@@ -1,0 +1,59 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0 -- C:\Program Files\Python312\python.exe
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 43 items
+
+atx-engine/tools/test_research_store.py::OpenTest::test_open_reads_the_schema_row_and_sets_the_policy_pragmas PASSED [  2%]
+atx-engine/tools/test_research_store.py::OpenTest::test_open_refuses_a_store_that_does_not_match_its_schema PASSED [  4%]
+atx-engine/tools/test_research_store.py::OpenTest::test_open_runs_no_ddl_and_never_creates_a_file PASSED [  6%]
+atx-engine/tools/test_research_store.py::RowsTest::test_a_failed_commit_rolls_back PASSED [  9%]
+atx-engine/tools/test_research_store.py::RowsTest::test_every_type_round_trips PASSED [ 11%]
+atx-engine/tools/test_research_store.py::RowsTest::test_select_orders_by_key_under_reverse_unordered_selects PASSED [ 13%]
+atx-engine/tools/test_research_store.py::RowsTest::test_sqlite_checks_and_append_only_surface_as_integrity_errors PASSED [ 16%]
+atx-engine/tools/test_research_store.py::RowsTest::test_transaction_commits_or_rolls_back PASSED [ 18%]
+atx-engine/tools/test_research_store.py::RowsTest::test_type_refusals_write_nothing 
+atx-engine/tools/test_research_store.py::RowsTest::test_type_refusals_write_nothing PASSED [ 20%]
+atx-engine/tools/test_research_store.py::RowsTest::test_upsert_get_and_select_with_where PASSED [ 23%]
+atx-engine/tools/test_research_store.py::CatalogStoreTest::test_catalog_tables_from_the_schema PASSED [ 25%]
+atx-engine/tools/test_research_store_blind.py::TypedColumnsHoldNoStatistic::test_no_typed_column_is_a_statistic PASSED [ 27%]
+atx-engine/tools/test_research_store_blind.py::TypedColumnsHoldNoStatistic::test_no_view_selects_a_statistic PASSED [ 30%]
+atx-engine/tools/test_research_store_blind.py::TypedColumnsHoldNoStatistic::test_the_token_list_catches_statistics PASSED [ 32%]
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_every_schema_literal_is_registered PASSED [ 34%]
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_legacy_allow_rows_are_dated_reasoned_and_not_classes 
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_legacy_allow_rows_are_dated_reasoned_and_not_classes PASSED [ 37%]
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_planted_unregistered_literal_fails PASSED [ 39%]
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_registry_shape 
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_registry_shape PASSED [ 41%]
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_shared_literal_needs_disjoint_literal_file_names 
+atx-engine/tools/test_research_store_classes.py::ClassRegistryGuard::test_shared_literal_needs_disjoint_literal_file_names PASSED [ 44%]
+atx-engine/tools/test_research_store_fixtures.py::FixtureDdlTest::test_every_fixture_ddl_statement_applies PASSED [ 46%]
+atx-engine/tools/test_research_store_fixtures.py::FixtureDdlTest::test_groups_print_in_the_documented_key_order PASSED [ 48%]
+atx-engine/tools/test_research_store_fixtures.py::FixtureDdlTest::test_host_sqlite_supports_the_grammar PASSED [ 51%]
+atx-engine/tools/test_research_store_fixtures.py::FixtureChecksTest::test_checks_refuse_bad_sha256_relpath_bool_json_and_allowed_values 
+atx-engine/tools/test_research_store_fixtures.py::FixtureChecksTest::test_checks_refuse_bad_sha256_relpath_bool_json_and_allowed_values PASSED [ 53%]
+atx-engine/tools/test_research_store_fixtures.py::FixtureChecksTest::test_core_and_cache_checks 
+atx-engine/tools/test_research_store_fixtures.py::FixtureChecksTest::test_core_and_cache_checks PASSED [ 55%]
+atx-engine/tools/test_research_store_fixtures.py::PyFixtureTest::test_make_py_fixture_reproduces_the_committed_logical_content PASSED [ 58%]
+atx-engine/tools/test_research_store_fixtures.py::DigestOracleTest::test_encoding_literal PASSED [ 60%]
+atx-engine/tools/test_research_store_fixtures.py::DigestOracleTest::test_oracle_reproduces_the_golden_digests PASSED [ 62%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_candidates_doc_py_indent2_noascii_lf PASSED [ 65%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_cli_counts_and_exit_codes PASSED [ 67%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_cycle_binding_typed_py_indent2 PASSED [ 69%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_eol_stale_rows_and_unrenderable_keys_are_reported 
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_eol_stale_rows_and_unrenderable_keys_are_reported PASSED [ 72%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_one_byte_edit_of_a_row_is_reported PASSED [ 74%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_one_byte_edit_on_disk_is_reported PASSED [ 76%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_registry_refuses_unknown_rules PASSED [ 79%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_run_receipt_typed_py_indent2_crlf_and_lf PASSED [ 81%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_run_receipt_values_that_do_not_fit_stay_in_extra PASSED [ 83%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_run_start_doc_py_indent2 PASSED [ 86%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_sealed_paths_never_opened PASSED [ 88%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_stage_receipts_typed_py_indent2_sorted_lf PASSED [ 90%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_trial_ledger_py_compact_sorted_lines_lf PASSED [ 93%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_verdict_and_copy_doc_py_indent2_lf PASSED [ 95%]
+atx-engine/tools/test_research_store_identity.py::IdentityCase::test_wave_result_doc_py_indent2_lf PASSED [ 97%]
+atx-engine/tools/test_research_store_identity.py::FixtureChain::test_cpp_catalog_renders_identically PASSED [100%]
+
+=================== 43 passed, 137 subtests passed in 2.75s ===================

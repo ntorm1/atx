@@ -782,13 +782,16 @@ the session scratchpad `root-gate0/`). Store exe p9-2r `d8a500d8` = receipt at s
 
 Next free build tag **p9-3e** (unchanged). Known-red set: **EMPTY**; no new red.
 
-### M6b (RESUME 11): SQL4, STOPPED at OWNER STOP 11 after the merge and its build, 2026-10-15
+### M6b (RESUME 11) + M6B-FINISH (RESUME 12): SQL4, 2026-10-15
 
-Start code `7320e1b9`, docs `fb566b44`. Code head **`06dc9e5a`**. Logs `m6b-logs/`. Trial ledger 133 lines `27e40f9f`
-at start and at the stop; `build-equity/research-store/` absent. Detail and the exact next step: `handoff-root-m6b.md`.
+Start code `7320e1b9`, docs `fb566b44`. Code head **`06dc9e5a`** (no slip). M6b stopped at OWNER STOP 11 after the
+merge and its build (docs `89b9644d`); M6B-FINISH (R12-RESUME; step 0 docs `6618abe1`) ran items 1-9 of
+`handoff-root-m6b.md`. Logs `m6b-logs/`. Trial ledger 133 lines `27e40f9f` throughout; `build-equity/research-store/`
+absent throughout. Detail: `root-wave3-merge-report.md` "SQL4"; state: `handoff-root-m6b.md`.
 
 | lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
 |---|---|---|---|---|---|---|---|---|
-| SQL4 | `15f51e62` (APPROVE, first review `44a76937`, 0 Required, 9 Suggested; code `c5df575d`) | `06dc9e5a` (`44a76937`, = recompute `b5b4eec9`) | 0 | **p9-3e** equity-dev; IC exe, IC tests, store exe, catalog tests (48 TUs / 7 links) | 0 | **not run** (STOP 11) | **not run** | tripwire test sources untouched, no pin line, no new literal, SQL-11 grep clean (**hold**); X-5 pre-merge references made (w, u; p9-3b exe); fixture catalog pre-merge dump made (`d32f7655...4e69`); post-merge identity, marginal, ledger verify, digest cause **not run** |
+| SQL4 | `15f51e62` (APPROVE, first review `44a76937`, 0 Required, 9 Suggested; code `c5df575d`) | `06dc9e5a` (`44a76937`, = recompute `b5b4eec9`) | 0 | **p9-3e** equity-dev; IC exe, IC tests, store exe, catalog tests (48 TUs / 7 links); exes re-hashed `disk = receipt` | 0 | IC named **79 / 79** (3 tripwires + 3 flag-absent fakes); catalog `ResearchCatalog*:SealGuard*:StoreCli*` **30 / 0 failed**; `ResearchCatalog.*` **17 / 17**; `StoreCli.*` **6 / 6** | store suite **43** at seeds 0 / 1 (`FixtureChain` ran: 12 / 0); marginal-argv case **1**; hook file **14**; classes guard: no new literal | tripwires, pins, SQL2-CLS, SQL-11 **hold**; fixture digest `d32f7655...4e69` -> **`a50fdcf9...100c`**, cause `ledger_state.head_sha256` / `head_rule` NULL -> B2 chain head / kChainRule only (**holds**); X-5 1a **holds** (0 outside), 1b **holds** (index SHA unchanged; its deletion REFUSED, PERM-1), case 2 **holds** (cold hits 0, warm 58 / 58, no `*.json` in D; 3 cold-pass `research_fields` leaves attributed by a no-flag cold control to cold vs warm); marginal shard (a) / (b) **holds** (0 outside; rows 0 / 2628; hits 2628); `verify --ledger` **holds** (exit 0, index ok, 21 heads all `prefix k`, other-ledger 0, not-a-prefix-head 0); clean-up **fails on one file** (`mega-candidate-cache-v8-lo3/index.sqlite` left by the refusal; it puts a `store` block in every runner receipt naming that cache: owner deletes it before the gate) |
 
-Next free build tag **p9-3f**. Known-red set: EMPTY as of GATE-0; the merged tree's suites have not run.
+**SQL4 verdict (SQL4-CUTOFF-2): checks green: SQL4 in the gate head.** Next free build tag **p9-3f**. Known-red set:
+**EMPTY** (targeted checks only; the whole suites are the gate's). Not run in P9 (RUN-1 bound / host): none.

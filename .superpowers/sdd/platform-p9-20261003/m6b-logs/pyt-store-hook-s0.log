@@ -1,0 +1,23 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0 -- C:\Program Files\Python312\python.exe
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 14 items
+
+scripts/tests/test_research_store_hook.py::test_selection_finds_the_indexes_a_store_could_select PASSED [  7%]
+scripts/tests/test_research_store_hook.py::test_runner_without_catalog_or_index_writes_todays_bytes PASSED [ 14%]
+scripts/tests/test_research_store_hook.py::test_runner_records_an_index_and_the_catalog PASSED [ 21%]
+scripts/tests/test_research_store_hook.py::test_hook_off_spawns_and_imports_nothing PASSED [ 28%]
+scripts/tests/test_research_store_hook.py::test_one_ingest_per_write_in_a_fake_wave PASSED [ 35%]
+scripts/tests/test_research_store_hook.py::test_fake_wave_bytes_equal_with_a_failing_store PASSED [ 42%]
+scripts/tests/test_research_store_hook.py::test_write_binding_ingests_its_binding[absolute-root] PASSED [ 50%]
+scripts/tests/test_research_store_hook.py::test_write_binding_ingests_its_binding[relative-root] PASSED [ 57%]
+scripts/tests/test_research_store_hook.py::test_write_verdict_ingests_the_verdict_then_its_copy[no-copy] PASSED [ 64%]
+scripts/tests/test_research_store_hook.py::test_write_verdict_ingests_the_verdict_then_its_copy[keep-verdicts] PASSED [ 71%]
+scripts/tests/test_research_store_hook.py::test_keep_copy_ingests_each_copy PASSED [ 78%]
+scripts/tests/test_research_store_hook.py::test_failures_are_one_warning_each PASSED [ 85%]
+scripts/tests/test_research_store_hook.py::test_an_unexpected_error_is_one_warning PASSED [ 92%]
+scripts/tests/test_research_store_hook.py::test_real_store_exe_ingests_every_class PASSED [100%]
+
+============================= 14 passed in 10.61s =============================

@@ -1,0 +1,90 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "6618abe12c9a55fcdfa1369d807bde552314457c",
+  "started_utc": "2026-10-15T18:58:27.383626+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+    "--library",
+    "atx-impl/strategies/fund_industry_ic_v8x3b.json",
+    "--library-sha256",
+    "32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54",
+    "--train",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--train-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--train-fields",
+    "build-equity/train-2020-2023-lo3-fields-v13",
+    "--train-fields-sha256",
+    "e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2",
+    "--output",
+    "build-equity/p9-m6b-x5-u-1b",
+    "--max-memory-mib",
+    "3072",
+    "--min-names",
+    "1000",
+    "--workers",
+    "4",
+    "--save-combined",
+    "--candidate-cache",
+    "build-equity/mega-candidate-cache-v8-lo3",
+    "--no-composition"
+  ],
+  "executable_sha256": "adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d",
+  "argv_sha256": "dfbcd1b10a062b5fa2f7c1ad518c509021c0f289ea271ba8b759d6301f2af811",
+  "attempt": 1,
+  "build_type": "Debug",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 512,
+    "admission_wait_seconds": 3600.0
+  },
+  "sampled_peak_tree_rss_bytes": 555671552,
+  "minimum_system_free_bytes": 4107980800,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/m6b-logs/cache-lo3-listing.log",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "admission": {
+    "wait_seconds": 3600.0,
+    "need_free_mib": 2560,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.015,
+    "checks": 1,
+    "free_mib": 4354,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 6.077999999979511,
+  "owned_processes": [
+    {
+      "pid": 1364,
+      "create_time": 1792090707.414702
+    },
+    {
+      "pid": 3108,
+      "create_time": 1792090707.4228084
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "dc8045d2dae1847d5ae952272b2782b404f57e43c66fd1a7b27f5f5afbe27f8a",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "store": {
+    "schema": "atx.run-store/v1",
+    "catalog": null,
+    "indexes": [
+      "build-equity/mega-candidate-cache-v8-lo3/index.sqlite"
+    ]
+  }
+}
+argv: --library atx-impl/strategies/fund_industry_ic_v8x3b.json --library-sha256 32f8d69f669fccfca8c150df11ee9615a6f2d6ef59537c87e3de2a24cdd04a54 --train build-equity/train-2020-2023-lo3/manifest.json --train-sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 --train-fields build-equity/train-2020-2023-lo3-fields-v13 --train-fields-sha256 e5f7f28c465a92885d55d55a439eb2f217b9f5f15d51017b4293ebc55935e9b2 --output build-equity/p9-m6b-x5-u-1b --max-memory-mib 3072 --min-names 1000 --workers 4 --save-combined --candidate-cache build-equity/mega-candidate-cache-v8-lo3 --no-composition

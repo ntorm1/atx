@@ -1,0 +1,15 @@
+M6B-FINISH item 1 (SPDLOG-RELINK / EXE-CUR): on-disk SHA-256 of the four p9-3e exes vs build-equity/mega-p9-3e-receipt.json
+time 2026-10-15T18:49:24Z head 6618abe1 code head 06dc9e5a
+receipt build-equity/mega-p9-3e-receipt.json sha256 62828e4d6e5f609f535200b46dfce865a4ba4f2d35cea94bbf90ceb021231ca5; m6b-logs copy 62828e4d6e5f609f535200b46dfce865a4ba4f2d35cea94bbf90ceb021231ca5
+receipt Source 06dc9e5a1629988167810f3b1c822bbef3020dcf Tag p9-3e ExitCode 0
+atx-equity-strategy-ic: receipt adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d disk adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d disk = receipt
+atx-impl-strategy-ic-tests: receipt 55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b disk 55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b disk = receipt
+atx-research-store: receipt a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73 disk a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73 disk = receipt
+atx-engine-research-catalog-tests: receipt b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a disk b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a disk = receipt
+mismatches 0
+ls -l --time-style=full-iso of the four exes:
+2026-10-15 14:22:21.610498600 build-equity/bin/atx-engine-research-catalog-tests.exe
+2026-10-15 14:22:22.615784600 build-equity/bin/atx-equity-strategy-ic.exe
+2026-10-15 14:22:23.843451100 build-equity/bin/atx-impl-strategy-ic-tests.exe
+2026-10-15 14:22:19.067708300 build-equity/bin/atx-research-store.exe
+trial ledger: 133 lines sha256 27e40f9f; build-equity/research-store/: absent

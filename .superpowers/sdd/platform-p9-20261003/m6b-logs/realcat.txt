@@ -1,0 +1,33 @@
+time 2026-10-15T19:47:21Z head 6618abe1 store exe sha256 a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73
+before: trial ledger 133 lines sha256 27e40f9f; research-store default dir: absent
+runner exit 0
+runner outcome completed exit 0 wall_seconds 94.9 peak_rss_mib 55 store block None
+catalog stdout (counts and digest lines only):
+files_seen 34636 verified 4176 declared 84 skipped 30419
+catalog_digest 0d9b31e9c0cbb28f13a8e7a3183fb9c028f0c0e2666cdb51d62ce77d57b21c43
+verify --catalog <it> --ledger build-equity/trials.jsonl:
+verify exit 0
+ledger build-equity/trials.jsonl lines 133 head 5a3ef9d9bf242dbb416a9b315b45e20377c234d3533e45cd1ae4bafaff8c7503 rule atx-ledger-chain-fold/v1 index ok
+recorded cycle_verdict build-equity/cycle-v8-b0a-lo1/cycle_verdict.json head bc95ae4fd33306fa5b022188a383b68925e8b4f078a451b8574b965fd18eac1e prefix 39
+recorded cycle_verdict build-equity/cycle-v8-b0b-lo3/cycle_verdict.json head ba3f4f704ad4f99ca782fecab66a052da28b95d223ad24e9a2e1cbc89e454270 prefix 40
+recorded cycle_verdict build-equity/cycle-v80/cycle_verdict.json head 8c0f816108c73c70597c1872c29232de06d287cb11695ae7a41e0a7426d957a7 prefix 50
+recorded cycle_verdict build-equity/cycle-v81-gm/cycle_verdict.json head a11bcbb114b17f8d6f2de8b7b6331ecafcdcbf0cf08df3b63b806755ce6f3b09 prefix 60
+recorded cycle_verdict build-equity/cycle-v81/cycle_verdict.json head 2635608f2b333f71789707593a2b92868773cd14055ae3ff5e9aad54922af24c prefix 59
+recorded cycle_verdict build-equity/cycle-v8x2/cycle_verdict.json head 9bd909df9a08e2347adf07950ba5c8acffa53a16e3aad602f7871fe2b74e40a0 prefix 76
+recorded cycle_verdict build-equity/cycle-v8x2b/cycle_verdict.json head 3c84c5b26e6939a1f1feb6952b55f930b2d8620f38e1b64f8d6cae349d18045f prefix 77
+recorded cycle_verdict build-equity/cycle-v8x3/cycle_verdict.json head 522dfa3416573a45a6f5034922eea4b75215dd055a2f02fe8c59ec674119ea1e prefix 85
+recorded cycle_verdict build-equity/cycle-v8x3b-gm/cycle_verdict.json head 7f13f733d576b5be69968fad64deb80124189fa00fd8a748a97cd2728aad89fb prefix 86
+recorded cycle_verdict build-equity/cycle-v8x4/cycle_verdict.json head d4d2c955c6a1002733af7d2b54c1327fea3db98389364756fdd123f725ecaa71 prefix 95
+recorded cycle_verdict build-equity/cycle-v8x4b/cycle_verdict.json head be896680f7c996f2c293d370a71b5ab963a568f2a26b9aafd34085d007b70f6d prefix 96
+recorded cycle_verdict build-equity/cycle-v8x7/cycle_verdict.json head af281c31e4c6eb8cfce8bef7a2e5b18c3950ba810c1f66a90528fb2762eece82 prefix 110
+recorded cycle_verdict build-equity/cycle-v8x7b-gm/cycle_verdict.json head 7aaf0ae12ce83e8482e2ce183fde7d33f0fc879522ff9ee5546b429af08ad01a prefix 111
+recorded cycle_verdict build-equity/cycle-v8x7b/cycle_verdict.json head af281c31e4c6eb8cfce8bef7a2e5b18c3950ba810c1f66a90528fb2762eece82 prefix 110
+recorded cycle_verdict build-equity/cycle-v8ys/cycle_verdict.json head ca3dcf3335bb446531b039a368101233a45d56fc701868f7db7f812b4a58cfdf prefix 127
+recorded cycle_verdict build-equity/cycle-v8ysb-gm/cycle_verdict.json head e186895aeed3f7f3f51f4e13e93c7b736047b304f3bc89c1ff09cf48b6994030 prefix 128
+recorded cycle_verdict build-equity/cycle-v8ysb/cycle_verdict.json head ca3dcf3335bb446531b039a368101233a45d56fc701868f7db7f812b4a58cfdf prefix 127
+recorded wave_result build-equity/waves/y-2/wave-result.json head 58bce60efae09d44750a3e247ff81262d50778cc8a78dd7f14e8e351a4f56d73 prefix 130
+recorded wave_result build-equity/waves/y-3/wave-result.json head a083edaa836b69ef622c1b1fb08b2e0a5fb34fea1bc1f3e10cd6f0562959459e prefix 129
+recorded wave_result build-equity/waves/y-5/wave-result.json head 6c5f0ff1faca1a1bbc2eb987e5e1f7363cf2bfa7484b58dab5fe194ed3275c11 prefix 131
+recorded wave_result build-equity/waves/y-s/wave-result.json head e186895aeed3f7f3f51f4e13e93c7b736047b304f3bc89c1ff09cf48b6994030 prefix 128
+recorded heads 21 not-a-prefix-head 0 other-ledger 0
+after: trial ledger 133 lines sha256 27e40f9f; research-store default dir: absent

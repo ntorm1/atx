@@ -1,0 +1,1 @@
+{"ledger_path":"build-equity/trials.jsonl","lines":5,"file_sha256":"6bc93fb0065f01452fae4f4d5140f9ce6553d197833bd299c96bb8b9b46a8b74","head_sha256":"8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008","head_rule":"atx-ledger-chain-fold/v1"}

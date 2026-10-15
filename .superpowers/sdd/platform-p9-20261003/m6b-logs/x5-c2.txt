@@ -1,0 +1,30 @@
+M6B-FINISH item 5 case 2 (flag --candidate-cache-index sqlite on a fresh D = build-equity/p9-m6bf-x5-idx-D)
+time 2026-10-15T19:00:35Z free RAM 5296 MiB, C: free 61G
+cache index build-equity/p9-m6bf-x5-idx-D/index.sqlite
+warning (SQL1-MON): book_monitor.py --fit-work does not yet read records stored only in this index; no P9 cell uses a cache index (SQL-11); delete it after the identity run
+cache init exit 0
+D after init: index.sqlite 
+u-c2cold completed exit 0 exe adffe7421781145a wall_seconds 133.4 peak_rss_mib 1629 u cache build-equity/p9-m6bf-x5-idx-D ['--candidate-cache-index', 'sqlite']
+u-c2warm completed exit 0 exe adffe7421781145a wall_seconds 6.9 peak_rss_mib 532 u cache build-equity/p9-m6bf-x5-idx-D ['--candidate-cache-index', 'sqlite']
+w-c2 completed exit 0 exe adffe7421781145a wall_seconds 56.9 peak_rss_mib 1373 w cache build-equity/p9-m6bf-x5-idx-D ['--candidate-cache-index', 'sqlite']
+cmp 1a u-post vs case-2 u-c2cold (allowed: 1a's seconds + /roles/*/candidate_cache + /roles/*/verify_bytes + per-candidate signal_cache / ic_result_cache / ic_missing_exit_v1_result_cache / stage_seconds): TOTAL outside the list: 119
+cmp 1a u-post vs case-2 u-c2warm (allowed: 1a's seconds + /roles/*/candidate_cache + /roles/*/verify_bytes + per-candidate signal_cache / ic_result_cache / ic_missing_exit_v1_result_cache / stage_seconds): TOTAL outside the list: 0
+cmp 1a w-post vs case-2 w-c2 (allowed: 1a's seconds + /roles/*/candidate_cache + /roles/*/verify_bytes + per-candidate signal_cache / ic_result_cache / ic_missing_exit_v1_result_cache / stage_seconds): TOTAL outside the list: 0
+p9-m6b-x5-u-c2cold/summary.json: role 0 candidates 58 | hits=0 ic_results.hits=0 ic_results.misses=58 index=sqlite legacy_hits=0 misses=58 vm_evaluations=58
+p9-m6b-x5-u-c2warm/summary.json: role 0 candidates 58 | hits=58 ic_results.hits=58 ic_results.misses=0 index=sqlite legacy_hits=0 misses=0 vm_evaluations=0
+p9-m6b-x5-w-c2/summary.json: role 0 candidates 58 | hits=58 ic_results.hits=58 ic_results.misses=0 index=sqlite legacy_hits=0 misses=0 vm_evaluations=0
+find D -name '*.json': 0 files
+D: 59 files, 3866724128 bytes; index files: index.sqlite 
+warm u wall_seconds (runner receipt): no flag on the real cache (1a u-post) run-x5-u-post.log 6.6; run-x5-u-1b.log 6.1; run-x5-u-c2warm.log 6.9; 
+RE-RUN of the three comparisons with MSYS_NO_PATHCONV=1: in the lines above, Git Bash path conversion had rewritten the 5th --allow ('^/(signal_cache|...)', the jsonl top level) to '^C:/Program Files/Git/(...)'; the cmp-c2-*.txt files are overwritten by this re-run.
+cmp 1a u-post vs case-2 u-c2cold: TOTAL outside the list: 3
+cmp 1a u-post vs case-2 u-c2warm: TOTAL outside the list: 0
+cmp 1a w-post vs case-2 w-c2: TOTAL outside the list: 0
+
+CONTROL (attribution of the 3 research_fields leaves): u cold, NO index flag, fresh empty file cache build-equity/p9-m6bf-x5-noidx-E
+u-c2ctl-cold completed exit 0 exe adffe7421781145a wall_seconds 116.8 peak_rss_mib 1623 index-flag False
+p9-m6b-x5-u-c2ctl-cold/summary.json: role 0 candidates 58 | hits=0 ic_results.hits=0 ic_results.misses=58 legacy_hits=0 misses=58 vm_evaluations=58
+cmp 1a u-post vs control cold (no flag): TOTAL outside the list: 3; outside leaves:  OUTSIDE /roles/*/research_fields/field_loads; OUTSIDE /roles/*/research_fields/loaded_bytes; OUTSIDE /roles/*/research_fields/peak_resident_fields;
+cmp control cold (no flag) vs case-2 cold (flag sqlite), same allowed list: TOTAL outside the list: 0
+E: 174 files, 3866438483 bytes, *.json files 116
+D (build-equity/p9-m6bf-x5-idx-D) and E (build-equity/p9-m6bf-x5-noidx-E) deleted by literal name 2026-10-15T19:08:34Z; C: free after 59G

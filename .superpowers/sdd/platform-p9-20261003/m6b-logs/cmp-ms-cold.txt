@@ -1,0 +1,3 @@
+DIFF   marginal_ic.json 54e8dc72 vs c150bff7: 16 leaves, 16 allowed, 0 outside
+         allowed path classes: ['/inputs/pair_cache/directory', '/inputs/pair_cache/index', '/inputs/pair_cache/legacy_rows_imported', '/inputs/pair_cache/legacy_shards_read', '/inputs/pair_cache/rows_read', '/inputs/pair_cache/rows_written', '/inputs/pair_cache/shard', '/inputs/pair_cache/shards_read', '/stage_seconds/hash', '/stage_seconds/kernel', '/stage_seconds/labels', '/stage_seconds/pair_cache']
+TOTAL outside the list: 0

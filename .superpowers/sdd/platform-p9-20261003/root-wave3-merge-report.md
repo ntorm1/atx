@@ -1109,3 +1109,121 @@ None. No Appendix IV placeholder names SQL3 (as at its first merge); the record 
   refusal. No data opened, no file under `C:/atx/atx-db` opened, `holdout_gate.py` not run; no statistic printed or
   recorded (the "2.589x at cadence 1" quoted above is the registration's mechanical rate-ratio bound, not a measured
   figure).
+
+## SQL4
+
+Step group M6b (RESUME 11: the merge and its build, stopped at OWNER STOP 11) and M6B-FINISH (RESUME 12: the post-merge
+checks; rulings R12-RESUME, SQL4-CUTOFF-2, M6B-SCOPE). Root `C:/atx-wt/pool-2`. Evidence `m6b-logs/` (tools
+`m6b-logs/tools/`; exit tables `gt-exits.txt`, `pyt-exits.txt`, `builds.txt`; permission refusals
+`perm-refusals.txt`). Handoff: `handoff-root-m6b.md`. TEST-1 / ROOT-1a: targeted checks only; nothing of the gate ran
+(no Release build, no whole suite, no P9-B0, no canary: M6B-SCOPE).
+
+### Merge (M6b, 2026-10-15 14:17 local)
+
+- `git merge --no-ff 44a76937` (first review APPROVE of `15f51e62`, code `c5df575d`; MERGE-SHA; pool-32 branch
+  `feat/p9-sql4-20261008`) -> **`06dc9e5a`**, **0 conflicts** (the review expected conflicts in the four CMake tails;
+  root's head `fb566b44` had no CMake edit since the lane's last root merge `475f5d8f`), tree `b5b4eec9` = the recompute
+  `git merge-tree --write-tree fb566b44 44a76937` (`m6b-logs/merge-checks.txt`). Merge base `475f5d8f`.
+- Build **p9-3e** (Debug `equity-dev`, source `06dc9e5a`; `atx-equity-strategy-ic,atx-impl-strategy-ic-tests,
+  atx-research-store,atx-engine-research-catalog-tests`; 48 TUs / 7 links; exit 0; 0 warning lines;
+  `m6b-logs/builds.txt`, `mega-p9-3e-receipt.json`). Release of the IC exe is the gate's (TEST-1). EXE-FREEZE: p9-3e
+  relinks the IC exe before the gate's P9-B0 re-pin (holds).
+
+### ROOT-1 attribution row (every code file of SQL4's range; merge commit `06dc9e5a`)
+
+`git diff fb566b44 06dc9e5a -- . ':!.superpowers'`: 24 files, +2605 / -139; plus 42 sprint-dir record files of the lane.
+A gate red in any of these files is attributed to merge commit **`06dc9e5a`** (lane SQL4, pool-32).
+
+| file | lane commit(s) in `475f5d8f..44a76937` | lines |
+|---|---|---|
+| `atx-engine/CMakeLists.txt` | `237fc8a6` | +5 |
+| `atx-engine/include/atx/engine/research/store/catalog/ingest.hpp` | `237fc8a6` | +42 -2 |
+| `atx-engine/include/atx/engine/research/store/catalog/store_cli.hpp` | `237fc8a6` | +4 -2 |
+| `atx-engine/include/atx/engine/research/store/ops_cache.hpp` | `a1955a71` | +34 |
+| `atx-engine/src/research/store/cache_ops.cpp` | `a1955a71` | +171 |
+| `atx-engine/src/research/store/catalog/ingest_ledger.cpp` | `237fc8a6` | +159 -9 |
+| `atx-engine/src/research/store/catalog/store_cli.cpp` | `237fc8a6` | +62 -13 |
+| `atx-engine/tests/CMakeLists.txt` | `4aade941` | +6 |
+| `atx-engine/tests/research/research_catalog_ledger_test.cpp` | `4aade941` | +208 |
+| `atx-engine/tests/research/research_catalog_test.cpp` | `237fc8a6` | +1 -1 |
+| `atx-impl/CMakeLists.txt` | `96b2b1e1` | +7 |
+| `atx-impl/src/strategy_ic_cache_index.cpp` (new) | `a1955a71` | +247 |
+| `atx-impl/src/strategy_ic_cache_index.hpp` (new) | `a1955a71` | +142 |
+| `atx-impl/src/strategy_ic_detail.hpp` | `a1955a71`, `4aade941` | +12 -5 |
+| `atx-impl/src/strategy_ic_result_cache.cpp` | `a1955a71` | +127 -22 |
+| `atx-impl/src/strategy_ic_runner.cpp` | `a1955a71`, `4aade941` | +58 -14 |
+| `atx-impl/src/strategy_ic_runner.hpp` | `a1955a71` | +8 |
+| `atx-impl/src/strategy_ic_signal_cache.cpp` | `a1955a71`, `4aade941` | +146 -23 |
+| `atx-impl/src/strategy_marginal_ic.cpp` | `22e41583` | +60 -13 |
+| `atx-impl/src/strategy_marginal_ic.hpp` | `22e41583` | +8 |
+| `atx-impl/src/strategy_marginal_pair_cache.cpp` | `22e41583` | +152 -32 |
+| `atx-impl/src/strategy_marginal_pair_cache.hpp` | `22e41583` | +33 -3 |
+| `atx-impl/tests/CMakeLists.txt` | `4aade941` | +7 |
+| `atx-impl/tests/strategy_ic_cache_index_test.cpp` (new) | `4aade941`, `44fce688` | +906 |
+
+The four CMake files also carry the lane's own conflict resolution of its second root merge `c5df575d` (root's blocks
+kept verbatim, SQL4's appended; the review's "Merges in the range"). No Python file outside the lane's sprint-dir tools.
+
+### Root items (`pool-32 task-SQL4-review.md:274-350` "What root must check at merge"; `handoff-root-m6b.md` items 1-9)
+
+M6B-FINISH, 2026-10-15 18:45-19:55 UTC. Start state (verified after step 0, the PM-files docs commit `6618abe1`): code
+head `06dc9e5a`; `git status --porcelain` = the five untracked `docs/plans/*.png` only; trial ledger 133 lines
+`27e40f9f`; `build-equity/research-store/` absent. Env for every test: vcpkg `debug/bin` + `bin` on PATH,
+`ATX_EQUITY_ROOT=C:/atx-wt/pool-2/build-equity`, `ATX_EQUITY_BIN=<that>/bin`, `ATX_RESEARCH_STORE_EXE=<that bin>/
+atx-research-store.exe`, TMP / TEMP / `--basetemp` under the session scratchpad `root-m6bf/`. Every real-data run through
+`scripts/run_bounded_research.py --seconds 600 --max-rss-mib 2048` (RUN-1 / RUN-2), on the p9-3e IC exe `adffe742`.
+Compared by SHA-256 and JSON path only (`tools/cmp.py`, `counters.py`); no output value was read or recorded.
+
+| item | check | result | evidence |
+|---|---|---|---|
+| 1 (EXE-CUR, SPDLOG-RELINK) | the four p9-3e exes on disk vs `build-equity/mega-p9-3e-receipt.json` | **holds**: 4 / 4 `disk = receipt` (IC `adffe742...d56d`, IC tests `55db8666...eb6b`, store `a54955e9...5c73`, catalog tests `b73b2199...835a`); no relink since the build; all 20 Debug exes of `build-equity/bin` = their newest receipt | `exe-rehash.txt`, `exe-sha-end.txt` |
+| 2 (review 3, 7; SQL4-S S-3) | IC filter `IcCacheIndex.*:IcResultIndex.*:MarginalPairIndex.*:StrategyIcRunner.*:MarginalIc.*`; catalog `ResearchCatalog*:SealGuard*:StoreCli*`; `ResearchCatalog.*`; `StoreCli.*` | **holds**: **79 / 79** (the three tripwires `StrategyIcRunner.VmSourcesPinnedToSemanticsVersion`, `.IcSourcesPinnedToSemanticsVersion`, `MarginalIc.PairCacheSourcesPinned` and the three flag-absent fakes `IcCacheIndex.FlagAbsentKeepsFileLayoutAndSummary`, `IcCacheIndex.SummaryRecordsIndex`, `MarginalPairIndex.FlagAbsentBlockUnchanged` among them, all OK); catalog **30 / 30, 0 failures**; `ResearchCatalog.*` **17 / 17**; `StoreCli.*` **6 / 6**; ENV-1 0 hits | `gt-exits.txt`, `gt-ic-named.log`, `gt-catalog-{full,rc,storecli}.log` |
+| 3 (review 5) | store suite (5 files) seeds 0 / 1; `test_research_cycle.py::test_marginal_argv_is_the_verbs_full_cli`; `test_research_store_hook.py`; classes guard before / after | **holds**: **43 passed** (137 subtests) at seed 0 and at seed 1, `FixtureChain::test_cpp_catalog_renders_identically` PASSED both (it asserts "total checked 12 mismatches 0" on the p9-3e store exe); the marginal-argv case **1 passed**; hook file **14 passed** (`test_real_store_exe_ingests_every_class` PASSED); guard scan after = GATE-0's at the pre-merge code tree except `scanned_files` 932 -> 934 (the two new C++ files `strategy_ic_cache_index.{cpp,hpp}` in `CPP_DIRS`): `distinct_literals` 135 -> 135, `unregistered` 0 -> 0 (no new literal; the guard's own pytest is in the store suite) | `pyt-exits.txt`, `pyt-store-suite-s{0,1}.log`, `pyt-research-cycle-marginal-argv-s0.log`, `pyt-store-hook-s0.log`, `guard-scan-after.txt` vs `gate0-logs/guard-scan-after.txt` |
+| 4 (review 6; SQL4-S S-1) | the fixture-chain catalog with the p9-3e store exe; `dump --table` of all 25 tables vs the p9-2r pre-merge dump | **holds**: init / catalog / `verify --pins` 0, `files_seen 28 verified 25 declared 0 skipped 4`, identity "total checked 12 mismatches 0"; 20 tables byte-identical; `artifact_seen`, `catalog_run`, `skipped_path`, `store_info` differ only in volatile values (the run id / timestamp, the store exe's SHA-256, the wall seconds, the digest itself), and these four tables are `volatile: true` in the committed schema fixtures (outside the digest); `ledger_state` (non-volatile) differs only in `head_sha256` / `head_rule`: NULL / NULL -> `8b1e9fe0...f008` / `atx-ledger-chain-fold/v1` = B2's `backtest_integrity.chain_head` of the fixture ledger's 5 lines / `CHAIN_RULE` (kChainRule). **New fixture `catalog_digest` `a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c`** (was `d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69`); cause: SQL4's `ingest_ledger.cpp` now fills `ledger_state.head_sha256` / `head_rule`. No committed file pins either digest (`git grep`); no expected value edited | `fixture-dump-post.txt`, `post-dump/`, `fixture-dump-cmp.txt` (`tools/dump_cmp.py`) |
+| 5 case 1a (review 8) | X-5 w and u, no flag, real cache, p9-3e vs the pre-merge p9-3b references (`p9-m6b-x5-{w,u}-pre`, made in M6b) | **holds**: w 10 files byte-identical, `summary.json` 238 / `train_candidates.jsonl` 229 differing leaves all on `seconds` paths, **0 outside**; u 3 files byte-identical (`orientations.json`, `recipe.json`, `train_daily_ic.csv`), 122 / 116 leaves all `seconds`, **0 outside**; counters unchanged (58 candidates, hits 58, `ic_results` hits 58, `vm_evaluations` 0). The p9-3b exe differs from `7320e1b9` only in NAV / fields TUs off the IC verb's path (M6b's note) | `cmp-1a-{w,u}.txt`, `counters-1a.txt`, `run-x5-{w,u}-post.log` |
+| 5 case 1b | `cache init` on the real cache dir (empty `index.sqlite`, 73,728 bytes, `3a177dfd...c6f0`), then w and u with no flag | **holds** as identity: index SHA-256 unchanged after both runs, no `-wal` / `-shm`; outputs = 1a outside `seconds` (0 outside, w and u); counters as 1a. **Clean-up NOT done**: the deletion of `index.sqlite` by literal name was REFUSED by the permission classifier (PERM-1 #2; not retried). The file is still in the real cache dir (see item 8) | `x5-1b.txt`, `cmp-1b-{w,u}.txt`, `perm-refusals.txt` |
+| 5 case 2 | fresh `D` = `build-equity/p9-m6bf-x5-idx-D` (`cache init`), `--candidate-cache D --candidate-cache-index sqlite`: u cold, u warm, w | **holds**: u cold completed in bounds (133.4 s, peak 1,629 MiB): hits 0, misses 58, `vm_evaluations` 58, `ic_results` misses 58; u warm (6.9 s): hits **58**, `ic_results` hits **58**; w: hits 58, `ic_results` hits 58; `find D -name '*.json'` **empty** (59 files: `index.sqlite` + 58 payloads); vs 1a with the review's allowed list (1a's `seconds`, the whole `/roles/*/candidate_cache`, `/roles/*/verify_bytes`, per candidate `signal_cache` / `ic_result_cache` / `ic_missing_exit_v1_result_cache` / `stage_seconds`): u warm **0 outside**, w **0 outside**, u cold **3 outside**: `/roles/*/research_fields/{field_loads,loaded_bytes,peak_resident_fields}`. Attributed by a control (one extra bounded run): u cold with NO flag on a fresh empty file cache `E` (116.8 s): the control has the same 3 leaves outside vs 1a, and control vs flagged cold = **0 outside** on the same list. So the 3 leaves are the cold pass's field loads (a warm 1a run loads no field), not the index; the review's list omitted them for the cold-vs-warm comparison. Warm u wall time: 6.6 s no flag (1a), 6.1 s (1b), 6.9 s with the index (case 2). D and E deleted by literal name | `x5-c2.txt`, `cmp-c2-*.txt`, `cmp-c2ctl-*.txt`, `run-x5-*-c2*.log` |
+| 6 (review 9) | Y-S pool-only marginal argv of record (`build-equity/mega-v8-b0b-train-u-v8ys-marginal-poolonly-run/receipt.json`), only `--output` / `--pair-cache` / `--pair-cache-index` changed: (a) empty P1 cold, warm; (b) `cache init` P2 + `--pair-cache-index sqlite` cold, warm | **holds**: all four completed in bounds (241.9 / 232.9 / 245.9 / 249.0 s; peak 252-299 MiB; (b) cold waited 1,014 s at the runner's no-compiler admission while a foreign `C:/atx-wt/pool-33` atx-vol build compiled); `marginal_ic.json` cold vs cold and warm vs warm: 16 differing leaves each, all under `/inputs/pair_cache` or `/stage_seconds`, **0 outside**; `working_bytes` equal, `candidates` 73 = 73; (b) cold `rows_read` 0, `rows_written` 2628 = `computed` 2628; (b) warm `computed` 0, `hits` 2628 = the pair count (73 x 72 / 2); (a) warm hits 2628 from 1 shard; P2 held only `index.sqlite` (no `-wal` / `-shm`); P1 and P2 deleted by literal name. All four ran with the leftover real-cache `index.sqlite` present (both arms alike; its SHA-256 unchanged after them) | `ms.txt`, `cmp-ms-{cold,warm}.txt`, `run-ms-*.log` |
+| 7 (review 10; SQL4-S S-6) | `tools/reparse_points.py C:/atx-wt/pool-2`; fresh real-tree catalog OUTSIDE `build-equity/research-store/` (session scratchpad `root-m6bf/real.sqlite`) through the bounded runner; `verify --catalog <it> --ledger build-equity/trials.jsonl` | **holds**: reparse points **0** (5,233 dirs walked, 42 pruned: `.git` or seal-named); catalog runner completed (94.9 s, peak 55 MiB, no `store` block), `files_seen 34636 verified 4176 declared 84 skipped 30419`; verify **exit 0**, ledger `lines 133 ... rule atx-ledger-chain-fold/v1 index ok`, **21 recorded heads, each `prefix <k>`** (17 `cycle_verdict`, 4 `wave_result`), `not-a-prefix-head 0`, **`other-ledger 0`**; trial ledger 133 / `27e40f9f` before and after; `build-equity/research-store/` absent before and after | `reparse-points.txt`, `realcat.txt`, `realcat-verify.txt`, `realcat-runner.log` (`tools/realcat.sh`) |
+| 8 (review 12) | no index, copy, D, P1, P2 left; pre-merge references deleted; real cache listing `155872de50833fca` | **FAILS on one file, by PERM-1 (not a code red)**: D, E, P1, P2 deleted; no copy was made; the four pre-merge reference dirs `p9-m6b-x5-{w,u}-pre{,-run}` deleted by literal name after 1a; but `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` remains (refusal #2). Listing at the end: 352 files, digest `fb444f7d316a1a4c`; without the `index.sqlite` row it is the start listing exactly (351 files, `155872de50833fca`: every original file's size and mtime unchanged). **Gate consequence:** while the file exists, the bounded runner (SQL3's hook, by design) writes a `store` block naming it into `start.json` / `receipt.json` of every run naming that cache dir (seen in the 1b and item-6 runner receipts), against SQL3-2; **the owner / PM must delete that one file before the gate's P9-B0** | `cleanup.txt`, `cache-lo3-listing-end.txt`, `perm-refusals.txt` |
+| 11 (SQL2-CLS, SQL-11) | new `atx.*` literal; cache-index flags on a cell argv / spec / prereg | **holds**: no literal (M6b's grep; item 3's scan); `git grep` at head `6618abe1`: the flags appear outside `atx-impl/src`, `atx-impl/tests`, `docs/plans` and the sprint dir only in the `atx-impl/CMakeLists.txt:315` comment; 0 files under `scripts/specs`; `p9-prereg.md:780` forbids them on every cell argv | `merge-tripwires.txt`, `sql11-recheck.txt` |
+
+Tripwire sources (review item 4): `git diff fb566b44 06dc9e5a -- atx-impl/tests/strategy_ic_runner_test.cpp
+atx-impl/tests/strategy_marginal_ic_test.cpp` empty; 0 pin lines moved (`merge-tripwires.txt`; M6b).
+
+**Verdict of this group (SQL4-CUTOFF-2): checks green: SQL4 in the gate head.** Every check of the merge holds; no red
+appeared, so no slip commit and no build (`p9-3f` unused). The one open item is a clean-up the permission classifier
+refused (the real cache dir's `index.sqlite`), which the owner / PM removes by hand before the gate; the no-flag paths
+(1a, 1b, the fakes) and the opt-in paths (case 2, item 6) are proven. "Not run in P9 (RUN-1 bound / host)" cases:
+**none** (every case completed within `--seconds 600 --max-rss-mib 2048`).
+
+### Exes after the merge (EXE-CUR for the gate)
+
+The four p9-3e exes are current by source at `06dc9e5a`. Newly stale by source after SQL4 (it changed
+`atx-impl-strategy`, which they link): the Debug NAV exe and target-tests p9-3d (source `1d003241`). Still stale as
+before: `atx-equity-strategy`, `-risk`, `-mine`, `atx-impl`, `atx-impl-tests` (p9-2p / p9-2t), eval tests p9-2v. Not
+touched by SQL4 (no link to `atx-impl-strategy`, the store or the catalog library): eval verb p9-2z, fields p9-3c,
+composition / admission p9-3a, book tests p9-2y, ledger tests p9-2t. Every Release exe is the gate's. EXE-FREEZE: the
+NAV and IC exes are relinked by the gate's builds before P9-B0 (holds).
+
+### For PRE (round 2b-ii)
+
+None from this group: no Appendix IV placeholder names SQL4; SQL-11 keeps the index flags off every cell argv. The new
+fixture catalog digest `a50fdcf9...100c` is for the gate's store step (SQL4-S S-1), not the prereg.
+
+### Disk and status (M6b + M6B-FINISH)
+
+- Deleted by literal name: `build-equity/p9-m6b-x5-{w,u}-pre` and `-pre-run` (about 110 MB); D and E (about 7.7 GB);
+  P1, P2; my outputs of 1b, case 2, the control and item 6 (`build-equity/p9-m6b-x5-{w,u}-1b{,-run}`,
+  `p9-m6b-x5-u-c2{cold,warm,ctl-cold}{,-run}`, `p9-m6b-x5-w-c2{,-run}`, `p9-m6b-ms-{a,b}-{cold,warm}{,-run}`,
+  `p9-m6bf-realcat-run`; about 250 MB). Every runner receipt is kept inside its `m6b-logs/run-*.log` (the catalog's in
+  `realcat-runner.log`). In all about 8.1 GB freed.
+- Kept: `build-equity/p9-m6b-x5-{w,u}-post` and `-post-run` (the p9-3e no-flag X-5 outputs, 1a's post side; about
+  110 MB; regenerable; the gate root may delete them by name); root's object trees; every receipt.
+- Left by refusal: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` (refusal #2) and the previous M6b agent's
+  scratch `.../2a54b18d-.../scratchpad/root-m6b/pre-cat.sqlite`, `pre-verify.txt` (refusal #1; harmless).
+- Code head **`06dc9e5a`** (no slip). Build tag used: none in M6B-FINISH (p9-3e in M6b); **next free build tag p9-3f**.
+  Known-red set: **EMPTY** (no red in the targeted checks; the whole suites are the gate's). Trial ledger 133 lines
+  `27e40f9f` throughout (0 trials). SQL3-2 holds (no catalog at the default path). No lease touched. No data dated
+  2024-01-01 or later opened; `holdout_gate.py` not run; no file under `C:/atx/atx-db` opened; no statistic read or
+  recorded (the counts above are cache counters, file counts, wall times and hashes).
