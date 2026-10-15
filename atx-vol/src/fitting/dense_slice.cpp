@@ -527,8 +527,6 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   const double sqrt_t = std::sqrt(T);
   const double ln_fk = std::log(F / K);
   const bool early_exit = !g_iv_early_exit_disabled.load(std::memory_order_relaxed);
-  double certified_lo = iv_lower;
-  double certified_hi = kIvMax;
   const double intrinsic = df * std::max(F - K, 0.0);
   const double time_value = safe_price - intrinsic;
   // Numerical wings need the original deterministic price bisection. Its
@@ -568,9 +566,7 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
         // to skip comparisons just outside a floating-point price plateau.
         if (left_price < safe_price - price_noise &&
             right_price > safe_price + price_noise) {
-          certified_lo = left;
-          certified_hi = right;
-          break;
+          return std::clamp(sigma - step, left, right);
         }
         break;
       }
@@ -580,11 +576,8 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
                   : 0.5 * (newton_lo + newton_hi);
     }
   }
-  // Follow the original bisection arithmetic even after certification: outside
-  // the certified interval monotonicity determines the sign without another
-  // Black evaluation. This keeps the established output rounding (including
-  // downstream deterministic frame hashes), while a failed Newton attempt
-  // leaves the full original bracket and its price comparisons untouched.
+  // An uncertified Newton candidate leaves the original bisection bracket
+  // untouched, preserving robustness in short-tenor and low-vega wings.
   double lo = iv_lower;
   double hi = kIvMax;
   // FIT-P1 (Task P-5): a fixed 64-iteration bisection here was up to ~260k
@@ -600,18 +593,12 @@ double ConvexSliceFit::iv(double k_log) const noexcept {
   // binary with the optimization on and off (see its declaration above).
   for (int iter = 0; iter < 64; ++iter) {
     const double mid = 0.5 * (lo + hi);
-    if (mid <= certified_lo) {
+    const double model =
+        black76_price_from_lnfk(F, K, T, mid, df, ln_fk, sqrt_t, Side::Call);
+    if (model < safe_price) {
       lo = mid;
-    } else if (mid >= certified_hi) {
-      hi = mid;
     } else {
-      const double model =
-          black76_price_from_lnfk(F, K, T, mid, df, ln_fk, sqrt_t, Side::Call);
-      if (model < safe_price) {
-        lo = mid;
-      } else {
-        hi = mid;
-      }
+      hi = mid;
     }
     if (early_exit && (hi - lo) < 1.0e-12 * std::max(1.0, hi)) {
       break;
