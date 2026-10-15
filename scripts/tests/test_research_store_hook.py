@@ -19,6 +19,8 @@ SQL-2, SQL-6, SQL-11, W3-4).
                                                           its copy, each one ingest of the whole file
   test_keep_copy_ingests_each_copy                        item 5, cycle_verdict.keep_copy: one ingest per copy written
   test_failures_are_one_warning_each                      ingest exit 3, a timeout, a check mismatch: one line each
+  test_an_unexpected_error_is_one_warning                 the catch-all: the real check meets the planted empty catalog
+                                                          (StoreError): one line, the write unchanged (STORE-S S-1)
   test_real_store_exe_ingests_every_class                 the built atx-research-store in a temp root: every class
                                                           ingested and re-rendered (item 5's writers by their own
                                                           calls); a non-canonical file and a re-queued candidate id
@@ -460,6 +462,21 @@ def test_failures_are_one_warning_each(tmp_path, monkeypatch, capsys):
         "rendered sha256 aa != catalogued bb (the JSON stands; repair: atx-research-store catalog --rebuild)"]
     H.record(root, tmp_path / "elsewhere.json", "wave-candidate")      # outside the root: named, not ingested
     assert "outside the root" in capsys.readouterr().err
+
+
+def test_an_unexpected_error_is_one_warning(tmp_path, monkeypatch, capsys):
+    # STORE-S S-1, the catch-all: ingest exits 0, then the real check opens the planted empty catalog (StoreError)
+    root = catalog_on(tmp_path / "r")
+    doc = dict(F.candidate("alpha_a"), schema=WQ.SCHEMA, status="proposed", wave=None,
+               history=[{"status": "proposed", "at": "2026-10-02", "by": "lane"}])
+    WQ.write(tmp_path / "plain", doc)                                   # the bytes of a write without the hook
+    rel = f"{WQ.QUEUE_DIR}/alpha_a.json"
+    monkeypatch.setattr(H, "subprocess", Ingests())
+    assert WQ.write(root, doc) == root / WQ.QUEUE_DIR / "alpha_a.json"   # the writer's return value unchanged
+    assert (root / rel).read_bytes() == (tmp_path / "plain" / rel).read_bytes()
+    lines = warnings(capsys.readouterr().err)
+    assert len(lines) == 1 and lines[0].startswith(f"{WARN}wave-candidate {rel}: StoreError: ")
+    assert lines[0].endswith("(the JSON stands; repair: atx-research-store catalog --rebuild)")
 
 
 # ------------------------------------------------------------------ the real store exe
