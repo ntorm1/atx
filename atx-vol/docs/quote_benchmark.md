@@ -23,6 +23,12 @@ python atx-vol/tools/quote_benchmark.py score `
   --dataset C:/atx-cache/quote-benchmark/20261014-dev `
   --run-receipt C:/atx-cache/quote-benchmark/predictions-svi.csv.run.json `
   --output C:/atx-cache/quote-benchmark/score-svi.json
+
+python atx-vol/tools/quote_benchmark.py compare `
+  --dataset C:/atx-cache/quote-benchmark/20261014-dev `
+  --run-a C:/atx-cache/quote-benchmark/predictions-svi.csv.run.json `
+  --run-b C:/atx-cache/quote-benchmark/predictions-essvi.csv.run.json `
+  --output C:/atx-cache/quote-benchmark/compare-svi-essvi.json
 ```
 
 The binary path is the native target's location in your build. Additional native
@@ -95,6 +101,28 @@ chosen approximation should be included in native run diagnostics.
 `labels.parquet` contains only `row_id`, `reference_price`, and `reference_vol`.
 Missing/sentinel labels do not remove rows from the model input cohort.
 
+An option-root suffix from 1 through 9 identifies a nonstandard adjusted
+contract under the [OCC OSI convention](https://infomemo.theocc.com/infomemos?number=26853).
+The number does not describe its deliverable. [OCC equity option specifications](https://www.theocc.com/clearance-and-settlement/clearing/equity-options-product-specifications)
+distinguish standard 100-share contracts from adjusted deliverables. The reporting
+classification `standard_symbol` means only that this suffix is absent; it does
+not certify the deliverable. A root/underlier spelling difference alone is not
+an adjustment rule. Production ingestion needs explicit deliverable components,
+exercise amount and premium multiplier. A native runner may refuse unsupported
+deliverables, but that refusal must remain visible against the original input
+coverage denominator.
+
+The supplied `sdiv` need not be constant across strikes. SpiderRock documents
+strike-dependent carry adjustments and a separate sdiv spline in its
+[live surface calibration description](https://docs.spiderrockconnect.com/docs/Documentation/PlatformFeatures/Analytics/LiveVolSurfaces/).
+The [pricing specification](https://docs.spiderrockconnect.com/docs/Documentation/PlatformFeatures/Analytics/OptionPricing/)
+defines continuous carry as `rate - sdiv` and treats dated cash dividends
+separately. Median aggregation of the supplied row inputs loses that strike
+variation. A quote-derived carry estimate must use raw put/call quotes and
+account for American exercise premiums; ordinary European parity alone is a
+diagnostic approximation. Neither reference prices nor reference volatilities
+may calibrate carry or determine contract admission.
+
 ## Predictions, provenance, and metrics
 
 Native predictions are CSV or Parquet with required columns `row_id`,
@@ -121,6 +149,42 @@ breakdowns use calendar time and contract side, independent of label values.
 Exact quantiles use memory proportional to the selected cohort; preparation,
 unlike scoring, has bounded row memory. Solver failures and label-missing rows
 remain visible through counts rather than disappearing from the population.
+
+Each score preserves the full selected cohort headline and adds mutually
+exclusive partitions from raw input columns:
+
+| Partition | Definition |
+| --- | --- |
+| `contract_kind` | Numeric suffix 1–9: `adjusted_suffix`; no suffix: `standard_symbol`; missing root: `unknown` |
+| `moneyness_band` | `abs(log(strike/spot)) <= 0.2`, `(0.2, 0.7]`, or `> 0.7`; invalid values: `unknown` |
+| `cash_dividends` | `ddiv_pv` zero, positive, or invalid/unknown |
+| `liquid_core` | Absolute log-moneyness at most 0.2, positive bid, spread/mid at most 0.5 |
+
+These partitions never change admission. Existing calendar-DTE/side breakdowns
+remain available. `reference_nbbo_diagnostic` separately reports reference prices
+inside or outside raw bid/ask. It is explicitly a label diagnostic, not a market
+input, fitting feature, filter, or rule for excluding difficult labels. A fair
+value outside the raw quote interval still contributes to headline error.
+
+## Paired comparisons
+
+`compare` verifies both run receipts against the same quote digest and validates
+all row/chain identities before joining. Each arm's original prediction and
+scoring coverage appears beside its own-population metrics. Those own-population
+errors are descriptive; they cannot establish improvement when the populations
+differ.
+
+Paired price statistics use exactly the rows where both arms produced finite
+nonnegative prices with valid reference prices. Volatility uses its own exact
+intersection of finite positive predictions and labels. Reported bias, MAE,
+RMSE and quantiles for the two arms use identical rows within each comparison.
+The paired reduction is `abs(error_A) - abs(error_B)`; a positive result favors B
+on that fixed population. Per-row improvement/worsening/tie fractions and counts
+scored only by one arm expose coverage changes. An empty intersection produces
+null errors, never a perfect-fit zero. The same paired metrics and per-arm
+coverage are broken down by the raw partitions above. Reports make no automatic
+winner claim. Both `score` and `compare` require new output paths and refuse to
+overwrite input evidence or existing reports.
 
 Reference parity alone cannot establish model truth or production readiness.
 Numerical reference convergence, no-arbitrage behavior, discrete dividends,

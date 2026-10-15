@@ -63,7 +63,8 @@ def prediction_receipt(dataset: Path, *, rows=None):
     pred.write_csv(path)
     receipt = dataset / "predictions.csv.run.json"
     qb.write_json(receipt, {"predictions": str(path), "prediction_sha256": qb.sha256(path),
-                           "quote_parquet_sha256": qb.sha256(dataset / "quotes.parquet")})
+                           "quote_parquet_sha256": qb.sha256(dataset / "quotes.parquet"),
+                           "quote_csv_sha256": qb.sha256(dataset / "quotes.csv")})
     return path, receipt
 
 
@@ -288,3 +289,126 @@ def test_native_new_timing_report_remains_usable(tmp_path, monkeypatch):
     assert receipt["curve"] == "essvi"
     assert report.read_text() == "{}"
     assert Path(str(output) + ".run.json").is_file()
+
+
+def candidate_receipt(dataset: Path, name: str, ids: list[int], prices: list[float],
+                      vols: list[float]) -> Path:
+    q = pl.read_parquet(dataset / "quotes.parquet").filter(pl.col("row_id").is_in(ids))
+    pred = q.select("row_id", "chain_id").with_columns(
+        pl.Series("predicted_price", prices), pl.Series("predicted_vol", vols),
+        pl.lit("ok").alias("status"))
+    path = dataset / f"{name}.csv"
+    pred.write_csv(path)
+    receipt = dataset / f"{name}.run.json"
+    qb.write_json(receipt, {"predictions": str(path), "prediction_sha256": qb.sha256(path),
+                           "quote_parquet_sha256": qb.sha256(dataset / "quotes.parquet"),
+                           "quote_csv_sha256": qb.sha256(dataset / "quotes.csv")})
+    return receipt
+
+
+def compare(dataset: Path, a: Path, b: Path, *, name="compare") -> dict:
+    args = qb.parser().parse_args([
+        "compare", "--dataset", str(dataset), "--run-a", str(a), "--run-b", str(b),
+        "--output", str(dataset / f"{name}.json"), "--split", "all",
+    ])
+    return qb.compare(args)
+
+
+def test_paired_comparison_cannot_claim_improvement_by_dropping_hard_contracts(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0, 1, 2], [1.1, 3.1, 101.1], [.3, .4, .5])
+    b = candidate_receipt(dataset, "b", [0, 1], [1.1, 4.1], [.31, float("nan")])
+    result = compare(dataset, a, b)
+    own_a = result["arm_a"]["metrics_own_population"]
+    own_b = result["arm_b"]["metrics_own_population"]
+    assert own_b["price_mae"] < own_a["price_mae"]  # Misleading unpaired headline.
+    assert own_a["price_coverage"] == .5
+    assert own_b["price_coverage"] == pytest.approx(1 / 3)
+    paired = result["paired"]
+    assert paired["price_intersection_rows"] == 2
+    assert paired["price_a_only_scored_rows"] == 1
+    assert paired["price_b_only_scored_rows"] == 0
+    assert paired["price_a_mae"] == pytest.approx(1.)
+    assert paired["price_b_mae"] == pytest.approx(1.5)
+    assert paired["price_paired_mean_abs_error_reduction"] == pytest.approx(-.5)
+    assert paired["price_fraction_worsened"] == .5
+    assert paired["price_fraction_unchanged"] == .5
+    assert paired["vol_bp_intersection_rows"] == 1  # Independent finite-vol mask.
+    assert paired["vol_bp_paired_mean_abs_error_reduction"] == pytest.approx(-100.)
+    reversed_result = compare(dataset, b, a, name="reversed")
+    assert reversed_result["paired"]["price_paired_mean_abs_error_reduction"] == pytest.approx(.5)
+
+
+def test_empty_paired_intersection_reports_unknown_errors_not_perfect_fit(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0, 1], [1.1, 1.2], [.3, .4])
+    b = candidate_receipt(dataset, "b", [2, 3], [1.1, 1.2], [.3, .4])
+    result = compare(dataset, a, b)["paired"]
+    assert result["price_intersection_rows"] == result["vol_bp_intersection_rows"] == 0
+    assert result["price_a_mae"] is None
+    assert result["price_b_mae"] is None
+    assert result["price_paired_mean_abs_error_reduction"] is None
+    assert result["price_fraction_improved"] is None
+
+
+def test_comparison_rejects_a_receipt_from_another_input_cohort(tmp_path):
+    original, _ = prepare(tmp_path, name="original")
+    changed = source_table()
+    changed = changed.set_column(changed.schema.get_field_index("okey_xx"), "okey_xx",
+                                 pa.array([95., 100., 110.] * 2))
+    other, _ = prepare(tmp_path, changed, name="other")
+    a = candidate_receipt(original, "a", [0], [1.1], [.3])
+    b = candidate_receipt(other, "b", [0], [1.1], [.3])
+    with pytest.raises(ValueError, match="different quote cohort"):
+        compare(original, a, b)
+
+
+def test_comparison_verifies_actual_native_csv_digest_not_only_parquet(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0], [1.1], [.3])
+    b = candidate_receipt(dataset, "b", [0], [1.1], [.3])
+    changed = json.loads(b.read_text())
+    changed["quote_csv_sha256"] = "0" * 64
+    qb.write_json(b, changed)
+    with pytest.raises(ValueError, match="quote CSV digest"):
+        compare(dataset, a, b)
+
+
+def test_report_strata_and_outside_reference_diagnostic_preserve_original_coverage(tmp_path):
+    table = source_table()
+    for column, values in {
+        "okey_tk": ["AAA1", "AAA", "AAA", "BBB", "BBB", "BBB"],
+        "okey_xx": [25., 50., 110., 90., 100., 110.],
+        "ddivPv": [1., 0., 0., 0., 0., 0.],
+        "srPrc": [100., 1.1, 1.1, 1.1, 1.1, 1.1],
+    }.items():
+        table = table.set_column(table.schema.get_field_index(column), column, pa.array(values))
+    dataset, _ = prepare(tmp_path, table)
+    _, receipt = prediction_receipt(dataset)
+    result = score(dataset, receipt)
+    assert result["metrics"]["eligible_rows"] == 6
+    assert result["metrics"]["price_scored_rows"] == 6
+    assert result["metrics"]["reference_outside_quote_rows"] == 1
+    for rows in result["raw_strata"].values():
+        assert sum(row["rows"] for row in rows) == 6
+        assert sum(row["eligible_rows"] for row in rows) == 6
+    kinds = {row["contract_kind"]: row for row in result["raw_strata"]["contract_kind"]}
+    assert kinds["adjusted_suffix"]["eligible_rows"] == 1
+    assert kinds["standard_symbol"]["eligible_rows"] == 5
+    ref = {row["reference_location"]: row for row in result["reference_nbbo_diagnostic"]}
+    assert ref["outside"]["price_scored_rows"] == 1  # It remains scored, not discarded.
+    assert ref["inside"]["price_scored_rows"] == 5
+
+
+def test_comparison_never_overwrites_a_provenance_artifact(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0], [1.1], [.3])
+    b = candidate_receipt(dataset, "b", [0], [1.1], [.3])
+    before = a.read_bytes()
+    args = qb.parser().parse_args([
+        "compare", "--dataset", str(dataset), "--run-a", str(a), "--run-b", str(b),
+        "--output", str(a), "--split", "all",
+    ])
+    with pytest.raises(ValueError, match="output already exists"):
+        qb.compare(args)
+    assert a.read_bytes() == before

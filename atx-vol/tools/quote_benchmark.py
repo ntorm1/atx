@@ -53,6 +53,7 @@ LABEL_SCHEMA = pa.schema([
     ("reference_vol", pa.float64()),
 ])
 PREDICTION_COLUMNS = ("row_id", "predicted_price", "predicted_vol", "status", "chain_id")
+RAW_STRATA = ("contract_kind", "moneyness_band", "cash_dividends", "liquid_core")
 
 
 def sha256(path: Path) -> str:
@@ -368,6 +369,14 @@ def scan_predictions(path: Path) -> pl.LazyFrame:
     return frame.select(PREDICTION_COLUMNS)
 
 
+def _error_metrics(error: pl.Expr, prefix: str) -> list[pl.Expr]:
+    return [error.mean().alias(f"{prefix}_bias"), error.abs().mean().alias(f"{prefix}_mae"),
+            error.pow(2).mean().sqrt().alias(f"{prefix}_rmse"),
+            error.abs().median().alias(f"{prefix}_median_abs"),
+            error.abs().quantile(.95).alias(f"{prefix}_p95_abs"),
+            error.abs().quantile(.99).alias(f"{prefix}_p99_abs")]
+
+
 def _metrics() -> list[pl.Expr]:
     result = [pl.len().alias("rows"), pl.col("eligible").sum().alias("eligible_rows"),
               pl.col("predicted").sum().alias("predicted_rows"),
@@ -380,32 +389,30 @@ def _metrics() -> list[pl.Expr]:
     for col, unit in (("price_error", "price"), ("vol_error", "vol_bp"),
                       ("spread_error", "price_in_spreads"),
                       ("midpoint_error", "midpoint_price")):
-        e = pl.col(col)
-        result.extend([e.mean().alias(f"{unit}_bias"), e.abs().mean().alias(f"{unit}_mae"),
-                       e.pow(2).mean().sqrt().alias(f"{unit}_rmse"),
-                       e.abs().quantile(.5).alias(f"{unit}_median_abs"),
-                       e.abs().quantile(.95).alias(f"{unit}_p95_abs"),
-                       e.abs().quantile(.99).alias(f"{unit}_p99_abs")])
+        result.extend(_error_metrics(pl.col(col), unit))
     result.extend([pl.col("inside_quotes").mean().alias("price_quote_containment"),
+                   (pl.col("reference_inside_quotes") == 0).sum().alias("reference_outside_quote_rows"),
                    pl.col("reference_inside_quotes").mean().alias("reference_quote_containment")])
     return result
 
 
-def score(args: argparse.Namespace) -> dict:
-    if not np.isfinite(args.tick_size) or args.tick_size <= 0:
+def _load_evaluation(dataset: Path, receipt_path: Path, split: str,
+                     tick_size: float) -> tuple[dict, dict, pl.LazyFrame]:
+    """Validate provenance/identities and retain the full selected quote cohort."""
+    if not np.isfinite(tick_size) or tick_size <= 0:
         raise ValueError("tick size must be finite and positive")
-    output = args.output.resolve()
-    if output.exists():
-        raise ValueError("score output already exists; use a new output path")
-    manifest = verify_dataset(args.dataset, labels=True)
-    receipt = json.loads(args.run_receipt.read_text(encoding="utf-8"))
+    manifest = verify_dataset(dataset, labels=True)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     predictions = Path(receipt["predictions"])
     if receipt["quote_parquet_sha256"] != manifest["files"]["quotes.parquet"]["sha256"]:
         raise ValueError("run receipt belongs to a different quote cohort")
+    if ("quotes.csv" in manifest["files"]
+            and receipt.get("quote_csv_sha256") != manifest["files"]["quotes.csv"]["sha256"]):
+        raise ValueError("run receipt quote CSV digest disagrees with the native input")
     if receipt["prediction_sha256"] != sha256(predictions):
         raise ValueError("prediction hash mismatch")
-    quotes = pl.scan_parquet(args.dataset / "quotes.parquet")
-    labels = pl.scan_parquet(args.dataset / "labels.parquet")
+    quotes = pl.scan_parquet(dataset / "quotes.parquet")
+    labels = pl.scan_parquet(dataset / "labels.parquet")
     pred = scan_predictions(predictions)
     # One-to-one joins are necessary: duplicate predictions must never weight a
     # convenient contract twice, and omitted contracts remain coverage failures.
@@ -428,8 +435,8 @@ def score(args: argparse.Namespace) -> dict:
                              & (pl.col("chain_id") != pl.col("prediction_chain_id")))
     if mismatch.select(pl.len()).collect().item():
         raise ValueError("prediction chain identity disagrees with its quote row")
-    if args.split != "all":
-        joined = joined.filter(pl.col("split") == args.split)
+    if split != "all":
+        joined = joined.filter(pl.col("split") == split)
     def good(col: str) -> pl.Expr:
         return pl.col(col).is_not_null() & pl.col(col).is_finite()
     joined = joined.with_columns(
@@ -465,30 +472,83 @@ def score(args: argparse.Namespace) -> dict:
         (pl.col("years_calendar") * 365.25).alias("dte"),
         (pl.col("strike") / pl.col("spot")).log().alias("log_moneyness"),
     ).with_columns(
-        (pl.col("price_error") / (pl.col("ask") - pl.col("bid")).clip(lower_bound=args.tick_size))
+        (pl.col("price_error") / (pl.col("ask") - pl.col("bid")).clip(lower_bound=tick_size))
           .alias("spread_error"),
         pl.col("dte").cut([1., 7., 30., 90., 365.],
                            labels=["<=1", "1-7", "7-30", "30-90", "90-365", ">365"])
           .cast(pl.String).alias("dte_band"),
     )
-    metrics = joined.select(_metrics()).collect(engine="streaming").to_dicts()[0]
+    return manifest, receipt, _add_reporting_strata(joined)
+
+
+def _add_reporting_strata(frame: pl.LazyFrame) -> pl.LazyFrame:
+    """Raw-input partitions are reporting only and never change eligibility."""
+    abs_k = pl.col("log_moneyness").abs()
+    mid = (pl.col("bid") + pl.col("ask")) * .5
+    raw_core = ((abs_k <= .2) & (pl.col("bid") > 0)
+                & ((pl.col("ask") - pl.col("bid")) / mid <= .5))
+    return frame.with_columns(
+        pl.when(pl.col("root").is_null() | (pl.col("root").str.len_chars() == 0))
+          .then(pl.lit("unknown"))
+          .when(pl.col("root").str.contains(r"[1-9]$"))
+          .then(pl.lit("adjusted_suffix"))
+          .otherwise(pl.lit("standard_symbol")).alias("contract_kind"),
+        pl.when(abs_k.is_null() | ~abs_k.is_finite()).then(pl.lit("unknown"))
+          .when(abs_k <= .2).then(pl.lit("core_abs_log_le_0.2"))
+          .when(abs_k <= .7).then(pl.lit("wing_abs_log_0.2_0.7"))
+          .otherwise(pl.lit("far_wing_abs_log_gt_0.7")).alias("moneyness_band"),
+        pl.when(pl.col("ddiv_pv").is_null() | ~pl.col("ddiv_pv").is_finite()
+                | (pl.col("ddiv_pv") < 0)).then(pl.lit("unknown"))
+          .when(pl.col("ddiv_pv") > 0).then(pl.lit("nonzero"))
+          .otherwise(pl.lit("zero")).alias("cash_dividends"),
+        raw_core.fill_null(False).alias("liquid_core"),
+        # This is a LABEL diagnostic, deliberately separate from RAW_STRATA.
+        pl.when(pl.col("reference_inside_quotes") == 1).then(pl.lit("inside"))
+          .when(pl.col("reference_inside_quotes") == 0).then(pl.lit("outside"))
+          .otherwise(pl.lit("ineligible_or_missing")).alias("reference_location"),
+    )
+
+
+def _with_coverage(metrics: dict) -> dict:
     eligible = metrics["eligible_rows"]
     for kind in ("price", "vol"):
         metrics[f"{kind}_coverage"] = metrics[f"{kind}_prediction_rows"] / eligible if eligible else None
         metrics[f"{kind}_scoring_coverage"] = metrics[f"{kind}_scored_rows"] / eligible if eligible else None
+    return metrics
+
+
+def _aggregate(frame: pl.LazyFrame) -> dict:
+    return _with_coverage(frame.select(_metrics()).collect(engine="streaming").to_dicts()[0])
+
+
+def _group_metrics(frame: pl.LazyFrame, keys: list[str]) -> list[dict]:
+    rows = frame.group_by(keys).agg(_metrics()).collect(engine="streaming").sort(keys).to_dicts()
+    return [_with_coverage(row) for row in rows]
+
+
+def score(args: argparse.Namespace) -> dict:
+    output = args.output.resolve()
+    if output.exists():
+        raise ValueError("score output already exists; use a new output path")
+    _, receipt, joined = _load_evaluation(args.dataset, args.run_receipt, args.split, args.tick_size)
+    metrics = _aggregate(joined)
     status = joined.group_by("input_status", "status").agg(pl.len().alias("rows"))
-    by_band = joined.group_by("split", "dte_band", "is_call").agg(_metrics())
     result = {
         "schema_version": SCHEMA_VERSION, "split": args.split,
+        "evaluator_sha256": ADAPTER_SHA256,
         "dataset_manifest_sha256": sha256(args.dataset / "manifest.json"),
         "run_receipt_sha256": sha256(args.run_receipt), "run": receipt,
         "tick_size": args.tick_size, "metrics": metrics,
         "status_counts": status.collect(engine="streaming").sort(["input_status", "status"]).to_dicts(),
-        "by_dte_side": by_band.collect(engine="streaming").sort(["split", "dte_band", "is_call"]).to_dicts(),
+        "by_dte_side": _group_metrics(joined, ["split", "dte_band", "is_call"]),
+        "raw_strata": {key: _group_metrics(joined, [key]) for key in RAW_STRATA},
+        "reference_nbbo_diagnostic": _group_metrics(joined, ["reference_location"]),
         "notes": ["srPrc/srVol are evaluation labels only",
                   "price errors are dollars per share; vol errors are absolute volatility basis points",
                   "spread-normalized errors divide by max(ask-bid,tick_size)",
                   "coverage denominators include every raw-input-eligible row, including solver failures",
+                  "standard_symbol means no adjusted numeric suffix; it is not verified deliverable metadata",
+                  "reference NBBO location is an evaluation diagnostic, never an admission rule",
                   "exact quantiles; scoring memory scales with selected cohort size"],
     }
     # Exclusive creation also closes the race between the initial existence
@@ -496,6 +556,75 @@ def score(args: argparse.Namespace) -> dict:
     # may be overwritten after it has served as provenance evidence.
     write_json(output, result, overwrite=False)
     print(json.dumps(metrics, allow_nan=False))
+    return result
+
+
+def _paired_metrics(kind: str) -> list[pl.Expr]:
+    a_valid, b_valid = pl.col(f"{kind}_valid"), pl.col(f"{kind}_valid_b")
+    common = a_valid & b_valid
+    a = pl.when(common).then(pl.col(f"{kind}_error")).otherwise(None)
+    b = pl.when(common).then(pl.col(f"{kind}_error_b")).otherwise(None)
+    reduction = a.abs() - b.abs()
+    prefix = "price" if kind == "price" else "vol_bp"
+    eligible = pl.col("eligible").sum()
+    a_predictions = pl.col(f"{kind}_prediction_valid").sum()
+    b_predictions = pl.col(f"{kind}_prediction_valid_b").sum()
+    return [common.sum().alias(f"{prefix}_intersection_rows"),
+            a_predictions.alias(f"{prefix}_a_prediction_rows"),
+            b_predictions.alias(f"{prefix}_b_prediction_rows"),
+            pl.when(eligible > 0).then(a_predictions / eligible).otherwise(None)
+              .alias(f"{prefix}_a_coverage"),
+            pl.when(eligible > 0).then(b_predictions / eligible).otherwise(None)
+              .alias(f"{prefix}_b_coverage"),
+            (a_valid & ~b_valid).sum().alias(f"{prefix}_a_only_scored_rows"),
+            (b_valid & ~a_valid).sum().alias(f"{prefix}_b_only_scored_rows"),
+            *_error_metrics(a, f"{prefix}_a"), *_error_metrics(b, f"{prefix}_b"),
+            reduction.mean().alias(f"{prefix}_paired_mean_abs_error_reduction"),
+            reduction.median().alias(f"{prefix}_paired_median_abs_error_reduction"),
+            (reduction > 0).mean().alias(f"{prefix}_fraction_improved"),
+            (reduction < 0).mean().alias(f"{prefix}_fraction_worsened"),
+            (reduction == 0).mean().alias(f"{prefix}_fraction_unchanged")]
+
+
+def compare(args: argparse.Namespace) -> dict:
+    """Compare exactly paired contracts; coverage remains visible for each arm."""
+    output = args.output.resolve()
+    if output.exists():
+        raise ValueError("comparison output already exists; use a new output path")
+    manifest, receipt_a, a = _load_evaluation(args.dataset, args.run_a, args.split, args.tick_size)
+    _, receipt_b, b = _load_evaluation(args.dataset, args.run_b, args.split, args.tick_size)
+    # Both arms were checked against this same manifest, including complete
+    # row identities. Retain this explicit invariant in the comparison seam.
+    if (receipt_a["quote_parquet_sha256"] != receipt_b["quote_parquet_sha256"]
+            or receipt_a.get("quote_csv_sha256") != receipt_b.get("quote_csv_sha256")):
+        raise ValueError("comparison arms have different quote input digests")
+    b_columns = ["row_id", "price_valid", "vol_valid", "price_error", "vol_error",
+                 "price_prediction_valid", "vol_prediction_valid"]
+    paired = a.join(b.select(b_columns), on="row_id", how="left", validate="1:1", suffix="_b")
+    pair_exprs = [pl.len().alias("rows"), pl.col("eligible").sum().alias("eligible_rows"),
+                  *_paired_metrics("price"), *_paired_metrics("vol")]
+    paired_metrics = paired.select(pair_exprs).collect(engine="streaming").to_dicts()[0]
+    raw_strata = {key: paired.group_by(key).agg(pair_exprs).collect(engine="streaming")
+                 .sort(key).to_dicts() for key in RAW_STRATA}
+    result = {
+        "schema_version": SCHEMA_VERSION, "split": args.split, "tick_size": args.tick_size,
+        "evaluator_sha256": ADAPTER_SHA256,
+        "dataset_manifest_sha256": sha256(args.dataset / "manifest.json"),
+        "quote_parquet_sha256": manifest["files"]["quotes.parquet"]["sha256"],
+        "arm_a": {"run_receipt_sha256": sha256(args.run_a), "run": receipt_a,
+                  "metrics_own_population": _aggregate(a)},
+        "arm_b": {"run_receipt_sha256": sha256(args.run_b), "run": receipt_b,
+                  "metrics_own_population": _aggregate(b)},
+        "paired": paired_metrics, "raw_strata_paired": raw_strata,
+        "notes": ["paired metrics use the exact intersection of successful, finite, label-valid rows",
+                  "price and volatility intersections are computed independently",
+                  "positive paired error reduction means arm B has smaller absolute error than arm A",
+                  "own-population error changes cannot establish improvement when coverage changes",
+                  "standard_symbol is a raw suffix classification, not certified deliverable metadata",
+                  "validation labels must not select hyperparameters"],
+    }
+    write_json(output, result, overwrite=False)
+    print(json.dumps(paired_metrics, allow_nan=False))
     return result
 
 
@@ -530,6 +659,14 @@ def parser() -> argparse.ArgumentParser:
     scoring.add_argument("--split", choices=["development", "validation", "all"], default="development")
     scoring.add_argument("--tick-size", type=float, default=0.01)
     scoring.set_defaults(func=score)
+    comparison = sub.add_parser("compare", help="compare two runs on exact price/vol intersections")
+    comparison.add_argument("--dataset", required=True, type=Path)
+    comparison.add_argument("--run-a", required=True, type=Path, help="baseline run receipt")
+    comparison.add_argument("--run-b", required=True, type=Path, help="candidate run receipt")
+    comparison.add_argument("--output", required=True, type=Path)
+    comparison.add_argument("--split", choices=["development", "validation", "all"], default="development")
+    comparison.add_argument("--tick-size", type=float, default=0.01)
+    comparison.set_defaults(func=compare)
     return ap
 
 
