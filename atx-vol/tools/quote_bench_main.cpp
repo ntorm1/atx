@@ -1,6 +1,7 @@
 // Offline orchestration only: model input is a closed, label-free CSV schema.
 // Numerical work lives in quote_slice, independently of any data vendor or file.
 #include "atx/vol/api/fitting/quote_slice.hpp"
+#include "quote_bench_policy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,13 +29,15 @@
 namespace {
 using namespace atx::vol;
 using Clock = std::chrono::steady_clock;
+using quote_bench_policy::Json;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 struct Arguments {
   std::filesystem::path input;
   std::filesystem::path output;
   std::filesystem::path report;
-  std::string curve{"essvi"};
+  std::string curve;
+  std::string policy{"auto"};
   std::string dividends{"aggregate-pv"};
   std::size_t max_rows{2000000U};
   QuoteSliceQualityConfig quality;
@@ -71,14 +74,18 @@ bool same_file(const std::filesystem::path &left, const std::filesystem::path &r
 
 Arguments arguments(int argc, char **argv) {
   Arguments args;
+  std::set<std::string_view> seen;
+  bool quality_specified = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view key{argv[i]};
+    if (!seen.insert(key).second) throw std::runtime_error("Duplicate argument: " + std::string(key));
     if (key == "--help") {
       std::cout << "atx-vol-quote-bench --input quotes.csv --output predictions.csv "
-                   "[--report timing.json] [--curve essvi|svi|convex-dense|spline-vol] "
+                   "[--report timing.json] [--policy auto|policy.json | --curve CURVE] "
                    "[--dividends aggregate-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
-                   "[--max-weight 1000]\n";
+                   "[--max-weight 1000]\n"
+                   "Default: --policy auto. Quality/min-quotes flags require explicit --curve.\n";
       return args;
     }
     if (i + 1 == argc) throw std::runtime_error("Missing value for " + std::string(key));
@@ -87,6 +94,7 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--output") args.output = value;
     else if (key == "--report") args.report = value;
     else if (key == "--curve") args.curve = value;
+    else if (key == "--policy") args.policy = value;
     else if (key == "--dividends") args.dividends = value;
     else if (key == "--max-rows") args.max_rows = number<std::size_t>(value, key);
     else if (key == "--min-quotes") args.min_quotes = number<std::size_t>(value, key);
@@ -94,6 +102,17 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--max-spread-vol") args.quality.max_spread_vol = real(value, key);
     else if (key == "--max-weight") args.quality.max_weight = real(value, key);
     else throw std::runtime_error("Unknown argument: " + std::string(key));
+    quality_specified = quality_specified || key == "--min-quotes" ||
+        key == "--max-spread-to-mid" || key == "--max-spread-vol" || key == "--max-weight";
+  }
+  if (seen.contains("--policy") && seen.contains("--curve")) {
+    throw std::runtime_error("--policy and --curve are mutually exclusive");
+  }
+  if ((seen.contains("--curve") && args.curve.empty()) || args.policy.empty()) {
+    throw std::runtime_error("Policy and curve names must not be empty");
+  }
+  if (quality_specified && args.curve.empty()) {
+    throw std::runtime_error("Global quality/min-quotes flags require explicit --curve; configure policy profiles instead");
   }
   if (args.input.empty() || args.output.empty() || args.max_rows == 0U) {
     throw std::runtime_error("--input, --output and a positive --max-rows are required");
@@ -113,6 +132,11 @@ Arguments arguments(int argc, char **argv) {
   if (!args.report.empty() &&
       (same_file(args.report, args.input) || same_file(args.report, args.output))) {
     throw std::runtime_error("Timing report must differ from input and predictions");
+  }
+  if (args.curve.empty() && args.policy != "auto" &&
+      (same_file(args.policy, args.input) || same_file(args.policy, args.output) ||
+       (!args.report.empty() && same_file(args.policy, args.report)))) {
+    throw std::runtime_error("Policy file must differ from input, predictions and report");
   }
   return args;
 }
@@ -276,6 +300,9 @@ struct Prediction {
   std::string status{"not_evaluated"};
   std::string quote_status{"not_attempted"};
   bool admitted{false};
+  std::string resolved_profile;
+  std::string policy_source;
+  std::string actual_curve;
 };
 
 struct RunStatistics {
@@ -291,6 +318,9 @@ struct RunStatistics {
   std::size_t calendar_pairs{};
   std::size_t calendar_rejected_chains{};
   std::size_t ambiguous_expiry_chains{};
+  Json policy_definition;
+  Json policy_decisions = Json::array();
+  Json per_profile_counts = Json::object();
 };
 
 // Contract-level underlying quotes can differ inside one recorded chain snapshot.
@@ -347,15 +377,27 @@ bool consistent_chain(const std::vector<InputRow> &rows,
 
 std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &rows,
                             RunStatistics &stats) {
-  QuoteSliceConfig config;
-  const auto kind = parse_curve_kind(args.curve);
-  if (!kind) throw std::runtime_error(kind.error().to_string());
-  config.curve.kind = kind.value();
-  config.quality = args.quality;
-  config.min_quotes = args.min_quotes;
-  config.dividend_model = args.dividends == "aggregate-pv"
+  const auto dividends = args.dividends == "aggregate-pv"
       ? QuoteSliceDividendModel::AggregatePresentValue
       : QuoteSliceDividendModel::ContinuousYield;
+  std::optional<quote_bench_policy::LoadedPolicy> policy;
+  std::shared_ptr<const QuoteFitProfile> fixed;
+  if (args.curve.empty()) {
+    policy.emplace(quote_bench_policy::load(args.policy, dividends));
+    stats.policy_definition = policy->definition;
+  } else {
+    const auto kind = parse_curve_kind(args.curve);
+    if (!kind) throw std::runtime_error(kind.error().to_string());
+    QuoteFitProfile profile{"fixed-" + args.curve, ProfileKind::OrdinarySingleName, {}};
+    profile.config.curve.kind = *kind;
+    profile.config.quality = args.quality;
+    profile.config.min_quotes = args.min_quotes;
+    profile.config.dividend_model = dividends;
+    fixed = std::make_shared<const QuoteFitProfile>(std::move(profile));
+    stats.policy_definition = {{"schema_version", 1},
+        {"profiles", Json::array({quote_bench_policy::profile_json(*fixed)})},
+        {"symbol_overrides", Json::array()}, {"regimes", nullptr}};
+  }
   std::vector<Prediction> predictions(rows.size());
   std::map<std::uint64_t, std::vector<std::size_t>> chains;
   for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -365,6 +407,115 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     else chains[rows[i].chain].push_back(i);
   }
   stats.chains = chains.size();
+  struct PreparedChain {
+    QuoteSliceMarket market;
+    std::vector<QuoteSliceQuote> quotes;
+    std::shared_ptr<const QuoteFitProfile> profile;
+    std::string source;
+  };
+  std::map<std::uint64_t, PreparedChain> prepared;
+  using SnapshotIdentity = std::array<std::string, 3>;
+  std::map<SnapshotIdentity, std::vector<std::uint64_t>> snapshot_chains;
+  const auto start = Clock::now();
+  for (const auto &[chain_id, indices] : chains) {
+    if (!consistent_chain(rows, indices)) {
+      for (const auto i : indices) predictions[i].status = "inconsistent_chain";
+      continue;
+    }
+    auto market = chain_market(rows, indices, stats);
+    if (!(std::isfinite(market.spot) && market.spot > 0.0 &&
+          std::isfinite(market.calendar_years) && market.calendar_years > 0.0 &&
+          std::isfinite(market.variance_years) && market.variance_years > 0.0 &&
+          std::isfinite(market.rate) && std::isfinite(market.continuous_yield) &&
+          std::isfinite(market.dividend_pv) && market.dividend_pv >= 0.0 &&
+          market.dividend_pv < market.spot)) {
+      for (const auto i : indices) predictions[i].status = "invalid_market";
+      continue;
+    }
+    PreparedChain chain{market, {}, {}, {}};
+    chain.quotes.reserve(indices.size());
+    for (const auto i : indices) chain.quotes.push_back(rows[i].quote);
+    prepared.emplace(chain_id, std::move(chain));
+    const auto &identity = rows[indices.front()].identity;
+    snapshot_chains[{identity[0], identity[1], identity[3]}].push_back(chain_id);
+  }
+  const auto add_count = [](Json &counts, const std::string &key, std::size_t count = 1U) {
+    if (counts.is_null()) counts = Json::object();
+    counts[key] = counts.value(key, std::size_t{}) + count;
+  };
+  std::set<std::uint64_t> ambiguous_expiries;
+  for (const auto &[identity, ids] : snapshot_chains) {
+    // Resolve ambiguity BEFORE fitting/routing: a failed duplicate must not
+    // inflate liquidity or let its sibling acquire a different policy.
+    std::map<std::string, std::vector<std::uint64_t>> expiries;
+    std::map<double, std::vector<std::uint64_t>> maturities;
+    for (const auto id : ids) {
+      expiries[rows[chains.at(id).front()].identity[2]].push_back(id);
+      maturities[prepared.at(id).market.calendar_years].push_back(id);
+    }
+    const auto reject_duplicates = [&](const auto &groups) {
+      for (const auto &[key, group] : groups) {
+        static_cast<void>(key);
+        if (group.size() > 1U) ambiguous_expiries.insert(group.begin(), group.end());
+      }
+    };
+    reject_duplicates(expiries);
+    reject_duplicates(maturities);
+    Json decision{{"underlier", identity[0]}, {"root", identity[1]}, {"snapshot_ns", identity[2]},
+                  {"eligible_chain_ids", Json::array()}, {"ambiguous_chain_ids", Json::array()}};
+    std::vector<QuoteFitExpirySnapshot> snapshots;
+    std::vector<std::uint64_t> eligible;
+    for (const auto id : ids) {
+      if (ambiguous_expiries.contains(id)) {
+        for (const auto i : chains.at(id)) predictions[i].status = "ambiguous_expiry";
+        decision["ambiguous_chain_ids"].push_back(id);
+      } else {
+        const auto &chain = prepared.at(id);
+        snapshots.push_back({chain.market, chain.quotes});
+        eligible.push_back(id);
+        decision["eligible_chain_ids"].push_back(id);
+      }
+    }
+    if (eligible.empty()) {
+      decision["status"] = "no_unambiguous_expiries";
+      stats.policy_decisions.push_back(std::move(decision));
+      continue;
+    }
+    std::shared_ptr<const QuoteFitProfile> profile = fixed;
+    std::string source{"fixed-curve"};
+    if (policy) {
+      const auto resolved = policy->catalog.resolve(identity[0], snapshots);
+      if (!resolved) {
+        for (const auto id : eligible) {
+          for (const auto i : chains.at(id)) predictions[i].status = "policy_resolution_failure";
+        }
+        decision["status"] = "policy_resolution_failure";
+        decision["error"] = resolved.error().to_string();
+        stats.policy_decisions.push_back(std::move(decision));
+        continue;
+      }
+      profile = resolved->profile;
+      source = to_string(resolved->source);
+      decision["features"] = quote_bench_policy::features_json(resolved->features);
+    } else {
+      decision["features"] = nullptr; // Fixed experiments do not classify.
+    }
+    decision["status"] = "resolved";
+    decision["resolved_profile"] = profile->name;
+    decision["policy_source"] = source;
+    decision["configured_curve"] = to_string(profile->config.curve.kind);
+    add_count(stats.per_profile_counts[profile->name], "resolved_snapshots");
+    for (const auto id : eligible) {
+      prepared.at(id).profile = profile;
+      prepared.at(id).source = source;
+      for (const auto i : chains.at(id)) {
+        predictions[i].resolved_profile = profile->name;
+        predictions[i].policy_source = source;
+        predictions[i].actual_curve = to_string(profile->config.curve.kind);
+      }
+    }
+    stats.policy_decisions.push_back(std::move(decision));
+  }
   struct PublishedSlice {
     std::uint64_t chain;
     double years;
@@ -374,27 +525,23 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   // Same underlying, deliverable root and EXACT valuation snapshot. Calendar
   // inequalities concern prices at the same strike, not total variance after
   // independently chosen carry transformations.
-  std::map<std::array<std::string, 3>, std::vector<PublishedSlice>> surfaces;
-  const auto start = Clock::now();
-  for (const auto &[chain_id, indices] : chains) {
-    static_cast<void>(chain_id);
+  std::map<SnapshotIdentity, std::vector<PublishedSlice>> surfaces;
+  std::set<std::uint64_t> fitted_chains;
+  for (const auto &[chain_id, chain] : prepared) {
+    if (!chain.profile) continue;
+    const auto &indices = chains.at(chain_id);
     const auto chain_start = Clock::now();
-    if (!consistent_chain(rows, indices)) {
-      for (const auto i : indices) predictions[i].status = "inconsistent_chain";
-      continue;
-    }
-    const auto market = chain_market(rows, indices, stats);
+    add_count(stats.per_profile_counts[chain.profile->name], "attempted_chains");
+    const auto &market = chain.market;
     if (market.dividend_pv > 0.0) ++stats.dividend_chains;
-    std::vector<QuoteSliceQuote> quotes;
-    quotes.reserve(indices.size());
-    for (const auto i : indices) quotes.push_back(rows[i].quote);
-    const auto fit = fit_quote_slice(market, quotes, config);
+    const auto fit = fit_quote_slice(market, chain.quotes, chain.profile->config);
     if (!fit) {
       ++stats.fit_failures[fit.error().to_string()];
       for (const auto i : indices) predictions[i].status = "invalid_market";
     } else {
       if (fit->fit_status == QuoteSliceFitStatus::Success) {
         ++stats.fitted;
+        fitted_chains.insert(chain_id);
         const auto &identity = rows[indices.front()].identity;
         surfaces[{identity[0], identity[1], identity[3]}].push_back(
             {chain_id, market.calendar_years, identity[2], *fit->prices});
@@ -404,6 +551,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       for (std::size_t j = 0; j < indices.size(); ++j) {
         const auto &result = fit->rows[j];
         auto &prediction = predictions[indices[j]];
+        if (fit->curve) prediction.actual_curve = to_string(fit->curve->kind());
         prediction.quote_status = to_string(result.quote_status);
         prediction.admitted = result.admitted;
         if (result.evaluation_status == QuoteSliceEvaluationStatus::Success) {
@@ -422,7 +570,6 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         std::chrono::duration<double, std::micro>(Clock::now() - chain_start).count());
   }
   std::set<std::uint64_t> calendar_failures;
-  std::set<std::uint64_t> ambiguous_expiries;
   for (auto &[identity, slices] : surfaces) {
     static_cast<void>(identity);
     std::sort(slices.begin(), slices.end(),
@@ -448,9 +595,13 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     }
   }
   stats.ambiguous_expiry_chains = ambiguous_expiries.size();
-  stats.calendar_rejected_chains = calendar_failures.size() - ambiguous_expiries.size();
+  stats.calendar_rejected_chains = 0U;
+  for (const auto id : calendar_failures) {
+    if (!ambiguous_expiries.contains(id)) ++stats.calendar_rejected_chains;
+  }
   for (const auto chain : calendar_failures) {
     --stats.fitted;
+    fitted_chains.erase(chain);
     for (const auto index : chains.at(chain)) {
       if (predictions[index].status == "ok") --stats.served;
       predictions[index].price = kNaN;
@@ -465,6 +616,17 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   if (!ambiguous_expiries.empty()) {
     stats.fit_failures["Ambiguous duplicate expiry"] = ambiguous_expiries.size();
   }
+  for (const auto id : fitted_chains) {
+    add_count(stats.per_profile_counts[prepared.at(id).profile->name], "fitted_chains");
+  }
+  for (const auto &prediction : predictions) {
+    if (prediction.resolved_profile.empty()) continue;
+    auto &counts = stats.per_profile_counts[prediction.resolved_profile];
+    add_count(counts, "rows");
+    add_count(counts, "admitted_quotes", prediction.admitted ? 1U : 0U);
+    add_count(counts, "served_rows", prediction.status == "ok" ? 1U : 0U);
+    add_count(counts["actual_curve_rows"], prediction.actual_curve);
+  }
   stats.elapsed_seconds = std::chrono::duration<double>(Clock::now() - start).count();
   return predictions;
 }
@@ -473,7 +635,8 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
                        const std::vector<Prediction> &predictions) {
   std::ofstream stream{path};
   if (!stream) throw std::runtime_error("Cannot open prediction output");
-  stream << "row_id,predicted_price,predicted_vol,status,chain_id,quote_status,admitted\n";
+  stream << "row_id,predicted_price,predicted_vol,status,chain_id,quote_status,admitted,"
+            "resolved_profile,policy_source,actual_curve\n";
   stream << std::setprecision(17);
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &prediction = predictions[i];
@@ -482,7 +645,9 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
     stream << ',';
     if (std::isfinite(prediction.vol)) stream << prediction.vol;
     stream << ',' << prediction.status << ',' << rows[i].chain << ','
-           << prediction.quote_status << ',' << (prediction.admitted ? 1 : 0) << '\n';
+           << prediction.quote_status << ',' << (prediction.admitted ? 1 : 0) << ','
+           << prediction.resolved_profile << ',' << prediction.policy_source << ','
+           << prediction.actual_curve << '\n';
   }
   stream.close();
   if (!stream) throw std::runtime_error("Prediction output write failed");
@@ -497,67 +662,45 @@ double quantile(std::vector<double> values, double p) {
   return values[lo] + (location - static_cast<double>(lo)) * (values[hi] - values[lo]);
 }
 
-std::string json_string(std::string_view value) {
-  std::string out{"\""};
-  for (const char c : value) {
-    if (c == '\\' || c == '"') out.push_back('\\');
-    if (static_cast<unsigned char>(c) < 32U) out.push_back(' ');
-    else out.push_back(c);
-  }
-  out.push_back('"');
-  return out;
-}
-
 void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
                   const RunStatistics &stats) {
-  stream << std::setprecision(17)
-         << "{\n  \"schema_version\": 1,\n  \"rows\": " << rows
-         << ",\n  \"chains\": " << stats.chains
-         << ",\n  \"fitted_chains\": " << stats.fitted
-         << ",\n  \"served_rows\": " << stats.served
-         << ",\n  \"admitted_quotes\": " << stats.admitted
-         << ",\n  \"cash_dividend_chains\": " << stats.dividend_chains
-         << ",\n  \"calendar_pairs_checked\": " << stats.calendar_pairs
-         << ",\n  \"calendar_rejected_chains\": " << stats.calendar_rejected_chains
-         << ",\n  \"ambiguous_expiry_chains\": " << stats.ambiguous_expiry_chains
-         << ",\n  \"curve\": \"" << args.curve << '"'
-         << ",\n  \"dividend_model\": \"" << args.dividends << '"'
-         << ",\n  \"min_quotes\": " << args.min_quotes
-         << ",\n  \"max_spread_to_mid\": " << args.quality.max_spread_to_mid
-         << ",\n  \"max_spread_vol\": " << args.quality.max_spread_vol
-         << ",\n  \"max_weight\": " << args.quality.max_weight
-         << ",\n  \"chain_market_aggregation\": \"median\""
-         << ",\n  \"contract_carry\": \"per-strike supplied yield\""
-         << ",\n  \"serving_representation\": \"bounded convex American price interpolation\""
-         << ",\n  \"maximum_spot_range_bps\": " << stats.max_spot_range_bps
-         << ",\n  \"fit_and_reprice_seconds\": " << stats.elapsed_seconds
-         << ",\n  \"served_rows_per_second\": "
-         << (stats.elapsed_seconds > 0.0
-                 ? static_cast<double>(stats.served) / stats.elapsed_seconds : 0.0)
-         << ",\n  \"chain_latency_us_p50\": " << quantile(stats.chain_microseconds, 0.50)
-         << ",\n  \"chain_latency_us_p95\": " << quantile(stats.chain_microseconds, 0.95)
-         << ",\n  \"chain_latency_us_p99\": " << quantile(stats.chain_microseconds, 0.99)
-         << ",\n  \"timing_scope\": \"serial cold fit plus all contract reprices; excludes CSV IO\""
-         << ",\n  \"performance_claim\": \"diagnostic; requires quiet repeated release runs\""
+  Json report{
+      {"schema_version", 2}, {"rows", rows}, {"chains", stats.chains},
+      {"fitted_chains", stats.fitted}, {"served_rows", stats.served},
+      {"admitted_quotes", stats.admitted}, {"cash_dividend_chains", stats.dividend_chains},
+      {"calendar_pairs_checked", stats.calendar_pairs},
+      {"calendar_rejected_chains", stats.calendar_rejected_chains},
+      {"ambiguous_expiry_chains", stats.ambiguous_expiry_chains},
+      {"policy_mode", !args.curve.empty() ? "fixed-curve" : args.policy == "auto" ? "auto" : "file"},
+      {"curve", args.curve.empty() ? Json(nullptr) : Json(args.curve)},
+      {"policy_definition", stats.policy_definition}, {"policy_decisions", stats.policy_decisions},
+      {"per_profile_counts", stats.per_profile_counts}, {"dividend_model", args.dividends},
+      {"chain_market_aggregation", "median"}, {"contract_carry", "per-strike supplied yield"},
+      {"serving_representation", "bounded convex American price interpolation"},
+      {"maximum_spot_range_bps", stats.max_spot_range_bps},
+      {"fit_and_reprice_seconds", stats.elapsed_seconds},
+      {"served_rows_per_second", stats.elapsed_seconds > 0.0 ?
+          static_cast<double>(stats.served) / stats.elapsed_seconds : 0.0},
+      {"chain_latency_us_p50", quantile(stats.chain_microseconds, 0.50)},
+      {"chain_latency_us_p95", quantile(stats.chain_microseconds, 0.95)},
+      {"chain_latency_us_p99", quantile(stats.chain_microseconds, 0.99)},
+      {"timing_scope", "serial preparation, raw policy routing, fit and repricing; excludes CSV IO and policy parsing; chain latency excludes preparation/routing"},
+      {"performance_claim", "diagnostic; requires quiet repeated release runs"},
+      {"fit_failure_counts", stats.fit_failures},
+      {"mandatory_admission", "quote validity, fitted American price bounds/strike shape/cross-side and calendar checks remain enabled"}};
 #ifdef __VERSION__
-         << ",\n  \"compiler\": \"" << __VERSION__ << '"'
+  report["compiler"] = __VERSION__;
 #elif defined(_MSC_VER)
-         << ",\n  \"compiler\": \"MSVC " << _MSC_VER << '"'
+  report["compiler"] = "MSVC " + std::to_string(_MSC_VER);
 #else
-         << ",\n  \"compiler\": \"unknown\""
+  report["compiler"] = "unknown";
 #endif
 #ifdef NDEBUG
-         << ",\n  \"build_type\": \"release\""
+  report["build_type"] = "release";
 #else
-         << ",\n  \"build_type\": \"debug\""
+  report["build_type"] = "debug";
 #endif
-         << ",\n  \"fit_failure_counts\": {";
-  bool first = true;
-  for (const auto &[message, count] : stats.fit_failures) {
-    stream << (first ? "\n    " : ",\n    ") << json_string(message) << ": " << count;
-    first = false;
-  }
-  stream << "\n  }\n}\n";
+  stream << report.dump(2) << '\n';
 }
 
 } // namespace

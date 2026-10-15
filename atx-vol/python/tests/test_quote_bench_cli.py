@@ -58,7 +58,7 @@ def invoke(binary: Path, source: Path, output: Path, *extra: str):
 def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     expected = make_quotes(source)
-    result = invoke(binary, source, output)
+    result = invoke(binary, source, output, "--curve", "essvi")
     assert result.returncode == 0, result.stderr
     with output.open(newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -68,11 +68,13 @@ def test_native_fit_recovers_independent_flat_call_values(binary, tmp_path):
     assert max(abs(float(row["predicted_price"]) - value)
                for row, value in zip(rows, expected)) < 0.03
     first = output.read_bytes()
-    assert invoke(binary, source, output).returncode == 0
+    assert invoke(binary, source, output, "--curve", "essvi").returncode == 0
     assert output.read_bytes() == first
     report = json.loads(result.stdout)
     assert report["served_rows"] == len(expected)
     assert report["fitted_chains"] == 1
+    assert report["policy_mode"] == "fixed-curve"
+    assert all(row["policy_source"] == "fixed-curve" for row in rows)
 
 
 def test_native_rejects_label_columns(binary, tmp_path):
@@ -208,3 +210,148 @@ def test_native_canonicalizes_snapshot_identity_and_refuses_duplicate_expiry(bin
     with output.open(newline="") as stream:
         assert all(row["status"] == "ambiguous_expiry" for row in csv.DictReader(stream))
     assert json.loads(result.stdout)["ambiguous_expiry_chains"] == 2
+
+
+def read_quotes(path):
+    with path.open(newline="") as stream:
+        return list(csv.DictReader(stream))
+
+
+def write_quotes(path, rows):
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_native_routes_once_per_exact_symbol_root_snapshot(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    first = read_quotes(source)
+    later = [dict(row, chain_id="18", years="1.0", years_calendar="1.0", expiry_days="21183")
+             for row in first[11:15]]
+    dense = [dict(row, chain_id="19", underlier="BBB", root="BBB") for row in first]
+    sparse = [dict(row, chain_id="20", snapshot_ns="2", bid="1", ask="3")
+              for row in first[11:15]]
+    rows = first + later + dense + sparse
+    for index, row in enumerate(rows):
+        row["row_id"] = str(index)
+    write_quotes(source, rows)
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["policy_mode"] == "auto"
+    decisions = {(item["underlier"], item["snapshot_ns"]): item
+                 for item in report["policy_decisions"]}
+    assert decisions["AAA", "1"]["eligible_chain_ids"] == [17, 18]
+    assert decisions["AAA", "1"]["resolved_profile"] == "ordinary"
+    assert decisions["BBB", "1"]["resolved_profile"] == "dense"
+    assert decisions["AAA", "2"]["resolved_profile"] == "sparse"
+    assert decisions["AAA", "1"]["features"]["median_near_money_strikes"] == 15
+    predictions = read_quotes(output)
+    assert all(row["resolved_profile"] == "ordinary" for row in predictions[:30])
+    assert all(row["policy_source"] == "raw-liquidity" for row in predictions)
+    assert report["per_profile_counts"]["ordinary"]["attempted_chains"] == 2
+    assert sum(counts["rows"] for counts in report["per_profile_counts"].values()) == len(rows)
+    assert sum(counts["served_rows"] for counts in report["per_profile_counts"].values()) == report["served_rows"]
+
+
+def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({
+        "schema_version": 1,
+        "profiles": [{"name": name, "base": name} for name in ["dense", "ordinary", "sparse"]] + [
+            {"name": "custom-smile", "base": "ordinary", "curve": "svi", "min_quotes": 8,
+             "quality": {"max_weight": 321}, "parametric": {"huber_k": 1.25}}],
+        "symbol_overrides": [{"symbol": "AAA", "profile": "custom-smile"}],
+    }))
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    rows = read_quotes(output)
+    assert all(row["resolved_profile"] == "custom-smile" for row in rows)
+    assert all(row["policy_source"] == "exact-symbol-override" for row in rows)
+    assert all(row["actual_curve"] == "svi" for row in rows)
+    report = json.loads(result.stdout)
+    definition = next(p for p in report["policy_definition"]["profiles"] if p["name"] == "custom-smile")
+    assert definition["quality"]["max_weight"] == 321
+    assert definition["parametric"]["huber_k"] == 1.25
+    assert definition["parametric"]["validate_no_arb"] is True
+    assert definition["dividend_model"] == "aggregate-pv"
+    document = json.loads(policy.read_text())
+    document["symbol_overrides"][0]["symbol"] = "aaa"
+    policy.write_text(json.dumps(document))
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    assert all(row["policy_source"] == "raw-liquidity" for row in read_quotes(output))
+
+
+@pytest.mark.parametrize("document", [
+    '{"schema_version":1,"srVol":0.3}',
+    '{"schema_version":1,"schema_version":1}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","quality":{"max_weight":true}}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","parametric":{"validate_no_arb":false}}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","convex":{"node_cap":1000000}}]}',
+    '{"schema_version":1,"symbol_overrides":[{"symbol":"AAA","profile":"missing"}]}',
+    '{"schema_version":1,"symbol_overrides":[{"symbol":"AAA","profile":"dense"},{"symbol":"AAA","profile":"sparse"}]}',
+    '{"schema_version":1,"regimes":{"dense_max_bidless_fraction":1.5}}',
+    '{"schema_version":1,"profiles":[{"name":"bad,name","base":"dense"}]}',
+])
+def test_native_rejects_invalid_policy_before_output(binary, tmp_path, document):
+    source, output, policy = tmp_path / "quotes.csv", tmp_path / "predictions.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    policy.write_text(document)
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("extra", [
+    ["--policy", "auto", "--curve", "essvi"],
+    ["--curve", "essvi", "--curve", "svi"],
+    ["--min-quotes", "4"],
+    ["--policy", "auto", "--max-spread-vol", "0.5"],
+])
+def test_native_refuses_ambiguous_policy_overrides(binary, tmp_path, extra):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    result = invoke(binary, source, output, *extra)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_native_preserves_policy_when_outputs_alias_it(binary, tmp_path):
+    source, output, policy = tmp_path / "quotes.csv", tmp_path / "predictions.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    original = b'{"schema_version":1}'
+    policy.write_bytes(original)
+    assert invoke(binary, source, policy, "--policy", str(policy)).returncode != 0
+    assert policy.read_bytes() == original
+    assert invoke(binary, source, output, "--policy", str(policy), "--report", str(policy)).returncode != 0
+    assert policy.read_bytes() == original
+    policy.write_bytes(b" " * (1024 * 1024 + 1))
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode != 0
+    assert "1 MiB" in result.stderr
+
+
+def test_native_duplicate_expiry_does_not_inflate_liquidity(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    first = read_quotes(source)
+    duplicate = [dict(row, chain_id="18") for row in first]
+    valid = [dict(row, chain_id="19", years="1", years_calendar="1", expiry_days="21183")
+             for row in first[11:15]]
+    rows = first + duplicate + valid
+    for index, row in enumerate(rows):
+        row["row_id"] = str(index)
+    write_quotes(source, rows)
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    assert decision["eligible_chain_ids"] == [19]
+    assert decision["ambiguous_chain_ids"] == [17, 18]
+    assert decision["features"]["unique_contracts"] == 4
+    assert decision["resolved_profile"] == "sparse"
+    assert all(row["status"] == "ambiguous_expiry" for row in read_quotes(output)[:52])
