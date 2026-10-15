@@ -567,7 +567,8 @@ TEST(IcCacheIndex, SummaryRecordsIndex) {
   files_cfg.candidate_cache_index = st::CacheIndexMode::Files;
   const auto files = run_named(dir, files_cfg, "files");
   ASSERT_TRUE(files.ok) << files.error;
-  for (const auto& role_result : read_json(dir.path / "files" / "summary.json").at("roles"))
+  const auto files_summary = read_json(dir.path / "files" / "summary.json");
+  for (const auto& role_result : files_summary.at("roles"))
     EXPECT_FALSE(role_result.at("candidate_cache").contains("index"));
   const auto cache = dir.path / "c";
   ASSERT_TRUE(init_index(cache));
@@ -643,7 +644,8 @@ TEST(IcResultIndex, RecordTextRoundTrip) {
   }
   const auto warm = run_named(dir, cfg, "warm");
   ASSERT_TRUE(warm.ok) << warm.error;
-  for (const auto& role_result : read_json(dir.path / "warm" / "summary.json").at("roles"))
+  const auto warm_summary = read_json(dir.path / "warm" / "summary.json");
+  for (const auto& role_result : warm_summary.at("roles"))
     EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"), 2);
   expect_exact_outputs(dir, "files", "warm");
 }
