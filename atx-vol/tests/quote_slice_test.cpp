@@ -210,5 +210,134 @@ TEST(QuoteSlice, InvalidSharedInputsFailWithoutPartiallyUsableOutput) {
   EXPECT_FALSE(fit_quote_slice(market, {}));
 }
 
+TEST(QuoteSlice, StrikeSpecificCarryRecoversFlatVolAndRepricesWithLocalYield) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.015, 0.0};
+  std::vector<QuoteSliceQuote> quotes;
+  for (int strike = 75; strike <= 125; strike += 5) {
+    const double K = static_cast<double>(strike);
+    const double yield = 0.015 + 0.08 * std::log(K / 100.0);
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(100.0, K, 0.4, 0.25, 0.05, yield * 1.25, side);
+      ASSERT_TRUE(price) << price.error().to_string();
+      const double half_spread = std::min(0.01, *price * 0.1);
+      quotes.push_back({K, side, *price - half_spread, *price + half_spread, yield});
+    }
+  }
+  auto fitted = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  ASSERT_EQ(fitted->carry_curve.size(), 11U);
+  EXPECT_DOUBLE_EQ(fitted->curve->F(), fitted->diagnostics.forward);
+  EXPECT_NEAR(fitted->curve->F(), 100.0 * std::exp((0.04 - 0.015) * 0.5), 1.0e-12);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fitted->rows[i];
+    ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+    EXPECT_NEAR(row.fitted_iv, 0.25, 5.0e-4);
+    if (row.admitted) { EXPECT_NEAR(row.market_iv, 0.25, 5.0e-6); }
+    const auto expected = andersen_lake(100.0, quotes[i].strike, 0.4, row.fitted_iv,
+                                       0.05, *quotes[i].continuous_yield * 1.25, quotes[i].side);
+    ASSERT_TRUE(expected);
+    EXPECT_DOUBLE_EQ(row.fitted_price, *expected);
+    const auto queried = evaluate_quote_slice(*fitted, quotes[i].strike, quotes[i].side);
+    ASSERT_TRUE(queried);
+    EXPECT_DOUBLE_EQ(queried->price, row.fitted_price);
+  }
+  // Midway in log strike interpolates the two supplied carries; outside the
+  // knot range serving keeps the nearest edge carry, including at new strikes.
+  for (double K : {60.0, std::sqrt(95.0 * 100.0), 150.0}) {
+    const double yield = 0.015 + 0.08 * std::log(std::clamp(K, 75.0, 125.0) / 100.0);
+    const auto queried = evaluate_quote_slice(*fitted, K, Side::Call);
+    ASSERT_TRUE(queried) << queried.error().to_string();
+    const auto expected = andersen_lake(100.0, K, 0.4, queried->volatility, 0.05,
+                                       yield * 1.25, Side::Call);
+    ASSERT_TRUE(expected);
+    EXPECT_NEAR(queried->price, *expected, 1.0e-10);
+  }
+}
+
+TEST(QuoteSlice, MissingYieldOverridesPreserveHistoricalArithmeticBitForBit) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.015, 0.0};
+  auto quotes = flat_quotes(market);
+  auto baseline = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(baseline);
+  ASSERT_EQ(baseline->fit_status, QuoteSliceFitStatus::Success);
+  EXPECT_TRUE(baseline->carry_curve.empty());
+  // Explicitly providing the reference yield, and a mixed supplied/missing
+  // schedule, must both take the exact legacy arithmetic path.
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    if ((i / 2U) % 2U == 0U) { quotes[i].continuous_yield = market.continuous_yield; }
+  }
+  auto explicit_carry = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(explicit_carry);
+  ASSERT_EQ(explicit_carry->fit_status, QuoteSliceFitStatus::Success);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &a = baseline->rows[i];
+    const auto &b = explicit_carry->rows[i];
+    EXPECT_EQ(a.quote_status, b.quote_status);
+    EXPECT_EQ(a.evaluation_status, b.evaluation_status);
+    EXPECT_DOUBLE_EQ(a.fitted_price, b.fitted_price);
+    EXPECT_DOUBLE_EQ(a.fitted_iv, b.fitted_iv);
+    if (a.admitted) { EXPECT_DOUBLE_EQ(a.market_iv, b.market_iv); }
+  }
+}
+
+TEST(QuoteSlice, ConflictingAndNonFiniteStrikeCarryIsRefusedWithoutAveraging) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  auto quotes = flat_quotes(market);
+  // An absent override resolves to the reference yield and participates in
+  // the conflict check just like an explicit carry at that strike.
+  quotes.front().continuous_yield = 0.03;
+  const auto conflict = fit_quote_slice(market, quotes);
+  ASSERT_FALSE(conflict);
+  EXPECT_EQ(conflict.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(conflict.error().message().find("conflicting"), std::string::npos);
+  quotes.front().continuous_yield = std::numeric_limits<double>::quiet_NaN();
+  const auto invalid = fit_quote_slice(market, quotes);
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(QuoteSlice, DatedCashInversionAndServingPreserveStrikeSpecificCarry) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.01, 0.0};
+  const std::vector<CashDividend> calendar_events{{0.2, 1.8}};
+  const std::vector<CashDividend> model_events{{0.16, 1.8}};
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::DatedCash;
+  config.curve.kind = VolCurveKind::LinearVariance;
+  config.side_policy = QuoteSliceSidePolicy::All;
+  config.min_quotes = 5;
+  config.discrete_div_steps = 101;
+  std::vector<QuoteSliceQuote> quotes;
+  for (int strike = 85; strike <= 115; strike += 5) {
+    const double K = static_cast<double>(strike);
+    const double yield = 0.01 + 0.04 * std::log(K / 100.0);
+    const Side side = strike <= 100 ? Side::Put : Side::Call;
+    const auto price = american_discrete_div_price(100.0, K, 0.4, 0.25, 0.05,
+                                                  yield * 1.25, side, model_events, 101);
+    ASSERT_TRUE(price);
+    quotes.push_back({K, side, *price - 0.001, *price + 0.001, yield});
+  }
+  auto fitted = fit_quote_slice(market, quotes, config, calendar_events);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fitted->rows[i];
+    ASSERT_TRUE(row.admitted);
+    EXPECT_NEAR(row.market_iv, 0.25, 2.0e-6);
+    const auto expected = american_discrete_div_price(100.0, quotes[i].strike, 0.4,
+        row.fitted_iv, 0.05, *quotes[i].continuous_yield * 1.25, quotes[i].side, model_events, 101);
+    ASSERT_TRUE(expected);
+    EXPECT_DOUBLE_EQ(row.fitted_price, *expected);
+  }
+  const double K = std::sqrt(100.0 * 105.0);
+  const double yield = 0.01 + 0.04 * std::log(K / 100.0);
+  const auto queried = evaluate_quote_slice(*fitted, K, Side::Call);
+  ASSERT_TRUE(queried);
+  const auto expected = american_discrete_div_price(100.0, K, 0.4, queried->volatility,
+      0.05, yield * 1.25, Side::Call, model_events, 101);
+  ASSERT_TRUE(expected);
+  EXPECT_NEAR(queried->price, *expected, 1.0e-10);
+}
+
 } // namespace
 } // namespace atx::vol

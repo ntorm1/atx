@@ -57,18 +57,107 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
       return Err(ErrorCode::InvalidArgument, "quote slice: invalid dividend event");
     }
   }
+  for (const QuoteSliceQuote &quote : quotes) {
+    if (quote.continuous_yield && !std::isfinite(*quote.continuous_yield)) {
+      return Err(ErrorCode::InvalidArgument, "quote slice: non-finite contract yield");
+    }
+  }
   return Ok();
 }
 
-Result<double> model_price(const QuoteSliceFit &fit, double strike, Side side, double sigma) {
+Status build_carry_curve(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes) {
+  const bool any_override = std::any_of(quotes.begin(), quotes.end(),
+      [](const QuoteSliceQuote &quote) { return quote.continuous_yield.has_value(); });
+  if (!any_override) { return Ok(); }
+  auto &curve = fit.carry_curve;
+  curve.reserve(quotes.size());
+  for (const auto &quote : quotes) {
+    if (positive(quote.strike) && valid_side(quote.side)) {
+      curve.push_back({quote.strike,
+                       quote.continuous_yield.value_or(fit.market.continuous_yield)});
+    }
+  }
+  std::sort(curve.begin(), curve.end(),
+            [](const QuoteSliceCarryPoint &a, const QuoteSliceCarryPoint &b) {
+              return a.strike < b.strike;
+            });
+  std::size_t count = 0;
+  for (const QuoteSliceCarryPoint &point : curve) {
+    if (count > 0 && curve[count - 1].strike == point.strike) {
+      if (curve[count - 1].continuous_yield != point.continuous_yield) {
+        return Err(ErrorCode::InvalidArgument,
+                   "quote slice: conflicting contract yields at the same strike");
+      }
+    } else {
+      curve[count++] = point;
+    }
+  }
+  curve.resize(count);
+  return Ok();
+}
+
+// upper >= lower > 0. log1p preserves a meaningful interval even when two
+// adjacent floating-point strikes have indistinguishable rounded logarithms.
+double log_strike_distance(double upper, double lower) noexcept {
+  const double relative = (upper - lower) / lower;
+  return std::isfinite(relative) ? std::log1p(relative) : std::log(upper) - std::log(lower);
+}
+
+double calendar_yield_at(const QuoteSliceFit &fit, double strike) noexcept {
+  const auto &curve = fit.carry_curve;
+  if (curve.empty()) { return fit.market.continuous_yield; }
+  const auto hi = std::lower_bound(curve.begin(), curve.end(), strike,
+      [](const QuoteSliceCarryPoint &point, double value) { return point.strike < value; });
+  if (hi == curve.end()) { return curve.back().continuous_yield; }
+  if (hi == curve.begin() || hi->strike == strike) { return hi->continuous_yield; }
+  const auto &lo = *(hi - 1);
+  const double weight = log_strike_distance(strike, lo.strike) /
+                        log_strike_distance(hi->strike, lo.strike);
+  return std::lerp(lo.continuous_yield, hi->continuous_yield, weight);
+}
+
+double effective_yield(const QuoteSliceFit &fit, double calendar_yield) noexcept {
+  // Preserve the historical arithmetic exactly on every reference-carry row.
+  if (calendar_yield == fit.market.continuous_yield) {
+    return fit.diagnostics.effective_yield;
+  }
+  double value = calendar_yield * (fit.market.calendar_years / fit.market.variance_years);
+  if (fit.dividend_model == QuoteSliceDividendModel::AggregatePresentValue) {
+    value -= std::log1p(-fit.market.dividend_pv / fit.market.spot) / fit.market.variance_years;
+  }
+  return value;
+}
+
+double local_forward(const QuoteSliceFit &fit, double calendar_yield, double q_effective) noexcept {
+  if (calendar_yield == fit.market.continuous_yield) { return fit.diagnostics.forward; }
+  const auto &m = fit.market;
+  const double growth = std::exp((m.rate - calendar_yield) * m.calendar_years);
+  if (fit.dividend_model == QuoteSliceDividendModel::AggregatePresentValue) {
+    return (m.spot - m.dividend_pv) * growth;
+  }
+  double forward = m.spot * growth;
+  if (fit.dividend_model == QuoteSliceDividendModel::DatedCash) {
+    for (const auto &event : fit.variance_clock_dividends) {
+      forward -= event.amount * std::exp((fit.diagnostics.effective_rate - q_effective) *
+                                         (m.variance_years - event.tau));
+    }
+  }
+  return forward;
+}
+
+Result<double> model_price(const QuoteSliceFit &fit, double strike, Side side, double sigma,
+                           double q_effective) {
   const auto &m = fit.market;
   const auto &d = fit.diagnostics;
+  if (!std::isfinite(q_effective)) {
+    return Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow");
+  }
   if (fit.dividend_model == QuoteSliceDividendModel::DatedCash) {
     return american_discrete_div_price(m.spot, strike, m.variance_years, sigma, d.effective_rate,
-                                       d.effective_yield, side, fit.variance_clock_dividends,
+                                       q_effective, side, fit.variance_clock_dividends,
                                        fit.discrete_div_steps);
   }
-  return andersen_lake(m.spot, strike, m.variance_years, sigma, d.effective_rate, d.effective_yield,
+  return andersen_lake(m.spot, strike, m.variance_years, sigma, d.effective_rate, q_effective,
                        side, fit.al_opts);
 }
 
@@ -77,16 +166,16 @@ Result<double> model_price(const QuoteSliceFit &fit, double strike, Side side, d
 // The CRR probability imposes sigma > |r-q|*sqrt(dt), so the lower endpoint
 // must honor the lattice domain instead of treating its error as a zero price.
 Result<double> dated_cash_iv(const QuoteSliceFit &fit, const QuoteSliceQuote &quote, double target,
-                             const QuoteSliceConfig &cfg) {
+                             const QuoteSliceConfig &cfg, double q_effective) {
   const auto &d = fit.diagnostics;
   const double min_lattice_sigma =
-      std::abs(d.effective_rate - d.effective_yield) *
+      std::abs(d.effective_rate - q_effective) *
       std::sqrt(fit.market.variance_years / static_cast<double>(fit.discrete_div_steps));
   double lo = std::max(kIvMin, min_lattice_sigma * (1.0 + 1.0e-6));
   if (!(lo < kIvMax)) {
     return Err(ErrorCode::OutOfRange, "dated-cash IV: lattice has no admissible volatility range");
   }
-  const auto lower = model_price(fit, quote.strike, quote.side, lo);
+  const auto lower = model_price(fit, quote.strike, quote.side, lo, q_effective);
   if (!lower) {
     return Err(lower.error());
   }
@@ -97,7 +186,7 @@ Result<double> dated_cash_iv(const QuoteSliceFit &fit, const QuoteSliceQuote &qu
   double hi = std::min(kIvMax, std::max(0.5, 2.0 * lo));
   double f_hi = 0.0;
   for (unsigned expansion = 0; expansion < 16; ++expansion) {
-    const auto upper = model_price(fit, quote.strike, quote.side, hi);
+    const auto upper = model_price(fit, quote.strike, quote.side, hi, q_effective);
     if (!upper) {
       return Err(upper.error());
     }
@@ -122,7 +211,7 @@ Result<double> dated_cash_iv(const QuoteSliceFit &fit, const QuoteSliceQuote &qu
     // exercise plateaus where Newton's vega would vanish.
     const double fraction = std::clamp(-f_lo / (f_hi - f_lo), 0.1, 0.9);
     const double sigma = lo + fraction * width;
-    const auto value = model_price(fit, quote.strike, quote.side, sigma);
+    const auto value = model_price(fit, quote.strike, quote.side, sigma, q_effective);
     if (!value) {
       return Err(value.error());
     }
@@ -214,7 +303,8 @@ Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double st
   if (!positive(sigma)) {
     return Err(ErrorCode::OutOfRange, "quote slice: curve returned invalid volatility");
   }
-  const auto price = model_price(fit, strike, side, sigma);
+  const auto price = model_price(fit, strike, side, sigma,
+                                 effective_yield(fit, calendar_yield_at(fit, strike)));
   if (!price) {
     return Err(price.error());
   }
@@ -270,6 +360,8 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
       !std::isfinite(diag.effective_yield)) {
     return Err(ErrorCode::OutOfRange, "quote slice: invalid derived carry or forward");
   }
+  const auto carry_status = build_carry_curve(out, quotes);
+  if (!carry_status) { return Err(carry_status.error()); }
 
   out.rows.resize(quotes.size());
   std::vector<FitObs> observations;
@@ -285,10 +377,19 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     if (!nonnegative(quote.bid) || !positive(quote.ask) || quote.bid > quote.ask) {
       continue;
     }
+    const double calendar_yield = quote.continuous_yield.value_or(market.continuous_yield);
+    const double q_effective = effective_yield(out, calendar_yield);
+    const double forward = local_forward(out, calendar_yield, q_effective);
+    if (!positive(forward) || !std::isfinite(q_effective)) {
+      row.quote_status = QuoteSliceQuoteStatus::InvalidObservation;
+      continue;
+    }
     const double k = std::log(quote.strike / diag.forward);
+    const double local_k = forward == diag.forward ? k : std::log(quote.strike / forward);
     if (config.side_policy == QuoteSliceSidePolicy::OutOfTheMoney &&
-        std::abs(k) > config.atm_log_band &&
-        ((k < 0.0 && quote.side == Side::Call) || (k > 0.0 && quote.side == Side::Put))) {
+        std::abs(local_k) > config.atm_log_band &&
+        ((local_k < 0.0 && quote.side == Side::Call) ||
+         (local_k > 0.0 && quote.side == Side::Put))) {
       row.quote_status = QuoteSliceQuoteStatus::ExcludedSide;
       continue;
     }
@@ -302,9 +403,9 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     ++diag.iv_attempted;
     const auto iv =
         config.dividend_model == QuoteSliceDividendModel::DatedCash
-            ? dated_cash_iv(out, quote, mid, config)
+            ? dated_cash_iv(out, quote, mid, config, q_effective)
             : american_implied_vol(mid, market.spot, quote.strike, market.variance_years,
-                                   diag.effective_rate, diag.effective_yield, quote.side,
+                                   diag.effective_rate, q_effective, quote.side,
                                    AmericanMethod::AndersenLake, config.iv_tolerance,
                                    config.max_iv_iterations, config.al_opts);
     if (!iv || !positive(*iv)) {
@@ -319,10 +420,18 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     const auto euro = black76_value_and_vega(diag.forward, quote.strike, market.variance_years, *iv,
                                              diag.discount, quote.side);
     const double spread = std::max(quote.ask - quote.bid, config.spread_floor);
-    const double weight_root = euro.vega / spread / (2.0 * *iv * market.variance_years);
+    const double local_vega = forward == diag.forward ? euro.vega :
+        black76_value_and_vega(forward, quote.strike, market.variance_years, *iv,
+                               diag.discount, quote.side).vega;
+    // IV uncertainty belongs to the actual quote's carry. Price-space fitters
+    // receive an equivalent spread in the common reference-forward coordinate.
+    const double normalized_spread = local_vega == euro.vega ? spread :
+        spread * (euro.vega / local_vega);
+    const double weight_root = local_vega / spread / (2.0 * *iv * market.variance_years);
     const double weight = std::min(weight_root * weight_root, 1.0e24);
     const double variance = *iv * *iv * market.variance_years;
-    if (!positive(weight) || !positive(euro.vega) || !nonnegative(euro.price) ||
+    if (!positive(weight) || !positive(euro.vega) || !positive(local_vega) ||
+        !positive(normalized_spread) || !nonnegative(euro.price) ||
         !positive(variance) || !std::isfinite(k)) {
       row.quote_status = QuoteSliceQuoteStatus::InvalidObservation;
       continue;
@@ -338,9 +447,9 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     obs.F = diag.forward;
     obs.df = diag.discount;
     obs.mid = euro.price;
-    obs.spread = spread;
+    obs.spread = normalized_spread;
     obs.vega = euro.vega;
-    obs.noise_sigma = spread / euro.vega;
+    obs.noise_sigma = spread / local_vega;
     obs.side = quote.side;
     obs.source_strike_index = static_cast<std::uint32_t>(i);
     observations.push_back(obs);
@@ -383,7 +492,8 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
       row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
       continue;
     }
-    const auto price = model_price(out, quote.strike, quote.side, row.fitted_iv);
+    const auto price = model_price(out, quote.strike, quote.side, row.fitted_iv,
+        effective_yield(out, quote.continuous_yield.value_or(market.continuous_yield)));
     if (!price || !nonnegative(*price)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::PricingFailure;
       continue;

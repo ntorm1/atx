@@ -31,6 +31,10 @@ struct QuoteSliceQuote {
   Side side = Side::Call;
   double bid = 0.0;
   double ask = 0.0;
+  // Optional contract carry, annualized on the CALENDAR clock and excluding
+  // separately supplied cash dividends. Missing means the market reference
+  // yield. Matched calls/puts at one strike must resolve to the same yield.
+  std::optional<double> continuous_yield{};
 };
 
 enum class QuoteSliceDividendModel : std::uint8_t {
@@ -46,7 +50,7 @@ enum class QuoteSliceDividendModel : std::uint8_t {
 
 enum class QuoteSliceSidePolicy : std::uint8_t {
   All,
-  // Puts below the forward, calls above; both exactly at the forward. Optional
+  // Puts below their local forward, calls above; both exactly at the forward. Optional
   // atm_log_band admits both sides within |log(K/F)| <= atm_log_band.
   OutOfTheMoney
 };
@@ -110,6 +114,11 @@ struct QuoteSliceDiagnostics {
   FitDiag curve_fit{};
 };
 
+struct QuoteSliceCarryPoint {
+  double strike = 0.0;
+  double continuous_yield = 0.0; // calendar annualized, excluding cash dividends
+};
+
 // An immutable serving snapshot when published by the caller. The curve owns
 // its fitted state, and the schedule is copied, so query lifetime is independent
 // of every input span and CurveConfig (including a caller's spline-knot span).
@@ -124,6 +133,11 @@ struct QuoteSliceFit {
   std::optional<AlOpts> al_opts;
   int discrete_div_steps = kDiscreteDivDefaultSteps;
   std::vector<CashDividend> variance_clock_dividends;
+  // Empty when no quote supplies a yield override. Otherwise owns one
+  // resolved carry per valid contract strike, including rejected bid/ask rows.
+  // Strictly increasing strikes; interpolation is linear in log strike, with
+  // flat edges. Conflicting same-strike carries are refused during fitting.
+  std::vector<QuoteSliceCarryPoint> carry_curve;
 };
 
 struct QuoteSliceValue {
@@ -134,6 +148,10 @@ struct QuoteSliceValue {
 // Fits raw American bid/ask quotes, then reprices every valid contract with the
 // fitted smile, including quotes excluded from fitting. No reference fair
 // values or reference volatilities are accepted by this API.
+// Per-contract yields are used for IV extraction and repricing. The fitted
+// volatility curve retains the COMMON market-reference forward coordinate;
+// European observation prices/spreads are transformed to that coordinate.
+// Weights use local-forward Black vega as a quote-sensitivity proxy.
 //
 // DatedCash dividends use CALENDAR tau measured from the same valuation instant
 // as calendar_years. The fitter maps tau to the variance clock at a constant
@@ -143,6 +161,8 @@ struct QuoteSliceValue {
 //
 // Shared malformed inputs return Err. Quote-level failures are retained in rows;
 // insufficient data or a curve failure returns Ok with a non-Success fit_status.
+// Non-finite yield overrides and conflicting resolved carries at the same
+// valid contract strike are shared InvalidArgument errors, never averaged.
 // The cold fitting path allocates O(quotes + dividends) scratch. Serving reuses
 // the immutable curve; the discrete-cash engine retains its own lattice cost.
 [[nodiscard]] Result<QuoteSliceFit>
@@ -151,7 +171,8 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
                 std::span<const CashDividend> calendar_dividends = {});
 
 // Query an arbitrary new strike using exactly the fitted snapshot's clocks,
-// carry and dividend model. Errors never produce fabricated zero values.
+// interpolated strike carry and dividend model. Exact carry nodes reproduce
+// their supplied yields. Errors never produce fabricated zero values.
 [[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike,
                                                            Side side);
 
