@@ -127,7 +127,8 @@ def test_legacy_n37_numbers_reproduced(tmp_path, monkeypatch, capsys):
     leaf exactly, and the golden file is unchanged. B2-6 disclosure: the n37 argv lists its reference among the dirs,
     so exactly one row is a self pair, degenerate under B2-R1 (c) (1 - rho < 1e-6): the engine prints its paired SE /
     t "na" (null) and adds ``degenerate`` / ``one_minus_rho`` where the legacy Python printed numbers; the test checks
-    that form and compares the rest of that row. A failure names JSON paths only, never a value."""
+    that form and compares the rest of that row. A failure names JSON paths only when run with the blind flags
+    (``--tb=no --show-capture=no -rN``), which every real-data run uses."""
     root = os.environ.get("ATX_EQUITY_ROOT")
     if not root or Path(root).name != "build-equity" or not Path(root).is_dir():
         pytest.skip("set ATX_EQUITY_ROOT to a build-equity directory (root runs this test on the v7.1 cells)")
