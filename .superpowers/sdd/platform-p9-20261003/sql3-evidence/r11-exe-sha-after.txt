@@ -1,0 +1,5 @@
+head da19d7ac6720e21cafe76a6531efb289c19d32c5
+d8a500d84dc2a25130c69b226d8f5deec47b8dabb6256522c83c00764d3d9d65 *C:/atx-wt/pool-2/build-equity/bin/atx-research-store.exe
+4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b *C:/atx-wt/pool-2/build-equity/bin/atx-research-eval.exe
+fbb5b3928ebb994ed14d87efe8d28c9929af94636d666433151d33cc5e40a314 *C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-ic.exe
+e6b21410987a8946dcd9a5d0b5631a15fee76d682d2be987c46f1d05be4bd219 *C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-targets.exe

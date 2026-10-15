@@ -1,4 +1,32 @@
-# Handoff SQL3 (P9 wave 3, pool-13): items 1-4 merged in root; item 5 coded, tested, merged with root at OWNER STOP 10 (teeth, report, tree deletion left)
+# Handoff SQL3 (P9 wave 3, pool-13): items 1-4 merged in root; item 5 + SQL3-WQ DONE (R11: teeth 7 / 7, report, root `175edd61` merged at `da19d7ac`); ready for review 2 (BASE `69b8c162`)
+
+## R11 round (SQL3-5-FINISH, Python only, no build; 2026-10-15)
+
+- Head: the R11 docs commit (this file, `task-SQL3-report.md`, `sql3-evidence/r11-*`) over `da19d7ac` (merge of root
+  `175edd61`, 0 conflicts; no file of this lane changed on root's side) over `00779453` (SQL3-WQ code + test) over
+  `d43b3a8b` (the R10 handoff). Review 2: BASE `69b8c162`, file `task-SQL3-review-2.md` (FU-REVIEWS).
+- DONE (1) SQL3-WQ: `scripts/wave_queue.py:146` hands the hook `Path(d or QUEUE_DIR) / p.name`; the emit line `:350`
+  (same defect, same file: listed as a deviation) hands it `a.output`; test
+  `scripts/tests/test_wave_queue.py:92` `test_a_relative_root_hands_the_store_hook_root_relative_names`.
+- DONE (2) teeth: `sql3-evidence/r11-teeth-item5.py` (the R10 tool with `head_ok` in the TEETH-CRLF form: `git
+  hash-object` vs `git rev-parse HEAD:<rel>`, raw SHA-256 vs the tool's own kept copy, porcelain empty; M6 / M7 added for
+  SQL3-WQ), run once on `00779453`: caught 7 / 7, every restore check held, final porcelain empty
+  (`r11-teeth-item5.log`).
+- DONE (3) runs on `da19d7ac` (seed 0; root's exes read-only, SHA-256 before = after): hook file 13 passed (real-exe
+  case ran, store `p9-2r` `d8a500d8...`); identity file 16 passed + 6 subtests; `test_wave_queue.py` 6 passed; the seven
+  writers' files 98 passed / 0 failed (eval verb `p9-2z` `47910191...` via `ATX_EQUITY_BIN`). Logs
+  `sql3-evidence/r11-{hook,identity,wave-queue,writers}-da19d7ac.log`, `r11-exe-sha-{before,after}.txt`.
+- DONE (4) report: `task-SQL3-report.md` "Item 5 for the follow-up" (call lines, S5-1, SQL3-WQ, teeth table, runs,
+  EXE-CUR, what root re-proves), the Outcome line, items row 5, G-P10 (b).
+- (5) SQL3-TREE: the object tree in `C:/atx-wt/pool-13/build-equity` (`CMakeFiles/ atx-core/ atx-engine/ atx-impl/
+  atx-tsdb/ bin/ lib/ tests/`, `.ninja_deps .ninja_log CMakeCache.txt CPackConfig.cmake CPackSourceConfig.cmake
+  CTestTestfile.cmake build.ninja cmake_install.cmake compile_commands.json spdlog.pc`; 429,455,033 bytes measured) is
+  deleted by name AFTER this commit; KEPT: `audits/`, `v8-interim3-pitch-render-run2/` (tracked), `mega-p9-sql3-{a,b}-*`,
+  `vcpkg-manifest-install.log`. The result is in the hand-back.
+- No permission refusal. No subagent. No build. Deferred to the gate (TEST-1): whole `scripts/tests` seeds 0 / 1, the
+  stage chain, the rest of the store suite, the cross-commit tiny-world identity.
+
+Next step: none for the lane; the PM dispatches review 2. Root merges at M6 iff APPROVE.
 
 ## R10 round (item 5, Python only, no build): state at OWNER STOP 10 (2026-10-08)
 
