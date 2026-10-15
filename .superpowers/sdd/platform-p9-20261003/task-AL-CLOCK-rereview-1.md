@@ -204,5 +204,5 @@ No Required finding.
 - Not touched: pool-8, pool-24, `C:/atx`, `atx-db/`, `main` / `origin/main`, any lease. Pool-2 was read only. No
   push. No data opened; `holdout_gate.py` not run.
 - Build: none (`p9-alclock-n` unused), so there is no object tree to delete. Disk freed: my scratch only (pytest
-  basetemps, diff copies, the teeth tool; under 1 MB).
+  basetemps, diff copies, the teeth tool; about 3 MB, deleted by name).
 - Tree clean before and after every step. This file is the only commit.
