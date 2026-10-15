@@ -1,0 +1,35 @@
+# root M5c (A4-DB) search for copies of the two fields' TRAIN inputs outside C:/atx/atx-db (names and sizes only; no file opened)
+## find in C:/atx-wt/pool-2/build-equity (names ftd.parquet, threshold.parquet, lists.parquet, finra_names.parquet; dirs ftd, regsho_threshold, security_master, alpha_panel*)
+## end
+## pool-2 tracked/untracked tree outside build-equity: files named ftd.parquet / threshold.parquet / lists.parquet / finra_names.parquet (size)
+## C:/atx/data (ls of entry names matching ftd|regsho|threshold|security_master|alpha_panel|sec_|finra_names)
+(entries listed: 187)
+## data-classification.md: lines naming ftd|regsho|threshold|security_master|alpha_panel
+11:- Corrections to the ledger's partial findings: (1) `finra_short_volume` is NOT a live input: every hit is a key / argument name, and the specs read `C:/atx/atx-db/data/raw/finra_short_volume`. (2)
+(end)
+## (re-run; the pruned find above printed nothing by an expression slip) pool-2 outside build-equity*:
+(end)
+## (re-run with an os.walk lister, tools/find_inputs.py: the two find runs above were rewritten by rtk and are void)
+dir  C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\ftd
+dir  C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\regsho_threshold
+dir  C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\security_master
+file C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\ftd\year=2023\ftd.parquet 4153
+file C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\regsho_threshold\lists.parquet 7365
+file C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\regsho_threshold\year=2023\threshold.parquet 2660
+file C:/atx-wt/pool-2\atx-engine\tests\fixtures\research_fields_holdings\security_master\finra_names.parquet 1853
+## C:/atx-wt/pool-2: 7 hit(s)
+## C:/atx/data: 0 hit(s)
+## lanes' pools by ls only (rtk proxy ls -A of the pool root and of its build-equity/ top level, grep ftd|regsho|threshold|security_master|alpha_panel|finra_names); skipped: pools 8 / 24 (frozen), pool-23 build-equity (TEETH-BIN-23), pools 25 / 26 (other sessions)
+pool-13: root [] build-equity []
+pool-14: root [] build-equity []
+pool-15: root [] build-equity []
+pool-20: root [] build-equity []
+pool-21: root [] build-equity []
+pool-22: root [] build-equity []
+pool-23: root [] build-equity [(build-equity not listed)]
+pool-27: root [] build-equity []
+pool-28: root [] build-equity []
+pool-29: root [] build-equity []
+pool-30: root [] build-equity []
+pool-31: root [] build-equity []
+pool-32: root [] build-equity []

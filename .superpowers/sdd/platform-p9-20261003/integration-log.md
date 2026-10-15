@@ -735,3 +735,14 @@ suites, Release, canaries and the parents' identity runs deferred to the gate. E
 | A4 (pre-flip only) | `7c9140c4` (APPROVE, review `fc3e414e`, 0 Required, 6 Suggested; pre-flip `6dab6948`) | `bba4c06f` (`6dab6948`, = recompute `d969238a`) | 0 | **p9-3c** equity-dev; fields tests, fields exe (33 TUs) | 0 | A4 filter 25 / 25 | holdings fixture 2; holdings engine path 2 (real exe); vendor engine path 10; fields engine path 11; field registry 37; guard 5 | fixture identity **holds**; registry rows **hold**; **A4-Q2 TRAIN identity NOT RUN** (its inputs live under `C:/atx/atx-db/data/`: owner rule): flips `69141218` / `59d807ea` and `fc3e414e` **NOT merged** (BLOCKED for the flips) |
 
 Next free build tag **p9-3d**. Known-red set: **EMPTY**; no new red.
+
+### M5c (RESUME 11; rulings A4-DB, A4-P10-FLIPS), 2026-10-15
+
+Same root agent, continued; read-only. Code head **`bba4c06f`** (unchanged). No merge, no build, no test, no real-data
+run. Zero trials: `build-equity/trials.jsonl` 133 lines `27e40f9f`.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| A4 (flips) | flips `69141218` / `59d807ea`, APPROVE head `fc3e414e` | none (A4 stays merged at `6dab6948`, `bba4c06f`) | - | none | - | - | - | provenance of both fields (Y-F0's manifest `26fee5ce`): every stage input under `C:\atx\atx-db\data\alpha_panel\v1\{ftd,regsho_threshold,security_master}` (`a4-provenance.txt`); no copy outside atx-db in pool-2, `C:/atx/data`, `data-classification.md` or the lane pools (`a4-copy-search.txt`; names and sizes only; no SHA match possible); **identity not run: inputs under atx-db; flips P10** (A4-P10-FLIPS); Python stays the producer of record; nothing reverted |
+
+Next free build tag **p9-3d**. Known-red set: **EMPTY**.

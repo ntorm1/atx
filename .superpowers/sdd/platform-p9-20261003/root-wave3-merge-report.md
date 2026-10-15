@@ -905,7 +905,42 @@ stage chain: `prepare_research_fields_engine.py` changed).
 The A4-Q2 case: both flipped fields are in Y-F0's manifest; the TRAIN identity is NOT established in M5 (inputs under
 `C:/atx/atx-db/data/`, owner rule); the flips are not in root, so every P9 cell builds or reuses the two fields with
 the Python builder (flag absent). The prereg states the case and "identity pending / not run" unless a later root group
-runs it.
+runs it. (Superseded by M5c below: "identity not run: inputs under atx-db; flips P10".)
+
+### M5c (rulings A4-DB, A4-P10-FLIPS; the same root agent, continued; read-only, no build, no test)
+
+The PM ruled A4-DB (NO: `C:/atx/atx-db/` is never opened) and ordered a READ-ONLY search for a copy of the two fields'
+TRAIN inputs outside atx-db, the identity only on a SHA-matched copy with year partitions <= 2023, else A4-P10-FLIPS.
+
+1. **Provenance** (`m5-logs/a4-provenance.txt`, from the `sources` and `reused_from.inputs` of the two entries of
+   `build-equity/train-2020-2023-lo3-fields-v15/manifest.json`, `26fee5ce`; both reused from `-v15a` with the same pins):
+   - `ftd_shares_ratio21`: `C:\atx\atx-db\data\alpha_panel\v1\ftd\manifest.json` (`a76d69be...`), its six
+     `year=2018 .. year=2023\ftd.parquet` files (each SHA-256 recorded), and `shares_out.f64` (`1cff53f8...`,
+     `build-equity/train-2020-2023-lo3-fields-v9`, in pool-2).
+   - `regsho_threshold_days63`: `C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\manifest.json` (`fb073c62...`),
+     `lists.parquet` (`4ebd1881...`, not year-partitioned), six `year=2018 .. year=2023\threshold.parquet`;
+     `C:\atx\atx-db\data\alpha_panel\v1\security_master\manifest.json` (`3afe0660...`) and `finra_names.parquet`
+     (`1acfed75...`, not year-partitioned).
+2. **Search for a copy outside atx-db** (`m5-logs/a4-copy-search.txt`; names and sizes only, no file opened; lister
+   `m5-logs/tools/find_inputs.py`, an `os.walk` over names): the whole pool-2 tree including `build-equity/`: only the
+   A4 synthetic fixture under `atx-engine/tests/fixtures/research_fields_holdings/` (4,153 / 7,365 / 2,660 / 1,853
+   bytes, not the recorded inputs); `C:/atx/data`: 0 hits; `data-classification.md`: no such entry; the lane pools 13,
+   14, 15, 20, 21, 22, 23 (root only; its `build-equity/` not listed, TEETH-BIN-23), 27-32 by `ls` of the pool root and
+   its `build-equity/` top level: 0 hits; pools 8 / 24 (frozen) and 25 / 26 (other sessions) skipped. Slip, logged: the
+   first two `find` passes were rewritten by the `rtk` hook and printed nothing; they are void, and the `os.walk`
+   lister replaced them.
+3. **Outcome: no copy exists outside atx-db, so nothing was hashed and the identity did not run. A4-P10-FLIPS applies:**
+   A4 stays merged at `6dab6948` (merge `bba4c06f`: the engine builders, kinds, tests and fixture are in, flag absent);
+   the flips `69141218`, `59d807ea` and the registry rows of `fc3e414e` are P10 whole; Python stays the producer of record
+   for both fields; no byte of Y-F0 moves; nothing reverted. Even with a copy, the two non-partitioned files
+   (`lists.parquet`, `finra_names.parquet`) could not have been opened under the 2024 rule.
+4. **For PRE (round 2b-ii):** the prereg's A4-Q2 entry reads "both fields are in Y-F0's manifest; identity not run:
+   inputs under atx-db; flips P10". A4 fix 1 follows A4-FIX1-CHAIN (re-applied on `6dab6948` iff a plain cherry-pick;
+   the PM's at the lane's hand-back).
+5. Blindness (disclosed): printing the two fields' manifest entries to find their `sources` also printed their
+   `coverage` blocks (cell counts, finite fractions and value quantiles of the two fields, 2018-2023): descriptive field
+   counts, no return / IC / Sharpe / turnover / NAV statistic; nothing of it is recorded (`a4-provenance.txt` carries
+   paths, bytes and SHA-256 only).
 
 ### Disk and status (M5)
 

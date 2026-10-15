@@ -26,3 +26,10 @@ flips 69141218 (ftd) and 59d807ea (regsho) and the APPROVE head of record fc3e41
 The pre-flip head stays merged: flag absent, both registry rows kind python, no byte of any P9 run moves. A4 = BLOCKED
 for the flips; the PM / owner rules whether the TRAIN identity may read the atx-db stages (then M6 runs it with the argv
 of task-A4-report.md "For root" item 3 and merges the flips and fc3e414e), or the flips go to P10.
+
+M5c (rulings A4-DB: NO, C:/atx/atx-db/ is never opened; then A4-P10-FLIPS): the two fields' provenance records
+(a4-provenance.txt) name every stage input under C:\atx\atx-db\data\alpha_panel\v1\; a read-only search by name and size
+(a4-copy-search.txt, tools/find_inputs.py) found no copy outside atx-db (pool-2 incl. build-equity: only the synthetic
+A4 fixture; C:/atx/data: none; data-classification.md: none; lane pools by ls: none). Identity not run: inputs under
+atx-db; flips 69141218 / 59d807ea and the registry rows of fc3e414e are P10 whole; A4 stays merged at 6dab6948
+(bba4c06f); nothing reverted.
