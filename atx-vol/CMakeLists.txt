@@ -59,6 +59,7 @@ set(ATX_VOL_PRICING_SOURCES
     # api/pricing/american.hpp.
     src/pricing/american_discrete_div.cpp
     src/pricing/american_markov.cpp
+    src/pricing/american_markov_batch.cpp
     src/pricing/pwl_strike.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
@@ -88,6 +89,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/convex_recovery.cpp
     src/fitting/quote_feasibility.cpp
     src/fitting/quote_slice.cpp
+    src/fitting/quote_fit_policy.cpp
     src/fitting/american_price_slice.cpp
     src/fitting/calib.cpp
     src/fitting/prepared_fitting.cpp
