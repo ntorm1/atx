@@ -1,5 +1,44 @@
 # Lane B2 handoff: post-identity redo (first written 2026-10-04; newest section first)
 
+## R10: fix round 2 (B2-N37) done (2026-10-08; dispatch R10-1; supersedes every section below)
+
+**Head:** the docs commit that adds the "Second merge" note below, on the merge commit `96ff5aa0` (root `858a4fca`
+merged: M4's D3, OD3P, AL-CLOCK; no conflict; tree `d64e548a` = `git merge-tree` recompute). **Root SHA merged
+last:** `858a4fca`. Before it: `eef8aabd` (records) on `e4683013` (root `094bcd3b`: M3's C3b, D3W, ABS and the
+SQL2-CLS rows; no conflict; tree = recompute). Lane code commit of the round: `71abeb2f`
+(`atx-impl/tools/test_nav_summ_v8.py` only). Branch `feat/p9-b2-20261003`, pool-14. No rebase, amend or reset; tree
+clean after this commit; nothing pending in the lane.
+
+**Second merge (after the records commit; root had moved again in code):** `96ff5aa0` merges root `858a4fca`; it
+changes nothing on the n37 path (root's `atx-impl/tools` changes are `carry_weights.py` and `test_od3_tooling.py`;
+`atx-engine/src/research/eval` unchanged since `094bcd3b`). Re-run on `96ff5aa0` with the same `p9-b2-r` verb: the
+test file with root's inputs, blind, 10 passed (`r10-pyt-v8-file-root-merged2.log`); synthetic 9 passed / 1 skipped
+(`r10-pyt-v8-file-synthetic-merged2.log`).
+
+**Ruling B2-N37: cause (b), arithmetic.** The verb's JSON doubles round-trip exactly into nav_summ (nlohmann printer,
+`json.loads`), so no formatting fix exists; the residue is the engine's summation order / fma: 541 summ leaves and 2
+PBO leaves differ, 0 beyond 1e-12 relative, **max |relative difference| 4.967e-14** (summ; PBO 3.104e-16). One row is
+the self pair (the legacy argv lists its reference among the dirs), degenerate under B2-R1 (c): SE / t null plus the
+`degenerate` / `one_minus_rho` keys (B2-6). The test now compares numerically at 1e-12 relative with that disclosure
+in its docstring and pins exactly one degenerate row; the golden file and every expected hash are unchanged.
+
+**Build:** Debug `p9-b2-r` of `atx-research-eval` only (source `73b4acfd`, dirty 0, exit 0; verb SHA-256
+`71d19288182a94a025b90b135f4c12477406d65e0e94ce82af5e6fbe49fd91c7`; receipt copy in `b2-evidence/`). No second build
+(cause (b): no C++). Next free tag `p9-b2-s`.
+
+**Tests (TEST-1, the test file only):** red reproduced on the unchanged test (1 failed); fixed: n37 1 passed; whole
+file with root's inputs 10 passed (before and after the merge); synthetic 9 passed / 1 skipped (before and after).
+Teeth in memory through the test's own helpers: 8 / 8 breaking perturbations caught, a 5e-13 relative
+perturbation accepted (inside the tolerance).
+
+**Next:** re-review 3 (REV-FRESH, BASE `46ffe3dc`; the lane's change is `71abeb2f`, the rest root's history); then
+root merges the round (MERGE-SHA) and re-runs the test file with its own verb, blind: the known-red set becomes empty.
+Detail: `task-B2-report.md`, last section "Fix round 2 (B2-N37)"; evidence `b2-evidence/r10-*`.
+
+**Disk:** after this commit, the pool-14 Debug object tree is deleted by name (1,229 MiB; receipts and logs kept)
+and the session scratch dir `b2-r10/`. **Permission refusals:** none. **Slip:** the merge commit `e4683013` carries
+git's default message without the trailer (not amended).
+
 ## R9 round: the two pending suites done (2026-10-07; dispatch R9-1; supersedes every section below)
 
 **Head:** the docs commit that adds this section, on the merge commit `52cdcc8c` (root `685e238b` merged: prereg

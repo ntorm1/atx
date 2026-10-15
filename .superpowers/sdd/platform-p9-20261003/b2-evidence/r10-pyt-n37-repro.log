@@ -1,0 +1,4 @@
+# pool-14 HEAD 73b4acfd (unchanged test); ATX_EQUITY_ROOT=C:/atx-wt/pool-2/build-equity (read-only); ATX_EQUITY_BIN=C:/atx-wt/pool-14/build-equity/bin (p9-b2-r, verb 71d19288...); blind flags --tb=no --show-capture=no -rN
+F                                                                        [100%]
+1 failed in 21.79s
+exit=1
