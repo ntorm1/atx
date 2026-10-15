@@ -2,6 +2,10 @@
 
 ## Outcome
 
+Follow-up rounds R10 / R11: item 5 DONE (call lines `b55c0d11`, SQL3-WQ `00779453`, root `175edd61` merged at
+`da19d7ac`; teeth 7 / 7; section "Item 5 for the follow-up" below); review 2 BASE `69b8c162`. The paragraph that follows
+is the R7 / R8 outcome as written then.
+
 DONE for items 1-4 and SQL3-1 as designed in `handoff-SQL3.md`; item 5 (three call lines in B2's files) is PENDING:
 B2's post-identity redo is not merged in root (`git -C C:/atx-wt/pool-2 log --format=%s -30` shows no B2 merge at the
 first and the last merge of this round). The round ended at the OWNER STOP after the suite in flight (seed 1)
@@ -30,7 +34,7 @@ feat/platform-p9-20261003` = already up to date (root `1b64ce45`); SQL3-SEED: `s
 | 3 | W3-4 (SQL2-S7) `seal_guard.cpp` | `atx-engine/src/research/store/catalog/seal_guard.cpp:40-79` (`kMaxAncestors`, `GitEntry`, `git_entry`, `repo_top`: OUTERMOST `.git` ancestor, bounded walk, an fs error = nullopt), `:162-176` (`sealed_root` scans only below the top; no `.git` ancestor or an fs error = the whole path, as before); header contract `seal_guard.hpp:9-14`, `:58-63`. Callers unchanged. (F-2's fix: commit after `d10d9e54`, build `p9-sql3-b`) | gtest `SealGuard.RootTokenScannedOnlyBelowTheRepoTop` (`research_catalog_seal_test.cpp:84`) | `gtest-p9-sql3-a.log`, `gtest-p9-sql3-b.log` (28 / 28) |
 | 3 | N3 (candidates stay keyed by id, W3-4) | documented in the hook's module doc; a re-queued id in a second queue dir is ingest exit 3 = one warning naming `catalog --rebuild` | `test_real_store_exe_ingests_every_class` (last block, real exe) | `pytest-hook-file-real-exe.log` |
 | 4 | W3-5 (SQL1-MON) `book_monitor.py` | `atx-impl/tools/book_monitor.py:15-18` (doc), `:242-246` (refusal before `fit_records`: exit 1, nothing written), `:250-257` (`work_indexes`: `W`, `W/..`, `W/*/`, `record_store.INDEX_NAME`). Fitter untouched | `atx-impl/tools/test_book_monitor.py:321` `test_indexed_fit_work_is_refused` (each of the three places) | `pytest-book-monitor.log` (13 passed) |
-| 5 | hooks in `cycle_resume.write_binding`, `cycle_verdict.write_verdict` + `keep_copy`, `wave_stage_record.record` | PENDING (B2 not in root; see "Item 5 for the follow-up") | the real-exe case already runs each of these three writers followed by the exact call item 5 adds: binding, verdict, verdict copy and wave result are ingested and re-rendered with 0 mismatches | as row 1 |
+| 5 | hooks in `cycle_resume.write_binding`, `cycle_verdict.write_verdict` + `keep_copy`, `wave_stage_record.record` | DONE in R10 / R11: `scripts/cycle_resume.py:193`, `scripts/cycle_verdict.py:183`, `:196`, `scripts/wave_stage_record.py:348` (code `b55c0d11`); SQL3-WQ `scripts/wave_queue.py:146`, `:350` (`00779453`); see "Item 5 for the follow-up" | `test_research_store_hook.py` (13 cases), `test_wave_queue.py::test_a_relative_root_hands_the_store_hook_root_relative_names`; teeth 7 / 7 | `r11-teeth-item5.log`, `r11-hook-da19d7ac.log`, `r11-wave-queue-da19d7ac.log`, `r11-identity-da19d7ac.log`, `r11-writers-da19d7ac.log` |
 
 Hook behaviour (all rows): on iff `<root>/build-equity/research-store/catalog.sqlite` and
 `<root>/build-equity/bin/atx-research-store.exe` both exist (once per process per root); then
@@ -178,27 +182,117 @@ entries (the classes guard turns green); identity (1) and (2) above.
 - (b) render identity of receipt, start receipt, stage receipt, binding, verdict, wave result, candidate: PARTIAL ->
   the writer hook re-renders each record at write time for run-start, run-receipt, stage-receipt, wave-candidate (and
   presence-checks wave-manifest); binding, verdict (+ copy) and wave result wait on item 5 (B2), proven in the
-  real-exe test with the exact call; root's real-tree count is the gate's.
+  real-exe test with the exact call; root's real-tree count is the gate's. R11: item 5 landed, so the hook now
+  re-renders binding, verdict (+ copy) and wave result at write time too, each writer by its own call (the real-exe
+  case: 10 checked, 0 mismatches, with root's store exe `p9-2r`); still PARTIAL for P9 as a whole: SQL3-2 keeps the
+  hook OFF on every run of record; root's real-tree count is the gate's.
 - (c) two from-scratch catalog digests: root's store step; unchanged by SQL3.
 - (d) caches: the receipt `store` block records the record-store index selection (SQL-6), so the choice is now in the
   receipt: LANDED for C1's recording; X-5 cache identities stay root's; SQL-11 holds (no P9 cell uses an index);
   `book_monitor --fit-work` refuses an indexed dir (W3-5).
 - (e) every `atx.*/vN` literal registered: PARTIAL until root adds `atx.run-store/v1` (SQL3-1).
 
-## Item 5 for the follow-up (only after B2's redo is merged in root)
+## Item 5 for the follow-up (DONE in rounds R10 / R11; Python only, no build)
 
-Three call lines, each right after the write, nothing else (the import line in each file aside):
-- `scripts/cycle_resume.py` `write_binding`: after `cycle.res.path(f"{st.run_dir}/{BINDING}").write_text(...)`:
-  `research_store_hook.record(cycle.res.root, cycle.res.path(f"{st.run_dir}/{BINDING}"), "cycle-binding")`.
-- `scripts/cycle_verdict.py` `write_verdict`: after `path.write_text(...)`: `research_store_hook.record(cycle.res.root,
-  path, "cycle-verdict")`; `keep_copy`: after the copy's `f.write(text)` returns its path:
-  `research_store_hook.record(cycle.res.root, d / f"{mode}-{k}.json", "cycle-verdict")` (inside the `with`'s success
-  path, before `return`).
-- `scripts/wave_stage_record.py` `record`: after `w.write_json(path, doc)` (the wave result):
-  `research_store_hook.record(w.root, w.path(path), "wave-result")`.
-Check at that time that `cycle.res.root` is the resolver's root attribute name; test: extend
-`test_one_ingest_per_write_in_a_fake_wave` (the fake wave then ingests the wave result too; the fake cycle writes its
-own bindings / verdicts, so those three get a unit case each with the fake store).
+Rounds: R10 (WIP `489d9a7e`, code `b55c0d11`, merge of root `5c811b56` at `d91ce86c`, handoff `d43b3a8b`; stopped at
+OWNER STOP 10 before teeth / report) and R11 (SQL3-WQ `00779453`, teeth, merge of root `175edd61` at `da19d7ac`, this
+report). B2's redo has been in root since `fcb0200e`. Review 2: BASE `69b8c162`, file `task-SQL3-review-2.md`.
+
+**Call lines** (each right after its write; `import research_store_hook` at `cycle_resume.py:38`, `cycle_verdict.py:30`,
+`wave_stage_record.py:13`; the classes `cycle-binding`, `cycle-verdict`, `wave-result` exist in `classes.json` and name
+these writers):
+
+| writer | line | call |
+|---|---|---|
+| `cycle_resume.write_binding` | `scripts/cycle_resume.py:193` | `record(cycle.res.root, f"{st.run_dir}/{BINDING}", "cycle-binding")` |
+| `cycle_verdict.keep_copy` | `scripts/cycle_verdict.py:182-184` | `rel = f"{cycle.cycle_dir()}/{VERDICTS}/{mode}-{k}.json"`; `record(cycle.res.root, rel, "cycle-verdict")`; `return rel` (inside the `with`'s success path) |
+| `cycle_verdict.write_verdict` | `scripts/cycle_verdict.py:196` | `record(cycle.res.root, f"{cycle.cycle_dir()}/{VERDICT}", "cycle-verdict")` |
+| `wave_stage_record.record` | `scripts/wave_stage_record.py:348` | `record(w.root, w.path(path), "wave-result")` (`Wave.root` is resolved, `wave_context.py:36`) |
+
+Deviation from the R7 plan of this section (slip S5-1, fixed in place in R10): the plan (and the WIP) handed the hook
+`cycle.res.path(...)` / `d / ...` / `path`. `Resolver.root` (`scripts/cycle/resolver.py:17`) is `Path(root)` unresolved
+and `research_cycle.py --root` is never resolved (`scripts/cycle/cli.py:523`, `:568`), so under a relative `--root r`
+those paths are cwd-relative while the hook reads a relative path against the root (`research_store_hook.record`,
+`:150`): it would ingest `r/r/...` (one warning, the record not catalogued). The two cycle writers pass the root-relative
+name they wrote. Fakes without `.root` (cross-lane, minimal): `atx-engine/tools/test_research_store_identity.py:315`,
+`:353`; `atx-engine/tests/fixtures/research_store/make_store_tree.py:100` (`_Res.root = TREE`; no catalog under the
+fixture tree, a no-op; the generator was NOT run: it rewrites the tracked fixture tree).
+
+**SQL3-WQ** (ruling SQL3-WQ; item 1's file, `00779453`). `scripts/wave_queue.py:146` carried the same pattern:
+`--root` (`:275`) is never resolved (`:303`), so `write` handed the hook `queue_dir(root, d) / ...` = `r/<dir>/<id>.json`
+(cwd-relative). Hunk: `research_store_hook.record(root, Path(d or QUEUE_DIR) / p.name, "wave-candidate")` (root-relative;
+absolute iff `--dir` is). Deviation: the emit line `:350` had the identical defect (`out = root / a.output` handed over,
+`r/w.json`); fixed in the same commit as a second one-line hunk, `research_store_hook.record(root, a.output,
+"wave-manifest")` (`a.output` is what `out` is composed from: absolute, or root-relative). With an absolute root both
+hunks hand the hook the same file as before (same ingest argv); with the catalog off nothing changes at all. Test:
+`scripts/tests/test_wave_queue.py:92` `test_a_relative_root_hands_the_store_hook_root_relative_names`: cwd = tmp,
+`--root r`, the hook test's `fake_store` (imported from `test_research_store_hook.py`); `new`, `pin`, `emit`: exactly three
+ingests `(q/alpha_a.json, wave-candidate)` x2 and `(w.json, wave-manifest)`, `--root` the resolved root, the bytes at
+each ingest = the whole file just written, one check per ingest, no warning. The other hook call sites hand over
+resolved paths already (`run_bounded_research.py:452`, `:455`: root and output resolved; `research_wave.chain_of`:
+`Wave.root`).
+
+**Tests** (`scripts/tests/test_research_store_hook.py`, R10): `Ingests.files` (:146, :151; the bytes the exe would read at
+the call: proves each call is after the write); `fake_store` (:311); `test_one_ingest_per_write_in_a_fake_wave` (:321,
++1 ingest: `out/waves/w1/wave-result.json`, whole at ingest); `test_fake_wave_bytes_equal_with_a_failing_store` (:341,
+13 warnings incl. 1 wave-result); `test_write_binding_ingests_its_binding[absolute-root|relative-root]` (:396);
+`test_write_verdict_ingests_the_verdict_then_its_copy[no-copy|keep-verdicts]` (:410, relative root);
+`test_keep_copy_ingests_each_copy` (:422); `test_real_store_exe_ingests_every_class` (:467) runs the three writers by
+their own calls with a real `Resolver` (10 checked, 0 mismatches).
+
+**Teeth** (TEETH-RESTORE in the TEETH-CRLF form; tool `sql3-evidence/r11-teeth-item5.py`, log `r11-teeth-item5.log`, on
+`00779453`, seed 0, root's store exe `p9-2r` for the real-exe case): before each mutation `git hash-object <rel>` =
+`git rev-parse HEAD:<rel>` and porcelain empty; the tool keeps the bytes (memory + a copy under its basetemp parent);
+after the restore the raw SHA-256 of the working bytes = the kept copy's, `hash-object` = HEAD's blob id, porcelain empty
+(all seven held; final porcelain empty). The R10 tool (`r10-teeth-item5.py`) had stopped at its precondition before any
+mutation (raw bytes vs the LF blob); never rerun.
+
+| id | mutation | file run | red (expected all red; exit 1 each) |
+|---|---|---|---|
+| M1 | `cycle_resume.py:193` removed | hook file | binding [absolute-root], [relative-root], real-exe (3 failed / 10 passed) |
+| M2 | `cycle_verdict.py:183` removed | hook file | keep_copy, verdict [keep-verdicts], real-exe (3 / 10) |
+| M3 | `cycle_verdict.py:196` removed | hook file | verdict [no-copy], [keep-verdicts], real-exe (3 / 10) |
+| M4 | `wave_stage_record.py:348` removed | hook file | one-ingest fake wave, fake-wave bytes / warnings (2 / 11) |
+| M5 | the WIP's cwd-relative form put back at `:193` | hook file | binding [relative-root] only; [absolute-root] and real-exe stay green (1 / 12) |
+| M6 | `wave_queue.py:146` back to `p` | `test_wave_queue.py` | the new relative-root case (1 / 5) |
+| M7 | `wave_queue.py:350` back to `out` | `test_wave_queue.py` | the new relative-root case (1 / 5) |
+
+Caught 7 / 7.
+
+**Runs** (TEST-1; merged head `da19d7ac`; seed 0; `-p no:cacheprovider`, own `--basetemp`, `PYTHONDONTWRITEBYTECODE=1`,
+`C:/Program Files/Python312/python.exe`; env `ATX_EQUITY_ROOT=C:/atx-wt/pool-2/build-equity`,
+`ATX_EQUITY_BIN=C:/atx-wt/pool-2/build-equity/bin`, `ATX_RESEARCH_STORE_EXE=<that bin>/atx-research-store.exe`; root's
+exes read-only, nothing else read or written under pool-2's `build-equity`):
+
+| file(s) | result | log (`sql3-evidence/`) |
+|---|---|---|
+| `scripts/tests/test_research_store_hook.py` | 13 passed, 0 failed, 0 skipped (the real-exe case ran) | `r11-hook-da19d7ac.log` |
+| `atx-engine/tools/test_research_store_identity.py` (separate invocation) | 16 passed + 6 subtests (its real-exe case ran) | `r11-identity-da19d7ac.log` |
+| `scripts/tests/test_wave_queue.py` | 6 passed | `r11-wave-queue-da19d7ac.log` |
+| the seven writers' files: `test_cycle_resume.py`, `test_cycle_scoring.py`, `test_research_cycle_roles.py`, `test_research_wave.py`, `test_wave_driver.py`, `test_wave_hardening.py`, `test_wave_eval_verb.py` | 98 passed, 0 failed | `r11-writers-da19d7ac.log` |
+
+EXE-CUR (`r11-exe-sha-before.txt` = `r11-exe-sha-after.txt`, identical: no relink during the run):
+`atx-research-store.exe` `d8a500d8...` = Debug `p9-2r` (root M1 / M4 records: current by source); `atx-research-eval.exe`
+`47910191...` = Debug `p9-2z` (source `138e1d2c`; receipt copy `m5-logs/mega-p9-2z-receipt.json` in root's sprint dir;
+used by `nav_summ` in 4 writer cases); `atx-equity-strategy-ic.exe` `fbb5b392...` and `atx-equity-strategy-targets.exe`
+`e6b21410...` = Debug `p9-2y` (root M4 table), hashed as present in the bin `ATX_EQUITY_BIN` names. Earlier rounds:
+R10 on `d91ce86c` the same counts (hook 13, identity 16, writers 98; `r10-*-final-d91ce86c.log`); the WIP as committed
+3 failed / 5 passed, as its body predicted (`r10-hook-wip-489d9a7e.log`).
+
+Deferred to the gate (TEST-1): whole `scripts/tests` seeds 0 / 1, the stage chain (not edited), the rest of the store
+suite, the tiny-world flag-absent identity across commits.
+
+**Merges.** R10 `d91ce86c` (root `5c811b56`), R11 `da19d7ac` (root `175edd61`, root M5 in progress: B2 fix 2, OD3P
+follow-up, D3W-PB merged; 0 conflicts; no file of this round changed on root's side, the tests above ran on the merged
+tree). No new literal, flag, JSON key or rule id; no CMake edit; no C++.
+
+**What root re-proves at merge (M6).** On the merged head: `test_research_store_hook.py` (real-exe case with a current
+store exe), `test_wave_queue.py`, `atx-engine/tools/test_research_store_identity.py`, the seven writers' files (with a bin
+holding the eval verb: `ATX_EQUITY_BIN`); with the catalog off (SQL3-2: always in P9) none of the six call lines spawns a
+process or changes a byte, so the runs of record are unaffected.
+
+SQL3-TREE: the kept object tree in `C:/atx-wt/pool-13/build-equity` is deleted by name after this report's commit
+(handoff head line states the bytes).
 
 ## Findings
 

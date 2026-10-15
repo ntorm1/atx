@@ -1,5 +1,6 @@
 """The candidate queue (wave_queue.py, platform v8 lane YINFRA): proposals, pins, the refusals, emit, and the wave's
-record stage setting each queued candidate's status.
+record stage setting each queued candidate's status; under a relative --root, the names the record-store hook is
+handed (P9 SQL3-WQ).
 
 Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider scripts/tests/test_wave_queue.py
 """
@@ -86,6 +87,32 @@ def test_pin_transitions_and_emit(tmp_path, capsys):
     assert RC.main(emit + ["--select", "alpha_a", "--output", "w2.json", "--after", str(root / "result.json")]) == 0
     m2 = json.loads((root / "w2.json").read_text())
     assert m2["parent"] == {"spec": "scripts/specs/v8/lib-x.json", "library": "x"} and m2["expect"] == {"n_before": 7}
+
+
+def test_a_relative_root_hands_the_store_hook_root_relative_names(tmp_path, monkeypatch, capsys):
+    """P9 SQL3-WQ: under a relative --root (cwd-relative, never resolved) new, pin and emit hand the record-store hook
+    the root-relative name they wrote; the cwd-relative path would name <root>/<root>/... One ingest per write, of
+    the whole file just written; no warning."""
+    import research_store_hook as H  # noqa: PLC0415
+    import test_research_store_hook as SH  # noqa: PLC0415  (fake_store: the hook on with a recording fake exe)
+    monkeypatch.setattr(H, "_catalogs", {})                     # decided anew here, the module's cache restored after
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "r"
+    root.mkdir()
+    fake, checked = SH.fake_store(root, monkeypatch)
+    assert propose(Path("r"), "alpha_a") == 0
+    proposed = (root / DIR / "alpha_a.json").read_bytes()
+    assert RC.main(["candidates", "pin", "--root", "r", "--dir", DIR, "--id", "alpha_a", "--by", "pm",
+                    "--at", "2026-10-03"]) == 0
+    head = {k: v for k, v in F.manifest().items() if k != "candidates"}
+    F.write_json(root, "head.json", dict(head, fields=dict(head["fields"], manifest_sha256="0" * 64)))
+    assert RC.main(["candidates", "emit", "--root", "r", "--dir", DIR, "--head", "r/head.json",
+                    "--select", "alpha_a", "--output", "w.json"]) == 0
+    expect = [(f"{DIR}/alpha_a.json", "wave-candidate")] * 2 + [("w.json", "wave-manifest")]
+    assert fake.ingested() == checked == expect
+    assert fake.of("--root") == [str(root.resolve())] * 3
+    assert fake.files == [proposed, (root / DIR / "alpha_a.json").read_bytes(), (root / "w.json").read_bytes()]
+    assert not SH.warnings(capsys.readouterr().err)
 
 
 def queue_root(tmp_path: Path, pin: bool = True) -> Path:
