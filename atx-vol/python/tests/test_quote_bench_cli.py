@@ -105,3 +105,43 @@ def test_native_preserves_source_when_report_aliases_input(binary, tmp_path):
     result = invoke(binary, source, output, "--report", str(source))
     assert result.returncode != 0
     assert source.read_bytes() == original
+
+
+def test_native_preserves_hardlinked_source(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "alias.csv"
+    make_quotes(source)
+    original = source.read_bytes()
+    os.link(source, output)
+    result = invoke(binary, source, output)
+    assert result.returncode != 0
+    assert source.read_bytes() == original
+
+
+def test_native_rejects_mixed_expiry_chain(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    rows[-1]["years"] = "0.6"
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        assert all(row["status"] == "inconsistent_chain" for row in csv.DictReader(stream))
+
+
+def test_native_counts_adjusted_deliverables_as_unsupported(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    lines = source.read_text().splitlines()
+    source.write_text(lines[0] + ",root\n" +
+                      "\n".join(line + ",AAA1" for line in lines[1:]) + "\n")
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert all(row["status"] == "unsupported_deliverable" for row in rows)
+    assert all(row["predicted_price"] == "" for row in rows)

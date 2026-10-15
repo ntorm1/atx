@@ -3,11 +3,13 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -50,6 +52,21 @@ double real(std::string_view value, std::string_view column) {
   return value.empty() ? kNaN : number<double>(value, column);
 }
 
+bool same_file(const std::filesystem::path &left, const std::filesystem::path &right) {
+  if (std::filesystem::exists(left) && std::filesystem::exists(right) &&
+      std::filesystem::equivalent(left, right)) {
+    return true; // Includes hardlinks, which canonical path strings do not resolve.
+  }
+  auto a = std::filesystem::weakly_canonical(left).native();
+  auto b = std::filesystem::weakly_canonical(right).native();
+#ifdef _WIN32
+  const auto lower = [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); };
+  std::transform(a.begin(), a.end(), a.begin(), lower);
+  std::transform(b.begin(), b.end(), b.begin(), lower);
+#endif
+  return a == b;
+}
+
 Arguments arguments(int argc, char **argv) {
   Arguments args;
   for (int i = 1; i < argc; ++i) {
@@ -76,15 +93,11 @@ Arguments arguments(int argc, char **argv) {
   if (args.dividends != "aggregate-pv" && args.dividends != "none") {
     throw std::runtime_error("--dividends must be aggregate-pv or none");
   }
-  if (std::filesystem::weakly_canonical(args.input) ==
-      std::filesystem::weakly_canonical(args.output)) {
+  if (same_file(args.input, args.output)) {
     throw std::runtime_error("Input and output must differ");
   }
   if (!args.report.empty() &&
-      (std::filesystem::weakly_canonical(args.report) ==
-           std::filesystem::weakly_canonical(args.input) ||
-       std::filesystem::weakly_canonical(args.report) ==
-           std::filesystem::weakly_canonical(args.output))) {
+      (same_file(args.report, args.input) || same_file(args.report, args.output))) {
     throw std::runtime_error("Timing report must differ from input and predictions");
   }
   return args;
@@ -157,6 +170,7 @@ struct InputRow {
   QuoteSliceMarket market{};
   QuoteSliceQuote quote{};
   std::string input_status;
+  std::array<std::string, 4> identity;
 };
 
 InputRow convert_row(const Header &header, const std::vector<std::string> &fields) {
@@ -167,8 +181,21 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
   InputRow row;
   row.id = number<std::uint64_t>(get("row_id"), "row_id");
   row.chain = number<std::uint64_t>(get("chain_id"), "chain_id");
+  const std::array<std::string_view, 4> identity_keys{
+      "underlier", "root", "expiry_days", "snapshot_ns"};
+  for (std::size_t i = 0; i < identity_keys.size(); ++i) {
+    if (header.contains(identity_keys[i])) row.identity[i] = get(identity_keys[i]);
+  }
   row.input_status = get("input_status");
   if (row.input_status != "ok") return row;
+  // OCC numeric suffixes 1-9 identify adjusted, nonstandard deliverables.
+  // The imported schema has no share ratio/cash basket: treating these as
+  // ordinary contracts fabricates intrinsic value and exercise economics.
+  const auto &root = row.identity[1];
+  if (!root.empty() && root.back() >= '1' && root.back() <= '9') {
+    row.input_status = "unsupported_deliverable";
+    return row;
+  }
   if (get("exercise") != "American") {
     row.input_status = "unsupported_exercise";
     return row;
@@ -232,6 +259,7 @@ struct RunStatistics {
   double max_spot_range_bps{};
   double elapsed_seconds{};
   std::vector<double> chain_microseconds;
+  std::map<std::string, std::size_t> fit_failures;
 };
 
 // Contract-level underlying quotes can differ inside one recorded chain snapshot.
@@ -265,6 +293,27 @@ QuoteSliceMarket chain_market(const std::vector<InputRow> &rows,
   return market;
 }
 
+bool consistent_chain(const std::vector<InputRow> &rows,
+                      const std::vector<std::size_t> &indices) {
+  const auto &first = rows[indices.front()];
+  std::set<std::pair<double, Side>> contracts;
+  for (const auto i : indices) {
+    const auto &row = rows[i];
+    if (row.identity != first.identity || !std::isfinite(row.quote.strike)) return false;
+    if (!contracts.emplace(row.quote.strike, row.quote.side).second) return false;
+    // Variance/funding clocks define an expiry; averaging distinct expiries
+    // would silently create a contract that was never supplied by the caller.
+    for (const auto member : {&QuoteSliceMarket::variance_years,
+                              &QuoteSliceMarket::calendar_years}) {
+      const double a = row.market.*member;
+      const double b = first.market.*member;
+      if (!std::isfinite(a) || !std::isfinite(b) ||
+          std::abs(a - b) > 1.0e-10 * std::max({1.0, std::abs(a), std::abs(b)})) return false;
+    }
+  }
+  return true;
+}
+
 std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &rows,
                             RunStatistics &stats) {
   QuoteSliceConfig config;
@@ -277,7 +326,9 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   std::vector<Prediction> predictions(rows.size());
   std::map<std::uint64_t, std::vector<std::size_t>> chains;
   for (std::size_t i = 0; i < rows.size(); ++i) {
-    if (rows[i].input_status != "ok") predictions[i].status = "input_rejected";
+    if (rows[i].input_status == "unsupported_deliverable") {
+      predictions[i].status = "unsupported_deliverable";
+    } else if (rows[i].input_status != "ok") predictions[i].status = "input_rejected";
     else chains[rows[i].chain].push_back(i);
   }
   stats.chains = chains.size();
@@ -285,6 +336,10 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   for (const auto &[chain_id, indices] : chains) {
     static_cast<void>(chain_id);
     const auto chain_start = Clock::now();
+    if (!consistent_chain(rows, indices)) {
+      for (const auto i : indices) predictions[i].status = "inconsistent_chain";
+      continue;
+    }
     const auto market = chain_market(rows, indices, stats);
     if (market.dividend_pv > 0.0) ++stats.dividend_chains;
     std::vector<QuoteSliceQuote> quotes;
@@ -292,9 +347,11 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     for (const auto i : indices) quotes.push_back(rows[i].quote);
     const auto fit = fit_quote_slice(market, quotes, config);
     if (!fit) {
+      ++stats.fit_failures[fit.error().to_string()];
       for (const auto i : indices) predictions[i].status = "invalid_market";
     } else {
       if (fit->fit_status == QuoteSliceFitStatus::Success) ++stats.fitted;
+      else ++stats.fit_failures[fit->fit_error];
       stats.admitted += fit->diagnostics.quotes_admitted;
       for (std::size_t j = 0; j < indices.size(); ++j) {
         const auto &result = fit->rows[j];
@@ -348,6 +405,17 @@ double quantile(std::vector<double> values, double p) {
   return values[lo] + (location - static_cast<double>(lo)) * (values[hi] - values[lo]);
 }
 
+std::string json_string(std::string_view value) {
+  std::string out{"\""};
+  for (const char c : value) {
+    if (c == '\\' || c == '"') out.push_back('\\');
+    if (static_cast<unsigned char>(c) < 32U) out.push_back(' ');
+    else out.push_back(c);
+  }
+  out.push_back('"');
+  return out;
+}
+
 void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
                   const RunStatistics &stats) {
   stream << std::setprecision(17)
@@ -382,7 +450,13 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
 #else
          << ",\n  \"build_type\": \"debug\""
 #endif
-         << "\n}\n";
+         << ",\n  \"fit_failure_counts\": {";
+  bool first = true;
+  for (const auto &[message, count] : stats.fit_failures) {
+    stream << (first ? "\n    " : ",\n    ") << json_string(message) << ": " << count;
+    first = false;
+  }
+  stream << "\n  }\n}\n";
 }
 
 } // namespace
