@@ -1,0 +1,2 @@
+atx-impl/src/strategy_ic_rules.cpp: ours 1 hunks (merged :546-550) kept True; theirs 17 hunks (merged :6-6, :7-7, :691-699, :712-722, :724-724, :729-731, :734-734, :738-739, :744-745, :748-748, :752-753, :757-765, :779-780, :785-786, :790-791, :794-813, :819-819) kept True; PASS
+RESULT PASS

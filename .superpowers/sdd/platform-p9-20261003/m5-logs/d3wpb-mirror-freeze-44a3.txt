@@ -1,0 +1,5 @@
+P9_FREEZE in file: False; rows left for P9 lanes at the freeze: 1
+   ('scripts/wave_rules.py', ['sign_pm7_35'], 'E2')
+G-P5 count: 1 function(s) in 1 row(s); ALLOWLIST rows 9
+FROZEN_PAIRS names sign_pm7_35: True
+FROZEN_PAIRS names screen_decision: False

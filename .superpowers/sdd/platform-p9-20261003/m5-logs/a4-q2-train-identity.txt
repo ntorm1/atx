@@ -1,0 +1,28 @@
+Root M5 (RESUME 11), A4-Q2 TRAIN identity for ftd_shares_ratio21 and regsho_threshold_days63: NOT RUN (stop at the lane boundary).
+
+Head when stopped: bba4c06f (A4 pre-flip head 6dab6948 merged; fields exe p9-3c d14346e8..., source bba4c06f).
+
+What was read (all inside pool-2):
+- build-equity/train-2020-2023-lo3-fields-v15/manifest.json (sha256 26fee5ce...; Y-F0's --fields manifest): both field
+  names are listed (files entries ftd_shares_ratio21.f64 15bc4e6a..., regsho_threshold_days63.f64 8248b3a2...;
+  shares_out.f64 1cff53f8...); all three were REUSED from train-2020-2023-lo3-fields-v15a (reuse.reused), the producing
+  code of the two fields research_fields_holdings.py (code_sha256_lf 9c025522...).
+- build-equity/train-2020-2023-lo3-fields-v15-run/receipt.json and p9-a1-identity-fields-v15-run/receipt.json: the TRAIN
+  recipe's argv (paths and pins only).
+
+Why it stopped: the recipe's holdings stages are
+  --ftd C:/atx/atx-db/data/alpha_panel/v1/ftd (stage pin a76d69be...)
+  --regsho-threshold C:/atx/atx-db/data/alpha_panel/v1/regsho_threshold (fb073c62...)
+  --security-master C:/atx/atx-db/data/alpha_panel/v1/security_master (3afe0660...)
+and the rest of the recipe (identity bridge, SEC stages, 13F, short volume, SIC events) also lives under
+C:/atx/atx-db/data/. No copy exists outside atx-db (pool-2 has no atx-db/data; C:/atx/data has no alpha_panel). The owner
+rule "never touch atx-db/" (resume4-dispatch.md; repeated in the M5 prompt) and DATA-1's "C:/atx/atx-db is never opened"
+forbid opening those files, and another session runs jobs there (a held read handle on Windows can block its rewrite of a
+stage file). Under the contract (stop for anything outside the worktree), root did not open any file under C:/atx/atx-db,
+did not start the bounded runner and did not merge the flips.
+
+Consequence (r11-dispatch ROOT M5 step 5, A4-Q2): the identity of record for the two flips is not established in P9; the
+flips 69141218 (ftd) and 59d807ea (regsho) and the APPROVE head of record fc3e414e (which contains them) are NOT merged.
+The pre-flip head stays merged: flag absent, both registry rows kind python, no byte of any P9 run moves. A4 = BLOCKED
+for the flips; the PM / owner rules whether the TRAIN identity may read the atx-db stages (then M6 runs it with the argv
+of task-A4-report.md "For root" item 3 and merges the flips and fc3e414e), or the flips go to P10.
