@@ -458,57 +458,51 @@ TEST(SurfaceArchiveV2, ConvexViewMaterializesOnlyQueriedSlices) {
   }
 }
 
-TEST(SurfaceArchiveV2, ConvexDenseWingFallbackBuildsAnchorsOnce) {
-  if constexpr (!atx::vol::counters::counters_enabled()) {
-    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
-    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
-  } else {
-    ConvexSliceFit fit;
-    fit.T = 0.25;
-    fit.F = 100.0;
-    fit.df = 1.0;
-    fit.u = {80.0, 100.0, 120.0};
-    fit.C = {25.0, 10.0, 9.99};
-    constexpr double kDeepRight = 100.0;
-    ASSERT_TRUE(std::isnan(fit.iv(kDeepRight)))
-        << "fixture must enter ConvexDenseCurve's numerical-wing fallback";
+TEST(SurfaceArchiveV2, ConvexDenseUnidentifiableWingFailsWithoutVarianceFallback) {
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = 1.0;
+  fit.u = {80.0, 100.0, 120.0};
+  fit.C = {25.0, 10.0, 9.99};
+  constexpr double kDeepRight = 100.0;
+  ASSERT_TRUE(std::isnan(fit.iv(kDeepRight)))
+      << "fixture must have an unidentifiable price-to-IV inversion";
 
-    atx::vol::counters::reset();
-    const ConvexDenseCurve curve(std::move(fit));
-    EXPECT_EQ(atx::vol::counters::snapshot().get(
-                  atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds),
-              0u)
-        << "construction must leave the fallback table absent";
+  atx::vol::counters::reset();
+  const ConvexDenseCurve curve(std::move(fit));
+  EXPECT_EQ(atx::vol::counters::snapshot().get(
+                atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds),
+            0u)
+      << "no variance fallback cache may be constructed";
 
-    constexpr std::size_t kWorkers = 8;
-    constexpr std::uint64_t kFallbackBits = 4634277297755232409ULL;
-    std::array<double, kWorkers> results{};
-    std::array<std::thread, kWorkers> workers{};
-    std::atomic<bool> start{false};
-    for (std::size_t worker = 0; worker < workers.size(); ++worker) {
-      workers[worker] = std::thread([&, worker] {
-        while (!start.load(std::memory_order_acquire)) {
-          std::this_thread::yield();
-        }
-        results[worker] = curve.w(kDeepRight);
-      });
-    }
-    start.store(true, std::memory_order_release);
-    for (std::thread &worker : workers) {
-      worker.join();
-    }
-    for (const double result : results) {
-      ASSERT_TRUE(std::isfinite(result));
-      EXPECT_EQ(std::bit_cast<std::uint64_t>(result), kFallbackBits);
-    }
-    EXPECT_EQ(std::bit_cast<std::uint64_t>(curve.w(kDeepRight)), kFallbackBits);
-
-    const auto snapshot = atx::vol::counters::snapshot();
-    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds), 1u);
-    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations), 5u);
-    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingFallbackEntries),
-              kWorkers + 1u);
+  constexpr std::size_t kWorkers = 8;
+  std::array<double, kWorkers> results{};
+  std::array<std::thread, kWorkers> workers{};
+  std::atomic<bool> start{false};
+  for (std::size_t worker = 0; worker < workers.size(); ++worker) {
+    workers[worker] = std::thread([&, worker] {
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      results[worker] = curve.w(kDeepRight);
+    });
   }
+  start.store(true, std::memory_order_release);
+  for (std::thread &worker : workers) {
+    worker.join();
+  }
+  for (const double result : results) {
+    EXPECT_TRUE(std::isnan(result));
+  }
+  EXPECT_TRUE(std::isnan(curve.w(kDeepRight)));
+  EXPECT_TRUE(std::isnan(curve.iv(kDeepRight)));
+
+  const auto snapshot = atx::vol::counters::snapshot();
+  EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds), 0u);
+  EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations), 0u);
+  EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingFallbackEntries),
+            0u);
 }
 
 TEST(SurfaceArchiveV2, SplineViewConcurrentFirstUseMaterializesOnce) {

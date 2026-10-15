@@ -502,6 +502,9 @@ TEST(VolCurve, SviServedSliceRejectsWingButterflyArb) {
   EXPECT_FALSE(served.has_value())
       << "served-path admitted a raw-SVI slice with wing butterfly arb over the "
          "quoted range +/- 0.5";
+  const SviCurve current(sp, df);
+  const auto refitted = atx::vol::refit_slice_curve(cfg, current, obs, F, T, df);
+  EXPECT_FALSE(refitted.has_value()) << "refit must apply the same full-range gate";
 }
 
 // C-8 (FIT-C5) fixture: CORE obs (|k| <= 0.15) are pure eSSVI-backbone-
@@ -650,6 +653,110 @@ TEST(VolCurve, PinnedSplineVolRejectsButterflyArb) {
   const auto served = fit_slice_curve(cfg, obs, F, T, df);
   EXPECT_FALSE(served.has_value())
       << "pinned SplineVol path served a butterfly-arbitrageable slice";
+}
+
+TEST(VolCurve, LinearVarianceFacadeRejectsNegativeDensityAtoms) {
+  constexpr double T = 0.5, F = 100.0, df = 0.99;
+  auto obs = make_smile_obs(T, F, df, 15);
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::LinearVariance;
+  const auto nonflat = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_FALSE(nonflat);
+  EXPECT_NE(nonflat.error().message().find("negative density atom"), std::string::npos);
+
+  // A truly flat interpolant has neither singular nor smooth density defects.
+  for (auto &o : obs) {
+    o.sigma_mkt = 0.25;
+    o.w_mkt = 0.25 * 0.25 * T;
+    const auto value = black76_value_and_vega(F, o.K, T, 0.25, df, o.side);
+    o.mid = value.price;
+    o.vega = value.vega;
+  }
+  const auto flat = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(flat) << flat.error().to_string();
+  for (double k : {-5.0, -0.15, 0.0, 0.17, 5.0}) {
+    EXPECT_DOUBLE_EQ((*flat)->iv(k), 0.25);
+  }
+}
+
+TEST(VolCurve, SplineFlatWingJoinsAreCheckedAnalytically) {
+  atx::vol::SplineVolParams p;
+  p.atm_vol = 0.25;
+  p.z = {-3.0, -1.0, 1.0, 3.0};
+  p.mult = {1.06, 1.02, 0.98, 0.94};
+  p.z_lo_valid = -1.0;
+  p.z_hi_valid = 1.0;
+  const atx::vol::SplineVolCurve left_kink(p, 0.5, 100.0, 1.0);
+  // This gentle linear skew has clean smooth density over the quoted region.
+  // Flattening its left wing nevertheless creates a negative point mass.
+  const auto interior = atx::vol::arb_check_butterfly(left_kink, -0.15, 0.15, 128);
+  ASSERT_TRUE(interior);
+  EXPECT_TRUE(interior->empty());
+  const auto left = left_kink.validate_strike_transitions();
+  ASSERT_FALSE(left);
+  EXPECT_NE(left.error().message().find("flat-wing join"), std::string::npos);
+
+  std::reverse(p.mult.begin(), p.mult.end());
+  const atx::vol::SplineVolCurve right_kink(p, 0.5, 100.0, 1.0);
+  EXPECT_FALSE(right_kink.validate_strike_transitions());
+  p.mult = {1.0, 1.0, 1.0, 1.0};
+  const atx::vol::SplineVolCurve constant(p, 0.5, 100.0, 1.0);
+  EXPECT_TRUE(constant.validate_strike_transitions());
+}
+
+TEST(VolCurve, SplineCeilingCrossingsAndBetweenKnotUndershootsAreRefused) {
+  atx::vol::SplineVolParams p;
+  p.atm_vol = 0.25;
+  p.z = {-3.0, -1.0, 1.0, 3.0};
+  p.mult = {0.9, 1.0, 1.1, 1.2};
+  p.mult_cap = 1.05;
+  const atx::vol::SplineVolCurve clipped(p, 0.5, 100.0, 1.0);
+  const auto crossing = clipped.validate_strike_transitions();
+  ASSERT_FALSE(crossing);
+  EXPECT_NE(crossing.error().message().find("ceiling transition"), std::string::npos);
+  p.mult_cap = 0.8;
+  const atx::vol::SplineVolCurve entirely_capped(p, 0.5, 100.0, 1.0);
+  EXPECT_TRUE(entirely_capped.validate_strike_transitions());
+
+  p.mult_cap = 0.0;
+  p.z = {0.0, 0.01, 1.0, 2.0};
+  p.mult = {1.0, 0.01, 0.01, 1.0};
+  const atx::vol::SplineVolCurve undershoot(p, 0.5, 100.0, 1.0);
+  const auto negative = undershoot.validate_strike_transitions();
+  ASSERT_FALSE(negative);
+  EXPECT_NE(negative.error().message().find("non-positive"), std::string::npos);
+}
+
+TEST(VolCurve, SplineFacadeRefusesWingAtomBeyondItsObservedRange) {
+  constexpr double T = 0.5, F = 100.0, df = 0.99;
+  const auto obs = make_smile_obs(T, F, df, 31);
+  const auto raw = atx::vol::fit_spline_vol_slice(obs, F, T, df);
+  ASSERT_TRUE(raw) << raw.error().to_string();
+  const auto &spline = static_cast<const atx::vol::SplineVolCurve &>(**raw);
+  ASSERT_EQ(spline.params().n_butterfly_viol, 0U);
+  ASSERT_FALSE(spline.validate_strike_transitions());
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::SplineVol;
+  const auto served = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_FALSE(served);
+  EXPECT_NE(served.error().message().find("flat-wing join"), std::string::npos);
+}
+
+TEST(VolCurve, ConvexFacadePreservesVerticalSpreadBoundWhenCallerDisablesIt) {
+  constexpr double T = 0.5, F = 100.0, df = 0.99;
+  auto obs = make_smile_obs(T, F, df, 15);
+  // The public facade owns this safety constraint regardless of tuning knobs.
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  cfg.convex.bound_slope_below = false;
+  const auto curve = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(curve) << curve.error().to_string();
+  const auto &fit = static_cast<const atx::vol::ConvexDenseCurve &>(**curve).fit();
+  for (std::size_t i = 1; i < fit.u.size(); ++i) {
+    const double slope = (fit.C[i] - fit.C[i - 1]) / (fit.u[i] - fit.u[i - 1]);
+    EXPECT_GE(slope, -df - 1.0e-8);
+    EXPECT_LE(slope, 1.0e-8);
+  }
 }
 
 TEST(VolCurve, C8ServedSlicePassesGridButterflyCheck) {

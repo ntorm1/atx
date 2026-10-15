@@ -11,9 +11,9 @@
 #include "atx/vol/api/pricing/black76.hpp" // black76_price: price-space calendar floor (P-5)
 
 #include "fitting/c8_calib.hpp"          // c8_fit_slice_lm, C8LmDiag
-#include "fitting/counters.hpp"          // ConvexDense wing-anchor observability
 #include "fitting/dense_slice_price.hpp" // safe_call_price (shared w/ dense_slice.cpp)
 #include "fitting/essvi_calib.hpp"       // essvi_fit_slice
+#include "fitting/resid_basis.hpp"        // exact runtime residual-basis count
 #include "fitting/svi_calib.hpp"         // svi_fit_slice, svi_project_mm
 
 namespace atx::vol {
@@ -77,10 +77,6 @@ struct PairBand {
   return Ok();
 }
 
-[[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve) {
-  return validate_parametric_risk_shape(curve, kRiskCalendarMin, kRiskCalendarMax);
-}
-
 // FT-C2/FT-C7: the strike-shape density scan for a closed-form parametric (SVI)
 // or a pinned SplineVol slice must cover the FULL quoted range padded by 0.5 in
 // log-moneyness (the C8/CStar policy), NOT just the fixed tradeable [-0.6, 0.6]
@@ -88,6 +84,63 @@ struct PairBand {
 // |k|<=0.6 can still carry Durrleman g<0 in a wing the closed form extrapolates
 // past the band. The scan window is the UNION of the padded quoted range and the
 // historical band, so coverage is never reduced for a tightly-quoted slice.
+[[nodiscard]] Status validate_essvi_transitions(const EssviParams &s) {
+  if (!(s.resid_scale > 0.0)) { return Ok(); }
+  if (!std::isfinite(s.resid_scale)) {
+    return Err(ErrorCode::Unavailable, "eSSVI admission: non-finite residual scale");
+  }
+  const int requested = s.resid_n_basis == 0 ? 5 : static_cast<int>(s.resid_n_basis);
+  const int count = s.resid_basis_kind == ResidualBasisKind::C2Bspline ?
+      detail::resid_bump_count(requested) : std::clamp(requested, 1, 16);
+  for (int i = 0; i < count; ++i) {
+    if (!std::isfinite(s.resid_coef[static_cast<std::size_t>(i)])) {
+      return Err(ErrorCode::Unavailable, "eSSVI admission: non-finite residual coefficient");
+    }
+  }
+  double left = 0.0;
+  double right = 0.0;
+  if (s.resid_basis_kind == ResidualBasisKind::C2Bspline) {
+    const double spacing = 2.0 / static_cast<double>(count - 1);
+    const double h = 1.5 * spacing;
+    const auto derivative = [&](double y) {
+      double value = 0.0;
+      for (int i = 0; i < count; ++i) {
+        const double centre = -1.0 + spacing * static_cast<double>(i);
+        const double u = (y - centre) / h;
+        if (u > -1.0 && u < 1.0) {
+          const double t = 1.0 - u * u;
+          value -= s.resid_coef[static_cast<std::size_t>(i)] * 6.0 * u * t * t / h;
+        }
+      }
+      return value / s.resid_scale;
+    };
+    left = derivative(-1.0);
+    right = derivative(1.0);
+  } else if (s.resid_basis_kind == ResidualBasisKind::HingeQuad ||
+             s.resid_basis_kind == ResidualBasisKind::None) {
+    const auto coefficient = [&](int i) {
+      return i < count ? s.resid_coef[static_cast<std::size_t>(i)] : 0.0;
+    };
+    const double left_hinge = coefficient(1) / s.resid_scale;
+    const double right_hinge = coefficient(3) / s.resid_scale;
+    const double tolerance = 1.0e-12 *
+        std::max(1.0, std::abs(left_hinge) + std::abs(right_hinge));
+    if (left_hinge < -tolerance || right_hinge < -tolerance) {
+      return Err(ErrorCode::Unavailable, "eSSVI admission: negative density atom at residual hinge");
+    }
+    // The runtime hinge starts at |y|=.4, leaving .6 before its hard clamp.
+    left = -(coefficient(1) + 1.2 * coefficient(2)) / s.resid_scale;
+    right = (coefficient(3) + 1.2 * coefficient(4)) / s.resid_scale;
+  } else {
+    return Err(ErrorCode::Unavailable, "eSSVI admission: unsupported residual basis");
+  }
+  const double tolerance = 1.0e-12 * std::max(1.0, std::abs(left) + std::abs(right));
+  if (!std::isfinite(left) || !std::isfinite(right) || left < -tolerance || right > tolerance) {
+    return Err(ErrorCode::Unavailable, "eSSVI admission: negative density atom at residual clamp");
+  }
+  return Ok();
+}
+
 [[nodiscard]] Status validate_served_shape_over_quotes(const IVolCurve &curve,
                                                        std::span<const FitObs> obs) {
   double k_lo = kRiskCalendarMin;
@@ -98,6 +151,28 @@ struct PairBand {
     }
     k_lo = std::min(k_lo, o.k - 0.5);
     k_hi = std::max(k_hi, o.k + 0.5);
+  }
+  if (curve.kind() == VolCurveKind::Essvi) {
+    const auto &s = static_cast<const EssviCurve &>(curve).slice();
+    ATX_TRY_VOID(validate_essvi_transitions(s));
+    if (s.resid_scale > 0.0) {
+      k_lo = std::min(k_lo, -s.resid_scale - 0.5);
+      k_hi = std::max(k_hi, s.resid_scale + 0.5);
+    }
+  }
+  if (curve.kind() == VolCurveKind::SplineVol) {
+    const auto &spline = static_cast<const SplineVolCurve &>(curve);
+    ATX_TRY_VOID(spline.validate_strike_transitions());
+    const auto &p = spline.params();
+    const double axis = p.atm_vol * std::sqrt(curve.T());
+    // The active spline extends beyond its observed range. Include every
+    // active interval, as well as the joins to the constant wings.
+    k_lo = std::min(k_lo, p.z.front() * axis - 0.5);
+    k_hi = std::max(k_hi, p.z.back() * axis + 0.5);
+    for (std::size_t i = 0; i + 1 < p.z.size(); ++i) {
+      ATX_TRY_VOID(validate_parametric_risk_shape(curve, p.z[i] * axis,
+                                                 p.z[i + 1] * axis));
+    }
   }
   return validate_parametric_risk_shape(curve, k_lo, k_hi);
 }
@@ -141,80 +216,14 @@ double ConvexDenseCurve::iv(double k_log) const noexcept {
   return wk > 0.0 && T_ > 0.0 ? std::sqrt(wk / T_) : kNaN;
 }
 
-const ConvexDenseCurve::FiniteAnchors *ConvexDenseCurve::finite_anchors() const noexcept {
-  if (const FiniteAnchors *anchors =
-          finite_anchors_published_.load(std::memory_order_acquire)) {
-    return anchors;
-  }
-  try {
-    std::call_once(finite_anchors_once_, [this] {
-      auto anchors = std::make_unique<FiniteAnchors>();
-      anchors->k.reserve(fit_.u.size() * 2u);
-      anchors->w.reserve(fit_.u.size() * 2u);
-      const auto append_anchor = [this, &anchors](double k) {
-        ATX_VOL_COUNT(ConvexDenseWingAnchorIvEvaluations);
-        const double sigma = fit_.iv(k);
-        if (std::isfinite(sigma) && sigma > 0.0) {
-          anchors->k.push_back(k);
-          anchors->w.push_back(sigma * sigma * T_);
-        }
-      };
-      for (std::size_t i = 0; i < fit_.u.size(); ++i) {
-        append_anchor(std::log(fit_.u[i] / F_));
-        if (i + 1u < fit_.u.size()) {
-          append_anchor(std::log(std::sqrt(fit_.u[i] * fit_.u[i + 1u]) / F_));
-        }
-      }
-      const FiniteAnchors *const published = anchors.get();
-      finite_anchors_owner_ = std::move(anchors);
-      ATX_VOL_COUNT(ConvexDenseWingAnchorBuilds);
-      finite_anchors_published_.store(published, std::memory_order_release);
-    });
-  } catch (...) {
-    // w() is noexcept. A transient allocation/call_once failure therefore
-    // fails this evaluation as NaN; call_once leaves the flag unset so a later
-    // fallback can retry instead of terminating or observing partial state.
-    return nullptr;
-  }
-  return finite_anchors_published_.load(std::memory_order_acquire);
-}
-
 double ConvexDenseCurve::w(double k_log) const noexcept {
   const double s = fit_.iv(k_log);
   if (s > 0.0 && std::isfinite(s) && T_ > 0.0) {
     return s * s * T_;
   }
-  ATX_VOL_COUNT(ConvexDenseWingFallbackEntries);
-  const FiniteAnchors *const anchors = finite_anchors();
-  if (anchors == nullptr || anchors->k.empty()) {
-    return kNaN;
-  }
-  if (anchors->k.size() == 1u) {
-    return anchors->w.front();
-  }
-  const auto it = std::lower_bound(anchors->k.begin(), anchors->k.end(), k_log);
-  std::size_t lo = 0u;
-  std::size_t hi = 1u;
-  if (it == anchors->k.begin()) {
-    lo = 0u;
-    hi = 1u;
-  } else if (it == anchors->k.end()) {
-    hi = anchors->k.size() - 1u;
-    lo = hi - 1u;
-  } else {
-    hi = static_cast<std::size_t>(it - anchors->k.begin());
-    lo = hi - 1u;
-  }
-  const double span = anchors->k[hi] - anchors->k[lo];
-  if (!(span > 0.0)) {
-    return anchors->w[lo];
-  }
-  // Roger Lee's moment bound is |dw/dk| <= 2. Stay just inside it so a
-  // numerical wing cannot manufacture an infinite-moment surface.
-  const double slope =
-      std::clamp((anchors->w[hi] - anchors->w[lo]) / span, -1.999, 1.999);
-  return std::max(1.0e-12,
-                  anchors->w[lo] + slope * (k_log - anchors->k[lo]));
+  // A Lee-bounded variance wing is not a convex-price extension. Preserve the
+  // fitted price representation and fail the IV query when it is unidentifiable.
+  return kNaN;
 }
 
 // ── EssviCurve / SviCurve ───────────────────────────────────────────────────
@@ -256,6 +265,87 @@ double LinearVarianceCurve::w(double k_log) const noexcept {
 }
 
 // ── CurveSurface ────────────────────────────────────────────────────────────
+
+Status SplineVolCurve::validate_strike_transitions() const {
+  const auto &z = p_.z;
+  const auto &y = p_.mult;
+  const double axis = p_.atm_vol * std::sqrt(T_);
+  if (z.size() < 2 || y.size() != z.size() || m2nd_.size() != z.size() ||
+      !(axis > 0.0) || !std::isfinite(axis) || !std::isfinite(p_.mult_cap) ||
+      !std::isfinite(p_.w_offset) || p_.w_offset < 0.0) {
+    return Err(ErrorCode::Unavailable, "spline admission: invalid polynomial state");
+  }
+  for (std::size_t i = 0; i < z.size(); ++i) {
+    if (!std::isfinite(z[i]) || !std::isfinite(y[i]) || !std::isfinite(m2nd_[i]) ||
+        !(y[i] > 0.0) || (i > 0 && !(z[i] > z[i - 1]))) {
+      return Err(ErrorCode::Unavailable, "spline admission: invalid knot state");
+    }
+  }
+  double minimum = y.front();
+  double maximum = y.front();
+  double left_slope = 0.0;
+  double right_slope = 0.0;
+  bool polynomial_finite = true;
+  for (std::size_t i = 0; i + 1 < z.size(); ++i) {
+    const double h = z[i + 1] - z[i];
+    // Exact cubic coefficients in t=(z-z_i)/h. Its extrema occur at the
+    // endpoints or the at-most-two roots of b+2*c*t+3*d*t^2.
+    const double a = y[i];
+    const double b = y[i + 1] - y[i] - h * h * (2.0 * m2nd_[i] + m2nd_[i + 1]) / 6.0;
+    const double c = h * h * m2nd_[i] / 2.0;
+    const double d = h * h * (m2nd_[i + 1] - m2nd_[i]) / 6.0;
+    if (!std::isfinite(b) || !std::isfinite(c) || !std::isfinite(d)) {
+      return Err(ErrorCode::Unavailable, "spline admission: polynomial coefficient overflow");
+    }
+    const auto inspect = [&](double t) {
+      if (t >= 0.0 && t <= 1.0) {
+        const double value = ((d * t + c) * t + b) * t + a;
+        if (!std::isfinite(value)) { polynomial_finite = false; return; }
+        minimum = std::min(minimum, value);
+        maximum = std::max(maximum, value);
+      }
+    };
+    inspect(1.0);
+    const double scale = std::max({std::abs(b), std::abs(c), std::abs(d)});
+    if (scale > 0.0) {
+      const double A = 3.0 * (d / scale);
+      const double B = 2.0 * (c / scale);
+      const double C = b / scale;
+      if (A == 0.0) {
+        if (B != 0.0) { inspect(-C / B); }
+      } else {
+        const double discriminant = std::fma(-4.0 * A, C, B * B);
+        if (discriminant >= 0.0) {
+          const double q = -0.5 * (B + std::copysign(std::sqrt(discriminant), B));
+          inspect(q / A);
+          if (q != 0.0) { inspect(C / q); }
+        }
+      }
+    }
+    if (i == 0) { left_slope = 2.0 * axis * y.front() * b / h; }
+    if (i + 2 == z.size()) {
+      right_slope = 2.0 * axis * y.back() * (b + 2.0 * c + 3.0 * d) / h;
+    }
+  }
+  if (!polynomial_finite || !(minimum > 0.0) || !std::isfinite(maximum) ||
+      !std::isfinite(left_slope) || !std::isfinite(right_slope)) {
+    return Err(ErrorCode::Unavailable, "spline admission: non-positive or non-finite segment");
+  }
+  if (p_.mult_cap > 0.0 && maximum > p_.mult_cap) {
+    if (minimum >= p_.mult_cap) { return Ok(); } // the entire served curve is constant
+    // Entering a hard ceiling drops a positive derivative to zero; leaving it
+    // drops zero to a negative derivative. Both are negative density atoms.
+    // A stationary inflection crossing could be harmless, but is unsupported:
+    // refuse that special case rather than certify it with finite samples.
+    return Err(ErrorCode::Unavailable, "spline admission: uncertified multiple-ceiling transition");
+  }
+  const double tolerance = 1.0e-12 *
+      std::max(1.0, std::abs(left_slope) + std::abs(right_slope));
+  if (left_slope < -tolerance || right_slope > tolerance) {
+    return Err(ErrorCode::Unavailable, "spline admission: negative density atom at flat-wing join");
+  }
+  return Ok();
+}
 
 void CurveSurface::push(std::unique_ptr<IVolCurve> slice) {
   if (slice != nullptr) {
@@ -621,22 +711,9 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
-    // FIT-C5: the eSSVI backbone is butterfly-arb-free EVERYWHERE by
-    // construction (the Mingone cube-space fit enforces the Lee/Gatheral-
-    // Jacquier bound), so the fixed risk-band scan is sufficient whenever no
-    // wing residual was fit — this branch is BIT-IDENTICAL to before C-8 on
-    // that (default, residual_disable == true) path. The optional HINGE_QUAD
-    // wing-residual layer is NOT projected onto the admissible cone (the
-    // per-slice Roper projector is out of port scope; see the PORT NOTE on
-    // `fit_wing_residual`, essvi_calib.cpp), so a served residual slice needs
-    // the SAME full-quoted-range scan the SVI branch uses (FT-C2/FT-C5): the
-    // residual's hinge-quadratic wing term can carry Durrleman g < 0 outside
-    // the fixed [-0.6, 0.6] band that a narrower scan never sees.
-    if (slice.resid_scale > 0.0) {
-      ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
-    } else {
-      ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
-    }
+    // Inspect the entire quoted range, including any optional residual layer
+    // and the final calendar projection, with the same admission as a refit.
+    ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {
@@ -748,6 +825,12 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     }
     std::unique_ptr<IVolCurve> curve =
         std::make_unique<LinearVarianceCurve>(T, F, df, std::move(k), std::move(w));
+    const auto &linear = static_cast<const LinearVarianceCurve &>(*curve);
+    const auto shape = arb_check_butterfly_linear_variance(linear);
+    if (!shape.clean()) {
+      return Err(ErrorCode::Unavailable,
+                 "fit_slice_curve: linear-variance slice has uncertified density or a negative density atom");
+    }
     return Ok(std::move(curve));
   }
   case VolCurveKind::C8: {
@@ -860,7 +943,7 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       diag->final_grad_norm = c8_lm.final_grad_norm;
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
     return Ok(std::move(curve));
   }
   case VolCurveKind::SplineVol: {
@@ -887,6 +970,7 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       return Err(ErrorCode::Unavailable,
                  "fit_slice_curve: pinned SplineVol slice butterfly-inadmissible");
     }
+    ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
     if (diag != nullptr) {
       diag->n_quotes_used = static_cast<std::uint32_t>(obs_eu.size());
     }
@@ -975,26 +1059,15 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
       }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
     return Ok(std::move(curve));
   }
   case VolCurveKind::Svi: {
-    ATX_TRY(SviParams slice,
-            svi_fit_slice(obs_eu, T, F, cfg.parametric, diag));
-    if (w_prev) {
-      const PairBand band = tradeable_pair_band(
-          obs_eu, {-std::numeric_limits<double>::infinity(),
-                   std::numeric_limits<double>::infinity()});
-      if (band.usable) {
-        ATX_TRY(const CalendarPairProjection projection,
-                arb_project_calendar_svi_pair(slice, w_prev, band.lo, band.hi,
-                                              kRiskCalendarIntervals));
-        (void)projection;
-      }
-    }
-    std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
-    return Ok(std::move(curve));
+    // The quasi-explicit solver has no warm-state input. Reuse the complete
+    // cold admission path, including its necessary-parameter projection and
+    // full quoted-range density check; refitting must not bypass either gate.
+    return fit_slice_curve(cfg, obs_eu, F, T, df, w_prev, {},
+        {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()}, diag);
   }
   case VolCurveKind::C8: {
     const auto *warm = dynamic_cast<const C8Curve *>(&current);
@@ -1051,7 +1124,7 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
       }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
     if (diag != nullptr) {
       diag->n_quotes_used = static_cast<std::uint32_t>(k.size());
       diag->inner_iters_total = static_cast<std::uint16_t>(
