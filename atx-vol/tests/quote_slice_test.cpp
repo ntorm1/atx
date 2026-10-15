@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include "atx/vol/api/pricing/black76.hpp"
+
 namespace atx::vol {
 namespace {
 
@@ -15,13 +17,16 @@ std::vector<QuoteSliceQuote> flat_quotes(const QuoteSliceMarket &market, double 
   const double ratio = market.calendar_years / market.variance_years;
   for (int strike = 75; strike <= 125; strike += 5) {
     for (Side side : {Side::Call, Side::Put}) {
-      const auto price = andersen_lake(market.spot, static_cast<double>(strike),
-                                      market.variance_years, sigma, market.rate * ratio,
-                                      market.continuous_yield * ratio, side);
-      if (!price) { ADD_FAILURE() << price.error().to_string(); return {}; }
+      const auto price =
+          andersen_lake(market.spot, static_cast<double>(strike), market.variance_years, sigma,
+                        market.rate * ratio, market.continuous_yield * ratio, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return {};
+      }
       const double half_spread = std::min(0.01, *price * 0.1);
-      quotes.push_back({static_cast<double>(strike), side,
-                        *price - half_spread, *price + half_spread});
+      quotes.push_back(
+          {static_cast<double>(strike), side, *price - half_spread, *price + half_spread});
     }
   }
   return quotes;
@@ -41,13 +46,15 @@ TEST(QuoteSlice, SeparateClocksPreserveCarryAndRecoverVolatility) {
   for (const auto &row : fitted->rows) {
     EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
     EXPECT_NEAR(row.fitted_iv, 0.25, 5.0e-4);
-    if (row.admitted) { EXPECT_NEAR(row.market_iv, 0.25, 5.0e-6); }
+    if (row.admitted) {
+      EXPECT_NEAR(row.market_iv, 0.25, 5.0e-6);
+    }
   }
   const auto value = evaluate_quote_slice(*fitted, 102.5, Side::Call);
   ASSERT_TRUE(value) << value.error().to_string();
   EXPECT_NEAR(value->volatility, 0.25, 5.0e-4);
-  const auto expected = andersen_lake(100.0, 102.5, 0.4, value->volatility, 0.05, 0.01875,
-                                     Side::Call);
+  const auto expected =
+      andersen_lake(100.0, 102.5, 0.4, value->volatility, 0.05, 0.01875, Side::Call);
   ASSERT_TRUE(expected);
   EXPECT_DOUBLE_EQ(value->price, *expected);
 }
@@ -122,9 +129,9 @@ TEST(QuoteSlice, DatedCashUsesTheSameLatticeForInversionAndNewStrikeQueries) {
   config.discrete_div_steps = 101;
   std::vector<QuoteSliceQuote> quotes;
   for (int strike = 85; strike <= 115; strike += 5) {
-    const auto side = strike < 100 ? Side::Put : Side::Call;
-    const auto value = american_discrete_div_price(100.0, static_cast<double>(strike), 0.4,
-                                                  0.25, 0.05, 0.0, side, model_events, 101);
+    const auto side = strike <= 100 ? Side::Put : Side::Call;
+    const auto value = american_discrete_div_price(100.0, static_cast<double>(strike), 0.4, 0.25,
+                                                   0.05, 0.0, side, model_events, 101);
     ASSERT_TRUE(value) << value.error().to_string();
     quotes.push_back({static_cast<double>(strike), side, *value - 0.001, *value + 0.001});
   }
@@ -140,8 +147,8 @@ TEST(QuoteSlice, DatedCashUsesTheSameLatticeForInversionAndNewStrikeQueries) {
   }
   const auto value = evaluate_quote_slice(*fitted, 102.5, Side::Call);
   ASSERT_TRUE(value);
-  const auto expected = american_discrete_div_price(100.0, 102.5, 0.4, value->volatility,
-                                                    0.05, 0.0, Side::Call, model_events, 101);
+  const auto expected = american_discrete_div_price(100.0, 102.5, 0.4, value->volatility, 0.05, 0.0,
+                                                    Side::Call, model_events, 101);
   ASSERT_TRUE(expected);
   EXPECT_NEAR(value->price, *expected, 1.0e-11);
 }
@@ -160,6 +167,34 @@ TEST(QuoteSlice, InsufficientDataRetainsEveryRowAndDoesNotFabricateAFit) {
   for (const auto &row : fitted->rows) {
     EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::NoFit);
     EXPECT_TRUE(std::isnan(row.fitted_price));
+  }
+}
+
+TEST(QuoteSlice, TerminalCashCallAgreesWithIndependentEuropeanExerciseLimit) {
+  // With q=0 and r>=0, a call's only useful exercise opportunity is immediately
+  // before the terminal cash payment. Its exact value is the dividend-free
+  // Black-Scholes call. These quotes therefore do not use the lattice under
+  // test, and the recovered volatility exposes its finite-grid error.
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.0, 0.0};
+  const std::vector<CashDividend> dividends{{0.5, 4.0}};
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::DatedCash;
+  config.side_policy = QuoteSliceSidePolicy::All;
+  config.curve.kind = VolCurveKind::LinearVariance;
+  config.min_quotes = 5;
+  config.discrete_div_steps = 1001;
+  std::vector<QuoteSliceQuote> quotes;
+  for (const double strike : {90.0, 95.0, 100.0, 105.0, 110.0}) {
+    const double exact =
+        black76_price(100.0 * std::exp(0.02), strike, 0.5, 0.25, std::exp(-0.02), Side::Call);
+    quotes.push_back({strike, Side::Call, exact - 0.001, exact + 0.001});
+  }
+  auto fitted = fit_quote_slice(market, quotes, config, dividends);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  for (const auto &row : fitted->rows) {
+    ASSERT_TRUE(row.admitted);
+    EXPECT_NEAR(row.market_iv, 0.25, 2.0e-4);
   }
 }
 

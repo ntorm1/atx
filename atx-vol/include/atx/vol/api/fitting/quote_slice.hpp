@@ -75,11 +75,13 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
   InvalidObservation
 };
 enum class QuoteSliceEvaluationStatus : std::uint8_t {
-  Success, InvalidContract, NoFit, InvalidVolatility, PricingFailure
+  Success,
+  InvalidContract,
+  NoFit,
+  InvalidVolatility,
+  PricingFailure
 };
-enum class QuoteSliceFitStatus : std::uint8_t {
-  Success, InsufficientQuotes, FitFailure
-};
+enum class QuoteSliceFitStatus : std::uint8_t { Success, InsufficientQuotes, FitFailure };
 
 [[nodiscard]] const char *to_string(QuoteSliceDividendModel value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceQuoteStatus value) noexcept;
@@ -143,14 +145,14 @@ struct QuoteSliceValue {
 // insufficient data or a curve failure returns Ok with a non-Success fit_status.
 // The cold fitting path allocates O(quotes + dividends) scratch. Serving reuses
 // the immutable curve; the discrete-cash engine retains its own lattice cost.
-[[nodiscard]] Result<QuoteSliceFit> fit_quote_slice(
-    const QuoteSliceMarket &market, std::span<const QuoteSliceQuote> quotes,
-    const QuoteSliceConfig &config = {},
-    std::span<const CashDividend> calendar_dividends = {});
+[[nodiscard]] Result<QuoteSliceFit>
+fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote> quotes,
+                const QuoteSliceConfig &config = {},
+                std::span<const CashDividend> calendar_dividends = {});
 
 // Query an arbitrary new strike using exactly the fitted snapshot's clocks,
 // carry and dividend model. Errors never produce fabricated zero values.
-[[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(
-    const QuoteSliceFit &fit, double strike, Side side);
+[[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike,
+                                                           Side side);
 
 } // namespace atx::vol
