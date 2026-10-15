@@ -1,5 +1,7 @@
 # handoff-D3W-PB: ew-theme-aim-v2 in the C++ fit, the resid reference, the D2-3 deletion; D3W-S (R9 close)
 
+**Head (R10 fix round 1, D3WPB-R1):** fix `90bc1962` (four `retired_by` labels -> `P10`, two comments cite D3WPB-Q1; mirror guard 7 passed, 21 / 8) on review PARTIAL `a0c7427c`, then this records commit; lane code `460f5ba2`, pre-deletion `c044f5f6`; next: the resumed D3W-PB review (D3WPB-SEQ).
+
 Lane D3W-PB (stretch; ruling D3W-PB: merges only if APPROVE at the gate, else P10 whole), worktree `C:/atx-wt/pool-23`,
 branch `feat/p9-d3w-20261005`, continued from D3W's APPROVE SHA `f0726acb` (ruling MERGE-SHA). Report:
 `task-D3W-PB-report.md` beside this file (items, file:line, tests, teeth, identity procedure).

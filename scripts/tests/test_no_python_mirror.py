@@ -42,20 +42,20 @@ COMPOSITION = "composition fit mirror (composition review table rows 1-5b)"
 # (module, symbols, rule, C++ that decides it, retired_by). Frozen at FROZEN_AT: delete rows or symbols, never add.
 ALLOWLIST = (
     # P9 B2 retired the statistics-of-record rows (backtest_integrity.py, nav_summ.py, dsr_total.py): atx-research-eval.
-    # P9 ruling D2-3: ew-theme-aim-v2 and the theme-resid diagnostics had no C++ path at D2's merge, so the
-    # composition_*.py deletion (and with it these rows) moved to lane D3; D2 wired the C++ fit behind --engine-fit.
+    # P9 ruling D2-3 moved the composition_*.py deletion to lane D3. Ruling D3WPB-Q1 keeps these rows through P9,
+    # retired in P10 (the D2-5 precedent for horizon_stats.py): the flag-absent fit still runs the Python rules.
     ("atx-impl/tools/composition_rules.py",
      ("ew_theme_std", "ew_theme_aim_v2", "tier_weights", "member_cap", "theme_gain_weights"), COMPOSITION,
-     "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "D3"),
-    # D3 part B (lane D3W-PB) retired composition_resid.py's row: its numpy reference moved to its test. The other
-    # D3 rows wait for a fitter that builds every document from composition_fit.json (P10).
+     "atx-impl/src/strategy_ic_composition.cpp over engine combine/group_rerank.hpp", "P10"),
+    # D3 part B (lane D3W-PB) retired composition_resid.py's row: its numpy reference moved to its test. Ruling
+    # D3WPB-Q1: the other rows wait for the P10 fitter that builds every document from composition_fit.json.
     ("atx-impl/tools/composition_theme_erc.py", ("erc_shares", "theme_erc"), COMPOSITION,
-     "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "D3"),
+     "atx-impl/src/strategy_ic_theme_erc.cpp over engine combine/group_erc.hpp", "P10"),
     ("atx-impl/tools/composition_ic_shrink.py", ("shrunk_shares", "ic_shrink"), COMPOSITION,
-     "atx-impl/src/strategy_ic_shrink.cpp over engine combine/group_shrink.hpp", "D3"),
+     "atx-impl/src/strategy_ic_shrink.cpp over engine combine/group_shrink.hpp", "P10"),
     ("atx-impl/tools/fit_composition_weights.py", ("newey_west_t", "screen_v4"),
      "admission screen and its Newey-West t (composition review table row 7)",
-     "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "D3"),
+     "new in B1 (atx-engine research/admission on eval/hac.hpp); the fitter is wired to it by D2", "P10"),
     # P9 ruling D2-5: horizon_stats.py stays through P9 (its code is part of every factor record's key, so removing
     # it would move keys under pinned records): a named G-P5 exception, retired in P10.
     ("atx-impl/tools/horizon_stats.py", ("theta_weights", "ic_theta", "theta_book_returns"),
