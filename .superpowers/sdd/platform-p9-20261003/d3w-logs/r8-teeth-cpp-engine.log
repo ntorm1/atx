@@ -1,0 +1,113 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WalkForward.RefusesBeforeAnyRow:WalkForward.CliWritesTheRowsAndRefuses:MomVolman.RefusalsAndWalkForwardRows
+[==========] Running 3 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 2 tests from WalkForward
+[ RUN      ] WalkForward.RefusesBeforeAnyRow
+..\atx-engine\tests\research\research_composition_fit_test.cpp(683): error: Expected: (rows.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: walk-forward-v1: the row at decision 5 (session 1578873600000000000) is refused: ic-shrink-v1: group cap: no member of another group can take a group's excess (infeasible cap)
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(683): error: Expected: (rows.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: walk-forward-v1: the row at decision 22 (session 1580342400000000000) is refused: ic-shrink-v1: group cap: no member of another group can take a group's excess (infeasible cap)
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(683): error: Expected: (rows.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: walk-forward-v1: the row at decision 22 (session 1580342400000000000) is refused: ic-shrink-v1: group cap: no member of another group can take a group's excess (infeasible cap)
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(683): error: Expected: (rows.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: walk-forward-v1: the row at decision 3 (session 1578700800000000000) is refused: ic-shrink-v1: group cap: no member of another group can take a group's excess (infeasible cap)
+
+[  FAILED  ] WalkForward.RefusesBeforeAnyRow (9 ms)
+[ RUN      ] WalkForward.CliWritesTheRowsAndRefuses
+..\atx-engine\tests\research\research_composition_fit_test.cpp(796): error: Expected equality of these values:
+  run_main(argv, o, err)
+    Which is: 0
+  1
+the window must be expanding
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(797): error: Expected: (err.str().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(798): error: Value of: fs::exists(target)
+  Actual: true
+Expected: false
+the window must be expanding
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(797): error: Expected: (err.str().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: atx-research-composition: output must not exist: C:\Users\natha\AppData\Local\Temp\atxv-02c5631c\atx_research_composition_walk_forward\refused
+
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(798): error: Value of: fs::exists(target)
+  Actual: true
+Expected: false
+lag >= 2
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(797): error: Expected: (err.str().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: atx-research-composition: output must not exist: C:\Users\natha\AppData\Local\Temp\atxv-02c5631c\atx_research_composition_walk_forward\refused
+
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(798): error: Value of: fs::exists(target)
+  Actual: true
+Expected: false
+lag >= 2
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(797): error: Expected: (err.str().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: atx-research-composition: output must not exist: C:\Users\natha\AppData\Local\Temp\atxv-02c5631c\atx_research_composition_walk_forward\refused
+
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(798): error: Value of: fs::exists(target)
+  Actual: true
+Expected: false
+lag >= 2
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(797): error: Expected: (err.str().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: atx-research-composition: output must not exist: C:\Users\natha\AppData\Local\Temp\atxv-02c5631c\atx_research_composition_walk_forward\refused
+
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(798): error: Value of: fs::exists(target)
+  Actual: true
+Expected: false
+never fill a window
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(797): error: Expected: (err.str().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+AlreadyExists: atx-research-composition: output must not exist: C:\Users\natha\AppData\Local\Temp\atxv-02c5631c\atx_research_composition_walk_forward\refused
+
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(798): error: Value of: fs::exists(target)
+  Actual: true
+Expected: false
+refused with theme-tsmom-v1
+
+[  FAILED  ] WalkForward.CliWritesTheRowsAndRefuses (259 ms)
+[----------] 2 tests from WalkForward (269 ms total)
+
+[----------] 1 test from MomVolman
+[ RUN      ] MomVolman.RefusalsAndWalkForwardRows
+..\atx-engine\tests\research\research_composition_fit_test.cpp(901): error: Value of: fit
+  Actual: true
+Expected: false
+mom-volman-v1 takes an ew-theme-std-v1 or ic-shrink-v1
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(901): error: Value of: fit
+  Actual: true
+Expected: false
+refused beside theme-tsmom-v1 and theme-resid-v1
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(902): error: Expected: (fit.error().message().find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+composition fit: mom-volman-v1: price_momentum has no weighted member
+
+..\atx-engine\tests\research\research_composition_fit_test.cpp(901): error: Value of: fit
+  Actual: true
+Expected: false
+the role has 127 decisions; the first block needs more than 127
+
+[  FAILED  ] MomVolman.RefusalsAndWalkForwardRows (43 ms)
+[----------] 1 test from MomVolman (43 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 2 test suites ran. (313 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 3 tests, listed below:
+[  FAILED  ] WalkForward.RefusesBeforeAnyRow
+[  FAILED  ] WalkForward.CliWritesTheRowsAndRefuses
+[  FAILED  ] MomVolman.RefusalsAndWalkForwardRows
+
+ 3 FAILED TESTS

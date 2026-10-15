@@ -11,7 +11,9 @@
 //             theme_gain_weights (ew_theme_std.hpp); ic-shrink-v1 / ic-shrink-aim-v1: each member's
 //             IC = its admission train_mean (admission::mean_sharpe over its live TRAIN decisions,
 //             the screen's own function, so the value is admission.csv's bit for bit), then
-//             ic_shrink_weights (ic_shrink.hpp).
+//             ic_shrink_weights (ic_shrink.hpp); ew-theme-aim-v2 (P9 lane D3W-PB):
+//             theme_gain_weights on the members' aim gains (ew_theme_std.hpp), which reads no
+//             factor value.
 //   erc       theme-erc-v1 on the parent: within-theme shares a_k (the parent's pre-cap weights
 //             normalised inside the theme), the TRAIN sleeves r_t(d) = sum_{k in t} a_k s_k f_k(d)
 //             and their sample covariance (theme_sleeve_covariance), theme_erc_weights.
@@ -39,6 +41,7 @@
 #include "atx/engine/combine/group_shrink.hpp"
 #include "atx/engine/research/composition/ew_theme_std.hpp"
 #include "atx/engine/research/composition/ic_shrink.hpp"
+#include "atx/engine/research/composition/mom_volman.hpp"
 #include "atx/engine/research/composition/theme_erc.hpp"
 
 namespace atx::engine::research::composition {
@@ -125,7 +128,7 @@ struct FitSpecMember {
   std::optional<atx::f64> gain; // the aim rules: the member's aim gain
 };
 struct FitSpec {
-  // ew-theme-std-v1 | ew-theme-std-aim-v1 | ic-shrink-v1 | ic-shrink-aim-v1
+  // ew-theme-std-v1 | ew-theme-std-aim-v1 | ic-shrink-v1 | ic-shrink-aim-v1 | ew-theme-aim-v2
   std::string composition;
   std::vector<FitSpecMember> members;
   std::vector<std::pair<std::string,atx::f64>> tier_scores; // ew-theme-std rules: tier -> score
@@ -150,6 +153,8 @@ struct CompositionFit {
   std::vector<atx::f64> ic,shrunk,share; // ic-shrink: per member
   std::vector<atx::f64> theme_mean;      // ic-shrink: per theme, the mean IC
   std::vector<atx::u8> equal_theme;      // ic-shrink: per theme
+  std::vector<atx::f64> gains;           // ew-theme-aim-v2: per member, its aim gain (its score)
+  std::vector<atx::f64> theme_weight;    // ew-theme-aim-v2: per theme, its capped weights summed
   // theme-erc-v1 (erc_share per member, covariance per theme pair).
   bool erc{};
   std::vector<atx::f64> erc_share,covariance;
@@ -170,15 +175,14 @@ struct CompositionFit {
 // weighted members of (w_k / W) s_k f_k(d) in member order, 0 outside TRAIN, over every decision of
 // the series. The IC runner forms every block's volatility, target and scale from it
 // (strategy_ic_mom_volman.cpp). The registered parents are ew-theme-std-v1 and ic-shrink-v1, with
-// or without theme-erc-v1; the role needs lookback + lag (126 + 2) to 65536 decisions.
-inline constexpr std::string_view mom_volman_rule="mom-volman-v1";
-inline constexpr std::string_view mom_volman_theme="price_momentum";
-inline constexpr atx::usize mom_volman_min_decisions=128;   // mom_volman_lookback + mom_volman_lag
-inline constexpr atx::usize mom_volman_max_decisions=65536; // mom_volman_max_decisions
+// or without theme-erc-v1; the role needs mom_volman_min_decisions (lookback + lag, 126 + 2) to
+// mom_volman_max_decisions decisions (mom_volman.hpp: the one definition both sides read).
 
 // The fit of `spec` on `view`, whose candidate columns carry the ids `ids`. Err (InvalidArgument)
 // on an unknown composition, a member not in `ids` or listed twice, a sign other than +1, a missing
-// or extra aim gain, a tier without a score, theme-resid-v1 beside theme-erc-v1 or theme-tsmom-v1,
+// or extra aim gain, an ew-theme-aim-v2 gain that is not finite and > 0, theme-erc-v1,
+// theme-tsmom-v1, theme-resid-v1 or mom-volman-v1 on ew-theme-aim-v2 (a plain weighted blend: no
+// theme block), a tier without a score, theme-resid-v1 beside theme-erc-v1 or theme-tsmom-v1,
 // mom-volman-v1 on an aim rule or beside theme-tsmom-v1 or theme-resid-v1, mom-volman-v1 without a
 // weighted price_momentum member or on a series outside its decision bounds, or any refusal of the
 // rule functions.
@@ -217,7 +221,9 @@ struct WalkForwardRow {
   CompositionFit fit;           // the window's fit (fit.weights: per member, the spec's order)
 };
 // Err (InvalidArgument) on a window other than expanding, lag < 2, step 0, min_decisions < 2,
-// theme-tsmom-v1 or theme-resid-v1 in the spec (their own TRAIN-fitted schedule and order), a
+// theme-tsmom-v1 or theme-resid-v1 in the spec (their own TRAIN-fitted schedule and order),
+// ew-theme-aim-v2 (P9 lane D3W-PB: its weights read no factor value, only the spec's whole-TRAIN
+// aim gains, so every row would be the full fit), a
 // series whose TRAIN decisions never fill a window, more than walk_forward_max_rows rows, or a row
 // whose fit refuses (the message names its decision index and session). A row's fit records no
 // mom-volman-v1 sleeve (that schedule is fitted on the whole TRAIN window: the full fit's).

@@ -1,0 +1,7 @@
+# D2-3 deletion (trial apply on 703ac03a, blobs pb-deletion-blobs.txt): the five fitter pytest files; ATX_RESEARCH_*_EXE = build-equity/bin (p9-d3wpb-a, source 703ac03a; the deletion changes no C++)
+...................................... [ 21%]
+........................................................... [ 53%]
+................................................................ [ 89%]
+...................                     [100%]
+180 passed, 88 subtests passed in 172.48s (0:02:52)
+exit=0

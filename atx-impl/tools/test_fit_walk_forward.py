@@ -543,8 +543,10 @@ class MomVolmanEngineFit(unittest.TestCase):
 
 
 class WeightsV3(unittest.TestCase):
-    """weights_v3 on a small document: every library id per row, a row-weighted zero-weight member's theme added to
-    theme_standardise (its theme must be a top-level weighted one), signs required."""
+    """weights_v3 on a small document: every library id per row, a row-weighted zero-weight member's fitted theme
+    added to theme_standardise. P9 lane D3W-PB (review D3W S-8): no copy of the IC runner's refusal (a lifted
+    candidate's sign and theme) is kept here; the runner refuses such a file before any payload
+    (WeightsV3.RefusalsPrecedeAnyPayloadOrOutput)."""
 
     DOC = {"schema": "atx.dsl-composition-weights/v2", "signs": {"a": 1, "b": 1, "c": 1},
            "weights": {"a": 0.5, "b": 0.5, "c": 0.0, "d": 0.0},
@@ -574,14 +576,14 @@ class WeightsV3(unittest.TestCase):
         plain = cef.weights_v3(self.DOC, self.rows([[0.5, 0.5, 0.0]]))
         self.assertEqual(plain["theme_standardise"]["themes"], {"a": "x", "b": "y"})  # nothing to add
 
-    def test_refusals(self):
-        with self.assertRaises(fcw.FitError) as caught:
-            cef.weights_v3(self.DOC, self.rows([[0.5, 0.0, 0.5]], themes=("x", "y", "z")), fcw.FitError)
-        self.assertIn("a row weights c of theme z, which no top-level weighted candidate has", str(caught.exception))
+    def test_the_runner_owns_the_lifted_candidate_refusal(self):
+        """The documents the runner refuses are written as the C++ rows give them (the theme mapping only)."""
+        other = cef.weights_v3(self.DOC, self.rows([[0.5, 0.0, 0.5]], themes=("x", "y", "z")))
+        self.assertEqual(other["theme_standardise"]["themes"], {"a": "x", "b": "y", "c": "z"})
         unsigned = dict(copy.deepcopy(self.DOC), signs={"a": 1, "b": 1})
-        with self.assertRaises(fcw.FitError) as caught:
-            cef.weights_v3(unsigned, self.rows([[0.5, 0.0, 0.5]]), fcw.FitError)
-        self.assertIn("without a composition sign: ['c']", str(caught.exception))
+        got = cef.weights_v3(unsigned, self.rows([[0.5, 0.0, 0.5]]))
+        self.assertEqual(got["signs"], {"a": 1, "b": 1})
+        self.assertEqual(got["walk_forward"]["rows"][0]["weights"], {"a": 0.5, "b": 0.0, "c": 0.5, "d": 0.0})
 
 
 @unittest.skipUnless(os.environ.get("ATX_RESEARCH_ADMISSION_EXE") and os.environ.get("ATX_RESEARCH_COMPOSITION_EXE"),

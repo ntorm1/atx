@@ -26,19 +26,21 @@
 // (IcComposition::schedule_theme_masses): the block is the theme_schedule block with rule
 // mom-volman-v1, so the two schedules exclude each other. It rides on a theme_standardise rule with
 // rerank true and is refused with theme_residualise.
+// The registered constants are defined once, in the engine (P9 lane D3W-PB, review D3W S-2): the
+// C++ composition fit records the sleeve against the same bounds.
 #include <span>
-#include <string_view>
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/research/composition/mom_volman.hpp"
 
 namespace atx::impl::strategy {
-inline constexpr std::string_view mom_volman_rule = "mom-volman-v1";
-inline constexpr std::string_view mom_volman_theme = "price_momentum";
-inline constexpr atx::usize mom_volman_lookback = 126;  // BSC's six months of daily returns
-inline constexpr atx::usize mom_volman_lag = 2;         // f(d) is realised at d + 2
-inline constexpr atx::usize mom_volman_step = 21;       // one month of decisions
-inline constexpr atx::usize mom_volman_max_decisions = 65536;
+using atx::engine::research::composition::mom_volman_rule;
+using atx::engine::research::composition::mom_volman_theme;
+using atx::engine::research::composition::mom_volman_lookback;
+using atx::engine::research::composition::mom_volman_lag;
+using atx::engine::research::composition::mom_volman_step;
+using atx::engine::research::composition::mom_volman_max_decisions;
 
 struct MomVolmanBlock {
   atx::usize decision{};  // j_b, an index into the sleeve
