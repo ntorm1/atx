@@ -1,0 +1,1 @@
+{"path":"build-equity/waves/fx-w1/wave-result.json","ord":0,"phase":"nav","run_dir":"build-equity/fx-nav-run1","outcome":"completed","exit_code":0,"seconds":12.345678901234567,"peak_mib":50,"executable_sha256":"9999999999999999999999999999999999999999999999999999999999999999"}

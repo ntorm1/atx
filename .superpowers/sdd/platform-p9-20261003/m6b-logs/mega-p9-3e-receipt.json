@@ -1,0 +1,40 @@
+{
+    "Source":  "06dc9e5a1629988167810f3b1c822bbef3020dcf",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "06dc9e5a1629988167810f3b1c822bbef3020dcf-dirty",
+    "Jobs":  4,
+    "FreeMiB":  5325,
+    "CommitMiB":  8831,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-research-store",
+                    "atx-engine-research-catalog-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  74.2308147,
+    "CompiledTUs":  48,
+    "Links":  7,
+    "Tag":  "p9-3e",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b"
+                                                       },
+                        "atx-research-store":  {
+                                                   "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-store.exe",
+                                                   "Sha256":  "a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73"
+                                               },
+                        "atx-engine-research-catalog-tests":  {
+                                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+                                                                  "Sha256":  "b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a"
+                                                              }
+                    }
+}

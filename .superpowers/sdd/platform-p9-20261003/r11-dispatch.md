@@ -197,3 +197,123 @@ AL-CLOCK fix head (iff `Task AL-CLOCK: APPROVE at <sha>`), SQL3 item 5 (iff revi
 head (iff APPROVE; tests only), SQL4 (iff APPROVE; LAST; the real X-5 u / w identity and the marginal shard identity
 per its report). Records as in M5; `handoff-root-m6.md`. Then the gate (`root-gate-brief.md`, GATE-1) as the PM's
 next prompt.
+
+## WAVE REVIEW (GATE-1 step 8; fresh reviewers by area; WAVE-REV-EARLY; dispatched 2026-10-15 ~12:10)
+
+Range: BASE `3c9eeb01` (the wave-1 gate head) .. HEAD `d51d011e` (root after M6: every wave-2 + wave-3 merge except
+SQL4). If SQL4 merges at M6b, the IC reviewer (continued) reviews `d51d011e..<M6b head>` as an addendum to its file;
+the other areas are unaffected by SQL4 (its files are IC / store only; the store reviewer gets the addendum too).
+Five reviewers, one per area, each a fresh Opus agent, read-only in `C:/atx-wt/pool-2` (NO git write there; NO build:
+root's gate and SQL4 own the host, HOST-4; Python tests allowed, own `--basetemp` under the session scratchpad; one own
+Python mutation per area if cheap, restored, TEETH-CRLF form; C++ claims proved from the lanes' logs and receipts under
+ROOT-SDD `*-logs/`, `build-equity/mega-*-receipt.json`, the lane reports and reviews in the pools' sprint dirs). Read
+code by SHA (`git show d51d011e:<path>`, `git diff 3c9eeb01..d51d011e -- <path>`), never from the working tree (root
+may be merging under you).
+
+Area precedence for a file in two areas (the first listed reviews it; the next cites it):
+1. **fields** (`wave-review-fields.md`): `atx-engine/src/research/fields*`, `atx-engine/include/atx/research/fields*`,
+   `atx-engine/src/research/holdings*`, `atx-engine/tests/research/*fields*`, `*holdings*`, `atx-engine/tests/fixtures/`,
+   the field registry rows under `scripts/specs/` (lanes A4, T2, ABS's field side). Judge PIT / seal safety first.
+2. **store / catalog** (`wave-review-store.md`): `atx-core/src/db`, `atx-core/include/atx/db*`, every `*store*` /
+   `*catalog*` TU under `atx-engine/` and `atx-impl/`, `scripts/research_store*.py`, `scripts/tests/test_research_store*`,
+   `classes.json` and its guard (lanes SQL2, SQL3). Judge: the hook never changes an exit code or a JSON byte; one
+   ingest per write; the catalog digest is reproducible; SQL2-CLS classes.
+3. **NAV / book C++** (`wave-review-nav.md`): `atx-impl/src/book/`, `atx-impl/src/strategy_nav_v7.cpp`,
+   `strategy_mv_aim.cpp`, `strategy_mv_target.cpp`, `strategy_nav_replay.cpp`, `atx-engine/src/book`,
+   `atx-engine/include/atx/book*`, `atx-engine/tests/book`, `atx-impl/tests/` for those, `scripts/specs/p9/rules/`
+   (lanes C3, AL-CLOCK, COV-MV, B2's NAV side, D3's rules). Judge: flag-absent byte identity claims backed by evidence;
+   no hot-path allocation per decision; the registrations promise only figures the exes print.
+4. **IC / composition C++** (`wave-review-ic.md`): the rest of `atx-engine/src/research/`,
+   `atx-engine/include/atx/research/`, `atx-impl/src/strategy_ic*`, `atx-impl/src/research/`, `eval_report.cpp`,
+   `atx-engine/tests/research/` not claimed by fields (lanes D3W, D3W-PB, ABS, SIGN, B2's eval verb, OD3P's C++ side).
+   Judge: the C++ fit / composition / screen identities vs their Python predecessors (evidence, not claims); the
+   deletion commits removed the Python mirror and its G-P5 row together; `/W4 /WX`.
+5. **Python wave / cycle** (`wave-review-python.md`): `scripts/*.py` not claimed above, `scripts/tests/`,
+   `atx-impl/tools/`, `atx-impl/strategies/`, `atx-engine/tools/` (lanes B2, C3b, D3, E2 follow-ups, OD3P, SQL3's
+   call lines, SIGN's stage call). Judge: no new Python mirror of a C++ rule; the stage chain's contracts; the n37 test's
+   1e-12 form (B2-N37); no look-ahead in the cycle (availability clocks).
+
+Every reviewer: `r7-review-dispatch.md` (contract), `briefs/review-template.md` (form), `r8-review-notes.md` (traces),
+the standing contract files, the area's lane reports / reviews in the pools (pool map: C3b 15, D3W / D3W-PB 23, ABS 28,
+D3 20, OD3P 21, B2 14, SQL3 13, SIGN 29, A4 27, AL-CLOCK 30 (and 8 frozen), COV-MV 31 (and 24 frozen), T2 22, E2 17),
+`root-wave3-merge-report.md` (root's checks per merge), the ledger's rulings for the lane ids. Blind: no 2020-2023
+statistic in any record or message. Findings in the template's form: Required (I = incorrect, M = missing; each with
+file:line, the failing input, the fix) and Suggested; the verdict for the area (APPROVE / CHANGES_REQUIRED). The file
+goes into ROOT-SDD as `wave-review-<area>.md`, UNCOMMITTED (the gate root agent commits the five files with
+`git add -f`); write it with the editor tool. Required findings are fixed by root as slips or returned to a lane
+before any cell (GATE-1); a Required in a merged lane's code that no slip can fix is a gate finding, not a revert.
+
+Hand-back under 200 words: STATUS, verdict, files reviewed (count), Required / Suggested (one line each), tests run
+with counts, own mutation result, file path, any permission refusal (exact command), open questions.
+
+## ROOT GATE (GATE-1; one root agent or a chain; the PM's prompt names the gate head and the next free tag)
+
+`root-gate-brief.md` is the brief (steps 0-9); this section adds the facts of RESUME 11. Read also
+`handoff-root-m6.md` (and `handoff-root-m6b.md` if SQL4 merged) "What the next root group must know" and "Exes
+(EXE-CUR)", `r11-dispatch.md` "WAVE REVIEW", the five `wave-review-<area>.md` files (step 8 ran EARLY, WAVE-REV-EARLY;
+you COMMIT them with `git add -f` at step 0 and act on their "What root must do before any cell" lists: a Required =
+a root slip or a BLOCKED hand-back before any cell), the ledger from "- RESUME 11" to the end.
+
+- Lanes in the head: waves 2 and 3 as `root-wave3-merge-report.md` lists them through M6 (B2 + fix 2, T2, C3b, D3W,
+  D3W-PB, ABS, D3, OD3P + follow-up, AL-CLOCK first APPROVE + fix 1, COV-MV + fix 1, SIGN, A4 pre-flip `6dab6948`,
+  SQL2 rows, SQL3 + item 5). NOT in the head (P10 whole; nothing of them in P9): A4's flips and fix-1 tests
+  (A4-P10-FLIPS, A4-FIX1-P10: Python stays the producer of record for `ftd_shares_ratio21` and
+  `regsho_threshold_days63`; Y-F0's fields manifest `26fee5ce` unchanged); SQL4 unless the prompt says it merged at M6b.
+- Step 1 exes: the full set at the gate head, Debug (`equity-dev`) and Release (`equity-rel`, `-Canary`), 0 warnings,
+  single-use tags from the prompt's next free tag; receipts per exe. The Debug `p9-3d` NAV exe and `p9-3b` IC exe are
+  superseded by these builds. EXE-FREEZE from the re-pin (step 6).
+- Step 2 suites: the known-red set is EMPTY (B2 fix 2 merged); the Release
+  `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned` named skip stays (OD5-2); any other red is attributed by
+  merge commit (ROOT-1 rows of `root-wave3-merge-report.md`) and stops the gate for that lane (BLOCKED). Whole
+  `scripts/tests` at seeds 0 and 1; `atx-engine/tools/test_stage_chain.py` alone; `atx-impl/tools`;
+  `atx-impl/strategies`; each its own invocation; `-p no:cacheprovider`, own `--basetemp`.
+- Step 3 identity: the parents' flag-absent identity with EVERY new flag absent (`mv-aim-v1`, `info-clock-rate-v1`,
+  C3's grid, the absent-members capability, the sign verb's stage call, SQL3's hook off, SQL4's index flags if merged);
+  AL-CLOCK's procedure (`task-AL-CLOCK-report.md` "Flag-absent identity procedure"); D3-Q1's engine-fit identity on the
+  current Y-F0 TRAIN fit (`--engine-fit` weights byte-identical to the Python fit's: then P9-F0h is produced with
+  `--engine-fit`; else P9-W lapses, PRE-35, and the difference is a finding); the gate greps (D3-Q2, D3-S1);
+  COMPOSE-1's parse check of `mv-aim-v1` + `info-clock-rate-v1` together on the tiny world (a refusal lapses P9-MV,
+  disclosed before any read); the golden `0x889874a3b9b29c55` at 1 and 4 workers; the canaries.
+- Step 4 P9-B0: substitution list first (committed); R-2, Y-F0, Y-1 re-based on the Release exes (Y-1 on the Release
+  v1.1 store `build-equity/p9-m2i-dcov-v11`, PRE-29); `--ann-mean-gross` on every reference; `--info-clock-print` on
+  Y-F0 and its pair (AL-CLOCK is in); bounded runner; READ NO STATISTIC; the identity-bridge flag line on every print
+  (OD5-1).
+- Step 6 re-pin: `exes.eval` and every exe's SHA-256; the W1-I2 re-pin reads the registration SHA `7801c198...` of
+  `info-clock-rate-v1.json`; COVMV-S2 S-b: iff `scripts/specs/p9/rules/mv-aim-v1.json` is not yet pinned by a ledger
+  line, golden or prereg SHA, root edits its `printed_only` sentence in the re-pin commit (else PRE-40 form: left,
+  stated); MV-FLAG-P0 is NOT here (it is the OD-3 P0 step).
+- Step 7: the store step (M2A-4, SQL3-2: the catalog run writes to a root run dir, never `build-equity/research-store/`
+  unless the brief's catalog step says so: then say so), the scoreboard, G-P ticks (G-P1 .. G-P9, G-P11), the G-P10
+  print from the merged tree ((d) PARTIAL "three writers hooked, the stage record's side files not", (e) landed for
+  `atx.run-store/v1`; the store reviewer's table in `wave-review-store.md`), the CRT record, rho of the P9 pairs (B2-13).
+- Step 9 records: `root-gate-report.md`, `integration-log.md`, the round-2b-ii facts by Appendix IV item number (incl.
+  item 16's registration SHA `7801c198...`, the A4-Q2 case as A4-P10-FLIPS, ALCLOCK-S2 S-A, COVMV-S2 S-b, SIGN-SUBST,
+  D3WPB-Q2, the deferred-suite cells now run), `handoff-root-gate.md` (code head, docs head, the exe table, the
+  reference dirs, known-red set, next free tag, what the cells agent must know). The ledger committed as it stands.
+- Host: your builds have priority (HOST-4); foreign builds outside `C:\atx-wt\` ignored (HOST-5); ENV-1; the memory
+  gate of `research-build.ps1`. If you run low on context: finish the current step to a committed state, write
+  `handoff-root-gate-<n>.md` with "Exact next step", report DONE_WITH_CONCERNS; the PM chains a fresh root agent.
+
+### ROOT GATE: rulings from the whole-wave review (RESUME 11, 2026-10-15 ~12:50; binding; full text in the ledger)
+
+- Step 0 slips (one commit each, before step 1's builds; guard before / after; store suite; named tests): STORE-M1
+  (`atx-impl/strategies` into the classes guard's `PY_DIRS`; every literal the extended guard finds registered in
+  `classes.json` by the table's precedent, class stated; STORE-S S-1's catch-all unit case iff under 20 lines);
+  IC-S (the four G-P5-invisible rule pairs into `FROZEN_PAIRS` iff that only pins their bytes and the guard stays
+  green; else G-P5 PARTIAL in the report, P10 retirement). Commit the five `wave-review-<area>.md` files (`git add -f`).
+- Step 1: GATE-EXES: the exe set includes `atx-research-composition` and `atx-research-admission` (Debug and
+  Release, receipts, the re-pin table; EXE-FREEZE covers them).
+- Step 2: GATE-COVDIFF: `cov-diff --legacy` on the three container stores `p9-m2i-dcov-v11`, `p9-m2i-dcov-covv1`,
+  `p9-m2d-cov-risk-container` (exit 0 each, recorded), `v8-risk-lo3-v10`'s identity cited from the M2d record; plus
+  a read-only hand check of each store's manifest `files` SHA-256 against the bytes on disk.
+- Step 3: D3-Q1a: the engine-fit identity strips `provenance.engine_fit` from both weights files (canonical JSON, SHA-256
+  of the stripped documents) and compares the two admission files whole; the tool and its output committed.
+  COMPOSE-1's fake-store parse check of `mv-aim-v1` + `info-clock-rate-v1` together stays required (the NAV reviewer's
+  parse probes found no flag conflict; the store-backed run is the gate's).
+- Step 4 / cells: PRE-MVX: P9-X's parent is P9-F0h (one `--risk-model`, the v1.1 store, B.7); P9-V pairs with P9-X;
+  P9-F = P9-X's book if accepted; stated in the round-2b-ii facts (B.7 "Parent", B.8, E). NAV-2STORE is P10.
+- Step 6 re-pin: COVMV-S2 S-b + NAV-S S-2: iff `mv-aim-v1.json` is not yet pinned, root edits its `printed_only` /
+  "ex-ante" sentence to name only what the exes print (else PRE-40 form: left, stated).
+- Step 7: G-P10 (e) "landed" iff the extended guard is green; (d) PARTIAL as M6 states; the catalog record states the
+  `classes.json` SHA by hand (STORE-S S-4).
+- Fields area: APPROVE, nothing for root. Python area: as its file says (dispatched 12:10; read it at step 0).

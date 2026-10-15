@@ -781,3 +781,14 @@ the session scratchpad `root-gate0/`). Store exe p9-2r `d8a500d8` = receipt at s
 | PY-S S-6 | none | - | paths located, command lines written (`handoff-root-gate0.md`) | no run (the gate's scoreboard step) |
 
 Next free build tag **p9-3e** (unchanged). Known-red set: **EMPTY**; no new red.
+
+### M6b (RESUME 11): SQL4, STOPPED at OWNER STOP 11 after the merge and its build, 2026-10-15
+
+Start code `7320e1b9`, docs `fb566b44`. Code head **`06dc9e5a`**. Logs `m6b-logs/`. Trial ledger 133 lines `27e40f9f`
+at start and at the stop; `build-equity/research-store/` absent. Detail and the exact next step: `handoff-root-m6b.md`.
+
+| lane | lane head | merge commit | conflicts | build tag (targets) | warnings | gtests | pytest | identity / root items |
+|---|---|---|---|---|---|---|---|---|
+| SQL4 | `15f51e62` (APPROVE, first review `44a76937`, 0 Required, 9 Suggested; code `c5df575d`) | `06dc9e5a` (`44a76937`, = recompute `b5b4eec9`) | 0 | **p9-3e** equity-dev; IC exe, IC tests, store exe, catalog tests (48 TUs / 7 links) | 0 | **not run** (STOP 11) | **not run** | tripwire test sources untouched, no pin line, no new literal, SQL-11 grep clean (**hold**); X-5 pre-merge references made (w, u; p9-3b exe); fixture catalog pre-merge dump made (`d32f7655...4e69`); post-merge identity, marginal, ledger verify, digest cause **not run** |
+
+Next free build tag **p9-3f**. Known-red set: EMPTY as of GATE-0; the merged tree's suites have not run.
