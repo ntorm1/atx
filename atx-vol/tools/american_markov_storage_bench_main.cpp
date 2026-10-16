@@ -147,9 +147,11 @@ Json describe(const AmericanMarkovModel &model) {
   std::size_t expanded_states = 0;
   std::set<const double *> state_blocks;
   std::set<const AmericanMarkovTransitionRow *> row_blocks;
+  std::set<const AmericanMarkovResolventFactor *> factor_blocks;
   std::set<std::pair<std::size_t, std::uint64_t>> diffusion_keys;
   std::size_t physical_states = 0;
   std::size_t physical_rows = 0;
+  std::size_t physical_factors = 0;
   for (const auto &layer : model.layers()) {
     hash.append(layer.calendar_time);
     hash.append(layer.variance_time);
@@ -168,8 +170,14 @@ Json describe(const AmericanMarkovModel &model) {
     hash.append(transition.volatility);
     hash.append(transition.cash_dividend);
     hash.append(transition.rows().size());
-    if (row_blocks.insert(transition.rows().data()).second) physical_rows += transition.rows().size();
-    if (transition.kind == AmericanMarkovStepKind::Diffusion) {
+    if (!transition.rows().empty() && row_blocks.insert(transition.rows().data()).second) {
+      physical_rows += transition.rows().size();
+    }
+    if (!transition.resolvent_factors().empty() &&
+        factor_blocks.insert(transition.resolvent_factors().data()).second) {
+      physical_factors += transition.resolvent_factors().size();
+    }
+    if (transition.kind != AmericanMarkovStepKind::CashDividend) {
       diffusion_keys.emplace(transition.interval_index,
                              std::bit_cast<std::uint64_t>(transition.variance_step));
     }
@@ -177,12 +185,23 @@ Json describe(const AmericanMarkovModel &model) {
       for (const auto destination : row.destination) hash.append(std::uint64_t{destination});
       for (const double probability : row.probability) hash.append(probability);
     }
+    // Leave explicit-mode fingerprints unchanged for baseline replay.
+    for (const auto &factor : transition.resolvent_factors()) {
+      hash.append(factor.forward_input_weight);
+      hash.append(factor.backward_input_weight);
+    }
   }
   return { {"operator_fingerprint", std::to_string(hash.value)},
            {"expanded_state_values", expanded_states},
            {"expanded_transition_rows", model.diagnostics().stored_rows},
            {"physical_state_values", physical_states}, {"physical_transition_rows", physical_rows},
            {"state_blocks", state_blocks.size()}, {"row_blocks", row_blocks.size()},
+           {"physical_resolvent_factors", physical_factors},
+           {"factor_blocks", factor_blocks.size()},
+           {"transition_work", model.diagnostics().transition_work},
+           {"max_probability_error", model.diagnostics().max_probability_sum_error},
+           {"max_relative_mean_error", model.diagnostics().max_relative_mean_error},
+           {"max_forward_mass_error", model.diagnostics().max_forward_mass_error},
            {"distinct_interval_variance_step_bits", diffusion_keys.size()},
            {"transitions", model.transitions().size()},
            {"terminal_zero_probability", model.diagnostics().terminal_zero_probability},
@@ -193,23 +212,51 @@ double elapsed_us(Clock::time_point start) {
   return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
 }
 
-Json run(const Fixture &fixture, std::size_t repetitions) {
-  auto grid = make_american_markov_sinh_grid(100.0, {129, 4.0, fixture.width, 1025});
+Json run(const Fixture &fixture, std::size_t repetitions,
+         AmericanMarkovDiffusionMethod method, std::size_t steps,
+         std::size_t nodes, std::size_t upper) {
+  auto grid = make_american_markov_sinh_grid(
+      100.0, {nodes, static_cast<double>(upper), fixture.width, 1025});
   if (!grid) throw std::runtime_error(grid.error().to_string());
   std::vector<double> compile_times;
   std::optional<AmericanMarkovModel> model;
+  AmericanMarkovConfig config;
+  config.diffusion_method = method;
+  config.max_calendar_step = 1.0 / static_cast<double>(steps);
+  config.max_variance_step = config.max_calendar_step;
   for (std::size_t repeat = 0; repeat < repetitions; ++repeat) {
     const auto start = Clock::now();
-    auto compiled = compile_american_markov({100.0, fixture.intervals, grid->states, {}});
+    auto compiled = compile_american_markov({100.0, fixture.intervals, grid->states, config});
     compile_times.push_back(elapsed_us(start));
     if (!compiled) throw std::runtime_error(compiled.error().to_string());
     model = std::move(*compiled);
   }
   Json out = describe(*model);
   out["fixture"] = fixture.name;
+  out["spot"] = 100.0;
+  out["width"] = fixture.width;
+  out["grid_nodes"] = nodes;
+  out["upper_multiple"] = upper;
+  out["max_clock_step"] = config.max_calendar_step;
+  out["diffusion_method"] = method == AmericanMarkovDiffusionMethod::ExplicitEuler
+                                 ? "explicit_euler" : "variance_resolvent";
+  out["intervals"] = Json::array();
+  for (const auto &interval : fixture.intervals) {
+    Json item{{"calendar_end", interval.calendar_end}, {"variance_end", interval.variance_end},
+              {"rate", interval.rate}, {"continuous_yield", interval.continuous_yield},
+              {"volatility", interval.volatility}, {"cash_at_end", interval.cash_dividend_at_end}};
+    if (!interval.local_volatility.empty()) {
+      item["local_volatility"] = Json::array();
+      for (const auto &node : interval.local_volatility) {
+        item["local_volatility"].push_back({node.log_state_over_spot, node.volatility_multiplier});
+      }
+    }
+    out["intervals"].push_back(std::move(item));
+  }
   out["compile_us"] = compile_times;
   const std::array strikes{80.0, 90.0, 95.0, 99.5, 99.9, 100.0,
                            100.1, 100.5, 105.0, 110.0, 120.0};
+  out["strikes"] = strikes;
   AmericanMarkovWorkspace scalar;
   AmericanMarkovBatchWorkspace batch;
   if (!scalar.prepare(*model) || !batch.prepare(*model, strikes.size())) {
@@ -271,18 +318,44 @@ int main(int argc, char **argv) {
     ::operator delete(aligned, std::align_val_t{64});
     if (calibration_count != 2) throw std::runtime_error("allocation counter calibration failed");
     std::size_t repetitions = 1;
-    if (argc == 3 && std::string_view(argv[1]) == "--repetitions") {
-      const std::string_view input(argv[2]);
-      const auto [end, error] = std::from_chars(input.data(), input.data() + input.size(), repetitions);
-      if (error != std::errc{} || end != input.data() + input.size() ||
-          repetitions == 0 || repetitions > 100) {
-        throw std::invalid_argument("repetitions must be in [1,100]");
+    std::size_t steps = 52;
+    std::size_t nodes = 129;
+    std::size_t upper = 4;
+    auto method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+    for (int i = 1; i < argc; i += 2) {
+      if (i + 1 >= argc) throw std::invalid_argument("each option requires a value");
+      const std::string_view option(argv[i]);
+      const std::string_view input(argv[i + 1]);
+      if (option == "--method") {
+        if (input == "explicit") method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+        else if (input == "resolvent") method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+        else throw std::invalid_argument("method must be explicit or resolvent");
+      } else if (option == "--repetitions" || option == "--steps" ||
+                 option == "--nodes" || option == "--upper") {
+        std::size_t parsed = 0;
+        const auto [end, error] =
+            std::from_chars(input.data(), input.data() + input.size(), parsed);
+        const std::size_t minimum = option == "--nodes" ? 3U : option == "--upper" ? 2U : 1U;
+        const std::size_t maximum = option == "--repetitions" ? 100U : option == "--nodes" ? 1025U
+                                                        : option == "--upper" ? 64U : 4096U;
+        if (error != std::errc{} || end != input.data() + input.size() ||
+            parsed < minimum || parsed > maximum) {
+          throw std::invalid_argument(
+              "repetitions[1,100], steps[1,4096], nodes[3,1025], upper[2,64]");
+        }
+        if (option == "--repetitions") repetitions = parsed;
+        else if (option == "--steps") steps = parsed;
+        else if (option == "--nodes") nodes = parsed;
+        else upper = parsed;
+      } else {
+        throw std::invalid_argument(
+            "options: --repetitions N --steps N --nodes N --upper N --method explicit|resolvent");
       }
-    } else if (argc != 1) {
-      throw std::invalid_argument("usage: american-markov-storage-bench [--repetitions N]");
     }
     Json results = Json::array();
-    for (const auto &fixture : fixtures()) results.push_back(run(fixture, repetitions));
+    for (const auto &fixture : fixtures()) {
+      results.push_back(run(fixture, repetitions, method, steps, nodes, upper));
+    }
     std::cout << Json{{"schema", 1}, {"repetitions", repetitions},
                       {"cpp_allocation_counter_calibration", calibration_count},
                       {"cpp_allocation_scope", "calling thread ordinary and aligned operator new"},

@@ -46,6 +46,11 @@ struct AmericanMarkovInterval {
 inline constexpr std::size_t kAmericanMarkovMaxStates = 4097;
 inline constexpr std::size_t kAmericanMarkovMaxTransitions = 65536;
 inline constexpr std::size_t kAmericanMarkovMaxStoredRows = 8000000;
+inline constexpr std::size_t kAmericanMarkovMaxTransitionWork = 16000000;
+// Observed numerical action residual ceiling, NOT a rigorous pricing error bound.
+inline constexpr double kAmericanMarkovResolventMaxActionError = 1.0e-12;
+
+enum class AmericanMarkovDiffusionMethod : std::uint8_t { ExplicitEuler, VarianceResolvent };
 
 struct AmericanMarkovConfig {
   // Used only when the caller supplies no grid. The generated uniform grid
@@ -60,6 +65,13 @@ struct AmericanMarkovConfig {
   std::size_t max_stored_rows = 1000000;
   // Counts local-vol nodes plus sampled state volatilities over all intervals.
   std::size_t max_stored_volatility_values = 1000000;
+  // ExplicitEuler retains CFL subdivision. VarianceResolvent uses positive
+  // (I-hQ)^-1 variance evolution with deterministic calendar carry/discount and
+  // exercise layers. This is a different finite Bermudan approximation.
+  AmericanMarkovDiffusionMethod diffusion_method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+  // Logical state visits per transition action: N explicit/cash, 2N resolvent.
+  // Default permits every formerly valid explicit expanded-row configuration.
+  std::size_t max_transition_work = kAmericanMarkovMaxStoredRows;
 };
 
 struct AmericanMarkovSpec {
@@ -71,7 +83,8 @@ struct AmericanMarkovSpec {
   AmericanMarkovConfig config;
 };
 
-enum class AmericanMarkovStepKind : std::uint8_t { Diffusion, CashDividend };
+enum class AmericanMarkovStepKind : std::uint8_t { Diffusion, CashDividend, VarianceResolvent };
+enum class AmericanMarkovTransitionAction : std::uint8_t { Backward, Forward };
 
 class AmericanMarkovModel;
 
@@ -80,6 +93,14 @@ class AmericanMarkovModel;
 struct AmericanMarkovTransitionRow {
   std::array<std::uint32_t, 3> destination{};
   std::array<double, 3> probability{};
+};
+
+// Normalized positive Thomas factors. A backward action performs a forward
+// convex sweep with alpha, then a backward convex sweep with beta. The transpose
+// reverses those same two compositions; no dense transition matrix is stored.
+struct AmericanMarkovResolventFactor {
+  double forward_input_weight = 1.0;  // alpha
+  double backward_input_weight = 1.0; // beta
 };
 
 struct AmericanMarkovLayer {
@@ -111,10 +132,24 @@ struct AmericanMarkovTransition {
     return rows_ ? std::span<const AmericanMarkovTransitionRow>(*rows_)
                  : std::span<const AmericanMarkovTransitionRow>{};
   }
+  [[nodiscard]] std::span<const AmericanMarkovResolventFactor> resolvent_factors() const noexcept {
+    return factors_ ? std::span<const AmericanMarkovResolventFactor>(*factors_)
+                    : std::span<const AmericanMarkovResolventFactor>{};
+  }
+  [[nodiscard]] std::size_t source_state_count() const noexcept {
+    return kind == AmericanMarkovStepKind::VarianceResolvent ? resolvent_factors().size()
+                                                            : rows().size();
+  }
+  [[nodiscard]] std::size_t target_state_count() const noexcept { return target_states_; }
+  [[nodiscard]] std::size_t rollback_work() const noexcept {
+    return source_state_count() * (kind == AmericanMarkovStepKind::VarianceResolvent ? 2U : 1U);
+  }
 
 private:
   friend Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &);
   std::shared_ptr<const std::vector<AmericanMarkovTransitionRow>> rows_;
+  std::shared_ptr<const std::vector<AmericanMarkovResolventFactor>> factors_;
+  std::size_t target_states_ = 0;
 };
 
 struct AmericanMarkovIntervalData {
@@ -130,7 +165,8 @@ struct AmericanMarkovIntervalData {
 struct AmericanMarkovDiagnostics {
   std::size_t diffusion_steps = 0;
   std::size_t cash_steps = 0;
-  // Logical expanded row count: still used for ALL row/work resource limits.
+  // Logical expanded row count: N source states per transition, independent
+  // of representation. Row limits use this count; two-pass work is separate.
   std::size_t stored_rows = 0;
   std::size_t max_states = 0;
   std::size_t stored_volatility_values = 0;
@@ -146,19 +182,32 @@ struct AmericanMarkovDiagnostics {
   std::size_t state_grid_blocks = 0;
   std::size_t physical_transition_rows = 0;
   std::size_t transition_row_blocks = 0;
+  std::size_t transition_work = 0;
+  std::size_t resolvent_steps = 0;
+  std::size_t physical_resolvent_factors = 0;
+  std::size_t resolvent_factor_blocks = 0;
+  double max_forward_mass_error = 0.0;
 };
 
 class AmericanMarkovWorkspace;
 
 [[nodiscard]] Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &spec);
+// Undiscounted transition action: Backward computes P*f, Forward computes P^T*m.
+// Exact-sized, finite input and nonoverlapping output spans are required. No
+// allocation occurs. Output may be partially written on numerical failure.
+[[nodiscard]] Status apply_american_markov_transition(
+    const AmericanMarkovTransition &transition, std::span<const double> input,
+    std::span<double> output,
+    AmericanMarkovTransitionAction action = AmericanMarkovTransitionAction::Backward);
 [[nodiscard]] Result<double>
 price_american_markov(const AmericanMarkovModel &model, double strike, Side side,
                       std::size_t expiry_index, AmericanMarkovWorkspace &workspace,
                       ExerciseStyle exercise = ExerciseStyle::American);
 
 // Immutable after compilation. Transition n maps layer n to layer n+1.
-// Const spans expose the complete operator for future exact PWL-strike Snell
-// recursion; the scalar pricer does not own a different pricing implementation.
+// Const spans expose explicit rows or resolvent factors. Scalar and batch
+// pricing use the same operator; current PWL construction supports only explicit
+// diffusion and refuses the resolvent method.
 //
 // This is a FINITE BERMUDAN model: exercise is allowed at every compiled layer.
 // Diffusion has absorbing zero/upper X boundaries. Cash is deterministic on
@@ -190,6 +239,7 @@ public:
   }
   [[nodiscard]] std::size_t initial_state_index() const noexcept { return initial_state_index_; }
   [[nodiscard]] double spot() const noexcept { return spot_; }
+  [[nodiscard]] AmericanMarkovDiffusionMethod diffusion_method() const noexcept { return method_; }
   [[nodiscard]] const AmericanMarkovDiagnostics &diagnostics() const noexcept {
     return diagnostics_;
   }
@@ -198,6 +248,7 @@ private:
   AmericanMarkovModel() = default;
   friend Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &);
   double spot_ = 0.0;
+  AmericanMarkovDiffusionMethod method_ = AmericanMarkovDiffusionMethod::ExplicitEuler;
   std::size_t initial_state_index_ = 0;
   std::vector<AmericanMarkovLayer> layers_;
   std::vector<AmericanMarkovTransition> transitions_;

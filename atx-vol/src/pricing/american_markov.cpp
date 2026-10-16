@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <new>
 #include <utility>
+
+#include "pricing/american_markov_transition.hpp"
 
 namespace atx::vol {
 namespace {
@@ -42,6 +45,9 @@ Status validate(const AmericanMarkovSpec &s) {
       c.max_states > kAmericanMarkovMaxStates || c.max_transitions == 0 ||
       c.max_transitions > kAmericanMarkovMaxTransitions || c.max_stored_rows == 0 ||
       c.max_stored_rows > kAmericanMarkovMaxStoredRows || !positive(c.max_calendar_step) ||
+      c.max_transition_work == 0 || c.max_transition_work > kAmericanMarkovMaxTransitionWork ||
+      (c.diffusion_method != AmericanMarkovDiffusionMethod::ExplicitEuler &&
+       c.diffusion_method != AmericanMarkovDiffusionMethod::VarianceResolvent) ||
       c.max_stored_volatility_values == 0 ||
       c.max_stored_volatility_values > kAmericanMarkovMaxStoredVolatilityValues ||
       !positive(c.max_variance_step) || !positive(c.cfl_fraction) || c.cfl_fraction > 1.0 ||
@@ -136,7 +142,107 @@ double exit_rate(std::span<const double> x, std::size_t i, double sigma) noexcep
 double intrinsic(double stock, double strike, Side side) noexcept {
   return std::max(side == Side::Call ? stock - strike : strike - stock, 0.0);
 }
+
+Result<std::vector<AmericanMarkovResolventFactor>> make_resolvent_factors(
+    std::span<const double> states, std::span<const double> exits, double h, double spot,
+    AmericanMarkovDiagnostics &diagnostics) {
+  std::vector<AmericanMarkovResolventFactor> factors(states.size());
+  double previous_beta = 1.0;
+  for (std::size_t i = 0; i < states.size(); ++i) {
+    double down = 0.0;
+    double up = 0.0;
+    if (i > 0 && i + 1 < states.size()) {
+      const double lower = states[i] - states[i - 1];
+      const double upper = states[i + 1] - states[i];
+      down = h * (exits[i] * (upper / (lower + upper)));
+      up = h * (exits[i] * (lower / (lower + upper)));
+    }
+    const double s = 1.0 + down * previous_beta;
+    const double pivot = s + up;
+    const double alpha = 1.0 / s;
+    const double beta = s / pivot;
+    if (!nonnegative(down) || !nonnegative(up) || !positive(s) || !positive(pivot) ||
+        !positive(alpha) || alpha > 1.0 || !positive(beta) || beta > 1.0) {
+      return Err(ErrorCode::OutOfRange, "American Markov: resolvent factors lose numerical range");
+    }
+    factors[i] = {alpha, beta};
+    previous_beta = beta;
+  }
+  std::vector<double> input(states.size(), 1.0);
+  std::vector<double> output(states.size());
+  if (!detail::resolvent_backward(factors, input, output)) {
+    return Err(ErrorCode::OutOfRange, "American Markov: nonfinite resolvent constant action");
+  }
+  for (const double value : output) {
+    const double error = std::abs(value - 1.0);
+    if (error > kAmericanMarkovResolventMaxActionError) {
+      return Err(ErrorCode::OutOfRange, "American Markov: resolvent probability residual exceeded");
+    }
+    diagnostics.max_probability_sum_error = std::max(diagnostics.max_probability_sum_error, error);
+  }
+  // Probe represented stock levels directly. Global normalization can round a
+  // small positive state to a subnormal and conceal material relative drift.
+  // Convex lerps keep these finite nonnegative inputs within their input range.
+  std::copy(states.begin(), states.end(), input.begin());
+  if (!detail::resolvent_backward(factors, input, output)) {
+    return Err(ErrorCode::OutOfRange, "American Markov: nonfinite resolvent stock action");
+  }
+  for (std::size_t i = 0; i < states.size(); ++i) {
+    const double error = std::abs(output[i] - input[i]) / std::max(input[i], spot);
+    if (!nonnegative(error) || error > kAmericanMarkovResolventMaxActionError) {
+      return Err(ErrorCode::OutOfRange, "American Markov: resolvent martingale residual exceeded");
+    }
+    diagnostics.max_relative_mean_error = std::max(diagnostics.max_relative_mean_error, error);
+  }
+  return Ok(std::move(factors));
+}
 } // namespace
+
+Status apply_american_markov_transition(const AmericanMarkovTransition &transition,
+                                        std::span<const double> input, std::span<double> output,
+                                        AmericanMarkovTransitionAction action) {
+  const auto source = transition.source_state_count();
+  const auto target = transition.target_state_count();
+  const bool forward = action == AmericanMarkovTransitionAction::Forward;
+  if (source == 0 || target == 0 ||
+      (action != AmericanMarkovTransitionAction::Backward && !forward) ||
+      (transition.kind != AmericanMarkovStepKind::Diffusion &&
+       transition.kind != AmericanMarkovStepKind::CashDividend &&
+       transition.kind != AmericanMarkovStepKind::VarianceResolvent) ||
+      input.size() != (forward ? source : target) ||
+      output.size() != (forward ? target : source)) {
+    return Err(ErrorCode::InvalidArgument, "American Markov: invalid transition action shape");
+  }
+  const std::less<const double *> before;
+  if (before(input.data(), output.data() + output.size()) &&
+      before(output.data(), input.data() + input.size())) {
+    return Err(ErrorCode::InvalidArgument, "American Markov: transition action buffers overlap");
+  }
+  if (!std::all_of(input.begin(), input.end(), [](double x) { return std::isfinite(x); })) {
+    return Err(ErrorCode::InvalidArgument, "American Markov: nonfinite transition action input");
+  }
+  bool finite = true;
+  if (transition.kind == AmericanMarkovStepKind::VarianceResolvent) {
+    if (source != target) {
+      return Err(ErrorCode::InvalidArgument, "American Markov: invalid resolvent action shape");
+    }
+    finite = forward ? detail::resolvent_transpose(transition.resolvent_factors(), input, output)
+                     : detail::resolvent_backward(transition.resolvent_factors(), input, output);
+  } else {
+    const auto rows = transition.rows();
+    std::fill(output.begin(), output.end(), 0.0);
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      for (std::size_t j = 0; j < 3; ++j) {
+        const auto destination = rows[i].destination[j];
+        if (forward) output[destination] += input[i] * rows[i].probability[j];
+        else output[i] += rows[i].probability[j] * input[destination];
+      }
+    }
+    finite = std::all_of(output.begin(), output.end(), [](double x) { return std::isfinite(x); });
+  }
+  if (!finite) return Err(ErrorCode::OutOfRange, "American Markov: transition action overflow");
+  return Ok();
+}
 
 Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &spec) {
   const auto valid = validate(spec);
@@ -144,8 +250,10 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     return Err(valid.error());
   }
   const auto &cfg = spec.config;
+  const bool resolvent = cfg.diffusion_method == AmericanMarkovDiffusionMethod::VarianceResolvent;
   AmericanMarkovModel model;
   model.spot_ = spec.spot;
+  model.method_ = cfg.diffusion_method;
   AmericanMarkovLayer initial;
   std::vector<double> initial_states;
   if (spec.state_grid.empty()) {
@@ -232,7 +340,8 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     const double cfl = cfg.cfl_fraction * (1.0 - 32.0 * std::numeric_limits<double>::epsilon());
     const double required = std::max({1.0, std::ceil(calendar_delta / cfg.max_calendar_step),
                                       std::ceil(variance_delta / cfg.max_variance_step),
-                                      std::ceil(variance_delta * max_exit / cfl)});
+                                      resolvent ? 0.0
+                                                : std::ceil(variance_delta * max_exit / cfl)});
     const std::size_t cash_steps = interval.cash_dividend_at_end > 0.0 ? 1U : 0U;
     const std::size_t remaining_steps = cfg.max_transitions - model.transitions_.size();
     if (!std::isfinite(required) || remaining_steps < cash_steps ||
@@ -245,6 +354,12 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     if (count + cash_steps > remaining_rows / state_count) {
       return Err(ErrorCode::OutOfRange, "American Markov: stored transition row limit exceeded");
     }
+    const std::size_t step_work = state_count * (resolvent ? 2U : 1U);
+    const std::size_t cash_work = cash_steps * state_count;
+    const std::size_t remaining_work = cfg.max_transition_work - model.diagnostics_.transition_work;
+    if (cash_work > remaining_work || count > (remaining_work - cash_work) / step_work) {
+      return Err(ErrorCode::OutOfRange, "American Markov: transition action work limit exceeded");
+    }
     model.interval_data_.push_back(std::move(interval_data));
     model.diagnostics_.stored_volatility_values += volatility_values;
     const std::size_t interval_index = model.interval_data_.size() - 1;
@@ -253,6 +368,8 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     // growth stay per-transition. Never quantize steps or share across intervals.
     std::map<std::uint64_t, std::shared_ptr<const std::vector<AmericanMarkovTransitionRow>>>
         row_cache;
+    std::map<std::uint64_t, std::shared_ptr<const std::vector<AmericanMarkovResolventFactor>>>
+        factor_cache;
 
     for (std::size_t step = 1; step <= count; ++step) {
       const auto &before = model.layers_.back();
@@ -268,6 +385,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       after.states_ = before.states_;
       AmericanMarkovTransition transition;
       transition.interval_index = interval_index;
+      transition.target_states_ = state_count;
       transition.calendar_step = after.calendar_time - before.calendar_time;
       transition.variance_step = after.variance_time - before.variance_time;
       transition.volatility = interval.volatility;
@@ -280,7 +398,23 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       }
       const auto key = std::bit_cast<std::uint64_t>(transition.variance_step);
       const auto cached = row_cache.find(key);
-      if (cached != row_cache.end()) {
+      if (resolvent) {
+        transition.kind = AmericanMarkovStepKind::VarianceResolvent;
+        const auto prior = factor_cache.find(key);
+        if (prior != factor_cache.end()) {
+          transition.factors_ = prior->second;
+        } else {
+          auto factors = make_resolvent_factors(states, state_exit_rates, transition.variance_step,
+                                                spec.spot, model.diagnostics_);
+          if (!factors) return Err(factors.error());
+          transition.factors_ = std::make_shared<
+              const std::vector<AmericanMarkovResolventFactor>>(std::move(*factors));
+          factor_cache.emplace(key, transition.factors_);
+          model.diagnostics_.physical_resolvent_factors += state_count;
+          ++model.diagnostics_.resolvent_factor_blocks;
+        }
+        ++model.diagnostics_.resolvent_steps;
+      } else if (cached != row_cache.end()) {
         transition.rows_ = cached->second;
       } else {
         std::vector<AmericanMarkovTransitionRow> rows(state_count);
@@ -327,6 +461,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
         ++model.diagnostics_.transition_row_blocks;
       }
       model.diagnostics_.stored_rows += state_count;
+      model.diagnostics_.transition_work += step_work;
       ++model.diagnostics_.diffusion_steps;
       model.transitions_.push_back(std::move(transition));
       model.layers_.push_back(std::move(after));
@@ -360,6 +495,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
         rows[i].probability[0] = 1.0;
       }
       model.diagnostics_.physical_state_values += after_states.size();
+      transition.target_states_ = after_states.size();
       ++model.diagnostics_.state_grid_blocks;
       model.diagnostics_.physical_transition_rows += state_count;
       ++model.diagnostics_.transition_row_blocks;
@@ -367,6 +503,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       transition.rows_ =
           std::make_shared<const std::vector<AmericanMarkovTransitionRow>>(std::move(rows));
       model.diagnostics_.stored_rows += state_count;
+      model.diagnostics_.transition_work += state_count;
       ++model.diagnostics_.cash_steps;
       model.transitions_.push_back(std::move(transition));
       model.layers_.push_back(std::move(after));
@@ -375,19 +512,43 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
   }
 
   // Forward probability propagation reports numerical boundary exposure using
-  // the SAME rows as pricing. This is compilation work, not serving work.
+  // the SAME operator as pricing. This is compilation work, not serving work.
   std::vector<double> mass(model.diagnostics_.max_states, 0.0);
   std::vector<double> next_mass(model.diagnostics_.max_states, 0.0);
   mass[model.initial_state_index_] = 1.0;
   for (const auto &transition : model.transitions_) {
     std::fill(next_mass.begin(), next_mass.end(), 0.0);
     const auto rows = transition.rows();
-    for (std::size_t i = 0; i < rows.size(); ++i) {
-      const auto &row = rows[i];
-      for (std::size_t j = 0; j < 3; ++j) {
-        next_mass[row.destination[j]] += mass[i] * row.probability[j];
+    if (transition.kind == AmericanMarkovStepKind::VarianceResolvent) {
+      const auto count = transition.source_state_count();
+      if (!detail::resolvent_transpose(transition.resolvent_factors(),
+                                       std::span<const double>(mass).first(count),
+                                       std::span<double>(next_mass).first(count))) {
+        return Err(ErrorCode::OutOfRange, "American Markov: resolvent forward action overflow");
+      }
+    } else {
+      for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto &row = rows[i];
+        for (std::size_t j = 0; j < 3; ++j) {
+          next_mass[row.destination[j]] += mass[i] * row.probability[j];
+        }
       }
     }
+    double total_mass = 0.0;
+    for (std::size_t i = 0; i < transition.target_state_count(); ++i) {
+      if (resolvent && !nonnegative(next_mass[i])) {
+        return Err(ErrorCode::OutOfRange, "American Markov: invalid resolvent forward probability");
+      }
+      total_mass += next_mass[i];
+    }
+    const double mass_error = std::abs(total_mass - 1.0);
+    if (resolvent &&
+        (!nonnegative(mass_error) || mass_error > kAmericanMarkovResolventMaxActionError)) {
+      return Err(ErrorCode::OutOfRange,
+                 "American Markov: resolvent forward mass residual exceeded");
+    }
+    model.diagnostics_.max_forward_mass_error =
+        std::max(model.diagnostics_.max_forward_mass_error, mass_error);
     mass.swap(next_mass);
   }
   model.diagnostics_.terminal_zero_probability = mass.front();
@@ -435,6 +596,19 @@ Result<double> price_american_markov(const AmericanMarkovModel &model, double st
     const auto &layer = model.layers()[n - 1];
     const auto rows = transition.rows();
     const auto states = layer.states();
+    if (transition.kind == AmericanMarkovStepKind::VarianceResolvent) {
+      const bool finite = detail::resolvent_rollback(
+          transition.resolvent_factors(), values->data(), scratch->data(), 1, 1,
+          [&](double continuation, std::size_t i, std::size_t) noexcept {
+            const double discounted = continuation * transition.discount;
+            return exercise == ExerciseStyle::American
+                       ? std::max(discounted, intrinsic(layer.growth * states[i], strike, side))
+                       : discounted;
+          });
+      if (!finite) return Err(ErrorCode::OutOfRange, "American Markov: option value overflow");
+      std::swap(values, scratch);
+      continue;
+    }
     for (std::size_t i = 0; i < rows.size(); ++i) {
       const auto &row = rows[i];
       double continuation = 0.0;

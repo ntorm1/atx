@@ -438,5 +438,48 @@ TEST(AmericanMarkovFit, MidpointCoefficientPrecedesSquaringAtTinyStockScale) {
   EXPECT_LT(fit->diagnostics().midpoint_loss, 1.0e-317);
 }
 
+TEST(AmericanMarkovFit, ResolventQuotesChargeBothPassesAgainstRollbackBudget) {
+  const std::array grid{0.0, 100.0, 200.0};
+  const std::array intervals{AmericanMarkovFitInterval{0.1, 0.1, 0.0, 0.0, 0.0}};
+  AmericanMarkovFitMarket market{100.0, intervals, grid, {}};
+  market.model_config.diffusion_method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+  market.model_config.max_calendar_step = 1.0;
+  market.model_config.max_variance_step = 1.0;
+  const std::array quotes{AmericanMarkovFitQuote{0, 100.0, Side::Call, 0.0, 100.0, 1.0},
+                          AmericanMarkovFitQuote{0, 100.0, Side::Put, 0.0, 100.0, 1.0}};
+  AmericanMarkovFitConfig config;
+  config.max_evaluations = 1;
+  config.max_rollback_work = 12;
+  const auto exact = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(exact) << exact.error().to_string();
+  EXPECT_EQ(exact->model().diagnostics().stored_rows, 3U);
+  EXPECT_EQ(exact->model().diagnostics().transition_work, 6U);
+  config.max_rollback_work = 11;
+  EXPECT_FALSE(fit_american_markov_intervals(market, quotes, config));
+  config.max_rollback_work = 6; // Enough for one pass per quote, insufficient for the solve.
+  EXPECT_FALSE(fit_american_markov_intervals(market, quotes, config));
+}
+
+TEST(AmericanMarkovFit, ResolventFitRetainsSelectedCommonProcess) {
+  const std::array intervals{AmericanMarkovFitInterval{0.2, 0.15, 0.02, 0.0, 1.0}};
+  AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  market.model_config.diffusion_method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+  const std::array knots{0.0};
+  const std::array sigmas{0.31};
+  const auto quotes = synthetic_quotes(market, knots, sigmas, false, 0.001);
+  AmericanMarkovFitConfig config;
+  config.initial_sigma = 0.20;
+  config.min_sigma = 0.05;
+  config.max_sigma = 0.8;
+  config.max_evaluations = 100;
+  config.max_sweeps = 32;
+  config.min_log_step = 1.0e-4;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_EQ(fit->model().diffusion_method(), AmericanMarkovDiffusionMethod::VarianceResolvent);
+  EXPECT_NEAR(fit->sigmas().front(), 0.31, 0.001);
+  EXPECT_LT(fit->diagnostics().max_interval_error, 0.002);
+}
+
 } // namespace
 } // namespace atx::vol

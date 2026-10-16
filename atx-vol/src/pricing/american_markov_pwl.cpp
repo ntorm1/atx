@@ -19,6 +19,9 @@ using atx::core::Ok;
   if (model.layers().empty() || model.expiry_layers().empty()) {
     return Err(ErrorCode::InvalidArgument, "American Markov PWL: empty or moved-from model");
   }
+  if (model.diffusion_method() != AmericanMarkovDiffusionMethod::ExplicitEuler) {
+    return Err(ErrorCode::Unavailable, "American Markov PWL: variance resolvent is unsupported");
+  }
   if (!std::isfinite(lo) || !std::isfinite(hi) || !(lo > 0.0) || !(hi > lo)) {
     return Err(ErrorCode::InvalidArgument, "American Markov PWL: invalid strike domain");
   }

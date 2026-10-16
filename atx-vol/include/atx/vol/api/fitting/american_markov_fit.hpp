@@ -69,7 +69,8 @@ struct AmericanMarkovFitConfig {
   std::size_t max_sweeps = 32;
   std::size_t batch_options = 128;
   std::size_t max_batch_values = 1048576; // Per workspace buffer.
-  std::size_t max_rollback_work = 50000000; // Row-option products per evaluation.
+  // State-pass-option products per evaluation: N explicit/cash, 2N resolvent.
+  std::size_t max_rollback_work = 50000000;
 };
 
 struct AmericanMarkovFitDiagnostics {

@@ -5,6 +5,8 @@
 #include <new>
 #include <utility>
 
+#include "pricing/american_markov_transition.hpp"
+
 namespace atx::vol {
 namespace {
 using atx::core::Err;
@@ -30,6 +32,23 @@ bool rollback(const AmericanMarkovModel &model, std::span<const double> strikes,
     const auto &layer = model.layers()[n - 1];
     const auto rows = transition.rows();
     const auto states = layer.states();
+    if (transition.kind == AmericanMarkovStepKind::VarianceResolvent) {
+      const bool finite = detail::resolvent_rollback(
+          transition.resolvent_factors(), values->data(), scratch->data(), stride, strikes.size(),
+          [&](double continuation, std::size_t i, std::size_t k) noexcept {
+            const double discounted = continuation * transition.discount;
+            if constexpr (American) {
+              const double stock = layer.growth * states[i];
+              return std::max(discounted,
+                              std::max(Call ? stock - strikes[k] : strikes[k] - stock, 0.0));
+            } else {
+              return discounted;
+            }
+          });
+      if (!finite) return false;
+      std::swap(values, scratch);
+      continue;
+    }
     bool finite = true;
     for (std::size_t i = 0; i < rows.size(); ++i) {
       const auto &row = rows[i];

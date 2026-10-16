@@ -234,19 +234,19 @@ struct Evaluator {
     if (strikes.size() > config.max_batch_values / states) {
       return Err(ErrorCode::OutOfRange, "Markov fit: batch workspace value limit exceeded");
     }
-    // Price groups roll back different prefixes. Count the actual row-option
+    // Price groups roll back different prefixes. Count the actual state-pass-option
     // work before invoking the kernels; no overflow-prone multiplication.
-    std::vector<std::size_t> prefix_rows(model.layers().size(), 0);
+    std::vector<std::size_t> prefix_work(model.layers().size(), 0);
     for (std::size_t i = 0; i < model.transitions().size(); ++i) {
-      prefix_rows[i + 1] = prefix_rows[i] + model.transitions()[i].rows().size();
+      prefix_work[i + 1] = prefix_work[i] + model.transitions()[i].rollback_work();
     }
     std::size_t work = 0;
     for (const auto &q : quotes) {
-      const auto rows = prefix_rows[model.expiry_layers()[q.expiry_index]];
-      if (rows > config.max_rollback_work - work) {
+      const auto quote_work = prefix_work[model.expiry_layers()[q.expiry_index]];
+      if (quote_work > config.max_rollback_work - work) {
         return Err(ErrorCode::OutOfRange, "Markov fit: rollback work limit exceeded");
       }
-      work += rows;
+      work += quote_work;
     }
     ATX_TRY_VOID(workspace.prepare(model, strikes.size()));
     prices.resize(quotes.size());
