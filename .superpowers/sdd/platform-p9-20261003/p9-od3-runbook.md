@@ -12,6 +12,8 @@ that fixes it. Root fills each one in the read's own record (`progress.md` and t
 
 ## 0. Rules that hold for every step
 
+Where this file and `p9-prereg.md` F.1 differ, F.1 governs (GATE-REV SG-2, 2026-10-16).
+
 1. **Once.** One read event, after the adoption print, on the frozen P9-F0h with Y-F0 beside it. No era u, w or NAV
    pass runs before the last P9 cell is ledgered (PM7-29 choice 11, carried). Data builds, coverage and mechanics
    checks (steps B and P below) may run earlier. Nothing in any book changes afterwards; a fail is reported, never
@@ -224,6 +226,13 @@ freeze wording per OD5-1 (v) ("passed with the identity-bridge flag").
    empty before 2018); P9-F0h's history S2 net Sharpe = its TRAIN S2 net Sharpe + P9-W's dSR (PRE-39; prereg B.6
    as PRE-39 reads it), and "lower than on 2020-2023" (PM7-28's registered expectation, carried); the ERC
    prediction printed "not read" (PRE-18).
+
+   Note (2026-10-16, FLAGS-SEQ; the prereg's F.1 governs, PRE-40 form): P9-W LAPSED (0) (D3-Q1a, ledger :975): the
+   prediction 'TRAIN S2 net Sharpe + P9-W's dSR' prints 'not produced: P9-W lapsed (0), D3-Q1a' (PW-LAPSE-PRINT, :994);
+   `--info-clock-print` reaches every book built over `lib-v8ysb-gm.json` through the parent's `nav.flags` (FLAGS-ROUTE,
+   :1019) once the root FLAGS agent's spec commit lands (its SHA is stated in `p9-prereg.md` B.0 by the PART 2 edit); the
+   exe-direct P9-B0 references carry it by hand on their argv.
+
 4. Producers: NAV exe `ann_vol`, `ann_mean`, `net_sharpe` per era; pooled rows from `nav_summ --pool`; turnover as B.2.
 5. Contamination flags: every member of each book and every P9 rule with its `source_sample_end` (prereg Appendix III;
    mv-aim-v1 **[UNKNOWN: COV-MV's registration]**).
