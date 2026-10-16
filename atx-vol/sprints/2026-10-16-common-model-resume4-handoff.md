@@ -78,6 +78,16 @@ dev200 (63,942 eligible rows), price MAE in USD on own population unless noted:
 | graded knot-spline admission (graded-v1) | 78.7% | 0.235 (mid 0.333 same rows) | all static rows byte-identical; A 0.163 / B 0.273 / C 0.169 |
 | status hybrid quote-slice -> X1 | 75.7% | 0.292 | containment 95.1% |
 | dividend opt-in (static + inferred schedule) | 18.8% | payers 0.224 -> 0.211 | non-payers identical; ASML blocked by lattice strike kinks |
+| **composite C2: dividend -> graded -> m6 (status-routed)** | **88.6%** | **0.233** (mid 0.336 same rows) | p99 2.02, containment 97.8%, MAE/spread 0.150; C1 graded->m6 0.236; C3 graded->X1 0.236 |
+
+Composite C1 beats the earlier quote-slice->X1 hybrid by 24.9% on that
+hybrid's 47,769 rows (0.2919 -> 0.2193). The 7,269 unserved eligible rows
+(11.4%) are META/ASML (4,886: arbitrage refusals and the 4,096-quote cap),
+TSM/V (1,496: arbitrage refusals and the dense parameter cap), 716 adjusted
+deliverables (by design), SRLN carry dispersion 86, ARI numeric 30, 55 mixed.
+Receipts: `C:/atx-cache/quote-benchmark/composite-20261016/RESULTS.md`.
+dev200b composites were NOT run (stop arrived first): no generalisation
+verdict for the composite yet.
 
 dev200b (62,369 eligible, 15:00 ET, disjoint symbols): the dev200 ranking
 holds on every exact intersection; dollar MAE does not transfer (served rows
@@ -123,6 +133,91 @@ integrated root), tick-path Greeks reference near the boundary, graded
    push record IV to <= 500 ns and cold AL to <= 15 us.
 5. Latency/accuracy are still unqualified claims; no "world's fastest" claim
    has been made or is justified yet.
+
+## Lane checkpoints at the stop
+
+### serve-path-lane: items 1-2 committed and gated, item 3 WIP, 4-5 not started
+
+Branch `feat/vol-serve-path-20261016`, base `dc064a1e` (not rebased), final
+WIP SHA `7cf6b38b`, pool-4 released, note
+`2026-10-16-serve-path-wip-handoff.md` in the WIP commit. Not reviewed.
+- `cd427b31` opt-in `SessionServePolicy` Records serve mode (every served
+  price carries a certificate; uncertified -> cold) and an opt-in
+  exercise-edge gate for the cached tensor. 2,000-contract chain max error vs
+  cold accurate AL: tensor $0.969 (775 contracts > $1e-3); gated band 1 $0.453
+  at 63 ms/chain; band 3 $0.070 at 122 ms; records $1.08e-4 (p99 $4e-5) at
+  0.85 ms. The gate stays OFF by default: the tensor error is spread across
+  the chain, a distance gate cannot remove it (ledgered). Gates: fitting slice
+  1027 cases with 38 failures identical to base, session serve 13/13,
+  PricedSurface 52/52, tick-path 38/38, hygiene clean; backtest slice 3 of 646
+  failed, NOT yet confirmed at base.
+- `e695a411` all tick-path review minors closed: price-scaled certificate
+  threshold with 8-ulp floor (a $50,000 underlying now refuses 0 of 42 instead
+  of 7), four fallback counters, floor Greeks consistent with the served
+  price, certification refuses unsolvable sigma rows, bench pool mask 0x3f
+  and main core 0xc0 (3 P-cores for the pool: pool-row timings no longer
+  comparable with earlier baselines, ledgered), zero-allowance walk tests.
+  Gates: tick-path 43/43, PricingExecutor 23/23, session/correction 78/78,
+  hygiene 7 files, bench self-check 0 failures. Unqualified: ladder tick
+  88.3 us median (42.9 ns/contract), direct record route 753 us.
+- WIP item 3: nearest-the-money-first rebuild priority when the per-tick
+  budget runs short; uncompiled, untested; +7% catch-up bench rows missing.
+- Unfinished: items 4 (record IV <= 500 ns) and 5 (record build speed), the
+  3 backtest failures at base, sprint note, rebase and final gates, review.
+
+### knot-ladder-lane: design only, no code
+
+Branch `feat/vol-knot-ladder-20261016`, base `31cdfeac`, commit `0e5f393a`
+holds only `2026-10-16-knot-ladder-wip-handoff.md`; pool-34 released; no
+source edits, builds, gates or benchmarks. Decided design: opt-in
+`graded.ladder: "knot-first"` (knot slice + bounded calendar repair, then
+point fit clean/repaired, then the stronger-prior refit, then refuse; each
+slice records `method` and `ladder_fallback`; A-grade rule unchanged); library
+row status `PriceOnly` (certified price, blank vol) exposed in the bench as
+`status=ok_price_only` / `vol_status=unidentifiable` under a top-level
+`price_only` key; scorer counts price-served as ok|ok_price_only and vol-served
+as ok only; composer `--served-status` accepts several values. Decision needed
+on resume: the minor asking `vol_status` to read `unidentifiable` on the 564
+`invalid_volatility` rows breaks strict graded-v1 parity (1348f63d) on that
+one column; the proposal is to prove parity by reverting that column only.
+dev200b still lacks graded-v1 / knotspline-v1 comparison runs.
+
+### smooth-div-lane: WIP committed, never compiled or tested
+
+Branch `feat/vol-smooth-dividend-20261016`, base `a402d615`, WIP SHA
+`e888791a`, pool-3 released, note `2026-10-16-smooth-dividend-wip-handoff.md`
+in the commit. Diagnosis of certification refusals on dividend chains: (1)
+lattice staircase noise (ASML 20924: 48 violations, 10 with a BBS final step);
+(2) model mismatch - the fitted curve is convex in Black-76 terms at the
+dated-dividend forward, but the spliced lattice's European price differs by a
+smooth 0.023-0.235 term that is concave across tight strike runs, so BBSR at
+4801 steps still fails; (3) vendor per-strike carry kinks (TSM 20896; 33 dev200
+chains fail on the aggregate route too). Implemented, opt-in and default
+bit-identical (default scheme reproduces `abc75955`): lattice schemes
+`spliced` (default), `spliced-bbs`, `spliced-bbsr`, `escrowed-bbs`,
+`escrowed-lr` (strike-centred Leisen-Reimer on the escrowed model, CRR
+fallback at tiny vols), bench keys `dividend_lattice` /
+`dividend_lattice_steps`; certification untouched; existing workspace reused.
+UNOFFICIAL exploration (`C:/atx-cache/quote-benchmark/smooth-div-20261016-explore/`):
+lattice chains certified/refused dev200 117/63 -> 149/31 with escrowed-lr
+(0 chains lost), dev200b 170/20 -> 183/7 (1 lost, HSBC); 11 of 12 servable
+ASML chains certify. Runtime unqualified: lattice step 2.06 s -> 10.22 s per
+dev200 run. Not done: the new tests (`discrete_div_smoothing_test.cpp`,
+`..._alloc_test.cpp`, target `atx-vol-discrete-div-smoothing-tests`) never
+compiled and thresholds uncalibrated; no gates on this commit; no rebase; no
+official `*-auto-divsmooth-v1` runs; no sprint note/ledger; dividend-review
+minors M1-M3/N2-N5 not started (note: the M1 probe's 1.00 special is exactly 4
+regular units, so "split only near whole units" would not catch it; a better
+signal is an increment holding more units than fit in its window, to be
+measured on the 59 dev200 split increments first).
+
+### composite-bench: dev200 only
+
+No lease, no code. Binary `73892e7f` reproduces m6 (`dc435595`) byte for
+byte. dev200 composites scored (table above); dev200b composites, |z| and
+class strata, and per-grade breakdown not run. Artifacts and SHA256s in
+`C:/atx-cache/quote-benchmark/composite-20261016/` (C1 `77d9cdde`, C2
+`c3ec3786`, C3 `8515d5c5`).
 
 ## Artifacts
 
