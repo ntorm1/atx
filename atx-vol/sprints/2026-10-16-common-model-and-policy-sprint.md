@@ -1,5 +1,11 @@
 # Common American model and symbol policy continuation
 
+**Current state: stopped at the user's request.** See
+[the latest next-parent handoff](2026-10-16-common-model-next-parent-handoff.md)
+for final commits, pending reviewed fitter, independent reference checkpoint,
+accuracy evidence and shutdown receipts. The active-work wording below records
+the earlier continuation and is superseded by that handoff.
+
 The user resumed the long-running goal after the 2026-10-16 handoff. Goal is
 active; the earlier pause record is historical. Work remains on leased branch
 `feat/vol-continue-20261016`, originally pool-35, RunId/HeartbeatId

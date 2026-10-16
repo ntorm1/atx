@@ -2,6 +2,11 @@
 
 Prepared 2026-10-15, approximately 16:25 America/New_York / 20:25 UTC.
 
+**Historical checkpoint.** Read
+[the newest next-parent handoff](2026-10-16-common-model-next-parent-handoff.md)
+first. Its branch, integration state, benchmarks and shutdown receipts supersede
+the current-state instructions below.
+
 ## Read this first
 
 The user explicitly said: **“stop here and write detailed handoff file for next parent agent.”**

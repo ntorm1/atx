@@ -1,5 +1,11 @@
 # ATX-VOL next-parent handoff - user-requested stop
 
+**Historical checkpoint.** The task was subsequently resumed, advanced and
+stopped again. Read
+[the newest handoff](2026-10-16-common-model-next-parent-handoff.md) first;
+its branch, integration state, numerical findings and shutdown receipts
+supersede this document's current-state instructions.
+
 Prepared 2026-10-16, approximately 02:45 America/New_York / 06:45 UTC.
 
 ## Start here: task is stopped, not complete
