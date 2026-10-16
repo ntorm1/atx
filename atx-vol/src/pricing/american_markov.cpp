@@ -14,12 +14,34 @@ using atx::core::Ok;
 bool positive(double x) noexcept { return x > 0.0 && std::isfinite(x); }
 bool nonnegative(double x) noexcept { return x >= 0.0 && std::isfinite(x); }
 
+Status validate_local_volatility(const AmericanMarkovInterval &interval) {
+  const auto nodes = interval.local_volatility;
+  if (nodes.size() > kAmericanMarkovMaxLocalVolNodes) {
+    return Err(ErrorCode::OutOfRange, "American Markov: local volatility node limit exceeded");
+  }
+  double previous = -std::numeric_limits<double>::infinity();
+  for (const auto &node : nodes) {
+    if (!std::isfinite(node.log_state_over_spot) ||
+        std::abs(node.log_state_over_spot) > kAmericanMarkovMaxLocalVolLogState ||
+        !(node.log_state_over_spot > previous) || !nonnegative(node.volatility_multiplier)) {
+      return Err(ErrorCode::InvalidArgument, "American Markov: invalid local volatility nodes");
+    }
+    if (!nonnegative(interval.volatility * node.volatility_multiplier)) {
+      return Err(ErrorCode::OutOfRange, "American Markov: local volatility product overflow");
+    }
+    previous = node.log_state_over_spot;
+  }
+  return Ok();
+}
+
 Status validate(const AmericanMarkovSpec &s) {
   const auto &c = s.config;
   if (!positive(s.spot) || s.intervals.empty() || c.max_states < 3 ||
       c.max_states > kAmericanMarkovMaxStates || c.max_transitions == 0 ||
       c.max_transitions > kAmericanMarkovMaxTransitions || c.max_stored_rows == 0 ||
       c.max_stored_rows > kAmericanMarkovMaxStoredRows || !positive(c.max_calendar_step) ||
+      c.max_stored_volatility_values == 0 ||
+      c.max_stored_volatility_values > kAmericanMarkovMaxStoredVolatilityValues ||
       !positive(c.max_variance_step) || !positive(c.cfl_fraction) || c.cfl_fraction > 1.0 ||
       s.intervals.size() > c.max_transitions) {
     return Err(ErrorCode::InvalidArgument,
@@ -61,10 +83,41 @@ Status validate(const AmericanMarkovSpec &s) {
       return Err(ErrorCode::InvalidArgument,
                  "American Markov: invalid interval, clock or dividend");
     }
+    const auto local_valid = validate_local_volatility(interval);
+    if (!local_valid) {
+      return local_valid;
+    }
     calendar = interval.calendar_end;
     variance = interval.variance_end;
   }
   return Ok();
+}
+
+double local_volatility(const AmericanMarkovInterval &interval, double state,
+                        double log_spot) noexcept {
+  const auto nodes = interval.local_volatility;
+  if (nodes.empty()) {
+    return interval.volatility;
+  }
+  // Subtract logs to avoid over/underflow in state/spot at extreme stock scales.
+  const double coordinate = state == 0.0 ? -std::numeric_limits<double>::infinity()
+                                         : std::log(state) - log_spot;
+  if (coordinate <= nodes.front().log_state_over_spot) {
+    return interval.volatility * nodes.front().volatility_multiplier;
+  }
+  if (coordinate >= nodes.back().log_state_over_spot) {
+    return interval.volatility * nodes.back().volatility_multiplier;
+  }
+  const auto high = std::lower_bound(
+      nodes.begin(), nodes.end(), coordinate,
+      [](const AmericanMarkovLocalVolNode &node, double x) {
+        return node.log_state_over_spot < x;
+      });
+  const auto &low = *(high - 1);
+  const double fraction = (coordinate - low.log_state_over_spot) /
+                          (high->log_state_over_spot - low.log_state_over_spot);
+  return interval.volatility *
+         std::lerp(low.volatility_multiplier, high->volatility_multiplier, fraction);
 }
 
 // Exit probability per unit variance time. Ratios avoid squaring stock levels,
@@ -121,6 +174,8 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
   model.diagnostics_.max_states = initial.states.size();
   model.layers_.push_back(std::move(initial));
   model.expiry_layers_.reserve(spec.intervals.size());
+  model.interval_data_.reserve(spec.intervals.size());
+  const double log_spot = std::log(spec.spot);
   double log_growth = 0.0;
 
   for (const auto &interval : spec.intervals) {
@@ -137,13 +192,32 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
         !positive(std::exp(-interval.rate * calendar_delta))) {
       return Err(ErrorCode::OutOfRange, "American Markov: carry or discount overflow");
     }
+    const std::size_t volatility_values = start.states.size() + interval.local_volatility.size();
+    if (volatility_values >
+        cfg.max_stored_volatility_values - model.diagnostics_.stored_volatility_values) {
+      return Err(ErrorCode::OutOfRange, "American Markov: stored volatility value limit exceeded");
+    }
+    AmericanMarkovIntervalData interval_data;
+    interval_data.first_layer = model.layers_.size() - 1;
+    interval_data.volatility = interval.volatility;
+    interval_data.local_volatility.assign(interval.local_volatility.begin(),
+                                          interval.local_volatility.end());
+    interval_data.state_volatilities.reserve(start.states.size());
+    std::vector<double> state_exit_rates;
+    state_exit_rates.reserve(start.states.size());
     double max_exit = 0.0;
-    for (std::size_t i = 1; i + 1 < start.states.size(); ++i) {
+    for (std::size_t i = 0; i < start.states.size(); ++i) {
+      const double sigma = local_volatility(interval, start.states[i], log_spot);
+      if (!nonnegative(sigma)) {
+        return Err(ErrorCode::OutOfRange, "American Markov: local volatility sampling overflow");
+      }
       const double value =
-          variance_delta == 0.0 ? 0.0 : exit_rate(start.states, i, interval.volatility);
+          variance_delta == 0.0 ? 0.0 : exit_rate(start.states, i, sigma);
       if (!nonnegative(value)) {
         return Err(ErrorCode::OutOfRange, "American Markov: state grid cannot resolve diffusion");
       }
+      interval_data.state_volatilities.push_back(sigma);
+      state_exit_rates.push_back(value);
       max_exit = std::max(max_exit, value);
     }
     // A small arithmetic margin prevents cfl_fraction==1 from manufacturing a
@@ -164,6 +238,9 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     if (count + cash_steps > remaining_rows / state_count) {
       return Err(ErrorCode::OutOfRange, "American Markov: stored transition row limit exceeded");
     }
+    model.interval_data_.push_back(std::move(interval_data));
+    model.diagnostics_.stored_volatility_values += volatility_values;
+    const std::size_t interval_index = model.interval_data_.size() - 1;
 
     for (std::size_t step = 1; step <= count; ++step) {
       const auto &before = model.layers_.back();
@@ -178,6 +255,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       after.growth = std::exp(log_growth + carry * (after.calendar_time - calendar_start));
       after.states = before.states;
       AmericanMarkovTransition transition;
+      transition.interval_index = interval_index;
       transition.calendar_step = after.calendar_time - before.calendar_time;
       transition.variance_step = after.variance_time - before.variance_time;
       transition.volatility = interval.volatility;
@@ -199,7 +277,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
           const double exit =
               transition.variance_step == 0.0
                   ? 0.0
-                  : transition.variance_step * exit_rate(before.states, i, interval.volatility);
+                  : transition.variance_step * state_exit_rates[i];
           const double down = exit * (upper / (lower + upper));
           const double up = exit * (lower / (lower + upper));
           const double stay = 1.0 - (down + up);
@@ -240,6 +318,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       after.growth = before.growth;
       after.states.reserve(state_count);
       AmericanMarkovTransition transition;
+      transition.interval_index = interval_index;
       transition.kind = AmericanMarkovStepKind::CashDividend;
       transition.cash_dividend = interval.cash_dividend_at_end;
       transition.rows.resize(state_count);
