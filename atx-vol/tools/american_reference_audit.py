@@ -12,16 +12,22 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
 import platform
+import sqlite3
 import sys
 import time
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
 
 import QuantLib as ql
 
+# Capture before any numerical work. Later edits must not relabel this execution.
+TOOL_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+QUALIFIED_QUANTLIB_VERSION = "1.44"
 INTERVAL_FIELDS = {"calendar_end", "variance_end", "rate", "continuous_yield",
                    "volatility", "cash_at_end"}
 SOURCE_ROOT = "https://github.com/lballabio/QuantLib/blob/v1.44/"
@@ -318,6 +324,104 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def dependency_receipt() -> dict:
+    version, distribution = ql.__version__, importlib.metadata.version("QuantLib")
+    if version != QUALIFIED_QUANTLIB_VERSION or distribution != QUALIFIED_QUANTLIB_VERSION:
+        raise ValueError("independent audit qualifies only QuantLib 1.44; "
+                         f"found runtime {version}, distribution {distribution}")
+    package = Path(ql.__file__).resolve().parent
+    native_modules = sorted([*package.glob("*.pyd"), *package.glob("*.so")])
+    if not native_modules:
+        raise ValueError("cannot identify the QuantLib native module for provenance")
+    return {"QuantLib": version, "distribution": distribution,
+            "qualified_version": QUALIFIED_QUANTLIB_VERSION,
+            "python": platform.python_version(), "platform": platform.platform(),
+            "native_modules": [{"name": p.name, "sha256": sha256(p)} for p in native_modules]}
+
+
+class ReferenceCheckpoint:
+    """Serial, per-contract durable journal; exact provenance is required to resume.
+
+    SQLite FULL synchronization commits each complete reference before progress
+    is reported. Exclusive locking persists between commits, so a second writer
+    cannot solve or publish into this journal. An interrupted solve is repeated;
+    previously committed solves survive process interruption. This is not a
+    power-loss guarantee for storage hardware that ignores fsync.
+    """
+
+    def __init__(self, path: Path, manifest: dict, *, resume: bool):
+        self.path = path
+        self.connection = None
+        if resume:
+            if not path.is_file():
+                raise ValueError("resume requires an existing checkpoint file")
+            if path.stat().st_size > 256 * 1024 * 1024:
+                raise ValueError("checkpoint exceeds 256 MiB")
+        else:
+            # Never silently adopt or replace a prior checkpoint.
+            with path.open("xb") as stream:
+                stream.flush()
+                os.fsync(stream.fileno())
+        try:
+            self.connection = sqlite3.connect(path, timeout=0)
+            self.connection.execute("PRAGMA locking_mode=EXCLUSIVE")
+            self.connection.execute("PRAGMA synchronous=FULL")
+            self.connection.execute("BEGIN EXCLUSIVE")
+            if resume:
+                if self.connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    raise ValueError("checkpoint integrity check failed")
+                rows = self.connection.execute("SELECT payload FROM manifest").fetchall()
+                if rows != [(canonical_json(manifest),)]:
+                    raise ValueError("checkpoint provenance mismatch; use a new checkpoint")
+            else:
+                self.connection.execute("CREATE TABLE manifest (payload TEXT NOT NULL)")
+                self.connection.execute("CREATE TABLE results (request_key TEXT PRIMARY KEY, "
+                                        "payload TEXT NOT NULL, sha256 TEXT NOT NULL)")
+                self.connection.execute("INSERT INTO manifest VALUES (?)", (canonical_json(manifest),))
+            self.connection.commit()
+        except BaseException:
+            self.close()
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self):
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+
+    def load(self, requests: dict) -> dict:
+        saved = {}
+        count = self.connection.execute("SELECT COUNT(*) FROM results").fetchone()[0]
+        if count > len(requests):
+            raise ValueError("checkpoint contains unexpected references")
+        for key, payload, digest in self.connection.execute(
+                "SELECT request_key, payload, sha256 FROM results"):
+            if key not in requests or hashlib.sha256(payload.encode()).hexdigest() != digest:
+                raise ValueError("checkpoint reference identity or checksum mismatch")
+            result = json.loads(payload, object_pairs_hook=unique_object)
+            # Canonical serialization also rejects nonfinite cached numeric data.
+            if canonical_json(result) != payload or result.get("status") not in (
+                    "observed_stable", "unresolved", "unsupported", "solver_failure"):
+                raise ValueError("checkpoint reference result is invalid")
+            saved[key] = result
+        return saved
+
+    def store(self, key: str, result: dict):
+        payload = canonical_json(result)
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        self.connection.execute("INSERT INTO results VALUES (?, ?, ?)", (key, payload, digest))
+        self.connection.commit()
+
+
 def summary(rows: list[dict]) -> dict:
     differences = [row["difference"] for row in rows if row.get("difference") is not None]
     return {"rows": len(rows), "reference_status_counts": dict(Counter(row["status"] for row in rows)),
@@ -328,8 +432,13 @@ def summary(rows: list[dict]) -> dict:
 
 
 def audit_document(document: dict, config: AuditConfig, *, exercise="american",
-                    selected_cases: set[str] | None = None, progress=None) -> dict:
+                    selected_cases: set[str] | None = None, progress=None,
+                    checkpoint_path: Path | None = None, resume=False,
+                    input_sha256: str | None = None) -> dict:
     config.validate()
+    if resume and checkpoint_path is None:
+        raise ValueError("resume requires a checkpoint path")
+    dependency = dependency_receipt()
     if (type(document.get("schema_version")) is not int
             or document["schema_version"] not in (1, 2)
             or not isinstance(document.get("cases"), list)):
@@ -372,7 +481,7 @@ def audit_document(document: dict, config: AuditConfig, *, exercise="american",
             else:
                 arguments = {"spot": spot, "intervals": intervals[:expiry + 1], "strike": strike,
                              "side": row["side"], "exercise": row["exercise"]}
-                key = json.dumps(arguments, sort_keys=True, allow_nan=False)
+                key = canonical_json(arguments)
                 if key not in requests:
                     if len(requests) >= config.max_unique_contracts:
                         raise ValueError("audit exceeds max_unique_contracts")
@@ -387,19 +496,32 @@ def audit_document(document: dict, config: AuditConfig, *, exercise="american",
         sum(4**i for i in range(config.levels)) + 6 * fine_scale**2)
     if work_per_contract * len(requests) > 100_000_000_000:
         raise ValueError("reference grid work exceeds bounded audit budget; shard the cases")
-    references = []
+    references, restored = [], 0
+    manifest = {"checkpoint_schema_version": 1, "tool_sha256": TOOL_SHA256,
+                "input_sha256": input_sha256 or hashlib.sha256(canonical_json(document).encode()).hexdigest(),
+                "settings": asdict(config), "exercise_selection": exercise,
+                "selected_cases": sorted(selected_cases or []), "dependency": dependency}
+    checkpoint = (ReferenceCheckpoint(checkpoint_path, manifest, resume=resume)
+                  if checkpoint_path is not None else nullcontext(None))
     # QuantLib settings are global. This offline tool is intentionally serial;
     # restore the caller's date even if a reference fails.
-    original_date = ql.Settings.instance().evaluationDate
-    try:
-        ql.Settings.instance().evaluationDate = ql.Date(1, 1, 2000)
-        for request in requests.values():
-            outcome = reference(**request["arguments"], config=config)
-            references.append({**request, **outcome})
-            if progress:
-                progress(len(references), len(requests))
-    finally:
-        ql.Settings.instance().evaluationDate = original_date
+    with checkpoint as journal:
+        saved = journal.load(requests) if journal is not None else {}
+        restored = len(saved)
+        original_date = ql.Settings.instance().evaluationDate
+        try:
+            ql.Settings.instance().evaluationDate = ql.Date(1, 1, 2000)
+            for key, request in requests.items():
+                outcome = saved.get(key)
+                if outcome is None:
+                    outcome = reference(**request["arguments"], config=config)
+                    if journal is not None:
+                        journal.store(key, outcome)
+                references.append({**request, **outcome})
+                if progress:
+                    progress(len(references), len(requests))
+        finally:
+            ql.Settings.instance().evaluationDate = original_date
     for case in cases:
         for row in case["rows"]:
             if "reference_id" not in row:
@@ -415,13 +537,13 @@ def audit_document(document: dict, config: AuditConfig, *, exercise="american",
             [row for row in case["rows"] if row["status"] == "observed_stable"])
         case["near_atm_summary"] = summary(
             [row for row in case["rows"] if abs(row["strike"] / case["spot"] - 1) < .05])
-    package = Path(ql.__file__).resolve().parent
-    native_modules = sorted([*package.glob("*.pyd"), *package.glob("*.so")])
     return {"schema_version": 1, "source_schema_version": document["schema_version"],
             "method": "QuantLib FdmBlackScholesOp/Fdm1DimSolver, Douglas with implicit damping",
-            "dependency": {"QuantLib": ql.__version__, "distribution": importlib.metadata.version("QuantLib"),
-                           "python": platform.python_version(), "platform": platform.platform(),
-                           "native_modules": [{"name": p.name, "sha256": sha256(p)} for p in native_modules]},
+            "dependency": dependency, "tool_sha256": TOOL_SHA256,
+            "checkpoint": {"path": str(checkpoint_path.resolve()) if checkpoint_path else None,
+                           "resumed_references": restored, "computed_references": len(requests) - restored,
+                           "durability": "SQLite per-reference commit, synchronous FULL, exclusive writer"
+                               if checkpoint_path else "in-memory API invocation"},
             "settings": asdict(config), "estimated_grid_updates": work_per_contract * len(requests),
             "primary_sources": PRIMARY_SOURCES,
             "exercise_selection": exercise, "references": references, "cases": cases,
@@ -447,6 +569,10 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--checkpoint", type=Path,
+                        help="durable journal path; default is OUTPUT.checkpoint.sqlite3")
+    parser.add_argument("--resume", action="store_true",
+                        help="reuse completed references from an exactly matching checkpoint")
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--exercise", choices=["american", "european", "all"], default="american")
     for name in ("time_steps", "space_nodes", "levels", "damping_steps",
@@ -460,6 +586,13 @@ def main(argv=None) -> int:
     try:
         if args.output.exists():
             raise ValueError("output already exists; use a new path")
+        checkpoint = args.checkpoint or Path(str(args.output) + ".checkpoint.sqlite3")
+        paths = [args.input, args.output, checkpoint]
+        for index, first in enumerate(paths):
+            for second in paths[index + 1:]:
+                if first.resolve() == second.resolve() or (
+                        first.exists() and second.exists() and first.samefile(second)):
+                    raise ValueError("input, output and checkpoint paths must be distinct")
         if args.input.stat().st_size > 64 * 1024 * 1024:
             raise ValueError("input exceeds 64 MiB")
         content = args.input.read_bytes()
@@ -469,16 +602,17 @@ def main(argv=None) -> int:
             if done % 50 == 0 or done == total:
                 print(f"reference contracts {done}/{total}", file=sys.stderr, flush=True)
         report = audit_document(document, config, exercise=args.exercise,
-                                 selected_cases=set(args.case), progress=progress)
+                                 selected_cases=set(args.case), progress=progress,
+                                 checkpoint_path=checkpoint, resume=args.resume,
+                                 input_sha256=hashlib.sha256(content).hexdigest())
         report["input"] = str(args.input.resolve())
         report["input_sha256"] = hashlib.sha256(content).hexdigest()
-        report["tool_sha256"] = sha256(Path(__file__))
         with args.output.open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, allow_nan=False)
             stream.write("\n")
         print(json.dumps(report["summary"], allow_nan=False))
         return 0
-    except (OSError, ValueError, RuntimeError, OverflowError) as error:
+    except (OSError, ValueError, RuntimeError, OverflowError, sqlite3.Error) as error:
         print(f"american-reference-audit: {error}", file=sys.stderr)
         return 1
 

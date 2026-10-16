@@ -5,7 +5,11 @@ import copy
 import importlib.util
 import json
 import math
+import sqlite3
+import subprocess
 import sys
+from contextlib import closing
+from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
@@ -220,3 +224,135 @@ def test_cli_preserves_existing_input_and_rejects_duplicate_json_keys(tmp_path):
     path.write_text('{"schema_version":1,"schema_version":2,"cases":[]}')
     assert audit.main(["--input", str(path), "--output", str(tmp_path / "result.json")]) == 1
     assert not (tmp_path / "result.json").exists()
+
+
+def two_contract_document():
+    source = document()
+    other = copy.deepcopy(source["cases"][0]["prices"][0])
+    other["strike"] = 101.
+    source["cases"][0]["prices"].append(other)
+    return source
+
+
+def test_checkpoint_recovers_completed_contract_after_abrupt_process_exit(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "abrupt.sqlite3"
+    # os._exit bypasses Python cleanup, exercising a real abandoned connection.
+    child = r'''
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("audit_child", sys.argv[1])
+audit = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = audit
+spec.loader.exec_module(audit)
+source = json.loads(sys.argv[3])
+def interrupted(done, total):
+    os._exit(23)
+audit.audit_document(source, audit.AuditConfig(time_steps=80, space_nodes=160, levels=2),
+                     checkpoint_path=Path(sys.argv[2]), progress=interrupted)
+'''
+    source = two_contract_document()
+    process = subprocess.run([sys.executable, "-c", child, str(PATH), str(checkpoint),
+                              json.dumps(source)], check=False, capture_output=True,
+                              text=True, timeout=30)
+    assert process.returncode == 23, process.stderr
+    with closing(sqlite3.connect(checkpoint)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM results").fetchone() == (1,)
+    called = []
+    original = audit.reference
+    def tracking(**arguments):
+        called.append(arguments["strike"])
+        return original(**arguments)
+    monkeypatch.setattr(audit, "reference", tracking)
+    report = audit.audit_document(source, config(), checkpoint_path=checkpoint, resume=True)
+    assert called == [101.]
+    assert report["checkpoint"]["resumed_references"] == 1
+    assert report["checkpoint"]["computed_references"] == 1
+    assert report["summary"]["rows"] == 2
+    called.clear()
+    replay = audit.audit_document(source, config(), checkpoint_path=checkpoint, resume=True)
+    assert not called
+    assert replay["references"] == report["references"]
+    assert replay["summary"] == report["summary"]
+
+
+@pytest.mark.parametrize("change", ["source", "config", "selection", "tool", "dependency"])
+def test_resume_rejects_changed_provenance_before_any_solve(tmp_path, monkeypatch, change):
+    checkpoint = tmp_path / "reference.sqlite3"
+    source, settings, selected = document(), config(), None
+    audit.audit_document(source, settings, checkpoint_path=checkpoint)
+    if change == "source":
+        source["cases"][0]["prices"][0]["price"] += 1
+    elif change == "config":
+        settings = replace(settings, time_steps=81)
+    elif change == "selection":
+        selected = {"synthetic"}
+    elif change == "tool":
+        monkeypatch.setattr(audit, "TOOL_SHA256", "different source")
+    else:
+        dependency = audit.dependency_receipt()
+        dependency["native_modules"][0]["sha256"] = "different binary"
+        monkeypatch.setattr(audit, "dependency_receipt", lambda: dependency)
+    monkeypatch.setattr(audit, "reference", lambda **_: pytest.fail("must not solve"))
+    with pytest.raises(ValueError, match="provenance mismatch"):
+        audit.audit_document(source, settings, checkpoint_path=checkpoint, resume=True,
+                             selected_cases=selected)
+
+
+def test_checkpoint_refuses_corruption_existing_path_and_concurrent_writer(tmp_path):
+    checkpoint = tmp_path / "reference.sqlite3"
+    source = document()
+    audit.audit_document(source, config(), checkpoint_path=checkpoint)
+    with pytest.raises(FileExistsError):
+        audit.audit_document(source, config(), checkpoint_path=checkpoint)
+    with closing(sqlite3.connect(checkpoint)) as connection:
+        manifest = json.loads(connection.execute("SELECT payload FROM manifest").fetchone()[0])
+    with (audit.ReferenceCheckpoint(checkpoint, manifest, resume=True),
+          pytest.raises(sqlite3.OperationalError, match="locked")):
+        audit.ReferenceCheckpoint(checkpoint, manifest, resume=True)
+    with closing(sqlite3.connect(checkpoint)) as connection:
+        connection.execute("UPDATE results SET payload = '{}' ")
+        connection.commit()
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        audit.audit_document(source, config(), checkpoint_path=checkpoint, resume=True)
+
+
+@pytest.mark.parametrize("runtime,distribution", [("1.43", "1.44"), ("1.44", "1.45")])
+def test_unqualified_quantlib_is_refused_before_solving(monkeypatch, runtime, distribution):
+    monkeypatch.setattr(ql, "__version__", runtime)
+    monkeypatch.setattr(audit.importlib.metadata, "version", lambda _: distribution)
+    monkeypatch.setattr(audit, "reference", lambda **_: pytest.fail("must not solve"))
+    with pytest.raises(ValueError, match="qualifies only QuantLib 1.44"):
+        audit.audit_document(document(), config())
+
+
+def test_cli_captures_import_hash_and_resumes_default_checkpoint(tmp_path, monkeypatch):
+    source, output, second_output = [tmp_path / name for name in
+                                     ("input.json", "output.json", "resumed.json")]
+    source.write_text(json.dumps(document()))
+    # A later replacement of the source path must not relabel the loaded code.
+    changed_source = tmp_path / "changed.py"
+    changed_source.write_text("# edited after import\n")
+    monkeypatch.setattr(audit, "__file__", str(changed_source))
+    args = ["--input", str(source), "--time-steps", "80", "--space-nodes", "160", "--levels", "2"]
+    assert audit.main([*args, "--output", str(output)]) == 0
+    first = json.loads(output.read_text())
+    assert first["tool_sha256"] == audit.TOOL_SHA256 == audit.sha256(PATH)
+    assert first["dependency"]["qualified_version"] == "1.44"
+    assert Path(str(output) + ".checkpoint.sqlite3").exists()
+    assert audit.main([*args, "--output", str(second_output), "--checkpoint",
+                       first["checkpoint"]["path"], "--resume"]) == 0
+    second = json.loads(second_output.read_text())
+    assert second["checkpoint"]["resumed_references"] == 1
+    assert second["checkpoint"]["computed_references"] == 0
+    assert second["references"] == first["references"]
+
+
+def test_checkpoint_input_alias_and_missing_resume_are_refused(tmp_path):
+    source, output = tmp_path / "input.json", tmp_path / "output.json"
+    source.write_text(json.dumps(document()))
+    original = source.read_bytes()
+    args = ["--input", str(source), "--output", str(output)]
+    assert audit.main([*args, "--checkpoint", str(source), "--resume"]) == 1
+    assert audit.main([*args, "--resume"]) == 1
+    assert source.read_bytes() == original
+    assert not output.exists()
