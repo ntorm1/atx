@@ -152,6 +152,7 @@ struct RawContract {
        cfg.side_policy != QuoteSliceSidePolicy::OutOfTheMoney) ||
       (cfg.dividend_model != QuoteSliceDividendModel::ContinuousYield &&
        cfg.dividend_model != QuoteSliceDividendModel::AggregatePresentValue &&
+       cfg.dividend_model != QuoteSliceDividendModel::AggregateFundingPresentValue &&
        cfg.dividend_model != QuoteSliceDividendModel::DatedCash) ||
       !nonnegative(quality.min_bid) || !nonnegative(quality.max_spread_to_mid) ||
       !nonnegative(quality.max_spread_vol) || !nonnegative(quality.min_vega_weight) ||

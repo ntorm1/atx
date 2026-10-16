@@ -44,6 +44,12 @@ enum class QuoteSliceDividendModel : std::uint8_t {
   // yield. This preserves (spot - PV)*exp((rate-yield)*calendar_years), but
   // cannot preserve exercise decisions at unknown ex-dividend dates.
   AggregatePresentValue,
+  // APPROXIMATION with a FUNDING-discounted cash PV: preserve
+  // spot*exp((rate-yield)*calendar_years) - PV*exp(rate*calendar_years).
+  // Equivalently, terminal prepaid stock is spot*exp(-yield*T)-PV.
+  // This differs from escrowed AggregatePresentValue when yield != 0.
+  // As with that model, missing ex-dates prevent exact exercise modeling.
+  AggregateFundingPresentValue,
   // Use the discrete-cash lattice and the supplied event dates for BOTH IV
   // inversion and repricing. dividend_pv must be zero to avoid double counting.
   DatedCash

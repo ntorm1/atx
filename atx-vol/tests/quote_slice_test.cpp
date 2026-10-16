@@ -119,6 +119,76 @@ TEST(QuoteSlice, AggregateCashIsAnExplicitApproximationAndCannotBeDoubleCounted)
   EXPECT_FALSE(fit_quote_slice(market, {}, config, events));
 }
 
+TEST(QuoteSlice, FundingCashPvPreservesDiscountedStockAndDiffersFromEscrow) {
+  QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.10, 2.0};
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::AggregateFundingPresentValue;
+  for (const double yield : {-0.10, 0.0, 0.10}) {
+    market.continuous_yield = yield;
+    const auto fitted = fit_quote_slice(market, {}, config);
+    ASSERT_TRUE(fitted);
+    const double prepaid = 100.0 * std::exp(-yield * 0.5) - 2.0;
+    EXPECT_NEAR(fitted->diagnostics.forward * fitted->diagnostics.discount, prepaid, 5.0e-13);
+    EXPECT_NEAR(100.0 * std::exp(-fitted->diagnostics.effective_yield * 0.4), prepaid, 5.0e-13);
+    const double escrowed_prepaid = 98.0 * std::exp(-yield * 0.5);
+    if (yield == 0.0) EXPECT_NEAR(prepaid, escrowed_prepaid, 1.0e-14);
+    else EXPECT_GT(std::abs(prepaid - escrowed_prepaid), 0.09);
+  }
+  EXPECT_STREQ(to_string(config.dividend_model), "aggregate_funding_pv_approximation");
+  const std::vector<CashDividend> events{{0.2, 2.0}};
+  EXPECT_FALSE(fit_quote_slice(market, {}, config, events));
+  market.continuous_yield = 20.0; // Positive funding PV exceeds discounted stock.
+  EXPECT_FALSE(fit_quote_slice(market, {}, config));
+  market.continuous_yield = -2.0;
+  market.dividend_pv = 150.0; // PV may exceed spot when prepaid stock is larger.
+  EXPECT_TRUE(fit_quote_slice(market, {}, config));
+  config.dividend_model = QuoteSliceDividendModel::AggregatePresentValue;
+  EXPECT_FALSE(fit_quote_slice(market, {}, config));
+}
+
+TEST(QuoteSlice, FundingPvFitAndOffNodeQueryUseEachContractsCarry) {
+  const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.015, 2.0};
+  std::vector<QuoteSliceQuote> quotes;
+  const auto calendar_yield = [](double strike) {
+    return 0.015 + 0.08 * std::log(strike / 100.0);
+  };
+  const auto model_yield = [&](double strike) {
+    // Independent discounted-stock identity, not the implementation's log1p map.
+    const double prepaid = 100.0 * std::exp(-calendar_yield(strike) * 0.5) - 2.0;
+    return -std::log(prepaid / 100.0) / 0.4;
+  };
+  for (int strike = 75; strike <= 125; strike += 5) {
+    const double K = static_cast<double>(strike);
+    for (const auto side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(100.0, K, 0.4, 0.25, 0.05, model_yield(K), side);
+      ASSERT_TRUE(price);
+      const double half = std::min(0.01, *price * 0.1);
+      quotes.push_back({K, side, *price - half, *price + half, calendar_yield(K)});
+    }
+  }
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::AggregateFundingPresentValue;
+  const auto fitted = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(fitted->fit_status, QuoteSliceFitStatus::Success) << fitted->fit_error;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fitted->rows[i];
+    ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+    if (row.admitted) EXPECT_NEAR(row.market_iv, 0.25, 5.0e-6);
+    const auto repriced = andersen_lake(100.0, quotes[i].strike, 0.4, row.fitted_iv,
+                                       0.05, model_yield(quotes[i].strike), quotes[i].side);
+    ASSERT_TRUE(repriced);
+    EXPECT_NEAR(row.fitted_price, *repriced, 2.0e-12);
+  }
+  const double K = std::sqrt(95.0 * 100.0);
+  const auto value = evaluate_quote_slice(*fitted, K, Side::Call);
+  ASSERT_TRUE(value);
+  const auto repriced = andersen_lake(100.0, K, 0.4, value->volatility, 0.05,
+                                     model_yield(K), Side::Call);
+  ASSERT_TRUE(repriced);
+  EXPECT_NEAR(value->price, *repriced, 2.0e-5);
+}
+
 TEST(QuoteSlice, DatedCashUsesTheSameLatticeForInversionAndNewStrikeQueries) {
   const QuoteSliceMarket market{100.0, 0.4, 0.5, 0.04, 0.0, 0.0};
   const std::vector<CashDividend> calendar_events{{0.2, 1.8}, {0.8, 2.0}};

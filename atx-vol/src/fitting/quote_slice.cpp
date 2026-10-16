@@ -21,8 +21,7 @@ bool nonnegative(double value) noexcept { return value >= 0.0 && std::isfinite(v
 Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quotes,
                 const QuoteSliceConfig &cfg, std::span<const CashDividend> dividends) {
   if (!positive(m.spot) || !positive(m.variance_years) || !positive(m.calendar_years) ||
-      !std::isfinite(m.rate) || !std::isfinite(m.continuous_yield) || !nonnegative(m.dividend_pv) ||
-      !(m.dividend_pv < m.spot)) {
+      !std::isfinite(m.rate) || !std::isfinite(m.continuous_yield) || !nonnegative(m.dividend_pv)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid market or clocks");
   }
   if (quotes.size() > std::numeric_limits<std::uint32_t>::max() || cfg.min_quotes < 2 ||
@@ -45,6 +44,11 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
     }
     break;
   case QuoteSliceDividendModel::AggregatePresentValue:
+    if (!(m.dividend_pv < m.spot)) {
+      return Err(ErrorCode::InvalidArgument, "escrowed-PV model requires PV below spot");
+    }
+    [[fallthrough]];
+  case QuoteSliceDividendModel::AggregateFundingPresentValue:
     if (!dividends.empty()) {
       return Err(ErrorCode::InvalidArgument, "aggregate-PV model cannot also consume dated cash");
     }
@@ -121,16 +125,35 @@ double calendar_yield_at(const QuoteSliceFit &fit, double strike) noexcept {
   return std::lerp(lo.continuous_yield, hi->continuous_yield, weight);
 }
 
+double aggregate_log_retention(const QuoteSliceMarket &market, double calendar_yield,
+                               QuoteSliceDividendModel model) noexcept {
+  if (market.dividend_pv == 0.0) return 0.0;
+  double fraction = market.dividend_pv / market.spot;
+  if (model == QuoteSliceDividendModel::AggregateFundingPresentValue) {
+    // Compute PV / (S*exp(-q*T)) without overflowing exp(q*T) separately.
+    fraction = std::exp(std::log(market.dividend_pv) - std::log(market.spot) +
+                        calendar_yield * market.calendar_years);
+  }
+  if (!(fraction < 1.0)) return std::numeric_limits<double>::quiet_NaN();
+  return std::log1p(-fraction);
+}
+
+double converted_yield(const QuoteSliceMarket &market, double calendar_yield,
+                        QuoteSliceDividendModel model) noexcept {
+  double value = calendar_yield * (market.calendar_years / market.variance_years);
+  if (model == QuoteSliceDividendModel::AggregatePresentValue ||
+      model == QuoteSliceDividendModel::AggregateFundingPresentValue) {
+    value -= aggregate_log_retention(market, calendar_yield, model) / market.variance_years;
+  }
+  return value;
+}
+
 double effective_yield(const QuoteSliceFit &fit, double calendar_yield) noexcept {
   // Preserve the historical arithmetic exactly on every reference-carry row.
   if (calendar_yield == fit.market.continuous_yield) {
     return fit.diagnostics.effective_yield;
   }
-  double value = calendar_yield * (fit.market.calendar_years / fit.market.variance_years);
-  if (fit.dividend_model == QuoteSliceDividendModel::AggregatePresentValue) {
-    value -= std::log1p(-fit.market.dividend_pv / fit.market.spot) / fit.market.variance_years;
-  }
-  return value;
+  return converted_yield(fit.market, calendar_yield, fit.dividend_model);
 }
 
 double local_forward(const QuoteSliceFit &fit, double calendar_yield, double q_effective) noexcept {
@@ -139,6 +162,10 @@ double local_forward(const QuoteSliceFit &fit, double calendar_yield, double q_e
   const double growth = std::exp((m.rate - calendar_yield) * m.calendar_years);
   if (fit.dividend_model == QuoteSliceDividendModel::AggregatePresentValue) {
     return (m.spot - m.dividend_pv) * growth;
+  }
+  if (fit.dividend_model == QuoteSliceDividendModel::AggregateFundingPresentValue) {
+    return std::exp(std::log(m.spot) + (m.rate - calendar_yield) * m.calendar_years +
+                    aggregate_log_retention(m, calendar_yield, fit.dividend_model));
   }
   double forward = m.spot * growth;
   if (fit.dividend_model == QuoteSliceDividendModel::DatedCash) {
@@ -246,6 +273,8 @@ const char *to_string(QuoteSliceDividendModel value) noexcept {
     return "continuous_yield";
   case QuoteSliceDividendModel::AggregatePresentValue:
     return "aggregate_pv_approximation";
+  case QuoteSliceDividendModel::AggregateFundingPresentValue:
+    return "aggregate_funding_pv_approximation";
   case QuoteSliceDividendModel::DatedCash:
     return "dated_cash_lattice";
   }
@@ -364,13 +393,16 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
   diag.effective_rate = market.rate * ratio;
-  diag.effective_yield = market.continuous_yield * ratio;
+  diag.effective_yield = converted_yield(market, market.continuous_yield, config.dividend_model);
   diag.discount = std::exp(-market.rate * market.calendar_years);
   const double growth = std::exp((market.rate - market.continuous_yield) * market.calendar_years);
   diag.forward = market.spot * growth;
   if (config.dividend_model == QuoteSliceDividendModel::AggregatePresentValue) {
-    diag.effective_yield -= std::log1p(-market.dividend_pv / market.spot) / market.variance_years;
     diag.forward = (market.spot - market.dividend_pv) * growth;
+  } else if (config.dividend_model == QuoteSliceDividendModel::AggregateFundingPresentValue) {
+    diag.forward = std::exp(std::log(market.spot) +
+        (market.rate - market.continuous_yield) * market.calendar_years +
+        aggregate_log_retention(market, market.continuous_yield, config.dividend_model));
   } else if (config.dividend_model == QuoteSliceDividendModel::DatedCash) {
     out.variance_clock_dividends.reserve(calendar_dividends.size());
     const double window = market.calendar_years * (1.0 + kTauAtExpiryRelTol);
