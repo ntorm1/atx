@@ -1068,6 +1068,84 @@ def test_seed_prior_option_moves_flat_hinge_fit_to_the_seed(binary, tmp_path):
     assert "prior" not in results["configured"]["policy_definition"]["initialization"]
 
 
+def test_one_sided_sigma_interval_keeps_the_configured_initial_and_prior(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    for row in rows:  # Every quote bidless: the asks bound sigma from above only.
+        row["bid"] = 0
+        row["ask"] = black_scholes_call(float(row["strike"]), .45)
+    write_rows(source, rows)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(initial_sigma=.25, prior_weight=.001, max_evaluations=64,
+                                        max_sweeps=24)
+    policy["initialization"] = {"mode": "quote-seed", "seed": {"estimator": "sigma-interval"},
+                                "prior": "seed"}
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    decision, = report["policy_decisions"]
+    init = decision["initialization"]
+    # Closing the open side with min_sigma would have seeded sqrt(min_sigma * .45)
+    # as initial AND prior centre; the refusal keeps both configured vectors.
+    assert init["state"] == "fallback_one_sided_interval" and not init["applied"]
+    assert report["initialization_states"] == {"fallback_one_sided_interval": 1}
+    assert init["parameter_status_counts"] == {"one_sided_interval": 1}
+    parameter, = init["parameters"]
+    assert parameter["sigma"] is None and parameter["variance_rate"] is None
+    assert parameter["interval_lower"] is None
+    assert parameter["interval_upper"] == pytest.approx(.45, abs=1e-5)
+    assert init["sigma_interval"]["lower"] is None
+    assert init["sigma_interval"]["effective_lower"] == init["layout"]["min_sigma"]
+    assert init["effective_initial_sigmas"] == [.25]
+    assert init["effective_prior_sigmas"] == [.25]
+    assert "effective_prior_source" not in init
+    assert decision["fit"]["sigmas"][0] == pytest.approx(.25, abs=1e-3)
+    # The expanded definition describes the opted-in behaviour, never the default.
+    definition = report["policy_definition"]["initialization"]
+    assert "configured prior and full quote set preserved" not in definition["application"]
+    assert "prior centre" in definition["application"]
+    assert definition["aggregation"].startswith("equal-weight intersection")
+    assert "one-sided intervals refused" in definition["aggregation"]
+    assert "never closed with a layout sigma bound" in definition["interval_estimator"]
+    assert "one-sided sigma intervals" in definition["prior_application"]
+
+
+def test_default_initialization_definition_keeps_its_bytes(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    texts = {}
+    for name, initialization in (("default", None),
+                                 ("fallback", {"mode": "quote-seed", "seed": {
+                                     "estimator": "bid-mid-ask-then-sigma-interval"}})):
+        policy.pop("initialization", None)
+        if initialization:
+            policy["initialization"] = initialization
+        path.write_text(json.dumps(policy))
+        result = common_run(binary, source, output, path)
+        assert result.returncode == 0, result.stderr
+        texts[name] = json.loads(result.stdout)["policy_definition"]["initialization"]
+    # Historical bytes: frozen configuration hashes depend on them.
+    assert texts["default"]["application"] == (
+        "complete seeds only; initializer error/incomplete falls back to configured initial; "
+        "no fitter retry; configured prior and full quote set preserved")
+    assert texts["default"]["aggregation"] == (
+        "equal quote medians within expiry; equal expiries within positive variance endpoint; "
+        "equal endpoints for shared; conservative adjacent support for interval shape; "
+        "flat across state knots")
+    assert texts["fallback"]["application"] == texts["default"]["application"]
+    assert texts["fallback"]["aggregation"] == (
+        "bid-mid-ask primary: " + texts["default"]["aggregation"] +
+        "; sigma-interval fallback: equal-weight intersection [max bid-implied lower, min "
+        "ask-implied upper] per expiry and per positive variance endpoint; shared: one "
+        "intersection over every used quote; interval shape: endpoint geometric-midpoint total "
+        "variance differenced; flat across state knots; one-sided intervals refused")
+
+
 @pytest.mark.parametrize("initialization", [
     {"mode": "quote-seed", "prior": "median"},
     {"mode": "configured", "prior": "seed"},

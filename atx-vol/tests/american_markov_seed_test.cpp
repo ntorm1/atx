@@ -375,11 +375,17 @@ TEST(AmericanMarkovSeedInterval, WideAndBidlessQuotesBoundSigmaThatBidMidAskRefu
   EXPECT_EQ(result->inversion_calls, 3U);
   EXPECT_EQ(result->reserved_root_iteration_slots, 3U * 32U);
   EXPECT_EQ(result->parameters[0].status, ParameterStatus::Ready);
+  // Both sides are market bounds: no one-sided provenance is attached.
+  EXPECT_FALSE(result->parameters[0].interval_lower);
+  EXPECT_FALSE(result->parameters[0].interval_upper);
   ASSERT_TRUE(result->expiries[0].sigma_interval);
   EXPECT_NEAR(result->expiries[0].total_variance->midpoint, 0.4 * 0.8 * 0.5, 1e-5);
 }
 
-TEST(AmericanMarkovSeedInterval, OneSidedIntervalClosesWithTheLayoutBound) {
+// A one-sided interval's midpoint would be sqrt(bound * layout constant), so a
+// layout sigma bound would become the seed (and, under prior "seed", the prior
+// centre). It is refused with the market bound reported instead.
+TEST(AmericanMarkovSeedInterval, AskOnlyIntervalIsRefusedNotClosedWithMinSigma) {
   const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
   const std::array quotes{bounded(0, 0.5, 0.0, 0.8), bounded(0, 0.5, 0.0, 1.1, 95)};
   AmericanMarkovSeedLayout layout;
@@ -389,10 +395,92 @@ TEST(AmericanMarkovSeedInterval, OneSidedIntervalClosesWithTheLayoutBound) {
   ASSERT_TRUE(result);
   ASSERT_TRUE(result->sigma_interval);
   EXPECT_FALSE(result->sigma_interval->lower);
+  EXPECT_NEAR(*result->sigma_interval->upper, 0.8, 1e-5);
+  // The descriptive fields still close the open side; they are never a seed.
   EXPECT_EQ(result->sigma_interval->effective_lower, layout.min_sigma);
-  ASSERT_EQ(result->initial_sigmas.size(), 1U);
-  EXPECT_NEAR(result->initial_sigmas[0], std::sqrt(0.05 * 0.8), 1e-5);
+  EXPECT_TRUE(result->initial_sigmas.empty());
+  const auto &p = result->parameters[0];
+  EXPECT_EQ(p.status, ParameterStatus::OneSidedInterval);
+  EXPECT_STREQ(to_string(p.status), "one_sided_interval");
+  EXPECT_FALSE(p.sigma);
+  EXPECT_FALSE(p.variance_rate); // No band built from the layout constant.
+  EXPECT_FALSE(p.interval_lower);
+  ASSERT_TRUE(p.interval_upper);
+  EXPECT_NEAR(*p.interval_upper, 0.8, 1e-5);
+  // The quotes still bound sigma; only the point seed is refused.
+  EXPECT_EQ(result->used_quotes, 2U);
   EXPECT_EQ(result->inversion_calls, 2U);
+}
+
+TEST(AmericanMarkovSeedInterval, BidOnlyIntervalIsRefusedNotClosedWithMaxSigma) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  // Asks above max_sigma bound nothing inside the layout; the bids bound below.
+  const std::array quotes{bounded(0, 0.5, 0.3, 0.9), bounded(0, 0.5, 0.35, 0.95, 105)};
+  AmericanMarkovSeedLayout layout;
+  layout.max_sigma = 0.6;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, interval_config());
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->sigma_interval);
+  EXPECT_NEAR(*result->sigma_interval->lower, 0.35, 1e-5);
+  EXPECT_FALSE(result->sigma_interval->upper);
+  EXPECT_EQ(result->sigma_interval->effective_upper, layout.max_sigma);
+  EXPECT_TRUE(result->initial_sigmas.empty());
+  const auto &p = result->parameters[0];
+  EXPECT_EQ(p.status, ParameterStatus::OneSidedInterval);
+  ASSERT_TRUE(p.interval_lower);
+  EXPECT_NEAR(*p.interval_lower, 0.35, 1e-5);
+  EXPECT_FALSE(p.interval_upper);
+  EXPECT_FALSE(p.sigma);
+  EXPECT_EQ(result->used_quotes, 2U);
+  EXPECT_EQ(result->inversion_calls, 4U);
+}
+
+// Two one-sided quotes on opposite sides make a two-sided market interval.
+TEST(AmericanMarkovSeedInterval, OppositeOneSidedQuotesCloseTheIntervalFromTheMarket) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  const std::array quotes{bounded(0, 0.5, 0.0, 0.8), bounded(0, 0.5, 0.35, 0.95, 105)};
+  AmericanMarkovSeedLayout layout;
+  layout.max_sigma = 0.9;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, interval_config());
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->sigma_interval);
+  EXPECT_NEAR(*result->sigma_interval->lower, 0.35, 1e-5);
+  EXPECT_NEAR(*result->sigma_interval->upper, 0.8, 1e-5);
+  EXPECT_EQ(result->parameters[0].status, ParameterStatus::Ready);
+  ASSERT_EQ(result->initial_sigmas.size(), 1U);
+  EXPECT_NEAR(result->initial_sigmas[0], std::sqrt(0.35 * 0.8), 1e-5);
+}
+
+TEST(AmericanMarkovSeedInterval, PerIntervalOneSidedEndpointRefusesBothDifferencedGroups) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0, 0, 0},
+                             AmericanMarkovFitInterval{1, 1, 0, 0, 0}};
+  AmericanMarkovSeedLayout layout;
+  layout.time_shape = AmericanMarkovFitTimeShape::PerVarianceInterval;
+  // Later endpoint ask-only: group 0 seeds, group 1 refuses on endpoint 1.
+  const std::array later{bounded(0, 0.25, 0.15, 0.25), bounded(1, 1, 0.0, 0.4)};
+  const auto a = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, later, layout, interval_config());
+  ASSERT_TRUE(a);
+  EXPECT_TRUE(a->initial_sigmas.empty());
+  EXPECT_EQ(a->parameters[0].status, ParameterStatus::Ready);
+  EXPECT_EQ(a->parameters[1].status, ParameterStatus::OneSidedInterval);
+  ASSERT_TRUE(a->parameters[1].interval_upper);
+  EXPECT_NEAR(*a->parameters[1].interval_upper, 0.4, 1e-5);
+  // Earlier endpoint ask-only: both groups difference its midpoint, both refuse
+  // and report endpoint 0's bound.
+  const std::array earlier{bounded(0, 0.25, 0.0, 0.25), bounded(1, 1, 0.3, 0.4)};
+  const auto b = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, earlier, layout, interval_config());
+  ASSERT_TRUE(b);
+  EXPECT_TRUE(b->initial_sigmas.empty());
+  for (std::size_t i = 0; i < 2; ++i) {
+    EXPECT_EQ(b->parameters[i].status, ParameterStatus::OneSidedInterval) << i;
+    ASSERT_TRUE(b->parameters[i].interval_upper) << i;
+    EXPECT_NEAR(*b->parameters[i].interval_upper, 0.25, 1e-5) << i;
+    EXPECT_FALSE(b->parameters[i].interval_lower) << i;
+  }
 }
 
 TEST(AmericanMarkovSeedInterval, UnboundedBothWaysIsRefusedNotDefaulted) {

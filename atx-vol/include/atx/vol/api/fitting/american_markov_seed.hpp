@@ -58,9 +58,12 @@ enum class AmericanMarkovSeedQuoteStatus {
   NonfiniteVariance
 };
 
+// OneSidedInterval (SigmaInterval only): the market bounds sigma on one side
+// only. Closing the open side with a layout sigma bound would make an admission
+// constant the seed, so the parameter is refused and the bound is reported.
 enum class AmericanMarkovSeedParameterStatus {
   Ready, MissingEndpoint, NegativeForwardVariance, UncertainForwardVariance,
-  SigmaBounds, UnsupportedCashSchedule, NonfiniteVariance
+  SigmaBounds, UnsupportedCashSchedule, NonfiniteVariance, OneSidedInterval
 };
 
 // Bid/mid/ask estimates, or propagated support bounds. These are heuristic
@@ -86,11 +89,14 @@ struct AmericanMarkovSeedQuoteDiagnostics {
 
 // SigmaInterval only. Feasible equivalent-sigma interval over a quote set:
 // lower = max bid-implied bound, upper = min ask-implied bound. A missing side
-// is replaced by the layout sigma bound ("effective"); the seed is the
-// geometric midpoint sqrt(effective_lower * effective_upper). crossed means
-// effective_lower > effective_upper (inconsistent quotes or term structure);
-// the midpoint is then still between the two crossed bounds and is reported,
-// never repaired. log_width = log(effective_upper / effective_lower).
+// is replaced by the layout sigma bound ("effective") for the descriptive
+// fields only. The seed is the geometric midpoint
+// sqrt(effective_lower * effective_upper) ONLY when both sides are market
+// bounds; a one-sided interval's midpoint depends on a layout constant and is
+// never a seed (OneSidedInterval). crossed means effective_lower >
+// effective_upper (inconsistent quotes or term structure); the midpoint is then
+// still between the two crossed bounds and is reported, never repaired.
+// log_width = log(effective_upper / effective_lower).
 struct AmericanMarkovSeedSigmaInterval {
   std::optional<double> lower;
   std::optional<double> upper;
@@ -129,6 +135,12 @@ struct AmericanMarkovSeedParameter {
   AmericanMarkovSeedParameterStatus status = AmericanMarkovSeedParameterStatus::MissingEndpoint;
   std::optional<double> sigma;
   std::optional<AmericanMarkovSeedVarianceBand> variance_rate;
+  // OneSidedInterval only: the market bounds of the refusing interval, in
+  // equivalent flat-to-expiry sigma. Exactly one is set; the other side is
+  // open. Shared: the global interval. PerVarianceInterval: the first
+  // one-sided endpoint of the pair this parameter differences.
+  std::optional<double> interval_lower;
+  std::optional<double> interval_upper;
 };
 
 struct AmericanMarkovQuoteSeeds {
@@ -183,9 +195,12 @@ struct AmericanMarkovQuoteSeeds {
 // expiries, equal quote weight). PerVarianceInterval intersects within each
 // variance endpoint, then differences geometric-midpoint total variance
 // (no adjacent-support requirement: Ready iff the forward rate is positive,
-// finite and inside the sigma bounds). A parameter is refused only when its
-// interval is unbounded on both sides (MissingEndpoint) or the forward
-// difference fails. Interval width is descriptive, not confidence.
+// finite and inside the sigma bounds). A parameter is refused when its
+// interval is unbounded on both sides (MissingEndpoint), bounded on one side
+// only (OneSidedInterval: no point seed from a layout bound; for
+// PerVarianceInterval either differenced endpoint being one-sided refuses),
+// or the forward difference fails. Interval width is descriptive, not
+// confidence.
 //
 // IMPORTANT: this function never applies its output. The fitter interprets an
 // empty prior_sigmas as INITIAL. A caller applying these seeds while preserving

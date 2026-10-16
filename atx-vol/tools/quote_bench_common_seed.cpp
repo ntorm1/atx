@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace quote_bench {
@@ -162,16 +163,43 @@ CommonInitializationConfig parse_common_initialization(const Json &entry) {
   return out;
 }
 
+namespace {
+// The default (bid-mid-ask, configured prior) texts are the historical bytes, so
+// legacy expanded definitions hash unchanged. Opted-in configurations get the
+// variant that describes what actually runs: they never contradict prior_application
+// or interval_estimator.
+constexpr const char *kConfiguredPriorApplication = "complete seeds only; initializer "
+    "error/incomplete falls back to configured initial; no fitter retry; configured prior and "
+    "full quote set preserved";
+constexpr const char *kSeedPriorApplication = "complete seeds only; initializer "
+    "error/incomplete falls back to configured initial and configured prior; no fitter retry; "
+    "an applied seed also replaces the prior centre (prior_application); full quote set preserved";
+constexpr const char *kBidMidAskAggregation = "equal quote medians within expiry; equal expiries "
+    "within positive variance endpoint; equal endpoints for shared; conservative adjacent "
+    "support for interval shape; flat across state knots";
+constexpr const char *kSigmaIntervalAggregation = "equal-weight intersection [max bid-implied "
+    "lower, min ask-implied upper] per expiry and per positive variance endpoint; shared: one "
+    "intersection over every used quote; interval shape: endpoint geometric-midpoint total "
+    "variance differenced; flat across state knots; one-sided intervals refused";
+
+Json aggregation_text(const CommonInitializationConfig &config) {
+  if (config.interval_fallback) {
+    return std::string("bid-mid-ask primary: ") + kBidMidAskAggregation +
+           "; sigma-interval fallback: " + kSigmaIntervalAggregation;
+  }
+  return config.seed.estimator == AmericanMarkovSeedEstimator::SigmaInterval
+      ? kSigmaIntervalAggregation : kBidMidAskAggregation;
+}
+} // namespace
+
 Json common_initialization_json(const CommonInitializationConfig &config) {
   Json result{{"mode", mode_name(config.mode)}, {"seed", seed_config_json(config.seed)},
-      {"application", "complete seeds only; initializer error/incomplete falls back to configured "
-          "initial; no fitter retry; configured prior and full quote set preserved"},
+      {"application", config.prior_from_seed ? kSeedPriorApplication
+                                             : kConfiguredPriorApplication},
       {"iv_convention", "Andersen-Lake flat-to-expiry American IV: variance time T, "
           "r=integral(r dt)/T, q=integral(q dt)/T; aggregate PV continuous-yield approximation; "
           "dated cash refused"},
-      {"aggregation", "equal quote medians within expiry; equal expiries within positive variance "
-          "endpoint; equal endpoints for shared; conservative adjacent support for interval shape; "
-          "flat across state knots"},
+      {"aggregation", aggregation_text(config)},
       {"limits", "support/MAD are heuristic, not statistical confidence or arbitrage bounds; "
           "root iteration slots reserve root-loop capacity, not total ALO pricing work"}};
   // Added only when opted in, so the default expanded definition keeps its bytes.
@@ -180,15 +208,17 @@ Json common_initialization_json(const CommonInitializationConfig &config) {
     result["seed"]["estimator"] = estimator_name(config);
     result["interval_estimator"] = "near-forward quotes incl. bidless/wide; ask-implied sigma is "
         "an upper bound, bid-implied sigma (bid above intrinsic floor) a lower bound; feasible "
-        "interval = [max lower, min upper], missing side = layout sigma bound; seed = geometric "
-        "midpoint (shared: all used quotes; per-interval: endpoint midpoints differenced); "
-        "refused only when unbounded both ways; crossed intervals reported, never repaired; "
+        "interval = [max lower, min upper]; seed = geometric midpoint of a two-sided interval "
+        "(shared: all used quotes; per-interval: endpoint midpoints differenced); a one-sided "
+        "interval is refused (one_sided_interval), never closed with a layout sigma bound; "
+        "refused when unbounded both ways; crossed intervals reported, never repaired; "
         "fallback runs only after an incomplete bid-mid-ask seed, within the remaining budget";
   }
   if (config.prior_from_seed) {
     result["prior"] = "seed";
     result["prior_application"] = "an applied quote seed (any estimator) also replaces the "
-        "regularization prior centre; refused/incomplete seeds keep the configured prior";
+        "regularization prior centre; refused/incomplete seeds, including one-sided sigma "
+        "intervals, keep the configured prior";
   }
   return result;
 }
@@ -294,14 +324,20 @@ void record_seeds(const AmericanMarkovQuoteSeeds &seeds, Json &d) {
       d["inversion_errors_not_sampled"] = d["inversion_errors_not_sampled"].get<std::size_t>() + 1U;
     }
   }
+  const bool interval = seeds.configuration.estimator == AmericanMarkovSeedEstimator::SigmaInterval;
+  const auto optional = [](const std::optional<double> &x) { return x ? Json(*x) : Json(nullptr); };
   d["parameters"] = Json::array();
   for (const auto &parameter : seeds.parameters) {
     increment(d["parameter_status_counts"], to_string(parameter.status));
     d["parameters"].push_back({{"status", to_string(parameter.status)},
-        {"sigma", parameter.sigma ? Json(*parameter.sigma) : Json(nullptr)},
+        {"sigma", optional(parameter.sigma)},
         {"variance_rate", band_json(parameter.variance_rate)}});
+    // The one market bound behind a one_sided_interval refusal (null otherwise).
+    if (interval) {
+      d["parameters"].back()["interval_lower"] = optional(parameter.interval_lower);
+      d["parameters"].back()["interval_upper"] = optional(parameter.interval_upper);
+    }
   }
-  const bool interval = seeds.configuration.estimator == AmericanMarkovSeedEstimator::SigmaInterval;
   d["expiries"] = Json::array();
   for (const auto &expiry : seeds.expiries) {
     d["expiries"].push_back({{"calendar_end", expiry.calendar_end},
@@ -333,6 +369,14 @@ void record_seeds(const AmericanMarkovQuoteSeeds &seeds, Json &d) {
         {"lower_sigma", quote.lower_bound ? Json(*quote.equivalent_vols[0]) : Json(nullptr)},
         {"upper_sigma", quote.upper_bound ? Json(*quote.equivalent_vols[2]) : Json(nullptr)}});
   }
+}
+
+// A one-sided sigma interval refuses its seed rather than letting a layout
+// sigma bound become the initial or prior centre (OneSidedInterval).
+bool one_sided_interval(const AmericanMarkovQuoteSeeds &seeds) {
+  return std::any_of(seeds.parameters.begin(), seeds.parameters.end(), [](const auto &p) {
+    return p.status == AmericanMarkovSeedParameterStatus::OneSidedInterval;
+  });
 }
 
 // SigmaInterval retry after an incomplete BidMidAsk seed, inside the same
@@ -371,7 +415,12 @@ void apply_interval_fallback(const AmericanMarkovFitMarket &market,
   d["inversion_calls"] = primary.inversion_calls + seeds->inversion_calls;
   d["reserved_root_iteration_slots"] =
       primary.reserved_root_iteration_slots + seeds->reserved_root_iteration_slots;
-  if (seeds->initial_sigmas.empty()) {
+  if (seeds->initial_sigmas.empty() && one_sided_interval(*seeds)) {
+    f["state"] = "one_sided_interval";
+    d["state"] = "fallback_one_sided_interval";
+    d["reason"] = "Bid-mid-ask seed incomplete; sigma-interval fallback bounded on one side "
+                  "only; configured initial and prior retained";
+  } else if (seeds->initial_sigmas.empty()) {
     f["state"] = "incomplete";
   } else if (!valid_vector(seeds->initial_sigmas, fit, result.initial_sigmas.size())) {
     f["state"] = "layout_mismatch";
@@ -412,6 +461,13 @@ void apply_common_quote_seeds(const AmericanMarkovFitMarket &market,
     return;
   }
   record_seeds(*seeds, d);
+  if (seeds->initial_sigmas.empty() && one_sided_interval(*seeds)) {
+    // Only SigmaInterval reports OneSidedInterval, so it never has a fallback.
+    d["state"] = "fallback_one_sided_interval";
+    d["reason"] = "Sigma interval bounded on one side only (a layout bound would set the "
+                  "midpoint); configured initial and prior retained";
+    return;
+  }
   if (seeds->initial_sigmas.empty()) {
     d["state"] = "fallback_incomplete";
     d["reason"] = "At least one requested seed parameter is unready; configured initial retained";

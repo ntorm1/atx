@@ -16,14 +16,18 @@ struct CommonInitializationConfig {
   CommonInitializationMode mode = CommonInitializationMode::Configured;
   // seed.estimator selects the primary estimator. interval_fallback (policy
   // spelling "bid-mid-ask-then-sigma-interval") runs SigmaInterval only when the
-  // BidMidAsk seed is incomplete or errors, within the SAME configured
-  // inversion/slot budgets (the remainder after the primary attempt).
+  // BidMidAsk seed is incomplete (state fallback_incomplete), within the SAME
+  // configured inversion/slot budgets (the remainder after the primary
+  // attempt). A primary estimator ERROR never runs it: errors are layout or
+  // schedule refusals that both estimators share, reported as fallback_error.
   atx::vol::AmericanMarkovSeedConfig seed;
   bool interval_fallback = false;
   // Policy "prior": "seed". With wide/bidless quotes the hinge interval loss is
   // flat, so only the prior acts and a fit returns to the configured prior
   // centre whatever the seed. This opt-in makes an applied seed vector the
-  // prior centre too; incomplete/refused seeds keep the configured prior.
+  // prior centre too; incomplete/refused seeds keep the configured prior. A
+  // one-sided sigma interval is a refusal (state fallback_one_sided_interval),
+  // so a layout sigma bound never becomes the prior centre.
   bool prior_from_seed = false;
 };
 

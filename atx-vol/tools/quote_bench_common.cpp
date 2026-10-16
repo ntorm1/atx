@@ -90,6 +90,7 @@ const char *termination_name(AmericanMarkovFitTermination value) {
   case AmericanMarkovFitTermination::ObjectiveTolerance: return "objective_tolerance";
   case AmericanMarkovFitTermination::GradientTolerance: return "gradient_tolerance";
   case AmericanMarkovFitTermination::DampingLimit: return "damping_limit";
+  case AmericanMarkovFitTermination::JacobianFailure: return "jacobian_failure";
   }
   return "unknown";
 }

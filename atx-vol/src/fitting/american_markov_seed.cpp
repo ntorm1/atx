@@ -516,22 +516,49 @@ AmericanMarkovSeedParameter checked_rate(Band rate, const AmericanMarkovSeedLayo
   return p;
 }
 
+bool two_sided(const AmericanMarkovSeedSigmaInterval &s) noexcept {
+  return s.lower.has_value() && s.upper.has_value();
+}
+
+// A one-sided interval's geometric midpoint is set by the layout bound that
+// closes its open side (min_sigma/max_sigma), an admission constant rather
+// than a market observation. It is refused, never seeded; the market bound is
+// reported. No artificial variance band is attached.
+AmericanMarkovSeedParameter one_sided(const AmericanMarkovSeedSigmaInterval &s) {
+  AmericanMarkovSeedParameter p;
+  p.status = ParameterStatus::OneSidedInterval;
+  p.interval_lower = s.lower;
+  p.interval_upper = s.upper;
+  return p;
+}
+
 // SigmaInterval groups. Shared: geometric midpoint over every used quote.
 // PerVarianceInterval: difference geometric-midpoint total variance between
 // adjacent endpoints; the band propagates the effective bounds descriptively.
+// Only two-sided intervals seed; one-sided ones refuse (see one_sided).
 std::vector<AmericanMarkovSeedParameter> interval_groups(const AmericanMarkovSeedLayout &layout,
                                                          const AmericanMarkovQuoteSeeds &out) {
   std::vector<AmericanMarkovSeedParameter> groups(out.time_groups);
   if (layout.time_shape == AmericanMarkovFitTimeShape::Shared) {
     if (out.sigma_interval) {
       const auto &s = *out.sigma_interval;
-      groups[0] = checked_rate(interval_band(s, 1.0), layout);
+      groups[0] = two_sided(s) ? checked_rate(interval_band(s, 1.0), layout) : one_sided(s);
     }
     return groups;
   }
   for (std::size_t i = 0; i < out.variance_endpoints.size(); ++i) {
     const auto &e = out.variance_endpoints[i];
     if (!e.sigma_interval || (i > 0 && !out.variance_endpoints[i - 1].sigma_interval)) continue;
+    // Both differenced midpoints must be market-bounded; report the earlier
+    // one-sided endpoint first.
+    if (i > 0 && !two_sided(*out.variance_endpoints[i - 1].sigma_interval)) {
+      groups[i] = one_sided(*out.variance_endpoints[i - 1].sigma_interval);
+      continue;
+    }
+    if (!two_sided(*e.sigma_interval)) {
+      groups[i] = one_sided(*e.sigma_interval);
+      continue;
+    }
     const Band total = *e.total_variance;
     const Band previous = i == 0 ? Band{} : *out.variance_endpoints[i - 1].total_variance;
     const double dv = e.variance_end - (i == 0 ? 0 : out.variance_endpoints[i - 1].variance_end);
@@ -653,6 +680,7 @@ const char *to_string(AmericanMarkovSeedParameterStatus status) noexcept {
   case ParameterStatus::SigmaBounds: return "sigma_bounds";
   case ParameterStatus::UnsupportedCashSchedule: return "unsupported_cash_schedule";
   case ParameterStatus::NonfiniteVariance: return "nonfinite_variance";
+  case ParameterStatus::OneSidedInterval: return "one_sided_interval";
   }
   return "unknown";
 }
