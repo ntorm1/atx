@@ -48,9 +48,11 @@
       "name": "vol-dev",
       "inherits": "equity-dev",
       "displayName": "vol-dev: restored volatility module and its dependencies",
+      "description": "Debug atx-vol closure. ATX_VOL_ONLY=ON (inherited by every vol-* preset) configures ONLY atx-core + atx-tsdb + atx-vol: atx-engine/atx-impl are never added, so no vol lane can compile them (before 2026-10-16 atx-vol-tests linked atx-engine and every lane that built it compiled all 146 engine TUs). The two engine consumers (atx-vol-vrp-train, atx-vol-vrp-model-tests) need -DATX_VOL_ONLY=OFF. See atx-vol/CLAUDE.md 'Build lanes'.",
       "binaryDir": "${sourceDir}/build-vol",
       "cacheVariables": {
         "ATX_BUILD_VOL": "ON",
+        "ATX_VOL_ONLY": "ON",
         "ATX_TEST_GROUPS": "core",
         "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/vol-dev"
       }

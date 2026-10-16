@@ -996,10 +996,15 @@ if(ATX_BUILD_TOOLS)
     # dir; Eigen arrives transitively (atx::core links Eigen3::Eigen PUBLIC).
     # The atx::engine::learn definitions live in atx-engine/src/learn/*.cpp,
     # which is why an include-dir grant alone would not link. This edge stays
-    # confined to THIS executable and atx-vol-tests — the atx-vol LIBRARY
-    # never includes an atx-engine header (layering).
-    add_executable(atx-vol-vrp-train tools/vrp_train_main.cpp)
-    target_link_libraries(atx-vol-vrp-train PRIVATE atx::vol atx::core atx-engine atx_warnings)
+    # confined to THIS executable and atx-vol-vrp-model-tests (tests/) — the
+    # atx-vol LIBRARY never includes an atx-engine header (layering).
+    #
+    # Absent under ATX_VOL_ONLY (every vol-* preset): the engine is not
+    # configured there, so a vol lane can never compile it through this tool.
+    if(NOT ATX_VOL_ONLY)
+        add_executable(atx-vol-vrp-train tools/vrp_train_main.cpp)
+        target_link_libraries(atx-vol-vrp-train PRIVATE atx::vol atx::core atx-engine atx_warnings)
+    endif()
 
     # alpha layer CLI: adjudicate a panel's inputs and target BEFORE a fit.
     # Reads the panel's header as its schema (columns by NAME, no version
