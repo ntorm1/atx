@@ -70,6 +70,63 @@ Parent next wires native common-model benchmarking and controlled numerical
 comparisons. New measurements must retain whole-cohort coverage/refusals and
 paired comparisons; no unseen validation labels are used for development.
 
+## Integrated policy and numerical comparisons
+
+Policy `218b178f` received independent APPROVE and is integrated as `15e9a9fd`.
+It owns all profile vectors, shares the raw liquidity classifier with the old
+quote-slice policy, and retains explicit symbol overrides and resource refusals.
+Parent permanently registered library/focused/monolithic targets and updated
+the header census to 58 Tier-A plus 31 Tier-B plus the umbrella (90 total).
+Parent Release policy and quote-slice CTest lanes both pass (12 and 49 cases);
+policy source/test and classifier source compile with PCH disabled. Defaults
+remain uncalibrated; a valid configuration does not guarantee every market fits
+within its work budget.
+
+Comparator `d66fbed6` received parent source/test review and is integrated as
+`5896262c`. Parent's 44 standalone Python tests pass. These load this tree's
+tool directly and run with `--noconftest`, since the unrelated compiled Python
+extension resolves to another checkout on this host. The extension suite was
+not run or claimed. Exact numeric schedule/contract joins retain requested
+coverage, failures, unresolved references and explicit replacement lineage.
+
+Audit v2 adds concentration equal to the first positive cumulative synthetic
+standard deviation, with an explicit fixed fallback for deterministic paths.
+This uses known fixture parameters, never vendor labels, and is an experiment
+rather than a production selection rule. Both 65/129-state adaptive profiles
+compile all 11 fixtures under unchanged limits. The 129-state short-low-vol ATM
+put is .032176688742 versus .032239718069 independent FD, compared with
+.001257913867 on default65. On the exact 24-contract American ATM reference set,
+MAE is .000476122095 versus .163272839667 default65, with all 24 priced. Those
+synthetic results are not SpiderRock fit improvements.
+
+Audit v3 adds 129 states at upper8S, and 65/129 at upper16S. All three compile
+all 11 fixtures. Across the full 198-case document, 182 compile/price; every
+success contains exactly its requested expiry/strike/side/style universe.
+Independent review found all 165 overlapping v2 cases numerically unchanged
+and recomputed the no-cash European errors within 2e-12. The adaptive129
+upper4S/8S/16S worst European errors are .088490959/.006131120/.010136436;
+high-vol upper-boundary probability is .0392899/.00309173/.000122766. Corresponding
+24-contract American ATM MAE is .000476122/.000596472/.000788782. Widening a
+fixed-count grid trades boundary error against central resolution. Next audit
+should match near-spot spacing and vary time refinement separately. Defaults
+and compiler caps are unchanged. Final v3 audit TU passes PCH-off compilation.
+
+Immutable external receipts under `C:/atx-cache/quote-benchmark/`:
+
+- `markov-audit-20261016-sinh-v2.json`, SHA256
+  `b491940f5da502af80998dd8e86537e1a31e8a75a7e7a1ef15c0381bad61362e`.
+- `common-lane-sinh-v2-compare-20261016-v2.json`, SHA256
+  `d0b2bf6848222fa302f37b31e03c55339a46f0598ec39632cb5f5e5d865097df`.
+- `markov-audit-20261016-sinh-v3.json`, SHA256
+  `28d6aeabf3cc985b952ad62d8d4f35dca546d196ffae3757ce17da583a481739`.
+  Its `.json.run.json` records source base182ee25c, exact pending audit source
+  `963189ec548eb90fd97ad3535da11232fb8f1a85cb2abd5b7f5007a68b90778c`, and binary
+  `bd7267533daddca3f216cbe23394fb39a6ee406ab6e396e4669830e30797f8f4`.
+  Concurrent-host wall time is diagnostic only.
+
+The saved original ATM reference and explicit two-row negative-rate refinement
+remain separate artifacts; replacements do not erase their earlier history.
+
 ## Primary-source checks
 
 Rechecked October 16:

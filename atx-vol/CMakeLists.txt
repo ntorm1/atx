@@ -93,6 +93,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/quote_slice.cpp
     src/fitting/quote_fit_policy.cpp
     src/fitting/american_markov_fit.cpp
+    src/fitting/american_markov_policy.cpp
     src/fitting/american_price_slice.cpp
     src/fitting/calib.cpp
     src/fitting/prepared_fitting.cpp

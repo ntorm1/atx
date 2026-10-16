@@ -37,6 +37,7 @@ struct Grid {
   double max_step;
   bool logarithmic;
   double concentration_scale = 0.0;
+  bool first_variance_scale = false;
 };
 
 double elapsed_us(Clock::time_point start) {
@@ -82,7 +83,12 @@ std::vector<Grid> grids(bool full) {
                                  {"sinh129-wide", 129u, 4.0, 1.0 / 104.0, false, 0.20},
                                  {"sinh65", 65u, 4.0, 1.0 / 52.0, false, 0.05},
                                  {"sinh129", 129u, 4.0, 1.0 / 104.0, false, 0.05},
-                                 {"sinh129-tight", 129u, 4.0, 1.0 / 104.0, false, 0.005}});
+                                 {"sinh129-tight", 129u, 4.0, 1.0 / 104.0, false, 0.005},
+                                 {"sinh65-variance", 65u, 4.0, 1.0 / 52.0, false, 0.05, true},
+                                 {"sinh129-variance", 129u, 4.0, 1.0 / 104.0, false, 0.05, true},
+                                 {"sinh129-variance-domain8", 129u, 8.0, 1.0 / 104.0, false, 0.05, true},
+                                 {"sinh65-variance-domain16", 65u, 16.0, 1.0 / 52.0, false, 0.05, true},
+                                 {"sinh129-variance-domain16", 129u, 16.0, 1.0 / 104.0, false, 0.05, true}});
   }
   return result;
 }
@@ -192,18 +198,36 @@ Json describe(const Fixture &fixture, const Grid &grid) {
   return {{"fixture", fixture.name}, {"spot", fixture.spot}, {"intervals", intervals},
            {"grid", grid.name}, {"requested_nodes", grid.nodes},
            {"upper_multiple", grid.upper_multiple}, {"max_clock_step", grid.max_step},
-           {"logarithmic", grid.logarithmic}, {"concentration_scale", grid.concentration_scale},
+           {"logarithmic", grid.logarithmic}, {"configured_concentration_scale", grid.concentration_scale},
+           {"concentration_rule", grid.first_variance_scale
+                ? "first positive cumulative fixture variance standard deviation; fixed fallback"
+                : "fixed"},
            {"requested_strikes", strike_samples(fixture.spot)}};
 }
 
 Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
   Json result = describe(fixture, grid);
   auto states = log_grid(fixture.spot, grid);
+  double concentration_scale = grid.concentration_scale;
+  if (grid.first_variance_scale) {
+    double previous = 0.0;
+    double integrated_variance = 0.0;
+    for (const auto &interval : fixture.intervals) {
+      integrated_variance += interval.volatility * interval.volatility *
+                             (interval.variance_end - previous);
+      if (integrated_variance > 0.0) {
+        concentration_scale = std::sqrt(integrated_variance);
+        break;
+      }
+      previous = interval.variance_end;
+    }
+  }
+  result["concentration_scale"] = concentration_scale;
   if (grid.concentration_scale > 0.0) {
     AmericanMarkovSinhGridConfig grid_config;
     grid_config.grid_nodes = grid.nodes;
     grid_config.upper_spot_multiple = grid.upper_multiple;
-    grid_config.concentration_scale = grid.concentration_scale;
+    grid_config.concentration_scale = concentration_scale;
     auto generated = make_american_markov_sinh_grid(fixture.spot, grid_config);
     if (!generated) {
       result["model_status"] = "grid_refused";

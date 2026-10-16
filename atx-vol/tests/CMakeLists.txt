@@ -57,6 +57,13 @@ add_test(NAME atx-vol-american-markov-market COMMAND atx-vol-american-markov-mar
 set_tests_properties(atx-vol-american-markov-market PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+add_executable(atx-vol-american-markov-policy-tests american_markov_policy_test.cpp)
+target_link_libraries(atx-vol-american-markov-policy-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov-policy COMMAND atx-vol-american-markov-policy-tests)
+set_tests_properties(atx-vol-american-markov-policy PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
 target_link_libraries(atx-vol-umbrella-tests PRIVATE
     atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)
@@ -116,6 +123,7 @@ add_executable(atx-vol-tests
     american_markov_pwl_test.cpp
     american_markov_fit_test.cpp
     american_markov_market_test.cpp
+    american_markov_policy_test.cpp
     pwl_strike_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
