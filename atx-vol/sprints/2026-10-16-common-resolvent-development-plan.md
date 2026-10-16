@@ -29,6 +29,8 @@ Files are `e0-policy.json`, `r104-policy.json` and `r416-policy.json`.
 Each explicitly freezes the whole expanded profile, market, classifier and IV
 configuration rather than relying on future defaults. The only differences
 between files are diffusion method and the two maximum clocks.
+The directory's Git attributes pin JSON line endings to LF so checkout on
+Windows preserves the recorded byte hashes.
 
 Keep the sparse 65-state / concentration .20 and ordinary/dense 129-state /
 concentration .10 grids, upper domain 4, profile assignments, shared/per-interval
