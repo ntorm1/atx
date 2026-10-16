@@ -99,6 +99,45 @@ ledger and merge rows read carry test counts and SHAs only); no data file, NAV d
 file or anything dated 2024-01-01 or later opened; no build, no test, no real-data tool; the only git write is this
 file's pathspec commit (PAR-1).
 
+**ROUND 2b-ii part B2a (the gate-delivered values that exist while the gate is owner-blocked; Ruling PRE-2BII-B2A,
+ledger :990; PAR-1).** The same PRE agent, continued by the PM's message, 2026-10-16, beside the BLOCKED-OWNER gate
+(GATE-IDX), from the gate records as they stand at root's docs head `65ce28f0`. Each value is filled in place in the
+bracket form; stale lines are stated beside (PRE-40 form); nothing is decided here:
+- Appendix IV item 1: R-2's re-based NAV reference `build-equity/p9-b0-r2-nav` (FIELDS-SUB-A, path A; the
+  classification disclosed) (filled, 2b-ii part B2a).
+- Item 3: the re-based Y-1 reference `build-equity/p9-b0g-y1-nav` (PRE-29's store substitution; no identity claimed;
+  PRE34-WHO); the X-10 re-base `build-equity/p9-b0g-x10-nav` (holds) stated beside C.11 (A.4 names no X-10) (filled,
+  2b-ii part B2a).
+- Item 5: C3-6 held, cited from M2j (filled, 2b-ii part B2a).
+- Items 9, 12, 15 and the fit-mode parts of items 16 and 17: flag-absent (D3-Q1a DIFFERENT), with B.0 "Fit mode"
+  (filled, 2b-ii part B2a); item 8 is P9-L's parent dirs (= item 2, behind GATE-IDX), not a fit-mode cell: left for B2b.
+- ALCLOCK-1's outcome (held) in B.4 and F.1; COMPOSE-1a ACCEPT (store-backed) in B.5; D3-Q1a DIFFERENT and P9-W LAPSED
+  (0) with the finding in B.6 (filled, 2b-ii part B2a).
+- Item 23: B8A-PROD in B.8 (a), with the FIELDS-GONE consequence for its step 2 stated beside (filled, 2b-ii part B2a).
+- C.13: SQL4-CUTOFF-2's outcome; A.4 and F.1: FINDING FIELDS-GONE stated (R-2 re-based by substitution on v15, X-5's
+  identity cut, FIELDS-X5); B.0 "Lane suites": the gate's step-2 counts (TEST-2) (filled, 2b-ii part B2a).
+- B.10: the gate-decided column for P9-C, P9-MV and P9-W and the status column; P9-X stays pending PRE-30 as PRE30-MVX
+  reads it; the table now reads as LAPSE-TABLE states it (filled, 2b-ii part B2a).
+Left for part B2b (brackets kept): Appendix IV items 2, 4, 6, 8, 20, 22, 25, 26; the cache listings; the catalog
+digest; "## Round 2b-ii record". The exe table is provisional until the re-pin: every exe cited here is "provisional,
+re-pin pending" (`handoff-root-gate-1.md` "Exe table").
+
+**Basis read (round 2b-ii part B2a).** The PM's B2a message; this file at `aef2e033` (unchanged at `65ce28f0`);
+`root-gate-report.md` whole (723 lines at `65ce28f0`); `handoff-root-gate-1.md`, `-2.md`, `-3.md`; in the ledger
+`progress.md` (990 lines at drafting) every line from "- RESUME 13" (:952) to the end, including SQL4-CUTOFF-2 (:924),
+COMPOSE-1a (:956), COMPOSE-PRE (:964), PRE30-MVX (:969), COVMV-PIN-2 (:970), B8A-PROD (:971), TEST-2 (:973), the
+hand-backs of root GATE agents 2 and 3 (:974, :984; agent 1 left no hand-back line: OWNER STOP 12, :946), "Cell P9-W:
+LAPSED (0)" (:975), GATE-TMP-2 (:976), GATE-MYPY (:977), FINDING FIELDS-GONE (:978), FIELDS-SUB (:979), FIELDS-X5
+(:980), LAPSE-TABLE (:981), GATE-3-ORDER (:982), FIELDS-SUB-A (:985), RELCACHE-ALLOW (:986), PRE34-WHO (:987),
+YF0-NAV-ORDER (:988), the PM's GATE STATE (:989) and PRE-2BII-B2A (:990); `handoff-root-m2j.md:42-44` and
+`handoff-root-m2j-fin.md:44` (C3-6). `gate-logs/` file names only (`ls`); no gate log was opened. Root heads seen:
+`c99a76e4`, `2e08fa1c`, `e5a2fe68`, `778d34b8`, `65ce28f0` (`git log --format=%h` only).
+
+**Blind (round 2b-ii part B2a).** The gate records read print no 2020-2023 return, IC, Sharpe, turnover or NAV statistic
+(file SHA-256, JSON paths, exit codes, counts, wall seconds and rho only); none is written here, and rho values are left
+to B2b (items 20, 22, 26). No data file, NAV dir, `trials.jsonl` or `build-equity/` file opened; nothing dated 2024-01-01
+or later; no build, no test, no real-data tool; the only git write is this file's pathspec commit (PAR-1, GATE-MYPY).
+
 **Basis read (round 2b-i).** `resume4-dispatch.md`, `resume6-addendum.md`, `resume7-addendum.md`, `resume8-addendum.md`;
 `r8-dispatch.md` "PRE-2b-i"; this file whole (round 2a: 1,117 lines, sha256
 `5943005ebc3bdd40783feb064c12e016a11952f8b376feff54020d9bccc9c7f7`); `p9-prereg-flags.md` "P9 rules" and "Open for the
@@ -201,8 +240,24 @@ earlier 69, not against 62. V decides more than N (v8y section 4).
 ### A.4 Named books
 
 - **R-2** (V8-F): the reference of G-B6 and G-B8. Spec as the v8 OD-3 protocol names it (`scripts/specs/v8/lib-v80.json`,
-  v8-od3-protocol section 3.1). Re-based at the wave-3 P9-B0 (PRE-22). [ROUND 2b-ii: R-2's re-based NAV reference dir and
-  SHA-256 - root, the gate's P9-B0 (PRE-22, GATE-1)].
+  v8-od3-protocol section 3.1). Re-based at the wave-3 P9-B0 (PRE-22). [ROUND 2b-ii: `build-equity/p9-b0-r2-nav`, the
+  re-based R-2 of record (FIELDS-SUB-A, path A: PRE-22 met by the fields substitution v10 -> v15, FIELDS-SUB's witness
+  70 / 70 held, `gate-logs/fields-witness.txt`, commit `e5a2fe68`); substitution list row 1 (`778d34b8`, committed before
+  any P9-B0 run): the v8 receipt `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80-run`'s argv with only
+  `--fields build-equity/train-2020-2023-lo3-fields-v15/manifest.json --fields-sha256 26fee5ce...3b09` and `--output`
+  changed and `--ann-mean-gross` added, token 0 the Release NAV exe p9-3f `255b58ac...3565` (provisional, re-pin
+  pending); completed exit 0, the 84-field manifest accepted; 27 files, listing SHA-256
+  `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json`
+  `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9` (per-file SHA-256 listing:
+  `gate-logs/b0-files-p9-b0-r2-nav.txt`). Disclosed beside it (FIELDS-SUB-A): against the v8 NAV of record
+  `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80` (written by the v8-era exe `5497c89d`, before P9's
+  NAV change) 13 / 27 files are byte-identical and every differing path is in one class: ALLOWED (8 leaves:
+  `/producer/*`, the `ann_mean_gross` opt-in), FIELDS (4: `/financing_fields/manifest_sha256`, v10 `a4a060ae` -> v15
+  `26fee5ce`), DERIVED (14 digests of other output files), M1D-C1 (1: `/v7/extras`), C1-COST (9 files: cost columns
+  only, 2-8 rows of 1,006); no `events_*`, L0 or `summary.json` statistic leaf moved; the report records PATH B by
+  FIELDS-SUB's letter (`root-gate-report.md:671-683`) and FIELDS-SUB-A re-rules it path A; G-B6 and the OD-3 R-2 line
+  read this dir and "cross-build reference" is NOT printed - `root-gate-report.md:636-683`; `gate-logs/r2-classify.txt`,
+  `r2-cmp-raw.txt`; `handoff-root-gate-3.md:82`; ledger :979, :985].
 - **Y-F0**: `scripts/specs/v8/lib-v8ysb-gm.json` (sha256 `1e3ec118...`), library `fund_industry_ic_v8ysb.json`
   (`41010b0b...`, 67 candidates), L_P 1.1828 (ledger :147, :190). The first parent of P9; re-based at the wave-3 P9-B0
   (PRE-22). [ROUND 2b-ii: Y-F0's re-based u, w and NAV reference dirs and SHA-256 - root, the gate's P9-B0 (PRE-22)].
@@ -210,7 +265,26 @@ earlier 69, not against 62. V decides more than N (v8y section 4).
   wave-3 P9-B0 reads the Release-built `atx-risk-v1.1` container store `build-equity/p9-m2i-dcov-v11` (manifest
   `397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7`; PRE-29, ledger :569, :582) and is not
   byte-comparable with v8's Y-1, whose store of record a Debug exe built (ULP-level covariance differences; PRE-29).
-  [ROUND 2b-ii: the re-based Y-1 reference dir and SHA-256 - root, the gate's P9-B0 (PRE-29, PRE-30, PRE-34)].
+  [ROUND 2b-ii: `build-equity/p9-b0g-y1-nav` (substitution list row 3, `778d34b8`: M1d's `p9-b0-y1-nav-run` argv with
+  only `--risk-model build-equity/p9-m2i-dcov-v11 --risk-model-sha256 397366473b3a...23c7` (PRE-29's store
+  substitution) and `--output` changed and `--ann-mean-gross` added, token 0 the Release NAV exe p9-3f (provisional,
+  re-pin pending); before it the COV-9 S9 check held and the v1.1 store re-checked equal to its pin); completed exit 0;
+  28 files, listing SHA-256 `cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813`, `summary.json`
+  `b0d4dcbf53e81aff3863ca1d9c7230da73a5c0a911a60f622c9f78aa3796c028`, `vol_target.csv`
+  `8e614ea7bbf47d363a5c357b7442c7b3a7b86df753879715f5d20bd083f767a7` (`gate-logs/b0-files-p9-b0g-y1-nav.txt`); no
+  identity claimed (PRE-29): it differs from M1d's `p9-b0-y1-nav` and, PRE-34's byte / JSON-path form, from v8's
+  ledgered Y-1 NAV `mega-nav-v8y-vol-target-L2.0` at 26 / 28 files each (`recipe.json`, `capacity/recipe.json`
+  byte-identical; `gate-logs/y1-cmp-b0.txt`, `y1-cmp-v8.txt`); PRE-34's printed-precision agreement of the figures is
+  the CELLS root's, at the P9-X step, before the adoption print, figures to the cell record only (PRE34-WHO; B.7) -
+  `root-gate-report.md:146`, `:646-652`, `:689-698`; `handoff-root-gate-3.md:84`; ledger :984, :987].
+- **Fields inputs (round 2b-ii part B2a; FINDING FIELDS-GONE, ledger :978).** `build-equity/train-2020-2023-lo3-fields-v9/`,
+  `-v10/`, `-v13/`, `-v14/` and `-v15a/` are absent from disk and `-v11/` holds only its `manifest.json`; `-v15/` is whole
+  (84 payloads); only the `-run` dirs of the others remain; nothing is rebuilt from atx-db (A4-DB) and who deleted them
+  is an owner item. So: R-2 is re-based by the fields substitution v10 -> v15 (FIELDS-SUB, FIELDS-SUB-A; the R-2 bullet
+  above); X-5's step-3 NAV / u / w flag-absent identity is CUT, "not run at the gate: fields v13 absent (FIELDS-GONE)"
+  (FIELDS-X5, ledger :980; X-5 is no P9 cell's parent; the gate's flag-absent identity of record is Y-F0's); Y-F0, Y-1
+  and X-10 read v15, every input present (`gate-logs/inputs-check.txt`); the two D-COV stores are pinned bytes,
+  unaffected (CRT-2), but their build argv names fields v10 (B.8 (a)) - `root-gate-report.md:463-474`.
 - **P9-F0**: the last accepted P9 cell, leverage excluded (P9-X, P9-V) and P9-W excluded; equals the re-based Y-F0 if no
   P9 cell is accepted. The book of G-B1 and G-B6.
 - **P9-F0h** (PRE-10, ledger :522): the last accepted book that does not read `--risk-model`; equals P9-F0 unless P9-MV
@@ -334,9 +408,13 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   own receipts or consoles; any other token or source stops the run. It is not an input difference under the void rule.
 - **Gross figure opt-in (PRE-7a, ledger :538).** Every P9 cell and its reference name the opt-in `--ann-mean-gross`
   (NavSpec `options.ann_mean_gross`) alike at the wave-3 P9-B0; print-only, not a rule flag; definition C.22 (C3-9).
-  [ROUND 2b-ii: C3-6 byte neutrality at root's C3 part-A merge (M2j): X-5 and Y-F0 NAV through `--spec` and argv
-  byte-identical to their P9-B0 references outside `producer`, tiny-world goldens Debug and Release; a miss returns the
-  lane and the gross-alpha lines are cut (C3-6, PRE-7a) - root, its M2j record].
+  [ROUND 2b-ii: C3-6 HOLDS, cited from M2j: the flag-absent NAV of X-5 (`p9-m2j-x5-argv` vs its reference of record
+  `p9-c1-s2-x5-nav`) and of Y-F0 (`p9-m2j-yf0-argv` vs `p9-b0-yf0-nav`) 26 / 27 files byte-identical, `summary.json`
+  differing only at `/producer/build_type`, `/producer/engine_git_sha`; `--spec` runs 27 / 27 byte-identical to the argv
+  runs; the canaries 15 on both goldens; the opt-in itself changes only `summary.json`, by `/scenarios/0..4/ann_mean_gross`
+  (opt-in side only; stripped = the flag-absent bytes); so no gross-alpha line is cut (PRE-7, PRE-7a); at the gate the
+  opt-in again adds only those leaves on the R-2, X-10 and Y-1 re-bases - `handoff-root-m2j.md:42-44`,
+  `handoff-root-m2j-fin.md:44`; `root-gate-report.md:148`; `gate-logs/x10-cmp.txt`, `r2-classify.txt`].
 - **NavSpec (`atx.nav-spec/v1`, C3 part A; part A merges on its APPROVE, part B is round C3b, reviewed and merged
   before the wave-3 gate, C3-2, ledger :508).** A spec may restate a compiled constant only at its compiled value and may
   narrow `leverage_range` inside the registry's [1, 2] (C3-1, ledger :507); no P9 cell changes the cost law (C3-3);
@@ -348,7 +426,13 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   D3W's, D3-2) delivered the C++ sleeve and the wave-3 P9-B0 re-based the parent under engine-fit, else flag-absent.
   Stated per cell below. Lane fact (round 2b-ii part A): D3W delivered the C++ sleeve (ALCOMB-7; `--engine-fit
   --mom-volman` writes it; D3W merged `08f04e07`, APPROVE `1e6c4336`, ledger :694; `task-D3W-report.md:20`); whether
-  the wave-3 P9-B0 re-based the parent under engine-fit is D3-Q1 / D3-Q1a's outcome at the gate (part B).
+  the wave-3 P9-B0 re-based the parent under engine-fit is D3-Q1 / D3-Q1a's outcome at the gate (part B). [ROUND 2b-ii:
+  flag-absent for every cell: D3-Q1a DIFFERENT at the gate (the engine fit's stripped weights differ from the Python
+  fit's at 694 float leaves; admission files identical), so P9-F0h is produced flag-absent (the Python fit) and the
+  parent reference is not re-based under `--engine-fit`; the Y-F0 fit is not re-based at P9-B0 (its flag-absent
+  identity holds outside D2's code-identity stamps, `gate-logs/fit-identity-yf0.txt`) - `gate-logs/d3q1a.txt`;
+  `root-gate-report.md:151`, `:482-489`, `:628-630`; ledger :975 ("Consequence for every v2 cell: fit mode =
+  flag-absent"), :981 (LAPSE-TABLE)].
 - **Fields producers: the A4-Q2 entry (round 2b-ii; A4-DB and A4-P10-FLIPS, ledger :867, :875-876, :883).**
   [ROUND 2b-ii: both flipped fields are in Y-F0's manifest; identity not run: inputs under atx-db; flips P10. A4 stays
   merged at its pre-flip head `6dab6948` (merge `bba4c06f`: the engine builders, kinds and their tests, flag
@@ -363,7 +447,21 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   "deferred to the gate (TEST-1)" (`task-AL-CLOCK-report.md:488`, `task-COV-MV-report.md:443`,
   `task-D3-report.md:116`, `task-D3W-report.md:133`, `task-D3W-PB-report.md:143`, `task-OD3P-report.md:298`,
   `task-SIGN-report.md:81`); they run once at the gate on the gate head; their counts are the gate report's (part B),
-  not a lane's.
+  not a lane's. [ROUND 2b-ii: the gate's step 2 on the gate head `06dc9e5a` (TEST-2, ledger :973: what ran stands;
+  every cut-list item had already run and is recorded as run; none "not run"): Release gtests whole (p9-3f) 16 / 16
+  targets, 4,098 run, 0 failed, 9 named pre-existing skips; Debug gtests whole (p9-3g) 16 / 16, 4,099 run, 0 failed, 6
+  named skips; `ctest -L atx_research` 291 and `-L atx_equity_strategy` 728 on both trees, 0 failed (1 disabled test,
+  `CovStageDigest.DumpPerStageOnTheLaneFixture`); `scripts/tests` seed 0 on Release: agent 1's run 1 failed / 702 passed
+  / 3 skipped, the one red GATE-TMP's (the tool's TMP root, W1-I1 refusing a 327-character path), re-run on the short
+  root 703 passed / 3 skipped / 0 failed, and the GATE-TMP case alone 1 passed; seed 1 703 passed / 3 skipped / 0
+  failed (the 3 skips the opt-in live-root cases of `test_research_cycle.py`); `atx-engine/tools/test_stage_chain.py`
+  10; `atx-engine/tools` 391; `atx-impl/tools` 770 on the OS TMP (on the short TMP one TMP-length-dependent golden,
+  `test_mega_report_v8.py::test_v7_config_renders_the_pre_v8_bytes`, fails: a test-fragility P10 note, GATE-TMP-2,
+  ledger :976); `atx-impl/strategies` 14; the fields pytests 4 / 26 / 16 / 37; the mirror guard 7 (G-P5: 0 rows left
+  for P9 lanes); golden `0x889874a3b9b29c55` at 1 and 4 workers OK on both builds; canaries 15 / 15 on both builds;
+  GATE-COVDIFF three `cov-diff --legacy` runs exit 0 after the COV-9 check; known-red set EMPTY - `root-gate-report.md`
+  :240-265, :336-346, :353-375, :381-399, :401-410, :412-459; `gate-logs/gt-exits.txt`, `ctest-exits.txt`,
+  `pyt-exits.txt`, `covdiff-runs.txt`].
 - **Void** (v8y section 12, carried; P9 additions 5-7): (1) run before this file is ruled, before the wave-3 P9-B0 and
   its re-pin commit (W1-I2 (b)), or before ALD-DIAG is printed (OD5-1 (iii); printed at M2g, C.2); (2) any input differs
   from its block (string, constant, template, hand-spec or registration SHA-256, parent not the last accepted, flag,
@@ -409,8 +507,9 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   `admission.json`, parent vs cell); the IC exe's `ic_missing_exit_v1`, `terminal_imputed_pairs`,
   `missing_exit_share` and `guard_excluded_pairs` (`task-S2-report.md:23`, `:195-204`).
 - **Predictions.** None registered (protocol cell; plan section 7.2 gives -.02 to +.02 [est], not a prediction).
-- **Fit mode** [ROUND 2b-ii: P9-L fit mode = the wave-3 P9-B0 parent reference's - root, the gate's P9-B0 (ALCOMB-7;
-  D3W's C++ sleeve, D3-2)]. Eval mode: B.0.
+- **Fit mode** [ROUND 2b-ii: flag-absent (the Python fit): the parent reference's mode, D3-Q1a DIFFERENT at the gate,
+  so P9-F0h is produced flag-absent (B.0 "Fit mode") - `gate-logs/d3q1a.txt`; `root-gate-report.md:151`; ledger :975,
+  :981]. Eval mode: B.0.
 - **Exposure (PRE-4, ledger :517; S2-FIX1 (3), :325).** Under `--label-terminal` a delisting cause may be classified up
   to 30 days after termination T, so labels whose T falls within 30 days of TRAIN end can embed post-TRAIN information.
   Stated, with no truncation code; bounded by the 2 exits ALD-DIAG prints as "unclassified (within 30 days of the seal)"
@@ -472,8 +571,9 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
 - **Printed only.** Hedge ratio per theme and block (IC exe `composition_hedge_trace`, AL-COMB S-3); turnover per unit
   gross (`scripts/wave_readers.py`, `book`); cost per traded dollar (C++ `cost_bps_per_traded_dollar`,
   `atx-impl/src/strategy_nav_v7.cpp:360`); net Sharpe at 4x NAV (`capacity_curve.csv`, `strategy_nav_v7.cpp:357-382`).
-- **Fit mode** [ROUND 2b-ii: P9-H fit mode = the wave-3 P9-B0 parent reference's - root, the gate's P9-B0 (ALCOMB-7;
-  `--theme-hedge` is accepted under `--engine-fit`, AL-COMB report "Combined round")]. Eval mode: B.0.
+- **Fit mode** [ROUND 2b-ii: flag-absent (the Python fit): the parent reference's mode, D3-Q1a DIFFERENT at the gate,
+  so `--engine-fit` is on no P9-H argv (B.0 "Fit mode") - `gate-logs/d3q1a.txt`; `root-gate-report.md:151`; ledger
+  :975, :981]. Eval mode: B.0.
 - **Undefined (0).** Parent outside the list above; the exe or fitter refuses. **Lapsed:** not applicable (registered,
   PRE-6).
 - **Expected effect** +.05 to +.15 [est] (registration `predictions.expected_effect`), printed, deciding nothing. On
@@ -524,9 +624,10 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
 - **Printed only.** sigma_b, target_b, scale_b per block (IC exe `composition_schedule_trace`, AL-COMB S-3); turnover
   per unit gross; net Sharpe at 4x NAV (producers as B.2).
 - **Fit mode.** Flag-absent unless D3W (ALCOMB-7, D3-2) adds the sleeve to the C++ fit: `--engine-fit --mom-volman` is
-  refused today (`composition_mom_volman.py:53-55`, `:137`; ALCOMB-7). [ROUND 2b-ii: the parent's wave-3 P9-B0 fit mode
-  - root, the gate's P9-B0; if the parent was re-based under engine-fit, P9-M is undefined unless D3W delivered the
-  sleeve]. Round 2b-ii part A (lane fact, stated beside): "is refused today" is stale since D3W's merge `08f04e07`:
+  refused today (`composition_mom_volman.py:53-55`, `:137`; ALCOMB-7). [ROUND 2b-ii: flag-absent (the Python fit): the
+  parent reference's mode, D3-Q1a DIFFERENT at the gate (B.0 "Fit mode"); the parent was not re-based under
+  `--engine-fit`, so the "undefined unless" clause has no case - `gate-logs/d3q1a.txt`; `root-gate-report.md:151`;
+  ledger :975, :981]. Round 2b-ii part A (lane fact, stated beside): "is refused today" is stale since D3W's merge `08f04e07`:
   D3W delivered the C++ sleeve (ALCOMB-7; `task-D3W-report.md:20`), so the "undefined unless" clause does not bind;
   the parent's mode itself is Appendix IV item 15 (part B).
 - **Limit (ALCOMB-4, ledger :268).** The schedule is fixed on the fit's TRAIN sleeve: outside those sessions the
@@ -618,7 +719,13 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
     it on the Y-F0 reference at the wave-3 P9-B0 and the cell inherits it from its parent's NAV flags (it is no rule's
     flag, so the E2-8 guard passes it); `--ann-mean-gross` on both; the rule flag `--rate info-clock-rate-v1` on the
     cell only - `task-AL-CLOCK-report.md:296-298`; registration `:53`]. That the P9-B0 reference names it: part B
-    (the gate's P9-B0 argv).
+    (the gate's P9-B0 argv). [ROUND 2b-ii: ALCLOCK-1 HELD at the gate's step 3: `--info-clock-print` on Y-F0's argv
+    (Release NAV p9-3f, provisional, re-pin pending) gives the same 27 files and changes only `summary.json`, by 70
+    leaves all under `/scenarios/<i>/info_clock` (5 of 5 scenarios), opt-in side only; without those blocks it is the
+    flag-absent document; so the block is not cut, no "no producer" line prints, and the P9-B0 Y-F0 NAV names
+    `--info-clock-print` (substitution list row 6, `778d34b8`; that run is behind GATE-IDX: its argv of record is part
+    B2b's) - `gate-logs/nav-identity-yf0.txt`, `tools/clock_optin_cmp.py`; `root-gate-report.md:102`, `:481`, `:625`;
+    ledger :981 (LAPSE-TABLE: P9-C RUNS)].
   - **Producers of each printed figure** (all the NAV exe `atx-equity-strategy-targets`). [ROUND 2b-ii: fast-rate share
     of name-days: `summary.json` `scenarios[k].info_clock.fast_share` (and `fast_name_days`, `missing_name_days`,
     `name_days`) under `--info-clock-print` (`atx-impl/src/book/nav_write.cpp:289` `info_clock_json`; census
@@ -650,8 +757,9 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
     sentence (`capacity_x1_equals_primary_bit_for_bit`) is tested on fixed-rate runs only; no test shows it with the
     rule ON; the rule-on test is P10. P9-C's acceptance (dSR > 0 AND mechanics) does not read that sentence; the claim
     stays untested for the rule-on path in P9, disclosed before any read.
-  - **Fit mode.** NAV-only cell: the fit is the parent's (`task-AL-CLOCK-report.md:294-295`); [ROUND 2b-ii: the wave-3
-    P9-B0 parent reference's fit mode - root, the gate's P9-B0 (part B; Appendix IV item 16)].
+  - **Fit mode.** NAV-only cell: the fit is the parent's (`task-AL-CLOCK-report.md:294-295`); [ROUND 2b-ii: flag-absent
+    (the Python fit): the parent reference's mode, D3-Q1a DIFFERENT at the gate (B.0 "Fit mode") - `gate-logs/d3q1a.txt`;
+    `root-gate-report.md:151`; ledger :975, :981].
 - **Lapsed (0; PRE-14, ledger :524)** if AL-CLOCK is not merged in root and APPROVE when the P9 cells start; the order
   of the remaining cells is unchanged. W3-EARLY-2 (ledger :584) lets the lane start on approved heads; it does not
   change this condition.
@@ -711,7 +819,18 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   store-backed parse check (`--rate info-clock-rate-v1 --target-rule mv-aim-v1 --risk-model <a tiny-world store>` to
   the parse / rule-table stage, no NAV run), or (if no tiny-world store can be built) at P9-MV's own preflight; a
   refusal at either lapses P9-MV at 0 before any read", the refusal line the finding, never a fix round after a read;
-  which of the two the gate delivered: part B2]
+  which of the two the gate delivered: part B2] [ROUND 2b-ii: the gate delivered the STORE-BACKED parse check:
+  COMPOSE-1a ACCEPT: a tiny-world store built by the Release risk exe (p9-3f `0c110534...586b`, provisional, re-pin
+  pending; `--recipe atx-cov-v1`, exit 0, manifest `5a4b7b9b...1555`), then the Release NAV exe (p9-3f `255b58ac...3565`)
+  with `--rate info-clock-rate-v1 --risk-model <that store> --risk-model-sha256 <its pin> --target-rule mv-aim-v1`
+  passes the v7 parse, the store open (role pin checked), the base parse and the run checks and stops at the fields load
+  ("fields lack ea_days_since": the tiny world has no clock field), the same stop as the rate alone, i.e. a data
+  refusal, not a flag conflict; controls: `mv-aim-v1` alone passes the fields load, two `--risk-model` are refused at
+  the v7 parse; no output dir created; so P9-MV does NOT lapse under COMPOSE-1 at the gate; stated limit:
+  `validate_nav_config` / `validate_nav_input` (after the fields and blend loads, `book/nav_lockstep.cpp:238-250`) for
+  the two rules together are P9-MV's own preflight, where a refusal lapses P9-MV at 0 before any read (COMPOSE-1,
+  COMPOSE-PRE) - `gate-logs/compose-1a.txt`, `tools/compose_1a.py`; `root-gate-report.md:101`, `:529-553`; ledger :974,
+  :981 (LAPSE-TABLE: P9-MV RUNS)].
   - **Rule and row.** [ROUND 2b-ii: `mv-aim-v1` (9 characters), kind `target`, x-flag `--target-rule mv-aim-v1`;
     params `risk_model` (`--risk-model`) and `risk_model_sha256` (`--risk-model-sha256`, pattern `^[0-9a-f]{64}$`),
     both required, closed schema (PRE-9); incompatible `aim-partial-v6, spo-v1, spo-v2, spo-v3, two-speed-v1,
@@ -772,11 +891,15 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
     above is a record of the merged bytes from the lane's block, not a pin of this file (stated for the PM: whether it
     counts as a "prereg SHA" under COVMV-S2 is the PM's to rule) [Ruled (COVMV-PIN, ledger :948): YES, a prereg pin;
     the `printed_only` / "ex-ante" sentences of `mv-aim-v1.json` (COVMV-S2 S-b; NAV-S S-2 the same) are NOT edited at
-    the re-pin; they stand stated here (PRE-40 form), the file's sentences untouched]. A null eigen share is disclosed
-    in the cell's print before the read (COVMV-S2).
+    the re-pin; they stand stated here (PRE-40 form), the file's sentences untouched] [Ruled (COVMV-PIN-2, ledger
+    :970): COVMV-PIN stands: the registration commit's allowed diff is the template's `/parent` plus the registration's
+    `template_sha256` (no stated cut for P9-MV), shown by JSON diff (CELLS step 1); the `printed_only` / "ex-ante"
+    sentences are not in that diff; this block records the registration's SHA-256 before (`4b4af6e2`, above) and after
+    (Appendix IV item 17, filled at that commit)]. A null eigen share is disclosed in the cell's print before the read
+    (COVMV-S2).
   - **Fit mode.** NAV-only cell (the template sets the NAV and monitor outputs only): the fit is the parent's;
-    [ROUND 2b-ii: the wave-3 P9-B0 parent reference's fit mode - root, the gate's P9-B0 (ALCOMB-7; part B; Appendix IV
-    item 17)].
+    [ROUND 2b-ii: flag-absent (the Python fit): the parent reference's mode, D3-Q1a DIFFERENT at the gate (B.0 "Fit
+    mode") - `gate-logs/d3q1a.txt`; `root-gate-report.md:151`; ledger :975, :981].
 - **Lapsed (0)** if COV-MV is not merged in root and APPROVE when the P9 cells start (COV-7; PRE-14); W3-EARLY-2 does
   not change this condition (as B.4).
 
@@ -801,6 +924,9 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   stays TRAIN-fixed (ALCOMB-4); theme-cov-hedge has no such limit (`task-AL-COMB-report.md:323-327`).
 - **OD-3 prediction it feeds** (PRE-23 as PRE-39 reads it; formula fixed now; number filled mechanically after P9-W):
   predicted history S2 net Sharpe of P9-F0h = its TRAIN S2 net Sharpe + P9-W's dSR (walk-forward minus in-sample).
+  (Round 2b-ii part B2a: P9-W LAPSED (0) at the gate (D3-Q1a DIFFERENT; below; ledger :975), so no P9-W dSR exists: this
+  registered prediction, its F.1 line and E's "P9-W's dSR" printed-beside line have no value to fill; how they print
+  ("not produced: P9-W lapsed (0)" or cut) is not ruled; stated for the PM.)
 - **Lanes D3 and D3W's blocks (round 2b-ii part A; Appendix IV item 18).** Merged and APPROVE: [ROUND 2b-ii: D3
   APPROVE `699440bb` (review `e197b3b6`), merge `0a2ceb2b`; D3W APPROVE `1e6c4336` (review `f0726acb`), merge
   `08f04e07` - ledger :753, :694; `integration-log.md:714`, `:699`].
@@ -830,7 +956,21 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
     SHA-256; equal = identity, and the re-based Y-F0 (P9-F0h when no cell is accepted) is produced with `--engine-fit`,
     an engine-fit parent; any other difference = P9-F0h is produced as before (Python fit), P9-W lapses at 0 (PRE-35)
     and the differing paths are a finding in the freeze report (no re-tuning, no second attempt). Outcome:
-    [ROUND 2b-ii: D3-Q1a's result - root, the gate's P9-B0 (part B)].
+    [ROUND 2b-ii: DIFFERENT (run at the gate's step 3, before P9-B0; Release exes p9-3f, provisional, re-pin pending:
+    `factors` -> `p9-gate-yf0-factors`, then the fit with `--engine-fit --engine-factors <it> --admission-exe
+    f53d9277... --composition-exe 04db0d67...` -> `p9-gate-yf0-fit-eng`, against the Python fit `p9-gate-yf0-fit-py`):
+    `admission.json` (`2d5abfd7...`) and `admission.csv` (`c3933116...`) byte-identical; `composition_weights.json`
+    with `$.provenance.engine_fit` removed (canonical JSON SHA-256): Python `f2454589...b876` vs engine
+    `decc2f8c...55a8`, 694 float leaves differ (0 non-float, no key on one side only): `/weights/*` (47), the
+    candidates' weights, the themes' and theme-ERC provenance (covariance, ERC shares and risk contributions, sleeve
+    vols and correlations, weights before cap), the theme-standardise ERC covariance, the in-sample blend diagnostic
+    and the weighted standalone turnover leaves; `provenance.engine_fit.status` "agree", `fit_max_rel_float_diff`
+    non-zero (within P12; its value not read). So P9-F0h is produced flag-absent (the Python fit) and P9-W LAPSES at 0
+    trials (PRE-35; "Cell P9-W: LAPSED (0)"); N_c unchanged; the order of the remaining cells unchanged (A.7). The
+    FINDING for the freeze report: on the real Y-F0 TRAIN fit the C++ theme-ERC fit agrees with numpy within ruling P12
+    but not bit for bit (BLAS `np.dot` vs the C++ sums, the risk `wave-review-ic.md` section 4 stated before the run)
+    and `--engine-fit` writes the C++ values, so every weight moves in its last bits; no re-tuning, no second attempt
+    (D3-Q1) - `gate-logs/d3q1a.txt`, `tools/d3q1a.py`; `root-gate-report.md:100`, `:483-489`; ledger :974, :975, :981].
   - **Per-date weights producer (D3W).** [ROUND 2b-ii: the C++ `atx-research-composition fit --factors D --spec S
     --output O --walk-forward expanding --lag 2 --step 21 --min-decisions 21` (one call), then the fitter's
     `run_post_step` writes `atx.dsl-composition-weights/v3` (the full-TRAIN weights, signs and blocks unchanged);
@@ -882,7 +1022,9 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   cell (PRE-35; D3W-PB, ledger :645). Round 2b-ii part A: both lane conditions hold (D3 merged `0a2ceb2b`, D3W merged
   `08f04e07`, each APPROVE; B.10); D3-Q1 / D3-Q1a's engine-fit identity at the gate's P9-B0 is the remaining lapse
   condition (above; part B). D3W-PB merged too (APPROVE `44a331e6`, ledger :789; `integration-log.md:733`) and gates
-  nothing (`task-D3W-PB-report.md:188-191`).
+  nothing (`task-D3W-PB-report.md:188-191`). Round 2b-ii part B2a: that condition failed: D3-Q1a DIFFERENT (above), so
+  **P9-W LAPSED (0)** (PRE-35; ledger :975, LAPSE-TABLE :981); every other line of this block stands as registered and
+  is not run; the finding is the "Outcome" above.
 
 ### B.7 P9-X: leverage, the Y-1 form (PRE-1, ledger :516; settles OD5-7)
 
@@ -934,7 +1076,11 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   registered (N_c +1). (Round 2b-ii part B1: read with P9-F0h, the two sentences part when P9-MV alone is accepted
   before P9-X: P9-F0h is then still the re-based Y-F0, so P9-X's book is Y-1's, while "any P9 cell is accepted before
   it" holds; which branch applies (N_c +0 with Y-1's verdict, or N_c +1 as registered) is not ruled; stated for the
-  PM.)
+  PM.) [Ruled (PRE30-MVX, ledger :969): +0: PRE-30's condition reads on P9-X's parent under PRE-MVX: P9-X is not a new
+  trial iff P9-F0h is the re-based Y-F0 of the P9-B0 (no accepted cell other than P9-MV before it), and then the
+  re-based Y-1 reference (`build-equity/p9-b0g-y1-nav`, A.4) is the cell of record with Y-1's verdict of record after
+  PRE-34's agreement check (the cells root's, PRE34-WHO); if P9-F0h is any other book, P9-X runs as registered (N_c
+  +1)]
 - **What prints when P9-X is not a new trial (PRE-34, ledger :599).** The cell of record is the re-based Y-1 reference
   of the wave-3 P9-B0 (frozen exes, Release v1.1 store); its figures are the ones printed for P9-X and, if it is P9-F
   (PRE-13), for G-B2, with v8's ledgered Y-1 figures beside them. Reading them is not a look (the same book up to a
@@ -994,10 +1140,21 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   over-forecast / over-corrected; above 1 + sqrt(2 / T) = under-forecast. Printed beside P9-V's result; they decide
   nothing.
   - **(a)** the book's sigma_hat bias closer to 1 under `atx-cov-v1` than under v1.1, read in both directions (a book b
-    pushed below the band is over-correction, not a confirmation). [ROUND 2b-ii: the producer of the book's sigma_hat
-    bias on the two stores - root names it before P9-V's read (a C++ producer exists in root: `atx-equity-strategy-risk
-    risk --book-weights` writes a `book` bias family, gate report item 5 step 2); which holdings and store pair it reads
-    is root's / the PM's call].
+    pushed below the band is over-correction, not a confirmation). [ROUND 2b-ii: B8A-PROD: the M2g Q5 chain
+    (`root-wave2-gate-report.md` item 5 steps 0-2), run by the CELLS root inside P9-V's cell (step 2), after its
+    registration commit: step 0 the holdings: P9-X's parent NAV (P9-F0h) re-run with its exact argv plus
+    `--emit-holdings <new dir>` on the frozen Release NAV exe, every other output byte-identical to the parent's (the
+    step-0 identity form; a difference = (a) "not produced"); step 1 `book-csv`; step 2 the frozen Release
+    `atx-equity-strategy-risk risk --book-weights <that csv>` once per recipe, with each pinned store's own build argv
+    (`--recipe atx-risk-v1.1` for `p9-m2i-dcov-v11`, `--recipe atx-cov-v1` for `p9-m2i-dcov-covv1`, the same role,
+    fields and options as their manifests record), written to NEW output dirs (never into a pinned store dir); every
+    step through the bounded runner (COVR-1) after the COV-9 role check; the print is the `book` family's full b mean /
+    median and in-band flag per recipe from each `bias_summary.json`, read in both directions (COV-11), beside P9-V's
+    result, deciding nothing; any refusal = (a) printed "not produced: <step, refusal line>" - ledger :971;
+    `root-gate-report.md:154`]. Stated beside (FIELDS-GONE, ledger :978; `root-gate-report.md:471-474`): the two
+    stores' build argv names `--fields .../train-2020-2023-lo3-fields-v10/manifest.json`, absent from disk, so step 2 as
+    ruled would be refused at the fields input and (a) would print "not produced"; whether a fields substitution (as
+    FIELDS-SUB for R-2's NAV) applies there is not ruled; stated for the PM.
   - **(b)** mean L_t and its changes (the NAV's `vol_target.csv`), printed beside P9-X's.
   - **(c)** D-COV's families, v1.1 | atx-cov-v1 (`bias_summary.json`):
 
@@ -1118,16 +1275,26 @@ D3's two guards (`699440bb`, merge `0a2ceb2b`; PRE-35; ledger :753, `integration
 | P9-L | yes: S2, re-review APPROVE `2ed2fc18` (ledger :364), merge `f6444417` (`integration-log.md:513`); never lapses (B.1) | none named | runs |
 | P9-H | yes: AL-COMB (`theme-cov-hedge-v1`), APPROVE `efb7ab2e` (ledger :447), merge `9d518317` (`integration-log.md:551`); registered (PRE-6, B.2) | none named | runs |
 | P9-M | yes: AL-COMB (`mom-volman-v1`), as P9-H; the sleeve line's producer D3W, APPROVE `1e6c4336` (ledger :694), merge `08f04e07` (`integration-log.md:699`): line kept (B.3) | none named | runs |
-| P9-C | yes: AL-CLOCK, APPROVE `7ebd41ff` (ledger :744), merge `858a4fca`; fix round 1 APPROVE `eed512bd` (ledger :860), merge `1d003241` (`integration-log.md:716`, `:759`) (PRE-14) | none named | runs |
-| P9-MV | yes: COV-MV, APPROVE `25e11b32` (ledger :813), merge `5c811b56` (`integration-log.md:717`) (COV-7, PRE-14) | COMPOSE-1 (ledger :832): pending the gate (the tiny-world parse of `--rate info-clock-rate-v1 --target-rule mv-aim-v1`; a refusal there or at P9-MV's run lapses P9-MV at 0) | pending |
-| P9-W | yes: D3 (kind wiring), APPROVE `699440bb` (ledger :753), merge `0a2ceb2b`; D3W (walk-forward C++ fit, v3 weights), APPROVE `1e6c4336` (ledger :694), merge `08f04e07` (`integration-log.md:714`, `:699`) (PRE-35) | D3-Q1a (ledger :898; D3-Q1, :726): pending the gate (engine-fit identity of the re-based Y-F0; a difference lapses P9-W at 0, PRE-35) | pending |
-| P9-X | n/a: hand cell, no lane (PRE-1, PRE-11); its store `p9-m2i-dcov-v11` built at M2i (ledger :582) | PRE-30 (ledger :570; PRE-34, :599): pending the gate (the re-based Y-1 reference of the P9-B0; P9-X runs as registered, N_c +1, iff a P9 cell is accepted before it, else that reference is the cell of record, N_c +0) | pending |
+| P9-C | yes: AL-CLOCK, APPROVE `7ebd41ff` (ledger :744), merge `858a4fca`; fix round 1 APPROVE `eed512bd` (ledger :860), merge `1d003241` (`integration-log.md:716`, `:759`) (PRE-14) | none named; part B2a: ALCLOCK-1 HELD at the gate (the opt-in byte-neutral but for the `info_clock` block, so the block stays and the P9-B0 Y-F0 NAV names `--info-clock-print`; `gate-logs/nav-identity-yf0.txt`; B.4) | runs |
+| P9-MV | yes: COV-MV, APPROVE `25e11b32` (ledger :813), merge `5c811b56` (`integration-log.md:717`) (COV-7, PRE-14) | COMPOSE-1 (ledger :832): pending the gate (the tiny-world parse of `--rate info-clock-rate-v1 --target-rule mv-aim-v1`; a refusal there or at P9-MV's run lapses P9-MV at 0); part B2a: **ACCEPT** at the gate's store-backed parse check (COMPOSE-1a, :956; `gate-logs/compose-1a.txt`; B.5); a refusal at P9-MV's own preflight still lapses it at 0 before any read (COMPOSE-PRE) | runs |
+| P9-W | yes: D3 (kind wiring), APPROVE `699440bb` (ledger :753), merge `0a2ceb2b`; D3W (walk-forward C++ fit, v3 weights), APPROVE `1e6c4336` (ledger :694), merge `08f04e07` (`integration-log.md:714`, `:699`) (PRE-35) | D3-Q1a (ledger :898; D3-Q1, :726): pending the gate (engine-fit identity of the re-based Y-F0; a difference lapses P9-W at 0, PRE-35); part B2a: **DIFFERENT** (694 float leaves of the stripped weights; admission identical; `gate-logs/d3q1a.txt`; B.6): "Cell P9-W: LAPSED (0)" (:975) | lapses (0) |
+| P9-X | n/a: hand cell, no lane (PRE-1, PRE-11); its store `p9-m2i-dcov-v11` built at M2i (ledger :582) | PRE-30 (ledger :570; PRE-34, :599): pending the gate (the re-based Y-1 reference of the P9-B0; P9-X runs as registered, N_c +1, iff a P9 cell is accepted before it, else that reference is the cell of record, N_c +0); part B2a: the gate delivered the reference (`build-equity/p9-b0g-y1-nav`, A.4); still PENDING PRE-30 as PRE30-MVX (:969) reads it: N_c +0 with that reference as the cell of record iff P9-F0h is the re-based Y-F0 (no accepted cell other than P9-MV before P9-X), after PRE-34's agreement check by the cells root (PRE34-WHO); else P9-X runs, N_c +1 | pending |
 | P9-V | n/a: hand cell, no lane (PRE-1, PRE-11); its store `p9-m2i-dcov-covv1` built at M2i (ledger :582) | none named (its pair follows P9-X's PRE-30 outcome, B.8) | runs |
 
 Gate-decided column: part B2. [Ruled (COMPOSE-PRE, ledger :964): the P9-MV gate-decided cell reads COMPOSE-1 as
 COMPOSE-1a (:956) refines it: "accept at the gate's store-backed parse check, or (if no tiny-world store can be
 built) at P9-MV's own preflight; a refusal at either lapses P9-MV at 0 before any read"; part B2 fills which of the
-two the gate delivered; the row stands as part A wrote it]
+two the gate delivered; the row stands as part A wrote it] [Part B2a: the gate delivered the store-backed check
+(ACCEPT; the P9-MV row and B.5)]
+
+Round 2b-ii part B2a (LAPSE-TABLE, ledger :981; CELLS-4's table of record, stated before any cell): the gate-decided
+column is filled for P9-C, P9-MV and P9-W from the gate records at `65ce28f0`, and the status column follows; P9-X stays
+pending PRE-30 as PRE30-MVX reads it (decided at the P9-X step, not by the gate). The table now reads as LAPSE-TABLE
+states it: P9-L RUNS; P9-H RUNS; P9-M RUNS (sleeve line kept, B.3); P9-C RUNS (ALCLOCK-1 held); P9-MV RUNS (COMPOSE-1a
+ACCEPT, store-backed); P9-W LAPSED (0) (D3-Q1a DIFFERENT); P9-X PENDING PRE-30 as PRE30-MVX reads it; P9-V RUNS (pair =
+P9-X or its reference). Fit mode of every v2 cell: flag-absent (B.0). Order unchanged (A.7); the table never changes
+after a read (CELLS-4). Every running cell still waits for the gate's PROCEED (GATE-REV) and the PM's ruling of this
+file.
 
 ---
 
@@ -1200,6 +1367,14 @@ two the gate delivered; the row stands as part A wrote it]
 | X-10 vs Y-F0 (P9-B0 refs; as ledgered: same) | 0.9994863034956717 | 5.13696504329025e-4 | 1.947e-9 | defined |
 | Y-1 vs X-10 (P9-B0 refs; as ledgered: same) | 0.9947113980219977 | 5.288601978002812e-3 | 1.891e-10 | defined |
 
+    Round 2b-ii part B2a: the X-10 reference of these pairs is re-based at the gate as `build-equity/p9-b0g-x10-nav`
+    (substitution list row 2, `778d34b8`: M1d's `p9-b0-x10-nav-run` argv with `--output` changed and `--ann-mean-gross`
+    added, Release NAV p9-3f, provisional, re-pin pending): HOLDS: 27 / 27 files, 26 byte-identical to M1d's
+    `p9-b0-x10-nav`, `summary.json` differing only at `/producer/build_type`, `/producer/engine_git_sha` and the opt-in
+    `/scenarios/0..4/ann_mean_gross`; listing SHA-256 `6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d`,
+    `summary.json` `deabe71b5e2dedfb0b224fb46fdcd0e7194a6950ad8f5ecabe9601cd786bd0bd` (`gate-logs/x10-cmp.txt`,
+    `b0-files-p9-b0g-x10-nav.txt`; `root-gate-report.md:646`, `:685-687`; `handoff-root-gate-3.md:83`); the Y-1 reference
+    is `p9-b0g-y1-nav` (A.4); the rho values on the gate's references are item 26 (part B2b).
     [ROUND 2b-ii: rho of the P9 pairs' references at the wave-3 P9-B0, and of each cell's pair before its read - root,
     the gate's P9-B0 and before each read (B2-13)]. Fallback per cell (one rule per cell, fixed before the pair's rho is
     measured, PRE-33, ledger :598): P9-X B2-13 (non-paired acceptance lines only; P9-X alone, its acceptance having no
@@ -1211,7 +1386,13 @@ two the gate delivered; the row stands as part A wrote it]
     fails the bar, ALD-4), nothing from WQ-EXPLORE (WQ-1; OD5-4). DSL SHA-256 recomputed: `rank(russell_recon)`
     `2aad0b86...`, `rank(hf_crowd)` `1881f8ce...`, `rank(lazy_prices)` `bcbe2653...` (each = its registration).
 13. **No SQLite cache index** in any cell; no `--candidate-cache-index` / `--pair-cache-index` on any argv (SQL-11,
-    :212); SQL4's identity runs join the wave-3 set only if SQL4 merges before the cells (SQL-12, :213).
+    :212); SQL4's identity runs join the wave-3 set only if SQL4 merges before the cells (SQL-12, :213). [ROUND 2b-ii:
+    SQL4-CUTOFF-2's outcome: SQL4's checks green at M6B-FINISH, SQL4 in the gate head `06dc9e5a` (the M6b merge of
+    `44a76937`; a red in any of its 24 files attributes to `06dc9e5a`); not BLOCKED, not P10; SQL4's opt-in cache
+    identity of record = M6b's items 5 (1a / 1b / 2) and 6 (`handoff-root-m6b.md`, run on the same source), cited; the
+    gate's step-7 X-5 opt-in cache identity is CUT (FIELDS-X5: inputs absent, and a `cache init` on the real cache would
+    re-create the GATE-IDX file); no cache-index flag on any gate argv and no `store` block in any P9-B0 receipt
+    (SQL3-2, SQL-11) - `root-gate-report.md:11-12`, `:51`, `:158`; `gate-logs/b0-runs.txt`; ledger :924, :940, :980].
 14. **Run caps** `--max-rss-mib 2048` unless the phase is known to need more, then root reads free memory first and
     states the figure (RUN-1, ledger :451); the parent spec's registered phase caps (u 2,560, w 3,072, card 2,560 MiB;
     `lib-v8ysb-gm.json:10-28`) are such known needs. Bounded real-data runs state `--seconds` <= 600 (the runner refuses
@@ -1410,6 +1591,11 @@ reads before v8: 2 (2023-2024); history reads <r>; 2025+ never read; identity-br
   without the capability is refused at plan time) are merged and APPROVE in the gate head `06dc9e5a`, so the
   clean-source line has its producer and ABS-1's fallback "not read: no producer" does not bind on that ground; the
   IC exe's flag-absent identity is the gate's (`integration-log.md:700`, "IC flag-absent passes -> gate"; part B2).
+  Round 2b-ii part B2a (FINDING FIELDS-GONE, ledger :978; FIELDS-SUB-A, :985): the R-2 line's TRAIN reference is
+  `build-equity/p9-b0-r2-nav`, re-based by the fields substitution v10 -> v15 (A.4 item 1); "not readable: its TRAIN NAV
+  cannot be reproduced on the frozen build" (FIELDS-SUB's path B) does not apply; fields v15 is whole on disk (84
+  payloads), so the B7 era fields argv below (Y-F0's v15 receipt with the reuse options removed) names no absent dir;
+  the v9 / v10 / v13 / v14 / v15a dirs are gone and nothing is rebuilt from atx-db (A4-DB, OD3-DB).
 - **Weights.** TRAIN admission, signs and weights carried back unchanged; no re-admission, no re-fit (PM7-29 choice 1,
   carried). Rules estimated at apply time re-estimate on each era's own returns (theme-cov-hedge: the hedge is 0 in
   each era's first 252 decisions, h_t being 0 before decision 253, stated in the OD-3 print, PRE-26); mom-volman's
@@ -1423,13 +1609,16 @@ reads before v8: 2 (2023-2024); history reads <r>; 2025+ never read; identity-br
     (ALCLOCK-1, ledger :625): the two books of the turnover-share prediction (P9-F0h and Y-F0 on each era) name
     `--info-clock-print` alike, as P9-C and its reference do; its producer is the NAV exe's `summary.json`
     `info_clock.turnover_share` (B.4); if the opt-in cannot be byte-neutral the block is cut from the reference and the
-    prediction is printed "no producer".
+    prediction is printed "no producer". [Part B2a: the opt-in HELD at the gate (B.4: only the `info_clock` leaves
+    added; `gate-logs/nav-identity-yf0.txt`), so the block stays and the prediction has its producer.]
   - P9-F0's history S2 net Sharpe = its TRAIN value + P9-W's dSR (B.6, PRE-23; the read is on P9-F0h, which equals
     P9-F0 unless P9-MV is accepted: "Open for the PM (round 2a)" item 8 [read: decided by PRE-39, ledger :604,
     restated below; "Rulings applied in round 2b-i and 2b-ii" item 8]); "lower than on 2020-2023" (PM7-28's
     registered expectation, carried). Round 2b-ii (PRE-39, ledger :604; root M4's OD3P item 7,
     `root-wave3-merge-report.md:489`, and :736): the registered prediction reads "history S2 net Sharpe of P9-F0h = its
-    TRAIN S2 net Sharpe + P9-W's dSR"; this line's "P9-F0's" is stale text (PRE-40 form; B.6 states PRE-39).
+    TRAIN S2 net Sharpe + P9-W's dSR"; this line's "P9-F0's" is stale text (PRE-40 form; B.6 states PRE-39). Part B2a:
+    P9-W LAPSED (0) at the gate (D3-Q1a DIFFERENT; B.6, B.10), so this prediction has no P9-W dSR to fill; how it
+    prints is not ruled (stated for the PM in B.6).
   - ERC (review-x5 via lit section 5.3): vol ratio .80-.87 and return ratio .90-1.0: printed "not read" (PRE-18; it
     would need X-5's pre-ERC parent as a fifth history line).
   - Producers: NAV exe `ann_vol`, `ann_mean`, `net_sharpe` per era (`strategy_nav_replay.cpp:1996-2002`); pooled rows
@@ -1763,43 +1952,50 @@ Appendix III: the two registered rules, PRE-31).
 
 **ROUND 2b, in order of appearance** (what closes it - who delivers it). Round 2b-ii part A (PRE-2BII-PAR): "(filled,
 part A)" = filled from a merged lane's block; "(part A: registration commit)" = re-bracketed `[ROUND 2b-ii: filled at
-the cell's registration commit by root - Appendix IV item N]`; an item with no tag is part B's (the gate):
-1. A.4 R-2 re-based NAV reference dir and SHA-256 - root, wave-3 P9-B0 (PRE-22).
-2. A.4 Y-F0 re-based u, w, NAV reference dirs and SHA-256 - root, wave-3 P9-B0 (PRE-22).
-3. A.4 re-based Y-1 reference dir and SHA-256 (on `p9-m2i-dcov-v11`) - root, wave-3 P9-B0 (PRE-29, PRE-30).
+the cell's registration commit by root - Appendix IV item N]`; an item with no tag is part B's (the gate). Round 2b-ii
+part B2a (PRE-2BII-B2A): "(filled, part B2a)" = filled from the gate records at `65ce28f0`; "(part B2b)" = left for
+the gate's final hand-back:
+1. A.4 R-2 re-based NAV reference dir and SHA-256 - root, wave-3 P9-B0 (PRE-22). (filled, part B2a: `p9-b0-r2-nav`,
+   FIELDS-SUB-A)
+2. A.4 Y-F0 re-based u, w, NAV reference dirs and SHA-256 - root, wave-3 P9-B0 (PRE-22). (part B2b: GATE-IDX)
+3. A.4 re-based Y-1 reference dir and SHA-256 (on `p9-m2i-dcov-v11`) - root, wave-3 P9-B0 (PRE-29, PRE-30). (filled,
+   part B2a: `p9-b0g-y1-nav`; the X-10 re-base `p9-b0g-x10-nav` beside C.11)
 4. B.0 exe paths, SHA-256, build tags, source commits - root, wave-3 P9-B0 re-pin commit (W1-I2 (b), B2-10 (b), EXE-CUR).
+   (part B2b: the re-pin; the step-1 table is provisional)
 5. B.0 C3-6 byte neutrality of `--ann-mean-gross` - root M2j, C3 part-A merge (C3-6; a miss cuts the gross lines).
-6. B.0 eval mode - root, wave-3 P9-B0 u receipt (PATH-1).
+   (filled, part B2a: holds, cited from M2j)
+6. B.0 eval mode - root, wave-3 P9-B0 u receipt (PATH-1). (part B2b: the u receipt is behind GATE-IDX)
 7. B.1 P9-L template `label-terminal.json` and SHA-256 - root writes it from B.1 (PRE-2). (part A: registration commit)
-8. B.1 P9-L parent / paired reference dirs and SHA-256 - root, wave-3 P9-B0 (= item 2).
-9. B.1 P9-L fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3's C++ sleeve).
+8. B.1 P9-L parent / paired reference dirs and SHA-256 - root, wave-3 P9-B0 (= item 2). (part B2b: = item 2)
+9. B.1 P9-L fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3's C++ sleeve). (filled, part B2a: flag-absent)
 10. B.2 P9-H re-pinned template SHA-256 - root's registration commit. (part A: registration commit)
 11. B.2 P9-H "ex-ante" cut from the template description - root, same commit (ALCOMB-9 (b)). (part A: registration
     commit)
-12. B.2 P9-H fit mode - root, wave-3 P9-B0 (ALCOMB-7).
+12. B.2 P9-H fit mode - root, wave-3 P9-B0 (ALCOMB-7). (filled, part B2a: flag-absent)
 13. B.3 P9-M re-pinned template SHA-256 (parent, PRE-8 description) - root's registration commit. (part A:
     registration commit)
 14. B.3 P9-M sleeve line keep / cut - lane D3 (ALCOMB-6); root re-pins if cut. (filled, part A: KEPT; D3W's block)
-15. B.3 P9-M parent fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3).
+15. B.3 P9-M parent fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3). (filled, part B2a: flag-absent)
 16. B.4 P9-C block (rule, row, registration and template SHA-256, parent conditions, producers, C3-4, DEC-16 argument,
     `source_sample_end`, C3-5 probe, fit mode) - lane AL-CLOCK, its review and root's merge; fit mode at the wave-3 P9-B0.
     (filled, part A; open: the parent's fit mode, part B; the re-pinned template / registration SHA-256, registration
-    commit)
+    commit) (fit mode filled, part B2a: flag-absent; ALCLOCK-1 held, B.4)
 17. B.5 P9-MV block (merged and APPROVE, registration and template SHA-256, `source_sample_end`, C3-4, PRE-9 / COV-13 (c) /
     PRE-24a carries, fit mode) - lane COV-MV, its review and root's merge; fit mode at the wave-3 P9-B0. (filled, part A;
     open: the parent's fit mode and COMPOSE-1, part B; the re-pinned template / registration SHA-256, registration
-    commit)
+    commit) (fit mode and COMPOSE-1 filled, part B2a: flag-absent; COMPOSE-1a ACCEPT, store-backed)
 18. B.6 P9-W block (manifest shape, fit mode, per-date weights producer, template and SHA-256) - lane D3. (filled, part
     A, from lanes D3 and D3W; open: D3-Q1a's outcome, part B; the generated cell spec's and the manifest's SHA-256,
-    registration commit)
+    registration commit) (D3-Q1a's outcome filled, part B2a: DIFFERENT, P9-W LAPSED (0))
 19. B.7 P9-X hand spec and SHA-256 - root writes and commits it (PRE-11). (part A: registration commit)
-20. B.7 rho of the P9-X pair - root, wave-3 references, before the read (B2-13).
+20. B.7 rho of the P9-X pair - root, wave-3 references, before the read (B2-13). (part B2b: needs the re-based Y-F0)
 21. B.8 P9-V hand spec and SHA-256 - root writes and commits it (PRE-11). (part A: registration commit)
-22. B.8 rho of the P9-V pair - root, before the read (B2-13).
-23. B.8 (a) producer of the book's sigma_hat bias on the two stores - root, before P9-V's read.
+22. B.8 rho of the P9-V pair - root, before the read (B2-13). (part B2b)
+23. B.8 (a) producer of the book's sigma_hat bias on the two stores - root, before P9-V's read. (filled, part B2a:
+    B8A-PROD, the cells root; the fields-v10 consequence stated for the PM)
 24. B.8 (e) third pooled eigen row "without structurally null ranks" - root M2j, D-COV-EIG (COV-13 (b)).
-25. C.6 `ucrtbase.dll` record at the wave-3 P9-B0 - root.
-26. C.11 rho of the P9 pairs' references at the wave-3 P9-B0 and of each cell's pair - root (B2-13).
+25. C.6 `ucrtbase.dll` record at the wave-3 P9-B0 - root. (part B2b: re-recorded at the Y-F0 runs)
+26. C.11 rho of the P9 pairs' references at the wave-3 P9-B0 and of each cell's pair - root (B2-13). (part B2b)
 27. E G-B7 step R-2 - the PM or root, from the v8 ledger's accepted line, into a P9 ledger line. (values copied in
     round 2b-i, PRE-36; part A: the SE basis answered from the v8 driver source and the P9 ledger-citation line written
     in E for the PM to copy)
