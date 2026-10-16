@@ -134,8 +134,8 @@ both private common runner/policy translation units. Parent's 60 native CLI and
 64 wrapper/scoring checks pass, without skips. All three owning native objects
 compile with PCH disabled. Standalone tool and native Python tests now have
 dedicated CTest registrations under `atx_vol_tools`, independent of the compiled
-Python extension; skipped checks are failures in those lanes. Registration
-execution is the next integration check.
+Python extension; skipped checks are failures in those lanes. Both registered
+lanes pass:108 standalone tool checks and60 native checks, no skips.
 
 The first common-model dev200 run will preserve current defaults and funding-PV
 conversion. Its full eligible denominator remains63,942, including unsupported
@@ -161,6 +161,23 @@ Rechecked October 16:
 - [QuantLib v1.44 concentrating mesher source](https://raw.githubusercontent.com/lballabio/QuantLib/v1.44/ql/methods/finitedifferences/meshers/concentrating1dmesher.cpp)
   is a primary implementation reference for concentration; our finite-process
   positivity, CFL cost and continuous approximation need separate assessment.
+- [Itkin's hybrid-dividend American pricing research](https://arxiv.org/html/2510.18159v1)
+  explores an integral-equation approach with time-dependent coefficients and
+  cash/proportional dividends. Its dividend/positivity assumptions need a separate
+  mapping to our limited-liability cash model before it can be a comparable
+  method. It is a future candidate, not measured library performance evidence.
+- [Fast American Option Pricing using Nonlinear Stencils](https://arxiv.org/html/2303.02317v2)
+  investigates parallel acceleration. Its hardware, workload and reported speed
+  ratios are not comparable to our unqualified concurrent-host diagnostics.
+- [Carr, Randomization and the American Put (1998)](https://engineering.nyu.edu/sites/default/files/2019-03/Carr-randomization-and-the-american-put.pdf)
+  and [QuantLib v1.44 implicit Euler](https://raw.githubusercontent.com/lballabio/QuantLib/v1.44/ql/methods/finitedifferences/schemes/impliciteulerscheme.cpp)
+  motivate an additional experiment after storage sharing: apply a positive
+  generator resolvent through tridiagonal factors, avoiding explicit CFL-driven
+  step growth. Our proposed finite-process interpretation is an inference:
+  for a zero-drift birth-death generator Q with Q1=Qx=0, (I-hQ)^-1 preserves
+  constants and state means mathematically. Numerical factorization must verify
+  residuals/positivity; Snell rollback still has finite exercise and first-order
+  time error. No operator replacement, cap relaxation or speed claim is made.
 
 Source parquet remains `C:/Users/natha/Downloads/OptionIntradayHist_30min_2026-10-14.parquet`.
 Reuse the hash-bound `C:/atx-cache/quote-benchmark/20261014-dev200` cohort; its
