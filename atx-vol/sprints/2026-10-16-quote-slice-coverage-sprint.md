@@ -153,7 +153,7 @@ lane and are not touched; no cap is raised.
 |---|---|---|
 | channel knot spline | `src/fitting/slice_channel.{hpp,cpp}` | internal header; SpiderRock 29-knot LogStd grid, active knots = observed z range +/-1 plus the nine central knots; cardinal natural-spline basis reproduces `SplineVolCurve` serving exactly; semismooth active-set Newton with backtracking on the exact objective, <=50 solves per pass, two passes (re-standardized at the fitted ATM vol); fixed-capacity 29x29 Eigen storage, heap only for O(obs x knots) basis scratch |
 | term prior | `src/fitting/term_prior.{hpp,cpp}` | internal header; `create` O(nodes), `at` allocation-free with LOO exclusion and PAV recomputed per query; <=128 nodes |
-| channel slice | `quote_slice.cpp` `fit_quote_slice_channel`, `QuoteSliceFitMethod::ChannelSpline` | `fit_quote_slice` split into prepare/admit/certify stages with unchanged arithmetic; channel = American IV of bid and ask at the contract's own carry (same AL forward map as the mid); bounded in-channel convexity repair (`repair_half_spreads`) |
+| channel slice | `quote_slice.cpp` `fit_quote_slice_channel`, `QuoteSliceFitMethod::ChannelSpline` | `fit_quote_slice` split into prepare/admit/certify stages with unchanged arithmetic; channel = American IV of bid and ask at the contract's own carry (same AL forward map as the mid); bounded-move convexity repair (`repair_half_spreads`; the move from the fitted price is bounded, containment in [bid, ask] is not guaranteed) |
 | calendar repair | `repair_quote_slice_calendar` | clamp between accepted earlier/later slices, convex minorant, <=3 rounds, move <= `calendar_repair_half_spreads` of the node's own half-spread, unchanged certificate, re-checked against every accepted slice |
 | graded surface | `src/fitting/quote_surface.cpp` `fit_quote_surface` | declared in the existing public `quote_slice.hpp` (no new public header, no Tier-B churn) |
 | bench | `quote_bench_{main,policy,data}` | `"admission"`, `"graded"`, profile `"channel"`, `"curve": "knot-spline"`; `grade` column and `graded_stats` (per-slice diagnostics) only in graded mode |
@@ -171,11 +171,15 @@ Departures from section 2, each made before the official runs:
    no-repair smoke: median 0.09, p75 0.28, p90 0.57 half-spreads; 301/340
    failing expiries were within 0.5. Policy value 0.5 (half of the half-spread).
 3. **Calendar repair added.** Greedy acceptance alone left 196-271 refused
-   expiries with crossing gaps median $0.05; a clamp-and-minorant repair inside
-   0.5 half-spreads now runs before the retry. A repaired grade-A slice is
-   demoted to B (its served prices are no longer the point fit's).
+   expiries with crossing gaps median $0.05; a clamp-and-minorant repair that
+   moves each node at most 0.5 of its own half-spread now runs before the
+   retry. A repaired grade-A slice is demoted to B (its served prices are no
+   longer the point fit's).
 4. Grade A is defined by evidence (own admitted point strikes >= profile
    `min_quotes`, served without prior), so it is method-independent (run c).
+   Corrected in the review fix round (item 7): A also requires that no repair
+   moved a served price, and under a knot-spline/family profile A is that
+   profile's prior-free channel fit, not a point fit.
 5. **Curve family is a choice, not the vendor's spline** (direction received
    mid-sprint). `QuoteSliceChannelConfig::family` (unset = native knot spline)
    solves the SAME channel objective and term prior with eSSVI, SVI, C8,
@@ -198,6 +202,36 @@ Departures from section 2, each made before the official runs:
    `admission: graded` with a `carry_mode` (composing the term prior with
    resolved carry is not done). Channel suites are owned by
    `atx-vol-quote-slice-tests` (`tests/slices.cmake`, CLAUDE.md table).
+7. **Review fix round** (independent review of `360281b2`: BLOCK on MAJOR-1;
+   fixes in `11318231`).
+   - MAJOR-1: grade A was given to any served pass-A fit meeting the evidence
+     minimum, including convexity-repaired slices and, under knot-spline or
+     family profiles, channel fits, contradicting the header ("unchanged point
+     fitter, no prior"). Grade A is now redefined consistently in
+     `quote_slice.hpp`, the bench `graded_semantics` text and
+     `docs/quote_benchmark.md`: own admitted point evidence >= `min_quotes`,
+     served by the profile's own pass-A method (point fit, or the prior-free
+     channel fit of a knot-spline/family profile) with no term prior and no
+     served price moved by a repair. A pass-A slice whose served prices a
+     convexity or calendar repair moved is graded B. Only the label changes:
+     tiering, prior-node roles and acceptance order are untouched, so the
+     served set and every price are unchanged (section 7 reruns).
+   - MINOR: `QuoteSliceFit::moved_nodes` flags repaired nodes and
+     `evaluate_quote_slice` re-implies their volatility from the served price.
+   - MINOR: "in-channel" / "inside the quotes" wording replaced by
+     bounded-move (the bound is N x the node's own half-spread from its fitted
+     price, not containment in [bid, ask]).
+   - MINOR: `validate_quote_slice_channel` (now public; requires
+     `channel_weight > 0` and `mult_ceil > mult_floor`) runs once in
+     `fit_quote_surface` and for every profile in the policy catalog.
+   - MINOR: a snapshot above `kQuoteSurfaceMaxExpiries` falls back to the
+     static per-expiry path (grade A/B/C by the pass-A rule, static calendar
+     rule), reported as `graded_stats.static_fallback`; it no longer marks
+     every row `invalid_market`.
+   - NITs taken: `channel_weight > 0`; `n_butterfly_viol` documented as not
+     computed for channel fits. Not taken: keeping only the best family curve,
+     de-duplicating prior nodes after leave-one-out (would change graded-v1
+     prices), splitting the long functions.
 
 ## 4. Approximations and known limits
 
@@ -213,9 +247,10 @@ Departures from section 2, each made before the official runs:
   holds them flat outside; earnings-variance splitting is not modelled.
 - Calendar repair is greedy in confidence order (A, then B, then C by evidence),
   not a joint LP; a refused slice is never used to repair others.
-- Both repairs only move prices inside half a quoted half-spread and never relax
-  `AmericanPriceSlice::create`, `check_american_calendar` or
-  `check_nondividend_american`.
+- Both repairs move each node at most 0.5 of its own quoted half-spread from
+  its previous (fitted) price; that bounds the move but does not keep a price
+  inside [bid, ask]. They never relax `AmericanPriceSlice::create`,
+  `check_american_calendar` or `check_nondividend_american`.
 - Runtime: graded dev200 ~4.5 min versus ~16 s static (two to three American IV
   inversions per contract, up to three channel fits per non-A expiry). Not a
   speed claim; channel observations could be cached across B1/B2/retry.
@@ -250,6 +285,15 @@ On the rebased branch (`fd1d7594` code; `vol-rel` per the build-lane rules,
 - PCH-off (`vol-hygiene`) `check` of the owning TUs of every changed header
   (quote_slice, slice_channel, quote_surface, term_prior, quote_fit_policy,
   quote_slice_carry, quote_bench_main and five test TUs): **12/12 pass**.
+
+Review fix round (`11318231`, pool-34, `vol-rel`, -Jobs 3): `check` of
+quote_slice, quote_surface, quote_fit_policy clean; both focused targets build
+clean; focused gtest **83/83** (new `KnotSplineProfileGradesAOnlyWithOwnEvidenceAndUnmovedPrices`,
+moved-node re-implication checks in it and in the calendar-repair test,
+shared channel-config Err, catalog channel validation); anchored ctest
+`^atx-vol-quote-(slice|benchmark-tools|benchmark-native|benchmark-campaign)$`
+**4/4**; CLI file **47/47** (new static-fallback case with 129 expiries);
+PCH-off 12/12; default parity `c89d0739` (`20261016-slice-parity-11318231.csv`).
 
 ## 6. Default-mode parity (byte identity)
 
@@ -293,20 +337,31 @@ point A + knot-spline B/C, both repairs at 0.5 half-spreads) and
 Both were produced at `ecf140dc`; rerun at `dc072f96` (rebased) the CSVs are
 byte-identical (`20261016-slice-graded-v1-dc072f96.csv`, `...-family-knot-v1.csv`).
 
+**Review fix round reruns** (binary `11318231`, SHA-256 `d934c43d...`):
+`20261016-slice-graded-v1-11318231.csv` is byte-identical to graded-v1
+(`d817c225...`); `20261016-slice-knotspline-v1-11318231.csv` (SHA-256
+`b3fd97640a04d7a5514bd34d82a40d7d9602a7be6a65ae57924b0ab6fe5cec4d`) has the
+same 72,348 statuses, prices and vols as knotspline-v1; only 10,654 rows move
+A -> B (pass-A knot slices whose prices the convexity repair moved). The
+tables below use the corrected grades.
+
 **Coverage (rows).**
 
 | run | served | A | B | C | arbitrage | calendar | insufficient | unsupported |
 |---|---|---|---|---|---|---|---|---|
 | baseline | 10,694 (16.7%) | 10,694 | - | - | 8,824 | 12,484 | 31,224 | 716 |
 | graded-v1 | **50,912 (79.6%)** | 16,334 | 33,304 | 1,274 | 5,320 | 6,904 | 90 | 716 |
-| knotspline-v1 | 49,860 (78.0%) | 17,432 | 31,186 | 1,242 | 8,656 | 4,620 | 90 | 716 |
+| knotspline-v1 (corrected grades) | 49,860 (78.0%) | 6,778 | 41,840 | 1,242 | 8,656 | 4,620 | 90 | 716 |
+| knotspline-v1 (as first reported) | 49,860 | 17,432 | 31,186 | 1,242 | | | | |
 
-**Exact intersection with the baseline (rows both price).** graded-v1: 10,654
-rows, **all 10,654 prices identical** (MAE 0.1510 both, bias -0.0290,
-containment 0.9828, core vol 93.2 bp); 0 baseline rows lost. knotspline-v1:
-9,392 rows, MAE 0.1653 -> **0.1620**, bias -0.0302 -> -0.0436, containment
-0.9869 -> **0.9974**, core vol 94.6 -> 89.6 bp; 1,262 baseline rows lost
-(knot slices failing the certificate where the point fit passed).
+**Exact intersection with the baseline (rows both price).** graded-v1: all
+10,694 raw baseline rows are served at identical price and vol strings (10,654
+of them carry labels: MAE 0.1510 both, bias -0.0290, containment 0.9828, core
+vol 93.2 bp); 0 baseline rows lost. knotspline-v1: 9,392 labelled rows, MAE
+0.1653 -> **0.1620**, bias -0.0302 -> -0.0436, containment 0.9869 ->
+**0.9974**, core vol 94.6 -> 89.6 bp; 1,300 raw baseline rows lost (1,026
+arbitrage, 274 calendar; 1,262 of them labelled), where the knot slice failed
+the certificate and the point fit passed.
 
 **Own population by grade** (price MAE vs label | mid MAE on the same rows |
 bias | containment in [bid, ask] | core-vol MAE bp, |z|<=1.5 and >7 d):
@@ -318,8 +373,8 @@ bias | containment in [bid, ask] | core-vol MAE bp, |z|<=1.5 and >7 d):
 | graded-v1 B | 32,948 | 0.2733 | 0.3630 | -0.183 | 0.994 | 987 |
 | graded-v1 C | 1,191 | 0.1693 | 0.3505 | -0.097 | 0.992 | 5,880 |
 | knotspline-v1 ALL | 49,386 | 0.2321 | 0.3382 | -0.140 | 0.997 | 746 |
-| knotspline-v1 A | 17,393 | 0.1704 | 0.2915 | -0.062 | 0.997 | 80 |
-| knotspline-v1 B | 30,831 | 0.2690 | 0.3638 | -0.186 | 0.998 | 1,066 |
+| knotspline-v1 A (corrected) | 6,772 | 0.2245 | 0.3388 | -0.061 | 0.998 | 47 |
+| knotspline-v1 B (corrected) | 41,452 | 0.2349 | 0.3376 | -0.154 | 0.998 | 834 |
 | knotspline-v1 C | 1,162 | 0.1734 | 0.3577 | -0.100 | 0.991 | 5,878 |
 
 Every grade beats the midpoint on its own rows. Newly served rows (graded-v1,
@@ -366,6 +421,11 @@ scorer `family_compare.py` -> `slice-coverage-20261016-score/family-compare.json
 **Coverage and arbitrage.** Served slices are certified by construction (zero
 served price-arbitrage); the table counts refusals and channel violations of
 served slices (fitted vol outside its bid/ask vol channel, before pricing).
+The A / B / C split below predates the review fix round: in these runs A is
+each family's prior-free pass-A channel fit and includes convexity-repaired
+slices (the fix relabels those B, as in section 7). The family runs were not
+rerun; the fix does not change any served row or price, so the coverage and
+accuracy comparisons stand.
 
 | family | served rows | A / B / C | arb-refused rows (chains) | calendar-refused rows (chains) | fit failures rows | served slices with channel violations (violations / channels) | convexity-repaired slices |
 |---|---|---|---|---|---|---|---|
@@ -440,15 +500,16 @@ convexity/calendar repairs and stronger-prior retries (451 repaired slices).
   and has the fewest channel violations (121 vs 960-3,608); its solve is the
   cheapest at the median (75 us vs 102-657 us), although its end-to-end
   expiry time is higher because more of its slices need repairs.
-  The parametric families add 5-6k rows only by serving fits
-  that leave the channel (containment 0.85-0.93 on those rows); the point
+  eSSVI, SVI and C8 add 5-6k rows only by serving fits that leave the channel
+  (containment 0.85-0.93 on those rows); convex-dense serves 264 fewer rows
+  than the knot spline (0.952 containment on the rows it adds); the point
   spline is refused by its own butterfly gate. Not chosen for vendor
   similarity: the spline wins on these measurements.
 - **Admission: graded-v1 (point fit A, knot spline B/C)** is the best default
   candidate today: most coverage (79.6% vs 16.7%), no baseline row lost and the
   baseline's exact prices on the intersection. All-knot (knotspline-v1) is more
-  accurate on the rows both serve but loses 1,262 baseline rows to certificate
-  failures. The evidence points to a ladder (knot spline first, point fit when
+  accurate on the rows both serve but loses 1,300 raw baseline rows (1,262
+  labelled) to certificate failures. The evidence points to a ladder (knot spline first, point fit when
   the knot slice fails the certificate) - not yet built (section 10).
 - Defaults stay unchanged (`admission: static`, no family) until a held-out
   validation split confirms these dev200 results.
@@ -456,7 +517,7 @@ convexity/calendar repairs and stronger-prior retries (451 repaired slices).
 ## 10. Unfinished / next
 
 1. Knot-first ladder with point-fit fallback on certificate failure (projected
-   from section 8: keeps the knot's accuracy and recovers the 1,262 rows), then
+   from section 8: keeps the knot's accuracy and recovers the 1,300 rows), then
    rerun on dev200 and the validation split.
 2. Remaining refusals in graded-v1: 5,320 arbitrage rows (mostly the
    vertical-spread and non-dividend checks under strike-varying supplied
