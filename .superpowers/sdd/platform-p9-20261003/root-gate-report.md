@@ -832,3 +832,42 @@ NAV row 6 reads), `train_combined_{finite.u8,ids.u64,member.u8,sessions.i64}`, `
 `train_planned_targets.csv` `cb744a74...`. `summary.json` 484 differing leaves, `train_candidates.jsonl` 266: TIMING 541,
 IDENTITY 1 (`vm_identity`), M1D-LIST 208 (the same cache-root paths, identity strings, `signal_key_sha256`,
 `ic_cache_bytes`, `ic_scratch_bytes`; both sides warm, so no hit / miss counter moved); outside **0**.
+
+### Step 4, agent 4: row 6, Y-F0 NAV of record on the Release NAV exe (`gate-logs/b0-runs.txt`, `yf0nav-cmp.txt`, `yf0nav-classes.txt`)
+
+YF0-NAV-ORDER: after row 5; `tools/b0_nav.py yf0` (dry first: the argv differs from `p9-b0-yf0-nav-run`'s at token 0,
+`--combined build-equity/p9-b0g-yf0-w/train_combined.json` (its SHA-256 re-hashed = the pinned `e13fbc4d...8c`) and
+`--output`, plus `--ann-mean-gross --info-clock-print` appended). Started 15:39:01Z, free RAM 5,539 MiB: completed exit 0,
+wall 34.4 s, peak 646 MiB, Release NAV exe `255b58ac...3565` = receipt before and after, receipt source `a24a77bd` clean
+in the code pathspec, no `store` block; the receipt's argv names `build-equity/p9-b0g-yf0-w/train_combined.json`.
+Outputs `build-equity/p9-b0g-yf0-nav`: 27 files, listing
+`e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json`
+`826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`.
+
+**Identity vs M1d's `p9-b0-yf0-nav`: holds.** 26 / 27 files byte-identical; `summary.json` differs at 77 leaves, all
+allowed: PRODUCER 2 (`/producer/build_type`, `/producer/engine_git_sha`), OPTIN 75 on the new side only
+(`/scenarios/0..4/ann_mean_gross` 5; `/scenarios/0..4/info_clock/*` 70 = 14 leaves x 5 scenarios, the ALCLOCK-1 form of
+agent 2's `nav-identity-yf0.txt`); outside **0**. ALCLOCK-1 holds at the NAV of record (LAPSE-TABLE: P9-C RUNS).
+
+`ucrtbase.dll` re-recorded at the Y-F0 runs (C.6, `gate-logs/ucrt-b0-4.txt`, 15:39:47Z): 10.0.26100.7623
+`2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF` (= CRT-2, = agent 3's cache-free runs).
+
+**Step 4 state: HOLDS.** Re-based references of record: R-2 `p9-b0-r2-nav` (FIELDS-SUB-A), X-10 `p9-b0g-x10-nav`, Y-1
+`p9-b0g-y1-nav` (PRE-29, no identity claimed), Y-F0 `p9-b0g-yf0-u` / `p9-b0g-yf0-w` / `p9-b0g-yf0-nav`; X-5 cut
+(FIELDS-X5).
+
+### Step 5, agent 4: rho of the two pairs that need Y-F0 (`gate-logs/rho-pairs-2.txt`, `receipt-p9-b0g-rho-2.json`)
+
+`scripts/run_bounded_research.py --output build-equity/p9-b0g-rho-2-run --seconds 600 --max-rss-mib 2048 -- <python>
+gate-logs/tools/rho_pairs.py build-equity-rel/bin/atx-research-eval.exe <pairs>`: completed exit 0, 1.4 s, peak 51 MiB, no
+`store` block; the Release eval verb p9-3f `e2b48c46...962c`; only `paired.{sessions, rho, one_minus_rho, degenerate}`
+read (B2-13):
+
+| pair | T | rho | "1 - rho < 1e-6" |
+|---|---|---|---|
+| P9-X pair: re-based Y-1 vs re-based Y-F0 (`p9-b0g-y1-nav` vs `p9-b0g-yf0-nav`) | 1005 | 0.9947035686613187 | **false** (paired test defined) |
+| X-10 vs Y-F0 (`p9-b0g-x10-nav` vs `p9-b0g-yf0-nav`) | 1005 | 0.9994863034956717 | **false** |
+| Y-1 vs X-10 (agent 3, `rho-pairs-1.txt`) | 1005 | 0.9947113980219978 | **false** |
+
+**Step 5 state: HOLDS** (every pair's value and flag logged; the P9-V pair's references are P9-X's, PRE-MVX, measured at
+the cells).

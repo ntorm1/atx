@@ -1,0 +1,18 @@
+# class summary of yf0nav-cmp.txt: count, class, collapsed JSON path
+5	OPTIN	/scenarios/<i>/ann_mean_gross
+5	OPTIN	/scenarios/<i>/info_clock/definition
+5	OPTIN	/scenarios/<i>/info_clock/fast_name_days
+5	OPTIN	/scenarios/<i>/info_clock/fast_planned_turnover
+5	OPTIN	/scenarios/<i>/info_clock/fast_share
+5	OPTIN	/scenarios/<i>/info_clock/field/name
+5	OPTIN	/scenarios/<i>/info_clock/field/sha256
+5	OPTIN	/scenarios/<i>/info_clock/missing_name_days
+5	OPTIN	/scenarios/<i>/info_clock/name_days
+5	OPTIN	/scenarios/<i>/info_clock/planned_turnover
+5	OPTIN	/scenarios/<i>/info_clock/rate
+5	OPTIN	/scenarios/<i>/info_clock/theta_fast
+5	OPTIN	/scenarios/<i>/info_clock/theta_slow
+5	OPTIN	/scenarios/<i>/info_clock/turnover_share
+5	OPTIN	/scenarios/<i>/info_clock/window_sessions
+1	PRODUCER	/producer/build_type
+1	PRODUCER	/producer/engine_git_sha
