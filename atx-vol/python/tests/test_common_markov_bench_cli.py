@@ -1032,6 +1032,54 @@ def test_interval_fallback_seeds_wide_and_bidless_market_within_budget(binary, t
     assert decision["fit"]["quote_count"] == len(rows)
 
 
+def test_seed_prior_option_moves_flat_hinge_fit_to_the_seed(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    for row in rows:  # Every quote wide (sigma .2 to .45): the interval loss is flat inside.
+        strike = float(row["strike"])
+        row["bid"] = black_scholes_call(strike, .2) if strike > 100 else 0
+        row["ask"] = black_scholes_call(strike, .45)
+    write_rows(source, rows)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(initial_sigma=.25, prior_weight=.001, max_evaluations=64,
+                                        max_sweeps=24)
+    seed = {"estimator": "sigma-interval"}
+    results = {}
+    for prior in ("configured", "seed"):
+        policy["initialization"] = {"mode": "quote-seed", "seed": seed, "prior": prior}
+        path.write_text(json.dumps(policy))
+        result = common_run(binary, source, output, path)
+        assert result.returncode == 0, result.stderr
+        results[prior] = json.loads(result.stdout)
+    midpoint = math.sqrt(.2 * .45)
+    configured, = results["configured"]["policy_decisions"]
+    assert configured["initialization"]["effective_initial_sigmas"] == pytest.approx([midpoint], abs=1e-5)
+    assert configured["initialization"]["effective_prior_sigmas"] == [.25]
+    assert "effective_prior_source" not in configured["initialization"]
+    # Flat interval loss: only the configured prior acts, so the fit returns to it.
+    assert configured["fit"]["sigmas"][0] == pytest.approx(.25, abs=1e-3)
+    seeded, = results["seed"]["policy_decisions"]
+    assert seeded["initialization"]["effective_prior_source"] == "quote_seed"
+    assert seeded["initialization"]["effective_prior_sigmas"] == pytest.approx([midpoint], abs=1e-5)
+    assert seeded["fit"]["sigmas"][0] == pytest.approx(midpoint, abs=1e-3)
+    assert results["seed"]["policy_definition"]["initialization"]["prior"] == "seed"
+    assert "prior" not in results["configured"]["policy_definition"]["initialization"]
+
+
+@pytest.mark.parametrize("initialization", [
+    {"mode": "quote-seed", "prior": "median"},
+    {"mode": "configured", "prior": "seed"},
+])
+def test_seed_prior_option_is_closed(binary, tmp_path, initialization):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    result = common_run(binary, source, output, policy_file(tmp_path, initialization=initialization))
+    assert result.returncode != 0
+    assert not output.exists()
+
+
 @pytest.mark.parametrize("estimator", ["sigma", "interval", 1])
 def test_seed_estimator_is_closed(binary, tmp_path, estimator):
     source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"

@@ -96,14 +96,22 @@ const char *common_search_name(AmericanMarkovFitSearch search) {
 }
 
 CommonInitializationConfig parse_common_initialization(const Json &entry) {
-  keys(entry, {"mode", "seed"});
+  keys(entry, {"mode", "seed", "prior"});
   if (!entry.contains("mode")) throw std::runtime_error("Common initialization requires mode");
   const auto mode = quote_bench_policy::text(entry.at("mode"));
   CommonInitializationConfig out;
   if (mode == "quote-seed") out.mode = CommonInitializationMode::QuoteSeed;
   else if (mode != "configured") throw std::runtime_error("Unknown common initialization mode");
-  if (entry.contains("seed") && out.mode != CommonInitializationMode::QuoteSeed) {
+  if ((entry.contains("seed") || entry.contains("prior")) &&
+      out.mode != CommonInitializationMode::QuoteSeed) {
     throw std::runtime_error("Seed controls require quote-seed initialization mode");
+  }
+  if (entry.contains("prior")) {
+    const auto prior = quote_bench_policy::text(entry.at("prior"));
+    if (prior == "seed") out.prior_from_seed = true;
+    else if (prior != "configured") {
+      throw std::runtime_error("Common initialization prior must be configured or seed");
+    }
   }
   if (!entry.contains("seed")) return out;
   const auto &j = entry.at("seed");
@@ -177,6 +185,11 @@ Json common_initialization_json(const CommonInitializationConfig &config) {
         "refused only when unbounded both ways; crossed intervals reported, never repaired; "
         "fallback runs only after an incomplete bid-mid-ask seed, within the remaining budget";
   }
+  if (config.prior_from_seed) {
+    result["prior"] = "seed";
+    result["prior_application"] = "an applied quote seed (any estimator) also replaces the "
+        "regularization prior centre; refused/incomplete seeds keep the configured prior";
+  }
   return result;
 }
 
@@ -240,6 +253,18 @@ CommonFitInitialization configured_common_fit_initialization(
 }
 
 namespace {
+// The configured prior was materialized before seeding; only prior "seed"
+// replaces it, and only with a complete applied seed vector.
+void use_seed(const std::vector<double> &seed, const CommonInitializationConfig &config,
+              CommonFitInitialization &result) {
+  result.initial_sigmas = seed;
+  if (config.prior_from_seed) {
+    result.prior_sigmas = seed;
+    result.diagnostics["effective_prior_source"] = "quote_seed";
+  }
+  effective_vectors(result);
+}
+
 // Every count, refusal, parameter and endpoint of one estimator call. Interval
 // provenance (which quotes bounded sigma, interval widths) only for SigmaInterval.
 void record_seeds(const AmericanMarkovQuoteSeeds &seeds, Json &d) {
@@ -351,14 +376,14 @@ void apply_interval_fallback(const AmericanMarkovFitMarket &market,
   } else if (!valid_vector(seeds->initial_sigmas, fit, result.initial_sigmas.size())) {
     f["state"] = "layout_mismatch";
   } else {
-    result.initial_sigmas = seeds->initial_sigmas;
     f["state"] = "applied";
     f["applied"] = true;
     d["state"] = "applied_interval_fallback";
     d["applied"] = true;
-    d["reason"] = "Bid-mid-ask seed incomplete; sigma-interval seed applied; configured prior "
-        "retained";
-    effective_vectors(result);
+    d["reason"] = config.prior_from_seed
+        ? "Bid-mid-ask seed incomplete; sigma-interval seed applied as initial and prior"
+        : "Bid-mid-ask seed incomplete; sigma-interval seed applied; configured prior retained";
+    use_seed(seeds->initial_sigmas, config, result);
   }
   d["interval_fallback"] = std::move(f);
 }
@@ -401,10 +426,10 @@ void apply_common_quote_seeds(const AmericanMarkovFitMarket &market,
     d["error_code"] = "seed_layout_mismatch";
     return;
   }
-  result.initial_sigmas = seeds->initial_sigmas;
   d["state"] = "applied";
   d["applied"] = true;
-  d["reason"] = "Complete quote seed applied; configured prior retained";
-  effective_vectors(result);
+  d["reason"] = config.prior_from_seed ? "Complete quote seed applied as initial and prior"
+                                       : "Complete quote seed applied; configured prior retained";
+  use_seed(seeds->initial_sigmas, config, result);
 }
 } // namespace quote_bench

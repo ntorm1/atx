@@ -20,6 +20,11 @@ struct CommonInitializationConfig {
   // inversion/slot budgets (the remainder after the primary attempt).
   atx::vol::AmericanMarkovSeedConfig seed;
   bool interval_fallback = false;
+  // Policy "prior": "seed". With wide/bidless quotes the hinge interval loss is
+  // flat, so only the prior acts and a fit returns to the configured prior
+  // centre whatever the seed. This opt-in makes an applied seed vector the
+  // prior centre too; incomplete/refused seeds keep the configured prior.
+  bool prior_from_seed = false;
 };
 
 // Owns every vector later borrowed by the synchronous fitter. No fit-config
