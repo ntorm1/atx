@@ -87,6 +87,30 @@ add_test(NAME atx-vol-american-markov-policy COMMAND atx-vol-american-markov-pol
 set_tests_properties(atx-vol-american-markov-policy PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# Pricing hot-path audit 2026-10-16 (tick-path lane): the chain-refresh entry
+# points, the per-expiry calibration record and the per-contract spot ladders.
+# Focused so the lane never relinks the monolithic exe. These three suites live
+# ONLY here (not in atx-vol-tests or a slice), so atx_vol_fast runs each case
+# once. The PricingExecutor suite (worker pinning behind the cpu_topology seam)
+# is owned by atx-vol-pricing-slice / atx-vol-tests and is not duplicated here.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only
+# (thread-local armed tally) to prove the tick path allocates nothing.
+include(GoogleTest) # gtest_discover_tests (idempotent; also included further down)
+add_executable(atx-vol-tick-path-tests
+    chain_tick_test.cpp expiry_record_test.cpp spot_ladder_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-tick-path-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-tick-path-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# One ctest case per gtest case so each touched suite is selectable by an
+# anchored -R (e.g. -R "^tick-path:ChainTickCached") and a vanished suite is
+# visible.
+gtest_discover_tests(atx-vol-tick-path-tests
+    TEST_PREFIX "tick-path:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
 add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
 target_link_libraries(atx-vol-umbrella-tests PRIVATE
     atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)

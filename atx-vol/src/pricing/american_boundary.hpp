@@ -278,6 +278,27 @@ struct AlSolveResid {
                                                 double K, double T, double sigma,
                                                 double r, double q) noexcept;
 
+// ── Tick-path record seam (pricing hot-path audit 2026-10-16, item 2) ─────────
+//
+// The per-expiry calibration record (fitting/expiry_record.cpp) samples the
+// early-exercise premium on a (log-moneyness, sigma) grid and splits its
+// moneyness domain at the CURRENT exercise boundary, so it needs two quantities
+// the price entry point above folds away. Both are pure forwarders onto the
+// file-local helpers american.cpp already uses; numerics are unchanged.
+
+// The exercise boundary at time-to-expiry tau = bnd.T, i.e. NOW: the critical
+// put spot at or below which immediate exercise is optimal. The same
+// barycentric interpolant the premium quadrature reads (al_boundary_at).
+[[nodiscard]] double al_boundary_now(const AlBoundary& bnd) noexcept;
+
+// The early-exercise premium integral alone at spot S — the quantity
+// al_put_price_from_boundary adds to the European put before its intrinsic /
+// European / zero clamps. Unclamped by those, so it stays a smooth function of S
+// across the exercise boundary (it is floored at 0 like the price path).
+[[nodiscard]] double al_put_premium_from_boundary(const AlBoundary& bnd, const AlWorkspace& ws,
+                                                  double S, double sigma, double r,
+                                                  double q) noexcept;
+
 // ── P2 (WS-P) seam: the PURE collocation residual R(y; sigma, r) ──────────
 //
 // Adjoint / implicit-function-theorem greeks (detail/adjoint_greeks.cpp) need the
