@@ -117,3 +117,13 @@ explicit refinement provenance and uncertainty; observed stability is not proof.
 The fixed comparisons use baseline `sinh129-variance-domain8`; the spatial
 comparisons use `sinh129-domain8-clock4800`. Each report retains 20736 requested
 rows across eight grids, including every refusal and unmatched reference row.
+
+## Parent integration
+
+Exact author commit `e93a9249d7c1f85b503c2c0001e53232fe7d86df` was reviewed
+and integrated as `ff97eb05`. Parent Release audit build, eleven registered
+native CLI cases (no skips) and the owning PCH-off object pass. Independent
+artifact reconciliation confirms identical 1200/2400/4800 diffusion-step
+schedules for funded/separate-clock/high-vol controls across all three node
+counts, and the unchanged one-million logical row cap. The journal-verifier
+followup `da4c0e55` also received exact-SHA independent approval.

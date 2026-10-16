@@ -706,6 +706,14 @@ if(Python3_Interpreter_FOUND)
         set_tests_properties(atx-vol-american-markov-audit-native PROPERTIES
             LABELS atx_vol_tools TIMEOUT 120
             FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+        add_test(NAME atx-vol-quote-benchmark-campaign
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ATX_QUOTE_BENCH_BINARY=$<TARGET_FILE:atx-vol-quote-bench>"
+                ${Python3_EXECUTABLE} -m pytest --noconftest -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_benchmark_campaign.py)
+        set_tests_properties(atx-vol-quote-benchmark-campaign PROPERTIES
+            LABELS atx_vol_tools TIMEOUT 120
+            FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
     endif()
 endif()
 
