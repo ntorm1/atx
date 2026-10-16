@@ -43,6 +43,24 @@ target_link_libraries(atx-vol-american-markov-tests
 add_test(NAME atx-vol-american-markov COMMAND atx-vol-american-markov-tests)
 set_tests_properties(atx-vol-american-markov PROPERTIES LABELS "atx_vol_fast")
 
+add_executable(atx-vol-american-markov-fit-tests american_markov_fit_test.cpp)
+target_link_libraries(atx-vol-american-markov-fit-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-american-markov-fit COMMAND atx-vol-american-markov-fit-tests)
+set_tests_properties(atx-vol-american-markov-fit PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
+target_link_libraries(atx-vol-umbrella-tests PRIVATE
+    atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)
+target_compile_definitions(atx-vol-umbrella-tests PRIVATE
+    "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
+    "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/api/vol.hpp\""
+    "ATX_VOL_INSTALL_CMAKE=\"${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/atx-vol-install.cmake\"")
+add_test(NAME atx-vol-umbrella COMMAND atx-vol-umbrella-tests)
+set_tests_properties(atx-vol-umbrella PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-tests
     convex_recovery_test.cpp
     quote_feasibility_test.cpp
@@ -88,6 +106,7 @@ add_executable(atx-vol-tests
     american_markov_test.cpp
     american_markov_batch_test.cpp
     american_markov_pwl_test.cpp
+    american_markov_fit_test.cpp
     pwl_strike_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
