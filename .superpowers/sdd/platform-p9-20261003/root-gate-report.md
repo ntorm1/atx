@@ -1285,3 +1285,58 @@ _member.u8,_sessions.i64}` in `summary.json` / `capacity/summary.json`, whose by
 `--info-clock-print` once each; the exe = its p9-3f receipt `255b58ac...3565`; the two new dirs absent. X-10 and Y-1
 plan the two tokens once each on their NAV argv (argv sha256 `40ff035d...` / `9dd016ff...` = `flags-verify.txt` lines
 27 / 57).
+
+### Step 4: the ONE bounded Release NAV re-run of Y-F0 through the spec route
+
+Pre-checks immediately before (18:10:47Z, `gate-logs/flags-ucrt.txt`): `ucrtbase.dll` 10.0.26100.7623 `2C08E77F...65EF`
+(= the P9-B0 record, C.6); the NAV exe `255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565` = its p9-3f
+receipt (SPDLOG-RELINK); C: 40.1 GB free (>= 15); free RAM 2.97 of 15.69 GB; no build and no bounded run of ours in
+flight (the foreign pool-3 build ignored, HOST-6a); the argv names no candidate cache and no cache-index flag.
+
+`fr_nav.py run` (`gate-logs/flags-run.txt`, `runner-p9-fr-yf0-nav.log`): started 18:11:04Z, free RAM 2,972 MiB, C: 40.2
+GB free; **completed, exit 0, wall 24.9 s**, peak 646 MiB; receipt `build-equity/p9-fr-yf0-nav-run/receipt.json`
+(copied to `gate-logs/receipt-p9-fr-yf0-nav.json`): `executable_sha256` `255b58ac...3565` (= before and after), `build_type`
+Release, `source_sha` `510a768a` ("clean in the code pathspec"), no `store` block (receipt, start), **`command` = the argv
+of record above, token for token**, `argv_sha256` **`c0d907586281b554114bbbf827adf5d48ab95b77ed4cc9f6e29b9bf6c912c9ec`** =
+the digest of the driver-planned NAV command (`flags-plan.txt`). Not ENV-1 (exit 0): one attempt, no re-run.
+Outputs `build-equity/p9-fr-yf0-nav`: 27 files, 10,841,581 bytes.
+
+### Step 5: identity against the reference (`gate-logs/flags-identity-yf0.txt`; `fr_nav.py cmp`, the cmp.py / b0_cmp.py form)
+
+Allowed differing leaves (FLAGS-ROUTE): `summary.json` `/producer/*` ONLY, i.e. the producer leaves present in the
+document: `/producer/build_type`, `/producer/definition`, `/producer/engine_git_sha`.
+
+**Result: 27 / 27 files byte-identical**, `summary.json` included (`826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`
+on both sides); differing leaves 0, of which allowed 0 and outside **0**. The dispatch expected 26 / 27 with
+`summary.json` differing at the producer stamps: those stamps differ only between builds (the gate's 26 / 27 forms
+compared against M1d's Debug-produced references); here both sides are the same Release exe p9-3f, so the three
+`/producer/*` leaves are equal too. The opt-in leaves are present and equal on both sides: 75 each
+(`/scenarios/0..4/ann_mean_gross` 5, `/scenarios/0..4/info_clock/**` 70), the same paths, equal (compared, not read).
+The per-file SHA-256 listing of the new dir (`gate-logs/flags-files-p9-fr-yf0-nav.txt`, the `b0-files` form) is
+byte-equal to the reference's `gate-logs/b0-files-p9-b0g-yf0-nav.txt`: **listing SHA-256
+`e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`** = the reference's (`handoff-root-gate.md` table).
+
+**VERDICT: HOLDS.** The spec route reproduces the reference byte for byte: the NAV argv the driver builds from
+`lib-v8ysb-gm.json`'s `nav.flags` at `f8d852f3` (with the two tokens inherited from the parent, not appended by hand)
+gives the bytes of `p9-b0g-yf0-nav`; the flags are alike on every cell and reference over the parent by inheritance
+(FLAGS-ROUTE-2 (a)); the order difference of step 4 and the `--combined` path token moved no byte.
+
+### Step 6: records, statements and the new dir
+
+- **No statistic:** no 2020-2023 return / IC / Sharpe / turnover / NAV statistic was read or recorded; outputs were
+  compared by SHA-256 and JSON leaf path only (the opt-in leaves compared for equality, never printed); the NavSpec
+  prints carry configuration only.
+- **The new dir stays:** `build-equity/p9-fr-yf0-nav` (27 files, 10,841,581 bytes; `dir_listing.py --sha` form:
+  `gate-logs/flags-listing-p9-fr-yf0-nav.txt`, its SHA-256 `0aade90325cff91ac40f1ea282edfa5fab6feded0822c90314744da66bf932bf`
+  (the tool's printed digest `0aade90325cff91a`; names, sizes, mtimes and content SHA-256); content-only listing
+  `e205d6ec...f797` above) and its run dir `build-equity/p9-fr-yf0-nav-run` (receipt, start, logs; 8,530 bytes): evidence,
+  regenerable, NOT a reference (the reference of record stays `p9-b0g-yf0-nav`); a P10 clean-up item.
+- Unchanged by this agent: the six P9-B0 reference dirs (never written; the cmp re-hashed `p9-b0g-yf0-nav`: unchanged),
+  the trial ledger (133 / `27e40f9f` after the run), `build-equity/research-store/` and `index.sqlite` (absent),
+  `x-leverage-L2.0.json`, `y-vol-target-y-1.json`, `lib-v80.json`, every template, rule, registration and fixture; no
+  build (EXE-FREEZE; next free tag still `p9-3h`); no suite and no test file run (TEST-2); no lease action.
+- Commits: DISPATCH-COMMIT `a70f406d`; route facts `5648284f`; **the spec commit `f8d852f3` (code head)**; steps 2-3
+  record `1a14a24a`; the pre-run record `510a768a`; this record in the docs commit that adds it.
+- Scratch (step 7): the two fixture catalogs and their verify output under `C:/Users/natha/AppData/Local/Temp/f1fx/`
+  (about 0.75 MB, outside the tree) are deleted by literal name after this record; no pytest was run, so no basetemp.
+  Permission refusals: none.

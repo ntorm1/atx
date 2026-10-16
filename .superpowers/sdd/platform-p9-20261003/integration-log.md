@@ -944,3 +944,9 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | y-3 | 24.5 (1) | 1.9 (1) | 1.6 (1) | 105.5 (2) | - | 37.2 (1) | 12.7 (1) | 52.8 (1) | 236.2 |
 | y-5 | 18.8 (1) | 1.0 (1) | 1.6 (1) | 161.6 (2) | - | 37.7 (1) | 12.7 (1) | 62.2 (1) | 295.5 |
 | y-s | 24.5 (1) | 1.9 (1) | 1.6 (1) | 115.3 (2) | 61.9 (1) | 40.0 (1) | 12.7 (1) | 52.8 (1) | 310.7 |
+
+### FLAGS-ROUTE (RESUME 14), root FLAGS agent, 2026-10-16 (GATE-REV part 2 RQ-1; rulings FLAGS-ROUTE, FLAGS-ROUTE-2)
+
+| item | result | evidence |
+|---|---|---|
+| FLAGS-ROUTE | spec commit **`f8d852f3`** (`lib-v8ysb-gm.json` `/nav/flags` += `--ann-mean-gross --info-clock-print`; `3631679c...` -> `a4ef6c04...`; the re-pin of record stays `2078f877`), verify holds (5 expected diff lines; the FIELDS-RISK standalone REFUSED line as before), fixture `a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c`, Y-F0 spec-route NAV identity HOLDS (27 / 27 byte-identical; allowed `/producer/*` only, none differing: the same Release exe) | `root-gate-report.md` "FLAGS-ROUTE (RQ-1 close), root FLAGS agent"; `gate-logs/flags-verify.txt`, `fixture-chain-7.txt`, `flags-plan.txt`, `flags-printspec.txt`, `flags-run.txt`, `flags-identity-yf0.txt` |

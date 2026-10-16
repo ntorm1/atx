@@ -55,3 +55,21 @@ gate-logs/tools change log (gate chain; one line block per change)
   with `DIR/` -> `DIR/<Release identity>/`, same remainder; `ic_results` identity strings = reference + the Release
   suffix; `ic_results/subdirectory`, `signal_key_sha256` identity-keyed strings; `verify_bytes`, `ic_cache_bytes`,
   `ic_scratch_bytes` integers). Re-run: `gate-logs/yf0u-cmp.txt` (0 outside). NEW tools/class_summary.py (paths only).
+
+2026-10-16 root FLAGS agent (RESUME 14; `r14-prompts/root-flags-prompt.md`; FLAGS-ROUTE, FLAGS-ROUTE-2):
+  (1) NEW tools/fr_nav.py (adapted from b0_nav.py's checks / run record and nav_run.py's printspec): `plan` takes the
+  NAV argv the driver plans (scripts/cycle/phases.py nav_step) for the minimal NAV-only template over
+  scripts/specs/v8/lib-v8ysb-gm.json (`change.set nav.output` -> build-equity/p9-fr-yf0-nav; resolved in memory by
+  research_spec.resolve, never written; Cycle(..., verify=True)), resolves token 0 against the pool root, lists every
+  token difference against the P9-B0 Y-F0 reference receipt (positional, then by option / value pair and option order),
+  and runs the pre-run checks (no cache flag, each opt-in flag once, no --seal-allow / --stage-timers, --combined
+  re-hashed, the exe = its p9-3f receipt, the new dirs absent), plus X-10 / Y-1's planned NAV flags and argv digests;
+  `printspec` prints the NavSpec of the planned argv and of the reference command (--output set to the new dir) with the
+  NAV exe's `--print-spec` (nothing runs) and compares them by JSON path; `run` is the ONE bounded run (--seconds 600
+  --max-rss-mib 2048 --build-type Release --admission-wait-seconds 1800) with b0_nav.py's record line (to
+  gate-logs/flags-run.txt) and per-file listing (gate-logs/flags-files-p9-fr-yf0-nav.txt); `cmp` is cmp.py's file /
+  JSON-leaf comparison with the allowed list `summary.json` `/producer/*` ONLY, every differing leaf listed by path,
+  plus the opt-in leaves' presence and equality on both sides (no value printed).
+  (2) NEW tools/fr_fixture.sh: gate agent 4's fixture-chain-{4,5,6}.txt form (m6b-logs/tools/fixture_dump.sh's catalog /
+  verify / identity lines, no table dumps; Release store exe; DBs outside the tree) -> gate-logs/fixture-chain-7.txt.
+  tools/repin_verify.py, dir_listing.py, exe_sha_end.py used unchanged.

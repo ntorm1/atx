@@ -162,3 +162,39 @@ PARTIAL.
 
 None open: Q1-Q4 ruled (REPIN-REV superseding REPIN-UW / REPIN-R2; Q3 accepted as disclosed; GP-TICKS: G-P5
 PARTIAL, G-P1 measured at P9-H by the cells root).
+
+## FLAGS-ROUTE amendment (root FLAGS agent)
+
+Added 2026-10-16 (RESUME 14; rulings FLAGS-ROUTE, FLAGS-ROUTE-2, FLAGS-SEQ (1); GATE-REV part 2 RQ-1, route (b)).
+Every line above stands as written; where it cites the old value, this section restates beside it (PRE-40 form).
+Record: `root-gate-report.md` section "FLAGS-ROUTE (RQ-1 close), root FLAGS agent".
+
+- **Code head: `f8d852f3`** (`spec(p9): lib-v8ysb-gm.json nav.flags += --ann-mean-gross --info-clock-print
+  (FLAGS-ROUTE; RQ-1)`; one file, the `/nav/flags` array's tail only), over `f8a85ad4`. **The re-pin of record stays
+  `2078f877`** (no pin moved); EXE-FREEZE unaffected (no exe touched; next free tag `p9-3h`).
+- **The lineage parent's SHA-256:** `scripts/specs/v8/lib-v8ysb-gm.json` `3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea`
+  = the re-pin's bytes (`2078f877`); **`a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` after FLAGS-ROUTE**
+  (the file a cell's `parent` names from now on). The spec digests over the template chain of X-10 / Y-1 moved with
+  it (`ea5c4578...` / `41360ef2...`); their own file SHA-256 (`46e9d6c2...`, `f4186573...`) did not.
+- **The two flags on every spec over the parent (FLAGS-ROUTE-2 (a)):** the parent's `nav.flags` now ends
+  `--capacity-curve --ann-mean-gross --info-clock-print`; X-10 (no `nav.flags` key) and Y-1 (`change.flags.nav` adds
+  `--vol-target` / `--risk-model` / `--risk-model-sha256`, replaces nothing) inherit it, each planning both tokens once
+  (`gate-logs/flags-plan.txt`); the four P9 templates (`parent` null, `change.set` only) inherit it once the cells root
+  sets `parent` to the FILE. On the driver-built argv the two tokens precede `--label-role ...` (`phases.py:832`
+  appends the label pair after `nav.flags`); the reference receipts carry them after it: the same options, the same
+  NavSpec (`gate-logs/flags-printspec.txt`), no input difference.
+- **S-5 restated (beside the sentence of "What the cells agent must know" that GATE-REV S-5 named, which stays as
+  written; this restatement governs after FLAGS-ROUTE):** every cell
+  inherits `--ann-mean-gross --info-clock-print` from the parent's `nav.flags`; alike on both sides for every v2 cell;
+  a hand cell against `p9-b0g-y1-nav` may carry `--info-clock-print` one-sidedly: disclosed, not a void (FLAGS-ROUTE-2 (b)).
+- **The identity record:** `gate-logs/flags-identity-yf0.txt`: ONE bounded Release NAV run of Y-F0 through the spec
+  route (the NAV argv the driver plans for the parent at `f8d852f3`, exe-direct; `gate-logs/flags-run.txt`, receipt
+  `build-equity/p9-fr-yf0-nav-run/receipt.json`, exit 0) into `build-equity/p9-fr-yf0-nav`: **27 / 27 files
+  byte-identical to `p9-b0g-yf0-nav`** (allowed `/producer/*` only; none differs: same Release exe), listing SHA-256
+  `e205d6ec...f797` = the reference's: HOLDS. `verify` on the pinned lineage holds (`gate-logs/flags-verify.txt`; the
+  FIELDS-RISK standalone REFUSED line as before); the fixture chain digest `a50fdcf9...100c` holds
+  (`gate-logs/fixture-chain-7.txt`). `build-equity/p9-fr-yf0-nav` (+ `-run`) is evidence, regenerable, not a
+  reference (P10 clean-up).
+- **The cells root's registration step is unchanged:** set each P9 template's `parent` to the FILE
+  `scripts/specs/v8/lib-v8ysb-gm.json` and `lock --exes --write` the cell (it pins what it inherits); a NAV-only cell
+  pairs against `p9-b0g-yf0-nav`.
