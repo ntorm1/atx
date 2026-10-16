@@ -53,6 +53,18 @@ LABEL_SCHEMA = pa.schema([
     ("reference_vol", pa.float64()),
 ])
 PREDICTION_COLUMNS = ("row_id", "predicted_price", "predicted_vol", "status", "chain_id")
+POLICY_METADATA_COLUMNS = ("resolved_profile", "policy_source", "configured_curve", "actual_curve")
+POLICY_METADATA_STATES = {
+    "reported": "nonempty metadata supplied by this prediction artifact",
+    "value_absent": "metadata column exists but this prediction row has an empty/null value",
+    "column_absent": "prediction artifact predates or omits this optional metadata column",
+    "prediction_absent": "the selected quote row has no row in the prediction artifact",
+}
+DIVIDEND_CONVENTIONS = {
+    "funding-pv": "aggregate_funding_pv_approximation",
+    "escrowed-pv": "aggregate_pv_approximation",
+    "none": "continuous_yield",
+}
 RAW_STRATA = ("contract_kind", "moneyness_band", "cash_dividends", "liquid_core")
 
 
@@ -308,9 +320,10 @@ def run_native(args: argparse.Namespace) -> dict:
         raise ValueError("prediction/receipt output already exists; use a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     extras = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve", "--policy"}
+    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve", "--policy", "--dividends"}
            for arg in extras):
-        raise ValueError("extra arguments cannot replace provenance-bound input/output/curve/policy")
+        raise ValueError("extra arguments cannot replace provenance-bound "
+                         "input/output/curve/policy/dividends")
     policy_path = None
     policy_hash = None
     policy_document = None
@@ -347,7 +360,7 @@ def run_native(args: argparse.Namespace) -> dict:
             raise ValueError("native timing report must use a new path distinct from predictions/receipt")
     selection = ["--curve", args.curve] if args.curve else ["--policy", policy]
     command = [str(binary), "--input", str((args.dataset / "quotes.csv").resolve()),
-               "--output", str(output), *selection, *extras]
+               "--output", str(output), *selection, "--dividends", args.dividends, *extras]
     started = time.perf_counter()
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, text=True)
     elapsed = time.perf_counter() - started
@@ -370,6 +383,8 @@ def run_native(args: argparse.Namespace) -> dict:
         "quote_csv_sha256": manifest["files"]["quotes.csv"]["sha256"],
         "predictions": str(output), "prediction_sha256": sha256(output),
         "wall_seconds": elapsed, "curve": args.curve, "policy": policy,
+        "dividends": args.dividends,
+        "dividend_model": DIVIDEND_CONVENTIONS[args.dividends],
         "policy_sha256": policy_hash, "policy_document": policy_document,
         "native_report": native_report,
     }
@@ -379,16 +394,44 @@ def run_native(args: argparse.Namespace) -> dict:
 
 
 def scan_predictions(path: Path) -> pl.LazyFrame:
+    """Retain optional policy provenance without inventing it for older artifacts."""
     if path.suffix.lower() == ".parquet":
         frame = pl.scan_parquet(path)
     else:
         frame = pl.scan_csv(path, schema_overrides={"row_id": pl.UInt64, "chain_id": pl.UInt64,
                               "predicted_price": pl.Float64, "predicted_vol": pl.Float64,
-                              "status": pl.String}, null_values=["nan", "NaN", ""])
-    missing = set(PREDICTION_COLUMNS) - set(frame.collect_schema().names())
+                              "status": pl.String,
+                              **dict.fromkeys(POLICY_METADATA_COLUMNS, pl.String)},
+                            null_values="")
+    # Float NaNs are parsed as floats and excluded by the finite-value masks.
+    # Global null tokens such as "nan" would corrupt a legal profile named nan.
+    schema = frame.collect_schema()
+    missing = set(PREDICTION_COLUMNS) - set(schema.names())
     if missing:
         raise ValueError(f"predictions missing columns: {sorted(missing)}")
-    return frame.select(PREDICTION_COLUMNS)
+    columns = [pl.col(name) for name in PREDICTION_COLUMNS]
+    invalid_metadata = []
+    for name in POLICY_METADATA_COLUMNS:
+        state_name = f"{name}_state"
+        if name not in schema:
+            columns.extend([pl.lit(None, dtype=pl.String).alias(name),
+                            pl.lit("column_absent").alias(state_name)])
+            continue
+        if schema[name] not in (pl.String, pl.Null):
+            raise ValueError(f"prediction metadata {name} must have string or null type")
+        value = pl.col(name).cast(pl.String).replace("", None)
+        columns.extend([value.alias(name),
+                        pl.when(value.is_null()).then(pl.lit("value_absent"))
+                          .otherwise(pl.lit("reported")).alias(state_name)])
+        invalid_metadata.append(((value.str.len_chars() > 128)
+                                  | value.str.contains(r"[\x00-\x1f\x7f]"))
+                                 .fill_null(False).any().alias(name))
+    if invalid_metadata:
+        invalid = frame.select(invalid_metadata).collect().to_dicts()[0]
+        if any(invalid.values()):
+            names = [name for name, rejected in invalid.items() if rejected]
+            raise ValueError(f"prediction metadata contains invalid identifiers: {names}")
+    return frame.select(columns)
 
 
 def _error_metrics(error: pl.Expr, prefix: str) -> list[pl.Expr]:
@@ -459,6 +502,13 @@ def _load_evaluation(dataset: Path, receipt_path: Path, split: str,
         raise ValueError("prediction chain identity disagrees with its quote row")
     if split != "all":
         joined = joined.filter(pl.col("split") == split)
+    # A missing prediction differs from an old-format or unresolved prediction.
+    # The states are separate keys, so a real profile can never collide with a
+    # synthetic string used as a missing-value group label.
+    joined = joined.with_columns([
+        pl.col(f"{name}_state").fill_null("prediction_absent")
+        for name in POLICY_METADATA_COLUMNS
+    ])
     def good(col: str) -> pl.Expr:
         return pl.col(col).is_not_null() & pl.col(col).is_finite()
     joined = joined.with_columns(
@@ -548,6 +598,16 @@ def _group_metrics(frame: pl.LazyFrame, keys: list[str]) -> list[dict]:
     return [_with_coverage(row) for row in rows]
 
 
+def _policy_metrics(frame: pl.LazyFrame) -> dict:
+    """Each partition includes failures and missing metadata in explicit groups."""
+    result = {key: _group_metrics(frame, [key, f"{key}_state"])
+              for key in POLICY_METADATA_COLUMNS}
+    result["profile_family"] = _group_metrics(
+        frame, ["resolved_profile", "resolved_profile_state",
+                "configured_curve", "configured_curve_state"])
+    return result
+
+
 def score(args: argparse.Namespace) -> dict:
     output = args.output.resolve()
     if output.exists():
@@ -564,6 +624,8 @@ def score(args: argparse.Namespace) -> dict:
         "status_counts": status.collect(engine="streaming").sort(["input_status", "status"]).to_dicts(),
         "by_dte_side": _group_metrics(joined, ["split", "dte_band", "is_call"]),
         "raw_strata": {key: _group_metrics(joined, [key]) for key in RAW_STRATA},
+        "policy_metadata_states": POLICY_METADATA_STATES,
+        "policy_strata": _policy_metrics(joined),
         "reference_nbbo_diagnostic": _group_metrics(joined, ["reference_location"]),
         "notes": ["srPrc/srVol are evaluation labels only",
                   "price errors are dollars per share; vol errors are absolute volatility basis points",
@@ -571,6 +633,8 @@ def score(args: argparse.Namespace) -> dict:
                   "coverage denominators include every raw-input-eligible row, including solver failures",
                   "standard_symbol means no adjusted numeric suffix; it is not verified deliverable metadata",
                   "reference NBBO location is an evaluation diagnostic, never an admission rule",
+                  "policy strata partition all selected rows, including explicit missing metadata groups",
+                  "configured_curve describes selection; actual_curve may be absent after a fit failure",
                   "exact quantiles; scoring memory scales with selected cohort size"],
     }
     # Exclusive creation also closes the race between the initial existence
@@ -621,27 +685,41 @@ def compare(args: argparse.Namespace) -> dict:
             or receipt_a.get("quote_csv_sha256") != receipt_b.get("quote_csv_sha256")):
         raise ValueError("comparison arms have different quote input digests")
     b_columns = ["row_id", "price_valid", "vol_valid", "price_error", "vol_error",
-                 "price_prediction_valid", "vol_prediction_valid"]
+                 "price_prediction_valid", "vol_prediction_valid",
+                 *POLICY_METADATA_COLUMNS,
+                 *[f"{name}_state" for name in POLICY_METADATA_COLUMNS]]
     paired = a.join(b.select(b_columns), on="row_id", how="left", validate="1:1", suffix="_b")
+    paired = paired.rename({name: f"{name}_a" for key in POLICY_METADATA_COLUMNS
+                            for name in (key, f"{key}_state")})
     pair_exprs = [pl.len().alias("rows"), pl.col("eligible").sum().alias("eligible_rows"),
                   *_paired_metrics("price"), *_paired_metrics("vol")]
     paired_metrics = paired.select(pair_exprs).collect(engine="streaming").to_dicts()[0]
     raw_strata = {key: paired.group_by(key).agg(pair_exprs).collect(engine="streaming")
                  .sort(key).to_dicts() for key in RAW_STRATA}
+    policy_transitions = {}
+    for key in POLICY_METADATA_COLUMNS:
+        keys = [f"{key}_a", f"{key}_state_a", f"{key}_b", f"{key}_state_b"]
+        policy_transitions[key] = (paired.group_by(keys).agg(pair_exprs)
+                                   .collect(engine="streaming").sort(keys).to_dicts())
     result = {
         "schema_version": SCHEMA_VERSION, "split": args.split, "tick_size": args.tick_size,
         "evaluator_sha256": ADAPTER_SHA256,
         "dataset_manifest_sha256": sha256(args.dataset / "manifest.json"),
         "quote_parquet_sha256": manifest["files"]["quotes.parquet"]["sha256"],
         "arm_a": {"run_receipt_sha256": sha256(args.run_a), "run": receipt_a,
-                  "metrics_own_population": _aggregate(a)},
+                  "metrics_own_population": _aggregate(a), "policy_strata": _policy_metrics(a)},
         "arm_b": {"run_receipt_sha256": sha256(args.run_b), "run": receipt_b,
-                  "metrics_own_population": _aggregate(b)},
+                  "metrics_own_population": _aggregate(b), "policy_strata": _policy_metrics(b)},
         "paired": paired_metrics, "raw_strata_paired": raw_strata,
+        "policy_metadata_states": POLICY_METADATA_STATES,
+        "policy_transitions_paired": policy_transitions,
         "notes": ["paired metrics use the exact intersection of successful, finite, label-valid rows",
                   "price and volatility intersections are computed independently",
                   "positive paired error reduction means arm B has smaller absolute error than arm A",
                   "own-population error changes cannot establish improvement when coverage changes",
+                  "policy transitions retain all selected rows; each group reports its own eligible denominator",
+                  "metadata and its absence are artifact provenance, not inferred from current defaults",
+                  "equal profile names need not imply equal parameters; consult each run's policy definition",
                   "standard_symbol is a raw suffix classification, not certified deliverable metadata",
                   "validation labels must not select hyperparameters"],
     }
@@ -675,6 +753,8 @@ def parser() -> argparse.ArgumentParser:
                                               "linear-variance", "c8-event"],
                            help="fixed curve for controlled experiments")
     selection.add_argument("--policy", help="auto (default) or a symbol/profile JSON file")
+    run.add_argument("--dividends", choices=list(DIVIDEND_CONVENTIONS), default="funding-pv",
+                     help="aggregate cash-PV approximation convention, or none for continuous yield")
     run.add_argument("extra", nargs=argparse.REMAINDER, help="native options after --")
     run.set_defaults(func=run_native)
     scoring = sub.add_parser("score", help="score predictions after verifying their cohort/run provenance")

@@ -206,7 +206,8 @@ def test_american_exercise_spelling_is_canonical_for_the_native_boundary(tmp_pat
 
 
 @pytest.mark.parametrize("extra", [["--curve", "svi"], ["--curve=svi"],
-                                  ["--policy", "auto"], ["--policy=auto"]])
+                                  ["--policy", "auto"], ["--policy=auto"],
+                                  ["--dividends", "none"], ["--dividends=escrowed-pv"]])
 def test_native_extras_cannot_override_the_recorded_curve(tmp_path, monkeypatch, extra):
     dataset, _ = prepare(tmp_path)
     binary = tmp_path / "unused-native.exe"
@@ -278,6 +279,7 @@ def test_native_new_timing_report_remains_usable(tmp_path, monkeypatch):
     report = tmp_path / "new-timing.json"
     def execute(command, **kwargs):
         assert command[command.index("--report") + 1] == str(report)
+        assert command[command.index("--dividends") + 1] == "funding-pv"
         output.write_text("predictions")
         report.write_text("{}")
         return qb.subprocess.CompletedProcess(command, 0, stdout='{"policy_mode":"auto"}')
@@ -289,6 +291,8 @@ def test_native_new_timing_report_remains_usable(tmp_path, monkeypatch):
     receipt = qb.run_native(args)
     assert receipt["curve"] is None
     assert receipt["policy"] == "auto"
+    assert receipt["dividends"] == "funding-pv"
+    assert receipt["dividend_model"] == "aggregate_funding_pv_approximation"
     assert receipt["native_report"] == {"policy_mode": "auto"}
     assert report.read_text() == "{}"
     assert Path(str(output) + ".run.json").is_file()
@@ -459,3 +463,232 @@ def test_comparison_never_overwrites_a_provenance_artifact(tmp_path):
     with pytest.raises(ValueError, match="output already exists"):
         qb.compare(args)
     assert a.read_bytes() == before
+
+
+def update_prediction_artifact(receipt: Path, frame: pl.DataFrame, suffix=".csv"):
+    document = json.loads(receipt.read_text())
+    path = Path(document["predictions"]).with_suffix(suffix)
+    if suffix == ".parquet":
+        frame.write_parquet(path)
+    else:
+        frame.write_csv(path)
+    document.update(predictions=str(path), prediction_sha256=qb.sha256(path))
+    qb.write_json(receipt, document)
+
+
+def prediction_frame(receipt: Path) -> pl.DataFrame:
+    return pl.read_csv(json.loads(receipt.read_text())["predictions"],
+                       schema_overrides={"row_id": pl.UInt64, "chain_id": pl.UInt64})
+
+
+def test_policy_score_partitions_failures_missing_predictions_and_independent_masks(tmp_path):
+    table = source_table().set_column(source_table().schema.get_field_index("exType"),
+                                      "exType", pa.array(["American"] * 5 + ["European"]))
+    dataset, _ = prepare(tmp_path, table)
+    receipt = candidate_receipt(dataset, "metadata", [0, 1, 2, 3, 5],
+                                [1.2, 100., float("nan"), 10., 1.1], [.31, .9, .32, .9, .3])
+    frame = prediction_frame(receipt).with_columns(
+        pl.Series("status", ["ok", "fit_failure", "ok", "invalid_market", "ok"]),
+        pl.Series("resolved_profile", ["dense", "dense", "sparse", None, "dense"]),
+        pl.Series("policy_source", ["raw-liquidity", "raw-liquidity",
+                                    "exact-symbol-override", None, "raw-liquidity"]),
+        pl.Series("configured_curve", ["convex-dense", "convex-dense", "essvi", None,
+                                       "convex-dense"]),
+        pl.Series("actual_curve", ["convex-dense", "", "essvi", None, "convex-dense"]))
+    update_prediction_artifact(receipt, frame)
+    result = score(dataset, receipt)
+    assert result["metrics"]["eligible_rows"] == 5
+    assert result["metrics"]["price_prediction_rows"] == 1
+    assert result["metrics"]["vol_prediction_rows"] == 2
+    for groups in result["policy_strata"].values():
+        for key in ("rows", "eligible_rows", "price_prediction_rows", "vol_prediction_rows",
+                    "price_scored_rows", "vol_scored_rows"):
+            assert sum(group[key] for group in groups) == result["metrics"][key]
+    groups = {(group["resolved_profile"], group["resolved_profile_state"]): group
+              for group in result["policy_strata"]["resolved_profile"]}
+    dense = groups["dense", "reported"]
+    assert dense["rows"] == 3  # Includes the ineligible prediction, without scoring it.
+    assert dense["eligible_rows"] == 2
+    assert dense["price_coverage"] == .5
+    assert dense["price_mae"] == pytest.approx(.1)
+    sparse = groups["sparse", "reported"]
+    assert sparse["price_coverage"] == 0
+    assert sparse["price_mae"] is None
+    assert sparse["vol_bp_mae"] == pytest.approx(200)
+    assert groups[None, "value_absent"]["eligible_rows"] == 1
+    assert groups[None, "prediction_absent"]["eligible_rows"] == 1
+    actual = {(group["actual_curve"], group["actual_curve_state"]): group
+              for group in result["policy_strata"]["actual_curve"]}
+    assert actual[None, "value_absent"]["rows"] == 2
+
+
+def test_legacy_metadata_absence_is_distinct_from_missing_prediction_rows(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=2)
+    result = score(dataset, receipt)
+    assert set(result["policy_metadata_states"]) == {
+        "reported", "value_absent", "column_absent", "prediction_absent"}
+    for key in qb.POLICY_METADATA_COLUMNS:
+        groups = {group[f"{key}_state"]: group for group in result["policy_strata"][key]}
+        assert set(groups) == {"column_absent", "prediction_absent"}
+        assert groups["column_absent"]["rows"] == 2
+        assert groups["column_absent"]["price_coverage"] == 1
+        assert groups["prediction_absent"]["eligible_rows"] == 4
+        assert groups["prediction_absent"]["price_coverage"] == 0
+        assert all(group[key] is None for group in groups.values())
+
+
+def test_empty_prediction_artifact_keeps_entire_metadata_coverage_denominator(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=0)
+    frame = prediction_frame(receipt).with_columns(
+        pl.lit(None, dtype=pl.String).alias("resolved_profile"))
+    update_prediction_artifact(receipt, frame)
+    result = score(dataset, receipt)
+    assert result["metrics"]["eligible_rows"] == 6
+    assert result["metrics"]["price_coverage"] == 0
+    for key in qb.POLICY_METADATA_COLUMNS:
+        group, = result["policy_strata"][key]
+        assert group[f"{key}_state"] == "prediction_absent"
+        assert group["eligible_rows"] == 6
+        assert group["price_mae"] is None
+
+
+@pytest.mark.parametrize("suffix", [".csv", ".parquet"])
+def test_metadata_text_is_lossless_and_partial_columns_remain_explicit(tmp_path, suffix):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset, rows=4)
+    frame = prediction_frame(receipt).with_columns(
+        pl.Series("resolved_profile", ["nan", "NaN", "123", "column_absent"]),
+        pl.lit(None, dtype=pl.String).alias("policy_source"),
+        pl.lit("essvi").alias("configured_curve"))
+    update_prediction_artifact(receipt, frame, suffix)
+    result = score(dataset, receipt)
+    reported = {row["resolved_profile"] for row in result["policy_strata"]["resolved_profile"]
+                if row["resolved_profile_state"] == "reported"}
+    assert reported == {"nan", "NaN", "123", "column_absent"}
+    assert {row["policy_source_state"] for row in result["policy_strata"]["policy_source"]} == {
+        "value_absent", "prediction_absent"}
+    actual = {row["actual_curve_state"]: row
+              for row in result["policy_strata"]["actual_curve"]}
+    assert actual["column_absent"]["eligible_rows"] == 4
+    assert actual["prediction_absent"]["eligible_rows"] == 2
+    assert all(row["actual_curve"] is None for row in actual.values())
+
+
+@pytest.mark.parametrize("value,suffix", [(123, ".parquet"), ("x" * 129, ".csv"),
+                                         ("bad\nname", ".csv")])
+def test_malformed_optional_metadata_is_rejected_without_creating_score(tmp_path, value, suffix):
+    dataset, _ = prepare(tmp_path)
+    _, receipt = prediction_receipt(dataset)
+    frame = prediction_frame(receipt).with_columns(pl.lit(value).alias("resolved_profile"))
+    update_prediction_artifact(receipt, frame, suffix)
+    with pytest.raises(ValueError, match="prediction metadata"):
+        score(dataset, receipt)
+    assert not (dataset / "score.json").exists()
+
+
+def test_profile_transition_comparison_preserves_pair_masks_and_all_coverage(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "a", [0, 1, 2, 3], [1.2, 3.1, 101.1, 1.1],
+                          [.31, .4, .5, .3])
+    b = candidate_receipt(dataset, "b", [0, 1, 2, 4], [1.11, 4.1, float("nan"), 1.1],
+                          [.305, float("nan"), .3, .3])
+    for receipt, profiles, families in [
+            (a, ["dense", "dense", "sparse", "sparse"],
+             ["convex-dense", "convex-dense", "essvi", "essvi"]),
+            (b, ["dense", "sparse", "sparse", "ordinary"],
+             ["convex-dense", "essvi", "essvi", "svi"])]:
+        frame = prediction_frame(receipt).with_columns(
+            pl.Series("resolved_profile", profiles),
+            pl.Series("configured_curve", families), pl.Series("actual_curve", families))
+        update_prediction_artifact(receipt, frame)
+    result = compare(dataset, a, b)
+    for groups in result["policy_transitions_paired"].values():
+        for key in ("rows", "eligible_rows", "price_intersection_rows", "vol_bp_intersection_rows",
+                    "price_a_prediction_rows", "price_b_prediction_rows",
+                    "vol_bp_a_prediction_rows", "vol_bp_b_prediction_rows"):
+            assert sum(group[key] for group in groups) == result["paired"][key]
+    transitions = {(row["resolved_profile_a"], row["resolved_profile_b"]): row
+                   for row in result["policy_transitions_paired"]["resolved_profile"]}
+    changed = transitions["dense", "sparse"]
+    assert changed["eligible_rows"] == 1
+    assert changed["price_intersection_rows"] == 1
+    assert changed["price_paired_mean_abs_error_reduction"] == pytest.approx(-1)
+    assert changed["vol_bp_intersection_rows"] == 0
+    assert changed["vol_bp_b_coverage"] == 0
+    assert changed["vol_bp_paired_mean_abs_error_reduction"] is None
+    unchanged = transitions["sparse", "sparse"]
+    assert unchanged["price_intersection_rows"] == 0
+    assert unchanged["vol_bp_intersection_rows"] == 1
+    assert unchanged["vol_bp_paired_mean_abs_error_reduction"] == pytest.approx(2000)
+    dropped = transitions["sparse", None]
+    assert dropped["resolved_profile_state_b"] == "prediction_absent"
+    assert dropped["price_a_coverage"] == 1
+    assert dropped["price_b_coverage"] == 0
+    added = transitions[None, "ordinary"]
+    assert added["resolved_profile_state_a"] == "prediction_absent"
+    assert added["price_a_coverage"] == 0
+    assert added["price_b_coverage"] == 1
+    assert transitions[None, None]["eligible_rows"] == 1
+    for arm in ("arm_a", "arm_b"):
+        for groups in result[arm]["policy_strata"].values():
+            assert sum(group["eligible_rows"] for group in groups) == 6
+    reverse = compare(dataset, b, a, name="reverse")
+    changed_reverse = next(row for row in reverse["policy_transitions_paired"]["resolved_profile"]
+                            if (row["resolved_profile_a"], row["resolved_profile_b"])
+                            == ("sparse", "dense"))
+    assert changed_reverse["price_paired_mean_abs_error_reduction"] == pytest.approx(1)
+
+
+def test_legacy_and_new_artifacts_compare_without_imputing_legacy_profile(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    a = candidate_receipt(dataset, "legacy", [0, 1], [1.1, 1.2], [.3, .3])
+    b = candidate_receipt(dataset, "current", [0, 1], [1.1, 1.2], [.3, .3])
+    update_prediction_artifact(b, prediction_frame(b).with_columns(
+        pl.lit("dense").alias("resolved_profile")))
+    result = compare(dataset, a, b)
+    transitions = result["policy_transitions_paired"]["resolved_profile"]
+    reported = next(row for row in transitions if row["resolved_profile_b"] == "dense")
+    assert reported["resolved_profile_a"] is None
+    assert reported["resolved_profile_state_a"] == "column_absent"
+    assert reported["resolved_profile_state_b"] == "reported"
+    assert reported["price_intersection_rows"] == 2
+    assert reported["price_paired_mean_abs_error_reduction"] == 0
+    missing = next(row for row in transitions if row["resolved_profile_b"] is None)
+    assert missing["resolved_profile_state_a"] == "prediction_absent"
+    assert missing["resolved_profile_state_b"] == "prediction_absent"
+    assert missing["eligible_rows"] == 4
+
+
+@pytest.mark.parametrize("choice,model", [("funding-pv", "aggregate_funding_pv_approximation"),
+                                         ("escrowed-pv", "aggregate_pv_approximation"),
+                                         ("none", "continuous_yield")])
+def test_dividend_convention_is_bound_to_native_command_and_receipt(
+        tmp_path, monkeypatch, choice, model):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "new-predictions.csv"
+
+    def execute(command, **kwargs):
+        assert command[command.index("--dividends") + 1] == choice
+        output.write_text("predictions")
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{}')
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--dividends", choice,
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["dividends"] == choice
+    assert receipt["dividend_model"] == model
+
+
+def test_ambiguous_aggregate_pv_cli_alias_is_refused():
+    with pytest.raises(SystemExit):
+        qb.parser().parse_args([
+            "run", "--dataset", "dataset", "--binary", "runner", "--output", "predictions",
+            "--dividends", "aggregate-pv",
+        ])
