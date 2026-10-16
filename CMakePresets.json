@@ -58,10 +58,26 @@
       }
     },
     {
+      "name": "vol-rel",
+      "inherits": "vol-dev",
+      "displayName": "vol-rel: Release + AVX2 lane gate preset (no ThinLTO)",
+      "description": "THE vol lane preset for check / build / ctest. Same compiler, CRT, /arch:AVX2, PCH and vol-only closure as vol-rel-avx2, minus CMAKE_INTERPROCEDURAL_OPTIMIZATION: no -flto=thin, so every link is a plain lld-link instead of a ThinLTO backend (measured 2026-10-16 in vol-rel-avx2: atx-vol-quote-bench links 12-24 s and atx-vol-tests 138-181 s under ThinLTO). Numerics: ThinLTO on/off was proven bit-identical on the 2x2 NAV matrix recorded in the `rel` preset description (commit 63f6f29: rel/rel-avx2 x LTO off/on, all cells and RunArchive digests identical, 145-test focused group pass/fail/skip-identical), so a vol-rel gate result stands for vol-rel-avx2; timings do NOT (no cross-TU inlining) - cite speed only from vol-rel-avx2. /arch:AVX2 rides CFLAGS/CXXFLAGS (see rel-avx2 for why not cacheVariables). Own deps dir, same isolation rule as vol-rel-avx2.",
+      "binaryDir": "${sourceDir}/build-vol-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+        "FETCHCONTENT_BASE_DIR": "${sourceDir}/deps/vol-rel"
+      },
+      "environment": {
+        "CFLAGS": "/arch:AVX2",
+        "CXXFLAGS": "/arch:AVX2"
+      }
+    },
+    {
       "name": "vol-rel-avx2",
       "inherits": "vol-dev",
-      "displayName": "vol-rel-avx2: optimized volatility benchmarks",
-      "description": "Restored volatility dependency graph, Release with ThinLTO and AVX2. No fast-math. Isolated dependency build directory; run timings on a quiet host.",
+      "displayName": "vol-rel-avx2: optimized volatility benchmarks (perf pins only)",
+      "description": "Restored volatility dependency graph, Release with ThinLTO and AVX2. No fast-math. Isolated dependency build directory; run timings on a quiet host. PERF PINS ONLY (scripts/atx-build.ps1 -Bench and bench/baselines numbers): lanes gate on vol-rel, which differs only by ThinLTO and is bit-identical in results (see vol-rel).",
       "binaryDir": "${sourceDir}/build-vol-rel-avx2",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",

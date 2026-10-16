@@ -36,6 +36,9 @@ never runs them. Never build the whole graph out of habit.
 | `ninja` | alias of the same `_base` behavior; same `build/` dir |
 | `dev-shared` | `dev` + atx libs as **DLLs** — smallest artifacts, fastest relinks. **Iteration only, NEVER the test gate**: header-inline instrumentation globals (`atx/vol/detail/counters.hpp` solve ledger) split per DLL image → SolveLedger/BacktestExec observer suites fail deterministically (verified 2026-07-22) |
 | `rel` / `rel-avx2` | Release benchmarks (`build-rel*/`); `rel-avx2` adds global `/arch:AVX2`, never `/fp:fast` |
+| `vol-rel` | **the atx-vol lane preset** for `check` / `build` / `-Ctest` (`build-vol-rel/`): Release + `/arch:AVX2` + PCH, **no ThinLTO**, `ATX_VOL_ONLY=ON` (atx-core + atx-tsdb + atx-vol only — atx-engine/atx-impl are never configured). Results bit-identical to `vol-rel-avx2` (ThinLTO on/off parity: `rel` preset description, commit 63f6f29); timings are not |
+| `vol-rel-avx2` | same as `vol-rel` + ThinLTO — **perf pins / `-Bench` only** (links cost 12–24 s per tool, 138–181 s for `atx-vol-tests`) |
+| `vol-dev` / `vol-hygiene` | Debug vol closure / PCH-off include check for vol targets (`build-vol*/`); both `ATX_VOL_ONLY=ON`. Lane rules + focused targets: `atx-vol/CLAUDE.md` "Build lanes" |
 | `hygiene` | PCH **OFF** — strict per-TU includes; the include-clean gate, run by hand — no CI builds the C++ tree (§8) — own `build-hygiene/` |
 | `vs` | Visual Studio MSBuild generator (IDE escape hatch) |
 

@@ -7,13 +7,16 @@ C++20 monorepo, layered: `atx-core` (vocab + IO) → `atx-tsdb` (shm store) → 
 Ninja lives inside the VS install, not on PATH. Use `scripts/atx-build.ps1` (sources vcvars, pins Ninja + `mt.exe`, exports `CCACHE_BASEDIR`, has a wrong-tree guard). `pwsh` may be absent — use `powershell` (5.1).
 
 ```powershell
-powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/
-powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp  # single-TU compile, seconds — the shaping loop
-powershell scripts\atx-build.ps1 build atx-vol-tests        # ALWAYS target-scoped, never bare all-targets
+# atx-vol lanes: ALWAYS -Preset vol-rel (Release+AVX2, no ThinLTO, vol-only closure)
+powershell scripts\atx-build.ps1 configure -Preset vol-rel                  # build-vol-rel/
+powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp -Preset vol-rel  # single-TU compile, seconds — the shaping loop
+powershell scripts\atx-build.ps1 build atx-vol-quote-slice-tests -Preset vol-rel -Jobs 2  # focused target, NEVER atx-vol-tests in a lane
+powershell scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-quote-slice$"         # anchored
+powershell scripts\atx-build.ps1 -Bench configure -Preset vol-rel-avx2      # perf pins only (ThinLTO)
 powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # release qualification only; forbidden in oracle loop
 ```
 
-Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCACHE_BASEDIR`). Iterate with `check <file>` → `build <owning-test-target>` → anchored `-Ctest -R <Suite>`. Full labels belong only to release qualification outside `vol-oracle-iter`; the oracle loop never runs them.
+Never raw `cmake --build`/`ninja` outside the wrapper or `--preset` (loses `CCACHE_BASEDIR`). Iterate with `check <file>` → `build <owning-test-target>` → anchored `-Ctest -R <Suite>`. Full labels belong only to release qualification outside `vol-oracle-iter`; the oracle loop never runs them. atx-vol lane rules (focused targets, `-Jobs` for N concurrent lanes): `atx-vol/CLAUDE.md` "Build lanes".
 
 ## Parallel work — worktree POOL, never raw `git worktree add`
 

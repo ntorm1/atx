@@ -17,6 +17,15 @@
   # Run the ORATS tests:
   pwsh scripts/atx-build.ps1 -Ctest -R DataOratsHistory
 
+.EXAMPLE
+  # atx-vol lane loop (atx-vol/CLAUDE.md "Build lanes"): vol-rel for everything,
+  # focused targets only, never atx-vol-tests; vol-rel-avx2 for perf pins only.
+  powershell scripts\atx-build.ps1 configure -Preset vol-rel
+  powershell scripts\atx-build.ps1 check atx-vol\src\fitting\quote_slice.cpp -Preset vol-rel
+  powershell scripts\atx-build.ps1 build atx-vol-quote-slice-tests -Preset vol-rel -Jobs 2
+  powershell scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-quote-slice$"
+  powershell scripts\atx-build.ps1 -Bench configure -Preset vol-rel-avx2
+
 .NOTES
   ABSOLUTE-PATH BANNER (parallel-worktree agents). This script ALWAYS builds the
   worktree that physically contains it (`$RepoRoot`, from `$PSScriptRoot`) — never
@@ -43,6 +52,8 @@
   fan-out with `ATX_VOL_FIT_WORKERS` (e.g. `$env:ATX_VOL_FIT_WORKERS=1` for a
   single-op latency bench, or a small cap so a background fit does not oversubscribe
   the leased cores). Correctness gates run on Debug/`rel`; perf on `rel-avx2`.
+  atx-vol: gates on `vol-rel` (no ThinLTO; results bit-identical to ThinLTO per
+  the `rel` preset description), perf pins on `vol-rel-avx2` only.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(

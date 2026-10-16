@@ -12,8 +12,8 @@ Vol surface / vol-derivatives library. Source groups: `core pricing fitting mark
 
 ## Release/pre-merge gates outside the oracle loop
 
-1. Full fast suite green: `powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast` (from repo root).
-2. Include hygiene: `cmake --preset hygiene && cmake --build --preset hygiene` (PCH OFF; the default build masks include rot).
+1. Full fast suite green: `powershell scripts\atx-build.ps1 -Ctest -Preset vol-rel -L atx_vol_fast` (from repo root, after building every exe the label covers in `build-vol-rel/`).
+2. Include hygiene: `-Preset vol-hygiene` (PCH OFF; the default build masks include rot) — scope it to the changed module's targets.
 
 The commands above are never run by `vol-oracle-iter` or its `vol-sprint` child.
 The oracle loop uses only its exact changed-file closure: affected anchored unit
@@ -22,9 +22,16 @@ quiet pinned speed, and owning PCH-off targets for changed headers. Labels, broa
 ctest/builds, full-repository hygiene, and release regression suites are separate
 release qualification work.
 3. Module gates: `powershell atx-vol\ci\run_all_gates.ps1` — determinism (1-thread vs N-thread bit-identical NAV), golden replay (82-session SPY corpus, fails closed if licensed corpus absent), lakehouse-off link, pool soak. All on `dev` preset — correctness only.
-4. Perf claims ONLY from `rel-avx2` (`build-rel-avx2/`) against `bench/baselines/` pins.
+4. Perf claims ONLY from `vol-rel-avx2` (`build-vol-rel-avx2/`, ThinLTO) against `bench/baselines/` pins.
 
 **Trap:** `dev-shared` preset is for iteration relinks ONLY, NEVER the test gate — per-DLL counter globals split and SolveLedger/BacktestExec observer suites fail deterministically.
+
+## Build lanes
+
+Measured basis: `sprints/2026-10-16-build-infra-sprint.md`. The rules, verbatim:
+
+1. **Preset `vol-rel` for every lane `configure` / `check` / `build` / `-Ctest`** (`build-vol-rel/`: Release + `/arch:AVX2` + PCH, no ThinLTO). `vol-rel-avx2` (ThinLTO) is for `-Bench` perf pins only; `vol-dev` (Debug) only when you need assertions; `vol-hygiene` for PCH-off checks of changed headers. ThinLTO on/off is bit-identical in results (`rel` preset description, commit 63f6f29), so a `vol-rel` pass stands for `vol-rel-avx2`; cite timings only from `vol-rel-avx2`.
+2. **Every vol preset is vol-only** (`ATX_VOL_ONLY=ON`): atx-core + atx-tsdb + atx-vol. atx-engine and atx-impl are not configured, so they cannot be compiled by accident. The two engine consumers — `atx-vol-vrp-train` and `atx-vol-vrp-model-tests` (VrpModel/VrpTrain suites) — exist only with `configure -Preset vol-rel -DATX_VOL_ONLY=OFF`.
 
 ## Memory protocol
 
