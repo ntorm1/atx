@@ -1782,7 +1782,9 @@ reads before v8: 2 (2023-2024); history reads <r>; 2025+ never read; identity-br
   `[UNKNOWN]` slots (`handoff-root-gate.md:143-145`); `lib-v80.json` is untouched and stale (A.4), so an OD-3 era spec
   for R-2, if OD-3 runs, is built from `p9-b0-r2-nav`'s recipe at the OD-3 step, the PM ruling then. FIELDS-RISK
   (ledger :1005; A.4): Y-F0's spec built alone resolves fields v13; whether Y-F0's history line (built from its TRAIN
-  spec) meets that refusal is not ruled; stated for the PM.
+  spec) meets that refusal is not ruled; stated for the PM. [Ruled: OD3-FIELDS-RISK, ledger :1008: a refusal at F.1
+  step B6 on the template chain's `baseline_fields` v13 is an F.1 stop condition (hand back before any era read; the
+  PM rules then; nothing pre-decided); moot if OD3-DB stays silent ("not read in P9")]
 - **Weights.** TRAIN admission, signs and weights carried back unchanged; no re-admission, no re-fit (PM7-29 choice 1,
   carried). Rules estimated at apply time re-estimate on each era's own returns (theme-cov-hedge: the hedge is 0 in
   each era's first 252 decisions, h_t being 0 before decision 253, stated in the OD-3 print, PRE-26); mom-volman's
