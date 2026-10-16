@@ -1178,3 +1178,46 @@ digest `adbcd348...` is not re-run. Stated, not decided (fact 3 with the edit): 
 also plan `--info-clock-print`, while their reference DIRS `p9-b0g-x10-nav` / `p9-b0g-y1-nav` were exe-direct runs with
 `--ann-mean-gross` only; those dirs are read by path as references (never re-run by a cell), and the Y-1 side is the
 case (b) names.
+
+### Step 2: the spec commit **`f8d852f3`** (ONE code commit, ONE file)
+
+`spec(p9): lib-v8ysb-gm.json nav.flags += --ann-mean-gross --info-clock-print (FLAGS-ROUTE; RQ-1)`, by pathspec
+`scripts/specs/v8/lib-v8ysb-gm.json` only (Edit tool; no re-serialisation). `git diff --stat` = 1 file, +3 / -1; the
+diff is exactly the `nav.flags` array's tail: `"--capacity-curve"` -> `"--capacity-curve",` (the JSON comma) and the two
+added lines `"--ann-mean-gross",` / `"--info-clock-print"` (the reference receipt's order); no key reordered, LF and the
+2-space indent kept (0 CR bytes before and after). JSON path `/nav/flags`: 25 -> 27 tokens. **SHA-256
+`3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea` -> `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`**
+(blob `9dd63a00` -> `f0c3acd2`). Not a pin move: the re-pin of record stays `2078f877`; no exe touched (EXE-FREEZE);
+`git diff 2078f877 f8d852f3 -- . ':(exclude).superpowers'` = this one file. Not edited: `x-leverage-L2.0.json`,
+`y-vol-target-y-1.json`, `lib-v80.json`, any template, rule, registration or fixture.
+
+### Step 3: `verify` on the pinned lineage and the fixture chain digest (after `f8d852f3`)
+
+**`verify`** (`gate-logs/tools/repin_verify.py`, the arguments of `repin-verify-3.txt`: X-10, Y-1, `lib-v8ysb-gm.json`,
+`--parent=` Y-F0 and X-10, `--fields=` Y-F0) -> **`gate-logs/flags-verify.txt`: holds.** Every pin `[locked,
+verified]` (library, recipe, role, label_role, reference_cell, reference_admission) and the three exe pins
+`[exes_sha256, verified]` = disk; `exes.eval` named and pinned (B2-11); **X-10 HOLDS**, **Y-1 HOLDS**; fields, u, fit,
+card, w, monitor done, u / w = the v8-era resume roots `mega-v8-b0b-train-u-v8ysb-1` / `mega-v8xw-train-theme-erc-v8ysb-2`;
+NAV made by `255b58ac` = `exes_sha256.nav` (W1-I2 (a)); the parents' NAVs `p9-b0g-yf0-nav` / `p9-b0g-x10-nav` made by
+the pinned Release NAV exe; Y-F0's as-built fields check holds (84 rows = its list). The ONE REFUSED line is the
+pre-existing standalone build of `lib-v8ysb-gm.json` ("REFUSED (the cycle cannot be built): input baseline_fields
+missing: build-equity/train-2020-2023-lo3-fields-v13/manifest.json"; FIELDS-RISK, FIELDS-GONE): expected, not a stop;
+that line alone makes the file end "tool exit 1" (`repin_verify.py` returns 1 on a cycle that cannot be built; GATE-REV
+S-2), exactly as `repin-verify-3.txt`.
+
+`diff repin-verify-3.txt flags-verify.txt` (72 / 72 lines): **5 differing lines, each expected**:
+
+| line | what differs | cause |
+|---|---|---|
+| 1 | the header (head, timestamp) | this record |
+| 4 | X-10 `spec digest over the template chain` `8127dbd8...d140` -> `ea5c4578ac6b851f81052e76121eb2bc8d4d145f5e78cbbca4863821df872ed8` (the file's own sha256 `46e9d6c2...` unchanged) | the edited parent is in X-10's chain |
+| 27 | X-10 `nav` line, C-13 binding note: "this spec's NAV command is argv sha256" `108e1c2d...58a8` -> `40ff035d18ef419751c5bea138a71117df47a79dd82c93d5fc6c9e64c5e832fb` (the reference dir's own argv sha256 `b9b0decb...` unchanged; informational, not counted, as before) | the planned NAV argv now carries the two tokens (the planned flag lists themselves: step 4's `flags-plan.txt`) |
+| 33 | Y-1 spec digest over the template chain `b0c7ad1c...656f` -> `41360ef2af5c8c39d3840f6f3fdbfa5b6cc3ada6457d7f8eb4a28486222858be` (file sha256 `f4186573...` unchanged) | the edited parent is in Y-1's chain |
+| 57 | Y-1 `nav` line, "this spec's NAV command is argv sha256" `61de47f4...824f` -> `9dd016ffef87c58f3a800b7cfb6893ef5ce3a2bd246919dfc2f72a46e9c1b859` (reference `badecf1f...` unchanged) | as line 27 |
+
+Nothing else differs (no pin line, no state, no exe, no REFUSED line other than the FIELDS-RISK one).
+
+**Fixture chain digest** (`gate-logs/tools/fr_fixture.sh`, the form of `fixture-chain-6.txt`; Release store exe p9-3f
+`0eeac21b...`; DBs outside the tree under `C:/Users/natha/AppData/Local/Temp/f1fx/`) -> **`gate-logs/fixture-chain-7.txt`:
+`catalog_digest a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c` twice** (both `files_seen 28 verified
+25 declared 0 skipped 4`), `verify --pins` exit 0, identity "total checked 12 mismatches 0": holds (= the record).
