@@ -470,6 +470,15 @@ def _verify_native_progress(path: Path, report: dict, start: dict) -> dict:
                         or source.get("input_sha256") != start["quote_csv_sha256"]
                         or source.get("policy_sha256") != start["policy_sha256"]
                         or source.get("executable_sha256") != start["binary_sha256"]
+                        or binding.get("model") != start["model"]
+                        or binding.get("dividends") != start["dividends"]
+                        or report.get("model") != start["model"]
+                        or report.get("dividend_model") != start["dividends"]
+                        or header.get("configuration") != report.get("policy_definition")
+                        or not isinstance(binding.get("configuration_sha256"), str)
+                        or binding["configuration_sha256"] != report.get("progress", {}).get(
+                            "configuration_sha256")
+                        or header.get("input_rows") != start["input_rows"]
                         or header.get("run_binding_sha256") != report.get("progress", {}).get(
                             "run_binding_sha256")):
                     raise ValueError("progress journal provenance disagrees with run")
@@ -497,6 +506,9 @@ def _verify_native_progress(path: Path, report: dict, start: dict) -> dict:
             or snapshots != header.get("snapshots_expected") or snapshots != report.get("snapshots")
             or completion.get("completed_rows") != rows
             or rows != report.get("progress", {}).get("completed_rows")
+            or rows > start["input_rows"]
+            or header.get("rows_excluded_by_input_status") != start["input_rows"] - rows
+            or completion.get("rows_excluded_by_input_status") != start["input_rows"] - rows
             or completion.get("input_rows") != report.get("rows")
             or report.get("rows") != start["input_rows"]):
         raise ValueError("progress journal incomplete or completion counts disagree")

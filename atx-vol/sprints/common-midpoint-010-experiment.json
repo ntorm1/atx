@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "model": "common-markov",
+  "profiles": [
+    {"name": "dense", "base": "dense", "fit": {"midpoint_weight": 0.1}},
+    {"name": "ordinary", "base": "ordinary", "fit": {"midpoint_weight": 0.1}},
+    {"name": "sparse", "base": "sparse", "fit": {"midpoint_weight": 0.1}}
+  ]
+}

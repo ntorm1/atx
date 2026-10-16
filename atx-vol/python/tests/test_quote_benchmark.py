@@ -434,16 +434,24 @@ def test_start_receipt_survives_interruption_before_final_run_receipt(tmp_path, 
 def progress_fixture(path, start):
     """Small valid journal boundary fixture, without invoking numerical work."""
     report = {"rows": start["input_rows"], "snapshots": 1,
-              "progress": {"completed_rows": 2, "run_binding_sha256": "binding"}}
+              "model": start["model"], "dividend_model": start["dividends"],
+              "policy_definition": {"profile": "fixture"},
+              "progress": {"completed_rows": 2, "run_binding_sha256": "binding",
+                           "configuration_sha256": "configuration"}}
     records = [
         {"record_type": "start", "sequence": 0, "run_binding_sha256": "binding",
-         "snapshots_expected": 1, "run_binding": {"source": {
+         "snapshots_expected": 1, "input_rows": start["input_rows"],
+         "rows_excluded_by_input_status": start["input_rows"] - 2,
+         "configuration": report["policy_definition"].copy(),
+         "run_binding": {"model": start["model"], "dividends": start["dividends"],
+                         "configuration_sha256": "configuration", "source": {
              "input_sha256": start["quote_csv_sha256"], "policy_sha256": start["policy_sha256"],
              "executable_sha256": start["binary_sha256"]}}},
         {"record_type": "snapshot", "sequence": 1, "run_binding_sha256": "binding",
          "rows": 2, "completed_rows": 2, "completed_snapshots": 1},
         {"record_type": "complete", "sequence": 2, "run_binding_sha256": "binding",
          "completed_rows": 2, "completed_snapshots": 1, "input_rows": start["input_rows"],
+         "rows_excluded_by_input_status": start["input_rows"] - 2,
          "state": "numerical_processing_complete"},
     ]
     for record in records:
@@ -478,11 +486,13 @@ def test_wrapper_binds_progress_and_prelaunch_receipt_to_final_receipt(tmp_path,
 
 
 @pytest.mark.parametrize("mutation", ["partial", "missing_complete", "sequence", "binding",
-                                     "rows", "input", "trailing", "oversized"])
+                                     "rows", "input", "trailing", "oversized", "configuration",
+                                     "configuration_hash", "model", "dividends", "excluded",
+                                     "header_rows"])
 def test_wrapper_refuses_invalid_or_incomplete_progress(tmp_path, mutation):
     path = tmp_path / "progress.jsonl"
     start = {"input_rows": 3, "quote_csv_sha256": "input", "policy_sha256": None,
-             "binary_sha256": "binary"}
+             "binary_sha256": "binary", "model": "common-markov", "dividends": "funding-pv"}
     report, records = progress_fixture(path, start)
     if mutation == "missing_complete":
         records.pop()
@@ -496,6 +506,16 @@ def test_wrapper_refuses_invalid_or_incomplete_progress(tmp_path, mutation):
         records[0]["run_binding"]["source"]["input_sha256"] = "changed"
     elif mutation == "trailing":
         records.append(records[-1])
+    elif mutation == "configuration":
+        records[0]["configuration"]["profile"] = "changed"
+    elif mutation == "configuration_hash":
+        records[0]["run_binding"]["configuration_sha256"] = "changed"
+    elif mutation in ("model", "dividends"):
+        records[0]["run_binding"][mutation] = "changed"
+    elif mutation == "excluded":
+        records[-1]["rows_excluded_by_input_status"] = 0
+    elif mutation == "header_rows":
+        records[0]["input_rows"] = 4
     payload = "".join(json.dumps(record) + "\n" for record in records)
     if mutation == "partial":
         payload = payload[:-1]

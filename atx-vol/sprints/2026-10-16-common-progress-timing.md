@@ -119,3 +119,16 @@ by this lane. Temporary CMake registration is restored before committing;
 parent must add `tools/quote_bench_progress.cpp` to `atx-vol-quote-bench`, in
 addition to the previously integrated common runner and common policy TUs.
 No shared ledger, CMake, README or library API edits belong to this commit.
+
+## Parent review and gates
+
+Parent approved exact author commit `90bcfae1ca2d71364200998d763e2536d95cec5e`
+and integrated it as `e724fc50`. The permanent native target now links the
+progress TU. Parent tightened the wrapper to compare model, dividend convention,
+expanded configuration and configuration digest against the start/final reports,
+and reconcile header/completion excluded rows. Six additional corruption cases
+exercise those checks; total 88 wrapper/scoring tests pass. Registered native
+CTest passes all 75 cases with no skips, including real interruption and native
+wrapper integration. All three owning PCH-off objects compile after refreshing
+the stale hygiene configure; Ruff and diff checks pass. Digests bind evidence
+but are not authenticated against a malicious writer of every artifact.
