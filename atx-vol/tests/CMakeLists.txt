@@ -95,7 +95,7 @@ set_tests_properties(atx-vol-american-markov-policy PROPERTIES
 # (thread-local armed tally) to prove the tick path allocates nothing.
 include(GoogleTest) # gtest_discover_tests (idempotent; also included further down)
 add_executable(atx-vol-tick-path-tests
-    chain_tick_test.cpp expiry_record_test.cpp pricing_executor_test.cpp
+    chain_tick_test.cpp expiry_record_test.cpp spot_ladder_test.cpp pricing_executor_test.cpp
     support/alloc_counter.cpp)
 target_link_libraries(atx-vol-tick-path-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)

@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -153,5 +154,97 @@ private:
 [[nodiscard]] Status refresh_chain_records(double spot, const ChainContractsView &chain,
                                            const ChainRecords &records,
                                            const ChainTickOutputs &out);
+
+// ── Per-contract Chebyshev spot ladders (audit items 1 + 4) ──────────────────
+//
+// sigma is fixed per contract between refits, so after a spot tick each
+// contract's value is a smooth function of ONE variable. At refit every
+// contract gets two Chebyshev series in spot over a window around the build
+// spot — price and vega — sampled from its expiry record (ChainRecords).
+// A tick then costs two short Clenshaw recurrences per contract and no
+// transcendental: delta and gamma are the first and second derivatives of the
+// SAME price series (so they are exactly consistent with the served price), and
+// theta is the continuation-region PDE identity
+// theta = r V - (r - q) S delta - 0.5 sigma^2 S^2 gamma on those values (the
+// american_greeks_al definition; no third series is stored).
+//
+// The exercise boundary splits the window: on the exercise side the contract is
+// served intrinsic (TickStatus::Exercised) and the series covers only the
+// continuation side, where the price is smooth.
+//
+// Layout: contracts are packed in blocks of kSpotLadderLanes consecutive
+// contracts (input order), each block holding its coefficients lane-interleaved
+// ([node][lane]) with the per-contract window/affine map/carry beside them, so
+// the per-tick loop streams the blocks in order and the lane loops vectorize
+// under /arch:AVX2. 2,000 contracts at 16 nodes are ~0.7 MB, L2-resident.
+//
+// Certification (per contract, at build and at every rebuild): the price series
+// is compared with the record at every midpoint between adjacent nodes and at
+// the domain ends; certified_error_usd()[i] = that maximum + F x the record's own
+// certified error against the cold solver. A contract whose certificate exceeds
+// SpotLadderPolicy::max_cert_usd even at the smallest window is REFUSED: it is
+// served from its record every tick (TickStatus::Fallback). Greeks are not
+// separately certified; the bench measures them against american_greeks_al.
+//
+// Window exits: when the spot leaves a contract's window the tick rebuilds that
+// contract's ladder centred on the new spot (from the record, ~16 record
+// evaluations), up to max_rebuilds_per_tick per tick; past the budget the
+// contract is served from its record that tick (TickStatus::Fallback) and
+// rebuilt on a later tick. Rebuilds are counted (rebuilds()).
+
+inline constexpr std::size_t kSpotLadderLanes = 4;
+inline constexpr std::uint16_t kSpotLadderNodes = 16;
+
+struct SpotLadderPolicy {
+  // Window half-width in ln-spot = clamp(window_sigmas * sigma * sqrt(T),
+  // window_min, window_max), halved (down to window_min) while a contract's
+  // certificate exceeds max_cert_usd.
+  double window_sigmas = 2.0;
+  double window_min = 0.0025;
+  double window_max = 0.04;
+  double max_cert_usd = 5.0e-4;
+  std::uint32_t max_rebuilds_per_tick = 32;
+  bool rebuild_on_exit = true;
+};
+
+class ChainSpotLadder {
+public:
+  ChainSpotLadder();
+  ~ChainSpotLadder();
+  ChainSpotLadder(ChainSpotLadder &&) noexcept;
+  ChainSpotLadder &operator=(ChainSpotLadder &&) noexcept;
+  ChainSpotLadder(const ChainSpotLadder &) = delete;
+  ChainSpotLadder &operator=(const ChainSpotLadder &) = delete;
+
+  // Build every contract's ladder around `spot` from `records` (copied: the
+  // ladder owns everything a tick reads). `records` must have been built for
+  // `chain` (same contract count and order).
+  // @return InvalidArgument for mismatched columns / records / non-positive spot.
+  [[nodiscard]] static Result<ChainSpotLadder> build(double spot, const ChainContractsView &chain,
+                                                     const ChainRecords &records,
+                                                     const SpotLadderPolicy &policy = {});
+
+  // The tick: price, delta, gamma, vega, theta for every contract at `spot`,
+  // inline, allocation-free. Not const: a window exit rebuilds that contract.
+  // @return InvalidArgument when `out` has the wrong length or `spot` is not a
+  //         finite positive number (nothing is written).
+  [[nodiscard]] Status refresh(double spot, const ChainTickOutputs &out);
+
+  [[nodiscard]] std::size_t size() const noexcept;
+  // In-tick rebuilds and record fallbacks since build().
+  [[nodiscard]] std::uint64_t rebuilds() const noexcept;
+  [[nodiscard]] std::uint64_t fallbacks() const noexcept;
+  // Per-contract certified price error in dollars at the current windows, and
+  // the contracts refused at build (served from their record every tick).
+  [[nodiscard]] std::span<const double> certified_error_usd() const noexcept;
+  [[nodiscard]] std::size_t refused_contracts() const noexcept;
+  // Bytes of tick-path data (blocks of coefficients and per-contract scalars).
+  [[nodiscard]] std::size_t tick_bytes() const noexcept;
+
+private:
+  struct Impl;
+  explicit ChainSpotLadder(std::unique_ptr<Impl> impl) noexcept;
+  std::unique_ptr<Impl> impl_;
+};
 
 } // namespace atx::vol

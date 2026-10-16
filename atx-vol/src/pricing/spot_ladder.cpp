@@ -1,0 +1,405 @@
+// Per-contract Chebyshev spot ladders — the tick path of api/pricing/chain_tick.hpp
+// (pricing hot-path audit 2026-10-16, items 1 and 4). See the ChainSpotLadder
+// section of that header for the representation, certification and window
+// policy; this file is the implementation.
+
+#include "atx/vol/api/pricing/chain_tick.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <utility>
+#include <vector>
+
+#include "fitting/correction_detail.hpp" // cheb_node / cheb_dct2 / unit maps
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::Ok;
+
+namespace {
+
+constexpr std::size_t kL = kSpotLadderLanes;
+constexpr std::uint16_t kN = kSpotLadderNodes;
+constexpr double kInf = std::numeric_limits<double>::infinity();
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+// Window halvings tried when a contract's certificate fails (build or rebuild).
+constexpr int kMaxShrink = 6;
+
+// Status codes the block kernel emits; OutOfWindow lanes are resolved afterwards
+// by the rebuild / record-fallback pass.
+constexpr std::uint8_t kLaneOk = static_cast<std::uint8_t>(TickStatus::Ok);
+constexpr std::uint8_t kLaneExercised = static_cast<std::uint8_t>(TickStatus::Exercised);
+constexpr std::uint8_t kLaneOut = static_cast<std::uint8_t>(TickStatus::OutOfWindow);
+
+// kL consecutive contracts. Coefficients are lane-interleaved so each Clenshaw
+// step reads one contiguous kL-double row for all lanes.
+struct alignas(64) Block {
+  double pc[kN][kL]; // price series in x
+  double vc[kN][kL]; // vega series in x
+  double alpha[kL];  // x = alpha * S + beta maps the continuation domain to [-1, 1]
+  double beta[kL];
+  double lo[kL]; // window [lo, hi]; a refused contract has lo = +inf, hi = -inf
+  double hi[kL];
+  double s_ex[kL];   // exercise split: put exercised iff S <= s_ex, call iff S >= s_ex
+  double strike[kL];
+  double put[kL];  // 1.0 for a put, 0.0 for a call
+  double r[kL];    // theta = r V - rq S delta - hs2 S^2 gamma
+  double rq[kL];
+  double hs2[kL];
+};
+
+// One tick of one block: every lane's outputs plus a lane status. Branch-free
+// so the lane loops vectorize; lanes outside their window still compute (finite
+// garbage) and are flagged kLaneOut for the caller to resolve.
+struct LaneOut {
+  double price[kL], delta[kL], gamma[kL], vega[kL], theta[kL];
+  std::uint8_t status[kL];
+};
+
+inline void eval_block(const Block &B, double S, LaneOut &o) noexcept {
+  double x[kL], tx[kL];
+  double b1[kL], b2[kL], d1[kL], d2[kL], e1[kL], e2[kL], v1[kL], v2[kL];
+  for (std::size_t l = 0; l < kL; ++l) {
+    x[l] = B.alpha[l] * S + B.beta[l];
+    tx[l] = 2.0 * x[l];
+    b1[l] = b2[l] = d1[l] = d2[l] = e1[l] = e2[l] = v1[l] = v2[l] = 0.0;
+  }
+  // Clenshaw for p(x), p'(x), p''(x) (differentiated recurrences) and the vega
+  // series, all four sharing the step. Same full-c0 form as the record.
+  for (int k = static_cast<int>(kN) - 1; k >= 1; --k) {
+    const double *pk = B.pc[k];
+    const double *vk = B.vc[k];
+    for (std::size_t l = 0; l < kL; ++l) {
+      const double b = pk[l] + tx[l] * b1[l] - b2[l];
+      const double d = 2.0 * b1[l] + tx[l] * d1[l] - d2[l];
+      const double e = 4.0 * d1[l] + tx[l] * e1[l] - e2[l];
+      const double v = vk[l] + tx[l] * v1[l] - v2[l];
+      b2[l] = b1[l];
+      b1[l] = b;
+      d2[l] = d1[l];
+      d1[l] = d;
+      e2[l] = e1[l];
+      e1[l] = e;
+      v2[l] = v1[l];
+      v1[l] = v;
+    }
+  }
+  for (std::size_t l = 0; l < kL; ++l) {
+    const double P = B.pc[0][l] + x[l] * b1[l] - b2[l];
+    const double Px = b1[l] + x[l] * d1[l] - d2[l];
+    const double Pxx = 2.0 * d1[l] + x[l] * e1[l] - e2[l];
+    const double V = B.vc[0][l] + x[l] * v1[l] - v2[l];
+    const bool is_put = B.put[l] != 0.0;
+    const bool in_win = (S >= B.lo[l]) && (S <= B.hi[l]);
+    const bool ex = is_put ? (S <= B.s_ex[l]) : (S >= B.s_ex[l]);
+    const double intr_raw = is_put ? (B.strike[l] - S) : (S - B.strike[l]);
+    const double intr = intr_raw > 0.0 ? intr_raw : 0.0;
+    const double px = P > intr ? P : intr;
+    const double delta = B.alpha[l] * Px;
+    const double gamma = B.alpha[l] * B.alpha[l] * Pxx;
+    o.price[l] = ex ? intr : px;
+    o.delta[l] = ex ? (is_put ? -1.0 : 1.0) : delta;
+    o.gamma[l] = ex ? 0.0 : gamma;
+    o.vega[l] = ex ? 0.0 : V;
+    o.theta[l] = ex ? 0.0 : (B.r[l] * px - B.rq[l] * S * delta - B.hs2[l] * S * S * gamma);
+    o.status[l] = !in_win ? kLaneOut : (ex ? kLaneExercised : kLaneOk);
+  }
+}
+
+// Price of one lane's series at S (no exercise / window logic): certification.
+[[nodiscard]] double lane_series_price(const Block &B, std::size_t l, double S) noexcept {
+  const double x = B.alpha[l] * S + B.beta[l];
+  const double two_x = 2.0 * x;
+  double b1 = 0.0, b2 = 0.0;
+  for (int k = static_cast<int>(kN) - 1; k >= 1; --k) {
+    const double b = B.pc[k][l] + two_x * b1 - b2;
+    b2 = b1;
+    b1 = b;
+  }
+  return B.pc[0][l] + x * b1 - b2;
+}
+
+} // namespace
+
+struct ChainSpotLadder::Impl {
+  std::size_t n = 0;
+  std::vector<Block> blocks;
+  std::vector<double> sigma;
+  std::vector<double> strike;
+  std::vector<Side> side;
+  std::vector<std::uint32_t> rec_of;
+  std::vector<double> half_width; // current ln-spot window half-width per contract
+  std::vector<std::uint8_t> refused;
+  std::vector<double> cert_usd;
+  std::vector<std::uint32_t> pending; // out-of-window scratch, sized n at build
+  ChainRecords records;
+  SpotLadderPolicy policy;
+  std::uint64_t rebuilds = 0;
+  std::uint64_t fallbacks = 0;
+  std::size_t refused_count = 0;
+
+  [[nodiscard]] const ExpiryRecord &record(std::size_t c) const noexcept {
+    return *records.bank().at(rec_of[c]);
+  }
+
+  // (Re)build contract c's ladder centred on `center`. Returns true when the
+  // certificate is within policy; false marks the contract refused.
+  bool build_one(std::size_t c, double center) noexcept;
+  void refuse(std::size_t c) noexcept;
+  void serve_from_record(std::size_t c, double S, const ChainTickOutputs &out) noexcept;
+};
+
+void ChainSpotLadder::Impl::refuse(std::size_t c) noexcept {
+  Block &B = blocks[c / kL];
+  const std::size_t l = c % kL;
+  B.lo[l] = kInf; // never inside: every tick routes it to the record fallback
+  B.hi[l] = -kInf;
+  if (refused[c] == 0u) {
+    refused[c] = 1u;
+    ++refused_count;
+  }
+}
+
+bool ChainSpotLadder::Impl::build_one(std::size_t c, double center) noexcept {
+  const ExpiryRecord &rec = record(c);
+  const double K = strike[c];
+  const double sig = sigma[c];
+  const bool is_put = (side[c] == Side::Put);
+  const double g = rec.forward_factor();
+  Block &B = blocks[c / kL];
+  const std::size_t l = c % kL;
+
+  // Spot of the exercise split: k = ln(K / (S g)) crosses the record's edge.
+  double s_ex = is_put ? -kInf : kInf;
+  if (rec.has_exercise_edge()) {
+    const double e = rec.exercise_edge(sig);
+    if (std::isfinite(e)) {
+      s_ex = K * std::exp(-e) / g;
+    }
+  }
+  const double rec_cert = rec.certified_max_abs_error_fwd();
+  const double rec_cert_usd = std::isfinite(rec_cert) ? rec_cert * center * g : 0.0;
+
+  double delta = half_width[c];
+  double cert = kInf;
+  for (int attempt = 0; attempt <= kMaxShrink; ++attempt) {
+    const double lo = center * std::exp(-delta);
+    const double hi = center * std::exp(delta);
+    const double a = is_put ? std::max(lo, s_ex) : lo;
+    const double b = is_put ? hi : std::min(hi, s_ex);
+    B.lo[l] = lo;
+    B.hi[l] = hi;
+    B.s_ex[l] = s_ex;
+    if (!(b > a)) {
+      // The whole window is on the exercise side: intrinsic everywhere, exact.
+      for (std::uint16_t k = 0; k < kN; ++k) {
+        B.pc[k][l] = 0.0;
+        B.vc[k][l] = 0.0;
+      }
+      B.alpha[l] = 0.0;
+      B.beta[l] = 0.0;
+      cert = 0.0;
+      break;
+    }
+    std::array<double, kN> pv{};
+    std::array<double, kN> vv{};
+    std::array<double, kN> pcoef{};
+    std::array<double, kN> vcoef{};
+    for (std::uint16_t j = 0; j < kN; ++j) {
+      const double Sj = detail::cheb_from_unit(detail::cheb_node(j, kN), a, b);
+      double vega = 0.0;
+      pv[j] = rec.price_and_vega(Sj, K, sig, &vega);
+      vv[j] = vega;
+    }
+    detail::cheb_dct2(pv.data(), pcoef.data(), kN);
+    detail::cheb_dct2(vv.data(), vcoef.data(), kN);
+    for (std::uint16_t k = 0; k < kN; ++k) {
+      B.pc[k][l] = pcoef[k];
+      B.vc[k][l] = vcoef[k];
+    }
+    B.alpha[l] = 2.0 / (b - a);
+    B.beta[l] = -(a + b) / (b - a);
+    // Certificate: series vs record at every midpoint between adjacent nodes
+    // (sorted ascending in x) and at both domain ends.
+    std::array<double, kN> xs{};
+    for (std::uint16_t j = 0; j < kN; ++j) {
+      xs[j] = detail::cheb_node(j, kN);
+    }
+    std::sort(xs.begin(), xs.end());
+    double worst = 0.0;
+    const auto probe = [&](double x) {
+      const double S = detail::cheb_from_unit(x, a, b);
+      const double err = std::abs(lane_series_price(B, l, S) - rec.price(S, K, sig));
+      worst = std::max(worst, std::isfinite(err) ? err : kInf);
+    };
+    for (std::uint16_t j = 0; j + 1 < kN; ++j) {
+      probe(0.5 * (xs[j] + xs[j + 1]));
+    }
+    probe(-1.0);
+    probe(1.0);
+    cert = worst + rec_cert_usd;
+    if (cert <= policy.max_cert_usd || delta <= policy.window_min) {
+      break;
+    }
+    delta = std::max(0.5 * delta, policy.window_min);
+  }
+  half_width[c] = delta;
+  cert_usd[c] = cert;
+  if (!(cert <= policy.max_cert_usd)) {
+    refuse(c);
+    return false;
+  }
+  return true;
+}
+
+void ChainSpotLadder::Impl::serve_from_record(std::size_t c, double S,
+                                              const ChainTickOutputs &out) noexcept {
+  const RecordGreeks g = record(c).greeks(S, strike[c], sigma[c]);
+  out.price[c] = g.price;
+  out.delta[c] = g.delta;
+  out.gamma[c] = g.gamma;
+  out.vega[c] = g.vega;
+  out.theta[c] = g.theta;
+  out.status[c] = std::isfinite(g.price) ? TickStatus::Fallback : TickStatus::Unpriceable;
+  ++fallbacks;
+}
+
+ChainSpotLadder::ChainSpotLadder() = default;
+ChainSpotLadder::~ChainSpotLadder() = default;
+ChainSpotLadder::ChainSpotLadder(ChainSpotLadder &&) noexcept = default;
+ChainSpotLadder &ChainSpotLadder::operator=(ChainSpotLadder &&) noexcept = default;
+ChainSpotLadder::ChainSpotLadder(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+
+Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContractsView &chain,
+                                               const ChainRecords &records,
+                                               const SpotLadderPolicy &policy) {
+  const std::size_t n = chain.size();
+  if (!std::isfinite(spot) || !(spot > 0.0) || !chain.consistent() ||
+      records.record_of_contract().size() != n || !(policy.window_min > 0.0) ||
+      !(policy.window_max >= policy.window_min) || !(policy.window_sigmas > 0.0) ||
+      !(policy.max_cert_usd > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "ChainSpotLadder::build: bad spot, column lengths, records or policy");
+  }
+  auto impl = std::make_unique<Impl>();
+  impl->n = n;
+  impl->policy = policy;
+  impl->records = records;
+  impl->blocks.assign((n + kL - 1) / kL, Block{});
+  impl->sigma.assign(chain.sigma.begin(), chain.sigma.end());
+  impl->strike.assign(chain.strike.begin(), chain.strike.end());
+  impl->side.assign(chain.side.begin(), chain.side.end());
+  const std::span<const std::uint32_t> rec_of = records.record_of_contract();
+  impl->rec_of.assign(rec_of.begin(), rec_of.end());
+  impl->half_width.assign(n, policy.window_max);
+  impl->refused.assign(n, 0u);
+  impl->cert_usd.assign(n, kNaN);
+  impl->pending.assign(n, 0u);
+
+  // Padding lanes of the last block mirror a refused contract: never in window,
+  // never written (the tick only writes lanes < n).
+  for (Block &B : impl->blocks) {
+    for (std::size_t l = 0; l < kL; ++l) {
+      B.lo[l] = kInf;
+      B.hi[l] = -kInf;
+      B.put[l] = 1.0;
+      B.s_ex[l] = -kInf;
+    }
+  }
+  for (std::size_t c = 0; c < n; ++c) {
+    const ExpiryRecord *rec = records.bank().at(rec_of[c]);
+    const double K = chain.strike[c];
+    const double sig = chain.sigma[c];
+    const double T = chain.expiry[c];
+    if (rec == nullptr || !(K > 0.0) || !(sig > 0.0) || !(T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "ChainSpotLadder::build: every contract needs a record, K, sigma, T > 0");
+    }
+    Block &B = impl->blocks[c / kL];
+    const std::size_t l = c % kL;
+    B.strike[l] = K;
+    B.put[l] = (chain.side[c] == Side::Put) ? 1.0 : 0.0;
+    B.r[l] = rec->rate();
+    B.rq[l] = rec->rate() - rec->carry();
+    B.hs2[l] = 0.5 * sig * sig;
+    impl->half_width[c] =
+        std::clamp(policy.window_sigmas * sig * std::sqrt(T), policy.window_min, policy.window_max);
+    (void)impl->build_one(c, spot);
+  }
+  return Ok(ChainSpotLadder(std::move(impl)));
+}
+
+Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
+  if (!impl_ || !std::isfinite(spot) || !(spot > 0.0) || !out.consistent() ||
+      out.size() != impl_->n) {
+    return Err(ErrorCode::InvalidArgument,
+               "ChainSpotLadder::refresh: output length mismatch or spot not finite > 0");
+  }
+  Impl &m = *impl_;
+  const std::size_t n = m.n;
+  std::size_t n_pending = 0;
+  LaneOut o;
+  for (std::size_t b = 0; b < m.blocks.size(); ++b) {
+    eval_block(m.blocks[b], spot, o);
+    const std::size_t base = b * kL;
+    const std::size_t lanes = std::min(kL, n - base);
+    for (std::size_t l = 0; l < lanes; ++l) {
+      out.price[base + l] = o.price[l];
+      out.delta[base + l] = o.delta[l];
+      out.gamma[base + l] = o.gamma[l];
+      out.vega[base + l] = o.vega[l];
+      out.theta[base + l] = o.theta[l];
+      out.status[base + l] = static_cast<TickStatus>(o.status[l]);
+      if (o.status[l] == kLaneOut) {
+        m.pending[n_pending++] = static_cast<std::uint32_t>(base + l);
+      }
+    }
+  }
+  // Resolve window exits: rebuild within budget, otherwise serve the record.
+  std::uint32_t rebuilt = 0;
+  for (std::size_t p = 0; p < n_pending; ++p) {
+    const std::size_t c = m.pending[p];
+    const bool may_rebuild = m.refused[c] == 0u && m.policy.rebuild_on_exit &&
+                             rebuilt < m.policy.max_rebuilds_per_tick;
+    if (may_rebuild) {
+      ++rebuilt;
+      ++m.rebuilds;
+      if (m.build_one(c, spot)) {
+        eval_block(m.blocks[c / kL], spot, o);
+        const std::size_t l = c % kL;
+        out.price[c] = o.price[l];
+        out.delta[c] = o.delta[l];
+        out.gamma[c] = o.gamma[l];
+        out.vega[c] = o.vega[l];
+        out.theta[c] = o.theta[l];
+        out.status[c] = static_cast<TickStatus>(o.status[l]);
+        continue;
+      }
+    }
+    m.serve_from_record(c, spot, out);
+  }
+  return Ok();
+}
+
+std::size_t ChainSpotLadder::size() const noexcept { return impl_ ? impl_->n : 0u; }
+std::uint64_t ChainSpotLadder::rebuilds() const noexcept { return impl_ ? impl_->rebuilds : 0u; }
+std::uint64_t ChainSpotLadder::fallbacks() const noexcept {
+  return impl_ ? impl_->fallbacks : 0u;
+}
+std::span<const double> ChainSpotLadder::certified_error_usd() const noexcept {
+  return impl_ ? std::span<const double>(impl_->cert_usd) : std::span<const double>{};
+}
+std::size_t ChainSpotLadder::refused_contracts() const noexcept {
+  return impl_ ? impl_->refused_count : 0u;
+}
+std::size_t ChainSpotLadder::tick_bytes() const noexcept {
+  return impl_ ? impl_->blocks.size() * sizeof(Block) : 0u;
+}
+
+} // namespace atx::vol

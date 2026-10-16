@@ -43,6 +43,10 @@
 //                      item 2), price + delta + gamma + vega + PDE theta.
 //   record_price_only  ExpiryRecord::price per contract (the <= 150 ns cached-
 //                      price micro target); Greek columns stay NaN.
+//   record_ladder      ChainSpotLadder (audit items 1 + 4): per-contract
+//                      Chebyshev price/vega series in spot built from the
+//                      records; 10,000 timed ticks; in-tick window-exit
+//                      rebuilds and record fallbacks are counted.
 //   The cold routes cost ~0.1-1 s per tick, so they run a handful of ticks; the
 //   cached routes a few hundred. Each row's `ticks` counter says how many.
 //   Record routes report their untimed refit build cost (`build_ms`) and the
@@ -287,6 +291,17 @@ void report_accuracy(benchmark::State &state, const std::vector<Sample> &samples
     // A price-only route leaves its Greek columns NaN by contract; those rows
     // carry no Greek evidence rather than an infinite error.
     if (!std::isnan(s.delta)) {
+      // Name the worst theta / gamma sample on stderr: the counters say how big,
+      // this says where (expiry, side, strike, spot, status).
+      if (std::abs(s.theta - r.theta) > et.max_abs || std::abs(s.gamma - r.gamma) > eg.max_abs) {
+        std::fprintf(stderr,
+                     "[chain-refresh] worst-so-far %s: i=%zu T=%.4f %s K=%.2f S=%.3f sig=%.4f "
+                     "st=%d gamma %.6e/%.6e theta %.5f/%.5f\n",
+                     state.name().c_str(), s.contract, c.expiry[s.contract],
+                     c.side[s.contract] == Side::Put ? "put" : "call", c.strike[s.contract],
+                     tape()[s.tape_idx], c.sigma[s.contract], static_cast<int>(s.status), s.gamma,
+                     r.gamma, s.theta, r.theta);
+      }
       ed.add(s.delta - r.delta);
       eg.add(s.gamma - r.gamma);
       ev.add(s.vega - r.vega);
@@ -338,6 +353,10 @@ void run_route(benchmark::State &state, Route &route, std::size_t warm_ticks) {
     route.refresh(spots[t % spots.size()], ov);
   }
   const std::uint64_t rebuilds_before = route.rebuilds();
+  [[maybe_unused]] std::uint64_t fallbacks_before = 0;
+  if constexpr (requires { route.fallbacks(); }) {
+    fallbacks_before = route.fallbacks();
+  }
   const auto planned = static_cast<std::size_t>(state.max_iterations);
   std::vector<double> lat;
   lat.reserve(planned);
@@ -397,6 +416,14 @@ void run_route(benchmark::State &state, Route &route, std::size_t warm_ticks) {
   // Worst build-time certified error (forward units) of the route's records/ladders.
   if constexpr (requires { route.cert_fwd(); }) {
     state.counters["cert_err_fwd_max"] = route.cert_fwd();
+  }
+  // Spot-ladder diagnostics: record fallbacks during the timed ticks, refused
+  // contracts, worst per-contract certificate ($) and the tick working set.
+  if constexpr (requires { route.fallbacks(); }) {
+    state.counters["fallbacks"] = static_cast<double>(route.fallbacks() - fallbacks_before);
+    state.counters["refused"] = route.refused();
+    state.counters["cert_usd_max"] = route.cert_usd_max();
+    state.counters["tick_kb"] = route.tick_kb();
   }
   report_accuracy(state, samples);
 }
@@ -602,6 +629,53 @@ struct RecordPriceOnlyRoute {
   [[nodiscard]] double build_ms() const noexcept { return b.build_ms; }
 };
 
+// record_ladder (audit items 1 + 4): ChainSpotLadder — per-contract Chebyshev
+// price and vega series in spot, delta/gamma from the price series, PDE theta.
+// reset() rebuilds every ladder at S0 from the records (untimed); window exits
+// during the timed ticks rebuild in-tick and are counted.
+struct RecordLadderRoute {
+  const BuiltRecords &b = chain_records();
+  ChainSpotLadder ladder;
+  double first_build_ms = 0.0;
+  std::uint64_t fallbacks_at_reset = 0;
+  void reset() {
+    if (!b.recs) {
+      return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    Result<ChainSpotLadder> l = ChainSpotLadder::build(kSpot0, chain().view(), *b.recs);
+    const auto t1 = std::chrono::steady_clock::now();
+    if (first_build_ms == 0.0) {
+      first_build_ms = 1.0e3 * std::chrono::duration<double>(t1 - t0).count();
+    }
+    if (l) {
+      ladder = std::move(*l);
+    }
+  }
+  void refresh(double spot, const ChainTickOutputs &out) {
+    const Status st = ladder.refresh(spot, out);
+    bool ok = st.has_value();
+    benchmark::DoNotOptimize(ok);
+  }
+  [[nodiscard]] std::uint64_t rebuilds() const noexcept { return ladder.rebuilds(); }
+  [[nodiscard]] std::uint64_t fallbacks() const noexcept { return ladder.fallbacks(); }
+  // Ladder build from the records; the records' own build is in the record rows.
+  [[nodiscard]] double build_ms() const noexcept { return first_build_ms; }
+  [[nodiscard]] double cert_usd_max() const noexcept {
+    double w = 0.0;
+    for (const double e : ladder.certified_error_usd()) {
+      w = std::max(w, e);
+    }
+    return w;
+  }
+  [[nodiscard]] double refused() const noexcept {
+    return static_cast<double>(ladder.refused_contracts());
+  }
+  [[nodiscard]] double tick_kb() const noexcept {
+    return static_cast<double>(ladder.tick_bytes()) / 1024.0;
+  }
+};
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -643,6 +717,8 @@ const bool kRegistered = [] {
   register_route<ColdAlAvx2BatchRoute>("chain/refresh/cold_al_avx2_batch/n2000", 3, 1);
   register_route<RecordDirectRoute>("chain/refresh/record_direct/n2000", 2000, 200);
   register_route<RecordPriceOnlyRoute>("chain/refresh/record_price_only/n2000", 2000, 200);
+  // §4: 10,000 timed ticks after 1,000 discarded ones.
+  register_route<RecordLadderRoute>("chain/refresh/record_ladder/n2000", 10000, 1000);
   return true;
 }();
 

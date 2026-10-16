@@ -74,6 +74,8 @@ set(ATX_VOL_PRICING_SOURCES
     # Tick-path chain refresh (pricing hot-path audit 2026-10-16): inline, pool-free
     # chain re-mark after a spot tick; public header api/pricing/chain_tick.hpp.
     src/pricing/chain_tick.cpp
+    # ... and its per-contract Chebyshev spot ladders (ChainSpotLadder).
+    src/pricing/spot_ladder.cpp
     # declarative swap-lane DSL
     src/pricing/swap_leg.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
