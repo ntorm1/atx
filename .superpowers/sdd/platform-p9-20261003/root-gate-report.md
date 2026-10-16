@@ -1134,3 +1134,47 @@ of record `p9-b0g-yf0-nav` reads `p9-b0g-yf0-w`); **the v8-era cycle dirs `mega-
 state)**, byte-identical to the Release references in every payload (u 3 / 3, w 10 / 10; checked at the re-pin); no
 cell re-runs u or w. R-2 is read by path (`p9-b0-r2-nav`); `lib-v80.json` untouched, its stale pins stated in the
 substitution list (amendment 4, PRE-40 form).
+
+## FLAGS-ROUTE (RQ-1 close), root FLAGS agent
+
+RESUME 14, 2026-10-16; dispatch `r14-prompts/root-flags-prompt.md`; rulings FLAGS-ROUTE, FLAGS-ROUTE-2, FLAGS-SEQ (1)
+(ledger, the block from "- RESUME 14"); GATE-REV part 2's one Required finding RQ-1 (`prereg-2bii-review.md`), route
+(b). Pool `C:/atx-wt/pool-2`, branch `feat/platform-p9-20261003`. No build, no suite (TEST-2), no statistic read
+(READ NO STATISTIC: SHA-256 and JSON path only).
+
+**Step 0 (start state, DISPATCH-COMMIT).** `gate-logs/flags-start.txt`: code head `f8a85ad4` = the re-pin of record
+`2078f877` outside `.superpowers/` (diff empty); docs head at start **`cb051169`**, not the dispatch's `6c608ff3`: the
+two commits above it are the PRE docs agent's pathspec commits beside me (FLAGS-SEQ (2), PAR-1: `bc034c4a` SG-1 in
+`p9-prereg.md`, `cb051169` SG-2 in `p9-od3-runbook.md`; nothing else), expected, not a stop. Trial ledger 133 lines
+`27e40f9f`; `research-store/` and `index.sqlite` absent; the six P9-B0 reference dirs present; the NAV exe
+`255b58ac...3565` and 27 / 27 Release exes = their p9-3f receipt; `ucrtbase.dll` 10.0.26100.7623 `2C08E77F...65EF`;
+free RAM 3.39 of 15.69 GB, C: 40.7 GB free. DISPATCH-COMMIT **`a70f406d`** (11 paths by explicit pathspec: the ledger
+and `next-goal-prompt.md` as they stand, `status-14.md`, `r13-prompts/{cells-prompt-1,gaterev-prompt-1}.md`, the five
+`r14-prompts/` files, `gate-logs/flags-start.txt`; 0 `mypy_cache`, 0 PNG).
+
+### Route facts (read-only, at code head `f8a85ad4`, BEFORE the spec edit)
+
+| # | fact | source (quoted) | holds |
+|---|---|---|---|
+| 1 | The lineage parent's NAV flags carry neither flag | `scripts/specs/v8/lib-v8ysb-gm.json` (sha256 `3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea`, LF, 2-space indent) `:250-282`: `"nav": {"output": "build-equity/p9-b0g-yf0-nav", "rule": "aim-partial-v5", "leverage": "1.1828", "flags": ["--cadence", "1", "--trade-fraction", ".05", "--dust-multiple", ".1", "--aim-leverage", "{leverage}", "--daily-turnover-mean-max", ".20", "--daily-turnover-p95-max", ".30", "--neutralize", "price-risk-v1", "--max-bytes", "1073741824", "--order-basis", "delta", "--exit-rate", ".05", "--locate-in-aim", "--liquidity-cache", "--warm-start-sessions", "60", "--capacity-curve"]}` (25 tokens) | yes: = the dispatch's list; no `--ann-mean-gross`, no `--info-clock-print` |
+| 2 | X-10 inherits the parent's list | `scripts/specs/v8/x-leverage-L2.0.json`: `"parent": "lib-v8ysb-gm.json"`, `"change": {"set": {"nav.leverage": "2.0", "nav.output": "build-equity/p9-b0g-x10-nav"}}`; no `nav.flags` key, no `change.flags`, no `change.unset` | yes |
+| 3 | Y-1 adds to the inherited list, replaces nothing | `scripts/specs/v8/y-vol-target-y-1.json`: `"parent": "x-leverage-L2.0.json"`, `"change": {"set": {"nav.output": "build-equity/p9-b0g-y1-nav", "nav.leverage": "2.0"}, "flags": {"nav": {"--vol-target": "vol-target-v1", "--risk-model": "build-equity/p9-m2i-dcov-v11", "--risk-model-sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"}}}`; `change.flags` semantics `scripts/research_spec.py:12-17`, `apply_flags` `:128-163` ("set the option's value (appended when absent)"): three options absent from the parent's list, so six tokens appended; no `nav.flags` override | yes |
+| 4 | The four P9 templates have no parent of their own and set outputs only | `scripts/specs/p9/templates/info-clock.json`, `mom-volman.json`, `mv-aim.json`, `theme-cov-hedge.json`: each `"parent": null`; `change` keys `["set"]` only; `change.set` keys: info-clock / mv-aim `nav.output`, `monitor.output`; mom-volman / theme-cov-hedge `fit.output`, `card.output`, `ic.w_output`, `nav.output`, `monitor.output` (`nominal_parent` of info-clock / mv-aim `../../v8/lib-v8ysb-gm.json`); no `nav.flags`, no `change.flags` | yes: once the cells root sets `parent` to the FILE at registration, each inherits the parent's list |
+| 5 | Every other spec over the parent | `git grep lib-v8ysb-gm.json -- scripts atx-impl atx-engine`: the v8 cells `y-norm-score-y-3{,-gm}.json`, `y-theme-tsmom-y-2{,-gm}.json`, `y-two-speed-y-5{,-gm}.json` (`"parent": "lib-v8ysb-gm.json"`; `change.set` `nav.output` (+ `nav.leverage` in `-gm`); `change.flags.nav` adds `--rank-shape` / `--two-speed` or nothing; no `nav.flags` override) and the v8 waves `y-2` / `y-3` / `y-5` naming it as their spec | they inherit too; v8 cells (y-2 / y-3 / y-5 NOT ACCEPTED), not run in P9 |
+| 6 | The driver builds the NAV argv from the resolved spec's `nav.flags` | `scripts/cycle/phases.py:824` (`nav_step`): `flags = [str(nav.get("leverage")) if f == "{leverage}" else f for f in nav["flags"]]`; `:829-832`: `argv = self.runner(run_dir, binds, phase, k) + [s["exes"]["nav"], "nav", "--combined", comb, "--combined-sha256", comb_sha, "--role", role_m, "--role-sha256", role_sha, "--fields", fdm, "--fields-sha256", self.rt_sha(fdm), "--output", n_out, "--rule", nav["rule"], *flags, *label]` with `label = ["--label-role", ..., "--label-role-sha256", ...]` (`:828`) | yes; and by construction the label pair follows `*flags`: tokens appended at the END of `nav.flags` reach the argv BEFORE `--label-role`, while the reference receipt carries them after it (an order difference, listed at step 4) |
+| 7 | The lane's own test shows a parent `--info-clock-print` reaching the cell exactly once | `scripts/tests/test_info_clock_rule.py:217`: `assert flags.count("--info-clock-print") == (1 if parent_flags else 0)`; `:222`: `assert argv.count("--info-clock-print") == (1 if parent_flags else 0)` (the "printed" world's parent flags carry it, `:203-204` of `test_kind_rule_wave_puts_one_rate_and_one_rule`, `:201`) | yes (read; the test file not run: not needed as evidence) |
+
+**Consequence (FLAGS-ROUTE-2, stated before the spec commit; the ruling's clauses, not its reasons).** (a) After
+FLAGS-ROUTE every spec built over `lib-v8ysb-gm.json` inherits `--ann-mean-gross` and `--info-clock-print` on its NAV
+argv (facts 2-6), so B.0's void rule (2) "alike" holds for `--ann-mean-gross` on every cell / reference pair and for
+`--info-clock-print` on every v2 cell against `p9-b0g-yf0-nav` or an accepted v2 parent, P9-C included. (b) A hand cell
+written from P9-F0h's NAV argv (P9-X, P9-V, if they run) against `p9-b0g-y1-nav` or P9-X may carry `--info-clock-print`
+on the cell side only: NOT a void; the one-sided `/scenarios/*/info_clock` block is disclosed in the cell record (the
+form of GATE-REV S-5); the void rule (2) wording stays as written, restated beside by the PRE docs agent (PRE-40 form).
+(c) The edit moves `lib-v8ysb-gm.json`'s SHA-256 off `3631679c...`: every citation of that value is restated beside
+(PRE-40 form); the cells root sets each template's `parent` to the FILE and `lock --exes --write` pins what it
+inherits; the re-pin of record stays `2078f877` (no pin moves), EXE-FREEZE is unaffected, and the gate's catalog
+digest `adbcd348...` is not re-run. Stated, not decided (fact 3 with the edit): the X-10 and Y-1 reference SPECS will
+also plan `--info-clock-print`, while their reference DIRS `p9-b0g-x10-nav` / `p9-b0g-y1-nav` were exe-direct runs with
+`--ann-mean-gross` only; those dirs are read by path as references (never re-run by a cell), and the Y-1 side is the
+case (b) names.
