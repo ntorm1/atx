@@ -1,6 +1,8 @@
 # P9 pre-registration (`p9-prereg.md`)
 
 ROUND 2b-ii COMPLETE (parts A, B1, B2a, B2b); pending GATE-REV part 2 and the PM's ruling PRE-2BII-RULED.
+[Part B3: GATE-REV part 2 returned CHANGES_REQUIRED (`prereg-2bii-review.md`, `6c608ff3`; RQ-1); RQ-1 closed by
+`f8d852f3` (FLAGS-ROUTE); pending the scoped re-check and PRE-2BII-RULED.]
 
 ROUND 2b-i PARTIAL (owner stop 2026-10-06): applied PRE-32 (B.0, B.7, D), PRE-33 (B.7, B.8, C.11), PRE-34 (A.6, B.7, D, E G-B2), PRE-35 as D3-2 reads it (B.0, B.3, B.6), PRE-36 with the G-B7 step values of R-2, X-2, X-3, X-5 (E), PRE-37 (A.4), PRE-38 (B.2, B.3, B.5), PRE-39 (A.4, B.6), PRE-40 (B.2, B.3), COV-14 (B.5, B.8 (e), C.17), ALCLOCK-1 / -2 / -3 (B.0, B.4, A.4), C3-13 (B.4, B.5), D3-1 (B.6), D3W-EVAL (B.3), GATE-1 (Conventions, C.8, C.15), placeholders of A-E relabelled ROUND 2b-ii; not yet applied: PRE-39, ALCLOCK-1, ALCLOCK-2, OD3P-1 and ABS-1 in F.1 / F.2, GATE-1 in G (item 7), C3-11 (G item 3), the extension of H (H12 still points to round 2a's item 2), Appendix II status of items 2 and 8, ALCLOCK-2 in Appendix III, the Appendix IV index, and the replacement of "Open for the PM (round 2a)" by "Rulings applied in round 2b-i" (that section still stands as round 2a wrote it); the placeholders of F.1, Appendix III and Appendix IV still read `[ROUND 2b: ...]`. [read (round 2b-ii part B1; PRE-2BI-REST, ledger :951): this "not yet applied" list is closed: ALCLOCK-2 in Appendix III, the Appendix IV index and the F.1 / Appendix III / Appendix IV tags were done in part A (no `[ROUND 2b: ...]` tag is left); every other item is applied in part B1, listed in the "ROUND 2b-ii part B1" paragraph below, each "(applied, 2b-ii part B1)"]
 
@@ -183,6 +185,65 @@ SEAL-REF (:996), REPIN-UW / REPIN-R2 (:999-1000), GP-TICKS (:1001), REPIN-REV (:
 (B2-13). No data file, NAV dir, `trials.jsonl` or `build-equity/` file opened; nothing dated 2024-01-01 or later; no
 build, no test, no real-data tool; the only git write is this file's pathspec commit (PAR-1).
 
+**ROUND 2b-ii part B3 (FLAGS-ROUTE restatement; Rulings FLAGS-ROUTE, FLAGS-ROUTE-2, FLAGS-SEQ (2), FLAGS-ORDER,
+PRE-40, PAR-1; ledger :1019, :1022, :1023, :1028).** A fresh PRE docs agent, 2026-10-16, in pool-2's sprint dir beside
+the root FLAGS agent (`r14-prompts/pre-flags-prompt.md`), after GATE-REV part 2 (`prereg-2bii-review.md` at
+`6c608ff3`: CHANGES_REQUIRED, Required RQ-1, Suggested SG-1 .. SG-3) and root's spec commit `f8d852f3`
+(`lib-v8ysb-gm.json` `nav.flags` += `--ann-mean-gross --info-clock-print`, nothing else; SHA-256 `3631679c...edea` ->
+`a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`; the identity HOLDS; root docs head `5ec208b4`).
+PRE-40 form: every stale sentence stands; the route is stated beside it with the ruling id and the commit SHA (bracket
+`[FLAGS-ROUTE, f8d852f3: ...]`); nothing is decided here:
+- GATE-REV SG-1: F.1's FIELDS-RISK sentence answered beside by OD3-FIELDS-RISK (ledger :1008) (applied, 2b-ii part B3;
+  its own commit `bc034c4a`). SG-2 is `p9-od3-runbook.md`'s ("F.1 governs" at the head of section 0; the dated
+  PW-LAPSE-PRINT / FLAGS-ROUTE note under section 4 item 3; commit `cb051169`); RUNBOOK-B6 (ledger :1026): no further
+  runbook edit.
+- B.0 "Gross figure opt-in (PRE-7a)": the route (the parent's `nav.flags` after `f8d852f3`; the v2 templates' `parent`,
+  no `nav.flags` override; `scripts/cycle/phases.py:824`), the references' exe-direct hand argv, the identity outcome
+  (HOLDS, `gate-logs/flags-identity-yf0.txt`) and the inheritance as root recorded it (applied, 2b-ii part B3).
+- B.0 "exes.": the parent's new SHA-256, the re-pin of record `2078f877` kept, no pin moved, EXE-FREEZE unaffected; the
+  bracket names no `3631679c`, so the statement sits beside its `lib-v8ysb-gm.json` mention (applied, 2b-ii part B3).
+- B.0 "Void" rule (2): FLAGS-ROUTE-2 (alike by inheritance for every v2 cell against `p9-b0g-yf0-nav` or an accepted
+  v2 parent; a hand cell's one-sided `--info-clock-print` against `p9-b0g-y1-nav` disclosed in the cell record, not a
+  void) and FLAGS-ORDER (argv token order is no input; the flag set is) (applied, 2b-ii part B3).
+- B.1 "Every flag": P9-L's route (its hand v1 template root names both flags in its own `nav.flags` or inherits them;
+  the cells root states which in the registration commit; alike with `p9-b0g-yf0-nav` either way) (applied, 2b-ii part
+  B3); B.1 "Parent / paired reference": the new SHA-256 beside `3631679c` (applied, 2b-ii part B3).
+- B.4 "The flag pair": the route exists since `f8d852f3`; before it the parent's `nav.flags` carried neither flag
+  (GATE-REV RQ-1) (applied, 2b-ii part B3).
+- B.7 and B.8 (the hand specs from P9-F0h's / P9-X's NAV argv with the stated change only): FLAGS-ROUTE-2 (b) once in
+  each (applied, 2b-ii part B3).
+- The parent's new SHA-256 beside every other `3631679c` citation: A.4 (the Y-F0 bullet), C.15 (no literal `3631679c`
+  there; beside its re-pin sentence, with `verify` and the fixture chain digest after `f8d852f3`), Appendix I (the B2b
+  paragraph under the table), Appendix IV item 8, and "Round 2b-ii record" (a line under "The re-pinned specs" table;
+  no row changed) (applied, 2b-ii part B3).
+- "Round 2b-ii record", last paragraph: the route named beside "which every cell carries alike" (applied, 2b-ii part
+  B3).
+- Line 3 (status): "RQ-1 closed by `f8d852f3` (FLAGS-ROUTE); pending the scoped re-check and PRE-2BII-RULED" (applied,
+  2b-ii part B3).
+SG-3 (line citations into `65ce28f0`-era files) is NOT re-cited now: they stay disclosed as such ("Round 2b-ii
+record", first paragraph), and the cells root refreshes them at the registration commit, as the review proposes. No
+pinned registration, expected hash, standing line, verdict or table row is changed; no other file is edited here.
+
+**Basis read (round 2b-ii part B3).** `r14-prompts/pre-flags-prompt.md`; `resume12-addendum.md`;
+`r13-prompts/pre-2bii-b-prompt.md`; `r12-post-gate.md` "PRE-2BII"; `prereg-2bii-review.md` whole; `gate-report-review.md`
+S-5; this file's header, A.4, B.0, B.1, B.4, B.7, B.8, C.15, F.1, Appendix I, Appendix IV and "Round 2b-ii record" at
+`a40db317`, and again at `5ec208b4` before this part's edits; `p9-od3-runbook.md` whole; in the ledger `progress.md`
+PRE-7a (:538), PRE-30 (:570), PERM-1 (:595), PRE-40 (:623), ALCLOCK-1 (:625), PAR-1 (:931), PRE30-MVX (:969),
+GATE-MYPY (:977), PRE34-WHO (:987), PW-LAPSE-PRINT (:994), SEAL-REF (:996), REPIN-REV (:1003), FINDING FIELDS-RISK
+(:1005), OD3-FIELDS-RISK (:1008) and every line from :1015 to :1029 (FLAGS-ROUTE, the RESUME 14 block, HOST-6a,
+FLAGS-ROUTE-2, FLAGS-SEQ, RUNBOOK-B6, FLAGS-ORDER and the hand-backs); the PM's PART 2 message (the spec commit, the new
+SHA-256, the identity outcome, root's docs head, the inheritance); `git show --stat f8d852f3` (one file) and
+`git show f8d852f3:scripts/specs/v8/lib-v8ysb-gm.json | sha256sum` = the working bytes' `sha256sum` = `a4ef6c04...c06a`
+(spec text only). Root's records (`root-gate-report.md`, `handoff-root-gate.md`, `gate-logs/flags-*.txt`) are cited by
+name from the PM's message and the ledger, not opened. Root heads seen: `6c608ff3`, `5648284f`, `f8d852f3`,
+`1a14a24a`, `510a768a`, `5ec208b4` (`git log --format=%h` only).
+
+**Blind (round 2b-ii part B3).** No 2020-2023 return, IC, Sharpe, turnover or NAV statistic is read or written: this
+file, the runbook and the ledger lines were read through a decimal-number mask, except the lines edited here (SHAs,
+flags, citations); no data file, NAV dir, `trials.jsonl`, `build-equity/` file or anything dated 2024-01-01 or later
+opened; no build, no test, no real-data tool; the only git writes are the pathspec commits of this file and the
+runbook (PAR-1, GATE-MYPY).
+
 **Basis read (round 2b-i).** `resume4-dispatch.md`, `resume6-addendum.md`, `resume7-addendum.md`, `resume8-addendum.md`;
 `r8-dispatch.md` "PRE-2b-i"; this file whole (round 2a: 1,117 lines, sha256
 `5943005ebc3bdd40783feb064c12e016a11952f8b376feff54020d9bccc9c7f7`); `p9-prereg-flags.md` "P9 rules" and "Open for the
@@ -337,7 +398,9 @@ earlier 69, not against 62. V decides more than N (v8y section 4).
   `root-gate-report.md:189`, `:834-907`, `:1113-1119`; ledger :986, :988, :1003]. Stated beside (the re-pin of record
   `2078f877`): `lib-v8ysb-gm.json` is now `3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea` (pins only:
   the Release NAV / IC exes, `exes.eval` and `exes_sha256` added, `nav.output` -> `p9-b0g-yf0-nav`); `1e3ec118...` above
-  is its pre-re-pin SHA-256 (PRE-40 form).
+  is its pre-re-pin SHA-256 (PRE-40 form). [re-stated, FLAGS-ROUTE `f8d852f3`:
+  `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` (`nav.flags` + `--ann-mean-gross
+  --info-clock-print`, nothing else); the re-pin of record stays `2078f877`; no pin moved; EXE-FREEZE unaffected]
 - **Y-F**: Y-1 (`scripts/specs/v8/y-vol-target-y-1.json`, `faffee17...`; ledger :167). Its re-based reference at the
   wave-3 P9-B0 reads the Release-built `atx-risk-v1.1` container store `build-equity/p9-m2i-dcov-v11` (manifest
   `397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7`; PRE-29, ledger :569, :582) and is not
@@ -501,7 +564,10 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   `build-equity-rel/bin/atx-equity-strategy-ic.exe` `ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705`,
   `exes.eval` `build-equity-rel/bin/atx-research-eval.exe`
   `e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c` (named and pinned, B2-11), in
-  `lib-v8ysb-gm.json`'s `exes` / `exes_sha256` (templates inherit them, `scripts/cycle/lock.py:24-28`); every other exe
+  `lib-v8ysb-gm.json`'s `exes` / `exes_sha256` (templates inherit them, `scripts/cycle/lock.py:24-28`) [re-stated,
+  FLAGS-ROUTE `f8d852f3`: `lib-v8ysb-gm.json` is now `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`
+  (was `3631679c...edea` at the re-pin; `nav.flags` only, its `exes` / `exes_sha256` unchanged); the re-pin of record
+  stays `2078f877`; no pin moved; EXE-FREEZE unaffected]; every other exe
   of the frozen set (composition, admission, store, risk, fields, ...) at step 1's table, all in "## Round 2b-ii
   record"; 27 / 27 Release and 27 / 27 Debug `disk = receipt` at the gate's end; EXE-FREEZE from `2078f877` (NAV, IC,
   eval, composition, admission, store; GATE-EXES); the follow-up `3a1a4759` (REPIN-UW / REPIN-R2) moved no exe pin, was
@@ -525,6 +591,18 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   (opt-in side only; stripped = the flag-absent bytes); so no gross-alpha line is cut (PRE-7, PRE-7a); at the gate the
   opt-in again adds only those leaves on the R-2, X-10 and Y-1 re-bases - `handoff-root-m2j.md:42-44`,
   `handoff-root-m2j-fin.md:44`; `root-gate-report.md:148`; `gate-logs/x10-cmp.txt`, `r2-classify.txt`].
+  [FLAGS-ROUTE, `f8d852f3`: the route: every P9 cell inherits `--ann-mean-gross` (and `--info-clock-print`) from the
+  lineage parent's `nav.flags` (`scripts/specs/v8/lib-v8ysb-gm.json`,
+  `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` after `f8d852f3`; the v2 templates set `parent` to
+  it at registration and carry no `nav.flags` override; the driver builds the NAV argv from the resolved spec's
+  `nav.flags`, `scripts/cycle/phases.py:824`); the P9-B0 references carry both by hand on their exe-direct argv; the
+  spec route reproduced `p9-b0g-yf0-nav` outside `/producer/*` (HOLDS: the driver-planned spec-route NAV of Y-F0
+  (`build-equity/p9-fr-yf0-nav`, Release NAV p9-3f, bounded run exit 0) vs the reference `p9-b0g-yf0-nav`: 27 / 27
+  files byte-identical (no `/producer/*` leaf differs: the same Release exe); the 75 opt-in leaves (5 `ann_mean_gross`,
+  70 `info_clock`) present and equal on both sides; `gate-logs/flags-identity-yf0.txt`); inheritance as root recorded
+  it: `x-leverage-L2.0.json` has no `nav.flags`, `y-vol-target-y-1.json`'s `change.flags.nav` only adds, the four
+  templates set outputs only, so every one inherits both flags once (`root-gate-report.md` "FLAGS-ROUTE (RQ-1 close)",
+  `handoff-root-gate.md` "FLAGS-ROUTE amendment", root docs head `5ec208b4`)]
 - **NavSpec (`atx.nav-spec/v1`, C3 part A; part A merges on its APPROVE, part B is round C3b, reviewed and merged
   before the wave-3 gate, C3-2, ledger :508).** A spec may restate a compiled constant only at its compiled value and may
   narrow `leverage_range` inside the registry's [1, 2] (C3-1, ledger :507); no P9 cell changes the cost law (C3-3);
@@ -579,7 +657,17 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   from its block (string, constant, template, hand-spec or registration SHA-256, parent not the last accepted, flag,
   fields dir, L other than PM6-6's correction or the registered 2.0, store pin, exe pin, eval or fit mode; the
   `--seal-allow` flag of SEAL-ALLOW-3 is not an input difference; `--ann-mean-gross` must be named alike on cell and
-  reference, and `--info-clock-print` alike on P9-C and its reference, ALCLOCK-1); (3) a return, IC, Sharpe or NAV statistic of the cell read before its mechanics passed; (4) a session at
+  reference, and `--info-clock-print` alike on P9-C and its reference, ALCLOCK-1) [FLAGS-ROUTE-2, `f8d852f3`: by
+  inheritance both flags are on every spec over the parent, so they are alike for every v2 cell against
+  `p9-b0g-yf0-nav` or an accepted v2 parent (and `--ann-mean-gross` on every cell / reference pair: every P9-B0 NAV
+  reference carries it); a hand cell written from P9-F0h's argv (P9-X, P9-V if they run) against `p9-b0g-y1-nav` or
+  P9-X may carry `--info-clock-print` one-sidedly: print-only, byte-neutral but for `/scenarios/*/info_clock`
+  (ALCLOCK-1), disclosed in the cell record, NOT a void. FLAGS-ORDER (ledger, RESUME 14 block): argv token ORDER is
+  not an input under this rule (2) (the flag SET is): the driver's planned argv places `nav.flags` (ending
+  `--ann-mean-gross --info-clock-print`) before the `--label-role` pair (`scripts/cycle/phases.py:832`) while the
+  exe-direct references carried the two flags after it; the two argvs resolve to the same NavSpec
+  (`gate-logs/flags-printspec.txt`) and the identity is byte-exact (`gate-logs/flags-identity-yf0.txt`)]; (3) a
+  return, IC, Sharpe or NAV statistic of the cell read before its mechanics passed; (4) a session at
   or after 2024-01-01 opened; (5) an exe rebuilt after the re-pin without P9-B0 redone (EXE-FREEZE); (6) `ucrtbase.dll`
   version or SHA-256 differs from the P9-B0 record (M2c-RED-2 (d); a change before a cell redoes P9-B0 and the re-pin
   but does not void the two D-COV stores, CRT-2); (7) a SQLite cache index flag on any argv (SQL-11, ledger :212). Not
@@ -608,10 +696,16 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   Never on any P9-L argv: a rule flag, a `--risk-model`, a cache index flag (SQL-11), any other changed input.
   Re-stated (round 2b-ii part B2b; SEAL-REF, ledger :996): `--seal-allow` is "carried on every driver-run argv; absent
   from an exe-direct reference run by construction" (the P9-B0 references were exe-direct bounded runs; B.0 "Seal
-  allowance"); it is not an input difference (B.0 "Void").
+  allowance"); it is not an input difference (B.0 "Void"). [FLAGS-ROUTE, `f8d852f3`: the route of `--ann-mean-gross`
+  (and `--info-clock-print`) on P9-L: its hand v1 template root is written from this block over the parent; if it names
+  `nav.flags` itself it names both flags (B.1 "this block names every flag"), else it inherits them from the parent's
+  `nav.flags` (B.0 "Gross figure opt-in"); the cells root states which in the registration commit; either way alike
+  with `p9-b0g-yf0-nav`]
 - **Parent / paired reference.** Y-F0 as re-based at the wave-3 P9-B0 (PRE-22). [ROUND 2b-ii: = item 2 (A.4): the
   lineage parent spec is the re-pinned `scripts/specs/v8/lib-v8ysb-gm.json`
-  `3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea` (the re-pin of record `2078f877`; root sets the
+  `3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea` [re-stated, FLAGS-ROUTE `f8d852f3`:
+  `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`; the re-pin of record stays `2078f877`; no pin
+  moved; EXE-FREEZE unaffected] (the re-pin of record `2078f877`; root sets the
   template's `parent` to it at the cell's registration commit and `lock --exes --write`s the cell); the paired parent
   NAV `build-equity/p9-b0g-yf0-nav` (listing `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`,
   `summary.json` `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`, made by the pinned Release NAV
@@ -840,8 +934,9 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
     registration (cadence 1, .05, `--capacity-curve`, `--warm-start-sessions 60`, `--locate-in-aim`, delta orders) -
     `task-AL-CLOCK-report.md:290-295`; registration `:45`, `:47-48`, `:88-89`].
   - **The flag pair, cell and reference (ALCLOCK-1, PRE-7a).** [ROUND 2b-ii: `--info-clock-print` on BOTH: root names
-    it on the Y-F0 reference at the wave-3 P9-B0 and the cell inherits it from its parent's NAV flags (it is no rule's
-    flag, so the E2-8 guard passes it); `--ann-mean-gross` on both; the rule flag `--rate info-clock-rate-v1` on the
+    it on the Y-F0 reference at the wave-3 P9-B0 and the cell inherits it from its parent's NAV flags [the route exists
+    since `f8d852f3` (FLAGS-ROUTE); before it the parent's `nav.flags` carried neither flag (GATE-REV RQ-1)] (it is no
+    rule's flag, so the E2-8 guard passes it); `--ann-mean-gross` on both; the rule flag `--rate info-clock-rate-v1` on the
     cell only - `task-AL-CLOCK-report.md:296-298`; registration `:53`]. That the P9-B0 reference names it: part B
     (the gate's P9-B0 argv). [ROUND 2b-ii: ALCLOCK-1 HELD at the gate's step 3: `--info-clock-print` on Y-F0's argv
     (Release NAV p9-3f, provisional, re-pin pending) gives the same 27 files and changes only `summary.json`, by 70
@@ -1191,7 +1286,12 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   item 19] (root writes and commits the P9-X hand spec and records its SHA-256). **Not a v2 `leverage` wave (PRE-32,
   ledger :597).** PRE-1 and PRE-11 supersede E2-13 (b)'s clause "a leverage change is P9-X, kind `leverage`": P9-X is
   the Y-1 form, run by hand as a v1 cycle; no P9 cell is a v2 kind `leverage` wave; that kind stays proven by its
-  fixtures and the E2-10 probes.
+  fixtures and the E2-10 probes. [FLAGS-ROUTE, `f8d852f3` (FLAGS-ROUTE-2 (b)): this hand spec is written from P9-F0h's
+  NAV argv with the stated change only, and that argv carries both opt-ins from the parent's `nav.flags`, so the cell
+  side carries `--ann-mean-gross` (alike with `p9-b0g-y1-nav` and with P9-F0h) and `--info-clock-print` (one-sided
+  against `p9-b0g-y1-nav`, whose exe-direct argv does not name it; alike against P9-F0h, the book it is written from,
+  and P9-V's side alike against P9-X, B.8): print-only, byte-neutral but for `/scenarios/*/info_clock` (ALCLOCK-1);
+  disclosed in the cell record, not a void]
 - **Store (PRE-29).** `build-equity/p9-m2i-dcov-v11`: the Release-built `atx-risk-v1.1` container store D-COV wrote (the
   same exe, role, fields and argv as B.5's store but `--recipe atx-risk-v1.1`): `manifest.json` `397366473b3a3b09...`
   (above), container root `b39a1b776639e7d0b88c70e8a43bb9f6c5e6dacb92a336a327234dfc5d312e1d`, `model.atxcov`
@@ -1261,7 +1361,11 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
 - **Shape (PRE-11).** By hand, as B.7: the NAV argv of P9-X with `--risk-model build-equity/p9-m2i-dcov-covv1
   --risk-model-sha256 ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3`. [ROUND 2b-ii: filled at the
   cell's registration commit by root - Appendix IV item 21] (root writes and commits the P9-V hand spec and records its
-  SHA-256).
+  SHA-256). [FLAGS-ROUTE, `f8d852f3` (FLAGS-ROUTE-2 (b)): this hand spec is P9-X's NAV argv (written from P9-F0h's)
+  with the stated change only, so the cell side carries `--ann-mean-gross` (alike with `p9-b0g-y1-nav` / P9-X) and
+  `--info-clock-print` (one-sided against `p9-b0g-y1-nav`, the reference under PRE-30 / PRE30-MVX, whose exe-direct
+  argv does not name it; alike against P9-X): print-only, byte-neutral but for `/scenarios/*/info_clock` (ALCLOCK-1);
+  disclosed in the cell record, not a void]
 - **Acceptance (decides).** Paired dSR > 0 vs P9-X AND mechanics at P9-X's scaled limits; a rejected P9-X still serves
   as the reference (plan section 5.2 :915-917). By hand (PRE-11). **Degenerate pair (PRE-33, ledger :598; one rule per
   cell, fixed before the pair's rho is measured).** P9-V is a dSR-decided cell: if 1 - rho < 1e-6 vs P9-X, PRE-12
@@ -1578,7 +1682,13 @@ file.
     to `p9-b0g-yf0-u` / `-w`, the references of record for provenance) and R-2 (`lib-v80.json`) is not re-pinned (read
     by path, `p9-b0-r2-nav`); the follow-up that pinned both (`3a1a4759`) failed `verify` and is reverted (`f8a85ad4`);
     `verify` on the pinned lineage holds (X-10, Y-1; the parent NAVs made by the pinned Release NAV exe: W1-I2 (a)) -
-    `gate-logs/repin-verify.txt`, `repin-verify-3.txt`; `handoff-root-gate.md:50-69`.
+    `gate-logs/repin-verify.txt`, `repin-verify-3.txt`; `handoff-root-gate.md:50-69`. [re-stated, FLAGS-ROUTE
+    `f8d852f3`: after the re-pin the parent spec `lib-v8ysb-gm.json` gained the two print-only opt-ins at the end of
+    its `nav.flags` and nothing else (a spec edit after the re-pin, disclosed): now
+    `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` (was `3631679c...edea`); the re-pin of record
+    stays `2078f877`; no pin moved; EXE-FREEZE unaffected; `verify` on the pinned lineage holds (X-10, Y-1; the
+    FIELDS-RISK standalone REFUSED line unchanged) and the fixture chain digest is unchanged -
+    `gate-logs/flags-verify.txt`, `fixture-chain-7.txt`]
 16. **G-P11 / COV-6**: role `train-2020-2023-lo3` has `universe.delisting.returns_applied: false` (ledger :292); root
     re-checks it before every run that reads `--risk-model` (COV-9, :354; ledger :401); it held before each M2i COV run
     (0 of 990 events true).
@@ -2080,7 +2190,9 @@ round-2a item ("Open item N" = "Open for the PM (round 2a)" item N), or a round-
 
 Round 2b-ii part B2b (the re-pin of record `2078f877`, pins only; PRE-40 form: the rows above stand as round 2a
 recorded them): `scripts/specs/v8/lib-v8ysb-gm.json` is now
-`3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea`,
+`3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea` [re-stated, FLAGS-ROUTE `f8d852f3`:
+`a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`; the re-pin of record stays `2078f877`; no pin
+moved; EXE-FREEZE unaffected; X-10 and Y-1 bytes unchanged, they inherit the two flags],
 `scripts/specs/v8/x-leverage-L2.0.json` `46e9d6c2fdbf42e362518118938bc89af038e3c09d7519d660aaa936554fd0bf` and
 `scripts/specs/v8/y-vol-target-y-1.json` `f4186573a41de3b67cdd815976639ed2123e5c6f43353516c61150d92dbb50d6` (each the
 bytes at `2078f877` = at the code head `f8a85ad4`); `lib-v80.json` (R-2) stays `306a070b...3a21`, untouched
@@ -2186,7 +2298,9 @@ the gate's final hand-back:
    B2b: research-fast)
 7. B.1 P9-L template `label-terminal.json` and SHA-256 - root writes it from B.1 (PRE-2). (part A: registration commit)
 8. B.1 P9-L parent / paired reference dirs and SHA-256 - root, wave-3 P9-B0 (= item 2). (part B2b: = item 2) (filled,
-   part B2b: = item 2; the re-pinned parent spec `3631679c`)
+   part B2b: = item 2; the re-pinned parent spec `3631679c`) [re-stated, FLAGS-ROUTE `f8d852f3`:
+   `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`; the re-pin of record stays `2078f877`; no pin
+   moved; EXE-FREEZE unaffected]
 9. B.1 P9-L fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3's C++ sleeve). (filled, part B2a: flag-absent)
 10. B.2 P9-H re-pinned template SHA-256 - root's registration commit. (part A: registration commit)
 11. B.2 P9-H "ex-ante" cut from the template description - root, same commit (ALCOMB-9 (b)). (part A: registration
@@ -2357,6 +2471,11 @@ end; EXE-FREEZE from `2078f877` over NAV, IC, eval, composition, admission and s
 | `x-leverage-L2.0.json` (X-10) | `ebe68e6e...4975` -> `46e9d6c2fdbf42e362518118938bc89af038e3c09d7519d660aaa936554fd0bf` | `nav.output` -> `p9-b0g-x10-nav`; `locked.reference_cell` -> `p9-b0g-yf0-nav/summary.json` `826d5ec6...8f38` |
 | `y-vol-target-y-1.json` (Y-1, P9-X's reference spec) | `faffee17...5f77` -> `f4186573a41de3b67cdd815976639ed2123e5c6f43353516c61150d92dbb50d6` | `nav.output` -> `p9-b0g-y1-nav`; `--risk-model` -> `p9-m2i-dcov-v11` `397366473b3a...23c7` (PRE-29); `locked.reference_cell` -> `p9-b0g-x10-nav/summary.json` `deabe71b...0bd` |
 
+[re-stated, FLAGS-ROUTE `f8d852f3`, beside the table's `lib-v8ysb-gm.json` row (the row stands as recorded):
+`a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` (`nav.flags` + `--ann-mean-gross
+--info-clock-print`, nothing else); the re-pin of record stays `2078f877`; no pin moved; EXE-FREEZE unaffected; the
+X-10 and Y-1 rows unchanged (both inherit the two flags once)]
+
 Not edited: `lib-v80.json` (R-2, `306a070b...3a21`; read by path; its v10 fields pin and v8 NAV output are stale,
 stated in the substitution list, PRE-40 form), `mv-aim-v1.json` (`4b4af6e2`, COVMV-PIN); read:
 `info-clock-rate-v1.json` `7801c198...a152` (W1-I2).
@@ -2440,4 +2559,11 @@ path A on the classification (A.4). The Y-F0 u compare tool's first pass put M1d
 kept (`yf0u-cmp-pass1.txt`) and the tool corrected (`tools/CHANGES.txt` (3)). The follow-up re-pin `3a1a4759` and its
 two `verify` refusals are recorded, then reverted (REPIN-REV). The reference NAVs are exe-direct bounded runs with no
 C-13 binding to their specs; their argv carries the substitution list's opt-in flags, which every cell carries alike
-(`--ann-mean-gross`; P9-C `--info-clock-print`) - `handoff-root-gate.md:140-142`.
+(`--ann-mean-gross`; P9-C `--info-clock-print`) - `handoff-root-gate.md:140-142`. [FLAGS-ROUTE, `f8d852f3`: the
+route: every P9 cell inherits `--ann-mean-gross` and `--info-clock-print` from the lineage parent's `nav.flags`
+(`lib-v8ysb-gm.json`, `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` after `f8d852f3`; the driver
+builds the NAV argv from the resolved spec's `nav.flags`, `scripts/cycle/phases.py:824`); the references carry both by
+hand; the spec route reproduced `p9-b0g-yf0-nav` (HOLDS: 27 / 27 files byte-identical,
+`gate-logs/flags-identity-yf0.txt`; B.0 "Gross figure opt-in"); the hand cells P9-X / P9-V carry `--info-clock-print`
+one-sided against `p9-b0g-y1-nav`, disclosed, not a void (FLAGS-ROUTE-2 (b); B.0 "Void", B.7, B.8); token order is no
+input (FLAGS-ORDER)]
