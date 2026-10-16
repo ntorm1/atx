@@ -122,6 +122,8 @@ struct AmericanMarkovQuoteSeeds {
 // state_grid and model_config are never changed or used to relax fitter gates.
 // All returned data is owned. Invalid global config/schedule returns an error;
 // unsupported dated cash and unusable quotes produce explicit diagnostics.
+// VarianceTimeKnots is explicitly unsupported and returns before inversion;
+// Shared/PerVarianceInterval seeds are never silently projected to knot controls.
 //
 // Inversion convention: Andersen-Lake at T=variance_end, r=integral(r dt)/T,
 // q=integral(q dt)/T. Aggregate-PV schedules already converted to continuous
