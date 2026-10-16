@@ -91,7 +91,7 @@ const char *termination_name(AmericanMarkovFitTermination value) {
   return "unknown";
 }
 
-Json fit_json(const AmericanMarkovFit &fit) {
+Json fit_json(const AmericanMarkovFit &fit, std::span<const AmericanMarkovFitQuote> quotes) {
   const auto &d = fit.diagnostics();
   Json result{{"termination", termination_name(d.termination)},
       {"parameter_count", d.parameter_count}, {"time_groups", d.time_groups},
@@ -111,12 +111,63 @@ Json fit_json(const AmericanMarkovFit &fit) {
                                                    fit.interval_groups().end())}};
   const auto &m = fit.model().diagnostics();
   result["model"] = {{"diffusion_steps", m.diffusion_steps}, {"cash_steps", m.cash_steps},
+      {"diffusion_method", fit.model().diffusion_method() == AmericanMarkovDiffusionMethod::ExplicitEuler
+          ? "explicit-euler" : "variance-resolvent"},
+      {"transition_work", m.transition_work}, {"resolvent_steps", m.resolvent_steps},
+      {"physical_resolvent_factors", m.physical_resolvent_factors},
+      {"resolvent_factor_blocks", m.resolvent_factor_blocks},
+      {"physical_state_values", m.physical_state_values}, {"state_grid_blocks", m.state_grid_blocks},
+      {"physical_transition_rows", m.physical_transition_rows},
+      {"transition_row_blocks", m.transition_row_blocks},
+      {"max_forward_mass_error", m.max_forward_mass_error},
       {"stored_rows", m.stored_rows}, {"max_states", m.max_states},
       {"stored_volatility_values", m.stored_volatility_values},
       {"max_probability_sum_error", m.max_probability_sum_error},
       {"max_relative_mean_error", m.max_relative_mean_error},
       {"terminal_zero_probability", m.terminal_zero_probability},
       {"terminal_upper_probability", m.terminal_upper_probability}};
+  // Report the actual compiled clocks and quote-prefix work of the retained
+  // best model. This is one objective evaluation's rollback work, not the sum
+  // across all optimizer trials or compile-time factor construction.
+  const auto &model = fit.model();
+  const auto expiries = model.expiry_layers();
+  std::vector<std::size_t> quote_counts(expiries.size(), 0);
+  for (const auto &quote : quotes) ++quote_counts[quote.expiry_index];
+  Json intervals = Json::array();
+  std::size_t first = 0, prefix_work = 0, quote_work = 0;
+  for (std::size_t i = 0; i < expiries.size(); ++i) {
+    std::size_t diffusion_steps = 0, cash_steps = 0, interval_work = 0;
+    double min_calendar = std::numeric_limits<double>::infinity(), max_calendar = 0.0;
+    double min_variance = std::numeric_limits<double>::infinity(), max_variance = 0.0;
+    for (std::size_t j = first; j < expiries[i]; ++j) {
+      const auto &transition = model.transitions()[j];
+      interval_work += transition.rollback_work();
+      if (transition.kind == AmericanMarkovStepKind::CashDividend) {
+        ++cash_steps;
+      } else {
+        ++diffusion_steps;
+        min_calendar = std::min(min_calendar, transition.calendar_step);
+        max_calendar = std::max(max_calendar, transition.calendar_step);
+        min_variance = std::min(min_variance, transition.variance_step);
+        max_variance = std::max(max_variance, transition.variance_step);
+      }
+    }
+    prefix_work += interval_work;
+    // Successful fits already admitted this sum under the bounded work cap.
+    quote_work += quote_counts[i] * prefix_work;
+    const auto &endpoint = model.layers()[expiries[i]];
+    intervals.push_back({{"interval_index", i}, {"calendar_end", endpoint.calendar_time},
+        {"variance_end", endpoint.variance_time}, {"diffusion_steps", diffusion_steps},
+        {"cash_steps", cash_steps}, {"transition_work", interval_work},
+        {"prefix_transition_work", prefix_work}, {"quote_count", quote_counts[i]},
+        {"min_calendar_step", diffusion_steps ? Json(min_calendar) : Json(nullptr)},
+        {"max_calendar_step", max_calendar},
+        {"min_variance_step", diffusion_steps ? Json(min_variance) : Json(nullptr)},
+        {"max_variance_step", max_variance}});
+    first = expiries[i];
+  }
+  result["model"]["resolved_intervals"] = std::move(intervals);
+  result["model"]["quote_prefix_rollback_work"] = quote_work;
   return result;
 }
 
@@ -301,7 +352,7 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
     refuse("fit_failure", "fit");
     return;
   }
-  decision["fit"] = fit_json(*fit);
+  decision["fit"] = fit_json(*fit, market.quotes());
   decision["status"] = "ok";
   for (std::size_t i = 0; i < indices.size(); ++i) {
     const auto &quote = market.quotes()[i];

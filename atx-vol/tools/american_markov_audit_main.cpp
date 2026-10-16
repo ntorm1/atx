@@ -277,8 +277,15 @@ Result<AmericanMarkovStateGrid> resolve_sinh_grid(double spot,
                         "audit grid: spacing match exceeds unchanged state budget");
 }
 
-Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
+const char *method_name(AmericanMarkovDiffusionMethod method) {
+  return method == AmericanMarkovDiffusionMethod::ExplicitEuler
+             ? "explicit-euler" : "variance-resolvent";
+}
+
+Json run(const Fixture &fixture, const Grid &grid, bool pricing_only,
+         AmericanMarkovDiffusionMethod method) {
   Json result = describe(fixture, grid);
+  result["diffusion_method"] = method_name(method);
   auto states = log_grid(fixture.spot, grid);
   double concentration_scale = grid.concentration_scale;
   if (grid.first_variance_scale) {
@@ -319,6 +326,7 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
     result["resolved_nodes"] = states.size();
   }
   AmericanMarkovConfig config;
+  config.diffusion_method = method;
   config.grid_nodes = grid.nodes;
   config.upper_spot_multiple = grid.upper_multiple;
   config.max_calendar_step = grid.max_step / grid.time_refinement;
@@ -327,12 +335,15 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
   // Keep the public defaults, including their resource limits, for every grid.
   result["model_limits"] = {{"max_states", config.max_states},
                               {"max_transitions", config.max_transitions},
-                              {"max_stored_rows", config.max_stored_rows}};
+                              {"max_stored_rows", config.max_stored_rows},
+                              {"max_transition_work", config.max_transition_work}};
   result["resolved_model_controls"] = {
+      {"diffusion_method", method_name(method)},
       {"max_calendar_step", config.max_calendar_step},
       {"max_variance_step", config.max_variance_step}, {"cfl_fraction", config.cfl_fraction},
       {"max_states", config.max_states}, {"max_transitions", config.max_transitions},
       {"max_stored_rows", config.max_stored_rows},
+      {"max_transition_work", config.max_transition_work},
       {"max_stored_volatility_values", config.max_stored_volatility_values}};
   auto start = Clock::now();
   auto model = compile_american_markov({fixture.spot, fixture.intervals, states, config});
@@ -345,7 +356,8 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
   result["model_status"] = "ok";
   std::vector<std::size_t> interval_diffusion_steps(fixture.intervals.size(), 0u);
   for (const auto &transition : model->transitions()) {
-    if (transition.kind == AmericanMarkovStepKind::Diffusion) {
+    if (transition.kind == AmericanMarkovStepKind::Diffusion ||
+        transition.kind == AmericanMarkovStepKind::VarianceResolvent) {
       ++interval_diffusion_steps[transition.interval_index];
     }
   }
@@ -374,14 +386,20 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
   result["resolved_state_grid"] = std::vector<double>(initial_states.begin(), initial_states.end());
   result["resolved_nodes"] = initial_states.size();
   const auto &d = model->diagnostics();
-  result["model"] = {{"states", d.max_states}, {"diffusion_steps", d.diffusion_steps},
+  result["model"] = {{"diffusion_method", method_name(method)},
+                       {"states", d.max_states}, {"diffusion_steps", d.diffusion_steps},
                        {"cash_steps", d.cash_steps}, {"stored_rows", d.stored_rows},
+                       {"transition_work", d.transition_work},
+                       {"resolvent_steps", d.resolvent_steps},
+                       {"physical_resolvent_factors", d.physical_resolvent_factors},
+                       {"resolvent_factor_blocks", d.resolvent_factor_blocks},
                        {"physical_state_values", d.physical_state_values},
                        {"state_grid_blocks", d.state_grid_blocks},
                        {"physical_transition_rows", d.physical_transition_rows},
                        {"transition_row_blocks", d.transition_row_blocks},
                        {"max_probability_error", d.max_probability_sum_error},
                        {"max_mean_error", d.max_relative_mean_error},
+                       {"max_forward_mass_error", d.max_forward_mass_error},
                        {"terminal_zero_probability", d.terminal_zero_probability},
                        {"terminal_upper_probability", d.terminal_upper_probability}};
   const auto strikes = strike_samples(fixture.spot);
@@ -511,6 +529,8 @@ int main(int argc, char **argv) {
     bool pricing_only = false;
     std::string fixture_filter;
     std::string grid_filter;
+    auto method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+    bool method_set = false;
     for (int i = 1; i < argc; ++i) {
       const std::string_view arg(argv[i]);
       if (arg == "--full" && !full) full = true;
@@ -519,13 +539,24 @@ int main(int argc, char **argv) {
         fixture_filter = argv[++i];
       } else if (arg == "--grid" && i + 1 < argc && grid_filter.empty()) {
         grid_filter = argv[++i];
+      } else if (arg == "--diffusion-method" && i + 1 < argc && !method_set) {
+        const std::string_view value(argv[++i]);
+        if (value == "variance-resolvent") method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+        else if (value != "explicit-euler") {
+          throw std::invalid_argument("diffusion method must be explicit-euler or variance-resolvent");
+        }
+        method_set = true;
       } else {
         throw std::invalid_argument(
-            "usage: american-markov-audit [--full] [--pricing-only] [--case NAME] [--grid NAME]");
+            "usage: american-markov-audit [--full] [--pricing-only] [--case NAME] [--grid NAME] "
+            "[--diffusion-method explicit-euler|variance-resolvent]");
       }
     }
     Json report{{"schema_version", 2},
                  {"pricing_only", pricing_only},
+                 {"diffusion_method", method_name(method)},
+                 {"diffusion_scope", "explicit Euler uses CFL subdivision; variance resolvent "
+                    "randomizes latent variance within deterministic clock steps and ignores CFL subdivision"},
                  {"requested_sides", {"call", "put"}},
                  {"requested_exercises", {"american", "european"}},
                  {"strike_sampling", "33 regular strikes plus spot and spot*(1+/-1e-6)"},
@@ -543,7 +574,7 @@ int main(int argc, char **argv) {
       if (!fixture_filter.empty() && fixture.name != fixture_filter) continue;
       for (const auto &grid : all_grids) {
         if (!grid_filter.empty() && grid.name != grid_filter) continue;
-        report["cases"].push_back(run(fixture, grid, pricing_only));
+        report["cases"].push_back(run(fixture, grid, pricing_only, method));
       }
     }
     if (report["cases"].empty()) throw std::invalid_argument("no fixture/grid matched");

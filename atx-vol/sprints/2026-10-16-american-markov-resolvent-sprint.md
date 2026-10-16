@@ -147,3 +147,35 @@ transition: consumers must dispatch on kind or use the checked raw action.
 The parent owns policy validation negative cases, because that policy layer is
 not part of this lane's frozen base. Exact-SHA independent review precedes
 integration.
+
+## Parent integration
+
+Independent review approved final author commit
+`1a2407321a2e929801e4b36f3a280c216c014f36`, integrated as `b2909ede`.
+The parent registered the eleven resolvent tests permanently and added closed
+native policy selection for `diffusion_method` and `max_transition_work`.
+Policy construction rejects invalid methods and capacities too small for a
+single two-pass action. Default explicit selection preserves prediction bytes
+in the synthetic native panel. All former row, fitting and state caps remain.
+
+Native fit receipts now expose logical work, immutable physical factors,
+forward mass residual, per-interval realized clock steps and quote-prefix
+rollback work for the retained best model. That last count covers one objective
+evaluation, not total optimization work or factor construction. Audit method
+selection reports the same provenance and counts resolvent steps correctly.
+The standalone probe adds an optional fixed concentration scale, retains each
+model refusal alongside successful fixtures, and rejects duplicate controls.
+
+Parent Release gates pass 60 pricing, 16 fitting, 14 seed and 13 policy cases;
+101 native/audit CLI cases pass, with no skips. Seven owning integration objects
+compile with PCH disabled. Ruff and diff checks pass. The native XML receipt
+`C:/atx-cache/quote-benchmark/resolvent-seam-20261016-native-v2.xml` has SHA256
+`f48e712d963ce1c9c31281e20e9f5950c063276e231b10f38cf5e11d5aa45e14`.
+Probe validation preserves seven prior operator and scalar-price fingerprints,
+checks eight invalid/duplicate scale arguments, serves seven fixed-scale models
+with zero prepared C++ allocations, and retains six explicit work refusals next
+to one successful deterministic model. Its receipt
+`resolvent-seam-20261016-probe-check-v1.json` in the same cache has SHA256
+`ea8f34e96633f9688427f0cd9dc2cd9f4e7136afdc3106f6fd588e9f1fddaeea`.
+Independent review of this parent integration seam is pending. No development
+resolvent campaign, default promotion or qualified speed claim has occurred.

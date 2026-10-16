@@ -62,7 +62,7 @@ mutation, invalid plans, raw-versus-manifest split disagreement and interruption
 Ruff passes. Receipt:
 `C:/atx-cache/quote-benchmark/common-campaign-20261016-parent-tests-v4.xml`.
 The native CTest registration rejects skipped cases when the benchmark binary is
-available. Independent review is pending; no development campaign has been run
+available. Initial review findings and corrected approval are below; no development campaign has been run
 through this new driver yet.
 
 ## Independent review corrections
@@ -76,4 +76,7 @@ baseline CSV now produces both failed comparison outcomes while retaining both
 successful native run receipts and own-population score files. The next trial
 still runs. Keyboard interruption continues to propagate without false completion.
 All 22 checks and Ruff pass; receipt `common-campaign-20261016-parent-tests-v6.xml`
-in the existing benchmark cache. Exact corrected-SHA re-review is pending.
+in the existing benchmark cache. Independent review approved corrected commit
+`5a2ac006a8606830c31b226ff4677c9c90cdf710`: all 22 checks passed again, including
+real native execution. Independent receipt `campaign-5a2ac006-independent-review.xml`
+has SHA256 `fc5305cd3c02d835920595ac5bef610c51ecac924ec9882da0b4ef8f0fac97fb`.

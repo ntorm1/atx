@@ -226,6 +226,13 @@ TEST(AmericanMarkovPolicy, RejectsInvalidNumericAndIndependentResourceConfigurat
   reject([](auto &p) { p.model_config.cfl_fraction = 1.01; });
   reject([](auto &p) { p.model_config.max_states = kAmericanMarkovMaxStates + 1; });
   reject([](auto &p) { p.model_config.max_stored_rows = 1; });
+  reject([](auto &p) { p.model_config.max_transition_work = 0; });
+  reject([](auto &p) {
+    p.model_config.max_transition_work = kAmericanMarkovMaxTransitionWork + 1;
+  });
+  reject([](auto &p) {
+    p.model_config.diffusion_method = static_cast<AmericanMarkovDiffusionMethod>(99);
+  });
   reject([](auto &p) { p.model_config.max_stored_volatility_values = 1; });
   reject([](auto &p) { p.grid_config.grid_nodes = 2049; });
   reject([](auto &p) { p.grid_config.concentration_scale = 0.0; });
@@ -243,6 +250,31 @@ TEST(AmericanMarkovPolicy, RejectsInvalidNumericAndIndependentResourceConfigurat
   reject([&](auto &p) { p.fit_config.log_state_knots = duplicate_knots; });
   const std::array outside_sigmas{200.0};
   reject([&](auto &p) { p.fit_config.initial_sigmas = outside_sigmas; });
+}
+
+TEST(AmericanMarkovPolicy, ResolventWorkBoundsAreValidatedAndSurviveCatalogOwnership) {
+  auto profiles = default_american_markov_policy_profiles();
+  auto &profile = profiles[2];
+  profile.model_config.diffusion_method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+  const auto minimum_work = 2 * profile.grid_config.grid_nodes;
+  profile.model_config.max_transition_work = minimum_work - 1;
+  EXPECT_FALSE(AmericanMarkovPolicyCatalog::create(profiles));
+  profile.model_config.max_transition_work = minimum_work;
+  profile.fit_config.max_rollback_work = minimum_work - 1;
+  EXPECT_FALSE(AmericanMarkovPolicyCatalog::create(profiles));
+  profile.fit_config.max_rollback_work = minimum_work;
+  auto catalog = AmericanMarkovPolicyCatalog::create(profiles);
+  ASSERT_TRUE(catalog) << catalog.error().to_string();
+  profile.model_config.diffusion_method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+  profile.model_config.max_transition_work = 1;
+  const auto input = quotes(2);
+  const std::array snapshots{QuoteFitExpirySnapshot{market(), input}};
+  const auto owned = catalog->resolve("A", snapshots, schedule);
+  ASSERT_TRUE(owned) << owned.error().to_string();
+  EXPECT_EQ(owned->profile->model_config.diffusion_method,
+            AmericanMarkovDiffusionMethod::VarianceResolvent);
+  EXPECT_EQ(owned->profile->model_config.max_transition_work, minimum_work);
+  EXPECT_EQ(owned->profile->fit_config.max_rollback_work, minimum_work);
 }
 
 TEST(AmericanMarkovPolicy, ExtractedClassifierValidatesFeaturesAndPreservesThresholdRules) {

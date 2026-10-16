@@ -21,6 +21,9 @@ using quote_bench_policy::text;
 
 Json model_json(const AmericanMarkovConfig &c) {
   return {{"grid_nodes", c.grid_nodes}, {"upper_spot_multiple", c.upper_spot_multiple},
+          {"diffusion_method", c.diffusion_method == AmericanMarkovDiffusionMethod::ExplicitEuler
+              ? "explicit-euler" : "variance-resolvent"},
+          {"max_transition_work", c.max_transition_work},
           {"max_calendar_step", c.max_calendar_step}, {"max_variance_step", c.max_variance_step},
           {"cfl_fraction", c.cfl_fraction}, {"max_states", c.max_states},
           {"max_transitions", c.max_transitions}, {"max_stored_rows", c.max_stored_rows},
@@ -55,7 +58,14 @@ Json fit_json(const AmericanMarkovFitConfig &c) {
 void parse_model(const Json &j, AmericanMarkovConfig &c) {
   keys(j, {"grid_nodes", "upper_spot_multiple", "max_calendar_step", "max_variance_step",
            "cfl_fraction", "max_states", "max_transitions", "max_stored_rows",
-           "max_stored_volatility_values"});
+           "max_stored_volatility_values", "diffusion_method", "max_transition_work"});
+  if (j.contains("diffusion_method")) {
+    const auto method = text(j.at("diffusion_method"));
+    if (method == "explicit-euler") c.diffusion_method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+    else if (method == "variance-resolvent") {
+      c.diffusion_method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+    } else throw std::runtime_error("Common model diffusion_method is invalid");
+  }
 #define FIELD(name, lower, upper) numeric(j, #name, c.name, lower, upper)
   FIELD(grid_nodes, 3, kAmericanMarkovMaxStates);
   FIELD(upper_spot_multiple, 1, 1.0e6);
@@ -65,6 +75,7 @@ void parse_model(const Json &j, AmericanMarkovConfig &c) {
   FIELD(max_states, 3, kAmericanMarkovMaxStates);
   FIELD(max_transitions, 1, kAmericanMarkovMaxTransitions);
   FIELD(max_stored_rows, 1, kAmericanMarkovMaxStoredRows);
+  FIELD(max_transition_work, 1, kAmericanMarkovMaxTransitionWork);
   FIELD(max_stored_volatility_values, 1, kAmericanMarkovMaxStoredVolatilityValues);
 #undef FIELD
 }

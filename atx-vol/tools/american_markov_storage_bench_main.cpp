@@ -214,33 +214,16 @@ double elapsed_us(Clock::time_point start) {
 
 Json run(const Fixture &fixture, std::size_t repetitions,
          AmericanMarkovDiffusionMethod method, std::size_t steps,
-         std::size_t nodes, std::size_t upper) {
-  auto grid = make_american_markov_sinh_grid(
-      100.0, {nodes, static_cast<double>(upper), fixture.width, 1025});
-  if (!grid) throw std::runtime_error(grid.error().to_string());
-  std::vector<double> compile_times;
-  std::optional<AmericanMarkovModel> model;
-  AmericanMarkovConfig config;
-  config.diffusion_method = method;
-  config.max_calendar_step = 1.0 / static_cast<double>(steps);
-  config.max_variance_step = config.max_calendar_step;
-  for (std::size_t repeat = 0; repeat < repetitions; ++repeat) {
-    const auto start = Clock::now();
-    auto compiled = compile_american_markov({100.0, fixture.intervals, grid->states, config});
-    compile_times.push_back(elapsed_us(start));
-    if (!compiled) throw std::runtime_error(compiled.error().to_string());
-    model = std::move(*compiled);
-  }
-  Json out = describe(*model);
-  out["fixture"] = fixture.name;
-  out["spot"] = 100.0;
-  out["width"] = fixture.width;
-  out["grid_nodes"] = nodes;
-  out["upper_multiple"] = upper;
-  out["max_clock_step"] = config.max_calendar_step;
-  out["diffusion_method"] = method == AmericanMarkovDiffusionMethod::ExplicitEuler
-                                 ? "explicit_euler" : "variance_resolvent";
-  out["intervals"] = Json::array();
+         std::size_t nodes, std::size_t upper, std::optional<double> concentration_scale) {
+  const double width = concentration_scale.value_or(fixture.width);
+  Json requested{{"fixture", fixture.name}, {"spot", 100.0},
+      {"fixture_concentration_scale", fixture.width},
+      {"requested_concentration_scale", concentration_scale ? Json(*concentration_scale) : Json(nullptr)},
+      {"width", width}, {"grid_nodes", nodes}, {"upper_multiple", upper},
+      {"max_clock_step", 1.0 / static_cast<double>(steps)},
+      {"diffusion_method", method == AmericanMarkovDiffusionMethod::ExplicitEuler
+          ? "explicit_euler" : "variance_resolvent"}};
+  requested["intervals"] = Json::array();
   for (const auto &interval : fixture.intervals) {
     Json item{{"calendar_end", interval.calendar_end}, {"variance_end", interval.variance_end},
               {"rate", interval.rate}, {"continuous_yield", interval.continuous_yield},
@@ -251,8 +234,36 @@ Json run(const Fixture &fixture, std::size_t repetitions,
         item["local_volatility"].push_back({node.log_state_over_spot, node.volatility_multiplier});
       }
     }
-    out["intervals"].push_back(std::move(item));
+    requested["intervals"].push_back(std::move(item));
   }
+  auto grid = make_american_markov_sinh_grid(
+      100.0, {nodes, static_cast<double>(upper), width, 1025});
+  if (!grid) {
+    requested["model_status"] = "grid_refused";
+    requested["model_error"] = grid.error().to_string();
+    return requested;
+  }
+  std::vector<double> compile_times;
+  std::optional<AmericanMarkovModel> model;
+  AmericanMarkovConfig config;
+  config.diffusion_method = method;
+  config.max_calendar_step = 1.0 / static_cast<double>(steps);
+  config.max_variance_step = config.max_calendar_step;
+  for (std::size_t repeat = 0; repeat < repetitions; ++repeat) {
+    const auto start = Clock::now();
+    auto compiled = compile_american_markov({100.0, fixture.intervals, grid->states, config});
+    compile_times.push_back(elapsed_us(start));
+    if (!compiled) {
+      requested["model_status"] = "refused";
+      requested["model_error"] = compiled.error().to_string();
+      requested["compile_us"] = compile_times;
+      return requested;
+    }
+    model = std::move(*compiled);
+  }
+  Json out = describe(*model);
+  out.update(requested);
+  out["model_status"] = "ok";
   out["compile_us"] = compile_times;
   const std::array strikes{80.0, 90.0, 95.0, 99.5, 99.9, 100.0,
                            100.1, 100.5, 105.0, 110.0, 120.0};
@@ -321,15 +332,26 @@ int main(int argc, char **argv) {
     std::size_t steps = 52;
     std::size_t nodes = 129;
     std::size_t upper = 4;
+    std::optional<double> concentration_scale;
     auto method = AmericanMarkovDiffusionMethod::ExplicitEuler;
+    std::set<std::string_view> seen;
     for (int i = 1; i < argc; i += 2) {
       if (i + 1 >= argc) throw std::invalid_argument("each option requires a value");
       const std::string_view option(argv[i]);
       const std::string_view input(argv[i + 1]);
+      if (!seen.insert(option).second) throw std::invalid_argument("duplicate probe option");
       if (option == "--method") {
         if (input == "explicit") method = AmericanMarkovDiffusionMethod::ExplicitEuler;
         else if (input == "resolvent") method = AmericanMarkovDiffusionMethod::VarianceResolvent;
         else throw std::invalid_argument("method must be explicit or resolvent");
+      } else if (option == "--concentration-scale") {
+        double parsed = 0.0;
+        const auto [end, error] = std::from_chars(input.data(), input.data() + input.size(), parsed);
+        if (error != std::errc{} || end != input.data() + input.size() ||
+            !std::isfinite(parsed) || parsed < 1.0e-6 || parsed > 100.0) {
+          throw std::invalid_argument("concentration-scale must be finite in [1e-6,100]");
+        }
+        concentration_scale = parsed;
       } else if (option == "--repetitions" || option == "--steps" ||
                  option == "--nodes" || option == "--upper") {
         std::size_t parsed = 0;
@@ -349,12 +371,13 @@ int main(int argc, char **argv) {
         else upper = parsed;
       } else {
         throw std::invalid_argument(
-            "options: --repetitions N --steps N --nodes N --upper N --method explicit|resolvent");
+            "options: --repetitions N --steps N --nodes N --upper N --method explicit|resolvent "
+            "--concentration-scale X");
       }
     }
     Json results = Json::array();
     for (const auto &fixture : fixtures()) {
-      results.push_back(run(fixture, repetitions, method, steps, nodes, upper));
+      results.push_back(run(fixture, repetitions, method, steps, nodes, upper, concentration_scale));
     }
     std::cout << Json{{"schema", 1}, {"repetitions", repetitions},
                       {"cpp_allocation_counter_calibration", calibration_count},

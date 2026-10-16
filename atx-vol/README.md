@@ -22,6 +22,19 @@ faithfully and mirror the upstream test tolerances.
 
 ## Ported modules
 
+The newer common-process American lane lives in `american_markov.hpp`,
+`american_markov_batch.hpp`, `american_markov_fit.hpp`, and
+`american_markov_policy.hpp`. It fits raw bid/ask intervals under one finite
+Bermudan stock process, with separate calendar/variance clocks and dated cash
+events. Explicit Euler is the default; positive variance resolvents are opt-in
+through `diffusion_method: "variance-resolvent"` in native common policies.
+Both retain bounded work and numerical admission checks. Finite-process
+no-arbitrage does not certify continuous-American or boundary accuracy; see the
+[resolvent audit](sprints/2026-10-16-american-markov-resolvent-sprint.md).
+The negative-rate limitation below describes the Andersen-Lake family; it does
+not apply to the common finite-process Snell rollback. Equivalent-IV reporting
+still uses that family's inversion convention and can refuse separately.
+
 | Layer | Header(s) | What it does |
 |---|---|---|
 | Types / version | `types.hpp`, `version.hpp` | `Side`, `ExerciseStyle`, numeric constants, `atx::core` error re-exports |

@@ -102,6 +102,77 @@ def test_common_expiries_share_one_process_and_cumulative_market(binary, tmp_pat
     assert {row["chain_id"] for row in read_rows(output)} == {"17", "18"}
 
 
+def test_common_resolvent_is_opt_in_and_reports_weighted_work(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    before = common_run(binary, source, output, path)
+    assert before.returncode == 0, before.stderr
+    default_bytes = output.read_bytes()
+    default = json.loads(before.stdout)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["model"] = {"diffusion_method": "explicit-euler"}
+    path.write_text(json.dumps(policy))
+    explicit = common_run(binary, source, output, path)
+    assert explicit.returncode == 0, explicit.stderr
+    assert output.read_bytes() == default_bytes
+    assert json.loads(explicit.stdout)["policy_definition"] == default["policy_definition"]
+    policy["profiles"][0]["model"] = {
+        "diffusion_method": "variance-resolvent", "max_calendar_step": 1 / 104,
+        "max_variance_step": 1 / 104,
+    }
+    path.write_text(json.dumps(policy))
+    candidate = common_run(binary, source, output, path)
+    assert candidate.returncode == 0, candidate.stderr
+    report = json.loads(candidate.stdout)
+    assert report["served_rows"] == len(read_rows(source)) == 26
+    model = report["policy_decisions"][0]["fit"]["model"]
+    assert model["diffusion_method"] == "variance-resolvent"
+    assert model["resolvent_steps"] == model["diffusion_steps"] == 52
+    assert model["transition_work"] == 2 * model["stored_rows"] == 2 * 129 * 52
+    assert model["quote_prefix_rollback_work"] == 26 * model["transition_work"]
+    interval, = model["resolved_intervals"]
+    assert interval["diffusion_steps"] == 52
+    assert interval["calendar_end"] == interval["variance_end"] == .5
+    assert interval["prefix_transition_work"] == model["transition_work"]
+    assert interval["min_calendar_step"] == pytest.approx(1 / 104)
+    assert interval["max_variance_step"] == pytest.approx(1 / 104)
+    assert model["physical_resolvent_factors"] > 0
+    assert model["resolvent_factor_blocks"] > 0
+    assert model["max_forward_mass_error"] < 1e-10
+    config = report["policy_definition"]["profiles"][0]["model"]
+    assert config["diffusion_method"] == "variance-resolvent"
+    assert config["max_stored_rows"] == 1_000_000
+    assert config["max_transition_work"] == 8_000_000
+    policy["profiles"][0]["model"]["max_transition_work"] = model["transition_work"] - 1
+    path.write_text(json.dumps(policy))
+    limited = common_run(binary, source, output, path)
+    assert limited.returncode == 0, limited.stderr
+    refused = json.loads(limited.stdout)
+    assert refused["served_rows"] == 0
+    assert len(read_rows(output)) == 26
+    assert all(not row["predicted_price"] for row in read_rows(output))
+    assert "work" in json.dumps(refused["policy_decisions"][0]).lower()
+
+
+@pytest.mark.parametrize("model", [
+    {"diffusion_method": "unknown"}, {"diffusion_method": 1},
+    {"max_transition_work": 0}, {"max_transition_work": 16_000_001},
+    {"max_transition_work": 1.5}, {"max_transition_work": True},
+    {"diffusion_method": "variance-resolvent", "max_transition_work": 257},
+])
+def test_common_rejects_invalid_diffusion_controls_before_output(binary, tmp_path, model):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["model"] = model
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
 def test_common_price_survives_unidentifiable_equivalent_iv(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
     make_quotes(source)

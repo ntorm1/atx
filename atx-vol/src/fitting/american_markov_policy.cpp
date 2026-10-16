@@ -32,12 +32,17 @@ Status validate_model(const AmericanMarkovPolicyProfile &profile) {
       !positive(m.max_variance_step) || !positive(m.cfl_fraction) || m.cfl_fraction > 1.0 ||
       m.max_transitions == 0 || m.max_transitions > kAmericanMarkovMaxTransitions ||
       m.max_stored_rows == 0 || m.max_stored_rows > kAmericanMarkovMaxStoredRows ||
+      m.max_transition_work == 0 || m.max_transition_work > kAmericanMarkovMaxTransitionWork ||
+      (m.diffusion_method != AmericanMarkovDiffusionMethod::ExplicitEuler &&
+       m.diffusion_method != AmericanMarkovDiffusionMethod::VarianceResolvent) ||
       m.max_stored_volatility_values == 0 ||
       m.max_stored_volatility_values > kAmericanMarkovMaxStoredVolatilityValues) {
     return Err(ErrorCode::InvalidArgument, "Markov policy: invalid model resource configuration");
   }
   ATX_TRY(const auto grid, make_american_markov_sinh_grid(1.0, profile.grid_config));
   if (grid.states.size() > m.max_states || grid.states.size() > m.max_stored_rows ||
+      grid.states.size() > m.max_transition_work /
+          (m.diffusion_method == AmericanMarkovDiffusionMethod::VarianceResolvent ? 2U : 1U) ||
       grid.states.size() >= m.max_stored_volatility_values) {
     return Err(ErrorCode::OutOfRange, "Markov policy: grid exceeds model storage capacity");
   }
@@ -103,7 +108,10 @@ Status validate_fit(const AmericanMarkovPolicyProfile &profile) {
   }
   const auto states = profile.grid_config.grid_nodes;
   const auto batch = std::min(c.batch_options, c.max_quotes);
-  if (batch > c.max_batch_values / states || c.max_rollback_work < states ||
+  const auto minimum_action_work = states *
+      (profile.model_config.diffusion_method == AmericanMarkovDiffusionMethod::VarianceResolvent
+           ? 2U : 1U);
+  if (batch > c.max_batch_values / states || c.max_rollback_work < minimum_action_work ||
       knots > profile.model_config.max_stored_volatility_values - states) {
     return Err(ErrorCode::OutOfRange, "Markov policy: inconsistent grid and fitting capacities");
   }

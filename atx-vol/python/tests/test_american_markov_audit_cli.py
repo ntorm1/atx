@@ -24,9 +24,10 @@ def binary():
 @pytest.fixture(scope="module")
 def case(binary):
     @functools.lru_cache(maxsize=16)
-    def run(fixture, grid):
+    def run(fixture, grid, method=None):
+        extra = ["--diffusion-method", method] if method is not None else []
         completed = subprocess.run(
-            [str(binary), "--full", "--pricing-only", "--case", fixture, "--grid", grid],
+            [str(binary), "--full", "--pricing-only", "--case", fixture, "--grid", grid, *extra],
             text=True, capture_output=True, timeout=60, check=False,
         )
         assert completed.returncode == 0, completed.stderr
@@ -178,3 +179,46 @@ def test_interval_time_provenance_reconciles_cash_and_paused_clocks(case):
             assert item["exceeds_clock_minimum"] == (item["resolved_diffusion_steps"] > minimum)
         if fixture == "clock_pause":
             assert intervals[1]["variance_clock_minimum_steps"] == 0
+
+
+@pytest.mark.parametrize("fixture", ["high_vol", "dated_cash", "clock_pause"])
+def test_resolvent_reports_method_work_and_exact_clock_subdivisions(case, fixture):
+    report, result = case(fixture, "sinh129-variance", "variance-resolvent")
+    assert result["model_status"] == result["pricing_status"] == "ok"
+    assert report["diffusion_method"] == result["diffusion_method"] == "variance-resolvent"
+    model = result["model"]
+    assert model["diffusion_method"] == "variance-resolvent"
+    assert model["resolvent_steps"] == model["diffusion_steps"] > 0
+    assert model["transition_work"] == model["stored_rows"] + model["states"] * model["resolvent_steps"]
+    assert model["physical_resolvent_factors"] > 0
+    assert model["resolvent_factor_blocks"] > 0
+    assert model["max_forward_mass_error"] < 1e-10
+    assert model["max_mean_error"] < 1e-12
+    assert result["model_limits"]["max_transition_work"] == 8_000_000
+    assert sum(i["resolved_diffusion_steps"] for i in result["resolved_time_intervals"]) == model["diffusion_steps"]
+    for item in result["resolved_time_intervals"]:
+        assert item["resolved_diffusion_steps"] == max(1, item["calendar_clock_minimum_steps"], item["variance_clock_minimum_steps"])
+        assert item["exceeds_clock_minimum"] is False
+    assert_complete(report, result)
+
+
+def test_explicit_method_flag_preserves_default_prices(case):
+    _, before = case("high_vol", "sinh129-variance")
+    report, after = case("high_vol", "sinh129-variance", "explicit-euler")
+    assert report["diffusion_method"] == after["diffusion_method"] == "explicit-euler"
+    for key in ("prices", "model", "resolved_time_intervals", "resolved_model_controls"):
+        assert before[key] == after[key]
+    assert after["model"]["resolvent_steps"] == 0
+    assert after["model"]["transition_work"] == after["model"]["stored_rows"]
+
+
+@pytest.mark.parametrize("args", [
+    ["--diffusion-method"], ["--diffusion-method", "unknown"],
+    ["--diffusion-method", "explicit-euler", "--diffusion-method", "variance-resolvent"],
+])
+def test_invalid_or_repeated_diffusion_method_is_cli_error(binary, args):
+    completed = subprocess.run([str(binary), *args], capture_output=True, text=True,
+                               timeout=10, check=False)
+    assert completed.returncode != 0
+    assert "fatal_error" in json.loads(completed.stderr)
+    assert not completed.stdout
