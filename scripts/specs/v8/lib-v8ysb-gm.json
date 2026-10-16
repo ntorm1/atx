@@ -187,8 +187,8 @@
     ]
   },
   "ic": {
-    "u_output": "build-equity/mega-v8-b0b-train-u-v8ysb",
-    "w_output": "build-equity/mega-v8xw-train-theme-erc-v8ysb",
+    "u_output": "build-equity/p9-b0g-yf0-u",
+    "w_output": "build-equity/p9-b0g-yf0-w",
     "cache": "build-equity/mega-candidate-cache-v8-lo3",
     "flags": [
       "--max-memory-mib",

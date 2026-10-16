@@ -91,8 +91,8 @@
     }
   },
   "fields": {
-    "output": "build-equity/train-2020-2023-lo3-fields-v10",
-    "manifest_sha256": "a4a060ae29c10080ca89b4b29335709558c2ae4842bd29db0398b23a43070809",
+    "output": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
     "list": [
       "si_shares",
       "si_dtc",
@@ -233,7 +233,7 @@
     ]
   },
   "nav": {
-    "output": "build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80",
+    "output": "build-equity/p9-b0-r2-nav",
     "rule": "aim-partial-v5",
     "leverage": "1.1474",
     "flags": [
