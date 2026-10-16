@@ -29,3 +29,14 @@ Root tree `C:/atx-wt/pool-33`, branch `feat/vol-resume4-20261016`, base
 All results are development-cohort evidence; no default promotion, no holdout
 labels opened, no main merge. Integration, gates and receipts are appended below
 as lanes report.
+
+## Lane result: bench-e0-queue (complete)
+
+E0 byte parity passed. R104 removes every E0 fit failure and reaches the
+cap-feasible ceiling (45,070 eligible prices, 70.49%); its three-way MAE is
+0.383 against E0's 0.500 with containment 97.1% and p99 2.19. R416 adds cost
+and boundary mass without shared-row gain. The remaining common-model gap to the
+quote midpoint (0.359 all-eligible) is still a low level (bias -0.245) on the
+sparse profile and in snapshots whose ATM knot is below the market. R104 is the
+development base for the policy experiments; nothing is promoted. Receipts and
+hashes: `C:/atx-cache/quote-benchmark/common-resolvent-controlled-20261016-v1/RESULTS-20261016.md`.
