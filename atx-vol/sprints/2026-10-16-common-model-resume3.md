@@ -127,6 +127,25 @@ Immutable external receipts under `C:/atx-cache/quote-benchmark/`:
 The saved original ATM reference and explicit two-row negative-rate refinement
 remain separate artifacts; replacements do not erase their earlier history.
 
+## Native common-model integration
+
+Parent reviewed exact native `2ef4ce86`, integrated as `735bcb28`, and registered
+both private common runner/policy translation units. Parent's 60 native CLI and
+64 wrapper/scoring checks pass, without skips. All three owning native objects
+compile with PCH disabled. Standalone tool and native Python tests now have
+dedicated CTest registrations under `atx_vol_tools`, independent of the compiled
+Python extension; skipped checks are failures in those lanes. Registration
+execution is the next integration check.
+
+The first common-model dev200 run will preserve current defaults and funding-PV
+conversion. Its full eligible denominator remains63,942, including unsupported
+adjusted deliverables. Score only after fitting, and compare on exact price/vol
+intersections with preserved automatic quote-slice funding-v2. No validation
+labels are opened. Independent v3 review `19ce0e88` integrated as `a8b0e419`;
+its note emphasizes that the24ATM reference panel excludes high_vol, funded,
+separate_clocks and deterministic fixtures. Broad European controls are needed
+alongside that narrow American reference aggregate.
+
 ## Primary-source checks
 
 Rechecked October 16:

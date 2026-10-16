@@ -677,6 +677,28 @@ if(Python3_Interpreter_FOUND)
         LABELS atx_vol
         SKIP_RETURN_CODE 77
         TIMEOUT 900)
+
+    # Standalone offline tools import their source by exact path and do not use
+    # the compiled atxvol extension. Keep its checkout guard out of these lanes;
+    # missing Python dependencies or skipped checks must fail explicitly.
+    add_test(NAME atx-vol-quote-benchmark-tools
+        COMMAND ${Python3_EXECUTABLE} -m pytest --noconftest -q
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_benchmark.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_american_audit_compare.py)
+    set_tests_properties(atx-vol-quote-benchmark-tools PROPERTIES
+        LABELS atx_vol_tools TIMEOUT 120
+        FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+    if(ATX_BUILD_TOOLS)
+        add_test(NAME atx-vol-quote-benchmark-native
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ATX_QUOTE_BENCH_BINARY=$<TARGET_FILE:atx-vol-quote-bench>"
+                ${Python3_EXECUTABLE} -m pytest --noconftest -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_bench_cli.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_common_markov_bench_cli.py)
+        set_tests_properties(atx-vol-quote-benchmark-native PROPERTIES
+            LABELS atx_vol_tools TIMEOUT 120
+            FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
+    endif()
 endif()
 
 # PR-C2 non-AVX2 scalar leg: a registered ctest lane (`atx-vol-pricing-forcescalar`,
