@@ -397,6 +397,150 @@ def test_wrapper_refuses_incompatible_model_policy_before_accessing_data(selecti
         qb.run_native(args)
 
 
+def test_start_receipt_survives_interruption_before_final_run_receipt(tmp_path, monkeypatch):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    output, progress = tmp_path / "predictions.csv", tmp_path / "progress.jsonl"
+    policy = tmp_path / "common-policy.json"
+    policy.write_text('{"schema_version":1,"model":"common-markov"}')
+    start_path = Path(str(output) + ".start.json")
+
+    def interrupted(command, **kwargs):
+        assert command[command.index("--progress") + 1] == str(progress.resolve())
+        start = json.loads(start_path.read_text())
+        assert start["state"] == "started_incomplete"
+        assert start["command"] == command
+        assert start["runner_sha256"] == qb.ADAPTER_SHA256
+        assert start["binary_sha256"] == qb.sha256(binary)
+        assert start["quote_csv_sha256"] == qb.sha256(dataset / "quotes.csv")
+        assert start["policy_sha256"] == qb.sha256(policy)
+        assert start["policy_document"] == json.loads(policy.read_text())
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(qb.subprocess, "run", interrupted)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--common-policy", str(policy), "--progress", str(progress),
+    ])
+    with pytest.raises(KeyboardInterrupt):
+        qb.run_native(args)
+    assert start_path.is_file()
+    assert not Path(str(output) + ".run.json").exists()
+    with pytest.raises(ValueError, match="output already exists"):
+        qb.run_native(args)
+
+
+def progress_fixture(path, start):
+    """Small valid journal boundary fixture, without invoking numerical work."""
+    report = {"rows": start["input_rows"], "snapshots": 1,
+              "progress": {"completed_rows": 2, "run_binding_sha256": "binding"}}
+    records = [
+        {"record_type": "start", "sequence": 0, "run_binding_sha256": "binding",
+         "snapshots_expected": 1, "run_binding": {"source": {
+             "input_sha256": start["quote_csv_sha256"], "policy_sha256": start["policy_sha256"],
+             "executable_sha256": start["binary_sha256"]}}},
+        {"record_type": "snapshot", "sequence": 1, "run_binding_sha256": "binding",
+         "rows": 2, "completed_rows": 2, "completed_snapshots": 1},
+        {"record_type": "complete", "sequence": 2, "run_binding_sha256": "binding",
+         "completed_rows": 2, "completed_snapshots": 1, "input_rows": start["input_rows"],
+         "state": "numerical_processing_complete"},
+    ]
+    for record in records:
+        record["schema_version"] = 1
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    return report, records
+
+
+def test_wrapper_binds_progress_and_prelaunch_receipt_to_final_receipt(tmp_path, monkeypatch):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    output, progress = tmp_path / "predictions.csv", tmp_path / "progress.jsonl"
+    start_path = Path(str(output) + ".start.json")
+
+    def execute(command, **kwargs):
+        start = json.loads(start_path.read_text())
+        report, _ = progress_fixture(progress, start)
+        output.write_text("predictions")
+        return qb.subprocess.CompletedProcess(command, 0, stdout=json.dumps(report))
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--progress", str(progress),
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["start_receipt_sha256"] == qb.sha256(start_path)
+    assert receipt["progress"]["sha256"] == qb.sha256(progress)
+    assert receipt["progress"]["records"] == 3
+    assert receipt["progress"]["completed_snapshots"] == 1
+
+
+@pytest.mark.parametrize("mutation", ["partial", "missing_complete", "sequence", "binding",
+                                     "rows", "input", "trailing", "oversized"])
+def test_wrapper_refuses_invalid_or_incomplete_progress(tmp_path, mutation):
+    path = tmp_path / "progress.jsonl"
+    start = {"input_rows": 3, "quote_csv_sha256": "input", "policy_sha256": None,
+             "binary_sha256": "binary"}
+    report, records = progress_fixture(path, start)
+    if mutation == "missing_complete":
+        records.pop()
+    elif mutation == "sequence":
+        records[1]["sequence"] = 3
+    elif mutation == "binding":
+        records[1]["run_binding_sha256"] = "other"
+    elif mutation == "rows":
+        records[-1]["completed_rows"] = 3
+    elif mutation == "input":
+        records[0]["run_binding"]["source"]["input_sha256"] = "changed"
+    elif mutation == "trailing":
+        records.append(records[-1])
+    payload = "".join(json.dumps(record) + "\n" for record in records)
+    if mutation == "partial":
+        payload = payload[:-1]
+    elif mutation == "oversized":
+        payload = " " * (4 * 1024 * 1024 + 1) + "\n"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(ValueError, match="progress journal"):
+        qb._verify_native_progress(path, report, start)
+
+
+@pytest.mark.parametrize("target", ["input", "output", "start", "receipt", "report", "binary"])
+def test_wrapper_protects_progress_aliases_before_native_launch(tmp_path, monkeypatch, target):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    output, report = tmp_path / "predictions.csv", tmp_path / "report.json"
+    progress = {"input": dataset / "quotes.csv", "output": output,
+                "start": Path(str(output) + ".start.json"),
+                "receipt": Path(str(output) + ".run.json"),
+                "report": report, "binary": binary}[target]
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsafe progress path reached native execution")
+    monkeypatch.setattr(qb.subprocess, "run", forbidden)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--progress", str(progress), "--", "--report", str(report),
+    ])
+    with pytest.raises(ValueError, match="must use a new path"):
+        qb.run_native(args)
+    assert not Path(str(output) + ".start.json").exists()
+
+
+@pytest.mark.parametrize("extra", [["--progress", "override"], ["--progress=override"]])
+def test_wrapper_progress_is_not_overridable_via_passthrough(tmp_path, monkeypatch, extra):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "native.exe"
+    binary.write_bytes(b"not executed")
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary),
+        "--output", str(tmp_path / "predictions.csv"), "--model", "common-markov", "--", *extra,
+    ])
+    with pytest.raises(ValueError, match="provenance-bound"):
+        qb.run_native(args)
+
+
 def candidate_receipt(dataset: Path, name: str, ids: list[int], prices: list[float],
                       vols: list[float]) -> Path:
     q = pl.read_parquet(dataset / "quotes.parquet").filter(pl.col("row_id").is_in(ids))

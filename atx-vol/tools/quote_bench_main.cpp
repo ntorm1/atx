@@ -3,6 +3,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "quote_bench_policy.hpp"
 #include "quote_bench_common.hpp"
+#include "quote_bench_progress.hpp"
 #include "quote_bench_data.hpp"
 
 #include <algorithm>
@@ -42,6 +43,7 @@ struct Arguments {
   std::filesystem::path input;
   std::filesystem::path output;
   std::filesystem::path report;
+  std::filesystem::path progress;
   std::string curve;
   std::string policy{"auto"};
   std::string model{"quote-slice"};
@@ -95,6 +97,7 @@ Arguments arguments(int argc, char **argv) {
                    "[--report timing.json] [--model quote-slice|common-markov] "
                    "[--policy auto|policy.json | --curve CURVE] "
                    "[--common-policy auto|common-policy.json] "
+                   "[--progress fresh-progress.jsonl] "
                    "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
                    "[--max-weight 1000]\n"
@@ -108,6 +111,7 @@ Arguments arguments(int argc, char **argv) {
     if (key == "--input") args.input = value;
     else if (key == "--output") args.output = value;
     else if (key == "--report") args.report = value;
+    else if (key == "--progress") args.progress = value;
     else if (key == "--curve") args.curve = value;
     else if (key == "--policy") args.policy = value;
     else if (key == "--model") args.model = value;
@@ -136,6 +140,10 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.model == "quote-slice" && seen.contains("--common-policy")) {
     throw std::runtime_error("--common-policy requires --model common-markov");
+  }
+  if (seen.contains("--progress") &&
+      (args.model != "common-markov" || args.progress.empty())) {
+    throw std::runtime_error("--progress requires common-markov and a fresh output path");
   }
   if ((seen.contains("--curve") && args.curve.empty()) || args.policy.empty()) {
     throw std::runtime_error("Policy and curve names must not be empty");
@@ -173,6 +181,13 @@ Arguments arguments(int argc, char **argv) {
       (same_file(args.common_policy, args.input) || same_file(args.common_policy, args.output) ||
        (!args.report.empty() && same_file(args.common_policy, args.report)))) {
     throw std::runtime_error("Common policy file must differ from input, predictions and report");
+  }
+  if (!args.progress.empty() &&
+      (std::filesystem::exists(args.progress) || same_file(args.progress, args.input) ||
+       same_file(args.progress, args.output) ||
+       (!args.report.empty() && same_file(args.progress, args.report)) ||
+       (args.common_policy != "auto" && same_file(args.progress, args.common_policy)))) {
+    throw std::runtime_error("Progress journal must use a new path distinct from all other files");
   }
   return args;
 }
@@ -747,9 +762,26 @@ int main(int argc, char **argv) {
   try {
     const auto args = arguments(argc, argv);
     if (args.help_requested) return 0;
+    Json provenance = Json::object();
+    if (!args.progress.empty()) {
+      provenance = {{"input", std::filesystem::weakly_canonical(args.input).string()},
+          {"input_sha256", quote_bench::file_sha256(args.input)},
+          {"policy_selection", args.common_policy},
+          {"policy_sha256", args.common_policy == "auto" ? Json(nullptr)
+              : Json(quote_bench::file_sha256(args.common_policy))},
+          {"executable_sha256", std::filesystem::exists(argv[0])
+              ? Json(quote_bench::file_sha256(argv[0])) : Json(nullptr)},
+          {"executable_hash_scope", "argv[0] if directly resolvable; wrapper start receipt "
+              "always binds the absolute invoked executable"}};
+    }
     const auto rows = read_rows(args);
+    if (!args.progress.empty() &&
+        provenance["input_sha256"] != quote_bench::file_sha256(args.input)) {
+      throw std::runtime_error("Input changed while reading progress-bound cohort");
+    }
     if (args.model == "common-markov") {
-      auto result = quote_bench::run_common_markov(rows, args.common_policy, args.dividends);
+      auto result = quote_bench::run_common_markov(rows, args.common_policy, args.dividends,
+                                                  args.progress, provenance);
       result.report["input"] = std::filesystem::weakly_canonical(args.input).string();
       write_predictions(args.output, rows, result.predictions);
       std::cout << result.report.dump(2) << '\n';

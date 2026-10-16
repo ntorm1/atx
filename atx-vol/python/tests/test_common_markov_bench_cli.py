@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
+import subprocess
+import time
 
 import pytest
 
@@ -238,3 +241,175 @@ def test_common_policy_duplicate_keys_hardlink_alias_and_resource_refusal(binary
     report = json.loads(result.stdout)
     assert report["resource_refusal_counts"] == {"market_resource_limit": 1}
     assert len(read_rows(output)) == 26
+
+
+def test_common_progress_binds_inputs_and_preserves_predictions(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path, progress = policy_file(tmp_path), tmp_path / "progress.jsonl"
+    baseline = common_run(binary, source, output, path)
+    assert baseline.returncode == 0, baseline.stderr
+    expected = output.read_bytes()
+    result = common_run(binary, source, output, path, "--progress", str(progress))
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == expected
+    report = json.loads(result.stdout)
+    records = [json.loads(line) for line in progress.read_bytes().splitlines()]
+    assert [r["record_type"] for r in records] == ["start", "snapshot", "complete"]
+    assert [r["sequence"] for r in records] == [0, 1, 2]
+    header, snapshot, complete = records
+    binding = header["run_binding"]
+    assert binding["source"]["input_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert binding["source"]["policy_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert binding["source"]["executable_sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
+    assert header["configuration"] == report["policy_definition"]
+    assert len({r["run_binding_sha256"] for r in records}) == 1
+    assert snapshot["objective_evaluations"] == report["objective_evaluations_known"] == 1
+    assert snapshot["fit_termination"] == "evaluation_limit"
+    assert snapshot["row_status_counts"] == {"ok": 26}
+    assert all(snapshot["stage_attempted"].values())
+    assert all(math.isfinite(x) and x >= 0 for x in snapshot["stage_elapsed_microseconds"].values())
+    assert report["stage_elapsed_microseconds"] == snapshot["stage_elapsed_microseconds"]
+    assert complete["state"] == "numerical_processing_complete"
+    assert complete["completed_rows"] == complete["input_rows"] == 26
+    assert all(key not in snapshot for key in ("bid", "ask", "strike", "srPrc", "srVol"))
+    before = progress.read_bytes()
+    refused = common_run(binary, source, output, path, "--progress", str(progress))
+    assert refused.returncode != 0
+    assert progress.read_bytes() == before
+
+
+@pytest.mark.parametrize("failure,stage", [
+    ("ambiguous", None), ("market", "market"), ("policy", "policy"),
+    ("grid", "grid"), ("fit_limit", "fit"), ("fit", "fit"),
+])
+def test_common_stage_timing_and_progress_include_refusals(binary, tmp_path, failure, stage):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    if failure == "ambiguous":
+        rows += [{**row, "row_id": int(row["row_id"]) + 1000, "chain_id": 18}
+                 for row in rows]
+    elif failure == "market":
+        rows[-1]["spot"] = "102"
+    elif failure == "policy":
+        for row in rows:
+            row["years"] = 0
+    elif failure == "grid":
+        # Finite accepted spot; configured upper grid stock overflows at runtime.
+        for row in rows:
+            row["spot"] = 1e308
+    elif failure == "fit_limit":
+        policy["profiles"][0]["fit"]["max_quotes"] = 1
+    else:
+        policy["profiles"][0]["model"] = {"max_transitions": 1}
+    path.write_text(json.dumps(policy))
+    write_rows(source, rows)
+    progress = tmp_path / "progress.jsonl"
+    result = common_run(binary, source, output, path, "--progress", str(progress))
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    decision, = report["policy_decisions"]
+    assert decision["status"] != "ok"
+    names = ["market", "policy", "grid", "fit", "equivalent_iv"]
+    visited = names[:names.index(stage) + 1] if stage else []
+    assert decision["stage_attempted"] == {name: name in visited for name in names}
+    assert all(value >= 0 for value in decision["stage_elapsed_microseconds"].values())
+    assert decision["objective_evaluations"] == (None if failure == "fit" else 0)
+    assert report["objective_evaluation_counts_unavailable"] == (failure == "fit")
+    records = [json.loads(line) for line in progress.read_bytes().splitlines()]
+    assert records[1]["status"] == decision["status"]
+    assert records[-1]["completed_rows"] == len(rows)
+
+
+@pytest.mark.parametrize("target", ["source", "output", "report", "policy", "hardlink"])
+def test_common_progress_rejects_aliases_before_writing(binary, tmp_path, target):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path, report = policy_file(tmp_path), tmp_path / "report.json"
+    alias = tmp_path / "hardlink"
+    os.link(source, alias)
+    progress = {"source": source, "output": output, "report": report,
+                "policy": path, "hardlink": alias}[target]
+    original = source.read_bytes()
+    result = common_run(binary, source, output, path, "--report", str(report),
+                        "--progress", str(progress))
+    assert result.returncode != 0
+    assert source.read_bytes() == original
+    assert not output.exists() and not report.exists()
+
+
+def test_common_progress_retains_completed_prefix_after_real_process_termination(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    original = read_rows(source)
+    # Many small snapshots ensure a completed prefix exists while work remains;
+    # the test kills a real child, without a production fault-injection hook.
+    rows = [{**row, "underlier": f"S{i:04}", "root": f"S{i:04}", "chain_id": i + 1,
+             "row_id": i * len(original) + j} for i in range(512)
+            for j, row in enumerate(original)]
+    write_rows(source, rows)
+    path, progress = policy_file(tmp_path), tmp_path / "partial.jsonl"
+    command = [str(binary), "--input", str(source), "--output", str(output),
+               "--model", "common-markov", "--common-policy", str(path),
+               "--progress", str(progress)]
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 20
+        prefix = []
+        while process.poll() is None and time.monotonic() < deadline:
+            if progress.exists():
+                prefix = progress.read_bytes().split(b"\n")[:-1]
+                if len(prefix) >= 2:
+                    break
+            time.sleep(.005)
+        assert process.poll() is None and len(prefix) >= 2
+        process.kill()
+        process.wait(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        process.stderr.close()
+    records = [json.loads(line) for line in progress.read_bytes().split(b"\n")[:-1]]
+    assert records[0]["state"] == "incomplete"
+    assert 1 <= len(records) - 1 < records[0]["snapshots_expected"]
+    assert all(record["record_type"] == "snapshot" for record in records[1:])
+    assert [record["sequence"] for record in records] == list(range(len(records)))
+    assert not output.exists()
+
+
+def test_native_progress_and_wrapper_receipts_agree_end_to_end(binary, tmp_path):
+    from test_quote_benchmark import prepare, qb
+    dataset, _ = prepare(tmp_path)
+    output, progress = tmp_path / "prices.csv", tmp_path / "progress.jsonl"
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--progress", str(progress),
+    ])
+    receipt = qb.run_native(args)
+    assert receipt["progress"]["sha256"] == qb.sha256(progress)
+    assert receipt["start_receipt_sha256"] == qb.sha256(qb.Path(receipt["start_receipt"]))
+    assert receipt["native_report"]["rows"] == 6
+    assert receipt["progress"]["completed_snapshots"] == receipt["native_report"]["snapshots"]
+
+
+def test_progress_reports_empty_eligible_cohort_without_invented_snapshots(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    for row in rows:
+        row["input_status"] = "unsupported_deliverable"
+    write_rows(source, rows)
+    progress = tmp_path / "progress.jsonl"
+    result = common_run(binary, source, output, None, "--progress", str(progress))
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(line) for line in progress.read_bytes().splitlines()]
+    assert [record["record_type"] for record in records] == ["start", "complete"]
+    assert records[0]["rows_excluded_by_input_status"] == len(rows)
+    assert records[0]["snapshots_expected"] == 0
+    assert records[1]["completed_snapshots"] == records[1]["completed_rows"] == 0
+    assert records[1]["row_status_counts"] == {"unsupported_deliverable": len(rows)}
+    assert len(read_rows(output)) == len(rows)

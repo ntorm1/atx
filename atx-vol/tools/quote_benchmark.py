@@ -12,6 +12,7 @@ from collections import Counter
 import datetime as dt
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -88,10 +89,13 @@ def split_for(underlier: str, fraction: float = 0.2, seed: str = "atx-vol-v1") -
             else "development")
 
 
-def write_json(path: Path, data: dict, *, overwrite: bool = True) -> None:
+def write_json(path: Path, data: dict, *, overwrite: bool = True, durable: bool = False) -> None:
     payload = json.dumps(data, indent=2, sort_keys=True, allow_nan=False) + "\n"
     with path.open("w" if overwrite else "x", encoding="utf-8") as stream:
         stream.write(payload)
+        if durable:
+            stream.flush()
+            os.fsync(stream.fileno())
 
 
 def normalize_quotes(batch: pa.RecordBatch, offset: int, *, bucket_minutes: int,
@@ -313,6 +317,8 @@ def run_native(args: argparse.Namespace) -> dict:
         raise ValueError("common-markov requires --common-policy; --policy/--curve are incompatible")
     if args.model == "quote-slice" and args.common_policy is not None:
         raise ValueError("--common-policy requires --model common-markov")
+    if args.progress is not None and args.model != "common-markov":
+        raise ValueError("--progress requires --model common-markov")
     manifest = verify_dataset(args.dataset)
     if "quotes.csv" not in manifest["files"]:
         raise ValueError("native runner needs quotes.csv; prepare with --csv")
@@ -320,15 +326,16 @@ def run_native(args: argparse.Namespace) -> dict:
     binary_hash = sha256(binary)
     output = args.output.resolve()
     receipt_path = Path(str(output) + ".run.json")
-    if output.exists() or receipt_path.exists():
+    start_path = Path(str(output) + ".start.json")
+    if output.exists() or receipt_path.exists() or start_path.exists():
         raise ValueError("prediction/receipt output already exists; use a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     extras = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
     if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve", "--policy", "--dividends",
-                                   "--model", "--common-policy"}
+                                   "--model", "--common-policy", "--progress"}
            for arg in extras):
         raise ValueError("extra arguments cannot replace provenance-bound "
-                         "input/output/model/curve/policy/common-policy/dividends")
+                         "input/output/model/curve/policy/common-policy/dividends/progress")
     policy_path = None
     policy_hash = None
     policy_document = None
@@ -343,6 +350,15 @@ def run_native(args: argparse.Namespace) -> dict:
         policy_hash = hashlib.sha256(policy_bytes).hexdigest()
         policy_document = json.loads(policy_bytes)
         policy = str(policy_path)
+    progress_path = args.progress.resolve() if args.progress is not None else None
+    protected = {output, receipt_path.resolve(), start_path.resolve(), binary, policy_path} | {
+        (args.dataset / name).resolve()
+        for name in ("manifest.json", "quotes.parquet", "quotes.csv", "labels.parquet")
+    }
+    if progress_path is not None:
+        if progress_path.exists() or progress_path in protected:
+            raise ValueError("progress journal must use a new path distinct from protected artifacts")
+        protected.add(progress_path)
     report_path = None
     for index, argument in enumerate(extras):
         if argument.split("=", 1)[0] != "--report":
@@ -358,17 +374,34 @@ def run_native(args: argparse.Namespace) -> dict:
         if not value or value.startswith("--"):
             raise ValueError("native timing report requires an output path")
         report_path = Path(value).resolve()
-        protected = {output, receipt_path.resolve(), binary, policy_path} | {
-            (args.dataset / name).resolve()
-            for name in ("manifest.json", "quotes.parquet", "quotes.csv", "labels.parquet")
-        }
         if report_path.exists() or report_path in protected:
             raise ValueError("native timing report must use a new path distinct from predictions/receipt")
     selection = (["--common-policy", policy] if args.model == "common-markov"
                  else ["--curve", args.curve] if args.curve else ["--policy", policy])
     command = [str(binary), "--input", str((args.dataset / "quotes.csv").resolve()),
                "--output", str(output), "--model", args.model, *selection,
-               "--dividends", args.dividends, *extras]
+               "--dividends", args.dividends,
+               *(["--progress", str(progress_path)] if progress_path is not None else []), *extras]
+    start_receipt = {
+        "schema_version": SCHEMA_VERSION, "state": "started_incomplete",
+        "started_utc": dt.datetime.now(dt.timezone.utc).isoformat(), "command": command,
+        "runner_sha256": ADAPTER_SHA256, "binary": str(binary), "binary_sha256": binary_hash,
+        "dataset": str(args.dataset.resolve()),
+        "dataset_manifest_sha256": sha256(args.dataset / "manifest.json"),
+        "quote_parquet_sha256": manifest["files"]["quotes.parquet"]["sha256"],
+        "quote_csv_sha256": manifest["files"]["quotes.csv"]["sha256"],
+        "input_rows": manifest["rows_selected"],
+        "model": args.model, "curve": args.curve, "policy_selection": policy,
+        "policy_sha256": policy_hash, "policy_document": policy_document,
+        "dividends": args.dividends, "dividend_model": DIVIDEND_CONVENTIONS[args.dividends],
+        "predictions": str(output), "run_receipt": str(receipt_path),
+        "native_report": str(report_path) if report_path else None,
+        "progress": str(progress_path) if progress_path else None,
+        "completion_semantics": "immutable start evidence; only final .run.json certifies "
+            "successful artifact publication; progress completion covers numerical processing only",
+    }
+    write_json(start_path, start_receipt, overwrite=False, durable=True)
+    start_hash = sha256(start_path)
     started = time.perf_counter()
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, text=True)
     elapsed = time.perf_counter() - started
@@ -383,6 +416,10 @@ def run_native(args: argparse.Namespace) -> dict:
         raise ValueError("native runner did not return a JSON report object")
     # Ensure model execution did not mutate its declared quote input.
     verify_dataset(args.dataset)
+    if sha256(start_path) != start_hash:
+        raise ValueError("start receipt changed during execution")
+    progress = (_verify_native_progress(progress_path, native_report, start_receipt)
+                if progress_path is not None else None)
     receipt = {
         "schema_version": SCHEMA_VERSION, "command": command,
         "binary": str(binary), "binary_sha256": binary_hash,
@@ -397,10 +434,75 @@ def run_native(args: argparse.Namespace) -> dict:
         "dividend_model": DIVIDEND_CONVENTIONS[args.dividends],
         "policy_sha256": policy_hash, "policy_document": policy_document,
         "native_report": native_report,
+        "start_receipt": str(start_path), "start_receipt_sha256": start_hash,
+        "runner_sha256": ADAPTER_SHA256, "progress": progress,
     }
-    write_json(receipt_path, receipt)
+    write_json(receipt_path, receipt, overwrite=False, durable=True)
     print(json.dumps({"run_receipt": str(receipt_path), "wall_seconds": elapsed}))
     return receipt
+
+
+def _verify_native_progress(path: Path, report: dict, start: dict) -> dict:
+    """Stream the bounded completed journal; partial journals are not run receipts."""
+    digest = hashlib.sha256()
+    header = None
+    completion = None
+    snapshots = rows = sequence = 0
+    with path.open("rb") as stream:
+        while line := stream.readline(4 * 1024 * 1024 + 1):
+            if len(line) > 4 * 1024 * 1024 or not line.endswith(b"\n"):
+                raise ValueError("progress journal contains oversized or partial record")
+            digest.update(line)
+            record = json.loads(line)
+            if (not isinstance(record, dict) or type(record.get("schema_version")) is not int
+                    or record["schema_version"] != 1):
+                raise ValueError("progress journal has an invalid record schema")
+            if (completion is not None or type(record.get("sequence")) is not int
+                    or record["sequence"] != sequence):
+                raise ValueError("progress journal has an invalid sequence")
+            if sequence == 0:
+                header = record
+                binding = header.get("run_binding")
+                if not isinstance(binding, dict) or not isinstance(binding.get("source"), dict):
+                    raise ValueError("progress journal has an invalid provenance object")
+                source = binding["source"]
+                if (header.get("record_type") != "start"
+                        or source.get("input_sha256") != start["quote_csv_sha256"]
+                        or source.get("policy_sha256") != start["policy_sha256"]
+                        or source.get("executable_sha256") != start["binary_sha256"]
+                        or header.get("run_binding_sha256") != report.get("progress", {}).get(
+                            "run_binding_sha256")):
+                    raise ValueError("progress journal provenance disagrees with run")
+            elif record.get("run_binding_sha256") != header["run_binding_sha256"]:
+                raise ValueError("progress journal run binding changed")
+            elif record.get("record_type") == "snapshot":
+                snapshots += 1
+                count = record.get("rows")
+                if type(count) is not int or count <= 0:
+                    raise ValueError("progress journal has an invalid row count")
+                rows += count
+                if (record.get("completed_snapshots") != snapshots
+                        or record.get("completed_rows") != rows):
+                    raise ValueError("progress journal cumulative counts disagree")
+            elif record.get("record_type") == "complete":
+                completion = record
+            else:
+                raise ValueError("progress journal has an invalid record type")
+            sequence += 1
+            if sequence > start["input_rows"] + 2:
+                raise ValueError("progress journal exceeds record limit")
+    if (completion is None or header is None
+            or completion.get("state") != "numerical_processing_complete"
+            or completion.get("completed_snapshots") != snapshots
+            or snapshots != header.get("snapshots_expected") or snapshots != report.get("snapshots")
+            or completion.get("completed_rows") != rows
+            or rows != report.get("progress", {}).get("completed_rows")
+            or completion.get("input_rows") != report.get("rows")
+            or report.get("rows") != start["input_rows"]):
+        raise ValueError("progress journal incomplete or completion counts disagree")
+    return {"path": str(path), "sha256": digest.hexdigest(), "records": sequence,
+            "completed_snapshots": snapshots, "completed_rows": rows,
+            "state": "numerical_processing_complete"}
 
 
 def scan_predictions(path: Path) -> pl.LazyFrame:
@@ -759,6 +861,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--binary", required=True, type=Path)
     run.add_argument("--output", required=True, type=Path)
     run.add_argument("--model", choices=["quote-slice", "common-markov"], default="quote-slice")
+    run.add_argument("--progress", type=Path,
+                     help="fresh durable common-markov JSONL progress journal (no resume)")
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--curve", choices=["svi", "essvi", "convex-dense", "spline-vol",
                                               "linear-variance", "c8-event"],

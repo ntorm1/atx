@@ -2,6 +2,7 @@
 
 #include "quote_bench_data.hpp"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,8 @@ struct CommonRun {
 // malformed configuration; expected market/fit refusals are reported as data.
 [[nodiscard]] CommonRun run_common_markov(const std::vector<InputRow> &rows,
                                          const std::string &policy,
-                                         const std::string &dividends);
+                                         const std::string &dividends,
+                                         const std::filesystem::path &progress_path = {},
+                                         const nlohmann::json &provenance = {});
 
 } // namespace quote_bench

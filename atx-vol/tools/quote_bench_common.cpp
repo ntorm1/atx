@@ -1,6 +1,7 @@
 #include "quote_bench_common.hpp"
 #include "quote_bench_common_policy.hpp"
 #include "quote_bench_policy.hpp"
+#include "quote_bench_progress.hpp"
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/american_markov_grid.hpp"
@@ -15,6 +16,7 @@
 #include <map>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +27,22 @@ using namespace atx::vol;
 using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 using Identity = std::array<std::string, 3>;
+
+struct StageTimes {
+  Json elapsed{{"market", 0.0}, {"policy", 0.0}, {"grid", 0.0},
+               {"fit", 0.0}, {"equivalent_iv", 0.0}};
+  Json attempted{{"market", false}, {"policy", false}, {"grid", false},
+                 {"fit", false}, {"equivalent_iv", false}};
+
+  template <class Function> auto measure(const char *stage, Function function) {
+    attempted[stage] = true;
+    const auto start = Clock::now();
+    auto value = function();
+    elapsed[stage] = elapsed[stage].get<double>() +
+        std::chrono::duration<double, std::micro>(Clock::now() - start).count();
+    return value;
+  }
+};
 
 Identity snapshot_identity(const InputRow &row) {
   return {row.identity[0], row.identity[1], row.identity[3]};
@@ -194,7 +212,7 @@ LiquidityInputs liquidity_inputs(const AmericanMarkovPreparedMarket &market,
 
 void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t> indices,
                    const CommonPolicy &policy, std::vector<Prediction> &predictions,
-                   Json &decision) {
+                   Json &decision, StageTimes &timing) {
   const auto refuse = [&](const std::string &status, const std::string &stage) {
     decision["status"] = status;
     decision["failure_stage"] = stage;
@@ -204,13 +222,18 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
     refuse("ambiguous_expiry", "identity");
     return;
   }
-  if (indices.size() > policy.market.max_quotes) {
+  const auto over_market_limit = timing.measure("market", [&] {
+    return indices.size() > policy.market.max_quotes;
+  });
+  if (over_market_limit) {
     decision["market"] = {{"status", "resource_limit"}, {"quote_count", indices.size()}};
     refuse("market_resource_limit", "market");
     return;
   }
-  const auto raw = raw_quotes(rows, indices);
-  auto prepared = prepare_american_markov_market(raw, policy.market);
+  auto prepared = timing.measure("market", [&] {
+    const auto raw = raw_quotes(rows, indices);
+    return prepare_american_markov_market(raw, policy.market);
+  });
   decision["market"] = market_json(prepared);
   if (prepared.diagnostics.refused_row && *prepared.diagnostics.refused_row < indices.size()) {
     decision["market"]["refused_row_id"] = rows[indices[*prepared.diagnostics.refused_row]].id;
@@ -220,9 +243,11 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
     return;
   }
   const auto &market = *prepared.market;
-  const auto liquidity = liquidity_inputs(market, prepared.diagnostics);
-  const auto resolved = policy.catalog.resolve(rows[indices.front()].identity[0],
-                                                liquidity.snapshots, market.intervals());
+  const auto resolved = timing.measure("policy", [&] {
+    const auto liquidity = liquidity_inputs(market, prepared.diagnostics);
+    return policy.catalog.resolve(rows[indices.front()].identity[0],
+                                  liquidity.snapshots, market.intervals());
+  });
   if (!resolved) {
     decision["error"] = resolved.error().to_string();
     decision["error_code"] = atx::core::to_string(resolved.error().code());
@@ -242,7 +267,9 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
     prediction.policy_source = to_string(resolved->source);
     prediction.configured_curve = "common-markov";
   }
-  const auto grid = make_american_markov_sinh_grid(market.spot(), profile.grid_config);
+  const auto grid = timing.measure("grid", [&] {
+    return make_american_markov_sinh_grid(market.spot(), profile.grid_config);
+  });
   if (!grid) {
     decision["error"] = grid.error().to_string();
     decision["error_code"] = atx::core::to_string(grid.error().code());
@@ -256,13 +283,18 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
       {"upper_spot_gap_over_spot", grid->upper_spot_gap_over_spot},
       {"min_gap_over_spot", grid->min_gap_over_spot},
       {"max_unit_volatility_exit_rate", grid->max_unit_volatility_exit_rate}};
-  if (market.quotes().size() > profile.fit_config.max_quotes) {
+  const auto over_fit_limit = timing.measure("fit", [&] {
+    return market.quotes().size() > profile.fit_config.max_quotes;
+  });
+  if (over_fit_limit) {
     decision["error"] = "Snapshot quote count exceeds configured fitter max_quotes";
     refuse("fit_quote_limit", "resource");
     return;
   }
-  const auto fit = fit_american_markov_intervals(
-      market.fit_market(profile.model_config, grid->states), market.quotes(), profile.fit_config);
+  const auto fit = timing.measure("fit", [&] {
+    return fit_american_markov_intervals(market.fit_market(profile.model_config, grid->states),
+                                       market.quotes(), profile.fit_config);
+  });
   if (!fit) {
     decision["error"] = fit.error().to_string();
     decision["error_code"] = atx::core::to_string(fit.error().code());
@@ -279,15 +311,33 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
     prediction.admitted = true;
     prediction.actual_curve = "common-markov";
     prediction.quote_status = quote.bid == 0.0 ? "bidless_upper_bound" : "two_sided_interval";
-    equivalent_iv(prediction, quote, prepared.diagnostics.expiries[quote.expiry_index],
-                  market.spot(), policy.equivalent_iv);
   }
+  timing.measure("equivalent_iv", [&] {
+    for (std::size_t i = 0; i < indices.size(); ++i) {
+      const auto &quote = market.quotes()[i];
+      equivalent_iv(predictions[indices[i]], quote,
+                    prepared.diagnostics.expiries[quote.expiry_index],
+                    market.spot(), policy.equivalent_iv);
+    }
+    return true;
+  });
 }
 } // namespace
 
 CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string &selection,
-                             const std::string &dividends) {
+                             const std::string &dividends,
+                             const std::filesystem::path &progress_path,
+                             const Json &provenance) {
   const auto policy = load_common_policy(selection, dividends);
+  if (!progress_path.empty() && selection != "auto" &&
+      provenance.at("policy_sha256") != file_sha256(selection)) {
+    throw std::runtime_error("Policy changed while reading progress-bound configuration");
+  }
+  const std::string configuration_hash = json_sha256(policy.definition);
+  const Json run_binding{{"source", provenance}, {"configuration_sha256", configuration_hash},
+                         {"dividends", dividends}, {"model", "common-markov"}};
+  const std::string run_hash = json_sha256(run_binding);
+  ProgressJournal progress(progress_path);
   CommonRun result{std::vector<Prediction>(rows.size()), Json::object()};
   std::map<Identity, std::vector<std::size_t>> groups;
   std::map<std::uint64_t, std::array<std::string, 4>> chain_identity;
@@ -314,9 +364,30 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
   std::size_t fitted_snapshots = 0;
   std::size_t fitted_chains = 0;
   std::size_t ambiguous_chains = 0;
+  std::size_t completed_snapshots = 0;
+  std::size_t completed_rows = 0;
+  std::size_t known_evaluations = 0;
+  std::size_t unavailable_evaluation_counts = 0;
+  std::size_t eligible_rows = 0;
+  for (const auto &[identity, indices] : groups) {
+    static_cast<void>(identity);
+    eligible_rows += indices.size();
+  }
+  StageTimes totals;
+  progress.append({{"record_type", "start"}, {"schema_version", 1}, {"sequence", 0},
+      {"run_binding_sha256", run_hash}, {"run_binding", run_binding},
+      {"configuration", policy.definition}, {"snapshots_expected", groups.size()},
+      {"input_rows", rows.size()}, {"completed_snapshots", 0},
+      {"rows_excluded_by_input_status", rows.size() - eligible_rows},
+      {"state", "incomplete"}, {"record_max_bytes", 4U * 1024U * 1024U},
+      {"completion_scope", "numerical snapshot processing only; final predictions/report "
+          "and wrapper run receipt are separate outputs"},
+      {"interruption_semantics", "no completion record means incomplete; only full "
+          "newline-terminated records are valid; no resume or in-flight snapshot recovery"}});
   const auto start = Clock::now();
   for (const auto &[identity, indices] : groups) {
     const auto snapshot_start = Clock::now();
+    StageTimes timing;
     std::set<std::uint64_t> chains;
     for (const auto index : indices) chains.insert(rows[index].chain);
     Json decision{{"underlier", identity[0]}, {"root", identity[1]}, {"snapshot_ns", identity[2]},
@@ -328,7 +399,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       decision["failure_stage"] = "identity";
       for (const auto index : indices) result.predictions[index].status = "inconsistent_chain";
     } else {
-      fit_snapshot(rows, indices, policy, result.predictions, decision);
+      fit_snapshot(rows, indices, policy, result.predictions, decision, timing);
     }
     const auto status = decision.at("status").get<std::string>();
     if (status == "ok") {
@@ -359,6 +430,39 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
     }
     decision["elapsed_microseconds"] =
         std::chrono::duration<double, std::micro>(Clock::now() - snapshot_start).count();
+    decision["stage_elapsed_microseconds"] = timing.elapsed;
+    decision["stage_attempted"] = timing.attempted;
+    // The fitter currently returns no evaluation ledger on a failed Result.
+    // Zero is known before fitting; a failed fit is explicitly unavailable.
+    const Json evaluations = decision.contains("fit") ? decision["fit"]["evaluations"]
+        : status == "fit_failure" ? Json(nullptr) : Json(0);
+    decision["objective_evaluations"] = evaluations;
+    if (evaluations.is_null()) ++unavailable_evaluation_counts;
+    else known_evaluations += evaluations.get<std::size_t>();
+    for (const auto &[stage, value] : timing.elapsed.items()) {
+      totals.elapsed[stage] = totals.elapsed[stage].get<double>() + value.get<double>();
+    }
+    ++completed_snapshots;
+    completed_rows += indices.size();
+    Json row_counts = Json::object();
+    Json vol_counts = Json::object();
+    for (const auto index : indices) {
+      count(row_counts, result.predictions[index].status);
+      count(vol_counts, result.predictions[index].vol_status);
+    }
+    progress.append({{"record_type", "snapshot"}, {"schema_version", 1},
+        {"sequence", completed_snapshots}, {"run_binding_sha256", run_hash},
+        {"underlier", identity[0]}, {"root", identity[1]}, {"snapshot_ns", identity[2]},
+        {"rows", indices.size()}, {"chains", chains.size()}, {"status", status},
+        {"failure_stage", decision.value("failure_stage", "")},
+        {"resolved_profile", decision.value("resolved_profile", "")},
+        {"completed_snapshots", completed_snapshots}, {"completed_rows", completed_rows},
+        {"row_status_counts", row_counts}, {"vol_status_counts", vol_counts},
+        {"elapsed_microseconds", decision["elapsed_microseconds"]},
+        {"stage_elapsed_microseconds", timing.elapsed}, {"stage_attempted", timing.attempted},
+        {"objective_evaluations", evaluations},
+        {"fit_termination", decision.contains("fit")
+            ? decision["fit"]["termination"] : Json(nullptr)}});
     decisions.push_back(std::move(decision));
   }
   const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
@@ -428,6 +532,17 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       {"timing_scope", "serial common-market preparation, policy resolution, fitting and "
           "equivalent IV; excludes CSV IO and policy parsing"},
       {"performance_claim", "diagnostic; requires quiet repeated release runs"}};
+  result.report["stage_elapsed_microseconds"] = totals.elapsed;
+  result.report["objective_evaluations_known"] = known_evaluations;
+  result.report["objective_evaluation_counts_unavailable"] = unavailable_evaluation_counts;
+  result.report["stage_timing_scope"] = "wall-clock stage calls, attempted flags distinguish "
+      "unvisited stages; snapshot includes orchestration, cohort includes progress IO; "
+      "fitter failure evaluation counts unavailable, never represented as zero";
+  result.report["progress"] = {{"enabled", !progress_path.empty()},
+      {"path", progress_path.empty() ? Json(nullptr)
+          : Json(std::filesystem::weakly_canonical(progress_path).string())},
+      {"run_binding_sha256", run_hash}, {"configuration_sha256", configuration_hash},
+      {"completed_snapshots", completed_snapshots}, {"completed_rows", completed_rows}};
 #ifdef __VERSION__
   result.report["compiler"] = __VERSION__;
 #elif defined(_MSC_VER)
@@ -440,6 +555,15 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
 #else
   result.report["build_type"] = "debug";
 #endif
+  progress.append({{"record_type", "complete"}, {"schema_version", 1},
+      {"sequence", completed_snapshots + 1U}, {"run_binding_sha256", run_hash},
+      {"state", "numerical_processing_complete"}, {"completed_snapshots", completed_snapshots},
+      {"completed_rows", completed_rows}, {"input_rows", rows.size()},
+      {"rows_excluded_by_input_status", rows.size() - completed_rows},
+      {"row_status_counts", row_status}, {"vol_status_counts", vol_status},
+      {"stage_elapsed_microseconds", totals.elapsed},
+      {"objective_evaluations_known", known_evaluations},
+      {"objective_evaluation_counts_unavailable", unavailable_evaluation_counts}});
   return result;
 }
 } // namespace quote_bench
