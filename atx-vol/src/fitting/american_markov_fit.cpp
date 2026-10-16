@@ -124,8 +124,8 @@ struct Layout {
 // One owned row per ORIGINAL interval, including paused variance. The compiler
 // applies the same schedule predicates; checking here keeps every represented
 // midpoint finite before any knot interpolation.
-Status map_time_weights(const AmericanMarkovFitMarket &m, const AmericanMarkovFitConfig &c,
-                        Layout &out) {
+[[nodiscard]] Status map_time_weights(const AmericanMarkovFitMarket &m,
+                                      const AmericanMarkovFitConfig &c, Layout &out) {
   const bool time_knots = c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots;
   if (time_knots) out.time_groups = out.time_knots.size();
   out.time_weights.reserve(m.intervals.size());
@@ -161,8 +161,9 @@ Status map_time_weights(const AmericanMarkovFitMarket &m, const AmericanMarkovFi
 // the model's own volatility budget. The represented interval log-sigma basis
 // must pass its fixed numerical admission over the final quoted prefix; the
 // objective's prior/roughness terms are never consulted, so they cannot rescue it.
-Status admit_time_knots(const AmericanMarkovFitMarket &m,
-                        std::span<const AmericanMarkovFitQuote> quotes, Layout &out) {
+[[nodiscard]] Status admit_time_knots(const AmericanMarkovFitMarket &m,
+                                      std::span<const AmericanMarkovFitQuote> quotes,
+                                      Layout &out) {
   const auto capacity = m.model_config.max_stored_volatility_values;
   if (capacity == 0 || capacity > kAmericanMarkovMaxStoredVolatilityValues ||
       m.intervals.size() > capacity / out.knots.size()) {
@@ -343,6 +344,9 @@ struct Evaluator {
           const double sigma = interpolated_sigma(sigmas[mapping.left_group * knot_count + j],
                                                   sigmas[mapping.right_group * knot_count + j],
                                                   mapping.right_weight);
+          // Defensive invariant, unreachable: interpolated_sigma brackets its
+          // result between two in-bounds controls. Were it ever to fire, the
+          // trial would only count as a failed evaluation.
           if (!positive(sigma) || sigma < config.min_sigma || sigma > config.max_sigma) {
             return Err(ErrorCode::OutOfRange, "Markov fit: interpolated sigma loses range");
           }

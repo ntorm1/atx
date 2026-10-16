@@ -90,6 +90,14 @@ def test_common_flat_control_has_independent_price_and_equivalent_iv(binary, tmp
     assert decision["fit"]["termination"] == "evaluation_limit"
     assert decision["fit"]["evaluations"] == 1
     assert decision["fit"]["sigmas"] == [.3]
+    # Schema 4: interval_groups is gone; owned time provenance replaces it.
+    assert report["schema_version"] == 4
+    assert "interval_groups" not in decision["fit"]
+    assert decision["fit"]["time_shape"] == "shared"
+    assert decision["fit"]["time_basis"] is None
+    assert decision["fit"]["interval_time_weights"] == [{
+        "left_group": 0, "right_group": 0, "right_weight": 0.0, "variance_time": .25,
+        "variance_active": True}]
     assert "not fitted local sigma" in report["predicted_vol_convention"]
     assert "no continuous-American" in report["accuracy_scope"]
     definition = report["policy_definition"]
