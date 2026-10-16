@@ -399,5 +399,44 @@ TEST(AmericanMarkovFit, MalformedSharedScheduleAndNonfiniteInputsAreRefused) {
   EXPECT_FALSE(fit_american_markov_intervals(market, quote, config));
 }
 
+TEST(AmericanMarkovFit, SubnormalWeightRetainsFiniteLargeResidualLoss) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  const double tiny = std::numeric_limits<double>::denorm_min();
+  const std::array quotes{
+      AmericanMarkovFitQuote{0, 100.0, Side::Call, 0.0, 20.0, 1.0e6},
+      AmericanMarkovFitQuote{0, 110.0, Side::Call, 1.0e148, 1.0e148, tiny}};
+  AmericanMarkovFitConfig config;
+  config.price_scale_floor = 1.0e-12;
+  config.midpoint_weight = 0.5;
+  config.max_evaluations = 1;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  // Factored reference avoids representing 1e320 or tiny/1e6. The model's
+  // bounded stock-scale price is negligible relative to this valid quote.
+  const double expected = tiny * 1.0e308 * 1.0e6;
+  EXPECT_GT(expected, 1.0e-10);
+  EXPECT_NEAR(fit->diagnostics().interval_loss, expected, expected * 1.0e-14);
+  EXPECT_NEAR(fit->diagnostics().midpoint_loss, 0.5 * expected, expected * 1.0e-14);
+  EXPECT_NEAR(fit->diagnostics().objective, 1.5 * expected, expected * 1.0e-14);
+}
+
+TEST(AmericanMarkovFit, MidpointCoefficientPrecedesSquaringAtTinyStockScale) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{1.0e-160, intervals, {}, {}};
+  const std::array quote{
+      AmericanMarkovFitQuote{0, 1.0e-160, Side::Call, 1.0e-160, 2.0e-160, 1.0}};
+  AmericanMarkovFitConfig config;
+  config.price_scale_floor = 100.0;
+  config.midpoint_weight = 1.0e6;
+  config.max_evaluations = 1;
+  const auto fit = fit_american_markov_intervals(market, quote, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  // With the coefficient applied after squaring, the unweighted squared
+  // midpoint residual rounds to zero. Its weighted contribution is representable.
+  EXPECT_GT(fit->diagnostics().midpoint_loss, 1.0e-319);
+  EXPECT_LT(fit->diagnostics().midpoint_loss, 1.0e-317);
+}
+
 } // namespace
 } // namespace atx::vol

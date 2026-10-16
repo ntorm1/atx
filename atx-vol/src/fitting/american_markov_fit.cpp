@@ -150,23 +150,27 @@ Objective objective(std::span<const AmericanMarkovFitQuote> quotes,
   Objective out;
   double weights = 0.0;
   for (const auto &q : quotes) weights += q.weight;
+  const double root_weights = std::sqrt(weights);
+  const double root_midpoint = std::sqrt(c.midpoint_weight);
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     const auto &q = quotes[i];
-    const double normalized_weight = q.weight / weights;
+    // Normalize in square-root space: weight/sum can underflow even when
+    // its weighted squared residual is material. Scale distance before its
+    // division as well, avoiding an overflowing unweighted residual.
+    const double root_weight = std::sqrt(q.weight) / root_weights;
     const double distance = std::max({q.bid - prices[i], prices[i] - q.ask, 0.0});
     const double scale = std::max(0.5 * (q.ask - q.bid), c.price_scale_floor);
-    const double residual = distance / scale;
-    out.interval += normalized_weight * residual * residual;
+    const double residual = (root_weight * distance) / scale;
+    out.interval += residual * residual;
     if (q.bid > 0.0 && c.midpoint_weight > 0.0) {
       const double center = 0.5 * q.bid + 0.5 * q.ask;
-      const double tie = (prices[i] - center) / scale;
-      out.midpoint += normalized_weight * tie * tie;
+      const double tie = root_midpoint * ((root_weight * (prices[i] - center)) / scale);
+      out.midpoint += tie * tie;
     }
     out.max_error = std::max(out.max_error, distance);
     out.mean_error += distance / static_cast<double>(quotes.size());
     out.inside += distance == 0.0 ? 1U : 0U;
   }
-  out.midpoint *= c.midpoint_weight;
   double prior = 0.0;
   double strike = 0.0;
   double time = 0.0;

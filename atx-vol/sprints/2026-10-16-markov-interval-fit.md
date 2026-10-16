@@ -87,3 +87,13 @@ Lane receipt: Debug `vol-dev` target built, then all **12 tests passed** in
 source and test objects compiled successfully after the final API comment.
 `git diff --check` and manual 100-column scan passed. These are focused lane
 checks, not Release performance evidence or full module qualification.
+
+Independent review found an extreme-weight arithmetic defect before integration:
+normalizing a positive subnormal weight could erase a finite material weighted
+residual. The correction uses square-root weight normalization, scales the
+distance before dividing by the spread floor, and applies the square root of
+the midpoint coefficient before squaring. The concrete counterexample changed
+from zero loss to the factored reference 4.940656458412466e-10. Added regressions
+cover that contribution and midpoint weighting at tiny stock scale. Corrected
+Debug validation: **14 tests passed**, zero skips, 2.107 seconds; source/test
+PCH-off checks passed. Both implementation and correction require integration.
