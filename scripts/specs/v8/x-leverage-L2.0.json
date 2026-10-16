@@ -7,13 +7,13 @@
   "change": {
     "set": {
       "nav.leverage": "2.0",
-      "nav.output": "build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb"
+      "nav.output": "build-equity/p9-b0g-x10-nav"
     }
   },
   "locked": {
     "reference_cell": {
-      "path": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb/summary.json",
-      "sha256": "2d30b7f6466cbcb3e5bf0f4758ce5570e853d26b15b44eba93814151e21aa525"
+      "path": "build-equity/p9-b0g-yf0-nav/summary.json",
+      "sha256": "826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38"
     },
     "reference_admission": {
       "path": "build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json",

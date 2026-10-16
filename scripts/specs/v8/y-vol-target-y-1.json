@@ -6,21 +6,21 @@
   "nominal_parent": "base-b0c.json",
   "change": {
     "set": {
-      "nav.output": "build-equity/mega-nav-v8y-vol-target-L2.0",
+      "nav.output": "build-equity/p9-b0g-y1-nav",
       "nav.leverage": "2.0"
     },
     "flags": {
       "nav": {
         "--vol-target": "vol-target-v1",
-        "--risk-model": "build-equity/v8-risk-lo3-v10",
-        "--risk-model-sha256": "862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a"
+        "--risk-model": "build-equity/p9-m2i-dcov-v11",
+        "--risk-model-sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
       }
     }
   },
   "locked": {
     "reference_cell": {
-      "path": "build-equity/mega-nav-v8x-theme-erc-L2.0-v8ysb/summary.json",
-      "sha256": "1bc1b6ca4ea3239f5cfe9c41001f2cf0180c6c96ae691a9ba6d5fdd1919e7fa3"
+      "path": "build-equity/p9-b0g-x10-nav/summary.json",
+      "sha256": "deabe71b5e2dedfb0b224fb46fdcd0e7194a6950ad8f5ecabe9601cd786bd0bd"
     },
     "reference_admission": {
       "path": "build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json",
