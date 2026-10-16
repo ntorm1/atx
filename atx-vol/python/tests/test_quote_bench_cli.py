@@ -156,7 +156,8 @@ def test_native_counts_adjusted_deliverables_as_unsupported(binary, tmp_path):
     assert all(row["predicted_price"] == "" for row in rows)
 
 
-def test_native_refuses_calendar_crossing_for_whole_affected_slices(binary, tmp_path):
+@pytest.mark.parametrize("mode", ["auto", "fixed", "override"])
+def test_native_refuses_calendar_crossing_for_whole_affected_slices(binary, tmp_path, mode):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     make_quotes(source)
     with source.open(newline="") as stream:
@@ -179,7 +180,17 @@ def test_native_refuses_calendar_crossing_for_whole_affected_slices(binary, tmp_
         writer = csv.DictWriter(stream, fieldnames=list(first[0]))
         writer.writeheader()
         writer.writerows(first + later)
-    result = invoke(binary, source, output)
+    extra = []
+    if mode == "fixed":
+        extra = ["--curve", "essvi"]
+    elif mode == "override":
+        policy = tmp_path / "policy.json"
+        policy.write_text(json.dumps({
+            "schema_version": 1,
+            "symbol_overrides": [{"symbol": "AAA", "profile": "ordinary"}],
+        }))
+        extra = ["--policy", str(policy)]
+    result = invoke(binary, source, output, *extra)
     assert result.returncode == 0, result.stderr
     with output.open(newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -264,7 +275,8 @@ def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
         "schema_version": 1,
         "profiles": [{"name": name, "base": name} for name in ["dense", "ordinary", "sparse"]] + [
             {"name": "custom-smile", "base": "ordinary", "curve": "svi", "min_quotes": 8,
-             "quality": {"max_weight": 321}, "parametric": {"huber_k": 1.25}}],
+             "quality": {"max_weight": 321}, "parametric": {"huber_k": 1.25},
+             "spline": {"grid": [-0.7, -0.2, 0.1, 0.8]}}],
         "symbol_overrides": [{"symbol": "AAA", "profile": "custom-smile"}],
     }))
     result = invoke(binary, source, output, "--policy", str(policy))
@@ -278,7 +290,10 @@ def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
     assert definition["quality"]["max_weight"] == 321
     assert definition["parametric"]["huber_k"] == 1.25
     assert definition["parametric"]["validate_no_arb"] is True
-    assert definition["dividend_model"] == "aggregate-pv"
+    assert definition["dividend_model"] == "aggregate_pv_approximation"
+    assert definition["spline"]["grid"] == [-0.7, -0.2, 0.1, 0.8]
+    assert report["policy_definition_format"] == "expanded-runtime-configuration-v1"
+    assert all(row["configured_curve"] == "svi" for row in rows)
     document = json.loads(policy.read_text())
     document["symbol_overrides"][0]["symbol"] = "aaa"
     policy.write_text(json.dumps(document))
@@ -290,6 +305,8 @@ def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
 @pytest.mark.parametrize("document", [
     '{"schema_version":1,"srVol":0.3}',
     '{"schema_version":1,"schema_version":1}',
+    '{"schema_version":1,"regimes":{"dense_profile":"dense","dense_profile":"dense"}}',
+    '{"schema_version":1,"regimes":{"near_money_log_band":1e999}}',
     '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","quality":{"max_weight":true}}]}',
     '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","parametric":{"validate_no_arb":false}}]}',
     '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","convex":{"node_cap":1000000}}]}',
@@ -297,6 +314,11 @@ def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
     '{"schema_version":1,"symbol_overrides":[{"symbol":"AAA","profile":"dense"},{"symbol":"AAA","profile":"sparse"}]}',
     '{"schema_version":1,"regimes":{"dense_max_bidless_fraction":1.5}}',
     '{"schema_version":1,"profiles":[{"name":"bad,name","base":"dense"}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","spline":{"grid":[0,1,1,2]}}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","parametric":{"max_inner_iter":1.5}}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","min_quotes":18446744073709551615}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","parametric":{"lee_bound_project":false}}]}',
+    '{"schema_version":1,"extra":' + '[' * 20 + '0' + ']' * 20 + '}',
 ])
 def test_native_rejects_invalid_policy_before_output(binary, tmp_path, document):
     source, output, policy = tmp_path / "quotes.csv", tmp_path / "predictions.csv", tmp_path / "policy.json"
@@ -330,6 +352,10 @@ def test_native_preserves_policy_when_outputs_alias_it(binary, tmp_path):
     assert policy.read_bytes() == original
     assert invoke(binary, source, output, "--policy", str(policy), "--report", str(policy)).returncode != 0
     assert policy.read_bytes() == original
+    alias = tmp_path / "policy-hardlink.json"
+    os.link(policy, alias)
+    assert invoke(binary, source, alias, "--policy", str(policy)).returncode != 0
+    assert policy.read_bytes() == original
     policy.write_bytes(b" " * (1024 * 1024 + 1))
     result = invoke(binary, source, output, "--policy", str(policy))
     assert result.returncode != 0
@@ -355,3 +381,29 @@ def test_native_duplicate_expiry_does_not_inflate_liquidity(binary, tmp_path):
     assert decision["features"]["unique_contracts"] == 4
     assert decision["resolved_profile"] == "sparse"
     assert all(row["status"] == "ambiguous_expiry" for row in read_quotes(output)[:52])
+
+
+def test_native_reports_selected_family_separately_when_no_curve_exists(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    write_quotes(source, read_quotes(source)[12:14])
+    result = invoke(binary, source, output)
+    assert result.returncode == 0, result.stderr
+    predictions = read_quotes(output)
+    assert all(row["resolved_profile"] == "sparse" for row in predictions)
+    assert all(row["configured_curve"] == "essvi" for row in predictions)
+    assert all(row["actual_curve"] == "" for row in predictions)
+    counts = json.loads(result.stdout)["per_profile_counts"]["sparse"]
+    assert counts["fitted_chains"] == 0
+    assert counts["served_rows"] == 0
+    assert counts["actual_curve_rows"] == {}
+    assert counts["no_curve_rows"] == 2
+    assert sum(counts["row_status_counts"].values()) == 2
+
+
+def test_native_help_after_input_does_not_start_run(binary, tmp_path):
+    source, output = tmp_path / "missing.csv", tmp_path / "predictions.csv"
+    result = invoke(binary, source, output, "--help")
+    assert result.returncode == 0, result.stderr
+    assert "Default: --policy auto" in result.stdout
+    assert not output.exists()

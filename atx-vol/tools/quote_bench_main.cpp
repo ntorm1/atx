@@ -17,7 +17,9 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -42,6 +44,7 @@ struct Arguments {
   std::size_t max_rows{2000000U};
   QuoteSliceQualityConfig quality;
   std::size_t min_quotes{6};
+  bool help_requested{false};
 };
 
 template <class T> T number(std::string_view value, std::string_view column) {
@@ -78,7 +81,9 @@ Arguments arguments(int argc, char **argv) {
   bool quality_specified = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view key{argv[i]};
-    if (!seen.insert(key).second) throw std::runtime_error("Duplicate argument: " + std::string(key));
+    if (!seen.insert(key).second) {
+      throw std::runtime_error("Duplicate argument: " + std::string(key));
+    }
     if (key == "--help") {
       std::cout << "atx-vol-quote-bench --input quotes.csv --output predictions.csv "
                    "[--report timing.json] [--policy auto|policy.json | --curve CURVE] "
@@ -86,6 +91,7 @@ Arguments arguments(int argc, char **argv) {
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
                    "[--max-weight 1000]\n"
                    "Default: --policy auto. Quality/min-quotes flags require explicit --curve.\n";
+      args.help_requested = true;
       return args;
     }
     if (i + 1 == argc) throw std::runtime_error("Missing value for " + std::string(key));
@@ -112,7 +118,8 @@ Arguments arguments(int argc, char **argv) {
     throw std::runtime_error("Policy and curve names must not be empty");
   }
   if (quality_specified && args.curve.empty()) {
-    throw std::runtime_error("Global quality/min-quotes flags require explicit --curve; configure policy profiles instead");
+    throw std::runtime_error("Global quality/min-quotes flags require explicit --curve; "
+                             "configure policy profiles instead");
   }
   if (args.input.empty() || args.output.empty() || args.max_rows == 0U) {
     throw std::runtime_error("--input, --output and a positive --max-rows are required");
@@ -302,6 +309,7 @@ struct Prediction {
   bool admitted{false};
   std::string resolved_profile;
   std::string policy_source;
+  std::string configured_curve;
   std::string actual_curve;
 };
 
@@ -390,6 +398,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     if (!kind) throw std::runtime_error(kind.error().to_string());
     QuoteFitProfile profile{"fixed-" + args.curve, ProfileKind::OrdinarySingleName, {}};
     profile.config.curve.kind = *kind;
+    profile.config.curve.convex.bound_slope_below = true;
     profile.config.quality = args.quality;
     profile.config.min_quotes = args.min_quotes;
     profile.config.dividend_model = dividends;
@@ -504,6 +513,13 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     decision["resolved_profile"] = profile->name;
     decision["policy_source"] = source;
     decision["configured_curve"] = to_string(profile->config.curve.kind);
+    if (!stats.per_profile_counts.contains(profile->name)) {
+      stats.per_profile_counts[profile->name] = {
+          {"resolved_snapshots", 0U}, {"attempted_chains", 0U}, {"fitted_chains", 0U},
+          {"rows", 0U}, {"admitted_quotes", 0U}, {"served_rows", 0U}, {"no_curve_rows", 0U},
+          {"configured_curve", to_string(profile->config.curve.kind)},
+          {"actual_curve_rows", Json::object()}, {"row_status_counts", Json::object()}};
+    }
     add_count(stats.per_profile_counts[profile->name], "resolved_snapshots");
     for (const auto id : eligible) {
       prepared.at(id).profile = profile;
@@ -511,7 +527,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       for (const auto i : chains.at(id)) {
         predictions[i].resolved_profile = profile->name;
         predictions[i].policy_source = source;
-        predictions[i].actual_curve = to_string(profile->config.curve.kind);
+        predictions[i].configured_curve = to_string(profile->config.curve.kind);
       }
     }
     stats.policy_decisions.push_back(std::move(decision));
@@ -625,7 +641,9 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     add_count(counts, "rows");
     add_count(counts, "admitted_quotes", prediction.admitted ? 1U : 0U);
     add_count(counts, "served_rows", prediction.status == "ok" ? 1U : 0U);
-    add_count(counts["actual_curve_rows"], prediction.actual_curve);
+    if (prediction.actual_curve.empty()) add_count(counts, "no_curve_rows");
+    else add_count(counts["actual_curve_rows"], prediction.actual_curve);
+    add_count(counts["row_status_counts"], prediction.status);
   }
   stats.elapsed_seconds = std::chrono::duration<double>(Clock::now() - start).count();
   return predictions;
@@ -636,7 +654,7 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
   std::ofstream stream{path};
   if (!stream) throw std::runtime_error("Cannot open prediction output");
   stream << "row_id,predicted_price,predicted_vol,status,chain_id,quote_status,admitted,"
-            "resolved_profile,policy_source,actual_curve\n";
+            "resolved_profile,policy_source,configured_curve,actual_curve\n";
   stream << std::setprecision(17);
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &prediction = predictions[i];
@@ -647,6 +665,7 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
     stream << ',' << prediction.status << ',' << rows[i].chain << ','
            << prediction.quote_status << ',' << (prediction.admitted ? 1 : 0) << ','
            << prediction.resolved_profile << ',' << prediction.policy_source << ','
+           << prediction.configured_curve << ','
            << prediction.actual_curve << '\n';
   }
   stream.close();
@@ -671,8 +690,10 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
       {"calendar_pairs_checked", stats.calendar_pairs},
       {"calendar_rejected_chains", stats.calendar_rejected_chains},
       {"ambiguous_expiry_chains", stats.ambiguous_expiry_chains},
-      {"policy_mode", !args.curve.empty() ? "fixed-curve" : args.policy == "auto" ? "auto" : "file"},
+      {"policy_mode", !args.curve.empty() ? "fixed-curve" :
+          args.policy == "auto" ? "auto" : "file"},
       {"curve", args.curve.empty() ? Json(nullptr) : Json(args.curve)},
+      {"policy_definition_format", "expanded-runtime-configuration-v1"},
       {"policy_definition", stats.policy_definition}, {"policy_decisions", stats.policy_decisions},
       {"per_profile_counts", stats.per_profile_counts}, {"dividend_model", args.dividends},
       {"chain_market_aggregation", "median"}, {"contract_carry", "per-strike supplied yield"},
@@ -684,10 +705,12 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
       {"chain_latency_us_p50", quantile(stats.chain_microseconds, 0.50)},
       {"chain_latency_us_p95", quantile(stats.chain_microseconds, 0.95)},
       {"chain_latency_us_p99", quantile(stats.chain_microseconds, 0.99)},
-      {"timing_scope", "serial preparation, raw policy routing, fit and repricing; excludes CSV IO and policy parsing; chain latency excludes preparation/routing"},
+      {"timing_scope", "serial preparation, raw policy routing, fit and repricing; "
+          "excludes CSV IO and policy parsing; chain latency excludes preparation/routing"},
       {"performance_claim", "diagnostic; requires quiet repeated release runs"},
       {"fit_failure_counts", stats.fit_failures},
-      {"mandatory_admission", "quote validity, fitted American price bounds/strike shape/cross-side and calendar checks remain enabled"}};
+      {"mandatory_admission", "quote validity, fitted American price bounds/strike shape/"
+          "cross-side and calendar checks remain enabled"}};
 #ifdef __VERSION__
   report["compiler"] = __VERSION__;
 #elif defined(_MSC_VER)
@@ -708,7 +731,7 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
 int main(int argc, char **argv) {
   try {
     const auto args = arguments(argc, argv);
-    if (args.input.empty()) return 0; // --help
+    if (args.help_requested) return 0;
     const auto rows = read_rows(args);
     RunStatistics stats;
     const auto predictions = run(args, rows, stats);
