@@ -16,6 +16,45 @@ JSON path, exit code and counts only; no 2020-2023 statistic is read or recorded
 - **GATE-IDX:** `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` (73,728 bytes, sha256 `3a177dfd...c6f0`) was
   present at step 0; this agent never deletes it and runs nothing naming that cache while it exists (see step 3).
 
+## Status by step after chain agent 3 (2026-10-16 ~14:30Z; detail in "Chain agent 3" at the end; rows not listed are as after agent 2)
+
+**Gate status: BLOCKED-OWNER** at the GATE-IDX check (14:21:49Z: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite`
+still present; the owner's to delete). Every cache-free item of GATE-3-ORDER is done and committed. No code red;
+known-red set EMPTY; 0 trials; no build (next free tag `p9-3h`); EXE-FREEZE not started.
+
+| step | state | evidence (`gate-logs/`) |
+|---|---|---|
+| 0 start state | **holds** (re-verified by agent 3: heads, ledger 133 / `27e40f9f`, research-store absent, 27 / 27 + 27 / 27 `disk = receipt`) | `exe-sha-{rel,dbg}-3.txt` |
+| 3 identity | **PARTIAL** (as agent 2) + X-5 rows **CUT**: "not run at the gate: fields v13 absent (FIELDS-GONE)" (FIELDS-X5); Y-F0 u / w flag-absent identity not run (GATE-IDX) | - |
+| 4 P9-B0 | **PARTIAL**: substitution list committed first (`778d34b8`); FIELDS-SUB witness **70 / 70**; R-2 run on v15 **completed**, comparison **outside** the allowed list (FIELDS / DERIVED / M1d-C1 / C1-COST classes only, no other path): **PATH B** by the ruling's letter (open question 1); X-10 re-based **holds** (`p9-b0g-x10-nav`); Y-1 re-based on the v1.1 store (`p9-b0g-y1-nav`; COV-9 S9 holds; differs from both earlier Y-1 dirs at 26 / 28 files, PRE-29); Y-F0 u / w / NAV **not run** (GATE-IDX) | `fields-witness.txt`, `b0-runs.txt`, `r2-cmp-raw.txt`, `r2-classify.txt`, `x10-cmp.txt`, `y1-cmp-{b0,v8}.txt`, `cov9-role-check-3.txt`, `v11-store-check-3.txt`, `ucrt-b0-3.txt` |
+| 5 rho | **PARTIAL**: Y-1 vs X-10 = 0.9947113980219978, flag false; the P9-X pair and X-10 vs Y-F0 wait for Y-F0 | `rho-pairs-1.txt` |
+| 6 re-pin | not reached (needs Y-F0's re-based references); EXE-FREEZE not started | - |
+| 7 store step | as after agent 2 (catalog, `verify --pins`, render identity, second catalog, G-P ticks not run: post-re-pin); X-5 opt-in cache identity **CUT** (FIELDS-X5: M6b items 5 / 6 cited) | - |
+| 9 records | incremental: this file, `integration-log.md`, `handoff-root-gate-3.md` | - |
+
+Rulings acted on by agent 3 (rows not listed: as after agent 2):
+
+| ruling | state | evidence (`gate-logs/`) |
+|---|---|---|
+| GATE-3-ORDER | followed: witness, substitution list (before any P9-B0 run), R-2, X-10, Y-1, then (cache-free) the Y-1 vs X-10 rho, then the GATE-IDX check | this file "Chain agent 3" |
+| FIELDS-SUB | witness 70 / 70; R-2 run completed on v15; **path B** (outside the allowed list; every differing path classified, no unclassified path); open question to the PM | `fields-witness.txt`, `r2-classify.txt` |
+| FIELDS-X5 | X-5 step-3 rows and step-7 opt-in cache identity cut, recorded as ruled; M6b items 5 / 6 cited | - |
+| GATE-MYPY | every commit by pathspec with the exclude; `git show --stat` 0 `mypy_cache` each | git |
+| GATE-IDX | file present at start, at the check (14:21:49Z) and at the hand-back (14:29:49Z): BLOCKED-OWNER | `cache-lo3-listing-agent3-idx.txt` |
+| GATE-RELCACHE | not reached (no Release u / w pass); built into `tools/b0_ic.py` | - |
+| PRE-22 / PRE-29 / PRE-30 | R-2 per FIELDS-SUB (path B); Y-1 re-based on the v1.1 store by its pin | `b0-runs.txt` |
+| PRE-34 | byte / JSON-path form: re-based Y-1 vs v8's ledgered Y-1 "differ at" 26 / 28 files; the printed-precision check is the cells root's (B.7) | `y1-cmp-v8.txt` |
+| PRE-7a / C3-9 | `--ann-mean-gross` on R-2, X-10, Y-1 (opt-in leaves only, absent on every reference side) | `x10-cmp.txt`, `r2-classify.txt` |
+| ALCLOCK-1 | `--info-clock-print` reserved for Y-F0's NAV (row 6; not run) | substitution list |
+| SEAL-ALLOW-3 | no seal scan in a bounded hand run; flag on no argv; no seal stop | substitution list |
+| COV-9 / COVR-1 | S9 holds before the Y-1 run; bounded runner; the v1.1 store = its pin | `cov9-role-check-3.txt`, `v11-store-check-3.txt` |
+| SQL3-2 / SQL-11 | no `store` block in any receipt; no cache flag on any NAV argv; no cache-index flag anywhere | `b0-runs.txt` |
+| B2-13 | Y-1 vs X-10 rho logged (value, flag) | `rho-pairs-1.txt` |
+| M2c-RED-2 (d) / CRT-2 | `ucrtbase.dll` recorded at the P9-B0 runs: unchanged | `ucrt-b0-3.txt` |
+| RUN-1 / RUN-2 / EXE-CUR / SPDLOG-RELINK | `--seconds 600 --max-rss-mib 2048`; free RAM stated per run; exe = receipt before and after each run | `b0-runs.txt` |
+| TEST-2 | no suite run by agent 3 | - |
+| LAPSE-TABLE | fit mode flag-absent in the records; P9-W LAPSED (0) carried | round-2b-ii table |
+
 ## Status by step after chain agent 2 (2026-10-16 ~13:45Z; the tables below it are agent 1's, as they stood at OWNER STOP 12)
 
 **Gate status: BLOCKED-OWNER** at step 4: (i) GATE-IDX: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite`
@@ -97,6 +136,28 @@ P9-B0 itself.
 Agent 2: item 25's value re-read at its step 0 (2026-10-16): unchanged (10.0.26100.7623 `2C08E77F...65EF`); still to be
 re-recorded at P9-B0 itself. Delivered as gate outcomes (not Appendix IV items): D3-Q1a DIFFERENT (P9-W lapses at 0)
 and COMPOSE-1a ACCEPT. The items tied to P9-B0, rho and the re-pin stay open (step 4 not started).
+
+Agent 3 (2026-10-16 ~14:30Z; BLOCKED-OWNER at GATE-IDX; by Appendix IV item; a "pending" item is NOT final):
+
+| item | fact | evidence |
+|---|---|---|
+| 1 R-2 | **PATH B of FIELDS-SUB** (by the ruling's letter): R-2 NOT re-based; witness 70 / 70; run `build-equity/p9-b0-r2-nav` completed on fields v15 (listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`), differing from the v8 NAV of record only at the FIELDS / DERIVED / M1d-C1 / C1-COST paths; G-B6 / OD-3 / G-B8 lines as FIELDS-SUB words path B; the PM's re-ruling on the evidence is open (question 1) | "Chain agent 3", `r2-classify.txt` |
+| 2 Y-F0 u / w / NAV | **pending** (GATE-IDX); new dirs reserved `p9-b0g-yf0-{u,w,nav}` | substitution list rows 4-6 |
+| 3 Y-1 | `build-equity/p9-b0g-y1-nav` (store `p9-m2i-dcov-v11`, manifest `397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7`): 28 files, listing `cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813`, `summary.json` `b0d4dcbf53e81aff3863ca1d9c7230da73a5c0a911a60f622c9f78aa3796c028`, `vol_target.csv` `8e614ea7bbf47d363a5c357b7442c7b3a7b86df753879715f5d20bd083f767a7`; PRE-34's byte / JSON-path form vs v8's ledgered Y-1 NAV: differ at 26 / 28 files (PRE-29's store change); the printed-precision agreement is the cells root's (B.7) | `b0-files-p9-b0g-y1-nav.txt`, `y1-cmp-v8.txt` |
+| 4 exe table | the step-1 table stands (Release p9-3f; 27 / 27 `disk = receipt` at agent 3's start and before / after every run); final only in the re-pin commit (**pending**, step 6 not reached) | `exe-sha-rel-3.txt` |
+| 5 C3-6 | holds, cited from M2j (`handoff-root-m2j.md:44`: X-5 and Y-F0 flag-absent NAV 26 / 27 identical, producer keys only; the opt-in leaves `/scenarios/0..4/ann_mean_gross` only, `handoff-root-m2j-fin.md:44`) | - |
+| 6 eval mode | **pending** (read from the re-based Y-F0 u receipt; u not run) | - |
+| 8 P9-L parent / reference | = item 2: **pending** | - |
+| 9, 12, 15 fit mode | **flag-absent** (D3-Q1a DIFFERENT, P9-W LAPSED (0); LAPSE-TABLE) | `d3q1a.txt`, ledger :975, :981 |
+| 20 rho P9-X pair | **pending** (re-based Y-1 vs re-based Y-F0) | - |
+| 22 rho P9-V pair | **pending** (before P9-V's read) | - |
+| 23 | B8A-PROD: the cells root | ledger :971 |
+| 25 `ucrtbase.dll` at P9-B0 | 10.0.26100.7623 `2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF` at the cache-free runs (14:22:31Z; = CRT-2); to be re-recorded at the Y-F0 runs | `ucrt-b0-3.txt` |
+| 26 rho of the references | Y-1 vs X-10 (gate refs): 0.9947113980219978, "1 - rho < 1e-6" **false**; the rest **pending** | `rho-pairs-1.txt` |
+
+Beside the items: SQL4 verdict green (in the head, SQL4-CUTOFF-2); D3-Q1a DIFFERENT; COMPOSE-1a ACCEPT; ALCLOCK-1 held;
+cut line X-5 (FIELDS-X5); substitution list `778d34b8`; cache listing before any Release pass: 352 files `fb444f7d316a1a4c`
+(351 + the GATE-IDX file; without it `155872de50833fca`); no Release pass ran, so no "after" listing.
 
 ## Step 0: start state (re-verification only; GATE-0 did the slips)
 
@@ -495,7 +556,7 @@ world and its store are deleted by literal name after this record.
 
 ## Chain agent 3 (RESUME 13, 2026-10-16; `r13-prompts/gate-prompt-3.md`; rulings GATE-3-ORDER, FIELDS-SUB, FIELDS-X5, GATE-MYPY, LAPSE-TABLE, TEST-2)
 
-Started from `handoff-root-gate-2.md`. Order of work = GATE-3-ORDER (ledger :961): every item that names no candidate
+Started from `handoff-root-gate-2.md`. Order of work = GATE-3-ORDER (ledger :982): every item that names no candidate
 cache first, then the GATE-IDX check. Every commit of this agent: explicit pathspecs plus
 `:(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache`, then `git show --stat HEAD` checked for
 `mypy_cache` (0) (GATE-MYPY; the 133 staged editor-side paths are the owner's to unstage, never touched here).
@@ -569,3 +630,94 @@ Not re-based: the Y-F0 fit (the brief's step 4 names u, w and NAV; the NAV refer
 gate's flag-absent fit identity of record is agent 2's (`fit-identity-yf0.txt`: holds outside D2's code-identity
 stamps). The D-COV stores are pinned bytes, never rebuilt (CRT-2). rho (step 5) is taken on the new NAV dirs above
 (B2-13; value and the "1 - rho < 1e-6" flag only).
+
+Committed as `778d34b8` (with `tools/b0_nav.py`, the ledger and `gate-prompt-3.md`), before the first P9-B0 run.
+
+### Step 4, agent 3: the cache-free P9-B0 runs (rows 1-3; `gate-logs/b0-runs.txt`, `b0-files-<out>.txt`, `receipt-<out>.json`)
+
+Every run: Release NAV exe p9-3f `255b58ac...3565` (= receipt before and after), bounded runner `--seconds 600
+--max-rss-mib 2048 --build-type Release`, alone on our side, receipt "clean in the code pathspec", **no `store` block**
+(receipt and start), argv = the receipt of record's with exactly the substitution list's tokens changed (the tool's token
+diff in `b0-runs.txt`). `ucrtbase.dll` at these runs: 10.0.26100.7623 `2C08E77F...65EF` (= CRT-2; `gate-logs/ucrt-b0-3.txt`).
+
+| # | run | started (UTC) | free RAM before | outcome | wall / peak | files | listing SHA-256 (`b0-files-<out>.txt`) | `summary.json` SHA-256 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `p9-b0-r2-nav` (R-2) | 14:15:27 | 3,350 MiB | completed, exit 0 (the 84-field v15 manifest accepted) | 25.1 s / 583 MiB | 27 | `04bb8060...b1bd` | `48a52f6a...c1b9` |
+| 2 | `p9-b0g-x10-nav` (X-10) | 14:18:45 | 3,171 MiB | completed, exit 0 | 25.6 s / 583 MiB | 27 | `6c87c8d5...f31d` | `deabe71b...0bd` |
+| 3 | `p9-b0g-y1-nav` (Y-1, store `p9-m2i-dcov-v11`) | 14:19:44 | 3,109 MiB | completed, exit 0 | 25.8 s / 1,080 MiB | 28 | `cac882e1...b813` | `b0d4dcbf...c028` (`vol_target.csv` `8e614ea7...67a7`) |
+
+Before row 3: COV-9 role check (`gate-logs/cov9-role-check-3.txt`, 14:19:24Z): role `e1c67101...95f4`,
+`universe.delisting.returns_applied = false`, 0 of 990 events true: **S9 HOLDS**; and the v1.1 store re-checked
+read-only against its pin (`tools/store_files_check.py`, `gate-logs/v11-store-check-3.txt`: manifest `39736647...23c7`,
+11 listed files + `model.atxcov` (root `b39a1b77...2e1d`) = the manifest, none unlisted: HOLDS).
+
+**Row 1, R-2: FIELDS-SUB step (3) and its verdict.** `m2g-logs/tools/nav_cmp.py` against the v8 NAV of record
+(`gate-logs/r2-cmp-raw.txt`): 27 / 27 files, **13 byte-identical, 14 differing; VERDICT outside the allowed list**
+(`summary.json` `/producer/*`, `/scenarios/<i>/ann_mean_gross`). Every differing path classified
+(`gate-logs/tools/r2_classify.py`, `gate-logs/r2-classify.txt`; kinds of values only, no value printed): **no path
+outside these classes**:
+
+| class | where | count |
+|---|---|---|
+| ALLOWED | `summary.json` `/producer/{build_type, definition, engine_git_sha}` (absent -> string), `/scenarios/0..4/ann_mean_gross` (absent -> number, opt-in side only) | 8 leaves |
+| FIELDS (the substitution itself) | `/financing_fields/manifest_sha256` in `summary.json`, `recipe.json`, `capacity/summary.json`, `capacity/recipe.json` (v10's `a4a060ae` -> v15's `26fee5ce`) | 4 leaves |
+| DERIVED (a digest of another output file, each = that file's digest on its own side) | `/recipe_sha256` (compact-JSON digest of `recipe.json`, in `summary.json` and `capacity/summary.json`); `summary.json` `/scenarios/1..4/daily_csv_sha256`; `capacity/summary.json` `/scenarios/0..4/daily_csv_sha256`; `summary.json` `/v7/files/{capacity/summary.json, v7_extras.json}` and `v7_extras.json` `/files/capacity/summary.json` (added) | 14 leaves |
+| M1D-C1 (named by M1d's written P9-B0 list for a v8-era reference vs a P9 exe, `integration-log.md:251-259`) | `summary.json` `/v7/extras` (string) | 1 leaf |
+| C1-COST (M1d's class, `integration-log.md:345`: cost columns only, a few rows) | the 4 daily CSVs of L1-L4 and the 5 `capacity/daily_K`: only `impact_cost_dollars`, `trade_cost_dollars`, `unrationed_cost_dollars`, `trade_cost_return`, 2-8 rows of 1,006 per file | 9 files |
+
+Byte-identical: every `events_*.csv` (5) and `capacity/events_*.csv` (5), the L0 `daily_linear-6bps-stale5-v1+swap-fin-v1.csv`,
+`capacity_curve.csv`, `v7_transfer_coefficient.csv`; no `summary.json` leaf differs other than those listed above.
+
+**Verdict, as the dispatch and FIELDS-SUB word it: PATH B.** The witness held (70 / 70) and the exe accepted the 84-field
+manifest; the outcome is "any other difference": the outputs differ outside the allowed paths, at the FIELDS, DERIVED,
+M1D-C1 and C1-COST paths above. So, as ruled: **R-2 is NOT re-based**; G-B6 pairs P9-F0 against the v8 NAV of record
+`mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80` with the line "cross-build reference (Debug NAV exe,
+fields v10): FIELDS-GONE" beside it; the OD-3 R-2 history line is "not readable: its TRAIN NAV cannot be reproduced on
+the frozen build (FIELDS-GONE)"; G-B8's paired leg "not evaluated" if OD-3 runs at all; the differing paths (the table
+above) are a finding. `p9-b0-r2-nav` is kept (a P9-B0 run dir; never deleted) with its SHA-256 listing. **For the PM
+(decides nothing here):** the comparison base was written by the v8 exe (`5497c89d`, source `39f87cd6`, 2026-10-02),
+before P9's NAV change, so the allowed list (`/producer/*` + the opt-in) cannot hold against it whatever the fields
+input: the same exe change moved every v8-era reference at M1d's P9-B0 (Y-F0, X-10, Y-1: 1-8 cost-column rows per L1-L4
+file, `/v7/extras`, `/v7/files/*`, all inside M1d's written list), and the FIELDS leaves are written by the substitution
+by construction (FIELDS-SUB's own trade-off clause names "its sha" among the differences); no position (events file),
+no L0 file and no statistic leaf of `summary.json` moved. Whether that is path A is the PM's ruling (open question 1).
+
+**Row 2, X-10: holds** (`gate-logs/x10-cmp.txt`): 27 / 27 files, 26 byte-identical; `summary.json` differs only at
+`/producer/build_type`, `/producer/engine_git_sha` and `/scenarios/0..4/ann_mean_gross` (absent in the reference, present
+in all 5 new scenarios); VERDICT inside the list. The re-based X-10 reference is `p9-b0g-x10-nav`.
+
+**Row 3, Y-1: recorded, no identity claimed (PRE-29).** Against M1d's `p9-b0-y1-nav` (`gate-logs/y1-cmp-b0.txt`) and,
+PRE-34's form, against v8's ledgered Y-1 NAV `mega-nav-v8y-vol-target-L2.0` (`gate-logs/y1-cmp-v8.txt`): **differ at**
+26 of 28 files each (every `daily_*` / `events_*` CSV and `capacity/*` CSV, `capacity/summary.json` 855 leaves,
+`capacity_curve.csv`, `summary.json` 824 / 826 leaves incl. `/scenarios/*` subtrees and the opt-in / producer leaves,
+`v7_extras.json` 77 leaves, `v7_transfer_coefficient.csv`, `vol_target.csv` (`sigma_hat`, `sigma_ref`, `raw`, `L_t`,
+`multiplier`, `gross`, `priced_share`)); byte-identical: `recipe.json`, `capacity/recipe.json`. This is the store
+substitution PRE-29 ruled (the Release-built v1.1 container store; "not byte-comparable with v8's Y-1"). PRE-34's own
+criterion (agreement of the figures at the ledger's printed precision) is a read of figures, made before the adoption
+print by the cells root (B.7, PRE30-MVX): not run at the gate (READ NO STATISTIC). The re-based Y-1 reference is
+`p9-b0g-y1-nav`.
+
+### Step 5, agent 3: rho of the pair that names no cache (`gate-logs/rho-pairs-1.txt`, `tools/rho_pairs.py`)
+
+Run before the GATE-IDX check because it names no candidate cache and reads only rows 2 and 3 (GATE-3-ORDER: everything
+that names no cache first); the pairs that need the re-based Y-F0 wait for GATE-IDX. Bounded runner
+(`build-equity/p9-b0g-rho-1-run`: completed exit 0, 0.5 s, peak 41 MiB, no `store` block), the M2g tool's form, the
+Release eval verb p9-3f `e2b48c46...962c`; only `paired.{sessions, rho, one_minus_rho, degenerate}` read:
+
+| pair (B2-13) | T | rho | "1 - rho < 1e-6" |
+|---|---|---|---|
+| Y-1 vs X-10 (`p9-b0g-y1-nav` vs `p9-b0g-x10-nav`) | 1005 | 0.9947113980219978 | **false** (paired test defined) |
+
+Not yet measured (need the re-based Y-F0 NAV, GATE-IDX): the P9-X pair (re-based Y-1 vs re-based Y-F0) and X-10 vs
+Y-F0.
+
+### GATE-IDX check (agent 3), after every cache-free item
+
+2026-10-16T14:21:49Z: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` **STILL PRESENT** (72 KiB); the cache
+dir lists 352 files (`gate-logs/cache-lo3-listing-agent3-idx.txt`, `fb444f7d316a1a4c`; without that row = agent 2's
+`155872de50833fca`). So no run naming `--candidate-cache build-equity/mega-candidate-cache-v8-lo3` was started:
+**BLOCKED-OWNER** (GATE-IDX). Not run: rows 4-6 (Y-F0 u / w / NAV; GATE-3-ORDER puts the NAV after the check too), the
+rest of step 5, step 6 (re-pin; EXE-FREEZE not started), step 7's rest, step 9's final records. Re-checked at the
+hand-back (14:29:49Z): still present. Trial ledger 133 lines `27e40f9f` at the hand-back; C: 67 GB free. Prepared for
+the next agent (not run): `gate-logs/tools/b0_ic.py` (rows 4-5 with GATE-IDX and GATE-RELCACHE built in; its `--dry`
+refuses while the file exists, tested). Hand-off: `handoff-root-gate-3.md`.

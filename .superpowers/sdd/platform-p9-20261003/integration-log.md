@@ -854,3 +854,26 @@ Gate head (code) **`06dc9e5a`**; docs commits beside root by pathspec (PAR-1: ID
 
 G-P ticks: none changed by agent 2. Build tags used by agent 2: none; next free tag **p9-3h**. Trials: 0 (ledger 133
 `27e40f9f`). Permission refusals: 1 (`gate-logs/perm-refusals.txt`).
+
+### GATE (RESUME 13), chain agent 3, 2026-10-16 (BLOCKED-OWNER at GATE-IDX)
+
+Gate head (code) **`06dc9e5a`** (unchanged). Order GATE-3-ORDER (ledger :982); every commit by pathspec with the
+`.mypy_cache` exclude (GATE-MYPY, 0 cache paths in each). Report: `root-gate-report.md` "Chain agent 3"; logs
+`gate-logs/`. Trial ledger 133 lines `27e40f9f`; `build-equity/research-store/` absent; GATE-IDX file present at start
+and at 14:21:49Z. Known-red set **EMPTY**. Release exes p9-3f, every one `disk = receipt` before and after each run.
+
+| step | item | result | evidence |
+|---|---|---|---|
+| 0 | re-verification | holds (heads, ledger, research-store absent, 27 / 27 + 27 / 27 `disk = receipt`) | `gate-logs/exe-sha-{rel,dbg}-3.txt` |
+| 4 | FIELDS-SUB (1) witness, 70 names of `lib-v80.json` | **70 / 70 hold** (v11 witness, v15 files table, on-disk SHA-256); the NAV's two read fields equal too | `gate-logs/fields-witness.txt` (commit `e5a2fe68`) |
+| 4 | substitution list | committed before any P9-B0 run: `778d34b8` | `root-gate-report.md` "Step 4, agent 3" |
+| 4 | R-2 NAV on fields v15 (`p9-b0-r2-nav`) vs the v8 NAV of record | completed (25.1 s, 583 MiB, no `store` block); 13 / 27 files identical; differences only FIELDS / DERIVED / M1d-C1 / C1-COST (no other path): **PATH B** by the ruling's letter (R-2 not re-based; PM open question) | `gate-logs/r2-cmp-raw.txt`, `r2-classify.txt` |
+| 4 | X-10 NAV (`p9-b0g-x10-nav`) vs `p9-b0-x10-nav` | **holds**: 26 / 27 identical; `summary.json` producer + `ann_mean_gross` only | `gate-logs/x10-cmp.txt` |
+| 4 | Y-1 NAV on `p9-m2i-dcov-v11` (`p9-b0g-y1-nav`) | completed (25.8 s, 1,080 MiB); COV-9 S9 holds before; the store re-checked = pin; differs from `p9-b0-y1-nav` and from v8's Y-1 NAV at 26 / 28 files (PRE-29's store change; recorded, no identity claimed) | `gate-logs/y1-cmp-{b0,v8}.txt`, `cov9-role-check-3.txt`, `v11-store-check-3.txt` |
+| 4 | `ucrtbase.dll` at P9-B0 | 10.0.26100.7623 `2C08E77F...65EF` (= CRT-2) | `gate-logs/ucrt-b0-3.txt` |
+| 5 | rho Y-1 vs X-10 (gate references) | 0.9947113980219978; "1 - rho < 1e-6" false | `gate-logs/rho-pairs-1.txt` |
+| 3, 7 | X-5 identity rows; X-5 opt-in cache identity | **CUT** (FIELDS-X5): "not run at the gate: fields v13 absent (FIELDS-GONE)"; M6b items 5 / 6 cited | - |
+| - | GATE-IDX check after every cache-free item | `index.sqlite` still present (352 files, `fb444f7d316a1a4c`): Y-F0 u / w / NAV, rho of the Y-F0 pairs, the re-pin, the store step **not run**: BLOCKED-OWNER | `gate-logs/cache-lo3-listing-agent3-idx.txt` |
+
+G-P ticks: none changed by agent 3. Build tags used by agent 3: none; next free tag **p9-3h**. Trials: 0 (ledger 133
+`27e40f9f`). Permission refusals: none.

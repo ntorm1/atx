@@ -1,6 +1,6 @@
-"""GATE agent 3 (ruling FIELDS-SUB, ledger :958): the witness that fields v15 holds, byte for byte, every payload of
+"""GATE agent 3 (ruling FIELDS-SUB, ledger :979): the witness that fields v15 holds, byte for byte, every payload of
 fields v10 that R-2's spec names, so R-2's P9-B0 NAV can read `fields-v15/manifest.json` instead of the deleted v10
-(FIELDS-GONE, ledger :957).
+(FIELDS-GONE, ledger :978).
 
 For every field f of `scripts/specs/v8/lib-v80.json` `fields.list` (R-2's spec; 70 names):
   (a) `train-2020-2023-lo3-fields-v11/manifest.json` has the field entry f (`fields[]`, name f, file f.f64) whose
