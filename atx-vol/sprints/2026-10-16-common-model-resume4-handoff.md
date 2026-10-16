@@ -211,6 +211,30 @@ regular units, so "split only near whole units" would not catch it; a better
 signal is an increment holding more units than fit in its window, to be
 measured on the 59 dev200 split increments first).
 
+### cleanup-lane: all three groups committed and gated, not reviewed
+
+Branch `feat/vol-review-cleanup-20261016`, tip `3465221c` rebased onto
+`2378605e` (root parent of 31cdfeac's docs commits), pool-1 released. Commits
+`811282cf` (Markov fit: one-sided sigma intervals are refused with the market
+bound reported and the configured initial/prior kept, counted as
+`fallback_one_sided_interval`; failed Jacobian probes retried the other way,
+else typed `JacobianFailure`; DampingLimit / Cholesky / time-knot prefix-reuse
+tests; definition texts fixed with default bytes pinned by a test; ledger
+correction "91/91": 51 stopped on step tolerance), `3ed89f9b` (implied forward:
+unmeasured-bias Parity pairs marked Unidentified and deactivated with the
+forward re-located; inert `implied_forward` block rejected;
+estimate_implied_forward split; NITs), `abf15ab0` (time knots: helper bodies
+moved to `american_markov_time_basis.cpp`; report schema_version 3 -> 4 with
+python expectations updated; NITs), `3465221c` notes. Gates on the rebased
+head: fit 41/41, seed 25/25, policy 17/17, implied-forward 26/26, anchored
+ctest 5/5, native pytest 149/149, PCH-off 23 objects clean. Parity: R104 dev200
+`6b129f64` identical with the final binary; legacy e0/r104/r416 canonical
+definitions match (measured with the group-A binary before the rebase). NOT
+run: quote-slice default parity `c89d0739` and the definition probe on the
+rebased binary. Deferred: `quote_slice.cpp` dispatch-before-validate() minor.
+Every m5/m6 `prior: seed` result predates the one-sided fix and must be rerun
+before any held-out use. Needs an independent exact-SHA review before merge.
+
 ### composite-bench: dev200 only
 
 No lease, no code. Binary `73892e7f` reproduces m6 (`dc435595`) byte for
