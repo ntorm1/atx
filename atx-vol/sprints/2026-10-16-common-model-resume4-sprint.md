@@ -73,3 +73,18 @@ where no vendor carry exists.
   lanes, focused test targets only, vol presets limited to the vol closure.
 - Source and document edits are made with the editor tools, not scripts.
 - Time-knot fitter `f4416a74` integrated at `fc5ffb84` after APPROVE.
+
+## Integration log (root branch `feat/vol-resume4-20261016`)
+
+| Merge | Lane SHA | Outcome |
+| --- | --- | --- |
+| `fc5ffb84` | time-knots `f4416a74` | APPROVE; 2 minor deferred |
+| `3495635f` | policy-experiments `9c1005ac` | compose tool + note; X1 modest gain; status hybrid 75.7% at 0.292 |
+| `d7f4b6b5` | implied-forward `a5d2018a` | APPROVE; mode stays off (supplied carry equals the label carry); 4 minor deferred |
+| `da3a4179` | build-infra `5cecf923` | vol-only presets, `vol-rel`, lease configure fix, test slices; root adopted `vol-rel` |
+| `ac01702c` | cohort builder `6703f85d` | dev200b built; ranking holds; spread-normalised MAE adopted |
+| `dc064a1e` | tick-path `94208f57` | BLOCK at `dcb6e3f1` (out-of-box ladder certificate) -> fix -> APPROVE; chain refresh p99 ~106-181 us unqualified |
+
+Pending: slice-coverage `360281b2` BLOCKED (grade-A semantics for channel
+fits with repaired nodes) -> fix round in progress; markov-fit budget/seed lane;
+dividend schedule lane; serve-path records lane.
