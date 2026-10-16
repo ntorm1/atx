@@ -26,7 +26,7 @@ powershell scripts\lease-worktree.ps1 -Status           # who holds what
 powershell scripts\lease-worktree.ps1 -Release pool-1 -RunId <same-run-id>
 ```
 
-Warm tree: 5 s no-op / 27 s branch flip. Fresh worktree: 132 s at 38% cache — and manual `git worktree add` skips submodules. Lease v3 publication is atomic and records run_id, branch, frozen base SHA, time, and an explicit durable process or heartbeat owner. Heartbeat acquisition starts an independent continuously renewing keeper; foreground commands do not own liveness. Production callers must never use the short-lived launcher PID. Release requires the acquiring run_id and stops the keeper; investigate owner state before explicit stale recovery.
+Warm tree: 5 s no-op / 27 s branch flip. Fresh worktree: 132 s at 38% cache — and manual `git worktree add` skips submodules. The lease configures `-ConfigurePreset auto` (vol branch → `vol-rel`, else `dev`/`equity-dev`; `none` skips): a slot already warm for that preset leases in ~7 s (measured 6.6 s), a cold one pays one configure (~42–55 s, deps cloned from local mirrors). Lease v3 publication is atomic and records run_id, branch, frozen base SHA, time, and an explicit durable process or heartbeat owner. Heartbeat acquisition starts an independent continuously renewing keeper; foreground commands do not own liveness. Production callers must never use the short-lived launcher PID. Release requires the acquiring run_id and stops the keeper; investigate owner state before explicit stale recovery.
 
 ## House style — mandatory reading before C++
 
