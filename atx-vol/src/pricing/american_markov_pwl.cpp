@@ -89,7 +89,7 @@ rollback_side(const AmericanMarkovModel &model, std::size_t terminal, double lo,
   values.reserve(model.diagnostics().max_states);
   previous.reserve(model.diagnostics().max_states);
   const auto &end = model.layers()[terminal];
-  for (const double state : end.states) {
+  for (const double state : end.states()) {
     ATX_TRY(auto allowed, budget.begin(0u));
     ATX_TRY(auto function,
              ConvexPwlStrikeFunction::payoff(end.growth * state, side, lo, hi, allowed));
@@ -99,8 +99,10 @@ rollback_side(const AmericanMarkovModel &model, std::size_t terminal, double lo,
   for (std::size_t n = terminal; n > 0u; --n) {
     const auto &transition = model.transitions()[n - 1u];
     const auto &layer = model.layers()[n - 1u];
-    for (std::size_t i = 0u; i < transition.rows.size(); ++i) {
-      const auto &row = transition.rows[i];
+    const auto rows = transition.rows();
+    const auto states = layer.states();
+    for (std::size_t i = 0u; i < rows.size(); ++i) {
+      const auto &row = rows[i];
       std::array<PwlStrikeTerm, 3> terms;
       std::size_t count = 0u;
       std::size_t inputs = 0u;
@@ -120,7 +122,7 @@ rollback_side(const AmericanMarkovModel &model, std::size_t terminal, double lo,
       budget.acquired(continuation);
       ATX_TRY(auto exercise_limits, budget.begin(continuation.nodes().size()));
       ATX_TRY(auto exercised,
-               continuation.max_intrinsic(layer.growth * layer.states[i], side, exercise_limits));
+               continuation.max_intrinsic(layer.growth * states[i], side, exercise_limits));
       budget.acquired(exercised);
       budget.released(continuation.nodes().size());
       previous.push_back(std::move(exercised));

@@ -17,8 +17,9 @@ bool rollback(const AmericanMarkovModel &model, std::span<const double> strikes,
               std::size_t terminal, std::size_t stride,
               std::vector<double> *&values, std::vector<double> *&scratch) noexcept {
   const auto &end = model.layers()[terminal];
-  for (std::size_t i = 0; i < end.states.size(); ++i) {
-    const double stock = end.growth * end.states[i];
+  const auto end_states = end.states();
+  for (std::size_t i = 0; i < end_states.size(); ++i) {
+    const double stock = end.growth * end_states[i];
     double *const row = values->data() + i * stride;
     for (std::size_t k = 0; k < strikes.size(); ++k) {
       row[k] = std::max(Call ? stock - strikes[k] : strikes[k] - stock, 0.0);
@@ -27,9 +28,11 @@ bool rollback(const AmericanMarkovModel &model, std::span<const double> strikes,
   for (std::size_t n = terminal; n > 0; --n) {
     const auto &transition = model.transitions()[n - 1];
     const auto &layer = model.layers()[n - 1];
+    const auto rows = transition.rows();
+    const auto states = layer.states();
     bool finite = true;
-    for (std::size_t i = 0; i < transition.rows.size(); ++i) {
-      const auto &row = transition.rows[i];
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto &row = rows[i];
       const double *const a = values->data() + row.destination[0] * stride;
       const double *const b = values->data() + row.destination[1] * stride;
       const double *const c = values->data() + row.destination[2] * stride;
@@ -38,7 +41,7 @@ bool rollback(const AmericanMarkovModel &model, std::span<const double> strikes,
       const double p1 = row.probability[1];
       const double p2 = row.probability[2];
       const double discount = transition.discount;
-      const double stock = layer.growth * layer.states[i];
+      const double stock = layer.growth * states[i];
       for (std::size_t k = 0; k < strikes.size(); ++k) {
         // Preserve scalar accumulation order with precise floating-point flags.
         const double continuation = ((p0 * a[k] + p1 * b[k]) + p2 * c[k]) * discount;

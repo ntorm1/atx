@@ -238,7 +238,7 @@ struct Evaluator {
     // work before invoking the kernels; no overflow-prone multiplication.
     std::vector<std::size_t> prefix_rows(model.layers().size(), 0);
     for (std::size_t i = 0; i < model.transitions().size(); ++i) {
-      prefix_rows[i + 1] = prefix_rows[i] + model.transitions()[i].rows.size();
+      prefix_rows[i + 1] = prefix_rows[i] + model.transitions()[i].rows().size();
     }
     std::size_t work = 0;
     for (const auto &q : quotes) {

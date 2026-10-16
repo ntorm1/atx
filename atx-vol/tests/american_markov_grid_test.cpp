@@ -182,19 +182,19 @@ TEST(AmericanMarkovGrid, CashAndLocalVolatilityKeepPositiveMartingaleRows) {
     const auto &step = model->transitions()[n];
     const auto &before = model->layers()[n];
     const auto &after = model->layers()[n + 1];
-    for (std::size_t i = 0; i < step.rows.size(); ++i) {
+    for (std::size_t i = 0; i < step.rows().size(); ++i) {
       double probability = 0.0;
       double mean = 0.0;
       for (std::size_t j = 0; j < 3; ++j) {
-        EXPECT_GE(step.rows[i].probability[j], 0.0);
-        probability += step.rows[i].probability[j];
-        mean += step.rows[i].probability[j] * after.states[step.rows[i].destination[j]];
+        EXPECT_GE(step.rows()[i].probability[j], 0.0);
+        probability += step.rows()[i].probability[j];
+        mean += step.rows()[i].probability[j] * after.states()[step.rows()[i].destination[j]];
       }
       EXPECT_NEAR(probability, 1.0, 4.0e-16);
       if (step.kind == AmericanMarkovStepKind::Diffusion) {
-        EXPECT_NEAR(mean, before.states[i], 1.0e-12);
+        EXPECT_NEAR(mean, before.states()[i], 1.0e-12);
       } else {
-        const double stock = before.growth * before.states[i];
+        const double stock = before.growth * before.states()[i];
         EXPECT_NEAR(after.growth * mean + std::min(stock, step.cash_dividend), stock, 1.0e-12);
       }
     }

@@ -1,8 +1,10 @@
 #include "atx/vol/api/pricing/american_markov.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <new>
 #include <utility>
 
@@ -145,33 +147,37 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
   AmericanMarkovModel model;
   model.spot_ = spec.spot;
   AmericanMarkovLayer initial;
+  std::vector<double> initial_states;
   if (spec.state_grid.empty()) {
-    initial.states.reserve(cfg.grid_nodes + 1);
+    initial_states.reserve(cfg.grid_nodes + 1);
     const double upper = spec.spot * cfg.upper_spot_multiple;
     for (std::size_t i = 0; i < cfg.grid_nodes; ++i) {
-      initial.states.push_back(upper *
+      initial_states.push_back(upper *
                                (static_cast<double>(i) / static_cast<double>(cfg.grid_nodes - 1)));
     }
-    const auto spot = std::lower_bound(initial.states.begin(), initial.states.end(), spec.spot);
-    if (spot == initial.states.end() || *spot != spec.spot) {
-      initial.states.insert(spot, spec.spot);
+    const auto spot = std::lower_bound(initial_states.begin(), initial_states.end(), spec.spot);
+    if (spot == initial_states.end() || *spot != spec.spot) {
+      initial_states.insert(spot, spec.spot);
     }
-    if (initial.states.size() > cfg.max_states) {
+    if (initial_states.size() > cfg.max_states) {
       return Err(ErrorCode::OutOfRange, "American Markov: inserting spot exceeds the state limit");
     }
-    for (std::size_t i = 1; i < initial.states.size(); ++i) {
-      if (!(initial.states[i] > initial.states[i - 1])) {
+    for (std::size_t i = 1; i < initial_states.size(); ++i) {
+      if (!(initial_states[i] > initial_states[i - 1])) {
         return Err(ErrorCode::OutOfRange,
                    "American Markov: generated grid loses floating-point resolution");
       }
     }
   } else {
-    initial.states.assign(spec.state_grid.begin(), spec.state_grid.end());
+    initial_states.assign(spec.state_grid.begin(), spec.state_grid.end());
   }
   model.initial_state_index_ = static_cast<std::size_t>(
-      std::lower_bound(initial.states.begin(), initial.states.end(), spec.spot) -
-      initial.states.begin());
-  model.diagnostics_.max_states = initial.states.size();
+      std::lower_bound(initial_states.begin(), initial_states.end(), spec.spot) -
+      initial_states.begin());
+  model.diagnostics_.max_states = initial_states.size();
+  model.diagnostics_.physical_state_values = initial_states.size();
+  model.diagnostics_.state_grid_blocks = 1;
+  initial.states_ = std::make_shared<const std::vector<double>>(std::move(initial_states));
   model.layers_.push_back(std::move(initial));
   model.expiry_layers_.reserve(spec.intervals.size());
   model.interval_data_.reserve(spec.intervals.size());
@@ -180,6 +186,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
 
   for (const auto &interval : spec.intervals) {
     const auto &start = model.layers_.back();
+    const auto states = start.states();
     const double calendar_start = start.calendar_time;
     const double variance_start = start.variance_time;
     const double calendar_delta = interval.calendar_end - calendar_start;
@@ -192,7 +199,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
         !positive(std::exp(-interval.rate * calendar_delta))) {
       return Err(ErrorCode::OutOfRange, "American Markov: carry or discount overflow");
     }
-    const std::size_t volatility_values = start.states.size() + interval.local_volatility.size();
+    const std::size_t volatility_values = states.size() + interval.local_volatility.size();
     if (volatility_values >
         cfg.max_stored_volatility_values - model.diagnostics_.stored_volatility_values) {
       return Err(ErrorCode::OutOfRange, "American Markov: stored volatility value limit exceeded");
@@ -202,17 +209,17 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     interval_data.volatility = interval.volatility;
     interval_data.local_volatility.assign(interval.local_volatility.begin(),
                                           interval.local_volatility.end());
-    interval_data.state_volatilities.reserve(start.states.size());
+    interval_data.state_volatilities.reserve(states.size());
     std::vector<double> state_exit_rates;
-    state_exit_rates.reserve(start.states.size());
+    state_exit_rates.reserve(states.size());
     double max_exit = 0.0;
-    for (std::size_t i = 0; i < start.states.size(); ++i) {
-      const double sigma = local_volatility(interval, start.states[i], log_spot);
+    for (std::size_t i = 0; i < states.size(); ++i) {
+      const double sigma = local_volatility(interval, states[i], log_spot);
       if (!nonnegative(sigma)) {
         return Err(ErrorCode::OutOfRange, "American Markov: local volatility sampling overflow");
       }
       const double value =
-          variance_delta == 0.0 ? 0.0 : exit_rate(start.states, i, sigma);
+          variance_delta == 0.0 ? 0.0 : exit_rate(states, i, sigma);
       if (!nonnegative(value)) {
         return Err(ErrorCode::OutOfRange, "American Markov: state grid cannot resolve diffusion");
       }
@@ -233,7 +240,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       return Err(ErrorCode::OutOfRange, "American Markov: expanded transition limit exceeded");
     }
     const auto count = static_cast<std::size_t>(required);
-    const std::size_t state_count = start.states.size();
+    const std::size_t state_count = states.size();
     const std::size_t remaining_rows = cfg.max_stored_rows - model.diagnostics_.stored_rows;
     if (count + cash_steps > remaining_rows / state_count) {
       return Err(ErrorCode::OutOfRange, "American Markov: stored transition row limit exceeded");
@@ -241,6 +248,11 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
     model.interval_data_.push_back(std::move(interval_data));
     model.diagnostics_.stored_volatility_values += volatility_values;
     const std::size_t interval_index = model.interval_data_.size() - 1;
+    // Row probabilities depend only on this interval's fixed grid/local-vol
+    // samples and the EXACT represented variance step. Calendar discounts and
+    // growth stay per-transition. Never quantize steps or share across intervals.
+    std::map<std::uint64_t, std::shared_ptr<const std::vector<AmericanMarkovTransitionRow>>>
+        row_cache;
 
     for (std::size_t step = 1; step <= count; ++step) {
       const auto &before = model.layers_.back();
@@ -253,7 +265,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
                                 ? interval.variance_end
                                 : std::lerp(variance_start, interval.variance_end, fraction);
       after.growth = std::exp(log_growth + carry * (after.calendar_time - calendar_start));
-      after.states = before.states;
+      after.states_ = before.states_;
       AmericanMarkovTransition transition;
       transition.interval_index = interval_index;
       transition.calendar_step = after.calendar_time - before.calendar_time;
@@ -262,46 +274,57 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       transition.discount = std::exp(-interval.rate * transition.calendar_step);
       if (!positive(transition.calendar_step) || !nonnegative(transition.variance_step) ||
           !positive(after.growth) || !positive(transition.discount) ||
-          !nonnegative(after.growth * after.states.back())) {
+          !nonnegative(after.growth * states.back())) {
         return Err(ErrorCode::OutOfRange,
                    "American Markov: time or stock grid loses numerical range");
       }
-      transition.rows.resize(state_count);
-      for (std::size_t i = 0; i < state_count; ++i) {
-        auto &row = transition.rows[i];
-        row.destination[0] = static_cast<std::uint32_t>(i);
-        row.probability[0] = 1.0;
-        if (i > 0 && i + 1 < state_count) {
-          const double lower = before.states[i] - before.states[i - 1];
-          const double upper = before.states[i + 1] - before.states[i];
-          const double exit =
-              transition.variance_step == 0.0
-                  ? 0.0
-                  : transition.variance_step * state_exit_rates[i];
-          const double down = exit * (upper / (lower + upper));
-          const double up = exit * (lower / (lower + upper));
-          const double stay = 1.0 - (down + up);
-          if (!nonnegative(down) || !nonnegative(up) || !nonnegative(stay)) {
-            return Err(
-                ErrorCode::OutOfRange,
-                "American Markov: rounded time step violates positive transition constraint");
+      const auto key = std::bit_cast<std::uint64_t>(transition.variance_step);
+      const auto cached = row_cache.find(key);
+      if (cached != row_cache.end()) {
+        transition.rows_ = cached->second;
+      } else {
+        std::vector<AmericanMarkovTransitionRow> rows(state_count);
+        for (std::size_t i = 0; i < state_count; ++i) {
+          auto &row = rows[i];
+          row.destination[0] = static_cast<std::uint32_t>(i);
+          row.probability[0] = 1.0;
+          if (i > 0 && i + 1 < state_count) {
+            const double lower = states[i] - states[i - 1];
+            const double upper = states[i + 1] - states[i];
+            const double exit =
+                transition.variance_step == 0.0
+                    ? 0.0
+                    : transition.variance_step * state_exit_rates[i];
+            const double down = exit * (upper / (lower + upper));
+            const double up = exit * (lower / (lower + upper));
+            const double stay = 1.0 - (down + up);
+            if (!nonnegative(down) || !nonnegative(up) || !nonnegative(stay)) {
+              return Err(
+                  ErrorCode::OutOfRange,
+                  "American Markov: rounded time step violates positive transition constraint");
+            }
+            row.destination = {static_cast<std::uint32_t>(i - 1), static_cast<std::uint32_t>(i),
+                               static_cast<std::uint32_t>(i + 1)};
+            row.probability = {down, stay, up};
           }
-          row.destination = {static_cast<std::uint32_t>(i - 1), static_cast<std::uint32_t>(i),
-                             static_cast<std::uint32_t>(i + 1)};
-          row.probability = {down, stay, up};
+          double sum = 0.0;
+          double mean = 0.0;
+          const double mean_scale = std::max(states[i], spec.spot);
+          for (std::size_t j = 0; j < 3; ++j) {
+            sum += row.probability[j];
+            mean += (row.probability[j] * states[row.destination[j]]) / mean_scale;
+          }
+          model.diagnostics_.max_probability_sum_error =
+              std::max(model.diagnostics_.max_probability_sum_error, std::abs(sum - 1.0));
+          model.diagnostics_.max_relative_mean_error =
+              std::max(model.diagnostics_.max_relative_mean_error,
+                       std::abs(mean - states[i] / mean_scale));
         }
-        double sum = 0.0;
-        double mean = 0.0;
-        const double mean_scale = std::max(before.states[i], spec.spot);
-        for (std::size_t j = 0; j < 3; ++j) {
-          sum += row.probability[j];
-          mean += (row.probability[j] * after.states[row.destination[j]]) / mean_scale;
-        }
-        model.diagnostics_.max_probability_sum_error =
-            std::max(model.diagnostics_.max_probability_sum_error, std::abs(sum - 1.0));
-        model.diagnostics_.max_relative_mean_error =
-            std::max(model.diagnostics_.max_relative_mean_error,
-                     std::abs(mean - before.states[i] / mean_scale));
+        transition.rows_ =
+            std::make_shared<const std::vector<AmericanMarkovTransitionRow>>(std::move(rows));
+        row_cache.emplace(key, transition.rows_);
+        model.diagnostics_.physical_transition_rows += state_count;
+        ++model.diagnostics_.transition_row_blocks;
       }
       model.diagnostics_.stored_rows += state_count;
       ++model.diagnostics_.diffusion_steps;
@@ -316,25 +339,33 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
       after.calendar_time = before.calendar_time;
       after.variance_time = before.variance_time;
       after.growth = before.growth;
-      after.states.reserve(state_count);
+      std::vector<double> after_states;
+      after_states.reserve(state_count);
       AmericanMarkovTransition transition;
       transition.interval_index = interval_index;
       transition.kind = AmericanMarkovStepKind::CashDividend;
       transition.cash_dividend = interval.cash_dividend_at_end;
-      transition.rows.resize(state_count);
-      const bool wipes_grid = interval.cash_dividend_at_end >= before.growth * before.states.back();
+      std::vector<AmericanMarkovTransitionRow> rows(state_count);
+      const bool wipes_grid = interval.cash_dividend_at_end >= before.growth * states.back();
       const double cash_x = wipes_grid ? 0.0 : interval.cash_dividend_at_end / before.growth;
       if (!nonnegative(cash_x)) {
         return Err(ErrorCode::OutOfRange, "American Markov: dividend conversion overflow");
       }
       for (std::size_t i = 0; i < state_count; ++i) {
-        const double post = wipes_grid ? 0.0 : std::max(before.states[i] - cash_x, 0.0);
-        if (after.states.empty() || post != after.states.back()) {
-          after.states.push_back(post);
+        const double post = wipes_grid ? 0.0 : std::max(states[i] - cash_x, 0.0);
+        if (after_states.empty() || post != after_states.back()) {
+          after_states.push_back(post);
         }
-        transition.rows[i].destination[0] = static_cast<std::uint32_t>(after.states.size() - 1);
-        transition.rows[i].probability[0] = 1.0;
+        rows[i].destination[0] = static_cast<std::uint32_t>(after_states.size() - 1);
+        rows[i].probability[0] = 1.0;
       }
+      model.diagnostics_.physical_state_values += after_states.size();
+      ++model.diagnostics_.state_grid_blocks;
+      model.diagnostics_.physical_transition_rows += state_count;
+      ++model.diagnostics_.transition_row_blocks;
+      after.states_ = std::make_shared<const std::vector<double>>(std::move(after_states));
+      transition.rows_ =
+          std::make_shared<const std::vector<AmericanMarkovTransitionRow>>(std::move(rows));
       model.diagnostics_.stored_rows += state_count;
       ++model.diagnostics_.cash_steps;
       model.transitions_.push_back(std::move(transition));
@@ -350,8 +381,9 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
   mass[model.initial_state_index_] = 1.0;
   for (const auto &transition : model.transitions_) {
     std::fill(next_mass.begin(), next_mass.end(), 0.0);
-    for (std::size_t i = 0; i < transition.rows.size(); ++i) {
-      const auto &row = transition.rows[i];
+    const auto rows = transition.rows();
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto &row = rows[i];
       for (std::size_t j = 0; j < 3; ++j) {
         next_mass[row.destination[j]] += mass[i] * row.probability[j];
       }
@@ -360,7 +392,7 @@ Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &sp
   }
   model.diagnostics_.terminal_zero_probability = mass.front();
   model.diagnostics_.terminal_upper_probability =
-      model.layers_.back().states.size() > 1 ? mass[model.layers_.back().states.size() - 1] : 0.0;
+      model.layers_.back().states().size() > 1 ? mass[model.layers_.back().states().size() - 1] : 0.0;
   return Ok(std::move(model));
 }
 
@@ -392,16 +424,19 @@ Result<double> price_american_markov(const AmericanMarkovModel &model, double st
   }
   const auto terminal = model.expiry_layers()[expiry_index];
   const auto &end = model.layers()[terminal];
+  const auto end_states = end.states();
   auto *values = &workspace.first_;
   auto *scratch = &workspace.second_;
-  for (std::size_t i = 0; i < end.states.size(); ++i) {
-    (*values)[i] = intrinsic(end.growth * end.states[i], strike, side);
+  for (std::size_t i = 0; i < end_states.size(); ++i) {
+    (*values)[i] = intrinsic(end.growth * end_states[i], strike, side);
   }
   for (std::size_t n = terminal; n > 0; --n) {
     const auto &transition = model.transitions()[n - 1];
     const auto &layer = model.layers()[n - 1];
-    for (std::size_t i = 0; i < transition.rows.size(); ++i) {
-      const auto &row = transition.rows[i];
+    const auto rows = transition.rows();
+    const auto states = layer.states();
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto &row = rows[i];
       double continuation = 0.0;
       for (std::size_t j = 0; j < 3; ++j) {
         continuation += row.probability[j] * (*values)[row.destination[j]];
@@ -412,7 +447,7 @@ Result<double> price_american_markov(const AmericanMarkovModel &model, double st
       }
       (*scratch)[i] =
           exercise == ExerciseStyle::American
-              ? std::max(continuation, intrinsic(layer.growth * layer.states[i], strike, side))
+              ? std::max(continuation, intrinsic(layer.growth * states[i], strike, side))
               : continuation;
     }
     std::swap(values, scratch);

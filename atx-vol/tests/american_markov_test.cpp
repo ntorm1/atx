@@ -2,8 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -47,32 +53,32 @@ TEST(AmericanMarkov, PositiveTransitionsPreserveMomentsAndCashWealth) {
     const auto &before = model->layers()[n];
     const auto &after = model->layers()[n + 1];
     EXPECT_GT(step.discount, 0.0);
-    ASSERT_EQ(step.rows.size(), before.states.size());
-    for (std::size_t i = 0; i < step.rows.size(); ++i) {
-      const auto &row = step.rows[i];
+    ASSERT_EQ(step.rows().size(), before.states().size());
+    for (std::size_t i = 0; i < step.rows().size(); ++i) {
+      const auto &row = step.rows()[i];
       double sum = 0.0;
       double mean = 0.0;
       double variance = 0.0;
       for (std::size_t j = 0; j < 3; ++j) {
-        ASSERT_LT(row.destination[j], after.states.size());
+        ASSERT_LT(row.destination[j], after.states().size());
         EXPECT_GE(row.probability[j], 0.0);
         sum += row.probability[j];
-        const double next = after.states[row.destination[j]];
+        const double next = after.states()[row.destination[j]];
         mean += row.probability[j] * next;
-        variance += row.probability[j] * std::pow(next - before.states[i], 2.0);
+        variance += row.probability[j] * std::pow(next - before.states()[i], 2.0);
       }
       EXPECT_NEAR(sum, 1.0, 3.0e-16);
       if (step.kind == AmericanMarkovStepKind::Diffusion) {
-        EXPECT_NEAR(mean, before.states[i], 1.0e-12);
-        const double expected = i == 0 || i + 1 == before.states.size()
+        EXPECT_NEAR(mean, before.states()[i], 1.0e-12);
+        const double expected = i == 0 || i + 1 == before.states().size()
                                     ? 0.0
-                                    : step.volatility * step.volatility * before.states[i] *
-                                          before.states[i] * step.variance_step;
+                                    : step.volatility * step.volatility * before.states()[i] *
+                                          before.states()[i] * step.variance_step;
         EXPECT_NEAR(variance, expected, 1.0e-11);
       } else {
         EXPECT_DOUBLE_EQ(step.calendar_step, 0.0);
         EXPECT_DOUBLE_EQ(step.variance_step, 0.0);
-        const double stock = before.growth * before.states[i];
+        const double stock = before.growth * before.states()[i];
         EXPECT_NEAR(after.growth * mean + std::min(stock, step.cash_dividend), stock, 1.0e-12);
       }
     }
@@ -117,7 +123,7 @@ TEST(AmericanMarkov, ExpiryCashRetainsCumExerciseAndLimitedLiability) {
   EXPECT_DOUBLE_EQ(price(*model, workspace, 100.0, Side::Put, 1), 100.0);
   EXPECT_DOUBLE_EQ(price(*model, workspace, 80.0, Side::Call, 1, ExerciseStyle::European), 0.0);
   EXPECT_NEAR(price(*model, workspace, 100.0, Side::Put, 2), 100.0 * std::exp(0.01), 3.0e-12);
-  EXPECT_EQ(model->layers().back().states.size(), 1U);
+  EXPECT_EQ(model->layers().back().states().size(), 1U);
   EXPECT_DOUBLE_EQ(model->diagnostics().terminal_zero_probability, 1.0);
 }
 
@@ -251,7 +257,7 @@ void expect_same_operators(const AmericanMarkovModel &a, const AmericanMarkovMod
   ASSERT_EQ(a.layers().size(), b.layers().size());
   ASSERT_EQ(a.transitions().size(), b.transitions().size());
   for (std::size_t n = 0; n < a.layers().size(); ++n) {
-    EXPECT_EQ(a.layers()[n].states, b.layers()[n].states);
+    EXPECT_TRUE(std::ranges::equal(a.layers()[n].states(), b.layers()[n].states()));
     EXPECT_EQ(a.layers()[n].growth, b.layers()[n].growth);
     EXPECT_EQ(a.layers()[n].calendar_time, b.layers()[n].calendar_time);
     EXPECT_EQ(a.layers()[n].variance_time, b.layers()[n].variance_time);
@@ -264,10 +270,10 @@ void expect_same_operators(const AmericanMarkovModel &a, const AmericanMarkovMod
     EXPECT_EQ(left.calendar_step, right.calendar_step);
     EXPECT_EQ(left.variance_step, right.variance_step);
     EXPECT_EQ(left.interval_index, right.interval_index);
-    ASSERT_EQ(left.rows.size(), right.rows.size());
-    for (std::size_t i = 0; i < left.rows.size(); ++i) {
-      EXPECT_EQ(left.rows[i].destination, right.rows[i].destination);
-      EXPECT_EQ(left.rows[i].probability, right.rows[i].probability);
+    ASSERT_EQ(left.rows().size(), right.rows().size());
+    for (std::size_t i = 0; i < left.rows().size(); ++i) {
+      EXPECT_EQ(left.rows()[i].destination, right.rows()[i].destination);
+      EXPECT_EQ(left.rows()[i].probability, right.rows()[i].probability);
     }
   }
 }
@@ -330,27 +336,27 @@ TEST(AmericanMarkov, LocalVolatilityPreservesPositiveRowsAndConditionalMoments) 
     }
     const auto &before = model->layers()[n];
     const auto &after = model->layers()[n + 1];
-    ASSERT_EQ(metadata.state_volatilities.size(), before.states.size());
-    for (std::size_t i = 0; i < step.rows.size(); ++i) {
+    ASSERT_EQ(metadata.state_volatilities.size(), before.states().size());
+    for (std::size_t i = 0; i < step.rows().size(); ++i) {
       double sum = 0.0;
       double mean = 0.0;
       double variance = 0.0;
-      const auto &row = step.rows[i];
+      const auto &row = step.rows()[i];
       for (std::size_t j = 0; j < 3; ++j) {
         EXPECT_GE(row.probability[j], 0.0);
         EXPECT_LE(row.probability[j], 1.0);
-        ASSERT_LT(row.destination[j], after.states.size());
+        ASSERT_LT(row.destination[j], after.states().size());
         sum += row.probability[j];
-        const double next = after.states[row.destination[j]];
+        const double next = after.states()[row.destination[j]];
         mean += row.probability[j] * next;
-        variance += row.probability[j] * std::pow(next - before.states[i], 2.0);
+        variance += row.probability[j] * std::pow(next - before.states()[i], 2.0);
       }
       EXPECT_NEAR(sum, 1.0, 3.0e-16);
-      EXPECT_NEAR(mean, before.states[i], 1.0e-12);
+      EXPECT_NEAR(mean, before.states()[i], 1.0e-12);
       const double sigma = metadata.state_volatilities[i];
-      const double expected = i == 0 || i + 1 == before.states.size()
+      const double expected = i == 0 || i + 1 == before.states().size()
                                   ? 0.0
-                                  : sigma * sigma * before.states[i] * before.states[i] *
+                                  : sigma * sigma * before.states()[i] * before.states()[i] *
                                         step.variance_step;
       EXPECT_NEAR(variance, expected, 2.0e-11);
     }
@@ -370,13 +376,13 @@ TEST(AmericanMarkov, LocalVolatilitySamplesActualPostCashStatesAndOwnsMetadata) 
   const auto &first = model->interval_data()[0];
   const auto &second = model->interval_data()[1];
   const auto &shifted = model->layers()[second.first_layer];
-  ASSERT_EQ(shifted.states.size(), 5U); // 0 and 20 coalesce after cash.
-  EXPECT_NEAR(shifted.states[1], 80.0 - 30.0 / std::exp(0.004), 1.0e-13);
+  ASSERT_EQ(shifted.states().size(), 5U); // 0 and 20 coalesce after cash.
+  EXPECT_NEAR(shifted.states()[1], 80.0 - 30.0 / std::exp(0.004), 1.0e-13);
   EXPECT_GT(second.state_volatilities[1], first.state_volatilities[2]);
-  for (std::size_t i = 0; i < shifted.states.size(); ++i) {
-    const double coordinate = shifted.states[i] == 0.0
+  for (std::size_t i = 0; i < shifted.states().size(); ++i) {
+    const double coordinate = shifted.states()[i] == 0.0
                                   ? -1.0
-                                  : std::clamp(std::log(shifted.states[i] / 100.0), -1.0, 1.0);
+                                  : std::clamp(std::log(shifted.states()[i] / 100.0), -1.0, 1.0);
     EXPECT_NEAR(second.state_volatilities[i], 0.2 * (1.25 - 0.75 * coordinate), 2.0e-16);
   }
   const auto expected_values = second.state_volatilities;
@@ -517,6 +523,130 @@ TEST(AmericanMarkov, LocalVolatilityMetadataHasExplicitHardResourceLimits) {
   nodes[1] = {kAmericanMarkovMaxLocalVolLogState, 1.0};
   intervals[0].local_volatility = nodes;
   EXPECT_TRUE(compile_american_markov(spec));
+}
+
+TEST(AmericanMarkov, ImmutableBlocksShareOnlyExactDiffusionStepsWithinEachInterval) {
+  const std::array grid{0.0, 50.0, 100.0, 200.0, 400.0};
+  const std::array intervals{AmericanMarkovInterval{0.25, 0.25, 0.03, 0.0, 0.2, 3.0},
+                             AmericanMarkovInterval{0.50, 0.50, -0.01, 0.0, 0.4, 500.0},
+                             AmericanMarkovInterval{0.75, 0.75, 0.01, 0.0, 0.4, 0.0}};
+  AmericanMarkovSpec spec{100.0, intervals, grid, {}};
+  spec.config.max_calendar_step = 1.0 / 129.0;
+  auto compiled = compile_american_markov(spec);
+  ASSERT_TRUE(compiled) << compiled.error().to_string();
+  const auto &model = *compiled;
+  using RowKey = std::pair<std::size_t, std::uint64_t>;
+  std::map<RowKey, const AmericanMarkovTransitionRow *> exact_steps;
+  std::set<const AmericanMarkovTransitionRow *> row_blocks;
+  std::set<const double *> grid_blocks;
+  std::size_t physical_rows = 0;
+  std::size_t physical_states = 0;
+  std::size_t logical_rows = 0;
+  std::size_t repeated_steps = 0;
+  for (const auto &layer : model.layers()) {
+    if (grid_blocks.insert(layer.states().data()).second) physical_states += layer.states().size();
+  }
+  for (std::size_t n = 0; n < model.transitions().size(); ++n) {
+    const auto &transition = model.transitions()[n];
+    const auto rows = transition.rows();
+    logical_rows += rows.size();
+    if (transition.kind == AmericanMarkovStepKind::Diffusion) {
+      EXPECT_EQ(model.layers()[n].states().data(), model.layers()[n + 1].states().data());
+      const RowKey key{transition.interval_index,
+                       std::bit_cast<std::uint64_t>(transition.variance_step)};
+      const auto [prior, inserted] = exact_steps.emplace(key, rows.data());
+      EXPECT_EQ(prior->second, rows.data());
+      if (inserted) {
+        // Different represented steps or intervals get independently owned rows,
+        // even after a cash wipe leaves the one-state absorbing process.
+        EXPECT_TRUE(row_blocks.insert(rows.data()).second);
+        physical_rows += rows.size();
+      } else {
+        ++repeated_steps;
+      }
+    } else {
+      EXPECT_NE(model.layers()[n].states().data(), model.layers()[n + 1].states().data());
+      EXPECT_TRUE(row_blocks.insert(rows.data()).second);
+      physical_rows += rows.size();
+    }
+  }
+  EXPECT_GT(exact_steps.size(), intervals.size());
+  EXPECT_GT(repeated_steps, 0U);
+  EXPECT_EQ(model.layers().back().states().size(), 1U);
+  const auto &diagnostics = model.diagnostics();
+  EXPECT_EQ(diagnostics.stored_rows, logical_rows);
+  EXPECT_EQ(diagnostics.physical_transition_rows, physical_rows);
+  EXPECT_EQ(diagnostics.transition_row_blocks, row_blocks.size());
+  EXPECT_EQ(diagnostics.physical_state_values, physical_states);
+  EXPECT_EQ(diagnostics.state_grid_blocks, grid_blocks.size());
+  EXPECT_EQ(diagnostics.state_grid_blocks, diagnostics.cash_steps + 1);
+  EXPECT_LT(physical_rows, logical_rows);
+
+  // Sharing cannot make an otherwise infeasible logical work budget pass.
+  spec.config.max_stored_rows = logical_rows;
+  spec.config.max_transitions = model.transitions().size();
+  EXPECT_TRUE(compile_american_markov(spec));
+  spec.config.max_stored_rows = logical_rows - 1;
+  EXPECT_FALSE(compile_american_markov(spec));
+  spec.config.max_stored_rows = physical_rows;
+  EXPECT_FALSE(compile_american_markov(spec));
+  spec.config.max_stored_rows = logical_rows;
+  --spec.config.max_transitions;
+  EXPECT_FALSE(compile_american_markov(spec));
+}
+
+TEST(AmericanMarkov, ImmutableBlocksAndPricingSurviveModelAndViewCopiesAndMoves) {
+  std::optional<AmericanMarkovModel> retained;
+  AmericanMarkovLayer retained_layer;
+  AmericanMarkovTransition retained_transition;
+  std::vector<double> expected_states;
+  std::vector<AmericanMarkovTransitionRow> expected_rows;
+  std::uint64_t expected_price = 0;
+  {
+    const std::array nodes{AmericanMarkovLocalVolNode{-0.2, 1.2},
+                           AmericanMarkovLocalVolNode{0.2, 0.8}};
+    const std::array intervals{AmericanMarkovInterval{0.1, 0.07, 0.03, 0.01, 0.2, 1.0, nodes}};
+    auto original = compile_american_markov({100.0, intervals, {}, {}});
+    ASSERT_TRUE(original);
+    retained = *original;
+    retained_layer = original->layers().front();
+    retained_transition = original->transitions().front();
+    expected_states.assign(retained_layer.states().begin(), retained_layer.states().end());
+    expected_rows.assign(retained_transition.rows().begin(), retained_transition.rows().end());
+    EXPECT_EQ(retained->layers().front().states().data(), retained_layer.states().data());
+    EXPECT_EQ(retained->transitions().front().rows().data(), retained_transition.rows().data());
+    AmericanMarkovWorkspace workspace;
+    ASSERT_TRUE(workspace.prepare(*original));
+    expected_price = std::bit_cast<std::uint64_t>(price(*original, workspace, 103.0, Side::Put));
+  }
+  ASSERT_TRUE(retained);
+  auto moved_model = std::move(*retained);
+  retained.reset();
+  auto copied_model = moved_model;
+  expect_same_operators(moved_model, copied_model);
+  auto moved_layer = std::move(retained_layer);
+  auto moved_transition = std::move(retained_transition);
+  EXPECT_TRUE(retained_layer.states().empty());
+  EXPECT_TRUE(retained_transition.rows().empty());
+  EXPECT_TRUE(std::ranges::equal(moved_layer.states(), expected_states));
+  ASSERT_EQ(moved_transition.rows().size(), expected_rows.size());
+  for (std::size_t i = 0; i < expected_rows.size(); ++i) {
+    EXPECT_EQ(moved_transition.rows()[i].destination, expected_rows[i].destination);
+    EXPECT_EQ(moved_transition.rows()[i].probability, expected_rows[i].probability);
+  }
+  for (const auto *model : {&moved_model, &copied_model}) {
+    AmericanMarkovWorkspace workspace;
+    ASSERT_TRUE(workspace.prepare(*model));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(price(*model, workspace, 103.0, Side::Put)),
+              expected_price);
+    EXPECT_EQ(model->interval_data().front().local_volatility.front().volatility_multiplier, 1.2);
+  }
+  // Standalone copies retain their buffers after the last model owner is gone.
+  copied_model = std::move(moved_model);
+  retained = std::move(copied_model);
+  retained.reset();
+  EXPECT_TRUE(std::ranges::equal(moved_layer.states(), expected_states));
+  EXPECT_EQ(moved_transition.rows().back().probability, expected_rows.back().probability);
 }
 
 } // namespace

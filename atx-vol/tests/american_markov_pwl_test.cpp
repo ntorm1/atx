@@ -116,7 +116,7 @@ TEST(AmericanMarkovPwl, EndpointCashAndNegativeRatesHaveIndependentDeterministic
     EXPECT_NEAR(*surface->price(strike, Side::Put, 1u), strike, 1.0e-13);
     EXPECT_NEAR(*surface->price(strike, Side::Put, 2u), strike * std::exp(0.01), 1.0e-12);
   }
-  EXPECT_EQ(surface->source_model().layers().back().states.size(), 1u);
+  EXPECT_EQ(surface->source_model().layers().back().states().size(), 1u);
 }
 
 TEST(AmericanMarkovPwl, DefaultMartingaleRetainsBoundedCrossingsAcrossFullRollback) {

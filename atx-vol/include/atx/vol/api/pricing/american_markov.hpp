@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -72,6 +73,8 @@ struct AmericanMarkovSpec {
 
 enum class AmericanMarkovStepKind : std::uint8_t { Diffusion, CashDividend };
 
+class AmericanMarkovModel;
+
 // Rows are probabilities, not discounted weights. Entries with zero probability
 // may repeat an index. Every destination belongs to the next layer.
 struct AmericanMarkovTransitionRow {
@@ -83,7 +86,15 @@ struct AmericanMarkovLayer {
   double calendar_time = 0.0;
   double variance_time = 0.0;
   double growth = 1.0;        // G=exp(integral(rate-continuous_yield) d calendar time)
-  std::vector<double> states; // X; actual stock at a node is growth * X
+  // X; actual stock at a node is growth * X. Copies of a layer retain immutable
+  // grid ownership even after the model is destroyed. Moved-from views are empty.
+  [[nodiscard]] std::span<const double> states() const noexcept {
+    return states_ ? std::span<const double>(*states_) : std::span<const double>{};
+  }
+
+private:
+  friend Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &);
+  std::shared_ptr<const std::vector<double>> states_;
 };
 
 struct AmericanMarkovTransition {
@@ -93,8 +104,17 @@ struct AmericanMarkovTransition {
   double variance_step = 0.0;
   double volatility = 0.0; // Baseline only; see interval_data()[interval_index].
   double cash_dividend = 0.0;
-  std::vector<AmericanMarkovTransitionRow> rows;
   std::size_t interval_index = 0;
+  // Identical diffusion rows within one interval share immutable storage.
+  // Copies retain ownership; span views borrow this transition or any copy.
+  [[nodiscard]] std::span<const AmericanMarkovTransitionRow> rows() const noexcept {
+    return rows_ ? std::span<const AmericanMarkovTransitionRow>(*rows_)
+                 : std::span<const AmericanMarkovTransitionRow>{};
+  }
+
+private:
+  friend Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &);
+  std::shared_ptr<const std::vector<AmericanMarkovTransitionRow>> rows_;
 };
 
 struct AmericanMarkovIntervalData {
@@ -110,6 +130,7 @@ struct AmericanMarkovIntervalData {
 struct AmericanMarkovDiagnostics {
   std::size_t diffusion_steps = 0;
   std::size_t cash_steps = 0;
+  // Logical expanded row count: still used for ALL row/work resource limits.
   std::size_t stored_rows = 0;
   std::size_t max_states = 0;
   std::size_t stored_volatility_values = 0;
@@ -119,9 +140,14 @@ struct AmericanMarkovDiagnostics {
   // probabilities. Useful numerical-boundary diagnostics; not error bounds.
   double terminal_zero_probability = 0.0;
   double terminal_upper_probability = 0.0;
+  // Unique represented element counts, not allocated bytes or serving work.
+  // Sharing does not increase any logical resource cap or reduce rollback work.
+  std::size_t physical_state_values = 0;
+  std::size_t state_grid_blocks = 0;
+  std::size_t physical_transition_rows = 0;
+  std::size_t transition_row_blocks = 0;
 };
 
-class AmericanMarkovModel;
 class AmericanMarkovWorkspace;
 
 [[nodiscard]] Result<AmericanMarkovModel> compile_american_markov(const AmericanMarkovSpec &spec);
