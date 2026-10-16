@@ -1,0 +1,43 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9l-label-terminal-gm",
+  "description": "P9 cell P9-L (id p9l-label-terminal; protocol cell, DEC-17; p9-prereg.md B.1, ruled PRE-2BII-RULED; Rulings PRE-2 .. PRE-5, PRE-27, C2-6): survival-conditioned IC labels. Shape (PRE-2): by hand as a v1 cycle, this template root over the lineage parent Y-F0 as re-based at the gate's P9-B0 (scripts/specs/v8/lib-v8ysb-gm.json; paired parent NAV build-equity/p9-b0g-yf0-nav), because no v2 kind carries --label-terminal; the v2 guards do not run on it, so B.1 names every flag. The registered change verbatim: on the u and w IC argv --label-terminal imputed-v1 with --train-label-role build-equity/train-2020-2023-lo3-dlret/manifest.json --train-label-role-sha256 95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069 (the parent spec's inputs.label_role); fit, card, w, NAV and monitor follow (their outputs renamed; u renamed too: the change is on the u pass). No constant. Carried alike from the parent, not a difference: the pinned exes (exes_sha256 by lock --exes), eval mode research-fast, fit mode flag-absent (the Python fit), the run caps, and every NAV flag of the parent's nav.flags including --ann-mean-gross and --info-clock-print (this template names no nav.flags: it inherits them, FLAGS-ROUTE f8d852f3). Never on any P9-L argv: a rule flag, a --risk-model, a cache index flag (SQL-11), any other changed input. Gross match (PRE-3): gross_match pm6-6-engine through the engine calibration, by hand in the form of wave_stage_cell.match_engine: G_parent = the parent NAV's all-rows S2 gross (the mechanics reader), the run recipe label-terminal-cal.json (this cell at the parent's L 1.1828 with nav --calibrate-gross G_parent --calibrate-tolerance 0.005) runs ONE NAV that publishes at the final L; the cell of record that a child names as parent is label-terminal-gm.json, the plain recipe at the published L-prime with no calibrate flag (PRE-27, C2-6). Acceptance (decides; PRE-5): mechanics only at the G-B9 limits unscaled (v8-mech: all-rows S2 gross in [.90, 1.05], |all-rows mean net| <= .02, tau mean <= .20, tau p95 <= .30, the two accounting rows within the NAV's own tolerance); adopted as the new parent iff mechanics pass; derived by hand and re-derived by a second agent before the trial-ledger line (CELLS-2). Printed only: the paired dSR vs the parent and both p (the pinned eval verb through nav_summ --bundle), orientation flips (u orientations.json, parent vs cell), admission changes (fit admission.json, parent vs cell), the IC exe's ic_missing_exit_v1, terminal_imputed_pairs, missing_exit_share and guard_excluded_pairs. Predictions: none registered. Exposure (PRE-4): under --label-terminal a delisting cause may be classified up to 30 days after termination, so labels within 30 days of TRAIN end can embed post-TRAIN information; stated, bounded by the 2 unclassified exits of ALD-DIAG; no truncation code. P9-L by hand at matched gross in one process (Ruling PM6-6, nav --calibrate-gross 0.9862134133265011, P9 C2; the wave_stage_cell.match_engine form, PRE-3): the exe calibrates at L 1.1828 and publishes at the final L (summary.json calibration).",
+  "parent": "../../v8/lib-v8ysb-gm.json",
+  "nominal_parent": "../../v8/lib-v8ysb-gm.json",
+  "change": {
+    "set": {
+      "ic.u_output": "build-equity/mega-p9l-train-u-label-terminal",
+      "fit.output": "build-equity/mega-weights-p9l-label-terminal",
+      "card.output": "build-equity/mega-cards-p9l-label-terminal",
+      "ic.w_output": "build-equity/mega-p9lw-train-label-terminal",
+      "nav.output": "build-equity/mega-nav-p9l-label-terminal-gm",
+      "monitor.output": "build-equity/mega-monitor-p9l-label-terminal",
+      "exes_sha256": {
+        "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+        "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+        "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+      }
+    },
+    "flags": {
+      "ic": {
+        "--label-terminal": "imputed-v1",
+        "--train-label-role": "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+        "--train-label-role-sha256": "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+      },
+      "nav": {
+        "--calibrate-gross": "0.9862134133265011",
+        "--calibrate-tolerance": "0.005"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/p9-b0g-yf0-nav/summary.json",
+      "sha256": "826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json",
+      "sha256": "121f70466884030f97d98ec3d965760e7df376c160385072d0abc8428b9bf255"
+    }
+  }
+}
