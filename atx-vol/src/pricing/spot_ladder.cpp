@@ -30,6 +30,11 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // Window halvings tried when a contract's certificate fails (build or rebuild).
 constexpr int kMaxShrink = 6;
+// Ulp-scale floor on every dollar certificate (8 ulps of max(F_max, K)): the
+// record certificate is a forward-unit grid bound, and a few-hundred-dollar price
+// carries rounding it cannot see (tick-path review v2: one 5.0e-13 overshoot at
+// S ~ 631).
+constexpr double kCertUlps = 8.0;
 
 // Status codes the block kernel emits; OutOfWindow lanes are resolved afterwards
 // by the rebuild / record-fallback pass.
@@ -100,15 +105,22 @@ inline void eval_block(const Block &B, double S, LaneOut &o) noexcept {
     const bool ex = is_put ? (S <= B.s_ex[l]) : (S >= B.s_ex[l]);
     const double intr_raw = is_put ? (B.strike[l] - S) : (S - B.strike[l]);
     const double intr = intr_raw > 0.0 ? intr_raw : 0.0;
-    const double px = P > intr ? P : intr;
+    // The served price is max(series, intrinsic). Where the floor wins, the lane
+    // is served the floor's own Greeks — the exercise convention for intrinsic,
+    // zero for a worthless floor — so the Greeks always belong to the served
+    // price (review dcb6e3f1 nit 12). An intrinsic floor reports Exercised.
+    const bool floored = !(P > intr);
+    const bool at_floor = ex || floored;
     const double delta = B.alpha[l] * Px;
     const double gamma = B.alpha[l] * B.alpha[l] * Pxx;
-    o.price[l] = ex ? intr : px;
-    o.delta[l] = ex ? (is_put ? -1.0 : 1.0) : delta;
-    o.gamma[l] = ex ? 0.0 : gamma;
-    o.vega[l] = ex ? 0.0 : V;
-    o.theta[l] = ex ? 0.0 : (B.r[l] * px - B.rq[l] * S * delta - B.hs2[l] * S * S * gamma);
-    o.status[l] = !in_win ? kLaneOut : (ex ? kLaneExercised : kLaneOk);
+    const double floor_delta = (ex || intr > 0.0) ? (is_put ? -1.0 : 1.0) : 0.0;
+    o.price[l] = at_floor ? intr : P;
+    o.delta[l] = at_floor ? floor_delta : delta;
+    o.gamma[l] = at_floor ? 0.0 : gamma;
+    o.vega[l] = at_floor ? 0.0 : V;
+    o.theta[l] = at_floor ? 0.0 : (B.r[l] * P - B.rq[l] * S * delta - B.hs2[l] * S * S * gamma);
+    const bool exercised = ex || (floored && intr > 0.0);
+    o.status[l] = !in_win ? kLaneOut : (exercised ? kLaneExercised : kLaneOk);
   }
 }
 
@@ -144,13 +156,14 @@ struct ChainSpotLadder::Impl {
   std::vector<double> box_lo;
   std::vector<double> box_hi;
   std::vector<std::uint8_t> refused;
+  std::vector<std::uint8_t> sigma_out; // sigma outside the record's sigma box
   std::vector<double> cert_usd;
   std::vector<std::uint32_t> pending; // out-of-window scratch, sized n at build
   ChainRecords records;
   SpotLadderPolicy policy;
-  std::uint64_t rebuilds = 0;
-  std::uint64_t fallbacks = 0;
+  SpotLadderCounters counters;
   std::size_t refused_count = 0;
+  std::size_t sigma_out_count = 0;
 
   [[nodiscard]] const ExpiryRecord &record(std::size_t c) const noexcept {
     return *records.bank().at(rec_of[c]);
@@ -166,7 +179,13 @@ struct ChainSpotLadder::Impl {
   bool build_one(std::size_t c, double center) noexcept;
   void refuse(std::size_t c) noexcept;
   void clear_window(std::size_t c) noexcept;
-  void serve_from_record(std::size_t c, double S, const ChainTickOutputs &out) noexcept;
+  // Serve contract c from its record (Fallback) and count it in `bucket`.
+  void serve_from_record(std::size_t c, double S, const ChainTickOutputs &out,
+                         std::uint64_t &bucket) noexcept;
+  // Certificate acceptance threshold at forward F_max (SpotLadderPolicy).
+  [[nodiscard]] double cert_limit(double f_max) const noexcept {
+    return std::max(policy.max_cert_usd, policy.max_cert_rel * f_max);
+  }
 };
 
 void ChainSpotLadder::Impl::clear_window(std::size_t c) noexcept {
@@ -220,13 +239,27 @@ bool ChainSpotLadder::Impl::build_one(std::size_t c, double center) noexcept {
 
   double delta = half_width[c];
   double cert = kInf;
+  double limit = policy.max_cert_usd;
+  double prev_lo = kNaN;
+  double prev_hi = kNaN;
   for (int attempt = 0; attempt <= kMaxShrink; ++attempt) {
     // Window clipped to the box, so every Ok / Exercised lane is in the box.
     const double lo = std::max(center * std::exp(-delta), box_lo[c]);
     const double hi = std::min(center * std::exp(delta), box_hi[c]);
+    if (lo == prev_lo && hi == prev_hi) {
+      // The box clips both sides: halving delta no longer moves the window, so
+      // another attempt would recompute the same certificate (review v2 nit 5).
+      break;
+    }
+    prev_lo = lo;
+    prev_hi = hi;
     // Record error in dollars = F x the forward-unit certificate; F is largest
-    // at the window's top.
-    const double rec_cert_usd = rec_cert * hi * g;
+    // at the window's top. Plus the ulp floor at the largest price scale.
+    const double f_max = hi * g;
+    const double ulp_floor =
+        kCertUlps * std::numeric_limits<double>::epsilon() * std::max(f_max, K);
+    const double rec_cert_usd = rec_cert * f_max + ulp_floor;
+    limit = cert_limit(f_max);
     const double a = is_put ? std::max(lo, s_ex) : lo;
     const double b = is_put ? hi : std::min(hi, s_ex);
     B.lo[l] = lo;
@@ -283,22 +316,22 @@ bool ChainSpotLadder::Impl::build_one(std::size_t c, double center) noexcept {
     probe(-1.0);
     probe(1.0);
     cert = worst + rec_cert_usd;
-    if (cert <= policy.max_cert_usd || delta <= policy.window_min) {
+    if (cert <= limit || delta <= policy.window_min) {
       break;
     }
     delta = std::max(0.5 * delta, policy.window_min);
   }
   half_width[c] = delta;
   cert_usd[c] = cert;
-  if (!(cert <= policy.max_cert_usd)) {
+  if (!(cert <= limit)) {
     refuse(c);
     return false;
   }
   return true;
 }
 
-void ChainSpotLadder::Impl::serve_from_record(std::size_t c, double S,
-                                              const ChainTickOutputs &out) noexcept {
+void ChainSpotLadder::Impl::serve_from_record(std::size_t c, double S, const ChainTickOutputs &out,
+                                              std::uint64_t &bucket) noexcept {
   const RecordGreeks g = record(c).greeks(S, strike[c], sigma[c]);
   out.price[c] = g.price;
   out.delta[c] = g.delta;
@@ -306,7 +339,7 @@ void ChainSpotLadder::Impl::serve_from_record(std::size_t c, double S,
   out.vega[c] = g.vega;
   out.theta[c] = g.theta;
   out.status[c] = std::isfinite(g.price) ? TickStatus::Fallback : TickStatus::Unpriceable;
-  ++fallbacks;
+  ++bucket;
 }
 
 ChainSpotLadder::ChainSpotLadder() = default;
@@ -322,7 +355,8 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
   if (!std::isfinite(spot) || !(spot > 0.0) || !chain.consistent() ||
       records.record_of_contract().size() != n || !(policy.window_min > 0.0) ||
       !(policy.window_max >= policy.window_min) || !(policy.window_sigmas > 0.0) ||
-      !(policy.max_cert_usd > 0.0)) {
+      !(policy.max_cert_usd > 0.0) || !(policy.max_cert_rel >= 0.0) ||
+      !std::isfinite(policy.max_cert_rel)) {
     return Err(ErrorCode::InvalidArgument,
                "ChainSpotLadder::build: bad spot, column lengths, records or policy");
   }
@@ -340,6 +374,7 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
   impl->box_lo.assign(n, kInf);
   impl->box_hi.assign(n, -kInf);
   impl->refused.assign(n, 0u);
+  impl->sigma_out.assign(n, 0u);
   impl->cert_usd.assign(n, kNaN);
   impl->pending.assign(n, 0u);
 
@@ -377,6 +412,9 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
       const double g = rec->forward_factor();
       impl->box_lo[c] = K * std::exp(-rec->k_max()) / g * (1.0 + 1.0e-12);
       impl->box_hi[c] = K * std::exp(-rec->k_min()) / g * (1.0 - 1.0e-12);
+    } else {
+      impl->sigma_out[c] = 1u; // no window ever; served from the record until a refit
+      ++impl->sigma_out_count;
     }
     (void)impl->build_one(c, spot);
   }
@@ -411,36 +449,64 @@ Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
   }
   // Resolve window exits: rebuild within budget, otherwise serve the record. A
   // spot outside the contract's record box cannot be certified at all, so it is
-  // served from the record without spending the rebuild budget.
+  // served from the record without spending the rebuild budget. Each fallback is
+  // counted in the bucket that says why (SpotLadderCounters).
+  SpotLadderCounters &k = m.counters;
   std::uint32_t rebuilt = 0;
   for (std::size_t p = 0; p < n_pending; ++p) {
     const std::size_t c = m.pending[p];
-    const bool may_rebuild = m.refused[c] == 0u && m.policy.rebuild_on_exit &&
-                             m.spot_in_box(c, spot) && rebuilt < m.policy.max_rebuilds_per_tick;
-    if (may_rebuild) {
-      ++rebuilt;
-      ++m.rebuilds;
-      if (m.build_one(c, spot)) {
-        eval_block(m.blocks[c / kL], spot, o);
-        const std::size_t l = c % kL;
-        out.price[c] = o.price[l];
-        out.delta[c] = o.delta[l];
-        out.gamma[c] = o.gamma[l];
-        out.vega[c] = o.vega[l];
-        out.theta[c] = o.theta[l];
-        out.status[c] = static_cast<TickStatus>(o.status[l]);
-        continue;
-      }
+    if (m.refused[c] != 0u) {
+      m.serve_from_record(c, spot, out, k.refused_fallbacks);
+      continue;
     }
-    m.serve_from_record(c, spot, out);
+    if (m.sigma_out[c] != 0u) {
+      m.serve_from_record(c, spot, out, k.sigma_out_of_box_fallbacks);
+      continue;
+    }
+    if (!m.spot_in_box(c, spot)) {
+      m.serve_from_record(c, spot, out, k.out_of_box_fallbacks);
+      continue;
+    }
+    if (!m.policy.rebuild_on_exit || rebuilt >= m.policy.max_rebuilds_per_tick) {
+      m.serve_from_record(c, spot, out, k.budget_fallbacks);
+      continue;
+    }
+    ++rebuilt;
+    ++k.rebuilds;
+    if (m.build_one(c, spot)) {
+      eval_block(m.blocks[c / kL], spot, o);
+      const std::size_t l = c % kL;
+      out.price[c] = o.price[l];
+      out.delta[c] = o.delta[l];
+      out.gamma[c] = o.gamma[l];
+      out.vega[c] = o.vega[l];
+      out.theta[c] = o.theta[l];
+      out.status[c] = static_cast<TickStatus>(o.status[l]);
+      continue;
+    }
+    // The rebuild could not certify a window: build_one refused the contract.
+    m.serve_from_record(c, spot, out, k.refused_fallbacks);
   }
   return Ok();
 }
 
 std::size_t ChainSpotLadder::size() const noexcept { return impl_ ? impl_->n : 0u; }
-std::uint64_t ChainSpotLadder::rebuilds() const noexcept { return impl_ ? impl_->rebuilds : 0u; }
+std::uint64_t ChainSpotLadder::rebuilds() const noexcept {
+  return impl_ ? impl_->counters.rebuilds : 0u;
+}
 std::uint64_t ChainSpotLadder::fallbacks() const noexcept {
-  return impl_ ? impl_->fallbacks : 0u;
+  if (!impl_) {
+    return 0u;
+  }
+  const SpotLadderCounters &k = impl_->counters;
+  return k.budget_fallbacks + k.out_of_box_fallbacks + k.sigma_out_of_box_fallbacks +
+         k.refused_fallbacks;
+}
+SpotLadderCounters ChainSpotLadder::counters() const noexcept {
+  return impl_ ? impl_->counters : SpotLadderCounters{};
+}
+std::size_t ChainSpotLadder::sigma_out_of_box_contracts() const noexcept {
+  return impl_ ? impl_->sigma_out_count : 0u;
 }
 std::span<const double> ChainSpotLadder::certified_error_usd() const noexcept {
   return impl_ ? std::span<const double>(impl_->cert_usd) : std::span<const double>{};

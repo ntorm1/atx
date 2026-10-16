@@ -89,6 +89,7 @@ TEST(ExpiryRecord, CertifiedErrorIsSmallAndCoversTheGrid) {
                 b.spec.side == Side::Put ? "put" : "call", b.rec.has_exercise_edge() ? 1 : 0, err,
                 b.rec.certified_points());
     EXPECT_TRUE(std::isfinite(err));
+    EXPECT_EQ(b.rec.uncertified_rows(), 0u) << "every certification row has a cold reference";
     EXPECT_GT(b.rec.certified_points(), 150u);
     // Measured 2026-10-16: <= 1.3e-8 forward units on these six records.
     EXPECT_LT(err, 1.0e-7) << "T=" << b.spec.expiry;
@@ -198,6 +199,48 @@ TEST(ExpiryRecord, PriceIsContinuousAcrossTheExerciseEdge) {
     const double out = b.rec.price(kS0, F * std::exp(edge + 1.0e-7), sig);
     EXPECT_NEAR(in, out, 1.0e-3) << "T=" << b.spec.expiry;
   }
+}
+
+// Tick-path review nit 12: the Greeks belong to the served price. Wherever the
+// record serves intrinsic (past the edge, or a continuation value that fell to
+// intrinsic before it) it reports exercised with delta +/-1 and zero gamma, vega
+// and theta, and price_and_vega agrees (vega 0); everywhere else the served
+// price is strictly above intrinsic.
+TEST(ExpiryRecord, GreeksBelongToTheServedPriceAtTheIntrinsicFloor) {
+  std::size_t exercised = 0, floored = 0, above = 0;
+  for (const Built &b : records()) {
+    const double T = b.spec.expiry;
+    const bool put = b.spec.side == Side::Put;
+    const double F = kS0 * b.rec.forward_factor();
+    for (int j = 0; j <= 80; ++j) {
+      const double k = b.spec.k_min + (b.spec.k_max - b.spec.k_min) * j / 80.0;
+      const double K = F * std::exp(k);
+      const double sig = smile(k);
+      const double intr = std::max(put ? K - kS0 : kS0 - K, 0.0);
+      const RecordGreeks g = b.rec.greeks(kS0, K, sig);
+      double vega = -1.0;
+      const double px = b.rec.price_and_vega(kS0, K, sig, &vega);
+      if (g.exercised) {
+        ++exercised;
+        floored += g.floored ? 1u : 0u;
+        EXPECT_DOUBLE_EQ(g.price, intr) << "T=" << T << " K=" << K;
+        EXPECT_EQ(g.delta, put ? -1.0 : 1.0) << "T=" << T << " K=" << K;
+        EXPECT_EQ(g.gamma, 0.0);
+        EXPECT_EQ(g.vega, 0.0);
+        EXPECT_EQ(g.theta, 0.0);
+        EXPECT_EQ(vega, 0.0) << "price_and_vega must agree at the floor; T=" << T << " K=" << K;
+        EXPECT_DOUBLE_EQ(px, intr);
+      } else {
+        ++above;
+        EXPECT_FALSE(g.floored);
+        EXPECT_GT(g.price, intr) << "T=" << T << " K=" << K;
+      }
+    }
+  }
+  std::printf("[record] floor grid: %zu exercised (%zu floored before the edge), %zu above\n",
+              exercised, floored, above);
+  EXPECT_GT(exercised, 0u);
+  EXPECT_GT(above, 0u);
 }
 
 // ── Box handling, regimes, refusals ──────────────────────────────────────────

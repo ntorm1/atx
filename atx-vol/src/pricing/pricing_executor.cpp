@@ -153,8 +153,24 @@ bool g_built = false;
 // Logical CPUs (group 0, up to 64) belonging to the highest-EfficiencyClass
 // physical cores = the performance cores. Empty on any failure -> caller falls
 // back to Auto sizing.
+[[nodiscard]] std::vector<std::uint64_t> discover_pcore_masks();
+
 [[nodiscard]] std::vector<unsigned> discover_pcores() {
+  // Flatten the per-core masks (same enumeration order, bits ascending) — the
+  // historical worker order, unchanged.
   std::vector<unsigned> out;
+  for (const std::uint64_t mask : discover_pcore_masks()) {
+    for (unsigned b = 0; b < 64; ++b) {
+      if ((mask >> b) & 1u) {
+        out.push_back(b);
+      }
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] std::vector<std::uint64_t> discover_pcore_masks() {
+  std::vector<std::uint64_t> out;
   DWORD len = 0;
   ::GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
   if (len == 0 || ::GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
@@ -181,10 +197,8 @@ bool g_built = false;
     if (info->Relationship == RelationProcessorCore && info->Processor.EfficiencyClass == max_eff &&
         info->Processor.GroupCount >= 1) {
       const KAFFINITY mask = info->Processor.GroupMask[0].Mask;
-      for (unsigned b = 0; b < 64; ++b) {
-        if ((mask >> b) & 1u) {
-          out.push_back(b);
-        }
+      if (mask != 0) {
+        out.push_back(static_cast<std::uint64_t>(mask));
       }
     }
     off += info->Size;
@@ -600,6 +614,29 @@ std::vector<unsigned> performance_core_cpus() {
 #else
   return {};
 #endif
+}
+
+std::vector<std::uint64_t> performance_core_masks() {
+#if defined(_MSC_VER)
+  return discover_pcore_masks();
+#else
+  return {};
+#endif
+}
+
+std::uint64_t pool_mask_excluding_core_of(const std::vector<std::uint64_t> &pcore_masks,
+                                          unsigned main_cpu) noexcept {
+  if (main_cpu >= 64u) {
+    return 0u;
+  }
+  const std::uint64_t main_bit = std::uint64_t{1} << main_cpu;
+  std::uint64_t pool = 0u;
+  for (const std::uint64_t core : pcore_masks) {
+    if ((core & main_bit) == 0u) {
+      pool |= core;
+    }
+  }
+  return pool;
 }
 
 bool pin_current_thread_affinity(std::uint64_t mask) noexcept {

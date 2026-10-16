@@ -209,20 +209,31 @@ private:
 // has no window at all. A lane reported Ok or Exercised is therefore always
 // inside its record's box. A spot outside the box is served from the record —
 // the box-clamped value, flagged TickStatus::Fallback and covered by no
-// certificate — until the spot comes back, when the next tick rebuilds it.
+// certificate — until the spot comes back, when the next tick rebuilds it. A
+// lane that STAYS outside its box (or whose sigma is outside the sigma box)
+// needs a refit: rebuild the ChainRecords at the new spot / smile and then the
+// ladder. counters() tells that case (out_of_box / sigma_out_of_box / refused)
+// apart from transient rebuild-budget pressure (budget).
 //
 // Certification (per contract, at build and at every rebuild): the price series
 // is compared with the record at every midpoint between adjacent nodes and at
 // the domain ends; certified_error_usd()[i] = that maximum + F_max x the record's
-// own certified error against the cold solver (F_max at the window's top). A
-// contract whose certificate exceeds SpotLadderPolicy::max_cert_usd even at the
+// own certified error against the cold solver (F_max at the window's top) + an
+// ulp-scale floor (8 ulps of max(F_max, K): the forward-unit grid certificate
+// cannot see rounding in a price of a few hundred dollars). The certificate is
+// accepted when it is at most max(SpotLadderPolicy::max_cert_usd,
+// max_cert_rel x F_max). A contract whose certificate exceeds that even at the
 // smallest window, or whose record is uncertified (ChainRecordPolicy::certify =
-// false), is REFUSED: it is served from its record every tick
-// (TickStatus::Fallback). certified_error_usd()[i] describes contract i's
-// current window and is NaN when it has none (uncertified record, or a build
-// spot outside its record box); a tick whose spot is outside the window serves
-// the record (Fallback) and makes no use of it. Greeks are not separately
-// certified; the bench measures them against american_greeks_al.
+// false, or a certification row the cold solver could not price), is REFUSED:
+// it is served from its record every tick (TickStatus::Fallback).
+// certified_error_usd()[i] describes contract i's current window and is NaN
+// when it has none (uncertified record, a build spot outside its record box, or
+// a sigma outside the record's sigma box); a tick whose spot is outside the
+// window serves the record (Fallback) and makes no use of it. Greeks are not
+// separately certified; the bench measures them against american_greeks_al.
+// Where the series falls to intrinsic the floor is served with the exercise
+// Greeks (delta +/-1, gamma = vega = theta = 0) and TickStatus::Exercised, so the
+// Greeks always belong to the price that is served.
 //
 // Window exits: when the spot leaves a contract's window (inside its record
 // box) the tick rebuilds that contract's ladder centred on the new spot (from
@@ -237,13 +248,38 @@ inline constexpr std::uint16_t kSpotLadderNodes = 16;
 struct SpotLadderPolicy {
   // Window half-width in ln-spot = clamp(window_sigmas * sigma * sqrt(T),
   // window_min, window_max), halved (down to window_min) while a contract's
-  // certificate exceeds max_cert_usd.
+  // certificate exceeds its acceptance threshold.
   double window_sigmas = 2.0;
   double window_min = 0.0025;
   double window_max = 0.04;
+  // Acceptance threshold = max(max_cert_usd, max_cert_rel x F_max): an absolute
+  // dollar floor plus a forward-scaled allowance. The record certificate is a
+  // forward-unit bound, so its dollar size grows with the underlying; a fixed
+  // $5e-4 refused every contract of a ~$5,000 underlying (record certificates
+  // ~3.3e-7 fwd = $1.7e-3 there). The defaults keep the floor binding below
+  // F ~ $1,000, so a $600 chain is unchanged.
   double max_cert_usd = 5.0e-4;
+  double max_cert_rel = 5.0e-7;
   std::uint32_t max_rebuilds_per_tick = 32;
   bool rebuild_on_exit = true;
+};
+
+// Where a ChainSpotLadder's record fallbacks came from, since build(). Every
+// Fallback lane-tick lands in exactly one bucket; fallbacks() is their sum.
+struct SpotLadderCounters {
+  std::uint64_t rebuilds = 0; // in-tick window rebuilds
+  // Transient: an in-box lane left its window after this tick's rebuild budget
+  // was spent; it is rebuilt on a later tick.
+  std::uint64_t budget_fallbacks = 0;
+  // The spot is outside the lane's record (k) box. Clears if the spot comes
+  // back; a lane that stays out needs a refit (ChainRecords at the new spot).
+  std::uint64_t out_of_box_fallbacks = 0;
+  // The contract's sigma is outside its record's sigma box: no window ever. A
+  // refit (ChainRecords from the current smile) is required.
+  std::uint64_t sigma_out_of_box_fallbacks = 0;
+  // The contract is refused (uncertified record, or no certifiable window).
+  // A refit is required.
+  std::uint64_t refused_fallbacks = 0;
 };
 
 class ChainSpotLadder {
@@ -270,14 +306,19 @@ public:
   [[nodiscard]] Status refresh(double spot, const ChainTickOutputs &out);
 
   [[nodiscard]] std::size_t size() const noexcept;
-  // In-tick rebuilds and record fallbacks since build().
+  // In-tick rebuilds and record fallbacks since build(); fallbacks() is the sum
+  // of the four fallback buckets of counters().
   [[nodiscard]] std::uint64_t rebuilds() const noexcept;
   [[nodiscard]] std::uint64_t fallbacks() const noexcept;
+  [[nodiscard]] SpotLadderCounters counters() const noexcept;
   // Per-contract certified price error in dollars of the current windows (NaN
-  // for a contract with no window), and the contracts refused (served from
-  // their record every tick).
+  // for a contract with no window), the contracts refused (served from their
+  // record every tick), and the contracts whose sigma is outside their record's
+  // sigma box (no window ever; also served from the record every tick). Both of
+  // the latter need a refit.
   [[nodiscard]] std::span<const double> certified_error_usd() const noexcept;
   [[nodiscard]] std::size_t refused_contracts() const noexcept;
+  [[nodiscard]] std::size_t sigma_out_of_box_contracts() const noexcept;
   // Bytes of tick-path data (blocks of coefficients and per-contract scalars).
   [[nodiscard]] std::size_t tick_bytes() const noexcept;
 

@@ -25,6 +25,20 @@ namespace atx::vol::detail {
 // host, in which case callers fall back to unpinned behaviour.
 [[nodiscard]] std::vector<unsigned> performance_core_cpus();
 
+// One logical-CPU mask per performance core (its SMT siblings together; bit b =
+// logical CPU b, group 0), in the same enumeration order as
+// performance_core_cpus(), whose ids are exactly these masks' bits. Lets a caller
+// keep a whole physical core free of pool workers (the bench main thread shares
+// a core with nobody, not even a hyperthread sibling). Empty when discovery fails.
+[[nodiscard]] std::vector<std::uint64_t> performance_core_masks();
+
+// The pool mask for a measuring thread pinned to `main_cpu`: every performance-
+// core logical CPU EXCEPT the physical core that holds `main_cpu` (both of its SMT
+// siblings). 0 when there is no other performance core to give the pool (the
+// caller then keeps the default topology).
+[[nodiscard]] std::uint64_t pool_mask_excluding_core_of(
+    const std::vector<std::uint64_t> &pcore_masks, unsigned main_cpu) noexcept;
+
 // Set the calling thread's affinity to `mask` (bit b = logical CPU b, group 0).
 // Returns true iff the OS accepted it. The pool workers call this with a single-
 // bit mask; the bench main thread calls it through pin_current_thread_for_latency.

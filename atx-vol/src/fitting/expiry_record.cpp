@@ -307,6 +307,7 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
     const auto work = std::make_unique<BoundaryWork>();
     double worst = 0.0;
     std::uint32_t pts = 0;
+    std::uint32_t refused_rows = 0;
     const auto check = [&](double k, double sigma, bool cold_ok) {
       const double K = std::exp(k);
       double cold = 0.0;
@@ -326,6 +327,12 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
       bool cold_ok = true;
       if (rec.american_) {
         cold_ok = std::isfinite(solve_edge(*work, ip, T, sc, S1, acc));
+      }
+      if (!cold_ok) {
+        // No reference at this sigma: the grid would have a hole the
+        // certificate cannot vouch for, so the record is refused below.
+        ++refused_rows;
+        continue;
       }
       const double edge = rec.exercise_edge(sc);
       // Continuation-side moneyness checks: the u-node midpoints of this sigma's
@@ -355,8 +362,9 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
         }
       }
     }
-    rec.cert_err_ = worst;
+    rec.cert_err_ = (refused_rows == 0u) ? worst : kNaN;
     rec.cert_pts_ = pts;
+    rec.cert_refused_rows_ = refused_rows;
   }
   return Ok(rec);
 }
@@ -506,7 +514,8 @@ double ExpiryRecord::price_and_vega(double S, double K, double sigma,
   }
   const Black76ValueVega bv = black76_value_and_vega(F, K, T_, sigma, df_, side_);
   const Jet j = eval_jet(k, sigma, /*want_k=*/false);
-  double px = bv.price + F * j.c;
+  const double cont = bv.price + F * j.c;
+  double px = cont;
   if (intr > px) {
     px = intr;
   }
@@ -514,7 +523,9 @@ double ExpiryRecord::price_and_vega(double S, double K, double sigma,
     px = bv.price;
   }
   if (vega_out != nullptr) {
-    *vega_out = bv.vega + F * j.c_s;
+    // A price floored at intrinsic is flat in sigma there: its vega is 0, the
+    // same as greeks() reports for it.
+    *vega_out = (intr > 0.0 && !(cont > intr)) ? 0.0 : bv.vega + F * j.c_s;
   }
   return (px > 0.0) ? px : 0.0;
 }
@@ -540,14 +551,20 @@ RecordGreeks ExpiryRecord::greeks(double S, double K, double sigma) const noexce
   }
   const Black76Greeks bg = black76_greeks(F, K, T_, sigma, r_, df_, side_);
   const Jet j = eval_jet(k, sigma, /*want_k=*/true);
-  double px = bg.price + F * j.c;
-  if (intr > px) {
-    px = intr;
+  const double cont = bg.price + F * j.c;
+  if (intr > 0.0 && !(cont > intr)) {
+    // The continuation value fell to intrinsic on the continuation side of the
+    // recorded edge: serve intrinsic with the exercise Greeks, so the Greeks
+    // belong to the served price (tick-path review nit 12).
+    g.floored = true;
+    g.exercised = true;
+    g.price = intr;
+    g.delta = put ? -1.0 : 1.0;
+    return g; // gamma = vega = theta = 0
   }
-  if (bg.price > px) {
-    px = bg.price;
-  }
-  g.price = (px > 0.0) ? px : 0.0;
+  // c >= 0 (eval_jet's served max(0, polynomial)) keeps cont >= Black-76 >= 0, so
+  // neither the European nor the zero floor can bind here.
+  g.price = (cont > 0.0) ? cont : 0.0;
   const double D = bg.greeks.delta + j.c - j.c_k; // dP/dF
   g.delta = m * D;
   g.gamma = m * m * (bg.greeks.gamma + (j.c_kk - j.c_k) / F);
