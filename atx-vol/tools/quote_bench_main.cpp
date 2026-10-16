@@ -1,7 +1,9 @@
 // Offline orchestration only: model input is a closed, label-free CSV schema.
-// Numerical work lives in quote_slice, independently of any data vendor or file.
+// Numerical work lives in reusable fitting/pricing APIs, independent of data files.
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "quote_bench_policy.hpp"
+#include "quote_bench_common.hpp"
+#include "quote_bench_data.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +34,8 @@ namespace {
 using namespace atx::vol;
 using Clock = std::chrono::steady_clock;
 using quote_bench_policy::Json;
+using quote_bench::InputRow;
+using quote_bench::Prediction;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 struct Arguments {
@@ -40,6 +44,8 @@ struct Arguments {
   std::filesystem::path report;
   std::string curve;
   std::string policy{"auto"};
+  std::string model{"quote-slice"};
+  std::string common_policy{"auto"};
   std::string dividends{"funding-pv"};
   std::size_t max_rows{2000000U};
   QuoteSliceQualityConfig quality;
@@ -86,7 +92,9 @@ Arguments arguments(int argc, char **argv) {
     }
     if (key == "--help") {
       std::cout << "atx-vol-quote-bench --input quotes.csv --output predictions.csv "
-                   "[--report timing.json] [--policy auto|policy.json | --curve CURVE] "
+                   "[--report timing.json] [--model quote-slice|common-markov] "
+                   "[--policy auto|policy.json | --curve CURVE] "
+                   "[--common-policy auto|common-policy.json] "
                    "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
                    "[--max-weight 1000]\n"
@@ -102,6 +110,8 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--report") args.report = value;
     else if (key == "--curve") args.curve = value;
     else if (key == "--policy") args.policy = value;
+    else if (key == "--model") args.model = value;
+    else if (key == "--common-policy") args.common_policy = value;
     else if (key == "--dividends") args.dividends = value;
     else if (key == "--max-rows") args.max_rows = number<std::size_t>(value, key);
     else if (key == "--min-quotes") args.min_quotes = number<std::size_t>(value, key);
@@ -114,6 +124,18 @@ Arguments arguments(int argc, char **argv) {
   }
   if (seen.contains("--policy") && seen.contains("--curve")) {
     throw std::runtime_error("--policy and --curve are mutually exclusive");
+  }
+  if (args.model != "quote-slice" && args.model != "common-markov") {
+    throw std::runtime_error("--model must be quote-slice or common-markov");
+  }
+  if (args.common_policy.empty()) throw std::runtime_error("Common policy must not be empty");
+  if (args.model == "common-markov" &&
+      (seen.contains("--policy") || seen.contains("--curve") || quality_specified)) {
+    throw std::runtime_error("common-markov requires --common-policy; quote-slice policy, "
+                             "curve and quality flags are incompatible");
+  }
+  if (args.model == "quote-slice" && seen.contains("--common-policy")) {
+    throw std::runtime_error("--common-policy requires --model common-markov");
   }
   if ((seen.contains("--curve") && args.curve.empty()) || args.policy.empty()) {
     throw std::runtime_error("Policy and curve names must not be empty");
@@ -146,6 +168,11 @@ Arguments arguments(int argc, char **argv) {
       (same_file(args.policy, args.input) || same_file(args.policy, args.output) ||
        (!args.report.empty() && same_file(args.policy, args.report)))) {
     throw std::runtime_error("Policy file must differ from input, predictions and report");
+  }
+  if (args.model == "common-markov" && args.common_policy != "auto" &&
+      (same_file(args.common_policy, args.input) || same_file(args.common_policy, args.output) ||
+       (!args.report.empty() && same_file(args.common_policy, args.report)))) {
+    throw std::runtime_error("Common policy file must differ from input, predictions and report");
   }
   return args;
 }
@@ -211,15 +238,6 @@ Header read_header(std::istream &stream) {
   }
   return header;
 }
-
-struct InputRow {
-  std::uint64_t id{};
-  std::uint64_t chain{};
-  QuoteSliceMarket market{};
-  QuoteSliceQuote quote{};
-  std::string input_status;
-  std::array<std::string, 4> identity;
-};
 
 InputRow convert_row(const Header &header, const std::vector<std::string> &fields) {
   if (fields.size() != header.size()) throw std::runtime_error("CSV field count mismatch");
@@ -302,18 +320,6 @@ double median(std::vector<double> values) {
   const std::size_t mid = values.size() / 2U;
   return values.size() % 2U ? values[mid] : 0.5 * values[mid - 1U] + 0.5 * values[mid];
 }
-
-struct Prediction {
-  double price{kNaN};
-  double vol{kNaN};
-  std::string status{"not_evaluated"};
-  std::string quote_status{"not_attempted"};
-  bool admitted{false};
-  std::string resolved_profile;
-  std::string policy_source;
-  std::string configured_curve;
-  std::string actual_curve;
-};
 
 struct RunStatistics {
   std::size_t chains{};
@@ -656,7 +662,7 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
   std::ofstream stream{path};
   if (!stream) throw std::runtime_error("Cannot open prediction output");
   stream << "row_id,predicted_price,predicted_vol,status,chain_id,quote_status,admitted,"
-            "resolved_profile,policy_source,configured_curve,actual_curve\n";
+            "resolved_profile,policy_source,configured_curve,actual_curve,vol_status,model\n";
   stream << std::setprecision(17);
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &prediction = predictions[i];
@@ -668,7 +674,9 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
            << prediction.quote_status << ',' << (prediction.admitted ? 1 : 0) << ','
            << prediction.resolved_profile << ',' << prediction.policy_source << ','
            << prediction.configured_curve << ','
-           << prediction.actual_curve << '\n';
+           << prediction.actual_curve << ','
+           << (prediction.model == "quote-slice" && std::isfinite(prediction.vol)
+                   ? "ok" : prediction.vol_status) << ',' << prediction.model << '\n';
   }
   stream.close();
   if (!stream) throw std::runtime_error("Prediction output write failed");
@@ -686,7 +694,7 @@ double quantile(std::vector<double> values, double p) {
 void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
                   const RunStatistics &stats) {
   Json report{
-      {"schema_version", 2}, {"rows", rows}, {"chains", stats.chains},
+      {"schema_version", 2}, {"model", "quote-slice"}, {"rows", rows}, {"chains", stats.chains},
       {"fitted_chains", stats.fitted}, {"served_rows", stats.served},
       {"admitted_quotes", stats.admitted}, {"cash_dividend_chains", stats.dividend_chains},
       {"calendar_pairs_checked", stats.calendar_pairs},
@@ -740,6 +748,20 @@ int main(int argc, char **argv) {
     const auto args = arguments(argc, argv);
     if (args.help_requested) return 0;
     const auto rows = read_rows(args);
+    if (args.model == "common-markov") {
+      auto result = quote_bench::run_common_markov(rows, args.common_policy, args.dividends);
+      result.report["input"] = std::filesystem::weakly_canonical(args.input).string();
+      write_predictions(args.output, rows, result.predictions);
+      std::cout << result.report.dump(2) << '\n';
+      if (!args.report.empty()) {
+        std::ofstream report{args.report};
+        if (!report) throw std::runtime_error("Cannot open timing report");
+        report << result.report.dump(2) << '\n';
+        report.close();
+        if (!report) throw std::runtime_error("Timing report write failed");
+      }
+      return 0;
+    }
     RunStatistics stats;
     const auto predictions = run(args, rows, stats);
     write_predictions(args.output, rows, predictions);

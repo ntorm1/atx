@@ -207,7 +207,9 @@ def test_american_exercise_spelling_is_canonical_for_the_native_boundary(tmp_pat
 
 @pytest.mark.parametrize("extra", [["--curve", "svi"], ["--curve=svi"],
                                   ["--policy", "auto"], ["--policy=auto"],
-                                  ["--dividends", "none"], ["--dividends=escrowed-pv"]])
+                                  ["--dividends", "none"], ["--dividends=escrowed-pv"],
+                                  ["--model", "common-markov"], ["--model=common-markov"],
+                                  ["--common-policy", "auto"], ["--common-policy=auto"]])
 def test_native_extras_cannot_override_the_recorded_curve(tmp_path, monkeypatch, extra):
     dataset, _ = prepare(tmp_path)
     binary = tmp_path / "unused-native.exe"
@@ -340,6 +342,59 @@ def test_policy_and_fixed_curve_are_mutually_exclusive():
             "run", "--dataset", "dataset", "--binary", "runner", "--output", "predictions",
             "--policy", "auto", "--curve", "essvi",
         ])
+
+
+@pytest.mark.parametrize("custom,mutate", [(False, False), (True, False), (True, True)])
+def test_common_model_policy_and_provenance_are_bound(tmp_path, monkeypatch, custom, mutate):
+    dataset, _ = prepare(tmp_path)
+    binary = tmp_path / "unused-native.exe"
+    binary.write_bytes(b"not executed")
+    output = tmp_path / "common-predictions.csv"
+    policy = tmp_path / "common-policy.json"
+    document = {"schema_version": 1, "model": "common-markov"}
+    policy.write_text(json.dumps(document))
+    original_hash = qb.sha256(policy)
+    selection = str(policy) if custom else "auto"
+
+    def execute(command, **kwargs):
+        assert command[command.index("--model") + 1] == "common-markov"
+        assert command[command.index("--common-policy") + 1] == (
+            str(policy.resolve()) if custom else "auto")
+        assert "--policy" not in command and "--curve" not in command
+        output.write_text("predictions")
+        if mutate:
+            policy.write_text('{"schema_version":1,"model":"changed"}')
+        return qb.subprocess.CompletedProcess(command, 0, stdout='{"model":"common-markov"}')
+
+    monkeypatch.setattr(qb.subprocess, "run", execute)
+    args = qb.parser().parse_args([
+        "run", "--dataset", str(dataset), "--binary", str(binary), "--output", str(output),
+        "--model", "common-markov", "--common-policy", selection,
+    ])
+    if mutate:
+        with pytest.raises(ValueError, match="policy configuration changed"):
+            qb.run_native(args)
+        assert not Path(str(output) + ".run.json").exists()
+    else:
+        receipt = qb.run_native(args)
+        assert receipt["model"] == "common-markov"
+        assert receipt["policy"] is None
+        assert receipt["common_policy"] == (str(policy.resolve()) if custom else "auto")
+        assert receipt["policy_sha256"] == (original_hash if custom else None)
+        assert receipt["policy_document"] == (document if custom else None)
+
+
+@pytest.mark.parametrize("selection", [
+    ["--model", "common-markov", "--policy", "auto"],
+    ["--model", "common-markov", "--curve", "essvi"],
+    ["--model", "quote-slice", "--common-policy", "auto"],
+])
+def test_wrapper_refuses_incompatible_model_policy_before_accessing_data(selection):
+    args = qb.parser().parse_args([
+        "run", "--dataset", "unused", "--binary", "unused", "--output", "unused", *selection,
+    ])
+    with pytest.raises(ValueError, match="requires"):
+        qb.run_native(args)
 
 
 def candidate_receipt(dataset: Path, name: str, ids: list[int], prices: list[float],

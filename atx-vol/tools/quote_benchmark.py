@@ -309,6 +309,10 @@ def verify_dataset(dataset: Path, *, labels: bool = False) -> dict:
 
 
 def run_native(args: argparse.Namespace) -> dict:
+    if args.model == "common-markov" and (args.policy is not None or args.curve is not None):
+        raise ValueError("common-markov requires --common-policy; --policy/--curve are incompatible")
+    if args.model == "quote-slice" and args.common_policy is not None:
+        raise ValueError("--common-policy requires --model common-markov")
     manifest = verify_dataset(args.dataset)
     if "quotes.csv" not in manifest["files"]:
         raise ValueError("native runner needs quotes.csv; prepare with --csv")
@@ -320,14 +324,16 @@ def run_native(args: argparse.Namespace) -> dict:
         raise ValueError("prediction/receipt output already exists; use a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
     extras = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
-    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve", "--policy", "--dividends"}
+    if any(arg.split("=", 1)[0] in {"--input", "--output", "--curve", "--policy", "--dividends",
+                                   "--model", "--common-policy"}
            for arg in extras):
         raise ValueError("extra arguments cannot replace provenance-bound "
-                         "input/output/curve/policy/dividends")
+                         "input/output/model/curve/policy/common-policy/dividends")
     policy_path = None
     policy_hash = None
     policy_document = None
-    policy = args.policy or (None if args.curve else "auto")
+    policy = ((args.common_policy or "auto") if args.model == "common-markov"
+              else args.policy or (None if args.curve else "auto"))
     if policy and policy != "auto":
         policy_path = Path(policy).resolve()
         # Keep configuration provenance bounded; the native loader owns schema validation.
@@ -358,9 +364,11 @@ def run_native(args: argparse.Namespace) -> dict:
         }
         if report_path.exists() or report_path in protected:
             raise ValueError("native timing report must use a new path distinct from predictions/receipt")
-    selection = ["--curve", args.curve] if args.curve else ["--policy", policy]
+    selection = (["--common-policy", policy] if args.model == "common-markov"
+                 else ["--curve", args.curve] if args.curve else ["--policy", policy])
     command = [str(binary), "--input", str((args.dataset / "quotes.csv").resolve()),
-               "--output", str(output), *selection, "--dividends", args.dividends, *extras]
+               "--output", str(output), "--model", args.model, *selection,
+               "--dividends", args.dividends, *extras]
     started = time.perf_counter()
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, text=True)
     elapsed = time.perf_counter() - started
@@ -382,7 +390,9 @@ def run_native(args: argparse.Namespace) -> dict:
         "quote_parquet_sha256": manifest["files"]["quotes.parquet"]["sha256"],
         "quote_csv_sha256": manifest["files"]["quotes.csv"]["sha256"],
         "predictions": str(output), "prediction_sha256": sha256(output),
-        "wall_seconds": elapsed, "curve": args.curve, "policy": policy,
+        "wall_seconds": elapsed, "model": args.model, "curve": args.curve,
+        "policy": policy if args.model == "quote-slice" else None,
+        "common_policy": policy if args.model == "common-markov" else None,
         "dividends": args.dividends,
         "dividend_model": DIVIDEND_CONVENTIONS[args.dividends],
         "policy_sha256": policy_hash, "policy_document": policy_document,
@@ -748,11 +758,13 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--dataset", required=True, type=Path)
     run.add_argument("--binary", required=True, type=Path)
     run.add_argument("--output", required=True, type=Path)
+    run.add_argument("--model", choices=["quote-slice", "common-markov"], default="quote-slice")
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--curve", choices=["svi", "essvi", "convex-dense", "spline-vol",
                                               "linear-variance", "c8-event"],
                            help="fixed curve for controlled experiments")
     selection.add_argument("--policy", help="auto (default) or a symbol/profile JSON file")
+    selection.add_argument("--common-policy", help="auto or a dedicated common-markov policy JSON file")
     run.add_argument("--dividends", choices=list(DIVIDEND_CONVENTIONS), default="funding-pv",
                      help="aggregate cash-PV approximation convention, or none for continuous yield")
     run.add_argument("extra", nargs=argparse.REMAINDER, help="native options after --")
