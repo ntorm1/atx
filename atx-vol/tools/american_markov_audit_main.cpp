@@ -201,11 +201,18 @@ Json run(const Fixture &fixture, const Grid &grid) {
                        {"max_mean_error", d.max_relative_mean_error},
                        {"terminal_zero_probability", d.terminal_zero_probability},
                        {"terminal_upper_probability", d.terminal_upper_probability}};
-  std::array<double, 33> strikes{};
-  for (std::size_t i = 0u; i < strikes.size(); ++i) {
+  constexpr std::size_t regular_strikes = 33;
+  std::array<double, regular_strikes + 3> strikes{};
+  for (std::size_t i = 0u; i < regular_strikes; ++i) {
     strikes[i] = fixture.spot * (0.4 + 1.4 * static_cast<double>(i) /
-                                        static_cast<double>(strikes.size() - 1u));
+                                        static_cast<double>(regular_strikes - 1u));
   }
+  // Include the initial payoff kink and nearby points: the regular strip
+  // misses ATM, where grid discretization is particularly visible.
+  strikes[regular_strikes] = fixture.spot * (1.0 - 1.0e-6);
+  strikes[regular_strikes + 1u] = fixture.spot;
+  strikes[regular_strikes + 2u] = fixture.spot * (1.0 + 1.0e-6);
+  std::sort(strikes.begin(), strikes.end());
   AmericanMarkovWorkspace scalar;
   AmericanMarkovBatchWorkspace batch;
   const auto scalar_ready = scalar.prepare(*model);
@@ -297,7 +304,9 @@ Json run(const Fixture &fixture, const Grid &grid) {
     result["pwl"] = {{"operations", pd.algebra_operations}, {"input_nodes", pd.input_nodes},
                        {"generated_nodes", pd.generated_nodes}, {"output_nodes", pd.output_nodes},
                        {"peak_live_nodes", pd.peak_live_nodes},
-                       {"max_function_nodes", pd.max_function_nodes}};
+                       {"max_function_nodes", pd.max_function_nodes},
+                       {"max_output_crossing_resolution_error",
+                        pd.max_output_crossing_resolution_error}};
     double max_pwl_error = 0.0;
     start = Clock::now();
     for (const auto &row : prices) {
@@ -336,13 +345,15 @@ int main(int argc, char **argv) {
             "usage: american-markov-audit [--full] [--case NAME] [--grid NAME]");
       }
     }
-    Json report{{"schema_version", 1},
+    Json report{{"schema_version", 2},
+                 {"strike_sampling", "33 regular strikes plus spot and spot*(1+/-1e-6)"},
                  {"purpose", "synthetic numerical diagnostics; timings are not a benchmark claim"},
                  {"model_scope",
                   "finite Bermudan; absorbing upper boundary; limited-liability cash"},
                  {"reference_scope",
                   "independent lognormal European and continuous deterministic stopping"},
-                 {"pwl_limits", "public defaults; exact represented knots; no compression"},
+                 {"pwl_limits", "public defaults; represented knots retained; "
+                    "unrepresentable crossings have a propagated fixed error allowance"},
                  {"cases", Json::array()}};
     const auto all_fixtures = fixtures();
     const auto all_grids = grids(full);
