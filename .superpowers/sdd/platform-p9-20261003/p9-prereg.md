@@ -244,6 +244,15 @@ flags, citations); no data file, NAV dir, `trials.jsonl`, `build-equity/` file o
 opened; no build, no test, no real-data tool; the only git writes are the pathspec commits of this file and the
 runbook (PAR-1, GATE-MYPY).
 
+**Cells registration edits (cells root agent 1, `r14-prompts/cells-prompt-1.md`; PRE-40, PRE-2BII-RULED, SG4-REF,
+SG-3).** P9-L's registration (code `0bba6c89` the template, `6ea79e5a` the calibrated run recipe; docs: this commit
+with `cells/p9l-label-terminal-plan.md`). PRE-40 form: no sentence is rewritten; each fill or restatement is a bracket
+beside the text it answers: B.1 "Shape" (the template's SHA-256, the inherited flags), B.1 "Parent", "Acceptance" and
+"Fit mode" (SG-3: the stale line citations re-located at docs head `a32b6f4c` / code head `f8d852f3`), Appendix IV
+item 7 (filled), and SG4-REF beside B.0 PRE-7a's and the round-2b-ii record's "the references carry both" (the
+two lines that held that clause are re-wrapped around the bracket, every word kept in order). No pinned
+registration, expected hash, standing line, verdict, table row or `manifest_note` is changed.
+
 **Basis read (round 2b-i).** `resume4-dispatch.md`, `resume6-addendum.md`, `resume7-addendum.md`, `resume8-addendum.md`;
 `r8-dispatch.md` "PRE-2b-i"; this file whole (round 2a: 1,117 lines, sha256
 `5943005ebc3bdd40783feb064c12e016a11952f8b376feff54020d9bccc9c7f7`); `p9-prereg-flags.md` "P9 rules" and "Open for the
@@ -595,7 +604,10 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   lineage parent's `nav.flags` (`scripts/specs/v8/lib-v8ysb-gm.json`,
   `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` after `f8d852f3`; the v2 templates set `parent` to
   it at registration and carry no `nav.flags` override; the driver builds the NAV argv from the resolved spec's
-  `nav.flags`, `scripts/cycle/phases.py:824`); the P9-B0 references carry both by hand on their exe-direct argv; the
+  `nav.flags`, `scripts/cycle/phases.py:824`); the P9-B0 references carry both by hand on their exe-direct argv
+  [SG4-REF: of the P9-B0 NAV references only `p9-b0g-yf0-nav` carries `--info-clock-print` (with `--ann-mean-gross`);
+  `p9-b0-r2-nav`, `p9-b0g-x10-nav`, `p9-b0g-y1-nav` carry `--ann-mean-gross` only (their receipts); every spec over the
+  lineage parent carries both (FLAGS-ROUTE); the one-sided case is FLAGS-ROUTE-2 (b)]; the
   spec route reproduced `p9-b0g-yf0-nav` outside `/producer/*` (HOLDS: the driver-planned spec-route NAV of Y-F0
   (`build-equity/p9-fr-yf0-nav`, Release NAV p9-3f, bounded run exit 0) vs the reference `p9-b0g-yf0-nav`: 27 / 27
   files byte-identical (no `/producer/*` leaf differs: the same Release exe); the 75 opt-in leaves (5 `ann_mean_gross`,
@@ -682,6 +694,14 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   `wave_kinds.py@ea7d9dde:161-162`). The v2 guards do not run on it, so this block names every flag. [ROUND 2b-ii:
   filled at the cell's registration commit by root - Appendix IV item 7] (root writes
   `scripts/specs/p9/templates/label-terminal.json` from this block and records its SHA-256 here in that commit).
+  [filled, P9-L registration commit `0bba6c89` (cells root agent 1): `scripts/specs/p9/templates/label-terminal.json`
+  `7483f4b10513d9000cfc89036c3f8f7f49626a9dd9c57999bcce11a258754219` (after `lock --write --exes`; parent and
+  nominal_parent `../../v8/lib-v8ysb-gm.json`); the change is `change.flags.ic` as "Change" below; it names no
+  `nav.flags`: it INHERITS `--ann-mean-gross` and `--info-clock-print` from the parent's `nav.flags` (FLAGS-ROUTE;
+  each once on the planned NAV argv, shown in the commit body); the run recipe `label-terminal-cal.json`
+  `7783967471f5b06dc1407d4425605156f7a3e647f28edd2a3ca5f2fb1a989d37` (`6ea79e5a`; `--calibrate-gross` G_parent
+  `0.9862134133265011`, `--calibrate-tolerance 0.005`, PRE-3); the limits and the verdict arithmetic in
+  `cells/p9l-label-terminal-plan.md`; the cell of record `label-terminal-gm.json` follows the calibration run (PRE-27)]
 - **Change.** `--label-terminal imputed-v1` with `--train-label-role <label role> --train-label-role-sha256 <pin>` on
   the IC passes (u and w), on the parent; fit, card, w and NAV follow (plan section 2.4 S2 :490-498;
   `task-S2-report.md:23`). Label role: `build-equity/train-2020-2023-lo3-dlret`
@@ -712,14 +732,19 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   exe: W1-I2 (a) holds); the u / w references of record `p9-b0g-yf0-u` / `p9-b0g-yf0-w`, while the parent spec's
   `ic.u_output` / `ic.w_output` stay the v8-era cycle dirs `mega-v8-b0b-train-u-v8ysb-1` /
   `mega-v8xw-train-theme-erc-v8ysb-2`, the cycle's resume roots (REPIN-REV; byte-identical payloads) -
-  `handoff-root-gate.md:78-80`, `:127-137`; `root-gate-report.md:193`].
+  `handoff-root-gate.md:78-80`, `:127-137`; `root-gate-report.md:193`]. [SG-3, P9-L registration: at docs head
+  `a32b6f4c` these read `handoff-root-gate.md:79-81` (the three Y-F0 reference rows), `:133-143` (the lineage parent
+  and the two roles of Y-F0's u / w); `root-gate-report.md:193` (item 8, unchanged)]
 - **Gross match (PRE-3).** `gross_match: pm6-6-engine`, through the engine calibration: one zero-trial calibration run
   (run recipe `-cal`); the cell of record that a child names as parent is the plain recipe at the published L-prime,
   with no calibrate flag (PRE-27, C2-6). Otherwise the first v2 wave after P9-L is refused at preflight (E2-14 R3a;
   E2 re-review 4 caveat, ledger :540).
 - **Acceptance (decides; PRE-5).** Mechanics only (G-B9 limits); adopted as the new parent iff mechanics pass. The
   driver has no "mechanics only" rule (`scripts/wave_rules.py:143`): the mechanics verdict is derived by hand and
-  re-derived independently by a second agent before the ledger line is written (PRE-5).
+  re-derived independently by a second agent before the ledger line is written (PRE-5). [SG-3, P9-L registration:
+  `scripts/wave_rules.py:143` reads `:158-161` at code head `f8d852f3` (the `ACCEPTANCE` table: `pm7-34`,
+  `v8-prereg-5`; no mechanics-only rule); the hand rule is `v8-mech` (`MECHANICS`, `:92-93`) at the G-B9 limits
+  unscaled, fixed in `cells/p9l-label-terminal-plan.md` before the run]
 - **Printed only.** Paired dSR vs the parent and both p (the pinned verb through `nav_summ`, `atx-impl/tools/
   nav_summ.py:205-210`); orientation flips (u `orientations.json`, parent vs cell); admission changes (fit
   `admission.json`, parent vs cell); the IC exe's `ic_missing_exit_v1`, `terminal_imputed_pairs`,
@@ -727,7 +752,8 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
 - **Predictions.** None registered (protocol cell; plan section 7.2 gives -.02 to +.02 [est], not a prediction).
 - **Fit mode** [ROUND 2b-ii: flag-absent (the Python fit): the parent reference's mode, D3-Q1a DIFFERENT at the gate,
   so P9-F0h is produced flag-absent (B.0 "Fit mode") - `gate-logs/d3q1a.txt`; `root-gate-report.md:151`; ledger :975,
-  :981]. Eval mode: B.0.
+  :981]. Eval mode: B.0. [SG-3, P9-L registration: `root-gate-report.md:151` (a `65ce28f0`-era line) reads `:173`
+  at docs head `a32b6f4c` (the fit mode row of items 9, 12, 15)]
 - **Exposure (PRE-4, ledger :517; S2-FIX1 (3), :325).** Under `--label-terminal` a delisting cause may be classified up
   to 30 days after termination T, so labels whose T falls within 30 days of TRAIN end can embed post-TRAIN information.
   Stated, with no truncation code; bounded by the 2 exits ALD-DIAG prints as "unclassified (within 30 days of the seal)"
@@ -2297,6 +2323,10 @@ the gate's final hand-back:
 6. B.0 eval mode - root, wave-3 P9-B0 u receipt (PATH-1). (part B2b: the u receipt is behind GATE-IDX) (filled, part
    B2b: research-fast)
 7. B.1 P9-L template `label-terminal.json` and SHA-256 - root writes it from B.1 (PRE-2). (part A: registration commit)
+   (filled, P9-L registration `0bba6c89`: `scripts/specs/p9/templates/label-terminal.json`
+   `7483f4b10513d9000cfc89036c3f8f7f49626a9dd9c57999bcce11a258754219`, inheriting the parent's `nav.flags`; the run
+   recipe `label-terminal-cal.json` `7783967471f5b06dc1407d4425605156f7a3e647f28edd2a3ca5f2fb1a989d37` (`6ea79e5a`);
+   B.1 "Shape")
 8. B.1 P9-L parent / paired reference dirs and SHA-256 - root, wave-3 P9-B0 (= item 2). (part B2b: = item 2) (filled,
    part B2b: = item 2; the re-pinned parent spec `3631679c`) [re-stated, FLAGS-ROUTE `f8d852f3`:
    `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`; the re-pin of record stays `2078f877`; no pin
@@ -2563,7 +2593,10 @@ C-13 binding to their specs; their argv carries the substitution list's opt-in f
 route: every P9 cell inherits `--ann-mean-gross` and `--info-clock-print` from the lineage parent's `nav.flags`
 (`lib-v8ysb-gm.json`, `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a` after `f8d852f3`; the driver
 builds the NAV argv from the resolved spec's `nav.flags`, `scripts/cycle/phases.py:824`); the references carry both by
-hand; the spec route reproduced `p9-b0g-yf0-nav` (HOLDS: 27 / 27 files byte-identical,
+hand [SG4-REF: of the P9-B0 NAV references only `p9-b0g-yf0-nav` carries `--info-clock-print` (with `--ann-mean-gross`);
+`p9-b0-r2-nav`, `p9-b0g-x10-nav`, `p9-b0g-y1-nav` carry `--ann-mean-gross` only (their receipts); every spec over the
+lineage parent carries both (FLAGS-ROUTE); the one-sided case is FLAGS-ROUTE-2 (b)]; the spec route reproduced
+`p9-b0g-yf0-nav` (HOLDS: 27 / 27 files byte-identical,
 `gate-logs/flags-identity-yf0.txt`; B.0 "Gross figure opt-in"); the hand cells P9-X / P9-V carry `--info-clock-print`
 one-sided against `p9-b0g-y1-nav`, disclosed, not a void (FLAGS-ROUTE-2 (b); B.0 "Void", B.7, B.8); token order is no
 input (FLAGS-ORDER)]
