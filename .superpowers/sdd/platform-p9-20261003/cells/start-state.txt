@@ -1,0 +1,40 @@
+# cells root agent 1, step 0: start state (read-only re-verification; DISPATCH-COMMIT), 2026-10-16T19:00Z
+# dispatch r14-prompts/cells-prompt-1.md (CELLS-1 .. CELLS-6, ADOPT-1, OD3-1 / OD3-GO; LAPSE-TABLE); pool C:/atx-wt/pool-2,
+# branch feat/platform-p9-20261003; tool cells/tools/start_state.py (--refs) + gate-logs/tools/exe_sha_end.py
+
+HEAD (git log -1 --format=%h): a32b6f4c (docs(p9): prereg-2bii-review.md: RQ-1 re-check (FLAGS-ROUTE)) = the dispatch's docs head
+code head (git log -1 -- . ':(exclude).superpowers'): f8d852f3 (spec(p9): lib-v8ysb-gm.json nav.flags += --ann-mean-gross
+  --info-clock-print (FLAGS-ROUTE; RQ-1)) = the dispatch's code head
+git diff --stat 2078f877 HEAD -- . ':(exclude).superpowers': scripts/specs/v8/lib-v8ysb-gm.json only (+3 / -1): the re-pin of
+  record 2078f877 plus the one FLAGS-ROUTE spec file (EXE-FREEZE runs from 2078f877)
+git status --short: M progress.md; M r14-prompts/cells-prompt-1.md; M r14-prompts/rev-flags-prompt.md (the PM's tracked
+  changes); ?? the five PNGs under docs/plans/ (never added)
+git status --short --ignored (r13-prompts, r14-prompts, status-14.md, next-goal-prompt.md, cells/): !! r14-prompts/
+  deriv-p9l-prompt.md, deriv-p9v-prompt.md, deriv-p9x-prompt.md; r13-prompts / status-14.md / next-goal-prompt.md clean
+  (committed); cells/ new (this file, tools/start_state.py)
+index: nothing staged (git diff --cached --name-only: 0 paths; the GATE-MYPY staged cache is no longer staged); every
+  commit still names explicit pathspecs plus the GATE-MYPY exclude
+lineage parent scripts/specs/v8/lib-v8ysb-gm.json sha256 a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a
+  (= the dispatch; was 3631679c...edea at the re-pin, PRE-40 form); x-leverage-L2.0.json 46e9d6c2...d0bf, y-vol-target-y-1.json
+  f4186573...50d6 (= the re-pin's)
+trial ledger build-equity/trials.jsonl: 133 lines, sha256 27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554
+build-equity/research-store/: absent
+build-equity/mega-candidate-cache-v8-lo3/index.sqlite: absent
+reference p9-b0-r2-nav: 27 files, listing sha256 04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd = gate-logs/b0-files-p9-b0-r2-nav.txt
+reference p9-b0g-x10-nav: 27 files, listing sha256 6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d = gate-logs/b0-files-p9-b0g-x10-nav.txt
+reference p9-b0g-y1-nav: 28 files, listing sha256 cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813 = gate-logs/b0-files-p9-b0g-y1-nav.txt
+reference p9-b0g-yf0-u: 5 files, listing sha256 1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa = gate-logs/b0-files-p9-b0g-yf0-u.txt
+reference p9-b0g-yf0-w: 12 files, listing sha256 ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1 = gate-logs/b0-files-p9-b0g-yf0-w.txt
+reference p9-b0g-yf0-nav: 27 files, listing sha256 e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797 = gate-logs/b0-files-p9-b0g-yf0-nav.txt
+  (each listing re-computed in the b0-files form, relpath TAB size TAB sha256, and byte-equal to the committed file)
+exes of the frozen set (EXE-FREEZE / CELLS-6; gate-logs/tools/exe_sha_end.py): Release build-equity-rel 27 / 27 "disk = receipt"
+  (newest receipt p9-3f, source 5f48a25d); Debug build-equity 27 / 27 "disk = receipt" (p9-3g, source 5f48a25d); the 11 exes of
+  the re-pin table (handoff-root-gate.md "Exe table of record": NAV 255b58ac...3565, IC ccd54db6...d705, eval e2b48c46...962c,
+  composition 04db0d67...16f2, admission f53d9277...063f, store 0eeac21b...3818, fields 883c5b74...584a, atx-equity-strategy
+  f883f81f...95a4, risk 0c110534...586b, mine daf88943...3eba, atx-impl 71f0c631...bdb9; and the Debug column) each = the table
+ucrtbase.dll (C:\Windows\System32) file version 10.0.26100.7623 (WinBuild.160101.0800) SHA-256
+  2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF (= the P9-B0 record, C.6)
+host: free RAM 4.35 of 15.69 GB (4455 MiB); C: 44.5 GB free (>= 15)
+processes: no build and no bounded run of ours; foreign (HOST-6a): a pool-4 cmake / ninja / clang-cl build
+  (build-vol-rel-avx2, atx-vol-chain-refresh-bench); editor-side mypy / black language servers. None touched.
+verdict: start state HOLDS (every item as the dispatch states it)
