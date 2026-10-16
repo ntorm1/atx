@@ -87,6 +87,9 @@ const char *termination_name(AmericanMarkovFitTermination value) {
   case AmericanMarkovFitTermination::StepTolerance: return "step_tolerance";
   case AmericanMarkovFitTermination::EvaluationLimit: return "evaluation_limit";
   case AmericanMarkovFitTermination::SweepLimit: return "sweep_limit";
+  case AmericanMarkovFitTermination::ObjectiveTolerance: return "objective_tolerance";
+  case AmericanMarkovFitTermination::GradientTolerance: return "gradient_tolerance";
+  case AmericanMarkovFitTermination::DampingLimit: return "damping_limit";
   }
   return "unknown";
 }
@@ -134,6 +137,11 @@ Json fit_json(const AmericanMarkovFit &fit, std::span<const AmericanMarkovFitQuo
       {"regularization_loss", d.regularization_loss},
       {"max_interval_error", d.max_interval_error}, {"mean_interval_error", d.mean_interval_error},
       {"final_log_step", d.final_log_step},
+      {"search", common_search_name(d.search)}, {"evaluation_budget", d.evaluation_budget},
+      {"jacobian_evaluations", d.jacobian_evaluations}, {"rejected_steps", d.rejected_steps},
+      {"evaluation_rollback_work", d.rollback_work}, {"priced_quotes", d.priced_quotes},
+      {"reused_quote_prices", d.reused_quote_prices}, {"final_damping", d.final_damping},
+      {"gradient_norm", d.gradient_norm},
       {"sigmas", std::vector<double>(fit.sigmas().begin(), fit.sigmas().end())},
       {"log_state_knots", std::vector<double>(fit.log_state_knots().begin(),
                                                fit.log_state_knots().end())}};
@@ -455,6 +463,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
   Json resource_failures = Json::object();
   Json profiles = Json::object();
   Json initialization_states = Json::object();
+  Json fit_terminations = Json::object();
   std::size_t fitted_snapshots = 0;
   std::size_t fitted_chains = 0;
   std::size_t ambiguous_chains = 0;
@@ -503,6 +512,8 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
     if (status == "ok") {
       ++fitted_snapshots;
       fitted_chains += chains.size();
+      count(fit_terminations, decision.value("resolved_profile", std::string{}) + ":" +
+                                  decision["fit"]["termination"].get<std::string>());
     } else {
       count(failures, decision.value("error", status));
       count(stages, decision.at("failure_stage").get<std::string>());
@@ -601,6 +612,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       {"policy_definition", policy.definition}, {"policy_decisions", decisions},
       {"per_profile_counts", profiles}, {"fit_failure_counts", failures},
       {"initialization_states", initialization_states},
+      {"fit_termination_counts", fit_terminations},
       {"market_failure_counts", market_failures}, {"resource_refusal_counts", resource_failures},
       {"solver_failure_code_counts", solver_codes},
       {"resource_refusal_scope", "typed market/quote-count limits; numerical/compiler/fitter "
