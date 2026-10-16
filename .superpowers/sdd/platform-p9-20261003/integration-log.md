@@ -903,9 +903,17 @@ G-P ticks at the gate (evidence rows in `root-gate-report.md` "Step 7, agent 4")
 
 | row | state |
 |---|---|
-| G-P1 | not checkable at the gate (the first real P9 wave) |
+| G-P1 | measured at P9-H by the cells root (GP-TICKS) |
 | G-P2, G-P3, G-P4, G-P6, G-P7, G-P8, G-P9, G-P11 | **ticked** |
 | G-P5 | PARTIAL (IC-S: four pairs unlisted, P10 retirement; the guard green, 0 rows left for P9 lanes) |
 | G-P10 (print) | (a) landed, (b) landed (435 / 0), (c) landed (`adbcd348...d474` twice), (d) PARTIAL as M6 states, (e) landed for `atx.run-store/v1` |
 
 Build tags used by agent 4: none; next free tag **p9-3h**. Trials: 0. Permission refusals: none.
+
+#### GATE agent 4 follow-up (rulings REPIN-UW, REPIN-R2, GP-TICKS; ledger :999-1001), 2026-10-16
+
+| item | result | evidence |
+|---|---|---|
+| second re-pin, ONE code commit, pins only | **`3a1a4759`**: `lib-v8ysb-gm.json` `ic.u_output` / `ic.w_output` -> `p9-b0g-yf0-u` / `-w` (`4081f473`); `lib-v80.json` fields -> v15 `26fee5ce` (list unchanged), `nav.output` -> `p9-b0-r2-nav` (`7f6e45ee`); no exe touched | `git show --stat 3a1a4759` |
+| `verify` on the pinned lineage | **REFUSES**: (1) X-10 / Y-1 pins hold but the inherited u / w resolve `p9-b0g-yf0-u-1` / `-w-1` **pending** (the cycle's IC-pass naming `<base>-<n>`), so a NAV-only cell would re-run u and w; (2) `lib-v80.json`'s as-built fields check fails (84 manifest rows vs the 70-name list). **STOPPED** for the PM (no second attempt; nothing reverted) | `gate-logs/repin-verify-2.txt` |
+| fixture chain digest | `a50fdcf9...100c` twice; verify --pins 0; identity 12 / 0: holds | `gate-logs/fixture-chain-5.txt` |

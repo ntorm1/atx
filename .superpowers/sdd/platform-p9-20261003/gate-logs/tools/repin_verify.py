@@ -93,9 +93,33 @@ def parent_nav(spec: str) -> int:
     return 0 if ok else 1
 
 
+def fields_view(spec: str) -> int:
+    """(agent 4, after REPIN-R2) the as-built fields check a `run` makes on a done fields step
+    (scripts/cycle/gate.py fields_check: the pinned manifest's rows must equal fields.list), on the spec's Cycle with
+    verify=False (the wave's view; a spec whose own compare inputs are gone still resolves); informational."""
+    import research_cycle as RC  # noqa: PLC0415
+    from cycle.gate import fields_check  # noqa: PLC0415
+    s = RC.load_spec(ROOT / spec)
+    c = RC.Cycle(s, Resolver(ROOT), verify=False)
+    f = s["fields"]
+    fdm = f"{f['output']}/manifest.json"
+    print(f"\n=== fields {spec} (verify=False): output {f['output']} pin {f.get('manifest_sha256')} disk "
+          f"{c.res.sha(fdm)} list {len(f.get('list') or [])} names; NAV output {c.out(s['nav']['output'])}")
+    try:
+        fields_check(c, fdm, log=lambda line: print("  " + line))
+        print("  fields check: holds")
+        return 0
+    except RC.CycleError as exc:
+        print(f"  fields check REFUSES: {exc}")
+        return 1
+
+
 def main(argv: list[str]) -> int:
     rc = 0
     for s in argv:
+        if s.startswith("--fields="):
+            rc = max(rc, fields_view(s[len("--fields="):]))
+            continue
         rc = max(rc, parent_nav(s[len("--parent="):]) if s.startswith("--parent=") else verify(s))
     return rc
 

@@ -19,8 +19,9 @@ JSON path, exit code and counts only; no 2020-2023 statistic is read or recorded
 
 ## Status by step after chain agent 4 (2026-10-16 ~16:10Z; FINAL; detail in "Chain agent 4" at the end)
 
-**Gate status: DONE** (GATE-1). Code head **`2078f877`** (the re-pin; gate code `06dc9e5a` + the re-pin only); EXE-FREEZE
-in force from `2078f877`. No code red; known-red set EMPTY; 0 trials (133 / `27e40f9f`); no build (next free tag
+**Gate status: DONE through step 7; the follow-up re-pin `3a1a4759` (REPIN-UW / REPIN-R2) is STOPPED at its verify** (two
+refusals recorded, "Step 6, agent 4, follow-up" at the end; the PM's). Code head **`3a1a4759`** (gate code `06dc9e5a` +
+the re-pin `2078f877` + `3a1a4759`, pins only); EXE-FREEZE in force from `2078f877` (no exe touched since). No code red; known-red set EMPTY; 0 trials (133 / `27e40f9f`); no build (next free tag
 `p9-3h`); exes of record p9-3f / p9-3g, 27 / 27 + 27 / 27 `disk = receipt` at agent 4's start and end.
 
 | step | state | evidence (`gate-logs/`) |
@@ -31,7 +32,7 @@ in force from `2078f877`. No code red; known-red set EMPTY; 0 trials (133 / `27e
 | 3 identity, canaries | **holds** with the cut: Y-F0 NAV / fit identity, ALCLOCK-1, D3-Q1a DIFFERENT (P9-W LAPSED (0)), COMPOSE-1a ACCEPT, greps, golden, canaries (agent 2); Y-F0 u / w flag-absent identity on the Release IC exe **holds** (rows 4-5, RELCACHE-ALLOW); X-5 rows **CUT** (FIELDS-X5) | `yf0u-cmp.txt`, `yf0w-cmp.txt` |
 | 4 P9-B0 | **holds**: R-2 `p9-b0-r2-nav` (path A, FIELDS-SUB-A), X-10 `p9-b0g-x10-nav`, Y-1 `p9-b0g-y1-nav` (PRE-29), Y-F0 `p9-b0g-yf0-u` / `-w` / `-nav` (identity holds; the NAV reads the re-based w, YF0-NAV-ORDER); `ucrtbase.dll` re-recorded | `b0-runs.txt`, `yf0{u,w,nav}-cmp.txt`, `ucrt-b0-4.txt` |
 | 5 rho | **holds**: P9-X pair 0.9947035686613187 (flag false); X-10 vs Y-F0 0.9994863034956717 (false); Y-1 vs X-10 0.9947113980219978 (false) | `rho-pairs-{1,2}.txt` |
-| 6 re-pin | **holds**: ONE code commit `2078f877`, pins only; `verify` on the pinned lineage holds; fixture chain digest `a50fdcf9...100c` reproduced | `repin-verify.txt`, `fixture-chain-4.txt` |
+| 6 re-pin | `2078f877` **holds** (pins only; `verify` holds; fixture `a50fdcf9...100c`); follow-up `3a1a4759` (REPIN-UW / REPIN-R2, pins only): fixture digest holds, **`verify` REFUSES** (Y-F0 u / w resolve `-1` pending; R-2's fields check fails, 70-name list vs 84 rows): STOPPED for the PM | `repin-verify.txt`, `repin-verify-2.txt`, `fixture-chain-{4,5}.txt` |
 | 7 store step, G-P | **holds**: catalog digest `adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474`, reproduced from scratch; `verify --pins` counts; render identity 435 / 0; G-P1 not checkable, G-P5 PARTIAL, the rest ticked; G-P10 (a)-(c), (e) landed, (d) PARTIAL | `realcat-gate*.txt` |
 | 8 whole-wave review | DONE before the chain | `wave-review-*.md` |
 | 9 records | this file, `integration-log.md`, **`handoff-root-gate.md`** (final) | - |
@@ -183,10 +184,10 @@ Agent 4 (2026-10-16 ~16:10Z; FINAL; every item below is final; items not listed 
 
 | item | fact | evidence (`gate-logs/`) |
 |---|---|---|
-| 1 R-2 | **`build-equity/p9-b0-r2-nav`, the re-based R-2 of record (path A, FIELDS-SUB-A)**: listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`; the classification table (`r2-classify.txt`) is its disclosure; G-B6 and the OD-3 R-2 line read it; its TRAIN fields dir is v15 (`26fee5ce`), its w the v8 w its argv reads (`mega-v8-r1w-train-std-v80-1/train_combined.json` `bbbf6f2b...cd98`, not re-based) | `b0-files-p9-b0-r2-nav.txt` |
-| 2 Y-F0 u / w / NAV | u **`build-equity/p9-b0g-yf0-u`** (5 files, listing `1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa`, `summary.json` `acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8`); w **`build-equity/p9-b0g-yf0-w`** (12 files, listing `ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1`, `summary.json` `f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2`, `train_combined.json` `e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c`); NAV **`build-equity/p9-b0g-yf0-nav`** (27 files, listing `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json` `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`; reads the re-based w; `--ann-mean-gross --info-clock-print`); each holds against M1d's reference (RELCACHE-ALLOW / the NAV form) | `b0-files-p9-b0g-yf0-{u,w,nav}.txt`, `yf0{u,w,nav}-cmp.txt` |
+| 1 R-2 | **`build-equity/p9-b0-r2-nav`, the re-based R-2 of record (path A, FIELDS-SUB-A)**; its spec `lib-v80.json` re-pinned in `3a1a4759` (fields v15 `26fee5ce`, the 70-name list unchanged, NAV output `p9-b0-r2-nav`; REPIN-R2; its fields check refuses, see step 6 follow-up): listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`; the classification table (`r2-classify.txt`) is its disclosure; G-B6 and the OD-3 R-2 line read it; its TRAIN fields dir is v15 (`26fee5ce`), its w the v8 w its argv reads (`mega-v8-r1w-train-std-v80-1/train_combined.json` `bbbf6f2b...cd98`, not re-based) | `b0-files-p9-b0-r2-nav.txt` |
+| 2 Y-F0 u / w / NAV | u **`build-equity/p9-b0g-yf0-u`** (5 files, listing `1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa`, `summary.json` `acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8`); w **`build-equity/p9-b0g-yf0-w`** (12 files, listing `ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1`, `summary.json` `f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2`, `train_combined.json` `e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c`); NAV **`build-equity/p9-b0g-yf0-nav`** (27 files, listing `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json` `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`; reads the re-based w; `--ann-mean-gross --info-clock-print`); each holds against M1d's reference (RELCACHE-ALLOW / the NAV form); u / w pinned as `lib-v8ysb-gm.json`'s `ic.u_output` / `ic.w_output` in `3a1a4759` (REPIN-UW; the cycle resolves them `-1` pending, step 6 follow-up) | `b0-files-p9-b0g-yf0-{u,w,nav}.txt`, `yf0{u,w,nav}-cmp.txt` |
 | 3 Y-1 | as agent 3 (`p9-b0g-y1-nav`); the re-pin points `y-vol-target-y-1.json` at it and at the v1.1 store | step 6 |
-| 4 exe table of the re-pin | the re-pin commit **`2078f877`** pins Release p9-3f (source = gate code `06dc9e5a`, receipt Source `5f48a25d`): NAV `build-equity-rel/bin/atx-equity-strategy-targets.exe` `255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565`, IC `build-equity-rel/bin/atx-equity-strategy-ic.exe` `ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705`, eval `build-equity-rel/bin/atx-research-eval.exe` `e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c`; every other exe of the frozen set at step 1's table (composition `04db0d67...16f2`, admission `f53d9277...063f`, store `0eeac21b...3818`, risk `0c110534...586b`, fields `883c5b74...584a`); EXE-FREEZE from `2078f877`; 27 / 27 + 27 / 27 `disk = receipt` at the end | `exe-sha-{rel,dbg}-4-end.txt`, step 6 |
+| 4 exe table of the re-pin | the re-pin commit **`2078f877`** (the follow-up `3a1a4759` moves no exe pin) pins Release p9-3f (source = gate code `06dc9e5a`, receipt Source `5f48a25d`): NAV `build-equity-rel/bin/atx-equity-strategy-targets.exe` `255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565`, IC `build-equity-rel/bin/atx-equity-strategy-ic.exe` `ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705`, eval `build-equity-rel/bin/atx-research-eval.exe` `e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c`; every other exe of the frozen set at step 1's table (composition `04db0d67...16f2`, admission `f53d9277...063f`, store `0eeac21b...3818`, risk `0c110534...586b`, fields `883c5b74...584a`); EXE-FREEZE from `2078f877`; 27 / 27 + 27 / 27 `disk = receipt` at the end | `exe-sha-{rel,dbg}-4-end.txt`, step 6 |
 | 6 eval mode | **research-fast** (the default): the Y-F0 u receipt's argv carries no `--eval-mode audit-exact`, and the Release VM identity is `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0` without the `_audit` suffix (PATH-1: every cell runs in its reference's mode) | `receipt-p9-b0g-yf0-u.json`, `yf0u-cmp.txt` |
 | 8 P9-L parent / reference | = item 2 (`p9-b0g-yf0-nav` the paired parent NAV; the re-pinned `lib-v8ysb-gm.json` names it) | step 6 |
 | 20 rho P9-X pair | re-based Y-1 vs re-based Y-F0: **0.9947035686613187**, "1 - rho < 1e-6" **false** | `rho-pairs-2.txt` |
@@ -991,11 +992,11 @@ listing `c9ee9291f5ddc0c2` = the 351 originals `155872de50833fca` (unchanged by 
 
 | row | state at the gate | evidence |
 |---|---|---|
-| G-P1 one-command wave | **not checkable at the gate**: measured on the first real P9 wave (plan 4.3 phase 2); no P9 wave has run (0 trials); the v8 timings baseline is agent 2's `scoreboard --timings` | `scoreboard-gate.txt` |
+| G-P1 one-command wave | **measured at P9-H by the cells root** (GP-TICKS: the v2 wave route end to end on a real cell, ticked at the first P9 v2 wave with its evidence row); no P9 wave has run at the gate (0 trials); the v8 timings baseline is agent 2's `scoreboard --timings` | `scoreboard-gate.txt` |
 | G-P2 spec-only experiments | **ticked**: the 10 kind fixtures under `scripts/specs/p9/kinds/`; the W3-8a tick held at M5 (`root-wave3-merge-report.md:444`, 12 passed); `scripts/tests` whole green at seeds 0 and 1 at step 2 (incl. `test_wave_kinds.py`) | `pyt-scripts-tests-rel-s0-rerun.log`, `pyt-scripts-tests-rel-s1.log` |
 | G-P3 Release adopted | **ticked**: IC half at M1d (u / w / marginal); NAV half shown at M2j item 5 (Release = Debug on X-5); at the gate every P9-B0 reference (R-2, X-10, Y-1, Y-F0 u / w / NAV) was produced on the Release p9-3f exes, the Y-F0 u / w / NAV hold against M1d's Debug references, and the re-pin pins the Release exes; canaries 15 / 15 on p9-3f | this report, steps 1, 4, 6 |
 | G-P4 CTest | **ticked**: `atx_research` 291 and `atx_equity_strategy` 728 register and run on both trees, 0 failed | `ctest-exits.txt` |
-| G-P5 no Python mirror | **PARTIAL** (IC-S at GATE-0: four pairs unlisted, P10 retirement); the guard green, "G-P5: 0 mirrored rule function(s) in 0 row(s) left for P9 lanes" | `pyt-mirror-guard-rel-s0.log`, `handoff-root-gate0.md` |
+| G-P5 no Python mirror | **PARTIAL** (IC-S at GATE-0: four pairs unlisted, P10 retirement; stays PARTIAL in the freeze print, GP-TICKS); the guard green, "G-P5: 0 mirrored rule function(s) in 0 row(s) left for P9 lanes" | `pyt-mirror-guard-rel-s0.log`, `handoff-root-gate0.md` |
 | G-P6 no versioned script | **ticked** (M1d); `scripts/tests/test_no_versioned_scripts.py` green inside both whole `scripts/tests` runs | `pyt-scripts-tests-rel-s0-rerun.log`, `pyt-scripts-tests-rel-s1.log` |
 | G-P7 statistics of record | **ticked**: B2 merged (the engine `eval` verb is the only producer of the statistics, tied to the frozen eval_tie oracle, `root-wave2-merge-report.md:1583-1602`), B2 fix 2 merged (known-red set EMPTY); at the gate the n37 legacy test passed on the Release verb (inside agent 2's whole `atx-impl/tools` run, 770 passed, 0 skipped; B2-N37 item 4), PY-S S-6 is equal, and step 5's rho came from the Release verb `exes.eval` now pins | `pyt-impl-tools-systmp-rel-s0.log`, `pys-s6-ledger-n.txt`, `rho-pairs-1.txt`, `rho-pairs-2.txt` |
 | G-P8 canary | **ticked**: 15 / 15 on Release p9-3f and on Debug p9-3g | `mega-p9-3f-canary.log`, `mega-p9-3g-canary.log` |
@@ -1034,3 +1035,45 @@ Kept (P9-B0 reference dirs, never deleted): `build-equity/p9-b0g-yf0-u`, `p9-b0g
 `p9-b0g-catv-1-run`. Deleted by literal name (regenerable scratch outside the tree): the catalog DBs
 `C:/Users/natha/AppData/Local/Temp/g4cat/` (catA / catB 17.4 MB each, the verify outputs) and `g4fx/` (the two fixture
 catalogs), after their records. Disk: the cache grew by 4,466,406,032 bytes (GATE-RELCACHE, accepted); C: 50 GB free.
+
+### Step 6, agent 4, follow-up: the second re-pin commit **`3a1a4759`** (rulings REPIN-UW, REPIN-R2; ledger :999-1000) and its verify: **REFUSES, STOPPED**
+
+ONE code commit, pins only: `git show --stat 3a1a4759` = `scripts/specs/v8/lib-v8ysb-gm.json` (+2 / -2) and
+`scripts/specs/v8/lib-v80.json` (+3 / -3); 0 `mypy_cache`; no exe touched (EXE-FREEZE unaffected, no build). The re-pin
+of record is now **`2078f877` + `3a1a4759`**.
+
+| spec | SHA-256 before -> after | pins moved |
+|---|---|---|
+| `lib-v8ysb-gm.json` (Y-F0) | `3631679c...edea` -> `4081f473173cd0068bb173a2cb3b2b761592b791705cf7be33bc95fe3f06e2ee` | `ic.u_output` -> `build-equity/p9-b0g-yf0-u`; `ic.w_output` -> `build-equity/p9-b0g-yf0-w` (REPIN-UW) |
+| `lib-v80.json` (R-2) | `306a070b...3a21` -> `7f6e45ee53c1854f7a3147f0a1b6e1021d67bf854f0ae9c57c17c37e1fb1bb89` | `fields.output` -> `build-equity/train-2020-2023-lo3-fields-v15`; `fields.manifest_sha256` -> `26fee5ce...3b09` (re-hashed from the file); the 70-name `list` unchanged; `nav.output` -> `build-equity/p9-b0-r2-nav` (REPIN-R2); nothing else |
+
+**`verify` on the pinned lineage after `3a1a4759`** (`gate-logs/repin-verify-2.txt`; `tools/repin_verify.py`, now
+also with `--fields=`: the as-built fields check a `run` makes on a done fields step, `scripts/cycle/gate.py:20-28`, on
+the wave's `verify=False` view; informational before, recorded now):
+
+1. **u / w not reusable (REFUSES REPIN-UW's premise).** For X-10 and Y-1 (the templates over Y-F0) every pin still holds
+   (inputs `[locked, verified]`, the three exe pins = disk, `exes.eval` pinned, NAV made by `255b58ac` = the pin), but the
+   inherited u and w now resolve as **`build-equity/p9-b0g-yf0-u-1` and `p9-b0g-yf0-w-1`, state `pending`**: the cycle
+   names an IC pass `<u_output>-<n>` with run dir `<u_output>-run<n>` (`scripts/cycle/phases.py:566-568`, `:596-598`),
+   and the P9-B0 dirs are exe-direct runs named `p9-b0g-yf0-u` / `-run` (no `-<n>`). So a NAV-only cell over Y-F0
+   would NOT resume from the parent's u_output: its driver would run u and w again (Release, into `p9-b0g-yf0-{u,w}-1`)
+   and its NAV would read `p9-b0g-yf0-w-1/train_combined.json`. (The same state was seen in the working tree before
+   `2078f877`, recorded in that step's text above as the reason the outputs were left at the v8 dirs.)
+2. **R-2's fields check REFUSES.** `lib-v80.json` on the wave's view: fields `train-2020-2023-lo3-fields-v15` pin
+   `26fee5ce` = disk, but "84 rows DIFFER from the spec list" -> `fields check FAILED (the pinned manifest's field rows
+   differ from fields.list)`: a `run` of the R-2 spec (OD-3's roles cycle reads it) stops at its done fields step
+   because the 70-name `list` is unchanged (as ruled) while v15 has 84 rows. Its NAV output `p9-b0-r2-nav` was made by
+   the Release NAV exe `255b58ac`; the spec pins no `exes_sha256` (none was ruled for it).
+3. Unchanged and pre-existing: `lib-v8ysb-gm.json` and `lib-v80.json` alone cannot be built by the cycle (their own
+   `inputs.baseline_fields` are fields v13 / v9, FIELDS-GONE); Y-F0's as-built fields check holds (84 rows = its list);
+   the parents' NAVs (`p9-b0g-yf0-nav`, `p9-b0g-x10-nav`) made by the pinned Release NAV exe.
+
+**Fixture chain digest after `3a1a4759`** (`gate-logs/fixture-chain-5.txt`): two fresh catalogs of the store fixture
+tree, both `catalog_digest a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c`; `verify --pins` exit 0;
+render identity 12 / 0: **holds**.
+
+**STOP (the PM's instruction: a verify refusal is recorded and handed back, no second attempt).** Nothing reverted;
+`3a1a4759` stays as committed; the reference dirs are untouched. What would close each refusal is the PM's ruling
+(not tried here): item 1 needs the u / w references under the cycle's IC-pass names or the outputs left at the v8 dirs
+(`2078f877`'s state); item 2 needs `lib-v80.json`'s `fields.list` set to v15's 84 rows (not a pin) or its fields pin
+left at v10.

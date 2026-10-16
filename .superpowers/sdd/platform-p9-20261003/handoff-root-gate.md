@@ -6,8 +6,11 @@ Root `C:/atx-wt/pool-2`, branch `feat/platform-p9-20261003`. Dispatch `r13-promp
 (FINAL)"). Evidence and tools: `gate-logs/` (`gate-logs/tools/`, changes in `tools/CHANGES.txt`). Rows:
 `integration-log.md` "GATE (RESUME 13), chain agent 4". Earlier links: `handoff-root-gate-{1,2,3}.md`.
 
-- **Status: DONE.** Steps 0-9 hold (step 3's X-5 rows and step 7's X-5 opt-in cache identity CUT by FIELDS-X5).
-- **Code head: `2078f877`** (the re-pin, ONE commit, pins only, over the gate code `06dc9e5a`).
+- **Status: DONE through step 7; the follow-up re-pin `3a1a4759` (REPIN-UW / REPIN-R2) is STOPPED at its `verify`**
+  (two refusals, below and `root-gate-report.md` "Step 6, agent 4, follow-up"; the PM's). Steps 0-5 and 7 hold (step 3's
+  X-5 rows and step 7's X-5 opt-in cache identity CUT by FIELDS-X5).
+- **Code head: `3a1a4759`.** The re-pin = **`2078f877` + `3a1a4759`** (two pins-only commits over the gate code
+  `06dc9e5a`; no exe pin moved in the second).
   **Docs head:** the records commit that adds this file (`git log -1 --format=%h -- <this file>`); this agent's
   docs commits below it: `bfbe64d2` (step 0, GATE-IDX, FIELDS-SUB-A, rows 4-6 amendments before the runs), `c0112afc`
   (row 4), `a24a77bd` (row 5), `cf6dc5df` (row 6, step 5), `883be9f2` (step 6 record).
@@ -43,7 +46,7 @@ table in `root-gate-report.md` step 1.
 | atx-equity-strategy-mine | `daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba` | `4dee20571d4c4481bcf175d8bb688574ba95c60ae29d08b4bb474849f7945412` |
 | atx-impl | `71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9` | `7095d4477dd7fee80ead2d9bbdb516a726ed3ab943beed95ac1dc5335af63e55` |
 
-## The re-pin (`2078f877`)
+## The re-pin (`2078f877`, then `3a1a4759`)
 
 | spec | SHA-256 before -> after | pins |
 |---|---|---|
@@ -51,11 +54,17 @@ table in `root-gate-report.md` step 1.
 | `scripts/specs/v8/x-leverage-L2.0.json` (X-10) | `ebe68e6e...4975` -> `46e9d6c2fdbf42e362518118938bc89af038e3c09d7519d660aaa936554fd0bf` | `nav.output` -> `build-equity/p9-b0g-x10-nav`; `locked.reference_cell` -> `p9-b0g-yf0-nav/summary.json` `826d5ec6...8f38` |
 | `scripts/specs/v8/y-vol-target-y-1.json` (Y-1) | `faffee17...5f77` -> `f4186573a41de3b67cdd815976639ed2123e5c6f43353516c61150d92dbb50d6` | `nav.output` -> `build-equity/p9-b0g-y1-nav`; `--risk-model` -> `build-equity/p9-m2i-dcov-v11` `397366473b3a...23c7`; `locked.reference_cell` -> `p9-b0g-x10-nav/summary.json` `deabe71b...0bd` |
 
-Not edited: `lib-v8ysb-gm.json`'s `ic.u_output` / `ic.w_output` (the v8 dirs, byte-identical to the re-based u / w in
-every payload; the cycle cannot name an exe-direct dir as an IC pass), `lib-v80.json` (R-2; its fields pin cannot move
-to v15 without changing `fields.list`), `mv-aim-v1.json` (COVMV-PIN, `4b4af6e2`). Read: `info-clock-rate-v1.json`
-`7801c198...a152` (W1-I2). `verify` on the pinned lineage: `gate-logs/repin-verify.txt` (X-10 and Y-1 hold; the
-parents' NAVs made by the pinned Release NAV exe).
+Second commit `3a1a4759` (REPIN-UW, REPIN-R2): `lib-v8ysb-gm.json` (`3631679c` -> `4081f473173cd0068bb173a2cb3b2b761592b791705cf7be33bc95fe3f06e2ee`)
+`ic.u_output` -> `build-equity/p9-b0g-yf0-u`, `ic.w_output` -> `build-equity/p9-b0g-yf0-w`; `lib-v80.json` (`306a070b` ->
+`7f6e45ee53c1854f7a3147f0a1b6e1021d67bf854f0ae9c57c17c37e1fb1bb89`) `fields.output` -> fields v15, `manifest_sha256` ->
+`26fee5ce...3b09` (the 70-name list unchanged), `nav.output` -> `build-equity/p9-b0-r2-nav`. **Its `verify` REFUSES**
+(`gate-logs/repin-verify-2.txt`): (1) the inherited u / w resolve `p9-b0g-yf0-u-1` / `-w-1` **pending** (the cycle names
+IC passes `<base>-<n>`, `scripts/cycle/phases.py:566-568`, `:596-598`), so a NAV-only cell would re-run u and w;
+(2) `lib-v80.json`'s as-built fields check fails (v15's 84 rows vs the 70-name list, `scripts/cycle/gate.py:22-28`).
+The fixture chain digest holds (`a50fdcf9...100c` twice, `fixture-chain-5.txt`). STOPPED as instructed: nothing
+reverted, no second attempt. Not edited: `mv-aim-v1.json` (COVMV-PIN, `4b4af6e2`). Read: `info-clock-rate-v1.json`
+`7801c198...a152` (W1-I2). `verify` after `2078f877`: `gate-logs/repin-verify.txt` (X-10 and Y-1 hold; the parents' NAVs made by the pinned
+Release NAV exe); after `3a1a4759`: `repin-verify-2.txt` (refuses, above).
 
 ## Reference dirs of record (the gate's P9-B0; never deleted; per-file SHA-256 in `gate-logs/b0-files-<dir>.txt`)
 
@@ -103,7 +112,8 @@ Catalog digest of the gate head **`adbcd348b5d82a1fd4f357274a34bbf387391cf82154a
 ok 1,620 / declared 169 / stale 220 / missing 630 / unresolved 1,512 (artifacts verified 4,190, declared 84); render
 identity 435 checked, 0 mismatches; ledger verify ok. Fixture digest `a50fdcf9...100c` reproduced. `classes.json`
 `5bc27ba4...6557` (by hand, STORE-S S-4). G-P: G-P1 not checkable (the first P9 wave), G-P5 PARTIAL (IC-S), G-P2 / 3 /
-4 / 6 / 7 / 8 / 9 / 11 ticked; G-P10 (a) (b) (c) (e) landed, (d) PARTIAL.
+4 / 6 / 7 / 8 / 9 / 11 ticked; G-P1 measured at P9-H by the cells root (GP-TICKS); G-P10 (a) (b) (c) (e) landed, (d)
+PARTIAL.
 
 ## What the cells agent must know
 
@@ -112,10 +122,12 @@ identity 435 checked, 0 mismatches; ledger verify ok. Fixture digest `a50fdcf9..
   flag-absent** (the Python fit; P9-F0h produced flag-absent). Eval mode: research-fast (the reference's, PATH-1).
 - **PRE-34's printed-precision agreement** of the re-based Y-1 vs v8's ledgered Y-1 is the CELLS root's, at the P9-X
   step, before the adoption print (PRE34-WHO); the gate recorded the path-level diff only (`gate-logs/y1-cmp-v8.txt`).
-- **The lineage parent is the re-pinned `scripts/specs/v8/lib-v8ysb-gm.json` (`3631679c`)**; set each P9 template's
+- **The lineage parent is the re-pinned `scripts/specs/v8/lib-v8ysb-gm.json` (`4081f473` at `3a1a4759`)**; until the PM
+  rules on the follow-up's refusal, a NAV-only cell over it would re-run u / w into `p9-b0g-yf0-{u,w}-1` (verify item 1); set each P9 template's
   `parent` to it at the cell's registration commit and `lock --exes --write` the cell (the pins it inherits are the
-  table above; B2-11 checks `exes.eval`). A NAV-only cell inherits Y-F0's u / fit / card / w (the v8 dirs, reused:
-  pre-K-P9-10 receipts) and pairs against `p9-b0g-yf0-nav` (W1-I2 (a) holds: the parent NAV is the pinned Release
+  table above; B2-11 checks `exes.eval`). At `2078f877` a NAV-only cell inherited Y-F0's u / fit / card / w (the v8
+  dirs, reused: pre-K-P9-10 receipts); at `3a1a4759` u / w name the P9-B0 dirs (pending, above); it pairs against
+  `p9-b0g-yf0-nav` (W1-I2 (a) holds: the parent NAV is the pinned Release
   exe's). P9-X's reference spec is the re-pinned `y-vol-target-y-1.json` (`p9-b0g-y1-nav`, the v1.1 store).
 - `lib-v8ysb-gm.json` alone cannot be built by `research_cycle.py status` (its own compare input `baseline_fields` is
   fields v13, FIELDS-GONE); templates over it resolve without it (`gate-logs/repin-verify.txt`).
@@ -123,14 +135,14 @@ identity 435 checked, 0 mismatches; ledger verify ok. Fixture digest `a50fdcf9..
   substitution list's opt-in flags (`--ann-mean-gross`; Y-F0 also `--info-clock-print`); every cell carries
   `--ann-mean-gross` (PRE-7a) and P9-C the clock flag, so the paired opt-in leaves are alike on both sides.
 - R-2 (G-B6, G-B8, OD-3) is read by path: `p9-b0-r2-nav`; its TRAIN fields dir is `train-2020-2023-lo3-fields-v15`, its
-  TRAIN w `mega-v8-r1w-train-std-v80-1` (the OD-3 runbook's R-2 [UNKNOWN] slots); `lib-v80.json` was not re-pinned.
+  TRAIN w `mega-v8-r1w-train-std-v80-1` (the OD-3 runbook's R-2 [UNKNOWN] slots); `lib-v80.json` re-pinned at
+  `3a1a4759` (REPIN-R2) and its fields check refuses there (70-name list vs 84 rows): OD-3's P1 would stop on it.
 - The real cache now holds the Release identity subtree (Release u / w of a cell over the Y-F0 library run warm).
   No cache-index flag on any argv (SQL-11); never re-create `index.sqlite` (`cache init`).
 - EXE-FREEZE from `2078f877`; `ucrtbase.dll` as above; the trial ledger is still 133 / `27e40f9f`.
 
 ## Open questions for the PM (one line each)
 
-1. Re-pin scope: `ic.u_output` / `ic.w_output` of `lib-v8ysb-gm.json` left at the v8 dirs (byte-identical payloads; the cycle's IC-pass naming cannot name `p9-b0g-yf0-u` / `-w`): accept as the re-pin of record?
-2. R-2: `lib-v80.json` not re-pinned (no lineage parent pins R-2; its fields pin cannot move without editing `fields.list`): accept read-by-path?
-3. RELCACHE-ALLOW: the first comparison pass under-encoded the M1d list (209 leaves, all in `root-wave1-merge-report.md:890-891`); the corrected tool classes them M1D-LIST: accept?
-4. G-P5 stays PARTIAL (IC-S) and G-P1 is measured at the first P9 wave: confirm for the freeze print.
+1. REPIN-UW: the cycle resolves `ic.u_output` `p9-b0g-yf0-u` as attempt `p9-b0g-yf0-u-1` (pending; same for w): rule how u / w references of record are named for the cycle, or revert to `2078f877`'s v8 dirs?
+2. REPIN-R2: `lib-v80.json`'s 70-name `fields.list` against v15's 84 rows fails the cycle's as-built fields check: list -> 84 rows (not a pin), or fields pin back to v10?
+3. Earlier Q3 (RELCACHE-ALLOW tool correction) accepted; GP-TICKS applied (G-P5 PARTIAL, G-P1 at P9-H).
