@@ -39,6 +39,12 @@ Native common policies can also request
 changes only the starting parameters, retains the configured prior and all
 fitting quotes, and reports incomplete/error fallbacks. See the
 [initializer contract](sprints/2026-10-16-native-common-quote-seeds.md).
+A profile may select `"time_shape": "variance-time-knots"` with explicit
+absolute `variance_time_knots` (variance years). Its parameter count follows the
+knot count, not the expiry count. Log sigma is sampled at each original
+interval's variance midpoint and frozen for that interval, a measured
+approximation rather than exact integrated variance; quote seeding refuses this
+shape. See the [time-knot contract](sprints/2026-10-16-american-markov-time-knots-sprint.md).
 
 | Layer | Header(s) | What it does |
 |---|---|---|

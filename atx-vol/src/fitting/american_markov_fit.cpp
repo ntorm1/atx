@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
+#include "fitting/american_markov_time_basis.hpp"
 
 namespace atx::vol {
 namespace {
@@ -30,7 +31,8 @@ Status validate(const AmericanMarkovFitMarket &m, std::span<const AmericanMarkov
       c.max_batch_values > kAmericanMarkovBatchMaxValues || c.max_rollback_work == 0 ||
       c.max_rollback_work > kAmericanMarkovFitMaxRollbackWork ||
       (c.time_shape != AmericanMarkovFitTimeShape::Shared &&
-       c.time_shape != AmericanMarkovFitTimeShape::PerVarianceInterval)) {
+       c.time_shape != AmericanMarkovFitTimeShape::PerVarianceInterval &&
+       c.time_shape != AmericanMarkovFitTimeShape::VarianceTimeKnots)) {
     return Err(ErrorCode::InvalidArgument, "Markov fit: invalid input or resource configuration");
   }
   if (!positive(c.min_sigma) || !positive(c.max_sigma) || c.min_sigma >= c.max_sigma ||
@@ -67,17 +69,78 @@ Status validate(const AmericanMarkovFitMarket &m, std::span<const AmericanMarkov
       return Err(ErrorCode::InvalidArgument, "Markov fit: invalid raw quote");
     }
   }
-  return Ok();
+  return detail::validate_markov_time_knots(c);
 }
 
 struct Layout {
   std::vector<double> knots;
-  std::vector<std::size_t> groups;
+  std::vector<double> time_knots;
+  std::vector<AmericanMarkovFitTimeWeight> time_weights;
+  std::optional<AmericanMarkovFitTimeBasisDiagnostics> time_basis;
   std::vector<double> initial;
   std::vector<double> prior;
   std::vector<std::size_t> order;
   std::size_t time_groups = 0;
 };
+
+// One owned row per ORIGINAL interval, including paused variance. The compiler
+// applies the same schedule predicates; checking here keeps every represented
+// midpoint finite before any knot interpolation.
+Status map_time_weights(const AmericanMarkovFitMarket &m, const AmericanMarkovFitConfig &c,
+                        Layout &out) {
+  const bool time_knots = c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots;
+  if (time_knots) out.time_groups = out.time_knots.size();
+  out.time_weights.reserve(m.intervals.size());
+  double calendar = 0.0;
+  double variance = 0.0;
+  for (const auto &interval : m.intervals) {
+    if (!positive(interval.calendar_end) || interval.calendar_end <= calendar ||
+        !nonnegative(interval.variance_end) || interval.variance_end < variance ||
+        !std::isfinite(interval.rate) || !std::isfinite(interval.continuous_yield) ||
+        !nonnegative(interval.cash_dividend_at_end)) {
+      return Err(ErrorCode::InvalidArgument, "Markov fit: invalid common interval schedule");
+    }
+    const bool active = interval.variance_end > variance;
+    const double midpoint = std::midpoint(variance, interval.variance_end);
+    AmericanMarkovFitTimeWeight mapping{0, 0, 0.0, midpoint, active};
+    if (time_knots) {
+      ATX_TRY(mapping, detail::markov_time_weight(midpoint, active, out.time_knots));
+    } else if (active) {
+      if (c.time_shape == AmericanMarkovFitTimeShape::PerVarianceInterval) {
+        mapping.left_group = mapping.right_group = out.time_groups++;
+      } else {
+        out.time_groups = 1;
+      }
+    }
+    out.time_weights.push_back(mapping);
+    calendar = interval.calendar_end;
+    variance = interval.variance_end;
+  }
+  return Ok();
+}
+
+// VarianceTimeKnots only. Interval-times-state scratch is preflighted against
+// the model's own volatility budget. The represented interval log-sigma basis
+// must pass its fixed numerical admission over the final quoted prefix; the
+// objective's prior/roughness terms are never consulted, so they cannot rescue it.
+Status admit_time_knots(const AmericanMarkovFitMarket &m,
+                        std::span<const AmericanMarkovFitQuote> quotes, Layout &out) {
+  const auto capacity = m.model_config.max_stored_volatility_values;
+  if (capacity == 0 || capacity > kAmericanMarkovMaxStoredVolatilityValues ||
+      m.intervals.size() > capacity / out.knots.size()) {
+    return Err(ErrorCode::OutOfRange,
+               "Markov fit: interval sigma scratch exceeds model capacity");
+  }
+  std::size_t last_quoted_interval = 0;
+  for (const auto &quote : quotes) {
+    last_quoted_interval = std::max(last_quoted_interval, quote.expiry_index);
+  }
+  ATX_TRY(auto basis, detail::diagnose_markov_time_basis(
+      std::span<const AmericanMarkovFitTimeWeight>(out.time_weights)
+          .first(last_quoted_interval + 1), out.time_groups));
+  out.time_basis = std::move(basis);
+  return Ok();
+}
 
 Result<Layout> layout(const AmericanMarkovFitMarket &m,
                       std::span<const AmericanMarkovFitQuote> quotes,
@@ -85,22 +148,15 @@ Result<Layout> layout(const AmericanMarkovFitMarket &m,
   Layout out;
   out.knots.assign(c.log_state_knots.begin(), c.log_state_knots.end());
   if (out.knots.empty()) out.knots.push_back(0.0);
-  out.groups.resize(m.intervals.size(), 0);
-  double variance = 0.0;
-  for (std::size_t i = 0; i < m.intervals.size(); ++i) {
-    if (m.intervals[i].variance_end > variance) {
-      if (c.time_shape == AmericanMarkovFitTimeShape::PerVarianceInterval) {
-        out.groups[i] = out.time_groups++;
-      } else {
-        out.time_groups = 1;
-      }
-    }
-    variance = m.intervals[i].variance_end;
-  }
+  out.time_knots.assign(c.variance_time_knots.begin(), c.variance_time_knots.end());
+  ATX_TRY_VOID(map_time_weights(m, c, out));
   if (out.time_groups == 0 || out.time_groups > c.max_parameters / out.knots.size()) {
     return Err(ErrorCode::OutOfRange, "Markov fit: unidentifiable variance or parameter limit");
   }
   const auto count = out.time_groups * out.knots.size();
+  if (c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
+    ATX_TRY_VOID(admit_time_knots(m, quotes, out));
+  }
   const auto parameters = [&](std::span<const double> values, std::vector<double> &target) {
     if (!values.empty() && values.size() != count) return false;
     if (!values.empty()) target.assign(values.begin(), values.end());
@@ -194,6 +250,19 @@ Objective objective(std::span<const AmericanMarkovFitQuote> quotes,
   return out;
 }
 
+// Log-sigma interpolation at one ORIGINAL interval's represented variance
+// midpoint; the caller freezes the sampled value for that whole interval.
+double interpolated_sigma(double left, double right, double right_weight) noexcept {
+  // Preserve exact controls at knots/tails and an exactly flat term structure.
+  // Avoid exp(log(sigma)) perturbing Shared-equivalent rows.
+  if (left == right) return left;
+  // Exact log-linear interpolation lies between its two controls. The bracket
+  // only removes exp/log rounding, so in-bounds controls cannot yield a spurious
+  // out-of-bounds node. Interpolation weights themselves are never clipped.
+  return std::clamp(std::exp(std::lerp(std::log(left), std::log(right), right_weight)),
+                    std::min(left, right), std::max(left, right));
+}
+
 // A reusable scratch owner for all trial models. Candidate models own their
 // sampled metadata, so none of these interval spans escapes the evaluation.
 struct Evaluator {
@@ -210,20 +279,38 @@ struct Evaluator {
   Evaluator(const AmericanMarkovFitMarket &m, std::span<const AmericanMarkovFitQuote> q,
             const AmericanMarkovFitConfig &c, const Layout &l)
       : market(m), quotes(q), config(c), shape(l), intervals(m.intervals.size()),
-        nodes(l.initial.size()), strikes(std::min(c.batch_options, q.size())),
+        nodes(c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots
+                  ? m.intervals.size() * l.knots.size() : l.initial.size()),
+        strikes(std::min(c.batch_options, q.size())),
         values(strikes.size()) {}
 
   Result<AmericanMarkovModel> compile(std::span<const double> sigmas) {
     const auto knot_count = shape.knots.size();
-    for (std::size_t i = 0; i < sigmas.size(); ++i) {
-      nodes[i] = {shape.knots[i % knot_count], sigmas[i]};
+    const bool time_knots = config.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots;
+    if (!time_knots) {
+      for (std::size_t i = 0; i < sigmas.size(); ++i) {
+        nodes[i] = {shape.knots[i % knot_count], sigmas[i]};
+      }
     }
     for (std::size_t i = 0; i < intervals.size(); ++i) {
       const auto &in = market.intervals[i];
+      const auto &mapping = shape.time_weights[i];
+      const auto offset = time_knots ? i * knot_count : mapping.left_group * knot_count;
+      if (time_knots) {
+        for (std::size_t j = 0; j < knot_count; ++j) {
+          const double sigma = interpolated_sigma(sigmas[mapping.left_group * knot_count + j],
+                                                  sigmas[mapping.right_group * knot_count + j],
+                                                  mapping.right_weight);
+          if (!positive(sigma) || sigma < config.min_sigma || sigma > config.max_sigma) {
+            return Err(ErrorCode::OutOfRange, "Markov fit: interpolated sigma loses range");
+          }
+          nodes[offset + j] = {shape.knots[j], sigma};
+        }
+      }
       intervals[i] = {in.calendar_end, in.variance_end, in.rate, in.continuous_yield, 1.0,
                       in.cash_dividend_at_end,
                       std::span<const AmericanMarkovLocalVolNode>(nodes).subspan(
-                          shape.groups[i] * knot_count, knot_count)};
+                          offset, knot_count)};
     }
     return compile_american_markov(
         {market.spot, intervals, market.state_grid, market.model_config});
@@ -293,11 +380,16 @@ Result<Candidate> evaluate(Evaluator &e, std::span<const double> sigmas) {
 } // namespace
 
 AmericanMarkovFit::AmericanMarkovFit(AmericanMarkovModel model, std::vector<double> sigmas,
-                                   std::vector<double> knots, std::vector<std::size_t> groups,
+                                   std::vector<double> knots, AmericanMarkovFitTimeShape time_shape,
+                                   std::vector<double> time_knots,
+                                   std::vector<AmericanMarkovFitTimeWeight> time_weights,
+                                   std::optional<AmericanMarkovFitTimeBasisDiagnostics> time_basis,
                                    std::vector<double> prices,
                                    AmericanMarkovFitDiagnostics diagnostics)
     : model_(std::move(model)), sigmas_(std::move(sigmas)), knots_(std::move(knots)),
-      groups_(std::move(groups)), prices_(std::move(prices)), diag_(diagnostics) {}
+      time_shape_(time_shape), time_knots_(std::move(time_knots)),
+      time_weights_(std::move(time_weights)), time_basis_(std::move(time_basis)),
+      prices_(std::move(prices)), diag_(diagnostics) {}
 
 Result<AmericanMarkovFit> fit_american_markov_intervals(
     const AmericanMarkovFitMarket &market, std::span<const AmericanMarkovFitQuote> quotes,
@@ -369,6 +461,8 @@ Result<AmericanMarkovFit> fit_american_markov_intervals(
   diagnostics.max_interval_error = best.loss.max_error;
   diagnostics.mean_interval_error = best.loss.mean_error;
   return Ok(AmericanMarkovFit(std::move(best.model), std::move(sigmas), std::move(shape.knots),
-                              std::move(shape.groups), std::move(best.prices), diagnostics));
+                              config.time_shape, std::move(shape.time_knots),
+                              std::move(shape.time_weights), std::move(shape.time_basis),
+                              std::move(best.prices), diagnostics));
 }
 } // namespace atx::vol

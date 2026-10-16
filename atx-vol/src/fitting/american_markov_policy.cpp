@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
+#include "fitting/american_markov_time_basis.hpp"
 
 namespace atx::vol {
 namespace {
@@ -59,7 +60,8 @@ Status validate_fit(const AmericanMarkovPolicyProfile &profile) {
       c.max_batch_values == 0 || c.max_batch_values > kAmericanMarkovBatchMaxValues ||
       c.max_rollback_work == 0 || c.max_rollback_work > kAmericanMarkovFitMaxRollbackWork ||
       (c.time_shape != AmericanMarkovFitTimeShape::Shared &&
-       c.time_shape != AmericanMarkovFitTimeShape::PerVarianceInterval)) {
+       c.time_shape != AmericanMarkovFitTimeShape::PerVarianceInterval &&
+       c.time_shape != AmericanMarkovFitTimeShape::VarianceTimeKnots)) {
     return Err(ErrorCode::InvalidArgument, "Markov policy: invalid fit resource configuration");
   }
   if (!positive(c.min_sigma) || !positive(c.max_sigma) || c.min_sigma >= c.max_sigma ||
@@ -96,10 +98,15 @@ Status validate_fit(const AmericanMarkovPolicyProfile &profile) {
       }
     }
   }
+  ATX_TRY_VOID(detail::validate_markov_time_knots(c));
   const auto knots = std::max(std::size_t{1}, c.log_state_knots.size());
-  if ((c.time_shape == AmericanMarkovFitTimeShape::Shared &&
-       ((!c.initial_sigmas.empty() && c.initial_sigmas.size() != knots) ||
-        (!c.prior_sigmas.empty() && c.prior_sigmas.size() != knots))) ||
+  const auto fixed_groups = c.time_shape == AmericanMarkovFitTimeShape::Shared ? 1U :
+      c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots
+          ? c.variance_time_knots.size() : 0U;
+  const auto fixed_count = fixed_groups * knots;
+  if ((fixed_groups != 0 &&
+       ((!c.initial_sigmas.empty() && c.initial_sigmas.size() != fixed_count) ||
+        (!c.prior_sigmas.empty() && c.prior_sigmas.size() != fixed_count))) ||
       (!c.initial_sigmas.empty() && c.initial_sigmas.size() % knots != 0) ||
       (!c.prior_sigmas.empty() && c.prior_sigmas.size() % knots != 0) ||
       (!c.initial_sigmas.empty() && !c.prior_sigmas.empty() &&
@@ -120,6 +127,7 @@ Status validate_fit(const AmericanMarkovPolicyProfile &profile) {
 
 struct OwnedProfile {
   std::vector<double> knots;
+  std::vector<double> time_knots;
   std::vector<double> initial;
   std::vector<double> prior;
   AmericanMarkovPolicyProfile profile;
@@ -241,10 +249,12 @@ AmericanMarkovPolicyCatalog::create(std::span<const AmericanMarkovPolicyProfile>
     auto owned = std::make_shared<OwnedProfile>();
     const auto &config = profile.fit_config;
     owned->knots.assign(config.log_state_knots.begin(), config.log_state_knots.end());
+    owned->time_knots.assign(config.variance_time_knots.begin(), config.variance_time_knots.end());
     owned->initial.assign(config.initial_sigmas.begin(), config.initial_sigmas.end());
     owned->prior.assign(config.prior_sigmas.begin(), config.prior_sigmas.end());
     owned->profile = profile;
     owned->profile.fit_config.log_state_knots = owned->knots;
+    owned->profile.fit_config.variance_time_knots = owned->time_knots;
     owned->profile.fit_config.initial_sigmas = owned->initial;
     owned->profile.fit_config.prior_sigmas = owned->prior;
     out.profiles_.emplace_back(owned, &owned->profile);
@@ -320,10 +330,14 @@ AmericanMarkovPolicyCatalog::resolve(std::string_view symbol,
   }
   const auto &profile = *profiles_[selected];
   const auto &fit = profile.fit_config;
-  const std::size_t groups = fit.time_shape == AmericanMarkovFitTimeShape::Shared ? 1 : active;
+  const std::size_t groups = fit.time_shape == AmericanMarkovFitTimeShape::Shared ? 1 :
+      fit.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots
+          ? fit.variance_time_knots.size() : active;
   const auto knots = std::max(std::size_t{1}, fit.log_state_knots.size());
   if (groups > fit.max_parameters / knots ||
-      intervals.size() > profile.model_config.max_transitions) {
+      intervals.size() > profile.model_config.max_transitions ||
+      (fit.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots &&
+       intervals.size() > profile.model_config.max_stored_volatility_values / knots)) {
     return Err(ErrorCode::OutOfRange, "Markov policy: schedule exceeds profile parameter capacity");
   }
   const auto count = groups * knots;

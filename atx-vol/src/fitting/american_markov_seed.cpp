@@ -28,6 +28,9 @@ bool quadrature(std::uint16_t n) noexcept {
 
 Status validate(const AmericanMarkovFitMarket &m, std::span<const AmericanMarkovFitQuote> quotes,
                 const AmericanMarkovSeedLayout &l, const AmericanMarkovSeedConfig &c) {
+  if (l.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
+    return Err(ErrorCode::Unavailable, "Markov seeds: variance-time-knot layout is unsupported");
+  }
   if (!positive(m.spot) || c.max_input_quotes == 0 ||
       c.max_input_quotes > kAmericanMarkovFitMaxQuotes || quotes.size() > c.max_input_quotes ||
       c.max_expiries == 0 || c.max_expiries > kAmericanMarkovSeedMaxExpiries ||

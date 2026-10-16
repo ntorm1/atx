@@ -25,6 +25,10 @@ struct CommonFitInitialization {
   nlohmann::json diagnostics;
 };
 
+// Closed native JSON spelling shared by policy parsing, expanded definitions,
+// seed layouts and fit reports: shared, per-variance-interval, variance-time-knots.
+[[nodiscard]] const char *common_time_shape_name(atx::vol::AmericanMarkovFitTimeShape shape);
+
 [[nodiscard]] CommonInitializationConfig parse_common_initialization(const nlohmann::json &entry);
 [[nodiscard]] nlohmann::json common_initialization_json(const CommonInitializationConfig &config);
 [[nodiscard]] nlohmann::json common_initialization_pending(const CommonInitializationConfig &config);

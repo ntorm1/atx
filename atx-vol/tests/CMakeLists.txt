@@ -46,6 +46,11 @@ set_tests_properties(atx-vol-american-markov PROPERTIES LABELS "atx_vol_fast")
 add_executable(atx-vol-american-markov-fit-tests american_markov_fit_test.cpp)
 target_link_libraries(atx-vol-american-markov-fit-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+# The variance-time-knot basis tests drive the private
+# fitting/american_markov_time_basis.hpp helper directly: no public fitter input
+# can produce the unordered rows its refusals guard against.
+target_include_directories(atx-vol-american-markov-fit-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME atx-vol-american-markov-fit COMMAND atx-vol-american-markov-fit-tests)
 set_tests_properties(atx-vol-american-markov-fit PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -38,15 +39,32 @@ struct AmericanMarkovFitQuote {
   double weight = 1.0;
 };
 
-enum class AmericanMarkovFitTimeShape { Shared, PerVarianceInterval };
+enum class AmericanMarkovFitTimeShape { Shared, PerVarianceInterval, VarianceTimeKnots };
 enum class AmericanMarkovFitTermination { StepTolerance, EvaluationLimit, SweepLimit };
+
+// Fixed numerical admission threshold for the interval log-sigma basis. This
+// is NOT a bound on price sensitivity or a calibration-identifiability proof.
+inline constexpr double kAmericanMarkovFitMinTimeBasisReciprocalCondition = 1.0e-12;
 
 struct AmericanMarkovFitConfig {
   // Empty means the single knot {0}: one flat sigma per selected time group.
   // Otherwise finite, strictly increasing log(X/initial spot) coordinates.
   std::span<const double> log_state_knots;
   AmericanMarkovFitTimeShape time_shape = AmericanMarkovFitTimeShape::Shared;
-  // Group-major absolute sigmas. Empty initial means initial_sigma everywhere;
+  // VarianceTimeKnots only: >=2 finite nonnegative strictly increasing absolute
+  // cumulative variance-year coordinates. Caller chooses every knot; flat tails.
+  // At each ORIGINAL interval's variance midpoint, interpolate log sigmas and
+  // freeze that local-vol vector for the interval. This does NOT integrate a
+  // continuous sigma(t) curve; compiler substep refinement cannot remove that
+  // midpoint-freezing approximation. No schedule boundaries are inserted.
+  // Inside one knot cell the represented/continuous interval variance ratio is
+  // x/sinh(x), x = half the interval width times the slope of log(sigma^2);
+  // intervals straddling a knot can be biased in either direction.
+  // Parameters: knot count times state knots, within max_parameters, however
+  // many expiries. Empty is required for Shared and PerVarianceInterval.
+  std::span<const double> variance_time_knots;
+  // Group-major absolute sigmas (a time group is one time knot in
+  // VarianceTimeKnots). Empty initial means initial_sigma everywhere;
   // empty prior means the INITIAL vector, fixed throughout optimization.
   std::span<const double> initial_sigmas;
   std::span<const double> prior_sigmas;
@@ -95,6 +113,25 @@ struct AmericanMarkovFitDiagnostics {
   double final_log_step = 0.0;
 };
 
+struct AmericanMarkovFitTimeWeight {
+  std::size_t left_group = 0;
+  std::size_t right_group = 0;
+  double right_weight = 0.0; // Left weight is 1-right_weight; equal groups mean one-hot.
+  double variance_time = 0.0; // Represented original-interval variance midpoint.
+  bool variance_active = false; // Paused intervals contribute no basis row.
+};
+
+struct AmericanMarkovFitTimeBasisDiagnostics {
+  std::size_t quoted_variance_intervals = 0;
+  std::vector<std::size_t> column_support_counts;
+  std::vector<double> column_l2_norms;
+  double common_normalization = 0.0; // sqrt(quoted_variance_intervals).
+  // Observed reciprocal infinity condition of R/common_normalization, where
+  // B=QR is the ordered interval-weight design. It is NOT cond_inf(B), a price
+  // Jacobian condition, or a variance-weighted economic information measure.
+  double qr_reciprocal_condition_inf = 0.0;
+};
+
 class AmericanMarkovFit;
 
 // Offline bounded deterministic calibration; allocates while searching.
@@ -121,9 +158,17 @@ public:
   [[nodiscard]] const AmericanMarkovModel &model() const noexcept { return model_; }
   [[nodiscard]] std::span<const double> sigmas() const noexcept { return sigmas_; }
   [[nodiscard]] std::span<const double> log_state_knots() const noexcept { return knots_; }
-  // Input interval -> sigma-vector time group. Stopped-variance intervals map
-  // to group zero; their sigma has no effect on the transition operator.
-  [[nodiscard]] std::span<const std::size_t> interval_groups() const noexcept { return groups_; }
+  [[nodiscard]] AmericanMarkovFitTimeShape time_shape() const noexcept { return time_shape_; }
+  [[nodiscard]] std::span<const double> variance_time_knots() const noexcept { return time_knots_; }
+  // One owned row per original interval, including paused variance. Legacy
+  // modes use equal groups; their paused intervals retain group zero.
+  [[nodiscard]] std::span<const AmericanMarkovFitTimeWeight>
+  interval_time_weights() const noexcept { return time_weights_; }
+  // Present only for VarianceTimeKnots. Uses every positive-variance interval
+  // through the latest positive-weight quoted expiry, including unquoted
+  // intermediate intervals. Regularization never rescues a refused basis.
+  [[nodiscard]] const std::optional<AmericanMarkovFitTimeBasisDiagnostics> &
+  time_basis_diagnostics() const noexcept { return time_basis_; }
   // Marks in the original input quote order; sorting is internal to dispatch.
   [[nodiscard]] std::span<const double> quote_prices() const noexcept { return prices_; }
   [[nodiscard]] const AmericanMarkovFitDiagnostics &diagnostics() const noexcept { return diag_; }
@@ -133,12 +178,18 @@ private:
       const AmericanMarkovFitMarket &, std::span<const AmericanMarkovFitQuote>,
       const AmericanMarkovFitConfig &);
   AmericanMarkovFit(AmericanMarkovModel model, std::vector<double> sigmas,
-                   std::vector<double> knots, std::vector<std::size_t> groups,
+                   std::vector<double> knots, AmericanMarkovFitTimeShape time_shape,
+                   std::vector<double> time_knots,
+                   std::vector<AmericanMarkovFitTimeWeight> time_weights,
+                   std::optional<AmericanMarkovFitTimeBasisDiagnostics> time_basis,
                    std::vector<double> prices, AmericanMarkovFitDiagnostics diagnostics);
   AmericanMarkovModel model_;
   std::vector<double> sigmas_;
   std::vector<double> knots_;
-  std::vector<std::size_t> groups_;
+  AmericanMarkovFitTimeShape time_shape_ = AmericanMarkovFitTimeShape::Shared;
+  std::vector<double> time_knots_;
+  std::vector<AmericanMarkovFitTimeWeight> time_weights_;
+  std::optional<AmericanMarkovFitTimeBasisDiagnostics> time_basis_;
   std::vector<double> prices_;
   AmericanMarkovFitDiagnostics diag_;
 };

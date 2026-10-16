@@ -91,6 +91,36 @@ const char *termination_name(AmericanMarkovFitTermination value) {
   return "unknown";
 }
 
+// Owned fitter time provenance: one row per original interval, including paused
+// variance. Knot-mode basis diagnostics describe the represented interval
+// log-sigma map only, not a price Jacobian or calibration identifiability.
+void time_layout_json(const AmericanMarkovFit &fit, Json &result) {
+  result["time_shape"] = common_time_shape_name(fit.time_shape());
+  result["variance_time_knots"] = std::vector<double>(fit.variance_time_knots().begin(),
+                                                      fit.variance_time_knots().end());
+  Json weights = Json::array();
+  for (const auto &row : fit.interval_time_weights()) {
+    weights.push_back({{"left_group", row.left_group}, {"right_group", row.right_group},
+        {"right_weight", row.right_weight}, {"variance_time", row.variance_time},
+        {"variance_active", row.variance_active}});
+  }
+  result["interval_time_weights"] = std::move(weights);
+  const auto &basis = fit.time_basis_diagnostics();
+  if (!basis) {
+    result["time_basis"] = nullptr;
+    return;
+  }
+  result["time_basis"] = {{"quoted_variance_intervals", basis->quoted_variance_intervals},
+      {"column_support_counts", basis->column_support_counts},
+      {"column_l2_norms", basis->column_l2_norms},
+      {"common_normalization", basis->common_normalization},
+      {"qr_reciprocal_condition_inf", basis->qr_reciprocal_condition_inf},
+      {"min_reciprocal_condition", kAmericanMarkovFitMinTimeBasisReciprocalCondition}};
+  result["time_interpolation"] = "log-linear sigma at each original interval's variance "
+      "midpoint, frozen for that whole interval; flat tails; not the exact integrated "
+      "variance of a continuous sigma(t)";
+}
+
 Json fit_json(const AmericanMarkovFit &fit, std::span<const AmericanMarkovFitQuote> quotes) {
   const auto &d = fit.diagnostics();
   Json result{{"termination", termination_name(d.termination)},
@@ -106,9 +136,8 @@ Json fit_json(const AmericanMarkovFit &fit, std::span<const AmericanMarkovFitQuo
       {"final_log_step", d.final_log_step},
       {"sigmas", std::vector<double>(fit.sigmas().begin(), fit.sigmas().end())},
       {"log_state_knots", std::vector<double>(fit.log_state_knots().begin(),
-                                               fit.log_state_knots().end())},
-      {"interval_groups", std::vector<std::size_t>(fit.interval_groups().begin(),
-                                                   fit.interval_groups().end())}};
+                                               fit.log_state_knots().end())}};
+  time_layout_json(fit, result);
   const auto &m = fit.model().diagnostics();
   result["model"] = {{"diffusion_steps", m.diffusion_steps}, {"cash_steps", m.cash_steps},
       {"diffusion_method", fit.model().diffusion_method() == AmericanMarkovDiffusionMethod::ExplicitEuler

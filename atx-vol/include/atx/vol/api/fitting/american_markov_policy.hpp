@@ -20,7 +20,7 @@ inline constexpr std::size_t kAmericanMarkovPolicyMaxSnapshots = 4096;
 inline constexpr std::size_t kAmericanMarkovPolicyMaxRawQuotes = 65536;
 
 // Definitions borrow fit-config spans until create() returns. The catalog
-// deep-copies knots and initial/prior sigmas; all other settings are values.
+// deep-copies state/time knots and initial/prior sigmas; other settings are values.
 // Model, grid and fit budgets are explicit and independent; a valid profile
 // cannot bypass any compiler/fitter no-arbitrage or numerical resource gate.
 struct AmericanMarkovPolicyProfile {
@@ -67,10 +67,12 @@ public:
   // must share one exact spot. No schedule or profile is silently changed.
   // Raw extraction is bounded to 4096 snapshots and 65536 total raw quote rows.
   //
-  // Counts active variance groups exactly as the fitter does; paused variance
-  // consumes no new group. Refuses all-paused variance, excessive parameters,
+  // Counts groups exactly as the fitter does: one Shared, positive intervals
+  // PerVarianceInterval, or the caller's explicit VarianceTimeKnots. Paused
+  // variance consumes no new group. Refuses all-paused variance, excessive parameters,
   // or initial/prior vectors inconsistent with the actual schedule. Overrides
-  // select the profile only; every validation remains mandatory.
+  // select the profile only; every validation remains mandatory. The fitter's
+  // knot-basis admission additionally uses its final positive-weight quote prefix.
   [[nodiscard]] Result<ResolvedAmericanMarkovPolicy>
   resolve(std::string_view symbol, std::span<const QuoteFitExpirySnapshot> snapshots,
           std::span<const AmericanMarkovFitInterval> intervals) const;

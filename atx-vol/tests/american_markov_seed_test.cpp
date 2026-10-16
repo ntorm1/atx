@@ -300,5 +300,28 @@ TEST(AmericanMarkovSeeds, ForwardSeedBoundsRefuseRatherThanClipAndZeroVarianceIs
   EXPECT_TRUE(result->initial_sigmas.empty());
 }
 
+TEST(AmericanMarkovSeeds, VarianceTimeKnotLayoutIsRefusedBeforeAnyInversion) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0, 0, 0},
+                             AmericanMarkovFitInterval{1, 1, 0, 0, 0}};
+  const std::array quotes{quote(0, 0.25, 0.2), quote(1, 1, 0.3)};
+  AmericanMarkovSeedLayout layout;
+  layout.time_shape = AmericanMarkovFitTimeShape::VarianceTimeKnots;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::Unavailable);
+  // The mode refusal precedes every other check: an otherwise invalid budget
+  // still reports the unsupported layout, so no projection or inversion runs.
+  AmericanMarkovSeedConfig invalid;
+  invalid.max_inversions = 0;
+  const auto ordered = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, invalid);
+  ASSERT_FALSE(ordered);
+  EXPECT_EQ(ordered.error().code(), ErrorCode::Unavailable);
+  // The legacy interval layout over the same quotes remains available.
+  layout.time_shape = AmericanMarkovFitTimeShape::PerVarianceInterval;
+  EXPECT_TRUE(estimate_american_markov_quote_seeds({100, intervals, {}, {}}, quotes, layout));
+}
+
 } // namespace
 } // namespace atx::vol
