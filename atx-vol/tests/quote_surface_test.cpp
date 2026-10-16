@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -353,8 +355,37 @@ TEST(QuoteSurface, BoundedCalendarRepairAdmitsASmallCrossing) {
   expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
 }
 
+TEST(QuoteSurface, MovedNodeWithoutAnIdentifiableVolatilityIsNeverServedWithTheCurveVol) {
+  // A calendar floor at the certificate's upper edge (call S - 1e-4 K, put
+  // K (1 - 2e-4): linear, so convex, and inside every price bound) lifts every
+  // node above any finite-volatility American price: the served prices have no
+  // identifiable volatility, so the rows must not keep the curve's volatility.
+  const auto c = chain(0.5, 0.25, 0.0, 0.01, 80, 120, 5);
+  auto fit = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
+  std::vector<AmericanPriceNode> lifted;
+  for (const auto &node : fit->prices->nodes()) {
+    lifted.push_back({node.strike, 100.0 - 1.0e-4 * node.strike, node.strike * (1.0 - 2.0e-4)});
+  }
+  const auto floor = AmericanPriceSlice::create(lifted, fit->prices->bounds());
+  ASSERT_TRUE(floor) << floor.error().to_string();
+  const std::array<const AmericanPriceSlice *, 1> earlier{&*floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0e9));
+  std::size_t invalid = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    const auto &row = fit->rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::InvalidVolatility) continue;
+    ++invalid;
+    EXPECT_TRUE(std::isnan(row.fitted_iv)) << i;
+    EXPECT_TRUE(std::isnan(row.fitted_price)) << i;
+    EXPECT_FALSE(evaluate_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side)) << i;
+  }
+  EXPECT_GT(invalid, 0u);
+}
+
 TEST(QuoteSurface, KnotSplineProfileGradesAOnlyWithOwnEvidenceAndUnmovedPrices) {
-  // A knot-spline profile's pass A is its prior-free channel fit. Well-quoted
+  // A knot-spline profile's pass A is its term-prior-free channel fit. Well-quoted
   // expiries meet the point-evidence minimum and keep their fitted prices: A.
   auto config = channel_config();
   config.channel.repair_half_spreads = 20.0;

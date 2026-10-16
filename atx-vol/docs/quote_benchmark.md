@@ -55,14 +55,17 @@ requirements, and rejected contracts remain in coverage reporting.
 Graded admission is opt-in (`"admission": "graded"`, default `"static"`). Each
 snapshot is fitted by `fit_quote_surface`. Pass A runs the profile's own method
 (the point fitter, or for a `knot-spline`/`channel.family` profile the
-prior-free channel fit). Grade A means the expiry's own admitted point evidence
-meets the profile's `min_quotes`, pass A served it with no term prior, and no
-repair moved a served price (under point profiles these keep the static path's
-exact prices). A pass-A slice whose prices a repair moved is grade B. The other
-expiries are refitted on the channel objective (every contract's bid/ask
-volatility channel, a spread-normalised mid anchor, and a leave-one-out term
-prior from the snapshot's other expiries), graded B (at least
-`grade_b_min_mid_strikes` mid strikes) or C. Repairs are bounded-move: each
+term-prior-free channel fit under the flat default shape). Grade A means the
+expiry's own admitted point evidence meets the profile's `min_quotes`, pass A
+served it with no term prior, and no repair moved a served price (under point
+profiles these keep the static path's exact prices). A pass-A slice whose
+prices a repair moved is grade B. The other expiries are refitted on the
+channel objective (every contract's bid/ask volatility channel, a
+spread-normalised mid anchor, and the leave-one-out term prior when another
+expiry supplies a node, else the flat default shape), graded B (at least
+`grade_b_min_mid_strikes` mid strikes) or C; static-fallback B/C are
+term-prior-free. Graded admission rejects profiles with a `carry_mode` or with
+`dividends` other than `aggregate`. Repairs are bounded-move: each
 node moves at most `repair_half_spreads` (convexity) or
 `calendar_repair_half_spreads` (calendar) of its own quote half-spread from its
 fitted price, which bounds the move but does not keep the price inside

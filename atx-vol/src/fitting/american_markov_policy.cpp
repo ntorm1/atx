@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
+#include "fitting/american_markov_fit_controls.hpp"
 #include "fitting/american_markov_time_basis.hpp"
 
 namespace atx::vol {
@@ -98,6 +99,7 @@ Status validate_fit(const AmericanMarkovPolicyProfile &profile) {
       }
     }
   }
+  ATX_TRY_VOID(detail::validate_markov_fit_search(c));
   ATX_TRY_VOID(detail::validate_markov_time_knots(c));
   const auto knots = std::max(std::size_t{1}, c.log_state_knots.size());
   const auto fixed_groups = c.time_shape == AmericanMarkovFitTimeShape::Shared ? 1U :

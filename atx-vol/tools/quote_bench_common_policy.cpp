@@ -57,6 +57,24 @@ Json fit_json(const AmericanMarkovFitConfig &c) {
   if (c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
     result["variance_time_knots"] = vector(c.variance_time_knots);
   }
+  // Same rule for the search/budget controls: all are expanded together, and
+  // only when any differs from its default.
+  const AmericanMarkovFitConfig d;
+  if (c.search != d.search || c.evaluations_per_parameter != d.evaluations_per_parameter ||
+      c.max_scaled_evaluations != d.max_scaled_evaluations ||
+      c.objective_tolerance != d.objective_tolerance ||
+      c.gradient_tolerance != d.gradient_tolerance ||
+      c.jacobian_log_step != d.jacobian_log_step || c.initial_damping != d.initial_damping ||
+      c.max_damping != d.max_damping) {
+    result["search"] = common_search_name(c.search);
+    result["evaluations_per_parameter"] = c.evaluations_per_parameter;
+    result["max_scaled_evaluations"] = c.max_scaled_evaluations;
+    result["objective_tolerance"] = c.objective_tolerance;
+    result["gradient_tolerance"] = c.gradient_tolerance;
+    result["jacobian_log_step"] = c.jacobian_log_step;
+    result["initial_damping"] = c.initial_damping;
+    result["max_damping"] = c.max_damping;
+  }
   return result;
 }
 
@@ -103,7 +121,9 @@ void parse_fit(const Json &j, AmericanMarkovFitConfig &c,
            "initial_sigma", "min_sigma", "max_sigma", "price_scale_floor", "midpoint_weight",
            "prior_weight", "strike_roughness_weight", "time_roughness_weight", "initial_log_step",
            "min_log_step", "max_parameters", "max_quotes", "max_evaluations", "max_sweeps",
-           "batch_options", "max_batch_values", "max_rollback_work"});
+           "batch_options", "max_batch_values", "max_rollback_work", "search",
+           "evaluations_per_parameter", "max_scaled_evaluations", "objective_tolerance",
+           "gradient_tolerance", "jacobian_log_step", "initial_damping", "max_damping"});
   if (j.contains("time_shape")) {
     const auto value = text(j.at("time_shape"));
     if (value == "shared") c.time_shape = AmericanMarkovFitTimeShape::Shared;
@@ -112,6 +132,13 @@ void parse_fit(const Json &j, AmericanMarkovFitConfig &c,
     } else if (value == "variance-time-knots") {
       c.time_shape = AmericanMarkovFitTimeShape::VarianceTimeKnots;
     } else throw std::runtime_error("Common fit time_shape is invalid");
+  }
+  if (j.contains("search")) {
+    const auto value = text(j.at("search"));
+    if (value == "coordinate-pattern") c.search = AmericanMarkovFitSearch::CoordinatePattern;
+    else if (value == "levenberg-marquardt") {
+      c.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+    } else throw std::runtime_error("Common fit search is invalid");
   }
   const std::array names{"log_state_knots", "initial_sigmas", "prior_sigmas",
                          "variance_time_knots"};
@@ -151,6 +178,15 @@ void parse_fit(const Json &j, AmericanMarkovFitConfig &c,
   FIELD(batch_options, 1, kAmericanMarkovBatchMaxOptions);
   FIELD(max_batch_values, 1, kAmericanMarkovBatchMaxValues);
   FIELD(max_rollback_work, 1, kAmericanMarkovFitMaxRollbackWork);
+  // Cross-field rules (explicit hard cap with scaling, damping order) are the
+  // fitter's and are enforced by the catalog before any execution.
+  FIELD(evaluations_per_parameter, 0, kAmericanMarkovFitMaxEvaluations);
+  FIELD(max_scaled_evaluations, 0, kAmericanMarkovFitMaxEvaluations);
+  FIELD(objective_tolerance, 0, 1);
+  FIELD(gradient_tolerance, 0, 1.0e6);
+  FIELD(jacobian_log_step, 1.0e-8, 0.5);
+  FIELD(initial_damping, 1.0e-12, 1.0e8);
+  FIELD(max_damping, 1.0e-12, 1.0e16);
 #undef FIELD
 }
 

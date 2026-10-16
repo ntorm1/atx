@@ -152,6 +152,33 @@ which own their `main()`) now enforces it automatically:
    ISA tag (and not the other's). An `avx2` run therefore cannot overwrite an
    `sse2` baseline (or vice-versa). Convention:
    `i7-1260p-clang18-{sse2,avx2}-<bench>.json`.
+5. **Main-thread pinning (pricing hot-path audit 2026-10-16, item 5a).** Item 1
+   pins only the pool *workers*; every single-threaded row runs on the Google
+   Benchmark main thread. `main()` now pins that thread to one P-core with the
+   pool's own discovery + affinity call (`src/pricing/cpu_topology.hpp`), raises
+   it to `THREAD_PRIORITY_HIGHEST`, opts it out of power throttling, records
+   `atx_main_cpu` / `atx_main_pinned` / `atx_main_is_pcore` /
+   `atx_main_priority_highest` / `atx_main_power_throttling_off` in the JSON
+   context, and **refuses** a `baselines/` write when the pin did not take. The
+   CPU defaults to the highest-numbered P-core logical CPU; override with
+   `ATX_BENCH_MAIN_CPU=<id>`.
+
+### Chain refresh (`atx-vol-chain-refresh-bench`, audit §4)
+
+Re-marks a deterministic 2,000-contract chain (20 expiries x 50 strikes x 2 sides,
+eSSVI smile, per-expiry borrow curve) after each tick of a fixed-seed spot tape
+(1 bp steps, 1% of ticks 10 bp), writing price/delta/gamma/vega/theta into
+preallocated SoA outputs. One iteration is one tick, timed on its own (manual
+time); counters `p50_us` … `max_us`, `ns_per_contract_p50`, `rebuilds_per_1k_ticks`,
+and untimed accuracy against `american_greeks_al` (accurate) on 1% of ticks x 5%
+of contracts (`price_max_abs`, `price_p99_abs`, `price_n_gt_1mil`, Greek max/p99).
+Rows `chain/refresh/{cached_scalar,cached_ladder,cold_al_qlfast,
+cold_al_avx2_batch,record_direct,record_price_only,record_ladder}/n2000`, pinned
+by the `atx-vol-chain-refresh-name-coverage` CTest. Not implemented:
+`markov_batch` (opt-in, never gated) and the `/div2` / `/spy_real` variants.
+`baselines/i7-1260p-clang18-avx2-chain-refresh-provisional.json` is a
+**provisional candidate** captured on a loaded host — not a pin; re-capture on a
+quiet host before gating.
 
 **Self-check (M3 verification, class `tooling`).** Run any bench exe with
 `--atx-self-check` to prove the CV gate rejects a synthetic high-variance sample

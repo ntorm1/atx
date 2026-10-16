@@ -242,8 +242,8 @@ struct QuoteSliceFit {
   // certified serving representation. Absence means the fit cannot be served.
   std::optional<AmericanPriceSlice> prices;
   // Empty unless a repair moved served prices off the curve. Otherwise one entry
-  // per prices->nodes() entry: bit 1 the call, bit 2 the put was moved. At such
-  // a node the curve's volatility is not the served price's.
+  // per prices->nodes() entry: value 1 = call moved, 2 = put moved (OR'd). At
+  // such a node the curve's volatility is not the served price's.
   std::vector<std::uint8_t> moved_nodes;
   std::vector<QuoteSliceRow> rows; // same order and length as input quotes
   QuoteSliceMarket market;
@@ -340,8 +340,9 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // remains satisfied and the unchanged AmericanPriceSlice certificate passes.
 // The bound limits the move; it does not keep a price inside [bid, ask]. On
 // success replaces fit.prices, flags moved nodes in fit.moved_nodes, refreshes
-// row prices (moved nodes report the volatility of the served price) and
-// returns true; otherwise leaves `fit` unchanged. The largest required move, in
+// row prices (moved nodes report the volatility of the served price, or
+// InvalidVolatility with NaN price and volatility when that price has no
+// identifiable volatility) and returns true; otherwise leaves `fit` unchanged. The largest required move, in
 // half-spreads, is written to `required` when non-null. The caller must still
 // check the result against every accepted slice.
 [[nodiscard]] bool repair_quote_slice_calendar(QuoteSliceFit &fit,
@@ -358,11 +359,12 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 //     the profile's own method (fit_quote_slice: the point fitter, or for a
 //     ChannelSpline profile the channel fit with only the flat default shape),
 //     with no term prior and no served price moved by a repair.
-//  B: a term-prior channel fit with at least `grade_b_min_mid_strikes` distinct
-//     mid strikes, or a pass-A slice whose served prices a convexity or
-//     calendar repair moved.
-//  C: a term-prior channel fit with fewer mid strikes (dominated by bid/ask
-//     bounds and the prior).
+//  B: a channel refit (under the leave-one-out term prior when another expiry
+//     supplies a node, else the flat default shape) with at least
+//     `grade_b_min_mid_strikes` distinct mid strikes, or a pass-A slice whose
+//     served prices a convexity or calendar repair moved.
+//  C: a channel refit (same prior rule) with fewer mid strikes (dominated by
+//     bid/ask bounds and the prior or default shape).
 enum class QuoteSliceGrade : std::uint8_t { A, B, C, Refused };
 
 [[nodiscard]] const char *to_string(QuoteSliceGrade value) noexcept;
@@ -410,8 +412,8 @@ struct QuoteSurfaceSlice {
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation
 // instant (the caller owns identity). Pass A runs the profile's own fit,
-// unchanged (fit_quote_slice: the point fitter, or the prior-free channel fit
-// for a ChannelSpline profile); expiries it cannot serve with enough own point
+// unchanged (fit_quote_slice: the point fitter, or the term-prior-free channel
+// fit for a ChannelSpline profile); expiries it cannot serve with enough own point
 // evidence are refitted on the channel objective under a leave-one-out term
 // prior built from the other fitted expiries (two stages, so snapshots without
 // any pass-A fit still borrow shape from their neighbours). Calendar

@@ -31,6 +31,10 @@ Status validate(const AmericanMarkovFitMarket &m, std::span<const AmericanMarkov
   if (l.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
     return Err(ErrorCode::Unavailable, "Markov seeds: variance-time-knot layout is unsupported");
   }
+  if (c.estimator != AmericanMarkovSeedEstimator::BidMidAsk &&
+      c.estimator != AmericanMarkovSeedEstimator::SigmaInterval) {
+    return Err(ErrorCode::InvalidArgument, "Markov seeds: unknown estimator");
+  }
   if (!positive(m.spot) || c.max_input_quotes == 0 ||
       c.max_input_quotes > kAmericanMarkovFitMaxQuotes || quotes.size() > c.max_input_quotes ||
       c.max_expiries == 0 || c.max_expiries > kAmericanMarkovSeedMaxExpiries ||
@@ -160,20 +164,43 @@ double moneyness(const AmericanMarkovFitQuote &quote, double spot,
                   expiry.integrated_yield);
 }
 
+double intrinsic_value(const AmericanMarkovFitQuote &quote, double spot) {
+  return std::max(quote.side == Side::Call ? spot - quote.strike : quote.strike - spot, 0.0);
+}
+
+double time_value_floor(const AmericanMarkovFitQuote &quote, double spot,
+                        const AmericanMarkovSeedConfig &c) {
+  return std::max(c.min_time_value_over_spot * spot,
+      64 * std::numeric_limits<double>::epsilon() * std::max(spot, quote.strike));
+}
+
+// A bid at or below the intrinsic floor carries no lower-bound information.
+bool informative_bid(const AmericanMarkovFitQuote &quote, double spot,
+                     const AmericanMarkovSeedConfig &c) {
+  return quote.bid - intrinsic_value(quote, spot) > time_value_floor(quote, spot, c);
+}
+
 QuoteStatus classify(const AmericanMarkovFitQuote &quote, double spot,
                        const AmericanMarkovSeedExpiryDiagnostics &expiry,
                        const AmericanMarkovSeedConfig &c) {
   if (expiry.variance_end <= 0.0) return QuoteStatus::ZeroVariance;
+  if (c.estimator == AmericanMarkovSeedEstimator::SigmaInterval) {
+    // Bidless and wide quotes stay eligible; only an ask on the intrinsic
+    // plateau (no upper-bound information, hence no bid information) is refused.
+    if (moneyness(quote, spot, expiry) > c.max_abs_log_forward_moneyness) {
+      return QuoteStatus::FarMoneyness;
+    }
+    if (quote.ask - intrinsic_value(quote, spot) <= time_value_floor(quote, spot, c)) {
+      return QuoteStatus::IntrinsicPlateau;
+    }
+    return QuoteStatus::InversionBudget;
+  }
   if (quote.bid == 0.0) return QuoteStatus::Bidless;
   if (relative_spread(quote) > c.max_relative_spread) return QuoteStatus::WideSpread;
   if (moneyness(quote, spot, expiry) > c.max_abs_log_forward_moneyness) {
     return QuoteStatus::FarMoneyness;
   }
-  const double intrinsic = std::max(quote.side == Side::Call ? spot - quote.strike
-                                                           : quote.strike - spot, 0.0);
-  const double floor = std::max(c.min_time_value_over_spot * spot,
-      64 * std::numeric_limits<double>::epsilon() * std::max(spot, quote.strike));
-  if (quote.bid - intrinsic <= floor) return QuoteStatus::IntrinsicPlateau;
+  if (!informative_bid(quote, spot, c)) return QuoteStatus::IntrinsicPlateau;
   return QuoteStatus::InversionBudget; // Eligible, pending deterministic selection.
 }
 
@@ -265,6 +292,152 @@ void invert(const AmericanMarkovFitQuote &q, double spot, const AmericanMarkovSe
   ++out.expiries[q.expiry_index].used_quotes;
 }
 
+// SigmaInterval: ask -> upper bound, informative bid -> lower bound. An IV
+// outside the layout range on the uninformative side (ask above max_sigma,
+// bid below min_sigma or on the IV floor) is no bound; on the conflicting side
+// (ask below min_sigma or on the IV floor, bid above max_sigma) the quote is
+// refused, since its other side is then uninformative too. Never clipped.
+void invert_interval(const AmericanMarkovFitQuote &q, double spot,
+                     const AmericanMarkovSeedLayout &layout,
+                     AmericanMarkovSeedQuoteDiagnostics &d, AmericanMarkovQuoteSeeds &out) {
+  const auto &c = out.configuration;
+  const auto &e = out.expiries[q.expiry_index];
+  bool failed = false;
+  const auto attempt = [&](std::size_t slot, double price) -> std::optional<double> {
+    ++d.inversion_calls;
+    ++out.inversion_calls;
+    out.reserved_root_iteration_slots += c.max_iv_iterations;
+    const auto result = american_implied_vol(price, spot, q.strike, e.variance_end,
+        e.integrated_rate / e.variance_end, e.integrated_yield / e.variance_end, q.side,
+        AmericanMethod::AndersenLake, c.iv_tolerance, c.max_iv_iterations, c.inversion_options);
+    if (!result) {
+      if (d.inversion_error.empty()) d.inversion_error = result.error().to_string();
+      failed = true;
+      return std::nullopt;
+    }
+    d.equivalent_vols[slot] = *result;
+    return *result;
+  };
+  const auto floor_iv = [&](double iv) {
+    return !std::isfinite(iv) || iv <= kIvMin + c.iv_tolerance;
+  };
+  std::optional<double> lower;
+  std::optional<double> upper;
+  std::optional<QuoteStatus> conflict;
+  if (const auto iv = attempt(2, q.ask)) {
+    if (floor_iv(*iv)) conflict = QuoteStatus::IvFloor;
+    else if (*iv < layout.min_sigma) conflict = QuoteStatus::SigmaBounds;
+    else if (*iv <= layout.max_sigma) upper = *iv;
+  }
+  if (!conflict && informative_bid(q, spot, c)) {
+    if (const auto iv = attempt(0, q.bid)) {
+      if (!floor_iv(*iv) && *iv > layout.max_sigma) conflict = QuoteStatus::SigmaBounds;
+      else if (!floor_iv(*iv) && *iv >= layout.min_sigma) lower = *iv;
+    }
+  }
+  if (lower && upper && *lower > *upper) {
+    d.status = QuoteStatus::InconsistentIvInterval; // Preserved IVs; never reordered.
+    return;
+  }
+  if (conflict) {
+    d.status = *conflict;
+    return;
+  }
+  if (!lower && !upper) {
+    d.status = failed ? QuoteStatus::InversionFailure
+                      : q.bid == 0.0 ? QuoteStatus::Bidless : QuoteStatus::SigmaBounds;
+    return;
+  }
+  d.lower_bound = lower.has_value();
+  d.upper_bound = upper.has_value();
+  d.status = QuoteStatus::Used;
+  ++out.used_quotes;
+  ++out.expiries[q.expiry_index].used_quotes;
+}
+
+// Running SigmaInterval intersection: max of lower bounds, min of upper bounds.
+struct IntervalBounds {
+  std::optional<double> lower;
+  std::optional<double> upper;
+  std::size_t lower_quotes = 0;
+  std::size_t upper_quotes = 0;
+
+  void add(const AmericanMarkovSeedQuoteDiagnostics &d) {
+    if (d.lower_bound) {
+      lower = std::max(lower.value_or(*d.equivalent_vols[0]), *d.equivalent_vols[0]);
+      ++lower_quotes;
+    }
+    if (d.upper_bound) {
+      upper = std::min(upper.value_or(*d.equivalent_vols[2]), *d.equivalent_vols[2]);
+      ++upper_quotes;
+    }
+  }
+  void merge(const IntervalBounds &other) {
+    if (other.lower) lower = std::max(lower.value_or(*other.lower), *other.lower);
+    if (other.upper) upper = std::min(upper.value_or(*other.upper), *other.upper);
+    lower_quotes += other.lower_quotes;
+    upper_quotes += other.upper_quotes;
+  }
+};
+
+std::optional<AmericanMarkovSeedSigmaInterval> make_sigma_interval(
+    const IntervalBounds &b, const AmericanMarkovSeedLayout &layout) {
+  if (!b.lower && !b.upper) return std::nullopt; // Unbounded both ways: no estimate.
+  AmericanMarkovSeedSigmaInterval out;
+  out.lower = b.lower;
+  out.upper = b.upper;
+  out.effective_lower = b.lower.value_or(layout.min_sigma);
+  out.effective_upper = b.upper.value_or(layout.max_sigma);
+  out.geometric_midpoint = std::sqrt(out.effective_lower * out.effective_upper);
+  out.log_width = std::log(out.effective_upper) - std::log(out.effective_lower);
+  out.crossed = out.effective_lower > out.effective_upper;
+  out.lower_bound_quotes = b.lower_quotes;
+  out.upper_bound_quotes = b.upper_quotes;
+  return out;
+}
+
+// Descriptive total-variance band {low^2, lower*upper, high^2} * years.
+Band interval_band(const AmericanMarkovSeedSigmaInterval &s, double years) {
+  const double low = std::min(s.effective_lower, s.effective_upper);
+  const double high = std::max(s.effective_lower, s.effective_upper);
+  return {low * low * years, s.effective_lower * s.effective_upper * years, high * high * years};
+}
+
+void aggregate_interval(std::span<const AmericanMarkovFitQuote> quotes,
+                        const AmericanMarkovSeedLayout &layout, AmericanMarkovQuoteSeeds &out) {
+  std::vector<IntervalBounds> bounds(out.expiries.size());
+  std::vector<std::vector<double>> spreads(out.expiries.size());
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    if (out.quotes[i].status != QuoteStatus::Used) continue;
+    bounds[quotes[i].expiry_index].add(out.quotes[i]);
+    spreads[quotes[i].expiry_index].push_back(relative_spread(quotes[i]));
+  }
+  IntervalBounds all;
+  for (std::size_t i = 0; i < out.expiries.size(); ++i) {
+    auto &e = out.expiries[i];
+    e.sigma_interval = make_sigma_interval(bounds[i], layout);
+    if (!e.sigma_interval) continue;
+    e.total_variance = interval_band(*e.sigma_interval, e.variance_end);
+    e.median_relative_spread = median(std::move(spreads[i]));
+    all.merge(bounds[i]);
+  }
+  for (auto &endpoint : out.variance_endpoints) {
+    IntervalBounds merged;
+    for (const auto expiry : endpoint.expiry_indices) {
+      if (!out.expiries[expiry].sigma_interval) continue;
+      merged.merge(bounds[expiry]);
+      ++endpoint.supported_expiries;
+    }
+    endpoint.sigma_interval = make_sigma_interval(merged, layout);
+    if (endpoint.sigma_interval) {
+      endpoint.total_variance = interval_band(*endpoint.sigma_interval, endpoint.variance_end);
+    }
+  }
+  if (layout.time_shape == AmericanMarkovFitTimeShape::Shared) {
+    out.sigma_interval = make_sigma_interval(all, layout);
+  }
+}
+
 void aggregate(std::span<const AmericanMarkovFitQuote> quotes, AmericanMarkovQuoteSeeds &out) {
   std::vector<std::vector<Band>> bands(out.expiries.size());
   std::vector<std::vector<double>> spreads(out.expiries.size());
@@ -321,9 +494,59 @@ AmericanMarkovSeedParameter parameter(Band variance, const AmericanMarkovSeedLay
   return p;
 }
 
-void infer_parameters(const AmericanMarkovSeedLayout &layout, AmericanMarkovQuoteSeeds &out) {
+AmericanMarkovSeedParameter checked_rate(Band rate, const AmericanMarkovSeedLayout &layout) {
+  AmericanMarkovSeedParameter p;
+  p.variance_rate = rate;
+  if (!std::isfinite(rate.lower) || !std::isfinite(rate.midpoint) ||
+      !std::isfinite(rate.upper)) {
+    p.status = ParameterStatus::NonfiniteVariance;
+    return p;
+  }
+  if (!(rate.midpoint > 0.0)) {
+    p.status = ParameterStatus::NegativeForwardVariance;
+    return p;
+  }
+  const double sigma = std::sqrt(rate.midpoint);
+  if (sigma < layout.min_sigma || sigma > layout.max_sigma) {
+    p.status = ParameterStatus::SigmaBounds;
+    return p;
+  }
+  p.status = ParameterStatus::Ready;
+  p.sigma = sigma;
+  return p;
+}
+
+// SigmaInterval groups. Shared: geometric midpoint over every used quote.
+// PerVarianceInterval: difference geometric-midpoint total variance between
+// adjacent endpoints; the band propagates the effective bounds descriptively.
+std::vector<AmericanMarkovSeedParameter> interval_groups(const AmericanMarkovSeedLayout &layout,
+                                                         const AmericanMarkovQuoteSeeds &out) {
   std::vector<AmericanMarkovSeedParameter> groups(out.time_groups);
   if (layout.time_shape == AmericanMarkovFitTimeShape::Shared) {
+    if (out.sigma_interval) {
+      const auto &s = *out.sigma_interval;
+      groups[0] = checked_rate(interval_band(s, 1.0), layout);
+    }
+    return groups;
+  }
+  for (std::size_t i = 0; i < out.variance_endpoints.size(); ++i) {
+    const auto &e = out.variance_endpoints[i];
+    if (!e.sigma_interval || (i > 0 && !out.variance_endpoints[i - 1].sigma_interval)) continue;
+    const Band total = *e.total_variance;
+    const Band previous = i == 0 ? Band{} : *out.variance_endpoints[i - 1].total_variance;
+    const double dv = e.variance_end - (i == 0 ? 0 : out.variance_endpoints[i - 1].variance_end);
+    groups[i] = checked_rate({(total.lower - previous.upper) / dv,
+                              (total.midpoint - previous.midpoint) / dv,
+                              (total.upper - previous.lower) / dv}, layout);
+  }
+  return groups;
+}
+
+void infer_parameters(const AmericanMarkovSeedLayout &layout, AmericanMarkovQuoteSeeds &out) {
+  std::vector<AmericanMarkovSeedParameter> groups(out.time_groups);
+  if (out.configuration.estimator == AmericanMarkovSeedEstimator::SigmaInterval) {
+    groups = interval_groups(layout, out);
+  } else if (layout.time_shape == AmericanMarkovFitTimeShape::Shared) {
     std::vector<Band> rates;
     for (const auto &e : out.variance_endpoints) {
       if (!e.total_variance) continue;
@@ -374,19 +597,27 @@ Result<AmericanMarkovQuoteSeeds> estimate_american_markov_quote_seeds(
     return Ok(std::move(out));
   }
   const auto selected = candidates(market, quotes, out);
+  const bool interval = config.estimator == AmericanMarkovSeedEstimator::SigmaInterval;
   // Round-robin across chronological expiries: no dense first expiry consumes
   // every inversion slot. Selection only affects seeds, never eventual fit rows.
+  // A quote is attempted only when its whole inversion need fits the budget:
+  // three calls (bid/mid/ask), or for SigmaInterval one per informative side.
   for (std::size_t rank = 0; rank < config.candidates_per_expiry; ++rank) {
     for (const auto &indices : selected) {
-      if (rank >= indices.size() || config.max_inversions - out.inversion_calls < 3U ||
-          config.max_root_iteration_slots - out.reserved_root_iteration_slots <
-              3U * config.max_iv_iterations) continue;
+      if (rank >= indices.size()) continue;
       const auto i = indices[rank];
-      invert(quotes[i], market.spot, layout, out.quotes[i], out);
+      const std::size_t need = !interval ? 3U
+          : informative_bid(quotes[i], market.spot, config) ? 2U : 1U;
+      if (config.max_inversions - out.inversion_calls < need ||
+          config.max_root_iteration_slots - out.reserved_root_iteration_slots <
+              need * config.max_iv_iterations) continue;
+      if (interval) invert_interval(quotes[i], market.spot, layout, out.quotes[i], out);
+      else invert(quotes[i], market.spot, layout, out.quotes[i], out);
     }
   }
   out.refused_quotes = quotes.size() - out.used_quotes;
-  aggregate(quotes, out);
+  if (interval) aggregate_interval(quotes, layout, out);
+  else aggregate(quotes, out);
   infer_parameters(layout, out);
   return Ok(std::move(out));
 }

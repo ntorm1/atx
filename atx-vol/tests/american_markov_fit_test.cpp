@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include "atx/vol/api/pricing/american_markov_batch.hpp"
 #include "fitting/american_markov_time_basis.hpp"
 
 namespace atx::vol {
@@ -1364,6 +1365,392 @@ TEST(AmericanMarkovFit, MidpointFrozenKnotSigmaBiasIsMeasuredAgainstContinuousCu
   std::printf("[midpoint-freezing] max |interval variance bias| %.6g, final cumulative %.6g, "
               "max |ATM call price bias| %.6g\n",
               max_interval_bias, cumulative_bias.back(), max_price_bias);
+}
+
+// ---------------------------------------------------------------------------
+// Search budget, Levenberg-Marquardt and work accounting. The generator below
+// is an independent compile/scalar-price path; the fitter prices in batches.
+// ---------------------------------------------------------------------------
+
+AmericanMarkovFitMarket resolvent_market(std::span<const AmericanMarkovFitInterval> intervals) {
+  AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  market.model_config.diffusion_method = AmericanMarkovDiffusionMethod::VarianceResolvent;
+  market.model_config.grid_nodes = 129;
+  return market;
+}
+
+// Group-major sigmas: one group (Shared) or one per positive-variance interval.
+std::vector<AmericanMarkovFitQuote> smile_quotes(const AmericanMarkovFitMarket &market,
+                                                 std::span<const double> knots,
+                                                 std::span<const double> sigmas,
+                                                 std::span<const double> strikes,
+                                                 double half_spread) {
+  std::vector<AmericanMarkovLocalVolNode> nodes;
+  for (std::size_t i = 0; i < sigmas.size(); ++i) {
+    nodes.push_back({knots[i % knots.size()], sigmas[i]});
+  }
+  const bool per_interval = sigmas.size() > knots.size();
+  std::vector<AmericanMarkovInterval> intervals;
+  std::size_t group = 0;
+  double last_variance = 0.0;
+  for (const auto &in : market.intervals) {
+    const std::size_t offset = per_interval && in.variance_end > last_variance ? group++ : 0;
+    intervals.push_back({in.calendar_end, in.variance_end, in.rate, in.continuous_yield, 1.0,
+                         in.cash_dividend_at_end,
+                         std::span<const AmericanMarkovLocalVolNode>(nodes).subspan(
+                             offset * knots.size(), knots.size())});
+    last_variance = in.variance_end;
+  }
+  auto model = compile_american_markov(
+      {market.spot, intervals, market.state_grid, market.model_config});
+  EXPECT_TRUE(model) << model.error().to_string();
+  if (!model) return {};
+  AmericanMarkovWorkspace workspace;
+  EXPECT_TRUE(workspace.prepare(*model));
+  std::vector<AmericanMarkovFitQuote> quotes;
+  for (std::size_t expiry = 0; expiry < intervals.size(); ++expiry) {
+    for (const auto side : {Side::Call, Side::Put}) {
+      for (const double strike : strikes) {
+        const auto value = price_american_markov(*model, strike, side, expiry, workspace);
+        EXPECT_TRUE(value);
+        if (!value) return {};
+        quotes.push_back({expiry, strike, side, std::max(0.0, *value - half_spread),
+                          *value + half_spread, 1.0});
+      }
+    }
+  }
+  return quotes;
+}
+
+// One objective evaluation's rollback work for these quotes on a model.
+std::size_t quote_work(const AmericanMarkovModel &model,
+                       std::span<const AmericanMarkovFitQuote> quotes) {
+  std::vector<std::size_t> prefix(model.layers().size(), 0);
+  for (std::size_t i = 0; i < model.transitions().size(); ++i) {
+    prefix[i + 1] = prefix[i] + model.transitions()[i].rollback_work();
+  }
+  std::size_t work = 0;
+  for (const auto &q : quotes) work += prefix[model.expiry_layers()[q.expiry_index]];
+  return work;
+}
+
+// Re-prices exactly as the fitter does: per expiry/side, ascending strikes, one batch.
+std::vector<double> batch_reprice(const AmericanMarkovModel &model,
+                                  std::span<const AmericanMarkovFitQuote> quotes) {
+  std::vector<double> out(quotes.size(), -1.0);
+  AmericanMarkovBatchWorkspace workspace;
+  EXPECT_TRUE(workspace.prepare(model, 128));
+  for (std::size_t expiry = 0; expiry < model.expiry_layers().size(); ++expiry) {
+    for (const auto side : {Side::Call, Side::Put}) {
+      std::vector<std::size_t> rows;
+      for (std::size_t i = 0; i < quotes.size(); ++i) {
+        if (quotes[i].expiry_index == expiry && quotes[i].side == side) rows.push_back(i);
+      }
+      std::sort(rows.begin(), rows.end(),
+                [&](std::size_t a, std::size_t b) { return quotes[a].strike < quotes[b].strike; });
+      EXPECT_LE(rows.size(), 128U);
+      std::vector<double> strikes;
+      for (const auto i : rows) strikes.push_back(quotes[i].strike);
+      std::vector<double> values(strikes.size());
+      EXPECT_TRUE(price_american_markov_batch(model, strikes, side, expiry, values, workspace));
+      for (std::size_t k = 0; k < rows.size(); ++k) out[rows[k]] = values[k];
+    }
+  }
+  return out;
+}
+
+TEST(AmericanMarkovFitSearch, ScaledBudgetIsExplicitClampedAndOverflowSafe) {
+  AmericanMarkovFitConfig config;
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, 5), 256U);
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, 128), 256U);
+  config.evaluations_per_parameter = 64;
+  config.max_scaled_evaluations = 1024;
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, 1), 256U); // Never below the base.
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, 5), 320U);
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, 16), 1024U);
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, 128), 1024U); // Hard cap.
+  config.evaluations_per_parameter = kAmericanMarkovFitMaxEvaluations;
+  EXPECT_EQ(american_markov_fit_evaluation_budget(config, static_cast<std::size_t>(-1)), 1024U);
+}
+
+TEST(AmericanMarkovFitSearch, InvalidScalingAndSearchControlsAreRefusedBeforeWork) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  const std::array quote{AmericanMarkovFitQuote{0, 100.0, Side::Call, 5.0, 5.2, 1.0}};
+  const auto refused = [&](auto mutate) {
+    AmericanMarkovFitConfig config;
+    mutate(config);
+    const auto fit = fit_american_markov_intervals(market, quote, config);
+    return !fit && fit.error().code() == ErrorCode::InvalidArgument;
+  };
+  EXPECT_TRUE(refused([](auto &c) { c.evaluations_per_parameter = 8; })); // No hard cap.
+  EXPECT_TRUE(refused([](auto &c) { c.max_scaled_evaluations = 512; }));  // Cap without scaling.
+  EXPECT_TRUE(refused([](auto &c) {
+    c.evaluations_per_parameter = 8;
+    c.max_scaled_evaluations = 128; // Below max_evaluations: would silently shrink.
+  }));
+  EXPECT_TRUE(refused([](auto &c) {
+    c.evaluations_per_parameter = 8;
+    c.max_scaled_evaluations = kAmericanMarkovFitMaxEvaluations + 1;
+  }));
+  EXPECT_TRUE(refused([](auto &c) {
+    c.evaluations_per_parameter = kAmericanMarkovFitMaxEvaluations + 1;
+    c.max_scaled_evaluations = 512;
+  }));
+  EXPECT_TRUE(refused([](auto &c) { c.search = static_cast<AmericanMarkovFitSearch>(7); }));
+  EXPECT_TRUE(refused([](auto &c) { c.objective_tolerance = -1.0; }));
+  EXPECT_TRUE(refused([](auto &c) { c.objective_tolerance = 2.0; }));
+  EXPECT_TRUE(refused([](auto &c) {
+    c.gradient_tolerance = std::numeric_limits<double>::quiet_NaN();
+  }));
+  EXPECT_TRUE(refused([](auto &c) { c.jacobian_log_step = 0.0; }));
+  EXPECT_TRUE(refused([](auto &c) { c.jacobian_log_step = 0.6; }));
+  EXPECT_TRUE(refused([](auto &c) { c.initial_damping = 0.0; }));
+  EXPECT_TRUE(refused([](auto &c) { c.max_damping = 1.0e-4; })); // Below initial_damping.
+  EXPECT_TRUE(refused([](auto &c) { c.max_damping = 1.0e17; }));
+  AmericanMarkovFitConfig valid;
+  valid.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  valid.evaluations_per_parameter = 8;
+  valid.max_scaled_evaluations = 256; // Equal to max_evaluations is allowed.
+  EXPECT_TRUE(fit_american_markov_intervals(market, quote, valid));
+}
+
+TEST(AmericanMarkovFitSearch, ScaledBudgetLetsFiveKnotSmileConvergeWhereDefaultHitsLimit) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0},
+                             AmericanMarkovFitInterval{0.75, 0.75, 0.0, 0.0, 0.0}};
+  const auto market = resolvent_market(intervals);
+  const std::array knots{-0.6, -0.3, 0.0, 0.3, 0.6};
+  const std::array truth{0.55, 0.40, 0.30, 0.26, 0.25};
+  const std::array strikes{55.0, 65.0, 75.0, 85.0, 95.0, 100.0, 105.0, 115.0, 130.0, 150.0,
+                           175.0};
+  const auto quotes = smile_quotes(market, knots, truth, strikes, 0.01);
+  ASSERT_FALSE(quotes.empty());
+  AmericanMarkovFitConfig config;
+  config.log_state_knots = knots;
+  const auto unscaled = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(unscaled) << unscaled.error().to_string();
+  // The historical budget binds, exactly as on the development cohort.
+  EXPECT_EQ(unscaled->diagnostics().termination, AmericanMarkovFitTermination::EvaluationLimit);
+  EXPECT_EQ(unscaled->diagnostics().evaluations, 256U);
+  EXPECT_EQ(unscaled->diagnostics().evaluation_budget, 256U);
+
+  auto coordinate = config;
+  coordinate.evaluations_per_parameter = 400;
+  coordinate.max_scaled_evaluations = 2048;
+  coordinate.max_sweeps = 400;
+  const auto scaled = fit_american_markov_intervals(market, quotes, coordinate);
+  ASSERT_TRUE(scaled) << scaled.error().to_string();
+  EXPECT_EQ(scaled->diagnostics().evaluation_budget, 2000U);
+  EXPECT_EQ(scaled->diagnostics().termination, AmericanMarkovFitTermination::StepTolerance);
+  EXPECT_LT(scaled->diagnostics().evaluations, 2000U);
+  EXPECT_LT(scaled->diagnostics().objective, unscaled->diagnostics().objective);
+
+  auto lm = config;
+  lm.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  lm.evaluations_per_parameter = 64;
+  lm.max_scaled_evaluations = 1024;
+  lm.max_sweeps = 64;
+  lm.objective_tolerance = 1.0e-10;
+  const auto damped = fit_american_markov_intervals(market, quotes, lm);
+  ASSERT_TRUE(damped) << damped.error().to_string();
+  const auto &d = damped->diagnostics();
+  EXPECT_EQ(d.search, AmericanMarkovFitSearch::LevenbergMarquardt);
+  EXPECT_EQ(d.evaluation_budget, 320U);
+  EXPECT_NE(d.termination, AmericanMarkovFitTermination::EvaluationLimit);
+  EXPECT_NE(d.termination, AmericanMarkovFitTermination::SweepLimit);
+  EXPECT_LT(d.evaluations, scaled->diagnostics().evaluations);
+  EXPECT_EQ(d.jacobian_evaluations % 5U, 0U);
+  EXPECT_GT(d.jacobian_evaluations, 0U);
+  EXPECT_LE(d.objective, scaled->diagnostics().objective * 1.05);
+  EXPECT_LT(d.objective, unscaled->diagnostics().objective);
+  EXPECT_LT(d.max_interval_error, 0.02);
+  for (std::size_t i = 1; i + 1 < truth.size(); ++i) {
+    EXPECT_NEAR(damped->sigmas()[i], truth[i], 0.02 * truth[i]) << i;
+  }
+  RecordProperty("coordinate_default_objective", decimal(unscaled->diagnostics().objective));
+  RecordProperty("coordinate_scaled_evaluations",
+                 std::to_string(scaled->diagnostics().evaluations));
+  RecordProperty("lm_evaluations", std::to_string(d.evaluations));
+  std::printf("[five-knot] default %zu evals obj %.3g | coordinate scaled %zu evals obj %.3g | "
+              "LM %zu evals (%zu Jacobian, %zu rejected) obj %.3g\n",
+              unscaled->diagnostics().evaluations, unscaled->diagnostics().objective,
+              scaled->diagnostics().evaluations, scaled->diagnostics().objective, d.evaluations,
+              d.jacobian_evaluations, d.rejected_steps, d.objective);
+}
+
+TEST(AmericanMarkovFitSearch, PerIntervalShapeConvergesAndReusesExactPrefixPrices) {
+  const std::array intervals{AmericanMarkovFitInterval{0.1, 0.1, 0.0, 0.0, 0.0},
+                             AmericanMarkovFitInterval{0.3, 0.3, 0.0, 0.0, 0.0},
+                             AmericanMarkovFitInterval{0.6, 0.6, 0.0, 0.0, 0.0}};
+  const auto market = resolvent_market(intervals);
+  const std::array knots{-0.25, 0.0, 0.25};
+  const std::array truth{0.36, 0.30, 0.27, 0.33, 0.28, 0.25, 0.31, 0.26, 0.24};
+  const std::array strikes{75.0, 85.0, 92.0, 100.0, 108.0, 118.0, 130.0};
+  const auto quotes = smile_quotes(market, knots, truth, strikes, 0.005);
+  ASSERT_FALSE(quotes.empty());
+  AmericanMarkovFitConfig config;
+  config.log_state_knots = knots;
+  config.time_shape = AmericanMarkovFitTimeShape::PerVarianceInterval;
+  const auto unscaled = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(unscaled) << unscaled.error().to_string();
+  EXPECT_EQ(unscaled->diagnostics().termination, AmericanMarkovFitTermination::EvaluationLimit);
+  EXPECT_EQ(unscaled->diagnostics().reused_quote_prices, 0U);
+
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.evaluations_per_parameter = 48;
+  config.max_scaled_evaluations = 1024;
+  config.max_sweeps = 64;
+  config.objective_tolerance = 1.0e-10;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  EXPECT_EQ(d.evaluation_budget, 432U);
+  EXPECT_NE(d.termination, AmericanMarkovFitTermination::EvaluationLimit);
+  EXPECT_NE(d.termination, AmericanMarkovFitTermination::SweepLimit);
+  EXPECT_LT(d.objective, unscaled->diagnostics().objective);
+  EXPECT_LT(d.max_interval_error, 0.01);
+  for (std::size_t i = 0; i < truth.size(); ++i) {
+    EXPECT_NEAR(fit->sigmas()[i], truth[i], 0.03 * truth[i]) << i;
+  }
+  // Every evaluation accounts for every quote exactly once: priced or reused.
+  EXPECT_EQ(d.failed_evaluations, 0U);
+  EXPECT_EQ(d.priced_quotes + d.reused_quote_prices, d.evaluations * quotes.size());
+  EXPECT_GT(d.reused_quote_prices, 0U);
+  // Reused prefixes are not charged: total work is strictly below full repricing.
+  const auto full = quote_work(fit->model(), quotes);
+  EXPECT_LT(d.rollback_work, d.evaluations * full);
+  EXPECT_GE(d.rollback_work, (d.evaluations - d.jacobian_evaluations) * full);
+  // Stored marks equal a fresh fitter-identical batch repricing, bit for bit.
+  const auto repriced = batch_reprice(fit->model(), quotes);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    EXPECT_EQ(bits_of(repriced[i]), bits_of(fit->quote_prices()[i])) << i;
+  }
+  std::printf("[per-interval] default %zu evals obj %.3g | LM %zu evals obj %.3g, "
+              "priced %zu reused %zu, work %zu vs full %zu\n",
+              unscaled->diagnostics().evaluations, unscaled->diagnostics().objective,
+              d.evaluations, d.objective, d.priced_quotes, d.reused_quote_prices,
+              d.rollback_work, d.evaluations * full);
+}
+
+// The reuse rule's premise, through the public compiler: changing only a later
+// interval's local volatility leaves every earlier expiry's batch prices
+// bit-identical, including with dated cash between them.
+TEST(AmericanMarkovFitSearch, LaterIntervalSigmaNeverChangesEarlierExpiryPriceBits) {
+  const std::array schedule{AmericanMarkovFitInterval{0.1, 0.1, 0.01, 0.0, 0.0},
+                            AmericanMarkovFitInterval{0.2, 0.2, 0.01, 0.0, 1.0},
+                            AmericanMarkovFitInterval{0.5, 0.45, 0.01, 0.0, 0.0}};
+  for (const auto method : {AmericanMarkovDiffusionMethod::ExplicitEuler,
+                            AmericanMarkovDiffusionMethod::VarianceResolvent}) {
+    std::array<std::vector<double>, 2> prices;
+    for (std::size_t variant = 0; variant < 2; ++variant) {
+      const std::array nodes{AmericanMarkovLocalVolNode{-0.2, 0.30},
+                             AmericanMarkovLocalVolNode{0.2, 0.25},
+                             AmericanMarkovLocalVolNode{-0.2, variant == 0 ? 0.40 : 0.55},
+                             AmericanMarkovLocalVolNode{0.2, 0.35}};
+      std::vector<AmericanMarkovInterval> intervals;
+      for (std::size_t i = 0; i < schedule.size(); ++i) {
+        const auto &s = schedule[i];
+        intervals.push_back({s.calendar_end, s.variance_end, s.rate, s.continuous_yield, 1.0,
+                             s.cash_dividend_at_end,
+                             std::span<const AmericanMarkovLocalVolNode>(nodes).subspan(
+                                 i == 2 ? 2 : 0, 2)});
+      }
+      AmericanMarkovConfig model_config;
+      model_config.diffusion_method = method;
+      const auto model = compile_american_markov({100.0, intervals, {}, model_config});
+      ASSERT_TRUE(model) << model.error().to_string();
+      std::vector<AmericanMarkovFitQuote> quotes;
+      for (std::size_t expiry = 0; expiry < 2; ++expiry) {
+        for (const double strike : {80.0, 95.0, 100.0, 110.0, 130.0}) {
+          quotes.push_back({expiry, strike, Side::Put, 0.0, 1.0, 1.0});
+          quotes.push_back({expiry, strike, Side::Call, 0.0, 1.0, 1.0});
+        }
+      }
+      prices[variant] = batch_reprice(*model, quotes);
+    }
+    ASSERT_EQ(prices[0].size(), prices[1].size());
+    for (std::size_t i = 0; i < prices[0].size(); ++i) {
+      EXPECT_EQ(bits_of(prices[0][i]), bits_of(prices[1][i])) << i;
+    }
+  }
+}
+
+TEST(AmericanMarkovFitSearch, CoordinateWorkLedgerChargesEveryQuoteOfEveryEvaluation) {
+  const std::array intervals{AmericanMarkovFitInterval{0.2, 0.2, 0.0, 0.0, 0.0},
+                             AmericanMarkovFitInterval{0.5, 0.5, 0.0, 0.0, 0.0}};
+  const auto market = resolvent_market(intervals);
+  const std::array knots{0.0};
+  const std::array truth{0.3};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, truth, strikes, 0.01);
+  AmericanMarkovFitConfig config;
+  config.max_evaluations = 40;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  EXPECT_EQ(d.search, AmericanMarkovFitSearch::CoordinatePattern);
+  EXPECT_EQ(d.failed_evaluations, 0U);
+  EXPECT_EQ(d.jacobian_evaluations, 0U);
+  EXPECT_EQ(d.reused_quote_prices, 0U);
+  EXPECT_EQ(d.priced_quotes, d.evaluations * quotes.size());
+  // Resolvent clocks do not depend on sigma, so every evaluation costs the same.
+  EXPECT_EQ(d.rollback_work, d.evaluations * quote_work(fit->model(), quotes));
+}
+
+TEST(AmericanMarkovFitSearch, LevenbergMarquardtTerminationsAreExplicitAndDeterministic) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const auto market = resolvent_market(intervals);
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  // All quotes inside, no regularization: exactly zero gradient after one Jacobian.
+  const std::array inside{AmericanMarkovFitQuote{0, 100.0, Side::Call, 0.0, 30.0, 1.0}};
+  const auto flat = fit_american_markov_intervals(market, inside, config);
+  ASSERT_TRUE(flat) << flat.error().to_string();
+  EXPECT_EQ(flat->diagnostics().termination, AmericanMarkovFitTermination::GradientTolerance);
+  EXPECT_EQ(flat->diagnostics().evaluations, 2U);
+  EXPECT_EQ(flat->diagnostics().gradient_norm, 0.0);
+  EXPECT_EQ(flat->sigmas()[0], config.initial_sigma);
+
+  const std::array target{0.31};
+  const std::array knots{0.0};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, target, strikes, 0.002);
+  // A budget below one iteration (n Jacobian columns + one trial) never starts one.
+  config.max_evaluations = 1;
+  const auto starved = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(starved);
+  EXPECT_EQ(starved->diagnostics().termination, AmericanMarkovFitTermination::EvaluationLimit);
+  EXPECT_EQ(starved->diagnostics().evaluations, 1U);
+  EXPECT_EQ(starved->diagnostics().objective, starved->diagnostics().initial_objective);
+
+  config.max_evaluations = 256;
+  config.objective_tolerance = 1.0; // Any accepted step satisfies it.
+  const auto once = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(once);
+  EXPECT_EQ(once->diagnostics().termination, AmericanMarkovFitTermination::ObjectiveTolerance);
+  EXPECT_EQ(once->diagnostics().accepted_steps, 1U);
+  EXPECT_EQ(once->diagnostics().completed_sweeps, 1U);
+  EXPECT_LT(once->diagnostics().objective, once->diagnostics().initial_objective);
+
+  config.objective_tolerance = 0.0;
+  config.max_sweeps = 2;
+  const auto swept = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(swept);
+  EXPECT_EQ(swept->diagnostics().completed_sweeps, 2U);
+  EXPECT_EQ(swept->diagnostics().termination, AmericanMarkovFitTermination::SweepLimit);
+
+  config.max_sweeps = 32;
+  const auto a = fit_american_markov_intervals(market, quotes, config);
+  const auto b = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(b);
+  EXPECT_EQ(bits_of(a->sigmas()[0]), bits_of(b->sigmas()[0]));
+  EXPECT_EQ(a->diagnostics().evaluations, b->diagnostics().evaluations);
+  EXPECT_EQ(a->diagnostics().termination, b->diagnostics().termination);
+  EXPECT_NEAR(a->sigmas()[0], target[0], 0.001);
+  EXPECT_LE(a->diagnostics().best_evaluation, a->diagnostics().evaluations);
+  EXPECT_LE(a->diagnostics().evaluations, a->diagnostics().evaluation_budget);
+  EXPECT_GT(a->diagnostics().final_damping, 0.0);
 }
 
 } // namespace

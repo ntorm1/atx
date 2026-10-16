@@ -109,6 +109,7 @@ three promotions (72/72 → 75/69); the per-module lists below do too.
 - curve_selector.hpp
 - deamer.hpp
 - dense_slice.hpp
+- expiry_record.hpp (added 2026-10-16, tick-path lane — Tier-B, outside the umbrella; the measured counts above predate it)
 - fit_metrics.hpp
 - fit_policy.hpp
 - parity.hpp
@@ -144,6 +145,7 @@ three promotions (72/72 → 75/69); the per-module lists below do too.
 - derivatives.hpp
 - dividend.hpp
 - greeks.hpp
+- chain_tick.hpp (added 2026-10-16, tick-path lane — Tier-B, outside the umbrella; the measured counts above predate it)
 - implied_vol.hpp
 - pricing_executor.hpp (promoted from detail/, 2026-08-14 fix round 1 — see note above)
 - rates_curve.hpp

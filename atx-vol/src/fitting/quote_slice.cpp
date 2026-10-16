@@ -798,7 +798,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     }
     if (!repaired.empty()) {
       // A repaired node's served price is no longer the curve's: report the
-      // volatility of the certified price when it is identifiable.
+      // volatility of the certified price, and never the curve's pre-repair
+      // volatility when the served price has none.
       const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
       const unsigned bit = quote.side == Side::Call ? 1u : 2u;
       if (at != strikes.end() && *at == quote.strike &&
@@ -807,7 +808,12 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         QuoteSliceConfig query;
         query.discrete_div_steps = out.discrete_div_steps;
         const auto iv = contract_iv(out, quote, *price, query, q);
-        if (iv && positive(*iv)) row.fitted_iv = *iv;
+        if (!iv || !positive(*iv)) {
+          row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
+          row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
+          continue;
+        }
+        row.fitted_iv = *iv;
       }
     }
     row.fitted_price = *price;
@@ -1220,7 +1226,15 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
       QuoteSliceConfig query;
       query.discrete_div_steps = fit.discrete_div_steps;
       const auto iv = contract_iv(fit, quote, *price, query, q);
-      if (iv && positive(*iv)) row.fitted_iv = *iv;
+      if (iv && positive(*iv)) {
+        row.fitted_iv = *iv;
+      } else {
+        // The served price has no identifiable volatility: never pair it with
+        // the curve's pre-repair volatility.
+        row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
+        row.fitted_price = std::numeric_limits<double>::quiet_NaN();
+        row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
+      }
     }
   }
   // Union with any earlier (convexity) repair: both leave nodes off the curve.

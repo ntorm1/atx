@@ -10,7 +10,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -156,12 +158,44 @@ inline Json carry_json(const QuoteSliceCarryConfig &carry) {
           {"exercise", f.exercise == ImpliedForwardExercise::American ? "american" : "european"}};
 }
 
+// Opt-in per-profile dividend routing (quote_bench_main.cpp). `aggregate` (the
+// default, also when the key is absent) prices every expiry with the --dividends
+// aggregate-PV model. `inferred-schedule` infers the chain's dated cash schedule
+// from its (ddiv, ddiv_pv, rate) ladder (api/marketdata/dividend_schedule.hpp) and
+// sends every expiry with an inferred ex-date inside its life through the
+// discrete-dividend route (discrete_div_route -> DatedCash V&N lattice).
+// `inferred-schedule-exact` does the same only where every event in the life is
+// exactly dated (no split or non-integer event).
+enum class DividendRouting : std::uint8_t { Aggregate, InferredSchedule, InferredScheduleExact };
+
+inline const char *to_string(DividendRouting value) {
+  switch (value) {
+  case DividendRouting::Aggregate:
+    return "aggregate";
+  case DividendRouting::InferredSchedule:
+    return "inferred-schedule";
+  case DividendRouting::InferredScheduleExact:
+    return "inferred-schedule-exact";
+  }
+  return "unknown";
+}
+
+inline DividendRouting parse_dividend_routing(const Json &entry) {
+  if (!entry.contains("dividends")) return DividendRouting::Aggregate;
+  const auto name = text(entry.at("dividends"));
+  if (name == "aggregate") return DividendRouting::Aggregate;
+  if (name == "inferred-schedule") return DividendRouting::InferredSchedule;
+  if (name == "inferred-schedule-exact") return DividendRouting::InferredScheduleExact;
+  throw std::runtime_error(
+      "Policy dividends must be aggregate, inferred-schedule or inferred-schedule-exact");
+}
+
 inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
                           std::vector<double> &spline_grid) {
   keys(entry, {"name", "base", "curve", "min_quotes", "quality", "parametric", "convex",
                "spline", "side_policy", "atm_log_band", "spread_floor", "min_time_value",
                "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward",
-               "channel"});
+               "channel", "dividends"});
   profile.name = text(entry.at("name"), true);
   auto &cfg = profile.config;
   if (entry.contains("curve")) {
@@ -478,6 +512,9 @@ inline Json read_document(const std::filesystem::path &path) {
 struct LoadedPolicy {
   QuoteFitPolicyCatalog catalog;
   Json definition;
+  // Profiles that opted out of the aggregate dividend model, by profile name
+  // (the catalog refuses duplicate names). Empty on the historical path.
+  std::map<std::string, DividendRouting, std::less<>> dividend_routing;
   bool graded{false};
   QuoteSurfaceConfig surface{};
 };
@@ -494,6 +531,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   const auto defaults = default_quote_fit_profiles();
   std::vector<QuoteFitProfile> profiles = defaults;
   std::vector<std::vector<double>> grids;
+  std::map<std::string, DividendRouting, std::less<>> routing;
   if (document.contains("profiles")) {
     const auto &list = document.at("profiles");
     if (!list.is_array() || list.empty() || list.size() > 64U) {
@@ -511,6 +549,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       }
       auto profile = *found;
       parse_profile(list[i], profile, grids[i]);
+      const auto dividends = parse_dividend_routing(list[i]);
+      if (dividends != DividendRouting::Aggregate) routing[profile.name] = dividends;
       profiles.push_back(std::move(profile));
     }
   }
@@ -580,10 +620,23 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
+    // Policy-key rejection matrix for graded admission: it requires supplied
+    // carry (no carry_mode) and the aggregate dividend model. A lattice-routed
+    // expiry needs its own dated-cash config, schedule and aggregate fallback,
+    // which fit_quote_surface (one config per snapshot) does not take yet.
+    const auto routed = routing.find(profile.name);
     if (graded && profile.config.carry.mode != QuoteSliceCarryMode::Supplied) {
       throw std::runtime_error("Policy admission graded requires supplied carry");
     }
-    definition["profiles"].push_back(profile_json_with_options(profile, graded));
+    if (graded && routed != routing.end()) {
+      throw std::runtime_error(
+          "Policy admission graded requires dividends aggregate (inferred-schedule routing "
+          "is not supported under graded admission)");
+    }
+    auto json = profile_json_with_options(profile, graded);
+    // Emitted only when opted in, so the aggregate-path provenance is unchanged.
+    if (routed != routing.end()) json["dividends"] = to_string(routed->second);
+    definition["profiles"].push_back(std::move(json));
   }
   for (const auto &entry : overrides) {
     definition["symbol_overrides"].push_back(
@@ -591,7 +644,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
-  return {std::move(*catalog), std::move(definition), graded, surface};
+  return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {

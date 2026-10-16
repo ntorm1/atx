@@ -253,6 +253,46 @@ TEST(AmericanMarkovPolicy, RejectsInvalidNumericAndIndependentResourceConfigurat
   reject([&](auto &p) { p.fit_config.initial_sigmas = outside_sigmas; });
 }
 
+TEST(AmericanMarkovPolicy, SearchAndScaledBudgetControlsShareTheFitterGate) {
+  const auto reject = [](auto mutation) {
+    auto profiles = default_american_markov_policy_profiles();
+    mutation(profiles[1].fit_config);
+    EXPECT_FALSE(AmericanMarkovPolicyCatalog::create(profiles));
+  };
+  reject([](auto &c) { c.evaluations_per_parameter = 64; }); // Scaling needs an explicit cap.
+  reject([](auto &c) { c.max_scaled_evaluations = 1024; }); // Orphan cap.
+  reject([](auto &c) {
+    c.evaluations_per_parameter = 64;
+    c.max_scaled_evaluations = c.max_evaluations - 1;
+  });
+  reject([](auto &c) {
+    c.evaluations_per_parameter = 64;
+    c.max_scaled_evaluations = kAmericanMarkovFitMaxEvaluations + 1;
+  });
+  reject([](auto &c) { c.search = static_cast<AmericanMarkovFitSearch>(9); });
+  reject([](auto &c) { c.objective_tolerance = 1.5; });
+  reject([](auto &c) { c.jacobian_log_step = 0.0; });
+  reject([](auto &c) { c.max_damping = c.initial_damping * 0.5; });
+  auto profiles = default_american_markov_policy_profiles();
+  auto &fit = profiles[1].fit_config;
+  fit.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  fit.evaluations_per_parameter = 64;
+  fit.max_scaled_evaluations = 1024;
+  fit.objective_tolerance = 1.0e-6;
+  const auto catalog = AmericanMarkovPolicyCatalog::create(profiles);
+  ASSERT_TRUE(catalog) << catalog.error().to_string();
+  const auto input = quotes(8, 0.2);
+  const std::array snapshots{QuoteFitExpirySnapshot{market(), input}};
+  const auto resolved = catalog->resolve("ORD", snapshots, schedule);
+  ASSERT_TRUE(resolved) << resolved.error().to_string();
+  ASSERT_EQ(resolved->profile->name, "ordinary");
+  const auto &owned = resolved->profile->fit_config;
+  EXPECT_EQ(owned.search, AmericanMarkovFitSearch::LevenbergMarquardt);
+  EXPECT_EQ(american_markov_fit_evaluation_budget(owned, resolved->parameter_count),
+            std::max<std::size_t>(owned.max_evaluations, 64 * resolved->parameter_count));
+  EXPECT_EQ(owned.max_scaled_evaluations, 1024U);
+}
+
 TEST(AmericanMarkovPolicy, ResolventWorkBoundsAreValidatedAndSurviveCatalogOwnership) {
   auto profiles = default_american_markov_policy_profiles();
   auto &profile = profiles[2];

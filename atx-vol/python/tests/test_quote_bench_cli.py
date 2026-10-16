@@ -581,7 +581,13 @@ def test_native_graded_options_are_strict(binary, tmp_path):
               "graded": {"calendar_retry_factor": 0.5}}, "outside supported bounds"),
             ({"schema_version": 1, "admission": "graded", "profiles": [
                 {"name": "dense", "base": "dense", "carry_mode": "implied-forward"}]},
-             "requires supplied carry")):
+             "requires supplied carry"),
+            ({"schema_version": 1, "admission": "graded", "profiles": [
+                {"name": "dense", "base": "dense", "dividends": "inferred-schedule"}]},
+             "requires dividends aggregate"),
+            ({"schema_version": 1, "admission": "graded", "profiles": [
+                {"name": "dense", "base": "dense", "dividends": "inferred-schedule-exact"}]},
+             "requires dividends aggregate")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document

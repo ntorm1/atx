@@ -71,6 +71,11 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/dividend.cpp
     src/pricing/adjusted_greeks.cpp
     src/pricing/pricing_executor.cpp
+    # Tick-path chain refresh (pricing hot-path audit 2026-10-16): inline, pool-free
+    # chain re-mark after a spot tick; public header api/pricing/chain_tick.hpp.
+    src/pricing/chain_tick.cpp
+    # ... and its per-contract Chebyshev spot ladders (ChainSpotLadder).
+    src/pricing/spot_ladder.cpp
     # declarative swap-lane DSL
     src/pricing/swap_leg.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
@@ -81,6 +86,9 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/surface.cpp
     src/fitting/vol_surface.cpp
     src/fitting/correction.cpp
+    # Per-expiry (k, sigma) calibration record at the expiry's exact carry
+    # (pricing hot-path audit 2026-10-16 item 2); header api/fitting/expiry_record.hpp.
+    src/fitting/expiry_record.cpp
     src/fitting/arb.cpp
     src/fitting/surface_policy.cpp
     # Task F-8: SurfaceOverlay/StickyMode bump algebra over a fitted surface --
@@ -134,6 +142,7 @@ set(ATX_VOL_FITTING_SOURCES
 
 set(ATX_VOL_MARKETDATA_SOURCES
     src/marketdata/american_markov_market.cpp
+    src/marketdata/dividend_schedule.cpp
     src/marketdata/implied_forward.cpp
     src/marketdata/universe.cpp
     src/marketdata/data.cpp

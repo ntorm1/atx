@@ -21,6 +21,7 @@ import time
 import numpy as np
 import polars as pl
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
@@ -174,21 +175,109 @@ def normalize_quotes(batch: pa.RecordBatch, offset: int, *, bucket_minutes: int,
     return norm.with_columns(status).select(QUOTE_SCHEMA.names)
 
 
-def choose_symbols(source: pq.ParquetFile, args: argparse.Namespace) -> set[str] | None:
+def choose_symbols(source: pq.ParquetFile,
+                   args: argparse.Namespace) -> tuple[set[str] | None, dict]:
+    """Return the requested underliers and the draw provenance recorded in the manifest.
+
+    Defaults reproduce the original rule exactly: hash order under the split seed,
+    no exclusions, no stratification. A distinct --draw-seed, --exclude-cohort and
+    --liquidity-strata draw further cohorts from the same split pool without moving
+    any underlier between development and validation.
+    """
     symbols = set(filter(None, (s.strip() for s in args.symbols.split(",")))) or None
+    draw_seed = args.split_seed if args.draw_seed is None else args.draw_seed
+    draw = {"draw_seed": draw_seed, "excluded_cohorts": [], "excluded_underliers": 0,
+            "liquidity_strata": None}
     if args.max_underliers is None:
-        return symbols
+        if args.exclude_cohort or args.liquidity_strata or args.match_strata_cohort:
+            raise ValueError("cohort exclusion and liquidity strata require --max-underliers")
+        draw["draw_rule"] = "requested symbols" if symbols else "all underliers"
+        return symbols, draw
+    if args.liquidity_strata < 0 or (args.match_strata_cohort and not args.liquidity_strata):
+        raise ValueError("--match-strata-cohort requires a positive --liquidity-strata")
     names: set[str] = set()
+    source_rows: Counter = Counter()
     for batch in source.iter_batches(columns=["undSecKey_tk"], batch_size=args.batch_size):
         names.update(v for v in batch.column(0).unique().to_pylist() if v)
+        if args.liquidity_strata:
+            source_rows.update({item["values"]: item["counts"]
+                                for item in pc.value_counts(batch.column(0)).to_pylist()})
     if symbols is not None:
         names &= symbols
     if args.split != "all":
         names = {n for n in names
                  if split_for(n, args.validation_fraction, args.split_seed) == args.split}
+    excluded: set[str] = set()
+    for path in args.exclude_cohort:
+        names_excluded = _cohort_underliers(path)
+        excluded.update(names_excluded)
+        draw["excluded_cohorts"].append({"manifest": str(path.resolve()),
+                                         "manifest_sha256": sha256(path),
+                                         "underliers": len(names_excluded)})
+    draw["excluded_underliers"] = len(excluded & names)
+    draw["draw_pool_underliers"] = len(names - excluded)
+
     # Hash order avoids an alphabetical large-cap/symbol-prefix selection bias.
-    return set(sorted(names, key=lambda n: (stable_id([args.split_seed, n]), n))
-               [:args.max_underliers])
+    def hash_order(pool: set[str]) -> list[str]:
+        return sorted(pool, key=lambda n: (stable_id([draw_seed, n]), n))
+
+    if not args.liquidity_strata:
+        draw["draw_rule"] = "first max_underliers of the split pool in draw-seed hash order"
+        return set(hash_order(names - excluded)[:args.max_underliers]), draw
+    # Strata are fixed by the complete split pool (before exclusion) so a later
+    # cohort and its reference share one partition. The proxy is the underlier's
+    # whole-source row count: raw listing breadth, independent of labels/quotes.
+    strata = args.liquidity_strata
+    ranked = sorted(names, key=lambda n: (source_rows[n], n))
+    if len(ranked) < strata:
+        raise ValueError("liquidity strata exceed the split pool size")
+    stratum = {n: rank * strata // len(ranked) for rank, n in enumerate(ranked)}
+    if args.match_strata_cohort is not None:
+        reference = _cohort_underliers(args.match_strata_cohort)
+        if not reference <= names:
+            raise ValueError("match-strata cohort contains underliers outside this split pool")
+        if len(reference) != args.max_underliers:
+            raise ValueError("match-strata cohort size must equal --max-underliers")
+        allocation = Counter(stratum[n] for n in reference)
+        source_of_allocation = {"match_cohort": str(args.match_strata_cohort.resolve()),
+                                "match_cohort_manifest_sha256": sha256(args.match_strata_cohort)}
+    else:
+        allocation = Counter({s: (s + 1) * args.max_underliers // strata
+                              - s * args.max_underliers // strata for s in range(strata)})
+        source_of_allocation = {"match_cohort": None, "match_cohort_manifest_sha256": None}
+    chosen: set[str] = set()
+    per_stratum = []
+    for s in range(strata):
+        members = {n for n in names if stratum[n] == s}
+        candidates = hash_order(members - excluded)
+        if len(candidates) < allocation[s]:
+            raise ValueError(f"liquidity stratum {s} has too few unexcluded underliers")
+        chosen.update(candidates[:allocation[s]])
+        counts = [source_rows[n] for n in members]
+        per_stratum.append({"stratum": s, "pool": len(members),
+                            "excluded": len(members & excluded),
+                            "min_source_rows": min(counts), "max_source_rows": max(counts),
+                            "allocated": allocation[s]})
+    draw["draw_rule"] = ("per liquidity stratum, first allocated underliers in draw-seed hash "
+                         "order after exclusions")
+    draw["liquidity_strata"] = {
+        "count": strata,
+        "proxy": "rows per underlier in the whole source file (all snapshots); label-free",
+        "partition": "equal-count strata of the split pool before exclusion, ordered by "
+                     "(source rows, underlier)",
+        "allocation": ("reference cohort's count per stratum" if args.match_strata_cohort
+                       else "proportional: floor((s+1)*n/K) - floor(s*n/K)"),
+        **source_of_allocation, "per_stratum": per_stratum,
+    }
+    return chosen, draw
+
+
+def _cohort_underliers(path: Path) -> set[str]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    names = manifest.get("selection", {}).get("selected_underliers")
+    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+        raise ValueError(f"{path}: manifest lacks selection.selected_underliers")
+    return set(names)
 
 
 def prepare(args: argparse.Namespace) -> dict:
@@ -211,7 +300,7 @@ def prepare(args: argparse.Namespace) -> dict:
     source_stat = source_path.stat()
     started = time.perf_counter()
     source_hash = sha256(source_path)
-    symbols = choose_symbols(source, args)
+    symbols, draw = choose_symbols(source, args)
     args.output.mkdir(parents=True, exist_ok=False)
     quote_path, label_path = args.output / "quotes.parquet", args.output / "labels.parquet"
     quote_writer = pq.ParquetWriter(quote_path, QUOTE_SCHEMA, compression="zstd")
@@ -279,7 +368,7 @@ def prepare(args: argparse.Namespace) -> dict:
                       "selected_underliers": sorted(selected_names),
                       "max_underliers": args.max_underliers,
                       "bucket_minutes": args.bucket_minutes,
-                      "buckets_new_york": sorted(buckets)},
+                      "buckets_new_york": sorted(buckets), **draw},
         "rows_selected": sum(counts.values()), "rows_by_input_status": dict(counts),
         "rows_by_split": dict(split_counts),
         "files": {p.name: {"sha256": sha256(p), "bytes": p.stat().st_size}
@@ -862,6 +951,17 @@ def parser() -> argparse.ArgumentParser:
     prep.add_argument("--max-underliers", type=int, help="deterministic hash-order cap, independent of labels")
     prep.add_argument("--split", choices=["development", "validation", "all"], default="development")
     prep.add_argument("--split-seed", default="atx-vol-v1")
+    prep.add_argument("--draw-seed", help="hash seed for the --max-underliers draw; "
+                      "defaults to --split-seed (the original rule). Never changes the split")
+    prep.add_argument("--exclude-cohort", action="append", type=Path, default=[],
+                      help="manifest.json of an earlier cohort whose selected underliers "
+                           "are excluded from the draw (repeatable)")
+    prep.add_argument("--liquidity-strata", type=int, default=0,
+                      help="draw from K equal-count strata of whole-source row count "
+                           "(0 = unstratified hash order)")
+    prep.add_argument("--match-strata-cohort", type=Path,
+                      help="manifest.json whose selected underliers set the per-stratum "
+                           "allocation (default: proportional)")
     prep.add_argument("--validation-fraction", type=float, default=0.2)
     prep.add_argument("--bucket-minutes", type=int, default=30)
     prep.add_argument("--buckets", default="", help="comma-separated New York HHMM buckets; empty means all")

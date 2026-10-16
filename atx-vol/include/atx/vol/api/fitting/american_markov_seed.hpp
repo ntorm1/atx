@@ -25,6 +25,14 @@ struct AmericanMarkovSeedLayout {
   std::size_t max_parameters = 32;
 };
 
+// BidMidAsk (default) inverts bid, mid and ask of tight two-sided near-forward
+// quotes and refuses bidless or wide ones. SigmaInterval is opt-in for sparse
+// markets: each near-forward quote contributes one-sided bounds on its
+// flat-to-expiry equivalent sigma (bid -> lower bound when bid exceeds the
+// intrinsic floor, ask -> upper bound), so bidless and wide quotes still count.
+// max_relative_spread is not applied. See estimate_american_markov_quote_seeds.
+enum class AmericanMarkovSeedEstimator { BidMidAsk, SigmaInterval };
+
 struct AmericanMarkovSeedConfig {
   double max_abs_log_forward_moneyness = 0.2;
   double max_relative_spread = 0.5;
@@ -40,6 +48,7 @@ struct AmericanMarkovSeedConfig {
   std::size_t max_root_iteration_slots = 12288;
   AlOpts inversion_options{.n_collocation = 7, .n_quadrature = 16,
       .n_quad_price = 16, .max_newton_iter = 4, .tol = 1.0e-8};
+  AmericanMarkovSeedEstimator estimator = AmericanMarkovSeedEstimator::BidMidAsk;
 };
 
 enum class AmericanMarkovSeedQuoteStatus {
@@ -66,8 +75,32 @@ struct AmericanMarkovSeedQuoteDiagnostics {
   AmericanMarkovSeedQuoteStatus status = AmericanMarkovSeedQuoteStatus::InvalidQuote;
   bool eligible = false; // Eligible before deterministic candidate/budget selection.
   std::size_t inversion_calls = 0;
-  std::array<std::optional<double>, 3> equivalent_vols; // Each attempted successful IV.
+  // Each attempted successful IV: bid/mid/ask. SigmaInterval never inverts mid.
+  std::array<std::optional<double>, 3> equivalent_vols;
   std::string inversion_error; // Original library error code and message.
+  // SigmaInterval only: which successful IVs became bounds. An IV below
+  // min_sigma (bid) or above max_sigma (ask) is uninformative, not a bound.
+  bool lower_bound = false;
+  bool upper_bound = false;
+};
+
+// SigmaInterval only. Feasible equivalent-sigma interval over a quote set:
+// lower = max bid-implied bound, upper = min ask-implied bound. A missing side
+// is replaced by the layout sigma bound ("effective"); the seed is the
+// geometric midpoint sqrt(effective_lower * effective_upper). crossed means
+// effective_lower > effective_upper (inconsistent quotes or term structure);
+// the midpoint is then still between the two crossed bounds and is reported,
+// never repaired. log_width = log(effective_upper / effective_lower).
+struct AmericanMarkovSeedSigmaInterval {
+  std::optional<double> lower;
+  std::optional<double> upper;
+  double effective_lower = 0.0;
+  double effective_upper = 0.0;
+  double geometric_midpoint = 0.0;
+  double log_width = 0.0;
+  bool crossed = false;
+  std::size_t lower_bound_quotes = 0;
+  std::size_t upper_bound_quotes = 0;
 };
 
 struct AmericanMarkovSeedExpiryDiagnostics {
@@ -80,6 +113,7 @@ struct AmericanMarkovSeedExpiryDiagnostics {
   std::optional<AmericanMarkovSeedVarianceBand> total_variance;
   double total_variance_mad = 0.0;
   double median_relative_spread = 0.0;
+  std::optional<AmericanMarkovSeedSigmaInterval> sigma_interval; // SigmaInterval only.
 };
 
 struct AmericanMarkovSeedEndpointDiagnostics {
@@ -88,6 +122,7 @@ struct AmericanMarkovSeedEndpointDiagnostics {
   std::size_t supported_expiries = 0;
   std::optional<AmericanMarkovSeedVarianceBand> total_variance;
   double total_variance_mad = 0.0;
+  std::optional<AmericanMarkovSeedSigmaInterval> sigma_interval; // SigmaInterval only.
 };
 
 struct AmericanMarkovSeedParameter {
@@ -115,6 +150,9 @@ struct AmericanMarkovQuoteSeeds {
   std::size_t refused_quotes = 0; // Includes eligible but unselected quotes.
   std::size_t inversion_calls = 0;
   std::size_t reserved_root_iteration_slots = 0;
+  // SigmaInterval + Shared only: the interval over every used quote, whose
+  // geometric midpoint is the single seed. Absent when no quote bounded sigma.
+  std::optional<AmericanMarkovSeedSigmaInterval> sigma_interval;
   AmericanMarkovSeedConfig configuration;
 };
 
@@ -135,6 +173,19 @@ struct AmericanMarkovQuoteSeeds {
 // knots receive the same time-group seed; no smile recovery is claimed.
 // Medians use equal quote weights; fitter quote weights are validated but never
 // repurposed as statistical confidence. Reported support/MAD is descriptive only.
+//
+// SigmaInterval (opt-in): same convention, candidate cap, round-robin and
+// budgets, but every near-forward quote is eligible (bidless and wide too),
+// a bid at or below the intrinsic floor gives no lower bound, and each quote
+// needs only the inversions of its informative sides (1 or 2, never mid).
+// A quote is Used when it yields at least one bound. Shared seeds every knot
+// with the geometric midpoint of the interval over ALL used quotes (all
+// expiries, equal quote weight). PerVarianceInterval intersects within each
+// variance endpoint, then differences geometric-midpoint total variance
+// (no adjacent-support requirement: Ready iff the forward rate is positive,
+// finite and inside the sigma bounds). A parameter is refused only when its
+// interval is unbounded on both sides (MissingEndpoint) or the forward
+// difference fails. Interval width is descriptive, not confidence.
 //
 // IMPORTANT: this function never applies its output. The fitter interprets an
 // empty prior_sigmas as INITIAL. A caller applying these seeds while preserving

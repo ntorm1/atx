@@ -533,3 +533,73 @@ convexity/calendar repairs and stronger-prior retries (451 repaired slices).
 6. Family solver: families keep their own robust losses and gates; a family
    whose own regularisation is aligned with the channel objective (or a
    C8/eSSVI fitter accepting bound constraints directly) was not attempted.
+
+## 11. Merge with root `b9374ae7` (dividend-schedule lane)
+
+Approved fix `03583b45` merged with root `feat/vol-resume4-20261016` at
+`b9374ae7` (a merge, so the reviewed SHAs stay in history). Conflicts: the
+ledger (both sides kept, append-only), `tests/CMakeLists.txt` (every target
+and registration from both sides, including `atx-vol-dividend-schedule-tests`),
+`tools/quote_bench_main.cpp` (the run statistics carry both the graded fields
+and the dividend-schedule fields; graded admission runs first, the static loop
+keeps the `fit_with_schedule` routing; both report blocks are emitted) and
+`tools/quote_bench_policy.hpp` (profile keys `carry_mode`, `implied_forward`,
+`channel`, `dividends`; legacy expanded definitions unchanged).
+
+**Decision: graded admission does not combine with `dividends:
+inferred-schedule` (or `-exact`) for now; the policy load rejects it.**
+`fit_quote_surface` fits one snapshot under one `QuoteSliceConfig`, whereas a
+lattice-routed expiry needs its own DatedCash config, its dated schedule and
+the aggregate fallback when the lattice fit fails. Those expiries would not
+flow through the graded certification path unchanged, so the combination is
+refused until the surface fitter accepts per-expiry dividend routes. The
+policy-key rejection matrix is now: graded + `carry_mode` rejected (unchanged),
+graded + `dividends` other than `aggregate` rejected (new; CLI test), every
+other key combination as before.
+
+**Review minors taken.** MINOR-1: the B/C wording now reads "channel refit
+under the leave-one-out term prior when another expiry supplies a node, else
+the flat default shape" (header, report `graded_semantics`,
+`docs/quote_benchmark.md`). MINOR-2: when the volatility of a moved node's
+served price cannot be re-implied (convexity repair in the fit, or
+`repair_quote_slice_calendar`), the row becomes `InvalidVolatility` with NaN
+volatility (and NaN price in the calendar repair) instead of keeping the
+pre-repair curve volatility; test
+`MovedNodeWithoutAnIdentifiableVolatilityIsNeverServedWithTheCurveVol` lifts
+every node to a convex, in-bounds calendar floor above any American price
+below the solver's volatility cap.
+
+**Gates (vol-rel, `-Jobs 3`; only `atx-vol-quote-bench`,
+`atx-vol-quote-slice-tests` and `atx-vol-dividend-schedule-tests` built):**
+quote-slice gtest 84/84; dividend-schedule 18/18; anchored ctest
+`^atx-vol-quote-(slice|benchmark-tools|benchmark-native|benchmark-campaign)$|^atx-vol-dividend-schedule$`
+5/5; quote-bench CLI pytest 47/47 (`--noconftest`); PCH-off (vol-hygiene)
+single-TU checks of `quote_slice.cpp`, `quote_bench_main.cpp`,
+`quote_bench_common.cpp`, `quote_bench_common_policy.cpp` and
+`quote_surface_test.cpp` clean.
+
+**dev200 parity** (binary SHA-256 `a9060cfd...`, snapshot
+`slice-coverage-20261016-bin/merge-b9374ae7/`; outputs
+`20261014-dev200/20261016-slice-<run>-mergeb9374ae7.csv`):
+
+| run | CSV SHA-256 | expected | served |
+|---|---|---|---|
+| default (`auto`) | `c89d07393c90ad86860a6bcacd3d1a84ede85f4647d9cce136567e34763d5b7c` | `c89d0739...` | 10,694 |
+| graded-v1 | `1348f63dba576874653663be67b69389d8360efd2339bf48215587be0b1fe377` | `d817c225...` | 50,348 (was 50,912) |
+| knotspline-v1 | `4169962d5e5dc2a41227e8617531c743c8f7c705592b646abf06fc269982539c` | `b3fd9764...` | 49,341 (was 49,860) |
+| dividend opt-in (`policy-divsched-v1.json`) | `abc75955cab8bef821c032ee2a45aa08979b0e92283daad66d3ca2d62bc3bcee` | `abc75955...` | 12,016 |
+
+Default and the dividend opt-in run are byte-identical to root (their native
+reports differ from root's only in timing fields; the expanded policy
+definitions are identical). The two graded runs change only by MINOR-2: every
+differing row (graded-v1 564 rows in 93 chains: 523 B, 41 C; knotspline-v1 519
+rows in 90 chains: 475 B, 44 C) goes from `ok` to `invalid_volatility` with
+NaN price and vol; all other 71,784 / 71,829 rows are identical. Every such row
+sits in a slice a repair moved, and all are in-the-money legs whose moved price
+lies at or just above intrinsic (median 0.012 above it), where the American
+IV solver at the contract's carry identifies no volatility (not diagnosed per
+row; the zero-volatility value under carry is the likely floor). The previous
+binary served them with the curve's pre-repair volatility.
+None of them is served by the static baseline, so "0 baseline rows lost"
+still holds; the section 7 tables (computed before this fix) overstate
+graded-v1 and knotspline-v1 served rows by these counts.
