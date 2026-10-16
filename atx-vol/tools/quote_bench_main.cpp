@@ -40,7 +40,7 @@ struct Arguments {
   std::filesystem::path report;
   std::string curve;
   std::string policy{"auto"};
-  std::string dividends{"aggregate-pv"};
+  std::string dividends{"funding-pv"};
   std::size_t max_rows{2000000U};
   QuoteSliceQualityConfig quality;
   std::size_t min_quotes{6};
@@ -87,10 +87,11 @@ Arguments arguments(int argc, char **argv) {
     if (key == "--help") {
       std::cout << "atx-vol-quote-bench --input quotes.csv --output predictions.csv "
                    "[--report timing.json] [--policy auto|policy.json | --curve CURVE] "
-                   "[--dividends aggregate-pv|none] [--max-rows 2000000] "
+                   "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
                    "[--max-weight 1000]\n"
-                   "Default: --policy auto. Quality/min-quotes flags require explicit --curve.\n";
+                   "Defaults: --policy auto --dividends funding-pv. "
+                   "Quality/min-quotes flags require explicit --curve.\n";
       args.help_requested = true;
       return args;
     }
@@ -124,8 +125,9 @@ Arguments arguments(int argc, char **argv) {
   if (args.input.empty() || args.output.empty() || args.max_rows == 0U) {
     throw std::runtime_error("--input, --output and a positive --max-rows are required");
   }
-  if (args.dividends != "aggregate-pv" && args.dividends != "none") {
-    throw std::runtime_error("--dividends must be aggregate-pv or none");
+  if (args.dividends != "funding-pv" && args.dividends != "escrowed-pv" &&
+      args.dividends != "none") {
+    throw std::runtime_error("--dividends must be funding-pv, escrowed-pv or none");
   }
   if (args.min_quotes < 2 || !std::isfinite(args.quality.max_weight) ||
       args.quality.max_weight <= 0.0 ||
@@ -385,9 +387,10 @@ bool consistent_chain(const std::vector<InputRow> &rows,
 
 std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &rows,
                             RunStatistics &stats) {
-  const auto dividends = args.dividends == "aggregate-pv"
-      ? QuoteSliceDividendModel::AggregatePresentValue
-      : QuoteSliceDividendModel::ContinuousYield;
+  const auto dividends = args.dividends == "funding-pv"
+      ? QuoteSliceDividendModel::AggregateFundingPresentValue
+      : args.dividends == "escrowed-pv" ? QuoteSliceDividendModel::AggregatePresentValue
+                                        : QuoteSliceDividendModel::ContinuousYield;
   std::optional<quote_bench_policy::LoadedPolicy> policy;
   std::shared_ptr<const QuoteFitProfile> fixed;
   if (args.curve.empty()) {
@@ -436,8 +439,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
           std::isfinite(market.calendar_years) && market.calendar_years > 0.0 &&
           std::isfinite(market.variance_years) && market.variance_years > 0.0 &&
           std::isfinite(market.rate) && std::isfinite(market.continuous_yield) &&
-          std::isfinite(market.dividend_pv) && market.dividend_pv >= 0.0 &&
-          market.dividend_pv < market.spot)) {
+          std::isfinite(market.dividend_pv) && market.dividend_pv >= 0.0)) {
       for (const auto i : indices) predictions[i].status = "invalid_market";
       continue;
     }
@@ -696,6 +698,11 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
       {"policy_definition_format", "expanded-runtime-configuration-v1"},
       {"policy_definition", stats.policy_definition}, {"policy_decisions", stats.policy_decisions},
       {"per_profile_counts", stats.per_profile_counts}, {"dividend_model", args.dividends},
+      {"dividend_convention_assumption", args.dividends == "funding-pv"
+          ? "funding-discounted cash PV; continuous-yield approximation without ex-dates"
+          : args.dividends == "escrowed-pv"
+              ? "escrowed cash PV; continuous-yield approximation without ex-dates"
+              : "continuous yield only; nonzero cash PV is refused"},
       {"chain_market_aggregation", "median"}, {"contract_carry", "per-strike supplied yield"},
       {"serving_representation", "bounded convex American price interpolation"},
       {"maximum_spot_range_bps", stats.max_spot_range_bps},

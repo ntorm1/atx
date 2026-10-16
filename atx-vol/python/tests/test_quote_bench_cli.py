@@ -89,6 +89,72 @@ def test_native_rejects_label_columns(binary, tmp_path):
     assert not output.exists()
 
 
+@pytest.mark.parametrize(("mode", "api_name"), [
+    ("funding-pv", "aggregate_funding_pv_approximation"),
+    ("escrowed-pv", "aggregate_pv_approximation"),
+    ("none", "continuous_yield"),
+])
+def test_native_records_explicit_dividend_convention(binary, tmp_path, mode, api_name):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    result = invoke(binary, source, output, "--curve", "essvi", "--dividends", mode)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["dividend_model"] == mode
+    assert report["policy_definition"]["profiles"][0]["dividend_model"] == api_name
+    if mode != "none":
+        assert "approximation without ex-dates" in report["dividend_convention_assumption"]
+    assert report["served_rows"] == 26
+
+
+def test_native_refuses_ambiguous_aggregate_pv_mode(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    result = invoke(binary, source, output, "--dividends", "aggregate-pv")
+    assert result.returncode != 0
+    assert "funding-pv, escrowed-pv or none" in result.stderr
+    assert not output.exists()
+
+
+def test_native_funding_pv_accepts_positive_prepaid_above_spot(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    with source.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    prepaid = 100.0 * math.exp(2.0 * 0.5) - 150.0
+    sigma_t = 0.3 * math.sqrt(0.5)
+    expected = []
+    for index, row in enumerate(rows):
+        strike = prepaid * (0.75 + index * 0.02)
+        d1 = math.log(prepaid / strike) / sigma_t + 0.5 * sigma_t
+        d2 = d1 - sigma_t
+        # Converted yield is negative, r=0: these American calls have no
+        # early-exercise premium. Direct formula supplies an independent check.
+        price = prepaid * 0.5 * math.erfc(-d1 / math.sqrt(2.0)) - (
+            strike * 0.5 * math.erfc(-d2 / math.sqrt(2.0)))
+        expected.append(price)
+        row.update(strike=str(strike), sdiv="-2", ddiv_pv="150",
+                   bid=str(price - 0.001), ask=str(price + 0.001))
+    with source.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    result = invoke(binary, source, output, "--curve", "essvi")
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        predictions = list(csv.DictReader(stream))
+    assert all(row["status"] == "ok" for row in predictions)
+    assert max(abs(float(row["predicted_vol"]) - 0.3) for row in predictions) < 0.001
+    assert max(abs(float(row["predicted_price"]) - price)
+               for row, price in zip(predictions, expected)) < 0.03
+    assert json.loads(result.stdout)["dividend_model"] == "funding-pv"
+    for mode in ("escrowed-pv", "none"):
+        result = invoke(binary, source, output, "--curve", "essvi", "--dividends", mode)
+        assert result.returncode == 0, result.stderr
+        with output.open(newline="") as stream:
+            assert all(row["status"] == "invalid_market" for row in csv.DictReader(stream))
+
+
 def test_native_rejects_duplicate_ids_and_oversized_cohort(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     make_quotes(source)
@@ -290,7 +356,7 @@ def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
     assert definition["quality"]["max_weight"] == 321
     assert definition["parametric"]["huber_k"] == 1.25
     assert definition["parametric"]["validate_no_arb"] is True
-    assert definition["dividend_model"] == "aggregate_pv_approximation"
+    assert definition["dividend_model"] == "aggregate_funding_pv_approximation"
     assert definition["spline"]["grid"] == [-0.7, -0.2, 0.1, 0.8]
     assert report["policy_definition_format"] == "expanded-runtime-configuration-v1"
     assert all(row["configured_curve"] == "svi" for row in rows)
@@ -405,5 +471,5 @@ def test_native_help_after_input_does_not_start_run(binary, tmp_path):
     source, output = tmp_path / "missing.csv", tmp_path / "predictions.csv"
     result = invoke(binary, source, output, "--help")
     assert result.returncode == 0, result.stderr
-    assert "Default: --policy auto" in result.stdout
+    assert "Defaults: --policy auto --dividends funding-pv" in result.stdout
     assert not output.exists()
