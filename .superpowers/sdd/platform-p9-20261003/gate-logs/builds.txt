@@ -1,0 +1,5 @@
+2026-10-15T20:07:56Z p9-3f start preset equity-rel -Canary free 5544 commit 5077 head 5f48a25d
+2026-10-15T20:16:39Z p9-3f end exit 0 warning-lines 0 wall 526s
+2026-10-15T20:17:03Z p9-3g waiting: pool build procs 2 free 5907 commit 5017 (waited 3s)
+2026-10-15T20:18:07Z p9-3g start preset equity-dev -Canary free 5954 commit 5020 head 5f48a25d
+2026-10-15T20:20:03Z p9-3g end exit 0 warning-lines 0 wall 183s

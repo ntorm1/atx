@@ -74,10 +74,14 @@ Dispatch text = `r11-dispatch.md` "ROOT GATE" + "ROOT GATE: rulings from the who
 `root-gate-brief.md` (steps 1-7 and 9; step 0 DONE at GATE-0, step 8 DONE: WAVE-REV-EARLY + SQL4-ADD), plus the
 facts below, filled by the PM at dispatch on M6B-FINISH's hand-back:
 
-- Gate head: `@@GATE-HEAD@@` (root's code head after M6B-FINISH). Docs head at dispatch: `@@DOCS-HEAD@@`.
-- SQL4 in the head: `@@SQL4-VERDICT@@` (M6B-FINISH's verdict; SQL4-CUTOFF-2).
-- Next free build tag: `@@TAG@@`; tags continue single-use from there (Debug `equity-dev`, Release `equity-rel`
-  `-Canary`).
+- Gate head: `06dc9e5a` (root's code head after M6B-FINISH: no slip). Docs head at dispatch: `0a481348` (docs
+  agents commit beside root by pathspec, PAR-1).
+- SQL4 in the head: checks green at M6B-FINISH (SQL4-CUTOFF-2); a red in SQL4's 24 files attributes to `06dc9e5a`.
+- GATE-IDX: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` (left by M6b case 1b; deletion refused to
+  root, PERM-1) is the owner's to delete; no run of record names that cache while it exists; steps 1-2 run now;
+  the check is immediately before step 3's first run naming the cache; else BLOCKED-OWNER after the cache-free steps.
+- Next free build tag: `p9-3f`; tags continue single-use from there (Debug `equity-dev`, Release `equity-rel`
+  `-Canary`). GATE-PAR: low-RAM suites may run concurrently; builds and bounded runs alone.
 - Step 0 re-verification only (no new slip expected): head, clean tree (only the five PNGs), ledger 133 / `27e40f9f`,
   `build-equity/research-store/` absent, `ucrtbase.dll` version + SHA-256, disk and RAM.
 - Step 1 exe set = `root-gate-brief.md` step 1 + GATE-EXES (`atx-research-composition`, `atx-research-admission`);

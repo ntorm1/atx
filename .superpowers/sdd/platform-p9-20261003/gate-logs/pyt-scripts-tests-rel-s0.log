@@ -1,0 +1,89 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 706 items
+
+scripts\tests\test_cycle_e2e.py ..............F                          [  2%]
+scripts\tests\test_cycle_resume.py .....                                 [  2%]
+scripts\tests\test_cycle_scoring.py .....                                [  3%]
+scripts\tests\test_info_clock_rule.py .....                              [  4%]
+scripts\tests\test_no_python_mirror.py .....
+G-P5: 0 mirrored rule function(s) in 0 row(s) left for P9 lanes
+..                           [  5%]
+scripts\tests\test_no_versioned_scripts.py ....                          [  5%]
+scripts\tests\test_p9_al_sig_registrations.py ...........                [  7%]
+scripts\tests\test_research_cycle.py ..s.......................s........ [ 12%]
+...s.........................................................            [ 20%]
+scripts\tests\test_research_cycle_label_role.py ..                       [ 21%]
+scripts\tests\test_research_cycle_od3.py ............................... [ 25%]
+...................                                                      [ 28%]
+scripts\tests\test_research_cycle_roles.py ..........................    [ 32%]
+scripts\tests\test_research_ledger.py ......                             [ 32%]
+scripts\tests\test_research_mine.py .................................... [ 37%]
+......                                                                   [ 38%]
+scripts\tests\test_research_spec.py .................................... [ 43%]
+...................................................                      [ 51%]
+scripts\tests\test_research_store_hook.py ..............                 [ 53%]
+scripts\tests\test_research_wave.py ...................                  [ 55%]
+scripts\tests\test_wave_driver.py ............................           [ 59%]
+scripts\tests\test_wave_eval_verb.py .......                             [ 60%]
+scripts\tests\test_wave_gross_match.py ............                      [ 62%]
+scripts\tests\test_wave_hardening.py ........                            [ 63%]
+scripts\tests\test_wave_kinds.py ....................................... [ 69%]
+........................................................................ [ 79%]
+........................................................................ [ 89%]
+.........                                                                [ 90%]
+scripts\tests\test_wave_queue.py ......                                  [ 91%]
+scripts\tests\test_wave_review.py .....................                  [ 94%]
+scripts\tests\test_wave_review_minor.py .........                        [ 95%]
+scripts\tests\test_wave_scoreboard.py ...                                [ 96%]
+scripts\tests\test_wave_sign_verb.py .....................               [ 99%]
+scripts\tests\test_wave_speed.py .....                                   [100%]
+
+================================== FAILURES ===================================
+___ test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun ___
+
+    @pytest.mark.skipif(not BIN and not REQUIRED, reason="set ATX_EQUITY_BIN to the directory of the equity executables")
+    def test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun():
+        if not BIN:
+            pytest.fail("ATX_CANARY_REQUIRED=1 but ATX_EQUITY_BIN is not set")
+        if BUILD_TYPE not in TW.BUILD_TYPES:
+            pytest.fail(f"ATX_EQUITY_BUILD_TYPE {BUILD_TYPE!r} is not one of {TW.BUILD_TYPES}")
+        if not accepts_no_git():
+            if REQUIRED:
+                pytest.fail("research_cycle.py does not accept --no-git (contract K3)")
+            pytest.skip("research_cycle.py does not accept --no-git yet (contract K3, lane A)")
+        # A short root directly under the system temp dir, not pytest's tmp_path: the candidate cache nests
+        # <role sha>/fp_*/ic1_*/<id>.<key>.json (about 150 characters), and under tmp_path the IC runner's cache
+        # publish crosses Windows MAX_PATH (260) and fails with "The system cannot find the path specified".
+        root = fresh_root()
+        try:
+>           _live_cycle(root)
+
+scripts\tests\test_cycle_e2e.py:454: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+root = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/4fa355c3-58ab-4cc6-8fed-68364330ac34/scratchpad/gate/bt-scripts-s0-tmp/tiny-world-v3itbczt')
+
+    def _live_cycle(root: Path) -> None:
+        goldens = load_goldens()
+        assert goldens["fields_manifest_sha256"] == template_fields_pin(), "goldens belong to another world"
+        TW.build(root, bin_dir=Path(BIN), build_type=BUILD_TYPE)
+        spec = json.loads((root / TW.SPEC).read_bytes())
+        done, seconds = run_cycle(root)
+>       assert done.returncode == 0, done.stdout[-4000:] + done.stderr[-4000:]
+E       AssertionError: # research_cycle tiny: spec C:\Users\natha\AppData\Local\Temp\claude\c--atx\4fa355c3-58ab-4cc6-8fed-68364330ac34\scratchpad\gate\bt-scripts-s0-tmp\tiny-world-v3itbczt\tiny.json sha256 7eafcb1b13ec8151cca98c92f8d0beb6e17269656184df2d7a7dd4281038a480; root C:\Users\natha\AppData\Local\Temp\claude\c--atx\4fa355c3-58ab-4cc6-8fed-68364330ac34\scratchpad\gate\bt-scripts-s0-tmp\tiny-world-v3itbczt; suffix none; attempts auto; runner overrides none; --no-git
+E         # pin library: tiny_world_v1.json e62f80cace992371743da94ecc6fd1b4cb3495113a6edcc04e3dfa8ddd77aae9 [locked, verified]
+E         # pin recipe: tiny_world_v1.recipe.json 1c9294dc025e02b1c7a3f256a28893ea0882d976183dae82a731c29d4830ba3d [locked, verified]
+E         # pin role: role/manifest.json 2b34283c0c488effdc6f4e2b2ba3da875effd6449b25269270218f7d18bf6c31 [locked, verified]
+E         research_cycle: tiny_world_v1.json: IC cache path too long (ruling W1-I1): candidate id(s) ['copy_b', 'noise_c', 'planted_a', 'planted_b'] would write IC cache files of up to 327 characters (> 250), e.g. C:\Users\natha\AppData\Local\Temp\claude\c--atx\4fa355c3-58ab-4cc6-8fed-68364330ac34\scratchpad\gate\bt-scripts-s0-tmp\tiny-world-v3itbczt\tiny-cache/dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/0000000000000000000000000000000000000000000000000000000000000000/fp_0000000000000000/ic1_0000000000000000/planted_a.0000000000000000.json; under this cache dir an id may have at most 0 characters: shorten the id before it is registered, or run from a shorter root / ic.cache (the Release layout is the bound for every build)
+E         
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['C:\\Program Files\\Python312\\python.exe', 'C:\\atx-wt\\pool-2\\scripts\\research_cycle.py', '...id before it is registered, or run from a shorter root / ic.cache (the Release layout is the bound for every build)\n").returncode
+
+scripts\tests\test_cycle_e2e.py:466: AssertionError
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_cycle_e2e.py::test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun
+=========== 1 failed, 702 passed, 3 skipped in 36483.68s (10:08:03) ===========

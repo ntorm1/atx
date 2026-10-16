@@ -1,0 +1,17 @@
+GATE root agent 1, step 0 re-verification (GATE-DISPATCH-12), 2026-10-15T20:07:38Z
+HEAD (docs head) 5f48a25d3730789914941fbc7aa42f4458cea6b1  code head = 06dc9e5a: git diff --name-only 06dc9e5a..HEAD outside .superpowers/: 0 files
+branch feat/platform-p9-20261003
+git status --porcelain:
+ M .superpowers/sdd/platform-p9-20261003/p9-prereg.md
+ M .superpowers/sdd/platform-p9-20261003/progress.md
+ M .superpowers/sdd/platform-p9-20261003/r12-dispatch.md
+?? docs/plans/2026-10-02-x5-equity-curve.png
+?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png
+?? docs/plans/2026-10-03-wq-explore-equity-curve.png
+?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png
+?? docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png
+merges in git log --format=%s -40 (Merge lines):
+12
+trial ledger: 133 lines sha256 27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554
+build-equity/research-store: ls: cannot access 'build-equity/research-store': No such file or directory
+GATE-IDX file build-equity/mega-candidate-cache-v8-lo3/index.sqlite: 73728 build-equity/mega-candidate-cache-v8-lo3/index.sqlite  sha256 3a177dfddbd86dcc43caf0fca92339faad5e051bf4012b90effdb95cff6bc6f0

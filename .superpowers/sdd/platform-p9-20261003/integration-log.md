@@ -795,3 +795,26 @@ absent throughout. Detail: `root-wave3-merge-report.md` "SQL4"; state: `handoff-
 
 **SQL4 verdict (SQL4-CUTOFF-2): checks green: SQL4 in the gate head.** Next free build tag **p9-3f**. Known-red set:
 **EMPTY** (targeted checks only; the whole suites are the gate's). Not run in P9 (RUN-1 bound / host): none.
+
+## P9 gate (GATE-1, the single wave-2 + wave-3 gate)
+
+### GATE (RESUME 12), chain agent 1, 2026-10-15 (stopped at OWNER STOP 12)
+
+Gate head (code) **`06dc9e5a`**; docs head at dispatch `0a481348` (PAR-1: IDX `5f48a25d` beside root). Report:
+`root-gate-report.md`; state: `handoff-root-gate-1.md`; logs `gate-logs/`. Trial ledger 133 lines `27e40f9f`
+throughout; `build-equity/research-store/` absent; GATE-IDX file `mega-candidate-cache-v8-lo3/index.sqlite` present
+at start and at the stop (nothing naming that cache ran). Known-red set **EMPTY**.
+
+| step | item | result | evidence |
+|---|---|---|---|
+| 0 | re-verification | holds (head, tree, ledger, research-store absent, `ucrtbase.dll` 10.0.26100.7623 `2C08E77F...65EF` unchanged) | `gate-logs/start-state.txt` |
+| 1 | Release **p9-3f** (equity-rel, `-Canary`, 27 targets) | exit 0, 0 warnings, 244 TUs / 34 links, canary 15 passed | `gate-logs/mega-p9-3f-*` |
+| 1 | Debug **p9-3g** (equity-dev, `-Canary`, 27 targets) | exit 0, 0 warnings, 68 TUs / 19 links, canary 15 passed | `gate-logs/mega-p9-3g-*` |
+| 1 | SPDLOG-RELINK re-hash | 27 / 27 + 27 / 27 `disk = receipt` | `gate-logs/exe-sha-{rel,dbg}.txt` |
+| 2 | Release gtests, 16 whole targets | 4,098 ran, 0 failed; named skips only (OD5-2's, `AlphaVm_ZeroAlloc.*` Release, two risk, five impl-tests real-data cases) | `gate-logs/gt-exits.txt` |
+| 2 | `scripts/tests` seed 0, Release exes | exit 1: 1 failed, 702 passed, 3 skipped; the one red = GATE-TMP's cause (W1-I1 refusal under the tool's long TMP root), re-run pending | `gate-logs/pyt-exits.txt` |
+| 2 | GATE-COVDIFF S-7 hand check, three container stores | holds (every manifest file + container = bytes on disk; manifests = pins) | `gate-logs/covdiff-s7-files.txt` |
+| 2 | Debug gtests, ctest labels, seed 1, stage chain, `atx-engine/tools`, `atx-impl/tools`, `atx-impl/strategies`, fields pytests, mirror guard alone, three `cov-diff` runs | **not run** (OWNER STOP 12) | `handoff-root-gate-1.md` |
+| 3-7 | | not reached | |
+
+G-P ticks: none changed by this agent (the gate's G-P rows are step 7). Next free build tag **p9-3h**.

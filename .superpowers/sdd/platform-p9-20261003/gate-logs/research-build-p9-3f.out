@@ -1,0 +1,207 @@
+{
+    "Source":  "5f48a25d3730789914941fbc7aa42f4458cea6b1",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  8,
+    "ConfiguredProvenance":  "5f48a25d3730789914941fbc7aa42f4458cea6b1-dirty",
+    "Jobs":  4,
+    "FreeMiB":  5521,
+    "CommitMiB":  5067,
+    "Targets":  [
+                    "atx-equity-strategy-targets",
+                    "atx-equity-strategy-ic",
+                    "atx-equity-strategy",
+                    "atx-equity-strategy-risk",
+                    "atx-equity-strategy-mine",
+                    "atx-research-eval",
+                    "atx-research-composition",
+                    "atx-research-admission",
+                    "atx-research-store",
+                    "atx-research-fields",
+                    "atx-impl",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-impl-strategy-target-tests",
+                    "atx-impl-tests",
+                    "atx-impl-strategy-tests",
+                    "atx-impl-strategy-mine-tests",
+                    "atx-engine-alpha-tests",
+                    "atx-engine-factory-tests",
+                    "atx-engine-book-tests",
+                    "atx-engine-risk-tests",
+                    "atx-engine-research-fields-tests",
+                    "atx-engine-research-admission-tests",
+                    "atx-engine-research-store-tests",
+                    "atx-engine-research-catalog-tests",
+                    "atx-engine-research-composition-tests",
+                    "atx-engine-research-ledger-tests",
+                    "atx-engine-research-eval-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  512.669927,
+    "CompiledTUs":  244,
+    "Links":  34,
+    "Tag":  "p9-3f",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity-rel",
+    "Executables":  {
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+                                                        },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705"
+                                                   },
+                        "atx-equity-strategy":  {
+                                                    "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy.exe",
+                                                    "Sha256":  "f883f81f0fbb928cb8fe2e8b1931841e0eef058e7b6398810e10de68cb0495a4"
+                                                },
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b"
+                                                     },
+                        "atx-equity-strategy-mine":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-mine.exe",
+                                                         "Sha256":  "daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba"
+                                                     },
+                        "atx-research-eval":  {
+                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-eval.exe",
+                                                  "Sha256":  "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c"
+                                              },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "04db0d67c1563184edd6fe8ff66796877c8db20239d5cfb423fa78e047df16f2"
+                                                     },
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "f53d9277e4ad2e3915343ccca032df3f0098a1a1cd7b4d832b640f5f7437063f"
+                                                   },
+                        "atx-research-store":  {
+                                                   "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-store.exe",
+                                                   "Sha256":  "0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818"
+                                               },
+                        "atx-research-fields":  {
+                                                    "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-fields.exe",
+                                                    "Sha256":  "883c5b74a95731eb310cfd30cb1ab39ee102e077ab2d7318bd5db941f486584a"
+                                                },
+                        "atx-impl":  {
+                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl.exe",
+                                         "Sha256":  "71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9"
+                                     },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "9e979065f2b56f135c819baab9da80c89e5745b6ba249c284c428d3497d0fb5b"
+                                                       },
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "5e781705c1fab53c42cb49d0777753a1f792ff022847923f4dce901411cd6db5"
+                                                           },
+                        "atx-impl-tests":  {
+                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-tests.exe",
+                                               "Sha256":  "9f4cf8076d17b93891a70fb5944e3f43975230a84bc0a82a1e8fb46d90e0b545"
+                                           },
+                        "atx-impl-strategy-tests":  {
+                                                        "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-tests.exe",
+                                                        "Sha256":  "0ae6ab3f4a09af6a33d4dec3f6eba8fe8324e7c3ea85aaae6f745cb5e03712e1"
+                                                    },
+                        "atx-impl-strategy-mine-tests":  {
+                                                             "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-mine-tests.exe",
+                                                             "Sha256":  "2ae349c689f9423f2847ffbb63a3ad9598b4c26aab0ca63136dc16a83019fa68"
+                                                         },
+                        "atx-engine-alpha-tests":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-alpha-tests.exe",
+                                                       "Sha256":  "534efe4928e84ae3f9fcc9f0ed79b7e823b51689987edd84c513b6ba7917bf56"
+                                                   },
+                        "atx-engine-factory-tests":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-factory-tests.exe",
+                                                         "Sha256":  "6bf91318724f77c0413dfaada365708d4360fbc754320f05a9e074655575483c"
+                                                     },
+                        "atx-engine-book-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-book-tests.exe",
+                                                      "Sha256":  "88f195dba54faa428eed45b4d53cf64d7e8f8a28702c7f3b3d68dd80ab4af0ac"
+                                                  },
+                        "atx-engine-risk-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-risk-tests.exe",
+                                                      "Sha256":  "b654425d22fc671b3b24a7dbbb35ccad4288b655afb8d1925853362ca624e99d"
+                                                  },
+                        "atx-engine-research-fields-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-fields-tests.exe",
+                                                                 "Sha256":  "165ebeea3d7f01fb330856240c12d125b18c0a491bac66183ab9a229c49b3651"
+                                                             },
+                        "atx-engine-research-admission-tests":  {
+                                                                    "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-admission-tests.exe",
+                                                                    "Sha256":  "39c4a81bda54df9712e2e818684cb78293486e7d664dec8b308883c505da1581"
+                                                                },
+                        "atx-engine-research-store-tests":  {
+                                                                "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-store-tests.exe",
+                                                                "Sha256":  "bf9c312941fc5d8668bb7024c476f915138679fb26f3f3fa21fd88e94d953d26"
+                                                            },
+                        "atx-engine-research-catalog-tests":  {
+                                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-catalog-tests.exe",
+                                                                  "Sha256":  "c996b733b5b92f58bee1760a0c7505ec6349c3847bb392d5014e762b58dfefc5"
+                                                              },
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "17cee392663a5df0432e3293bec06bb5126f6931672b0d827cdaa0e336a731f6"
+                                                                  },
+                        "atx-engine-research-ledger-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-ledger-tests.exe",
+                                                                 "Sha256":  "bfe2afc39770a316810ea5f33650e6d15f66ad013374b123ea16e42f8865bf94"
+                                                             },
+                        "atx-engine-research-eval-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-eval-tests.exe",
+                                                               "Sha256":  "2b9910b3665798c6d93cca37998580db5942cc7284b88cfef4b9830b946a4a02"
+                                                           }
+                    },
+    "Canary":  {
+                   "Mode":  "check",
+                   "BuildType":  "Release",
+                   "Bin":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin",
+                   "ExitCode":  0,
+                   "Log":  "C:\\atx-wt\\pool-2\\build-equity\\mega-p9-3f-canary.log",
+                   "WallSeconds":  7.7577273
+               }
+}
+    + FullyQualifiedErrorId : NativeCommandError
+[1/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\clock.cpp.obj
+[2/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\asof_series.cpp.obj
+[3/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\field_spec.cpp.obj
+[4/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\field_stats.cpp.obj
+[5/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\field_writer.cpp.obj
+[6/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\field_registry.cpp.obj
+[7/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\file_io.cpp.obj
+[8/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\finra_inputs.cpp.obj
+[9/281] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\mv_target.cpp.obj
+[10/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\finra_asof_field.cpp.obj
+[11/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\manifest.cpp.obj
+[12/281] Linking CXX static library lib\atx-engine.lib
+[13/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\producer.cpp.obj
+[14/281] Linking CXX executable bin\atx-shm-worker.exe
+[15/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\registry.cpp.obj
+[16/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\role_axes.cpp.obj
+[17/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\role_rows.cpp.obj
+[18/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\research_fields_cli.cpp.obj
+[19/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\reuse.cpp.obj
+[20/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\trailing_mean.cpp.obj
+[21/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\factor_break.cpp.obj
+[22/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\volume_mean_field.cpp.obj
+[23/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\generated\research_fields_build_identity.cpp.obj
+[24/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\nyse_calendar.cpp.obj
+[25/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\vendor_panel.cpp.obj
+[26/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\parquet_columns.cpp.obj
+[27/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\vendor_fields.cpp.obj
+[28/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\stage.cpp.obj
+[29/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\thirteenf_holdings.cpp.obj
+[30/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\russell_proxy.cpp.obj
+[31/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\thirteenf_filings.cpp.obj
+[32/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\gia_13f_skill.cpp.obj
+[33/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\gia_13f_field.cpp.obj
+[34/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\session_clock.cpp.obj
+[35/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\run_payload.cpp.obj
+[36/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\russell_recon_field.cpp.obj
+[37/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\short_side.cpp.obj
+[38/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\holdings_specs.cpp.obj
+[39/281] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\holdings_ftd.cpp.obj
+..............
+tiny_world canary (Release): planted members at h 21, band 2.0 SE (PM ruling T1-SE): {"planted_a": {"band_se": 2.0, "mean": 0.028643040293040295, "planted": 0.04406974726037816, "planted_t": 2.3393679827753457, "standard_error": 0.01883831341835128, "t": 1.5204673399869106, "within_band": true, "z": -0.8189006427884352}, "planted_b": {"band_se": 2.0, "mean": 0.010685531135531133, "planted": 0.04491101333227986, "planted_t": 1.4978441966553238, "standard_error": 0.029983768293501994, "t": 0.35637719151688063, "within_band": true, "z": -1.1414670051384432}}
+.
+15 passed in 6.49s
