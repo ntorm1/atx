@@ -40,3 +40,25 @@ quote midpoint (0.359 all-eligible) is still a low level (bias -0.245) on the
 sparse profile and in snapshots whose ATM knot is below the market. R104 is the
 development base for the policy experiments; nothing is promoted. Receipts and
 hashes: `C:/atx-cache/quote-benchmark/common-resolvent-controlled-20261016-v1/RESULTS-20261016.md`.
+
+## Lane result: time-knots-lane (complete, under review)
+
+`f4416a74` on `feat/vol-markov-time-knots2-20261016`: variance-time-knot
+shape, `interval_groups()` consumers migrated, legacy eight-case parity
+232/232 values, anchored suites fit 28, policy 16, seed 15, market 20, pricing
+60, native CLI 122, audit 18, campaign 22, PCH-off 15 objects. Measured
+midpoint-freezing bias follows x/sinh(x): -4.9% variance inside a steep coarse
+cell, +8.3% straddling a knot. Independent exact-SHA review dispatched.
+
+## Lane result: implied-forward-lane (complete, under review)
+
+`a5d2018a` on `feat/vol-implied-forward-20261016`: reusable per-expiry implied
+forward / sdiv estimator (Tier-B headers, allocation-free, typed refusals) and
+an opt-in `carry_mode` for the quote-slice path; default path byte-identical.
+Benchmark verdict: the supplied carry in the raw schema already sits within
+0.07-5.1 bp of the label-implied forward by tenor, while any quote-only forward
+misses by 8-39 bp, so the mode is WORSE on dev200 (0.176 -> 0.259 on 7,852
+shared rows) and must stay off for this benchmark. Hypothesis 7 is refuted at
+the forward level; the residual >365d call/put asymmetry is strike-varying
+(ASML 93%), i.e. exercise/dividend modelling. The module is kept for live use
+where no vendor carry exists.
