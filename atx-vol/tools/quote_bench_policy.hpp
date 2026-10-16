@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -73,11 +74,93 @@ inline const char *loss_name(CalibLossKind value) {
   return value == CalibLossKind::Mid ? "mid" : "interval";
 }
 
+// Opt-in per-expiry carry resolution (quote_slice_carry.hpp). Absent keys keep
+// the historical supplied carry.
+inline void parse_carry(const Json &entry, QuoteSliceCarryConfig &carry) {
+  if (entry.contains("carry_mode")) {
+    const auto mode = text(entry.at("carry_mode"));
+    if (mode == "supplied") {
+      carry.mode = QuoteSliceCarryMode::Supplied;
+    } else if (mode == "implied-forward") {
+      carry.mode = QuoteSliceCarryMode::ImpliedForward;
+      carry.implied.method = ImpliedForwardMethod::AmericanAlignment;
+    } else if (mode == "implied-forward-parity") {
+      carry.mode = QuoteSliceCarryMode::ImpliedForward;
+      carry.implied.method = ImpliedForwardMethod::Parity;
+    } else {
+      throw std::runtime_error(
+          "Policy carry_mode must be supplied, implied-forward or implied-forward-parity");
+    }
+  }
+  if (!entry.contains("implied_forward")) return;
+  const auto &j = entry.at("implied_forward");
+  keys(j, {"min_pairs", "max_pairs", "band_sd", "spread_floor", "max_weight_ratio", "huber_k",
+           "max_dispersion_sd", "max_leave_one_out_sd", "max_exercise_shift_sd",
+           "max_pair_exercise_shift_sd", "min_time_value", "min_time_value_fraction",
+           "al_preset", "fixed_point_tolerance", "max_fixed_point_iterations"});
+  auto &f = carry.implied;
+  numeric(j, "min_pairs", f.min_pairs, 1, static_cast<double>(kImpliedForwardMaxSelected));
+  numeric(j, "max_pairs", f.max_pairs, 1, static_cast<double>(kImpliedForwardMaxSelected));
+  numeric(j, "band_sd", f.band_sd, 1.0e-6, 100);
+  numeric(j, "spread_floor", f.spread_floor, 1.0e-12, 1.0e6);
+  numeric(j, "max_weight_ratio", f.max_weight_ratio, 1, 1.0e6);
+  numeric(j, "huber_k", f.huber_k, 1.0e-6, 1.0e6);
+  numeric(j, "max_dispersion_sd", f.max_dispersion_sd, 1.0e-12, 100);
+  numeric(j, "max_leave_one_out_sd", f.max_leave_one_out_sd, 1.0e-12, 100);
+  numeric(j, "max_exercise_shift_sd", f.max_exercise_shift_sd, 1.0e-12, 100);
+  numeric(j, "max_pair_exercise_shift_sd", f.max_pair_exercise_shift_sd, 1.0e-12, 100);
+  numeric(j, "min_time_value", f.min_time_value, 0, 1.0e9);
+  numeric(j, "min_time_value_fraction", f.min_time_value_fraction, 0, 100);
+  numeric(j, "fixed_point_tolerance", f.fixed_point_tolerance, 1.0e-15, 1.0e-2);
+  numeric(j, "max_fixed_point_iterations", f.max_fixed_point_iterations, 1, 255);
+  if (j.contains("al_preset")) {
+    const auto preset = text(j.at("al_preset"));
+    if (preset == "fast") f.al_opts = al_fast_opts();
+    else if (preset == "bulk") f.al_opts = al_bulk_opts();
+    else if (preset == "accurate") f.al_opts = std::nullopt;
+    else throw std::runtime_error("Policy implied_forward al_preset must be fast, bulk or "
+                                  "accurate");
+  }
+  if (f.max_pairs < f.min_pairs) {
+    throw std::runtime_error("Policy implied_forward max_pairs must be at least min_pairs");
+  }
+}
+
+inline const char *al_preset_name(const std::optional<AlOpts> &opts) {
+  if (!opts) return "accurate";
+  const auto same = [&](const AlOpts &o) {
+    return opts->n_collocation == o.n_collocation && opts->n_quadrature == o.n_quadrature &&
+           opts->n_quad_price == o.n_quad_price && opts->max_newton_iter == o.max_newton_iter &&
+           opts->tol == o.tol;
+  };
+  if (same(al_fast_opts())) return "fast";
+  if (same(al_bulk_opts())) return "bulk";
+  return "custom";
+}
+
+inline Json carry_json(const QuoteSliceCarryConfig &carry) {
+  const auto &f = carry.implied;
+  return {{"method", to_string(f.method)}, {"min_pairs", f.min_pairs},
+          {"max_pairs", f.max_pairs}, {"band_sd", f.band_sd}, {"spread_floor", f.spread_floor},
+          {"max_weight_ratio", f.max_weight_ratio}, {"huber_k", f.huber_k},
+          {"max_dispersion_sd", f.max_dispersion_sd},
+          {"max_leave_one_out_sd", f.max_leave_one_out_sd},
+          {"max_exercise_shift_sd", f.max_exercise_shift_sd},
+          {"max_pair_exercise_shift_sd", f.max_pair_exercise_shift_sd},
+          {"min_time_value", f.min_time_value},
+          {"min_time_value_fraction", f.min_time_value_fraction},
+          {"al_preset", al_preset_name(f.al_opts)}, {"iv_tolerance", f.iv_tolerance},
+          {"max_iv_iterations", f.max_iv_iterations},
+          {"fixed_point_tolerance", f.fixed_point_tolerance},
+          {"max_fixed_point_iterations", f.max_fixed_point_iterations},
+          {"exercise", f.exercise == ImpliedForwardExercise::American ? "american" : "european"}};
+}
+
 inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
                           std::vector<double> &spline_grid) {
   keys(entry, {"name", "base", "curve", "min_quotes", "quality", "parametric", "convex",
                "spline", "side_policy", "atm_log_band", "spread_floor", "min_time_value",
-               "iv_tolerance", "max_iv_iterations"});
+               "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward"});
   profile.name = text(entry.at("name"), true);
   auto &cfg = profile.config;
   if (entry.contains("curve")) {
@@ -169,6 +252,7 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
       s.grid = spline_grid;
     }
   }
+  parse_carry(entry, cfg.carry);
   // These are mandatory controls, never user-adjustable escape hatches.
   cfg.curve.convex.bound_slope_below = true;
 }
@@ -249,7 +333,7 @@ inline Json profile_json(const QuoteFitProfile &profile) {
   const auto &c = profile.config;
   const auto &dense = c.curve.convex;
   const auto &spline = c.curve.spline;
-  return {{"name", profile.name}, {"kind", profile.kind},
+  Json out{{"name", profile.name}, {"kind", profile.kind},
           {"curve", to_string(c.curve.kind)},
           {"dividend_model", to_string(c.dividend_model)}, {"min_quotes", c.min_quotes},
           {"quality", quality_json(c.quality)},
@@ -267,6 +351,12 @@ inline Json profile_json(const QuoteFitProfile &profile) {
           {"discrete_div_steps", c.discrete_div_steps},
           {"al_opts", nullptr}, {"convex_repair", nullptr},
           {"spline_candidate", c.curve.spline_candidate}};
+  // Emitted only when opted in, so the supplied-carry provenance is unchanged.
+  if (c.carry.mode != QuoteSliceCarryMode::Supplied) {
+    out["carry_mode"] = to_string(c.carry.mode);
+    out["implied_forward"] = carry_json(c.carry);
+  }
+  return out;
 }
 
 inline Json regimes_json(const QuoteFitRegimeConfig &r) {

@@ -35,6 +35,17 @@ add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=QuoteSlice.*:AmericanPriceSlice.*:QuoteFitPolicy.*)
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
 
+# Implied forward / carry estimator and the quote slice's opt-in carry mode. The
+# allocation test replaces global operator new, so it lives ONLY in this focused
+# executable (the monolithic atx-vol-tests has its own replacement).
+add_executable(atx-vol-implied-forward-tests
+    implied_forward_test.cpp quote_slice_carry_test.cpp implied_forward_alloc_test.cpp)
+target_link_libraries(atx-vol-implied-forward-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+add_test(NAME atx-vol-implied-forward COMMAND atx-vol-implied-forward-tests)
+set_tests_properties(atx-vol-implied-forward PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)
@@ -127,6 +138,8 @@ add_executable(atx-vol-tests
     cstar_calib_test.cpp
     dense_slice_test.cpp
     quote_slice_test.cpp
+    quote_slice_carry_test.cpp
+    implied_forward_test.cpp
     quote_fit_policy_test.cpp
     american_price_slice_test.cpp
     american_markov_test.cpp
