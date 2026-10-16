@@ -490,3 +490,82 @@ under COMPOSE-1 at the gate. Stated limit: `validate_nav_config` / `validate_nav
 loads (`book/nav_lockstep.cpp:238-250`), which the tiny world cannot reach with the rate on; those checks of the two
 rules together are P9-MV's own preflight (COMPOSE-PRE: a refusal there lapses P9-MV at 0 before any read). The tiny
 world and its store are deleted by literal name after this record.
+
+---
+
+## Chain agent 3 (RESUME 13, 2026-10-16; `r13-prompts/gate-prompt-3.md`; rulings GATE-3-ORDER, FIELDS-SUB, FIELDS-X5, GATE-MYPY, LAPSE-TABLE, TEST-2)
+
+Started from `handoff-root-gate-2.md`. Order of work = GATE-3-ORDER (ledger :961): every item that names no candidate
+cache first, then the GATE-IDX check. Every commit of this agent: explicit pathspecs plus
+`:(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache`, then `git show --stat HEAD` checked for
+`mypy_cache` (0) (GATE-MYPY; the 133 staged editor-side paths are the owner's to unstage, never touched here).
+
+### Step 0 re-verification (agent 3, 2026-10-16T14:04Z)
+
+- HEAD `2e08fa1c` (docs); code head `06dc9e5a`: `git diff --name-only 06dc9e5a..HEAD` outside `.superpowers/` = 0 files.
+  `git status --porcelain` (outside the staged `.mypy_cache`): the PM's `progress.md` edit and the five untracked PNGs.
+- Trial ledger 133 lines, sha256 `27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554`.
+  `build-equity/research-store/` absent (SQL3-2).
+- GATE-IDX file `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` **still present** (72 KiB) at start; not touched.
+- SPDLOG-RELINK re-hash (`tools/exe_sha_end.py`): **27 / 27 Release (p9-3f) and 27 / 27 Debug (p9-3g) `disk = receipt`**
+  (`gate-logs/exe-sha-rel-3.txt`, `exe-sha-dbg-3.txt`); next free tag `p9-3h` unused.
+- Host: free RAM 3,490 of 16,069 MB; C: 66.6 GB free; no build running (ours or foreign); editor-side python only.
+
+### FIELDS-SUB (1): the witness (`gate-logs/tools/fields_witness.py`, `gate-logs/fields-witness.txt`; commit `e5a2fe68`)
+
+For each of the 70 names of `scripts/specs/v8/lib-v80.json` `fields.list` (R-2's spec, sha256 `306a070b...3a21`;
+`fields.manifest_sha256` = v10's pin `a4a060ae...0809`): (a) the v11 manifest (`5826c02a...5f69`) has the entry, file
+`<f>.f64`, `reused_from.dir` ending `fields-v10`, `reused_from.manifest_sha256` `a4a060ae...0809` and a `payload_sha256`;
+(b) v15's manifest (`26fee5ce...3b09`, re-hashed) `files[<f>.f64].sha256` equals it; (c) the bytes on disk
+`train-2020-2023-lo3-fields-v15/<f>.f64` hash to it (every one of the 70 hashed in full). **Result: 70 / 70 hold, no
+miss.** Beside it, the two fields R-2's NAV of record says it read (`summary.json` `/financing_fields/fields_used`:
+`shares_out` `1cff53f8...05bc`, `si_shares` `78036207...7186`) equal v15's `files` entries and the bytes on disk.
+
+### Step 4, agent 3: the P9-B0 substitution list (written and committed BEFORE any P9-B0 run)
+
+Reading of GATE-3-ORDER's items (1) and (2): the witness (1) runs first; the substitution list (2) is committed before
+any P9-B0 run (the brief's step 4 and FIELDS-SUB: "listed FIRST in the substitution list"), so R-2's NAV run (1) starts
+only after this list's commit. The runs, their tool and the checks are fixed here; nothing below is decided after a run.
+
+Common to every run below:
+- **Exe** (M2c-RED-2 (e), OD5-2: Release is the producer of record): token 0 of every receipt of record (a Debug exe in
+  `build-equity/bin`) -> the Release exe of step 1 in `build-equity-rel/bin`, tag p9-3f, source = code head `06dc9e5a`
+  (receipt Source `5f48a25d`, a docs commit: `git diff 5f48a25d..HEAD` outside `.superpowers/` empty, EXE-CUR): NAV
+  `atx-equity-strategy-targets` `255b58ac...3565`, IC `atx-equity-strategy-ic` `ccd54db6...d705`; re-hashed against the
+  receipt before and after each run (SPDLOG-RELINK).
+- **Runner** (RUN-1, RUN-2, COVR-1): `scripts/run_bounded_research.py --output build-equity/<out>-run --seconds 600
+  --max-rss-mib 2048 --build-type Release --admission-wait-seconds 1800 -- <exe> <argv>`; u / w at the registered phase
+  caps of prereg C.14 (u 2,560, w 3,072 MiB; `lib-v8ysb-gm.json:10-28`), free RAM stated; alone on our side of the host
+  (GATE-PAR); one per pool.
+- **Argv** = the receipt of record's `command` with ONLY the tokens named per run changed (the tool asserts each named
+  flag occurs exactly once, that no added flag is already there, and re-hashes every substituted pin from its file).
+  `--ann-mean-gross` appended on every NAV reference (PRE-7a, C3-9); `--info-clock-print` appended on Y-F0's NAV only
+  (ALCLOCK-1: the P9-B0 names it on the Y-F0 reference; held at agent 2's step 3; LAPSE-TABLE P9-C RUNS). Fit mode
+  flag-absent (LAPSE-TABLE; D3-Q1a). No `--candidate-cache` on any NAV argv (checked on each receipt of record before
+  its run: none names one), no cache-index flag anywhere (SQL-11, prereg C.13). Timings off: no timing flag on any argv
+  (C.5).
+- **`--seal-allow`** (SEAL-ALLOW-3): a flag of the wave driver `research_wave.py` (its seal scan over the wave's logs;
+  `scripts/wave_seal.py:18`); a hand run through the bounded runner has no seal scan and the exes take no such flag, so
+  it is named on no argv here; should any run stop on a seal token, `tools/sealsrc.py` runs first and the stop is
+  recorded (none expected).
+- **No statistic is read.** Outputs are compared by file SHA-256 and JSON leaf path (`m2g-logs/tools/nav_cmp.py`: CSVs by
+  header, row count and the count of differing cells per column; no value printed). Every output file's SHA-256 is
+  listed (`gate-logs/b0-files-<out>.txt`). A run's receipt must carry no `store` block (SQL3-2).
+- **Tool:** `gate-logs/tools/b0_nav.py <cell>` (NAV runs; `--dry` prints the argv and its token diff, run before this
+  commit for all four NAV cells); the u / w runs use the same form (token 0 and `--output` only).
+
+| # | reference replaced | receipt of record (argv source) | tokens changed (besides token 0) | new dir | compared against / expected | why |
+|---|---|---|---|---|---|---|
+| 1 | **R-2** (A.4; no P9-B0 reference yet) | `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80-run` (v8 Debug exe `5497c89d`, source `39f87cd6`, 2026-10-02) | `--fields build-equity/train-2020-2023-lo3-fields-v15/manifest.json --fields-sha256 26fee5ce...3b09` (the v10 pair: FIELDS-GONE, FIELDS-SUB, witness above), `--output build-equity/p9-b0-r2-nav`; + `--ann-mean-gross` | `p9-b0-r2-nav` | the v8 NAV of record `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80` by SHA-256 per file; allowed: `summary.json` `/producer/*` and the leaves `--ann-mean-gross` adds (`/scenarios/<i>/ann_mean_gross`, opt-in side only, the M2j item-4 form); identical outside them = path A (R-2 re-based = `p9-b0-r2-nav`, PRE-22 met by substitution); any other difference, a witness miss or a refusal of the 84-field manifest = **path B** (R-2 NOT re-based; G-B6 / OD-3 lines as FIELDS-SUB words them). Facts stated before the run (not a ruling): that reference was written before P9 by the v8 exe, i.e. before C1's NAV change (M1d's P9-B0 list: L1-L4 / capacity files "may differ (sqrt)" against a v8-era reference); and its `summary.json`, `recipe.json`, `capacity/summary.json`, `capacity/recipe.json` carry the fields manifest's SHA-256 (`/financing_fields/manifest_sha256`, `summary.json` `/source_bindings/research_fields_manifest_sha256`). The verdict is the ruling's letter; every differing path is ALSO classified (fields-manifest leaf / M1d's C1 classes / other) for the PM, deciding nothing | PRE-22; FIELDS-SUB |
+| 2 | **X-10** (`p9-b0-x10-nav`, M1d, Debug `407c34ad`) | `p9-b0-x10-nav-run` | `--output build-equity/p9-b0g-x10-nav`; + `--ann-mean-gross` | `p9-b0g-x10-nav` | `p9-b0-x10-nav`: 27 / 27 files, 26 byte-identical; `summary.json` only `/producer/build_type`, `/producer/engine_git_sha` and `/scenarios/<i>/ann_mean_gross` (the form of agent 2's Y-F0 identity on the same exe, `nav-identity-yf0.txt`); anything else = an identity miss, attributed by merge commit (ROOT-1) | B2-13 (the leverage-only pair's reference); GATE-3-ORDER |
+| 3 | **Y-1** (`p9-b0-y1-nav`, M1d, Debug `407c34ad`, store `v8-risk-lo3-v10`) | `p9-b0-y1-nav-run` | `--risk-model build-equity/p9-m2i-dcov-v11 --risk-model-sha256 397366473b3a...23c7` (the Release `atx-risk-v1.1` container store by its pin, PRE-29; `handoff-root-m2i.md` "Store pins"), `--output build-equity/p9-b0g-y1-nav`; + `--ann-mean-gross` | `p9-b0g-y1-nav` | no identity is claimed (PRE-29: another store, not byte-comparable with v8's Y-1): every file's SHA-256 recorded; compared with `p9-b0-y1-nav` and, PRE-34's form, with v8's ledgered Y-1 NAV `mega-nav-v8y-vol-target-L2.0`, each reported as "agree / differ at <paths>" by SHA-256 and JSON path only; PRE-34's printed-precision agreement of the figures is a read of figures (B.7: made before the adoption print) and is NOT run here (READ NO STATISTIC). Before the run: COV-9 role check (`m2g-logs/tools/s9_check.py`), COVR-1 | PRE-29, PRE-30, PRE-34 |
+| 4 | **Y-F0 u** (`p9-b0-yf0-u`, M1d, Debug IC `393183c0`) | `p9-b0-yf0-u-run` | `--output build-equity/p9-b0g-yf0-u` (the argv keeps `--candidate-cache build-equity/mega-candidate-cache-v8-lo3`, GATE-RELCACHE) | `p9-b0g-yf0-u` | after GATE-IDX only. `p9-b0-yf0-u`: payloads (`orientations.json`, `recipe.json`, `train_daily_ic.csv`) byte-identical; `train_candidates.jsonl` equal outside `/stage_seconds/*`, `/wall_seconds`; `summary.json` differs by design only at timing leaves, the Release VM identity strings and cache-root paths, the cache counters (cold Release pass vs warm Debug reference: M1d's Release IC adoption list, `integration-log.md:304-327`) and the cold-vs-warm field counters `/roles/*/research_fields/{field_loads,loaded_bytes,peak_resident_fields}` (GATE-RELCACHE), each listed by path; anything else = an identity miss (ROOT-1). Cache: GATE-RELCACHE's checks (>= 15 GB free before; after, the 351 original files byte-unchanged, `155872de50833fca`, and the new whole-dir listing recorded with its cause) | PRE-22 |
+| 5 | **Y-F0 w** (`p9-b0-yf0-w`, M1d) | `p9-b0-yf0-w-run` | `--output build-equity/p9-b0g-yf0-w` (cache as row 4; `--composition-weights` the v8 fit's, as the receipt) | `p9-b0g-yf0-w` | after GATE-IDX only. `p9-b0-yf0-w`: the 10 payloads byte-identical (`orientations.json`, `recipe.json`, `train_combined.{f64,json}`, `train_combined_{finite.u8,ids.u64,member.u8,sessions.i64}`, `train_daily_ic.csv`, `train_planned_targets.csv`); `summary.json` / `train_candidates.jsonl` as row 4 | PRE-22 |
+| 6 | **Y-F0 NAV** (`p9-b0-yf0-nav`, M1d) | `p9-b0-yf0-nav-run` | `--output build-equity/p9-b0g-yf0-nav`; + `--ann-mean-gross --info-clock-print` | `p9-b0g-yf0-nav` | after GATE-IDX (GATE-3-ORDER). `p9-b0-yf0-nav`: 27 / 27, 26 byte-identical; `summary.json` only `/producer/build_type`, `/producer/engine_git_sha`, `/scenarios/<i>/ann_mean_gross` and `/scenarios/<i>/info_clock/**` (opt-in side only; ALCLOCK-1 as held at step 3) | PRE-22, ALCLOCK-1, LAPSE-TABLE |
+| - | **X-5** (`p9-c1-s2-x5-nav`; u / w) | - | - | - | **CUT** (FIELDS-X5): "not run at the gate: fields v13 absent (FIELDS-GONE)"; X-5 is no P9 cell's parent; its opt-in cache identity of record is M6b's items 5 / 6 (`handoff-root-m6b.md`), cited, not re-run | FIELDS-X5 |
+
+Not re-based: the Y-F0 fit (the brief's step 4 names u, w and NAV; the NAV references read the v8 w's
+`train_combined.json`, the w reads the v8 fit's weights, each stage on its reference's own inputs, the M1d form); the
+gate's flag-absent fit identity of record is agent 2's (`fit-identity-yf0.txt`: holds outside D2's code-identity
+stamps). The D-COV stores are pinned bytes, never rebuilt (CRT-2). rho (step 5) is taken on the new NAV dirs above
+(B2-13; value and the "1 - rho < 1e-6" flag only).
