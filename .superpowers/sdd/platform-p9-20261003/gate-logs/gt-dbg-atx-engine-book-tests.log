@@ -1,0 +1,506 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 197 tests from 29 test suites.
+[----------] Global test environment set-up.
+[----------] 8 tests from BookAllocation
+[ RUN      ] BookAllocation.KellyLeverageFromSharpe
+[       OK ] BookAllocation.KellyLeverageFromSharpe (0 ms)
+[ RUN      ] BookAllocation.CapacityClipsKelly
+[       OK ] BookAllocation.CapacityClipsKelly (0 ms)
+[ RUN      ] BookAllocation.MaxGrossCapsWhenBothExceed
+[       OK ] BookAllocation.MaxGrossCapsWhenBothExceed (0 ms)
+[ RUN      ] BookAllocation.ZeroVolGivesZero
+[       OK ] BookAllocation.ZeroVolGivesZero (0 ms)
+[ RUN      ] BookAllocation.NegativeKellyClampsToZero
+[       OK ] BookAllocation.NegativeKellyClampsToZero (0 ms)
+[ RUN      ] BookAllocation.EffectiveBreadthParticipationRatio
+[       OK ] BookAllocation.EffectiveBreadthParticipationRatio (0 ms)
+[ RUN      ] BookAllocation.EffectiveBreadthIgnoresNonPositiveEigs
+[       OK ] BookAllocation.EffectiveBreadthIgnoresNonPositiveEigs (0 ms)
+[ RUN      ] BookAllocation.EffectiveBreadthAllNonPositiveIsZero
+[       OK ] BookAllocation.EffectiveBreadthAllNonPositiveIsZero (0 ms)
+[----------] 8 tests from BookAllocation (1 ms total)
+
+[----------] 7 tests from BookBorrowSchedule
+[ RUN      ] BookBorrowSchedule.ShortWithoutLocateIsRejected
+[       OK ] BookBorrowSchedule.ShortWithoutLocateIsRejected (0 ms)
+[ RUN      ] BookBorrowSchedule.ShortWithinLocateIsAcceptedAndPartialLocateIsBinding
+[       OK ] BookBorrowSchedule.ShortWithinLocateIsAcceptedAndPartialLocateIsBinding (0 ms)
+[ RUN      ] BookBorrowSchedule.VanishedLocateNeverForcesACoverOfAnExistingShort
+[       OK ] BookBorrowSchedule.VanishedLocateNeverForcesACoverOfAnExistingShort (0 ms)
+[ RUN      ] BookBorrowSchedule.PerNameFeesRebateAndCashRateAreChargedOnTheDayBasis
+[       OK ] BookBorrowSchedule.PerNameFeesRebateAndCashRateAreChargedOnTheDayBasis (0 ms)
+[ RUN      ] BookBorrowSchedule.CashRichBookEarnsNegativeFinancingCost
+[       OK ] BookBorrowSchedule.CashRichBookEarnsNegativeFinancingCost (0 ms)
+[ RUN      ] BookBorrowSchedule.ScheduleValidationAndExclusivity
+[       OK ] BookBorrowSchedule.ScheduleValidationAndExclusivity (0 ms)
+[ RUN      ] BookBorrowSchedule.DollarNeutralBookEarnsThePolicyRateOnlyOnceOnNav
+[       OK ] BookBorrowSchedule.DollarNeutralBookEarnsThePolicyRateOnlyOnceOnNav (0 ms)
+[----------] 7 tests from BookBorrowSchedule (0 ms total)
+
+[----------] 3 tests from ClaimsReplay
+[ RUN      ] ClaimsReplay.EmptyEventBatchIsBitIdenticalToScheduledIntents
+[       OK ] ClaimsReplay.EmptyEventBatchIsBitIdenticalToScheduledIntents (0 ms)
+[ RUN      ] ClaimsReplay.LongReceivableTransitionAndPaymentPreserveNavAndLedgers
+[       OK ] ClaimsReplay.LongReceivableTransitionAndPaymentPreserveNavAndLedgers (0 ms)
+[ RUN      ] ClaimsReplay.RetiredPredecessorTargetsAreRejectedAtomically
+[       OK ] ClaimsReplay.RetiredPredecessorTargetsAreRejectedAtomically (0 ms)
+[----------] 3 tests from ClaimsReplay (1 ms total)
+
+[----------] 3 tests from ClaimsState
+[ RUN      ] ClaimsState.SignedTransitionAndPaymentRoundTripPreserveNavAndLedger
+[       OK ] ClaimsState.SignedTransitionAndPaymentRoundTripPreserveNavAndLedger (0 ms)
+[ RUN      ] ClaimsState.BoundedCountsAndDuplicateIdsReject
+[       OK ] ClaimsState.BoundedCountsAndDuplicateIdsReject (0 ms)
+[ RUN      ] ClaimsState.RejectionsLeaveStateAndSpansByteIdentical
+[       OK ] ClaimsState.RejectionsLeaveStateAndSpansByteIdentical (0 ms)
+[----------] 3 tests from ClaimsState (1 ms total)
+
+[----------] 8 tests from DecayMonitor
+[ RUN      ] DecayMonitor.DemotesPlantedDecayingAlpha
+[       OK ] DecayMonitor.DemotesPlantedDecayingAlpha (0 ms)
+[ RUN      ] DecayMonitor.DoesNotDemoteStableAlpha
+[       OK ] DecayMonitor.DoesNotDemoteStableAlpha (0 ms)
+[ RUN      ] DecayMonitor.PageHinkleyDetectsLevelShift
+[       OK ] DecayMonitor.PageHinkleyDetectsLevelShift (0 ms)
+[ RUN      ] DecayMonitor.MinTrlMatchesClosedForm
+[       OK ] DecayMonitor.MinTrlMatchesClosedForm (0 ms)
+[ RUN      ] DecayMonitor.EarlyObsCannotConcludeDecay
+[       OK ] DecayMonitor.EarlyObsCannotConcludeDecay (0 ms)
+[ RUN      ] DecayMonitor.CostFloodedIsNotDecay
+[       OK ] DecayMonitor.CostFloodedIsNotDecay (0 ms)
+[ RUN      ] DecayMonitor.DemotesDecayAcrossSeeds
+[       OK ] DecayMonitor.DemotesDecayAcrossSeeds (1 ms)
+[ RUN      ] DecayMonitor.NeverDemotesStableAcrossSeeds
+[       OK ] DecayMonitor.NeverDemotesStableAcrossSeeds (5 ms)
+[----------] 8 tests from DecayMonitor (8 ms total)
+
+[----------] 1 test from DecayController
+[ RUN      ] DecayController.DrivesLifecyclePitAndAsymmetric
+[       OK ] DecayController.DrivesLifecyclePitAndAsymmetric (62 ms)
+[----------] 1 test from DecayController (62 ms total)
+
+[----------] 11 tests from BookEventBatch
+[ RUN      ] BookEventBatch.AbortPolicyStillFailsOnTheMissingHeldClose
+[       OK ] BookEventBatch.AbortPolicyStillFailsOnTheMissingHeldClose (0 ms)
+[ RUN      ] BookEventBatch.DelistingAfterMissingHeldCloseDoesNotAbort
+[       OK ] BookEventBatch.DelistingAfterMissingHeldCloseDoesNotAbort (0 ms)
+[ RUN      ] BookEventBatch.CrspDelistReturnIsRealisedAsGrossPnl
+[       OK ] BookEventBatch.CrspDelistReturnIsRealisedAsGrossPnl (0 ms)
+[ RUN      ] BookEventBatch.CrspPolicyRejectsAnUnfilledReturnButAcceptsAnExplicitFill
+[       OK ] BookEventBatch.CrspPolicyRejectsAnUnfilledReturnButAcceptsAnExplicitFill (0 ms)
+[ RUN      ] BookEventBatch.ShortDelistingBuysBackAtTheDelistingValue
+[       OK ] BookEventBatch.ShortDelistingBuysBackAtTheDelistingValue (0 ms)
+[ RUN      ] BookEventBatch.RecordBuilderRejectsInconsistentRecords
+[       OK ] BookEventBatch.RecordBuilderRejectsInconsistentRecords (0 ms)
+[ RUN      ] BookEventBatch.ScheduledPolicyServesBatchesByObservation
+[       OK ] BookEventBatch.ScheduledPolicyServesBatchesByObservation (0 ms)
+[ RUN      ] BookEventBatch.ScheduledPolicyRejectsUnqueriedPeriodsAndOverflow
+[       OK ] BookEventBatch.ScheduledPolicyRejectsUnqueriedPeriodsAndOverflow (0 ms)
+[ RUN      ] BookEventBatch.EmptyScheduledPolicyReproducesIntentReplay
+[       OK ] BookEventBatch.EmptyScheduledPolicyReproducesIntentReplay (0 ms)
+[ RUN      ] BookEventBatch.ClaimsReplayRejectsTheOptInReplayExtensions
+[       OK ] BookEventBatch.ClaimsReplayRejectsTheOptInReplayExtensions (0 ms)
+[ RUN      ] BookEventBatch.DelistingCancelsAnUnfilledWorkingOrderOnAnUnheldName
+[       OK ] BookEventBatch.DelistingCancelsAnUnfilledWorkingOrderOnAnUnheldName (0 ms)
+[----------] 11 tests from BookEventBatch (1 ms total)
+
+[----------] 5 tests from BookInverseVol
+[ RUN      ] BookInverseVol.OddCountClosedForm
+[       OK ] BookInverseVol.OddCountClosedForm (0 ms)
+[ RUN      ] BookInverseVol.EvenCountTakesTheMeanOfTheTwoMiddleOnes
+[       OK ] BookInverseVol.EvenCountTakesTheMeanOfTheTwoMiddleOnes (0 ms)
+[ RUN      ] BookInverseVol.FixturesTellWrongRulesApart
+[       OK ] BookInverseVol.FixturesTellWrongRulesApart (0 ms)
+[ RUN      ] BookInverseVol.EqualOrMissingVolatilitiesAreTheIdentity
+[       OK ] BookInverseVol.EqualOrMissingVolatilitiesAreTheIdentity (0 ms)
+[ RUN      ] BookInverseVol.RefusesBadInputBeforeAnythingChanges
+[       OK ] BookInverseVol.RefusesBadInputBeforeAnythingChanges (0 ms)
+[----------] 5 tests from BookInverseVol (0 ms total)
+
+[----------] 12 tests from MvTarget
+[ RUN      ] MvTarget.ThreeNamesDiagonalClosedForm
+[       OK ] MvTarget.ThreeNamesDiagonalClosedForm (0 ms)
+[ RUN      ] MvTarget.EqualsDenseInverseOnSmallN
+[       OK ] MvTarget.EqualsDenseInverseOnSmallN (0 ms)
+[ RUN      ] MvTarget.RankDeficientFEqualsDenseSolve
+[       OK ] MvTarget.RankDeficientFEqualsDenseSolve (0 ms)
+[ RUN      ] MvTarget.GrossNormalised
+[       OK ] MvTarget.GrossNormalised (0 ms)
+[ RUN      ] MvTarget.PositiveScalarWashesOut
+[       OK ] MvTarget.PositiveScalarWashesOut (0 ms)
+[ RUN      ] MvTarget.NanAlphaIsNoOpinion
+[       OK ] MvTarget.NanAlphaIsNoOpinion (0 ms)
+[ RUN      ] MvTarget.DollarNeutralOnThePricedSet
+[       OK ] MvTarget.DollarNeutralOnThePricedSet (0 ms)
+[ RUN      ] MvTarget.WorkingBytesBound
+[       OK ] MvTarget.WorkingBytesBound (0 ms)
+[ RUN      ] MvTarget.RefusalsAndUnavailable
+[       OK ] MvTarget.RefusalsAndUnavailable (0 ms)
+[ RUN      ] MvTarget.FactorExposureIsXTransposeW
+[       OK ] MvTarget.FactorExposureIsXTransposeW (0 ms)
+[ RUN      ] MvTarget.LowEigenShare
+[       OK ] MvTarget.LowEigenShare (0 ms)
+[ RUN      ] MvTarget.FactorEigenOnKeptStorageIsAFreshSolve
+[       OK ] MvTarget.FactorEigenOnKeptStorageIsAFreshSolve (58 ms)
+[----------] 12 tests from MvTarget (61 ms total)
+
+[----------] 5 tests from BookNormalScore
+[ RUN      ] BookNormalScore.FourDistinctNamesAreThePublishedQuantiles
+[       OK ] BookNormalScore.FourDistinctNamesAreThePublishedQuantiles (0 ms)
+[ RUN      ] BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite
+[       OK ] BookNormalScore.TiesShareTheMeanRankAndMirrorsAreOpposite (0 ms)
+[ RUN      ] BookNormalScore.FixtureTellsWrongRulesApart
+[       OK ] BookNormalScore.FixtureTellsWrongRulesApart (0 ms)
+[ RUN      ] BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue
+[       OK ] BookNormalScore.NormPpfOfALiteralIsItsRunTimeValue (0 ms)
+[ RUN      ] BookNormalScore.ShortRowsWriteNothingAndRefusalsWriteNothing
+[       OK ] BookNormalScore.ShortRowsWriteNothingAndRefusalsWriteNothing (0 ms)
+[----------] 5 tests from BookNormalScore (0 ms total)
+
+[----------] 7 tests from BookPipeline
+[ RUN      ] BookPipeline.EndToEndRunIsByteIdentical
+[       OK ] BookPipeline.EndToEndRunIsByteIdentical (2937 ms)
+[ RUN      ] BookPipeline.NoLookAheadTruncationInvariant
+[       OK ] BookPipeline.NoLookAheadTruncationInvariant (3 ms)
+[ RUN      ] BookPipeline.LifecycleDrivenEndToEnd
+[       OK ] BookPipeline.LifecycleDrivenEndToEnd (1132 ms)
+[ RUN      ] BookPipeline.NetBelowGrossCostHonest
+[       OK ] BookPipeline.NetBelowGrossCostHonest (968 ms)
+[ RUN      ] BookPipeline.GrossNeverExceedsCapacity
+[       OK ] BookPipeline.GrossNeverExceedsCapacity (897 ms)
+[ RUN      ] BookPipeline.NoiseLibraryProducesFlatBook
+[       OK ] BookPipeline.NoiseLibraryProducesFlatBook (1486 ms)
+[ RUN      ] BookPipeline.DeadFactorAugmentationIsReal
+[       OK ] BookPipeline.DeadFactorAugmentationIsReal (533 ms)
+[----------] 7 tests from BookPipeline (7959 ms total)
+
+[----------] 8 tests from BookReplayCost
+[ RUN      ] BookReplayCost.FlatBpsCostIsBitIdenticalToTradeBps
+[       OK ] BookReplayCost.FlatBpsCostIsBitIdenticalToTradeBps (0 ms)
+[ RUN      ] BookReplayCost.SqrtImpactCostIsMonotoneInParticipation
+[       OK ] BookReplayCost.SqrtImpactCostIsMonotoneInParticipation (0 ms)
+[ RUN      ] BookReplayCost.UnusableLiquidityFillsNothing
+[       OK ] BookReplayCost.UnusableLiquidityFillsNothing (0 ms)
+[ RUN      ] BookReplayCost.CreateRejectsInvalidParameters
+[       OK ] BookReplayCost.CreateRejectsInvalidParameters (0 ms)
+[ RUN      ] BookReplayCost.ParticipationCapPartiallyFillsAndCarriesResidualForward
+[       OK ] BookReplayCost.ParticipationCapPartiallyFillsAndCarriesResidualForward (0 ms)
+[ RUN      ] BookReplayCost.NewDecisionReplacesTheOpenWorkingOrder
+[       OK ] BookReplayCost.NewDecisionReplacesTheOpenWorkingOrder (0 ms)
+[ RUN      ] BookReplayCost.NetOfImpactPnlIsBelowFrictionless
+[       OK ] BookReplayCost.NetOfImpactPnlIsBelowFrictionless (0 ms)
+[ RUN      ] BookReplayCost.RejectsAmbiguousOrMisShapedConfiguration
+[       OK ] BookReplayCost.RejectsAmbiguousOrMisShapedConfiguration (0 ms)
+[----------] 8 tests from BookReplayCost (1 ms total)
+
+[----------] 3 tests from ReplayCostSqrt
+[ RUN      ] ReplayCostSqrt.CostFractionBitsArePinnedOnFixedInputs
+[       OK ] ReplayCostSqrt.CostFractionBitsArePinnedOnFixedInputs (0 ms)
+[ RUN      ] ReplayCostSqrt.CappedFillCostAndUnrationedCostBitsArePinned
+[       OK ] ReplayCostSqrt.CappedFillCostAndUnrationedCostBitsArePinned (0 ms)
+[ RUN      ] ReplayCostSqrt.OtherExponentsKeepPowAndHalfIsTheSquareRoot
+[       OK ] ReplayCostSqrt.OtherExponentsKeepPowAndHalfIsTheSquareRoot (0 ms)
+[----------] 3 tests from ReplayCostSqrt (0 ms total)
+
+[----------] 17 tests from BookReplay
+[ RUN      ] BookReplay.WeeklyHoldingsDriftAcrossEveryIntervalAndTerminalTargetDoesNotTrade
+[       OK ] BookReplay.WeeklyHoldingsDriftAcrossEveryIntervalAndTerminalTargetDoesNotTrade (0 ms)
+[ RUN      ] BookReplay.TradeFeesUseActualDollarsAndLaterTargetsUseNavAfterEarlierFees
+[       OK ] BookReplay.TradeFeesUseActualDollarsAndLaterTargetsUseNavAfterEarlierFees (0 ms)
+[ RUN      ] BookReplay.WeekendBorrowUsesStartShortNotionalAndCoverStopsFurtherAccrual
+[       OK ] BookReplay.WeekendBorrowUsesStartShortNotionalAndCoverStopsFurtherAccrual (0 ms)
+[ RUN      ] BookReplay.DefaultDelayExcludesEarlierMoveAndPreservesOriginWhileHolding
+[       OK ] BookReplay.DefaultDelayExcludesEarlierMoveAndPreservesOriginWhileHolding (0 ms)
+[ RUN      ] BookReplay.EligibilityExitStillLosesMoneyAndOnlyUnusedMissingMarksAreIgnored
+[       OK ] BookReplay.EligibilityExitStillLosesMoneyAndOnlyUnusedMissingMarksAreIgnored (0 ms)
+[ RUN      ] BookReplay.ReversalTradesFullDollarDeltaAndUnchangedInventoryDoesNotTrade
+[       OK ] BookReplay.ReversalTradesFullDollarDeltaAndUnchangedInventoryDoesNotTrade (0 ms)
+[ RUN      ] BookReplay.SmallHoldingsSurviveAndChangingTriScaleDoesNotChangeEconomics
+[       OK ] BookReplay.SmallHoldingsSurviveAndChangingTriScaleDoesNotChangeEconomics (0 ms)
+[ RUN      ] BookReplay.ShapesSchedulesTimesAndTargetsAreValidatedBeforeReplay
+[       OK ] BookReplay.ShapesSchedulesTimesAndTargetsAreValidatedBeforeReplay (0 ms)
+[ RUN      ] BookReplay.InvalidCostsInsolvencyAndUnrepresentablePositionsFailClosed
+[       OK ] BookReplay.InvalidCostsInsolvencyAndUnrepresentablePositionsFailClosed (0 ms)
+[ RUN      ] BookReplay.FinalObservationIsValuationOnlyAndEmptyScheduleRemainsCash
+[       OK ] BookReplay.FinalObservationIsValuationOnlyAndEmptyScheduleRemainsCash (0 ms)
+[ RUN      ] BookReplay.PolicySeesMarkedDriftAndRecordsActualAcceptedAllocation
+[       OK ] BookReplay.PolicySeesMarkedDriftAndRecordsActualAcceptedAllocation (0 ms)
+[ RUN      ] BookReplay.PolicyReceivesOriginalDecisionRowsAndNeverRunsAtFinalValuation
+[       OK ] BookReplay.PolicyReceivesOriginalDecisionRowsAndNeverRunsAtFinalValuation (0 ms)
+[ RUN      ] BookReplay.PolicyErrorsAndInvalidCandidatesReturnNoPartialResult
+[       OK ] BookReplay.PolicyErrorsAndInvalidCandidatesReturnNoPartialResult (0 ms)
+[ RUN      ] BookReplay.IdentityPolicyExactlyMatchesFixedReplayWithDriftFeesAndBorrow
+[       OK ] BookReplay.IdentityPolicyExactlyMatchesFixedReplayWithDriftFeesAndBorrow (0 ms)
+[ RUN      ] BookReplay.ExplicitHoldPreservesUnitsWithoutWeightRoundTripAndCloseIsExact
+[       OK ] BookReplay.ExplicitHoldPreservesUnitsWithoutWeightRoundTripAndCloseIsExact (0 ms)
+[ RUN      ] BookReplay.InvalidIntentsCannotBypassHeldMarksEligibilityOrPublishEarlierAllocations
+[       OK ] BookReplay.InvalidIntentsCannotBypassHeldMarksEligibilityOrPublishEarlierAllocations (0 ms)
+[ RUN      ] BookReplay.TargetWeightIntentsExactlyMatchDelayedFixedAndLegacyPolicyReplay
+[       OK ] BookReplay.TargetWeightIntentsExactlyMatchDelayedFixedAndLegacyPolicyReplay (0 ms)
+[----------] 17 tests from BookReplay (2 ms total)
+
+[----------] 2 tests from ReplayReportParity
+[ RUN      ] ReplayReportParity.OnePeriodPolicyReplayEqualsLegacyReport
+[       OK ] ReplayReportParity.OnePeriodPolicyReplayEqualsLegacyReport (0 ms)
+[ RUN      ] ReplayReportParity.OnePeriodParityHoldsThroughAFlatCostModel
+[       OK ] ReplayReportParity.OnePeriodParityHoldsThroughAFlatCostModel (0 ms)
+[----------] 2 tests from ReplayReportParity (0 ms total)
+
+[----------] 8 tests from BookReport
+[ RUN      ] BookReport.AccumulatesNetOfCostEquityCurve
+[       OK ] BookReport.AccumulatesNetOfCostEquityCurve (59 ms)
+[ RUN      ] BookReport.CapacityUtilizationBounded
+[       OK ] BookReport.CapacityUtilizationBounded (52 ms)
+[ RUN      ] BookReport.WriteIsByteIdenticalAcrossRuns
+[       OK ] BookReport.WriteIsByteIdenticalAcrossRuns (70 ms)
+[ RUN      ] BookReport.FactorExposureIncludesDeadColumns
+[       OK ] BookReport.FactorExposureIncludesDeadColumns (63 ms)
+[ RUN      ] BookReport.NoSurvivorship
+[       OK ] BookReport.NoSurvivorship (48 ms)
+[ RUN      ] BookReport.LifecycleCensusCountsStates
+[       OK ] BookReport.LifecycleCensusCountsStates (54 ms)
+[ RUN      ] BookReport.RejectsOutOfRangeScheduleDate
+[       OK ] BookReport.RejectsOutOfRangeScheduleDate (52 ms)
+[ RUN      ] BookReport.RejectsDimMismatch
+[       OK ] BookReport.RejectsDimMismatch (54 ms)
+[----------] 8 tests from BookReport (456 ms total)
+
+[----------] 7 tests from BookRiskTarget
+[ RUN      ] BookRiskTarget.FactorVarianceEqualsTheDenseQuadraticForm
+[       OK ] BookRiskTarget.FactorVarianceEqualsTheDenseQuadraticForm (0 ms)
+[ RUN      ] BookRiskTarget.SigmaHatAndLeverageInClosedForm
+[       OK ] BookRiskTarget.SigmaHatAndLeverageInClosedForm (0 ms)
+[ RUN      ] BookRiskTarget.SigmaHatIsScaleFreeAndReadsTheWholeBookGross
+[       OK ] BookRiskTarget.SigmaHatIsScaleFreeAndReadsTheWholeBookGross (0 ms)
+[ RUN      ] BookRiskTarget.ClipHoldsTheLeverageInsidePoint8ToOnePoint25L
+[       OK ] BookRiskTarget.ClipHoldsTheLeverageInsidePoint8ToOnePoint25L (0 ms)
+[ RUN      ] BookRiskTarget.CadenceEstimatesEvery21SessionsFromTheFirstEstimableDecision
+[       OK ] BookRiskTarget.CadenceEstimatesEvery21SessionsFromTheFirstEstimableDecision (0 ms)
+[ RUN      ] BookRiskTarget.RefusesParametersOutsideTheirRanges
+[       OK ] BookRiskTarget.RefusesParametersOutsideTheirRanges (0 ms)
+[ RUN      ] BookRiskTarget.RefusesMalformedModelsAndGrossBeforeAnyEstimate
+[       OK ] BookRiskTarget.RefusesMalformedModelsAndGrossBeforeAnyEstimate (0 ms)
+[----------] 7 tests from BookRiskTarget (0 ms total)
+
+[----------] 10 tests from BookTargetShaping
+[ RUN      ] BookTargetShaping.HoldBandFirstUseSetsEveryEligibleName
+[       OK ] BookTargetShaping.HoldBandFirstUseSetsEveryEligibleName (0 ms)
+[ RUN      ] BookTargetShaping.HoldBandKeepsInsideAndMovesOutside
+[       OK ] BookTargetShaping.HoldBandKeepsInsideAndMovesOutside (0 ms)
+[ RUN      ] BookTargetShaping.HoldBandStateSurvivesAnIneligibleDay
+[       OK ] BookTargetShaping.HoldBandStateSurvivesAnIneligibleDay (0 ms)
+[ RUN      ] BookTargetShaping.HoldBandZeroBandIsTheIdentity
+[       OK ] BookTargetShaping.HoldBandZeroBandIsTheIdentity (0 ms)
+[ RUN      ] BookTargetShaping.HoldBandRefusesBadInputWithoutChangingAnything
+[       OK ] BookTargetShaping.HoldBandRefusesBadInputWithoutChangingAnything (0 ms)
+[ RUN      ] BookTargetShaping.CapWithoutBreachIsUntouchedBitForBit
+[       OK ] BookTargetShaping.CapWithoutBreachIsUntouchedBitForBit (0 ms)
+[ RUN      ] BookTargetShaping.CapClipsAndSpreadsProRataInsideTheSide
+[       OK ] BookTargetShaping.CapClipsAndSpreadsProRataInsideTheSide (0 ms)
+[ RUN      ] BookTargetShaping.CapResidualBreachIsReportedNotRepassed
+[       OK ] BookTargetShaping.CapResidualBreachIsReportedNotRepassed (0 ms)
+[ RUN      ] BookTargetShaping.CapUnplacedMassWhenTheWholeSideIsClipped
+[       OK ] BookTargetShaping.CapUnplacedMassWhenTheWholeSideIsClipped (0 ms)
+[ RUN      ] BookTargetShaping.CapRefusesBadInputWithoutChangingAnything
+[       OK ] BookTargetShaping.CapRefusesBadInputWithoutChangingAnything (0 ms)
+[----------] 10 tests from BookTargetShaping (0 ms total)
+
+[----------] 10 tests from TargetTracking
+[ RUN      ] TargetTracking.ZeroCostNoLimitsReturnsTheTargetTo1e8
+[       OK ] TargetTracking.ZeroCostNoLimitsReturnsTheTargetTo1e8 (0 ms)
+[ RUN      ] TargetTracking.DiagonalLinearCostIsTheSoftThreshold
+[       OK ] TargetTracking.DiagonalLinearCostIsTheSoftThreshold (0 ms)
+[ RUN      ] TargetTracking.OneNameMatchesAGoldenSectionSearchAtEveryKink
+[       OK ] TargetTracking.OneNameMatchesAGoldenSectionSearchAtEveryKink (2 ms)
+[ RUN      ] TargetTracking.HigherCostTradesLess
+[       OK ] TargetTracking.HigherCostTradesLess (1 ms)
+[ RUN      ] TargetTracking.LimitsAndBoxesHoldToTolerance
+[       OK ] TargetTracking.LimitsAndBoxesHoldToTolerance (0 ms)
+[ RUN      ] TargetTracking.TradeLimitShareCountsNamesAtTheirLimit
+[       OK ] TargetTracking.TradeLimitShareCountsNamesAtTheirLimit (0 ms)
+[ RUN      ] TargetTracking.IndefiniteCovarianceIsClippedAndCounted
+[       OK ] TargetTracking.IndefiniteCovarianceIsClippedAndCounted (0 ms)
+[ RUN      ] TargetTracking.RepeatsBitForBitAndAWarmDualAgrees
+[       OK ] TargetTracking.RepeatsBitForBitAndAWarmDualAgrees (0 ms)
+[ RUN      ] TargetTracking.TwoNameFactorProblemMatchesItsClosedForm
+[       OK ] TargetTracking.TwoNameFactorProblemMatchesItsClosedForm (0 ms)
+[ RUN      ] TargetTracking.RefusesMalformedProblems
+[       OK ] TargetTracking.RefusesMalformedProblems (0 ms)
+[----------] 10 tests from TargetTracking (5 ms total)
+
+[----------] 12 tests from BookTwoSpeed
+[ RUN      ] BookTwoSpeed.RegisteredConstants
+[       OK ] BookTwoSpeed.RegisteredConstants (0 ms)
+[ RUN      ] BookTwoSpeed.FastThetaFollowsTheCadence
+[       OK ] BookTwoSpeed.FastThetaFollowsTheCadence (0 ms)
+[ RUN      ] BookTwoSpeed.OneStepClosedForm
+[       OK ] BookTwoSpeed.OneStepClosedForm (0 ms)
+[ RUN      ] BookTwoSpeed.EqualRatesAreOneBookTowardTheSummedAim
+[       OK ] BookTwoSpeed.EqualRatesAreOneBookTowardTheSummedAim (0 ms)
+[ RUN      ] BookTwoSpeed.OppositeSleeveTradesNet
+[       OK ] BookTwoSpeed.OppositeSleeveTradesNet (0 ms)
+[ RUN      ] BookTwoSpeed.FastSleeveHalvesItsGapInFiveSteps
+[       OK ] BookTwoSpeed.FastSleeveHalvesItsGapInFiveSteps (0 ms)
+[ RUN      ] BookTwoSpeed.RefusalsWriteNothing
+[       OK ] BookTwoSpeed.RefusalsWriteNothing (0 ms)
+[ RUN      ] BookTwoSpeed.NettedAimClosedForm
+[       OK ] BookTwoSpeed.NettedAimClosedForm (0 ms)
+[ RUN      ] BookTwoSpeed.AimPartialStepOnTheAimIsTheNettedSleeveMove
+[       OK ] BookTwoSpeed.AimPartialStepOnTheAimIsTheNettedSleeveMove (0 ms)
+[ RUN      ] BookTwoSpeed.NettedAimRefusalsWriteNothing
+[       OK ] BookTwoSpeed.NettedAimRefusalsWriteNothing (0 ms)
+[ RUN      ] BookTwoSpeed.CarryKeepsTheFastHoldingAtTheBooksScale
+[       OK ] BookTwoSpeed.CarryKeepsTheFastHoldingAtTheBooksScale (0 ms)
+[ RUN      ] BookTwoSpeed.CarryRefusalsWriteNothing
+[       OK ] BookTwoSpeed.CarryRefusalsWriteNothing (0 ms)
+[----------] 12 tests from BookTwoSpeed (0 ms total)
+
+[----------] 5 tests from BookVolTarget
+[ RUN      ] BookVolTarget.RegisteredConstants
+[       OK ] BookVolTarget.RegisteredConstants (0 ms)
+[ RUN      ] BookVolTarget.LeverageIsTheCapTimesTheRatioClipped
+[       OK ] BookVolTarget.LeverageIsTheCapTimesTheRatioClipped (0 ms)
+[ RUN      ] BookVolTarget.RunningMeanIncludesTheCurrentEstimateAndTheClipBinds
+[       OK ] BookVolTarget.RunningMeanIncludesTheCurrentEstimateAndTheClipBinds (0 ms)
+[ RUN      ] BookVolTarget.FixtureTellsWrongRulesApart
+[       OK ] BookVolTarget.FixtureTellsWrongRulesApart (0 ms)
+[ RUN      ] BookVolTarget.RefusalsLeaveTheStateUntouched
+[       OK ] BookVolTarget.RefusalsLeaveTheStateUntouched (0 ms)
+[----------] 5 tests from BookVolTarget (0 ms total)
+
+[----------] 5 tests from BookBorrowSingleCount
+[ RUN      ] BookBorrowSingleCount.DefaultIsFeeOnce
+[       OK ] BookBorrowSingleCount.DefaultIsFeeOnce (0 ms)
+[ RUN      ] BookBorrowSingleCount.FeeQuotedScheduleChargesTheFeeOnceAndProceedsEarnCash
+[measured] fee-quoted 1-day financing: V2=0.1840036800 V1=0.1900038000
+[       OK ] BookBorrowSingleCount.FeeQuotedScheduleChargesTheFeeOnceAndProceedsEarnCash (0 ms)
+[ RUN      ] BookBorrowSingleCount.RebateQuotedScheduleNetsTheFeeOnceAndMatchesV1
+[       OK ] BookBorrowSingleCount.RebateQuotedScheduleNetsTheFeeOnceAndMatchesV1 (0 ms)
+[ RUN      ] BookBorrowSingleCount.FeeAndRebateTogetherDoubleCountUnderV1AndAreRejectedUnderV2
+[measured] 1-day financing: V1 fee+rebate=-0.0200004000 V2 fee=-0.0230004600 V2 rebate=-0.0230004600
+[       OK ] BookBorrowSingleCount.FeeAndRebateTogetherDoubleCountUnderV1AndAreRejectedUnderV2 (0 ms)
+[ RUN      ] BookBorrowSingleCount.FinancingRuleIsValidated
+[       OK ] BookBorrowSingleCount.FinancingRuleIsValidated (0 ms)
+[----------] 5 tests from BookBorrowSingleCount (0 ms total)
+
+[----------] 9 tests from BookLegacyReport
+[ RUN      ] BookLegacyReport.HoldingSessionsFollowTheScheduleAndCapAtThePanelEnd
+[       OK ] BookLegacyReport.HoldingSessionsFollowTheScheduleAndCapAtThePanelEnd (0 ms)
+[ RUN      ] BookLegacyReport.WeeklyBookEarnsTheCompoundedWeekNotOneSession
+[measured] weekly book, name 0: V2 0.051010 vs V1 0.010000 per rebalance
+[       OK ] BookLegacyReport.WeeklyBookEarnsTheCompoundedWeekNotOneSession (0 ms)
+[ RUN      ] BookLegacyReport.DelistedHeldNameTakesTheShumwayReturnNotZero
+[       OK ] BookLegacyReport.DelistedHeldNameTakesTheShumwayReturnNotZero (0 ms)
+[ RUN      ] BookLegacyReport.DelistingInsideTheWindowCompoundsToTheLastPrint
+[       OK ] BookLegacyReport.DelistingInsideTheWindowCompoundsToTheLastPrint (0 ms)
+[ RUN      ] BookLegacyReport.InteriorGapMarksAtTheLastPrintAndIsNotADelisting
+[       OK ] BookLegacyReport.InteriorGapMarksAtTheLastPrintAndIsNotADelisting (0 ms)
+[ RUN      ] BookLegacyReport.OnePeriodV1ReproducesThePreW0ArithmeticBitForBit
+[       OK ] BookLegacyReport.OnePeriodV1ReproducesThePreW0ArithmeticBitForBit (0 ms)
+[ RUN      ] BookLegacyReport.InputsAreValidated
+[       OK ] BookLegacyReport.InputsAreValidated (0 ms)
+[ RUN      ] BookLegacyReport.BorrowAccruesAnAnnualRateOverTheSessionsHeld
+[measured] weekly 0.5 short @252bps/yr: V2 2.500e-04 vs V1 1.260e-02 per rebalance
+[       OK ] BookLegacyReport.BorrowAccruesAnAnnualRateOverTheSessionsHeld (37 ms)
+[ RUN      ] BookLegacyReport.DelistedReturnReachesThePnlThroughARowPanel
+[measured] delisting week pnl_gross: V2 -0.189394 vs survivor-only 0.030606
+[       OK ] BookLegacyReport.DelistedReturnReachesThePnlThroughARowPanel (34 ms)
+[----------] 9 tests from BookLegacyReport (71 ms total)
+
+[----------] 4 tests from BookReplayDelay
+[ RUN      ] BookReplayDelay.ZeroDelayIsRejectedWithoutTheOptIn
+[       OK ] BookReplayDelay.ZeroDelayIsRejectedWithoutTheOptIn (0 ms)
+[ RUN      ] BookReplayDelay.EveryEntryPointSharesTheRejection
+[       OK ] BookReplayDelay.EveryEntryPointSharesTheRejection (0 ms)
+[ RUN      ] BookReplayDelay.OptInAdmitsSameCloseAndMeasuresItsLookAhead
+[       OK ] BookReplayDelay.OptInAdmitsSameCloseAndMeasuresItsLookAhead (0 ms)
+[ RUN      ] BookReplayDelay.DefaultConfigIsDelayOneWithoutSameClose
+[       OK ] BookReplayDelay.DefaultConfigIsDelayOneWithoutSameClose (0 ms)
+[----------] 4 tests from BookReplayDelay (0 ms total)
+
+[----------] 14 tests from BookReplayDelist
+[ RUN      ] BookReplayDelist.Pcs20130501FixtureRunsToTheEnd
+[measured] PCS last_value=309613.47 proceeds=216729.43 pnl(04-30->05-01)=-86691.77 final_nav=992931.34
+[       OK ] BookReplayDelist.Pcs20130501FixtureRunsToTheEnd (0 ms)
+[ RUN      ] BookReplayDelist.LegacyMissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNeverAbort
+[measured] venue=1 short=0 r=-0.30 proceeds=280.00 final_nav=880.0000
+[measured] venue=1 short=1 r=-0.30 proceeds=-280.00 final_nav=1120.0000
+[measured] venue=2 short=0 r=-0.55 proceeds=180.00 final_nav=780.0000
+[measured] venue=2 short=1 r=-0.55 proceeds=-180.00 final_nav=1220.0000
+[measured] venue=0 short=0 r=-0.55 proceeds=180.00 final_nav=780.0000
+[measured] venue=0 short=1 r=-0.30 proceeds=-280.00 final_nav=1120.0000
+[       OK ] BookReplayDelist.LegacyMissingCloseWithoutEvidenceIsShumwayFlaggedNeverZeroNeverAbort (0 ms)
+[ RUN      ] BookReplayDelist.SuppliedTerminalReturnTableWinsAndIsNotFlagged
+[       OK ] BookReplayDelist.SuppliedTerminalReturnTableWinsAndIsNotFlagged (0 ms)
+[ RUN      ] BookReplayDelist.FlaggedShortProceedsAreReportedApart
+[       OK ] BookReplayDelist.FlaggedShortProceedsAreReportedApart (0 ms)
+[ RUN      ] BookReplayDelist.InteriorGapCarriesAHeldLongAndShortAtTheLastPrint
+[measured] gap short=0 carried=400.00 final_nav=1080.0000 (pre-fix final_nav 780.0000)
+[measured] gap short=1 carried=-400.00 final_nav=920.0000 (pre-fix final_nav 1120.0000)
+[       OK ] BookReplayDelist.InteriorGapCarriesAHeldLongAndShortAtTheLastPrint (0 ms)
+[ RUN      ] BookReplayDelist.GapCarryBlocksTradesUntilThePrintAndSpansSessions
+[       OK ] BookReplayDelist.GapCarryBlocksTradesUntilThePrintAndSpansSessions (0 ms)
+[ RUN      ] BookReplayDelist.TableStillListedCarriesThenLiquidatesAtTheTableReturn
+[       OK ] BookReplayDelist.TableStillListedCarriesThenLiquidatesAtTheTableReturn (0 ms)
+[ RUN      ] BookReplayDelist.IntentOnAGapCarriedNameIsNotExecuted
+[       OK ] BookReplayDelist.IntentOnAGapCarriedNameIsNotExecuted (0 ms)
+[ RUN      ] BookReplayDelist.TableAndExchangeInputsAreValidated
+[       OK ] BookReplayDelist.TableAndExchangeInputsAreValidated (0 ms)
+[ RUN      ] BookReplayDelist.IntentPolicyTargetOnAVanishedNameIsUnfilledNotFatal
+[       OK ] BookReplayDelist.IntentPolicyTargetOnAVanishedNameIsUnfilledNotFatal (0 ms)
+[ RUN      ] BookReplayDelist.LocateBreachClipsToTheLocateAndReports
+[       OK ] BookReplayDelist.LocateBreachClipsToTheLocateAndReports (0 ms)
+[ RUN      ] BookReplayDelist.ShrunkenLocateHoldsTheCarriedShortWithoutGrowingOrCovering
+[       OK ] BookReplayDelist.ShrunkenLocateHoldsTheCarriedShortWithoutGrowingOrCovering (0 ms)
+[ RUN      ] BookReplayDelist.WorkingOrderIsClippedToTheCurrentLocateBeforePricing
+[       OK ] BookReplayDelist.WorkingOrderIsClippedToTheCurrentLocateBeforePricing (0 ms)
+[ RUN      ] BookReplayDelist.ClaimsPathKeepsAbortSemanticsAndRejectsExtensions
+[       OK ] BookReplayDelist.ClaimsPathKeepsAbortSemanticsAndRejectsExtensions (0 ms)
+[----------] 14 tests from BookReplayDelist (2 ms total)
+
+[----------] 4 tests from BookReplayCausal
+[ RUN      ] BookReplayCausal.FuturePricesAndFutureEventsCannotAlterMissingClosePrefix
+[       OK ] BookReplayCausal.FuturePricesAndFutureEventsCannotAlterMissingClosePrefix (0 ms)
+[ RUN      ] BookReplayCausal.SuppliedReturnOnlyAppliesWhenAvailableAtTheMissingValuation
+[       OK ] BookReplayCausal.SuppliedReturnOnlyAppliesWhenAvailableAtTheMissingValuation (0 ms)
+[ RUN      ] BookReplayCausal.UnevidencedMissingPriceStressIsAdverseForEveryVenueAndPosition
+[       OK ] BookReplayCausal.UnevidencedMissingPriceStressIsAdverseForEveryVenueAndPosition (0 ms)
+[ RUN      ] BookReplayCausal.RepeatedMissingPricesAndShortReentryCannotManufactureAlpha
+[       OK ] BookReplayCausal.RepeatedMissingPricesAndShortReentryCannotManufactureAlpha (0 ms)
+[----------] 4 tests from BookReplayCausal (1 ms total)
+
+[----------] 2 tests from BookLegacyReportCausal
+[ RUN      ] BookLegacyReportCausal.FuturePrintsCannotReclassifyAHoldingWindow
+[       OK ] BookLegacyReportCausal.FuturePrintsCannotReclassifyAHoldingWindow (0 ms)
+[ RUN      ] BookLegacyReportCausal.ReappearanceInsideHoldingWindowDoesNotUndoFirstMissingFallback
+[       OK ] BookLegacyReportCausal.ReappearanceInsideHoldingWindowDoesNotUndoFirstMissingFallback (0 ms)
+[----------] 2 tests from BookLegacyReportCausal (0 ms total)
+
+[----------] 3 tests from ReportBorrow
+[ RUN      ] ReportBorrow.BorrowZeroByteIdentical
+[       OK ] ReportBorrow.BorrowZeroByteIdentical (63 ms)
+[ RUN      ] ReportBorrow.BorrowDebitsShortLeg
+[       OK ] ReportBorrow.BorrowDebitsShortLeg (66 ms)
+[ RUN      ] ReportBorrow.BorrowTwiceRunByteIdentical
+[       OK ] ReportBorrow.BorrowTwiceRunByteIdentical (72 ms)
+[----------] 3 tests from ReportBorrow (202 ms total)
+
+[----------] 4 tests from SecurityTransition
+[ RUN      ] SecurityTransition.SignedStockCashAndFullPaymentPreserveAttributedExposureAndNav
+SECURITY_TRANSITION_MEASUREMENT {"schema":"atx-security-transition-measurement-v1","case_id":"long-canonical","inputs":{"old_units":2,"old_raw":10,"old_tri":30,"successor_units_before":-0.40000000000000002,"successor_raw":12,"successor_tri":60,"successor_shares_per_old_share":0.5,"cash_per_old_share":4.0491000000000001,"entitled_pre_split_share_equivalents":6,"settled_cash_before":100},"values":{"old_share_equivalents":6,"entitled_share_equivalents":6,"old_units_after":0,"old_units_delta":-2,"removed_old_marked_value":60,"successor_share_equivalents_delivered":3,"successor_units_added":0.60000000000000009,"successor_units_after":0.20000000000000007,"successor_value_before":-24,"successor_value_after":12.000000000000004,"incremental_successor_value":36,"pending_signed_cash_claim":24.294600000000003,"gross_receivable":24.294600000000003,"gross_payable":0,"settled_cash_after_transition":100,"transition_settled_cash_delta":0,"nav_before":136,"nav_after_transition":136.2946,"transition_value_bridge":0.29460000000000264,"payment_cash_delta":24.294600000000003,"payment_claim_delta":-24.294600000000003,"settled_cash_after_payment":124.2946,"claim_after_full_payment":0,"nav_after_payment":136.2946,"payment_nav_change":0},"residuals":{"representation_residual":0,"transition_accounting_residual":0,"payment_accounting_residual":0}}
+SECURITY_TRANSITION_MEASUREMENT {"schema":"atx-security-transition-measurement-v1","case_id":"short-canonical","inputs":{"old_units":-2,"old_raw":10,"old_tri":30,"successor_units_before":0.40000000000000002,"successor_raw":12,"successor_tri":60,"successor_shares_per_old_share":0.5,"cash_per_old_share":4.0491000000000001,"entitled_pre_split_share_equivalents":-6,"settled_cash_before":100},"values":{"old_share_equivalents":-6,"entitled_share_equivalents":-6,"old_units_after":0,"old_units_delta":2,"removed_old_marked_value":-60,"successor_share_equivalents_delivered":-3,"successor_units_added":-0.60000000000000009,"successor_units_after":-0.20000000000000007,"successor_value_before":24,"successor_value_after":-12.000000000000004,"incremental_successor_value":-36,"pending_signed_cash_claim":-24.294600000000003,"gross_receivable":0,"gross_payable":24.294600000000003,"settled_cash_after_transition":100,"transition_settled_cash_delta":0,"nav_before":64,"nav_after_transition":63.705399999999997,"transition_value_bridge":-0.29460000000000264,"payment_cash_delta":-24.294600000000003,"payment_claim_delta":24.294600000000003,"settled_cash_after_payment":75.705399999999997,"claim_after_full_payment":0,"nav_after_payment":63.705399999999997,"payment_nav_change":0},"residuals":{"representation_residual":0,"transition_accounting_residual":0,"payment_accounting_residual":0}}
+[       OK ] SecurityTransition.SignedStockCashAndFullPaymentPreserveAttributedExposureAndNav (0 ms)
+[ RUN      ] SecurityTransition.IndependentTriScalesPreserveEconomicsAndUnprovedBasisRejects
+SECURITY_TRANSITION_MEASUREMENT {"schema":"atx-security-transition-measurement-v1","case_id":"long-old_scale_8","inputs":{"old_units":0.25,"old_raw":10,"old_tri":240,"successor_units_before":-0.40000000000000002,"successor_raw":12,"successor_tri":60,"successor_shares_per_old_share":0.5,"cash_per_old_share":4.0491000000000001,"entitled_pre_split_share_equivalents":6,"settled_cash_before":100},"values":{"old_share_equivalents":6,"entitled_share_equivalents":6,"old_units_after":0,"old_units_delta":-0.25,"removed_old_marked_value":60,"successor_share_equivalents_delivered":3,"successor_units_added":0.60000000000000009,"successor_units_after":0.20000000000000007,"successor_value_before":-24,"successor_value_after":12.000000000000004,"incremental_successor_value":36,"pending_signed_cash_claim":24.294600000000003,"gross_receivable":24.294600000000003,"gross_payable":0,"settled_cash_after_transition":100,"transition_settled_cash_delta":0,"nav_before":136,"nav_after_transition":136.2946,"transition_value_bridge":0.29460000000000264,"payment_cash_delta":24.294600000000003,"payment_claim_delta":-24.294600000000003,"settled_cash_after_payment":124.2946,"claim_after_full_payment":0,"nav_after_payment":136.2946,"payment_nav_change":0},"residuals":{"representation_residual":0,"transition_accounting_residual":0,"payment_accounting_residual":0}}
+SECURITY_TRANSITION_MEASUREMENT {"schema":"atx-security-transition-measurement-v1","case_id":"long-successor_scale_4","inputs":{"old_units":2,"old_raw":10,"old_tri":30,"successor_units_before":-0.10000000000000001,"successor_raw":12,"successor_tri":240,"successor_shares_per_old_share":0.5,"cash_per_old_share":4.0491000000000001,"entitled_pre_split_share_equivalents":6,"settled_cash_before":100},"values":{"old_share_equivalents":6,"entitled_share_equivalents":6,"old_units_after":0,"old_units_delta":-2,"removed_old_marked_value":60,"successor_share_equivalents_delivered":3,"successor_units_added":0.15000000000000002,"successor_units_after":0.050000000000000017,"successor_value_before":-24,"successor_value_after":12.000000000000004,"incremental_successor_value":36,"pending_signed_cash_claim":24.294600000000003,"gross_receivable":24.294600000000003,"gross_payable":0,"settled_cash_after_transition":100,"transition_settled_cash_delta":0,"nav_before":136,"nav_after_transition":136.2946,"transition_value_bridge":0.29460000000000264,"payment_cash_delta":24.294600000000003,"payment_claim_delta":-24.294600000000003,"settled_cash_after_payment":124.2946,"claim_after_full_payment":0,"nav_after_payment":136.2946,"payment_nav_change":0},"residuals":{"representation_residual":0,"transition_accounting_residual":0,"payment_accounting_residual":0}}
+SECURITY_TRANSITION_MEASUREMENT {"schema":"atx-security-transition-measurement-v1","case_id":"long-independent_scales_8_4","inputs":{"old_units":0.25,"old_raw":10,"old_tri":240,"successor_units_before":-0.10000000000000001,"successor_raw":12,"successor_tri":240,"successor_shares_per_old_share":0.5,"cash_per_old_share":4.0491000000000001,"entitled_pre_split_share_equivalents":6,"settled_cash_before":100},"values":{"old_share_equivalents":6,"entitled_share_equivalents":6,"old_units_after":0,"old_units_delta":-0.25,"removed_old_marked_value":60,"successor_share_equivalents_delivered":3,"successor_units_added":0.15000000000000002,"successor_units_after":0.050000000000000017,"successor_value_before":-24,"successor_value_after":12.000000000000004,"incremental_successor_value":36,"pending_signed_cash_claim":24.294600000000003,"gross_receivable":24.294600000000003,"gross_payable":0,"settled_cash_after_transition":100,"transition_settled_cash_delta":0,"nav_before":136,"nav_after_transition":136.2946,"transition_value_bridge":0.29460000000000264,"payment_cash_delta":24.294600000000003,"payment_claim_delta":-24.294600000000003,"settled_cash_after_payment":124.2946,"claim_after_full_payment":0,"nav_after_payment":136.2946,"payment_nav_change":0},"residuals":{"representation_residual":0,"transition_accounting_residual":0,"payment_accounting_residual":0}}
+[       OK ] SecurityTransition.IndependentTriScalesPreserveEconomicsAndUnprovedBasisRejects (0 ms)
+[ RUN      ] SecurityTransition.OrderingIdentityAndAdmissionFailuresAreAtomic
+[       OK ] SecurityTransition.OrderingIdentityAndAdmissionFailuresAreAtomic (0 ms)
+[ RUN      ] SecurityTransition.AdmittedMarkToleranceAndAbsorbedAdditionsAreEnforced
+[       OK ] SecurityTransition.AdmittedMarkToleranceAndAbsorbedAdditionsAreEnforced (0 ms)
+[----------] 4 tests from SecurityTransition (2 ms total)
+
+[----------] Global test environment tear-down
+[==========] 197 tests from 29 test suites ran. (8848 ms total)
+[  PASSED  ] 197 tests.

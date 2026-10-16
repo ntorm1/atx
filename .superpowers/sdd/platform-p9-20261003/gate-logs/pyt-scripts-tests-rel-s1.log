@@ -1,0 +1,45 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 706 items
+
+scripts\tests\test_cycle_e2e.py ...............                          [  2%]
+scripts\tests\test_cycle_resume.py .....                                 [  2%]
+scripts\tests\test_cycle_scoring.py .....                                [  3%]
+scripts\tests\test_info_clock_rule.py .....                              [  4%]
+scripts\tests\test_no_python_mirror.py .....
+G-P5: 0 mirrored rule function(s) in 0 row(s) left for P9 lanes
+..                           [  5%]
+scripts\tests\test_no_versioned_scripts.py ....                          [  5%]
+scripts\tests\test_p9_al_sig_registrations.py ...........                [  7%]
+scripts\tests\test_research_cycle.py ..s.......................s........ [ 12%]
+...s.........................................................            [ 20%]
+scripts\tests\test_research_cycle_label_role.py ..                       [ 21%]
+scripts\tests\test_research_cycle_od3.py ............................... [ 25%]
+...................                                                      [ 28%]
+scripts\tests\test_research_cycle_roles.py ..........................    [ 32%]
+scripts\tests\test_research_ledger.py ......                             [ 32%]
+scripts\tests\test_research_mine.py .................................... [ 37%]
+......                                                                   [ 38%]
+scripts\tests\test_research_spec.py .................................... [ 43%]
+...................................................                      [ 51%]
+scripts\tests\test_research_store_hook.py ..............                 [ 53%]
+scripts\tests\test_research_wave.py ...................                  [ 55%]
+scripts\tests\test_wave_driver.py ............................           [ 59%]
+scripts\tests\test_wave_eval_verb.py .......                             [ 60%]
+scripts\tests\test_wave_gross_match.py ............                      [ 62%]
+scripts\tests\test_wave_hardening.py ........                            [ 63%]
+scripts\tests\test_wave_kinds.py ....................................... [ 69%]
+........................................................................ [ 79%]
+........................................................................ [ 89%]
+.........                                                                [ 90%]
+scripts\tests\test_wave_queue.py ......                                  [ 91%]
+scripts\tests\test_wave_review.py .....................                  [ 94%]
+scripts\tests\test_wave_review_minor.py .........                        [ 95%]
+scripts\tests\test_wave_scoreboard.py ...                                [ 96%]
+scripts\tests\test_wave_sign_verb.py .....................               [ 99%]
+scripts\tests\test_wave_speed.py .....                                   [100%]
+
+================= 703 passed, 3 skipped in 1094.65s (0:18:14) =================

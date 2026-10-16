@@ -1,0 +1,44 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+scripts\tests\test_cycle_e2e.py F                                        [100%]
+
+================================== FAILURES ===================================
+___ test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun ___
+
+    @pytest.mark.skipif(not BIN and not REQUIRED, reason="set ATX_EQUITY_BIN to the directory of the equity executables")
+    def test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun():
+        if not BIN:
+            pytest.fail("ATX_CANARY_REQUIRED=1 but ATX_EQUITY_BIN is not set")
+        if BUILD_TYPE not in TW.BUILD_TYPES:
+            pytest.fail(f"ATX_EQUITY_BUILD_TYPE {BUILD_TYPE!r} is not one of {TW.BUILD_TYPES}")
+        if not accepts_no_git():
+            if REQUIRED:
+                pytest.fail("research_cycle.py does not accept --no-git (contract K3)")
+            pytest.skip("research_cycle.py does not accept --no-git yet (contract K3, lane A)")
+        # A short root directly under the system temp dir, not pytest's tmp_path: the candidate cache nests
+        # <role sha>/fp_*/ic1_*/<id>.<key>.json (about 150 characters), and under tmp_path the IC runner's cache
+        # publish crosses Windows MAX_PATH (260) and fails with "The system cannot find the path specified".
+>       root = fresh_root()
+               ^^^^^^^^^^^^
+
+scripts\tests\test_cycle_e2e.py:452: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+parent = None
+
+    def fresh_root(parent: Path | None = None) -> Path:
+        """A new empty root outside the repository (--no-git is accepted only there)."""
+        root = Path(tempfile.mkdtemp(prefix="tiny-world-", dir=parent))
+        if root.resolve().is_relative_to(REPO.resolve()):
+>           raise RuntimeError(f"temporary root {root} lies inside the repository")
+E           RuntimeError: temporary root C:\atx-wt\pool-2\build-equity\pt\pr\t\tiny-world-luarx0j_ lies inside the repository
+
+scripts\tests\test_cycle_e2e.py:216: RuntimeError
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_cycle_e2e.py::test_cycle_e2e_goldens_ic_reference_redundant_copy_and_idempotent_rerun
+============================== 1 failed in 0.41s ==============================

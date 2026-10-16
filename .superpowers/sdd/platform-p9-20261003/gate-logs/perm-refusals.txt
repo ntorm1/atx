@@ -1,0 +1,15 @@
+Permission refusals of root GATE agent 2 (PERM-1: never retried, never replaced by a same-effect command)
+
+1. 2026-10-16 ~13:30Z. Context: `git add -f -- <sprint dir>/gate-logs ...` (the step-2 records commit) also staged an
+   editor-side type-checker cache that had appeared inside `gate-logs/tools/.mypy_cache/` (133 files; not written by
+   any command of this agent; git-ignored). The unstage of that cache was refused by the permission system:
+
+   cd /c/atx-wt/pool-2 && D=.superpowers/sdd/platform-p9-20261003 && git reset -q -- $D/gate-logs/tools/.mypy_cache && rtk proxy git diff --cached --name-only | rtk proxy grep -c -E "mypy_cache|__pycache__"; rtk proxy git diff --cached --name-only | wc -l; rtk proxy git diff --cached --name-only | rtk proxy grep "gate-logs" | head -70
+
+   Not retried; no `git rm --cached` or other unstage substitute was used. State left: those 133 paths
+   (`.superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache/**`) stay STAGED in pool-2's index, never
+   committed. This agent's commits from then on name explicit pathspecs with
+   `:(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache` so the staged cache is never swept;
+   `git show --stat` of each such commit is checked for `mypy_cache` (0). The PM / owner may unstage them by hand
+   (`git -C C:/atx-wt/pool-2 reset -q -- .superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache`). Until
+   then any bare `git commit` in pool-2 would commit them (PAR-1 pathspec commits are unaffected).

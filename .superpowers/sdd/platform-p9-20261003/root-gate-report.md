@@ -185,3 +185,200 @@ recorded here): Release `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDige
 Debug gtests whole; `ctest -L atx_research` / `-L atx_equity_strategy` on both trees; `scripts/tests` seed 1; the stage
 chain; `atx-engine/tools`; `atx-impl/tools`; `atx-impl/strategies`; the fields fixture pytests; the mirror guard alone;
 the three cov-diff runs. Commands: `handoff-root-gate-1.md` "Exact next step".
+
+---
+
+## Chain agent 2 (RESUME 13, 2026-10-16; `r13-prompts/gate-prompt-2.md`; rulings R13-RESUME, GATE-TMP, GATE-RELCACHE, COMPOSE-1a, HOST-6)
+
+Started from `handoff-root-gate-1.md`. First act (R13-RESUME, DIRTY-1 form): agent 1's five placeholders (and the
+sixth, `@@PY_S0_LOG@@` in its `integration-log.md` row) filled from `gate-logs/gt-exits.txt` / `pyt-exits.txt` only;
+agent 1's records and the PM's files committed as they stood: docs commit `0c8bc8da`.
+
+### Step 0 re-verification (agent 2; `gate-logs/start-state-2.txt`, 2026-10-16T12:36:59Z)
+
+- HEAD `0c8bc8da` (docs); code head `06dc9e5a`: `git diff --name-only 06dc9e5a..HEAD` outside `.superpowers/` = 0
+  files. `git status --porcelain` = the five untracked PNGs only. First-parent merges down from `06dc9e5a`: SQL4,
+  SQL3 item 5, AL-CLOCK fix 1, A4 pre-flip, SIGN x3, D3W-PB x3, OD3P follow-up, B2 fix 2, COV-MV, AL-CLOCK (14 listed).
+- Trial ledger 133 lines, sha256 `27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554`.
+- `build-equity/research-store/` absent (SQL3-2).
+- GATE-IDX file `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` **still present** (73,728 bytes, sha256
+  `3a177dfd...c6f0`).
+- `ucrtbase.dll` 10.0.26100.7623 `2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF` (= CRT-2 record,
+  unchanged); `ucrtbased.dll` 10.0.22000.832 `19E79E91...F48D` (unchanged).
+- Host: free RAM 4,965 of 16,069 MB, commit free 9,034 MB, C: 67.8 GB free; our build processes 0; foreign: the
+  atx-vol sessions of pools 33 / 34 (HOST-6: a `cmake --build C:\atx-wt\pool-34\build-vol-rel-avx2` and a pool-33
+  quote benchmark started during the suites; never touched).
+- SPDLOG-RELINK re-hash (`gate-logs/tools/exe_sha_end.py`): **27 / 27 Release (p9-3f) and 27 / 27 Debug (p9-3g)
+  `disk = receipt`**: the exe table of step 1 stands, no re-receipt needed; next free tag `p9-3h` unused.
+
+### GATE-TMP: the tool change and where the short root sits (`gate-logs/tools/CHANGES.txt`)
+
+`gate-logs/tools/pyt.sh` now takes a short invocation name and puts the basetemp (`<root>/b`) AND TMP / TEMP of every
+invocation under ONE fresh short root, deleted by literal name after its record (the one logged change). The ruled
+root `C:/atx-wt/pool-2/build-equity/pt/<invocation>` lies **inside pool-2's git work tree**, where the code under test
+refuses a tiny-world root by design: `scripts/tests/test_cycle_e2e.py:212-217` (`fresh_root`: "temporary root ... lies
+inside the repository") and `scripts/research_tree.py:75-81` (`no_git_refusal`: `research_cycle.py --no-git`, contract
+K3, only for a root outside any git repository; the `--no-git` tests root tiny worlds under the basetemp too). Probe on
+the ruled root, the one e2e node (`GATE_PT=ruled`): **1 failed**, `RuntimeError: temporary root
+C:\atx-wt\pool-2\build-equity\pt\pr\t\tiny-world-luarx0j_ lies inside the repository`
+(`gate-logs/pyt-tmp-probe-ruled-root-s0.log`; probe root deleted by literal name). Decision within GATE-TMP's purpose
+(a short TMP root so W1-I1 does not refuse; the slip is the tool's, not the code's): every run of record uses the
+short root `C:/Users/natha/AppData/Local/Temp/g2<inv>` (the OS temp dir, outside any work tree, where pytest and
+`tempfile` put these tiny worlds when nothing overrides TMP, as at every ROOT-1 run before agent 1): deepest tiny-world
+IC cache path 247 <= 250 (agent 1's refusal: 327 with a 138-character root; the tail is 189).
+
+### Step 2, agent 2: `scripts/tests` whole, seeds 0 (again) and 1 (GATE-TMP; Release exes, `GATE_BUILD=rel`)
+
+Run side by side (GATE-PAR: separate roots `g2s0` / `g2s1`), beside the Debug gtests; head `0c8bc8da` (code
+`06dc9e5a`), code-dirty none, ENV-1 0 hits each (`gate-logs/pyt-exits.txt`).
+
+| invocation | seed | result | wall | log |
+|---|---|---|---|---|
+| `scripts/tests` (whole), agent 1's run (TMP under the session scratchpad) | 0 | exit 1: 1 failed (GATE-TMP's cause), 702 passed, 3 skipped | 36,486 s (spans OWNER STOP 12; not a timing finding) | `pyt-scripts-tests-rel-s0.log` |
+| probe: the e2e node alone on the ruled root inside the work tree | 0 | 1 failed: `fresh_root` "lies inside the repository" (the test's own guard; see GATE-TMP above) | 1 s | `pyt-tmp-probe-ruled-root-s0.log` |
+| `scripts/tests` (whole), re-run on the short root `g2s0` | 0 | **exit 0: 703 passed, 3 skipped, 0 failed**; `test_cycle_e2e.py` 15 / 15 incl. the GATE-TMP case | 1,098 s | `pyt-scripts-tests-rel-s0-rerun.log` |
+| `scripts/tests` (whole), short root `g2s1` | 1 | **exit 0: 703 passed, 3 skipped, 0 failed** | 1,096 s | `pyt-scripts-tests-rel-s1.log` |
+
+GATE-TMP closes: the one red of agent 1's run was the tool's TMP root; on the short root the case passes at both
+seeds. No red to attribute. The 3 skips are all in `scripts/tests/test_research_cycle.py`, opt-in live-root cases
+(a `-rs` run of that file, 93 passed / 3 skipped, `gate-logs/pyt-research-cycle-rs-rel-s0.log`): `:56`, `:706`, `:946`
+"set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files" (the same class as M2j's 4 skips; named, pre-existing).
+
+### Step 2, agent 2: the other pytest invocations (each its own; Release exes; seed 0; `gate-logs/pyt-exits.txt`)
+
+Two chains side by side (`tools/pyt_batch.sh A|B`, GATE-PAR), beside the Debug gtests; head `aef2e033` (the PRE
+agent's pathspec commit of `p9-prereg.md` above root's `0c8bc8da`; code `06dc9e5a`), code-dirty none, ENV-1 0 hits.
+
+| invocation | result | log |
+|---|---|---|
+| `atx-engine/tools/test_stage_chain.py` alone | **10 passed** | `pyt-stage-chain-rel-s0.log` |
+| `atx-engine/tools` (the other 42 `test_*.py`, explicit paths; without the stage chain and the two fields files below) | **391 passed** | `pyt-engine-tools-rel-s0.log` |
+| `scripts/tests/test_no_python_mirror.py` alone (IC review item 2) | **7 passed**; "G-P5: 0 mirrored rule function(s) in 0 row(s) left for P9 lanes" | `pyt-mirror-guard-rel-s0.log` |
+| `atx-impl/strategies` | **14 passed** | `pyt-impl-strategies-rel-s0.log` |
+| fields: the holdings pair (`research_fields_holdings/test_holdings_{engine_path,fixture}.py`) | **4 passed** | `pyt-fields-holdings-pair-rel-s0.log` |
+| fields: the four `research_fields/test_*.py` | **26 passed** | `pyt-fields-four-rel-s0.log` |
+| fields: `atx-engine/tools/test_research_fields_holdings.py` alone | **16 passed** | `pyt-fields-tools-holdings-rel-s0.log` |
+| fields: `atx-engine/tools/test_field_registry.py` alone | **37 passed** | `pyt-field-registry-rel-s0.log` |
+| `atx-impl/tools` (g2 TMP) | exit 1: **1 failed**, 769 passed: `test_mega_report_v8.py::test_v7_config_renders_the_pre_v8_bytes`, `assert 109873 == 109868` | `pyt-impl-tools-rel-s0.log` |
+
+The `atx-impl/tools` red is the gate tool's again, not the code's: that test asserts the rendered html's LENGTH
+(`V7_GOLDEN_BYTES` 109868) before it normalises the `tempfile.mkdtemp` root out of the html, so it holds only for a TMP
+of exactly 33 characters (the OS default `C:\Users\natha\AppData\Local\Temp`); the g2 TMP is 38 characters: +5, the
+difference. The node alone (no load): on the g2 TMP 1 failed (109873, deterministic); on the OS TMP 1 passed
+(`pyt-mega-v7-node-{g2tmp,systmp}-s0.log`; `tools/CHANGES.txt` second entry, mode `GATE_PT=systmp`). Not attributed
+to a merge; P10 note (the test should normalise before it measures). The whole `atx-impl/tools` run of record is the
+re-run alone under `GATE_PT=systmp`:
+
+| invocation | result | log |
+|---|---|---|
+| `atx-impl/tools` (whole), alone, basetemp `g2i2`, TMP = the OS temp dir | **exit 0: 770 passed, 0 skipped, 0 failed** (the fitter `RealExecutables` and engine-fit real-exe cases ran on the Release admission / composition exes: 0 skipped; the n37 test on the Release verb passed, B2-N37 item 4) | `pyt-impl-tools-systmp-rel-s0.log` |
+
+### Step 2, agent 2: Debug gtests, whole targets (p9-3g; `tools/suite_gt.sh dbg`; `gate-logs/gt-exits.txt`, `gt-dbg-<target>.log`)
+
+Every exe re-hashed `disk = receipt` before the run (step 0 above); ENV-1 0 hits.
+
+| target | ran | passed | skipped (names) | failed | disabled |
+|---|---|---|---|---|---|
+| atx-impl-strategy-ic-tests | 261 | 261 | 0 | 0 | 0 |
+| atx-impl-strategy-target-tests | 421 | 421 | 0 | 0 | 1 |
+| atx-impl-strategy-tests | 46 | 46 | 0 | 0 | 0 |
+| atx-impl-strategy-mine-tests | 44 | 44 | 0 | 0 | 0 |
+| atx-impl-tests | 1,272 | 1,267 | 5 (the same five real-data cases as Release) | 0 | 0 |
+| atx-engine-alpha-tests | 783 | 783 | 0 (Debug runs `AlphaLitGolden_ExistingOps.EveryPreW2OpcodeDigestIsPinned`, the Debug-CRT golden, and `AlphaVm_ZeroAlloc.*`: both OK) | 0 | 1 |
+| atx-engine-factory-tests | 396 | 396 | 0 | 0 | 0 |
+| atx-engine-book-tests | 197 | 197 | 0 | 0 | 0 |
+| atx-engine-risk-tests `Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery` | 432 | 431 | 1: `RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery` | 0 | 0 |
+| atx-engine-research-fields / admission / store / catalog / composition / ledger / eval tests | 110 / 16 / 27 / 30 / 21 / 16 / 27 | all | 0 | 0 | 0 |
+
+**Debug: 16 / 16 targets exit 0; 4,099 run, 0 failed, 6 skipped (all named, pre-existing).** Golden
+`0x889874a3b9b29c55` (`kGoldenDigest`, `atx-engine/tests/factory/factory_nsga_search_test.cpp:77`,
+`factory_signal_fitness_test.cpp:79`): `SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest`,
+`...ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount` (1 and 4 workers), `NsgaSearch.ScalarRaw_ReproducesGoldenDigest`,
+`NsgaSearch.ScalarRaw_DigestInvariantAcrossWorkers`, `NsgaSearch.DeflateSelection_DefaultIsOff_ByteIdentical`: **OK
+on Debug and on Release** (step 3's golden item holds).
+
+### Step 2, agent 2: `ctest -L` through the wrapper (`tools/ctest_label.sh`; `scripts/atx-build.ps1 -Ctest -Jobs 1`; `gate-logs/ctest-exits.txt`)
+
+| tree | label | result | log |
+|---|---|---|---|
+| Release `build-equity-rel` | `atx_research` | 100% passed, 0 failed out of 291 | `ctest-rel-atx_research.log` |
+| Release | `atx_equity_strategy` | 100% passed, 0 failed out of 728; 1 "Not Run (Disabled)": `atx-impl-strategy-target-tests.CovStageDigest.DumpPerStageOnTheLaneFixture` (the target's one DISABLED test) | `ctest-rel-atx_equity_strategy.log` |
+| Debug `build-equity` | `atx_research` | 100% passed, 0 failed out of 291 | `ctest-dbg-atx_research.log` |
+| Debug | `atx_equity_strategy` | 100% passed, 0 failed out of 728; the same 1 disabled | `ctest-dbg-atx_equity_strategy.log` |
+
+G-P4 (CTest registration): both labels register and run on both trees (291 / 728 tests).
+
+### TEST-2 (owner 2026-10-16; ledger :972-973; the PM's message to this agent) and what it changes here
+
+TEST-2 cuts every remaining whole-suite item of step 2. It reached this agent AFTER every item of its cut list had
+already completed and been logged (Debug gtests whole, the four `ctest -L` runs, `scripts/tests` seed 1 and the
+seed-0 re-run, the stage chain, `atx-engine/tools`, `atx-impl/tools` (and its re-run), `atx-impl/strategies`, the
+fields pytests, the mirror guard alone; the times are in `gt-exits.txt`, `ctest-exits.txt`, `pyt-exits.txt`, last
+line 13:25Z). Per the PM's message ("anything of step 2 you have ALREADY completed and logged before reading this:
+keep it in the report as run; stop nothing mid-invocation, start NO new whole-suite invocation") they stand above as
+run; no whole-suite invocation was started after it. Cut list items not run at the gate: **none left** (all had run).
+
+Focused check (a), GATE-TMP's one red as the SINGLE test, Release exes, seed 0:
+
+| root | basetemp / TMP | result | log |
+|---|---|---|---|
+| the ruled short root `C:/atx-wt/pool-2/build-equity/pt/pr` (inside pool-2's work tree) | `pt/pr/b` / `pt/pr/t` | 1 failed at the test's own setup: `fresh_root` "temporary root ... lies inside the repository" | `pyt-tmp-probe-ruled-root-s0.log` |
+| the short root outside the work tree `C:/Users/natha/AppData/Local/Temp/g2e1` | `g2e1/b` / `g2e1` | **1 passed** (5.9 s) | `pyt-gatetmp-single-g2-s0.log` |
+
+ROOT-1 attribution of the ruled-root failure: the refusing lines are `scripts/tests/test_cycle_e2e.py:212-217`
+(`fresh_root`, commit `d6083b33`, 2026-09-29) and `scripts/research_tree.py:75-81` (`no_git_refusal`, `fa61c67f`,
+2026-09-29), both ancestors of the wave-1 gate head `3c9eeb01`: no wave-2 / wave-3 merge commit touches them, so no
+lane is attributable; it is the test's v8-era precondition (contract K3: a tiny-world root outside any git
+repository), which no root inside `C:/atx-wt/pool-2/` can meet. **Verdict (a): the seed-0 record is green with the
+cause stated** (the GATE-TMP red was the tool's TMP root; the case passes alone on a short root outside the work
+tree and inside both whole runs above). Open question for the PM: GATE-TMP / TEST-2 name a root inside the work tree;
+this agent used the nearest root that the test admits (stated, not a code change).
+
+Focused check (b), GATE-COVDIFF: the COV-9 role check first (`gate-logs/cov9-role-check.txt`, 13:26:52Z: role
+manifest `e1c67101...95f4`, `universe.delisting.returns_applied = false`, 0 of 990 events true: **S9 HOLDS**), then
+`atx-equity-strategy-risk cov-diff --legacy <store>` on the step-1 Release exe (p9-3f `0c110534...586b`, = receipt
+before and after) through the bounded runner (`--seconds 600 --max-rss-mib 2048 --build-type Release`; alone on the
+host for our side; `tools/covdiff_run.sh`; `gate-logs/covdiff-runs.txt`, `covdiff-<name>-stdout.log`,
+`receipt-p9-gate-covdiff-<name>.json`):
+
+| store | runner | verb exit | the verb's line | `store` block (SQL3-2) |
+|---|---|---|---|---|
+| `build-equity/p9-m2i-dcov-v11` | completed, 1.3 s, peak 501 MiB | **0** | `legacy equal: 1405 sessions factor_covariance.f64 specific_variance.f64 style_exposures.f32 industry_slot.u8` | none (receipt, start) |
+| `build-equity/p9-m2i-dcov-covv1` | completed, 1.3 s, peak 501 MiB | **0** | the same line | none |
+| `build-equity/p9-m2d-cov-risk-container` | completed, 1.6 s, peak 501 MiB | **0** | the same line | none |
+
+With agent 1's S-7 hand check (every manifest `files` entry and the container equal the bytes on disk; manifests =
+pins) and `v8-risk-lo3-v10` cited from M2d (`handoff-root-m2d.md:23`, `m2d-logs/cov-diff-legacy.log`: "legacy equal:
+1405 sessions ...", exit 0; not re-run, as ruled), **GATE-COVDIFF holds**. Focused check (c): D3-Q1a's and
+COMPOSE-1a's own evidence is their runs (step 3); no extra gtest filter was needed.
+
+**Step 2 state: HOLDS.** 0 failed in every suite of record (Release and Debug gtests whole, both ctest labels on both
+trees, `scripts/tests` seeds 0 and 1, the stage chain, `atx-engine/tools`, `atx-impl/tools`, `atx-impl/strategies`, the
+fields pytests, the mirror guard), named skips only; the two reds seen were the gate tool's TMP root (GATE-TMP), each
+shown so; GATE-COVDIFF holds. Known-red set EMPTY.
+
+### Step 3, agent 2: COMPOSE-1a, the store-backed parse check (`gate-logs/compose-1a.txt`, `tools/compose_1a.py`)
+
+Synthetic only (no product code, no real data): the tiny world (`scripts/tests/fixtures/tiny_world.py`, seed 7) built
+into `build-equity/p9-gate-compose-tw` (role `2b34283c...6c31`, fields `395f82f7...a1ac`, = the template's locked
+pins); the step-1 Release `atx-equity-strategy-risk` (p9-3f `0c110534...586b`) `risk ... --emit-exposures all
+--emit-container --bias-families extended --recipe atx-cov-v1` on it: **exit 0**, a store
+`build-equity/p9-gate-compose-store` (manifest `5a4b7b9b...1555`, container `model.atxcov` written; 656 sessions x 64
+names, 0 fitted / 0 forecast sessions on so short a world). Then the Release NAV exe (p9-3f `255b58ac...3565`) on the
+tiny world's NAV argv (`tiny.json` nav block; `--combined` names a placeholder file: every check below comes before the
+blend load), one not-yet-existing `--output` each:
+
+| case | flags added | exit | the refusal line | stage reached |
+|---|---|---|---|---|
+| COMPOSE-1 | `--rate info-clock-rate-v1 --risk-model <tiny store> --risk-model-sha256 5a4b7b9b... --target-rule mv-aim-v1` | 1 | `InvalidArgument: nav replay: fields lack ea_days_since` | v7 parse, the store open (role pin checked), the base parse and the run checks pass; refused at the fields load: the tiny world has no `ea_days_since` (the rate's clock) |
+| control: `mv-aim-v1` alone | the store flags + `--target-rule mv-aim-v1` | 1 | `InvalidArgument: target replay: manifest missing/oversized` | past the fields load; stops at the placeholder blend |
+| control: the rate alone | `--rate info-clock-rate-v1` | 1 | `InvalidArgument: nav replay: fields lack ea_days_since` | the same stop as COMPOSE-1 |
+| control: two stores | COMPOSE-1's flags + a second `--risk-model` | 2 | `InvalidArgument: nav v7: duplicate/missing value: --risk-model` | refused at the v7 parse (the M-1 refusal) |
+
+No output directory was created by any case. **COMPOSE-1a outcome: ACCEPT at the gate's store-backed parse check**
+(the two rules together pass the parse and the store open with a real store; the one refusal is the tiny world's
+missing clock field, identical with the rate alone, i.e. a data refusal, not a flag conflict). So P9-MV does NOT lapse
+under COMPOSE-1 at the gate. Stated limit: `validate_nav_config` / `validate_nav_input` run after the fields and blend
+loads (`book/nav_lockstep.cpp:238-250`), which the tiny world cannot reach with the rate on; those checks of the two
+rules together are P9-MV's own preflight (COMPOSE-PRE: a refusal there lapses P9-MV at 0 before any read). The tiny
+world and its store are deleted by literal name after this record.

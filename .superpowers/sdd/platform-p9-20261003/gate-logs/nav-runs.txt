@@ -1,0 +1,2 @@
+printspec x5 exe 255b58acedf7df82 exit 0 stderr-bytes 0 spec x5.navspec.json bytes 1473 sha256 53fd737d0aee52b4083a8bae6cf3052ad0c7a6579b3f7c608efa22e3aa7af67f
+printspec yf0 exe 255b58acedf7df82 exit 0 stderr-bytes 0 spec yf0.navspec.json bytes 1478 sha256 a793e1832d3421d51a8e25fff69a2f65e01b63a787bc1ec241832b1f5fa00bb4

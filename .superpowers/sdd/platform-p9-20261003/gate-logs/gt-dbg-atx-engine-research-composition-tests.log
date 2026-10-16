@@ -1,0 +1,60 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 21 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from ResearchComposition
+[ RUN      ] ResearchComposition.NumpyPairwiseSumIsNumpys
+[       OK ] ResearchComposition.NumpyPairwiseSumIsNumpys (35 ms)
+[ RUN      ] ResearchComposition.ErcClosedFormTwoThemes
+[       OK ] ResearchComposition.ErcClosedFormTwoThemes (0 ms)
+[ RUN      ] ResearchComposition.SleeveCovarianceClosedForm
+[       OK ] ResearchComposition.SleeveCovarianceClosedForm (0 ms)
+[ RUN      ] ResearchComposition.CapTraceRecordsEveryPass
+[       OK ] ResearchComposition.CapTraceRecordsEveryPass (0 ms)
+[ RUN      ] ResearchComposition.TierRegradesAreRuleFive
+[       OK ] ResearchComposition.TierRegradesAreRuleFive (0 ms)
+[ RUN      ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder
+[       OK ] ResearchComposition.ThemeResidOrderIsTheRegisteredOrder (0 ms)
+[ RUN      ] ResearchComposition.FitEqualsPythonFixture
+[       OK ] ResearchComposition.FitEqualsPythonFixture (5 ms)
+[ RUN      ] ResearchComposition.FitRefusesMalformedSpecs
+[       OK ] ResearchComposition.FitRefusesMalformedSpecs (3 ms)
+[ RUN      ] ResearchComposition.CliPublishesTheFit
+[       OK ] ResearchComposition.CliPublishesTheFit (43 ms)
+[ RUN      ] ResearchComposition.WeightsSchemaIds
+[       OK ] ResearchComposition.WeightsSchemaIds (0 ms)
+[----------] 10 tests from ResearchComposition (89 ms total)
+
+[----------] 4 tests from WalkForward
+[ RUN      ] WalkForward.ExpandingMeanClosedForm
+[       OK ] WalkForward.ExpandingMeanClosedForm (2 ms)
+[ RUN      ] WalkForward.NoRowUsesFutureDecisions
+[       OK ] WalkForward.NoRowUsesFutureDecisions (22 ms)
+[ RUN      ] WalkForward.RefusesBeforeAnyRow
+[       OK ] WalkForward.RefusesBeforeAnyRow (1 ms)
+[ RUN      ] WalkForward.CliWritesTheRowsAndRefuses
+[       OK ] WalkForward.CliWritesTheRowsAndRefuses (116 ms)
+[----------] 4 tests from WalkForward (142 ms total)
+
+[----------] 3 tests from MomVolman
+[ RUN      ] MomVolman.SleeveIsTsmomStepOneForPriceMomentum
+[       OK ] MomVolman.SleeveIsTsmomStepOneForPriceMomentum (2 ms)
+[ RUN      ] MomVolman.RefusalsAndWalkForwardRows
+[       OK ] MomVolman.RefusalsAndWalkForwardRows (19 ms)
+[ RUN      ] MomVolman.CliWritesTheSleeveBlockOnlyWhenAsked
+[       OK ] MomVolman.CliWritesTheSleeveBlockOnlyWhenAsked (46 ms)
+[----------] 3 tests from MomVolman (68 ms total)
+
+[----------] 4 tests from AimV2
+[ RUN      ] AimV2.ClosedFormOnAPlantedModel
+[       OK ] AimV2.ClosedFormOnAPlantedModel (0 ms)
+[ RUN      ] AimV2.ReadsNoFactorValue
+[       OK ] AimV2.ReadsNoFactorValue (0 ms)
+[ RUN      ] AimV2.RefusalsBeforeAnyFit
+[       OK ] AimV2.RefusalsBeforeAnyFit (3 ms)
+[ RUN      ] AimV2.CliWritesGainsAndThemeWeightsOnlyForIt
+[       OK ] AimV2.CliWritesGainsAndThemeWeightsOnlyForIt (26 ms)
+[----------] 4 tests from AimV2 (31 ms total)
+
+[----------] Global test environment tear-down
+[==========] 21 tests from 4 test suites ran. (332 ms total)
+[  PASSED  ] 21 tests.

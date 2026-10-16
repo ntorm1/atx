@@ -818,3 +818,25 @@ at start and at the stop (nothing naming that cache ran). Known-red set **EMPTY*
 | 3-7 | | not reached | |
 
 G-P ticks: none changed by this agent (the gate's G-P rows are step 7). Next free build tag **p9-3h**.
+
+### GATE (RESUME 13), chain agent 2, 2026-10-16
+
+Gate head (code) **`06dc9e5a`**; docs commits beside root by pathspec (PAR-1: IDX-CHECK `73be0a13`, PRE B1
+`aef2e033`). Report: `root-gate-report.md` "Chain agent 2"; logs `gate-logs/`. Trial ledger 133 lines `27e40f9f`;
+`build-equity/research-store/` absent; GATE-IDX file present at start. Known-red set **EMPTY**. TEST-2 (owner,
+2026-10-16) reached this agent after every whole-suite item below had completed: they stand as run.
+
+| step | item | result | evidence |
+|---|---|---|---|
+| 0 | re-verification, SPDLOG-RELINK re-hash | holds; 27 / 27 + 27 / 27 `disk = receipt`; `ucrtbase.dll` unchanged | `gate-logs/start-state-2.txt` |
+| 2 | GATE-TMP tool change (`tools/pyt.sh`, `tools/CHANGES.txt`) | short root outside the work tree (the ruled root inside it is refused by the e2e test's own guard: probe 1 failed) | `pyt-tmp-probe-ruled-root-s0.log` |
+| 2 | `scripts/tests` seed 0 re-run / seed 1, Release exes | 703 passed, 3 skipped, 0 failed each (GATE-TMP case passes) | `pyt-scripts-tests-rel-s{0-rerun,1}.log` |
+| 2 | GATE-TMP case alone (TEST-2 (a)) | 1 passed on the short root outside the tree | `pyt-gatetmp-single-g2-s0.log` |
+| 2 | Debug gtests, 16 whole targets | 4,099 ran, 0 failed, 6 named skips | `gate-logs/gt-exits.txt` |
+| 2 | `ctest -L atx_research` / `atx_equity_strategy`, Release and Debug | 291 / 728 each, 0 failed (1 disabled) | `gate-logs/ctest-exits.txt` |
+| 2 | stage chain; `atx-engine/tools` rest; mirror guard; `atx-impl/strategies`; fields pytests (4 invocations) | 10; 391; 7; 14; 4 / 26 / 16 / 37: all passed | `gate-logs/pyt-exits.txt` |
+| 2 | `atx-impl/tools` | g2 TMP: 1 failed (a TMP-length golden: `test_mega_report_v8.py::test_v7_config_renders_the_pre_v8_bytes`, +5 = the TMP length delta); re-run alone on the OS TMP: 770 passed, 0 skipped | `pyt-impl-tools{,-systmp}-rel-s0.log`, `tools/CHANGES.txt` |
+| 2 | GATE-COVDIFF: COV-9, three `cov-diff --legacy` bounded runs | S9 holds; exit 0 x 3, "legacy equal: 1405 sessions" (4 files) | `cov9-role-check.txt`, `covdiff-runs.txt` |
+| 3 | COMPOSE-1a (tiny world, Release risk store, Release NAV parse) | ACCEPT at the store-backed parse stage; stop = the tiny world's missing `ea_days_since` (same as the rate alone) | `gate-logs/compose-1a.txt` |
+| 3 | D3-Q2 / D3-S1 greps over `scripts/specs/p9/` | 0 / 0 | `gate-logs/d3-greps.txt` |
+| 3 | golden `0x889874a3b9b29c55` at 1 and 4 workers; canaries | OK on Debug and Release (whole-target runs); canaries 15 / 15 both builds (step 1) | `gt-{rel,dbg}-atx-engine-factory-tests.log`, `gt-{rel,dbg}-atx-impl-strategy-mine-tests.log` |
