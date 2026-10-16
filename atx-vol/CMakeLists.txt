@@ -60,6 +60,7 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/american_discrete_div.cpp
     src/pricing/american_markov.cpp
     src/pricing/american_markov_batch.cpp
+    src/pricing/american_markov_pwl.cpp
     src/pricing/pwl_strike.cpp
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp

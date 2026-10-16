@@ -36,7 +36,8 @@ add_test(NAME atx-vol-quote-slice
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
 
 add_executable(atx-vol-american-markov-tests
-    american_markov_test.cpp american_markov_batch_test.cpp pwl_strike_test.cpp)
+    american_markov_test.cpp american_markov_batch_test.cpp
+    american_markov_pwl_test.cpp pwl_strike_test.cpp)
 target_link_libraries(atx-vol-american-markov-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 add_test(NAME atx-vol-american-markov COMMAND atx-vol-american-markov-tests)
@@ -86,6 +87,7 @@ add_executable(atx-vol-tests
     american_price_slice_test.cpp
     american_markov_test.cpp
     american_markov_batch_test.cpp
+    american_markov_pwl_test.cpp
     pwl_strike_test.cpp
     profile_test.cpp
     fit_policy_test.cpp
