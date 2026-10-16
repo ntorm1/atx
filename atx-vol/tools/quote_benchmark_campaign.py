@@ -24,7 +24,7 @@ SPEC.loader.exec_module(qb)
 CAMPAIGN_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 MAX_TRIALS = 64
 MAX_DOCUMENT_BYTES = 1024 * 1024
-RESERVED_IDS = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+RESERVED_IDS = {"policies", "con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
                 *(f"lpt{i}" for i in range(1, 10))}
 
 
@@ -215,7 +215,7 @@ def run_campaign(plan_path: Path, output: Path) -> dict:
                            "paired_with_fixed_baseline": comparison["paired"],
                            "artifacts": {name: qb.sha256(trial_dir / name) for name in
                                ("predictions.csv.run.json", "score.json", "comparison.json")}}
-            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            except (OSError, ValueError, RuntimeError, KeyError, qb.pl.exceptions.PolarsError) as exc:
                 outcome = {"trial_id": trial["id"], "state": "failed",
                            "error_type": type(exc).__name__, "error": str(exc)[:4096]}
             qb.write_json(trial_dir / "outcome.json", outcome, overwrite=False, durable=True)
@@ -246,7 +246,7 @@ def main(argv=None) -> int:
         result = run_campaign(args.plan, args.output)
         print(json.dumps({"campaign": str(args.output.resolve()), "state": result["state"]}))
         return 0 if result["state"] == "complete" else 1
-    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+    except (OSError, ValueError, RuntimeError, KeyError, qb.pl.exceptions.PolarsError) as exc:
         print(f"quote-benchmark-campaign: {exc}", file=sys.stderr)
         return 2
 

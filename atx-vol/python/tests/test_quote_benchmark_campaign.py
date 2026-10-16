@@ -49,7 +49,7 @@ def records(output):
 
 
 @pytest.mark.parametrize("mutation", ["unknown", "schema_bool", "duplicate_id", "path_id",
-                                     "uppercase_id", "reserved_id", "empty_trials", "too_many",
+                                     "uppercase_id", "reserved_id", "internal_id", "empty_trials", "too_many",
                                      "bad_tick"])
 def test_invalid_plan_has_no_output_or_native_side_effect(tmp_path, monkeypatch, mutation):
     path, plan, output = fixture_plan(tmp_path)
@@ -65,6 +65,8 @@ def test_invalid_plan_has_no_output_or_native_side_effect(tmp_path, monkeypatch,
         plan["trials"][0]["id"] = "FIRST"
     elif mutation == "reserved_id":
         plan["trials"][0]["id"] = "con"
+    elif mutation == "internal_id":
+        plan["trials"][1]["id"] = "policies"
     elif mutation == "empty_trials":
         plan["trials"] = []
     elif mutation == "too_many":
@@ -194,3 +196,24 @@ def test_native_campaign_scores_complete_runs_and_preserves_failed_trial(binary,
     assert (output / "refused/predictions.csv.start.json").exists()
     assert not (output / "refused/score.json").exists()
     assert [r["sequence"] for r in records(output)] == list(range(8))
+
+
+def test_real_evaluator_failure_retains_outcomes_and_continues_fixed_queue(binary, tmp_path):
+    path, plan, output = fixture_plan(tmp_path, binary)
+    receipt_path = Path(plan["baseline_receipt"])
+    receipt = json.loads(receipt_path.read_bytes())
+    predictions = Path(receipt["predictions"])
+    qb.pl.read_csv(predictions, schema_overrides={"chain_id": qb.pl.UInt64}).with_columns(
+        qb.pl.lit("unparseable").alias("predicted_price")).write_csv(predictions)
+    receipt["prediction_sha256"] = qb.sha256(predictions)
+    receipt_path.write_text(json.dumps(receipt))
+    result = campaign.run_campaign(path, output)
+    assert result["state"] == "completed_with_failures"
+    assert [r["state"] for r in result["trials"]] == ["failed", "failed"]
+    assert all(r["error_type"] == "ComputeError" for r in result["trials"])
+    for name in ("first", "second"):
+        assert (output / name / "predictions.csv.run.json").is_file()
+        assert (output / name / "score.json").is_file()
+        assert (output / name / "outcome.json").is_file()
+        assert not (output / name / "comparison.json").exists()
+    assert records(output)[-1]["attempted_trials"] == 2

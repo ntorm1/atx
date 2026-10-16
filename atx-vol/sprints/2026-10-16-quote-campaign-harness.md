@@ -64,3 +64,16 @@ Ruff passes. Receipt:
 The native CTest registration rejects skipped cases when the benchmark binary is
 available. Independent review is pending; no development campaign has been run
 through this new driver yet.
+
+## Independent review corrections
+
+Exact initial commit `716675ee` was blocked by independent review on two
+reproduced cases: the otherwise-valid ID `policies` collided with the internal
+policy-snapshot directory, and Polars evaluation errors escaped the per-trial
+exception contract. The focused correction reserves that directory name before
+output creation and records `PolarsError` as a failed trial. A real malformed
+baseline CSV now produces both failed comparison outcomes while retaining both
+successful native run receipts and own-population score files. The next trial
+still runs. Keyboard interruption continues to propagate without false completion.
+All 22 checks and Ruff pass; receipt `common-campaign-20261016-parent-tests-v6.xml`
+in the existing benchmark cache. Exact corrected-SHA re-review is pending.
