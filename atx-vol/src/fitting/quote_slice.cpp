@@ -1,6 +1,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -1079,9 +1080,12 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
     applied.strength = prior->strength;
   }
   const ChannelPrior *used_prior = prior != nullptr ? &applied : nullptr;
+  const auto solve_start = std::chrono::steady_clock::now();
   const auto solved = config.channel.family
                           ? solve_channel_family(out, channel, used_prior, config)
                           : solve_channel_native(out, channel, used_prior, config);
+  channel_diag.solve_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - solve_start).count();
   if (!solved) {
     if (solved.error().code() == ErrorCode::InvalidArgument) {
       return Err(solved.error());
@@ -1098,6 +1102,7 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   channel_diag.prior_strength = d.prior_strength;
   channel_diag.term_prior = d.used_term_prior;
   channel_diag.converged = d.converged;
+  channel_diag.iterations = d.iterations;
   certify_and_serve(out, quotes, config.channel.repair_half_spreads);
   return Ok(std::move(out));
 }

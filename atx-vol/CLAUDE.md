@@ -40,7 +40,7 @@ Focused targets (the stem lists in `tests/slices.cmake` are authoritative; confi
 
 | Target | Owns `tests/<stem>_test.cpp` | ctest anchor |
 |---|---|---|
-| `atx-vol-quote-slice-tests` | quote_slice, american_price_slice, quote_fit_policy | `^atx-vol-quote-slice$` |
+| `atx-vol-quote-slice-tests` | quote_slice, american_price_slice, quote_fit_policy, quote_surface, slice_channel, term_prior | `^atx-vol-quote-slice$` |
 | `atx-vol-american-markov-tests` | american_markov{,_batch,_resolvent,_pwl,_grid}, pwl_strike | `^atx-vol-american-markov$` |
 | `atx-vol-american-markov-{fit,seed,market,policy}-tests` | american_markov_{fit,seed,market,policy} | `^atx-vol-american-markov-<x>$` |
 | `atx-vol-umbrella-tests` | vol_umbrella | `^atx-vol-umbrella$` |

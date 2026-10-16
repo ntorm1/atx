@@ -192,6 +192,8 @@ struct QuoteSliceChannelDiagnostics {
   double prior_strength = 0.0;
   bool term_prior = false;        // false: flat default shape
   bool converged = false;
+  std::size_t iterations = 0;     // Newton iterations (knot spline) or family refits
+  double solve_seconds = 0.0;     // wall time of the channel solve alone (diagnostic)
   // Convexity repair: required shift measured whenever the certificate failed,
   // nodes moved only when the repair was within tolerance and applied.
   std::size_t repaired_nodes = 0;

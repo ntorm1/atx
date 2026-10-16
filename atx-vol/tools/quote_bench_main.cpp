@@ -513,7 +513,9 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           {"mid_strikes", d.channel.mid_strikes}, {"violations", d.channel.violations},
           {"max_violation_half_widths", d.channel.max_violation_half_widths},
           {"prior_strength", d.channel.prior_strength}, {"term_prior", d.channel.term_prior},
-          {"converged", d.channel.converged}, {"repaired_nodes", d.channel.repaired_nodes},
+          {"converged", d.channel.converged}, {"iterations", d.channel.iterations},
+          {"solve_us", d.channel.solve_seconds * 1.0e6},
+          {"repaired_nodes", d.channel.repaired_nodes},
           {"repair_max_price", d.channel.repair_max_price},
           {"repair_max_half_spreads", std::isfinite(d.channel.repair_max_half_spreads)
               ? Json(d.channel.repair_max_half_spreads) : Json("inf")},

@@ -35,7 +35,7 @@ target_link_libraries(atx-vol-quote-slice-tests
 # The channel/term-prior suites test internal fitting headers (src/fitting/).
 target_include_directories(atx-vol-quote-slice-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* QuoteFitPolicy.*
-       QuoteSliceChannel.* QuoteSurface.* SliceChannel.* TermPrior.*)
+       QuoteSliceChannel.* QuoteSurface.* SliceChannel.* SliceChannelFamily.* TermPrior.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
