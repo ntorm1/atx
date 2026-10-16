@@ -316,6 +316,56 @@ $env:PATH = "$PathPrefix;$env:PATH"
 # CCACHE_BASEDIR is the one per-worktree ccache key (relativizes this tree's
 # paths in the hash -> cross-worktree cache hits).
 $env:CCACHE_BASEDIR = $RepoRoot
+# The other cross-worktree keys, exactly as the _base preset's `environment`
+# sets them. A plain `cmake --build <dir>` (what `build` runs) never applies
+# preset environment, so without these the hit rate silently depended on the
+# user-level ccache.conf. An explicit caller value still wins.
+if (-not $env:CCACHE_NOHASHDIR) { $env:CCACHE_NOHASHDIR = "1" }
+if (-not $env:CCACHE_SLOPPINESS) {
+  $env:CCACHE_SLOPPINESS = "pch_defines,time_macros,include_file_mtime,include_file_ctime"
+}
+if (-not $env:CCACHE_IGNOREOPTIONS) {
+  $env:CCACHE_IGNOREOPTIONS = "-ffile-prefix-map=* /clang:-ffile-prefix-map=*"
+}
+
+# LOCAL DEPS MIRRORS (configure only). A first configure of a preset with its
+# own FETCHCONTENT_BASE_DIR (every vol-*/equity-rel preset) git-clones each
+# FetchContent dependency from the network: measured 2026-10-16 at 55-83 s of a
+# cold vol-rel configure, and one probe failed outright on a gitlab.com 503 for
+# eigen. The shared $env:ATX_DEPS_DIR (C:\atx-cache\deps) already holds full
+# clones of those repositories, so point git's url.<mirror>.insteadOf at them for
+# this process: FetchContent still checks out its own pinned GIT_TAG (a tag the
+# mirror lacks fails loudly instead of building a stale source), only the
+# transport changes. Mirrors are discovered from each <name>-src's origin URL, so
+# nothing here restates CMakeLists.txt. Opt out: $env:ATX_DEPS_MIRROR_OFF=1.
+if ($verb -eq "configure" -and -not $env:ATX_DEPS_MIRROR_OFF -and -not $env:GIT_CONFIG_COUNT -and
+    $env:ATX_DEPS_DIR -and (Test-Path $env:ATX_DEPS_DIR)) {
+  $mirrorCount = 0
+  $mirrorDirs = @(Get-ChildItem -Path $env:ATX_DEPS_DIR -Directory -Filter "*-src" -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName ".git") })
+  $savedMirrorErrorAction = $ErrorActionPreference
+  try {
+    # A mirror without an origin makes git write to stderr; that must skip the
+    # mirror, not abort the configure (5.1 promotes redirected stderr under Stop).
+    $ErrorActionPreference = "Continue"
+    foreach ($mirror in $mirrorDirs) {
+      $origin = (& git -C $mirror.FullName remote get-url origin 2>$null)
+      if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace("$origin")) { continue }
+      [Environment]::SetEnvironmentVariable("GIT_CONFIG_KEY_$mirrorCount",
+        ("url." + ($mirror.FullName -replace '\\', '/') + ".insteadOf"), "Process")
+      [Environment]::SetEnvironmentVariable("GIT_CONFIG_VALUE_$mirrorCount", "$origin".Trim(), "Process")
+      $mirrorCount++
+    }
+  }
+  finally {
+    $ErrorActionPreference = $savedMirrorErrorAction
+  }
+  if ($mirrorCount -gt 0) {
+    $env:GIT_CONFIG_COUNT = "$mirrorCount"
+    Write-Host ("[atx-build] FetchContent git deps clone from " + $mirrorCount +
+      " local mirror(s) in " + $env:ATX_DEPS_DIR) -ForegroundColor DarkCyan
+  }
+}
 Push-Location $RepoRoot
 $savedErrorAction = $ErrorActionPreference
 try {
