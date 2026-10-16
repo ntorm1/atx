@@ -197,3 +197,5 @@ Once R-1 is closed (one root docs commit), the gate is PROCEED.
 
 All other steps (0-3, 5-9) and every ruling row above hold. Once R-1 is closed, the cells may start (PROCEED). No
 BLOCKED attribution exists, the SQL4 verdict is carried green, and the trial ledger is 133 / `27e40f9f`.
+
+2026-10-16: R-1 closed at d78f5cc2: PROCEED (six OD5-1 identity-bridge flag lines at `root-gate-report.md:699-701`, `:855`, `:890`, `:910` and `handoff-root-gate.md:84`; R-2 u / fit / w CUT line at `root-gate-report.md:545-546` and `handoff-root-gate.md:85-86`).
