@@ -352,7 +352,34 @@ struct RunStatistics {
   Json policy_definition;
   Json policy_decisions = Json::array();
   Json per_profile_counts = Json::object();
+  // Per-expiry carry decisions; empty unless a profile opts out of supplied carry.
+  Json carry_resolutions = Json::array();
+  Json carry_status_counts = Json::object();
 };
+
+Json finite_or_null(double value) { return std::isfinite(value) ? Json(value) : Json(nullptr); }
+
+Json carry_resolution_json(const QuoteSliceCarryResolution &r, std::uint64_t chain,
+                           const InputRow &row, const QuoteSliceMarket &market) {
+  return {{"chain_id", chain}, {"underlier", row.identity[0]}, {"root", row.identity[1]},
+          {"expiry_days", row.identity[2]}, {"calendar_years", market.calendar_years},
+          {"variance_years", market.variance_years}, {"mode", to_string(r.mode)},
+          {"applied", r.applied}, {"status", to_string(r.status)}, {"reason", r.reason},
+          {"supplied_forward", finite_or_null(r.supplied_forward)},
+          {"supplied_yield", finite_or_null(r.supplied_yield)},
+          {"implied_forward", finite_or_null(r.implied_forward)},
+          {"implied_yield", finite_or_null(r.implied_yield)},
+          {"implied_total_yield", finite_or_null(r.implied_total_yield)},
+          {"parity_forward", finite_or_null(r.parity_forward)},
+          {"forward_lower", finite_or_null(r.forward_lower)},
+          {"forward_upper", finite_or_null(r.forward_upper)},
+          {"dispersion_sd", finite_or_null(r.dispersion_sd)},
+          {"exercise_shift_sd", finite_or_null(r.exercise_shift_sd)},
+          {"atm_total_vol", finite_or_null(r.atm_total_vol)},
+          {"pairs_valid", r.pairs_valid}, {"pairs_selected", r.pairs_selected},
+          {"pairs_retained", r.pairs_retained}, {"pairs_contaminated", r.pairs_contaminated},
+          {"pairs_unidentified", r.pairs_unidentified}};
+}
 
 // Contract-level underlying quotes can differ inside one recorded chain snapshot.
 // The median is robust to isolated stale legs; dispersion is explicitly reported.
@@ -578,6 +605,14 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       ++stats.fit_failures[fit.error().to_string()];
       for (const auto i : indices) predictions[i].status = "invalid_market";
     } else {
+      if (fit->carry_resolution.mode != QuoteSliceCarryMode::Supplied) {
+        const auto &carry = fit->carry_resolution;
+        stats.carry_resolutions.push_back(
+            carry_resolution_json(carry, chain_id, rows[indices.front()], market));
+        const std::string key = std::string(carry.applied ? "applied:" : "fallback:") +
+                                to_string(carry.status);
+        stats.carry_status_counts[key] = stats.carry_status_counts.value(key, std::size_t{}) + 1U;
+      }
       if (fit->fit_status == QuoteSliceFitStatus::Success) {
         ++stats.fitted;
         fitted_chains.insert(chain_id);
@@ -741,6 +776,12 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
       {"fit_failure_counts", stats.fit_failures},
       {"mandatory_admission", "quote validity, fitted American price bounds/strike shape/"
           "cross-side and calendar checks remain enabled"}};
+  if (!stats.carry_resolutions.empty()) {
+    report["contract_carry"] = "per-expiry implied forward where the estimator accepts; "
+                               "otherwise per-strike supplied yield";
+    report["carry_status_counts"] = stats.carry_status_counts;
+    report["carry_resolutions"] = stats.carry_resolutions;
+  }
 #ifdef __VERSION__
   report["compiler"] = __VERSION__;
 #elif defined(_MSC_VER)

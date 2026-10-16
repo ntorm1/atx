@@ -7,6 +7,7 @@
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/quote_slice_carry.hpp"
 
 namespace atx::vol {
 namespace {
@@ -379,6 +380,9 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
                                       std::span<const QuoteSliceQuote> quotes,
                                       const QuoteSliceConfig &config,
                                       std::span<const CashDividend> calendar_dividends) {
+  if (config.carry.mode != QuoteSliceCarryMode::Supplied) {
+    return detail::fit_quote_slice_resolving_carry(market, quotes, config, calendar_dividends);
+  }
   const Status valid = validate(market, quotes, config, calendar_dividends);
   if (!valid) {
     return Err(valid.error());

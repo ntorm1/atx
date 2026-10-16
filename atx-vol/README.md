@@ -987,7 +987,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 32 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 34 | Public and supported to include; **not** frozen |
 | `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
@@ -1063,6 +1063,11 @@ surface. Tier-A's own forward-declaration of `SnapshotPool` in
 `backtest.hpp` is unchanged in mechanism (still forward-declared, never
 `#include`d) precisely so Tier-A's closed-under-inclusion rule does not pull
 this newly-Tier-B header into Tier-A.
+
+The implied-forward sprint (2026-10-16) added `api/marketdata/implied_forward.hpp` (per-expiry
+option-implied forward / carry estimator from raw put-call pairs) and
+`api/fitting/quote_slice_carry.hpp` (the quote slice's opt-in carry-mode types),
+both outside the umbrella: Tier-B 32 → **34**, no Tier-A change.
 
 That drift is now caught by a test rather than by a reader, for the counts
 that can be.

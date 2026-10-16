@@ -11,6 +11,7 @@
 
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/american_price_slice.hpp"
+#include "atx/vol/api/fitting/quote_slice_carry.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 
 namespace atx::vol {
@@ -89,6 +90,9 @@ struct QuoteSliceConfig {
   double iv_tolerance = 1.0e-7;
   std::uint16_t max_iv_iterations = 64;
   int discrete_div_steps = kDiscreteDivDefaultSteps;
+  // Opt-in carry resolution (quote_slice_carry.hpp). The default Supplied mode
+  // is the historical path, unchanged.
+  QuoteSliceCarryConfig carry{};
 };
 
 enum class QuoteSliceQuoteStatus : std::uint8_t {
@@ -177,6 +181,9 @@ struct QuoteSliceFit {
   // Strictly increasing strikes; interpolation is linear in log strike, with
   // flat edges. Conflicting same-strike carries are refused during fitting.
   std::vector<QuoteSliceCarryPoint> carry_curve;
+  // How the expiry carry was resolved (quote_slice_carry.hpp). Under an applied
+  // implied forward, `market` holds the implied yield the fit actually used.
+  QuoteSliceCarryResolution carry_resolution{};
 };
 
 struct QuoteSliceValue {
