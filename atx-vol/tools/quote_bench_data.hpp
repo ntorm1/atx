@@ -32,6 +32,7 @@ struct Prediction {
   std::string actual_curve;
   std::string vol_status{"not_evaluated"};
   std::string model{"quote-slice"};
+  std::string grade; // graded admission only: A, B or C when served
 };
 
 } // namespace quote_bench

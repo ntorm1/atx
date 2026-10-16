@@ -268,4 +268,26 @@ TEST(QuoteFitPolicy, RejectsInvalidSnapshotClocksAndDuplicateExpiries) {
   EXPECT_EQ(empty->classifier.kind, ProfileKind::IlliquidSmallCap);
 }
 
+
+TEST(QuoteFitPolicy, ChannelProfilesSkipPointMinimumsButValidateChannelControls) {
+  auto profiles = default_quote_fit_profiles();
+  // A knot-spline sparse profile keeps min_quotes 4 (it only grades point evidence).
+  profiles.back().config.method = QuoteSliceFitMethod::ChannelSpline;
+  profiles.back().config.curve.kind = VolCurveKind::SplineVol;
+  profiles.back().config.channel.repair_half_spreads = 0.5;
+  EXPECT_TRUE(QuoteFitPolicyCatalog::create(profiles).has_value());
+  auto bad = profiles;
+  bad.back().config.channel.prior_scale = 0.0;
+  EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
+  bad = profiles;
+  bad.back().config.channel.mult_ceil = bad.back().config.channel.mult_floor;
+  EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
+  bad = profiles;
+  bad.back().config.channel.min_channel_quotes = 0u;
+  EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
+  bad = profiles;
+  bad.back().config.method = static_cast<QuoteSliceFitMethod>(9);
+  EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
+}
+
 } // namespace

@@ -473,3 +473,89 @@ def test_native_help_after_input_does_not_start_run(binary, tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Defaults: --policy auto --dividends funding-pv" in result.stdout
     assert not output.exists()
+
+
+def write_policy(path: Path, document: dict) -> Path:
+    path.write_text(json.dumps(document))
+    return path
+
+
+def test_native_graded_admission_adds_grades_without_changing_point_prices(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    static_output, graded_output = tmp_path / "static.csv", tmp_path / "graded.csv"
+    static = invoke(binary, source, static_output)
+    assert static.returncode == 0, static.stderr
+    policy = write_policy(tmp_path / "graded.json",
+                          {"schema_version": 1, "admission": "graded"})
+    graded = invoke(binary, source, graded_output, "--policy", str(policy))
+    assert graded.returncode == 0, graded.stderr
+    with static_output.open(newline="") as stream:
+        static_reader = csv.DictReader(stream)
+        static_rows = list(static_reader)
+        assert "grade" not in static_reader.fieldnames
+    with graded_output.open(newline="") as stream:
+        graded_reader = csv.DictReader(stream)
+        graded_rows = list(graded_reader)
+        assert graded_reader.fieldnames[-1] == "grade"
+    assert len(static_rows) == len(graded_rows)
+    assert all(row["status"] == "ok" for row in static_rows)
+    for before, after in zip(static_rows, graded_rows):
+        if before["status"] == "ok":
+            # A point-fitted expiry is served unchanged and graded A.
+            assert after["predicted_price"] == before["predicted_price"]
+            assert after["grade"] == "A"
+        if after["status"] == "ok":
+            assert after["grade"] in {"A", "B", "C"}
+        else:
+            assert after["grade"] == ""
+    report = json.loads(graded.stdout)
+    assert report["admission"] == "graded"
+    assert sum(report["graded_stats"]["served_rows"].values()) == report["served_rows"]
+    assert report["policy_definition"]["admission"] == "graded"
+    assert "admission" not in json.loads(static.stdout)
+
+
+def test_native_graded_options_are_strict(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    for document, message in (
+            ({"schema_version": 1, "admission": "loose"}, "static or graded"),
+            ({"schema_version": 1, "graded": {"term_prior_weight": 1}}, "require admission graded"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"bogus": 1}},
+             "Unknown policy key"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"calendar_retry_factor": 0.5}}, "outside supported bounds")):
+        policy = write_policy(tmp_path / "policy.json", document)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+
+
+def test_native_knot_spline_profile_serves_a_channel_spline(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    expected = make_quotes(source)
+    profiles = [{"name": name, "base": name, "curve": "knot-spline",
+                 "channel": {"repair_half_spreads": 0.5, "channel_weight": 100}}
+                for name in ("dense", "ordinary", "sparse")]
+    policy = write_policy(tmp_path / "policy.json",
+                          {"schema_version": 1, "profiles": profiles})
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert all(row["configured_curve"] == "knot-spline" for row in rows)
+    assert all(row["actual_curve"] == "spline-vol" for row in rows)
+    assert all(row["status"] == "ok" for row in rows)
+    assert max(abs(float(row["predicted_vol"]) - 0.3) for row in rows) < 0.005
+    assert max(abs(float(row["predicted_price"]) - value)
+               for row, value in zip(rows, expected)) < 0.03
+    report = json.loads(result.stdout)
+    definition = report["policy_definition"]["profiles"]
+    assert all(profile["method"] == "knot-spline" for profile in definition)
+    assert all(profile["channel"]["repair_half_spreads"] == 0.5 for profile in definition)
+    bad = write_policy(tmp_path / "bad.json", {"schema_version": 1, "profiles": [
+        {"name": "dense", "base": "dense", "channel": {"unknown": 1}}]})
+    result = invoke(binary, source, output, "--policy", str(bad))
+    assert result.returncode != 0
+    assert "Unknown policy key" in result.stderr

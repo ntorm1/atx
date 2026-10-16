@@ -160,13 +160,41 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
                           std::vector<double> &spline_grid) {
   keys(entry, {"name", "base", "curve", "min_quotes", "quality", "parametric", "convex",
                "spline", "side_policy", "atm_log_band", "spread_floor", "min_time_value",
-               "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward"});
+               "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward",
+               "channel"});
   profile.name = text(entry.at("name"), true);
   auto &cfg = profile.config;
   if (entry.contains("curve")) {
-    const auto kind = parse_curve_kind(text(entry.at("curve")));
-    if (!kind) throw std::runtime_error(kind.error().to_string());
-    cfg.curve.kind = *kind;
+    const auto name = text(entry.at("curve"));
+    if (name == "knot-spline") {
+      // Channel-constrained knot spline; served as a spline-vol curve.
+      cfg.method = QuoteSliceFitMethod::ChannelSpline;
+      cfg.curve.kind = VolCurveKind::SplineVol;
+    } else {
+      const auto kind = parse_curve_kind(name);
+      if (!kind) throw std::runtime_error(kind.error().to_string());
+      cfg.curve.kind = *kind;
+      cfg.method = QuoteSliceFitMethod::PointCurve;
+    }
+  }
+  if (entry.contains("channel")) {
+    const auto &j = entry.at("channel");
+    keys(j, {"channel_weight", "mid_weight", "itm_mid_weight", "default_shape_weight",
+             "prior_scale", "roughness", "min_half_width_vol", "mult_floor", "mult_ceil",
+             "max_iterations", "min_channel_quotes", "repair_half_spreads"});
+    auto &c = cfg.channel;
+    numeric(j, "channel_weight", c.channel_weight, 0, 1.0e8);
+    numeric(j, "mid_weight", c.mid_weight, 0, 1.0e8);
+    numeric(j, "itm_mid_weight", c.itm_mid_weight, 0, 1.0e3);
+    numeric(j, "default_shape_weight", c.default_shape_weight, 0, 1.0e6);
+    numeric(j, "prior_scale", c.prior_scale, 1.0e-4, 10);
+    numeric(j, "roughness", c.roughness, 0, 1.0e6);
+    numeric(j, "min_half_width_vol", c.min_half_width_vol, 1.0e-6, 1);
+    numeric(j, "mult_floor", c.mult_floor, 1.0e-4, 1);
+    numeric(j, "mult_ceil", c.mult_ceil, 1, 100);
+    numeric(j, "max_iterations", c.max_iterations, 1, 1000);
+    numeric(j, "min_channel_quotes", c.min_channel_quotes, 1, 100000);
+    numeric(j, "repair_half_spreads", c.repair_half_spreads, 0, 100);
   }
   numeric(entry, "min_quotes", cfg.min_quotes, 4, 100000);
   numeric(entry, "atm_log_band", cfg.atm_log_band, 0, 5);
@@ -359,6 +387,38 @@ inline Json profile_json(const QuoteFitProfile &profile) {
   return out;
 }
 
+inline Json channel_json(const QuoteSliceChannelConfig &c) {
+  return {{"channel_weight", c.channel_weight}, {"mid_weight", c.mid_weight},
+          {"itm_mid_weight", c.itm_mid_weight}, {"default_shape_weight", c.default_shape_weight},
+          {"prior_scale", c.prior_scale}, {"roughness", c.roughness},
+          {"min_half_width_vol", c.min_half_width_vol}, {"mult_floor", c.mult_floor},
+          {"mult_ceil", c.mult_ceil}, {"max_iterations", c.max_iterations},
+          {"min_channel_quotes", c.min_channel_quotes},
+          {"repair_half_spreads", c.repair_half_spreads}};
+}
+
+// Opt-in fields are provenance only when used, so the default runtime
+// definition (and every default-mode report) stays unchanged.
+inline Json profile_json_with_options(const QuoteFitProfile &profile, bool graded) {
+  Json out = profile_json(profile);
+  const auto &c = profile.config;
+  if (graded || c.method != QuoteSliceFitMethod::PointCurve) {
+    out["method"] = c.method == QuoteSliceFitMethod::ChannelSpline ? "knot-spline" : "point";
+    out["channel"] = channel_json(c.channel);
+  }
+  return out;
+}
+
+inline Json surface_json(const QuoteSurfaceConfig &s) {
+  return {{"term_prior_weight", s.term_prior_weight},
+          {"prior_decay_log_time", s.prior_decay_log_time},
+          {"prior_quote_halflife", s.prior_quote_halflife},
+          {"channel_node_weight", s.channel_node_weight},
+          {"calendar_retry_factor", s.calendar_retry_factor},
+          {"grade_b_min_mid_strikes", s.grade_b_min_mid_strikes},
+          {"calendar_repair_half_spreads", s.calendar_repair_half_spreads}};
+}
+
 inline Json regimes_json(const QuoteFitRegimeConfig &r) {
   return {{"dense_profile", r.dense_profile}, {"ordinary_profile", r.ordinary_profile},
           {"sparse_profile", r.sparse_profile}, {"near_money_log_band", r.near_money_log_band},
@@ -396,12 +456,15 @@ inline Json read_document(const std::filesystem::path &path) {
 struct LoadedPolicy {
   QuoteFitPolicyCatalog catalog;
   Json definition;
+  bool graded{false};
+  QuoteSurfaceConfig surface{};
 };
 
 inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel dividends) {
   const Json document = selection == "auto" ? Json{{"schema_version", 1}} :
                                              read_document(selection);
-  keys(document, {"schema_version", "profiles", "symbol_overrides", "regimes"});
+  keys(document, {"schema_version", "profiles", "symbol_overrides", "regimes", "admission",
+                  "graded"});
   if (!document.contains("schema_version") || !document.at("schema_version").is_number_integer() ||
       document.at("schema_version") != 1) {
     throw std::runtime_error("Policy schema_version must be 1");
@@ -464,11 +527,41 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     numeric(j, "dense_max_bidless_fraction", regimes.dense_max_bidless_fraction, 0, 1);
     numeric(j, "sparse_min_bidless_fraction", regimes.sparse_min_bidless_fraction, 0, 1);
   }
+  bool graded = false;
+  if (document.contains("admission")) {
+    const auto mode = text(document.at("admission"));
+    if (mode == "graded") graded = true;
+    else if (mode != "static") {
+      throw std::runtime_error("Policy admission must be static or graded");
+    }
+  }
+  QuoteSurfaceConfig surface;
+  if (document.contains("graded")) {
+    if (!graded) throw std::runtime_error("Policy graded options require admission graded");
+    const auto &j = document.at("graded");
+    keys(j, {"term_prior_weight", "prior_decay_log_time", "prior_quote_halflife",
+             "channel_node_weight", "calendar_retry_factor", "grade_b_min_mid_strikes",
+             "calendar_repair_half_spreads"});
+    numeric(j, "term_prior_weight", surface.term_prior_weight, 0, 1.0e6);
+    numeric(j, "prior_decay_log_time", surface.prior_decay_log_time, 1.0e-3, 100);
+    numeric(j, "prior_quote_halflife", surface.prior_quote_halflife, 1.0e-3, 1.0e6);
+    numeric(j, "channel_node_weight", surface.channel_node_weight, 1.0e-6, 1.0e6);
+    numeric(j, "calendar_retry_factor", surface.calendar_retry_factor, 1, 1.0e6);
+    numeric(j, "grade_b_min_mid_strikes", surface.grade_b_min_mid_strikes, 1, 100000);
+    numeric(j, "calendar_repair_half_spreads", surface.calendar_repair_half_spreads, 0, 100);
+  }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};
+  if (graded) {
+    definition["admission"] = "graded";
+    definition["graded"] = surface_json(surface);
+  }
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
-    definition["profiles"].push_back(profile_json(profile));
+    if (graded && profile.config.carry.mode != QuoteSliceCarryMode::Supplied) {
+      throw std::runtime_error("Policy admission graded requires supplied carry");
+    }
+    definition["profiles"].push_back(profile_json_with_options(profile, graded));
   }
   for (const auto &entry : overrides) {
     definition["symbol_overrides"].push_back(
@@ -476,7 +569,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
-  return {std::move(*catalog), std::move(definition)};
+  return {std::move(*catalog), std::move(definition), graded, surface};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {

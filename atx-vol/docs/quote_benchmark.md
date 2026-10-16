@@ -52,6 +52,26 @@ The built-in profiles are starting configurations, not calibrated universal
 settings. Every profile retains the same final strike and calendar admission
 requirements, and rejected contracts remain in coverage reporting.
 
+Graded admission is opt-in (`"admission": "graded"`, default `"static"`). Each
+snapshot is fitted by `fit_quote_surface`: expiries the profile's point fitter
+serves are grade A and keep their exact prices; the others are refitted by the
+channel knot spline (every contract's bid/ask volatility channel, a
+spread-normalised mid anchor, and a leave-one-out term prior from the
+snapshot's other expiries), graded B (at least `grade_b_min_mid_strikes` mid
+strikes) or C. Calendar crossings refuse only the lower-confidence slice after
+an optional in-quote price repair and one stronger-prior retry. Top-level
+`"graded"` keys: `term_prior_weight`, `prior_decay_log_time`,
+`prior_quote_halflife`, `channel_node_weight`, `calendar_retry_factor`,
+`grade_b_min_mid_strikes`, `calendar_repair_half_spreads`. Profile `"channel"`
+keys tune the channel spline (`channel_weight`, `mid_weight`, `itm_mid_weight`,
+`default_shape_weight`, `prior_scale`, `roughness`, `min_half_width_vol`,
+`mult_floor`, `mult_ceil`, `max_iterations`, `min_channel_quotes`,
+`repair_half_spreads`); `"curve": "knot-spline"` makes it the profile's point
+method as well. Graded output appends a `grade` column and the native report
+adds `graded_stats` (per-grade chains/rows and per-slice diagnostics). Every
+served slice still passes the unchanged American price and calendar
+certificates; refusals keep their reason.
+
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of
 distinct underliers, not source rows. `--max-underliers` performs a preliminary

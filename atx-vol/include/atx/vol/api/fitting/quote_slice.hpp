@@ -77,6 +77,39 @@ struct QuoteSliceQualityConfig {
   double max_weight = 1.0e3;
 };
 
+enum class QuoteSliceFitMethod : std::uint8_t {
+  // Admitted point mids fitted by `curve` (the historical default).
+  PointCurve,
+  // Channel-constrained knot spline: every valid contract's bid/ask volatility
+  // channel (both sides, bidless upper bounds included), a spread-normalised
+  // mid anchor and a flat default-shape prior. Served as a SplineVol curve on
+  // the SpiderRock standardized grid; `curve` and `min_quotes` are not used.
+  ChannelSpline
+};
+
+// Channel knot-spline controls (src/fitting/slice_channel.hpp has the
+// objective). The mid anchor is in channel half-widths; the channel penalty is
+// in the fixed volatility unit min_half_width_vol.
+struct QuoteSliceChannelConfig {
+  double channel_weight = 100.0;      // steep penalty outside [bid, ask]
+  double mid_weight = 1.0;            // spread-normalised mid anchor
+  double itm_mid_weight = 1.0;        // extra factor on in-the-money legs' mid term
+  double default_shape_weight = 0.05; // flat default shape when no term prior
+  double prior_scale = 0.10;          // relative volatility unit of the prior penalty
+  double roughness = 0.02;            // second-difference penalty on knot vols
+  double min_half_width_vol = 0.0025; // floor on a channel half-width
+  double mult_floor = 0.05;
+  double mult_ceil = 3.0;
+  std::uint16_t max_iterations = 50;
+  std::size_t min_channel_quotes = 2; // usable channels required to fit
+  // In-channel convexity repair, applied only when the strict price certificate
+  // fails: each side's prices are replaced by their greatest convex minorant if
+  // every moved node moves by at most this many of its own quote half-spreads
+  // (bidless: half the ask; a side without a quote uses the other side's). The
+  // unchanged certificate then runs again. 0 disables the repair.
+  double repair_half_spreads = 0.0;
+};
+
 struct QuoteSliceConfig {
   CurveConfig curve{.kind = VolCurveKind::Essvi};
   QuoteSliceQualityConfig quality{};
@@ -93,6 +126,8 @@ struct QuoteSliceConfig {
   // Opt-in carry resolution (quote_slice_carry.hpp). The default Supplied mode
   // is the historical path, unchanged.
   QuoteSliceCarryConfig carry{};
+  QuoteSliceFitMethod method = QuoteSliceFitMethod::PointCurve;
+  QuoteSliceChannelConfig channel{};
 };
 
 enum class QuoteSliceQuoteStatus : std::uint8_t {
@@ -138,6 +173,24 @@ struct QuoteSliceRow {
   bool weight_capped = false;
 };
 
+// Populated only by the channel method.
+struct QuoteSliceChannelDiagnostics {
+  bool used = false;
+  std::size_t channel_quotes = 0; // usable bid/ask volatility channels
+  std::size_t mid_quotes = 0;     // of which carry a mid volatility
+  std::size_t mid_strikes = 0;    // distinct strikes among the mid quotes
+  std::size_t violations = 0;     // fitted volatility outside its channel
+  double max_violation_half_widths = 0.0;
+  double prior_strength = 0.0;
+  bool term_prior = false;        // false: flat default shape
+  bool converged = false;
+  // Convexity repair: required shift measured whenever the certificate failed,
+  // nodes moved only when the repair was within tolerance and applied.
+  std::size_t repaired_nodes = 0;
+  double repair_max_price = 0.0;
+  double repair_max_half_spreads = 0.0;
+};
+
 struct QuoteSliceDiagnostics {
   std::size_t quotes_seen = 0;
   std::size_t iv_attempted = 0;
@@ -150,6 +203,7 @@ struct QuoteSliceDiagnostics {
   double effective_rate = 0.0;
   double effective_yield = 0.0;
   FitDiag curve_fit{};
+  QuoteSliceChannelDiagnostics channel{};
 };
 
 struct QuoteSliceCarryPoint {
@@ -228,5 +282,115 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
 // after check_american_calendar has accepted their overlapping price domains.
 [[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike,
                                                            Side side);
+
+// A smile prior for one expiry: an ATM volatility and a shape as multiples
+// sigma/atm_vol on an increasing standardized grid z = ln(K/F)/(atm_vol*sqrt(T))
+// (variance clock), with the effective strength already applied. Spans are
+// borrowed for the duration of the call only.
+struct QuoteSlicePrior {
+  double atm_vol = 0.0;
+  std::span<const double> z;
+  std::span<const double> multiples;
+  double strength = 0.0;
+};
+
+// Channel knot-spline fit of one expiry (QuoteSliceFitMethod::ChannelSpline),
+// optionally regularized toward `prior` instead of the flat default shape.
+// Every valid contract contributes its bid/ask channel, inverted with the SAME
+// American model and per-contract carry as the point path; quote statuses and
+// admission provenance are reported exactly as by the point path. Final prices
+// pass the same mandatory AmericanPriceSlice certification. Fewer than
+// `channel.min_channel_quotes` usable channels returns InsufficientQuotes; a
+// numerical failure of the spline returns FitFailure.
+[[nodiscard]] Result<QuoteSliceFit>
+fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote> quotes,
+                        const QuoteSliceConfig &config, const QuoteSlicePrior *prior,
+                        std::span<const CashDividend> calendar_dividends = {});
+
+// Calendar repair inside the quotes. Moves the certified node prices of `fit`
+// into [max over `earlier` slices, min over `later` slices] wherever a node lies
+// inside their domains, restores convexity with the greatest convex minorant,
+// and accepts only when every moved node stays within `half_spreads` of its own
+// quote half-spread (bidless: half the ask), the clamp remains satisfied and the
+// unchanged AmericanPriceSlice certificate passes. On success replaces
+// fit.prices, refreshes row prices (moved nodes report the volatility of the
+// served price) and returns true; otherwise leaves `fit` unchanged. The largest
+// required move, in half-spreads, is written to `required` when non-null. The
+// caller must still check the result against every accepted slice.
+[[nodiscard]] bool repair_quote_slice_calendar(QuoteSliceFit &fit,
+                                               std::span<const QuoteSliceQuote> quotes,
+                                               std::span<const AmericanPriceSlice *const> earlier,
+                                               std::span<const AmericanPriceSlice *const> later,
+                                               double half_spreads, double *required = nullptr);
+
+// ── Graded admission over one valuation surface ──────────────────────────────
+
+// Confidence grade carried by every served expiry.
+//  A: the expiry's own admitted point quotes satisfy the profile minimum and the
+//     unchanged point fitter served it without any prior.
+//  B: channel fit with at least `grade_b_min_mid_strikes` distinct mid strikes,
+//     or a point fit whose prices were moved by the calendar repair.
+//  C: channel fit dominated by bid/ask bounds and the term/default prior.
+enum class QuoteSliceGrade : std::uint8_t { A, B, C, Refused };
+
+[[nodiscard]] const char *to_string(QuoteSliceGrade value) noexcept;
+
+struct QuoteSurfaceExpiry {
+  QuoteSliceMarket market;
+  std::span<const QuoteSliceQuote> quotes;
+  std::span<const CashDividend> calendar_dividends{};
+};
+
+struct QuoteSurfaceConfig {
+  double term_prior_weight = 1.0;     // scale of the neighbour prior's strength
+  double prior_decay_log_time = 1.0;  // confidence e-folding in |ln(T/T_nearest)|
+  double prior_quote_halflife = 6.0;  // strength * n0 / (n0 + own two-sided strikes)
+  double channel_node_weight = 0.5;   // prior-node weight of a channel fit vs a point fit
+  double calendar_retry_factor = 4.0; // prior strength multiplier on a calendar retry
+  std::size_t grade_b_min_mid_strikes = 4;
+  // Calendar repair inside the quotes for a slice that crosses accepted ones
+  // (repair_quote_slice_calendar); 0 disables it. A repaired grade-A slice is
+  // demoted to B because its served prices are no longer the point fit's.
+  double calendar_repair_half_spreads = 0.0;
+};
+
+struct QuoteSurfaceSlice {
+  // For a refused expiry the fit keeps its diagnostics and row provenance but
+  // never carries certified prices or fitted values.
+  QuoteSliceFit fit;
+  QuoteSliceGrade grade = QuoteSliceGrade::Refused;
+  // Empty when served. Otherwise one of: invalid_input, insufficient_quotes,
+  // fit_failure, arbitrage_failure, calendar_arbitrage.
+  std::string refusal;
+  std::string error;                  // detail for invalid_input / fit failures
+  QuoteSliceFitStatus point_status = QuoteSliceFitStatus::InsufficientQuotes;
+  bool channel_refit = false;         // served or last attempted by the channel fitter
+  bool calendar_retry = false;        // a calendar retry was attempted
+  bool calendar_repaired = false;     // served after a calendar repair inside the quotes
+  // For a calendar refusal: the largest price crossing against the accepted
+  // slices (earlier minus later, price units) and its strike.
+  double calendar_gap = 0.0;
+  double calendar_gap_strike = 0.0;
+  // Largest node move (in half-spreads) the calendar repair required, over its
+  // attempts; infinite when a moved node had no quote. Zero when never tried.
+  double calendar_repair_required = 0.0;
+};
+
+// Graded admission for every expiry of ONE underlier/deliverable at ONE valuation
+// instant (the caller owns identity). Pass A runs the unchanged point fitter;
+// expiries it cannot serve are refitted with the channel knot spline under a
+// leave-one-out term prior built from the other fitted expiries (two stages, so
+// snapshots without any point fit still borrow shape from their neighbours).
+// Calendar consistency is enforced on the final American prices: slices are
+// accepted greedily in confidence order and only a slice that crosses an
+// accepted one is retried once (stronger prior) and otherwise refused. No
+// certification is relaxed. Distinct calendar maturities are required; at most
+// kQuoteSurfaceMaxExpiries expiries. Shared malformed configuration is Err;
+// per-expiry input errors are refusals with refusal == "invalid_input".
+inline constexpr std::size_t kQuoteSurfaceMaxExpiries = 128;
+
+[[nodiscard]] Result<std::vector<QuoteSurfaceSlice>>
+fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSliceConfig &config,
+                  const QuoteSurfaceConfig &surface = {});
 
 } // namespace atx::vol
