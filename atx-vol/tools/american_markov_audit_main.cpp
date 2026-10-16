@@ -329,11 +329,16 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
     return result;
   }
   result["model_status"] = "ok";
-  result["resolved_state_grid"] = model->layers().front().states;
-  result["resolved_nodes"] = model->layers().front().states.size();
+  const auto initial_states = model->layers().front().states();
+  result["resolved_state_grid"] = std::vector<double>(initial_states.begin(), initial_states.end());
+  result["resolved_nodes"] = initial_states.size();
   const auto &d = model->diagnostics();
   result["model"] = {{"states", d.max_states}, {"diffusion_steps", d.diffusion_steps},
                        {"cash_steps", d.cash_steps}, {"stored_rows", d.stored_rows},
+                       {"physical_state_values", d.physical_state_values},
+                       {"state_grid_blocks", d.state_grid_blocks},
+                       {"physical_transition_rows", d.physical_transition_rows},
+                       {"transition_row_blocks", d.transition_row_blocks},
                        {"max_probability_error", d.max_probability_sum_error},
                        {"max_mean_error", d.max_relative_mean_error},
                        {"terminal_zero_probability", d.terminal_zero_probability},

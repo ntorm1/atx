@@ -118,3 +118,17 @@ existing `atx-vol-american-markov-audit --full --pricing-only` executable. The
 parent audit can expose the four new physical diagnostics without changing its
 numerical model or resource policy. Exact-SHA independent review is required
 before integration.
+
+## Parent integration verification
+
+Integrated as `45756049` after exact-SHA independent review. Permanent storage
+probe and seven-case native audit CTest registration are now installed. The audit
+uses the immutable state view and reports all four physical storage counters.
+Parent Release gates pass 49 Markov/grid/PWL, 14 fitter and 7 native audit cases;
+six owning PCH-off source checks pass. The separate parent storage probe matches
+all seven baseline operator fingerprints and all 616 scalar binary64 price bits,
+with zero ordinary/aligned C++ allocations in prepared scalar and batch windows.
+Receipt: `C:/atx-cache/quote-benchmark/markov-storage-20261016-parent-v1.json`,
+SHA256 `7c825c7bc0ebd61c3e5a630dc59be869fda3cb8bafa93e63292c6e9bcda56891`.
+The first comparison script needed UTF-8 BOM decoding for the preserved baseline;
+no numerical rerun or artifact overwrite was required. Timing remains unqualified.
