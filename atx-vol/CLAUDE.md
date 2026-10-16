@@ -32,6 +32,31 @@ Measured basis: `sprints/2026-10-16-build-infra-sprint.md`. The rules, verbatim:
 
 1. **Preset `vol-rel` for every lane `configure` / `check` / `build` / `-Ctest`** (`build-vol-rel/`: Release + `/arch:AVX2` + PCH, no ThinLTO). `vol-rel-avx2` (ThinLTO) is for `-Bench` perf pins only; `vol-dev` (Debug) only when you need assertions; `vol-hygiene` for PCH-off checks of changed headers. ThinLTO on/off is bit-identical in results (`rel` preset description, commit 63f6f29), so a `vol-rel` pass stands for `vol-rel-avx2`; cite timings only from `vol-rel-avx2`.
 2. **Every vol preset is vol-only** (`ATX_VOL_ONLY=ON`): atx-core + atx-tsdb + atx-vol. atx-engine and atx-impl are not configured, so they cannot be compiled by accident. The two engine consumers — `atx-vol-vrp-train` and `atx-vol-vrp-model-tests` (VrpModel/VrpTrain suites) — exist only with `configure -Preset vol-rel -DATX_VOL_ONLY=OFF`.
+3. **Never build `atx-vol-tests` in a lane.** Build the focused target that owns your suite (table below) and run it anchored: `-Ctest -Preset vol-rel -R "^<anchor>"`. The monolith (≈215 PCH test TUs, PCH objects never shared between worktrees by ccache, one huge link) is for integration/release qualification only.
+4. **Lease with the default `-ConfigurePreset auto`** — a vol branch gets `vol-rel` configured on a cold slot and is skipped on a warm one.
+
+Focused targets (the stem lists in `tests/slices.cmake` are authoritative; configure prints `atx-vol test slices: <target>(<files>)`):
+
+| Target | Owns `tests/<stem>_test.cpp` | ctest anchor |
+|---|---|---|
+| `atx-vol-quote-slice-tests` | quote_slice, american_price_slice, quote_fit_policy | `^atx-vol-quote-slice$` |
+| `atx-vol-american-markov-tests` | american_markov{,_batch,_resolvent,_pwl,_grid}, pwl_strike | `^atx-vol-american-markov$` |
+| `atx-vol-american-markov-{fit,seed,market,policy}-tests` | american_markov_{fit,seed,market,policy} | `^atx-vol-american-markov-<x>$` |
+| `atx-vol-umbrella-tests` | vol_umbrella | `^atx-vol-umbrella$` |
+| `atx-vol-oracle-convention-tests`, `atx-vol-discrete-div-tests` | oracle_conventions; discrete_div_american, oracle_dividends | gtest suite name |
+| `atx-vol-alpha-tests`, `varswap-compare-columns-tests`, `spx-wilmott-repro-tests` | alpha_*; varswap_compare_columns; spx_wilmott_repro | `^AlphaRegistry$`, `^VarswapCompareColumns$`, `^SpxWilmottReproUnit$` |
+| `atx-vol-core-slice` | version, log_sink, counters, phase_profile, solve_ledger, vol_time, parallel_for, process_scratch, test_paths | `^core/<Suite>\.` |
+| `atx-vol-pricing-slice` | black76, greeks, implied_vol, iv_*, scalar_erfc, american (non-Markov), adjoint/adjusted greeks, dividend, rates_curve, derivatives, deriv_{distribution,fixtures,greeks}, cboe_strip, swap_leg, theo, pricing_executor, batch, *_ok_stamp | `^pricing/<Suite>\.` |
+| `atx-vol-simd-slice` | simd_* | `^simd/` |
+| `atx-vol-fitting-slice` | surface/vol_surface, calib*, c8*, essvi*, svi, cstar*, s3, dense_slice, curve_*, session, pricer_fitter, deamer, parity, arb, correction, … | `^fitting/` |
+| `atx-vol-marketdata-slice` | universe, data, opra_*, corpus, listed_opra, listed_definitions_cache, occ_ess, catalog, spy_real, spy_fit_corpus, breadth, spy_bidask_regression | `^marketdata/` |
+| `atx-vol-storage-slice` | run_archive, run_diagnostics, run_report, surface_db*, backtest_db*, research_db, writer_lock, surface_archive*, track_*, sweep_driver, chain_export | `^storage/` |
+| `atx-vol-analytics-slice` | projections, var*, event_vol, scenario_grid, pnl_attribution, deriv_pnl, analytics_*, earnings_*, amzn_earnings, realized_vol, breakeven | `^analytics/` |
+| `atx-vol-backtest-slice` | backtest*, strategy*, portfolio/priced_surface, margin, deriv_book, panels, tearsheet, research_validation, bev_label_factory_gate, … | `^backtest/` |
+| `atx-vol-dispersion-slice` | dispersion*, listed_dispersion*, mag7/spy dispersion, multiname_pipeline | `^dispersion/` |
+| `atx-vol-oracle-slice` | oracle_bench | `^oracle/` |
+
+Which slice owns suite `Foo`? `-Ctest -Preset vol-rel -N -L atx_vol_slice -R "/Foo\."` (needs the slice built once; PRE_TEST discovery) or find `TEST*(Foo,` in `tests/` and look its file stem up in `tests/slices.cmake`. A new `*_test.cpp` added to `atx-vol-tests` lands in a slice automatically (stem table, then prefix rule, then `atx-vol-misc-slice`). Slice cases carry only the `atx_vol_slice` label, so `-L atx_vol_fast`/`atx_vol_slow` still run each case once, through `atx-vol-tests`.
 
 ## Memory protocol
 

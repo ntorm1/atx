@@ -840,3 +840,7 @@ add_test(NAME AlphaRegistry COMMAND atx-vol-alpha-tests)
 set_tests_properties(AlphaRegistry PROPERTIES
     FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
     LABELS "atx_vol;atx_vol_fast")
+
+# Module test slices for lanes (atx-vol-<module>-slice): partitioned from
+# atx-vol-tests' SOURCES, so keep this include LAST. See slices.cmake.
+include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)
