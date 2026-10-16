@@ -155,5 +155,132 @@ TEST(SliceChannel, IsDeterministic) {
   EXPECT_EQ(a->params.atm_vol, b->params.atm_vol);
 }
 
+// ── Family solve ──────────────────────────────────────────────────────────────
+
+// A three-parameter "family": weighted least squares of sigma = a + b k + c k^2.
+// Records every fitted coefficient vector so a test can read the solution step.
+struct QuadraticFamily {
+  std::vector<std::array<double, 3>> fits;
+  std::vector<double> sigma_refs;
+
+  [[nodiscard]] Status operator()(double sigma_ref, std::span<const ChannelTarget> targets,
+                                  std::span<const double> k_eval, std::span<double> sigma) {
+    std::array<std::array<double, 4>, 3> m{};
+    for (const ChannelTarget &t : targets) {
+      const std::array<double, 3> x{1.0, t.k, t.k * t.k};
+      for (std::size_t r = 0; r < 3; ++r) {
+        for (std::size_t c = 0; c < 3; ++c) m[r][c] += t.weight * x[r] * x[c];
+        m[r][3] += t.weight * x[r] * t.sigma;
+      }
+    }
+    for (std::size_t p = 0; p < 3; ++p) { // Gaussian elimination (SPD, no pivoting)
+      for (std::size_t r = p + 1; r < 3; ++r) {
+        const double f = m[r][p] / m[p][p];
+        for (std::size_t c = p; c < 4; ++c) m[r][c] -= f * m[p][c];
+      }
+    }
+    std::array<double, 3> beta{};
+    for (std::size_t p = 3; p-- > 0;) {
+      double v = m[p][3];
+      for (std::size_t c = p + 1; c < 3; ++c) v -= m[p][c] * beta[c];
+      beta[p] = v / m[p][p];
+    }
+    for (std::size_t i = 0; i < k_eval.size(); ++i) {
+      sigma[i] = beta[0] + beta[1] * k_eval[i] + beta[2] * k_eval[i] * k_eval[i];
+    }
+    fits.push_back(beta);
+    sigma_refs.push_back(sigma_ref);
+    return atx::core::Ok();
+  }
+};
+
+double quadratic(const std::array<double, 3> &beta, double k) {
+  return beta[0] + beta[1] * k + beta[2] * k * k;
+}
+
+TEST(SliceChannelFamily, RecoversAQuadraticSmileFromTightChannels) {
+  const auto obs = tight_channels(0.002);
+  QuadraticFamily family;
+  const auto fit = fit_slice_channel_family(
+      obs, kYears, nullptr, {}, 12,
+      [&family](double r, std::span<const ChannelTarget> t, std::span<const double> k,
+                std::span<double> s) { return family(r, t, k, s); });
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_TRUE(fit->diagnostics.converged);
+  EXPECT_EQ(fit->diagnostics.violations, 0U);
+  EXPECT_EQ(fit->diagnostics.observations, obs.size());
+  EXPECT_GT(fit->diagnostics.knots, 0U);
+  ASSERT_LT(fit->step, family.fits.size());
+  EXPECT_NEAR(fit->sigma_ref, smile(0.0), 1.0e-2); // the kernel-weighted seed
+  for (const auto &o : obs) {
+    EXPECT_NEAR(quadratic(family.fits[fit->step], o.k), smile(o.k), 1.0e-3) << o.k;
+  }
+}
+
+TEST(SliceChannelFamily, ActiveBoundsPullTheFamilyBelowBidlessAsks) {
+  // Mids on the money follow the smile; two bidless wing asks sit well below
+  // the smile's extrapolation, so only the channel term can bring it down.
+  std::vector<ChannelObservation> obs;
+  for (int i = -5; i <= 5; ++i) {
+    const double k = 0.03 * i;
+    obs.push_back({k, smile(k) - 0.002, smile(k) + 0.002, smile(k), 1.0});
+  }
+  obs.push_back({0.27, 0.0, 0.22});
+  obs.push_back({0.30, 0.0, 0.22});
+  QuadraticFamily family;
+  const auto fit = fit_slice_channel_family(
+      obs, kYears, nullptr, {}, 12,
+      [&family](double r, std::span<const ChannelTarget> t, std::span<const double> k,
+                std::span<double> s) { return family(r, t, k, s); });
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_GE(fit->diagnostics.iterations, 2U); // the first step ignores both bounds
+  EXPECT_GT(quadratic(family.fits.front(), 0.30), 0.23);
+  const auto &solution = family.fits[fit->step];
+  EXPECT_LE(quadratic(solution, 0.27), 0.22 + 2.0e-3);
+  EXPECT_LE(quadratic(solution, 0.30), 0.22 + 2.0e-3);
+}
+
+TEST(SliceChannelFamily, FirstStepFailureIsAnErrorAndLaterFailuresKeepTheBest) {
+  const auto obs = tight_channels(0.002, 0.0015);
+  const auto failing = [](double, std::span<const ChannelTarget>, std::span<const double>,
+                          std::span<double>) -> Status {
+    return atx::core::Err(ErrorCode::Internal, "family failed");
+  };
+  const auto none = fit_slice_channel_family(obs, kYears, nullptr, {}, 12, failing);
+  ASSERT_FALSE(none);
+  EXPECT_EQ(none.error().code(), ErrorCode::Internal);
+  QuadraticFamily family;
+  int calls = 0;
+  const auto once = fit_slice_channel_family(
+      obs, kYears, nullptr, {}, 12,
+      [&](double r, std::span<const ChannelTarget> t, std::span<const double> k,
+          std::span<double> s) -> Status {
+        if (calls++ > 0) return atx::core::Err(ErrorCode::Internal, "family failed");
+        // Leave every quote outside its channel so a second step is requested.
+        const Status ok = family(r, t, k, s);
+        for (double &v : s) v += 0.01;
+        return ok;
+      });
+  ASSERT_TRUE(once) << once.error().to_string();
+  EXPECT_EQ(once->step, 0U);
+  EXPECT_EQ(once->diagnostics.iterations, 1U);
+  EXPECT_FALSE(once->diagnostics.converged);
+  EXPECT_EQ(once->diagnostics.violations, obs.size());
+}
+
+TEST(SliceChannelFamily, RejectsAnEmptyStepOrZeroSteps) {
+  const auto obs = tight_channels(0.002);
+  QuadraticFamily family;
+  const ChannelFamilyStep step = [&family](double r, std::span<const ChannelTarget> t,
+                                           std::span<const double> k, std::span<double> s) {
+    return family(r, t, k, s);
+  };
+  EXPECT_EQ(fit_slice_channel_family(obs, kYears, nullptr, {}, 0, step).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_EQ(fit_slice_channel_family(obs, kYears, nullptr, {}, 12, {}).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_TRUE(family.fits.empty());
+}
+
 } // namespace
 } // namespace atx::vol

@@ -506,4 +506,163 @@ Result<ChannelFit> fit_slice_channel(std::span<const ChannelObservation> observa
   return Ok(std::move(out));
 }
 
+namespace {
+
+// Quadratic terms at one log-moneyness add: the merged target is the weighted
+// mean with the summed weight (and the tighter unit).
+void merge_targets(std::vector<ChannelTarget> &targets) {
+  std::sort(targets.begin(), targets.end(),
+            [](const ChannelTarget &a, const ChannelTarget &b) { return a.k < b.k; });
+  std::size_t kept = 0;
+  for (std::size_t i = 0; i < targets.size(); ++i) {
+    const ChannelTarget t = targets[i];
+    if (kept > 0 &&
+        std::abs(t.k - targets[kept - 1].k) <= 1.0e-12 * std::max(1.0, std::abs(t.k))) {
+      ChannelTarget &merged = targets[kept - 1];
+      const double weight = merged.weight + t.weight;
+      merged.sigma = (merged.weight * merged.sigma + t.weight * t.sigma) / weight;
+      merged.weight = weight;
+      merged.unit = std::min(merged.unit, t.unit);
+    } else {
+      targets[kept++] = t;
+    }
+  }
+  targets.resize(kept);
+}
+
+} // namespace
+
+Result<ChannelFamilyFit>
+fit_slice_channel_family(std::span<const ChannelObservation> observations, double variance_years,
+                         const ChannelPrior *prior, const ChannelFitConfig &config,
+                         std::uint16_t max_steps, const ChannelFamilyStep &step) {
+  ATX_TRY_VOID(validate_config(config));
+  if (!positive(variance_years)) {
+    return Err(ErrorCode::InvalidArgument, "slice channel: invalid variance time");
+  }
+  if (max_steps == 0 || !step) {
+    return Err(ErrorCode::InvalidArgument, "slice channel: invalid family step");
+  }
+  if (prior != nullptr) {
+    ATX_TRY_VOID(validate_prior(*prior));
+  }
+  const std::vector<Prepared> prepared = prepare(observations, config);
+  if (prepared.size() < config.min_observations) {
+    return Err(ErrorCode::Unavailable, "slice channel: too few usable channel observations");
+  }
+  const bool use_prior = prior != nullptr && prior->strength > 0.0;
+  const double sigma_ref = use_prior ? prior->atm_vol : seed_atm(prepared, variance_years);
+  if (!positive(sigma_ref)) {
+    return Err(ErrorCode::Unavailable, "slice channel: no ATM volatility can be seeded");
+  }
+  const double axis = sigma_ref * std::sqrt(variance_years);
+  double z_lo = std::numeric_limits<double>::infinity();
+  double z_hi = -z_lo;
+  for (const Prepared &o : prepared) {
+    z_lo = std::min(z_lo, o.k / axis);
+    z_hi = std::max(z_hi, o.k / axis);
+  }
+  // The prior as point targets on the knots the knot spline would use.
+  const Knots knots = select_knots(z_lo, z_hi);
+  const double strength = use_prior ? prior->strength : config.default_shape_weight;
+  std::vector<ChannelTarget> anchors;
+  anchors.reserve(knots.n);
+  for (std::size_t j = 0; j < knots.n; ++j) {
+    const double value =
+        use_prior ? prior_value(*prior, knots.z[j] * sigma_ref / prior->atm_vol) : sigma_ref;
+    const double unit = config.prior_scale * value;
+    anchors.push_back({knots.z[j] * axis, value, strength / (unit * unit), unit});
+  }
+  const std::size_t n = prepared.size();
+  std::vector<double> k_eval(n + anchors.size());
+  for (std::size_t i = 0; i < n; ++i) k_eval[i] = prepared[i].k;
+  for (std::size_t j = 0; j < anchors.size(); ++j) k_eval[n + j] = anchors[j].k;
+  std::vector<double> sigma(k_eval.size());
+  const double channel_scale =
+      config.channel_weight / (config.min_half_width * config.min_half_width);
+  const auto mid_weight = [&config](const Prepared &o) {
+    return std::isfinite(o.mid) ? config.mid_weight * o.mid_scale / (o.h * o.h) : 0.0;
+  };
+  std::vector<std::int8_t> active(n, 0);
+  std::vector<std::int8_t> next(n, 0);
+  std::vector<ChannelTarget> targets;
+  targets.reserve(n + anchors.size());
+  ChannelFamilyFit out;
+  out.sigma_ref = sigma_ref;
+  auto &diag = out.diagnostics;
+  double best = std::numeric_limits<double>::infinity();
+  std::size_t steps = 0;
+  for (std::uint16_t iteration = 0; iteration < max_steps; ++iteration) {
+    targets.clear();
+    for (std::size_t i = 0; i < n; ++i) {
+      const Prepared &o = prepared[i];
+      const double a = mid_weight(o);
+      const double b = active[i] != 0 ? channel_scale : 0.0;
+      if (!(a + b > 0.0)) continue;
+      const double bound = active[i] < 0 ? o.lo : o.hi;
+      const double target = b == 0.0 ? o.mid : a == 0.0 ? bound : (a * o.mid + b * bound) / (a + b);
+      targets.push_back({o.k, target, a + b, 2.0 * o.h});
+    }
+    if (strength > 0.0) targets.insert(targets.end(), anchors.begin(), anchors.end());
+    merge_targets(targets);
+    const Status fitted = step(sigma_ref, targets, k_eval, sigma);
+    const bool finite = fitted && std::all_of(sigma.begin(), sigma.begin() +
+                                                  static_cast<std::ptrdiff_t>(n),
+                                              [](double s) { return positive(s); });
+    if (!finite) {
+      if (steps > 0) break; // keep the best step so far
+      if (!fitted) return Err(fitted.error());
+      return Err(ErrorCode::Internal, "slice channel: family curve is not finite on the quotes");
+    }
+    double value = 0.0;
+    std::size_t violations = 0;
+    double worst = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      const Prepared &o = prepared[i];
+      const double s = sigma[i];
+      if (std::isfinite(o.mid)) value += mid_weight(o) * (s - o.mid) * (s - o.mid);
+      next[i] = 0;
+      if (s < o.lo) {
+        next[i] = -1;
+        value += channel_scale * (o.lo - s) * (o.lo - s);
+      } else if (s > o.hi) {
+        next[i] = 1;
+        value += channel_scale * (s - o.hi) * (s - o.hi);
+      }
+      const double excess = std::max(o.lo - s, s - o.hi);
+      if (excess > 1.0e-9) {
+        ++violations;
+        worst = std::max(worst, excess / o.h);
+      }
+    }
+    for (std::size_t j = 0; j < anchors.size(); ++j) {
+      const double s = sigma[n + j];
+      if (!std::isfinite(s)) continue; // outside the family's domain: no prior term
+      const double d = s - anchors[j].sigma;
+      value += anchors[j].weight * d * d;
+    }
+    if (value < best) {
+      best = value;
+      out.step = steps;
+      diag.violations = violations;
+      diag.max_violation_half_widths = worst;
+      diag.objective = value;
+    }
+    ++steps;
+    if (next == active) {
+      diag.converged = true; // the next step would refit the same targets
+      break;
+    }
+    active.swap(next);
+  }
+  diag.observations = n;
+  diag.mid_observations = static_cast<std::size_t>(std::count_if(
+      prepared.begin(), prepared.end(), [](const Prepared &o) { return std::isfinite(o.mid); }));
+  diag.knots = anchors.size();
+  diag.iterations = steps;
+  diag.prior_strength = strength;
+  diag.used_term_prior = use_prior;
+  return Ok(std::move(out));
+}
+
 } // namespace atx::vol

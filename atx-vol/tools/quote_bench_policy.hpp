@@ -181,8 +181,24 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
     const auto &j = entry.at("channel");
     keys(j, {"channel_weight", "mid_weight", "itm_mid_weight", "default_shape_weight",
              "prior_scale", "roughness", "min_half_width_vol", "mult_floor", "mult_ceil",
-             "max_iterations", "min_channel_quotes", "repair_half_spreads"});
+             "max_iterations", "min_channel_quotes", "repair_half_spreads", "family",
+             "family_iterations"});
     auto &c = cfg.channel;
+    if (j.contains("family")) {
+      // The family that solves the channel objective; knot-spline is the native solver.
+      const auto name = text(j.at("family"));
+      if (name == "knot-spline") {
+        c.family.reset();
+      } else {
+        const auto kind = parse_curve_kind(name);
+        if (!kind) throw std::runtime_error(kind.error().to_string());
+        if (*kind == VolCurveKind::LinearVariance) {
+          throw std::runtime_error("Policy channel family cannot be linear-variance");
+        }
+        c.family = *kind;
+      }
+    }
+    numeric(j, "family_iterations", c.family_iterations, 1, 1000);
     numeric(j, "channel_weight", c.channel_weight, 0, 1.0e8);
     numeric(j, "mid_weight", c.mid_weight, 0, 1.0e8);
     numeric(j, "itm_mid_weight", c.itm_mid_weight, 0, 1.0e3);
@@ -388,13 +404,19 @@ inline Json profile_json(const QuoteFitProfile &profile) {
 }
 
 inline Json channel_json(const QuoteSliceChannelConfig &c) {
-  return {{"channel_weight", c.channel_weight}, {"mid_weight", c.mid_weight},
-          {"itm_mid_weight", c.itm_mid_weight}, {"default_shape_weight", c.default_shape_weight},
-          {"prior_scale", c.prior_scale}, {"roughness", c.roughness},
-          {"min_half_width_vol", c.min_half_width_vol}, {"mult_floor", c.mult_floor},
-          {"mult_ceil", c.mult_ceil}, {"max_iterations", c.max_iterations},
-          {"min_channel_quotes", c.min_channel_quotes},
-          {"repair_half_spreads", c.repair_half_spreads}};
+  Json out{{"channel_weight", c.channel_weight}, {"mid_weight", c.mid_weight},
+           {"itm_mid_weight", c.itm_mid_weight}, {"default_shape_weight", c.default_shape_weight},
+           {"prior_scale", c.prior_scale}, {"roughness", c.roughness},
+           {"min_half_width_vol", c.min_half_width_vol}, {"mult_floor", c.mult_floor},
+           {"mult_ceil", c.mult_ceil}, {"max_iterations", c.max_iterations},
+           {"min_channel_quotes", c.min_channel_quotes},
+           {"repair_half_spreads", c.repair_half_spreads}};
+  // A family solver is provenance only when selected (native knot spline otherwise).
+  if (c.family) {
+    out["family"] = to_string(*c.family);
+    out["family_iterations"] = c.family_iterations;
+  }
+  return out;
 }
 
 // Opt-in fields are provenance only when used, so the default runtime

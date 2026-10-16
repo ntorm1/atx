@@ -817,8 +817,20 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       !positive(c.prior_scale) || !finite_nonnegative(c.roughness) ||
       !positive(c.min_half_width_vol) || !positive(c.mult_floor) || !positive(c.mult_ceil) ||
       !(c.mult_ceil > c.mult_floor) || c.max_iterations == 0 || c.min_channel_quotes < 1 ||
-      !finite_nonnegative(c.repair_half_spreads)) {
+      !finite_nonnegative(c.repair_half_spreads) || c.family_iterations == 0) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
+  }
+  if (c.family) {
+    switch (*c.family) {
+    case VolCurveKind::ConvexDense:
+    case VolCurveKind::Essvi:
+    case VolCurveKind::Svi:
+    case VolCurveKind::C8:
+    case VolCurveKind::SplineVol:
+      break;
+    default: // LinearVariance interpolates its targets: no channel solve
+      return Err(ErrorCode::InvalidArgument, "quote slice: unsupported channel family");
+    }
   }
   return Ok();
 }
@@ -909,6 +921,93 @@ std::vector<ChannelObservation> build_channel_observations(QuoteSliceFit &out,
   return channel;
 }
 
+// The native knot-spline solve of the channel objective, served as SplineVol.
+Result<ChannelFitDiagnostics> solve_channel_native(QuoteSliceFit &out,
+                                                   std::span<const ChannelObservation> channel,
+                                                   const ChannelPrior *prior,
+                                                   const QuoteSliceConfig &config) {
+  ATX_TRY(ChannelFit fitted, fit_slice_channel(channel, out.market.variance_years, prior,
+                                               channel_fit_config(config.channel)));
+  out.curve = std::make_unique<SplineVolCurve>(fitted.params, out.market.variance_years,
+                                               out.diagnostics.forward, out.diagnostics.discount);
+  return Ok(fitted.diagnostics);
+}
+
+// The same objective solved by `channel.family` (fit_slice_channel_family). Each
+// step's targets become European point observations on the reference forward
+// (out-of-the-money side). Weights keep the objective's ratios in total
+// variance, scaled so a unit mid anchor at the half-width floor and the
+// reference ATM volatility carries the point path's weight cap (an active bound
+// therefore weighs channel_weight times the cap). A family error is a fit
+// failure of this expiry, never a configuration error.
+Result<ChannelFitDiagnostics> solve_channel_family(QuoteSliceFit &out,
+                                                   std::span<const ChannelObservation> channel,
+                                                   const ChannelPrior *prior,
+                                                   const QuoteSliceConfig &config) {
+  const double years = out.market.variance_years;
+  const double forward = out.diagnostics.forward;
+  const double discount = out.diagnostics.discount;
+  CurveConfig curve = config.curve;
+  curve.kind = *config.channel.family;
+  const double unit = config.channel.min_half_width_vol;
+  std::vector<std::unique_ptr<IVolCurve>> curves;
+  std::vector<FitObs> observations;
+  const ChannelFamilyStep step = [&](double sigma_ref, std::span<const ChannelTarget> targets,
+                                     std::span<const double> k_eval,
+                                     std::span<double> sigma) -> Status {
+    const double reference = 2.0 * sigma_ref * years;
+    const double scale = config.quality.max_weight * unit * unit * reference * reference;
+    observations.clear();
+    observations.reserve(targets.size());
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+      const ChannelTarget &t = targets[i];
+      const double strike = forward * std::exp(t.k);
+      const Side side = t.k < 0.0 ? Side::Put : Side::Call;
+      const auto euro = black76_value_and_vega(forward, strike, years, t.sigma, discount, side);
+      const double sensitivity = 2.0 * t.sigma * years;
+      const double weight = scale * t.weight / (sensitivity * sensitivity);
+      if (!positive(strike) || !positive(euro.vega) || !nonnegative(euro.price) ||
+          !positive(weight)) {
+        continue; // no price sensitivity at this target: it cannot inform the fit
+      }
+      FitObs obs;
+      obs.k = t.k;
+      obs.sigma_mkt = t.sigma;
+      obs.score_sigma_mkt = t.sigma;
+      obs.w_mkt = t.sigma * t.sigma * years;
+      obs.weight_w = weight;
+      obs.active_weight_w = weight;
+      obs.K = strike;
+      obs.F = forward;
+      obs.df = discount;
+      obs.mid = euro.price;
+      obs.spread = t.unit * euro.vega;
+      obs.vega = euro.vega;
+      obs.noise_sigma = t.unit;
+      obs.side = side;
+      obs.source_strike_index = static_cast<std::uint32_t>(i);
+      observations.push_back(obs);
+    }
+    auto fitted = fit_slice_curve(
+        curve, observations, forward, years, discount, {}, {},
+        {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()});
+    if (!fitted) {
+      return Err(ErrorCode::Internal, std::string("channel family ") + to_string(curve.kind) +
+                                          ": " + fitted.error().to_string());
+    }
+    for (std::size_t i = 0; i < k_eval.size(); ++i) {
+      sigma[i] = (*fitted)->iv(k_eval[i]);
+    }
+    curves.push_back(std::move(*fitted));
+    return Ok();
+  };
+  ATX_TRY(ChannelFamilyFit solved,
+          fit_slice_channel_family(channel, years, prior, channel_fit_config(config.channel),
+                                   config.channel.family_iterations, step));
+  out.curve = std::move(curves[solved.step]);
+  return Ok(solved.diagnostics);
+}
+
 } // namespace
 
 Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
@@ -979,27 +1078,26 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
     applied.multiples = prior->multiples;
     applied.strength = prior->strength;
   }
-  const auto fitted = fit_slice_channel(channel, market.variance_years,
-                                        prior != nullptr ? &applied : nullptr,
-                                        channel_fit_config(config.channel));
-  if (!fitted) {
-    if (fitted.error().code() == ErrorCode::InvalidArgument) {
-      return Err(fitted.error());
+  const ChannelPrior *used_prior = prior != nullptr ? &applied : nullptr;
+  const auto solved = config.channel.family
+                          ? solve_channel_family(out, channel, used_prior, config)
+                          : solve_channel_native(out, channel, used_prior, config);
+  if (!solved) {
+    if (solved.error().code() == ErrorCode::InvalidArgument) {
+      return Err(solved.error());
     }
-    out.fit_status = fitted.error().code() == ErrorCode::Unavailable
+    out.fit_status = solved.error().code() == ErrorCode::Unavailable
                          ? QuoteSliceFitStatus::InsufficientQuotes
                          : QuoteSliceFitStatus::FitFailure;
-    out.fit_error = fitted.error().to_string();
+    out.fit_error = solved.error().to_string();
     return Ok(std::move(out));
   }
-  const ChannelFitDiagnostics &d = fitted->diagnostics;
+  const ChannelFitDiagnostics &d = *solved;
   channel_diag.violations = d.violations;
   channel_diag.max_violation_half_widths = d.max_violation_half_widths;
   channel_diag.prior_strength = d.prior_strength;
   channel_diag.term_prior = d.used_term_prior;
   channel_diag.converged = d.converged;
-  out.curve = std::make_unique<SplineVolCurve>(fitted->params, market.variance_years,
-                                               out.diagnostics.forward, out.diagnostics.discount);
   certify_and_serve(out, quotes, config.channel.repair_half_spreads);
   return Ok(std::move(out));
 }

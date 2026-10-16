@@ -124,6 +124,55 @@ TEST(QuoteSliceChannel, RefusesWhenFewerThanTheMinimumChannelsAreUsable) {
   EXPECT_FALSE(fit_quote_slice(c.market, c.quotes, config));
 }
 
+TEST(QuoteSliceChannel, EveryPointFamilySolvesTheSameChannelObjective) {
+  const auto c = chain(0.5, 0.25, -0.05, 0.02);
+  // The point spline keeps its own pinned butterfly gate, which may refuse the
+  // channel targets (it does on this chain); a refusal is a fit failure of the
+  // expiry, never an error.
+  {
+    auto config = channel_config();
+    config.channel.family = VolCurveKind::SplineVol;
+    const auto fit = fit_quote_slice(c.market, c.quotes, config);
+    ASSERT_TRUE(fit) << fit.error().to_string();
+    EXPECT_TRUE(fit->fit_status == QuoteSliceFitStatus::Success ||
+                fit->fit_status == QuoteSliceFitStatus::FitFailure);
+  }
+  for (const VolCurveKind kind : {VolCurveKind::Essvi, VolCurveKind::Svi, VolCurveKind::C8,
+                                  VolCurveKind::ConvexDense}) {
+    auto config = channel_config();
+    config.channel.family = kind;
+    const auto fit = fit_quote_slice(c.market, c.quotes, config);
+    ASSERT_TRUE(fit) << to_string(kind) << ": " << fit.error().to_string();
+    ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << to_string(kind) << ": "
+                                                             << fit->fit_error;
+    ASSERT_TRUE(fit->curve);
+    EXPECT_EQ(fit->curve->kind(), kind);
+    EXPECT_TRUE(fit->prices);
+    EXPECT_TRUE(fit->diagnostics.channel.used);
+    EXPECT_NEAR(fit->curve->iv(0.0), 0.25, 0.01) << to_string(kind);
+    std::size_t inside = 0;
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto &row = fit->rows[i];
+      ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << i;
+      inside += row.fitted_price >= c.quotes[i].bid - 1.0e-9 &&
+                row.fitted_price <= c.quotes[i].ask + 1.0e-9;
+    }
+    EXPECT_GE(inside * 10, c.quotes.size() * 9) << to_string(kind);
+  }
+}
+
+TEST(QuoteSliceChannel, RejectsAnInterpolatingFamilyAndZeroFamilySteps) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.02);
+  auto config = channel_config();
+  config.channel.family = VolCurveKind::LinearVariance;
+  ASSERT_FALSE(fit_quote_slice(c.market, c.quotes, config));
+  config.channel.family = VolCurveKind::Essvi;
+  config.channel.family_iterations = 0;
+  ASSERT_FALSE(fit_quote_slice(c.market, c.quotes, config));
+  config.channel.family_iterations = 12;
+  EXPECT_TRUE(fit_quote_slice(c.market, c.quotes, config));
+}
+
 TEST(QuoteSurface, WellQuotedExpiriesAreGradeAAndBitIdenticalToThePointFit) {
   const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
                                   chain(1.0, 0.26, -0.06, 0.01)};

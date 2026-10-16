@@ -385,8 +385,10 @@ Json carry_resolution_json(const QuoteSliceCarryResolution &r, std::uint64_t cha
 
 // Configured fit family as reported in predictions and decisions.
 std::string configured_curve(const QuoteFitProfile &profile) {
-  return profile.config.method == QuoteSliceFitMethod::ChannelSpline
-      ? std::string{"knot-spline"} : std::string{to_string(profile.config.curve.kind)};
+  const auto &c = profile.config;
+  if (c.method != QuoteSliceFitMethod::ChannelSpline) return to_string(c.curve.kind);
+  return c.channel.family ? "channel-" + std::string{to_string(*c.channel.family)}
+                          : std::string{"knot-spline"};
 }
 
 // Contract-level underlying quotes can differ inside one recorded chain snapshot.

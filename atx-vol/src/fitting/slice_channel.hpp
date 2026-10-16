@@ -33,6 +33,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 
@@ -95,5 +96,48 @@ struct ChannelFit {
                                                    double variance_years,
                                                    const ChannelPrior *prior,
                                                    const ChannelFitConfig &config = {});
+
+// ── The same objective solved by an arbitrary point-curve family ─────────────
+//
+// For families that can only be fitted to weighted point targets (eSSVI, SVI,
+// C8, convex-dense, the point spline). Bounded active-set reweighting: each
+// step fits the family to
+//   * every contract's mid anchor (weight mid_weight * mid_scale / h^2), merged
+//     with its bound (weight channel_weight / u^2) while the previous step's
+//     curve lies outside that side of the channel, and
+//   * the prior as point targets at the knots the knot spline would use
+//     (weight strength / (prior_scale * prior)^2),
+// then the active set is recomputed from the fitted curve. Roughness is left to
+// the family's own regularisation, and the prior grid is standardized once at
+// the seeded (or prior) ATM volatility. The step with the lowest exact data +
+// prior objective is the solution; iteration stops when the active set repeats.
+// APPROXIMATION: the family's own robust loss, filters and weight floors act on
+// these targets, so the minimised objective is the family's, not exactly this.
+struct ChannelTarget {
+  double k{};      // ln(K / F_reference); targets are sorted by k, distinct
+  double sigma{};  // target volatility, > 0
+  double weight{}; // objective weight in 1 / vol^2
+  double unit{};   // the target's own volatility unit: 2 h, or the prior unit
+};
+
+// Fits the family to `targets` and writes its volatility at each `k_eval` into
+// `sigma` (same length). `sigma_ref` is the ATM reference of the prior grid.
+using ChannelFamilyStep =
+    std::function<Status(double sigma_ref, std::span<const ChannelTarget> targets,
+                         std::span<const double> k_eval, std::span<double> sigma)>;
+
+struct ChannelFamilyFit {
+  std::size_t step{};     // 0-based index, among successful steps, of the solution
+  double sigma_ref{};
+  ChannelFitDiagnostics diagnostics; // iterations = successful steps
+};
+
+// @return as fit_slice_channel; additionally InvalidArgument for zero
+//         `max_steps` or an empty step, and the first step's error when the
+//         family cannot fit at all. A later failing step ends the iteration.
+[[nodiscard]] Result<ChannelFamilyFit>
+fit_slice_channel_family(std::span<const ChannelObservation> observations, double variance_years,
+                         const ChannelPrior *prior, const ChannelFitConfig &config,
+                         std::uint16_t max_steps, const ChannelFamilyStep &step);
 
 } // namespace atx::vol

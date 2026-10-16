@@ -525,7 +525,10 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded", "graded": {"bogus": 1}},
              "Unknown policy key"),
             ({"schema_version": 1, "admission": "graded",
-              "graded": {"calendar_retry_factor": 0.5}}, "outside supported bounds")):
+              "graded": {"calendar_retry_factor": 0.5}}, "outside supported bounds"),
+            ({"schema_version": 1, "admission": "graded", "profiles": [
+                {"name": "dense", "base": "dense", "carry_mode": "implied-forward"}]},
+             "requires supplied carry")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -559,3 +562,32 @@ def test_native_knot_spline_profile_serves_a_channel_spline(binary, tmp_path):
     result = invoke(binary, source, output, "--policy", str(bad))
     assert result.returncode != 0
     assert "Unknown policy key" in result.stderr
+    assert all("family" not in profile["channel"] for profile in definition)
+
+
+def test_native_channel_family_solves_the_channel_objective(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    expected = make_quotes(source)
+    profiles = [{"name": name, "base": name, "curve": "knot-spline",
+                 "channel": {"family": "essvi", "family_iterations": 8}}
+                for name in ("dense", "ordinary", "sparse")]
+    policy = write_policy(tmp_path / "policy.json",
+                          {"schema_version": 1, "profiles": profiles})
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert all(row["configured_curve"] == "channel-essvi" for row in rows)
+    assert all(row["actual_curve"] == "essvi" for row in rows)
+    assert all(row["status"] == "ok" for row in rows)
+    assert max(abs(float(row["predicted_price"]) - value)
+               for row, value in zip(rows, expected)) < 0.03
+    definition = json.loads(result.stdout)["policy_definition"]["profiles"]
+    assert all(profile["channel"]["family"] == "essvi" for profile in definition)
+    assert all(profile["channel"]["family_iterations"] == 8 for profile in definition)
+    for family in ("linear-variance", "cstar"):
+        bad = write_policy(tmp_path / "bad.json", {"schema_version": 1, "profiles": [
+            {"name": "dense", "base": "dense", "curve": "knot-spline",
+             "channel": {"family": family}}]})
+        result = invoke(binary, source, output, "--policy", str(bad))
+        assert result.returncode != 0, family

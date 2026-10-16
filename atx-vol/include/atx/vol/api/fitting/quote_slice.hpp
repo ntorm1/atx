@@ -80,10 +80,11 @@ struct QuoteSliceQualityConfig {
 enum class QuoteSliceFitMethod : std::uint8_t {
   // Admitted point mids fitted by `curve` (the historical default).
   PointCurve,
-  // Channel-constrained knot spline: every valid contract's bid/ask volatility
-  // channel (both sides, bidless upper bounds included), a spread-normalised
-  // mid anchor and a flat default-shape prior. Served as a SplineVol curve on
-  // the SpiderRock standardized grid; `curve` and `min_quotes` are not used.
+  // Channel objective: every valid contract's bid/ask volatility channel (both
+  // sides, bidless upper bounds included), a spread-normalised mid anchor and a
+  // flat default-shape prior, solved by `channel.family` (default: the knot
+  // spline on the standardized grid, served as SplineVol). `curve.kind` and
+  // `min_quotes` are not used by the fit; `min_quotes` only grades evidence.
   ChannelSpline
 };
 
@@ -102,6 +103,13 @@ struct QuoteSliceChannelConfig {
   double mult_ceil = 3.0;
   std::uint16_t max_iterations = 50;
   std::size_t min_channel_quotes = 2; // usable channels required to fit
+  // Curve family that solves the channel objective. Unset: the native knot
+  // spline (slice_channel). Otherwise any point family except LinearVariance,
+  // fitted by bounded active-set reweighting around its own weighted fitter
+  // (fit_slice_curve): mid anchor, currently violated bounds and the prior
+  // become weighted point targets; at most `family_iterations` refits.
+  std::optional<VolCurveKind> family{};
+  std::uint16_t family_iterations = 12;
   // In-channel convexity repair, applied only when the strict price certificate
   // fails: each side's prices are replaced by their greatest convex minorant if
   // every moved node moves by at most this many of its own quote half-spreads
@@ -301,7 +309,9 @@ struct QuoteSlicePrior {
 // admission provenance are reported exactly as by the point path. Final prices
 // pass the same mandatory AmericanPriceSlice certification. Fewer than
 // `channel.min_channel_quotes` usable channels returns InsufficientQuotes; a
-// numerical failure of the spline returns FitFailure.
+// numerical failure of the spline (or of `channel.family`'s first refit)
+// returns FitFailure. Requires supplied carry (config.carry.mode == Supplied);
+// fit_quote_slice resolves carry before its prior-free channel fit.
 [[nodiscard]] Result<QuoteSliceFit>
 fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote> quotes,
                         const QuoteSliceConfig &config, const QuoteSlicePrior *prior,
@@ -382,10 +392,12 @@ struct QuoteSurfaceSlice {
 // leave-one-out term prior built from the other fitted expiries (two stages, so
 // snapshots without any point fit still borrow shape from their neighbours).
 // Calendar consistency is enforced on the final American prices: slices are
-// accepted greedily in confidence order and only a slice that crosses an
-// accepted one is retried once (stronger prior) and otherwise refused. No
-// certification is relaxed. Distinct calendar maturities are required; at most
-// kQuoteSurfaceMaxExpiries expiries. Shared malformed configuration is Err;
+// accepted greedily in confidence order; a slice that crosses an accepted one is
+// first repaired inside its quotes (when calendar_repair_half_spreads > 0), then
+// refitted once with a stronger prior (and that refit repaired), and otherwise
+// refused. No certification is relaxed. Distinct calendar maturities are required; at most
+// kQuoteSurfaceMaxExpiries expiries; carry must be supplied (resolved carry is
+// not yet composed with the term prior). Shared malformed configuration is Err;
 // per-expiry input errors are refusals with refusal == "invalid_input".
 inline constexpr std::size_t kQuoteSurfaceMaxExpiries = 128;
 
