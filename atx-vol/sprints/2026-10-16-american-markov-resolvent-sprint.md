@@ -177,5 +177,16 @@ with zero prepared C++ allocations, and retains six explicit work refusals next
 to one successful deterministic model. Its receipt
 `resolvent-seam-20261016-probe-check-v1.json` in the same cache has SHA256
 `ea8f34e96633f9688427f0cd9dc2cd9f4e7136afdc3106f6fd588e9f1fddaeea`.
-Independent review of this parent integration seam is pending. No development
-resolvent campaign, default promotion or qualified speed claim has occurred.
+Independent review approved exact parent seam
+`340ae585ed68be2fea61d7c9c34fab290256e205`. Fifteen focused native/audit checks
+passed independently against the frozen binaries; a separate two-expiry check
+reconciled prefix work 13,416/26,832 and total quote work 1,046,448. Review receipt
+`resolvent-seam-340ae585-independent-review-v1/review.json` in the same cache has
+SHA256 `7f5a2f6dd58ddd5e32a4b11a1b36b2ca09bfcc6dc82a4ec722ede69263657925`.
+The frozen `common-resolvent-seam-20261016-bin` archive holds that source's three
+tools and thirteen runtime DLLs; quote executable SHA256 is
+`1caee582623e3284e5add50115ced5e28e2ea6af2064427faaf64637001fbdfd`.
+Its build receipt distinguishes committed source from precommit CMake metadata.
+The [fixed development plan](2026-10-16-common-resolvent-development-plan.md)
+is approved; synthetic controls and E0 byte parity gate candidate execution.
+No default promotion or qualified speed claim has occurred.

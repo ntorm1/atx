@@ -102,3 +102,25 @@ Temporary CMake registration was restored before commit. Parent integration must
 add `tools/quote_bench_common_seed.cpp` to `atx-vol-quote-bench`; the existing native
 CTest already includes the changed Python test file. Parent owns shared CMake,
 README and ledger changes. Fresh exact-SHA parent review remains required.
+
+## Parent review and integration
+
+Parent approved exact author commit `c9a4ad094521adbec964842d9c9a7b392941eeb0`
+after reviewing owned vector lifetime, configured prior preservation, unchanged
+full quote span, complete-only application, fallback diagnostics and bounded
+configuration. Integrated as `8d4f9354`, with permanent helper registration.
+The merged resolvent/seed native suite passes **107 checks**, with no skips;
+the wrapper and fixed-campaign suites pass **110 checks**, with no skips. Four
+owning native translation units pass PCH-off closure (one was already current).
+These checks import standalone tool sources, not the unrelated editable Python
+extension. Full-library release gates have not been rerun or claimed.
+
+Parent XML receipts under `C:/atx-cache/quote-benchmark/`:
+
+- `native-seeds-parent-20261016-merged-v1.xml`, SHA256
+  `4e3e4f6f681121c49f2f02c6c804609303f086f9e6f3f05a65671fc8370a22d7`.
+- `native-seeds-parent-20261016-wrapper-v1.xml`, SHA256
+  `257025cdee2bcc1e6e2f3a7c7ed6d5c274acb0b1d0cd77c9eee9c98d613cb549`.
+
+The predeclared resolvent development campaign uses its earlier frozen,
+seed-free binary. This initializer is not silently mixed into that experiment.

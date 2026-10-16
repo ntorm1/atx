@@ -34,6 +34,11 @@ no-arbitrage does not certify continuous-American or boundary accuracy; see the
 The negative-rate limitation below describes the Andersen-Lake family; it does
 not apply to the common finite-process Snell rollback. Equivalent-IV reporting
 still uses that family's inversion convention and can refuse separately.
+Native common policies can also request
+`"initialization": {"mode": "quote-seed"}`. The bounded quote-only estimator
+changes only the starting parameters, retains the configured prior and all
+fitting quotes, and reports incomplete/error fallbacks. See the
+[initializer contract](sprints/2026-10-16-native-common-quote-seeds.md).
 
 | Layer | Header(s) | What it does |
 |---|---|---|

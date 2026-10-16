@@ -922,7 +922,7 @@ if(ATX_BUILD_TOOLS)
     # Python scorer; the native tool accepts a closed raw-quote input schema.
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
         tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp
-        tools/quote_bench_progress.cpp)
+        tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
     target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings
         nlohmann_json::nlohmann_json)
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
