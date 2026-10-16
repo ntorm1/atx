@@ -993,7 +993,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 35 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 36 | Public and supported to include; **not** frozen |
 | `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
@@ -1168,7 +1168,10 @@ umbrella — so Tier-A (58) held and no other row moved.
 **35**, api/ headers 93 → **94**: `chain_tick.hpp` landed under `api/pricing/` —
 the inline, pool-free chain re-mark after a spot tick (`ChainContractsView`,
 `ChainTickOutputs`, the one-byte `TickStatus`, `refresh_chain_cached`) — outside
-the umbrella, so Tier-A (58) held and no other row moved.
+the umbrella, so Tier-A (58) held and no other row moved. Then Tier-B 35 →
+**36**, api/ headers 94 → **95**: `expiry_record.hpp` landed under `api/fitting/` —
+the per-expiry (moneyness, sigma) calibration record at the expiry's exact carry
+(`ExpiryRecord`, `ExpiryRecordBank`) — also outside the umbrella.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A

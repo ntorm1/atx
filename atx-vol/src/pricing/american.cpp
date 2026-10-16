@@ -2032,6 +2032,17 @@ namespace amer {
   return price;
 }
 
+// Tick-path record seam (american_boundary.hpp): pure forwarders.
+[[nodiscard]] double al_boundary_now(const AlBoundary &bnd) noexcept {
+  return al_boundary_at(bnd, bnd.T);
+}
+
+[[nodiscard]] double al_put_premium_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                  double S, double sigma, double r,
+                                                  double q) noexcept {
+  return al_put_premium(bnd, ws, S, sigma, r, q);
+}
+
 // P2 (WS-P) seam — the PURE collocation residual R(y; sigma, r, q), exposed as a
 // linkable symbol so the adjoint-greeks kernel (detail/adjoint_greeks.cpp) can
 // call it to form J = dR/dy and R_sigma/R_r. Pure function of (y, sigma, r, q):

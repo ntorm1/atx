@@ -24,10 +24,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <vector>
 
-#include "atx/vol/api/core/types.hpp"         // Side, Status
-#include "atx/vol/api/fitting/correction.hpp" // AmericanCorrectionCaches
+#include "atx/vol/api/core/types.hpp"            // Side, Status
+#include "atx/vol/api/fitting/correction.hpp"    // AmericanCorrectionCaches
+#include "atx/vol/api/fitting/expiry_record.hpp" // ExpiryRecord, ExpiryRecordBank
+#include "atx/vol/api/pricing/american.hpp"      // AlOpts
 
 namespace atx::vol {
 
@@ -98,5 +102,56 @@ struct ChainTickOutputs {
 [[nodiscard]] Status refresh_chain_cached(double spot, const ChainContractsView &chain,
                                           const AmericanCorrectionCaches &caches,
                                           const ChainTickOutputs &out);
+
+// ── Per-expiry calibration records for a chain (audit item 2) ────────────────
+
+// How a chain's records are sized at refit. One record per distinct (T, r, q,
+// side) group of contracts.
+struct ChainRecordPolicy {
+  // ln-spot excursion, both ways, the moneyness box must cover beyond the listed
+  // strikes at the build spot. A spot move past it takes contracts out of their
+  // record's box (served clamped, TickStatus::Fallback).
+  double spot_move = 0.05;
+  // sigma box = [sigma_lo_mult * min sigma, sigma_hi_mult * max sigma] of the group.
+  double sigma_lo_mult = 0.6;
+  double sigma_hi_mult = 1.6;
+  std::optional<AlOpts> sample_opts = std::nullopt; // nullopt = accurate preset
+  bool certify = true;
+};
+
+// The records of one chain plus the contract -> record map. Built once per refit
+// (allocates); immutable afterwards and safe for concurrent reads.
+class ChainRecords {
+public:
+  // @return InvalidArgument for mismatched columns / non-positive spot, or the
+  //         first ExpiryRecord::build error.
+  [[nodiscard]] static Result<ChainRecords> build(double spot, const ChainContractsView &chain,
+                                                  const ChainRecordPolicy &policy = {});
+
+  [[nodiscard]] const ExpiryRecordBank &bank() const noexcept { return bank_; }
+  // record_of_contract()[i] indexes bank() for contract i.
+  [[nodiscard]] std::span<const std::uint32_t> record_of_contract() const noexcept {
+    return record_of_;
+  }
+  // Largest certified_max_abs_error_fwd() over the records (NaN if uncertified).
+  [[nodiscard]] double worst_certified_error_fwd() const noexcept { return worst_cert_; }
+
+private:
+  ExpiryRecordBank bank_{0};
+  std::vector<std::uint32_t> record_of_;
+  double worst_cert_ = 0.0;
+};
+
+// Record tick route (audit item 2): each contract is re-marked from its expiry
+// record — price, delta, gamma, vega and the continuation-PDE theta — inline.
+// TickStatus::Exercised in the exercise region; TickStatus::Fallback when the
+// contract's (k, sigma) has left its record's box (the box-clamped record value
+// is served, flagged); Unpriceable + NaN for a non-positive strike or sigma.
+//
+// @return InvalidArgument for mismatched columns, a non-positive / non-finite
+//         spot, or `records` built for a different contract count.
+[[nodiscard]] Status refresh_chain_records(double spot, const ChainContractsView &chain,
+                                           const ChainRecords &records,
+                                           const ChainTickOutputs &out);
 
 } // namespace atx::vol

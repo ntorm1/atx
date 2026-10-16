@@ -39,8 +39,14 @@
 //                      rho/charm off (3 boundary solves per contract).
 //   cold_al_avx2_batch american_greeks_batch, analytic AVX2 laned route, accurate
 //                      AL, executor = nullptr (serial, inline).
+//   record_direct      refresh_chain_records: per-expiry ExpiryRecord (audit
+//                      item 2), price + delta + gamma + vega + PDE theta.
+//   record_price_only  ExpiryRecord::price per contract (the <= 150 ns cached-
+//                      price micro target); Greek columns stay NaN.
 //   The cold routes cost ~0.1-1 s per tick, so they run a handful of ticks; the
 //   cached routes a few hundred. Each row's `ticks` counter says how many.
+//   Record routes report their untimed refit build cost (`build_ms`) and the
+//   worst build-time certified error (`cert_err_fwd_max`, forward units).
 //   NOT IMPLEMENTED: markov_batch (opt-in, never gated per §4).
 //
 // Every number this bench prints on a shared host is UNQUALIFIED. Only a quiet
@@ -54,6 +60,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -83,6 +90,7 @@ constexpr std::size_t kStrikesPerExpiry = 50;
 constexpr std::size_t kContracts = kExpiryDays.size() * kStrikesPerExpiry * 2u;
 constexpr std::uint64_t kTapeSeed = 0x20261016A7C0FFEEull;
 constexpr std::size_t kTapeLength = 20000; // covers warm + timed ticks of every route
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // Fixed ATM term structure: elevated front end decaying to ~18%.
 [[nodiscard]] double atm_vol(double T) noexcept { return 0.18 + 0.10 * std::exp(-T / 0.15); }
@@ -191,8 +199,10 @@ void fnv_mix(std::uint64_t &h, double v) noexcept {
 struct OutputStore {
   std::vector<double> price, delta, gamma, vega, theta;
   std::vector<TickStatus> status;
+  // NaN-initialized so a column a route never writes reads as "no evidence".
   explicit OutputStore(std::size_t n)
-      : price(n), delta(n), gamma(n), vega(n), theta(n), status(n, TickStatus::Ok) {}
+      : price(n, kNaN), delta(n, kNaN), gamma(n, kNaN), vega(n, kNaN), theta(n, kNaN),
+        status(n, TickStatus::Ok) {}
   [[nodiscard]] ChainTickOutputs view() noexcept {
     return ChainTickOutputs{price, delta, gamma, vega, theta, status};
   }
@@ -274,11 +284,16 @@ void report_accuracy(benchmark::State &state, const std::vector<Sample> &samples
     if (!(std::abs(dp) <= 1.0e-3)) {
       ++n_gt_mil;
     }
-    ed.add(s.delta - r.delta);
-    eg.add(s.gamma - r.gamma);
-    ev.add(s.vega - r.vega);
-    et.add(s.theta - r.theta);
+    // A price-only route leaves its Greek columns NaN by contract; those rows
+    // carry no Greek evidence rather than an infinite error.
+    if (!std::isnan(s.delta)) {
+      ed.add(s.delta - r.delta);
+      eg.add(s.gamma - r.gamma);
+      ev.add(s.vega - r.vega);
+      et.add(s.theta - r.theta);
+    }
   }
+  state.counters["acc_greek_samples"] = static_cast<double>(ed.abs_err.size());
   state.counters["acc_samples"] = static_cast<double>(samples.size());
   state.counters["price_max_abs"] = ep.max_abs;
   state.counters["price_p99_abs"] = ep.p99();
@@ -375,6 +390,14 @@ void run_route(benchmark::State &state, Route &route, std::size_t warm_ticks) {
       lat.empty() ? 0.0
                   : 1.0e3 * static_cast<double>(rebuilds) / static_cast<double>(lat.size());
   state.counters["contracts"] = static_cast<double>(kContracts);
+  // Refit-time (untimed) build cost of the route's records/ladders, when it has one.
+  if constexpr (requires { route.build_ms(); }) {
+    state.counters["build_ms"] = route.build_ms();
+  }
+  // Worst build-time certified error (forward units) of the route's records/ladders.
+  if constexpr (requires { route.cert_fwd(); }) {
+    state.counters["cert_err_fwd_max"] = route.cert_fwd();
+  }
   report_accuracy(state, samples);
 }
 
@@ -513,6 +536,72 @@ struct ColdAlAvx2BatchRoute {
   [[nodiscard]] std::uint64_t rebuilds() const noexcept { return 0; }
 };
 
+// ── Records (audit item 2): one ExpiryRecord per (expiry, side) at S0 ─────────
+
+struct BuiltRecords {
+  std::optional<ChainRecords> recs;
+  double build_ms = 0.0;
+  double worst_cert_fwd = 0.0;
+};
+
+// Built once per process, untimed: the refit-time cost lands in `build_ms`.
+[[nodiscard]] const BuiltRecords &chain_records() {
+  static const BuiltRecords built = [] {
+    BuiltRecords b;
+    const auto t0 = std::chrono::steady_clock::now();
+    Result<ChainRecords> r = ChainRecords::build(kSpot0, chain().view(), ChainRecordPolicy{});
+    const auto t1 = std::chrono::steady_clock::now();
+    b.build_ms = 1.0e3 * std::chrono::duration<double>(t1 - t0).count();
+    if (r) {
+      b.worst_cert_fwd = r->worst_certified_error_fwd();
+      b.recs = std::move(*r);
+    } else {
+      std::fprintf(stderr, "[chain-refresh] ChainRecords::build failed: %s\n",
+                   r.error().to_string().c_str());
+    }
+    return b;
+  }();
+  return built;
+}
+
+// record_direct: refresh_chain_records — every contract from its record (price,
+// delta, gamma, vega, PDE theta): one second-order 2-D Clenshaw per contract.
+struct RecordDirectRoute {
+  const BuiltRecords &b = chain_records();
+  void reset() noexcept {}
+  void refresh(double spot, const ChainTickOutputs &out) {
+    if (b.recs) {
+      const Status st = refresh_chain_records(spot, chain().view(), *b.recs, out);
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+    }
+  }
+  [[nodiscard]] std::uint64_t rebuilds() const noexcept { return 0; }
+  [[nodiscard]] double build_ms() const noexcept { return b.build_ms; }
+  [[nodiscard]] double cert_fwd() const noexcept { return b.worst_cert_fwd; }
+};
+
+// record_price_only: the cached-PRICE micro path (audit target <= 150 ns per
+// arbitrary-strike price): ExpiryRecord::price per contract, one 192-term
+// Clenshaw plus the Black-76 leg. Greek columns are left NaN by design.
+struct RecordPriceOnlyRoute {
+  const BuiltRecords &b = chain_records();
+  void reset() noexcept {}
+  void refresh(double spot, const ChainTickOutputs &out) {
+    if (!b.recs) {
+      return;
+    }
+    const SyntheticChain &c = chain();
+    const std::span<const std::uint32_t> rec_of = b.recs->record_of_contract();
+    const ExpiryRecordBank &bank = b.recs->bank();
+    for (std::size_t i = 0; i < kContracts; ++i) {
+      out.price[i] = bank.at(rec_of[i])->price(spot, c.strike[i], c.sigma[i]);
+    }
+  }
+  [[nodiscard]] std::uint64_t rebuilds() const noexcept { return 0; }
+  [[nodiscard]] double build_ms() const noexcept { return b.build_ms; }
+};
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -552,6 +641,8 @@ const bool kRegistered = [] {
   register_route<CachedLadderRoute>("chain/refresh/cached_ladder/n2000", 300, 20);
   register_route<ColdAlQlFastRoute>("chain/refresh/cold_al_qlfast/n2000", 5, 1);
   register_route<ColdAlAvx2BatchRoute>("chain/refresh/cold_al_avx2_batch/n2000", 3, 1);
+  register_route<RecordDirectRoute>("chain/refresh/record_direct/n2000", 2000, 200);
+  register_route<RecordPriceOnlyRoute>("chain/refresh/record_price_only/n2000", 2000, 200);
   return true;
 }();
 

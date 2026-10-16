@@ -84,6 +84,9 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/surface.cpp
     src/fitting/vol_surface.cpp
     src/fitting/correction.cpp
+    # Per-expiry (k, sigma) calibration record at the expiry's exact carry
+    # (pricing hot-path audit 2026-10-16 item 2); header api/fitting/expiry_record.hpp.
+    src/fitting/expiry_record.cpp
     src/fitting/arb.cpp
     src/fitting/surface_policy.cpp
     # Task F-8: SurfaceOverlay/StickyMode bump algebra over a fitted surface --

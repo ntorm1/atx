@@ -109,6 +109,7 @@ three promotions (72/72 → 75/69); the per-module lists below do too.
 - curve_selector.hpp
 - deamer.hpp
 - dense_slice.hpp
+- expiry_record.hpp (added 2026-10-16, tick-path lane — Tier-B, outside the umbrella; the measured counts above predate it)
 - fit_metrics.hpp
 - fit_policy.hpp
 - parity.hpp
