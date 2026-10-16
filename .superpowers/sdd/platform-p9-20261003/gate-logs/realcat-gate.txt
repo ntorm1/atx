@@ -1,0 +1,12 @@
+before: ledger 133 lines 27e40f9f; research-store absent; head 883be9f2; 2026-10-16T16:00:58Z
+runner exit 1
+store exe build-equity-rel/bin/atx-research-store.exe sha256 0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818
+first attempt build-equity/p9-b0g-cat-1-run: process-error exit 1 in 0.3 s (the tool's relative exe path refused by CreateProcess, FileNotFoundError; nothing catalogued); fixed: absolute exe path
+before attempt 2: ledger 133 lines 27e40f9f; research-store absent; head 883be9f2; 2026-10-16T16:01:41Z
+runner exit 0
+store exe C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-store.exe sha256 0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818
+catalog A: init exit 0
+catalog A: catalog exit 0; files_seen 33699 verified 4190 declared 84 skipped 29468; catalog_digest adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474
+catalog B: init exit 0
+catalog B: catalog exit 0; files_seen 33699 verified 4190 declared 84 skipped 29468; catalog_digest adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474
+second from-scratch catalog reproduces the digest: True

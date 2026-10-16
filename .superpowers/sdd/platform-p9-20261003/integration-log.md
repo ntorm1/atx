@@ -877,3 +877,35 @@ and at 14:21:49Z. Known-red set **EMPTY**. Release exes p9-3f, every one `disk =
 
 G-P ticks: none changed by agent 3. Build tags used by agent 3: none; next free tag **p9-3h**. Trials: 0 (ledger 133
 `27e40f9f`). Permission refusals: none.
+
+### GATE (RESUME 13), chain agent 4, 2026-10-16 (DONE: the gate completes)
+
+Gate code head **`2078f877`** (= `06dc9e5a` + the re-pin, pins only); EXE-FREEZE from `2078f877`. Report:
+`root-gate-report.md` "Chain agent 4"; logs `gate-logs/`; final handoff `handoff-root-gate.md`. Trial ledger 133 lines
+`27e40f9f` throughout; `build-equity/research-store/` absent; known-red set **EMPTY**; Release exes p9-3f (27 / 27
+`disk = receipt` at start and end; Debug p9-3g likewise).
+
+| step | item | result | evidence |
+|---|---|---|---|
+| 0 | re-verification; GATE-IDX check first | holds; `index.sqlite` **absent**, the cache = the 351 originals `155872de50833fca` | `gate-logs/exe-sha-{rel,dbg}-4.txt`, `cache-lo3-listing-agent4-idx.txt` |
+| 4 | FIELDS-SUB-A applied to the records; rows 4-6 amendments committed before the runs (`bfbe64d2`) | R-2 of record = `p9-b0-r2-nav` (path A) | `root-gate-report.md` |
+| 4 | row 4 Y-F0 u on the Release IC exe (`p9-b0g-yf0-u`) | completed (107.0 s, 1,613 MiB, cap 2,560); cold Release pass: the 351 originals unchanged, +201 files (4.47 GB) Release identity subtree; vs M1d's `p9-b0-yf0-u`: payloads 3 / 3 identical, 0 leaves outside RELCACHE-ALLOW (1,031 differing leaves, all classed by path) | `gate-logs/yf0u-cmp.txt`, `yf0u-classes.txt` |
+| 4 | row 5 Y-F0 w (`p9-b0g-yf0-w`) | completed (30.6 s, 1,427 MiB, cap 3,072); payloads 10 / 10 identical (`train_combined.json` `e13fbc4d`); 0 outside | `gate-logs/yf0w-cmp.txt` |
+| 4 | row 6 Y-F0 NAV of record on the re-based w (`p9-b0g-yf0-nav`) | completed (34.4 s, 646 MiB); 26 / 27 identical; `summary.json` PRODUCER 2 + OPTIN 75 (new side only); 0 outside; `ucrtbase.dll` = CRT-2 | `gate-logs/yf0nav-cmp.txt`, `ucrt-b0-4.txt` |
+| 5 | rho (B2-13) | P9-X pair 0.9947035686613187 (flag false); X-10 vs Y-F0 0.9994863034956717 (false) | `gate-logs/rho-pairs-2.txt` |
+| 6 | the re-pin, ONE code commit | **`2078f877`**: `lib-v8ysb-gm.json` (Release exes + `exes.eval` + `exes_sha256`, `nav.output` -> `p9-b0g-yf0-nav`), `x-leverage-L2.0.json` (`p9-b0g-x10-nav`), `y-vol-target-y-1.json` (`p9-b0g-y1-nav`, the v1.1 store); `verify` on the pinned lineage holds | `gate-logs/repin-verify.txt` |
+| 6 / 7 | fixture chain digest | `a50fdcf9...100c` twice (Release store exe) | `gate-logs/fixture-chain-4.txt` |
+| 7 | real-tree catalog (bounded, DBs outside the root) | digest **`adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474`**, a second from-scratch catalog **reproduces** it; files_seen 33,699 / verified 4,190 / declared 84 / skipped 29,468 | `gate-logs/realcat-gate.txt` |
+| 7 | `verify --pins` counts; render identity; ledger verify | ok 1,620 / declared 169 / stale 220 / missing 630 / unresolved 1,512; render identity 435 checked, 0 mismatches; ledger 133 lines index ok | `gate-logs/realcat-gate-verify.txt`, `realcat-gate-verify-ledger.txt` |
+| 7 | `classes.json` SHA (STORE-S S-4) | `5bc27ba489f24a0d1c8c42c8c29927c8d1bde6bf63cd5993f285a5b084086557` | - |
+
+G-P ticks at the gate (evidence rows in `root-gate-report.md` "Step 7, agent 4"):
+
+| row | state |
+|---|---|
+| G-P1 | not checkable at the gate (the first real P9 wave) |
+| G-P2, G-P3, G-P4, G-P6, G-P7, G-P8, G-P9, G-P11 | **ticked** |
+| G-P5 | PARTIAL (IC-S: four pairs unlisted, P10 retirement; the guard green, 0 rows left for P9 lanes) |
+| G-P10 (print) | (a) landed, (b) landed (435 / 0), (c) landed (`adbcd348...d474` twice), (d) PARTIAL as M6 states, (e) landed for `atx.run-store/v1` |
+
+Build tags used by agent 4: none; next free tag **p9-3h**. Trials: 0. Permission refusals: none.

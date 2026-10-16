@@ -15,6 +15,26 @@ JSON path, exit code and counts only; no 2020-2023 statistic is read or recorded
 - **Trial ledger** `build-equity/trials.jsonl`: 133 lines, sha256 `27e40f9f...` at every check (0 trials).
 - **GATE-IDX:** `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` (73,728 bytes, sha256 `3a177dfd...c6f0`) was
   present at step 0; this agent never deletes it and runs nothing naming that cache while it exists (see step 3).
+  The owner deleted it by hand; agent 4 found it absent at 15:11:39Z (the 351 originals, `155872de50833fca`).
+
+## Status by step after chain agent 4 (2026-10-16 ~16:10Z; FINAL; detail in "Chain agent 4" at the end)
+
+**Gate status: DONE** (GATE-1). Code head **`2078f877`** (the re-pin; gate code `06dc9e5a` + the re-pin only); EXE-FREEZE
+in force from `2078f877`. No code red; known-red set EMPTY; 0 trials (133 / `27e40f9f`); no build (next free tag
+`p9-3h`); exes of record p9-3f / p9-3g, 27 / 27 + 27 / 27 `disk = receipt` at agent 4's start and end.
+
+| step | state | evidence (`gate-logs/`) |
+|---|---|---|
+| 0 start state | **holds** (agent 4: heads, ledger, research-store absent, exes `disk = receipt`, `ucrtbase.dll` = CRT-2, GATE-IDX cleared) | `exe-sha-{rel,dbg}-4.txt`, `cache-lo3-listing-agent4-idx.txt` |
+| 1 exes of record | **holds** (agent 1; unchanged) | `exe-sha-{rel,dbg}-4-end.txt` |
+| 2 suites | **holds** (agent 2) | as after agent 2 |
+| 3 identity, canaries | **holds** with the cut: Y-F0 NAV / fit identity, ALCLOCK-1, D3-Q1a DIFFERENT (P9-W LAPSED (0)), COMPOSE-1a ACCEPT, greps, golden, canaries (agent 2); Y-F0 u / w flag-absent identity on the Release IC exe **holds** (rows 4-5, RELCACHE-ALLOW); X-5 rows **CUT** (FIELDS-X5) | `yf0u-cmp.txt`, `yf0w-cmp.txt` |
+| 4 P9-B0 | **holds**: R-2 `p9-b0-r2-nav` (path A, FIELDS-SUB-A), X-10 `p9-b0g-x10-nav`, Y-1 `p9-b0g-y1-nav` (PRE-29), Y-F0 `p9-b0g-yf0-u` / `-w` / `-nav` (identity holds; the NAV reads the re-based w, YF0-NAV-ORDER); `ucrtbase.dll` re-recorded | `b0-runs.txt`, `yf0{u,w,nav}-cmp.txt`, `ucrt-b0-4.txt` |
+| 5 rho | **holds**: P9-X pair 0.9947035686613187 (flag false); X-10 vs Y-F0 0.9994863034956717 (false); Y-1 vs X-10 0.9947113980219978 (false) | `rho-pairs-{1,2}.txt` |
+| 6 re-pin | **holds**: ONE code commit `2078f877`, pins only; `verify` on the pinned lineage holds; fixture chain digest `a50fdcf9...100c` reproduced | `repin-verify.txt`, `fixture-chain-4.txt` |
+| 7 store step, G-P | **holds**: catalog digest `adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474`, reproduced from scratch; `verify --pins` counts; render identity 435 / 0; G-P1 not checkable, G-P5 PARTIAL, the rest ticked; G-P10 (a)-(c), (e) landed, (d) PARTIAL | `realcat-gate*.txt` |
+| 8 whole-wave review | DONE before the chain | `wave-review-*.md` |
+| 9 records | this file, `integration-log.md`, **`handoff-root-gate.md`** (final) | - |
 
 ## Status by step after chain agent 3 (2026-10-16 ~14:30Z; detail in "Chain agent 3" at the end; rows not listed are as after agent 2)
 
@@ -158,6 +178,29 @@ Agent 3 (2026-10-16 ~14:30Z; BLOCKED-OWNER at GATE-IDX; by Appendix IV item; a "
 Beside the items: SQL4 verdict green (in the head, SQL4-CUTOFF-2); D3-Q1a DIFFERENT; COMPOSE-1a ACCEPT; ALCLOCK-1 held;
 cut line X-5 (FIELDS-X5); substitution list `778d34b8`; cache listing before any Release pass: 352 files `fb444f7d316a1a4c`
 (351 + the GATE-IDX file; without it `155872de50833fca`); no Release pass ran, so no "after" listing.
+
+Agent 4 (2026-10-16 ~16:10Z; FINAL; every item below is final; items not listed are as agent 3's table, which stands):
+
+| item | fact | evidence (`gate-logs/`) |
+|---|---|---|
+| 1 R-2 | **`build-equity/p9-b0-r2-nav`, the re-based R-2 of record (path A, FIELDS-SUB-A)**: listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`; the classification table (`r2-classify.txt`) is its disclosure; G-B6 and the OD-3 R-2 line read it; its TRAIN fields dir is v15 (`26fee5ce`), its w the v8 w its argv reads (`mega-v8-r1w-train-std-v80-1/train_combined.json` `bbbf6f2b...cd98`, not re-based) | `b0-files-p9-b0-r2-nav.txt` |
+| 2 Y-F0 u / w / NAV | u **`build-equity/p9-b0g-yf0-u`** (5 files, listing `1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa`, `summary.json` `acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8`); w **`build-equity/p9-b0g-yf0-w`** (12 files, listing `ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1`, `summary.json` `f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2`, `train_combined.json` `e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c`); NAV **`build-equity/p9-b0g-yf0-nav`** (27 files, listing `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json` `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`; reads the re-based w; `--ann-mean-gross --info-clock-print`); each holds against M1d's reference (RELCACHE-ALLOW / the NAV form) | `b0-files-p9-b0g-yf0-{u,w,nav}.txt`, `yf0{u,w,nav}-cmp.txt` |
+| 3 Y-1 | as agent 3 (`p9-b0g-y1-nav`); the re-pin points `y-vol-target-y-1.json` at it and at the v1.1 store | step 6 |
+| 4 exe table of the re-pin | the re-pin commit **`2078f877`** pins Release p9-3f (source = gate code `06dc9e5a`, receipt Source `5f48a25d`): NAV `build-equity-rel/bin/atx-equity-strategy-targets.exe` `255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565`, IC `build-equity-rel/bin/atx-equity-strategy-ic.exe` `ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705`, eval `build-equity-rel/bin/atx-research-eval.exe` `e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c`; every other exe of the frozen set at step 1's table (composition `04db0d67...16f2`, admission `f53d9277...063f`, store `0eeac21b...3818`, risk `0c110534...586b`, fields `883c5b74...584a`); EXE-FREEZE from `2078f877`; 27 / 27 + 27 / 27 `disk = receipt` at the end | `exe-sha-{rel,dbg}-4-end.txt`, step 6 |
+| 6 eval mode | **research-fast** (the default): the Y-F0 u receipt's argv carries no `--eval-mode audit-exact`, and the Release VM identity is `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0` without the `_audit` suffix (PATH-1: every cell runs in its reference's mode) | `receipt-p9-b0g-yf0-u.json`, `yf0u-cmp.txt` |
+| 8 P9-L parent / reference | = item 2 (`p9-b0g-yf0-nav` the paired parent NAV; the re-pinned `lib-v8ysb-gm.json` names it) | step 6 |
+| 20 rho P9-X pair | re-based Y-1 vs re-based Y-F0: **0.9947035686613187**, "1 - rho < 1e-6" **false** | `rho-pairs-2.txt` |
+| 22 rho P9-V pair | P9-V pairs with P9-X (PRE-MVX); its references are P9-X's: the P9-X pair above; the cell pair itself is measured at the cells (before P9-V's read) | `rho-pairs-2.txt` |
+| 25 `ucrtbase.dll` at P9-B0 | 10.0.26100.7623 `2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF` at the Y-F0 runs (15:39:47Z) = the cache-free runs = CRT-2 | `ucrt-b0-4.txt`, `ucrt-b0-3.txt` |
+| 26 rho of the references | P9-X pair 0.9947035686613187 (false); X-10 vs Y-F0 **0.9994863034956717** (false); Y-1 vs X-10 0.9947113980219978 (false) | `rho-pairs-{1,2}.txt` |
+
+Beside the items (final): SQL4 verdict green (SQL4-CUTOFF-2); D3-Q1a DIFFERENT (P9-W LAPSED (0)); COMPOSE-1a ACCEPT;
+ALCLOCK-1 held (step 3 and the NAV of record); cut line X-5 (FIELDS-X5); the substitution list `778d34b8` + agent 4's
+amendments `bfbe64d2` (row 1 path A; rows 4-6 classes and the NAV's w) and the tool correction `c0112afc`; the re-pin
+`2078f877`; the catalog digest `adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474` (reproduced); the
+fixture digest `a50fdcf9...100c` (reproduced); `classes.json` `5bc27ba4...6557`. Cache listing **before** the Release
+pass: 351 files `155872de50833fca` (after the owner's GATE-IDX deletion; 352 `fb444f7d316a1a4c` with it); **after**:
+552 files `c9ee9291f5ddc0c2` (the 351 unchanged + the 201-file Release identity subtree, 4,466,406,032 bytes).
 
 ## Step 0: start state (re-verification only; GATE-0 did the slips)
 
@@ -917,3 +960,77 @@ by the cycle (its own `inputs.baseline_fields` is fields v13, FIELDS-GONE; the s
 children resolve without it); the reference NAVs carry no C-13 binding to these specs (exe-direct runs with the
 substitution list's opt-in flags), so a `run` of the reference spec itself would not score them: they are references,
 not cells.
+
+### Step 7, agent 4: the store step (M2A-4, SQL3-2, STORE-S S-4), G-P ticks, the G-P10 print (after the re-pin)
+
+Every run on the gate head with the re-pin in (docs head `883be9f2`, code `2078f877`), the Release store exe p9-3f
+`atx-research-store` `0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818` (= receipt before and after),
+every catalog DB **outside the root** (`C:/Users/natha/AppData/Local/Temp/g4cat/`, `g4fx/`), so
+`build-equity/research-store/` stayed absent and the record hook off (SQL3-2); the trial ledger read only (133 /
+`27e40f9f` before and after).
+
+| item | result | evidence (`gate-logs/`) |
+|---|---|---|
+| fixture chain digest (step 6's "fixture chain digest"; the fixture digest of record, M6b SQL4-S S-1) | the store fixture tree `atx-engine/tests/fixtures/research_store/tree`, two fresh catalogs: both `files_seen 28 verified 25 declared 0 skipped 4`, **`catalog_digest a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c`** twice (= the record); `verify --pins` exit 0; render identity "total checked 12 mismatches 0" | `fixture-chain-4.txt` |
+| real-tree catalog of the gate head, bounded root run (M2A-4) | `run_bounded_research.py --output build-equity/p9-b0g-cat-2-run --seconds 600 --max-rss-mib 2048 -- python tools/gate_cat.py <store exe> C:/atx-wt/pool-2 <A> <B>`: completed exit 0, 26.4 s, peak 53 MiB, no `store` block; catalog A: init 0, catalog 0, `files_seen 33699 verified 4190 declared 84 skipped 29468`, **`catalog_digest adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474`** (argv as M6B-FINISH item 7: `--root <pool> --ledger build-equity/trials.jsonl --classes atx-engine/schemas/research_store/classes.json`) | `realcat-gate.txt`, `tools/gate_cat.py` |
+| a second from-scratch catalog reproduces the digest | catalog B (a fresh DB, in the same bounded run, so both walks see the same tree: the run's own dir holds only its `start.json` during both, and bounded-run receipts / starts are catalogued classes in `classes.json`): the same counts and **`adbcd348...d474`: reproduced** | `realcat-gate.txt` |
+| first attempt (void) | `build-equity/p9-b0g-cat-1-run`: process-error exit 1 in 0.3 s; the tool passed a relative exe path that `CreateProcess` refused (FileNotFoundError; nothing catalogued); fixed (absolute path), re-run as above; kept as its record | `realcat-gate.txt`, `realcat-gate-runner.log` |
+| `verify --pins` counts by state (G-P10 (a)) on catalog A | bounded run `build-equity/p9-b0g-catv-1-run` (completed exit 0, 0.8 s, peak 40 MiB, no `store` block; `tools/gate_catv.py`): artifacts verified **4,190**, declared **84**; pins **ok 1,620, declared 169, stale 220, missing 630, unresolved 1,512**; by kind: exe ok 1 / stale 84 / unresolved 83; field-payload declared 168 / missing 516; field-source declared 1 / ok 276 / unresolved 1,371; fields-manifest missing 24 / ok 11; input missing 20 / ok 247 / unresolved 6; ledger-head unresolved 17; locked ok 74; receipt-binding missing 70 / ok 630 / stale 136; receipt-log ok 336; rule-template ok 8; spec-digest unresolved 35; stage-receipt ok 33 (every stale / missing row is listed by path in the file: v8-era receipt bindings and the fields dirs gone under FIELDS-GONE) | `realcat-gate-verify.txt` |
+| render-identity mismatch count (G-P10 (b)) | `research_store_identity.py --catalog A --root <pool>`: run-receipt 168, run-start 169, stage-receipt 37, cycle-binding 23, cycle-verdict 17, wave-result 4, wave-candidate 16, trial-ledger 1: **total checked 435, mismatches 0** | `realcat-gate-verify.txt` |
+| `verify --catalog A --ledger build-equity/trials.jsonl` | exit 0: 133 lines, head `5a3ef9d9...7503`, rule `atx-ledger-chain-fold/v1`, index ok | `realcat-gate-verify-ledger.txt` |
+| `classes.json` SHA by hand (STORE-S S-4) | `atx-engine/schemas/research_store/classes.json` **`5bc27ba489f24a0d1c8c42c8c29927c8d1bde6bf63cd5993f285a5b084086557`** (the catalog itself records no `classes.json` SHA: P10) | this row |
+| X-5 opt-in cache identity | **CUT** (FIELDS-X5): M6b items 5 / 6 cited, not re-run (a `cache init` on the real cache would re-create the GATE-IDX file) | `handoff-root-m6b.md` |
+| scoreboard, `scoreboard --timings`, PY-S S-6, CRT record | agent 2's records stand (`scoreboard-gate.txt`, `pys-s6-ledger-n.txt`, `crt-record.txt`); not re-run: the scoreboard reads wave results and the ledger only (`scripts/wave_scoreboard.py:71-100`), which the re-pin does not touch; the ledger is unchanged (133 / `27e40f9f`, head `5a3ef9d9`) | - |
+
+Cache listing (GATE-RELCACHE) at the end: `build-equity/mega-candidate-cache-v8-lo3` 552 files, 12,265,945,104 bytes,
+listing `c9ee9291f5ddc0c2` = the 351 originals `155872de50833fca` (unchanged by size and mtime) + 201 files /
+4,466,406,032 bytes of the Release identity subtree `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/` (written by row 4;
+`gate-logs/cache-lo3-listing-agent4-final.txt`); no `index.sqlite`. C: 50 GB free at the end.
+
+#### G-P ticks at the gate (plan section 0.4; G-P1 .. G-P9 + G-P11 gate the freeze, G-P10 is printed, SQL-8)
+
+| row | state at the gate | evidence |
+|---|---|---|
+| G-P1 one-command wave | **not checkable at the gate**: measured on the first real P9 wave (plan 4.3 phase 2); no P9 wave has run (0 trials); the v8 timings baseline is agent 2's `scoreboard --timings` | `scoreboard-gate.txt` |
+| G-P2 spec-only experiments | **ticked**: the 10 kind fixtures under `scripts/specs/p9/kinds/`; the W3-8a tick held at M5 (`root-wave3-merge-report.md:444`, 12 passed); `scripts/tests` whole green at seeds 0 and 1 at step 2 (incl. `test_wave_kinds.py`) | `pyt-scripts-tests-rel-s0-rerun.log`, `pyt-scripts-tests-rel-s1.log` |
+| G-P3 Release adopted | **ticked**: IC half at M1d (u / w / marginal); NAV half shown at M2j item 5 (Release = Debug on X-5); at the gate every P9-B0 reference (R-2, X-10, Y-1, Y-F0 u / w / NAV) was produced on the Release p9-3f exes, the Y-F0 u / w / NAV hold against M1d's Debug references, and the re-pin pins the Release exes; canaries 15 / 15 on p9-3f | this report, steps 1, 4, 6 |
+| G-P4 CTest | **ticked**: `atx_research` 291 and `atx_equity_strategy` 728 register and run on both trees, 0 failed | `ctest-exits.txt` |
+| G-P5 no Python mirror | **PARTIAL** (IC-S at GATE-0: four pairs unlisted, P10 retirement); the guard green, "G-P5: 0 mirrored rule function(s) in 0 row(s) left for P9 lanes" | `pyt-mirror-guard-rel-s0.log`, `handoff-root-gate0.md` |
+| G-P6 no versioned script | **ticked** (M1d); `scripts/tests/test_no_versioned_scripts.py` green inside both whole `scripts/tests` runs | `pyt-scripts-tests-rel-s0-rerun.log`, `pyt-scripts-tests-rel-s1.log` |
+| G-P7 statistics of record | **ticked**: B2 merged (the engine `eval` verb is the only producer of the statistics, tied to the frozen eval_tie oracle, `root-wave2-merge-report.md:1583-1602`), B2 fix 2 merged (known-red set EMPTY); at the gate the n37 legacy test passed on the Release verb (inside agent 2's whole `atx-impl/tools` run, 770 passed, 0 skipped; B2-N37 item 4), PY-S S-6 is equal, and step 5's rho came from the Release verb `exes.eval` now pins | `pyt-impl-tools-systmp-rel-s0.log`, `pys-s6-ledger-n.txt`, `rho-pairs-1.txt`, `rho-pairs-2.txt` |
+| G-P8 canary | **ticked**: 15 / 15 on Release p9-3f and on Debug p9-3g | `mega-p9-3f-canary.log`, `mega-p9-3g-canary.log` |
+| G-P9 seal | **ticked**: T2 merged (`atx-engine/tools/conftest.py` binds no window globally; three modules take the superseded window by name, T2-GOLD); the seal consumer tests green at step 2 (`atx-engine/tools` 391 passed incl. `test_prepare_research_fields_seal.py`, `test_seal_partitions.py`; fields gtests 110 / 110 on both builds) | `pyt-engine-tools-rel-s0.log`, `gt-rel-atx-engine-research-fields-tests.log`, `gt-dbg-atx-engine-research-fields-tests.log` |
+| G-P11 risk model PIT + container | **ticked**: COV-6 answered at the COV review (the as-of trace holds); COV-9 S9 holds at the gate (role `e1c67101`, `universe.delisting.returns_applied = false`, 0 of 990 events); GATE-COVDIFF holds (`cov-diff --legacy` exit 0 on the three container stores); `RiskCovContainer.*` green in both builds' risk tests | `cov9-role-check.txt`, `cov9-role-check-3.txt`, `covdiff-runs.txt`, `gt-rel-atx-engine-risk-tests.log`, `gt-dbg-atx-engine-risk-tests.log` |
+| G-P10 artifact store (print, gates nothing) | (a) **landed** (the counts above); (b) **landed** at the gate (435 checked, 0 mismatches, 8 classes); (c) **landed** (two from-scratch digests, both `adbcd348...d474`); (d) **PARTIAL** as M6 states: "three writers hooked, the stage record's side files not" (SQL3-S2 S-2); the X-5 cache identities are M6b items 5 / 6 (cited, FIELDS-X5); SQL-11 holds; (e) **landed** for `atx.run-store/v1` (the extended guard `test_research_store_classes.py` green inside `atx-engine/tools` at step 2) | this table, `pyt-engine-tools-rel-s0.log` |
+
+**Step 7 state: HOLDS** (the X-5 opt-in cache identity cut by FIELDS-X5).
+
+### Rulings acted on by agent 4
+
+| ruling | state | evidence (`gate-logs/`) |
+|---|---|---|
+| GATE-IDX | cleared by the owner; checked first after step 0 (absent; the 351 originals `155872de50833fca`) and again by `b0_ic.py` before rows 4 and 5 | `cache-lo3-listing-agent4-idx.txt`, `b0-runs.txt` |
+| GATE-RELCACHE | C: 60.4 GB free before; after the cold Release u the 351 originals unchanged, the new 552-file listing recorded with its cause; C: 50 GB free at the end | `cache-lo3-listing-after-p9-b0g-yf0-{u,w}.txt`, `cache-lo3-listing-agent4-final.txt` |
+| RELCACHE-ALLOW | u and w: every payload byte-identical, every differing leaf listed by JSON path in an allowed class (TIMING, COUNTERS, IDENTITY, M1D-LIST), 0 outside; the tool's first pass under-encoded the ruling's fourth class (disclosed, `yf0u-cmp-pass1.txt`, `tools/CHANGES.txt` (3)) | `yf0{u,w}-cmp.txt`, `yf0{u,w}-classes.txt` |
+| FIELDS-SUB-A | applied: step-4 row 1, the rulings table, round-2b-ii item 1 and the substitution list row 1 say path A; "cross-build reference" removed; the classification table kept as the disclosure | this file |
+| YF0-NAV-ORDER | row 6 after row 5, reading `p9-b0g-yf0-w` (the receipt names it); `--info-clock-print`, `--ann-mean-gross`; `ucrtbase.dll` re-recorded | `b0-runs.txt`, `ucrt-b0-4.txt` |
+| PRE34-WHO | nothing run (the cells root's); the path-level diff of agent 3 stands | `y1-cmp-v8.txt` |
+| PRE-2BII-B2A / PAR-1 | `p9-prereg.md` never added or committed by this agent | git |
+| GATE-MYPY | nothing staged at start; every commit by explicit pathspec (the exclude carried on the record commits), `git show --stat` 0 `mypy_cache` each | git |
+| B2-13 | rho value and flag only, three pairs | `rho-pairs-{1,2}.txt` |
+| W1-I2 (a) / (b), B2-10 (b), B2-11 | the re-pin `2078f877`; `verify` holds; `exes.eval` named and pinned | `repin-verify.txt` |
+| COVMV-PIN | `mv-aim-v1.json` not edited (`4b4af6e2`) | step 6 |
+| EXE-FREEZE | starts at `2078f877`; no exe rebuilt (no build tag used); 27 / 27 + 27 / 27 `disk = receipt` at the end | `exe-sha-{rel,dbg}-4-end.txt` |
+| SQL3-2 / SQL-11 | no `store` block in any receipt of this agent; `build-equity/research-store/` absent throughout; no cache-index flag anywhere | `b0-runs.txt`, `realcat-gate.txt` |
+| RUN-1 / RUN-2 / COVR-1 | every real-data run bounded (`--seconds 600`; NAV / rho / catalog `--max-rss-mib 2048`, u 2,560, w 3,072 per C.14); free RAM stated per run | `b0-runs.txt` |
+| TEST-2 | no suite run by agent 4 | - |
+| READ NO STATISTIC | no return / IC / Sharpe / turnover / NAV statistic read or recorded; outputs compared by SHA-256 and JSON path; the catalog's and verify's outputs hold paths, digests and counts only | - |
+| LAPSE-TABLE | fit mode flag-absent; P9-W LAPSED (0); P9-X pending PRE-30 / PRE30-MVX | round-2b-ii table |
+
+### Kept and deleted outputs (agent 4)
+
+Kept (P9-B0 reference dirs, never deleted): `build-equity/p9-b0g-yf0-u`, `p9-b0g-yf0-w`, `p9-b0g-yf0-nav` (each with its
+`-run` dir); the run dirs `build-equity/p9-b0g-rho-2-run`, `p9-b0g-cat-1-run` (the void attempt), `p9-b0g-cat-2-run`,
+`p9-b0g-catv-1-run`. Deleted by literal name (regenerable scratch outside the tree): the catalog DBs
+`C:/Users/natha/AppData/Local/Temp/g4cat/` (catA / catB 17.4 MB each, the verify outputs) and `g4fx/` (the two fixture
+catalogs), after their records. Disk: the cache grew by 4,466,406,032 bytes (GATE-RELCACHE, accepted); C: 50 GB free.

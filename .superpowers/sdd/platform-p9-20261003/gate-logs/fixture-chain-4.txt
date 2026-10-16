@@ -1,0 +1,11 @@
+fixture chain catalog (gate agent 4, step 6 / 7; m6b-logs/tools/fixture_dump.sh form; Release store exe; DBs outside the tree) 2026-10-16T16:00:44Z head 883be9f2
+store exe 0eeac21bb95677d8 catalog 1:
+  init 0
+  files_seen 28 verified 25 declared 0 skipped 4
+  catalog_digest a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c
+store exe 0eeac21bb95677d8 catalog 2:
+  init 0
+  files_seen 28 verified 25 declared 0 skipped 4
+  catalog_digest a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c
+  verify --pins 0
+  identity: total checked 12 mismatches 0
