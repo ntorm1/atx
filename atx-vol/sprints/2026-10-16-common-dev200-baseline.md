@@ -82,3 +82,47 @@ Artifacts are under `C:/atx-cache/quote-benchmark/20261014-dev200/`:
 The original executable and adjacent runtime DLLs are retained separately in
 `C:/atx-cache/quote-benchmark/common-auto-baseline-20261016-bin/`. Original run
 receipts and predictions are not overwritten.
+
+## Completed isolated experiments
+
+The storage/progress rerun completed in 535.60 diagnostic wall seconds. Every
+prediction byte matches the original 72,348-row CSV, SHA256
+`3f6965872f72e137956f8a8534adbd0e2755f6804023cec333860e7faf835cd3`.
+Expanded configuration and all 191 snapshot decisions also match after excluding
+the newly introduced stage/evaluation timing metadata. Stage sums are 519.02
+seconds fitting, 15.26 equivalent IV, 0.016 market, 0.008 policy and 0.001 grid.
+There are 13,988 known objective evaluations and 22 failed-fit counts explicitly
+unavailable. Different concurrent host loads prevent a qualified speedup claim.
+
+The midpoint-0.1 experiment completed in 552.69 diagnostic seconds. Expanded
+configuration differs only in that one weight on all three profiles. Price
+coverage remains 25,014/63,942 with exactly the same 24,581 price-scored rows.
+Matched price MAE falls from 0.500204628 to 0.459036561 (8.23%). Containment rises
+from 90.8291% to 91.5887%. Price p99 absolute error rises from 4.02242 to 4.06426,
+so the gain is not uniform. Price error improves on 46.47%, worsens on 17.73%, and
+ties on 35.80% of the matched rows.
+
+Volatility coverage changes from 18,978 to 19,018 rows. On the exact 18,867-row
+vol intersection, MAE falls from 2,797.746780 to 2,698.377824 bp; 111 baseline-only
+and 151 candidate-only scored vols remain visible. Ordinary-profile matched price
+MAE falls from 0.527242 to 0.476551 on 14,419 contracts; sparse falls from 0.461840
+to 0.434186 on 10,162. These are development results, not holdout qualification.
+
+Against the older quote-slice model, the midpoint candidate still has worse
+matched price MAE: 0.403867558 versus 0.174061385 on the same 1,252 contracts.
+The next numerical and term-structure work remains necessary. The production
+defaults are unchanged; no automated promotion is authorized by these scores.
+
+Both experiments use archived native SHA256
+`d5a3d5e6f9f6aac4cb2dae58f225c2071677aba64cc85ddac7fb4e19f00593d0`
+in `C:/atx-cache/quote-benchmark/common-storage-progress-20261016-bin/`, with
+adjacent DLLs and build provenance. Their complete durable journals and immutable
+start receipts accompany the following artifacts in the original dataset folder:
+
+| Artifact | SHA256 |
+| --- | --- |
+| `20261016-common-storage-parity-v2.csv.run.json` | `df85b627e2b4cf991249698840a8f90a0ccdd23183971b8a9310560cfe5a1a77` |
+| `20261016-common-storage-parity-v2-native.json` | `1575729e86f5c9dc2a04c6e19673f01471511d518328628f30791970c1963524` |
+| `20261016-common-midpoint010-v1.csv.run.json` | `3abf2c3b52b6febc2d77a337981414687343955bcf50cdde0636178d868cbe18` |
+| `20261016-common-midpoint010-v1-score.json` | `a87439afdf4acb989c89fae64d36e74ae820c06f2db221c36468686ebadc76a4` |
+| `20261016-common-vs-midpoint010-v1-compare.json` | `7b54d2b393b9a6a7be2c6dd60f5ea93a87ad08cb5318be236f46cfa7405ad55e` |

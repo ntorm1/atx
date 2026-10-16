@@ -123,3 +123,13 @@ not a performance benchmark. Both new source/test TUs also passed the
 `C:/atx-cache/quote-benchmark/quote-seed-20261016-tests.xml`; its hash and exact
 commit are supplied in the delivery receipt. No full Debug runtime or broad
 release qualification is claimed.
+
+## Parent integration
+
+Parent reviewed exact `6d8cd7f32b2da84cc0250051765e975391b0a652` and integrated
+it as `bc235d86`. Permanent library source, focused/monolithic tests and public
+header inventory are registered (Tier-A58/Tier-B32,91 api headers including
+umbrella). Parent14 seed plus14 fitter tests pass, as do source and both test
+PCH-off objects and the two affected public-header inventory/install checks.
+No full-release pass is claimed; the known unrelated fixture-path umbrella
+failure remains. The seed helper is still opt-in and has no native CLI application.
