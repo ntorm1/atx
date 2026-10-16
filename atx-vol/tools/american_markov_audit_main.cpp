@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
+#include "atx/vol/api/pricing/american_markov_grid.hpp"
 #include "atx/vol/api/pricing/american_markov_pwl.hpp"
 
 namespace {
@@ -35,6 +36,7 @@ struct Grid {
   double upper_multiple;
   double max_step;
   bool logarithmic;
+  double concentration_scale = 0.0;
 };
 
 double elapsed_us(Clock::time_point start) {
@@ -75,7 +77,12 @@ std::vector<Grid> grids(bool full) {
                                  {"domain8", 129u, 8.0, 1.0 / 52.0, false},
                                  {"log65", 65u, 4.0, 1.0 / 52.0, true},
                                  {"log129", 129u, 4.0, 1.0 / 104.0, true},
-                                 {"log257", 257u, 4.0, 1.0 / 208.0, true}});
+                                 {"log257", 257u, 4.0, 1.0 / 208.0, true},
+                                 {"sinh65-wide", 65u, 4.0, 1.0 / 52.0, false, 0.20},
+                                 {"sinh129-wide", 129u, 4.0, 1.0 / 104.0, false, 0.20},
+                                 {"sinh65", 65u, 4.0, 1.0 / 52.0, false, 0.05},
+                                 {"sinh129", 129u, 4.0, 1.0 / 104.0, false, 0.05},
+                                 {"sinh129-tight", 129u, 4.0, 1.0 / 104.0, false, 0.005}});
   }
   return result;
 }
@@ -160,6 +167,21 @@ double deterministic_reference(const Fixture &fixture, std::size_t expiry,
   return best;
 }
 
+std::array<double, 36> strike_samples(double spot) {
+  constexpr std::size_t regular_strikes = 33;
+  std::array<double, regular_strikes + 3> strikes{};
+  for (std::size_t i = 0u; i < regular_strikes; ++i) {
+    strikes[i] = spot * (0.4 + 1.4 * static_cast<double>(i) /
+                                 static_cast<double>(regular_strikes - 1u));
+  }
+  // Retain the initial payoff kink and adjacent probes, even on a refused grid.
+  strikes[regular_strikes] = spot * (1.0 - 1.0e-6);
+  strikes[regular_strikes + 1u] = spot;
+  strikes[regular_strikes + 2u] = spot * (1.0 + 1.0e-6);
+  std::sort(strikes.begin(), strikes.end());
+  return strikes;
+}
+
 Json describe(const Fixture &fixture, const Grid &grid) {
   Json intervals = Json::array();
   for (const auto &i : fixture.intervals) {
@@ -170,12 +192,31 @@ Json describe(const Fixture &fixture, const Grid &grid) {
   return {{"fixture", fixture.name}, {"spot", fixture.spot}, {"intervals", intervals},
            {"grid", grid.name}, {"requested_nodes", grid.nodes},
            {"upper_multiple", grid.upper_multiple}, {"max_clock_step", grid.max_step},
-           {"logarithmic", grid.logarithmic}};
+           {"logarithmic", grid.logarithmic}, {"concentration_scale", grid.concentration_scale},
+           {"requested_strikes", strike_samples(fixture.spot)}};
 }
 
-Json run(const Fixture &fixture, const Grid &grid) {
+Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
   Json result = describe(fixture, grid);
-  const auto states = log_grid(fixture.spot, grid);
+  auto states = log_grid(fixture.spot, grid);
+  if (grid.concentration_scale > 0.0) {
+    AmericanMarkovSinhGridConfig grid_config;
+    grid_config.grid_nodes = grid.nodes;
+    grid_config.upper_spot_multiple = grid.upper_multiple;
+    grid_config.concentration_scale = grid.concentration_scale;
+    auto generated = make_american_markov_sinh_grid(fixture.spot, grid_config);
+    if (!generated) {
+      result["model_status"] = "grid_refused";
+      result["model_error"] = generated.error().to_string();
+      return result;
+    }
+    result["grid_diagnostics"] = {
+        {"lower_spot_gap_over_spot", generated->lower_spot_gap_over_spot},
+        {"upper_spot_gap_over_spot", generated->upper_spot_gap_over_spot},
+        {"min_gap_over_spot", generated->min_gap_over_spot},
+        {"max_unit_volatility_exit_rate", generated->max_unit_volatility_exit_rate}};
+    states = std::move(generated->states);
+  }
   AmericanMarkovConfig config;
   config.grid_nodes = grid.nodes;
   config.upper_spot_multiple = grid.upper_multiple;
@@ -201,18 +242,7 @@ Json run(const Fixture &fixture, const Grid &grid) {
                        {"max_mean_error", d.max_relative_mean_error},
                        {"terminal_zero_probability", d.terminal_zero_probability},
                        {"terminal_upper_probability", d.terminal_upper_probability}};
-  constexpr std::size_t regular_strikes = 33;
-  std::array<double, regular_strikes + 3> strikes{};
-  for (std::size_t i = 0u; i < regular_strikes; ++i) {
-    strikes[i] = fixture.spot * (0.4 + 1.4 * static_cast<double>(i) /
-                                        static_cast<double>(regular_strikes - 1u));
-  }
-  // Include the initial payoff kink and nearby points: the regular strip
-  // misses ATM, where grid discretization is particularly visible.
-  strikes[regular_strikes] = fixture.spot * (1.0 - 1.0e-6);
-  strikes[regular_strikes + 1u] = fixture.spot;
-  strikes[regular_strikes + 2u] = fixture.spot * (1.0 + 1.0e-6);
-  std::sort(strikes.begin(), strikes.end());
+  const auto strikes = strike_samples(fixture.spot);
   AmericanMarkovWorkspace scalar;
   AmericanMarkovBatchWorkspace batch;
   const auto scalar_ready = scalar.prepare(*model);
@@ -291,6 +321,11 @@ Json run(const Fixture &fixture, const Grid &grid) {
   result["deterministic_reference_count"] = deterministic_count;
   result["max_deterministic_reference_error"] = deterministic_count
                                                     ? Json(max_deterministic_error) : Json(nullptr);
+  if (pricing_only) {
+    result["pwl_status"] = "not_requested";
+    result["prices"] = std::move(prices);
+    return result;
+  }
   start = Clock::now();
   const auto surface =
       compile_american_markov_pwl(std::move(*model), strikes.front(), strikes.back());
@@ -331,21 +366,26 @@ Json run(const Fixture &fixture, const Grid &grid) {
 int main(int argc, char **argv) {
   try {
     bool full = false;
+    bool pricing_only = false;
     std::string fixture_filter;
     std::string grid_filter;
     for (int i = 1; i < argc; ++i) {
       const std::string_view arg(argv[i]);
       if (arg == "--full" && !full) full = true;
+      else if (arg == "--pricing-only" && !pricing_only) pricing_only = true;
       else if (arg == "--case" && i + 1 < argc && fixture_filter.empty()) {
         fixture_filter = argv[++i];
       } else if (arg == "--grid" && i + 1 < argc && grid_filter.empty()) {
         grid_filter = argv[++i];
       } else {
         throw std::invalid_argument(
-            "usage: american-markov-audit [--full] [--case NAME] [--grid NAME]");
+            "usage: american-markov-audit [--full] [--pricing-only] [--case NAME] [--grid NAME]");
       }
     }
     Json report{{"schema_version", 2},
+                 {"pricing_only", pricing_only},
+                 {"requested_sides", {"call", "put"}},
+                 {"requested_exercises", {"american", "european"}},
                  {"strike_sampling", "33 regular strikes plus spot and spot*(1+/-1e-6)"},
                  {"purpose", "synthetic numerical diagnostics; timings are not a benchmark claim"},
                  {"model_scope",
@@ -361,7 +401,7 @@ int main(int argc, char **argv) {
       if (!fixture_filter.empty() && fixture.name != fixture_filter) continue;
       for (const auto &grid : all_grids) {
         if (!grid_filter.empty() && grid.name != grid_filter) continue;
-        report["cases"].push_back(run(fixture, grid));
+        report["cases"].push_back(run(fixture, grid, pricing_only));
       }
     }
     if (report["cases"].empty()) throw std::invalid_argument("no fixture/grid matched");

@@ -59,6 +59,7 @@ set(ATX_VOL_PRICING_SOURCES
     # api/pricing/american.hpp.
     src/pricing/american_discrete_div.cpp
     src/pricing/american_markov.cpp
+    src/pricing/american_markov_grid.cpp
     src/pricing/american_markov_batch.cpp
     src/pricing/american_markov_pwl.cpp
     src/pricing/pwl_strike.cpp
@@ -126,6 +127,7 @@ set(ATX_VOL_FITTING_SOURCES
 )
 
 set(ATX_VOL_MARKETDATA_SOURCES
+    src/marketdata/american_markov_market.cpp
     src/marketdata/universe.cpp
     src/marketdata/data.cpp
     src/marketdata/opra_panel.cpp

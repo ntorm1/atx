@@ -27,15 +27,44 @@ fixture-path scan failed on five preexisting absolute literals in
 `chain_export_test.cpp`, `oracle_bench_test.cpp`, `chain_export.hpp` and
 `oracle_bench_main.cpp`. The full umbrella gate is therefore not green.
 
+## Integrated grid, adapter and reference
+
+Grid `807c4036` received a fresh independent APPROVE and is integrated as
+`f76cefc2`. Adapter `10de6dd7` received parent source/header/test review and is
+integrated as `22e69239`. Permanent focused and monolithic registrations added;
+README census is now 30 Tier-B headers. Parent Release Markov/grid 47 cases and
+adapter 20 cases passed. Parent source/test object checks passed with PCH off.
+
+The synthetic audit now has five explicit sinh profiles (65/129 at scale .20,
+65/129 at .05 and129 at .005), plus the previous eight. `--pricing-only` reports
+PWL as not_requested and measures scalar/batch prices. Requested strike/side/
+exercise universes are recorded before compilation, including refused models.
+Compiler limits and production grid defaults remain unchanged. Final audit TU
+passed Release and PCH-off compilation.
+
+Original reference `8f73464d` and enhancement `2c0cd3ff` integrated as
+`701267a7`/`f376b606` after independent review; parent reran30 Python cases,
+all passed. QuantLib remains an isolated offline dependency.
+
+New refined negative-rate ATM evidence:
+`C:/atx-cache/quote-benchmark/american-reference-20261016-negative-rate-refined-v2.json`,
+SHA256 `411f45df26c549b626a182e5717f9b0fb98fecdbcb08d3405c8355dbeb997edf`.
+Input is the preserved ATM-only document; filter negative_rate, base1600 time /
+1600 space,3 levels, absolute tolerance .0001. Both rows now observed stable
+under unchanged tolerances. Call7.314923899471783, largest observed change
+.00006336893283176437 versus threshold .00010731492389947179; put
+10.107548269412252, change .0000020073020063904323. These are observed refinement
+differences, not proven error bounds. A default-path SQLite checkpoint persists
+both completed references.
+
 ## Active independent lanes
 
-- Concentrated state-grid helper: bounded sinh grid with exact zero, initial
-  spot and upper states; no default compiler/cap changes.
-- Reference audit: fresh review of `8f73464d` approved its offline diagnostic
-  role, 19 baseline tests passed; durable checkpointing, startup source hash and
-  QuantLib version qualification under development.
-- Common-market adapter: robust aggregation of allowed raw market inputs into
-  one common stock process and expiry prefixes, with dispersion/refusal reports.
+- Reusable common-model liquidity profiles, shared raw classification,
+  owned numeric configs and exact symbol overrides.
+- Native common-model benchmark route, modular shared IO, closed policy parser
+  and Python runner provenance.
+- Exact-signature audit comparison, full requested coverage and paired baseline
+  metrics, using saved independent references without recomputing them.
 
 Parent next wires native common-model benchmarking and controlled numerical
 comparisons. New measurements must retain whole-cohort coverage/refusals and
