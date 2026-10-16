@@ -84,7 +84,8 @@ where no vendor carry exists.
 | `da3a4179` | build-infra `5cecf923` | vol-only presets, `vol-rel`, lease configure fix, test slices; root adopted `vol-rel` |
 | `ac01702c` | cohort builder `6703f85d` | dev200b built; ranking holds; spread-normalised MAE adopted |
 | `dc064a1e` | tick-path `94208f57` | BLOCK at `dcb6e3f1` (out-of-box ladder certificate) -> fix -> APPROVE; chain refresh p99 ~106-181 us unqualified |
+| `be85fd21` | markov-fit `88c77c5d` | APPROVE; LM ends evaluation-limit stalls; seed-as-prior 0.3519 -> 0.3391 on the R104 rows (post-hoc); MINOR-1 one-sided seed bound must be fixed before holdout |
 
-Pending: slice-coverage `360281b2` BLOCKED (grade-A semantics for channel
-fits with repaired nodes) -> fix round in progress; markov-fit budget/seed lane;
-dividend schedule lane; serve-path records lane.
+Pending: slice-coverage fix `03583b45` under re-review; dividend schedule
+`a402d615` under review; serve-path records lane; smooth dated-dividend
+lattice lane; review-cleanup lane for the deferred minors.
