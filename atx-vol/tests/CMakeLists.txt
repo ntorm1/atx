@@ -46,6 +46,19 @@ add_test(NAME atx-vol-implied-forward COMMAND atx-vol-implied-forward-tests)
 set_tests_properties(atx-vol-implied-forward PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# Discrete dividend schedule inference from per-expiry (ddiv, ddiv_pv, rate). The
+# allocation test links support/alloc_counter.cpp, which replaces global operator
+# new, so it lives ONLY in this focused executable (the monolithic atx-vol-tests
+# has its own replacement).
+add_executable(atx-vol-dividend-schedule-tests
+    dividend_schedule_test.cpp dividend_schedule_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-dividend-schedule-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-dividend-schedule-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-dividend-schedule COMMAND atx-vol-dividend-schedule-tests)
+set_tests_properties(atx-vol-dividend-schedule PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)
@@ -164,6 +177,7 @@ add_executable(atx-vol-tests
     quote_slice_test.cpp
     quote_slice_carry_test.cpp
     implied_forward_test.cpp
+    dividend_schedule_test.cpp
     quote_fit_policy_test.cpp
     american_price_slice_test.cpp
     american_markov_test.cpp

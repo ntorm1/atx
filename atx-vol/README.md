@@ -993,7 +993,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 36 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 37 | Public and supported to include; **not** frozen |
 | `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
@@ -1074,6 +1074,11 @@ The implied-forward sprint (2026-10-16) added `api/marketdata/implied_forward.hp
 option-implied forward / carry estimator from raw put-call pairs) and
 `api/fitting/quote_slice_carry.hpp` (the quote slice's opt-in carry-mode types),
 both outside the umbrella: Tier-B 32 → **34**, no Tier-A change.
+
+The dividend-schedule sprint (2026-10-16), rebased onto the tick-path lane's two
+headers below, added `api/marketdata/dividend_schedule.hpp` (dated cash-dividend
+schedule inferred from per-expiry dividend sums and their present values), outside
+the umbrella: Tier-B 36 → **37**, api/ headers 95 → **96**, no Tier-A change.
 
 That drift is now caught by a test rather than by a reader, for the counts
 that can be.

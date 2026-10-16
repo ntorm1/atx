@@ -139,6 +139,7 @@ set(ATX_VOL_FITTING_SOURCES
 
 set(ATX_VOL_MARKETDATA_SOURCES
     src/marketdata/american_markov_market.cpp
+    src/marketdata/dividend_schedule.cpp
     src/marketdata/implied_forward.cpp
     src/marketdata/universe.cpp
     src/marketdata/data.cpp
