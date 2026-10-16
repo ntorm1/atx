@@ -30,7 +30,7 @@ agent 4, follow-up" and its revert in "Step 6, agent 4: REPIN-REV" at the end. N
 | 0 start state | **holds** (agent 4: heads, ledger, research-store absent, exes `disk = receipt`, `ucrtbase.dll` = CRT-2, GATE-IDX cleared) | `exe-sha-{rel,dbg}-4.txt`, `cache-lo3-listing-agent4-idx.txt` |
 | 1 exes of record | **holds** (agent 1; unchanged) | `exe-sha-{rel,dbg}-4-end.txt` |
 | 2 suites | **holds** (agent 2) | as after agent 2 |
-| 3 identity, canaries | **holds** with the cut: Y-F0 NAV / fit identity, ALCLOCK-1, D3-Q1a DIFFERENT (P9-W LAPSED (0)), COMPOSE-1a ACCEPT, greps, golden, canaries (agent 2); Y-F0 u / w flag-absent identity on the Release IC exe **holds** (rows 4-5, RELCACHE-ALLOW); X-5 rows **CUT** (FIELDS-X5) | `yf0u-cmp.txt`, `yf0w-cmp.txt` |
+| 3 identity, canaries | **holds** with the cut: Y-F0 NAV / fit identity, ALCLOCK-1, D3-Q1a DIFFERENT (P9-W LAPSED (0)), COMPOSE-1a ACCEPT, greps, golden, canaries (agent 2); Y-F0 u / w flag-absent identity on the Release IC exe **holds** (rows 4-5, RELCACHE-ALLOW); X-5 rows **CUT** (FIELDS-X5); R-2's identity = its NAV only (R2-IDENTITY), met by step 4 row 1 (FIELDS-SUB-A); R-2's u / fit / w **CUT**: "not run in P9: NAV-only reference; its v8-era u / fit / w inputs include fields v10, absent (FIELDS-GONE)" | `yf0u-cmp.txt`, `yf0w-cmp.txt` |
 | 4 P9-B0 | **holds**: R-2 `p9-b0-r2-nav` (path A, FIELDS-SUB-A), X-10 `p9-b0g-x10-nav`, Y-1 `p9-b0g-y1-nav` (PRE-29), Y-F0 `p9-b0g-yf0-u` / `-w` / `-nav` (identity holds; the NAV reads the re-based w, YF0-NAV-ORDER); `ucrtbase.dll` re-recorded | `b0-runs.txt`, `yf0{u,w,nav}-cmp.txt`, `ucrt-b0-4.txt` |
 | 5 rho | **holds**: P9-X pair 0.9947035686613187 (flag false); X-10 vs Y-F0 0.9994863034956717 (false); Y-1 vs X-10 0.9947113980219978 (false) | `rho-pairs-{1,2}.txt` |
 | 6 re-pin | **holds**: the re-pin of record `2078f877` (pins only; `verify` holds; fixture `a50fdcf9...100c`); the follow-up `3a1a4759` (REPIN-UW / REPIN-R2) refused at `verify` and was reverted by `f8a85ad4` (REPIN-REV); after the revert `verify` holds again (line-for-line = the `883be9f2` record) and the fixture digest reproduces | `repin-verify{,-2,-3}.txt`, `fixture-chain-{4,5,6}.txt` |
@@ -541,6 +541,10 @@ Other step-3 items: COMPOSE-1a ACCEPT (above); D3-Q2 / D3-S1 greps 0 / 0 (`gate-
 ALCLOCK-1, D3-Q1a, COMPOSE-1a, greps, golden, canaries done; X-5 identity blocked by missing inputs; u / w identity
 blocked by GATE-IDX).
 
+R-2 in step 3 (agent 4, ruling R2-IDENTITY; GATE-REV S-1): step 3's R-2 identity is its NAV only (the brief's step 4
+re-bases "R-2 (NAV)"; no P9 cell reads R-2's u / fit / w; G-B6 and G-B8 read its NAV), met by step 4 row 1 under
+FIELDS-SUB-A (`p9-b0-r2-nav`). R-2's u / fit / w: **CUT**, "not run in P9: NAV-only reference; its v8-era u / fit / w inputs include fields v10, absent (FIELDS-GONE)".
+
 ### Steps 4-6: not started (GATE-IDX; missing R-2 input)
 
 Immediately before step 4 (13:40:01Z) `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` was STILL present, so
@@ -690,6 +694,11 @@ diff in `b0-runs.txt`). `ucrtbase.dll` at these runs: 10.0.26100.7623 `2C08E77F.
 | 1 | `p9-b0-r2-nav` (R-2) | 14:15:27 | 3,350 MiB | completed, exit 0 (the 84-field v15 manifest accepted) | 25.1 s / 583 MiB | 27 | `04bb8060...b1bd` | `48a52f6a...c1b9` |
 | 2 | `p9-b0g-x10-nav` (X-10) | 14:18:45 | 3,171 MiB | completed, exit 0 | 25.6 s / 583 MiB | 27 | `6c87c8d5...f31d` | `deabe71b...0bd` |
 | 3 | `p9-b0g-y1-nav` (Y-1, store `p9-m2i-dcov-v11`) | 14:19:44 | 3,109 MiB | completed, exit 0 | 25.8 s / 1,080 MiB | 28 | `cac882e1...b813` | `b0d4dcbf...c028` (`vol_target.csv` `8e614ea7...67a7`) |
+
+Identity-bridge flag line (OD5-1 (i), prereg C.1; added by agent 4 under R1-FIX, GATE-REV R-1), one per reference:
+- Row 1, R-2 `build-equity/p9-b0-r2-nav`: "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
+- Row 2, X-10 `build-equity/p9-b0g-x10-nav`: "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
+- Row 3, Y-1 `build-equity/p9-b0g-y1-nav`: "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
 
 Before row 3: COV-9 role check (`gate-logs/cov9-role-check-3.txt`, 14:19:24Z): role `e1c67101...95f4`,
 `universe.delisting.returns_applied = false`, 0 of 990 events true: **S9 HOLDS**; and the v1.1 store re-checked
@@ -843,6 +852,8 @@ mtime); 201 files / 4,466,406,032 bytes added under `dslvm1_clang18.1_opt_md_nde
 `c9ee9291f5ddc0c2`, cause "Release identity subtree added at step 4 (p9-b0g-yf0-u)"
 (`gate-logs/cache-lo3-listing-after-p9-b0g-yf0-u.txt`); C: 53.0 GB free after (>= 15).
 
+Identity-bridge flag line (OD5-1 (i), prereg C.1; R1-FIX), row 4, Y-F0 u `build-equity/p9-b0g-yf0-u`: "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
+
 **Identity vs M1d's `p9-b0-yf0-u` (RELCACHE-ALLOW): holds.** Payloads byte-identical: `orientations.json` `d0d16f30...`,
 `recipe.json` `b9b4029c...`, `train_daily_ic.csv` `c8714175...`. `summary.json` 629 differing leaves and
 `train_candidates.jsonl` 402, every one in an allowed class, each listed by JSON path in `yf0u-cmp.txt` (collapsed by
@@ -876,6 +887,8 @@ receipt). Outputs `build-equity/p9-b0g-yf0-w`: 12 files, listing
 Release w added no file; the tool's cause line repeats "added at step 4" because it counts every file beyond the 351);
 C: 51.8 GB free.
 
+Identity-bridge flag line (OD5-1 (i), prereg C.1; R1-FIX), row 5, Y-F0 w `build-equity/p9-b0g-yf0-w`: "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
+
 **Identity vs M1d's `p9-b0-yf0-w` (RELCACHE-ALLOW): holds.** All 10 payloads byte-identical: `orientations.json`,
 `recipe.json`, `train_combined.f64` `70d863f9...`, `train_combined.json` **`e13fbc4d...8c`** (= the v8 w's, the pin the
 NAV row 6 reads), `train_combined_{finite.u8,ids.u64,member.u8,sessions.i64}`, `train_daily_ic.csv` `45261f20...`,
@@ -893,6 +906,8 @@ in the code pathspec, no `store` block; the receipt's argv names `build-equity/p
 Outputs `build-equity/p9-b0g-yf0-nav`: 27 files, listing
 `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json`
 `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`.
+
+Identity-bridge flag line (OD5-1 (i), prereg C.1; R1-FIX), row 6, Y-F0 NAV `build-equity/p9-b0g-yf0-nav`: "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
 
 **Identity vs M1d's `p9-b0-yf0-nav`: holds.** 26 / 27 files byte-identical; `summary.json` differs at 77 leaves, all
 allowed: PRODUCER 2 (`/producer/build_type`, `/producer/engine_git_sha`), OPTIN 75 on the new side only
@@ -1106,7 +1121,9 @@ The two refusals of `3a1a4759`, quoted from `gate-logs/repin-verify-2.txt`:
 pin; `exes.eval` pinned); the parents' NAVs `p9-b0g-yf0-nav` / `p9-b0g-x10-nav` made by the pinned Release NAV exe; Y-F0's
 as-built fields check holds (84 rows = its list). The verify section is line-for-line identical to the `883be9f2`
 record `repin-verify.txt` (66 / 66 lines); the one REFUSED line is the pre-existing standalone build of
-`lib-v8ysb-gm.json` (its own `inputs.baseline_fields` is fields v13, FIELDS-GONE), the same as at `883be9f2`.
+`lib-v8ysb-gm.json` (its own `inputs.baseline_fields` is fields v13, FIELDS-GONE), the same as at `883be9f2`; that line
+alone makes the file end "tool exit 1" (`tools/repin_verify.py` returns 1 on a cycle that cannot be built; GATE-REV
+S-2), as `repin-verify.txt` did: every spec verified ends "HOLDS".
 **Fixture chain digest after the revert** (`gate-logs/fixture-chain-6.txt`): `a50fdcf9...100c` twice, `verify --pins`
 exit 0, render identity 12 / 0: holds.
 

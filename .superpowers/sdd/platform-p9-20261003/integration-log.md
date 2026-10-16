@@ -925,3 +925,22 @@ Build tags used by agent 4: none; next free tag **p9-3h**. Trials: 0. Permission
 | revert of `3a1a4759`, ONE code commit | **`f8a85ad4`** (`git revert --no-commit 3a1a4759` + a pathspec commit); `git diff 2078f877 f8a85ad4 -- scripts/specs/v8/` **empty**; the re-pin of record is `2078f877`; EXE-FREEZE from `2078f877` | `git show --stat f8a85ad4` |
 | `verify` on the pinned lineage | **holds** (X-10, Y-1; u / w the v8-era resume roots, done; the parent NAVs made by the pinned Release NAV exe); line-for-line = the `883be9f2` record | `gate-logs/repin-verify-3.txt` |
 | fixture chain digest | `a50fdcf9...100c` twice; verify --pins 0; identity 12 / 0 | `gate-logs/fixture-chain-6.txt` |
+
+#### GATE agent 4, R1-FIX / R2-IDENTITY (GATE-REV part 1, `gate-report-review.md` at `81900ce9`), 2026-10-16
+
+Records only, no re-run, no code: the OD5-1 identity-bridge flag line (prereg C.1) added to each of the six P9-B0
+reference records (`root-gate-report.md` step 4 rows 1-6; `handoff-root-gate.md` reference-dir table); R-2's step-3
+identity = its NAV only (step 4 row 1), its u / fit / w CUT (R2-IDENTITY); GATE-REV S-1 (by R2-IDENTITY), S-2, S-3,
+S-5 applied as record wording; S-4 left (`integration-log.md:686`'s `@@S0@@` / `@@S1@@` in the wave-3 SQL3 merge row:
+IDX-FINAL / the final report's, not a gate item).
+
+`scoreboard --timings` at the gate (agent 2's run, `gate-logs/scoreboard-gate.txt`; v8 waves, wall seconds by phase;
+runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3); byte-equal to M1d's table above
+("M1d resume", `#### scoreboard --timings`) and to `root-gate-report.md`'s step 7 copy:
+
+| wave | card | fit | monitor | nav | ref | summ | u | w | total |
+|---|---|---|---|---|---|---|---|---|---|
+| y-2 | 18.2 (1) | 0.8 (1) | 1.6 (1) | 90.9 (2) | - | 34.4 (1) | 12.7 (1) | 42.2 (1) | 200.7 |
+| y-3 | 24.5 (1) | 1.9 (1) | 1.6 (1) | 105.5 (2) | - | 37.2 (1) | 12.7 (1) | 52.8 (1) | 236.2 |
+| y-5 | 18.8 (1) | 1.0 (1) | 1.6 (1) | 161.6 (2) | - | 37.7 (1) | 12.7 (1) | 62.2 (1) | 295.5 |
+| y-s | 24.5 (1) | 1.9 (1) | 1.6 (1) | 115.3 (2) | 61.9 (1) | 40.0 (1) | 12.7 (1) | 52.8 (1) | 310.7 |

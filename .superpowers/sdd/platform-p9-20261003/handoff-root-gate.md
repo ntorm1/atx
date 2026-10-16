@@ -6,7 +6,8 @@ Root `C:/atx-wt/pool-2`, branch `feat/platform-p9-20261003`. Dispatch `r13-promp
 (FINAL)"). Evidence and tools: `gate-logs/` (`gate-logs/tools/`, changes in `tools/CHANGES.txt`). Rows:
 `integration-log.md` "GATE (RESUME 13), chain agent 4". Earlier links: `handoff-root-gate-{1,2,3}.md`.
 
-- **Status: DONE.** Steps 0-9 hold (step 3's X-5 rows and step 7's X-5 opt-in cache identity CUT by FIELDS-X5).
+- **Status: DONE.** Steps 0-9 hold (step 3's X-5 rows, R-2's u / fit / w (R2-IDENTITY) and step 7's X-5 opt-in cache
+  identity CUT; FIELDS-X5, FIELDS-GONE).
 - **Code head: `f8a85ad4`** (`chore(p9): revert 3a1a4759: the re-pin of record is 2078f877 (REPIN-REV)`). **The re-pin
   of record is `2078f877`** (pins only, over the gate code `06dc9e5a`); `git diff 2078f877 f8a85ad4 --
   scripts/specs/v8/` is empty. The follow-up `3a1a4759` (REPIN-UW / REPIN-R2) refused at `verify` and is reverted
@@ -79,6 +80,11 @@ from fields.list)" (v15's 84 rows vs the 70-name list). `f8a85ad4` restores both
 | `build-equity/p9-b0g-yf0-w` | Y-F0 w (Release IC, warm) | 12 | `ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1` | `f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2` |
 | `build-equity/p9-b0g-yf0-nav` | Y-F0 NAV of record (reads `p9-b0g-yf0-w`; `--ann-mean-gross --info-clock-print`) | 27 | `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797` | `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38` |
 
+Identity-bridge flag line (OD5-1 (i), prereg C.1; R1-FIX), for EVERY reference in the table (`p9-b0-r2-nav`,
+`p9-b0g-x10-nav`, `p9-b0g-y1-nav`, `p9-b0g-yf0-u`, `p9-b0g-yf0-w`, `p9-b0g-yf0-nav`): "universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured".
+R-2 (R2-IDENTITY): its identity at the gate is its NAV only (`p9-b0-r2-nav`, FIELDS-SUB-A); its u / fit / w are **CUT**:
+"not run in P9: NAV-only reference; its v8-era u / fit / w inputs include fields v10, absent (FIELDS-GONE)".
+
 Each with its `-run` dir (receipt, start, logs; receipts copied to `gate-logs/receipt-<dir>.json`). rho (B2-13): P9-X
 pair (Y-1 vs Y-F0) 0.9947035686613187, X-10 vs Y-F0 0.9994863034956717, Y-1 vs X-10 0.9947113980219978; every
 "1 - rho < 1e-6" flag false (`gate-logs/rho-pairs-{1,2}.txt`).
@@ -138,8 +144,11 @@ PARTIAL.
 - `lib-v8ysb-gm.json` alone cannot be built by `research_cycle.py status` (its own compare input `baseline_fields` is
   fields v13, FIELDS-GONE); templates over it resolve without it (`gate-logs/repin-verify.txt`).
 - The reference NAVs are exe-direct bounded runs: they carry no C-13 binding to their specs and their argv carries the
-  substitution list's opt-in flags (`--ann-mean-gross`; Y-F0 also `--info-clock-print`); every cell carries
-  `--ann-mean-gross` (PRE-7a) and P9-C the clock flag, so the paired opt-in leaves are alike on both sides.
+  substitution list's opt-in flags (`--ann-mean-gross`; Y-F0 also `--info-clock-print`). Every cell carries
+  `--ann-mean-gross` (PRE-7a), so the `ann_mean_gross` leaves are alike on both sides. Only P9-C carries
+  `--info-clock-print` (B.0's void rule (2): the flag alike on P9-C and its reference only); for every other cell the
+  parent reference `p9-b0g-yf0-nav`'s `/scenarios/*/info_clock` block is a one-sided difference, the only one the
+  flag makes (ALCLOCK-1: opt-in leaves only, byte-neutral otherwise) (GATE-REV S-5).
 - **R-2 (G-B6, G-B8, OD-3) is read BY PATH: `p9-b0-r2-nav`** (FIELDS-SUB-A); its TRAIN fields dir is
   `train-2020-2023-lo3-fields-v15`, its TRAIN w `mega-v8-r1w-train-std-v80-1` (the OD-3 runbook's R-2 [UNKNOWN]
   slots). `lib-v80.json` is untouched (`306a070b`): its fields pin names the absent v10 and its NAV output the v8 dir,
