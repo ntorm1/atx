@@ -1646,6 +1646,44 @@ TEST(PricedSurfaceQueryPricing, RepresentativeFastCoversEveryScalarAndFusedRoute
   EXPECT_EQ(fused.greeks, *greeks);
 }
 
+// Serve-path lane (2026-10-16): the opt-in exercise-edge gate on the fast tiers.
+// A band no in-box point clears routes every fast query cold — bit-identical to
+// the forced-cold execution — and reports ExerciseEdgeFallback; nullopt restores
+// the fast route; a zero band gates only points past the recorded edge.
+TEST(PricedSurfaceQueryPricing, ExerciseEdgeGateRoutesGatedPointsToTheColdPricer) {
+  PricedSurface source = make_essvi(95, 6);
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_FALSE(prepared->exercise_edge_gate().has_value());
+  constexpr double T = 0.29;
+  constexpr Side side = Side::Put;
+
+  auto wide = std::move(*prepared).with_exercise_edge_gate(1.0e6);
+  ASSERT_TRUE(wide.has_value());
+  for (const double K : {80.0, 100.0, 120.0}) {
+    EXPECT_EQ(wide->query_pricing_route(K, T, side), QueryPricingRoute::ExerciseEdgeFallback);
+    const auto gated = wide->fair_value(K, T, side);
+    const auto cold = wide->fair_value(K, T, side, QueryExecution::ColdReference);
+    ASSERT_TRUE(gated.has_value() && cold.has_value());
+    EXPECT_EQ(hexbits(*gated), hexbits(*cold)) << "K=" << K;
+    const auto g_gated = wide->greeks(K, T, side);
+    const auto g_cold = wide->greeks(K, T, side, QueryExecution::ColdReference);
+    ASSERT_TRUE(g_gated.has_value() && g_cold.has_value());
+    EXPECT_EQ(*g_gated, *g_cold) << "K=" << K;
+  }
+
+  auto zero = std::move(*wide).with_exercise_edge_gate(0.0);
+  ASSERT_TRUE(zero.has_value());
+  // A far-OTM put is deep in the continuation region; a deep-ITM put is past it.
+  EXPECT_EQ(zero->query_pricing_route(80.0, T, side), QueryPricingRoute::RepresentativeFast);
+  EXPECT_EQ(zero->query_pricing_route(160.0, T, side), QueryPricingRoute::ExerciseEdgeFallback);
+
+  auto off = std::move(*zero).with_exercise_edge_gate(std::nullopt);
+  ASSERT_TRUE(off.has_value());
+  EXPECT_EQ(off->query_pricing_route(160.0, T, side), QueryPricingRoute::RepresentativeFast);
+  EXPECT_FALSE(std::move(*off).with_exercise_edge_gate(-1.0).has_value());
+}
+
 TEST(PricedSurfaceQueryPricing, LightweightTelemetryCountsOneResolvedRoutePerFusedRequest) {
   namespace lw = counters::lightweight;
   PricedSurface source = make_essvi(921, 6);

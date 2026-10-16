@@ -783,6 +783,132 @@ void run_iv(benchmark::State &state, bool warm) {
       static_cast<double>(n_status[1] + n_status[5] + n_status[6]);
 }
 
+// ── Serve-path gate (serve-path lane, 2026-10-16, item 1) ────────────────────
+//
+// Rows chain/serve/<route>/n2000: one iteration re-marks all 2,000 contracts at
+// S0 the way a session serve path would, and the row reports the FULL-chain
+// price error against cold accurate Andersen-Lake at S0 (every contract, not the
+// rotating 5% sample of the tick rows):
+//   cached        the correction tensor everywhere (session default today)
+//   gated_bX      the exercise-edge gate at band X sigma sqrt(T)
+//                 (CorrectionBlend::clear_of_exercise_edge on the cache's own
+//                 recorded edge, the SessionServePolicy predicate): a contract
+//                 that fails it is re-priced cold, american_greeks_al with
+//                 al_fast_opts and vega (3 boundary solves) — the Fast preset's
+//                 scheme; the session's own cold Greek route
+//                 (american_greeks_fd) costs more
+//   records       refresh_chain_records: the records serve mode's route
+// Counters: flips (contracts routed cold), price_max_abs / p99 / n_gt_1mil over
+// all 2,000, served_cached_max_abs (the tensor-served subset), ms_per_chain p50.
+
+[[nodiscard]] const std::vector<double> &cold_accurate_s0() {
+  static const std::vector<double> ref = [] {
+    const SyntheticChain &c = chain();
+    std::vector<double> out(kContracts, kNaN);
+    for (std::size_t i = 0; i < kContracts; ++i) {
+      const Result<double> p = andersen_lake(kSpot0, c.strike[i], c.expiry[i], c.sigma[i],
+                                             c.rate[i], c.carry[i], c.side[i], std::nullopt);
+      out[i] = p ? *p : kNaN;
+    }
+    return out;
+  }();
+  return ref;
+}
+
+// band < 0: ungated tensor; band >= 0: gated. records: the record route.
+void run_serve(benchmark::State &state, double band, bool records) {
+  const SyntheticChain &c = chain();
+  const std::vector<double> &ref = cold_accurate_s0();
+  const AmericanCorrectionCaches caches = session_style_caches().view();
+  const BuiltRecords &b = chain_records();
+  if (records && !b.recs) {
+    state.SkipWithError("ChainRecords::build failed");
+    return;
+  }
+  OutputStore out(kContracts);
+  const ChainTickOutputs ov = out.view();
+  // Which contracts the gate routes cold (fixed at S0, computed once, untimed).
+  std::vector<std::uint8_t> cold(kContracts, 0u);
+  std::size_t flips = 0;
+  if (!records && band >= 0.0) {
+    for (std::size_t i = 0; i < kContracts; ++i) {
+      const CorrectionBlend blend = CorrectionBlend::single(caches.for_side(c.side[i]));
+      const double F = kSpot0 * std::exp((c.rate[i] - c.carry[i]) * c.expiry[i]);
+      const double k = std::log(c.strike[i] / F);
+      if (!blend.clear_of_exercise_edge(k, c.expiry[i], c.sigma[i], band)) {
+        cold[i] = 1u;
+        ++flips;
+      }
+    }
+  }
+  const AlOpts cold_opts = al_fast_opts();
+  std::vector<double> lat;
+  lat.reserve(static_cast<std::size_t>(state.max_iterations));
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    const Clock::time_point t0 = Clock::now();
+    if (records) {
+      const Status st = refresh_chain_records(kSpot0, c.view(), *b.recs, ov);
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+    } else {
+      const Status st = refresh_chain_cached(kSpot0, c.view(), caches, ov);
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+      for (std::size_t i = 0; i < kContracts; ++i) {
+        if (cold[i] == 0u) {
+          continue;
+        }
+        const Result<AmericanGreeks> g =
+            american_greeks_al(kSpot0, c.strike[i], c.expiry[i], c.sigma[i], c.rate[i],
+                               c.carry[i], c.side[i], cold_opts, /*need_vega=*/true,
+                               /*need_rho=*/false, /*need_charm=*/false);
+        out.price[i] = g ? g->price : kNaN;
+        out.delta[i] = g ? g->delta : kNaN;
+        out.gamma[i] = g ? g->gamma : kNaN;
+        out.vega[i] = g ? g->vega : kNaN;
+        out.theta[i] = g ? g->theta : kNaN;
+        out.status[i] = g ? TickStatus::Fallback : TickStatus::Unpriceable;
+      }
+    }
+    benchmark::DoNotOptimize(out.price.data());
+    benchmark::ClobberMemory();
+    const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+    state.SetIterationTime(dt);
+    if (lat.size() < lat.capacity()) {
+      lat.push_back(dt);
+    }
+  }
+  std::vector<double> sorted(lat);
+  std::sort(sorted.begin(), sorted.end());
+  ErrStats all;
+  double served_cached_max = 0.0;
+  std::size_t n_gt_mil = 0;
+  std::size_t worst = 0;
+  for (std::size_t i = 0; i < kContracts; ++i) {
+    const double e = std::abs(out.price[i] - ref[i]);
+    if (e > all.max_abs || !std::isfinite(e)) {
+      worst = i;
+    }
+    all.add(out.price[i] - ref[i]);
+    n_gt_mil += (e <= 1.0e-3) ? 0u : 1u;
+    if (!records && cold[i] == 0u) {
+      served_cached_max = std::max(served_cached_max, std::isfinite(e) ? e : 1.0e300);
+    }
+  }
+  std::fprintf(stderr, "[chain-serve] %s worst: i=%zu T=%.4f %s K=%.2f err=%.4e\n",
+               state.name().c_str(), worst, c.expiry[worst],
+               c.side[worst] == Side::Put ? "put" : "call", c.strike[worst],
+               out.price[worst] - ref[worst]);
+  state.counters["ms_per_chain_p50"] = 1.0e-3 * quantile_us(sorted, 0.5);
+  state.counters["flips"] = static_cast<double>(flips);
+  state.counters["price_max_abs"] = all.max_abs;
+  state.counters["price_p99_abs"] = all.p99();
+  state.counters["price_n_gt_1mil"] = static_cast<double>(n_gt_mil);
+  state.counters["served_cached_max_abs"] = records ? 0.0 : served_cached_max;
+  state.counters["contracts"] = static_cast<double>(kContracts);
+}
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -831,6 +957,29 @@ const bool kRegistered = [] {
         warm ? "chain/iv/record_warm/n2000" : "chain/iv/record_cold/n2000",
         [warm](benchmark::State &state) { run_iv(state, warm); });
     apply_common(b)->UseManualTime()->Iterations(200)->Unit(benchmark::kMicrosecond);
+  }
+  // Serve-path gate (item 1): full-chain accuracy at S0 per serving route.
+  struct ServeRow {
+    const char *name;
+    double band;
+    bool records;
+    int iterations;
+  };
+  constexpr std::array<ServeRow, 6> kServeRows = {{
+      {"chain/serve/cached/n2000", -1.0, false, 20},
+      {"chain/serve/gated_b0.5/n2000", 0.5, false, 5},
+      {"chain/serve/gated_b1/n2000", 1.0, false, 5},
+      {"chain/serve/gated_b2/n2000", 2.0, false, 5},
+      {"chain/serve/gated_b3/n2000", 3.0, false, 5},
+      {"chain/serve/records/n2000", -1.0, true, 50},
+  }};
+  for (const ServeRow &row : kServeRows) {
+    benchmark::internal::Benchmark *b = benchmark::RegisterBenchmark(
+        row.name, [row](benchmark::State &state) { run_serve(state, row.band, row.records); });
+    apply_common(b)
+        ->UseManualTime()
+        ->Iterations(row.iterations)
+        ->Unit(benchmark::kMillisecond);
   }
   return true;
 }();

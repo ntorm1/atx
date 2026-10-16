@@ -37,11 +37,17 @@ enum class QueryExecution : std::uint8_t {
 
 // Per-query route introspection. A fast-configured surface reports
 // ColdFallback when the resolved point is outside its certified correction box.
+// The two values appended on 2026-10-16 (serve-path lane) are reported only when
+// a serving object opts in: ExerciseEdgeFallback when the exercise-edge gate
+// keeps an in-box query off the correction tensor (it is priced cold), Record
+// when a certified per-expiry ExpiryRecord serves it (VolaSession records mode).
 enum class QueryPricingRoute : std::uint8_t {
   ColdReference = 0,
   RepresentativeFast = 1,
   CarryBank = 2,
   ColdFallback = 3,
+  ExerciseEdgeFallback = 4,
+  Record = 5,
 };
 
 } // namespace atx::vol

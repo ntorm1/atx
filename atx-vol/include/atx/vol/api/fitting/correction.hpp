@@ -219,7 +219,41 @@ public:
   [[nodiscard]] Status set_extrap_policy(ExtrapPolicy policy) noexcept;
   [[nodiscard]] ExtrapPolicy extrap_policy() const noexcept { return extrap_policy_; }
 
+  // ── Exercise edge (serve-path gate, 2026-10-16) ───────────────────────────
+  //
+  // The tensor is a smooth interpolant of a correction whose second derivative
+  // jumps at the early-exercise boundary. build() already solves ONE boundary per
+  // (T_j, sigma_l) node row to sample the correction; it keeps that row's CURRENT
+  // exercise edge k*(T_j, sigma_l) (in k_log = ln(K/F) terms, at the baked r, q)
+  // as an n_T x n_s Chebyshev series of the normalized edge z* = k* / (sigma
+  // sqrt T). No extra boundary solve is spent.
+  //
+  // Returns the signed distance of k_log from that edge INTO the continuation
+  // side, in units of sigma sqrt(T): (k* - k_log) / (sigma sqrt T) for a put
+  // (exercised for k_log >= k*), (k_log - k*) / (sigma sqrt T) for a call.
+  // Negative means the exercise side. +inf when the baked (r, q, side) has no
+  // early exercise; NaN for an unpopulated cache, a cache whose edge was not
+  // recorded (a row fell back to the per-node sampler), or a non-finite /
+  // non-positive argument. T and sigma clamp to the box for the edge lookup.
+  // noexcept, allocation-free: one n_T x n_s Clenshaw.
+  //
+  // MEASURED LIMIT (chain-refresh bench, 2026-10-16): the tensor's error is NOT
+  // confined near the edge. Its Chebyshev interpolant of the kinked correction
+  // converges only algebraically, so the pollution spreads over the whole k box
+  // (puts: 592 of 1,000 bench contracts off cold accurate AL by more than $1e-2,
+  // most of them more than 1 sigma sqrt T from the edge). A distance gate therefore
+  // trades many cold re-prices for a partial error cut; see SessionServePolicy.
+  [[nodiscard]] double exercise_edge_distance(double k_log, double T,
+                                              double sigma) const noexcept;
+
 private:
+  // What build() learned about the exercise edge (exercise_edge_distance).
+  enum class EdgeState : std::uint8_t {
+    Unknown = 0,  // not recorded (default cache, or a row fell back per node)
+    European = 1, // baked regime has no early exercise: the edge is at infinity
+    Recorded = 2, // edge_coefs_ holds the z* series
+  };
+
   double k_log_min_ = 0.0;
   double k_log_max_ = 0.0;
   double T_min_ = 0.0;
@@ -246,6 +280,11 @@ private:
   // Bit-identical to the in-pass diff because the k_log diff is the innermost op
   // (no prior collapse to reorder against). Empty on a default-constructed cache.
   std::vector<double> dk_coefs_;
+  // Normalized exercise edge z* = k* / (sigma sqrt T) as n_T x n_s Chebyshev
+  // coefficients, laid out [j * n_s + l] (j = T axis, l = sigma axis). Empty
+  // unless edge_state_ == Recorded.
+  std::vector<double> edge_coefs_;
+  EdgeState edge_state_ = EdgeState::Unknown;
 };
 
 // ── Optional per-side hot-path caches (de-Americanization / parity) ──────
@@ -290,6 +329,14 @@ struct CorrectionBlend {
   // the seam that lets the session serve path fall back to the cold pricer
   // (PR-C1) instead of serving a clamped correction.
   [[nodiscard]] bool contains(double k_log, double T, double sigma) const noexcept;
+
+  // True when every endpoint eval() reads (the same endpoint selection as
+  // contains()) is MORE than `band` sigma sqrt(T) clear of its exercise edge on
+  // the continuation side (CorrectionCache::exercise_edge_distance > band). False
+  // for an invalid blend, an unrecorded edge, or a NaN band. The session's
+  // exercise-edge gate (SessionServePolicy) routes a query that fails it cold.
+  [[nodiscard]] bool clear_of_exercise_edge(double k_log, double T, double sigma,
+                                            double band) const noexcept;
 
   // Baked risk-free rate of the endpoint eval() reads (the lower cache, or the
   // upper at weight 1). NaN for an invalid blend. The two blended endpoints share

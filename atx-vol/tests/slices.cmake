@@ -53,7 +53,7 @@ set(ATX_VOL_SLICE_fitting_STEMS
     convex_recovery quote_feasibility calib calib_robustness prepared_fitting c8 c8_calib
     essvi_anchored essvi_calib essvi_deam svi_calib cstar cstar_calib s3 dense_slice
     profile fit_policy curve_selector projection fit_metrics deamer parity surface_parity
-    session pricer_fitter vol_curve spline_curve curve_noarb curve_fit_parallel
+    session session_serve pricer_fitter vol_curve spline_curve curve_noarb curve_fit_parallel
     curve_fit_carry_fallback curve_fit_coverage robust surface_overlay mark_rescue)
 set(ATX_VOL_SLICE_marketdata_STEMS
     universe data opra_panel opra_hive opra_batch corpus listed_opra

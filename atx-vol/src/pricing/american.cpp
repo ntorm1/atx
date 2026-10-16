@@ -2764,9 +2764,17 @@ Result<AlBoundaryConvergence> andersen_lake_convergence(double S, double K, doub
   return Ok(AlBoundaryConvergence{ev.resid, ev.tol, ev.converged(), ev.sweeps, budget});
 }
 
-Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T, double sigma,
-                                double r, double q, std::span<double> price_out,
-                                const std::optional<AlOpts> &opts) {
+namespace {
+
+// Body of andersen_lake_call_slice. `b_now_out` (nullable) receives the solved
+// internal-put boundary NOW (amer::al_call_slice_with_edge); writing it changes no
+// price, so the public slice stays bit-identical.
+Status call_slice_impl(double S, std::span<const double> strikes, double T, double sigma,
+                       double r, double q, std::span<double> price_out,
+                       const std::optional<AlOpts> &opts, double *b_now_out) {
+  if (b_now_out != nullptr) {
+    *b_now_out = std::numeric_limits<double>::quiet_NaN();
+  }
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_call_slice: S must be > 0");
   }
@@ -2882,6 +2890,9 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
       }
     }
   }
+  if (b_now_out != nullptr) {
+    *b_now_out = al_boundary_now(bnd);
+  }
 
   // F5: the boundary is fixed (Kp = S) across every strike, so the premium's
   // strike-invariant node terms and the euro forward/discount are bound ONCE here
@@ -2910,9 +2921,15 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
   return Ok();
 }
 
-Status andersen_lake_put_slice(double S, std::span<const double> strikes, double T, double sigma,
-                               double r, double q, std::span<double> price_out,
-                               const std::optional<AlOpts> &opts) {
+// Body of andersen_lake_put_slice. `b_now_out` (nullable) receives the boundary
+// NOW at the reference strike strikes[0] (amer::al_put_slice_with_edge); writing
+// it changes no price, so the public slice stays bit-identical.
+Status put_slice_impl(double S, std::span<const double> strikes, double T, double sigma, double r,
+                      double q, std::span<double> price_out, const std::optional<AlOpts> &opts,
+                      double *b_now_out) {
+  if (b_now_out != nullptr) {
+    *b_now_out = std::numeric_limits<double>::quiet_NaN();
+  }
   if (!(S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake_put_slice: S must be > 0");
   }
@@ -3011,6 +3028,9 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
   case AlSolveStatus::Ok:
     break;
   }
+  if (b_now_out != nullptr) {
+    *b_now_out = al_boundary_now(bnd); // bnd.K is still the reference strike here
+  }
 
   // F5: y[] is homogeneity-invariant, so only bnd.xmax rescales per strike — the
   // premium's pre-xmax boundary factor (and v/dq/dr, euro exps) are bound ONCE and
@@ -3027,6 +3047,36 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
   }
   return Ok();
 }
+
+} // namespace
+
+Status andersen_lake_call_slice(double S, std::span<const double> strikes, double T, double sigma,
+                                double r, double q, std::span<double> price_out,
+                                const std::optional<AlOpts> &opts) {
+  return call_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, nullptr);
+}
+
+Status andersen_lake_put_slice(double S, std::span<const double> strikes, double T, double sigma,
+                               double r, double q, std::span<double> price_out,
+                               const std::optional<AlOpts> &opts) {
+  return put_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, nullptr);
+}
+
+namespace amer {
+
+Status al_call_slice_with_edge(double S, std::span<const double> strikes, double T, double sigma,
+                               double r, double q, std::span<double> price_out,
+                               const std::optional<AlOpts> &opts, double *b_now_out) {
+  return call_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, b_now_out);
+}
+
+Status al_put_slice_with_edge(double S, std::span<const double> strikes, double T, double sigma,
+                              double r, double q, std::span<double> price_out,
+                              const std::optional<AlOpts> &opts, double *b_now_out) {
+  return put_slice_impl(S, strikes, T, sigma, r, q, price_out, opts, b_now_out);
+}
+
+} // namespace amer
 
 Result<double> baw_american(double S, double K, double T, double sigma, double r, double q,
                             Side side, std::uint16_t max_iter, double tol) {

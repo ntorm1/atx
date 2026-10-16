@@ -205,6 +205,7 @@ add_executable(atx-vol-tests
     opra_hive_test.cpp
     opra_batch_test.cpp
     session_test.cpp
+    session_serve_test.cpp
     vol_umbrella_test.cpp
     spy_real_test.cpp
     curve_noarb_test.cpp

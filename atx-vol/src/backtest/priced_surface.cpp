@@ -319,6 +319,19 @@ struct PricedSurface::QueryAccelerator {
     return entry.put.has_value() ? &*entry.put : nullptr;
   }
 
+  // The serving blend: blend_at, then the opt-in exercise-edge gate (an in-box
+  // point too close to the recorded edge gets the unusable blend => cold).
+  [[nodiscard]] CorrectionBlend serving_blend(const ResolvedSurfacePoint &point, Side side,
+                                              QueryPricingTier tier,
+                                              const std::optional<double> &band) const noexcept {
+    const CorrectionBlend blend = blend_at(point, side, tier);
+    if (band.has_value() && blend.usable(side) &&
+        !blend.clear_of_exercise_edge(point.k_log, point.T, point.sigma, *band)) {
+      return {};
+    }
+    return blend;
+  }
+
   [[nodiscard]] CorrectionBlend blend_at(const ResolvedSurfacePoint &point, Side side,
                                          QueryPricingTier tier) const noexcept {
     if (entries.empty()) {
@@ -381,7 +394,8 @@ PricedSurface::PricedSurface(PricedSurface &&other) noexcept
       slice_rates_(std::move(other.slice_rates_)), term_rates_(other.term_rates_),
       query_pricing_tier_(other.query_pricing_tier_),
       query_accelerator_(std::move(other.query_accelerator_)),
-      instance_id_(std::exchange(other.instance_id_, allocate_surface_instance_id())) {}
+      instance_id_(std::exchange(other.instance_id_, allocate_surface_instance_id())),
+      exercise_edge_band_(other.exercise_edge_band_) {}
 
 PricedSurface &PricedSurface::operator=(PricedSurface &&other) noexcept {
   if (this == &other) {
@@ -395,6 +409,7 @@ PricedSurface &PricedSurface::operator=(PricedSurface &&other) noexcept {
   query_pricing_tier_ = other.query_pricing_tier_;
   query_accelerator_ = std::move(other.query_accelerator_);
   instance_id_ = std::exchange(other.instance_id_, allocate_surface_instance_id());
+  exercise_edge_band_ = other.exercise_edge_band_;
   return *this;
 }
 
@@ -475,6 +490,16 @@ Result<PricedSurface> PricedSurface::with_query_pricing(QueryPricingTier tier) &
   return Ok(std::move(*this));
 }
 
+Result<PricedSurface> PricedSurface::with_exercise_edge_gate(std::optional<double> band) && {
+  if (band.has_value() && !(std::isfinite(*band) && *band >= 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "PricedSurface::with_exercise_edge_gate: band must be finite and >= 0");
+  }
+  exercise_edge_band_ = band;
+  instance_id_ = allocate_surface_instance_id(); // the served route set changed
+  return Ok(std::move(*this));
+}
+
 std::size_t PricedSurface::query_cache_pair_count() const noexcept {
   return query_accelerator_ != nullptr ? query_accelerator_->entries.size() : 0u;
 }
@@ -495,6 +520,11 @@ QueryPricingRoute PricedSurface::query_pricing_route(double K, double T, Side si
   const CorrectionBlend correction = query_accelerator_->blend_at(point, side, query_pricing_tier_);
   if (!correction.usable(side)) {
     return QueryPricingRoute::ColdFallback;
+  }
+  if (exercise_edge_band_.has_value() &&
+      !correction.clear_of_exercise_edge(point.k_log, point.T, point.sigma,
+                                         *exercise_edge_band_)) {
+    return QueryPricingRoute::ExerciseEdgeFallback;
   }
   return query_pricing_tier_ == QueryPricingTier::RepresentativeFast
              ? QueryPricingRoute::RepresentativeFast
@@ -682,7 +712,8 @@ Result<double> PricedSurface::price_resolved(const ResolvedSurfacePoint &p, Side
   counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
                                                       query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
-    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    const CorrectionBlend correction =
+        query_accelerator_->serving_blend(p, side, query_pricing_tier_, exercise_edge_band_);
     if (correction.usable(side)) {
       const double cached =
           american_price_cached(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
@@ -703,7 +734,8 @@ Result<AmericanGreeks> PricedSurface::greeks_resolved(const ResolvedSurfacePoint
   counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
                                                       query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
-    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    const CorrectionBlend correction =
+        query_accelerator_->serving_blend(p, side, query_pricing_tier_, exercise_edge_band_);
     if (correction.usable(side)) {
       // L4/K4: the cached-correction route ignores `needs` and returns its full
       // internally-consistent jet — a correctness-preserving superset (a reduced
@@ -740,7 +772,8 @@ Result<double> PricedSurface::delta_resolved(const ResolvedSurfacePoint &p, Side
   counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
                                                       query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
-    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    const CorrectionBlend correction =
+        query_accelerator_->serving_blend(p, side, query_pricing_tier_, exercise_edge_band_);
     if (correction.usable(side)) {
       auto cached =
           american_delta(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
@@ -760,7 +793,8 @@ Result<double> PricedSurface::vega_resolved(const ResolvedSurfacePoint &p, Side 
   counters::lightweight::QuerySample telemetry_sample{execution == QueryExecution::Configured &&
                                                       query_accelerator_ != nullptr};
   if (execution == QueryExecution::Configured && query_accelerator_ != nullptr) {
-    const CorrectionBlend correction = query_accelerator_->blend_at(p, side, query_pricing_tier_);
+    const CorrectionBlend correction =
+        query_accelerator_->serving_blend(p, side, query_pricing_tier_, exercise_edge_band_);
     if (correction.usable(side)) {
       const double cached =
           american_vega(pricing_.S, p.K, p.T, p.sigma, p.rate, p.q_eff, side, correction);
