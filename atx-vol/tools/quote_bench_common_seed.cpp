@@ -61,6 +61,16 @@ bool valid_vector(std::span<const double> values, const AmericanMarkovFitConfig 
 }
 } // namespace
 
+const char *common_time_shape_name(AmericanMarkovFitTimeShape shape) {
+  switch (shape) {
+  case AmericanMarkovFitTimeShape::Shared: return "shared";
+  case AmericanMarkovFitTimeShape::PerVarianceInterval: return "per-variance-interval";
+  case AmericanMarkovFitTimeShape::VarianceTimeKnots: return "variance-time-knots";
+  }
+  // Policy validation refuses out-of-range enumerators before any report.
+  throw std::runtime_error("Common fit time_shape is invalid");
+}
+
 CommonInitializationConfig parse_common_initialization(const Json &entry) {
   keys(entry, {"mode", "seed"});
   if (!entry.contains("mode")) throw std::runtime_error("Common initialization requires mode");
@@ -167,12 +177,16 @@ CommonFitInitialization configured_common_fit_initialization(
   d["configured_initial_source"] = fit.initial_sigmas.empty() ? "initial_sigma" : "initial_sigmas";
   d["configured_prior_source"] = fit.prior_sigmas.empty() ? "configured_initial" : "prior_sigmas";
   d["configuration"] = common_initialization_json(config);
-  d["layout"] = {{"time_shape", fit.time_shape == AmericanMarkovFitTimeShape::Shared
-          ? "shared" : "per-variance-interval"},
+  d["layout"] = {{"time_shape", common_time_shape_name(fit.time_shape)},
       {"log_state_knots", fit.log_state_knots.empty() ? std::vector<double>{0.0}
           : std::vector<double>{fit.log_state_knots.begin(), fit.log_state_knots.end()}},
       {"parameter_count", parameter_count}, {"max_parameters", fit.max_parameters},
       {"min_sigma", fit.min_sigma}, {"max_sigma", fit.max_sigma}};
+  // Legacy layouts keep their former key set; only the knot mode adds coordinates.
+  if (fit.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
+    d["layout"]["variance_time_knots"] = std::vector<double>(fit.variance_time_knots.begin(),
+                                                             fit.variance_time_knots.end());
+  }
   effective_vectors(result);
   return result;
 }

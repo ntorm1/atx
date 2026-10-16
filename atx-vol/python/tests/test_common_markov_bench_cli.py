@@ -42,6 +42,32 @@ def policy_file(tmp_path, **updates):
     return path
 
 
+def two_expiry_quotes(source):
+    """Closed-form zero-carry calls at .5 and 1 year, both generated at sigma .3."""
+    make_quotes(source)
+    rows = read_rows(source)
+    other = []
+    for row in rows:
+        strike = float(row["strike"])
+        d1 = math.log(100 / strike) / .3 + .15
+        price = 50 * math.erfc(-d1 / math.sqrt(2)) - (
+            strike / 2 * math.erfc(-(d1 - .3) / math.sqrt(2)))
+        other.append({**row, "row_id": int(row["row_id"]) + 1000, "chain_id": 18,
+                      "expiry_days": 21200, "years": 1., "years_calendar": 1.,
+                      "bid": price - .001, "ask": price + .001})
+    write_rows(source, rows + other)
+    return rows + other
+
+
+def knot_policy(tmp_path, knots=(0, 1.5), **fit):
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(
+        time_shape="variance-time-knots", variance_time_knots=list(knots), **fit)
+    path.write_text(json.dumps(policy))
+    return path, policy
+
+
 def common_run(binary, source, output, policy=None, *extra):
     selection = ("--common-policy", str(policy)) if policy else ()
     return invoke(binary, source, output, "--model", "common-markov", *selection, *extra)
@@ -97,7 +123,12 @@ def test_common_expiries_share_one_process_and_cumulative_market(binary, tmp_pat
     assert report["served_rows"] == 52
     decision, = report["policy_decisions"]
     assert decision["fit"]["time_groups"] == 1
-    assert decision["fit"]["interval_groups"] == [0, 0]
+    fit = decision["fit"]
+    assert fit["time_shape"] == "shared" and fit["variance_time_knots"] == []
+    assert fit["time_basis"] is None and "time_interpolation" not in fit
+    assert [(row["left_group"], row["right_group"], row["right_weight"], row["variance_active"])
+            for row in fit["interval_time_weights"]] == [(0, 0, 0, True)] * 2
+    assert [row["variance_time"] for row in fit["interval_time_weights"]] == [.25, .75]
     assert [expiry["calendar_years"]["median"] for expiry in decision["market"]["expiries"]] == [.5, 1.]
     assert {row["chain_id"] for row in read_rows(output)} == {"17", "18"}
 
@@ -743,3 +774,129 @@ def test_seed_stage_and_fitter_failures_do_not_trigger_retry(binary, tmp_path, f
         assert init["state"] == "not_attempted" and init["reason"] == decision["status"]
         assert not decision["stage_attempted"]["seed"]
         assert decision["stage_elapsed_microseconds"]["seed"] == 0
+
+
+def test_common_variance_time_knots_expand_policy_and_report_owned_basis(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    rows = two_expiry_quotes(source)
+    path, _ = knot_policy(tmp_path, max_evaluations=40)
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    profile, = report["policy_definition"]["profiles"]
+    assert profile["fit"]["time_shape"] == "variance-time-knots"
+    assert profile["fit"]["variance_time_knots"] == [0, 1.5]
+    decision, = report["policy_decisions"]
+    fit = decision["fit"]
+    assert fit["time_shape"] == "variance-time-knots" and fit["variance_time_knots"] == [0, 1.5]
+    assert fit["time_groups"] == fit["parameter_count"] == len(fit["sigmas"]) == 2
+    weights = fit["interval_time_weights"]
+    assert [(row["left_group"], row["right_group"], row["variance_active"])
+            for row in weights] == [(0, 1, True)] * 2
+    a, b = (row["right_weight"] for row in weights)
+    assert (a, b) == pytest.approx((.25 / 1.5, .75 / 1.5), rel=1e-15)
+    assert "midpoint" in fit["time_interpolation"]
+    # Independent 2x2 Gram-Schmidt reference for the represented interval map.
+    first, second = (1 - a, 1 - b), (a, b)
+    r11 = math.hypot(*first)
+    r12 = (first[0] * second[0] + first[1] * second[1]) / r11
+    r22 = math.hypot(second[0] - r12 * first[0] / r11, second[1] - r12 * first[1] / r11)
+    inverse = max(1 / r11 + abs(r12) / (r11 * r22), 1 / r22)
+    basis = fit["time_basis"]
+    assert basis["quoted_variance_intervals"] == 2
+    assert basis["column_support_counts"] == [2, 2]
+    assert basis["column_l2_norms"] == pytest.approx([r11, math.hypot(*second)], rel=1e-14)
+    assert basis["common_normalization"] == pytest.approx(math.sqrt(2), rel=1e-15)
+    assert basis["qr_reciprocal_condition_inf"] == pytest.approx(
+        1 / (max(r11 + abs(r12), r22) * inverse), rel=1e-12)
+    assert basis["min_reciprocal_condition"] == 1e-12
+    predictions = read_rows(output)
+    assert len(predictions) == len(rows) == report["served_rows"]
+    assert all(row["status"] == "ok" for row in predictions)
+    assert max(abs(float(row["predicted_vol"]) - .3) for row in predictions) < .004
+
+
+def test_common_equal_knot_controls_reproduce_shared_prediction_bytes(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    two_expiry_quotes(source)
+    shared = common_run(binary, source, output, policy_file(tmp_path))
+    assert shared.returncode == 0, shared.stderr
+    shared_rows, shared_report = read_rows(output), json.loads(shared.stdout)
+    # Legacy expanded definitions gain no key, so their configuration hash is unchanged.
+    assert "variance_time_knots" not in shared_report["policy_definition"]["profiles"][0]["fit"]
+    path, _ = knot_policy(tmp_path)
+    knots = common_run(binary, source, output, path)
+    assert knots.returncode == 0, knots.stderr
+    knot_rows, knot_report = read_rows(output), json.loads(knots.stdout)
+    columns = ("row_id", "status", "predicted_price", "predicted_vol", "vol_status")
+    assert [tuple(row[c] for c in columns) for row in knot_rows] == [
+        tuple(row[c] for c in columns) for row in shared_rows]
+    a, = shared_report["policy_decisions"]
+    b, = knot_report["policy_decisions"]
+    for key in ("objective", "interval_loss", "midpoint_loss", "max_interval_error"):
+        assert a["fit"][key] == b["fit"][key], key
+    assert a["fit"]["model"]["transition_work"] == b["fit"]["model"]["transition_work"]
+    assert b["fit"]["sigmas"] == [.3, .3]
+
+
+def test_common_variance_time_knots_refuse_quote_seeds_and_keep_configured_fit(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    two_expiry_quotes(source)
+    path, policy = knot_policy(tmp_path)
+    baseline = common_run(binary, source, output, path)
+    assert baseline.returncode == 0, baseline.stderr
+    expected = output.read_bytes()
+    policy["initialization"] = {"mode": "quote-seed"}
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == expected
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "fallback_error" and not init["applied"]
+    assert init["error_code"] == "Unavailable"
+    assert init["inversion_calls"] is None and init["eligible_quotes"] is None
+    assert init["layout"]["time_shape"] == "variance-time-knots"
+    assert init["layout"]["variance_time_knots"] == [0, 1.5]
+    assert init["effective_initial_sigmas"] == init["effective_prior_sigmas"] == [.3, .3]
+    assert decision["status"] == "ok" and decision["fit"]["quote_count"] == 52
+
+
+@pytest.mark.parametrize("fit", [
+    {"variance_time_knots": [0, 1]},
+    {"time_shape": "variance-time-knots"},
+    {"time_shape": "variance-time-knot", "variance_time_knots": [0, 1]},
+    {"time_shape": "variance-time-knots", "variance_time_knots": [.5]},
+    {"time_shape": "variance-time-knots", "variance_time_knots": [1, .5]},
+    {"time_shape": "variance-time-knots", "variance_time_knots": [.5, .5]},
+    {"time_shape": "variance-time-knots", "variance_time_knots": [-.1, .5]},
+    {"time_shape": "variance-time-knots", "variance_time_knots": [0, "1"]},
+    {"time_shape": "variance-time-knots", "variance_time_knots": 1},
+    {"time_shape": "variance-time-knots", "variance_time_knots": list(range(9))},
+    {"time_shape": "variance-time-knots", "variance_time_knots": [0, 1], "initial_sigmas": [.3]},
+])
+def test_common_variance_time_knot_policy_is_closed_before_execution(binary, tmp_path, fit):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(fit)
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def test_common_unsupported_time_knot_is_a_typed_fit_failure(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    # One quoted positive-variance interval cannot identify two time controls.
+    path, _ = knot_policy(tmp_path, knots=(0, 1))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    decision, = report["policy_decisions"]
+    assert decision["status"] == "fit_failure" and decision["error_code"] == "OutOfRange"
+    assert "time basis" in decision["error"]
+    assert report["served_rows"] == 0
+    assert all(row["status"] == "fit_failure" for row in read_rows(output))

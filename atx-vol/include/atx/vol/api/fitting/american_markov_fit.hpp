@@ -57,9 +57,14 @@ struct AmericanMarkovFitConfig {
   // freeze that local-vol vector for the interval. This does NOT integrate a
   // continuous sigma(t) curve; compiler substep refinement cannot remove that
   // midpoint-freezing approximation. No schedule boundaries are inserted.
-  // Empty is required for Shared and PerVarianceInterval.
+  // Inside one knot cell the represented/continuous interval variance ratio is
+  // x/sinh(x), x = half the interval width times the slope of log(sigma^2);
+  // intervals straddling a knot can be biased in either direction.
+  // Parameters: knot count times state knots, within max_parameters, however
+  // many expiries. Empty is required for Shared and PerVarianceInterval.
   std::span<const double> variance_time_knots;
-  // Group-major absolute sigmas. Empty initial means initial_sigma everywhere;
+  // Group-major absolute sigmas (a time group is one time knot in
+  // VarianceTimeKnots). Empty initial means initial_sigma everywhere;
   // empty prior means the INITIAL vector, fixed throughout optimization.
   std::span<const double> initial_sigmas;
   std::span<const double> prior_sigmas;

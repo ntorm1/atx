@@ -83,20 +83,17 @@ struct Layout {
   std::size_t time_groups = 0;
 };
 
-Result<Layout> layout(const AmericanMarkovFitMarket &m,
-                      std::span<const AmericanMarkovFitQuote> quotes,
-                      const AmericanMarkovFitConfig &c) {
-  Layout out;
+// One owned row per ORIGINAL interval, including paused variance. The compiler
+// applies the same schedule predicates; checking here keeps every represented
+// midpoint finite before any knot interpolation.
+Status map_time_weights(const AmericanMarkovFitMarket &m, const AmericanMarkovFitConfig &c,
+                        Layout &out) {
   const bool time_knots = c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots;
-  out.knots.assign(c.log_state_knots.begin(), c.log_state_knots.end());
-  if (out.knots.empty()) out.knots.push_back(0.0);
-  out.time_knots.assign(c.variance_time_knots.begin(), c.variance_time_knots.end());
   if (time_knots) out.time_groups = out.time_knots.size();
   out.time_weights.reserve(m.intervals.size());
   double calendar = 0.0;
   double variance = 0.0;
-  for (std::size_t i = 0; i < m.intervals.size(); ++i) {
-    const auto &interval = m.intervals[i];
+  for (const auto &interval : m.intervals) {
     if (!positive(interval.calendar_end) || interval.calendar_end <= calendar ||
         !nonnegative(interval.variance_end) || interval.variance_end < variance ||
         !std::isfinite(interval.rate) || !std::isfinite(interval.continuous_yield) ||
@@ -119,24 +116,46 @@ Result<Layout> layout(const AmericanMarkovFitMarket &m,
     calendar = interval.calendar_end;
     variance = interval.variance_end;
   }
+  return Ok();
+}
+
+// VarianceTimeKnots only. Interval-times-state scratch is preflighted against
+// the model's own volatility budget. The represented interval log-sigma basis
+// must pass its fixed numerical admission over the final quoted prefix; the
+// objective's prior/roughness terms are never consulted, so they cannot rescue it.
+Status admit_time_knots(const AmericanMarkovFitMarket &m,
+                        std::span<const AmericanMarkovFitQuote> quotes, Layout &out) {
+  const auto capacity = m.model_config.max_stored_volatility_values;
+  if (capacity == 0 || capacity > kAmericanMarkovMaxStoredVolatilityValues ||
+      m.intervals.size() > capacity / out.knots.size()) {
+    return Err(ErrorCode::OutOfRange,
+               "Markov fit: interval sigma scratch exceeds model capacity");
+  }
+  std::size_t last_quoted_interval = 0;
+  for (const auto &quote : quotes) {
+    last_quoted_interval = std::max(last_quoted_interval, quote.expiry_index);
+  }
+  ATX_TRY(auto basis, detail::diagnose_markov_time_basis(
+      std::span<const AmericanMarkovFitTimeWeight>(out.time_weights)
+          .first(last_quoted_interval + 1), out.time_groups));
+  out.time_basis = std::move(basis);
+  return Ok();
+}
+
+Result<Layout> layout(const AmericanMarkovFitMarket &m,
+                      std::span<const AmericanMarkovFitQuote> quotes,
+                      const AmericanMarkovFitConfig &c) {
+  Layout out;
+  out.knots.assign(c.log_state_knots.begin(), c.log_state_knots.end());
+  if (out.knots.empty()) out.knots.push_back(0.0);
+  out.time_knots.assign(c.variance_time_knots.begin(), c.variance_time_knots.end());
+  ATX_TRY_VOID(map_time_weights(m, c, out));
   if (out.time_groups == 0 || out.time_groups > c.max_parameters / out.knots.size()) {
     return Err(ErrorCode::OutOfRange, "Markov fit: unidentifiable variance or parameter limit");
   }
   const auto count = out.time_groups * out.knots.size();
-  if (time_knots) {
-    const auto capacity = m.model_config.max_stored_volatility_values;
-    if (capacity == 0 || capacity > kAmericanMarkovMaxStoredVolatilityValues ||
-        m.intervals.size() > capacity / out.knots.size()) {
-      return Err(ErrorCode::OutOfRange, "Markov fit: interval sigma scratch exceeds model capacity");
-    }
-    std::size_t last_quoted_interval = 0;
-    for (const auto &quote : quotes) {
-      last_quoted_interval = std::max(last_quoted_interval, quote.expiry_index);
-    }
-    ATX_TRY(auto basis, detail::diagnose_markov_time_basis(
-        std::span<const AmericanMarkovFitTimeWeight>(out.time_weights)
-            .first(last_quoted_interval + 1), out.time_groups));
-    out.time_basis = std::move(basis);
+  if (c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
+    ATX_TRY_VOID(admit_time_knots(m, quotes, out));
   }
   const auto parameters = [&](std::span<const double> values, std::vector<double> &target) {
     if (!values.empty() && values.size() != count) return false;
@@ -231,6 +250,19 @@ Objective objective(std::span<const AmericanMarkovFitQuote> quotes,
   return out;
 }
 
+// Log-sigma interpolation at one ORIGINAL interval's represented variance
+// midpoint; the caller freezes the sampled value for that whole interval.
+double interpolated_sigma(double left, double right, double right_weight) noexcept {
+  // Preserve exact controls at knots/tails and an exactly flat term structure.
+  // Avoid exp(log(sigma)) perturbing Shared-equivalent rows.
+  if (left == right) return left;
+  // Exact log-linear interpolation lies between its two controls. The bracket
+  // only removes exp/log rounding, so in-bounds controls cannot yield a spurious
+  // out-of-bounds node. Interpolation weights themselves are never clipped.
+  return std::clamp(std::exp(std::lerp(std::log(left), std::log(right), right_weight)),
+                    std::min(left, right), std::max(left, right));
+}
+
 // A reusable scratch owner for all trial models. Candidate models own their
 // sampled metadata, so none of these interval spans escapes the evaluation.
 struct Evaluator {
@@ -266,12 +298,9 @@ struct Evaluator {
       const auto offset = time_knots ? i * knot_count : mapping.left_group * knot_count;
       if (time_knots) {
         for (std::size_t j = 0; j < knot_count; ++j) {
-          const double left = sigmas[mapping.left_group * knot_count + j];
-          const double right = sigmas[mapping.right_group * knot_count + j];
-          // Preserve exact controls at knots/tails and an exactly flat term
-          // structure. Avoid exp(log(sigma)) perturbing Shared-equivalent rows.
-          const double sigma = left == right ? left : std::exp(std::lerp(
-              std::log(left), std::log(right), mapping.right_weight));
+          const double sigma = interpolated_sigma(sigmas[mapping.left_group * knot_count + j],
+                                                  sigmas[mapping.right_group * knot_count + j],
+                                                  mapping.right_weight);
           if (!positive(sigma) || sigma < config.min_sigma || sigma > config.max_sigma) {
             return Err(ErrorCode::OutOfRange, "Markov fit: interpolated sigma loses range");
           }

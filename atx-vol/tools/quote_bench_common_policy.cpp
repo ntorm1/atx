@@ -39,10 +39,9 @@ Json fit_json(const AmericanMarkovFitConfig &c) {
   const auto vector = [](std::span<const double> values) {
     return std::vector<double>(values.begin(), values.end());
   };
-  return {{"log_state_knots", vector(c.log_state_knots)},
+  Json result{{"log_state_knots", vector(c.log_state_knots)},
           {"initial_sigmas", vector(c.initial_sigmas)}, {"prior_sigmas", vector(c.prior_sigmas)},
-          {"time_shape", c.time_shape == AmericanMarkovFitTimeShape::Shared
-              ? "shared" : "per-variance-interval"},
+          {"time_shape", common_time_shape_name(c.time_shape)},
           {"initial_sigma", c.initial_sigma}, {"min_sigma", c.min_sigma},
           {"max_sigma", c.max_sigma}, {"price_scale_floor", c.price_scale_floor},
           {"midpoint_weight", c.midpoint_weight}, {"prior_weight", c.prior_weight},
@@ -53,6 +52,12 @@ Json fit_json(const AmericanMarkovFitConfig &c) {
           {"max_evaluations", c.max_evaluations}, {"max_sweeps", c.max_sweeps},
           {"batch_options", c.batch_options}, {"max_batch_values", c.max_batch_values},
           {"max_rollback_work", c.max_rollback_work}};
+  // Only the knot mode adds this key, so every legacy expanded definition, and
+  // therefore its configuration hash, keeps its previous bytes.
+  if (c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots) {
+    result["variance_time_knots"] = vector(c.variance_time_knots);
+  }
+  return result;
 }
 
 void parse_model(const Json &j, AmericanMarkovConfig &c) {
@@ -88,9 +93,13 @@ void parse_grid(const Json &j, AmericanMarkovSinhGridConfig &c) {
   numeric(j, "max_states", c.max_states, 3, kAmericanMarkovMaxStates);
 }
 
+// Vectors are copied into caller-owned storage; the catalog deep-copies them again.
+// Knot coordinates are validated by the catalog (>=2 finite nonnegative strictly
+// increasing variance years, only with variance-time-knots, within max_parameters).
 void parse_fit(const Json &j, AmericanMarkovFitConfig &c,
-                std::array<std::vector<double>, 3> &storage) {
+                std::array<std::vector<double>, 4> &storage) {
   keys(j, {"log_state_knots", "initial_sigmas", "prior_sigmas", "time_shape",
+           "variance_time_knots",
            "initial_sigma", "min_sigma", "max_sigma", "price_scale_floor", "midpoint_weight",
            "prior_weight", "strike_roughness_weight", "time_roughness_weight", "initial_log_step",
            "min_log_step", "max_parameters", "max_quotes", "max_evaluations", "max_sweeps",
@@ -100,12 +109,16 @@ void parse_fit(const Json &j, AmericanMarkovFitConfig &c,
     if (value == "shared") c.time_shape = AmericanMarkovFitTimeShape::Shared;
     else if (value == "per-variance-interval") {
       c.time_shape = AmericanMarkovFitTimeShape::PerVarianceInterval;
+    } else if (value == "variance-time-knots") {
+      c.time_shape = AmericanMarkovFitTimeShape::VarianceTimeKnots;
     } else throw std::runtime_error("Common fit time_shape is invalid");
   }
-  const std::array names{"log_state_knots", "initial_sigmas", "prior_sigmas"};
+  const std::array names{"log_state_knots", "initial_sigmas", "prior_sigmas",
+                         "variance_time_knots"};
   const std::array spans{&AmericanMarkovFitConfig::log_state_knots,
                         &AmericanMarkovFitConfig::initial_sigmas,
-                        &AmericanMarkovFitConfig::prior_sigmas};
+                        &AmericanMarkovFitConfig::prior_sigmas,
+                        &AmericanMarkovFitConfig::variance_time_knots};
   for (std::size_t index = 0; index < names.size(); ++index) {
     if (!j.contains(names[index])) continue;
     const auto &values = j.at(names[index]);
@@ -216,7 +229,7 @@ CommonPolicy load_common_policy(const std::string &selection, const std::string 
   }
   const auto defaults = default_american_markov_policy_profiles();
   auto profiles = defaults;
-  std::vector<std::array<std::vector<double>, 3>> storage;
+  std::vector<std::array<std::vector<double>, 4>> storage;
   if (document.contains("profiles")) {
     const auto &list = document.at("profiles");
     if (!list.is_array() || list.empty() || list.size() > kAmericanMarkovPolicyMaxProfiles) {

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -339,6 +340,118 @@ TEST(AmericanMarkovPolicy, RawExtractionLimitsAndMovedFromCatalogFailClosed) {
   EXPECT_FALSE(catalog->resolve("A", valid, schedule));
   EXPECT_TRUE(moved.resolve("A", valid, schedule));
   EXPECT_FALSE(moved.resolve("bad symbol", valid, schedule));
+}
+
+std::vector<AmericanMarkovFitInterval> weekly_schedule(std::size_t count) {
+  std::vector<AmericanMarkovFitInterval> out;
+  for (std::size_t i = 0; i < count; ++i) {
+    const double years = static_cast<double>(i + 1) / 52.0;
+    out.push_back({years, years, 0.0, 0.0, 0.0});
+  }
+  return out;
+}
+
+TEST(AmericanMarkovPolicy, VarianceTimeKnotsResolveBoundedCountsAndOwnTheirCoordinates) {
+  const auto intervals = weekly_schedule(300);
+  const auto input = quotes(8);
+  // 26/52 is exactly 0.5, matching the raw expiry clock bit for bit.
+  const std::array snapshots{QuoteFitExpirySnapshot{market(0.5), input}};
+  const std::array overrides{QuoteFitSymbolOverride{"KNOTS", "dense"}};
+  std::optional<ResolvedAmericanMarkovPolicy> result;
+  {
+    auto profiles = default_american_markov_policy_profiles();
+    std::vector<double> knots{0.0, 0.5, 2.0, 5.0};
+    profiles[0].fit_config.time_shape = AmericanMarkovFitTimeShape::VarianceTimeKnots;
+    profiles[0].fit_config.variance_time_knots = knots;
+    auto catalog = AmericanMarkovPolicyCatalog::create(profiles, overrides);
+    ASSERT_TRUE(catalog) << catalog.error().to_string();
+    knots.assign(4, 99.0);
+    auto resolved = catalog->resolve("KNOTS", snapshots, intervals);
+    ASSERT_TRUE(resolved) << resolved.error().to_string();
+    result = std::move(*resolved);
+  }
+  const auto copy = *result;
+  result.reset();
+  // Four time knots times five dense state knots, independent of 300 expiries.
+  EXPECT_EQ(copy.time_groups, 4U);
+  EXPECT_EQ(copy.parameter_count, 20U);
+  const auto owned = copy.profile->fit_config.variance_time_knots;
+  ASSERT_EQ(owned.size(), 4U);
+  EXPECT_EQ(owned[0], 0.0);
+  EXPECT_EQ(owned[1], 0.5);
+  EXPECT_EQ(owned[2], 2.0);
+  EXPECT_EQ(owned[3], 5.0);
+  // The unmodified per-interval dense profile cannot represent this schedule.
+  const auto legacy = AmericanMarkovPolicyCatalog::create(
+      default_american_markov_policy_profiles(), overrides);
+  ASSERT_TRUE(legacy);
+  const auto refused = legacy->resolve("KNOTS", snapshots, intervals);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(AmericanMarkovPolicy, RejectsInvalidVarianceTimeKnotProfiles) {
+  const auto create = [](auto mutation) {
+    auto profiles = default_american_markov_policy_profiles();
+    mutation(profiles[0].fit_config);
+    return AmericanMarkovPolicyCatalog::create(profiles);
+  };
+  const auto knot_shape = [](AmericanMarkovFitConfig &c, std::span<const double> knots) {
+    c.time_shape = AmericanMarkovFitTimeShape::VarianceTimeKnots;
+    c.variance_time_knots = knots;
+  };
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::array two{0.0, 1.0};
+  // Coordinates without the knot shape, and the knot shape without valid coordinates.
+  EXPECT_FALSE(create([&](auto &c) { c.variance_time_knots = two; }));
+  EXPECT_FALSE(create([&](auto &c) { knot_shape(c, {}); }));
+  for (const auto &bad : std::vector<std::vector<double>>{
+           {0.5}, {1.0, 0.5}, {0.5, 0.5}, {-0.1, 0.5}, {0.0, nan}}) {
+    EXPECT_FALSE(create([&](auto &c) { knot_shape(c, bad); }));
+  }
+  // Dense has five state knots and 64 parameters: 12 time knots fit, 13 do not.
+  std::vector<double> many(13);
+  for (std::size_t i = 0; i < many.size(); ++i) many[i] = static_cast<double>(i);
+  EXPECT_TRUE(create([&](auto &c) {
+    knot_shape(c, std::span<const double>(many).first(12));
+  }));
+  EXPECT_FALSE(create([&](auto &c) { knot_shape(c, many); }));
+  // Initial/prior vectors must match the knot layout exactly.
+  const std::vector<double> five(5, 0.25);
+  const std::vector<double> ten(10, 0.25);
+  EXPECT_FALSE(create([&](auto &c) {
+    knot_shape(c, two);
+    c.initial_sigmas = five;
+  }));
+  EXPECT_FALSE(create([&](auto &c) {
+    knot_shape(c, two);
+    c.prior_sigmas = five;
+  }));
+  EXPECT_TRUE(create([&](auto &c) {
+    knot_shape(c, two);
+    c.initial_sigmas = ten;
+    c.prior_sigmas = ten;
+  }));
+}
+
+TEST(AmericanMarkovPolicy, VarianceTimeKnotScheduleRespectsVolatilityScratchCapacity) {
+  auto profiles = default_american_markov_policy_profiles();
+  auto &sparse = profiles[2];
+  const std::array knots{0.0, 1.0};
+  sparse.fit_config.time_shape = AmericanMarkovFitTimeShape::VarianceTimeKnots;
+  sparse.fit_config.variance_time_knots = knots;
+  // Interval-times-state-knot scratch admits at most 76/1 intervals; the compiler
+  // separately charges each interval's sampled grid volatilities at compile time.
+  sparse.model_config.max_stored_volatility_values = 76;
+  const std::array overrides{QuoteFitSymbolOverride{"A", "sparse"}};
+  const auto catalog = AmericanMarkovPolicyCatalog::create(profiles, overrides);
+  ASSERT_TRUE(catalog) << catalog.error().to_string();
+  const auto input = quotes(2);
+  const std::array snapshots{QuoteFitExpirySnapshot{market(0.5), input}};
+  EXPECT_TRUE(catalog->resolve("A", snapshots, weekly_schedule(76)));
+  const auto refused = catalog->resolve("A", snapshots, weekly_schedule(77));
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::OutOfRange);
 }
 
 } // namespace
