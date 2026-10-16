@@ -62,3 +62,14 @@ shared rows) and must stay off for this benchmark. Hypothesis 7 is refuted at
 the forward level; the residual >365d call/put asymmetry is strike-varying
 (ASML 93%), i.e. exercise/dividend modelling. The module is kept for live use
 where no vendor carry exists.
+
+## Standing direction (user, this resume)
+
+- SpiderRock marks are the yardstick, not the architecture. Any curve family
+  or surface parameterisation that matches or beats the labels on accuracy,
+  robustness and performance is preferred over replicating the vendor spline.
+  Family choice is decided by dev200 evidence under one shared objective.
+- Build infrastructure must not burn lane time: no monolithic test link in
+  lanes, focused test targets only, vol presets limited to the vol closure.
+- Source and document edits are made with the editor tools, not scripts.
+- Time-knot fitter `f4416a74` integrated at `fc5ffb84` after APPROVE.
