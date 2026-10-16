@@ -178,4 +178,31 @@ Status refresh_chain_records(double spot, const ChainContractsView &chain,
   return Ok();
 }
 
+Status implied_vols_from_records(double spot, const ChainContractsView &chain,
+                                 const ChainRecords &records, std::span<const double> target_price,
+                                 std::span<double> sigma_out,
+                                 std::span<RecordIvStatus> status_out) {
+  const std::size_t n = chain.size();
+  if (!std::isfinite(spot) || !(spot > 0.0) || !chain.consistent() ||
+      records.record_of_contract().size() != n || target_price.size() != n ||
+      sigma_out.size() != n || status_out.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "implied_vols_from_records: span lengths disagree or spot is not finite > 0");
+  }
+  const std::span<const std::uint32_t> rec_of = records.record_of_contract();
+  const ExpiryRecordBank &bank = records.bank();
+  for (std::size_t i = 0; i < n; ++i) {
+    const ExpiryRecord *rec = bank.at(rec_of[i]);
+    if (rec == nullptr) {
+      sigma_out[i] = kNaN;
+      status_out[i] = RecordIvStatus::Invalid;
+      continue;
+    }
+    const RecordIv iv = rec->implied_vol(spot, chain.strike[i], target_price[i], chain.sigma[i]);
+    sigma_out[i] = iv.sigma;
+    status_out[i] = iv.status;
+  }
+  return Ok();
+}
+
 } // namespace atx::vol

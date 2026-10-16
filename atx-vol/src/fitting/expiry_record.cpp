@@ -556,6 +556,90 @@ RecordGreeks ExpiryRecord::greeks(double S, double K, double sigma) const noexce
   return g;
 }
 
+// ── implied vol against the record (audit item 3) ────────────────────────────
+
+RecordIv ExpiryRecord::implied_vol(double S, double K, double target_price, double sigma_seed,
+                                   double price_tol, double vega_floor) const noexcept {
+  RecordIv out;
+  out.sigma = kNaN;
+  if (!populated_ || !(S > 0.0) || !(K > 0.0) || !std::isfinite(target_price) ||
+      !(price_tol > 0.0) || !(vega_floor >= 0.0)) {
+    out.status = RecordIvStatus::Invalid;
+    return out;
+  }
+  const double tol = price_tol * std::max(1.0, target_price);
+  const double floor_v = vega_floor * K;
+  const double intr_raw = (side_ == Side::Put) ? (K - S) : (S - K);
+  const double intr = (intr_raw > 0.0) ? intr_raw : 0.0;
+  if (target_price < intr - tol) {
+    out.status = RecordIvStatus::BelowIntrinsic;
+    return out;
+  }
+  // An in-the-money target AT intrinsic is reproduced by every sigma up to the
+  // exercise edge (the price is flat there), so it identifies no vol at all.
+  if (intr > 0.0 && target_price <= intr + tol) {
+    out.status = RecordIvStatus::VegaFloor;
+    return out;
+  }
+  // Price is non-decreasing in sigma, so [lo, hi] always brackets the root once
+  // each evaluation moves the matching end; the box ends are tested only when
+  // Newton aims past them.
+  double lo = s_min_;
+  double hi = s_max_;
+  double sig = (std::isfinite(sigma_seed) && sigma_seed > 0.0)
+                   ? atx::core::clamp(sigma_seed, s_min_, s_max_)
+                   : 0.5 * (s_min_ + s_max_);
+  double last_vega = 0.0;
+  constexpr int kMaxEvaluations = 16;
+  for (int it = 0; it < kMaxEvaluations; ++it) {
+    double vega = 0.0;
+    const double p = price_and_vega(S, K, sig, &vega);
+    out.evaluations = static_cast<std::uint8_t>(it + 1);
+    last_vega = vega;
+    const double f = p - target_price;
+    if (std::abs(f) <= tol) {
+      // A match where the price is flat in sigma (exercise region, deep ITM)
+      // identifies no vol: report it rather than return the seed as an answer.
+      out.sigma = sig;
+      out.status = (vega > floor_v) ? RecordIvStatus::Ok : RecordIvStatus::VegaFloor;
+      return out;
+    }
+    if (sig == s_min_ && f > 0.0) {
+      out.sigma = s_min_;
+      out.status = RecordIvStatus::BelowBox;
+      return out;
+    }
+    if (sig == s_max_ && f < 0.0) {
+      out.sigma = s_max_;
+      out.status = RecordIvStatus::AboveBox;
+      return out;
+    }
+    if (f > 0.0) {
+      hi = sig;
+    } else {
+      lo = sig;
+    }
+    double next = 0.5 * (lo + hi);
+    if (vega > floor_v) {
+      const double newton = sig - f / vega;
+      if (newton > lo && newton < hi) {
+        next = newton;
+      } else if (newton >= hi && hi == s_max_) {
+        next = s_max_; // test the box end itself: AboveBox if still short
+      } else if (newton <= lo && lo == s_min_) {
+        next = s_min_;
+      }
+    }
+    if (!(hi - lo > 1.0e-14 * s_max_) || next == sig) {
+      break;
+    }
+    sig = next;
+  }
+  out.sigma = sig;
+  out.status = (last_vega > floor_v) ? RecordIvStatus::NoConvergence : RecordIvStatus::VegaFloor;
+  return out;
+}
+
 // ── bank ─────────────────────────────────────────────────────────────────────
 
 ExpiryRecordBank::ExpiryRecordBank(std::size_t capacity) : capacity_(capacity) {

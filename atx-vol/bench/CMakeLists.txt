@@ -570,6 +570,8 @@ if(Python3_Interpreter_FOUND)
             --required chain/refresh/record_direct/n2000
             --required chain/refresh/record_price_only/n2000
             --required chain/refresh/record_ladder/n2000
+            --required chain/iv/record_warm/n2000
+            --required chain/iv/record_cold/n2000
     )
     set_tests_properties(atx-vol-chain-refresh-name-coverage PROPERTIES LABELS atx_vol)
 endif()

@@ -116,6 +116,27 @@ struct RecordGreeks {
   bool in_box = true;     // (k, sigma) inside the record box; outside it clamps
 };
 
+// Outcome of an implied-vol inversion against a record (audit item 3). One byte;
+// the inversion never builds an error string.
+enum class RecordIvStatus : std::uint8_t {
+  Ok = 0,             // |price(sigma) - target| <= price_tol
+  BelowIntrinsic = 1, // target below intrinsic: no sigma reproduces it
+  BelowBox = 2,       // target below the record price at sigma_min (sigma = sigma_min)
+  AboveBox = 3,       // target above the record price at sigma_max (sigma = sigma_max)
+  VegaFloor = 4,      // ill-posed: vega below the floor (deep ITM / exercise region),
+                      // or an ITM target at intrinsic, which every sigma up to the
+                      // exercise edge reproduces
+
+  NoConvergence = 5,  // iteration budget exhausted (sigma = last iterate)
+  Invalid = 6,        // non-positive S/K, non-finite target, or unpopulated record
+};
+
+struct RecordIv {
+  double sigma = 0.0;
+  RecordIvStatus status = RecordIvStatus::Invalid;
+  std::uint8_t evaluations = 0; // record price+vega evaluations spent
+};
+
 class ExpiryRecord {
 public:
   static constexpr std::uint16_t kNk = 16; // moneyness nodes
@@ -177,6 +198,21 @@ public:
 
   // Price, delta, gamma, vega, theta at (S, K, sigma).
   [[nodiscard]] RecordGreeks greeks(double S, double K, double sigma) const noexcept;
+
+  // American implied vol against THIS record's price map (audit item 3): the
+  // sigma with price(S, K, sigma) == target_price, by Newton on the record's own
+  // price and vega, warm-started at `sigma_seed` (the surface vol at this strike
+  // is the intended seed) and safeguarded by a bisection bracket inside
+  // [sigma_min, sigma_max]. Round-trip consistent with price() by construction;
+  // its error against the cold-AL implied vol is ~ (record price error) / vega.
+  // Refuses rather than guessing: VegaFloor when vega < vega_floor (deep ITM or
+  // exercise region), Below/AboveBox when the target lies outside the record's
+  // sigma box. `price_tol` is relative to max(1, target_price); `vega_floor` is
+  // relative to K (vega per unit sigma). noexcept and allocation-free; at most 16
+  // price+vega evaluations.
+  [[nodiscard]] RecordIv implied_vol(double S, double K, double target_price, double sigma_seed,
+                                     double price_tol = 1.0e-10,
+                                     double vega_floor = 1.0e-8) const noexcept;
 
 private:
   struct Jet {

@@ -416,4 +416,114 @@ TEST(ChainTickRecords, ShapeErrorsAreRefusedAndTheTickAllocatesNothing) {
   EXPECT_EQ(n, 0u);
 }
 
+// ── Implied vol against the record (audit item 3) ────────────────────────────
+
+TEST(RecordImpliedVol, RoundTripsTheRecordPriceFromAWarmSeedInFewEvaluations) {
+  int worst_evals = 0;
+  for (const Built &b : records()) {
+    const double T = b.spec.expiry;
+    const double half = 3.0 * 0.25 * std::sqrt(T);
+    for (int j = 0; j <= 6; ++j) {
+      const double k = -half + 2.0 * half * j / 6.0;
+      const double K = kS0 * std::exp((kR - kQ) * T + k);
+      const double sig_true = 1.03 * smile(k); // a 3% vol move off the surface
+      const double target = b.rec.price(kS0, K, sig_true);
+      const RecordIv iv = b.rec.implied_vol(kS0, K, target, smile(k));
+      if (iv.status == RecordIvStatus::VegaFloor) {
+        continue; // deep ITM / exercised: ill-posed by design (pinned below)
+      }
+      ASSERT_EQ(iv.status, RecordIvStatus::Ok) << "T=" << T << " K=" << K;
+      EXPECT_NEAR(iv.sigma, sig_true, 1.0e-7) << "T=" << T << " K=" << K;
+      EXPECT_LE(std::abs(b.rec.price(kS0, K, iv.sigma) - target), 1.0e-10 * std::max(1.0, target));
+      worst_evals = std::max(worst_evals, static_cast<int>(iv.evaluations));
+    }
+  }
+  std::printf("[record-iv] worst evaluations from a 3%%-off warm seed: %d\n", worst_evals);
+  EXPECT_LE(worst_evals, 5);
+}
+
+TEST(RecordImpliedVol, RecoversTheColdSolverVolFromColdPrices) {
+  double worst = 0.0;
+  for (const Built &b : records()) {
+    const double T = b.spec.expiry;
+    const double half = 3.0 * 0.25 * std::sqrt(T);
+    for (int j = 1; j <= 5; ++j) {
+      const double k = -half + 2.0 * half * j / 6.0;
+      const double K = kS0 * std::exp((kR - kQ) * T + k);
+      const double sig_true = 1.03 * smile(k);
+      const Result<double> cold =
+          andersen_lake(kS0, K, T, sig_true, kR, kQ, b.spec.side, std::nullopt);
+      ASSERT_TRUE(cold.has_value());
+      const RecordIv iv = b.rec.implied_vol(kS0, K, *cold, smile(k));
+      if (iv.status == RecordIvStatus::VegaFloor) {
+        continue;
+      }
+      ASSERT_EQ(iv.status, RecordIvStatus::Ok) << "T=" << T << " K=" << K;
+      worst = std::max(worst, std::abs(iv.sigma - sig_true));
+    }
+  }
+  std::printf("[record-iv] worst |iv - sigma_true| from cold prices: %.3e\n", worst);
+  EXPECT_LT(worst, 1.0e-5);
+}
+
+TEST(RecordImpliedVol, RefusesIllPosedTargetsWithTypedStatus) {
+  const Built &put_long = records()[4]; // T = 1.5 put
+  ASSERT_EQ(put_long.spec.side, Side::Put);
+  const ExpiryRecord &r = put_long.rec;
+  // Below intrinsic: a 120-strike put at S=100 is worth at least 20.
+  EXPECT_EQ(r.implied_vol(kS0, 120.0, 19.0, 0.3).status, RecordIvStatus::BelowIntrinsic);
+  // Above the box: more than the sigma_max price.
+  const RecordIv above = r.implied_vol(kS0, 100.0, 60.0, 0.3);
+  EXPECT_EQ(above.status, RecordIvStatus::AboveBox);
+  EXPECT_EQ(above.sigma, r.sigma_max());
+  // Below the box: less than the sigma_min price but above intrinsic.
+  const double floor_px = r.price(kS0, 100.0, r.sigma_min());
+  const RecordIv below = r.implied_vol(kS0, 100.0, 0.5 * floor_px, 0.3);
+  EXPECT_EQ(below.status, RecordIvStatus::BelowBox);
+  EXPECT_EQ(below.sigma, r.sigma_min());
+  // Deep in the exercise region the price is flat (intrinsic) in sigma: an
+  // intrinsic target identifies no vol and is refused, not answered with the seed.
+  const double edge = r.exercise_edge(0.3);
+  const double K_deep = kS0 * r.forward_factor() * std::exp(edge + 0.05);
+  const RecordIv flat = r.implied_vol(kS0, K_deep, K_deep - kS0, 0.3);
+  EXPECT_EQ(flat.status, RecordIvStatus::VegaFloor);
+  // ... from ANY seed: a seed above the exercise edge must not wander to the far
+  // end of the flat interval and report it as the answer.
+  EXPECT_EQ(r.implied_vol(kS0, K_deep, K_deep - kS0, r.sigma_max()).status,
+            RecordIvStatus::VegaFloor);
+  EXPECT_EQ(r.implied_vol(kS0, K_deep, K_deep - kS0, std::numeric_limits<double>::quiet_NaN())
+                .status,
+            RecordIvStatus::VegaFloor);
+  EXPECT_EQ(r.implied_vol(-1.0, 100.0, 5.0, 0.3).status, RecordIvStatus::Invalid);
+  EXPECT_EQ(ExpiryRecord{}.implied_vol(kS0, 100.0, 5.0, 0.3).status, RecordIvStatus::Invalid);
+}
+
+TEST(RecordImpliedVol, ChainEntryMatchesPerContractAndAllocatesNothing) {
+  const SmallChain c = make_chain();
+  ChainRecordPolicy pol;
+  pol.certify = false;
+  const Result<ChainRecords> recs = ChainRecords::build(kS0, c.view(), pol);
+  ASSERT_TRUE(recs.has_value());
+  const std::size_t n = c.strike.size();
+  std::vector<double> target(n), sig(n);
+  std::vector<RecordIvStatus> st(n, RecordIvStatus::Invalid);
+  for (std::size_t i = 0; i < n; ++i) {
+    const ExpiryRecord *rec = recs->bank().at(recs->record_of_contract()[i]);
+    target[i] = rec->price(kS0, c.strike[i], 1.02 * c.sigma[i]);
+  }
+  const std::uint64_t allocs = atx::vol::testkit::count_allocations([&] {
+    (void)implied_vols_from_records(kS0, c.view(), *recs, target, sig, st);
+  });
+  EXPECT_EQ(allocs, 0u);
+  for (std::size_t i = 0; i < n; ++i) {
+    const ExpiryRecord *rec = recs->bank().at(recs->record_of_contract()[i]);
+    const RecordIv iv = rec->implied_vol(kS0, c.strike[i], target[i], c.sigma[i]);
+    EXPECT_EQ(st[i], iv.status) << i;
+    EXPECT_TRUE(bits_equal(sig[i], iv.sigma) || (std::isnan(sig[i]) && std::isnan(iv.sigma)))
+        << i;
+  }
+  std::vector<double> short_sig(n - 1u);
+  EXPECT_FALSE(implied_vols_from_records(kS0, c.view(), *recs, target, short_sig, st).has_value());
+}
+
 } // namespace

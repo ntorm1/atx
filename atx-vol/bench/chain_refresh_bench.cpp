@@ -51,6 +51,8 @@
 //   cached routes a few hundred. Each row's `ticks` counter says how many.
 //   Record routes report their untimed refit build cost (`build_ms`) and the
 //   worst build-time certified error (`cert_err_fwd_max`, forward units).
+//   chain/iv/record_{warm,cold}/n2000 time American IV against the records for
+//   all 2,000 contracts (audit item 3); see run_iv below.
 //   NOT IMPLEMENTED: markov_batch (opt-in, never gated per §4).
 //
 // Every number this bench prints on a shared host is UNQUALIFIED. Only a quiet
@@ -676,6 +678,111 @@ struct RecordLadderRoute {
   }
 };
 
+// ── American IV against the records (audit item 3) ───────────────────────────
+//
+// Rows chain/iv/record_{warm,cold}/n2000: one iteration inverts all 2,000
+// contracts. Targets are COLD accurate AL prices at sigma_true = 1.03 x the
+// surface vol (a 3% vol move), computed once. `warm` seeds each inversion at the
+// surface vol (implied_vols_from_records); `cold` seeds at the record's sigma-box
+// midpoint. Counters: ns_per_iv (p50 iteration / 2,000), evals_mean, and the IV
+// error against sigma_true over the Ok contracts (vol units).
+
+struct IvTargets {
+  std::vector<double> target, sigma_true;
+};
+
+[[nodiscard]] const IvTargets &iv_targets() {
+  static const IvTargets t = [] {
+    const SyntheticChain &c = chain();
+    IvTargets out;
+    out.target.assign(kContracts, kNaN);
+    out.sigma_true.assign(kContracts, kNaN);
+    for (std::size_t i = 0; i < kContracts; ++i) {
+      out.sigma_true[i] = 1.03 * c.sigma[i];
+      const Result<double> p = andersen_lake(kSpot0, c.strike[i], c.expiry[i], out.sigma_true[i],
+                                             c.rate[i], c.carry[i], c.side[i], std::nullopt);
+      out.target[i] = p ? *p : kNaN;
+    }
+    return out;
+  }();
+  return t;
+}
+
+void run_iv(benchmark::State &state, bool warm) {
+  const BuiltRecords &b = chain_records();
+  if (!b.recs) {
+    state.SkipWithError("ChainRecords::build failed");
+    return;
+  }
+  const SyntheticChain &c = chain();
+  const IvTargets &t = iv_targets();
+  const std::span<const std::uint32_t> rec_of = b.recs->record_of_contract();
+  const ExpiryRecordBank &bank = b.recs->bank();
+  std::vector<double> sig(kContracts, kNaN);
+  std::vector<RecordIvStatus> st(kContracts, RecordIvStatus::Invalid);
+  std::vector<double> lat;
+  lat.reserve(static_cast<std::size_t>(state.max_iterations));
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    const Clock::time_point t0 = Clock::now();
+    if (warm) {
+      const Status s = implied_vols_from_records(kSpot0, c.view(), *b.recs, t.target, sig, st);
+      bool ok = s.has_value();
+      benchmark::DoNotOptimize(ok);
+    } else {
+      for (std::size_t i = 0; i < kContracts; ++i) {
+        const RecordIv iv =
+            bank.at(rec_of[i])->implied_vol(kSpot0, c.strike[i], t.target[i], kNaN);
+        sig[i] = iv.sigma;
+        st[i] = iv.status;
+      }
+    }
+    benchmark::DoNotOptimize(sig.data());
+    benchmark::ClobberMemory();
+    const Clock::time_point t1 = Clock::now();
+    const double dt = std::chrono::duration<double>(t1 - t0).count();
+    state.SetIterationTime(dt);
+    if (lat.size() < lat.capacity()) {
+      lat.push_back(dt);
+    }
+  }
+  std::vector<double> sorted(lat);
+  std::sort(sorted.begin(), sorted.end());
+  state.counters["ns_per_iv"] = 1.0e3 * quantile_us(sorted, 0.5) / static_cast<double>(kContracts);
+  state.counters["p99_us"] = quantile_us(sorted, 0.99);
+  // Untimed: evaluation counts and accuracy against sigma_true.
+  double evals = 0.0;
+  ErrStats err;
+  std::array<std::size_t, 7> n_status{};
+  for (std::size_t i = 0; i < kContracts; ++i) {
+    const RecordIv iv = bank.at(rec_of[i])->implied_vol(kSpot0, c.strike[i], t.target[i],
+                                                        warm ? c.sigma[i] : kNaN);
+    evals += iv.evaluations;
+    ++n_status[static_cast<std::size_t>(iv.status)];
+    if (iv.status == RecordIvStatus::Ok) {
+      if (std::abs(iv.sigma - t.sigma_true[i]) > err.max_abs) {
+        double vega = 0.0;
+        const double p = bank.at(rec_of[i])->price_and_vega(kSpot0, c.strike[i], iv.sigma, &vega);
+        std::fprintf(stderr,
+                     "[chain-iv] worst-so-far %s: i=%zu T=%.4f %s K=%.2f iv=%.6f true=%.6f "
+                     "target=%.6e price=%.6e vega=%.3e evals=%d\n",
+                     state.name().c_str(), i, c.expiry[i], c.side[i] == Side::Put ? "put" : "call",
+                     c.strike[i], iv.sigma, t.sigma_true[i], t.target[i], p, vega,
+                     static_cast<int>(iv.evaluations));
+      }
+      err.add(iv.sigma - t.sigma_true[i]);
+    }
+  }
+  state.counters["evals_mean"] = evals / static_cast<double>(kContracts);
+  state.counters["iv_max_abs"] = err.max_abs;
+  state.counters["iv_p99_abs"] = err.p99();
+  state.counters["st_ok"] = static_cast<double>(n_status[0]);
+  state.counters["st_vega_floor"] = static_cast<double>(n_status[4]);
+  state.counters["st_box"] = static_cast<double>(n_status[2] + n_status[3]);
+  state.counters["st_other"] =
+      static_cast<double>(n_status[1] + n_status[5] + n_status[6]);
+}
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -719,6 +826,12 @@ const bool kRegistered = [] {
   register_route<RecordPriceOnlyRoute>("chain/refresh/record_price_only/n2000", 2000, 200);
   // §4: 10,000 timed ticks after 1,000 discarded ones.
   register_route<RecordLadderRoute>("chain/refresh/record_ladder/n2000", 10000, 1000);
+  for (const bool warm : {true, false}) {
+    benchmark::internal::Benchmark *b = benchmark::RegisterBenchmark(
+        warm ? "chain/iv/record_warm/n2000" : "chain/iv/record_cold/n2000",
+        [warm](benchmark::State &state) { run_iv(state, warm); });
+    apply_common(b)->UseManualTime()->Iterations(200)->Unit(benchmark::kMicrosecond);
+  }
   return true;
 }();
 

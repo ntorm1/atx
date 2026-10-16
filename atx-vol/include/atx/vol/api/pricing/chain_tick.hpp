@@ -155,6 +155,19 @@ private:
                                            const ChainRecords &records,
                                            const ChainTickOutputs &out);
 
+// Record IV route (audit item 3): sigma_out[i] = the American implied vol of
+// target_price[i] against contract i's expiry record (ExpiryRecord::implied_vol),
+// warm-started at chain.sigma[i] — the surface vol at that strike. Inline and
+// allocation-free; status_out[i] carries the per-contract RecordIvStatus.
+//
+// @return InvalidArgument when any span length disagrees with the chain or the
+//         records, or spot is not finite > 0 (nothing is written).
+[[nodiscard]] Status implied_vols_from_records(double spot, const ChainContractsView &chain,
+                                               const ChainRecords &records,
+                                               std::span<const double> target_price,
+                                               std::span<double> sigma_out,
+                                               std::span<RecordIvStatus> status_out);
+
 // ── Per-contract Chebyshev spot ladders (audit items 1 + 4) ──────────────────
 //
 // sigma is fixed per contract between refits, so after a spot tick each
