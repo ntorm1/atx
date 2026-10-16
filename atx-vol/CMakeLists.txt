@@ -906,6 +906,9 @@ endif()
 # banner text line by line. Renaming is a separable change with its own blast
 # radius; the promotion does not need it.
 if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-american-markov-audit tools/american_markov_audit_main.cpp)
+    target_link_libraries(atx-vol-american-markov-audit PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
     # Label-free benchmark runner. Reference values exist only in the separate
     # Python scorer; the native tool accepts a closed raw-quote input schema.
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp)
