@@ -871,3 +871,49 @@ read (B2-13):
 
 **Step 5 state: HOLDS** (every pair's value and flag logged; the P9-V pair's references are P9-X's, PRE-MVX, measured at
 the cells).
+
+### Step 6, agent 4: the re-pin (W1-I2 (b), B2-10 (b), B2-11; ONE code commit **`2078f877`**; EXE-FREEZE starts here)
+
+`git show --stat 2078f877`: 3 files, `scripts/specs/v8/{lib-v8ysb-gm,x-leverage-L2.0,y-vol-target-y-1}.json`, +17 / -11,
+pins only (0 `mypy_cache`); `git diff --name-only 06dc9e5a..2078f877` outside `.superpowers/` = those 3 files.
+
+| spec (role) | SHA-256 before -> after | pins moved |
+|---|---|---|
+| `lib-v8ysb-gm.json` (Y-F0, the lineage parent of every P9 cell) | `1e3ec118...8626` -> `3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea` | `exes` -> `build-equity-rel/bin/atx-equity-strategy-ic.exe`, `.../atx-equity-strategy-targets.exe` and **`exes.eval`** `.../atx-research-eval.exe` (added); **`exes_sha256`** (added) eval `e2b48c46...962c`, ic `ccd54db6...d705`, nav `255b58ac...3565` (= p9-3f, = disk); `nav.output` `mega-nav-v8x-theme-erc-L1.1828-v8ysb` -> **`build-equity/p9-b0g-yf0-nav`** |
+| `x-leverage-L2.0.json` (X-10) | `ebe68e6e...4975` -> `46e9d6c2fdbf42e362518118938bc89af038e3c09d7519d660aaa936554fd0bf` | `change.set.nav.output` -> **`build-equity/p9-b0g-x10-nav`**; `locked.reference_cell` -> `build-equity/p9-b0g-yf0-nav/summary.json` `826d5ec6...8f38` |
+| `y-vol-target-y-1.json` (Y-1, P9-X's reference, PRE-30) | `faffee17...5f77` -> `f4186573a41de3b67cdd815976639ed2123e5c6f43353516c61150d92dbb50d6` | `change.set.nav.output` -> **`build-equity/p9-b0g-y1-nav`**; `change.flags.nav` `--risk-model` / `--risk-model-sha256` `v8-risk-lo3-v10` `862515d9...` -> `build-equity/p9-m2i-dcov-v11` `397366473b3a...23c7` (PRE-29); `locked.reference_cell` -> `build-equity/p9-b0g-x10-nav/summary.json` `deabe71b...0bd` |
+
+The exes of the re-pin = step 1's table (Release p9-3f; templates inherit the parent's `exes_sha256`,
+`scripts/cycle/lock.py:24-28`). Read, not edited: `info-clock-rate-v1.json` = the registration SHA **`7801c198...a152`**
+(W1-I2; on disk = the LF bytes merged at `1d003241`); `mv-aim-v1.json` = `4b4af6e2...80b4` **NOT edited** (COVMV-PIN:
+its `printed_only` / "ex-ante" sentences stay as they are, PRE-40 form, stated in B.5).
+
+Decided within the rulings (each stated for the PM; open questions 1-2):
+- **`ic.u_output` / `ic.w_output` stay the v8 dirs** (`mega-v8-b0b-train-u-v8ysb[-1]`, `mega-v8xw-train-theme-erc-v8ysb[-2]`).
+  The cycle names an IC pass `<base>-<n>` with run dir `<base>-run<n>` (`scripts/cycle/phases.py:566-568`, `:596-598`),
+  so a spec cannot name the exe-direct P9-B0 dirs `p9-b0g-yf0-u` / `-w` (run dirs `-run`): pointed there, the cycle
+  resolves `p9-b0g-yf0-u-1` / `-w-1` "pending" and every NAV-only cell would re-run u and w (tried in the working tree,
+  `repin-verify.txt` is the final state). The v8 u / w are byte-identical to the re-based u / w in every payload
+  (u 3 / 3, w 10 / 10 incl. `train_combined.json` `e13fbc4d`, checked by SHA-256 at the re-pin) and their receipts
+  predate K-P9-10, so the Release pins do not refuse them (`scripts/cycle_resume.py:141-155`); the P9-B0 u / w of record
+  stay `p9-b0g-yf0-u` / `-w` (Appendix IV item 2; the NAV of record reads `p9-b0g-yf0-w`, YF0-NAV-ORDER).
+- **R-2 (`lib-v80.json`) is not edited**: no lineage parent spec pins R-2's NAV (G-B6, G-B8 and the OD-3 R-2 line read
+  `p9-b0-r2-nav` by path, prereg A.4); re-pinning `lib-v80.json`'s fields to v15 would need its 70-name `fields.list`
+  changed (the cycle refuses a list that differs from the pinned manifest's 84 rows, `scripts/cycle/gate.py:22-28`): not
+  a pin. `lib-v80.json` stays `306a070b...3a21` (the FIELDS-SUB witness's spec SHA).
+- `env_path_prepend` not touched: the three pinned Release exes import no vcpkg DLL (PE import tables: system and CRT
+  DLLs only), so the DLL path cannot change their bytes' behaviour.
+
+**`verify` on the pinned lineage** (`gate-logs/tools/repin_verify.py`, `gate-logs/repin-verify.txt`; read-only; per
+spec the Cycle the CLI builds and, per done step, the checks a `run` makes before reusing it: K-P9-10 argv,
+E1-REUSE-a2 exe pin, W1-I2 (a)'s parent-NAV exe, B2-11's `exes.eval`): **X-10 HOLDS** and **Y-1 HOLDS** (every input
+pin `[locked, verified]`, the three exe pins `[exes_sha256, verified]` = disk, `exes.eval` named and pinned; fields, u,
+fit, card, w, monitor done and reusable (pre-K-P9-10 receipts); NAV `p9-b0g-x10-nav` / `p9-b0g-y1-nav` made by
+`255b58ac` = the pin); the wave's view of the parents (`Cycle(..., verify=False)`, as `wave_context.Wave.outputs`):
+Y-F0's NAV `p9-b0g-yf0-nav` and X-10's `p9-b0g-x10-nav` made by `255b58ac` = `exes_sha256.nav` (W1-I2 (a) no longer
+refuses a Release rule cell over them). Before the re-pin the same tool found 4 problems on X-10 (no pins, no
+`exes.eval`, the parent NAV by the v8 exe `72ff6d2d`). Stated, not counted: `lib-v8ysb-gm.json` alone cannot be built
+by the cycle (its own `inputs.baseline_fields` is fields v13, FIELDS-GONE; the same before the re-pin; template
+children resolve without it); the reference NAVs carry no C-13 binding to these specs (exe-direct runs with the
+substitution list's opt-in flags), so a `run` of the reference spec itself would not score them: they are references,
+not cells.
