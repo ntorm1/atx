@@ -6,6 +6,15 @@
 # lease owner. Lease records are fully written to a unique temp file and then
 # atomically published by rename; a truncated final record is fail-closed and
 # can be explicitly recovered only after a corruption grace period.
+#
+# Cold-slot configure: -ConfigurePreset <name> | auto (default) | none.
+#   auto -> vol-rel for a vol branch (a '/vol-', '-vol-' or '_vol_' segment),
+#           else dev when the full module checkout exists (atx-kb, atx-agent-db,
+#           atx-options-engine), else equity-dev; -Shared keeps dev-shared.
+#   none -> skip; the lane configures its own preset.
+# The slot counts as warm for a preset when <that preset's binaryDir>\build.ninja
+# exists (resolved from CMakePresets.json the way scripts\atx-build.ps1 does), so
+# a vol tree warm in build-vol-rel is no longer reconfigured as a cold dev tree.
 
 param(
   [string]$Branch,
@@ -18,6 +27,7 @@ param(
   [int]$HeartbeatTimeoutSeconds = 600,
   [string]$StopKeeper,
   [switch]$Shared,
+  [string]$ConfigurePreset = 'auto',
   [string]$Release,
   [string]$Quarantine,
   [switch]$RecoverStale,
@@ -435,6 +445,57 @@ function Stop-HeartbeatKeeper($Record, [string]$PoolRoot, [switch]$RemoveFiles) 
   return 'stopped'
 }
 
+# Mirrors scripts\atx-build.ps1 Get-PresetBinaryDir: walk `inherits` (first
+# entry wins, as in CMake) to the first binaryDir and strip ${sourceDir}. Returns
+# a worktree-relative directory.
+function Get-PresetBinaryDir([string]$Worktree, [string]$Name) {
+  $presetsFile = Join-Path $Worktree 'CMakePresets.json'
+  if (-not (Test-Path $presetsFile)) { return 'build' }
+  $presets = @((Get-Content $presetsFile -Raw | ConvertFrom-Json).configurePresets)
+  $current = $Name
+  for ($hop = 0; $hop -lt $presets.Count; $hop++) {
+    $preset = $presets | Where-Object { $_.name -eq $current } | Select-Object -First 1
+    if ($null -eq $preset) { break }
+    if ($preset.binaryDir) {
+      return (($preset.binaryDir -replace '\$\{sourceDir\}/?', '') -replace '/', '\')
+    }
+    if (-not $preset.inherits) { break }
+    $current = @($preset.inherits)[0]
+  }
+  throw ('cannot resolve binaryDir for configure preset ' + $Name)
+}
+
+function Test-PresetDefined([string]$Worktree, [string]$Name) {
+  $presetsFile = Join-Path $Worktree 'CMakePresets.json'
+  if (-not (Test-Path $presetsFile)) { return $false }
+  $presets = @((Get-Content $presetsFile -Raw | ConvertFrom-Json).configurePresets)
+  return [bool]($presets | Where-Object { $_.name -eq $Name } | Select-Object -First 1)
+}
+
+# Which preset a cold slot is configured with. Explicit -ConfigurePreset wins
+# (including 'none'); then -Shared; then auto. Before 2026-10-16 every cold slot
+# ran `dev`, which can no longer configure in this checkout (atx-kb, atx-agent-db
+# and atx-options-engine are absent) and cost ~55 s per lease before failing.
+function Resolve-ConfigurePreset(
+  [string]$Requested,
+  [string]$BranchName,
+  [string]$Worktree,
+  [switch]$SharedLibs
+) {
+  if ($Requested -and $Requested -ne 'auto') {
+    if ($SharedLibs) { throw 'choose either -Shared or -ConfigurePreset, not both' }
+    return $Requested
+  }
+  if ($SharedLibs) { return 'dev-shared' }
+  if ($BranchName -match '(^|[/_-])vol([/_-]|$)') { return 'vol-rel' }
+  $fullCheckout = $true
+  foreach ($module in @('atx-kb', 'atx-agent-db', 'atx-options-engine')) {
+    if (-not (Test-Path (Join-Path $Worktree $module))) { $fullCheckout = $false }
+  }
+  if ($fullCheckout) { return 'dev' }
+  return 'equity-dev'
+}
+
 # Pester imports safety helpers without running command mode.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -488,7 +549,9 @@ if ($Status) {
     } else {
       $branchName = (git -C $tree.FullName rev-parse --abbrev-ref HEAD 2>$null)
     }
-    $warm = if (Test-Path (Join-Path $tree.FullName 'build\build.ninja')) { 'warm' } else { 'cold' }
+    $warmDirs = @(Get-ChildItem -Path $tree.FullName -Directory -Filter 'build*' -ErrorAction SilentlyContinue |
+      Where-Object { Test-Path (Join-Path $_.FullName 'build.ninja') } | ForEach-Object { $_.Name })
+    $warm = if ($warmDirs.Count -gt 0) { 'warm:' + ($warmDirs -join ',') } else { 'cold' }
     Write-Host ($tree.Name + '  [' + $warm + ']  branch=' + $branchName + '  ' + $state)
   }
   return
@@ -707,15 +770,30 @@ Assert-BranchHeadMatchesBase $checkedOutSha $baseSha
 git -C $worktree submodule update --init --recursive
 if ($LASTEXITCODE -ne 0) { throw ('submodule update failed; lease remains held: ' + $worktree) }
 
-$preset = if ($Shared) { 'dev-shared' } else { 'dev' }
-if (-not (Test-Path (Join-Path $worktree 'build\build.ninja'))) {
-  Write-Host ('cold tree: configuring preset ' + $preset + ' (one-time for this slot)') -ForegroundColor Cyan
-  Push-Location $worktree
-  try { & (Join-Path $worktree 'scripts\atx-build.ps1') configure -Preset $preset }
-  finally { Pop-Location }
-  if ($LASTEXITCODE -ne 0) { throw ('configure failed; lease remains held: ' + $worktree) }
-} elseif ($Shared) {
-  Write-Host 'NOTE: tree already configured; -Shared ignored.' -ForegroundColor Yellow
+$preset = Resolve-ConfigurePreset $ConfigurePreset $Branch $worktree -SharedLibs:$Shared
+if ($preset -ne 'none' -and (-not $ConfigurePreset -or $ConfigurePreset -eq 'auto') -and
+    -not (Test-PresetDefined $worktree $preset)) {
+  # An older frozen base may predate the auto-chosen preset (vol-rel landed
+  # 2026-10-16); skip rather than fail an otherwise good lease.
+  Write-Host ('auto preset ' + $preset + ' is not defined at this base; configure skipped') -ForegroundColor Yellow
+  $preset = 'none'
+}
+if ($preset -eq 'none') {
+  Write-Host 'configure skipped (-ConfigurePreset none)' -ForegroundColor Cyan
+} else {
+  $presetBinaryDir = Get-PresetBinaryDir $worktree $preset
+  if (-not (Test-Path (Join-Path (Join-Path $worktree $presetBinaryDir) 'build.ninja'))) {
+    Write-Host ('cold tree for preset ' + $preset + ': configuring ' + $presetBinaryDir +
+      ' (one-time for this slot)') -ForegroundColor Cyan
+    Push-Location $worktree
+    try { & (Join-Path $worktree 'scripts\atx-build.ps1') configure -Preset $preset }
+    finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw ('configure failed; lease remains held: ' + $worktree) }
+  } else {
+    Write-Host ('warm tree for preset ' + $preset + ' (' + $presetBinaryDir +
+      '); configure skipped') -ForegroundColor Cyan
+    if ($Shared) { Write-Host 'NOTE: tree already configured; -Shared ignored.' -ForegroundColor Yellow }
+  }
 }
 if ($HeartbeatId) { [System.IO.File]::SetLastWriteTimeUtc($heartbeatPath, [DateTime]::UtcNow) }
 

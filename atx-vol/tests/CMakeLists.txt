@@ -360,15 +360,11 @@ add_executable(atx-vol-tests
     # matches nothing in ATX_VOL_SLOW_FILTER, so the suite lands in the
     # atx_vol_fast label.
     oracle_bench_test.cpp
-    # vrp-ml sprint, lane vrp-model — appended target: the schema-v2
-    # IFairVolModel seam (pricing/theo.hpp: fair_vol_feature_count, linear-v2
-    # coefficient TSV, flat-array GBT scorer) + the walk-forward VRP trainer
-    # logic header (tools/vrp_train.hpp). The trainer calls atx-engine's learn
-    # layer (fit_gbt / fit_linear / elastic_net), whose definitions live in
-    # the atx-engine LIBRARY — hence the extra target_link_libraries below.
-    # The atx-vol LIBRARY itself still never includes an atx-engine header;
-    # the engine edge exists only on this test exe and atx-vol-vrp-train.
-    vrp_model_test.cpp
+    # vrp_model_test.cpp (vrp-ml lane vrp-model) is NOT listed here: it needs
+    # the atx-engine learn layer, so it builds into its own
+    # atx-vol-vrp-model-tests exe further down, which exists only when the
+    # engine is configured. Keeping it out keeps atx-engine out of this exe's
+    # link closure (build-infra sprint 2026-10-16).
 )
 
 # Oracle RSI charter stage 2: the non-driver TUs of atx-vol-oracle-bench
@@ -438,15 +434,27 @@ target_link_libraries(atx-vol-tests
         atx-test-scratch    # FIX-3/F3-B: per-process temp root (was a listed source in F2-A)
 )
 
-# vrp-ml lane vrp-model: vrp_model_test.cpp includes tools/vrp_train.hpp,
-# which calls into atx::engine::learn (fit_gbt / fit_linear / elastic_net —
-# declared in headers, DEFINED in atx-engine/src/learn/*.cpp), so this exe
-# links the atx-engine library. Spelled as the plain target name (not the
-# atx::engine ALIAS): atx-vol is add_subdirectory'd BEFORE atx-engine at the
-# root, and a namespaced name must already exist at the call site while a
-# plain name resolves at generate time. Eigen arrives transitively (atx::core
-# links Eigen3::Eigen PUBLIC); atx-engine's PUBLIC include dir rides this edge.
-target_link_libraries(atx-vol-tests PRIVATE atx-engine)
+# vrp-ml lane vrp-model: vrp_model_test.cpp covers the schema-v2
+# IFairVolModel seam (pricing/theo.hpp: fair_vol_feature_count, linear-v2
+# coefficient TSV, flat-array GBT scorer) and the walk-forward VRP trainer
+# logic header (tools/vrp_train.hpp), which calls into atx::engine::learn
+# (fit_gbt / fit_linear / elastic_net -- declared in headers, DEFINED in
+# atx-engine/src/learn/*.cpp). That engine edge used to sit on atx-vol-tests
+# itself, which made every vol lane that built the monolithic exe compile all
+# of atx-engine (146 TUs, ~1000 CPU-s per tree under Release+ThinLTO). The
+# suite now owns a dedicated exe that exists only when the engine is
+# configured, i.e. NOT under ATX_VOL_ONLY (every vol-* preset); configure a vol
+# preset with -DATX_VOL_ONLY=OFF to build it. Plain target name `atx-engine`
+# (not the atx::engine ALIAS): atx-vol is add_subdirectory'd BEFORE atx-engine
+# at the root and a plain name resolves at generate time. The atx-vol LIBRARY
+# itself never includes an atx-engine header.
+if(NOT ATX_VOL_ONLY)
+    add_executable(atx-vol-vrp-model-tests vrp_model_test.cpp)
+    target_link_libraries(atx-vol-vrp-model-tests PRIVATE
+        atx::vol atx::core atx-engine GTest::gtest_main atx_warnings)
+    target_include_directories(atx-vol-vrp-model-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+endif()
 
 # Wave E T7 fix round 1, I5: listed_definitions_cache_test.cpp's peak-RSS
 # harness calls GetProcessMemoryInfo/EmptyWorkingSet (psapi.h). Linked
@@ -607,6 +615,13 @@ gtest_discover_tests(atx-vol-tests
     TEST_FILTER "${ATX_VOL_SLOW_FILTER}"
     PROPERTIES LABELS atx_vol_slow SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
+# VrpModel/VrpTrain cases keep the fast-lane label they had inside atx-vol-tests;
+# their exe exists only when atx-engine is configured (see its definition above).
+if(TARGET atx-vol-vrp-model-tests)
+    gtest_discover_tests(atx-vol-vrp-model-tests
+        PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+        DISCOVERY_MODE PRE_TEST)
+endif()
 
 # Oracle RSI charter stage 4 (Mode B). scripts/oracle-targeted-gate.ps1
 # -Gate mode_b_targeted_tests runs `ctest -R ^mode_b_targeted_tests$`, so a
@@ -843,3 +858,7 @@ add_test(NAME AlphaRegistry COMMAND atx-vol-alpha-tests)
 set_tests_properties(AlphaRegistry PROPERTIES
     FAIL_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
     LABELS "atx_vol;atx_vol_fast")
+
+# Module test slices for lanes (atx-vol-<module>-slice): partitioned from
+# atx-vol-tests' SOURCES, so keep this include LAST. See slices.cmake.
+include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)
