@@ -338,7 +338,8 @@ def test_common_progress_binds_inputs_and_preserves_predictions(binary, tmp_path
     assert snapshot["objective_evaluations"] == report["objective_evaluations_known"] == 1
     assert snapshot["fit_termination"] == "evaluation_limit"
     assert snapshot["row_status_counts"] == {"ok": 26}
-    assert all(snapshot["stage_attempted"].values())
+    assert not snapshot["stage_attempted"]["seed"]
+    assert all(value for name, value in snapshot["stage_attempted"].items() if name != "seed")
     assert all(math.isfinite(x) and x >= 0 for x in snapshot["stage_elapsed_microseconds"].values())
     assert report["stage_elapsed_microseconds"] == snapshot["stage_elapsed_microseconds"]
     assert complete["state"] == "numerical_processing_complete"
@@ -386,7 +387,7 @@ def test_common_stage_timing_and_progress_include_refusals(binary, tmp_path, fai
     assert decision["status"] != "ok"
     names = ["market", "policy", "grid", "fit", "equivalent_iv"]
     visited = names[:names.index(stage) + 1] if stage else []
-    assert decision["stage_attempted"] == {name: name in visited for name in names}
+    assert decision["stage_attempted"] == {**{name: name in visited for name in names}, "seed": False}
     assert all(value >= 0 for value in decision["stage_elapsed_microseconds"].values())
     assert decision["objective_evaluations"] == (None if failure == "fit" else 0)
     assert report["objective_evaluation_counts_unavailable"] == (failure == "fit")
@@ -484,3 +485,261 @@ def test_progress_reports_empty_eligible_cohort_without_invented_snapshots(binar
     assert records[1]["completed_snapshots"] == records[1]["completed_rows"] == 0
     assert records[1]["row_status_counts"] == {"unsupported_deliverable": len(rows)}
     assert len(read_rows(output)) == len(rows)
+
+
+def test_configured_initialization_is_default_and_preserves_output(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    original = common_run(binary, source, output, path)
+    assert original.returncode == 0, original.stderr
+    expected = output.read_bytes()
+    policy = json.loads(path.read_text())
+    policy["initialization"] = {"mode": "configured"}
+    path.write_text(json.dumps(policy))
+    explicit = common_run(binary, source, output, path)
+    assert explicit.returncode == 0, explicit.stderr
+    assert output.read_bytes() == expected
+    report = json.loads(explicit.stdout)
+    decision, = report["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "configured" and not init["attempted"]
+    assert init["effective_initial_sigmas"] == init["effective_prior_sigmas"] == [.3]
+    assert not decision["stage_attempted"]["seed"]
+    assert decision["stage_elapsed_microseconds"]["seed"] == 0
+    assert init["eligible_quotes"] is None
+    assert report["initialization_states"] == {"configured": 1}
+    assert report["policy_definition"]["initialization"]["seed"]["max_inversions"] == 384
+
+
+@pytest.mark.parametrize("prior", [None, .4])
+def test_complete_seeds_preserve_configured_prior_and_full_quotes(binary, tmp_path, prior):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    rows[0]["bid"] = 0
+    write_rows(source, rows)
+    path = policy_file(tmp_path, initialization={"mode": "quote-seed"})
+    policy = json.loads(path.read_text())
+    fit = policy["profiles"][0]["fit"]
+    fit.update(initial_sigma=.18, initial_sigmas=[.2], prior_weight=.7)
+    if prior is not None:
+        fit["prior_sigmas"] = [prior]
+    path.write_text(json.dumps(policy))
+    progress = tmp_path / "seed-progress.jsonl"
+    result = common_run(binary, source, output, path, "--progress", str(progress))
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    decision, = report["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "applied" and init["attempted"] and init["applied"]
+    assert init["effective_initial_sigmas"] == pytest.approx([.3], abs=1e-5)
+    old_prior = .2 if prior is None else prior
+    assert init["effective_prior_sigmas"] == [old_prior]
+    assert init["configured_prior_source"] == ("configured_initial" if prior is None else "prior_sigmas")
+    assert init["configured_initial_source"] == "initial_sigmas"
+    sigma, = decision["fit"]["sigmas"]
+    assert decision["fit"]["regularization_loss"] == pytest.approx(.7 * math.log(sigma / old_prior)**2)
+    assert decision["fit"]["quote_count"] == report["served_rows"] == len(rows)
+    assert init["used_quotes"] == 5
+    assert init["refused_quotes"] + init["used_quotes"] == len(rows)
+    assert init["quote_status_counts"]["bidless"] == 1
+    assert sum(init["quote_status_counts"].values()) == len(rows)
+    assert init["inversion_calls"] == 15 and init["reserved_root_iteration_slots"] == 15 * 32
+    assert decision["stage_attempted"]["seed"]
+    assert decision["stage_elapsed_microseconds"]["seed"] > 0
+    assert report["per_profile_counts"]["control"]["initialization_states"] == {"applied": 1}
+    header, snapshot, complete = [json.loads(line) for line in progress.read_bytes().splitlines()]
+    assert header["configuration"]["initialization"] == report["policy_definition"]["initialization"]
+    assert snapshot["initialization"]["effective_prior_sigmas"] == [old_prior]
+    assert snapshot["initialization"]["quote_status_counts"] == init["quote_status_counts"]
+    assert "expiries" not in snapshot["initialization"]
+    assert complete["initialization_states"] == {"applied": 1}
+
+
+@pytest.mark.parametrize("controls,state", [
+    ({"max_abs_log_forward_moneyness": 0}, "fallback_incomplete"),
+    ({"max_input_quotes": 1}, "fallback_error"),
+])
+def test_seed_fallback_reproduces_configured_output(binary, tmp_path, controls, state):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    baseline = common_run(binary, source, output, path)
+    assert baseline.returncode == 0, baseline.stderr
+    expected = output.read_bytes()
+    policy = json.loads(path.read_text())
+    policy["initialization"] = {"mode": "quote-seed", "seed": controls}
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == expected
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == state and init["attempted"] and not init["applied"]
+    assert init["effective_initial_sigmas"] == init["effective_prior_sigmas"] == [.3]
+    assert decision["fit"]["quote_count"] == 26
+    if state == "fallback_error":
+        assert init["eligible_quotes"] is init["inversion_calls"] is None
+        assert init["error_code"]
+    else:
+        assert init["eligible_quotes"] == init["used_quotes"] == init["inversion_calls"] == 0
+        assert init["quote_status_counts"] == {"far_moneyness": 26}
+
+
+def test_budget_incomplete_term_seeds_never_apply_partial_vector(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    # Distinct expiry with usable quote intervals; the inversion budget permits
+    # only the first endpoint's triplet, leaving the second forward group unready.
+    rows += [{**row, "row_id": int(row["row_id"]) + 1000, "chain_id": 18,
+              "expiry_days": 21200, "years": 1., "years_calendar": 1.} for row in rows]
+    write_rows(source, rows)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(time_shape="per-variance-interval", initial_sigma=.2)
+    path.write_text(json.dumps(policy))
+    baseline = common_run(binary, source, output, path)
+    assert baseline.returncode == 0, baseline.stderr
+    expected = output.read_bytes()
+    policy["initialization"] = {"mode": "quote-seed", "seed": {"max_inversions": 3}}
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == expected
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "fallback_incomplete"
+    assert init["parameter_status_counts"] == {"ready": 1, "missing_endpoint": 1}
+    assert init["effective_initial_sigmas"] == init["effective_prior_sigmas"] == [.2, .2]
+    assert init["used_quotes"] == 1 and init["inversion_calls"] == 3
+    assert init["quote_status_counts"]["inversion_budget"] > 0
+    assert decision["fit"]["quote_count"] == len(rows)
+
+
+@pytest.mark.parametrize("refusal", ["iv_floor", "sigma_bounds"])
+def test_seed_numerical_refusal_keeps_configured_fit(binary, tmp_path, refusal):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    if refusal == "iv_floor":
+        row = read_rows(source)[0]
+        # Exact zero-carry ATM call at the inverter's .005 floor.
+        price = 100 * math.erf(.005 * math.sqrt(.5) / (2 * math.sqrt(2)))
+        row.update(strike=100, bid=price, ask=price)
+        write_rows(source, [row])
+        policy["profiles"][0]["fit"].update(initial_sigma=.02, min_sigma=.001)
+    else:
+        policy["profiles"][0]["fit"].update(initial_sigma=.2, max_sigma=.25)
+    path.write_text(json.dumps(policy))
+    baseline = common_run(binary, source, output, path)
+    assert baseline.returncode == 0, baseline.stderr
+    expected = output.read_bytes()
+    policy["initialization"] = {"mode": "quote-seed"}
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == expected
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "fallback_incomplete" and not init["applied"]
+    assert init["quote_status_counts"][refusal] > 0 and init["used_quotes"] == 0
+    assert decision["fit"]["quote_count"] == len(read_rows(source))
+
+
+def test_shared_seeds_broadcast_knots_without_moving_explicit_prior(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path, initialization={"mode": "quote-seed"})
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(
+        log_state_knots=[-.2, 0, .2], initial_sigma=.2, prior_sigmas=[.15, .2, .25], prior_weight=.8)
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "applied"
+    assert init["effective_initial_sigmas"] == pytest.approx([.3, .3, .3], abs=1e-5)
+    assert init["effective_prior_sigmas"] == [.15, .2, .25]
+    assert init["layout"]["log_state_knots"] == [-.2, 0, .2]
+    sigma = decision["fit"]["sigmas"]
+    expected_penalty = .8 * sum(math.log(x / y)**2 for x, y in zip(sigma, [.15, .2, .25])) / 3
+    assert decision["fit"]["regularization_loss"] == pytest.approx(expected_penalty)
+
+
+def test_seed_inversion_error_samples_are_bounded_and_all_refusals_counted(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    for row in rows:
+        row.update(bid=200, ask=201)  # Above a zero-carry call's price bound.
+    rows += [{**row, "row_id": int(row["row_id"]) + 1000, "chain_id": 18,
+              "expiry_days": 21200, "years": 1., "years_calendar": 1.} for row in rows]
+    write_rows(source, rows)
+    path = policy_file(tmp_path, initialization={
+        "mode": "quote-seed", "seed": {"candidates_per_expiry": 32}})
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    decision, = json.loads(result.stdout)["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "fallback_incomplete"
+    failures = init["quote_status_counts"]["inversion_failure"]
+    assert failures > 32
+    assert len(init["inversion_error_samples"]) == init["inversion_error_sample_limit"] == 32
+    assert init["inversion_errors_not_sampled"] == failures - 32
+    assert all(0 <= item["quote_index"] < len(rows) and 0 < len(item["error"]) <= 1024
+               for item in init["inversion_error_samples"])
+    assert sum(init["quote_status_counts"].values()) == decision["fit"]["quote_count"] == len(rows)
+
+
+@pytest.mark.parametrize("initialization", [
+    {"mode": "unknown"}, {"seed": {}}, {"mode": "configured", "seed": {}},
+    {"mode": "quote-seed", "seed": {"unknown": 1}},
+    {"mode": "quote-seed", "seed": {"max_inversions": 3073}},
+    {"mode": "quote-seed", "seed": {"max_input_quotes": 0}},
+    {"mode": "quote-seed", "seed": {"max_root_iteration_slots": 95}},
+    {"mode": "quote-seed", "seed": {"max_iv_iterations": 32.5}},
+    {"mode": "quote-seed", "seed": {"inversion_options": {"n_quad_price": 0}}},
+    {"mode": "quote-seed", "seed": {"inversion_options": {"n_quadrature": 9}}},
+    {"mode": "quote-seed", "seed": {"max_relative_spread": float("nan")}},
+])
+def test_seed_policy_is_closed_and_bounded_before_execution(binary, tmp_path, initialization):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path, initialization=initialization)
+    progress = tmp_path / "progress.jsonl"
+    result = common_run(binary, source, output, path, "--progress", str(progress))
+    assert result.returncode != 0
+    assert not output.exists() and not progress.exists()
+
+
+@pytest.mark.parametrize("failure", ["market", "fit_limit", "fit"])
+def test_seed_stage_and_fitter_failures_do_not_trigger_retry(binary, tmp_path, failure):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path, initialization={"mode": "quote-seed"})
+    policy = json.loads(path.read_text())
+    if failure == "market":
+        policy["market"] = {"max_quotes": 1}
+    elif failure == "fit_limit":
+        policy["profiles"][0]["fit"]["max_quotes"] = 1
+    else:
+        policy["profiles"][0]["model"] = {"max_transitions": 1}
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    decision, = report["policy_decisions"]
+    assert report["served_rows"] == 0 and len(read_rows(output)) == 26
+    init = decision["initialization"]
+    if failure == "fit":
+        assert decision["status"] == "fit_failure"
+        assert init["state"] == "applied" and decision["stage_attempted"]["seed"]
+        assert decision["objective_evaluations"] is None
+    else:
+        assert init["state"] == "not_attempted" and init["reason"] == decision["status"]
+        assert not decision["stage_attempted"]["seed"]
+        assert decision["stage_elapsed_microseconds"]["seed"] == 0

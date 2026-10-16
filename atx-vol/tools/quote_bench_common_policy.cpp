@@ -208,7 +208,7 @@ CommonPolicy load_common_policy(const std::string &selection, const std::string 
       ? Json{{"schema_version", 1}, {"model", "common-markov"}}
       : quote_bench_policy::read_document(selection);
   keys(document, {"schema_version", "model", "profiles", "symbol_overrides", "regimes",
-                  "market", "equivalent_iv"});
+                  "market", "equivalent_iv", "initialization"});
   if (!document.contains("schema_version") || !document.at("schema_version").is_number_integer() ||
       document.at("schema_version") != 1 ||
       document.value("model", std::string{}) != "common-markov") {
@@ -269,11 +269,16 @@ CommonPolicy load_common_policy(const std::string &selection, const std::string 
   }
   auto catalog = AmericanMarkovPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
+  CommonInitializationConfig initialization;
+  if (document.contains("initialization")) {
+    initialization = parse_common_initialization(document.at("initialization"));
+  }
   Json definition{{"schema_version", 1}, {"model", "common-markov"},
       {"profiles", Json::array()}, {"symbol_overrides", Json::array()},
       {"regimes", quote_bench_policy::regimes_json(regimes)}, {"market", market_json(market)},
       {"equivalent_iv", {{"tolerance", iv.tolerance}, {"min_time_value", iv.min_time_value},
-                          {"max_iterations", iv.max_iterations}}}};
+                          {"max_iterations", iv.max_iterations}}},
+      {"initialization", common_initialization_json(initialization)}};
   for (const auto &profile : profiles) {
     definition["profiles"].push_back(common_profile_json(profile));
   }
@@ -281,6 +286,6 @@ CommonPolicy load_common_policy(const std::string &selection, const std::string 
     definition["symbol_overrides"].push_back(
         {{"symbol", entry.symbol}, {"profile", entry.profile}});
   }
-  return {std::move(*catalog), market, iv, std::move(definition)};
+  return {std::move(*catalog), market, iv, initialization, std::move(definition)};
 }
 } // namespace quote_bench

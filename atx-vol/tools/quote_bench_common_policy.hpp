@@ -1,5 +1,7 @@
 #pragma once
 
+#include "quote_bench_common_seed.hpp"
+
 #include "atx/vol/api/fitting/american_markov_policy.hpp"
 #include "atx/vol/api/marketdata/american_markov_market.hpp"
 
@@ -20,6 +22,7 @@ struct CommonPolicy {
   atx::vol::AmericanMarkovPolicyCatalog catalog;
   atx::vol::AmericanMarkovMarketConfig market;
   EquivalentIvConfig equivalent_iv;
+  CommonInitializationConfig initialization;
   nlohmann::json definition;
 };
 

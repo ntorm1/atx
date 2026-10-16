@@ -30,9 +30,9 @@ using Identity = std::array<std::string, 3>;
 
 struct StageTimes {
   Json elapsed{{"market", 0.0}, {"policy", 0.0}, {"grid", 0.0},
-               {"fit", 0.0}, {"equivalent_iv", 0.0}};
+               {"seed", 0.0}, {"fit", 0.0}, {"equivalent_iv", 0.0}};
   Json attempted{{"market", false}, {"policy", false}, {"grid", false},
-                 {"fit", false}, {"equivalent_iv", false}};
+                 {"seed", false}, {"fit", false}, {"equivalent_iv", false}};
 
   template <class Function> auto measure(const char *stage, Function function) {
     attempted[stage] = true;
@@ -342,9 +342,22 @@ void fit_snapshot(const std::vector<InputRow> &rows, std::span<const std::size_t
     refuse("fit_quote_limit", "resource");
     return;
   }
+  const auto fit_market = market.fit_market(profile.model_config, grid->states);
+  auto initialization = configured_common_fit_initialization(
+      profile.fit_config, resolved->parameter_count, policy.initialization);
+  auto effective_fit = profile.fit_config;
+  if (policy.initialization.mode == CommonInitializationMode::QuoteSeed) {
+    timing.measure("seed", [&] {
+      apply_common_quote_seeds(fit_market, market.quotes(), profile.fit_config,
+                              policy.initialization, initialization);
+      return true;
+    });
+    effective_fit.initial_sigmas = initialization.initial_sigmas;
+    effective_fit.prior_sigmas = initialization.prior_sigmas;
+  }
+  decision["initialization"] = std::move(initialization.diagnostics);
   const auto fit = timing.measure("fit", [&] {
-    return fit_american_markov_intervals(market.fit_market(profile.model_config, grid->states),
-                                       market.quotes(), profile.fit_config);
+    return fit_american_markov_intervals(fit_market, market.quotes(), effective_fit);
   });
   if (!fit) {
     decision["error"] = fit.error().to_string();
@@ -412,6 +425,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
   Json market_failures = Json::object();
   Json resource_failures = Json::object();
   Json profiles = Json::object();
+  Json initialization_states = Json::object();
   std::size_t fitted_snapshots = 0;
   std::size_t fitted_chains = 0;
   std::size_t ambiguous_chains = 0;
@@ -443,6 +457,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
     for (const auto index : indices) chains.insert(rows[index].chain);
     Json decision{{"underlier", identity[0]}, {"root", identity[1]}, {"snapshot_ns", identity[2]},
                   {"rows", indices.size()},
+                  {"initialization", common_initialization_pending(policy.initialization)},
                   {"chain_ids", std::vector<std::uint64_t>(chains.begin(), chains.end())}};
     if (std::any_of(chains.begin(), chains.end(),
                     [&](auto id) { return inconsistent.contains(id); })) {
@@ -453,6 +468,9 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       fit_snapshot(rows, indices, policy, result.predictions, decision, timing);
     }
     const auto status = decision.at("status").get<std::string>();
+    auto &initialization = decision["initialization"];
+    if (initialization["state"] == "not_attempted") initialization["reason"] = status;
+    count(initialization_states, initialization.at("state").get<std::string>());
     if (status == "ok") {
       ++fitted_snapshots;
       fitted_chains += chains.size();
@@ -478,6 +496,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       count(p, "fitted_snapshots", status == "ok" ? 1U : 0U);
       count(p, "attempted_chains", chains.size());
       count(p, "fitted_chains", status == "ok" ? chains.size() : 0U);
+      count(p["initialization_states"], initialization.at("state").get<std::string>());
     }
     decision["elapsed_microseconds"] =
         std::chrono::duration<double, std::micro>(Clock::now() - snapshot_start).count();
@@ -512,6 +531,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
         {"elapsed_microseconds", decision["elapsed_microseconds"]},
         {"stage_elapsed_microseconds", timing.elapsed}, {"stage_attempted", timing.attempted},
         {"objective_evaluations", evaluations},
+        {"initialization", common_initialization_compact(initialization)},
         {"fit_termination", decision.contains("fit")
             ? decision["fit"]["termination"] : Json(nullptr)}});
     decisions.push_back(std::move(decision));
@@ -551,6 +571,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       {"policy_definition_format", "expanded-common-markov-runtime-configuration-v1"},
       {"policy_definition", policy.definition}, {"policy_decisions", decisions},
       {"per_profile_counts", profiles}, {"fit_failure_counts", failures},
+      {"initialization_states", initialization_states},
       {"market_failure_counts", market_failures}, {"resource_refusal_counts", resource_failures},
       {"solver_failure_code_counts", solver_codes},
       {"resource_refusal_scope", "typed market/quote-count limits; numerical/compiler/fitter "
@@ -580,7 +601,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
           "tail or discretization error certificate"},
       {"fit_and_reprice_seconds", seconds},
       {"served_rows_per_second", seconds > 0 ? static_cast<double>(served) / seconds : 0},
-      {"timing_scope", "serial common-market preparation, policy resolution, fitting and "
+      {"timing_scope", "serial common-market preparation, policy resolution, grid, optional seeding, fitting and "
           "equivalent IV; excludes CSV IO and policy parsing"},
       {"performance_claim", "diagnostic; requires quiet repeated release runs"}};
   result.report["stage_elapsed_microseconds"] = totals.elapsed;
@@ -612,6 +633,7 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
       {"completed_rows", completed_rows}, {"input_rows", rows.size()},
       {"rows_excluded_by_input_status", rows.size() - completed_rows},
       {"row_status_counts", row_status}, {"vol_status_counts", vol_status},
+      {"initialization_states", initialization_states},
       {"stage_elapsed_microseconds", totals.elapsed},
       {"objective_evaluations_known", known_evaluations},
       {"objective_evaluation_counts_unavailable", unavailable_evaluation_counts}});
