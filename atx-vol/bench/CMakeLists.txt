@@ -535,3 +535,38 @@ target_link_libraries(atx-vol-theo-bench
         atx_warnings
         Threads::Threads
 )
+
+# ── Pricing hot-path audit 2026-10-16 §4 — chain-refresh bench ───────────────
+# Re-marks a deterministic 2,000-contract chain (20 expiries x 50 strikes x 2
+# sides) after every tick of a fixed-seed spot tape: per-tick p50/p90/p99/p99.9
+# latency (manual time, pinned main thread, never the pricing pool) plus untimed
+# accuracy against the cold Andersen-Lake reference. Rows chain/refresh/<route>/
+# n2000. Own target (one owner per TU).
+add_executable(atx-vol-chain-refresh-bench
+    bench_main.cpp
+    chain_refresh_bench.cpp
+)
+target_link_libraries(atx-vol-chain-refresh-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-chain-refresh-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-chain-refresh-bench>
+            --required chain/refresh/cached_scalar/n2000
+            --required chain/refresh/cached_ladder/n2000
+            --required chain/refresh/cold_al_qlfast/n2000
+            --required chain/refresh/cold_al_avx2_batch/n2000
+    )
+    set_tests_properties(atx-vol-chain-refresh-name-coverage PROPERTIES LABELS atx_vol)
+endif()

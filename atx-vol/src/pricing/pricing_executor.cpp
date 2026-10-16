@@ -15,6 +15,7 @@
 
 #include "fitting/counters.hpp"     // ATX_VOL_COUNT (opt-in; no-op when OFF)
 #include "core/parallel_for.hpp" // atx_auto_worker_count (shared core budget)
+#include "pricing/cpu_topology.hpp" // performance_core_cpus / pin_current_thread_affinity
 
 #if defined(_MSC_VER)
 #ifndef NOMINMAX
@@ -337,14 +338,11 @@ struct PricingExecutor::State {
   }
 
   void worker_loop(std::uint64_t affinity_mask) {
-#if defined(_MSC_VER)
     if (affinity_mask != 0) {
-      // Best-effort: a 0 return means the pin failed; we simply continue unpinned.
-      (void)::SetThreadAffinityMask(::GetCurrentThread(), static_cast<DWORD_PTR>(affinity_mask));
+      // Best-effort: a false return means the pin failed; we simply continue unpinned.
+      // The same helper pins the bench main thread (cpu_topology.hpp, audit item 5a).
+      (void)detail::pin_current_thread_affinity(affinity_mask);
     }
-#else
-    (void)affinity_mask;
-#endif
     std::unique_lock<std::mutex> lk(m);
     ++started;
     cv_started.notify_one();
@@ -588,5 +586,69 @@ Status configure_pricing_executor(const ExecutorConfig &cfg) {
   g_pending_cfg = cfg;
   return atx::core::Ok();
 }
+
+// ── cpu_topology.hpp seam (perf audit 2026-10-16 item 5a) ─────────────────────
+//
+// The pool's own P-core discovery and affinity call, exported so the benchmark
+// main thread and the inline tick path are pinned exactly the way pool workers
+// are. All best-effort: a failed OS call is reported, never thrown.
+namespace detail {
+
+std::vector<unsigned> performance_core_cpus() {
+#if defined(_MSC_VER)
+  return discover_pcores();
+#else
+  return {};
+#endif
+}
+
+bool pin_current_thread_affinity(std::uint64_t mask) noexcept {
+#if defined(_MSC_VER)
+  if (mask == 0) {
+    return false;
+  }
+  return ::SetThreadAffinityMask(::GetCurrentThread(), static_cast<DWORD_PTR>(mask)) != 0;
+#else
+  (void)mask;
+  return false;
+#endif
+}
+
+int current_cpu() noexcept {
+#if defined(_MSC_VER)
+  return static_cast<int>(::GetCurrentProcessorNumber());
+#else
+  return -1;
+#endif
+}
+
+ThreadPinReport pin_current_thread_for_latency(unsigned cpu) noexcept {
+  ThreadPinReport rep;
+  rep.requested_cpu = cpu;
+#if defined(_MSC_VER)
+  if (cpu >= 64u) {
+    return rep; // group-0 masks only, matching discover_pcores
+  }
+  rep.affinity_set = pin_current_thread_affinity(std::uint64_t{1} << cpu);
+  rep.priority_raised = ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_HIGHEST) != 0;
+  // Opt this thread OUT of execution-speed throttling (EcoQoS): ControlMask names
+  // the policy being set, a zero StateMask turns it off. Without this Windows may
+  // park a "background-looking" thread on a lowered clock even on a P-core.
+  THREAD_POWER_THROTTLING_STATE throttle{};
+  throttle.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+  throttle.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+  throttle.StateMask = 0;
+  rep.throttling_disabled =
+      ::SetThreadInformation(::GetCurrentThread(), ThreadPowerThrottling, &throttle,
+                             static_cast<DWORD>(sizeof(throttle))) != 0;
+  // A new affinity mask takes effect at the next scheduling decision; yield so
+  // the observed CPU reflects the pin rather than the pre-pin core.
+  (void)::SwitchToThread();
+  rep.observed_cpu = current_cpu();
+#endif
+  return rep;
+}
+
+} // namespace detail
 
 } // namespace atx::vol

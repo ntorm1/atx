@@ -71,6 +71,9 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/dividend.cpp
     src/pricing/adjusted_greeks.cpp
     src/pricing/pricing_executor.cpp
+    # Tick-path chain refresh (pricing hot-path audit 2026-10-16): inline, pool-free
+    # chain re-mark after a spot tick; public header api/pricing/chain_tick.hpp.
+    src/pricing/chain_tick.cpp
     # declarative swap-lane DSL
     src/pricing/swap_leg.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)

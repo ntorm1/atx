@@ -993,7 +993,7 @@ current tree.
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/api/vol.hpp` includes | 58 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 34 | Public and supported to include; **not** frozen |
+| **Tier-B** | other public headers under `include/atx/vol/api/<module>/` | 35 | Public and supported to include; **not** frozen |
 | `alpha/` | `include/atx/vol/alpha/` — a SECOND public include root, header-only | 7 | Public, installed, outside the freeze and outside the umbrella. L7-T1 (2026-08-23) added the install rule and this row; until then the root sat on the target's public `BUILD_INTERFACE` and was shipped by nothing, so it compiled in-tree and was a hard `#include` failure downstream |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 12 | Run orchestration. Not part of the shipped library surface |
@@ -1163,6 +1163,12 @@ reconciliation moves two digits where the pre-restructure ones moved three.
 `vrp_signal_v1` signal contract plus the ranked long/short vega-normalized
 straddle book (`VolEdgeStrategy`), header-only and deliberately outside the
 umbrella — so Tier-A (58) held and no other row moved.
+
+**2026-10-16 tick-path lane (pricing hot-path audit items 1-5):** Tier-B 34 →
+**35**, api/ headers 93 → **94**: `chain_tick.hpp` landed under `api/pricing/` —
+the inline, pool-free chain re-mark after a spot tick (`ChainContractsView`,
+`ChainTickOutputs`, the one-byte `TickStatus`, `refresh_chain_cached`) — outside
+the umbrella, so Tier-A (58) held and no other row moved.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A
