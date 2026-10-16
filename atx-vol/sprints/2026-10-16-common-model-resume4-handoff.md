@@ -121,8 +121,36 @@ validate()" in `quote_slice.cpp` (conflicted with the slice lane; do it on the
 integrated root), tick-path Greeks reference near the boundary, graded
 `n_butterfly_viol` not computed for channel fits.
 
+## Smile figure (requested at the stop) and what it exposed
+
+`C:/atx-cache/quote-benchmark/plots-20261016/smile-comparison-20261014.png`
+(+ .svg, per-panel CSVs, README, script): SPY/AAPL/RIVN/MSTR/CRWV, one
+20-60 day expiry each at the 10:30 ET snapshot, bid/ask American IV band
+(atxvol Andersen-Lake inversion under the fit's own carry), srVol dots, our
+graded-v1 fit (31cdfeac binary, custom 5-symbol cohort under
+`plots-20261016/cohort-5sym-1030/`). Ours vs srVol MAE on plotted strikes:
+AAPL 64 bp (grade B point convex-dense), RIVN 466 bp (217 bp two-sided; the
+bidless 20-25 call wing carries a placeholder 0.75 ask and our curve sits
+6.5-17 vol points under srVol there), MSTR 42 bp (19 bp two-sided; knot-spline
+channel), CRWV 226 bp (point eSSVI; OUR FIT IS OUTSIDE THE BID/ASK BAND ON 17
+OF 41 STRIKES while srVol is inside on 39 of 41).
+**SPY was refused on every 20-60 day expiry** by the price-slice
+certification (`arbitrage_failure`: call/put convexity violated above the
+global lower convex envelope at one node) - the most liquid underlier in the
+market is unserved by the current admission while SpiderRock serves it with a
+0.04-vol-point-wide market. AAPL's and MSTR's most liquid expiry (Nov 20) was
+refused for a calendar crossing. These are the first two items for the next
+parent: (a) repair-inside-the-channel instead of whole-slice refusal for
+single-node convexity/calendar violations (the research note's SANOS /
+Cohen-Reisinger-Wang direction; the knot-ladder lane's fallback design helps),
+measured on SPY/AAPL/MSTR slices; (b) the channel penalty must dominate on
+wide-market names like CRWV (fit outside bid/ask on 41% of strikes is a
+policy-weight or wing-cap defect, not a label question).
+
 ## Next steps the evidence supports
 
+0. Fix SPY-class whole-slice refusals and the CRWV-class channel escapes
+   first (see the figure section); re-plot the same five slices as the gate.
 1. Integrate the in-flight lanes after fresh exact-SHA review (knot ladder,
    serve path, smooth dividends, cleanup), then re-run the composite benchmark
    on both cohorts and record MAE/spread.
