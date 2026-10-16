@@ -1,0 +1,6 @@
+print-spec plan: exit 0, stderr bytes 0, stdout 1538 bytes sha256 c4eda28c325cc7955caa65f6099c792d1d5a4ba53cd242d68ea66c2259a21ada -> flags-navspec-plan.json
+print-spec ref: exit 0, stderr bytes 0, stdout 1517 bytes sha256 c48db656a365cf14c5f7564f979da6e3ff0568b9e907ffd55f0501e5b17239a2 -> flags-navspec-ref.json
+build-equity/p9-fr-yf0-nav created by print-spec: False; build-equity/p9-fr-yf0-nav-run: False
+NavSpec of the argv of record vs NavSpec of the reference command (--output set to build-equity/p9-fr-yf0-nav): 1 differing leaf path(s): ['/options/combined']
+  options.ann_mean_gross: present in both True, equal True
+  options.info_clock_print: present in both True, equal True

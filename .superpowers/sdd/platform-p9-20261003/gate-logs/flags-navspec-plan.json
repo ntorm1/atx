@@ -1,0 +1,47 @@
+{
+  "constants": {
+    "capacity_multiples": [
+      0.5,
+      1.0,
+      2.0,
+      4.0,
+      8.0
+    ],
+    "initial_nav": 1000000000.0,
+    "leverage_range": [
+      1.0,
+      2.0
+    ],
+    "liquidity_window": 63,
+    "min_vol_pairs": 20
+  },
+  "options": {
+    "aim_leverage": 1.1828,
+    "ann_mean_gross": true,
+    "cadence": 1,
+    "capacity_curve": true,
+    "combined": "build-equity/mega-v8xw-train-theme-erc-v8ysb-2/train_combined.json",
+    "combined_sha256": "e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c",
+    "daily_turnover_mean_max": 0.2,
+    "daily_turnover_p95_max": 0.3,
+    "dust_multiple": 0.1,
+    "exit_rate": 0.05,
+    "fields": "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+    "fields_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "info_clock_print": true,
+    "label_role": "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+    "label_role_sha256": "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069",
+    "liquidity_cache": true,
+    "locate_in_aim": true,
+    "max_bytes": 1073741824,
+    "neutralize": "price-risk-v1",
+    "order_basis": "delta",
+    "output": "build-equity/p9-fr-yf0-nav",
+    "role": "build-equity/train-2020-2023-lo3/manifest.json",
+    "role_sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "rule": "aim-partial-v5",
+    "trade_fraction": 0.05,
+    "warm_start_sessions": 60
+  },
+  "schema": "atx.nav-spec/v1"
+}

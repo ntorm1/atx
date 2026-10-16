@@ -1221,3 +1221,67 @@ Nothing else differs (no pin line, no state, no exe, no REFUSED line other than 
 `0eeac21b...`; DBs outside the tree under `C:/Users/natha/AppData/Local/Temp/f1fx/`) -> **`gate-logs/fixture-chain-7.txt`:
 `catalog_digest a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c` twice** (both `files_seen 28 verified
 25 declared 0 skipped 4`), `verify --pins` exit 0, identity "total checked 12 mismatches 0": holds (= the record).
+
+### Step 4, before the run: the spec-route argv and every token difference (committed BEFORE the run)
+
+**Tool and mode.** `gate-logs/tools/fr_nav.py` (new; adapted from `b0_nav.py` / `nav_run.py`, `tools/CHANGES.txt`),
+mode **"spec route, exe-direct"**: the argv of record is the NAV argv the driver plans (`scripts/cycle/phases.py`
+`nav_step`, :824-832) for the resolved spec at HEAD `f8d852f3`, i.e. `lib-v8ysb-gm.json` at its leverage 1.1828 with
+its `nav.flags` now ending `--ann-mean-gross --info-clock-print`, with only `nav.output` moved to the new dir; run
+directly on the Release NAV exe through the bounded runner. The parent alone cannot be built by the cycle (FIELDS-RISK:
+its own `inputs.baseline_fields` is the absent v13), so the argv comes from the cycle of the minimal NAV-only template
+over the parent FILE, resolved in memory and never written: `{"parent": "scripts/specs/v8/lib-v8ysb-gm.json",
+"change": {"set": {"nav.output": "build-equity/p9-fr-yf0-nav"}}}` (the way every P9 cell is built, FLAGS-ROUTE-2 (a);
+`research_spec.resolve` drops only the parent's own identity inputs; `Cycle(..., verify=True)` verified every input pin;
+the NAV step plans `pending`, u / fit / card / w `done` = Y-F0's). Token 0 is the spec's `exes.nav`
+(`build-equity-rel/bin/atx-equity-strategy-targets.exe`) resolved against the pool root, the same file and the form of
+the reference receipt. Why not `nav_run.py`'s `spec` mode as it stands: it runs `nav --spec gate-logs/yf0.navspec.json`,
+a NavSpec printed from M1d's reference argv (neither opt-in flag, M1d's w path), so it takes no flag from the research
+spec, and its command (`nav --spec F --output D`) cannot meet the token rule below; the dispatch's "i.e." (the NAV argv
+the driver plans) and its token rule fix the form. The NavSpec side (C3-6: the `--spec` route = the argv route,
+27 / 27 at the gate) is carried by the print-spec check below. Planned record: `gate-logs/flags-plan.txt`.
+
+**The argv of record (49 tokens, verbatim):**
+`C:\atx-wt\pool-2\build-equity-rel\bin\atx-equity-strategy-targets.exe nav --combined
+build-equity/mega-v8xw-train-theme-erc-v8ysb-2/train_combined.json --combined-sha256
+e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c --role build-equity/train-2020-2023-lo3/manifest.json
+--role-sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 --fields
+build-equity/train-2020-2023-lo3-fields-v15/manifest.json --fields-sha256
+26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09 --output build-equity/p9-fr-yf0-nav --rule
+aim-partial-v5 --cadence 1 --trade-fraction .05 --dust-multiple .1 --aim-leverage 1.1828 --daily-turnover-mean-max .20
+--daily-turnover-p95-max .30 --neutralize price-risk-v1 --max-bytes 1073741824 --order-basis delta --exit-rate .05
+--locate-in-aim --liquidity-cache --warm-start-sessions 60 --capacity-curve --ann-mean-gross --info-clock-print
+--label-role build-equity/train-2020-2023-lo3-dlret/manifest.json --label-role-sha256
+95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069`
+(`research_tree.argv_sha256` of `command[1:]` = `c0d907586281b554114bbbf827adf5d48ab95b77ed4cc9f6e29b9bf6c912c9ec`: the
+digest a C-13 binding of that spec computes and the receipt's `argv_sha256` must show.) Runner:
+`scripts/run_bounded_research.py --output build-equity/p9-fr-yf0-nav-run --seconds 600 --max-rss-mib 2048 --build-type
+Release --admission-wait-seconds 1800 -- <argv>`; no `--seal-allow` (exe-direct: no driver seal scan, SEAL-REF), no
+`--stage-timers` (timings off), no candidate cache, no cache-index flag (SQL-11).
+
+**Every token difference against `gate-logs/receipt-p9-b0g-yf0-nav.json` `command` (49 / 49 tokens; positional, then
+by option):**
+
+| position | reference | argv of record | class |
+|---|---|---|---|
+| [3] | `build-equity/p9-b0g-yf0-w/train_combined.json` | `build-equity/mega-v8xw-train-theme-erc-v8ysb-2/train_combined.json` | the `--combined` path token, by construction (the spec's `ic.w_output` = the v8-era resume root, REPIN-REV); `--combined-sha256` the same `e13fbc4d...` (re-hashed from the file: equal); expected (dispatch) |
+| [15] | `build-equity/p9-b0g-yf0-nav` | `build-equity/p9-fr-yf0-nav` | the output token; expected (dispatch) |
+| [43]-[48] | `--label-role <dlret manifest> --label-role-sha256 95e16cfe... --ann-mean-gross --info-clock-print` | `--ann-mean-gross --info-clock-print --label-role <dlret manifest> --label-role-sha256 95e16cfe...` | the SAME six tokens in another order: `nav_step` appends `*label` after `*flags` (`phases.py:832`; route fact 6, committed in `5648284f` before the edit), so tokens at the end of `nav.flags` precede the label pair; every cell's argv carries this order |
+
+By option: 26 option / value pairs on each side, no option on one side only, values differ at `--combined` and
+`--output` only. **The order difference is not named in the dispatch** (which lists the output and `--combined` tokens);
+I identified it from the driver code before the edit and the run, and checked that it configures nothing different:
+the NAV exe's flag adapter (`nav <flags> --print-spec`, "nothing runs", `atx-impl/src/book/nav_spec.hpp:51`; "flags ->
+spec -> flags is the identity up to flag order", `:19-20`), run on the argv of record and on the reference command with
+its `--output` set to the new dir, prints two NavSpec documents that differ at **one leaf path, `/options/combined`**
+(`options.ann_mean_gross` and `options.info_clock_print` present and equal in both; `gate-logs/flags-printspec.txt`,
+`flags-navspec-{plan,ref}.json`; neither new dir created). So the order is no input difference and I treat it as a
+by-construction token of the spec route, not as a stop; disclosed here for the PM and the RQ-1 re-check. The
+`--combined` path token moves no output byte: the reference's outputs name neither `p9-b0g-yf0-w` nor its own dir (0
+files; the string `train_combined` occurs only as the payload FILE names `train_combined{.f64,_finite.u8,_ids.u64,
+_member.u8,_sessions.i64}` in `summary.json` / `capacity/summary.json`, whose bytes are equal in both w dirs, w 10 / 10).
+
+**Pre-checks in the plan (`flags-plan.txt`):** no `--candidate-cache` / cache-index flag; `--ann-mean-gross` and
+`--info-clock-print` once each; the exe = its p9-3f receipt `255b58ac...3565`; the two new dirs absent. X-10 and Y-1
+plan the two tokens once each on their NAV argv (argv sha256 `40ff035d...` / `9dd016ff...` = `flags-verify.txt` lines
+27 / 57).
