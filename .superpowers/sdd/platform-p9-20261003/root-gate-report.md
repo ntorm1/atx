@@ -19,9 +19,10 @@ JSON path, exit code and counts only; no 2020-2023 statistic is read or recorded
 
 ## Status by step after chain agent 4 (2026-10-16 ~16:10Z; FINAL; detail in "Chain agent 4" at the end)
 
-**Gate status: DONE through step 7; the follow-up re-pin `3a1a4759` (REPIN-UW / REPIN-R2) is STOPPED at its verify** (two
-refusals recorded, "Step 6, agent 4, follow-up" at the end; the PM's). Code head **`3a1a4759`** (gate code `06dc9e5a` +
-the re-pin `2078f877` + `3a1a4759`, pins only); EXE-FREEZE in force from `2078f877` (no exe touched since). No code red; known-red set EMPTY; 0 trials (133 / `27e40f9f`); no build (next free tag
+**Gate status: DONE** (GATE-1). Code head **`f8a85ad4`** (the revert of `3a1a4759`, REPIN-REV): the re-pin of record is
+**`2078f877`** (`git diff 2078f877 f8a85ad4 -- scripts/specs/v8/` is empty); EXE-FREEZE in force from `2078f877` (no exe
+touched since). The follow-up `3a1a4759` (REPIN-UW / REPIN-R2) and its two verify refusals are disclosed in "Step 6,
+agent 4, follow-up" and its revert in "Step 6, agent 4: REPIN-REV" at the end. No code red; known-red set EMPTY; 0 trials (133 / `27e40f9f`); no build (next free tag
 `p9-3h`); exes of record p9-3f / p9-3g, 27 / 27 + 27 / 27 `disk = receipt` at agent 4's start and end.
 
 | step | state | evidence (`gate-logs/`) |
@@ -32,7 +33,7 @@ the re-pin `2078f877` + `3a1a4759`, pins only); EXE-FREEZE in force from `2078f8
 | 3 identity, canaries | **holds** with the cut: Y-F0 NAV / fit identity, ALCLOCK-1, D3-Q1a DIFFERENT (P9-W LAPSED (0)), COMPOSE-1a ACCEPT, greps, golden, canaries (agent 2); Y-F0 u / w flag-absent identity on the Release IC exe **holds** (rows 4-5, RELCACHE-ALLOW); X-5 rows **CUT** (FIELDS-X5) | `yf0u-cmp.txt`, `yf0w-cmp.txt` |
 | 4 P9-B0 | **holds**: R-2 `p9-b0-r2-nav` (path A, FIELDS-SUB-A), X-10 `p9-b0g-x10-nav`, Y-1 `p9-b0g-y1-nav` (PRE-29), Y-F0 `p9-b0g-yf0-u` / `-w` / `-nav` (identity holds; the NAV reads the re-based w, YF0-NAV-ORDER); `ucrtbase.dll` re-recorded | `b0-runs.txt`, `yf0{u,w,nav}-cmp.txt`, `ucrt-b0-4.txt` |
 | 5 rho | **holds**: P9-X pair 0.9947035686613187 (flag false); X-10 vs Y-F0 0.9994863034956717 (false); Y-1 vs X-10 0.9947113980219978 (false) | `rho-pairs-{1,2}.txt` |
-| 6 re-pin | `2078f877` **holds** (pins only; `verify` holds; fixture `a50fdcf9...100c`); follow-up `3a1a4759` (REPIN-UW / REPIN-R2, pins only): fixture digest holds, **`verify` REFUSES** (Y-F0 u / w resolve `-1` pending; R-2's fields check fails, 70-name list vs 84 rows): STOPPED for the PM | `repin-verify.txt`, `repin-verify-2.txt`, `fixture-chain-{4,5}.txt` |
+| 6 re-pin | **holds**: the re-pin of record `2078f877` (pins only; `verify` holds; fixture `a50fdcf9...100c`); the follow-up `3a1a4759` (REPIN-UW / REPIN-R2) refused at `verify` and was reverted by `f8a85ad4` (REPIN-REV); after the revert `verify` holds again (line-for-line = the `883be9f2` record) and the fixture digest reproduces | `repin-verify{,-2,-3}.txt`, `fixture-chain-{4,5,6}.txt` |
 | 7 store step, G-P | **holds**: catalog digest `adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474`, reproduced from scratch; `verify --pins` counts; render identity 435 / 0; G-P1 not checkable, G-P5 PARTIAL, the rest ticked; G-P10 (a)-(c), (e) landed, (d) PARTIAL | `realcat-gate*.txt` |
 | 8 whole-wave review | DONE before the chain | `wave-review-*.md` |
 | 9 records | this file, `integration-log.md`, **`handoff-root-gate.md`** (final) | - |
@@ -184,10 +185,10 @@ Agent 4 (2026-10-16 ~16:10Z; FINAL; every item below is final; items not listed 
 
 | item | fact | evidence (`gate-logs/`) |
 |---|---|---|
-| 1 R-2 | **`build-equity/p9-b0-r2-nav`, the re-based R-2 of record (path A, FIELDS-SUB-A)**; its spec `lib-v80.json` re-pinned in `3a1a4759` (fields v15 `26fee5ce`, the 70-name list unchanged, NAV output `p9-b0-r2-nav`; REPIN-R2; its fields check refuses, see step 6 follow-up): listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`; the classification table (`r2-classify.txt`) is its disclosure; G-B6 and the OD-3 R-2 line read it; its TRAIN fields dir is v15 (`26fee5ce`), its w the v8 w its argv reads (`mega-v8-r1w-train-std-v80-1/train_combined.json` `bbbf6f2b...cd98`, not re-based) | `b0-files-p9-b0-r2-nav.txt` |
-| 2 Y-F0 u / w / NAV | u **`build-equity/p9-b0g-yf0-u`** (5 files, listing `1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa`, `summary.json` `acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8`); w **`build-equity/p9-b0g-yf0-w`** (12 files, listing `ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1`, `summary.json` `f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2`, `train_combined.json` `e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c`); NAV **`build-equity/p9-b0g-yf0-nav`** (27 files, listing `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json` `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`; reads the re-based w; `--ann-mean-gross --info-clock-print`); each holds against M1d's reference (RELCACHE-ALLOW / the NAV form); u / w pinned as `lib-v8ysb-gm.json`'s `ic.u_output` / `ic.w_output` in `3a1a4759` (REPIN-UW; the cycle resolves them `-1` pending, step 6 follow-up) | `b0-files-p9-b0g-yf0-{u,w,nav}.txt`, `yf0{u,w,nav}-cmp.txt` |
+| 1 R-2 | **`build-equity/p9-b0-r2-nav`, the re-based R-2 of record (path A, FIELDS-SUB-A)**; read BY PATH (REPIN-REV): `lib-v80.json` untouched at the re-pin of record (`306a070b`; its fields pin names the absent v10 and its NAV output the v8 dir: stale, stated in the substitution list, PRE-40 form; `3a1a4759`'s re-pin of it was reverted): listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`; the classification table (`r2-classify.txt`) is its disclosure; G-B6 and the OD-3 R-2 line read it; its TRAIN fields dir is v15 (`26fee5ce`), its w the v8 w its argv reads (`mega-v8-r1w-train-std-v80-1/train_combined.json` `bbbf6f2b...cd98`, not re-based) | `b0-files-p9-b0-r2-nav.txt` |
+| 2 Y-F0 u / w / NAV | u **`build-equity/p9-b0g-yf0-u`** (5 files, listing `1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa`, `summary.json` `acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8`); w **`build-equity/p9-b0g-yf0-w`** (12 files, listing `ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1`, `summary.json` `f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2`, `train_combined.json` `e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c`); NAV **`build-equity/p9-b0g-yf0-nav`** (27 files, listing `e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797`, `summary.json` `826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38`; reads the re-based w; `--ann-mean-gross --info-clock-print`); each holds against M1d's reference (RELCACHE-ALLOW / the NAV form); the references of record for provenance (the Release exe, the receipts, the identity); Y-F0's spec keeps `ic.u_output` / `ic.w_output` at the v8-era cycle dirs `mega-v8-b0b-train-u-v8ysb-1` / `mega-v8xw-train-theme-erc-v8ysb-2`, the cycle's resume roots (completed state), byte-identical in every payload (REPIN-REV; `3a1a4759`'s re-pin of them reverted) | `b0-files-p9-b0g-yf0-{u,w,nav}.txt`, `yf0{u,w,nav}-cmp.txt` |
 | 3 Y-1 | as agent 3 (`p9-b0g-y1-nav`); the re-pin points `y-vol-target-y-1.json` at it and at the v1.1 store | step 6 |
-| 4 exe table of the re-pin | the re-pin commit **`2078f877`** (the follow-up `3a1a4759` moves no exe pin) pins Release p9-3f (source = gate code `06dc9e5a`, receipt Source `5f48a25d`): NAV `build-equity-rel/bin/atx-equity-strategy-targets.exe` `255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565`, IC `build-equity-rel/bin/atx-equity-strategy-ic.exe` `ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705`, eval `build-equity-rel/bin/atx-research-eval.exe` `e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c`; every other exe of the frozen set at step 1's table (composition `04db0d67...16f2`, admission `f53d9277...063f`, store `0eeac21b...3818`, risk `0c110534...586b`, fields `883c5b74...584a`); EXE-FREEZE from `2078f877`; 27 / 27 + 27 / 27 `disk = receipt` at the end | `exe-sha-{rel,dbg}-4-end.txt`, step 6 |
+| 4 exe table of the re-pin | the re-pin of record **`2078f877`** (the follow-up `3a1a4759` and its revert `f8a85ad4` move no exe pin) pins Release p9-3f (source = gate code `06dc9e5a`, receipt Source `5f48a25d`): NAV `build-equity-rel/bin/atx-equity-strategy-targets.exe` `255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565`, IC `build-equity-rel/bin/atx-equity-strategy-ic.exe` `ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705`, eval `build-equity-rel/bin/atx-research-eval.exe` `e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c`; every other exe of the frozen set at step 1's table (composition `04db0d67...16f2`, admission `f53d9277...063f`, store `0eeac21b...3818`, risk `0c110534...586b`, fields `883c5b74...584a`); EXE-FREEZE from `2078f877`; 27 / 27 + 27 / 27 `disk = receipt` at the end | `exe-sha-{rel,dbg}-4-end.txt`, step 6 |
 | 6 eval mode | **research-fast** (the default): the Y-F0 u receipt's argv carries no `--eval-mode audit-exact`, and the Release VM identity is `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0` without the `_audit` suffix (PATH-1: every cell runs in its reference's mode) | `receipt-p9-b0g-yf0-u.json`, `yf0u-cmp.txt` |
 | 8 P9-L parent / reference | = item 2 (`p9-b0g-yf0-nav` the paired parent NAV; the re-pinned `lib-v8ysb-gm.json` names it) | step 6 |
 | 20 rho P9-X pair | re-based Y-1 vs re-based Y-F0: **0.9947035686613187**, "1 - rho < 1e-6" **false** | `rho-pairs-2.txt` |
@@ -824,6 +825,11 @@ cache exactly once and no index flag, the 351 originals `155872de50833fca` with 
    moves no output byte. Compared with `p9-b0-yf0-nav` by `b0_cmp.py --mode nav` (PRODUCER `/producer/{build_type,
    engine_git_sha}`; OPTIN `/scenarios/<i>/ann_mean_gross` and `/scenarios/<i>/info_clock/**` on the new side only).
    `ucrtbase.dll` re-recorded at this run (C.6). Tool changes: `gate-logs/tools/CHANGES.txt` (agent 4 entry).
+4. (REPIN-REV addendum, after the runs; it states a stale pin and changes no run, PRE-40 form) Row 1, R-2: R-2 is read
+   BY PATH (`build-equity/p9-b0-r2-nav`, FIELDS-SUB-A). Its v8 spec `scripts/specs/v8/lib-v80.json` (`306a070b...3a21`)
+   is NOT re-pinned: its `fields` pin names the absent v10 (`a4a060ae`, FIELDS-GONE) and its `nav.output` the v8 NAV
+   dir `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80`: both stale, stated here; G-B6's bundle and any
+   OD-3 era spec for R-2 read `p9-b0-r2-nav` (an OD-3 era spec, if OD-3 runs, is built from its recipe at that step).
 
 ### Step 4, agent 4: row 4, Y-F0 u on the Release IC exe (`gate-logs/b0-runs.txt`, `yf0u-cmp.txt`, `yf0u-classes.txt`)
 
@@ -1077,3 +1083,37 @@ render identity 12 / 0: **holds**.
 (not tried here): item 1 needs the u / w references under the cycle's IC-pass names or the outputs left at the v8 dirs
 (`2078f877`'s state); item 2 needs `lib-v80.json`'s `fields.list` set to v15's 84 rows (not a pin) or its fields pin
 left at v10.
+
+### Step 6, agent 4: REPIN-REV (ledger :1003; supersedes REPIN-UW and REPIN-R2): the revert **`f8a85ad4`**
+
+`git revert --no-commit 3a1a4759`, then one commit by pathspec (`chore(p9): revert 3a1a4759: the re-pin of record is
+2078f877 (REPIN-REV)`): 2 files (`lib-v8ysb-gm.json` +2 / -2, `lib-v80.json` +3 / -3), 0 `mypy_cache`; **`git diff
+2078f877 f8a85ad4 -- scripts/specs/v8/` is EMPTY** (0 bytes): both specs are again their bytes at `2078f877`
+(`lib-v8ysb-gm.json` `3631679c...edea`, `lib-v80.json` `306a070b...3a21`). No uncommitted work touched (the PM's
+`progress.md` and `r12-prompts/cells-prompt.md` edits and the five PNGs left as they are). **The re-pin of record is
+`2078f877`**; EXE-FREEZE runs from it; 27 / 27 Release exes `disk = receipt` after the revert.
+
+The two refusals of `3a1a4759`, quoted from `gate-logs/repin-verify-2.txt`:
+1. `u       pending  build-equity/p9-b0g-yf0-u-1` and `w       pending  build-equity/p9-b0g-yf0-w-1` (X-10 and Y-1 alike):
+   the cycle resolves the u / w pins as attempt roots of exe-direct dirs that carry no cycle state, so every NAV-only
+   cell would re-run u and w.
+2. `fields check: pinned build-equity/train-2020-2023-lo3-fields-v15/manifest.json sha256 26fee5ce...: 84 rows DIFFER
+   from the spec list` -> `fields check REFUSES: fields check FAILED (the pinned manifest's field rows differ from
+   fields.list)` (`lib-v80.json`).
+
+**`verify` on the pinned lineage after the revert: HOLDS** (`gate-logs/repin-verify-3.txt`): X-10 HOLDS, Y-1 HOLDS (u
+`mega-v8-b0b-train-u-v8ysb-1` and w `mega-v8xw-train-theme-erc-v8ysb-2` done and reusable; NAV made by `255b58ac` = the
+pin; `exes.eval` pinned); the parents' NAVs `p9-b0g-yf0-nav` / `p9-b0g-x10-nav` made by the pinned Release NAV exe; Y-F0's
+as-built fields check holds (84 rows = its list). The verify section is line-for-line identical to the `883be9f2`
+record `repin-verify.txt` (66 / 66 lines); the one REFUSED line is the pre-existing standalone build of
+`lib-v8ysb-gm.json` (its own `inputs.baseline_fields` is fields v13, FIELDS-GONE), the same as at `883be9f2`.
+**Fixture chain digest after the revert** (`gate-logs/fixture-chain-6.txt`): `a50fdcf9...100c` twice, `verify --pins`
+exit 0, render identity 12 / 0: holds.
+
+The two roles of Y-F0's u / w (REPIN-REV): **`build-equity/p9-b0g-yf0-u` / `p9-b0g-yf0-w` are the references of record
+for provenance** (the Release IC exe p9-3f, their receipts, the RELCACHE-ALLOW identity with M1d's references; the NAV
+of record `p9-b0g-yf0-nav` reads `p9-b0g-yf0-w`); **the v8-era cycle dirs `mega-v8-b0b-train-u-v8ysb-1` /
+`mega-v8xw-train-theme-erc-v8ysb-2` stay the spec's `ic.u_output` / `ic.w_output`: the cycle's resume roots (completed
+state)**, byte-identical to the Release references in every payload (u 3 / 3, w 10 / 10; checked at the re-pin); no
+cell re-runs u or w. R-2 is read by path (`p9-b0-r2-nav`); `lib-v80.json` untouched, its stale pins stated in the
+substitution list (amendment 4, PRE-40 form).

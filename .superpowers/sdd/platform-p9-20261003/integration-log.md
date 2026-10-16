@@ -917,3 +917,11 @@ Build tags used by agent 4: none; next free tag **p9-3h**. Trials: 0. Permission
 | second re-pin, ONE code commit, pins only | **`3a1a4759`**: `lib-v8ysb-gm.json` `ic.u_output` / `ic.w_output` -> `p9-b0g-yf0-u` / `-w` (`4081f473`); `lib-v80.json` fields -> v15 `26fee5ce` (list unchanged), `nav.output` -> `p9-b0-r2-nav` (`7f6e45ee`); no exe touched | `git show --stat 3a1a4759` |
 | `verify` on the pinned lineage | **REFUSES**: (1) X-10 / Y-1 pins hold but the inherited u / w resolve `p9-b0g-yf0-u-1` / `-w-1` **pending** (the cycle's IC-pass naming `<base>-<n>`), so a NAV-only cell would re-run u and w; (2) `lib-v80.json`'s as-built fields check fails (84 manifest rows vs the 70-name list). **STOPPED** for the PM (no second attempt; nothing reverted) | `gate-logs/repin-verify-2.txt` |
 | fixture chain digest | `a50fdcf9...100c` twice; verify --pins 0; identity 12 / 0: holds | `gate-logs/fixture-chain-5.txt` |
+
+#### GATE agent 4, REPIN-REV (ledger :1003), 2026-10-16
+
+| item | result | evidence |
+|---|---|---|
+| revert of `3a1a4759`, ONE code commit | **`f8a85ad4`** (`git revert --no-commit 3a1a4759` + a pathspec commit); `git diff 2078f877 f8a85ad4 -- scripts/specs/v8/` **empty**; the re-pin of record is `2078f877`; EXE-FREEZE from `2078f877` | `git show --stat f8a85ad4` |
+| `verify` on the pinned lineage | **holds** (X-10, Y-1; u / w the v8-era resume roots, done; the parent NAVs made by the pinned Release NAV exe); line-for-line = the `883be9f2` record | `gate-logs/repin-verify-3.txt` |
+| fixture chain digest | `a50fdcf9...100c` twice; verify --pins 0; identity 12 / 0 | `gate-logs/fixture-chain-6.txt` |

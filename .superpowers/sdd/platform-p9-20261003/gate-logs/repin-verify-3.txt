@@ -1,0 +1,72 @@
+# verify on the pinned lineage after the revert f8a85ad4 (REPIN-REV); git diff 2078f877 HEAD -- scripts/specs/v8/ = 0 bytes (empty); 2026-10-16T16:28:29Z
+
+=== scripts/specs/v8/x-leverage-L2.0.json
+# research_cycle v8x-leverage-L2.0: spec C:\atx-wt\pool-2\scripts\specs\v8\x-leverage-L2.0.json sha256 46e9d6c2fdbf42e362518118938bc89af038e3c09d7519d660aaa936554fd0bf (spec digest over the template chain 8127dbd86125d5777a9967bca0159291a6d96824708d129c2e39eff9e101d140); root C:\atx-wt\pool-2; suffix none; attempts auto; runner overrides none
+# pin library: atx-impl/strategies/fund_industry_ic_v8ysb.json 41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5 [locked, verified]
+# pin recipe: atx-impl/strategies/fund_industry_ic_v8ysb.recipe.v2.json 9d357c757943379a2aff1978de73594a2c7cbd70983f10ac65c0dd02df458759 [locked, verified]
+# pin role: build-equity/train-2020-2023-lo3/manifest.json e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 [locked, verified]
+# pin label_role: build-equity/train-2020-2023-lo3-dlret/manifest.json 95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069 [locked, verified]
+# pin reference_cell: build-equity/p9-b0g-yf0-nav/summary.json 826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38 [locked, verified]
+# pin reference_admission: build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json 121f70466884030f97d98ec3d965760e7df376c160385072d0abc8428b9bf255 [locked, verified]
+# pin exe eval: build-equity-rel/bin/atx-research-eval.exe e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c [exes_sha256, verified]
+# pin exe ic: build-equity-rel/bin/atx-equity-strategy-ic.exe ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 [exes_sha256, verified]
+# pin exe nav: build-equity-rel/bin/atx-equity-strategy-targets.exe 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 [exes_sha256, verified]
+# template x-leverage-L2.0.json: parent lib-v8ysb-gm.json
+exes {'ic': 'build-equity-rel/bin/atx-equity-strategy-ic.exe', 'nav': 'build-equity-rel/bin/atx-equity-strategy-targets.exe', 'eval': 'build-equity-rel/bin/atx-research-eval.exe'}
+exes_sha256 {'eval': 'e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c', 'ic': 'ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705', 'nav': '255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565'}
+  exe eval: build-equity-rel/bin/atx-research-eval.exe disk e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c = pin
+  exe ic: build-equity-rel/bin/atx-equity-strategy-ic.exe disk ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 = pin
+  exe nav: build-equity-rel/bin/atx-equity-strategy-targets.exe disk 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = pin
+  B2-11: exes.eval named and pinned
+  fields  done     build-equity/train-2020-2023-lo3-fields-v15
+  u       done     build-equity/mega-v8-b0b-train-u-v8ysb-1 | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  fit     done     build-equity/mega-weights-v8x-theme-erc-v8ysb | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  card    done     build-equity/mega-cards-v8x-theme-erc-v8ysb | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  gate    always   
+  w       done     build-equity/mega-v8xw-train-theme-erc-v8ysb-2 | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  nav     done     build-equity/p9-b0g-x10-nav | exe: executable sha256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = the spec's exes_sha256 pin of nav | C-13 binding (informational, not counted): NAV build-equity/p9-b0g-x10-nav was made by a command with argv sha256 b9b0decb182aed397d391d5a5d793e5172efedc28c8bd26883a7312ab5d586d8 (build-equity/p9-b0g-x10-nav-run/receipt.json); this spec's NAV command is argv sha256 108e1c2df96255204188d4bbf2ee89b06c8262dec1fe321501339906831958a8: refusing to score it (run the NAV again under a fresh --suffix) | W1-I2 (a): NAV made by 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = exes_sha256.nav
+  monitor done     build-equity/mega-monitor-v8x-theme-erc-v8ysb | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  summ    always   
+--- scripts/specs/v8/x-leverage-L2.0.json: HOLDS
+
+=== scripts/specs/v8/y-vol-target-y-1.json
+# research_cycle v8y-vol-target-y-1: spec C:\atx-wt\pool-2\scripts\specs\v8\y-vol-target-y-1.json sha256 f4186573a41de3b67cdd815976639ed2123e5c6f43353516c61150d92dbb50d6 (spec digest over the template chain b0c7ad1c0d003e1249ab78e4b702dbf33d01af356c5a5751c479ddbf193d656f); root C:\atx-wt\pool-2; suffix none; attempts auto; runner overrides none
+# pin library: atx-impl/strategies/fund_industry_ic_v8ysb.json 41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5 [locked, verified]
+# pin recipe: atx-impl/strategies/fund_industry_ic_v8ysb.recipe.v2.json 9d357c757943379a2aff1978de73594a2c7cbd70983f10ac65c0dd02df458759 [locked, verified]
+# pin role: build-equity/train-2020-2023-lo3/manifest.json e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 [locked, verified]
+# pin label_role: build-equity/train-2020-2023-lo3-dlret/manifest.json 95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069 [locked, verified]
+# pin reference_cell: build-equity/p9-b0g-x10-nav/summary.json deabe71b5e2dedfb0b224fb46fdcd0e7194a6950ad8f5ecabe9601cd786bd0bd [locked, verified]
+# pin reference_admission: build-equity/mega-weights-v8x-theme-erc-v8ysb/admission.json 121f70466884030f97d98ec3d965760e7df376c160385072d0abc8428b9bf255 [locked, verified]
+# pin exe eval: build-equity-rel/bin/atx-research-eval.exe e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c [exes_sha256, verified]
+# pin exe ic: build-equity-rel/bin/atx-equity-strategy-ic.exe ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 [exes_sha256, verified]
+# pin exe nav: build-equity-rel/bin/atx-equity-strategy-targets.exe 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 [exes_sha256, verified]
+# template y-vol-target-y-1.json: parent x-leverage-L2.0.json
+# template x-leverage-L2.0.json: parent lib-v8ysb-gm.json
+exes {'ic': 'build-equity-rel/bin/atx-equity-strategy-ic.exe', 'nav': 'build-equity-rel/bin/atx-equity-strategy-targets.exe', 'eval': 'build-equity-rel/bin/atx-research-eval.exe'}
+exes_sha256 {'eval': 'e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c', 'ic': 'ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705', 'nav': '255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565'}
+  exe eval: build-equity-rel/bin/atx-research-eval.exe disk e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c = pin
+  exe ic: build-equity-rel/bin/atx-equity-strategy-ic.exe disk ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 = pin
+  exe nav: build-equity-rel/bin/atx-equity-strategy-targets.exe disk 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = pin
+  B2-11: exes.eval named and pinned
+  fields  done     build-equity/train-2020-2023-lo3-fields-v15
+  u       done     build-equity/mega-v8-b0b-train-u-v8ysb-1 | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  fit     done     build-equity/mega-weights-v8x-theme-erc-v8ysb | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  card    done     build-equity/mega-cards-v8x-theme-erc-v8ysb | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  gate    always   
+  w       done     build-equity/mega-v8xw-train-theme-erc-v8ysb-2 | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  nav     done     build-equity/p9-b0g-y1-nav | exe: executable sha256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = the spec's exes_sha256 pin of nav | C-13 binding (informational, not counted): NAV build-equity/p9-b0g-y1-nav was made by a command with argv sha256 badecf1f1ad758c202765b9022770d8543cc6f8ad6fa54a8209f4880bc2b0b72 (build-equity/p9-b0g-y1-nav-run/receipt.json); this spec's NAV command is argv sha256 61de47f49332e2114e08cfd5b97458f7ef73d07b9a73da3f6093b6327190824f: refusing to score it (run the NAV again under a fresh --suffix) | W1-I2 (a): NAV made by 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = exes_sha256.nav
+  monitor done     build-equity/mega-monitor-v8x-theme-erc-v8ysb | argv: receipt predates K-P9-10 (reused as before) | exe: receipt predates K-P9-10 or names no exe (reused as before)
+  summ    always   
+--- scripts/specs/v8/y-vol-target-y-1.json: HOLDS
+
+=== scripts/specs/v8/lib-v8ysb-gm.json
+REFUSED (the cycle cannot be built): input baseline_fields missing: build-equity/train-2020-2023-lo3-fields-v13/manifest.json
+
+=== parent scripts/specs/v8/lib-v8ysb-gm.json (verify=False, the wave's view): NAV build-equity/p9-b0g-yf0-nav made by 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = exes_sha256.nav; exes_sha256 {'eval': 'e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c', 'ic': 'ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705', 'nav': '255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565'}; exes {'ic': 'build-equity-rel/bin/atx-equity-strategy-ic.exe', 'nav': 'build-equity-rel/bin/atx-equity-strategy-targets.exe', 'eval': 'build-equity-rel/bin/atx-research-eval.exe'}
+
+=== parent scripts/specs/v8/x-leverage-L2.0.json (verify=False, the wave's view): NAV build-equity/p9-b0g-x10-nav made by 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = exes_sha256.nav; exes_sha256 {'eval': 'e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c', 'ic': 'ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705', 'nav': '255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565'}; exes {'ic': 'build-equity-rel/bin/atx-equity-strategy-ic.exe', 'nav': 'build-equity-rel/bin/atx-equity-strategy-targets.exe', 'eval': 'build-equity-rel/bin/atx-research-eval.exe'}
+
+=== fields scripts/specs/v8/lib-v8ysb-gm.json (verify=False): output build-equity/train-2020-2023-lo3-fields-v15 pin 26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09 disk 26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09 list 84 names; NAV output build-equity/p9-b0g-yf0-nav
+  fields check: pinned build-equity/train-2020-2023-lo3-fields-v15/manifest.json sha256 26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09: 84 rows == the spec list
+  fields check: holds
+tool exit 1
