@@ -253,6 +253,35 @@ const char *to_string(QuoteFitPolicySource source) noexcept {
   return "unknown";
 }
 
+Result<QuoteFitLiquidityRegime>
+classify_quote_fit_liquidity(const QuoteFitLiquidityFeatures &features,
+                             const QuoteFitRegimeConfig &regimes) {
+  ATX_TRY_VOID(validate_regimes(regimes));
+  const auto spread = features.median_relative_spread;
+  if (!nonnegative(features.median_near_money_strikes) ||
+      !nonnegative(features.near_money_bidless_fraction) ||
+      features.near_money_bidless_fraction > 1.0 ||
+      (spread && (!nonnegative(*spread) || *spread > 2.0)) ||
+      static_cast<std::size_t>(features.classifier.kind) >= kProfileKindCount) {
+    return Err(ErrorCode::InvalidArgument, "quote fit policy: invalid routing features");
+  }
+  if (!spread || features.max_near_money_strikes < kMinIdentifiableSliceStrikes ||
+      features.median_near_money_strikes <
+          static_cast<double>(regimes.sparse_min_median_strikes) ||
+      *spread >= regimes.sparse_min_median_relative_spread ||
+      features.near_money_bidless_fraction >= regimes.sparse_min_bidless_fraction ||
+      features.classifier.kind == ProfileKind::IlliquidSmallCap) {
+    return Ok(QuoteFitLiquidityRegime::Sparse);
+  }
+  if (features.median_near_money_strikes >=
+          static_cast<double>(regimes.dense_min_median_strikes) &&
+      *spread <= regimes.dense_max_median_relative_spread &&
+      features.near_money_bidless_fraction <= regimes.dense_max_bidless_fraction) {
+    return Ok(QuoteFitLiquidityRegime::Dense);
+  }
+  return Ok(QuoteFitLiquidityRegime::Ordinary);
+}
+
 std::vector<QuoteFitProfile> default_quote_fit_profiles() {
   QuoteFitProfile ordinary{"ordinary", ProfileKind::OrdinarySingleName, {}};
   ordinary.config.quality.max_spread_to_mid = 0.80;
@@ -342,20 +371,17 @@ QuoteFitPolicyCatalog::resolve(std::string_view symbol,
     return Err(ErrorCode::InvalidArgument, "quote fit policy: empty or moved-from catalog");
   }
   ATX_TRY(auto features, quote_fit_liquidity_features(snapshots, regimes_.near_money_log_band));
+  ATX_TRY(const auto regime, classify_quote_fit_liquidity(features, regimes_));
   std::size_t selected = ordinary_;
-  const auto spread = features.median_relative_spread;
-  if (!spread || features.max_near_money_strikes < kMinIdentifiableSliceStrikes ||
-      features.median_near_money_strikes <
-          static_cast<double>(regimes_.sparse_min_median_strikes) ||
-      *spread >= regimes_.sparse_min_median_relative_spread ||
-      features.near_money_bidless_fraction >= regimes_.sparse_min_bidless_fraction ||
-      features.classifier.kind == ProfileKind::IlliquidSmallCap) {
+  switch (regime) {
+  case QuoteFitLiquidityRegime::Sparse:
     selected = sparse_;
-  } else if (features.median_near_money_strikes >=
-                 static_cast<double>(regimes_.dense_min_median_strikes) &&
-             *spread <= regimes_.dense_max_median_relative_spread &&
-             features.near_money_bidless_fraction <= regimes_.dense_max_bidless_fraction) {
+    break;
+  case QuoteFitLiquidityRegime::Dense:
     selected = dense_;
+    break;
+  case QuoteFitLiquidityRegime::Ordinary:
+    break;
   }
   QuoteFitPolicySource source = QuoteFitPolicySource::RawLiquidity;
   const auto it =

@@ -79,6 +79,15 @@ struct QuoteFitRegimeConfig {
   double sparse_min_bidless_fraction{0.50};
 };
 
+enum class QuoteFitLiquidityRegime { Dense, Ordinary, Sparse };
+
+// Reusable raw-liquidity routing, independent of a volatility parameterization.
+// Checks thresholds and finite/ranged routing features; names are resolved by
+// the owning catalog. Empty evidence selects Sparse. No ticker heuristics.
+[[nodiscard]] Result<QuoteFitLiquidityRegime>
+classify_quote_fit_liquidity(const QuoteFitLiquidityFeatures &features,
+                             const QuoteFitRegimeConfig &regimes = {});
+
 enum class QuoteFitPolicySource { RawLiquidity, ExactSymbolOverride };
 
 [[nodiscard]] const char *to_string(QuoteFitPolicySource source) noexcept;
