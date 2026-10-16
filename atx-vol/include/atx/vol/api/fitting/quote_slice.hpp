@@ -92,7 +92,7 @@ enum class QuoteSliceFitMethod : std::uint8_t {
 // objective). The mid anchor is in channel half-widths; the channel penalty is
 // in the fixed volatility unit min_half_width_vol.
 struct QuoteSliceChannelConfig {
-  double channel_weight = 100.0;      // steep penalty outside [bid, ask]
+  double channel_weight = 100.0;      // steep penalty outside [bid, ask]; > 0
   double mid_weight = 1.0;            // spread-normalised mid anchor
   double itm_mid_weight = 1.0;        // extra factor on in-the-money legs' mid term
   double default_shape_weight = 0.05; // flat default shape when no term prior
@@ -110,13 +110,20 @@ struct QuoteSliceChannelConfig {
   // become weighted point targets; at most `family_iterations` refits.
   std::optional<VolCurveKind> family{};
   std::uint16_t family_iterations = 12;
-  // In-channel convexity repair, applied only when the strict price certificate
-  // fails: each side's prices are replaced by their greatest convex minorant if
-  // every moved node moves by at most this many of its own quote half-spreads
-  // (bidless: half the ask; a side without a quote uses the other side's). The
-  // unchanged certificate then runs again. 0 disables the repair.
+  // Bounded-move convexity repair, applied only when the strict price
+  // certificate fails: each side's prices are replaced by their greatest convex
+  // minorant if every moved node moves, FROM ITS FITTED PRICE, by at most this
+  // many of its own quote half-spreads (bidless: half the ask; a side without a
+  // quote uses the other side's). This bounds the move; it does not keep a
+  // price inside [bid, ask]. The unchanged certificate then runs again; moved
+  // nodes are flagged in QuoteSliceFit::moved_nodes. 0 disables the repair.
   double repair_half_spreads = 0.0;
 };
+
+// InvalidArgument unless every channel control is finite and in range
+// (channel_weight > 0, mult_ceil > mult_floor > 0, a supported family, ...).
+// fit_quote_slice_channel and fit_quote_surface apply it before any fit.
+[[nodiscard]] Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config);
 
 struct QuoteSliceConfig {
   CurveConfig curve{.kind = VolCurveKind::Essvi};
@@ -234,6 +241,10 @@ struct QuoteSliceFit {
   // bounds throughout its finite domain. The intermediate IV curve is NOT a
   // certified serving representation. Absence means the fit cannot be served.
   std::optional<AmericanPriceSlice> prices;
+  // Empty unless a repair moved served prices off the curve. Otherwise one entry
+  // per prices->nodes() entry: bit 1 the call, bit 2 the put was moved. At such
+  // a node the curve's volatility is not the served price's.
+  std::vector<std::uint8_t> moved_nodes;
   std::vector<QuoteSliceRow> rows; // same order and length as input quotes
   QuoteSliceMarket market;
   QuoteSliceDividendModel dividend_model = QuoteSliceDividendModel::ContinuousYield;
@@ -284,9 +295,11 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
                 std::span<const CashDividend> calendar_dividends = {});
 
 // Query inside the certified price domain. At a grid node the fitted IV is
-// cached through the immutable curve. Between nodes, invert the certified
-// piecewise-linear price using the snapshot's local carry and American model;
-// this keeps returned price and IV consistent. Outside-domain requests fail.
+// cached through the immutable curve, except at a node a repair moved off the
+// curve (moved_nodes), which is inverted like a point between nodes. Between
+// nodes, invert the certified piecewise-linear price using the snapshot's local
+// carry and American model; this keeps returned price and IV consistent.
+// Outside-domain requests fail.
 // For allocation-free PRICE-ONLY serving, call fit.prices->price(K, side).
 // A slice enforces strike constraints; publish several expiries together only
 // after check_american_calendar has accepted their overlapping price domains.
@@ -319,16 +332,18 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
                         const QuoteSliceConfig &config, const QuoteSlicePrior *prior,
                         std::span<const CashDividend> calendar_dividends = {});
 
-// Calendar repair inside the quotes. Moves the certified node prices of `fit`
-// into [max over `earlier` slices, min over `later` slices] wherever a node lies
+// Bounded-move calendar repair. Moves the certified node prices of `fit` into
+// [max over `earlier` slices, min over `later` slices] wherever a node lies
 // inside their domains, restores convexity with the greatest convex minorant,
-// and accepts only when every moved node stays within `half_spreads` of its own
-// quote half-spread (bidless: half the ask), the clamp remains satisfied and the
-// unchanged AmericanPriceSlice certificate passes. On success replaces
-// fit.prices, refreshes row prices (moved nodes report the volatility of the
-// served price) and returns true; otherwise leaves `fit` unchanged. The largest
-// required move, in half-spreads, is written to `required` when non-null. The
-// caller must still check the result against every accepted slice.
+// and accepts only when every node moved by at most `half_spreads` of its own
+// quote half-spread (bidless: half the ask) FROM ITS PREVIOUS PRICE, the clamp
+// remains satisfied and the unchanged AmericanPriceSlice certificate passes.
+// The bound limits the move; it does not keep a price inside [bid, ask]. On
+// success replaces fit.prices, flags moved nodes in fit.moved_nodes, refreshes
+// row prices (moved nodes report the volatility of the served price) and
+// returns true; otherwise leaves `fit` unchanged. The largest required move, in
+// half-spreads, is written to `required` when non-null. The caller must still
+// check the result against every accepted slice.
 [[nodiscard]] bool repair_quote_slice_calendar(QuoteSliceFit &fit,
                                                std::span<const QuoteSliceQuote> quotes,
                                                std::span<const AmericanPriceSlice *const> earlier,
@@ -338,11 +353,16 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // ── Graded admission over one valuation surface ──────────────────────────────
 
 // Confidence grade carried by every served expiry.
-//  A: the expiry's own admitted point quotes satisfy the profile minimum and the
-//     unchanged point fitter served it without any prior.
-//  B: channel fit with at least `grade_b_min_mid_strikes` distinct mid strikes,
-//     or a point fit whose prices were moved by the calendar repair.
-//  C: channel fit dominated by bid/ask bounds and the term/default prior.
+//  A: the expiry's own admitted point quotes satisfy the profile minimum
+//     (min_quotes admitted quotes and distinct strikes) and pass A served it with
+//     the profile's own method (fit_quote_slice: the point fitter, or for a
+//     ChannelSpline profile the channel fit with only the flat default shape),
+//     with no term prior and no served price moved by a repair.
+//  B: a term-prior channel fit with at least `grade_b_min_mid_strikes` distinct
+//     mid strikes, or a pass-A slice whose served prices a convexity or
+//     calendar repair moved.
+//  C: a term-prior channel fit with fewer mid strikes (dominated by bid/ask
+//     bounds and the prior).
 enum class QuoteSliceGrade : std::uint8_t { A, B, C, Refused };
 
 [[nodiscard]] const char *to_string(QuoteSliceGrade value) noexcept;
@@ -360,9 +380,9 @@ struct QuoteSurfaceConfig {
   double channel_node_weight = 0.5;   // prior-node weight of a channel fit vs a point fit
   double calendar_retry_factor = 4.0; // prior strength multiplier on a calendar retry
   std::size_t grade_b_min_mid_strikes = 4;
-  // Calendar repair inside the quotes for a slice that crosses accepted ones
-  // (repair_quote_slice_calendar); 0 disables it. A repaired grade-A slice is
-  // demoted to B because its served prices are no longer the point fit's.
+  // Bounded-move calendar repair for a slice that crosses accepted ones
+  // (repair_quote_slice_calendar); 0 disables it. A repaired pass-A slice is
+  // graded B because its served prices are no longer its fit's.
   double calendar_repair_half_spreads = 0.0;
 };
 
@@ -378,7 +398,7 @@ struct QuoteSurfaceSlice {
   QuoteSliceFitStatus point_status = QuoteSliceFitStatus::InsufficientQuotes;
   bool channel_refit = false;         // served or last attempted by the channel fitter
   bool calendar_retry = false;        // a calendar retry was attempted
-  bool calendar_repaired = false;     // served after a calendar repair inside the quotes
+  bool calendar_repaired = false;     // served after a bounded-move calendar repair
   // For a calendar refusal: the largest price crossing against the accepted
   // slices (earlier minus later, price units) and its strike.
   double calendar_gap = 0.0;
@@ -389,18 +409,21 @@ struct QuoteSurfaceSlice {
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation
-// instant (the caller owns identity). Pass A runs the unchanged point fitter;
-// expiries it cannot serve are refitted with the channel knot spline under a
-// leave-one-out term prior built from the other fitted expiries (two stages, so
-// snapshots without any point fit still borrow shape from their neighbours).
-// Calendar consistency is enforced on the final American prices: slices are
-// accepted greedily in confidence order; a slice that crosses an accepted one is
-// first repaired inside its quotes (when calendar_repair_half_spreads > 0), then
+// instant (the caller owns identity). Pass A runs the profile's own fit,
+// unchanged (fit_quote_slice: the point fitter, or the prior-free channel fit
+// for a ChannelSpline profile); expiries it cannot serve with enough own point
+// evidence are refitted on the channel objective under a leave-one-out term
+// prior built from the other fitted expiries (two stages, so snapshots without
+// any pass-A fit still borrow shape from their neighbours). Calendar
+// consistency is enforced on the final American prices: slices are accepted
+// greedily in confidence order; a slice that crosses an accepted one is first
+// given a bounded-move repair (when calendar_repair_half_spreads > 0), then
 // refitted once with a stronger prior (and that refit repaired), and otherwise
-// refused. No certification is relaxed. Distinct calendar maturities are required; at most
-// kQuoteSurfaceMaxExpiries expiries; carry must be supplied (resolved carry is
-// not yet composed with the term prior). Shared malformed configuration is Err;
-// per-expiry input errors are refusals with refusal == "invalid_input".
+// refused. No certification is relaxed. Distinct calendar maturities are
+// required; at most kQuoteSurfaceMaxExpiries expiries; carry must be supplied
+// (resolved carry is not yet composed with the term prior). Shared malformed
+// configuration (including config.channel) is Err; per-expiry input errors are
+// refusals with refusal == "invalid_input".
 inline constexpr std::size_t kQuoteSurfaceMaxExpiries = 128;
 
 [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>>

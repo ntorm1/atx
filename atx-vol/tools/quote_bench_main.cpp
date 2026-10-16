@@ -459,12 +459,14 @@ void count_into(Json &counts, const std::string &key, std::size_t count = 1U) {
 
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
-// consistency is enforced inside fit_quote_surface on the final prices.
+// consistency is enforced inside fit_quote_surface on the final prices. A
+// snapshot with more than kQuoteSurfaceMaxExpiries expiries is left to the
+// static per-expiry path (`static_fallback`) rather than refused wholesale.
 void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedChain> &prepared,
                 const std::map<SnapshotIdentity, std::vector<std::uint64_t>> &snapshot_chains,
                 const std::set<std::uint64_t> &ambiguous, const QuoteSurfaceConfig &surface,
                 std::vector<Prediction> &predictions, RunStatistics &stats,
-                std::set<std::uint64_t> &fitted_chains) {
+                std::set<std::uint64_t> &fitted_chains, std::set<std::uint64_t> &static_fallback) {
   auto &graded = stats.graded_stats;
   for (const auto &[identity, ids] : snapshot_chains) {
     static_cast<void>(identity);
@@ -473,6 +475,12 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       if (!ambiguous.contains(id) && prepared.at(id).profile) members.push_back(id);
     }
     if (members.empty()) continue;
+    if (members.size() > kQuoteSurfaceMaxExpiries) {
+      static_fallback.insert(members.begin(), members.end());
+      count_into(graded["static_fallback"], "snapshots");
+      count_into(graded["static_fallback"], "chains", members.size());
+      continue;
+    }
     const auto &profile = *prepared.at(members.front()).profile;
     std::vector<QuoteSurfaceExpiry> expiries;
     expiries.reserve(members.size());
@@ -711,13 +719,26 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   // independently chosen carry transformations.
   std::map<SnapshotIdentity, std::vector<PublishedSlice>> surfaces;
   std::set<std::uint64_t> fitted_chains;
+  std::set<std::uint64_t> static_fallback;
   if (policy && policy->graded) {
     stats.graded = true;
     fit_graded(chains, prepared, snapshot_chains, ambiguous_expiries, policy->surface,
-               predictions, stats, fitted_chains);
+               predictions, stats, fitted_chains, static_fallback);
   }
+  // Grade of a static-fallback expiry under graded admission: the pass-A rule
+  // without a term prior (own point evidence and unmoved prices => A).
+  const auto fallback_grade = [&](const QuoteSliceFit &fit, const QuoteSliceConfig &config) {
+    const auto &d = fit.diagnostics;
+    const bool evidence = d.quotes_admitted >= config.min_quotes &&
+                          d.distinct_strikes >= config.min_quotes;
+    if (evidence) return std::string{fit.moved_nodes.empty() ? "A" : "B"};
+    return std::string{d.channel.mid_strikes >= policy->surface.grade_b_min_mid_strikes ? "B"
+                                                                                       : "C"};
+  };
   for (const auto &[chain_id, chain] : prepared) {
-    if (stats.graded) break; // graded admission fitted and published every snapshot above
+    // Graded admission fitted and published every snapshot above except the
+    // static-fallback ones, which take this path and the static calendar rule.
+    if (stats.graded && !static_fallback.contains(chain_id)) continue;
     if (!chain.profile) continue;
     const auto &indices = chains.at(chain_id);
     const auto chain_start = Clock::now();
@@ -756,6 +777,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
           prediction.price = result.fitted_price;
           prediction.vol = result.fitted_iv;
           prediction.status = "ok";
+          if (stats.graded) prediction.grade = fallback_grade(*fit, chain.profile->config);
           ++stats.served;
         } else if (fit->fit_status != QuoteSliceFitStatus::Success) {
           prediction.status = to_string(fit->fit_status);
@@ -768,7 +790,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         std::chrono::duration<double, std::micro>(Clock::now() - chain_start).count());
   }
   std::set<std::uint64_t> calendar_failures;
-  for (auto &[identity, slices] : surfaces) { // empty under graded admission
+  for (auto &[identity, slices] : surfaces) { // graded admission: static-fallback snapshots only
     static_cast<void>(identity);
     std::sort(slices.begin(), slices.end(),
               [](const auto &a, const auto &b) { return a.years < b.years; });
@@ -804,6 +826,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       if (predictions[index].status == "ok") --stats.served;
       predictions[index].price = kNaN;
       predictions[index].vol = kNaN;
+      predictions[index].grade.clear();
       predictions[index].status = ambiguous_expiries.contains(chain)
           ? "ambiguous_expiry" : "calendar_arbitrage";
     }
@@ -912,9 +935,13 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
   if (stats.graded) {
     report["admission"] = "graded";
     report["graded_stats"] = stats.graded_stats;
-    report["graded_semantics"] = "A: point fit meeting the profile minimum; B/C: channel knot "
-        "spline under a leave-one-out term prior (B: >= grade_b_min_mid_strikes mid strikes); "
-        "calendar crossings refuse only the lower-confidence slice after one retry";
+    report["graded_semantics"] = "A: own admitted point evidence >= the profile minimum, served "
+        "by the profile's own method (point fit, or the prior-free channel fit of a knot-spline/"
+        "channel.family profile) with no term prior and no served price moved by a repair; B: a "
+        "pass-A slice whose prices a bounded-move repair moved, or a term-prior channel fit with "
+        ">= grade_b_min_mid_strikes mid strikes; C: other term-prior channel fits; calendar "
+        "crossings refuse only the lower-confidence slice after a bounded-move repair and one "
+        "retry; snapshots above the expiry cap use the static path (static_fallback)";
   }
 #ifdef __VERSION__
   report["compiler"] = __VERSION__;

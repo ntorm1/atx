@@ -49,6 +49,61 @@ QuoteSliceConfig channel_config() {
   return config;
 }
 
+// Flat-volatility American quotes whose supplied per-strike carry alternates, so
+// the repriced American prices zig-zag across strikes (locally non-convex) by
+// less than a few half-spreads: the bounded convexity repair has to move them.
+Chain zigzag_carry_chain(double years, double sigma, double low_q, double high_q,
+                         double half_spread) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, years, years, 0.03, low_q, 0.0};
+  for (int strike = 80; strike <= 120; strike += 2) {
+    const double q = (strike / 2) % 2 == 0 ? low_q : high_q;
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(100.0, static_cast<double>(strike), years, sigma, 0.03, q, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * half_spread);
+      out.quotes.push_back({static_cast<double>(strike), side, std::max(*price - spread, 0.0),
+                            *price + spread, q});
+    }
+  }
+  return out;
+}
+
+// At every node a repair moved, the served row and evaluate_quote_slice both
+// report the volatility of the SERVED price (not the curve's) with that price.
+void expect_moved_nodes_reimplied(const QuoteSliceFit &fit,
+                                  std::span<const QuoteSliceQuote> quotes) {
+  ASSERT_TRUE(fit.prices);
+  const auto nodes = fit.prices->nodes();
+  ASSERT_EQ(fit.moved_nodes.size(), nodes.size());
+  std::size_t checked = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &quote = quotes[i];
+    const auto at = std::find_if(nodes.begin(), nodes.end(), [&](const AmericanPriceNode &n) {
+      return n.strike == quote.strike;
+    });
+    ASSERT_NE(at, nodes.end());
+    const unsigned bit = quote.side == Side::Call ? 1u : 2u;
+    if ((fit.moved_nodes[static_cast<std::size_t>(at - nodes.begin())] & bit) == 0u) continue;
+    const auto value = evaluate_quote_slice(fit, quote.strike, quote.side);
+    ASSERT_TRUE(value) << value.error().to_string();
+    EXPECT_DOUBLE_EQ(value->price, fit.rows[i].fitted_price) << i;
+    EXPECT_NEAR(value->volatility, fit.rows[i].fitted_iv, 1.0e-6) << i;
+    const auto repriced = andersen_lake(fit.market.spot, quote.strike, fit.market.variance_years,
+                                        value->volatility, fit.diagnostics.effective_rate,
+                                        quote.continuous_yield.value_or(fit.market.continuous_yield),
+                                        quote.side);
+    ASSERT_TRUE(repriced);
+    EXPECT_NEAR(*repriced, value->price, 1.0e-4) << i;
+    ++checked;
+  }
+  EXPECT_GT(checked, 0u);
+}
+
 std::vector<QuoteSurfaceExpiry> expiries(const std::vector<Chain> &chains) {
   std::vector<QuoteSurfaceExpiry> out;
   for (const auto &c : chains) out.push_back({c.market, c.quotes, {}});
@@ -263,7 +318,7 @@ TEST(QuoteSurface, CalendarCrossingRefusesOnlyTheLowerConfidenceSlice) {
   }
 }
 
-TEST(QuoteSurface, CalendarRepairInsideTheQuotesAdmitsASmallCrossing) {
+TEST(QuoteSurface, BoundedCalendarRepairAdmitsASmallCrossing) {
   // The later expiry is quoted slightly too cheap: a crossing far smaller than
   // its half-spreads. The repair clamps it above the earlier expiry, re-certifies
   // and demotes the point fit to B; with the repair disabled it is refused.
@@ -295,6 +350,39 @@ TEST(QuoteSurface, CalendarRepairInsideTheQuotesAdmitsASmallCrossing) {
     EXPECT_GE(moved, -half_spread - 1.0e-9) << i;
     EXPECT_LE(moved, half_spread + 1.0e-9) << i;
   }
+  expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
+}
+
+TEST(QuoteSurface, KnotSplineProfileGradesAOnlyWithOwnEvidenceAndUnmovedPrices) {
+  // A knot-spline profile's pass A is its prior-free channel fit. Well-quoted
+  // expiries meet the point-evidence minimum and keep their fitted prices: A.
+  auto config = channel_config();
+  config.channel.repair_half_spreads = 20.0;
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  const auto surface = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(surface) << surface.error().to_string();
+  for (const auto &slice : *surface) {
+    ASSERT_EQ(slice.grade, QuoteSliceGrade::A) << slice.refusal << " " << slice.error;
+    EXPECT_FALSE(slice.channel_refit);
+    EXPECT_EQ(slice.fit.curve->kind(), VolCurveKind::SplineVol);
+    EXPECT_TRUE(slice.fit.diagnostics.channel.used);
+    EXPECT_FALSE(slice.fit.diagnostics.channel.term_prior);
+    EXPECT_TRUE(slice.fit.moved_nodes.empty());
+  }
+  expect_calendar_consistent(*surface);
+  // Same evidence, but the served prices had to be moved by the bounded
+  // convexity repair: the slice is served from pass A and graded B.
+  const std::vector<Chain> zig{zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05)};
+  const auto moved = fit_quote_surface(expiries(zig), config);
+  ASSERT_TRUE(moved) << moved.error().to_string();
+  const auto &slice = (*moved)[0];
+  EXPECT_EQ(slice.grade, QuoteSliceGrade::B) << slice.refusal << " " << slice.error;
+  EXPECT_FALSE(slice.channel_refit);
+  EXPECT_GE(slice.fit.diagnostics.distinct_strikes, config.min_quotes);
+  EXPECT_GT(slice.fit.diagnostics.channel.repaired_nodes, 0u);
+  EXPECT_FALSE(slice.fit.moved_nodes.empty());
+  expect_moved_nodes_reimplied(slice.fit, zig[0].quotes);
 }
 
 TEST(QuoteSurface, InvalidExpiryIsRefusedWithoutFailingTheSurface) {
@@ -317,6 +405,15 @@ TEST(QuoteSurface, RejectsDuplicateMaturitiesAndInvalidConfiguration) {
   bad.calendar_retry_factor = 0.5;
   EXPECT_EQ(fit_quote_surface(expiries(one), QuoteSliceConfig{}, bad).error().code(),
             ErrorCode::InvalidArgument);
+  // A malformed channel configuration is shared: Err, not a per-expiry refusal.
+  for (const auto mutate : {+[](QuoteSliceChannelConfig &c) { c.mult_ceil = c.mult_floor; },
+                            +[](QuoteSliceChannelConfig &c) { c.channel_weight = 0.0; }}) {
+    QuoteSliceConfig channel_bad;
+    mutate(channel_bad.channel);
+    EXPECT_FALSE(validate_quote_slice_channel(channel_bad.channel));
+    EXPECT_EQ(fit_quote_surface(expiries(one), channel_bad).error().code(),
+              ErrorCode::InvalidArgument);
+  }
   const auto empty = fit_quote_surface({}, QuoteSliceConfig{});
   ASSERT_TRUE(empty);
   EXPECT_TRUE(empty->empty());

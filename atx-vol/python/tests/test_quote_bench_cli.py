@@ -516,6 +516,59 @@ def test_native_graded_admission_adds_grades_without_changing_point_prices(binar
     assert "admission" not in json.loads(static.stdout)
 
 
+def make_wide_snapshot(path: Path, expiries: int) -> None:
+    # One snapshot with `expiries` flat-volatility call expiries (zero carry,
+    # so American calls equal European values).
+    def phi(x: float) -> float:
+        return 0.5 * math.erfc(-x / math.sqrt(2.0))
+
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow([
+            "row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+            "years", "years_calendar", "rate", "sdiv", "ddiv_pv",
+            "input_status", "exercise", "underlier", "root", "expiry_days", "snapshot_ns",
+        ])
+        row = 0
+        for expiry in range(expiries):
+            years = 0.1 + 0.01 * expiry
+            for strike in range(75, 126, 2):
+                sigma_t = 0.3 * math.sqrt(years)
+                d1 = math.log(100.0 / strike) / sigma_t + 0.5 * sigma_t
+                price = 100.0 * phi(d1) - strike * phi(d1 - sigma_t)
+                writer.writerow([
+                    row, 1000 + expiry, strike, 1, 100, max(price - 0.001, 0.0), price + 0.001,
+                    years, years, 0, 0, 0, "ok", "American", "AAA", "AAA",
+                    round(years * 365.25 * 1000), 1,
+                ])
+                row += 1
+
+
+def test_native_graded_snapshot_above_expiry_cap_falls_back_to_static(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_wide_snapshot(source, 129)  # kQuoteSurfaceMaxExpiries is 128
+    static_output, graded_output = tmp_path / "static.csv", tmp_path / "graded.csv"
+    static = invoke(binary, source, static_output)
+    assert static.returncode == 0, static.stderr
+    policy = write_policy(tmp_path / "graded.json",
+                          {"schema_version": 1, "admission": "graded"})
+    graded = invoke(binary, source, graded_output, "--policy", str(policy))
+    assert graded.returncode == 0, graded.stderr
+    with static_output.open(newline="") as stream:
+        static_rows = list(csv.DictReader(stream))
+    with graded_output.open(newline="") as stream:
+        graded_rows = list(csv.DictReader(stream))
+    served = [row for row in static_rows if row["status"] == "ok"]
+    assert len(served) > 0.9 * len(static_rows)
+    for before, after in zip(static_rows, graded_rows):
+        assert after["status"] == before["status"]
+        assert after["predicted_price"] == before["predicted_price"]
+        assert after["grade"] == ("A" if before["status"] == "ok" else "")
+    report = json.loads(graded.stdout)
+    assert report["graded_stats"]["static_fallback"] == {"snapshots": 1, "chains": 129}
+    assert report["served_rows"] == len(served)
+
+
 def test_native_graded_options_are_strict(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     make_quotes(source)

@@ -288,6 +288,13 @@ TEST(QuoteFitPolicy, ChannelProfilesSkipPointMinimumsButValidateChannelControls)
   bad = profiles;
   bad.back().config.method = static_cast<QuoteSliceFitMethod>(9);
   EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
+  // A point profile's channel controls drive its graded B/C refits: validated too.
+  bad = profiles;
+  bad.front().config.channel.channel_weight = 0.0;
+  EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
+  bad = profiles;
+  bad.front().config.channel.family = VolCurveKind::LinearVariance;
+  EXPECT_FALSE(QuoteFitPolicyCatalog::create(bad).has_value());
 }
 
 } // namespace

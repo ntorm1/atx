@@ -84,6 +84,8 @@ struct ChannelFitDiagnostics {
 };
 
 struct ChannelFit {
+  // params.n_butterfly_viol is NOT computed here (left 0, meaning "not
+  // scanned"); served prices are certified downstream by AmericanPriceSlice.
   SplineVolParams params;
   ChannelFitDiagnostics diagnostics;
 };

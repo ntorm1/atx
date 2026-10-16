@@ -1,16 +1,18 @@
 // Graded admission over one valuation surface (see quote_slice.hpp contract).
 //
-// Pass A runs the unchanged point fitter on every expiry. Expiries it cannot
-// serve are refitted by the channel knot spline under a term prior: stage B1
-// uses the point-fitted expiries as prior nodes (or the flat default shape when
-// there are none), stage B2 rebuilds a leave-one-out prior from every fitted
-// expiry (point and B1 channel fits) and refits. Final American prices are then
-// accepted greedily in confidence order under the unchanged calendar check; a
-// slice that crosses an accepted one gets one stronger-prior retry built from
-// the accepted slices only, and is otherwise refused. Every acceptance keeps the
-// AmericanPriceSlice certificate and every accepted pair passes
-// check_american_calendar. Work is bounded: at most three channel fits per
-// expiry and O(expiries^2) calendar checks.
+// Pass A runs the profile's own fit (fit_quote_slice) on every expiry; a served
+// pass-A fit with enough own point evidence is the "pass-A tier". Other expiries
+// are refitted on the channel objective under a term prior: stage B1 uses the
+// pass-A tier as prior nodes (or the flat default shape when there are none),
+// stage B2 rebuilds a leave-one-out prior from every fitted expiry (pass-A and
+// B1 channel fits) and refits. Final American prices are then accepted greedily
+// in confidence order under the unchanged calendar check; a slice that crosses
+// an accepted one gets a bounded-move repair, then one stronger-prior retry
+// built from the accepted slices only, and is otherwise refused. A pass-A slice
+// is graded A only when no repair moved its served prices, B otherwise. Every
+// acceptance keeps the AmericanPriceSlice certificate and every accepted pair
+// passes check_american_calendar. Work is bounded: at most three channel fits
+// per expiry and O(expiries^2) calendar checks.
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
@@ -131,6 +133,10 @@ public:
     for (QuoteSurfaceSlice &slice : out_) {
       if (slice.grade == QuoteSliceGrade::Refused) {
         strip(slice.fit);
+      } else if (slice.grade == QuoteSliceGrade::A && !slice.fit.moved_nodes.empty()) {
+        // Pass-A tier, but a repair moved its served prices off its fit. The
+        // tier (prior node role, acceptance order) is unchanged; only the label.
+        slice.grade = QuoteSliceGrade::B;
       }
     }
     return Ok(std::move(out_));
@@ -353,8 +359,8 @@ private:
     if (rejected.empty()) {
       return Ok();
     }
-    // Per rejected slice, in confidence order: repair its own prices inside the
-    // quotes; else refit once with a stronger prior built from accepted slices
+    // Per rejected slice, in confidence order: a bounded-move repair of its own
+    // prices; else refit once with a stronger prior built from accepted slices
     // (and repair that refit); else refuse. Every acceptance is re-checked.
     ATX_TRY(const TermPrior accepted_prior, make_prior(nodes(true, &accepted), surface_));
     for (const std::size_t i : rejected) {
@@ -402,6 +408,7 @@ private:
     trial.diagnostics = fit.diagnostics;
     trial.rows = fit.rows;
     trial.prices = fit.prices;
+    trial.moved_nodes = fit.moved_nodes;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     double required = 0.0;
     const bool repaired = repair_quote_slice_calendar(trial, expiries_[i].quotes, earlier, later,
@@ -412,6 +419,7 @@ private:
       return false;
     }
     fit.prices = std::move(trial.prices);
+    fit.moved_nodes = std::move(trial.moved_nodes);
     fit.rows = std::move(trial.rows);
     return true;
   }
@@ -448,6 +456,8 @@ Result<std::vector<QuoteSurfaceSlice>>
 fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSliceConfig &config,
                   const QuoteSurfaceConfig &surface) {
   ATX_TRY_VOID(validate_surface(surface));
+  // Shared configuration: refuse it once rather than as a per-expiry failure.
+  ATX_TRY_VOID(validate_quote_slice_channel(config.channel));
   if (config.carry.mode != QuoteSliceCarryMode::Supplied) {
     return Err(ErrorCode::InvalidArgument,
                "quote surface: graded admission requires supplied carry");

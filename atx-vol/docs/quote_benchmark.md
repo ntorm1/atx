@@ -53,13 +53,22 @@ settings. Every profile retains the same final strike and calendar admission
 requirements, and rejected contracts remain in coverage reporting.
 
 Graded admission is opt-in (`"admission": "graded"`, default `"static"`). Each
-snapshot is fitted by `fit_quote_surface`: expiries the profile's point fitter
-serves are grade A and keep their exact prices; the others are refitted by the
-channel knot spline (every contract's bid/ask volatility channel, a
-spread-normalised mid anchor, and a leave-one-out term prior from the
-snapshot's other expiries), graded B (at least `grade_b_min_mid_strikes` mid
-strikes) or C. Calendar crossings refuse only the lower-confidence slice after
-an optional in-quote price repair and one stronger-prior retry. Top-level
+snapshot is fitted by `fit_quote_surface`. Pass A runs the profile's own method
+(the point fitter, or for a `knot-spline`/`channel.family` profile the
+prior-free channel fit). Grade A means the expiry's own admitted point evidence
+meets the profile's `min_quotes`, pass A served it with no term prior, and no
+repair moved a served price (under point profiles these keep the static path's
+exact prices). A pass-A slice whose prices a repair moved is grade B. The other
+expiries are refitted on the channel objective (every contract's bid/ask
+volatility channel, a spread-normalised mid anchor, and a leave-one-out term
+prior from the snapshot's other expiries), graded B (at least
+`grade_b_min_mid_strikes` mid strikes) or C. Repairs are bounded-move: each
+node moves at most `repair_half_spreads` (convexity) or
+`calendar_repair_half_spreads` (calendar) of its own quote half-spread from its
+fitted price, which bounds the move but does not keep the price inside
+[bid, ask]. Calendar crossings refuse only the lower-confidence slice after an
+optional repair and one stronger-prior retry. A snapshot with more than 128
+expiries falls back to the static path (`graded_stats.static_fallback`). Top-level
 `"graded"` keys: `term_prior_weight`, `prior_decay_log_time`,
 `prior_quote_halflife`, `channel_node_weight`, `calendar_retry_factor`,
 `grade_b_min_mid_strikes`, `calendar_repair_half_spreads`. Profile `"channel"`
@@ -75,7 +84,8 @@ output appends a `grade` column and the native report adds `graded_stats`
 (per-grade chains/rows and per-slice diagnostics, including the channel solve
 time `solve_us` and refit count). Every served slice still passes the unchanged
 American price and calendar certificates; refusals keep their reason. Graded
-admission requires supplied carry (no `carry_mode`).
+admission requires supplied carry (no `carry_mode`); channel controls are
+validated for every profile (`channel_weight > 0`, `mult_ceil > mult_floor`).
 
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of

@@ -358,7 +358,10 @@ Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double st
   const auto nodes = fit.prices->nodes();
   const auto node = std::lower_bound(nodes.begin(), nodes.end(), strike,
       [](const AmericanPriceNode &value, double k) { return value.strike < k; });
-  if (node != nodes.end() && node->strike == strike) {
+  const auto index = static_cast<std::size_t>(node - nodes.begin());
+  const unsigned bit = side == Side::Call ? 1u : 2u;
+  const bool moved = index < fit.moved_nodes.size() && (fit.moved_nodes[index] & bit) != 0u;
+  if (node != nodes.end() && node->strike == strike && !moved) {
     const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
     if (!positive(sigma)) {
       return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
@@ -660,8 +663,9 @@ void lower_hull(std::span<const AmericanPriceNode> nodes, Side side, std::vector
   }
 }
 
-// Repair inside the quotes: lower both sides to their convex minorants when every
-// required shift is within `half_spreads` of the node's own half-spread. Records
+// Bounded-move repair: lower both sides to their convex minorants when every
+// required shift from the fitted price is within `half_spreads` of the node's
+// own half-spread (a bound on the move, not containment in [bid, ask]). Records
 // the required shift either way; returns whether nodes were changed.
 bool repair_convexity(std::vector<AmericanPriceNode> &nodes,
                       std::span<const QuoteSliceQuote> quotes, double half_spreads,
@@ -705,7 +709,8 @@ bool repair_convexity(std::vector<AmericanPriceNode> &nodes,
 
 // Stage 3: reprice every valid strike from out.curve, certify the final
 // American prices and fill the rows. Sets fit_status/fit_error on refusal.
-// A positive `repair_half_spreads` enables the in-channel convexity repair.
+// A positive `repair_half_spreads` enables the bounded-move convexity repair;
+// nodes it moved are flagged in out.moved_nodes.
 void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quotes,
                        double repair_half_spreads = 0.0) {
   const QuoteSliceMarket &market = out.market;
@@ -809,11 +814,14 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     row.evaluation_status = QuoteSliceEvaluationStatus::Success;
     ++diag.prices_produced;
   }
+  if (std::any_of(repaired.begin(), repaired.end(), [](std::uint8_t m) { return m != 0u; })) {
+    out.moved_nodes = std::move(repaired);
+  }
 }
 
 Status validate_channel(const QuoteSliceChannelConfig &c) {
   const auto finite_nonnegative = [](double x) { return std::isfinite(x) && x >= 0.0; };
-  if (!finite_nonnegative(c.channel_weight) || !finite_nonnegative(c.mid_weight) ||
+  if (!positive(c.channel_weight) || !finite_nonnegative(c.mid_weight) ||
       !finite_nonnegative(c.itm_mid_weight) || !finite_nonnegative(c.default_shape_weight) ||
       !positive(c.prior_scale) || !finite_nonnegative(c.roughness) ||
       !positive(c.min_half_width_vol) || !positive(c.mult_floor) || !positive(c.mult_ceil) ||
@@ -1010,6 +1018,10 @@ Result<ChannelFitDiagnostics> solve_channel_family(QuoteSliceFit &out,
 }
 
 } // namespace
+
+Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
+  return validate_channel(config);
+}
 
 Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
                                       std::span<const QuoteSliceQuote> quotes,
@@ -1210,6 +1222,11 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
       const auto iv = contract_iv(fit, quote, *price, query, q);
       if (iv && positive(*iv)) row.fitted_iv = *iv;
     }
+  }
+  // Union with any earlier (convexity) repair: both leave nodes off the curve.
+  if (std::any_of(moved.begin(), moved.end(), [](std::uint8_t m) { return m != 0u; })) {
+    if (fit.moved_nodes.size() != moved.size()) fit.moved_nodes.assign(moved.size(), 0);
+    for (std::size_t i = 0; i < moved.size(); ++i) fit.moved_nodes[i] |= moved[i];
   }
   return true;
 }

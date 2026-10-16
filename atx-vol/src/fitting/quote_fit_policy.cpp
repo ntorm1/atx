@@ -115,20 +115,18 @@ struct RawContract {
                "quote fit policy: no-arbitrage controls must remain enabled");
   }
   std::size_t minimum = 4u;
-  if (cfg.method == QuoteSliceFitMethod::ChannelSpline) {
-    // The channel knot spline is not a point-count family: its own channel
-    // controls bound it, and min_quotes only grades point evidence.
-    const auto &c = cfg.channel;
-    if (!nonnegative(c.channel_weight) || !nonnegative(c.mid_weight) ||
-        !nonnegative(c.itm_mid_weight) || !nonnegative(c.default_shape_weight) ||
-        !positive(c.prior_scale) || !nonnegative(c.roughness) ||
-        !positive(c.min_half_width_vol) || !positive(c.mult_floor) || !positive(c.mult_ceil) ||
-        !(c.mult_ceil > c.mult_floor) || c.max_iterations == 0u || c.min_channel_quotes == 0u) {
-      return Err(ErrorCode::InvalidArgument, "quote fit policy: invalid channel configuration");
-    }
-  } else if (cfg.method != QuoteSliceFitMethod::PointCurve) {
+  // Channel controls are validated for every profile: a point profile's channel
+  // configuration still drives its B/C refits under graded admission.
+  if (!validate_quote_slice_channel(cfg.channel)) {
+    return Err(ErrorCode::InvalidArgument, "quote fit policy: invalid channel configuration");
+  }
+  if (cfg.method != QuoteSliceFitMethod::PointCurve &&
+      cfg.method != QuoteSliceFitMethod::ChannelSpline) {
     return Err(ErrorCode::InvalidArgument, "quote fit policy: unknown fit method");
-  } else {
+  }
+  // The channel objective is not a point-count family: its own channel
+  // controls bound it, and min_quotes only grades point evidence.
+  if (cfg.method == QuoteSliceFitMethod::PointCurve) {
     switch (cfg.curve.kind) {
     case VolCurveKind::ConvexDense:
       if (!cfg.curve.convex.bound_slope_below || !nonnegative(cfg.curve.convex.lambda) ||
