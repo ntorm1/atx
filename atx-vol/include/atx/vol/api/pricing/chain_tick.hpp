@@ -240,10 +240,24 @@ private:
 // the record, ~16 record evaluations), up to max_rebuilds_per_tick per tick;
 // past the budget the contract is served from its record that tick
 // (TickStatus::Fallback) and rebuilt on a later tick. A spot outside the box
-// does not spend the budget. Rebuilds are counted (rebuilds()).
+// does not spend the budget. Rebuilds are counted (rebuilds()). When more
+// contracts are waiting than the budget allows, the ones nearest the money in
+// standard deviations, |ln(K / F)| / (sigma sqrt(T)) at the tick's spot, are
+// rebuilt first (SpotLadderRebuildOrder::NearestAtmFirst): after a large move
+// the contracts with the most gamma and vega leave the record fallback first.
+// Both routes are certified (a rebuilt window, or the record it is built from),
+// so the order changes which lanes are Ok on a catch-up tick, not their error
+// bound. The selection is an in-place partial sort on scratch sized at build: a
+// tick still allocates nothing.
 
 inline constexpr std::size_t kSpotLadderLanes = 4;
 inline constexpr std::uint16_t kSpotLadderNodes = 16;
+
+// Which waiting contracts a budget-limited tick rebuilds first.
+enum class SpotLadderRebuildOrder : std::uint8_t {
+  NearestAtmFirst = 0, // smallest |ln(K / F)| / (sigma sqrt(T)) first (default)
+  ContractIndex = 1,   // input order (the behaviour before 2026-10-16)
+};
 
 struct SpotLadderPolicy {
   // Window half-width in ln-spot = clamp(window_sigmas * sigma * sqrt(T),
@@ -255,13 +269,15 @@ struct SpotLadderPolicy {
   // Acceptance threshold = max(max_cert_usd, max_cert_rel x F_max): an absolute
   // dollar floor plus a forward-scaled allowance. The record certificate is a
   // forward-unit bound, so its dollar size grows with the underlying; a fixed
-  // $5e-4 refused every contract of a ~$5,000 underlying (record certificates
-  // ~3.3e-7 fwd = $1.7e-3 there). The defaults keep the floor binding below
-  // F ~ $1,000, so a $600 chain is unchanged.
+  // $5e-4 refuses every contract whose record certifies worse than ~1e-7 fwd on
+  // a ~$5,000 underlying (the 40 bench records reach 3.3e-7 fwd = $1.7e-3
+  // there). The defaults keep the floor binding below F ~ $1,000, so a $600
+  // chain is unchanged.
   double max_cert_usd = 5.0e-4;
   double max_cert_rel = 5.0e-7;
   std::uint32_t max_rebuilds_per_tick = 32;
   bool rebuild_on_exit = true;
+  SpotLadderRebuildOrder rebuild_order = SpotLadderRebuildOrder::NearestAtmFirst;
 };
 
 // Where a ChainSpotLadder's record fallbacks came from, since build(). Every

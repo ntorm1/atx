@@ -159,6 +159,13 @@ struct ChainSpotLadder::Impl {
   std::vector<std::uint8_t> sigma_out; // sigma outside the record's sigma box
   std::vector<double> cert_usd;
   std::vector<std::uint32_t> pending; // out-of-window scratch, sized n at build
+  // Rebuild priority: |ln K - ln g - ln S| x inv_sd = |ln(K / F)| / (sigma sqrt T).
+  std::vector<double> ln_k_over_g;
+  std::vector<double> inv_sd;
+  // In-box rebuild candidates of one tick and their (key, contract) ranks:
+  // scratch sized n at build, so the tick's partial sort allocates nothing.
+  std::vector<std::uint32_t> candidates;
+  std::vector<std::pair<double, std::uint32_t>> ranked;
   ChainRecords records;
   SpotLadderPolicy policy;
   SpotLadderCounters counters;
@@ -377,6 +384,10 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
   impl->sigma_out.assign(n, 0u);
   impl->cert_usd.assign(n, kNaN);
   impl->pending.assign(n, 0u);
+  impl->ln_k_over_g.assign(n, 0.0);
+  impl->inv_sd.assign(n, 0.0);
+  impl->candidates.assign(n, 0u);
+  impl->ranked.assign(n, std::pair<double, std::uint32_t>{0.0, 0u});
 
   // Padding lanes of the last block mirror a refused contract: never in window,
   // never written (the tick only writes lanes < n).
@@ -406,6 +417,8 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
     B.hs2[l] = 0.5 * sig * sig;
     impl->half_width[c] =
         std::clamp(policy.window_sigmas * sig * std::sqrt(T), policy.window_min, policy.window_max);
+    impl->ln_k_over_g[c] = std::log(K) - std::log(rec->forward_factor());
+    impl->inv_sd[c] = 1.0 / (sig * std::sqrt(T));
     if (sig >= rec->sigma_min() && sig <= rec->sigma_max()) {
       // Pulled in by a relative 1e-12 so that rounding in ln(K / (S g)) at the
       // very edge can never land a served lane a few ulps outside the box.
@@ -452,7 +465,7 @@ Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
   // served from the record without spending the rebuild budget. Each fallback is
   // counted in the bucket that says why (SpotLadderCounters).
   SpotLadderCounters &k = m.counters;
-  std::uint32_t rebuilt = 0;
+  std::size_t n_cand = 0;
   for (std::size_t p = 0; p < n_pending; ++p) {
     const std::size_t c = m.pending[p];
     if (m.refused[c] != 0u) {
@@ -467,11 +480,33 @@ Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
       m.serve_from_record(c, spot, out, k.out_of_box_fallbacks);
       continue;
     }
-    if (!m.policy.rebuild_on_exit || rebuilt >= m.policy.max_rebuilds_per_tick) {
+    m.candidates[n_cand++] = static_cast<std::uint32_t>(c);
+  }
+  const std::size_t budget =
+      m.policy.rebuild_on_exit ? std::min<std::size_t>(m.policy.max_rebuilds_per_tick, n_cand) : 0u;
+  if (budget < n_cand && budget > 0u &&
+      m.policy.rebuild_order == SpotLadderRebuildOrder::NearestAtmFirst) {
+    // More candidates than budget: move the `budget` nearest the money (in
+    // standard deviations at this spot) to the front. Ties break on the contract
+    // index, so the selected set is deterministic.
+    const double ln_s = std::log(spot);
+    for (std::size_t i = 0; i < n_cand; ++i) {
+      const std::uint32_t c = m.candidates[i];
+      m.ranked[i] = {std::abs(m.ln_k_over_g[c] - ln_s) * m.inv_sd[c], c};
+    }
+    const auto first = m.ranked.begin();
+    std::nth_element(first, first + static_cast<std::ptrdiff_t>(budget),
+                     first + static_cast<std::ptrdiff_t>(n_cand));
+    for (std::size_t i = 0; i < n_cand; ++i) {
+      m.candidates[i] = m.ranked[i].second;
+    }
+  }
+  for (std::size_t i = 0; i < n_cand; ++i) {
+    const std::size_t c = m.candidates[i];
+    if (i >= budget) {
       m.serve_from_record(c, spot, out, k.budget_fallbacks);
       continue;
     }
-    ++rebuilt;
     ++k.rebuilds;
     if (m.build_one(c, spot)) {
       eval_block(m.blocks[c / kL], spot, o);
