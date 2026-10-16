@@ -911,3 +911,83 @@ def test_ambiguous_aggregate_pv_cli_alias_is_refused():
             "run", "--dataset", "dataset", "--binary", "runner", "--output", "predictions",
             "--dividends", "aggregate-pv",
         ])
+
+
+def breadth_source(tmp_path: Path, underliers: int = 40) -> Path:
+    """Underlier i lists i + 1 contracts, so whole-source row count orders liquidity."""
+    rows = [(f"U{i:02d}", k) for i in range(underliers) for k in range(i + 1)]
+    n = len(rows)
+    base = source_table()
+    table = pa.table({
+        name: (pa.array([r[0] for r in rows]) if name in ("okey_tk", "undSecKey_tk")
+               else pa.array([90. + r[1] for r in rows]) if name == "okey_xx"
+               else pa.repeat(base.column(name)[0], n))
+        for name in base.column_names})
+    source = tmp_path / "breadth.parquet"
+    pq.write_table(table, source, row_group_size=97)
+    return source
+
+
+def draw(tmp_path: Path, source: Path, name: str, *extra: str) -> dict:
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output",
+                                  str(tmp_path / name), "--split", "all", "--batch-size", "50",
+                                  "--max-underliers", "8", *extra])
+    return qb.prepare(args)
+
+
+def test_default_draw_keeps_the_split_seed_hash_order(tmp_path):
+    source = breadth_source(tmp_path)
+    manifest = draw(tmp_path, source, "default")
+    expected = sorted((f"U{i:02d}" for i in range(40)),
+                      key=lambda n: (qb.stable_id(["atx-vol-v1", n]), n))[:8]
+    selection = manifest["selection"]
+    assert selection["selected_underliers"] == sorted(expected)
+    assert selection["draw_seed"] == "atx-vol-v1"
+    assert selection["liquidity_strata"] is None and selection["excluded_cohorts"] == []
+
+
+def test_second_draw_excludes_reference_and_matches_its_strata(tmp_path):
+    source = breadth_source(tmp_path)
+    first = draw(tmp_path, source, "first")
+    reference = tmp_path / "first" / "manifest.json"
+    second = draw(tmp_path, source, "second", "--draw-seed", "other", "--exclude-cohort",
+                  str(reference), "--liquidity-strata", "4", "--match-strata-cohort",
+                  str(reference))
+    old = set(first["selection"]["selected_underliers"])
+    new = set(second["selection"]["selected_underliers"])
+    assert len(new) == 8 and not old & new
+    # Equal-count strata of 40 names ordered by rows: stratum = index // 10.
+    def strata(names):
+        return sorted(int(n[1:]) // 10 for n in names)
+    assert strata(new) == strata(old)
+    block = second["selection"]["liquidity_strata"]
+    allocated = [s["allocated"] for s in block["per_stratum"]]
+    assert allocated == [strata(old).count(s) for s in range(4)]
+    assert block["match_cohort_manifest_sha256"] == qb.sha256(reference)
+    assert second["selection"]["excluded_underliers"] == 8
+    again = draw(tmp_path, source, "again", "--draw-seed", "other", "--exclude-cohort",
+                 str(reference), "--liquidity-strata", "4", "--match-strata-cohort",
+                 str(reference))
+    assert again["selection"]["selected_underliers"] == second["selection"]["selected_underliers"]
+
+
+def test_proportional_strata_allocate_evenly(tmp_path):
+    manifest = draw(tmp_path, breadth_source(tmp_path), "even", "--liquidity-strata", "4")
+    names = manifest["selection"]["selected_underliers"]
+    assert sorted(int(n[1:]) // 10 for n in names) == [0, 0, 1, 1, 2, 2, 3, 3]
+
+
+@pytest.mark.parametrize("extra", [["--liquidity-strata", "-1"],
+                                   ["--match-strata-cohort", "x.json"]])
+def test_invalid_draw_options_are_refused(tmp_path, extra):
+    with pytest.raises(ValueError):
+        draw(tmp_path, breadth_source(tmp_path), "bad", *extra)
+
+
+def test_cohort_exclusion_requires_a_capped_draw(tmp_path):
+    source = breadth_source(tmp_path)
+    args = qb.parser().parse_args(["prepare", "--source", str(source), "--output",
+                                  str(tmp_path / "x"), "--exclude-cohort", "m.json"])
+    with pytest.raises(ValueError):
+        qb.prepare(args)
+    assert not (tmp_path / "x").exists()
