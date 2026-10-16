@@ -40,7 +40,19 @@ struct AmericanMarkovFitQuote {
 };
 
 enum class AmericanMarkovFitTimeShape { Shared, PerVarianceInterval, VarianceTimeKnots };
-enum class AmericanMarkovFitTermination { StepTolerance, EvaluationLimit, SweepLimit };
+// ObjectiveTolerance/GradientTolerance/DampingLimit are reported only by the
+// opt-in LevenbergMarquardt search; the default coordinate search never uses them.
+enum class AmericanMarkovFitTermination {
+  StepTolerance, EvaluationLimit, SweepLimit, ObjectiveTolerance, GradientTolerance, DampingLimit
+};
+
+// CoordinatePattern (default) is the historical derivative-free compass search
+// in log sigma: +/-step per coordinate, step halved after a sweep without any
+// improvement. LevenbergMarquardt is opt-in damped Gauss-Newton on the same
+// objective's residual vector, with a bounded forward-difference price Jacobian
+// (one objective evaluation per parameter per iteration) and box projection.
+// Neither certifies a global optimum.
+enum class AmericanMarkovFitSearch { CoordinatePattern, LevenbergMarquardt };
 
 // Fixed numerical admission threshold for the interval log-sigma basis. This
 // is NOT a bound on price sensitivity or a calibration-identifiability proof.
@@ -84,11 +96,39 @@ struct AmericanMarkovFitConfig {
   std::size_t max_parameters = 32;
   std::size_t max_quotes = 4096;
   std::size_t max_evaluations = 256;
+  // Coordinate search: completed sweeps. LevenbergMarquardt: completed
+  // Jacobian iterations (each refreshes the price Jacobian once).
   std::size_t max_sweeps = 32;
   std::size_t batch_options = 128;
   std::size_t max_batch_values = 1048576; // Per workspace buffer.
   // State-pass-option products per evaluation: N explicit/cash, 2N resolvent.
   std::size_t max_rollback_work = 50000000;
+
+  // Opt-in, parameter-scaled evaluation budget. Zero (default) keeps exactly
+  // max_evaluations. Nonzero makes the budget
+  //   clamp(evaluations_per_parameter * parameters, max_evaluations,
+  //         max_scaled_evaluations)
+  // where max_scaled_evaluations is the explicit hard cap: required in
+  // [max_evaluations, kAmericanMarkovFitMaxEvaluations] when scaling is on and
+  // required to be zero when it is off. Nothing else widens implicitly.
+  std::size_t evaluations_per_parameter = 0;
+  std::size_t max_scaled_evaluations = 0;
+
+  AmericanMarkovFitSearch search = AmericanMarkovFitSearch::CoordinatePattern;
+  // LevenbergMarquardt only (the coordinate search ignores all four, and uses
+  // initial_log_step instead). min_log_step is the step tolerance: an iteration
+  // whose projected step has max |d log sigma| below it terminates.
+  // Accepted step with objective decrease <= objective_tolerance * objective
+  // terminates (0 disables); max |d objective / d log sigma| <=
+  // gradient_tolerance terminates (0 stops only on an exactly zero gradient).
+  double objective_tolerance = 0.0;
+  double gradient_tolerance = 0.0;
+  // Forward-difference step in log sigma; mirrored to a backward step at max_sigma.
+  double jacobian_log_step = 1.0e-3;
+  // Marquardt damping relative to diag(J'J); grows on rejected trial steps.
+  // A rejection that would exceed max_damping terminates with DampingLimit.
+  double initial_damping = 1.0e-3;
+  double max_damping = 1.0e10;
 };
 
 struct AmericanMarkovFitDiagnostics {
@@ -110,7 +150,23 @@ struct AmericanMarkovFitDiagnostics {
   double regularization_loss = 0.0;
   double max_interval_error = 0.0; // Price units, independent of weights.
   double mean_interval_error = 0.0;
+  // Coordinate: final compass step. LevenbergMarquardt: max |d log sigma| of
+  // the last proposed (projected) step, or zero if none was proposed.
   double final_log_step = 0.0;
+  AmericanMarkovFitSearch search = AmericanMarkovFitSearch::CoordinatePattern;
+  std::size_t evaluation_budget = 0; // Effective cap after optional scaling.
+  std::size_t jacobian_evaluations = 0; // LevenbergMarquardt Jacobian columns.
+  std::size_t rejected_steps = 0; // LevenbergMarquardt trial steps not accepted.
+  // Every admitted evaluation charges the rollback work of the quotes it
+  // actually prices (checked against max_rollback_work before the kernels
+  // run). Exactly unaffected quote prefixes of a Jacobian column are reused,
+  // not repriced, and appear in reused_quote_prices instead. Compilation and
+  // factor construction are separate bounded compiler work, not counted here.
+  std::size_t rollback_work = 0;
+  std::size_t priced_quotes = 0;
+  std::size_t reused_quote_prices = 0;
+  double final_damping = 0.0;  // LevenbergMarquardt only.
+  double gradient_norm = 0.0;  // LevenbergMarquardt: last max |d objective / d log sigma|.
 };
 
 struct AmericanMarkovFitTimeWeight {
@@ -133,6 +189,13 @@ struct AmericanMarkovFitTimeBasisDiagnostics {
 };
 
 class AmericanMarkovFit;
+
+// Effective evaluation cap for a resolved parameter count under a config that
+// fit_american_markov_intervals accepts: max_evaluations without scaling, else
+// clamp(evaluations_per_parameter * parameters, max_evaluations,
+// max_scaled_evaluations), computed without overflow.
+[[nodiscard]] std::size_t american_markov_fit_evaluation_budget(
+    const AmericanMarkovFitConfig &config, std::size_t parameters) noexcept;
 
 // Offline bounded deterministic calibration; allocates while searching.
 // All spans are borrowed for this call only. Invalid input, a refused initial
