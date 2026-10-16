@@ -39,6 +39,20 @@ enum class QuoteSliceCarryMode : std::uint8_t {
 
 [[nodiscard]] const char *to_string(QuoteSliceCarryMode value) noexcept;
 
+// Why a non-Supplied mode kept the supplied carry. The estimator status says
+// why EstimateRefused happened; the post-estimate causes (NoModelYield,
+// SliceRefused) arrive with status Ok, so only this field explains them.
+enum class QuoteSliceCarryFallback : std::uint8_t {
+  None,            // applied, or the Supplied path
+  DatedCash,       // the lattice forward is not an implied-forward model
+  InvalidMarket,   // spot/clock/rate malformed: the Supplied fit reports it
+  EstimateRefused, // the estimator refused (see status)
+  NoModelYield,    // the forward has no finite yield under the dividend model
+  SliceRefused     // the slice refused the implied carry
+};
+
+[[nodiscard]] const char *to_string(QuoteSliceCarryFallback value) noexcept;
+
 struct QuoteSliceCarryConfig {
   QuoteSliceCarryMode mode = QuoteSliceCarryMode::Supplied;
   ImpliedForwardConfig implied{};
@@ -49,6 +63,7 @@ struct QuoteSliceCarryConfig {
 struct QuoteSliceCarryResolution {
   QuoteSliceCarryMode mode = QuoteSliceCarryMode::Supplied;
   bool applied = false; // the implied carry replaced the supplied carry
+  QuoteSliceCarryFallback fallback = QuoteSliceCarryFallback::None;
   ImpliedForwardStatus status = ImpliedForwardStatus::Invalid;
   const char *reason = "supplied carry";
   // The supplied carry, as the slice would have used it.

@@ -203,6 +203,61 @@ TEST(ImpliedForward, ParityAcceptsShortDatedAmericanChain) {
   EXPECT_NEAR(r.forward / c.forward() - 1.0, 0.0, 2.0e-4);
 }
 
+// Adding the same amount to both legs leaves a pair's parity forward intact
+// but prices its out-of-the-money anchor leg above the American bound (call >
+// spot, put > strike), so its early-exercise bias cannot be measured.
+void inflate_both_legs(ImpliedForwardPair &pair, double amount) {
+  pair.call_bid += amount;
+  pair.call_ask += amount;
+  pair.put_bid += amount;
+  pair.put_ask += amount;
+}
+
+TEST(ImpliedForward, ParityExcludesAnAmericanPairWhoseBiasCannotBeMeasured) {
+  Chain c;
+  c.years = 0.02;
+  c.rate = 0.05;
+  c.yield = 0.0;
+  c.half_spread = 0.01;
+  ImpliedForwardConfig cfg;
+  cfg.method = ImpliedForwardMethod::Parity;
+  auto pairs = american_chain(c, 80.0, 120.0, 1.0);
+  // Strike 101 is selected near the money but is not the straddle pair (100).
+  const auto corrupted = std::find_if(pairs.begin(), pairs.end(),
+                                      [](const auto &p) { return p.strike == 101.0; });
+  ASSERT_NE(corrupted, pairs.end());
+  inflate_both_legs(*corrupted, 100.0);
+  const auto r = estimate_implied_forward(c.market(), pairs, cfg);
+  ASSERT_EQ(r.status, ImpliedForwardStatus::Ok) << r.reason;
+  // Before the fix this pair stayed Retained and active, unscreened.
+  EXPECT_EQ(r.pairs_unidentified, 1u);
+  bool found = false;
+  for (std::size_t i = 0; i < r.pairs_selected; ++i) {
+    if (r.pairs[i].strike != 101.0) {
+      continue;
+    }
+    found = true;
+    EXPECT_EQ(r.pairs[i].status, ImpliedForwardPairStatus::Unidentified);
+    EXPECT_EQ(r.pairs[i].robust_weight, 0.0);
+  }
+  EXPECT_TRUE(found);
+  EXPECT_GE(r.pairs_retained, cfg.min_pairs);
+  EXPECT_LE(std::fabs(r.exercise_shift_sd), cfg.max_exercise_shift_sd);
+  EXPECT_NEAR(r.forward / c.forward() - 1.0, 0.0, 2.0e-4);
+
+  // When no selected pair can be measured, nothing is published.
+  for (auto &pair : pairs) {
+    if (pair.strike != 101.0) {
+      inflate_both_legs(pair, 100.0);
+    }
+  }
+  const auto none = estimate_implied_forward(c.market(), pairs, cfg);
+  EXPECT_EQ(none.status, ImpliedForwardStatus::Contaminated) << none.reason;
+  EXPECT_EQ(none.pairs_unidentified, none.pairs_selected);
+  EXPECT_EQ(none.pairs_retained, 0u);
+  EXPECT_TRUE(std::isnan(none.forward));
+}
+
 TEST(ImpliedForward, RefusesSparseExpiryWithTooFewTwoSidedPairs) {
   const Chain c;
   auto pairs = european_chain(c);

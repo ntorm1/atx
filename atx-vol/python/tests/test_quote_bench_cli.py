@@ -368,7 +368,35 @@ def test_native_exact_override_and_expanded_custom_profile(binary, tmp_path):
     assert all(row["policy_source"] == "raw-liquidity" for row in read_quotes(output))
 
 
+def test_native_implied_forward_profile_records_every_estimator_control(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)  # Calls only: the estimator has no pairs and refuses.
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({
+        "schema_version": 1,
+        "profiles": [{"name": name, "base": name, "carry_mode": "implied-forward-parity",
+                      "implied_forward": {"min_pairs": 3, "al_preset": "bulk"}}
+                     for name in ["dense", "ordinary", "sparse"]],
+    }))
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    definition = next(p for p in report["policy_definition"]["profiles"] if p["name"] == "dense")
+    assert definition["carry_mode"] == "implied_forward"
+    carry = definition["implied_forward"]
+    assert carry["method"] == "parity" and carry["al_preset"] == "bulk"
+    assert carry["max_outlier_fraction"] == 0.34
+    assert "al_opts" not in carry  # Named presets need no field-by-field expansion.
+    resolution, = report["carry_resolutions"]
+    assert resolution["fallback_cause"] == "estimate_refused"
+    assert report["carry_status_counts"] == {"fallback:insufficient_pairs": 1}
+
+
 @pytest.mark.parametrize("document", [
+    # An implied_forward block under the resolved supplied carry would be inert.
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","implied_forward":{"min_pairs":3}}]}',
+    '{"schema_version":1,"profiles":[{"name":"dense","base":"dense","carry_mode":"supplied",'
+    '"implied_forward":{"min_pairs":3}}]}',
     '{"schema_version":1,"srVol":0.3}',
     '{"schema_version":1,"schema_version":1}',
     '{"schema_version":1,"regimes":{"dense_profile":"dense","dense_profile":"dense"}}',

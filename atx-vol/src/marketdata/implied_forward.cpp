@@ -535,6 +535,153 @@ double sd_units(double value, double forward, double total_vol) noexcept {
   return value / forward / total_vol;
 }
 
+// Stage 2, AmericanAlignment: re-admit stage-1 outliers (the exercise premium
+// varies by strike, so a pair can disagree with the European fit only because
+// of early exercise), align every active pair, rescale the ATM unit from the
+// aligned IVs, screen per-pair corrections and re-locate. Returns the retained
+// count; `location` becomes the exercise-corrected location.
+std::size_t align_strip(Strip &strip, std::size_t n, const ImpliedForwardMarket &market,
+                        double df, const ImpliedForwardConfig &cfg, double &total_vol,
+                        Location &location) {
+  for (std::size_t i = 0; i < n; ++i) {
+    Candidate &c = strip[i];
+    if (c.status == ImpliedForwardPairStatus::Outlier && std::isfinite(c.parity) &&
+        positive(c.weight)) {
+      c.active = true;
+      c.status = ImpliedForwardPairStatus::Retained;
+    }
+    if (!c.active) {
+      continue;
+    }
+    c.anchor = c.strike >= location.center ? Side::Call : Side::Put;
+    align_pair(c, market, df, total_vol, cfg);
+  }
+  // The aligned American IVs measure the ATM level better than a straddle.
+  double sum_w = 0.0;
+  double sum_ws = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (strip[i].active && std::isfinite(strip[i].sigma)) {
+      sum_w += strip[i].weight;
+      sum_ws += strip[i].weight * strip[i].sigma;
+    }
+  }
+  if (sum_w > 0.0) {
+    total_vol = std::clamp(sum_ws / sum_w * std::sqrt(market.years), kMinTotalVol, kMaxTotalVol);
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    Candidate &c = strip[i];
+    if (c.active && std::fabs(sd_units(c.value - c.parity, c.value, total_vol)) >
+                        cfg.max_pair_exercise_shift_sd) {
+      c.active = false;
+      c.status = ImpliedForwardPairStatus::Contaminated;
+    }
+  }
+  return locate_retained(strip, n, cfg.huber_k, location);
+}
+
+// Stage 2, Parity on an American chain: measure (never apply) the EEP bias
+// with one alignment step per active pair, anchored at the stage-1 location.
+// A pair whose step fails has no measured bias: it keeps the step's typed
+// status (Unidentified when the IV inversion or repricing fails, Contaminated
+// when the step leaves the positive forwards) and is deactivated, and the
+// measured pairs are re-located (updating `retained`), so an unscreened pair
+// never contributes to a published forward. Returns the weighted mean shift
+// of the pairs that remain active, or NaN when none does.
+double measure_parity_bias(Strip &strip, std::size_t n, const ImpliedForwardMarket &market,
+                           double df, double total_vol, const ImpliedForwardConfig &cfg,
+                           Location &location, std::size_t &retained) {
+  Values shifts{};
+  bool excluded = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    Candidate &c = strip[i];
+    if (!c.active) {
+      continue;
+    }
+    c.anchor = c.strike >= location.center ? Side::Call : Side::Put;
+    const NewtonStep step = alignment_step(c, c.parity, market, df, total_vol, 0.0, cfg);
+    c.sigma = step.sigma;
+    if (step.status != ImpliedForwardPairStatus::Retained) {
+      c.status = step.status;
+      c.active = false;
+      c.huber = 0.0;
+      excluded = true;
+      continue;
+    }
+    shifts[i] = step.next - c.parity;
+  }
+  if (excluded) {
+    retained = locate_retained(strip, n, cfg.huber_k, location);
+  }
+  double sum_w = 0.0;
+  double sum_shift = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!strip[i].active) {
+      continue;
+    }
+    const double w = strip[i].weight * strip[i].huber;
+    sum_w += w;
+    sum_shift += w * shifts[i];
+  }
+  return sum_w > 0.0 ? sum_shift / sum_w : kNaN;
+}
+
+// Stage 3, after a finite positive forward: restate it as carry and measure
+// the retained strip's dispersion and leave-one-out sensitivity.
+void publish_carry(ImpliedForwardResult &out, Strip &strip, std::size_t n,
+                   const ImpliedForwardMarket &market, double df, double total_vol,
+                   double exercise_shift, bool american, double huber_k) noexcept {
+  const double forward = out.forward;
+  out.implied_yield = market.rate - std::log(forward / market.spot) / market.years;
+  out.prepaid_deficit = market.spot - forward * df;
+  if (market.reference_yield) {
+    out.forward_offset =
+        forward - market.spot * std::exp((market.rate - *market.reference_yield) * market.years);
+  }
+  double dispersion = 0.0;
+  double max_loo = 0.0;
+  spread_statistics(strip, n, huber_k, forward, dispersion, max_loo);
+  out.dispersion = dispersion;
+  out.dispersion_sd = sd_units(dispersion, forward, total_vol);
+  out.max_leave_one_out_shift_sd = sd_units(max_loo, forward, total_vol);
+  out.exercise_shift_sd = american ? sd_units(exercise_shift, forward, total_vol) : 0.0;
+}
+
+// Stage 3 refusal ladder, in order; Ok only when every gate passes.
+void classify(ImpliedForwardResult &out, std::size_t retained, bool parity_on_american,
+              const ImpliedForwardConfig &cfg) noexcept {
+  const std::size_t lost = out.pairs_contaminated + out.pairs_unidentified +
+                           out.pairs_exercise_bound;
+  if (retained < cfg.min_pairs) {
+    const bool lost_to_exercise = lost > 0 && retained + lost >= cfg.min_pairs;
+    set_status(out, lost_to_exercise ? ImpliedForwardStatus::Contaminated
+                                     : ImpliedForwardStatus::InsufficientPairs,
+               lost_to_exercise ? "early exercise removed too many near-money pairs"
+                                : "fewer retained near-money pairs than min_pairs");
+    return;
+  }
+  if (static_cast<double>(out.pairs_outlier) >
+      cfg.max_outlier_fraction * static_cast<double>(out.pairs_outlier + retained)) {
+    set_status(out, ImpliedForwardStatus::Dispersion, "too many pairs rejected as outliers");
+    return;
+  }
+  if (out.dispersion_sd > cfg.max_dispersion_sd) {
+    set_status(out, ImpliedForwardStatus::Dispersion,
+               "pair forwards disagree beyond max_dispersion_sd");
+    return;
+  }
+  if (out.max_leave_one_out_shift_sd > cfg.max_leave_one_out_sd) {
+    set_status(out, ImpliedForwardStatus::Dispersion,
+               "one pair moves the forward beyond max_leave_one_out_sd");
+    return;
+  }
+  if (parity_on_american && !(std::fabs(out.exercise_shift_sd) <= cfg.max_exercise_shift_sd)) {
+    set_status(out, ImpliedForwardStatus::Contaminated,
+               "parity forward carries early-exercise bias beyond max_exercise_shift_sd");
+    return;
+  }
+  set_status(out, ImpliedForwardStatus::Ok, "ok");
+}
+
 } // namespace
 
 const char *to_string(ImpliedForwardStatus value) noexcept {
@@ -615,64 +762,12 @@ ImpliedForwardResult estimate_implied_forward(const ImpliedForwardMarket &market
   const bool american = cfg.exercise == ImpliedForwardExercise::American;
   const bool align = american && cfg.method == ImpliedForwardMethod::AmericanAlignment;
   double exercise_shift = 0.0;
-
   if (align && std::isfinite(location.center)) {
-    // Re-admit stage-1 outliers: the exercise premium varies by strike, so a
-    // pair can disagree with the European fit only because of early exercise.
-    for (std::size_t i = 0; i < n; ++i) {
-      Candidate &c = strip[i];
-      if (c.status == ImpliedForwardPairStatus::Outlier && std::isfinite(c.parity) &&
-          positive(c.weight)) {
-        c.active = true;
-        c.status = ImpliedForwardPairStatus::Retained;
-      }
-      if (!c.active) {
-        continue;
-      }
-      c.anchor = c.strike >= location.center ? Side::Call : Side::Put;
-      align_pair(c, market, df, total_vol, cfg);
-    }
-    // The aligned American IVs measure the ATM level better than a straddle.
-    double sum_w = 0.0;
-    double sum_ws = 0.0;
-    for (std::size_t i = 0; i < n; ++i) {
-      if (strip[i].active && std::isfinite(strip[i].sigma)) {
-        sum_w += strip[i].weight;
-        sum_ws += strip[i].weight * strip[i].sigma;
-      }
-    }
-    if (sum_w > 0.0) {
-      total_vol = std::clamp(sum_ws / sum_w * std::sqrt(market.years), kMinTotalVol, kMaxTotalVol);
-    }
-    for (std::size_t i = 0; i < n; ++i) {
-      Candidate &c = strip[i];
-      if (c.active && std::fabs(sd_units(c.value - c.parity, c.value, total_vol)) >
-                          cfg.max_pair_exercise_shift_sd) {
-        c.active = false;
-        c.status = ImpliedForwardPairStatus::Contaminated;
-      }
-    }
-    retained = locate_retained(strip, n, cfg.huber_k, location);
+    retained = align_strip(strip, n, market, df, cfg, total_vol, location);
     exercise_shift = location.center - out.parity_forward;
   } else if (american && std::isfinite(location.center)) {
-    // Parity on an American chain: measure (never apply) the EEP bias with one
-    // alignment step per retained pair.
-    double sum_w = 0.0;
-    double sum_shift = 0.0;
-    for (std::size_t i = 0; i < n; ++i) {
-      Candidate &c = strip[i];
-      if (!c.active) {
-        continue;
-      }
-      c.anchor = c.strike >= location.center ? Side::Call : Side::Put;
-      const NewtonStep step = alignment_step(c, c.parity, market, df, total_vol, 0.0, cfg);
-      c.sigma = step.sigma;
-      if (step.status == ImpliedForwardPairStatus::Retained) {
-        sum_w += c.weight * c.huber;
-        sum_shift += c.weight * c.huber * (step.next - c.parity);
-      }
-    }
-    exercise_shift = sum_w > 0.0 ? sum_shift / sum_w : kNaN;
+    exercise_shift =
+        measure_parity_bias(strip, n, market, df, total_vol, cfg, location, retained);
   }
 
   out.forward = location.center;
@@ -686,54 +781,8 @@ ImpliedForwardResult estimate_implied_forward(const ImpliedForwardMarket &market
                "no pair supports a forward");
     return out;
   }
-  const double forward = location.center;
-  out.implied_yield = market.rate - std::log(forward / market.spot) / market.years;
-  out.prepaid_deficit = market.spot - forward * df;
-  if (market.reference_yield) {
-    out.forward_offset =
-        forward - market.spot * std::exp((market.rate - *market.reference_yield) * market.years);
-  }
-  double dispersion = 0.0;
-  double max_loo = 0.0;
-  spread_statistics(strip, n, cfg.huber_k, forward, dispersion, max_loo);
-  out.dispersion = dispersion;
-  out.dispersion_sd = sd_units(dispersion, forward, total_vol);
-  out.max_leave_one_out_shift_sd = sd_units(max_loo, forward, total_vol);
-  out.exercise_shift_sd = american ? sd_units(exercise_shift, forward, total_vol) : 0.0;
-
-  if (retained < cfg.min_pairs) {
-    const bool lost_to_exercise =
-        out.pairs_contaminated + out.pairs_unidentified + out.pairs_exercise_bound > 0 &&
-        retained + out.pairs_contaminated + out.pairs_unidentified + out.pairs_exercise_bound >=
-            cfg.min_pairs;
-    set_status(out, lost_to_exercise ? ImpliedForwardStatus::Contaminated
-                                     : ImpliedForwardStatus::InsufficientPairs,
-               lost_to_exercise ? "early exercise removed too many near-money pairs"
-                                : "fewer retained near-money pairs than min_pairs");
-    return out;
-  }
-  if (static_cast<double>(out.pairs_outlier) >
-      cfg.max_outlier_fraction * static_cast<double>(out.pairs_outlier + retained)) {
-    set_status(out, ImpliedForwardStatus::Dispersion, "too many pairs rejected as outliers");
-    return out;
-  }
-  if (out.dispersion_sd > cfg.max_dispersion_sd) {
-    set_status(out, ImpliedForwardStatus::Dispersion,
-               "pair forwards disagree beyond max_dispersion_sd");
-    return out;
-  }
-  if (out.max_leave_one_out_shift_sd > cfg.max_leave_one_out_sd) {
-    set_status(out, ImpliedForwardStatus::Dispersion,
-               "one pair moves the forward beyond max_leave_one_out_sd");
-    return out;
-  }
-  if (american && !align &&
-      !(std::fabs(out.exercise_shift_sd) <= cfg.max_exercise_shift_sd)) {
-    set_status(out, ImpliedForwardStatus::Contaminated,
-               "parity forward carries early-exercise bias beyond max_exercise_shift_sd");
-    return out;
-  }
-  set_status(out, ImpliedForwardStatus::Ok, "ok");
+  publish_carry(out, strip, n, market, df, total_vol, exercise_shift, american, cfg.huber_k);
+  classify(out, retained, american && !align, cfg);
   return out;
 }
 
