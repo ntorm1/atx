@@ -1,0 +1,8 @@
+CRT record (CRT-2, M2c-RED-2 (d); gate agent 2, step 7 part): the two Release-built D-COV stores are pinned bytes,
+never rebuilt in P9; their receipts and exe hashes, their manifest SHA-256 vs the M2i pins, and the CRT now.
+p9-m2i-dcov-v11: receipt outcome completed exit 0 build_type Release exe ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811 source f1d2a102 started 2026-10-04T23:19:47.017993+00:00; manifest sha256 397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7 = M2i pin True
+p9-m2i-dcov-covv1: receipt outcome completed exit 0 build_type Release exe ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811 source f1d2a102 started 2026-10-04T23:20:43.867039+00:00; manifest sha256 ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3 = M2i pin True
+built under ucrtbase.dll 10.0.26100.7623 2c08e77f...65ef (handoff-root-m2i.md); now (gate agent 2 step 0,
+2026-10-16T12:36:59Z): 10.0.26100.7623 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF: unchanged;
+ucrtbased.dll 10.0.22000.832 19E79E91...F48D unchanged. The stores' container identity: GATE-COVDIFF (step 2) and
+agent 1's S-7 hand check (covdiff-s7-files.txt). Neither store was rebuilt or written by the gate.

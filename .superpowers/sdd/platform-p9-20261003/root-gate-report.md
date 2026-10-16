@@ -16,7 +16,27 @@ JSON path, exit code and counts only; no 2020-2023 statistic is read or recorded
 - **GATE-IDX:** `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` (73,728 bytes, sha256 `3a177dfd...c6f0`) was
   present at step 0; this agent never deletes it and runs nothing naming that cache while it exists (see step 3).
 
-## Status by step
+## Status by step after chain agent 2 (2026-10-16 ~13:45Z; the tables below it are agent 1's, as they stood at OWNER STOP 12)
+
+**Gate status: BLOCKED-OWNER** at step 4: (i) GATE-IDX: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite`
+still present (the owner's to delete; no run of record named the cache); (ii) NEW: the fields directories
+`build-equity/train-2020-2023-lo3-fields-v10/` and `-v13/` (with v9 / v14 / v15a) are absent from disk: R-2's NAV argv
+(the P9-B0 re-base) and X-5's NAV / u / w identity argvs cannot run. No code red; known-red set EMPTY; 0 trials.
+
+| step | state | evidence (`gate-logs/`) |
+|---|---|---|
+| 0 start state | **holds** (re-verified by agent 2; exes re-hashed `disk = receipt` 27 / 27 + 27 / 27) | `start-state-2.txt` |
+| 1 exes of record | **holds** (agent 1; unchanged) | `mega-p9-3{f,g}-*`, `exe-sha-{rel,dbg}.txt` |
+| 2 suites | **holds**: Release gtests 4,098 / 0 failed; Debug gtests 4,099 / 0 failed; ctest 291 + 728 on both trees, 0 failed; `scripts/tests` seeds 0 and 1: 703 / 0 failed / 3 named skips each; stage chain 10; `atx-engine/tools` 391; `atx-impl/tools` 770; `atx-impl/strategies` 14; fields 4 / 26 / 16 / 37; mirror guard 7; GATE-TMP closed (the tool's TMP root; two TMP-root effects shown, `tools/CHANGES.txt`); GATE-COVDIFF holds (3 x exit 0) | `gt-exits.txt`, `ctest-exits.txt`, `pyt-exits.txt`, `covdiff-runs.txt` |
+| 3 identity, canaries | **PARTIAL**: Y-F0 NAV (argv, `--spec`) and fit identity hold; ALCLOCK-1 holds; D3-Q1a DIFFERENT (P9-W lapses at 0, PRE-35; finding); COMPOSE-1a ACCEPT; D3-Q2 / D3-S1 0 / 0; golden 1 / 4 workers OK both builds; canaries 15 / 15 both builds; **X-5 NAV identity not run (fields v13 absent); X-5 u / w not run (GATE-IDX + v13)** | `nav-identity-yf0.txt`, `fit-identity-yf0.txt`, `d3q1a.txt`, `compose-1a.txt`, `d3-greps.txt`, `inputs-check.txt` |
+| 4 P9-B0 | **not started: BLOCKED-OWNER** (GATE-IDX; R-2's fields v10 absent) | this file "Steps 4-6" |
+| 5 rho | not reached (needs step 4) | |
+| 6 re-pin | not reached; EXE-FREEZE not started | |
+| 7 store step, scoreboard, G-P, CRT | **PARTIAL**: scoreboard + timings reproduce the lineage; PY-S S-6 "equal"; CRT record; catalog / G-P / X-5 opt-in cache identity not run (post-re-pin; GATE-IDX) | `scoreboard-gate.txt`, `pys-s6-ledger-n.txt`, `crt-record.txt` |
+| 8 whole-wave review | DONE before the chain | `wave-review-*.md` |
+| 9 records | incremental: this file, `integration-log.md`, `handoff-root-gate-2.md` | |
+
+## Status by step (agent 1, at OWNER STOP 12)
 
 | step | state | evidence |
 |---|---|---|
@@ -30,6 +50,22 @@ JSON path, exit code and counts only; no 2020-2023 statistic is read or recorded
 | 7 store step, scoreboard, G-P, CRT | not reached | |
 | 8 whole-wave review | DONE before this agent (WAVE-REV-EARLY, SQL4-ADD; GATE-0 committed the five files) | `wave-review-*.md`, ledger :905, :913 |
 | 9 records | incremental | this file, `integration-log.md`, `handoff-root-gate*.md` |
+
+## The rulings: state after chain agent 2 (RESUME 13; rows not listed are as in agent 1's table below)
+
+| ruling | step | state | evidence (`gate-logs/`) |
+|---|---|---|---|
+| GATE-TMP | 2 | **closed**: the tool's TMP root moved to a short root OUTSIDE the work tree (the ruled `build-equity/pt/<inv>` is refused by K3 `fresh_root` / `no_git_refusal`, both pre-P9; open question for the PM); seed 0 re-run green, the single named test green | `tools/CHANGES.txt`, `pyt-exits.txt` |
+| TEST-2 (owner 2026-10-16) | 2 | received after every whole suite of step 2 had completed and been logged: all stand as run; focused checks (a) single test green and (b) the three `cov-diff --legacy` runs done; no new whole-suite invocation started | this file "Chain agent 2" |
+| GATE-COVDIFF | 2 | **holds**: COV-9 role check first (S9 0 of 990), then the three bounded `cov-diff --legacy` runs exit 0, "legacy equal: 1405 sessions", no store block | `cov9-role-check.txt`, `covdiff-runs.txt` |
+| D3-Q1a | 3 | **DIFFERENT**: admission identical, the engine-fit weights differ from the Python fit in 694 float leaves (`status` "agree"); P9-W lapses at 0 (PRE-35); P9-F0h is produced flag-absent (Python fit) | `d3q1a.txt` |
+| COMPOSE-1 (1a) | 3 | **ACCEPT** at the store-backed parse stage on the tiny world (both flags accepted together; stops at the same later stage as the rate-only control); `validate_nav_config` / `validate_nav_input` left to P9-MV's preflight | `compose-1a.txt` |
+| ALCLOCK-1 | 3 | **holds**: flag-absent Y-F0 NAV identity; opt-in adds only `/scenarios/*/info_clock` leaves (5 / 5 scenarios) | `nav-identity-yf0.txt` |
+| D3-Q2, D3-S1 | 3 | **hold**: 0 / 0 over `scripts/specs/p9/` | `d3-greps.txt` |
+| GATE-IDX | 3, 4, 7 | file **still present** at 13:40:01Z: no run naming the cache; step 4 not started: **BLOCKED-OWNER** | `cache-lo3-listing-agent2-start.txt` |
+| PY-S S-6 | 7 | **equal** (unscored 63, scored 62, each three ways) | `pys-s6-ledger-n.txt` |
+| CRT-2 | 7 | recorded: stores = pins, CRT unchanged | `crt-record.txt` |
+| PERM-1 | - | one refusal (the unstage of an editor-side `.mypy_cache`); not retried | `perm-refusals.txt` |
 
 ## The "ROOT GATE: rulings" list (`r11-dispatch.md`) and the dispatch rulings: state at OWNER STOP 12
 
@@ -57,6 +93,10 @@ None of items 1-6, 8, 9, 12, 15, 20, 22, 23, 25, 26 is final yet (P9-B0, the re-
 already fixed for them: item 4's exe paths, SHA-256 and tags are step 1's table (final only when the re-pin commit
 names them); item 25: the `ucrtbase.dll` value at step 0 (10.0.26100.7623 `2C08E77F...65EF`), to be re-recorded at
 P9-B0 itself.
+
+Agent 2: item 25's value re-read at its step 0 (2026-10-16): unchanged (10.0.26100.7623 `2C08E77F...65EF`); still to be
+re-recorded at P9-B0 itself. Delivered as gate outcomes (not Appendix IV items): D3-Q1a DIFFERENT (P9-W lapses at 0)
+and COMPOSE-1a ACCEPT. The items tied to P9-B0, rho and the re-pin stay open (step 4 not started).
 
 ## Step 0: start state (re-verification only; GATE-0 did the slips)
 
@@ -356,6 +396,74 @@ COMPOSE-1a's own evidence is their runs (step 3); no extra gtest filter was need
 trees, `scripts/tests` seeds 0 and 1, the stage chain, `atx-engine/tools`, `atx-impl/tools`, `atx-impl/strategies`, the
 fields pytests, the mirror guard), named skips only; the two reds seen were the gate tool's TMP root (GATE-TMP), each
 shown so; GATE-COVDIFF holds. Known-red set EMPTY.
+
+### Step 3, agent 2: identity (SHA-256 and JSON path only; no statistic read)
+
+**Reference inputs missing on disk (a finding for the owner / PM; `gate-logs/inputs-check.txt`, `tools/inputs_check.py`,
+names only):** the fields directories `build-equity/train-2020-2023-lo3-fields-v10/` and `-fields-v13/` no longer
+exist (their builders' receipts `-v10-run/`, `-v13-run/` remain; `-v9`, `-v14`, `-v15a` are gone too; `-v11` and `-v15`
+remain). `disk-audit.md:135` (2026-10-03) lists v9 / v10 / v13 / v14 / v15 / v15a as one hard-linked family ("v13 is the
+P6 pin `e5f7f28c...` that X-5 and D-1 read"); M6b's X-5 runs read v13 on 2026-10-15 ~19:30Z, so the directories went
+after that; nothing in this agent's or agent 1's records deletes them, and no ledger line records it. Missing inputs of
+gate runs: X-5's NAV reference argv (`p9-c1-s2-x5-nav-run`: `--fields .../fields-v13/manifest.json`), X-5's u / w
+(`p9-m6b-x5-{u,w}-post-run`: `--train-fields .../fields-v13`), **R-2's NAV argv** (`mega-nav-v8-r1-std-...-L1.1474-v80-run`:
+`--fields .../fields-v10/manifest.json`), and the build argv of the three container stores (`p9-m2i-dcov-v11`,
+`-covv1`, `p9-m2d-cov-risk-container`: `--fields .../fields-v10/manifest.json`; the stores themselves are pinned bytes
+and read fine: GATE-COVDIFF above; B8A-PROD's step 2 in P9-V's cell re-runs that build argv, so it needs v10). Every
+Y-F0 / Y-1 / X-10 input (fields v15) is present. Not recreated (a fields build reads atx-db inputs: A4-DB / OD3-DB).
+
+| item | runs (bounded runner, `--seconds 600 --max-rss-mib 2048`, Release p9-3f exes; `gate-logs/nav-runs.txt`, `d3q1a.txt`) | result | evidence |
+|---|---|---|---|
+| X-5 NAV flag-absent identity, argv and `--spec` (C3-6 / M2J-2 reference `p9-c1-s2-x5-nav`) | `p9-gate-x5-nav-{argv,spec}` | **not run: refused before any work**, exit 1 `InvalidArgument: nav replay: fields manifest missing/oversized` (fields v13 absent); nothing written | `nav-runs.txt`, `receipt-p9-gate-x5-nav-*.json` |
+| Y-F0 NAV flag-absent identity, argv (reference `p9-b0-yf0-nav`: the wave-1 P9-B0's Debug exe `407c34ad...`) | `p9-gate-yf0-nav-argv`, 22 s, peak 583 MiB, no `store` block | **holds**: 26 / 27 files byte-identical; `summary.json` differs only at `/producer/build_type`, `/producer/engine_git_sha` | `nav-identity-yf0.txt` |
+| Y-F0 NAV flag-absent identity, `--spec` (NavSpec printed by the Release exe: `yf0.navspec.json` `a793e183...`) | `p9-gate-yf0-nav-spec` | **holds**: the same 26 / 27, the same two `/producer` leaves | `nav-identity-yf0.txt` |
+| ALCLOCK-1 opt-in (`--info-clock-print` on Y-F0's argv) | `p9-gate-yf0-nav-clock` | **holds**: same 27 files; only `summary.json` differs, 70 leaves all under `/scenarios/<i>/info_clock` (5 of 5 scenarios), opt-in side only; minus those blocks = the flag-absent document | `nav-identity-yf0.txt`, `tools/clock_optin_cmp.py` |
+| Y-F0 fit flag-absent identity (reference `p9-b0-yf0-fit`; the fit receipt's argv, `--output` only changed) | `p9-gate-yf0-fit-py`, 1.6 s | **holds outside the code-identity stamps**: `admission.csv` byte-identical; `admission.json` only `/inputs/script_sha256` (reference only) -> `/inputs/producer_fingerprint` (new only); `composition_weights.json` only `/provenance/{admission_sha256, script_sha256 -> producer_fingerprint, std/module_sha256 -> std/producer_fingerprint, theme_erc/module_sha256 -> theme_erc/producer_fingerprint}`; attributed by merge commit to `61378337` (D2: `d61f73c2` replaced the script SHA stamps, CM-5, as M2d's D2 root item (iii) recorded) | `fit-identity-yf0.txt` |
+| D3-Q1a engine-fit identity (D3-Q1, D3-Q1a) | signals index `p9-gate-yf0-sig` (67 candidates, roster order, payloads of the real cache's Debug entries; `signals.json` `410900f5...`), Release `factors` -> `p9-gate-yf0-factors` (1004 decisions x 67, 0 refused; manifest `21b9f198...41e1`), `--engine-fit --engine-factors <it> --admission-exe <Release f53d9277...> --composition-exe <Release 04db0d67...>` -> `p9-gate-yf0-fit-eng` | **DIFFERENT**: `admission.json` = (`2d5abfd7...`) and `admission.csv` = (`c3933116...`) byte-identical; `composition_weights.json` minus `$.provenance.engine_fit` (canonical JSON): Python `f2454589...b876` vs engine `decc2f8c...55a8`: 694 float leaves differ (0 non-float; no key on one side only): `/weights/*` (47), `/provenance/candidates/*/weight`, `/provenance/themes/*`, `/provenance/theme_erc/*` (covariance, ERC shares / risk contributions, sleeve vols / correlations, weights before cap), `/theme_standardise/theme_erc/covariance/matrix/*/*`, `/provenance/blend_in_sample_TRAIN_diagnostic/factor_mean`, `/provenance/weighted_standalone_turnover`; `provenance.engine_fit.status` = "agree", `fit_max_rel_float_diff` **non-zero** (within P12; value not read) | `d3q1a.txt`, `receipt-p9-gate-yf0-*.json`, `tools/d3q1a.py` |
+
+**D3-Q1a outcome (ruled before the run, ledger :726, :898): P9-W LAPSES at 0 trials (PRE-35); P9-F0h is produced
+flag-absent (the Python fit) at P9-B0.** The FINDING for the freeze report: on the real Y-F0 TRAIN fit the C++
+theme-ERC fit agrees with numpy within ruling P12 but not bit for bit (the risk `wave-review-ic.md` section 4 stated
+before the run: `fit.hpp:23-31`, BLAS `np.dot` vs the C++ sums), and `--engine-fit` writes the C++ values, so every
+weight moves in its last bits; no re-tuning, no second attempt. The admission screen itself is identical.
+
+Other step-3 items: COMPOSE-1a ACCEPT (above); D3-Q2 / D3-S1 greps 0 / 0 (`gate-logs/d3-greps.txt`); golden at 1 and
+4 workers OK on both builds; canaries 15 / 15 on both builds (step 1). **X-5 u / w identity and every other run naming
+`--candidate-cache build-equity/mega-candidate-cache-v8-lo3`: not run** (GATE-IDX: `index.sqlite` still present,
+`gate-logs/cache-lo3-listing-agent2-start.txt`: 352 files, `fb444f7d316a1a4c`; without that row 351 files =
+`155872de50833fca`); X-5's u / w would in any case need the absent fields v13. **Step 3 state: PARTIAL** (Y-F0 identity,
+ALCLOCK-1, D3-Q1a, COMPOSE-1a, greps, golden, canaries done; X-5 identity blocked by missing inputs; u / w identity
+blocked by GATE-IDX).
+
+### Steps 4-6: not started (GATE-IDX; missing R-2 input)
+
+Immediately before step 4 (13:40:01Z) `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` was STILL present, so
+no run naming `--candidate-cache build-equity/mega-candidate-cache-v8-lo3` was started (Y-F0's re-based u / w are P9-B0
+runs): **BLOCKED-OWNER** (GATE-IDX). P9-B0 is one run set with its substitution list committed first; it was not
+started piecemeal (its R-2 NAV would in any case refuse: fields v10 absent, above). No substitution list was written
+(it depends on the PM's ruling on R-2's missing input). Steps 5 (rho) and 6 (re-pin; EXE-FREEZE) follow step 4.
+
+### Step 7, agent 2: the parts that name neither the cache nor a P9-B0 output
+
+| item | result | evidence |
+|---|---|---|
+| `research_cycle.py scoreboard --timings` | exit 0; ledger `build-equity/trials.jsonl` 133 lines, head `5a3ef9d9...7503`, N 62 (chain verified); lineage `(parent) v8x3b -> y-s v8ysb ACCEPTED`, 0 branches; waves y-s ACCEPTED, y-2 / y-3 / y-5 NOT ACCEPTED; checks 4 / 4 (each ledgered, `s2_net_sr` equal): **reproduces the accepted lineage** (= the wave-1 record); timings table below (wall seconds; v8's waves read through the P9 scoreboard; no P9 wave exists yet) | `gate-logs/scoreboard-gate.txt` (non-statistic fields only; the console and JSON were deleted from the scratchpad unread beyond those fields) |
+| PY-S S-6: the Python `ledger_n` vs the eval verb's N, by hand | **equal**: unscored py 63 = `house_v1.n` 63 = `tot.v8.n` 63 (`n_rule` "+ 1"); scored (`--trial c0=0ad7ea4c5122ebe3`) py 62 = 62 = 62 (no "+ 1"); Release eval verb p9-3f `e2b48c46...962c`; synthetic net series (300 placeholder rows), no dsr / sr0 / variance field read | `gate-logs/pys-s6-ledger-n.txt` |
+| CRT record (CRT-2) | the two D-COV stores: receipts completed exit 0, Release, exe `ccc73cd1...d811` (p9-2o), manifests = the M2i pins; `ucrtbase.dll` unchanged since their build; never rebuilt | `gate-logs/crt-record.txt` |
+| catalog (M2A-4), `verify --pins`, render identity, second catalog, X-5 opt-in cache identity, G-P ticks | **not run**: the catalog walks `build-equity/` (it would index the GATE-IDX file and could not be reproduced after its deletion) and belongs on the post-re-pin tree; the X-5 opt-in cache identity names the cache (GATE-IDX) and needs the absent fields v13 | - |
+
+`scoreboard --timings` (v8 waves, wall seconds by phase; runs), as read at the gate:
+
+| wave | card | fit | monitor | nav | ref | summ | u | w | total |
+|---|---|---|---|---|---|---|---|---|---|
+| y-2 | 18.2 (1) | 0.8 (1) | 1.6 (1) | 90.9 (2) | - | 34.4 (1) | 12.7 (1) | 42.2 (1) | 200.7 |
+| y-3 | 24.5 (1) | 1.9 (1) | 1.6 (1) | 105.5 (2) | - | 37.2 (1) | 12.7 (1) | 52.8 (1) | 236.2 |
+| y-5 | 18.8 (1) | 1.0 (1) | 1.6 (1) | 161.6 (2) | - | 37.7 (1) | 12.7 (1) | 62.2 (1) | 295.5 |
+| y-s | 24.5 (1) | 1.9 (1) | 1.6 (1) | 115.3 (2) | 61.9 (1) | 40.0 (1) | 12.7 (1) | 52.8 (1) | 310.7 |
+
+Gate walls of this agent beside them (Release p9-3f, our host quiet but for the HOST-6 vol sessions): Y-F0 NAV 21-22 s
+(the wave-1 P9-B0 Debug NAV: 79-90 s); Y-F0 `factors` 24.8 s; the fitter 1.6 / 1.9 s (cached WorkStore records,
+67 reused).
 
 ### Step 3, agent 2: COMPOSE-1a, the store-backed parse check (`gate-logs/compose-1a.txt`, `tools/compose_1a.py`)
 

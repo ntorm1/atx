@@ -1,0 +1,16 @@
+research_cycle.py scoreboard --timings (gate agent 2, step 7 part): exit 0; the full JSON / console stayed in the
+session scratchpad and were deleted; this file holds the non-statistic fields only (lineage ids, checks as
+booleans, the ledger, the timings: wall seconds by phase). No Sharpe / return / dSR / turnover value is copied.
+ledger: path build-equity/trials.jsonl lines 133 head 5a3ef9d9bf242dbb416a9b315b45e20377c234d3533e45cd1ae4bafaff8c7503 N 62
+lineage (accepted books in order): (parent):v8x3b [BASE] -> y-s:v8ysb [ACCEPTED]
+branches: 0
+waves: y-s ACCEPTED (parent scripts/specs/v8/x-theme-erc-gm.json); y-3 NOT ACCEPTED (parent scripts/specs/v8/lib-v8ysb-gm.json); y-2 NOT ACCEPTED (parent scripts/specs/v8/lib-v8ysb-gm.json); y-5 NOT ACCEPTED (parent scripts/specs/v8/lib-v8ysb-gm.json)
+checks: y-2 ledgered True s2_net_sr_equal True; y-3 ledgered True s2_net_sr_equal True; y-5 ledgered True s2_net_sr_equal True; y-s ledgered True s2_net_sr_equal True
+checks all true: True (4 / 4)
+timings (wall seconds by phase; runs):
+| wave | card | fit | monitor | nav | ref | summ | u | w | total |
+|---|---|---|---|---|---|---|---|---|---|
+| y-2 | 18.2 (1) | 0.8 (1) | 1.6 (1) | 90.9 (2) | - | 34.4 (1) | 12.7 (1) | 42.2 (1) | 200.7 |
+| y-3 | 24.5 (1) | 1.9 (1) | 1.6 (1) | 105.5 (2) | - | 37.2 (1) | 12.7 (1) | 52.8 (1) | 236.2 |
+| y-5 | 18.8 (1) | 1.0 (1) | 1.6 (1) | 161.6 (2) | - | 37.7 (1) | 12.7 (1) | 62.2 (1) | 295.5 |
+| y-s | 24.5 (1) | 1.9 (1) | 1.6 (1) | 115.3 (2) | 61.9 (1) | 40.0 (1) | 12.7 (1) | 52.8 (1) | 310.7 |

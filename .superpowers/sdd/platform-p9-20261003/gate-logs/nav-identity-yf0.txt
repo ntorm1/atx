@@ -1,0 +1,19 @@
+### yf0 argv vs p9-b0-yf0-nav
+reference build-equity/p9-b0-yf0-nav (27 files)  new build-equity/p9-gate-yf0-nav-argv (27 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
+### yf0 spec vs p9-b0-yf0-nav
+reference build-equity/p9-b0-yf0-nav (27 files)  new build-equity/p9-gate-yf0-nav-spec (27 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list
+exit 0
+### ALCLOCK-1 opt-in: yf0 argv (absent) vs yf0 + --info-clock-print
+absent build-equity/p9-gate-yf0-nav-argv (27 files) | opt-in build-equity/p9-gate-yf0-nav-clock (27 files); same file set True
+files differing: ['summary.json']
+summary.json: scenarios 5; scenarios carrying info_clock 5; differing leaf paths 70; outside /scenarios/*/info_clock none; each on the opt-in side only True
+opt-in summary.json minus each scenario's info_clock equals the flag-absent document: True
+VERDICT: holds
+exit 0

@@ -840,3 +840,17 @@ Gate head (code) **`06dc9e5a`**; docs commits beside root by pathspec (PAR-1: ID
 | 3 | COMPOSE-1a (tiny world, Release risk store, Release NAV parse) | ACCEPT at the store-backed parse stage; stop = the tiny world's missing `ea_days_since` (same as the rate alone) | `gate-logs/compose-1a.txt` |
 | 3 | D3-Q2 / D3-S1 greps over `scripts/specs/p9/` | 0 / 0 | `gate-logs/d3-greps.txt` |
 | 3 | golden `0x889874a3b9b29c55` at 1 and 4 workers; canaries | OK on Debug and Release (whole-target runs); canaries 15 / 15 both builds (step 1) | `gt-{rel,dbg}-atx-engine-factory-tests.log`, `gt-{rel,dbg}-atx-impl-strategy-mine-tests.log` |
+| 3 | inputs of the identity / P9-B0 argvs of record (names only) | **fields v10 and v13 (with v9, v14, v15a) absent from disk** (only their `-run` dirs remain): X-5 NAV / u / w and R-2's NAV cannot re-run; every Y-F0 / Y-1 / X-10 input present | `gate-logs/inputs-check.txt` |
+| 3 | Y-F0 NAV identity, argv form and `--spec` form (Release p9-3f, bounded) | holds: 26 / 27 files byte-identical; the summary differs only at `/producer/build_type`, `/producer/engine_git_sha` | `gate-logs/nav-identity-yf0.txt`, `nav-runs.txt` |
+| 3 | ALCLOCK-1 opt-in (Y-F0, `info_clock` on) | holds: 70 leaves added, all under `/scenarios/*/info_clock` (5 / 5 scenarios); nothing else moves | `gate-logs/nav-identity-yf0.txt` |
+| 3 | Y-F0 fit, flag absent | holds outside the code-identity stamps (attributed: D2 merge `61378337`, commit `d61f73c2`) | `gate-logs/fit-identity-yf0.txt` |
+| 3 | D3-Q1a: engine fit vs Python fit on Y-F0 | **DIFFERENT**: admission files identical; stripped weights differ (694 float leaves; `status` "agree"); P9-W lapses at 0 (PRE-35); P9-F0h produced flag-absent | `gate-logs/d3q1a.txt` |
+| 3 | X-5 NAV identity; X-5 / Y-F0 u / w identity | **not run**: fields v13 absent; u / w name the cache (GATE-IDX) | `gate-logs/inputs-check.txt` |
+| 4-6 | P9-B0, rho, re-pin | **not started**: GATE-IDX file present at 13:40:01Z (BLOCKED-OWNER); R-2's NAV input fields v10 absent; EXE-FREEZE not started | `root-gate-report.md` "Steps 4-6" |
+| 7 | `research_cycle.py scoreboard --timings` | exit 0; ledger 133 lines, N 62, chain verified; lineage v8x3b -> y-s ACCEPTED, checks 4 / 4: reproduces the accepted lineage | `gate-logs/scoreboard-gate.txt` |
+| 7 | PY-S S-6 `ledger_n` vs the eval verb's N | equal: unscored 63 / 63 / 63, scored 62 / 62 / 62 | `gate-logs/pys-s6-ledger-n.txt` |
+| 7 | CRT record (CRT-2) | the two D-COV stores = pins; exe `ccc73cd1...d811`; `ucrtbase.dll` unchanged | `gate-logs/crt-record.txt` |
+| 7 | catalog, `verify --pins`, render identity, second catalog, G-P ticks, X-5 opt-in cache identity | **not run** (post-re-pin; GATE-IDX; fields v13) | - |
+
+G-P ticks: none changed by agent 2. Build tags used by agent 2: none; next free tag **p9-3h**. Trials: 0 (ledger 133
+`27e40f9f`). Permission refusals: 1 (`gate-logs/perm-refusals.txt`).
