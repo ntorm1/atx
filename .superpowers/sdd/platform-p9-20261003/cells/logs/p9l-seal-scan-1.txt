@@ -1,0 +1,8 @@
+  .superpowers/sdd/platform-p9-20261003/cells/logs/p9l-run1-cycle.log:2 token=2026-10-02 form=iso source=A
+  .superpowers/sdd/platform-p9-20261003/cells/logs/p9l-run1-cycle.log:2 token=2026-10-03 form=iso source=A2
+  .superpowers/sdd/platform-p9-20261003/cells/logs/p9l-run1-cycle.log:2 token=2026-10-03 form=iso source=A2
+  .superpowers/sdd/platform-p9-20261003/cells/logs/p9l-run1-cycle.log:2 token=2026-10-03 form=iso source=A2
+  .superpowers/sdd/platform-p9-20261003/cells/logs/p9l-run1-cycle.log:2 token=2026-10-06 form=iso source=A2
+files scanned: 11; seal 2024-01-01; forms ['iso', 'compact', 'year', 'quarter']; seeds 0; seal references 0; untracked PNGs named 5
+summary: 2026-10-02 A x1, 2026-10-03 A2 x3, 2026-10-06 A2 x1
+OTHER hits: 0
