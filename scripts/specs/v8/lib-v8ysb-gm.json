@@ -276,7 +276,9 @@
       "--liquidity-cache",
       "--warm-start-sessions",
       "60",
-      "--capacity-curve"
+      "--capacity-curve",
+      "--ann-mean-gross",
+      "--info-clock-print"
     ]
   },
   "monitor": {
