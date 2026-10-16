@@ -1,0 +1,22 @@
+# root FLAGS agent, step 0: start state (read-only re-verification), 2026-10-16T17:55Z
+# dispatch r14-prompts/root-flags-prompt.md (FLAGS-ROUTE, FLAGS-ROUTE-2, FLAGS-SEQ (1)); pool C:/atx-wt/pool-2, branch feat/platform-p9-20261003
+
+HEAD (git log -1 --format=%h): cb051169
+  dispatch fact: 6c608ff3. Difference: two docs commits of the PRE docs agent beside me (FLAGS-SEQ (2), PAR-1), by pathspec:
+    bc034c4a docs(p9): p9-prereg.md F.1 cites OD3-FIELDS-RISK (GATE-REV SG-1)
+    cb051169 docs(p9): p9-od3-runbook.md: F.1 governs; PW-LAPSE-PRINT and FLAGS-ROUTE notes (GATE-REV SG-2)
+  git diff --stat 6c608ff3 HEAD = p9-od3-runbook.md (+9) and p9-prereg.md (+3 / -1) only. Expected under FLAGS-SEQ (2); not a stop.
+git status --short: M progress.md, M next-goal-prompt.md (the two tracked changes); ?? the five PNGs under docs/plans/ (never added). Index: nothing staged.
+git status --short --ignored (r13-prompts, r14-prompts, status-14.md): !! r13-prompts/cells-prompt-1.md, !! r13-prompts/gaterev-prompt-1.md, !! r14-prompts/ (cells-prompt-1.md, idx-final-prompt.md, pre-flags-prompt.md, rev-flags-prompt.md, root-flags-prompt.md), !! status-14.md
+git diff 2078f877 HEAD -- . ':(exclude).superpowers': empty (0 bytes): code = the re-pin of record 2078f877 (code head f8a85ad4)
+trial ledger build-equity/trials.jsonl: 133 lines, sha256 27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554
+build-equity/research-store/: absent
+build-equity/mega-candidate-cache-v8-lo3/index.sqlite: absent
+P9-B0 reference dirs present: p9-b0-r2-nav, p9-b0g-x10-nav, p9-b0g-y1-nav, p9-b0g-yf0-u, p9-b0g-yf0-w, p9-b0g-yf0-nav
+new dirs of this dispatch absent before the run: build-equity/p9-fr-yf0-nav, build-equity/p9-fr-yf0-nav-run
+lineage parent scripts/specs/v8/lib-v8ysb-gm.json sha256 3631679cd18f1c6a63a6a5dc96cdbe6ee7669b81b8979f529544f1b237d9edea (= the re-pin's bytes)
+Release NAV exe build-equity-rel/bin/atx-equity-strategy-targets.exe sha256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = p9-3f receipt (EXE-FREEZE; SPDLOG-RELINK)
+  gate-logs/tools/exe_sha_end.py build-equity build-equity-rel: 27 / 27 Release exes "disk = receipt" (newest receipt p9-3f, source 5f48a25d)
+ucrtbase.dll: 2026-10-16T17:55:14Z (C:\Windows\System32) file version 10.0.26100.7623 (WinBuild.160101.0800) SHA-256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF (= the P9-B0 record, C.6)
+host: free RAM 3.39 of 15.69 GB; C: 40.7 GB free (>= 15)
+processes: no build and no bounded run of ours; foreign (HOST-6a): pool-3 cmake / ninja / clang-cl build (build-vol-rel) and a pool-3 quote benchmark; editor-side mypy / black language servers. None touched.
