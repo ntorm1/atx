@@ -813,3 +813,22 @@ instead). That row names exactly these leaves (identity strings incl. `ic_result
 `signal_key_sha256`; cache-root paths `directory`, `fields_directory`, payload + sidecar "now under `DIR/<Release
 root>/`, same file names"; counters incl. `verify_bytes`, `ic_cache_bytes`, `ic_scratch_bytes`). The tool now encodes
 that list with a strict check per leaf (`tools/CHANGES.txt` (3)); no payload and no other leaf is involved.
+
+### Step 4, agent 4: row 5, Y-F0 w on the Release IC exe (`gate-logs/b0-runs.txt`, `yf0w-cmp.txt`, `yf0w-classes.txt`)
+
+`tools/b0_ic.py yf0w`, after row 4, free RAM 5,210 MiB, runner cap 3,072 MiB (C.14): completed exit 0, wall 30.6 s, peak
+1,427 MiB, exe = receipt before and after, receipt source `c0112afc` clean in the code pathspec, no `store` block; argv =
+the receipt of record's with token 0 and `--output` only (the cache and `--composition-weights` of the v8 fit as the
+receipt). Outputs `build-equity/p9-b0g-yf0-w`: 12 files, listing
+`ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1`, `summary.json`
+`f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2`. Cache after: the 351 originals still
+`155872de50833fca`; the whole listing `c9ee9291f5ddc0c2` (552 files) is byte-for-byte the after-u listing (the warm
+Release w added no file; the tool's cause line repeats "added at step 4" because it counts every file beyond the 351);
+C: 51.8 GB free.
+
+**Identity vs M1d's `p9-b0-yf0-w` (RELCACHE-ALLOW): holds.** All 10 payloads byte-identical: `orientations.json`,
+`recipe.json`, `train_combined.f64` `70d863f9...`, `train_combined.json` **`e13fbc4d...8c`** (= the v8 w's, the pin the
+NAV row 6 reads), `train_combined_{finite.u8,ids.u64,member.u8,sessions.i64}`, `train_daily_ic.csv` `45261f20...`,
+`train_planned_targets.csv` `cb744a74...`. `summary.json` 484 differing leaves, `train_candidates.jsonl` 266: TIMING 541,
+IDENTITY 1 (`vm_identity`), M1D-LIST 208 (the same cache-root paths, identity strings, `signal_key_sha256`,
+`ic_cache_bytes`, `ic_scratch_bytes`; both sides warm, so no hit / miss counter moved); outside **0**.
