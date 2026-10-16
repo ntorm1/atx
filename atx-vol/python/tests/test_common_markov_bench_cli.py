@@ -900,3 +900,144 @@ def test_common_unsupported_time_knot_is_a_typed_fit_failure(binary, tmp_path):
     assert "time basis" in decision["error"]
     assert report["served_rows"] == 0
     assert all(row["status"] == "fit_failure" for row in read_rows(output))
+
+
+SEARCH_KEYS = ("search", "evaluations_per_parameter", "max_scaled_evaluations",
+               "objective_tolerance", "gradient_tolerance", "jacobian_log_step",
+               "initial_damping", "max_damping")
+
+
+def test_default_search_keeps_definition_and_reports_effective_budget(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    result = common_run(binary, source, output, policy_file(tmp_path))
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    fit_definition = report["policy_definition"]["profiles"][0]["fit"]
+    # Legacy expanded definitions (and their configuration hashes) gain no key.
+    assert not any(key in fit_definition for key in SEARCH_KEYS)
+    decision, = report["policy_decisions"]
+    fit = decision["fit"]
+    assert fit["search"] == "coordinate-pattern"
+    assert fit["evaluation_budget"] == fit["evaluations"] == 1
+    assert fit["jacobian_evaluations"] == fit["reused_quote_prices"] == 0
+    assert fit["priced_quotes"] == 26 and fit["evaluation_rollback_work"] > 0
+    assert report["fit_termination_counts"] == {"control:evaluation_limit": 1}
+
+
+def test_levenberg_marquardt_scaled_budget_is_explicit_and_reported(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    expected = make_quotes(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(
+        log_state_knots=[-.2, 0, .2], initial_sigma=.2, max_evaluations=64,
+        search="levenberg-marquardt", evaluations_per_parameter=32, max_scaled_evaluations=256,
+        max_sweeps=40, objective_tolerance=1e-9)
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    fit_definition = report["policy_definition"]["profiles"][0]["fit"]
+    assert fit_definition["search"] == "levenberg-marquardt"
+    assert fit_definition["evaluations_per_parameter"] == 32
+    assert fit_definition["max_scaled_evaluations"] == 256
+    assert all(key in fit_definition for key in SEARCH_KEYS)
+    decision, = report["policy_decisions"]
+    fit = decision["fit"]
+    assert fit["search"] == "levenberg-marquardt"
+    assert fit["evaluation_budget"] == 96  # 32 x 3 knots, above the 64 base, below the 256 cap
+    assert fit["evaluations"] <= 96
+    assert fit["termination"] in {"objective_tolerance", "step_tolerance", "gradient_tolerance"}
+    assert fit["jacobian_evaluations"] > 0 and fit["jacobian_evaluations"] % 3 == 0
+    # A shared shape reuses nothing: every evaluation prices every quote.
+    assert fit["reused_quote_prices"] == 0
+    assert fit["priced_quotes"] == fit["evaluations"] * 26
+    # Explicit clocks vary with sigma, so only the retained model's work is a floor.
+    assert fit["evaluation_rollback_work"] >= fit["model"]["quote_prefix_rollback_work"]
+    assert fit["sigmas"] == pytest.approx([.3, .3, .3], abs=.02)
+    assert report["fit_termination_counts"] == {f"control:{fit['termination']}": 1}
+    rows = read_rows(output)
+    assert max(abs(float(row["predicted_price"]) - price) for row, price in zip(rows, expected)) < .04
+
+
+@pytest.mark.parametrize("fit", [
+    {"search": "newton"},
+    {"evaluations_per_parameter": 8},
+    {"max_scaled_evaluations": 64},
+    {"evaluations_per_parameter": 8, "max_scaled_evaluations": 8193},
+    {"evaluations_per_parameter": 8.5, "max_scaled_evaluations": 64},
+    {"jacobian_log_step": 0},
+    {"initial_damping": 1, "max_damping": .5},
+    {"objective_tolerance": float("nan")},
+])
+def test_search_policy_is_closed_and_bounded_before_execution(binary, tmp_path, fit):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path)
+    policy = json.loads(path.read_text())
+    policy["profiles"][0]["fit"].update(fit)
+    path.write_text(json.dumps(policy))
+    result = common_run(binary, source, output, path)
+    assert result.returncode != 0
+    assert not output.exists()
+
+
+def black_scholes_call(strike, sigma, years=.5):
+    width = sigma * math.sqrt(years)
+    d1 = math.log(100 / strike) / width + width / 2
+    return 50 * math.erfc(-d1 / math.sqrt(2)) - strike / 2 * math.erfc(-(d1 - width) / math.sqrt(2))
+
+
+def test_interval_fallback_seeds_wide_and_bidless_market_within_budget(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    rows = read_rows(source)
+    for index, row in enumerate(rows):
+        strike = float(row["strike"])
+        # Asks at sigma .45; OTM bids at sigma .2 (wide), every third OTM and all ITM bidless,
+        # so the bid-mid-ask primary admits nothing.
+        bidless = index % 3 == 0 or strike < 100
+        row["bid"] = 0 if bidless else black_scholes_call(strike, .2)
+        row["ask"] = black_scholes_call(strike, .45)
+    write_rows(source, rows)
+    path = policy_file(tmp_path, initialization={"mode": "quote-seed", "seed": {
+        "estimator": "bid-mid-ask-then-sigma-interval", "max_inversions": 12}})
+    result = common_run(binary, source, output, path)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    definition = report["policy_definition"]["initialization"]
+    assert definition["seed"]["estimator"] == "bid-mid-ask-then-sigma-interval"
+    assert "geometric midpoint" in definition["interval_estimator"]
+    decision, = report["policy_decisions"]
+    init = decision["initialization"]
+    assert init["state"] == "applied_interval_fallback" and init["applied"]
+    # The bid-mid-ask primary refuses every quote before inverting anything.
+    assert init["primary_inversion_calls"] == 0 and init["used_quotes"] == 0
+    assert set(init["quote_status_counts"]) <= {"bidless", "wide_spread", "far_moneyness"}
+    fallback = init["interval_fallback"]
+    assert fallback["state"] == "applied" and fallback["remaining_max_inversions"] == 12
+    assert fallback["estimator"] == "sigma-interval"
+    assert init["inversion_calls"] == fallback["inversion_calls"] <= 12
+    interval = fallback["sigma_interval"]
+    assert interval["lower"] == pytest.approx(.2, abs=1e-5)
+    assert interval["upper"] == pytest.approx(.45, abs=1e-5)
+    assert interval["geometric_midpoint"] == pytest.approx(math.sqrt(.2 * .45), abs=1e-5)
+    assert not interval["crossed"]
+    assert len(fallback["interval_quotes"]) == fallback["used_quotes"] > 0
+    assert any(q["lower_sigma"] is None for q in fallback["interval_quotes"])  # Bidless ask only.
+    assert init["effective_initial_sigmas"] == pytest.approx([math.sqrt(.2 * .45)], abs=1e-5)
+    assert init["effective_prior_sigmas"] == [.3]  # Configured prior retained.
+    assert report["initialization_states"] == {"applied_interval_fallback": 1}
+    assert decision["fit"]["quote_count"] == len(rows)
+
+
+@pytest.mark.parametrize("estimator", ["sigma", "interval", 1])
+def test_seed_estimator_is_closed(binary, tmp_path, estimator):
+    source, output = tmp_path / "quotes.csv", tmp_path / "prices.csv"
+    make_quotes(source)
+    path = policy_file(tmp_path, initialization={"mode": "quote-seed",
+                                                 "seed": {"estimator": estimator}})
+    result = common_run(binary, source, output, path)
+    assert result.returncode != 0
+    assert not output.exists()

@@ -243,6 +243,10 @@ namespace {
 // Every count, refusal, parameter and endpoint of one estimator call. Interval
 // provenance (which quotes bounded sigma, interval widths) only for SigmaInterval.
 void record_seeds(const AmericanMarkovQuoteSeeds &seeds, Json &d) {
+  // The pending record pre-creates both counters; a fallback record does not.
+  for (const auto *key : {"quote_status_counts", "parameter_status_counts"}) {
+    if (!d[key].is_object()) d[key] = Json::object();
+  }
   d["eligible_quotes"] = seeds.eligible_quotes;
   d["used_quotes"] = seeds.used_quotes;
   d["refused_quotes"] = seeds.refused_quotes;
