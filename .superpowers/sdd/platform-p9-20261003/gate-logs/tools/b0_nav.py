@@ -11,7 +11,8 @@ CELL (the substitution list, root-gate-report.md "Step 4, agent 3"):
   x10  X-10 `p9-b0-x10-nav-run`: --output build-equity/p9-b0g-x10-nav, + --ann-mean-gross
   y1   Y-1  `p9-b0-y1-nav-run`: --risk-model / --risk-model-sha256 -> `p9-m2i-dcov-v11` (PRE-29), --output
        build-equity/p9-b0g-y1-nav, + --ann-mean-gross
-  yf0  Y-F0 `p9-b0-yf0-nav-run`: --output build-equity/p9-b0g-yf0-nav, + --ann-mean-gross --info-clock-print
+  yf0  Y-F0 `p9-b0-yf0-nav-run`: --combined / --combined-sha256 -> build-equity/p9-b0g-yf0-w/train_combined.json
+       (agent 4, YF0-NAV-ORDER), --output build-equity/p9-b0g-yf0-nav, + --ann-mean-gross --info-clock-print
 Token 0 (the exe) is always the Release exe (M2c-RED-2 (e), OD5-2). Checks before the run: the receipt's argv names no
 `--candidate-cache` and no cache-index flag (GATE-IDX, SQL-11), every substituted flag occurs exactly once, no added
 flag is already present, every substituted pin re-hashed from its file, the exe = its p9-3f receipt, the output dirs
@@ -47,10 +48,14 @@ CELLS = {
            {"--risk-model": V11_STORE,
             "--risk-model-sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"},
            ["--ann-mean-gross"]),
-    "yf0": ("build-equity/p9-b0-yf0-nav-run/receipt.json", "p9-b0g-yf0-nav", {},
+    # agent 4, YF0-NAV-ORDER: the NAV of record reads the re-based w; its train_combined.json must be the reference
+    # w's bytes (e13fbc4d..., a row-5 payload): the pin check below re-hashes it and STOPs otherwise
+    "yf0": ("build-equity/p9-b0-yf0-nav-run/receipt.json", "p9-b0g-yf0-nav",
+            {"--combined": "build-equity/p9-b0g-yf0-w/train_combined.json",
+             "--combined-sha256": "e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c"},
             ["--ann-mean-gross", "--info-clock-print"]),
 }
-PIN_OF = {"--fields-sha256": "--fields", "--risk-model-sha256": "--risk-model"}
+PIN_OF = {"--fields-sha256": "--fields", "--risk-model-sha256": "--risk-model", "--combined-sha256": "--combined"}
 
 
 def sha_file(p: Path) -> str:

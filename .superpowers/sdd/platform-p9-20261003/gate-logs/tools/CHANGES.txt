@@ -36,3 +36,13 @@ gate-logs/tools change log (gate chain; one line block per change)
   fragility (P10 note: normalise before measuring), not a code red; no merge attributed. The `atx-impl/tools` run of
   record is the whole directory re-run alone under `GATE_PT=systmp` (no tiny-world IC cache path in that directory).
   This mode was added between runs; the batch-B pyt.sh processes running at the edit wrote well-formed lines (checked).
+
+2026-10-16 gate agent 4 (RESUME 13; `r13-prompts/gate-prompt-4.md`), before rows 4-6 ran:
+  (1) NEW tools/b0_cmp.py: the rows 4-6 comparison, listing EVERY differing JSON leaf by path with its class (no value
+  printed; RELCACHE-ALLOW wants every allowed leaf listed by JSON path); `--mode ic` = RELCACHE-ALLOW's classes (TIMING,
+  COUNTERS, IDENTITY: the reference's VM identity string replaced by the new side's), `--mode nav` = PRODUCER + OPTIN
+  (new side only). Self-tested before any run: p9-b0-x10-nav vs p9-b0g-x10-nav = agent 3's `x10-cmp.txt` verdict
+  (PRODUCER 2, OPTIN 5, outside 0); p9-b0-yf0-u against itself = 0 differing leaves.
+  (2) tools/b0_nav.py cell yf0 (YF0-NAV-ORDER): `--combined` -> build-equity/p9-b0g-yf0-w/train_combined.json and
+  `--combined-sha256` e13fbc4d... (the reference w's bytes; the tool re-hashes the file and STOPs if it differs), so the
+  NAV of record reads the re-based w and its receipt names that dir. Nothing else of the tool changed.

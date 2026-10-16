@@ -26,7 +26,7 @@ known-red set EMPTY; 0 trials; no build (next free tag `p9-3h`); EXE-FREEZE not 
 |---|---|---|
 | 0 start state | **holds** (re-verified by agent 3: heads, ledger 133 / `27e40f9f`, research-store absent, 27 / 27 + 27 / 27 `disk = receipt`) | `exe-sha-{rel,dbg}-3.txt` |
 | 3 identity | **PARTIAL** (as agent 2) + X-5 rows **CUT**: "not run at the gate: fields v13 absent (FIELDS-GONE)" (FIELDS-X5); Y-F0 u / w flag-absent identity not run (GATE-IDX) | - |
-| 4 P9-B0 | **PARTIAL**: substitution list committed first (`778d34b8`); FIELDS-SUB witness **70 / 70**; R-2 run on v15 **completed**, comparison **outside** the allowed list (FIELDS / DERIVED / M1d-C1 / C1-COST classes only, no other path): **PATH B** by the ruling's letter (open question 1); X-10 re-based **holds** (`p9-b0g-x10-nav`); Y-1 re-based on the v1.1 store (`p9-b0g-y1-nav`; COV-9 S9 holds; differs from both earlier Y-1 dirs at 26 / 28 files, PRE-29); Y-F0 u / w / NAV **not run** (GATE-IDX) | `fields-witness.txt`, `b0-runs.txt`, `r2-cmp-raw.txt`, `r2-classify.txt`, `x10-cmp.txt`, `y1-cmp-{b0,v8}.txt`, `cov9-role-check-3.txt`, `v11-store-check-3.txt`, `ucrt-b0-3.txt` |
+| 4 P9-B0 | **PARTIAL**: substitution list committed first (`778d34b8`); FIELDS-SUB witness **70 / 70**; R-2 run on v15 **completed**, comparison outside the `/producer` + opt-in list only at the FIELDS / DERIVED / M1d-C1 / C1-COST classes (no other path; the classification table is the disclosure): **PATH A, ruled FIELDS-SUB-A** (agent 3 recorded path B by the letter and asked): the re-based R-2 of record is `p9-b0-r2-nav`; X-10 re-based **holds** (`p9-b0g-x10-nav`); Y-1 re-based on the v1.1 store (`p9-b0g-y1-nav`; COV-9 S9 holds; differs from both earlier Y-1 dirs at 26 / 28 files, PRE-29); Y-F0 u / w / NAV **not run** (GATE-IDX) | `fields-witness.txt`, `b0-runs.txt`, `r2-cmp-raw.txt`, `r2-classify.txt`, `x10-cmp.txt`, `y1-cmp-{b0,v8}.txt`, `cov9-role-check-3.txt`, `v11-store-check-3.txt`, `ucrt-b0-3.txt` |
 | 5 rho | **PARTIAL**: Y-1 vs X-10 = 0.9947113980219978, flag false; the P9-X pair and X-10 vs Y-F0 wait for Y-F0 | `rho-pairs-1.txt` |
 | 6 re-pin | not reached (needs Y-F0's re-based references); EXE-FREEZE not started | - |
 | 7 store step | as after agent 2 (catalog, `verify --pins`, render identity, second catalog, G-P ticks not run: post-re-pin); X-5 opt-in cache identity **CUT** (FIELDS-X5: M6b items 5 / 6 cited) | - |
@@ -37,12 +37,12 @@ Rulings acted on by agent 3 (rows not listed: as after agent 2):
 | ruling | state | evidence (`gate-logs/`) |
 |---|---|---|
 | GATE-3-ORDER | followed: witness, substitution list (before any P9-B0 run), R-2, X-10, Y-1, then (cache-free) the Y-1 vs X-10 rho, then the GATE-IDX check | this file "Chain agent 3" |
-| FIELDS-SUB | witness 70 / 70; R-2 run completed on v15; **path B** (outside the allowed list; every differing path classified, no unclassified path); open question to the PM | `fields-witness.txt`, `r2-classify.txt` |
+| FIELDS-SUB / FIELDS-SUB-A | witness 70 / 70; R-2 run completed on v15; every differing path classified, no unclassified path; **path A ruled (FIELDS-SUB-A)**: the re-based R-2 of record is `p9-b0-r2-nav` (PRE-22 met by the fields substitution), the classification table its disclosure; G-B6 and the OD-3 R-2 line read it | `fields-witness.txt`, `r2-classify.txt` |
 | FIELDS-X5 | X-5 step-3 rows and step-7 opt-in cache identity cut, recorded as ruled; M6b items 5 / 6 cited | - |
 | GATE-MYPY | every commit by pathspec with the exclude; `git show --stat` 0 `mypy_cache` each | git |
 | GATE-IDX | file present at start, at the check (14:21:49Z) and at the hand-back (14:29:49Z): BLOCKED-OWNER | `cache-lo3-listing-agent3-idx.txt` |
 | GATE-RELCACHE | not reached (no Release u / w pass); built into `tools/b0_ic.py` | - |
-| PRE-22 / PRE-29 / PRE-30 | R-2 per FIELDS-SUB (path B); Y-1 re-based on the v1.1 store by its pin | `b0-runs.txt` |
+| PRE-22 / PRE-29 / PRE-30 | R-2 per FIELDS-SUB (path A, FIELDS-SUB-A: `p9-b0-r2-nav`); Y-1 re-based on the v1.1 store by its pin | `b0-runs.txt` |
 | PRE-34 | byte / JSON-path form: re-based Y-1 vs v8's ledgered Y-1 "differ at" 26 / 28 files; the printed-precision check is the cells root's (B.7) | `y1-cmp-v8.txt` |
 | PRE-7a / C3-9 | `--ann-mean-gross` on R-2, X-10, Y-1 (opt-in leaves only, absent on every reference side) | `x10-cmp.txt`, `r2-classify.txt` |
 | ALCLOCK-1 | `--info-clock-print` reserved for Y-F0's NAV (row 6; not run) | substitution list |
@@ -141,7 +141,7 @@ Agent 3 (2026-10-16 ~14:30Z; BLOCKED-OWNER at GATE-IDX; by Appendix IV item; a "
 
 | item | fact | evidence |
 |---|---|---|
-| 1 R-2 | **PATH B of FIELDS-SUB** (by the ruling's letter): R-2 NOT re-based; witness 70 / 70; run `build-equity/p9-b0-r2-nav` completed on fields v15 (listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`), differing from the v8 NAV of record only at the FIELDS / DERIVED / M1d-C1 / C1-COST paths; G-B6 / OD-3 / G-B8 lines as FIELDS-SUB words path B; the PM's re-ruling on the evidence is open (question 1) | "Chain agent 3", `r2-classify.txt` |
+| 1 R-2 | **PATH A (ruled FIELDS-SUB-A)**: the re-based R-2 of record is `build-equity/p9-b0-r2-nav` (PRE-22 met by the fields substitution; witness 70 / 70), run on fields v15 (listing `04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd`, `summary.json` `48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9`); disclosure: it differs from the v8 NAV of record only at the FIELDS / DERIVED / M1d-C1 / C1-COST paths (`r2-classify.txt`); G-B6 and the OD-3 R-2 history line read it (the OD-3 R-2 line is readable: its TRAIN NAV = `p9-b0-r2-nav`) | "Chain agent 3", `r2-classify.txt` |
 | 2 Y-F0 u / w / NAV | **pending** (GATE-IDX); new dirs reserved `p9-b0g-yf0-{u,w,nav}` | substitution list rows 4-6 |
 | 3 Y-1 | `build-equity/p9-b0g-y1-nav` (store `p9-m2i-dcov-v11`, manifest `397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7`): 28 files, listing `cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813`, `summary.json` `b0d4dcbf53e81aff3863ca1d9c7230da73a5c0a911a60f622c9f78aa3796c028`, `vol_target.csv` `8e614ea7bbf47d363a5c357b7442c7b3a7b86df753879715f5d20bd083f767a7`; PRE-34's byte / JSON-path form vs v8's ledgered Y-1 NAV: differ at 26 / 28 files (PRE-29's store change); the printed-precision agreement is the cells root's (B.7) | `b0-files-p9-b0g-y1-nav.txt`, `y1-cmp-v8.txt` |
 | 4 exe table | the step-1 table stands (Release p9-3f; 27 / 27 `disk = receipt` at agent 3's start and before / after every run); final only in the re-pin commit (**pending**, step 6 not reached) | `exe-sha-rel-3.txt` |
@@ -617,7 +617,7 @@ Common to every run below:
 
 | # | reference replaced | receipt of record (argv source) | tokens changed (besides token 0) | new dir | compared against / expected | why |
 |---|---|---|---|---|---|---|
-| 1 | **R-2** (A.4; no P9-B0 reference yet) | `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80-run` (v8 Debug exe `5497c89d`, source `39f87cd6`, 2026-10-02) | `--fields build-equity/train-2020-2023-lo3-fields-v15/manifest.json --fields-sha256 26fee5ce...3b09` (the v10 pair: FIELDS-GONE, FIELDS-SUB, witness above), `--output build-equity/p9-b0-r2-nav`; + `--ann-mean-gross` | `p9-b0-r2-nav` | the v8 NAV of record `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80` by SHA-256 per file; allowed: `summary.json` `/producer/*` and the leaves `--ann-mean-gross` adds (`/scenarios/<i>/ann_mean_gross`, opt-in side only, the M2j item-4 form); identical outside them = path A (R-2 re-based = `p9-b0-r2-nav`, PRE-22 met by substitution); any other difference, a witness miss or a refusal of the 84-field manifest = **path B** (R-2 NOT re-based; G-B6 / OD-3 lines as FIELDS-SUB words them). Facts stated before the run (not a ruling): that reference was written before P9 by the v8 exe, i.e. before C1's NAV change (M1d's P9-B0 list: L1-L4 / capacity files "may differ (sqrt)" against a v8-era reference); and its `summary.json`, `recipe.json`, `capacity/summary.json`, `capacity/recipe.json` carry the fields manifest's SHA-256 (`/financing_fields/manifest_sha256`, `summary.json` `/source_bindings/research_fields_manifest_sha256`). The verdict is the ruling's letter; every differing path is ALSO classified (fields-manifest leaf / M1d's C1 classes / other) for the PM, deciding nothing | PRE-22; FIELDS-SUB |
+| 1 | **R-2** (A.4; no P9-B0 reference yet) | `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80-run` (v8 Debug exe `5497c89d`, source `39f87cd6`, 2026-10-02) | `--fields build-equity/train-2020-2023-lo3-fields-v15/manifest.json --fields-sha256 26fee5ce...3b09` (the v10 pair: FIELDS-GONE, FIELDS-SUB, witness above), `--output build-equity/p9-b0-r2-nav`; + `--ann-mean-gross` | `p9-b0-r2-nav` | the v8 NAV of record `mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80` by SHA-256 per file; allowed: `summary.json` `/producer/*` and the leaves `--ann-mean-gross` adds (`/scenarios/<i>/ann_mean_gross`, opt-in side only, the M2j item-4 form); identical outside them = path A (R-2 re-based = `p9-b0-r2-nav`, PRE-22 met by substitution); any other difference, a witness miss or a refusal of the 84-field manifest = **path B** (R-2 NOT re-based; G-B6 / OD-3 lines as FIELDS-SUB words them). Facts stated before the run (not a ruling): that reference was written before P9 by the v8 exe, i.e. before C1's NAV change (M1d's P9-B0 list: L1-L4 / capacity files "may differ (sqrt)" against a v8-era reference); and its `summary.json`, `recipe.json`, `capacity/summary.json`, `capacity/recipe.json` carry the fields manifest's SHA-256 (`/financing_fields/manifest_sha256`, `summary.json` `/source_bindings/research_fields_manifest_sha256`). The verdict is the ruling's letter; every differing path is ALSO classified (fields-manifest leaf / M1d's C1 classes / other) for the PM, deciding nothing. **Ruled path A (FIELDS-SUB-A)** (agent 4's amendment): the re-based R-2 of record is `p9-b0-r2-nav` | PRE-22; FIELDS-SUB; FIELDS-SUB-A |
 | 2 | **X-10** (`p9-b0-x10-nav`, M1d, Debug `407c34ad`) | `p9-b0-x10-nav-run` | `--output build-equity/p9-b0g-x10-nav`; + `--ann-mean-gross` | `p9-b0g-x10-nav` | `p9-b0-x10-nav`: 27 / 27 files, 26 byte-identical; `summary.json` only `/producer/build_type`, `/producer/engine_git_sha` and `/scenarios/<i>/ann_mean_gross` (the form of agent 2's Y-F0 identity on the same exe, `nav-identity-yf0.txt`); anything else = an identity miss, attributed by merge commit (ROOT-1) | B2-13 (the leverage-only pair's reference); GATE-3-ORDER |
 | 3 | **Y-1** (`p9-b0-y1-nav`, M1d, Debug `407c34ad`, store `v8-risk-lo3-v10`) | `p9-b0-y1-nav-run` | `--risk-model build-equity/p9-m2i-dcov-v11 --risk-model-sha256 397366473b3a...23c7` (the Release `atx-risk-v1.1` container store by its pin, PRE-29; `handoff-root-m2i.md` "Store pins"), `--output build-equity/p9-b0g-y1-nav`; + `--ann-mean-gross` | `p9-b0g-y1-nav` | no identity is claimed (PRE-29: another store, not byte-comparable with v8's Y-1): every file's SHA-256 recorded; compared with `p9-b0-y1-nav` and, PRE-34's form, with v8's ledgered Y-1 NAV `mega-nav-v8y-vol-target-L2.0`, each reported as "agree / differ at <paths>" by SHA-256 and JSON path only; PRE-34's printed-precision agreement of the figures is a read of figures (B.7: made before the adoption print) and is NOT run here (READ NO STATISTIC). Before the run: COV-9 role check (`m2g-logs/tools/s9_check.py`), COVR-1 | PRE-29, PRE-30, PRE-34 |
 | 4 | **Y-F0 u** (`p9-b0-yf0-u`, M1d, Debug IC `393183c0`) | `p9-b0-yf0-u-run` | `--output build-equity/p9-b0g-yf0-u` (the argv keeps `--candidate-cache build-equity/mega-candidate-cache-v8-lo3`, GATE-RELCACHE) | `p9-b0g-yf0-u` | after GATE-IDX only. `p9-b0-yf0-u`: payloads (`orientations.json`, `recipe.json`, `train_daily_ic.csv`) byte-identical; `train_candidates.jsonl` equal outside `/stage_seconds/*`, `/wall_seconds`; `summary.json` differs by design only at timing leaves, the Release VM identity strings and cache-root paths, the cache counters (cold Release pass vs warm Debug reference: M1d's Release IC adoption list, `integration-log.md:304-327`) and the cold-vs-warm field counters `/roles/*/research_fields/{field_loads,loaded_bytes,peak_resident_fields}` (GATE-RELCACHE), each listed by path; anything else = an identity miss (ROOT-1). Cache: GATE-RELCACHE's checks (>= 15 GB free before; after, the 351 original files byte-unchanged, `155872de50833fca`, and the new whole-dir listing recorded with its cause) | PRE-22 |
@@ -668,19 +668,19 @@ outside these classes**:
 Byte-identical: every `events_*.csv` (5) and `capacity/events_*.csv` (5), the L0 `daily_linear-6bps-stale5-v1+swap-fin-v1.csv`,
 `capacity_curve.csv`, `v7_transfer_coefficient.csv`; no `summary.json` leaf differs other than those listed above.
 
-**Verdict, as the dispatch and FIELDS-SUB word it: PATH B.** The witness held (70 / 70) and the exe accepted the 84-field
-manifest; the outcome is "any other difference": the outputs differ outside the allowed paths, at the FIELDS, DERIVED,
-M1D-C1 and C1-COST paths above. So, as ruled: **R-2 is NOT re-based**; G-B6 pairs P9-F0 against the v8 NAV of record
-`mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80` with the line "cross-build reference (Debug NAV exe,
-fields v10): FIELDS-GONE" beside it; the OD-3 R-2 history line is "not readable: its TRAIN NAV cannot be reproduced on
-the frozen build (FIELDS-GONE)"; G-B8's paired leg "not evaluated" if OD-3 runs at all; the differing paths (the table
-above) are a finding. `p9-b0-r2-nav` is kept (a P9-B0 run dir; never deleted) with its SHA-256 listing. **For the PM
-(decides nothing here):** the comparison base was written by the v8 exe (`5497c89d`, source `39f87cd6`, 2026-10-02),
+**Verdict: PATH A, ruled FIELDS-SUB-A** (agent 3 recorded path B by FIELDS-SUB's letter, "any other difference", and
+asked; the PM ruled that the letter meant a difference the fields input could cause). The witness held (70 / 70) and
+the exe accepted the 84-field manifest; the outputs differ from the v8 NAV of record outside `/producer` + the opt-in
+only at the FIELDS, DERIVED, M1D-C1 and C1-COST paths above, which stay beside the reference as its disclosure. So:
+**the re-based R-2 of record is `build-equity/p9-b0-r2-nav`** (PRE-22 met by the fields substitution; Appendix IV item
+1); G-B6 and the OD-3 R-2 line read it, and the OD-3 R-2 history line is readable (its TRAIN NAV = `p9-b0-r2-nav`).
+`p9-b0-r2-nav` is kept (a P9-B0 reference dir; never deleted) with its SHA-256 listing. Agent 3's note for the PM, on
+which the ruling rests: the comparison base was written by the v8 exe (`5497c89d`, source `39f87cd6`, 2026-10-02),
 before P9's NAV change, so the allowed list (`/producer/*` + the opt-in) cannot hold against it whatever the fields
 input: the same exe change moved every v8-era reference at M1d's P9-B0 (Y-F0, X-10, Y-1: 1-8 cost-column rows per L1-L4
 file, `/v7/extras`, `/v7/files/*`, all inside M1d's written list), and the FIELDS leaves are written by the substitution
 by construction (FIELDS-SUB's own trade-off clause names "its sha" among the differences); no position (events file),
-no L0 file and no statistic leaf of `summary.json` moved. Whether that is path A is the PM's ruling (open question 1).
+no L0 file and no statistic leaf of `summary.json` moved. (Agent 3's open question 1; answered by FIELDS-SUB-A.)
 
 **Row 2, X-10: holds** (`gate-logs/x10-cmp.txt`): 27 / 27 files, 26 byte-identical; `summary.json` differs only at
 `/producer/build_type`, `/producer/engine_git_sha` and `/scenarios/0..4/ann_mean_gross` (absent in the reference, present
@@ -721,3 +721,62 @@ rest of step 5, step 6 (re-pin; EXE-FREEZE not started), step 7's rest, step 9's
 hand-back (14:29:49Z): still present. Trial ledger 133 lines `27e40f9f` at the hand-back; C: 67 GB free. Prepared for
 the next agent (not run): `gate-logs/tools/b0_ic.py` (rows 4-5 with GATE-IDX and GATE-RELCACHE built in; its `--dry`
 refuses while the file exists, tested). Hand-off: `handoff-root-gate-3.md`.
+
+---
+
+## Chain agent 4 (RESUME 13, 2026-10-16; `r13-prompts/gate-prompt-4.md` over `gate-prompt-3.md`; rulings FIELDS-SUB-A, RELCACHE-ALLOW, PRE34-WHO, YF0-NAV-ORDER, PRE-2BII-B2A)
+
+Started from `handoff-root-gate-3.md` "Exact next step". The owner deleted the GATE-IDX file and unstaged the editor-side
+`.mypy_cache` by hand (ledger "OWNER ACTIONS observed"); every commit of this agent still names explicit pathspecs plus
+`:(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache` and is checked for 0 `mypy_cache` paths.
+The PRE agent's `p9-prereg.md` is never added here (PRE-2BII-B2A).
+
+### Step 0 re-verification (agent 4, 2026-10-16T15:10:30Z)
+
+- HEAD `1e2dbf3c` (the PRE agent's B2a pathspec commit above agent 3's `65ce28f0`); code head `06dc9e5a`:
+  `git diff --name-only 06dc9e5a..HEAD` outside `.superpowers/` = 0 files; index: nothing staged (the 133
+  `.mypy_cache` paths are no longer staged). `git status --porcelain`: the PM's `progress.md` edit and the five PNGs.
+- Trial ledger 133 lines, sha256 `27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554`;
+  `build-equity/research-store/` absent (SQL3-2).
+- SPDLOG-RELINK (`tools/exe_sha_end.py`): **27 / 27 Release (p9-3f) and 27 / 27 Debug (p9-3g) `disk = receipt`**
+  (`gate-logs/exe-sha-rel-4.txt`, `exe-sha-dbg-4.txt`); next free tag `p9-3h` unused.
+- `ucrtbase.dll` 10.0.26100.7623 `2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF` (= CRT-2).
+- Host: free RAM 4,671 of 16,069 MB; C: 60.4 GB free; no build of ours; foreign: the editor's python daemons and an
+  atx-vol quote benchmark under `C:\atx-cache\quote-benchmark` (HOST-5 / HOST-6: never touched).
+
+### GATE-IDX check (agent 4; first act after step 0)
+
+2026-10-16T15:11:39Z: `build-equity/mega-candidate-cache-v8-lo3/index.sqlite` **ABSENT**; the cache dir lists exactly the
+351 original files, `tools/dir_listing.py` digest **`155872de50833fca`** (= agent 2's start listing minus its
+`index.sqlite` row, row for row; `gate-logs/cache-lo3-listing-agent4-idx.txt`; 7,799,539,072 bytes). GATE-IDX cleared.
+`tools/b0_ic.py yf0u --dry` and `yf0w --dry` (GATE-IDX + GATE-RELCACHE dry check): index absent, the argv names the real
+cache exactly once and no index flag, the 351 originals `155872de50833fca` with 0 files beyond them, C: 60.4 GB free
+(>= 15), the Release IC exe `ccd54db6...d705` = its p9-3f receipt; the argv differs from the receipt of record at token
+0 (the Release exe) and `--output` only.
+
+### Step 4, agent 4: substitution-list amendments (committed BEFORE rows 4-6 ran)
+
+1. Row 1 (R-2): **ruled path A (FIELDS-SUB-A)**: the re-based R-2 of record is `build-equity/p9-b0-r2-nav` (the row and
+   the agent-3 verdict paragraph above amended; the classification table stays as the disclosure).
+2. Rows 4 / 5 (Y-F0 u / w), RELCACHE-ALLOW: compared with M1d's Debug references `p9-b0-yf0-u` / `p9-b0-yf0-w` by
+   `gate-logs/tools/b0_cmp.py --mode ic`, which lists every differing leaf by JSON path with its class. Allowed classes
+   (exactly the ruling's list, fixed before the runs): TIMING (`.../wall_seconds`, `.../hash_seconds`,
+   `.../stage_seconds/<stage>`); COUNTERS (`/roles/<i>/candidate_cache/{hits,misses,legacy_hits,vm_evaluations}`,
+   `vm_evaluations` being the miss count by definition, `atx-impl/src/strategy_ic_runner.cpp:735`;
+   `/roles/<i>/candidate_cache/ic_results/{hits,misses}`; the per-candidate `signal_cache` / `ic_result_cache` hit | miss
+   stamps, `:641-642`; `/roles/<i>/research_fields/{field_loads,loaded_bytes,peak_resident_fields}`); IDENTITY
+   (`/roles/<i>/candidate_cache/vm_identity`, and any string leaf equal to the reference's with the reference VM identity
+   string replaced by the Release one: the `DIR/<identity>/` cache-root paths; M1d's adoption list, `integration-log.md:322-325`,
+   names no other leaf). Every other file byte-identical (u: `orientations.json`, `recipe.json`, `train_daily_ic.csv`;
+   w: those plus `train_combined.{f64,json}`, `train_combined_{finite.u8,ids.u64,member.u8,sessions.i64}`,
+   `train_planned_targets.csv`). Anything else = an identity miss attributed by merge commit (ROOT-1), BLOCKED for that
+   lane; the gate goes on with what the miss does not invalidate.
+3. Row 6 (Y-F0 NAV), YF0-NAV-ORDER: runs after row 5 and reads the re-based w: `--combined
+   build-equity/p9-b0g-yf0-w/train_combined.json` (`--combined-sha256 e13fbc4d...8c` unchanged: the reference w's
+   `train_combined.json`, which = v8's `mega-v8xw-train-theme-erc-v8ysb-2/train_combined.json`; the tool re-hashes the new
+   file and stops if it differs), so the receipt names that dir; with `--ann-mean-gross --info-clock-print` (PRE-7a,
+   ALCLOCK-1), `--output build-equity/p9-b0g-yf0-nav`. No NAV output names the combined path (checked on
+   `p9-b0-yf0-nav`: the path string occurs in no output file; `summary.json` carries the sha only), so the path token
+   moves no output byte. Compared with `p9-b0-yf0-nav` by `b0_cmp.py --mode nav` (PRODUCER `/producer/{build_type,
+   engine_git_sha}`; OPTIN `/scenarios/<i>/ann_mean_gross` and `/scenarios/<i>/info_clock/**` on the new side only).
+   `ucrtbase.dll` re-recorded at this run (C.6). Tool changes: `gate-logs/tools/CHANGES.txt` (agent 4 entry).
