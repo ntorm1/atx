@@ -99,7 +99,21 @@ std::vector<Grid> grids(bool full) {
                                  {"sinh129-variance-time2", 129u, 4.0, 1.0 / 104.0,
                                   false, 0.05, true, false, 2.0},
                                  {"sinh129-variance-time4", 129u, 4.0, 1.0 / 104.0,
-                                  false, 0.05, true, false, 4.0}});
+                                  false, 0.05, true, false, 4.0},
+                                 {"sinh161-variance-domain8", 161u, 8.0, 1.0 / 104.0,
+                                  false, 0.05, true},
+                                 {"sinh193-variance-domain8", 193u, 8.0, 1.0 / 104.0,
+                                  false, 0.05, true},
+                                 {"sinh129-domain8-time2", 129u, 8.0, 1.0 / 104.0,
+                                  false, 0.05, true, false, 2.0},
+                                 {"sinh129-domain8-time3", 129u, 8.0, 1.0 / 104.0,
+                                  false, 0.05, true, false, 3.0},
+                                 {"sinh129-domain8-clock4800", 129u, 8.0, 1.0 / 4800.0,
+                                  false, 0.05, true},
+                                 {"sinh161-domain8-clock4800", 161u, 8.0, 1.0 / 4800.0,
+                                  false, 0.05, true},
+                                 {"sinh193-domain8-clock4800", 193u, 8.0, 1.0 / 4800.0,
+                                  false, 0.05, true}});
   }
   return result;
 }
@@ -329,6 +343,33 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
     return result;
   }
   result["model_status"] = "ok";
+  std::vector<std::size_t> interval_diffusion_steps(fixture.intervals.size(), 0u);
+  for (const auto &transition : model->transitions()) {
+    if (transition.kind == AmericanMarkovStepKind::Diffusion) {
+      ++interval_diffusion_steps[transition.interval_index];
+    }
+  }
+  Json time_intervals = Json::array();
+  double previous_calendar = 0.0;
+  double previous_variance = 0.0;
+  for (std::size_t i = 0u; i < fixture.intervals.size(); ++i) {
+    const auto &interval = fixture.intervals[i];
+    // A successful compilation already bounded these ceilings by the unchanged
+    // transition cap. Counts determine both exact linear clock subdivisions.
+    const auto calendar_minimum = static_cast<std::size_t>(
+        std::ceil((interval.calendar_end - previous_calendar) / config.max_calendar_step));
+    const auto variance_minimum = static_cast<std::size_t>(
+        std::ceil((interval.variance_end - previous_variance) / config.max_variance_step));
+    const auto clock_minimum = std::max({std::size_t{1}, calendar_minimum, variance_minimum});
+    time_intervals.push_back({{"interval_index", i},
+                              {"calendar_clock_minimum_steps", calendar_minimum},
+                              {"variance_clock_minimum_steps", variance_minimum},
+                              {"resolved_diffusion_steps", interval_diffusion_steps[i]},
+                              {"exceeds_clock_minimum", interval_diffusion_steps[i] > clock_minimum}});
+    previous_calendar = interval.calendar_end;
+    previous_variance = interval.variance_end;
+  }
+  result["resolved_time_intervals"] = std::move(time_intervals);
   const auto initial_states = model->layers().front().states();
   result["resolved_state_grid"] = std::vector<double>(initial_states.begin(), initial_states.end());
   result["resolved_nodes"] = initial_states.size();

@@ -125,3 +125,56 @@ def test_unknown_grid_is_an_explicit_cli_error(binary):
     assert completed.returncode != 0
     assert "fatal_error" in json.loads(completed.stderr)
     assert not completed.stdout
+
+
+def test_fixed_domain_spatial_control_keeps_exact_time_subdivisions(case):
+    cases = [case("high_vol", f"sinh{nodes}-domain8-clock4800") for nodes in (129, 161, 193)]
+    reference = cases[0][1]
+    for nodes, (report, result) in zip((129, 161, 193), cases):
+        assert result["model_status"] == result["pricing_status"] == "ok"
+        assert result["resolved_nodes"] == result["requested_nodes"] == nodes
+        assert result["upper_multiple"] == reference["upper_multiple"] == 8
+        assert result["concentration_scale"] == reference["concentration_scale"]
+        assert result["resolved_time_intervals"] == reference["resolved_time_intervals"]
+        assert result["resolved_time_intervals"] == [{
+            "interval_index": 0, "calendar_clock_minimum_steps": 4800,
+            "variance_clock_minimum_steps": 4800, "resolved_diffusion_steps": 4800,
+            "exceeds_clock_minimum": False,
+        }]
+        assert result["resolved_model_controls"] == reference["resolved_model_controls"]
+        assert result["model"]["diffusion_steps"] == 4800
+        assert result["model"]["stored_rows"] == nodes * 4800
+        assert result["model"]["stored_rows"] <= result["model_limits"]["max_stored_rows"] == 1_000_000
+        assert_complete(report, result)
+
+
+@pytest.mark.parametrize("factor", [2, 3])
+def test_fixed_domain_time_control_keeps_grid_and_refines_cfl(case, factor):
+    _, reference = case("high_vol", "sinh129-variance-domain8")
+    report, result = case("high_vol", f"sinh129-domain8-time{factor}")
+    assert result["model_status"] == result["pricing_status"] == "ok"
+    assert result["resolved_state_grid"] == reference["resolved_state_grid"]
+    assert result["grid_diagnostics"] == reference["grid_diagnostics"]
+    assert result["model_limits"] == reference["model_limits"]
+    assert result["resolved_model_controls"]["cfl_fraction"] == .9 / factor
+    before = reference["resolved_time_intervals"][0]["resolved_diffusion_steps"]
+    after = result["resolved_time_intervals"][0]["resolved_diffusion_steps"]
+    assert factor * before - (factor - 1) <= after <= factor * before
+    assert result["resolved_time_intervals"][0]["exceeds_clock_minimum"] is True
+    assert_complete(report, result)
+
+
+def test_interval_time_provenance_reconciles_cash_and_paused_clocks(case):
+    for fixture in ("dated_cash", "clock_pause"):
+        _, result = case(fixture, "sinh161-variance-domain8")
+        assert result["model_status"] == "ok"
+        intervals = result["resolved_time_intervals"]
+        assert len(intervals) == len(result["intervals"])
+        assert sum(i["resolved_diffusion_steps"] for i in intervals) == result["model"]["diffusion_steps"]
+        for index, item in enumerate(intervals):
+            assert item["interval_index"] == index
+            minimum = max(1, item["calendar_clock_minimum_steps"], item["variance_clock_minimum_steps"])
+            assert item["resolved_diffusion_steps"] >= minimum
+            assert item["exceeds_clock_minimum"] == (item["resolved_diffusion_steps"] > minimum)
+        if fixture == "clock_pause":
+            assert intervals[1]["variance_clock_minimum_steps"] == 0
