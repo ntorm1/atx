@@ -190,12 +190,36 @@ inline DividendRouting parse_dividend_routing(const Json &entry) {
       "Policy dividends must be aggregate, inferred-schedule or inferred-schedule-exact");
 }
 
+// Opt-in lattice scheme of the dated-cash route (american.hpp, DiscreteDivScheme)
+// and its step count. Both act only where a chain is routed to the DatedCash
+// lattice (`dividends` above); the aggregate models ignore them. Absent keys
+// keep the historical spliced 301-step lattice.
+inline void parse_lattice_options(const Json &entry, QuoteSliceConfig &cfg) {
+  if (entry.contains("dividend_lattice")) {
+    const auto name = text(entry.at("dividend_lattice"));
+    bool known = false;
+    for (const auto scheme : {DiscreteDivScheme::SplicedCrr, DiscreteDivScheme::SplicedBbs,
+                              DiscreteDivScheme::SplicedBbsr, DiscreteDivScheme::EscrowedBbs,
+                              DiscreteDivScheme::EscrowedLeisenReimer}) {
+      if (name == to_string(scheme)) {
+        cfg.discrete_div_scheme = scheme;
+        known = true;
+      }
+    }
+    if (!known) {
+      throw std::runtime_error("Policy dividend_lattice must be spliced, spliced-bbs, "
+                               "spliced-bbsr, escrowed-bbs or escrowed-lr");
+    }
+  }
+  numeric(entry, "dividend_lattice_steps", cfg.discrete_div_steps, 1, kDiscreteDivMaxSteps);
+}
+
 inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
                           std::vector<double> &spline_grid) {
   keys(entry, {"name", "base", "curve", "min_quotes", "quality", "parametric", "convex",
                "spline", "side_policy", "atm_log_band", "spread_floor", "min_time_value",
                "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward",
-               "dividends"});
+               "dividends", "dividend_lattice", "dividend_lattice_steps"});
   profile.name = text(entry.at("name"), true);
   auto &cfg = profile.config;
   if (entry.contains("curve")) {
@@ -288,6 +312,7 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
     }
   }
   parse_carry(entry, cfg.carry);
+  parse_lattice_options(entry, cfg);
   // These are mandatory controls, never user-adjustable escape hatches.
   cfg.curve.convex.bound_slope_below = true;
 }
@@ -390,6 +415,10 @@ inline Json profile_json(const QuoteFitProfile &profile) {
   if (c.carry.mode != QuoteSliceCarryMode::Supplied) {
     out["carry_mode"] = to_string(c.carry.mode);
     out["implied_forward"] = carry_json(c.carry);
+  }
+  // Emitted only when opted in, so the historical lattice provenance is unchanged.
+  if (c.discrete_div_scheme != DiscreteDivScheme::SplicedCrr) {
+    out["dividend_lattice"] = to_string(c.discrete_div_scheme);
   }
   return out;
 }

@@ -59,6 +59,21 @@ add_test(NAME atx-vol-dividend-schedule COMMAND atx-vol-dividend-schedule-tests)
 set_tests_properties(atx-vol-dividend-schedule PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# The opt-in strike-smoothing lattice schemes of the dated-cash American route
+# (DiscreteDivScheme, api/pricing/american.hpp). Focused executable for the same
+# reason as the schedule target above: its allocation test replaces global
+# operator new through support/alloc_counter.cpp.
+add_executable(atx-vol-discrete-div-smoothing-tests
+    discrete_div_smoothing_test.cpp discrete_div_smoothing_alloc_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-discrete-div-smoothing-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-smoothing-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-discrete-div-smoothing COMMAND atx-vol-discrete-div-smoothing-tests)
+set_tests_properties(atx-vol-discrete-div-smoothing PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)

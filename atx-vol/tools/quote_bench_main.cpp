@@ -674,6 +674,8 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
        {"forward", finite_or_null(used)},
        {"forward_shift_bp", finite_or_null(1.0e4 * (used / reference - 1.0))},
        {"fit_status", *fit ? Json(to_string((*fit)->fit_status)) : Json("error")},
+       {"lattice_steps", chain.profile->config.discrete_div_steps},
+       {"lattice_scheme", to_string(chain.profile->config.discrete_div_scheme)},
        {"chain_us", us}});
   return std::move(*fit);
 }
@@ -1043,9 +1045,11 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         {"clock_mapping", "tau = years_calendar * days / (expiry_day - valuation_day); an "
             "ex-date on the expiry date lands at tau = T"},
         {"route", "discrete_div_route(Lattice) admits an ex-date in (valuation, expiry] -> "
-            "QuoteSliceDividendModel::DatedCash (V&N lattice, 301 steps, dividend_pv = 0, "
-            "per-strike sdiv kept as residual yield) for IV inversion and repricing; "
-            "otherwise the --dividends aggregate model unchanged"},
+            "QuoteSliceDividendModel::DatedCash (V&N lattice, the profile's "
+            "dividend_lattice_steps (301 unless set) and dividend_lattice scheme (spliced unless "
+            "set; per route: lattice_steps, lattice_scheme), dividend_pv = 0, per-strike sdiv "
+            "kept as residual yield) for IV inversion and repricing; otherwise the "
+            "--dividends aggregate model unchanged"},
         {"route_granularity", "per chain (one expiry); every contract of a chain shares its "
             "route, joinable on chain_id"},
         {"schedule_status_counts", stats.schedule_status_counts},

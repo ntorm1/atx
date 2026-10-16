@@ -888,6 +888,133 @@ inline constexpr double kTauAtExpiryRelTol = 1.0e-12;
 // gets InvalidArgument rather than an unbounded loop.
 inline constexpr int kDiscreteDivMaxSteps = 20001;
 
+// ── Lattice scheme: strike smoothing and the escrowed variant (opt-in) ──────
+//
+// WHY THIS EXISTS. A strike-by-strike lattice price must pass
+// `AmericanPriceSlice` certification (fixed 1e-8 + 1e-9*max(S, K) tolerance)
+// when each strike is priced at its OWN fitted vol. Two separate defects stop the
+// spliced CRR doing that on dividend-paying chains (per-strike diagnosis in
+// sprints/2026-10-16-smooth-dividend-lattice-sprint.md):
+//   1. LATTICE NOISE. A plain CRR price is piecewise LINEAR in strike between
+//      terminal nodes (the terminal distribution is a staircase), and per-strike
+//      vols move the nodes between neighbouring strikes: concave kinks of 1e-2
+//      to 1e-1 on dev200 ASML, refused at 301 to 4801 steps alike.
+//   2. MODEL MISMATCH. The vol curve is fitted convex in BLACK76 PRICE space at
+//      the dated-cash forward, and a dense convex fit is TIGHT (zero butterflies
+//      on runs of strikes). The spliced lattice's European is not Black76: the
+//      cash-dividend distribution differs from the lognormal forward by a smooth
+//      term (0.02-0.30 on ASML 2027-04-16) that is concave in the wings, so the
+//      re-priced slice is non-convex on every tight run — still at 4801 steps
+//      with Richardson. No lattice refinement removes it.
+// The BBS final step removes (1). Only a scheme whose European converges to
+// Black76 at the dated-cash forward removes (2), and only one whose European is
+// ALSO accurate to well under the tolerance at the served step count survives
+// the tightest runs: the escrowed Leisen-Reimer tree below. (Control variates
+// against Black76 were built and measured too — they fix the dense chains and
+// break tightly LINEAR deep-in-the-money runs, which they re-bend with the
+// European's residual error — and were dropped; see the sprint note.)
+//
+//   SplicedCrr  the V&N spliced CRR rollback exactly as documented above.
+//         DEFAULT, and bit-identical to every price this function returned
+//         before the option existed.
+//   SplicedBbs  Broadie-Detemple (1996): the continuation value at the LAST
+//         step before expiry is the analytic Black-Scholes value over that
+//         final step instead of the rollback of the kinked payoff, so each node
+//         at step N-1 spreads a lognormal over the last step and the price is a
+//         smooth function of (strike, sigma). Cash on the terminal (expiry)
+//         step stays analytic: the European payoff becomes a call struck at
+//         K + D, or a put struck at K + D minus a put struck at D (exact,
+//         including the zero floor on the post-dividend level); an AMERICAN
+//         call may exercise cum-dividend at expiry, which makes its payoff the
+//         undiluted (S - K)+, so the dividend cannot move it (the ledger's
+//         cum-dividend rule, now analytic). Cash landing ON step N-1 is applied
+//         to that analytic continuation at the post-dividend level directly, so
+//         that splice interpolates nothing and needs no grid-bottom
+//         extrapolation; every earlier ex-step splices exactly as in SplicedCrr
+//         (same interpolation, same quadratic grid-bottom rule, same cum- and
+//         post-dividend exercise test).
+//   SplicedBbsr  SplicedBbs plus two-point Richardson extrapolation in the step
+//         count: (N*P_N - M*P_M) / (N - M) with M = N / 2 (integer division),
+//         the generalisation of 2*P_N - P_{N/2} to odd N. An American price is
+//         floored at its intrinsic value afterwards (extrapolation can step
+//         under an exercise plateau). One extra rollback at a quarter of the
+//         work; `steps >= 2`. It AMPLIFIES the exercise-boundary oscillation
+//         (measured), so it is an accuracy option, not a smoothing one.
+//   EscrowedBbs  A DIFFERENT MODEL, stated as such: the lattice carries the
+//         escrowed stock X = S - sum D_i e^{-(r-q) tau_i} (cash still to come,
+//         discounted at the carry), lognormal with vol `sigma`, and the exercise
+//         test values the stock as X + escrow(t), stepping down at each ex-date
+//         — dated exercise, cum- and post-dividend at an ex-step exactly as the
+//         splice tests it, but nothing interpolated and no grid bottom. Its
+//         European converges to Black76 at the SAME dated-cash forward
+//         F = S e^{(r-q)T} - sum D_i e^{(r-q)(T - tau_i)}, so the curve's
+//         convexity carries over, and the BBS final step makes it smooth in
+//         (strike, sigma). The vol is the escrowed stock's, not the spot's (the
+//         classical escrowed-model distinction); a quote fit absorbs that
+//         because it inverts and reprices in one model. Its residual O(1/N)
+//         European error is smooth but still bends the tightest runs (measured).
+//         OutOfRange when the cash exhausts the spot.
+//   EscrowedLeisenReimer  The escrowed model on a Leisen-Reimer (1996) tree:
+//         Peizer-Pratt inversion makes the up probability N(d2) and the up
+//         factor N(d1)/N(d2) AT THIS STRIKE, so the tree is centred on K — the
+//         strike-aligned lattice, moving continuously with (K, sigma) — and its
+//         European converges smoothly at O(1/n^2) to the same Black76. Plain
+//         terminal payoff (the centring makes a BBS step unnecessary). An even
+//         `steps` runs at `steps + 1` (Leisen-Reimer's odd-n convention). Where
+//         the strike is so far from the money (|d2| beyond ~200 at 301 steps)
+//         that the Peizer-Pratt probability rounds to exactly 0 or 1, the
+//         centred tree does not exist and the CRR geometry prices that strike
+//         (it is worth its forward intrinsic on any tree). OutOfRange when the
+//         cash exhausts the spot.
+//
+// The scheme is a PRICE option: `american_discrete_div_greeks`, the greek bundle
+// and the dividend sensitivities keep the spliced CRR rollback. Every scheme
+// uses the caller's step count for its (fine) lattice and the same per-call
+// lattice workspace; BBSR's coarse rollback reuses the fine one's buffers.
+enum class DiscreteDivScheme : std::uint8_t {
+  SplicedCrr,
+  SplicedBbs,
+  SplicedBbsr,
+  EscrowedBbs,
+  EscrowedLeisenReimer,
+};
+
+// Stable names for provenance and policy files: "spliced", "spliced-bbs",
+// "spliced-bbsr", "escrowed-bbs", "escrowed-lr".
+[[nodiscard]] const char *to_string(DiscreteDivScheme value) noexcept;
+
+// True when `scheme` names a scheme and `steps` can carry it: Richardson needs a
+// coarse lattice of at least one step, so `steps >= 2`. The step RANGE itself
+// is `american_discrete_div_price`'s own validation.
+[[nodiscard]] constexpr bool discrete_div_scheme_admits(DiscreteDivScheme scheme,
+                                                        int steps) noexcept {
+  switch (scheme) {
+  case DiscreteDivScheme::SplicedCrr:
+  case DiscreteDivScheme::SplicedBbs:
+  case DiscreteDivScheme::EscrowedBbs:
+  case DiscreteDivScheme::EscrowedLeisenReimer:
+    return steps >= 1;
+  case DiscreteDivScheme::SplicedBbsr:
+    return steps >= 2;
+  }
+  return false;
+}
+
+// The coarse step count BBSR extrapolates against (`steps / 2`).
+[[nodiscard]] constexpr int discrete_div_richardson_coarse_steps(int steps) noexcept {
+  return steps / 2;
+}
+
+// The step count whose time step bounds the CRR probability window for a
+// scheme: the coarse lattice under BBSR, the caller's otherwise. PUBLIC because
+// a caller that brackets an implied volatility must keep the CRR probability
+// inside (0, 1) on EVERY lattice the scheme runs.
+[[nodiscard]] constexpr int discrete_div_coarsest_steps(int steps,
+                                                        DiscreteDivScheme scheme) noexcept {
+  return scheme == DiscreteDivScheme::SplicedBbsr ? discrete_div_richardson_coarse_steps(steps)
+                                                  : steps;
+}
+
 // Price plus the two FREE lattice-derived greeks — the cheap tier. Deliberately
 // not `AmericanGreeks`; the wide bundle is `DiscreteDivGreekBundle` below, and
 // it costs seven more rollbacks.
@@ -916,16 +1043,23 @@ struct DiscreteDivGreeks {
 // @param exercise American (default) or European. European exists because the
 //                 identities that VALIDATE this engine — put-call parity and
 //                 Black-Scholes convergence — are European statements.
+// @param scheme   lattice scheme (`DiscreteDivScheme` above). SplicedCrr, the
+//                 default, is the historical rollback bit for bit.
 // @return the option premium, or an Error:
 //   InvalidArgument — non-positive S/K/T/sigma, non-finite r/q, `steps` outside
-//                     its range, or a non-finite / negative dividend field
+//                     its range, a non-finite / negative dividend field, or a
+//                     scheme `discrete_div_scheme_admits` refuses
 //   OutOfRange      — the CRR risk-neutral probability left (0, 1): the step is
 //                     too coarse for this (r - q, sigma, T). Raise `steps`.
+//                     Under SplicedBbsr the COARSE lattice's step decides it
+//                     (`discrete_div_coarsest_steps`). Also: under the escrowed
+//                     schemes, cash that exhausts the spot.
 [[nodiscard]] Result<double>
 american_discrete_div_price(double S, double K, double T, double sigma, double r, double q,
                             Side side, std::span<const CashDividend> dividends,
                             int steps = kDiscreteDivDefaultSteps,
-                            ExerciseStyle exercise = ExerciseStyle::American);
+                            ExerciseStyle exercise = ExerciseStyle::American,
+                            DiscreteDivScheme scheme = DiscreteDivScheme::SplicedCrr);
 
 // The same lattice, additionally reporting the delta and gamma its first two
 // time steps already carry. `price` is bit-identical to
