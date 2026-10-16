@@ -147,7 +147,7 @@ adds a trailing `grade` column (A/B/C/empty); default output is unchanged.
 Scope exclusions: carry/borrow and `deamer.cpp` are owned by the implied-forward
 lane and are not touched; no cap is raised.
 
-## 3. What was built (commit `ecf140dc`), and how it departs from the design
+## 3. What was built (commit `ecf140dc`, rebased as `aabe436f`), and how it departs from the design
 
 | piece | file(s) | notes |
 |---|---|---|
