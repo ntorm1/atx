@@ -198,6 +198,97 @@ TEST(PwlStrike, ArithmeticOverflowReturnsExplicitFailure) {
   EXPECT_EQ(sum.error().code(), atx::vol::ErrorCode::OutOfRange);
 }
 
+TEST(PwlStrike, AdjacentStrikeCrossingsRetainEndpointMaximaWithExplicitBound) {
+  // Scaling by powers of two preserves the adjacent-strike geometry exactly.
+  for (const int exponent : {-400, 0, 400}) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const double lo = std::ldexp(175.0, exponent);
+      const double hi = std::nextafter(lo, std::numeric_limits<double>::infinity());
+      const double child_spot = std::ldexp(
+          std::nextafter(side == Side::Call ? 212.5 : 137.5, 0.0), exponent);
+      const double exercise_spot = std::ldexp(side == Side::Call ? 193.75 : 156.25, exponent);
+      const double weight = side == Side::Call ? 0.5000000000000002 : 0.4999999999999998;
+      const auto child = ConvexPwlStrikeFunction::payoff(child_spot, side, lo, hi);
+      ASSERT_TRUE(child);
+      const std::array term{PwlStrikeTerm{&*child, weight}};
+      const auto continuation = ConvexPwlStrikeFunction::weighted_sum(term);
+      ASSERT_TRUE(continuation);
+      const double gap_lo = *continuation->value(lo) - payoff(exercise_spot, lo, side);
+      const double gap_hi = *continuation->value(hi) - payoff(exercise_spot, hi, side);
+      ASSERT_NE(std::signbit(gap_lo), std::signbit(gap_hi));
+      ASSERT_NE(gap_lo, 0.0);
+      ASSERT_NE(gap_hi, 0.0);
+      const auto result = continuation->max_intrinsic(exercise_spot, side);
+      ASSERT_TRUE(result) << result.error().to_string();
+      ASSERT_EQ(result->nodes().size(), 2u);
+      EXPECT_EQ(result->value(lo), std::max(*continuation->value(lo),
+                                           payoff(exercise_spot, lo, side)));
+      EXPECT_EQ(result->value(hi), std::max(*continuation->value(hi),
+                                           payoff(exercise_spot, hi, side)));
+      // For two affine functions with opposing endpoint gaps a,b, the exact
+      // maximum excess of their endpoint-max chord is a*b/(a+b).
+      const double a = std::abs(gap_lo);
+      const double b = std::abs(gap_hi);
+      const double exact_chord_error = std::min(a, b) / (1.0 + std::min(a, b) / std::max(a, b));
+      EXPECT_GE(result->crossing_resolution_error_bound(), exact_chord_error);
+      EXPECT_GT(result->crossing_resolution_error_bound(), 0.0);
+      EXPECT_EQ(continuation->crossing_resolution_error_bound(), 0.0);
+    }
+  }
+}
+
+TEST(PwlStrike, CrossingErrorSurvivesRepeatedPositiveCompositionAndExercise) {
+  const double lo = 175.0;
+  const double hi = std::nextafter(lo, std::numeric_limits<double>::infinity());
+  const auto child = ConvexPwlStrikeFunction::payoff(
+      std::nextafter(212.5, 0.0), Side::Call, lo, hi);
+  ASSERT_TRUE(child);
+  const std::array term{PwlStrikeTerm{&*child, 0.5000000000000002}};
+  const auto base = ConvexPwlStrikeFunction::weighted_sum(term);
+  ASSERT_TRUE(base);
+  auto current = base->max_intrinsic(193.75, Side::Call);
+  ASSERT_TRUE(current);
+  ASSERT_GT(current->crossing_resolution_error_bound(), 0.0);
+  for (int i = 0; i < 256; ++i) {
+    const double inherited = current->crossing_resolution_error_bound();
+    const std::array terms{PwlStrikeTerm{&*current, 0.5}, PwlStrikeTerm{&*base, 0.5}};
+    const auto blended = ConvexPwlStrikeFunction::weighted_sum(terms);
+    ASSERT_TRUE(blended) << blended.error().to_string();
+    EXPECT_GE(blended->crossing_resolution_error_bound(), 0.5 * inherited);
+    const double before_max = blended->crossing_resolution_error_bound();
+    current = blended->max_intrinsic(193.75, Side::Call);
+    ASSERT_TRUE(current) << current.error().to_string();
+    EXPECT_GT(current->crossing_resolution_error_bound(), before_max);
+    EXPECT_GE(*current->value(lo), payoff(193.75, lo, Side::Call));
+    EXPECT_GE(*current->value(hi), payoff(193.75, hi, Side::Call));
+  }
+  const std::array zero{PwlStrikeTerm{&*current, 0.0}};
+  const auto erased = ConvexPwlStrikeFunction::weighted_sum(zero);
+  ASSERT_TRUE(erased);
+  EXPECT_EQ(erased->crossing_resolution_error_bound(), 0.0);
+}
+
+TEST(PwlStrike, AmplifiedCrossingErrorCannotResetItsFixedBudget) {
+  constexpr double lo = 1.0;
+  const double hi = std::nextafter(lo, 2.0);
+  const double ulp = hi - lo;
+  const auto stock = ConvexPwlStrikeFunction::payoff(0.0, Side::Put, lo, hi);
+  ASSERT_TRUE(stock);
+  const std::array term{PwlStrikeTerm{&*stock, 3.5 * ulp}};
+  const auto continuation = ConvexPwlStrikeFunction::weighted_sum(term);
+  ASSERT_TRUE(continuation);
+  const auto resolved = continuation->max_intrinsic(lo + 4.0 * ulp, Side::Call);
+  ASSERT_TRUE(resolved) << resolved.error().to_string();
+  ASSERT_GT(resolved->crossing_resolution_error_bound(), 0.0);
+  // The absolute floor permits this tiny error initially. Amplifying the
+  // expression must amplify its bound, not grant a fresh absolute allowance.
+  const std::array amplified{PwlStrikeTerm{&*resolved, 1.0e16}};
+  const auto rejected = ConvexPwlStrikeFunction::weighted_sum(amplified);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), atx::vol::ErrorCode::OutOfRange);
+  EXPECT_NE(rejected.error().message().find("accumulated crossing"), std::string::npos);
+}
+
 TEST(PwlStrike, ResultOwnsItsChildrenAndSupportsConcurrentConstQueries) {
   const auto make_owned = [] {
     const auto a = ConvexPwlStrikeFunction::payoff(80.0, Side::Call, 50.0, 150.0);

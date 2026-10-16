@@ -164,6 +164,9 @@ compile_american_markov_pwl(AmericanMarkovModel model, double min_strike, double
                     std::to_string(expiry) + ": " + put.error().message());
       }
       budget.diagnostics.output_nodes += call->nodes().size() + put->nodes().size();
+      budget.diagnostics.max_output_crossing_resolution_error = std::max(
+          {budget.diagnostics.max_output_crossing_resolution_error,
+           call->crossing_resolution_error_bound(), put->crossing_resolution_error_bound()});
       slices.push_back({expiry, terminal, end.calendar_time, end.variance_time,
                          std::move(*call), std::move(*put)});
     }

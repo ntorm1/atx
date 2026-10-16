@@ -33,6 +33,34 @@ using atx::core::Ok;
   return std::max(side == Side::Call ? spot - strike : strike - spot, 0.0);
 }
 
+[[nodiscard]] double roundoff_allowance(std::span<const PwlStrikeNode> nodes) noexcept {
+  double scale = 1.0;
+  for (const auto &node : nodes) scale = std::max(scale, node.value);
+  return 64.0 * std::numeric_limits<double>::epsilon() * scale;
+}
+
+// Outward rounding keeps the explicitly introduced crossing error conservative
+// through arbitrarily many algebra operations. Zero contributes exactly zero.
+[[nodiscard]] double add_up(double a, double b) noexcept {
+  if (a == 0.0) return b;
+  if (b == 0.0) return a;
+  return std::nextafter(a + b, std::numeric_limits<double>::infinity());
+}
+
+[[nodiscard]] double multiply_up(double a, double b) noexcept {
+  if (a == 0.0 || b == 0.0) return 0.0;
+  return std::nextafter(a * b, std::numeric_limits<double>::infinity());
+}
+
+[[nodiscard]] Status validate_crossing_error(double error,
+                                            std::span<const PwlStrikeNode> nodes) {
+  if (!std::isfinite(error) || error > roundoff_allowance(nodes)) {
+    return Err(ErrorCode::OutOfRange,
+               "PWL strike: accumulated crossing resolution error exceeds roundoff budget");
+  }
+  return Ok();
+}
+
 [[nodiscard]] Status append(std::vector<PwlStrikeNode> &nodes, PwlStrikeNode node,
                             const PwlStrikeLimits &limits, std::size_t other_workspace) {
   if (nodes.size() >= limits.max_nodes || other_workspace >= limits.max_workspace_nodes ||
@@ -52,9 +80,7 @@ using atx::core::Ok;
 }
 
 [[nodiscard]] Status validate_convexity(std::span<const PwlStrikeNode> nodes) {
-  double scale = 1.0;
-  for (const auto &node : nodes) scale = std::max(scale, node.value);
-  const double tolerance = 64.0 * std::numeric_limits<double>::epsilon() * scale;
+  const double tolerance = roundoff_allowance(nodes);
   std::vector<std::size_t> hull;
   hull.reserve(nodes.size());
   for (std::size_t i = 0u; i < nodes.size(); ++i) {
@@ -92,7 +118,7 @@ using atx::core::Ok;
 [[nodiscard]] Status exercise_segment(std::vector<PwlStrikeNode> &output,
                                       const PwlStrikeNode &left, const PwlStrikeNode &right,
                                       double spot, Side side, const PwlStrikeLimits &limits,
-                                      std::size_t workspace) {
+                                      double &crossing_error) {
   const double left_payoff = intrinsic(spot, left.strike, side);
   const double right_payoff = intrinsic(spot, right.strike, side);
   const double left_gap = left.value - left_payoff;
@@ -104,20 +130,29 @@ using atx::core::Ok;
     const double fraction = a > b ? 1.0 / (1.0 + b / a) : (a / b) / (1.0 + a / b);
     const double strike = std::lerp(left.strike, right.strike, fraction);
     if (!(strike > left.strike && strike < right.strike)) {
-      return Err(ErrorCode::OutOfRange, "PWL strike: exercise crossing below strike resolution");
+      // The maximum of the two affine segments lies below the chord of its
+      // endpoint maxima by at most a*b/(a+b) <= min(a,b). There may be NO double
+      // between the endpoints. Retain their exact maxima and account for this
+      // unresolved crossing instead of manufacturing a duplicate strike.
+      // One nextafter bounds rounding in the endpoint subtractions. Segment
+      // interiors are disjoint, so their uniform errors combine by maximum.
+      crossing_error = std::max(crossing_error,
+          std::nextafter(std::min(a, b), std::numeric_limits<double>::infinity()));
+    } else {
+      const double continuation = std::lerp(
+          left.value, right.value, (strike - left.strike) / (right.strike - left.strike));
+      ATX_TRY_VOID(append(output, {strike, std::max(continuation, intrinsic(spot, strike, side))},
+                          limits, 0u));
     }
-    const double continuation = std::lerp(
-        left.value, right.value, (strike - left.strike) / (right.strike - left.strike));
-    ATX_TRY_VOID(append(output, {strike, std::max(continuation, intrinsic(spot, strike, side))},
-                        limits, workspace));
   }
-  return append(output, {right.strike, std::max(right.value, right_payoff)}, limits, workspace);
+  return append(output, {right.strike, std::max(right.value, right_payoff)}, limits, 0u);
 }
 
 } // namespace
 
-ConvexPwlStrikeFunction::ConvexPwlStrikeFunction(std::vector<PwlStrikeNode> nodes) noexcept
-    : nodes_(std::move(nodes)) {}
+ConvexPwlStrikeFunction::ConvexPwlStrikeFunction(std::vector<PwlStrikeNode> nodes,
+                                               double crossing_error) noexcept
+    : nodes_(std::move(nodes)), crossing_resolution_error_bound_(crossing_error) {}
 
 Result<ConvexPwlStrikeFunction>
 ConvexPwlStrikeFunction::payoff(double spot, Side side, double min_strike, double max_strike,
@@ -136,11 +171,12 @@ ConvexPwlStrikeFunction::payoff(double spot, Side side, double min_strike, doubl
   }
   ATX_TRY_VOID(append(nodes, {max_strike, intrinsic(spot, max_strike, side)}, limits, 0u));
   ATX_TRY_VOID(validate_convexity(nodes));
-  return Ok(ConvexPwlStrikeFunction(std::move(nodes)));
+  return Ok(ConvexPwlStrikeFunction(std::move(nodes), 0.0));
 }
 
 Result<ConvexPwlStrikeFunction>
-ConvexPwlStrikeFunction::weighted_sum(std::span<const PwlStrikeTerm> terms, PwlStrikeLimits limits) {
+ConvexPwlStrikeFunction::weighted_sum(std::span<const PwlStrikeTerm> terms,
+                                     PwlStrikeLimits limits) {
   ATX_TRY_VOID(validate_limits(limits));
   if (terms.empty()) {
     return Err(ErrorCode::InvalidArgument, "PWL strike: weighted sum requires at least one term");
@@ -149,6 +185,7 @@ ConvexPwlStrikeFunction::weighted_sum(std::span<const PwlStrikeTerm> terms, PwlS
     return Err(ErrorCode::Unavailable, "PWL strike: term or workspace limit exceeded");
   }
   std::size_t input_nodes = 0u;
+  double crossing_error = 0.0;
   double lo = 0.0;
   double hi = 0.0;
   for (std::size_t i = 0u; i < terms.size(); ++i) {
@@ -158,6 +195,8 @@ ConvexPwlStrikeFunction::weighted_sum(std::span<const PwlStrikeTerm> terms, PwlS
       return Err(ErrorCode::InvalidArgument, "PWL strike: invalid weighted term");
     }
     const auto nodes = term.function->nodes();
+    crossing_error = add_up(crossing_error,
+        multiply_up(term.weight, term.function->crossing_resolution_error_bound()));
     if (nodes.size() > limits.max_input_nodes - input_nodes) {
       return Err(ErrorCode::Unavailable, "PWL strike: input node limit exceeded");
     }
@@ -197,7 +236,8 @@ ConvexPwlStrikeFunction::weighted_sum(std::span<const PwlStrikeTerm> terms, PwlS
     ATX_TRY_VOID(append(output, {strike, sum}, limits, terms.size()));
   }
   ATX_TRY_VOID(validate_convexity(output));
-  return Ok(ConvexPwlStrikeFunction(std::move(output)));
+  ATX_TRY_VOID(validate_crossing_error(crossing_error, output));
+  return Ok(ConvexPwlStrikeFunction(std::move(output), crossing_error));
 }
 
 Result<ConvexPwlStrikeFunction>
@@ -211,6 +251,7 @@ ConvexPwlStrikeFunction::max_intrinsic(double spot, Side side, PwlStrikeLimits l
     return Err(ErrorCode::Unavailable, "PWL strike: input node limit exceeded");
   }
   std::vector<PwlStrikeNode> output;
+  double local_crossing_error = 0.0;
   output.reserve(std::min(nodes_.size(), limits.max_nodes));
   ATX_TRY_VOID(append(output, {nodes_.front().strike,
                               std::max(nodes_.front().value,
@@ -219,16 +260,21 @@ ConvexPwlStrikeFunction::max_intrinsic(double spot, Side side, PwlStrikeLimits l
     const auto &left = nodes_[i - 1u];
     const auto &right = nodes_[i];
     if (spot > left.strike && spot < right.strike) {
-      const PwlStrikeNode middle{
-          spot, std::lerp(left.value, right.value, (spot - left.strike) / (right.strike - left.strike))};
-      ATX_TRY_VOID(exercise_segment(output, left, middle, spot, side, limits, 0u));
-      ATX_TRY_VOID(exercise_segment(output, middle, right, spot, side, limits, 0u));
+      const PwlStrikeNode middle{spot, std::lerp(
+          left.value, right.value, (spot - left.strike) / (right.strike - left.strike))};
+      ATX_TRY_VOID(exercise_segment(
+          output, left, middle, spot, side, limits, local_crossing_error));
+      ATX_TRY_VOID(exercise_segment(
+          output, middle, right, spot, side, limits, local_crossing_error));
     } else {
-      ATX_TRY_VOID(exercise_segment(output, left, right, spot, side, limits, 0u));
+      ATX_TRY_VOID(exercise_segment(output, left, right, spot, side, limits, local_crossing_error));
     }
   }
   ATX_TRY_VOID(validate_convexity(output));
-  return Ok(ConvexPwlStrikeFunction(std::move(output)));
+  // Maximum with a fixed payoff is 1-Lipschitz in the continuation value.
+  const double crossing_error = add_up(crossing_resolution_error_bound_, local_crossing_error);
+  ATX_TRY_VOID(validate_crossing_error(crossing_error, output));
+  return Ok(ConvexPwlStrikeFunction(std::move(output), crossing_error));
 }
 
 std::optional<double> ConvexPwlStrikeFunction::value(double strike) const noexcept {

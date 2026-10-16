@@ -42,13 +42,16 @@ struct PwlStrikeTerm {
 // interval. The public construction algebra preserves convexity: payoff,
 // nonnegative weighted sum, and maximum with an exercise payoff. Every input
 // knot and representable interior policy crossing is retained; there is no
-// resampling, smoothing, extrapolation, or approximate knot compression.
+// resampling, smoothing, extrapolation, or compression of represented knots.
 //
-// Algebra is exact apart from floating-point rounding. After each operation,
+// Arithmetic rounds to double precision. After each operation,
 // the entire function must lie within 64*epsilon*max(1,max_node_value) of its
 // global lower convex envelope. This fixed numerical allowance is independent
-// of the number of knots and cannot be configured. A crossing too close to an
-// endpoint to represent distinctly is an explicit numerical failure.
+// of the number of knots and cannot be configured. If a policy crossing rounds
+// onto an endpoint, the chord of endpoint maxima is used only when its explicit
+// accumulated uniform error bound stays within that SAME fixed allowance.
+// Positive sums propagate the weighted bounds; exercise adds the largest local
+// chord error to the inherited bound. Exceeding the allowance refuses the result.
 //
 // Construction/copies allocate. value() and nodes() do not; concurrent const
 // access is safe. A moved-from function is empty and cannot be composed.
@@ -75,9 +78,18 @@ public:
   [[nodiscard]] std::optional<double> value(double strike) const noexcept;
   [[nodiscard]] std::span<const PwlStrikeNode> nodes() const noexcept { return nodes_; }
 
+  // Bound on additional uniform error from unrepresentable policy crossings,
+  // propagated through the whole expression. Zero means no such approximation.
+  // It does not bound all IEEE arithmetic roundoff or model discretization error.
+  [[nodiscard]] double crossing_resolution_error_bound() const noexcept {
+    return crossing_resolution_error_bound_;
+  }
+
 private:
-  explicit ConvexPwlStrikeFunction(std::vector<PwlStrikeNode> nodes) noexcept;
+  explicit ConvexPwlStrikeFunction(std::vector<PwlStrikeNode> nodes,
+                                   double crossing_error) noexcept;
   std::vector<PwlStrikeNode> nodes_;
+  double crossing_resolution_error_bound_{};
 };
 
 } // namespace atx::vol

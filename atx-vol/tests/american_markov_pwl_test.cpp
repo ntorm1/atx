@@ -119,6 +119,45 @@ TEST(AmericanMarkovPwl, EndpointCashAndNegativeRatesHaveIndependentDeterministic
   EXPECT_EQ(surface->source_model().layers().back().states.size(), 1u);
 }
 
+TEST(AmericanMarkovPwl, DefaultMartingaleRetainsBoundedCrossingsAcrossFullRollback) {
+  const std::array intervals{AmericanMarkovInterval{0.25, 0.25, 0.0, 0.0, 0.2, 0.0}};
+  auto model = compile_american_markov({100.0, intervals, {}, {}});
+  ASSERT_TRUE(model);
+  ASSERT_EQ(model->diagnostics().max_states, 65u);
+  const auto surface = compile_american_markov_pwl(std::move(*model), 40.0, 180.0);
+  ASSERT_TRUE(surface) << surface.error().to_string();
+  const auto &slice = surface->slices()[0];
+  const double call_error = slice.call.crossing_resolution_error_bound();
+  const double put_error = slice.put.crossing_resolution_error_bound();
+  EXPECT_GT(std::max(call_error, put_error), 0.0);
+  EXPECT_EQ(surface->diagnostics().max_output_crossing_resolution_error,
+            std::max(call_error, put_error));
+  AmericanMarkovWorkspace workspace;
+  ASSERT_TRUE(workspace.prepare(surface->source_model()));
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto &function = side == Side::Call ? slice.call : slice.put;
+    double largest_value = 1.0;
+    for (const auto &node : function.nodes()) largest_value = std::max(largest_value, node.value);
+    const double allowance = 64.0 * std::numeric_limits<double>::epsilon() * largest_value;
+    EXPECT_LE(function.crossing_resolution_error_bound(), allowance);
+    for (int i = 0; i <= 1120; ++i) {
+      const double strike = 40.0 + 0.125 * static_cast<double>(i);
+      const auto scalar = price_american_markov(
+          surface->source_model(), strike, side, 0, workspace);
+      ASSERT_TRUE(scalar);
+      // The exposed bound excludes ordinary arithmetic roundoff; do not claim
+      // it alone bounds the two differently ordered floating-point recursions.
+      EXPECT_NEAR(*function.value(strike), *scalar, 3.0e-12);
+    }
+    for (const auto &node : function.nodes()) {
+      const auto scalar = price_american_markov(
+          surface->source_model(), node.strike, side, 0, workspace);
+      ASSERT_TRUE(scalar);
+      EXPECT_NEAR(node.value, *scalar, 3.0e-12);
+    }
+  }
+}
+
 TEST(AmericanMarkovPwl, AggregateBudgetsFailClosedWithoutPartialSurfaces) {
   const auto model = one_step_model();
   ASSERT_TRUE(model.has_value());
