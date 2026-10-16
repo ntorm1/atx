@@ -38,6 +38,8 @@ struct Grid {
   bool logarithmic;
   double concentration_scale = 0.0;
   bool first_variance_scale = false;
+  bool match_reference_spacing = false;
+  double time_refinement = 1.0;
 };
 
 double elapsed_us(Clock::time_point start) {
@@ -88,7 +90,16 @@ std::vector<Grid> grids(bool full) {
                                  {"sinh129-variance", 129u, 4.0, 1.0 / 104.0, false, 0.05, true},
                                  {"sinh129-variance-domain8", 129u, 8.0, 1.0 / 104.0, false, 0.05, true},
                                  {"sinh65-variance-domain16", 65u, 16.0, 1.0 / 52.0, false, 0.05, true},
-                                 {"sinh129-variance-domain16", 129u, 16.0, 1.0 / 104.0, false, 0.05, true}});
+                                 {"sinh129-variance-domain16", 129u, 16.0, 1.0 / 104.0,
+                                  false, 0.05, true},
+                                 {"sinh-match-domain8", 129u, 8.0, 1.0 / 104.0,
+                                  false, 0.05, true, true},
+                                 {"sinh-match-domain16", 129u, 16.0, 1.0 / 104.0,
+                                  false, 0.05, true, true},
+                                 {"sinh129-variance-time2", 129u, 4.0, 1.0 / 104.0,
+                                  false, 0.05, true, false, 2.0},
+                                 {"sinh129-variance-time4", 129u, 4.0, 1.0 / 104.0,
+                                  false, 0.05, true, false, 4.0}});
   }
   return result;
 }
@@ -197,12 +208,59 @@ Json describe(const Fixture &fixture, const Grid &grid) {
   }
   return {{"fixture", fixture.name}, {"spot", fixture.spot}, {"intervals", intervals},
            {"grid", grid.name}, {"requested_nodes", grid.nodes},
-           {"upper_multiple", grid.upper_multiple}, {"max_clock_step", grid.max_step},
+           {"upper_multiple", grid.upper_multiple},
+           {"configured_max_clock_step", grid.max_step},
+           {"max_clock_step", grid.max_step / grid.time_refinement},
            {"logarithmic", grid.logarithmic}, {"configured_concentration_scale", grid.concentration_scale},
+           {"requested_time_refinement", grid.time_refinement},
+           {"requested_spacing_match", grid.match_reference_spacing},
            {"concentration_rule", grid.first_variance_scale
                 ? "first positive cumulative fixture variance standard deviation; fixed fallback"
                 : "fixed"},
            {"requested_strikes", strike_samples(fixture.spot)}};
+}
+
+Result<AmericanMarkovStateGrid> resolve_sinh_grid(double spot,
+    const AmericanMarkovSinhGridConfig &config, bool match_spacing, Json &result) {
+  if (!match_spacing) return make_american_markov_sinh_grid(spot, config);
+  auto reference_config = config;
+  reference_config.grid_nodes = 129;
+  reference_config.upper_spot_multiple = 4.0;
+  auto &match = result["spacing_match"];
+  match = {{"reference_grid", "sinh129-variance"}, {"reference_nodes", 129},
+           {"reference_upper_multiple", 4.0}, {"minimum_nodes", config.grid_nodes},
+           {"maximum_nodes", config.max_states}, {"candidate_evaluations", 0},
+           {"rule", "first ascending node count with both spot gaps <= reference gaps"}};
+  const auto reference = make_american_markov_sinh_grid(spot, reference_config);
+  if (!reference) {
+    match["status"] = "reference_refused";
+    return atx::core::Err(reference.error());
+  }
+  match["reference_lower_gap_over_spot"] = reference->lower_spot_gap_over_spot;
+  match["reference_upper_gap_over_spot"] = reference->upper_spot_gap_over_spot;
+  match["reference_concentration_scale"] = config.concentration_scale;
+  auto trial_config = config;
+  // Integer allocation of left/right nodes can make individual spot gaps
+  // nonmonotone in node count. Ascending bounded search needs no such assumption.
+  for (std::size_t nodes = config.grid_nodes; nodes <= config.max_states; ++nodes) {
+    trial_config.grid_nodes = nodes;
+    match["candidate_evaluations"] = nodes - config.grid_nodes + 1;
+    auto trial = make_american_markov_sinh_grid(spot, trial_config);
+    if (!trial) {
+      match["status"] = "candidate_refused";
+      match["refused_nodes"] = nodes;
+      return atx::core::Err(trial.error());
+    }
+    if (trial->lower_spot_gap_over_spot <= reference->lower_spot_gap_over_spot &&
+        trial->upper_spot_gap_over_spot <= reference->upper_spot_gap_over_spot) {
+      match["status"] = "matched";
+      match["resolved_nodes"] = nodes;
+      return trial;
+    }
+  }
+  match["status"] = "search_exhausted";
+  return atx::core::Err(ErrorCode::OutOfRange,
+                        "audit grid: spacing match exceeds unchanged state budget");
 }
 
 Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
@@ -228,7 +286,8 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
     grid_config.grid_nodes = grid.nodes;
     grid_config.upper_spot_multiple = grid.upper_multiple;
     grid_config.concentration_scale = concentration_scale;
-    auto generated = make_american_markov_sinh_grid(fixture.spot, grid_config);
+    auto generated = resolve_sinh_grid(fixture.spot, grid_config,
+                                        grid.match_reference_spacing, result);
     if (!generated) {
       result["model_status"] = "grid_refused";
       result["model_error"] = generated.error().to_string();
@@ -241,15 +300,26 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
         {"max_unit_volatility_exit_rate", generated->max_unit_volatility_exit_rate}};
     states = std::move(generated->states);
   }
+  if (!states.empty()) {
+    result["resolved_state_grid"] = states;
+    result["resolved_nodes"] = states.size();
+  }
   AmericanMarkovConfig config;
   config.grid_nodes = grid.nodes;
   config.upper_spot_multiple = grid.upper_multiple;
-  config.max_calendar_step = grid.max_step;
-  config.max_variance_step = grid.max_step;
+  config.max_calendar_step = grid.max_step / grid.time_refinement;
+  config.max_variance_step = grid.max_step / grid.time_refinement;
+  config.cfl_fraction /= grid.time_refinement;
   // Keep the public defaults, including their resource limits, for every grid.
   result["model_limits"] = {{"max_states", config.max_states},
                               {"max_transitions", config.max_transitions},
                               {"max_stored_rows", config.max_stored_rows}};
+  result["resolved_model_controls"] = {
+      {"max_calendar_step", config.max_calendar_step},
+      {"max_variance_step", config.max_variance_step}, {"cfl_fraction", config.cfl_fraction},
+      {"max_states", config.max_states}, {"max_transitions", config.max_transitions},
+      {"max_stored_rows", config.max_stored_rows},
+      {"max_stored_volatility_values", config.max_stored_volatility_values}};
   auto start = Clock::now();
   auto model = compile_american_markov({fixture.spot, fixture.intervals, states, config});
   result["compile_us"] = elapsed_us(start);
@@ -259,6 +329,8 @@ Json run(const Fixture &fixture, const Grid &grid, bool pricing_only) {
     return result;
   }
   result["model_status"] = "ok";
+  result["resolved_state_grid"] = model->layers().front().states;
+  result["resolved_nodes"] = model->layers().front().states.size();
   const auto &d = model->diagnostics();
   result["model"] = {{"states", d.max_states}, {"diffusion_steps", d.diffusion_steps},
                        {"cash_steps", d.cash_steps}, {"stored_rows", d.stored_rows},
