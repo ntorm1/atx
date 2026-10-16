@@ -1,5 +1,6 @@
 {
   "context": {
+    "atx_baseline_status": "provisional: captured on a loaded host (33-90% CPU), UNQUALIFIED; not a pin, re-capture on a quiet host before gating",
     "date": "2026-10-16T12:16:18-04:00",
     "host_name": "NATHANS_PC",
     "executable": "C:\\atx-wt\\pool-34\\build-vol-rel-avx2\\bin\\atx-vol-chain-refresh-bench.exe",

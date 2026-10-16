@@ -101,6 +101,13 @@ struct Outputs {
   return *records().bank().at(records().record_of_contract()[i]);
 }
 
+// Contract i's (k, sigma) at spot S lies inside its record's certified box.
+[[nodiscard]] bool in_record_box(std::size_t i, double S) {
+  const ExpiryRecord &rec = record_of(i);
+  const double k = std::log(chain().strike[i] / (S * rec.forward_factor()));
+  return rec.contains(k, chain().sigma[i]);
+}
+
 TEST(ChainSpotLadder, EveryContractIsCertifiedWithinPolicy) {
   ChainSpotLadder lad = build_ladder();
   ASSERT_EQ(lad.size(), chain().strike.size());
@@ -179,13 +186,22 @@ TEST(ChainSpotLadder, WindowExitRebuildsWithinBudgetThenCatchesUpNextTick) {
   ChainSpotLadder lad = build_ladder(pol);
   const std::size_t n = chain().strike.size();
   Outputs out(n);
-  const double S = kS0 * std::exp(0.06); // past window_max (4%) for every contract
+  // +4.5%: past window_max (4%) for every contract, yet inside every record box
+  // (ChainRecordPolicy::spot_move = 5% beyond the outermost strikes).
+  const double S = kS0 * std::exp(0.045);
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(in_record_box(i, S)) << i;
+  }
   ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
   EXPECT_EQ(lad.rebuilds(), 32u);
   EXPECT_EQ(lad.fallbacks(), n - 32u);
   for (std::size_t i = 0; i < n; ++i) {
     const RecordGreeks g = record_of(i).greeks(S, chain().strike[i], chain().sigma[i]);
-    EXPECT_LE(std::abs(out.price[i] - g.price), lad.certified_error_usd()[i] + 1.0e-12) << i;
+    if (out.status[i] == TickStatus::Fallback) {
+      EXPECT_TRUE(bits_equal(out.price[i], g.price)) << i;
+    } else {
+      EXPECT_LE(std::abs(out.price[i] - g.price), lad.certified_error_usd()[i] + 1.0e-12) << i;
+    }
   }
   // The next tick rebuilds the rest; the one after rebuilds nothing.
   ASSERT_TRUE(lad.refresh(S * 1.0005, out.view()).has_value());
@@ -196,6 +212,78 @@ TEST(ChainSpotLadder, WindowExitRebuildsWithinBudgetThenCatchesUpNextTick) {
   }
   ASSERT_TRUE(lad.refresh(S * 1.001, out.view()).has_value());
   EXPECT_EQ(lad.rebuilds(), n) << "a rebuilt window must contain the next small move";
+}
+
+// Review finding (dcb6e3f1): a rebuilt window used to extend past the record's
+// (k, sigma) box, serving box-clamped record values as Ok with a certificate
+// that only covered the box — $6.0e-3 off the cold solver at +6% and $1.9e-2 at
+// +8% on this chain. Walk the spot well past ChainRecordPolicy::spot_move both
+// ways (and back) with an unlimited rebuild budget: every Ok / Exercised lane
+// must lie inside its record box and within its certificate of the cold solver;
+// every lane outside its box must be Fallback.
+TEST(ChainSpotLadder, WalkPastTheRecordBoxNeverServesAnUncertifiedLane) {
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = 1000;
+  ChainSpotLadder lad = build_ladder(pol);
+  const std::size_t n = chain().strike.size();
+  Outputs out(n);
+  std::vector<double> path;
+  for (int t = 1; t <= 40; ++t) {
+    path.push_back(0.0025 * t); // up to +10%
+  }
+  for (int t = 39; t >= -40; --t) {
+    path.push_back(0.0025 * t); // back down through 0 to -10%
+  }
+  double worst_served = 0.0, worst_slack = -1.0, worst_fallback = 0.0;
+  std::size_t served = 0, outside = 0, checks = 0;
+  for (std::size_t p = 0; p < path.size(); ++p) {
+    const double x = path[p];
+    const double S = kS0 * std::exp(x);
+    ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
+    const bool cold_check = (std::lround(x / 0.0025) % 4) == 0; // every 1% of log-spot
+    for (std::size_t i = 0; i < n; ++i) {
+      const bool box = in_record_box(i, S);
+      const bool is_served =
+          out.status[i] == TickStatus::Ok || out.status[i] == TickStatus::Exercised;
+      if (!box) {
+        ++outside;
+        EXPECT_EQ(out.status[i], TickStatus::Fallback) << "x=" << x << " i=" << i;
+      } else if (in_record_box(i, S * (1.0 + 1.0e-9)) && in_record_box(i, S * (1.0 - 1.0e-9))) {
+        // Strictly inside (the walk lands exactly on some box edges, where the
+        // ladder's box is pulled in by 1e-12 and serves the record instead).
+        EXPECT_TRUE(is_served) << "x=" << x << " i=" << i << " (budget is unlimited)";
+      }
+      if (!cold_check) {
+        continue;
+      }
+      const Result<double> cold =
+          andersen_lake(S, chain().strike[i], chain().expiry[i], chain().sigma[i], kR, kQ,
+                        chain().side[i], std::nullopt);
+      ASSERT_TRUE(cold.has_value());
+      const double err = std::abs(out.price[i] - *cold);
+      if (is_served) {
+        ++served;
+        const double cert = lad.certified_error_usd()[i];
+        worst_served = std::max(worst_served, err);
+        worst_slack = std::max(worst_slack, err - cert);
+        EXPECT_LE(err, cert + 1.0e-6) << "x=" << x << " i=" << i;
+      } else if (!box) {
+        worst_fallback = std::max(worst_fallback, err);
+      }
+      ++checks;
+    }
+  }
+  std::printf("[ladder] box walk: %zu cold checks; served Ok/Exercised %zu, worst vs cold %.3e $ "
+              "(worst err - cert %.3e); out-of-box lane-ticks %zu (Fallback), worst clamped "
+              "record vs cold %.3e $\n",
+              checks, served, worst_served, worst_slack, outside, worst_fallback);
+  EXPECT_GT(outside, 0u) << "the walk must leave some record boxes";
+  EXPECT_GT(served, 0u);
+  // Back at the build spot every contract is inside its box again and rebuilt.
+  ASSERT_TRUE(lad.refresh(kS0, out.view()).has_value());
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_NE(out.status[i], TickStatus::Fallback) << i;
+  }
 }
 
 TEST(ChainSpotLadder, RebuildBudgetExhaustedServesTheRecordFlaggedFallback) {

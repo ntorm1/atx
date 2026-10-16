@@ -114,6 +114,14 @@ opt-in path, the per-underlier 16×8×12 tensor baked at one `q_rep`.
   rebuilds per tick; past it the record serves that tick (`Fallback`) and the
   contract rebuilds on a later tick. The tick never allocates and never touches
   the pool.
+- **Record box (review fix round 1).** Every window is clipped to the spot range
+  that keeps the contract's k inside its record's [k_min, k_max], and a contract
+  whose σ is outside the record's σ box gets no window. A spot outside the box is
+  served from the record, flagged `Fallback`, without spending the rebuild
+  budget. So an `Ok` or `Exercised` lane is always inside the box its
+  certificate covers. At `dcb6e3f1` a rebuilt window could run past the box
+  edge; the clamped record values then went out as `Ok` (see "Review fix
+  round 1").
 
 ### Item 3: IV against the record
 
@@ -146,11 +154,14 @@ ill-posed targets instead of guessing:
     F ≈ 600.
 - **Ladder.** At build and at every rebuild, the price series is compared with
   its record at all 15 node midpoints and both domain ends. The certificate is
-  that maximum plus F × the record's certificate. When it exceeds
-  `max_cert_usd` ($5e-4), the window halves down to 0.25%. A contract still over
-  is refused and served from its record every tick. In the bench chain no
-  contract is refused; the worst certificate is $2.3e-4. The series reproduces
-  its record to price 2.9e-9 and delta 1.8e-8 (test chain).
+  that maximum plus F_max × the record's certificate, with F_max taken at the
+  window's top. When it exceeds `max_cert_usd` ($5e-4), the window halves down
+  to 0.25%. A contract still over is refused and served from its record every
+  tick, and so is any contract whose record is uncertified (`certify = false`).
+  The certificate holds only inside the record's (k, σ) box, which is why
+  windows are clipped to it. In the bench chain no contract is refused; the
+  worst certificate is $2.3e-4. The series reproduces its record to price
+  2.9e-9 and delta 1.8e-8 (test chain).
 - **Greeks are not certified per contract.** They are measured against
   `american_greeks_al`, which is a finite difference with a fixed
   hS = 1e-3·S. Near the exercise boundary that stencil straddles the kink, and
@@ -183,7 +194,21 @@ record_ladder p99.9 is 218.8 µs. It made 62 in-tick rebuilds over 10,000 ticks
 (6.2 per 1k ticks), with 0 fallbacks and 0 refused contracts. Ladder build takes
 23 ms and record build takes 299 ms for 40 certified records; both are untimed
 refit costs. The cached rows' Greek maxima against cold are Δ 0.076, Γ 2.8e-3,
-vega 60 and θ 4.1. That is the q_rep / wide-box drift the audit predicted.
+vega 60 and θ 4.1.
+
+**Correction (review of `dcb6e3f1`, finding 3).** An earlier version of this
+note blamed the cached route's $0.577 on q_rep / wide-box drift. That is wrong.
+The reviewer's one-factor probe over all 2,000 contracts gives:
+
+- the session recipe: $0.969 max;
+- exact per-expiry q: $1.13;
+- a tight T box: $0.97;
+- exact q plus tight T, k and σ boxes: still $0.534 max, with 561 contracts
+  over $1e-3.
+
+The dominant error is the 16×8×12 CorrectionCache tensor interpolating across
+the exercise boundary's kink. The record avoids it because its k axis stops at
+the edge.
 
 Other runs on the same day (receipts `…-item2`, `…-item4`):
 
@@ -219,7 +244,7 @@ never the monolithic `atx-vol-tests` (coordinator rule).
 | Item | TU checks | Focused ctest `^tick-path:` | PCH-off owners | Umbrella |
 |---|---|---|---|---|
 | 1 | 4 (rel-avx2) | 31/31 (ChainTickCached 5, CpuTopology 2, PricingExecutor 24) | 5/5 | 9/10 |
-| 2 | 3 (dev) | 47/47 (adds ExpiryRecord 13, ExpiryRecordBank 1, ExpiryRecordSeam 1, ChainTickRecords 3) | 6/6 | 9/10 (Tier-B 33 → 34) |
+| 2 | 3 (dev) | 47/47 (adds ExpiryRecord 11, ExpiryRecordBank 1, ExpiryRecordSeam 1, ChainTickRecords 3) | 6/6 | 9/10 (Tier-B 33 → 34) |
 | 3 | via build | 57/57 (adds ChainSpotLadder 10) | 6/6 | — |
 | 4 | via build | 61/61 (adds RecordImpliedVol 4) | 5/5 | 9/10 |
 
@@ -268,6 +293,100 @@ and 63% after; the receipt is `C:\atx-cache\quote-benchmark\tick-path-20261016-r
 The accuracy counters match the pre-rebase run to the printed digits: price max
 $1.0753e-4, p99 $3.94e-5, certificate $2.27e-4, 62 rebuilds, 0 fallbacks.
 
+## Review fix round 1 (review of `dcb6e3f1`: BLOCK)
+
+The review is `C:\atx-cache\quote-benchmark\tick-path-dcb6e3f1-review-v1\review.md`.
+The fix was made in the leased tree pool-4 (run `vol-20261016-tickfix`).
+
+**MAJOR (finding 1), fixed.** A rebuilt ladder window was never intersected with
+the record's (k, σ) box, so past `spot_move` the ladder served box-clamped
+record values as `Ok` under an in-box certificate. Against the cold solver that
+was $6.0e-3 at +6% and $1.9e-2 at +8% on the test chain, and $4.5e-3 at +6% on
+a 600-contract bench subset. `build_one` now does three things:
+
+- It clips the window to S ∈ [K e^{−k_max}/g, K e^{−k_min}/g], pulled in by a
+  relative 1e-12.
+- It gives a contract whose σ is outside the record's σ box no window.
+- It leaves the window empty when the centre spot is outside the box.
+
+On the tick side, a pending lane whose spot is outside its box is served from
+the record as `Fallback` and does not spend the rebuild budget. When the spot
+comes back inside the box, the lane is rebuilt.
+
+`WindowExitRebuildsWithinBudgetThenCatchesUpNextTick` used to assert the bug at
++6%. It now moves +4.5%, which leaves every window but stays inside every box.
+The new `WalkPastTheRecordBoxNeverServesAnUncertifiedLane` walks ±10% and back
+in 0.25% ticks with an unlimited budget. At each tick it asserts:
+
+- no `Ok` / `Exercised` lane is outside its box;
+- every out-of-box lane is `Fallback`;
+- every lane strictly inside its box is served.
+
+At every 1% it also checks each served lane against cold accurate AL, within its
+certificate plus 1e-6. Over 1,260 cold checks the served lanes are at worst
+$1.58e-6 off, and the largest error minus certificate is −2.8e-14. There were
+540 out-of-box lane-ticks, all `Fallback`; their clamped-record error reaches
+$3.4e-2 and carries no certificate.
+
+The reviewer's probe, re-run on the fixed code (receipt
+`C:\atx-cache\quote-benchmark\tick-path-20261016-fix1\probe-ladder-box-after-fix.log`),
+shows 0 out-of-box `Ok` / `Exercised` lanes at every checkpoint: ±1..8% on the
+test chain and ±1..6% on the bench subset. The served-lane maximum is
+$9.5e-7 on the test chain and $1.17e-4 on the bench subset. Out-of-box lanes
+are `Fallback`, at up to $1.9e-2 (test chain, +8%) and $4.4e-3 (bench subset,
++6%), the same numbers the record route reports.
+
+**MINOR, fixed:**
+
+- **Finding 4.** An uncertified record (NaN) now refuses its contract. Its
+  certificate is NaN and the record serves it, flagged `Fallback`.
+- **Certificate tightening.** The record's dollar certificate now uses F at the
+  window's top rather than at its centre, so the bench's worst ladder
+  certificate moved from $2.27e-4 to $2.36e-4.
+- **Finding 5.** `pricing_executor_test.cpp` was removed from
+  `atx-vol-tick-path-tests`. PricingExecutor is owned by
+  `atx-vol-pricing-slice` / `atx-vol-tests`, so `atx_vol_fast` runs each case
+  once.
+- **Finding 3.** The attribution of the cached route's error is corrected here,
+  in the `expiry_record.hpp` header comment, and by an appended LEDGER
+  correction line.
+
+**NITs, fixed:**
+
+- **Finding 6.** Documented that the cached route's refusal path allocates.
+- **Finding 7.** `OutOfWindow` is documented as reserved, since no route emits
+  it.
+- **Finding 8.** Documented that the record routes read only strike and σ from
+  the chain.
+- **Finding 9.** `refresh_chain_records` now applies the out-of-box `Fallback`
+  test before `Exercised`; the test asserts `Fallback` exactly where the record
+  box excludes the contract.
+- **Finding 14.** The provisional baseline JSON now carries an
+  `atx_baseline_status` context key.
+
+Findings 10-13 (`build()` length, skipped cert rows, unclamped Greeks under a
+clamped price, and main-thread / pool CPU sharing) are left open.
+
+### Gates (fix round 1, vol-only presets, `-Jobs 3`, focused targets only)
+
+| Gate | Preset | Result |
+|---|---|---|
+| `-Ctest -R "^tick-path:"` | `vol-rel` | **38/38**. That is 61 − 24 PricingExecutor cases (deduplicated) + 1 new walk test: ChainTickCached 5, CpuTopology 2, ExpiryRecord 11, ExpiryRecordBank 1, ExpiryRecordSeam 1, ChainTickRecords 3, ChainSpotLadder 11, RecordImpliedVol 4 |
+| Allocation tests (`--gtest_filter=*Alloc*`) | `vol-rel` | 5/5: ChainTickCached.HappyPathTickAllocatesNothing, ExpiryRecord.QueriesAllocateNothing, ChainTickRecords.ShapeErrorsAreRefusedAndTheTickAllocatesNothing, RecordImpliedVol.ChainEntryMatchesPerContractAndAllocatesNothing, ChainSpotLadder.TicksAllocateNothingEvenWhenTheyRebuild (its +7% tick now also covers the out-of-box record path) |
+| PCH-off build + `^tick-path:` | `vol-hygiene` | OK, **38/38** |
+| `--atx-self-check` / `^atx-vol-chain-refresh-name-coverage$` | `vol-rel-avx2 -Bench` | 0 failures / 1/1 |
+
+There was also a `record_ladder` confirmation run, UNQUALIFIED, with host load
+39% before and 85% after:
+
+- Timing: p50 96.7 µs, p99 159.4 µs, p99.9 196.3 µs.
+- Counts: 62 rebuilds, 0 fallbacks, 0 refused.
+- Accuracy: price max $1.075e-4, p99 $3.94e-5; Greek p99s unchanged from the
+  earlier runs.
+
+The bench tape stays inside every record box, so the fix does not change its
+accuracy.
+
 ## Unfinished
 
 1. **Quiet-host qualification.** Nothing is pinned. Re-run
@@ -282,7 +401,10 @@ $1.0753e-4, p99 $3.94e-5, certificate $2.27e-4, 62 rebuilds, 0 fallbacks.
    The dividend axis and the V&N certification are missing.
 5. **Serving integration.** Records and ladders are not wired into the session
    / `PricedSurface` / `QueryAccelerator` path; they are opt-in APIs. The
-   default cached route (with its q_rep drift) is unchanged.
+   default cached route is unchanged, including its tensor-across-the-kink
+   error. The session's `cache_serves` gate checks box containment only, so
+   in-box contracts near the boundary are still served cached; the serve path
+   needs a follow-up.
 6. **IV ≤ 500 ns.** ~3.5 evaluations × ~250-350 ns each. Candidate fixes:
    - Halley, or a first step from the surface vega.
    - Collapse the k axis at the strike when the record has no edge in its box.

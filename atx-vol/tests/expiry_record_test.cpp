@@ -392,10 +392,15 @@ TEST(ChainTickRecords, SpotFarOutsideTheBoxIsFlaggedFallback) {
   ASSERT_TRUE(recs.has_value());
   EXPECT_TRUE(std::isnan(recs->worst_certified_error_fwd()));
   Outputs out(c.strike.size());
-  ASSERT_TRUE(refresh_chain_records(kS0 * 1.3, c.view(), *recs, out.view()).has_value());
+  const double S = kS0 * 1.3;
+  ASSERT_TRUE(refresh_chain_records(S, c.view(), *recs, out.view()).has_value());
   std::size_t fallback = 0;
-  for (const TickStatus st : out.status) {
-    fallback += (st == TickStatus::Fallback) ? 1u : 0u;
+  for (std::size_t i = 0; i < out.status.size(); ++i) {
+    fallback += (out.status[i] == TickStatus::Fallback) ? 1u : 0u;
+    // Out of the box is Fallback even where the clamped edge says "exercised".
+    const ExpiryRecord &rec = *recs->bank().at(recs->record_of_contract()[i]);
+    const double k = std::log(c.strike[i] / (S * rec.forward_factor()));
+    EXPECT_EQ(out.status[i] == TickStatus::Fallback, !rec.contains(k, c.sigma[i])) << i;
   }
   EXPECT_GT(fallback, 0u);
 }

@@ -8,10 +8,14 @@
 // The served cached American price today is Black-76 plus ONE per-underlier
 // CorrectionCache: a 16 x 8 x 12 Chebyshev tensor over (k, T, sigma) baked at a
 // single representative carry q_rep (session.cpp build_session_caches). Every
-// cached price walks all 1,536 coefficients, and every expiry whose q_eff differs
-// from q_rep inherits the carry mismatch (the A9 note in american.cpp). On the
-// audit's 2,000-contract chain that route misses the cold Andersen-Lake reference
-// by up to ~$0.58 in price.
+// cached price walks all 1,536 coefficients. On the audit's 2,000-contract chain
+// that route misses the cold Andersen-Lake reference by up to ~$0.58 in price
+// (bench 5% sample; $0.97 over all 2,000). The carry mismatch (the A9 note in
+// american.cpp) is NOT the main cause: with exact per-expiry q and tight k / T /
+// sigma boxes the same tensor still misses by $0.53, 561 of 2,000 contracts over
+// $1e-3 (review probe 2026-10-16), because a smooth tensor in k interpolates
+// across the exercise boundary's kink. The record below removes both causes: T
+// and q are exact, and its k axis stops at the exercise edge.
 //
 // An ExpiryRecord fixes the expiry: T, r and q are EXACT for that expiry, the T
 // axis disappears, and one record is a 16 x 12 coefficient plane per side

@@ -43,10 +43,15 @@ enum class TickStatus : std::uint8_t {
   Exercised = 1,   // spot is in the early-exercise region: intrinsic value,
                    // delta = +/-1 and gamma = vega = theta = 0 (the cold
                    // reference american_greeks_al reports theta = 0 there too)
-  OutOfWindow = 2, // record route: spot left this contract's certified window
-                   // and no fallback was allowed; outputs are NaN
+  OutOfWindow = 2, // reserved: the spot ladder's kernel flags a lane whose spot
+                   // left its window, and the tick resolves every such lane
+                   // (rebuild, or Fallback) before it returns, so no public
+                   // route emits this value today
   Fallback = 3,    // served by the route's documented fallback (e.g. the cached
-                   // route with no cache for this side serves the Black-76 leg)
+                   // route with no cache for this side serves the Black-76 leg;
+                   // the record routes serve the box-clamped record value when
+                   // (k, sigma) has left the record's box, which is NOT covered
+                   // by any certificate)
   Unpriceable = 4, // the model refused this contract; outputs are NaN
 };
 
@@ -97,6 +102,9 @@ struct ChainTickOutputs {
 // american_greeks documents) and TickStatus::Unpriceable + NaN where it refuses.
 // This route still pays a full 3-D second-order correction sweep per contract;
 // it exists as the measured baseline the record routes are compared against.
+// Allocation-free on the served path; a refused contract goes through
+// american_greeks' error Result, which builds its message string (an
+// allocation) before the contract is written Unpriceable.
 //
 // @return InvalidArgument when the columns disagree in length or `spot` is not
 //         a finite positive number; nothing is written then.
@@ -145,9 +153,13 @@ private:
 
 // Record tick route (audit item 2): each contract is re-marked from its expiry
 // record — price, delta, gamma, vega and the continuation-PDE theta — inline.
-// TickStatus::Exercised in the exercise region; TickStatus::Fallback when the
-// contract's (k, sigma) has left its record's box (the box-clamped record value
-// is served, flagged); Unpriceable + NaN for a non-positive strike or sigma.
+// TickStatus::Fallback when the contract's (k, sigma) has left its record's box
+// (the box-clamped record value is served, flagged, uncertified; this takes
+// precedence over the exercise test, whose edge is clamped in sigma there too);
+// otherwise TickStatus::Exercised in the exercise region and Ok elsewhere;
+// Unpriceable + NaN for a non-positive strike or sigma. Only `strike` and
+// `sigma` are read per contract: T, r and q are the record's own (the chain was
+// grouped by them when `records` was built).
 //
 // @return InvalidArgument for mismatched columns, a non-positive / non-finite
 //         spot, or `records` built for a different contract count.
@@ -191,19 +203,33 @@ private:
 // the per-tick loop streams the blocks in order and the lane loops vectorize
 // under /arch:AVX2. 2,000 contracts at 16 nodes are ~0.7 MB, L2-resident.
 //
+// Record box: the record's certificate covers its (k, sigma) box only, so every
+// window is clipped to the spot range that keeps k = ln(K / F) inside
+// [k_min, k_max], and a contract whose sigma is outside the record's sigma box
+// has no window at all. A lane reported Ok or Exercised is therefore always
+// inside its record's box. A spot outside the box is served from the record —
+// the box-clamped value, flagged TickStatus::Fallback and covered by no
+// certificate — until the spot comes back, when the next tick rebuilds it.
+//
 // Certification (per contract, at build and at every rebuild): the price series
 // is compared with the record at every midpoint between adjacent nodes and at
-// the domain ends; certified_error_usd()[i] = that maximum + F x the record's own
-// certified error against the cold solver. A contract whose certificate exceeds
-// SpotLadderPolicy::max_cert_usd even at the smallest window is REFUSED: it is
-// served from its record every tick (TickStatus::Fallback). Greeks are not
-// separately certified; the bench measures them against american_greeks_al.
+// the domain ends; certified_error_usd()[i] = that maximum + F_max x the record's
+// own certified error against the cold solver (F_max at the window's top). A
+// contract whose certificate exceeds SpotLadderPolicy::max_cert_usd even at the
+// smallest window, or whose record is uncertified (ChainRecordPolicy::certify =
+// false), is REFUSED: it is served from its record every tick
+// (TickStatus::Fallback). certified_error_usd()[i] describes contract i's
+// current window and is NaN when it has none (uncertified record, or a build
+// spot outside its record box); a tick whose spot is outside the window serves
+// the record (Fallback) and makes no use of it. Greeks are not separately
+// certified; the bench measures them against american_greeks_al.
 //
-// Window exits: when the spot leaves a contract's window the tick rebuilds that
-// contract's ladder centred on the new spot (from the record, ~16 record
-// evaluations), up to max_rebuilds_per_tick per tick; past the budget the
-// contract is served from its record that tick (TickStatus::Fallback) and
-// rebuilt on a later tick. Rebuilds are counted (rebuilds()).
+// Window exits: when the spot leaves a contract's window (inside its record
+// box) the tick rebuilds that contract's ladder centred on the new spot (from
+// the record, ~16 record evaluations), up to max_rebuilds_per_tick per tick;
+// past the budget the contract is served from its record that tick
+// (TickStatus::Fallback) and rebuilt on a later tick. A spot outside the box
+// does not spend the budget. Rebuilds are counted (rebuilds()).
 
 inline constexpr std::size_t kSpotLadderLanes = 4;
 inline constexpr std::uint16_t kSpotLadderNodes = 16;
@@ -247,8 +273,9 @@ public:
   // In-tick rebuilds and record fallbacks since build().
   [[nodiscard]] std::uint64_t rebuilds() const noexcept;
   [[nodiscard]] std::uint64_t fallbacks() const noexcept;
-  // Per-contract certified price error in dollars at the current windows, and
-  // the contracts refused at build (served from their record every tick).
+  // Per-contract certified price error in dollars of the current windows (NaN
+  // for a contract with no window), and the contracts refused (served from
+  // their record every tick).
   [[nodiscard]] std::span<const double> certified_error_usd() const noexcept;
   [[nodiscard]] std::size_t refused_contracts() const noexcept;
   // Bytes of tick-path data (blocks of coefficients and per-contract scalars).

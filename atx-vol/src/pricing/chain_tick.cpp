@@ -172,8 +172,10 @@ Status refresh_chain_records(double spot, const ChainContractsView &chain,
     out.gamma[i] = g.gamma;
     out.vega[i] = g.vega;
     out.theta[i] = g.theta;
-    out.status[i] = g.exercised ? TickStatus::Exercised
-                                : (g.in_box ? TickStatus::Ok : TickStatus::Fallback);
+    // Out of the box first: there the exercise edge is clamped in sigma too, so
+    // neither Ok nor Exercised is certified.
+    out.status[i] = !g.in_box ? TickStatus::Fallback
+                              : (g.exercised ? TickStatus::Exercised : TickStatus::Ok);
   }
   return Ok();
 }

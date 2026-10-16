@@ -135,6 +135,14 @@ struct ChainSpotLadder::Impl {
   std::vector<Side> side;
   std::vector<std::uint32_t> rec_of;
   std::vector<double> half_width; // current ln-spot window half-width per contract
+  // Spot range [box_lo, box_hi] that keeps the contract's (k, sigma) inside its
+  // record's certified box: k = ln(K / (S g)) in [k_min, k_max] <=> S in
+  // [K e^{-k_max} / g, K e^{-k_min} / g]. Empty (+inf, -inf) when sigma itself is
+  // outside the record's sigma box. Every window is clipped to it, so a lane the
+  // kernel reports Ok or Exercised is always inside the box the record's
+  // certificate covers; a spot outside it is served from the record (Fallback).
+  std::vector<double> box_lo;
+  std::vector<double> box_hi;
   std::vector<std::uint8_t> refused;
   std::vector<double> cert_usd;
   std::vector<std::uint32_t> pending; // out-of-window scratch, sized n at build
@@ -147,19 +155,29 @@ struct ChainSpotLadder::Impl {
   [[nodiscard]] const ExpiryRecord &record(std::size_t c) const noexcept {
     return *records.bank().at(rec_of[c]);
   }
+  [[nodiscard]] bool spot_in_box(std::size_t c, double S) const noexcept {
+    return S >= box_lo[c] && S <= box_hi[c];
+  }
 
   // (Re)build contract c's ladder centred on `center`. Returns true when the
-  // certificate is within policy; false marks the contract refused.
+  // contract has a certified window containing `center`; false when it is
+  // refused (certificate over policy, or an uncertified record) or `center` is
+  // outside its record box (no window until the spot comes back).
   bool build_one(std::size_t c, double center) noexcept;
   void refuse(std::size_t c) noexcept;
+  void clear_window(std::size_t c) noexcept;
   void serve_from_record(std::size_t c, double S, const ChainTickOutputs &out) noexcept;
 };
 
-void ChainSpotLadder::Impl::refuse(std::size_t c) noexcept {
+void ChainSpotLadder::Impl::clear_window(std::size_t c) noexcept {
   Block &B = blocks[c / kL];
   const std::size_t l = c % kL;
-  B.lo[l] = kInf; // never inside: every tick routes it to the record fallback
+  B.lo[l] = kInf; // never inside: every tick routes it to the pending pass
   B.hi[l] = -kInf;
+}
+
+void ChainSpotLadder::Impl::refuse(std::size_t c) noexcept {
+  clear_window(c);
   if (refused[c] == 0u) {
     refused[c] = 1u;
     ++refused_count;
@@ -183,28 +201,49 @@ bool ChainSpotLadder::Impl::build_one(std::size_t c, double center) noexcept {
       s_ex = K * std::exp(-e) / g;
     }
   }
+  // The ladder's certificate stands on the record's: an uncertified record
+  // (certify = false, NaN) gives nothing to stand on, so the contract is refused
+  // and served from its record, flagged Fallback.
   const double rec_cert = rec.certified_max_abs_error_fwd();
-  const double rec_cert_usd = std::isfinite(rec_cert) ? rec_cert * center * g : 0.0;
+  if (!std::isfinite(rec_cert)) {
+    cert_usd[c] = kNaN;
+    refuse(c);
+    return false;
+  }
+  // The record certificate covers its (k, sigma) box only. A centre outside the
+  // box has no certifiable window: serve the record until the spot comes back.
+  if (!spot_in_box(c, center)) {
+    cert_usd[c] = kNaN;
+    clear_window(c);
+    return false;
+  }
 
   double delta = half_width[c];
   double cert = kInf;
   for (int attempt = 0; attempt <= kMaxShrink; ++attempt) {
-    const double lo = center * std::exp(-delta);
-    const double hi = center * std::exp(delta);
+    // Window clipped to the box, so every Ok / Exercised lane is in the box.
+    const double lo = std::max(center * std::exp(-delta), box_lo[c]);
+    const double hi = std::min(center * std::exp(delta), box_hi[c]);
+    // Record error in dollars = F x the forward-unit certificate; F is largest
+    // at the window's top.
+    const double rec_cert_usd = rec_cert * hi * g;
     const double a = is_put ? std::max(lo, s_ex) : lo;
     const double b = is_put ? hi : std::min(hi, s_ex);
     B.lo[l] = lo;
     B.hi[l] = hi;
     B.s_ex[l] = s_ex;
     if (!(b > a)) {
-      // The whole window is on the exercise side: intrinsic everywhere, exact.
+      // The whole window is on the exercise side: intrinsic everywhere.
       for (std::uint16_t k = 0; k < kN; ++k) {
         B.pc[k][l] = 0.0;
         B.vc[k][l] = 0.0;
       }
       B.alpha[l] = 0.0;
       B.beta[l] = 0.0;
-      cert = 0.0;
+      // Intrinsic on the exercise side of the record's edge: exactly the
+      // record's value there, which its certificate covers (it probes the
+      // exercise side too).
+      cert = rec_cert_usd;
       break;
     }
     std::array<double, kN> pv{};
@@ -298,6 +337,8 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
   const std::span<const std::uint32_t> rec_of = records.record_of_contract();
   impl->rec_of.assign(rec_of.begin(), rec_of.end());
   impl->half_width.assign(n, policy.window_max);
+  impl->box_lo.assign(n, kInf);
+  impl->box_hi.assign(n, -kInf);
   impl->refused.assign(n, 0u);
   impl->cert_usd.assign(n, kNaN);
   impl->pending.assign(n, 0u);
@@ -330,6 +371,13 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
     B.hs2[l] = 0.5 * sig * sig;
     impl->half_width[c] =
         std::clamp(policy.window_sigmas * sig * std::sqrt(T), policy.window_min, policy.window_max);
+    if (sig >= rec->sigma_min() && sig <= rec->sigma_max()) {
+      // Pulled in by a relative 1e-12 so that rounding in ln(K / (S g)) at the
+      // very edge can never land a served lane a few ulps outside the box.
+      const double g = rec->forward_factor();
+      impl->box_lo[c] = K * std::exp(-rec->k_max()) / g * (1.0 + 1.0e-12);
+      impl->box_hi[c] = K * std::exp(-rec->k_min()) / g * (1.0 - 1.0e-12);
+    }
     (void)impl->build_one(c, spot);
   }
   return Ok(ChainSpotLadder(std::move(impl)));
@@ -361,12 +409,14 @@ Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
       }
     }
   }
-  // Resolve window exits: rebuild within budget, otherwise serve the record.
+  // Resolve window exits: rebuild within budget, otherwise serve the record. A
+  // spot outside the contract's record box cannot be certified at all, so it is
+  // served from the record without spending the rebuild budget.
   std::uint32_t rebuilt = 0;
   for (std::size_t p = 0; p < n_pending; ++p) {
     const std::size_t c = m.pending[p];
     const bool may_rebuild = m.refused[c] == 0u && m.policy.rebuild_on_exit &&
-                             rebuilt < m.policy.max_rebuilds_per_tick;
+                             m.spot_in_box(c, spot) && rebuilt < m.policy.max_rebuilds_per_tick;
     if (may_rebuild) {
       ++rebuilt;
       ++m.rebuilds;
