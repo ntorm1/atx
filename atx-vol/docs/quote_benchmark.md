@@ -67,10 +67,15 @@ keys tune the channel spline (`channel_weight`, `mid_weight`, `itm_mid_weight`,
 `default_shape_weight`, `prior_scale`, `roughness`, `min_half_width_vol`,
 `mult_floor`, `mult_ceil`, `max_iterations`, `min_channel_quotes`,
 `repair_half_spreads`); `"curve": "knot-spline"` makes it the profile's point
-method as well. Graded output appends a `grade` column and the native report
-adds `graded_stats` (per-grade chains/rows and per-slice diagnostics). Every
-served slice still passes the unchanged American price and calendar
-certificates; refusals keep their reason.
+method as well. `channel.family` (`knot-spline` default, or `essvi`, `svi`,
+`c8-event`, `convex-dense`, `spline-vol`) solves the same channel objective with
+that point family by bounded active-set reweighting (`family_iterations`,
+default 12); predictions report `configured_curve` `channel-<family>`. Graded
+output appends a `grade` column and the native report adds `graded_stats`
+(per-grade chains/rows and per-slice diagnostics, including the channel solve
+time `solve_us` and refit count). Every served slice still passes the unchanged
+American price and calendar certificates; refusals keep their reason. Graded
+admission requires supplied carry (no `carry_mode`).
 
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of
