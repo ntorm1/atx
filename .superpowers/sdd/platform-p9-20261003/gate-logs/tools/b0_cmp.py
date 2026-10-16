@@ -18,6 +18,16 @@ usage: python b0_cmp.py REFERENCE_DIR NEW_DIR --mode ic|nav OUT_TXT
   IDENTITY  `/candidate_cache/vm_identity`, and any string leaf whose new value is the reference value with the
             reference's VM identity string replaced by the new side's (the Release identity and its `DIR/<identity>/`
             cache-root paths); the two identity strings are read from `/roles/<i>/candidate_cache/vm_identity`
+  M1D-LIST  (agent 4, added after the u pass's first comparison, `yf0u-cmp-pass1.txt`: RELCACHE-ALLOW's fourth class,
+            "M1d's written Release IC adoption list where it names a leaf", is the u / w row of
+            `root-wave1-merge-report.md:890-891`, which this tool's first pass did not encode) exactly the leaves that
+            list names: the cache-root paths `/candidate_cache/{directory,fields_directory}` and
+            `/candidate_cache/entries/<i>/{payload,sidecar}` (allowed only when the new path is the reference path with
+            `<cache dir>/` -> `<cache dir>/<new VM identity>/` and the same remainder, "same file names"); the identity
+            strings `/candidate_cache/ic_results/{identity,key/ic_identity}` (allowed only when new = reference + the
+            Release identity suffix), `/candidate_cache/ic_results/subdirectory` and
+            `/candidate_cache/entries/<i>/signal_key_sha256` (identity-keyed names; string both sides); the cache state
+            counters `/roles/<i>/{verify_bytes,ic_cache_bytes,ic_scratch_bytes}` (integer both sides)
 anything else (incl. a leaf on one side only outside these classes) = OUTSIDE (an identity miss, ROOT-1).
 
 --mode nav (row 6, Y-F0 NAV; the form of `x10-cmp.txt` / `nav-identity-yf0.txt`): files other than `summary.json`
@@ -91,6 +101,31 @@ def classify_ic(path: str, a, b, id_a: str | None, id_b: str | None) -> str:
     if (id_a and id_b and id_a != id_b and isinstance(a, str) and isinstance(b, str) and id_a in a
             and a.replace(id_a, id_b) == b):
         return "IDENTITY"
+    return m1d_list(path, a, b, id_a, id_b)
+
+
+CACHE_DIR = "build-equity/mega-candidate-cache-v8-lo3"
+M1D_PATHS = re.compile(r"/candidate_cache/(directory|fields_directory|entries/\d+/(payload|sidecar))$")
+M1D_SUFFIXED = re.compile(r"/candidate_cache/ic_results/(identity|key/ic_identity)$")
+M1D_NAMES = re.compile(r"/candidate_cache/(ic_results/subdirectory|entries/\d+/signal_key_sha256)$")
+M1D_COUNTERS = re.compile(r"^/roles/\d+/(verify_bytes|ic_cache_bytes|ic_scratch_bytes)$")
+
+
+def m1d_list(path: str, a, b, id_a: str | None, id_b: str | None) -> str:
+    """M1d's written Release IC adoption list (root-wave1-merge-report.md:890-891), each leaf with its strict check."""
+    strs = isinstance(a, str) and isinstance(b, str)
+    if M1D_PATHS.search(path) and strs and id_b:
+        for sep in ("\\", "/"):
+            head = CACHE_DIR + sep
+            if a.startswith(head) and b == head + id_b + sep + a[len(head):]:
+                return "M1D-LIST"
+        return "OUTSIDE"
+    if M1D_SUFFIXED.search(path) and strs and id_a and id_b and id_b.startswith(id_a):
+        return "M1D-LIST" if b == a + id_b[len(id_a):] else "OUTSIDE"
+    if M1D_NAMES.search(path) and strs:
+        return "M1D-LIST"
+    if M1D_COUNTERS.search(path) and isinstance(a, int) and isinstance(b, int):
+        return "M1D-LIST"
     return "OUTSIDE"
 
 

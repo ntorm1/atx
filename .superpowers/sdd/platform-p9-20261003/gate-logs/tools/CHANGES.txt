@@ -46,3 +46,12 @@ gate-logs/tools change log (gate chain; one line block per change)
   (2) tools/b0_nav.py cell yf0 (YF0-NAV-ORDER): `--combined` -> build-equity/p9-b0g-yf0-w/train_combined.json and
   `--combined-sha256` e13fbc4d... (the reference w's bytes; the tool re-hashes the file and STOPs if it differs), so the
   NAV of record reads the re-based w and its receipt names that dir. Nothing else of the tool changed.
+  (3) after row 4 ran (u pass), before row 5: tools/b0_cmp.py's first pass (`gate-logs/yf0u-cmp-pass1.txt`, kept) put
+  209 summary.json leaves OUTSIDE: the cache-root paths of the Debug reference sit at `DIR/<role>/...` (no identity
+  subdir), so the IDENTITY string-substitution rule did not match them, and the tool had not encoded RELCACHE-ALLOW's
+  fourth class at all ("M1d's written Release IC adoption list where it names a leaf"; my amendment cited
+  `integration-log.md:322-325`, the expectation, instead of the written result `root-wave1-merge-report.md:890-891`).
+  Added class M1D-LIST: exactly the leaves that list names, each with a strict check (cache-root paths = reference path
+  with `DIR/` -> `DIR/<Release identity>/`, same remainder; `ic_results` identity strings = reference + the Release
+  suffix; `ic_results/subdirectory`, `signal_key_sha256` identity-keyed strings; `verify_bytes`, `ic_cache_bytes`,
+  `ic_scratch_bytes` integers). Re-run: `gate-logs/yf0u-cmp.txt` (0 outside). NEW tools/class_summary.py (paths only).

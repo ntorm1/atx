@@ -780,3 +780,36 @@ cache exactly once and no index flag, the 351 originals `155872de50833fca` with 
    moves no output byte. Compared with `p9-b0-yf0-nav` by `b0_cmp.py --mode nav` (PRODUCER `/producer/{build_type,
    engine_git_sha}`; OPTIN `/scenarios/<i>/ann_mean_gross` and `/scenarios/<i>/info_clock/**` on the new side only).
    `ucrtbase.dll` re-recorded at this run (C.6). Tool changes: `gate-logs/tools/CHANGES.txt` (agent 4 entry).
+
+### Step 4, agent 4: row 4, Y-F0 u on the Release IC exe (`gate-logs/b0-runs.txt`, `yf0u-cmp.txt`, `yf0u-classes.txt`)
+
+`tools/b0_ic.py yf0u`, started 15:18:36Z, free RAM 3,633 MiB, runner cap 2,560 MiB (C.14): completed exit 0, wall
+107.0 s, peak 1,613 MiB, Release IC exe `ccd54db6...d705` = receipt before and after, receipt source `bfbe64d2` "clean in
+the code pathspec", no `store` block (receipt, start); argv = the receipt of record's with token 0 and `--output` only.
+Outputs `build-equity/p9-b0g-yf0-u`: 5 files, listing `1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa`
+(`gate-logs/b0-files-p9-b0g-yf0-u.txt`), `summary.json` `acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8`.
+GATE-RELCACHE after the pass: the 351 original files' listing still **`155872de50833fca`** (byte-unchanged by size and
+mtime); 201 files / 4,466,406,032 bytes added under `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0/`; whole listing 552 files
+`c9ee9291f5ddc0c2`, cause "Release identity subtree added at step 4 (p9-b0g-yf0-u)"
+(`gate-logs/cache-lo3-listing-after-p9-b0g-yf0-u.txt`); C: 53.0 GB free after (>= 15).
+
+**Identity vs M1d's `p9-b0-yf0-u` (RELCACHE-ALLOW): holds.** Payloads byte-identical: `orientations.json` `d0d16f30...`,
+`recipe.json` `b9b4029c...`, `train_daily_ic.csv` `c8714175...`. `summary.json` 629 differing leaves and
+`train_candidates.jsonl` 402, every one in an allowed class, each listed by JSON path in `yf0u-cmp.txt` (collapsed by
+class in `yf0u-classes.txt`): TIMING 545 (`wall_seconds`, `hash_seconds`, `stage_seconds/*`), COUNTERS 276 (cache
+`hits` / `misses` / `vm_evaluations`, `ic_results` hits / misses, the per-candidate `signal_cache` / `ic_result_cache`
+stamps 67 + 67 in each file, `research_fields` `field_loads` / `loaded_bytes` / `peak_resident_fields`), IDENTITY 1
+(`vm_identity` `dslvm1_clang18.1` -> `dslvm1_clang18.1_opt_md_ndebug_xs13.0.0`), M1D-LIST 209 (the cache-root paths
+`directory`, `fields_directory`, 67 `payload` + 67 `sidecar` now under `DIR/<Release identity>/` with the same
+remainder; `ic_results` `identity` / `key/ic_identity` + the Release suffix; `ic_results/subdirectory`; 67
+`signal_key_sha256`; `verify_bytes`, `ic_cache_bytes`, `ic_scratch_bytes`). Outside: **0**.
+
+Disclosure (the comparison tool, not the run): the first pass of `tools/b0_cmp.py` (`yf0u-cmp-pass1.txt`, kept) put the
+209 M1D-LIST leaves OUTSIDE: its IDENTITY rule was a string substitution, and the Debug reference's cache-root paths
+sit at `DIR/<role>/...` without an identity directory; and the tool had not encoded RELCACHE-ALLOW's fourth class
+("M1d's written Release IC adoption list where it names a leaf"), whose written u / w row is
+`root-wave1-merge-report.md:890-891` (my amendment above cited the pre-run expectation `integration-log.md:322-325`
+instead). That row names exactly these leaves (identity strings incl. `ic_results` identity / key / subdirectory and
+`signal_key_sha256`; cache-root paths `directory`, `fields_directory`, payload + sidecar "now under `DIR/<Release
+root>/`, same file names"; counters incl. `verify_bytes`, `ic_cache_bytes`, `ic_scratch_bytes`). The tool now encodes
+that list with a strict check per leaf (`tools/CHANGES.txt` (3)); no payload and no other leaf is involved.
