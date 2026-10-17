@@ -1,0 +1,58 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "p9mv-mv-aim",
+  "kind": "rule",
+  "description": "P9-MV prereg B.5: mv-aim-v1 on accepted H; pinned covv1, pm7-34, pm6-6-engine; immediate bounded native route.",
+  "parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "turnover-per-gross-not-higher",
+      "capacity-4x-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-prereg-construction",
+    "construction_cap": 71
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 66
+  },
+  "out_dir": "build-equity/waves/p9mv-mv-aim",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-p9-20261003/cells/waves"
+  },
+  "driver": {
+    "lock_exes": true,
+    "receipt_digest": "content",
+    "keep_verdicts": true,
+    "timings": true
+  },
+  "rule_cell": {
+    "template": "scripts/specs/p9/templates/mv-aim.json",
+    "template_sha256": "d4dc2ff7916fdda924590da597e7c8325358cc369a6c567f2c1b9d7df145e5c6",
+    "name": "mv-aim-v1",
+    "source_sample_end": 2010,
+    "predicted_mechanism": "V^{-1} tilt lowers ex-ante and realised vol at equal gross alpha",
+    "data_class": "H"
+  },
+  "rules": [
+    {
+      "name": "mv-aim-v1",
+      "params": {
+        "risk_model": "build-equity/p9-m2i-dcov-covv1",
+        "risk_model_sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+      }
+    }
+  ]
+}
