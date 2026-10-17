@@ -26,12 +26,35 @@ UNQUALIFIED, and no baseline was pinned. Correctness gates ran on `vol-rel`.
 
 ## Defaults
 
-The default paths are byte-identical:
+Item 2 (`e695a411`) changes four tick-path defaults compared with root
+`7ca31c95`. They change what `ChainSpotLadder`, `ExpiryRecord`,
+`refresh_chain_records` and `implied_vols_from_records` return under the
+default policy, and none of them can be turned off:
+
+1. Every ladder certificate has an 8-ulp floor of max(F_max, K).
+2. `SpotLadderPolicy::max_cert_rel = 5e-7` is on by default. It binds only
+   above F of about $1,000.
+3. A floored lane, or a record `greeks()` call at the floor, returns exercise
+   Greeks and `TickStatus::Exercised`, and `price_and_vega` reports a vega of 0
+   at the floor.
+4. A certification row that is refused (no cold reference) makes the whole
+   record uncertified.
+
+These four changes are accepted correctness fixes, not a score-driven
+promotion (PM ruling on review MINOR-1 of `03a5463b`, at the wave-1b
+integration). They close the open minors of the tick-path `94208f57` review.
+The session and PricedSurface default serve paths are unchanged.
+
+The following stay opt-in:
 
 - The Records serve mode and the exercise-edge gate are opt-in and OFF.
 - `SpotLadderPolicy::rebuild_order` defaults to `ContractIndex`, the behaviour
-  before this sprint.
-- `ChainRecordPolicy::build_workers` defaults to 1, an inline build.
+  before this sprint. The nearest-ATM rebuild order is opt-in.
+- `ChainRecordPolicy::build_workers` defaults to 1, an inline build. The
+  parallel record build is opt-in.
+
+Items 3-5 add no further default change: with the defaults, 91 of 91 non-timing
+bench counters equal those of an `e695a411` build (review of `03a5463b`).
 
 Items 4 and 5 change no record value. Two checks show this:
 
