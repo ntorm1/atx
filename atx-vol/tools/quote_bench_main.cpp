@@ -763,12 +763,15 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
       static_cast<double>(expiry_ns - now_ns) / kCalendarYearNs, market.rate,
       DiscreteDivPolicy::Lattice);
   std::string reason;
+  // The count comparison runs BEFORE applies(): an empty route with events in
+  // the life (dividend_schedule_instants' overflow guard returns 0, or a route
+  // refusal) is a window mismatch, never "no ex-date".
   if (life.coverage != DividendExpiryCoverage::Covered) {
     reason = std::string("schedule_") + to_string(life.coverage);
-  } else if (!route.applies()) {
-    reason = "no_ex_date_in_life";
   } else if (route.schedule.size() != life.count || route.n_outside_tau_window != 0U) {
     reason = "route_window_mismatch";
+  } else if (!route.applies()) {
+    reason = "no_ex_date_in_life";
   } else if (record.routing == DividendRouting::InferredScheduleExact && life.ambiguous > 0U) {
     reason = "ambiguous_events_excluded";
   }

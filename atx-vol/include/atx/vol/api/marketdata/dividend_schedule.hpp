@@ -282,7 +282,9 @@ dividend_schedule_expiry_events(const DividendScheduleResult &schedule, std::int
 // expiry_ns = expiry_day * kDividendScheduleNsPerDay: the instant window then
 // admits exactly the events `dividend_schedule_expiry_events` returns.
 //
-// @return events written; 0 when `out` is smaller than `schedule.n_events`
+// @return events written; 0 when `out` is smaller than `schedule.n_events`, and
+//         0 when an instant could overflow int64 nanoseconds (|valuation_day|
+//         above about 67,600, i.e. past the year 2155 on the 1970 epoch)
 [[nodiscard]] std::size_t dividend_schedule_instants(const DividendScheduleResult &schedule,
                                                      std::span<DividendEvent> out) noexcept;
 
