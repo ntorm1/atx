@@ -708,6 +708,11 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   regenerated run recipe SHA-256 `1f00e19ec9dc3092ebe570b9645700910062881835dc9cd391623cff76c00062`.
   G_parent, tolerance, flags, pins and all other settings stay as registered. Resume w attempt 2 after
   free RAM >= 4608 MiB and C: >= 15 GB; completed u / fit / card and failed w run1 are preserved.]
+  [PRE-40 restatement, R15-RAM-NOW, owner direction 2026-10-17: the extra RAM gate and RAM waits above
+  are superseded. Omit `--admission-wait` and `--host-budget-mib`; launch immediately under the unchanged
+  w IC / RSS 3584 MiB caps, 300 s limit and runner launch/runtime free-memory floor 512 MiB.
+  C: >= 15 GB, one bounded run at a time, frozen exes and all read checkpoints still apply.
+  Any actual bounded resource stop is preserved and reported immediately, without automatic retry or waiting.]
 - **Change.** `--label-terminal imputed-v1` with `--train-label-role <label role> --train-label-role-sha256 <pin>` on
   the IC passes (u and w), on the parent; fit, card, w and NAV follow (plan section 2.4 S2 :490-498;
   `task-S2-report.md:23`). Label role: `build-equity/train-2020-2023-lo3-dlret`

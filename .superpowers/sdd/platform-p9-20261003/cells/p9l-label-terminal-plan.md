@@ -166,3 +166,11 @@ and C: >= 15 GB immediately before launch; if RAM is low, poll every 60 seconds 
 A second refusal stops. The remainder of section 3 stands; B.0 void (3) requires mechanics PASS before
 return / IC / Sharpe reads. Commit own derivation, then stop for fresh DERIV before any trial-ledger write.
 SEAL-HAND supplies the hand scan after each stage. No separate -cal NAV directory or second NAV is planned.
+
+[Resource-dispatch restatement, R15-RAM-NOW, 2026-10-17: the owner directs no RAM waits.
+The free-RAM >= 4608 MiB gate and `--admission-wait 1800` above are superseded. The immediate command is
+`research_cycle.py run scripts/specs/p9/templates/label-terminal.json --stop-after w --attempt w=2`.
+Omit admission-wait and host-budget options for subsequent stages too. The child argv is unchanged;
+the runner retains w 300 s / RSS 3584 MiB and its 512 MiB launch/runtime free-memory floor.
+C: >= 15 GB and one bounded run at a time still apply. Any actual resource stop requires immediate
+evidence and handback; no automatic retry. No source/spec mutation, re-lock or rebuild accompanies this ruling.]
