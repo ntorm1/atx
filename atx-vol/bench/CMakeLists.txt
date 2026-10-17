@@ -590,3 +590,53 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(atx-vol-chain-refresh-name-coverage PROPERTIES LABELS atx_vol)
 endif()
+
+# ── Batch-pricing lane 2026-10-17 — chain batch bench ────────────────────────
+# api/pricing/batch_chain.hpp on the chain-refresh 2,000-contract chain (and an
+# optional dev200 sample named by ATX_VOL_BATCH_DEV200_CSV): contracts/s of the
+# per-contract loop vs the Scalar / LanedAvx2 routes inline and fanned out over the
+# pinned pool, batch IV (PerContract / Lockstep), and output-hash identity counters.
+# Rows chain/batch/<route>/<kind>/t<k>/n2000. Own target (one owner per TU).
+add_executable(atx-vol-chain-batch-bench
+    bench_main.cpp
+    chain_batch_bench.cpp
+)
+target_link_libraries(atx-vol-chain-batch-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-chain-batch-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-chain-batch-bench>
+            --required chain/batch/loop/greeks/n2000
+            --required chain/batch/scalar/greeks/t1/n2000
+            --required chain/batch/scalar/greeks/t2/n2000
+            --required chain/batch/scalar/greeks/t3/n2000
+            --required chain/batch/scalar/greeks/t4/n2000
+            --required chain/batch/laned_avx2/greeks/t1/n2000
+            --required chain/batch/laned_avx2/greeks/t3/n2000
+            --required chain/batch/loop/price/n2000
+            --required chain/batch/scalar/price/t1/n2000
+            --required chain/batch/laned_avx2/price/t1/n2000
+            --required chain/batch/iv/loop/n2000
+            --required chain/batch/iv/per_contract/t1/n2000
+            --required chain/batch/iv/per_contract/t3/n2000
+            --required chain/batch/iv/lockstep/t1/n2000
+            --required chain/batch/iv/lockstep/t3/n2000
+            --required chain/batch/dev200/loop/greeks
+            --required chain/batch/dev200/scalar/greeks/t1
+            --required chain/batch/dev200/scalar/greeks/t3
+            --required chain/batch/dev200/iv/per_contract/t1
+            --required chain/batch/dev200/iv/lockstep/t1
+    )
+    set_tests_properties(atx-vol-chain-batch-name-coverage PROPERTIES LABELS atx_vol)
+endif()

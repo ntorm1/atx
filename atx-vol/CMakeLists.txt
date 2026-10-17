@@ -76,6 +76,10 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/chain_tick.cpp
     # ... and its per-contract Chebyshev spot ladders (ChainSpotLadder).
     src/pricing/spot_ladder.cpp
+    # Chain-level batch price / Greeks / implied vol (batch-pricing lane 2026-10-17);
+    # public header api/pricing/batch_chain.hpp.
+    src/pricing/batch_chain.cpp
+    src/pricing/batch_chain_iv.cpp
     # declarative swap-lane DSL
     src/pricing/swap_leg.cpp
     # THEO-7: theo vocabulary + TheoEngine (identity semantics beside the served mark)
