@@ -1,0 +1,36 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9v-vol-target-cov",
+  "description": "P9-V prereg B.8: replace only the X vol-target risk store by pinned covv1. Hand v1 cycle, no gross matching; independent derivation before trial write.",
+  "parent": "p9x-leverage.json",
+  "requires": [],
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-p9v-vol-target-cov",
+      "nav.leverage": "2.0",
+      "monitor.output": "build-equity/mega-monitor-p9v-vol-target-cov",
+      "exes_sha256": {
+        "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+        "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+        "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+      }
+    },
+    "flags": {
+      "nav": {
+        "--vol-target": "vol-target-v1",
+        "--risk-model": "build-equity/p9-m2i-dcov-covv1",
+        "--risk-model-sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-p9x-leverage/summary.json",
+      "sha256": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    }
+  }
+}
