@@ -272,7 +272,7 @@ class Wave:
     def commit_paths(self, message: str, expected: set[str]) -> str | None:
         """Commit exactly the files a stage wrote: every dirty file of the code pathspec must be one of ``expected``
         (else nothing is committed); None when nothing is dirty. Optional ATX_WAVE_COMMIT_TRAILER adds one literal
-        message paragraph; ATX_WAVE_COMMIT_EXCLUDE appends one exclusion pathspec to add and commit. Both are read
+        message paragraph; ATX_WAVE_COMMIT_EXCLUDE appends one :(exclude)TARGET pathspec to add and commit. Both are read
         from the process environment and affect Git metadata only; no shell evaluation or default argv change."""
         dirty = self.dirty_files()
         extra = [p for p in dirty if p not in expected]
@@ -282,8 +282,12 @@ class Wave:
         if not dirty:
             return None
         env = self.env()
-        for argv in WS.commit_argvs(dirty, message, trailer=env.get("ATX_WAVE_COMMIT_TRAILER"),
-                                   exclude=env.get("ATX_WAVE_COMMIT_EXCLUDE")):
+        try:
+            argvs = WS.commit_argvs(dirty, message, trailer=env.get("ATX_WAVE_COMMIT_TRAILER"),
+                                   exclude=env.get("ATX_WAVE_COMMIT_EXCLUDE"))
+        except ValueError as exc:
+            raise stage_chain.StageError(f"commit policy: {exc}") from exc
+        for argv in argvs:
             self.run(argv, "commit")
         left = self.dirty_files()
         if left:

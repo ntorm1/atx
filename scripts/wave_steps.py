@@ -138,7 +138,9 @@ def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, r
 
 def commit_argvs(paths: list[str], message: str, *, trailer: str | None = None,
                  exclude: str | None = None) -> list[list[str]]:
-    """Exact positive paths, with optional literal commit metadata; absent options preserve the original argv."""
+    """Exact positive paths, optional literal trailer and :(exclude)TARGET; absent options preserve original argv."""
+    if exclude and (not exclude.startswith(":(exclude)") or not exclude[len(":(exclude)"):].strip()):
+        raise ValueError("ATX_WAVE_COMMIT_EXCLUDE must be :(exclude) followed by a nonempty target")
     selected = [*paths, *([exclude] if exclude else [])]
     paragraphs = ["-m", trailer] if trailer else []
     return [["git", "add", "--", *selected],

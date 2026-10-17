@@ -4,8 +4,10 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from wave_context import Wave
+from wave_context import Wave, stage_chain
 import wave_steps as WS
 
 
@@ -16,6 +18,10 @@ def test_wave_commit_policy_real_git(tmp_path, monkeypatch):
     own = "scripts/cell.json"
     assert WS.commit_argvs([own], "cell") == [
         ["git", "add", "--", own], ["git", "commit", "-q", "-m", "cell", "--", own]]
+    assert WS.commit_argvs([own], "cell", trailer="", exclude="") == WS.commit_argvs([own], "cell")
+    for invalid in ("notes.txt", ":(exclude)", ":(exclude)   ", " "):
+        with pytest.raises(ValueError, match="nonempty target"):
+            WS.commit_argvs([own], "cell", exclude=invalid)
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True,
@@ -48,6 +54,12 @@ def test_wave_commit_policy_real_git(tmp_path, monkeypatch):
                               capture_output=True, text=True)
 
     w.run = run
+    monkeypatch.setenv("ATX_WAVE_COMMIT_EXCLUDE", "notes.txt")
+    with pytest.raises(stage_chain.StageError, match="commit policy"):
+        w.commit_paths("cell", {own})
+    assert calls == []
+    assert git("log", "-1", "--format=%s") == "seed"
+    monkeypatch.setenv("ATX_WAVE_COMMIT_EXCLUDE", exclude)
     committed = w.commit_paths("cell", {own})
     assert committed == git("rev-parse", "HEAD")
     assert calls == [["git", "add", "--", own, exclude],
