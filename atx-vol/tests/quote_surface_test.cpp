@@ -1342,6 +1342,52 @@ TEST(QuoteSurfaceLadder, ASliceOutsideTheMarketNeverOutranksOneInsideItForTheCal
   EXPECT_EQ((*open)[1].refusal, "calendar_arbitrage");
 }
 
+TEST(QuoteSurfaceLadder, AKnotSliceThatCrossesFallsBackToItsHeldPointFit) {
+  // One smile sigma(k) = 0.25 - 0.30 k. E (0.48 y, 7 strikes, one-cent quotes)
+  // has too few channels for a knot slice, so its point fit serves. L (0.5 y,
+  // 13 strikes, 10% half-spreads) gets a knot slice that a wide channel floor
+  // and a strong flat default shape (no mid anchor) pull off its skew: outside
+  // its quotes, served only under the relaxed channel limit, and below E's
+  // prices in the wings. L's own point fit follows the skew, is inside its
+  // quotes and is consistent with E.
+  const std::vector<Chain> chains{chain(0.48, 0.25, -0.30, 0.0, 85, 115, 5),
+                                  chain(0.5, 0.25, -0.30, 0.10, 70, 130, 5)};
+  QuoteSliceConfig config;
+  config.channel.min_channel_quotes = 20;
+  config.channel.min_half_width_vol = 0.05;
+  config.channel.mid_weight = 0.0;
+  config.channel.default_shape_weight = 100.0;
+  QuoteSurfaceConfig surface = knot_first();
+  surface.ladder_channel_max_outside_fraction = 1.0;
+  const auto on = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  const auto &e = (*on)[0];
+  const auto &l = (*on)[1];
+  ASSERT_EQ(e.grade, QuoteSliceGrade::A) << e.refusal << " " << e.error;
+  EXPECT_EQ(e.method, QuoteSurfaceMethod::Point);
+  EXPECT_EQ(e.knot_status, QuoteSliceFitStatus::InsufficientQuotes);
+  // L's knot slice served pass A (it certified, under the relaxed limit), then
+  // crossed E; the calendar pass served L's held point fit instead, unrepaired.
+  EXPECT_EQ(l.knot_status, QuoteSliceFitStatus::Success);
+  ASSERT_EQ(l.grade, QuoteSliceGrade::A)
+      << l.refusal << " " << l.error << " method " << to_string(l.method) << " fallback "
+      << to_string(l.ladder_fallback);
+  EXPECT_EQ(l.method, QuoteSurfaceMethod::Point);
+  EXPECT_FALSE(l.channel_refit);
+  EXPECT_LE(l.outside_fraction, 0.05);
+  EXPECT_EQ(l.ladder_fallback, QuoteSurfaceLadderFallback::Calendar);
+  EXPECT_FALSE(l.calendar_repaired);
+  EXPECT_FALSE(l.calendar_retry);
+  const auto point = fit_quote_slice(chains[1].market, chains[1].quotes, config);
+  ASSERT_TRUE(point) << point.error().to_string();
+  expect_same_prices(l.fit, *point);
+  expect_calendar_consistent(*on);
+  // The knot slice alone does cross E (it is what the calendar pass refused).
+  const auto knot = fit_quote_slice_channel(chains[1].market, chains[1].quotes, config, nullptr);
+  ASSERT_TRUE(knot && knot->fit_status == QuoteSliceFitStatus::Success);
+  EXPECT_FALSE(check_american_calendar(*e.fit.prices, *knot->prices));
+}
+
 TEST(QuoteSurfaceLadder, RejectsAChannelProfileTheDominanceGateAndBadLimits) {
   const std::vector<Chain> one{chain(0.25, 0.22, 0.0, 0.01)};
   EXPECT_EQ(fit_quote_surface(expiries(one), channel_config(), knot_first()).error().code(),
