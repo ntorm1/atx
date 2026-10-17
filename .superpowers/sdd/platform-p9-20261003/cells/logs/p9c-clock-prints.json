@@ -1,0 +1,282 @@
+﻿{
+  "parent": {
+    "source": "build-equity\\mega-nav-p9-theme-cov-hedge-gm\\summary.json",
+    "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+    "scenarios": [
+      {
+        "scenario": "linear-6bps-stale5-v1+swap-fin-v1",
+        "primary": false,
+        "info_clock": {
+          "rate": "fixed",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 25.151679172022554,
+          "fast_planned_turnover": 8.520092562095087,
+          "turnover_share": 0.338748459052086,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.1163097160400177,
+          "mean_gross_leverage": 0.9841185509126439
+        }
+      },
+      {
+        "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+        "primary": true,
+        "info_clock": {
+          "rate": "fixed",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 25.164589192854553,
+          "fast_planned_turnover": 8.52439774600637,
+          "turnover_share": 0.3387457542293939,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.1182847720520317,
+          "mean_gross_leverage": 0.9861861805709025
+        }
+      },
+      {
+        "scenario": "modeled-1bn-terminal-adverse-v1+swap-fin-v1",
+        "primary": false,
+        "info_clock": {
+          "rate": "fixed",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 25.173380467810983,
+          "fast_planned_turnover": 8.529449543029154,
+          "turnover_share": 0.33882813450246374,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.1193437897089227,
+          "mean_gross_leverage": 0.9868494270108918
+        }
+      },
+      {
+        "scenario": "modeled-1bn-stale5-v1+flat-300-v0",
+        "primary": false,
+        "info_clock": {
+          "rate": "fixed",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 25.217877944251022,
+          "fast_planned_turnover": 8.541238304351891,
+          "turnover_share": 0.33869774146872883,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.1210012149525754,
+          "mean_gross_leverage": 0.9872345147401129
+        }
+      },
+      {
+        "scenario": "modeled-1bn-stale5-v1+engine-tiers-v1",
+        "primary": false,
+        "info_clock": {
+          "rate": "fixed",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 25.1651865066654,
+          "fast_planned_turnover": 8.524798384649895,
+          "turnover_share": 0.33875363420779603,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.1184320680021176,
+          "mean_gross_leverage": 0.9863594141960205
+        }
+      }
+    ],
+    "capacity_source": "build-equity\\mega-nav-p9-theme-cov-hedge-gm\\capacity_curve.csv",
+    "capacity_sha256": "ed26cab56147d36f5cfd99b840e91236a489285da94a443fa2542faf396d14ee",
+    "cost_bps_per_traded_dollar": 12.490795824692793,
+    "x4_net_sharpe": 1.759566530994928
+  },
+  "cell": {
+    "source": "build-equity\\mega-nav-p9-info-clock-gm\\summary.json",
+    "sha256": "280416e93018afc51f53734fafdc714817e5f9e9bc2849d239806477c17621f8",
+    "scenarios": [
+      {
+        "scenario": "linear-6bps-stale5-v1+swap-fin-v1",
+        "primary": false,
+        "info_clock": {
+          "rate": "info-clock-rate-v1",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 31.25032065337406,
+          "fast_planned_turnover": 15.875088795290296,
+          "turnover_share": 0.50799762893237,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.0954554315279275,
+          "mean_gross_leverage": 0.9850839548849983
+        }
+      },
+      {
+        "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+        "primary": true,
+        "info_clock": {
+          "rate": "info-clock-rate-v1",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 31.36438786527308,
+          "fast_planned_turnover": 15.970751549414706,
+          "turnover_share": 0.5092001673368431,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.0982968560980533,
+          "mean_gross_leverage": 0.9861380929669935
+        }
+      },
+      {
+        "scenario": "modeled-1bn-terminal-adverse-v1+swap-fin-v1",
+        "primary": false,
+        "info_clock": {
+          "rate": "info-clock-rate-v1",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 31.352457189739482,
+          "fast_planned_turnover": 15.955035468583178,
+          "turnover_share": 0.5088926642025583,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.0983829831573262,
+          "mean_gross_leverage": 0.9864007008290815
+        }
+      },
+      {
+        "scenario": "modeled-1bn-stale5-v1+flat-300-v0",
+        "primary": false,
+        "info_clock": {
+          "rate": "info-clock-rate-v1",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 31.424155407572233,
+          "fast_planned_turnover": 15.995936146822071,
+          "turnover_share": 0.5090331287938945,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.1132066818547721,
+          "mean_gross_leverage": 0.9869176067799572
+        }
+      },
+      {
+        "scenario": "modeled-1bn-stale5-v1+engine-tiers-v1",
+        "primary": false,
+        "info_clock": {
+          "rate": "info-clock-rate-v1",
+          "window_sessions": 21,
+          "theta_fast": 0.12944943670387588,
+          "theta_slow": 0.05,
+          "name_days": 1853636,
+          "fast_name_days": 596814,
+          "missing_name_days": 99464,
+          "fast_share": 0.32196936183803077,
+          "planned_turnover": 31.3634865669565,
+          "fast_planned_turnover": 15.969559433329932,
+          "turnover_share": 0.5091767906363738,
+          "definition": "P9 AL-CLOCK --info-clock-print (print-only): the book's member-decisions over its scored effective rebalance decisions (rows >= score_begin), whatever rate it runs (rate): name_days; fast_name_days = those whose clock (field: ea_days_since, row d, the pinned role fields; not an input of the run unless rate is info-clock-rate-v1) lies in [0, window_sessions]; missing_name_days = those whose clock is NaN; fast_share = fast / name_days; planned_turnover = sum of |planned - current| weights over the name-days (planned: the book's plan after DECIDE, locate block included; current: its weight entering DECIDE); fast_planned_turnover = its part on fast name-days; turnover_share = fast / planned_turnover (null when a denominator is 0); theta_fast = 1 - 2^(-cadence/5) and theta_slow = .05 are info-clock-rate-v1's rates at this run's cadence",
+          "field": {
+            "name": "ea_days_since",
+            "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b"
+          }
+        },
+        "exposure": {
+          "max_gross_leverage": 1.0984548004445642,
+          "mean_gross_leverage": 0.9862816704315294
+        }
+      }
+    ],
+    "capacity_source": "build-equity\\mega-nav-p9-info-clock-gm\\capacity_curve.csv",
+    "capacity_sha256": "9772bcd2c8e744ff0046deb6db998d131139adb1247c5953fd30fe96b4d1511b",
+    "cost_bps_per_traded_dollar": 13.359305074226501,
+    "x4_net_sharpe": 1.6634910903860418
+  }
+}

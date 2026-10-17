@@ -974,3 +974,9 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | item | result | evidence |
 |---|---|---|
 | P9-M / G-P1 | Native pm7-34 REJECTED; one construction trial, ledger135->136. One uninterrupted native invocation162.25s; fresh phases/readers/bundle143.345s; inherited u51.578s reused, total receipt phases194.923s (<300target/<600hard). Scoreboard161.5 is stage_seconds override, record0.312s separate. Registered sleeve eval0.265s is outside native wave. G-P1 remains UNAWARDED;67-member rule wave is not the73-member add-alpha example. | `cells/p9m-mom-volman-record.md`; `cells/logs/p9m-timing-summary.json`; `cells/waves/p9m-mom-volman/` |
+
+### P9-C native completion, 2026-10-17 (R15-C-LAUNCH)
+
+| item | result | evidence |
+|---|---|---|
+| P9-C / G-P1 | Native pm7-34 REJECTED; one construction trial, ledger136->137. One uninterrupted native invocation82.640s; fresh phases/readers/bundle69.453s; inherited u/fit/w/card115.047s reused, total receipt phases184.500s (<300target/<600hard). Scoreboard82.0 is stage_seconds override81.969s, record.344s separate. Actual NAV48.453s/693.46484375MiB; no new admission wait. G-P1 remains UNAWARDED;67-member rule route and prior limitations retained. | `cells/p9c-info-clock-record.md`; `cells/logs/p9c-timing-summary.json`; `cells/waves/p9c-info-clock/` |

@@ -1,0 +1,41 @@
+﻿{
+  "pass": true,
+  "rows": [
+    {
+      "check": "gross_all_rows",
+      "value": 0.9862042240985196,
+      "limit": "[0.9, 1.05]",
+      "pass": true
+    },
+    {
+      "check": "abs_net_all_rows",
+      "value": 0.006548684683784417,
+      "limit": "<= 0.02",
+      "pass": true
+    },
+    {
+      "check": "tau_mean",
+      "value": 0.03305737324750237,
+      "limit": "<= 0.2",
+      "pass": true
+    },
+    {
+      "check": "tau_p95",
+      "value": 0.04945272707779896,
+      "limit": "<= 0.3",
+      "pass": true
+    },
+    {
+      "check": "max_return_identity_error",
+      "value": 3.621235256101585e-16,
+      "limit": "<= 1e-09",
+      "pass": true
+    },
+    {
+      "check": "max_cash_book_relative_error",
+      "value": 6.826282596561157e-14,
+      "limit": "<= 1e-09",
+      "pass": true
+    }
+  ]
+}

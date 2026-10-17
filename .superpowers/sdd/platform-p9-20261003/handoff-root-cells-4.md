@@ -1,4 +1,4 @@
-# Cells root4 handoff: P9-M complete, awaiting PM disposition
+# Cells root4 handoff: historical M checkpoint; CURRENT C checkpoint appended below
 
 Actual model GPT-6 Astra; prescribed literal trailer remains
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>.
@@ -92,3 +92,74 @@ mechanics->rho log->registered scalars, native trial only. Actual resource/drive
 is preserved and handed back without retry. Every commit exact positive paths plus
 :(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache and literal trailer.
 Root4 has sufficient remaining context for C preparation and one native cell if separately released.
+
+## CURRENT checkpoint: P9-C complete, awaiting PM disposition; stop before MV
+
+This appended checkpoint supersedes the historical M "Not done"/"Exact next step" above.
+PM REJECTED M in resume15-ledger-21.txt (progress1101); accepted H remained the C parent.
+PM will chain a fresh root5 after C disposition. Root4 has performed no MV preparation.
+
+Workspace/branch remain C:/atx-wt/pool-2, feat/platform-p9-20261003; all exec calls must set
+workdir because cwd defaults C:/atx. Actual model GPT-6 Astra; literal trailer unchanged.
+Full root4 dispatch r14-prompts/cells-prompt-4.md and its inherited whole contracts remain;
+C amendment r14-prompts/cells-root4-c.md, scratch21-23 (read whole) govern this completion.
+Fresh root5 must use PM's new dispatch/release and the inherited contracts, not infer permission
+from this handoff. No MV spec mutation, diagnostic, computation or build is authorized here.
+
+Completed C:
+- Preparation afba2530: exact five prerequisite proofs/current ancestry+row+eligible H/v15,
+  original template95d4104a/rule7801c198 and blobs preserved. No old test/probe rerun.
+- R15-C-READY/R15-C-LAUNCH in scratch22; registration0ca14564 exact three files: only
+  template parent->H and requires[], registration template_sha256 pin, new native C manifest.
+  Description/constants/predictions/source2019FLAGGED/manifest_note/historical requires unchanged.
+  Template SHA09c6289de5759bb9721c14bbb07e59dfeb20e21f57d76bc62132216282a597e1;
+  rule SHA57d4590fb91cf3f5149d3dfe2b2b82e82edc002f172cb81e3e270c16becdeb9b;
+  manifest SHAa2975f0c58692f8432c5bba97f98610be6b33665ddae987266b8496ed53e5f3b.
+- Original registration body lacked full delta/pins. R15-C-REG-BODY scratch23 required a
+  premeasurement supplement, committed c2b73ade body with complete old/new leaves, manifest,
+  original/new hashes/argv binding. It also commits read plan/filter, PRE-40 B.4/AppendixIV16,
+  scratch22/23/progress. No amend or scientific re-registration. PM independently verified.
+- One native C wave exit0,82.640s; no retry/wait. Generated commits83c43705/5bfe8258/88584804
+  are one-spec/trailer commits. Plain gm spec SHA723b981a5ccc2f55427b18708359dc1ae0b68459a261da3c85d0b25aaa4fd4c7,
+  NAV build-equity/mega-nav-p9-info-clock-gm,L1.1239. H u/fit/w/card reused natively.
+- Source40 logs A7/B4/C6/D28,OTHER0;54 exes/CRT/six reference listings/ten input hashes hold,
+  cache686/index/store absent; generated scope and actual NAV rule/rate/print argv checked.
+  Seven own bounded receipts/four historical reused. NAV48.453s, actual peak693.46484375MiB.
+  Historical u retains1800s configured wait/.016s historical actual wait; C has no new wait.
+- Mechanics6/6 PASS, then existing hash-bound rho0.9862992771637219/1005 sessions logged,
+  inferredFALSE (optional keys absent), then scalar read. Bundle SHA
+  ac489cf4797384b40d8d0da9c3e45c1a0eceed16bac4c4f1eaff072095d0646b.
+- Native REJECTED: dSR-0.13730612827997102,SE.08347705087942155,p2 .0994,p1 .945;
+  netSR1.7377160086121153 vsH1.8750221368920863. Cost13.3593 vs12.4908bps;4x1.66349 vs1.75957.
+  All five scenarios' clock counts/shares/provenance and realised exposure max/mean printed.
+  Fastshare.32196936183803077 both; primary turnover share.5092001673368431 vsH.3387457542293939.
+  Matched TRAIN mean exposure.9861380929669935 vsH.9861861805709025. Fixed-rate-only x1 test/P10
+  limitation remains. No M sleeve/H-only criterion, new statistic or deciding condition.
+- Result SHA1750bbf8725fbb87bd7ce672d28969b1903eb71b3779998ac6230a84f344e34e;
+  exactly one native construction trial52988f05af490865,count1. Ledger137 SHA
+  21522bb42c9adf7859dbf042878338b3b0374b2f920055a8f2e59980c2a9a76b; first136 SHA
+  c98dd0c4d59bada990fb34c7bf5efc3ae59873acc313de771a2d025a449013b7 unchanged.
+  Canonical N_c66,historical admissions61/P9 additions0,N_hand127,M110,N_tot237;
+  eight historical window reruns add0. All seven void checks hold, audit limits disclosed.
+- Timing82.0 scoreboard is stage override81.969s,record.344 separate; receipt sum184.500s
+  includes115.047s reused, fresh69.453s,outer82.640s. G-P1 permanently unawarded as before.
+- Full record cells/p9c-info-clock-record.md;95 own output/receipt hashes in
+  cells/logs/p9c-output-files-sha256.txt (SHA9ec8b9052add2944d3da0e25ae6967bc807391f173df659eecebe6113c667c2a),
+  native copies cells/waves/p9c-info-clock. Final docs commit will follow88584804;
+  locate by subject "Record P9-C completion and current handoff". No result statistics in body.
+
+Next action is PM's C disposition. Until it is ruled, accepted H remains last PM-accepted parent:
+scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json, SHA
+1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f, NAV
+build-equity/mega-nav-p9-theme-cov-hedge-gm,L1.1674,libraryv8ysb. Do not silently use rejected C/M.
+v15 manifest26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09;
+D-COV pins remain in start-state4/current input audit. Frozen ICccd54db6...,NAV255b58ac...,
+evale2b48c46...,CRT2c08e77f... unchanged; all54 full hashes in p9c-frozen-exes.json.
+
+Preserve earlier M scientific/source inspection disclosures and C metadata-audit corrections.
+No permission refusal. Raw native/scoreboard files remain on disk unread except allowlisted
+metadata/scalars, unstaged. PM final-report.md draft and five owner PNGs untouched. No atx-db,
+2024+ session data, cache-index, foreign pool, ref/lease, build/suite or MV preparation.
+Future launch only by new PM release; retain R15-RAM-NOW/caps/floor/one invocation and stop on
+actual refusal. Full registration delta/pins must appear in premeasurement commit body;
+explicit positive pathspecs plus GATE-MYPY exclusion and exact owner trailer for every commit.

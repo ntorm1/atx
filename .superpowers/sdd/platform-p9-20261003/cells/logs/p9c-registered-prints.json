@@ -1,0 +1,30 @@
+﻿{
+  "decision": {
+    "rule": "pm7-34",
+    "accepted": false,
+    "dsr": -0.13730612827997102
+  },
+  "checks": {
+    "dsr_positive": false,
+    "mechanics": true
+  },
+  "paired": {
+    "dsr": -0.13730612827997102,
+    "memmel_se": 0.08347705087942155,
+    "sr": 1.7377160086121153,
+    "sr_reference": 1.8750221368920863
+  },
+  "p_two_sided": 0.0994,
+  "p_one_sided": 0.945,
+  "books": {
+    "cell": {
+      "cost_bps_traded": 13.359305074226517,
+      "x4_net_sharpe": 1.6634910903860418
+    },
+    "parent": {
+      "cost_bps_traded": 12.490795824692832,
+      "x4_net_sharpe": 1.759566530994928
+    }
+  },
+  "expected_effect_nondeciding": "+.02 to +.06 net Sharpe; book gross +~5%; capacity down [est]"
+}
