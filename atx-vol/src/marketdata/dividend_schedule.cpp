@@ -26,6 +26,9 @@ struct Increment {
   double days = 0.0;       // provisional single-event time, inside [lo + 1, hi]
   bool integer = false;    // the PV-implied time is an integer day in the window
   std::size_t count = 1;   // events the count pass assigns
+  // More units by amount than its window holds apart (header, pass 2): kept as
+  // one event and flagged, never split into fewer events than its units.
+  bool overfull = false;
   DividendEventKind kind = DividendEventKind::Exact; // how the place pass resolved it
 };
 
@@ -216,7 +219,14 @@ void count_events(const DividendScheduleConfig &c, Work &w, DividendScheduleResu
     Increment &inc = w.increments[i];
     const double width = static_cast<double>(inc.hi - inc.lo - 1);
     const double fit = std::min(1.0 + std::floor(width / spacing), static_cast<double>(cap));
-    inc.count = std::min({amount_count(inc.amount, unit, cap), static_cast<std::size_t>(fit), cap});
+    const std::size_t units = amount_count(inc.amount, unit, cap);
+    const auto room = static_cast<std::size_t>(fit);
+    // A run of regular dividends needs `units` events; a window that holds fewer
+    // (but more than one) cannot carry that run, and splitting it into `room`
+    // events would invent a dividend size nobody paid. A window that holds ONE
+    // event keeps the increment whole and exactly dated (a special).
+    inc.overfull = units > room && room >= 2;
+    inc.count = inc.overfull ? 1 : std::min({units, room, cap});
   }
   out.unit_amount = unit;
   out.cadence_days = cadence;
@@ -305,7 +315,7 @@ Reason place_events(std::int32_t valuation_day, const DividendScheduleConfig &c,
       continue;
     }
     double days = inc.days;
-    if (inc.integer && inc.count == 1) {
+    if (inc.integer && inc.count == 1 && !inc.overfull) {
       inc.kind = DividendEventKind::Exact;
     } else {
       inc.kind = DividendEventKind::NonIntegerDay;

@@ -161,6 +161,46 @@ TEST(DividendSchedule, SpecialDividendInANarrowWindowIsNotReadAsARunOfUnits) {
   EXPECT_EQ(s.events[2].kind, DividendEventKind::Exact);
 }
 
+// The review probe (dividend-a402d615-review-v1, M1): quarterly 0.25 at days 10
+// and 101, then a special alone in the 89-day window (110, 200], which holds two
+// events at half the 91-day cadence. Four (or eight) units cannot be a run of
+// two, so the special stays ONE event at its true date, flagged; before this
+// rule it became two 0.50 SumSplit events at days 111.0 and 189.19.
+TEST(DividendSchedule, AnIncrementWithMoreUnitsThanItsWindowHoldsIsKeptWholeAndFlagged) {
+  for (const double special : {1.0, 2.0}) {
+    const auto input = ladder({{0.25, 10}, {0.25, 101}, {special, 150}}, {20, 110, 200});
+    const auto s = infer_dividend_schedule(kValuationDay, input);
+    ASSERT_EQ(s.status, DividendScheduleStatus::Ambiguous) << special;
+    EXPECT_EQ(s.cadence_days, 91.0);
+    EXPECT_DOUBLE_EQ(s.unit_amount, 0.25);
+    ASSERT_EQ(s.n_events, 3u) << special;
+    EXPECT_EQ(s.events[2].kind, DividendEventKind::NonIntegerDay);
+    EXPECT_EQ(s.events[2].increment_events, 1u);
+    EXPECT_NEAR(s.events[2].amount, special, 1e-13);
+    EXPECT_NEAR(s.events[2].days, 150.0, 1e-6);
+    EXPECT_EQ(s.split_increments, 0u);
+    EXPECT_EQ(s.non_integer_increments, 1u);
+    expect_reprices(s, input, 1e-12);
+  }
+}
+
+// The limit of that rule, pinned: a special worth no more units than its window
+// holds apart (0.50 = two units in the same window) is indistinguishable by
+// amount from two regular dividends, and is split as a run, flagged.
+TEST(DividendSchedule, ASpecialWorthNoMoreUnitsThanItsWindowHoldsIsSplitAsARun) {
+  const auto input = ladder({{0.25, 10}, {0.25, 101}, {0.5, 150}}, {20, 110, 200});
+  const auto s = infer_dividend_schedule(kValuationDay, input);
+  ASSERT_EQ(s.status, DividendScheduleStatus::Ambiguous);
+  ASSERT_EQ(s.n_events, 4u);
+  for (std::size_t i = 2; i < 4; ++i) {
+    EXPECT_EQ(s.events[i].kind, DividendEventKind::SumSplit);
+    EXPECT_EQ(s.events[i].increment_events, 2u);
+    EXPECT_NEAR(s.events[i].amount, 0.25, 1e-14);
+  }
+  EXPECT_EQ(s.split_increments, 1u);
+  expect_reprices(s, input, 1e-12);
+}
+
 TEST(DividendSchedule, RoundTripOfAConstructedTableReproducesEverySumAndPv) {
   const std::vector<TrueEvent> truth{{0.24, 3},  {0.24, 33},  {0.24, 64},  {0.26, 94},
                                      {0.26, 125}, {0.26, 155}, {0.26, 186}, {0.26, 216},

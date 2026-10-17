@@ -38,8 +38,15 @@
 //     the ladder (only then are they consecutive dividends). Each increment
 //     holds n = round(inc / unit) events, capped by how many fit in its window
 //     at `cadence_spacing_fraction * cadence` (or `min_event_spacing_days` when
-//     the cadence is unknown) and by `max_events_per_increment`. The cap is what
-//     keeps a special dividend from being read as a run of regular ones.
+//     the cadence is unknown) and by `max_events_per_increment`. A window that
+//     holds ONE event keeps the increment whole and exactly dated, so a special
+//     dividend in a bracket narrower than about that spacing + 1 day is never
+//     read as a run of regular ones. In a WIDER bracket the amount alone cannot
+//     tell a special from a run: a special worth no more units than its window
+//     holds apart IS split as a run (flagged SumSplit), while an increment
+//     holding MORE units than its window holds apart (room for two or more)
+//     cannot be a run and is kept as ONE event at its PV-exact time, flagged
+//     NonIntegerDay — never split into fewer events than its units.
 //  3. Place (THE DECLARED SPLIT RULE). An increment with n >= 2 is split into n
 //     EQUAL amounts inc/n at EQUALLY SPACED times t_j = t_1 + (j-1)*h inside its
 //     window. The spacing h is the cadence when known, else window width / n;
