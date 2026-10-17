@@ -1,0 +1,36 @@
+{
+  "path": "build-equity\\p9v-vol-target-cov-readers\\pair.json",
+  "sha256": "a8d3da1576d5f620369e48dd8f747395a8f1a2dcec47adf75c17f4de5c1a6303",
+  "files": {
+    "build-equity\\mega-nav-p9x-leverage\\summary.json": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108",
+    "build-equity\\mega-nav-p9x-leverage\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "faa0b16ae93324e37c6a69f56f80e52bc664ffd111f4ac5400a6ca7b9110b3a3",
+    "build-equity\\mega-nav-p9v-vol-target-cov\\summary.json": "ac83c97006150d45a05bec4e5c9895bc773cc9afee73c2878c38d68003d57233",
+    "build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "7c00ceb75e22b64722fdc999f7814cd88960577bdc4158aea829864bbde726c4"
+  },
+  "receipt": {
+    "path": "build-equity/p9v-vol-target-cov-readers/pair-run1/receipt.json",
+    "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+    "argv_sha256": "9ccdd7f312b7ad2bd0191aaf2aa549bdcae7aad983c6f11ae32bff0e76c70671",
+    "source_sha": "eecf6ebe9b4a692f4c5d7d83349af683358ad362",
+    "wall_seconds": 0.5150000000139698,
+    "peak_mib": 48.63671875,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    }
+  },
+  "engine_exe_sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.9999794724534574,
+    "one_minus_rho": null,
+    "degenerate": null
+  },
+  "missing": [
+    "one_minus_rho",
+    "degenerate"
+  ],
+  "threshold_flag": false,
+  "provenance": "inferred FALSE; missing optional fields under R15-V2-RHO, stable difference not supplied"
+}

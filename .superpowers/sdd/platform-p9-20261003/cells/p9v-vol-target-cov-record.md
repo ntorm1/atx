@@ -43,6 +43,16 @@ in p9v-rho-guard-controls.json; exact C.11 threshold remains1e-6.
 
 ## Preparation/identity-bridge disclosures
 
+Rho checkpoint after mechanics commit eecf6ebe: source/pin/original-receipt
+binding checks passed. Bundle a8d3da1576d5f620369e48dd8f747395a8f1a2dcec47adf75c17f4de5c1a6303,
+frozen eval e2b48c46. Rho .9999794724534574 over1005 sessions; optional stable
+difference/degenerate keys absent. Threshold flag FALSE, inferred from documented
+nondegenerate encoding and checked consistent with rho; stable difference is
+"not supplied by bundle". No paired scalar beyond rho has been read at this
+checkpoint. Exact evidence `cells/logs/p9v-rho-first.json` includes original pair
+receipt and all four matching summary/primary-daily bindings. PRE-33 fallback
+does not trigger. One pair producer0.515s/48.63671875MiB, outer.828s; no rerun.
+
 R15-V-PREPSCOPE: metadata inspection printed existing covv1 /run mean_r2
 .24678876760976343 and first28 manifest lines with existing prereg eigen diagnostics.
 R15-V-PREPSCOPE-2: separate whole v11 si_shares field inspection displayed existing

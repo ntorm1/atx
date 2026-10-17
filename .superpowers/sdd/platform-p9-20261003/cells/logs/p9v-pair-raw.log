@@ -1,0 +1,117 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "eecf6ebe9b4a692f4c5d7d83349af683358ad362",
+  "started_utc": "2026-10-17T17:29:47.875242+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "atx-impl/tools/nav_summ.py",
+    "--engine-stats",
+    "build-equity-rel/bin/atx-research-eval.exe",
+    "--protocol",
+    "v8",
+    "--bundle",
+    "build-equity/mega-nav-p9x-leverage",
+    "build-equity/mega-nav-p9v-vol-target-cov",
+    "--bundle-json",
+    "build-equity/p9v-vol-target-cov-readers/pair.json"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "9ccdd7f312b7ad2bd0191aaf2aa549bdcae7aad983c6f11ae32bff0e76c70671",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\atx-impl\\tools\\nav_summ.py",
+      "sha256": "7b5c5e242e789cb78f2a3fc6c6be2c359344f76f476a2aa31f2cfc4edb29ab69"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\summary.json",
+      "sha256": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\summary.json",
+      "sha256": "ac83c97006150d45a05bec4e5c9895bc773cc9afee73c2878c38d68003d57233"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "sha256": "ec2aa080acc82d22371c994b777ac328b0a4412841e6e2bd8961c4ce2ca878dd"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "faa0b16ae93324e37c6a69f56f80e52bc664ffd111f4ac5400a6ca7b9110b3a3"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "sha256": "3058fd848d78eccd80ad45800dc3b866e7d3fa0b98f09d447fa48ba938eaf4b7"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "sha256": "d37f7e71e941fdb24a2a0cf6db543df1e97ed4ec470d5a8861fba34ec48c6b5b"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "sha256": "4d077149c851d12196e5181eced8066b67ddcf6000a665a49dae9e675ad0afda"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "sha256": "76cd3954f05a8af89a37dcf3d5112732b4db4487edda11ee569c629172332ddf"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "7c00ceb75e22b64722fdc999f7814cd88960577bdc4158aea829864bbde726c4"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "sha256": "c0d69182466dff21af77631a2f8bf5d72c9c0d60c71406fdaa0f887c74c79c33"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "sha256": "762becd608c957530daed1fe5e82ac1c52fdffe696b7eb2c8c0da1f1ac1dd309"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "sha256": "b3f239ba2dff4ee3c23ab48486f09f91b407581f578fd0b34fbd9d69a7952f63"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9x-leverage\\capacity_curve.csv",
+      "sha256": "4226d21474004c55cfa2fac5331c19c2068bb0fced90434a3f343aaed2b3e17e"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-nav-p9v-vol-target-cov\\capacity_curve.csv",
+      "sha256": "5a555d53ac6fdc44c630f3a4d23670cf9cc20e06914a3a8315b8a4f18fae064c"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 50999296,
+  "minimum_system_free_bytes": 5468127232,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "wall_seconds": 0.5150000000139698,
+  "owned_processes": [
+    {
+      "pid": 6256,
+      "create_time": 1792258187.8805063
+    },
+    {
+      "pid": 15836,
+      "create_time": 1792258187.8864443
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "44fa5ed271276ddd6accfb88c7d859606776d3100b95b1e08567fbdf4469df25",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
