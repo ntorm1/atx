@@ -1,0 +1,27 @@
+{
+  "path": "build-equity/p9-adoption-readers/r2-yf0.json",
+  "sha256": "77316228751a84190cb2fe33d3d0866ed9e0dd30a1f903d647509070adcd093e",
+  "base": "build-equity/p9-b0-r2-nav",
+  "final": "build-equity/p9-b0g-yf0-nav",
+  "input_hashes": {
+    "build-equity/p9-b0-r2-nav/summary.json": "48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9",
+    "build-equity/p9-b0-r2-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "ac9e99359a6e5b151dabe42259ada92c82d069bde68ed7458ba644db954917d3",
+    "build-equity/p9-b0g-yf0-nav/summary.json": "826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38",
+    "build-equity/p9-b0g-yf0-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3"
+  },
+  "engine_exe_sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.8995266242016284,
+    "one_minus_rho": null,
+    "degenerate": null
+  },
+  "missing": [
+    "one_minus_rho",
+    "degenerate"
+  ],
+  "threshold_flag": false,
+  "provenance": "inferred FALSE under documented nondegenerate encoding; stable difference not supplied",
+  "source_certificate_sha256": "75f8139ae92628ffe6625197f215e3413f45dacdfe4c0265da85c5b46347a4ef",
+  "mechanics_certificate_sha256": "3fbd07f236f40ef672e49d9666b060881039414323ccda3d6b9987548b23c803"
+}

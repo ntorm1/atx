@@ -1,0 +1,27 @@
+{
+  "path": "build-equity/p9-adoption-readers/yf0-h.json",
+  "sha256": "fc76ee63c08a4c2c1b99fc6376b9d9dfbb99d203867bf8d5fa607ca9ae8401bc",
+  "base": "build-equity/p9-b0g-yf0-nav",
+  "final": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+  "input_hashes": {
+    "build-equity/p9-b0g-yf0-nav/summary.json": "826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38",
+    "build-equity/p9-b0g-yf0-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3",
+    "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+    "build-equity/mega-nav-p9-theme-cov-hedge-gm/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc"
+  },
+  "engine_exe_sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.8653199607726447,
+    "one_minus_rho": null,
+    "degenerate": null
+  },
+  "missing": [
+    "one_minus_rho",
+    "degenerate"
+  ],
+  "threshold_flag": false,
+  "provenance": "inferred FALSE under documented nondegenerate encoding; stable difference not supplied",
+  "source_certificate_sha256": "d4466051239c25601da1d13a64f5b2eb3b2411fc75236e463ade43bd91b2144b",
+  "mechanics_certificate_sha256": "3fbd07f236f40ef672e49d9666b060881039414323ccda3d6b9987548b23c803"
+}
