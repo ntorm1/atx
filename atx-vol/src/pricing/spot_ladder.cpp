@@ -363,7 +363,9 @@ Result<ChainSpotLadder> ChainSpotLadder::build(double spot, const ChainContracts
       records.record_of_contract().size() != n || !(policy.window_min > 0.0) ||
       !(policy.window_max >= policy.window_min) || !(policy.window_sigmas > 0.0) ||
       !(policy.max_cert_usd > 0.0) || !(policy.max_cert_rel >= 0.0) ||
-      !std::isfinite(policy.max_cert_rel)) {
+      !std::isfinite(policy.max_cert_rel) ||
+      (policy.rebuild_order != SpotLadderRebuildOrder::ContractIndex &&
+       policy.rebuild_order != SpotLadderRebuildOrder::NearestAtmFirst)) {
     return Err(ErrorCode::InvalidArgument,
                "ChainSpotLadder::build: bad spot, column lengths, records or policy");
   }
@@ -486,9 +488,12 @@ Status ChainSpotLadder::refresh(double spot, const ChainTickOutputs &out) {
       m.policy.rebuild_on_exit ? std::min<std::size_t>(m.policy.max_rebuilds_per_tick, n_cand) : 0u;
   if (budget < n_cand && budget > 0u &&
       m.policy.rebuild_order == SpotLadderRebuildOrder::NearestAtmFirst) {
-    // More candidates than budget: move the `budget` nearest the money (in
-    // standard deviations at this spot) to the front. Ties break on the contract
-    // index, so the selected set is deterministic.
+    // More candidates than budget (opt-in order): move the `budget` nearest the
+    // money (in standard deviations at this spot) to the front. The (key, index)
+    // pairs are distinct, so ties break on the contract index and the selected
+    // set is deterministic; the order inside it does not matter, because each
+    // rebuild writes only its own lane. Keys are finite: K, g, sigma, T > 0 were
+    // checked at build and the spot is finite > 0.
     const double ln_s = std::log(spot);
     for (std::size_t i = 0; i < n_cand; ++i) {
       const std::uint32_t c = m.candidates[i];

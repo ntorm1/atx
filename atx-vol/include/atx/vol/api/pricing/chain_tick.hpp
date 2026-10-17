@@ -241,22 +241,25 @@ private:
 // past the budget the contract is served from its record that tick
 // (TickStatus::Fallback) and rebuilt on a later tick. A spot outside the box
 // does not spend the budget. Rebuilds are counted (rebuilds()). When more
-// contracts are waiting than the budget allows, the ones nearest the money in
-// standard deviations, |ln(K / F)| / (sigma sqrt(T)) at the tick's spot, are
-// rebuilt first (SpotLadderRebuildOrder::NearestAtmFirst): after a large move
-// the contracts with the most gamma and vega leave the record fallback first.
-// Both routes are certified (a rebuilt window, or the record it is built from),
+// contracts are waiting than the budget allows, the default rebuilds them in
+// input order (SpotLadderRebuildOrder::ContractIndex). Opt-in
+// SpotLadderRebuildOrder::NearestAtmFirst rebuilds the ones nearest the money in
+// standard deviations, z = |ln(K / F)| / (sigma sqrt(T)) at the tick's spot,
+// first (ties on the contract index), so after a large move the contracts with
+// the most gamma and vega leave the record fallback first. The served lanes of
+// both orders are certified (a rebuilt window, or the record it is built from),
 // so the order changes which lanes are Ok on a catch-up tick, not their error
-// bound. The selection is an in-place partial sort on scratch sized at build: a
-// tick still allocates nothing.
+// bound; when the budget covers every waiting contract the two orders are
+// bit-identical. The selection is an in-place partial sort on scratch sized at
+// build: a tick still allocates nothing.
 
 inline constexpr std::size_t kSpotLadderLanes = 4;
 inline constexpr std::uint16_t kSpotLadderNodes = 16;
 
 // Which waiting contracts a budget-limited tick rebuilds first.
 enum class SpotLadderRebuildOrder : std::uint8_t {
-  NearestAtmFirst = 0, // smallest |ln(K / F)| / (sigma sqrt(T)) first (default)
-  ContractIndex = 1,   // input order (the behaviour before 2026-10-16)
+  ContractIndex = 0,   // input order (default; the behaviour before 2026-10-17)
+  NearestAtmFirst = 1, // smallest |ln(K / F)| / (sigma sqrt(T)) first (opt-in)
 };
 
 struct SpotLadderPolicy {
@@ -277,7 +280,7 @@ struct SpotLadderPolicy {
   double max_cert_rel = 5.0e-7;
   std::uint32_t max_rebuilds_per_tick = 32;
   bool rebuild_on_exit = true;
-  SpotLadderRebuildOrder rebuild_order = SpotLadderRebuildOrder::NearestAtmFirst;
+  SpotLadderRebuildOrder rebuild_order = SpotLadderRebuildOrder::ContractIndex;
 };
 
 // Where a ChainSpotLadder's record fallbacks came from, since build(). Every

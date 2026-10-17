@@ -53,6 +53,9 @@
 //   worst build-time certified error (`cert_err_fwd_max`, forward units).
 //   chain/iv/record_{warm,cold}/n2000 time American IV against the records for
 //   all 2,000 contracts (audit item 3); see run_iv below.
+//   chain/serve/<route>/n2000 compare the serving routes at S0 (run_serve) and
+//   chain/catchup/jump7/<order>_b<budget>/n{600,2000} time the spot ladder's
+//   catch-up after a +7% jump (run_catchup).
 //   NOT IMPLEMENTED: markov_batch (opt-in, never gated per §4).
 //
 // Every number this bench prints on a shared host is UNQUALIFIED. Only a quiet
@@ -909,6 +912,190 @@ void run_serve(benchmark::State &state, double band, bool records) {
   state.counters["contracts"] = static_cast<double>(kContracts);
 }
 
+// ── Catch-up after a +7% jump (serve-path lane, 2026-10-17, item 3) ──────────
+//
+// Rows chain/catchup/jump7/<order>_b<budget>/n{600,2000}: one iteration builds a
+// ChainSpotLadder at S0 (untimed), then the spot jumps +7% in one tick and walks
+// the 1 bp tape from there (spot_t = 1.07 x tape[t]). Every in-box contract has
+// left its window, so the per-tick rebuild budget binds. The iteration ends on
+// the first tick with no budget fallback (the "clean" tick), then times
+// kCatchupSettleTicks more ticks. <order> is the SpotLadderPolicy rebuild order:
+// `index` = ContractIndex (default), `atm` = NearestAtmFirst (opt-in). n600 is
+// the strikes with j % 10 in {0, 3, 6} of every (expiry, side) run, with its own
+// records. Manual time = the catch-up ticks, jump tick through the clean tick.
+// Counters (identical every iteration: the scenario is deterministic):
+//   catchup_ticks        ticks that carried a budget fallback
+//   atm_catchup_tick     1-based tick from which every in-box contract with
+//                        z = |ln(K / F)| / (sigma sqrt T) <= 1 is served Ok /
+//                        Exercised (0 = never within kCatchupMaxTicks)
+//   atm_lanes            in-box z <= 1 contracts on the jump tick
+//   out_of_box_lanes     out-of-box record fallbacks on the clean tick: lanes the
+//                        jump took outside their record box, which need a refit
+//   jump_tick_us, catchup_tick_p50_us / _max_us, settled_tick_p50_us
+
+constexpr double kCatchupJump = 1.07;
+constexpr std::size_t kCatchupMaxTicks = 256;
+constexpr std::size_t kCatchupSettleTicks = 50;
+
+// Strikes j % 10 in {0, 3, 6} of every run: 15 of 50 -> 600 contracts.
+[[nodiscard]] const SyntheticChain &chain600() {
+  static const SyntheticChain s = [] {
+    const SyntheticChain &full = chain();
+    SyntheticChain out;
+    for (std::size_t i = 0; i < full.strike.size(); ++i) {
+      const std::size_t j = (i % kStrikesPerExpiry) % 10u;
+      if (j != 0u && j != 3u && j != 6u) {
+        continue;
+      }
+      out.strike.push_back(full.strike[i]);
+      out.expiry.push_back(full.expiry[i]);
+      out.sigma.push_back(full.sigma[i]);
+      out.rate.push_back(full.rate[i]);
+      out.carry.push_back(full.carry[i]);
+      out.side.push_back(full.side[i]);
+    }
+    return out;
+  }();
+  return s;
+}
+
+[[nodiscard]] const BuiltRecords &chain600_records() {
+  static const BuiltRecords built = [] {
+    BuiltRecords b;
+    const auto t0 = std::chrono::steady_clock::now();
+    Result<ChainRecords> r = ChainRecords::build(kSpot0, chain600().view(), ChainRecordPolicy{});
+    b.build_ms = 1.0e3 * std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (r) {
+      b.worst_cert_fwd = r->worst_certified_error_fwd();
+      b.recs = std::move(*r);
+    } else {
+      std::fprintf(stderr, "[chain-catchup] ChainRecords::build (n600) failed: %s\n",
+                   r.error().to_string().c_str());
+    }
+    return b;
+  }();
+  return built;
+}
+
+// What one catch-up scenario observed (the timings go to the caller's arrays).
+struct CatchupObs {
+  std::size_t catchup_ticks = 0;
+  std::size_t atm_catchup_tick = 0;
+  std::size_t atm_lanes = 0;
+  std::uint64_t out_of_box_lanes = 0;
+  double total_s = 0.0;
+  bool clean = false;
+};
+
+// In-box z <= 1 contracts still served Fallback at `spot`, after the tick.
+[[nodiscard]] std::size_t atm_fallbacks(const SyntheticChain &c, const ChainRecords &recs,
+                                        double spot, std::span<const TickStatus> status,
+                                        std::size_t *atm_lanes) {
+  const std::span<const std::uint32_t> rec_of = recs.record_of_contract();
+  std::size_t waiting = 0;
+  std::size_t lanes = 0;
+  for (std::size_t i = 0; i < c.strike.size(); ++i) {
+    const ExpiryRecord &rec = *recs.bank().at(rec_of[i]);
+    const double k = std::log(c.strike[i] / (spot * rec.forward_factor()));
+    if (!(std::abs(k) <= c.sigma[i] * std::sqrt(c.expiry[i])) || !rec.contains(k, c.sigma[i])) {
+      continue;
+    }
+    ++lanes;
+    waiting += (status[i] == TickStatus::Fallback) ? 1u : 0u;
+  }
+  if (atm_lanes != nullptr) {
+    *atm_lanes = lanes;
+  }
+  return waiting;
+}
+
+void run_catchup(benchmark::State &state, bool n600, SpotLadderRebuildOrder order,
+                 std::uint32_t budget) {
+  const SyntheticChain &c = n600 ? chain600() : chain();
+  const BuiltRecords &b = n600 ? chain600_records() : chain_records();
+  if (!b.recs) {
+    state.SkipWithError("ChainRecords::build failed");
+    return;
+  }
+  const std::size_t n = c.strike.size();
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = budget;
+  pol.rebuild_order = order;
+  OutputStore out(n);
+  const ChainTickOutputs ov = out.view();
+  const std::vector<double> &spots = tape();
+  std::vector<double> jump_lat, catchup_lat, settled_lat;
+  const auto iters = static_cast<std::size_t>(state.max_iterations);
+  jump_lat.reserve(iters);
+  catchup_lat.reserve(iters * kCatchupMaxTicks);
+  settled_lat.reserve(iters * kCatchupSettleTicks);
+  CatchupObs last;
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    Result<ChainSpotLadder> built = ChainSpotLadder::build(kSpot0, c.view(), *b.recs, pol);
+    if (!built) {
+      state.SkipWithError("ChainSpotLadder::build failed");
+      break;
+    }
+    ChainSpotLadder lad = std::move(*built);
+    CatchupObs obs;
+    std::size_t t = 0;
+    for (; t < kCatchupMaxTicks && !obs.clean; ++t) {
+      const double spot = kCatchupJump * spots[t];
+      const std::uint64_t budget_before = lad.counters().budget_fallbacks;
+      const std::uint64_t oob_before = lad.counters().out_of_box_fallbacks;
+      const Clock::time_point t0 = Clock::now();
+      const Status st = lad.refresh(spot, ov);
+      benchmark::DoNotOptimize(out.price.data());
+      benchmark::ClobberMemory();
+      const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+      obs.total_s += dt;
+      if (t == 0u) {
+        jump_lat.push_back(dt);
+      }
+      const bool pressure = lad.counters().budget_fallbacks != budget_before;
+      if (pressure) {
+        ++obs.catchup_ticks;
+        catchup_lat.push_back(dt);
+      } else {
+        obs.clean = true;
+        obs.out_of_box_lanes = lad.counters().out_of_box_fallbacks - oob_before;
+      }
+      if (obs.atm_catchup_tick == 0u &&
+          atm_fallbacks(c, *b.recs, spot, out.status, t == 0u ? &obs.atm_lanes : nullptr) == 0u) {
+        obs.atm_catchup_tick = t + 1u;
+      }
+    }
+    for (std::size_t s = 0; s < kCatchupSettleTicks; ++s, ++t) {
+      const Clock::time_point t0 = Clock::now();
+      const Status st = lad.refresh(kCatchupJump * spots[t], ov);
+      benchmark::DoNotOptimize(out.price.data());
+      benchmark::ClobberMemory();
+      settled_lat.push_back(std::chrono::duration<double>(Clock::now() - t0).count());
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+    }
+    state.SetIterationTime(obs.total_s);
+    last = obs;
+  }
+  std::sort(jump_lat.begin(), jump_lat.end());
+  std::sort(catchup_lat.begin(), catchup_lat.end());
+  std::sort(settled_lat.begin(), settled_lat.end());
+  state.counters["catchup_ticks"] = static_cast<double>(last.catchup_ticks);
+  state.counters["caught_up"] = last.clean ? 1.0 : 0.0;
+  state.counters["atm_catchup_tick"] = static_cast<double>(last.atm_catchup_tick);
+  state.counters["atm_lanes"] = static_cast<double>(last.atm_lanes);
+  state.counters["out_of_box_lanes"] = static_cast<double>(last.out_of_box_lanes);
+  state.counters["jump_tick_us"] = quantile_us(jump_lat, 0.5);
+  state.counters["catchup_tick_p50_us"] = quantile_us(catchup_lat, 0.5);
+  state.counters["catchup_tick_max_us"] = catchup_lat.empty() ? 0.0 : 1.0e6 * catchup_lat.back();
+  state.counters["settled_tick_p50_us"] = quantile_us(settled_lat, 0.5);
+  state.counters["budget"] = static_cast<double>(budget);
+  state.counters["contracts"] = static_cast<double>(n);
+}
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -980,6 +1167,30 @@ const bool kRegistered = [] {
         ->UseManualTime()
         ->Iterations(row.iterations)
         ->Unit(benchmark::kMillisecond);
+  }
+  // Catch-up after a +7% jump (item 3): rebuild order x budget x chain size.
+  struct CatchupRow {
+    const char *name;
+    bool n600;
+    SpotLadderRebuildOrder order;
+    std::uint32_t budget;
+  };
+  constexpr SpotLadderRebuildOrder kIndex = SpotLadderRebuildOrder::ContractIndex;
+  constexpr SpotLadderRebuildOrder kAtm = SpotLadderRebuildOrder::NearestAtmFirst;
+  constexpr std::array<CatchupRow, 6> kCatchupRows = {{
+      {"chain/catchup/jump7/index_b32/n600", true, kIndex, 32},
+      {"chain/catchup/jump7/atm_b32/n600", true, kAtm, 32},
+      {"chain/catchup/jump7/atm_b64/n600", true, kAtm, 64},
+      {"chain/catchup/jump7/index_b32/n2000", false, kIndex, 32},
+      {"chain/catchup/jump7/atm_b32/n2000", false, kAtm, 32},
+      {"chain/catchup/jump7/atm_b64/n2000", false, kAtm, 64},
+  }};
+  for (const CatchupRow &row : kCatchupRows) {
+    benchmark::internal::Benchmark *b =
+        benchmark::RegisterBenchmark(row.name, [row](benchmark::State &state) {
+          run_catchup(state, row.n600, row.order, row.budget);
+        });
+    apply_common(b)->UseManualTime()->Iterations(10)->Unit(benchmark::kMicrosecond);
   }
   return true;
 }();
