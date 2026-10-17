@@ -1359,8 +1359,11 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
           "certifies, is inside the market and has own point evidence, else the point fit "
           "when it certifies and is inside the market (method channel/point, ladder_fallback "
           "certificate/knot_failure/containment), both graded by the unchanged A rule; other "
-          "expiries take the channel refits (channel_refit); the repair rung tries the knot "
-          "fit, then the point fit; no rung serves prices outside bid/ask on more than "
+          "expiries take the channel refits (channel_refit); ladder_fallback none means the knot "
+          "slice served, or certified inside the market without own point evidence (the point "
+          "fit shares its admission and is refused too) and the channel refits decide; the "
+          "repair rung tries the knot fit, then the point fit; no rung serves prices outside "
+          "bid/ask on more than "
           "ladder_max_outside_fraction (point fits) or ladder_channel_max_outside_fraction "
           "(channel fits), and at least ladder_min_outside_quotes, of the strictly two-sided "
           "quotes (a refit outside is refused outside_market); calendar: one visit per slice "
@@ -1378,7 +1381,9 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
     report["price_only_semantics"] = "policy price_only: a served row whose certified price "
         "has no identifiable American volatility under its own carry (a repaired node) is "
         "status ok_price_only with that price, a blank vol and vol_status unidentifiable; it is "
-        "never counted in served_rows (price-served = ok | ok_price_only, vol-served = ok)";
+        "never counted in served_rows (price-served = ok | ok_price_only, vol-served = ok) and "
+        "never becomes a vol row (a later calendar repair refreshes its price only); without "
+        "the key such a row is refused invalid_volatility";
   }
   if (!stats.dividend_schedules.empty()) {
     report["dividend_schedule"] = {

@@ -113,7 +113,12 @@ in-market point fit of a knot-served slice (clean, then repaired), then the
 stronger-prior retry, then the channel calendar repairs. Per-slice provenance
 adds `method` (`point`, `channel`, `channel_refit`), `ladder_fallback` (`none`,
 `certificate`, `knot_failure`, `containment`, `calendar`), `knot_status`,
-`knot_error`, `outside_fraction` and `outside_quotes`.
+`knot_error`, `outside_fraction` and `outside_quotes`. `ladder_fallback=none`
+means the knot slice served, or that it certified inside the market without
+the A rule's own point evidence; then the point fit, which shares its quote
+admission, is refused too (`insufficient_quotes`) and the channel refits decide
+(`method=channel_refit`). A slice that pass A serves with its point fit always
+names the knot rung's failure (`certificate`, `knot_failure` or `containment`).
 
 Top-level `"price_only": true` (opt-in, static or graded) publishes a served row
 whose certified price has no identifiable American volatility (a node a repair
@@ -121,6 +126,10 @@ moved below the zero-volatility value) as `status=ok_price_only` with the price,
 a blank `predicted_vol` and `vol_status=unidentifiable`; without the key such a
 row stays `status=invalid_volatility` with no price (its `vol_status` reads
 `unidentifiable`, previously `not_evaluated`: the only keys-off output change).
+A price-only row is final in the library (`QuoteSliceFit::price_only_nodes`): a
+later calendar repair refreshes its certified price but never re-implies a
+volatility, and `evaluate_quote_slice` refuses it, so with or without the key a
+price-only outcome is never published as an `ok` row with a volatility.
 The scorer counts price coverage over
 `ok | ok_price_only` and volatility coverage over `ok` only, and
 `compose_predictions_by_status.py --served-status ok ok_price_only` routes both
