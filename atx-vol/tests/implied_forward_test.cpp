@@ -258,6 +258,74 @@ TEST(ImpliedForward, ParityExcludesAnAmericanPairWhoseBiasCannotBeMeasured) {
   EXPECT_TRUE(std::isnan(none.forward));
 }
 
+// The bias screen's other exclusion (cleanup review 3465221c, MINOR): a
+// measurement step that would leave the positive forwards (x + step <= 0) is
+// typed Contaminated by alignment_step and, like an Unidentified pair, is
+// deactivated and the measured pairs re-located (measure_parity_bias).
+//
+// The step is capped at 0.25 * total_vol * x, so it can cross zero only when the
+// strip's ATM unit total_vol is at least 4. Inflating both legs of the straddle
+// pair (strike 90, nearest the ~90.5 forward) by 200 keeps its parity forward but
+// pins that unit at its 5.0 clamp (and prices its anchor put above its strike, so
+// that pair is Unidentified). Strike 95 is then quoted with a tiny parity forward
+// x = 2 under a channel wide enough to keep it in the stage-1 location. Its
+// anchor is the call (95 >= the location); at the yield that reproduces x the
+// call quote (6, spot intrinsic 5) is almost all early-exercise premium, so the
+// step is about -6 against a cap of 2.5.
+TEST(ImpliedForward, ParityExcludesAnAmericanPairWhoseBiasStepLeavesPositiveForwards) {
+  Chain c;
+  c.years = 1.0;
+  c.rate = 0.05;
+  c.yield = 0.15; // forward below spot, so strike 95 is both above it and ITM by spot
+  ImpliedForwardConfig cfg;
+  cfg.method = ImpliedForwardMethod::Parity;
+  auto pairs = american_chain(c);
+  const auto at = [&](double strike) {
+    return std::find_if(pairs.begin(), pairs.end(),
+                        [&](const auto &p) { return p.strike == strike; });
+  };
+  ASSERT_NE(at(90.0), pairs.end());
+  ASSERT_NE(at(95.0), pairs.end());
+  inflate_both_legs(*at(90.0), 200.0);
+  const double df = c.discount();
+  const double call_mid = 6.0;
+  const double put_mid = call_mid + df * (95.0 - 2.0); // parity forward x = 2
+  *at(95.0) = {95.0, call_mid - 5.5, call_mid + 5.5, put_mid - 90.0, put_mid + 90.0};
+  const auto r = estimate_implied_forward(c.market(), pairs, cfg);
+  ASSERT_EQ(r.status, ImpliedForwardStatus::Ok) << r.reason;
+  EXPECT_EQ(r.atm_total_vol, 5.0) << "the step cap needs the clamped unit";
+  // Before the fix this pair stayed Retained and active, unscreened.
+  EXPECT_EQ(r.pairs_contaminated, 1u);
+  EXPECT_EQ(r.pairs_unidentified, 1u);
+  bool found = false;
+  double lowest = std::numeric_limits<double>::infinity();
+  double highest = -std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < r.pairs_selected; ++i) {
+    const ImpliedForwardPairDiagnostic &d = r.pairs[i];
+    if (d.status == ImpliedForwardPairStatus::Retained) {
+      lowest = std::min(lowest, d.parity_forward);
+      highest = std::max(highest, d.parity_forward);
+    }
+    if (d.strike == 95.0) {
+      found = true;
+      EXPECT_NEAR(d.parity_forward, 2.0, 1.0e-9);
+      EXPECT_EQ(d.anchor_side, Side::Call);
+      EXPECT_TRUE(std::isfinite(d.sigma)) << "the anchor leg was inverted";
+      EXPECT_EQ(d.status, ImpliedForwardPairStatus::Contaminated);
+      EXPECT_EQ(d.robust_weight, 0.0);
+    } else if (d.strike == 90.0) {
+      EXPECT_EQ(d.status, ImpliedForwardPairStatus::Unidentified);
+    }
+  }
+  EXPECT_TRUE(found);
+  EXPECT_GE(r.pairs_retained, cfg.min_pairs);
+  // The published forward is a location of the measured pairs alone. (It keeps
+  // Parity's measured, unapplied early-exercise bias: about -1% on this chain.)
+  EXPECT_GE(r.forward, lowest);
+  EXPECT_LE(r.forward, highest);
+  EXPECT_NEAR(r.forward / c.forward() - 1.0, 0.0, 2.0e-2);
+}
+
 TEST(ImpliedForward, RefusesSparseExpiryWithTooFewTwoSidedPairs) {
   const Chain c;
   auto pairs = european_chain(c);
