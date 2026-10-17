@@ -304,7 +304,17 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
   row.quote = {real(get("strike"), "strike"), side == 1U ? Side::Call : Side::Put,
                real(get("bid"), "bid"), real(get("ask"), "ask")};
   row.quote.continuous_yield = row.market.continuous_yield;
-  if (header.contains("ddiv")) row.dividend_sum = real(get("ddiv"), "ddiv");
+  if (header.contains("ddiv")) {
+    // Never throws (InputRow::dividend_sum): only the opt-in schedule reads it.
+    const auto cell = get("ddiv");
+    double value = kNaN;
+    const auto [end, error] = std::from_chars(cell.data(), cell.data() + cell.size(), value);
+    if (error == std::errc{} && end == cell.data() + cell.size()) {
+      row.dividend_sum = value;
+    } else {
+      row.dividend_sum_malformed = !cell.empty();
+    }
+  }
   return row;
 }
 
@@ -371,6 +381,9 @@ struct RunStatistics {
   Json route_chain_counts = Json::object();
   Json route_contract_counts = Json::object();
   Json route_reason_counts = Json::object();
+  // Opted-in rows whose ddiv cell is not a number (their snapshot's schedule
+  // is refused as non_finite_input).
+  std::size_t malformed_ddiv_rows{};
   std::vector<double> lattice_chain_microseconds;
   std::vector<double> escrow_chain_microseconds;
 };
@@ -662,7 +675,7 @@ infer_schedules(const std::vector<InputRow> &rows,
                 const std::map<std::uint64_t, PreparedChain> &prepared,
                 const quote_bench_policy::LoadedPolicy &policy, RunStatistics &stats) {
   std::map<SnapshotIdentity, ScheduleRecord> schedules;
-  bool any_sum = false;
+  bool any_cell = false;
   for (const auto &[identity, ids] : snapshot_chains) {
     std::vector<DividendLadderExpiry> ladder;
     auto routing = DividendRouting::Aggregate;
@@ -675,9 +688,14 @@ infer_schedules(const std::vector<InputRow> &rows,
       const auto &indices = chains.at(id);
       std::vector<double> sums;
       sums.reserve(indices.size());
-      for (const auto i : indices) sums.push_back(rows[i].dividend_sum);
+      for (const auto i : indices) {
+        sums.push_back(rows[i].dividend_sum);
+        if (rows[i].dividend_sum_malformed) ++stats.malformed_ddiv_rows;
+        // A present cell, readable or not, shows the column exists.
+        any_cell = any_cell || std::isfinite(rows[i].dividend_sum) ||
+                   rows[i].dividend_sum_malformed;
+      }
       const double sum = median(std::move(sums));
-      any_sum = any_sum || std::isfinite(sum);
       ladder.push_back({number<std::int32_t>(rows[indices.front()].identity[2], "expiry_days"),
                         chain.market.calendar_years, chain.market.rate, sum,
                         chain.market.dividend_pv});
@@ -693,7 +711,7 @@ infer_schedules(const std::vector<InputRow> &rows,
     stats.dividend_schedules.push_back(schedule_json(identity, record));
     schedules.emplace(identity, std::move(record));
   }
-  if (!schedules.empty() && !any_sum) {
+  if (!schedules.empty() && !any_cell) {
     throw std::runtime_error("inferred-schedule dividends require the ddiv column");
   }
   return schedules;
@@ -1222,6 +1240,7 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
             "route, joinable on chain_id"},
         {"schedule_status_counts", stats.schedule_status_counts},
         {"schedule_reason_counts", stats.schedule_reason_counts},
+        {"malformed_ddiv_rows", stats.malformed_ddiv_rows},
         {"event_kind_counts", stats.event_kind_counts},
         {"route_chain_counts", stats.route_chain_counts},
         {"route_contract_counts", stats.route_contract_counts},

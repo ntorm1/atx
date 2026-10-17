@@ -701,3 +701,32 @@ def test_native_dividend_lattice_keys_are_strict_and_recorded(binary, tmp_path):
     definition = json.loads(default.stdout)["policy_definition"]["profiles"]
     assert all("dividend_lattice" not in profile for profile in definition)
     assert all(profile["discrete_div_steps"] == 301 for profile in definition)
+
+
+def test_native_malformed_ddiv_cell_is_a_typed_schedule_refusal_not_an_abort(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    clean = [dict(row, ddiv="0") for row in read_quotes(source)]
+    write_quotes(source, clean)
+    baseline = invoke(binary, source, output)
+    assert baseline.returncode == 0, baseline.stderr
+    expected = output.read_bytes()
+    write_quotes(source, [dict(row, ddiv="n/a") if index == 3 else row
+                          for index, row in enumerate(clean)])
+    # The default path never reads ddiv: same bytes, no abort.
+    default = invoke(binary, source, output)
+    assert default.returncode == 0, default.stderr
+    assert output.read_bytes() == expected
+    # The opt-in schedule of that snapshot is refused, typed, and the row counted.
+    profiles = [{"name": name, "base": name, "dividends": "inferred-schedule"}
+                for name in ("dense", "ordinary", "sparse")]
+    policy = write_policy(tmp_path / "policy.json", {"schema_version": 1, "profiles": profiles})
+    routed = invoke(binary, source, output, "--policy", str(policy))
+    assert routed.returncode == 0, routed.stderr
+    block = json.loads(routed.stdout)["dividend_schedule"]
+    assert block["malformed_ddiv_rows"] == 1
+    schedule, = block["schedules"]
+    assert (schedule["status"], schedule["reason"]) == ("invalid", "non_finite_input")
+    route, = block["routes"]
+    assert route["route"] == "escrow" and route["reason"] == "schedule_not_covered"
+    assert output.read_bytes() == expected

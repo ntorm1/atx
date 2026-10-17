@@ -16,8 +16,12 @@ struct InputRow {
   atx::vol::QuoteSliceMarket market{};
   atx::vol::QuoteSliceQuote quote{};
   // Raw `ddiv` (undiscounted cash dividends to expiry). Read only by the opt-in
-  // inferred-schedule dividend routing; NaN when the column is absent.
+  // inferred-schedule dividend routing; NaN when the column is absent, the cell
+  // is empty, or the cell is not a number. A malformed cell never aborts a run:
+  // the default path ignores the column, and the opt-in schedule of its
+  // snapshot is refused (non_finite_input) with the row counted.
   double dividend_sum{std::numeric_limits<double>::quiet_NaN()};
+  bool dividend_sum_malformed{false};
   std::string input_status;
   // Underlier, deliverable root, canonical expiry day, canonical exact snapshot.
   std::array<std::string, 4> identity;
