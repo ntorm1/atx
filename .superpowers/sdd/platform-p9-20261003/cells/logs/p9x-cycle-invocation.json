@@ -1,0 +1,15 @@
+{
+  "invocation": "cycle",
+  "exit_code": 0,
+  "wall_seconds": 19.82900000002701,
+  "command": [
+    "C:/Program Files/Python312/python.exe",
+    "-u",
+    "scripts/research_cycle.py",
+    "run",
+    "scripts/specs/p9/templates/p9x-leverage.json",
+    "--stop-after",
+    "nav"
+  ],
+  "raw_sha256": "c17a25f7813bed1908d97e3182d799695bd4d9de22e3abf5fa39986b33160f5c"
+}

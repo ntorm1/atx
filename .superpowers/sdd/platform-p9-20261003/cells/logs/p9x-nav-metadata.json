@@ -1,0 +1,44 @@
+{
+  "phases": [
+    {
+      "phase": "fields",
+      "state": "done"
+    },
+    {
+      "phase": "u",
+      "state": "done"
+    },
+    {
+      "phase": "fit",
+      "state": "done"
+    },
+    {
+      "phase": "card",
+      "state": "done"
+    },
+    {
+      "phase": "w",
+      "state": "done"
+    },
+    {
+      "phase": "nav",
+      "state": "executed"
+    }
+  ],
+  "stopped_after": "nav",
+  "ledger_unchanged": true,
+  "receipt": {
+    "path": "build-equity/mega-nav-p9x-leverage-run/receipt.json",
+    "sha256": "067f8bc4146a016f8b0a210551b7112ccdb077ed5d4b282cd1f8cdc1065168ea",
+    "source_sha": "d964df8600014b3c136ab0fbe595d0065915a48b",
+    "argv_sha256": "de3ab7f123a63ec1ba8ada48478577b679ea665e5db775261545f3953d47ad5e",
+    "wall_seconds": 18.844000000040978,
+    "peak_mib": 1142.4453125,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    }
+  },
+  "metadata_parser_note": "Initial strict phase-line regex omitted native attempt suffix; no additional phase was executed."
+}
