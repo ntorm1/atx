@@ -140,6 +140,13 @@ run 2 = committed `0a42510e`; ratios are within one run against that run's loop 
 Run 2's synthetic loop rows were taken at 79-95 % host load (CV 22-35 %); read the
 synthetic ratios from run 1 and dev200 from run 2.
 
+*[Qualification added at the wave-3a root integration: the IV rows above and the IV
+ratios and contracts/s quoted below were measured on the PRE-FIX code (`fe6a516f`,
+library `0a42510e`), before fix round 1 (`5da11835`, §7) added the cold-map
+verification to PerContract, and the re-review's post-fix run of `583e3a75`
+(UNQUALIFIED, loaded host; `C:/atx-cache/quote-benchmark/batch-pricing-583e3a75-rereview-v1/review.md`)
+measured PerContract t1 at 4687.1 ms against an IV loop of 3436.8 ms, 0.73x the loop.]*
+
 **Target >= 3x single-thread over the naive loop: NOT met.** Single-thread the
 bit-identical Scalar route is the loop (1.0x within noise by construction: it makes
 the same kernel calls, which are the whole cost, and the public kernel API shares none
