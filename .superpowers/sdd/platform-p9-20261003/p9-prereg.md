@@ -932,6 +932,17 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
 
 ### B.4 P9-C: `info-clock-rate-v1` (DEC-16: distinct from Y-5)
 
+[PRE-40, R15-C-READY/R15-C-LAUNCH, registration `0ca14564`: parent is accepted H's
+`theme-cov-hedge-v1-attempt2-gm.json`, SHA `1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f`.
+Only template parent/requires and registration template pin changed; exact five strings/proof
+and original blobs are in `cells/p9c-prerequisite-closure.md` at `afba2530`. New template SHA
+`09c6289de5759bb9721c14bbb07e59dfeb20e21f57d76bc62132216282a597e1`, rule SHA
+`57d4590fb91cf3f5149d3dfe2b2b82e82edc002f172cb81e3e270c16becdeb9b`, native v2 manifest
+`scripts/specs/p9/waves/p9c-info-clock.json` SHA `a2975f0c58692f8432c5bba97f98610be6b33665ddae987266b8496ed53e5f3b`.
+Description/manifest_note/source2019 FLAGGED/constants/predictions and capacity statement remain.
+The C scalar read plan preserves per-scenario realised exposure max/mean and clock provenance;
+fixed-rate-only capacity x1 test limitation/P10 remains. No scientific criterion added.]
+
 - **id** `p9c-info-clock`. **Kind** `rule` naming the trade-rate NAV row; `gross_match: pm6-6-engine`, leverage
   published by the match stage (the shape E2-13 (b) requires to work, ledger :481; E2 re-review 4 ran it to record on
   `pm6-6-engine` with L-prime reaching the cell of record and its argv, real exes not probed, ledger :540). **Counts**
@@ -2417,6 +2428,9 @@ the gate's final hand-back:
     `source_sample_end`, C3-5 probe, fit mode) - lane AL-CLOCK, its review and root's merge; fit mode at the wave-3 P9-B0.
     (filled, part A; open: the parent's fit mode, part B; the re-pinned template / registration SHA-256, registration
     commit) (fit mode filled, part B2a: flag-absent; ALCLOCK-1 held, B.4)
+    [PRE-40, filled `0ca14564`, R15-C-READY: B.4 above records the exact parent/prerequisite/pin
+    closure and new template/rule/manifest hashes; original registration remains preserved at
+    `afba2530`. Fit stays flag-absent; both print flags inherited once, NAV-only native route.]
 17. B.5 P9-MV block (merged and APPROVE, registration and template SHA-256, `source_sample_end`, C3-4, PRE-9 / COV-13 (c) /
     PRE-24a carries, fit mode) - lane COV-MV, its review and root's merge; fit mode at the wave-3 P9-B0. (filled, part A;
     open: the parent's fit mode and COMPOSE-1, part B; the re-pinned template / registration SHA-256, registration
