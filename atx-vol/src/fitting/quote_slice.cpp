@@ -1,9 +1,11 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,7 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
       !positive(cfg.quality.max_weight)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid quote-quality policy");
   }
+  ATX_TRY_VOID(validate_quote_slice_repair(cfg.repair));
   switch (cfg.dividend_model) {
   case QuoteSliceDividendModel::ContinuousYield:
     if (m.dividend_pv != 0.0 || !dividends.empty()) {
@@ -347,6 +350,27 @@ const char *to_string(QuoteSliceFitStatus value) noexcept {
     return "fit_failure";
   case QuoteSliceFitStatus::ArbitrageFailure:
     return "arbitrage_failure";
+  }
+  return "unknown";
+}
+const char *to_string(QuoteSliceRepairOutcome value) noexcept {
+  switch (value) {
+  case QuoteSliceRepairOutcome::NotAttempted:
+    return "not_attempted";
+  case QuoteSliceRepairOutcome::Applied:
+    return "applied";
+  case QuoteSliceRepairOutcome::NoMove:
+    return "no_move";
+  case QuoteSliceRepairOutcome::Infeasible:
+    return "infeasible";
+  case QuoteSliceRepairOutcome::LeftChannel:
+    return "left_channel";
+  case QuoteSliceRepairOutcome::NodeBudget:
+    return "node_budget";
+  case QuoteSliceRepairOutcome::VolBudget:
+    return "vol_budget";
+  case QuoteSliceRepairOutcome::NotCertified:
+    return "not_certified";
   }
   return "unknown";
 }
@@ -715,12 +739,343 @@ bool repair_convexity(std::vector<AmericanPriceNode> &nodes,
   return true;
 }
 
+// ── Channel repair (QuoteSliceRepairConfig) ─────────────────────────────────
+
+// The certificate's fixed numerical allowance (american_price_slice.cpp).
+double certificate_tolerance(double spot, double strike) noexcept {
+  return 1.0e-8 + 1.0e-9 * std::max(spot, strike);
+}
+
+// Lowers, per side, only the nodes more than the certificate allowance above the
+// side's lower convex envelope, onto that envelope (the same hull construction
+// and interpolation as the certificate). Hull vertices never move, so the
+// envelope of the untouched nodes is unchanged. ORs 1 (call) / 2 (put) into
+// `moved` (resized to the node count) for every node it lowers.
+void lower_violators(std::vector<AmericanPriceNode> &nodes, double spot,
+                     std::vector<std::uint8_t> &moved) {
+  moved.resize(nodes.size(), 0);
+  std::vector<double> target;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const bool call = side == Side::Call;
+    lower_hull(nodes, side, target);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      double &value = call ? nodes[i].call : nodes[i].put;
+      if (value - target[i] > certificate_tolerance(spot, nodes[i].strike)) {
+        value = target[i];
+        moved[i] |= call ? 1u : 2u;
+      }
+    }
+  }
+}
+
+// The tightest own-quote channel of every node side: [max bid, min ask] over the
+// valid quotes at that strike and side (bidless: [0, ask]). A side without a
+// valid quote has the unbounded channel, i.e. no containment constraint.
+struct NodeChannels {
+  std::vector<double> call_lo, call_hi, put_lo, put_hi;
+};
+
+NodeChannels node_channels(std::span<const AmericanPriceNode> nodes,
+                           std::span<const QuoteSliceQuote> quotes) {
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  NodeChannels c{std::vector<double>(nodes.size(), -kInf), std::vector<double>(nodes.size(), kInf),
+                 std::vector<double>(nodes.size(), -kInf), std::vector<double>(nodes.size(), kInf)};
+  for (const QuoteSliceQuote &quote : quotes) {
+    if (!positive(quote.strike) || !valid_side(quote.side) || !nonnegative(quote.bid) ||
+        !positive(quote.ask) || !(quote.ask > quote.bid)) {
+      continue;
+    }
+    const auto it = std::lower_bound(nodes.begin(), nodes.end(), quote.strike,
+        [](const AmericanPriceNode &node, double k) { return node.strike < k; });
+    if (it == nodes.end() || it->strike != quote.strike) continue;
+    const auto i = static_cast<std::size_t>(it - nodes.begin());
+    auto &lo = quote.side == Side::Call ? c.call_lo[i] : c.put_lo[i];
+    auto &hi = quote.side == Side::Call ? c.call_hi[i] : c.put_hi[i];
+    lo = std::max(lo, quote.bid);
+    hi = std::min(hi, quote.ask);
+  }
+  return c;
+}
+
+double channel_distance(double price, double lo, double hi) noexcept {
+  return std::max({lo - price, price - hi, 0.0});
+}
+
+// Weighted least-squares projection (weights `w`) of one side's prices `p` (in place)
+// onto { convex in strike; first slope >= slope_min; last slope <= slope_max;
+// lo <= p <= hi }: argmin sum w_i (p_i - p0_i)^2 by Dykstra's algorithm, in
+// Hildreth's form for the half-spaces (one nonnegative multiplier each) plus a
+// full increment for the box. Convex + end slopes covers every vertical-spread
+// bound of the certificate. Nodes whose constraints never bind are untouched
+// bit for bit. Bounded: at most kMaxSweeps sweeps of O(n). False when the box
+// is empty or the sweeps do not settle; the caller then refuses the repair.
+bool project_convex_box(std::span<const double> strikes, std::vector<double> &p,
+                        std::span<const double> lo, std::span<const double> hi,
+                        std::span<const double> w, double slope_min, double slope_max) {
+  constexpr int kMaxSweeps = 20000;
+  const std::size_t n = p.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!(lo[i] <= hi[i])) return false;
+  }
+  if (n < 2) return true;
+  // Half-space j: sum_k a_jk p_k >= b_j over three (convexity) or two (slope)
+  // consecutive nodes starting at first[j].
+  struct HalfSpace {
+    std::size_t first;
+    std::size_t count;
+    std::array<double, 3> a;
+    double b;
+    double norm; // a W^-1 a
+    double mu;   // Dykstra multiplier, >= 0
+  };
+  std::vector<HalfSpace> spaces;
+  spaces.reserve(n);
+  const auto inverse_norm = [&](HalfSpace &h) {
+    h.norm = 0.0;
+    for (std::size_t k = 0; k < h.count; ++k) h.norm += h.a[k] * h.a[k] / w[h.first + k];
+  };
+  for (std::size_t i = 1; i + 1 < n; ++i) {
+    const double left = 1.0 / (strikes[i] - strikes[i - 1]);
+    const double right = 1.0 / (strikes[i + 1] - strikes[i]);
+    HalfSpace h{i - 1, 3, {left, -(left + right), right}, 0.0, 0.0, 0.0};
+    inverse_norm(h);
+    spaces.push_back(h);
+  }
+  const double first_width = 1.0 / (strikes[1] - strikes[0]);
+  const double last_width = 1.0 / (strikes[n - 1] - strikes[n - 2]);
+  HalfSpace first{0, 2, {-first_width, first_width, 0.0}, slope_min, 0.0, 0.0};
+  HalfSpace last{n - 2, 2, {last_width, -last_width, 0.0}, -slope_max, 0.0, 0.0};
+  inverse_norm(first);
+  inverse_norm(last);
+  spaces.push_back(first);
+  spaces.push_back(last);
+  std::vector<double> box(n, 0.0);
+  double scale = 1.0;
+  for (const double value : p) scale = std::max(scale, std::abs(value));
+  const double tolerance = 1.0e-13 * scale;
+  for (int sweep = 0; sweep < kMaxSweeps; ++sweep) {
+    double change = 0.0;
+    for (HalfSpace &h : spaces) {
+      double dot = 0.0;
+      for (std::size_t k = 0; k < h.count; ++k) dot += h.a[k] * p[h.first + k];
+      const double mu = std::max(0.0, h.mu + (h.b - dot) / h.norm);
+      const double step = mu - h.mu;
+      if (step == 0.0) continue;
+      h.mu = mu;
+      for (std::size_t k = 0; k < h.count; ++k) {
+        const double delta = step * h.a[k] / w[h.first + k];
+        p[h.first + k] += delta;
+        change = std::max(change, std::abs(delta));
+      }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      const double z = p[i] + box[i];
+      const double clamped = std::clamp(z, lo[i], hi[i]);
+      change = std::max(change, std::abs(clamped - p[i]));
+      box[i] = z - clamped;
+      p[i] = clamped;
+    }
+    if (change <= tolerance) return true;
+  }
+  return false;
+}
+
+// Per-node box of one side for the channel projection: the node's own quote
+// channel widened to contain the starting price (so no node can end farther
+// outside its channel than it started), intersected with the certificate's
+// per-node price bounds; a side without its own quote is held fixed. The
+// least-squares weights are uniform: the box already carries each node's
+// channel, and spread-scaled weights (ratios up to ~1e5 across a chain) make
+// the cyclic projection converge far too slowly.
+void channel_box(std::span<const AmericanPriceNode> nodes, Side side, const NodeChannels &channel,
+                 const AmericanPriceBounds &bounds, std::vector<double> &lo,
+                 std::vector<double> &hi, std::vector<double> &w) {
+  const bool call = side == Side::Call;
+  lo.resize(nodes.size());
+  hi.resize(nodes.size());
+  w.assign(nodes.size(), 1.0);
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const double k = nodes[i].strike;
+    const double price = call ? nodes[i].call : nodes[i].put;
+    const double bid = call ? channel.call_lo[i] : channel.put_lo[i];
+    const double ask = call ? channel.call_hi[i] : channel.put_hi[i];
+    if (!std::isfinite(ask)) {
+      lo[i] = price;
+      hi[i] = price;
+      continue;
+    }
+    // The certificate's own per-node bounds are hard (an empty box refuses).
+    const double intrinsic = std::max(call ? bounds.spot - k : k - bounds.spot, 0.0);
+    const double upper = call ? bounds.prepaid_max : k * bounds.discount_max;
+    lo[i] = std::max(std::min(bid, price), intrinsic);
+    hi[i] = std::min(std::max(ask, price), upper);
+  }
+}
+
+// Calendar clamp of a slice's nodes against accepted slices: floors from the
+// earlier ones, caps from the later ones, wherever a node lies in their domain.
+struct CalendarClamp {
+  std::vector<double> floor_call, floor_put, cap_call, cap_put;
+};
+
+// Projects both sides of `nodes` inside their channels (and, with `clamp`,
+// inside the calendar floors/caps), then lowers any residual certificate
+// violation onto its envelope. False when a box is empty or a projection does
+// not settle.
+bool project_in_channel(std::vector<AmericanPriceNode> &nodes,
+                        std::span<const QuoteSliceQuote> quotes,
+                        const AmericanPriceBounds &bounds, const CalendarClamp *clamp) {
+  const NodeChannels channel = node_channels(nodes, quotes);
+  std::vector<double> strikes(nodes.size());
+  for (std::size_t i = 0; i < nodes.size(); ++i) strikes[i] = nodes[i].strike;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  std::vector<double> w;
+  std::vector<double> p(nodes.size());
+  for (const Side side : {Side::Call, Side::Put}) {
+    const bool call = side == Side::Call;
+    channel_box(nodes, side, channel, bounds, lo, hi, w);
+    if (clamp != nullptr) {
+      for (std::size_t i = 0; i < nodes.size(); ++i) {
+        lo[i] = std::max(lo[i], call ? clamp->floor_call[i] : clamp->floor_put[i]);
+        hi[i] = std::min(hi[i], call ? clamp->cap_call[i] : clamp->cap_put[i]);
+      }
+    }
+    for (std::size_t i = 0; i < nodes.size(); ++i) p[i] = call ? nodes[i].call : nodes[i].put;
+    // Calls fall with slope >= -discount_max; puts rise with slope <= discount_max.
+    const double slope_min = call ? -bounds.discount_max : 0.0;
+    const double slope_max = call ? 0.0 : bounds.discount_max;
+    if (!project_convex_box(strikes, p, lo, hi, w, slope_min, slope_max)) return false;
+    for (std::size_t i = 0; i < nodes.size(); ++i) (call ? nodes[i].call : nodes[i].put) = p[i];
+  }
+  std::vector<std::uint8_t> lowered;
+  lower_violators(nodes, bounds.spot, lowered);
+  return true;
+}
+
+// Budget check of a proposed move `before` -> `after` (same strikes). Fills
+// `moved` (1 call / 2 put per node) and `record` (nodes, largest price and
+// volatility moves against the fitted curve, unidentified node sides) and
+// returns Applied when the move satisfies QuoteSliceRepairConfig; the caller
+// still has to certify the result.
+QuoteSliceRepairOutcome check_channel_move(const QuoteSliceFit &fit,
+                                           std::span<const AmericanPriceNode> before,
+                                           std::span<const AmericanPriceNode> after,
+                                           std::span<const QuoteSliceQuote> quotes,
+                                           const QuoteSliceRepairConfig &budget,
+                                           std::vector<std::uint8_t> &moved,
+                                           QuoteSliceRepairRecord &record) {
+  moved.assign(after.size(), 0);
+  record.nodes = 0;
+  record.material_nodes = 0;
+  record.max_price_move = 0.0;
+  record.max_vol_move = 0.0;
+  record.max_unquoted_vol_move = 0.0;
+  record.unidentified = 0;
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    const double call = std::abs(after[i].call - before[i].call);
+    const double put = std::abs(after[i].put - before[i].put);
+    if (call > 0.0) moved[i] |= 1u;
+    if (put > 0.0) moved[i] |= 2u;
+    if (moved[i] == 0u) continue;
+    ++record.nodes;
+    if (std::max(call, put) > budget.immaterial_price_move) ++record.material_nodes;
+    record.max_price_move = std::max({record.max_price_move, call, put});
+  }
+  if (record.nodes == 0) return QuoteSliceRepairOutcome::NoMove;
+  if (record.material_nodes > budget.max_nodes) return QuoteSliceRepairOutcome::NodeBudget;
+  const NodeChannels channel = node_channels(after, quotes);
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const bool call = side == Side::Call;
+      if ((moved[i] & (call ? 1u : 2u)) == 0u) continue;
+      const double lo = call ? channel.call_lo[i] : channel.put_lo[i];
+      const double hi = call ? channel.call_hi[i] : channel.put_hi[i];
+      const double old_price = call ? before[i].call : before[i].put;
+      const double new_price = call ? after[i].call : after[i].put;
+      const double slack = 1.0e-12 * std::max(1.0, std::abs(old_price));
+      if (channel_distance(new_price, lo, hi) > channel_distance(old_price, lo, hi) + slack) {
+        return QuoteSliceRepairOutcome::LeftChannel;
+      }
+    }
+  }
+  QuoteSliceConfig query;
+  query.discrete_div_steps = fit.discrete_div_steps;
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    if (moved[i] == 0u) continue;
+    const double strike = after[i].strike;
+    const double curve_vol = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
+    const double q = effective_yield(fit, calendar_yield_at(fit, strike));
+    for (const Side side : {Side::Call, Side::Put}) {
+      const bool call = side == Side::Call;
+      if ((moved[i] & (call ? 1u : 2u)) == 0u) continue;
+      const double price = call ? after[i].call : after[i].put;
+      const QuoteSliceQuote at{strike, side, price, price, {}};
+      const auto iv = contract_iv(fit, at, price, query, q);
+      if (!iv || !positive(*iv) || !positive(curve_vol)) {
+        ++record.unidentified;
+        continue;
+      }
+      const double change = std::abs(*iv - curve_vol);
+      record.max_vol_move = std::max(record.max_vol_move, change);
+      if (!std::isfinite(call ? channel.call_hi[i] : channel.put_hi[i])) {
+        record.max_unquoted_vol_move = std::max(record.max_unquoted_vol_move, change);
+      }
+    }
+  }
+  return record.max_unquoted_vol_move > budget.max_vol_move ? QuoteSliceRepairOutcome::VolBudget
+                                                            : QuoteSliceRepairOutcome::Applied;
+}
+
+// Channel repair of a failed slice certificate, in two steps on the FITTED
+// prices: (1) lower only the rejected nodes onto their envelope (exact, cheap;
+// enough for isolated concave kinks), else (2) the full projection inside the
+// channels (project_in_channel; also restores monotonicity and raises nodes).
+// Each step must pass the budget and the unchanged certificate; `record` keeps
+// the outcome of the last step that produced a candidate (Infeasible only when
+// the lowering moved nothing and the projection has no candidate). On success
+// replaces `prices`/`repaired` and returns the certified slice.
+std::optional<AmericanPriceSlice> channel_repair_slice(
+    const QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+    std::vector<AmericanPriceNode> &prices, const AmericanPriceBounds &bounds,
+    const QuoteSliceRepairConfig &budget, std::vector<std::uint8_t> &repaired,
+    QuoteSliceRepairRecord &record) {
+  for (int step = 0; step < 2; ++step) {
+    std::vector<AmericanPriceNode> trial = prices;
+    if (step == 0) {
+      std::vector<std::uint8_t> lowered;
+      lower_violators(trial, fit.market.spot, lowered);
+    } else if (!project_in_channel(trial, quotes, bounds, nullptr)) {
+      // No projected candidate: keep why the lowering was refused, unless it
+      // did not move anything (then the slice simply has no feasible repair).
+      if (record.outcome == QuoteSliceRepairOutcome::NoMove) {
+        record.outcome = QuoteSliceRepairOutcome::Infeasible;
+      }
+      return std::nullopt;
+    }
+    std::vector<std::uint8_t> moved;
+    record.outcome = check_channel_move(fit, prices, trial, quotes, budget, moved, record);
+    if (record.outcome != QuoteSliceRepairOutcome::Applied) continue;
+    auto certified = AmericanPriceSlice::create(trial, bounds);
+    if (!certified) {
+      record.outcome = QuoteSliceRepairOutcome::NotCertified;
+      continue;
+    }
+    prices = std::move(trial);
+    repaired = std::move(moved);
+    return std::move(*certified);
+  }
+  return std::nullopt;
+}
+
 // Stage 3: reprice every valid strike from out.curve, certify the final
 // American prices and fill the rows. Sets fit_status/fit_error on refusal.
 // A positive `repair_half_spreads` enables the bounded-move convexity repair;
-// nodes it moved are flagged in out.moved_nodes.
+// a Channel `channel_repair` then gets the remaining failures. Nodes either
+// repair moved are flagged in out.moved_nodes.
 void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quotes,
-                       double repair_half_spreads = 0.0) {
+                       double repair_half_spreads = 0.0,
+                       const QuoteSliceRepairConfig *channel_repair = nullptr) {
   const QuoteSliceMarket &market = out.market;
   auto &diag = out.diagnostics;
   // Certify the FINAL American prices. A no-arbitrage European IV curve is
@@ -767,26 +1122,43 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   }
   bounds.prepaid_min = std::max(bounds.prepaid_min, 0.0);
   auto certified = AmericanPriceSlice::create(prices, bounds);
+  const bool channel_mode =
+      channel_repair != nullptr && channel_repair->mode == QuoteSliceRepairMode::Channel;
+  // The channel repair starts from the fitted prices, never from a bounded-move
+  // repair that moved them and still failed (only copied when it can run).
+  std::vector<AmericanPriceNode> fitted;
+  if (!certified && channel_mode) fitted = prices;
   std::vector<std::uint8_t> repaired;
   if (!certified && repair_half_spreads > 0.0 &&
       repair_convexity(prices, quotes, repair_half_spreads, diag.channel, repaired)) {
     certified = AmericanPriceSlice::create(prices, bounds);
   }
-  if (!certified) {
+  std::optional<AmericanPriceSlice> channel_certified;
+  if (!certified && channel_mode) {
+    // A bounded attempt that moved nodes and still failed is discarded: the
+    // served moves (if any) are the channel repair's, recorded in diag.repair.
+    if (!repaired.empty()) diag.channel.repaired_nodes = 0;
+    channel_certified =
+        channel_repair_slice(out, quotes, fitted, bounds, *channel_repair, repaired, diag.repair);
+    if (channel_certified) prices = std::move(fitted);
+  }
+  if (!certified && !channel_certified) {
     out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
     out.fit_error = certified.error().to_string();
     return;
   }
+  AmericanPriceSlice &accepted = channel_certified ? *channel_certified : *certified;
   if (q_min == 0.0 && q_max == 0.0 && out.variance_clock_dividends.empty() &&
       diag.effective_rate >= 0.0) {
-    const auto joint = check_nondividend_american(*certified, diag.discount);
+    const auto joint = check_nondividend_american(accepted, diag.discount);
     if (!joint) {
+      if (channel_certified) diag.repair.outcome = QuoteSliceRepairOutcome::NotCertified;
       out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
       out.fit_error = joint.error().to_string();
       return;
     }
   }
-  out.prices = std::move(*certified);
+  out.prices = std::move(accepted);
   out.fit_status = QuoteSliceFitStatus::Success;
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     const auto &quote = quotes[i];
@@ -840,7 +1212,10 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       !positive(c.prior_scale) || !finite_nonnegative(c.roughness) ||
       !positive(c.min_half_width_vol) || !positive(c.mult_floor) || !positive(c.mult_ceil) ||
       !(c.mult_ceil > c.mult_floor) || c.max_iterations == 0 || c.min_channel_quotes < 1 ||
-      !finite_nonnegative(c.repair_half_spreads) || c.family_iterations == 0) {
+      !finite_nonnegative(c.repair_half_spreads) || c.family_iterations == 0 ||
+      (c.point_max_outside_fraction &&
+       !(*c.point_max_outside_fraction >= 0.0 && *c.point_max_outside_fraction <= 1.0)) ||
+      c.point_min_outside_quotes < 1) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -1037,11 +1412,27 @@ Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
   return validate_channel(config);
 }
 
+Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {
+  if ((config.mode != QuoteSliceRepairMode::Off && config.mode != QuoteSliceRepairMode::Channel) ||
+      config.max_nodes < 1 || !positive(config.max_vol_move) ||
+      !nonnegative(config.immaterial_price_move)) {
+    return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel repair configuration");
+  }
+  return Ok();
+}
+
 Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
                                       std::span<const QuoteSliceQuote> quotes,
                                       const QuoteSliceConfig &config,
                                       std::span<const CashDividend> calendar_dividends) {
   if (config.carry.mode != QuoteSliceCarryMode::Supplied) {
+    // Validate the caller's inputs before carry resolution: the implied-carry
+    // path replaces every contract yield, so a non-finite supplied yield (or
+    // any other malformed input) would otherwise never reach validate().
+    const Status valid = validate(market, quotes, config, calendar_dividends);
+    if (!valid) {
+      return Err(valid.error());
+    }
     return detail::fit_quote_slice_resolving_carry(market, quotes, config, calendar_dividends);
   }
   if (config.method == QuoteSliceFitMethod::ChannelSpline) {
@@ -1068,7 +1459,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     return Ok(std::move(out));
   }
   out.curve = std::move(*curve);
-  certify_and_serve(out, quotes);
+  certify_and_serve(out, quotes, 0.0, &config.repair);
   return Ok(std::move(out));
 }
 
@@ -1129,89 +1520,71 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   channel_diag.term_prior = d.used_term_prior;
   channel_diag.converged = d.converged;
   channel_diag.iterations = d.iterations;
-  certify_and_serve(out, quotes, config.channel.repair_half_spreads);
+  certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair);
   return Ok(std::move(out));
 }
 
-bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
-                                 std::span<const AmericanPriceSlice *const> earlier,
-                                 std::span<const AmericanPriceSlice *const> later,
-                                 double half_spreads, double *required) {
-  if (required != nullptr) *required = 0.0;
-  if (!fit.prices || !fit.curve || !(half_spreads > 0.0) || !std::isfinite(half_spreads) ||
-      fit.rows.size() != quotes.size()) {
-    return false;
-  }
-  const auto original = fit.prices->nodes();
-  std::vector<AmericanPriceNode> nodes(original.begin(), original.end());
-  std::vector<double> floor_call(nodes.size(), 0.0);
-  std::vector<double> floor_put(nodes.size(), 0.0);
-  std::vector<double> cap_call(nodes.size(), std::numeric_limits<double>::infinity());
-  std::vector<double> cap_put(nodes.size(), std::numeric_limits<double>::infinity());
+namespace {
+
+// Fills the calendar clamp of `nodes` against accepted slices: floors from
+// `earlier`, caps from `later`, wherever a node lies inside their domains.
+// False when a floor exceeds its cap beyond the certificate allowance.
+bool calendar_clamp(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> nodes,
+                    std::span<const AmericanPriceSlice *const> earlier,
+                    std::span<const AmericanPriceSlice *const> later, CalendarClamp &c) {
+  c.floor_call.assign(nodes.size(), 0.0);
+  c.floor_put.assign(nodes.size(), 0.0);
+  c.cap_call.assign(nodes.size(), std::numeric_limits<double>::infinity());
+  c.cap_put.assign(nodes.size(), std::numeric_limits<double>::infinity());
   for (std::size_t i = 0; i < nodes.size(); ++i) {
     const double k = nodes[i].strike;
     for (const AmericanPriceSlice *slice : earlier) {
       const auto call = slice->price(k, Side::Call);
       const auto put = slice->price(k, Side::Put);
-      if (call) floor_call[i] = std::max(floor_call[i], *call);
-      if (put) floor_put[i] = std::max(floor_put[i], *put);
+      if (call) c.floor_call[i] = std::max(c.floor_call[i], *call);
+      if (put) c.floor_put[i] = std::max(c.floor_put[i], *put);
     }
     for (const AmericanPriceSlice *slice : later) {
       const auto call = slice->price(k, Side::Call);
       const auto put = slice->price(k, Side::Put);
-      if (call) cap_call[i] = std::min(cap_call[i], *call);
-      if (put) cap_put[i] = std::min(cap_put[i], *put);
+      if (call) c.cap_call[i] = std::min(c.cap_call[i], *call);
+      if (put) c.cap_put[i] = std::min(c.cap_put[i], *put);
     }
     // Accepted slices agree only to the certificate's fixed allowance.
     const double tol = 1.0e-8 + 1.0e-9 * std::max(fit.market.spot, nodes[i].strike);
-    if (floor_call[i] > cap_call[i] + tol || floor_put[i] > cap_put[i] + tol) return false;
-    cap_call[i] = std::max(cap_call[i], floor_call[i]);
-    cap_put[i] = std::max(cap_put[i], floor_put[i]);
+    if (c.floor_call[i] > c.cap_call[i] + tol || c.floor_put[i] > c.cap_put[i] + tol) return false;
+    c.cap_call[i] = std::max(c.cap_call[i], c.floor_call[i]);
+    c.cap_put[i] = std::max(c.cap_put[i], c.floor_put[i]);
   }
-  // Alternate the calendar clamp and the convex minorant (which can undercut a
-  // floor where earlier domains end); at most three rounds, then verify.
-  std::vector<double> call_target;
-  std::vector<double> put_target;
-  bool within = false;
-  for (int round = 0; round < 3 && !within; ++round) {
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-      nodes[i].call = std::clamp(nodes[i].call, floor_call[i], cap_call[i]);
-      nodes[i].put = std::clamp(nodes[i].put, floor_put[i], cap_put[i]);
-    }
-    lower_hull(nodes, Side::Call, call_target);
-    lower_hull(nodes, Side::Put, put_target);
-    within = true;
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-      const double tol = 1.0e-8 + 1.0e-9 * std::max(fit.market.spot, nodes[i].strike);
-      nodes[i].call = call_target[i];
-      nodes[i].put = put_target[i];
-      within = within && nodes[i].call >= floor_call[i] - tol &&
-               nodes[i].put >= floor_put[i] - tol;
-    }
-  }
-  std::vector<double> call_spread;
-  std::vector<double> put_spread;
-  node_half_spreads(nodes, quotes, call_spread, put_spread);
-  std::vector<std::uint8_t> moved(nodes.size(), 0);
-  double worst = 0.0;
+  return true;
+}
+
+void clamp_nodes(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c) {
   for (std::size_t i = 0; i < nodes.size(); ++i) {
-    for (const Side side : {Side::Call, Side::Put}) {
-      const bool call = side == Side::Call;
-      const double shift = std::abs(call ? nodes[i].call - original[i].call
-                                         : nodes[i].put - original[i].put);
-      if (!(shift > 0.0)) continue;
-      moved[i] |= call ? 1u : 2u;
-      const double spread = call ? call_spread[i] : put_spread[i];
-      const double ratio =
-          spread > 0.0 ? shift / spread : std::numeric_limits<double>::infinity();
-      worst = std::max(worst, ratio);
+    nodes[i].call = std::clamp(nodes[i].call, c.floor_call[i], c.cap_call[i]);
+    nodes[i].put = std::clamp(nodes[i].put, c.floor_put[i], c.cap_put[i]);
+  }
+}
+
+bool above_floors(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> nodes,
+                  const CalendarClamp &c) {
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const double tol = 1.0e-8 + 1.0e-9 * std::max(fit.market.spot, nodes[i].strike);
+    if (!(nodes[i].call >= c.floor_call[i] - tol && nodes[i].put >= c.floor_put[i] - tol)) {
+      return false;
     }
   }
-  if (required != nullptr) *required = worst;
-  if (!within || worst > half_spreads) return false;
-  auto certified = AmericanPriceSlice::create(nodes, fit.prices->bounds());
-  if (!certified) return false;
-  fit.prices = std::move(*certified);
+  return true;
+}
+
+// Publishes a certified calendar repair: replaces fit.prices, refreshes the
+// served rows (moved nodes re-implied; no identifiable volatility -> NaN price
+// and volatility, InvalidVolatility) and ORs `moved` into fit.moved_nodes.
+void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+                            AmericanPriceSlice certified,
+                            std::span<const AmericanPriceNode> nodes,
+                            const std::vector<std::uint8_t> &moved) {
+  fit.prices = std::move(certified);
   std::vector<double> strikes;
   strikes.reserve(nodes.size());
   for (const auto &node : nodes) strikes.push_back(node.strike);
@@ -1250,6 +1623,107 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
     if (fit.moved_nodes.size() != moved.size()) fit.moved_nodes.assign(moved.size(), 0);
     for (std::size_t i = 0; i < moved.size(); ++i) fit.moved_nodes[i] |= moved[i];
   }
+}
+
+} // namespace
+
+bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+                                 std::span<const AmericanPriceSlice *const> earlier,
+                                 std::span<const AmericanPriceSlice *const> later,
+                                 double half_spreads, double *required) {
+  if (required != nullptr) *required = 0.0;
+  if (!fit.prices || !fit.curve || !(half_spreads > 0.0) || !std::isfinite(half_spreads) ||
+      fit.rows.size() != quotes.size()) {
+    return false;
+  }
+  const auto original = fit.prices->nodes();
+  std::vector<AmericanPriceNode> nodes(original.begin(), original.end());
+  CalendarClamp clamp;
+  if (!calendar_clamp(fit, nodes, earlier, later, clamp)) return false;
+  // Alternate the calendar clamp and the convex minorant (which can undercut a
+  // floor where earlier domains end); at most three rounds, then verify.
+  std::vector<double> call_target;
+  std::vector<double> put_target;
+  bool within = false;
+  for (int round = 0; round < 3 && !within; ++round) {
+    clamp_nodes(nodes, clamp);
+    lower_hull(nodes, Side::Call, call_target);
+    lower_hull(nodes, Side::Put, put_target);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      nodes[i].call = call_target[i];
+      nodes[i].put = put_target[i];
+    }
+    within = above_floors(fit, nodes, clamp);
+  }
+  std::vector<double> call_spread;
+  std::vector<double> put_spread;
+  node_half_spreads(nodes, quotes, call_spread, put_spread);
+  std::vector<std::uint8_t> moved(nodes.size(), 0);
+  double worst = 0.0;
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const bool call = side == Side::Call;
+      const double shift = std::abs(call ? nodes[i].call - original[i].call
+                                         : nodes[i].put - original[i].put);
+      if (!(shift > 0.0)) continue;
+      moved[i] |= call ? 1u : 2u;
+      const double spread = call ? call_spread[i] : put_spread[i];
+      const double ratio =
+          spread > 0.0 ? shift / spread : std::numeric_limits<double>::infinity();
+      worst = std::max(worst, ratio);
+    }
+  }
+  if (required != nullptr) *required = worst;
+  if (!within || worst > half_spreads) return false;
+  auto certified = AmericanPriceSlice::create(nodes, fit.prices->bounds());
+  if (!certified) return false;
+  commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
+  return true;
+}
+
+bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
+                                            std::span<const QuoteSliceQuote> quotes,
+                                            std::span<const AmericanPriceSlice *const> earlier,
+                                            std::span<const AmericanPriceSlice *const> later,
+                                            const QuoteSliceRepairConfig &budget,
+                                            QuoteSliceRepairRecord *record) {
+  QuoteSliceRepairRecord local;
+  QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
+  out = QuoteSliceRepairRecord{};
+  if (!fit.prices || !fit.curve || fit.rows.size() != quotes.size() || budget.max_nodes < 1 ||
+      !positive(budget.max_vol_move) || !nonnegative(budget.immaterial_price_move)) {
+    return false;
+  }
+  const auto original = fit.prices->nodes();
+  std::vector<AmericanPriceNode> nodes(original.begin(), original.end());
+  CalendarClamp clamp;
+  if (!calendar_clamp(fit, nodes, earlier, later, clamp) ||
+      !project_in_channel(nodes, quotes, fit.prices->bounds(), &clamp)) {
+    out.outcome = QuoteSliceRepairOutcome::Infeasible;
+    return false;
+  }
+  // The projection honours the floors exactly; the residual lowering may not.
+  const bool within = above_floors(fit, nodes, clamp);
+  std::vector<std::uint8_t> moved;
+  out.outcome = check_channel_move(fit, original, nodes, quotes, budget, moved, out);
+  if (out.outcome != QuoteSliceRepairOutcome::Applied) return false;
+  auto certified = AmericanPriceSlice::create(nodes, fit.prices->bounds());
+  // The clamp acts at this slice's nodes only: a neighbour's knot between two
+  // of them can still cross, so the full calendar check runs on the result.
+  const auto calendar_clean = [&](const AmericanPriceSlice &repaired) {
+    for (const AmericanPriceSlice *slice : earlier) {
+      if (!check_american_calendar(*slice, repaired)) return false;
+    }
+    for (const AmericanPriceSlice *slice : later) {
+      if (!check_american_calendar(repaired, *slice)) return false;
+    }
+    return true;
+  };
+  if (!within || !certified || !calendar_clean(*certified)) {
+    out.outcome = QuoteSliceRepairOutcome::NotCertified;
+    return false;
+  }
+  commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
   return true;
 }
 

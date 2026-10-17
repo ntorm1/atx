@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -190,6 +191,29 @@ TEST(QuoteSliceCarry, MalformedMarketStillReportsTheSuppliedError) {
   ASSERT_FALSE(implied);
   ASSERT_FALSE(supplied);
   EXPECT_EQ(implied.error().code(), supplied.error().code());
+}
+
+TEST(QuoteSliceCarry, MalformedQuoteIsRejectedBeforeCarryResolution) {
+  // The implied-carry path replaces every contract yield, so a non-finite
+  // supplied yield must be refused before carry resolution, exactly as the
+  // supplied path refuses it.
+  const double forward = 100.0 * std::exp(0.03);
+  const QuoteSliceMarket market{100.0, 1.0, 1.0, 0.04, 0.01, 0.0};
+  auto quotes = american_quotes(100.0, 1.0, 0.04, 0.01, forward);
+  quotes[3].continuous_yield = std::numeric_limits<double>::quiet_NaN();
+  const auto implied = fit_quote_slice(market, quotes, implied_config());
+  const auto supplied = fit_quote_slice(market, quotes);
+  ASSERT_FALSE(supplied);
+  ASSERT_FALSE(implied);
+  EXPECT_EQ(implied.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(implied.error().code(), supplied.error().code());
+  // A malformed shared configuration is refused the same way.
+  auto config = implied_config();
+  config.min_quotes = 1;
+  quotes[3].continuous_yield = 0.01;
+  const auto bad_config = fit_quote_slice(market, quotes, config);
+  ASSERT_FALSE(bad_config);
+  EXPECT_EQ(bad_config.error().code(), ErrorCode::InvalidArgument);
 }
 
 } // namespace

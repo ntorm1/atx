@@ -370,6 +370,8 @@ struct RunStatistics {
   Json carry_resolutions = Json::array();
   Json carry_status_counts = Json::object();
   bool graded{false};
+  bool graded_channel_repair{false}; // opt-in graded keys seen in this run
+  bool graded_dominance{false};
   Json graded_stats = Json::object();
   // Inferred dividend schedules and per-chain routes; empty unless a profile
   // sets the policy key `dividends` to an inferred-schedule mode.
@@ -491,6 +493,13 @@ void count_into(Json &counts, const std::string &key, std::size_t count = 1U) {
   counts[key] = counts.value(key, std::size_t{}) + count;
 }
 
+Json repair_json(const QuoteSliceRepairRecord &r) {
+  return {{"outcome", to_string(r.outcome)}, {"nodes", r.nodes},
+          {"material_nodes", r.material_nodes}, {"max_price_move", r.max_price_move},
+          {"max_vol_move", r.max_vol_move}, {"max_unquoted_vol_move", r.max_unquoted_vol_move},
+          {"unidentified", r.unidentified}};
+}
+
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
 // consistency is enforced inside fit_quote_surface on the final prices. A
@@ -546,7 +555,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       const bool served = slice.grade != QuoteSliceGrade::Refused;
       const std::string grade = served ? to_string(slice.grade) : slice.refusal;
       const auto &d = fit.diagnostics;
-      graded["slices"].push_back({
+      Json entry{
           {"chain_id", members[s]}, {"profile", profile.name},
           {"variance_years", fit.market.variance_years}, {"grade", grade},
           {"error", slice.error}, {"point_status", to_string(slice.point_status)},
@@ -565,11 +574,45 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           {"calendar_repaired", slice.calendar_repaired}, {"calendar_gap", slice.calendar_gap},
           {"calendar_repair_required", std::isfinite(slice.calendar_repair_required)
               ? Json(slice.calendar_repair_required) : Json("inf")},
-          {"calendar_gap_strike", slice.calendar_gap_strike}});
+          {"calendar_gap_strike", slice.calendar_gap_strike}};
+      // Opt-in provenance only, so every pre-existing graded report is unchanged.
+      const bool channel_repair = profile.config.repair.mode == QuoteSliceRepairMode::Channel;
+      const bool dominance = profile.config.channel.point_max_outside_fraction.has_value();
+      stats.graded_channel_repair = stats.graded_channel_repair || channel_repair;
+      stats.graded_dominance = stats.graded_dominance || dominance;
+      if (channel_repair || dominance) entry["point_error"] = slice.point_error;
+      if (channel_repair) {
+        entry["repair"] = repair_json(d.repair);
+        entry["repair_rung"] = slice.repair_rung;
+        entry["rung_repair"] = repair_json(slice.rung_repair);
+        entry["calendar_channel_repaired"] = slice.calendar_channel_repaired;
+        entry["calendar_channel_repair"] = repair_json(slice.calendar_channel_repair);
+      }
+      if (dominance) {
+        entry["point_outside_fraction"] = slice.point_outside_fraction;
+        entry["point_outside_quotes"] = slice.point_outside_quotes;
+        entry["calendar_readmitted"] = slice.calendar_readmitted;
+        entry["point_gated"] = slice.point_gated;
+        entry["point_fallback"] = slice.point_fallback;
+      }
+      graded["slices"].push_back(std::move(entry));
       count_into(graded["chains"], grade);
       if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);
       if (slice.calendar_retry) count_into(graded["calendar_retry_chains"], grade);
       if (slice.calendar_repaired) count_into(graded["calendar_repaired_chains"], grade);
+      if (served && d.repair.outcome == QuoteSliceRepairOutcome::Applied) {
+        count_into(graded["channel_repaired_chains"], grade);
+      }
+      if (slice.repair_rung) count_into(graded["repair_rung_chains"], grade);
+      if (slice.calendar_channel_repaired) {
+        count_into(graded["calendar_channel_repaired_chains"], grade);
+      }
+      if (slice.point_gated) count_into(graded["point_gated_chains"], grade);
+      if (slice.point_fallback) count_into(graded["point_fallback_chains"], grade);
+      if (slice.point_gated && slice.channel_refit) {
+        count_into(graded["point_refit_chains"], grade);
+      }
+      if (slice.calendar_readmitted) count_into(graded["calendar_readmitted_chains"], grade);
       if (served) {
         ++stats.fitted;
         fitted_chains.insert(members[s]);
@@ -1018,8 +1061,12 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     if (market.dividend_pv > 0.0) ++stats.dividend_chains;
     const auto &first = rows[indices.front()];
     const auto schedule = schedules.find({first.identity[0], first.identity[1], first.identity[3]});
+    // The graded channel repair is a rung of fit_quote_surface only: the
+    // static(-fallback) path keeps its historical certificate unrepaired.
+    QuoteSliceConfig static_config = chain.profile->config;
+    static_config.repair.mode = QuoteSliceRepairMode::Off;
     const auto fit = schedule == schedules.end()
-        ? fit_quote_slice(market, chain.quotes, chain.profile->config)
+        ? fit_quote_slice(market, chain.quotes, static_config)
         : fit_with_schedule(chain_id, first, indices.size(), chain, schedule->second, stats);
     if (!fit) {
       ++stats.fit_failures[fit.error().to_string()];
@@ -1224,6 +1271,29 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "strikes; C: other channel refits; calendar crossings refuse only the lower-confidence "
         "slice after a bounded-move repair and one retry; snapshots above the expiry cap use the "
         "static path (static_fallback; its B/C are term-prior-free channel fits)";
+    if (stats.graded_channel_repair) {
+      report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
+          "; repair channel: a failed certificate is repaired by lowering the offending nodes "
+          "onto their convex envelope, else by a least-squares projection onto the convex, "
+          "slope- and bound-constrained prices inside each node's own bid/ask channel widened "
+          "to its fitted price (calendar: also inside the neighbours' prices), accepted only if "
+          "no moved node ends farther outside its channel, at most repair_max_nodes strikes "
+          "move by more than repair_immaterial_price, and unquoted node-sides move at most "
+          "repair_max_vol in IV (quoted sides are bounded only by their channel), then "
+          "re-certified unchanged; it runs where a check already failed (channel refits, the "
+          "pass-A fit of a still-refused expiry, then calendar crossings that the bounded-move "
+          "repair and the retry cannot fix); every channel-repaired slice is at best B";
+    }
+    if (stats.graded_dominance) {
+      report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
+          "; channel.point_max_outside_fraction / point_min_outside_quotes (per profile), "
+          "after every other rung: a final point fit (served, or refused for a calendar "
+          "crossing) outside bid/ask on more than that share and at least that many of its "
+          "two-sided quotes is replaced by a channel refit only when the final served set is "
+          "calendar-consistent with it; otherwise it is kept (point_fallback, A becomes B); "
+          "after an adoption, calendar refusals are re-checked against the final served set "
+          "(calendar_readmitted, B/C); the gate never refuses an expiry";
+    }
   }
   if (!stats.dividend_schedules.empty()) {
     report["dividend_schedule"] = {
