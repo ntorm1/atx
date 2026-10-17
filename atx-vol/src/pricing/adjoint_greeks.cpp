@@ -292,7 +292,14 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   if (!(r > 0.0) || T <= 1.0e-6 || sigma <= 1.0e-6) {
     return std::nullopt;
   }
-  const AlScheme sch = amer::scheme_from_opts(opts);
+  // The tape differentiates the Reference map (al_solve_put_boundary_tape clears
+  // ws.fast), so the bumped re-solves below pin Reference too: one arithmetic for
+  // every leg of the bundle even when the caller's opts select AlProfile::Fast.
+  const AlScheme sch = [&] {
+    AlScheme s = amer::scheme_from_opts(opts);
+    s.profile = atx::vol::AlProfile::Reference;
+    return s;
+  }();
   AlBoundary bnd{};
   AlWorkspace ws{};
   AlSolveTape tape{};

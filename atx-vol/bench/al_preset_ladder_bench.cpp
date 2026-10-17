@@ -387,15 +387,23 @@ struct Preset {
   std::optional<AlOpts> opts;
 };
 
-// The shipped presets, priced through the public entry point.
+// The shipped presets, priced through the public entry point, then the same three
+// schemes on the opt-in AlProfile::Fast kernel arithmetic (al-speed tier 2).
 [[nodiscard]] const std::vector<Preset> &presets() {
   static const std::vector<Preset> p = {
       {"accurate", std::nullopt},
       {"fast", atx::vol::al_fast_opts()},
       {"bulk", atx::vol::al_bulk_opts()},
+      {"accurate_fastprofile", atx::vol::al_fast_profile(std::nullopt)},
+      {"fast_fastprofile", atx::vol::al_fast_profile(atx::vol::al_fast_opts())},
+      {"bulk_fastprofile", atx::vol::al_fast_profile(atx::vol::al_bulk_opts())},
   };
   return p;
 }
+
+// The Reference presets only (the first three rows above): the error rows below
+// pair each with its al_fast_profile twin.
+[[nodiscard]] std::size_t reference_preset_count() noexcept { return 3; }
 
 [[nodiscard]] double sorted_quantile(const std::vector<double> &s, double q) {
   if (s.empty()) {
@@ -810,6 +818,207 @@ void run_libm(benchmark::State &state, Fn fn) {
       benchmark::Counter(ops * 1e-9, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
 }
 
+// ── Greeks latency (american/greeks_latency/<preset>) ─────────────────────────
+// Single-op american_greeks_al (the full bundle: 5 boundary solves) on the grid,
+// timed exactly like run_latency.
+void run_greeks_latency(benchmark::State &state, const Preset &preset) {
+  const Grid &g = grid();
+  constexpr std::size_t kCap = std::size_t{1} << 16;
+  std::vector<double> samples_us;
+  samples_us.reserve(kCap);
+  double sink = 0.0;
+  for (auto _ : state) {
+    double total_us = 0.0;
+    for (const GridPt &p : g.pts) {
+      const auto t0 = std::chrono::steady_clock::now();
+      const atx::vol::Result<atx::vol::AmericanGreeks> r =
+          atx::vol::american_greeks_al(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, preset.opts);
+      const auto t1 = std::chrono::steady_clock::now();
+      sink += r.has_value() ? r->delta : 0.0;
+      const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+      total_us += us;
+      if (samples_us.size() < kCap) {
+        samples_us.push_back(us);
+      }
+    }
+    benchmark::DoNotOptimize(sink);
+    state.SetIterationTime(total_us * 1.0e-6);
+  }
+  std::sort(samples_us.begin(), samples_us.end());
+  double mean = 0.0;
+  for (const double v : samples_us) {
+    mean += v;
+  }
+  mean = samples_us.empty() ? 0.0 : mean / static_cast<double>(samples_us.size());
+  state.counters["samples"] = static_cast<double>(samples_us.size());
+  state.counters["p50_us"] = sorted_quantile(samples_us, 0.50);
+  state.counters["p90_us"] = sorted_quantile(samples_us, 0.90);
+  state.counters["p99_us"] = sorted_quantile(samples_us, 0.99);
+  state.counters["mean_us"] = mean;
+}
+
+// ── Fast-profile error (ATX_VOL_AL_FAST_ERR=1) ────────────────────────────────
+//
+// american/fast_profile_error/<set>/<preset> prices every point of <set> on the
+// Reference preset and on al_fast_profile(preset) — the SAME scheme, only the
+// kernel arithmetic differs — and reports the distribution of the difference:
+//   price_*      |P_fast - P_ref| (currency units of the set's spot) and, on prices
+//                >= 0.01, |P_fast - P_ref| / P_ref;
+//   iv_*_bp      |IV_fast - IV_ref| * 1e4 where both invert the SAME target (the
+//                Reference price) with american_implied_vol (tol 1e-10, 100 iter);
+//   *_mismatch   points where exactly one profile returned an error.
+// american/fast_profile_error/greeks/<set>/<preset> does the same for every field
+// of american_greeks_al (p99 is the comparison statistic; max is reported but a
+// finite-difference greek's max is dominated by its worst stencil).
+// Sets: grid (the ladder grid), random (the 6,000-contract fingerprint set) and,
+// when ATX_VOL_AL_DEV200=<csv> names a kernel-input file (header line, then
+// S,K,T,sigma,r,q,is_call per row), dev200.
+class ErrDist {
+public:
+  void add(double e) { v_.push_back(e); }
+  [[nodiscard]] double max() const {
+    return v_.empty() ? 0.0 : *std::max_element(v_.begin(), v_.end());
+  }
+  [[nodiscard]] double quantile(double q) const {
+    std::vector<double> s = v_;
+    std::sort(s.begin(), s.end());
+    return sorted_quantile(s, q);
+  }
+  [[nodiscard]] std::size_t size() const noexcept { return v_.size(); }
+
+private:
+  std::vector<double> v_;
+};
+
+[[nodiscard]] std::vector<GridPt> load_kernel_inputs(const std::string &path) {
+  std::vector<GridPt> v;
+  std::ifstream in(path);
+  std::string line;
+  if (!std::getline(in, line)) {
+    return v; // empty or missing file
+  }
+  while (std::getline(in, line)) {
+    double f[7] = {};
+    const char *c = line.c_str();
+    bool ok = true;
+    for (int k = 0; k < 7 && ok; ++k) {
+      char *end = nullptr;
+      f[k] = std::strtod(c, &end);
+      ok = end != c;
+      c = (*end == ',') ? end + 1 : end;
+    }
+    if (ok) {
+      v.push_back(GridPt{f[0], f[1], f[2], f[3], f[4], f[5], f[6] != 0.0 ? Side::Call : Side::Put});
+    }
+  }
+  return v;
+}
+
+enum class ErrSet { Grid, Random, Dev200 };
+
+[[nodiscard]] const std::vector<GridPt> &err_points(ErrSet s) {
+  static const std::vector<GridPt> random = fingerprint_contracts(6000);
+  static const std::vector<GridPt> dev200 = load_kernel_inputs(env_text("ATX_VOL_AL_DEV200"));
+  switch (s) {
+  case ErrSet::Grid:
+    return grid().pts;
+  case ErrSet::Random:
+    return random;
+  case ErrSet::Dev200:
+    break;
+  }
+  return dev200;
+}
+
+void run_fast_error(benchmark::State &state, ErrSet set, const Preset &preset) {
+  using namespace atx::vol;
+  const std::vector<GridPt> &pts = err_points(set);
+  const std::optional<AlOpts> ref = preset.opts;
+  const std::optional<AlOpts> fast = al_fast_profile(preset.opts);
+  ErrDist p_abs, p_rel, iv_bp;
+  double mismatch = 0.0;
+  double iv_mismatch = 0.0;
+  for (auto _ : state) {
+    for (const GridPt &p : pts) {
+      const Result<double> a = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, ref);
+      const Result<double> b = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, fast);
+      if (a.has_value() != b.has_value()) {
+        mismatch += 1.0;
+        continue;
+      }
+      if (!a.has_value()) {
+        continue;
+      }
+      const double d = std::abs(*b - *a);
+      p_abs.add(d);
+      if (*a >= 0.01) {
+        p_rel.add(d / *a);
+      }
+      const Result<double> iva = american_implied_vol(*a, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                      AmericanMethod::AndersenLake, 1.0e-10, 100,
+                                                      ref);
+      const Result<double> ivb = american_implied_vol(*a, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                      AmericanMethod::AndersenLake, 1.0e-10, 100,
+                                                      fast);
+      if (iva.has_value() != ivb.has_value()) {
+        iv_mismatch += 1.0;
+      } else if (iva.has_value()) {
+        iv_bp.add(std::abs(*ivb - *iva) * 1.0e4);
+      }
+    }
+  }
+  state.counters["points"] = static_cast<double>(pts.size());
+  state.counters["priced"] = static_cast<double>(p_abs.size());
+  state.counters["status_mismatch"] = mismatch;
+  state.counters["price_max_abs"] = p_abs.max();
+  state.counters["price_p99_abs"] = p_abs.quantile(0.99);
+  state.counters["price_p50_abs"] = p_abs.quantile(0.50);
+  state.counters["price_max_rel"] = p_rel.max();
+  state.counters["iv_solved"] = static_cast<double>(iv_bp.size());
+  state.counters["iv_mismatch"] = iv_mismatch;
+  state.counters["iv_max_bp"] = iv_bp.max();
+  state.counters["iv_p99_bp"] = iv_bp.quantile(0.99);
+}
+
+void run_fast_greeks_error(benchmark::State &state, ErrSet set, const Preset &preset) {
+  using namespace atx::vol;
+  const std::vector<GridPt> &pts = err_points(set);
+  const std::optional<AlOpts> ref = preset.opts;
+  const std::optional<AlOpts> fast = al_fast_profile(preset.opts);
+  constexpr const char *kNames[] = {"price", "delta", "gamma", "vega", "theta",
+                                    "rho",   "vanna", "volga", "charm"};
+  ErrDist dist[9];
+  double mismatch = 0.0;
+  for (auto _ : state) {
+    for (const GridPt &p : pts) {
+      const Result<AmericanGreeks> a =
+          american_greeks_al(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, ref);
+      const Result<AmericanGreeks> b =
+          american_greeks_al(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, fast);
+      if (a.has_value() != b.has_value()) {
+        mismatch += 1.0;
+        continue;
+      }
+      if (!a.has_value()) {
+        continue;
+      }
+      const double va[9] = {a->price, a->delta, a->gamma, a->vega, a->theta,
+                            a->rho,   a->vanna, a->volga, a->charm};
+      const double vb[9] = {b->price, b->delta, b->gamma, b->vega, b->theta,
+                            b->rho,   b->vanna, b->volga, b->charm};
+      for (int k = 0; k < 9; ++k) {
+        dist[k].add(std::abs(vb[k] - va[k]));
+      }
+    }
+  }
+  state.counters["points"] = static_cast<double>(pts.size());
+  state.counters["status_mismatch"] = mismatch;
+  for (int k = 0; k < 9; ++k) {
+    state.counters[std::string(kNames[k]) + "_p99"] = dist[k].quantile(0.99);
+    state.counters[std::string(kNames[k]) + "_max"] = dist[k].max();
+  }
+}
+
 const bool kRegistered = [] {
   using atx::vol::bench::apply_common;
   for (const Rung &rung : rungs()) {
@@ -824,6 +1033,38 @@ const bool kRegistered = [] {
                      name, [&preset](benchmark::State &state) { run_latency(state, preset); }))
         ->UseManualTime()
         ->Unit(benchmark::kMicrosecond);
+  }
+  for (const Preset &preset : presets()) {
+    const std::string name = std::string("american/greeks_latency/") + preset.name;
+    apply_common(benchmark::RegisterBenchmark(
+                     name,
+                     [&preset](benchmark::State &state) { run_greeks_latency(state, preset); }))
+        ->UseManualTime()
+        ->Unit(benchmark::kMicrosecond);
+  }
+  if (!env_text("ATX_VOL_AL_FAST_ERR").empty()) {
+    std::vector<std::pair<const char *, ErrSet>> sets = {{"grid", ErrSet::Grid},
+                                                         {"random", ErrSet::Random}};
+    if (!env_text("ATX_VOL_AL_DEV200").empty()) {
+      sets.emplace_back("dev200", ErrSet::Dev200);
+    }
+    for (const auto &[label, set] : sets) {
+      for (std::size_t i = 0; i < reference_preset_count(); ++i) {
+        const Preset &preset = presets()[i];
+        const ErrSet s = set;
+        const std::string tail = std::string(label) + "/" + preset.name;
+        benchmark::RegisterBenchmark(
+            "american/fast_profile_error/" + tail,
+            [s, &preset](benchmark::State &state) { run_fast_error(state, s, preset); })
+            ->Iterations(1)
+            ->Unit(benchmark::kMillisecond);
+        benchmark::RegisterBenchmark(
+            "american/fast_profile_error/greeks/" + tail,
+            [s, &preset](benchmark::State &state) { run_fast_greeks_error(state, s, preset); })
+            ->Iterations(1)
+            ->Unit(benchmark::kMillisecond);
+      }
+    }
   }
   if (const std::string path = env_text("ATX_VOL_AL_FINGERPRINT"); !path.empty()) {
     benchmark::RegisterBenchmark("american/ladder_fingerprint",

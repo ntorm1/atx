@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp" // american_implied_vol (AlFastProfile IV bound)
 #include "pricing/american_boundary.hpp" // amer:: boundary seam (REVL1-F2 seed check)
 #include "pricing/american_detail.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
@@ -4346,6 +4347,229 @@ TEST(BawBracketRecovery, AlColdSeedTakesTheClampedHistoricalCriticalPrice) {
   // is satisfied vacuously by roots the widening never touches.
   EXPECT_TRUE(pinned_at_floor)
       << "no node pinned at the historical floor; pick a contract where one does";
+}
+
+// ── al-speed tier 2 (2026-10-17): the opt-in AlProfile::Fast kernel arithmetic ──
+//
+// Fast keeps the scheme and swaps three exact-arithmetic identities (Cody Phi/phi,
+// log-domain boundary ratio, shared BAW d1), so its contract is a ROUNDING-LEVEL
+// bound against Reference on the same scheme, documented on AlProfile:
+//   |P_fast - P_ref| <= 1e-12 * max(P_ref, 1)    (measured max 8.0e-13 abs, 1.9e-13 rel)
+//   |IV_fast - IV_ref| <= 0.01 bp on vega-bearing contracts (measured p99 2e-8 bp)
+//   Greeks: a p99 bound per field (the ledger's p99-not-max rule), listed below.
+namespace al_fast_profile_test {
+
+struct Pt {
+  double S, K, T, sigma, r, q;
+  Side side;
+};
+
+// Both sides, short to long T, low to high vol, flat/positive carry, ITM..OTM.
+std::vector<Pt> fast_profile_grid() {
+  std::vector<Pt> v;
+  for (const Side side : {Side::Put, Side::Call}) {
+    for (const double T : {0.02, 0.1, 0.5, 1.5, 4.0}) {
+      for (const double sigma : {0.08, 0.25, 0.7}) {
+        for (const double r : {0.005, 0.045, 0.1}) {
+          for (const double q : {0.0, 0.02, 0.09}) {
+            for (const double m : {0.7, 0.9, 1.0, 1.1, 1.4}) {
+              v.push_back(Pt{100.0, 100.0 * m, T, sigma, r, q, side});
+            }
+          }
+        }
+      }
+    }
+  }
+  return v;
+}
+
+std::vector<std::optional<AlOpts>> reference_presets() {
+  return {std::nullopt, al_fast_opts(), atx::vol::al_bulk_opts()};
+}
+
+} // namespace al_fast_profile_test
+
+// Default-constructed AlOpts and every shipped preset stay on Reference.
+TEST(AlFastProfile, DefaultsAreReference) {
+  using atx::vol::AlProfile;
+  EXPECT_EQ(AlOpts{}.profile, AlProfile::Reference);
+  EXPECT_EQ(al_fast_opts().profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::al_bulk_opts().profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::al_default_opts().profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::amer::scheme_from_opts(std::nullopt).profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::amer::scheme_from_opts(al_fast_opts()).profile, AlProfile::Reference);
+}
+
+// al_fast_profile(o) resolves to the SAME scheme as o — node count, both quadrature
+// orders, sweep split, tol — with only the profile flipped. nullopt maps to the
+// explicit ACCURATE equivalent.
+TEST(AlFastProfile, SelectsTheSameSchemeWithOnlyTheProfileFlipped) {
+  using atx::vol::AlProfile;
+  using atx::vol::amer::AlScheme;
+  using atx::vol::amer::scheme_from_opts;
+  for (const std::optional<AlOpts> &o : al_fast_profile_test::reference_presets()) {
+    const AlOpts f = atx::vol::al_fast_profile(o);
+    EXPECT_EQ(f.profile, AlProfile::Fast);
+    const AlScheme a = scheme_from_opts(o);
+    const AlScheme b = scheme_from_opts(f);
+    EXPECT_EQ(a.n_boundary, b.n_boundary);
+    EXPECT_EQ(a.n_quad_fp, b.n_quad_fp);
+    EXPECT_EQ(a.n_quad_price, b.n_quad_price);
+    EXPECT_EQ(a.n_iter_jn, b.n_iter_jn);
+    EXPECT_EQ(a.n_iter_fp, b.n_iter_fp);
+    EXPECT_EQ(a.tol, b.tol);
+    EXPECT_EQ(a.seed, b.seed);
+    EXPECT_EQ(a.profile, AlProfile::Reference);
+    EXPECT_EQ(b.profile, AlProfile::Fast);
+  }
+}
+
+// The price bound, and the guard that keeps it from being vacuous: Fast must
+// actually run different arithmetic (some price differs in its last bits).
+TEST(AlFastProfile, PriceWithinRoundingBoundOfReference) {
+  const std::vector<al_fast_profile_test::Pt> grid = al_fast_profile_test::fast_profile_grid();
+  int checked = 0;
+  int differing = 0;
+  double worst = 0.0;
+  for (const std::optional<AlOpts> &o : al_fast_profile_test::reference_presets()) {
+    const AlOpts f = atx::vol::al_fast_profile(o);
+    for (const auto &p : grid) {
+      const auto a = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, o);
+      const auto b = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, f);
+      ASSERT_EQ(a.has_value(), b.has_value()) << "status differs K=" << p.K << " T=" << p.T;
+      if (!a.has_value()) {
+        EXPECT_EQ(a.error().code(), b.error().code());
+        continue;
+      }
+      ++checked;
+      const double d = std::abs(*b - *a);
+      differing += (*a != *b) ? 1 : 0;
+      worst = std::max(worst, d / std::max(*a, 1.0));
+      ASSERT_LE(d, 1.0e-12 * std::max(*a, 1.0))
+          << "side=" << (p.side == Side::Call ? "C" : "P") << " K=" << p.K << " T=" << p.T
+          << " sigma=" << p.sigma << " r=" << p.r << " q=" << p.q << " ref=" << *a
+          << " fast=" << *b;
+    }
+  }
+  EXPECT_GT(checked, 3000);
+  EXPECT_GT(differing, 0) << "Fast produced Reference's bits everywhere: profile not engaged";
+  std::cout << "[AlFastProfile] checked=" << checked << " differing=" << differing
+            << " worst |dP|/max(P,1)=" << worst << "\n";
+}
+
+// The same target price inverts to the same vol under either profile.
+TEST(AlFastProfile, ImpliedVolWithinBoundOfReference) {
+  int solved = 0;
+  double worst_bp = 0.0;
+  for (const std::optional<AlOpts> &o : al_fast_profile_test::reference_presets()) {
+    const AlOpts f = atx::vol::al_fast_profile(o);
+    for (const auto &p : al_fast_profile_test::fast_profile_grid()) {
+      // Vega-bearing contracts only: deep-ITM short-dated prices pin the inversion
+      // to the intrinsic floor, where any vol inside a wide band reprices exactly.
+      if (p.T < 0.1 || p.K < 85.0 || p.K > 120.0) {
+        continue;
+      }
+      const auto px = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, o);
+      if (!px.has_value()) {
+        continue;
+      }
+      const auto ia = atx::vol::american_implied_vol(*px, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                     AmericanMethod::AndersenLake, 1.0e-10,
+                                                     100, o);
+      const auto ib = atx::vol::american_implied_vol(*px, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                     AmericanMethod::AndersenLake, 1.0e-10,
+                                                     100, f);
+      ASSERT_EQ(ia.has_value(), ib.has_value()) << "K=" << p.K << " T=" << p.T;
+      if (!ia.has_value()) {
+        continue;
+      }
+      ++solved;
+      const double bp = std::abs(*ib - *ia) * 1.0e4;
+      worst_bp = std::max(worst_bp, bp);
+      ASSERT_LE(bp, 0.01) << "K=" << p.K << " T=" << p.T << " sigma=" << p.sigma;
+    }
+  }
+  EXPECT_GT(solved, 500);
+  std::cout << "[AlFastProfile] iv solved=" << solved << " worst bp=" << worst_bp << "\n";
+}
+
+// Greeks on the cold analytic route: p99 (not max) of |fast - ref| per field.
+TEST(AlFastProfile, GreeksP99WithinBoundOfReference) {
+  struct Bound {
+    const char *name;
+    double p99;
+  };
+  // ~100x over the measured p99 on the 6,000-contract and dev200 sets (sprint note).
+  constexpr Bound kBound[] = {{"price", 1e-11}, {"delta", 1e-11}, {"gamma", 1e-9},
+                              {"vega", 1e-8},   {"theta", 5e-6},  {"rho", 1e-7},
+                              {"vanna", 1e-8},  {"volga", 5e-5},  {"charm", 1e-5}};
+  std::vector<double> diff[9];
+  const AlOpts f = atx::vol::al_fast_profile(atx::vol::al_bulk_opts());
+  for (const auto &p : al_fast_profile_test::fast_profile_grid()) {
+    const auto a =
+        american_greeks_al(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, atx::vol::al_bulk_opts());
+    const auto b = american_greeks_al(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, f);
+    ASSERT_EQ(a.has_value(), b.has_value());
+    if (!a.has_value()) {
+      continue;
+    }
+    const double va[9] = {a->price, a->delta, a->gamma, a->vega, a->theta,
+                          a->rho,   a->vanna, a->volga, a->charm};
+    const double vb[9] = {b->price, b->delta, b->gamma, b->vega, b->theta,
+                          b->rho,   b->vanna, b->volga, b->charm};
+    for (int k = 0; k < 9; ++k) {
+      diff[k].push_back(std::abs(vb[k] - va[k]));
+    }
+  }
+  ASSERT_GT(diff[0].size(), 1000u);
+  for (int k = 0; k < 9; ++k) {
+    std::sort(diff[k].begin(), diff[k].end());
+    const double p99 =
+        diff[k][static_cast<std::size_t>(0.99 * static_cast<double>(diff[k].size() - 1))];
+    EXPECT_LE(p99, kBound[k].p99) << kBound[k].name;
+    std::cout << "[AlFastProfile] greeks " << kBound[k].name << " p99=" << p99
+              << " max=" << diff[k].back() << "\n";
+  }
+}
+
+// Slices on the fast profile price through the same boundary + premium arithmetic
+// as the scalar fast entry point, strike for strike. The call slice solves the one
+// shared internal-put boundary (Kp = S) exactly as the scalar call does, so it keeps
+// the Reference slice's bit-identity; the put slice reuses strikes[0]'s boundary
+// rescaled per strike (scale-boundary, not bit-identical on Reference either), so it
+// is held to the price bound.
+TEST(AlFastProfile, SlicesAgreeWithScalarFastPrices) {
+  const AlOpts f = atx::vol::al_fast_profile(atx::vol::al_bulk_opts());
+  std::vector<double> strikes;
+  for (int k = 0; k < 15; ++k) {
+    strikes.push_back(70.0 + 4.0 * k);
+  }
+  std::vector<double> out(strikes.size());
+  int bit_equal = 0;
+  int checked = 0;
+  for (const double T : {0.05, 0.6, 2.0}) {
+    for (const double sigma : {0.15, 0.45}) {
+      const double S = 100.0;
+      const double r = 0.04;
+      const double q = 0.03;
+      ASSERT_TRUE(andersen_lake_put_slice(S, strikes, T, sigma, r, q, out, f).has_value());
+      for (std::size_t i = 0; i < strikes.size(); ++i) {
+        const auto s = andersen_lake(S, strikes[i], T, sigma, r, q, Side::Put, f);
+        ASSERT_TRUE(s.has_value());
+        EXPECT_NEAR(out[i], *s, 1.0e-12 * std::max(*s, 1.0)) << "put K=" << strikes[i];
+        bit_equal += (out[i] == *s) ? 1 : 0;
+        ++checked;
+      }
+      ASSERT_TRUE(andersen_lake_call_slice(S, strikes, T, sigma, r, q, out, f).has_value());
+      for (std::size_t i = 0; i < strikes.size(); ++i) {
+        const auto s = andersen_lake(S, strikes[i], T, sigma, r, q, Side::Call, f);
+        ASSERT_TRUE(s.has_value());
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(out[i]), std::bit_cast<std::uint64_t>(*s))
+            << "call K=" << strikes[i] << " slice=" << out[i] << " scalar=" << *s;
+      }
+    }
+  }
+  std::cout << "[AlFastProfile] put slice bit_equal=" << bit_equal << "/" << checked << "\n";
 }
 
 } // namespace
