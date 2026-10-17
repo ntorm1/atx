@@ -1,9 +1,9 @@
-# P9-L (`p9l-label-terminal`) cell record: ACCEPTED by mechanics; awaiting independent DERIV
+# P9-L (`p9l-label-terminal`) cell record: ACCEPTED; DERIV agrees; ledgered
 
-**Current status (2026-10-17, cells root agent 2): ACCEPTED, own derivation, 6 / 6 mechanics rows pass.**
+**Current status (2026-10-17, cells root agent 2): ACCEPTED, DERIV agrees, 6 / 6 mechanics rows pass; ledgered.**
 Section 10 is the resumed run and committed mechanics decision, before any return / IC / Sharpe read.
 Sections 1-9 below preserve agent 1's historical stopped-run record; their status statements describe run 1 only.
-No trial-ledger line is authorized until fresh DERIV agrees through the PM.
+Section 12 records the PM release and completed ledger step; earlier checkpoint statements are historical.
 
 Cells root agent 1 (`r14-prompts/cells-prompt-1.md`), pool-2, branch `feat/platform-p9-20261003`, 2026-10-16. Block:
 `p9-prereg.md` B.1; plan of record `cells/p9l-label-terminal-plan.md` (committed `0950cb57` before any run).
@@ -286,3 +286,53 @@ SHA `b59fd5f44847f36f566ff4dc1274a75559b77f46922588ef040473dac715c026`.
 DERIV is `cells/logs/p9l-plan-label-terminal-gm.txt`; the actual NAV receipt carries the calibration flags.
 No monitor, summ/trial write, P9-H registration or run has started. Next cell, only on PM release, is P9-H
 over this accepted plain record spec if DERIV agrees and the PM rules it. No open question or permission refusal.
+
+## 12. DERIV agreement and authorized ledger completion
+
+Fresh DERIV `86fcd5df` independently found ACCEPTED and the same six deciding values.
+Its disclosed broad prereg extraction and direct PowerShell / unavailable-utility deviations were accepted
+by PM ruling R15-DERIV-SCOPE; its independence is accepted with that limitation, not described as pristine
+section-only access. The PM then ruled P9-L ACCEPTED and explicitly released plan section 3 step 9.
+Release and prepared next-root docs committed before execution at `f6a94011`.
+
+Both commands used `C:/Program Files/Python312/python.exe`, no admission-wait or host-budget option,
+and unchanged bounded limits: 180 s, RSS 1536 MiB, system-free launch/runtime floor 512 MiB.
+They reused completed fields/u/fit/card/w/NAV and appended no admission line.
+
+1. `research_cycle.py run scripts/specs/p9/templates/label-terminal-cal.json --stop-after monitor`:
+   free RAM 3512 MiB, C: 40.1 GB; monitor completed exit 0 in 1.844 s, peak 133 MiB.
+   Receipt `build-equity/mega-monitor-p9l-label-terminal-run/receipt.json`, SHA
+   `62a5046b4f53e116cd654df1819b3ff677db379fa21d52bc2ede88a1b6a7b055`.
+   The stop-after checkpoint allowed the hand seal check before summ: OTHER 0.
+   Ledger still 133 / original full SHA.
+2. `research_cycle.py run scripts/specs/p9/templates/label-terminal-cal.json`:
+   free RAM 3846 MiB, C: 40.1 GB; monitor reused, summ completed exit 0 in 11.453 s, peak 75 MiB.
+   Receipt `build-equity/cycle-p9l-label-terminal-gm/summ-run1/receipt.json`, SHA
+   `f31b3a62e0b3404c2b8d8ee6ab7c59305495b1c6cf7b6b8663faaef8044dd244`.
+   Cycle completed; hand seal OTHER 0. The cycle's generic `cycle_verdict.json` was generated but not
+   read or used as P9-L's decision; B.1's mechanics derivations and the PM ruling remain authoritative.
+
+**Exactly one appended construction trial:** `trial_id 4a8141373c779aa1`, count 1, origin `prior`,
+cell `build-equity/mega-nav-p9l-label-terminal-gm`. Before: 133 lines,
+`27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554`.
+After: **134 lines, `b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61`**.
+The first 133 complete lines hash to the exact before SHA: no prior ledger byte changed.
+The new row's `prev_sha256` is `5a3ef9d9bf242dbb416a9b315b45e20377c234d3533e45cd1ae4bafaff8c7503`.
+Audit `cells/logs/p9l-ledger-completion.json`; all completion-file hashes in
+`cells/logs/p9l-completion-outputs.txt`. Filtered cycle logs and seals are
+`p9l-{monitor,ledger}-cycle-filtered.txt`, `p9l-seal-{monitor,ledger}.txt` under `cells/logs/`.
+Raw monitor/summ output statistics were not read.
+
+**Appendix A after ledger completion:** TRAIN construction cells 63; historical admission trials 61,
+P9 admission additions 0 (split unchanged from section 11); K_a 40 historical hand-written strings;
+mined campaigns in P9 0, M 110; N_hand 124; N_tot 234; research-window-v2 (2020-2023);
+hidden 2024+ unread in this sprint; validation reads before v8 2 (2023-2024); history reads 0;
+2025+ never read; identity-bridge flag as section 10. Counts use `backtest_integrity.trial_counts`
+(eight window reruns and event/campaign lines excluded), with the existing Appendix A functions
+on the ledger only; evidence `cells/logs/p9l-accounting-after-ledger.txt`. No research reader was rerun.
+
+**P9-L complete; STOP before P9-H.** The exact next parent is
+`scripts/specs/p9/templates/label-terminal-gm.json` (SHA `de44a668...9a4d`), paired reference
+`build-equity/mega-nav-p9l-label-terminal-gm`. Fresh cells root 3 must receive the separate PM release
+for `p9h-cov-hedge`; no H template edit or run occurred here. R15-RAM-NOW applies to every remaining stage.
+H is the first v2 cell and must capture G-P1 end-to-end timing/integration evidence. No permission refusal.

@@ -1,0 +1,49 @@
+{
+  "before_lines": 133,
+  "before_sha256": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554",
+  "after_lines": 134,
+  "after_sha256": "b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61",
+  "new_trial": {
+    "cell": "build-equity/mega-nav-p9l-label-terminal-gm",
+    "count": 1,
+    "kind": "construction",
+    "origin": "prior",
+    "trial_id": "4a8141373c779aa1",
+    "prev_sha256": "5a3ef9d9bf242dbb416a9b315b45e20377c234d3533e45cd1ae4bafaff8c7503"
+  },
+  "construction_count": 63,
+  "counted_trials": 124,
+  "receipts": {
+    "build-equity\\mega-monitor-p9l-label-terminal-run\\receipt.json": {
+      "outcome": "completed",
+      "exit_code": 0,
+      "wall_seconds": 1.8439999999245629,
+      "sampled_peak_tree_rss_bytes": 139857920,
+      "argv_sha256": "9b9ab2cda9c98e4ffa0c9c922f847cf43ff02e8ceca86b1a04f265ccdc3def8b",
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "source_sha": "f6a940115ff16f170d97edc2487cbaf37bb0a9ee",
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      },
+      "receipt_sha256": "62a5046b4f53e116cd654df1819b3ff677db379fa21d52bc2ede88a1b6a7b055"
+    },
+    "build-equity\\cycle-p9l-label-terminal-gm\\summ-run1\\receipt.json": {
+      "outcome": "completed",
+      "exit_code": 0,
+      "wall_seconds": 11.452999999979511,
+      "sampled_peak_tree_rss_bytes": 79634432,
+      "argv_sha256": "8ed6ce0f1f0b161154cfcd96992b6f8dffe13b8c7d642bc8426b58486a1ed068",
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "source_sha": "f6a940115ff16f170d97edc2487cbaf37bb0a9ee",
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      },
+      "receipt_sha256": "f31b3a62e0b3404c2b8d8ee6ab7c59305495b1c6cf7b6b8663faaef8044dd244"
+    }
+  },
+  "counting_rule": "backtest_integrity.trial_counts: window reruns and protocol/campaign events excluded"
+}

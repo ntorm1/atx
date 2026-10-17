@@ -1,0 +1,11 @@
+Appendix A (trial ledger build-equity/trials.jsonl): 124 trials in 134 ledger lines
+   admission       61  [TRAIN 2020-01-01..2023-12-31]
+   composition      0
+   construction    24  [TRAIN 2020-01-03..2023-12-29]
+   construction    37  [TRAIN 2020-01-06..2022-12-30]
+   construction     2  [TRAIN 2020-01-06..2023-12-29]
+   universe         0
+   data             0
+   mining-campaign     0  (1 campaign line(s), registry count 110: the campaigns' own budget, not in N)
+   adding no trial: 9 line(s) (0 by the defect rule, 8 window re-run(s), 1 protocol line(s))
+TRAIN construction cells 63; admission trials this sprint 61; window research-window-v2 (2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024); history reads 0; 2025+ never read.
