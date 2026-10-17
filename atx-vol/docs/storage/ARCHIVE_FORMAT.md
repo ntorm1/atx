@@ -205,7 +205,7 @@ One `QuoteSurfaceSlice` (graded admission) or one standalone `QuoteSliceFit`
 | 600 | 16 | `al_opts` | `AlOpts` (tol, 4 x u16); meaningful when `has_al_opts` |
 | 616 | 184 | `slice` | `QuoteSurfaceSlice` extras: calendar gap / gap strike / repair required / point outside fraction, point outside quotes, `rung_repair`, `calendar_channel_repair`, refusal / error / point_error strings, grade, point_status, flags (bit0 channel_refit, bit1 calendar_retry, bit2 calendar_repaired, bit3 repair_rung, bit4 calendar_channel_repaired, bit5 point_gated, bit6 point_fallback, bit7 calendar_readmitted), `present` (0 = standalone fit) |
 | 800 | 8 | `rows` | ref into `QuoteRows`, one per input quote (`QuoteSliceFit::rows`) |
-| 808 | 8 | `moved_nodes` | ref into `MovedNodes`; count 0 or `prices.nodes.count` |
+| 808 | 8 | `moved_nodes` | ref into `MovedNodes`, stored as the fit holds it (each value 0..3); usually count 0 or `prices.nodes.count`, but a slice stripped after a repair keeps its flags with `prices` absent, so the count is not tied to `prices` |
 | 816 | 8 | `dividends` | ref into `Dividends` (`variance_clock_dividends`) |
 | 824 | 8 | `carry_curve` | ref into `CarryPoints` |
 | 832 | 8 | `fit_error` | string |
@@ -362,25 +362,36 @@ Evolution rules:
 ## 9. Writing, appending, compaction
 
 Writer: `FitArchiveWriter` copies every input into staging vectors (inputs are
-not retained), then at `finish` builds the symbol table, sorts every record type
-by key, refuses duplicate keys (`DuplicateKey`), lays the sections out and
-computes all checksums. `write_file` publishes with one fsync of the temp file
-and an atomic rename (POSIX additionally fsyncs the directory); a reader never
-sees a partial archive, and on a failed rename the temp is preserved and the
-previous file is intact.
+not retained; each `add_*` is all-or-nothing, so a refused add leaves the writer
+unchanged), then at `finish` builds the sorted symbol table and rewrites the
+records' symbol ids to it, keeps every record type in insertion order, builds
+each type's index sorted by key, refuses duplicate keys (`DuplicateKey`), lays
+the sections out and computes all checksums. Only `Symbols` and `Strings` are
+always emitted; any other section is written only when it has elements (a
+missing index of a present record type is `MissingSection`). `finish` is
+deterministic: the same adds and `FitArchiveFileInfo` give the same bytes.
+`publish_fit_archive` / `write_file` publish with one fsync of the temp file and
+an atomic rename (POSIX additionally fsyncs the directory); a reader never sees
+a partial archive, and on a failed rename the temp is preserved and the previous
+file is intact.
 
-Series (append): a directory holding immutable segments `seg-<sequence>.atxvfa`
-and the manifest `series.atxvfa`, an ATXVFA file whose only section is
-`SeriesSegments` (128 B per segment: sequence, file name, file size, whole-file
-CRC, header CRC, min / max snapshot, record counts). Append = take the
-`series.lock` WriterLock, read the manifest, refuse keys already present in a
-segment whose snapshot range overlaps (`DuplicateKey`), publish the new segment
+Series (append): a directory holding immutable segments
+`seg-<sequence, 12 digits zero-padded>.atxvfa` and the manifest `series.atxvfa`,
+an ATXVFA file whose only section is `SeriesSegments` (128 B per segment:
+sequence, file name, file size, whole-file CRC, header CRC, min / max snapshot,
+record counts). Sequences are nonzero and unique within a manifest (not
+necessarily increasing in list order, because compaction puts the merged segment
+where the run was); a new segment takes the largest listed sequence plus one.
+Append (`append_fit_archive_segment`) = take the `series.lock` WriterLock
+(`Busy` after `lock_timeout`), read the manifest, refuse keys already present in
+a segment whose snapshot range overlaps (`DuplicateKey`), publish the new segment
 (temp + fsync + rename), then publish the new manifest the same way. A crash
 between the two leaves an unreferenced segment that the next append of the same
 sequence replaces; readers only ever see segments the manifest lists. Readers
-read the manifest into memory (never map it, so it can be replaced while they
-run), map the listed segments, and refuse a segment whose size, whole-file CRC
-(footer copy) or sequence differs from its manifest entry (`SegmentMismatch`).
+(`FitArchiveSeries::open`) read the manifest into memory with a Paranoid check
+(never map it, so it can be replaced while they run), map the listed segments,
+and refuse a segment whose size, whole-file CRC (footer copy) or sequence
+differs from its manifest entry (`SegmentMismatch`).
 
 Why segments rather than an append log: (1) on Windows a mapped file cannot be
 extended or replaced while any reader maps it (`atx::tsdb::Mapping` opens with
@@ -390,12 +401,14 @@ mappings never change underneath them; (2) a torn append can only damage the
 new segment, which is self-validating, never the published history;
 (3) visibility is one atomic manifest rename; (4) compaction is a plain merge.
 
-Compaction: `compact_series` copies the records of a run of segments into one
-new segment (records are copied as stored, with only their symbol ids and pool
-references rebased, so compaction is bit-exact and never re-encodes a fit),
-publishes a manifest that replaces those entries, then deletes the old segment
-files best-effort (a file still mapped by a reader on Windows is left and
-reported; `gc` of unreferenced segments is a later run).
+Compaction: `compact_fit_archive_series(dir, first, count)` copies the records
+of a run of manifest entries into one new segment through
+`FitArchiveWriter::copy_from` (records are copied as stored, with only their
+symbol ids and pool references rebased, so compaction is bit-exact and never
+re-encodes a fit), publishes a manifest in which that segment, under a new
+sequence, takes the run's position, then deletes the old segment files
+best-effort (`FitArchiveCompaction::removed` / `kept`: a file still mapped by a
+reader on Windows is kept; `gc` of unreferenced segments is a later run).
 
 Concurrency: an open `FitArchive` is immutable; every query is `const`,
 allocation-free and safe from any number of threads. Writers are
@@ -404,15 +417,33 @@ lock.
 
 ## 10. Allocation budget
 
-`open` allocates the reader's section table copy and, only for a section whose
-stride differs from the reader's struct, an upgraded copy. After `open`, every
+`open` allocates the reader's section table copy, the file buffer in `Read` mode
+(`open_copy` likewise), and, only for a section whose stride differs from the
+reader's struct, an upgraded copy. After `open`, every
 view (`fits()`, `find_fit`, `price_nodes`, `quote_rows`, `expiry_records`,
 `find_expiry`, symbol lookup, string views, `ExpiryRecord` pricing) is
 allocation-free; `tests/fit_archive_records_test.cpp` checks it with a global
 allocation counter. `decode_*` functions materialise owned library objects
 (`QuoteSurfaceSlice`, `AmericanPriceSlice`, curves, Markov specs) and allocate.
 
-## 11. Not in this version
+## 11. Tools
+
+`atx-vol-surface-archive` (`tools/surface_archive_main.cpp`, read-only):
+`inspect <file|series-dir>` prints the header, the section table and record
+counts (fit grades A / B / C / refused / standalone); `dump <file>
+[--underlier S]` prints one tab-separated line per record; `verify
+<file|series-dir>` runs a `Paranoid` open and, on refusal, reopens at `Framing`
+to name each damaged section. Exit codes: 0 ok, 1 usage, 2 refused (the
+`ArchiveStatus` name is printed).
+
+`atx-vol-fit-archive-bench` (`tools/surface_archive_bench_main.cpp`; the name
+`atx-vol-surface-archive-bench` belongs to the ATXVSA2 bench in `bench/`)
+reproduces one cohort's graded quote-slice run, checks every served row against
+that run's predictions CSV bit for bit, archives the payload with each served
+expiry's `ChainRecords`, and reports write, open and random-access timings.
+Results: `sprints/2026-10-17-surface-archive-sprint.md`.
+
+## 12. Not in this version
 
 Compression (a per-section codec field can be added as a new section flag in a
 minor), network transport, and any default serve path that reads the archive.
