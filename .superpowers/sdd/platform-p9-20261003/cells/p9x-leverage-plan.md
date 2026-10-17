@@ -1,7 +1,10 @@
 # P9-X exact preparation and hand read plan
 
-Preparation only under R15-X-PREP / resume15-ledger-26, at HEAD
-`3c699d4051a856266ea1427864a2a11f14d0b961`. No X spec, measurement or trial exists.
+Originally preparation only under R15-X-PREP / resume15-ledger-26, at HEAD
+`3c699d4051a856266ea1427864a2a11f14d0b961`. At that checkpoint no X spec, measurement or trial existed.
+R15-X-READY/SOURCE/LAUNCH (scratch27) now releases exact registration and the
+ordered NAV-only route below; registration `ac60bd39` adds the proposed spec.
+No X measurement or trial existed at this prelaunch documentation checkpoint.
 MV is REJECTED; W LAPSED (0), with no invented dSR. Final unlevered P9-F0 =
 P9-F0h = accepted H. PRE30-MVX requires a new X trial; PRE-34's old-Y1
 zero-trial agreement branch is inapplicable. No V work is authorized here.
@@ -66,7 +69,7 @@ the five main scenarios, identifying primary `modeled-1bn-stale5-v1+swap-fin-v1`
 that realised gross is capped. The partial-aim implementation does not itself
 establish that equivalence. Report any observed cap breach or schema conflict
 to PM before return reads; do not silently turn it into a seventh decision test
-or loosen the cap. This interpretation is proposed prospectively for PM ruling.
+or loosen the cap. R15-X-READY prospectively approves this interpretation and stop condition.
 
 ## Run and source boundary
 
@@ -88,7 +91,7 @@ Own raw console: `cells/logs/p9x-cycle-raw.log`. Own NAV receipt directory:
 consoles as `cells/logs/p9x-{mechanics,pair,book}-raw.log`. Preserve raw output
 unread. Metadata filter prints only stage/status/path/elapsed/resource values.
 
-Proposed exact direct-hand source allowance, requiring PM ruling: scan each
+Exact direct-hand source allowance approved by R15-X-SOURCE: scan each
 named own raw console plus `stdout.log`, `stderr.log`, `start.json`,
 `receipt.json` in those four named receipt directories, after each producer.
 Use SEAL-HAND's forms/seeds/seal-reference scan and per-hit report, with these
@@ -103,7 +106,10 @@ on 2026-10-17 only; exact five owner filenames only as string entries in
 - `docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png`
 - `docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png`
 
-Match only the token span within that exact field value. A filename elsewhere,
+Additionally, only `p9x-cycle-raw.log` may use those exact entry spans in the
+canonical `# dirty outside the code pathspec (listed, not a stop): ` header,
+parsed as complete comma-separated paths (cycle/cli.py:293-294).
+Match only the token span within that exact field value or header entry. A filename elsewhere,
 different day, other UTC field, unexpected file or any nonmatching hit stops
 before result reads. Existing hand_seal.py is a first classification, not enough
 alone because its A2/B predicates are broader. No general date exemption,
@@ -111,7 +117,8 @@ wave-console class D extension, M exact-file carryover or wave checker change.
 Owner files are name-only: never open/hash/stage/move/delete. Extra reused-phase
 receipt/log paths are covered only by their existing verified audit; unexpected
 new phase activity stops. Never import sealsrc.py. No unsupported --seal-allow
-is passed to the v1 cycle. PM must approve these precise predicates before run.
+is passed to the v1 cycle. R15-X-SOURCE approves these precise predicates before run; the narrow
+`cells/tools/p9x_read_filter.py` enforces them without changing the wave checker.
 
 ## Ordered read and independent derivation
 
@@ -134,7 +141,8 @@ is passed to the v1 cycle. PM must approve these precise predicates before run.
 3. Then run the exact bounded book reader; source/pins first. Read only
    `/navs/{parent,cell,yf0}/{net_annual,net_sharpe,x4_net_sharpe,ann_vol,max_drawdown}`
    plus identification/hash metadata. Paired print allowlist is `/paired/dsr`,
-   `/paired/lw/p_value`, `/paired/lw/p_one_sided`; SE/t are n/a under the fallback,
+   `/paired/memmel_se`, `/paired/t`, `/paired/lw/p_value`, `/paired/lw/p_one_sided`;
+   SE/t and both p are print-only and n/a under the fallback,
    with no broad lw/cbb objects or confidence intervals. Compute only the
    registered X-10 comparisons. No M/C variants or old-Y1 agreement read.
 4. Mean L_t uses X's registered `vol_target.csv`, primary-book rows only, exact
@@ -146,13 +154,14 @@ is passed to the v1 cycle. PM must approve these precise predicates before run.
    input/output hash list and handoff. Stop for fresh independent DERIV. No hand
    trial write, monitor/summ, V or other next cell until explicit PM release.
 
-DERIV's proposed exact read set: this plan/companion, own six-mechanics evidence,
-the three named reader JSON files, `cells/logs/p9x-rho-first.json` (explicitly
+DERIV's proposed exact read set: this plan/companion, raw `mechanics.json` six-measure values
+(without root's derived checks/PASS labels), `pair.json`, and H/X registered
+book fields in `book.json` (exclude unnecessary Y-F0 descriptive results), `cells/logs/p9x-rho-first.json` (explicitly
 outside NAV dirs), the four named receipt directories' metadata/source reports,
 and H/X/Y-F0 `summary.json`, primary `daily_modeled-1bn-stale5-v1+swap-fin-v1.csv`
 and `capacity_curve.csv`; X `vol_target.csv` for the registered mean L_t only.
 Hashes are available for all named files. DERIV receives its own PM dispatch,
-does not read root's verdict or a trial line, and independently derives X-10.
+does not read root's mechanics derivation, own derived record, verdict or a trial line, and independently derives X-10.
 The H/Y-F0 NAV paths and complete commands are in the companion. Unlisted
 scientific fields/files are not authorized by inclusion of their parent folder.
 

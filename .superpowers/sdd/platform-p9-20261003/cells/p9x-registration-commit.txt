@@ -1,0 +1,142 @@
+Register exact P9-X hand template
+
+R15-X-READY/R15-X-LAUNCH. Add one template only; complete new-file diff:
+
++{
++  "schema": "atx.research-cycle-template/v1",
++  "name": "p9x-leverage",
++  "description": "P9-X prereg B.7: vol-target-v1 at cap 2.0 on accepted H, pinned Release v11 store. NAV-only hand v1 cycle; no gross matching. Scaled mechanics and X-10 acceptance are derived independently before any hand trial write.",
++  "parent": "theme-cov-hedge-v1-attempt2-gm.json",
++  "requires": [],
++  "change": {
++    "set": {
++      "nav.output": "build-equity/mega-nav-p9x-leverage",
++      "nav.leverage": "2.0",
++      "monitor.output": "build-equity/mega-monitor-p9x-leverage",
++      "exes_sha256": {
++        "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
++        "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
++        "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
++      }
++    },
++    "flags": {
++      "nav": {
++        "--vol-target": "vol-target-v1",
++        "--risk-model": "build-equity/p9-m2i-dcov-v11",
++        "--risk-model-sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
++      }
++    }
++  },
++  "locked": {
++    "reference_cell": {
++      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
++      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
++    },
++    "reference_admission": {
++      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
++      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
++    }
++  }
++}
+
+Parent scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json SHA256 1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f.
+Template SHA256 e8a308b593b67c16111f3e4792c92983e9c5cfd412c7e42d485ecfe089b549db
+Frozen store and role bindings:
+{
+  "path": "build-equity/p9-m2i-dcov-v11",
+  "manifest_sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7",
+  "container": {
+    "bytes": 510677824,
+    "file": "model.atxcov",
+    "file_sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3",
+    "format": "atx.cov-container/1.0",
+    "root_sha256": "b39a1b776639e7d0b88c70e8a43bb9f6c5e6dacb92a336a327234dfc5d312e1d"
+  },
+  "role": {
+    "manifest_sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "path": "build-equity/train-2020-2023-lo3/manifest.json"
+  },
+  "returns_applied": false
+}
+Complete resolved bounded NAV argv and input/exe bindings:
+[
+  "C:/Program Files/Python312/python.exe",
+  "scripts/run_bounded_research.py",
+  "--seconds",
+  "180",
+  "--max-rss-mib",
+  "1536",
+  "--min-free-mib",
+  "512",
+  "--output",
+  "build-equity/mega-nav-p9x-leverage-run",
+  "--bind",
+  "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+  "--bind",
+  "build-equity/mega-p9w-train-theme-cov-hedge-1/train_combined.json",
+  "--bind",
+  "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+  "--bind",
+  "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+  "--",
+  "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+  "nav",
+  "--combined",
+  "build-equity/mega-p9w-train-theme-cov-hedge-1/train_combined.json",
+  "--combined-sha256",
+  "fe7b64c6006863bb155c14fb7e5a8bf009535912f7ce4232259ecb731974e6e6",
+  "--role",
+  "build-equity/train-2020-2023-lo3/manifest.json",
+  "--role-sha256",
+  "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+  "--fields",
+  "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+  "--fields-sha256",
+  "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+  "--output",
+  "build-equity/mega-nav-p9x-leverage",
+  "--rule",
+  "aim-partial-v5",
+  "--cadence",
+  "1",
+  "--trade-fraction",
+  ".05",
+  "--dust-multiple",
+  ".1",
+  "--aim-leverage",
+  "2.0",
+  "--daily-turnover-mean-max",
+  ".20",
+  "--daily-turnover-p95-max",
+  ".30",
+  "--neutralize",
+  "price-risk-v1",
+  "--max-bytes",
+  "1073741824",
+  "--order-basis",
+  "delta",
+  "--exit-rate",
+  ".05",
+  "--locate-in-aim",
+  "--liquidity-cache",
+  "--warm-start-sessions",
+  "60",
+  "--capacity-curve",
+  "--ann-mean-gross",
+  "--info-clock-print",
+  "--vol-target",
+  "vol-target-v1",
+  "--risk-model",
+  "build-equity/p9-m2i-dcov-v11",
+  "--risk-model-sha256",
+  "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7",
+  "--label-role",
+  "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+  "--label-role-sha256",
+  "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+]
+Inherited fit flags (no engine-fit):
+["--orientation", "prior", "--screen", "v4-prior-v1", "--composition", "ew-theme-std-v1", "--theme-erc", "theme-erc-v1", "--theme-hedge", "theme-cov-hedge-v1"]
+Closed scientific delta: leverage 2.0 and vol-target-v1 with the single frozen v11 store; all completed H phases and other options preserved. Gross_match none. Own output/identity bookkeeping and known explicit pins/locks only. Both --ann-mean-gross and --info-clock-print inherited exactly once; --capacity-curve inherited once. No calibration or measurement in this commit.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

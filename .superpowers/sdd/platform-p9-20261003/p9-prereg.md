@@ -1360,6 +1360,17 @@ fixed-rate-only capacity x1 test limitation/P10 remains. No scientific criterion
 
 ### B.7 P9-X: leverage, the Y-1 form (PRE-1, ledger :516; settles OD5-7)
 
+[PRE-40, R15-X-READY/SOURCE/LAUNCH, registration `ac60bd39`: new hand template
+`scripts/specs/p9/templates/p9x-leverage.json` SHA-256
+`e8a308b593b67c16111f3e4792c92983e9c5cfd412c7e42d485ecfe089b549db`,
+parent accepted H SHA-256 `1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f`.
+MV rejected and W lapsed0; P9-F0=P9-F0h=H, PRE30-MVX new-trial branch.
+Exact leverage2.0/vol-target-v1/v11 delta, inherited print flags once, no gross
+matching. Frozen store/exe/input pins and supported NAV-only argv are in
+`cells/p9x-leverage-proposal.json`; ordered source/cap/scaled-mechanics/rho/print
+and fresh DERIV boundaries in `cells/p9x-leverage-plan.md`. Stop after nav; no
+monitor/summ/trial until fresh DERIV agreement and explicit PM completion release.]
+
 - **id** `p9x-leverage`. **Counts** N_c +1 if run, N_c +0 under PRE-30 (below). **Parent** P9-F0 [read: P9-F0h (PRE-MVX, MVX-F0H)] at L_P. Undefined if
   L_P >= 2.0 (v8y section 6).
 - **Parent (round 2b-ii; PRE-MVX, ledger :889; NAV review M-1, `wave-review-nav.md:13`, `:98`).** P9-X's parent is
@@ -2461,6 +2472,9 @@ the gate's final hand-back:
     A, from lanes D3 and D3W; open: D3-Q1a's outcome, part B; the generated cell spec's and the manifest's SHA-256,
     registration commit) (D3-Q1a's outcome filled, part B2a: DIFFERENT, P9-W LAPSED (0))
 19. B.7 P9-X hand spec and SHA-256 - root writes and commits it (PRE-11). (part A: registration commit)
+    [PRE-40, filled `ac60bd39`, R15-X-READY: exact new hand spec/SHA and closed
+    parent/store/pin delta are recorded adjacent to B.7; prelaunch read/source
+    contract is committed before measurement, fresh DERIV precedes trial write.]
 20. B.7 rho of the P9-X pair - root, wave-3 references, before the read (B2-13). (part B2b: needs the re-based Y-F0)
     (filled, part B2b: on the references; the cell's own pair, if P9-X runs, is the cells root's before its read)
 21. B.8 P9-V hand spec and SHA-256 - root writes and commits it (PRE-11). (part A: registration commit)

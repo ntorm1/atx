@@ -1,0 +1,51 @@
+[
+  {
+    "phase": "fields",
+    "state": "done",
+    "kind": "pinned",
+    "output": "build-equity/train-2020-2023-lo3-fields-v15",
+    "run_dir": null
+  },
+  {
+    "phase": "u",
+    "state": "done",
+    "kind": "bounded",
+    "output": "build-equity/mega-p9l-train-u-label-terminal-1",
+    "run_dir": "build-equity/mega-p9l-train-u-label-terminal-run1"
+  },
+  {
+    "phase": "fit",
+    "state": "done",
+    "kind": "bounded",
+    "output": "build-equity/mega-weights-p9-theme-cov-hedge",
+    "run_dir": "build-equity/mega-weights-p9-theme-cov-hedge-run1"
+  },
+  {
+    "phase": "card",
+    "state": "done",
+    "kind": "bounded",
+    "output": "build-equity/mega-cards-p9-theme-cov-hedge",
+    "run_dir": "build-equity/mega-cards-p9-theme-cov-hedge-run"
+  },
+  {
+    "phase": "gate",
+    "state": "always",
+    "kind": "internal",
+    "output": null,
+    "run_dir": null
+  },
+  {
+    "phase": "w",
+    "state": "done",
+    "kind": "bounded",
+    "output": "build-equity/mega-p9w-train-theme-cov-hedge-1",
+    "run_dir": "build-equity/mega-p9w-train-theme-cov-hedge-run1"
+  },
+  {
+    "phase": "nav",
+    "state": "pending",
+    "kind": "bounded",
+    "output": "build-equity/mega-nav-p9x-leverage",
+    "run_dir": "build-equity/mega-nav-p9x-leverage-run"
+  }
+]
