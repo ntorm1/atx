@@ -222,3 +222,67 @@ by ALD-DIAG's two unclassified exits; no truncation code. Predictions: none regi
 Rho, printed-only rows and Appendix A accounting block follow only after this mechanics commit.
 No permission refusal. One pathspec typo (`idx-final-chain.md` at sprint root) failed before staging;
 the correct path `r14-prompts/idx-final-chain.md` was located and used. No research stop in the resumed run.
+
+## 11. Registered printed-only rows (after mechanics commit `7bceff42`)
+
+Rho ran first: `cells/logs/p9l-rho.txt`, bounded receipt
+`build-equity/p9l-label-terminal-readers/rho-run1/receipt.json`, completed exit 0.
+**rho = 1.0; 1 - rho = 0.0; `1 - rho < 1e-6` true.** The primary daily CSVs have the same SHA prefix
+`e7eb57201ea5`; 1005 common sessions. This is a degenerate pair under C.11 / PRE-12 / PRE-33.
+P9-L's acceptance remains mechanics-only, so the degenerate printed comparison does not change its verdict.
+
+Paired bundle (cell minus parent): **dSR 0.0; Memmel SE na; two-sided p na; one-sided p na**.
+The bundle emits null for these undefined statistics, rendered "na" under the registered fallback;
+the point dSR is not positive, which is a printed observation, not P9-L's acceptance predicate.
+`build-equity/p9l-label-terminal-readers/bundle-parent.json` SHA
+`e3b60f29c31c9a7f75139abc24ab8afc556f18eefd7e4c66cdb314469bb20038`;
+`nav_summ_run.engine_exe_sha256` equals pinned eval
+`e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c`.
+Receipt `build-equity/p9l-label-terminal-readers/bundle-parent-run1/receipt.json`, completed exit 0;
+bounded argv and permitted keys in `cells/logs/p9l-bundle.txt`. No year tables or other bundle keys read.
+Rho prelaunch free RAM 3949 MiB; bundle 3375 MiB; accounting 4611 MiB. C: >= 40.5 GB.
+
+Orientations: 67 candidate ids match; one sign change, `earn_surprise_comp`: parent 0 -> cell -1
+(undefined/zero to negative, rather than a positive-to-negative flip). Admission: 67 ids match,
+**zero status changes**. No admission t, Sharpe, return, tau or correlation value was read.
+
+The three named coverage diagnostics below are identical for u and w, for each of their 67 candidates
+and the combined coverage. They are per horizon, not summed over candidates:
+
+| horizon | terminal_imputed_pairs | missing_exit_share | guard_excluded_pairs |
+|---:|---:|---:|---:|
+| 5 | 1852 | 0.0015602313756518339 | 51 |
+| 21 | 7638 | 0.005423291773097393 | 226 |
+| 63 | 20739 | 0.01490568549284752 | 595 |
+
+The registered `ic_missing_exit_v1` blocks for all 67 candidates in each pass are printed in
+`cells/logs/p9l-printed-only.json`, beside the orientation/status changes and named coverage counters;
+SHA `1702efc858c1acb157b7df9df48344cf4b582bba2d23067629e1811c302debd0`.
+Extractor `cells/tools/p9l_prints.py` selects only these registered fields. An exploratory structure/key
+print emitted the same permitted `ic_missing_exit_v1` blocks to the tool console and was truncated there;
+the committed artifact is complete. No unregistered candidate IC block was emitted.
+
+All later seal scans (rho, bundle, accounting) have OTHER 0; evidence `cells/logs/p9l-seal-{rho,bundle,accounting}.txt`.
+No extra research variant, no prediction, no trial write. The accounting reader used only `--ledger-n`,
+not the ledger-writing `--ledger` option; receipt
+`build-equity/p9l-label-terminal-readers/accounting-run1/receipt.json`, completed exit 0.
+
+**Appendix A accounting block, current ledger before DERIV:** TRAIN construction cells 62; admission
+trials in the inherited ledger 61, P9 additions 0 (v8 12, X hand-written 25, X-4 re-screens 9,
+Y hand-written 15, P9 hand-written 0 [P9-S lapsed, W3-15, OD5-4]); K_a 40 historical hand-written strings;
+mined campaigns in P9 0 (v9-mine-c1 from v8: M 110); N_tot 233; N_hand 123; window research-window-v2
+(2020-2023); hidden 2024+ unread in this sprint; validation reads before v8: 2 (2023-2024);
+history reads 0; 2025+ never read; identity-bridge flag as section 10. Machine evidence
+`cells/logs/p9l-accounting.txt`: 123 counted trials in 133 lines. P9-L's N_c +1 is pending DERIV and
+the authorized driver ledger step: prospective N_c 63, N_hand 124, N_tot 234; these are not yet ledgered counts.
+P9-X under PRE-30 adds 0; no P9-X work was done here.
+
+Final verification (`cells/logs/p9l-end-state-2.txt`, `exe-sha-{rel,dbg}-2-end.txt`): frozen exes 27/27
+each, CRT, all six references, absent catalog/index and 133-line ledger SHA all unchanged.
+Reader files' complete final listing: `cells/logs/p9l-readers-final-listing.txt`, 23 files,
+SHA `b59fd5f44847f36f566ff4dc1274a75559b77f46922588ef040473dac715c026`.
+
+**STOP for PM / fresh DERIV.** Own verdict ACCEPTED; all void checks held. The plain planned argv for
+DERIV is `cells/logs/p9l-plan-label-terminal-gm.txt`; the actual NAV receipt carries the calibration flags.
+No monitor, summ/trial write, P9-H registration or run has started. Next cell, only on PM release, is P9-H
+over this accepted plain record spec if DERIV agrees and the PM rules it. No open question or permission refusal.

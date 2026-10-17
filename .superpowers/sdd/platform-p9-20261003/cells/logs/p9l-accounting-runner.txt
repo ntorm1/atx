@@ -1,0 +1,57 @@
+['C:\\Program Files\\Python312\\python.exe', 'scripts/run_bounded_research.py', '--seconds', '180', '--max-rss-mib', '1536', '--min-free-mib', '512', '--output', 'build-equity/p9l-label-terminal-readers/accounting-run1', '--bind', 'build-equity/trials.jsonl', '--', 'C:\\Program Files\\Python312\\python.exe', 'atx-impl/tools/nav_summ.py', '--ledger-n', 'build-equity/trials.jsonl', '--protocol', 'v8']
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "7bceff426e8f55cd9889e5e86a98c3413b226085",
+  "started_utc": "2026-10-17T13:44:31.254925+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "atx-impl/tools/nav_summ.py",
+    "--ledger-n",
+    "build-equity/trials.jsonl",
+    "--protocol",
+    "v8"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "124cab69ecf70b376c53ea5631dd95ca4fa19dd0a5ccd8da7c4226f1832332d7",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\trials.jsonl",
+      "sha256": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554"
+    }
+  ],
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 41672704,
+  "minimum_system_free_bytes": 4807983104,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "wall_seconds": 0.8279999999795109,
+  "owned_processes": [
+    {
+      "pid": 17844,
+      "create_time": 1792244671.2660713
+    },
+    {
+      "pid": 21196,
+      "create_time": 1792244671.278184
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "6cfc1e1d8504d4cca83788f5c8d8b01e4c73ee4c7853a35432919a73f622262f",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,13 @@
+B2-13 rho of the P9 pairs' references (engine eval verb on nav_summ's paired series; no return statistic)
+verb C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe  sha256 e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c
+
+P9L
+  child     build-equity/mega-nav-p9l-label-terminal-gm  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 e7eb57201ea5
+  reference build-equity/p9-b0g-yf0-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 e7eb57201ea5
+  T (common sessions) verb 1005 / aligned 1005
+  rho (verb)              1.0
+  1 - rho (verb, stable)  0.0
+  verb degenerate flag    True
+  '1 - rho < 1e-6' flag   True
+  cross-check |rho verb - rho numpy| 0.000e+00
+  class: DEGENERATE: the B2-13 / PRE-12 / PRE-33 fallback of the cell applies
