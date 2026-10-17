@@ -55,7 +55,7 @@ kernel).
 - Implied vol `PerContract` (default): `american_implied_vol` per row, warm-started
   at the row's own sigma (the serve-path warm-seed rule), behind an intrinsic /
   upper-bound screen that reports `VegaFloor` / `OutOfBand` instead of the scalar's
-  "clamp to kIvMin and succeed".
+  "clamp to kIvMin and succeed". (Superseded by the shared refusal rule of §7.)
 - Implied vol `Lockstep` (opt-in): 4 contracts at a time run a safeguarded
   Newton-secant in lockstep (lane arrays for iterate, bracket, residual and slope;
   the first step's slope is the closed-form Black-76 vega at the forward), each lane
@@ -165,13 +165,20 @@ identical in both runs:
 
 **Opt-in bounds (max |diff| vs the loop over Ok rows).** LanedAvx2: price 1.1e-12,
 delta 7.7e-13, gamma 3.8e-12, vega 2.7e-10, theta 2.4e-7, rho 1.6e-9 (dev200 / chain
-maxima). Lockstep IV vs PerContract 1.8e-5 vol; vs the true vol 1.6e-8 on the chain,
-where PerContract itself is 1.8e-5 off (its warm search map; `american_iv.hpp` notes
-the same). One dev200 status differs: an ill-conditioned deep-ITM call (vega ~2e-5,
-above the 1e-8 K floor) that PerContract returns at the kIvMin clamp (VegaFloor) and
-Lockstep inverts to 0.3062 against a true 0.3090; that row is also the 2.8e-3
-`max_abs_iv_vs_true` of the dev200 Lockstep rows. 280 / 299 VegaFloor rows (chain /
-dev200) are ITM targets at intrinsic, identical on both routes.
+maxima). Lockstep IV vs PerContract 1.8e-5 vol; vs the true vol 1.6e-8 on the chain
+ONLY (dev200 worst 2.8e-3, the row below), where PerContract itself is 1.8e-5 off
+(1.3e-5 on dev200). One dev200 status differs (row 1295): an ill-conditioned call
+(American fd vega 9.34e-6 at the root, above the 1e-8 K = 1.85e-6 floor; its whole time
+value above the zero-vol American value is 8.47e-8 USD) that PerContract refuses
+through american_implied_vol's zero-vol band (|target - zero_vol| <= 1e-9 S + 1e-12 =
+4.37e-7 -> Ok(kIvMin) -> VegaFloor) and that Lockstep accepted at 0.306194 against a
+root of 0.308999998 (2.8e-3 off) on the price residual alone. 280 / 299 VegaFloor rows
+(chain / dev200) are ITM targets at intrinsic, identical on both routes.
+
+*[Corrected in fix round 1 (§7): the original text said "vega ~2e-5", "admits ~1e-3 of
+vol" (observed 2.81e-3), "the kIvMin clamp" (the rule is the zero-vol band) and gave the
+Lockstep 1.6e-8 unqualified. The IV hashes in the table above are the fe6a516f ones;
+§7 has the fixed ones.]*
 
 Receipts: `C:/atx-cache/quote-benchmark/batch-pricing-20261017-bench/` (RESULTS.md,
 both JSONs, tables, binary, `sha256.txt`), dev200 sample
@@ -202,3 +209,38 @@ Parity receipts: `C:/atx-cache/quote-benchmark/batch-pricing-20261017-parity/`.
 3. A warm-seeded laned put kernel (per-lane seed boundary): Lockstep IV spends most of
    each iteration in the per-lane scalar BAW seed of a cold solve.
 4. A laned price + sigma-bumped price in one pack (exact Newton slope for IV).
+5. (fix round 1) `andersen_lake` is not monotone in sigma on long-dated deep-ITM puts:
+   S=100, K=128.989, T=2, r=.05, q=.015 prices intrinsic exactly for sigma <= 0.070,
+   rises to intrinsic + 7.7e-6 at 0.140, falls back to exactly intrinsic on
+   [0.170, 0.180], then rises (laned map identical). A target in that window has
+   several Ok roots; the routes can return different ones.
+
+## 7. Fix round 1 (review of fe6a516f: BLOCK, 2 major) — code `5da11835`
+
+**Rule now shared by both IV routes** (header "One implied-vol refusal rule"):
+american_implied_vol's own screen, replicated (price ceiling, immediate intrinsic,
+zero-volatility American value, band = max(max(intrinsic_tol, 1e-9) * ceiling,
+price_tol * max(1, P)) + 1e-12); Ok only at an evaluated sigma with residual <=
+price_tol * max(1, P), a chord slope of evaluated American prices > vega_floor * K and
+a Newton correction <= sigma_tol (Lockstep: or both bracket ends evaluated within
+sigma_tol). Lockstep never accepts on the Black-76 seed slope or on the residual alone;
+PerContract verifies american_implied_vol's answer on the cold map (flat chord ->
+VegaFloor; a miss -> up to 4 secant steps, then NoConvergence).
+
+**Measured (vol-rel-avx2 smoke run of the fixed binary, UNQUALIFIED timings omitted;
+the full bench rerun was stopped at the user stop, partial output kept in
+`C:/atx-cache/quote-benchmark/batch-pricing-20261017-fix1-bench/`):**
+- Greeks hashes unchanged: chain `9f41b247880203d7`, dev200 `e3e9bb01908a6013` (the
+  dev200 fixture's pricing sigma is frozen at its fe6a516f definition).
+- New IV hashes (values of PerContract Ok rows that missed the rule are now polished on
+  the cold map; Lockstep rows follow the new acceptance; statuses below): chain
+  PerContract `22ce29207191495b` (was `b9a8099a9c1ae13a`), chain Lockstep
+  `c0dd99622b63d825` (was `16bf3ea73549928a`), dev200 PerContract `5471894473c1a004`
+  (was `f2edd4997a78248c`), dev200 Lockstep `144a6b11b337506e` (was `3d9795712f012058`).
+- Status counts: chain 1720 Ok / 280 VegaFloor on both routes; dev200 2199 / 299 on
+  both (Lockstep was 2200 / 298). dev200 PerContract-vs-Lockstep status disagreements:
+  1 before (row 1295), 0 after; chain 0 / 0.
+- max |iv - true| over Ok rows: PerContract chain 2.1e-9 (was 1.8e-5), dev200 3.8e-9
+  (was 1.3e-5); Lockstep chain 1.6e-8, dev200 3.7e-8 (was 2.8e-3).
+- Scalar answer vs the rule before polishing (probe): chain 459 / 1720 Ok rows missed
+  the residual and 66 the sigma_tol correction (max 1.8e-5); dev200 648 / 163 of 2199.
