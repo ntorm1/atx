@@ -78,3 +78,71 @@ The single named real-Git test passed after a fixture correction, and passed aga
 negative-exclusion validation: `cells/logs/p9h-commit-policy-test-final.txt` (1 passed, 1.33 seconds).
 Initial failure and first pass are retained in `p9h-commit-policy-test.txt` and `p9h-commit-policy-test-fixed.txt`.
 No H data execution, return read, construction trial or disposition yet; current ledger SHA remains the initial value.
+
+## Native attempt 1: stopped before any bounded child phase
+
+PM launch release R15-H-LAUNCH and R15-V2-RHO committed in `70baa15a`; native policy review APPROVE
+`a8f06490`. Prelaunch 2026-10-17T14:18:19Z: 2439 MiB free RAM, C: 39.8 GB free, CRT unchanged; ledger134
+at the exact initial SHA, research-store/index absent (`cells/logs/p9h-prelaunch.txt`). Initial source scan had
+zero files/hits (`p9h-sealsrc-before.txt`), so the invocation supplied no seal allowance.
+
+Exact native command, with the three environment values in the committed read plan:
+
+```text
+"C:/Program Files/Python312/python.exe" -u scripts/research_cycle.py wave run scripts/specs/p9/waves/p9h-cov-hedge.json
+```
+
+Raw combined console was redirected unread to `cells/logs/p9h-native-console.txt` (SHA
+`fe2159573fd1958b7ff8d120ee69e3127337a30d74b8194701bd456b3d00f543`). The metadata filter exposed stages only.
+Outer exit4, external wall3.7267768 seconds (`p9h-native-wall.txt`). Completed stage receipts in
+`build-equity/waves/p9h-cov-hedge/receipts`: preflight0.828s, register0s, screen0s, spec1.219s.
+Run failed0.578s, `05-run.failed-1.json`. Stage time including failed attempt2.625s; this is not a completed
+platform phase-wall measurement. No bounded research phase started, so no phase-wall throughput result or
+scoreboard result exists. G-P1 is not evaluated/passed. Actual kind rule:67 inherited members, one rule, zero
+new candidate admissions. One invocation, no retry and no spec edit after its failure.
+
+The native spec stage ran `lock --write --exes`, then committed exactly
+`scripts/specs/p9/templates/theme-cov-hedge-v1.json` in `21c78bfd85883849e761a7397bd943969b999ccd`,
+SHA `a00bba84924f91469edb320d79d5382697f0f8bc71286a3a17a58d03989f1923`. Its generated code diff adds the
+derived fitter flag and frozen pins; both required NAV print flags remain inherited once. Native Git commands:
+
+```text
+git add -- scripts/specs/p9/templates/theme-cov-hedge-v1.json :(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache
+git commit -q -m "wave p9h-cov-hedge: rule cell theme-cov-hedge-v1.json on scripts/specs/p9/templates/label-terminal-gm.json" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- scripts/specs/p9/templates/theme-cov-hedge-v1.json :(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache
+```
+
+Both exit0; exact one-file scope, prescribed trailer and exclusion verified, no mypy/PNG changes. Python-driver
+source is the reviewed runtime at launch `70baa15a` (then generated-spec commit21c78bfd); C++ producers remain
+the frozen source5f48a25d builds. Post-stop disk hashes equal frozen eval `e2b48c46...`, IC `ccd54db6...`, NAV
+`255b58ac...`; no source/hygiene fix rebuilt or re-pinned an executable.
+
+Exact failed child command:
+
+```text
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/templates/theme-cov-hedge-v1.json --stop-after w --keep-verdicts --root C:/atx-wt/pool-2
+```
+
+Child exit3, stdout empty. Full diagnostic in
+`build-equity/waves/p9h-cov-hedge/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log`:
+
+```text
+research_cycle: run refused: theme-cov-hedge-v1.json requires: P9-H registered by the PM in the P9 prereg (plan section 5.2, DEC-15), after root's zero-trial diagnostic scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json has run and its q / q_lit are printed in the prereg (lit section 8 Q5); theme-cov-hedge-v1.json requires: lane AL-COMB's combined round reviewed and merged by root (Rulings ALCOMB-5 / ALCOMB-5a: D2's head merged into the lane, the theme-cov-hedge-v1 row in D2's K-P9-9 params_schema form, the fixture regenerated from the merged C++); theme-cov-hedge-v1.json requires: wave_kinds.COMPOSITION_FLAGS maps theme-cov-hedge-v1 to {fit: {--theme-hedge: theme-cov-hedge-v1}} (lane E2's table; AL-COMB merge request); theme-cov-hedge-v1.json requires: root sets parent to the last accepted cell whose fit is --composition ew-theme-std-v1 or ic-shrink-v1 (with or without --theme-erc, --theme-tsmom or --mom-volman) and carries neither theme-resid-v1 nor two-speed-v1, and runs the cell as an atx.research-wave/v2 kind rule wave whose rules block is [{name: theme-cov-hedge-v1, params: {}}] (Ruling ALCOMB-1)
+```
+
+Callsite `cycle/cli.py:397-399` calls `research_spec.run_refusal` before check_clean, header or phase iteration.
+`research_spec.py:257` treats every nonempty `requires` entry in the template chain as open; it does not evaluate
+the narrative. `wave_steps.rule_cell_doc` copies the registered template, preserving these four entries. All
+remain because deleting them was outside the permitted closed registration diff. This is a driver guard stop,
+not a failed scientific hypothesis, FIELDS-RISK, resource refusal, VOID, UNDEFINED or REJECTED cell.
+
+Post-stop source-only audit scanned8 logs: exactly two OTHER hits, compact `20261003` at
+`consoles/004-commit.log:1` and `005-commit.log:1`, both within the prescribed Git exclusion path above.
+`cells/logs/p9h-sealsrc-stopped.txt` exit1 records every hit. No allowance was supplied or inferred; actual sources
+were reported immediately for PM adjudication. No other hit. No return/paired/IC figure has been exposed.
+
+All11 wave files are hashed in `cells/logs/p9h-stopped-files-sha256.txt`. No H downstream output directory exists.
+Cache stays686 files, index absent. Ledger after remains134 lines, SHA
+`b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61`; no new trial/id. Rho not produced,
+mechanics/verdict/predictions/AppendixA not read; no automatic judge occurred. No permission refusal.
+Void checklist is not asserted all-held for an unexecuted cell: the open-requires stop and two source-classification
+hits are preserved. Next action requires PM ruling. P9-M remains unreleased; accepted parent is still P9-L.

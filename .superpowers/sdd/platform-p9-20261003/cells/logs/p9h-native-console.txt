@@ -1,0 +1,30 @@
+﻿== preflight
+   preflight: manifest commit 818e07507653, parent p9l-label-terminal-gm (L 1.1828), fields 26fee5ce301b, ledger 134 lines N 63, budget {'id': 'p9-prereg-construction', 'construction_cap': 71}
+   receipt C:\atx-wt\pool-2\build-equity\waves\p9h-cov-hedge\receipts\01-preflight.json
+== register
+   receipt C:\atx-wt\pool-2\build-equity\waves\p9h-cov-hedge\receipts\02-register.json
+== screen
+   receipt C:\atx-wt\pool-2\build-equity\waves\p9h-cov-hedge\receipts\03-screen.json
+== spec
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/templates/theme-cov-hedge-v1.json --write --exes --root C:/atx-wt/pool-2
+git add -- scripts/specs/p9/templates/theme-cov-hedge-v1.json :(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache
+git commit -q -m "wave p9h-cov-hedge: rule cell theme-cov-hedge-v1.json on scripts/specs/p9/templates/label-terminal-gm.json" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- scripts/specs/p9/templates/theme-cov-hedge-v1.json :(exclude).superpowers/sdd/platform-p9-20261003/gate-logs/tools/.mypy_cache
+   receipt C:\atx-wt\pool-2\build-equity\waves\p9h-cov-hedge\receipts\04-spec.json
+== run
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/templates/theme-cov-hedge-v1.json --stop-after w --keep-verdicts --root C:/atx-wt/pool-2
+python.exe : research_cycle wave: HARD-STOP [run]: the cell's inputs (--stop-after w: its NAV runs once, calibrated, 
+in the match stage): exit 3 ("C:/Program Files/Python312/python.exe" scripts/research_cycle.py run 
+scripts/specs/p9/templates/theme-cov-hedge-v1.json --stop-after w --keep-verdicts --root C:/atx-wt/pool-2)  
+regenerated from the merged C++); theme-cov-hedge-v1.json requires: wave_kinds.COMPOSITION_FLAGS maps 
+theme-cov-hedge-v1 to {fit: {--theme-hedge: theme-cov-hedge-v1}} (lane E2's table; AL-COMB merge request); 
+theme-cov-hedge-v1.json requires: root sets parent to the last accepted cell whose fit is --composition 
+ew-theme-std-v1 or ic-shrink-v1 (with or without --theme-erc, --theme-tsmom or --mom-volman) and carries neither 
+theme-resid-v1 nor two-speed-v1, and runs the cell as an atx.research-wave/v2 kind rule wave whose rules block is 
+[{name: theme-cov-hedge-v1, params: {}}] (Ruling ALCOMB-1)
+At line:2 char:285
++ ... StartNew(); & 'C:/Program Files/Python312/python.exe' -u scripts/rese ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (research_cycle ...uling ALCOMB-1):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+

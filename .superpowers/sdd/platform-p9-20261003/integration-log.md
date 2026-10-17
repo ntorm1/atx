@@ -950,3 +950,9 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | item | result | evidence |
 |---|---|---|
 | FLAGS-ROUTE | spec commit **`f8d852f3`** (`lib-v8ysb-gm.json` `/nav/flags` += `--ann-mean-gross --info-clock-print`; `3631679c...` -> `a4ef6c04...`; the re-pin of record stays `2078f877`), verify holds (5 expected diff lines; the FIELDS-RISK standalone REFUSED line as before), fixture `a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c`, Y-F0 spec-route NAV identity HOLDS (27 / 27 byte-identical; allowed `/producer/*` only, none differing: the same Release exe) | `root-gate-report.md` "FLAGS-ROUTE (RQ-1 close), root FLAGS agent"; `gate-logs/flags-verify.txt`, `fixture-chain-7.txt`, `flags-plan.txt`, `flags-printspec.txt`, `flags-run.txt`, `flags-identity-yf0.txt` |
+
+### P9-H native attempt 1, 2026-10-17 (R15-H-LAUNCH)
+
+| item | result | evidence |
+|---|---|---|
+| G-P1 first native P9 v2 attempt | NOT EVALUATED: kind rule, 67 inherited members, one rule, zero new admission candidates; not the 73-member add-alpha example. One native wave invocation, no hand research-stage orchestration or retry. Stopped before any bounded child phase because generated template retains four requires entries. External wall 3.7267768s; completed stage seconds 0.828 + 0 + 0 + 1.219 and failed run 0.578 (sum2.625s); no complete phase-wall sum or scoreboard result, so no <=300s/<=600s pass claim. Native generated spec commit21c78bfd has exact scope/trailer/exclusion; frozen exes unchanged. No H result or trial. | `cells/p9h-cov-hedge-record.md` native attempt1; `cells/logs/p9h-native-wall.txt`, `p9h-stopped-files-sha256.txt`; `build-equity/waves/p9h-cov-hedge/receipts/05-run.failed-1.json` |
