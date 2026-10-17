@@ -1,0 +1,11 @@
+argv: 'C:/Program Files/Python312/python.exe' scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/p9l-label-terminal-readers/mech-matched-run1 --bind scripts/wave_readers.py --bind build-equity/mega-nav-p9l-label-terminal-gm/summary.json --bind build-equity/mega-nav-p9l-label-terminal-gm/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind build-equity/mega-nav-p9l-label-terminal-gm/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind build-equity/mega-nav-p9l-label-terminal-gm/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind build-equity/mega-nav-p9l-label-terminal-gm/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind build-equity/mega-nav-p9l-label-terminal-gm/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv --bind build-equity/mega-nav-p9l-label-terminal-gm/capacity_curve.csv -- 'C:/Program Files/Python312/python.exe' scripts/wave_readers.py mechanics --nav cell=build-equity/mega-nav-p9l-label-terminal-gm --output build-equity/p9l-label-terminal-readers/mech-matched.json
+runner exit 0; receipt build-equity/p9l-label-terminal-readers/mech-matched-run1/receipt.json: outcome completed exit 0 wall 0.5320000000065193 s peak 40 MiB exe 624bbc0586d88556 source f6512b51 store-block False
+output build-equity/p9l-label-terminal-readers/mech-matched.json sha256 2ba459ca68cc513f4b896f99a5507cdec946deb34eb501590cd165c9f929fc68
+cell: dir build-equity/mega-nav-p9l-label-terminal-gm scenario modeled-1bn-stale5-v1+swap-fin-v1 daily_csv_sha256 e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3
+  gross_all_rows: 0.9862134133265011 vs [0.9, 1.05]: pass
+  abs_net_all_rows: 0.005339981852022642 vs <= 0.02: pass
+  tau_mean: 0.028134396709054203 vs <= 0.2: pass
+  tau_p95: 0.033410443831757175 vs <= 0.3: pass
+  max_return_identity_error: 3.67544536472586e-16 vs <= 1e-09: pass
+  max_cash_book_relative_error: 1.1074477435259236e-13 vs <= 1e-09: pass
+  v8-mech (unscaled): PASS (6 / 6 rows)

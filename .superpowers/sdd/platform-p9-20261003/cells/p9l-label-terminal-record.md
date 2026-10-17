@@ -1,4 +1,9 @@
-# P9-L (`p9l-label-terminal`) cell record: STOPPED at w (driver HARD-STOP; no verdict)
+# P9-L (`p9l-label-terminal`) cell record: ACCEPTED by mechanics; awaiting independent DERIV
+
+**Current status (2026-10-17, cells root agent 2): ACCEPTED, own derivation, 6 / 6 mechanics rows pass.**
+Section 10 is the resumed run and committed mechanics decision, before any return / IC / Sharpe read.
+Sections 1-9 below preserve agent 1's historical stopped-run record; their status statements describe run 1 only.
+No trial-ledger line is authorized until fresh DERIV agrees through the PM.
 
 Cells root agent 1 (`r14-prompts/cells-prompt-1.md`), pool-2, branch `feat/platform-p9-20261003`, 2026-10-16. Block:
 `p9-prereg.md` B.1; plan of record `cells/p9l-label-terminal-plan.md` (committed `0950cb57` before any run).
@@ -137,3 +142,83 @@ held: exes 27 / 27 = the table, no rebuild. (6) held: `ucrtbase.dll` = the recor
    RAM stated first) = a re-registration with a new template SHA-256: is a resource budget an "input" under void (2),
    and is that edit allowed?
 2. If ruled yes: resume from u / fit / card done (the same outputs), w as attempt 2, then the plan unchanged.
+
+## 10. Resumed run and own mechanics derivation (2026-10-17)
+
+P9L-WBUDGET and SEAL-HAND answered section 9. Restart `89b8ae72`: all 27 Release and 27 Debug exes
+equal receipts; all six P9-B0 reference listings and CRT match; absent catalog/index and missing old fields
+remain absent. Evidence: `cells/start-state-2.txt`, `cells/logs/exe-sha-{rel,dbg}-2.txt`.
+
+Resource registration `f560f741` changes only w IC admission and runner RSS to 3584 MiB (two added
+JSON entries per file). Template SHA `1d15513e74851e776a7e40d538f528690fbab04c4a92bb8afdcc240a805e3170`;
+run recipe SHA `1f00e19ec9dc3092ebe570b9645700910062881835dc9cd391623cff76c00062`.
+PRE-40/plan commit `7a49c825`; exact diff/body supplement `9e17644f`,
+`cells/p9l-resource-registration-supplement.md` (the original commit body omitted the required diff).
+No research input or exe changed. The original description's "run caps carried alike" is superseded by this ruling.
+
+RAM polling ran 13:22:23Z to the owner's stop at about 13:36Z; its log is preserved in
+`cells/logs/p9l-ram-wait-2.txt`. R15-RAM-NOW, committed before launch at `f6512b51`, removes both the
+extra idle reservation and optional admission-wait route. No source/spec change accompanied that direction.
+Only our RAM helper PID 14312 was stopped. All real runs kept the registered time/RSS caps and 512 MiB
+system-free launch/runtime floor; no host-budget or admission-wait option. C: stayed above 15 GB.
+
+| stage | exact cycle command / reader | result | receipt |
+|---|---|---|---|
+| w | `research_cycle.py run scripts/specs/p9/templates/label-terminal.json --stop-after w --attempt w=2` | completed exit 0; 24.609 s; peak 1693 MiB; prelaunch free 2188 MiB, C: 40.7 GB | `build-equity/mega-p9lw-train-label-terminal-run2/receipt.json` |
+| NAV | `research_cycle.py run scripts/specs/p9/templates/label-terminal-cal.json --stop-after nav` | completed exit 0; 39.187 s; peak 694 MiB; prelaunch free 3971 MiB, C: 40.7 GB | `build-equity/mega-nav-p9l-label-terminal-gm-run/receipt.json` |
+| mechanics | `hand_readers.mech`, DRIVER empty under R15-RAM-NOW, `mech-matched`, cell's published NAV | completed exit 0; 0.532 s; peak 40 MiB; prelaunch free 4077 MiB, C: 40.6 GB | `build-equity/p9l-label-terminal-readers/mech-matched-run1/receipt.json` |
+
+All interpreter invocations use `C:/Program Files/Python312/python.exe`. u / fit / card were reused;
+failed w run1 preserved; w output is `build-equity/mega-p9lw-train-label-terminal-2`.
+The gate appended zero admission lines, nine already ledgered. Child w argv differs from run1 only in
+the registered budget and attempt output path. NAV is the one calibrated publication; no second NAV.
+Complete bounded argvs are in `p9l-run2-cycle-filtered.txt`, `p9l-nav-cycle-filtered.txt`, `p9l-mechanics.txt`
+under `cells/logs/`; raw cycle logs remain unread except through the filter and seal scanner.
+w receipt SHA `5abc456422ee22ec138f3e5383a07093273f123f0c00a6422f070198aca4c257`;
+NAV receipt SHA `6a7a4ff131f3a0c9791cbd00219942a35b2db9e2776e53d553c50eae1071ea57`.
+Every output file is hashed in `cells/logs/p9l-outputs-run2.txt`.
+
+Calibration (`cells/logs/p9l-match-check.txt`): target and gross both `0.9862134133265011`, tolerance `.005`,
+requested leverage `1.1828`, requested gross `0.9862134133265011`, corrected false, published leverage
+`1.1828`, matched true, construction_reused true. All required keys present; requested L and target equal
+registration; reader gross equals calibration gross bit for bit. L-prime is therefore `1.1828`.
+Plain record spec generated with `wave_stage_cell.record_doc`, dry-locked, committed `ac903247`:
+`scripts/specs/p9/templates/label-terminal-gm.json`, SHA
+`de44a668999ab8997c7118afb52efd93551ac2e7df93efe9118edbf719aa9a4d`.
+Saved plain planned argv: `cells/logs/p9l-plan-label-terminal-gm.txt` (`--aim-leverage 1.1828`, no calibrate
+flags). The actual receipt correctly carries the -cal flags; both bind the same -gm output/cycle directory.
+
+Own derivation from B.1's six unscaled G-B9 predicates, not from a return statistic:
+
+| predicate | value | registered limit | result |
+|---|---:|---|---|
+| all-rows S2 gross | 0.9862134133265011 | [0.90, 1.05] | pass |
+| absolute all-rows mean net | 0.005339981852022642 | <= 0.02 | pass |
+| tau mean | 0.028134396709054203 | <= 0.20 | pass |
+| tau p95 | 0.033410443831757175 | <= 0.30 | pass |
+| maximum return identity error | 3.67544536472586e-16 | <= 1e-9 | pass |
+| maximum cash-book relative error | 1.1074477435259236e-13 | <= 1e-9 | pass |
+
+Every value is finite; all six inequalities hold. **P9-L ACCEPTED by the registered mechanics-only rule.**
+Reader file SHA `2ba459ca68cc513f4b896f99a5507cdec946deb34eb501590cd165c9f929fc68`.
+This decision is committed before any registered rho, return bundle or IC/admission/orientation print is read.
+Fresh DERIV is still required; the decision is not yet ledgered.
+
+Hand seal scans after w, NAV and mechanics: OTHER 0 (`p9l-seal-w2.txt`, `p9l-seal-nav.txt`,
+`p9l-seal-mechanics.txt`). Cache unchanged since run1: all 686 filename/size/mtime rows identical,
+listing `329f1368c2fca0a5`; no new records from w2. Existing 67 imputed-v1 records come from frozen
+post-`110fd735` build `5f48a25d`, so S2-6's pre-fix exclusion is not engaged; none deleted.
+Void checklist (1)-(7): all held; no cache index/timings flags; print flags inherited alike; no risk model;
+no hidden data read; no rebuild. SEAL-HAND replaces the inapplicable v1 --seal-allow switch as ruled.
+Ledger before and after w/NAV/mechanics: 133 lines,
+`27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554`.
+
+Identity-bridge flag: universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit`
+depend on 2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0);
+size unmeasured. Absolute returns may be overstated by survivorship; paired comparisons are relative evidence.
+PRE-4 exposure remains: labels within 30 days of TRAIN end can embed post-TRAIN information, bounded
+by ALD-DIAG's two unclassified exits; no truncation code. Predictions: none registered.
+
+Rho, printed-only rows and Appendix A accounting block follow only after this mechanics commit.
+No permission refusal. One pathspec typo (`idx-final-chain.md` at sprint root) failed before staging;
+the correct path `r14-prompts/idx-final-chain.md` was located and used. No research stop in the resumed run.
