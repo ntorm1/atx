@@ -1,4 +1,8 @@
-# P9-H registration and route checkpoint
+# P9-H record: ACCEPTED
+
+Final disposition: native pm7-34 ACCEPTED, paired S2 net dSR0.02554011056222616 >0 and all six mechanics checks
+PASS. Exactly one construction trial is ledgered. The completed result and final accounting follow the preserved
+chronological checkpoints below. Stop before P9-M, which requires the PM's separate release.
 
 Scope: `p9h-cov-hedge` only, R15-ROOT3. Executing agent GPT-6 Astra. This is not a cell disposition.
 
@@ -181,3 +185,141 @@ proof and R15-SEAL-D / R15-H-VERIFY-RESUME preparation are in `cells/p9h-attempt
 Source checker37 controls PASS; actual29-log rescan A4/B2/C6/D16/OTHER0. All32 wave files preserved;197 additional
 output/run files hashed; ledger134 unchanged. Frozen54/54 and CRT match, cache686/no index. Same-state resume
 is prepared but not launched pending PM verification; first six stages must reuse. G-P1 remains unawarded.
+
+## Completion read boundary: mechanics and rho logged before paired figures
+
+R15-H-RESUME-GO committed `30d74551`; continuation exited0 after reusing all first six stages. Final source scan
+40 logs: A7/B4/C6/D28, OTHER0. All32 stopped wave files and197 output/run files remain byte-identical; frozen
+producers/CRT and six references match, cache686/no index. `cells/logs/p9h-mechanics-first.json` records all six
+v8-mech checks PASS before this rho read; cell/parent NAV and eval pins match, C-13 binding verified.
+
+First registered paired read: existing bundle SHA
+`2fa545913cd34328d2d73de6775bd57eb1e80c851f247e9322d1976f6b51c951`, eval pin e2b48c46...d962c,
+exact L/H pair validated against judge receipt. Sessions1005, rho0.8653199607726447. Neither one_minus_rho nor
+degenerate is supplied; numeric stable difference is `not supplied by bundle`; threshold flag FALSE inferred
+from documented nondegenerate encoding under R15-V2-RHO, not a calculated difference. Log
+`cells/logs/p9h-attempt2-rho-first.txt` saved before any other paired figure. No rho/statistical rerun.
+
+## Final registered result and prints
+
+Native `08-judge.json` decides only paired S2 net dSR>0 AND mechanics, pm7-34. ACCEPTED: cell net SR
+1.8750221368920863, parent1.8494820263298601, dSR0.02554011056222616. Printed paired Memmel SE
+0.2615496420444564, t0.09764918950982554; LW two-sided p0.9322 (one-sided0.4744), SE0.27003020920357984,
+95% CI[-0.5241771391575851,0.5752827923080717]; CBB95% CI[-0.49947667984762295,0.5797562683890513].
+These uncertainty lines do not change the registered point-dSR decision. Nondegenerate encoding as above;
+C.11 fallback is not needed. Engine eval producer is frozen e2b48c46...d962c; no Python statistic substitute.
+
+| Mechanics check | Value | Fixed limit | Result |
+|---|---:|---|---|
+| gross_all_rows | 0.986241893721804 | [0.9,1.05] | PASS |
+| abs_net_all_rows | 0.0050699651270206605 | <=0.02 | PASS |
+| tau_mean | 0.02706227150226712 | <=0.2 | PASS |
+| tau_p95 | 0.03234806696272993 | <=0.3 | PASS |
+| max_return_identity_error | 3.7816971776294395e-16 | <=1e-9 | PASS |
+| max_cash_book_relative_error | 1.2564514679600198e-13 | <=1e-9 | PASS |
+
+The native PM6-6 engine calibrated one NAV process to final L1.1674 (parent1.1828). Its plain recipe of record is
+`scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json`, commit `bd837403`, SHA-256
+`1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f`; paired NAV
+`build-equity/mega-nav-p9-theme-cov-hedge-gm`. Gross-matching and all printed fields use the registered S2
+`modeled-1bn-stale5-v1+swap-fin-v1` scenario. Native generated commits each contain only their named one spec
+and the required trailer/exclusion; no changes on resume. The original failed attempts and all receipts remain.
+
+| Registered printed field | H | L parent |
+|---|---:|---:|
+| C++ ann_vol | 0.030344611264587394 | 0.030569717335626075 |
+| C++ ann_mean_gross, gross of costs and financing | 0.07061758625960741 | 0.07067817348886382 |
+| turnover per unit gross | 0.027439791063976805 | 0.028527696266223746 |
+| C++ cost_bps_per_traded_dollar, capacity x1 | 12.490795824692793 | 12.657953278624722 |
+| C++ net Sharpe at capacity x4 | 1.759566530994928 | 1.6994264697927697 |
+
+Registered predictions: realised-vol ratio H/L0.9926363051196309 <1, MET; gross-alpha ratio
+0.9991427731325576 in[.90,1.10], MET. These ratios divide the two existing C++ prints; no new return statistic.
+Expected dSR[+.05,+.15] print-only estimate was NOT MET (actual+.0255401); ex-ante prediction stays CUT.
+Native printed criteria all met and decide nothing. `cells/logs/p9h-registered-prints.json` SHA
+`d3c71d24c8b6b3598e04b9829846297a20bf1123b114be219487ce109c816633` contains exact selections/provenance.
+
+IC's registered hedge-ratio print is copied without recomputation: all12 theme names and all55 block h-vectors
+in `/roles/0/composition_hedge_trace` from `mega-p9w-train-theme-cov-hedge-1/summary.json` (source SHA
+`1807c2eb01f300624b03ba8def18e266176efc93a33c2cfb8e83ac9ea068acab`). Complete artifact
+`cells/logs/p9h-hedge-traces.json`, SHA `da37c75bf1ad98be85a812447e00443e8283f3aec4956df098aa5678b49ae5d6`.
+No unrelated candidate IC block was printed. `cells/tools/p9h_complete_reads.py` performs only allowed-field
+selection, registered ratios and ledger accounting after the rho log; it launches no engine or process.
+
+## Trial accounting, void checks and preservation
+
+Exactly one native-judge construction trial:94a77d4af05ac735, count1, origin prior, H's gm NAV above.
+Ledger before134 lines / `b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61`;
+after135 lines / `7b87d61ccb3285e9ea94aefb52222e610f74287b5559988339eccf09aed07e00`.
+The first134 complete raw lines retain the before hash. No manual trial write, new admission or second H trial.
+Evidence `cells/logs/p9h-ledger-completion.json` and `p9h-accounting.txt`; native recorded chain head
+`1568e4a9ef832de9fc76493579fc0119f4c8898ee7a1638395746d8ca50c1cd2` is distinct from the whole-file SHA.
+
+Appendix A: TRAIN construction cells64; historical admission trials61, P9 additions0 (v8:12, X hand-written25,
+X-4 re-screens9, Y hand-written15, P9 hand-written0); K_a40 historical hand-written strings; P9 mined campaigns0,
+inherited v9-mine-c1 M110; N_hand125, N_tot235. Window research-window-v2(2020-2023); hidden2024+ unread in
+this sprint; validation reads before v8:2(2023-2024); history reads0; 2025+ never read. Eight window reruns and
+one protocol line add no trials. Native n_before63 -> n_after64. P9-S/W remain lapsed; no later-cell work.
+
+Void checklist **all held**: (1) registered locks/re-pin/ALD-DIAG preconditions and explicit requires closure
+preceded data execution; (2) accepted L parent, rule constants, fields v15 pin, inputs, eval/fit modes and
+registered flags agree, with only the explicitly ruled metadata clones and PM6-6 calibration; (3) all raw
+statistics withheld until source/pin gates and mechanics passed, rho logged before paired figures;
+(4) no session at/after2024-01-01 opened, every final seal hit has A/B/C/D provenance, OTHER0;
+(5) frozen builds unchanged, Release27/27 and Debug27/27 plus final eval/IC/NAV disk checks match;
+(6) CRT version/hash matches P9-B0; (7) no cache-index flag or index.sqlite, cache remains686 files.
+`p9h-final-receipt-flags.json` verifies all completed receipt outcomes/flags: fit flag-absent, no engine timing,
+both required NAV flags exactly once. The source classifier examined only console text, never PNG contents.
+All six reference file listings still match. Initial guard/seal stops are driver checkpoints, not scientific
+rejections or voids, and are retained in this record. No permission refusal.
+
+Identity-bridge flag: universe `linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on
+2026-dated inputs through the identity bridge (paths listed in `al-data/atx-db-request.md` A0); size unmeasured.
+
+Result `build-equity/waves/p9h-cov-hedge-attempt2/wave-result.json` SHA
+`e93f09532bdc4b12ffc3d2e51f69edef4e15454997cde62dd56ca327663cbf67`; bundle SHA2fa54591...51c951.
+The original32 wave files and197 run/output files remain unchanged after resume. Additional final64 wave,
+monitor and cycle files are fully hashed in `cells/logs/p9h-final-wave-monitor-cycle-sha256.txt`.
+The native result/log/ledger-head copies are retained under `cells/waves/p9h-cov-hedge/`.
+
+## G-P1 factual timing and completion
+
+Exact native commands/environment and stop/resume boundaries are in the committed read plan and stop record.
+No hand script orchestrated a research stage; extraction helpers only filter existing outputs. One native attempt1
+stopped before any data, one fresh attempt2 performed the registered computation, and one same-state continuation
+reused all first six successful stages then ran verify/judge/record. No fit/w/card/NAV rerun. The registered
+kind rule has67 inherited members, one rule and zero new admissions; it is not the73-member add-alpha example.
+
+| Timing scope | Seconds |
+|---|---:|
+| Attempt1 native invocation, stopped before data | 3.7267768 |
+| Attempt2 initial native invocation, seal checkpoint | 131.2085962 |
+| Attempt2 verification/judge/record continuation | 24.3026102 |
+| Attempt2 summed invocation walls | 155.5112064 |
+| All three invocation walls summed | 159.2379832 |
+| Attempt2 start-to-final completion, including PM checkpoint | 680.5601286 |
+| Fresh core phase receipt sum, fit/card/w/NAV/monitor/summ | 132.610 |
+| Fresh phase sum including bounded readers/bundle | 135.596 |
+| Inherited u receipt (prior invocation, separately reused) | 51.578 |
+| Full phase receipt sum including inherited u | 187.174 |
+| Native recorded process rows sum, overlapping phase scope | 150.267 |
+
+Attempt2 continuation start14:51:45.1249547Z/end14:52:09.5042300Z; free RAM4133 MiB/C:39.0 GB, no RAM wait.
+First attempt2 start14:40:48.9441014Z. All bounded fresh phases completed within their registered caps/floor.
+The phase sums are below plan0.4's300s target and600s hard threshold. The680.560s elapsed checkpoint span is a
+different metric and is not labeled a phase-wall failure or an uninterrupted run.
+
+Registered `scoreboard --results build-equity/waves/p9h-cov-hedge-attempt2/wave-result.json --ledger
+build-equity/trials.jsonl --timings` ran once. Raw output withheld; timing-only extract
+`cells/logs/p9h-scoreboard-timings.txt`. Its displayed phase-table total152.4 follows the documented
+`wave_scoreboard.py:161-164` stage_seconds override (exact152.405 through judge), not the sum of printed phase
+columns. Record receipt0.344 and failed verify0.297 are separately retained; the result is built before its
+record receipt exists. This is a timing-label/total-semantics caveat, not an assertion of incorrect computation.
+Git processes2.422s also appear as a table column; receipt phase sum187.174 above excludes this process column.
+Full metadata/process rows in `p9h-timing-summary.json`, with source receipt details in `p9h-native-timing-details.json`.
+
+**G-P1 is unawarded.** Zero-spec-edits-on-retry is UNMET under R15-H-RESTART, and interrupted/restarted execution
+and67-member rule scope remain disclosed. Timing success does not repair either limitation.
+
+**P9-H complete; STOP before P9-M.** Native next parent is the accepted H plain gm spec/hash and NAV above.
+M requires the PM's separate release. No open question, extra statistic, permission refusal or next-cell action.

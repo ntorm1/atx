@@ -1,0 +1,96 @@
+{
+  "decision": {
+    "accepted": true,
+    "checks": {
+      "criteria": true,
+      "dsr_positive": true,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": true,
+        "printed": "met",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": true,
+        "printed": "met",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      },
+      {
+        "criterion": "cost-bps-lower",
+        "met": true,
+        "printed": "met",
+        "text": "S2 cost_bps_traded lower than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": 0.02554011056222616,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.8653199607726447,
+    "dsr": 0.02554011056222616,
+    "memmel_se": 0.2615496420444564,
+    "t": 0.09764918950982554,
+    "lw": {
+      "ci95": [
+        -0.5241771391575851,
+        0.5752827923080717
+      ],
+      "dsr_population": 0.025552826575243274,
+      "p_one_sided": 0.4744,
+      "p_value": 0.9322,
+      "se": 0.27003020920357984,
+      "valid_draws": 4999
+    },
+    "cbb_ci95": [
+      -0.49947667984762295,
+      0.5797562683890513
+    ],
+    "sr": 1.8750221368920863,
+    "sr_reference": 1.8494820263298601
+  },
+  "books": {
+    "cell": {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "summary_sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+      "capacity_csv_sha256": "ed26cab56147d36f5cfd99b840e91236a489285da94a443fa2542faf396d14ee",
+      "ann_vol_cpp": 0.030344611264587394,
+      "ann_mean_gross_cpp": 0.07061758625960741,
+      "turnover_per_gross": 0.027439791063976805,
+      "cost_bps_per_traded_dollar_cpp_x1": 12.490795824692793,
+      "net_sharpe_cpp_x4": 1.759566530994928
+    },
+    "parent": {
+      "path": "build-equity/mega-nav-p9l-label-terminal-gm",
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "summary_sha256": "42ddc5cdc202f1988c1106c403f769d322cd79e225744124860cfad134401e66",
+      "capacity_csv_sha256": "edf1001d5afa0e81f7d41b76b73f8e8ece5441c77b2fb23dbaa28457f4b0691f",
+      "ann_vol_cpp": 0.030569717335626075,
+      "ann_mean_gross_cpp": 0.07067817348886382,
+      "turnover_per_gross": 0.028527696266223746,
+      "cost_bps_per_traded_dollar_cpp_x1": 12.657953278624722,
+      "net_sharpe_cpp_x4": 1.6994264697927697
+    }
+  },
+  "predictions": {
+    "realised_vol_ratio": 0.9926363051196309,
+    "vol_ratio_lt_1": true,
+    "gross_alpha_ratio": 0.9991427731325576,
+    "gross_ratio_in_band": true,
+    "expected_dsr_band": [
+      0.05,
+      0.15
+    ],
+    "ex_ante": "CUT"
+  }
+}

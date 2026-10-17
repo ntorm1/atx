@@ -962,3 +962,9 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | item | result | evidence |
 |---|---|---|
 | G-P1 interrupted native attempt2 | Kind rule67 inherited/one rule/zero admissions; external131.2085962s, stage sum129.858s including failed verify0.297s. Fresh fit/card/w/NAV phase sum116.328s; inherited u51.578s separately reused. Completed run67.828s and match59.406s; stopped solely on22 unallowed ISO provenance tokens before judge. No complete scoreboard result or throughput pass. Zero-spec-edits-on-retry UNMET after explicitly ruled metadata clones; no later success awards G-P1. | `cells/p9h-attempt2-seal-stop.md`; `cells/logs/p9h-attempt2-native-wall.txt`, `p9h-attempt2-phases-final.json`, `p9h-attempt2-verify-failed.json` |
+
+### P9-H completed native continuation, 2026-10-17 (R15-H-RESUME-GO)
+
+| item | result | evidence |
+|---|---|---|
+| P9-H / G-P1 | H ACCEPTED by native pm7-34; one construction trial, ledger134->135. First6 stages reused; verify/judge/record continuation24.3026102s. Attempt2 summed invocation155.5112064s; start-to-final elapsed680.5601286s includes PM checkpoint. Fresh core phases132.610s, with readers/bundle135.596s; inherited u51.578s separately reused, full receipt phase sum187.174s (<300target/<600hard). Scoreboard displayed total152.4 is documented stage_seconds override, not phase-column sum. G-P1 UNAWARDED: retry metadata edits and interrupted67-member rule route are retained limitations, not73-member add-alpha equivalence. No source fix/extra run. | `cells/p9h-cov-hedge-record.md` final timing; `cells/logs/p9h-timing-summary.json`, `p9h-scoreboard-timings.txt`, native result copies `cells/waves/p9h-cov-hedge/` |

@@ -1,0 +1,9 @@
+{
+  "schema": "atx.ledger-head/v1",
+  "wave": "p9h-cov-hedge",
+  "ledger": "build-equity/trials.jsonl",
+  "lines": 135,
+  "head_sha256": "1568e4a9ef832de9fc76493579fc0119f4c8898ee7a1638395746d8ca50c1cd2",
+  "rule": "atx-ledger-chain-fold/v1",
+  "n": 64
+}
