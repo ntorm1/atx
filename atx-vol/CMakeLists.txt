@@ -941,6 +941,12 @@ if(ATX_BUILD_TOOLS)
     # ATXVFA archive CLI: inspect | dump | verify (docs/storage/ARCHIVE_FORMAT.md).
     add_executable(atx-vol-surface-archive tools/surface_archive_main.cpp)
     target_link_libraries(atx-vol-surface-archive PRIVATE atx::vol atx::core atx_warnings)
+    # Its write / open / random-read benchmark over a graded quote-slice run.
+    # Named fit-archive: bench/ already owns atx-vol-surface-archive-bench (the
+    # ATXVSA2 bench).
+    add_executable(atx-vol-fit-archive-bench tools/surface_archive_bench_main.cpp)
+    target_link_libraries(atx-vol-fit-archive-bench PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
     # Label-free benchmark runner. Reference values exist only in the separate
     # Python scorer; the native tool accepts a closed raw-quote input schema.
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
