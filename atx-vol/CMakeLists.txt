@@ -167,6 +167,11 @@ set(ATX_VOL_STORAGE_SOURCES
     # catalog, which is genuinely lakehouse-only).
     src/storage/writer_lock.cpp
     src/storage/surface_archive.cpp
+    # ATXVFA fitted-surface archive (docs/storage/ARCHIVE_FORMAT.md): opt-in,
+    # no existing path reads or writes it.
+    src/storage/fit_archive.cpp
+    src/storage/fit_archive_records.cpp
+    src/storage/fit_archive_series.cpp
     src/storage/run_archive.cpp
     src/storage/run_diagnostics.cpp
     src/storage/surface_db.cpp
