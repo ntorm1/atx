@@ -64,3 +64,118 @@ Universe linked-operating-v3 and identity-bridge-v2-pit fields depend on2026 inp
 size unmeasured. Absolute returns/Sharpe may be overstated by survivorship; paired
 relative tests share the limitation. No hidden-session/atx-db access or owner PNG
 open/hash/stage/move/delete. No new permission refusal.
+
+## Own decision after committed rho: REJECTED, awaiting independent DERIV
+
+Mechanics commit eecf6ebe precedes paired computation; rho86f0acb9 precedes scalar
+exposure. Exact original pair receipt inputs match all four current summary/
+primary daily hashes. B2-11 frozen eval verified. Nondegenerate paired net
+dSR=-.00040932705902685385 is not>0. All six mechanics pass, but the conjunction
+fails: own B.8 verdict REJECTED. No generic driver verdict is used.
+Memmel SE .003229996480990207, t -.12672678172744264, p2 .9072, p1 .5678 are
+registered nondeciding prints. No CI/lw object/cbb or other unlisted figure read.
+
+PRE-13's independent H comparison passes: V net annual.0893596400030433>
+H.05689681785648637; V net Sharpe1.8403229698169834>=H1.875022136892088-.100,
+with same six mechanics. V nevertheless fails acceptance versus X. Proposed
+P9-F remains accepted X, F0=F0h remains H; PM disposition/DERIV pending.
+
+| Registered book print | H | X | V |
+|---|---|---|---|
+| net annual |.05689681785648637|.08986194230342487|.0893596400030433|
+| net Sharpe |1.875022136892088|1.8407322968760098|1.8403229698169834|
+|4x net Sharpe|1.759566530994928|1.678945115577997|1.6778400337962325|
+|annual volatility|.030344611264587394|.04881858293893884|.04855649876061155|
+|maximum drawdown|.02203729312571523|.032292584985299744|.032014711770221194|
+
+Exact registered projections and bookb4126a9c bindings are in
+`cells/logs/p9v-registered-prints.json`. No P9-V step enters G-B7 (PRE-36).
+
+## B.8(a)-(e), printed only
+
+(a) **Not produced: step2 v11 bounded runner validation error, "bind small
+config/source manifests, not full data payloads".** This is an internal argv
+validation stop, not a permission-system refusal. Native risk never launched;
+no risk receipt/output exists, and covv1 was not attempted. No retry by dropping
+the CSV bind, new output namespace, model rebuild, probe or alternate producer.
+Original proposed command is retained exactly in
+`cells/logs/p9v-b8a-risk-v11-launch.json`; the sole placeholder was filled with
+the already recorded CSV digest. Raw console/source report preserved, OTHER0.
+
+Preceding stages held: actual H calibration argv plus new output/holdings ran
+once. Complete27-file non-holdings sets match H byte-for-byte, including summary/
+producer, with zero exceptions. `p9v-b8a-identity.json` binds every size/hash.
+Q5 serializer sourceb2274b40 ran once and produced95,310,443-byte CSV
+ccda2610e3e89ac732a50cd1d59e9e40863310bca89963098e3ea9f30c4656f8, pinned in
+`p9v-b8a-book-pin.json` before risk attempt. All11 risk fields had witnessed
+coverage; unavailable book-bias evidence is not inferred from store-family data.
+No diagnostic outcome changes the fixed V decision or model parameters.
+
+(b) Native primary L_t: X mean1.864660752885562 over1004 rows,38 consecutive
+changes; V mean1.8579460516069106 over1004 rows,39 changes. Mean V-X change
+-.00671470127865148. Both finite in[1,2], distinct from realised gross exposure.
+X CSVed25e426; V CSV38a963fc; only registered session/book/L_t projections used.
+
+(c)-(e) The full five-family table, all51 eigen-rank rows and directional counts,
+all three pooled eigen rows and D-COV-EIG no-exclusion finding are copied exactly
+from the prereg in `cells/p9v-dcov-registered-prints.md`, SHAb1d58976bed67f1dd0990609b46f6ee404378e73090c510df9cb6ea797a3e265.
+Below-band is over-forecast/over-corrected, above-band under-forecast.39/51 ranks
+nearer1,12 farther; in-band10/51 vs9/51. Ranks00-02 exceed1000 in both recipes;
+none meets the fixed structural-null exclusion. The third pooled row equals all
+ranks. No exclusion/parameter move, new statistic or recipe. Defect remains P10.
+
+## Bounds, integrity, void checklist and accounting
+
+| Completed bounded stage |seconds|peak MiB|outer seconds|
+|---|---|---|---|
+|V NAV|21.969|1142.390625|22.969|
+|mechanics|.515|44.76171875|.844|
+|pair|.515|48.63671875|.828|
+|book|.531|45.62109375|.844|
+|B8a H+holdings|25.296|692.8046875|25.609|
+|B8a CSV|3.140|392.17578125|3.484|
+
+Failed risk wrapper exit2/outer.141s has no native phase/receipt and is not folded
+into completed phase time. Fresh completed sum51.966s; all outer invocations
+including failed wrapper54.719s. Historical reused phases115.047s separately.
+Main caps180s/1536MiB, diagnostics600s/2048MiB; floor512MiB retained. All launched
+immediately with RAM/disk stated; no RAM polling/admission-wait/host-budget.
+No G-P1 award implied by these hand stages; previously unawarded status stands.
+
+Final `p9v-final-audit.json`: all54 frozen exes/CRT/both streamed models/source
+pins remain; six listings126 reference files equal; cache686, research-store/
+index/retired fields absent.31 actual source files: OWN_UTC17, OWNER_RECEIPT85,
+OWNER_HEADER5, SEED1, OTHER0. Missing risk receipt is explicitly a pre-spawn
+validation stop, not silently treated as a successful phase. Output listing
+`cells/logs/p9v-output-sha256.txt` contains88 files, SHA256
+6bf3100a5b992a02fec9542646a3adda30bf54ec281a7d8edba902f7eb0d284a.
+
+B.0 seven void conditions all held: (1) ruled prereg/gate/re-pin/ALD-DIAG precede
+run; (2) exact registered V inputs/flags/modes/parent/store/exes, both print flags
+once, COV9 false; (3) own mechanics committed before return reads and rho committed
+before paired scalars; (4) no2024+ session opened; (5) no rebuild; (6) CRT version/
+SHA unchanged; (7) no SQLite index flag/file. Separate preparation exposures remain
+disclosed above; optional diagnostic driver stop is not a cell void.
+The raw cycle log's native trailing space at line37 was flagged by git diff
+--check and preserved byte-for-byte; no raw evidence normalization.
+
+Appendix A unchanged139 lines/full SHA5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd;
+original138 prefixfe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8.
+Nc68, historical admissions61/P9+0,Nhand129,M110,Ntot239; eight historical window
+reruns add0,history reads0. No V trial written; prospective new construction counts
+one only through the supported native completion after fresh DERIV/PM release.
+
+## Stop for independent DERIV; completion remains prospective
+
+Fresh DERIV must use PM's prepared exact dispatch, deciding raw mechanics,
+committed rho, pair leaves and V/H selection only; no root PASS/verdict or B8
+diagnostic reads. Exact rho path is outside NAV dirs and included in that dispatch.
+`cells/p9v-completion-proposal.json` SHA256
+a628391717d982b58a39a1df99c1032dd8bf152c0312354741dffff95f3d1105 is metadata
+only: actual native Cycle.steps produces monitor pending, summ always, earlier
+phases done. Supported `run <same spec> --stop-after monitor`, then `run <same spec>`
+once, each180s/1536MiB/floor512, no wait. Ten exact future source paths are in the
+proposal; their strict parsed metadata/header extension requires separate PM
+release. No summ.ledger_copy destination; native summ alone would append one trial.
+Generic cycle verdict and unregistered monitor/summ/PBO statistics remain unread
+and non-authoritative. No completion, adoption or OD3 execution is authorized yet.

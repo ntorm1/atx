@@ -1,0 +1,18 @@
+{
+  "path": "build-equity/p9v-b8a-book.csv",
+  "sha256": "ccda2610e3e89ac732a50cd1d59e9e40863310bca89963098e3ea9f30c4656f8",
+  "bytes": 95310443,
+  "receipt": {
+    "path": "build-equity/p9v-b8a-book-run/receipt.json",
+    "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+    "argv_sha256": "b4cf7741845caff40f150f6a403999cb99aa3e6c35ac3fa61db303950a6e90f3",
+    "source_sha": "86f0acb9c05f0ca0e9eefe611291a123f661987b",
+    "wall_seconds": 3.14000000001397,
+    "peak_mib": 392.17578125,
+    "limits": {
+      "seconds": 600.0,
+      "max_rss_mib": 2048,
+      "min_free_mib": 512
+    }
+  }
+}

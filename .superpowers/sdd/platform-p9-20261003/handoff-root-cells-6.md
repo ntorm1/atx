@@ -1,5 +1,30 @@
 # Cells root6 preparation checkpoint
 
+## Updated checkpoint after released V execution
+
+Preparation below is retained as history. R15-V-READY/SOURCE/B8A/LAUNCH released
+registrationae92cf3a, prelauncha0c6ec5d; mechanicseecf6ebe and rho86f0acb9 committed
+in order before returns. Own V REJECTED: dSR-.00040932705902685385 vs X fails>0;
+all six H-scaled mechanics and realised cap pass. Rho.9999794724534574/1005,
+optional keys absent/inferred FALSE consistently; no fallback. H comparison
+passes but V acceptance fails, so proposed P9-F=X, F0=F0h=H. Fresh DERIV pending.
+
+Done: exact native NAV/readers; B8(a)27/27 H byte identity and pinned CSVccda2610;
+first risk wrapper stopped exit2 before native execution: "bind small config/source
+manifests, not full data payloads". Diagnostic not produced; no retry or covv1 run.
+Internal validation, not permission-system refusal. B8(b)-(e) registered prints
+complete. Full own record cells/p9v-vol-target-cov-record.md, final-audit,
+88-file output listing SHA6bf3100a5b992a02fec9542646a3adda30bf54ec281a7d8edba902f7eb0d284a.
+31 actual source files OTHER0. All54 frozen exes/CRT/126 refs/models remain.
+Ledger139/full5caaccd3 and original138 prefixfe1bc97e unchanged;
+Nc68/Nhand129/M110/Ntot239; history0. Both preparation exposure disclosures retained.
+
+Not done: independent DERIV, native monitor/summ/trial, final selection/adoption/OD3.
+Exact next step: PM dispatches fresh DERIV from prepared r14-prompts/deriv-p9v-resume15.md.
+Only literal DERIV agrees plus separate release can execute the metadata-only
+cells/p9v-completion-proposal.json (SHAa6283917...), monitor then same-spec full run,
+ten named future source files, native reuse/no fresh NAV. No manual ledger append.
+
 ## Done
 
 Read root6 dispatch/amendment, inherited standing contracts/prereg/reviews,

@@ -1,0 +1,117 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "86f0acb9c05f0ca0e9eefe611291a123f661987b",
+  "started_utc": "2026-10-17T17:30:19.750653+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+    "nav",
+    "--combined",
+    "build-equity/mega-p9w-train-theme-cov-hedge-1/train_combined.json",
+    "--combined-sha256",
+    "fe7b64c6006863bb155c14fb7e5a8bf009535912f7ce4232259ecb731974e6e6",
+    "--role",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--role-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--fields",
+    "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+    "--fields-sha256",
+    "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "--output",
+    "build-equity/p9v-b8a-h-nav",
+    "--rule",
+    "aim-partial-v5",
+    "--cadence",
+    "1",
+    "--trade-fraction",
+    ".05",
+    "--dust-multiple",
+    ".1",
+    "--aim-leverage",
+    "1.1828",
+    "--daily-turnover-mean-max",
+    ".20",
+    "--daily-turnover-p95-max",
+    ".30",
+    "--neutralize",
+    "price-risk-v1",
+    "--max-bytes",
+    "1073741824",
+    "--order-basis",
+    "delta",
+    "--exit-rate",
+    ".05",
+    "--locate-in-aim",
+    "--liquidity-cache",
+    "--warm-start-sessions",
+    "60",
+    "--capacity-curve",
+    "--ann-mean-gross",
+    "--info-clock-print",
+    "--calibrate-gross",
+    "0.9862134133265011",
+    "--calibrate-tolerance",
+    "0.005",
+    "--label-role",
+    "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+    "--label-role-sha256",
+    "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069",
+    "--emit-holdings",
+    "build-equity/p9v-b8a-holdings"
+  ],
+  "executable_sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+  "argv_sha256": "6cf01f6632e7449c3513b0e8cbd37d3910fdcf3ed0eabe83ec1441f2e43fe393",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+      "sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\train-2020-2023-lo3\\manifest.json",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\train-2020-2023-lo3-fields-v15\\manifest.json",
+      "sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\mega-p9w-train-theme-cov-hedge-1\\train_combined.json",
+      "sha256": "fe7b64c6006863bb155c14fb7e5a8bf009535912f7ce4232259ecb731974e6e6"
+    }
+  ],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 512
+  },
+  "sampled_peak_tree_rss_bytes": 726458368,
+  "minimum_system_free_bytes": 4774195200,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "wall_seconds": 25.29599999997299,
+  "owned_processes": [
+    {
+      "pid": 8968,
+      "create_time": 1792258219.765996
+    },
+    {
+      "pid": 7468,
+      "create_time": 1792258219.7820327
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "17ab9cbeaad71be58490c731aac249ef8a80b5c1fe0fc8474f7959e87ddb4bc0",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

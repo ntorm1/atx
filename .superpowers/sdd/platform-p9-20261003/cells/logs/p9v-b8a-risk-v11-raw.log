@@ -1,0 +1,10 @@
+usage: run_bounded_research.py [-h] --output OUTPUT [--seconds SECONDS]
+                               [--max-rss-mib MAX_RSS_MIB]
+                               [--min-free-mib MIN_FREE_MIB] [--bind BIND]
+                               [--root ROOT] [--no-git] [--role-id ROLE_ID]
+                               [--attempt ATTEMPT] [--build-type BUILD_TYPE]
+                               [--admission-wait-seconds ADMISSION_WAIT_SECONDS]
+                               [--host-budget-mib HOST_BUDGET_MIB]
+                               [--host-claims HOST_CLAIMS]
+                               ...
+run_bounded_research.py: error: bind small config/source manifests, not full data payloads

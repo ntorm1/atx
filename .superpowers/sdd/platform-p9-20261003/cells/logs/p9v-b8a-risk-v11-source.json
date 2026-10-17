@@ -1,0 +1,11 @@
+{
+  "stage": "b8a-risk-v11",
+  "files": [
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-b8a-risk-v11-raw.log",
+      "sha256": "74a7f7c14c43279351114def7deb6802d20010083745575a156e77ea74eda0e0",
+      "hits": []
+    }
+  ],
+  "other": 0
+}
