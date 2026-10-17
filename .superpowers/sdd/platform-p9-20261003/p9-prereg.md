@@ -870,6 +870,19 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   read, root sets `parent`, corrects the template description (text only, PRE-8) and re-pins `template_sha256`.
   [ROUND 2b-ii: filled at the cell's registration commit by root - Appendix IV item 13] (PRE-8's description; the
   sleeve line is kept, item 14 below, so no sleeve sentence is cut).
+  [PRE-40, R15-M-READY / R15-M-LAUNCH, registration `a11bfb9d`: parent is accepted H's
+  `theme-cov-hedge-v1-attempt2-gm.json` (SHA `1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f`).
+  The description's parent-modifier substring gains exactly `or --theme-hedge theme-cov-hedge-v1`;
+  the five evidenced textual prerequisites are discharged to `[]` under the explicit PM ruling.
+  Template SHA `a731e7889a2fdccb352ba4cc07aa8dd896c33821db248969533fdca666c2a30a`;
+  rule registration SHA `cc1afede247bf031c5674bfa333b0953298453528974825b733e9bca43109138`;
+  native manifest `scripts/specs/p9/waves/p9m-mom-volman.json` SHA
+  `0bfdd92284afc5209cedc979d4ab317fced7878c3772deeda570749484adf0fc`.
+  The sleeve sentence, manifest_note and historical engine-fit note remain unchanged. Fit remains
+  flag-absent; the registered sleeve print is in-sample/full-TRAIN as below. Exact prior blobs,
+  closure proof and adjudicated parent-read limitation: `cells/p9m-prerequisite-closure.md`.
+  Precommitted scalar-only order/paths: `cells/p9m-mom-volman-read-plan.md`; immediate bounded
+  launch under R15-RAM-NOW, w3584MiB/300s, floor512MiB, no optional admission/host-budget wait.]
   **Stale note (PRE-40, ledger :623):** as B.2: the registration's `manifest_note` "gross_match pm6-6" is stale and is
   not edited; the template names `pm6-6-engine` (C2-9, C2-11), checked by root before the re-pin; a manifest following
   the note literally is refused at preflight by C3b's retirement of the Python `pm6-6` route.
@@ -2395,6 +2408,9 @@ the gate's final hand-back:
 12. B.2 P9-H fit mode - root, wave-3 P9-B0 (ALCOMB-7). (filled, part B2a: flag-absent)
 13. B.3 P9-M re-pinned template SHA-256 (parent, PRE-8 description) - root's registration commit. (part A:
     registration commit)
+    [PRE-40, filled `a11bfb9d`, R15-M-READY: B.3 above records the full new template/rule/manifest
+    hashes, exact parent/text/prerequisite delta and original-blob preservation. Items14-15 stay
+    KEPT and flag-absent; sleeve remains in-sample/full-TRAIN.]
 14. B.3 P9-M sleeve line keep / cut - lane D3 (ALCOMB-6); root re-pins if cut. (filled, part A: KEPT; D3W's block)
 15. B.3 P9-M parent fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3). (filled, part B2a: flag-absent)
 16. B.4 P9-C block (rule, row, registration and template SHA-256, parent conditions, producers, C3-4, DEC-16 argument,

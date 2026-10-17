@@ -1,0 +1,34 @@
+# wave p9m-mom-volman: manifest scripts/specs/p9/waves/p9m-mom-volman.json sha256 0bfdd92284afc5209cedc979d4ab317fced7878c3772deeda570749484adf0fc; state build-equity/waves/p9m-mom-volman/receipts; root C:\atx-wt\pool-2
+# stage 01 preflight: pending
+#   checks: manifest committed; parent scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json loads and has its NAV; fields pin; seal 2024-01-01; ledger chain, N == 64; budget; code pathspec clean
+#   kind rule (contract K-P9-9)
+C:/atx-wt/pool-2/build-equity-rel/bin/atx-equity-strategy-ic.exe --list-rules --json
+C:/atx-wt/pool-2/build-equity-rel/bin/atx-equity-strategy-targets.exe nav --list-rules --json
+#   then: rules [{'name': 'mom-volman-v1', 'params': {}}] validated against those tables (params_schema; flags derived)
+#   then: ruling E2-8: every IC rule mapped in COMPOSITION_FLAGS; no rule's flag in the cell's resolved flag lists but through rules (constants / template flags and sets, spellings, abbreviations)
+#   then: ruling E2-14: no --calibrate-gross / --calibrate-tolerance in any flag list (the pm6-6-engine match stage's own); ruling E2-15: no ref section but the template's own pinned block, its resolved side judged as the cell's
+# stage 02 register: pending
+#   (rule wave: no strings to register)
+# stage 03 screen: pending
+#   (rule wave: no screen)
+# stage 04 spec: pending
+#   write scripts/specs/p9/templates/mom-volman-v1.json: scripts/specs/p9/templates/mom-volman.json with parent scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json and the constants (kind rule: the derived constants, wave_kinds.py)
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/templates/mom-volman-v1.json --write --exes --root C:/atx-wt/pool-2
+#   then: git add / commit -- scripts/specs/p9/templates/mom-volman-v1.json
+# stage 05 run: pending
+#   (a b library with speed.screen_first runs `run <cell> --screen` first)
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run "<the cell spec (known after the spec stage)>" --stop-after w --keep-verdicts --root C:/atx-wt/pool-2
+# stage 06 match: pending
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/waves/p9m-mom-volman/readers/mech-parent-run1 --bind scripts/wave_readers.py --bind "<parent NAV>/summary.json" -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav "parent=<parent NAV>" --output build-equity/waves/p9m-mom-volman/readers/mech-parent.json
+#   write <cell>-cal.json (nav.flags + --calibrate-gross G_parent --calibrate-tolerance T, at the cell's L; ref pinned uncalibrated), then
+#   research_cycle.py lock <cell>-cal.json ; git commit ; research_cycle.py run <cell>-cal.json --stop-after nav (one NAV: pass 1, at most one correction, published at the final L) ; mechanics reader (mech-matched)
+#   write <cell>-gm.json (the plain recipe at the final L, bound to that NAV: the cell of record) ; research_cycle.py lock <cell>-gm.json ; git commit
+# stage 07 verify: pending
+#   mechanics rule v8-mech on the mechanics keys; C-13 binding of the cell's NAV; NAV exe sha256 of the parent vs the cell (a rule cell, with or without its template's own ref construction (ruling E2-15 (c)), or a library cell without one is refused when the two NAVs' exes differ or only one is recorded, by receipt or exes_sha256 pin (ruling W1-I2 (a)); a library cell with one, differing, its ref must have run on the cell's exe); seal scan of every log the wave produced (run dirs of the screen, the cell and its -gm copy, readers, consoles)
+# stage 08 judge: pending
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run "<the cell spec>" --keep-verdicts --root C:/atx-wt/pool-2
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/waves/p9m-mom-volman/bundle-run1 --bind atx-impl/tools/nav_summ.py --bind "<parent NAV>/summary.json" --bind "<the cell NAV>/summary.json" -- "C:/Program Files/Python312/python.exe" atx-impl/tools/nav_summ.py --engine-stats "<the cell spec's exes.eval>" --protocol v8 --bundle "<parent NAV>" "<the cell NAV>" --bundle-json build-equity/waves/p9m-mom-volman/bundle.json
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/waves/p9m-mom-volman/readers/book-run1 --bind scripts/wave_readers.py --bind "<the cell NAV>/summary.json" --bind "<parent NAV>/summary.json" -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py book --nav "cell=<the cell NAV>" --nav "parent=<parent NAV>" --output build-equity/waves/p9m-mom-volman/readers/book.json
+#   verdict by pm7-34
+# stage 09 record: pending
+#   ledger re-read (N 64 -> + the cell); write build-equity/waves/p9m-mom-volman/wave-result.json and build-equity/waves/p9m-mom-volman/wave-log.md

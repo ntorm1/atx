@@ -1,0 +1,72 @@
+P9-M registered under R15-M-READY
+
+Closed JSON delta (all unlisted leaves unchanged):
+scripts/specs/p9/templates/mom-volman.json
+/description: exactly one substring replacement; remainder byte-identical in the decoded string.
+BEFORE with or without --theme-erc theme-erc-v1 (the parents the fitter's --mom-volman accepts, composition_mom_volman.PARENT_RULES)
+AFTER with or without --theme-erc theme-erc-v1 or --theme-hedge theme-cov-hedge-v1 (the parents the fitter's --mom-volman accepts, composition_mom_volman.PARENT_RULES)
+{"pointer": "/parent", "before": null, "after": "theme-cov-hedge-v1-attempt2-gm.json"}
+{"pointer": "/requires", "before": ["the PM has read Y-2 (theme-tsmom-v1) and ruled mom-volman-v1 distinct from Y-2 and Y-1 before any P9-M read (plan DEC-16, lit section 7 restatement risk, E-45 / PM7-14)", "P9-M registered by the PM in the P9 prereg (plan section 5.2)", "lane AL-COMB's combined round reviewed and merged by root (Rulings ALCOMB-5 / ALCOMB-5a: D2's head merged into the lane, the mom-volman-v1 row in D2's K-P9-9 params_schema form, the fixture regenerated from the merged C++; D2 kept composition_theme_tsmom.sleeves, so the sleeve source is unchanged)", "wave_kinds.COMPOSITION_FLAGS maps mom-volman-v1 to {fit: {--mom-volman: mom-volman-v1}} (lane E2's table; AL-COMB merge request)", "root sets parent to the last accepted cell whose fit is --composition ew-theme-std-v1 or ic-shrink-v1 (with or without --theme-erc), weights price_momentum and carries neither theme-tsmom-v1 nor theme-resid-v1, and runs the cell as an atx.research-wave/v2 kind rule wave whose rules block is [{name: mom-volman-v1, params: {}}] (Ruling ALCOMB-1)"], "after": []}
+scripts/specs/p9/rules/mom-volman-v1.json
+{"pointer": "/manifest_fragment/rule_cell/template_sha256", "before": "7e9b26c1bc4a6453447ccbf9fee2612ecb50a293330f239cfc93d035e45db6fb", "after": "a731e7889a2fdccb352ba4cc07aa8dd896c33821db248969533fdca666c2a30a"}
+New manifest scripts/specs/p9/waves/p9m-mom-volman.json
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "p9m-mom-volman",
+  "kind": "rule",
+  "description": "P9-M prereg B.3, R15-M-READY: mom-volman-v1 on accepted P9-H; registered constants, pm7-34, pm6-6-engine. R15-RAM-NOW immediate bounded route.",
+  "parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher"
+    ]
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-prereg-construction",
+    "construction_cap": 71
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 64
+  },
+  "out_dir": "build-equity/waves/p9m-mom-volman",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-p9-20261003/cells/waves"
+  },
+  "driver": {
+    "lock_exes": true,
+    "receipt_digest": "content",
+    "keep_verdicts": true,
+    "timings": true
+  },
+  "rule_cell": {
+    "template": "scripts/specs/p9/templates/mom-volman.json",
+    "template_sha256": "a731e7889a2fdccb352ba4cc07aa8dd896c33821db248969533fdca666c2a30a",
+    "name": "mom-volman-v1",
+    "source_sample_end": 2016,
+    "predicted_mechanism": "the momentum sleeve's volatility clusters and is unrelated to its next-month mean, so holding the price_momentum theme's mass inversely to its trailing six-month realised volatility, against the running mean of those estimates, cuts momentum-crash variance at about the same momentum return",
+    "data_class": "H"
+  },
+  "rules": [
+    {
+      "name": "mom-volman-v1",
+      "params": {}
+    }
+  ]
+}
+Inherited NAV flags once: ["--cadence", "1", "--trade-fraction", ".05", "--dust-multiple", ".1", "--aim-leverage", "{leverage}", "--daily-turnover-mean-max", ".20", "--daily-turnover-p95-max", ".30", "--neutralize", "price-risk-v1", "--max-bytes", "1073741824", "--order-basis", "delta", "--exit-rate", ".05", "--locate-in-aim", "--liquidity-cache", "--warm-start-sessions", "60", "--capacity-curve", "--ann-mean-gross", "--info-clock-print"]
+scripts/specs/p9/templates/mom-volman.json SHA256 a731e7889a2fdccb352ba4cc07aa8dd896c33821db248969533fdca666c2a30a
+scripts/specs/p9/rules/mom-volman-v1.json SHA256 cc1afede247bf031c5674bfa333b0953298453528974825b733e9bca43109138
+scripts/specs/p9/waves/p9m-mom-volman.json SHA256 0bfdd92284afc5209cedc979d4ab317fced7878c3772deeda570749484adf0fc
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
