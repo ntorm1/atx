@@ -1024,8 +1024,9 @@ QuoteSliceRepairOutcome check_channel_move(const QuoteSliceFit &fit,
 // enough for isolated concave kinks), else (2) the full projection inside the
 // channels (project_in_channel; also restores monotonicity and raises nodes).
 // Each step must pass the budget and the unchanged certificate; `record` keeps
-// the last step's outcome. On success replaces `prices`/`repaired` and returns
-// the certified slice.
+// the outcome of the last step that produced a candidate (Infeasible only when
+// the lowering moved nothing and the projection has no candidate). On success
+// replaces `prices`/`repaired` and returns the certified slice.
 std::optional<AmericanPriceSlice> channel_repair_slice(
     const QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
     std::vector<AmericanPriceNode> &prices, const AmericanPriceBounds &bounds,
@@ -1037,7 +1038,11 @@ std::optional<AmericanPriceSlice> channel_repair_slice(
       std::vector<std::uint8_t> lowered;
       lower_violators(trial, fit.market.spot, lowered);
     } else if (!project_in_channel(trial, quotes, bounds, nullptr)) {
-      record.outcome = QuoteSliceRepairOutcome::Infeasible;
+      // No projected candidate: keep why the lowering was refused, unless it
+      // did not move anything (then the slice simply has no feasible repair).
+      if (record.outcome == QuoteSliceRepairOutcome::NoMove) {
+        record.outcome = QuoteSliceRepairOutcome::Infeasible;
+      }
       return std::nullopt;
     }
     std::vector<std::uint8_t> moved;
@@ -1122,6 +1127,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   }
   std::optional<AmericanPriceSlice> channel_certified;
   if (!certified && channel_mode) {
+    // A bounded attempt that moved nodes and still failed is discarded: the
+    // served moves (if any) are the channel repair's, recorded in diag.repair.
+    if (!repaired.empty()) diag.channel.repaired_nodes = 0;
     channel_certified =
         channel_repair_slice(out, quotes, fitted, bounds, *channel_repair, repaired, diag.repair);
     if (channel_certified) prices = std::move(fitted);
@@ -1198,7 +1206,8 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       !(c.mult_ceil > c.mult_floor) || c.max_iterations == 0 || c.min_channel_quotes < 1 ||
       !finite_nonnegative(c.repair_half_spreads) || c.family_iterations == 0 ||
       (c.point_max_outside_fraction &&
-       !(*c.point_max_outside_fraction >= 0.0 && *c.point_max_outside_fraction <= 1.0))) {
+       !(*c.point_max_outside_fraction >= 0.0 && *c.point_max_outside_fraction <= 1.0)) ||
+      c.point_min_outside_quotes < 1) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -1691,7 +1700,18 @@ bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
   out.outcome = check_channel_move(fit, original, nodes, quotes, budget, moved, out);
   if (out.outcome != QuoteSliceRepairOutcome::Applied) return false;
   auto certified = AmericanPriceSlice::create(nodes, fit.prices->bounds());
-  if (!within || !certified) {
+  // The clamp acts at this slice's nodes only: a neighbour's knot between two
+  // of them can still cross, so the full calendar check runs on the result.
+  const auto calendar_clean = [&](const AmericanPriceSlice &repaired) {
+    for (const AmericanPriceSlice *slice : earlier) {
+      if (!check_american_calendar(*slice, repaired)) return false;
+    }
+    for (const AmericanPriceSlice *slice : later) {
+      if (!check_american_calendar(repaired, *slice)) return false;
+    }
+    return true;
+  };
+  if (!within || !certified || !calendar_clean(*certified)) {
     out.outcome = QuoteSliceRepairOutcome::NotCertified;
     return false;
   }

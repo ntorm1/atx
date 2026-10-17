@@ -216,7 +216,7 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
     keys(j, {"channel_weight", "mid_weight", "itm_mid_weight", "default_shape_weight",
              "prior_scale", "roughness", "min_half_width_vol", "mult_floor", "mult_ceil",
              "max_iterations", "min_channel_quotes", "repair_half_spreads", "family",
-             "family_iterations", "point_max_outside_fraction"});
+             "family_iterations", "point_max_outside_fraction", "point_min_outside_quotes"});
     auto &c = cfg.channel;
     if (j.contains("family")) {
       // The family that solves the channel objective; knot-spline is the native solver.
@@ -252,6 +252,11 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
       numeric(j, "point_max_outside_fraction", fraction, 0, 1);
       c.point_max_outside_fraction = fraction;
     }
+    if (j.contains("point_min_outside_quotes") && !c.point_max_outside_fraction) {
+      throw std::runtime_error(
+          "Policy channel point_min_outside_quotes requires point_max_outside_fraction");
+    }
+    numeric(j, "point_min_outside_quotes", c.point_min_outside_quotes, 1, 100000);
   }
   numeric(entry, "min_quotes", cfg.min_quotes, 4, 100000);
   numeric(entry, "atm_log_band", cfg.atm_log_band, 0, 5);
@@ -459,6 +464,7 @@ inline Json channel_json(const QuoteSliceChannelConfig &c) {
   }
   if (c.point_max_outside_fraction) {
     out["point_max_outside_fraction"] = *c.point_max_outside_fraction;
+    out["point_min_outside_quotes"] = c.point_min_outside_quotes;
   }
   return out;
 }

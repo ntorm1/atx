@@ -118,14 +118,22 @@ struct QuoteSliceChannelConfig {
   // price inside [bid, ask]. The unchanged certificate then runs again; moved
   // nodes are flagged in QuoteSliceFit::moved_nodes. 0 disables the repair.
   double repair_half_spreads = 0.0;
-  // Opt-in channel dominance under graded admission (fit_quote_surface): a
-  // pass-A POINT fit whose served prices lie outside [bid, ask] on more than
-  // this fraction of the expiry's strictly two-sided quotes is no pass-A
-  // evidence; the expiry is refitted on this channel objective like any other
-  // candidate, and the point fit is served (grade B, `point_fallback`) only when
-  // no channel refit is. Per profile, so it can target wide markets. Unset: off.
-  // In [0, 1].
+  // Opt-in channel dominance under graded admission (fit_quote_surface), run
+  // after every other rung (pass A, channel passes, repair rung, calendar
+  // pass): an expiry whose final fit is a POINT fit (served, or refused only
+  // for a calendar crossing) with prices outside [bid, ask] on more than this
+  // fraction of its strictly two-sided quotes, and on at least
+  // `point_min_outside_quotes` of them, is offered a channel refit under the
+  // prior of the other served expiries, gated point fits excluded (they are no
+  // evidence). The refit replaces the point fit only
+  // when the final served set is calendar-consistent with it (after the same
+  // bounded-move and channel calendar repairs); otherwise the point fit is kept
+  // (`point_fallback`; a served A becomes B). Once a refit is adopted, calendar
+  // refusals are re-checked against the final served set
+  // (`calendar_readmitted`). The gate never refuses an expiry and never changes
+  // another served one. Per profile. Unset: off. In [0, 1].
   std::optional<double> point_max_outside_fraction{};
+  std::size_t point_min_outside_quotes = 1; // >= 1; used only with the fraction
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -155,7 +163,13 @@ enum class QuoteSliceRepairMode : std::uint8_t { Off, Channel };
 // envelope, and such moves are flagged and re-implied but do not count), and
 // (c) every moved node-side WITHOUT its own quote (where no channel protects
 // the price) moved by at most `max_vol_move` in American IV from the fitted
-// curve. The IV change of every moved node-side is recorded either way. The
+// curve. What bounds what: a QUOTED side is bounded only by its own channel
+// [min(bid, fitted), max(ask, fitted)], so its IV can move by up to that
+// channel's IV width (several vol points on wide markets) and `max_vol_move`
+// does not apply to it; `max_vol_move` binds only an unquoted side, and such a
+// side can move only through the residual lowering (the projection holds it
+// fixed). The IV change of every moved node-side is recorded either way
+// (QuoteSliceRepairRecord::max_vol_move, max_unquoted_vol_move). The
 // unchanged certificate then runs again; nothing about certification is
 // relaxed. Moved nodes are flagged in QuoteSliceFit::moved_nodes and re-implied
 // as for the other repairs.
@@ -273,7 +287,9 @@ struct QuoteSliceChannelDiagnostics {
   std::size_t iterations = 0;     // Newton iterations (knot spline) or family refits
   double solve_seconds = 0.0;     // wall time of the channel solve alone (diagnostic)
   // Convexity repair: required shift measured whenever the certificate failed,
-  // nodes moved only when the repair was within tolerance and applied.
+  // nodes moved only when the repair was within tolerance and applied, and 0
+  // when its result was discarded (still uncertified) in favour of the channel
+  // repair (QuoteSliceDiagnostics::repair), whose moves are the served ones.
   std::size_t repaired_nodes = 0;
   double repair_max_price = 0.0;
   double repair_max_half_spreads = 0.0;
@@ -432,9 +448,11 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // of a half-spread bound. On success replaces fit.prices, ORs the moved nodes
 // into fit.moved_nodes, refreshes row prices and volatilities exactly as
 // repair_quote_slice_calendar does and returns true; otherwise leaves `fit`
-// unchanged. `record` (when non-null) receives what the repair did or why it
-// was refused. The caller must still check the result against every accepted
-// slice.
+// unchanged. The repaired slice must pass the unchanged certificate AND
+// check_american_calendar against every slice in `earlier` and `later` (the
+// clamp acts at this slice's own nodes only, so a neighbour's knot between
+// them can still cross); either failure is NotCertified. `record` (when
+// non-null) receives what the repair did or why it was refused.
 [[nodiscard]] bool repair_quote_slice_calendar_in_channel(
     QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
     std::span<const AmericanPriceSlice *const> earlier,
@@ -454,8 +472,9 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 //     `grade_b_min_mid_strikes` distinct mid strikes, or a pass-A slice whose
 //     served prices a convexity or calendar repair moved. Opt-in rungs are B as
 //     well: a pass-A fit served only after the channel repair (repair rung), and
-//     a pass-A point fit that failed the channel-dominance gate but is served
-//     because no channel refit was (point fallback). A repaired slice is never A.
+//     a pass-A point fit that failed the channel-dominance gate and was kept
+//     because its channel refit was not calendar-consistent (point fallback). A
+//     dominance refit is graded as any channel refit. A repaired slice is never A.
 //  C: a channel refit (same prior rule) with fewer mid strikes (dominated by
 //     bid/ask bounds and the prior or default shape).
 enum class QuoteSliceGrade : std::uint8_t { A, B, C, Refused };
@@ -512,13 +531,19 @@ struct QuoteSurfaceSlice {
   // Served after a channel calendar repair; the last such attempt's record.
   bool calendar_channel_repaired = false;
   QuoteSliceRepairRecord calendar_channel_repair{};
-  // Dominance gate (QuoteSliceChannelConfig::point_max_outside_fraction): the
-  // pass-A point fit's share of two-sided quotes outside [bid, ask], whether it
-  // failed the gate, and whether it was served anyway because no channel refit
-  // was.
+  // Dominance gate (QuoteSliceChannelConfig::point_max_outside_fraction),
+  // measured on the final point fit after the calendar pass: its share and
+  // count of two-sided quotes outside [bid, ask], whether it failed the gate,
+  // and whether the point fit was kept because the channel refit was not
+  // calendar-consistent (a gated slice that is not a fallback is served by the
+  // refit, channel_refit true).
   double point_outside_fraction = 0.0;
+  std::size_t point_outside_quotes = 0;
   bool point_gated = false;
   bool point_fallback = false;
+  // A calendar refusal served after the gate adopted a refit (its own or a
+  // neighbour's), re-checked against the final served set; grade B or C.
+  bool calendar_readmitted = false;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation
@@ -544,7 +569,10 @@ struct QuoteSurfaceSlice {
 // the retry's. A newly served expiry still feeds the B2 prior and the greedy
 // calendar order, so it can change other expiries' channel refits and displace
 // a later candidate (the benchmark reports this on the intersection rows).
-// Distinct calendar maturities are
+// The channel-dominance gate (QuoteSliceChannelConfig::point_max_outside_fraction)
+// runs last and only substitutes calendar-consistent refits (then re-admits
+// calendar refusals that the substitution unblocked), so it changes no prior,
+// no acceptance order and no other served expiry. Distinct calendar maturities are
 // required; at most kQuoteSurfaceMaxExpiries expiries; carry must be supplied
 // (resolved carry is not yet composed with the term prior). Shared malformed
 // configuration (including config.channel and config.repair) is Err;

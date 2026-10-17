@@ -576,6 +576,8 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       }
       if (dominance) {
         entry["point_outside_fraction"] = slice.point_outside_fraction;
+        entry["point_outside_quotes"] = slice.point_outside_quotes;
+        entry["calendar_readmitted"] = slice.calendar_readmitted;
         entry["point_gated"] = slice.point_gated;
         entry["point_fallback"] = slice.point_fallback;
       }
@@ -593,6 +595,10 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       }
       if (slice.point_gated) count_into(graded["point_gated_chains"], grade);
       if (slice.point_fallback) count_into(graded["point_fallback_chains"], grade);
+      if (slice.point_gated && slice.channel_refit) {
+        count_into(graded["point_refit_chains"], grade);
+      }
+      if (slice.calendar_readmitted) count_into(graded["calendar_readmitted_chains"], grade);
       if (served) {
         ++stats.fitted;
         fitted_chains.insert(members[s]);
@@ -1234,18 +1240,24 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
       report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
           "; repair channel: a failed certificate is repaired by lowering the offending nodes "
           "onto their convex envelope, else by a least-squares projection onto the convex, "
-          "slope- and bound-constrained prices inside each node's own bid/ask channel "
-          "(calendar: also inside the neighbours' prices), accepted only if no moved node ends "
-          "farther outside its channel and the node and volatility budgets hold, then "
+          "slope- and bound-constrained prices inside each node's own bid/ask channel widened "
+          "to its fitted price (calendar: also inside the neighbours' prices), accepted only if "
+          "no moved node ends farther outside its channel, at most repair_max_nodes strikes "
+          "move by more than repair_immaterial_price, and unquoted node-sides move at most "
+          "repair_max_vol in IV (quoted sides are bounded only by their channel), then "
           "re-certified unchanged; it runs where a check already failed (channel refits, the "
           "pass-A fit of a still-refused expiry, then calendar crossings that the bounded-move "
           "repair and the retry cannot fix); every channel-repaired slice is at best B";
     }
     if (stats.graded_dominance) {
       report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
-          "; channel.point_max_outside_fraction (per profile): a pass-A point fit outside "
-          "bid/ask on more than that share of its two-sided quotes is refitted on the channel "
-          "objective and served (B) only when no channel refit is (point_fallback)";
+          "; channel.point_max_outside_fraction / point_min_outside_quotes (per profile), "
+          "after every other rung: a final point fit (served, or refused for a calendar "
+          "crossing) outside bid/ask on more than that share and at least that many of its "
+          "two-sided quotes is replaced by a channel refit only when the final served set is "
+          "calendar-consistent with it; otherwise it is kept (point_fallback, A becomes B); "
+          "after an adoption, calendar refusals are re-checked against the final served set "
+          "(calendar_readmitted, B/C); the gate never refuses an expiry";
     }
   }
   if (!stats.dividend_schedules.empty()) {

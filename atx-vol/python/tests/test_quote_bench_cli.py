@@ -606,7 +606,16 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "profiles": [
                 {"name": "dense", "base": "dense",
                  "channel": {"point_max_outside_fraction": 0.05}}]},
-             "point_max_outside_fraction requires admission graded")):
+             "point_max_outside_fraction requires admission graded"),
+            ({"schema_version": 1, "admission": "graded", "profiles": [
+                {"name": "dense", "base": "dense",
+                 "channel": {"point_min_outside_quotes": 4}}]},
+             "point_min_outside_quotes requires point_max_outside_fraction"),
+            ({"schema_version": 1, "admission": "graded", "profiles": [
+                {"name": "dense", "base": "dense",
+                 "channel": {"point_max_outside_fraction": 0.05,
+                             "point_min_outside_quotes": 0}}]},
+             "outside supported bounds")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -628,7 +637,8 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
         "schema_version": 1, "admission": "graded",
         "graded": {"repair": "channel", "repair_max_nodes": 32, "repair_max_vol": 0.01},
         "profiles": [{"name": name, "base": name,
-                      "channel": {"point_max_outside_fraction": 1.0}}
+                      "channel": {"point_max_outside_fraction": 1.0,
+                                  "point_min_outside_quotes": 4}}
                      for name in ("dense", "ordinary", "sparse")]})
     keyed = invoke(binary, source, keyed_output, "--policy", str(keyed_policy))
     assert keyed.returncode == 0, keyed.stderr
@@ -642,6 +652,9 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
     assert "repair" not in plain_report["policy_definition"]["graded"]
     for profile in report["policy_definition"]["profiles"]:
         assert profile["channel"]["point_max_outside_fraction"] == 1.0
+        assert profile["channel"]["point_min_outside_quotes"] == 4
+    for profile in plain_report["policy_definition"]["profiles"]:
+        assert "point_min_outside_quotes" not in profile["channel"]
     assert "repair channel" in report["graded_semantics"]
     assert "point_max_outside_fraction" in report["graded_semantics"]
     assert "repair channel" not in plain_report["graded_semantics"]
@@ -653,6 +666,7 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
         assert entry["calendar_channel_repaired"] is False
         assert entry["point_gated"] is False
         assert entry["point_fallback"] is False
+        assert entry["point_outside_quotes"] >= 0
     for entry in plain_report["graded_stats"]["slices"]:
         assert "repair" not in entry and "point_gated" not in entry
 

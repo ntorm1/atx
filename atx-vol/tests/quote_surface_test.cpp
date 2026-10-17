@@ -558,10 +558,10 @@ TEST(QuoteSliceChannel, RepairRefusesWhenNoConvexPriceSetFitsInsideTheQuotes) {
   ASSERT_TRUE(fit) << fit.error().to_string();
   ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << fit->fit_error;
   EXPECT_FALSE(fit->prices);
-  const auto outcome = fit->diagnostics.repair.outcome;
-  EXPECT_TRUE(outcome == QuoteSliceRepairOutcome::Infeasible ||
-              outcome == QuoteSliceRepairOutcome::LeftChannel)
-      << to_string(outcome);
+  // The lowering would leave the one-cent channels and the projection has no
+  // candidate, so the record keeps the lowering's refusal.
+  EXPECT_EQ(fit->diagnostics.repair.outcome, QuoteSliceRepairOutcome::LeftChannel)
+      << to_string(fit->diagnostics.repair.outcome);
 }
 
 TEST(QuoteSliceChannel, ChannelCalendarRepairLiftsACrossingInsideTheQuotes) {
@@ -660,8 +660,10 @@ TEST(QuoteSurface, ChannelRepairServesAMicroKinkedExpiryAndLeavesTheRestUnchange
   EXPECT_NE(fixed.grade, QuoteSliceGrade::A); // a repaired slice is never A
   ASSERT_TRUE(fixed.fit.prices);
   EXPECT_FALSE(fixed.fit.moved_nodes.empty());
-  const auto &record = fixed.repair_rung ? fixed.rung_repair : fixed.fit.diagnostics.repair;
-  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Applied);
+  // Served by its channel refit, which the repair certified (not by the rung).
+  EXPECT_TRUE(fixed.channel_refit);
+  EXPECT_FALSE(fixed.repair_rung);
+  EXPECT_EQ(fixed.fit.diagnostics.repair.outcome, QuoteSliceRepairOutcome::Applied);
   expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
   expect_calendar_consistent(*on);
   // The well-quoted neighbours certify without the repair: unchanged, still A.
@@ -674,25 +676,29 @@ TEST(QuoteSurface, ChannelRepairServesAMicroKinkedExpiryAndLeavesTheRestUnchange
   }
 }
 
-// One-cent quotes. The outer expiries have a linear skew the eSSVI point fit
-// meets everywhere; the middle one has a put skew that stops at the money (a
-// convex kink in volatility), which the smooth point family cannot follow.
-std::vector<Chain> tight_chains() {
-  std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.0), chain(0.5, 0.24, -0.08, 0.0),
-                            chain(1.0, 0.26, -0.06, 0.0)};
-  Chain &kinked = chains[1];
-  for (auto &quote : kinked.quotes) {
+// A put skew that stops at the money (a convex kink in volatility), which the
+// smooth point family cannot follow; half-spread relative, one-cent floor.
+Chain kinked_chain(double years, double half_spread) {
+  Chain out = chain(years, 0.24, -0.08, 0.0);
+  for (auto &quote : out.quotes) {
     const double k = std::log(quote.strike / 100.0);
     const double sigma = 0.24 + 0.40 * std::max(-k, 0.0);
-    const auto price = andersen_lake(100.0, quote.strike, 0.5, sigma, 0.03, 0.01, quote.side);
+    const auto price = andersen_lake(100.0, quote.strike, years, sigma, 0.03, 0.01, quote.side);
     if (!price) {
       ADD_FAILURE() << price.error().to_string();
-      return chains;
+      return out;
     }
-    quote.bid = std::max(*price - 0.01, 0.0);
-    quote.ask = *price + 0.01;
+    const double spread = std::max(0.01, *price * half_spread);
+    quote.bid = std::max(*price - spread, 0.0);
+    quote.ask = *price + spread;
   }
-  return chains;
+  return out;
+}
+
+// One-cent quotes. The outer expiries have a linear skew the eSSVI point fit
+// meets everywhere; the middle one is kinked.
+std::vector<Chain> tight_chains() {
+  return {chain(0.25, 0.22, -0.10, 0.0), kinked_chain(0.5, 0.0), chain(1.0, 0.26, -0.06, 0.0)};
 }
 
 std::size_t outside_quotes(const QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes) {
@@ -732,12 +738,18 @@ TEST(QuoteSurface, DominanceGateRefitsAPointFitOutsideItsQuotes) {
     const std::size_t point_outside = outside_quotes((*off)[e].fit, chains[e].quotes);
     EXPECT_EQ(slice.point_gated, slice.point_outside_fraction > 0.0) << e;
     EXPECT_EQ(slice.point_gated, point_outside > 0) << e;
+    EXPECT_EQ(slice.point_outside_quotes, point_outside) << e;
+    // The gate runs last and never refuses: every expiry is still served.
+    ASSERT_NE(slice.grade, QuoteSliceGrade::Refused) << slice.refusal << " " << slice.error;
     if (!slice.point_gated) {
+      // An expiry that is not gated is untouched: same grade, same prices.
       EXPECT_EQ(slice.grade, QuoteSliceGrade::A) << e;
+      for (std::size_t i = 0; i < chains[e].quotes.size(); ++i) {
+        EXPECT_EQ(slice.fit.rows[i].fitted_price, (*off)[e].fit.rows[i].fitted_price) << e;
+      }
       continue;
     }
     ++gated;
-    ASSERT_NE(slice.grade, QuoteSliceGrade::Refused) << slice.refusal << " " << slice.error;
     EXPECT_NE(slice.grade, QuoteSliceGrade::A) << e;
     EXPECT_NE(slice.channel_refit, slice.point_fallback) << e;
     if (slice.channel_refit) {
@@ -752,8 +764,42 @@ TEST(QuoteSurface, DominanceGateRefitsAPointFitOutsideItsQuotes) {
   expect_calendar_consistent(*on);
 }
 
-TEST(QuoteSurface, DominanceGateFallsBackToThePointFitWhenNoRefitIsServed) {
+TEST(QuoteSurface, DominanceGateNeedsTheMinimumOutsideCount) {
   const auto chains = tight_chains();
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
+  const std::size_t kinked_outside = outside_quotes((*off)[1].fit, chains[1].quotes);
+  ASSERT_GT(kinked_outside, 1u);
+  QuoteSliceConfig config;
+  config.channel.point_max_outside_fraction = 0.0;
+  // One more than the kinked expiry's outside count: the share passes the gate,
+  // the count does not, so nothing is gated and the surface is unchanged.
+  config.channel.point_min_outside_quotes = kinked_outside + 1;
+  const auto below = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(below) << below.error().to_string();
+  EXPECT_EQ((*below)[1].point_outside_quotes, kinked_outside);
+  EXPECT_GT((*below)[1].point_outside_fraction, 0.0);
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    EXPECT_FALSE((*below)[e].point_gated) << e;
+    EXPECT_EQ((*below)[e].grade, (*off)[e].grade) << e;
+    for (std::size_t i = 0; i < chains[e].quotes.size(); ++i) {
+      EXPECT_EQ((*below)[e].fit.rows[i].fitted_price, (*off)[e].fit.rows[i].fitted_price);
+    }
+  }
+  config.channel.point_min_outside_quotes = kinked_outside; // exactly the count: gated
+  const auto at = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(at) << at.error().to_string();
+  EXPECT_TRUE((*at)[1].point_gated);
+  config.channel.point_min_outside_quotes = 0;
+  EXPECT_FALSE(validate_quote_slice_channel(config.channel));
+  EXPECT_EQ(fit_quote_surface(expiries(chains), config).error().code(),
+            ErrorCode::InvalidArgument);
+}
+
+TEST(QuoteSurface, DominanceGateKeepsThePointFitWhenNoRefitIsServed) {
+  const auto chains = tight_chains();
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
   QuoteSliceConfig config;
   config.channel.point_max_outside_fraction = 0.0;
   config.channel.min_channel_quotes = 100000; // no channel refit can be served
@@ -766,16 +812,171 @@ TEST(QuoteSurface, DominanceGateFallsBackToThePointFitWhenNoRefitIsServed) {
     ++fallbacks;
     EXPECT_TRUE(slice.point_fallback);
     EXPECT_FALSE(slice.channel_refit);
-    EXPECT_EQ(slice.grade, QuoteSliceGrade::B);
+    EXPECT_EQ(slice.grade, QuoteSliceGrade::B); // was A: not A evidence any more
     EXPECT_TRUE(slice.refusal.empty());
-    const auto alone = fit_quote_slice(chains[e].market, chains[e].quotes);
-    ASSERT_TRUE(alone);
     for (std::size_t i = 0; i < chains[e].quotes.size(); ++i) {
-      EXPECT_EQ(slice.fit.rows[i].fitted_price, alone->rows[i].fitted_price) << i;
+      EXPECT_EQ(slice.fit.rows[i].fitted_price, (*off)[e].fit.rows[i].fitted_price) << i;
     }
   }
   EXPECT_TRUE((*surface)[1].point_fallback);
   EXPECT_GT(fallbacks, 0u);
+}
+
+TEST(QuoteSurface, ChannelCalendarRepairServesACrossingTheBoundedRepairAndRetryCannot) {
+  // The later expiry is quoted slightly too cheap (as in the bounded-repair
+  // test), the bounded-move repair is off and no channel refit can be served,
+  // so the retry fails too: only repair_quote_slice_calendar_in_channel, on the
+  // expiry's own point fit, can serve it.
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  QuoteSliceConfig no_refit;
+  no_refit.channel.min_channel_quotes = 100000;
+  const auto off = fit_quote_surface(expiries(chains), no_refit);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ((*off)[1].refusal, "calendar_arbitrage");
+  EXPECT_TRUE((*off)[1].calendar_retry);
+  QuoteSliceConfig config = channel_repair_config();
+  config.channel.min_channel_quotes = 100000;
+  const auto on = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  const auto &kept = (*on)[0];
+  const auto &fixed = (*on)[1];
+  EXPECT_EQ(kept.grade, QuoteSliceGrade::A);
+  ASSERT_EQ(fixed.grade, QuoteSliceGrade::B)
+      << fixed.refusal << " " << fixed.error << " channel calendar repair "
+      << to_string(fixed.calendar_channel_repair.outcome);
+  EXPECT_TRUE(fixed.calendar_retry);
+  EXPECT_TRUE(fixed.calendar_channel_repaired);
+  EXPECT_TRUE(fixed.calendar_repaired);
+  EXPECT_FALSE(fixed.channel_refit);
+  EXPECT_EQ(fixed.calendar_channel_repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(fixed.calendar_channel_repair.nodes, 0u);
+  ASSERT_TRUE(fixed.fit.prices);
+  expect_calendar_consistent(*on);
+  expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
+  // No moved price ends farther outside its own quote than the point fit put it.
+  const auto point = fit_quote_slice(chains[1].market, chains[1].quotes);
+  ASSERT_TRUE(point);
+  for (std::size_t i = 0; i < chains[1].quotes.size(); ++i) {
+    const auto &quote = chains[1].quotes[i];
+    if (fixed.fit.rows[i].evaluation_status != QuoteSliceEvaluationStatus::Success) continue;
+    EXPECT_LE(channel_distance(fixed.fit.rows[i].fitted_price, quote),
+              channel_distance(point->rows[i].fitted_price, quote) + 1.0e-12)
+        << i;
+  }
+}
+
+// Zig-zag carry chain quoted on its out-of-the-money side only: every strike's
+// in-the-money node-side has no quote, so no channel protects its price.
+Chain otm_only(Chain c) {
+  std::erase_if(c.quotes, [](const QuoteSliceQuote &q) {
+    return (q.side == Side::Call) != (q.strike >= 100.0);
+  });
+  return c;
+}
+
+TEST(QuoteSliceChannel, RepairVolBudgetBindsOnlyUnquotedNodeSides) {
+  const auto c = otm_only(zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05));
+  const auto off = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ(off->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << off->fit_error;
+  auto config = channel_repair_config(1000);
+  config.repair.max_vol_move = 10.0; // effectively unbounded
+  const auto loose = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(loose) << loose.error().to_string();
+  const auto &moved = loose->diagnostics.repair;
+  ASSERT_EQ(loose->fit_status, QuoteSliceFitStatus::Success)
+      << loose->fit_error << " repair " << to_string(moved.outcome);
+  ASSERT_GT(moved.max_unquoted_vol_move, 0.0); // unquoted in-the-money sides moved
+  config.repair.max_vol_move = 0.5 * moved.max_unquoted_vol_move;
+  const auto tight = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(tight) << tight.error().to_string();
+  EXPECT_EQ(tight->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+  EXPECT_FALSE(tight->prices);
+  EXPECT_EQ(tight->diagnostics.repair.outcome, QuoteSliceRepairOutcome::VolBudget);
+  EXPECT_GT(tight->diagnostics.repair.max_unquoted_vol_move, config.repair.max_vol_move);
+}
+
+TEST(QuoteSliceChannel, ChannelCalendarRepairIsNotCertifiedWhenANeighbourKnotStillCrosses) {
+  // The repair clamps this slice at its own nodes. A later neighbour with extra
+  // knots between those nodes, dipping below this slice's segments there, is
+  // met at every node yet still crossed between them: NotCertified, unchanged.
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto fit = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  const AmericanPriceSlice floor = shifted_slice(*fit, 0.002);
+  std::vector<AmericanPriceNode> cap_nodes;
+  const auto nodes = fit->prices->nodes();
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    cap_nodes.push_back({nodes[i].strike, nodes[i].call + 0.02, nodes[i].put + 0.02});
+    const bool near_money = nodes[i].strike >= 95.0 && nodes[i].strike < 105.0;
+    if (i + 1 < nodes.size() && near_money) {
+      const auto &next = nodes[i + 1];
+      cap_nodes.push_back({0.5 * (nodes[i].strike + next.strike),
+                           0.5 * (nodes[i].call + next.call) - 0.003,
+                           0.5 * (nodes[i].put + next.put) - 0.003});
+    }
+  }
+  auto cap = AmericanPriceSlice::create(cap_nodes, fit->prices->bounds());
+  ASSERT_TRUE(cap) << cap.error().to_string();
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  const std::array<const AmericanPriceSlice *, 1> later{&*cap};
+  const std::vector<AmericanPriceNode> before(nodes.begin(), nodes.end());
+  QuoteSliceRepairConfig budget;
+  budget.max_nodes = 100;
+  QuoteSliceRepairRecord record;
+  EXPECT_FALSE(
+      repair_quote_slice_calendar_in_channel(*fit, c.quotes, earlier, later, budget, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::NotCertified);
+  EXPECT_TRUE(fit->moved_nodes.empty());
+  const auto after = fit->prices->nodes();
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    EXPECT_EQ(after[i].call, before[i].call) << i;
+    EXPECT_EQ(after[i].put, before[i].put) << i;
+  }
+  // Without the dipping knots the same repair is applied.
+  QuoteSliceRepairRecord plain;
+  EXPECT_TRUE(repair_quote_slice_calendar_in_channel(*fit, c.quotes, earlier, {}, budget, &plain))
+      << to_string(plain.outcome);
+}
+
+TEST(QuoteSurface, DominanceGateNeverCostsAnExpiryTheCalendarPassServed) {
+  // The one-cent kinked expiry is gated, but a later, wide-quoted expiry with
+  // the same kink sits between its point fit and its refit: the refit crosses
+  // it, the point fit does not. The gate keeps the point fit, so every expiry
+  // the calendar pass served is still served, at its gate-off prices. (Run
+  // before the calendar pass, the refit replaced the point fit and the calendar
+  // pass then refused the expiry: the review's RIVN case.)
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.0), kinked_chain(0.5, 0.0),
+                                  kinked_chain(0.51, 0.10)};
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
+  QuoteSliceConfig config;
+  config.channel.point_max_outside_fraction = 0.05;
+  const auto on = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    ASSERT_EQ((*off)[e].grade, QuoteSliceGrade::A) << e << " " << (*off)[e].refusal;
+    ASSERT_NE((*on)[e].grade, QuoteSliceGrade::Refused)
+        << e << " " << (*on)[e].refusal << " " << (*on)[e].error;
+    for (std::size_t i = 0; i < chains[e].quotes.size(); ++i) {
+      EXPECT_EQ((*on)[e].fit.rows[i].fitted_price, (*off)[e].fit.rows[i].fitted_price) << e;
+    }
+  }
+  const auto &kinked = (*on)[1];
+  EXPECT_TRUE(kinked.point_gated);
+  EXPECT_TRUE(kinked.point_fallback);
+  EXPECT_FALSE(kinked.channel_refit);
+  EXPECT_EQ(kinked.grade, QuoteSliceGrade::B);
+  EXPECT_FALSE((*on)[2].point_gated);
+  EXPECT_EQ((*on)[2].grade, QuoteSliceGrade::A);
+  expect_calendar_consistent(*on);
+  // The neighbour is what blocks the refit: without it the refit is served.
+  const std::vector<Chain> alone{chains[0], chains[1]};
+  const auto refit = fit_quote_surface(expiries(alone), config);
+  ASSERT_TRUE(refit) << refit.error().to_string();
+  EXPECT_TRUE((*refit)[1].channel_refit);
+  EXPECT_FALSE((*refit)[1].point_fallback);
 }
 
 } // namespace
