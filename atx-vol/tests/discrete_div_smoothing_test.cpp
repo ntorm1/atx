@@ -805,4 +805,57 @@ TEST(DiscreteDivSchemeQuoteSlice, AStepCountTheSchemeCannotCarryIsRefused) {
   EXPECT_EQ(fit.error().code(), ErrorCode::InvalidArgument);
 }
 
+TEST(DiscreteDivSchemeQuoteSlice, BbsrInvertsALongDatedHighCarryChainOnItsCoarseLatticeBound) {
+  // The dated-cash IV bracket starts at the CRR probability bound
+  // |r - q| sqrt(T / n). BBSR also rolls back a coarse lattice (n / 2 steps),
+  // whose larger dt sets the bound. Long-dated, high carry: at 301 steps the
+  // fine bound (3.7e-3) sits under kIvMin = 0.005 and the coarse one (5.3e-3)
+  // over it, so a bracket started from the fine lattice opens at kIvMin, where
+  // BBSR's coarse rollback is outside its domain and every IV solve fails.
+  using atx::vol::QuoteSliceConfig;
+  using atx::vol::QuoteSliceDividendModel;
+  using atx::vol::QuoteSliceFitStatus;
+  using atx::vol::QuoteSliceMarket;
+  using atx::vol::QuoteSliceQuote;
+  using atx::vol::QuoteSliceQuoteStatus;
+  constexpr double kSpot = 100.0;
+  constexpr double kT = 2.5;
+  constexpr double kRate = 0.041;
+  constexpr auto kScheme = DiscreteDivScheme::SplicedBbsr;
+  QuoteSliceConfig cfg;
+  cfg.dividend_model = QuoteSliceDividendModel::DatedCash;
+  cfg.discrete_div_scheme = kScheme;
+  const int steps = cfg.discrete_div_steps;
+  const int coarse = atx::vol::discrete_div_coarsest_steps(steps, kScheme);
+  // The case discriminates only while kIvMin sits between the two bounds.
+  ASSERT_LT(kRate * std::sqrt(kT / static_cast<double>(steps)), atx::vol::kIvMin);
+  ASSERT_GT(kRate * std::sqrt(kT / static_cast<double>(coarse)), atx::vol::kIvMin);
+
+  const QuoteSliceMarket market{kSpot, kT, kT, kRate, 0.0, 0.0};
+  std::vector<CashDividend> divs;
+  for (double tau = 0.2; tau < kT; tau += 0.25) {
+    divs.push_back({tau, 0.5});
+  }
+  std::vector<QuoteSliceQuote> quotes;
+  for (double K = 70.0; K <= 140.0; K += 5.0) {
+    const double sigma = 0.30 - 0.10 * std::log(K / kSpot);
+    for (const Side side : {Side::Call, Side::Put}) {
+      const double mid = price(kSpot, K, kT, sigma, kRate, 0.0, side, divs, steps,
+                               ExerciseStyle::American, kScheme);
+      const double half = std::max(0.02, 0.01 * mid);
+      quotes.push_back({K, side, mid - half, mid + half, {}});
+    }
+  }
+  const auto fit = atx::vol::fit_quote_slice(market, quotes, cfg, divs);
+  ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
+  EXPECT_EQ(fit->discrete_div_scheme, kScheme);
+  std::size_t failures = 0;
+  for (const auto &row : fit->rows) {
+    failures += row.quote_status == QuoteSliceQuoteStatus::ImpliedVolatilityFailure ? 1U : 0U;
+  }
+  EXPECT_EQ(failures, 0U) << "of " << fit->diagnostics.iv_attempted << " IV solves";
+  EXPECT_GE(fit->diagnostics.quotes_admitted, cfg.min_quotes);
+  EXPECT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
+}
+
 } // namespace

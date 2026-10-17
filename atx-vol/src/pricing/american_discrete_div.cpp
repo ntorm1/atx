@@ -557,11 +557,11 @@ run_escrowed_lattice(double S, double K, double T, double sigma, double r, doubl
   }
   if (!leisen_reimer || !usable(tree)) {
     // The CRR geometry. Under Leisen-Reimer this is the DEGENERATE regime only:
-    // the strike sits so many standard deviations away (|d2| beyond ~200 at
-    // 301 steps, sigma*sqrt(T) -> 0 at an IV bracket's lower end) that the
-    // Peizer-Pratt probability rounds to exactly 0 or 1 and the centred tree
-    // does not exist; the option is then worth its forward intrinsic on any
-    // tree, and the CRR one still prices it.
+    // the strike sits so many standard deviations away (|d1| or |d2| beyond
+    // about 104 at 301 steps, 207 at 1201 — measured; sigma*sqrt(T) -> 0 at an
+    // IV bracket's lower end) that a Peizer-Pratt probability rounds to exactly
+    // 0 or 1 and the centred tree does not exist; the option is then worth its
+    // forward intrinsic on any tree, and the CRR one still prices it.
     tree.up = std::exp(sigma * std::sqrt(dt));
     tree.down = 1.0 / tree.up;
     tree.p = (std::exp(carry * dt) - tree.down) / (tree.up - tree.down);

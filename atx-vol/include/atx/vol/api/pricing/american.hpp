@@ -961,11 +961,17 @@ inline constexpr int kDiscreteDivMaxSteps = 20001;
 //         European converges smoothly at O(1/n^2) to the same Black76. Plain
 //         terminal payoff (the centring makes a BBS step unnecessary). An even
 //         `steps` runs at `steps + 1` (Leisen-Reimer's odd-n convention). Where
-//         the strike is so far from the money (|d2| beyond ~200 at 301 steps)
-//         that the Peizer-Pratt probability rounds to exactly 0 or 1, the
-//         centred tree does not exist and the CRR geometry prices that strike
-//         (it is worth its forward intrinsic on any tree). OutOfRange when the
-//         cash exhausts the spot.
+//         the strike is so far from the money that a Peizer-Pratt probability
+//         rounds to exactly 0 or 1 (|d1| or |d2| beyond about 104 at 301 steps,
+//         207 at 1201; the bound grows like sqrt(n)), the centred tree does not
+//         exist and the CRR geometry prices that strike (it is worth its
+//         forward intrinsic on any tree). OutOfRange when the cash exhausts the
+//         spot.
+//
+//         The escrowed schemes are a different MODEL, so a quote slice fitted
+//         under them reports the ESCROWED stock's volatility (the stock net of
+//         the cash in the option's life), not a spot volatility: comparable
+//         with another escrowed fit, not one for one with a spot-vol mark.
 //
 // The scheme is a PRICE option: `american_discrete_div_greeks`, the greek bundle
 // and the dividend sensitivities keep the spliced CRR rollback. Every scheme

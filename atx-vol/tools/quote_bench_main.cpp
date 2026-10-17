@@ -606,7 +606,8 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
 // opts in, each snapshot's (ddiv, ddiv_pv, rate) expiry ladder becomes a dated
 // schedule (api/marketdata/dividend_schedule.hpp) and every expiry whose life
 // holds an inferred ex-date goes through the shared discrete-dividend route
-// (discrete_div_route, Lattice) into the quote slice's DatedCash V&N lattice.
+// (discrete_div_route, Lattice) into the quote slice's DatedCash lattice under
+// the profile's `dividend_lattice` scheme (spliced V&N unless set).
 // Every other expiry keeps the historical aggregate path bit for bit. Day
 // numbering: the UTC day of snapshot_ns is the valuation date (US listed
 // sessions end before 00:00 UTC); expiry_days is already a day number.
@@ -1228,17 +1229,23 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
             "median exactly dated amount), capped by its window at half the cadence) is split "
             "into n equal amounts at equally spaced times (spacing = cadence, else window/n, "
             "shrunk to fit), first time solved so the n events reproduce the increment's PV "
-            "exactly; flagged sum_split, never silent"},
+            "exactly; flagged sum_split, never silent. An increment holding more units than "
+            "its window holds apart (room for two or more) is kept as one event at its "
+            "PV-exact time (clamped to the window), flagged non_integer_day"},
         {"day_numbering", "valuation date = UTC day of snapshot_ns; ex-dates in whole days"},
         {"clock_mapping", "tau = years_calendar * days / (expiry_day - valuation_day); an "
             "ex-date on the expiry date lands at tau = T"},
         {"route", "discrete_div_route(Lattice) admits an ex-date in (valuation, expiry] -> "
-            "QuoteSliceDividendModel::DatedCash (V&N lattice, the profile's "
-            "dividend_lattice_steps (301 unless set) and dividend_lattice scheme (spliced unless "
-            "set; per route: lattice_steps, lattice_scheme, null where the lattice did not "
-            "run), dividend_pv = 0, per-strike sdiv "
-            "kept as residual yield) for IV inversion and repricing; otherwise the "
-            "--dividends aggregate model unchanged"},
+            "QuoteSliceDividendModel::DatedCash lattice for IV inversion and repricing "
+            "(dividend_pv = 0, per-strike sdiv kept as residual yield): the profile's "
+            "dividend_lattice scheme at dividend_lattice_steps (301 unless set; per route: "
+            "lattice_scheme, lattice_steps, null where the lattice did not run). spliced "
+            "(default) is the V&N spliced CRR on spot; spliced-bbs adds a Broadie-Detemple "
+            "analytic final step, spliced-bbsr that plus Richardson in the step count; "
+            "escrowed-bbs (CRR + BBS) and escrowed-lr (Leisen-Reimer) are the ESCROWED-dividend "
+            "model, whose implied and reported vols are the escrowed stock's (spot net of the "
+            "discounted cash in the option's life), not spot vols. Otherwise the --dividends "
+            "aggregate model unchanged"},
         {"route_granularity", "per chain (one expiry); every contract of a chain shares its "
             "route, joinable on chain_id"},
         {"schedule_status_counts", stats.schedule_status_counts},

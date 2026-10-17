@@ -163,7 +163,8 @@ inline Json carry_json(const QuoteSliceCarryConfig &carry) {
 // aggregate-PV model. `inferred-schedule` infers the chain's dated cash schedule
 // from its (ddiv, ddiv_pv, rate) ladder (api/marketdata/dividend_schedule.hpp) and
 // sends every expiry with an inferred ex-date inside its life through the
-// discrete-dividend route (discrete_div_route -> DatedCash V&N lattice).
+// discrete-dividend route (discrete_div_route -> DatedCash lattice, scheme per
+// `dividend_lattice`; the escrowed schemes fit the escrowed stock's vol).
 // `inferred-schedule-exact` does the same only where every event in the life is
 // exactly dated (no split or non-integer event).
 enum class DividendRouting : std::uint8_t { Aggregate, InferredSchedule, InferredScheduleExact };
