@@ -146,3 +146,29 @@ Cache stays686 files, index absent. Ledger after remains134 lines, SHA
 mechanics/verdict/predictions/AppendixA not read; no automatic judge occurred. No permission refusal.
 Void checklist is not asserted all-held for an unexecuted cell: the open-requires stop and two source-classification
 hits are preserved. Next action requires PM ruling. P9-M remains unreleased; accepted parent is still P9-L.
+
+## Attempt2 preparation under R15-H-READY / R15-H-RESTART / R15-SEAL-C
+
+PM closed all four textual prerequisites on `cells/p9h-prerequisite-closure.md` at `d9d5c132`. Metadata-only
+clones are committed in `708ab6ce`: ready template changes only requires to []; attempt2 manifest changes only
+out_dir, rule_cell.template, its SHA and rule_cell.name. Exact closed JSON delta and both full hashes are in
+`cells/p9h-attempt2-registration-commit.txt`. The original registration, rule, template, generated21c78bfd spec
+and all eleven stopped files remain byte-identical; `cells/logs/p9h-attempt2-preservation.txt` records each hash.
+Trial ledger remains134 / b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61.
+
+The sprint checker now recognizes source C only at the exact compact20261003 hit span in the standalone,
+unquoted mandated Git exclusion argv token after --, on line1 of a numbered *-commit.log Git add/commit header.
+Other sources/hits remain OTHER; A/B predicates are unchanged. Scanner SHA-256:
+`9672f889d24185a8667bdb2e5fc0cd7cdb81f59fd7310e6ad35067af74b17cc8`.
+Focused `python .superpowers/sdd/platform-p9-20261003/tools/sealsrc.py --controls`: 21 PASS, recorded in
+`cells/logs/p9h-sealc-controls-final.txt`. Actual `--manifest scripts/specs/p9/waves/p9h-cov-hedge.json` scan:
+8 logs, exactly2 class-C hits at preserved consoles004/005 line1, OTHER=0; final log
+`cells/logs/p9h-sealc-attempt1-rescan-final.txt`. Earlier19-control logs remain separately preserved.
+No production algorithm, frozen binary, guard enforcement, data or statistical computation changed.
+
+Read-only `research_cycle.py wave plan scripts/specs/p9/waves/p9h-cov-hedge-attempt2.json` exited0; output in
+`cells/logs/p9h-attempt2-wave-plan.txt`. No attempt2 state or generated spec exists at this checkpoint.
+The committed read plan and filter now target fresh attempt2 state, with distinct unread console/wall/rho logs
+and explicit scoreboard result path. Mechanics, then existing-bundle rho provenance, then paired read boundary
+is unchanged. G-P1 zero-spec-edits-on-retry is UNMET; a later success cannot award G-P1. This preparation is not
+a retry execution or scientific result. Await PM verification/release before launch; no next cell released.

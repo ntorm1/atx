@@ -799,6 +799,17 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   `mega-nav-p9l-label-terminal-gm`; its plain template SHA is `de44a668999ab8997c7118afb52efd93551ac2e7df93efe9118edbf719aa9a4d`.
   Required NAV print flags each occur once by inheritance; `cells/logs/p9h-resolved-plan.txt` records them.
   No measurement yet: generated-cell lock and internal-commit route remain pending the PM's route ruling.]
+  [PRE-40, R15-H-READY / R15-H-RESTART, metadata amendment `708ab6ce`: attempt1 stopped before any data phase
+  because the native guard treats all four textual requires as open. PM discharged each on the committed
+  `cells/p9h-prerequisite-closure.md` evidence. New `theme-cov-hedge-ready.json` changes only `/requires` to `[]`,
+  SHA-256 `5e9eae0aa660e9de3e538a1e659b16234e36597cd4e6dc07eecc956740d7f168`. New
+  `scripts/specs/p9/waves/p9h-cov-hedge-attempt2.json`, SHA-256
+  `c4d682c33fb216c2c4915a8dee778267d4c6cfe2c9f53f6551b8cc938acd4c81`, changes only `/out_dir`,
+  `/rule_cell/template`, `/rule_cell/template_sha256`, `/rule_cell/name`; full closed delta in commit body and
+  `cells/p9h-attempt2-registration-commit.txt`. All scientific keys, parent, rule, pins, outputs and caps remain;
+  original template/rule/manifest, generated `21c78bfd` spec and eleven stopped files are preserved. R15-SEAL-C
+  classifies only the evidenced exact Git exclusion-token source. Updated read plan retains mechanics then rho
+  then paired read order. Attempt2 awaits PM handback verification; G-P1 zero-spec-edits-on-retry is UNMET.]
 - **Rule and constants.** Per theme t and decision d on ew-theme-std-v1's re-rank R_t: beta of each name on its own
   theme sleeve over the trailing 252 decisions ending d-2 (>= 126 pairs), orthogonalised to R_t; H_t = its centred
   rank; h_t = OLS slope of the sleeve on the hedge leg, re-estimated every 21 decisions from decision 253 (0 before);
@@ -2374,9 +2385,13 @@ the gate's final hand-back:
 10. B.2 P9-H re-pinned template SHA-256 - root's registration commit. (part A: registration commit)
     [PRE-40, filled `818e0750`: template `1f56c19428b7b62de9788e37ec21bf20a78f122e411fb8fb948a0cc0347ec082`,
     registration `6b4c3b0d3eebdf5752e41394d316766e75a1b0df22552bc85449740ae36f2516`; B.2 bracket governs.]
+    [PRE-40, R15-H-READY / R15-H-RESTART, `708ab6ce`: new ready-template SHA-256
+    `5e9eae0aa660e9de3e538a1e659b16234e36597cd4e6dc07eecc956740d7f168`; only requires closure in this clone.
+    Original registration remains byte-for-byte; B.2's adjacent amendment gives attempt2 binding/delta.]
 11. B.2 P9-H "ex-ante" cut from the template description - root, same commit (ALCOMB-9 (b)). (part A: registration
     commit)
     [PRE-40, filled `818e0750`: removed exactly `ex-ante and `; B.2 records the before/after text.]
+    [PRE-40, R15-H-RESTART, `708ab6ce`: the ready clone preserves that exact description; no further prediction edit.]
 12. B.2 P9-H fit mode - root, wave-3 P9-B0 (ALCOMB-7). (filled, part B2a: flag-absent)
 13. B.3 P9-M re-pinned template SHA-256 (parent, PRE-8 description) - root's registration commit. (part A:
     registration commit)

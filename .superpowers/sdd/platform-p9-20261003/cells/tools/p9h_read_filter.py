@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 
-WAVE = Path('build-equity/waves/p9h-cov-hedge')
+WAVE = Path('build-equity/waves/p9h-cov-hedge-attempt2')
 STAGES = ('preflight', 'register', 'screen', 'spec', 'run', 'match', 'verify', 'judge', 'record')
 EVAL = Path('build-equity-rel/bin/atx-research-eval.exe')
 PIN = 'e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c'
