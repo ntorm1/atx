@@ -209,6 +209,15 @@ Native `08-judge.json` decides only paired S2 net dSR>0 AND mechanics, pm7-34. A
 These uncertainty lines do not change the registered point-dSR decision. Nondegenerate encoding as above;
 C.11 fallback is not needed. Engine eval producer is frozen e2b48c46...d962c; no Python statistic substitute.
 
+**Actual read-scope disclosure, R15-H-READSCOPE:** the completion extractor selected `cbb_ci95` and copied the
+whole `lw` object, exposing the same-pair confidence intervals shown above beyond the committed read plan's
+named dSR/SE/p fields. Those intervals were not pre-registered prints. They came from the existing registered
+H/L bundle after source/pin gates, mechanics and the rho-first log, with no new computation, variant, trial or
+acceptance criterion. All exposed figures and artifacts remain preserved. PM ruled that B.0 void(3)'s
+before-mechanics prohibition was not violated, no other void condition was triggered, and the fixed native
+point-dSR/mechanics decision stands independently of the intervals. Future readers must select exactly the
+required scalar fields rather than copy nested statistics objects. No helper edit or rerun was made.
+
 | Mechanics check | Value | Fixed limit | Result |
 |---|---:|---|---|
 | gross_all_rows | 0.986241893721804 | [0.9,1.05] | PASS |
@@ -323,3 +332,7 @@ and67-member rule scope remain disclosed. Timing success does not repair either 
 
 **P9-H complete; STOP before P9-M.** Native next parent is the accepted H plain gm spec/hash and NAV above.
 M requires the PM's separate release. No open question, extra statistic, permission refusal or next-cell action.
+
+PM closeout in `resume15-ledger-18.txt` accepts H with the explicit read-scope disclosure above and preserves
+G-P1's unawarded status. R15-ROOT4 releases only fresh root4's M prerequisite/registration preparation on accepted
+H; no M data execution is released. Root3 stops after this docs-only closeout.

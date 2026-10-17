@@ -38,3 +38,17 @@ Receipt phase sum187.174s includes prior u51.578s; fresh135.596s includes reader
 Attempt2 summed native invocation155.5112064s versus start-to-final680.5601286s including PM checkpoint.
 Scoreboard total152.4 follows documented stage_seconds override, not phase-column sum; no source fix.
 No permission refusal or unresolved H question. Await PM disposition before any M work.
+
+## PM closeout and actual read-scope disclosure
+
+PM accepted H in `resume15-ledger-18.txt`, independently verifying its native decision, hashes, final64 files and
+ledger prefix. R15-H-READSCOPE discloses that root3's completion extractor selected `cbb_ci95` and the whole
+`lw` object, exposing the same-pair confidence intervals beyond the committed dSR/SE/p read plan. These were
+existing registered H/L bundle outputs read after mechanics and rho, not pre-registered interval prints. No new
+computation, variant, trial or acceptance criterion resulted; all exposed figures/evidence remain preserved.
+PM ruled no B.0 void condition triggered and the fixed pm7-34 point-dSR/mechanics acceptance unchanged.
+Future readers must select only explicitly required scalar fields, not whole nested statistics objects.
+Root3 made no helper edit or rerun. G-P1 remains unawarded with its recorded limitations.
+
+R15-ROOT4 now releases fresh root4's P9-M prerequisite/registration preparation only on accepted H under
+`r14-prompts/cells-prompt-4.md`; it does not release M data execution. Root3 stops after the docs-only closeout.
