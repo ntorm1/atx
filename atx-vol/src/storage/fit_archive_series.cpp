@@ -73,8 +73,11 @@ struct Range {
   return e;
 }
 
+// A bitwise OR, not a sum: the counts come from the manifest file, and a u64 sum
+// of forged counts can wrap to 0 and hide a segment from lookups and from the
+// append duplicate check.
 [[nodiscard]] bool has_records(const FitArchiveSeriesSegment &e) noexcept {
-  return e.surface_records + e.fit_records + e.expiry_records + e.ladder_records + e.markov_records > 0u;
+  return (e.surface_records | e.fit_records | e.expiry_records | e.ladder_records | e.markov_records) != 0u;
 }
 
 [[nodiscard]] bool overlaps(const FitArchiveSeriesSegment &a, const FitArchiveSeriesSegment &b) noexcept {

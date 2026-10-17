@@ -595,5 +595,92 @@ TEST(FitArchiveRecordRefusal, CorruptCurvePayloadAndUncertifiablePrices) {
   EXPECT_EQ(decoded.error().status, ArchiveStatus::RecordInvalid);
 }
 
+// One fit of every curve kind (enum order, so fit i has kind i), for the
+// node-count overflow refusals (review MAJOR-1).
+std::vector<std::byte> every_kind_image() {
+  const auto surface = testkit::synthetic_surface();
+  std::vector<QuoteSurfaceSlice> slices;
+  std::vector<std::int32_t> days;
+  for (int kind = 0; kind <= 5; ++kind) {
+    slices.push_back(testkit::exotic_slice(surface.slices[1], static_cast<VolCurveKind>(kind)));
+    days.push_back(21000 + kind);
+  }
+  FitArchiveWriter w;
+  EXPECT_TRUE(w.add_surface({"SPY", kSnapshot, slices, days, {}, {}, "dense", "symbol"}).has_value());
+  auto image = w.finish();
+  EXPECT_TRUE(image.has_value());
+  return image ? std::move(*image) : std::vector<std::byte>{};
+}
+
+// The count whose doubled value wraps a u32 back to the stored payload length:
+// n + 2^31 for a kind with nodes, 2^31 for a fixed-size kind (whose count is 0).
+std::uint32_t wrapping_count(const FitArchiveCurve &c) { return c.node_count + 0x80000000u; }
+
+// A curve node_count whose 2n wraps a u32 passed the 32-bit word-count check, so
+// open accepted the file and the decoders read ~16 GiB past the payload. Every
+// such count, for every curve kind, is refused at every verify level by the
+// record pass of open, before any view or decoder can reach the payload.
+TEST(FitArchiveRecordRefusal, CurveNodeCountThatWrapsU32IsRefusedForEveryCurveKind) {
+  const auto image = every_kind_image();
+  const FitArchive a = open_image(image);
+  ASSERT_EQ(a.fits().size(), 6u);
+  const auto files = testkit::scratch_dir("node-count-wraps-u32");
+  for (std::size_t i = 0; i < a.fits().size(); ++i) {
+    const FitArchiveCurve &c = a.fits()[i].curve;
+    ASSERT_EQ(static_cast<std::size_t>(c.kind), i);
+    const std::string kind = to_string(static_cast<VolCurveKind>(c.kind));
+    for (const std::uint32_t count : {wrapping_count(c), 0x80000000u, 0xFFFFFFFFu}) {
+      const auto forged = testkit::forge_node_count(image, i, count);
+      ASSERT_FALSE(forged.empty());
+      for (const auto verify : {FitArchiveVerify::Framing, FitArchiveVerify::Full, FitArchiveVerify::Paranoid}) {
+        auto opened = FitArchive::open_copy(forged, verify);
+        ASSERT_FALSE(opened.has_value())
+            << kind << " node_count " << count << " verify " << static_cast<int>(verify);
+        EXPECT_EQ(opened.error().status, ArchiveStatus::RecordInvalid) << kind << " " << count;
+        EXPECT_EQ(opened.error().section, static_cast<std::uint32_t>(Type::FitRecords)) << kind;
+        EXPECT_EQ(opened.error().detail, i) << kind;
+      }
+    }
+    // The wrapping case as a file, for the CLI and the crafted-file table.
+    const auto file = files / ("node-count-wraps-u32-" + kind + ".atxvfa");
+    const auto wrapped = testkit::forge_node_count(image, i, wrapping_count(c));
+    ASSERT_TRUE(publish_fit_archive(file.string(), wrapped).has_value());
+    auto from_disk = FitArchive::open(file.string(), {FitArchiveOpenMode::Mapped, FitArchiveVerify::Paranoid});
+    ASSERT_FALSE(from_disk.has_value()) << kind;
+    EXPECT_EQ(from_disk.error().status, ArchiveStatus::RecordInvalid) << kind;
+  }
+}
+
+// The decoders also guard record copies a caller edited (open cannot validate
+// those): a wrapping count is refused before any payload word is read. Only run
+// with the fix in place: with 32-bit arithmetic this test reads out of bounds.
+TEST(FitArchiveRecordRefusal, DecodersRefuseARecordCopyWhoseNodeCountWraps) {
+  const auto image = every_kind_image();
+  const FitArchive a = open_image(image);
+  ASSERT_EQ(a.fits().size(), 6u);
+  for (std::size_t i = 0; i < a.fits().size(); ++i) {
+    ASSERT_TRUE(decode_curve(a, a.fits()[i]).has_value()) << i;
+    for (const std::uint32_t count : {wrapping_count(a.fits()[i].curve), 0xFFFFFFFFu}) {
+      FitArchiveFitRecord copy = a.fits()[i];
+      copy.curve.node_count = count;
+      const std::string kind = to_string(static_cast<VolCurveKind>(copy.curve.kind));
+      auto curve = decode_curve(a, copy);
+      ASSERT_FALSE(curve.has_value()) << kind << " " << count;
+      EXPECT_EQ(curve.error().status, ArchiveStatus::RecordInvalid) << kind;
+      auto fit = decode_fit(a, copy);
+      ASSERT_FALSE(fit.has_value()) << kind;
+      EXPECT_EQ(fit.error().status, ArchiveStatus::RecordInvalid) << kind;
+      auto slice = decode_surface_slice(a, copy);
+      ASSERT_FALSE(slice.has_value()) << kind;
+      EXPECT_EQ(slice.error().status, ArchiveStatus::RecordInvalid) << kind;
+    }
+  }
+  // decode_surface reads only the archive's own records, which open validated.
+  ASSERT_EQ(a.surfaces().size(), 1u);
+  auto surface = decode_surface(a, a.surfaces()[0]);
+  ASSERT_TRUE(surface.has_value());
+  EXPECT_EQ(surface->size(), 6u);
+}
+
 } // namespace
 } // namespace atx::vol

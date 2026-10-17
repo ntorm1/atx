@@ -76,7 +76,7 @@ file_size - 64           Footer                64 B
 | 32 | 8 | `section_table_offset` | 256 |
 | 40 | 4 | `section_count` | <= 256 |
 | 44 | 4 | `flags` | 0 (reserved) |
-| 48 | 8 | `created_unix_ns` | writer-supplied (tests pin it for determinism) |
+| 48 | 8 | `created_unix_ns` | writer-supplied via `FitArchiveFileInfo`; pin it (tests, `--created-unix-ns` of the bench) to compare archives by sha256 (section 9) |
 | 56 | 8 | `writer_version` | `ATX_VOL_VERSION_NUM(major, minor, patch)` of the writing library |
 | 64 | 8 | `archive_id` | caller id (0 = none); a series stamps its id on every segment |
 | 72 | 8 | `segment_sequence` | 0 standalone; series segment number (1, 2, ...) |
@@ -157,6 +157,7 @@ binary search over `Symbols`; after that every lookup is integer-keyed.
 | 37 | `Dividends` | 16 | 8 | 1.0 | yes | `{f64 tau, amount}` = `CashDividend` |
 | 38 | `CarryPoints` | 16 | 8 | 1.0 | yes | `{f64 strike, continuous_yield}` = `QuoteSliceCarryPoint` |
 | 39 | `CurveWords` | 8 | 8 | 1.0 | yes | 8-byte words of curve payloads (section 6) |
+| 40 | `FitTimings` | 8 | 8 | 1.0 | no | `{f64 channel_solve_seconds}` per `FitRecords` element, same order; written only after `FitArchiveWriter::record_timings(true)` (section 9) |
 | 48 | `ExpiryMeta` | 128 | 8 | 1.0 | yes | `FitArchiveExpiryMeta[]` (section 5.3) |
 | 49 | `ExpiryData` | 1824 | 8 | 1.0 | yes | `ExpiryRecord` object representations (section 7) |
 | 50 | `ExpiryIndex` | 24 | 8 | 1.0 | yes | index over 48 |
@@ -198,7 +199,7 @@ One `QuoteSurfaceSlice` (graded admission) or one standalone `QuoteSliceFit`
 | --- | --- | --- | --- |
 | 0 | 24 | `key` | |
 | 24 | 48 | `market` | `QuoteSliceMarket` (6 x f64) |
-| 72 | 280 | `diagnostics` | `QuoteSliceDiagnostics`: 6 counts (u64), forward / discount / effective rate / effective yield, `curve_fit` (`FitDiag`, 48 B: 3 f64, 3 u32, 2 u16, termination, projection, flags bit0 reverted_to_seed bit1 warm_started bit2 has final_grad_norm), `channel` (96 B: 6 u64, 5 f64, flags bit0 used bit1 term_prior bit2 converged), `repair` (`QuoteSliceRepairRecord`, 56 B) |
+| 72 | 280 | `diagnostics` | `QuoteSliceDiagnostics`: 6 counts (u64), forward / discount / effective rate / effective yield, `curve_fit` (`FitDiag`, 48 B: 3 f64, 3 u32, 2 u16, termination, projection, flags bit0 reverted_to_seed bit1 warm_started bit2 has final_grad_norm), `channel` (96 B: 6 u64, 5 f64, flags bit0 used bit1 term_prior bit2 converged; the third f64, at record offset 264, is `reserved_timing` and must be 0: the channel solve's wall-clock `solve_seconds` lives only in the optional `FitTimings` section), `repair` (`QuoteSliceRepairRecord`, 56 B) |
 | 352 | 144 | `carry` | `QuoteSliceCarryResolution`: 11 f64, 5 u64, `reason` string, mode / applied / fallback / status |
 | 496 | 48 | `curve` | `present`, `kind` (`VolCurveKind`), base `T`, `F`, `df`, `node_count`, `payload` ref into `CurveWords` |
 | 544 | 56 | `prices` | `present`, `AmericanPriceBounds` (5 f64), `nodes` ref into `PriceNodes` |
@@ -289,6 +290,16 @@ is the per-kind array length `n`.
 | 4 C8 | 22 | `C8Params` native layout (176 B), same helper |
 | 5 SplineVol | 6 + 2n | atm_vol, z_lo_valid, z_hi_valid, mult_cap, w_offset, n_butterfly_viol, `z[n]`, `mult[n]` |
 
+`node_count` is a u32 read from the file, so the expected word count is
+computed in 64-bit arithmetic: `2n` cannot wrap, and a payload passes only when
+it really holds every node. (In 32 bits, `n + 2^31` doubles to `2n + 2^32`,
+which wraps back to the stored length; such a file passed `open` and the
+decoders then read about 16 GiB past the payload. Review MAJOR-1, fixed in fix
+round 1 and tested per curve kind.) A fixed-size kind must carry `node_count`
+0. The record pass of `open` and `decode_curve` apply the same shape check, so
+a decoder handed a record copy the caller edited refuses exactly what `open`
+would have refused, before reading any payload word.
+
 Decoding constructs the concrete curve through its public constructor and
 refuses the record (`RecordInvalid`) unless the rebuilt curve's `T()`, `F()` and
 `df()` equal the stored ones bit for bit.
@@ -340,7 +351,16 @@ flag and reserved byte valid (`RecordInvalid`), and the `ExpiryRecord` checks
 (`LayoutMismatch`). Verify level `Paranoid` adds the whole-file CRC
 (`FileChecksum`); level `Framing` skips the section CRCs and padding scan (for a
 trusted cache) but never the structural pass. Each refusal is exercised by a
-crafted file in `tests/fit_archive_test.cpp`.
+crafted file in `tests/fit_archive_test.cpp`, `tests/fit_archive_records_test.cpp`
+and `tests/fit_archive_series_test.cpp`.
+
+Size arithmetic on file-supplied values never wraps. Section bounds use the
+subtraction form (`length <= footer_offset - offset`) and the element count is
+checked as `count == length / stride`; pool references use `first <= pool` and
+`count <= pool - first`; record indices are summed in `size_t` after that
+check; the stride-upgrade copy checks `count <= SIZE_MAX / stride` before it
+allocates; curve word counts are computed in u64 (section 6); manifest record
+counts are combined with a bitwise OR, never summed.
 
 Evolution rules:
 
@@ -370,6 +390,24 @@ the sections out and computes all checksums. Only `Symbols` and `Strings` are
 always emitted; any other section is written only when it has elements (a
 missing index of a present record type is `MissingSection`). `finish` is
 deterministic: the same adds and `FitArchiveFileInfo` give the same bytes.
+
+Determinism and timings: an archive is a function of the added values and the
+`FitArchiveFileInfo` only, so its sha256 can pin a parity check once
+`created_unix_ns` is pinned. Wall-clock fit diagnostics differ run to run
+(today `QuoteSliceChannelDiagnostics::solve_seconds`), so by default they are
+not stored: the fit record's slot is `reserved_timing`, always 0 (a nonzero
+value is `RecordInvalid`), and the field decodes as 0.
+`FitArchiveWriter::record_timings(true)` keeps them in the optional
+`FitTimings` section (type 40, not `Required`, one 8-byte element per fit
+record in `FitRecords` order; a count that differs from `FitRecords` is
+`RecordInvalid`). `decode_fit` restores a timing only for an element of
+`archive.fits()` (a record copy gets 0), and a reader that does not know type
+40 loses only the timings. `copy_from` carries a source's `FitTimings`, so a
+compaction stays bit-exact. Archives written before fix round 1 of the
+surface-archive lane (431b724f and earlier) stored the wall time in the slot
+and are refused by this reader; the format is pre-release, so no version was
+bumped.
+
 `publish_fit_archive` / `write_file` publish with one fsync of the temp file and
 an atomic rename (POSIX additionally fsyncs the directory); a reader never sees
 a partial archive, and on a failed rename the temp is preserved and the previous
@@ -392,6 +430,17 @@ sequence replaces; readers only ever see segments the manifest lists. Readers
 (never map it, so it can be replaced while they run), map the listed segments,
 and refuse a segment whose size, whole-file CRC (footer copy) or sequence
 differs from its manifest entry (`SegmentMismatch`).
+
+Segment names: a manifest entry's `file_name` must be exactly the writer's name
+for its sequence (`seg-`, the decimal sequence zero-padded to at least 12
+digits, `.atxvfa`, then NUL padding; `fit_archive_segment_name_ok`). Anything
+else (a directory part, `..`, an absolute or drive-relative path, an embedded
+NUL, another sequence, a different padding) is `RecordInvalid`. The rule is
+checked at three points: the manifest's record pass (so `open` of the manifest
+refuses it at every verify level), `open_segment` where the name becomes a
+path, and again before compaction deletes a replaced segment. No series
+operation therefore reads, maps or deletes a file outside the series
+directory (review MINOR-1).
 
 Why segments rather than an append log: (1) on Windows a mapped file cannot be
 extended or replaced while any reader maps it (`atx::tsdb::Mapping` opens with
@@ -441,6 +490,15 @@ to name each damaged section. Exit codes: 0 ok, 1 usage, 2 refused (the
 reproduces one cohort's graded quote-slice run, checks every served row against
 that run's predictions CSV bit for bit, archives the payload with each served
 expiry's `ChainRecords`, and reports write, open and random-access timings.
+After publishing it reopens the file (`Paranoid`), decodes every surface with
+`decode_surface` and repeats the row check on the decoded values
+(`round_trip.parity_vs_reference`, which must equal the payload's), and
+compares every archived `ExpiryRecord`'s 1820 value bytes with the record that
+was built; any difference exits 1. `--created-unix-ns N` pins the header time
+(default: now) and `--timings on` writes `FitTimings` (default off); with the
+time pinned and timings off, two runs over the same inputs publish
+byte-identical archives. The unbuffered (cold-proxy) read owns its file handle
+and page buffer through RAII and refuses a short read.
 Results: `sprints/2026-10-17-surface-archive-sprint.md`.
 
 ## 12. Not in this version

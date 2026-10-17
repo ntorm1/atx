@@ -194,9 +194,10 @@ markov_local_vol(const FitArchive &archive, const FitArchiveMarkovInterval &inte
 // Bit-identical to the object that was written, except that wall-clock timings
 // decode as 0 unless the archive has a FitTimings section and `fit` is an
 // element of archive.fits(). RecordInvalid when a stored curve or price slice
-// does not rebuild or a curve's node count disagrees with its payload (cannot
-// happen for a validated archive written by this library; it guards foreign
-// writers and record copies edited by the caller).
+// does not rebuild, or when the curve fails the shape check of open's record
+// pass (node count against payload length in 64-bit arithmetic, kind, reserved
+// and native enum / bool bytes). A record of a validated archive always passes;
+// the check guards record copies edited by the caller, which open never saw.
 [[nodiscard]] ArchiveResult<std::unique_ptr<IVolCurve>> decode_curve(const FitArchive &archive,
                                                                     const FitArchiveFitRecord &fit);
 [[nodiscard]] ArchiveResult<QuoteSliceFit> decode_fit(const FitArchive &archive,

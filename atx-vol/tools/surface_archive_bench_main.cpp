@@ -8,13 +8,21 @@
 // kQuoteSurfaceMaxExpiries expiries take the static path there and are skipped
 // here), checks the payload against that run's predictions CSV row by row, then
 // optionally builds each served expiry's ChainRecords (ExpiryRecords) and
-// archives everything. Timings are wall clock on whatever host runs it: report
-// them as unqualified unless the host is quiet and pinned.
+// archives everything. It then reopens the published file and checks the
+// reference rows again against values decoded from those bytes (the round
+// trip), plus every archived ExpiryRecord against the one that was built.
+// Timings are wall clock on whatever host runs it: report them as unqualified
+// unless the host is quiet and pinned.
 //
 //   atx-vol-fit-archive-bench --input quotes.csv --policy graded-v1.json
 //       --reference <graded run predictions.csv> --out-dir <new folder>
 //       [--dividends funding-pv] [--workers N] [--reps N] [--lookups N]
-//       [--ladders on|off]
+//       [--ladders on|off] [--created-unix-ns N] [--timings on|off]
+//
+// --created-unix-ns pins the header's creation time (default: now) and
+// --timings on keeps the fitter's wall-clock solve times (FitTimings section;
+// default off). With the time pinned and timings off, two runs over the same
+// inputs publish byte-identical archives (ARCHIVE_FORMAT.md section 9).
 
 #include <algorithm>
 #include <array>
@@ -71,6 +79,8 @@ struct Args {
   std::size_t reps{9};
   std::size_t lookups{262144};
   bool ladders{true};
+  std::optional<std::int64_t> created_unix_ns; // header creation time; now when absent
+  bool timings{false};                         // FitArchiveWriter::record_timings
 };
 
 Args parse(int argc, char **argv) {
@@ -88,6 +98,12 @@ Args parse(int argc, char **argv) {
     else if (k == "--reps") a.reps = std::stoul(v);
     else if (k == "--lookups") a.lookups = std::stoul(v);
     else if (k == "--ladders") a.ladders = v == "on";
+    else if (k == "--created-unix-ns") {
+      std::int64_t ns = 0;
+      const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), ns);
+      if (ec != std::errc{} || end != v.data() + v.size()) throw std::runtime_error("bad --created-unix-ns " + v);
+      a.created_unix_ns = ns;
+    } else if (k == "--timings") a.timings = v == "on";
     else throw std::runtime_error("unknown argument " + std::string(k));
   }
   if (a.input.empty() || a.policy.empty() || a.out_dir.empty()) {
@@ -275,6 +291,48 @@ Json stats(std::vector<double> v, double scale = 1.0) {
           {"max", v.back() * scale}};
 }
 
+// Reference predictions by row id: {price, vol, grade} as printed (empty when
+// the reference run did not serve the row).
+using Reference = std::map<std::uint64_t, std::array<std::string, 3>>;
+
+Reference read_reference(const fs::path &path) {
+  Reference ref;
+  std::ifstream in(path);
+  if (!in) throw std::runtime_error("cannot open reference");
+  std::string line;
+  std::getline(in, line);
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const auto f = csv_record(line);
+    ref[number<std::uint64_t>(f[0])] = {f[1], f[2], f.size() > 13 ? f[13] : std::string{}};
+  }
+  return ref;
+}
+
+// Row-by-row agreement of one slice's rows with the reference run.
+struct Parity {
+  std::size_t compared{0}, price_equal{0}, vol_equal{0}, grade_equal{0}, unserved_both{0}, reference_ok{0};
+
+  void add(const std::array<std::string, 3> &r, const QuoteSliceRow &row, QuoteSliceGrade grade) {
+    if (!r[0].empty()) ++reference_ok;
+    if (grade == QuoteSliceGrade::Refused || row.evaluation_status != QuoteSliceEvaluationStatus::Success) {
+      unserved_both += r[0].empty() ? 1u : 0u;
+      return;
+    }
+    ++compared;
+    price_equal += !r[0].empty() && number<double>(r[0]) == row.fitted_price ? 1u : 0u;
+    vol_equal += std::isfinite(row.fitted_iv) ? (!r[1].empty() && number<double>(r[1]) == row.fitted_iv ? 1u : 0u)
+                                              : (r[1].empty() ? 1u : 0u);
+    grade_equal += r[2] == to_string(grade) ? 1u : 0u;
+  }
+  [[nodiscard]] bool operator==(const Parity &) const = default;
+  [[nodiscard]] Json json() const {
+    return {{"served_rows_compared", compared}, {"price_exact_equal", price_equal}, {"vol_exact_equal", vol_equal},
+            {"grade_equal", grade_equal}, {"unserved_rows_also_unserved_in_reference", unserved_both},
+            {"reference_ok_rows_in_these_snapshots", reference_ok}};
+  }
+};
+
 std::array<std::uint8_t, 32> digest_of(const fs::path &file) {
   const auto hex = atx::core::sha256_file(file.string());
   if (!hex || hex->size() != 64) throw std::runtime_error("sha256 failed");
@@ -284,31 +342,83 @@ std::array<std::uint8_t, 32> digest_of(const fs::path &file) {
 }
 
 #if defined(_WIN32)
+// Owns a Win32 file handle: closed exactly once, on every path (an early
+// throw included), either by close() or by the destructor.
+class FileHandle {
+public:
+  explicit FileHandle(HANDLE h) noexcept : h_(h) {}
+  ~FileHandle() { close(); }
+  FileHandle(const FileHandle &) = delete;
+  FileHandle &operator=(const FileHandle &) = delete;
+  FileHandle(FileHandle &&) = delete;
+  FileHandle &operator=(FileHandle &&) = delete;
+  [[nodiscard]] bool valid() const noexcept { return h_ != INVALID_HANDLE_VALUE && h_ != nullptr; }
+  [[nodiscard]] HANDLE get() const noexcept { return h_; }
+  void close() noexcept {
+    if (valid()) CloseHandle(h_);
+    h_ = INVALID_HANDLE_VALUE;
+  }
+
+private:
+  HANDLE h_;
+};
+
+// Owns a page-aligned VirtualAlloc region (FILE_FLAG_NO_BUFFERING reads need
+// sector-aligned buffers); released by the destructor on every path.
+class PageBuffer {
+public:
+  explicit PageBuffer(std::size_t bytes) noexcept
+      : p_(bytes == 0 ? nullptr : VirtualAlloc(nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)) {}
+  ~PageBuffer() {
+    if (p_ != nullptr) VirtualFree(p_, 0, MEM_RELEASE);
+  }
+  PageBuffer(const PageBuffer &) = delete;
+  PageBuffer &operator=(const PageBuffer &) = delete;
+  PageBuffer(PageBuffer &&) = delete;
+  PageBuffer &operator=(PageBuffer &&) = delete;
+  [[nodiscard]] std::byte *data() const noexcept { return static_cast<std::byte *>(p_); }
+
+private:
+  void *p_;
+};
+
 // Read the whole file bypassing the OS cache (FILE_FLAG_NO_BUFFERING) into a
 // page-aligned buffer: a cold-read proxy where dropping the standby list needs
-// administrator rights.
+// administrator rights. Every Win32 return is checked and a short read is an
+// error; the handle and the buffer are RAII-owned, so a throw leaks neither.
 std::pair<std::vector<std::byte>, double> unbuffered_read(const fs::path &path, double &open_seconds) {
+  constexpr std::uint64_t kPage = 4096;
+  constexpr std::size_t kChunk = std::size_t{1} << 24;
   const auto t0 = Clock::now();
-  HANDLE h = CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                         FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-  if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("unbuffered open failed");
+  FileHandle file{CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+  if (!file.valid()) throw std::runtime_error("unbuffered open failed: " + path.string());
   LARGE_INTEGER size{};
-  GetFileSizeEx(h, &size);
-  const auto bytes = static_cast<std::size_t>(size.QuadPart);
-  const std::size_t rounded = (bytes + 4095u) / 4096u * 4096u;
-  void *buf = VirtualAlloc(nullptr, rounded, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-  DWORD got = 0;
+  if (GetFileSizeEx(file.get(), &size) == 0 || size.QuadPart <= 0) {
+    throw std::runtime_error("unbuffered size query failed: " + path.string());
+  }
+  const auto bytes = static_cast<std::uint64_t>(size.QuadPart);
+  if (bytes > std::numeric_limits<std::size_t>::max() - kPage) throw std::runtime_error("file too large");
+  const auto rounded = static_cast<std::size_t>((bytes + kPage - 1) / kPage * kPage);
+  const PageBuffer buf(rounded);
+  if (buf.data() == nullptr) throw std::runtime_error("VirtualAlloc failed");
   std::size_t total = 0;
+  // Bounded: every pass adds at least one byte (total <= rounded) or leaves.
   while (total < rounded) {
-    const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(rounded - total, 1u << 24));
-    if (!ReadFile(h, static_cast<char *>(buf) + total, chunk, &got, nullptr) || got == 0) break;
+    const auto chunk = static_cast<DWORD>(std::min(rounded - total, kChunk));
+    DWORD got = 0;
+    if (ReadFile(file.get(), buf.data() + total, chunk, &got, nullptr) == 0) {
+      throw std::runtime_error("unbuffered read failed: " + path.string());
+    }
+    if (got == 0) break; // end of file
     total += got;
   }
-  CloseHandle(h);
+  file.close();
+  if (total != bytes) {
+    throw std::runtime_error("short unbuffered read: " + std::to_string(total) + " of " + std::to_string(bytes));
+  }
   const double read_s = seconds_since(t0);
-  std::vector<std::byte> copy(bytes);
-  std::memcpy(copy.data(), buf, bytes);
-  VirtualFree(buf, 0, MEM_RELEASE);
+  std::vector<std::byte> copy(buf.data(), buf.data() + static_cast<std::size_t>(bytes));
   const auto t1 = Clock::now();
   auto a = FitArchive::open_bytes(copy, nullptr, FitArchiveVerify::Full);
   open_seconds = seconds_since(t1);
@@ -442,52 +552,30 @@ int main(int argc, char **argv) {
     }
     const double fit_wall = seconds_since(t_fit);
 
-    // ── Parity of the payload against the graded run's predictions ──
-    Json parity = nullptr;
-    if (!args.reference.empty()) {
-      std::map<std::uint64_t, std::array<std::string, 3>> ref; // price, vol, grade
-      std::ifstream in(args.reference);
-      std::string line;
-      std::getline(in, line);
-      while (std::getline(in, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        const auto f = csv_record(line);
-        ref[number<std::uint64_t>(f[0])] = {f[1], f[2], f.size() > 13 ? f[13] : std::string{}};
-      }
-      std::size_t compared = 0, price_equal = 0, vol_equal = 0, grade_equal = 0, refused_rows = 0, ref_ok = 0;
+    // ── Parity of the in-memory payload (before encoding) against the graded run ──
+    // This checks the fit, not the archive; the round trip below repeats it on
+    // values decoded from the published file.
+    const Reference ref = args.reference.empty() ? Reference{} : read_reference(args.reference);
+    Parity payload_parity;
+    if (!ref.empty()) {
       for (std::size_t i = 0; i < snapshots.size(); ++i) {
         if (!fitted[i].ok) continue;
         for (std::size_t e = 0; e < fitted[i].slices.size(); ++e) {
           const auto &slice = fitted[i].slices[e];
-          const bool served = slice.grade != QuoteSliceGrade::Refused;
           const auto &idx = chains.at(snapshots[i].chains[e]);
-          for (std::size_t j = 0; j < idx.size(); ++j) {
-            const auto &r = ref.at(rows[idx[j]].id);
-            if (!r[0].empty()) ++ref_ok;
-            const QuoteSliceRow &row = slice.fit.rows[j];
-            if (!served || row.evaluation_status != QuoteSliceEvaluationStatus::Success) {
-              refused_rows += r[0].empty() ? 1u : 0u;
-              continue;
-            }
-            ++compared;
-            price_equal += !r[0].empty() && number<double>(r[0]) == row.fitted_price ? 1u : 0u;
-            vol_equal += std::isfinite(row.fitted_iv) ? (!r[1].empty() && number<double>(r[1]) == row.fitted_iv ? 1u : 0u)
-                                                      : (r[1].empty() ? 1u : 0u);
-            grade_equal += r[2] == to_string(slice.grade) ? 1u : 0u;
-          }
+          for (std::size_t j = 0; j < idx.size(); ++j) payload_parity.add(ref.at(rows[idx[j]].id), slice.fit.rows[j], slice.grade);
         }
       }
-      parity = {{"served_rows_compared", compared}, {"price_exact_equal", price_equal},
-                {"vol_exact_equal", vol_equal}, {"grade_equal", grade_equal},
-                {"unserved_rows_also_unserved_in_reference", refused_rows},
-                {"reference_ok_rows_in_these_snapshots", ref_ok}};
     }
 
     // ── Encode ──
     const auto policy_digest = digest_of(args.policy);
-    FitArchiveWriter writer({std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                 std::chrono::system_clock::now().time_since_epoch()).count(),
-                             0x2026101700000001ull, 0});
+    const std::int64_t created_unix_ns =
+        args.created_unix_ns.value_or(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
+    FitArchiveWriter writer({created_unix_ns, 0x2026101700000001ull, 0});
+    writer.record_timings(args.timings);
     const std::string provenance = Json{{"policy", policy.definition}, {"inputs", report["inputs"]}}.dump();
     writer.set_provenance(std::as_bytes(std::span{provenance.data(), provenance.size()}));
     std::size_t surfaces = 0, fits = 0, served_slices = 0, ladders = 0, expiry_records = 0, ladder_failures = 0;
@@ -545,6 +633,72 @@ int main(int argc, char **argv) {
       const auto t0 = Clock::now();
       if (!publish_fit_archive(archive.string(), image)) throw std::runtime_error("publish failed");
       report["final_publish_ms"] = seconds_since(t0) * 1.0e3;
+    }
+
+    // ── Round trip: the reference rows and the ExpiryRecords, decoded from the published file ──
+    Json round_trip = nullptr;
+    {
+      auto published = FitArchive::open(archive.string(), {FitArchiveOpenMode::Mapped, FitArchiveVerify::Paranoid});
+      if (!published) throw std::runtime_error(std::string("published archive refused: ") + describe(published.error()));
+      Parity archive_parity;
+      std::size_t fits_decoded = 0, records_compared = 0, records_equal = 0;
+      for (std::size_t i = 0; i < snapshots.size(); ++i) {
+        const Snapshot &s = snapshots[i];
+        const Fitted &f = fitted[i];
+        if (!f.ok) continue;
+        const auto id = published->find_underlier(s.root);
+        const FitArchiveSurfaceRecord *surface = id ? published->find_surface(*id, s.snapshot_ns) : nullptr;
+        if (surface == nullptr) throw std::runtime_error("round trip: surface missing for " + s.root);
+        auto decoded = decode_surface(*published, *surface);
+        if (!decoded) throw std::runtime_error("round trip: decode_surface " + s.root + ": " + describe(decoded.error()));
+        const auto stored = published->fits_of(*surface); // expiry order, parallel to *decoded
+        for (std::size_t e = 0; e < s.chains.size(); ++e) {
+          const auto at = std::find_if(stored.begin(), stored.end(),
+                                       [&](const FitArchiveFitRecord &r) { return r.key.expiry_day == s.days[e]; });
+          if (at == stored.end()) throw std::runtime_error("round trip: expiry missing for " + s.root);
+          const QuoteSurfaceSlice &slice = (*decoded)[static_cast<std::size_t>(at - stored.begin())];
+          const auto &idx = chains.at(s.chains[e]);
+          if (slice.fit.rows.size() != idx.size()) throw std::runtime_error("round trip: row count differs for " + s.root);
+          ++fits_decoded;
+          if (!ref.empty()) {
+            for (std::size_t j = 0; j < idx.size(); ++j) archive_parity.add(ref.at(rows[idx[j]].id), slice.fit.rows[j], slice.grade);
+          }
+          if (!f.records[e]) continue;
+          const FitArchiveKey key{*id, s.days[e], s.snapshot_ns, 0, 0};
+          const FitArchiveLadderRecord *ladder = published->find_ladder(key);
+          if (ladder == nullptr) throw std::runtime_error("round trip: ladder missing for " + s.root);
+          const auto metas = published->ladder_records(*ladder);
+          const ExpiryRecordBank &bank = f.records[e]->bank();
+          if (metas.size() != bank.size()) throw std::runtime_error("round trip: record count differs for " + s.root);
+          for (std::size_t k = 0; k < metas.size(); ++k) {
+            const ExpiryRecord *archived = expiry_record(*published, metas[k]);
+            ++records_compared;
+            // Value bytes only: [1820, 1824) is tail padding (ARCHIVE_FORMAT.md section 7).
+            records_equal += archived != nullptr && bank.at(k) != nullptr &&
+                                     std::memcmp(archived, bank.at(k), kFitArchiveExpiryRecordValueBytes) == 0
+                                 ? 1u
+                                 : 0u;
+          }
+        }
+      }
+      if (records_compared != published->expiry_meta().size()) {
+        throw std::runtime_error("round trip: not every archived ExpiryRecord was compared");
+      }
+      round_trip = {{"source", "values decoded from the published file (Paranoid open, decode_surface, ladder records)"},
+                    {"fits_decoded", fits_decoded},
+                    {"fit_records_in_archive", published->fits().size()},
+                    {"parity_vs_reference", ref.empty() ? Json(nullptr) : archive_parity.json()},
+                    {"expiry_records_compared", records_compared},
+                    {"expiry_records_value_bytes_equal", records_equal}};
+      std::cout << "round trip (decoded from " << archive.string() << "): fits " << fits_decoded << "/"
+                << published->fits().size() << ", served rows " << archive_parity.compared << ", price exact "
+                << archive_parity.price_equal << ", vol exact " << archive_parity.vol_equal << ", grade "
+                << archive_parity.grade_equal << ", unserved in both " << archive_parity.unserved_both
+                << ", ExpiryRecords bit-identical " << records_equal << "/" << records_compared << "\n";
+      if (!(archive_parity == payload_parity) || records_equal != records_compared ||
+          fits_decoded != published->fits().size()) {
+        throw std::runtime_error("round trip differs from the payload (see the line above)");
+      }
     }
 
     // ── Open + validate (warm page cache) ──
@@ -664,13 +818,16 @@ int main(int argc, char **argv) {
                          {"ladders", ladders}, {"expiry_records", expiry_records},
                          {"chain_record_build_failures", ladder_failures},
                          {"symbols", a->symbols().size()}};
-    report["parity_vs_reference"] = parity;
+    report["payload_parity_vs_reference"] = ref.empty() ? Json(nullptr) : payload_parity.json();
+    report["round_trip"] = round_trip;
     report["fit_wall_seconds"] = fit_wall;
     std::vector<double> nonzero;
     for (const double s : ladder_seconds) if (s > 0.0) nonzero.push_back(s);
     report["chain_record_build_cpu_seconds_sum"] = std::accumulate(nonzero.begin(), nonzero.end(), 0.0);
     report["archive"] = {{"path", archive.string()}, {"bytes", image.size()}, {"sections", sizes},
-                         {"bytes_per_expiry_fit", fits ? static_cast<double>(image.size()) / static_cast<double>(fits) : 0.0}};
+                         {"bytes_per_expiry_fit", fits ? static_cast<double>(image.size()) / static_cast<double>(fits) : 0.0},
+                         {"created_unix_ns", created_unix_ns}, {"created_unix_ns_pinned", args.created_unix_ns.has_value()},
+                         {"fit_timings_section", args.timings}};
     report["write"] = {{"encode_seconds_all_records", encode_s}, {"finish_ms", stats(finish_s, 1.0e3)},
                        {"publish_temp_fsync_rename_ms", stats(publish_s, 1.0e3)}};
     report["open"] = open;

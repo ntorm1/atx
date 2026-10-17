@@ -129,6 +129,28 @@ template <class T> [[nodiscard]] std::span<const T> slice_of(std::span<const T> 
          k == VolCurveKind::SplineVol;
 }
 
+// Curve payload shape, plus the bytes of native params that must be valid
+// values before the payload may be copied into a library struct. The record
+// pass of open and decode_curve apply the same predicate, so a decoder handed
+// an edited record copy refuses exactly what open would have refused.
+[[nodiscard]] bool curve_ok(const FitArchiveCurve &c, std::span<const double> words) noexcept {
+  if (!zero_bytes(c.reserved)) return false;
+  if (c.present == 0u) {
+    return c.kind == 0u && c.node_count == 0u && c.payload.count == 0u && bits_of(c.T) == 0u &&
+           bits_of(c.F) == 0u && bits_of(c.df) == 0u;
+  }
+  if (c.present != 1u || c.kind > kMaxCurveKind) return false;
+  if (!kind_has_nodes(c.kind) && c.node_count != 0u) return false;
+  if (words.size() != expected_curve_words(c.kind, c.node_count)) return false;
+  const auto raw = std::as_bytes(words);
+  if (c.kind == ev(VolCurveKind::C8) && raw[offsetof(C8Params, bumps_active)] > std::byte{1}) return false;
+  if (c.kind == ev(VolCurveKind::Essvi) &&
+      raw[offsetof(EssviParams, resid_basis_kind)] > std::byte{kMaxResidualBasis}) {
+    return false;
+  }
+  return true;
+}
+
 // QuoteSliceCarryResolution::reason is a `const char *` with static lifetime in
 // the library; a decoded reason is interned once per distinct text so it keeps
 // that lifetime. Bounded by the (small, fixed) set of reasons the fitter emits.
@@ -1171,7 +1193,9 @@ std::span<const AmericanMarkovLocalVolNode> markov_local_vol(const FitArchive &a
 ArchiveResult<std::unique_ptr<IVolCurve>> decode_curve(const FitArchive &a, const FitArchiveFitRecord &fit) {
   const FitArchiveCurve &c = fit.curve;
   const auto words = a.curve_payload(fit);
-  if (c.present == 0u || words.size() != expected_curve_words(c.kind, c.node_count)) {
+  // `fit` may be a caller-edited copy, which open never validated: the whole
+  // shape check runs again before any payload word is read.
+  if (c.present == 0u || !curve_ok(c, words)) {
     return archive_error(ArchiveStatus::RecordInvalid, Type::FitRecords);
   }
   const std::size_t n = c.node_count;
@@ -1478,26 +1502,6 @@ template <class R>
   return f.termination <= kMaxTermination && f.projection <= kMaxProjection && f.flags <= 7u &&
          f.reserved0 == 0u && f.reserved1 == 0u && grad_ok && d.channel.flags <= 7u &&
          bits_of(d.channel.reserved_timing) == 0u && zero_bytes(d.channel.reserved) && repair_ok(d.repair);
-}
-
-// Curve payload shape, plus the bytes of native params that must be valid
-// values before the payload may be copied into a library struct.
-[[nodiscard]] bool curve_ok(const FitArchiveCurve &c, std::span<const double> words) noexcept {
-  if (!zero_bytes(c.reserved)) return false;
-  if (c.present == 0u) {
-    return c.kind == 0u && c.node_count == 0u && c.payload.count == 0u && bits_of(c.T) == 0u &&
-           bits_of(c.F) == 0u && bits_of(c.df) == 0u;
-  }
-  if (c.present != 1u || c.kind > kMaxCurveKind) return false;
-  if (!kind_has_nodes(c.kind) && c.node_count != 0u) return false;
-  if (words.size() != expected_curve_words(c.kind, c.node_count)) return false;
-  const auto raw = std::as_bytes(words);
-  if (c.kind == ev(VolCurveKind::C8) && raw[offsetof(C8Params, bumps_active)] > std::byte{1}) return false;
-  if (c.kind == ev(VolCurveKind::Essvi) &&
-      raw[offsetof(EssviParams, resid_basis_kind)] > std::byte{kMaxResidualBasis}) {
-    return false;
-  }
-  return true;
 }
 
 [[nodiscard]] ArchiveOutcome validate_fits(const FitArchive &a) noexcept {

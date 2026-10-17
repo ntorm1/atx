@@ -582,10 +582,31 @@ inline void reseal(std::vector<std::byte> &image) {
   return out;
 }
 
-// Rewrite the file name of manifest entry `index` in the series at `series_dir`
-// and re-sign every checksum, so only the planted name can cause a refusal.
-inline void forge_segment_name(const std::filesystem::path &series_dir, std::size_t index,
-                               std::string_view name) {
+// `image` with fit `fit`'s curve node_count replaced and every checksum
+// re-signed, so only the planted count can cause a refusal. A count of
+// n + 2^31 doubles to 2n + 2^32: in u32 arithmetic exactly the stored payload.
+[[nodiscard]] inline std::vector<std::byte> forge_node_count(std::span<const std::byte> image, std::size_t fit,
+                                                             std::uint32_t node_count) {
+  FitArchiveHeader h{};
+  EXPECT_GE(image.size(), sizeof h);
+  if (image.size() < sizeof h) return {};
+  std::memcpy(&h, image.data(), sizeof h);
+  auto sections = split_image(image);
+  ImageSection *fits = find_section(sections, FitArchiveSectionType::FitRecords);
+  EXPECT_NE(fits, nullptr);
+  if (fits == nullptr) return {};
+  const std::size_t at = fit * sizeof(FitArchiveFitRecord) + offsetof(FitArchiveFitRecord, curve) +
+                         offsetof(FitArchiveCurve, node_count);
+  EXPECT_LE(at + sizeof node_count, fits->bytes.size());
+  if (at + sizeof node_count > fits->bytes.size()) return {};
+  write_at(fits->bytes, at, node_count);
+  return join_image(sections, {h.created_unix_ns, h.archive_id, h.segment_sequence});
+}
+
+// Rewrite manifest entry `index` of the series at `series_dir` with `edit` and
+// re-sign every checksum, so only the planted change can cause a refusal.
+template <class Edit>
+void forge_segment(const std::filesystem::path &series_dir, std::size_t index, Edit edit) {
   const auto path = series_dir / std::string(kFitArchiveSeriesManifest);
   const auto image = read_file(path);
   ASSERT_GE(image.size(), sizeof(FitArchiveHeader));
@@ -596,12 +617,46 @@ inline void forge_segment_name(const std::filesystem::path &series_dir, std::siz
   const std::size_t at = index * sizeof(FitArchiveSeriesSegment);
   ASSERT_LE(at + sizeof(FitArchiveSeriesSegment), segments->bytes.size());
   auto entry = read_at<FitArchiveSeriesSegment>(segments->bytes, at);
-  ASSERT_LT(name.size(), entry.file_name.size());
-  entry.file_name.fill('\0');
-  std::copy(name.begin(), name.end(), entry.file_name.begin());
+  edit(entry);
   write_at(segments->bytes, at, entry);
   const auto forged = join_image(sections, {h.created_unix_ns, h.archive_id, h.segment_sequence});
   ASSERT_TRUE(publish_fit_archive(path.string(), forged).has_value());
+}
+
+// Rewrite the file name of manifest entry `index` (NUL padded; `name` may hold
+// embedded NULs) and re-sign every checksum.
+inline void forge_segment_name(const std::filesystem::path &series_dir, std::size_t index,
+                               std::string_view name) {
+  ASSERT_LT(name.size(), FitArchiveSeriesSegment{}.file_name.size());
+  forge_segment(series_dir, index, [&](FitArchiveSeriesSegment &entry) {
+    entry.file_name.fill('\0');
+    std::copy(name.begin(), name.end(), entry.file_name.begin());
+  });
+}
+
+// Names a manifest entry for sequence 1 must never carry: the review's escape
+// forms (parent directory both ways, absolute, drive-relative, embedded NUL)
+// plus a subdirectory, another sequence and an unpadded sequence. Each fits the
+// 40-byte field with a NUL to spare.
+[[nodiscard]] inline std::vector<std::string> foreign_segment_names() {
+  const std::string own = "seg-000000000001.atxvfa";
+  const std::string nul(1, '\0');
+  return {"..\\" + own,
+          "../" + own,
+          "C:\\" + own,
+          "C:" + own,
+          own + nul + "..\\x",
+          "seg-0000" + nul + "00000001.atxvfa",
+          "sub\\" + own,
+          "seg-000000000002.atxvfa",
+          "seg-1.atxvfa"};
+}
+
+// A forged name for test messages, with each NUL shown as \0.
+[[nodiscard]] inline std::string printable(std::string_view name) {
+  std::string out;
+  for (const char c : name) out += c == '\0' ? std::string("\\0") : std::string(1, c);
+  return out;
 }
 
 } // namespace atx::vol::testkit

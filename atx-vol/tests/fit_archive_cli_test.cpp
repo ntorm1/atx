@@ -1,6 +1,9 @@
 // atx-vol-surface-archive CLI: inspect / dump / verify exit codes and output on
-// good, corrupt, truncated and missing archives and on a series directory.
+// good, corrupt, truncated and missing archives, on a series directory, and on
+// the review's crafted cases (a wrapping curve node count, a manifest naming a
+// file outside its series).
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -120,6 +123,54 @@ TEST(FitArchiveCli, InspectsAndVerifiesASeriesDirectory) {
   EXPECT_NE(inspect.out.find("segments: 2"), std::string::npos) << inspect.out;
   const CliRun verify = run_cli(dir, "verify " + series.string());
   EXPECT_EQ(verify.code, 0) << verify.out;
+}
+
+// Review MAJOR-1 through the tool: a curve node_count whose 2n wraps a u32 back
+// to the stored payload length is refused, not served.
+TEST(FitArchiveCli, VerifyRefusesACurveNodeCountThatWrapsU32) {
+  const auto dir = testkit::scratch_dir("cli-node-count");
+  const auto surface = testkit::synthetic_surface();
+  std::vector<QuoteSurfaceSlice> slices;
+  slices.push_back(testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense));
+  const std::vector<std::int32_t> days{21000};
+  FitArchiveWriter w;
+  ASSERT_TRUE(w.add_surface({"SPY", kSnapshot, slices, days}).has_value());
+  const auto image = w.finish();
+  ASSERT_TRUE(image.has_value());
+  auto a = FitArchive::open_copy(*image);
+  ASSERT_TRUE(a.has_value());
+  const std::uint32_t wraps = a->fits()[0].curve.node_count + 0x80000000u;
+  const auto file = dir / "convex-node-count-wraps-u32.atxvfa";
+  ASSERT_TRUE(publish_fit_archive(file.string(), testkit::forge_node_count(*image, 0, wraps)).has_value());
+  for (const std::string command : {"verify ", "inspect ", "dump "}) {
+    const CliRun run = run_cli(dir, command + file.string());
+    EXPECT_EQ(run.code, 2) << command << run.out;
+    EXPECT_NE(run.out.find("REFUSED record-invalid section=fit-records(32) detail=0"), std::string::npos)
+        << command << run.out;
+  }
+}
+
+// Review MINOR-1 through the tool: verify and inspect of a series whose manifest
+// names any file but the writer's own segment refuse the series. A valid copy of
+// segment 1 sits beside the series, so following "..\" would have succeeded.
+TEST(FitArchiveCli, VerifyRefusesASeriesWhoseManifestNamesAForeignFile) {
+  const auto dir = testkit::scratch_dir("cli-series-escape");
+  const auto series = dir / "series";
+  ASSERT_TRUE(append_fit_archive_segment(series.string(), sample_writer(kSnapshot)).has_value());
+  ASSERT_TRUE(append_fit_archive_segment(series.string(), sample_writer(kSnapshot + 1)).has_value());
+  fs::copy_file(series / "seg-000000000001.atxvfa", dir / "seg-000000000001.atxvfa");
+  const auto manifest = series / std::string(kFitArchiveSeriesManifest);
+  const auto pristine = testkit::read_file(manifest);
+  for (const std::string &name : testkit::foreign_segment_names()) {
+    ASSERT_TRUE(publish_fit_archive(manifest.string(), pristine).has_value());
+    testkit::forge_segment_name(series, 0, name);
+    for (const std::string command : {"verify ", "inspect "}) {
+      const CliRun run = run_cli(dir, command + series.string());
+      EXPECT_EQ(run.code, 2) << command << testkit::printable(name) << "\n" << run.out;
+      EXPECT_NE(run.out.find("REFUSED record-invalid section=series-segments(80)"), std::string::npos)
+          << command << testkit::printable(name) << "\n" << run.out;
+    }
+  }
 }
 
 } // namespace
