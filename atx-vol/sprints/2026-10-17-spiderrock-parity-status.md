@@ -66,25 +66,29 @@ like-for-like (dev200b payers 205 → 217 bp); the price comparison is. No machi
 
 ## 3. Smile cohort — per-slice parity to srVol (five symbols, 2026-10-14 10:30 ET)
 
-From `plots-20261017-v2/README.md` (slice-repair v3) and the knot-ladder lane report. MAE is ours
-vs srVol in bp over the plotted strikes; "inside" = strikes whose served IV lies inside the
-bid/ask IV band. Updated figures with the ladder curve are being produced into
-`C:/atx-cache/quote-benchmark/plots-20261017-v3/` (see the handoff for their status).
+From `C:/atx-cache/quote-benchmark/plots-20261017-v3/RESULTS.md` (this stop; figures
+`smile-<SYMBOL>-<expiry>.png` beside it; fits on root `022e9727` plus the unreviewed knot-ladder
+lane binary, code-equal to `901757ec`). Cells = strikes inside the bid/ask IV band · median
+|IV − srVol| in bp over the plotted OTM strikes (max in parentheses); violations
+(monotone / convex / calendar) were 0/0/0 for every served curve. srVol itself sits inside the
+band on 102/118, 114/118, 39/42, 50/51, 39/41 and 17/20 strikes respectively.
 
-| Slice | graded-v1 | slice-repair v3 (integrated, opt-in) | knot-ladder (UNREVIEWED) |
-| --- | --- | --- | --- |
-| SPY 23 d | refused (every 20-60 d expiry) | refused (calendar); 44 d served 106/118 inside, 2 bp | 23 d served 334/334 rows, 0 violations |
-| AAPL Nov 20 | refused (calendar) | refused (calendar); 30 d served 32/32 inside, 20 bp | served 168/168 rows, 0 violations (6 bp in the v2 trial) |
-| MSTR Nov 20 | refused (calendar) | served 50/51 inside, 91 bp | served |
-| CRWV Nov 20 | eSSVI point fit, 17/41 outside, 226 bp | refit, 1/41 outside, 75 bp | served (containment-first) |
-| RIVN 30 d | 20/20 inside, 466 bp | 20/20 inside, 466 bp; all 4 expiries served | served |
+| Slice | graded-v1 (default) | slice-repair v3 (integrated, opt-in) | knot-ladder (UNREVIEWED) | C5 composite serves |
+| --- | --- | --- | --- | --- |
+| SPY 23 d | refused (convexity) | refused (calendar) | 113/118 · 1.8 bp (26) | m6 fallback |
+| SPY 44 d | refused (convexity) | 106/118 · 0.9 bp (29) | 104/118 · 0.9 bp (30) | repair-v3 |
+| AAPL Nov 20 | refused (calendar) | refused (calendar) | 41/42 · 4.6 bp (60) | m6 fallback |
+| MSTR Nov 20 | refused (calendar) | 50/51 · 26 bp (509) | 49/51 · 26 bp (536), grade A | repair-v3 |
+| CRWV Nov 20 | 24/41 · 178 bp (897) | 40/41 · 34.5 bp (382) | 40/41 · 34.7 bp (382) | repair-v3 |
+| RIVN Nov 13 | 20/20 · 241 bp (1,682) | 20/20 · 241 bp | 20/20 · 97 bp (3,456) | repair-v3 |
 
-Reading the table: where both are served, atx-vol sits inside the bid/ask band on nearly every
-strike; the bp distance to srVol is small on liquid names (SPY 2 bp, AAPL 6-20 bp) and large on
-wide-spread names (RIVN 466 bp with every strike inside the band — the mark itself sits far from
-the band's middle there). The remaining parity gaps on this cohort are coverage gaps, not shape
-gaps: AAPL Nov 20 and SPY 23 d are served only by the knot-ladder lane's containment-first
-calendar ordering, which has not passed review.
+Reading the table: where a curve is served, atx-vol sits inside the bid/ask band on nearly every
+strike; the bp distance to srVol is small on liquid names (SPY 1-2 bp, AAPL 5 bp) and large on
+wide-spread names (RIVN 97-241 bp with every strike inside the band — srVol itself sits outside
+the band on 3 of 20 strikes there, so bp-to-srVol is not a quality measure on such names). The
+remaining parity gaps on this cohort are coverage gaps, not shape gaps: AAPL Nov 20 and SPY 23 d
+are served only by the knot-ladder lane's containment-first calendar ordering, which has not
+passed review; until it does, C5 serves those rows from the m6 common model.
 
 ## 4. Known gaps vs SpiderRock, by cause
 

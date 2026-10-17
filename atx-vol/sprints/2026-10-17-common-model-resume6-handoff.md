@@ -170,6 +170,42 @@ figures `plots-20261017-v3/` (this stop). Sprint workspace
 | deferred-tests | `8d6cafa1` (WIP on `022e9727`) | items 1-4 written and passing (8 tests in 4 test files, no library change); items 5-6 not started; revert runs / ctests / PCH-off / parity / sprint note not run; concern: refused certification row leaves `has_exercise_edge()` false via a NaN box-end edge (`expiry_record.cpp:292-299`, serve-path owner). | finish 5-6 + gates → light review → integrate |
 | smile-plots | read-only on root `022e9727` | running at the stop in pool-3 (Opus, read-only); its result and the `plots-20261017-v3` folder state are appended in the closing section below | — |
 
+## Smile figures produced at the stop (smile-plots lane, DONE_WITH_CONCERNS)
+
+`C:/atx-cache/quote-benchmark/plots-20261017-v3/`: six per-slice PNGs (`smile-SPY-2026-11-06-23d`,
+`smile-SPY-2026-11-27-44d`, `smile-AAPL-2026-11-20-37d`, `smile-MSTR-2026-11-20-37d`,
+`smile-CRWV-2026-11-20-37d`, `smile-RIVN-2026-11-13-30d`), `RESULTS.md` (per-slice table: served
+status, strikes inside bid/ask, median/max |IV − srVol| bp, violations, which C5 source serves the
+rows), `smile_slices.py`, `tables/`, `runs/`, `sha256.txt` (47 files). Checks: graded-v1 on the
+root build reproduces `7fa3c415`, v3 reproduces `97fad2f0`, the ladder binary `dfe3f1b8` matches
+its manifest and its output matches the lane's and the reviewer's (`232d2c0d`); it is code-equal
+to `901757ec` (UNREVIEWED; the fix-round tip `2e60186c` was not used). srVol is drawn as a
+yardstick only. No served chain has a monotonicity, convexity or calendar violation; no slice is
+price-only. Headline (inside bid/ask · median bp vs srVol, max in parentheses):
+
+| Slice | graded-v1 | slice-repair v3 | knot-ladder (unreviewed) | C5 serves |
+| --- | --- | --- | --- | --- |
+| SPY 23 d | refused (convexity) | refused (calendar) | 113/118 · 1.8 bp (26) | m6 (not run, not plotted) |
+| SPY 44 d | refused (convexity) | 106/118 · 0.9 bp (29) | 104/118 · 0.9 bp (30) | repair-v3 |
+| AAPL Nov 20 | refused (calendar) | refused (calendar) | 41/42 · 4.6 bp (60) | m6 (not run, not plotted) |
+| MSTR Nov 20 | refused (calendar) | 50/51 · 26 bp (509) | 49/51 · 26 bp (536), grade A | repair-v3 |
+| CRWV Nov 20 | 24/41 · 178 bp (897) | 40/41 · 34.5 bp (382) | 40/41 · 34.7 bp (382) | repair-v3 |
+| RIVN Nov 13 | 20/20 · 241 bp (1,682) | 20/20 · 241 bp (identical vols) | 20/20 · 97 bp (3,456); call wing bends down on ask-only strikes 21-25 | repair-v3 |
+
+Concerns: SPY 23 d and AAPL Nov 20 are served only by the unreviewed ladder; on those two slices
+C5 falls through to m6, which was not run (time budget), so no C5 curve is drawn there. The
+escrowed-lr dividend model was run only to determine what C5 serves and is not plotted (different
+vol convention). Lane left no commits (its branch `feat/vol-smile-plots-20261017r6` sits at
+`022e9727`; delete freely); pool-3 released.
+
 ## Handoff commit and lease disposition
 
-HANDOFF_COMMIT
+- Handoff committed on `feat/vol-resume4-20261016` as `b6f0621c` (this file,
+  `2026-10-17-spiderrock-parity-status.md`, `2026-10-17-resume6-pm-ledger.md`); this closing
+  section (smile figures, status §3 refresh, final ledger copy) is a second docs commit on top of
+  it — the branch head at the stop is that second commit.
+- Root lease pool-1 (RunId `vol-20261017-root6`, keeper 20932) released by the PM right after
+  the closing commit; every lane pool (3, 4, 33, 34) was released by its lane.
+  `lease-worktree.ps1 -Status` should show no live `vol-20261017r6-*` or `vol-20261017-root6`
+  lease. Lane branch tips: knot-ladder `2e60186c`, al-speed `409ee7aa`, deferred-tests
+  `8d6cafa1`, batch-pricing `583e3a75` (merged), surface-archive `6d2f6910` (merged).
