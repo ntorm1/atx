@@ -4,6 +4,16 @@ PREPARATION ONLY under R15-ROOT6. No V spec, output, measurement or trial exists
 Executing model: GPT-6 Astra. The literal historical commit trailer is retained.
 X is ACCEPTED and complete; F0=F0h remains H. No adoption or OD3 scope is released.
 
+Prelaunch continuation: the preceding status records preparation at1ad619ef.
+R15-V-READY/SOURCE/B8A/LAUNCH now releases this exact plan; registration ae92cf3a
+writes the candidate unchanged. `cells/tools/p9v_guard.py` safely imports only
+unchanged X helper definitions, uses the exact40 paths and scalar projections,
+and checks completed native phase reuse before launch. Focused synthetic routing/
+source/projection controls pass; all54 producer pins rechecked. No data run had
+occurred at this prelaunch commit. The PM's fresh DERIV scope is narrower than the
+original proposal below: deciding raw mechanics/rho/pair and V/H selection only;
+B.8 nondeciding diagnostics and root verdict/PASS labels excluded.
+
 ## Closed registration proposal
 
 `p9v-vol-target-cov-proposal.json` is the complete normative proposal: candidate

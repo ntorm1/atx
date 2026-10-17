@@ -1464,6 +1464,24 @@ monitor/summ/trial until fresh DERIV agreement and explicit PM completion releas
 
 ### B.8 P9-V: vol-target-v1 on `atx-cov-v1` (COV-6, ledger :198; registered by PRE-1)
 
+[PRE-40, R15-V-READY/SOURCE/B8A/LAUNCH: registration ae92cf3a adds
+`scripts/specs/p9/templates/p9v-vol-target-cov.json`, SHA256
+`95cf5c05d1c9257ee10592f255a2321a16f0112edb2305b7876bee973d4e98ed`,
+parent completed X `p9x-leverage.json` (ac60bd39, e8a308b5...). Sole scientific
+delta is pinned v11->covv1 risk store, original cap/floor/cadence/annual constants
+unchanged; H-scaled mechanics never rescaled from X. Exact full closed delta,
+producer argv/pins, scalar/source/independent-read gates and B.8(a) diagnostic
+prerequisites are committed in `cells/p9v-vol-target-cov-plan.md` and companion
+proposal at1ad619ef. Both inherited print flags occur once; completed H phases
+reused, flag-absent fit, no gross matching/calibration of V. Source/rho/mechanics
+ordering and PRE-13 selection stay separate. Actual H receipt calibration argv
+is retained only for B.8(a)'s holdings identity rerun; every other byte must match.
+70-field witness covers all11 risk reads; book-csv uses the pinned existing Q5
+serializer. R15-RAM-NOW omits optional admission-wait/host-budget arguments,
+retains bounded caps/floor512MiB/C:>=15GB and actual-stop preservation. Both
+R15-V-PREPSCOPE disclosures remain explicit; no trial before fresh DERIV and PM
+completion release. This restatement changes no registered criterion.]
+
 - **id** `p9v-vol-target-cov`. Registered because P9-X is the Y-1 form (PRE-1; COV-6). **Counts** N_c +1 if run.
 - **Rule.** `vol-target-v1` with its registered constants (cap = P9-X's L 2.0, floor 1, cadence 21, annualisation 252)
   on P9-F0 [read: P9-F0h (PRE-MVX, MVX-F0H)], reading `build-equity/p9-m2i-dcov-covv1` (manifest `ea58691f...f0f3`,
@@ -2478,6 +2496,9 @@ the gate's final hand-back:
 20. B.7 rho of the P9-X pair - root, wave-3 references, before the read (B2-13). (part B2b: needs the re-based Y-F0)
     (filled, part B2b: on the references; the cell's own pair, if P9-X runs, is the cells root's before its read)
 21. B.8 P9-V hand spec and SHA-256 - root writes and commits it (PRE-11). (part A: registration commit)
+    [Filled, PRE-40/R15-V-READY: ae92cf3a, `scripts/specs/p9/templates/p9v-vol-target-cov.json`,
+    SHA256 `95cf5c05d1c9257ee10592f255a2321a16f0112edb2305b7876bee973d4e98ed`;
+    exact proposal/plan at1ad619ef. Original placeholder retained as history.]
 22. B.8 rho of the P9-V pair - root, before the read (B2-13). (part B2b) (filled, part B2b: a cell-time value, the cells
     root's before P9-V's read)
 23. B.8 (a) producer of the book's sigma_hat bias on the two stores - root, before P9-V's read. (filled, part B2a:
