@@ -27,6 +27,16 @@ It closes the MINOR findings deferred from three integrated lanes:
 | NIT-4 (TDD deviation disclosed) | No change; this sprint also ran implementation first, per its brief. | - |
 | NIT-5 (ledger "converges 91/91") | Correction line appended: 51 of the 91 stopped on StepTolerance. | - |
 
+**Rerun flag (added at integration, review `3465221c` MINOR-1).** Every
+m1/m3/m5/m6 `prior: seed` or interval-seeded result produced before
+`811282cf` used 18 one-sided interval seeds as starting values and must be
+rerun before any held-out use. In each of the m1/m3/m5/m6 native reports, 53
+decisions are `applied_interval_fallback` and 18 of them have a null `lower`
+or `upper`; under `811282cf` those 18 become `fallback_one_sided_interval`.
+This covers every m1/m3 number in `2026-10-16-markov-fit-budget-sprint.md`
+(including the "m1 = X1 = 0.6877" seed-alone finding and the m5-vs-m1 and
+m6-vs-m3 deltas) and every composite built on m6.
+
 ## B. Implied forward (commit `3ed89f9b`)
 
 | Finding | Fix | Test |
