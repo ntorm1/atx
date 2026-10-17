@@ -2184,7 +2184,7 @@ reads before v8: 2 (2023-2024); history reads <r>; 2025+ never read; identity-br
 
 ## G. Freeze gate checklist (plan section 4.4, as amended by G-P11 and SQL-8; the PM ticks it)
 
-- [ ] 1. Book: G-B1 floor met by P9-F0 (P9-F0h beside if it differs, PRE-10); G-B2 by P9-F (PRE-13) against 8.0% (label
+- [x] 1. Book: G-B1 floor met by P9-F0 (P9-F0h beside if it differs, PRE-10); G-B2 by P9-F (PRE-13) against 8.0% (label
       "plan placeholder, not owner-stated"); G-B4 floor; G-B6 one-sided p < .05; G-B9 mechanics; G-B5 and G-B7
       printed; G-B1 / G-B2 / G-B8 carry the identity-bridge flag (OD5-1 (i), ALD-9).
 - [ ] 2. History: OD-3 read once under F.1 on P9-F0h (PRE-10); predictions printed against outcomes; the clean-source
@@ -2204,10 +2204,10 @@ reads before v8: 2 (2023-2024); history reads <r>; 2025+ never read; identity-br
       cells root at the first P9 v2 wave with its evidence row; G-P2, G-P3, G-P4, G-P6, G-P7, G-P8, G-P9 and G-P11
       ticked at the gate, each with its evidence row (`root-gate-report.md:997-1011` at `d22246f6`;
       `integration-log.md:902-909`).
-- [ ] 4. Accounting: the Appendix A block of every P9 result complete; N_c <= 71, K_a, M, N_tot <= 252 (A.1); every
+- [x] 4. Accounting: the Appendix A block of every P9 result complete; N_c <= 71, K_a, M, N_tot <= 252 (A.1); every
       void, undefined, lapsed and not-a-new-trial (PRE-30) cell logged with its count (0 or 1).
 - [ ] 5. Housekeeping: every P9 pool released; lane branches merged by SHA; no dirty path in the research pathspec.
-- [ ] 6. G-P10 printed with its evidence (a)-(e), landed / partial / P10; it does not gate (SQL-8). [ROUND 2b-ii: at
+- [x] 6. G-P10 printed with its evidence (a)-(e), landed / partial / P10; it does not gate (SQL-8). [ROUND 2b-ii: at
       the gate (step 7, after the re-pin; the Release store exe p9-3f `0eeac21b...3818`; every catalog DB outside the
       root, `build-equity/research-store/` absent): the real-tree catalog digest of the gate head
       `adbcd348b5d82a1fd4f357274a34bbf387391cf82154a961e701bad39a0dd474` (bounded root run `p9-b0g-cat-2-run`; files_seen
@@ -2219,17 +2219,44 @@ reads before v8: 2 (2023-2024); history reads <r>; 2025+ never read; identity-br
       G-P10 (a), (b), (c), (e) landed, (d) PARTIAL as M6 states; the X-5 cache identities are M6b's items 5 / 6
       (FIELDS-X5) - `gate-logs/realcat-gate.txt`, `realcat-gate-verify.txt`, `fixture-chain-{4,5,6}.txt`;
       `root-gate-report.md:971-1013` (at `d22246f6`); `handoff-root-gate.md:110-118`].
-- [ ] 7. EXE-FREEZE held from the wave-3 re-pin to the freeze (or each break re-based first); `ucrtbase.dll` records
+- [x] 7. EXE-FREEZE held from the wave-3 re-pin to the freeze (or each break re-based first); `ucrtbase.dll` records
       equal across every cell, and the two D-COV stores' record unchanged (C.6, C.8; CRT-2). Round 2b-ii part B1
       (GATE-1, ledger :630): "the wave-3 re-pin" is the ONE re-pin (W1-I2 (b), `exes.eval` included) of the one gate
       for waves 2 and 3, made after its ONE P9-B0 (R-2, Y-F0 and Y-1 re-based; the substitution list written first);
       EXE-FREEZE starts at that re-pin; the re-pin's exe table (tag, SHA-256, source commit) is part B2's ("Round 2b-ii
       record"). Part B2b: the re-pin of record is `2078f877`, EXE-FREEZE from it (C.8); the exe table is in "## Round
       2b-ii record".
-- [ ] 8. Verdict wording for a pass: "passed with the identity-bridge flag"; `al-data/atx-db-request.md` handed to the
+- [x] 8. Verdict wording for a pass: "passed with the identity-bridge flag"; `al-data/atx-db-request.md` handed to the
       owner with the freeze report (OD5-1 (iv)-(v)).
-- [ ] 9. Owner items listed, not acted on: OD5-2 (deterministic `pow` / `tanh` / `exp2` and its one-time re-pin; M2I-HK),
+- [x] 9. Owner items listed, not acted on: OD5-2 (deterministic `pow` / `tanh` / `exp2` and its one-time re-pin; M2I-HK),
       OD5-3 (main / origin main), OD5-5 (data purchase), production leverage (OD5-7), the WQ theme (WQ-1, OD5-4).
+
+### PM final reconciliation (RESUME 15)
+
+These ticks record actual evidence, not a waiver of the unchecked conditions. The
+original scientific conditions above remain unchanged. Final gate verdict:
+**NOT PRODUCTION-QUALIFIED**. A completed P9 milestone is distinct from a qualified
+book/platform pass. `freeze-verdict.md`, `final-report.md` and the complete
+`rulings-index-final.md` carry the dispositions and owner/P10 handover; final
+document/metadata continuity is in `freeze-final-state.md`.
+
+| Item | PM disposition and evidence |
+|---|---|
+| 1 | MET: R15-ADOPT-READ-OD3 / `adoption-print.md`. F0=F0h=H, F=X. B1/B2/B4/B6/B9 met; B2 remains **plan placeholder, not owner-stated**. B6 one-sided p .0372 meets .05 but not .01 target. B3/B5/B7 remain print-only; their unfavorable results are retained. Full identity flags printed. |
+| 2 | NOT EVALUATED: OD3-DB unanswered; `od3-read.md` records **not read in P9: era inputs under atx-db (A4-DB, OD3-DB)**. G-B8 not evaluated, history0. No era, prediction-outcome or clean-source statistic is invented. |
+| 3 | NOT FULLY MET: G-P1 UNAWARDED, G-P5 PARTIAL (four unlisted pairs, P10 retirement). G-P2/3/4/6/7/8/9/11 retain the named gate passes and their recorded scope. Existing Python year-table/per-year bundle producers qualify the native-statistics claim; no new gate pass is inferred. |
+| 4 | MET: final ledger140, Nc69/Nhand130/M110/Ntot240; original133 prefix preserved. Seven completed cells count1 each; S/W lapsed0. Full Appendix A records plus four R15-APPENDIX-SPLIT historical clarifications are complete. No adoption trial or history line added. |
+| 5 | OWNER ITEM under LEASE-DEAD: no lease release, stale recovery, worktree removal/prune or foreign cleanup. Final scope/status/ref checks are in `freeze-final-state.md`; five owner PNGs remain name-only/untracked. Historical lane integration evidence is retained, not re-merged. |
+| 6 | PRINT COMPLETE: all G-P10(a)-(e) in `final-report.md`, the original gate snapshot. (d) remains PARTIAL; catalog schema-hash binding remains a P10 gap. This row gates nothing. |
+| 7 | MET: re-pin2078f877/source5f48a25d; no rebuild. Fresh freeze preparation and final continuity verification bind all54 exes, CRT, both covariance manifests/models, v15/role and126 references. Large payload hashes are streamed. No expected pin changed. |
+| 8 | FLAG/HANDOVER COMPLETE: exact identity-bridge flag and `al-data/atx-db-request.md` delivered by reference in the final report. No qualified pass is asserted, so the conditional pass wording does not turn this into a pass. |
+| 9 | LISTED, NOT ACTED ON: owner items, historical permission refusals/command-text gaps and P10 work are retained in the final report and complete ruling appendix. Main/origin-main and leases are not mutated. |
+
+Research interpretation: H meets the registered adoption rule, but its incremental
+comparison to YF0 has one-sided p .4744; the six-step conditional adjusted sum is
+-1.6477111820020742. These nondeciding prints do not reverse the precommitted
+selection or establish new out-of-sample alpha. Platform delivery and alpha evidence
+receive separate outcomes under `goal-two-tracks.md`.
 
 ---
 
