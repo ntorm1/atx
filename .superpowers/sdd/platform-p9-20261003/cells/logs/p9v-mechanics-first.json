@@ -1,0 +1,105 @@
+{
+  "rows": [
+    {
+      "check": "mean_gross_leverage_all_rows",
+      "value": 1.5689054552945432,
+      "limit": [
+        0.8398191654289909,
+        1.6946383308579818
+      ],
+      "pass": true
+    },
+    {
+      "check": "mean_net_leverage_all_rows",
+      "value": 0.009515183983300727,
+      "limit": 0.03426417680315231,
+      "pass": true
+    },
+    {
+      "check": "tau_gmv_mean",
+      "value": 0.0274239219358025,
+      "limit": 0.3426417680315231,
+      "pass": true
+    },
+    {
+      "check": "tau_gmv_p95",
+      "value": 0.0340207434251207,
+      "limit": 0.5139626520472845,
+      "pass": true
+    },
+    {
+      "check": "max_return_identity_error",
+      "value": 3.918306651362613e-16,
+      "limit": 1e-09,
+      "pass": true
+    },
+    {
+      "check": "max_cash_book_relative_error",
+      "value": 1.0425862266790606e-13,
+      "limit": 1e-09,
+      "pass": true
+    }
+  ],
+  "pass": true,
+  "exposure": [
+    {
+      "scenario": "linear-6bps-stale5-v1+swap-fin-v1",
+      "mean_gross_leverage": 1.5601522494947695,
+      "max_gross_leverage": 1.8574538217014218
+    },
+    {
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "mean_gross_leverage": 1.5686889463334153,
+      "max_gross_leverage": 1.8610479460638438
+    },
+    {
+      "scenario": "modeled-1bn-terminal-adverse-v1+swap-fin-v1",
+      "mean_gross_leverage": 1.5718856185161847,
+      "max_gross_leverage": 1.864999781180776
+    },
+    {
+      "scenario": "modeled-1bn-stale5-v1+flat-300-v0",
+      "mean_gross_leverage": 1.5660362758167476,
+      "max_gross_leverage": 1.8661622915687062
+    },
+    {
+      "scenario": "modeled-1bn-stale5-v1+engine-tiers-v1",
+      "mean_gross_leverage": 1.5691450384302525,
+      "max_gross_leverage": 1.8616312760698774
+    }
+  ],
+  "cap_hold": true,
+  "L_t_cap_hold": true,
+  "L_t_rows": 1004,
+  "mechanics_sha256": "3c4a645db5cdddfc9d58dfbbcd72bff672fd3b1ce8cbc81bda591639729787e5",
+  "summary_sha256": "ac83c97006150d45a05bec4e5c9895bc773cc9afee73c2878c38d68003d57233",
+  "vol_target_sha256": "38a963fc9d530c4e1d08de616bcd9b96758c6accb640303dabc454f935994065",
+  "receipts": [
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/receipt.json",
+      "sha256": "e737f364176ea6754c00be0000d1b9572f84b33fa6ed0f01aaec0aa5fb9f867f",
+      "argv_sha256": "1c2d38c22e425c32f0fbe5d16ee222e3c7fcb14e4eb0832578713bc198f6d989",
+      "source_sha": "a0c6ec5dec28227dc725b0782eef5fb13be5e6f0",
+      "wall_seconds": 21.968999999924563,
+      "peak_mib": 1142.390625,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      }
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/mechanics-run1/receipt.json",
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "argv_sha256": "a408b46a71d4017524157a19a74edfbf3a17464550f5c0cb47d058312c406c71",
+      "source_sha": "a0c6ec5dec28227dc725b0782eef5fb13be5e6f0",
+      "wall_seconds": 0.5150000000139698,
+      "peak_mib": 44.76171875,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      }
+    }
+  ]
+}

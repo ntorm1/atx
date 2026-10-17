@@ -184,16 +184,25 @@ def bundle():
     exe=sha('build-equity-rel/bin/atx-research-eval.exe')
     assert b['nav_summ_run']['engine_exe_sha256']==exe==p['template']['change']['set']['exes_sha256']['eval']
     files={str(f):sha(f) for d in (BASE,CELL) for f in (d/'summary.json',d/('daily_'+p['scenario']+'.csv'))}
+    bindings={Path(v['path']).resolve():v['sha256'] for v in doc(DIRS['pair']/'receipt.json')['bindings']}
+    assert all(bindings.get(Path(path).resolve())==pin for path,pin in files.items()), 'STOP: original pair receipt bindings'
     return b,{'path':str(READ/'pair.json'),'sha256':sha(READ/'pair.json'),'files':files,'receipt':r,'engine_exe_sha256':exe}
 
-def rho():
-    b,out=bundle(); p=b['paired']; r=finite(p['rho'])
+def degeneracy(p):
+    r=finite(p['rho'])
     assert type(p['sessions']) is int and p['sessions']>=2 and -1<=r<=1 and r!=.999999
+    assert not math.isclose(1-r,1e-6,rel_tol=0,abs_tol=1e-12), 'STOP: rho rounding-boundary concern'
     if 'degenerate' not in p and 'one_minus_rho' not in p:
+        assert 1-r>1e-6, 'STOP: absent optional fields conflict with rho threshold'
         flag=False; provenance='inferred FALSE; missing optional fields under R15-V2-RHO, stable difference not supplied'
     elif p.get('degenerate') is True and 0<=finite(p['one_minus_rho'])<1e-6:
+        assert 1-r<1e-6 and abs((1-r)-p['one_minus_rho'])<1e-12, 'STOP: inconsistent stable difference'
         flag=True; provenance='supplied stable difference and native flag'
     else: raise AssertionError('STOP: inconsistent degeneracy encoding')
+    return flag,provenance
+
+def rho():
+    b,out=bundle(); p=b['paired']; flag,provenance=degeneracy(p)
     out.update(paired={k:p.get(k) for k in ('sessions','rho','one_minus_rho','degenerate')},
         missing=[k for k in ('one_minus_rho','degenerate') if k not in p],threshold_flag=flag,provenance=provenance)
     save(own('rho-first'),out); return out
@@ -261,6 +270,11 @@ def controls():
     assert any(h['source']=='OTHER' for h in X.source_text(text.replace('2026-10-17T','2026-10-18T'),'receipt'))
     p={'dsr':1,'memmel_se':2,'t':3,'lw':{'p_value':.5,'p_one_sided':.4,'secret':'CANARY'},'cbb':'CANARY'}
     assert 'CANARY' not in json.dumps(X.project_pair(p,False)) and X.project_pair(p,True)['t']=='n/a'
+    assert degeneracy({'rho':.9,'sessions':10})[0] is False
+    for r in (.999999,.9999999,1.):
+        try: degeneracy({'rho':r,'sessions':10})
+        except AssertionError: pass
+        else: raise AssertionError('synthetic absent-key inconsistency was accepted')
     assert len(DIRS)==8 and len(set(DIRS.values()))==8
     assert len({str(d/n) for d in DIRS.values() for n in ('start.json','receipt.json','stdout.log','stderr.log')}|{str(LOGS/f'p9v-{s}-raw.log') for s in DIRS})==40
     return {'V_routing_scalar_source_controls':'PASS','scientific_input_reads':0,'source_files':40}
