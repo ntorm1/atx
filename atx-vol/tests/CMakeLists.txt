@@ -788,7 +788,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME atx-vol-quote-benchmark-tools
         COMMAND ${Python3_EXECUTABLE} -m pytest --noconftest -q
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_quote_benchmark.py
-            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_american_audit_compare.py)
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_american_audit_compare.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_compose_predictions_by_status.py)
     set_tests_properties(atx-vol-quote-benchmark-tools PROPERTIES
         LABELS atx_vol_tools TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
