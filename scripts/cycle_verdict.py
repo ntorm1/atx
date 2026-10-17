@@ -7,7 +7,9 @@
                  only after a full run whose summ wrote nav_summ --json / --pbo-json into the cycle dir (spec
                  "verdict": true); dsr is the pre-registered DSR (v8-prereg item 3, review C-1): nav_summ
                  --dsr-ledger's ``deflated_ledger`` (N and V[SR] from the sprint ledger of record, never from a cell
-                 count), the legacy-variance DSR beside it (gates nothing); a summ row without it is refused,
+                 count), the legacy-variance DSR beside it (gates nothing); a summ row without it is refused; when the
+                 spec names the engine verb (exes.eval, P9 ruling B2-R3) a summ.json / pbo.json whose
+                 nav_summ_run.engine_exe_sha256 is not its exes_sha256 pin (unpinned: its SHA-256 now) is refused,
    phases[{name, seconds, peak_mib}]  from each phase's bounded-runner receipt, else the cycle's own wall clock
                  (peak_mib null) for a direct phase run by this invocation,
    ledger{path, head, lines}  the sprint ledger of record's chain head when the cycle has a ledger (review C-6)}
@@ -25,10 +27,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import research_store_hook
+
 VERDICT = "cycle_verdict.json"
 VERDICT_SCHEMA = "atx.cycle-verdict/v1"
 VERDICTS = "verdicts"                  # <cycle dir>/verdicts/<mode>-<k>.json: the per-run copies (keep)
 SUMM_JSON, PBO_JSON = "summ.json", "pbo.json"     # nav_summ --json / --pbo-json targets in the cycle dir
+EVAL_KEY = "eval"           # the exes key of the engine verb (research_cycle.EVAL_EXE; P9 ruling B2-R3)
 
 
 class VerdictError(ValueError):
@@ -63,9 +68,48 @@ def phase_rows(cycle, steps: dict, timings: dict) -> list[dict]:
     return out
 
 
-def scoring_blocks(res, cycle_dir: str, nav_out: str) -> dict:
+def verb_sha256(cycle) -> tuple[str, str] | None:
+    """(SHA-256, what it is) of the engine verb the summ's statistics must come from (P9 ruling B2-R3): the cycle's
+    exes_sha256 pin of exes.eval, else exes.eval's SHA-256 as it is now; None when the spec names no verb (nav_summ
+    resolved its own: nothing to compare, as before). A named verb that is missing is refused."""
+    pins = getattr(cycle, "exe_pins", None) or {}
+    if EVAL_KEY in pins:
+        rel, sha = pins[EVAL_KEY]
+        return sha, f"the exes_sha256 pin of {rel}"
+    rel = (cycle.spec.get("exes") or {}).get(EVAL_KEY)
+    if not rel:
+        return None
+    sha = cycle.res.sha(rel)
+    if sha is None:
+        raise VerdictError(f"exes.eval {rel} is missing: the summ's statistics cannot be matched to their verb (P9 "
+                           "ruling B2-R3)")
+    return sha, f"{rel} (unpinned, as it is now)"
+
+
+def check_verb(name: str, doc, verb: tuple[str, str]) -> None:
+    """Ruling B2-R3: a summ output (``name``: summ.json row or pbo.json) whose nav_summ_run names another engine verb
+    than ``verb`` (or none) is refused: a summ output of another verb is not reused."""
+    run = doc.get("nav_summ_run") if isinstance(doc, dict) else None
+    got = run.get("engine_exe_sha256") if isinstance(run, dict) else None
+    if got != verb[0]:
+        raise VerdictError(f"{name}: its statistics come from the engine verb {got or 'none named'} "
+                           f"(nav_summ_run.engine_exe_sha256), not {verb[1]} {verb[0]}: a summ output of another "
+                           "verb is not reused (P9 ruling B2-R3; run the summ again)")
+
+
+def check_summ_verb(cycle_dir: str, summ: list, pbo, verb: tuple[str, str]) -> None:
+    """check_verb on every row of a cycle's summ.json and on its pbo.json (when there is one): the verdict's rule, and
+    the wave judge's for a v2 cell (wave_stage_record.scored_verdict, ruling B2-11: at the stage that runs the summ)."""
+    for r in summ:
+        check_verb(f"{cycle_dir}/{SUMM_JSON} row {r.get('dir') if isinstance(r, dict) else r!r}", r, verb)
+    if pbo is not None:
+        check_verb(f"{cycle_dir}/{PBO_JSON}", pbo, verb)
+
+
+def scoring_blocks(res, cycle_dir: str, nav_out: str, verb: tuple[str, str] | None = None) -> dict:
     """paired, dsr and pbo from nav_summ's --json (a list of per-dir results: this cycle's NAV dir, else the last)
-    and --pbo-json; {} when the summ wrote no JSON."""
+    and --pbo-json; {} when the summ wrote no JSON. With ``verb`` (verb_sha256) every row and the pbo.json must name
+    that verb (check_verb)."""
     summ = res.read_json(f"{cycle_dir}/{SUMM_JSON}")
     if not isinstance(summ, list) or not summ:
         return {}
@@ -73,6 +117,8 @@ def scoring_blocks(res, cycle_dir: str, nav_out: str) -> dict:
     row = mine[-1] if mine else summ[-1]
     p = row.get("paired") or {}
     pbo = res.read_json(f"{cycle_dir}/{PBO_JSON}")
+    if verb is not None:
+        check_summ_verb(cycle_dir, summ, pbo, verb)
     return {"paired": {"dsr": p.get("dsr"), "se": p.get("memmel_se"), "cbb_ci": p.get("cbb_ci95"),
                        "lw_p": (p.get("lw") or {}).get("p_value")},
             "dsr": dsr_block(row),
@@ -117,7 +163,7 @@ def verdict(cycle, timings: dict, spec_sha256: str | None, ledger: dict | None =
     doc["phases"] = phase_rows(cycle, steps, timings)
     navs = [st for st in steps.values() if st.phase == "nav"]
     if not cycle.screen and s.get("verdict") and navs:
-        doc.update(scoring_blocks(res, cycle.cycle_dir(), navs[-1].output))
+        doc.update(scoring_blocks(res, cycle.cycle_dir(), navs[-1].output, verb_sha256(cycle)))
     if ledger is not None:
         doc["ledger"] = ledger
     return doc
@@ -133,7 +179,9 @@ def keep_copy(cycle, mode: str, text: str) -> str:
         try:
             with (d / f"{mode}-{k}.json").open("x", encoding="utf-8", newline="\n") as f:
                 f.write(text)
-            return f"{cycle.cycle_dir()}/{VERDICTS}/{mode}-{k}.json"
+            rel = f"{cycle.cycle_dir()}/{VERDICTS}/{mode}-{k}.json"
+            research_store_hook.record(cycle.res.root, rel, "cycle-verdict")       # P9 SQL3 item 5
+            return rel
         except FileExistsError:
             k += 1
 
@@ -145,6 +193,7 @@ def write_verdict(cycle, timings: dict, spec_sha256: str | None, log, ledger: di
     doc = verdict(cycle, timings, spec_sha256, ledger)
     text = json.dumps(doc, indent=2) + "\n"
     path.write_text(text, encoding="utf-8", newline="\n")
+    research_store_hook.record(cycle.res.root, f"{cycle.cycle_dir()}/{VERDICT}", "cycle-verdict")   # P9 SQL3 item 5
     copy = keep_copy(cycle, doc["mode"], text) if keep else None
     for r in doc["marginal"]:
         log(f"marginal {r.get('id')}: ic21 {r.get('ic21')} (HAC t {r.get('ic21_hac_t')}); marginal ic21 "

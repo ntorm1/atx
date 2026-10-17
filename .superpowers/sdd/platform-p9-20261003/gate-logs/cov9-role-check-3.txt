@@ -1,0 +1,6 @@
+COV-9 role check (m2g-logs/tools/s9_check.py), 2026-10-16T14:19:24Z, before the Y-1 P9-B0 NAV re-base (reads --risk-model; COVR-1)
+role manifest build-equity/train-2020-2023-lo3/manifest.json sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4
+universe.delisting keys ['by_cause', 'counts', 'events', 'return_rule', 'returns_applied', 'rule', 'stage_rule']
+universe.delisting.returns_applied = false
+events with returns_applied true: 0 of 990
+S9 HOLDS

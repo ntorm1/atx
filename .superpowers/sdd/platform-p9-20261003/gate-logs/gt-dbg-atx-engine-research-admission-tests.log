@@ -1,0 +1,41 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 16 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 16 tests from ResearchAdmission
+[ RUN      ] ResearchAdmission.EqualsFitterFixture
+[       OK ] ResearchAdmission.EqualsFitterFixture (26 ms)
+[ RUN      ] ResearchAdmission.CsvEqualsFitterBytes
+[       OK ] ResearchAdmission.CsvEqualsFitterBytes (3 ms)
+[ RUN      ] ResearchAdmission.PythonFloatRepr
+[       OK ] ResearchAdmission.PythonFloatRepr (0 ms)
+[ RUN      ] ResearchAdmission.CliScreensAFactorSeries
+[       OK ] ResearchAdmission.CliScreensAFactorSeries (71 ms)
+[ RUN      ] ResearchAdmission.CandidatesContract
+[       OK ] ResearchAdmission.CandidatesContract (1 ms)
+[ RUN      ] ResearchAdmission.ScreenV4ClosedForm
+[       OK ] ResearchAdmission.ScreenV4ClosedForm (0 ms)
+[ RUN      ] ResearchAdmission.FirstFailureWins
+[       OK ] ResearchAdmission.FirstFailureWins (0 ms)
+[ RUN      ] ResearchAdmission.GreedyOrderTierThenRoster
+[       OK ] ResearchAdmission.GreedyOrderTierThenRoster (0 ms)
+[ RUN      ] ResearchAdmission.RhoLimitIsStrictAndLowOverlapIsNoted
+[       OK ] ResearchAdmission.RhoLimitIsStrictAndLowOverlapIsNoted (0 ms)
+[ RUN      ] ResearchAdmission.HacMethodReproducesTheFitter
+[       OK ] ResearchAdmission.HacMethodReproducesTheFitter (0 ms)
+[ RUN      ] ResearchAdmission.RefusesMalformedInput
+[       OK ] ResearchAdmission.RefusesMalformedInput (0 ms)
+[ RUN      ] ResearchAdmission.TradedHorizonClosedForm
+[       OK ] ResearchAdmission.TradedHorizonClosedForm (0 ms)
+[ RUN      ] ResearchAdmission.SignPredicateGateRule
+[       OK ] ResearchAdmission.SignPredicateGateRule (0 ms)
+[ RUN      ] ResearchAdmission.SignPredicateWaveRule
+[       OK ] ResearchAdmission.SignPredicateWaveRule (0 ms)
+[ RUN      ] ResearchAdmission.SignPredicatePm735DecisionTable
+[       OK ] ResearchAdmission.SignPredicatePm735DecisionTable (0 ms)
+[ RUN      ] ResearchAdmission.SignPredicateUnknownFailsClosedAndNamesRoundTrip
+[       OK ] ResearchAdmission.SignPredicateUnknownFailsClosedAndNamesRoundTrip (0 ms)
+[----------] 16 tests from ResearchAdmission (105 ms total)
+
+[----------] Global test environment tear-down
+[==========] 16 tests from 1 test suite ran. (106 ms total)
+[  PASSED  ] 16 tests.

@@ -27,6 +27,9 @@ another DSL), and a second variant of one hypothesis id unless that variant carr
 emit writes a wave manifest (wave_manifest.py) from HEAD (every manifest key but candidates) and the selected PINNED
 candidates in the order given; --after RESULT takes parent and expect.n_before from a previous wave-result.json (its
 next_parent and ledger.n_after: N advanced by code). Nothing is overwritten; every write is validated first.
+Each candidate file written (new, pin, the wave's record stage) and each emitted manifest goes to the record-store
+hook (P9 SQL3, research_store_hook: classes wave-candidate and wave-manifest; a no-op unless the root's catalog is
+on; never changes a byte or an exit code).
 """
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import research_store_hook  # noqa: E402
 import research_tree  # noqa: E402
 import wave_manifest as WM  # noqa: E402
 
@@ -139,6 +143,7 @@ def write(root: Path, c: dict, d: str | None = None, *, new: bool = False) -> Pa
         raise QueueError(f"{p} exists: a candidate is proposed once")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(c, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    research_store_hook.record(root, Path(d or QUEUE_DIR) / p.name, "wave-candidate")   # root-relative (SQL3-WQ)
     return p
 
 
@@ -342,6 +347,7 @@ def main(argv=None) -> int:
             raise QueueError(f"{out} exists: a wave manifest is written once")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(m, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+        research_store_hook.record(root, a.output, "wave-manifest")     # root-relative unless absolute (SQL3-WQ)
         print(f"wave manifest {out.as_posix()}: {len(m['candidates'])} candidates; commit it, then "
               f"research_cycle.py wave run {a.output.as_posix()}")
         return 0

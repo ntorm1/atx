@@ -5,6 +5,7 @@
 #include <vector>
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "strategy_ic_cache_index.hpp"
 namespace atx::impl::strategy {
 // Bytes of a research fields manifest (atx.research-role-fields/v1) the IC runner and the
 // marginal verb read (review B-4). Every other metadata file keeps 1 MiB, but a published
@@ -33,9 +34,32 @@ struct IcRunnerConfig {
   bool no_composition{false};
   // Cost measurement (platform v8 task H-2, --eval-mode audit-exact): every candidate is
   // evaluated under the VM's AuditExact mode instead of ResearchFast, and the recipe's "vm"
-  // names it. Refused with --candidate-cache, whose entries are keyed on ResearchFast. False:
-  // the runner is unchanged.
+  // names it. P9 S2: allowed with --candidate-cache, whose signal entries then live under their
+  // own identity token (vm_identity(true): the ResearchFast identity + "_audit", its own cache
+  // root, eval_mode keyed and matched), so the two tiers never share an entry. False: the runner
+  // is unchanged (the default switch is a P9-B0 ruling, not this flag).
   bool audit_exact{false};
+  // P9 S2 (DS-4, --min-coverage F): IcScreenConfig::min_coverage, in (0, 1]. The default .8 is
+  // the former hard-coded gate: the recipe, the IC-result scope and every output keep their bytes.
+  // Any other value is recorded in the recipe and keys the IC-result cache.
+  atx::f64 min_coverage{0.8};
+  // P9 S2 (--ic-hac-rule bartlett-2h-v1|horizon-aware-v3; empty: absent). Absent, the screen's
+  // own HAC rule and no byte changes. Present, the recipe records it, a non-default rule keys the
+  // IC-result cache, and every printed estimate carries a "hac" block with its standard error and
+  // lag under BOTH rules (the other recomputed from the same daily series).
+  std::string ic_hac_rule;
+  // P9 S2 (DS-3, --label-terminal imputed-v1; empty: today's labels, no byte changes). Each scored
+  // role then needs its pinned label role (--train-label-role / --validation-label-role with their
+  // SHA-256): the role builder's --delisting-returns build of that role (universe.delisting.
+  // returns_applied true), read as a label-only price column. Its imputed close prices a name's
+  // termination session, so a name that terminates inside a label's horizon exits there
+  // (LabelTerminalRule::ImputedV1) instead of having no label; the signal role-refusal (E-10)
+  // stays for every signal and field. The run scores with the imputed labels, prints each
+  // candidate's IC under today's labels beside them ("ic_missing_exit_v1"), the missing-exit share
+  // and the imputed-pair count, and records the rule and the label pins in the recipe.
+  std::string label_terminal;
+  std::string train_label_role, train_label_role_sha256;
+  std::string validation_label_role, validation_label_role_sha256;
   // Optional reusable raw DSL signals under ROOT = DIR[/<vm-identity>] (the
   // <vm-identity> level is omitted only for the legacy identity dslvm1_clang18.1).
   // Content-keyed layout (atx.dsl-candidate-signal/v2, written by this runner):
@@ -80,6 +104,19 @@ struct IcRunnerConfig {
   // registry's themes at the P9 base, so every output is byte-identical to runs without it;
   // present, summary.json (and a --plan-only plan) records theme_registry_sha256.
   std::string theme_registry_path, theme_registry_sha256;
+  // absent-members-v1 (P9 lane ABS, ruling OD3P-1; strategy_ic_absent.hpp): an
+  // atx.od3-flagged-members/v1 list (the SHA-256 of its bytes pinned) of library members the pass
+  // treats, on every date, as members with no data. Both or neither; refused with
+  // --no-composition. Absent: every output byte unchanged; present, summary.json records
+  // absent_members and nothing else names it (no recipe term, no cache key).
+  std::string absent_members_path, absent_members_sha256;
+  // P9 lane SQL4 (--candidate-cache-index files|sqlite; strategy_ic_cache_index.hpp): Files (the
+  // default, and an absent flag) is today's cache layout and every output byte, whatever files
+  // DIR holds. Sqlite keeps the signal and IC-result entries as rows of DIR/index.sqlite (made only
+  // by `atx-research-store cache init DIR`; payload files unchanged, legacy files read through);
+  // the summary's candidate_cache block then records "index": "sqlite". Needs --candidate-cache;
+  // refused with --cache-report (a file-layout listing). Not a method input (no recipe term).
+  CacheIndexMode candidate_cache_index{CacheIndexMode::Files};
 };
 // IC-only research; no book, surfaces, fees, Sharpe, stock events or holdout.
 // TRAIN21h sample rank-IC fits signs; validation uses frozen signs; screening remains diagnostic for the fixed blend.

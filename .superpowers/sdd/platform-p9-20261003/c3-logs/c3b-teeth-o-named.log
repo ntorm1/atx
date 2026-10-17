@@ -1,0 +1,138 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = NavSpec.*:NavRules.*:CostLawRegistry.*:TradeRateRegistry.*:TargetRegistry.*:NavFieldsSeal.*:NavBookWorkers.*:NavBookRule.*:NavAnnMeanGross.*:CalibrateGross.*:CovStore.*
+[==========] Running 34 tests from 11 test suites.
+[----------] Global test environment set-up.
+[----------] 2 tests from NavBookWorkers
+[ RUN      ] NavBookWorkers.PublishedBytesEqualOneWorker
+[       OK ] NavBookWorkers.PublishedBytesEqualOneWorker (827 ms)
+[ RUN      ] NavBookWorkers.V6CostV2CapacityAdvHoldOnFourEqualsOne
+[       OK ] NavBookWorkers.V6CostV2CapacityAdvHoldOnFourEqualsOne (2613 ms)
+[----------] 2 tests from NavBookWorkers (3441 ms total)
+
+[----------] 7 tests from CalibrateGross
+[ RUN      ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize
+[       OK ] CalibrateGross.NumpyMeanIsNumpysMeanAtEverySize (8 ms)
+[ RUN      ] CalibrateGross.FourDecimalsAndTheStepArePm66
+[       OK ] CalibrateGross.FourDecimalsAndTheStepArePm66 (3 ms)
+[ RUN      ] CalibrateGross.WithinToleranceOnePass
+[       OK ] CalibrateGross.WithinToleranceOnePass (734 ms)
+[ RUN      ] CalibrateGross.OneCorrectionMatchesTwoProcess
+[       OK ] CalibrateGross.OneCorrectionMatchesTwoProcess (3217 ms)
+[ RUN      ] CalibrateGross.RefusesOutsideRange
+[       OK ] CalibrateGross.RefusesOutsideRange (401 ms)
+[ RUN      ] CalibrateGross.TieredRunReusesTheConstructionByteForByte
+[       OK ] CalibrateGross.TieredRunReusesTheConstructionByteForByte (2046 ms)
+[ RUN      ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage
+[       OK ] CalibrateGross.ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage (6510 ms)
+[----------] 7 tests from CalibrateGross (12925 ms total)
+
+[----------] 1 test from NavFieldsSeal
+[ RUN      ] NavFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent
+[       OK ] NavFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent (942 ms)
+[----------] 1 test from NavFieldsSeal (942 ms total)
+
+[----------] 7 tests from NavBookRule
+[ RUN      ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns
+[       OK ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns (314 ms)
+[ RUN      ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule
+[       OK ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule (211 ms)
+[ RUN      ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath
+[       OK ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath (123 ms)
+[ RUN      ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges
+[       OK ] NavBookRule.RefusedWithoutTheStoreOrOutsideTheParameterRanges (84 ms)
+[ RUN      ] NavBookRule.ListRulesJsonCarriesTheLeverageRows
+[       OK ] NavBookRule.ListRulesJsonCarriesTheLeverageRows (28 ms)
+[ RUN      ] NavBookRule.AimLeverageIsOptionalWithItsDefault
+[       OK ] NavBookRule.AimLeverageIsOptionalWithItsDefault (6 ms)
+[ RUN      ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte
+[       OK ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte (3340 ms)
+[----------] 7 tests from NavBookRule (4109 ms total)
+
+[----------] 5 tests from CovStore
+[ RUN      ] CovStore.RiskSliceFromContainerEqualsDirectory
+[       OK ] CovStore.RiskSliceFromContainerEqualsDirectory (6166 ms)
+[ RUN      ] CovStore.VolAndRiskTargetRecordsUnchanged
+[       OK ] CovStore.VolAndRiskTargetRecordsUnchanged (493 ms)
+[ RUN      ] CovStore.RefusesRoleGeometryOrRootMismatch
+[       OK ] CovStore.RefusesRoleGeometryOrRootMismatch (377 ms)
+[ RUN      ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal
+[       OK ] CovStore.RefusesAContainerReachingTheSealWithoutUnseal (200 ms)
+[ RUN      ] CovStore.LegacyManifestTakesTheLegacyPath
+[       OK ] CovStore.LegacyManifestTakesTheLegacyPath (138 ms)
+[----------] 5 tests from CovStore (7377 ms total)
+
+[----------] 5 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (92 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (7 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (112 ms)
+[ RUN      ] NavSpec.GridFileRefusesADuplicateKey
+..\atx-impl\tests\strategy_nav_spec_test.cpp(409): error: Expected equality of these values:
+  run(grid, output, out, err)
+    Which is: 0
+  1
+--aim-leverage
+
+..\atx-impl\tests\strategy_nav_spec_test.cpp(411): error: Expected: (err.str().find("nav grid: duplicate key \"" + key + "\" in " + grid.string())) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+
+..\atx-impl\tests\strategy_nav_spec_test.cpp(413): error: Value of: fs::exists(output)
+  Actual: true
+Expected: false
+--aim-leverage
+
+..\atx-impl\tests\strategy_nav_spec_test.cpp(409): error: Expected equality of these values:
+  run(grid, output, out, err)
+    Which is: 0
+  1
+variants
+
+..\atx-impl\tests\strategy_nav_spec_test.cpp(411): error: Expected: (err.str().find("nav grid: duplicate key \"" + key + "\" in " + grid.string())) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+
+..\atx-impl\tests\strategy_nav_spec_test.cpp(413): error: Value of: fs::exists(output)
+  Actual: true
+Expected: false
+variants
+
+[  FAILED  ] NavSpec.GridFileRefusesADuplicateKey (1037 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (2124 ms)
+[----------] 5 tests from NavSpec (3376 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (10 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (16 ms)
+[----------] 2 tests from NavRules (27 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+[       OK ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (1384 ms)
+[----------] 2 tests from CostLawRegistry (1385 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (1 ms)
+[----------] 1 test from TradeRateRegistry (1 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (83 ms)
+[----------] 1 test from TargetRegistry (83 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (4275 ms)
+[----------] 1 test from NavAnnMeanGross (4275 ms total)
+
+[----------] Global test environment tear-down
+[==========] 34 tests from 11 test suites ran. (37949 ms total)
+[  PASSED  ] 33 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] NavSpec.GridFileRefusesADuplicateKey
+
+ 1 FAILED TEST

@@ -60,6 +60,7 @@
 #include "atx/engine/alpha/bytecode.hpp"
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/lit_ops.hpp" // W2 literature kernels (shared with the VM)
+#include "atx/engine/alpha/op_traits.hpp" // P9 S2: the per-opcode table (routing predicates)
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/state_ops.hpp"
@@ -152,82 +153,22 @@ struct RecState {
   std::vector<std::uint8_t> seeded;          // kalman_level / ou_filter / kalman_reg
 };
 
+// P9 S2: the three routing predicates below read the per-opcode table (op_traits.hpp). The W2
+// literature rows (detail::is_lit_op) stay out of the Ts and Cs routes, as before: their Ts ops run
+// on LitTsState rings (analyze_lit_ts) and bucket / cs_resid_on through exec_lit.
+// The shift and rolling families (delay, delta, group_delay's TsKind::Lookback, every Ts* window,
+// S3.2, OU rolling fit), minus the W2 trailing-window rows.
 [[nodiscard]] inline bool is_ts_op(OpCode op) noexcept {
-  switch (op) {
-  case OpCode::TsDelay:
-  case OpCode::TsDelta:
-  case OpCode::TsSum:
-  case OpCode::TsMean:
-  case OpCode::TsStd:
-  case OpCode::TsVar:
-  case OpCode::TsMin:
-  case OpCode::TsMax:
-  case OpCode::TsArgMin:
-  case OpCode::TsArgMax:
-  case OpCode::TsRank:
-  case OpCode::TsCorr:
-  case OpCode::TsCov:
-  case OpCode::TsProduct:
-  case OpCode::TsDecayLinear:
-  case OpCode::TsEma:
-  case OpCode::TsWma:
-  case OpCode::TsSkew:
-  case OpCode::TsKurt:
-  case OpCode::TsMed:
-  case OpCode::TsMad:
-  case OpCode::TsSlope:
-  case OpCode::TsRsquare:
-  case OpCode::TsResid:
-  case OpCode::TsZscore:
-  case OpCode::TsBackfill:
-  case OpCode::TsAvDiff:
-  case OpCode::TsQuantile:
-  case OpCode::TsScale:
-  case OpCode::TsCountNans:
-  case OpCode::TsRegression:
-  case OpCode::TsDecayExp:
-  case OpCode::TsEntropy:
-  case OpCode::TsMoment:
-  case OpCode::OuTheta:
-  case OpCode::OuHalflife:
-  case OpCode::OuMean:
-  case OpCode::OuZscore:
-  case OpCode::GroupDelay: // v8 YOPS: delay's shift on a classifier (TsKind::Lookback)
-    return true;
-  default:
-    return false;
-  }
+  return (detail::is_shift_op(op) || detail::is_rolling_op(op)) && !detail::is_lit_op(op);
 }
 
+// The cross-sectional family minus the W2 rows (bucket, cs_resid_on).
 [[nodiscard]] inline bool is_cs_op(OpCode op) noexcept {
-  switch (op) {
-  case OpCode::CsRank:
-  case OpCode::CsZscore:
-  case OpCode::CsScale:
-  case OpCode::CsNormalize:
-  case OpCode::CsWinsorize:
-  case OpCode::CsDemeanG:
-  case OpCode::CsNeutG:
-  case OpCode::CsRankG:
-  case OpCode::CsZscoreG:
-  case OpCode::CsCountG:
-  case OpCode::CsMeanG:
-  case OpCode::CsScaleG:
-  case OpCode::CsResidualize:
-  case OpCode::CsQuantile:
-  case OpCode::CsVecSum:
-  case OpCode::CsVecAvg:
-  case OpCode::CsSumG: // v8 YOPS group_sum
-    return true;
-  default:
-    return false;
-  }
+  return detail::is_cross_section_op(op) && !detail::is_lit_op(op);
 }
 
 [[nodiscard]] inline bool is_grouped_cs(OpCode op) noexcept {
-  return op == OpCode::CsDemeanG || op == OpCode::CsNeutG || op == OpCode::CsRankG ||
-         op == OpCode::CsZscoreG || op == OpCode::CsCountG || op == OpCode::CsMeanG ||
-         op == OpCode::CsScaleG || op == OpCode::CsResidualize || op == OpCode::CsSumG;
+  return detail::needs_group_operand(op);
 }
 
 // Classify a Ts op exactly as vm.hpp eval_time_series routes it.

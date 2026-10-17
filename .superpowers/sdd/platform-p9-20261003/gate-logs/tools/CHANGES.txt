@@ -1,0 +1,75 @@
+gate-logs/tools change log (gate chain; one line block per change)
+
+2026-10-16 gate agent 2, GATE-TMP (ledger "Ruling GATE-TMP"; R13-RESUME): tools/pyt.sh
+  Before (agent 1): usage `pyt.sh LABEL SEED BASETEMP LOG -- args`; basetemp = the caller's path (the session
+  scratchpad), TMP / TEMP = <basetemp>-tmp. The tiny-world canary `test_cycle_e2e.py::test_cycle_e2e_goldens_ic_
+  reference_redundant_copy_and_idempotent_rerun` makes its root with `tempfile.mkdtemp` under TMP; under that long
+  root the IC cache path was 327 > 250 and `research_cycle.py` refused at plan time (W1-I1): agent 1's one red.
+  After: usage `pyt.sh LABEL SEED INV LOG -- args`; ONE fresh short root per invocation holds basetemp <root>/b and
+  TMP / TEMP; the caller deletes the root by literal name after the run's record; the root is written into each
+  pyt-exits.txt line.
+  The ruling's literal root C:/atx-wt/pool-2/build-equity/pt/<INV> lies INSIDE pool-2's git work tree. Two
+  constraints of the code under test refuse a tiny-world root there: `scripts/tests/test_cycle_e2e.py:212-217`
+  `fresh_root` raises "temporary root ... lies inside the repository", and `scripts/research_tree.py:75-81`
+  `no_git_refusal` refuses `research_cycle.py --no-git` (contract K3) for any root inside a git repository (the
+  `--no-git` tests that root tiny worlds under tmp_path, i.e. the basetemp, hit the same refusal). Probe on the
+  ruled root (`GATE_PT=ruled`, INV `pr`, the one e2e node): 1 failed, `RuntimeError: temporary root
+  C:\atx-wt\pool-2\build-equity\pt\pr\t\tiny-world-luarx0j_ lies inside the repository`
+  (`gate-logs/pyt-tmp-probe-ruled-root-s0.log`, `pyt-exits.txt`); probe root deleted by literal name.
+  Decision within GATE-TMP's purpose (a short TMP root so that W1-I1 does not refuse; the slip is the tool's): the
+  default root is C:/Users/natha/AppData/Local/Temp/g2<INV> (the OS temp dir, outside any git work tree; the
+  location pytest and Python's tempfile use when nothing overrides them, i.e. where every root ROOT-1 run before
+  agent 1 put these tiny worlds), basetemp <root>/b, TMP / TEMP = <root>; deepest tiny-world IC cache path
+  38 + 1 + 19 + 189 = 247 <= 250 (tail 189 = 327 - the 138-character root of agent 1's refusal line).
+  `research_tree.no_git_refusal(C:\Users\natha\AppData\Local\Temp)` = None (accepted);
+  `no_git_refusal(C:/atx-wt/pool-2/build-equity)` = the K3 refusal (checked read-only by import, agent 2).
+
+2026-10-16 gate agent 2, same change, second mode (GATE-TMP; a TMP-length-dependent golden): tools/pyt.sh
+  `GATE_PT=systmp`: basetemp under the short root C:/Users/natha/AppData/Local/Temp/g2<INV>/b, TMP / TEMP = the OS
+  temp dir itself `C:\Users\natha\AppData\Local\Temp` (33 characters, the value every ROOT-1 run before agent 1 had).
+  Cause: `atx-impl/tools/test_mega_report_v8.py::test_v7_config_renders_the_pre_v8_bytes` builds its world under
+  `tempfile.mkdtemp(prefix='v8r')` (the `root` fixture, `:245-251`), the rendered html contains that root once, and the
+  test asserts `len(html) == V7_GOLDEN_BYTES` (109868, `:39`) BEFORE normalising the root away (`:301-307`): the golden
+  holds only for a TMP of exactly 33 characters. In the `atx-impl/tools` run on the g2 root (TMP 38 characters) it
+  failed `109873 == 109868` (+5 = the TMP length difference); the node alone: on the g2 TMP 1 failed (109873 again,
+  deterministic, not load), on the OS TMP 1 passed (`gate-logs/pyt-mega-v7-node-{g2tmp,systmp}-s0.log`). A test
+  fragility (P10 note: normalise before measuring), not a code red; no merge attributed. The `atx-impl/tools` run of
+  record is the whole directory re-run alone under `GATE_PT=systmp` (no tiny-world IC cache path in that directory).
+  This mode was added between runs; the batch-B pyt.sh processes running at the edit wrote well-formed lines (checked).
+
+2026-10-16 gate agent 4 (RESUME 13; `r13-prompts/gate-prompt-4.md`), before rows 4-6 ran:
+  (1) NEW tools/b0_cmp.py: the rows 4-6 comparison, listing EVERY differing JSON leaf by path with its class (no value
+  printed; RELCACHE-ALLOW wants every allowed leaf listed by JSON path); `--mode ic` = RELCACHE-ALLOW's classes (TIMING,
+  COUNTERS, IDENTITY: the reference's VM identity string replaced by the new side's), `--mode nav` = PRODUCER + OPTIN
+  (new side only). Self-tested before any run: p9-b0-x10-nav vs p9-b0g-x10-nav = agent 3's `x10-cmp.txt` verdict
+  (PRODUCER 2, OPTIN 5, outside 0); p9-b0-yf0-u against itself = 0 differing leaves.
+  (2) tools/b0_nav.py cell yf0 (YF0-NAV-ORDER): `--combined` -> build-equity/p9-b0g-yf0-w/train_combined.json and
+  `--combined-sha256` e13fbc4d... (the reference w's bytes; the tool re-hashes the file and STOPs if it differs), so the
+  NAV of record reads the re-based w and its receipt names that dir. Nothing else of the tool changed.
+  (3) after row 4 ran (u pass), before row 5: tools/b0_cmp.py's first pass (`gate-logs/yf0u-cmp-pass1.txt`, kept) put
+  209 summary.json leaves OUTSIDE: the cache-root paths of the Debug reference sit at `DIR/<role>/...` (no identity
+  subdir), so the IDENTITY string-substitution rule did not match them, and the tool had not encoded RELCACHE-ALLOW's
+  fourth class at all ("M1d's written Release IC adoption list where it names a leaf"; my amendment cited
+  `integration-log.md:322-325`, the expectation, instead of the written result `root-wave1-merge-report.md:890-891`).
+  Added class M1D-LIST: exactly the leaves that list names, each with a strict check (cache-root paths = reference path
+  with `DIR/` -> `DIR/<Release identity>/`, same remainder; `ic_results` identity strings = reference + the Release
+  suffix; `ic_results/subdirectory`, `signal_key_sha256` identity-keyed strings; `verify_bytes`, `ic_cache_bytes`,
+  `ic_scratch_bytes` integers). Re-run: `gate-logs/yf0u-cmp.txt` (0 outside). NEW tools/class_summary.py (paths only).
+
+2026-10-16 root FLAGS agent (RESUME 14; `r14-prompts/root-flags-prompt.md`; FLAGS-ROUTE, FLAGS-ROUTE-2):
+  (1) NEW tools/fr_nav.py (adapted from b0_nav.py's checks / run record and nav_run.py's printspec): `plan` takes the
+  NAV argv the driver plans (scripts/cycle/phases.py nav_step) for the minimal NAV-only template over
+  scripts/specs/v8/lib-v8ysb-gm.json (`change.set nav.output` -> build-equity/p9-fr-yf0-nav; resolved in memory by
+  research_spec.resolve, never written; Cycle(..., verify=True)), resolves token 0 against the pool root, lists every
+  token difference against the P9-B0 Y-F0 reference receipt (positional, then by option / value pair and option order),
+  and runs the pre-run checks (no cache flag, each opt-in flag once, no --seal-allow / --stage-timers, --combined
+  re-hashed, the exe = its p9-3f receipt, the new dirs absent), plus X-10 / Y-1's planned NAV flags and argv digests;
+  `printspec` prints the NavSpec of the planned argv and of the reference command (--output set to the new dir) with the
+  NAV exe's `--print-spec` (nothing runs) and compares them by JSON path; `run` is the ONE bounded run (--seconds 600
+  --max-rss-mib 2048 --build-type Release --admission-wait-seconds 1800) with b0_nav.py's record line (to
+  gate-logs/flags-run.txt) and per-file listing (gate-logs/flags-files-p9-fr-yf0-nav.txt); `cmp` is cmp.py's file /
+  JSON-leaf comparison with the allowed list `summary.json` `/producer/*` ONLY, every differing leaf listed by path,
+  plus the opt-in leaves' presence and equality on both sides (no value printed).
+  (2) NEW tools/fr_fixture.sh: gate agent 4's fixture-chain-{4,5,6}.txt form (m6b-logs/tools/fixture_dump.sh's catalog /
+  verify / identity lines, no table dumps; Release store exe; DBs outside the tree) -> gate-logs/fixture-chain-7.txt.
+  tools/repin_verify.py, dir_listing.py, exe_sha_end.py used unchanged.

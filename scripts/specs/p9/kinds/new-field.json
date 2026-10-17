@@ -1,0 +1,55 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "k-field",
+  "kind": "field",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind field (new field): the register stage builds fields-k-field = fields/ plus the registry row vol_126 (prepare_research_fields.py --registry, fields/ reused), then the string reading it is registered on that dir.",
+  "parent": {
+    "spec": "tiny.json",
+    "library": "tiny_world_v1"
+  },
+  "fields": {
+    "dir": "fields",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": []
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-kinds-fixture",
+    "admission_cap": 1000,
+    "admission_cycle_prefix": "p9k",
+    "construction_cap": 1000
+  },
+  "ledger": "trials.jsonl",
+  "expect": {
+    "n_before": 0
+  },
+  "out_dir": "waves/k-field",
+  "library": "p9k-field",
+  "candidates": [
+    {
+      "id": "p9k_vol",
+      "dsl": "rank((-1 * vol_126))",
+      "dsl_sha256": "29b5a366b8544a5da73b7503ac6288586562008127bc68b4355366cceb0d8337",
+      "theme": "low_risk",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "P9 kinds fixture (synthetic; no hypothesis)",
+      "origin": "prior",
+      "hypothesis": "p9k-p9k_vol",
+      "kind": "add",
+      "fields": [
+        "vol_126"
+      ]
+    }
+  ],
+  "field": {
+    "rows": [
+      "vol_126"
+    ],
+    "output": "fields-k-field"
+  },
+  "sign_rule": "pm7-35"
+}

@@ -1,0 +1,136 @@
+{
+  "stage": "cycle",
+  "files": [
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/start.json",
+      "sha256": "0a5ccd570923f84af25266ef167a29e1868d52e55f8d44972371afb1fe13aa8a",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/receipt.json",
+      "sha256": "e737f364176ea6754c00be0000d1b9572f84b33fa6ed0f01aaec0aa5fb9f867f",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/stdout.log",
+      "sha256": "9510bc5f9673e62d20be0bd44481a86f9e2c630a0f492f0d5bf2b4896c1ed6fc",
+      "hits": []
+    },
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-cycle-raw.log",
+      "sha256": "1ec93a7e85509b36fd14c35a8fcbe72c278f1a0f348e94d59ce4cb2fffc0ffba",
+      "hits": [
+        {
+          "line": 1,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        }
+      ]
+    }
+  ],
+  "other": 0
+}

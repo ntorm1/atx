@@ -1,0 +1,25 @@
+M6B-FINISH permission refusals (PERM-1: never retried, never routed around)
+
+1. 2026-10-15 ~18:56Z, item 4 clean-up (delete the previous M6b agent's scratch catalog by name). Refused by the
+   auto-mode classifier ("Irreversible Local Destruction"). Exact command:
+   rm /c/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6b/pre-cat.sqlite /c/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6b/pre-verify.txt && rmdir /c/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6b/pre-dump && ls -la /c/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-m6b/
+   State left: that session scratchpad dir still holds pre-cat.sqlite (376 KB), pre-verify.txt (1.5 KB) and an empty
+   pre-dump/ (regenerable scratch; nothing reads them). For the owner / PM to remove by hand if wanted.
+
+2. 2026-10-15 ~19:00Z, item 5 case 1b clean-up (delete the index.sqlite that `atx-research-store cache init` made in
+   the real cache dir, by literal name). Refused by the auto-mode classifier ("Irreversible Local Destruction").
+   Exact command:
+   rm build-equity/mega-candidate-cache-v8-lo3/index.sqlite && L=.superpowers/sdd/platform-p9-20261003/m6b-logs && { echo "index.sqlite deleted by literal name $(date -u +%FT%TZ); index files left: $(ls build-equity/mega-candidate-cache-v8-lo3 | grep -c -E 'index\.sqlite')"; "C:/Program Files/Python312/python.exe" $L/tools/dir_listing.py build-equity/mega-candidate-cache-v8-lo3 $L/cache-lo3-listing-after-1b.txt; } | tee -a $L/x5-1b.txt
+   (run from C:/atx-wt/pool-2). State left: C:/atx-wt/pool-2/build-equity/mega-candidate-cache-v8-lo3/index.sqlite,
+   73,728 bytes, SHA-256 3a177dfddbd86dcc43caf0fca92339faad5e051bf4012b90effdb95cff6bc6f0 (an empty SQL4 cache
+   index; no -wal / -shm). Every other file of the dir is as it began. The no-flag IC exe neither reads nor writes it
+   (case 1b: SHA unchanged across the w and u runs; outputs identical to 1a outside the seconds paths). OWNER / PM:
+   delete that one file by hand before the gate (SQL-11 clean-up, item 8).
+   CONSEQUENCE FOUND AFTERWARDS (gate-blocking until the file is removed): while that index.sqlite exists, the bounded
+   runner (SQL3's store hook, by design: it records the cache index a run could select) writes a `store` block
+   {"catalog": null, "indexes": ["build-equity/mega-candidate-cache-v8-lo3/index.sqlite"]} into start.json and
+   receipt.json of EVERY bounded run naming --candidate-cache build-equity/mega-candidate-cache-v8-lo3, flag or no
+   flag. Seen in the runner receipts of p9-m6b-x5-{w,u}-1b-run and p9-m6b-ms-a-{cold,warm}-run; absent in
+   p9-m6b-x5-{w,u}-post-run (before the index) and in the control p9-m6b-x5-u-c2ctl-cold-run (fresh cache, no index).
+   The IC exe's own output bytes are unaffected (case 1b). SQL3-2 requires no `store` block in any receipt of a run of
+   record (P9-B0 references, cells, OD-3): the file must be deleted before the gate's step 1 / P9-B0.

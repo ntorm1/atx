@@ -1,0 +1,39 @@
+{
+  "authority": "R15-ADOPT-READ-OD3; all three scratch44/progress lines read",
+  "original_snapshot_commit": "2f34da25b3701e91c5cc153cc4e9a10e1c92b10f",
+  "original_listing": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9-adoption-final-output-sha256.txt",
+  "original_listing_sha256": "1eec8c85895bcdc654ea17acda0743ae7cb975a4cb6f25bc3e9b381446633756",
+  "original_adoption_git_blob_sha256": "0f2a0fe82c7177a0f02747709dda0c2184276530f9ef89a01e3e57add05cb7bd",
+  "original_adoption_matches_listing": true,
+  "correction": "Only three mojibake minus sequences and five mojibake en-dash sequences to ASCII hyphen, plus Native backtest_integrity to Existing Python backtest_integrity",
+  "exact_transformation_verified": true,
+  "other_original_entries_unchanged": 62,
+  "changed_or_new_documentation": [
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/adoption-print.md",
+      "sha256": "ffdf4b8af8f77e77e102f2cccb8e30e146024559850f968c0f96261e7c18aa33"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/od3-read.md",
+      "sha256": "20dbcc81cb095d0f19f9ca7ae5eae35a5c421edecf20c3cbb11c09823d431c72"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-7-od3.md",
+      "sha256": "5af3d007c8c18985f4d915dab6188eb1e0fce4f13694ab5474718d469143f048"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/progress.md",
+      "sha256": "eafc5d10dee10841645dacc46048779572f9ab4ee82234fc2abe77b71f309cda"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/resume15-ledger-44.txt",
+      "sha256": "a85346bb28a74e6ddcc39ce21d6c7f4073eb2fcfdd36bbaa1573be23944dc6a9"
+    }
+  ],
+  "original_handoff_unchanged": true,
+  "scientific_outputs_or_values_changed": false,
+  "new_statistical_or_data_runs": 0,
+  "history_reads": 0,
+  "permission_refusals": 0,
+  "ledger_sha256": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d"
+}

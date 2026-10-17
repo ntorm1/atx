@@ -1,0 +1,98 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchFieldsA4*:ResearchFieldsHoldings*
+[==========] Running 18 tests from 5 test suites.
+[----------] Global test environment set-up.
+[----------] 3 tests from ResearchFieldsA4Reuse
+[ RUN      ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel
+..\atx-engine\tests\research\research_fields_a4_reuse_test.cpp(140): error: Expected equality of these values:
+  history_of(b, "ret_overnight")
+    Which is: 2
+  union_history
+    Which is: 1600
+the rebuilt field's panel must be the union of every planned field's request
+
+[  FAILED  ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel (196 ms)
+[ RUN      ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory
+..\atx-engine\tests\research\research_fields_a4_reuse_test.cpp(155): error: Expected equality of these values:
+  longer->reused
+    Which is: 1
+  0U
+    Which is: 0
+
+unknown file: error: C++ exception with description "[json.exception.out_of_range.403] key 'ret_overnight' not found" thrown in the test body.
+
+[  FAILED  ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory (104 ms)
+[ RUN      ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision
+..\atx-engine\tests\research\research_fields_a4_reuse_test.cpp(185): error: Expected equality of these values:
+  reuse.at("inputs_digested").get<u64>()
+    Which is: 15
+  4U
+    Which is: 4
+{"dir":"C:\\Users\\natha\\AppData\\Local\\Temp\\atxv-63a82b04\\atx_research_fields_a4_reuse_digests\\a","inputs_digested":15,"manifest_sha256":"e4241a5552af7b6191e85a1a9df16983dd7925b7c083942fc406de0d4a79309a","recomputed":{},"reused":["ret_overnight","ret_intraday","ceq_iss_5y","open_adj","high_adj","low_adj"],"seal":"match"}
+
+[  FAILED  ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision (141 ms)
+[----------] 3 tests from ResearchFieldsA4Reuse (442 ms total)
+
+[----------] 6 tests from ResearchFieldsA4Clock
+[ RUN      ] ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar
+[       OK ] ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark
+[       OK ] ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.SessionCalendarRefusesABadRole
+[       OK ] ResearchFieldsA4Clock.SessionCalendarRefusesABadRole (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.LatestRowsIsThePythonPointer
+[       OK ] ResearchFieldsA4Clock.LatestRowsIsThePythonPointer (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.LatestRowsBeforeIsStrict
+[       OK ] ResearchFieldsA4Clock.LatestRowsBeforeIsStrict (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit
+[       OK ] ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit (0 ms)
+[----------] 6 tests from ResearchFieldsA4Clock (0 ms total)
+
+[----------] 5 tests from ResearchFieldsHoldingsFixture
+[ RUN      ] ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys
+[       OK ] ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys (31 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.FtdIsThePythonField
+[       OK ] ResearchFieldsHoldingsFixture.FtdIsThePythonField (73 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.RegshoIsThePythonField
+[       OK ] ResearchFieldsHoldingsFixture.RegshoIsThePythonField (54 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries
+[       OK ] ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries (155 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused
+[       OK ] ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused (8 ms)
+[----------] 5 tests from ResearchFieldsHoldingsFixture (323 ms total)
+
+[----------] 2 tests from ResearchFieldsHoldingsProbe
+[ RUN      ] ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth
+[       OK ] ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth (18 ms)
+[ RUN      ] ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth
+[       OK ] ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth (8 ms)
+[----------] 2 tests from ResearchFieldsHoldingsProbe (27 ms total)
+
+[----------] 2 tests from ResearchFieldsHoldingsKernel
+[ RUN      ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder
+..\atx-engine\tests\research\research_fields_holdings_test.cpp(657): error: Value of: first_change(forwards, run(true), n).has_value()
+  Actual: true
+Expected: false
+
+[  FAILED  ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder (8 ms)
+[ RUN      ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches
+..\atx-engine\tests\research\research_fields_holdings_test.cpp(703): error: Expected equality of these values:
+  split.checks.at("rows_later_than_their_list").get<u64>()
+    Which is: 1
+  2U
+    Which is: 2
+
+[  FAILED  ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches (5 ms)
+[----------] 2 tests from ResearchFieldsHoldingsKernel (13 ms total)
+
+[----------] Global test environment tear-down
+[==========] 18 tests from 5 test suites ran. (809 ms total)
+[  PASSED  ] 13 tests.
+[  FAILED  ] 5 tests, listed below:
+[  FAILED  ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel
+[  FAILED  ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory
+[  FAILED  ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision
+[  FAILED  ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder
+[  FAILED  ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches
+
+ 5 FAILED TESTS

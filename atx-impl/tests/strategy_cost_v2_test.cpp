@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <limits>
 #include <span>
+#include <stop_token>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@
 namespace {
 using namespace atx;
 namespace st = atx::impl::strategy;
+namespace co = atx::core;
 namespace cv = atx::impl::strategy::cost_v2;
 namespace v7 = atx::impl::strategy::v7;
 namespace bk = atx::engine::book;
@@ -529,6 +531,37 @@ TEST(NavV7Hook, AimV6CapacityBookIsTheNavMultipleBookAndX1IsTheMainPass) {
 // same order, each replay book hands its own back (NavReplayResult::transfer), and every book's
 // record (what capacity_curve.csv and v7_extras.json read: v7::run_records) is the one the two
 // captures of the separate passes recorded.
+TEST(NavReplayCancellation, GroupedCapacityAdvHoldStopsAtObservedSession) {
+  const Role role(40, 12, 23);
+  v7::NavV7Options options;
+  options.aim_v6 = true;
+  options.capacity = true;
+  options.v6.band_b = aim_v5().dust_multiple;
+  v7::ScopedNavExtension extension(options);
+  auto cfg = nav_config(s2(), 1e8);
+  cfg.target.adv_hold_q = 0.05;
+  const auto lockstep = v7::lockstep_scenarios(st::fixed_nav_scenarios());
+  ASSERT_GT(lockstep.books.size(), lockstep.capacity_begin);
+  std::stop_source stop;
+  class StopSink final : public st::NavHoldingsSink {
+  public:
+    explicit StopSink(std::stop_source& source) : source_(source) {}
+    co::Status session(const st::NavReplayDay&, std::span<const st::NavHolding>) override {
+      ++calls;
+      source_.request_stop();
+      return co::Ok();
+    }
+    usize calls{};
+  private:
+    std::stop_source& source_;
+  } sink{stop};
+  const auto result = st::replay_nav_scenarios(role.nav(), cfg, lockstep.books,
+      sink, st::nav_primary_scenario_index, stop.get_token());
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), co::ErrorCode::Cancelled);
+  EXPECT_EQ(sink.calls, 1U);
+}
+
 TEST(NavCapacityLockstep, OneLockstepEqualsTheSeparatePassesBookForBook) {
   const Role role(40, 12, 23);
   v7::NavV7Options o; o.aim_v6 = true; o.capacity = true;

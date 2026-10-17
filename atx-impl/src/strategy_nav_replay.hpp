@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 #include "atx/engine/book/risk_target.hpp"
+#include "strategy_nav_calibrate.hpp" // P9 C2: NavCalibrateOptions
 #include "strategy_target_replay.hpp"
 
 namespace atx::impl::strategy {
@@ -117,11 +118,41 @@ inline constexpr atx::usize nav_primary_scenario_index = 1;
 // sigma_i / ADV_i = its liquidity row of session d (window [d-w, d), the execution
 // liquidity definition); a name with ADV <= 0, sigma <= 0 or fewer than min_vol_pairs
 // return pairs (the fallback sigma) gets rate_min, never NaN.
-enum class NavRateRule : atx::u8 { Fixed = 0, PerNameV1 = 1 };
+// InfoClockV1 (P9 lane AL-CLOCK, info-clock-rate-v1; Rulings W3-16, ALCLOCK-1, ALCLOCK-2): member i
+// of decision d moves by nav_info_clock_rates' rate from its information clock, the role field
+// ea_days_since (NavReplayInput::info_clock, row d only).
+enum class NavRateRule : atx::u8 { Fixed = 0, PerNameV1 = 1, InfoClockV1 = 2 };
 // Declared per-name-v1 defaults (research brief 4.B): RRA 10, JKMP lambda 0.2 (0.1%
 // impact at 1% of ADV), clip [0.01, 0.15].
 inline constexpr atx::f64 nav_rate_rra = 10.0, nav_rate_lambda = 0.2;
 inline constexpr atx::f64 nav_rate_min = 0.01, nav_rate_max = 0.15;
+// info-clock-rate-v1 (lit [28][29]; Bowles, Reed, Ringgenberg and Thornock, "Anomaly Time", JF
+// 2024: anomaly returns concentrate in the month after the information release). Its clock is the
+// role field ea_days_since (atx-engine/tools/research_fields_sec.py: sessions since the reaction
+// session of the latest visible primary earnings announcement, >= 0; NaN when there is no fresh
+// one); the paper's information-release date mapped to that reaction session is a fixed choice of
+// the registration (scripts/specs/p9/rules/info-clock-rate-v1.json). A member whose clock lies in
+// [0, nav_info_clock_window] sessions (one month, [29]) is FAST and moves at Y-5's fast rate
+// engine::book::two_speed_fast_theta(C) = 1 - 2^(-C/5) at the rebalance cadence C (Ruling W3-16;
+// .12945 at C = 1); every other member, a NaN clock included, is slow and moves at the parent's
+// theta, two_speed_slow_theta .05 (the config's trade_fraction, which the rule requires to be .05).
+// No constant is new: the rate is two-speed-v1's pair of rates, the window [29]'s month.
+inline constexpr const char* nav_info_clock_rate_id = "info-clock-rate-v1";
+inline constexpr const char* nav_info_clock_field = "ea_days_since";
+inline constexpr atx::f64 nav_info_clock_window = 21.0;
+// One decision's info-clock rates: rates[i] = two_speed_fast_theta(cadence) for a member
+// (member[i] != 0) whose days_since[i] lies in [0, nav_info_clock_window], else theta_slow (a
+// nonmember too: the rule never moves one, and the replay's rate check wants a rate in [0, 1]).
+// Every span one entry per name; every days_since entry NaN or finite >= 0 (a negative or
+// infinite clock is outside the field's domain), member flags 0/1, cadence >= 1, theta_slow in
+// (0, 1]; Err(InvalidArgument) before any write otherwise. Pure: reads row d of the clock only.
+[[nodiscard]] atx::core::Status nav_info_clock_rates(std::span<const atx::u8> member,
+                                                     std::span<const atx::f64> days_since,
+                                                     atx::usize cadence, atx::f64 theta_slow,
+                                                     std::span<atx::f64> rates);
+// The fast rate at cadence C (two_speed_fast_theta) and whether a clock value is fast.
+[[nodiscard]] atx::f64 nav_info_clock_fast_theta(atx::usize cadence) noexcept;
+[[nodiscard]] bool nav_info_clock_fast(atx::f64 days_since) noexcept;
 // theta = clip(sqrt(rra * daily_vol^2 * adv_dollars / (lambda * nav)), rate_min, rate_max):
 // Garleanu-Pedersen (2013) partial adjustment under quadratic cost with the JKMP impact
 // calibration Lambda = lambda / ADV and risk aversion RRA / NAV; daily_vol a daily SD,
@@ -167,7 +198,9 @@ struct NavReplayConfig {
   atx::u64 max_events{262'144}; // explicit refusal beyond
   // PerNameV1 requires target.rule aim-partial-v5, rate_rra and rate_lambda in (0, 1e6]
   // and 0 < rate_min <= rate_max <= 1. Fixed requires every rate_* at its default, so a
-  // fixed-rate recipe cannot silently carry rate parameters.
+  // fixed-rate recipe cannot silently carry rate parameters. InfoClockV1 (P9 AL-CLOCK) requires
+  // aim-partial-v5 at trade_fraction .05 (its slow rate), every rate_* at its default, the fixed
+  // two-speed setting (off) and the input's info clock.
   NavRateRule rate{NavRateRule::Fixed};
   atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
   atx::f64 rate_lambda{nav_rate_lambda};
@@ -227,7 +260,7 @@ struct NavExecutionOptions {
   NavLabelRolePin label_role{};
 };
 // The trading rate of a run_nav_replay call (copied into its NavReplayConfig; CLI
-// --rate fixed|per-name-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
+// --rate fixed|per-name-v1|info-clock-rate-v1, --rate-rra, --rate-lambda, --rate-min, --rate-max).
 struct NavRateOptions {
   NavRateRule rate{NavRateRule::Fixed};
   atx::f64 rate_rra{nav_rate_rra}, rate_min{nav_rate_min}, rate_max{nav_rate_max};
@@ -255,11 +288,16 @@ struct NavMarkPrices {
 // target.industry (grp_ff12 ids) is required by, and only read by, the industry ids.
 // A TieredSwapV1 scenario requires the financing fields; with them every book also
 // reports its short dollars by tier. mark (v8 E-25): the label marks, or empty.
+// info_clock (P9 AL-CLOCK): the role field ea_days_since, date-major at the input's geometry,
+// every cell NaN or finite >= 0; or empty. Read only at decision rows (row d by decision d): it
+// sets the rates of rate InfoClockV1 (required then) and, whenever given, every main book's
+// NavInfoClockStats; empty (the default), every output is the replay's without it.
 struct NavReplayInput {
   TargetReplayInput target;
   std::span<const atx::f64> volume;
   NavFinancingFields financing{};
   NavMarkPrices mark{};
+  std::span<const atx::f64> info_clock{};
 };
 
 // Borrow tier of every name at decision d, from rows <= d only (formed once per
@@ -362,8 +400,21 @@ struct NavRateStats {
   atx::usize n{}, at_min_count{}, at_max_count{};
   atx::f64 mean{}, min{}, max{}, p05{}, p50{}, p95{}, share_at_min{}, share_at_max{};
 };
+// P9 AL-CLOCK (Ruling ALCLOCK-1): one main book's information-clock census over its scored
+// effective rebalance decisions (rows >= decision_begin; a capacity book counts nothing), members
+// only, whatever rate the book runs: name_days the member-decisions, fast_name_days those whose
+// clock is in [0, nav_info_clock_window], missing_name_days those whose clock is NaN;
+// planned_turnover = sum of |planned - current| over those member-decisions (weights; planned =
+// the book's plan after DECIDE, the locate block included; current = its weight entering
+// DECIDE) and fast_planned_turnover its part on the fast name-days. Index order per decision, so
+// the sums are the same bits on any number of book workers. All zero without an info clock.
+struct NavInfoClockStats {
+  atx::usize name_days{}, fast_name_days{}, missing_name_days{};
+  atx::f64 planned_turnover{}, fast_planned_turnover{};
+};
 struct NavConstructionStats {
   NavRateStats rate_stats{};
+  NavInfoClockStats info_clock{}; // P9 AL-CLOCK; zero without NavReplayInput::info_clock
 };
 // One scored decision of one main book under a leverage rule (risk_target::Record; P9 C1): the
 // estimate in force and L_t. rebalance; updated (this decision took the estimate in force); base
@@ -518,6 +569,10 @@ struct NavYear {
 struct NavSummary {
   atx::usize observations{};
   atx::f64 net_sharpe{}, gross_sharpe{}, mean_daily_net{}, ann_mean{}, ann_vol{}, cagr{};
+  // P9 C3 (Rulings PRE-7 / PRE-7a): 252 x the running mean of gross_return over the rows ann_mean
+  // averages (net_return = gross_return - trade_cost_return - borrow_return -
+  // long_financing_return, nav_mark.cpp); published only under NavEmitOptions::ann_mean_gross.
+  atx::f64 ann_mean_gross{};
   atx::f64 max_drawdown{}, total_net_return{}, final_nav{};
   bool hac_defined{};
   atx::f64 hac_t{}; // Bartlett lag 5, small-sample corrected; NaN when undefined
@@ -621,7 +676,10 @@ struct NavFieldsPin {
                                                std::ostream& progress);
 // With the trading rate: PerNameV1 adds rate = "per-name-v1", rate_rra, rate_lambda,
 // rate_min and rate_max to the recipe and construction.v5.rate_stats to every scenario
-// summary. NavRateOptions{} (Fixed) is exactly the four-argument overload.
+// summary. InfoClockV1 (P9 AL-CLOCK) needs the fields pin, loads ea_days_since from it (recorded
+// in the recipe's financing_fields.fields_used) and adds rate = "info-clock-rate-v1",
+// rate_theta_fast, rate_theta_slow, rate_window_sessions, rate_field and the aim_partial text to
+// the recipe. NavRateOptions{} (Fixed) is exactly the four-argument overload.
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
                                                const NavFieldsPin& fields,
@@ -685,10 +743,27 @@ enum class NavHoldingsFormat : atx::u8 { F64 = 0, Csv = 1 };
 // summary.json stays reproducible byte for byte (the clocks read in the replay are
 // observation only: no published value depends on them); every other file is unchanged
 // either way.
+// ann_mean_gross (P9 C3, Rulings PRE-7 / PRE-7a; CLI --ann-mean-gross, NavSpec key
+// ann_mean_gross): print-only. Each scenario of the main summary.json (single run, calibrated
+// run, every grid variant) gains ann_mean_gross = NavSummary::ann_mean_gross, the gross annual
+// mean beside ann_mean (net). Off (default): no such key and every output byte is the run
+// without it; on: only summary.json changes, by that key (the recipe, the CSVs, the capacity
+// directory and the v7 files are unchanged; a grid manifest's summary_file_sha256 follows its
+// variant's summary.json).
+// info_clock_print (P9 AL-CLOCK, Ruling ALCLOCK-1; CLI --info-clock-print, NavSpec key
+// info_clock_print): print-only, not a rule flag. The run loads the field ea_days_since from
+// --fields (required) WITHOUT recording it in the recipe's fields_used, and each scenario of the
+// main summary.json (single run, calibrated run, every grid variant) gains the block info_clock
+// (NavInfoClockStats of the book, its shares, the rate the book runs, the rule's constants and
+// the field's SHA-256) at whatever rates the book runs. Off (default): no such block and every
+// output byte is the run without it; on: only summary.json changes, by that block. Rate
+// info-clock-rate-v1 alone prints no block.
 struct NavEmitOptions {
   std::string holdings_directory;
   NavHoldingsFormat format{NavHoldingsFormat::F64};
   bool stage_timers{};
+  bool ann_mean_gross{};
+  bool info_clock_print{};
 };
 [[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
                                                const NavTurnoverLimits& limits,
@@ -696,6 +771,26 @@ struct NavEmitOptions {
                                                const NavRateOptions& rate,
                                                const NavExecutionOptions& execution,
                                                const NavEmitOptions& emit,
+                                               std::ostream& progress,
+                                               std::stop_token stop = {});
+// --calibrate-gross G_P [--calibrate-tolerance T] (P9 C2; strategy_nav_calibrate.hpp states the
+// rule): one load, pass 1 = the primary S2 book alone at cfg.target.aim_leverage L, PM6-6's
+// decision, pass 2 = this run at the final L (cfg with aim_leverage L', every file the plain
+// run's bytes at L') plus summary.json calibration. Pass 2 replays pass 1's shared construction
+// (borrow tiers, census, desired target and its record) unless the construction reads a setting
+// that differs between the passes or a state pass 1 does not form: --adv-hold-q (the cap reads
+// L), --two-speed (F moves toward L; DECIDE reads it) and --emit-holdings with a declared hold
+// band (the export reads the band state), or unless the record does not fit what --max-bytes
+// leaves after the load; then pass 2 forms it again (the same bytes either way). Requires
+// aim-partial-v5 (aim_leverage is its key); refused with an spo rule (its engines keep pass 1's
+// rows). NavCalibrateOptions{} (off) is exactly the seven-argument overload.
+[[nodiscard]] atx::core::Status run_nav_replay(const TargetReplayRunConfig& cfg,
+                                               const NavTurnoverLimits& limits,
+                                               const NavFieldsPin& fields,
+                                               const NavRateOptions& rate,
+                                               const NavExecutionOptions& execution,
+                                               const NavEmitOptions& emit,
+                                               const NavCalibrateOptions& calibrate,
                                                std::ostream& progress,
                                                std::stop_token stop = {});
 // argv[0] is the "nav" verb. Rejects --one-way-bps / --annual-borrow-bps.
@@ -706,11 +801,21 @@ struct NavEmitOptions {
 // the valueless flags --locate-in-aim and --liquidity-cache. v7: --emit-holdings NEWDIR
 // [--holdings-format f64|csv]. v8: --warm-start-sessions K, --book-workers N, the valueless
 // --stage-timers, --construction-grid GRID.json (run_nav_grid), and --label-role PATH
-// --label-role-sha256 SHA (E-25, together or neither: NavExecutionOptions::label_role).
+// --label-role-sha256 SHA (E-25, together or neither: NavExecutionOptions::label_role). P9 C2:
+// --calibrate-gross G_P [--calibrate-tolerance T] (NavCalibrateOptions; the tolerance only with
+// it; not with --construction-grid).
 // P9 C1 (K-P9-7, Ruling P7): `nav --list-rules [--json]` prints the rule contract and exits 0
 // before any other flag is read: {"schema": "atx.nav-rules/v1", "capabilities": [...], "rules":
-// [{id, kind, params_schema, incompatible}]}; this lane lists the leverage rules (fixed-v1,
-// vol-target-v1, risk-target-v1). Without --json: one "<kind> <id>" line per rule.
+// [{id, kind, params_schema, incompatible}]}; C1 listed the leverage rules (fixed-v1,
+// vol-target-v1, risk-target-v1), P9 C3 adds the trade-rate, cost-law and target registries
+// (book/nav_rules.hpp). Without --json: one "<kind> <id>" line per rule.
+// P9 C3: `nav --spec NAVSPEC.json [--output NEWDIR]` runs one atx.nav-spec/v1 file and `nav
+// <flags> --print-spec` prints the NavSpec of <flags> (book/nav_spec.hpp), next after
+// --list-rules; P13: a --fields manifest built under another research seal is refused; the
+// valueless --ann-mean-gross (PRE-7a) is NavEmitOptions::ann_mean_gross (print-only).
+// P9 AL-CLOCK: --rate info-clock-rate-v1 (NavRateRule::InfoClockV1; aim-partial-v5, needs
+// --fields holding ea_days_since) and the valueless --info-clock-print
+// (NavEmitOptions::info_clock_print; print-only, needs --fields).
 inline constexpr const char* nav_rules_schema = "atx.nav-rules/v1";
 [[nodiscard]] int dispatch_nav_replay(int argc, char** argv, std::ostream& out,
                                       std::ostream& err);

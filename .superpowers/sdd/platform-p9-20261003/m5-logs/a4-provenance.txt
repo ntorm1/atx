@@ -1,0 +1,23 @@
+# root M5c (A4-DB): the provenance records of the two fields in Y-F0's fields manifest build-equity/train-2020-2023-lo3-fields-v15/manifest.json (sha256 26fee5ce...): sources (path, bytes, sha256), reused_from.inputs; nothing else of the entry is copied here
+== shares_out  payload sha256 1cff53f8d22929bc23bfd67ee76b991abecb7d07ce2c8cf32d9f932c84e805bc  reused_from C:\atx-wt\pool-2\build-equity\train-2020-2023-lo3-fields-v15a  inputs None
+   C:\Users\natha\Downloads\TickerHistory3.parquet  bytes 3617973507  sha256 0ed96b2696f194deee0d297b51425d3daf96bbaf3b28030b614a34a6943abbae
+== ftd_shares_ratio21  payload sha256 15bc4e6aca959d5c8a93ed9135c9c4073a13bb5c12a0537e08978b4bf449d692  reused_from C:\atx-wt\pool-2\build-equity\train-2020-2023-lo3-fields-v15a  inputs {'ftd': 'a76d69bed49829d9e14216f1abe2ef76b480c16c576fa49ae63fa2a28050f945', 'seal': '2024-01-01'}
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\manifest.json  bytes 392375  sha256 a76d69bed49829d9e14216f1abe2ef76b480c16c576fa49ae63fa2a28050f945
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\year=2018\ftd.parquet  bytes 14379179  sha256 6d281cd7a098033030fafb1515928f7869748a0427a8df069be0ef79ba0de792
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\year=2019\ftd.parquet  bytes 12683851  sha256 c67d6ff0ac070aaf733d6ecf06eb8802a80f2563cad74a32b500f1fdb578ecdd
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\year=2020\ftd.parquet  bytes 14769755  sha256 e1dfd6ecec0595e59399adb2f07ac62415a2da0a805fadae0fb5a73960e6c239
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\year=2021\ftd.parquet  bytes 18552578  sha256 d03fc826bba5a0cfd84ca13d50c64dcd9ea08d94c852019b37d6834467b8ad7e
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\year=2022\ftd.parquet  bytes 18677194  sha256 4b1a9e8d590919f7abe75588f536932dcd87eae7429b4e9b30e662425b337b36
+   C:\atx\atx-db\data\alpha_panel\v1\ftd\year=2023\ftd.parquet  bytes 17483913  sha256 ca2c02150ea96064ceee85c013ee26e22d532289b45dc0fcd1316b9e69f54157
+   C:\atx-wt\pool-2\build-equity\train-2020-2023-lo3-fields-v9\shares_out.f64  bytes 66563280  sha256 1cff53f8d22929bc23bfd67ee76b991abecb7d07ce2c8cf32d9f932c84e805bc
+== regsho_threshold_days63  payload sha256 8248b3a23fc644e7ab52ef638f1d5226ba7ef852293883c8d425c118e3e60daf  reused_from C:\atx-wt\pool-2\build-equity\train-2020-2023-lo3-fields-v15a  inputs {'regsho_threshold': 'fb073c6222cb16cb27968c067d45ecd2ffe50cf10958391cae8d6417ad9e6f4f', 'seal': '2024-01-01', 'security_master': '3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a'}
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\manifest.json  bytes 629957  sha256 fb073c6222cb16cb27968c067d45ecd2ffe50cf10958391cae8d6417ad9e6f4f
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\lists.parquet  bytes 173100  sha256 4ebd1881873011d6a1e58d14a1bf1dac87804e6b476af82f0825ab6a95629571
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\year=2018\threshold.parquet  bytes 110223  sha256 060b20bb5517dc7515fec869b1e47ac8b599148db91da828b9f0efe9b4ee35f0
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\year=2019\threshold.parquet  bytes 119417  sha256 0effca3c5b5acd3785d751711e48be32beee9f55bbf88e93de0a3598d93aa7f0
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\year=2020\threshold.parquet  bytes 145803  sha256 55973ec77cf190a4e8fe8bea63c1cea5e8bb53f005d3bafe4036874e79a8762b
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\year=2021\threshold.parquet  bytes 134524  sha256 dc757417c8437d33ecb5b3adfe9aa1950f566705b49b3efa388b9fd5aaf0be21
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\year=2022\threshold.parquet  bytes 120847  sha256 b835e62d6b344d559eeefe4d46777eeec0be5df9ac3fae2b75993736c345e2d8
+   C:\atx\atx-db\data\alpha_panel\v1\regsho_threshold\year=2023\threshold.parquet  bytes 86333  sha256 e05c7f91f3e5bcda3f0fda553e40b4f9930960f727a5e3540281ab39c3170125
+   C:\atx\atx-db\data\alpha_panel\v1\security_master\manifest.json  bytes 4178  sha256 3afe06605adac9aa85494cc5d1e7307194392954ad3b6ba8142b281fa62a414a
+   C:\atx\atx-db\data\alpha_panel\v1\security_master\finra_names.parquet  bytes 1410313  sha256 1acfed75fc172f82a17115c5651370e14d36e4204fbc3f133765eb1354cd591d

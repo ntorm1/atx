@@ -1,0 +1,8 @@
+﻿[atx-build] check: 'atx-impl\tests\strategy_ic_cache_index_test.cpp' matches 2 objects (building all):
+  atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_ic_cache_index_test.cpp.obj
+  atx-impl/tests/CMakeFiles/atx-impl-strategy-ic-tests.dir/strategy_ic_cache_index_test.cpp.obj
+[atx-build] ninja -C C:\atx-wt\pool-32\build-equity -j 1 atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_ic_cache_index_test.cpp.obj atx-impl/tests/CMakeFiles/atx-impl-strategy-ic-tests.dir/strategy_ic_cache_index_test.cpp.obj
+ninja: Entering directory `C:\atx-wt\pool-32\build-equity'
+[0/2] Re-checking globbed directories...
+[1/3] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-tests.dir\strategy_ic_cache_index_test.cpp.obj
+[2/3] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_cache_index_test.cpp.obj

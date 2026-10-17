@@ -1,0 +1,605 @@
+{
+  "stage": "completion",
+  "files": [
+    {
+      "path": "build-equity/cycle-p9v-vol-target-cov/summ-run1/start.json",
+      "sha256": "119e90919d415c836c48107c491f482daac0d3fcc95e20bbde421fe5bb095149",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 133,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 134,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 135,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 136,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 137,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/cycle-p9v-vol-target-cov/summ-run1/receipt.json",
+      "sha256": "6b70c33262eba62749a60b8e6b12c7a8658ce8c4931fc179d483a8bb9b7b9d59",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 133,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 134,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 135,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 136,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 137,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/cycle-p9v-vol-target-cov/summ-run1/stdout.log",
+      "sha256": "601ca9cd134ba3c2a2f735af22e1767aedfb9d99c49947796f83484d290338e9",
+      "hits": [
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 39,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 61,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 83,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 105,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 127,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 149,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 171,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 193,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 215,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 237,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 259,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 281,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 303,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 325,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 347,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 369,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 391,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 413,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 435,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 457,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 479,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 501,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 523,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 545,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 567,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 589,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 611,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 633,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 655,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 677,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 699,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 715,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 737,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 759,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 775,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 797,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 819,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 842,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 866,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 890,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 914,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 938,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 962,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 986,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1004,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1028,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1052,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1076,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1100,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1123,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1146,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1169,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1192,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1215,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1238,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1255,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1272,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1296,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1320,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1344,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1368,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1392,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1416,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1440,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1464,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1488,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1512,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1536,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1560,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1584,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1608,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1632,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1656,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1680,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1704,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1729,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 2045,
+          "token": "20260927",
+          "form": "compact",
+          "source": "SEED"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/cycle-p9v-vol-target-cov/summ-run1/stderr.log",
+      "sha256": "7d5ea0b9735f03e8a947c5e12f4ee469e76e52b94972b85904f545ac1bc35272",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-completion-raw.log",
+      "sha256": "260e35f0987966cdd8a994f7755fa9186bc2e733e7cd9a16ad2aa76ebb4cc1b7",
+      "hits": [
+        {
+          "line": 1,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        }
+      ]
+    }
+  ],
+  "other": 0
+}

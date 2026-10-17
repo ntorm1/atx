@@ -1,0 +1,2 @@
+pid 24932 affinity [0] output build-equity/p9-m2i-dcov-v11-r2 parent 24496 python.exe parent-affinity [0] at +0.5s
+probe end after 47.3s, processes seen 1, cpus on host 16

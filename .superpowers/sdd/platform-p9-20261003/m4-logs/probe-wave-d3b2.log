@@ -1,0 +1,59 @@
+== preflight
+   preflight: manifest commit 9e339c461206, parent tiny (L 1.12), fields 395f82f7b34d, ledger 0 lines N 0, budget {'id': 'p9-kinds-fixture', 'construction_cap': 1000}
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-d3b2\waves\m4-d3b2\receipts\01-preflight.json
+== register
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-d3b2\waves\m4-d3b2\receipts\02-register.json
+== screen
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-d3b2\waves\m4-d3b2\receipts\03-screen.json
+== spec
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2.json --write --exes --root C:/atx-wt/pool-2/build-equity/p9-m4-tw-d3b2
+git add -- scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2.json
+git commit -q -m "wave m4-d3b2: rule cell rule-nav-m4-d3b2.json on tiny.json" -- scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-d3b2\waves\m4-d3b2\receipts\04-spec.json
+== run
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2.json --stop-after w --root C:/atx-wt/pool-2/build-equity/p9-m4-tw-d3b2
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-d3b2\waves\m4-d3b2\receipts\05-run.json
+== match
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output waves/m4-d3b2/readers/mech-parent-run1 --bind scripts/wave_readers.py --bind tiny-nav/summary.json --bind tiny-nav/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav parent=tiny-nav --output waves/m4-d3b2/readers/mech-parent.json
+   gross (engine): G_parent 0.98609002641359 (mode pm6-6-engine, tolerance 0.005); nav --calibrate-gross
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-cal.json --root C:/atx-wt/pool-2/build-equity/p9-m4-tw-d3b2
+git add -- scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-cal.json
+git commit -q -m "wave m4-d3b2: rule-nav-m4-d3b2-cal.json calibrated in one process (PM6-6, P9 C2)" -- scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-cal.json
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-cal.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m4-tw-d3b2
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output waves/m4-d3b2/readers/mech-matched-run1 --bind scripts/wave_readers.py --bind tiny-nav-k-navrule-gm/summary.json --bind tiny-nav-k-navrule-gm/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav-k-navrule-gm/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav-k-navrule-gm/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav-k-navrule-gm/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav-k-navrule-gm/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav cell=tiny-nav-k-navrule-gm --output waves/m4-d3b2/readers/mech-matched.json
+   calibrated: G 1.0419426343712663 at L 1.12 -> L 1.0600, G 0.987232657629662 vs G_parent 0.98609002641359
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-gm.json --root C:/atx-wt/pool-2/build-equity/p9-m4-tw-d3b2
+git add -- scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-gm.json
+git commit -q -m "wave m4-d3b2: rule-nav-m4-d3b2-gm.json at L 1.0600, the plain recipe of the calibrated NAV (PM6-6, P9 C2)" -- scripts/specs/p9/kinds/templates/rule-nav-m4-d3b2-gm.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m4-tw-d3b2\waves\m4-d3b2\receipts\06-match.json
+== verify
+   mechanics gross_all_rows: 0.987232657629662 [0.9, 1.05] -> pass
+   mechanics abs_net_all_rows: 0.0006063182946755971 <= 0.02 -> pass
+   mechanics tau_mean: 0.02883441790247308 <= 0.2 -> pass
+   mechanics tau_p95: 0.04361352623264346 <= 0.3 -> pass
+   mechanics max_return_identity_error: 2.2985086056692694e-16 <= 1e-09 -> pass
+   mechanics max_cash_book_relative_error: 6.052371725539964e-15 <= 1e-09 -> pass
+
+research_cycle wave: HARD-STOP [verify]: verify: rule cell: its paired parent NAV was made by NAV exe d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f and the cell's NAV by d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f (exes_sha256 pins: cell d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f, parent None): a paired test compares like with like (DEC-20, ruling W1-I2): the parent spec must name a NAV made by the cell's exe (root re-pins it, W1-I2 (b)); 2 date token(s) at or after the seal 2024-01-01 in ['waves/m4-d3b2/consoles/007-mechanics-reader.log', 'waves/m4-d3b2/consoles/012-mechanics-reader.log'] (inspect: a data date is a seal breach; a token that is not one is allowed by ruling: research_wave.py run ... --seal-allow TOKEN=RULING): stop for the PM's ruling (the cell ran; no ledger line was written)
+
+WAVE d3b2 exit 4
+SEAL-HIT waves/m4-d3b2/consoles/007-mechanics-reader.log:7: 2026-10-09: "started_utc": "2026-10-09T01:31:03.777821+00:00",
+SEAL-HIT waves/m4-d3b2/consoles/012-mechanics-reader.log:7: 2026-10-09: "started_utc": "2026-10-09T01:31:08.807322+00:00",
+SEAL CHECK OK: every hit is a started_utc stamp; resuming with ['--seal-allow', '2026-10-09=SEAL-ALLOW']
+== preflight: done (01-preflight.json)
+== register: done (02-register.json)
+== screen: done (03-screen.json)
+== spec: done (04-spec.json)
+== run: done (05-run.json)
+== match: done (06-match.json)
+== verify
+   mechanics gross_all_rows: 0.987232657629662 [0.9, 1.05] -> pass
+   mechanics abs_net_all_rows: 0.0006063182946755971 <= 0.02 -> pass
+   mechanics tau_mean: 0.02883441790247308 <= 0.2 -> pass
+   mechanics tau_p95: 0.04361352623264346 <= 0.3 -> pass
+   mechanics max_return_identity_error: 2.2985086056692694e-16 <= 1e-09 -> pass
+   mechanics max_cash_book_relative_error: 6.052371725539964e-15 <= 1e-09 -> pass
+
+research_cycle wave: HARD-STOP [verify]: verify: rule cell: its paired parent NAV was made by NAV exe d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f and the cell's NAV by d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f (exes_sha256 pins: cell d255a0c3b6914ddca792b5ab748fe796162472e191b769664b90a1f088b25b7f, parent None): a paired test compares like with like (DEC-20, ruling W1-I2): the parent spec must name a NAV made by the cell's exe (root re-pins it, W1-I2 (b)): stop for the PM's ruling (the cell ran; no ledger line was written)
+
+WAVE d3b2 (resumed) exit 4

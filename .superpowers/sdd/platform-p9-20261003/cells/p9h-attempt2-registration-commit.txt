@@ -1,0 +1,47 @@
+P9-H metadata registration
+
+R15-H-READY / R15-H-RESTART: two new clones only. Original registration, template, manifest, generated spec and stopped receipts remain unchanged.
+
+scripts/specs/p9/templates/theme-cov-hedge-ready.json vs registered theme-cov-hedge.json:
+[
+  {
+    "pointer": "/requires",
+    "before": [
+      "P9-H registered by the PM in the P9 prereg (plan section 5.2, DEC-15), after root's zero-trial diagnostic scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json has run and its q / q_lit are printed in the prereg (lit section 8 Q5)",
+      "lane AL-COMB's combined round reviewed and merged by root (Rulings ALCOMB-5 / ALCOMB-5a: D2's head merged into the lane, the theme-cov-hedge-v1 row in D2's K-P9-9 params_schema form, the fixture regenerated from the merged C++)",
+      "wave_kinds.COMPOSITION_FLAGS maps theme-cov-hedge-v1 to {fit: {--theme-hedge: theme-cov-hedge-v1}} (lane E2's table; AL-COMB merge request)",
+      "root sets parent to the last accepted cell whose fit is --composition ew-theme-std-v1 or ic-shrink-v1 (with or without --theme-erc, --theme-tsmom or --mom-volman) and carries neither theme-resid-v1 nor two-speed-v1, and runs the cell as an atx.research-wave/v2 kind rule wave whose rules block is [{name: theme-cov-hedge-v1, params: {}}] (Ruling ALCOMB-1)"
+    ],
+    "after": []
+  }
+]
+SHA-256 5e9eae0aa660e9de3e538a1e659b16234e36597cd4e6dc07eecc956740d7f168
+
+scripts/specs/p9/waves/p9h-cov-hedge-attempt2.json vs original wave:
+[
+  {
+    "pointer": "/out_dir",
+    "before": "build-equity/waves/p9h-cov-hedge",
+    "after": "build-equity/waves/p9h-cov-hedge-attempt2"
+  },
+  {
+    "pointer": "/rule_cell/name",
+    "before": "theme-cov-hedge-v1",
+    "after": "theme-cov-hedge-v1-attempt2"
+  },
+  {
+    "pointer": "/rule_cell/template",
+    "before": "scripts/specs/p9/templates/theme-cov-hedge.json",
+    "after": "scripts/specs/p9/templates/theme-cov-hedge-ready.json"
+  },
+  {
+    "pointer": "/rule_cell/template_sha256",
+    "before": "1f56c19428b7b62de9788e37ec21bf20a78f122e411fb8fb948a0cc0347ec082",
+    "after": "5e9eae0aa660e9de3e538a1e659b16234e36597cd4e6dc07eecc956740d7f168"
+  }
+]
+SHA-256 c4d682c33fb216c2c4915a8dee778267d4c6cfe2c9f53f6551b8cc938acd4c81
+
+Scientific keys, parent, rules, outputs, acceptance, predictions, pins and caps unchanged. G-P1 zero-spec-edits-on-retry is UNMET; no throughput claim. Attempt2 launch requires PM verification and release. Required NAV print flags remain inherited once each; the native spec stage locks --exes --write before measurement.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

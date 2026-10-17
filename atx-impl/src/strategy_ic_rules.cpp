@@ -12,12 +12,16 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "atx/core/sha256.hpp"
+#include "atx/engine/research/composition/fit.hpp" // P9 lane D3W: walk-forward-v1's constants
+#include "strategy_ic_mom_volman.hpp"
 #include "strategy_ic_shrink.hpp"
 #include "strategy_ic_theme_erc.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include "strategy_ic_theme_tsmom.hpp"
 #include "strategy_two_speed.hpp"
 
 namespace atx::impl::strategy::ic_detail {
+namespace rc=atx::engine::research::composition;
 // ---- Theme table ---------------------------------------------------------------
 bool theme_name(const std::string& s) {
   return !s.empty() && s.size()<=64 && std::all_of(s.begin(),s.end(),[](char c) {
@@ -395,103 +399,103 @@ constexpr std::string_view grouping_bytes="one f64 dates x names plane per theme
 constexpr std::array<std::string_view,4> standardise_ids{theme_standardise_rule,ic_shrink_rule,
     ic_shrink_aim_rule,theme_erc_rule};
 constexpr std::array<std::string_view,1> redistribute_ids{theme_redistribution_rule};
-constexpr std::array<std::string_view,2> resid_excludes{theme_tsmom_rule,two_speed_rule};
-constexpr std::array<std::string_view,1> resid_ids{theme_residualise_rule};
-// JSON Schema of each block (params_schema; list_rules_json parses it). A schema states the keys
-// the block's parse and verify read; they allow other keys unless it says otherwise.
-constexpr std::string_view redistribute_schema=
-    R"({"type":"object","required":["rule","composition","themes"],)"
-    R"("properties":{"rule":{"const":"within-theme-v1"},"composition":{"const":"ew-theme-v6"},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}}}})";
-constexpr std::string_view std_schema=
-    R"({"type":"object","required":["rule","rerank","themes"],)"
-    R"("properties":{"rule":{"const":"ew-theme-std-v1"},"rerank":{"type":"boolean"},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}}}})";
-constexpr std::string_view shrink_schema=
-    R"({"type":"object","required":["rule","rerank","themes","ic_shrink"],)"
-    R"("properties":{"rule":{"const":"ic-shrink-v1"},"rerank":{"const":true},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"ic_shrink":{"type":"object","required":["intensity",)"
-    R"("floor","members"],"properties":{"intensity":{"const":0.5},"floor":{"const":0},)"
-    R"("members":{"type":"object","minProperties":1,"additionalProperties":{"type":"object",)"
-    R"("required":["theme","ic"],"properties":{"theme":{"type":"string","pattern":"^[a-z0-9_]{1,)"
-    R"(64}$"},"ic":{"type":"number"}}}}}}}})";
-constexpr std::string_view shrink_aim_schema=
-    R"({"type":"object","required":["rule","rerank","themes","ic_shrink"],)"
-    R"("properties":{"rule":{"const":"ic-shrink-aim-v1"},"rerank":{"const":true},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"ic_shrink":{"type":"object","required":["intensity",)"
-    R"("floor","members"],"properties":{"intensity":{"const":0.5},"floor":{"const":0},)"
-    R"("members":{"type":"object","minProperties":1,"additionalProperties":{"type":"object",)"
-    R"("required":["theme","ic","gain"],"properties":{"theme":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"},"ic":{"type":"number"},"gain":{"type":"number",)"
-    R"("exclusiveMinimum":0}}}}}}}})";
-constexpr std::string_view erc_schema=
-    R"({"type":"object","required":["rule","rerank","themes","theme_erc"],)"
-    R"("properties":{"rule":{"const":"theme-erc-v1"},"rerank":{"const":true},)"
-    R"("themes":{"type":"object","additionalProperties":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"theme_erc":{"type":"object","required":["sweeps",)"
-    R"("dispersion","members","covariance"],"properties":{"sweeps":{"const":10000},)"
-    R"("dispersion":{"const":1e-10},"members":{"type":"object","minProperties":1,)"
-    R"("additionalProperties":{"type":"object","required":["theme","share"],)"
-    R"("properties":{"theme":{"type":"string","pattern":"^[a-z0-9_]{1,64}$"},)"
-    R"("share":{"type":"number"}}}},"covariance":{"type":"object","required":["themes",)"
-    R"("matrix"],"properties":{"themes":{"type":"array","items":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"matrix":{"type":"array","items":{"type":"array",)"
-    R"("items":{"type":"number"}}}}}}}}})";
-constexpr std::string_view resid_schema=
-    R"({"type":"object","required":["rule","order"],)"
-    R"("properties":{"rule":{"const":"theme-resid-v1"},"order":{"type":"array",)"
-    R"("items":{"type":"string","pattern":"^[a-z0-9_]{1,64}$"}}}})";
-constexpr std::string_view tsmom_schema=
-    R"({"type":"object","required":["rule","lookback","lag","step","themes","blocks"],)"
-    R"("properties":{"rule":{"const":"theme-tsmom-v1"},"lookback":{"const":252},)"
-    R"("lag":{"const":3},"step":{"const":21},"themes":{"type":"array","items":{"type":"string",)"
-    R"("pattern":"^[a-z0-9_]{1,64}$"}},"blocks":{"type":"array","minItems":1,"maxItems":4096,)"
-    R"("items":{"type":"object","required":["from_session","trailing"],)"
-    R"("properties":{"from_session":{"type":"integer"},"trailing":{"type":"array",)"
-    R"("items":{"type":"number"}}}}}}})";
-constexpr std::string_view sleeves_schema=
-    R"({"type":"object","required":["rule"],"additionalProperties":false,)"
-    R"("properties":{"rule":{"const":"two-speed-v1"}}})";
+// theme-resid-v1 excludes every other rider; the two theme_schedule rules share one block; the
+// hedge and the sleeves exclude each other (P9 lane AL-COMB: mom-volman-v1, theme-cov-hedge-v1).
+constexpr std::array<std::string_view,4> resid_excludes{theme_tsmom_rule,mom_volman_rule,
+    two_speed_rule,theme_hedge_rule};
+constexpr std::array<std::string_view,2> tsmom_excludes{theme_residualise_rule,mom_volman_rule};
+constexpr std::array<std::string_view,2> volman_excludes{theme_residualise_rule,theme_tsmom_rule};
+constexpr std::array<std::string_view,2> sleeves_excludes{theme_residualise_rule,theme_hedge_rule};
+constexpr std::array<std::string_view,2> hedge_excludes{theme_residualise_rule,two_speed_rule};
+// params_schema (progress.md ruling D1-PSCHEMA, P9 lane D2): the JSON Schema of the `params` a
+// K-P9-9 wave-manifest rule entry {name: <id>, params: {...}} may carry for the row. The params are
+// the row's own rule key (`rule`, the id: the key every K-P9-6 block names its rule by; lane E2's
+// wave_kinds.checked_params fills it in when a manifest leaves it out) and the rule's registered
+// constants: each key optional (absent = the registered value) and, when given, equal to it
+// (`const`, integers typed); no other key is accepted. Lane E2 validates a manifest's params
+// against the schema it reads from `--list-rules --json`. The weights-file blocks the fitter writes
+// are checked by each row's parse and verify, not by params_schema.
+// ParamsSchemaConstantsAreTheRegisteredOnes pins every const below to the C++ constant it restates.
+constexpr std::string_view redistribute_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"within-theme-v1"}}})";
+constexpr std::string_view std_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"ew-theme-std-v1"}}})";
+constexpr std::string_view shrink_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"ic-shrink-v1"},)"
+    R"("intensity":{"type":"number","const":0.5},"floor":{"type":"number","const":0}}})";
+constexpr std::string_view shrink_aim_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"ic-shrink-aim-v1"},)"
+    R"("intensity":{"type":"number","const":0.5},"floor":{"type":"number","const":0}}})";
+constexpr std::string_view erc_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"theme-erc-v1"},)"
+    R"("sweeps":{"type":"integer","const":10000},"dispersion":{"type":"number","const":1e-10}}})";
+constexpr std::string_view resid_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"theme-resid-v1"}}})";
+constexpr std::string_view tsmom_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"theme-tsmom-v1"},)"
+    R"("lookback":{"type":"integer","const":252},"lag":{"type":"integer","const":3},)"
+    R"("step":{"type":"integer","const":21}}})";
+constexpr std::string_view sleeves_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"two-speed-v1"}}})";
+// P9 lane AL-COMB: the registered constants of mom-volman-v1 (strategy_ic_mom_volman.hpp) and
+// theme-cov-hedge-v1 (strategy_ic_theme_hedge.hpp) in the same form; each block's parse checks
+// the block the fitter writes (composition_volman, composition_hedge).
+constexpr std::string_view volman_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"mom-volman-v1"},)"
+    R"("lookback":{"type":"integer","const":126},"lag":{"type":"integer","const":2},)"
+    R"("step":{"type":"integer","const":21}}})";
+constexpr std::string_view hedge_params_schema=
+    R"({"type":"object","additionalProperties":false,)"
+    R"("properties":{"rule":{"type":"string","const":"theme-cov-hedge-v1"},)"
+    R"("lookback":{"type":"integer","const":252},"lag":{"type":"integer","const":2},)"
+    R"("step":{"type":"integer","const":21},"min_pairs":{"type":"integer","const":126}}})";
 // Parse order: theme_redistribution, theme_standardise (four rows; the recorded-rule check runs
-// with them), theme_residualise, theme_schedule, theme_sleeves -- the v8 runner's order, so every
-// refusal is the one it gave.
-constexpr std::array<CompositionRule,8> rule_table{{
+// with them), theme_residualise, theme_schedule (two rows, one shared parse), theme_sleeves -- the
+// v8 runner's order, so every refusal is the one it gave -- then theme_hedge (P9 lane AL-COMB).
+constexpr std::array<CompositionRule,10> rule_table{{
     {.id=theme_redistribution_rule, .version="v1", .block_key="theme_redistribution",
      .stage=IcStageKind::redistribute, .parse=&composition_themes, .verify=nullptr,
      .recipe_key="composition_redistribution", .recipe_text=redistribute_text,
      .working_bytes="two f64 dates x names planes per theme (blend and present weight)",
-     .params_schema=redistribute_schema, .incompatible=standardise_ids, .requires_any={},
+     .params_schema=redistribute_params_schema, .incompatible=standardise_ids, .requires_any={},
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // ew-theme-std-v1 (R-1; R-3's ew-theme-std-aim-v1 writes it too; the R-1 identity device,
     // composition_rules.identity_document, grafts a rerank-off block onto ew-theme-v1 weights)
     {.id=theme_standardise_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=nullptr,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
-     .working_bytes=grouping_bytes, .params_schema=std_schema, .incompatible=redistribute_ids,
-     .requires_any={}, .rerank_off=true, .also_written_by="ew-theme-std-aim-v1",
-     .identity_source="ew-theme-v1"},
+     .working_bytes=grouping_bytes, .params_schema=std_params_schema,
+     .incompatible=redistribute_ids, .requires_any={}, .rerank_off=true,
+     .also_written_by="ew-theme-std-aim-v1", .identity_source="ew-theme-v1"},
     // ic-shrink-v1 (R-10, strategy_ic_shrink.hpp)
     {.id=ic_shrink_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=&verify_ic_shrink,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
-     .working_bytes=grouping_bytes, .params_schema=shrink_schema, .incompatible=redistribute_ids,
+     .working_bytes=grouping_bytes, .params_schema=shrink_params_schema,
+     .incompatible=redistribute_ids,
      .requires_any={}, .rerank_off=false, .also_written_by={}, .identity_source={}},
     // ic-shrink-aim-v1 (R-10 on an aim parent, E-44)
     {.id=ic_shrink_aim_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise,
      .verify=&verify_ic_shrink_aim, .recipe_key="composition_standardise",
      .recipe_text=standardise_text, .working_bytes=grouping_bytes,
-     .params_schema=shrink_aim_schema, .incompatible=redistribute_ids, .requires_any={},
+     .params_schema=shrink_aim_params_schema, .incompatible=redistribute_ids, .requires_any={},
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-erc-v1 (X XCOMB, strategy_ic_theme_erc.hpp)
     {.id=theme_erc_rule, .version="v1", .block_key="theme_standardise",
      .stage=IcStageKind::standardise, .parse=&composition_standardise, .verify=&verify_theme_erc,
      .recipe_key="composition_standardise", .recipe_text=standardise_text,
-     .working_bytes=grouping_bytes, .params_schema=erc_schema, .incompatible=redistribute_ids,
+     .working_bytes=grouping_bytes, .params_schema=erc_params_schema,
+     .incompatible=redistribute_ids,
      .requires_any={}, .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-resid-v1 (R-11, strategy_ic_theme_resid.cpp): residualises the standardised planes
     {.id=theme_residualise_rule, .version="v1", .block_key="theme_residualise",
@@ -499,27 +503,51 @@ constexpr std::array<CompositionRule,8> rule_table{{
      .recipe_key="composition_residualise", .recipe_text={},
      .working_bytes="per name 8 B per theme plus 8 B of regression scratch, on the standardise "
                     "planes",
-     .params_schema=resid_schema, .incompatible=resid_excludes, .requires_any=standardise_ids,
+     .params_schema=resid_params_schema, .incompatible=resid_excludes,
+     .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // theme-tsmom-v1 (Y-2, strategy_ic_theme_tsmom.cpp): the theme masses in force per date
     {.id=theme_tsmom_rule, .version="v1", .block_key="theme_schedule",
-     .stage=IcStageKind::schedule, .parse=&composition_schedule, .verify=nullptr,
+     .stage=IcStageKind::schedule, .parse=&composition_schedule_rules, .verify=nullptr,
      .recipe_key="composition_schedule", .recipe_text={},
      .working_bytes="none beyond the standardise planes (the block masses)",
-     .params_schema=tsmom_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
+     .params_schema=tsmom_params_schema, .incompatible=tsmom_excludes,
+     .requires_any=standardise_ids,
+     .rerank_off=false, .also_written_by={}, .identity_source={}},
+    // mom-volman-v1 (P9 AL-COMB, strategy_ic_mom_volman.cpp): the price_momentum mass per block
+    {.id=mom_volman_rule, .version="v1", .block_key="theme_schedule",
+     .stage=IcStageKind::schedule, .parse=&composition_schedule_rules, .verify=nullptr,
+     .recipe_key="composition_schedule", .recipe_text={},
+     .working_bytes="none beyond the standardise planes (the block masses)",
+     .params_schema=volman_params_schema, .incompatible=volman_excludes,
+     .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
     // two-speed-v1 (Y-5, strategy_ic_two_speed.cpp): the fast and slow sleeves beside the blend
     {.id=two_speed_rule, .version="v1", .block_key="theme_sleeves",
      .stage=IcStageKind::sleeves, .parse=&composition_sleeves, .verify=nullptr,
      .recipe_key="composition_sleeves", .recipe_text={},
      .working_bytes="two f64 dates x names sleeve planes and one f64 per date (the fast share)",
-     .params_schema=sleeves_schema, .incompatible=resid_ids, .requires_any=standardise_ids,
+     .params_schema=sleeves_params_schema, .incompatible=sleeves_excludes,
+     .requires_any=standardise_ids,
+     .rerank_off=false, .also_written_by={}, .identity_source={}},
+    // theme-cov-hedge-v1 (P9 AL-COMB, strategy_ic_theme_hedge.cpp over engine
+    // combine/char_cov_hedge.hpp): each theme's re-rank hedged on its own sleeve's loading
+    {.id=theme_hedge_rule, .version="v1", .block_key="theme_hedge",
+     .stage=IcStageKind::hedge, .parse=&composition_hedge, .verify=nullptr,
+     .recipe_key="composition_hedge", .recipe_text={},
+     .working_bytes="the role's session returns and one hedged plane (f64 dates x names each), a "
+                    "presence byte per cell and the kernel's per-name window sums",
+     .params_schema=hedge_params_schema, .incompatible=hedge_excludes,
+     .requires_any=standardise_ids,
      .rerank_off=false, .also_written_by={}, .identity_source={}},
 }};
 // What the exe offers beyond the v7 CLI (the envelope's capabilities; lane E2 reads them in place
-// of the --help probe, research_cycle.py exe_capabilities). Sorted.
-constexpr std::array<std::string_view,5> exe_capabilities{"eval-mode-audit-exact","list-rules",
-    "marginal","no-composition","theme-registry"};
+// of the --help probe, research_cycle.py exe_capabilities). Sorted. P9 S2 (ruling S2-2) adds the
+// IC method options ic-hac-rule, label-terminal and min-coverage; P9 lane ABS (ruling OD3P-1)
+// absent-members-v1 (--absent-members, strategy_ic_absent.hpp).
+constexpr std::array<std::string_view,9> exe_capabilities{"absent-members-v1",
+    "eval-mode-audit-exact","ic-hac-rule","label-terminal","list-rules","marginal","min-coverage",
+    "no-composition","theme-registry"};
 // A pair of present rows that list each other is refused, naming both blocks (the v8 runner's
 // "theme_redistribution and theme_standardise are exclusive").
 co::Status refuse_incompatible(std::span<const CompositionRule* const> present) {
@@ -579,6 +607,65 @@ std::vector<IcStageKind> running_stage_kinds(const PinnedWeights& pinned) {
   for (const auto* rule:running_rules(pinned)) out.push_back(rule->stage);
   return out;
 }
+namespace {
+// The first session of the role at or after `from` (its date index; dates when none is).
+usize first_at_or_after(std::span<const i64> session_keys,i64 from) {
+  return static_cast<usize>(std::lower_bound(session_keys.begin(),session_keys.end(),from)-
+                            session_keys.begin());
+}
+// P9 lane D3W: the walk_forward rows of a v3 file and, on a standardise grouping, the masses in
+// force (composition_stages' comment).
+co::Status walk_forward_stages(const PinnedWeights& pinned,std::span<const i64> session_keys,
+                               IcCompositionStages& out) {
+  if (pinned.weight_rows.size()!=pinned.weight_from.size() || pinned.weight_rows.empty())
+    return co::Err(co::ErrorCode::Internal,"IC runner: walk_forward geometry");
+  out.weight_rows.reserve(pinned.weight_rows.size());
+  for (usize r=0;r<pinned.weight_rows.size();++r)
+    out.weight_rows.push_back({first_at_or_after(session_keys,pinned.weight_from[r]),
+                               pinned.weight_rows[r]});
+  if (pinned.std_themes.empty()) return co::Ok(); // the plain pinned path: per-date weights only
+  const bool volman=pinned.schedule==mom_volman_rule;
+  std::vector<usize> volman_begin;
+  if (volman) {
+    if (pinned.volman_scale.size()!=pinned.schedule_from.size() ||
+        pinned.volman_theme>=pinned.std_theme_count)
+      return co::Err(co::ErrorCode::Internal,"IC runner: mom-volman-v1 schedule geometry");
+    for (const i64 from:pinned.schedule_from)
+      volman_begin.push_back(first_at_or_after(session_keys,from));
+  }
+  std::vector<usize> bounds{0};
+  for (const auto& row:out.weight_rows) bounds.push_back(row.begin);
+  bounds.insert(bounds.end(),volman_begin.begin(),volman_begin.end());
+  std::sort(bounds.begin(),bounds.end());
+  bounds.erase(std::unique(bounds.begin(),bounds.end()),bounds.end());
+  IcStage stage; stage.kind=IcStageKind::schedule;
+  stage.blocks.reserve(bounds.size());
+  usize row=0,block=0; // rows (blocks) [0, row) begin at or before the boundary
+  for (const usize at:bounds) {
+    while (row<out.weight_rows.size() && out.weight_rows[row].begin<=at) ++row;
+    while (block<volman_begin.size() && volman_begin[block]<=at) ++block;
+    std::vector<f64> mass(pinned.std_theme_count,0.0);
+    if (row>0) {
+      const auto& w=out.weight_rows[row-1U].weights;
+      for (usize k=0;k<w.size();++k)
+        if (w[k]>0) mass[pinned.std_themes[k]]+=w[k];
+      if (block>0)
+        mass[pinned.volman_theme]=mass[pinned.volman_theme]*pinned.volman_scale[block-1U];
+    }
+    stage.blocks.push_back({at,std::move(mass)});
+  }
+  const auto scheduled=std::find_if(out.stages.begin(),out.stages.end(),
+      [](const IcStage& s) { return s.kind==IcStageKind::schedule; });
+  if (scheduled!=out.stages.end()) {
+    scheduled->blocks=std::move(stage.blocks);
+    return co::Ok();
+  }
+  const auto later=std::find_if(out.stages.begin(),out.stages.end(),
+      [](const IcStage& s) { return s.kind>IcStageKind::schedule; });
+  out.stages.insert(later,std::move(stage));
+  return co::Ok();
+}
+} // namespace
 co::Result<IcCompositionStages> composition_stages(const PinnedWeights& pinned,
                                                    std::span<const i64> session_keys) {
   IcCompositionStages out;
@@ -590,18 +677,146 @@ co::Result<IcCompositionStages> composition_stages(const PinnedWeights& pinned,
       if (pinned.schedule_mass.size()!=pinned.schedule_from.size())
         return co::Err(co::ErrorCode::Internal,"IC runner: theme schedule geometry");
       stage.blocks.reserve(pinned.schedule_from.size());
-      for (usize b=0;b<pinned.schedule_from.size();++b) {
-        const auto at=std::lower_bound(session_keys.begin(),session_keys.end(),
-                                       pinned.schedule_from[b]);
+      for (usize b=0;b<pinned.schedule_from.size();++b)
         stage.blocks.push_back(
-            {static_cast<usize>(at-session_keys.begin()),pinned.schedule_mass[b]});
-      }
+            {first_at_or_after(session_keys,pinned.schedule_from[b]),pinned.schedule_mass[b]});
     }
     if (rule->stage==IcStageKind::sleeves) stage.fast=pinned.sleeve_fast;
     out.stages.push_back(std::move(stage));
   }
+  if (!pinned.walk_forward.empty()) ATX_TRY_VOID(walk_forward_stages(pinned,session_keys,out));
   return co::Ok(std::move(out));
 }
+
+namespace {
+// composition_walk_forward's three jobs (review D3W S-4): the block's shape, its rows, and the
+// candidates the rows weight beyond the top-level weights.
+co::Error walk_forward_refused(const std::string& what) {
+  return co::Error(co::ErrorCode::InvalidArgument,"IC runner: "+what);
+}
+
+// The block's six keys (each row is walk_forward_rows').
+co::Status walk_forward_shape(const Json& block) {
+  const auto at_least=[&block](const char* key,i64 least) {
+    return block.contains(key) && block.at(key).is_number_integer() &&
+           block.at(key).get<i64>()>=least;
+  };
+  const auto text=[&block](const char* key,std::string_view want) {
+    return block.contains(key) && block.at(key).is_string() &&
+           block.at(key).get_ref<const std::string&>()==want;
+  };
+  if (!block.is_object() || block.size()!=6U || !text("rule",rc::walk_forward_rule) ||
+      !text("window",rc::walk_forward_expanding) || !at_least("lag",2) || !at_least("step",1) ||
+      !at_least("min_decisions",2) || !block.contains("rows") || !block.at("rows").is_array() ||
+      block.at("rows").empty() || block.at("rows").size()>rc::walk_forward_max_rows)
+    return co::Err(walk_forward_refused(
+        "walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2, step: >= 1, "
+        "min_decisions: >= 2, rows: [{from_session, weights: {id: weight}}, ...] (1..4096)}"));
+  return co::Ok();
+}
+
+// The rows (at most walk_forward_max_rows, checked by walk_forward_shape): from_session strictly
+// increasing; per row one finite weight >= 0 for every library candidate (library order), no
+// other id, at least one of them > 0.
+co::Status walk_forward_rows(const Json& block,const Library& lib,std::vector<i64>& from,
+                             std::vector<std::vector<f64>>& rows) {
+  std::set<std::string> ids;
+  for (const auto& c:lib.candidates) ids.insert(c.id);
+  for (const auto& row:block.at("rows")) {
+    if (!row.is_object() || row.size()!=2U || !row.contains("from_session") ||
+        !row.at("from_session").is_number_integer() || !row.contains("weights") ||
+        !row.at("weights").is_object())
+      return co::Err(
+          walk_forward_refused("walk_forward row must be {from_session: integer, weights: {id: "
+                               "weight}}"));
+    const i64 session=row.at("from_session").get<i64>();
+    if (!from.empty() && !(session>from.back()))
+      return co::Err(walk_forward_refused("walk_forward from_session must increase strictly"));
+    const auto& weights=row.at("weights");
+    for (auto it=weights.begin();it!=weights.end();++it)
+      if (!ids.contains(it.key()))
+        return co::Err(
+            walk_forward_refused("walk_forward weight for unknown candidate: "+it.key()));
+    std::vector<f64> w;
+    w.reserve(lib.candidates.size());
+    for (const auto& c:lib.candidates) {
+      const auto it=weights.find(c.id);
+      if (it==weights.end())
+        return co::Err(walk_forward_refused("walk_forward weight missing: "+c.id));
+      const f64 x=it->is_number()?it->get<f64>():quiet_nan;
+      if (!std::isfinite(x) || x<0)
+        return co::Err(walk_forward_refused("walk_forward weight must be finite and >= 0: "+c.id));
+      w.push_back(x);
+    }
+    if (std::none_of(w.begin(),w.end(),[](f64 x) { return x>0; }))
+      return co::Err(walk_forward_refused("walk_forward row at from_session "+
+                                          std::to_string(session)+" weights no candidate"));
+    from.push_back(session);
+    rows.push_back(std::move(w));
+  }
+  return co::Ok();
+}
+
+// A candidate a row weights needs its composition sign and, beyond the top-level weights, a theme
+// that a top-level weighted candidate has: the standardise grouping stays the full-TRAIN fit's, and
+// the candidate takes that theme's index.
+co::Status lift_walk_forward_candidates(const Json& j,const Library& lib,
+                                        std::span<const std::vector<f64>> rows,
+                                        PinnedWeights& pinned) {
+  const bool grouped=!pinned.std_themes.empty();
+  std::vector<std::string> names(grouped?pinned.std_theme_count:0U);
+  if (grouped) {
+    const auto& listed=j.at("theme_standardise").at("themes");
+    for (usize k=0;k<lib.candidates.size();++k)
+      if (pinned.values[k]>0)
+        names[pinned.std_themes[k]]=listed.at(lib.candidates[k].id).get<std::string>();
+  }
+  for (usize k=0;k<lib.candidates.size();++k) {
+    if (std::none_of(rows.begin(),rows.end(),[k](const std::vector<f64>& w) { return w[k]>0; }))
+      continue;
+    const auto& id=lib.candidates[k].id;
+    if (!pinned.signs.empty() && pinned.signs[k]==0)
+      return co::Err(walk_forward_refused(
+          "composition sign missing for a candidate a walk_forward row weights: "+id));
+    if (!grouped || pinned.values[k]>0) continue;
+    const auto& listed=j.at("theme_standardise").at("themes");
+    const auto it=listed.find(id);
+    if (it==listed.end())
+      return co::Err(
+          walk_forward_refused("theme missing for a candidate a walk_forward row weights: "+id));
+    const auto& theme=it->get_ref<const std::string&>();
+    const auto at=std::find(names.begin(),names.end(),theme);
+    if (at==names.end())
+      return co::Err(walk_forward_refused("walk_forward row weights "+id+" of theme "+theme+
+                                          ", which no top-level weighted candidate has"));
+    pinned.std_themes[k]=static_cast<usize>(at-names.begin());
+  }
+  return co::Ok();
+}
+} // namespace
+
+co::Status composition_walk_forward(const Json& j,const RuleInputs& in,PinnedWeights& pinned) {
+  if (!j.contains("walk_forward"))
+    return co::Err(walk_forward_refused("composition weights schema "
+                                        "atx.dsl-composition-weights/v3 requires a walk_forward "
+                                        "block"));
+  const auto& block=j.at("walk_forward");
+  ATX_TRY_VOID(walk_forward_shape(block));
+  if (!pinned.themes.empty() || pinned.residualise || pinned.schedule==theme_tsmom_rule)
+    return co::Err(walk_forward_refused(
+        "walk_forward (walk-forward-v1) is refused with theme_redistribution, theme_residualise "
+        "and theme-tsmom-v1 (their grouping, order and schedule are fitted on the whole TRAIN "
+        "window)"));
+  std::vector<i64> from;
+  std::vector<std::vector<f64>> rows;
+  ATX_TRY_VOID(walk_forward_rows(block,in.lib,from,rows));
+  ATX_TRY_VOID(lift_walk_forward_candidates(j,in.lib,rows,pinned));
+  pinned.walk_forward=std::string(rc::walk_forward_rule);
+  pinned.weight_from=std::move(from);
+  pinned.weight_rows=std::move(rows);
+  return co::Ok();
+}
+
 std::string_view stage_name(IcStageKind kind) noexcept {
   switch (kind) {
     case IcStageKind::redistribute: return "redistribute";
@@ -609,6 +824,7 @@ std::string_view stage_name(IcStageKind kind) noexcept {
     case IcStageKind::residualise: return "residualise";
     case IcStageKind::schedule: return "schedule";
     case IcStageKind::sleeves: return "sleeves";
+    case IcStageKind::hedge: return "hedge";
   }
   return {};
 }

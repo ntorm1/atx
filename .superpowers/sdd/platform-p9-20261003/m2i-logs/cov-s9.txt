@@ -1,0 +1,24 @@
+== before p9-m2i-dcov-v11 (2026-10-04T23:19:46Z)
+role manifest build-equity/train-2020-2023-lo3/manifest.json sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4
+universe.delisting keys ['by_cause', 'counts', 'events', 'return_rule', 'returns_applied', 'rule', 'stage_rule']
+universe.delisting.returns_applied = false
+events with returns_applied true: 0 of 990
+S9 HOLDS
+== before p9-m2i-dcov-covv1 (2026-10-04T23:20:42Z)
+role manifest build-equity/train-2020-2023-lo3/manifest.json sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4
+universe.delisting keys ['by_cause', 'counts', 'events', 'return_rule', 'returns_applied', 'rule', 'stage_rule']
+universe.delisting.returns_applied = false
+events with returns_applied true: 0 of 990
+S9 HOLDS
+== before p9-m2i-dcov-v11-r2 (2026-10-04T23:24:25Z)
+role manifest build-equity/train-2020-2023-lo3/manifest.json sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4
+universe.delisting keys ['by_cause', 'counts', 'events', 'return_rule', 'returns_applied', 'rule', 'stage_rule']
+universe.delisting.returns_applied = false
+events with returns_applied true: 0 of 990
+S9 HOLDS
+== before p9-m2i-dcov-covv1-r2 (2026-10-04T23:25:20Z)
+role manifest build-equity/train-2020-2023-lo3/manifest.json sha256 e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4
+universe.delisting keys ['by_cause', 'counts', 'events', 'return_rule', 'returns_applied', 'rule', 'stage_rule']
+universe.delisting.returns_applied = false
+events with returns_applied true: 0 of 990
+S9 HOLDS

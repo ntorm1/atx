@@ -1,0 +1,76 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchCatalog*:SealGuard*:StoreCli*
+[==========] Running 30 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 17 tests from ResearchCatalog
+[ RUN      ] ResearchCatalog.LedgerHeadFromResearchLedger
+[       OK ] ResearchCatalog.LedgerHeadFromResearchLedger (255 ms)
+[ RUN      ] ResearchCatalog.RecordedHeadsArePrefixHeads
+[       OK ] ResearchCatalog.RecordedHeadsArePrefixHeads (722 ms)
+[ RUN      ] ResearchCatalog.RecordsSchemaJsonEqualsFixture
+[       OK ] ResearchCatalog.RecordsSchemaJsonEqualsFixture (11 ms)
+[ RUN      ] ResearchCatalog.IngestsSyntheticTree
+[       OK ] ResearchCatalog.IngestsSyntheticTree (134 ms)
+[ RUN      ] ResearchCatalog.DigestReproducibleFromScratch
+[       OK ] ResearchCatalog.DigestReproducibleFromScratch (271 ms)
+[ RUN      ] ResearchCatalog.DigestIndependentOfIngestOrder
+[       OK ] ResearchCatalog.DigestIndependentOfIngestOrder (226 ms)
+[ RUN      ] ResearchCatalog.PinsResolvedAndStaleDetected
+[       OK ] ResearchCatalog.PinsResolvedAndStaleDetected (287 ms)
+[ RUN      ] ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared
+[       OK ] ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared (166 ms)
+[ RUN      ] ResearchCatalog.VerifyPayloadsUpgradesToVerified
+[       OK ] ResearchCatalog.VerifyPayloadsUpgradesToVerified (501 ms)
+[ RUN      ] ResearchCatalog.UnparsedJsonCataloguedAsArtifact
+[       OK ] ResearchCatalog.UnparsedJsonCataloguedAsArtifact (108 ms)
+[ RUN      ] ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder
+[       OK ] ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder (273 ms)
+[ RUN      ] ResearchCatalog.CrlfAndLfDetected
+[       OK ] ResearchCatalog.CrlfAndLfDetected (140 ms)
+[ RUN      ] ResearchCatalog.IngestIsIdempotent
+[       OK ] ResearchCatalog.IngestIsIdempotent (72 ms)
+[ RUN      ] ResearchCatalog.TrialLinesAppendOnly
+[       OK ] ResearchCatalog.TrialLinesAppendOnly (159 ms)
+[ RUN      ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder
+[       OK ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder (126 ms)
+[ RUN      ] ResearchCatalog.ClassifierUsesGlobsAndSchemas
+[       OK ] ResearchCatalog.ClassifierUsesGlobsAndSchemas (0 ms)
+[ RUN      ] ResearchCatalog.CacheImportMatchesRecordStore
+[       OK ] ResearchCatalog.CacheImportMatchesRecordStore (371 ms)
+[----------] 17 tests from ResearchCatalog (3834 ms total)
+
+[----------] 7 tests from SealGuard
+[ RUN      ] SealGuard.HasSealedYearMatchesTheBackstopRegex
+[       OK ] SealGuard.HasSealedYearMatchesTheBackstopRegex (0 ms)
+[ RUN      ] SealGuard.YearTokenPathNeverOpened
+[       OK ] SealGuard.YearTokenPathNeverOpened (109 ms)
+[ RUN      ] SealGuard.SealedRootNeverOpened
+[       OK ] SealGuard.SealedRootNeverOpened (78 ms)
+[ RUN      ] SealGuard.RootTokenScannedOnlyBelowTheRepoTop
+[       OK ] SealGuard.RootTokenScannedOnlyBelowTheRepoTop (134 ms)
+[ RUN      ] SealGuard.CacheImportNeverOpensSealedPaths
+[       OK ] SealGuard.CacheImportNeverOpensSealedPaths (68 ms)
+[ RUN      ] SealGuard.OutsideRootsListedNotOpened
+[       OK ] SealGuard.OutsideRootsListedNotOpened (153 ms)
+[ RUN      ] SealGuard.FieldSourcePinsNotFollowed
+[       OK ] SealGuard.FieldSourcePinsNotFollowed (163 ms)
+[----------] 7 tests from SealGuard (708 ms total)
+
+[----------] 6 tests from StoreCli
+[ RUN      ] StoreCli.ExitCodes
+[       OK ] StoreCli.ExitCodes (457 ms)
+[ RUN      ] StoreCli.SealedRootRefusedBeforeAnythingIsRead
+[       OK ] StoreCli.SealedRootRefusedBeforeAnythingIsRead (152 ms)
+[ RUN      ] StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb
+[       OK ] StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb (79 ms)
+[ RUN      ] StoreCli.DuplicateCandidateIdIsARefusal
+[       OK ] StoreCli.DuplicateCandidateIdIsARefusal (108 ms)
+[ RUN      ] StoreCli.QueryRowsOrderedByKey
+[       OK ] StoreCli.QueryRowsOrderedByKey (305 ms)
+[ RUN      ] StoreCli.SchemaJsonEqualsStoreInfo
+[       OK ] StoreCli.SchemaJsonEqualsStoreInfo (115 ms)
+[----------] 6 tests from StoreCli (1219 ms total)
+
+[----------] Global test environment tear-down
+[==========] 30 tests from 3 test suites ran. (5762 ms total)
+[  PASSED  ] 30 tests.

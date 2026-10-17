@@ -1,0 +1,40 @@
+{
+    "Source":  "994210f44862390615db83587a5a876ea3fd8cb9",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "994210f44862390615db83587a5a876ea3fd8cb9",
+    "Jobs":  4,
+    "FreeMiB":  4319,
+    "CommitMiB":  3346,
+    "Targets":  [
+                    "atx-engine-research-composition-tests",
+                    "atx-research-composition",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-equity-strategy-ic"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  830.5663555,
+    "CompiledTUs":  341,
+    "Links":  16,
+    "Tag":  "p9-d3w-a",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-23\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-23\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "f2ea6ce5eab05bc57516f339fc873fef991b29c41ea545754992fcafce80735e"
+                                                                  },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-23\\build-equity\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "021138d73f070281fb37d0871279f68172b7e708d947ff1ca39228191dec1a24"
+                                                     },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-23\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "8cc97584700957d7fb3bb3a9872a514ff4e2165a7cc1bd2340e1d56d29151a1f"
+                                                       },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-23\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "24513276026397dc8f4858a9525510485826ea4e924f43dc662bc2a2a6d22972"
+                                                   }
+                    }
+}

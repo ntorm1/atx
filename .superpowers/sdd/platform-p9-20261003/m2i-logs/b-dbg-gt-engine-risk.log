@@ -1,0 +1,1041 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = Risk*:-RiskQpAugment.MatchesDenseOracleAcrossBattery
+[==========] Running 432 tests from 51 test suites.
+[----------] Global test environment set-up.
+[----------] 9 tests from RiskAdmmSchedule
+[ RUN      ] RiskAdmmSchedule.RoundPow2SnapsToNearestPowerOfTwo
+[       OK ] RiskAdmmSchedule.RoundPow2SnapsToNearestPowerOfTwo (0 ms)
+[ RUN      ] RiskAdmmSchedule.AdaptRhoBalancesResidualsAndClamps
+[       OK ] RiskAdmmSchedule.AdaptRhoBalancesResidualsAndClamps (0 ms)
+[ RUN      ] RiskAdmmSchedule.ScheduledSolveIsDeterministicAcrossRuns
+[       OK ] RiskAdmmSchedule.ScheduledSolveIsDeterministicAcrossRuns (508 ms)
+[ RUN      ] RiskAdmmSchedule.KktResidualAfterScheduleIsTight
+[       OK ] RiskAdmmSchedule.KktResidualAfterScheduleIsTight (254 ms)
+[ RUN      ] RiskAdmmSchedule.ScheduleBeatsFixedRhoWithoutPolish
+[       OK ] RiskAdmmSchedule.ScheduleBeatsFixedRhoWithoutPolish (79 ms)
+[ RUN      ] RiskAdmmSchedule.DefaultPathUnchangedByNewResultFields
+[       OK ] RiskAdmmSchedule.DefaultPathUnchangedByNewResultFields (198 ms)
+[ RUN      ] RiskAdmmSchedule.WarmStartWithEarlyExitConvergesFasterToSameBook
+[       OK ] RiskAdmmSchedule.WarmStartWithEarlyExitConvergesFasterToSameBook (486 ms)
+[ RUN      ] RiskAdmmSchedule.WarmStartZeroRhoIsByteIdenticalToOmittingIt
+[       OK ] RiskAdmmSchedule.WarmStartZeroRhoIsByteIdenticalToOmittingIt (440 ms)
+[ RUN      ] RiskAdmmSchedule.WarmStartCarriesAdaptedRhoAndStartsFromIt
+[       OK ] RiskAdmmSchedule.WarmStartCarriesAdaptedRhoAndStartsFromIt (764 ms)
+[----------] 9 tests from RiskAdmmSchedule (2733 ms total)
+
+[----------] 7 tests from RiskAttribution
+[ RUN      ] RiskAttribution.MimickingBooksHaveZeroSpecificUnderWlsFactorReturns
+[       OK ] RiskAttribution.MimickingBooksHaveZeroSpecificUnderWlsFactorReturns (1 ms)
+[ RUN      ] RiskAttribution.ComponentsSumToTotalWithin1e12
+[       OK ] RiskAttribution.ComponentsSumToTotalWithin1e12 (19 ms)
+[ RUN      ] RiskAttribution.PerFactorPnlIsExposureTimesReturn
+[       OK ] RiskAttribution.PerFactorPnlIsExposureTimesReturn (0 ms)
+[ RUN      ] RiskAttribution.HaltedNameContributesNothing
+[       OK ] RiskAttribution.HaltedNameContributesNothing (0 ms)
+[ RUN      ] RiskAttribution.LedgerFoldsDays
+[       OK ] RiskAttribution.LedgerFoldsDays (1 ms)
+[ RUN      ] RiskAttribution.RiskSplitMatchesModelRisk
+[       OK ] RiskAttribution.RiskSplitMatchesModelRisk (0 ms)
+[ RUN      ] RiskAttribution.TrackingErrorCheckBand
+[       OK ] RiskAttribution.TrackingErrorCheckBand (0 ms)
+[----------] 7 tests from RiskAttribution (24 ms total)
+
+[----------] 9 tests from RiskCapacity
+[ RUN      ] RiskCapacity.GridOrderMonotoneAndZeroCrossing
+[       OK ] RiskCapacity.GridOrderMonotoneAndZeroCrossing (0 ms)
+[ RUN      ] RiskCapacity.SmallAumApproxGross
+[       OK ] RiskCapacity.SmallAumApproxGross (0 ms)
+[ RUN      ] RiskCapacity.OneCostSurfaceReadsSimY
+[       OK ] RiskCapacity.OneCostSurfaceReadsSimY (0 ms)
+[ RUN      ] RiskCapacity.DeterministicBitwise
+[       OK ] RiskCapacity.DeterministicBitwise (0 ms)
+[ RUN      ] RiskCapacity.EmptyGridYieldsEmpty
+[       OK ] RiskCapacity.EmptyGridYieldsEmpty (0 ms)
+[ RUN      ] RiskCapacity.ZeroWeightContributesNothing
+[       OK ] RiskCapacity.ZeroWeightContributesNothing (0 ms)
+[ RUN      ] RiskCapacity.NaNWeightExcludedNoLeak
+[       OK ] RiskCapacity.NaNWeightExcludedNoLeak (0 ms)
+[ RUN      ] RiskCapacity.ShortPanelDegenerates
+[       OK ] RiskCapacity.ShortPanelDegenerates (0 ms)
+[ RUN      ] RiskCapacity.HandComputedConstantReturnZeroSigma
+[       OK ] RiskCapacity.HandComputedConstantReturnZeroSigma (0 ms)
+[----------] 9 tests from RiskCapacity (1 ms total)
+
+[----------] 12 tests from RiskConstraintDispatchMH
+[ RUN      ] RiskConstraintDispatchMH.BaselineIsDollarNeutralWithinGross
+[       OK ] RiskConstraintDispatchMH.BaselineIsDollarNeutralWithinGross (1 ms)
+[ RUN      ] RiskConstraintDispatchMH.GrossLeverageAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.GrossLeverageAloneMovesAndHolds (0 ms)
+[ RUN      ] RiskConstraintDispatchMH.PositionCapAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.PositionCapAloneMovesAndHolds (6 ms)
+[ RUN      ] RiskConstraintDispatchMH.FactorExposureAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.FactorExposureAloneMovesAndHolds (16 ms)
+[ RUN      ] RiskConstraintDispatchMH.GroupCapAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.GroupCapAloneMovesAndHolds (19 ms)
+[ RUN      ] RiskConstraintDispatchMH.BetaNeutralAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.BetaNeutralAloneMovesAndHolds (16 ms)
+[ RUN      ] RiskConstraintDispatchMH.TurnoverBudgetAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.TurnoverBudgetAloneMovesAndHolds (29 ms)
+[ RUN      ] RiskConstraintDispatchMH.SectorNetBudgetAloneMovesAndHolds
+[       OK ] RiskConstraintDispatchMH.SectorNetBudgetAloneMovesAndHolds (20 ms)
+[ RUN      ] RiskConstraintDispatchMH.SectorSocBudgetAloneMoves
+[       OK ] RiskConstraintDispatchMH.SectorSocBudgetAloneMoves (38 ms)
+[ RUN      ] RiskConstraintDispatchMH.TrackingErrorAloneMovesTheBook
+[       OK ] RiskConstraintDispatchMH.TrackingErrorAloneMovesTheBook (22 ms)
+[ RUN      ] RiskConstraintDispatchMH.RobustAlphaAloneMovesTheBook
+[       OK ] RiskConstraintDispatchMH.RobustAlphaAloneMovesTheBook (37 ms)
+[ RUN      ] RiskConstraintDispatchMH.CapacityDescriptorsAloneFailClosedTyped
+[       OK ] RiskConstraintDispatchMH.CapacityDescriptorsAloneFailClosedTyped (0 ms)
+[----------] 12 tests from RiskConstraintDispatchMH (210 ms total)
+
+[----------] 15 tests from RiskConstraintDispatch
+[ RUN      ] RiskConstraintDispatch.PortfolioTrackingOnlyBindsAtRequestedRisk
+[       OK ] RiskConstraintDispatch.PortfolioTrackingOnlyBindsAtRequestedRisk (10 ms)
+[ RUN      ] RiskConstraintDispatch.PortfolioRobustOnlyMatchesAnalyticOptimum
+[       OK ] RiskConstraintDispatch.PortfolioRobustOnlyMatchesAnalyticOptimum (9 ms)
+[ RUN      ] RiskConstraintDispatch.PortfolioStandaloneConeValidationIsNotBypassed
+[       OK ] RiskConstraintDispatch.PortfolioStandaloneConeValidationIsNotBypassed (0 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonTrackingOnlyBindsInBothForecastModes
+[       OK ] RiskConstraintDispatch.HorizonTrackingOnlyBindsInBothForecastModes (17 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonRobustOnlyMatchesAnalyticOptimum
+[       OK ] RiskConstraintDispatch.HorizonRobustOnlyMatchesAnalyticOptimum (8 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonSectorOnlyHonorsEachSectorLimit
+[       OK ] RiskConstraintDispatch.HorizonSectorOnlyHonorsEachSectorLimit (6 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonCapacityCapsWithoutReferenceDataFailClosed
+[       OK ] RiskConstraintDispatch.HorizonCapacityCapsWithoutReferenceDataFailClosed (0 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonStandaloneConeValidationIsNotBypassed
+[       OK ] RiskConstraintDispatch.HorizonStandaloneConeValidationIsNotBypassed (0 ms)
+[ RUN      ] RiskConstraintDispatch.PortfolioTrackingRetainsTurnoverCostAndPreviousBook
+[       OK ] RiskConstraintDispatch.PortfolioTrackingRetainsTurnoverCostAndPreviousBook (30 ms)
+[ RUN      ] RiskConstraintDispatch.PortfolioTurnoverCostCoexistsWithHardBudgetAndRobustCone
+[       OK ] RiskConstraintDispatch.PortfolioTurnoverCostCoexistsWithHardBudgetAndRobustCone (29 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonTrackingRetainsCalibratedTurnoverCost
+[       OK ] RiskConstraintDispatch.HorizonTrackingRetainsCalibratedTurnoverCost (34 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonTrackingRetainsCapacityBoundAndHonorsOptOut
+[       OK ] RiskConstraintDispatch.HorizonTrackingRetainsCapacityBoundAndHonorsOptOut (49 ms)
+[ RUN      ] RiskConstraintDispatch.HorizonPartialExecutionWithNonzeroBenchmarkFailsClosed
+[       OK ] RiskConstraintDispatch.HorizonPartialExecutionWithNonzeroBenchmarkFailsClosed (0 ms)
+[ RUN      ] RiskConstraintDispatch.QpTurnoverPenaltyRejectsInvalidCoefficientAndReference
+[       OK ] RiskConstraintDispatch.QpTurnoverPenaltyRejectsInvalidCoefficientAndReference (0 ms)
+[ RUN      ] RiskConstraintDispatch.AugmentedObjectiveIncludesExactTurnoverPenalty
+[       OK ] RiskConstraintDispatch.AugmentedObjectiveIncludesExactTurnoverPenalty (0 ms)
+[----------] 15 tests from RiskConstraintDispatch (200 ms total)
+
+[----------] 35 tests from RiskConstraints
+[ RUN      ] RiskConstraints.FullSet_Materializes_ExactRowCountAndOrder
+[       OK ] RiskConstraints.FullSet_Materializes_ExactRowCountAndOrder (0 ms)
+[ RUN      ] RiskConstraints.FactorExposure_OnBoundaryFeasible_OverInfeasible
+[       OK ] RiskConstraints.FactorExposure_OnBoundaryFeasible_OverInfeasible (0 ms)
+[ RUN      ] RiskConstraints.GroupCap_OnBoundaryFeasible_OverInfeasible
+[       OK ] RiskConstraints.GroupCap_OnBoundaryFeasible_OverInfeasible (0 ms)
+[ RUN      ] RiskConstraints.BetaNeutral_OnBoundaryFeasible_OverInfeasible
+[       OK ] RiskConstraints.BetaNeutral_OnBoundaryFeasible_OverInfeasible (0 ms)
+[ RUN      ] RiskConstraints.PositionBox_OnBoundaryFeasible_OverInfeasible
+[       OK ] RiskConstraints.PositionBox_OnBoundaryFeasible_OverInfeasible (0 ms)
+[ RUN      ] RiskConstraints.DollarNeutral_ExactSumZero
+[       OK ] RiskConstraints.DollarNeutral_ExactSumZero (0 ms)
+[ RUN      ] RiskConstraints.L1Budget_GrossAndTurnoverMetadata
+[       OK ] RiskConstraints.L1Budget_GrossAndTurnoverMetadata (0 ms)
+[ RUN      ] RiskConstraints.L1Budget_NoTurnover_FlagFalse
+[       OK ] RiskConstraints.L1Budget_NoTurnover_FlagFalse (0 ms)
+[ RUN      ] RiskConstraints.L1Budget_Turnover_EmptyWPrev_ZeroRef
+[       OK ] RiskConstraints.L1Budget_Turnover_EmptyWPrev_ZeroRef (0 ms)
+[ RUN      ] RiskConstraints.Materialize_TwiceByteIdentical
+[       OK ] RiskConstraints.Materialize_TwiceByteIdentical (0 ms)
+[ RUN      ] RiskConstraints.FactorExposure_LengthMismatch_InvalidArgument
+[       OK ] RiskConstraints.FactorExposure_LengthMismatch_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.FactorExposure_ColIndexOutOfRange_OutOfRange
+[       OK ] RiskConstraints.FactorExposure_ColIndexOutOfRange_OutOfRange (0 ms)
+[ RUN      ] RiskConstraints.FactorExposure_NegativeBound_InvalidArgument
+[       OK ] RiskConstraints.FactorExposure_NegativeBound_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.GroupId_LengthMismatch_InvalidArgument
+[       OK ] RiskConstraints.GroupId_LengthMismatch_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.GroupCap_NegativeCap_InvalidArgument
+[       OK ] RiskConstraints.GroupCap_NegativeCap_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.GroupCap_WrongGroupCount_InvalidArgument
+[       OK ] RiskConstraints.GroupCap_WrongGroupCount_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.BetaNeutral_LengthMismatch_InvalidArgument
+[       OK ] RiskConstraints.BetaNeutral_LengthMismatch_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.BetaNeutral_NegativeTol_InvalidArgument
+[       OK ] RiskConstraints.BetaNeutral_NegativeTol_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.PositionCap_NegativeCap_InvalidArgument
+[       OK ] RiskConstraints.PositionCap_NegativeCap_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.GrossNet_NegativeLeverage_InvalidArgument
+[       OK ] RiskConstraints.GrossNet_NegativeLeverage_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.TurnoverBudget_Negative_InvalidArgument
+[       OK ] RiskConstraints.TurnoverBudget_Negative_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.ExposureRowMismatch_InvalidArgument
+[       OK ] RiskConstraints.ExposureRowMismatch_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.EmptyOptionals_OmitTheirRows
+[       OK ] RiskConstraints.EmptyOptionals_OmitTheirRows (0 ms)
+[ RUN      ] RiskConstraints.MinimalSet_OnlyGross_OneRow
+[       OK ] RiskConstraints.MinimalSet_OnlyGross_OneRow (0 ms)
+[ RUN      ] RiskConstraints.GrossNetOnly_NotDollarNeutral_ZeroRows
+[       OK ] RiskConstraints.GrossNetOnly_NotDollarNeutral_ZeroRows (0 ms)
+[ RUN      ] RiskConstraints.ParticipationCap_BindsBoxToAdvFraction
+[       OK ] RiskConstraints.ParticipationCap_BindsBoxToAdvFraction (0 ms)
+[ RUN      ] RiskConstraints.OwnershipCap_BindsBoxToSharesFraction
+[       OK ] RiskConstraints.OwnershipCap_BindsBoxToSharesFraction (0 ms)
+[ RUN      ] RiskConstraints.MinComposition_ParticipationOwnershipNameCap
+[       OK ] RiskConstraints.MinComposition_ParticipationOwnershipNameCap (0 ms)
+[ RUN      ] RiskConstraints.ParticipationCap_OnBoundaryFeasible_OverInfeasible
+[       OK ] RiskConstraints.ParticipationCap_OnBoundaryFeasible_OverInfeasible (0 ms)
+[ RUN      ] RiskConstraints.SectorRiskBudget_NetWeight_OnBoundaryFeasible_OverInfeasible
+[       OK ] RiskConstraints.SectorRiskBudget_NetWeight_OnBoundaryFeasible_OverInfeasible (0 ms)
+[ RUN      ] RiskConstraints.S84Caps_Materialize_TwiceByteIdentical
+[       OK ] RiskConstraints.S84Caps_Materialize_TwiceByteIdentical (0 ms)
+[ RUN      ] RiskConstraints.ParticipationCap_NegativeFraction_InvalidArgument
+[       OK ] RiskConstraints.ParticipationCap_NegativeFraction_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.OwnershipCap_NegativeFraction_InvalidArgument
+[       OK ] RiskConstraints.OwnershipCap_NegativeFraction_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.SectorRiskBudget_NegativeCap_InvalidArgument
+[       OK ] RiskConstraints.SectorRiskBudget_NegativeCap_InvalidArgument (0 ms)
+[ RUN      ] RiskConstraints.ParticipationCap_NoRefData_FallsBackToNameCap
+[       OK ] RiskConstraints.ParticipationCap_NoRefData_FallsBackToNameCap (0 ms)
+[----------] 35 tests from RiskConstraints (2 ms total)
+
+[----------] 5 tests from RiskConstraintsR1
+[ RUN      ] RiskConstraintsR1.CsrMatchesOrderedDenseRowsAndImplicitBoxes
+[       OK ] RiskConstraintsR1.CsrMatchesOrderedDenseRowsAndImplicitBoxes (0 ms)
+[ RUN      ] RiskConstraintsR1.DollarTradeAndLiquidationCapsIntersectAndZeroLiquidityBinds
+[       OK ] RiskConstraintsR1.DollarTradeAndLiquidationCapsIntersectAndZeroLiquidityBinds (0 ms)
+[ RUN      ] RiskConstraintsR1.SparseStorageAndSolverBudgetsRefuseBeforeDenseExpansion
+[       OK ] RiskConstraintsR1.SparseStorageAndSolverBudgetsRefuseBeforeDenseExpansion (0 ms)
+[ RUN      ] RiskConstraintsR1.RelativeBudgetUsesActualGrossAndTurnoverWithoutNameCountMultiplier
+[       OK ] RiskConstraintsR1.RelativeBudgetUsesActualGrossAndTurnoverWithoutNameCountMultiplier (0 ms)
+[ RUN      ] RiskConstraintsR1.RelativeMetadataAndOverflowFailClosedOnDenseAndSparseInputs
+[       OK ] RiskConstraintsR1.RelativeMetadataAndOverflowFailClosedOnDenseAndSparseInputs (0 ms)
+[----------] 5 tests from RiskConstraintsR1 (1 ms total)
+
+[----------] 7 tests from RiskCostFactorV2
+[ RUN      ] RiskCostFactorV2.ProxMatchesIndependentDerivativeOracleAndExtremeScales
+[       OK ] RiskCostFactorV2.ProxMatchesIndependentDerivativeOracleAndExtremeScales (0 ms)
+[ RUN      ] RiskCostFactorV2.HeterogeneousCostsMatchScalarOracleAndExplicitLegacy
+[       OK ] RiskCostFactorV2.HeterogeneousCostsMatchScalarOracleAndExplicitLegacy (334 ms)
+[ RUN      ] RiskCostFactorV2.HardPinsCapsAndContradictoryLocateAreNotDropped
+[       OK ] RiskCostFactorV2.HardPinsCapsAndContradictoryLocateAreNotDropped (7 ms)
+[ RUN      ] RiskCostFactorV2.EconomicBudgetsAndFailedConvergenceRemainHardErrors
+[       OK ] RiskCostFactorV2.EconomicBudgetsAndFailedConvergenceRemainHardErrors (45 ms)
+[ RUN      ] RiskCostFactorV2.RejectsMalformedStandaloneImpactReferenceBeforeCompilation
+[       OK ] RiskCostFactorV2.RejectsMalformedStandaloneImpactReferenceBeforeCompilation (6 ms)
+[ RUN      ] RiskCostFactorV2.PortfolioConsumerBindsCostsUnitsAxisAndActualHeldBook
+[       OK ] RiskCostFactorV2.PortfolioConsumerBindsCostsUnitsAxisAndActualHeldBook (7 ms)
+[ RUN      ] RiskCostFactorV2.SnapshotAvailabilityAndBorrowPolicyAreExplicit
+[       OK ] RiskCostFactorV2.SnapshotAvailabilityAndBorrowPolicyAreExplicit (6 ms)
+[----------] 7 tests from RiskCostFactorV2 (409 ms total)
+
+[----------] 8 tests from RiskCostTerms
+[ RUN      ] RiskCostTerms.AllInactiveIsByteIdenticalToPlainSolve
+[       OK ] RiskCostTerms.AllInactiveIsByteIdenticalToPlainSolve (1 ms)
+[ RUN      ] RiskCostTerms.LinearKappaSoftThresholdsAroundPreviousBook
+[       OK ] RiskCostTerms.LinearKappaSoftThresholdsAroundPreviousBook (13 ms)
+[ RUN      ] RiskCostTerms.BorrowFeeShrinksShortLegOnly
+[       OK ] RiskCostTerms.BorrowFeeShrinksShortLegOnly (10 ms)
+[ RUN      ] RiskCostTerms.LocateCapBoundsShortSize
+[       OK ] RiskCostTerms.LocateCapBoundsShortSize (9 ms)
+[ RUN      ] RiskCostTerms.ThreeHalvesImpactMatchesClosedForm
+[       OK ] RiskCostTerms.ThreeHalvesImpactMatchesClosedForm (82 ms)
+[ RUN      ] RiskCostTerms.EvaluateMatchesHandComputedBreakdown
+[       OK ] RiskCostTerms.EvaluateMatchesHandComputedBreakdown (0 ms)
+[ RUN      ] RiskCostTerms.RejectsMalformedTerms
+[       OK ] RiskCostTerms.RejectsMalformedTerms (0 ms)
+[ RUN      ] RiskCostTerms.AugmentationAppendsColumnsAndRowsAfterBaseLayout
+[       OK ] RiskCostTerms.AugmentationAppendsColumnsAndRowsAfterBaseLayout (0 ms)
+[----------] 8 tests from RiskCostTerms (118 ms total)
+
+[----------] 21 tests from RiskCovContainer
+[ RUN      ] RiskCovContainer.RoundTripIsBitExact
+[       OK ] RiskCovContainer.RoundTripIsBitExact (22 ms)
+[ RUN      ] RiskCovContainer.SameInputsSameBytes
+[       OK ] RiskCovContainer.SameInputsSameBytes (14 ms)
+[ RUN      ] RiskCovContainer.HeaderLayoutIsPinned
+[       OK ] RiskCovContainer.HeaderLayoutIsPinned (11 ms)
+[ RUN      ] RiskCovContainer.ArraysAre64ByteAlignedAndBlocksPageAligned
+[       OK ] RiskCovContainer.ArraysAre64ByteAlignedAndBlocksPageAligned (11 ms)
+[ RUN      ] RiskCovContainer.RefusesTruncatedFile
+[       OK ] RiskCovContainer.RefusesTruncatedFile (38 ms)
+[ RUN      ] RiskCovContainer.RefusesBadMagicOrMajorAndAcceptsHigherMinor
+[       OK ] RiskCovContainer.RefusesBadMagicOrMajorAndAcceptsHigherMinor (44 ms)
+[ RUN      ] RiskCovContainer.RefusesIncompleteFlag
+[       OK ] RiskCovContainer.RefusesIncompleteFlag (23 ms)
+[ RUN      ] RiskCovContainer.FullVerifyRefusesAFlippedBlockByte
+[       OK ] RiskCovContainer.FullVerifyRefusesAFlippedBlockByte (20 ms)
+[ RUN      ] RiskCovContainer.LazyVerifyRefusesAFlippedBlockByteOnFirstTouch
+[       OK ] RiskCovContainer.LazyVerifyRefusesAFlippedBlockByteOnFirstTouch (23 ms)
+[ RUN      ] RiskCovContainer.RefusesRootPinMismatch
+[       OK ] RiskCovContainer.RefusesRootPinMismatch (13 ms)
+[ RUN      ] RiskCovContainer.RefusesOverlappingOrMisalignedSections
+[       OK ] RiskCovContainer.RefusesOverlappingOrMisalignedSections (36 ms)
+[ RUN      ] RiskCovContainer.RefusesNonAscendingSessionsAndCutoffAfterAsOf
+[       OK ] RiskCovContainer.RefusesNonAscendingSessionsAndCutoffAfterAsOf (33 ms)
+[ RUN      ] RiskCovContainer.IgnoresUnknownOptionalSectionRefusesUnknownRequired
+[       OK ] RiskCovContainer.IgnoresUnknownOptionalSectionRefusesUnknownRequired (35 ms)
+[ RUN      ] RiskCovContainer.AtOrBeforeNeverReturnsAFutureCutoff
+[       OK ] RiskCovContainer.AtOrBeforeNeverReturnsAFutureCutoff (17 ms)
+[ RUN      ] RiskCovContainer.PrefixRunsShareBlockHashes
+[       OK ] RiskCovContainer.PrefixRunsShareBlockHashes (40 ms)
+[ RUN      ] RiskCovContainer.FactorRiskViewIsZeroCopyOnPricedRows
+[       OK ] RiskCovContainer.FactorRiskViewIsZeroCopyOnPricedRows (16 ms)
+[ RUN      ] RiskCovContainer.WriterRefusesOutOfOrderAppendAndBadRowOrder
+[       OK ] RiskCovContainer.WriterRefusesOutOfOrderAppendAndBadRowOrder (5 ms)
+[ RUN      ] RiskCovContainer.FullVerifyIsWorkerCountInvariant
+[       OK ] RiskCovContainer.FullVerifyIsWorkerCountInvariant (29 ms)
+[ RUN      ] RiskCovContainer.ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock
+[       OK ] RiskCovContainer.ParseBlockRefusesArrayBoundsThatWrapOrLeaveTheBlock (0 ms)
+[ RUN      ] RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap
+[       OK ] RiskCovContainer.RefusesSectionTableAndBlockSizesThatWrap (59 ms)
+[ RUN      ] RiskCovContainer.RefusesGeometryThatWrapsK
+[       OK ] RiskCovContainer.RefusesGeometryThatWrapsK (32 ms)
+[----------] 21 tests from RiskCovContainer (534 ms total)
+
+[----------] 9 tests from RiskCovarianceIntegration
+[ RUN      ] RiskCovarianceIntegration.BlendFactorCovIsConvexCombination
+[       OK ] RiskCovarianceIntegration.BlendFactorCovIsConvexCombination (0 ms)
+[ RUN      ] RiskCovarianceIntegration.BlendFactorCovEndpointsAndClamp
+[       OK ] RiskCovarianceIntegration.BlendFactorCovEndpointsAndClamp (0 ms)
+[ RUN      ] RiskCovarianceIntegration.BlendFactorCovIsSpdForSpdInputs
+[       OK ] RiskCovarianceIntegration.BlendFactorCovIsSpdForSpdInputs (1 ms)
+[ RUN      ] RiskCovarianceIntegration.BlendSpecificIsElementwiseConvexCombination
+[       OK ] RiskCovarianceIntegration.BlendSpecificIsElementwiseConvexCombination (0 ms)
+[ RUN      ] RiskCovarianceIntegration.AllFeaturesBuildSucceedsAndIsSpd
+[       OK ] RiskCovarianceIntegration.AllFeaturesBuildSucceedsAndIsSpd (12 ms)
+[ RUN      ] RiskCovarianceIntegration.AllFeaturesEngageVersusP4Default
+[       OK ] RiskCovarianceIntegration.AllFeaturesEngageVersusP4Default (9 ms)
+[ RUN      ] RiskCovarianceIntegration.AllFeaturesOptimizerReturnsFiniteBook
+[       OK ] RiskCovarianceIntegration.AllFeaturesOptimizerReturnsFiniteBook (9 ms)
+[ RUN      ] RiskCovarianceIntegration.AllFeaturesDeterministicByteIdenticalSolve
+[       OK ] RiskCovarianceIntegration.AllFeaturesDeterministicByteIdenticalSolve (35 ms)
+[ RUN      ] RiskCovarianceIntegration.AllFeaturesTruncationInvariant
+[       OK ] RiskCovarianceIntegration.AllFeaturesTruncationInvariant (17 ms)
+[----------] 9 tests from RiskCovarianceIntegration (87 ms total)
+
+[----------] 13 tests from RiskEstimatorV2
+[ RUN      ] RiskEstimatorV2.FundamentalBuilderBindsExplicitRecipeAndDatedCleaning
+[       OK ] RiskEstimatorV2.FundamentalBuilderBindsExplicitRecipeAndDatedCleaning (8 ms)
+[ RUN      ] RiskEstimatorV2.EwmaPreservesMissingSessionAgesAgainstScalarOracle
+[       OK ] RiskEstimatorV2.EwmaPreservesMissingSessionAgesAgainstScalarOracle (0 ms)
+[ RUN      ] RiskEstimatorV2.EigenUsesObservedEffectiveHistoryAndValidatesInactivePaths
+[       OK ] RiskEstimatorV2.EigenUsesObservedEffectiveHistoryAndValidatesInactivePaths (0 ms)
+[ RUN      ] RiskEstimatorV2.VraRequiresPriorClockAndKeepsUnavailableEvidenceExplicit
+[       OK ] RiskEstimatorV2.VraRequiresPriorClockAndKeepsUnavailableEvidenceExplicit (0 ms)
+[ RUN      ] RiskEstimatorV2.SpecificThinFallbackAndCapWeightedDecileFormula
+[       OK ] RiskEstimatorV2.SpecificThinFallbackAndCapWeightedDecileFormula (1 ms)
+[ RUN      ] RiskEstimatorV2.CleaningSeparatesFactorAndSpecificRegimeAndBindsStatus
+[       OK ] RiskEstimatorV2.CleaningSeparatesFactorAndSpecificRegimeAndBindsStatus (5 ms)
+[ RUN      ] RiskEstimatorV2.HybridRetainsThinNamesAndRejectsUnknownCurrentInputs
+[       OK ] RiskEstimatorV2.HybridRetainsThinNamesAndRejectsUnknownCurrentInputs (4 ms)
+[ RUN      ] RiskEstimatorV2.Validation21FixesHoldingsAndMakesMissingBooksUnavailable
+[       OK ] RiskEstimatorV2.Validation21FixesHoldingsAndMakesMissingBooksUnavailable (2 ms)
+[ RUN      ] RiskEstimatorV2.ValidationAdmitsAllPersistentBookGroupsBeforeCallingFactory
+[       OK ] RiskEstimatorV2.ValidationAdmitsAllPersistentBookGroupsBeforeCallingFactory (7 ms)
+[ RUN      ] RiskEstimatorV2.ValidationModelWorkspaceUsesRemainingCombinedBudget
+[       OK ] RiskEstimatorV2.ValidationModelWorkspaceUsesRemainingCombinedBudget (2 ms)
+[ RUN      ] RiskEstimatorV2.RecipeIdentityUsesClassicLocaleAndActiveKnobs
+[       OK ] RiskEstimatorV2.RecipeIdentityUsesClassicLocaleAndActiveKnobs (0 ms)
+[ RUN      ] RiskEstimatorV2.NeweyWestCorrectionUsesConsistentWeightedLagMoments
+[       OK ] RiskEstimatorV2.NeweyWestCorrectionUsesConsistentWeightedLagMoments (0 ms)
+[ RUN      ] RiskEstimatorV2.RollingMradDetectsChangingBiasAndDoesNotCompactMissingMonths
+[       OK ] RiskEstimatorV2.RollingMradDetectsChangingBiasAndDoesNotCompactMissingMonths (2 ms)
+[----------] 13 tests from RiskEstimatorV2 (37 ms total)
+
+[----------] 9 tests from RiskDiscretize
+[ RUN      ] RiskDiscretize.AllRulesOffReturnsContinuousBookUnchanged
+[       OK ] RiskDiscretize.AllRulesOffReturnsContinuousBookUnchanged (7 ms)
+[ RUN      ] RiskDiscretize.MaxNamesKeepsLargestAndResolvesFeasibly
+[       OK ] RiskDiscretize.MaxNamesKeepsLargestAndResolvesFeasibly (27 ms)
+[ RUN      ] RiskDiscretize.MinTradePinsSmallTradesAtPreviousBook
+[       OK ] RiskDiscretize.MinTradePinsSmallTradesAtPreviousBook (14 ms)
+[ RUN      ] RiskDiscretize.LotRoundingProducesWholeLotTrades
+[       OK ] RiskDiscretize.LotRoundingProducesWholeLotTrades (7 ms)
+[ RUN      ] RiskDiscretize.DeterministicAndRejectsBadInput
+[       OK ] RiskDiscretize.DeterministicAndRejectsBadInput (7 ms)
+[ RUN      ] RiskDiscretize.MaxNamesCapHoldsWhenMinTradeWouldRepinAnExitingName
+[       OK ] RiskDiscretize.MaxNamesCapHoldsWhenMinTradeWouldRepinAnExitingName (0 ms)
+[ RUN      ] RiskDiscretize.MaxNamesCapHoldsThroughResolveForUnheldNames
+[       OK ] RiskDiscretize.MaxNamesCapHoldsThroughResolveForUnheldNames (7 ms)
+[ RUN      ] RiskDiscretize.ResolveHonoursScheduleAndWarmStart
+[       OK ] RiskDiscretize.ResolveHonoursScheduleAndWarmStart (23 ms)
+[ RUN      ] RiskDiscretize.FactorSpaceResolveMatchesAugmented
+[       OK ] RiskDiscretize.FactorSpaceResolveMatchesAugmented (15 ms)
+[----------] 9 tests from RiskDiscretize (112 ms total)
+
+[----------] 1 test from RiskDiscretizeR1
+[ RUN      ] RiskDiscretizeR1.PinsAppendAfterImplicitCsrBoxesWithoutDenseMaterialization
+[       OK ] RiskDiscretizeR1.PinsAppendAfterImplicitCsrBoxesWithoutDenseMaterialization (0 ms)
+[----------] 1 test from RiskDiscretizeR1 (0 ms total)
+
+[----------] 11 tests from RiskExposures
+[ RUN      ] RiskExposures.SizeIsLnCapStandardized
+[       OK ] RiskExposures.SizeIsLnCapStandardized (0 ms)
+[ RUN      ] RiskExposures.MissingCapDropsInstrument
+[       OK ] RiskExposures.MissingCapDropsInstrument (0 ms)
+[ RUN      ] RiskExposures.StandardizedColumnHasZeroMeanUnitStd
+[       OK ] RiskExposures.StandardizedColumnHasZeroMeanUnitStd (0 ms)
+[ RUN      ] RiskExposures.VolatilityWindowTruncationInvariant
+[       OK ] RiskExposures.VolatilityWindowTruncationInvariant (0 ms)
+[ RUN      ] RiskExposures.SectorDummiesSumToGroupSize
+[       OK ] RiskExposures.SectorDummiesSumToGroupSize (0 ms)
+[ RUN      ] RiskExposures.SingleSectorAllOnes
+[       OK ] RiskExposures.SingleSectorAllOnes (0 ms)
+[ RUN      ] RiskExposures.SingleInstrumentDegenerateZeroZScore
+[       OK ] RiskExposures.SingleInstrumentDegenerateZeroZScore (0 ms)
+[ RUN      ] RiskExposures.MomentumWindowTruncationInvariant
+[       OK ] RiskExposures.MomentumWindowTruncationInvariant (0 ms)
+[ RUN      ] RiskExposures.ColumnOrderSectorsThenStyles
+[       OK ] RiskExposures.ColumnOrderSectorsThenStyles (0 ms)
+[ RUN      ] RiskExposures.RowOutOfRangeIsError
+[       OK ] RiskExposures.RowOutOfRangeIsError (0 ms)
+[ RUN      ] RiskExposures.SpanLengthMismatchIsError
+[       OK ] RiskExposures.SpanLengthMismatchIsError (0 ms)
+[----------] 11 tests from RiskExposures (1 ms total)
+
+[----------] 9 tests from RiskFactorBuilder
+[ RUN      ] RiskFactorBuilder.WlsRecoversExactFactorReturns
+[       OK ] RiskFactorBuilder.WlsRecoversExactFactorReturns (0 ms)
+[ RUN      ] RiskFactorBuilder.SpecificVarianceMatchesResidualVariance
+[       OK ] RiskFactorBuilder.SpecificVarianceMatchesResidualVariance (0 ms)
+[ RUN      ] RiskFactorBuilder.LedoitWolfOracleMatchesClosedForm
+[       OK ] RiskFactorBuilder.LedoitWolfOracleMatchesClosedForm (0 ms)
+[ RUN      ] RiskFactorBuilder.BuildEndToEndProducesUsableModel
+[       OK ] RiskFactorBuilder.BuildEndToEndProducesUsableModel (0 ms)
+[ RUN      ] RiskFactorBuilder.FitWindowTruncationInvariant
+[       OK ] RiskFactorBuilder.FitWindowTruncationInvariant (0 ms)
+[ RUN      ] RiskFactorBuilder.WindowBelowTwoIsError
+[       OK ] RiskFactorBuilder.WindowBelowTwoIsError (0 ms)
+[ RUN      ] RiskFactorBuilder.WindowBelowFactorCountIsError
+[       OK ] RiskFactorBuilder.WindowBelowFactorCountIsError (0 ms)
+[ RUN      ] RiskFactorBuilder.StatFactorRungIsNoLongerNotImplemented
+[       OK ] RiskFactorBuilder.StatFactorRungIsNoLongerNotImplemented (0 ms)
+[ RUN      ] RiskFactorBuilder.DeadFactorRungIsStillNotImplemented
+[       OK ] RiskFactorBuilder.DeadFactorRungIsStillNotImplemented (0 ms)
+[----------] 9 tests from RiskFactorBuilder (3 ms total)
+
+[----------] 4 tests from RiskFactorCovTarget
+[ RUN      ] RiskFactorCovTarget.MatchesCombineEstimatorOnCleanPanel
+[       OK ] RiskFactorCovTarget.MatchesCombineEstimatorOnCleanPanel (16 ms)
+[ RUN      ] RiskFactorCovTarget.ZeroVarianceColumnIsCarriedAtFloor
+[       OK ] RiskFactorCovTarget.ZeroVarianceColumnIsCarriedAtFloor (7 ms)
+[ RUN      ] RiskFactorCovTarget.RejectsNonFiniteAndTooShort
+[       OK ] RiskFactorCovTarget.RejectsNonFiniteAndTooShort (0 ms)
+[ RUN      ] RiskFactorCovTarget.HybridDefaultIsUnchangedAndOptInBuilds
+[       OK ] RiskFactorCovTarget.HybridDefaultIsUnchangedAndOptInBuilds (1078 ms)
+[----------] 4 tests from RiskFactorCovTarget (1102 ms total)
+
+[----------] 12 tests from RiskFactorModel
+[ RUN      ] RiskFactorModel.OneFactorRiskMatchesDenseQuadratic
+[       OK ] RiskFactorModel.OneFactorRiskMatchesDenseQuadratic (0 ms)
+[ RUN      ] RiskFactorModel.TwoFactorRiskMatchesDenseQuadratic
+[       OK ] RiskFactorModel.TwoFactorRiskMatchesDenseQuadratic (0 ms)
+[ RUN      ] RiskFactorModel.ApplyInverseRoundTripsToIdentity
+[       OK ] RiskFactorModel.ApplyInverseRoundTripsToIdentity (0 ms)
+[ RUN      ] RiskFactorModel.NeutralizeResidualOrthogonalToFactors
+[       OK ] RiskFactorModel.NeutralizeResidualOrthogonalToFactors (0 ms)
+[ RUN      ] RiskFactorModel.ZeroSpecificVarianceIsFlooredAndInvertible
+[       OK ] RiskFactorModel.ZeroSpecificVarianceIsFlooredAndInvertible (0 ms)
+[ RUN      ] RiskFactorModel.FitWindowAccessors
+[       OK ] RiskFactorModel.FitWindowAccessors (0 ms)
+[ RUN      ] RiskFactorModel.CreateRejectsFactorCovDimMismatch
+[       OK ] RiskFactorModel.CreateRejectsFactorCovDimMismatch (0 ms)
+[ RUN      ] RiskFactorModel.CreateRejectsSpecificVarLengthMismatch
+[       OK ] RiskFactorModel.CreateRejectsSpecificVarLengthMismatch (0 ms)
+[ RUN      ] RiskFactorModel.CreateRejectsEmptyFitWindow
+[       OK ] RiskFactorModel.CreateRejectsEmptyFitWindow (0 ms)
+[ RUN      ] RiskFactorModel.CreateRejectsNonSpdFactorCov
+[       OK ] RiskFactorModel.CreateRejectsNonSpdFactorCov (0 ms)
+[ RUN      ] RiskFactorModel.RidgeConstantIsTiny
+[       OK ] RiskFactorModel.RidgeConstantIsTiny (0 ms)
+[ RUN      ] RiskFactorModel.CreateRejectsFactorCountAboveStackBound
+[       OK ] RiskFactorModel.CreateRejectsFactorCountAboveStackBound (1 ms)
+[----------] 12 tests from RiskFactorModel (2 ms total)
+
+[----------] 10 tests from RiskFundamentalFactors
+[ RUN      ] RiskFundamentalFactors.PanelAsOfHonoursAvailabilityLagAndStaleness
+[       OK ] RiskFundamentalFactors.PanelAsOfHonoursAvailabilityLagAndStaleness (0 ms)
+[ RUN      ] RiskFundamentalFactors.ColumnsAreCapWeightedMeanZeroEqualWeightedSdOne
+[       OK ] RiskFundamentalFactors.ColumnsAreCapWeightedMeanZeroEqualWeightedSdOne (5 ms)
+[ RUN      ] RiskFundamentalFactors.LayoutIsMarketThenSectorsThenStyles
+[       OK ] RiskFundamentalFactors.LayoutIsMarketThenSectorsThenStyles (0 ms)
+[ RUN      ] RiskFundamentalFactors.MovingAvailabilityPastAsOfChangesExposure
+[       OK ] RiskFundamentalFactors.MovingAvailabilityPastAsOfChangesExposure (0 ms)
+[ RUN      ] RiskFundamentalFactors.DefaultLagHidesSameDayRelease
+[       OK ] RiskFundamentalFactors.DefaultLagHidesSameDayRelease (0 ms)
+[ RUN      ] RiskFundamentalFactors.MissingPolicyFillZeroVersusDrop
+[       OK ] RiskFundamentalFactors.MissingPolicyFillZeroVersusDrop (0 ms)
+[ RUN      ] RiskFundamentalFactors.CapFromSharesWhenNoCapSpan
+[       OK ] RiskFundamentalFactors.CapFromSharesWhenNoCapSpan (0 ms)
+[ RUN      ] RiskFundamentalFactors.RejectsFundamentalStyleWithoutPanelAndBadSpans
+[       OK ] RiskFundamentalFactors.RejectsFundamentalStyleWithoutPanelAndBadSpans (0 ms)
+[ RUN      ] RiskFundamentalFactors.HoistedBetaIsBitIdenticalToLegacy
+[       OK ] RiskFundamentalFactors.HoistedBetaIsBitIdenticalToLegacy (25 ms)
+[ RUN      ] RiskFundamentalFactors.GoldenDeterminismHash
+[       OK ] RiskFundamentalFactors.GoldenDeterminismHash (2 ms)
+[----------] 10 tests from RiskFundamentalFactors (35 ms total)
+
+[----------] 5 tests from RiskGpRiccati
+[ RUN      ] RiskGpRiccati.DenseProportionalMatchesGpClosedFormRateAndAim
+[       OK ] RiskGpRiccati.DenseProportionalMatchesGpClosedFormRateAndAim (1 ms)
+[ RUN      ] RiskGpRiccati.FactorSpacePathMatchesDenseOracle
+[       OK ] RiskGpRiccati.FactorSpacePathMatchesDenseOracle (0 ms)
+[ RUN      ] RiskGpRiccati.HorizonOneIsTheMyopicCostedTrade
+[       OK ] RiskGpRiccati.HorizonOneIsTheMyopicCostedTrade (0 ms)
+[ RUN      ] RiskGpRiccati.LongHorizonConvergesToSteadyStateAndSatisfiesRiccati
+[       OK ] RiskGpRiccati.LongHorizonConvergesToSteadyStateAndSatisfiesRiccati (27 ms)
+[ RUN      ] RiskGpRiccati.RejectsBadInputs
+[       OK ] RiskGpRiccati.RejectsBadInputs (0 ms)
+[----------] 5 tests from RiskGpRiccati (29 ms total)
+
+[----------] 12 tests from RiskHorizon
+[ RUN      ] RiskHorizon.IdentityDecayIsConstantTrajectoryAndPreservesNaN
+[       OK ] RiskHorizon.IdentityDecayIsConstantTrajectoryAndPreservesNaN (0 ms)
+[ RUN      ] RiskHorizon.FiniteHalflifeDecaysGeometrically
+[       OK ] RiskHorizon.FiniteHalflifeDecaysGeometrically (0 ms)
+[ RUN      ] RiskHorizon.MultiSourceSuperposition
+[       OK ] RiskHorizon.MultiSourceSuperposition (0 ms)
+[ RUN      ] RiskHorizon.NaNSemanticsAcrossNameClasses
+[       OK ] RiskHorizon.NaNSemanticsAcrossNameClasses (0 ms)
+[ RUN      ] RiskHorizon.DecayEdgeCases
+[       OK ] RiskHorizon.DecayEdgeCases (0 ms)
+[ RUN      ] RiskHorizon.InstantDecayInTrajectory
+[       OK ] RiskHorizon.InstantDecayInTrajectory (0 ms)
+[ RUN      ] RiskHorizon.DeterministicAcrossBuilds
+[       OK ] RiskHorizon.DeterministicAcrossBuilds (0 ms)
+[ RUN      ] RiskHorizon.ErrsOnEmptySources
+[       OK ] RiskHorizon.ErrsOnEmptySources (0 ms)
+[ RUN      ] RiskHorizon.ErrsOnSpanLengthMismatch
+[       OK ] RiskHorizon.ErrsOnSpanLengthMismatch (0 ms)
+[ RUN      ] RiskHorizon.ErrsOnNegativeHalflife
+[       OK ] RiskHorizon.ErrsOnNegativeHalflife (0 ms)
+[ RUN      ] RiskHorizon.HorizonZeroGivesSingleRowEqualToAlphaT
+[       OK ] RiskHorizon.HorizonZeroGivesSingleRowEqualToAlphaT (0 ms)
+[ RUN      ] RiskHorizon.SingleNameUniverse
+[       OK ] RiskHorizon.SingleNameUniverse (0 ms)
+[----------] 12 tests from RiskHorizon (0 ms total)
+
+[----------] 11 tests from RiskHybridModel
+[ RUN      ] RiskHybridModel.StructuredRegressionMatchesDenseWls
+[       OK ] RiskHybridModel.StructuredRegressionMatchesDenseWls (1 ms)
+[ RUN      ] RiskHybridModel.IndustryConstraintIsExactAndFitUnchanged
+[       OK ] RiskHybridModel.IndustryConstraintIsExactAndFitUnchanged (1 ms)
+[ RUN      ] RiskHybridModel.RecoversPlantedLatentFactor
+[       OK ] RiskHybridModel.RecoversPlantedLatentFactor (904 ms)
+[ RUN      ] RiskHybridModel.LatentFactorRiskIsCaptured
+[       OK ] RiskHybridModel.LatentFactorRiskIsCaptured (470 ms)
+[ RUN      ] RiskHybridModel.DeterministicAndPitSafe
+[       OK ] RiskHybridModel.DeterministicAndPitSafe (117 ms)
+[ RUN      ] RiskHybridModel.SkipsDatesAndAssetsWithMissingData
+[       OK ] RiskHybridModel.SkipsDatesAndAssetsWithMissingData (5 ms)
+[ RUN      ] RiskHybridModel.RejectsBadShapes
+[       OK ] RiskHybridModel.RejectsBadShapes (0 ms)
+[ RUN      ] RiskHybridModel.SelectionKernels
+[       OK ] RiskHybridModel.SelectionKernels (0 ms)
+[ RUN      ] RiskHybridModel.PanelAdapterEndToEnd
+[       OK ] RiskHybridModel.PanelAdapterEndToEnd (77 ms)
+[ RUN      ] RiskHybridModel.PanelAdapterPitCaps
+[       OK ] RiskHybridModel.PanelAdapterPitCaps (97 ms)
+[ RUN      ] RiskHybridModel.RejectsBadCapSeriesAndTooFewDatesForK
+[       OK ] RiskHybridModel.RejectsBadCapSeriesAndTooFewDatesForK (1 ms)
+[----------] 11 tests from RiskHybridModel (1678 ms total)
+
+[----------] 11 tests from RiskKktLdl
+[ RUN      ] RiskKktLdl.ExactActualFillBudgetPreservesFactorAndSolve
+[       OK ] RiskKktLdl.ExactActualFillBudgetPreservesFactorAndSolve (0 ms)
+[ RUN      ] RiskKktLdl.RejectedSymbolicRefactorInvalidatesPriorFactor
+[       OK ] RiskKktLdl.RejectedSymbolicRefactorInvalidatesPriorFactor (0 ms)
+[ RUN      ] RiskKktLdl.FailedNumericRefactorCannotRemainReady
+[       OK ] RiskKktLdl.FailedNumericRefactorCannotRemainReady (0 ms)
+[ RUN      ] RiskKktLdl.QpFactorBudgetPropagatesWithAndWithoutPolish
+[       OK ] RiskKktLdl.QpFactorBudgetPropagatesWithAndWithoutPolish (2 ms)
+[ RUN      ] RiskKktLdl.ReconstructsAugmentedKktAndInertia
+[       OK ] RiskKktLdl.ReconstructsAugmentedKktAndInertia (39 ms)
+[ RUN      ] RiskKktLdl.ReconstructsSyntheticQuasiDefinite
+[       OK ] RiskKktLdl.ReconstructsSyntheticQuasiDefinite (0 ms)
+[ RUN      ] RiskKktLdl.SolveMatchesDenseLdltReference
+[       OK ] RiskKktLdl.SolveMatchesDenseLdltReference (6 ms)
+[ RUN      ] RiskKktLdl.FactorIsByteIdenticalAcrossRuns
+[       OK ] RiskKktLdl.FactorIsByteIdenticalAcrossRuns (1 ms)
+[ RUN      ] RiskKktLdl.WarmSymbolicMatchesColdFactorByteForByte
+[       OK ] RiskKktLdl.WarmSymbolicMatchesColdFactorByteForByte (0 ms)
+[ RUN      ] RiskKktLdl.SolveByteIdenticalAcrossThreadCounts
+[       OK ] RiskKktLdl.SolveByteIdenticalAcrossThreadCounts (3 ms)
+[ RUN      ] RiskKktLdl.ZeroPivotIsReported
+[       OK ] RiskKktLdl.ZeroPivotIsReported (0 ms)
+[----------] 11 tests from RiskKktLdl (55 ms total)
+
+[----------] 5 tests from RiskMhTrueMpc
+[ RUN      ] RiskMhTrueMpc.FirstPeriodEqualsDirectStackedSolve
+[       OK ] RiskMhTrueMpc.FirstPeriodEqualsDirectStackedSolve (21 ms)
+[ RUN      ] RiskMhTrueMpc.UnconstrainedFirstMoveIsTheGpPolicy
+[       OK ] RiskMhTrueMpc.UnconstrainedFirstMoveIsTheGpPolicy (10 ms)
+[ RUN      ] RiskMhTrueMpc.LongerHorizonTradesMoreOnAPersistentSignal
+[       OK ] RiskMhTrueMpc.LongerHorizonTradesMoreOnAPersistentSignal (11 ms)
+[ RUN      ] RiskMhTrueMpc.RequirementsFailTyped
+[       OK ] RiskMhTrueMpc.RequirementsFailTyped (0 ms)
+[ RUN      ] RiskMhTrueMpc.ConstrainedChainThreadsThePreviousBook
+[       OK ] RiskMhTrueMpc.ConstrainedChainThreadsThePreviousBook (10 ms)
+[----------] 5 tests from RiskMhTrueMpc (54 ms total)
+
+[----------] 5 tests from RiskModelConfigSpine
+[ RUN      ] RiskModelConfigSpine.DefaultsAreInert
+[       OK ] RiskModelConfigSpine.DefaultsAreInert (0 ms)
+[ RUN      ] RiskModelConfigSpine.DiagonalIsFrozenAtZero
+[       OK ] RiskModelConfigSpine.DiagonalIsFrozenAtZero (0 ms)
+[ RUN      ] RiskModelConfigSpine.ArtifactRoundTripByteIdentical
+[       OK ] RiskModelConfigSpine.ArtifactRoundTripByteIdentical (0 ms)
+[ RUN      ] RiskModelConfigSpine.ArtifactDigestStableTwiceRun
+[       OK ] RiskModelConfigSpine.ArtifactDigestStableTwiceRun (0 ms)
+[ RUN      ] RiskModelConfigSpine.ArtifactDigestChangesOnMutation
+[       OK ] RiskModelConfigSpine.ArtifactDigestChangesOnMutation (0 ms)
+[----------] 5 tests from RiskModelConfigSpine (0 ms total)
+
+[----------] 7 tests from RiskModelValidation
+[ RUN      ] RiskModelValidation.CorrectlySpecifiedModelIsInBand
+[       OK ] RiskModelValidation.CorrectlySpecifiedModelIsInBand (706 ms)
+[ RUN      ] RiskModelValidation.UnderstatedModelIsFlagged
+[       OK ] RiskModelValidation.UnderstatedModelIsFlagged (424 ms)
+[ RUN      ] RiskModelValidation.JsonScorecardIsDeterministicAndComplete
+[       OK ] RiskModelValidation.JsonScorecardIsDeterministicAndComplete (162 ms)
+[ RUN      ] RiskModelValidation.JsonStringsAreEscaped
+[       OK ] RiskModelValidation.JsonStringsAreEscaped (10 ms)
+[ RUN      ] RiskModelValidation.NanReturnNamesAreDroppedFromBooks
+[       OK ] RiskModelValidation.NanReturnNamesAreDroppedFromBooks (60 ms)
+[ RUN      ] RiskModelValidation.RejectsBadConfigAndPropagatesFactoryErrors
+[       OK ] RiskModelValidation.RejectsBadConfigAndPropagatesFactoryErrors (0 ms)
+[ RUN      ] RiskModelValidation.ThreeCandidateConfigsProduceScorecards
+[       OK ] RiskModelValidation.ThreeCandidateConfigsProduceScorecards (4812 ms)
+[----------] 7 tests from RiskModelValidation (6176 ms total)
+
+[----------] 7 tests from RiskMpcStack
+[ RUN      ] RiskMpcStack.HorizonOneMatchesClosedForm
+[       OK ] RiskMpcStack.HorizonOneMatchesClosedForm (3 ms)
+[ RUN      ] RiskMpcStack.HorizonThreeFirstMoveMatchesGpRiccatiBackwardRecursion
+[       OK ] RiskMpcStack.HorizonThreeFirstMoveMatchesGpRiccatiBackwardRecursion (13 ms)
+[ RUN      ] RiskMpcStack.DollarNeutralStackMatchesDenseKkt
+[       OK ] RiskMpcStack.DollarNeutralStackMatchesDenseKkt (10 ms)
+[ RUN      ] RiskMpcStack.GrossBudgetHoldsInEveryPeriod
+[       OK ] RiskMpcStack.GrossBudgetHoldsInEveryPeriod (17 ms)
+[ RUN      ] RiskMpcStack.LongerHorizonTradesLessOnFastDecayingSignal
+[       OK ] RiskMpcStack.LongerHorizonTradesLessOnFastDecayingSignal (10 ms)
+[ RUN      ] RiskMpcStack.TwoSolvesByteIdentical
+[       OK ] RiskMpcStack.TwoSolvesByteIdentical (10 ms)
+[ RUN      ] RiskMpcStack.RejectsBadHorizonAndMalformedInputs
+[       OK ] RiskMpcStack.RejectsBadHorizonAndMalformedInputs (0 ms)
+[----------] 7 tests from RiskMpcStack (66 ms total)
+
+[----------] 16 tests from RiskMultiHorizon
+[ RUN      ] RiskMultiHorizon.BoundaryPinByteIdenticalToMultiPeriodFullStep
+[       OK ] RiskMultiHorizon.BoundaryPinByteIdenticalToMultiPeriodFullStep (1 ms)
+[ RUN      ] RiskMultiHorizon.BoundaryPinByteIdenticalToMultiPeriodPartialStep
+[       OK ] RiskMultiHorizon.BoundaryPinByteIdenticalToMultiPeriodPartialStep (1 ms)
+[ RUN      ] RiskMultiHorizon.BoundaryPinByteIdenticalUnderCapacityClip
+[       OK ] RiskMultiHorizon.BoundaryPinByteIdenticalUnderCapacityClip (0 ms)
+[ RUN      ] RiskMultiHorizon.GpAimIsHorizonAverage
+[       OK ] RiskMultiHorizon.GpAimIsHorizonAverage (0 ms)
+[ RUN      ] RiskMultiHorizon.GpAimIdentitySingleSourceEqualsAlphaTBitIdentical
+[       OK ] RiskMultiHorizon.GpAimIdentitySingleSourceEqualsAlphaTBitIdentical (0 ms)
+[ RUN      ] RiskMultiHorizon.GpAimPreservesAllNaNName
+[       OK ] RiskMultiHorizon.GpAimPreservesAllNaNName (0 ms)
+[ RUN      ] RiskMultiHorizon.GpAimWeightsPersistentSourceMore
+[       OK ] RiskMultiHorizon.GpAimWeightsPersistentSourceMore (0 ms)
+[ RUN      ] RiskMultiHorizon.AugmentedConstraintsSatisfiedEveryPeriod
+[       OK ] RiskMultiHorizon.AugmentedConstraintsSatisfiedEveryPeriod (55 ms)
+[ RUN      ] RiskMultiHorizon.TwoRunsByteIdentical
+[       OK ] RiskMultiHorizon.TwoRunsByteIdentical (1 ms)
+[ RUN      ] RiskMultiHorizon.FirstMoveExecutionThreadsRealizedBook
+[       OK ] RiskMultiHorizon.FirstMoveExecutionThreadsRealizedBook (0 ms)
+[ RUN      ] RiskMultiHorizon.RejectsInvalidTradeRate
+[       OK ] RiskMultiHorizon.RejectsInvalidTradeRate (0 ms)
+[ RUN      ] RiskMultiHorizon.StackedMpcAgreesWithAimCollapseOnConstantTrajectory
+[       OK ] RiskMultiHorizon.StackedMpcAgreesWithAimCollapseOnConstantTrajectory (0 ms)
+[ RUN      ] RiskMultiHorizon.StackedMpcDeterministicTwoRuns
+[       OK ] RiskMultiHorizon.StackedMpcDeterministicTwoRuns (1 ms)
+[ RUN      ] RiskMultiHorizon.EmptyScheduleGivesEmptyOkResult
+[       OK ] RiskMultiHorizon.EmptyScheduleGivesEmptyOkResult (0 ms)
+[ RUN      ] RiskMultiHorizon.MultiSourceMultiHorizonProducesFiniteBooks
+[       OK ] RiskMultiHorizon.MultiSourceMultiHorizonProducesFiniteBooks (0 ms)
+[ RUN      ] RiskMultiHorizon.SingleNameUniverse
+[       OK ] RiskMultiHorizon.SingleNameUniverse (0 ms)
+[----------] 16 tests from RiskMultiHorizon (65 ms total)
+
+[----------] 5 tests from RiskOptimizerCostTerms
+[ RUN      ] RiskOptimizerCostTerms.SqrtImpactPricingEqualsReplayCharge
+[       OK ] RiskOptimizerCostTerms.SqrtImpactPricingEqualsReplayCharge (0 ms)
+[ RUN      ] RiskOptimizerCostTerms.FlatBpsPricingEqualsReplayCharge
+[       OK ] RiskOptimizerCostTerms.FlatBpsPricingEqualsReplayCharge (0 ms)
+[ RUN      ] RiskOptimizerCostTerms.UntradeableCapAndExponentContracts
+[       OK ] RiskOptimizerCostTerms.UntradeableCapAndExponentContracts (0 ms)
+[ RUN      ] RiskOptimizerCostTerms.BorrowLegMatchesAccrualFormula
+[       OK ] RiskOptimizerCostTerms.BorrowLegMatchesAccrualFormula (0 ms)
+[ RUN      ] RiskOptimizerCostTerms.CalibratedTermsDriveTheCostedSolve
+[       OK ] RiskOptimizerCostTerms.CalibratedTermsDriveTheCostedSolve (698 ms)
+[----------] 5 tests from RiskOptimizerCostTerms (698 ms total)
+
+[----------] 22 tests from RiskOptimizer
+[ RUN      ] RiskOptimizer.LambdaKappaZeroRecoversWeightPolicyBook
+[       OK ] RiskOptimizer.LambdaKappaZeroRecoversWeightPolicyBook (0 ms)
+[ RUN      ] RiskOptimizer.LambdaKappaZeroRecoversWeightPolicyBookLeverageTwo
+[       OK ] RiskOptimizer.LambdaKappaZeroRecoversWeightPolicyBookLeverageTwo (0 ms)
+[ RUN      ] RiskOptimizer.LambdaKappaZeroRecoversWeightPolicyBookWithNaNHoles
+[       OK ] RiskOptimizer.LambdaKappaZeroRecoversWeightPolicyBookWithNaNHoles (0 ms)
+[ RUN      ] RiskOptimizer.KappaZeroIsTurnoverFree
+[       OK ] RiskOptimizer.KappaZeroIsTurnoverFree (0 ms)
+[ RUN      ] RiskOptimizer.RaisingLambdaShrinksHighVarianceNames
+[       OK ] RiskOptimizer.RaisingLambdaShrinksHighVarianceNames (0 ms)
+[ RUN      ] RiskOptimizer.KappaReducesTurnover
+[       OK ] RiskOptimizer.KappaReducesTurnover (0 ms)
+[ RUN      ] RiskOptimizer.NameCapNeverExceeded
+[       OK ] RiskOptimizer.NameCapNeverExceeded (8 ms)
+[ RUN      ] RiskOptimizer.DollarNeutralAndGrossLeverageInvariants
+[       OK ] RiskOptimizer.DollarNeutralAndGrossLeverageInvariants (8 ms)
+[ RUN      ] RiskOptimizer.DeterministicAcrossReruns
+[       OK ] RiskOptimizer.DeterministicAcrossReruns (18 ms)
+[ RUN      ] RiskOptimizer.ErrsOnAlphaDimMismatch
+[       OK ] RiskOptimizer.ErrsOnAlphaDimMismatch (0 ms)
+[ RUN      ] RiskOptimizer.ErrsOnWPrevDimMismatch
+[       OK ] RiskOptimizer.ErrsOnWPrevDimMismatch (0 ms)
+[ RUN      ] RiskOptimizer.WPrevAtOptimumNoTrade
+[       OK ] RiskOptimizer.WPrevAtOptimumNoTrade (0 ms)
+[ RUN      ] RiskOptimizer.SingleNameDollarNeutralIsZero
+[       OK ] RiskOptimizer.SingleNameDollarNeutralIsZero (0 ms)
+[ RUN      ] RiskOptimizer.CapBelowEqualWeightAllPinned
+[       OK ] RiskOptimizer.CapBelowEqualWeightAllPinned (4 ms)
+[ RUN      ] RiskOptimizer.EmptyWPrevTreatedAsFlat
+[       OK ] RiskOptimizer.EmptyWPrevTreatedAsFlat (0 ms)
+[ RUN      ] RiskOptimizer.OutputsAreFinite
+[       OK ] RiskOptimizer.OutputsAreFinite (5 ms)
+[ RUN      ] RiskOptimizer.WiredMinimalDispatch_Pin1_ByteIdentical
+[       OK ] RiskOptimizer.WiredMinimalDispatch_Pin1_ByteIdentical (0 ms)
+[ RUN      ] RiskOptimizer.WiredMinimalDispatch_NaNHole_ByteIdentical
+[       OK ] RiskOptimizer.WiredMinimalDispatch_NaNHole_ByteIdentical (0 ms)
+[ RUN      ] RiskOptimizer.WiredMinimalDispatch_RiskAwareTurnover_ByteIdentical
+[       OK ] RiskOptimizer.WiredMinimalDispatch_RiskAwareTurnover_ByteIdentical (34 ms)
+[ RUN      ] RiskOptimizer.WiredMinimalDispatch_Pin3LambdaTilt_ByteIdentical
+[       OK ] RiskOptimizer.WiredMinimalDispatch_Pin3LambdaTilt_ByteIdentical (0 ms)
+[ RUN      ] RiskOptimizer.WiredMinimalDispatch_HonorsAttachedSetOverCfg
+[       OK ] RiskOptimizer.WiredMinimalDispatch_HonorsAttachedSetOverCfg (15 ms)
+[ RUN      ] RiskOptimizer.WiredAugmentedDispatch_ParticipationCapSatisfied
+[       OK ] RiskOptimizer.WiredAugmentedDispatch_ParticipationCapSatisfied (19 ms)
+[----------] 22 tests from RiskOptimizer (118 ms total)
+
+[----------] 9 tests from RiskFactorAdmm
+[ RUN      ] RiskFactorAdmm.EqualityOnlyMatchesClosedForm
+[       OK ] RiskFactorAdmm.EqualityOnlyMatchesClosedForm (2 ms)
+[ RUN      ] RiskFactorAdmm.ProductionShapeMatchesAugmentedSolver
+[       OK ] RiskFactorAdmm.ProductionShapeMatchesAugmentedSolver (10435 ms)
+[ RUN      ] RiskFactorAdmm.TurnoverPenaltyBudgetAndImpactMatchAugmented
+[       OK ] RiskFactorAdmm.TurnoverPenaltyBudgetAndImpactMatchAugmented (1887 ms)
+[ RUN      ] RiskFactorAdmm.PinsAreHonouredExactly
+[       OK ] RiskFactorAdmm.PinsAreHonouredExactly (1 ms)
+[ RUN      ] RiskFactorAdmm.WarmStartCutsIterationsAndMatchesCold
+[       OK ] RiskFactorAdmm.WarmStartCutsIterationsAndMatchesCold (117 ms)
+[ RUN      ] RiskFactorAdmm.DeterministicByteIdentical
+[       OK ] RiskFactorAdmm.DeterministicByteIdentical (9 ms)
+[ RUN      ] RiskFactorAdmm.ConeSetsFallBackToAugmentedPath
+[       OK ] RiskFactorAdmm.ConeSetsFallBackToAugmentedPath (5 ms)
+[ RUN      ] RiskFactorAdmm.InfeasibleSetFailsTyped
+[       OK ] RiskFactorAdmm.InfeasibleSetFailsTyped (13 ms)
+[ RUN      ] RiskFactorAdmm.BoxL1ProjectionMatchesBruteForce
+[       OK ] RiskFactorAdmm.BoxL1ProjectionMatchesBruteForce (34 ms)
+[----------] 9 tests from RiskFactorAdmm (12507 ms total)
+
+[----------] 3 tests from RiskQpPolish
+[ RUN      ] RiskQpPolish.BindingTurnoverRemovesRegularizationBiasAndPreservesFreeGrossAuxiliaries
+[       OK ] RiskQpPolish.BindingTurnoverRemovesRegularizationBiasAndPreservesFreeGrossAuxiliaries (7 ms)
+[ RUN      ] RiskQpPolish.FeasibleEqualityOptimumReplacesInfeasibleLowerObjectiveAfterOneAdmmStep
+[       OK ] RiskQpPolish.FeasibleEqualityOptimumReplacesInfeasibleLowerObjectiveAfterOneAdmmStep (0 ms)
+[ RUN      ] RiskQpPolish.WrongActiveMultiplierAndConeViolationPreserveTheAdmmFallback
+[       OK ] RiskQpPolish.WrongActiveMultiplierAndConeViolationPreserveTheAdmmFallback (7 ms)
+[----------] 3 tests from RiskQpPolish (15 ms total)
+
+[----------] 19 tests from RiskQpSolver
+[ RUN      ] RiskQpSolver.FactorModelApplyMatchesDenseForward
+[       OK ] RiskQpSolver.FactorModelApplyMatchesDenseForward (0 ms)
+[ RUN      ] RiskQpSolver.SpecificVarReturnsFlooredDiagonal
+[       OK ] RiskQpSolver.SpecificVarReturnsFlooredDiagonal (0 ms)
+[ RUN      ] RiskQpSolver.DollarNeutralRecoversAnalyticOptimum
+[       OK ] RiskQpSolver.DollarNeutralRecoversAnalyticOptimum (1 ms)
+[ RUN      ] RiskQpSolver.FactoredAdmmMatchesDenseAdmmLinear
+[       OK ] RiskQpSolver.FactoredAdmmMatchesDenseAdmmLinear (6 ms)
+[ RUN      ] RiskQpSolver.ReturnedBookSatisfiesLinearConstraints
+[       OK ] RiskQpSolver.ReturnedBookSatisfiesLinearConstraints (3 ms)
+[ RUN      ] RiskQpSolver.GrossL1BudgetHoldsAtBook
+[       OK ] RiskQpSolver.GrossL1BudgetHoldsAtBook (4 ms)
+[ RUN      ] RiskQpSolver.TurnoverL1BudgetHoldsAtBook
+[       OK ] RiskQpSolver.TurnoverL1BudgetHoldsAtBook (4 ms)
+[ RUN      ] RiskQpSolver.InfeasibleConstraintsReturnErr
+[       OK ] RiskQpSolver.InfeasibleConstraintsReturnErr (0 ms)
+[ RUN      ] RiskQpSolver.ZeroGrossBudgetForcesZeroBook
+[       OK ] RiskQpSolver.ZeroGrossBudgetForcesZeroBook (3 ms)
+[ RUN      ] RiskQpSolver.TwoSolvesByteIdentical
+[       OK ] RiskQpSolver.TwoSolvesByteIdentical (11 ms)
+[ RUN      ] RiskQpSolver.QLengthMismatchReturnsErr
+[       OK ] RiskQpSolver.QLengthMismatchReturnsErr (0 ms)
+[ RUN      ] RiskQpSolver.SingleNameUniverse
+[       OK ] RiskQpSolver.SingleNameUniverse (0 ms)
+[ RUN      ] RiskQpSolver.ZeroObjectiveFeasibleBook
+[       OK ] RiskQpSolver.ZeroObjectiveFeasibleBook (1 ms)
+[ RUN      ] RiskQpSolver.RuizSameOptimumAsNoRuiz
+[       OK ] RiskQpSolver.RuizSameOptimumAsNoRuiz (4 ms)
+[ RUN      ] RiskQpSolver.RuizSolveByteIdentical
+[       OK ] RiskQpSolver.RuizSolveByteIdentical (9 ms)
+[ RUN      ] RiskQpSolver.PolishNeverDegradesObjective
+[       OK ] RiskQpSolver.PolishNeverDegradesObjective (3 ms)
+[ RUN      ] RiskQpSolver.CertificateSmallResidualsOnFeasibleProblem
+[       OK ] RiskQpSolver.CertificateSmallResidualsOnFeasibleProblem (2 ms)
+[ RUN      ] RiskQpSolver.WarmStartMatchesColdOptimum
+[       OK ] RiskQpSolver.WarmStartMatchesColdOptimum (4 ms)
+[ RUN      ] RiskQpSolver.WarmStartSolveByteIdentical
+[       OK ] RiskQpSolver.WarmStartSolveByteIdentical (3 ms)
+[----------] 19 tests from RiskQpSolver (67 ms total)
+
+[----------] 2 tests from RiskQpSparseR1
+[ RUN      ] RiskQpSparseR1.LegacyAbsoluteDenseAndCsrProduceIdenticalAugmentedAndFactorBooks
+[       OK ] RiskQpSparseR1.LegacyAbsoluteDenseAndCsrProduceIdenticalAugmentedAndFactorBooks (74 ms)
+[ RUN      ] RiskQpSparseR1.RelativePolicySolvesAndRejectsMalformedBudgetBeforeEitherRoute
+[       OK ] RiskQpSparseR1.RelativePolicySolvesAndRejectsMalformedBudgetBeforeEitherRoute (10 ms)
+[----------] 2 tests from RiskQpSparseR1 (84 ms total)
+
+[----------] 1 test from RiskScaffold
+[ RUN      ] RiskScaffold.NamespaceCompilesAndLinks
+[       OK ] RiskScaffold.NamespaceCompilesAndLinks (0 ms)
+[----------] 1 test from RiskScaffold (0 ms total)
+
+[----------] 9 tests from RiskShrinkagePsd
+[ RUN      ] RiskShrinkagePsd.ConstCorrLwMatchesClosedForm
+[       OK ] RiskShrinkagePsd.ConstCorrLwMatchesClosedForm (0 ms)
+[ RUN      ] RiskShrinkagePsd.ConstCorrLwDeterministic
+[       OK ] RiskShrinkagePsd.ConstCorrLwDeterministic (0 ms)
+[ RUN      ] RiskShrinkagePsd.ConstCorrLwPositiveDefiniteWhenNGreaterThanT
+[       OK ] RiskShrinkagePsd.ConstCorrLwPositiveDefiniteWhenNGreaterThanT (0 ms)
+[ RUN      ] RiskShrinkagePsd.MpClipPreservesTrace
+[       OK ] RiskShrinkagePsd.MpClipPreservesTrace (1 ms)
+[ RUN      ] RiskShrinkagePsd.MpClipNoopWhenNoNoiseBulk
+[       OK ] RiskShrinkagePsd.MpClipNoopWhenNoNoiseBulk (0 ms)
+[ RUN      ] RiskShrinkagePsd.MpClipRejectsNonPositiveQ
+[       OK ] RiskShrinkagePsd.MpClipRejectsNonPositiveQ (0 ms)
+[ RUN      ] RiskShrinkagePsd.HighamNearestCorrelationRepairsIndefinite
+[       OK ] RiskShrinkagePsd.HighamNearestCorrelationRepairsIndefinite (1 ms)
+[ RUN      ] RiskShrinkagePsd.HighamNearestCorrelationIdempotentOnValid
+[       OK ] RiskShrinkagePsd.HighamNearestCorrelationIdempotentOnValid (0 ms)
+[ RUN      ] RiskShrinkagePsd.EigenvalueClipFloorsSpectrum
+[       OK ] RiskShrinkagePsd.EigenvalueClipFloorsSpectrum (0 ms)
+[----------] 9 tests from RiskShrinkagePsd (3 ms total)
+
+[----------] 10 tests from RiskStatFactor
+[ RUN      ] RiskStatFactor.RecoversPlantedLatentFactors
+[       OK ] RiskStatFactor.RecoversPlantedLatentFactors (16 ms)
+[ RUN      ] RiskStatFactor.GramTopKDominatesAndRecoversFactorReturns
+[       OK ] RiskStatFactor.GramTopKDominatesAndRecoversFactorReturns (5 ms)
+[ RUN      ] RiskStatFactor.RecoveredSubspaceCapturesNonOrthogonalPlantedFactors
+[       OK ] RiskStatFactor.RecoveredSubspaceCapturesNonOrthogonalPlantedFactors (5 ms)
+[ RUN      ] RiskStatFactor.StatRungIsNoLongerNotImplemented
+[       OK ] RiskStatFactor.StatRungIsNoLongerNotImplemented (1 ms)
+[ RUN      ] RiskStatFactor.DeadRungStillNotImplemented
+[       OK ] RiskStatFactor.DeadRungStillNotImplemented (0 ms)
+[ RUN      ] RiskStatFactor.NotEnoughInstrumentsIsError
+[       OK ] RiskStatFactor.NotEnoughInstrumentsIsError (0 ms)
+[ RUN      ] RiskStatFactor.WindowNotAboveFactorCountIsError
+[       OK ] RiskStatFactor.WindowNotAboveFactorCountIsError (0 ms)
+[ RUN      ] RiskStatFactor.DeterministicReplay
+[       OK ] RiskStatFactor.DeterministicReplay (8 ms)
+[ RUN      ] RiskStatFactor.FitWindowTruncationInvariant
+[       OK ] RiskStatFactor.FitWindowTruncationInvariant (5 ms)
+[ RUN      ] RiskStatFactor.GlsReweightChangesEstimateBothSpd
+[       OK ] RiskStatFactor.GlsReweightChangesEstimateBothSpd (9 ms)
+[----------] 10 tests from RiskStatFactor (54 ms total)
+
+[----------] 8 tests from RiskVolRegime
+[ RUN      ] RiskVolRegime.StationaryPanelGivesUnitMultiplier
+[       OK ] RiskVolRegime.StationaryPanelGivesUnitMultiplier (0 ms)
+[ RUN      ] RiskVolRegime.NewestSpikeInflatesMultiplier
+[       OK ] RiskVolRegime.NewestSpikeInflatesMultiplier (0 ms)
+[ RUN      ] RiskVolRegime.DeterministicByteIdentical
+[       OK ] RiskVolRegime.DeterministicByteIdentical (0 ms)
+[ RUN      ] RiskVolRegime.ZeroForecastDiagonalExcludesFactor
+[       OK ] RiskVolRegime.ZeroForecastDiagonalExcludesFactor (0 ms)
+[ RUN      ] RiskVolRegime.AllZeroForecastGivesFiniteMultiplier
+[       OK ] RiskVolRegime.AllZeroForecastGivesFiniteMultiplier (0 ms)
+[ RUN      ] RiskVolRegime.TruncationInvariantUnderOldRows
+[       OK ] RiskVolRegime.TruncationInvariantUnderOldRows (0 ms)
+[ RUN      ] RiskVolRegime.BuildAppliesAndIsDeterministic
+[       OK ] RiskVolRegime.BuildAppliesAndIsDeterministic (1 ms)
+[ RUN      ] RiskVolRegime.ZeroHalfLifeIsByteIdenticalNoOp
+[       OK ] RiskVolRegime.ZeroHalfLifeIsByteIdenticalNoOp (0 ms)
+[----------] 8 tests from RiskVolRegime (2 ms total)
+
+[----------] 9 tests from RiskFactorModelPit
+[ RUN      ] RiskFactorModelPit.LaggedExposureRowIsThePriorClose
+[       OK ] RiskFactorModelPit.LaggedExposureRowIsThePriorClose (1 ms)
+[ RUN      ] RiskFactorModelPit.RegressionExposuresInvariantToFuturePerturbation
+[W0-R0 evidence] future-perturbation: LaggedV2 X identical at 3/3 dates; ContemporaneousV1 X moved at 3/3 dates
+[       OK ] RiskFactorModelPit.RegressionExposuresInvariantToFuturePerturbation (8 ms)
+[ RUN      ] RiskFactorModelPit.ModelBuiltAtTInvariantToFuturePerturbation
+[       OK ] RiskFactorModelPit.ModelBuiltAtTInvariantToFuturePerturbation (117 ms)
+[ RUN      ] RiskFactorModelPit.ContemporaneousLiquidityPremiumIsRemoved
+[W0-R0 evidence] pure-noise Liquidity factor return: ContemporaneousV1 mean=0.005818 t=22.62 (n=150); LaggedV2 mean=0.000251 t=0.95 (n=150)
+[       OK ] RiskFactorModelPit.ContemporaneousLiquidityPremiumIsRemoved (115 ms)
+[ RUN      ] RiskFactorModelPit.CapAndGroupAreReadPerDate
+[       OK ] RiskFactorModelPit.CapAndGroupAreReadPerDate (0 ms)
+[ RUN      ] RiskFactorModelPit.SideInputShapeAndCoverageAreChecked
+[       OK ] RiskFactorModelPit.SideInputShapeAndCoverageAreChecked (0 ms)
+[ RUN      ] RiskFactorModelPit.ZScoreIsCapWeightedAndWinsorized
+[W0-R0 evidence] planted ln-adv outlier: V1 outlier z=6.189, spread of the other 39 names sd=0.136; V2 outlier z=2.681, others sd=0.888, max|z|=2.681
+[W0-R0 evidence] V2 winsor bound: max|z - mean_eq(z)| = 3.000000044155, cap-weighted mean of z = -1.823e-15
+[       OK ] RiskFactorModelPit.ZScoreIsCapWeightedAndWinsorized (0 ms)
+[ RUN      ] RiskFactorModelPit.SizeSmallCapTailKeepsItsOrder
+[W0-R0 evidence] Size z (ln-cap sd 2, n=400): min z=-4.432, names below -3 (pinned by a post-centring clip)=26, names at the minimum=1, adjacent ties=0
+[       OK ] RiskFactorModelPit.SizeSmallCapTailKeepsItsOrder (0 ms)
+[ RUN      ] RiskFactorModelPit.PassBSeriesInvariantToInteriorPerturbation
+[W0-R0 evidence] interior perturbation (s0=12): LaggedV2 max|df| over s>=s0 = 2.429e-17, |f - planted| max = 3.123e-17, |df(s0-1)| = 2.428e-02; ContemporaneousV1 |df(s0)| = 8.188e-04
+[       OK ] RiskFactorModelPit.PassBSeriesInvariantToInteriorPerturbation (17 ms)
+[----------] 9 tests from RiskFactorModelPit (263 ms total)
+
+[----------] 5 tests from RiskSectorColumnsById
+[ RUN      ] RiskSectorColumnsById.GroupMissingAtOlderDatesBuildsAndMapsById
+[W0-R0 evidence] group-missing build: K=3, dates=30, group-3 missing on 20 dates, max|f - planted| checked at 1e-10
+[       OK ] RiskSectorColumnsById.GroupMissingAtOlderDatesBuildsAndMapsById (7 ms)
+[ RUN      ] RiskSectorColumnsById.CheckedIndexingCatchesThePreW0Read
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[       OK ] RiskSectorColumnsById.CheckedIndexingCatchesThePreW0Read (145 ms)
+[ RUN      ] RiskSectorColumnsById.VanishedGroupIsRegressedButNotCarried
+[       OK ] RiskSectorColumnsById.VanishedGroupIsRegressedButNotCarried (2 ms)
+[ RUN      ] RiskSectorColumnsById.PitGroupReassignmentRecoversPlantedReturns
+[W0-R0 evidence] sector switch: max |f - planted| PIT groups=1.648e-16, static (today's) groups=6.757e-04
+[       OK ] RiskSectorColumnsById.PitGroupReassignmentRecoversPlantedReturns (8 ms)
+[ RUN      ] RiskSectorColumnsById.MapColumnsMatchesByIdentity
+[       OK ] RiskSectorColumnsById.MapColumnsMatchesByIdentity (0 ms)
+[----------] 5 tests from RiskSectorColumnsById (164 ms total)
+
+[----------] 6 tests from RiskThinNameFloor
+[ RUN      ] RiskThinNameFloor.ThinNameNoLongerLooksRiskless
+[W0-R0 evidence] thin name (1 residual): D V1=0.000e+00 V2=2.380e-04 (median 3.436e-04, thick range 7.510e-05..9.553e-04); min-variance weight V1=0.3782 V2=0.0292 (max other name V2 0.1002)
+[       OK ] RiskThinNameFloor.ThinNameNoLongerLooksRiskless (33 ms)
+[ RUN      ] RiskThinNameFloor.ThinNameDoesNotDictateItsSectorReturn
+[W0-R0 evidence] sector-3 return on the thin name's first date: thin r=-0.07823, V1 f=-0.07823, V2 f=-0.01314
+[       OK ] RiskThinNameFloor.ThinNameDoesNotDictateItsSectorReturn (15 ms)
+[ RUN      ] RiskThinNameFloor.StructuralFallbackRecoversPlantedModel
+[       OK ] RiskThinNameFloor.StructuralFallbackRecoversPlantedModel (0 ms)
+[ RUN      ] RiskThinNameFloor.GlobalFloorAndDegenerateCases
+[       OK ] RiskThinNameFloor.GlobalFloorAndDegenerateCases (0 ms)
+[ RUN      ] RiskThinNameFloor.StatisticalModelIsFlooredToo
+[W0-R0 evidence] APCA floor: stale-name D NoneV1=4.289e-12 V2=3.491e-05 (median 3.491e-04)
+[       OK ] RiskThinNameFloor.StatisticalModelIsFlooredToo (6 ms)
+[ RUN      ] RiskThinNameFloor.NonFiniteFloorFracIsRejected
+[       OK ] RiskThinNameFloor.NonFiniteFloorFracIsRejected (9 ms)
+[----------] 6 tests from RiskThinNameFloor (65 ms total)
+
+[----------] 15 tests from RiskCone
+[ RUN      ] RiskCone.SocProjectionMatchesClosedForm
+[       OK ] RiskCone.SocProjectionMatchesClosedForm (0 ms)
+[ RUN      ] RiskCone.BallProjectionMatchesClosedForm
+[       OK ] RiskCone.BallProjectionMatchesClosedForm (0 ms)
+[ RUN      ] RiskCone.OrderedNorm2IsBitReproducible
+[       OK ] RiskCone.OrderedNorm2IsBitReproducible (0 ms)
+[ RUN      ] RiskCone.TrackingErrorConstraintIsSatisfiedAndBinds
+[       OK ] RiskCone.TrackingErrorConstraintIsSatisfiedAndBinds (28 ms)
+[ RUN      ] RiskCone.TrackingErrorSolveIsDeterministic
+[       OK ] RiskCone.TrackingErrorSolveIsDeterministic (32 ms)
+[ RUN      ] RiskCone.ZeroConeMatchesCertifiedBoxOnlyOptimum
+[       OK ] RiskCone.ZeroConeMatchesCertifiedBoxOnlyOptimum (25 ms)
+[ RUN      ] RiskCone.SectorRiskConeIsSatisfiedAndBindsAcrossTwoSectors
+[       OK ] RiskCone.SectorRiskConeIsSatisfiedAndBindsAcrossTwoSectors (35 ms)
+[ RUN      ] RiskCone.SectorRiskSolveIsDeterministic
+[       OK ] RiskCone.SectorRiskSolveIsDeterministic (39 ms)
+[ RUN      ] RiskCone.ImpactSurrogateFoldsIntoPqClosedForm
+[       OK ] RiskCone.ImpactSurrogateFoldsIntoPqClosedForm (0 ms)
+[ RUN      ] RiskCone.ImpactSurrogateReducesTurnoverMonotonically
+[       OK ] RiskCone.ImpactSurrogateReducesTurnoverMonotonically (38 ms)
+[ RUN      ] RiskCone.ZeroSectorConeZeroImpactMatchesPlainBookBitwise
+[       OK ] RiskCone.ZeroSectorConeZeroImpactMatchesPlainBookBitwise (24 ms)
+[ RUN      ] RiskCone.RobustConeIsVariableApexAndRoutesThroughSocProject
+[       OK ] RiskCone.RobustConeIsVariableApexAndRoutesThroughSocProject (0 ms)
+[ RUN      ] RiskCone.RobustConeKappaZeroIsByteIdenticalToNominal
+[       OK ] RiskCone.RobustConeKappaZeroIsByteIdenticalToNominal (30 ms)
+[ RUN      ] RiskCone.RobustConeReducesFactorExposureMonotonicallyAndBinds
+[       OK ] RiskCone.RobustConeReducesFactorExposureMonotonicallyAndBinds (53 ms)
+[ RUN      ] RiskCone.RobustConeWithSuppliedOmegaBites
+[       OK ] RiskCone.RobustConeWithSuppliedOmegaBites (33 ms)
+[----------] 15 tests from RiskCone (344 ms total)
+
+[----------] 5 tests from RiskElasticity
+[ RUN      ] RiskElasticity.InfeasibleReturnsClosestFeasibleWithOrderedReport
+[       OK ] RiskElasticity.InfeasibleReturnsClosestFeasibleWithOrderedReport (513 ms)
+[ RUN      ] RiskElasticity.TightGrossBudgetIsRelaxedClosestFeasible
+[       OK ] RiskElasticity.TightGrossBudgetIsRelaxedClosestFeasible (359 ms)
+[ RUN      ] RiskElasticity.FeasibleProblemIsByteIdenticalNoOp
+[       OK ] RiskElasticity.FeasibleProblemIsByteIdenticalNoOp (20 ms)
+[ RUN      ] RiskElasticity.ElasticSolveIsDeterministic
+[       OK ] RiskElasticity.ElasticSolveIsDeterministic (485 ms)
+[ RUN      ] RiskElasticity.HardConstraintInfeasibilityDoesNotRelax
+[       OK ] RiskElasticity.HardConstraintInfeasibilityDoesNotRelax (46 ms)
+[----------] 5 tests from RiskElasticity (1425 ms total)
+
+[----------] 6 tests from RiskGarleanuPedersen
+[ RUN      ] RiskGarleanuPedersen.RelaxedQpMatchesClosedFormSolverConsistency
+[       OK ] RiskGarleanuPedersen.RelaxedQpMatchesClosedFormSolverConsistency (5 ms)
+[ RUN      ] RiskGarleanuPedersen.ClosedFormMatchesHandDerivedGroundTruth
+[       OK ] RiskGarleanuPedersen.ClosedFormMatchesHandDerivedGroundTruth (0 ms)
+[ RUN      ] RiskGarleanuPedersen.ClosedFormNoSolverByteStable
+[       OK ] RiskGarleanuPedersen.ClosedFormNoSolverByteStable (0 ms)
+[ RUN      ] RiskGarleanuPedersen.IdentityDecayCollapsesAlphaBarToAlphaTBitIdentical
+[       OK ] RiskGarleanuPedersen.IdentityDecayCollapsesAlphaBarToAlphaTBitIdentical (0 ms)
+[ RUN      ] RiskGarleanuPedersen.AlphaBarDirectionInvariantToHorizonBeyondDecaySupport
+[       OK ] RiskGarleanuPedersen.AlphaBarDirectionInvariantToHorizonBeyondDecaySupport (0 ms)
+[ RUN      ] RiskGarleanuPedersen.RejectsBadArguments
+[       OK ] RiskGarleanuPedersen.RejectsBadArguments (0 ms)
+[----------] 6 tests from RiskGarleanuPedersen (6 ms total)
+
+[----------] 5 tests from RiskQpAugment
+[ RUN      ] RiskQpAugment.HessianIsBlockDiagDF
+[       OK ] RiskQpAugment.HessianIsBlockDiagDF (0 ms)
+[ RUN      ] RiskQpAugment.FactorDefinitionRowsArePresentAndCorrect
+[       OK ] RiskQpAugment.FactorDefinitionRowsArePresentAndCorrect (0 ms)
+[ RUN      ] RiskQpAugment.GrossAndTurnoverSplitsAreSparseAuxRows
+[       OK ] RiskQpAugment.GrossAndTurnoverSplitsAreSparseAuxRows (0 ms)
+[ RUN      ] RiskQpAugment.DollarNeutralRecoversAnalyticOptimum
+[       OK ] RiskQpAugment.DollarNeutralRecoversAnalyticOptimum (3 ms)
+[ RUN      ] RiskQpAugment.TwoSolvesByteIdentical
+[       OK ] RiskQpAugment.TwoSolvesByteIdentical (64 ms)
+[----------] 5 tests from RiskQpAugment (68 ms total)
+
+[----------] 1 test from RiskQpAugmentFast
+[ RUN      ] RiskQpAugmentFast.MatchesDenseOracleAcrossBattery
+[       OK ] RiskQpAugmentFast.MatchesDenseOracleAcrossBattery (46388 ms)
+[----------] 1 test from RiskQpAugmentFast (46389 ms total)
+
+[----------] 1 test from RiskQpAugmentNightly
+[ RUN      ] RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery
+..\atx-engine\tests\risk_qp_augment_test.cpp(528): Skipped
+Nightly: set ATX_NIGHTLY=1 (or ATX_RISK_NIGHTLY=1) to run the large dense-oracle battery
+
+[  SKIPPED ] RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery (0 ms)
+[----------] 1 test from RiskQpAugmentNightly (0 ms total)
+
+[----------] 2 tests from RiskNightlyGate_Decision
+[ RUN      ] RiskNightlyGate_Decision.UnsetEmptyOrZeroIsOff
+[       OK ] RiskNightlyGate_Decision.UnsetEmptyOrZeroIsOff (0 ms)
+[ RUN      ] RiskNightlyGate_Decision.AnyOtherValueOnEitherSwitchIsOn
+[       OK ] RiskNightlyGate_Decision.AnyOtherValueOnEitherSwitchIsOn (0 ms)
+[----------] 2 tests from RiskNightlyGate_Decision (0 ms total)
+
+[----------] 2 tests from RiskNightlyGate_Env
+[ RUN      ] RiskNightlyGate_Env.UnsetSwitchesSkipNightly
+[       OK ] RiskNightlyGate_Env.UnsetSwitchesSkipNightly (0 ms)
+[ RUN      ] RiskNightlyGate_Env.EitherSwitchEnablesNightly
+[       OK ] RiskNightlyGate_Env.EitherSwitchEnablesNightly (0 ms)
+[----------] 2 tests from RiskNightlyGate_Env (0 ms total)
+
+[----------] 1 test from RiskNightlyGate_Registry
+[ RUN      ] RiskNightlyGate_Registry.NightlyAndFastBatteriesAreRegistered
+[       OK ] RiskNightlyGate_Registry.NightlyAndFastBatteriesAreRegistered (1 ms)
+[----------] 1 test from RiskNightlyGate_Registry (1 ms total)
+
+[----------] 1 test from RiskNightlyGate_Battery
+[ RUN      ] RiskNightlyGate_Battery.ContainsEveryPreSplitCase
+[       OK ] RiskNightlyGate_Battery.ContainsEveryPreSplitCase (0 ms)
+[----------] 1 test from RiskNightlyGate_Battery (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 432 tests from 51 test suites ran. (76034 ms total)
+[  PASSED  ] 431 tests.
+[  SKIPPED ] 1 test, listed below:
+[  SKIPPED ] RiskQpAugmentNightly.MatchesDenseOracleAcrossLargeBattery

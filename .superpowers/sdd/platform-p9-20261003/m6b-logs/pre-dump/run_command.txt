@@ -1,0 +1,4 @@
+{"run_dir":"build-equity/fx-nav-run1","ord":0,"arg":"C:\\atx\\build-equity\\bin\\atx-equity-strategy-targets.exe"}
+{"run_dir":"build-equity/fx-nav-run1","ord":1,"arg":"nav"}
+{"run_dir":"build-equity/fx-nav-run1","ord":2,"arg":"--output"}
+{"run_dir":"build-equity/fx-nav-run1","ord":3,"arg":"build-equity/fx-nav"}

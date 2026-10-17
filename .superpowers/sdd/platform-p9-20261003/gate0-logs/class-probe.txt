@@ -1,0 +1,4 @@
+init exit 0
+catalog exit 0
+lib/receipt.json atx.library-spec-receipt/v1 -> class library-spec-receipt
+run/receipt.json atx.bounded-research-run/v1 -> class run-receipt

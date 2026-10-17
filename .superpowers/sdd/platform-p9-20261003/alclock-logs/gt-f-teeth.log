@@ -1,0 +1,290 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = InfoClock*
+[==========] Running 13 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 9 tests from InfoClockRate
+[ RUN      ] InfoClockRate.KernelAtTheWindowBoundary
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(283): error: Value of: refused(member, clock, 0, .05, member.size())
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(285): error: Value of: refused(member, clock, 1, slow, member.size())
+  Actual: false
+Expected: true
+0
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(285): error: Value of: refused(member, clock, 1, slow, member.size())
+  Actual: false
+Expected: true
+-0.050000000000000003
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(285): error: Value of: refused(member, clock, 1, slow, member.size())
+  Actual: false
+Expected: true
+1.5
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(285): error: Value of: refused(member, clock, 1, slow, member.size())
+  Actual: false
+Expected: true
+nan
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(285): error: Value of: refused(member, clock, 1, slow, member.size())
+  Actual: false
+Expected: true
+inf
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(288): error: Value of: refused(two, clock, 1, .05, member.size())
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(292): error: Value of: refused(member, c, 1, .05, member.size())
+  Actual: false
+Expected: true
+-1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(292): error: Value of: refused(member, c, 1, .05, member.size())
+  Actual: false
+Expected: true
+-1e-300
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(292): error: Value of: refused(member, c, 1, .05, member.size())
+  Actual: false
+Expected: true
+inf
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(292): error: Value of: refused(member, c, 1, .05, member.size())
+  Actual: false
+Expected: true
+-inf
+
+[  FAILED  ] InfoClockRate.KernelAtTheWindowBoundary (5 ms)
+[ RUN      ] InfoClockRate.ConfigAndInputRefusals
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(361): error: Value of: refuses(r.nav(), cfg, "needs the info clock")
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(365): error: Value of: refuses(short_in, cfg, "info clock (ea_days_since) geometry")
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(367): error: Value of: refuses(short_in, fixed, "info clock (ea_days_since) geometry")
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(374): error: Value of: refuses(x, cfg, "ea_days_since outside its domain (NaN or finite >= 0) at row 5, " "name 3")
+  Actual: false
+Expected: true
+-1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(374): error: Value of: refuses(x, cfg, "ea_days_since outside its domain (NaN or finite >= 0) at row 5, " "name 3")
+  Actual: false
+Expected: true
+inf
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(374): error: Value of: refuses(x, cfg, "ea_days_since outside its domain (NaN or finite >= 0) at row 5, " "name 3")
+  Actual: false
+Expected: true
+-inf
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(381): error: Value of: refuses(in, other, config_needle)
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(358): error: Expected: (text.find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: target replay: aim_leverage/dust_multiple are aim-partial-v5 only
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(384): error: Value of: refuses(in, other, config_needle)
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(358): error: Expected: (text.find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate takes no rate parameters
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(391): error: Value of: refuses(in, other, config_needle)
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(358): error: Expected: (text.find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate takes no rate parameters
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(391): error: Value of: refuses(in, other, config_needle)
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(358): error: Expected: (text.find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate takes no rate parameters
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(391): error: Value of: refuses(in, other, config_needle)
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(358): error: Expected: (text.find(needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+InvalidArgument: nav replay: rate per-name-v1 needs aim-partial-v5, rate_rra and rate_lambda in (0, 1e6] and 0 < rate_min <= rate_max <= 1; a fixed rate takes no rate parameters
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(391): error: Value of: refuses(in, other, config_needle)
+  Actual: false
+Expected: true
+
+[  FAILED  ] InfoClockRate.ConfigAndInputRefusals (18 ms)
+[ RUN      ] InfoClockRate.StepChangeClosedForm
+[       OK ] InfoClockRate.StepChangeClosedForm (2927 ms)
+[ RUN      ] InfoClockRate.EventClockIsCausal
+[       OK ] InfoClockRate.EventClockIsCausal (1588 ms)
+[ RUN      ] InfoClockRate.CommandLineRefusalsWriteNothing
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(552): error: Expected equality of these values:
+  nav(w.args(out, c.fields, c.flags), log, err)
+    Which is: 0
+  c.code
+    Which is: 1
+1 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(553): error: Expected: (err.str().find(c.needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+1 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(554): error: Value of: fs::exists(out)
+  Actual: true
+Expected: false
+1
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(552): error: Expected equality of these values:
+  nav(w.args(out, c.fields, c.flags), log, err)
+    Which is: 0
+  c.code
+    Which is: 1
+3 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(553): error: Expected: (err.str().find(c.needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+3 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(554): error: Value of: fs::exists(out)
+  Actual: true
+Expected: false
+3
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(552): error: Expected equality of these values:
+  nav(w.args(out, c.fields, c.flags), log, err)
+    Which is: 0
+  c.code
+    Which is: 1
+6 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(553): error: Expected: (err.str().find(c.needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+6 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(554): error: Value of: fs::exists(out)
+  Actual: true
+Expected: false
+6
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(552): error: Expected equality of these values:
+  nav(w.args(out, c.fields, c.flags), log, err)
+    Which is: 0
+  c.code
+    Which is: 1
+10 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(553): error: Expected: (err.str().find(c.needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+10 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(554): error: Value of: fs::exists(out)
+  Actual: true
+Expected: false
+10
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(552): error: Expected equality of these values:
+  nav(w.args(out, c.fields, c.flags), log, err)
+    Which is: 0
+  c.code
+    Which is: 1
+11 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(553): error: Expected: (err.str().find(c.needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+11 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(554): error: Value of: fs::exists(out)
+  Actual: true
+Expected: false
+11
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(552): error: Expected equality of these values:
+  nav(w.args(out, c.fields, c.flags), log, err)
+    Which is: 0
+  c.code
+    Which is: 2
+13 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(553): error: Expected: (err.str().find(c.needle)) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+13 
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(554): error: Value of: fs::exists(out)
+  Actual: true
+Expected: false
+13
+
+[  FAILED  ] InfoClockRate.CommandLineRefusalsWriteNothing (3989 ms)
+[ RUN      ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(589): error: Value of: parses(joined(capacity, {"--rate", "info-clock-rate-v1"}))
+  Actual: false
+Expected: true
+
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(600): error: Expected equality of these values:
+  nav(w.args(w.out("cap"), &w.fields, joined(rule_on, {"--capacity-curve"})), log, err)
+    Which is: 2
+  0
+InvalidArgument: nav v7: aim-partial-v6 and --capacity-curve need the fixed rate (per-name-v1 reads the NAV)
+
+
+[  FAILED  ] InfoClockRate.CapacityCurveAcceptsThisRateOnly (209 ms)
+[ RUN      ] InfoClockRate.BookWorkersOneAndFourSameBytes
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(618): error: Expected equality of these values:
+  nav(w.args(w.out("one"), &w.fields, flags), log, err)
+    Which is: 2
+  0
+InvalidArgument: nav v7: aim-partial-v6 and --capacity-curve need the fixed rate (per-name-v1 reads the NAV)
+
+
+[  FAILED  ] InfoClockRate.BookWorkersOneAndFourSameBytes (157 ms)
+[ RUN      ] InfoClockRate.RegistryRowAndParser
+[       OK ] InfoClockRate.RegistryRowAndParser (13 ms)
+[ RUN      ] InfoClockRate.WorkspaceReserveOneRatePerName
+[       OK ] InfoClockRate.WorkspaceReserveOneRatePerName (0 ms)
+[----------] 9 tests from InfoClockRate (8911 ms total)
+
+[----------] 4 tests from InfoClockPrint
+[ RUN      ] InfoClockPrint.FlagAbsentLoadsNoClock
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(709): error: Expected equality of these values:
+  nav(w.args(without, &w.plain, shape), log, err)
+    Which is: 1
+  0
+InvalidArgument: nav replay: fields lack ea_days_since
+
+
+[  FAILED  ] InfoClockPrint.FlagAbsentLoadsNoClock (690 ms)
+[ RUN      ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario
+[       OK ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario (5920 ms)
+[ RUN      ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock
+[       OK ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock (1024 ms)
+[ RUN      ] InfoClockPrint.SpecEqualsArgv
+..\atx-impl\tests\strategy_nav_info_clock_test.cpp(899): error: Expected equality of these values:
+  nav(args, log, err)
+    Which is: 2
+  0
+InvalidArgument: nav v7: aim-partial-v6 and --capacity-curve need the fixed rate (per-name-v1 reads the NAV)
+
+
+[  FAILED  ] InfoClockPrint.SpecEqualsArgv (1667 ms)
+[----------] 4 tests from InfoClockPrint (9304 ms total)
+
+[----------] Global test environment tear-down
+[==========] 13 tests from 2 test suites ran. (18216 ms total)
+[  PASSED  ] 6 tests.
+[  FAILED  ] 7 tests, listed below:
+[  FAILED  ] InfoClockRate.KernelAtTheWindowBoundary
+[  FAILED  ] InfoClockRate.ConfigAndInputRefusals
+[  FAILED  ] InfoClockRate.CommandLineRefusalsWriteNothing
+[  FAILED  ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+[  FAILED  ] InfoClockRate.BookWorkersOneAndFourSameBytes
+[  FAILED  ] InfoClockPrint.FlagAbsentLoadsNoClock
+[  FAILED  ] InfoClockPrint.SpecEqualsArgv
+
+ 7 FAILED TESTS

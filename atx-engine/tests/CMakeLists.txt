@@ -507,3 +507,73 @@ target_sources(atx-engine-research-fields-tests PRIVATE
     research/research_fields_vendor_panel_test.cpp
     research/research_fields_vendor_fields_test.cpp
     research/research_fields_vendor_fixture_test.cpp)
+
+# P9 lane AL-SIG (cross-lane append): the stage readers' and engine-only kinds' gtests (gtest filter
+# ResearchFieldsAlSig*; synthetic stage fixture fixtures/research_fields_al_sig, found beside the slice-1 fixture)
+# join the research-fields test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_al_sig_thirteenf_test.cpp
+    research/research_fields_al_sig_gia_test.cpp
+    research/research_fields_al_sig_russell_test.cpp
+    research/research_fields_al_sig_fixture_test.cpp)
+
+# Platform P9 lane D2: the composition library's bounded target (ResearchComposition.*; the Python-generated
+# fixture path is a target-local define), registered in CTest under atx_research like B1's. The library target is
+# defined after this directory (end of atx-engine/CMakeLists.txt); CMake resolves the link name at generation.
+add_executable(atx-engine-research-composition-tests EXCLUDE_FROM_ALL
+    research/research_composition_fit_test.cpp)
+target_link_libraries(atx-engine-research-composition-tests PRIVATE
+    atx-engine-research-composition atx-engine-research-admission GTest::gtest_main atx_warnings Threads::Threads
+    atx-test-scratch nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-composition-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-composition-tests PRIVATE
+    "ATX_RESEARCH_COMPOSITION_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_composition\"")
+gtest_discover_tests(atx-engine-research-composition-tests DISCOVERY_MODE PRE_TEST
+    TEST_PREFIX "atx-engine-research-composition-tests." PROPERTIES LABELS atx_research)
+
+# Platform P9 B2: the research ledger and eval verb libraries' bounded targets (sources in tests/research/, not a
+# test group; no shared test PCH). ResearchLedger* runs on the ledger library alone; the eval target ties the verb
+# to T1's statistics fixture (fixtures/eval_tie, P11 / G-P7) and the Python ledger rules
+# (fixtures/research_ledger). Registered under the CTest label atx_research here (the deferred registration above
+# skips a target already registered).
+add_executable(atx-engine-research-ledger-tests EXCLUDE_FROM_ALL
+    research/research_ledger_chain_test.cpp
+    research/research_ledger_counts_test.cpp)
+target_link_libraries(atx-engine-research-ledger-tests PRIVATE
+    atx-engine-research-ledger GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-ledger-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-ledger-tests PRIVATE
+    "ATX_RESEARCH_LEDGER_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_ledger\"")
+add_executable(atx-engine-research-eval-tests EXCLUDE_FROM_ALL
+    research/research_eval_tie_test.cpp
+    research/research_eval_rng_test.cpp
+    research/research_eval_conditional_test.cpp
+    research/research_eval_edges_test.cpp)
+target_link_libraries(atx-engine-research-eval-tests PRIVATE
+    atx-engine-research-eval GTest::gtest_main atx_warnings Threads::Threads atx-test-scratch
+    nlohmann_json::nlohmann_json)
+target_include_directories(atx-engine-research-eval-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(atx-engine-research-eval-tests PRIVATE
+    "ATX_EVAL_TIE_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/eval_tie\""
+    "ATX_EVAL_EDGES_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_eval_edges\""
+    "ATX_RESEARCH_LEDGER_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/research_ledger\"")
+foreach(_b2_tests IN ITEMS atx-engine-research-ledger-tests atx-engine-research-eval-tests)
+    gtest_discover_tests(${_b2_tests} DISCOVERY_MODE PRE_TEST TEST_PREFIX "${_b2_tests}."
+        PROPERTIES LABELS atx_research)
+endforeach()
+
+# Platform P9 lane A4 (SEC / holdings sources to C++): the reuse history and digest gtests (A3
+# review S-2, A3-3), the session clock primitives and the holdings kinds (fixture under
+# fixtures/research_fields_holdings, its generator and pytest beside it) join the research-fields
+# test target.
+target_sources(atx-engine-research-fields-tests PRIVATE
+    research/research_fields_a4_reuse_test.cpp
+    research/research_fields_a4_clock_test.cpp
+    research/research_fields_holdings_test.cpp)
+
+# P9 lane SQL4 (rulings SQL-7 / SQL-9): the catalog's ledger index head from B2's chain_head and
+# `verify --ledger` (ResearchCatalog.LedgerHeadFromResearchLedger, .RecordedHeadsArePrefixHeads)
+# beside SQL2's catalog gtests; the test reads B2's chain functions directly.
+target_sources(atx-engine-research-catalog-tests PRIVATE research/research_catalog_ledger_test.cpp)
+target_link_libraries(atx-engine-research-catalog-tests PRIVATE atx::engine-research-ledger)

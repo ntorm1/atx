@@ -1,0 +1,52 @@
+reference build-equity/mega-nav-v8-r1-std-t.05-d.1-fixed-obdelta-x.05-loc-L1.1474-v80 (27 files) new build-equity/p9-b0-r2-nav (27 files); one side only: none
+  C1-COST  capacity/daily_capacity-x0p5-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 3; differing cells by column {'impact_cost_dollars': 1, 'trade_cost_dollars': 1, 'unrationed_cost_dollars': 1, 'trade_cost_return': 1}
+  C1-COST  capacity/daily_capacity-x1-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 5; differing cells by column {'impact_cost_dollars': 1, 'trade_cost_dollars': 2, 'trade_cost_return': 2}
+  C1-COST  capacity/daily_capacity-x2-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 2; differing cells by column {'trade_cost_dollars': 1, 'trade_cost_return': 1}
+  C1-COST  capacity/daily_capacity-x4-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 3; differing cells by column {'impact_cost_dollars': 1, 'unrationed_cost_dollars': 2}
+  C1-COST  capacity/daily_capacity-x8-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 2; differing cells by column {'unrationed_cost_dollars': 2}
+  same   capacity/events_capacity-x0p5-v1+swap-fin-v1.csv
+  same   capacity/events_capacity-x1-v1+swap-fin-v1.csv
+  same   capacity/events_capacity-x2-v1+swap-fin-v1.csv
+  same   capacity/events_capacity-x4-v1+swap-fin-v1.csv
+  same   capacity/events_capacity-x8-v1+swap-fin-v1.csv
+  FIELDS   capacity/recipe.json /financing_fields/manifest_sha256 [sha256 -> sha256]
+  FIELDS   capacity/summary.json /financing_fields/manifest_sha256 [sha256 -> sha256]
+  DERIVED  capacity/summary.json /recipe_sha256 (names capacity/recipe.json: = its digest on each side True) [sha256 -> sha256]
+  DERIVED  capacity/summary.json /scenarios/0/daily_csv_sha256 (names capacity/daily_capacity-x0p5-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  DERIVED  capacity/summary.json /scenarios/1/daily_csv_sha256 (names capacity/daily_capacity-x1-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  DERIVED  capacity/summary.json /scenarios/2/daily_csv_sha256 (names capacity/daily_capacity-x2-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  DERIVED  capacity/summary.json /scenarios/3/daily_csv_sha256 (names capacity/daily_capacity-x4-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  DERIVED  capacity/summary.json /scenarios/4/daily_csv_sha256 (names capacity/daily_capacity-x8-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  same   capacity_curve.csv
+  same   daily_linear-6bps-stale5-v1+swap-fin-v1.csv
+  C1-COST  daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv: header equal True; rows 1006 vs 1006; rows differing 5; differing cells by column {'trade_cost_dollars': 1, 'unrationed_cost_dollars': 1, 'trade_cost_return': 1, 'impact_cost_dollars': 3}
+  C1-COST  daily_modeled-1bn-stale5-v1+flat-300-v0.csv: header equal True; rows 1006 vs 1006; rows differing 8; differing cells by column {'trade_cost_dollars': 2, 'unrationed_cost_dollars': 3, 'trade_cost_return': 2, 'impact_cost_dollars': 3}
+  C1-COST  daily_modeled-1bn-stale5-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 5; differing cells by column {'impact_cost_dollars': 1, 'trade_cost_dollars': 2, 'trade_cost_return': 2}
+  C1-COST  daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv: header equal True; rows 1006 vs 1006; rows differing 5; differing cells by column {'impact_cost_dollars': 1, 'trade_cost_dollars': 2, 'trade_cost_return': 2, 'unrationed_cost_dollars': 1}
+  same   events_linear-6bps-stale5-v1+swap-fin-v1.csv
+  same   events_modeled-1bn-stale5-v1+engine-tiers-v1.csv
+  same   events_modeled-1bn-stale5-v1+flat-300-v0.csv
+  same   events_modeled-1bn-stale5-v1+swap-fin-v1.csv
+  same   events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv
+  FIELDS   recipe.json /financing_fields/manifest_sha256 [sha256 -> sha256]
+  FIELDS   summary.json /financing_fields/manifest_sha256 [sha256 -> sha256]
+  ALLOWED  summary.json /producer/build_type [absent -> string]
+  ALLOWED  summary.json /producer/definition [absent -> string]
+  ALLOWED  summary.json /producer/engine_git_sha [absent -> string]
+  DERIVED  summary.json /recipe_sha256 (names recipe.json: = its digest on each side True) [sha256 -> sha256]
+  ALLOWED  summary.json /scenarios/0/ann_mean_gross [absent -> number]
+  ALLOWED  summary.json /scenarios/1/ann_mean_gross [absent -> number]
+  DERIVED  summary.json /scenarios/1/daily_csv_sha256 (names daily_modeled-1bn-stale5-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  ALLOWED  summary.json /scenarios/2/ann_mean_gross [absent -> number]
+  DERIVED  summary.json /scenarios/2/daily_csv_sha256 (names daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  ALLOWED  summary.json /scenarios/3/ann_mean_gross [absent -> number]
+  DERIVED  summary.json /scenarios/3/daily_csv_sha256 (names daily_modeled-1bn-stale5-v1+flat-300-v0.csv: = its digest on each side True) [sha256 -> sha256]
+  ALLOWED  summary.json /scenarios/4/ann_mean_gross [absent -> number]
+  DERIVED  summary.json /scenarios/4/daily_csv_sha256 (names daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv: = its digest on each side True) [sha256 -> sha256]
+  M1D-C1   summary.json /v7/extras [string -> string]
+  DERIVED  summary.json /v7/files/capacity/summary.json (added; names capacity/summary.json: = its digest on the new side True) [absent -> sha256]
+  DERIVED  summary.json /v7/files/v7_extras.json (added; names v7_extras.json: = its digest on the new side True) [absent -> sha256]
+  DERIVED  v7_extras.json /files/capacity/summary.json (added; names capacity/summary.json: = its digest on the new side True) [absent -> sha256]
+  same   v7_transfer_coefficient.csv
+classes: {'C1-COST': 9, 'FIELDS': 4, 'DERIVED': 14, 'ALLOWED': 8, 'M1D-C1': 1}
+VERDICT (classification only): no OTHER

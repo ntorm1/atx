@@ -1,0 +1,38 @@
+﻿waiting free=4094 commit=1120 busy=0 at 2026-10-03T18:59:05.5517528-04:00
+admitted free=4121 commit=3450 at 2026-10-03T18:59:36.1651515-04:00
+{
+    "Source":  "ba2e2de653c58d70a04a10e26ab4bbc04fa35ec4",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "98e0f31bcf2d99684a6a9d5dfcbf90e589ec7f18-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3963,
+    "CommitMiB":  3442,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  55.572528999999996,
+    "CompiledTUs":  8,
+    "Links":  2,
+    "Tag":  "p9-cov-e",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "7b0920fcdff0a4b1aeb8cc5f28c6b2f334cc52e9d5208733e569375f8177e531"
+                                                           }
+                    }
+}
+[1/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[2/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[3/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[4/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[5/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[6/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[7/11] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[8/11] Linking CXX static library lib\spdlogd.lib
+[9/11] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-target-tests.dir\strategy_cov_model_test.cpp.obj
+[10/11] Linking CXX executable bin\atx-impl-strategy-target-tests.exe
+BUILD_EXIT=0

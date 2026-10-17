@@ -1,0 +1,80 @@
+{
+    "Source":  "06dc9e5a1629988167810f3b1c822bbef3020dcf",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  7,
+    "ConfiguredProvenance":  "06dc9e5a1629988167810f3b1c822bbef3020dcf-dirty",
+    "Jobs":  4,
+    "FreeMiB":  5325,
+    "CommitMiB":  8831,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-research-store",
+                    "atx-engine-research-catalog-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  74.2308147,
+    "CompiledTUs":  48,
+    "Links":  7,
+    "Tag":  "p9-3e",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b"
+                                                       },
+                        "atx-research-store":  {
+                                                   "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-store.exe",
+                                                   "Sha256":  "a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73"
+                                               },
+                        "atx-engine-research-catalog-tests":  {
+                                                                  "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+                                                                  "Sha256":  "b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a"
+                                                              }
+                    }
+}
+    + FullyQualifiedErrorId : NativeCommandError
+[1/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\pins.cpp.obj
+[2/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-store.dir\src\research\store\store.cpp.obj
+[3/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-store.dir\src\research\store\cache_ops.cpp.obj
+[4/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\catalog.cpp.obj
+[5/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_stage.cpp.obj
+[6/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_run.cpp.obj
+[7/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_cycle.cpp.obj
+[8/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\json_text.cpp.obj
+[9/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_wave.cpp.obj
+[10/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_spec.cpp.obj
+[11/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_fields.cpp.obj
+[12/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_ledger.cpp.obj
+[13/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\ingest_build.cpp.obj
+[14/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\query.cpp.obj
+[15/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\store_cli.cpp.obj
+[16/58] Building CXX object atx-engine\CMakeFiles\atx-engine-research-catalog.dir\src\research\store\catalog\cache_index.cpp.obj
+[17/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_library.cpp.obj
+[18/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_admission.cpp.obj
+[19/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_signal_cache.cpp.obj
+[20/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_runner.cpp.obj
+[21/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_resid.cpp.obj
+[22/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_tsmom.cpp.obj
+[23/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_two_speed.cpp.obj
+[24/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_result_cache.cpp.obj
+[25/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_research_role.cpp.obj
+[26/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\generated\build_provenance.cpp.obj
+[27/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine_pool.cpp.obj
+[28/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_ic.cpp.obj
+[29/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_marginal_pair_cache.cpp.obj
+[30/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mine.cpp.obj
+[31/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_theme_hedge.cpp.obj
+[32/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_factors_verb.cpp.obj
+[33/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_mom_volman.cpp.obj
+[34/58] Linking CXX static library lib\atx-engine-research-store.lib
+[35/58] Linking CXX static library lib\atx-engine-research-catalog.lib
+[36/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_cache_index.cpp.obj
+[37/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_absent.cpp.obj
+[38/58] Building CXX object atx-engine\CMakeFiles\atx-research-store.dir\src\research\store\catalog\store_main.cpp.obj
+[39/58] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_rules.cpp.obj

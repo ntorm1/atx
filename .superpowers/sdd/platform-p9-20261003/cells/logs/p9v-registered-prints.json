@@ -1,0 +1,71 @@
+{
+  "books": {
+    "parent": {
+      "net_annual": 0.05689681785648637,
+      "net_sharpe": 1.875022136892088,
+      "x4_net_sharpe": 1.759566530994928,
+      "ann_vol": 0.030344611264587394,
+      "max_drawdown": 0.02203729312571523
+    },
+    "cell": {
+      "net_annual": 0.0893596400030433,
+      "net_sharpe": 1.8403229698169834,
+      "x4_net_sharpe": 1.6778400337962325,
+      "ann_vol": 0.04855649876061155,
+      "max_drawdown": 0.032014711770221194
+    },
+    "x": {
+      "net_annual": 0.08986194230342487,
+      "net_sharpe": 1.8407322968760098,
+      "x4_net_sharpe": 1.678945115577997,
+      "ann_vol": 0.04881858293893884,
+      "max_drawdown": 0.032292584985299744
+    }
+  },
+  "paired": {
+    "dsr": -0.00040932705902685385,
+    "memmel_se": 0.003229996480990207,
+    "t": -0.12672678172744264,
+    "p_two_sided": 0.9072,
+    "p_one_sided": 0.5678
+  },
+  "paired_deciding": true,
+  "accepted": false,
+  "selection_checks": {
+    "annual_above_H": true,
+    "Sharpe_within_point100_H": true,
+    "mechanics": true
+  },
+  "P9_F_proposed": "X",
+  "L_t": {
+    "x": {
+      "rows": 1004,
+      "mean_L_t": 1.864660752885562,
+      "consecutive_changes": 38,
+      "sha256": "ed25e4267dff32c07a377a23b44ebd50bbc007a749d2030a5592d756259960b0"
+    },
+    "cell": {
+      "rows": 1004,
+      "mean_L_t": 1.8579460516069106,
+      "consecutive_changes": 39,
+      "sha256": "38a963fc9d530c4e1d08de616bcd9b96758c6accb640303dabc454f935994065"
+    },
+    "mean_change_V_minus_X": -0.00671470127865148
+  },
+  "book_receipt": {
+    "path": "build-equity/p9v-vol-target-cov-readers/book-run1/receipt.json",
+    "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+    "argv_sha256": "b7454d2fd011d4fd54b5053e13bd402c1fe6242f4d253a287dd7bf37b222fe83",
+    "source_sha": "86f0acb9c05f0ca0e9eefe611291a123f661987b",
+    "wall_seconds": 0.5310000000754371,
+    "peak_mib": 45.62109375,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    }
+  },
+  "book_sha256": "b4126a9c82a6da0fd44d02713e64ff06467dbc210bca01423427054c226772ec",
+  "degenerate": false,
+  "degenerate_line": null
+}

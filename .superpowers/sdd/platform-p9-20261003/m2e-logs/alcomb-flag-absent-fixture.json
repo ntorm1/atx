@@ -1,0 +1,263 @@
+{
+ "cases": {
+  "ew-theme": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "shrink": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "shrink-erc": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "shrink-tsmom": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-aim-resid": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-erc": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-erc-tsmom": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  },
+  "std-resid-child": {
+   "files": {
+    "admission.csv": {
+     "identical": true
+    },
+    "admission.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.inputs.producer_fingerprint"
+     ]
+    },
+    "composition_weights.json": {
+     "identical": false,
+     "paths_only_new": [],
+     "paths_only_old": [],
+     "paths_value_differs": [
+      "$.provenance.admission_sha256",
+      "$.provenance.producer_fingerprint",
+      "$.provenance.resid.parent_weights_sha256"
+     ]
+    }
+   },
+   "only_new": [],
+   "only_old": []
+  }
+ },
+ "codes": {
+  "new": {
+   "ew-theme": 0,
+   "shrink": 0,
+   "shrink-erc": 0,
+   "shrink-tsmom": 0,
+   "std": 0,
+   "std-aim-resid": 0,
+   "std-erc": 0,
+   "std-erc-tsmom": 0,
+   "std-resid-child": 0
+  },
+  "old": {
+   "ew-theme": 0,
+   "shrink": 0,
+   "shrink-erc": 0,
+   "shrink-tsmom": 0,
+   "std": 0,
+   "std-aim-resid": 0,
+   "std-erc": 0,
+   "std-erc-tsmom": 0,
+   "std-resid-child": 0
+  }
+ }
+}

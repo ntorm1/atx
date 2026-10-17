@@ -1,0 +1,232 @@
+{
+  "stage": "dsr-years",
+  "files": [
+    {
+      "path": "build-equity/p9-adoption-readers/dsr-years-run1/start.json",
+      "sha256": "87d6c410f1e89e86405ed1c691c4fe9de43cea0c952cd614598e7c14124d17b8",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 161,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 162,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 163,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 164,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 165,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 160,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OTHER"
+        },
+        {
+          "line": 77,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 81,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 85,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9-adoption-readers/dsr-years-run1/receipt.json",
+      "sha256": "694c4d63eb436aa4d35962082dadcea108bba1642336a8f6e27fc2fdeb3efc3b",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 161,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 162,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 163,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 164,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 165,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 160,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OTHER"
+        },
+        {
+          "line": 77,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 81,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 85,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9-adoption-readers/dsr-years-run1/stdout.log",
+      "sha256": "e41d6e3db00205312501825ced92ebd26a88c0f650bd4d6cafa4990dc45ab394",
+      "hits": []
+    },
+    {
+      "path": "build-equity/p9-adoption-readers/dsr-years-run1/stderr.log",
+      "sha256": "4e5ea0831d8aa2cdd37fe594919d83229bde1bb4e68351bb209508b6b4a1b09b",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9-adoption-dsr-years-raw.log",
+      "sha256": "694c4d63eb436aa4d35962082dadcea108bba1642336a8f6e27fc2fdeb3efc3b",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 161,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 162,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 163,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 164,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 165,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 160,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OTHER"
+        },
+        {
+          "line": 77,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 81,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 85,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        }
+      ]
+    }
+  ],
+  "other": 3
+}

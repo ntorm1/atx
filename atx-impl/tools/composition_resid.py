@@ -33,20 +33,19 @@ Registration (lane ORTH, task-R-11-report.md; every constant fixed blind, declar
 Split of work. The fitter (``fit_composition_weights.py --theme-resid theme-resid-v1``) fits the parent's composition
 unchanged and attaches ``theme_residualise`` {rule, order} and ``provenance.resid`` (``attach``). The IC runner
 (atx-impl/src/strategy_ic_theme_resid.cpp, IcThemeRule::residualise; least squares by modified Gram-Schmidt with one
-re-orthogonalisation pass, atx/engine/combine/group_residualise.hpp) applies rules 2-5 per session. ``blend`` below is
-the independent numpy reference of the runner's rule (least squares by ``numpy.linalg.lstsq``) and ``kernel`` its
-plane-level form (the arguments of add_theme_residualised), the Python side of the "Python equals C++" check
-(strategy_ic_theme_resid_test.cpp pins the same fixture values). No TRAIN statistic, window or read is added: the
+re-orthogonalisation pass, atx/engine/combine/group_residualise.hpp) applies rules 2-5 per session; the C++ is the rule's
+only producer (P9 lane D3W-PB, ruling D2-3: the independent numpy reference of the runner's rule, ``blend`` and its
+plane-level form ``kernel``, moved to test_composition_resid.py, where both sides meet the same exact values). No TRAIN
+statistic, window or read is added: the
 fitter's inputs are the parent's.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-from pathlib import Path
 
-import numpy as np
+import composition_engine_fit  # this directory: compare_values, ruling P12's comparison (ruling D2-R2)
+import composition_rules  # this directory: module_fingerprint (ruling D2-2)
 
 RULE_ID = "theme-resid-v1"
 BLOCK = "theme_residualise"
@@ -82,6 +81,22 @@ PRIOR_ONLY = ("--theme-resid needs the prior path (--orientation prior, a v4 scr
 PARENT_CHECK = ("the re-fit minus theme_residualise and provenance.resid equals the parent cell's weights file apart "
                 "from provenance.script_sha256 and provenance.admission_sha256, and the re-fit's admission.json equals "
                 "the parent's apart from inputs.script_sha256")
+# P9 lane D2 (CM-5): the fitter's identity in its outputs is producer_fingerprint (script_sha256 before CM-5); either
+# key, on either side, is the fitter identity the check allows to differ (PARENT_CHECK's text is the v8 rule's).
+FITTER_IDENTITY_KEYS = ("script_sha256", "producer_fingerprint")
+# P9 ruling D2-R2: a fit under --engine-fit carries provenance.engine_fit (composition_engine_fit.PROVENANCE_KEY) and
+# states in its ic-shrink block that the ICs are the C++ fit's (ruling D2-S4). Neither is a value the re-fit
+# reproduces, so the check sets them aside; whenever either fit ran --engine-fit every other value is compared under
+# ruling P12 (composition_engine_fit.compare_values) and provenance.resid records this text beside PARENT_CHECK.
+ENGINE_FIT_KEY = composition_engine_fit.PROVENANCE_KEY
+ENGINE_FIT_ANNOTATIONS = {"ic_shrink": ("ic_source", "ic_admission_max_abs_diff")}
+PARENT_CHECK_ENGINE_FIT = (
+    "ruling D2-R2: the parent or the re-fit ran --engine-fit (C++ fit values), so provenance.engine_fit and the "
+    "ic-shrink IC annotations (ic_source, ic_admission_max_abs_diff) are set aside and every other value of the two "
+    "files agrees to ruling P12 (floats within 1e-12 x max(1, |x|); strings, integers, booleans, keys, lengths and "
+    "orders exactly); the admission tables are compared exactly, as without the flag")
+# CM-5 / ruling D2-2: a rule block of a fit made before P9 lane D2 names its code by module_sha256 (the whole file).
+PRE_D2_KEY = "module_sha256"
 
 
 class ResidError(ValueError):
@@ -93,8 +108,14 @@ def _require(condition, message: str, error: type[Exception]) -> None:
         raise error(message)
 
 
-def module_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
+# The writers of the theme_residualise block and provenance.resid (ruling D2-2; apply adds the parent check's record)
+PRODUCERS = ("attach", "apply")
+
+
+def producer_fingerprint() -> str:
+    """provenance.resid's code identity (ruling D2-2: composition_rules.module_fingerprint; module_sha256, the whole
+    file's SHA-256, before P9 lane D2)."""
+    return composition_rules.module_fingerprint(__file__, PRODUCERS)
 
 
 # ---------------------------------------------------------------- the weights file
@@ -154,7 +175,7 @@ def attach(document: dict, registered, error: type[Exception] = ResidError) -> d
                    "(strategy_ic_theme_resid.cpp, IcThemeRule::residualise)"),
         "diagnostic": ("provenance.blend_in_sample_TRAIN_diagnostic excludes the per-session re-rank and "
                        "residualisation"),
-        "module_sha256": module_sha256()}
+        "producer_fingerprint": producer_fingerprint()}
     return document
 
 
@@ -169,14 +190,23 @@ def _differing(a: dict, b: dict, prefix: str = "") -> list[str]:
 
 
 def parent_check(document: dict, admission: bytes, parent: bytes, parent_admission: bytes,
-                 error: type[Exception] = ResidError) -> None:
+                 error: type[Exception] = ResidError, engine_fit: bool = False) -> bool:
     """Finding R6B-O-5: R-11's weights are a re-fit of its parent cell's argv plus the block, so ``document`` (the
     re-fit, block and provenance.resid attached) must be the parent's weights file ``parent`` again (PARENT_CHECK): the
-    two differ only in provenance.script_sha256 (this fitter file's SHA-256) and provenance.admission_sha256, which may
-    differ only because the admission table records that SHA (``admission`` and ``parent_admission`` equal apart from
-    inputs.script_sha256). Anything else -- fitter-affecting code or an input changed between the parent's fit and this
-    one -- is refused, naming the keys that differ. A parent that already carries the block is refused. Compared as
-    canonical JSON (sorted keys: the fitter's canonical_bytes up to whitespace)."""
+    two differ only in the fitter identity (provenance.producer_fingerprint, or provenance.script_sha256 in a parent
+    fitted before CM-5) and provenance.admission_sha256, which may differ only because the admission table records the
+    fitter identity (``admission`` and ``parent_admission`` equal apart from it). Anything else -- fitter-affecting code
+    or an input changed between the parent's fit and this one -- is refused, naming the keys that differ. A parent that
+    already carries the block is refused, and so is a parent fitted before P9 lane D2 (its rule blocks name their code
+    by module_sha256: no re-fit can equal it; refit the parent). Compared as canonical JSON (sorted keys: the fitter's
+    canonical_bytes up to whitespace).
+
+    Ruling D2-R2: ``engine_fit`` (the re-fit runs --engine-fit) or a parent carrying provenance.engine_fit puts the
+    check in engine-fit mode: provenance.engine_fit and the ic-shrink IC annotations (ENGINE_FIT_ANNOTATIONS) are set
+    aside and the rest is compared under ruling P12 (composition_engine_fit.compare_values: floats within 1e-12 x
+    max(1, |x|), everything else exactly; P9 D3W, ruling D2-9: strict, so an integer against an equal float is a
+    difference too), so C++ values within P12 of the Python's pass and a change beyond it is refused, naming the
+    values. Returns whether the check ran in engine-fit mode."""
     try:
         mother, child_adm, mother_adm = json.loads(parent), json.loads(admission), json.loads(parent_admission)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -186,23 +216,45 @@ def parent_check(document: dict, admission: bytes, parent: bytes, parent_admissi
              error)
     _require(BLOCK not in mother and "resid" not in mother["provenance"],
              f"{RULE_ID}: --theme-resid-parent already carries {BLOCK}: the parent cell is not the rule's parent", error)
+    stale = sorted(k for k, v in mother["provenance"].items() if isinstance(v, dict) and PRE_D2_KEY in v)
+    _require(not stale, f"{RULE_ID}: --theme-resid-parent was fitted before P9 lane D2: its provenance blocks {stale} "
+                        f"name their code by {PRE_D2_KEY}, which CM-5 / ruling D2-2 replaced by producer_fingerprint, "
+                        "so no re-fit by this fitter can equal it; refit the parent cell with this fitter, then re-run "
+                        "this cell against the new parent file", error)
+    parent_engine = ENGINE_FIT_KEY in mother["provenance"]
+    mode = engine_fit or parent_engine
     child = json.loads(_text(document))
     child.pop(BLOCK, None)
     child["provenance"].pop("resid", None)
-    for doc in (child, mother):
-        doc["provenance"].pop("script_sha256", None)
-    for doc in (child_adm, mother_adm):
-        if isinstance(doc.get("inputs"), dict):
-            doc["inputs"].pop("script_sha256", None)
+    for key in FITTER_IDENTITY_KEYS:  # CM-5: the fitter identity under either name
+        for doc in (child, mother):
+            doc["provenance"].pop(key, None)
+        for doc in (child_adm, mother_adm):
+            if isinstance(doc.get("inputs"), dict):
+                doc["inputs"].pop(key, None)
     adm_differ = _differing(child_adm, mother_adm)
     _require(not adm_differ, f"{RULE_ID}: --theme-resid-parent: the re-fit's admission.json differs from the parent's "
                              f"beyond inputs.script_sha256 (keys {adm_differ})", error)
     for doc in (child, mother):
         doc["provenance"].pop("admission_sha256", None)
-    differ = sorted([k for k in _differing(child, mother) if k != "provenance"] +
-                    _differing(child["provenance"], mother["provenance"], "provenance."))
-    _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus the "
-                         f"block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
+        doc["provenance"].pop(ENGINE_FIT_KEY, None)
+        for block, keys in ENGINE_FIT_ANNOTATIONS.items():
+            if mode and isinstance(doc["provenance"].get(block), dict):
+                for key in keys:
+                    doc["provenance"][block].pop(key, None)
+    if not mode:
+        differ = sorted([k for k in _differing(child, mother) if k != "provenance"] +
+                        _differing(child["provenance"], mother["provenance"], "provenance."))
+        _require(not differ, f"{RULE_ID}: --theme-resid-parent: the re-fit is not the parent cell's weights file plus "
+                             f"the block (differ: {differ}); a fitter-affecting change lies between the two fits", error)
+        return False
+    differ, _ = composition_engine_fit.compare_values(mother, child, strict=True)
+    sides = " and ".join(name for name, on in (("the parent", parent_engine), ("this re-fit", engine_fit)) if on)
+    _require(not differ, f"{RULE_ID}: --theme-resid-parent: --engine-fit on {sides} (ruling D2-R2): the re-fit is not "
+                         f"the parent cell's weights file plus the block within ruling P12 ({len(differ)} values differ: "
+                         f"{differ[:20]}); C++ rounding stays within P12, so a fitter-affecting change or a changed "
+                         "input lies between the two fits", error)
+    return True
 
 
 def add_argument(parser: argparse.ArgumentParser) -> None:
@@ -214,8 +266,10 @@ def add_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--theme-resid-parent", default=None,
                         help="v8 R-11 (finding R6B-O-5): the parent cell's composition_weights.json (its admission.json "
                              "beside it, bound by the file's provenance.admission_sha256); with --theme-resid the re-fit "
-                             "must be that file plus the block (only provenance.script_sha256 and the admission SHA it "
-                             "moves may differ), and provenance.resid records its SHA-256")
+                             "must be that file plus the block (only the fitter identity, producer_fingerprint, and the "
+                             "admission SHA it moves may differ; with --engine-fit on either fit, ruling D2-R2: values "
+                             "within ruling P12), and provenance.resid records its SHA-256; a parent fitted before P9 "
+                             "lane D2 is refused (refit it)")
     parser.add_argument("--theme-resid-parent-sha256", default=None, help="the SHA-256 pin of --theme-resid-parent")
 
 
@@ -233,133 +287,10 @@ def apply(args, document: dict, summary: dict, registered, error: type[Exception
     if parent is not None:
         if admission is None:
             raise error(f"{RULE_ID}: --theme-resid-parent needs the re-fit's admission table")
-        parent_check(document, admission, parent["weights"], parent["admission"], error)
+        mode = parent_check(document, admission, parent["weights"], parent["admission"], error,
+                            engine_fit=bool(getattr(args, "engine_fit", False)))
         document["provenance"]["resid"].update(parent_weights_sha256=parent["sha256"], parent_check=PARENT_CHECK)
+        if mode:  # ruling D2-R2: the comparison this file passed (never written without --engine-fit on a side)
+            document["provenance"]["resid"]["parent_check_engine_fit"] = PARENT_CHECK_ENGINE_FIT
         summary["theme_residualise_parent_sha256"] = parent["sha256"]
     summary[BLOCK] = dict(document[BLOCK])
-
-
-# ---------------------------------------------------------------- reference of the runner's rule (numpy)
-def centred_tied_ranks(values: np.ndarray, keep: np.ndarray) -> np.ndarray:
-    """Centred tied rank of each kept value among the kept ones, (less + (less + equal - 1)) / (2 (n - 1)) - .5; NaN
-    elsewhere and everywhere when fewer than two are kept."""
-    out = np.full(values.shape, np.nan)
-    idx = np.flatnonzero(keep)
-    n = len(idx)
-    if n < 2:
-        return out
-    v = values[idx]
-    for a, i in enumerate(idx):
-        less, equal = int(np.sum(v < v[a])), int(np.sum(v == v[a]))
-        out[i] = (less + (less + equal - 1)) / (2.0 * (n - 1)) - 0.5
-    return out
-
-
-def residual(y: np.ndarray, x: np.ndarray, tolerance: float = SPAN_TOLERANCE) -> tuple[np.ndarray, bool]:
-    """Least-squares residual of y on [1, x] (x: n x m) by numpy.linalg.lstsq; exactly 0 (spanned) within tolerance."""
-    design = np.column_stack([np.ones(len(y))] + ([x] if x.size else []))
-    beta = np.linalg.lstsq(design, y, rcond=None)[0]
-    e = y - design @ beta
-    centred = float(np.linalg.norm(y - y.mean()))
-    if not centred > 0 or float(np.linalg.norm(e)) <= tolerance * centred:
-        return np.zeros(len(y)), True
-    return e, False
-
-
-def tie_block_means(e: np.ndarray, z: np.ndarray) -> np.ndarray:
-    """Rule 4's tie step (Ruling PM4-12): ``e`` with each run of exactly equal ``z`` (a tie block; the names sorted by
-    (z, position), so a block lists its names in ascending order) of two or more names replaced by the block mean,
-    summed from the block's first name in ascending name order and divided by the block size (the C++ expression and
-    order, strategy_ic_theme_resid.cpp mean_over_tie_blocks). A block of one name is untouched."""
-    out = np.array(e, dtype=np.float64)
-    order = sorted(range(len(z)), key=lambda k: (float(z[k]), k))
-    b = 0
-    while b < len(order):
-        end = b + 1
-        while end < len(order) and z[order[end]] == z[order[b]]:
-            end += 1
-        if end - b > 1:
-            total = float(e[order[b]])
-            for k in order[b + 1:end]:
-                total += float(e[k])
-            mean = total / float(end - b)
-            for k in order[b:end]:
-                out[k] = mean
-        b = end
-    return out
-
-
-def standardise(total: np.ndarray, present: np.ndarray) -> np.ndarray:
-    """Rule 2 on one session (themes x names): the centred tied rank of each theme's sum over its present names; a lone
-    present name 0; NaN where the theme has no present member."""
-    z = np.full(total.shape, np.nan)
-    for t in range(total.shape[0]):
-        if present[t].sum() == 1:
-            z[t, present[t]] = 0.0
-        elif present[t].sum() >= 2:
-            z[t] = centred_tied_ranks(total[t], present[t])
-    return z
-
-
-def add_session(z: np.ndarray, mass, out: np.ndarray) -> None:
-    """Rules 3-5 on one session's standardised composites ``z`` (themes x names, registered order, NaN = absent): adds
-    W_t x the theme's term to ``out`` (names) at the names where theme t is present (two or more of them)."""
-    names = z.shape[1]
-    for t in range(z.shape[0]):
-        names_t = np.flatnonzero(~np.isnan(z[t]))
-        if len(names_t) < 2:
-            continue
-        if t == 0:
-            out[names_t] += mass[0] * z[0, names_t]
-            continue
-        x = np.nan_to_num(z[:t][:, names_t], nan=0.0).T
-        e, spanned = residual(z[t, names_t], x)
-        if spanned:
-            continue
-        e = tie_block_means(e, z[t, names_t])
-        full = np.zeros(names)
-        full[names_t] = e
-        keep = np.zeros(names, dtype=bool)
-        keep[names_t] = True
-        rr = centred_tied_ranks(full, keep)
-        out[names_t] += mass[t] * rr[names_t]
-
-
-def kernel(planes, mass, names: int) -> np.ndarray:
-    """The numpy reference of strategy_ic_theme_resid.cpp add_theme_residualised: ``planes`` one dates x names row-major
-    plane per theme (registered order) of the raw sums (NaN = no member present), ``mass`` W per theme; returns what the
-    kernel adds to a zero ``out`` (dates * names)."""
-    planes = np.asarray(planes, dtype=np.float64)
-    dates = planes.shape[1] // names
-    out = np.zeros(dates * names)
-    for d in range(dates):
-        total = planes[:, d * names:(d + 1) * names]
-        add_session(standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total)), mass,
-                    out[d * names:(d + 1) * names])
-    return out
-
-
-def blend(member: np.ndarray, signals: list[np.ndarray], weights: list[float], signs: list[int], position: list[int],
-          themes: int) -> np.ndarray:
-    """theme-resid-v1 blend (dates x names): ``position[k]`` is member k's theme position in the registered order;
-    W_t sums the theme's positive weights; members with weight 0 or sign 0 add no rank; nonmember cells NaN, as the IC
-    composition writes them."""
-    dates, names = member.shape
-    out = np.where(member == 1, 0.0, np.nan)
-    mass = np.zeros(themes)
-    for k, w in enumerate(weights):
-        if w > 0:
-            mass[position[k]] += w
-    for d in range(dates):
-        total = np.zeros((themes, names))
-        present = np.zeros((themes, names), dtype=bool)
-        for k, sig in enumerate(signals):
-            if not (weights[k] > 0) or signs[k] == 0:
-                continue
-            row = sig[d]
-            r = centred_tied_ranks(row, (member[d] == 1) & np.isfinite(row))
-            ok = ~np.isnan(r)
-            total[position[k], ok] += signs[k] * weights[k] * r[ok]
-            present[position[k], ok] = True
-        add_session(standardise(total, present), mass, out[d])
-    return out

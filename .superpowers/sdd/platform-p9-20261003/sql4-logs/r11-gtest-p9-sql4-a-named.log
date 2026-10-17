@@ -1,0 +1,191 @@
+﻿exe sha256 06a6ef444e8d4252bda3d08851b2e28513c8857c484ee9165151da36ed4faaea
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = IcCacheIndex.*:IcResultIndex.*:MarginalPairIndex.*:StrategyIcRunner.*:MarginalIc.*
+[==========] Running 79 tests from 5 test suites.
+[----------] Global test environment set-up.
+[----------] 51 tests from StrategyIcRunner
+[ RUN      ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns
+[       OK ] StrategyIcRunner.FreezesTrainSignsAndReportsCombinedIcWithoutBookReturns (210 ms)
+[ RUN      ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload
+[       OK ] StrategyIcRunner.PlanOnlyPinsMetadataAndNeverLoadsPayload (99 ms)
+[ RUN      ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean
+[       OK ] StrategyIcRunner.InsufficientHorizonProducesNullRatherThanZeroMean (138 ms)
+[ RUN      ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets
+[       OK ] StrategyIcRunner.SharedVmWorkersPreserveSignalsOrientationsAndPlannedTargets (222 ms)
+[ RUN      ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload
+[       OK ] StrategyIcRunner.WorkerBoundsAndAdditionalMemoryAreAdmittedBeforePayload (72 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload
+[       OK ] StrategyIcRunner.FrozenTrainValidationMatchesUninterruptedWithoutTrainPayload (243 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload
+[       OK ] StrategyIcRunner.FrozenTrainIdentityMethodAndSignsRefuseBeforeValidationPayload (236 ms)
+[ RUN      ] StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested
+[       OK ] StrategyIcRunner.SavesExactPreTargetBlendSupportAndPinnedAxesOnlyWhenRequested (246 ms)
+[ RUN      ] StrategyIcRunner.AscendingVmArenaDemandMatchesRetainedMaximumArena
+[       OK ] StrategyIcRunner.AscendingVmArenaDemandMatchesRetainedMaximumArena (381 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly
+[       OK ] StrategyIcRunner.CandidateCacheColdAndWarmRunsReproduceUncachedOutputsExactly (496 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrphans
+[       OK ] StrategyIcRunner.CandidateCacheResumesStoppedRunAndAdoptsOnlyIdenticalOrphans (358 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverwrite
+[       OK ] StrategyIcRunner.CandidateCacheRefusesTamperedOrForeignEntriesWithoutOverwrite (273 ms)
+[ RUN      ] StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes
+[       OK ] StrategyIcRunner.PinnedDefaultCompositionWeightsReproduceDefaultBlendBytes (414 ms)
+[ RUN      ] StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored
+[       OK ] StrategyIcRunner.UnequalPinnedWeightsChangeBlendAndRecipeWhileZeroWeightStaysScored (337 ms)
+[ RUN      ] StrategyIcRunner.InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput
+[       OK ] StrategyIcRunner.InvalidCompositionWeightsRefuseBeforeAnyPayloadOrOutput (259 ms)
+[ RUN      ] StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput
+[       OK ] StrategyIcRunner.ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayloadOrOutput (357 ms)
+[ RUN      ] StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned
+[       OK ] StrategyIcRunner.ThemeRedistributionIsRecordedInRecipeSummaryAndCombinedOnlyWhenPinned (587 ms)
+[ RUN      ] StrategyIcRunner.ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights
+[       OK ] StrategyIcRunner.ValidationOnlyResumeComposesCandidateCacheAndTrainBoundWeights (544 ms)
+[ RUN      ] StrategyIcRunner.ExtraFieldsResolveByNameAndMatchHandComputedSignals
+[       OK ] StrategyIcRunner.ExtraFieldsResolveByNameAndMatchHandComputedSignals (599 ms)
+[ RUN      ] StrategyIcRunner.UnreferencedFieldsAreNeverOpenedOrAdmitted
+[       OK ] StrategyIcRunner.UnreferencedFieldsAreNeverOpenedOrAdmitted (263 ms)
+[ RUN      ] StrategyIcRunner.FieldBindingRefusalsPrecedeRolePayloadAndOutput
+[       OK ] StrategyIcRunner.FieldBindingRefusalsPrecedeRolePayloadAndOutput (220 ms)
+[ RUN      ] StrategyIcRunner.GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels
+[       OK ] StrategyIcRunner.GrpFieldsBindAsGroupClassifiersAndExcludeNaNLabels (380 ms)
+[ RUN      ] StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged
+[       OK ] StrategyIcRunner.AbsentFieldOptionsLeaveRecipeAndOutputsUnchanged (312 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheKeyChangesOnlyForCandidatesReadingAChangedFieldPayload
+[       OK ] StrategyIcRunner.CandidateCacheKeyChangesOnlyForCandidatesReadingAChangedFieldPayload (794 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheChangedDslUnderSameIdIsANewEntry
+[       OK ] StrategyIcRunner.CandidateCacheChangedDslUnderSameIdIsANewEntry (333 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests
+[       OK ] StrategyIcRunner.CandidateCacheReadsV1EntriesInPlaceThroughKnownManifests (1406 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheWritesFitWithinTheDeepestCommittedPath
+[       OK ] StrategyIcRunner.CandidateCacheWritesFitWithinTheDeepestCommittedPath (503 ms)
+[ RUN      ] StrategyIcRunner.CacheReportAccountsHitsMissesAndUnreferencedEntries
+[       OK ] StrategyIcRunner.CacheReportAccountsHitsMissesAndUnreferencedEntries (183 ms)
+[ RUN      ] StrategyIcRunner.LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt
+[       OK ] StrategyIcRunner.LibraryDeclaringMktRetRunsOnlyWhenFieldsSupplyIt (209 ms)
+[ RUN      ] StrategyIcRunner.RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields
+[       OK ] StrategyIcRunner.RealV2LibraryDeclaringMktRetPlansOnlyWithPinnedFields (119 ms)
+[ RUN      ] StrategyIcRunner.PlanOnlyPrintsCandidateRows
+[       OK ] StrategyIcRunner.PlanOnlyPrintsCandidateRows (88 ms)
+[ RUN      ] StrategyIcRunner.FrozenTrainResumeBindsResearchFieldPins
+[       OK ] StrategyIcRunner.FrozenTrainResumeBindsResearchFieldPins (334 ms)
+[ RUN      ] StrategyIcRunner.NonPointInTimeFieldsAndUnflaggedManifestsAreRefused
+[       OK ] StrategyIcRunner.NonPointInTimeFieldsAndUnflaggedManifestsAreRefused (162 ms)
+[ RUN      ] StrategyIcRunner.PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution
+[       OK ] StrategyIcRunner.PinnedSignOppositeToIcOrientationFlipsOnlyThatBlendContribution (397 ms)
+[ RUN      ] StrategyIcRunner.CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars
+[       OK ] StrategyIcRunner.CandidateCacheIsScopedByVmIdentityAndRefusesForeignSidecars (383 ms)
+[ RUN      ] StrategyIcRunner.CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers
+[       OK ] StrategyIcRunner.CandidateCachePayloadBytesAreIdenticalAcrossVmWorkers (254 ms)
+[ RUN      ] StrategyIcRunner.ExtraFieldsResideOnlyWhileReferencedAndReloadExactly
+[       OK ] StrategyIcRunner.ExtraFieldsResideOnlyWhileReferencedAndReloadExactly (987 ms)
+[ RUN      ] StrategyIcRunner.ExtraFieldsAreMaskedByRolePresence
+[       OK ] StrategyIcRunner.ExtraFieldsAreMaskedByRolePresence (231 ms)
+[ RUN      ] StrategyIcRunner.FieldDefinitionsMustMatchAcrossRoles
+[       OK ] StrategyIcRunner.FieldDefinitionsMustMatchAcrossRoles (125 ms)
+[ RUN      ] StrategyIcRunner.FieldsOptionMustNameTheDirectory
+[       OK ] StrategyIcRunner.FieldsOptionMustNameTheDirectory (142 ms)
+[ RUN      ] StrategyIcRunner.CandidateCachePreflightRefusesBeforeRolePayload
+[       OK ] StrategyIcRunner.CandidateCachePreflightRefusesBeforeRolePayload (277 ms)
+[ RUN      ] StrategyIcRunner.VmSourcesPinnedToSemanticsVersion
+[       OK ] StrategyIcRunner.VmSourcesPinnedToSemanticsVersion (71 ms)
+[ RUN      ] StrategyIcRunner.IcSourcesPinnedToSemanticsVersion
+[       OK ] StrategyIcRunner.IcSourcesPinnedToSemanticsVersion (13 ms)
+[ RUN      ] StrategyIcRunner.ValidationWeightsMustNameTheFrozenTrainOrientations
+[       OK ] StrategyIcRunner.ValidationWeightsMustNameTheFrozenTrainOrientations (333 ms)
+[ RUN      ] StrategyIcRunner.ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain
+[       OK ] StrategyIcRunner.ValidationOnlyChecksFieldDefinitionsAgainstFrozenTrain (417 ms)
+[ RUN      ] StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly
+[       OK ] StrategyIcRunner.IcResultCacheHitsReproduceUncachedOutputsExactly (723 ms)
+[ RUN      ] StrategyIcRunner.IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettings
+[       OK ] StrategyIcRunner.IcResultCacheRefusesTamperedOrForeignEntriesAndKeysSettings (507 ms)
+[ RUN      ] StrategyIcRunner.CacheMissOnRoleChange
+[       OK ] StrategyIcRunner.CacheMissOnRoleChange (290 ms)
+[ RUN      ] StrategyIcRunner.AdmissionReportsRequiredBytes
+[       OK ] StrategyIcRunner.AdmissionReportsRequiredBytes (74 ms)
+[ RUN      ] StrategyIcRunner.AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity
+[       OK ] StrategyIcRunner.AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity (492 ms)
+[ RUN      ] StrategyIcRunner.DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput
+[       OK ] StrategyIcRunner.DelistingReturnsRoleIsRefusedBeforeAnyPayloadOrOutput (104 ms)
+[----------] 51 tests from StrategyIcRunner (17224 ms total)
+
+[----------] 15 tests from MarginalIc
+[ RUN      ] MarginalIc.PoolPlusNoiseHasZeroMarginalWithin2Se
+[       OK ] MarginalIc.PoolPlusNoiseHasZeroMarginalWithin2Se (308 ms)
+[ RUN      ] MarginalIc.PlantedOrthogonalRecovered
+[       OK ] MarginalIc.PlantedOrthogonalRecovered (265 ms)
+[ RUN      ] MarginalIc.StreamsByDateUnder600MiB
+[       OK ] MarginalIc.StreamsByDateUnder600MiB (275 ms)
+[ RUN      ] MarginalIc.RefusesInputsNotBoundToThePool
+[       OK ] MarginalIc.RefusesInputsNotBoundToThePool (202 ms)
+[ RUN      ] MarginalIc.DelistingReturnsRoleIsRefused
+[       OK ] MarginalIc.DelistingReturnsRoleIsRefused (202 ms)
+[ RUN      ] MarginalIc.StandardisedThemesComeFromTheWeightsBlock
+[       OK ] MarginalIc.StandardisedThemesComeFromTheWeightsBlock (665 ms)
+[ RUN      ] MarginalIc.CandidatesSubsetEqualsFullRows
+[       OK ] MarginalIc.CandidatesSubsetEqualsFullRows (461 ms)
+[ RUN      ] MarginalIc.CompactedRowsEqual
+[       OK ] MarginalIc.CompactedRowsEqual (1229 ms)
+[ RUN      ] MarginalIc.PairCacheHitEqualsCompute
+[       OK ] MarginalIc.PairCacheHitEqualsCompute (575 ms)
+[ RUN      ] MarginalIc.ThirtyThreeThemes
+[       OK ] MarginalIc.ThirtyThreeThemes (2408 ms)
+[ RUN      ] MarginalIc.BandsByteIdenticalAt1And4
+[       OK ] MarginalIc.BandsByteIdenticalAt1And4 (1367 ms)
+[ RUN      ] MarginalIc.ExcludeSelfDropsTheMembersOwnTerm
+[       OK ] MarginalIc.ExcludeSelfDropsTheMembersOwnTerm (329 ms)
+[ RUN      ] MarginalIc.VerifiedDigestsSkipTheRehash
+[       OK ] MarginalIc.VerifiedDigestsSkipTheRehash (363 ms)
+[ RUN      ] MarginalIc.PairCacheSourcesPinned
+[       OK ] MarginalIc.PairCacheSourcesPinned (3 ms)
+[ RUN      ] MarginalIc.CacheRootsNeverShareAcrossBuilds
+[       OK ] MarginalIc.CacheRootsNeverShareAcrossBuilds (521 ms)
+[----------] 15 tests from MarginalIc (9182 ms total)
+
+[----------] 7 tests from IcCacheIndex
+[ RUN      ] IcCacheIndex.FlagAbsentKeepsFileLayoutAndSummary
+[       OK ] IcCacheIndex.FlagAbsentKeepsFileLayoutAndSummary (586 ms)
+[ RUN      ] IcCacheIndex.FlagWithoutIndexRefused
+[       OK ] IcCacheIndex.FlagWithoutIndexRefused (79 ms)
+[ RUN      ] IcCacheIndex.RowIsTheCommitMarker
+[       OK ] IcCacheIndex.RowIsTheCommitMarker (446 ms)
+[ RUN      ] IcCacheIndex.ReadThroughImportsLegacySidecar
+[       OK ] IcCacheIndex.ReadThroughImportsLegacySidecar (451 ms)
+[ RUN      ] IcCacheIndex.KeyMismatchRefuses
+[       OK ] IcCacheIndex.KeyMismatchRefuses (338 ms)
+[ RUN      ] IcCacheIndex.TwoConnectionsInterleave
+[       OK ] IcCacheIndex.TwoConnectionsInterleave (83 ms)
+[ RUN      ] IcCacheIndex.SummaryRecordsIndex
+unknown file: error: C++ exception with description "[json.exception.type_error.304] cannot use at() with number" thrown in the test body.
+
+[  FAILED  ] IcCacheIndex.SummaryRecordsIndex (272 ms)
+[----------] 7 tests from IcCacheIndex (2257 ms total)
+
+[----------] 2 tests from IcResultIndex
+[ RUN      ] IcResultIndex.RecordTextRoundTrip
+unknown file: error: C++ exception with description "[json.exception.type_error.304] cannot use at() with number" thrown in the test body.
+
+[  FAILED  ] IcResultIndex.RecordTextRoundTrip (452 ms)
+[ RUN      ] IcResultIndex.TamperedRecordIsMiss
+[       OK ] IcResultIndex.TamperedRecordIsMiss (343 ms)
+[----------] 2 tests from IcResultIndex (796 ms total)
+
+[----------] 4 tests from MarginalPairIndex
+[ RUN      ] MarginalPairIndex.SameStatsAsShards
+[       OK ] MarginalPairIndex.SameStatsAsShards (611 ms)
+[ RUN      ] MarginalPairIndex.ConflictingBitsRefused
+[       OK ] MarginalPairIndex.ConflictingBitsRefused (38 ms)
+[ RUN      ] MarginalPairIndex.ReadsLegacyShards
+[       OK ] MarginalPairIndex.ReadsLegacyShards (458 ms)
+[ RUN      ] MarginalPairIndex.FlagAbsentBlockUnchanged
+[       OK ] MarginalPairIndex.FlagAbsentBlockUnchanged (264 ms)
+[----------] 4 tests from MarginalPairIndex (1374 ms total)
+
+[----------] Global test environment tear-down
+[==========] 79 tests from 5 test suites ran. (30835 ms total)
+[  PASSED  ] 77 tests.
+[  FAILED  ] 2 tests, listed below:
+[  FAILED  ] IcCacheIndex.SummaryRecordsIndex
+[  FAILED  ] IcResultIndex.RecordTextRoundTrip
+
+ 2 FAILED TESTS
+exit=1 seconds=30.902653

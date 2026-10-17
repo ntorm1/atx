@@ -1,0 +1,3262 @@
+{
+ "built_allow_abbrev": false,
+ "longs": [
+  "--admission-exe",
+  "--composition",
+  "--composition-exe",
+  "--engine-factors",
+  "--engine-fit",
+  "--era",
+  "--era-id",
+  "--help",
+  "--library",
+  "--library-sha256",
+  "--max-new-candidates",
+  "--max-seconds",
+  "--mom-volman",
+  "--orientation",
+  "--orientations",
+  "--orientations-sha256",
+  "--output",
+  "--recipe",
+  "--recipe-sha256",
+  "--report-f-theta",
+  "--runner-summary",
+  "--runner-summary-sha256",
+  "--screen",
+  "--theme-erc",
+  "--theme-hedge",
+  "--theme-resid",
+  "--theme-resid-parent",
+  "--theme-resid-parent-sha256",
+  "--theme-tsmom",
+  "--train",
+  "--train-sha256",
+  "--two-speed",
+  "--work-dir"
+ ],
+ "specs": [
+  {
+   "file": "scripts/specs/p9/blocked/hf_crowd.json",
+   "template": false,
+   "schema": "atx.p9-blocked-registration/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/p9/blocked/lazy_prices.json",
+   "template": false,
+   "schema": "atx.p9-blocked-registration/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/p9/candidates/russell_recon.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/p9/diagnostics/al-comb-q5-style-variance.json",
+   "template": false,
+   "schema": "atx.p9-diagnostic-spec/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/p9/rules/mom-volman-v1.json",
+   "template": false,
+   "schema": "atx.p9-rule-registration/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/p9/rules/theme-cov-hedge-v1.json",
+   "template": false,
+   "schema": "atx.p9-rule-registration/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/p9/templates/mom-volman.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/p9/templates/theme-cov-hedge.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/tiny.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v61-ops.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v61.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v70-lo3.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v70.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v71.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v7u-lo3.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v61-c1-lo1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v61-c2-lo1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v61-c3-lo1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v61-lo1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v61-spo1-lo1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v70-lo1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v70-lo3.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8-rerun/w04-v70-spo2-lo3.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/base-b0c.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/base-lo1.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/base-lo3.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/candidates/conn_rev.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/dato.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/day_rev_freq.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/deal_target.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/div_event.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/ea_uvol.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/exch_switch.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/fscore_hbm.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/ins_cluster.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/iv_vol_of_vol.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/mom_turn.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/peer_mom_1m.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/smile_slope.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/so_wang_rev.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/candidates/stio_trade.json",
+   "template": false,
+   "schema": "atx.wave-candidate/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/lib-v80.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v81-gm.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v81.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x2.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x2b.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x3.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x3b-gm.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x3b.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x4.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x4b.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x7.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x7b-gm.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8x7b.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8ys.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8ysb-gm.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/lib-v8ysb.json",
+   "template": false,
+   "schema": "atx.research-cycle-spec/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r1-comp-v8-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r1-comp-v8.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r10.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ic-shrink-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r11.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-resid",
+    "theme-resid-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r2-lib-v80.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r3-aim-gain-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-aim-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r3-aim-gain.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-aim-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r4-hold-band.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r5-adv-hold.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r6-spo-v3-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r6-spo-v3.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r7-lib-v81.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r8.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r9a.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/r9b.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/waves/y-2.json",
+   "template": false,
+   "schema": "atx.research-wave/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/waves/y-3.json",
+   "template": false,
+   "schema": "atx.research-wave/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/waves/y-5.json",
+   "template": false,
+   "schema": "atx.research-wave/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/waves/y-s.head.json",
+   "template": false,
+   "schema": "atx.research-wave/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/waves/y-s.json",
+   "template": false,
+   "schema": "atx.research-wave/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  },
+  {
+   "file": "scripts/specs/v8/x-inv-vol-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/x-inv-vol.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/x-leverage-L2.0.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/x-theme-erc-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/x-theme-erc.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-norm-score-y-3-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-norm-score-y-3.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-norm-score.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-theme-tsmom-y-2-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--theme-tsmom",
+    "theme-tsmom-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-theme-tsmom-y-2.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--theme-tsmom",
+    "theme-tsmom-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-theme-tsmom.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--theme-tsmom",
+    "theme-tsmom-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-two-speed-y-5-gm.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--two-speed",
+    "two-speed-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-two-speed-y-5.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--two-speed",
+    "two-speed-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-two-speed.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--two-speed",
+    "two-speed-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-vol-target-y-1.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v8/y-vol-target.json",
+   "template": true,
+   "schema": "atx.research-cycle-template/v1",
+   "how": "load_spec",
+   "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-v1"
+   ],
+   "nonexact": [],
+   "parse_abbrev_on": true,
+   "parse_abbrev_off": true,
+   "same_namespace": true
+  },
+  {
+   "file": "scripts/specs/v9/mine-c1.json",
+   "template": false,
+   "schema": "atx.mine-campaign-spec/v1",
+   "load_spec_error": "spec schema must be atx.research-cycle-spec/v1",
+   "how": "raw-resolve",
+   "fit": "none"
+  }
+ ],
+ "text_counts": {
+  "files": 1325,
+  "tokens": 9789,
+  "exact": 1734,
+  "prefix": 182
+ },
+ "text_candidates": [
+  {
+   "file": ".superpowers/sdd/mega-alpha-20260926/studies/test_audit_fund_fields.py",
+   "line": 197,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "common = [\"--out\", str(out)]"
+  },
+  {
+   "file": ".superpowers/sdd/mega-alpha-20260926/studies/v6_w.env.example",
+   "line": 46,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "#   --check-fields $FD --check-fields-sha256 $FS --out $R2LO_DIR --memory-mib 1024 --max-seconds 170"
+  },
+  {
+   "file": ".superpowers/sdd/mega-alpha-20260926/studies/v6u_train.sh",
+   "line": 49,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "--check-fields $FD --check-fields-sha256 $FS --out $R2LO_DIR --memory-mib 1024 --max-seconds 170 | grep -E '\"exit_code\"' | head -1"
+  },
+  {
+   "file": ".superpowers/sdd/platform-p9-20261003/m2e-logs/tools/c2_gm_pair.py",
+   "line": 7,
+   "token": "--engine",
+   "matches": [
+    "--engine-factors",
+    "--engine-fit"
+   ],
+   "text": "c2_gm_pair.py run NAME L [--engine] [--dry]"
+  },
+  {
+   "file": ".superpowers/sdd/platform-p9-20261003/m2e-logs/tools/c2_gm_pair.py",
+   "line": 9,
+   "token": "--engine",
+   "matches": [
+    "--engine-factors",
+    "--engine-fit"
+   ],
+   "text": "exactly --output -> build-equity/NAME and --aim-leverage -> L substituted; --engine"
+  },
+  {
+   "file": ".superpowers/sdd/platform-p9-20261003/m2e-logs/tools/c2_gm_pair.py",
+   "line": 199,
+   "token": "--engine",
+   "matches": [
+    "--engine-factors",
+    "--engine-fit"
+   ],
+   "text": "sys.exit(run(a[1], a[2], \"--engine\" in a, \"--dry\" in a))"
+  },
+  {
+   "file": ".superpowers/sdd/platform-v8-20260929/xwq_check.py",
+   "line": 1027,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "return (f'\"$PY\" scripts/research_cycle.py add-alpha --id {p[\"id\"]} --dsl \"{wrapped}\" --theme {p[\"theme\"]} '"
+  },
+  {
+   "file": ".superpowers/sdd/platform-v8-20260929/ysig_check.py",
+   "line": 279,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "return (f'\"$PY\" scripts/research_cycle.py add-alpha --id {cid} --dsl \"{CANDIDATES[cid]}\" --theme {r[\"theme\"]} '"
+  },
+  {
+   "file": ".superpowers/sdd/strategy/cash-qualification-20260926/recent-gap-39621-source-v1-run__receipt.json",
+   "line": 19,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/cash-qualification-20260926/recent-gap-39621-source-v1-run__start.json",
+   "line": 19,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/cash-qualification-20260926/recent-q1-gap-batch-v1-run__receipt.json",
+   "line": 56,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/cash-qualification-20260926/recent-q1-gap-batch-v1-run__start.json",
+   "line": 56,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/fast-ic-qualification-20260926/recent-fast-train-2020-2022-v1-run/receipt.json",
+   "line": 12,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/fast-ic-qualification-20260926/recent-fast-train-2020-2022-v1-run/start.json",
+   "line": 12,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/fast-ic-qualification-20260926/recent-fast-validation-2023-2024-v1-run/receipt.json",
+   "line": 12,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/fast-ic-qualification-20260926/recent-fast-validation-2023-2024-v1-run/start.json",
+   "line": 12,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/qualification-20260926/recent-dev-check-v1-run__receipt.json",
+   "line": 11,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/qualification-20260926/recent-dev-smoke-v1-run__receipt.json",
+   "line": 11,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/strategy/qualification-20260926/recent-projection-v1-run__receipt.json",
+   "line": 11,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/tier1-parity/archive20-inspect1-memory.json",
+   "line": 7,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\","
+  },
+  {
+   "file": ".superpowers/sdd/tier1-parity/claude-ctl/inspect_companyfacts_terminal.py",
+   "line": 4,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "python inspect_companyfacts_terminal.py --activation-run activation-companyfacts-archive20 --out <new.json>"
+  },
+  {
+   "file": ".superpowers/sdd/tier1-parity/claude-ctl/inspect_companyfacts_terminal.py",
+   "line": 7,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "maps (<= archive member count) and the ZIP central-directory names. Refuses to overwrite --out."
+  },
+  {
+   "file": ".superpowers/sdd/tier1-parity/claude-ctl/inspect_companyfacts_terminal.py",
+   "line": 40,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "parser.add_argument('--out', type=Path, required=True)"
+  },
+  {
+   "file": ".superpowers/sdd/w0/g0_measure.py",
+   "line": 152,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "'--out',OUT/f'data/equity_mine_l9_guard_g0_{SHA}'])"
+  },
+  {
+   "file": ".superpowers/sdd/w0/g0_measure.py",
+   "line": 175,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "'--out',OUT/f'data/equity_baseline_training_2013_g0_{SHA}{suffix}',"
+  },
+  {
+   "file": ".superpowers/sdd/w0/g0_measure.py",
+   "line": 201,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "run(f'base_{year}_t{cut}',BIN/'atx-impl.exe',['equity-baseline',*common,'--out',base,"
+  },
+  {
+   "file": ".superpowers/sdd/w0/g0_measure.py",
+   "line": 205,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "'--out',OUT/f'data/equity_g0cp21_ic_{year}_t{cut}_{SHA}',"
+  },
+  {
+   "file": ".superpowers/sdd/w0/g0_measure.py",
+   "line": 214,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "'--out',OUT/f'data/equity_g0cp21_scorecard_{SHA}',"
+  },
+  {
+   "file": "atx-engine/tools/audit_recent_price_gap.py",
+   "line": 268,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "parser.add_argument(\"--out\", type=Path, required=True)"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 23,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "python build_fundamental_events.py prepare --out OUT --cik-list CIKS --companyfacts-dir CF --fsds-dir FSDS"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 24,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "python build_fundamental_events.py events --out OUT --batches 0-20      # repeat per chunk; resumable"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 25,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "python build_fundamental_events.py finalize --out OUT                   # manifest.json published last"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 1192,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "raise UsageError(\"code changed since `prepare` (code_sha256 differs); start a fresh --out\")"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 1226,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "raise UsageError(f\"{run_path} exists with a different plan; use a fresh --out\")"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 1232,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "raise UsageError(f\"{receipt_path} does not verify; delete --out and start again\")"
+  },
+  {
+   "file": "atx-engine/tools/build_fundamental_events.py",
+   "line": 1519,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "sp.add_argument(\"--out\", required=True, help=\"output directory (fresh for prepare)\")"
+  },
+  {
+   "file": "atx-engine/tools/export_fundamental_fields.py",
+   "line": 39,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "--contexts \"identified-contexts/*\" --out fresh-export"
+  },
+  {
+   "file": "atx-engine/tools/export_fundamental_fields.py",
+   "line": 797,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "ap.add_argument(\"--out\", required=True)"
+  },
+  {
+   "file": "atx-engine/tools/prepare_recent_research.py",
+   "line": 930,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "p.add_argument(\"--out\", required=True, type=Path)"
+  },
+  {
+   "file": "atx-engine/tools/test_build_fundamental_events.py",
+   "line": 489,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "argv = [stage, \"--out\", str(s[\"out\"])]"
+  },
+  {
+   "file": "atx-engine/tools/test_linked_operating_v2.py",
+   "line": 222,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "common = [\"role\", \"--out\", str(self.base / \"cli\"), \"--base-role\", str(self.base / \"role\"),"
+  },
+  {
+   "file": "atx-engine/tools/test_linked_operating_v3.py",
+   "line": 302,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "with patch.object(sys, \"argv\", [\"prepare_recent_research.py\", *common, \"--out\", str(self.base / \"x\")]), \\"
+  },
+  {
+   "file": "atx-engine/tools/test_linked_operating_v3.py",
+   "line": 306,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "argv = common + [\"--out\", str(self.base / \"cli\"), \"--delisting\", str(self.base / \"delisting\"),"
+  },
+  {
+   "file": "atx-engine/tools/test_lo1_delisting.py",
+   "line": 199,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--universe\", LO1, \"--out\", str(self.base / \"cli\")]"
+  },
+  {
+   "file": "atx-engine/tools/test_prepare_recent_research.py",
+   "line": 364,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "for argv in ([\"role\", \"--out\", str(self.base / \"x\"), \"--universe\", \"linked-operating-v1\","
+  },
+  {
+   "file": "atx-engine/tools/test_prepare_recent_research.py",
+   "line": 366,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "[\"role\", \"--out\", str(self.base / \"x\"), \"--cache\", str(self.base / \"cache\"),"
+  },
+  {
+   "file": "atx-engine/tools/test_prepare_recent_research.py",
+   "line": 368,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "[\"role\", \"--out\", str(self.base / \"x\"), \"--universe\", \"linked-operating-v1\","
+  },
+  {
+   "file": "atx-impl/strategies/generate_from_spec.py",
+   "line": 4,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "generate_from_spec.py --spec SPEC (--check | --out DIR) [--plan-json PATH] [--strategies DIR]"
+  },
+  {
+   "file": "atx-impl/strategies/generate_from_spec.py",
+   "line": 13,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "--out writes it and its receipt; --check refuses it)"
+  },
+  {
+   "file": "atx-impl/strategies/generate_from_spec.py",
+   "line": 20,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "--check compares the generated bytes with the committed files under the strategies dir; --out DIR writes the"
+  },
+  {
+   "file": "atx-impl/strategies/generate_from_spec.py",
+   "line": 146,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "ap.add_argument(\"--out\", type=Path, default=None, help=\"write the artefacts and receipt.json into DIR\")"
+  },
+  {
+   "file": "atx-impl/strategies/generate_from_spec.py",
+   "line": 151,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "print(\"generate_from_spec: pass exactly one of --check and --out DIR\", file=sys.stderr)"
+  },
+  {
+   "file": "atx-impl/strategies/test_generate_from_spec.py",
+   "line": 41,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "assert S.main([\"--spec\", str(V71_SPEC), \"--out\", str(out)]) == 0"
+  },
+  {
+   "file": "atx-impl/strategies/test_generate_from_spec.py",
+   "line": 118,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "assert S.main([\"--spec\", str(write_spec(root)), \"--out\", str(out), \"--strategies\", str(root)]) == 0"
+  },
+  {
+   "file": "atx-impl/strategies/test_generate_from_spec.py",
+   "line": 154,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "assert S.main([\"--spec\", str(write_spec(root, plan=plan)), \"--out\", str(out), \"--strategies\", str(root)]) == 0"
+  },
+  {
+   "file": "atx-impl/strategies/test_generate_from_spec.py",
+   "line": 162,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "*(extra or (\"--out\", str(tmp_path / \"out\")))])"
+  },
+  {
+   "file": "atx-impl/strategies/test_generate_from_spec.py",
+   "line": 179,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "assert S.main([\"--spec\", str(write_spec(root)), \"--strategies\", str(root)]) == 2   # neither --check nor --out"
+  },
+  {
+   "file": "atx-impl/tools/alpha_report_card.py",
+   "line": 4,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "alpha_report_card.py --u-pass U --train ROLE/manifest.json --train-sha256 SHA --admission ADM.json"
+  },
+  {
+   "file": "atx-impl/tools/alpha_report_card.py",
+   "line": 1173,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "p.add_argument(\"--admission\", type=Path, required=True, help=\"admission.json of fit_composition_weights\")"
+  },
+  {
+   "file": "atx-impl/tools/book_monitor.py",
+   "line": 13,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "--admission JSON      admission.json: the admitted members (M2, M4) and their signs"
+  },
+  {
+   "file": "atx-impl/tools/book_monitor.py",
+   "line": 248,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "return None, \"--fit-work needs --admission\""
+  },
+  {
+   "file": "atx-impl/tools/book_monitor.py",
+   "line": 353,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "out.update(na(\"no --admission (admitted members)\"))"
+  },
+  {
+   "file": "atx-impl/tools/book_monitor.py",
+   "line": 561,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "p.add_argument(\"--admission\", type=Path)"
+  },
+  {
+   "file": "atx-impl/tools/compare_window_overlap.py",
+   "line": 39,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "Output ``--out`` (never overwritten): ``atx.window-overlap/v1`` with totals, the differing keys and, with"
+  },
+  {
+   "file": "atx-impl/tools/compare_window_overlap.py",
+   "line": 582,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "p.add_argument(\"--out\", type=Path, required=True, help=\"report JSON (never overwritten)\")"
+  },
+  {
+   "file": "atx-impl/tools/compare_window_overlap.py",
+   "line": 596,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "require(not args.out.exists(), f\"--out exists; refusing overwrite: {args.out}\")"
+  },
+  {
+   "file": "atx-impl/tools/composition_rules.py",
+   "line": 411,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "ident.add_argument(\"--out\", type=Path, required=True, help=\"new weights file (never overwritten)\")"
+  },
+  {
+   "file": "atx-impl/tools/composition_rules.py",
+   "line": 417,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "_require(not args.out.exists(), f\"--out exists; refusing overwrite: {args.out}\", RuleError)"
+  },
+  {
+   "file": "atx-impl/tools/fit_composition_weights.py",
+   "line": 2762,
+   "token": "--compo",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "# flag, so adding a flag changes what a prefix means (D2's --composition-exe made every --compo... ambiguous)."
+  },
+  {
+   "file": "atx-impl/tools/mega_report/__main__.py",
+   "line": 1,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"\"\"CLI: ``python atx-impl/tools/mega_report --config CONFIG.json --out REPORT.html`` (or ``python -m mega_report``"
+  },
+  {
+   "file": "atx-impl/tools/mega_report/__main__.py",
+   "line": 18,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "ap.add_argument('--out')"
+  },
+  {
+   "file": "atx-impl/tools/mega_report/__main__.py",
+   "line": 27,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "ap.error('--config and --out are required')"
+  },
+  {
+   "file": "atx-impl/tools/mega_report/report.py",
+   "line": 207,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "return f'<span class=\"dot{h}\" style=\"--c:var(--{C.esc(self.gtok(cell))})\"></span>'"
+  },
+  {
+   "file": "atx-impl/tools/mega_report/theme.py",
+   "line": 109,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": ".dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:baseline;background:var(--c);border:1.5px solid var(--c)}"
+  },
+  {
+   "file": "atx-impl/tools/mega_report/theme.py",
+   "line": 109,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": ".dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:baseline;background:var(--c);border:1.5px solid var(--c)}"
+  },
+  {
+   "file": "atx-impl/tools/repair_role_factor_breaks.py",
+   "line": 597,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "p.add_argument(\"--out\", type=Path, help=\"repair: NEW role directory (must not exist; parent must)\")"
+  },
+  {
+   "file": "atx-impl/tools/repair_role_factor_breaks.py",
+   "line": 607,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "p.error(\"give exactly one of --scan-only or --out\")"
+  },
+  {
+   "file": "atx-impl/tools/repair_role_factor_breaks.py",
+   "line": 613,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "raise Refusal(f\"--out {a.out} must not exist and its parent must be a directory (exclusive output)\")"
+  },
+  {
+   "file": "atx-impl/tools/repair_role_factor_breaks.py",
+   "line": 640,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "# Nothing is published without its manifest (publish-last); a partial --out is never a role."
+  },
+  {
+   "file": "atx-impl/tools/test_alpha_report_card.py",
+   "line": 235,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "\"--admission\", str(self.admission), \"--output\", str(out), *extra]"
+  },
+  {
+   "file": "atx-impl/tools/test_book_monitor.py",
+   "line": 172,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "cls.train_inputs = [\"--daily-ic\", w.daily_ic(\"ic.csv\"), \"--admission\", w.admission,"
+  },
+  {
+   "file": "atx-impl/tools/test_book_monitor.py",
+   "line": 184,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "argv = [\"--reference\", self.ref, \"--admission\", w.admission,"
+  },
+  {
+   "file": "atx-impl/tools/test_book_monitor.py",
+   "line": 292,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "self.assertIn(\"--admission\", c[\"M2\"][\"reason\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 100,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "if \"--out\" in argv:"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 101,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "path = Path(argv[argv.index(\"--out\") + 1])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 135,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(), \"--per-key\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 161,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\", self.out(), \"--per-key\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 186,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(), \"--per-key\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 203,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\", self.out()])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 215,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(),"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 221,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(),"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 234,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", self.tmp / \"new_sealed\", \"--out\", out])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 239,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(),"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 248,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(), \"--per-key\","
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 272,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\", out)])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 303,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\", out)]), 0)"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 327,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(),"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 333,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run([\"--kind\", \"field\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", out])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 363,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--new-role\", self.new_role, \"--out\", self.out(), \"--per-key\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 380,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run([\"--kind\", \"signal\", \"--old\", old_root, \"--new\", new_root, \"--out\", self.out()])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 391,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--new-role\", self.new_role, \"--out\", self.out(), \"--per-key\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 410,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--new-run\", self.tmp / \"run_new\", \"--out\", self.out(), \"--per-key\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 425,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(argv + [\"--out\", self.out()])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 428,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run(argv + [\"--out\", self.out(), \"--no-verify\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 456,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"daily_ic\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(),"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 467,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\", self.out(), \"--before\", \"2021-01-13\"])"
+  },
+  {
+   "file": "atx-impl/tools/test_compare_window_overlap.py",
+   "line": 475,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, rep, err = run([\"--kind\", \"daily_ic\", \"--old\", old_dir, \"--new\", new_dir, \"--out\", self.out(),"
+  },
+  {
+   "file": "atx-impl/tools/test_composition_rules.py",
+   "line": 347,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"--out\", str(out)]"
+  },
+  {
+   "file": "atx-impl/tools/test_composition_rules.py",
+   "line": 359,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "bad[bad.index(\"--out\") + 1] = str(self.root / \"other.json\")"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 707,
+   "token": "--compo",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "prefix was read as its flag, so adding a flag changed what a prefix meant (--compo read --composition until D2 added"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 736,
+   "token": "--compo",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "for extra in ([\"--compo\", \"ew-theme-v1\"], [\"--compo=ew-theme-v1\"], [\"--c\", \"ew-theme-v1\"], [\"--orient\", \"prior\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 736,
+   "token": "--compo",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "for extra in ([\"--compo\", \"ew-theme-v1\"], [\"--compo=ew-theme-v1\"], [\"--c\", \"ew-theme-v1\"], [\"--orient\", \"prior\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 736,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "for extra in ([\"--compo\", \"ew-theme-v1\"], [\"--compo=ew-theme-v1\"], [\"--c\", \"ew-theme-v1\"], [\"--orient\", \"prior\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 736,
+   "token": "--orient",
+   "matches": [
+    "--orientation",
+    "--orientations",
+    "--orientations-sha256"
+   ],
+   "text": "for extra in ([\"--compo\", \"ew-theme-v1\"], [\"--compo=ew-theme-v1\"], [\"--c\", \"ew-theme-v1\"], [\"--orient\", \"prior\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 737,
+   "token": "--orient",
+   "matches": [
+    "--orientation",
+    "--orientations",
+    "--orientations-sha256"
+   ],
+   "text": "[\"--orient=prior\"], [\"--composition-e\", \"c.exe\"], [\"--engine-f\"], [\"--max-sec\", \"5\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 737,
+   "token": "--composition-e",
+   "matches": [
+    "--composition-exe"
+   ],
+   "text": "[\"--orient=prior\"], [\"--composition-e\", \"c.exe\"], [\"--engine-f\"], [\"--max-sec\", \"5\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 737,
+   "token": "--engine-f",
+   "matches": [
+    "--engine-factors",
+    "--engine-fit"
+   ],
+   "text": "[\"--orient=prior\"], [\"--composition-e\", \"c.exe\"], [\"--engine-f\"], [\"--max-sec\", \"5\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 737,
+   "token": "--max-sec",
+   "matches": [
+    "--max-seconds"
+   ],
+   "text": "[\"--orient=prior\"], [\"--composition-e\", \"c.exe\"], [\"--engine-f\"], [\"--max-sec\", \"5\"],"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 738,
+   "token": "--report-f",
+   "matches": [
+    "--report-f-theta"
+   ],
+   "text": "[\"--report-f\"], [\"--h\"]):"
+  },
+  {
+   "file": "atx-impl/tools/test_fit_composition_weights.py",
+   "line": 738,
+   "token": "--h",
+   "matches": [
+    "--help"
+   ],
+   "text": "[\"--report-f\"], [\"--h\"]):"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 160,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, text, err = run(\"--role\", self.role, \"--role-sha256\", self.sha, \"--out\", out, *extra)"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 252,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(\"--role\", self.role, \"--role-sha256\", self.sha, \"--out\", out)"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 256,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, _ = run(\"--role\", self.role, \"--role-sha256\", self.sha, \"--out\", self.base / \"no\" / \"parent\")"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 261,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(\"--role\", self.role, \"--role-sha256\", \"f\" * 64, \"--out\", self.base / \"x\")"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 270,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(\"--role\", self.role, \"--role-sha256\", self.sha, \"--out\", self.base / \"y\")"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 315,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(\"--role\", self.role, \"--role-sha256\", self.sha, \"--out\", self.base / \"z\","
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 338,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, text, _ = run(\"--role\", role, \"--role-sha256\", sha, \"--out\", self.base / \"out\")"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 341,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, text, err = run(\"--role\", role, \"--role-sha256\", sha, \"--out\", self.base / \"noop\", \"--allow-noop\","
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 354,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, text, err = run(\"--role\", role, \"--role-sha256\", sha, \"--out\", self.base / \"out\","
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 398,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, _ = run(\"--role\", role, \"--role-sha256\", sha, \"--rule\", \"v2\", \"--out\", self.base / \"v2\")"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 401,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(\"--role\", role, \"--role-sha256\", sha, \"--rule\", \"v1\", \"--out\", self.base / \"v1\")"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 414,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, _ = run(\"--role\", role, \"--role-sha256\", sha, \"--out\", self.base / \"v1\")  # default v1"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 417,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, text, err = run(\"--role\", role, \"--role-sha256\", sha, \"--rule\", \"v2\", \"--out\", out,"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 442,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(\"--role\", role, \"--role-sha256\", sha, \"--rule\", rule, \"--out\", outs[rule],"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 473,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "self.assertEqual(old_tool.main(args + [\"--out\", str(self.base / \"old\")]), 0)"
+  },
+  {
+   "file": "atx-impl/tools/test_repair_role_factor_breaks.py",
+   "line": 474,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "code, _, err = run(*args, \"--out\", self.base / \"new\")"
+  },
+  {
+   "file": "scripts/canonical-acceptance-run.ps1",
+   "line": 81,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "Stage \"load\" { & $cli load --zip $OratsZip --out $segs }"
+  },
+  {
+   "file": "scripts/oracle-targeted-gate.ps1",
+   "line": 220,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "Arguments = @('--cohort', $smokeCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)"
+  },
+  {
+   "file": "scripts/oracle-targeted-gate.ps1",
+   "line": 252,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "Arguments = @('--convention-sweep', '--smoke', $smokeCohort, '--tune', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--git-sha', $Identity.Sha)"
+  },
+  {
+   "file": "scripts/oracle-targeted-gate.ps1",
+   "line": 281,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "Arguments = @('--cohort', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)"
+  },
+  {
+   "file": "scripts/oracle-targeted-gate.ps1",
+   "line": 291,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "Arguments = @('--cohort', $tuneCohort, '--store', $script:OracleStoreRoot, '--out', $out, '--iter', '0', '--git-sha', $Identity.Sha)"
+  },
+  {
+   "file": "scripts/oracle-targeted-gate.ps1",
+   "line": 314,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "# --aggregate-only with NO --out. Giving this gate the easier --out shape"
+  },
+  {
+   "file": "scripts/oracle-targeted-gate.ps1",
+   "line": 314,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "# --aggregate-only with NO --out. Giving this gate the easier --out shape"
+  },
+  {
+   "file": "scripts/research_add_alpha.py",
+   "line": 3,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "research_cycle.py add-alpha --id X --dsl \"...\" --theme T --tier B --prior-sign 1 --citation \"...\" --origin prior"
+  },
+  {
+   "file": "scripts/research_add_alpha.py",
+   "line": 400,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "ap.add_argument(\"--theme\", required=True)"
+  },
+  {
+   "file": "scripts/research_cycle.py",
+   "line": 10,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "research_cycle.py add-alpha --id X --dsl \"...\" --theme T --tier B --prior-sign 1 --citation \"...\" --origin prior"
+  },
+  {
+   "file": "scripts/research_cycle.py",
+   "line": 1522,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "\"--admission\", adm, \"--admission-sha256\", self.rt_sha(adm), *c.get(\"flags\", []), \"--output\", c_out]"
+  },
+  {
+   "file": "scripts/research_cycle.py",
+   "line": 1530,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "\"--admission\", f\"{w_dir}/admission.json\", \"--fit-work\", self.fit_work_dir()]"
+  },
+  {
+   "file": "scripts/research_mine.py",
+   "line": 723,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "\"--theme\", \"mined\", \"--tier\", \"C+\", \"--prior-sign\", \"1\", \"--origin\", \"mined\","
+  },
+  {
+   "file": "scripts/specs/v7u-lo3.json",
+   "line": 13,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "\"role_command\": \"python atx-engine/tools/prepare_recent_research.py role --universe linked-operating-v3 --out build-equity/recent-fast-train-2020-2022-v2-lo3 --base-role build-equity/recent-fast-train"
+  },
+  {
+   "file": "scripts/tests/build-tradeable-alphas.Tests.ps1",
+   "line": 130,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "It 'does NOT use bare --out for discover (that sets cfg.out, which discover ignores)' {"
+  },
+  {
+   "file": "scripts/tests/build-tradeable-alphas.Tests.ps1",
+   "line": 131,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "($argv -contains '--out') | Should Be $false"
+  },
+  {
+   "file": "scripts/tests/oracle-targeted-gate.Tests.ps1",
+   "line": 202,
+   "token": "--out",
+   "matches": [
+    "--output"
+   ],
+   "text": "($spec.Arguments -join ' ') | Should Match '--cohort .+smoke\\.json --store C:\\\\atx-cache\\\\oracle\\\\spiderrock --out .+build\\\\oracle-gates\\\\mode-a-smoke-[0-9a-f]{40}\\.json --iter 0 --git-sha [0-9a-f]{40"
+  },
+  {
+   "file": "scripts/tests/test_research_cycle.py",
+   "line": 500,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "\"--admission\", f\"{w}/admission.json\", \"--admission-sha256\", f\"<sha256:{w}/admission.json>\","
+  },
+  {
+   "file": "scripts/tests/test_research_cycle.py",
+   "line": 506,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "\"--admission\", f\"{w}/admission.json\", \"--fit-work\", \"build-equity/mega-fit-work-v61\","
+  },
+  {
+   "file": "scripts/tests/test_research_cycle.py",
+   "line": 531,
+   "token": "--admission",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert got[7].startswith(\"monitor --baseline --daily-ic out/U-1/train_daily_ic.csv --admission \""
+  },
+  {
+   "file": "scripts/tests/test_research_cycle.py",
+   "line": 1823,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "return [\"add-alpha\", \"--id\", c[\"id\"], \"--dsl\", c[\"dsl\"], \"--theme\", c[\"theme\"], \"--tier\", c[\"tier\"],"
+  },
+  {
+   "file": "scripts/tests/test_research_mine.py",
+   "line": 548,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "assert len(lines) == 2 and all(\"add-alpha\" in x and \"--theme mined --tier C+ --prior-sign 1 --origin mined\" in x"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 830,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "base = [\"--a\", \"1\", \"--flag\", \"--b\", \"x\"]"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 831,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--a\": \"2\"}, \"s\") == [\"--a\", \"2\", \"--flag\", \"--b\", \"x\"]            # value replaced"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 831,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--a\": \"2\"}, \"s\") == [\"--a\", \"2\", \"--flag\", \"--b\", \"x\"]            # value replaced"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 832,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--c\": \"3\"}, \"s\") == base + [\"--c\", \"3\"]                            # appended"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 832,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--c\": \"3\"}, \"s\") == base + [\"--c\", \"3\"]                            # appended"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 833,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--flag\": \"v\"}, \"s\") == [\"--a\", \"1\", \"--flag\", \"v\", \"--b\", \"x\"]      # value given"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 834,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--a\": False, \"--flag\": False}, \"s\") == [\"--b\", \"x\"]                # removed"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 838,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "RS.apply_flags(base, {\"--a\": True}, \"s\")"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 839,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--a\": {\"1\": \"7\", \"2\": \"8\"}}, \"s\") == [\"--a\", \"7\", \"--flag\", \"--b\", \"x\"]  # by parent"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 839,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert RS.apply_flags(base, {\"--a\": {\"1\": \"7\", \"2\": \"8\"}}, \"s\") == [\"--a\", \"7\", \"--flag\", \"--b\", \"x\"]  # by parent"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 840,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "for ops in ({\"--a\": {\"3\": \"7\"}}, {\"--flag\": {\"1\": \"7\"}}, {\"--z\": {\"1\": \"7\"}}, {\"--a\": {\"1\": True}}):"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 840,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "for ops in ({\"--a\": {\"3\": \"7\"}}, {\"--flag\": {\"1\": \"7\"}}, {\"--z\": {\"1\": \"7\"}}, {\"--a\": {\"1\": True}}):"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 880,
+   "token": "--compo",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "COMPOSITION_ABBREVIATIONS = {\"abbreviation\": [\"--compo\", V5_AIM], \"abbreviation-equals\": [f\"--compo={V5_AIM}\"],"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 880,
+   "token": "--compo",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "COMPOSITION_ABBREVIATIONS = {\"abbreviation\": [\"--compo\", V5_AIM], \"abbreviation-equals\": [f\"--compo={V5_AIM}\"],"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 881,
+   "token": "--c",
+   "matches": [
+    "--composition",
+    "--composition-exe"
+   ],
+   "text": "\"shortest\": [\"--c\", V5_AIM]}"
+  },
+  {
+   "file": "scripts/tests/test_research_spec.py",
+   "line": 1222,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "return RC.main([\"add-alpha\", \"--id\", cid, \"--dsl\", dsl, \"--theme\", like[\"theme\"], \"--tier\", like[\"tier\"],"
+  },
+  {
+   "file": "scripts/tests/test_wave_driver.py",
+   "line": 171,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "assert CR.reuse_args(\"fit\", [\"--a\", \"--theme-resid-parent\", \"p\", \"--theme-resid-parent-sha256\", \"s\", \"--b\"]) == \\"
+  },
+  {
+   "file": "scripts/tests/test_wave_driver.py",
+   "line": 172,
+   "token": "--a",
+   "matches": [
+    "--admission-exe"
+   ],
+   "text": "[\"--a\", \"--b\"]"
+  },
+  {
+   "file": "scripts/tests/test_wave_driver.py",
+   "line": 1021,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "f\"rank(ts_mean({cid}_field, 20))\", \"--theme\", \"value\", \"--tier\", \"B\", \"--prior-sign\", \"1\","
+  },
+  {
+   "file": "scripts/tests/test_wave_driver.py",
+   "line": 1047,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "\"rank(ts_mean(a_field, 20))\", \"--theme\", \"value\", \"--tier\", \"B\", \"--prior-sign\", \"1\","
+  },
+  {
+   "file": "scripts/tests/test_wave_queue.py",
+   "line": 28,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "dsl or f\"rank(ts_mean({cid}_field, 20))\", \"--theme\", \"value\", \"--tier\", \"B\", \"--prior-sign\", \"1\","
+  },
+  {
+   "file": "scripts/wave_queue.py",
+   "line": 14,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "research_cycle.py candidates new      --id X --dsl \"...\" --theme T --tier B --prior-sign 1 --citation C"
+  },
+  {
+   "file": "scripts/wave_queue.py",
+   "line": 274,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "ap.add_argument(\"--theme\")"
+  },
+  {
+   "file": "scripts/wave_steps.py",
+   "line": 56,
+   "token": "--theme",
+   "matches": [
+    "--theme-erc",
+    "--theme-hedge",
+    "--theme-resid",
+    "--theme-resid-parent",
+    "--theme-resid-parent-sha256",
+    "--theme-tsmom"
+   ],
+   "text": "argv = [py, tool(RCY, root), \"add-alpha\", \"--id\", c[\"id\"], \"--dsl\", c[\"dsl\"], \"--theme\", c[\"theme\"],"
+  }
+ ]
+}

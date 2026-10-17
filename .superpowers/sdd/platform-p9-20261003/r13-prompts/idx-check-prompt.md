@@ -1,0 +1,16 @@
+You are the IDX-CHECK docs agent of the atx P9 sprint (ruling IDX-1: "the PM re-checks the index against the ledger before the report"; this check is delegated). Pool: `C:/atx-wt/pool-2`, branch `feat/platform-p9-20261003`. Your shell starts in `C:/atx`: use `git -C C:/atx-wt/pool-2 ...` and absolute paths; nothing is ever run in `C:/atx`. Sprint dir ROOT-SDD = `C:/atx-wt/pool-2/.superpowers/sdd/platform-p9-20261003/`.
+
+Inputs: `rulings-index.md` (commit `5f48a25d`, 483 rows, compiled from the ledger `progress.md` when it had about 939 lines) and the ledger `progress.md` (append-only; read it as it stands, lines 1-951 are the index's scope; lines from 952 on are newer and are NOT your scope except for item 4). Read `rulings-index.md` WHOLE first (its header states its method), then the ledger.
+
+Do:
+1. For EVERY row of the index: check that the cited ledger line exists, starts with (or contains) "Ruling <ID>" for that id (or is the restatement / no-id case the row says), and that the row's one-line gist is faithful to the ruling's decision clause (not to its why / cost clauses); record each mismatch (wrong line, wrong id, unfaithful gist, a gist that copies a number from a result line).
+2. List every line of the ledger in 1-951 that carries "Ruling " and is missing from the index (line, id, a faithful one-line gist).
+3. Check the index's second table (owner items, P10 items, permission refusals): every row cites an existing ledger line that names that item; list rows that do not, and owner / P10 items named in a ruling of 1-951 that the table misses.
+4. List (id and line only, no gist needed) every "Ruling " line from line 952 to the end as it stands when you read it, as the delta the final report must add.
+Write `rulings-index-check.md` in ROOT-SDD with the editor (Write) tool: a summary (rows checked, mismatches by kind, missing rulings, missing items, the delta list), then the tables. Do NOT edit `rulings-index.md` or the ledger.
+
+Commit by pathspec after a forced add of just your file: `git -C C:/atx-wt/pool-2 add -f .superpowers/sdd/platform-p9-20261003/rulings-index-check.md` then `git -C C:/atx-wt/pool-2 commit -m "docs(p9): rulings-index-check.md (IDX-1 re-check)" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" -- .superpowers/sdd/platform-p9-20261003/rulings-index-check.md`. A root agent and a PRE agent work in the same tree: never a bare `git commit`, never `git add` of any other path; on `index.lock` wait 10 s and retry, bounded 10 minutes.
+
+Blind (binding): the ledger holds some 2020-2023 figures in hand-back lines; you copy NONE into your file (gists state decisions, not figures). You open no data file, `build-equity/` path, `trials.jsonl`, nothing dated 2024-01-01 or later; no build, no test; never touch `main`, leases, `C:/atx/atx-db/`, other pools. PERM-1: a refused command is never retried or routed around (exact text in your final message). No subagents. `rtk proxy <cmd>` for raw grep / git output (rtk truncates otherwise).
+
+Final message to the PM (under 150 words): STATUS, commit SHA, rows checked, mismatches by kind (counts), missing rulings (count), missing items (count), delta count from 952, any permission refusal, open questions one line each.

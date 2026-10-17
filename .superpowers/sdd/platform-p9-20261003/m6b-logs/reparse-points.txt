@@ -1,0 +1,1 @@
+C:/atx-wt/pool-2: dirs walked 5233, pruned (.git or seal-named) 42, reparse points 0

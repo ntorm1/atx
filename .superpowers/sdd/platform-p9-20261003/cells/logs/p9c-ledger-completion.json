@@ -1,0 +1,18 @@
+{
+  "ledger_lines": 137,
+  "ledger_sha256": "21522bb42c9adf7859dbf042878338b3b0374b2f920055a8f2e59980c2a9a76b",
+  "N_c": 66,
+  "historical_admissions": 61,
+  "P9_admission_additions": 0,
+  "N_hand": 127,
+  "M": 110,
+  "N_tot": 237,
+  "new_trial": {
+    "trial_id": "52988f05af490865",
+    "kind": "construction",
+    "origin": "prior",
+    "cell": "build-equity/mega-nav-p9-info-clock-gm",
+    "window_id": "research-window-v2"
+  },
+  "new_trial_count": 1
+}

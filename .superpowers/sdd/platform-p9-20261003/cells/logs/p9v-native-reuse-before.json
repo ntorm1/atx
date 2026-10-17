@@ -1,0 +1,26 @@
+{
+  "u": {
+    "state": "done",
+    "output": "build-equity/mega-p9l-train-u-label-terminal-1",
+    "receipt": "build-equity/mega-p9l-train-u-label-terminal-run1",
+    "receipt_sha256": "5ec77576ab1e7c5a5d8bc968f35e2dea70ecad96f0688cdc7275557e0fbfd5df"
+  },
+  "fit": {
+    "state": "done",
+    "output": "build-equity/mega-weights-p9-theme-cov-hedge",
+    "receipt": "build-equity/mega-weights-p9-theme-cov-hedge-run1",
+    "receipt_sha256": "f08600e01776ca10f89b9f68ebf523af9846d4218164d7a7c9375c697d41a9f3"
+  },
+  "card": {
+    "state": "done",
+    "output": "build-equity/mega-cards-p9-theme-cov-hedge",
+    "receipt": "build-equity/mega-cards-p9-theme-cov-hedge-run",
+    "receipt_sha256": "afc77107833bf538efa319d6e419d0885e5b8a69a13be45017c839986126da20"
+  },
+  "w": {
+    "state": "done",
+    "output": "build-equity/mega-p9w-train-theme-cov-hedge-1",
+    "receipt": "build-equity/mega-p9w-train-theme-cov-hedge-run1",
+    "receipt_sha256": "eeb4d3fa5b5e6d8e692ac3ab4e5977b96e7315503515b52936ee3000b98706e2"
+  }
+}

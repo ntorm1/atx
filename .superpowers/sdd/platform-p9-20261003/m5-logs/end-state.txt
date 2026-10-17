@@ -1,0 +1,5 @@
+root M5 end 2026-10-15T15:07:50Z
+code head bba4c06f; HEAD before records bba4c06f
+trial ledger lines 133 sha256 27e40f9f6314585e
+research-store: absent
+busy (our build procs): 0

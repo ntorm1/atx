@@ -1,0 +1,40 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "k-horizon",
+  "kind": "horizon",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind horizon (new holding period): NAV cadence 5 (rebalance every 5 sessions); every output the parent has of u, fit, card, w and nav renamed -h5.",
+  "parent": {
+    "spec": "tiny.json",
+    "library": "tiny_world_v1"
+  },
+  "fields": {
+    "dir": "fields",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": []
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-kinds-fixture",
+    "construction_cap": 1000
+  },
+  "ledger": "trials.jsonl",
+  "expect": {
+    "n_before": 0
+  },
+  "out_dir": "waves/k-horizon",
+  "rule_cell": {
+    "template": "scripts/specs/p9/kinds/templates/horizon.json",
+    "template_sha256": "0b8fd484e8995bee506c1a13ab9a7afd2199989f138254520d211132fad99bac"
+  },
+  "horizon": {
+    "days": 5,
+    "flags": {
+      "nav": {
+        "--cadence": "5"
+      }
+    }
+  }
+}

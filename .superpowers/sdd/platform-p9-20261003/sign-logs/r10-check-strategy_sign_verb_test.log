@@ -1,0 +1,322 @@
+[atx-build] check: 'atx-impl/tests/strategy_sign_verb_test.cpp' matches 2 objects (building all):
+  atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_sign_verb_test.cpp.obj
+  atx-impl/tests/CMakeFiles/atx-impl-strategy-ic-tests.dir/strategy_sign_verb_test.cpp.obj
+[atx-build] ninja -C C:\atx-wt\pool-29\build-equity -j 1 atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_sign_verb_test.cpp.obj atx-impl/tests/CMakeFiles/atx-impl-strategy-ic-tests.dir/strategy_sign_verb_test.cpp.obj
+ninja: Entering directory `C:\atx-wt\pool-29\build-equity'
+[0/2] Re-checking globbed directories...
+[1/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[2/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[3/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[4/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[5/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[6/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[7/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[8/220] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[9/220] Building C object atx-core\CMakeFiles\atx_sqlite3.dir\third-party\sqlite\sqlite3.c.obj
+[10/220] Building C object atx-core\CMakeFiles\atx_miniz.dir\third-party\miniz\miniz.c.obj
+[11/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\core.cpp.obj
+[12/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\decimal.cpp.obj
+[13/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\datetime.cpp.obj
+[14/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\symbol.cpp.obj
+[15/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\sha256.cpp.obj
+[16/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet.cpp.obj
+[17/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet_writer.cpp.obj
+[18/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\zip_reader.cpp.obj
+[19/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\db\sqlite.cpp.obj
+[20/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\db\connection.cpp.obj
+[21/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\dbn.cpp.obj
+[22/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento.cpp.obj
+[23/220] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento_pull.cpp.obj
+[24/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\batch.cpp.obj
+[25/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\datetime.cpp.obj
+[26/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn.cpp.obj
+[27/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_decoder.cpp.obj
+[28/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_encoder.cpp.obj
+[29/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_store.cpp.obj
+[30/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\buffer.cpp.obj
+[31/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\dbn_buffer_decoder.cpp.obj
+[32/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_client.cpp.obj
+[33/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_stream_reader.cpp.obj
+[34/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\json_helpers.cpp.obj
+[35/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\live_connection.cpp.obj
+[36/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\scoped_fd.cpp.obj
+[37/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\sha256_hasher.cpp.obj
+[38/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_client.cpp.obj
+[39/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_readable.cpp.obj
+[40/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\zstd_stream.cpp.obj
+[41/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\enums.cpp.obj
+[42/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\exceptions.cpp.obj
+[43/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\file_stream.cpp.obj
+[44/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\flag_set.cpp.obj
+[45/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\historical.cpp.obj
+..\atx-core\third-party\databento-cpp\src\historical.cpp(1142,30): warning: 'getenv' is deprecated: This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [-Wdeprecated-declarations]
+ 1142 |   char const* env_key = std::getenv("DATABENTO_API_KEY");
+      |                              ^
+C:\Program Files (x86)\Windows Kits\10\include\10.0.22000.0\ucrt\stdlib.h(1183,20): note: 'getenv' has been explicitly marked deprecated here
+ 1183 |     _Check_return_ _CRT_INSECURE_DEPRECATE(_dupenv_s)
+      |                    ^
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\vcruntime.h(356,55): note: expanded from macro '_CRT_INSECURE_DEPRECATE'
+  356 |         #define _CRT_INSECURE_DEPRECATE(_Replacement) _CRT_DEPRECATE_TEXT(    \
+      |                                                       ^
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\vcruntime.h(346,47): note: expanded from macro '_CRT_DEPRECATE_TEXT'
+  346 | #define _CRT_DEPRECATE_TEXT(_Text) __declspec(deprecated(_Text))
+      |                                               ^
+1 warning generated.
+[46/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\live.cpp.obj
+..\atx-core\third-party\databento-cpp\src\live.cpp(18,30): warning: 'getenv' is deprecated: This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details. [-Wdeprecated-declarations]
+   18 |   char const* env_key = std::getenv("DATABENTO_API_KEY");
+      |                              ^
+C:\Program Files (x86)\Windows Kits\10\include\10.0.22000.0\ucrt\stdlib.h(1183,20): note: 'getenv' has been explicitly marked deprecated here
+ 1183 |     _Check_return_ _CRT_INSECURE_DEPRECATE(_dupenv_s)
+      |                    ^
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\vcruntime.h(356,55): note: expanded from macro '_CRT_INSECURE_DEPRECATE'
+  356 |         #define _CRT_INSECURE_DEPRECATE(_Replacement) _CRT_DEPRECATE_TEXT(    \
+      |                                                       ^
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\vcruntime.h(346,47): note: expanded from macro '_CRT_DEPRECATE_TEXT'
+  346 | #define _CRT_DEPRECATE_TEXT(_Text) __declspec(deprecated(_Text))
+      |                                               ^
+1 warning generated.
+[47/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\live_blocking.cpp.obj
+[48/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\live_threaded.cpp.obj
+[49/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\log.cpp.obj
+[50/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\metadata.cpp.obj
+[51/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\pretty.cpp.obj
+[52/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\publishers.cpp.obj
+[53/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\record.cpp.obj
+[54/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\symbol_map.cpp.obj
+[55/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\symbology.cpp.obj
+[56/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\v1.cpp.obj
+[57/220] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\v2.cpp.obj
+[58/220] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\builder.cpp.obj
+[59/220] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\load_parquet.cpp.obj
+[60/220] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\mapping.cpp.obj
+[61/220] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\segment_reader.cpp.obj
+[62/220] Building CXX object atx-tsdb\CMakeFiles\atx-tsdb.dir\src\version.cpp.obj
+[63/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\engine.cpp.obj
+[64/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\claims_state.cpp.obj
+[65/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay.cpp.obj
+[66/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\security_transition.cpp.obj
+[67/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\target_tracking.cpp.obj
+[68/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\canonical.cpp.obj
+[69/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\crossover.cpp.obj
+[70/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\factory.cpp.obj
+[71/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\fitness.cpp.obj
+[72/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_objective.cpp.obj
+[73/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_cash_claim.cpp.obj
+[74/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\execution_stock_transition.cpp.obj
+[75/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\ic_screen.cpp.obj
+[76/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\genome.cpp.obj
+[77/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\mutation.cpp.obj
+[78/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\op_catalog.cpp.obj
+[79/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\param_search.cpp.obj
+[80/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\pool_view.cpp.obj
+[81/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\research_driver.cpp.obj
+[82/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\search_driver.cpp.obj
+[83/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cpcv.cpp.obj
+[84/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cpcv_date.cpp.obj
+[85/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\constraints.cpp.obj
+[86/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\cov_ewma.cpp.obj
+[87/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\eigen_adjust.cpp.obj
+[88/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\vol_regime.cpp.obj
+[89/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\specific_risk.cpp.obj
+[90/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\cov_container.cpp.obj
+[91/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\cross_section_ic.cpp.obj
+[92/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\pbo.cpp.obj
+[93/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\perf_metrics.cpp.obj
+[94/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\breadth.cpp.obj
+[95/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\robustness_battery.cpp.obj
+[96/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\bytecode.cpp.obj
+[97/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\dag.cpp.obj
+[98/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\lexer.cpp.obj
+[99/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\oracle.cpp.obj
+[100/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\oracle_formulaic.cpp.obj
+[101/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\oracle_lit.cpp.obj
+[102/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\panel.cpp.obj
+[103/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\parser.cpp.obj
+[104/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\registry.cpp.obj
+[105/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\segment_panel.cpp.obj
+[106/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\streams.cpp.obj
+[107/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\typecheck.cpp.obj
+[108/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\unparse.cpp.obj
+[109/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\elastic_net.cpp.obj
+[110/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\ensemble.cpp.obj
+[111/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\feature_matrix.cpp.obj
+[112/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\panel_dataset.cpp.obj
+[113/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\gbt.cpp.obj
+[114/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\hmm.cpp.obj
+[115/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\latent.cpp.obj
+[116/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\learned_source.cpp.obj
+[117/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\linear_alpha.cpp.obj
+[118/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\nn_source.cpp.obj
+[119/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\pipeline.cpp.obj
+[120/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\sequence_features.cpp.obj
+[121/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\tcn_alpha.cpp.obj
+[122/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\autoencoder_alpha.cpp.obj
+[123/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\train.cpp.obj
+[124/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\nn\layers.cpp.obj
+[125/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\nn\loss.cpp.obj
+[126/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\nn\optimizer.cpp.obj
+[127/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\nn\trainer.cpp.obj
+[128/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\learn\nn\seq_layers.cpp.obj
+[129/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\adapt_factor.cpp.obj
+[130/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\adapt_feature.cpp.obj
+[131/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\adapt_panel.cpp.obj
+[132/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\adapt_signal.cpp.obj
+[133/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\adjust.cpp.obj
+[134/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\align.cpp.obj
+[135/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\catalog.cpp.obj
+[136/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\catalog_report.cpp.obj
+[137/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\context.cpp.obj
+[138/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\corporate_actions.cpp.obj
+[139/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\data_handler.cpp.obj
+[140/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\dataset.cpp.obj
+[141/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\real_panel.cpp.obj
+[142/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\shm_bar_feed.cpp.obj
+[143/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\universe.cpp.obj
+[144/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\point_in_time_universe.cpp.obj
+[145/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\orats_history.cpp.obj
+[146/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\history_panel.cpp.obj
+[147/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\panel_store.cpp.obj
+[148/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\finra_short.cpp.obj
+[149/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\batch_eval.cpp.obj
+[150/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\parallel_run.cpp.obj
+[151/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\process_executor.cpp.obj
+[152/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\scheduler.cpp.obj
+[153/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\shm_segment.cpp.obj
+[154/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\workload_eval.cpp.obj
+[155/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\workload_mine.cpp.obj
+[156/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\parallel\workload_streams.cpp.obj
+[157/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\validation\bias_audit.cpp.obj
+[158/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\conviction.cpp.obj
+[159/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\regime_combiner.cpp.obj
+[160/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\crowding.cpp.obj
+[161/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\factor_model.cpp.obj
+[162/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\garleanu_pedersen.cpp.obj
+[163/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\multi_horizon.cpp.obj
+[164/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\kelly_sizing.cpp.obj
+[165/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\fund\meta_allocator.cpp.obj
+[166/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\fund\cross_sleeve_risk.cpp.obj
+[167/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\fund\netting.cpp.obj
+[168/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\fund\meta_book.cpp.obj
+[169/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\regime\source_csv.cpp.obj
+[170/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\regime\align.cpp.obj
+[171/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\regime\loader.cpp.obj
+[172/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\regime\store.cpp.obj
+[173/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\regime\with_regime_fields.cpp.obj
+[174/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\disk.cpp.obj
+[175/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\quant\trading_calendar.cpp.obj
+[176/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\alpha\subtree_cache.cpp.obj
+[177/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\rewrite.cpp.obj
+[178/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\fidelity.cpp.obj
+[179/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\trial_registry.cpp.obj
+[180/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\trial_epoch.cpp.obj
+[181/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\exposure_panel.cpp.obj
+[182/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\price_exposure_provider.cpp.obj
+[183/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\fundamental_clock_artifact.cpp.obj
+[184/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\strategy_data.cpp.obj
+[185/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\data\role_panel.cpp.obj
+[186/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\research_ic_fitness.cpp.obj
+[187/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\factory\objective_ic.cpp.obj
+[188/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\multiple_testing.cpp.obj
+[189/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\eval\lockbox_audit.cpp.obj
+[190/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\signal_combiner.cpp.obj
+[191/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\signal_cube.cpp.obj
+[192/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\orthogonalize.cpp.obj
+[193/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\combine\marginal_rank_ic.cpp.obj
+[194/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\model_validation.cpp.obj
+[195/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\qp_solver.cpp.obj
+[196/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\qp_factor_admm.cpp.obj
+[197/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\exposures.cpp.obj
+[198/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\hybrid_factor_model.cpp.obj
+[199/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\risk\cost_terms.cpp.obj
+[200/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\replay_cost.cpp.obj
+[201/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\target_shaping.cpp.obj
+[202/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\book\risk_target.cpp.obj
+[203/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\cost_surface.cpp.obj
+[204/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\spread_estimators.cpp.obj
+[205/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\borrow_tiers.cpp.obj
+[206/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\fim_adjustment.cpp.obj
+[207/220] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\src\cost\modeled_inputs.cpp.obj
+[208/220] Linking CXX static library lib\spdlogd.lib
+[209/220] Linking C static library lib\atx_sqlite3.lib
+[210/220] Linking C static library lib\atx_miniz.lib
+[211/220] Linking CXX static library lib\atx-core.lib
+[212/220] Linking CXX static library lib\Debug\databento.lib
+[213/220] Linking CXX static library lib\atx-tsdb.lib
+[214/220] Linking CXX static library lib\atx-engine.lib
+[215/220] Building CXX object atx-engine\CMakeFiles\atx-shm-worker.dir\src\parallel\shm_worker_main.cpp.obj
+[216/220] Linking CXX executable bin\atx-shm-worker.exe
+[217/220] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-test-pch.dir\cmake_pch.cxx.obj
+[218/220] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-tests.dir\strategy_sign_verb_test.cpp.obj
+FAILED: atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_sign_verb_test.cpp.obj 
+C:\atx-cache\bin\ccache.exe C:\PROGRA~1\MICROS~3\2022\COMMUN~1\VC\Tools\Llvm\x64\bin\clang-cl.exe  /nologo -TP -DATX_IMPL_TESTS_DIR=\"C:/atx-wt/pool-29/atx-impl/tests\" -DGTEST_LINKED_AS_SHARED_LIBRARY=1 -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE -DSPDLOG_COMPILED_LIB -IC:\atx-wt\pool-29\atx-impl\src -IC:\atx-wt\pool-29\atx-core\include -IC:\atx-cache\deps\spdlog-src\include -IC:\atx-wt\pool-29\atx-engine\include -IC:\atx-wt\pool-29\atx-tsdb\include -IC:\atx-wt\pool-29\atx-core\third-party\miniz -imsvcC:\atx-cache\deps\tl-expected-src\include -imsvcC:\atx-cache\deps\unordered_dense-src\include -imsvcC:\atx-cache\deps\eigen3-src -imsvcC:\atx-cache\deps\xsimd-src\include -imsvcC:\atx-cache\vcpkg_installed\x64-windows\include -imsvcC:\atx-cache\deps\json-src\include /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++20 -MDd -Z7 /clang:-ffile-prefix-map=C:/atx-wt/pool-29=. /W4 /permissive- /WX /YuC:/atx-wt/pool-29/build-equity/atx-impl/tests/CMakeFiles/atx-impl-test-pch.dir/cmake_pch.hxx /FpC:/atx-wt/pool-29/build-equity/atx-impl/tests/CMakeFiles/atx-impl-test-pch.dir/./cmake_pch.cxx.pch /FIC:/atx-wt/pool-29/build-equity/atx-impl/tests/CMakeFiles/atx-impl-test-pch.dir/cmake_pch.hxx /showIncludes /Foatx-impl\tests\CMakeFiles\atx-impl-tests.dir\strategy_sign_verb_test.cpp.obj /Fdbin\atx-impl-test-pch.pdb -c -- C:\atx-wt\pool-29\atx-impl\tests\strategy_sign_verb_test.cpp
+..\atx-impl\tests\strategy_sign_verb_test.cpp(128,9): error: must use 'struct' tag to refer to type 'Run' in this scope
+  128 |   const Run run = sign_rows(dir, rows, receipt);
+      |         ^
+      |         struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+error: 'Run' is a private member of 'testing::Test'
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: declared private here
+..\atx-impl\tests\strategy_sign_verb_test.cpp(156,9): error: must use 'struct' tag to refer to type 'Run' in this scope
+  156 |   const Run run = sign_rows(dir, rows, receipt);
+      |         ^
+      |         struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+error: 'Run' is a private member of 'testing::Test'
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: declared private here
+..\atx-impl\tests\strategy_sign_verb_test.cpp(189,9): error: must use 'struct' tag to refer to type 'Run' in this scope
+  189 |   const Run run = run_verb({"--rule", "pm7-35", "--rows", rows_path, "--output",
+      |         ^
+      |         struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+error: 'Run' is a private member of 'testing::Test'
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: declared private here
+..\atx-impl\tests\strategy_sign_verb_test.cpp(294,11): error: must use 'struct' tag to refer to type 'Run' in this scope
+  294 |     const Run run = run_verb({"--rule", "pm7-35", "--rows", (dir.path / "rows.json").string(),
+      |           ^
+      |           struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+error: 'Run' is a private member of 'testing::Test'
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: declared private here
+..\atx-impl\tests\strategy_sign_verb_test.cpp(309,3): error: must use 'struct' tag to refer to type 'Run' in this scope
+  309 |   Run run = run_verb({"--rule", "pm7-35", "--rows", rows, "--output", receipt});
+      |   ^
+      |   struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+..\atx-impl\tests\strategy_sign_verb_test.cpp(345,11): error: must use 'struct' tag to refer to type 'Run' in this scope
+  345 |     const Run run = run_verb(args);
+      |           ^
+      |           struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+error: 'Run' is a private member of 'testing::Test'
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: declared private here
+..\atx-impl\tests\strategy_sign_verb_test.cpp(352,9): error: must use 'struct' tag to refer to type 'Run' in this scope
+  352 |   const Run help = run_verb({"--help"});
+      |         ^
+      |         struct 
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: struct 'Run' is hidden by a non-type declaration of 'Run' here
+  331 |   void Run();
+      |        ^
+error: 'Run' is a private member of 'testing::Test'
+C:\atx-cache\vcpkg_installed\x64-windows\include\gtest\gtest.h(331,8): note: declared private here
+13 errors generated.
+ninja: build stopped: subcommand failed.

@@ -1,0 +1,50 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "k-replace",
+  "kind": "replace",
+  "description": "P9 kinds fixture (contract K-P9-9, gate G-P2) on the tiny-world wave layout (scripts/tests/fixtures/tiny_world.py, seed 7: parent tiny.json, fields/, trials.jsonl): kind replace (replaced signal): noise_c replaced in place.",
+  "parent": {
+    "spec": "tiny.json",
+    "library": "tiny_world_v1"
+  },
+  "fields": {
+    "dir": "fields",
+    "manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": []
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-kinds-fixture",
+    "admission_cap": 1000,
+    "admission_cycle_prefix": "p9k",
+    "construction_cap": 1000
+  },
+  "ledger": "trials.jsonl",
+  "expect": {
+    "n_before": 0
+  },
+  "out_dir": "waves/k-replace",
+  "library": "p9k-replace",
+  "candidates": [
+    {
+      "id": "p9k_value_alt",
+      "dsl": "rank((-1 * shares_out))",
+      "dsl_sha256": "a75f7bdf0b0c355765fa22afdbcb82d0d17711659ab0035c4e282e8ae6221709",
+      "theme": "value",
+      "tier": "B",
+      "prior_sign": 1,
+      "citation": "P9 kinds fixture (synthetic; no hypothesis)",
+      "origin": "prior",
+      "hypothesis": "p9k-p9k_value_alt",
+      "kind": "replace",
+      "replaces": [
+        "noise_c"
+      ],
+      "rescreen": true
+    }
+  ],
+  "sign_rule": "pm7-35"
+}

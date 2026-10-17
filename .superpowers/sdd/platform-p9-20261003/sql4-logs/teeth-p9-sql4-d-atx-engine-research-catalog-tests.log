@@ -1,0 +1,52 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+..\atx-engine\tests\research\research_catalog_ledger_test.cpp(96): error: Expected equality of these values:
+  t::scalar_text(db, "SELECT head_sha256 FROM ledger_state;")
+    Which is: (nullopt)
+  head->head_sha256
+    Which is: "8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008"
+
+..\atx-engine\tests\research\research_catalog_ledger_test.cpp(97): error: Expected equality of these values:
+  t::scalar_text(db, "SELECT head_rule FROM ledger_state;")
+    Which is: (nullopt)
+  std::string{lg::kChainRule}
+    Which is: "atx-ledger-chain-fold/v1"
+
+..\atx-engine\tests\research\research_catalog_ledger_test.cpp(108): error: Expected equality of these values:
+  t::scalar_text(*cli_db, "SELECT head_sha256 FROM ledger_state;")
+    Which is: (nullopt)
+  head->head_sha256
+    Which is: "8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008"
+
+[  FAILED  ] ResearchCatalog.LedgerHeadFromResearchLedger (286 ms)
+..\atx-engine\tests\research\research_catalog_ledger_test.cpp(142): error: Value of: verified(db, {ledger}).ok()
+  Actual: true
+Expected: false
+
+..\atx-engine\tests\research\research_catalog_ledger_test.cpp(184): error: Expected equality of these values:
+  refused.code
+    Which is: 0
+  cat::kExitRefusal
+    Which is: 3
+ledger build-equity/trials.jsonl lines 5 head 429097966ae2a1c4ad50f72cb2a467b89502809a81df2636d7c4cc9490a86e4d rule atx-ledger-chain-fold/v1 index ok
+recorded cycle_verdict build-equity/cycle-fx-base/cycle_verdict.json head 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 prefix 6
+recorded cycle_verdict build-equity/cycle-fx-base/verdicts/run-1.json head 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 prefix 6
+recorded wave_result build-equity/waves/fx-w1/wave-result.json head 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 prefix 6
+recorded heads 3 not-a-prefix-head 0 other-ledger 0
+
+
+..\atx-engine\tests\research\research_catalog_ledger_test.cpp(187): error: Expected: (refused.out.find("recorded heads 3 not-a-prefix-head 3 other-ledger 0\n")) != (std::string::npos), actual: 18446744073709551615 vs 18446744073709551615
+ledger build-equity/trials.jsonl lines 5 head 429097966ae2a1c4ad50f72cb2a467b89502809a81df2636d7c4cc9490a86e4d rule atx-ledger-chain-fold/v1 index ok
+recorded cycle_verdict build-equity/cycle-fx-base/cycle_verdict.json head 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 prefix 6
+recorded cycle_verdict build-equity/cycle-fx-base/verdicts/run-1.json head 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 prefix 6
+recorded wave_result build-equity/waves/fx-w1/wave-result.json head 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 prefix 6
+recorded heads 3 not-a-prefix-head 0 other-ledger 0
+
+
+[  FAILED  ] ResearchCatalog.RecordedHeadsArePrefixHeads (592 ms)
+..\atx-engine\tests\research\research_catalog_test.cpp(368): error: Value of: static_cast<bool>(cat::default_ledger_head())
+  Actual: false
+Expected: true
+
+[  FAILED  ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder (140 ms)
+[==========] 17 tests from 1 test suite ran. (3477 ms total)
+[  PASSED  ] 14 tests.

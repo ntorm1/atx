@@ -1,0 +1,11 @@
+same   orientations.json c0efa61c
+same   recipe.json aab90534
+DIFF   summary.json d5baa8a6 vs c9d891d9: 484 leaves, 481 allowed, 3 outside
+         OUTSIDE /roles/*/research_fields/field_loads
+         OUTSIDE /roles/*/research_fields/loaded_bytes
+         OUTSIDE /roles/*/research_fields/peak_resident_fields
+         allowed path classes: ['/roles/*/candidate_cache/directory', '/roles/*/candidate_cache/entries/*/payload', '/roles/*/candidate_cache/entries/*/sidecar', '/roles/*/candidate_cache/fields_directory', '/roles/*/candidate_cache/hits', '/roles/*/candidate_cache/ic_results/hits', '/roles/*/candidate_cache/ic_results/misses', '/roles/*/candidate_cache/misses', '/roles/*/candidate_cache/vm_evaluations', '/roles/*/candidates/*/ic_result_cache', '/roles/*/candidates/*/signal_cache', '/roles/*/candidates/*/stage_seconds/cache_write']
+DIFF   train_candidates.jsonl 46dcfe09 vs 638e1b65: 348 leaves, 348 allowed, 0 outside
+         allowed path classes: ['/ic_result_cache', '/signal_cache', '/stage_seconds/cache_write', '/stage_seconds/ic', '/stage_seconds/vm', '/wall_seconds']
+same   train_daily_ic.csv b03f7170
+TOTAL outside the list: 3

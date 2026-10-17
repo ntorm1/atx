@@ -1,0 +1,181 @@
+..............s..............
+G-P5: 34 mirrored rule function(s) in 13 row(s) left for P9 lanes
+...................s....................... [ 13%]
+s...........s........................................................... [ 27%]
+........................................................................ [ 41%]
+.............................................F.......................... [ 55%]
+...F.................................................................... [ 69%]
+........................................................................ [ 83%]
+........................................................................ [ 97%]
+............                                                             [100%]
+================================== FAILURES ===================================
+__________ test_the_whole_file_passes_with_a_generated_spec_present ___________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/6ea15be9-c1e8-4316-99d4-4854dfd7c03c/scratchpad/m2h/bt-s1/test_the_whole_file_passes_wit0')
+
+    def test_the_whole_file_passes_with_a_generated_spec_present(tmp_path):
+        """Ruling PM5-24: the R-2 path on stand-ins (v8_root, parent_cell, add-alpha v71 -> PROBE on base-lo1) generates
+        lib-PROBE.json; with its tools back on base-lo1's (v8_root points them at the fake ones), as add-alpha writes it
+        from the live base, it goes into a copy of scripts/specs/v8. The rule recognises it from its content: the same file
+        under another name, without add-alpha's marks, or as a template is authored. Then this whole file runs on the copy
+        (a subprocess with ATX_TEST_V8_SPECS; this test deselected) and passes, the generated spec checked in it, next to
+        those root generated (lib-v80.json since R-2). PM6-10: the probe is not named v80, whose library root committed (a
+        fake root holds a committed library as is, so it would stand in for the probe's own and fail its pin)."""
+        root, parent = v8_root(tmp_path / "made")
+        parent_cell(root, parent)
+        assert add(root, parent, "v8_probe", "rank(decay_linear((be / at_lag4), 21))", name=PROBE) == RC.EXIT_OK
+        doc = json.loads((root / SPECS / f"lib-{PROBE}.json").read_text(encoding="utf-8"))
+        assert committed(doc["inputs"]["library"]["path"]) is None, doc["inputs"]["library"]   # a stand-in, not a file
+        base = json.loads((V8 / "base-lo1.json").read_text(encoding="utf-8"))
+        doc.update(python=base["python"], exes=base["exes"], runner=dict(doc["runner"], script=base["runner"]["script"]))
+        for section in ("fit", "card", "monitor", "summ"):
+            doc[section]["script"] = base[section]["script"]
+        specs = tmp_path / "v8"
+        shutil.copytree(V8, specs)
+        (specs / f"lib-{PROBE}.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        assert generated_by_add_alpha(specs / f"lib-{PROBE}.json")
+        other = tmp_path / "other"
+        other.mkdir()
+        lib = f"lib-{PROBE}.json"
+        for file, bad in ((f"{PROBE}.json", doc), ("lib-v81.json", doc), (lib, dict(doc, description="by hand")),
+                          (lib, dict(doc, gate=dict(doc["gate"], name="b0a-readout"))),
+                          (lib, {k: v for k, v in doc.items() if k != "compare"}),
+                          (lib, dict(doc, schema=RS.TEMPLATE_SCHEMA))):
+            (other / file).write_text(json.dumps(bad), encoding="utf-8")
+            assert not generated_by_add_alpha(other / file), file
+        run = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--basetemp",
+                              str(tmp_path / "inner"), str(Path(__file__).resolve()), "-k",
+                              "not test_the_whole_file_passes_with_a_generated_spec_present"],
+                             env=dict(os.environ, ATX_TEST_V8_SPECS=str(specs)), cwd=research_tree.REPO,
+                             capture_output=True, text=True, timeout=600)
+        tail = run.stdout[-4000:] + run.stderr[-2000:]
+>       assert run.returncode == 0 and re.search(r"\n\d+ passed, 1 deselected in ", run.stdout), tail   # nothing failed
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: :test_templates_differ_from_the_parent_only_by_the_registered_change[r3-aim-gain.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r4-hold-band.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r5-adv-hold.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r6-spo-v3-gm.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r6-spo-v3.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r7-lib-v81.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r8.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r9a.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[r9b.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[x-inv-vol.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[x-theme-erc.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[y-norm-score.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[y-theme-tsmom.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[y-two-speed.json]
+E         PASSED scripts/tests/test_research_spec.py::test_templates_differ_from_the_parent_only_by_the_registered_change[y-vol-target.json]
+E         PASSED scripts/tests/test_research_spec.py::test_v8_base_specs_carry_the_ruled_settings
+E         PASSED scripts/tests/test_research_spec.py::test_r1_runs_the_weighted_pass_under_3072_mib_and_its_children_inherit_it
+E         PASSED scripts/tests/test_research_spec.py::test_template_runs_only_its_change_after_root_sets_the_parent
+E         PASSED scripts/tests/test_research_spec.py::test_template_lock_pins_what_it_adds_and_derives
+E         PASSED scripts/tests/test_research_spec.py::test_template_refusals
+E         PASSED scripts/tests/test_research_spec.py::test_apply_flags_operations
+E         PASSED scripts/tests/test_research_spec.py::test_r3_maps_the_parents_composition_to_its_aim_rule
+E         PASSED scripts/tests/test_research_spec.py::test_e27b_refuses_every_spelling_at_plan_run_and_lock
+E         PASSED scripts/tests/test_research_spec.py::test_e27b_refuses_every_spelling_at_add_alpha
+E         PASSED scripts/tests/test_research_spec.py::test_r10_derives_its_rule_from_the_parent_and_runs_the_w_pass_at_3072
+E         PASSED scripts/tests/test_research_spec.py::test_r11_appends_theme_resid_to_the_parents_fit
+E         PASSED scripts/tests/test_research_spec.py::test_r11_checks_its_re_fit_against_the_parent_cells_weights
+E         PASSED scripts/tests/test_research_spec.py::test_null_fields_pin_plans_unlocked_and_lock_fills_it
+E         PASSED scripts/tests/test_research_spec.py::test_derive_name_substitutes_the_parent_token_else_appends
+E         PASSED scripts/tests/test_research_spec.py::test_add_alpha_on_a_v8_base_spec_screens_and_runs
+E         PASSED scripts/tests/test_research_spec.py::test_add_alpha_on_a_v8_template_removes_replaces_rescreens_and_records_exceptions
+E         PASSED scripts/tests/test_research_spec.py::test_add_alpha_child_of_a_labelled_parent_labels_its_ref_and_nav
+E         PASSED scripts/tests/test_research_spec.py::test_cache_gc_apply_with_the_v8_specs_keeps_the_shared_stores
+E         PASSED scripts/tests/test_research_spec.py::test_x_theme_erc_appends_its_flag_to_the_parents_fit
+E         PASSED scripts/tests/test_research_spec.py::test_x_inv_vol_appends_its_flag_to_the_parents_nav
+E         FAILED scripts/tests/test_research_spec.py::test_e27b_reads_what_the_fitter_and_nav_summ_parse
+E         1 failed, 85 passed, 1 deselected in 156.28s (0:02:36)
+E         
+E       assert (1 == 0)
+E        +  where 1 = CompletedProcess(args=['C:\\Program Files\\Python312\\python.exe', '-m', 'pytest', '-q', '-rA', '-p', 'no:cacheprovide...st_e27b_reads_what_the_fitter_and_nav_summ_parse\n1 failed, 85 passed, 1 deselected in 156.28s (0:02:36)\n', stderr='').returncode
+
+scripts\tests\test_research_spec.py:634: AssertionError
+---------------------------- Captured stdout call -----------------------------
+locked fields: build-equity/train-2020-2023-lo1-fields-v9/manifest.json a05f3b86c2bb2bd82088d1f89f5670e36868828a3aa9faa1e07815661b9a100f
+locked role: build-equity/train-2020-2023-lo1/manifest.json f31a9064ccb9c6586f5ac039c82943a3cdd89df17b829b325c4a7335547fa73d
+locked identity_bridge: build-equity/identity-bridge-r4-v2/manifest.json 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+locked fund_events: build-equity/fundamental-events-v3/manifest.json 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+wrote C:\Users\natha\AppData\Local\Temp\claude\c--atx\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\scratchpad\m2h\bt-s1\test_the_whole_file_passes_wit0\made\root\scripts\specs\v8\base-lo1.json
+add-alpha v8_probe: registered in atx-impl/strategies/alphas/registry.json
+library v8probe (fund_industry_ic_v8probe): 49 members = v71 + ['v8_probe']; atx-impl/strategies/fund_industry_ic_v8probe.json sha256 9309fab9b8f561a91a456e9332718f09af3096a296c3db1f46b8a3b414a6f4bf; K1 plan: 49 rows valid
+prereg stub atx-impl/strategies/libraries/v8probe.prereg.md; spec scripts/specs/v8/lib-v8probe.json (from C:/Users/natha/AppData/Local/Temp/claude/c--atx/6ea15be9-c1e8-4316-99d4-4854dfd7c03c/scratchpad/m2h/bt-s1/test_the_whole_file_passes_wit0/made/root/scripts/specs/v8/base-lo1.json)
+locked 12 pins; next: research_cycle.py run scripts/specs/v8/lib-v8probe.json --screen (commit first)
+_____________ test_e27b_reads_what_the_fitter_and_nav_summ_parse ______________
+
+    def test_e27b_reads_what_the_fitter_and_nav_summ_parse():
+        """Every spelling of the cases is one the real parsers read as ew-theme-aim-v1 / --protocol v8 (so the guard must
+        see it), and the guard reads it."""
+        sys.path.insert(0, str(research_tree.REPO / "atx-impl" / "tools"))
+        import fit_composition_weights as fcw
+        import nav_summ as NS
+        for name, sp in COMPOSITION_SPELLINGS.items():
+>           assert fcw.parse_args(FIT_REQUIRED + sp).composition == ("ew-theme-v1" if name == "repeat-first" else V5_AIM)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_research_spec.py:929: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+atx-impl\tools\fit_composition_weights.py:2809: in parse_args
+    return p.parse_args(argv)
+           ^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python312\Lib\argparse.py:1891: in parse_args
+    args, argv = self.parse_known_args(args, namespace)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python312\Lib\argparse.py:1924: in parse_known_args
+    namespace, args = self._parse_known_args(args, namespace)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python312\Lib\argparse.py:1967: in _parse_known_args
+    option_tuple = self._parse_optional(arg_string)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python312\Lib\argparse.py:2288: in _parse_optional
+    self.error(msg % args)
+C:\Program Files\Python312\Lib\argparse.py:2655: in error
+    self.exit(2, _('%(prog)s: error: %(message)s\n') % args)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = ArgumentParser(prog='__main__.py', usage=None, description='TRAIN-only admission screens ``v3-admit-v1`` / ``v4-prior-...im-v1`` / ``ew-theme-v6``.', formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)
+status = 2
+message = '__main__.py: error: ambiguous option: --compo could match --composition, --composition-exe\n'
+
+    def exit(self, status=0, message=None):
+        if message:
+            self._print_message(message, _sys.stderr)
+>       _sys.exit(status)
+E       SystemExit: 2
+
+C:\Program Files\Python312\Lib\argparse.py:2642: SystemExit
+---------------------------- Captured stderr call -----------------------------
+usage: __main__.py [-h] --library LIBRARY --library-sha256 LIBRARY_SHA256
+                   --train TRAIN --train-sha256 TRAIN_SHA256 --orientations
+                   ORIENTATIONS --orientations-sha256 ORIENTATIONS_SHA256
+                   --runner-summary RUNNER_SUMMARY --runner-summary-sha256
+                   RUNNER_SUMMARY_SHA256 --screen
+                   {none,v3-admit-v1,v4-prior-v1,v4-prior-v2}
+                   [--composition {mv-shrink-0.9-nonneg-v1,mv-shrink-0.9-nonneg-netcost-v1,ew-theme-v1,ew-theme-aim-v1,ew-theme-v6,ew-theme-std-v1,ew-theme-std-aim-v1,ew-theme-aim-v2,ic-shrink-v1,ic-shrink-aim-v1}]
+                   [--orientation {train,prior}] [--recipe RECIPE]
+                   [--recipe-sha256 RECIPE_SHA256] --output OUTPUT
+                   [--work-dir WORK_DIR] [--max-seconds MAX_SECONDS]
+                   [--max-new-candidates MAX_NEW_CANDIDATES]
+                   [--report-f-theta]
+                   [--era ID ROLE ROLE_SHA ORIENT ORIENT_SHA SUMMARY SUMMARY_SHA]
+                   [--era-id ERA_ID] [--theme-resid {theme-resid-v1}]
+                   [--theme-resid-parent THEME_RESID_PARENT]
+                   [--theme-resid-parent-sha256 THEME_RESID_PARENT_SHA256]
+                   [--theme-erc {theme-erc-v1}]
+                   [--theme-tsmom {theme-tsmom-v1}]
+                   [--two-speed {two-speed-v1}] [--mom-volman {mom-volman-v1}]
+                   [--theme-hedge {theme-cov-hedge-v1}] [--engine-fit]
+                   [--engine-factors ENGINE_FACTORS]
+                   [--admission-exe ADMISSION_EXE]
+                   [--composition-exe COMPOSITION_EXE]
+__main__.py: error: ambiguous option: --compo could match --composition, --composition-exe
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_research_spec.py::test_the_whole_file_passes_with_a_generated_spec_present
+FAILED scripts/tests/test_research_spec.py::test_e27b_reads_what_the_fitter_and_nav_summ_parse
+SKIPPED [1] scripts\tests\test_cycle_e2e.py:439: set ATX_EQUITY_BIN to the directory of the equity executables
+SKIPPED [1] scripts\tests\test_research_cycle.py:56: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files
+SKIPPED [1] scripts\tests\test_research_cycle.py:706: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L7 merge)
+SKIPPED [1] scripts\tests\test_research_cycle.py:946: set RESEARCH_CYCLE_LIVE_ROOT to hash the real pool-2 files (after the L8 merge)
+2 failed, 510 passed, 4 skipped in 695.86s (0:11:35)

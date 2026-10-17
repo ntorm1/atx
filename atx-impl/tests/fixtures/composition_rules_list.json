@@ -1,8 +1,12 @@
 {
   "capabilities": [
+    "absent-members-v1",
     "eval-mode-audit-exact",
+    "ic-hac-rule",
+    "label-terminal",
     "list-rules",
     "marginal",
+    "min-coverage",
     "no-composition",
     "theme-registry"
   ],
@@ -17,26 +21,13 @@
         "theme-erc-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "composition": {
-            "const": "ew-theme-v6"
-          },
           "rule": {
-            "const": "within-theme-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+            "const": "within-theme-v1",
+            "type": "string"
           }
         },
-        "required": [
-          "rule",
-          "composition",
-          "themes"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_redistribution",
@@ -54,26 +45,13 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "rerank": {
-            "type": "boolean"
-          },
           "rule": {
-            "const": "ew-theme-std-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+            "const": "ew-theme-std-v1",
+            "type": "string"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -91,63 +69,21 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "ic_shrink": {
-            "properties": {
-              "floor": {
-                "const": 0
-              },
-              "intensity": {
-                "const": 0.5
-              },
-              "members": {
-                "additionalProperties": {
-                  "properties": {
-                    "ic": {
-                      "type": "number"
-                    },
-                    "theme": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "theme",
-                    "ic"
-                  ],
-                  "type": "object"
-                },
-                "minProperties": 1,
-                "type": "object"
-              }
-            },
-            "required": [
-              "intensity",
-              "floor",
-              "members"
-            ],
-            "type": "object"
+          "floor": {
+            "const": 0,
+            "type": "number"
           },
-          "rerank": {
-            "const": true
+          "intensity": {
+            "const": 0.5,
+            "type": "number"
           },
           "rule": {
-            "const": "ic-shrink-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+            "const": "ic-shrink-v1",
+            "type": "string"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes",
-          "ic_shrink"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -165,68 +101,21 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "ic_shrink": {
-            "properties": {
-              "floor": {
-                "const": 0
-              },
-              "intensity": {
-                "const": 0.5
-              },
-              "members": {
-                "additionalProperties": {
-                  "properties": {
-                    "gain": {
-                      "exclusiveMinimum": 0,
-                      "type": "number"
-                    },
-                    "ic": {
-                      "type": "number"
-                    },
-                    "theme": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "theme",
-                    "ic",
-                    "gain"
-                  ],
-                  "type": "object"
-                },
-                "minProperties": 1,
-                "type": "object"
-              }
-            },
-            "required": [
-              "intensity",
-              "floor",
-              "members"
-            ],
-            "type": "object"
+          "floor": {
+            "const": 0,
+            "type": "number"
           },
-          "rerank": {
-            "const": true
+          "intensity": {
+            "const": 0.5,
+            "type": "number"
           },
           "rule": {
-            "const": "ic-shrink-aim-v1"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+            "const": "ic-shrink-aim-v1",
+            "type": "string"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes",
-          "ic_shrink"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -244,89 +133,21 @@
         "within-theme-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "rerank": {
-            "const": true
+          "dispersion": {
+            "const": 1e-10,
+            "type": "number"
           },
           "rule": {
-            "const": "theme-erc-v1"
+            "const": "theme-erc-v1",
+            "type": "string"
           },
-          "theme_erc": {
-            "properties": {
-              "covariance": {
-                "properties": {
-                  "matrix": {
-                    "items": {
-                      "items": {
-                        "type": "number"
-                      },
-                      "type": "array"
-                    },
-                    "type": "array"
-                  },
-                  "themes": {
-                    "items": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    },
-                    "type": "array"
-                  }
-                },
-                "required": [
-                  "themes",
-                  "matrix"
-                ],
-                "type": "object"
-              },
-              "dispersion": {
-                "const": 1e-10
-              },
-              "members": {
-                "additionalProperties": {
-                  "properties": {
-                    "share": {
-                      "type": "number"
-                    },
-                    "theme": {
-                      "pattern": "^[a-z0-9_]{1,64}$",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "theme",
-                    "share"
-                  ],
-                  "type": "object"
-                },
-                "minProperties": 1,
-                "type": "object"
-              },
-              "sweeps": {
-                "const": 10000
-              }
-            },
-            "required": [
-              "sweeps",
-              "dispersion",
-              "members",
-              "covariance"
-            ],
-            "type": "object"
-          },
-          "themes": {
-            "additionalProperties": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "object"
+          "sweeps": {
+            "const": 10000,
+            "type": "integer"
           }
         },
-        "required": [
-          "rule",
-          "rerank",
-          "themes",
-          "theme_erc"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_standardise",
@@ -342,25 +163,18 @@
       "id": "theme-resid-v1",
       "incompatible": [
         "theme-tsmom-v1",
-        "two-speed-v1"
+        "mom-volman-v1",
+        "two-speed-v1",
+        "theme-cov-hedge-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "order": {
-            "items": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "array"
-          },
           "rule": {
-            "const": "theme-resid-v1"
+            "const": "theme-resid-v1",
+            "type": "string"
           }
         },
-        "required": [
-          "rule",
-          "order"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_residualise",
@@ -380,61 +194,29 @@
       "block_key": "theme_schedule",
       "id": "theme-tsmom-v1",
       "incompatible": [
-        "theme-resid-v1"
+        "theme-resid-v1",
+        "mom-volman-v1"
       ],
       "params_schema": {
+        "additionalProperties": false,
         "properties": {
-          "blocks": {
-            "items": {
-              "properties": {
-                "from_session": {
-                  "type": "integer"
-                },
-                "trailing": {
-                  "items": {
-                    "type": "number"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "from_session",
-                "trailing"
-              ],
-              "type": "object"
-            },
-            "maxItems": 4096,
-            "minItems": 1,
-            "type": "array"
-          },
           "lag": {
-            "const": 3
+            "const": 3,
+            "type": "integer"
           },
           "lookback": {
-            "const": 252
+            "const": 252,
+            "type": "integer"
           },
           "rule": {
-            "const": "theme-tsmom-v1"
+            "const": "theme-tsmom-v1",
+            "type": "string"
           },
           "step": {
-            "const": 21
-          },
-          "themes": {
-            "items": {
-              "pattern": "^[a-z0-9_]{1,64}$",
-              "type": "string"
-            },
-            "type": "array"
+            "const": 21,
+            "type": "integer"
           }
         },
-        "required": [
-          "rule",
-          "lookback",
-          "lag",
-          "step",
-          "themes",
-          "blocks"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_schedule",
@@ -451,21 +233,62 @@
       "working_bytes": "none beyond the standardise planes (the block masses)"
     },
     {
+      "block_key": "theme_schedule",
+      "id": "mom-volman-v1",
+      "incompatible": [
+        "theme-resid-v1",
+        "theme-tsmom-v1"
+      ],
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "lag": {
+            "const": 2,
+            "type": "integer"
+          },
+          "lookback": {
+            "const": 126,
+            "type": "integer"
+          },
+          "rule": {
+            "const": "mom-volman-v1",
+            "type": "string"
+          },
+          "step": {
+            "const": 21,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "recipe_key": "composition_schedule",
+      "recipe_sha256": "ae1f81c424a3e536a83354cef473904cdfd2b355f36b819c28475187bbfb93c5",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "schedule",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "none beyond the standardise planes (the block masses)"
+    },
+    {
       "block_key": "theme_sleeves",
       "id": "two-speed-v1",
       "incompatible": [
-        "theme-resid-v1"
+        "theme-resid-v1",
+        "theme-cov-hedge-v1"
       ],
       "params_schema": {
         "additionalProperties": false,
         "properties": {
           "rule": {
-            "const": "two-speed-v1"
+            "const": "two-speed-v1",
+            "type": "string"
           }
         },
-        "required": [
-          "rule"
-        ],
         "type": "object"
       },
       "recipe_key": "composition_sleeves",
@@ -480,6 +303,52 @@
       "verified": false,
       "version": "v1",
       "working_bytes": "two f64 dates x names sleeve planes and one f64 per date (the fast share)"
+    },
+    {
+      "block_key": "theme_hedge",
+      "id": "theme-cov-hedge-v1",
+      "incompatible": [
+        "theme-resid-v1",
+        "two-speed-v1"
+      ],
+      "params_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "lag": {
+            "const": 2,
+            "type": "integer"
+          },
+          "lookback": {
+            "const": 252,
+            "type": "integer"
+          },
+          "min_pairs": {
+            "const": 126,
+            "type": "integer"
+          },
+          "rule": {
+            "const": "theme-cov-hedge-v1",
+            "type": "string"
+          },
+          "step": {
+            "const": 21,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "recipe_key": "composition_hedge",
+      "recipe_sha256": "cd6abb04e0bfd8c80572b09c3d030bee3d9d75a771a9e43ae086248564849c1c",
+      "requires_any": [
+        "ew-theme-std-v1",
+        "ic-shrink-v1",
+        "ic-shrink-aim-v1",
+        "theme-erc-v1"
+      ],
+      "stage": "hedge",
+      "verified": false,
+      "version": "v1",
+      "working_bytes": "the role's session returns and one hedged plane (f64 dates x names each), a presence byte per cell and the kernel's per-name window sums"
     }
   ],
   "schema": "atx.composition-rules/v1"

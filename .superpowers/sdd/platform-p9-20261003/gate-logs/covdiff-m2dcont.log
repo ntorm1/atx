@@ -1,0 +1,66 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "aef2e0336a525540bc7e5d080b507d5dcf5c285e",
+  "started_utc": "2026-10-16T13:27:02.836904+00:00",
+  "command": [
+    "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+    "cov-diff",
+    "--legacy",
+    "build-equity/p9-m2d-cov-risk-container"
+  ],
+  "executable_sha256": "0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b",
+  "argv_sha256": "79d0570f64c535f0662e347e3e659b34e6d815f25ad2e5fc9c8aeea7e1001781",
+  "attempt": 1,
+  "build_type": "Release",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256,
+    "admission_wait_seconds": 1800.0
+  },
+  "sampled_peak_tree_rss_bytes": 525168640,
+  "minimum_system_free_bytes": 3606147072,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/gate-logs/gt-exits.txt",
+    ".superpowers/sdd/platform-p9-20261003/gate-logs/pyt-exits.txt",
+    ".superpowers/sdd/platform-p9-20261003/gate-logs/tools/pyt.sh",
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    ".superpowers/sdd/platform-p9-20261003/r12-prompts/cells-prompt.md",
+    ".superpowers/sdd/platform-p9-20261003/root-gate-report.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "admission": {
+    "wait_seconds": 1800.0,
+    "need_free_mib": 2304,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.015,
+    "checks": 1,
+    "free_mib": 3837,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 1.577999999979511,
+  "owned_processes": [
+    {
+      "pid": 2180,
+      "create_time": 1792157222.8532193
+    },
+    {
+      "pid": 7016,
+      "create_time": 1792157222.8641703
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "2c77cc624276cc483ad9db559b28aa88764f9bfe0572d25f70725c937bd5a25e",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

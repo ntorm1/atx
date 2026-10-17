@@ -1,0 +1,7 @@
+exe atx-equity-strategy-ic.exe sha256 8608b8249258da827166454bd3b95c5be61625fcd2c4300e590d94e15723f857
+exit 0 stderr bytes 0
+stdout == fixture (LF-normalised bytes): True | as JSON: True
+schema atx.composition-rules/v1
+capabilities ['absent-members-v1', 'eval-mode-audit-exact', 'ic-hac-rule', 'label-terminal', 'list-rules', 'marginal', 'min-coverage', 'no-composition', 'theme-registry']
+sorted: True | absent-members-v1 first: True
+exe_capabilities holds absent-members-v1: True | count 9

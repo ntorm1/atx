@@ -1,0 +1,55 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "a24a77bd9fe0ef99156e0d93b7bfd04ff91fe200",
+  "started_utc": "2026-10-16T15:40:35.770736+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    ".superpowers/sdd/platform-p9-20261003/gate-logs/tools/rho_pairs.py",
+    "build-equity-rel/bin/atx-research-eval.exe",
+    "P9-X pair (Y-1 vs Y-F0, gate P9-B0 refs)=build-equity/p9-b0g-y1-nav,build-equity/p9-b0g-yf0-nav",
+    "X-10 vs Y-F0 (gate P9-B0 refs)=build-equity/p9-b0g-x10-nav,build-equity/p9-b0g-yf0-nav"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "3f550149087c1304a7ffdb1fef61e5f137a7005b35070c8dbbef9385233954f2",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256
+  },
+  "sampled_peak_tree_rss_bytes": 53186560,
+  "minimum_system_free_bytes": 5429366784,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-runs.txt",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "wall_seconds": 1.3599999999860302,
+  "owned_processes": [
+    {
+      "pid": 21768,
+      "create_time": 1792165235.7783096
+    },
+    {
+      "pid": 18668,
+      "create_time": 1792165235.7900743
+    },
+    {
+      "pid": 21000,
+      "create_time": 1792165236.571437
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "26f018d4b4ab88f7a932e34e198b33a26e452061f509b3c5319e67769b77bbdb",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

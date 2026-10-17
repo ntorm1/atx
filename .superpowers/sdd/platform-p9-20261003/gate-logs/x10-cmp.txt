@@ -1,0 +1,4 @@
+reference build-equity/p9-b0-x10-nav (27 files)  new build-equity/p9-b0g-x10-nav (27 files)
+  DIFF summary.json: 7 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha', '/scenarios/0/ann_mean_gross', '/scenarios/1/ann_mean_gross', '/scenarios/2/ann_mean_gross', '/scenarios/3/ann_mean_gross', '/scenarios/4/ann_mean_gross']; outside the list: none
+  files byte-identical 26, differing 1
+VERDICT: inside the list

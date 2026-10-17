@@ -34,18 +34,27 @@ fields::BuildSpec plan_spec(std::vector<std::string> names) {
 
 TEST(ResearchFieldsRegistry, KindLookup) {
   const auto kinds = fields::builder_kinds();
-  ASSERT_EQ(kinds.size(), 9U);
+  ASSERT_EQ(kinds.size(), 13U);
   const auto ids = fields::builder_kind_ids();
-  // P9 A3 appended the six vendor-panel kinds (vendor_fields.hpp) after lane A2's three.
+  // P9 A3 appended the six vendor-panel kinds (vendor_fields.hpp) after lane A2's three; lane
+  // AL-SIG's engine-only kinds follow, then lane A4's holdings kinds.
   const std::vector<std::string_view> want{"si_shares",     "si_dtc",       "vol_126",
                                            "ret_overnight", "ret_intraday", "ceq_iss_5y",
-                                           "open_adj",      "high_adj",     "low_adj"};
+                                           "open_adj",      "high_adj",     "low_adj",
+                                           "gia_13f",       "russell_recon",
+                                           "ftd_shares_ratio21", "regsho_threshold_days63"};
   EXPECT_TRUE(std::equal(ids.begin(), ids.end(), want.begin(), want.end()));
   const auto names = fields::engine_field_names(); // the registry-less names are the kind ids
   EXPECT_TRUE(std::equal(names.begin(), names.end(), want.begin(), want.end()));
   auto spec_of = [](std::string_view id) {
     auto spec = plan_spec({std::string(id)});
     spec.price_source = support::fixture_dir() / "vendor" / "th.parquet"; // vendor kinds' input
+    spec.thirteenf = fields::StageRequest{"thirteenf", std::string(64, 'a')}; // AL-SIG kinds'
+    spec.indexes = fields::StageRequest{"indexes", std::string(64, 'a')};     // stage requests
+    spec.ftd = fields::StageRequest{"ftd", std::string(64, 'a')}; // lane A4 kinds' inputs
+    spec.regsho_threshold = fields::StageRequest{"regsho_threshold", std::string(64, 'a')};
+    spec.security_master = fields::StageRequest{"security_master", std::string(64, 'a')};
+    spec.shares_out = fields::FileRequest{"shares_out.f64", std::string(64, 'a')};
     return spec;
   };
   for (const fields::BuilderKind &kind : kinds) {
@@ -53,7 +62,8 @@ TEST(ResearchFieldsRegistry, KindLookup) {
     ASSERT_NE(found, nullptr) << kind.id;
     EXPECT_EQ(found, &kind);
     EXPECT_TRUE(kind.parse != nullptr && kind.build != nullptr) << kind.id;
-    // A ported kind builds exactly its own field: its plan names the field and pins its spec.
+    // A kind builds exactly its own field: its plan names the field and pins its spec (the vendor
+    // kinds also need price_source, the AL-SIG kinds their stage request).
     const auto plan = kind.parse(kind.id, Json::object(), spec_of(kind.id));
     ASSERT_TRUE(plan.has_value()) << plan.error().message();
     EXPECT_EQ(plan->name, kind.id);

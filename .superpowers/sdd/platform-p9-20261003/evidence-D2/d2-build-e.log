@@ -1,0 +1,100 @@
+﻿{
+    "Source":  "61a808c6447ddd57be6144d9c3082d5f2e68a29f",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  14,
+    "ConfiguredProvenance":  "61a808c6447ddd57be6144d9c3082d5f2e68a29f",
+    "Jobs":  2,
+    "FreeMiB":  1750,
+    "CommitMiB":  3296,
+    "Targets":  [
+                    "atx-engine-research-composition-tests",
+                    "atx-research-composition",
+                    "atx-research-admission",
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-equity-strategy-targets",
+                    "atx-impl-strategy-target-tests",
+                    "atx-engine-combine-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  782.8121911,
+    "CompiledTUs":  363,
+    "Links":  18,
+    "Tag":  "p9-d2-e",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-20\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "466c7ad2b7a76000e691d677afcca46ae606cf0296afbf99c81beb44b26d310a"
+                                                                  },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "a074ca53b68270a442f6b78e0ea10416b95f3b33b1c03e7153f16cd3755899a6"
+                                                     },
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "bf7e7142de9067f42f87e489e970929e774c55f37d8deb8286f60817016c2d60"
+                                                   },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "f8f06bc4fbbf5ca2f50e900880150f72949bd3151ff33567da224655d95851c3"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "c16e918be01f601b3f06636b7fa775f3ca8f5d52faf61f10449fede3d0eea878"
+                                                       },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "dcca336286a1d172f15c5f09f06d20eef4ea7e16c0996a870cf872e30b52975e"
+                                                        },
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "a2d4d4d99bd99f6219f3857adb6fb0790147e732a9e2fa135c6f535a16ede560"
+                                                           },
+                        "atx-engine-combine-tests":  {
+                                                         "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-engine-combine-tests.exe",
+                                                         "Sha256":  "0252b87ba2dd45f00bb59ab71e5a75b126e8a324d26c15ee8674f58304d9ab1a"
+                                                     }
+                    }
+}
+[1/384] Building CXX object atx-engine\CMakeFiles\atx-engine.dir\cmake_pch.cxx.obj
+[2/384] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\cmake_pch.cxx.obj
+[3/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[4/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[5/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[6/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[7/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[8/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[9/384] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[12/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\decimal.cpp.obj
+[13/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\core.cpp.obj
+[14/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\datetime.cpp.obj
+[15/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\symbol.cpp.obj
+[16/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\sha256.cpp.obj
+[17/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet.cpp.obj
+[18/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\parquet_writer.cpp.obj
+[19/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\io\zip_reader.cpp.obj
+[20/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\db\sqlite.cpp.obj
+[21/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\dbn.cpp.obj
+[22/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento.cpp.obj
+[23/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\batch.cpp.obj
+[24/384] Building CXX object atx-core\CMakeFiles\atx-core.dir\src\external\databento_pull.cpp.obj
+[25/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\datetime.cpp.obj
+[26/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn.cpp.obj
+[27/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_decoder.cpp.obj
+[28/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_encoder.cpp.obj
+[29/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\dbn_store.cpp.obj
+[30/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\buffer.cpp.obj
+[31/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\dbn_buffer_decoder.cpp.obj
+[32/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_client.cpp.obj
+[33/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\http_stream_reader.cpp.obj
+[34/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\live_connection.cpp.obj
+[35/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\json_helpers.cpp.obj
+[36/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\scoped_fd.cpp.obj
+[37/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\sha256_hasher.cpp.obj
+[38/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_client.cpp.obj
+[39/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\tcp_readable.cpp.obj
+[40/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\detail\zstd_stream.cpp.obj
+[41/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\enums.cpp.obj
+[42/384] Building CXX object atx-core\third-party\databento-cpp\CMakeFiles\databento.dir\src\exceptions.cpp.obj

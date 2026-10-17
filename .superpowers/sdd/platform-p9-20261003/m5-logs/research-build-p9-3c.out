@@ -1,0 +1,66 @@
+{
+    "Source":  "bba4c06f50e77449ea6c969880a012ac4d26c7fd",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  6,
+    "ConfiguredProvenance":  "bba4c06f50e77449ea6c969880a012ac4d26c7fd-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3637,
+    "CommitMiB":  7916,
+    "Targets":  [
+                    "atx-engine-research-fields-tests",
+                    "atx-research-fields"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  82.0895948,
+    "CompiledTUs":  33,
+    "Links":  3,
+    "Tag":  "p9-3c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-fields-tests":  {
+                                                                 "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-fields-tests.exe",
+                                                                 "Sha256":  "39be2b3d995b11873b5d667c04419b5b063f1f2f56729bce1816eed1b30febdf"
+                                                             },
+                        "atx-research-fields":  {
+                                                    "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-fields.exe",
+                                                    "Sha256":  "d14346e836923cc8dea8ebd05b9769f0449b44e0f9f9150866f31d5a2e875cde"
+                                                }
+                    }
+}
+[1/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\manifest.cpp.obj
+[2/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\registry.cpp.obj
+[3/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\reuse.cpp.obj
+[4/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\research_fields_cli.cpp.obj
+[5/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\generated\research_fields_build_identity.cpp.obj
+[6/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\parquet_columns.cpp.obj
+[7/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\stage.cpp.obj
+[8/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\thirteenf_holdings.cpp.obj
+[9/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\thirteenf_filings.cpp.obj
+[10/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\russell_proxy.cpp.obj
+[11/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\gia_13f_skill.cpp.obj
+[12/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\russell_recon_field.cpp.obj
+[13/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\gia_13f_field.cpp.obj
+[14/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\run_payload.cpp.obj
+[15/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\session_clock.cpp.obj
+[16/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\holdings_specs.cpp.obj
+[17/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\sources\short_side.cpp.obj
+[18/39] Building CXX object atx-engine\CMakeFiles\atx-research-fields.dir\src\research\fields\research_fields_main.cpp.obj
+[19/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\holdings_ftd.cpp.obj
+[20/39] Building CXX object atx-engine\CMakeFiles\atx-engine-research-fields.dir\src\research\fields\holdings_regsho.cpp.obj
+[21/39] Linking CXX static library lib\atx-engine-research-fields.lib
+[22/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_cli_test.cpp.obj
+[23/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_registry_test.cpp.obj
+[24/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_manifest_test.cpp.obj
+[25/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_vendor_fields_test.cpp.obj
+[26/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_vendor_panel_test.cpp.obj
+[27/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_vendor_fixture_test.cpp.obj
+[28/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_al_sig_thirteenf_test.cpp.obj
+[29/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_al_sig_gia_test.cpp.obj
+[30/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_al_sig_russell_test.cpp.obj
+[31/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_a4_reuse_test.cpp.obj
+[32/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_al_sig_fixture_test.cpp.obj
+[33/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_a4_clock_test.cpp.obj
+[34/39] Linking CXX executable bin\atx-research-fields.exe
+[35/39] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_holdings_test.cpp.obj
+[36/39] Linking CXX executable bin\atx-engine-research-fields-tests.exe

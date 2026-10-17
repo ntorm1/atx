@@ -1,0 +1,4 @@
+scripts/specs/p9/kinds/new-cost-model.json: ours 1 hunks (merged :18-18) kept True; theirs 1 hunks (merged :5-5) kept True; PASS
+scripts/specs/p9/kinds/walk-forward.json: ours 1 hunks (merged :18-18) kept True; theirs 3 hunks (merged :5-5, :29-29, :31-32) kept True; PASS
+scripts/tests/test_wave_kinds.py: ours 4 hunks (merged :187-187, :630-631, :750-750, :776-776) kept True; theirs 8 hunks (merged :30-44, :50-50, :54-54, :78-78, :216-217, :360-362, :398-398, :1036-1566) kept True; PASS
+RESULT PASS

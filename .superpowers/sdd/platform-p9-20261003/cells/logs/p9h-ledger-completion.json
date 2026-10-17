@@ -1,0 +1,28 @@
+{
+  "before_lines": 134,
+  "before_sha256": "b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61",
+  "after_lines": 135,
+  "after_sha256": "7b87d61ccb3285e9ea94aefb52222e610f74287b5559988339eccf09aed07e00",
+  "prefix_unchanged": true,
+  "new_row": {
+    "trial_id": "94a77d4af05ac735",
+    "kind": "construction",
+    "cell": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+    "count": 1,
+    "origin": "prior",
+    "prev_sha256": "70a31c43577e6f32ed4f471cdc7fb87c3ab03c94e6ee5ca3beea396ff8e10e97"
+  },
+  "counts": {
+    "construction": {
+      "TRAIN 2020-01-06..2022-12-30": 37,
+      "TRAIN 2020-01-06..2023-12-29": 2,
+      "TRAIN 2020-01-03..2023-12-29": 25
+    },
+    "admission": {
+      "TRAIN 2020-01-01..2023-12-31": 61
+    }
+  },
+  "N_hand": 125,
+  "M": 110,
+  "N_tot": 235
+}

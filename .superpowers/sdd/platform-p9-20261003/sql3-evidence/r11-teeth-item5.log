@@ -1,0 +1,39 @@
+repo C:\atx-wt\pool-13 HEAD 007794533ab6088d254d448322922547ef3d0e0f
+ATX_RESEARCH_STORE_EXE C:/atx-wt/pool-2/build-equity/bin/atx-research-store.exe sha256 d8a500d84dc2a25130c69b226d8f5deec47b8dabb6256522c83c00764d3d9d65
+M1 scripts/cycle_resume.py (scripts/tests/test_research_store_hook.py) CAUGHT exit 1: 3 failed, 10 passed in 12.06s
+   red scripts/tests/test_research_store_hook.py::test_real_store_exe_ingests_every_class
+   red scripts/tests/test_research_store_hook.py::test_write_binding_ingests_its_binding[absolute-root]
+   red scripts/tests/test_research_store_hook.py::test_write_binding_ingests_its_binding[relative-root]
+   expected red 3 all in the red set: True; must stay green 0 green: True
+   restored: scripts/cycle_resume.py hash-object 8b6832f287bec36c0f2cb1fe8d7e98e7f25f2c14 = HEAD 8b6832f287bec36c0f2cb1fe8d7e98e7f25f2c14; kept sha256 df1b65e46798a0b0a585d14099e4461d2c772df9692e889b31c9209dbe675fee = working; porcelain ''
+M2 scripts/cycle_verdict.py (scripts/tests/test_research_store_hook.py) CAUGHT exit 1: 3 failed, 10 passed in 12.16s
+   red scripts/tests/test_research_store_hook.py::test_keep_copy_ingests_each_copy
+   red scripts/tests/test_research_store_hook.py::test_real_store_exe_ingests_every_class
+   red scripts/tests/test_research_store_hook.py::test_write_verdict_ingests_the_verdict_then_its_copy[keep-verdicts]
+   expected red 3 all in the red set: True; must stay green 0 green: True
+   restored: scripts/cycle_verdict.py hash-object 19001b1c240c942447befc4e72caff2ac98db3b1 = HEAD 19001b1c240c942447befc4e72caff2ac98db3b1; kept sha256 c595cb7e2d02e6a97837fbc05a1b5370d4dcbabe0851abd1da46e8033d96366f = working; porcelain ''
+M3 scripts/cycle_verdict.py (scripts/tests/test_research_store_hook.py) CAUGHT exit 1: 3 failed, 10 passed in 13.82s
+   red scripts/tests/test_research_store_hook.py::test_real_store_exe_ingests_every_class
+   red scripts/tests/test_research_store_hook.py::test_write_verdict_ingests_the_verdict_then_its_copy[keep-verdicts]
+   red scripts/tests/test_research_store_hook.py::test_write_verdict_ingests_the_verdict_then_its_copy[no-copy]
+   expected red 3 all in the red set: True; must stay green 0 green: True
+   restored: scripts/cycle_verdict.py hash-object 19001b1c240c942447befc4e72caff2ac98db3b1 = HEAD 19001b1c240c942447befc4e72caff2ac98db3b1; kept sha256 c595cb7e2d02e6a97837fbc05a1b5370d4dcbabe0851abd1da46e8033d96366f = working; porcelain ''
+M4 scripts/wave_stage_record.py (scripts/tests/test_research_store_hook.py) CAUGHT exit 1: 2 failed, 11 passed in 12.15s
+   red scripts/tests/test_research_store_hook.py::test_fake_wave_bytes_equal_with_a_failing_store
+   red scripts/tests/test_research_store_hook.py::test_one_ingest_per_write_in_a_fake_wave
+   expected red 2 all in the red set: True; must stay green 0 green: True
+   restored: scripts/wave_stage_record.py hash-object 2ee82fda8ee5b7bb7eb1b5ecb6e15823bbc6ab9c = HEAD 2ee82fda8ee5b7bb7eb1b5ecb6e15823bbc6ab9c; kept sha256 e6d06cbbfb5c91aa857f67c6d30fd27d6b8e880b32694360b8d30077ee353112 = working; porcelain ''
+M5 scripts/cycle_resume.py (scripts/tests/test_research_store_hook.py) CAUGHT exit 1: 1 failed, 12 passed in 11.84s
+   red scripts/tests/test_research_store_hook.py::test_write_binding_ingests_its_binding[relative-root]
+   expected red 1 all in the red set: True; must stay green 2 green: True
+   restored: scripts/cycle_resume.py hash-object 8b6832f287bec36c0f2cb1fe8d7e98e7f25f2c14 = HEAD 8b6832f287bec36c0f2cb1fe8d7e98e7f25f2c14; kept sha256 df1b65e46798a0b0a585d14099e4461d2c772df9692e889b31c9209dbe675fee = working; porcelain ''
+M6 scripts/wave_queue.py (scripts/tests/test_wave_queue.py) CAUGHT exit 1: 1 failed, 5 passed in 7.04s
+   red scripts/tests/test_wave_queue.py::test_a_relative_root_hands_the_store_hook_root_relative_names
+   expected red 1 all in the red set: True; must stay green 0 green: True
+   restored: scripts/wave_queue.py hash-object 40eb3f9ea0a23e972b13667f2eb64173e63a9b33 = HEAD 40eb3f9ea0a23e972b13667f2eb64173e63a9b33; kept sha256 2957ec57ef9d2d17bcc4b9dbcd5c60b520ad8f32e7edd633676b979aa3e1df21 = working; porcelain ''
+M7 scripts/wave_queue.py (scripts/tests/test_wave_queue.py) CAUGHT exit 1: 1 failed, 5 passed in 6.60s
+   red scripts/tests/test_wave_queue.py::test_a_relative_root_hands_the_store_hook_root_relative_names
+   expected red 1 all in the red set: True; must stay green 0 green: True
+   restored: scripts/wave_queue.py hash-object 40eb3f9ea0a23e972b13667f2eb64173e63a9b33 = HEAD 40eb3f9ea0a23e972b13667f2eb64173e63a9b33; kept sha256 2957ec57ef9d2d17bcc4b9dbcd5c60b520ad8f32e7edd633676b979aa3e1df21 = working; porcelain ''
+final porcelain ''
+caught 7 / 7

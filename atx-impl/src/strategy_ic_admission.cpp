@@ -1,6 +1,7 @@
 #include "strategy_ic_detail.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -13,6 +14,9 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+#include "atx/engine/data/research_window.hpp"
+#include "atx/engine/data/strategy_data.hpp"
+#include "atx/engine/research/composition/weights_schema.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_rules.hpp"
 
@@ -22,6 +26,11 @@ constexpr const char* weights_schema="atx.dsl-composition-weights/v1";
 // ew-theme-v6 files (V6-W fix round 1 I1): v2 iff a theme_redistribution block is
 // present, v1 iff absent, so a binary predating within-theme-v1 refuses them loudly.
 constexpr const char* weights_schema_v2="atx.dsl-composition-weights/v2";
+// P9 lane D3W (contract K-P9-8, ruling P19): v2's blocks plus the walk_forward block (per-date
+// weights; strategy_ic_rules.hpp composition_walk_forward). A binary predating D3W refuses it.
+constexpr const char* weights_schema_v3="atx.dsl-composition-weights/v3";
+static_assert(std::string_view(weights_schema_v3)==
+              atx::engine::research::composition::weights_schema_v3);
 constexpr const char* fields_semantics="extra-date-major-f64-columns-resolved-by-name;NaN-where-not-visible;"
     "role-presence-mask;decision-member-mask-unchanged";
 } // namespace
@@ -46,6 +55,17 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
   if (cfg.workers!=1) recipe["vm_workers"]=cfg.workers;
   if (parallel_ic && cfg.workers!=1) recipe["research_ic_workers"]=cfg.workers;
   if (cfg.save_combined) recipe["saved_combined"]="date-major-f64-with-explicit-support-v1";
+  // P9 S2: each IC method option is recorded only when given (absent: the recipe keeps its bytes).
+  // The label role pins themselves are recorded per scored role by run_ic.
+  if (cfg.min_coverage!=ex::kDefaultIcMinCoverage) recipe["min_coverage"]=cfg.min_coverage;
+  if (!cfg.ic_hac_rule.empty()) recipe["ic_hac_rule"]=cfg.ic_hac_rule;
+  if (!cfg.label_terminal.empty()) {
+    recipe["label_terminal"]=cfg.label_terminal;
+    recipe["labels"]="close[d+1+h]/close[d+1]-1;strict-positive-observed-endpoints;role-maturity;"
+        "missing-exit:first-label-role-only-session-in-(d+1,d+1+h]-at-its-imputed-close-then-cash;"
+        "label-role-adds-only-the-session-after-each-name's-last-scored-session;"
+        "imputed-exit-return-guard:scored-role-and-label-role(terminal-step)";
+  }
   // Absent weights leave the recipe byte-identical; pinned weights change both
   // the method statement and the canonical hash. The candidate cache is not a
   // method input: a verified hit is the exact VM output it replaces.
@@ -69,6 +89,9 @@ Json method_recipe(const IcRunnerConfig& cfg,bool parallel_ic,bool pinned_signs,
         if (rule->stage==IcStageKind::residualise)
           recipe["composition_residualise_order"]=theme_order_json(pinned->residualise_order);
       }
+    // P9 lane D3W: per-date weights (a v3 file's walk_forward rows) record their rule.
+    if (pinned!=nullptr && !pinned->walk_forward.empty())
+      recipe["composition_walk_forward"]=pinned->walk_forward;
     recipe["composition_weights_sha256"]=cfg.composition_weights_sha256;
   }
   return recipe;
@@ -116,6 +139,34 @@ co::Status expect_frozen_fields(const IcRunnerConfig& cfg,const Library& lib,con
   expected["research_fields"]=fields_recipe(std::move(pins),lib);
   return co::Ok();
 }
+// P9 S2: likewise the label role pins of --label-terminal imputed-v1 (run_ic records one per scored
+// role). TRAIN's is taken from the source (its label role is never opened here) and, if
+// re-supplied, must match; a validation pin must equal this run's.
+co::Status expect_frozen_label_roles(const IcRunnerConfig& cfg,const Json& recipe,Json& expected) {
+  const auto differs=[] {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN label role pin differs");
+  };
+  if (!recipe.contains("label_role_manifest_sha256")) {
+    if (!cfg.train_label_role_sha256.empty()) return differs();
+    return co::Ok();
+  }
+  const auto& source=recipe.at("label_role_manifest_sha256");
+  if (!source.is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN label role record");
+  Json pins=Json::object();
+  if (source.contains("train")) {
+    const auto& train=source.at("train");
+    if (!train.is_string() || !hash_valid(train.get<std::string>()))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN label role record");
+    pins["train"]=train;
+  }
+  if (!cfg.train_label_role_sha256.empty() &&
+      (!pins.contains("train") || pins.at("train")!=cfg.train_label_role_sha256))
+    return differs();
+  if (source.contains("validation")) pins["validation"]=cfg.validation_label_role_sha256;
+  expected["label_role_manifest_sha256"]=std::move(pins);
+  return co::Ok();
+}
 } // namespace
 co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& lib,const Role& train) {
   ATX_TRY(auto artifact,pinned_json(cfg.orientations_path,cfg.orientations_sha256));
@@ -158,6 +209,7 @@ co::Result<FrozenTrain> frozen_train(const IcRunnerConfig& cfg,const Library& li
   if (recipe.at("role_manifest_sha256").contains("validation"))
     expected["role_manifest_sha256"]["validation"]=cfg.validation_sha256;
   ATX_TRY_VOID(expect_frozen_fields(cfg,lib,recipe,expected));
+  ATX_TRY_VOID(expect_frozen_label_roles(cfg,recipe,expected));
   if (recipe!=expected)
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: frozen TRAIN method/statistical settings/role pins differ");
   const auto& rows=artifact.at("candidates");
@@ -232,8 +284,10 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
   const auto cells=d*n,score_dates=end-begin;
   // The pinned composition's stage list (strategy_ic_rules.hpp), its grouping's theme count (0:
   // none) and the sleeve planes when two-speed-v1 runs: the v8 envelope for the same file.
+  // P9 lane D3W: a v3 file's walk_forward rows add their own term (none otherwise).
   ATX_TRY(auto composition,ic_composition_stage_bytes(static_cast<usize>(d),static_cast<usize>(n),
-      lib.candidates.size(),pinned.composition_theme_count(),running_stage_kinds(pinned)));
+      lib.candidates.size(),pinned.composition_theme_count(),running_stage_kinds(pinned),
+      pinned.weight_rows.size()));
   Budget b{std::numeric_limits<u64>::max(),0};
   Json memory=Json::object();
   u64 mark=0;
@@ -272,7 +326,21 @@ co::Result<Role> admit(const IcRunnerConfig& cfg,const Library& lib,std::string 
       return co::Err(co::ErrorCode::Unavailable,"IC runner: combined IC label/rank/scratch budget");
   }
   term("label_bytes");
-  // No second VM or label cache: only worker-local Cs/TS scratch. Allow 2x
+  // P9 S2 (--label-terminal imputed-v1; absent: no term, the bytes above): the pinned label role
+  // is resident beside the role while its labels prepare (role26 + its u32 return guard, fix
+  // round 1; dropped before any VM), and today's labels stay prepared beside the imputed ones
+  // with their own row scratch, so each candidate also prints its IC under them.
+  if (!cfg.label_terminal.empty()) {
+    if (!b.add(cells,26+4)) return budget_refusal();
+    for (u64 h:{5ULL,21ULL,63ULL}) {
+      const auto mature=score_dates>h+1?score_dates-h-1:0;
+      if (!b.add(mature*n,16) || !b.add(mature,32))
+        return co::Err(co::ErrorCode::Unavailable,"IC runner: combined IC label/rank/scratch budget");
+    }
+    term("label_terminal_bytes");
+  }
+  // No second VM: only worker-local Cs/TS scratch (a second label cache only under
+  // --label-terminal, above). Allow 2x
   // vector growth within1024B/name and64B/date; add64B/name for IC row buffers;
   // separately reserve8MiB stack
   // address/commit envelope plus64KiB runtime slack per explicit worker. This
@@ -291,6 +359,109 @@ co::Status within_budget(const IcRunnerConfig& cfg,const Library& lib,const Role
                    "IC runner: required_bytes="+std::to_string(role.bytes)+" max_compiled_slots="+
                    std::to_string(lib.max_slots)+
                    " exceeds configured memory budget before payload load");
+  return co::Ok();
+}
+co::Status check_ic_method_options(const IcRunnerConfig& cfg,bool validation_only) {
+  const auto refused=[](const std::string& what) {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+what);
+  };
+  if (!std::isfinite(cfg.min_coverage) || cfg.min_coverage<=0.0 || cfg.min_coverage>1.0)
+    return refused("--min-coverage must be in (0, 1]");
+  if (!cfg.ic_hac_rule.empty() && cfg.ic_hac_rule!="bartlett-2h-v1" && cfg.ic_hac_rule!="horizon-aware-v3")
+    return refused("--ic-hac-rule takes bartlett-2h-v1 or horizon-aware-v3");
+  if (!cfg.label_terminal.empty() && cfg.label_terminal!="imputed-v1")
+    return refused("--label-terminal takes imputed-v1");
+  if (cfg.train_label_role.empty()!=cfg.train_label_role_sha256.empty() ||
+      cfg.validation_label_role.empty()!=cfg.validation_label_role_sha256.empty())
+    return refused("each --*-label-role needs its --*-label-role-sha256 (and the reverse)");
+  const bool train_pin=!cfg.train_label_role.empty(),validation_pin=!cfg.validation_label_role.empty();
+  if (cfg.label_terminal.empty()) {
+    if (train_pin || validation_pin) return refused("--*-label-role is read only with --label-terminal imputed-v1");
+    return co::Ok();
+  }
+  if (validation_pin && cfg.validation_manifest.empty())
+    return refused("--validation-label-role needs --validation");
+  if ((!validation_only && !train_pin) || (!cfg.validation_manifest.empty() && !validation_pin))
+    return refused("--label-terminal imputed-v1 needs a pinned label role for every scored role "
+                   "(--train-label-role / --validation-label-role with their SHA-256)");
+  return co::Ok();
+}
+ex::IcHacRule ic_hac_rule(const IcRunnerConfig& cfg) noexcept {
+  return cfg.ic_hac_rule=="horizon-aware-v3"?ex::IcHacRule::HorizonAwareV3:ex::IcHacRule::Bartlett2hV1;
+}
+LabelRolePin label_role_pin(const IcRunnerConfig& cfg,const std::string& role_name) {
+  if (role_name=="train") return {cfg.train_label_role,cfg.train_label_role_sha256};
+  if (role_name=="validation") return {cfg.validation_label_role,cfg.validation_label_role_sha256};
+  return {};
+}
+co::Status admit_label_role(const IcRunnerConfig& cfg,const Role& role) {
+  const auto pin=label_role_pin(cfg,role.name);
+  const auto option="--"+role.name+"-label-role";
+  if (pin.path.empty() || pin.sha.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --label-terminal imputed-v1 needs "+option+
+        " (and its SHA-256) for the scored "+role.name+" role");
+  ATX_TRY(auto text,pinned_text(pin.path,pin.sha));
+  // The one relaxation of Ruling E-10: this role prices labels only. It must be the role builder's
+  // --delisting-returns build (an unpatched role would impute nothing and is refused as a mistake).
+  ATX_TRY(const bool applied,engine::data::role_delisting_returns_applied(text));
+  if (!applied)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" must be the role builder's "
+        "--delisting-returns build of the "+role.name+" role (universe.delisting.returns_applied true): "+pin.path);
+  const auto j=Json::parse(text);
+  const auto& m=role.metadata;
+  for (const auto* key:{"dates","instruments","score_begin","score_end"})
+    if (!j.contains(key) || j.at(key)!=m.at(key))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" "+key+" differs from the pinned "+
+          role.name+" role manifest's");
+  const auto& files=j.at("files"); const auto& receipts=m.at("files");
+  for (const auto* file:{"sessions.i64","ids.u64"})
+    if (!files.contains(file) || files.at(file).at("sha256")!=receipts.at(file).at("sha256"))
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+option+" "+file+
+          " differs from the pinned "+role.name+" role manifest's (the label role shares its sessions and ids)");
+  return co::Ok();
+}
+co::Status bind_label_role(const engine::data::StrategyRoleData& role,
+                           const engine::data::StrategyRoleData& label) {
+  const auto& scored=role.panel; const auto& priced=label.panel;
+  if (scored.dates()!=priced.dates() || scored.instruments()!=priced.instruments() ||
+      role.session_keys!=label.session_keys || role.instrument_ids!=label.instrument_ids ||
+      role.score_begin!=label.score_begin || role.score_end!=label.score_end)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role axes differ from the scored role's");
+  ATX_TRY(const auto scored_id,scored.field_id(ic_price_field));
+  ATX_TRY(const auto priced_id,priced.field_id(ic_price_field));
+  // Fix round 1: raw_close too (the label role's return guard reads it on the terminal step).
+  ATX_TRY(const auto scored_raw_id,scored.field_id("raw_close"));
+  ATX_TRY(const auto priced_raw_id,priced.field_id("raw_close"));
+  const auto scored_close=scored.field_all(scored_id),priced_close=priced.field_all(priced_id);
+  const auto scored_raw=scored.field_all(scored_raw_id),priced_raw=priced.field_all(priced_raw_id);
+  const auto n=scored.instruments();
+  const auto same=[](f64 a,f64 b) { return std::bit_cast<u64>(a)==std::bit_cast<u64>(b); };
+  // Each name's last scored-present session (dates(): never present).
+  std::vector<usize> last(n,scored.dates());
+  for (usize d=scored.dates();d-->0;)
+    for (usize i=0;i<n;++i)
+      if (last[i]==scored.dates() && scored.in_universe(d,i)) last[i]=d;
+  const auto at=[](usize d,usize i) {
+    return "(date "+std::to_string(d)+", instrument "+std::to_string(i)+")";
+  };
+  for (usize d=0;d<scored.dates();++d)
+    for (usize i=0;i<n;++i) {
+      const auto k=d*n+i;
+      if (!scored.in_universe(d,i)) {
+        // Fix round 1: the only presence a label role may add is a termination, the one session
+        // after the name's last scored session (the role builder's T = L + 1).
+        if (priced.in_universe(d,i) && (last[i]==scored.dates() || d!=last[i]+1))
+          return co::Err(co::ErrorCode::InvalidArgument,
+              "IC runner: label role adds presence that is not a termination "+at(d,i)+
+              "; a label role may only add the session after a name's last scored session");
+        continue;
+      }
+      if (!priced.in_universe(d,i) || !same(scored_close[k],priced_close[k]) ||
+          !same(scored_raw[k],priced_raw[k]))
+        return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role differs from the scored role "
+            "on a cell the role presents "+at(d,i)+"; a label role may only add presence (its "
+            "termination sessions)");
+    }
   return co::Ok();
 }
 namespace {
@@ -326,6 +497,25 @@ Json field_definition(const Json& row) {
   }
   out["plausibility"]=std::move(domain);
   return out;
+}
+// P9 S2 (ruling P13, the IC half of the C++ seal consumer; research/fields/reuse.cpp is the
+// builder's): "match" when the manifest's seal.exclusive_end is this build's research seal, "absent"
+// for a legacy manifest without one (no seal block, or a block without exclusive_end, as the
+// Python producer reads it), accepted and logged by score_role. A present exclusive_end that is
+// not this build's seal, or a malformed seal block, refuses.
+co::Result<std::string> fields_seal(const Json& manifest,const std::string& role_name) {
+  const auto seal=manifest.find("seal");
+  if (seal==manifest.end()) return co::Ok(std::string("absent"));
+  if (!seal->is_object())
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role_name+
+        " fields manifest seal block is not an object");
+  const auto recorded=seal->find("exclusive_end");
+  if (recorded==seal->end()) return co::Ok(std::string("absent"));
+  if (!recorded->is_string() || recorded->get<std::string>()!=engine::data::kSealBeginDate)
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role_name+
+        " fields manifest was built under the seal "+recorded->dump()+"; this build's seal is "+
+        std::string(engine::data::kSealBeginDate)+" ("+std::string(engine::data::kResearchWindowId)+")");
+  return co::Ok(std::string("match"));
 }
 } // namespace
 // Review M5: with both manifests pinned, every declared extra must mean the same
@@ -369,6 +559,7 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
   if (!j.is_object() || j.value("schema",std::string{})!=fields_schema ||
       j.value("status",std::string{})!="complete" || !j.contains("role") || !j.at("role").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: "+role.name+" fields manifest schema");
+  ATX_TRY(auto seal,fields_seal(j,role.name));
   const auto& bound=j.at("role");
   if (bound.value("manifest_sha256",std::string{})!=role.sha ||
       receipts.at("sessions.i64").at("sha256")!=bound.value("sessions_sha256",std::string{}) ||
@@ -405,7 +596,7 @@ co::Status bind_fields(const Library& lib,Role& role,const std::string& director
           "' is not point-in-time in the pinned "+role.name+" fields manifest (non_pit_aspects: "+
           it->second.non_pit_aspects+"); refusing look-ahead");
   }
-  RoleFields bound_fields{directory,pin,{},{}};
+  RoleFields bound_fields{directory,pin,{},{},std::move(seal)};
   for (const auto& name:lib.declared_extra) bound_fields.declared[name]=available.at(name).definition;
   for (const auto& name:lib.extra_fields) {
     const auto& field=available.at(name);
@@ -473,7 +664,8 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   ATX_TRY(auto text,pinned_text(cfg.composition_weights_path,cfg.composition_weights_sha256));
   ATX_TRY(auto j,unique_key_json(text));
   if (!j.is_object() || !j.contains("schema") ||
-      (j.at("schema")!=weights_schema && j.at("schema")!=weights_schema_v2) ||
+      (j.at("schema")!=weights_schema && j.at("schema")!=weights_schema_v2 &&
+       j.at("schema")!=weights_schema_v3) ||
       !j.contains("library_sha256") || j.at("library_sha256")!=cfg.library_sha256 ||
       !j.contains("weights") || !j.at("weights").is_object())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: composition weights schema/library identity");
@@ -505,17 +697,26 @@ co::Result<PinnedWeights> composition_weights(const IcRunnerConfig& cfg,const Li
   // redistribution and theme_standardise are exclusive").
   ATX_TRY_VOID(parse_composition_rules(j,RuleInputs{lib,themes},pinned));
   const bool v2=j.at("schema")==weights_schema_v2;
+  // P9 lane D3W: v3 takes v2's grouping blocks (none required) and requires the walk_forward block,
+  // which v1 and v2 refuse.
+  const bool v3=j.at("schema")==weights_schema_v3;
   const bool standardise=!pinned.standardise.empty();
   if (v2 && pinned.themes.empty() && !standardise)
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block "
         "or a theme_standardise block");
-  if (!v2 && !pinned.themes.empty())
+  if (!v2 && !v3 && !pinned.themes.empty())
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2");
-  if (!v2 && standardise)
+  if (!v2 && !v3 && standardise)
     return co::Err(co::ErrorCode::InvalidArgument,
         "IC runner: theme_standardise requires composition weights schema atx.dsl-composition-weights/v2");
+  if (v3) {
+    ATX_TRY_VOID(composition_walk_forward(j,RuleInputs{lib,themes},pinned));
+  } else if (j.contains("walk_forward")) {
+    return co::Err(co::ErrorCode::InvalidArgument,"IC runner: walk_forward requires composition "
+        "weights schema atx.dsl-composition-weights/v3");
+  }
   if (j.contains("provenance")) pinned.provenance=j.at("provenance");
   return co::Ok(std::move(pinned));
 }
@@ -541,6 +742,11 @@ Json weights_summary(const IcRunnerConfig& cfg,const PinnedWeights& pinned,const
   // two-speed-v1 only (absent otherwise): its rule and fast themes.
   if (!pinned.sleeves.empty())
     out["sleeves"]=Json{{"rule",pinned.sleeves},{"fast_themes",pinned.sleeve_fast_themes}};
+  // walk-forward-v1 only (P9 lane D3W, schema v3; absent otherwise): its rule, rows, first and last
+  // row session; the book is flat before the first.
+  if (!pinned.walk_forward.empty())
+    out["walk_forward"]=Json{{"rule",pinned.walk_forward},{"rows",pinned.weight_from.size()},
+        {"first_session",pinned.weight_from.front()},{"last_session",pinned.weight_from.back()}};
   return out;
 }
 // Review M1 (root ruling, strict): weights applied against a frozen TRAIN artifact

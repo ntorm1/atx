@@ -1,0 +1,45 @@
+2026-10-08 23:36:31Z others=4 free=3062 commitfree=8530 quiet=0
+2026-10-08 23:37:01Z others=4 free=3086 commitfree=8941 quiet=0
+2026-10-08 23:37:31Z others=4 free=2703 commitfree=8737 quiet=0
+2026-10-08 23:38:01Z others=4 free=2725 commitfree=8738 quiet=0
+2026-10-08 23:38:32Z others=4 free=2652 commitfree=8743 quiet=0
+2026-10-08 23:39:02Z others=4 free=2576 commitfree=8472 quiet=0
+2026-10-08 23:39:32Z others=4 free=2412 commitfree=8339 quiet=0
+2026-10-08 23:40:03Z others=4 free=3920 commitfree=8103 quiet=0
+2026-10-08 23:40:33Z others=4 free=3249 commitfree=8353 quiet=0
+2026-10-08 23:41:03Z others=4 free=3483 commitfree=8209 quiet=0
+2026-10-08 23:41:34Z others=2 free=3054 commitfree=8375 quiet=0
+2026-10-08 23:42:04Z others=2 free=3034 commitfree=7500 quiet=0
+2026-10-08 23:42:34Z others=0 free=2593 commitfree=8063 quiet=1
+2026-10-08 23:43:05Z others=2 free=1842 commitfree=7260 quiet=0
+2026-10-08 23:43:35Z others=5 free=2697 commitfree=7629 quiet=0
+2026-10-08 23:44:05Z others=5 free=3760 commitfree=7618 quiet=0
+2026-10-08 23:44:36Z others=4 free=3080 commitfree=7226 quiet=0
+2026-10-08 23:45:06Z others=0 free=2786 commitfree=7264 quiet=1
+2026-10-08 23:45:37Z others=0 free=2807 commitfree=8002 quiet=2
+2026-10-08 23:46:07Z others=0 free=2696 commitfree=7900 quiet=3
+2026-10-08 23:46:37Z others=0 free=4452 commitfree=7841 quiet=4
+2026-10-08 23:46:37Z starting configure equity-dev
+2026-10-09 00:03:57Z waiter v2 (HOST-5 filter) tag=p9-b2-r configure=False
+2026-10-09 00:03:57Z pool-builders=2 pools=pool-30 free=3490 commitfree=6861 quiet=0
+2026-10-09 00:04:28Z pool-builders=2 pools=pool-30 free=2993 commitfree=7080 quiet=0
+2026-10-09 00:04:58Z pool-builders=2 pools=pool-30 free=3171 commitfree=6377 quiet=0
+2026-10-09 00:05:28Z pool-builders=2 pools=pool-30 free=2588 commitfree=6081 quiet=0
+2026-10-09 00:05:59Z pool-builders=2 pools=pool-30 free=3428 commitfree=6239 quiet=0
+2026-10-09 00:06:29Z pool-builders=2 pools=pool-30 free=2469 commitfree=5867 quiet=0
+2026-10-09 00:06:59Z pool-builders=2 pools=pool-30 free=3481 commitfree=6496 quiet=0
+2026-10-09 00:07:29Z pool-builders=2 pools=pool-30 free=2620 commitfree=6024 quiet=0
+2026-10-09 00:08:00Z pool-builders=2 pools=pool-30 free=2784 commitfree=6423 quiet=0
+2026-10-09 00:08:30Z pool-builders=2 pools=pool-30 free=2403 commitfree=5884 quiet=0
+2026-10-09 00:09:00Z pool-builders= pools=pool-30 free=3839 commitfree=6835 quiet=0
+2026-10-09 00:09:31Z pool-builders=0 pools= free=3411 commitfree=6920 quiet=1
+2026-10-09 00:10:01Z pool-builders=5 pools=pool-2 free=3288 commitfree=6730 quiet=0
+2026-10-09 00:10:31Z pool-builders=5 pools=pool-2 free=3408 commitfree=7208 quiet=0
+2026-10-09 00:11:02Z pool-builders=4 pools=pool-2 free=3359 commitfree=7405 quiet=0
+2026-10-09 00:11:32Z pool-builders=5 pools=pool-2 free=2812 commitfree=7058 quiet=0
+2026-10-09 00:12:02Z pool-builders=0 pools= free=3260 commitfree=7666 quiet=1
+2026-10-09 00:12:32Z pool-builders=0 pools= free=3461 commitfree=6872 quiet=2
+2026-10-09 00:13:03Z pool-builders=0 pools= free=3196 commitfree=6569 quiet=3
+2026-10-09 00:13:33Z pool-builders=0 pools= free=3160 commitfree=6696 quiet=4
+2026-10-09 00:13:33Z starting p9-b2-r
+2026-10-09 00:20:19Z build p9-b2-r exit=0

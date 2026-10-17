@@ -771,15 +771,27 @@ co::Result<Streams> open_streams(const Pool& pool, const std::vector<CacheEntry>
   }
   return co::Ok(std::move(out));
 }
-// --pair-cache: every computed pair found in the cache is seeded and no longer computed.
-struct PairCacheUse { std::optional<MarginalPairCache> cache; usize hits{}; };
+// --pair-cache: every computed pair found in the cache is seeded and no longer computed. P9 lane
+// SQL4: under --pair-cache-index sqlite the run's one index object (DIR/index.sqlite, never
+// created here) is opened before any payload and held to the store; otherwise none exists.
+struct PairCacheUse {
+  std::optional<MarginalPairCache> cache;
+  usize hits{};
+  std::optional<CacheIndex> index;
+};
 co::Result<PairCacheUse> seed_pairs(const MarginalIcConfig& cfg, const Pool& pool, usize rows,
                                     const std::vector<CacheEntry>& entries,
-                                    cb::PairwiseRowCorrelation& rho) {
+                                    cb::PairwiseRowCorrelation& rho, std::ostream& progress) {
   PairCacheUse out;
   if (cfg.pair_cache_directory.empty()) return co::Ok(std::move(out));
+  if (cfg.pair_cache_index == CacheIndexMode::Sqlite) {
+    ATX_TRY(auto opened,
+            CacheIndex::open(cfg.pair_cache_directory, &progress, IndexAccess::ReadWrite));
+    out.index.emplace(std::move(opened));
+  }
   ATX_TRY(auto cache, open_marginal_pair_cache(cfg.pair_cache_directory,
-      MarginalPairScope{pool.role_sha, pool.member.sha, pool.score_begin, rows, cfg.min_names}));
+      MarginalPairScope{pool.role_sha, pool.member.sha, pool.score_begin, rows, cfg.min_names},
+      out.index ? &*out.index : nullptr));
   std::vector<cb::PairSeed> seeds;
   for (const auto& [a, b] : rho.computed_pairs()) {
     const auto hit =
@@ -922,6 +934,9 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
       return co::Err(fail(co::ErrorCode::InvalidArgument,
                           "--workers 1..16; --exclude-self needs --themes (book members are known "
                           "only from the pool's weights)"));
+    if (cfg.pair_cache_index == CacheIndexMode::Sqlite && cfg.pair_cache_directory.empty())
+      return co::Err(fail(co::ErrorCode::InvalidArgument,
+                          "--pair-cache-index sqlite needs --pair-cache"));
     std::error_code ec;
     if (fs::exists(cfg.output_directory, ec) || ec)
       return co::Err(fail(co::ErrorCode::AlreadyExists, "output directory must be new: " + cfg.output_directory));
@@ -950,7 +965,7 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
     cb::PairwiseRowCorrelation rho(lib.size(), cfg.min_names);
     if (!cfg.candidates_path.empty()) ATX_TRY_VOID(rho.restrict_to(listing.listed));
     const auto pair_started = steady::now();
-    ATX_TRY(auto pair_cache, seed_pairs(cfg, pool, rows, entries, rho));
+    ATX_TRY(auto pair_cache, seed_pairs(cfg, pool, rows, entries, rho, progress));
     f64 pair_cache_seconds = since(pair_started);
     // A candidate is read and ranked when it gets a row, builds a theme composite or is in a
     // computed pair; any other payload is never opened.
@@ -1005,14 +1020,28 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
       for (const auto& [a, b] : rho.computed_pairs())
         computed.try_emplace(marginal_pair_key(entries[a].payload_sha, entries[b].payload_sha),
                              MarginalPairStat{rho.sum(a, b), rho.dates(a, b)});
-      ATX_TRY(const auto shard, store_marginal_pairs(*pair_cache.cache, computed));
-      pair_cache_seconds += since(store_started);
       const auto& cache = *pair_cache.cache;
-      pair_cache_input = Json{{"directory", cfg.pair_cache_directory},
-          {"key_sha256", cache.key_sha}, {"shards_read", cache.shards},
-          {"cached_pairs", cache.stats.size()},
-          {"hits", pair_cache.hits}, {"computed", rho.computed_pairs().size()},
-          {"shard", shard.empty() ? Json(nullptr) : Json(shard)}};
+      if (pair_cache.index) {
+        // P9 lane SQL4 (--pair-cache-index sqlite): rows in place of a shard; this block only.
+        ATX_TRY(const auto stored, store_marginal_pair_rows(cache, computed, *pair_cache.index));
+        pair_cache_seconds += since(store_started);
+        pair_cache_input = Json{{"directory", cfg.pair_cache_directory},
+            {"index", std::string(kCacheIndexSqlite)}, {"key_sha256", cache.key_sha},
+            {"rows_read", cache.rows_read}, {"legacy_shards_read", cache.shards},
+            {"legacy_rows_imported", cache.rows_imported}, {"cached_pairs", cache.stats.size()},
+            {"hits", pair_cache.hits}, {"computed", rho.computed_pairs().size()},
+            {"rows_written", stored.written}};
+        if (stored.skipped) pair_cache_input["store_skipped"] = true;
+        if (cache.legacy_pending) pair_cache_input["legacy_import_pending"] = true;
+      } else {
+        ATX_TRY(const auto shard, store_marginal_pairs(cache, computed));
+        pair_cache_seconds += since(store_started);
+        pair_cache_input = Json{{"directory", cfg.pair_cache_directory},
+            {"key_sha256", cache.key_sha}, {"shards_read", cache.shards},
+            {"cached_pairs", cache.stats.size()},
+            {"hits", pair_cache.hits}, {"computed", rho.computed_pairs().size()},
+            {"shard", shard.empty() ? Json(nullptr) : Json(shard)}};
+      }
     }
     Json rows_json = Json::array();
     for (usize k = 0; k < lib.size(); ++k)
@@ -1077,6 +1106,7 @@ co::Status run_marginal_ic(const MarginalIcConfig& cfg, std::ostream& progress) 
 
 int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream& err) {
   MarginalIcConfig cfg;
+  bool pair_index_given = false; // P9 lane SQL4: --pair-cache-index
   try {
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
@@ -1085,7 +1115,8 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
                "--role MANIFEST --output NEWDIR\n"
                "    [--library-sha256 SHA] [--pool-sha256 SHA] [--themes WEIGHTS_JSON] [--fields DIR]\n"
                "    [--min-names N (50)] [--max-memory-mib N (600)]\n"
-               "    [--candidates FILE] [--pair-cache DIR] [--verified-digests FILE]\n"
+               "    [--candidates FILE] [--pair-cache DIR [--pair-cache-index files|sqlite]]\n"
+               "    [--verified-digests FILE]\n"
                "    [--workers N (1)] [--exclude-self]\n"
                "  Writes NEWDIR/marginal_ic.json (atx.marginal-ic/v1, contract K6): per library candidate ic21,\n"
                "  ic21_hac_t, marginal_ic21, marginal_hac_t (Bartlett lag 21), max_abs_rho, max_rho_member.\n"
@@ -1099,6 +1130,9 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
                "    for pairs with one); every candidate stays in the regressors and in the\n"
                "    max_abs_rho search.\n"
                "  --pair-cache: pair statistics reused across runs on the role.\n"
+               "  --pair-cache-index files|sqlite (default files: shard files): sqlite keeps the\n"
+               "    pairs as rows of DIR/index.sqlite (made only by atx-research-store cache\n"
+               "    init DIR; refused without it); legacy shards are read through and imported.\n"
                "  --verified-digests: payload SHA256s (one per line) the caller verified; those\n"
                "    payloads are not re-hashed.\n"
                "  --workers: date bands on 1..16 threads (same bytes at every count).\n"
@@ -1127,6 +1161,11 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
       else if (key == "--min-names") cfg.min_names = static_cast<usize>(integer());
       else if (key == "--candidates") cfg.candidates_path = value;
       else if (key == "--pair-cache") cfg.pair_cache_directory = value;
+      else if (key == "--pair-cache-index") {
+        const auto mode = parse_cache_index_mode(value);
+        if (!mode) throw std::invalid_argument("--pair-cache-index takes files or sqlite");
+        cfg.pair_cache_index = *mode; pair_index_given = true;
+      }
       else if (key == "--verified-digests") cfg.verified_digests_path = value;
       else if (key == "--workers") {
         const auto workers = integer();
@@ -1138,6 +1177,14 @@ int dispatch_marginal_ic(int argc, char** argv, std::ostream& out, std::ostream&
         cfg.max_working_bytes = mib << 20;
       } else throw std::invalid_argument("unknown option: " + key);
     }
+    // P9 lane SQL4: usage refusals (exit 2). The index is never created here; its presence only
+    // refuses, it never selects a backend.
+    if (pair_index_given && cfg.pair_cache_directory.empty())
+      throw std::invalid_argument("--pair-cache-index needs --pair-cache");
+    if (cfg.pair_cache_index == CacheIndexMode::Sqlite &&
+        !cache_index_present(cfg.pair_cache_directory))
+      throw std::invalid_argument("--pair-cache-index sqlite needs DIR/index.sqlite (made by "
+                                  "atx-research-store cache init DIR)");
     const auto status = run_marginal_ic(cfg, out);
     if (!status) { err << status.error().to_string() << '\n'; return 1; }
     return 0;

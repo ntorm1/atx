@@ -1,0 +1,298 @@
+{
+  "head": "71226ef9be8816e2c5e6b0ded657249d9c81b712",
+  "checks": [
+    {
+      "path": "atx-impl/tools/nav_summ.py",
+      "sha256": "7b5c5e242e789cb78f2a3fc6c6be2c359344f76f476a2aa31f2cfc4edb29ab69"
+    },
+    {
+      "path": "atx-impl/tools/backtest_integrity.py",
+      "sha256": "3def2b12eb87dd58b58fff2f3ecfcd760c1f3afbdb43f26c96097d0ecbbbadd9"
+    },
+    {
+      "path": "atx-impl/tools/dsr_total.py",
+      "sha256": "8dbbed693fe217aa94f2229c528e2c5e18cd8db6f7b6d33a1ce2863e86ffe168"
+    },
+    {
+      "path": "scripts/run_bounded_research.py",
+      "sha256": "b8a929e12b014e63d1699aaabdd4cfd61ac066676359f8eabe7bef15bb458df9"
+    },
+    {
+      "path": "scripts/wave_seal.py",
+      "sha256": "1dc40c31bcf67f86c127c26778698118c48d9de45fba854c69429392b3dcf98f"
+    },
+    {
+      "path": "atx-engine/tools/research_window.py",
+      "sha256": "32fe8acd16a3c0e24aae2b4cfe8c870c16a48cfabfbcb19e11da63507dbbd9c6"
+    },
+    {
+      "path": "atx-engine/src/research/eval/eval_report.cpp",
+      "sha256": "a2579c5a51d83c0c065578338226f537cd2d28746fda9b74db1802db9f0a5ddc"
+    },
+    {
+      "path": "atx-engine/src/research/eval/eval_cli.cpp",
+      "sha256": "4b99b21d6c4aec12e29b47e3c6c489a0eb23ef063e93fc380465cca00442c304"
+    },
+    {
+      "path": "atx-engine/src/research/eval/eval_series.cpp",
+      "sha256": "0450f8c9069275f88e41f4f8ad6e4d85817f54106c0e0b3c9e50c591439396b4"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/tools/p9x_read_filter.py",
+      "sha256": "d079a1eaabfc7ea597cc5c5cd62182e2571af4f4202bddda3a3dd80bcfdf2a5a"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/tools/p9_adoption_conditional.py",
+      "sha256": "8aa5b380f214b933453ca60ce26dc02205c4bdac5df5527587ec52ce7f64f0fb"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/tools/p9_adoption_prepare.py",
+      "sha256": "da1bd11e6615e5dabe83295a15bbb7ec424e57535688b6affb4abb3a4f183f89"
+    },
+    {
+      "path": "build-equity/trials.jsonl",
+      "sha256": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d"
+    },
+    {
+      "path": "C:/Windows/System32/ucrtbase.dll",
+      "sha256": "2c08e77f86b0953cffa505bdbe64e87ecb7c088db65d5acb9a2eee65a32565ef"
+    },
+    {
+      "path": "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+      "sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+    },
+    {
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/manifest.json",
+      "sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/model.atxcov",
+      "sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-covv1/manifest.json",
+      "sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-covv1/model.atxcov",
+      "sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a"
+    },
+    {
+      "path": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+      "sha256": "1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f"
+    },
+    {
+      "path": "scripts/specs/p9/templates/p9x-leverage.json",
+      "sha256": "e8a308b593b67c16111f3e4792c92983e9c5cfd412c7e42d485ecfe089b549db"
+    },
+    {
+      "path": "build-equity/cycle-v8y-vol-target-y-1/pbo.json",
+      "sha256": "2beb256ccd64325d28f0b7f95d3eae8e94b10b4ab57197f48c7681e7876f4ea6"
+    },
+    {
+      "path": "build-equity/cycle-v8ysb-gm/pbo.json",
+      "sha256": "556192c0161051011587467b86c848b916ae4ff8de3fbfbd79cd1d7b4f23aa10"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9h-registered-prints.json",
+      "sha256": "d3c71d24c8b6b3598e04b9829846297a20bf1123b114be219487ce109c816633"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9h-mechanics-first.json",
+      "sha256": "af97bd5c84a420b3d74575622fad160f7bc026bac40758d2f40da833a1663a19"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-registered-prints.json",
+      "sha256": "bd6934b6e93bd5c195871bf51858658859cf58edd9f4c159015e9a8da02e5b55"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-mechanics-first.json",
+      "sha256": "8b222bfc9dacbefc111d00c36aa274297894b2deebd4ab5cc84df66f253ed015"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-final-output-sha256.txt",
+      "sha256": "c314eaeceef66e9014bc6a825e6ed4dd0cccde9ee84031fc1a7c326caee65347"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-clock-prints.json",
+      "sha256": "9d0318798adc013144fac7ff8c59eb31c4f414a7aa63c3b1f86bde35a913b601"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-registered-prints.json",
+      "sha256": "6cae3171a5dfd97a8c0d69a1f82717825fc27aca025dba4eb9194880b5e5603b"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-completion-audit.json",
+      "sha256": "85ae97ea0cb195ce4a9680e8d0601e91b915bc02e0f4f78d979f743eb401fc76"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-accounting-v8.txt",
+      "sha256": "36a81dcb1209d4417c31a1298d4970d6e4985dc4494b8413f33e1be6c8572c32"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-final-output-sha256.txt",
+      "sha256": "6c393a339133d1d84a4db935d668edbeb5d477e4e95c2030daed018a8e6fb2ef"
+    },
+    {
+      "path": "build-equity/waves/p9h-cov-hedge-attempt2/readers/mech-matched.json",
+      "sha256": "7a1537f5dd162912759f2559aaa94b3edec7952e3e380b5f7a6c4862ff81f50e"
+    },
+    {
+      "path": "build-equity/p9x-leverage-readers/book.json",
+      "sha256": "a4ff52666727e9401a00bce89d6b0fdc219977c935c2d01e13425a2585718d38"
+    },
+    {
+      "path": "build-equity/p9x-leverage-readers/mechanics.json",
+      "sha256": "3ab0dd5d931faa2ce2d72f1258aae7428d4d3c88565503ca0d7285a2616abc4d"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/root-R0-12-report.md",
+      "sha256": "f26218b8d692477d269277dbfc66c98f434e1ad0d3d7504e7bf5f0ced0ecb0f9"
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/p9-prereg.md",
+      "sha256": "e525ff79e18e9be5c775ab73f42fbe292f5766d1670ad846feee75efa3cc513b"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/capacity_curve.csv",
+      "sha256": "ed26cab56147d36f5cfd99b840e91236a489285da94a443fa2542faf396d14ee"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "sha256": "0e4e8b0b8249a79d3faae49453b14486ece5434f79f11faef1907ec865308d6a"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "sha256": "74655bc75e74413419d4455ed49a6491ace40ed563daebc4f37178f882b177b3"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "sha256": "014a437b402fdbedf68a521b43881040ce370fe1f1b17b699bbbeaf99e33f278"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc"
+    },
+    {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "sha256": "cd1988cbdaec58323204156ff4d781392d52c533b4e1880d746af93db6cdad74"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/summary.json",
+      "sha256": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/capacity_curve.csv",
+      "sha256": "4226d21474004c55cfa2fac5331c19c2068bb0fced90434a3f343aaed2b3e17e"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "sha256": "ec2aa080acc82d22371c994b777ac328b0a4412841e6e2bd8961c4ce2ca878dd"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "sha256": "4d077149c851d12196e5181eced8066b67ddcf6000a665a49dae9e675ad0afda"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "sha256": "d37f7e71e941fdb24a2a0cf6db543df1e97ed4ec470d5a8861fba34ec48c6b5b"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "faa0b16ae93324e37c6a69f56f80e52bc664ffd111f4ac5400a6ca7b9110b3a3"
+    },
+    {
+      "path": "build-equity/mega-nav-p9x-leverage/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "sha256": "3058fd848d78eccd80ad45800dc3b866e7d3fa0b98f09d447fa48ba938eaf4b7"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/summary.json",
+      "sha256": "826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/capacity_curve.csv",
+      "sha256": "edf1001d5afa0e81f7d41b76b73f8e8ece5441c77b2fb23dbaa28457f4b0691f"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "sha256": "22f31398db5ecdcf8d807bd9a148f9c11449f76bd516872583550294ee379921"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "sha256": "dbeddebee72086824f137c8c94a28698a8ee65876585dccb1edf06da7ca6eeac"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "sha256": "a4fc667e8f99fc407e773985314d6c3e968dab52355e9e5bc72d980d47cfae47"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3"
+    },
+    {
+      "path": "build-equity/p9-b0g-yf0-nav/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "sha256": "b525b1a126c44eecbb17cebd5587695ef5e2194e7461f8c55ec9ae4bdfb820d9"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/summary.json",
+      "sha256": "48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/capacity_curve.csv",
+      "sha256": "b99b1cd14237067c06b6af36b2b3b472fee7e0aee9a6524bb80a680ebcfca3db"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "sha256": "e39644f0c38d5670f6296e4a50b3a39c3c2a20525f2800fbcc46fb3d0133f322"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "sha256": "55a47e65e7365c995c68eb6bafd8843be3614e8d95bf2737d8d77235bcf972b1"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "sha256": "c4754c76d9168fef39038c12d8364d0d041be8950a82e5a6d8edebdaf2673c3f"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "sha256": "ac9e99359a6e5b151dabe42259ada92c82d069bde68ed7458ba644db954917d3"
+    },
+    {
+      "path": "build-equity/p9-b0-r2-nav/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "sha256": "9831ba31b0529684230f1f6d1a6220fd45503c74851fa6144df2df5396134fe4"
+    },
+    {
+      "path": "build-equity/cycle-v8y-vol-target-y-1/pbo.json",
+      "sha256": "2beb256ccd64325d28f0b7f95d3eae8e94b10b4ab57197f48c7681e7876f4ea6"
+    },
+    {
+      "path": "build-equity/cycle-v8ysb-gm/pbo.json",
+      "sha256": "556192c0161051011587467b86c848b916ae4ff8de3fbfbd79cd1d7b4f23aa10"
+    }
+  ],
+  "ledger_lines": 140,
+  "ledger_prefix_sha256": {
+    "133": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554",
+    "139": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+    "140": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d"
+  },
+  "canonical_counts": {
+    "Nc": 69,
+    "admissions_historical": 61,
+    "Nhand": 130,
+    "M_inherited": 110,
+    "Ntot": 240,
+    "history": 0
+  },
+  "no_new_trials_or_retries": true,
+  "source_exception": "R15-ADOPT-PM-METADATA exact three original spans; original OTHER certificate preserved",
+  "permission_refusals": 0
+}

@@ -1,0 +1,68 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "ea52989a0b0cf3ab33b08bd6cf56aafa98b38059",
+  "started_utc": "2026-10-04T18:30:18.228280+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "atx-impl/tools/nav_summ.py",
+    "build-equity/p9-b0-yf0-nav",
+    "--reference",
+    "build-equity/p9-c1-s2-x5-nav",
+    "--protocol",
+    "v8",
+    "--psr",
+    "--dsr-ledger",
+    "C:/Users/natha/AppData/Local/Temp/claude/c--atx/6ea15be9-c1e8-4316-99d4-4854dfd7c03c/scratchpad/m2f-ledger-copy/trials.jsonl",
+    "--dsr-total",
+    "C:/Users/natha/AppData/Local/Temp/claude/c--atx/6ea15be9-c1e8-4316-99d4-4854dfd7c03c/scratchpad/m2f-ledger-copy/trials.jsonl",
+    "--json",
+    "build-equity/p9-m2f-b2-identity/YF0-P.json"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "80fa9a1843e202e15722ef887630b6e719b903f064c2abc9ff8c327bfcee3f30",
+  "attempt": 1,
+  "build_type": null,
+  "bindings": [
+    {
+      "path": "C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\6ea15be9-c1e8-4316-99d4-4854dfd7c03c\\scratchpad\\m2f-ledger-copy\\trials.jsonl",
+      "sha256": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554"
+    }
+  ],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 256
+  },
+  "sampled_peak_tree_rss_bytes": 504778752,
+  "minimum_system_free_bytes": 2207731712,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    ".superpowers/sdd/platform-p9-20261003/al-data/atx-db-request.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/builder-designs.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/task-AL-DATA-report.md",
+    ".superpowers/sdd/platform-p9-20261003/al-data/task-AL-DATA-review.md",
+    ".superpowers/sdd/platform-p9-20261003/progress.md",
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png"
+  ],
+  "wall_seconds": 1.0630000000091968,
+  "owned_processes": [
+    {
+      "pid": 10560,
+      "create_time": 1791138618.2317045
+    },
+    {
+      "pid": 6512,
+      "create_time": 1791138618.241639
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "90b583ca0a601e9d340da85b5b8064b444846bc4393ceae05c955be6c690915b",
+    "stderr.log": "3498e3f5a53011a6ae38bfc3823b436bcb936cd876fefa0ff6837d52b78ef9cc"
+  }
+}

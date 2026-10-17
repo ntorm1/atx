@@ -1,0 +1,4 @@
+reference build-equity/p9-b0-y1-nav (28 files)  new build-equity/p9-m2i-cov-y1-nav (28 files)
+  DIFF summary.json: 2 leaf paths differ: ['/producer/build_type', '/producer/engine_git_sha']; outside the list: none
+  files byte-identical 27, differing 1
+VERDICT: inside the list

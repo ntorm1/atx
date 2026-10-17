@@ -1,0 +1,1 @@
+d8a500d84dc2a25130c69b226d8f5deec47b8dabb6256522c83c00764d3d9d65 *build-equity/bin/atx-research-store.exe

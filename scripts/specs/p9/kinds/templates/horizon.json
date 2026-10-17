@@ -1,0 +1,8 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9k-horizon",
+  "description": "P9 kinds fixture (K-P9-9, G-P2 'new horizon / holding period'): the wave's horizon block sets the flags and renames every output -h<days>; this template changes nothing else.",
+  "parent": null,
+  "nominal_parent": "../../../../../tiny.json",
+  "change": {}
+}

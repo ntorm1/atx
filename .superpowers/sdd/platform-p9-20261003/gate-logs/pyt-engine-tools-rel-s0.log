@@ -1,0 +1,53 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 391 items
+
+atx-engine\tools\test_audit_recent_price_gap.py .........                [  2%]
+atx-engine\tools\test_build_fundamental_events.py ...................... [  7%]
+                                                                         [  7%]
+atx-engine\tools\test_era_pool.py .................                      [ 12%]
+atx-engine\tools\test_field_module_imports.py .....                      [ 13%]
+atx-engine\tools\test_linked_operating_v2.py .....                       [ 14%]
+atx-engine\tools\test_linked_operating_v3.py ........                    [ 16%]
+atx-engine\tools\test_lo1_delisting.py ....                              [ 17%]
+atx-engine\tools\test_no_new_python_builder.py ....                      [ 18%]
+atx-engine\tools\test_prepare_identity_bridge.py ..................      [ 23%]
+atx-engine\tools\test_prepare_recent_research.py ...........             [ 26%]
+atx-engine\tools\test_prepare_research_fields.py ....................... [ 32%]
+.............                                                            [ 35%]
+atx-engine\tools\test_prepare_research_fields_draft.py ....              [ 36%]
+atx-engine\tools\test_prepare_research_fields_module_reuse.py ......     [ 38%]
+atx-engine\tools\test_prepare_research_fields_reuse.py ...............   [ 41%]
+atx-engine\tools\test_prepare_research_fields_reuse_keys.py ....         [ 42%]
+atx-engine\tools\test_prepare_research_fields_seal.py ..                 [ 43%]
+atx-engine\tools\test_prepare_research_fields_sec.py .............       [ 46%]
+atx-engine\tools\test_prepare_research_fields_sic.py .......             [ 48%]
+atx-engine\tools\test_prepare_research_fields_sv.py ...........          [ 51%]
+atx-engine\tools\test_record_store.py ...                                [ 52%]
+atx-engine\tools\test_record_store_sqlite.py .........                   [ 54%]
+atx-engine\tools\test_research_fields_connected.py ...........           [ 57%]
+atx-engine\tools\test_research_fields_deals.py ........                  [ 59%]
+atx-engine\tools\test_research_fields_divevent.py .....                  [ 60%]
+atx-engine\tools\test_research_fields_gold.py .......                    [ 62%]
+atx-engine\tools\test_research_fields_holdings_xsw.py ..........         [ 64%]
+atx-engine\tools\test_research_fields_ivshape.py .......                 [ 66%]
+atx-engine\tools\test_research_fields_mgr13f.py .........                [ 69%]
+atx-engine\tools\test_research_fields_ohlc.py .......                    [ 70%]
+atx-engine\tools\test_research_fields_price.py .........                 [ 73%]
+atx-engine\tools\test_research_fields_v8.py .............                [ 76%]
+atx-engine\tools\test_research_fields_v8_quarters.py .........           [ 78%]
+atx-engine\tools\test_research_fields_v9_earn.py ...........             [ 81%]
+atx-engine\tools\test_research_fields_v9_nt.py ...........               [ 84%]
+atx-engine\tools\test_research_fields_xdata.py .......                   [ 86%]
+atx-engine\tools\test_research_store.py ...........                      [ 89%]
+atx-engine\tools\test_research_store_blind.py ...                        [ 89%]
+atx-engine\tools\test_research_store_classes.py .....                    [ 91%]
+atx-engine\tools\test_research_store_fixtures.py ........                [ 93%]
+atx-engine\tools\test_research_store_identity.py ................        [ 97%]
+atx-engine\tools\test_research_window.py ......                          [ 98%]
+atx-engine\tools\test_seal_partitions.py .....                           [100%]
+
+======================= 391 passed in 247.49s (0:04:07) =======================

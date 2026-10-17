@@ -1,0 +1,592 @@
+[atx-build] ctest --test-dir C:\atx-wt\pool-2\build-equity --output-on-failure -j 1 -L atx_research
+Internal ctest changing into directory: C:/atx-wt/pool-2/build-equity
+Test project C:/atx-wt/pool-2/build-equity
+        Start 3934: atx-engine-research-store-tests.ResearchStoreTable.ToyDdlExactText
+  1/291 Test #3934: atx-engine-research-store-tests.ResearchStoreTable.ToyDdlExactText .............................................   Passed    0.05 sec
+        Start 3935: atx-engine-research-store-tests.ResearchStoreTable.BindReadRoundTripEveryType
+  2/291 Test #3935: atx-engine-research-store-tests.ResearchStoreTable.BindReadRoundTripEveryType ..................................   Passed    0.03 sec
+        Start 3936: atx-engine-research-store-tests.ResearchStoreTable.NullOptionalRoundTrip
+  3/291 Test #3936: atx-engine-research-store-tests.ResearchStoreTable.NullOptionalRoundTrip .......................................   Passed    0.02 sec
+        Start 3937: atx-engine-research-store-tests.ResearchStoreTable.U64BitPatternRoundTrip
+  4/291 Test #3937: atx-engine-research-store-tests.ResearchStoreTable.U64BitPatternRoundTrip ......................................   Passed    0.02 sec
+        Start 3938: atx-engine-research-store-tests.ResearchStoreTable.ReadRejectsNullInRequiredColumn
+  5/291 Test #3938: atx-engine-research-store-tests.ResearchStoreTable.ReadRejectsNullInRequiredColumn .............................   Passed    0.02 sec
+        Start 3939: atx-engine-research-store-tests.ResearchStoreTable.AppendOnlyRefusesUpdateAndDelete
+  6/291 Test #3939: atx-engine-research-store-tests.ResearchStoreTable.AppendOnlyRefusesUpdateAndDelete ............................   Passed    0.02 sec
+        Start 3940: atx-engine-research-store-tests.ResearchStoreTable.UpsertReplacesNonKeyColumns
+  7/291 Test #3940: atx-engine-research-store-tests.ResearchStoreTable.UpsertReplacesNonKeyColumns .................................   Passed    0.03 sec
+        Start 3941: atx-engine-research-store-tests.ResearchStoreTable.SelectAllOrderedByKeyUnderReverseUnorderedSelects
+  8/291 Test #3941: atx-engine-research-store-tests.ResearchStoreTable.SelectAllOrderedByKeyUnderReverseUnorderedSelects ...........   Passed    0.03 sec
+        Start 3942: atx-engine-research-store-tests.ResearchStoreTable.BindRefusesNanAndNegativeZeroReal
+  9/291 Test #3942: atx-engine-research-store-tests.ResearchStoreTable.BindRefusesNanAndNegativeZeroReal ...........................   Passed    0.13 sec
+        Start 3943: atx-engine-research-store-tests.ResearchStoreTable.TypeChecksRefuseBadValues
+ 10/291 Test #3943: atx-engine-research-store-tests.ResearchStoreTable.TypeChecksRefuseBadValues ...................................   Passed    0.02 sec
+        Start 3944: atx-engine-research-store-tests.ResearchStoreSchema.GroupJsonEqualsFixture
+ 11/291 Test #3944: atx-engine-research-store-tests.ResearchStoreSchema.GroupJsonEqualsFixture .....................................   Passed    0.04 sec
+        Start 3945: atx-engine-research-store-tests.ResearchStoreSchema.DdlAppliesOnVendoredSqlite
+ 12/291 Test #3945: atx-engine-research-store-tests.ResearchStoreSchema.DdlAppliesOnVendoredSqlite .................................   Passed    0.14 sec
+        Start 3946: atx-engine-research-store-tests.ResearchStoreSchema.DbDocumentHasEveryGroupInOrder
+ 13/291 Test #3946: atx-engine-research-store-tests.ResearchStoreSchema.DbDocumentHasEveryGroupInOrder .............................   Passed    0.05 sec
+        Start 3947: atx-engine-research-store-tests.ResearchStoreDigest.EncodingLiteral
+ 14/291 Test #3947: atx-engine-research-store-tests.ResearchStoreDigest.EncodingLiteral ............................................   Passed    0.02 sec
+        Start 3948: atx-engine-research-store-tests.ResearchStoreDigest.GoldenVectors
+ 15/291 Test #3948: atx-engine-research-store-tests.ResearchStoreDigest.GoldenVectors ..............................................   Passed    0.13 sec
+        Start 3949: atx-engine-research-store-tests.ResearchStoreDigest.VolatileColumnsExcluded
+ 16/291 Test #3949: atx-engine-research-store-tests.ResearchStoreDigest.VolatileColumnsExcluded ....................................   Passed    0.13 sec
+        Start 3950: atx-engine-research-store-tests.ResearchStoreDigest.RealsByBitPattern
+ 17/291 Test #3950: atx-engine-research-store-tests.ResearchStoreDigest.RealsByBitPattern ..........................................   Passed    0.02 sec
+        Start 3951: atx-engine-research-store-tests.ResearchStoreOpen.CreateThenReopen
+ 18/291 Test #3951: atx-engine-research-store-tests.ResearchStoreOpen.CreateThenReopen .............................................   Passed    0.05 sec
+        Start 3952: atx-engine-research-store-tests.ResearchStoreOpen.MigratesToyV1ToV2
+ 19/291 Test #3952: atx-engine-research-store-tests.ResearchStoreOpen.MigratesToyV1ToV2 ............................................   Passed    0.08 sec
+        Start 3953: atx-engine-research-store-tests.ResearchStoreOpen.RefusesForeignApplicationId
+ 20/291 Test #3953: atx-engine-research-store-tests.ResearchStoreOpen.RefusesForeignApplicationId ..................................   Passed    0.05 sec
+        Start 3954: atx-engine-research-store-tests.ResearchStoreOpen.RefusesNewerVersion
+ 21/291 Test #3954: atx-engine-research-store-tests.ResearchStoreOpen.RefusesNewerVersion ..........................................   Passed    0.04 sec
+        Start 3955: atx-engine-research-store-tests.ResearchStoreOpen.StoreInfoHoldsSchemaJson
+ 22/291 Test #3955: atx-engine-research-store-tests.ResearchStoreOpen.StoreInfoHoldsSchemaJson .....................................   Passed    0.06 sec
+        Start 3956: atx-engine-research-store-tests.ResearchStoreOpen.ReadsPythonCreatedFixture
+ 23/291 Test #3956: atx-engine-research-store-tests.ResearchStoreOpen.ReadsPythonCreatedFixture ....................................   Passed    0.14 sec
+        Start 3957: atx-engine-research-store-tests.ResearchStoreOpen.CatalogDigestIndependentOfInsertOrder
+ 24/291 Test #3957: atx-engine-research-store-tests.ResearchStoreOpen.CatalogDigestIndependentOfInsertOrder ........................   Passed    0.07 sec
+        Start 3958: atx-engine-research-store-tests.ResearchStoreOpen.RefusesSchemaDriftAtSameVersion
+ 25/291 Test #3958: atx-engine-research-store-tests.ResearchStoreOpen.RefusesSchemaDriftAtSameVersion ..............................   Passed    0.07 sec
+        Start 3959: atx-engine-research-store-tests.ResearchStoreOpen.RequiresExactlyOneStoreInfoGroup
+ 26/291 Test #3959: atx-engine-research-store-tests.ResearchStoreOpen.RequiresExactlyOneStoreInfoGroup .............................   Passed    0.04 sec
+        Start 3960: atx-engine-research-store-tests.ResearchStoreOpen.OpenCacheNeverCreatesAnIndex
+ 27/291 Test #3960: atx-engine-research-store-tests.ResearchStoreOpen.OpenCacheNeverCreatesAnIndex .................................   Passed    0.04 sec
+        Start 3961: atx-engine-research-catalog-tests.ResearchCatalog.RecordsSchemaJsonEqualsFixture
+ 28/291 Test #3961: atx-engine-research-catalog-tests.ResearchCatalog.RecordsSchemaJsonEqualsFixture ...............................   Passed    0.05 sec
+        Start 3962: atx-engine-research-catalog-tests.ResearchCatalog.IngestsSyntheticTree
+ 29/291 Test #3962: atx-engine-research-catalog-tests.ResearchCatalog.IngestsSyntheticTree .........................................   Passed    0.48 sec
+        Start 3963: atx-engine-research-catalog-tests.ResearchCatalog.DigestReproducibleFromScratch
+ 30/291 Test #3963: atx-engine-research-catalog-tests.ResearchCatalog.DigestReproducibleFromScratch ................................   Passed    0.44 sec
+        Start 3964: atx-engine-research-catalog-tests.ResearchCatalog.DigestIndependentOfIngestOrder
+ 31/291 Test #3964: atx-engine-research-catalog-tests.ResearchCatalog.DigestIndependentOfIngestOrder ...............................   Passed    0.39 sec
+        Start 3965: atx-engine-research-catalog-tests.ResearchCatalog.PinsResolvedAndStaleDetected
+ 32/291 Test #3965: atx-engine-research-catalog-tests.ResearchCatalog.PinsResolvedAndStaleDetected .................................   Passed    0.45 sec
+        Start 3966: atx-engine-research-catalog-tests.ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared
+ 33/291 Test #3966: atx-engine-research-catalog-tests.ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared ..................   Passed    0.29 sec
+        Start 3967: atx-engine-research-catalog-tests.ResearchCatalog.VerifyPayloadsUpgradesToVerified
+ 34/291 Test #3967: atx-engine-research-catalog-tests.ResearchCatalog.VerifyPayloadsUpgradesToVerified .............................   Passed    0.76 sec
+        Start 3968: atx-engine-research-catalog-tests.ResearchCatalog.UnparsedJsonCataloguedAsArtifact
+ 35/291 Test #3968: atx-engine-research-catalog-tests.ResearchCatalog.UnparsedJsonCataloguedAsArtifact .............................   Passed    0.20 sec
+        Start 3969: atx-engine-research-catalog-tests.ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder
+ 36/291 Test #3969: atx-engine-research-catalog-tests.ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder ...................   Passed    0.42 sec
+        Start 3970: atx-engine-research-catalog-tests.ResearchCatalog.CrlfAndLfDetected
+ 37/291 Test #3970: atx-engine-research-catalog-tests.ResearchCatalog.CrlfAndLfDetected ............................................   Passed    0.34 sec
+        Start 3971: atx-engine-research-catalog-tests.ResearchCatalog.IngestIsIdempotent
+ 38/291 Test #3971: atx-engine-research-catalog-tests.ResearchCatalog.IngestIsIdempotent ...........................................   Passed    0.14 sec
+        Start 3972: atx-engine-research-catalog-tests.ResearchCatalog.TrialLinesAppendOnly
+ 39/291 Test #3972: atx-engine-research-catalog-tests.ResearchCatalog.TrialLinesAppendOnly .........................................   Passed    0.27 sec
+        Start 3973: atx-engine-research-catalog-tests.ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder
+ 40/291 Test #3973: atx-engine-research-catalog-tests.ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder .......................   Passed    0.18 sec
+        Start 3974: atx-engine-research-catalog-tests.ResearchCatalog.ClassifierUsesGlobsAndSchemas
+ 41/291 Test #3974: atx-engine-research-catalog-tests.ResearchCatalog.ClassifierUsesGlobsAndSchemas ................................   Passed    0.05 sec
+        Start 3975: atx-engine-research-catalog-tests.ResearchCatalog.CacheImportMatchesRecordStore
+ 42/291 Test #3975: atx-engine-research-catalog-tests.ResearchCatalog.CacheImportMatchesRecordStore ................................   Passed    0.45 sec
+        Start 3976: atx-engine-research-catalog-tests.ResearchCatalog.LedgerHeadFromResearchLedger
+ 43/291 Test #3976: atx-engine-research-catalog-tests.ResearchCatalog.LedgerHeadFromResearchLedger .................................   Passed    0.36 sec
+        Start 3977: atx-engine-research-catalog-tests.ResearchCatalog.RecordedHeadsArePrefixHeads
+ 44/291 Test #3977: atx-engine-research-catalog-tests.ResearchCatalog.RecordedHeadsArePrefixHeads ..................................   Passed    0.84 sec
+        Start 3978: atx-engine-research-catalog-tests.SealGuard.HasSealedYearMatchesTheBackstopRegex
+ 45/291 Test #3978: atx-engine-research-catalog-tests.SealGuard.HasSealedYearMatchesTheBackstopRegex ...............................   Passed    0.02 sec
+        Start 3979: atx-engine-research-catalog-tests.SealGuard.YearTokenPathNeverOpened
+ 46/291 Test #3979: atx-engine-research-catalog-tests.SealGuard.YearTokenPathNeverOpened ...........................................   Passed    0.18 sec
+        Start 3980: atx-engine-research-catalog-tests.SealGuard.SealedRootNeverOpened
+ 47/291 Test #3980: atx-engine-research-catalog-tests.SealGuard.SealedRootNeverOpened ..............................................   Passed    0.14 sec
+        Start 3981: atx-engine-research-catalog-tests.SealGuard.RootTokenScannedOnlyBelowTheRepoTop
+ 48/291 Test #3981: atx-engine-research-catalog-tests.SealGuard.RootTokenScannedOnlyBelowTheRepoTop ................................   Passed    0.21 sec
+        Start 3982: atx-engine-research-catalog-tests.SealGuard.CacheImportNeverOpensSealedPaths
+ 49/291 Test #3982: atx-engine-research-catalog-tests.SealGuard.CacheImportNeverOpensSealedPaths ...................................   Passed    0.07 sec
+        Start 3983: atx-engine-research-catalog-tests.SealGuard.OutsideRootsListedNotOpened
+ 50/291 Test #3983: atx-engine-research-catalog-tests.SealGuard.OutsideRootsListedNotOpened ........................................   Passed    0.19 sec
+        Start 3984: atx-engine-research-catalog-tests.SealGuard.FieldSourcePinsNotFollowed
+ 51/291 Test #3984: atx-engine-research-catalog-tests.SealGuard.FieldSourcePinsNotFollowed .........................................   Passed    0.19 sec
+        Start 3985: atx-engine-research-catalog-tests.StoreCli.ExitCodes
+ 52/291 Test #3985: atx-engine-research-catalog-tests.StoreCli.ExitCodes ...........................................................   Passed    0.45 sec
+        Start 3986: atx-engine-research-catalog-tests.StoreCli.SealedRootRefusedBeforeAnythingIsRead
+ 53/291 Test #3986: atx-engine-research-catalog-tests.StoreCli.SealedRootRefusedBeforeAnythingIsRead ...............................   Passed    0.21 sec
+        Start 3987: atx-engine-research-catalog-tests.StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb
+ 54/291 Test #3987: atx-engine-research-catalog-tests.StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb ..............................   Passed    0.10 sec
+        Start 3988: atx-engine-research-catalog-tests.StoreCli.DuplicateCandidateIdIsARefusal
+ 55/291 Test #3988: atx-engine-research-catalog-tests.StoreCli.DuplicateCandidateIdIsARefusal ......................................   Passed    0.18 sec
+        Start 3989: atx-engine-research-catalog-tests.StoreCli.QueryRowsOrderedByKey
+ 56/291 Test #3989: atx-engine-research-catalog-tests.StoreCli.QueryRowsOrderedByKey ...............................................   Passed    0.36 sec
+        Start 3990: atx-engine-research-catalog-tests.StoreCli.SchemaJsonEqualsStoreInfo
+ 57/291 Test #3990: atx-engine-research-catalog-tests.StoreCli.SchemaJsonEqualsStoreInfo ...........................................   Passed    0.15 sec
+        Start 3991: atx-engine-research-composition-tests.ResearchComposition.NumpyPairwiseSumIsNumpys
+ 58/291 Test #3991: atx-engine-research-composition-tests.ResearchComposition.NumpyPairwiseSumIsNumpys .............................   Passed    0.09 sec
+        Start 3992: atx-engine-research-composition-tests.ResearchComposition.ErcClosedFormTwoThemes
+ 59/291 Test #3992: atx-engine-research-composition-tests.ResearchComposition.ErcClosedFormTwoThemes ...............................   Passed    0.03 sec
+        Start 3993: atx-engine-research-composition-tests.ResearchComposition.SleeveCovarianceClosedForm
+ 60/291 Test #3993: atx-engine-research-composition-tests.ResearchComposition.SleeveCovarianceClosedForm ...........................   Passed    0.12 sec
+        Start 3994: atx-engine-research-composition-tests.ResearchComposition.CapTraceRecordsEveryPass
+ 61/291 Test #3994: atx-engine-research-composition-tests.ResearchComposition.CapTraceRecordsEveryPass .............................   Passed    0.03 sec
+        Start 3995: atx-engine-research-composition-tests.ResearchComposition.TierRegradesAreRuleFive
+ 62/291 Test #3995: atx-engine-research-composition-tests.ResearchComposition.TierRegradesAreRuleFive ..............................   Passed    0.01 sec
+        Start 3996: atx-engine-research-composition-tests.ResearchComposition.ThemeResidOrderIsTheRegisteredOrder
+ 63/291 Test #3996: atx-engine-research-composition-tests.ResearchComposition.ThemeResidOrderIsTheRegisteredOrder ..................   Passed    0.01 sec
+        Start 3997: atx-engine-research-composition-tests.ResearchComposition.FitEqualsPythonFixture
+ 64/291 Test #3997: atx-engine-research-composition-tests.ResearchComposition.FitEqualsPythonFixture ...............................   Passed    0.19 sec
+        Start 3998: atx-engine-research-composition-tests.ResearchComposition.FitRefusesMalformedSpecs
+ 65/291 Test #3998: atx-engine-research-composition-tests.ResearchComposition.FitRefusesMalformedSpecs .............................   Passed    0.17 sec
+        Start 3999: atx-engine-research-composition-tests.ResearchComposition.CliPublishesTheFit
+ 66/291 Test #3999: atx-engine-research-composition-tests.ResearchComposition.CliPublishesTheFit ...................................   Passed    0.11 sec
+        Start 4000: atx-engine-research-composition-tests.ResearchComposition.WeightsSchemaIds
+ 67/291 Test #4000: atx-engine-research-composition-tests.ResearchComposition.WeightsSchemaIds .....................................   Passed    0.02 sec
+        Start 4001: atx-engine-research-composition-tests.WalkForward.ExpandingMeanClosedForm
+ 68/291 Test #4001: atx-engine-research-composition-tests.WalkForward.ExpandingMeanClosedForm ......................................   Passed    0.02 sec
+        Start 4002: atx-engine-research-composition-tests.WalkForward.NoRowUsesFutureDecisions
+ 69/291 Test #4002: atx-engine-research-composition-tests.WalkForward.NoRowUsesFutureDecisions .....................................   Passed    0.07 sec
+        Start 4003: atx-engine-research-composition-tests.WalkForward.RefusesBeforeAnyRow
+ 70/291 Test #4003: atx-engine-research-composition-tests.WalkForward.RefusesBeforeAnyRow ..........................................   Passed    0.02 sec
+        Start 4004: atx-engine-research-composition-tests.WalkForward.CliWritesTheRowsAndRefuses
+ 71/291 Test #4004: atx-engine-research-composition-tests.WalkForward.CliWritesTheRowsAndRefuses ...................................   Passed    0.17 sec
+        Start 4005: atx-engine-research-composition-tests.MomVolman.SleeveIsTsmomStepOneForPriceMomentum
+ 72/291 Test #4005: atx-engine-research-composition-tests.MomVolman.SleeveIsTsmomStepOneForPriceMomentum ...........................   Passed    0.16 sec
+        Start 4006: atx-engine-research-composition-tests.MomVolman.RefusalsAndWalkForwardRows
+ 73/291 Test #4006: atx-engine-research-composition-tests.MomVolman.RefusalsAndWalkForwardRows .....................................   Passed    0.17 sec
+        Start 4007: atx-engine-research-composition-tests.MomVolman.CliWritesTheSleeveBlockOnlyWhenAsked
+ 74/291 Test #4007: atx-engine-research-composition-tests.MomVolman.CliWritesTheSleeveBlockOnlyWhenAsked ...........................   Passed    0.10 sec
+        Start 4008: atx-engine-research-composition-tests.AimV2.ClosedFormOnAPlantedModel
+ 75/291 Test #4008: atx-engine-research-composition-tests.AimV2.ClosedFormOnAPlantedModel ..........................................   Passed    0.02 sec
+        Start 4009: atx-engine-research-composition-tests.AimV2.ReadsNoFactorValue
+ 76/291 Test #4009: atx-engine-research-composition-tests.AimV2.ReadsNoFactorValue .................................................   Passed    0.01 sec
+        Start 4010: atx-engine-research-composition-tests.AimV2.RefusalsBeforeAnyFit
+ 77/291 Test #4010: atx-engine-research-composition-tests.AimV2.RefusalsBeforeAnyFit ...............................................   Passed    0.03 sec
+        Start 4011: atx-engine-research-composition-tests.AimV2.CliWritesGainsAndThemeWeightsOnlyForIt
+ 78/291 Test #4011: atx-engine-research-composition-tests.AimV2.CliWritesGainsAndThemeWeightsOnlyForIt .............................   Passed    0.04 sec
+        Start 4012: atx-engine-research-ledger-tests.ResearchLedgerChain.EmptyPrefixIsTheGenesisUnderTheNamedRule
+ 79/291 Test #4012: atx-engine-research-ledger-tests.ResearchLedgerChain.EmptyPrefixIsTheGenesisUnderTheNamedRule ..................   Passed    0.03 sec
+        Start 4013: atx-engine-research-ledger-tests.ResearchLedgerChain.LegacyLinesFoldAndAChainedLineIsItsOwnHash
+ 80/291 Test #4013: atx-engine-research-ledger-tests.ResearchLedgerChain.LegacyLinesFoldAndAChainedLineIsItsOwnHash ................   Passed    0.03 sec
+        Start 4014: atx-engine-research-ledger-tests.ResearchLedgerChain.PrefixHeadsAreTheHeadOfEveryPrefix
+ 81/291 Test #4014: atx-engine-research-ledger-tests.ResearchLedgerChain.PrefixHeadsAreTheHeadOfEveryPrefix ........................   Passed    0.13 sec
+        Start 4015: atx-engine-research-ledger-tests.ResearchLedgerChain.LineEndsAndBlankLinesDoNotMoveTheHead
+ 82/291 Test #4015: atx-engine-research-ledger-tests.ResearchLedgerChain.LineEndsAndBlankLinesDoNotMoveTheHead .....................   Passed    0.03 sec
+        Start 4016: atx-engine-research-ledger-tests.ResearchLedgerChain.VerifyAcceptsTheChainAndRefusesEachBreak
+ 83/291 Test #4016: atx-engine-research-ledger-tests.ResearchLedgerChain.VerifyAcceptsTheChainAndRefusesEachBreak ..................   Passed    0.02 sec
+        Start 4017: atx-engine-research-ledger-tests.ResearchLedgerChain.ANullPrevLineFoldsInEveryRule
+ 84/291 Test #4017: atx-engine-research-ledger-tests.ResearchLedgerChain.ANullPrevLineFoldsInEveryRule .............................   Passed    0.13 sec
+        Start 4018: atx-engine-research-ledger-tests.ResearchLedgerChain.ANonObjectLineIsAParseError
+ 85/291 Test #4018: atx-engine-research-ledger-tests.ResearchLedgerChain.ANonObjectLineIsAParseError ...............................   Passed    0.13 sec
+        Start 4019: atx-engine-research-ledger-tests.ResearchLedgerChain.FixturePrefixHeadsEqualPython
+ 86/291 Test #4019: atx-engine-research-ledger-tests.ResearchLedgerChain.FixturePrefixHeadsEqualPython .............................   Passed    0.05 sec
+        Start 4020: atx-engine-research-ledger-tests.ResearchLedgerChain.AnAbsentLedgerIsEmptyOrRefused
+ 87/291 Test #4020: atx-engine-research-ledger-tests.ResearchLedgerChain.AnAbsentLedgerIsEmptyOrRefused ............................   Passed    0.05 sec
+        Start 4021: atx-engine-research-ledger-tests.ResearchLedger.TrialCountsEqualPython
+ 88/291 Test #4021: atx-engine-research-ledger-tests.ResearchLedger.TrialCountsEqualPython .........................................   Passed    0.03 sec
+        Start 4022: atx-engine-research-ledger-tests.ResearchLedger.LedgerNEqualsPython
+ 89/291 Test #4022: atx-engine-research-ledger-tests.ResearchLedger.LedgerNEqualsPython ............................................   Passed    0.03 sec
+        Start 4023: atx-engine-research-ledger-tests.ResearchLedger.NTotBreakdownEqualsPython
+ 90/291 Test #4023: atx-engine-research-ledger-tests.ResearchLedger.NTotBreakdownEqualsPython ......................................   Passed    0.03 sec
+        Start 4024: atx-engine-research-ledger-tests.ResearchLedger.WindowVarianceEqualsPython
+ 91/291 Test #4024: atx-engine-research-ledger-tests.ResearchLedger.WindowVarianceEqualsPython .....................................   Passed    0.03 sec
+        Start 4025: atx-engine-research-ledger-tests.ResearchLedger.ConstructionIdsAndPrefixesEqualPython
+ 92/291 Test #4025: atx-engine-research-ledger-tests.ResearchLedger.ConstructionIdsAndPrefixesEqualPython ..........................   Passed    0.03 sec
+        Start 4026: atx-engine-research-ledger-tests.ResearchLedger.TrialIdentitiesEqualPython
+ 93/291 Test #4026: atx-engine-research-ledger-tests.ResearchLedger.TrialIdentitiesEqualPython .....................................   Passed    0.02 sec
+        Start 4027: atx-engine-research-ledger-tests.ResearchLedger.ReaderRefusesWhatThePythonRefuses
+ 94/291 Test #4027: atx-engine-research-ledger-tests.ResearchLedger.ReaderRefusesWhatThePythonRefuses ..............................   Passed    0.03 sec
+        Start 4028: atx-engine-research-eval-tests.EvalVerb.TieMomentsAndPsr
+ 95/291 Test #4028: atx-engine-research-eval-tests.EvalVerb.TieMomentsAndPsr .......................................................   Passed    1.17 sec
+        Start 4029: atx-engine-research-eval-tests.EvalVerb.TieDsrCrossLoAndHouse
+ 96/291 Test #4029: atx-engine-research-eval-tests.EvalVerb.TieDsrCrossLoAndHouse ..................................................   Passed    0.93 sec
+        Start 4030: atx-engine-research-eval-tests.EvalVerb.TieOncAndEffectiveNDsr
+ 97/291 Test #4030: atx-engine-research-eval-tests.EvalVerb.TieOncAndEffectiveNDsr .................................................   Passed    0.78 sec
+        Start 4031: atx-engine-research-eval-tests.EvalVerb.TiePbo
+ 98/291 Test #4031: atx-engine-research-eval-tests.EvalVerb.TiePbo .................................................................   Passed    0.70 sec
+        Start 4032: atx-engine-research-eval-tests.EvalVerb.TiePaired
+ 99/291 Test #4032: atx-engine-research-eval-tests.EvalVerb.TiePaired ..............................................................   Passed    0.74 sec
+        Start 4033: atx-engine-research-eval-tests.EvalVerb.TieNormPpf
+100/291 Test #4033: atx-engine-research-eval-tests.EvalVerb.TieNormPpf .............................................................   Passed    0.05 sec
+        Start 4034: atx-engine-research-eval-tests.EvalVerb.JsonSchema
+101/291 Test #4034: atx-engine-research-eval-tests.EvalVerb.JsonSchema .............................................................   Passed    0.71 sec
+        Start 4035: atx-engine-research-eval-tests.EvalVerb.HandRowIsThePrefixState
+102/291 Test #4035: atx-engine-research-eval-tests.EvalVerb.HandRowIsThePrefixState ................................................   Passed    1.11 sec
+        Start 4036: atx-engine-research-eval-tests.EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns
+103/291 Test #4036: atx-engine-research-eval-tests.EvalVerb.HandRowAtNTotMinusMLeavesOutTheCampaigns ...............................   Passed    0.18 sec
+        Start 4037: atx-engine-research-eval-tests.EvalVerb.CliWritesTheDocumentAndRefuses
+104/291 Test #4037: atx-engine-research-eval-tests.EvalVerb.CliWritesTheDocumentAndRefuses .........................................   Passed    0.09 sec
+        Start 4038: atx-engine-research-eval-tests.EvalVerb.ProtocolDefaultsFollowNavSumm
+105/291 Test #4038: atx-engine-research-eval-tests.EvalVerb.ProtocolDefaultsFollowNavSumm ..........................................   Passed    0.02 sec
+        Start 4039: atx-engine-research-eval-tests.EvalVerb.VolFlagAddsNetVolOnly
+106/291 Test #4039: atx-engine-research-eval-tests.EvalVerb.VolFlagAddsNetVolOnly ..................................................   Passed    0.09 sec
+        Start 4040: atx-engine-research-eval-tests.ResearchEvalRng.CbbStartsAreDefaultRngIntegers
+107/291 Test #4040: atx-engine-research-eval-tests.ResearchEvalRng.CbbStartsAreDefaultRngIntegers ..................................   Passed    0.04 sec
+        Start 4041: atx-engine-research-eval-tests.ResearchEvalRng.OncDrawsAreTheRecordedPicks
+108/291 Test #4041: atx-engine-research-eval-tests.ResearchEvalRng.OncDrawsAreTheRecordedPicks .....................................   Passed    0.07 sec
+        Start 4042: atx-engine-research-eval-tests.ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes
+109/291 Test #4042: atx-engine-research-eval-tests.ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes ..............   Passed    0.07 sec
+        Start 4043: atx-engine-research-eval-tests.Conditional.ClosedFormNormalCase
+110/291 Test #4043: atx-engine-research-eval-tests.Conditional.ClosedFormNormalCase ................................................   Passed    0.02 sec
+        Start 4044: atx-engine-research-eval-tests.Conditional.UnselectedCellsAreListedNotSummed
+111/291 Test #4044: atx-engine-research-eval-tests.Conditional.UnselectedCellsAreListedNotSummed ...................................   Passed    0.02 sec
+        Start 4045: atx-engine-research-eval-tests.Conditional.RefusesANonPositiveSe
+112/291 Test #4045: atx-engine-research-eval-tests.Conditional.RefusesANonPositiveSe ...............................................   Passed    0.02 sec
+        Start 4046: atx-engine-research-eval-tests.EvalEdges.FixtureCoversTheRulingsCases
+113/291 Test #4046: atx-engine-research-eval-tests.EvalEdges.FixtureCoversTheRulingsCases ..........................................   Passed    0.13 sec
+        Start 4047: atx-engine-research-eval-tests.EvalEdges.PairedTiesWithinTheConditioningBound
+114/291 Test #4047: atx-engine-research-eval-tests.EvalEdges.PairedTiesWithinTheConditioningBound ..................................   Passed    0.58 sec
+        Start 4048: atx-engine-research-eval-tests.EvalEdges.PairedRefusesADegeneratePair
+115/291 Test #4048: atx-engine-research-eval-tests.EvalEdges.PairedRefusesADegeneratePair ..........................................   Passed    0.56 sec
+        Start 4049: atx-engine-research-eval-tests.EvalEdges.VerbPrintsADegeneratePairAsRefused
+116/291 Test #4049: atx-engine-research-eval-tests.EvalEdges.VerbPrintsADegeneratePairAsRefused ....................................   Passed    0.18 sec
+        Start 4050: atx-engine-research-eval-tests.EvalEdges.CscvConstantCandidateHasSharpeZero
+117/291 Test #4050: atx-engine-research-eval-tests.EvalEdges.CscvConstantCandidateHasSharpeZero ....................................   Passed    0.03 sec
+        Start 4051: atx-engine-research-eval-tests.EvalEdges.CscvConstantWinsAndTiesTheZeroColumnByIndex
+118/291 Test #4051: atx-engine-research-eval-tests.EvalEdges.CscvConstantWinsAndTiesTheZeroColumnByIndex ...........................   Passed    0.13 sec
+        Start 4052: atx-engine-research-eval-tests.EvalEdges.HouseNormPpfIsThePythonBisectionForAnyN
+119/291 Test #4052: atx-engine-research-eval-tests.EvalEdges.HouseNormPpfIsThePythonBisectionForAnyN ...............................   Passed    0.03 sec
+        Start 4053: atx-engine-research-eval-tests.EvalEdges.HouseDsrTiesThePythonForAnyN
+120/291 Test #4053: atx-engine-research-eval-tests.EvalEdges.HouseDsrTiesThePythonForAnyN ..........................................   Passed    0.03 sec
+        Start 4054: atx-engine-research-eval-tests.EvalEdges.VerbHouseRowsTieThePythonForAnyN
+121/291 Test #4054: atx-engine-research-eval-tests.EvalEdges.VerbHouseRowsTieThePythonForAnyN ......................................   Passed    0.24 sec
+        Start 4055: atx-engine-research-fields-tests.ResearchFieldsClock.CivilDaysMatchPython
+122/291 Test #4055: atx-engine-research-fields-tests.ResearchFieldsClock.CivilDaysMatchPython ......................................   Passed    0.06 sec
+        Start 4056: atx-engine-research-fields-tests.ResearchFieldsClock.IsoDatesAreStrict
+123/291 Test #4056: atx-engine-research-fields-tests.ResearchFieldsClock.IsoDatesAreStrict .........................................   Passed    0.04 sec
+        Start 4057: atx-engine-research-fields-tests.ResearchFieldsClock.SealComesFromTheResearchWindow
+124/291 Test #4057: atx-engine-research-fields-tests.ResearchFieldsClock.SealComesFromTheResearchWindow ............................   Passed    0.04 sec
+        Start 4058: atx-engine-research-fields-tests.ResearchFieldsClock.PythonFloatRepr
+125/291 Test #4058: atx-engine-research-fields-tests.ResearchFieldsClock.PythonFloatRepr ...........................................   Passed    0.04 sec
+        Start 4059: atx-engine-research-fields-tests.ResearchFieldsClock.JsonStringEscapesAsPython
+126/291 Test #4059: atx-engine-research-fields-tests.ResearchFieldsClock.JsonStringEscapesAsPython .................................   Passed    0.04 sec
+        Start 4060: atx-engine-research-fields-tests.ResearchFieldsClock.FormulaFingerprintsEqualThePython
+127/291 Test #4060: atx-engine-research-fields-tests.ResearchFieldsClock.FormulaFingerprintsEqualThePython .........................   Passed    0.04 sec
+        Start 4061: atx-engine-research-fields-tests.ResearchFieldsClock.FormulaFingerprintMovesWithTheDefinition
+128/291 Test #4061: atx-engine-research-fields-tests.ResearchFieldsClock.FormulaFingerprintMovesWithTheDefinition ..................   Passed    0.15 sec
+        Start 4062: atx-engine-research-fields-tests.ResearchFieldsWriter.PairwiseSumIsNumpys
+129/291 Test #4062: atx-engine-research-fields-tests.ResearchFieldsWriter.PairwiseSumIsNumpys ......................................   Passed    0.04 sec
+        Start 4063: atx-engine-research-fields-tests.ResearchFieldsWriter.LinearQuantileIsNumpys
+130/291 Test #4063: atx-engine-research-fields-tests.ResearchFieldsWriter.LinearQuantileIsNumpys ...................................   Passed    0.03 sec
+        Start 4064: atx-engine-research-fields-tests.ResearchFieldsWriter.ReduceMinMaxAreNumpys
+131/291 Test #4064: atx-engine-research-fields-tests.ResearchFieldsWriter.ReduceMinMaxAreNumpys ....................................   Passed    0.02 sec
+        Start 4065: atx-engine-research-fields-tests.ResearchFieldsWriter.QuantilesPartitionLikeNumpy
+132/291 Test #4065: atx-engine-research-fields-tests.ResearchFieldsWriter.QuantilesPartitionLikeNumpy ..............................   Passed    0.02 sec
+        Start 4066: atx-engine-research-fields-tests.ResearchFieldsWriter.RoundedFractionIsPythonRound
+133/291 Test #4066: atx-engine-research-fields-tests.ResearchFieldsWriter.RoundedFractionIsPythonRound .............................   Passed    0.04 sec
+        Start 4067: atx-engine-research-fields-tests.ResearchFieldsWriter.RoleAxesRefuseAWrongPinAndASealedSession
+134/291 Test #4067: atx-engine-research-fields-tests.ResearchFieldsWriter.RoleAxesRefuseAWrongPinAndASealedSession .................   Passed    0.04 sec
+        Start 4068: atx-engine-research-fields-tests.ResearchFieldsWriter.CanonicalNanAndCoverage
+135/291 Test #4068: atx-engine-research-fields-tests.ResearchFieldsWriter.CanonicalNanAndCoverage ..................................   Passed    0.05 sec
+        Start 4069: atx-engine-research-fields-tests.ResearchFieldsWriter.ExclusiveCreateAndShapeChecks
+136/291 Test #4069: atx-engine-research-fields-tests.ResearchFieldsWriter.ExclusiveCreateAndShapeChecks ............................   Passed    0.04 sec
+        Start 4070: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.ClosedFormWindowOfThree
+137/291 Test #4070: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.ClosedFormWindowOfThree ..............................   Passed    0.03 sec
+        Start 4071: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.NegativeZeroIsAcceptedAndCounted
+138/291 Test #4071: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.NegativeZeroIsAcceptedAndCounted .....................   Passed    0.03 sec
+        Start 4072: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.SumOrderIsNumpys
+139/291 Test #4072: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.SumOrderIsNumpys .....................................   Passed    0.03 sec
+        Start 4073: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.NegativeVolumeIsNotAccepted
+140/291 Test #4073: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.NegativeVolumeIsNotAccepted ..........................   Passed    0.03 sec
+        Start 4074: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.LookAheadProbeHoldsAndCatchesALeak
+141/291 Test #4074: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.LookAheadProbeHoldsAndCatchesALeak ...................   Passed    0.03 sec
+        Start 4075: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.Vol126OnATinyRole
+142/291 Test #4075: atx-engine-research-fields-tests.ResearchFieldsVolumeMean.Vol126OnATinyRole ....................................   Passed    0.05 sec
+        Start 4076: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.CsvContract
+143/291 Test #4076: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.CsvContract ...........................................   Passed    0.03 sec
+        Start 4077: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.AsofRuleClosedForm
+144/291 Test #4077: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.AsofRuleClosedForm ....................................   Passed    0.03 sec
+        Start 4078: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.LookAheadProbeHoldsAndCatchesALeak
+145/291 Test #4078: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.LookAheadProbeHoldsAndCatchesALeak ....................   Passed    0.03 sec
+        Start 4079: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.SiSharesOnATinyRole
+146/291 Test #4079: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.SiSharesOnATinyRole ...................................   Passed    0.06 sec
+        Start 4080: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.InputsAreChecked
+147/291 Test #4080: atx-engine-research-fields-tests.ResearchFieldsFinraAsof.InputsAreChecked ......................................   Passed    0.07 sec
+        Start 4081: atx-engine-research-fields-tests.ResearchFieldsFixture.RoleAxesMatchThePythonRole
+148/291 Test #4081: atx-engine-research-fields-tests.ResearchFieldsFixture.RoleAxesMatchThePythonRole ..............................   Passed    0.04 sec
+        Start 4082: atx-engine-research-fields-tests.ResearchFieldsFixture.Vol126IsByteIdentical
+149/291 Test #4082: atx-engine-research-fields-tests.ResearchFieldsFixture.Vol126IsByteIdentical ...................................   Passed    0.09 sec
+        Start 4083: atx-engine-research-fields-tests.ResearchFieldsFixture.FinraFieldsAreByteIdentical
+150/291 Test #4083: atx-engine-research-fields-tests.ResearchFieldsFixture.FinraFieldsAreByteIdentical .............................   Passed    0.09 sec
+        Start 4084: atx-engine-research-fields-tests.ResearchFieldsCli.SpecContract
+151/291 Test #4084: atx-engine-research-fields-tests.ResearchFieldsCli.SpecContract ................................................   Passed    0.07 sec
+        Start 4085: atx-engine-research-fields-tests.ResearchFieldsCli.ReceiptEqualsThePythonManifest
+152/291 Test #4085: atx-engine-research-fields-tests.ResearchFieldsCli.ReceiptEqualsThePythonManifest ..............................   Passed    0.09 sec
+        Start 4086: atx-engine-research-fields-tests.ResearchFieldsCli.MainPublishesTheReceiptLastAndOnce
+153/291 Test #4086: atx-engine-research-fields-tests.ResearchFieldsCli.MainPublishesTheReceiptLastAndOnce ..........................   Passed    0.07 sec
+        Start 4087: atx-engine-research-fields-tests.ResearchFieldsRegistry.KindLookup
+154/291 Test #4087: atx-engine-research-fields-tests.ResearchFieldsRegistry.KindLookup .............................................   Passed    0.04 sec
+        Start 4088: atx-engine-research-fields-tests.ResearchFieldsRegistry.UnknownKindRefused
+155/291 Test #4088: atx-engine-research-fields-tests.ResearchFieldsRegistry.UnknownKindRefused .....................................   Passed    0.04 sec
+        Start 4089: atx-engine-research-fields-tests.ResearchFieldsRegistry.RowRequestsAKindRefuses
+156/291 Test #4089: atx-engine-research-fields-tests.ResearchFieldsRegistry.RowRequestsAKindRefuses ................................   Passed    0.04 sec
+        Start 4090: atx-engine-research-fields-tests.ResearchFieldsRegistry.ParseRoundTrip
+157/291 Test #4090: atx-engine-research-fields-tests.ResearchFieldsRegistry.ParseRoundTrip .........................................   Passed    0.03 sec
+        Start 4091: atx-engine-research-fields-tests.ResearchFieldsRegistry.RowContract
+158/291 Test #4091: atx-engine-research-fields-tests.ResearchFieldsRegistry.RowContract ............................................   Passed    0.03 sec
+        Start 4092: atx-engine-research-fields-tests.ResearchFieldsRegistry.PlansKeepSourceOrderAndRegistrationOrder
+159/291 Test #4092: atx-engine-research-fields-tests.ResearchFieldsRegistry.PlansKeepSourceOrderAndRegistrationOrder ...............   Passed    0.03 sec
+        Start 4093: atx-engine-research-fields-tests.ResearchFieldsRegistry.SpecSchemaFollowsTheRegistryFlag
+160/291 Test #4093: atx-engine-research-fields-tests.ResearchFieldsRegistry.SpecSchemaFollowsTheRegistryFlag .......................   Passed    0.03 sec
+        Start 4094: atx-engine-research-fields-tests.ResearchFieldsManifest.PublishLast
+161/291 Test #4094: atx-engine-research-fields-tests.ResearchFieldsManifest.PublishLast ............................................   Passed    0.04 sec
+        Start 4095: atx-engine-research-fields-tests.ResearchFieldsManifest.ProducerBlock
+162/291 Test #4095: atx-engine-research-fields-tests.ResearchFieldsManifest.ProducerBlock ..........................................   Passed    0.03 sec
+        Start 4096: atx-engine-research-fields-tests.ResearchFieldsManifest.RegistryBuildPublishesTheManifestLast
+163/291 Test #4096: atx-engine-research-fields-tests.ResearchFieldsManifest.RegistryBuildPublishesTheManifestLast ..................   Passed    0.13 sec
+        Start 4097: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseHitOnTheSameExecutable
+164/291 Test #4097: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseHitOnTheSameExecutable ............................   Passed    0.14 sec
+        Start 4098: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseMissOnAnotherOrUnknownExecutable
+165/291 Test #4098: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseMissOnAnotherOrUnknownExecutable ..................   Passed    0.18 sec
+        Start 4099: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseMissReasons
+166/291 Test #4099: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseMissReasons .......................................   Passed    0.14 sec
+        Start 4100: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseRefusesAnotherSealRoleOrPin
+167/291 Test #4100: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseRefusesAnotherSealRoleOrPin .......................   Passed    0.20 sec
+        Start 4101: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseRefusesACorruptPriorPayload
+168/291 Test #4101: atx-engine-research-fields-tests.ResearchFieldsManifest.ReuseRefusesACorruptPriorPayload .......................   Passed    0.13 sec
+        Start 4102: atx-engine-research-fields-tests.ResearchFieldsNyseCalendar.RuleSessions
+169/291 Test #4102: atx-engine-research-fields-tests.ResearchFieldsNyseCalendar.RuleSessions .......................................   Passed    0.03 sec
+        Start 4103: atx-engine-research-fields-tests.ResearchFieldsNyseCalendar.ExtendedAxisIsThePythonAxis
+170/291 Test #4103: atx-engine-research-fields-tests.ResearchFieldsNyseCalendar.ExtendedAxisIsThePythonAxis ........................   Passed    0.13 sec
+        Start 4104: atx-engine-research-fields-tests.ResearchFieldsNyseCalendar.SessionCalendarPinIsThePythonPin
+171/291 Test #4104: atx-engine-research-fields-tests.ResearchFieldsNyseCalendar.SessionCalendarPinIsThePythonPin ...................   Passed    0.05 sec
+        Start 4105: atx-engine-research-fields-tests.ResearchFieldsFactorBreak.ClosedForm
+172/291 Test #4105: atx-engine-research-fields-tests.ResearchFieldsFactorBreak.ClosedForm ..........................................   Passed    0.03 sec
+        Start 4106: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.DuplicateKeysAreQuarantinedEverywhere
+173/291 Test #4106: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.DuplicateKeysAreQuarantinedEverywhere ...............   Passed    0.03 sec
+        Start 4107: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.ToF32RoundsAsNumpy
+174/291 Test #4107: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.ToF32RoundsAsNumpy ..................................   Passed    0.03 sec
+        Start 4108: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.RefusesAFileThatIsNotTheRoles
+175/291 Test #4108: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.RefusesAFileThatIsNotTheRoles .......................   Passed    0.28 sec
+        Start 4109: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.HashOnce
+176/291 Test #4109: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.HashOnce ............................................   Passed    0.21 sec
+        Start 4110: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.SealPushDown
+177/291 Test #4110: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.SealPushDown ........................................   Passed    0.26 sec
+        Start 4111: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.SealedValuesOfAStraddlingGroupReachNothing
+178/291 Test #4111: atx-engine-research-fields-tests.ResearchFieldsVendorPanel.SealedValuesOfAStraddlingGroupReachNothing ..........   Passed    0.23 sec
+        Start 4112: atx-engine-research-fields-tests.ResearchFieldsVendorFields.OpenReturnsLookAheadProbe
+179/291 Test #4112: atx-engine-research-fields-tests.ResearchFieldsVendorFields.OpenReturnsLookAheadProbe ..........................   Passed    0.10 sec
+        Start 4113: atx-engine-research-fields-tests.ResearchFieldsVendorFields.CeqIssuanceLookAheadProbe
+180/291 Test #4113: atx-engine-research-fields-tests.ResearchFieldsVendorFields.CeqIssuanceLookAheadProbe ..........................   Passed    0.08 sec
+        Start 4114: atx-engine-research-fields-tests.ResearchFieldsVendorFields.CeqIssuanceSharesLagNinetyDays
+181/291 Test #4114: atx-engine-research-fields-tests.ResearchFieldsVendorFields.CeqIssuanceSharesLagNinetyDays .....................   Passed    0.07 sec
+        Start 4115: atx-engine-research-fields-tests.ResearchFieldsVendorFields.OhlcBarsLookAheadProbe
+182/291 Test #4115: atx-engine-research-fields-tests.ResearchFieldsVendorFields.OhlcBarsLookAheadProbe .............................   Passed    0.12 sec
+        Start 4116: atx-engine-research-fields-tests.ResearchFieldsVendorFields.FormulaFingerprintsAreTheRegistrys
+183/291 Test #4116: atx-engine-research-fields-tests.ResearchFieldsVendorFields.FormulaFingerprintsAreTheRegistrys .................   Passed    0.08 sec
+        Start 4117: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.UnionPanelIsThePythonPricePanel
+184/291 Test #4117: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.UnionPanelIsThePythonPricePanel ...................   Passed    0.09 sec
+        Start 4118: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.BarPanelIsThePythonOhlcPanel
+185/291 Test #4118: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.BarPanelIsThePythonOhlcPanel ......................   Passed    0.11 sec
+        Start 4119: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.FieldsAreByteIdentical
+186/291 Test #4119: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.FieldsAreByteIdentical ............................   Passed    0.18 sec
+        Start 4120: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.RegistryBuildEntriesAreThePythonEntries
+187/291 Test #4120: atx-engine-research-fields-tests.ResearchFieldsVendorFixture.RegistryBuildEntriesAreThePythonEntries ...........   Passed    0.22 sec
+        Start 4121: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.QuarterCalendar
+188/291 Test #4121: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.QuarterCalendar ..................................   Passed    0.03 sec
+        Start 4122: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.EffectiveFilingsRule
+189/291 Test #4122: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.EffectiveFilingsRule .............................   Passed    0.03 sec
+        Start 4123: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.IndexVisibilityDeadlineAndSeal
+190/291 Test #4123: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.IndexVisibilityDeadlineAndSeal ...................   Passed    0.03 sec
+        Start 4124: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.RowScreen
+191/291 Test #4124: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.RowScreen ........................................   Passed    0.03 sec
+        Start 4125: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.QuarterPositionsClosedForm
+192/291 Test #4125: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.QuarterPositionsClosedForm .......................   Passed    0.02 sec
+        Start 4126: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.BasisFactorsDetectASplit
+193/291 Test #4126: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.BasisFactorsDetectASplit .........................   Passed    0.02 sec
+        Start 4127: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.StagePinAndContract
+194/291 Test #4127: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.StagePinAndContract ..............................   Passed    0.09 sec
+        Start 4128: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.SealedPartIsNeverOpenedAndTheProbeHasTeeth
+195/291 Test #4128: atx-engine-research-fields-tests.ResearchFieldsAlSigThirteenf.SealedPartIsNeverOpenedAndTheProbeHasTeeth .......   Passed    0.04 sec
+        Start 4129: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.CenteredRanksClosedForm
+196/291 Test #4129: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.CenteredRanksClosedForm ................................   Passed    0.03 sec
+        Start 4130: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.HoldingsReturnsClosedForm
+197/291 Test #4130: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.HoldingsReturnsClosedForm ..............................   Passed    0.03 sec
+        Start 4131: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.HolderScoresClosedForm
+198/291 Test #4131: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.HolderScoresClosedForm .................................   Passed    0.03 sec
+        Start 4132: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.RowClockAnchorStalenessNoSkipBack
+199/291 Test #4132: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.RowClockAnchorStalenessNoSkipBack ......................   Passed    0.03 sec
+        Start 4133: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.AccumulatorVisibilityAndManagerFloor
+200/291 Test #4133: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.AccumulatorVisibilityAndManagerFloor ...................   Passed    0.03 sec
+        Start 4134: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.PlantedLeakProbeHasTeeth
+201/291 Test #4134: atx-engine-research-fields-tests.ResearchFieldsAlSigGia.PlantedLeakProbeHasTeeth ...............................   Passed    0.03 sec
+        Start 4135: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.SnapshotsFromRows
+202/291 Test #4135: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.SnapshotsFromRows ..................................   Passed    0.03 sec
+        Start 4136: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.UndeclaredIndexIdsAreRefused
+203/291 Test #4136: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.UndeclaredIndexIdsAreRefused .......................   Passed    0.04 sec
+        Start 4137: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.IndexesStageRule
+204/291 Test #4137: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.IndexesStageRule ...................................   Passed    0.11 sec
+        Start 4138: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.MovesClosedForm
+205/291 Test #4138: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.MovesClosedForm ....................................   Passed    0.03 sec
+        Start 4139: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.EventWindowClock
+206/291 Test #4139: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.EventWindowClock ...................................   Passed    0.03 sec
+        Start 4140: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.PlantedLeakProbeHasTeeth
+207/291 Test #4140: atx-engine-research-fields-tests.ResearchFieldsAlSigRussell.PlantedLeakProbeHasTeeth ...........................   Passed    0.02 sec
+        Start 4141: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.CommittedRowsPinTheSpecs
+208/291 Test #4141: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.CommittedRowsPinTheSpecs ...........................   Passed    0.07 sec
+        Start 4142: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.BuildMatchesTheOracle
+209/291 Test #4142: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.BuildMatchesTheOracle ..............................   Passed    0.22 sec
+        Start 4143: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.ReuseFollowsTheStagePin
+210/291 Test #4143: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.ReuseFollowsTheStagePin ............................   Passed    0.28 sec
+        Start 4144: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin
+211/291 Test #4144: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin .........................   Passed    0.35 sec
+        Start 4145: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.KindsRefuseWithoutTheirStage
+212/291 Test #4145: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.KindsRefuseWithoutTheirStage .......................   Passed    0.06 sec
+        Start 4146: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.SpecKeysParseAndRefuseBadPins
+213/291 Test #4146: atx-engine-research-fields-tests.ResearchFieldsAlSigFixture.SpecKeysParseAndRefuseBadPins ......................   Passed    0.07 sec
+        Start 4147: atx-engine-research-fields-tests.ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel
+214/291 Test #4147: atx-engine-research-fields-tests.ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel ................   Passed    0.28 sec
+        Start 4148: atx-engine-research-fields-tests.ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory
+215/291 Test #4148: atx-engine-research-fields-tests.ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory ...........   Passed    0.28 sec
+        Start 4149: atx-engine-research-fields-tests.ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision
+216/291 Test #4149: atx-engine-research-fields-tests.ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision ..................   Passed    0.24 sec
+        Start 4150: atx-engine-research-fields-tests.ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar
+217/291 Test #4150: atx-engine-research-fields-tests.ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar ......................   Passed    0.03 sec
+        Start 4151: atx-engine-research-fields-tests.ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark
+218/291 Test #4151: atx-engine-research-fields-tests.ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark ........................   Passed    0.03 sec
+        Start 4152: atx-engine-research-fields-tests.ResearchFieldsA4Clock.SessionCalendarRefusesABadRole
+219/291 Test #4152: atx-engine-research-fields-tests.ResearchFieldsA4Clock.SessionCalendarRefusesABadRole ..........................   Passed    0.03 sec
+        Start 4153: atx-engine-research-fields-tests.ResearchFieldsA4Clock.LatestRowsIsThePythonPointer
+220/291 Test #4153: atx-engine-research-fields-tests.ResearchFieldsA4Clock.LatestRowsIsThePythonPointer ............................   Passed    0.03 sec
+        Start 4154: atx-engine-research-fields-tests.ResearchFieldsA4Clock.LatestRowsBeforeIsStrict
+221/291 Test #4154: atx-engine-research-fields-tests.ResearchFieldsA4Clock.LatestRowsBeforeIsStrict ................................   Passed    0.03 sec
+        Start 4155: atx-engine-research-fields-tests.ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit
+222/291 Test #4155: atx-engine-research-fields-tests.ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit ...................   Passed    0.02 sec
+        Start 4156: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys
+223/291 Test #4156: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys ..............   Passed    0.06 sec
+        Start 4157: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.FtdIsThePythonField
+224/291 Test #4157: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.FtdIsThePythonField .............................   Passed    0.09 sec
+        Start 4158: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.RegshoIsThePythonField
+225/291 Test #4158: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.RegshoIsThePythonField ..........................   Passed    0.10 sec
+        Start 4159: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries
+226/291 Test #4159: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries .........   Passed    0.19 sec
+        Start 4160: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused
+227/291 Test #4160: atx-engine-research-fields-tests.ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused ..................   Passed    0.04 sec
+        Start 4161: atx-engine-research-fields-tests.ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth
+228/291 Test #4161: atx-engine-research-fields-tests.ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth .........................   Passed    0.06 sec
+        Start 4162: atx-engine-research-fields-tests.ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth
+229/291 Test #4162: atx-engine-research-fields-tests.ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth ......................   Passed    0.05 sec
+        Start 4163: atx-engine-research-fields-tests.ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder
+230/291 Test #4163: atx-engine-research-fields-tests.ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder .................   Passed    0.04 sec
+        Start 4164: atx-engine-research-fields-tests.ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches
+231/291 Test #4164: atx-engine-research-fields-tests.ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches .............   Passed    0.04 sec
+        Start 4165: atx-engine-research-admission-tests.ResearchAdmission.ScreenV4ClosedForm
+232/291 Test #4165: atx-engine-research-admission-tests.ResearchAdmission.ScreenV4ClosedForm .......................................   Passed    0.03 sec
+        Start 4166: atx-engine-research-admission-tests.ResearchAdmission.FirstFailureWins
+233/291 Test #4166: atx-engine-research-admission-tests.ResearchAdmission.FirstFailureWins .........................................   Passed    0.01 sec
+        Start 4167: atx-engine-research-admission-tests.ResearchAdmission.GreedyOrderTierThenRoster
+234/291 Test #4167: atx-engine-research-admission-tests.ResearchAdmission.GreedyOrderTierThenRoster ................................   Passed    0.01 sec
+        Start 4168: atx-engine-research-admission-tests.ResearchAdmission.RhoLimitIsStrictAndLowOverlapIsNoted
+235/291 Test #4168: atx-engine-research-admission-tests.ResearchAdmission.RhoLimitIsStrictAndLowOverlapIsNoted .....................   Passed    0.02 sec
+        Start 4169: atx-engine-research-admission-tests.ResearchAdmission.HacMethodReproducesTheFitter
+236/291 Test #4169: atx-engine-research-admission-tests.ResearchAdmission.HacMethodReproducesTheFitter .............................   Passed    0.02 sec
+        Start 4170: atx-engine-research-admission-tests.ResearchAdmission.RefusesMalformedInput
+237/291 Test #4170: atx-engine-research-admission-tests.ResearchAdmission.RefusesMalformedInput ....................................   Passed    0.01 sec
+        Start 4171: atx-engine-research-admission-tests.ResearchAdmission.TradedHorizonClosedForm
+238/291 Test #4171: atx-engine-research-admission-tests.ResearchAdmission.TradedHorizonClosedForm ..................................   Passed    0.01 sec
+        Start 4172: atx-engine-research-admission-tests.ResearchAdmission.SignPredicateGateRule
+239/291 Test #4172: atx-engine-research-admission-tests.ResearchAdmission.SignPredicateGateRule ....................................   Passed    0.02 sec
+        Start 4173: atx-engine-research-admission-tests.ResearchAdmission.SignPredicateWaveRule
+240/291 Test #4173: atx-engine-research-admission-tests.ResearchAdmission.SignPredicateWaveRule ....................................   Passed    0.02 sec
+        Start 4174: atx-engine-research-admission-tests.ResearchAdmission.SignPredicatePm735DecisionTable
+241/291 Test #4174: atx-engine-research-admission-tests.ResearchAdmission.SignPredicatePm735DecisionTable ..........................   Passed    0.01 sec
+        Start 4175: atx-engine-research-admission-tests.ResearchAdmission.SignPredicateUnknownFailsClosedAndNamesRoundTrip
+242/291 Test #4175: atx-engine-research-admission-tests.ResearchAdmission.SignPredicateUnknownFailsClosedAndNamesRoundTrip .........   Passed    0.01 sec
+        Start 4176: atx-engine-research-admission-tests.ResearchAdmission.EqualsFitterFixture
+243/291 Test #4176: atx-engine-research-admission-tests.ResearchAdmission.EqualsFitterFixture ......................................   Passed    0.05 sec
+        Start 4177: atx-engine-research-admission-tests.ResearchAdmission.CsvEqualsFitterBytes
+244/291 Test #4177: atx-engine-research-admission-tests.ResearchAdmission.CsvEqualsFitterBytes .....................................   Passed    0.05 sec
+        Start 4178: atx-engine-research-admission-tests.ResearchAdmission.PythonFloatRepr
+245/291 Test #4178: atx-engine-research-admission-tests.ResearchAdmission.PythonFloatRepr ..........................................   Passed    0.05 sec
+        Start 4179: atx-engine-research-admission-tests.ResearchAdmission.CliScreensAFactorSeries
+246/291 Test #4179: atx-engine-research-admission-tests.ResearchAdmission.CliScreensAFactorSeries ..................................   Passed    0.22 sec
+        Start 4180: atx-engine-research-admission-tests.ResearchAdmission.CandidatesContract
+247/291 Test #4180: atx-engine-research-admission-tests.ResearchAdmission.CandidatesContract .......................................   Passed    0.02 sec
+        Start 6182: atx-impl-strategy-mine-tests.StrategyMineRule.HurdleIsTheBonferroniValueOfThePlan
+248/291 Test #6182: atx-impl-strategy-mine-tests.StrategyMineRule.HurdleIsTheBonferroniValueOfThePlan ..............................   Passed    0.03 sec
+        Start 6183: atx-impl-strategy-mine-tests.StrategyMineRule.ShortlistIsByF2ThenHash
+249/291 Test #6183: atx-impl-strategy-mine-tests.StrategyMineRule.ShortlistIsByF2ThenHash ..........................................   Passed    0.03 sec
+        Start 6184: atx-impl-strategy-mine-tests.StrategyMineRule.OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs
+250/291 Test #6184: atx-impl-strategy-mine-tests.StrategyMineRule.OverlapFactorIsRegisteredAndItsEstimatorIsTheVerbs ...............   Passed    0.03 sec
+        Start 6185: atx-impl-strategy-mine-tests.StrategyMineRule.RhoIsGreedyAgainstMembersAndKeptCandidates
+251/291 Test #6185: atx-impl-strategy-mine-tests.StrategyMineRule.RhoIsGreedyAgainstMembersAndKeptCandidates .......................   Passed    0.03 sec
+        Start 6186: atx-impl-strategy-mine-tests.StrategyMineRule.ConfirmIsOneSidedWithBenjaminiYekutieli
+252/291 Test #6186: atx-impl-strategy-mine-tests.StrategyMineRule.ConfirmIsOneSidedWithBenjaminiYekutieli ..........................   Passed    0.02 sec
+        Start 6187: atx-impl-strategy-mine-tests.StrategyMineRule.ConfirmReadNeedsItsFullWindow
+253/291 Test #6187: atx-impl-strategy-mine-tests.StrategyMineRule.ConfirmReadNeedsItsFullWindow ....................................   Passed    0.13 sec
+        Start 6188: atx-impl-strategy-mine-tests.StrategyMineRule.FactorsAreReadFromTheirBands
+254/291 Test #6188: atx-impl-strategy-mine-tests.StrategyMineRule.FactorsAreReadFromTheirBands .....................................   Passed    0.03 sec
+        Start 6189: atx-impl-strategy-mine-tests.StrategyMineRule.ConfirmFactorFollowsTheReadsThatReachIt
+255/291 Test #6189: atx-impl-strategy-mine-tests.StrategyMineRule.ConfirmFactorFollowsTheReadsThatReachIt ..........................   Passed    0.01 sec
+        Start 6190: atx-impl-strategy-mine-tests.StrategyMineRule.RhoStepRunsOverTheWholeShortlistThenCaps
+256/291 Test #6190: atx-impl-strategy-mine-tests.StrategyMineRule.RhoStepRunsOverTheWholeShortlistThenCaps .........................   Passed    0.02 sec
+        Start 6191: atx-impl-strategy-mine-tests.StrategyMineRule.UndefinedRhoFailsTheCandidate
+257/291 Test #6191: atx-impl-strategy-mine-tests.StrategyMineRule.UndefinedRhoFailsTheCandidate ....................................   Passed    0.02 sec
+        Start 6192: atx-impl-strategy-mine-tests.StrategyMine.TemplatesAreTheHouseSet
+258/291 Test #6192: atx-impl-strategy-mine-tests.StrategyMine.TemplatesAreTheHouseSet ..............................................   Passed    0.02 sec
+        Start 6193: atx-impl-strategy-mine-tests.StrategyMine.WorkingBytesAreThePeakOfThePhases
+259/291 Test #6193: atx-impl-strategy-mine-tests.StrategyMine.WorkingBytesAreThePeakOfThePhases ....................................   Passed    0.13 sec
+        Start 6194: atx-impl-strategy-mine-tests.StrategyMine.RungFailuresAreTheirOwnTrialStatus
+260/291 Test #6194: atx-impl-strategy-mine-tests.StrategyMine.RungFailuresAreTheirOwnTrialStatus ...................................   Passed    0.02 sec
+        Start 6195: atx-impl-strategy-mine-tests.StrategyMineCampaign.ModelTermsAreTheFixtureAllocations
+261/291 Test #6195: atx-impl-strategy-mine-tests.StrategyMineCampaign.ModelTermsAreTheFixtureAllocations ...........................   Passed    1.43 sec
+        Start 6196: atx-impl-strategy-mine-tests.StrategyMineCampaign.MembersStreamByDateAsStored
+262/291 Test #6196: atx-impl-strategy-mine-tests.StrategyMineCampaign.MembersStreamByDateAsStored ..................................   Passed    0.34 sec
+        Start 6197: atx-impl-strategy-mine-tests.StrategyMineCampaign.PromotesThePlantedSignalsOnlyInFiveSeeds
+263/291 Test #6197: atx-impl-strategy-mine-tests.StrategyMineCampaign.PromotesThePlantedSignalsOnlyInFiveSeeds .....................   Passed   11.92 sec
+        Start 6198: atx-impl-strategy-mine-tests.StrategyMineCampaign.RulePinsOnTheTemplates
+264/291 Test #6198: atx-impl-strategy-mine-tests.StrategyMineCampaign.RulePinsOnTheTemplates .......................................   Passed    3.43 sec
+        Start 6199: atx-impl-strategy-mine-tests.StrategyMineCampaign.RhoStepReadsTheWholeShortlistBeforeTheCap
+265/291 Test #6199: atx-impl-strategy-mine-tests.StrategyMineCampaign.RhoStepReadsTheWholeShortlistBeforeTheCap ....................   Passed    1.94 sec
+        Start 6200: atx-impl-strategy-mine-tests.StrategyMineCampaign.UndefinedRhoAgainstAMemberFails
+266/291 Test #6200: atx-impl-strategy-mine-tests.StrategyMineCampaign.UndefinedRhoAgainstAMemberFails ..............................   Passed    1.91 sec
+        Start 6201: atx-impl-strategy-mine-tests.StrategyMineCampaign.PromotionSignalsDoNotDependOnTheEngine
+267/291 Test #6201: atx-impl-strategy-mine-tests.StrategyMineCampaign.PromotionSignalsDoNotDependOnTheEngine .......................   Passed   13.49 sec
+        Start 6202: atx-impl-strategy-mine-tests.StrategyMineCampaign.RhoBatchingNeverChangesThePromotion
+268/291 Test #6202: atx-impl-strategy-mine-tests.StrategyMineCampaign.RhoBatchingNeverChangesThePromotion ..........................   Passed    3.26 sec
+        Start 6203: atx-impl-strategy-mine-tests.StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers
+269/291 Test #6203: atx-impl-strategy-mine-tests.StrategyMineCampaign.SameSeedSameChainHeadAtOneAndFourWorkers .....................   Passed   11.10 sec
+        Start 6204: atx-impl-strategy-mine-tests.StrategyMineCampaign.SharedRegistryLinesCountEachCampaignsOwnRecords
+270/291 Test #6204: atx-impl-strategy-mine-tests.StrategyMineCampaign.SharedRegistryLinesCountEachCampaignsOwnRecords ..............   Passed    4.18 sec
+        Start 6205: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesAMissingBudgetOrOneBelowTheCapacity
+271/291 Test #6205: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesAMissingBudgetOrOneBelowTheCapacity ...................   Passed    0.26 sec
+        Start 6206: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesABudgetAboveTheCeilingBeforeAnyPayload
+272/291 Test #6206: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesABudgetAboveTheCeilingBeforeAnyPayload ................   Passed    0.27 sec
+        Start 6207: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesACampaignWithoutTheBook
+273/291 Test #6207: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesACampaignWithoutTheBook ...............................   Passed    0.28 sec
+        Start 6208: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesSealedRolesAndWindowsPastTrain
+274/291 Test #6208: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesSealedRolesAndWindowsPastTrain ........................   Passed    0.40 sec
+        Start 6209: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesBadWindowsAndBoundsBeforeAnyPayload
+275/291 Test #6209: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesBadWindowsAndBoundsBeforeAnyPayload ...................   Passed    0.27 sec
+        Start 6210: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesADelistingReturnsRole
+276/291 Test #6210: atx-impl-strategy-mine-tests.StrategyMineCampaign.RefusesADelistingReturnsRole .................................   Passed    0.50 sec
+        Start 6211: atx-impl-strategy-mine-tests.SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest
+277/291 Test #6211: atx-impl-strategy-mine-tests.SignalFitnessDefaults.ImplicitDefaultsKeepTheGoldenDigest .........................   Passed    0.05 sec
+        Start 6212: atx-impl-strategy-mine-tests.SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount
+278/291 Test #6212: atx-impl-strategy-mine-tests.SignalFitnessDefaults.ExplicitDefaultsKeepTheGoldenDigestAtEveryWorkerCount .......   Passed    0.11 sec
+        Start 6213: atx-impl-strategy-mine-tests.SignalFitnessPath.FunctorReplacesPoolFitnessAndFilesRejections
+279/291 Test #6213: atx-impl-strategy-mine-tests.SignalFitnessPath.FunctorReplacesPoolFitnessAndFilesRejections ....................   Passed    0.02 sec
+        Start 6214: atx-impl-strategy-mine-tests.SignalFitnessPath.MaskReachesFullAndRungEngines
+280/291 Test #6214: atx-impl-strategy-mine-tests.SignalFitnessPath.MaskReachesFullAndRungEngines ...................................   Passed    0.02 sec
+        Start 6215: atx-impl-strategy-mine-tests.SignalFitnessPath.RebuiltEnginesKeepTheMaskAndTheRunAcrossGenerations
+281/291 Test #6215: atx-impl-strategy-mine-tests.SignalFitnessPath.RebuiltEnginesKeepTheMaskAndTheRunAcrossGenerations .............   Passed    0.03 sec
+        Start 6216: atx-impl-strategy-mine-tests.SignalFitnessPath.RungFailuresAreListedApartFromRacingRejections
+282/291 Test #6216: atx-impl-strategy-mine-tests.SignalFitnessPath.RungFailuresAreListedApartFromRacingRejections ..................   Passed    0.02 sec
+        Start 6217: atx-impl-strategy-mine-tests.SignalFitnessPath.RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors
+283/291 Test #6217: atx-impl-strategy-mine-tests.SignalFitnessPath.RefusesDateStridesLegacyOverlaysBadMasksAndFunctorErrors ........   Passed    0.13 sec
+        Start 6218: atx-impl-strategy-mine-tests.SignalFitnessPath.MaskAndCatalogueRefuseAProgressSink
+284/291 Test #6218: atx-impl-strategy-mine-tests.SignalFitnessPath.MaskAndCatalogueRefuseAProgressSink .............................   Passed    0.05 sec
+        Start 6219: atx-impl-strategy-mine-tests.SignalFitnessPath.ProgramSlotBoundRefusesLargerProgramsBeforeEvaluation
+285/291 Test #6219: atx-impl-strategy-mine-tests.SignalFitnessPath.ProgramSlotBoundRefusesLargerProgramsBeforeEvaluation ...........   Passed    0.02 sec
+        Start 6220: atx-impl-strategy-mine-tests.OpCatalogCfgTest.LiteratureRowsAndDenyListShapeTheSwapCatalogue
+286/291 Test #6220: atx-impl-strategy-mine-tests.OpCatalogCfgTest.LiteratureRowsAndDenyListShapeTheSwapCatalogue ...................   Passed    0.07 sec
+        Start 6221: atx-impl-strategy-mine-tests.ResearchIcAccessors.LabelsAreWhatEvaluateResearchIcCorrelates
+287/291 Test #6221: atx-impl-strategy-mine-tests.ResearchIcAccessors.LabelsAreWhatEvaluateResearchIcCorrelates .....................   Passed    0.03 sec
+        Start 6222: atx-impl-strategy-mine-tests.ResearchIcAccessors.WindowRecipeFieldValues
+288/291 Test #6222: atx-impl-strategy-mine-tests.ResearchIcAccessors.WindowRecipeFieldValues .......................................   Passed    0.02 sec
+        Start 6223: atx-impl-strategy-mine-tests.ResearchIcFitnessTest.PlantedSignalScoresAndIsRecorded
+289/291 Test #6223: atx-impl-strategy-mine-tests.ResearchIcFitnessTest.PlantedSignalScoresAndIsRecorded ............................   Passed    0.03 sec
+        Start 6224: atx-impl-strategy-mine-tests.ResearchIcFitnessTest.CandidateSpannedByTheRegressorsIsScreened
+290/291 Test #6224: atx-impl-strategy-mine-tests.ResearchIcFitnessTest.CandidateSpannedByTheRegressorsIsScreened ...................   Passed    0.02 sec
+        Start 6225: atx-impl-strategy-mine-tests.ResearchIcFitnessTest.PartlySpannedAndNegativeCandidatesScoreTheDirectMarginalT
+291/291 Test #6225: atx-impl-strategy-mine-tests.ResearchIcFitnessTest.PartlySpannedAndNegativeCandidatesScoreTheDirectMarginalT ...   Passed    0.04 sec
+
+100% tests passed, 0 tests failed out of 291
+
+Label Time Summary:
+atx_research    =  86.47 sec*proc (291 tests)
+
+Total Test time (real) =  90.59 sec

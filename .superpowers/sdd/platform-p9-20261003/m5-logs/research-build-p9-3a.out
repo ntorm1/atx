@@ -1,0 +1,54 @@
+{
+    "Source":  "6088bfe96d4361a4f2499302a33c1b1d6dfda927",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "5c811b561240d952fc4cdf29fceeef345538fe21-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3761,
+    "CommitMiB":  7814,
+    "Targets":  [
+                    "atx-engine-research-composition-tests",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-research-composition",
+                    "atx-research-admission"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  33.545504099999995,
+    "CompiledTUs":  9,
+    "Links":  5,
+    "Tag":  "p9-3a",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9"
+                                                                  },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "b43d7a3ebc082f9d97df4055a09dbf8c502b4cb1202d2b113f05d88b376b97ca"
+                                                       },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e"
+                                                     },
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26"
+                                                   }
+                    }
+}
+[1/15] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\ew_theme_std.cpp.obj
+[2/15] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\fit.cpp.obj
+[3/15] Building CXX object atx-engine\CMakeFiles\atx-research-composition.dir\src\research\composition\composition_main.cpp.obj
+[4/15] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_mom_volman.cpp.obj
+[5/15] Building CXX object atx-engine\CMakeFiles\atx-engine-research-composition.dir\src\research\composition\composition_cli.cpp.obj
+[6/15] Linking CXX static library lib\atx-engine-research-composition.lib
+[7/15] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-composition-tests.dir\research\research_composition_fit_test.cpp.obj
+[8/15] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_rules_test.cpp.obj
+[9/15] Linking CXX executable bin\atx-research-composition.exe
+[10/15] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_ic_rules.cpp.obj
+[11/15] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_mom_volman_test.cpp.obj
+[12/15] Linking CXX static library lib\atx-impl-strategy.lib
+[13/15] Linking CXX executable bin\atx-engine-research-composition-tests.exe
+[14/15] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe

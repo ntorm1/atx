@@ -1,0 +1,33 @@
+== preflight
+   preflight: manifest commit 00e6f5b02e69, parent tiny (L 1.12), fields 395f82f7b34d, ledger 0 lines N 0, budget {'id': 'p9-kinds-fixture', 'construction_cap': 1000}
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-py\waves\m2h-py\receipts\01-preflight.json
+== register
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-py\waves\m2h-py\receipts\02-register.json
+== screen
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-py\waves\m2h-py\receipts\03-screen.json
+== spec
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py.json --write --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py
+git add -- scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py.json
+git commit -q -m "wave m2h-py: rule cell m2h-rule-ref-m2h-py.json on tiny.json" -- scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py.json
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-py\waves\m2h-py\receipts\04-spec.json
+== run
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py
+   receipt C:\atx-wt\pool-2\build-equity\p9-m2h-tw-py\waves\m2h-py\receipts\05-run.json
+== match
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output waves/m2h-py/readers/mech-calibration-run1 --bind scripts/wave_readers.py --bind tiny-nav-m2h/summary.json --bind tiny-nav/summary.json --bind tiny-nav-m2h/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav-m2h/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav-m2h/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav-m2h/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav-m2h/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv --bind tiny-nav/daily_linear-6bps-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+flat-300-v0.csv --bind tiny-nav/daily_modeled-1bn-stale5-v1+swap-fin-v1.csv --bind tiny-nav/daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv -- "C:/Program Files/Python312/python.exe" scripts/wave_readers.py mechanics --nav cell=tiny-nav-m2h --nav parent=tiny-nav --output waves/m2h-py/readers/mech-calibration.json
+   gross: G 1.0419426343712663 vs G_parent 0.986692308059862 (mode pm6-6, tolerance 0.005)
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py lock scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py-gm.json --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py
+git add -- scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py-gm.json
+git commit -q -m "wave m2h-py: m2h-rule-ref-m2h-py-gm.json at L 1.0606 (gross matching, PM6-6)" -- scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py-gm.json
+"C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py-gm.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py
+
+research_cycle wave: HARD-STOP [match]: matched run (--stop-after nav): exit 3 ("C:/Program Files/Python312/python.exe" scripts/research_cycle.py run scripts/specs/p9/kinds/templates/m2h-rule-ref-m2h-py-gm.json --stop-after nav --root C:/atx-wt/pool-2/build-equity/p9-m2h-tw-py) ccf8971cf02b669c1e8e272fe66fbebe68e763f0f30e3f10eddde [locked, verified]
+# pin reference_admission: tiny-weights/admission.json ed4ccba45c914a8268a6285c427fdd5290d90f4c5eefa5c0584960a0dc9789b6 [locked, verified]
+# pin reference_combined: tiny-w-1/train_combined.json e1017b0d89d00da198f8524812192e795fb7eca4c1e286dbd6eec867bf80c9bb [locked, verified]
+# template m2h-rule-ref-m2h-py-gm.json: parent tiny.json
+== fields: done (fields)
+fields check: pinned fields/manifest.json sha256 395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac: 3 rows == the spec list
+== ref: done (tiny-ref-m2h)
+
+
+WAVE py exit 4

@@ -1,0 +1,2064 @@
+# ..\atx-engine\src\research\fields\clock.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\asof_series.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\field_spec.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\field_stats.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\field_writer.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\field_registry.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\file_io.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\finra_inputs.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\book\mv_target.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\finra_asof_field.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\manifest.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\producer.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\registry.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\role_axes.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\role_rows.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\research_fields_cli.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\reuse.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\trailing_mean.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\factor_break.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\volume_mean_field.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# atx-engine\generated\research_fields_build_identity.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\nyse_calendar.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\vendor_panel.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\parquet_columns.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\vendor_fields.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\stage.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\thirteenf_holdings.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\russell_proxy.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\thirteenf_filings.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\gia_13f_skill.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\gia_13f_field.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\session_clock.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\run_payload.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\russell_recon_field.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\sources\short_side.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\holdings_specs.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\holdings_ftd.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\store.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\fields\holdings_regsho.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\pins.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\catalog.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\json_text.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_run.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\cache_ops.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_stage.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_cycle.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_wave.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_spec.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_ledger.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_fields.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\ingest_build.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\query.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\store_cli.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\cache_index.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\composition\ew_theme_std.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\composition\fit.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\composition\composition_cli.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\eval\eval_cli.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\eval\eval_report.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_library.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_admission.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_runner.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_composition.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_result_cache.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_theme_resid.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_theme_tsmom.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_signal_cache.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_two_speed.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_research_role.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_mine_pool.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_validate.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_liquidity.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_mark.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_execute.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_decide.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_session.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_summarize.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_marginal_ic.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_mine.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_lockstep.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_load.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_write.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_run.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_cli.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_deploy.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_publish.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_cost_v2.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_holdings.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_nav_v7.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_spo_v3.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_spo.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_live.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# atx-impl\generated\build_provenance.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_risk_target.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_rules.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\book\nav_spec.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_marginal_pair_cache.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_factors_verb.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_theme_hedge.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_mom_volman.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_rules.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_absent.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_mv_aim.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\admission\admission_main.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-engine\src\research\fields\research_fields_main.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_ic_cache_index.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\store\catalog\store_main.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\src\strategy_sign_verb.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\composition\composition_main.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\src\research\eval\eval_main.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\deflate_selection_running_n_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\blocking_pbo_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\cascade_trial_count_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\execution_fitness_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_archive_l3_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_behavior_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_cost_aware_fitness_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_cpcv_cache_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_fidelity_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_integration_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_fitness_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_nsga_search_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_mine_into_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_objective_ic_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_oos_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_research_driver_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_s3_2_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_pool_view_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_search_l3_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_search_driver_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_typed_fields_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\factory_signal_fitness_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\fitness_capacity_turnover_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\fitness_turnover_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\fitness_cost_selection_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\robustness_battery_full_wire_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\search_quality_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\search_progress_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\robustness_battery_wire_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_clock_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_writer_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_volume_mean_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_finra_asof_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\book\book_mv_target_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_fixture_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_cli_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_registry_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_manifest_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\book\book_pipeline_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_vendor_fields_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_vendor_panel_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_al_sig_gia_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_al_sig_thirteenf_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_vendor_fixture_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_al_sig_russell_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_a4_clock_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_a4_reuse_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_al_sig_fixture_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_admission_sign_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_admission_screen_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_fields_holdings_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_store_table_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_admission_fixture_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_store_schema_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_store_digest_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_catalog_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_catalog_seal_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_store_open_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_catalog_cli_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_eval_rng_test.cpp
+direct_cache_miss
+local_storage_hit
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+preprocessed_cache_hit
+# ..\atx-engine\tests\research\research_eval_conditional_test.cpp
+direct_cache_miss
+local_storage_hit
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+preprocessed_cache_hit
+# ..\atx-engine\tests\research\research_catalog_ledger_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tools\equity_strategy_ic.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tools\equity_strategy_targets.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_eval_tie_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_eval_edges_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\research\research_composition_fit_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_cost_v2_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_cov_store_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_cov_model_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_cache_index_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_composition_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_mom_volman_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_theme_resid_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_theme_hedge_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_rules_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_theme_tsmom_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_marginal_ic_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_mv_aim_rule_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_nav_calibrate_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_live_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_nav_info_clock_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_norm_score_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_runner_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_nav_spec_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_risk_target_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_sign_verb_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_spo_pin_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_nav_replay_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_risk_model_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_spo_v3_pin_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_spo_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_target_replay_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_dsl_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_runner_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_two_speed_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_spo_v3_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\execution_schedule_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\factory\execution_cash_claim_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-engine\tests\data\strategy_data_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_ic_composition_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_theme_resid_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_runner_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_marginal_ic_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_theme_tsmom_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_rules_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_theme_hedge_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_mom_volman_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_sign_verb_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_ic_cache_index_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_target_replay_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_nav_replay_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_live_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_cost_v2_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_risk_model_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_spo_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_spo_pin_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_spo_v3_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_spo_v3_pin_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_risk_target_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-engine\tests\factory\execution_stock_transition_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_norm_score_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-engine\tests\factory\execution_objective_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_miss
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_two_speed_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_cov_model_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_cov_store_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_nav_calibrate_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_nav_spec_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_nav_info_clock_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_mv_aim_rule_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-impl\tests\strategy_vol_target_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_mine_test.cpp
+direct_cache_hit
+local_storage_hit
+local_storage_read_hit
+local_storage_read_hit
+# ..\atx-engine\tests\factory\factory_signal_fitness_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss
+# ..\atx-impl\tests\strategy_vol_target_test.cpp
+cache_miss
+direct_cache_miss
+local_storage_miss
+local_storage_read_hit
+local_storage_read_miss
+local_storage_write
+local_storage_write
+preprocessed_cache_miss

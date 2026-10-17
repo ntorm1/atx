@@ -1,0 +1,605 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "p9h-cov-hedge",
+  "kind": "rule",
+  "description": "P9-H prereg B.2, R15-ROOT3: theme-cov-hedge-v1 on accepted P9-L; unchanged registered constants, pm7-34, pm6-6-engine. No admission wait, host budget, automatic retry or engine timing flag.",
+  "manifest": {
+    "commit": "708ab6ceac4e6198e7def859ae7760eec32ea957",
+    "path": "scripts/specs/p9/waves/p9h-cov-hedge-attempt2.json",
+    "sha256": "c4d682c33fb216c2c4915a8dee778267d4c6cfe2c9f53f6551b8cc938acd4c81"
+  },
+  "library": null,
+  "template": "scripts/specs/p9/templates/theme-cov-hedge-ready.json",
+  "budget": {
+    "construction_cap": 71,
+    "id": "p9-prereg-construction"
+  },
+  "parent": {
+    "spec": "scripts/specs/p9/templates/label-terminal-gm.json",
+    "spec_digest": "ab85fa22561b1c38965f88491097ca92e9594d0cd610b255e3ca821beb445ddd",
+    "library": "v8ysb",
+    "nav": "build-equity/mega-nav-p9l-label-terminal-gm",
+    "leverage": "1.1828"
+  },
+  "screen": null,
+  "cell": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "spec_digest": "0e04a009da8c4f1b73cbce7d6a971b036c6288a3655f59f83a23c92b11571a97",
+    "library": "v8ysb",
+    "kind": "rule",
+    "nav": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+    "leverage": "1.1674",
+    "gross": 0.986241893721804,
+    "gross_parent": 0.9862134133265011,
+    "gross_calibration": 0.9992581911406168,
+    "leverage_calibration": "1.1828",
+    "corrected": true,
+    "gross_match": "pm6-6-engine",
+    "run_spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-cal.json",
+    "run_spec_digest": "90c581679cfc39ebac0682cedaa861a9c9300bf61efdc6f16bc3300ddc797802"
+  },
+  "marginal": null,
+  "mechanics": {
+    "pass": true,
+    "rows": [
+      {
+        "check": "gross_all_rows",
+        "limit": "[0.9, 1.05]",
+        "pass": true,
+        "value": 0.986241893721804
+      },
+      {
+        "check": "abs_net_all_rows",
+        "limit": "<= 0.02",
+        "pass": true,
+        "value": 0.0050699651270206605
+      },
+      {
+        "check": "tau_mean",
+        "limit": "<= 0.2",
+        "pass": true,
+        "value": 0.02706227150226712
+      },
+      {
+        "check": "tau_p95",
+        "limit": "<= 0.3",
+        "pass": true,
+        "value": 0.03234806696272993
+      },
+      {
+        "check": "max_return_identity_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.7816971776294395e-16
+      },
+      {
+        "check": "max_cash_book_relative_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 1.2564514679600198e-13
+      }
+    ],
+    "rule": "v8-mech"
+  },
+  "nav_exe": {
+    "cell": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+    "equal": true,
+    "parent": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+    "ref": "none"
+  },
+  "seal_scan": {
+    "files": 40,
+    "seal": "2024-01-01",
+    "forms": [
+      "iso",
+      "compact",
+      "year",
+      "quarter"
+    ],
+    "tokens_at_or_after_seal": 0,
+    "where": [],
+    "seal_references": {
+      "tokens": 0,
+      "files": []
+    },
+    "allowed": [
+      {
+        "token": "2026-10-02",
+        "ruling": "R15-SEAL-D",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/016-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-03",
+        "ruling": "R15-SEAL-D",
+        "tokens": 21,
+        "files": [
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/016-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-06",
+        "ruling": "R15-SEAL-D",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/016-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-17",
+        "ruling": "R15-SEAL-D",
+        "tokens": 4,
+        "files": [
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "20260927",
+        "ruling": "nav_summ's default bootstrap seed (not a date)",
+        "tokens": 1,
+        "files": [
+          "build-equity/cycle-theme-cov-hedge-v1-attempt2-gm/summ-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20260929",
+        "ruling": "nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)",
+        "tokens": 73,
+        "files": [
+          "build-equity/cycle-theme-cov-hedge-v1-attempt2-gm/summ-run1/stdout.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/bundle-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20261003",
+        "ruling": "R15-SEAL-C",
+        "tokens": 6,
+        "files": [
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/004-commit.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/005-commit.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/009-commit.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/010-commit.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/014-commit.log",
+          "build-equity/waves/p9h-cov-hedge-attempt2/consoles/015-commit.log"
+        ]
+      }
+    ],
+    "rulings": {
+      "2026-10-02": "R15-SEAL-D",
+      "2026-10-03": "R15-SEAL-D",
+      "2026-10-06": "R15-SEAL-D",
+      "2026-10-17": "R15-SEAL-D",
+      "20261003": "R15-SEAL-C"
+    }
+  },
+  "stats": {
+    "cell": {
+      "ann_vol": 0.030344611264587394,
+      "annual_costs": {
+        "borrow": 0.003302611384998739,
+        "long_financing": 0.0020122563350613203,
+        "trade_cost": 0.008405900683058918
+      },
+      "cagr": 0.058053229805862694,
+      "cost_bps_traded": 12.490795824692832,
+      "daily_csv_sha256": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc",
+      "dir": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+      "gross_annual": 0.07061758625960535,
+      "gross_sharpe": 2.326823088920012,
+      "max_drawdown": 0.02203729312571523,
+      "mean_gross_leverage_all_rows": 0.986241893721804,
+      "net_annual": 0.05689681785648637,
+      "net_sharpe": 1.875022136892088,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.02706227150226712,
+      "tau_per_gross": 0.027439791063976805,
+      "x4_net_sharpe": 1.759566530994928
+    },
+    "parent": {
+      "ann_vol": 0.030569717335626075,
+      "annual_costs": {
+        "borrow": 0.003275975200840431,
+        "long_financing": 0.0020127166514112933,
+        "trade_cost": 0.008851338874388331
+      },
+      "cagr": 0.05766642148886314,
+      "cost_bps_traded": 12.657953278624719,
+      "daily_csv_sha256": "e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3",
+      "dir": "build-equity/mega-nav-p9l-label-terminal-gm",
+      "gross_annual": 0.07067817348886478,
+      "gross_sharpe": 2.3117806086991832,
+      "max_drawdown": 0.02580037230369092,
+      "mean_gross_leverage_all_rows": 0.9862134133265011,
+      "net_annual": 0.05653814276222473,
+      "net_sharpe": 1.849482026329859,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.028134396709054203,
+      "tau_per_gross": 0.028527696266223746,
+      "x4_net_sharpe": 1.6994264697927697
+    }
+  },
+  "paired": {
+    "cbb_ci": [
+      -0.49947667984762295,
+      0.5797562683890513
+    ],
+    "dsr": 0.02554011056222616,
+    "lw_p": 0.9322,
+    "se": 0.2615496420444564
+  },
+  "bundle": {
+    "cbb_ci95": [
+      -0.49947667984762295,
+      0.5797562683890513
+    ],
+    "dsr": 0.02554011056222616,
+    "freeze_gate": false,
+    "lw_ci95": [
+      -0.5241771391575851,
+      0.5752827923080717
+    ],
+    "memmel_se": 0.2615496420444564,
+    "p_one_sided": 0.4744,
+    "p_two_sided": 0.9322,
+    "path": "build-equity/waves/p9h-cov-hedge-attempt2/bundle.json",
+    "rho": 0.8653199607726447,
+    "sessions": 1005,
+    "sha256": "2fa545913cd34328d2d73de6775bd57eb1e80c851f247e9322d1976f6b51c951"
+  },
+  "dsr": {
+    "cell_count": 0.8446282280405221,
+    "effective_n": 0.9421113614153915,
+    "legacy": {
+      "cells": 37,
+      "dsr": 0.9707516279586623,
+      "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"
+    },
+    "n": 64,
+    "source": "nav_summ --dsr-ledger (deflated_ledger)",
+    "variance_cells": 35,
+    "variance_sr": 0.0013134994815544138,
+    "window_id": "research-window-v2"
+  },
+  "pbo": 0.12905982905982907,
+  "verdict": {
+    "accepted": true,
+    "checks": {
+      "criteria": true,
+      "dsr_positive": true,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": true,
+        "printed": "met",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": true,
+        "printed": "met",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      },
+      {
+        "criterion": "cost-bps-lower",
+        "met": true,
+        "printed": "met",
+        "text": "S2 cost_bps_traded lower than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": 0.02554011056222616,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 134,
+    "lines_after": 135,
+    "head": "1568e4a9ef832de9fc76493579fc0119f4c8898ee7a1638395746d8ca50c1cd2",
+    "n_before": 63,
+    "n_after": 64,
+    "trial_id": "94a77d4af05ac735",
+    "admission_lines": []
+  },
+  "next_parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "library": "v8ysb"
+  },
+  "timings": [
+    {
+      "executable_sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 933,
+      "phase": "u",
+      "run_dir": "build-equity/mega-p9l-train-u-label-terminal-run1",
+      "seconds": 51.57799999997951
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 66,
+      "phase": "fit",
+      "run_dir": "build-equity/mega-weights-p9-theme-cov-hedge-run1",
+      "seconds": 3.077999999979511
+    },
+    {
+      "executable_sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1757,
+      "phase": "w",
+      "run_dir": "build-equity/mega-p9w-train-theme-cov-hedge-run1",
+      "seconds": 35.60999999998603
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1441,
+      "phase": "card",
+      "run_dir": "build-equity/mega-cards-p9-theme-cov-hedge-run",
+      "seconds": 24.780999999959022
+    },
+    {
+      "executable_sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 693,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-p9-theme-cov-hedge-gm-run",
+      "seconds": 52.85899999993853
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 133,
+      "phase": "monitor",
+      "run_dir": "build-equity/mega-monitor-p9-theme-cov-hedge-run",
+      "seconds": 2.719000000040978
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 69,
+      "phase": "summ",
+      "run_dir": "build-equity/cycle-theme-cov-hedge-v1-attempt2-gm/summ-run1",
+      "seconds": 13.563000000081956
+    },
+    {
+      "phase": "reader:book",
+      "run_dir": "build-equity/waves/p9h-cov-hedge-attempt2/readers/book-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.8290000000270084,
+      "peak_mib": 40,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    },
+    {
+      "phase": "reader:mech-matched",
+      "run_dir": "build-equity/waves/p9h-cov-hedge-attempt2/readers/mech-matched-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.5310000000754371,
+      "peak_mib": 32,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    },
+    {
+      "phase": "reader:mech-parent",
+      "run_dir": "build-equity/waves/p9h-cov-hedge-attempt2/readers/mech-parent-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.8130000000819564,
+      "peak_mib": 43,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    },
+    {
+      "phase": "bundle",
+      "run_dir": "build-equity/waves/p9h-cov-hedge-attempt2/bundle-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.8129999999655411,
+      "peak_mib": 50,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    }
+  ],
+  "receipts": {
+    "01-preflight": "fc5f78d86fbe165b058f7be3aa2d65fb3cf75a6fecf4914fa7e943c54885fd21",
+    "02-register": "3a89999d5c11de3e078b9f108f250668d0ee1c70b5e9d3b9b37614fd7ba0bc15",
+    "03-screen": "e4cdfc481475dbd5114950a624e81f2045cb6cd1fd327bc856f2081f1082e5dc",
+    "04-spec": "c836f6c62c4f1a0b40520f5d1d34dad779aabf4f44830544d2411064f2d9f546",
+    "05-run": "f574bdbafca66a834765af2cb66950bcbdc548707e8d146b7d2c28ce8f90fc0b",
+    "06-match": "16d2b4890f3041b663af4702667cd89ea4d52446d7e0524ba78dbeca38b0a569",
+    "07-verify.failed-1": "af05e51be85527863d42dcdb69739de175c6452c789870a265cb1abf57eca953",
+    "07-verify": "25327a4e081593d546c759ef8556f5d49bf6465f9fa27c840a3baf91acf52e19",
+    "08-judge": "cb5c9569c12e88e786fc86ad38e0e883dddc41f68f2d7513f6579b5f1d2283fd"
+  },
+  "exes_sha256": {
+    "cell": {
+      "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+    },
+    "differ": [],
+    "parent": {
+      "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+    }
+  },
+  "stage_seconds": {
+    "preflight": 0.89,
+    "register": 0.0,
+    "screen": 0.0,
+    "spec": 1.437,
+    "run": 67.828,
+    "match": 59.406,
+    "verify": 0.235,
+    "judge": 22.609
+  },
+  "processes": [
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.109,
+      "what": "git status"
+    },
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.078,
+      "what": "git log"
+    },
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.016,
+      "what": "ic rule table"
+    },
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.032,
+      "what": "nav rule table"
+    },
+    {
+      "stage": "spec",
+      "calls": 3,
+      "seconds": 0.375,
+      "what": "git status"
+    },
+    {
+      "stage": "spec",
+      "calls": 1,
+      "seconds": 0.594,
+      "what": "lock the rule cell"
+    },
+    {
+      "stage": "spec",
+      "calls": 2,
+      "seconds": 0.359,
+      "what": "commit"
+    },
+    {
+      "stage": "spec",
+      "calls": 1,
+      "seconds": 0.063,
+      "what": "git rev-parse"
+    },
+    {
+      "stage": "run",
+      "calls": 1,
+      "seconds": 67.407,
+      "what": "the cell's inputs (--stop-after w: its NAV runs once, calibrated, in the match stage)"
+    },
+    {
+      "stage": "match",
+      "calls": 2,
+      "seconds": 2.484,
+      "what": "mechanics reader"
+    },
+    {
+      "stage": "match",
+      "calls": 2,
+      "seconds": 0.125,
+      "what": "git diff"
+    },
+    {
+      "stage": "match",
+      "calls": 5,
+      "seconds": 0.484,
+      "what": "git status"
+    },
+    {
+      "stage": "match",
+      "calls": 1,
+      "seconds": 0.453,
+      "what": "lock (dry: every pin of the run recipe verified)"
+    },
+    {
+      "stage": "match",
+      "calls": 4,
+      "seconds": 0.563,
+      "what": "commit"
+    },
+    {
+      "stage": "match",
+      "calls": 2,
+      "seconds": 0.078,
+      "what": "git rev-parse"
+    },
+    {
+      "stage": "match",
+      "calls": 1,
+      "seconds": 54.219,
+      "what": "calibrated run (--stop-after nav, nav --calibrate-gross)"
+    },
+    {
+      "stage": "match",
+      "calls": 1,
+      "seconds": 0.516,
+      "what": "lock (dry: every pin of the cell of record verified)"
+    },
+    {
+      "stage": "judge",
+      "calls": 1,
+      "seconds": 19.296,
+      "what": "the cell's monitor and summ (nav_summ scores and ledgers the cell)"
+    },
+    {
+      "stage": "judge",
+      "calls": 1,
+      "seconds": 1.313,
+      "what": "bundle (PM5-23)"
+    },
+    {
+      "stage": "judge",
+      "calls": 2,
+      "seconds": 0.11,
+      "what": "git diff"
+    },
+    {
+      "stage": "judge",
+      "calls": 1,
+      "seconds": 1.515,
+      "what": "book reader"
+    },
+    {
+      "stage": "record",
+      "what": "git status",
+      "calls": 1,
+      "seconds": 0.078
+    }
+  ]
+}

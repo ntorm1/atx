@@ -1,0 +1,40 @@
+{
+    "Source":  "44fce688cc456e5c500fa5638c42baabacddaea5",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "44fce688cc456e5c500fa5638c42baabacddaea5",
+    "Jobs":  4,
+    "FreeMiB":  4387,
+    "CommitMiB":  8627,
+    "Targets":  [
+                    "atx-research-store",
+                    "atx-engine-research-catalog-tests",
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  20.5800648,
+    "CompiledTUs":  20,
+    "Links":  6,
+    "Tag":  "p9-sql4-b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-32\\build-equity",
+    "Executables":  {
+                        "atx-research-store":  {
+                                                   "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-research-store.exe",
+                                                   "Sha256":  "9e52cec15275462c5dabe08f8a62cc885f97ac733931e25dcbbcfdd397a83a14"
+                                               },
+                        "atx-engine-research-catalog-tests":  {
+                                                                  "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+                                                                  "Sha256":  "cc0ed1061acceba88025f0eaf4a00037d398979ef06749eff0af78de680607c4"
+                                                              },
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "d9c1095965c62debe285c9876d9a32217ba497d91442489942ca1a2c7511f506"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-32\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "0d40d68808c6e9df82faf180a379133571df06c5b7ec2077978ae6217dd5d31b"
+                                                       }
+                    }
+}

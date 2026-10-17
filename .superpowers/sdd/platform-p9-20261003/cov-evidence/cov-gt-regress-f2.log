@@ -1,0 +1,273 @@
+﻿Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = RiskWls.*:RiskEwma.*:RiskBias.*:RiskModel.*:RiskVerb.*:RiskRobust.*:RiskTarget.*:VolTarget.*:NavBookRule.*:Spo*:NavV7Hook.*
+[==========] Running 104 tests from 18 test suites.
+[----------] Global test environment set-up.
+[----------] 11 tests from NavV7Hook
+[ RUN      ] NavV7Hook.NoExtensionIsTheIdentityAtEverySeam
+[       OK ] NavV7Hook.NoExtensionIsTheIdentityAtEverySeam (0 ms)
+[ RUN      ] NavV7Hook.HelpListsTheV7FlagsAndV6RelabelsTheHoldingsManifest
+[       OK ] NavV7Hook.HelpListsTheV7FlagsAndV6RelabelsTheHoldingsManifest (0 ms)
+[ RUN      ] NavV7Hook.ClaimsOnlyTheV7Flags
+[       OK ] NavV7Hook.ClaimsOnlyTheV7Flags (0 ms)
+[ RUN      ] NavV7Hook.ScenarioListsForStressAndCapacityPasses
+[       OK ] NavV7Hook.ScenarioListsForStressAndCapacityPasses (0 ms)
+[ RUN      ] NavV7Hook.AimV6NeutralParametersReplayV5BitForBitAndRecordTheTransferCoefficient
+[       OK ] NavV7Hook.AimV6NeutralParametersReplayV5BitForBitAndRecordTheTransferCoefficient (3 ms)
+[ RUN      ] NavV7Hook.AimV6DefaultParametersChangeThePlanButKeepTheBookDollarNeutral
+[       OK ] NavV7Hook.AimV6DefaultParametersChangeThePlanButKeepTheBookDollarNeutral (7 ms)
+[ RUN      ] NavV7Hook.AimV6CapacityBookIsTheNavMultipleBookAndX1IsTheMainPass
+[       OK ] NavV7Hook.AimV6CapacityBookIsTheNavMultipleBookAndX1IsTheMainPass (8 ms)
+[ RUN      ] NavV7Hook.ParsedIdentityCellBandExponentZeroReplaysV5BitForBit
+[       OK ] NavV7Hook.ParsedIdentityCellBandExponentZeroReplaysV5BitForBit (2 ms)
+[ RUN      ] NavV7Hook.ParsedDefaultBandExponentIsOneThirdAndChangesBandedNames
+[       OK ] NavV7Hook.ParsedDefaultBandExponentIsOneThirdAndChangesBandedNames (8 ms)
+[ RUN      ] NavV7Hook.ParseRefusesV6ParametersWithoutTheRuleAndOutOfRangeExponents
+[       OK ] NavV7Hook.ParseRefusesV6ParametersWithoutTheRuleAndOutOfRangeExponents (4 ms)
+[ RUN      ] NavV7Hook.SideFilesExcludeWarmUp
+[       OK ] NavV7Hook.SideFilesExcludeWarmUp (529 ms)
+[----------] 11 tests from NavV7Hook (567 ms total)
+
+[----------] 4 tests from RiskWls
+[ RUN      ] RiskWls.RecoversPlantedFactorReturnsExactly
+[       OK ] RiskWls.RecoversPlantedFactorReturnsExactly (1 ms)
+[ RUN      ] RiskWls.CapConstraintHoldsAndResidualsAreOrthogonalToMarketAndStyles
+[       OK ] RiskWls.CapConstraintHoldsAndResidualsAreOrthogonalToMarketAndStyles (2 ms)
+[ RUN      ] RiskWls.CollinearStylesAreRefusedNotSolved
+[       OK ] RiskWls.CollinearStylesAreRefusedNotSolved (0 ms)
+[ RUN      ] RiskWls.DegenerateStyleColumnIsNotRegressedAndReported
+[       OK ] RiskWls.DegenerateStyleColumnIsNotRegressedAndReported (1 ms)
+[----------] 4 tests from RiskWls (6 ms total)
+
+[----------] 3 tests from RiskEwma
+[ RUN      ] RiskEwma.VarianceWithNeweyWestEqualsEngineEwmaVarianceV2
+[       OK ] RiskEwma.VarianceWithNeweyWestEqualsEngineEwmaVarianceV2 (4 ms)
+[ RUN      ] RiskEwma.CorrelationWithNeweyWestEqualsEngineFactorCovarianceV2
+[       OK ] RiskEwma.CorrelationWithNeweyWestEqualsEngineFactorCovarianceV2 (27 ms)
+[ RUN      ] RiskEwma.EqualWeightsWithoutLagsIsThePopulationCovariance
+[       OK ] RiskEwma.EqualWeightsWithoutLagsIsThePopulationCovariance (0 ms)
+[----------] 3 tests from RiskEwma (32 ms total)
+
+[----------] 4 tests from RiskBias
+[ RUN      ] RiskBias.StatisticIsNearOneOnCorrectlySpecifiedForecasts
+[       OK ] RiskBias.StatisticIsNearOneOnCorrectlySpecifiedForecasts (4 ms)
+[ RUN      ] RiskBias.BandsFollowUse4AppendixA
+[       OK ] RiskBias.BandsFollowUse4AppendixA (0 ms)
+[ RUN      ] RiskBias.DroppedShareAboveFivePercentRefusesTheSeries
+[       OK ] RiskBias.DroppedShareAboveFivePercentRefusesTheSeries (0 ms)
+[ RUN      ] RiskBias.ShortHistoryFactorIsForecastStructurallyAndNothingIsDropped
+[       OK ] RiskBias.ShortHistoryFactorIsForecastStructurallyAndNothingIsDropped (8157 ms)
+[----------] 4 tests from RiskBias (8162 ms total)
+
+[----------] 8 tests from RiskModel
+[ RUN      ] RiskModel.RecoversPlantedFactorsForecastsSpecificRiskAndIsUnbiased
+[       OK ] RiskModel.RecoversPlantedFactorsForecastsSpecificRiskAndIsUnbiased (3899 ms)
+[ RUN      ] RiskModel.BookWeightsFormTheBookSeriesAndUnknownRowsAreRefused
+[       OK ] RiskModel.BookWeightsFormTheBookSeriesAndUnknownRowsAreRefused (1151 ms)
+[ RUN      ] RiskModel.NamesAndReturnGuard
+[       OK ] RiskModel.NamesAndReturnGuard (0 ms)
+[ RUN      ] RiskModel.ShortHistoryFactorVarianceIsTheClassPriorBlend
+[       OK ] RiskModel.ShortHistoryFactorVarianceIsTheClassPriorBlend (1475 ms)
+[ RUN      ] RiskModel.FullyObservedFactorsAreBitIdenticalWithStructuralForecasts
+[       OK ] RiskModel.FullyObservedFactorsAreBitIdenticalWithStructuralForecasts (3345 ms)
+[ RUN      ] RiskModel.IndustryMergeIsPerDateAndTheResidualSlotIsAlwaysForecast
+[       OK ] RiskModel.IndustryMergeIsPerDateAndTheResidualSlotIsAlwaysForecast (1436 ms)
+[ RUN      ] RiskModel.AbsentMembersAndNonMembersStayOutOfTheFit
+[       OK ] RiskModel.AbsentMembersAndNonMembersStayOutOfTheFit (855 ms)
+[ RUN      ] RiskModel.AssetGrowthOutlierOnAShortHistoryNameStaysBounded
+[       OK ] RiskModel.AssetGrowthOutlierOnAShortHistoryNameStaysBounded (1859 ms)
+[----------] 8 tests from RiskModel (14027 ms total)
+
+[----------] 3 tests from RiskVerb
+[ RUN      ] RiskVerb.RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused
+[       OK ] RiskVerb.RestrictedRoleWithAbsentMembersRunsAndMalformedMasksAreRefused (2829 ms)
+[ RUN      ] RiskVerb.RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer
+[       OK ] RiskVerb.RoleReachingTheSealNeedsAnOwnerAndTheManifestNamesTheProducer (900 ms)
+[ RUN      ] RiskVerb.StructuralFactorsAreMarkedAndTheOptimiserReadsTheirVariance
+[       OK ] RiskVerb.StructuralFactorsAreMarkedAndTheOptimiserReadsTheirVariance (2365 ms)
+[----------] 3 tests from RiskVerb (6095 ms total)
+
+[----------] 7 tests from RiskRobust
+[ RUN      ] RiskRobust.OneExtremeOutlierMovesOtherStyleZOnlyWithinTheStatedBound
+[       OK ] RiskRobust.OneExtremeOutlierMovesOtherStyleZOnlyWithinTheStatedBound (2 ms)
+[ RUN      ] RiskRobust.StandardizeStyleBoundariesAndNamesOutsideTheUniverse
+[       OK ] RiskRobust.StandardizeStyleBoundariesAndNamesOutsideTheUniverse (0 ms)
+[ RUN      ] RiskRobust.DegenerateStyleIsDroppedEverySessionAndCountedInTheManifest
+[       OK ] RiskRobust.DegenerateStyleIsDroppedEverySessionAndCountedInTheManifest (2334 ms)
+[ RUN      ] RiskRobust.StructuralSpecificVolIsClampedToTheFitAndBoundedToItsSigmaQuantiles
+[       OK ] RiskRobust.StructuralSpecificVolIsClampedToTheFitAndBoundedToItsSigmaQuantiles (1 ms)
+[ RUN      ] RiskRobust.SizeDecileTargetIsRobustToOneCorruptName
+[       OK ] RiskRobust.SizeDecileTargetIsRobustToOneCorruptName (0 ms)
+[ RUN      ] RiskRobust.SpecificVarianceOutsideTheBoundIsRefusedNamingInstrumentAndDate
+[       OK ] RiskRobust.SpecificVarianceOutsideTheBoundIsRefusedNamingInstrumentAndDate (0 ms)
+[ RUN      ] RiskRobust.TheDriverRefusesTheRunAtTheFirstOutOfRangeSession
+[       OK ] RiskRobust.TheDriverRefusesTheRunAtTheFirstOutOfRangeSession (660 ms)
+[----------] 7 tests from RiskRobust (3001 ms total)
+
+[----------] 7 tests from SpoSolver
+[ RUN      ] SpoSolver.KktResidualBelowToleranceOnFiftyNames
+[       OK ] SpoSolver.KktResidualBelowToleranceOnFiftyNames (1 ms)
+[ RUN      ] SpoSolver.CostFreeUnboundedSolutionIsTheClosedFormMarkowitz
+[       OK ] SpoSolver.CostFreeUnboundedSolutionIsTheClosedFormMarkowitz (4 ms)
+[ RUN      ] SpoSolver.NetGrossBetaAndBoxesHoldTo1e10
+[       OK ] SpoSolver.NetGrossBetaAndBoxesHoldTo1e10 (1 ms)
+[ RUN      ] SpoSolver.CostFreeAimVarianceFallsAndGrossCrossesWithGamma
+[       OK ] SpoSolver.CostFreeAimVarianceFallsAndGrossCrossesWithGamma (2 ms)
+[ RUN      ] SpoSolver.WarmAndColdStartsAgreeAndRepeatBitForBit
+[       OK ] SpoSolver.WarmAndColdStartsAgreeAndRepeatBitForBit (1 ms)
+[ RUN      ] SpoSolver.TwoNamesMatchAOneDimensionalSearchWithTheThreeHalvesCost
+[       OK ] SpoSolver.TwoNamesMatchAOneDimensionalSearchWithTheThreeHalvesCost (3 ms)
+[ RUN      ] SpoSolver.HorizonConsistentAlphaIsASqrtHCostWeightAndTradesLess
+[       OK ] SpoSolver.HorizonConsistentAlphaIsASqrtHCostWeightAndTradesLess (1 ms)
+[----------] 7 tests from SpoSolver (18 ms total)
+
+[----------] 1 test from SpoAlpha
+[ RUN      ] SpoAlpha.OrientationFollowsDesiredAndTheHorizonScalesThePerSessionForecast
+[       OK ] SpoAlpha.OrientationFollowsDesiredAndTheHorizonScalesThePerSessionForecast (0 ms)
+[----------] 1 test from SpoAlpha (0 ms total)
+
+[----------] 2 tests from SpoCalibration
+[ RUN      ] SpoCalibration.V1GammaKeepsTheCostedBookInsideTheBudgetAndV2Binds
+[       OK ] SpoCalibration.V1GammaKeepsTheCostedBookInsideTheBudgetAndV2Binds (4 ms)
+[ RUN      ] SpoCalibration.V2GammaBindFailureIsReportedAsNaNWithANoteAndNeverAborts
+[       OK ] SpoCalibration.V2GammaBindFailureIsReportedAsNaNWithANoteAndNeverAborts (5 ms)
+[----------] 2 tests from SpoCalibration (10 ms total)
+
+[----------] 2 tests from SpoRisk
+[ RUN      ] SpoRisk.RefusesADateWithoutForecastAnotherRoleAndAnotherPin
+[       OK ] SpoRisk.RefusesADateWithoutForecastAnotherRoleAndAnotherPin (126 ms)
+[ RUN      ] SpoRisk.ImplausibleSpecificVarianceIsCappedAndCounted
+[       OK ] SpoRisk.ImplausibleSpecificVarianceIsCappedAndCounted (0 ms)
+[----------] 2 tests from SpoRisk (126 ms total)
+
+[----------] 11 tests from SpoHook
+[ RUN      ] SpoHook.FlagOffKeepsAimPartialV5BitForBit
+[       OK ] SpoHook.FlagOffKeepsAimPartialV5BitForBit (2 ms)
+[ RUN      ] SpoHook.ParseRoutesTheRuleAndRefusesBadCombinations
+[       OK ] SpoHook.ParseRoutesTheRuleAndRefusesBadCombinations (1 ms)
+[ RUN      ] SpoHook.ParseSpoV2AppliesTheFixUpDefaultsUnderTheFlagsGiven
+[       OK ] SpoHook.ParseSpoV2AppliesTheFixUpDefaultsUnderTheFlagsGiven (1 ms)
+[ RUN      ] SpoHook.ParseGrossBudgetAndVoidFlags_RefuseOutOfRangeAndHoldingsWithTheVoid
+[       OK ] SpoHook.ParseGrossBudgetAndVoidFlags_RefuseOutOfRangeAndHoldingsWithTheVoid (1 ms)
+[ RUN      ] SpoHook.ReplayPlansNeutralBudgetedBooksAndRelabelsTheRule
+[       OK ] SpoHook.ReplayPlansNeutralBudgetedBooksAndRelabelsTheRule (316 ms)
+[ RUN      ] SpoHook.CalibrationMeetsTheBindingOfTheVolTargetAndTheGrossBudget
+[       OK ] SpoHook.CalibrationMeetsTheBindingOfTheVolTargetAndTheGrossBudget (155 ms)
+[ RUN      ] SpoHook.ReplayRefusesWhenTheRiskModelLacksADecisionDate
+[       OK ] SpoHook.ReplayRefusesWhenTheRiskModelLacksADecisionDate (144 ms)
+[ RUN      ] SpoHook.ShadowBookScoresTheAimPartialPlanBesideTheOptimiser
+[       OK ] SpoHook.ShadowBookScoresTheAimPartialPlanBesideTheOptimiser (174 ms)
+[ RUN      ] SpoHook.SpoV2CalibratesToTheVolTargetAndScalesAlphaToTheHorizon
+[       OK ] SpoHook.SpoV2CalibratesToTheVolTargetAndScalesAlphaToTheHorizon (200 ms)
+[ RUN      ] SpoHook.ACorruptSpecificVarianceIsCappedAndCountedInTheDiagnostics
+[       OK ] SpoHook.ACorruptSpecificVarianceIsCappedAndCountedInTheDiagnostics (179 ms)
+[ RUN      ] SpoHook.SpoV2BindsTheGrossBudgetOnPostRampDecisionsWithPlannedGrossG
+[       OK ] SpoHook.SpoV2BindsTheGrossBudgetOnPostRampDecisionsWithPlannedGrossG (304 ms)
+[----------] 11 tests from SpoHook (1485 ms total)
+
+[----------] 2 tests from SpoTripwire
+[ RUN      ] SpoTripwire.TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture
+[       OK ] SpoTripwire.TheClampFeedsAlphaAndTheVoidStopsTheRunAtCapture (350 ms)
+[ RUN      ] SpoTripwire.AVoidRunExitsThreeWithDiagnosticsAndNoNavOrReturnFile
+[       OK ] SpoTripwire.AVoidRunExitsThreeWithDiagnosticsAndNoNavOrReturnFile (1352 ms)
+[----------] 2 tests from SpoTripwire (1703 ms total)
+
+[----------] 2 tests from SpoPin
+[ RUN      ] SpoPin.SpoV1PlannedWeightsOfTwoLockstepBooks_MatchThePinnedDigest
+[spo-pin] weights=0xda6b6871e7e267c5 (54 diagnostics rows)
+[       OK ] SpoPin.SpoV1PlannedWeightsOfTwoLockstepBooks_MatchThePinnedDigest (209 ms)
+[ RUN      ] SpoPin.SpoV1ReplayAndDiagnosticsColumns1To38_MatchThePinnedDigest
+[spo-pin] replay=0xaabdbb72f99a6e13 (40 days)
+[       OK ] SpoPin.SpoV1ReplayAndDiagnosticsColumns1To38_MatchThePinnedDigest (152 ms)
+[----------] 2 tests from SpoPin (362 ms total)
+
+[----------] 19 tests from SpoV3
+[ RUN      ] SpoV3.V1AndV2DigestsUnchanged
+[spo-v3-pin] v1 weights=0xda6b6871e7e267c5 replay=0xaabdbb72f99a6e13
+[spo-v3-pin] v2 weights=0xb039820b40d5cf24 (40 diagnostics rows) replay=0xd24b61721a7c698c (30 days)
+[       OK ] SpoV3.V1AndV2DigestsUnchanged (395 ms)
+[ RUN      ] SpoV3.ZeroCostNoLimitsReturnsAimTo1e8
+[       OK ] SpoV3.ZeroCostNoLimitsReturnsAimTo1e8 (163 ms)
+[ RUN      ] SpoV3.GammaIsSPriorOverTheAnnualisedAimVolOfADenseSigma
+[       OK ] SpoV3.GammaIsSPriorOverTheAnnualisedAimVolOfADenseSigma (116 ms)
+[ RUN      ] SpoV3.GrossCapIsSlackOnFixture
+[       OK ] SpoV3.GrossCapIsSlackOnFixture (700 ms)
+[ RUN      ] SpoV3.PrimaryBookLimitsUnmetVoidsTheRunWhateverTheVoidFlag
+[       OK ] SpoV3.PrimaryBookLimitsUnmetVoidsTheRunWhateverTheVoidFlag (4 ms)
+[ RUN      ] SpoV3.EngineVoidsOnItsPrimaryBooksLimitsUnmet
+[       OK ] SpoV3.EngineVoidsOnItsPrimaryBooksLimitsUnmet (566 ms)
+[ RUN      ] SpoV3.TieredRunVoidsOnItsSwapFinancedPrimaryBookOnly
+[       OK ] SpoV3.TieredRunVoidsOnItsSwapFinancedPrimaryBookOnly (604 ms)
+[ RUN      ] SpoV3.CliVoidOnPrimaryLimitsUnmetExitsThreeWithTheExtrasOnly
+[       OK ] SpoV3.CliVoidOnPrimaryLimitsUnmetExitsThreeWithTheExtrasOnly (12378 ms)
+[ RUN      ] SpoV3.ReportsTrackingErrorAndShareAtTradeLimit
+[       OK ] SpoV3.ReportsTrackingErrorAndShareAtTradeLimit (934 ms)
+[ RUN      ] SpoV3.WarmStartCalibratesOnTheFirstScoredDecision
+[       OK ] SpoV3.WarmStartCalibratesOnTheFirstScoredDecision (917 ms)
+[ RUN      ] SpoV3.CriterionReadsTheTradedBookAfterTheTrades
+[       OK ] SpoV3.CriterionReadsTheTradedBookAfterTheTrades (873 ms)
+[ RUN      ] SpoV3.TradedAfterIsBackFilledPerBookAcrossCadences
+[       OK ] SpoV3.TradedAfterIsBackFilledPerBookAcrossCadences (427 ms)
+[ RUN      ] SpoV3.ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim
+[       OK ] SpoV3.ParseRefusesTheRegisteredConstantsAndRoutesTheImpliedAim (6 ms)
+[ RUN      ] SpoV3.AimIncludesHoldBandAndAdvCapWhenDeclared
+[       OK ] SpoV3.AimIncludesHoldBandAndAdvCapWhenDeclared (730 ms)
+[ RUN      ] SpoV3.ShapingFlagsAbsentIsByteIdentical
+[       OK ] SpoV3.ShapingFlagsAbsentIsByteIdentical (2037 ms)
+[ RUN      ] SpoV3.ShapingFlagsPassThroughAndSpoV1V2RefuseThem
+[       OK ] SpoV3.ShapingFlagsPassThroughAndSpoV1V2RefuseThem (1 ms)
+[ RUN      ] SpoV3.CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone
+[       OK ] SpoV3.CapacityPassBooksAreTheNavMultipleTrackerAndLeaveTheMainPassAlone (4028 ms)
+[ RUN      ] SpoV3.CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes
+[       OK ] SpoV3.CapacityDeclarationWithoutAdvHoldKeepsTheBaseBytes (95 ms)
+[ RUN      ] SpoV3.TradeFractionHasNoEffectOnTheBook
+[       OK ] SpoV3.TradeFractionHasNoEffectOnTheBook (1304 ms)
+[----------] 19 tests from SpoV3 (26292 ms total)
+
+[----------] 7 tests from RiskTarget
+[ RUN      ] RiskTarget.FlagAbsentKeepsThePinnedBenchDigests
+[       OK ] RiskTarget.FlagAbsentKeepsThePinnedBenchDigests (297 ms)
+[ RUN      ] RiskTarget.SpoV3TracksTheScaledAimWithTheParentsGammaAndBound
+[       OK ] RiskTarget.SpoV3TracksTheScaledAimWithTheParentsGammaAndBound (205 ms)
+[ RUN      ] RiskTarget.ScalerSigmaHatMatchesADenseRecomputationOnTheStore
+[       OK ] RiskTarget.ScalerSigmaHatMatchesADenseRecomputationOnTheStore (108 ms)
+[ RUN      ] RiskTarget.ReplayEstimatesOnTheFirstBookThenEvery21Sessions
+[       OK ] RiskTarget.ReplayEstimatesOnTheFirstBookThenEvery21Sessions (192 ms)
+[ RUN      ] RiskTarget.AimPartialV5PlansTowardTheScaledAimBitForBit
+[       OK ] RiskTarget.AimPartialV5PlansTowardTheScaledAimBitForBit (110 ms)
+[ RUN      ] RiskTarget.CapacityX1IsTheMainBookBitForBit
+[       OK ] RiskTarget.CapacityX1IsTheMainBookBitForBit (97 ms)
+[ RUN      ] RiskTarget.ParseRoutesTheFlagsAndRefusesTheRest
+[       OK ] RiskTarget.ParseRoutesTheFlagsAndRefusesTheRest (9 ms)
+[----------] 7 tests from RiskTarget (1024 ms total)
+
+[----------] 6 tests from VolTarget
+[ RUN      ] VolTarget.ReplayManagesTheCapWithTheRunningMeanEvery21Sessions
+[       OK ] VolTarget.ReplayManagesTheCapWithTheRunningMeanEvery21Sessions (198 ms)
+[ RUN      ] VolTarget.AimPartialV5PlansTowardTheManagedAimBitForBit
+[       OK ] VolTarget.AimPartialV5PlansTowardTheManagedAimBitForBit (154 ms)
+[ RUN      ] VolTarget.CapacityX1IsTheMainBookBitForBit
+[       OK ] VolTarget.CapacityX1IsTheMainBookBitForBit (90 ms)
+[ RUN      ] VolTarget.RiskTargetSpellingsAreUnchangedWithoutTheFlag
+[       OK ] VolTarget.RiskTargetSpellingsAreUnchangedWithoutTheFlag (0 ms)
+[ RUN      ] VolTarget.ParseRoutesTheFlagAndRefusesTheRest
+[       OK ] VolTarget.ParseRoutesTheFlagAndRefusesTheRest (2 ms)
+[ RUN      ] VolTarget.TruncationInvariant
+[       OK ] VolTarget.TruncationInvariant (403 ms)
+[----------] 6 tests from VolTarget (851 ms total)
+
+[----------] 5 tests from NavBookRule
+[ RUN      ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns
+[       OK ] NavBookRule.GridOfLeveragesInOnePassEqualsThreeSingleRuns (359 ms)
+[ RUN      ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule
+[       OK ] NavBookRule.VolTargetOnBookWorkersEqualsSerialAndTheSeamInjectsTheRule (335 ms)
+[ RUN      ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath
+[       OK ] NavBookRule.RefusedOutsideAimPartialV5AndOnTheDecidePath (117 ms)
+[ RUN      ] NavBookRule.ListRulesJsonCarriesTheLeverageRows
+[       OK ] NavBookRule.ListRulesJsonCarriesTheLeverageRows (4 ms)
+[ RUN      ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte
+[       OK ] NavBookRule.CliGridAndBookWorkersEqualTheStandaloneRunsByteForByte (5438 ms)
+[----------] 5 tests from NavBookRule (6255 ms total)
+
+[----------] Global test environment tear-down
+[==========] 104 tests from 18 test suites ran. (70027 ms total)
+[  PASSED  ] 104 tests.

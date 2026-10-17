@@ -28,8 +28,14 @@
     }
   },
   "exes": {
-    "ic": "build-equity/bin/atx-equity-strategy-ic.exe",
-    "nav": "build-equity/bin/atx-equity-strategy-targets.exe"
+    "ic": "build-equity-rel/bin/atx-equity-strategy-ic.exe",
+    "nav": "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+    "eval": "build-equity-rel/bin/atx-research-eval.exe"
+  },
+  "exes_sha256": {
+    "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+    "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+    "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
   },
   "inputs": {
     "library": {
@@ -242,7 +248,7 @@
     "report": []
   },
   "nav": {
-    "output": "build-equity/mega-nav-v8x-theme-erc-L1.1828-v8ysb",
+    "output": "build-equity/p9-b0g-yf0-nav",
     "rule": "aim-partial-v5",
     "leverage": "1.1828",
     "flags": [
@@ -270,7 +276,9 @@
       "--liquidity-cache",
       "--warm-start-sessions",
       "60",
-      "--capacity-curve"
+      "--capacity-curve",
+      "--ann-mean-gross",
+      "--info-clock-print"
     ]
   },
   "monitor": {

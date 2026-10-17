@@ -1,0 +1,6 @@
+# whole test_nav_summ_v8.py (synthetic; n37 skips without ATX_EQUITY_ROOT), working-tree fix on 73b4acfd; ATX_EQUITY_BIN=C:/atx-wt/pool-14/build-equity/bin (p9-b2-r)
+s.........                                                               [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] atx-impl\tools\test_nav_summ_v8.py:133: set ATX_EQUITY_ROOT to a build-equity directory (root runs this test on the v7.1 cells)
+9 passed, 1 skipped in 5.66s
+exit=0

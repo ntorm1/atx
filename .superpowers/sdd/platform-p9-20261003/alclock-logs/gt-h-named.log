@@ -1,0 +1,79 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = InfoClock*:NavSpec.*:NavRules.*:TradeRateRegistry.*:NavAnnMeanGross.*:CostLawRegistry.*:TargetRegistry.*
+[==========] Running 24 tests from 8 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from NavSpec
+[ RUN      ] NavSpec.FlagsAndSpecSameConfig
+[       OK ] NavSpec.FlagsAndSpecSameConfig (43 ms)
+[ RUN      ] NavSpec.RefusesWhatItCannotType
+[       OK ] NavSpec.RefusesWhatItCannotType (1 ms)
+[ RUN      ] NavSpec.RefusesADuplicateKey
+[       OK ] NavSpec.RefusesADuplicateKey (65 ms)
+[ RUN      ] NavSpec.SpecRunPublishesTheFlagRunBytes
+[       OK ] NavSpec.SpecRunPublishesTheFlagRunBytes (1209 ms)
+[----------] 4 tests from NavSpec (1321 ms total)
+
+[----------] 2 tests from NavRules
+[ RUN      ] NavRules.OneTableEveryKindInOrder
+[       OK ] NavRules.OneTableEveryKindInOrder (6 ms)
+[ RUN      ] NavRules.LegacyAliasesOnTheirRowsOnly
+[       OK ] NavRules.LegacyAliasesOnTheirRowsOnly (4 ms)
+[----------] 2 tests from NavRules (11 ms total)
+
+[----------] 2 tests from CostLawRegistry
+[ RUN      ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet
+[       OK ] CostLawRegistry.RowsAreTheReplaysLawsAndOneNameableSet (0 ms)
+[ RUN      ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte
+[       OK ] CostLawRegistry.CostSqrtV2IsTheCostV2RunByteForByte (387 ms)
+[----------] 2 tests from CostLawRegistry (387 ms total)
+
+[----------] 1 test from TradeRateRegistry
+[ RUN      ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults
+[       OK ] TradeRateRegistry.RowsCarryTheParsersFlagsAndDefaults (0 ms)
+[----------] 1 test from TradeRateRegistry (0 ms total)
+
+[----------] 1 test from TargetRegistry
+[ RUN      ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput
+[       OK ] TargetRegistry.UnregisteredIdIsRefusedBeforeOutput (35 ms)
+[----------] 1 test from TargetRegistry (35 ms total)
+
+[----------] 1 test from NavAnnMeanGross
+[ RUN      ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey
+[       OK ] NavAnnMeanGross.PrintOnlyOptInAddsOneSummaryKey (1681 ms)
+[----------] 1 test from NavAnnMeanGross (1681 ms total)
+
+[----------] 9 tests from InfoClockRate
+[ RUN      ] InfoClockRate.KernelAtTheWindowBoundary
+[       OK ] InfoClockRate.KernelAtTheWindowBoundary (2 ms)
+[ RUN      ] InfoClockRate.ConfigAndInputRefusals
+[       OK ] InfoClockRate.ConfigAndInputRefusals (3 ms)
+[ RUN      ] InfoClockRate.StepChangeClosedForm
+[       OK ] InfoClockRate.StepChangeClosedForm (1239 ms)
+[ RUN      ] InfoClockRate.EventClockIsCausal
+[       OK ] InfoClockRate.EventClockIsCausal (514 ms)
+[ RUN      ] InfoClockRate.CommandLineRefusalsWriteNothing
+[       OK ] InfoClockRate.CommandLineRefusalsWriteNothing (470 ms)
+[ RUN      ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+[       OK ] InfoClockRate.CapacityCurveAcceptsThisRateOnly (500 ms)
+[ RUN      ] InfoClockRate.BookWorkersOneAndFourSameBytes
+[       OK ] InfoClockRate.BookWorkersOneAndFourSameBytes (1123 ms)
+[ RUN      ] InfoClockRate.RegistryRowAndParser
+[       OK ] InfoClockRate.RegistryRowAndParser (6 ms)
+[ RUN      ] InfoClockRate.WorkspaceReserveOneRatePerName
+[       OK ] InfoClockRate.WorkspaceReserveOneRatePerName (0 ms)
+[----------] 9 tests from InfoClockRate (3861 ms total)
+
+[----------] 4 tests from InfoClockPrint
+[ RUN      ] InfoClockPrint.FlagAbsentLoadsNoClock
+[       OK ] InfoClockPrint.FlagAbsentLoadsNoClock (2285 ms)
+[ RUN      ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario
+[       OK ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario (3005 ms)
+[ RUN      ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock
+[       OK ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock (741 ms)
+[ RUN      ] InfoClockPrint.SpecEqualsArgv
+[       OK ] InfoClockPrint.SpecEqualsArgv (2499 ms)
+[----------] 4 tests from InfoClockPrint (8531 ms total)
+
+[----------] Global test environment tear-down
+[==========] 24 tests from 8 test suites ran. (15831 ms total)
+[  PASSED  ] 24 tests.

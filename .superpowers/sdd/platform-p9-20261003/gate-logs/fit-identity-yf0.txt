@@ -1,0 +1,9 @@
+### flag-absent fit identity: p9-b0-yf0-fit (reference) vs p9-gate-yf0-fit-py
+reference build-equity/p9-b0-yf0-fit (3 files)  new build-equity/p9-gate-yf0-fit-py (3 files)
+  DIFF admission.json: 2 leaf paths differ: ['/inputs/producer_fingerprint', '/inputs/script_sha256']; outside the list: ['/inputs/producer_fingerprint', '/inputs/script_sha256']
+  DIFF composition_weights.json: 7 leaf paths differ: ['/provenance/admission_sha256', '/provenance/producer_fingerprint', '/provenance/script_sha256', '/provenance/std/module_sha256', '/provenance/std/producer_fingerprint', '/provenance/theme_erc/module_sha256', '/provenance/theme_erc/producer_fingerprint']; outside the list: ['/provenance/admission_sha256', '/provenance/producer_fingerprint', '/provenance/script_sha256', '/provenance/std/module_sha256', '/provenance/std/producer_fingerprint', '/provenance/theme_erc/module_sha256', '/provenance/theme_erc/producer_fingerprint']
+  files byte-identical 1, differing 2
+VERDICT: OUTSIDE the list
+exit 1
+admission.json: /inputs/producer_fingerprint [new only]; /inputs/script_sha256 [reference only]
+composition_weights.json: /provenance/admission_sha256 [both]; /provenance/producer_fingerprint [new only]; /provenance/script_sha256 [reference only]; /provenance/std/module_sha256 [reference only]; /provenance/std/producer_fingerprint [new only]; /provenance/theme_erc/module_sha256 [reference only]; /provenance/theme_erc/producer_fingerprint [new only]

@@ -1,0 +1,7 @@
+alclock-info-clock-rule seed 0 head 1d003241 code-dirty [] exit 0 wall 6s start 2026-10-15T15:39:55Z env1-hits 0 :: ============================== 5 passed in 3.99s ==============================
+alclock-info-clock-rule seed 1 head 1d003241 code-dirty [] exit 0 wall 5s start 2026-10-15T15:40:01Z env1-hits 0 :: ============================== 5 passed in 3.52s ==============================
+sql3-hook seed 0 head d51d011e code-dirty [] exit 0 wall 12s start 2026-10-15T15:42:13Z env1-hits 0 :: ============================= 13 passed in 11.76s =============================
+sql3-identity seed 0 head d51d011e code-dirty [] exit 0 wall 2s start 2026-10-15T15:42:26Z env1-hits 0 :: ============================= 16 passed in 1.26s ==============================
+sql3-wave-queue seed 0 head d51d011e code-dirty [] exit 0 wall 7s start 2026-10-15T15:42:28Z env1-hits 0 :: ============================== 6 passed in 5.64s ==============================
+sql3-writers seed 0 head d51d011e code-dirty [] exit 0 wall 138s start 2026-10-15T15:42:35Z env1-hits 0 :: ======================= 98 passed in 136.69s (0:02:16) ========================
+sql3-identity-q seed 0 head d51d011e code-dirty [] exit 0 wall 2s start 2026-10-15T15:45:30Z env1-hits 0 :: 16 passed, 6 subtests passed in 1.19s

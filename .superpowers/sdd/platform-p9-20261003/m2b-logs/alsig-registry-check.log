@@ -1,0 +1,4 @@
+﻿ok 94
+engine rows ['si_shares', 'si_dtc', 'ret_overnight', 'ret_intraday', 'ceq_iss_5y', 'vol_126', 'open_adj', 'high_adj', 'low_adj', 'gia_13f', 'russell_recon']
+tail [('gia_13f', 'engine', 'gia_13f', True, 0), ('russell_recon', 'engine', 'russell_recon', False, 1)]
+sha256 d9e0d802ab4083c0b39bb8a68276ac57ae273d0178c89dea2720e4796e277758 207464

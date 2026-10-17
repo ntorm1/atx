@@ -1,0 +1,3 @@
+fccaa07e3bd83d87e2d31617175b8ca8173b9f5f722de90c068e8ef44e8ab183 *atx-equity-strategy-ic.exe
+53ca5dd481a2ddc1f7cad514f9cd2ef5e1cbb0e69edb0fc627eb0cc6cbafe2a9 *atx-equity-strategy-targets.exe
+a57a2090999c0f71557ebf93bd952337395bc8cd9cd107d641f4b8e4452e38d9 *atx-research-eval.exe

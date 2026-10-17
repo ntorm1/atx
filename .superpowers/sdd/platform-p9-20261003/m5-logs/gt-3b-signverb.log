@@ -1,0 +1,22 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = SignVerb*
+[==========] Running 6 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 6 tests from SignVerb
+[ RUN      ] SignVerb.DecisionTableThroughTheVerb
+[       OK ] SignVerb.DecisionTableThroughTheVerb (21 ms)
+[ RUN      ] SignVerb.ReasonsAreTheWaveRulesWords
+[       OK ] SignVerb.ReasonsAreTheWaveRulesWords (18 ms)
+[ RUN      ] SignVerb.ReceiptPinsTheRowsFileAndIgnoresOtherKeys
+[       OK ] SignVerb.ReceiptPinsTheRowsFileAndIgnoresOtherKeys (16 ms)
+[ RUN      ] SignVerb.RefusesMalformedRowsBeforeAnyOutput
+[       OK ] SignVerb.RefusesMalformedRowsBeforeAnyOutput (762 ms)
+[ RUN      ] SignVerb.RefusesAMissingRowsFileAndAnExistingOutput
+[       OK ] SignVerb.RefusesAMissingRowsFileAndAnExistingOutput (8 ms)
+[ RUN      ] SignVerb.UsageErrorsWriteNothing
+[       OK ] SignVerb.UsageErrorsWriteNothing (1 ms)
+[----------] 6 tests from SignVerb (827 ms total)
+
+[----------] Global test environment tear-down
+[==========] 6 tests from 1 test suite ran. (827 ms total)
+[  PASSED  ] 6 tests.

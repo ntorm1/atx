@@ -1,0 +1,4 @@
+ucrtbase.dll record at the gate's P9-B0 runs (M2c-RED-2 (d), prereg C.6, Appendix IV item 25; root GATE agent 3)
+2026-10-16T14:22:31Z C:\Windows\System32\ucrtbase.dll FileVersion 10.0.26100.7623 (WinBuild.160101.0800) SHA-256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF
+2026-10-16T14:22:31Z C:\Windows\System32\ucrtbased.dll FileVersion 10.0.22000.832 (WinBuild.160101.0800) SHA-256 19E79E91A6AADDA65191EA6DDDA4CC106E26C78338B05E73092E20709399F48D
+= the CRT-2 record of the two Release D-COV stores and of gate steps 0 (agents 1, 2): unchanged. Runs it covers: p9-b0-r2-nav (14:15Z), p9-b0g-x10-nav (14:18Z), p9-b0g-y1-nav (14:19Z).

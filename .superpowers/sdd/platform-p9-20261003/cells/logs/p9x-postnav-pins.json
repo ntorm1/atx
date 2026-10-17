@@ -1,0 +1,48 @@
+{
+  "status": "PASS",
+  "ledger_lines": 138,
+  "ledger_sha256": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8",
+  "frozen_exes": 54,
+  "inputs": [
+    {
+      "path": "atx-impl/strategies/fund_industry_ic_v8ysb.json",
+      "sha256": "41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5"
+    },
+    {
+      "path": "atx-impl/strategies/fund_industry_ic_v8ysb.recipe.v2.json",
+      "sha256": "9d357c757943379a2aff1978de73594a2c7cbd70983f10ac65c0dd02df458759"
+    },
+    {
+      "dir": "build-equity/train-2020-2023-lo3",
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "universe": "linked-operating-v3",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    {
+      "dir": "build-equity/train-2020-2023-lo3-dlret",
+      "path": "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+      "sha256": "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+    },
+    {
+      "dir": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    {
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/manifest.json",
+      "sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/model.atxcov",
+      "sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3"
+    },
+    {
+      "path": "build-equity/waves/p9h-cov-hedge-attempt2/readers/mech-matched.json",
+      "sha256": "7a1537f5dd162912759f2559aaa94b3edec7952e3e380b5f7a6c4862ff81f50e"
+    }
+  ]
+}

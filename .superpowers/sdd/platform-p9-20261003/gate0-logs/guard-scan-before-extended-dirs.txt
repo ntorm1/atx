@@ -1,0 +1,6 @@
+PY_DIRS ['scripts', 'atx-engine/tools', 'atx-impl/tools', 'atx-impl/strategies']
+today 2026-10-15
+scanned_files 932
+distinct_literals 135
+unregistered 1
+  atx.library-spec-receipt/v1: atx-impl/strategies/generate_from_spec.py

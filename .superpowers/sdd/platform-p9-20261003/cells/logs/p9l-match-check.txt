@@ -1,0 +1,6 @@
+NAV build-equity/mega-nav-p9l-label-terminal-gm (run recipe scripts/specs/p9/templates/label-terminal-cal.json, cycle dir build-equity/cycle-p9l-label-terminal-gm)
+calibration: target 0.9862134133265011; tolerance 0.005; leverage_requested 1.1828; gross_requested 0.9862134133265011; corrected False; leverage 1.1828; gross 0.9862134133265011; matched True; construction_reused True
+check 1 leverage_requested == L 1.1828 and target == G_parent 0.9862134133265011: holds
+check 2 mech-matched G 0.9862134133265011 == calibration.gross 0.9862134133265011 bit for bit: holds
+check 3 matched: True (|G - G_parent| 0 vs tolerance 0.005): holds
+L-prime 1.1828 (corrected False; the driver's rule)

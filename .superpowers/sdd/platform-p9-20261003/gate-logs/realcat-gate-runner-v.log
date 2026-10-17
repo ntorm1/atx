@@ -1,0 +1,70 @@
+{
+  "schema": "atx.bounded-research-run/v1",
+  "source_sha": "883be9f23e12f38f9a15c80907bd8125d1c35768",
+  "started_utc": "2026-10-16T16:02:56.736518+00:00",
+  "command": [
+    "C:\\Program Files\\Python312\\python.exe",
+    ".superpowers/sdd/platform-p9-20261003/gate-logs/tools/gate_catv.py",
+    "build-equity-rel/bin/atx-research-store.exe",
+    "C:/atx-wt/pool-2",
+    "C:/Users/natha/AppData/Local/Temp/g4cat/catA.sqlite",
+    "C:/Users/natha/AppData/Local/Temp/g4cat/v"
+  ],
+  "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+  "argv_sha256": "a42c5f846c2fd89983f058fbc922b40a5df5bf49399cda4e85a6744e06d59c65",
+  "attempt": 1,
+  "build_type": "Release",
+  "bindings": [],
+  "limits": {
+    "seconds": 600.0,
+    "max_rss_mib": 2048,
+    "min_free_mib": 512,
+    "admission_wait_seconds": 1800.0
+  },
+  "sampled_peak_tree_rss_bytes": 42168320,
+  "minimum_system_free_bytes": 5507985408,
+  "outcome": "completed",
+  "exit_code": 0,
+  "git": "clean in the code pathspec",
+  "dirty_outside_pathspec": [
+    "docs/plans/2026-10-02-x5-equity-curve.png",
+    "docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-equity-curve.png",
+    "docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png",
+    "docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png"
+  ],
+  "admission": {
+    "wait_seconds": 1800.0,
+    "need_free_mib": 2560,
+    "host_budget_mib": null,
+    "claims_dir": null,
+    "waited_seconds": 0.016,
+    "checks": 1,
+    "free_mib": 5273,
+    "claimed_by_others_mib": null
+  },
+  "wall_seconds": 0.8120000000344589,
+  "owned_processes": [
+    {
+      "pid": 15172,
+      "create_time": 1792166576.772117
+    },
+    {
+      "pid": 21016,
+      "create_time": 1792166576.781854
+    },
+    {
+      "pid": 16896,
+      "create_time": 1792166576.9598117
+    },
+    {
+      "pid": 20608,
+      "create_time": 1792166577.3047144
+    }
+  ],
+  "ownership_scope": "sampled descendant identities; commands must not detach unsampled children",
+  "logs": {
+    "stdout.log": "4e9d8bd1da430f39fddf309e5a117be23b9a0b445cd721a2ffd62e5fca717cc6",
+    "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

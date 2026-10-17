@@ -1,0 +1,41 @@
+{
+    "Source":  "4c9dfd9dc660170d5085a3786eea91f4571fda57",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "4c9dfd9dc660170d5085a3786eea91f4571fda57-dirty",
+    "Jobs":  4,
+    "FreeMiB":  5431,
+    "CommitMiB":  7157,
+    "Targets":  [
+                    "atx-engine",
+                    "atx-engine-risk-tests",
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-risk",
+                    "atx-equity-strategy-targets"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  269.4374045,
+    "CompiledTUs":  82,
+    "Links":  6,
+    "Tag":  "p9-2b",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-engine-risk-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-risk-tests.exe",
+                                                      "Sha256":  "3d52efaa9180223a8b9d80a756a79642bda2bc0af5eefa789ef53c9c03cbdbce"
+                                                  },
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "dff75bd95aabdc9779ab2f99e09d440c0e8acdb1744ee02e019d598aa2d6f1b9"
+                                                           },
+                        "atx-equity-strategy-risk":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+                                                         "Sha256":  "efb21faddb5a9471fb4c63d89c6bdc01de5a69e6e6748a8cbaa4d8152146b602"
+                                                     },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "3fa29f2bac4e8091bfeff33aa73af34d87cdaa65e661a6be526c99a445a491f8"
+                                                        }
+                    }
+}

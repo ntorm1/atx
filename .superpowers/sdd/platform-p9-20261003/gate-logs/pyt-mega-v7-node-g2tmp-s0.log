@@ -1,0 +1,26 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\atx-wt\pool-2
+plugins: anyio-4.6.2.post1, asyncio-1.3.0, xdist-3.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+atx-impl\tools\test_mega_report_v8.py F                                  [100%]
+
+================================== FAILURES ===================================
+___________________ test_v7_config_renders_the_pre_v8_bytes ___________________
+
+root = WindowsPath('C:/Users/natha/AppData/Local/Temp/g2m1/v8rj8y42ne5')
+
+    def test_v7_config_renders_the_pre_v8_bytes(root):
+        """The v7 config shape (pitch3's synthetic world) renders exactly the bytes it rendered before v8.py existed; only
+        the generator's git head and the temp root are normalised."""
+        html = _v7_render(root)
+>       assert len(html) == V7_GOLDEN_BYTES
+E       assert 109873 == 109868
+E        +  where 109873 = len('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial... === \'Enter\' || e.key === \' \') { e.preventDefault(); go(); } });\n    });\n  });\n})();\n</script></body></html>\n')
+
+atx-impl\tools\test_mega_report_v8.py:305: AssertionError
+=========================== short test summary info ===========================
+FAILED atx-impl/tools/test_mega_report_v8.py::test_v7_config_renders_the_pre_v8_bytes
+============================== 1 failed in 0.83s ==============================

@@ -1,0 +1,4 @@
+﻿[atx-build] ninja -C C:\atx-wt\pool-27\build-equity -j 1 atx-engine/tests/CMakeFiles/atx-engine-research-fields-tests.dir/research/research_fields_holdings_test.cpp.obj
+ninja: Entering directory `C:\atx-wt\pool-27\build-equity'
+[0/2] Re-checking globbed directories...
+[1/2] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-research-fields-tests.dir\research\research_fields_holdings_test.cpp.obj

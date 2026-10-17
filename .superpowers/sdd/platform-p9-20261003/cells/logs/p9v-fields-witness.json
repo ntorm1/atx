@@ -1,0 +1,441 @@
+{
+  "witness_sha256": "0b5b348a2b5f60654387bbfbf2f9ceef9bd5918551eea4dc9e5aa18ef64e2a66",
+  "v11_manifest_sha256": "5826c02a27f6ad292597f017e075116d1ac18a1713aa8dda1be323217e895f69",
+  "v15_manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+  "risk_source_sha256": "b74618f49e7dd94fafbd03fd1e09ebefb5f996a53caccb2e2b6557810e683740",
+  "risk_fields": [
+    "at",
+    "at_lag4",
+    "be",
+    "gp_ttm",
+    "grp_ff49",
+    "lt",
+    "me_company",
+    "ni_ttm",
+    "shares_out",
+    "si_dtc",
+    "si_shares"
+  ],
+  "rows": [
+    {
+      "name": "si_shares",
+      "sha256": "780362070cd40b468b5647c9f254e61c42c0c8a646539bdd4200cf9d9be07186",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "si_dtc",
+      "sha256": "f424d90fd46ba57382c4120c962e83920964aaa61c25079fe66239b33ea880f5",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "iv_atm_21d",
+      "sha256": "a07440d80094dfb8c3b2dc2b20c62b1f987ab493badf51f9ffb93d68d2e94be1",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "iv_atm_63d",
+      "sha256": "f10c74fcca0a2449b872e3e28fef58ff970b5a5d0915f57cc37200f2d949d63c",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "iv_atm_126d",
+      "sha256": "aa4032d4486fbf968cf302379ed88e4b70151f42c12161e8db3193b96e428033",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "earn_recent",
+      "sha256": "bae32a99a5e6b1797aac3ebf960deb337e2fb80cd4829e909c8f4bf88465e156",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "shares_out",
+      "sha256": "1cff53f8d22929bc23bfd67ee76b991abecb7d07ce2c8cf32d9f932c84e805bc",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "mkt_ret",
+      "sha256": "3d0f961f2d22de091f72fe6ef58fc86723e3f6946cba414d3accc992e67bc885",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "be",
+      "sha256": "8b5c9aa6d21ca58903db5b4b7fa0e46223dc4c2db00866453cfc4cc8a9881731",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "at",
+      "sha256": "acd3a06dacd34c62ae5ed2162105e20c2dd9b256c62896c3c8b8a80fb8dade58",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "at_lag4",
+      "sha256": "0a700d956e4a8a14fdb848c3260d083189e0f498c7d1f2ea491651c453758e09",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "lt",
+      "sha256": "d0a426baeb7847e02ccd48c81e4b2cda9154d4144b697f52f5ffec573571ad37",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "che",
+      "sha256": "523002ab94265d88f85ddab3f572e4fb03bbf6216f19c89b1f4726ed4fc681b5",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "debt",
+      "sha256": "adf875605b826f65485ba7ca4d4f29f7f31a94d564e450dff5537cfbf301903f",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "sale_ttm",
+      "sha256": "b3b9eac2a42dea186cf8dc325a6e38380c4c3b8918286b04fc8eae500d63b809",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "gp_ttm",
+      "sha256": "7bdd801a79fc6feb0a91bd17aadfb24251ec6988947919b5199a378306c873f0",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "oi_ttm",
+      "sha256": "94a36f7f8197695e8c0afd4fc9316a5e0a634022a05cf9e13e58bff0ca713b23",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ni_ttm",
+      "sha256": "4366929ff510c1b5f91e5ee6ee909f9656c8999d83af238e62f4624446ad1737",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "ni_q",
+      "sha256": "965ea4df74cfea8001bf2f1333371288de5e0cad9c076455ba139f7ab8341f57",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ni_q_lag4",
+      "sha256": "e1452ed9c1f88b87104cb1f2b89225d839559268d0a061027576a2b04e28c0b5",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "be_lag1q",
+      "sha256": "147ca4529bb18cf6be1aa42237b4fa9211571014ec6924efeef36b3bc2ad3698",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "be_lag1q_lag4",
+      "sha256": "fe96153edfdf9a837ea0ca73ad28c1f495d3734f3e5951863b93d846a3f9d4ce",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "cfo_ttm",
+      "sha256": "133641bb9529e46b05a1c8388f72ee58b64a83eb4c2e90361140a208c9c63df1",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "capx_ttm",
+      "sha256": "9bff331141245f785ef8d31be2d7fb25ca967ba44648543ed7623f22629ba1a5",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "xrd_ttm",
+      "sha256": "65870e742a2221d7c0a9b6dd6ac22d4a1d29b86383f1bf4be46712742f0f8388",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "dvc_ttm",
+      "sha256": "ec5eb62ecd20095ced612eb42d9e2d2ef1f8f1444e337515631fecf13bbba984",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "prstkc_ttm",
+      "sha256": "df9892fe90bb19e600ad79f8aef6636ecace44a080551df116e6a0534f05801e",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "sstk_ttm",
+      "sha256": "5c5887d8ad431865c97668c6692f733b1a173e1afe4c4af757324261f7ac1681",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "txt_q",
+      "sha256": "137c93644b203f7b60660d245644e03a79d9e4cfe16c8baab58d872ad759c6f5",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "txt_q_lag4",
+      "sha256": "322b6741e6157f7c3e65414ceb6d8948ac3cfee0d25bbce7aabc84e4c8fd6fa3",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "shrs_q",
+      "sha256": "9c21b91885f2da36548036a4994664c1f0c2de928eb75a246b53df8fff5d32df",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "shrs_q_lag4",
+      "sha256": "0838b3ae031d4447b219e4d360463fb1f3a04c0a9dde64bee7f3fe794359a7ca",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "noa",
+      "sha256": "a5d43c0e4a0c45d5cfe1d8bced71c7dc69606278525b8e37c0cfc54fa351d349",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "noa_lag4",
+      "sha256": "bc6e86aab84d3ba5b497beda361b9f56e9bc8b5fac0b2f2e39a6419cb6d9ba12",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "sue",
+      "sha256": "eb5524ab3561326e073570b0f62fb284ab74ea2e28ffddc7720a0b397c5c7a4a",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "fscore",
+      "sha256": "c35ae08ef0d058034fa0e4550b7fdabc659f34078e8a4748a1095b377526f2a9",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "me_company",
+      "sha256": "d86c1b6552e6d1c6496dd0b7b36a17f15f7ae58c83648951998ccd4fec14f457",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "grp_sic2",
+      "sha256": "19458791099c80883103c549c7d9397ffd6497a109a3f990a51707a4463df6d1",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "grp_ff12",
+      "sha256": "9471947c5f89608633f2e28e2ac1e287aa1c49663b80a4e65be115bd0a8bef6b",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "grp_ff49",
+      "sha256": "7ab56556d35389069aac5c4797fff38f2935b5dcfd535dfdeb91fd7e2daebb84",
+      "risk_read": true,
+      "match": true
+    },
+    {
+      "name": "sv_ratio126",
+      "sha256": "b9e230812310ad08460158a3ae1fb2455423dede0b08e9592f8ba22d5bb2a25a",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ea_days_to_expected",
+      "sha256": "e2f50236e21eec72a7e3bc50dbb1e41aa16416b824507204c2737c7dc52e765a",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ea_days_since",
+      "sha256": "fb6742f084c04b14302d0d26a91c740e2e08be1e6704856d815a62053a6d709b",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ea_window_pre5",
+      "sha256": "f2eb864697a6a6ccd467f97b83aa5a39d0e1eeac4235964749baa15867778fc9",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ea_window_post3",
+      "sha256": "5ae39670739deec42a05d3d756b1e420811bb09bbd77dea441939e322ae4821d",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ea_delay_days",
+      "sha256": "cb6ed47e7849b73f8b7932c39d53e2ccaddc98721cb347694a8e4d5d10a2ca60",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ea_time_of_day",
+      "sha256": "176f719095b57aab3b0f0e716145bd9cab762143142c3c0b177600529c5c87aa",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ins_net_buy_ratio",
+      "sha256": "fd82672c5c4a9a2e9849443c1e59b2518ac342a5603ea614ce31bae8e707ea0f",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ins_n_buyers",
+      "sha256": "4c0379e41a3e7f964336fa622410a8ff5bc1f17b4a3fb70f822506f0b98d828c",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ins_n_sellers",
+      "sha256": "9ea8810ab488d1b5b86c705190bd9d67549f81fd7702a6d90b17c526114d4d7d",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ins_opportunistic_net",
+      "sha256": "9ff542facb231ab96e66d35b862577df045a70b8456b5f00deea0a1a8282e328",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ins_cluster_buy",
+      "sha256": "84e01d5d98f807718704bcec414ec4bc62d7843510ab840d00027c5f808241d0",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "k8_count_63",
+      "sha256": "eb684ae8fc272e92d4bf2f82e20c35011765b9c968344eecd3578d7ca3d8d08a",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "k8_item_material_21",
+      "sha256": "d4f5a0ede025c5d5e2330ee955b972db0bdd4f2d7d393c764d8fa292c04429cd",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "k8_days_since_any",
+      "sha256": "efc625413e551ed8f95e566b02b1f336cf1003dc76c23e2587b53528c6b73a4b",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ret_overnight",
+      "sha256": "1a41d3853685c8de5a81e3f994fcedd9caed8094613122dc39855a064a23a6fa",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ret_intraday",
+      "sha256": "f6cf5eb3e386fbf62e9a1893ee05cee737edcb2ad969a2b6165ced487f183ba1",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ceq_iss_5y",
+      "sha256": "88301a7bed081cb8ec06c566b733f41788282bacfa87ae0ed87e92817b5a607e",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "coskew_60m",
+      "sha256": "c3503df31443f93a5b49b8e9cd003b6908f3c31abd7367f9c5002038620db1ad",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "vol_126",
+      "sha256": "ee15d4bf1e2a564cc9dc8a15598ea9ee9f47621c367630286764ad32ee440918",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "xrd0_ttm",
+      "sha256": "e9b5adef4b44c497dbbc89ababe93605cc637efeae5c57f14af3a492eafff1fc",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "grp_ff12f49",
+      "sha256": "14eaa17aa074c430ddb88824f121c165877a13a49dab2828e229dafc3428b2ea",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "inst_own_share",
+      "sha256": "3d06e58e3b8567de95d56848a5c6b08a8fe12065ec57f97a270d4fc188ba343c",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "inst_breadth_chg",
+      "sha256": "9fc05bc088a2f2731d0d4b8f47211fc54b8adc304450ed81908111901117f4dd",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "inst_own_chg_q",
+      "sha256": "345c34e3744cf22864feaf8e3d0f6505803e8b866fefaa185e95a8b5df2707f7",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "inst_best_ideas",
+      "sha256": "514350e9be22057505b8f3f54beb8769b6ff42604da1f70978b91f4279b5af96",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "inst_n_holders",
+      "sha256": "62a1b03acd0c88ca7c6b0c1fc11310a5c50a7e0af6ea19f0bb86bf7cf5fa2e26",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "ftd_shares_ratio21",
+      "sha256": "15bc4e6aca959d5c8a93ed9135c9c4073a13bb5c12a0537e08978b4bf449d692",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "regsho_threshold_days63",
+      "sha256": "8248b3a23fc644e7ab52ef638f1d5226ba7ef852293883c8d425c118e3e60daf",
+      "risk_read": false,
+      "match": true
+    },
+    {
+      "name": "sv_offexchange_share126",
+      "sha256": "1f76757acfe5fa1ade5e4b86202e6d627374f0cf5fa3f9fa0e276cf05640dd0a",
+      "risk_read": false,
+      "match": true
+    }
+  ]
+}

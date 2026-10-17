@@ -25,9 +25,14 @@ the record, never read for resume) and stops the chain; the next ``run`` retries
 
 Digest (``Chain(..., digest=)``): "file" (the default, as before) chains the previous receipt's file SHA-256 as the
 input ``previous_receipt_sha256``; "content" (P9 OR section 3) chains ``content_sha256``, the SHA-256 of its canonical
-JSON without the time keys (TIME_KEYS: started_utc, seconds), as ``previous_receipt_content_sha256``, so a chain re-run
-on the same inputs and outputs has the same digests whatever its timing. A chain keeps one rule: a receipt recorded
-under the other rule reads as stale.
+JSON without the time keys (TIME_KEYS: started_utc, seconds, wall_seconds, peak_mib, at any depth: the receipt's own
+and its outputs' phase and process rows), as ``previous_receipt_content_sha256``, so a chain re-run on the same inputs
+and outputs has the same digests whatever its timing. A chain keeps one rule: a receipt recorded under the other rule
+reads as stale.
+
+Write callback (``Chain(..., on_write=)``, P9 SQL3): called with the path of each receipt the chain has just written
+(ok and ``.failed-<k>``), never for a done stage; default None (nothing called). A callback that raises is reported on
+stderr and changes nothing: the chain, its receipts and its exit codes are those of a run without one.
 Standard library only.
 """
 from __future__ import annotations
@@ -38,13 +43,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import time
 from typing import Callable
 
 SCHEMA = "atx.stage-receipt/v1"
 PREV = "previous_receipt_sha256"          # the input every stage after the first carries
 PREV_CONTENT = "previous_receipt_content_sha256"   # its name under digest="content" (P9 OR section 3)
-TIME_KEYS = ("started_utc", "seconds")    # a receipt's time keys: out of its content digest
+# A receipt's time-valued keys, out of its content digest at any depth (review E1 minor: the stages' phase rows carry
+# seconds / peak_mib, driver.timings' process rows seconds, bounded receipts wall_seconds).
+TIME_KEYS = ("started_utc", "seconds", "wall_seconds", "peak_mib")
 DIGESTS = ("file", "content")
 LOCK = "chain.lock"                       # <state dir>/chain.lock while a run holds the state dir
 EXIT_STALE, EXIT_STOP = 3, 4
@@ -90,16 +98,24 @@ def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def time_free(value):
+    """``value`` without TIME_KEYS in any object at any depth (lists keep their order)."""
+    if isinstance(value, dict):
+        return {k: time_free(v) for k, v in value.items() if k not in TIME_KEYS}
+    if isinstance(value, list):
+        return [time_free(v) for v in value]
+    return value
+
+
 def content_sha256(path: Path) -> str:
-    """SHA-256 of a receipt's content keys: its canonical JSON without TIME_KEYS (P9 OR section 3)."""
+    """SHA-256 of a receipt's content keys: its canonical JSON without TIME_KEYS at any depth (P9 OR section 3)."""
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
-    body = {k: v for k, v in doc.items() if k not in TIME_KEYS} if isinstance(doc, dict) else doc
-    return hashlib.sha256(canonical(body).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical(time_free(doc)).encode("utf-8")).hexdigest()
 
 
 class Chain:
     def __init__(self, name: str, stages: list[Stage], state_dir: Path, *, clock: Callable[[], str] = utc_now,
-                 digest: str = "file"):
+                 digest: str = "file", on_write: Callable[[Path], object] | None = None):
         names = [s.name for s in stages]
         if not stages or len(set(names)) != len(names) or not all(n and n.replace("-", "").isalnum() for n in names):
             raise ValueError(f"chain {name}: stages need distinct names of letters, digits and '-' ({names})")
@@ -107,6 +123,16 @@ class Chain:
             raise ValueError(f"chain {name}: digest must be one of {', '.join(DIGESTS)}")
         self.name, self.stages, self.state_dir, self.clock = name, list(stages), Path(state_dir), clock
         self.digest = digest
+        self.on_write = on_write
+
+    def written(self, path: Path) -> None:
+        """Hand a receipt just written to ``on_write`` (module doc); a callback failure is one stderr line."""
+        if self.on_write is None:
+            return
+        try:
+            self.on_write(path)
+        except Exception as exc:                      # noqa: BLE001  (a callback never changes the chain)
+            print(f"stage_chain: warning: on_write {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     def receipt_digest(self, path: Path) -> str:
         """A receipt file's digest under the chain's rule: its file SHA-256, or content_sha256 (digest="content")."""
@@ -250,11 +276,14 @@ class Chain:
                 except Exception as exc:                  # noqa: BLE001  any failure leaves its receipt and stops
                     code = exc.code if isinstance(exc, StageError) else EXIT_STOP
                     error = str(exc) if isinstance(exc, StageError) else f"{type(exc).__name__}: {exc}"
-                    self.write(self.failed_path(i), dict(self.body(i, now, {}, started, t0), status="failed",
-                                                         error=error, code=code))
+                    failed = self.failed_path(i)
+                    self.write(failed, dict(self.body(i, now, {}, started, t0), status="failed", error=error,
+                                            code=code))
+                    self.written(failed)
                     raise ChainError(f"HARD-STOP [{st.name}]: {error}", code) from exc
                 outputs = json.loads(canonical(outputs or {}))
                 self.write(self.receipt_path(i), self.body(i, now, outputs, started, t0))
+                self.written(self.receipt_path(i))
                 done[st.name] = outputs
                 log(f"   receipt {self.receipt_path(i)}")
             if until == st.name:

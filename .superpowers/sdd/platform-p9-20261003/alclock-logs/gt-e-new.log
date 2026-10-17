@@ -1,0 +1,39 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = InfoClock*
+[==========] Running 13 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 9 tests from InfoClockRate
+[ RUN      ] InfoClockRate.KernelAtTheWindowBoundary
+[       OK ] InfoClockRate.KernelAtTheWindowBoundary (0 ms)
+[ RUN      ] InfoClockRate.ConfigAndInputRefusals
+[       OK ] InfoClockRate.ConfigAndInputRefusals (2 ms)
+[ RUN      ] InfoClockRate.StepChangeClosedForm
+[       OK ] InfoClockRate.StepChangeClosedForm (1521 ms)
+[ RUN      ] InfoClockRate.EventClockIsCausal
+[       OK ] InfoClockRate.EventClockIsCausal (901 ms)
+[ RUN      ] InfoClockRate.CommandLineRefusalsWriteNothing
+[       OK ] InfoClockRate.CommandLineRefusalsWriteNothing (1093 ms)
+[ RUN      ] InfoClockRate.CapacityCurveAcceptsThisRateOnly
+[       OK ] InfoClockRate.CapacityCurveAcceptsThisRateOnly (790 ms)
+[ RUN      ] InfoClockRate.BookWorkersOneAndFourSameBytes
+[       OK ] InfoClockRate.BookWorkersOneAndFourSameBytes (1822 ms)
+[ RUN      ] InfoClockRate.RegistryRowAndParser
+[       OK ] InfoClockRate.RegistryRowAndParser (10 ms)
+[ RUN      ] InfoClockRate.WorkspaceReserveOneRatePerName
+[       OK ] InfoClockRate.WorkspaceReserveOneRatePerName (0 ms)
+[----------] 9 tests from InfoClockRate (6143 ms total)
+
+[----------] 4 tests from InfoClockPrint
+[ RUN      ] InfoClockPrint.FlagAbsentLoadsNoClock
+[       OK ] InfoClockPrint.FlagAbsentLoadsNoClock (2827 ms)
+[ RUN      ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario
+[       OK ] InfoClockPrint.PrintOnlyOptInAddsOneBlockPerScenario (3614 ms)
+[ RUN      ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock
+[       OK ] InfoClockPrint.RuleOnWithoutFlagPrintsNoBlock (1033 ms)
+[ RUN      ] InfoClockPrint.SpecEqualsArgv
+[       OK ] InfoClockPrint.SpecEqualsArgv (3718 ms)
+[----------] 4 tests from InfoClockPrint (11194 ms total)
+
+[----------] Global test environment tear-down
+[==========] 13 tests from 2 test suites ran. (17338 ms total)
+[  PASSED  ] 13 tests.

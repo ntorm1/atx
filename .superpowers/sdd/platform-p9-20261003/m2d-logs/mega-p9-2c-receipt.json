@@ -1,0 +1,25 @@
+{
+    "Source":  "70104732c30b0c8da6090272bd8866345f70f2cd",
+    "Preset":  "equity-rel",
+    "DirtyEntries":  9,
+    "ConfiguredProvenance":  "70104732c30b0c8da6090272bd8866345f70f2cd-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3692,
+    "CommitMiB":  4571,
+    "Targets":  [
+                    "atx-engine-bench"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  162.8852068,
+    "CompiledTUs":  57,
+    "Links":  3,
+    "Tag":  "p9-2c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity-rel",
+    "Executables":  {
+                        "atx-engine-bench":  {
+                                                 "Path":  "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-bench.exe",
+                                                 "Sha256":  "8b34199d71fc98fc7b850496c19e3346dfc679bb998f01f459441988cc79fb91"
+                                             }
+                    }
+}

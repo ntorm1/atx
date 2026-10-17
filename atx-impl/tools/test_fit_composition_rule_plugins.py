@@ -14,9 +14,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fit_composition_weights as fcw  # noqa: E402
 import composition_ic_shrink  # noqa: E402
+import composition_mom_volman  # noqa: E402
 import composition_resid  # noqa: E402
 import composition_rules  # noqa: E402
 import composition_theme_erc  # noqa: E402
+import composition_theme_hedge  # noqa: E402
 import composition_theme_tsmom  # noqa: E402
 import composition_two_speed  # noqa: E402
 
@@ -114,14 +116,17 @@ def test_the_rule_ids_the_fitter_writes_are_rows_of_the_runner_table():
                composition_ic_shrink.AIM_RULE_ID: "theme_standardise",
                composition_theme_erc.RULE_ID: "theme_standardise", composition_resid.RULE_ID: composition_resid.BLOCK,
                composition_theme_tsmom.RULE_ID: composition_theme_tsmom.BLOCK,
-               composition_two_speed.RULE_ID: composition_two_speed.BLOCK}
+               composition_two_speed.RULE_ID: composition_two_speed.BLOCK,
+               # P9 lane AL-COMB: the two rows it registered
+               composition_mom_volman.RULE_ID: composition_mom_volman.BLOCK,
+               composition_theme_hedge.RULE_ID: composition_theme_hedge.BLOCK}
     assert written == listed
 
 
 # ---------------------------------------------------------------- the modifier modules
 def test_the_modifier_modules_register_and_check_in_order():
     assert fcw.MODIFIER_MODULES == (composition_resid, composition_theme_erc, composition_theme_tsmom,
-                                    composition_two_speed)
+                                    composition_two_speed, composition_mom_volman, composition_theme_hedge)
     assert fcw.MODIFIER_MODULES == (composition_resid,) + fcw.PARENT_CHECKED_MODIFIERS
     assert all(callable(m.add_argument) for m in fcw.MODIFIER_MODULES)
     assert all(callable(m.check_args) for m in fcw.PARENT_CHECKED_MODIFIERS)
@@ -129,7 +134,7 @@ def test_the_modifier_modules_register_and_check_in_order():
             "--orientations", "o", "--orientations-sha256", "0" * 64, "--runner-summary", "s",
             "--runner-summary-sha256", "0" * 64, "--screen", "none", "--output", "out"]
     args = fcw.parse_args(argv)
-    for name in ("theme_resid", "theme_erc", "theme_tsmom", "two_speed"):
+    for name in ("theme_resid", "theme_erc", "theme_tsmom", "two_speed", "mom_volman", "theme_hedge"):
         assert getattr(args, name) is None  # flag absent: no modifier
     flagged = fcw.parse_args(argv + ["--theme-resid", composition_resid.RULE_ID, "--theme-erc",
                                      composition_theme_erc.RULE_ID, "--theme-tsmom", composition_theme_tsmom.RULE_ID,
@@ -153,7 +158,9 @@ def test_the_theme_tuple_is_the_registry_table_in_file_order():
     assert fcw.V7_APPENDED_THEMES == fcw.PRIOR_THEMES[len(fcw.V4_THEMES):]
     assert fcw.registered_prior_themes() == fcw.PRIOR_THEMES
     assert fcw.registry_themes(fcw.REGISTRY_PATH) == fcw.PRIOR_THEMES
-    # At the P9 base the registry is the list of record.
+    # At the P9 base the registry is the list of record. This pins today's 13 themes on purpose (D1 review minor, P9
+    # lane D2): the first theme a lane registers (AL-COMB, or E2's --theme-registry) must update this line and
+    # test_composition_resid's built-in table check in the same commit.
     assert fcw.PRIOR_THEMES == fcw.V4_THEMES + fcw.V7_APPENDED_THEMES_OF_RECORD
 
 

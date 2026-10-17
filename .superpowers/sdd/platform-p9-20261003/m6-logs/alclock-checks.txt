@@ -1,0 +1,22 @@
+AL-CLOCK fix 1 merge checks (root M6, 2026-10-15T15:41:26Z)
+merge 1d003241 parents 97505c1c eed512bd; tree 91d2526a9b45feb8fafc1ab932d3620ff403e7b3; merge-tree --write-tree 97505c1c eed512bd = 91d2526a9b45feb8fafc1ab932d3620ff403e7b3
+lane files (merge-base 5c811b56 .. eed512bd, outside .superpowers):
+  atx-impl/src/book/nav_cli.cpp
+  atx-impl/src/book/nav_lockstep.cpp
+  atx-impl/src/strategy_nav_v7.cpp
+  atx-impl/tests/fixtures/nav_rule_info_clock_rate_v1.json
+  atx-impl/tests/strategy_nav_info_clock_test.cpp
+  scripts/specs/p9/rules/info-clock-rate-v1.json
+  scripts/tests/test_info_clock_rule.py
+atx-impl/tests/CMakeLists.txt touched by the merge: 0 (W3-9: nothing to keep-both)
+registration info-clock-rate-v1.json sha256 (HEAD blob, LF) 7801c19880a225a2f4c6ecb8756117f03fccafa71b92f440830bfb6fdcb8a152
+  ALCLOCK-4 clause 1 present: 1
+  ALCLOCK-4 clause 2 present: 1
+  OD5-7 sentence present: 1
+  superseded clause present: 0
+new atx.*/vN literals in added lines (outside .superpowers): [] (SQL2-CLS: none)
+97505c1c 611d47252781913dbd2fcef594fb2e333fa29d8b7515cc4b9a78aa1d72abb828 553 chars
+1d003241 611d47252781913dbd2fcef594fb2e333fa29d8b7515cc4b9a78aa1d72abb828 553 chars
+capacity_declaration unchanged: True
+after AL-CLOCK merge: trials.jsonl lines 133 sha256 27e40f9f6314585e; research-store absent; porcelain-code []
+template info-clock.json sha256 (HEAD blob) 95d4104a421c32f91877649f1ec9dfbdb409c9a121d6f6e2377e5e25e19b42d5

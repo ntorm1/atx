@@ -12,6 +12,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/types.hpp"
+#include "atx/engine/combine/group_rerank.hpp"  // for_each_centered_rank (P9 ruling P8)
 #include "atx/engine/combine/orthogonalize.hpp" // residualize_signal, PanelView, ExposureView
 #include "atx/engine/eval/hac.hpp"             // mean_inference
 
@@ -152,23 +153,11 @@ atx::core::Status centred_tied_ranks(std::span<const f64> values, std::span<cons
       sorted.emplace_back(values[i], i);
     }
   }
-  if (sorted.size() < 2U) {
-    return atx::core::Ok();
-  }
-  sort_ranked(sorted);
-  // The composition's arithmetic (strategy_ic_composition.cpp each_centered_rank), term for term.
-  const f64 denominator = 2.0 * static_cast<f64>(sorted.size() - 1U);
-  for (usize b = 0U; b < sorted.size();) {
-    usize e = b + 1U;
-    while (e < sorted.size() && sorted[e].first == sorted[b].first) {
-      ++e;
-    }
-    const f64 rank = (static_cast<f64>(b) + static_cast<f64>(e - 1U)) / denominator - 0.5;
-    for (usize j = b; j < e; ++j) {
-      out[sorted[j].second] = rank;
-    }
-    b = e;
-  }
+  // P9 lane D2 (ruling P8): the one centred tied rank helper, combine/group_rerank.hpp's
+  // for_each_centered_rank -- the (value, name) sort and the rank expression the composition uses,
+  // which are the ones this function spelled out before, so every rank keeps its bits. Fewer than
+  // two eligible names rank nothing (`out` stays NaN).
+  for_each_centered_rank(sorted, [&](usize i, f64 rank) { out[i] = rank; });
   return atx::core::Ok();
 }
 

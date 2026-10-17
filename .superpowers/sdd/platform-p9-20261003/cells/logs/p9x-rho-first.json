@@ -1,0 +1,36 @@
+{
+  "path": "build-equity/p9x-leverage-readers/pair.json",
+  "sha256": "b3ec7017daaecefbd7f2543aaadb6b4408d3da8f064d657a22d4395609fcfd35",
+  "receipt": {
+    "path": "build-equity/p9x-leverage-readers/pair-run1/receipt.json",
+    "sha256": "73eff67e06d7ee5d83e446f0b087af87371b463bcc8f67a81e5fcb1926b330b1",
+    "source_sha": "4b441f5d7ab9a943c83ab74664c9b2d81097c8ce",
+    "argv_sha256": "741ee783d7ca4bbe11f2c829d2c75b74a2fbcfb4b12f57bf76a1a070af6a5355",
+    "wall_seconds": 0.5150000000139698,
+    "peak_mib": 48.5390625,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    }
+  },
+  "files": {
+    "build-equity\\mega-nav-p9-theme-cov-hedge-gm\\summary.json": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+    "build-equity\\mega-nav-p9-theme-cov-hedge-gm\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc",
+    "build-equity\\mega-nav-p9x-leverage\\summary.json": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108",
+    "build-equity\\mega-nav-p9x-leverage\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv": "faa0b16ae93324e37c6a69f56f80e52bc664ffd111f4ac5400a6ca7b9110b3a3"
+  },
+  "engine_exe_sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.9970789273786574,
+    "one_minus_rho": null,
+    "degenerate": null
+  },
+  "missing": [
+    "one_minus_rho",
+    "degenerate"
+  ],
+  "threshold_flag": false,
+  "provenance": "inferred FALSE; documented nondegenerate encoding, R15-V2-RHO"
+}

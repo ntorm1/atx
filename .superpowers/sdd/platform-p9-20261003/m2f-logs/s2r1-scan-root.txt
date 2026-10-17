@@ -1,0 +1,53 @@
+lib-v8ysb-gm library: atx-impl/strategies/fund_industry_ic_v8ysb.json | other inputs keys: ['baseline_fields', 'baseline_library', 'label_role', 'library', 'recipe', 'reference_admission', 'reference_cell', 'reference_combined', 'reference_daily', 'reference_daily_ic', 'reference_orientations', 'reference_weights', 'role']
+book candidates: 67 | fields: 58
+== book candidates (inline dsl) using a split op
+-- res_mom_12_1 (price_momentum): ops=['stddev']
+      rank(decay_linear(delay((((ts_sum(((close / delay(close, 1)) - 1), 231) / stddev(((close / delay(close, 1)) - 1), 231)) - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * (ts_sum(mkt_ret, 231) / stddev(mkt_ret, 231)))) / signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 231)))), 0.5)), 21), 21))
+-- smax (low_risk): ops=['stddev']
+      rank(decay_linear((-1 * ((ts_max(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 252)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 252))))), 21))
+-- iv_rv_spread (options_implied): ops=['stddev']
+      rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (stddev(((close / delay(close, 1)) - 1), 21) * 15.874507866387544)))
+-- qmj_safety (low_risk): ops=['stddev']
+      (((rank(decay_linear((-1 * ts_beta_on(((close / delay(close, 1)) - 1), mkt_ret, 252)), 21)) + rank(decay_linear(((-1 * (debt / at)) + (0 * log(at))), 21))) + rank(decay_linear((-1 * stddev(((ni_q / be_lag1q) + (0 * log(be_lag1q))), 252)), 21))) / 3)
+-- smax5 (low_risk): ops=['stddev']
+      rank(decay_linear((-1 * ((ts_topk_mean(((close / delay(close, 1)) - 1), 21, 5) / stddev(((close / delay(close, 1)) - 1), 21)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 21))))), 21))
+book candidates hit: 5
+
+(cross-check) libraries/v8ysb.json members: 67 same ids as the book: True
+registry entries with an expression: 117
+members without a registry entry: []
+library-file strings with a split op: []
+lib-v8ysb-gm spec strings with a split op: []
+
+== book members using a split op
+-- res_mom_12_1
+   .dsl: ops=['stddev']
+      rank(decay_linear(delay((((ts_sum(((close / delay(close, 1)) - 1), 231) / stddev(((close / delay(close, 1)) - 1), 231)) - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * (ts_sum(mkt_ret, 231) / stddev(mkt_ret, 231)))) / signedpower(abs((1 - (correlation(((close / delay(close, 1)) - 1), mkt_ret, 231) * correlation(((close / delay(close, 1)) - 1), mkt_ret, 231)))), 0.5)), 21), 21))
+-- smax
+   .dsl: ops=['stddev']
+      rank(decay_linear((-1 * ((ts_max(((close / delay(close, 1)) - 1), 21) / stddev(((close / delay(close, 1)) - 1), 252)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 252))))), 21))
+-- iv_rv_spread
+   .dsl: ops=['stddev']
+      rank((ts_backfill((iv_atm_21d + (0 * log(((iv_atm_21d - 0.02) * (5 - iv_atm_21d))))), 5) - (stddev(((close / delay(close, 1)) - 1), 21) * 15.874507866387544)))
+-- qmj_safety
+   .dsl: ops=['stddev']
+      (((rank(decay_linear((-1 * ts_beta_on(((close / delay(close, 1)) - 1), mkt_ret, 252)), 21)) + rank(decay_linear(((-1 * (debt / at)) + (0 * log(at))), 21))) + rank(decay_linear((-1 * stddev(((ni_q / be_lag1q) + (0 * log(be_lag1q))), 252)), 21))) / 3)
+   .notes.deviation: ops=['slope']
+      beta is a 252-session daily OLS slope (not Frazzini-Pedersen's 5-year 3-day correlation x 1-year vol ratio); LEV = debt / at (AFP add minority interest and preferred); EVOL = sd of the as-of quarterly ROE over 252 sessions (4-5 quarters under the bound); IVOL omitted (low_ivol removed in v6; price-risk-v1 projects out vol63); O-score and Z-score omitted (no current assets or liabilities, working capital or retained earnings in fields-v7). Caveat: price-risk-v1 (beta252) largely projects out the beta leg, as it did low_beta; LEV and EVOL carry the rest
+-- smax5
+   .dsl: ops=['stddev']
+      rank(decay_linear((-1 * ((ts_topk_mean(((close / delay(close, 1)) - 1), 21, 5) / stddev(((close / delay(close, 1)) - 1), 21)) + (0 * log(stddev(((close / delay(close, 1)) - 1), 21))))), 21))
+registry-resolved members hit: 5
+book dsl != registry dsl for: []
+
+== scripts/specs/p9 strings using a split op
+scripts\specs\p9\blocked\hf_crowd.json: 27 strings, 0 with a split op
+scripts\specs\p9\blocked\lazy_prices.json: 27 strings, 0 with a split op
+scripts\specs\p9\candidates\russell_recon.json: 30 strings, 0 with a split op
+scripts\specs\p9\diagnostics\al-comb-q5-style-variance.json: 48 strings, 0 with a split op
+scripts\specs\p9\rules\mom-volman-v1.json: 62 strings, 0 with a split op
+scripts\specs\p9\rules\theme-cov-hedge-v1.json: 52 strings, 1 with a split op
+   .fixed_choices[2]: ops=['slope']
+      h_t is the OLS slope (intercept included) of the theme sleeve on the hedge leg's return, 0 before decision 253, below 126 pairs or without variance; held between re-estimates
+scripts\specs\p9\templates\mom-volman.json: 14 strings, 0 with a split op
+scripts\specs\p9\templates\theme-cov-hedge.json: 13 strings, 0 with a split op

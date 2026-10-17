@@ -1,0 +1,32 @@
+{
+  "role_manifest_sha256": "2b34283c0c488effdc6f4e2b2ba3da875effd6449b25269270218f7d18bf6c31",
+  "fields_manifest_sha256": "395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac",
+  "library_sha256": "e62f80cace992371743da94ecc6fd1b4cb3495113a6edcc04e3dfa8ddd77aae9",
+  "recipe_sha256": "1c9294dc025e02b1c7a3f256a28893ea0882d976183dae82a731c29d4830ba3d",
+  "registry_sha256": "ae04b3ed5650814f1d474e098ee1ea6b7dee4b390a17c2fa5295ff63236de5c1",
+  "spec": "C:\\atx-wt\\pool-2\\build-equity\\p9-m4-tw-v5\\tiny.json",
+  "seed": 7
+}
+ff19d0ac62161ce9 --orientation prior --screen v4-prior-v1 --composition ew-theme-v1 --recipe tiny_world_v1.recipe.json --recipe-sha256 1c9294dc025e02b1c7a3f256a28893ea0882d976183dae82a731c29d4830ba3d --work-dir tiny-fit-work --max-seconds 60 --output tiny-weights
+   receipt: outcome completed exit 0 1.6 s peak 60 MiB
+# dirty outside the code pathspec (listed, not a stop): tiny-fit-work/, tiny-weights-run1/, tiny-weights/
+== card
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 60 --max-rss-mib 512 --min-free-mib 256 --output tiny-cards-run --bind atx-impl/tools/alpha_report_card.py --bind role/manifest.json --bind tiny-u-1/summary.json --bind tiny-weights/admission.json -- "C:/Program Files/Python312/python.exe" atx-impl/tools/alpha_report_card.py --u-pass tiny-u-1 --train role/manifest.json --train-sha256 2b34283c0c488effdc6f4e2b2ba3da875effd6449b25269270218f7d18bf6c31 --admission tiny-weights/admission.json --admission-sha256 c09ef51109816e641d1157d17fc3be056393129bb50e4c12caea13d81f7e978f --workers 2 --output tiny-cards
+   receipt: outcome completed exit 0 1.1 s peak 54 MiB
+gate tiny-planted planted_a: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 0.7091; tau 0.0476 (limit 0.7); max |rho| 0.0796 with noise_c; redundant_with None; train days 270
+gate tiny-planted planted_b: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 0.8027; tau 0.1198 (limit 0.7); max |rho| 0.0656 with noise_c; redundant_with None; train days 270
+  noise_c: status admitted, max |rho| 0.0796 with planted_a
+  copy_b: status reject_redundant, max |rho| 1.0000 with planted_b
+gate tiny-planted PASS
+# dirty outside the code pathspec (listed, not a stop): tiny-cards-run/, tiny-cards/
+== w (attempt 1)
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 60 --max-rss-mib 512 --min-free-mib 256 --output tiny-w-run1 --bind C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-ic.exe --bind role/manifest.json --bind fields/manifest.json --bind tiny_world_v1.json --bind tiny-weights/composition_weights.json -- C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-ic.exe --library tiny_world_v1.json --library-sha256 e62f80cace992371743da94ecc6fd1b4cb3495113a6edcc04e3dfa8ddd77aae9 --train role/manifest.json --train-sha256 2b34283c0c488effdc6f4e2b2ba3da875effd6449b25269270218f7d18bf6c31 --train-fields fields --train-fields-sha256 395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac --output tiny-w-1 --max-memory-mib 256 --min-names 50 --workers 4 --save-combined --candidate-cache tiny-cache --composition-weights tiny-weights/composition_weights.json --composition-weights-sha256 65f6387d910e660a5b8be784b03d9917762ad8401bf0becf296e83b7f3714a56
+   receipt: outcome completed exit 0 0.3 s peak 5 MiB
+# dirty outside the code pathspec (listed, not a stop): tiny-w-1/, tiny-w-run1/
+== nav (attempt 1)
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 60 --max-rss-mib 512 --min-free-mib 256 --output tiny-nav-run --bind C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-targets.exe --bind tiny-w-1/train_combined.json --bind fields/manifest.json -- C:/atx-wt/pool-2/build-equity/bin/atx-equity-strategy-targets.exe nav --combined tiny-w-1/train_combined.json --combined-sha256 a32f5458a0f9436488ac118fcb84b153529fdc11c31a46b2c43eaaae6f73ae06 --role role/manifest.json --role-sha256 2b34283c0c488effdc6f4e2b2ba3da875effd6449b25269270218f7d18bf6c31 --fields fields/manifest.json --fields-sha256 395f82f7b34dd96e50403ff8b47faa58a3d7a94af433ddaaf906f596d039a1ac --output tiny-nav --rule aim-partial-v5 --cadence 1 --trade-fraction .05 --dust-multiple .1 --aim-leverage 1.12 --daily-turnover-mean-max .20 --daily-turnover-p95-max .30 --neutralize price-risk-v1 --max-bytes 268435456 --order-basis delta --exit-rate .05 --locate-in-aim --liquidity-cache
+   receipt: outcome completed exit 0 1.1 s peak 24 MiB
+== stopped after nav (--stop-after)
+
+
+parent (v5) run exit 0

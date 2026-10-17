@@ -1,0 +1,210 @@
+{
+  "generated_commits": [
+    {
+      "sha": "c7ac9f9f05fc5aaa5fe229f440cca2f5c827c70e",
+      "paths": [
+        "scripts/specs/p9/templates/mom-volman-v1.json"
+      ],
+      "trailer": true
+    },
+    {
+      "sha": "8daca68cf80b14329af919c012d905c2ae42e210",
+      "paths": [
+        "scripts/specs/p9/templates/mom-volman-v1-cal.json"
+      ],
+      "trailer": true
+    },
+    {
+      "sha": "891b8dda219b22e5c34bc42232fe4c07cc5edbf3",
+      "paths": [
+        "scripts/specs/p9/templates/mom-volman-v1-gm.json"
+      ],
+      "trailer": true
+    }
+  ],
+  "cell_spec_sha256": "350a74418bcf52384a303f3dae8e7bcff48a01a2979b1a3a0c66a55e1549cfa3",
+  "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--theme-hedge",
+    "theme-cov-hedge-v1",
+    "--mom-volman",
+    "mom-volman-v1"
+  ],
+  "nav_flags": [
+    "--cadence",
+    "1",
+    "--trade-fraction",
+    ".05",
+    "--dust-multiple",
+    ".1",
+    "--aim-leverage",
+    "{leverage}",
+    "--daily-turnover-mean-max",
+    ".20",
+    "--daily-turnover-p95-max",
+    ".30",
+    "--neutralize",
+    "price-risk-v1",
+    "--max-bytes",
+    "1073741824",
+    "--order-basis",
+    "delta",
+    "--exit-rate",
+    ".05",
+    "--locate-in-aim",
+    "--liquidity-cache",
+    "--warm-start-sessions",
+    "60",
+    "--capacity-curve",
+    "--ann-mean-gross",
+    "--info-clock-print"
+  ],
+  "nav_output": "build-equity/mega-nav-p9-mom-volman-gm",
+  "leverage": "1.1674",
+  "input_checks": [
+    {
+      "key": "library",
+      "path": "atx-impl/strategies/fund_industry_ic_v8ysb.json",
+      "sha256": "41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5"
+    },
+    {
+      "key": "recipe",
+      "path": "atx-impl/strategies/fund_industry_ic_v8ysb.recipe.v2.json",
+      "sha256": "9d357c757943379a2aff1978de73594a2c7cbd70983f10ac65c0dd02df458759"
+    },
+    {
+      "key": "role",
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    {
+      "key": "label_role",
+      "path": "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+      "sha256": "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+    },
+    {
+      "key": "reference_cell",
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    {
+      "key": "reference_admission",
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    }
+  ],
+  "fields": {
+    "output": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "list": [
+      "si_shares",
+      "si_dtc",
+      "iv_atm_21d",
+      "iv_atm_63d",
+      "iv_atm_126d",
+      "earn_recent",
+      "shares_out",
+      "mkt_ret",
+      "be",
+      "at",
+      "at_lag4",
+      "lt",
+      "che",
+      "debt",
+      "sale_ttm",
+      "gp_ttm",
+      "oi_ttm",
+      "ni_ttm",
+      "ni_q",
+      "ni_q_lag4",
+      "be_lag1q",
+      "be_lag1q_lag4",
+      "cfo_ttm",
+      "capx_ttm",
+      "xrd_ttm",
+      "dvc_ttm",
+      "prstkc_ttm",
+      "sstk_ttm",
+      "txt_q",
+      "txt_q_lag4",
+      "shrs_q",
+      "shrs_q_lag4",
+      "noa",
+      "noa_lag4",
+      "sue",
+      "fscore",
+      "me_company",
+      "grp_sic2",
+      "grp_ff12",
+      "grp_ff49",
+      "sv_ratio126",
+      "ea_days_to_expected",
+      "ea_days_since",
+      "ea_window_pre5",
+      "ea_window_post3",
+      "ea_delay_days",
+      "ea_time_of_day",
+      "ins_net_buy_ratio",
+      "ins_n_buyers",
+      "ins_n_sellers",
+      "ins_opportunistic_net",
+      "ins_cluster_buy",
+      "k8_count_63",
+      "k8_item_material_21",
+      "k8_days_since_any",
+      "ret_overnight",
+      "ret_intraday",
+      "ceq_iss_5y",
+      "coskew_60m",
+      "vol_126",
+      "xrd0_ttm",
+      "grp_ff12f49",
+      "nt_first_126",
+      "earn_season_rank",
+      "div_month_pred",
+      "beta_dvol_21",
+      "season_y2_5",
+      "open_adj",
+      "high_adj",
+      "low_adj",
+      "iv_skew_21",
+      "stio_chg_q",
+      "div_init_omit",
+      "deal_pending",
+      "conn_ret63",
+      "inst_own_share",
+      "inst_breadth_chg",
+      "inst_own_chg_q",
+      "inst_best_ideas",
+      "inst_n_holders",
+      "ftd_shares_ratio21",
+      "regsho_threshold_days63",
+      "sv_offexchange_share126",
+      "exch_up_365d"
+    ]
+  },
+  "ledger": {
+    "lines": 136,
+    "sha256": "c98dd0c4d59bada990fb34c7bf5efc3ae59873acc313de771a2d025a449013b7",
+    "prefix135_unchanged": true
+  },
+  "cache_files": 686,
+  "run_status": {
+    "01-preflight.json": 0.656,
+    "02-register.json": 0.0,
+    "03-screen.json": 0.0,
+    "04-spec.json": 1.266,
+    "05-run.json": 81.515,
+    "06-match.json": 53.89,
+    "07-verify.json": 0.172,
+    "08-judge.json": 24.0,
+    "09-record.json": 0.312
+  }
+}

@@ -97,6 +97,7 @@
 #include "atx/engine/alpha/cs_ops.hpp"
 #include "atx/engine/alpha/fusion.hpp" // Lane 2: FusedProgram / FusedKernel
 #include "atx/engine/alpha/lit_ops.hpp" // platform-v7 W2 literature kernels
+#include "atx/engine/alpha/op_traits.hpp" // P9 S2: the per-opcode table (ChunkAxis, families)
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/state_ops.hpp"
@@ -375,8 +376,11 @@ struct KernelPolicy {
 //  exactly the cells the full-range call writes for that range, with the SAME
 //  per-cell arithmetic in the SAME order — so any partition of the axis across
 //  workers is bit-identical to the serial full-range call.
+//  P9 S2: ChunkAxis and each opcode's axis live in the per-opcode table
+//  (op_traits.hpp); chunk_axis() reads it. The same independence lets the
+//  serial kernels (leaves, element-wise, W2, as-of, recurrences) run in worker
+//  bands of their axis when a pool is set (dispatch_banded).
 // =========================================================================
-enum class ChunkAxis : atx::u8 { Cells, Dates, Instruments };
 
 // A borrowed slot buffer for Engine::execute_range: `rd` is the readable view,
 // `wr` the writable one (null for read-only inputs such as a cache entry). `n`
@@ -470,6 +474,7 @@ public:
       ts_scratch_a_thr_.resize(w);
       ts_scratch_b_thr_.resize(w);
     }
+    grow_band_scratch(w); // P9 S2: the Instruments bands of dispatch_banded run on this pool
   }
   [[nodiscard]] atx::engine::parallel::DetPool *ts_pool() const noexcept { return ts_pool_; }
 
@@ -703,6 +708,7 @@ public:
       cs_valid_thr_.resize(w);
       cs_scratch_thr_.resize(w);
     }
+    grow_band_scratch(w); // P9 S2: the Dates and Cells bands of dispatch_banded run on this pool
   }
   [[nodiscard]] atx::engine::parallel::DetPool *cs_pool() const noexcept { return cs_pool_; }
 
@@ -718,15 +724,10 @@ public:
   //  Errors: Err(InvalidArgument) for Free / StoreAlpha / an out-of-range slot.
   // =======================================================================
   [[nodiscard]] static ChunkAxis chunk_axis(OpCode op) noexcept {
-    // v8 YOPS as-of ops: date row t reads input rows t+1-d-j .. t only, so date
-    // bands are independent (the inputs are immutable while the node runs).
-    if (op == OpCode::LoadField || is_cs_op(op) || detail::is_asof_op(op)) {
-      return ChunkAxis::Dates;
-    }
-    if (is_instrument_op(op)) {
-      return ChunkAxis::Instruments;
-    }
-    return ChunkAxis::Cells;
+    // The op's row of the per-opcode table (op_traits.hpp): LoadField, the Cs* family and the v8
+    // as-of ops (date row t reads input rows <= t only) on Dates; every shift, rolling and
+    // recurrence op on Instruments; everything else on Cells.
+    return detail::op_chunk_axis(op);
   }
 
   [[nodiscard]] atx::core::Status bind_fields(const Program &prog) { return resolve_fields(prog); }
@@ -817,6 +818,58 @@ public:
   }
 
 private:
+  // ---- P9 S2 (DSL/IC review §7 item 2): worker bands of the serial kernels -------------------
+  // The leaves, the element-wise maps, the W2 literature kernels, the as-of family and the
+  // recurrences used to run serially at any worker count (only the built-in Cs and Ts kernels used
+  // a pool, so more workers made a cold IC pass slower, ruling E-24). Each now runs in contiguous
+  // bands of its chunk_axis (dispatch_banded): a band is the serial kernel over [b_lo, b_hi) with
+  // that worker's private BandScratch. The kernels read their inputs whole and write only their
+  // band, so every cell is written with the same arithmetic in the same order for any band split:
+  // byte-identical at every pool size, and with no pool the one band [lo, hi) IS the serial call.
+  struct BandScratch {
+    std::vector<atx::f64> lit_col;  // W2 Ts: one instrument's n_in input columns (n_in * dates)
+    std::vector<atx::f64> lit_win;  // W2 Ts: one cell's gathered windows (n_in * d), n_in > 1
+    detail::LitScratch lit;         // W2 sort / OLS rows / cs_resid_on regression rows
+    detail::AsofScratch asof;       // v8 YOPS as-of rank rows / factor / window scratch
+    std::vector<atx::usize> valid;  // W2 Cs: one date row's valid set
+    detail::CsScratch cs;           // W2 bucket's sort scratch
+  };
+  static constexpr atx::usize kSerialBand = ~atx::usize{0}; // run_bands' worker id without a pool
+
+  // Grow the per-worker band scratch to `w` workers (called by the pool setters, never in a band,
+  // so no thread resizes the outer vector while another reads it).
+  void grow_band_scratch(atx::usize w) {
+    if (band_thr_.size() < w) {
+      band_thr_.resize(w);
+    }
+  }
+  [[nodiscard]] BandScratch &band_scratch(atx::usize wid) {
+    return wid == kSerialBand ? band_serial_ : band_thr_[wid];
+  }
+  // The pool an axis' bands run on: the Cs pool for Dates and Cells, the Ts pool for Instruments
+  // (null: no bands). Same DEADLOCK CONSTRAINT as set_ts_pool / set_cs_pool.
+  [[nodiscard]] atx::engine::parallel::DetPool *band_pool(ChunkAxis axis) const noexcept {
+    return axis == ChunkAxis::Instruments ? ts_pool_ : cs_pool_;
+  }
+  // body(b_lo, b_hi, wid) over min(n, 4 x workers) contiguous bands partitioning [lo, hi)
+  // (quotient/remainder split, no overflow), or body(lo, hi, kSerialBand) once without a pool or
+  // with fewer than two units. Each band is run by exactly one worker `wid` (DetPool contract).
+  template <class Body>
+  void run_bands(atx::engine::parallel::DetPool *pool, atx::usize lo, atx::usize hi,
+                 Body &&body) {
+    const atx::usize n = hi > lo ? hi - lo : atx::usize{0};
+    if (pool == nullptr || n < 2) {
+      body(lo, hi, kSerialBand);
+      return;
+    }
+    const atx::usize bands = std::min(n, pool->n_workers() * 4U);
+    pool->parallel_for(bands, [&body, lo, n, bands](atx::usize b, atx::usize wid) {
+      const atx::usize b_lo = lo + n / bands * b + n % bands * b / bands;
+      const atx::usize b_hi = lo + n / bands * (b + 1U) + n % bands * (b + 1U) / bands;
+      body(b_lo, b_hi, wid);
+    });
+  }
+
   // Column access. Normally a Program SlotId indexes the pool buffer directly (see
   // evaluate()); under execute_range it indexes the borrowed ExtSlot table.
   [[nodiscard]] std::span<atx::f64> wcol(SlotId s) {
@@ -836,44 +889,6 @@ private:
   [[nodiscard]] std::span<atx::f64> dst_col(const Instr &in) { return wcol(in.dst); }
   [[nodiscard]] std::span<const atx::f64> src_col(const Instr &in, atx::usize k) const {
     return rcol(in.src.at(k));
-  }
-
-  [[nodiscard]] static bool is_cs_op(OpCode op) noexcept {
-    switch (op) {
-    case OpCode::CsRank:
-    case OpCode::CsZscore:
-    case OpCode::CsScale:
-    case OpCode::CsNormalize:
-    case OpCode::CsWinsorize:
-    case OpCode::CsDemeanG:
-    case OpCode::CsNeutG:
-    case OpCode::CsRankG:
-    case OpCode::CsZscoreG:
-    case OpCode::CsCountG:
-    case OpCode::CsMeanG:
-    case OpCode::CsScaleG:
-    case OpCode::CsResidualize:
-    case OpCode::CsQuantile:
-    case OpCode::CsVecSum:
-    case OpCode::CsVecAvg:
-    case OpCode::CsBucket:  // W2: date rows (lit_ops.hpp)
-    case OpCode::CsResidOn: // W2
-    case OpCode::CsSumG:    // v8 YOPS group_sum
-      return true;
-    default:
-      return false;
-    }
-  }
-
-  // Ts*/OU rolling, recurrences and the Kalman record op: per-instrument columns.
-  [[nodiscard]] static bool is_instrument_op(OpCode op) noexcept {
-    const auto v = static_cast<atx::u8>(op);
-    const bool ts_block = v >= static_cast<atx::u8>(OpCode::TsDelay) &&
-                          v <= static_cast<atx::u8>(OpCode::OuFilter);
-    return ts_block || op == OpCode::KalmanReg || op == OpCode::OuTheta ||
-           op == OpCode::OuHalflife || op == OpCode::OuMean || op == OpCode::OuZscore ||
-           detail::is_lit_ts_op(op) || // W2 trailing-window ops
-           op == OpCode::GroupDelay;   // v8 YOPS: delay's shift on a classifier
   }
 
   // Slot offset an operand reads beyond its own slot: Pin's projected pin, and a
@@ -1199,9 +1214,8 @@ private:
                                                  atx::usize hi) {
     switch (in.op) {
     case OpCode::LoadField:
-      return eval_load_field(in, instruments, lo, hi);
     case OpCode::Const:
-      return eval_const(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::Add:
     case OpCode::Sub:
     case OpCode::Mul:
@@ -1210,28 +1224,28 @@ private:
     case OpCode::Spow:
     case OpCode::MinP:
     case OpCode::MaxP:
-      return eval_elementwise(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::Neg:
     case OpCode::Abs:
     case OpCode::Sign:
     case OpCode::Log:
     case OpCode::Sigmoid:
     case OpCode::Tanh:
-      return eval_elementwise(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::CmpLt:
     case OpCode::CmpGt:
     case OpCode::CmpLe:
     case OpCode::CmpGe:
     case OpCode::CmpEq:
     case OpCode::CmpNe:
-      return eval_elementwise(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::And:
     case OpCode::Or:
-      return eval_elementwise(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::Not:
-      return eval_elementwise(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::Select:
-      return eval_elementwise(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::CsRank:
     case OpCode::CsZscore:
     case OpCode::CsScale:
@@ -1295,21 +1309,21 @@ private:
     case OpCode::Hump:
     case OpCode::KalmanLevel:
     case OpCode::OuFilter:
-      return eval_recurrence(in, dates, instruments, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::Split2:
-      return eval_split2(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::KalmanReg:
-      return eval_kalman_reg(in, dates, instruments, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::Pin:
       eval_pin(in, lo, hi);
       return atx::core::Ok();
     // ---- platform-v7 W2 literature ops (lit_ops.hpp) ----
     case OpCode::ArgPack:
     case OpCode::GroupCross:
-      return eval_lit_map(in, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::CsBucket:
     case OpCode::CsResidOn:
-      return eval_lit_cs(in, instruments, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::TsTopkMean:
     case OpCode::TsResidOn:
     case OpCode::TsBetaOn:
@@ -1322,7 +1336,7 @@ private:
     case OpCode::TsMaxMp:
     case OpCode::TsDecayLinearMp:
     case OpCode::TsCorrMp:
-      return eval_lit_ts(in, dates, instruments, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     // ---- platform-v8 YOPS formulaic ops (CsSumG is a Cs op above) ----
     case OpCode::GroupDelay: // delay's lookback kernel; the window is operand 1 (a Const)
       return eval_ts_lookback(OpCode::TsDelay, src_col(in, 0), dst_col(in), dates, instruments,
@@ -1332,7 +1346,7 @@ private:
     case OpCode::AsofRankDecayLinear:
     case OpCode::AsofRankCorr:
     case OpCode::AsofRankCov:
-      return eval_asof(in, instruments, lo, hi);
+      return dispatch_banded(in, dates, instruments, lo, hi);
     case OpCode::StoreAlpha:
     case OpCode::Free:
       ATX_UNREACHABLE(); // StoreAlpha/Free handled by evaluate(); never dispatched
@@ -1340,13 +1354,73 @@ private:
     ATX_UNREACHABLE(); // exhaustive switch — no valid fallthrough
   }
 
+  // P9 S2: a serial kernel over [lo, hi) of its chunk_axis, in worker bands on band_pool (see
+  // BandScratch). The refusals and the shared growth a band must not do run here, on the calling
+  // thread, before any band starts: the LoadField dictionary check and the recurrence state_.
+  [[nodiscard]] atx::core::Status dispatch_banded(const Instr &in, atx::usize dates,
+                                                  atx::usize instruments, atx::usize lo,
+                                                  atx::usize hi) {
+    if (in.op == OpCode::LoadField && in.param >= field_remap_.size()) {
+      return atx::core::Err(atx::core::ErrorCode::Internal,
+                            "Engine::evaluate: LoadField param out of field-dictionary range");
+    }
+    if ((in.op == OpCode::TradeWhen || in.op == OpCode::Hump) && instruments > state_.size()) {
+      state_.resize(instruments); // grow-once; each band then reads/writes only its own state_[j]
+    }
+    run_bands(band_pool(chunk_axis(in.op)), lo, hi,
+              [this, &in, dates, instruments](atx::usize b_lo, atx::usize b_hi, atx::usize wid) {
+                run_band(in, dates, instruments, b_lo, b_hi, band_scratch(wid));
+              });
+    return atx::core::Ok();
+  }
+
+  // One band of a dispatch_banded instruction: the serial kernel over [lo, hi) with scratch `s`.
+  // Precondition: dispatch_range routed `in` here (a leaf, element-wise, record, W2, as-of or
+  // recurrence opcode).
+  void run_band(const Instr &in, atx::usize dates, atx::usize instruments, atx::usize lo,
+                atx::usize hi, BandScratch &s) {
+    switch (in.op) {
+    case OpCode::LoadField:
+      eval_load_field(in, instruments, lo, hi);
+      return;
+    case OpCode::Const:
+      eval_const(in, lo, hi);
+      return;
+    case OpCode::ArgPack:
+    case OpCode::GroupCross:
+      eval_lit_map(in, lo, hi);
+      return;
+    case OpCode::Split2:
+      eval_split2(in, lo, hi);
+      return;
+    case OpCode::KalmanReg:
+      eval_kalman_reg(in, dates, instruments, lo, hi);
+      return;
+    case OpCode::CsBucket:
+    case OpCode::CsResidOn:
+      eval_lit_cs(in, instruments, lo, hi, s);
+      return;
+    default:
+      break;
+    }
+    if (detail::is_lit_ts_op(in.op)) {
+      eval_lit_ts(in, dates, instruments, lo, hi, s);
+    } else if (detail::is_asof_op(in.op)) {
+      eval_asof(in, instruments, lo, hi, s.asof);
+    } else if (detail::is_recurrence_op(in.op)) {
+      eval_recurrence(in, dates, instruments, lo, hi);
+    } else {
+      eval_elementwise(in, lo, hi); // the element-wise family (vm_apply_ew refuses anything else)
+    }
+  }
+
   // ---- platform-v8 YOPS as-of rank family (kernel + rules: asof_ops.hpp) -----
   // Date rows [d0, d1): row t (NaN while t + 1 < d + j) hands the kernel the
   // contiguous input rows of its window — x / y / the Cs mask rows
   // t+1-d-j .. t-j and the w rows t+1-d-j .. t — so a date band reads only rows
-  // <= its own and writes only its own rows. Serial within a band (one scratch).
-  [[nodiscard]] atx::core::Status eval_asof(const Instr &in, atx::usize instruments,
-                                            atx::usize d0, atx::usize d1) {
+  // <= its own and writes only its own rows. Serial within a band (the band's scratch).
+  void eval_asof(const Instr &in, atx::usize instruments, atx::usize d0, atx::usize d1,
+                 detail::AsofScratch &scratch) {
     const detail::AsofGeom geo = detail::asof_geom(in.imm);
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<const atx::f64> w = src_col(in, 1);
@@ -1366,15 +1440,14 @@ private:
       detail::asof_rank_row(in.op, x.subspan(b, nd), w.subspan(b, span_rows * instruments),
                             pair ? y.subspan(b, nd) : y,
                             mask.empty() ? mask : mask.subspan(b, nd), instruments, geo.d, orow,
-                            asof_scratch_, policy_.rank_ties, policy_.flat);
+                            scratch, policy_.rank_ties, policy_.flat);
     }
-    return atx::core::Ok();
   }
 
   // ---- platform-v7 W2 literature ops (kernels + NaN rules: lit_ops.hpp) ------
   // pack2/pack3 copy their operands into the contiguous record block; group_cross
   // is element-wise. Cells [lo, hi).
-  [[nodiscard]] atx::core::Status eval_lit_map(const Instr &in, atx::usize lo, atx::usize hi) {
+  void eval_lit_map(const Instr &in, atx::usize lo, atx::usize hi) {
     if (in.op == OpCode::ArgPack) {
       for (atx::u32 c = 0; c < in.n_out; ++c) {
         const std::span<const atx::f64> s = src_col(in, c);
@@ -1383,7 +1456,7 @@ private:
           o[i] = s[i];
         }
       }
-      return atx::core::Ok();
+      return;
     }
     const std::span<const atx::f64> g1 = src_col(in, 0);
     const std::span<const atx::f64> g2 = src_col(in, 1);
@@ -1391,13 +1464,13 @@ private:
     for (atx::usize i = lo; i < hi; ++i) {
       o[i] = detail::lit_group_cross(g1[i], g2[i]);
     }
-    return atx::core::Ok();
   }
 
   // bucket / cs_resid_on over date rows [d0, d1): the same valid-set scan as
-  // cs_one_date (non-NaN x AND the Cs eligibility mask, ascending index), serial.
-  [[nodiscard]] atx::core::Status eval_lit_cs(const Instr &in, atx::usize instruments,
-                                              atx::usize d0, atx::usize d1) {
+  // cs_one_date (non-NaN x AND the Cs eligibility mask, ascending index), serial
+  // within the band (its scratch `s`).
+  void eval_lit_cs(const Instr &in, atx::usize instruments, atx::usize d0, atx::usize d1,
+                   BandScratch &s) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<atx::f64> out = dst_col(in);
     std::array<std::span<const atx::f64>, detail::kLitMaxReg> cov{};
@@ -1422,24 +1495,23 @@ private:
       const std::span<atx::f64> orow = out.subspan(d * instruments, instruments);
       const std::span<const atx::u8> mrow =
           mask.empty() ? std::span<const atx::u8>{} : mask.subspan(d * instruments, instruments);
-      cs_valid_.clear();
+      s.valid.clear();
       for (atx::usize i = 0; i < instruments; ++i) {
         orow[i] = detail::kLitNaN;
         if (!std::isnan(xr[i]) && (mrow.empty() || mrow[i] != 0U)) {
-          cs_valid_.push_back(i);
+          s.valid.push_back(i);
         }
       }
       if (in.op == OpCode::CsBucket) {
-        detail::lit_bucket_row(xr, cs_valid_, nb, orow, cs_scratch_);
+        detail::lit_bucket_row(xr, s.valid, nb, orow, s.cs);
         continue;
       }
       for (atx::usize c = 0; c < k; ++c) {
         crow[c] = cov[c].subspan(d * instruments, instruments);
       }
       detail::lit_cs_resid_row(xr, std::span<const std::span<const atx::f64>>{crow.data(), k},
-                               cs_valid_, orow, lit_scratch_);
+                               s.valid, orow, s.lit);
     }
-    return atx::core::Ok();
   }
 
   // W2 trailing-window ops over instrument columns [j0, j1): for each date the
@@ -1447,9 +1519,13 @@ private:
   // shared cell kernel runs — the call StreamingEngine makes on its ring, so the
   // two agree bit-for-bit. Full-window ops short-circuit a short window to NaN
   // (the kernel would return NaN); the min-periods family evaluates it.
-  [[nodiscard]] atx::core::Status eval_lit_ts(const Instr &in, atx::usize dates,
-                                              atx::usize instruments, atx::usize j0,
-                                              atx::usize j1) {
+  // P9 S2 (DS-2): each input's column j is extracted ONCE per instruction (one strided pass per
+  // input, into the band's lit_col), so a cell's window is a contiguous slice of it: a unary op
+  // (n_in == 1) passes that slice itself, a multi-input op copies n_in contiguous slices. The
+  // kernel sees the same values in the same order as the per-cell strided gather it replaces, so
+  // every output bit is unchanged.
+  void eval_lit_ts(const Instr &in, atx::usize dates, atx::usize instruments, atx::usize j0,
+                   atx::usize j1, BandScratch &s) {
     atx::usize last = 0;
     for (atx::usize k = 0; k < in.src.size(); ++k) {
       if (in.src.at(k) != kNoSlot) {
@@ -1457,22 +1533,33 @@ private:
       }
     }
     const atx::usize d = detail::tsv_window_of(src_col(in, last));
-    const atx::usize n_in = detail::lit_ts_inputs(in.op, in.param);
     std::array<std::span<const atx::f64>, 1 + detail::kLitMaxReg> cols{};
+    // The typechecker bounds n_in by 1 + kMaxTsRegressors; the min keeps a hand-built param in
+    // range.
+    const atx::usize n_in = std::min(detail::lit_ts_inputs(in.op, in.param), cols.size());
     cols[0] = src_col(in, 0);
     if (in.op == OpCode::TsCorrMp) {
       cols[1] = src_col(in, 1);
     } else {
-      for (atx::u32 c = 1; c < n_in && c < cols.size(); ++c) {
+      for (atx::u32 c = 1; c < n_in; ++c) {
         cols[c] = rcol(in.src[1] + (c - 1U)); // the regressor block of operand 1
       }
     }
     const std::span<atx::f64> out = dst_col(in);
     const bool partial_ok = detail::is_lit_mp_op(in.op);
-    if (lit_win_.size() < n_in * d) {
-      lit_win_.resize(n_in * d);
+    if (s.lit_win.size() < n_in * d) {
+      s.lit_win.resize(n_in * d);
+    }
+    if (s.lit_col.size() < n_in * dates) {
+      s.lit_col.resize(n_in * dates);
     }
     for (atx::usize j = j0; j < j1; ++j) {
+      for (atx::usize c = 0; c < n_in; ++c) {
+        atx::f64 *const col = s.lit_col.data() + c * dates;
+        for (atx::usize t = 0; t < dates; ++t) {
+          col[t] = cols[c][t * instruments + j];
+        }
+      }
       for (atx::usize t = 0; t < dates; ++t) {
         const atx::usize len = std::min(t + 1, d);
         const atx::usize cell = t * instruments + j;
@@ -1481,36 +1568,30 @@ private:
           continue;
         }
         const atx::usize first = t + 1 - len;
-        for (atx::usize c = 0; c < n_in; ++c) {
-          for (atx::usize i = 0; i < len; ++i) {
-            lit_win_[c * len + i] = cols[c][(first + i) * instruments + j];
+        std::span<const atx::f64> win{s.lit_col.data() + first, len};
+        if (n_in > 1) {
+          for (atx::usize c = 0; c < n_in; ++c) {
+            std::copy_n(s.lit_col.data() + c * dates + first, len, s.lit_win.data() + c * len);
           }
+          win = std::span<const atx::f64>{s.lit_win.data(), n_in * len};
         }
-        out[cell] = detail::lit_ts_cell(in.op,
-                                        std::span<const atx::f64>{lit_win_.data(), n_in * len},
-                                        n_in, len, d, in.imm[0], lit_scratch_);
+        out[cell] = detail::lit_ts_cell(in.op, win, n_in, len, d, in.imm[0], s.lit);
       }
     }
-    return atx::core::Ok();
   }
 
   // ---- leaves -------------------------------------------------------------
-  [[nodiscard]] atx::core::Status eval_const(const Instr &in, atx::usize lo, atx::usize hi) {
+  void eval_const(const Instr &in, atx::usize lo, atx::usize hi) {
     const std::span<atx::f64> out = dst_col(in);
     for (atx::usize i = lo; i < hi; ++i) {
       out[i] = in.imm[0];
     }
-    return atx::core::Ok();
   }
 
   // LoadField copies the field, NaN-ing any out-of-universe cell (point-in-time).
   // `in.param` indexes the program's field dictionary; remap to the Panel id.
-  [[nodiscard]] atx::core::Status eval_load_field(const Instr &in, atx::usize instruments,
-                                                  atx::usize d0, atx::usize d1) {
-    if (in.param >= field_remap_.size()) {
-      return atx::core::Err(atx::core::ErrorCode::Internal,
-                            "Engine::evaluate: LoadField param out of field-dictionary range");
-    }
+  // Precondition (dispatch_banded checks it): in.param < field_remap_.size().
+  void eval_load_field(const Instr &in, atx::usize instruments, atx::usize d0, atx::usize d1) {
     const std::span<atx::f64> out = dst_col(in);
     const std::span<const atx::f64> field = panel_.field_all(field_remap_[in.param]);
     for (atx::usize d = d0; d < d1; ++d) {
@@ -1519,19 +1600,17 @@ private:
         out[idx] = panel_.in_universe(d, j) ? field[idx] : detail::kVmNaN;
       }
     }
-    return atx::core::Ok();
   }
 
   // ---- element-wise (unary / binary / comparison / logical / not / select) --
   // All route through detail::vm_apply_ew — the single implementation the fused
   // kernels share — over the cell range [lo, hi).
-  [[nodiscard]] atx::core::Status eval_elementwise(const Instr &in, atx::usize lo, atx::usize hi) {
+  void eval_elementwise(const Instr &in, atx::usize lo, atx::usize hi) {
     const atx::usize n = hi - lo;
     const atx::f64 *x = in.src[0] != kNoSlot ? src_col(in, 0).data() + lo : nullptr;
     const atx::f64 *y = in.src[1] != kNoSlot ? src_col(in, 1).data() + lo : nullptr;
     const atx::f64 *z = in.src[2] != kNoSlot ? src_col(in, 2).data() + lo : nullptr;
     detail::vm_apply_ew(in.op, x, y, z, dst_col(in).data() + lo, n);
-    return atx::core::Ok();
   }
 
   // ---- cross-sectional (per date-row) -------------------------------------
@@ -1545,10 +1624,7 @@ private:
                                                      atx::usize d0, atx::usize d1) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<atx::f64> out = dst_col(in);
-    const bool grouped =
-        (in.op == OpCode::CsDemeanG || in.op == OpCode::CsNeutG || in.op == OpCode::CsRankG ||
-         in.op == OpCode::CsZscoreG || in.op == OpCode::CsCountG || in.op == OpCode::CsMeanG ||
-         in.op == OpCode::CsScaleG || in.op == OpCode::CsResidualize || in.op == OpCode::CsSumG);
+    const bool grouped = detail::needs_group_operand(in.op); // P9 S2: the per-opcode table
     std::span<const atx::f64> g{};
     std::span<const atx::f64> z{}; // cs_residualize optional style covariate (src[2])
     // The scalar 2nd operand: CsScale's target L1 norm `a`, CsWinsorize's std
@@ -2053,18 +2129,18 @@ private:
   // separate clear: t==0 seeds it. state_[j] reuse across t (and across calls,
   // after the grow-once resize) is sound because every read of state_[j] at date
   // t precedes its write for date t.
-  [[nodiscard]] atx::core::Status eval_recurrence(const Instr &in, atx::usize dates,
-                                                  atx::usize instruments, atx::usize j0,
-                                                  atx::usize j1) {
+  // P9 S2: dispatch_banded grows state_ to `instruments` before any band runs, and
+  // a band [j0, j1) touches only state_[j0 .. j1): bands share no element.
+  void eval_recurrence(const Instr &in, atx::usize dates, atx::usize instruments, atx::usize j0,
+                       atx::usize j1) {
     const std::span<atx::f64> out = dst_col(in);
     if (in.op == OpCode::KalmanLevel) {
-      return eval_kalman_level(in, out, dates, instruments, j0, j1);
+      eval_kalman_level(in, out, dates, instruments, j0, j1);
+      return;
     }
     if (in.op == OpCode::OuFilter) {
-      return eval_ou_filter(in, out, dates, instruments, j0, j1);
-    }
-    if (instruments > state_.size()) {
-      state_.resize(instruments); // grow-once; reused across calls
+      eval_ou_filter(in, out, dates, instruments, j0, j1);
+      return;
     }
     if (in.op == OpCode::Hump) {
       const std::span<const atx::f64> x = src_col(in, 0);
@@ -2080,7 +2156,7 @@ private:
             state_[j] = v;
           }
         }
-        return atx::core::Ok();
+        return;
       }
       // W0-A0 (A-02): per-instrument HumpState (prior + NaN-run length) lives on
       // the stack for its column's forward scan — the column is independent.
@@ -2091,7 +2167,7 @@ private:
           out[i] = detail::hump_step(s, x[i], thr);
         }
       }
-      return atx::core::Ok();
+      return;
     }
     // TradeWhen: trigger=src[0], alpha=src[1], exit=src[2].
     const std::span<const atx::f64> trig = src_col(in, 0);
@@ -2106,16 +2182,14 @@ private:
         state_[j] = v;
       }
     }
-    return atx::core::Ok();
   }
 
   // KalmanLevel VM kernel — per-instrument forward scan using the shared scalar
   // step kernel (state_ops::kalman_level_step). Stack-local KalmanLevelState per
   // instrument (no pooled state_ buffer needed — the struct holds {x,P}). Reads
   // Q/R from in.imm[0/1]. The oracle restates this math INLINE for the diff.
-  [[nodiscard]] atx::core::Status eval_kalman_level(const Instr &in, std::span<atx::f64> out,
-                                                    atx::usize dates, atx::usize instruments,
-                                                    atx::usize j0, atx::usize j1) {
+  void eval_kalman_level(const Instr &in, std::span<atx::f64> out, atx::usize dates,
+                         atx::usize instruments, atx::usize j0, atx::usize j1) {
     const std::span<const atx::f64> z = src_col(in, 0);
     const atx::f64 Q = in.imm[0];
     const atx::f64 R = in.imm[1];
@@ -2127,15 +2201,13 @@ private:
         out[i] = detail::kalman_level_step(s, seeded, z[i], Q, R);
       }
     }
-    return atx::core::Ok();
   }
 
   // OuFilter VM kernel — per-instrument forward scan using the shared scalar step
   // kernel (state_ops::ou_filter_step). Stack-local {xhat, seeded} per instrument.
   // Reads theta/mu from in.imm[0/1]. The oracle restates this math INLINE.
-  [[nodiscard]] atx::core::Status eval_ou_filter(const Instr &in, std::span<atx::f64> out,
-                                                 atx::usize dates, atx::usize instruments,
-                                                 atx::usize j0, atx::usize j1) {
+  void eval_ou_filter(const Instr &in, std::span<atx::f64> out, atx::usize dates,
+                      atx::usize instruments, atx::usize j0, atx::usize j1) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const atx::f64 theta = in.imm[0];
     const atx::f64 mu = in.imm[1];
@@ -2147,7 +2219,6 @@ private:
         out[i] = detail::ou_filter_step(xhat, seeded, x[i], theta, mu);
       }
     }
-    return atx::core::Ok();
   }
 
   // ---- multi-output (Split2) -----------------------------------------------
@@ -2155,7 +2226,7 @@ private:
   // two-slot block [dst, dst+1]; `out_col(in, k)` = pool_.column(in.dst + k).
   // SAFETY: the linearizer's acquire_block(2) ensured both buffer slots are
   // within the pre-sized pool; accessing in.dst+1 never exceeds capacity.
-  [[nodiscard]] atx::core::Status eval_split2(const Instr &in, atx::usize c0, atx::usize c1) {
+  void eval_split2(const Instr &in, atx::usize c0, atx::usize c1) {
     const std::span<const atx::f64> x = src_col(in, 0);
     const std::span<atx::f64> hi = wcol(in.dst + 0);
     const std::span<atx::f64> lo = wcol(in.dst + 1);
@@ -2163,7 +2234,6 @@ private:
       hi[i] = x[i];
       lo[i] = -x[i];
     }
-    return atx::core::Ok();
   }
 
   // ---- Chan 2-state time-varying regression (multi-output, 3 pins) -----------
@@ -2174,9 +2244,8 @@ private:
   // the three output columns — the linearizer's acquire_block(3) guarantees the
   // contiguous block [dst, dst+2] is within the pre-sized pool.
   // SAFETY: causal by construction (step reads only prior state + date-t inputs).
-  [[nodiscard]] atx::core::Status eval_kalman_reg(const Instr &in, atx::usize dates,
-                                                  atx::usize instruments, atx::usize j0,
-                                                  atx::usize j1) {
+  void eval_kalman_reg(const Instr &in, atx::usize dates, atx::usize instruments, atx::usize j0,
+                       atx::usize j1) {
     const std::span<const atx::f64> y = src_col(in, 0);
     const std::span<const atx::f64> x = src_col(in, 1);
     const atx::f64 delta = in.imm[0];
@@ -2195,7 +2264,6 @@ private:
         orr[i] = o.resid;
       }
     }
-    return atx::core::Ok();
   }
 
   const Panel &panel_;
@@ -2217,9 +2285,10 @@ private:
   std::vector<atx::f64> state_;        // recurrence state[n_instruments]; grown once, reused
   std::vector<atx::usize> cs_valid_;   // Cs* per-date valid-index scratch; grown once, cleared per date
   detail::CsScratch cs_scratch_;       // Cs* grouped/sort scratch; grown once, reset per date
-  std::vector<atx::f64> lit_win_;      // W2 Ts gathered windows (n_in * d); grown on demand
-  detail::LitScratch lit_scratch_;     // W2 sort / OLS rows / regression-row scratch
-  detail::AsofScratch asof_scratch_;   // v8 YOPS as-of rank rows / factor / window scratch
+  // P9 S2: the banded kernels' scratch (BandScratch): band_serial_ without a pool (the W2 and
+  // as-of scratch that lived here), band_thr_[wid] per worker (sized by the pool setters).
+  BandScratch band_serial_;
+  std::vector<BandScratch> band_thr_;
   // S3-3: optional intra-eval column pool + PER-WORKER scratch. ts_pool_ is null by
   // default (serial). When set, the batch column loop runs over instrument bands on
   // the pool; each worker `wid` owns ts_col_thr_[wid] (x column), ts_col_b_thr_[wid]

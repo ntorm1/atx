@@ -23,6 +23,16 @@
 //   * the configs: AuditExact and ResearchFast (different Ts kernels), each with and without a
 //     cross-section mask.
 //
+// P9 lane S2 widens the sweep to the v8 formulaic rows (detail::formulaic_ops(): group_sum,
+// group_delay, the as-of family), checks every opcode the VM dispatches is reached, and runs two
+// more properties over the same variants and configs:
+//   * worker bands: the program on an Engine whose Cs and Ts pools are a DetPool of 1, 4 and 16
+//     workers (as the IC runner sets them) is byte-equal to the serial Engine, so every banded
+//     kernel (vm.hpp dispatch_banded) and every pooled Cs / Ts kernel is bit-identical at any
+//     band split (the 12 x 7 panel splits every axis down to single rows, columns and cells);
+//   * truncation: the program on a panel of only the first T dates gives, on those dates, the
+//     full panel's bytes (no op reads a later date, whatever the panel's length).
+//
 // Each target carries a second root `keep = x + y + z + u`. It holds the fields live past the op,
 // so the op's destination is a slot the target has not written before: a cell the op skipped reads
 // 0.0 on the fresh Engine and a poison value (no poison leaf is 0.0) on a dirty one.
@@ -53,12 +63,14 @@
 #include "atx/core/types.hpp"
 
 #include "atx/engine/alpha/bytecode.hpp"
+#include "atx/engine/alpha/op_traits.hpp"
 #include "atx/engine/alpha/panel.hpp"
 #include "atx/engine/alpha/parser.hpp"
 #include "atx/engine/alpha/registry.hpp"
 #include "atx/engine/alpha/typecheck.hpp"
 #include "atx/engine/alpha/unparse.hpp"
 #include "atx/engine/alpha/vm.hpp"
+#include "atx/engine/parallel/det_pool.hpp"
 
 namespace atx_test_alpha_vm_slot_reuse {
 
@@ -185,28 +197,29 @@ constexpr std::array<FieldDef, 7> kFields{{{"x", &field_x},
                                            {"pz", &field_pz}}};
 
 // The fields above, with name 4 listed from date 3 and name 2 out of the universe on date 9.
-[[nodiscard]] Panel make_panel() {
+// `dates` < kDates gives the same panel's first `dates` dates (the truncation property).
+[[nodiscard]] Panel make_panel(usize dates = kDates) {
   std::vector<std::string> names;
   std::vector<std::vector<f64>> cols;
   for (const FieldDef &f : kFields) {
     names.emplace_back(f.name);
-    std::vector<f64> col(kDates * kNames, 0.0);
-    for (usize t = 0; t < kDates; ++t) {
+    std::vector<f64> col(dates * kNames, 0.0);
+    for (usize t = 0; t < dates; ++t) {
       for (usize j = 0; j < kNames; ++j) {
         col[t * kNames + j] = f.value(t, j);
       }
     }
     cols.push_back(std::move(col));
   }
-  std::vector<std::uint8_t> universe(kDates * kNames, std::uint8_t{1});
-  for (usize t = 0; t < kDates; ++t) {
+  std::vector<std::uint8_t> universe(dates * kNames, std::uint8_t{1});
+  for (usize t = 0; t < dates; ++t) {
     for (usize j = 0; j < kNames; ++j) {
       if ((j == 4 && t < 3) || (j == 2 && t == 9)) {
         universe[t * kNames + j] = std::uint8_t{0};
       }
     }
   }
-  auto p = Panel::create(kDates, kNames, std::move(names), std::move(cols), std::move(universe));
+  auto p = Panel::create(dates, kNames, std::move(names), std::move(cols), std::move(universe));
   EXPECT_TRUE(p.has_value()) << (p ? "" : p.error().message());
   if (p) {
     return std::move(*p);
@@ -215,10 +228,10 @@ constexpr std::array<FieldDef, 7> kFields{{{"x", &field_x},
 }
 
 // The cross-section eligibility of the masked configs: name 3 on even dates, name 0 on date 1 and
-// name 6 from date 10 are excluded.
-[[nodiscard]] std::vector<u8> make_cs_mask() {
-  std::vector<u8> mask(kDates * kNames, u8{1});
-  for (usize t = 0; t < kDates; ++t) {
+// name 6 from date 10 are excluded (the first `dates` dates of it).
+[[nodiscard]] std::vector<u8> make_cs_mask(usize dates = kDates) {
+  std::vector<u8> mask(dates * kNames, u8{1});
+  for (usize t = 0; t < dates; ++t) {
     for (usize j = 0; j < kNames; ++j) {
       if ((j == 3 && t % 2 == 0) || (j == 0 && t == 1) || (j == 6 && t >= 10)) {
         mask[t * kNames + j] = u8{0};
@@ -321,6 +334,7 @@ struct Form {
   };
   add_rows(alpha::detail::builtin_ops());
   add_rows(alpha::detail::literature_ops());
+  add_rows(alpha::detail::formulaic_ops()); // P9 S2: the v8 rows (group_sum, group_delay, as-of)
   for (usize v = 0; v < kOpCodeValues; ++v) {
     const auto op = static_cast<OpCode>(static_cast<u8>(v));
     const std::string_view bin = alpha::detail::binary_op_text(op);
@@ -837,8 +851,18 @@ TEST(AlphaVmSlotReuse, Catalogue_EveryRowAndOperator_HasAnEvaluatedVariant) {
       uncovered.push_back(c.form);
     }
   }
-  EXPECT_EQ(rows, alpha::detail::builtin_ops().size() + alpha::detail::literature_ops().size());
+  EXPECT_EQ(rows, alpha::detail::builtin_ops().size() + alpha::detail::literature_ops().size() +
+                      alpha::detail::formulaic_ops().size());
   EXPECT_TRUE(uncovered.empty()) << "no evaluated variant runs: " << join(uncovered);
+  // P9 S2: every opcode the VM dispatches (every family but StoreAlpha / Free's housekeeping) is
+  // run by some variant, so the properties below sweep all of them.
+  std::vector<std::string> unreached;
+  for (usize v = 0; v < alpha::kOpTraits.size(); ++v) {
+    if (alpha::kOpTraits[v].family != alpha::OpFamily::Housekeeping && !seen[v]) {
+      unreached.push_back("opcode " + std::to_string(v));
+    }
+  }
+  EXPECT_TRUE(unreached.empty()) << "no evaluated variant runs: " << join(unreached);
   EXPECT_GT(fx.variants.size(), fx.coverage.size());
   RecordProperty("forms", std::to_string(fx.coverage.size()));
   RecordProperty("variants", std::to_string(fx.variants.size()));
@@ -888,6 +912,168 @@ TEST(AlphaVmSlotReuse, EveryOp_DirtyPoolMaskedAuditExact_ByteEqualToAFreshEngine
 
 TEST(AlphaVmSlotReuse, EveryOp_DirtyPoolMaskedResearchFast_ByteEqualToAFreshEngine) {
   expect_independent_of_prior_programs(Config{alpha::EvalMode::ResearchFast, true});
+}
+
+// ---- P9 S2: worker bands -----------------------------------------------------------------------
+
+constexpr std::array<usize, 3> kBandWorkers{{1, 4, 16}};
+
+// One pool per size for the whole binary (a pool's threads outlive the variants).
+[[nodiscard]] atx::engine::parallel::DetPool &band_pool(usize index) {
+  static atx::engine::parallel::DetPool one{kBandWorkers[0]};
+  static atx::engine::parallel::DetPool four{kBandWorkers[1]};
+  static atx::engine::parallel::DetPool sixteen{kBandWorkers[2]};
+  if (index == 0) {
+    return one;
+  }
+  return index == 1 ? four : sixteen;
+}
+
+// The property: every variant on an Engine whose Cs and Ts pools are one DetPool of 1, 4 and 16
+// workers is byte-equal to the serial (pool-less) Engine.
+void expect_band_parity(const Config &cfg) {
+  const Fixture &fx = fixture();
+  ASSERT_TRUE(fx.problems.empty()) << join(fx.problems);
+  ASSERT_FALSE(fx.variants.empty());
+  for (usize p = 0; p < kBandWorkers.size(); ++p) {
+    ASSERT_EQ(band_pool(p).n_workers(), kBandWorkers[p]);
+  }
+  Reporter rep;
+  for (const Variant &v : fx.variants) {
+    const ArmRun ref = run_after(fx, cfg, nullptr, v.prog);
+    if (!ref.error.empty()) {
+      rep.fail(v, "serial Engine", ref.error);
+      continue;
+    }
+    for (usize p = 0; p < kBandWorkers.size(); ++p) {
+      const std::string arm = std::to_string(kBandWorkers[p]) + "-worker bands";
+      Engine engine{fx.panel};
+      const std::string error = configure(engine, cfg, fx);
+      if (!error.empty()) {
+        rep.fail(v, arm, error);
+        continue;
+      }
+      engine.set_cs_pool(&band_pool(p));
+      engine.set_ts_pool(&band_pool(p));
+      auto out = engine.evaluate(v.prog);
+      if (!out) {
+        rep.fail(v, arm, out.error().message());
+        continue;
+      }
+      rep.compare(v, arm, ref.signals, *out);
+    }
+  }
+  EXPECT_EQ(rep.failures(), usize{0}) << "failures over " << fx.variants.size() << " variants";
+}
+
+TEST(AlphaVmBandParity, EveryOp_Workers1_4_16AuditExact_ByteEqualToSerial) {
+  expect_band_parity(Config{alpha::EvalMode::AuditExact, false});
+}
+
+TEST(AlphaVmBandParity, EveryOp_Workers1_4_16ResearchFast_ByteEqualToSerial) {
+  expect_band_parity(Config{alpha::EvalMode::ResearchFast, false});
+}
+
+TEST(AlphaVmBandParity, EveryOp_Workers1_4_16MaskedAuditExact_ByteEqualToSerial) {
+  expect_band_parity(Config{alpha::EvalMode::AuditExact, true});
+}
+
+TEST(AlphaVmBandParity, EveryOp_Workers1_4_16MaskedResearchFast_ByteEqualToSerial) {
+  expect_band_parity(Config{alpha::EvalMode::ResearchFast, true});
+}
+
+// ---- P9 S2: truncation -------------------------------------------------------------------------
+
+// The prefix lengths: 5 dates (no 5-bar window of name 6 completes) and 10 (name 2's universe
+// hole on date 9 included).
+constexpr std::array<usize, 2> kPrefixDates{{5, 10}};
+
+// The first `dates` rows of every alpha of `full` against `prefix` (a run on the truncated panel);
+// "" when byte-equal, else where they first differ.
+[[nodiscard]] std::string prefix_difference(const SignalSet &full, const SignalSet &prefix,
+                                            usize dates) {
+  if (prefix.dates != dates || prefix.instruments != full.instruments ||
+      prefix.alphas.size() != full.alphas.size()) {
+    return "the truncated signal set has a different shape";
+  }
+  const usize cells = dates * full.instruments;
+  for (usize a = 0; a < full.alphas.size(); ++a) {
+    const std::vector<f64> &w = full.alphas[a].values;
+    const std::vector<f64> &g = prefix.alphas[a].values;
+    if (g.size() != cells || w.size() < cells) {
+      return "alpha " + std::to_string(a) + " has a different size";
+    }
+    for (usize i = 0; i < cells; ++i) {
+      if (std::bit_cast<u64>(w[i]) != std::bit_cast<u64>(g[i])) {
+        const usize names = full.instruments == 0 ? usize{1} : full.instruments;
+        return "alpha '" + full.alphas[a].name + "' date " + std::to_string(i / names) + " name " +
+               std::to_string(i % names) + ": full panel " + value_text(w[i]) + " (" +
+               bits_text(w[i]) + "), " + std::to_string(dates) + "-date panel " +
+               value_text(g[i]) + " (" + bits_text(g[i]) + ")";
+      }
+    }
+  }
+  return {};
+}
+
+// The property: every variant on the first T dates of the panel (and of the mask) gives the full
+// panel's bytes on those dates.
+void expect_truncation_invariant(const Config &cfg) {
+  const Fixture &fx = fixture();
+  ASSERT_TRUE(fx.problems.empty()) << join(fx.problems);
+  ASSERT_FALSE(fx.variants.empty());
+  std::vector<Panel> panels;
+  std::vector<std::vector<u8>> masks;
+  for (const usize dates : kPrefixDates) {
+    panels.push_back(make_panel(dates));
+    masks.push_back(make_cs_mask(dates));
+  }
+  Reporter rep;
+  for (const Variant &v : fx.variants) {
+    const ArmRun ref = run_after(fx, cfg, nullptr, v.prog);
+    if (!ref.error.empty()) {
+      rep.fail(v, "full panel", ref.error);
+      continue;
+    }
+    for (usize k = 0; k < kPrefixDates.size(); ++k) {
+      const std::string arm = std::to_string(kPrefixDates[k]) + "-date panel";
+      Engine engine{panels[k]};
+      engine.set_eval_mode(cfg.mode);
+      if (cfg.masked) {
+        const atx::core::Status s = engine.set_cross_section_mask(masks[k]);
+        if (!s) {
+          rep.fail(v, arm, s.error().message());
+          continue;
+        }
+      }
+      auto out = engine.evaluate(v.prog);
+      if (!out) {
+        rep.fail(v, arm, out.error().message());
+        continue;
+      }
+      const std::string diff = prefix_difference(ref.signals, *out, kPrefixDates[k]);
+      if (!diff.empty()) {
+        rep.fail(v, arm, diff);
+      }
+    }
+  }
+  EXPECT_EQ(rep.failures(), usize{0}) << "failures over " << fx.variants.size() << " variants";
+}
+
+TEST(AlphaVmTruncation, EveryOp_PrefixPanelAuditExact_ByteEqualToFullPanelRows) {
+  expect_truncation_invariant(Config{alpha::EvalMode::AuditExact, false});
+}
+
+TEST(AlphaVmTruncation, EveryOp_PrefixPanelResearchFast_ByteEqualToFullPanelRows) {
+  expect_truncation_invariant(Config{alpha::EvalMode::ResearchFast, false});
+}
+
+TEST(AlphaVmTruncation, EveryOp_PrefixPanelMaskedAuditExact_ByteEqualToFullPanelRows) {
+  expect_truncation_invariant(Config{alpha::EvalMode::AuditExact, true});
+}
+
+TEST(AlphaVmTruncation, EveryOp_PrefixPanelMaskedResearchFast_ByteEqualToFullPanelRows) {
+  expect_truncation_invariant(Config{alpha::EvalMode::ResearchFast, true});
 }
 
 } // namespace atx_test_alpha_vm_slot_reuse

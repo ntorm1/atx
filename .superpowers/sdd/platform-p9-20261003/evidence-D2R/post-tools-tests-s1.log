@@ -1,0 +1,10 @@
+........................................................................ [ 25%]
+........................................................................ [ 50%]
+....................s............................ [ 67%]
+........................................................... [ 88%]
+.................................s                                       [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] atx-impl\tools\test_composition_engine_fit.py:668: needs built atx-research-admission and atx-research-composition
+SKIPPED [1] atx-impl\tools\test_factor_series_admission.py:481: needs built atx-equity-strategy-targets and atx-research-admission
+284 passed, 2 skipped, 36 subtests passed in 160.73s (0:02:40)
+exit=0

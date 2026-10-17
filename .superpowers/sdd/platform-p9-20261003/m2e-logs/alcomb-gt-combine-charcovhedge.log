@@ -1,0 +1,20 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = CharCovHedge.*
+[==========] Running 5 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 5 tests from CharCovHedge
+[ RUN      ] CharCovHedge.ClosedForm2Names
+[       OK ] CharCovHedge.ClosedForm2Names (1 ms)
+[ RUN      ] CharCovHedge.ClosedFormFiveNames
+[       OK ] CharCovHedge.ClosedFormFiveNames (1 ms)
+[ RUN      ] CharCovHedge.WindowSumsAreTheTrailingWindowOls
+[       OK ] CharCovHedge.WindowSumsAreTheTrailingWindowOls (3 ms)
+[ RUN      ] CharCovHedge.FutureReturnDoesNotChangePast
+[       OK ] CharCovHedge.FutureReturnDoesNotChangePast (1 ms)
+[ RUN      ] CharCovHedge.RefusesBadInputAndCountsScratch
+[       OK ] CharCovHedge.RefusesBadInputAndCountsScratch (0 ms)
+[----------] 5 tests from CharCovHedge (9 ms total)
+
+[----------] Global test environment tear-down
+[==========] 5 tests from 1 test suite ran. (10 ms total)
+[  PASSED  ] 5 tests.

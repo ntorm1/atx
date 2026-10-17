@@ -1,0 +1,4 @@
+store-suite seed 0 head 6618abe1 code-dirty [] exit 0 wall 5s start 2026-10-15T18:51:36Z env1-hits 0 :: =================== 43 passed, 137 subtests passed in 2.75s ===================
+store-suite seed 1 head 6618abe1 code-dirty [] exit 0 wall 3s start 2026-10-15T18:51:41Z env1-hits 0 :: =================== 43 passed, 137 subtests passed in 1.84s ===================
+research-cycle-marginal-argv seed 0 head 6618abe1 code-dirty [] exit 0 wall 1s start 2026-10-15T18:51:53Z env1-hits 0 :: ============================== 1 passed in 0.41s ==============================
+store-hook seed 0 head 6618abe1 code-dirty [] exit 0 wall 12s start 2026-10-15T18:51:54Z env1-hits 0 :: ============================= 14 passed in 10.61s =============================

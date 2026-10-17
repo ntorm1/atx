@@ -1,0 +1,1 @@
+adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d *build-equity/bin/atx-equity-strategy-ic.exe

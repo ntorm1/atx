@@ -118,12 +118,19 @@ class StoreAcrossLibraries(unittest.TestCase):
         cosmetic = edited("fcw_cosmetic", doc, b"    # a comment\n" + doc.replace(b"The candidate", b"Edited. The candidate"))
         files, line = run(cosmetic, self.v71, self.root / "cosmetic-out", work)
         self.assertEqual(line, f"fit: computed 0, reused {N_V71}")
+        # CM-5 (P9 lane D2): the outputs name the writing functions' producer fingerprint, not the file's SHA-256, so
+        # a comment / docstring edit moves no output byte
+        self.assertNotEqual(cosmetic.SCRIPT_SHA256, fcw.SCRIPT_SHA256)
+        self.assertEqual(files, self.bare)
         orchestration = edited("fcw_orchestration", b"def fit(args, log=None) -> tuple[int, dict]:\n",
                                b"def fit(args, log=None) -> tuple[int, dict]:\n    _probe = 1  # noqa: F841\n")
         files, line = run(orchestration, self.v71, self.root / "orchestration-out", work)
         self.assertEqual(line, f"fit: computed 0, reused {N_V71}")
-        # outputs differ from the unedited fitter's only by the script SHA-256 they name
-        adm = files[fcw.OUTPUT_ADMISSION].replace(orchestration.SCRIPT_SHA256.encode(), fcw.SCRIPT_SHA256.encode())
+        # a code edit of a writing function: outputs differ from the unedited fitter's only by the fingerprint they name
+        fingerprint = fcw.producer_fingerprint(fcw.OUTPUT_PRODUCERS).encode()
+        moved = orchestration.producer_fingerprint(orchestration.OUTPUT_PRODUCERS).encode()
+        self.assertNotEqual(moved, fingerprint)
+        adm = files[fcw.OUTPUT_ADMISSION].replace(moved, fingerprint)
         self.assertEqual(adm, self.bare[fcw.OUTPUT_ADMISSION])
         # a value-neutral edit of producer code still counts as producer code: everything is recomputed
         producer = edited("fcw_producer", b"    ranks = (first.astype(np.float64) + last.astype(np.float64)) / "
@@ -132,7 +139,8 @@ class StoreAcrossLibraries(unittest.TestCase):
                           b"denominator[:, None] - 0.5 + 0.0\n")
         files, line = run(producer, self.v71, self.root / "producer-out", work)
         self.assertEqual(line, f"fit: computed {N_V71}, reused 0")
-        adm = files[fcw.OUTPUT_ADMISSION].replace(producer.SCRIPT_SHA256.encode(), fcw.SCRIPT_SHA256.encode())
+        adm = files[fcw.OUTPUT_ADMISSION].replace(producer.producer_fingerprint(producer.OUTPUT_PRODUCERS).encode(),
+                                                  fcw.producer_fingerprint(fcw.OUTPUT_PRODUCERS).encode())
         self.assertEqual(adm, self.bare[fcw.OUTPUT_ADMISSION])
 
 

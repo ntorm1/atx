@@ -1,0 +1,4 @@
+ic-named exe 55db8666c0353343 filter 'IcCacheIndex.*:IcResultIndex.*:MarginalPairIndex.*:StrategyIcRunner.*:MarginalIc.*' exit 0 wall 35s ran 79 passed 79 skipped 0 failed 0 disabled 0 env1-hits 0
+catalog-full exe b73b2199db7fd1bc filter 'ResearchCatalog*:SealGuard*:StoreCli*' exit 0 wall 6s ran 30 passed 30 skipped 0 failed 0 disabled 0 env1-hits 0
+catalog-rc exe b73b2199db7fd1bc filter 'ResearchCatalog.*' exit 0 wall 5s ran 17 passed 17 skipped 0 failed 0 disabled 0 env1-hits 0
+catalog-storecli exe b73b2199db7fd1bc filter 'StoreCli.*' exit 0 wall 1s ran 6 passed 6 skipped 0 failed 0 disabled 0 env1-hits 0

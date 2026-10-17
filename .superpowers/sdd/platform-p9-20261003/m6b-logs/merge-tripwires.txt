@@ -1,0 +1,20 @@
+tripwire test sources diff fb566b44..06dc9e5a (expect empty):
+
+pin lines touched (sources_sha256 / kPinned) in the merge diff:
+0
+new atx.* literals in production code added by the merge:
+SQL-11 grep (cache-index flags outside atx-impl/src, tests, docs/plans, sprint dir):
+atx-impl/CMakeLists.txt:315:# (strategy_ic_cache_index.hpp) behind --candidate-cache-index / --pair-cache-index; it opens
+end
+prereg / sprint briefs mentions:
+1
+.superpowers/sdd/platform-p9-20261003/handoff-SQL4.md
+.superpowers/sdd/platform-p9-20261003/p9-prereg.md
+.superpowers/sdd/platform-p9-20261003/progress.md
+.superpowers/sdd/platform-p9-20261003/r11-dispatch.md
+.superpowers/sdd/platform-p9-20261003/sql-design.md
+.superpowers/sdd/platform-p9-20261003/sql-plan-amendment.md
+.superpowers/sdd/platform-p9-20261003/task-SQL4-report.md
+.superpowers/sdd/platform-p9-20261003/task-SQL4-review.md
+.superpowers/sdd/platform-p9-20261003/wave-review-store.md
+.superpowers/sdd/platform-p9-20261003/wave2-carry.md

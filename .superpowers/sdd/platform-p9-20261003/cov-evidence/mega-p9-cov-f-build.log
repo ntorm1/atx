@@ -1,0 +1,9 @@
+[atx-build] cmake --build C:\atx-wt\pool-24\build-equity --parallel 3 --target atx-engine-risk-tests 
+atx-impl-strategy-target-tests atx-equity-strategy-risk
+cmake.exe : Error: could not load cache
+At C:\atx-wt\pool-24\scripts\atx-build.ps1:315 char:3
++   & $nativeTool.Source @innerArgs
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Error: could not load cache:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

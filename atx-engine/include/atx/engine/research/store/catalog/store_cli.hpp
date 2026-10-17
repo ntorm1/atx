@@ -4,13 +4,15 @@
 // sql-design section 3.9). Exit codes: 0 ok, 2 usage, 3 refusal (a stale or missing pin under
 // --strict, a sealed / oversized / outside-root path, a sealed --root or `cache init --import`
 // DIR, a foreign or newer store (also as the target of `catalog --rebuild`), a changed
-// trial-ledger line, two files claiming one candidate id or build tag), 4 error.
+// trial-ledger line, two files claiming one candidate id or build tag; P9 lane SQL4: under
+// `verify --ledger`, a recorded ledger head that is not the head of a prefix of its ledger or an
+// inconsistent ledger index), 4 error.
 //
 //   init --catalog DB
 //   catalog --catalog DB --root R [--specs GLOB]... [--ledger L]... [--include P]...
 //           [--rebuild] [--verify-payloads DIR] [--classes FILE]
 //   ingest --catalog DB --class C --path P [--root R] [--classes FILE]
-//   verify --catalog DB --pins [--spec S] [--strict]
+//   verify --catalog DB [--pins [--spec S] [--strict]] [--ledger L]...
 //   query {artifacts|pins|stale-pins|runs|timings|producers} --catalog DB [--json]
 //   digest --catalog DB
 //   dump --catalog DB --table T

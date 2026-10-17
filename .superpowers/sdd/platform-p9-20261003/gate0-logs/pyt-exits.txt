@@ -1,0 +1,9 @@
+classes-guard-baseline seed 0 head 22f99018 code-dirty [] exit 0 wall 5s start 2026-10-15T17:52:47Z env1-hits 0 :: ============================== 5 passed in 0.45s ==============================
+classes-guard-baseline-q seed 0 head 22f99018 code-dirty [] exit 0 wall 2s start 2026-10-15T17:53:14Z env1-hits 0 :: 5 passed, 97 subtests passed in 0.46s
+classes-guard-before seed 0 head 22f99018 code-dirty [ M atx-engine/tools/test_research_store_classes.py ] exit 1 wall 1s start 2026-10-15T17:53:37Z env1-hits 0 :: 1 failed, 4 passed, 97 subtests passed in 0.49s
+classes-guard-after seed 0 head 22f99018 code-dirty [ M atx-engine/schemas/research_store/classes.json  M atx-engine/tools/test_research_store_classes.py ] exit 0 wall 1s start 2026-10-15T17:54:13Z env1-hits 0 :: 5 passed, 98 subtests passed in 0.24s
+store-suite seed 0 head 22f99018 code-dirty [ M atx-engine/schemas/research_store/classes.json  M atx-engine/tools/test_research_store_classes.py ] exit 0 wall 3s start 2026-10-15T17:54:39Z env1-hits 0 :: 43 passed, 137 subtests passed in 1.90s
+store-suite seed 1 head 22f99018 code-dirty [ M atx-engine/schemas/research_store/classes.json  M atx-engine/tools/test_research_store_classes.py ] exit 0 wall 2s start 2026-10-15T17:54:42Z env1-hits 0 :: 43 passed, 137 subtests passed in 1.55s
+hook-before-s1 seed 0 head 22f99018 code-dirty [ M atx-engine/schemas/research_store/classes.json  M atx-engine/tools/test_research_store_classes.py ] exit 0 wall 10s start 2026-10-15T17:56:16Z env1-hits 0 :: 13 passed in 9.96s
+hook-after-s1 seed 0 head 22f99018 code-dirty [ M atx-engine/schemas/research_store/classes.json  M atx-engine/tools/test_research_store_classes.py  M scripts/tests/test_research_store_hook.py ] exit 0 wall 10s start 2026-10-15T17:56:58Z env1-hits 0 :: 14 passed in 8.87s
+mirror-guard seed 0 head 7320e1b9 code-dirty [] exit 0 wall 2s start 2026-10-15T17:59:25Z env1-hits 0 :: 7 passed in 1.21s

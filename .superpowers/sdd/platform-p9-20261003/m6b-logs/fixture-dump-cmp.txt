@@ -1,0 +1,35 @@
+SAME   artifact
+DIFF   artifact_seen: 25 rows; differing keys ['catalog_run_id (volatile)']
+SAME   build_exe
+SAME   build_receipt
+SAME   candidate
+SAME   candidate_event
+DIFF   catalog_run: 1 rows; differing keys ['catalog_digest (volatile)', 'catalog_run_id (volatile)', 'seconds (volatile)', 'started_utc (volatile)', 'store_exe_sha256 (volatile)']
+SAME   cycle_binding
+SAME   cycle_verdict
+SAME   field_entry
+SAME   field_manifest
+DIFF   ledger_state: 1 rows; differing keys ['head_rule', 'head_sha256']
+SAME   pin
+SAME   producer
+SAME   run
+SAME   run_binding
+SAME   run_command
+SAME   run_start
+DIFF   skipped_path: 4 rows; differing keys ['catalog_run_id (volatile)']
+SAME   spec_doc
+SAME   stage_receipt
+DIFF   store_info: 3 rows; differing keys ['value (volatile)']
+SAME   trial_line
+SAME   wave_result
+SAME   wave_timing
+ledger_state pre  head_sha256 None head_rule None
+ledger_state post head_sha256 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008 head_rule atx-ledger-chain-fold/v1
+B2 chain_head of the fixture ledger (5 lines): 8b1e9fe0f97c38ebdea46e1b7f26ce1c9262b74c5f6caae7b39f3341d803f008; CHAIN_RULE atx-ledger-chain-fold/v1
+post head = B2 chain head: True; post rule = kChainRule: True; pre both NULL: True; other ledger_state keys differing: []
+TOTAL non-volatile differences outside ledger_state.head_sha256 / head_rule: 0
+
+Digest scope (digest.hpp: atx.catalog-digest/v1 covers every row of every NON-volatile table): the committed schema fixtures atx-engine/tests/fixtures/research_store/schema/*.json mark store_info, catalog_run, artifact_seen, skipped_path volatile=true and ledger_state volatile=false. So the only digest-relevant row change is ledger_state (head_sha256 / head_rule NULL -> B2 chain head 8b1e9fe0... / kChainRule).
+pre-merge digest (p9-2r d8a500d8): d32f7655e6cdd860e1af36ceadb00a1c1603136a69d17ad954e629cae4e84e69
+post-merge digest (p9-3e a54955e9): a50fdcf9c9c83bdac0d41ff368666da31578ebb4407bbc4498175a63014f100c
+cause: SQL4's ingest_ledger.cpp now fills ledger_state.head_sha256 / head_rule (SQL4-S S-1). No expected value edited.

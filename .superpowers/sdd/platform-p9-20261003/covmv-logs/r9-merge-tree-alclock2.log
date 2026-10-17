@@ -1,0 +1,10 @@
+dea24856e832ceb0eb9e7aff3c2d55e358eb6718
+atx-impl/tests/CMakeLists.txt
+
+Auto-merging atx-impl/src/book/nav_decide.cpp
+Auto-merging atx-impl/src/book/nav_lockstep.cpp
+Auto-merging atx-impl/src/book/nav_rules.cpp
+Auto-merging atx-impl/src/book/nav_rules.hpp
+Auto-merging atx-impl/src/strategy_nav_v7.cpp
+Auto-merging atx-impl/tests/CMakeLists.txt
+CONFLICT (content): Merge conflict in atx-impl/tests/CMakeLists.txt

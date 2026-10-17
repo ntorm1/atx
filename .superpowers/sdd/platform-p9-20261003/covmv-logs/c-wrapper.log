@@ -1,0 +1,72 @@
+﻿{
+    "Source":  "d44e05f5327f92b76c8a69b1a948153fdc60bdd2",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "26b67bd523f05cd6be8070873883e005938be44c",
+    "Jobs":  3,
+    "FreeMiB":  2275,
+    "CommitMiB":  3679,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-equity-strategy-targets"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  458.1311234,
+    "CompiledTUs":  77,
+    "Links":  8,
+    "Tag":  "p9-covmv-c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-24\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "5c455d6e4c081fad908146057b91681539c067d055e537c139f4e8a6a1166379"
+                                                           },
+                        "atx-equity-strategy-targets":  {
+                                                            "Path":  "C:\\atx-wt\\pool-24\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+                                                            "Sha256":  "5d0a85fc2f7f7e2d252a8cdf691c6c7f53ab6ca5881188e387837fda4649642d"
+                                                        }
+                    }
+}
+[1/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_liquidity.cpp.obj
+[2/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_validate.cpp.obj
+[3/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_mark.cpp.obj
+[4/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_execute.cpp.obj
+[5/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_decide.cpp.obj
+[6/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_session.cpp.obj
+[7/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_summarize.cpp.obj
+[8/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_lockstep.cpp.obj
+[9/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_load.cpp.obj
+[10/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_write.cpp.obj
+[11/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_cli.cpp.obj
+[12/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_run.cpp.obj
+[13/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_publish.cpp.obj
+[14/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_deploy.cpp.obj
+[15/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\book\nav_rules.cpp.obj
+[16/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_mv_aim.cpp.obj
+[17/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\panel_pipeline.cpp.obj
+[18/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\serialize_genome.cpp.obj
+[19/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\dispatch.cpp.obj
+[20/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_load.cpp.obj
+[21/86] Building CXX object atx-impl\CMakeFiles\atx-impl-strategy.dir\src\strategy_nav_v7.cpp.obj
+[22/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_regime.cpp.obj
+[23/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\asof_field.cpp.obj
+[24/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\append_history_panel.cpp.obj
+[25/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_augment.cpp.obj
+[26/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_panel.cpp.obj
+[27/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\store_progress_sink.cpp.obj
+[28/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_sweep.cpp.obj
+[29/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_discover.cpp.obj
+[30/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_riskmodel.cpp.obj
+[31/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_combine.cpp.obj
+[32/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_optimize.cpp.obj
+[33/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\replay_diagnostics.cpp.obj
+[34/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\stage_report.cpp.obj
+[35/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\replay_report.cpp.obj
+[36/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\equity_baseline_views.cpp.obj
+[37/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\equity_allocation.cpp.obj
+[38/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\preference_source.cpp.obj
+[39/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\trial_ledger.cpp.obj
+[40/86] Building CXX object atx-impl\CMakeFiles\atx-impl-pipeline.dir\src\prereg.cpp.obj
+
+research-build exit=0

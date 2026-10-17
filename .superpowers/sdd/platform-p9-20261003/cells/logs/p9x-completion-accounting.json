@@ -1,0 +1,22 @@
+{
+  "ledger_lines": 139,
+  "ledger_sha256": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+  "prefix138_sha256": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8",
+  "prefix138_unchanged": true,
+  "chain_head": "3eaafa4b30882adc6c432ae86fb94339d61820417d6c03aaffb7bc67bc04927e",
+  "new_trial": {
+    "trial_id": "4b3e8c853dac51c2",
+    "kind": "construction",
+    "count": 1,
+    "cell": "build-equity/mega-nav-p9x-leverage",
+    "origin": "prior",
+    "window_id": "research-window-v2"
+  },
+  "canonical_Nc": 68,
+  "historical_admissions": 61,
+  "P9_new_admissions": 0,
+  "Nhand": 129,
+  "M": 110,
+  "Ntot": 239,
+  "historical_window_reruns_zero": 8
+}

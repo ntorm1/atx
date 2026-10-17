@@ -1,0 +1,12 @@
+{
+  "scoreboard_total_stage_override": 161.5,
+  "stage_sum_before_record": 161.499,
+  "record_seconds": 0.312,
+  "invocation_seconds": 162.25,
+  "receipt_phase_sum_including_reused_u": 194.92299999971874,
+  "reused_u_seconds": 51.57799999997951,
+  "fresh_phases_including_readers_bundle": 143.34499999973923,
+  "git_seconds": 2.2640000000000002,
+  "registered_sleeve_seconds": 0.26500000001396984,
+  "G_P1": "unawarded, preserved prior limitation; this is a 67-member rule wave"
+}

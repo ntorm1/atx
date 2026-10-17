@@ -510,6 +510,30 @@ TEST(NavBookRule, RefusedOutsideAimPartialV5AndOnTheDecidePath) {
   EXPECT_NE(decided.error().message().find("leverage rule"), std::string::npos);
 }
 
+// P9 C2 (carried C1 minors): the NAV config refuses a leverage rule without its pinned store, and
+// risk-target-v1 parameters outside their declared ranges, before any plan (the v7 command line
+// checks them too; a config built in code no longer bypasses it).
+TEST(NavBookRule, RefusedWithoutTheStoreOrOutsideTheParameterRanges) {
+  const Directory dir;
+  const Role role(30, 12, 53);
+  const auto risk = clean_store(dir, role, 3);
+  ASSERT_NE(risk, nullptr);
+  auto cfg = nav_config();
+  cfg.leverage = rt::leverage_rule(vol_options(), risk);
+  ASSERT_TRUE(st::replay_nav(role.nav(), cfg)); // the control
+  auto storeless = cfg;
+  storeless.leverage.risk = nullptr;
+  const auto refused = st::replay_nav(role.nav(), storeless);
+  ASSERT_FALSE(refused);
+  EXPECT_NE(refused.error().message().find("atx-risk-v1 store"), std::string::npos);
+  auto ranged = cfg;
+  ranged.leverage.law = st::NavLeverageLaw::RiskTargetV1;
+  ranged.leverage.params.bias = 0.0; // b outside (0, 10]
+  const auto out_of_range = st::replay_nav(role.nav(), ranged);
+  ASSERT_FALSE(out_of_range);
+  EXPECT_NE(out_of_range.error().message().find("--risk-target"), std::string::npos);
+}
+
 // K-P9-7 (Ruling P7): `nav --list-rules --json` prints the envelope {schema "atx.nav-rules/v1",
 // capabilities, rules} and exits 0 before any other flag is read; the leverage rows fixed-v1,
 // vol-target-v1 and risk-target-v1 each carry kind "leverage", a JSON Schema object of their
@@ -528,10 +552,12 @@ TEST(NavBookRule, ListRulesJsonCarriesTheLeverageRows) {
   ASSERT_TRUE(contract.at("capabilities").is_array());
   const auto& caps = contract.at("capabilities");
   EXPECT_NE(std::find(caps.begin(), caps.end(), Json("leverage-rule-per-book")), caps.end());
+  // P9 C3: the table also carries the trade-rate, cost-law and target rows (NavRules.*,
+  // strategy_nav_spec_test.cpp); the leverage rows come first, byte for byte C1's.
   std::vector<std::string> ids;
   for (const auto& row : contract.at("rules")) {
+    if (row.at("kind") != "leverage") continue;
     ids.push_back(row.at("id").get<std::string>());
-    EXPECT_EQ(row.at("kind"), "leverage") << ids.back();
     const auto& schema = row.at("params_schema");
     EXPECT_EQ(schema.at("type"), "object") << ids.back();
     EXPECT_FALSE(schema.at("additionalProperties").get<bool>()) << ids.back();
@@ -552,10 +578,38 @@ TEST(NavBookRule, ListRulesJsonCarriesTheLeverageRows) {
   EXPECT_EQ(risk.at("cadence").at("default"), eb::risk_target_default_cadence);
   std::ostringstream text, quiet;
   ASSERT_EQ(run({"nav", "--list-rules"}, text, quiet), 0);
-  EXPECT_EQ(text.str(), "leverage fixed-v1\nleverage vol-target-v1\nleverage risk-target-v1\n");
+  EXPECT_EQ(text.str().rfind("leverage fixed-v1\nleverage vol-target-v1\nleverage risk-target-v1\n",
+                             0),
+            0U);
   std::ostringstream help;
   ASSERT_EQ(run({"nav", "--help"}, help, quiet), 0);
   EXPECT_NE(help.str().find("--list-rules"), std::string::npos);
+}
+
+// P9 C2 (carried C1 minor): every leverage rule's aim_leverage carries its default 1 and is not
+// required (it was listed as required while defaulted); the rule-specific keys stay required.
+TEST(NavBookRule, AimLeverageIsOptionalWithItsDefault) {
+  std::vector<std::string> args{"nav", "--list-rules", "--json"};
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  std::ostringstream out, err;
+  ASSERT_EQ(st::dispatch_nav_replay(static_cast<int>(argv.size()), argv.data(), out, err), 0);
+  const auto contract = Json::parse(out.str());
+  ASSERT_GE(contract.at("rules").size(), 3U); // P9 C3: then the other kinds' rows
+  const auto& caps = contract.at("capabilities"); // P9 C2 (review S7)
+  EXPECT_NE(std::find(caps.begin(), caps.end(), Json("calibrate-gross-pm6-6")), caps.end());
+  for (const auto& row : contract.at("rules")) {
+    if (row.at("kind") != "leverage") continue;
+    const auto& schema = row.at("params_schema");
+    const auto& required = schema.at("required");
+    EXPECT_EQ(std::find(required.begin(), required.end(), Json("aim_leverage")), required.end())
+        << row.at("id");
+    EXPECT_EQ(schema.at("properties").at("aim_leverage").at("default"), 1) << row.at("id");
+  }
+  const auto& risk = contract.at("rules").at(2).at("params_schema").at("required");
+  EXPECT_EQ(risk, Json::array({"sigma_star", "risk_model", "risk_model_sha256"}));
+  EXPECT_EQ(contract.at("rules").at(1).at("params_schema").at("required"),
+            Json::array({"risk_model", "risk_model_sha256"}));
 }
 
 // The command line (dispatch_nav_replay -> dispatch_nav_v7 -> the replay): a construction grid

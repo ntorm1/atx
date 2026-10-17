@@ -870,7 +870,9 @@ TEST(StrategyIcRunner, ThemeRedistributionRefusalsAndSchemaGatePrecedeAnyPayload
        "composition weights schema atx.dsl-composition-weights/v2 requires a theme_redistribution block"},
       {themed_text(weights_v1,cfg,equal,theme_block(both)),
        "theme_redistribution requires composition weights schema atx.dsl-composition-weights/v2"},
-      {themed_text("atx.dsl-composition-weights/v3",cfg,equal,theme_block(both)),"schema/library identity"},
+      // P9 lane D3W: v3 is K-P9-8's (WeightsV3.*), so an unknown schema is now v4.
+      {themed_text("atx.dsl-composition-weights/v4",cfg,equal,theme_block(both)),
+       "schema/library identity"},
       // Block shape: exactly {rule: within-theme-v1, composition: ew-theme-v6, themes: {...}}.
       {themed_text(weights_v2,cfg,equal,R"(,"theme_redistribution":[1])"),shape},
       {themed_text(weights_v2,cfg,equal,theme_block(both,"within-theme-v2")),shape},
@@ -1075,11 +1077,15 @@ f64 group_label(usize d,usize i) {
   if (i==0 && d%3==0) return 5.0;
   return i<3?1.0:2.0;
 }
+// `gate` (P9 lane ABS): the scale times a positive multiplier varying by date and name (scale 1: a
+// gated member's data; NaN: none).
 std::vector<f64> field_column(const std::string& name,f64 scale) {
   std::vector<f64> out(D*N);
   for (usize d=0;d<D;++d) for (usize i=0;i<N;++i)
     out[d*N+i]=name=="grp_a"?group_label(d,i):(name=="mkt_ret"?market_value(d):
-        (name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):si_value(d,i,scale)));
+        (name=="iv_atm_21d"?.3+.01*static_cast<f64>(i):
+        (name=="gate"?scale*(1.5+std::sin(.37*static_cast<f64>(d)+1.3*static_cast<f64>(i))):
+        si_value(d,i,scale))));
   return out;
 }
 // A producer-shaped atx.research-role-fields/v1 directory bound to one role's own
@@ -2959,6 +2965,7 @@ TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
   ASSERT_TRUE(within) << within.error().to_string();
   const auto admitted=Json::parse(within_log.str());
   EXPECT_FALSE(admitted.contains("admission"));
+  EXPECT_TRUE(admitted.at("candidates").is_array()); // the K1 rows (contract K1)
   ASSERT_EQ(admitted.at("roles").size(),2U);
   for (const auto& row:admitted.at("roles")) {
     EXPECT_FALSE(row.contains("within_budget")); EXPECT_FALSE(row.contains("memory_terms"));
@@ -2975,6 +2982,8 @@ TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
       << message;
   const auto plan=Json::parse(log.str());
   EXPECT_EQ(plan.at("admission"),"refused-required-bytes-exceed-max-working-bytes");
+  // P9 lane D2: a refused plan carries no K1 rows, so it never reloads as a K1 plan.
+  EXPECT_FALSE(plan.contains("candidates"));
   EXPECT_EQ(plan.at("max_working_bytes"),required-1);
   EXPECT_EQ(plan.at("candidate_count"),admitted.at("candidate_count"));
   ASSERT_EQ(plan.at("roles").size(),2U);
@@ -3015,23 +3024,70 @@ TEST(IcAdmission, PlanPrintsRequiredBytesOverCap) {
             std::string::npos);
 }
 // Task H-2: --eval-mode audit-exact evaluates every candidate under the VM's AuditExact mode and
-// names it in the recipe's vm; absent, the recipe keeps ResearchFast. It is refused with
-// --candidate-cache (entries keyed on ResearchFast) before any output, and the CLI takes no
-// other mode.
-TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndRefusedWithTheCache) {
+// names it in the recipe's vm; absent, the recipe keeps ResearchFast. P9 S2 (brief S2) lifts its
+// refusal with --candidate-cache: its signal entries live under their own identity token
+// (<vm identity>_audit, its own cache root, AuditExact sidecars), so a warm audit run serves
+// exactly the uncached audit bytes and the two tiers never share an entry. The CLI takes no other
+// mode.
+TEST(StrategyIcRunner, AuditExactEvalModeIsRecordedAndCachedUnderItsOwnIdentity) {
   Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
   const auto fast=run_named(dir,cfg,"fast"); ASSERT_TRUE(fast.ok) << fast.error;
   auto exact=cfg; exact.audit_exact=true;
   const auto audit=run_named(dir,exact,"audit"); ASSERT_TRUE(audit.ok) << audit.error;
   EXPECT_EQ(read_json(dir.path/"fast"/"recipe.json").at("vm"),"ResearchFast;full-historical-asof-member-mask");
   EXPECT_EQ(read_json(dir.path/"audit"/"recipe.json").at("vm"),"AuditExact;full-historical-asof-member-mask");
-  auto cached=exact; cached.candidate_cache_directory=(dir.path/"cache").string();
-  const auto refused=run_named(dir,cached,"cached");
-  EXPECT_FALSE(refused.ok);
-  EXPECT_NE(refused.error.find("--eval-mode audit-exact is refused with --candidate-cache"),std::string::npos)
-      << refused.error;
-  EXPECT_TRUE(refused.log.empty());
-  EXPECT_FALSE(std::filesystem::exists(dir.path/"cached")); EXPECT_FALSE(std::filesystem::exists(dir.path/"cache"));
+  const auto identity=atx::impl::strategy::ic_cache_vm_identity().identity;
+  const auto cache=dir.path/"cache";
+  auto cached=exact; cached.candidate_cache_directory=cache.string();
+  const auto cold=run_named(dir,cached,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto warm=run_named(dir,cached,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  // The audit entries sit under <identity>_audit and nowhere else.
+  EXPECT_TRUE(std::filesystem::is_directory(cache/(identity+"_audit")));
+  usize roots=0;
+  for (const auto& entry:std::filesystem::directory_iterator(cache)) {
+    ++roots; EXPECT_EQ(entry.path().filename().string(),identity+"_audit");
+  }
+  EXPECT_EQ(roots,1U);
+  for (const std::string name:{"cold","warm"}) {
+    const auto summary=read_json(dir.path/name/"summary.json");
+    ASSERT_EQ(summary.at("roles").size(),2U);
+    for (const auto& role_result:summary.at("roles")) {
+      const auto& signals=role_result.at("candidate_cache");
+      EXPECT_EQ(signals.at("vm_identity"),identity+"_audit") << name;
+      EXPECT_EQ(signals.at("hits"),name=="warm"?2:0) << name;
+    }
+    for (const auto* file:{"recipe.json","orientations.json","train_daily_ic.csv","validation_daily_ic.csv",
+                           "train_planned_targets.csv","validation_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"audit"/file)) << name << ' ' << file;
+  }
+  const auto sidecar=read_json(cache_entry(dir.path/"cold"/"summary.json","train","volume_level").sidecar);
+  EXPECT_EQ(sidecar.at("eval_mode"),"AuditExact;full-historical-asof-member-mask");
+  EXPECT_EQ(sidecar.at("vm_identity"),identity+"_audit");
+  // A ResearchFast run on the same directory shares nothing with the audit entries.
+  auto fast_cached=cfg; fast_cached.candidate_cache_directory=cache.string();
+  const auto fast_cold=run_named(dir,fast_cached,"fast_cold"); ASSERT_TRUE(fast_cold.ok) << fast_cold.error;
+  const auto fast_summary=read_json(dir.path/"fast_cold"/"summary.json");
+  for (const auto& role_result:fast_summary.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("vm_identity"),identity);
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),0);
+  }
+  EXPECT_EQ(fast_cold.log.find("IC cache-hit"),std::string::npos);
+  for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"fast_cold"/file),file_sha(dir.path/"fast"/file)) << file;
+  // Fix round 1 (review S2 #7): a stale sidecar planted under the audit root (the ResearchFast
+  // entry's) is refused as a foreign entry, never served; restored, the audit run hits again.
+  const auto audit_entry=cache_entry(dir.path/"cold"/"summary.json","train","volume_level");
+  const auto fast_entry=cache_entry(dir.path/"fast_cold"/"summary.json","train","volume_level");
+  ASSERT_NE(audit_entry.sidecar.string(),fast_entry.sidecar.string());
+  const auto kept_sidecar=file_bytes(audit_entry.sidecar); ASSERT_FALSE(kept_sidecar.empty());
+  ASSERT_TRUE(write_bytes(audit_entry.sidecar,file_bytes(fast_entry.sidecar)));
+  const auto stale=run_named(dir,cached,"stale"); EXPECT_FALSE(stale.ok);
+  EXPECT_NE(stale.error.find("candidate cache entry mismatch: volume_level"),std::string::npos)
+      << stale.error;
+  ASSERT_TRUE(write_bytes(audit_entry.sidecar,kept_sidecar));
+  const auto restored=run_named(dir,cached,"restored"); ASSERT_TRUE(restored.ok) << restored.error;
+  EXPECT_EQ(file_sha(dir.path/"restored"/"train_daily_ic.csv"),
+            file_sha(dir.path/"audit"/"train_daily_ic.csv"));
   const auto cli=[&](const std::string& mode) {
     std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
         cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
@@ -4293,5 +4349,1256 @@ TEST(ThemeRegistryRunner, RegistryOrderIsTheRegisteredOrder) {
   EXPECT_FALSE(no_sha.ok);
   EXPECT_NE(no_sha.error.find("bounded config"),std::string::npos) << no_sha.error;
   EXPECT_FALSE(std::filesystem::exists(dir.path/"no-sha"));
+}
+// ---- P9 lane S2: IC method options (--min-coverage, --ic-hac-rule, --label-terminal) and the
+// fields seal consumer (ruling P13) ----
+// A candidate row's IC block (what result_json prints), without the row's own bookkeeping.
+Json ic_block(const Json& candidate) {
+  Json out=Json::object();
+  for (const auto* key:{"reject","enough_evidence","reason","horizons"}) out[key]=candidate.at(key);
+  return out;
+}
+// A run refused before any payload or output.
+void expect_early_refusal(const Directory& dir,atx::impl::strategy::IcRunnerConfig attempt,
+                          const std::string& name,const std::string& reason) {
+  const auto run=run_named(dir,attempt,name);
+  EXPECT_FALSE(run.ok) << name;
+  EXPECT_NE(run.error.find(reason),std::string::npos) << name << ": " << run.error;
+  EXPECT_TRUE(run.log.empty()) << name;
+  EXPECT_FALSE(std::filesystem::exists(dir.path/name)) << name;
+}
+// The IC CLI on `cfg`'s TRAIN role in plan-only mode plus `extra` options: its exit code.
+int ic_cli(const atx::impl::strategy::IcRunnerConfig& cfg,const std::vector<std::string>& extra) {
+  std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,"--library-sha256",
+      cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",cfg.train_sha256,"--min-names","3",
+      "--min-dates","8","--plan-only"};
+  args.insert(args.end(),extra.begin(),extra.end());
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream stdout_log,stderr_log;
+  return atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),stdout_log,stderr_log);
+}
+// DS-4 / review §3: --min-coverage and --ic-hac-rule are recorded in the recipe only when given;
+// at their defaults they score the same bits under the same IC-result key, and --ic-hac-rule prints
+// every estimate's standard error and lag under both rules (the active one equal to the estimate).
+// A non-default value keys its own IC-result directory. Bad values refuse before any payload; the
+// CLI refuses an unparsable --min-coverage (exit 2).
+TEST(IcMethodOptions, RecordedOnlyWhenGivenPrintBothHacRulesAndKeyTheIcCache) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  auto bartlett=cfg; bartlett.ic_hac_rule="bartlett-2h-v1";
+  const auto named=run_named(dir,bartlett,"named"); ASSERT_TRUE(named.ok) << named.error;
+  const auto plain_recipe=read_json(dir.path/"plain"/"recipe.json");
+  EXPECT_FALSE(plain_recipe.contains("min_coverage")); EXPECT_FALSE(plain_recipe.contains("ic_hac_rule"));
+  const auto named_recipe=read_json(dir.path/"named"/"recipe.json");
+  EXPECT_EQ(named_recipe.at("ic_hac_rule"),"bartlett-2h-v1"); EXPECT_FALSE(named_recipe.contains("min_coverage"));
+  for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv","train_planned_targets.csv",
+                         "validation_planned_targets.csv"})
+    EXPECT_EQ(file_sha(dir.path/"named"/file),file_sha(dir.path/"plain"/file)) << file;
+  const auto plain_summary=read_json(dir.path/"plain"/"summary.json");
+  const auto named_summary=read_json(dir.path/"named"/"summary.json");
+  const auto plain_scope=plain_summary.at("roles").at(0).at("candidate_cache").at("ic_results");
+  usize printed=0;
+  for (usize r=0;r<2;++r) {
+    const auto& base_role=plain_summary.at("roles").at(r); const auto& role_result=named_summary.at("roles").at(r);
+    // The default rule keeps the IC-result key: the plain run's entries serve this run.
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("subdirectory"),
+              base_role.at("candidate_cache").at("ic_results").at("subdirectory")) << r;
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2) << r;
+    for (usize c=0;c<role_result.at("candidates").size();++c) {
+      auto row=ic_block(role_result.at("candidates").at(c));
+      const auto base=ic_block(base_role.at("candidates").at(c));
+      for (usize k=0;k<row.at("horizons").size();++k)
+        for (const auto* metric:{"pearson","rank"}) {
+          auto& estimate=row["horizons"][k][metric];
+          const auto& expected=base.at("horizons").at(k).at(metric);
+          const auto block=estimate.at("hac");
+          EXPECT_EQ(block.at("rule"),"bartlett-2h-v1");
+          EXPECT_EQ(block.at("bartlett-2h-v1").at("standard_error"),expected.at("standard_error"));
+          EXPECT_EQ(block.at("bartlett-2h-v1").at("hac_lag"),expected.at("required_hac_lag"));
+          EXPECT_EQ(block.at("bartlett-2h-v1").at("inference_defined"),expected.at("inference_defined"));
+          EXPECT_TRUE(block.at("horizon-aware-v3").contains("standard_error"));
+          estimate.erase("hac"); ++printed;
+        }
+      EXPECT_EQ(row,base) << r << ' ' << c; // nothing else changes
+    }
+  }
+  EXPECT_EQ(printed,2U*2U*3U*2U);
+  // Non-default values: recorded, keyed (their own IC-result directory, a clean miss) and equal to
+  // an uncached run under the same value.
+  auto aware=cfg; aware.ic_hac_rule="horizon-aware-v3";
+  auto loose=cfg; loose.min_coverage=.5;
+  std::set<std::string> subdirectories{plain_scope.at("subdirectory").get<std::string>()};
+  for (const auto& [option,name]:{std::pair{&aware,std::string("aware")},std::pair{&loose,std::string("loose")}}) {
+    const auto run=run_named(dir,*option,name); ASSERT_TRUE(run.ok) << name << ": " << run.error;
+    const auto summary=read_json(dir.path/name/"summary.json");
+    const auto scope=summary.at("roles").at(0).at("candidate_cache").at("ic_results");
+    EXPECT_TRUE(subdirectories.insert(scope.at("subdirectory").get<std::string>()).second) << name;
+    EXPECT_EQ(scope.at("hits"),0) << name;
+    auto uncached=*option; uncached.candidate_cache_directory.clear();
+    const auto reference=run_named(dir,uncached,name+"_uncached"); ASSERT_TRUE(reference.ok) << reference.error;
+    for (const auto* file:{"recipe.json","orientations.json","train_daily_ic.csv","validation_daily_ic.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/(name+"_uncached")/file)) << name << ' ' << file;
+    const auto recipe=read_json(dir.path/name/"recipe.json");
+    if (name=="aware") {
+      EXPECT_EQ(recipe.at("ic_hac_rule"),"horizon-aware-v3"); EXPECT_FALSE(recipe.contains("min_coverage"));
+      EXPECT_EQ(scope.at("key").at("hac_rule"),"horizon-aware-v3");
+      EXPECT_FALSE(scope.at("key").contains("min_coverage_bits"));
+      const auto& h21=summary.at("roles").at(0).at("candidates").at(0).at("horizons").at(1).at("rank");
+      EXPECT_EQ(h21.at("hac").at("rule"),"horizon-aware-v3");
+      EXPECT_EQ(h21.at("hac").at("horizon-aware-v3").at("standard_error"),h21.at("standard_error"));
+      EXPECT_EQ(h21.at("hac").at("horizon-aware-v3").at("hac_lag"),h21.at("required_hac_lag"));
+    } else {
+      EXPECT_EQ(recipe.at("min_coverage"),.5); EXPECT_FALSE(recipe.contains("ic_hac_rule"));
+      EXPECT_TRUE(scope.at("key").contains("min_coverage_bits")); EXPECT_FALSE(scope.at("key").contains("hac_rule"));
+      EXPECT_FALSE(summary.at("roles").at(0).at("candidates").at(0).at("horizons").at(1).at("rank").contains("hac"));
+    }
+  }
+  for (const f64 bad:{0.0,1.5,-.25,std::numeric_limits<f64>::quiet_NaN()}) {
+    auto refused=cfg; refused.min_coverage=bad;
+    expect_early_refusal(dir,refused,"bad_coverage","--min-coverage must be in (0, 1]");
+  }
+  auto unknown=cfg; unknown.ic_hac_rule="newey-west";
+  expect_early_refusal(dir,unknown,"bad_rule","--ic-hac-rule takes bartlett-2h-v1 or horizon-aware-v3");
+  EXPECT_EQ(ic_cli(cfg,{"--min-coverage",".5"}),0);
+  EXPECT_EQ(ic_cli(cfg,{"--ic-hac-rule","horizon-aware-v3"}),0);
+  for (const std::string value:{"abc","-0.5","+0.5","0.5x","nan","inf",""})
+    EXPECT_EQ(ic_cli(cfg,{"--min-coverage",value}),2) << value;
+  EXPECT_EQ(ic_cli(cfg,{"--min-coverage","1.5"}),1); // parsed, then refused by run_ic
+  EXPECT_EQ(ic_cli(cfg,{"--ic-hac-rule","newey-west"}),1);
+}
+// --label-terminal imputed-v1 fixtures: TRAIN's instrument 0 leaves the scored role after session
+// 419 (absent from 420); its label role, the role builder's --delisting-returns build of the same
+// role, also prices it at 420 (its imputed terminal close). TRAIN only.
+constexpr usize kTerminalSession=420;
+std::vector<usize> absent_from(usize first) {
+  std::vector<usize> out; for (usize d=first;d<D;++d) out.push_back(d*N); return out;
+}
+bool returns_applied(const std::string& manifest,bool applied,std::string& sha) {
+  auto j=read_json(manifest);
+  j["universe"]={{"id","linked-operating-v1"},{"delisting",{{"returns_applied",applied}}}};
+  return json_file(manifest,j,sha);
+}
+bool terminal_fixture(Directory& dir,atx::impl::strategy::IcRunnerConfig& cfg) {
+  if (!fixture(dir,cfg)) return false;
+  cfg.validation_manifest.clear(); cfg.validation_sha256.clear();
+  const auto scored=dir.path/"train_terminated",label=dir.path/"train_label";
+  if (!role(scored,17683,cfg.train_sha256,1,absent_from(kTerminalSession)) ||
+      !role(label,17683,cfg.train_label_role_sha256,1,absent_from(kTerminalSession+1))) return false;
+  cfg.train_manifest=(scored/"manifest.json").string();
+  cfg.train_label_role=(label/"manifest.json").string();
+  cfg.label_terminal="imputed-v1";
+  return returns_applied(cfg.train_label_role,true,cfg.train_label_role_sha256);
+}
+atx::impl::strategy::IcRunnerConfig without_terminal(atx::impl::strategy::IcRunnerConfig cfg) {
+  cfg.label_terminal.clear(); cfg.train_label_role.clear(); cfg.train_label_role_sha256.clear();
+  return cfg;
+}
+// DSL/IC review §7 item 3: scored under the imputed labels, every candidate (and the blend) also
+// prints its IC under today's labels -- a plain run's IC on the same role -- beside the imputed-pair
+// count and the missing-exit share; the recipe records the rule, the label definition and the
+// label role pin. The imputed pairs are, per horizon h, the decisions whose holding straddles 419:
+// h of them for h = 5 and 21, and all 33 mature rows for h = 63.
+TEST(IcLabelTerminal, ImputedRunPrintsBothIcsCountsImputedPairsAndRecordsThePin) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  auto plain_cfg=without_terminal(cfg);
+  const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  const auto imputed=run_named(dir,cfg,"imputed"); ASSERT_TRUE(imputed.ok) << imputed.error;
+  const auto plain_recipe=read_json(dir.path/"plain"/"recipe.json");
+  for (const auto* key:{"label_terminal","label_role_manifest_sha256"})
+    EXPECT_FALSE(plain_recipe.contains(key)) << key;
+  const auto recipe=read_json(dir.path/"imputed"/"recipe.json");
+  EXPECT_EQ(recipe.at("label_terminal"),"imputed-v1");
+  // The label definition gains the missing-exit clause; the default one has none.
+  EXPECT_EQ(plain_recipe.at("labels").get<std::string>().find("missing-exit:"),std::string::npos);
+  EXPECT_NE(recipe.at("labels").get<std::string>().find("missing-exit:first-label-role-only-session"),
+            std::string::npos);
+  EXPECT_EQ(recipe.at("label_role_manifest_sha256"),Json({{"train",cfg.train_label_role_sha256}}));
+  const auto base=read_json(dir.path/"plain"/"summary.json").at("roles").at(0);
+  const auto role_result=read_json(dir.path/"imputed"/"summary.json").at("roles").at(0);
+  EXPECT_FALSE(base.contains("label_terminal"));
+  const auto& block=role_result.at("label_terminal");
+  EXPECT_EQ(block.at("rule"),"imputed-v1");
+  EXPECT_EQ(block.at("label_role_manifest_sha256"),cfg.train_label_role_sha256);
+  EXPECT_GT(block.at("missing_exit_v1_ic_cache_bytes").get<u64>(),0U);
+  // The orientations agree, so the two blends are the same signal.
+  const auto signs=[](const std::filesystem::path& path) {
+    const auto artifact=read_json(path); Json out=Json::array();
+    for (const auto& row:artifact.at("candidates")) out.push_back(row.at("sign"));
+    return out;
+  };
+  ASSERT_EQ(signs(dir.path/"imputed"/"orientations.json"),signs(dir.path/"plain"/"orientations.json"));
+  const std::array<u64,3> straddling{5,21,33};
+  // The missing-exit-v1 IC beside the imputed one is the plain run's, once its two print-only
+  // coverage keys are checked and dropped.
+  const auto legacy_equals_plain=[&](Json legacy,const Json& expected,const Json& scored,const std::string& what) {
+    ASSERT_EQ(legacy.at("horizons").size(),3U) << what;
+    for (usize k=0;k<3;++k) {
+      auto& cov=legacy["horizons"][k]["coverage"];
+      const auto& now=scored.at("horizons").at(k).at("coverage");
+      EXPECT_EQ(cov.at("terminal_imputed_pairs"),0) << what << k;
+      EXPECT_DOUBLE_EQ(cov.at("missing_exit_share").get<f64>(),cov.at("missing_exit_pairs").get<f64>()/
+                       cov.at("decision_eligible_pairs").get<f64>()) << what << k;
+      EXPECT_EQ(now.at("terminal_imputed_pairs"),straddling[k]) << what << k;
+      EXPECT_EQ(now.at("finite_label_pairs").get<u64>()-cov.at("finite_label_pairs").get<u64>(),straddling[k])
+          << what << k;
+      EXPECT_EQ(now.at("missing_exit_pairs"),cov.at("missing_exit_pairs")) << what << k;
+      EXPECT_EQ(now.at("decision_eligible_pairs"),cov.at("decision_eligible_pairs")) << what << k;
+      EXPECT_DOUBLE_EQ(now.at("missing_exit_share").get<f64>(),cov.at("missing_exit_share").get<f64>()) << what << k;
+      cov.erase("terminal_imputed_pairs"); cov.erase("missing_exit_share");
+    }
+    EXPECT_EQ(legacy,ic_block(expected)) << what;
+  };
+  ASSERT_EQ(role_result.at("candidates").size(),2U);
+  for (usize c=0;c<2;++c) {
+    const auto& row=role_result.at("candidates").at(c);
+    legacy_equals_plain(row.at("ic_missing_exit_v1"),base.at("candidates").at(c),row,row.at("id").get<std::string>());
+  }
+  legacy_equals_plain(role_result.at("combined_ic_missing_exit_v1"),base.at("combined_ic"),
+                      role_result.at("combined_ic"),"__combined__");
+  // The imputed labels move the IC itself (some daily IC on the straddling rows changes).
+  EXPECT_NE(file_sha(dir.path/"imputed"/"train_daily_ic.csv"),file_sha(dir.path/"plain"/"train_daily_ic.csv"));
+}
+// The label role is admitted only as the role builder's --delisting-returns build of the scored
+// role (same axes, score window and sessions / ids receipts), with a pin on both sides of the flag;
+// each refusal precedes any payload or output. A label role that differs from the scored role on a
+// cell the role presents (it may only add presence) refuses once both are loaded.
+TEST(IcLabelTerminal, LabelRoleRefusals) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  auto bare=cfg; bare.train_label_role.clear(); bare.train_label_role_sha256.clear();
+  expect_early_refusal(dir,bare,"bare","needs a pinned label role for every scored role");
+  auto unflagged=cfg; unflagged.label_terminal.clear();
+  expect_early_refusal(dir,unflagged,"unflagged","--*-label-role is read only with --label-terminal imputed-v1");
+  auto unpinned=cfg; unpinned.train_label_role_sha256.clear();
+  expect_early_refusal(dir,unpinned,"unpinned","each --*-label-role needs its --*-label-role-sha256");
+  auto other_rule=cfg; other_rule.label_terminal="imputed-v2";
+  expect_early_refusal(dir,other_rule,"other_rule","--label-terminal takes imputed-v1");
+  auto wrong_pin=cfg; wrong_pin.train_label_role_sha256=std::string(64,'0');
+  expect_early_refusal(dir,wrong_pin,"wrong_pin","");
+  auto unapplied=cfg; ASSERT_TRUE(returns_applied(unapplied.train_label_role,false,unapplied.train_label_role_sha256));
+  expect_early_refusal(dir,unapplied,"unapplied",
+      "--train-label-role must be the role builder's --delisting-returns build of the train role");
+  ASSERT_TRUE(returns_applied(cfg.train_label_role,true,cfg.train_label_role_sha256));
+  // Another score window.
+  auto shifted=cfg; const auto shifted_dir=dir.path/"label_shifted";
+  std::filesystem::copy(dir.path/"train_label",shifted_dir,std::filesystem::copy_options::recursive);
+  auto manifest=read_json(shifted_dir/"manifest.json"); manifest["score_begin"]=400;
+  shifted.train_label_role=(shifted_dir/"manifest.json").string();
+  ASSERT_TRUE(json_file(shifted.train_label_role,manifest,shifted.train_label_role_sha256));
+  expect_early_refusal(dir,shifted,"shifted","--train-label-role score_begin differs from the pinned train role");
+  // Another session axis (a role a day later).
+  auto later=cfg; const auto later_dir=dir.path/"label_later";
+  ASSERT_TRUE(role(later_dir,17684,later.train_label_role_sha256,1,absent_from(kTerminalSession+1)));
+  later.train_label_role=(later_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(later.train_label_role,true,later.train_label_role_sha256));
+  expect_early_refusal(dir,later,"later","--train-label-role sessions.i64 differs from the pinned train role");
+  // Another close on cells the scored role presents: refused after both load, before scoring.
+  auto repriced=cfg; const auto repriced_dir=dir.path/"label_repriced";
+  ASSERT_TRUE(role(repriced_dir,17683,repriced.train_label_role_sha256,-1,absent_from(kTerminalSession+1)));
+  repriced.train_label_role=(repriced_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(repriced.train_label_role,true,repriced.train_label_role_sha256));
+  const auto refused=run_named(dir,repriced,"repriced"); EXPECT_FALSE(refused.ok);
+  EXPECT_NE(refused.error.find("label role differs from the scored role on a cell the role presents"),
+            std::string::npos) << refused.error;
+  EXPECT_EQ(refused.log.find("IC eval-start"),std::string::npos);
+  // Fix round 1 (review S2 #2): added presence that is not a termination -- here a second session
+  // after instrument 0's last scored session 419 -- refuses once both are loaded.
+  auto doubled=cfg; const auto doubled_dir=dir.path/"label_doubled";
+  ASSERT_TRUE(role(doubled_dir,17683,doubled.train_label_role_sha256,1,
+                   absent_from(kTerminalSession+2)));
+  doubled.train_label_role=(doubled_dir/"manifest.json").string();
+  ASSERT_TRUE(returns_applied(doubled.train_label_role,true,doubled.train_label_role_sha256));
+  const auto twice=run_named(dir,doubled,"doubled"); EXPECT_FALSE(twice.ok);
+  EXPECT_NE(twice.error.find("label role adds presence that is not a termination "
+                             "(date 421, instrument 0)"),std::string::npos) << twice.error;
+  EXPECT_EQ(twice.log.find("IC eval-start"),std::string::npos);
+  // The same label role pinned with the flag runs.
+  const auto accepted=run_named(dir,cfg,"accepted"); ASSERT_TRUE(accepted.ok) << accepted.error;
+  // CLI: the flag and its pins parse; another rule value refuses (run_ic, exit 1).
+  EXPECT_EQ(ic_cli(cfg,{"--label-terminal","imputed-v1","--train-label-role",cfg.train_label_role,
+                        "--train-label-role-sha256",cfg.train_label_role_sha256}),0);
+  EXPECT_EQ(ic_cli(cfg,{"--label-terminal","imputed-v2","--train-label-role",cfg.train_label_role,
+                        "--train-label-role-sha256",cfg.train_label_role_sha256}),1);
+}
+// One f64 cell of a role payload (little-endian, as payload() writes it).
+f64 read_cell(const std::filesystem::path& path,usize cell) {
+  const auto bytes=file_bytes(path); u64 bits=0;
+  for (usize b=0;b<8;++b) bits|=static_cast<u64>(static_cast<u8>(bytes.at(cell*8+b)))<<(8*b);
+  return std::bit_cast<f64>(bits);
+}
+// Rewrites one f64 cell of role payload `file` and re-pins its receipt in the role manifest.
+bool patch_cell(const std::filesystem::path& role_dir,const std::string& file,usize cell,f64 value,
+                std::string& sha) {
+  auto bytes=file_bytes(role_dir/file); if (bytes.size()<(cell+1)*8) return false;
+  const auto bits=std::bit_cast<u64>(value);
+  for (usize b=0;b<8;++b) bytes[cell*8+b]=static_cast<char>((bits>>(8*b))&0xFFU);
+  if (!write_bytes(role_dir/file,bytes)) return false;
+  const auto digest=core::sha256_file((role_dir/file).string()); if (!digest) return false;
+  auto manifest=read_json(role_dir/"manifest.json"); manifest["files"][file]["sha256"]=*digest;
+  return json_file(role_dir/"manifest.json",manifest,sha);
+}
+// Fix round 1 (review S2 #1): the terminal step is return-guarded on the label role. A label role
+// whose termination close (and raw close) is 5% of the last close (r = -0.95, |log(1 + r)| = 3.0 >
+// 1.5) has every straddling pair guard-excluded and none imputed: its labels, so its IC, are the
+// missing-exit-v1 ones. The fixture's own termination (a tiny return) imputes as before.
+TEST(IcLabelTerminal, AbsurdTerminalReturnIsGuardedOnTheLabelRole) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  const auto label_dir=std::filesystem::path(cfg.train_label_role).parent_path();
+  const usize last=(kTerminalSession-1)*N,terminal=kTerminalSession*N; // instrument 0
+  for (const std::string file:{"close.f64","raw_close.f64"})
+    ASSERT_TRUE(patch_cell(label_dir,file,terminal,read_cell(label_dir/file,last)*.05,
+                           cfg.train_label_role_sha256));
+  const auto absurd=run_named(dir,cfg,"absurd"); ASSERT_TRUE(absurd.ok) << absurd.error;
+  const auto role_result=read_json(dir.path/"absurd"/"summary.json").at("roles").at(0);
+  const std::array<u64,3> straddling{5,21,33};
+  ASSERT_EQ(role_result.at("candidates").size(),2U);
+  for (usize c=0;c<2;++c) {
+    const auto& row=role_result.at("candidates").at(c);
+    for (usize k=0;k<3;++k) {
+      const auto& now=row.at("horizons").at(k);
+      const auto& before=row.at("ic_missing_exit_v1").at("horizons").at(k);
+      EXPECT_EQ(now.at("coverage").at("terminal_imputed_pairs"),0) << c << k;
+      const auto& guarded=now.at("coverage").at("guard_excluded_pairs");
+      EXPECT_EQ(guarded.get<u64>()-before.at("coverage").at("guard_excluded_pairs").get<u64>(),
+                straddling[k]) << c << k;
+      EXPECT_EQ(now.at("coverage").at("finite_label_pairs"),
+                before.at("coverage").at("finite_label_pairs")) << c << k;
+      EXPECT_EQ(now.at("rank"),before.at("rank")) << c << k;
+      EXPECT_EQ(now.at("pearson"),before.at("pearson")) << c << k;
+    }
+  }
+}
+// Frozen TRAIN: a --label-terminal source records both roles' label role pins; a validation-only
+// resume must carry the flag, may omit TRAIN's pin (taken from the source, its role never opened)
+// but never differ from it, and binds the validation pin it scores with.
+TEST(IcLabelTerminal, FrozenTrainResumeBindsTheLabelRolePins) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  // Each label role: a copy of its role declaring applied delisting returns (it adds no session).
+  for (const std::string name:{"train","validation"}) {
+    std::filesystem::copy(dir.path/name,dir.path/(name+"_label"),std::filesystem::copy_options::recursive);
+    auto& path=name=="train"?cfg.train_label_role:cfg.validation_label_role;
+    auto& sha=name=="train"?cfg.train_label_role_sha256:cfg.validation_label_role_sha256;
+    path=(dir.path/(name+"_label")/"manifest.json").string();
+    ASSERT_TRUE(returns_applied(path,true,sha));
+  }
+  cfg.label_terminal="imputed-v1";
+  const auto source=run_named(dir,cfg,"source"); ASSERT_TRUE(source.ok) << source.error;
+  EXPECT_EQ(read_json(dir.path/"source"/"recipe.json").at("label_role_manifest_sha256"),
+            Json({{"train",cfg.train_label_role_sha256},{"validation",cfg.validation_label_role_sha256}}));
+  auto resume=cfg; resume.orientations_path=(dir.path/"source"/"orientations.json").string();
+  resume.orientations_sha256=file_sha(resume.orientations_path);
+  const auto resumed=run_named(dir,resume,"resumed"); ASSERT_TRUE(resumed.ok) << resumed.error;
+  EXPECT_EQ(file_sha(dir.path/"resumed"/"validation_daily_ic.csv"),
+            file_sha(dir.path/"source"/"validation_daily_ic.csv"));
+  auto train_free=resume; train_free.train_label_role.clear(); train_free.train_label_role_sha256.clear();
+  const auto freed=run_named(dir,train_free,"train_free"); ASSERT_TRUE(freed.ok) << freed.error;
+  EXPECT_EQ(file_sha(dir.path/"train_free"/"validation_daily_ic.csv"),
+            file_sha(dir.path/"source"/"validation_daily_ic.csv"));
+  // Fix round 1 (review S2 #4): a resume records only its scored role's pin; the unscored TRAIN's
+  // (optional, empty or not) is never written, so both resumes write the same recipe bytes.
+  EXPECT_EQ(read_json(dir.path/"resumed"/"recipe.json").at("label_role_manifest_sha256"),
+            Json({{"validation",cfg.validation_label_role_sha256}}));
+  EXPECT_EQ(file_sha(dir.path/"train_free"/"recipe.json"),
+            file_sha(dir.path/"resumed"/"recipe.json"));
+  auto other=resume; other.train_label_role_sha256=std::string(64,'1');
+  expect_early_refusal(dir,other,"other_pin","frozen TRAIN label role pin differs");
+  auto dropped=resume; dropped.label_terminal.clear();
+  dropped.train_label_role.clear(); dropped.train_label_role_sha256.clear();
+  dropped.validation_label_role.clear(); dropped.validation_label_role_sha256.clear();
+  expect_early_refusal(dir,dropped,"dropped","frozen TRAIN method/statistical settings/role pins differ");
+  auto no_validation_pin=resume;
+  no_validation_pin.validation_label_role.clear(); no_validation_pin.validation_label_role_sha256.clear();
+  expect_early_refusal(dir,no_validation_pin,"no_validation_pin","needs a pinned label role for every scored role");
+}
+// Ruling S2-3: with --candidate-cache the missing-exit-v1 IC beside --label-terminal is cached under
+// its own IC-result scope (keyed label_terminal = missing-exit-v1), apart from both the imputed
+// scope and the flag-absent one, which a label-terminal run never writes. A warm run hits both and
+// reproduces an uncached run; under --no-composition a candidate with both IC results cached is
+// never loaded, and one whose missing-exit-v1 entry is gone loads its signal again.
+TEST(IcLabelTerminal, MissingExitIcIsCachedUnderItsOwnScope) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(terminal_fixture(dir,cfg));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  auto plain_cfg=without_terminal(cfg);
+  const auto plain=run_named(dir,plain_cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  const auto plain_summary=dir.path/"plain"/"summary.json";
+  const auto plain_scope=read_json(plain_summary).at("roles").at(0).at("candidate_cache").at("ic_results");
+  const auto signal_dir=cache_entry(plain_summary,"train","volume_level").sidecar.parent_path();
+  const auto default_dir=signal_dir/plain_scope.at("subdirectory").get<std::string>();
+  std::vector<std::pair<std::filesystem::path,std::vector<char>>> default_entries;
+  for (const auto& entry:std::filesystem::directory_iterator(default_dir))
+    default_entries.emplace_back(entry.path(),file_bytes(entry.path()));
+  ASSERT_EQ(default_entries.size(),2U);
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  const auto warm=run_named(dir,cfg,"warm"); ASSERT_TRUE(warm.ok) << warm.error;
+  auto uncached=cfg; uncached.candidate_cache_directory.clear();
+  const auto reference=run_named(dir,uncached,"uncached"); ASSERT_TRUE(reference.ok) << reference.error;
+  const auto reference_role=read_json(dir.path/"uncached"/"summary.json").at("roles").at(0);
+  std::string imputed_subdirectory,legacy_subdirectory;
+  for (const std::string name:{"cold","warm"}) {
+    const auto role_result=read_json(dir.path/name/"summary.json").at("roles").at(0);
+    const auto& scope=role_result.at("candidate_cache").at("ic_results");
+    const auto& legacy=scope.at("missing_exit_v1");
+    EXPECT_EQ(scope.at("key").at("label_terminal"),"imputed-v1");
+    EXPECT_EQ(scope.at("key").at("label_role_manifest_sha256"),cfg.train_label_role_sha256);
+    EXPECT_EQ(legacy.at("key").at("label_terminal"),"missing-exit-v1");
+    EXPECT_FALSE(legacy.at("key").contains("label_role_manifest_sha256"));
+    imputed_subdirectory=scope.at("subdirectory").get<std::string>();
+    legacy_subdirectory=legacy.at("subdirectory").get<std::string>();
+    const std::set<std::string> distinct{imputed_subdirectory,legacy_subdirectory,
+                                         plain_scope.at("subdirectory").get<std::string>()};
+    EXPECT_EQ(distinct.size(),3U) << name;
+    EXPECT_EQ(scope.at("hits"),name=="warm"?2:0) << name;
+    EXPECT_EQ(legacy.at("hits"),name=="warm"?2:0) << name;
+    for (usize c=0;c<2;++c) {
+      const auto& row=role_result.at("candidates").at(c);
+      EXPECT_EQ(row.at("ic_missing_exit_v1_result_cache"),name=="warm"?"hit":"miss") << name << c;
+      EXPECT_EQ(row.at("ic_missing_exit_v1"),reference_role.at("candidates").at(c).at("ic_missing_exit_v1"))
+          << name << c;
+      EXPECT_EQ(ic_block(row),ic_block(reference_role.at("candidates").at(c))) << name << c;
+    }
+    for (const auto* file:{"recipe.json","orientations.json","train_daily_ic.csv","train_planned_targets.csv"})
+      EXPECT_EQ(file_sha(dir.path/name/file),file_sha(dir.path/"uncached"/file)) << name << ' ' << file;
+  }
+  EXPECT_TRUE(std::filesystem::exists(signal_dir/legacy_subdirectory/(level_stem()+".json")));
+  // The flag-absent scope is untouched: the same two entries, byte for byte.
+  usize still=0;
+  for (const auto& entry:std::filesystem::directory_iterator(default_dir)) {
+    ++still;
+    const auto it=std::find_if(default_entries.begin(),default_entries.end(),
+                               [&](const auto& e) { return e.first==entry.path(); });
+    ASSERT_NE(it,default_entries.end()) << entry.path();
+    EXPECT_EQ(file_bytes(entry.path()),it->second) << entry.path();
+  }
+  EXPECT_EQ(still,2U);
+  // Fix round 1 (review S2 #7): a stale record planted in the missing-exit-v1 scope (the
+  // flag-absent run's record of the same signal) is refused, never served; restored, it serves.
+  const auto legacy_entry=signal_dir/legacy_subdirectory/(level_stem()+".json");
+  const auto kept_record=file_bytes(legacy_entry); ASSERT_FALSE(kept_record.empty());
+  ASSERT_TRUE(write_bytes(legacy_entry,file_bytes(default_dir/(level_stem()+".json"))));
+  const auto planted=run_named(dir,cfg,"planted"); EXPECT_FALSE(planted.ok);
+  EXPECT_NE(planted.error.find("candidate IC cache entry mismatch: volume_level"),std::string::npos)
+      << planted.error;
+  ASSERT_TRUE(write_bytes(legacy_entry,kept_record));
+  const auto served=run_named(dir,cfg,"served"); ASSERT_TRUE(served.ok) << served.error;
+  EXPECT_EQ(read_json(dir.path/"served"/"summary.json").at("roles").at(0).at("candidate_cache")
+                .at("ic_results").at("missing_exit_v1").at("hits"),2);
+  // --no-composition: both IC results cached, so no payload is loaded (each is tampered at equal
+  // size: a load would refuse on its SHA-256).
+  for (const std::string id:{"volume_level","volume_rank"}) {
+    const auto payload=cache_entry(dir.path/"cold"/"summary.json","train",id).payload;
+    auto bytes=file_bytes(payload); ASSERT_EQ(bytes.size(),D*N*sizeof(f64)) << id;
+    bytes[8*N*100]=static_cast<char>(bytes[8*N*100]^1); ASSERT_TRUE(write_bytes(payload,bytes));
+  }
+  auto screen=cfg; screen.no_composition=true;
+  const auto screened=run_named(dir,screen,"screen"); ASSERT_TRUE(screened.ok) << screened.error;
+  EXPECT_NE(screened.log.find("IC cache-hit volume_rank role=train layout=v2 payload=not-loaded ic_result=hit"),
+            std::string::npos) << screened.log;
+  EXPECT_EQ(read_json(dir.path/"screen"/"summary.json").at("roles").at(0).at("verify_bytes"),0);
+  // Without its missing-exit-v1 entry the candidate's signal must load (and here refuses).
+  ASSERT_TRUE(std::filesystem::remove(signal_dir/legacy_subdirectory/(level_stem()+".json")));
+  const auto rescore=run_named(dir,screen,"rescore"); EXPECT_FALSE(rescore.ok);
+  EXPECT_NE(rescore.error.find("candidate cache payload SHA256 mismatch: "+level_stem()+".f64"),std::string::npos)
+      << rescore.error;
+}
+// Ruling P13 (the IC half of the C++ seal consumer): a pinned fields manifest built under this
+// build's research seal (seal.exclusive_end 2024-01-01) is bound; one without a seal (or a seal block
+// without exclusive_end) is a legacy manifest, accepted and logged per role; a manifest built under
+// another seal, or with a malformed seal block, refuses before any payload or output.
+TEST(IcFieldsSeal, ManifestSealMustBeThisBuildsOrAbsent) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(field_library(cfg,{"si_shares"},{{"si_ratio","si_shares / volume"}}));
+  ASSERT_TRUE(pin_fields(dir,cfg,"f",{"si_shares"}));
+  const auto sealed=[&](const Json& block) {
+    auto out=cfg;
+    for (auto [directory,sha]:{std::pair{&out.train_fields_directory,&out.train_fields_sha256},
+                               std::pair{&out.validation_fields_directory,&out.validation_fields_sha256}}) {
+      const auto path=std::filesystem::path(*directory)/"manifest.json";
+      auto j=read_json(path);
+      if (block.is_null()) j.erase("seal"); else j["seal"]=block;
+      EXPECT_TRUE(json_file(path,j,*sha));
+    }
+    return out;
+  };
+  const auto absent=run_named(dir,cfg,"absent"); ASSERT_TRUE(absent.ok) << absent.error;
+  for (const std::string role_name:{"train","validation"})
+    EXPECT_NE(absent.log.find("IC fields-seal role="+role_name+" seal=absent accepted-as-legacy-manifest"),
+              std::string::npos) << absent.log;
+  auto matching=sealed({{"exclusive_end","2024-01-01"},{"window_id","research-window-v2"}});
+  const auto match=run_named(dir,matching,"match"); ASSERT_TRUE(match.ok) << match.error;
+  EXPECT_EQ(match.log.find("seal=absent"),std::string::npos);
+  for (const auto* file:{"train_daily_ic.csv","validation_daily_ic.csv"})
+    EXPECT_EQ(file_sha(dir.path/"match"/file),file_sha(dir.path/"absent"/file)) << file;
+  expect_early_refusal(dir,sealed({{"exclusive_end","2025-01-01"}}),"later_seal",
+      "fields manifest was built under the seal \"2025-01-01\"; this build's seal is 2024-01-01");
+  expect_early_refusal(dir,sealed({{"exclusive_end",20240101}}),"numeric_seal","fields manifest was built under the seal");
+  expect_early_refusal(dir,sealed("2024-01-01"),"flat_seal","fields manifest seal block is not an object");
+  auto keyless=sealed({{"window_id","research-window-v2"}});
+  const auto legacy=run_named(dir,keyless,"keyless"); ASSERT_TRUE(legacy.ok) << legacy.error;
+  EXPECT_NE(legacy.log.find("IC fields-seal role=train seal=absent accepted-as-legacy-manifest"),std::string::npos);
+}
+// ---- P9 lane D3W: composition weights schema v3, walk-forward-v1 rows (contract K-P9-8) ----
+const std::string weights_v3="atx.dsl-composition-weights/v3";
+const std::string wf_head=
+    R"("rule":"walk-forward-v1","window":"expanding","lag":2,"step":21,"min_decisions":21)";
+// The walk_forward block: `head` (rule and recorded flags) and raw `rows`.
+std::string wf_block(const std::string& rows,const std::string& head=wf_head) {
+  return ",\"walk_forward\":{"+head+",\"rows\":"+rows+"}";
+}
+std::string wf_row(i64 session,const std::string& weights) {
+  return "{\"from_session\":"+std::to_string(session)+",\"weights\":"+weights+"}";
+}
+// The fixture's TRAIN role session of date d (the validation role's sessions all follow them).
+i64 train_session(usize d) { return (17683+static_cast<i64>(d))*day; }
+// A mom-volman-v1 theme_schedule block over TRAIN sessions 0..n-1: .5 (-1)^d, then 2 (-1)^d from
+// 200 on (the volatility steps up, so the block scales move).
+std::string volman_block(usize n) {
+  Json sessions=Json::array(),sleeve=Json::array();
+  for (usize d=0;d<n;++d) {
+    sessions.push_back(train_session(d));
+    sleeve.push_back((d<200?.5:2.0)*(d%2U==0U?1.0:-1.0));
+  }
+  return ",\"theme_schedule\":"+Json{{"rule","mom-volman-v1"},{"theme","price_momentum"},
+      {"lookback",126},{"lag",2},{"step",21},{"sessions",sessions},{"sleeve",sleeve}}.dump();
+}
+// A v3 run against its v1 / v2 parent whose top-level weights its one row (from TRAIN session 0)
+// repeats: every payload byte for byte; the recipe, the orientations' candidates, the combined
+// manifests and the role summaries differ only by the weights pin, the rule key and the hashes of
+// those; the summary records the rows.
+void expect_single_row_identity(const Directory& dir,const std::string& parent,
+                                const std::string& v3) {
+  for (const std::string role_name:{"train","validation"})
+    for (const auto* suffix:{"_daily_ic.csv","_planned_targets.csv","_combined.f64",
+                             "_combined_member.u8","_combined_finite.u8"}) {
+      const auto file=role_name+suffix; const auto expected=file_sha(dir.path/parent/file);
+      ASSERT_FALSE(expected.empty()) << file;
+      EXPECT_EQ(file_sha(dir.path/v3/file),expected) << file;
+    }
+  auto a=read_json(dir.path/parent/"recipe.json"),b=read_json(dir.path/v3/"recipe.json");
+  EXPECT_EQ(b.at("composition_walk_forward"),"walk-forward-v1");
+  EXPECT_FALSE(a.contains("composition_walk_forward"));
+  EXPECT_NE(a.at("composition_weights_sha256"),b.at("composition_weights_sha256"));
+  for (auto* recipe:{&a,&b})
+    for (const auto* key:{"composition_walk_forward","composition_weights_sha256"})
+      recipe->erase(key);
+  EXPECT_EQ(b,a);
+  EXPECT_EQ(read_json(dir.path/v3/"orientations.json").at("candidates"),
+            read_json(dir.path/parent/"orientations.json").at("candidates"));
+  for (const std::string role_name:{"train","validation"}) {
+    const auto manifest=role_name+"_combined.json";
+    auto x=read_json(dir.path/parent/manifest),y=read_json(dir.path/v3/manifest);
+    EXPECT_EQ(y.at("composition_walk_forward"),"walk-forward-v1") << role_name;
+    EXPECT_FALSE(x.contains("composition_walk_forward")) << role_name;
+    for (auto* m:{&x,&y})
+      for (const auto* key:{"composition_walk_forward","composition_weights_sha256",
+                            "run_recipe_sha256","orientations_artifact_sha256"})
+        m->erase(key);
+    EXPECT_EQ(y,x) << role_name;
+  }
+  const auto sa=read_json(dir.path/parent/"summary.json"),sb=read_json(dir.path/v3/"summary.json");
+  for (usize r=0;r<2;++r)
+    EXPECT_EQ(stable_role(sb.at("roles").at(r),false),stable_role(sa.at("roles").at(r),false)) << r;
+  const auto& record=sb.at("composition_weights").at("walk_forward");
+  EXPECT_EQ(record.at("rule"),"walk-forward-v1");
+  EXPECT_EQ(record.at("rows").get<usize>(),1U);
+  EXPECT_EQ(record.at("first_session").get<i64>(),train_session(0));
+  EXPECT_FALSE(sa.at("composition_weights").contains("walk_forward"));
+}
+// Contract K-P9-8 (ruling P19, brief-D3 as carried): a v3 file whose one row starts at the first
+// TRAIN session with the top-level weights is its v1 / v2 parent byte for byte, on the plain pinned
+// path, on ew-theme-std-v1's standardisation and under the mom-volman-v1 schedule (whose blocks the
+// row masses then merge with); only the records that name the file and the rule differ.
+TEST(WeightsV3, SingleRowEqualsV1Bytes) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string row="["+wf_row(train_session(0),weights)+"]";
+  const std::string themes=
+      R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::vector<std::pair<std::string,std::string>> parents{
+      {weights_v1,signs},{weights_v2,signs+std_block(themes,true)},
+      {weights_v2,signs+std_block(themes,true)+volman_block(300)}};
+  for (usize c=0;c<parents.size();++c) {
+    SCOPED_TRACE(c);
+    const auto& [schema,extra]=parents[c];
+    const auto parent="parent"+std::to_string(c),v3="v3_"+std::to_string(c);
+    ASSERT_TRUE(pin(parent+".json",themed_text(schema,cfg,weights,extra)));
+    const auto a=run_named(dir,cfg,parent); ASSERT_TRUE(a.ok) << a.error;
+    ASSERT_TRUE(pin(v3+".json",themed_text(weights_v3,cfg,weights,extra+wf_block(row))));
+    const auto b=run_named(dir,cfg,v3); ASSERT_TRUE(b.ok) << b.error;
+    expect_single_row_identity(dir,parent,v3);
+  }
+}
+// Rows switch at their session and the book is flat before the first (ruling D3-1): on the plain
+// path each TRAIN date before the first row's session holds 0 (members) or NaN (non-members), the
+// dates of each row are the blend of a v1 file with that row's weights, bit for bit, and every
+// validation date (its sessions follow the rows) the last row's. On ew-theme-std-v1 the same, with
+// a row weighting a candidate the top-level weights leave at 0 (its theme is a weighted one).
+TEST(WeightsV3, RowsSwitchAtTheirSessionAndTheBookIsFlatBefore) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); cfg.save_combined=true;
+  const auto pin=[&](const std::string& file,const std::string& text) {
+    cfg.composition_weights_path=(dir.path/file).string();
+    return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+  };
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string first=R"({"volume_level":1.0,"volume_rank":0.0,"volume_vee":0.0})";
+  const std::string second=R"({"volume_level":0.0,"volume_rank":1.0,"volume_vee":0.0})";
+  const auto run=[&](const std::string& name,const std::string& text) {
+    if (!pin(name+".json",text)) return false;
+    const auto done=run_named(dir,cfg,name);
+    EXPECT_TRUE(done.ok) << name << ": " << done.error;
+    return done.ok;
+  };
+  ASSERT_TRUE(run("a",themed_text(weights_v1,cfg,first,signs)));
+  ASSERT_TRUE(run("b",themed_text(weights_v1,cfg,second,signs)));
+  const std::string halves=R"({"volume_level":0.5,"volume_rank":0.5,"volume_vee":0.0})";
+  ASSERT_TRUE(run("wf",themed_text(weights_v3,cfg,halves,
+      signs+wf_block("["+wf_row(train_session(200),first)+","+wf_row(train_session(300),second)+
+                     "]"))));
+  // ew-theme-std-v1: the top-level weights leave volume_rank at 0; its row weights it in theme
+  // value.
+  const std::string themes=R"({"volume_level":"value","volume_rank":"value","volume_vee":"value"})";
+  const std::string spread=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  ASSERT_TRUE(run("c",themed_text(weights_v2,cfg,spread,signs+std_block(themes,true))));
+  const std::string ends=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  ASSERT_TRUE(run("std_wf",themed_text(weights_v3,cfg,ends,
+      signs+std_block(themes,true)+wf_block("["+wf_row(train_session(250),spread)+"]"))));
+  // `after`: (first TRAIN date, reference run) per row, ascending.
+  using Rows=std::vector<std::pair<usize,std::string>>;
+  const auto flat_then=[&](const std::string& run_name,usize from,const Rows& after) {
+    for (const std::string role_name:{"train","validation"}) {
+      SCOPED_TRACE(run_name+" "+role_name);
+      const auto combined=role_name+"_combined.f64";
+      const auto s=combined_payload(dir.path/run_name/combined);
+      ASSERT_EQ(s.size(),D*N);
+      std::vector<std::vector<f64>> want;
+      for (const auto& reference:after)
+        want.push_back(combined_payload(dir.path/reference.second/combined));
+      const bool train=role_name=="train";
+      for (usize k=0;k<D*N;++k) {
+        const usize d=k/N;
+        if (train && d<from) {
+          if (std::isnan(want.front()[k])) EXPECT_TRUE(std::isnan(s[k])) << d << ' ' << k%N;
+          else EXPECT_EQ(std::bit_cast<u64>(s[k]),std::bit_cast<u64>(0.0)) << d << ' ' << k%N;
+          continue;
+        }
+        usize source=after.size()-1U;
+        if (train)
+          for (usize r=0;r<after.size();++r) if (d>=after[r].first) source=r;
+        EXPECT_TRUE(same_value(s[k],want[source][k])) << d << ' ' << k%N;
+      }
+    }
+  };
+  flat_then("wf",200,{{200,"a"},{300,"b"}});
+  flat_then("std_wf",250,{{250,"c"}});
+  const auto manifest=read_json(dir.path/"std_wf"/"train_combined.json");
+  EXPECT_EQ(manifest.at("composition_walk_forward"),"walk-forward-v1");
+  EXPECT_EQ(manifest.at("composition_standardise"),"ew-theme-std-v1");
+}
+// Every v3 refusal (block shape, rows, the rules it is refused with, a row-weighted candidate
+// without its sign or theme) and v1 / v2 carrying the block precede any payload or output.
+TEST(WeightsV3, RefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; atx::impl::strategy::IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  const auto path=dir.path/"weights.json"; cfg.composition_weights_path=path.string();
+  const std::string w=R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25})";
+  const std::string signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+  const std::string themes=
+      R"({"volume_level":"value","volume_rank":"price_momentum","volume_vee":"value"})";
+  const std::string row=wf_row(train_session(10),w);
+  const std::string rows="["+row+"]";
+  const auto v3=[&](const std::string& extra) { return themed_text(weights_v3,cfg,w,signs+extra); };
+  // Admitted: the plain path, a standardise grouping, two rows.
+  for (const auto& text:{v3(wf_block(rows)),v3(std_block(themes,true)+wf_block(rows)),
+                         v3(wf_block("["+row+","+wf_row(train_session(30),w)+"]"))}) {
+    ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+    cfg.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(cfg,log);
+    ASSERT_TRUE(status) << status.error().to_string() << "\n" << text;
+    const auto plan=Json::parse(log.str());
+    EXPECT_EQ(plan.at("composition_weights").at("walk_forward").at("rule"),"walk-forward-v1");
+  }
+  const std::string shape=
+      "walk_forward must be {rule: walk-forward-v1, window: expanding, lag: >= 2";
+  const std::string row_shape=
+      "walk_forward row must be {from_session: integer, weights: {id: weight}}";
+  const std::string refused_with=
+      "walk_forward (walk-forward-v1) is refused with theme_redistribution, "
+      "theme_residualise and theme-tsmom-v1";
+  std::string many="[";
+  for (usize r=0;r<4097;++r) many+=(r?",":"")+wf_row(train_session(0)+static_cast<i64>(r),w);
+  many+="]";
+  // The head with one field replaced (rule, window, lag, step, min_decisions as raw JSON).
+  const auto head=[](const std::string& rule,const std::string& window,const std::string& lag,
+                     const std::string& step,const std::string& min) {
+    return "\"rule\":"+rule+",\"window\":"+window+",\"lag\":"+lag+",\"step\":"+step+
+           ",\"min_decisions\":"+min;
+  };
+  const std::string ok_rule="\"walk-forward-v1\"",ok_window="\"expanding\"";
+  const std::string head_v=R"("rule":"walk-forward-v1","window":"expanding","lag":2,"step":21)";
+  // One row at TRAIN session 10 with raw `weights`.
+  const auto one=[](const std::string& weights) {
+    return wf_block("["+wf_row(train_session(10),weights)+"]");
+  };
+  const std::string s0=std::to_string(train_session(0));
+  const std::string needs_v3=
+      "walk_forward requires composition weights schema atx.dsl-composition-weights/v3";
+  const std::string bad="walk_forward weight must be finite and >= 0: volume_rank";
+  const std::vector<std::pair<std::string,std::string>> cases{
+      {v3(""),
+       "composition weights schema atx.dsl-composition-weights/v3 requires a walk_forward block"},
+      {themed_text(weights_v1,cfg,w,signs+wf_block(rows)),needs_v3},
+      {themed_text(weights_v2,cfg,w,signs+std_block(themes,true)+wf_block(rows)),needs_v3},
+      {v3(R"(,"walk_forward":[1])"),shape},
+      {v3(wf_block(rows,head("\"walk-forward-v2\"",ok_window,"2","21","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,"\"rolling\"","2","21","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"1","21","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"2","0","21"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"2","21","1"))),shape},
+      {v3(wf_block(rows,head(ok_rule,ok_window,"2","21","\"21\""))),shape},
+      {v3(wf_block(rows,head_v)),shape},
+      {v3(wf_block(rows,wf_head+R"(,"extra":1)")),shape},
+      {v3(",\"walk_forward\":{"+wf_head+"}"),shape},
+      {v3(wf_block("[]")),shape},
+      {v3(wf_block("{}")),shape},
+      {v3(wf_block(many)),shape},
+      {v3(wf_block("[1]")),row_shape},
+      {v3(wf_block(R"([{"from_session":1.5,"weights":{}}])")),row_shape},
+      {v3(wf_block("[{\"from_session\":"+s0+"}]")),row_shape},
+      {v3(wf_block("[{\"from_session\":"+s0+",\"weights\":"+w+",\"x\":1}]")),row_shape},
+      {v3(wf_block("["+row+","+row+"]")),"walk_forward from_session must increase strictly"},
+      {v3(one(R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25,"other":0})")),
+       "walk_forward weight for unknown candidate: other"},
+      {v3(one(R"({"volume_level":0.5,"volume_vee":0.25})")),
+       "walk_forward weight missing: volume_rank"},
+      {v3(one(R"({"volume_level":0.5,"volume_rank":-0.25,"volume_vee":0.25})")),bad},
+      {v3(one(R"({"volume_level":0.5,"volume_rank":"x","volume_vee":0.25})")),bad},
+      {v3(one(R"({"volume_level":0,"volume_rank":0,"volume_vee":0})")),"weights no candidate"},
+      {themed_text(weights_v3,cfg,w,signs+theme_block(themes)+wf_block(rows)),refused_with},
+      {v3(std_block(themes,true)+resid_block(R"(["value","price_momentum"])")+wf_block(rows)),
+       refused_with},
+      {v3(std_block(themes,true)+tsmom_block(R"(["price_momentum","value"])",
+                                             "["+tsmom_row(1000,"[1.0,-1.0]")+"]")+wf_block(rows)),
+       refused_with}};
+  // A row weighting a candidate the top-level weights leave at 0: its sign, then its theme.
+  const std::string top=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  const std::string lifted=one(R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})");
+  const std::string two_signs=R"(,"signs":{"volume_level":1,"volume_vee":1})";
+  const std::string value_only=R"({"volume_level":"value","volume_vee":"value"})";
+  const std::vector<std::pair<std::string,std::string>> lifted_cases{
+      {themed_text(weights_v3,cfg,top,two_signs+lifted),
+       "composition sign missing for a candidate a walk_forward row weights: volume_rank"},
+      {themed_text(weights_v3,cfg,top,signs+std_block(value_only,true)+lifted),
+       "theme missing for a candidate a walk_forward row weights: volume_rank"},
+      {themed_text(weights_v3,cfg,top,signs+std_block(themes,true)+lifted),
+       "walk_forward row weights volume_rank of theme price_momentum, which no top-level weighted "
+       "candidate has"}};
+  for (const bool plan_only:{true,false}) {
+    for (const auto* list:{&cases,&lifted_cases})
+      for (const auto& [text,reason]:*list) {
+        ASSERT_TRUE(text_file(path,text,cfg.composition_weights_sha256));
+        cfg.plan_only=plan_only; std::ostringstream attempt;
+        const auto status=atx::impl::strategy::run_ic(cfg,attempt);
+        // Every case reports (a mutation's teeth show per refusal); none aborts the loop.
+        if (status) {
+          ADD_FAILURE() << "accepted, expected: " << reason << "\n" << text.substr(0,400);
+          continue;
+        }
+        EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+            << reason << " -> " << status.error().to_string();
+        EXPECT_TRUE(attempt.str().empty());
+        EXPECT_FALSE(std::filesystem::exists(dir.path/"output"));
+      }
+  }
+}
+// ---- P9 lane ABS: absent-members-v1 (--absent-members; ruling OD3P-1, contract
+// od3p-absent-contract.md sections 2-5) ----
+using atx::impl::strategy::IcRunnerConfig;
+// The list file the cycle passes (its drop list itself); every key but schema and members is the
+// Python side's and ignored by the exe.
+bool pin_absent(const Directory& dir,IcRunnerConfig& cfg,const Json& members,
+                const std::string& name="flagged_members.json") {
+  cfg.absent_members_path=(dir.path/name).string();
+  const Json list{{"schema","atx.od3-flagged-members/v1"},{"members",members},
+      {"rules",Json::array({"theme-cov-hedge-v1"})},{"rules_pending",Json::array()},
+      {"source",{{"path","flags.md"},{"sha256",std::string(64,'b')}}}};
+  return json_file(cfg.absent_members_path,list,cfg.absent_members_sha256);
+}
+void clear_absent(IcRunnerConfig& cfg) {
+  cfg.absent_members_path.clear(); cfg.absent_members_sha256.clear();
+}
+bool pin_weights_text(const Directory& dir,IcRunnerConfig& cfg,const std::string& file,
+                      const std::string& text) {
+  cfg.composition_weights_path=(dir.path/file).string();
+  return text_file(cfg.composition_weights_path,text,cfg.composition_weights_sha256);
+}
+// The members `listed` read the field gate, which no other candidate reads: each DSL becomes
+// (DSL) * gate. gate (field_column) is a positive multiplier at scale 1, so the members keep
+// informative data, and NaN at scale NaN (contract section 5's I': their evaluated signals
+// non-finite everywhere).
+bool gate_members(IcRunnerConfig& cfg,const std::vector<std::string>& listed) {
+  auto lib=read_json(cfg.library_path);
+  lib["fields"].push_back({{"name","gate"},{"basis","synthetic upstream field"}});
+  usize gated=0;
+  for (auto& candidate:lib["candidates"]) {
+    const auto id=candidate.at("id").get<std::string>();
+    if (std::find(listed.begin(),listed.end(),id)!=listed.end()) {
+      candidate["dsl"]="("+candidate.at("dsl").get<std::string>()+") * gate";
+      ++gated;
+    }
+  }
+  return gated==listed.size() && json_file(cfg.library_path,lib,cfg.library_sha256);
+}
+// Pins the gate fields at dir/<tag>-{train,validation}, replacing what is there: both runs of an
+// equivalence read the same paths, so only the pins differ.
+bool pin_gate(const Directory& dir,IcRunnerConfig& cfg,const std::string& tag,f64 gate) {
+  std::error_code ec;
+  for (const auto* role_name:{"-train","-validation"})
+    std::filesystem::remove_all(dir.path/(tag+role_name),ec);
+  return pin_fields(dir,cfg,tag,{"gate"},gate);
+}
+// A run's input pins of the gate fields: the two manifests and the two gate payloads.
+std::vector<std::string> gate_pins(const IcRunnerConfig& cfg) {
+  return {cfg.train_fields_sha256,cfg.validation_fields_sha256,
+          file_sha(std::filesystem::path(cfg.train_fields_directory)/"gate.f64"),
+          file_sha(std::filesystem::path(cfg.validation_fields_directory)/"gate.f64")};
+}
+// The hashes a run publishes over its inputs: the recipe's, the orientations' and each role's
+// combined manifest (empty where absent).
+std::vector<std::string> run_hashes(const std::filesystem::path& out) {
+  const auto summary=read_json(out/"summary.json");
+  std::vector<std::string> hashes;
+  for (const auto* key:{"recipe_sha256","orientation_recipe_sha256","orientations_artifact_sha256"})
+    hashes.push_back(summary.value(key,std::string{}));
+  for (const auto& role_result:summary.at("roles"))
+    hashes.push_back(role_result.contains("combined_artifact")
+        ?role_result.at("combined_artifact").at("manifest_sha256").get<std::string>()
+        :std::string{});
+  return hashes;
+}
+using Pins=std::vector<std::pair<std::string,std::string>>;
+std::string substituted(std::string text,const Pins& pins) {
+  for (const auto& [from,to]:pins) {
+    if (from.empty() || from==to) continue;
+    for (usize at=text.find(from);at!=std::string::npos;at=text.find(from,at+to.size()))
+      text.replace(at,from.size(),to);
+  }
+  return text;
+}
+// The keys contract section 5 excludes, at any depth: wall-clock and stage seconds, the cache
+// bookkeeping and the absent_members record. `warm` (runs on caches in different states): also
+// what a cache hit saves (the verified bytes and the field loads).
+void drop_excluded(Json& j,bool warm) {
+  if (j.is_object()) {
+    for (const auto* key:{"wall_seconds","stage_seconds","hash_seconds","candidate_cache",
+                          "signal_cache","ic_result_cache","ic_missing_exit_v1_result_cache",
+                          "absent_members"})
+      j.erase(key);
+    if (warm)
+      for (const auto* key:{"verify_bytes","field_loads","peak_resident_fields","loaded_bytes"})
+        j.erase(key);
+  }
+  if (j.is_structured())
+    for (auto& value:j) drop_excluded(value,warm);
+}
+std::string normalised(const std::string& text,bool lines,bool warm) {
+  if (!lines) {
+    auto j=Json::parse(text); drop_excluded(j,warm); return j.dump(1);
+  }
+  std::istringstream in(text); std::string out;
+  for (std::string line;std::getline(in,line);) {
+    auto j=Json::parse(line); drop_excluded(j,warm); out+=j.dump()+'\n';
+  }
+  return out;
+}
+// Every file `a` publishes equals `b`'s byte for byte: binary payloads as written, text with `b`'s
+// input pins (and the hashes over them) substituted by `a`'s, summary.json and the candidate
+// receipts without the excluded keys.
+void expect_same_outputs(const std::filesystem::path& a,const std::filesystem::path& b,
+                         const Pins& pins,bool warm=false) {
+  const auto names=[](const std::filesystem::path& dir) {
+    std::set<std::string> out;
+    for (const auto& entry:std::filesystem::directory_iterator(dir))
+      out.insert(entry.path().filename().string());
+    return out;
+  };
+  const auto files=names(a);
+  ASSERT_EQ(files,names(b));
+  ASSERT_GE(files.size(),10U);
+  for (const auto& name:files) {
+    SCOPED_TRACE(name);
+    const auto x=file_bytes(a/name),y=file_bytes(b/name);
+    const bool lines=name.ends_with(".jsonl");
+    if (!lines && !name.ends_with(".json") && !name.ends_with(".csv")) {
+      EXPECT_TRUE(x==y) << x.size() << " vs " << y.size() << " bytes";
+      continue;
+    }
+    const std::string left(x.begin(),x.end());
+    const std::string right=substituted(std::string(y.begin(),y.end()),pins);
+    if (name=="summary.json" || lines)
+      EXPECT_EQ(normalised(left,lines,warm),normalised(right,lines,warm));
+    else
+      EXPECT_EQ(left,right);
+  }
+}
+// Contract section 5 for `cfg` (a library gated on the listed members; weights pinned or not): the
+// pass with the list on I (gate 1) against the same pass without it on I' (gate NaN), on fresh
+// caches when `cfg` names one. The pass without the list on I shows the list removes something.
+void expect_absent_equivalence(const Directory& dir,IcRunnerConfig cfg,const Json& listed,
+                               const std::string& tag) {
+  SCOPED_TRACE(tag);
+  cfg.save_combined=true;
+  const bool cached=!cfg.candidate_cache_directory.empty();
+  const auto cache=[&](IcRunnerConfig& run,const std::string& name) {
+    if (cached) run.candidate_cache_directory=(dir.path/(tag+"-"+name)).string();
+  };
+  ASSERT_TRUE(pin_gate(dir,cfg,tag+"-gate",1.0));
+  ASSERT_TRUE(pin_absent(dir,cfg,listed,tag+"-list.json"));
+  cache(cfg,"c1");
+  const auto with_list=run_named(dir,cfg,tag+"-listed");
+  ASSERT_TRUE(with_list.ok) << with_list.error;
+  const auto listed_pins=gate_pins(cfg);
+  auto plain=cfg; clear_absent(plain); cache(plain,"c0");
+  const auto data=run_named(dir,plain,tag+"-data"); ASSERT_TRUE(data.ok) << data.error;
+  auto removed=plain; cache(removed,"c2");
+  ASSERT_TRUE(pin_gate(dir,removed,tag+"-gate",std::numeric_limits<f64>::quiet_NaN()));
+  const auto without=run_named(dir,removed,tag+"-removed");
+  ASSERT_TRUE(without.ok) << without.error;
+  Pins pins;
+  const auto removed_pins=gate_pins(removed);
+  for (usize k=0;k<removed_pins.size();++k) pins.emplace_back(removed_pins[k],listed_pins[k]);
+  const auto a=run_hashes(dir.path/(tag+"-listed")),b=run_hashes(dir.path/(tag+"-removed"));
+  for (usize k=0;k<a.size();++k) pins.emplace_back(b[k],a[k]);
+  expect_same_outputs(dir.path/(tag+"-listed"),dir.path/(tag+"-removed"),pins);
+  const auto record=read_json(dir.path/(tag+"-listed")/"summary.json").at("absent_members");
+  EXPECT_EQ(record.at("members"),listed);
+  EXPECT_FALSE(read_json(dir.path/(tag+"-removed")/"summary.json").contains("absent_members"));
+  for (const std::string role_name:{"train","validation"})
+    EXPECT_NE(file_sha(dir.path/(tag+"-data")/(role_name+"_combined.f64")),
+              file_sha(dir.path/(tag+"-listed")/(role_name+"_combined.f64"))) << role_name;
+}
+const std::string vee_signs=R"(,"signs":{"volume_level":1,"volume_rank":1,"volume_vee":1})";
+// Case 1: a listed member of a theme with other members (ew-theme-v6's within-theme-v1): its mass
+// stays in the theme and the others carry it.
+TEST(AbsentMembers, ThemeMemberLeavesItsMassToTheOtherMembers) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string themes=
+      R"({"volume_level":"liquidity","volume_rank":"size","volume_vee":"liquidity"})";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"v6.json",
+                               themed_text(weights_v2,cfg,weights,vee_signs+theme_block(themes))));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"v6");
+}
+// Case 2: every member of one theme listed, under ew-theme-v6 and ew-theme-std-v1: the theme with
+// no present member.
+TEST(AbsentMembers, WholeThemeListedIsAThemeWithNoPresentMember) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_level","volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string themes=
+      R"({"volume_level":"liquidity","volume_rank":"size","volume_vee":"liquidity"})";
+  const Json listed=Json::array({"volume_vee","volume_level"});
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"v6.json",
+                               themed_text(weights_v2,cfg,weights,vee_signs+theme_block(themes))));
+  expect_absent_equivalence(dir,cfg,listed,"v6");
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"std.json",
+      themed_text(weights_v2,cfg,weights,vee_signs+std_block(themes,true))));
+  expect_absent_equivalence(dir,cfg,listed,"std");
+}
+// Case 3: theme-erc-v1 and ic-shrink-v1 bases: the runner verifies the same weights file and the
+// listed member's TRAIN weight is carried into its theme's mass.
+TEST(AbsentMembers, ThemeErcAndIcShrinkBasesVerifyAndCarryTheirWeights) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_lag_1"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  for (const std::string rule:{"theme-erc-v1","ic-shrink-v1"}) {
+    const auto doc=rule=="theme-erc-v1"?erc_doc(cfg,rule):shrink_doc(cfg,rule);
+    ASSERT_TRUE(pin_weights_text(dir,cfg,rule+".json",doc.dump()));
+    expect_absent_equivalence(dir,cfg,Json::array({"volume_lag_1"}),rule);
+  }
+}
+// Case 4: an ew-theme-std-v1 base (the standardise path, IcComposition::add_standardised).
+TEST(AbsentMembers, StandardiseBaseLeavesTheMemberOutOfItsThemeRerank) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(shrink_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"std.json",erc_doc(cfg,"ew-theme-std-v1").dump()));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"std");
+}
+// Case 5: a base without themes (v1 weights): the blend keeps its fixed denominator.
+TEST(AbsentMembers, UnthemedBlendKeepsItsFixedDenominator) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_rank"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string weights=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"v1.json",themed_text(weights_v1,cfg,weights,vee_signs)));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_rank"}),"v1");
+}
+// Case 6: the u pass (no --composition-weights; cases 1-5 and 7 are w passes), without a cache: the
+// listed member has no TRAIN orientation (sign 0) and the equal family weights are unchanged.
+TEST(AbsentMembers, UnweightedPassWithoutCacheLeavesTheMemberUnoriented) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"u");
+  const auto orientations=read_json(dir.path/"u-listed"/"orientations.json");
+  for (const auto& row:orientations.at("candidates"))
+    EXPECT_EQ(row.at("sign").get<int>()==0,row.at("id")=="volume_vee") << row.at("id");
+}
+// Case 7 (D3W's v3 rows): per-date weights on the plain path and on ew-theme-std-v1 treat a listed
+// member as missing on every date of every row.
+TEST(AbsentMembers, WalkForwardRowsTreatTheMemberAsMissing) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.candidate_cache_directory=(dir.path/"c").string();
+  const std::string top=R"({"volume_level":0.5,"volume_rank":0.25,"volume_vee":0.25})";
+  const std::string first=R"({"volume_level":0.5,"volume_rank":0.0,"volume_vee":0.5})";
+  const std::string second=R"({"volume_level":0.25,"volume_rank":0.5,"volume_vee":0.25})";
+  const std::string rows="["+wf_row(train_session(200),first)+","+
+                         wf_row(train_session(300),second)+"]";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"wf.json",
+                               themed_text(weights_v3,cfg,top,vee_signs+wf_block(rows))));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"wf");
+  const std::string themes=R"({"volume_level":"value","volume_rank":"value","volume_vee":"value"})";
+  ASSERT_TRUE(pin_weights_text(dir,cfg,"std_wf.json",
+      themed_text(weights_v3,cfg,top,vee_signs+std_block(themes,true)+wf_block(rows))));
+  expect_absent_equivalence(dir,cfg,Json::array({"volume_vee"}),"std_wf");
+}
+// One cache dir shared by runs with and without the list serves neither a wrong entry (contract
+// section 4): the listed member's signal entry holds its real bytes and serves both; its IC result
+// is never read from or written to the cache. So the warm run with the list equals one on a fresh
+// cache, and the warm run without it equals the cold one (cache bookkeeping aside).
+TEST(AbsentMembers, SharedCacheNeverCrossServesRunsWithAndWithoutTheList) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_vee"}));
+  cfg.save_combined=true; ASSERT_TRUE(pin_gate(dir,cfg,"gate",1.0));
+  cfg.candidate_cache_directory=(dir.path/"shared").string();
+  auto listed=cfg; ASSERT_TRUE(pin_absent(dir,listed,Json::array({"volume_vee"})));
+  const auto cold=run_named(dir,cfg,"cold"); ASSERT_TRUE(cold.ok) << cold.error;
+  // The listed member's IC-result entries the run without the list wrote, per role.
+  std::vector<std::pair<std::filesystem::path,std::string>> ic_entries;
+  const auto cold_summary=read_json(dir.path/"cold"/"summary.json");
+  for (const auto& role_result:cold_summary.at("roles")) {
+    const auto& scope=role_result.at("candidate_cache");
+    for (const auto& entry:scope.at("entries"))
+      if (entry.at("id")=="volume_vee") {
+        const std::filesystem::path sidecar=entry.at("sidecar").get<std::string>();
+        const auto path=sidecar.parent_path()/
+            scope.at("ic_results").at("subdirectory").get<std::string>()/sidecar.filename();
+        ic_entries.emplace_back(path,file_sha(path));
+      }
+  }
+  ASSERT_EQ(ic_entries.size(),2U);
+  for (const auto& [path,sha]:ic_entries) ASSERT_FALSE(sha.empty()) << path;
+  const auto warm=run_named(dir,listed,"warm_listed"); ASSERT_TRUE(warm.ok) << warm.error;
+  const auto warm_summary=read_json(dir.path/"warm_listed"/"summary.json");
+  for (const auto& role_result:warm_summary.at("roles")) {
+    EXPECT_EQ(role_result.at("candidate_cache").at("hits"),3);
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),2);
+    for (const auto& row:role_result.at("candidates")) {
+      EXPECT_EQ(row.at("signal_cache"),"hit") << row.at("id");
+      EXPECT_EQ(row.at("ic_result_cache"),row.at("id")=="volume_vee"?"miss":"hit") << row.at("id");
+    }
+  }
+  for (const auto& [path,sha]:ic_entries) EXPECT_EQ(file_sha(path),sha) << path;
+  const auto again=run_named(dir,cfg,"warm_plain"); ASSERT_TRUE(again.ok) << again.error;
+  const auto again_summary=read_json(dir.path/"warm_plain"/"summary.json");
+  for (const auto& role_result:again_summary.at("roles"))
+    EXPECT_EQ(role_result.at("candidate_cache").at("ic_results").at("hits"),3);
+  expect_same_outputs(dir.path/"cold",dir.path/"warm_plain",{},true);
+  auto fresh=listed; fresh.candidate_cache_directory=(dir.path/"fresh").string();
+  const auto clean=run_named(dir,fresh,"fresh_listed"); ASSERT_TRUE(clean.ok) << clean.error;
+  expect_same_outputs(dir.path/"fresh_listed",dir.path/"warm_listed",{},true);
+}
+// The record is the list's only trace: summary.json's absent_members (members as listed, not in
+// library order), absent without the flag; the recipe is the same bytes with and without it; an
+// unlisted member's rows are unchanged, a listed one scores no IC and is unoriented.
+TEST(AbsentMembers, RecordIsTheOnlyTraceAndUnlistedRowsAreUnchanged) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg));
+  ASSERT_TRUE(vee_library(cfg)); ASSERT_TRUE(gate_members(cfg,{"volume_level","volume_vee"}));
+  cfg.save_combined=true; ASSERT_TRUE(pin_gate(dir,cfg,"gate",1.0));
+  const auto plain=run_named(dir,cfg,"plain"); ASSERT_TRUE(plain.ok) << plain.error;
+  auto listed=cfg; ASSERT_TRUE(pin_absent(dir,listed,Json::array({"volume_vee","volume_level"})));
+  const auto run=run_named(dir,listed,"listed"); ASSERT_TRUE(run.ok) << run.error;
+  const auto a=read_json(dir.path/"plain"/"summary.json");
+  const auto b=read_json(dir.path/"listed"/"summary.json");
+  EXPECT_FALSE(a.contains("absent_members"));
+  EXPECT_EQ(b.at("absent_members"),(Json{{"rule","absent-members-v1"},
+      {"list_sha256",listed.absent_members_sha256},
+      {"members",Json::array({"volume_vee","volume_level"})}}));
+  std::set<std::string> keys_a,keys_b;
+  for (auto it=a.begin();it!=a.end();++it) keys_a.insert(it.key());
+  for (auto it=b.begin();it!=b.end();++it) keys_b.insert(it.key());
+  keys_b.erase("absent_members");
+  EXPECT_EQ(keys_b,keys_a);
+  EXPECT_EQ(file_sha(dir.path/"listed"/"recipe.json"),file_sha(dir.path/"plain"/"recipe.json"));
+  const auto rows_of=[](const std::filesystem::path& path,const std::string& id) {
+    std::ifstream in(path,std::ios::binary); std::vector<std::string> out;
+    for (std::string line;std::getline(in,line);) if (line.starts_with(id+",")) out.push_back(line);
+    return out;
+  };
+  for (const std::string role_name:{"train","validation"}) {
+    SCOPED_TRACE(role_name);
+    const auto daily=role_name+"_daily_ic.csv";
+    const auto kept=rows_of(dir.path/"listed"/daily,"volume_rank");
+    EXPECT_FALSE(kept.empty());
+    EXPECT_EQ(kept,rows_of(dir.path/"plain"/daily,"volume_rank"));
+    for (const std::string id:{"volume_level","volume_vee"}) {
+      const auto removed=rows_of(dir.path/"listed"/daily,id);
+      ASSERT_EQ(removed.size(),rows_of(dir.path/"plain"/daily,id).size()) << id;
+      for (const auto& line:removed) EXPECT_TRUE(line.ends_with(",,,")) << line;
+    }
+  }
+  const auto oa=read_json(dir.path/"plain"/"orientations.json").at("candidates");
+  const auto ob=read_json(dir.path/"listed"/"orientations.json").at("candidates");
+  ASSERT_EQ(ob.size(),oa.size());
+  for (usize c=0;c<ob.size();++c) {
+    if (ob.at(c).at("id")=="volume_rank") { EXPECT_EQ(ob.at(c),oa.at(c)); continue; }
+    EXPECT_EQ(ob.at(c).at("sign"),0) << ob.at(c).at("id");
+    EXPECT_FALSE(ob.at(c).at("orientation_defined").get<bool>()) << ob.at(c).at("id");
+  }
+}
+// The capability (contract section 3): `--list-rules --json` offers absent-members-v1, sorted.
+TEST(AbsentMembers, CapabilityIsListedInTheSortedEnvelope) {
+  std::vector<std::string> args{"atx-equity-strategy-ic","--list-rules","--json"};
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream out,err;
+  ASSERT_EQ(atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),out,err),0)
+      << err.str();
+  const auto caps=Json::parse(out.str()).at("capabilities");
+  EXPECT_TRUE(std::is_sorted(caps.begin(),caps.end()));
+  EXPECT_NE(std::find(caps.begin(),caps.end(),"absent-members-v1"),caps.end());
+}
+// The IC CLI on `cfg`'s TRAIN role plus `extra`: its exit code, stdout and stderr.
+struct CliRun { int code{}; std::string out,err; };
+CliRun absent_cli(const IcRunnerConfig& cfg,const std::vector<std::string>& extra) {
+  std::vector<std::string> args{"atx-equity-strategy-ic","--library",cfg.library_path,
+      "--library-sha256",cfg.library_sha256,"--train",cfg.train_manifest,"--train-sha256",
+      cfg.train_sha256,"--min-names","3","--min-dates","8"};
+  args.insert(args.end(),extra.begin(),extra.end());
+  std::vector<char*> argv; for (auto& arg:args) argv.push_back(arg.data());
+  std::ostringstream out,err;
+  const int code=
+      atx::impl::strategy::dispatch_ic(static_cast<int>(argv.size()),argv.data(),out,err);
+  return {code,out.str(),err.str()};
+}
+// Every refusal of contract section 5 precedes any payload or output: run_ic's (exit 1), with both
+// roles' close payloads removed, as a run and as a plan; the CLI's repeated flag (exit 2). The list
+// with the Python side's keys is admitted.
+TEST(AbsentMembers, RefusalsPrecedeAnyPayloadOrOutput) {
+  Directory dir; IcRunnerConfig cfg; ASSERT_TRUE(fixture(dir,cfg)); ASSERT_TRUE(vee_library(cfg));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"train"/"close.f64"));
+  ASSERT_TRUE(std::filesystem::remove(dir.path/"validation"/"close.f64"));
+  ASSERT_TRUE(pin_absent(dir,cfg,Json::array({"volume_vee"})));
+  {
+    auto plan=cfg; plan.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(plan,log);
+    ASSERT_TRUE(status) << status.error().to_string();
+    EXPECT_EQ(Json::parse(log.str()).at("candidate_count"),3);
+  }
+  const auto with_text=[&](const std::string& name,const std::string& text) {
+    auto attempt=cfg; attempt.absent_members_path=(dir.path/name).string();
+    EXPECT_TRUE(text_file(attempt.absent_members_path,text,attempt.absent_members_sha256));
+    return attempt;
+  };
+  const std::string schema=R"("schema":"atx.od3-flagged-members/v1")";
+  const auto members=[&](const std::string& raw) { return "{"+schema+",\"members\":"+raw+"}"; };
+  const std::string both="--absent-members and --absent-members-sha256 are given together";
+  const std::string bad_hex="needs --absent-members-sha256 as 64 lowercase hex";
+  const std::string not_object="--absent-members file is not a JSON object";
+  const std::string bad_schema="schema must be atx.od3-flagged-members/v1";
+  const std::string not_array="members must be a non-empty array of candidate ids";
+  const std::string not_string="member must be a string";
+  const std::string bad_id="member id must match [A-Za-z0-9_]+: ";
+  std::vector<std::tuple<std::string,IcRunnerConfig,std::string>> cases;
+  { auto a=cfg; a.absent_members_sha256.clear(); cases.emplace_back("path_only",a,both); }
+  { auto a=cfg; a.absent_members_path.clear(); cases.emplace_back("pin_only",a,both); }
+  { auto a=cfg; a.no_composition=true;
+    cases.emplace_back("screen",a,"--absent-members is refused with --no-composition"); }
+  { auto a=cfg;
+    std::transform(a.absent_members_sha256.begin(),a.absent_members_sha256.end(),
+                   a.absent_members_sha256.begin(),
+                   [](char c)->char { return c>='a' && c<='f'?static_cast<char>(c-'a'+'A'):c; });
+    cases.emplace_back("upper_pin",a,bad_hex); }
+  { auto a=cfg; a.absent_members_sha256.pop_back(); cases.emplace_back("short_pin",a,bad_hex); }
+  { auto a=cfg; a.absent_members_path=(dir.path/"missing.json").string();
+    cases.emplace_back("missing",a,"metadata file missing or unreadable"); }
+  cases.emplace_back("empty",with_text("empty.json",""),"metadata file empty");
+  { auto a=cfg; a.absent_members_sha256=std::string(64,'0');
+    cases.emplace_back("mismatch",a,"--absent-members file SHA-256 differs"); }
+  cases.emplace_back("torn",with_text("torn.json","{"+schema+","),not_object);
+  cases.emplace_back("array",with_text("array.json",R"(["volume_vee"])"),not_object);
+  cases.emplace_back("scalar",with_text("scalar.json",R"("volume_vee")"),not_object);
+  cases.emplace_back("no_schema",with_text("no_schema.json",R"({"members":["volume_vee"]})"),
+                     bad_schema);
+  cases.emplace_back("schema_v2",with_text("schema_v2.json",
+      R"({"schema":"atx.od3-flagged-members/v2","members":["volume_vee"]})"),bad_schema);
+  cases.emplace_back("schema_number",with_text("schema_number.json",
+      R"({"schema":1,"members":["volume_vee"]})"),bad_schema);
+  cases.emplace_back("no_members",with_text("no_members.json","{"+schema+"}"),not_array);
+  cases.emplace_back("members_text",with_text("members_text.json",members(R"("volume_vee")")),
+                     not_array);
+  cases.emplace_back("members_object",with_text("members_object.json",
+      members(R"({"volume_vee":1})")),not_array);
+  cases.emplace_back("members_empty",with_text("members_empty.json",members("[]")),not_array);
+  cases.emplace_back("number",with_text("number.json",members("[1]")),not_string);
+  cases.emplace_back("null",with_text("null.json",members(R"(["volume_vee",null])")),not_string);
+  cases.emplace_back("nested",with_text("nested.json",members(R"([["volume_vee"]])")),not_string);
+  cases.emplace_back("dash",with_text("dash.json",members(R"(["volume-vee"])")),
+                     bad_id+"volume-vee");
+  cases.emplace_back("blank",with_text("blank.json",members(R"([""])")),bad_id);
+  cases.emplace_back("space",with_text("space.json",members(R"(["volume vee"])")),
+                     bad_id+"volume vee");
+  cases.emplace_back("case",with_text("case.json",members(R"(["Volume_vee"])")),
+                     "member is not a candidate of --library: Volume_vee");
+  cases.emplace_back("other",with_text("other.json",members(R"(["volume_vee","other"])")),
+                     "member is not a candidate of --library: other");
+  cases.emplace_back("twice",with_text("twice.json",
+      members(R"(["volume_vee","volume_rank","volume_vee"])")),"member listed twice: volume_vee");
+  for (const auto& [name,attempt,reason]:cases) {
+    expect_early_refusal(dir,attempt,name,reason);
+    auto plan=attempt; plan.plan_only=true; std::ostringstream log;
+    const auto status=atx::impl::strategy::run_ic(plan,log);
+    EXPECT_FALSE(status) << name;
+    if (!status)
+      EXPECT_NE(status.error().to_string().find(reason),std::string::npos)
+          << name << ": " << status.error().to_string();
+    EXPECT_TRUE(log.str().empty()) << name;
+  }
+  // The CLI: each flag at most once (exit 2 before run_ic), as a run and as a plan.
+  const std::vector<std::string> flags{"--absent-members",cfg.absent_members_path,
+                                       "--absent-members-sha256",cfg.absent_members_sha256};
+  auto plan_args=flags; plan_args.push_back("--plan-only");
+  const auto accepted=absent_cli(cfg,plan_args);
+  EXPECT_EQ(accepted.code,0) << accepted.err;
+  for (const usize repeated:{0U,2U}) {
+    for (const bool plan:{true,false}) {
+      auto extra=flags;
+      extra.insert(extra.end(),flags.begin()+static_cast<std::ptrdiff_t>(repeated),
+                   flags.begin()+static_cast<std::ptrdiff_t>(repeated+2U));
+      const auto out=(dir.path/("cli_"+std::to_string(repeated)+(plan?"_plan":"_run"))).string();
+      if (plan) {
+        extra.push_back("--plan-only");
+      } else {
+        extra.push_back("--output");
+        extra.push_back(out);
+      }
+      const auto refused=absent_cli(cfg,extra);
+      EXPECT_EQ(refused.code,2) << flags[repeated] << ' ' << plan << ": " << refused.err;
+      EXPECT_NE(refused.err.find(flags[repeated]+" given more than once"),std::string::npos)
+          << refused.err;
+      EXPECT_TRUE(refused.out.empty()) << flags[repeated];
+      EXPECT_FALSE(std::filesystem::exists(out)) << out;
+    }
+  }
 }
 } // namespace

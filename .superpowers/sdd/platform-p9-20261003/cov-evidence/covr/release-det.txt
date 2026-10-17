@@ -1,0 +1,7 @@
+exe C:\atx-wt\pool-24\build-equity-rel\bin\atx-equity-strategy-risk.exe sha256 9d9fc4fa1dc06d2cf121f168b0fb370fc770ad42eaedffeb516eb703ab71a1ae
+fixture C:\atx-wt\pool-24\build-equity\p9-covr-out\rel\in; process affinity mask 0xffff
+  v11: a child started under mask 1 reports affinity 0x1
+v11: 12 files; run1 = run2 True; run1 = cpu1 True; model.atxcov sha256 03227531e9a95471 / 03227531e9a95471 / 03227531e9a95471; wall 0.5 / 0.8 / 2.0 s
+  covv1: a child started under mask 1 reports affinity 0x1
+covv1: 12 files; run1 = run2 True; run1 = cpu1 True; model.atxcov sha256 6358e9a6ecf5f2ea / 6358e9a6ecf5f2ea / 6358e9a6ecf5f2ea; wall 2.0 / 1.4 / 1.5 s
+determinism: HOLDS

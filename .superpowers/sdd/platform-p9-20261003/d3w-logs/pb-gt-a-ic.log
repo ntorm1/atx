@@ -1,0 +1,60 @@
+# p9-d3wpb-a (Debug, source 703ac03a), exe sha256 afabd5be...; filter WeightsV3.*:CompositionWeightRows.*:MomVolman.*:ThemeTsmomRunner.*:CharCovHedge.*
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WeightsV3.*:CompositionWeightRows.*:MomVolman.*:ThemeTsmomRunner.*:CharCovHedge.*
+[==========] Running 18 tests from 5 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from CompositionWeightRows
+[ RUN      ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst
+[       OK ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst (9 ms)
+[----------] 1 test from CompositionWeightRows (10 ms total)
+
+[----------] 2 tests from ThemeTsmomRunner
+[ RUN      ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule
+[       OK ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule (2059 ms)
+[ RUN      ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (467 ms)
+[----------] 2 tests from ThemeTsmomRunner (2526 ms total)
+
+[----------] 3 tests from WeightsV3
+[ RUN      ] WeightsV3.SingleRowEqualsV1Bytes
+[       OK ] WeightsV3.SingleRowEqualsV1Bytes (2883 ms)
+[ RUN      ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore
+[       OK ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore (2822 ms)
+[ RUN      ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput (16945 ms)
+[----------] 3 tests from WeightsV3 (22651 ms total)
+
+[----------] 7 tests from MomVolman
+[ RUN      ] MomVolman.RegisteredConstants
+[       OK ] MomVolman.RegisteredConstants (0 ms)
+[ RUN      ] MomVolman.StepVarianceClosedForm
+[       OK ] MomVolman.StepVarianceClosedForm (1 ms)
+[ RUN      ] MomVolman.ScheduleFromTheWeightsFile
+[       OK ] MomVolman.ScheduleFromTheWeightsFile (8 ms)
+[ RUN      ] MomVolman.SharedParseAndRefusals
+[       OK ] MomVolman.SharedParseAndRefusals (50 ms)
+[ RUN      ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused
+[       OK ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused (5 ms)
+[ RUN      ] MomVolman.SummaryTracePrintsTheScalePerBlock
+[       OK ] MomVolman.SummaryTracePrintsTheScalePerBlock (10 ms)
+[ RUN      ] MomVolman.SleeveFilesBeforeAndAfterScaling
+[       OK ] MomVolman.SleeveFilesBeforeAndAfterScaling (75 ms)
+[----------] 7 tests from MomVolman (153 ms total)
+
+[----------] 5 tests from CharCovHedge
+[ RUN      ] CharCovHedge.ClosedForm2Names
+[       OK ] CharCovHedge.ClosedForm2Names (0 ms)
+[ RUN      ] CharCovHedge.ClosedFormFiveNames
+[       OK ] CharCovHedge.ClosedFormFiveNames (0 ms)
+[ RUN      ] CharCovHedge.WindowSumsAreTheTrailingWindowOls
+[       OK ] CharCovHedge.WindowSumsAreTheTrailingWindowOls (16 ms)
+[ RUN      ] CharCovHedge.FutureReturnDoesNotChangePast
+[       OK ] CharCovHedge.FutureReturnDoesNotChangePast (2 ms)
+[ RUN      ] CharCovHedge.RefusesBadInputAndCountsScratch
+[       OK ] CharCovHedge.RefusesBadInputAndCountsScratch (0 ms)
+[----------] 5 tests from CharCovHedge (20 ms total)
+
+[----------] Global test environment tear-down
+[==========] 18 tests from 5 test suites ran. (25363 ms total)
+[  PASSED  ] 18 tests.
+exit=0

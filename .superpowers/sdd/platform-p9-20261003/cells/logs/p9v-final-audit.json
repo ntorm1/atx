@@ -1,0 +1,1032 @@
+{
+  "pins": "PASS",
+  "frozen_exes": 54,
+  "ledger_sha256": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+  "host": "free RAM 5.12 of 15.69 GB (5243 MiB); C: 36.1 GB free",
+  "references": [
+    {
+      "name": "p9-b0-r2-nav",
+      "files": 27,
+      "listing_sha256": "04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd"
+    },
+    {
+      "name": "p9-b0g-x10-nav",
+      "files": 27,
+      "listing_sha256": "6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d"
+    },
+    {
+      "name": "p9-b0g-y1-nav",
+      "files": 28,
+      "listing_sha256": "cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813"
+    },
+    {
+      "name": "p9-b0g-yf0-u",
+      "files": 5,
+      "listing_sha256": "1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa"
+    },
+    {
+      "name": "p9-b0g-yf0-w",
+      "files": 12,
+      "listing_sha256": "ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1"
+    },
+    {
+      "name": "p9-b0g-yf0-nav",
+      "files": 27,
+      "listing_sha256": "e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797"
+    }
+  ],
+  "source_files": [
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/start.json",
+      "sha256": "0a5ccd570923f84af25266ef167a29e1868d52e55f8d44972371afb1fe13aa8a",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/receipt.json",
+      "sha256": "e737f364176ea6754c00be0000d1b9572f84b33fa6ed0f01aaec0aa5fb9f867f",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/stdout.log",
+      "sha256": "9510bc5f9673e62d20be0bd44481a86f9e2c630a0f492f0d5bf2b4896c1ed6fc",
+      "hits": []
+    },
+    {
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-cycle-raw.log",
+      "sha256": "1ec93a7e85509b36fd14c35a8fcbe72c278f1a0f348e94d59ce4cb2fffc0ffba",
+      "hits": [
+        {
+          "line": 1,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/mechanics-run1/start.json",
+      "sha256": "3385ebc183a1523696d9ce6271bfad4ab2376ba34819f143b68fb3da4ce3fff5",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 63,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 64,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 65,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 66,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 67,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/mechanics-run1/receipt.json",
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 63,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 64,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 65,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 66,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 67,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/mechanics-run1/stdout.log",
+      "sha256": "850996635c8b8c5daa2ce8c689f3748c506e49e4b5ef70ca3c1608ffd7080b54",
+      "hits": []
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/mechanics-run1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-mechanics-raw.log",
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 63,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 64,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 65,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 66,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 67,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/pair-run1/start.json",
+      "sha256": "2dd71c259f0aa8741520bca0524030c8b50855c738918960a8f77be91f82be9f",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/pair-run1/receipt.json",
+      "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/pair-run1/stdout.log",
+      "sha256": "44fa5ed271276ddd6accfb88c7d859606776d3100b95b1e08567fbdf4469df25",
+      "hits": [
+        {
+          "line": 1,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/pair-run1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-pair-raw.log",
+      "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/book-run1/start.json",
+      "sha256": "a92a9bb6aea18ebb3e5ddf8c473d6f016042c62f2b78ec4a4b230cf20028a843",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 123,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 124,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 125,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 126,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 127,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/book-run1/receipt.json",
+      "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 123,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 124,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 125,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 126,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 127,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/book-run1/stdout.log",
+      "sha256": "ee37f486d03bdeb100a286df4e9397602adfc0b930efc12f4642df2962e865b3",
+      "hits": []
+    },
+    {
+      "path": "build-equity/p9v-vol-target-cov-readers/book-run1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-book-raw.log",
+      "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 123,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 124,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 125,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 126,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 127,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-b8a-h-nav-run/start.json",
+      "sha256": "59ea4306495d3784ed90341cfd2ce81205dabe006213023701920b2c69bf0b3d",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-b8a-h-nav-run/receipt.json",
+      "sha256": "0bac14e9d4b2610c20b0a7a5738bd81abd262ff52e15bb62da09895a5ff01882",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-b8a-h-nav-run/stdout.log",
+      "sha256": "17ab9cbeaad71be58490c731aac249ef8a80b5c1fe0fc8474f7959e87ddb4bc0",
+      "hits": []
+    },
+    {
+      "path": "build-equity/p9v-b8a-h-nav-run/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-b8a-h-nav-raw.log",
+      "sha256": "0bac14e9d4b2610c20b0a7a5738bd81abd262ff52e15bb62da09895a5ff01882",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 95,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 96,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 97,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 98,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 99,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-b8a-book-run/start.json",
+      "sha256": "7bebaa63383d797e06fbcc4106b56c01495e6a95cf4f96b1664e2366b490236d",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 47,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 48,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 49,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 50,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 51,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-b8a-book-run/receipt.json",
+      "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 47,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 48,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 49,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 50,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 51,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9v-b8a-book-run/stdout.log",
+      "sha256": "5e93c363313f12343f96244902446c93007335f0b928e91e83587f9a82eb312c",
+      "hits": []
+    },
+    {
+      "path": "build-equity/p9v-b8a-book-run/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-b8a-book-raw.log",
+      "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 47,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 48,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 49,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 50,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 51,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-b8a-risk-v11-raw.log",
+      "sha256": "74a7f7c14c43279351114def7deb6802d20010083745575a156e77ea74eda0e0",
+      "hits": []
+    }
+  ],
+  "source_counts": {
+    "OWN_UTC": 17,
+    "OWNER_RECEIPT": 85,
+    "OWNER_HEADER": 5,
+    "SEED": 1
+  },
+  "timings": [
+    {
+      "stage": "cycle",
+      "path": "build-equity/mega-nav-p9v-vol-target-cov-run/receipt.json",
+      "sha256": "e737f364176ea6754c00be0000d1b9572f84b33fa6ed0f01aaec0aa5fb9f867f",
+      "argv_sha256": "1c2d38c22e425c32f0fbe5d16ee222e3c7fcb14e4eb0832578713bc198f6d989",
+      "source_sha": "a0c6ec5dec28227dc725b0782eef5fb13be5e6f0",
+      "wall_seconds": 21.968999999924563,
+      "peak_mib": 1142.390625,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      },
+      "outer_seconds": 22.969000000040978
+    },
+    {
+      "stage": "mechanics",
+      "path": "build-equity/p9v-vol-target-cov-readers/mechanics-run1/receipt.json",
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "argv_sha256": "a408b46a71d4017524157a19a74edfbf3a17464550f5c0cb47d058312c406c71",
+      "source_sha": "a0c6ec5dec28227dc725b0782eef5fb13be5e6f0",
+      "wall_seconds": 0.5150000000139698,
+      "peak_mib": 44.76171875,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      },
+      "outer_seconds": 0.8440000000409782
+    },
+    {
+      "stage": "pair",
+      "path": "build-equity/p9v-vol-target-cov-readers/pair-run1/receipt.json",
+      "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+      "argv_sha256": "9ccdd7f312b7ad2bd0191aaf2aa549bdcae7aad983c6f11ae32bff0e76c70671",
+      "source_sha": "eecf6ebe9b4a692f4c5d7d83349af683358ad362",
+      "wall_seconds": 0.5150000000139698,
+      "peak_mib": 48.63671875,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      },
+      "outer_seconds": 0.8279999999795109
+    },
+    {
+      "stage": "book",
+      "path": "build-equity/p9v-vol-target-cov-readers/book-run1/receipt.json",
+      "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+      "argv_sha256": "b7454d2fd011d4fd54b5053e13bd402c1fe6242f4d253a287dd7bf37b222fe83",
+      "source_sha": "86f0acb9c05f0ca0e9eefe611291a123f661987b",
+      "wall_seconds": 0.5310000000754371,
+      "peak_mib": 45.62109375,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      },
+      "outer_seconds": 0.8440000000409782
+    },
+    {
+      "stage": "b8a-h-nav",
+      "path": "build-equity/p9v-b8a-h-nav-run/receipt.json",
+      "sha256": "0bac14e9d4b2610c20b0a7a5738bd81abd262ff52e15bb62da09895a5ff01882",
+      "argv_sha256": "6cf01f6632e7449c3513b0e8cbd37d3910fdcf3ed0eabe83ec1441f2e43fe393",
+      "source_sha": "86f0acb9c05f0ca0e9eefe611291a123f661987b",
+      "wall_seconds": 25.29599999997299,
+      "peak_mib": 692.8046875,
+      "limits": {
+        "seconds": 600.0,
+        "max_rss_mib": 2048,
+        "min_free_mib": 512
+      },
+      "outer_seconds": 25.609000000054948
+    },
+    {
+      "stage": "b8a-book",
+      "path": "build-equity/p9v-b8a-book-run/receipt.json",
+      "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+      "argv_sha256": "b4cf7741845caff40f150f6a403999cb99aa3e6c35ac3fa61db303950a6e90f3",
+      "source_sha": "86f0acb9c05f0ca0e9eefe611291a123f661987b",
+      "wall_seconds": 3.14000000001397,
+      "peak_mib": 392.17578125,
+      "limits": {
+        "seconds": 600.0,
+        "max_rss_mib": 2048,
+        "min_free_mib": 512
+      },
+      "outer_seconds": 3.484000000054948
+    }
+  ],
+  "failed_diagnostic_launch": {
+    "stage": "b8a-risk-v11",
+    "exit_code": 2,
+    "outer_seconds": 0.1410000000614673,
+    "command": [
+      "C:/Program Files/Python312/python.exe",
+      "scripts/run_bounded_research.py",
+      "--seconds",
+      "600",
+      "--max-rss-mib",
+      "2048",
+      "--min-free-mib",
+      "512",
+      "--output",
+      "build-equity/p9v-b8a-risk-v11-run",
+      "--bind",
+      "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+      "--bind",
+      "build-equity/train-2020-2023-lo3/manifest.json",
+      "--bind",
+      "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+      "--bind",
+      "build-equity/p9v-b8a-book.csv",
+      "--",
+      "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+      "risk",
+      "--role",
+      "build-equity/train-2020-2023-lo3/manifest.json",
+      "--role-sha256",
+      "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+      "--fields",
+      "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+      "--fields-sha256",
+      "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+      "--output",
+      "build-equity/p9v-b8a-risk-v11",
+      "--emit-exposures",
+      "all",
+      "--emit-container",
+      "--bias-families",
+      "extended",
+      "--recipe",
+      "atx-risk-v1.1",
+      "--book-weights",
+      "build-equity/p9v-b8a-book.csv",
+      "--book-weights-sha256",
+      "ccda2610e3e89ac732a50cd1d59e9e40863310bca89963098e3ea9f30c4656f8"
+    ]
+  },
+  "diagnostic_status": "not produced: step2 v11 bounded runner error: bind small config/source manifests, not full data payloads",
+  "fresh_completed_phase_seconds": 51.9660000000149,
+  "outer_seconds_including_failed_wrapper": 54.71900000027381,
+  "inherited_phase_seconds": 115.04699999990407,
+  "ledger": {
+    "lines": 139,
+    "sha256": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+    "N_c": 68,
+    "N_hand": 129,
+    "M": 110,
+    "N_tot": 239,
+    "history_reads": 0,
+    "P9_admissions": 0
+  },
+  "output_listing": {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-output-sha256.txt",
+    "sha256": "6bf3100a5b992a02fec9542646a3adda30bf54ec281a7d8edba902f7eb0d284a",
+    "files": 88
+  },
+  "fixed_prints": {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/p9v-dcov-registered-prints.md",
+    "sha256": "b1d58976bed67f1dd0990609b46f6ee404378e73090c510df9cb6ea797a3e265"
+  }
+}

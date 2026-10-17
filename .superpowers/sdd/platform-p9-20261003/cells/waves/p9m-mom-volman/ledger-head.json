@@ -1,0 +1,9 @@
+{
+  "schema": "atx.ledger-head/v1",
+  "wave": "p9m-mom-volman",
+  "ledger": "build-equity/trials.jsonl",
+  "lines": 136,
+  "head_sha256": "daa7783f00183fd1cf680ccdfdc3cf2927e0e85fe935ca028acce601348ffa21",
+  "rule": "atx-ledger-chain-fold/v1",
+  "n": 65
+}

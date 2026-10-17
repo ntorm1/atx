@@ -1,0 +1,4 @@
+..............
+tiny_world canary (Release): planted members at h 21, band 2.0 SE (PM ruling T1-SE): {"planted_a": {"band_se": 2.0, "mean": 0.028643040293040295, "planted": 0.04406974726037816, "planted_t": 2.3393679827753457, "standard_error": 0.01883831341835128, "t": 1.5204673399869106, "within_band": true, "z": -0.8189006427884352}, "planted_b": {"band_se": 2.0, "mean": 0.010685531135531133, "planted": 0.04491101333227986, "planted_t": 1.4978441966553238, "standard_error": 0.029983768293501994, "t": 0.35637719151688063, "within_band": true, "z": -1.1414670051384432}}
+.
+15 passed in 8.88s

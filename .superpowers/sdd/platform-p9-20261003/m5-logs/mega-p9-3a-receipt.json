@@ -1,0 +1,40 @@
+{
+    "Source":  "6088bfe96d4361a4f2499302a33c1b1d6dfda927",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  5,
+    "ConfiguredProvenance":  "5c811b561240d952fc4cdf29fceeef345538fe21-dirty",
+    "Jobs":  4,
+    "FreeMiB":  3761,
+    "CommitMiB":  7814,
+    "Targets":  [
+                    "atx-engine-research-composition-tests",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-research-composition",
+                    "atx-research-admission"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  33.545504099999995,
+    "CompiledTUs":  9,
+    "Links":  5,
+    "Tag":  "p9-3a",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-2\\build-equity",
+    "Executables":  {
+                        "atx-engine-research-composition-tests":  {
+                                                                      "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+                                                                      "Sha256":  "76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9"
+                                                                  },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "b43d7a3ebc082f9d97df4055a09dbf8c502b4cb1202d2b113f05d88b376b97ca"
+                                                       },
+                        "atx-research-composition":  {
+                                                         "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-composition.exe",
+                                                         "Sha256":  "212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e"
+                                                     },
+                        "atx-research-admission":  {
+                                                       "Path":  "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-admission.exe",
+                                                       "Sha256":  "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26"
+                                                   }
+                    }
+}

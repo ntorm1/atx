@@ -1,0 +1,68 @@
+.....F..F.F..F.......................................................... [ 72%]
+...........................                                              [100%]
+================================== FAILURES ===================================
+_ test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value __
+C:\atx-wt\pool-13\scripts\tests\test_cycle_scoring.py:87: in test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value
+    argv, rows = run_summ(root, sp, monkeypatch)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\atx-wt\pool-13\scripts\tests\test_cycle_scoring.py:76: in run_summ
+    assert NS.main(argv[2:]) == 0
+           ^^^^^^^^^^^^^^^^^
+C:\atx-wt\pool-13\atx-impl\tools\nav_summ.py:1164: in main
+    analysed = [analyse(Path(d), args, weights, ref_nets) for d in args.dirs]
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\atx-wt\pool-13\atx-impl\tools\nav_summ.py:691: in analyse
+    engine = engine_of(args)
+             ^^^^^^^^^^^^^^^
+C:\atx-wt\pool-13\atx-impl\tools\nav_summ.py:187: in engine_of
+    _ENGINE[path] = EngineStats(str(path))
+                    ^^^^^^^^^^^^^^^^^^^^^^
+C:\atx-wt\pool-13\atx-impl\tools\nav_summ.py:210: in __init__
+    raise SystemExit(f"nav_summ: no engine statistics executable {self.exe}: build atx-research-eval "
+E   SystemExit: nav_summ: no engine statistics executable C:\atx-wt\pool-13\build-equity\bin\atx-research-eval.exe: build atx-research-eval (scripts/research-build.ps1) or name one with --engine-stats EXE
+______ test_the_summ_runs_the_named_verb_and_the_verdict_refuses_another ______
+scripts\tests\test_cycle_scoring.py:216: in test_the_summ_runs_the_named_verb_and_the_verdict_refuses_another
+    want = hashlib.sha256(verb.read_bytes()).hexdigest()
+                          ^^^^^^^^^^^^^^^^^
+C:\Program Files\Python312\Lib\pathlib.py:1019: in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python312\Lib\pathlib.py:1013: in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\atx-wt\\pool-13\\build-equity\\bin\\atx-research-eval.exe'
+__________________ test_each_era_has_receipt_and_ledger_line __________________
+scripts\tests\test_research_cycle_roles.py:194: in test_each_era_has_receipt_and_ledger_line
+    assert run(root, sp, log) == RC.EXIT_OK, log[-5:]
+           ^^^^^^^^^^^^^^^^^^
+scripts\tests\test_research_cycle_roles.py:177: in run
+    return RC.run_cycle(cycle_of(root, sp, **kw), stop_after=stop_after, clean=lambda r: True,
+scripts\cycle\cli.py:462: in run_cycle
+    if step_outcome(cycle, x, k, done, log):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\cycle\cli.py:356: in step_outcome
+    raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
+E   cycle.spec.CycleError: HARD-STOP [summ]: exit 1
+---------------------------- Captured stderr call -----------------------------
+nav_summ: no engine statistics executable C:\atx-wt\pool-13\build-equity\bin\atx-research-eval.exe: build atx-research-eval (scripts/research-build.ps1) or name one with --engine-stats EXE
+____________ test_e3_alone_is_the_single_role_cycle_byte_for_byte _____________
+scripts\tests\test_research_cycle_roles.py:289: in test_e3_alone_is_the_single_role_cycle_byte_for_byte
+    assert run(root_single, sp_single) == run(root_roles, sp_roles) == RC.EXIT_OK
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\tests\test_research_cycle_roles.py:177: in run
+    return RC.run_cycle(cycle_of(root, sp, **kw), stop_after=stop_after, clean=lambda r: True,
+scripts\cycle\cli.py:462: in run_cycle
+    if step_outcome(cycle, x, k, done, log):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\cycle\cli.py:356: in step_outcome
+    raise CycleError(f"HARD-STOP [{key}]: exit {done.returncode}")
+E   cycle.spec.CycleError: HARD-STOP [summ]: exit 1
+---------------------------- Captured stderr call -----------------------------
+nav_summ: no engine statistics executable C:\atx-wt\pool-13\build-equity\bin\atx-research-eval.exe: build atx-research-eval (scripts/research-build.ps1) or name one with --engine-stats EXE
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_cycle_scoring.py::test_verdict_dsr_is_the_ledger_variance_value_not_the_single_cell_lo_value
+FAILED scripts/tests/test_cycle_scoring.py::test_the_summ_runs_the_named_verb_and_the_verdict_refuses_another
+FAILED scripts/tests/test_research_cycle_roles.py::test_each_era_has_receipt_and_ledger_line
+FAILED scripts/tests/test_research_cycle_roles.py::test_e3_alone_is_the_single_role_cycle_byte_for_byte
+4 failed, 95 passed in 134.75s (0:02:14)
+exit 1

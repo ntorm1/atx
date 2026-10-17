@@ -1,0 +1,2576 @@
+..............s...................
+G-P5: 34 mirrored rule function(s) in 13 row(s) left for P9 lanes
+...................s.................. [ 13%]
+.....s...........s...................................................... [ 27%]
+........................................................................ [ 40%]
+........................................................................ [ 54%]
+.............................s.......................................... [ 68%]
+........................................................................ [ 81%]
+...................................................................FFFFF [ 95%]
+FFFFFF.F..FFFFFFFFFFFFFFF                                                [100%]
+================================== FAILURES ===================================
+___________ test_a_file_the_stage_does_not_write_blocks_its_commit ____________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_file_the_stage_does_not0')
+
+    def test_a_file_the_stage_does_not_write_blocks_its_commit(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:178: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:208: in build
+    git(root, "add", "-A")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'add', '-A'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_file_the_stage_does_not0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'add', '-A']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'add', '-A']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+________ test_a_retry_after_the_stage_failed_commits_exactly_its_files ________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_retry_after_the_stage_f0')
+
+    def test_a_retry_after_the_stage_failed_commits_exactly_its_files(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:186: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_retry_after_the_stage_f0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+________ test_the_screen_librarys_logs_are_scanned_in_a_b_library_wave ________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_screen_librarys_logs_0')
+
+    def test_the_screen_librarys_logs_are_scanned_in_a_b_library_wave(tmp_path):
+>       root = F.build(tmp_path / "r", speed={"screen_first": False})                  # the b library screens nothing
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:202: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_screen_librarys_logs_0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______________ test_every_command_console_is_kept_and_scanned ________________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_every_command_console_is_0')
+
+    def test_every_command_console_is_kept_and_scanned(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:217: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_every_command_console_is_0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+__ test_the_record_stage_rescans_after_the_judge_before_the_hidden_data_line __
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_record_stage_rescans_0')
+
+    def test_the_record_stage_rescans_after_the_judge_before_the_hidden_data_line(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:235: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_record_stage_rescans_0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+______________ test_the_hidden_data_line_counts_the_records_scan ______________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_hidden_data_line_coun0')
+
+    def test_the_hidden_data_line_counts_the_records_scan(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:244: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_hidden_data_line_coun0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_________ test_a_library_spec_edited_after_register_is_never_screened _________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_library_spec_edited_aft0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001481B078530>
+
+    def test_a_library_spec_edited_after_register_is_never_screened(tmp_path, capsys):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:255: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_library_spec_edited_aft0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______ test_a_file_a_done_stage_recorded_that_moves_is_stale_on_resume _______
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_file_a_done_stage_recor0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001481B00BBC0>
+
+    def test_a_file_a_done_stage_recorded_that_moves_is_stale_on_resume(tmp_path, capsys):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:267: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_file_a_done_stage_recor0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+__________ test_verify_compares_the_navs_binding_with_the_cell_spec ___________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_verify_compares_the_navs_0')
+
+    def test_verify_compares_the_navs_binding_with_the_cell_spec(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:290: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_verify_compares_the_navs_0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______________ test_carried_rows_hold_only_the_per_row_fields ________________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_carried_rows_hold_only_th0')
+
+    def test_carried_rows_hold_only_the_per_row_fields(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:302: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_carried_rows_hold_only_th0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+__________ test_reuse_is_off_when_the_screens_marginal_mode_differs ___________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_reuse_is_off_when_the_scr0')
+
+    def test_reuse_is_off_when_the_screens_marginal_mode_differs(tmp_path):
+        """A replacing wave screens pool-only; its replacement dropped, the b library adds only and runs themes: the
+        screen's rows are not the b library's, so it runs its own marginal (reuse on in the manifest)."""
+        cands = [F.candidate("alpha_a"), F.candidate("alpha_r", kind="replace", replaces=["m1"])]
+>       root = F.build(tmp_path / "r", candidates=cands)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:316: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_reuse_is_off_when_the_scr0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______ test_a_manifest_with_its_state_in_the_code_pathspec_never_runs ________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_manifest_with_its_state0')
+
+    def test_a_manifest_with_its_state_in_the_code_pathspec_never_runs(tmp_path):
+>       root = F.build(tmp_path / "r", out_dir="atx-impl/waves/w1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review.py:342: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_manifest_with_its_state0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______ test_a_seal_allow_ruling_passes_verify_and_is_carried_to_record _______
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_seal_allow_ruling_passe0')
+
+    def test_a_seal_allow_ruling_passes_verify_and_is_carried_to_record(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:53: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_seal_allow_ruling_passe0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______ test_verify_reads_the_binding_of_the_last_completed_nav_attempt _______
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_verify_reads_the_binding_0')
+
+    def test_verify_reads_the_binding_of_the_last_completed_nav_attempt(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:85: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_verify_reads_the_binding_0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_________ test_a_rule_wave_resumes_after_lock_write_rewrote_its_cell __________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_rule_wave_resumes_after0')
+
+    def test_a_rule_wave_resumes_after_lock_write_rewrote_its_cell(tmp_path):
+>       root = rule_root(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:107: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\test_wave_review_minor.py:103: in rule_root
+    return F.build(path, drop=("candidates", "sign_rule", "library"), rule_cell=rule)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_rule_wave_resumes_after0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+____________ test_research_cycle_and_add_alpha_get_the_waves_root _____________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_research_cycle_and_add_al0')
+
+    def test_research_cycle_and_add_alpha_get_the_waves_root(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:127: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_research_cycle_and_add_al0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+______ test_readers_and_bundle_bind_the_daily_series_and_capacity_curve _______
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_readers_and_bundle_bind_t0')
+
+    def test_readers_and_bundle_bind_the_daily_series_and_capacity_curve(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:146: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_readers_and_bundle_bind_t0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_______ test_a_bundle_whose_run_did_not_bind_the_series_now_is_refused ________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_bundle_whose_run_did_no0')
+
+    def test_a_bundle_whose_run_did_not_bind_the_series_now_is_refused(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:157: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_bundle_whose_run_did_no0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+________ test_the_log_section_has_the_hand_heading_and_the_budget_line ________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_log_section_has_the_h0')
+
+    def test_the_log_section_has_the_hand_heading_and_the_budget_line(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_review_minor.py:169: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_log_section_has_the_h0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+___________________ test_the_lineage_follows_accepted_books ___________________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_lineage_follows_accep0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001481B079070>
+
+    def test_the_lineage_follows_accepted_books(tmp_path, capsys):
+>       root = two_waves(tmp_path, second_accepted=True)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_scoreboard.py:51: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\test_wave_scoreboard.py:31: in two_waves
+    root = F.build(tmp_path / "r")
+           ^^^^^^^^^^^^^^^^^^^^^^^
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_lineage_follows_accep0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+____________ test_a_rejected_wave_is_listed_but_not_in_the_lineage ____________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_rejected_wave_is_listed0')
+
+    def test_a_rejected_wave_is_listed_but_not_in_the_lineage(tmp_path):
+>       root = two_waves(tmp_path, second_accepted=False)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_scoreboard.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\test_wave_scoreboard.py:31: in two_waves
+    root = F.build(tmp_path / "r")
+           ^^^^^^^^^^^^^^^^^^^^^^^
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_rejected_wave_is_listed0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+________________ test_the_ledger_checks_and_conflicting_copies ________________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_ledger_checks_and_con0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001481B4C6E10>
+
+    def test_the_ledger_checks_and_conflicting_copies(tmp_path, capsys):
+>       root = two_waves(tmp_path, second_accepted=True)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_scoreboard.py:77: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\test_wave_scoreboard.py:31: in two_waves
+    root = F.build(tmp_path / "r")
+           ^^^^^^^^^^^^^^^^^^^^^^^
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_ledger_checks_and_con0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+________ test_the_b_cell_reuses_the_screen_marginal_and_screens_first _________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_b_cell_reuses_the_scr0')
+
+    def test_the_b_cell_reuses_the_screen_marginal_and_screens_first(tmp_path):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_speed.py:41: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_b_cell_reuses_the_scr0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+__________ test_speed_off_runs_the_b_library_as_add_alpha_derives_it __________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_speed_off_runs_the_b_libr0')
+
+    def test_speed_off_runs_the_b_library_as_add_alpha_derives_it(tmp_path):
+>       root = F.build(tmp_path / "r", speed={"reuse_screen_marginal": False, "screen_first": False})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_speed.py:57: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_speed_off_runs_the_b_libr0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+__________ test_a_replacing_wave_runs_its_marginal_on_the_pool_only ___________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_replacing_wave_runs_its0')
+
+    def test_a_replacing_wave_runs_its_marginal_on_the_pool_only(tmp_path):
+        cands = [F.candidate("alpha_a"), F.candidate("alpha_r", kind="replace", replaces=["m1"])]
+>       root = F.build(tmp_path / "r", candidates=cands, speed={"reuse_screen_marginal": False})
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_speed.py:67: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_replacing_wave_runs_its0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+_ test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it __
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_ruled_marginal_runs_poo0')
+
+    def test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it(tmp_path):
+        """PM8-15 (integration of Y): an add-alpha wave on a theme-erc parent with more themes than the marginal verb
+        takes runs the marginal on the pool only (PM6-8 (i)) under the ruled phase cap; the b library carries the rows.
+        The cap is the bounded runner's maximum (P9 DEC-1: y-s's 720 s is refused at load, test_runner_max_refuses_720)."""
+        rule = {"ruling": "PM8-15", "pool_only": True, "seconds": RT.RUNNER_MAX_SECONDS}
+>       root = F.build(tmp_path / "r", marginal=rule)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_speed.py:83: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_a_ruled_marginal_runs_poo0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+______________ test_the_scoreboard_prints_wall_seconds_by_phase _______________
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_scoreboard_prints_wal0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001481B4C0200>
+
+    def test_the_scoreboard_prints_wall_seconds_by_phase(tmp_path, capsys):
+>       root = F.build(tmp_path / "r")
+               ^^^^^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_wave_speed.py:103: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\tests\wave_fixture.py:192: in build
+    git(root, "init", "-q")
+scripts\tests\wave_fixture.py:52: in git
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'init', '-q'],)
+kwargs = {'cwd': WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/e45465ef-5b0c-46c1-a500-df3c5b952d2a/scratchpad/alclock-bt-s0/test_the_scoreboard_prints_wal0/r'), 'stderr': -1, 'stdout': -1, 'text': True}
+process = <Popen: returncode: 3221225794 args: ['git', 'init', '-q']>
+stdout = '', stderr = '', retcode = 3221225794
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout is given, and the process takes too long, a TimeoutExpired
+        exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'init', '-q']' returned non-zero exit status 3221225794.
+
+C:\Program Files\Python312\Lib\subprocess.py:571: CalledProcessError
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_wave_review.py::test_a_file_the_stage_does_not_write_blocks_its_commit
+FAILED scripts/tests/test_wave_review.py::test_a_retry_after_the_stage_failed_commits_exactly_its_files
+FAILED scripts/tests/test_wave_review.py::test_the_screen_librarys_logs_are_scanned_in_a_b_library_wave
+FAILED scripts/tests/test_wave_review.py::test_every_command_console_is_kept_and_scanned
+FAILED scripts/tests/test_wave_review.py::test_the_record_stage_rescans_after_the_judge_before_the_hidden_data_line
+FAILED scripts/tests/test_wave_review.py::test_the_hidden_data_line_counts_the_records_scan
+FAILED scripts/tests/test_wave_review.py::test_a_library_spec_edited_after_register_is_never_screened
+FAILED scripts/tests/test_wave_review.py::test_a_file_a_done_stage_recorded_that_moves_is_stale_on_resume
+FAILED scripts/tests/test_wave_review.py::test_verify_compares_the_navs_binding_with_the_cell_spec
+FAILED scripts/tests/test_wave_review.py::test_carried_rows_hold_only_the_per_row_fields
+FAILED scripts/tests/test_wave_review.py::test_reuse_is_off_when_the_screens_marginal_mode_differs
+FAILED scripts/tests/test_wave_review.py::test_a_manifest_with_its_state_in_the_code_pathspec_never_runs
+FAILED scripts/tests/test_wave_review_minor.py::test_a_seal_allow_ruling_passes_verify_and_is_carried_to_record
+FAILED scripts/tests/test_wave_review_minor.py::test_verify_reads_the_binding_of_the_last_completed_nav_attempt
+FAILED scripts/tests/test_wave_review_minor.py::test_a_rule_wave_resumes_after_lock_write_rewrote_its_cell
+FAILED scripts/tests/test_wave_review_minor.py::test_research_cycle_and_add_alpha_get_the_waves_root
+FAILED scripts/tests/test_wave_review_minor.py::test_readers_and_bundle_bind_the_daily_series_and_capacity_curve
+FAILED scripts/tests/test_wave_review_minor.py::test_a_bundle_whose_run_did_not_bind_the_series_now_is_refused
+FAILED scripts/tests/test_wave_review_minor.py::test_the_log_section_has_the_hand_heading_and_the_budget_line
+FAILED scripts/tests/test_wave_scoreboard.py::test_the_lineage_follows_accepted_books
+FAILED scripts/tests/test_wave_scoreboard.py::test_a_rejected_wave_is_listed_but_not_in_the_lineage
+FAILED scripts/tests/test_wave_scoreboard.py::test_the_ledger_checks_and_conflicting_copies
+FAILED scripts/tests/test_wave_speed.py::test_the_b_cell_reuses_the_screen_marginal_and_screens_first
+FAILED scripts/tests/test_wave_speed.py::test_speed_off_runs_the_b_library_as_add_alpha_derives_it
+FAILED scripts/tests/test_wave_speed.py::test_a_replacing_wave_runs_its_marginal_on_the_pool_only
+FAILED scripts/tests/test_wave_speed.py::test_a_ruled_marginal_runs_pool_only_with_its_cap_and_the_b_cell_reuses_it
+FAILED scripts/tests/test_wave_speed.py::test_the_scoreboard_prints_wall_seconds_by_phase
+27 failed, 497 passed, 5 skipped in 2111.48s (0:35:11)

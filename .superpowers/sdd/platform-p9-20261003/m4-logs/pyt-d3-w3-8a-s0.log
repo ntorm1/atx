@@ -1,0 +1,16 @@
+............                                                             [100%]
+=================================== PASSES ====================================
+=========================== short test summary info ===========================
+PASSED scripts/tests/test_wave_kinds.py::test_the_ten_fixtures_load_and_cover_the_kinds
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[leverage-change.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-combination-rule.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-cost-model.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-field.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-horizon.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-nav-rule.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-signal.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[new-universe.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[replaced-signal.json]
+PASSED scripts/tests/test_wave_kinds.py::test_every_fixture_runs_preflight_on_c3s_rows[walk-forward.json]
+PASSED scripts/tests/test_wave_kinds.py::test_the_cost_model_fixture_runs_to_spec_on_c3s_rows
+12 passed, 180 deselected in 12.05s

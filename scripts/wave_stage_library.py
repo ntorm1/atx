@@ -1,5 +1,6 @@
 """The register, screen and spec stages of a research wave (wave_stages.py): add-alpha into the wave's library,
-the screen and the sign rule, the cell spec (screen library, b library or rule cell).
+the screen and the sign rule (the IC exe's sign verb, P9 lane SIGN), the cell spec (screen library, b library or rule
+cell).
 """
 from __future__ import annotations
 
@@ -10,6 +11,8 @@ import research_add_alpha as AA
 import research_cycle as RC
 import wave_manifest as WM
 import wave_rules as WR
+import wave_kinds as WK
+import wave_stage_kinds as SK
 import wave_steps as WS
 from wave_context import Wave
 from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc, lib_spec, library_wave, lock_exes,
@@ -20,7 +23,7 @@ from wave_stage_util import (EXIT_PIN, MARGINAL_KEYS, ROW_KEYS, StageError, cyc,
 def add_alpha(w: Wave, c: dict, name: str) -> list[str]:
     m = w.manifest
     return WS.add_alpha_argv(w.python, c, parent=m["parent"]["library"], parent_spec=m["parent"]["spec"], name=name,
-                             fields_dir=m["fields"]["dir"], plan_out=w.wave_path("plans", name, f"{c['id']}.json"),
+                             fields_dir=SK.fields_dir(w, {}), plan_out=w.wave_path("plans", name, f"{c['id']}.json"),
                              root=w.root)
 
 
@@ -55,10 +58,13 @@ def add_alpha_files(w: Wave, name: str) -> set[str]:
 
 def register(w: Wave, done: dict, log) -> dict:
     if not library_wave(w):
+        if SK.kind(w) == "role":       # v2 kind role (K-P9-9): the role and its fields are built here
+            return {"build": SK.build(w)}
         return skipped("a rule wave registers no strings")
     m = w.manifest
     name, plans = m["library"], {}
     w.require_clean("register", add_alpha_files(w, name))
+    build = SK.build(w)                # v2 kind field: the fields dir the strings are registered on ({} otherwise)
     for c in m["candidates"]:
         w.run(add_alpha(w, c, name), f"add-alpha {c['id']}")
         plans[c["id"]] = w.sha(w.wave_path("plans", name, f"{c['id']}.json"))
@@ -74,13 +80,14 @@ def register(w: Wave, done: dict, log) -> dict:
     spec = lib_spec(name)
     if not w.exists(spec):
         raise StageError(f"add-alpha wrote no {spec}")
-    return {"library": name, "spec": spec, "spec_sha256": w.sha(spec), "commit": commit or w.head(), "plans": plans}
+    out = {"library": name, "spec": spec, "spec_sha256": w.sha(spec), "commit": commit or w.head(), "plans": plans}
+    return dict(out, build=build) if build else out
 
 
 def register_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
-        return ["#   (rule wave: no strings to register)"]
-    lines = [WS.fmt_argv(add_alpha(w, c, w.manifest["library"])) for c in w.manifest["candidates"]]
+        return SK.build_plan(w) or ["#   (rule wave: no strings to register)"]
+    lines = SK.build_plan(w) + [WS.fmt_argv(add_alpha(w, c, w.manifest["library"])) for c in w.manifest["candidates"]]
     if w.manifest.get("marginal"):
         lines.append(f"#   then: marginal as ruled ({w.manifest['marginal']['ruling']}): {w.manifest['marginal']} "
                      "(the library spec rewritten, lock dry)")
@@ -109,9 +116,11 @@ def screen(w: Wave, done: dict, log) -> dict:
     marginal = [{k: x.get(k) for k in MARGINAL_KEYS} for x in (doc or {}).get("marginal") or [] if isinstance(x, dict)]
     ids = {c["id"] for c in m["candidates"]}
     try:
-        dec = WR.screen_decision(m["sign_rule"], m["candidates"], [r for r in rows if r["id"] in ids])
+        sign_in = WR.sign_rows(m["candidates"], [r for r in rows if r["id"] in ids])
     except WR.RuleError as exc:
         raise StageError(f"screen: {apath}: {exc}") from exc
+    sign = sign_verb(w, spec, m["sign_rule"], sign_in)          # the sign rule: the IC exe's sign verb (C++)
+    dec = sign.pop("decision")
     gate_ok = done_screen.returncode == RC.EXIT_OK
     for row in dec["rows"]:
         log(f"   {row['id']}: status {row['status']}, runner sign {row['runner_sign']} vs prior "
@@ -120,7 +129,7 @@ def screen(w: Wave, done: dict, log) -> dict:
         f"{dec['kept']}, dropped {dec['dropped']}")
     out = {"spec": spec, "gate_exit": done_screen.returncode, "admission": apath, "admission_sha256": w.sha(apath),
            "verdict": vpath, "verdict_sha256": w.sha(vpath), "rows": [r for r in rows if r["id"] in ids],
-           "marginal": marginal, "decision": dec, "cell": bool(gate_ok and dec["kept"])}
+           "marginal": marginal, "decision": dec, "sign": sign, "cell": bool(gate_ok and dec["kept"])}
     if timings_on(w):                  # P9 OR section 5: the screen's u, fit, card, marginal rows (a b library's cell
         out["phases"] = phase_rows(w, spec)                       # spec is another spec)
     return out
@@ -129,8 +138,51 @@ def screen(w: Wave, done: dict, log) -> dict:
 def screen_plan(w: Wave, done: dict) -> list[str]:
     if not library_wave(w):
         return ["#   (rule wave: no screen)"]
+    rule = w.manifest["sign_rule"]
     return [WS.fmt_argv(cyc(w,"run", lib_spec(w.manifest["library"]), "--screen")),
-            f"#   then: the sign rule {w.manifest['sign_rule']} on every string's row of the fit's admission.json"]
+            f"#   then: the sign rule {rule} on every string's row of the fit's admission.json, by the IC exe's sign "
+            f"verb: <exes.ic> sign --rule {rule} --rows {w.wave_path(SIGN_DIR, 'rows-<k>.json')} --output "
+            f"{w.wave_path(SIGN_DIR, 'receipt-<k>.json')}"]
+
+
+# ------------------------------------------------------------------ the sign verb (P9 lane SIGN, ruling C3-11)
+SIGN_DIR = "sign"
+
+
+def sign_exe(w: Wave, spec: str) -> str:
+    """The IC exe the screen spec runs (its effective exes.ic, research_cycle's rule; load_spec refuses a spec with an
+    ic section and no exes.ic), held to its exes_sha256 pin when the spec has one (exit 3 otherwise, a missing exe
+    included, as research_cycle's verify_exes: the sign verb runs on the exe the screen ran on)."""
+    doc = w.load_spec(spec)
+    exe = RC.effective_exes(doc)["ic"]
+    pin, now = (doc.get(RC.EXES_PIN) or {}).get("ic"), w.sha(exe)
+    if pin is not None and now != pin:
+        got = f"sha256 {now[:12]}" if now else "missing"
+        raise StageError(f"screen: the IC exe {exe} is {got}, not its pin {str(pin)[:12]} ({spec} "
+                         f"{RC.EXES_PIN}.ic): the sign verb runs only on the pinned exe", EXIT_PIN)
+    return exe
+
+
+def sign_verb(w: Wave, spec: str, rule: str, rows: list[dict]) -> dict:
+    """The sign rule ``rule`` on the screen's rows (WR.sign_rows) by the IC exe's sign verb (atx-equity-strategy-ic
+    sign: the engine's research/admission pm7_35, so no Python copy decides). Each call writes the rows file
+    <out_dir>/sign/rows-<k>.json and the verb writes its receipt-<k>.json (k the first free number: a retried screen
+    gets its own pair, nothing is overwritten); the decision is read from the receipt (WR.verb_decision, exit 3 when
+    it is not the verb's answer to these rows). Returns {exe, exe_sha256, rows, rows_sha256, receipt, receipt_sha256,
+    decision}."""
+    exe = sign_exe(w, spec)
+    k = 1
+    while w.exists(w.wave_path(SIGN_DIR, f"rows-{k}.json")) or w.exists(w.wave_path(SIGN_DIR, f"receipt-{k}.json")):
+        k += 1
+    rows_rel, receipt_rel = w.wave_path(SIGN_DIR, f"rows-{k}.json"), w.wave_path(SIGN_DIR, f"receipt-{k}.json")
+    rows_sha = w.write_json(rows_rel, {"rule": rule, "rows": rows}, exclusive=True)
+    w.run([str(w.path(exe)), "sign", "--rule", rule, "--rows", rows_rel, "--output", receipt_rel], f"sign ({rule})")
+    try:
+        dec = WR.verb_decision(rule, rows, w.read_json(receipt_rel), rows_sha)
+    except (WR.RuleError, ValueError) as exc:
+        raise StageError(f"screen: {receipt_rel}: {exc}", EXIT_PIN) from exc
+    return {"exe": exe, "exe_sha256": w.sha(exe), "rows": rows_rel, "rows_sha256": rows_sha, "receipt": receipt_rel,
+            "receipt_sha256": w.sha(receipt_rel), "decision": dec}
 
 
 def cell_out(w: Wave, done: dict, spec: str, kind: str, commit: str | None, library: str) -> dict:
@@ -147,10 +199,11 @@ def cell_out(w: Wave, done: dict, spec: str, kind: str, commit: str | None, libr
 
 def spec_stage(w: Wave, done: dict, log) -> dict:
     m = w.manifest
+    if SK.kind(w) in WK.SCHEMA_ONLY:   # preflight refuses it; never reached
+        raise StageError(f"kind {SK.kind(w)} is schema only (lane D3)", EXIT_PIN)
     if not library_wave(w):
-        rc = m["rule_cell"]
-        cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
-        doc = WS.rule_cell_doc(w.read_json(rc["template"]), rc["template"], m["parent"]["spec"], rc, m["wave"])
+        cell = SK.cell_path(w)         # v2 kinds (K-P9-9): the template with the kind's derived constants
+        doc = SK.cell_doc(w, done, cell)
         w.require_clean("spec", {cell})
         if not w.exists(cell):            # a first write: the cell's NAV must be new (a template is used once)
             nav = w.outputs_of(doc, cell)["nav"]
@@ -197,10 +250,13 @@ def spec_stage(w: Wave, done: dict, log) -> dict:
 
 def spec_plan(w: Wave, done: dict) -> list[str]:
     m = w.manifest
+    if SK.kind(w) in WK.SCHEMA_ONLY:
+        return [f"#   (kind {SK.kind(w)}: schema only until lane D3, no cell)"]
     if not library_wave(w):
-        rc = m["rule_cell"]
-        cell = WS.rule_cell_path(rc["template"], rc, m["wave"])
-        return [f"#   write {cell}: {rc['template']} with parent {m['parent']['spec']} and the constants",
+        _, _, template = SK.base_rule_cell(w)
+        cell = SK.cell_path(w)
+        return [f"#   write {cell}: {template} with parent {m['parent']['spec']} and the constants"
+                + (f" (kind {SK.kind(w)}: the derived constants, wave_kinds.py)" if SK.kind(w) else ""),
                 WS.fmt_argv(cyc(w,"lock", cell, "--write", *(["--exes"] if lock_exes(w) else []))),
                 "#   then: git add / commit -- " + cell]
     kept = ((done.get("screen") or {}).get("decision") or {}).get("kept")
@@ -218,4 +274,9 @@ def screen_inputs(w: Wave, done: dict) -> dict:
 
 def spec_inputs(w: Wave, done: dict) -> dict:
     sc = done.get("screen") or {}
-    return pinned("screen", sc, {"admission_sha256": w.sha(sc["admission"])}) if sc.get("admission") else {}
+    if not sc.get("admission"):
+        return {}
+    out = pinned("screen", sc, {"admission_sha256": w.sha(sc["admission"])})
+    if sc.get("sign"):       # P9 lane SIGN: the receipt the decision was read from (a screen before SIGN has none)
+        out.update(pinned("screen.sign", sc["sign"], {"receipt_sha256": w.sha(sc["sign"]["receipt"])}))
+    return out

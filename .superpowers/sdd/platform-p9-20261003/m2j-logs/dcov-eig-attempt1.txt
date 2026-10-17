@@ -1,0 +1,81 @@
+D-COV-EIG read (COV-13 (b)); files opened per store: manifest.json, factor_covariance.f64, factor_structural.u8
+
+## build-equity/p9-m2i-dcov-v11  model atx-risk-v1.1  (manifest pin verified; payload pins verified)
+layout factor_covariance.f64: little-endian f64, dates x factors x factors row-major, forecast at the session's close for the next session, NaN where not forecast
+layout factor_structural.u8: dates x factors, 1 = the factor's forecast in factor_covariance.f64 at the session is structural (recipe.factor_covariance.structural), else 0
+dates 1405; formed blocks 1279; scored sessions per rank (blocks with > k factors, next session present): ranks 00-47 [1152, 1215, 1278], 48 948, 49 817, 50 733, 51+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+scored sessions with at least one structural factor in the block: 1278; max |share(i) + (ii) + (iii) - 1| 2.22e-15
+
+eigen-00  sessions 1278
+  median eigenvalue / session median eigenvalue  2.535948e-08
+  median share (i) structural                    0.000000
+  median share (ii) industry + market (unflagged) 0.685369
+  median share (iii) style (unflagged)           0.314631
+  median share (i) + (ii), per session           0.685369
+  info: median industry + market share (all)     0.685369; style share (all) 0.314631
+  five largest median squared loadings: ind_ff39 0.2485, style_momentum 0.1050, style_size 0.0471, ind_ff44 0.0240, ind_ff9 0.0174
+  reading rule (i) + (ii) >= 0.99: not structurally null
+
+eigen-01  sessions 1278
+  median eigenvalue / session median eigenvalue  5.146051e-08
+  median share (i) structural                    0.000000
+  median share (ii) industry + market (unflagged) 0.811024
+  median share (iii) style (unflagged)           0.188976
+  median share (i) + (ii), per session           0.811024
+  info: median industry + market share (all)     0.811024; style share (all) 0.188976
+  five largest median squared loadings: ind_ff39 0.0567, ind_ff43 0.0256, ind_ff48 0.0216, ind_ff24 0.0192, style_leverage 0.0175
+  reading rule (i) + (ii) >= 0.99: not structurally null
+
+eigen-02  sessions 1278
+  median eigenvalue / session median eigenvalue  2.152098e-02
+  median share (i) structural                    0.000000
+  median share (ii) industry + market (unflagged) 0.045031
+  median share (iii) style (unflagged)           0.954962
+  median share (i) + (ii), per session           0.045038
+  info: median industry + market share (all)     0.045038; style share (all) 0.954962
+  five largest median squared loadings: style_leverage 0.1990, style_value 0.1721, style_asset_growth 0.1682, style_profitability 0.0145, ind_ff36 0.0063
+  reading rule (i) + (ii) >= 0.99: not structurally null
+
+## build-equity/p9-m2i-dcov-covv1  model atx-cov-v1  (manifest pin verified; payload pins verified)
+layout factor_covariance.f64: little-endian f64, dates x factors x factors row-major, forecast at the session's close for the next session, NaN where not forecast
+layout factor_structural.u8: dates x factors, 1 = the factor's forecast in factor_covariance.f64 at the session is structural (recipe.factor_covariance.structural), else 0
+dates 1405; formed blocks 1279; scored sessions per rank (blocks with > k factors, next session present): ranks 00-47 [1152, 1215, 1278], 48 948, 49 817, 50 733, 51+ [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+scored sessions with at least one structural factor in the block: 1278; max |share(i) + (ii) + (iii) - 1| 2.66e-15
+
+eigen-00  sessions 1278
+  median eigenvalue / session median eigenvalue  2.724547e-08
+  median share (i) structural                    0.000000
+  median share (ii) industry + market (unflagged) 0.682621
+  median share (iii) style (unflagged)           0.317379
+  median share (i) + (ii), per session           0.682621
+  info: median industry + market share (all)     0.682621; style share (all) 0.317379
+  five largest median squared loadings: ind_ff39 0.2503, style_momentum 0.1045, style_size 0.0475, ind_ff44 0.0238, ind_ff9 0.0172
+  reading rule (i) + (ii) >= 0.99: not structurally null
+
+eigen-01  sessions 1278
+  median eigenvalue / session median eigenvalue  5.501793e-08
+  median share (i) structural                    0.000000
+  median share (ii) industry + market (unflagged) 0.805389
+  median share (iii) style (unflagged)           0.194611
+  median share (i) + (ii), per session           0.805389
+  info: median industry + market share (all)     0.805389; style share (all) 0.194611
+  five largest median squared loadings: ind_ff39 0.0439, ind_ff43 0.0258, ind_ff48 0.0220, ind_ff24 0.0182, style_leverage 0.0167
+  reading rule (i) + (ii) >= 0.99: not structurally null
+
+eigen-02  sessions 1278
+  median eigenvalue / session median eigenvalue  2.411677e-02
+  median share (i) structural                    0.000000
+  median share (ii) industry + market (unflagged) 0.045026
+  median share (iii) style (unflagged)           0.954968
+  median share (i) + (ii), per session           0.045032
+  info: median industry + market share (all)     0.045032; style share (all) 0.954968
+  five largest median squared loadings: style_leverage 0.1925, style_asset_growth 0.1837, style_value 0.1604, style_profitability 0.0145, ind_ff36 0.0061
+  reading rule (i) + (ii) >= 0.99: not structurally null
+
+## Verdicts
+p9-m2i-dcov-v11 eigen-00: not structurally null
+p9-m2i-dcov-v11 eigen-01: not structurally null
+p9-m2i-dcov-v11 eigen-02: not structurally null
+p9-m2i-dcov-covv1 eigen-00: not structurally null
+p9-m2i-dcov-covv1 eigen-01: not structurally null
+p9-m2i-dcov-covv1 eigen-02: not structurally null

@@ -1,0 +1,16 @@
+M6B-FINISH item 5 case 1b (no flag, index.sqlite present in the real cache dir)
+time 2026-10-15T18:57:29Z store exe a54955e965ee2aa0
+cache index build-equity/mega-candidate-cache-v8-lo3/index.sqlite
+warning (SQL1-MON): book_monitor.py --fit-work does not yet read records stored only in this index; no P9 cell uses a cache index (SQL-11); delete it after the identity run
+cache init exit 0
+after init: index.sqlite 
+index sha256 after init: 3a177dfddbd86dcc43caf0fca92339faad5e051bf4012b90effdb95cff6bc6f0 size 73728
+after w-1b and u-1b: index.sqlite 
+index sha256 after runs: 3a177dfddbd86dcc43caf0fca92339faad5e051bf4012b90effdb95cff6bc6f0 size 73728
+-wal / -shm present: 0
+run-x5-w-1b.log completed exit 0 exe adffe7421781145a wall 51.8 peak_rss_mib 1372 w index-flag False
+run-x5-u-1b.log completed exit 0 exe adffe7421781145a wall 6.1 peak_rss_mib 529 u index-flag False
+cmp 1a-post vs 1b w: TOTAL outside the list: 0
+cmp 1a-post vs 1b u: TOTAL outside the list: 0
+p9-m6b-x5-w-1b/summary.json: role 0 candidates 58 | hits=58 ic_results.hits=58 ic_results.misses=0 legacy_hits=0 misses=0 vm_evaluations=0
+p9-m6b-x5-u-1b/summary.json: role 0 candidates 58 | hits=58 ic_results.hits=58 ic_results.misses=0 legacy_hits=0 misses=0 vm_evaluations=0

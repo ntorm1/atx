@@ -1,0 +1,11 @@
+### Wall-clock by phase (s; runs)
+
+| wave | bundle | card | fit | git | monitor | nav | reader:book | reader:mech-matched | reader:mech-parent | summ | u | w | total |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| p9mv-mv-aim | 0.5 (1) | 24.8 (1) | 3.1 (1) | 1.2 (24) | 1.6 (1) | 26.1 (1) | 0.5 (1) | 0.3 (1) | 0.5 (1) | 8.9 (1) | 51.6 (1) | 35.6 (1) | 45.6 |
+
+### Wall-clock by stage (s)
+
+| wave | preflight | register | screen | spec | run | match | verify | judge |
+|---|---|---|---|---|---|---|---|---|
+| p9mv-mv-aim | 0.4 | 0.0 | 0.0 | 0.6 | 0.6 | 29.9 | 0.1 | 14.0 |

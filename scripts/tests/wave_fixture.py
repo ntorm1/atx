@@ -1,6 +1,7 @@
 """A synthetic root for research_wave.py tests: a git repository holding a parent cell, its NAV, a fields manifest, a
 chained ledger and a committed wave manifest, plus FakeCycle, a process executor that plays research_cycle.py,
-add-alpha, the bounded runner (running wave_readers.py in process) and nav_summ --bundle on synthetic files.
+add-alpha, the bounded runner (running wave_readers.py in process), nav_summ --bundle and the IC exe's sign verb on
+synthetic files.
 
 Every number here is synthetic (sessions 2020-2021, inside TRAIN); no data of the repository is read.
 """
@@ -103,9 +104,17 @@ def sessions(n: int) -> list[int]:
     return out
 
 
+def nav_gross(gross: float, rows: int = 300) -> float:
+    """The all-rows S2 gross the mechanics reader reads from write_nav(gross)'s daily CSV (numpy's mean of its values,
+    which round-trip through the CSV): the G of a synthetic NAV (P9 C2's fake calibration)."""
+    import numpy as np  # noqa: PLC0415
+    return float(np.array([gross + 0.01 * math.sin(k / 7.0) for k in range(rows)], dtype=np.float64).mean())
+
+
 def write_nav(root: Path, nav: str, gross: float, *, drift: float = 2e-4, net_lev: float = 0.001, rows: int = 300,
-              x4: float = 1.1, accounting: float = 1e-14) -> None:
-    """A synthetic NAV output dir: summary.json (primary s2), daily_s2.csv, capacity_curve.csv."""
+              x4: float = 1.1, accounting: float = 1e-14, calibration: dict | None = None) -> None:
+    """A synthetic NAV output dir: summary.json (primary s2; P9 C2: the calibration record when given),
+    daily_s2.csv, capacity_curve.csv."""
     cols = ["session_ns", "return_observation", "executed", "traded_dollars", "pretrade_gross_dollars",
             "one_way_turnover_gmv", "gross_leverage", "net_leverage", "trade_cost_dollars", "pretrade_nav",
             "held_names", "net_return"]
@@ -125,8 +134,10 @@ def write_nav(root: Path, nav: str, gross: float, *, drift: float = 2e-4, net_le
                                   "tolerance": 1e-9},
             "meets_daily_turnover_mean": True, "meets_daily_turnover_p95": True,
             "construction": {"v5": {"aim_leverage": 1.0}}, "daily_turnover_gmv": {"mean": 0.02}}
-    write_json(root, f"{nav}/summary.json", {"primary_scenario": "s2", "rule": "aim-partial-v5", "status": "complete",
-                                             "scenarios": [scen]})
+    summary = {"primary_scenario": "s2", "rule": "aim-partial-v5", "status": "complete", "scenarios": [scen]}
+    if calibration is not None:
+        summary["calibration"] = calibration
+    write_json(root, f"{nav}/summary.json", summary)
     cap = "multiple,book,net_sharpe\n" + "".join(f"{m},s2,{x4 if m == 4 else 1.0}\n" for m in (0.5, 1, 2, 4, 8))
     write(root, f"{nav}/capacity_curve.csv", cap)
 
@@ -166,7 +177,7 @@ def manifest(drop: tuple = (), **over) -> dict:
          "fields": {"dir": FIELDS, "manifest_sha256": None}, "library": "w1",
          "candidates": [candidate("alpha_a"), candidate("alpha_b"), candidate("alpha_c")],
          "acceptance": {"rule": "pm7-34", "printed": ["turnover-per-gross-not-higher", "capacity-4x-higher"]},
-         "sign_rule": "pm7-35", "gross_match": "pm6-6",
+         "sign_rule": "pm7-35", "gross_match": "pm6-6-engine",
          "budget": {"id": "syn", "admission_cap": 10, "admission_cycle_prefix": "w", "construction_cap": 20},
          "ledger": LEDGER, "expect": {"n_before": 2}, "out_dir": "out/waves/w1",
          "record": {"copy_to": "sprint/waves"}}
@@ -223,6 +234,8 @@ class FakeCycle:
         if argv[0] == "git":
             done = subprocess.run(argv, cwd=root, capture_output=True, text=True)
             return done
+        if argv[1] == "sign":                                     # the IC exe's sign verb (P9 lane SIGN)
+            return self.sign(argv)
         tool = Path(argv[1]).name
         if tool == "research_cycle.py":
             return self.cycle(argv[2:])
@@ -277,11 +290,21 @@ class FakeCycle:
                                                   for r in listed], chain=True)
             return self.ok(args, self.gate_exit)
         nav = c.out(spec["nav"]["output"])
+        if "--stop-after" in args and args[args.index("--stop-after") + 1] == "w":
+            w_out = f"{c.out(spec['ic']['w_output'])}-1"     # P9 C2 engine mode: the cell's inputs, no NAV
+            if not (self.root / w_out / "summary.json").is_file():
+                write_json(self.root, f"{w_out}/summary.json", {"status": "complete"})
+                write_json(self.root, f"{w_out}/train_combined.json", {"combined": spec["name"]})
+            return self.ok(args)
         if "--stop-after" in args:
             base = spec["name"][:-3] if spec["name"].endswith("-gm") else spec["name"]
-            gross = self.gross_per_l.get(base, 0.9862 / 1.1474) * float(spec["nav"]["leverage"])
+            per_l = self.gross_per_l.get(base, 0.9862 / 1.1474)
+            gross = per_l * float(spec["nav"]["leverage"])
             drift = 3e-4 + int(sha(base.encode()), 16) % 100003 * 1e-9          # each cell its own series
-            write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift)
+            calibration = self.calibrate(spec["nav"], per_l)
+            if calibration is not None:
+                gross = per_l * calibration["leverage"]
+            write_nav(self.root, nav, gross, accounting=self.accounting, drift=drift, calibration=calibration)
             run_dir, k = f"{nav}-run", 2                                 # research_cycle: -run, then -run<k>
             while (self.root / run_dir).exists():
                 run_dir, k = f"{nav}-run{k}", k + 1
@@ -307,6 +330,25 @@ class FakeCycle:
         BI.ledger_append(self.root / LEDGER, [construction_line(nav, sha(daily), sr)], chain=True)
         return self.ok(args)
 
+    @staticmethod
+    def calibrate(nav: dict, per_l: float) -> dict | None:
+        """P9 C2's nav --calibrate-gross on the synthetic NAV (G(L) = nav_gross(per_l x L)): pass 1 at L, PM6-6's one
+        correction L' = L x G_parent / G at 4 decimals (the fake exe's own arithmetic, a test oracle: the Python rule
+        of wave_rules is retired, ruling C2-11), the record the exe writes into summary.json; None without the flag."""
+        flags = [str(f) for f in nav.get("flags") or []]
+        if "--calibrate-gross" not in flags:
+            return None
+        target = float(flags[flags.index("--calibrate-gross") + 1])
+        tol = float(flags[flags.index("--calibrate-tolerance") + 1]) if "--calibrate-tolerance" in flags else 0.005
+        lev = float(nav["leverage"])
+        g1 = nav_gross(per_l * lev)
+        corrected = abs(g1 - target) > tol
+        final = float(f"{lev * target / g1:.4f}") if corrected else lev
+        g2 = nav_gross(per_l * final)
+        return {"target": target, "tolerance": tol, "leverage_requested": lev, "gross_requested": g1,
+                "corrected": corrected, "leverage": final, "gross": g2, "matched": abs(g2 - target) <= tol,
+                "construction_reused": True, "rule": "fake"}
+
     def add_alpha(self, args: list[str]):
         a = {args[k]: args[k + 1] for k in range(len(args) - 1) if args[k].startswith("--")}
         name, cid = a["--name"], a["--id"]
@@ -322,11 +364,33 @@ class FakeCycle:
         write_json(self.root, f"{st}/ic_{name}.recipe.v2.json", {"members": members + [cid]})
         write(self.root, f"{st}/libraries/{name}.prereg.md", f"# {name}\n")
         pspec, pc = self.spec_outputs(a["--parent-spec"])
-        write_json(self.root, f"scripts/specs/v8/lib-{name}.json",
-                   cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),
-                             leverage=str(pspec["nav"]["leverage"]), marginal_of=pspec["name"]))
+        spec = cell_spec(name, f"out/nav-{name}-L1.1474", reference_nav=pc.out(pspec["nav"]["output"]),
+                         leverage=str(pspec["nav"]["leverage"]), marginal_of=pspec["name"])
+        spec.update({k: pspec[k] for k in ("exes", RC.EXES_PIN) if k in pspec})   # derive_spec copies the parent's
+        write_json(self.root, f"scripts/specs/v8/lib-{name}.json", spec)
         write_json(self.root, a["--save-plan"], {"library": name, "candidates": [{"id": cid}]})
         return self.ok(args)
+
+    def sign(self, argv: list[str]):
+        """`<exes.ic> sign --rule pm7-35 --rows FILE --output NEWFILE` on the fake root: the receipt of
+        atx-impl/src/strategy_sign_verb.hpp, each verdict and reason by sign_oracle (test_wave_sign_verb.py holds the
+        oracle to the real exe row for row)."""
+        a = {argv[k]: argv[k + 1] for k in range(2, len(argv) - 1, 2)}
+        if a.get("--rule") != "pm7-35":
+            return subprocess.CompletedProcess(argv, 2, "", f"sign: unknown --rule {a.get('--rule')}")
+        out = self.root / a["--output"]
+        if out.exists():
+            return subprocess.CompletedProcess(argv, 1, "", "sign: the output must not exist (never overwritten)")
+        data = (self.root / a["--rows"]).read_bytes()
+        rows = [dict({k: r[k] for k in SIGN_ECHO}, verdict=v, reason=why)
+                for r in json.loads(data)["rows"] for v, why in [sign_oracle(r)]]
+        write_json(self.root, a["--output"], {
+            "schema": "atx.sign-receipt/v1", "rule": "pm7-35", "sign_rule": "wave-zero-kept-v1",
+            "predicate": "pm7_35(sign_rule, kind, status == \"admitted\", prior_sign, runner_sign)",
+            "rows_file": a["--rows"], "rows_sha256": sha(data), "rows": rows,
+            "kept": [r["id"] for r in rows if r["verdict"] == "keep"],
+            "dropped": [r["id"] for r in rows if r["verdict"] == "drop"]})
+        return self.ok(argv)
 
     def bounded(self, argv: list[str]):
         k = argv.index("--")
@@ -356,3 +420,40 @@ class FakeCycle:
                                                           "bindings": bindings})
         write(self.root, f"{run_dir}/stdout.log", "reader\n")
         return self.ok(argv, code)
+
+
+EVAL_VERB = "bin/atx-research-eval.exe"
+SIGN_ECHO = ("id", "kind", "prior_sign", "status", "runner_sign")
+
+
+def sign_oracle(row: dict) -> tuple[str, str]:
+    """(verdict, reason) of one screen row under PM7-35 as ruled: the fake IC exe's sign verb. A test oracle (the rule
+    is the engine's research/admission pm7_35); test_wave_sign_verb.py holds it equal to the real exe on every
+    enumerated combination."""
+    kind, status, sign, prior = row["kind"], row["status"], row["runner_sign"], row["prior_sign"]
+    admitted = status == "admitted"
+    if kind == "replace":
+        if admitted and sign == prior:
+            return "keep", "replacement admitted with the prior sign"
+        return "drop", (f"replacement not kept (status {status}, runner sign {sign}, prior {prior:+d}): the replaced "
+                        "member keeps its string at 0 trials")
+    if not admitted:
+        return "keep", f"addition not admitted (status {status}): stays at weight 0"
+    if sign == prior:
+        return "keep", "addition admitted with the prior sign"
+    if sign == 0:
+        return "keep", "addition admitted, runner sign 0 (R-2 precedent)"
+    return "drop", f"addition admitted with runner sign {sign} against prior {prior:+d}: dropped from the wave"
+
+
+def pin_eval_verb(root: Path) -> None:
+    """The parent spec of a v2 world names the engine verb and pins it, as root's re-pin does for the P9 lineage
+    parents (rulings B2-10 (b), B2-11: exes.eval, path and SHA-256): exes.eval beside ic and nav and exes_sha256.eval
+    of a synthetic verb file; its cells inherit both (a template child by resolve, an add-alpha copy as derive_spec
+    copies the parent). No IC or NAV exe file is written (the fake world has none: an exe on disk turns on checks a
+    fake tool cannot meet, e.g. ruling W1-I1's cache path bound). Written, not committed."""
+    parent = json.loads((root / PARENT).read_text(encoding="utf-8"))
+    write(root, EVAL_VERB, f"synthetic exe {EVAL_VERB}\n")
+    parent["exes"] = dict(parent["exes"], eval=EVAL_VERB)
+    parent[RC.EXES_PIN] = dict(parent.get(RC.EXES_PIN) or {}, eval=sha((root / EVAL_VERB).read_bytes()))
+    write_json(root, PARENT, parent)

@@ -1,0 +1,61 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = TrialLedger*
+[==========] Running 24 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 23 tests from TrialLedger
+[ RUN      ] TrialLedger.SerializesAPreRegisteredLineByteExactly
+[       OK ] TrialLedger.SerializesAPreRegisteredLineByteExactly (1 ms)
+[ RUN      ] TrialLedger.MissingLedgerIsAValidEmptyChain
+[       OK ] TrialLedger.MissingLedgerIsAValidEmptyChain (0 ms)
+[ RUN      ] TrialLedger.ThreeAppendsFormAVerifiableChain
+[       OK ] TrialLedger.ThreeAppendsFormAVerifiableChain (30 ms)
+[ RUN      ] TrialLedger.TamperedMiddleLineBreaksTheChainAtTheFollowingIndex
+[       OK ] TrialLedger.TamperedMiddleLineBreaksTheChainAtTheFollowingIndex (22 ms)
+[ RUN      ] TrialLedger.TruncatedFinalLineIsDetectedAsParseErrorNamingTheRepairOffset
+[       OK ] TrialLedger.TruncatedFinalLineIsDetectedAsParseErrorNamingTheRepairOffset (28 ms)
+[ RUN      ] TrialLedger.AppendAfterABrokenChainIsRefused
+[       OK ] TrialLedger.AppendAfterABrokenChainIsRefused (26 ms)
+[ RUN      ] TrialLedger.DeclaredTrialsForCheckpointReturnsTheDeclaredN
+[       OK ] TrialLedger.DeclaredTrialsForCheckpointReturnsTheDeclaredN (22 ms)
+[ RUN      ] TrialLedger.ManifestTracksTheHeadAndPreservesCreatedUtc
+[       OK ] TrialLedger.ManifestTracksTheHeadAndPreservesCreatedUtc (7 ms)
+[ RUN      ] TrialLedger.PreRegisteredLineRejectsAResultDigest
+[       OK ] TrialLedger.PreRegisteredLineRejectsAResultDigest (0 ms)
+[ RUN      ] TrialLedger.TailEditIsDetectedBySidecarHeadMismatch
+[       OK ] TrialLedger.TailEditIsDetectedBySidecarHeadMismatch (30 ms)
+[ RUN      ] TrialLedger.LastLineDeletionIsDetectedBySidecarCountMismatch
+[       OK ] TrialLedger.LastLineDeletionIsDetectedBySidecarCountMismatch (25 ms)
+[ RUN      ] TrialLedger.LastLineDeletionWithAConsistentSidecarIsTheDocumentedLimit
+[       OK ] TrialLedger.LastLineDeletionWithAConsistentSidecarIsTheDocumentedLimit (30 ms)
+[ RUN      ] TrialLedger.MissingSidecarBesideANonEmptyLedgerIsRefused
+[       OK ] TrialLedger.MissingSidecarBesideANonEmptyLedgerIsRefused (23 ms)
+[ RUN      ] TrialLedger.ForgedGenesisLinkFailsAtLineZero
+[       OK ] TrialLedger.ForgedGenesisLinkFailsAtLineZero (34 ms)
+[ RUN      ] TrialLedger.ConcurrentAppendIsRefusedWhileTheLockExists
+[       OK ] TrialLedger.ConcurrentAppendIsRefusedWhileTheLockExists (28 ms)
+[ RUN      ] TrialLedger.RejectsAnObjectKeyThatCouldForgeAScannableField
+[       OK ] TrialLedger.RejectsAnObjectKeyThatCouldForgeAScannableField (0 ms)
+[ RUN      ] TrialLedger.ZeroDeclared_AcceptedOnlyForNonTrialPurpose
+[       OK ] TrialLedger.ZeroDeclared_AcceptedOnlyForNonTrialPurpose (6 ms)
+[ RUN      ] TrialLedger.PositiveDeclared_RejectedForNonTrialPurpose
+[       OK ] TrialLedger.PositiveDeclared_RejectedForNonTrialPurpose (0 ms)
+[ RUN      ] TrialLedger.NegativeDeclared_AlwaysRejected
+[       OK ] TrialLedger.NegativeDeclared_AlwaysRejected (0 ms)
+[ RUN      ] TrialLedger.DeclaredTrials_SumsZeroLinesAndFindsThem
+[       OK ] TrialLedger.DeclaredTrials_SumsZeroLinesAndFindsThem (67 ms)
+[ RUN      ] TrialLedger.DeclaredTrials_ZeroWithTrialPurpose_IsParseError
+[       OK ] TrialLedger.DeclaredTrials_ZeroWithTrialPurpose_IsParseError (13 ms)
+[ RUN      ] TrialLedger.DeclaredTrials_PositiveWithNonTrialPurposeInWalk_IsParseError
+[       OK ] TrialLedger.DeclaredTrials_PositiveWithNonTrialPurposeInWalk_IsParseError (5 ms)
+[ RUN      ] TrialLedger.PreRegisteredLines_CountsByCheckpoint
+[       OK ] TrialLedger.PreRegisteredLines_CountsByCheckpoint (50 ms)
+[----------] 23 tests from TrialLedger (461 ms total)
+
+[----------] 1 test from TrialLedgerRepository
+[ RUN      ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies
+[       OK ] TrialLedgerRepository.ExistingCp14Ledger_StillVerifies (1 ms)
+[----------] 1 test from TrialLedgerRepository (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 24 tests from 2 test suites ran. (462 ms total)
+[  PASSED  ] 24 tests.

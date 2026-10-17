@@ -24,7 +24,7 @@ import pytest
 
 import backtest_integrity as BI
 import nav_summ as NS
-from test_nav_summ import SCEN, T0, DAY, write_nav
+from test_nav_summ import SCEN, T0, DAY, longhand_dsr, write_nav
 
 TOOLS = Path(__file__).resolve().parent
 SHIM = TOOLS.parents[1] / ".superpowers" / "sdd" / "mega-alpha-20260926" / "studies" / "nav_summ.py"
@@ -64,9 +64,71 @@ def lane_a_protocol_line(ledger: Path, window_sha: str) -> dict:
 
 
 # ------------------------------------------------------------------ legacy reproduction (root only)
+# ruling B2-N37: the n37 statistics come from the engine verb atx-research-eval since B2 (the producer of record);
+# its arithmetic (summation order, fma) is not numpy's, so floats compare at 1e-12 relative (B2-R1 (b)'s form)
+N37_REL_TOL = 1e-12
+# rulings B2-6 / B2-R1 (c): the paired keys a degenerate pair (1 - rho < 1e-6) refuses (null, printed "na")
+N37_REFUSED = (("memmel_se",), ("t",), ("lw", "se"))
+
+
+def numeric_mismatches(got, want, path: str = "") -> list[str]:
+    """The JSON paths where ``got`` differs from ``want`` (ruling B2-N37): the same keys, lengths and types; strings,
+    booleans, nulls and integers equal; floats equal within N37_REL_TOL relative (NaN equals NaN). Paths only, never
+    a value (the n37 rows are real statistics)."""
+    if isinstance(want, dict):
+        if not isinstance(got, dict) or set(got) != set(want):
+            return [f"{path or '.'} (keys)"]
+        return [p for k in sorted(want) for p in numeric_mismatches(got[k], want[k], f"{path}.{k}")]
+    if isinstance(want, list):
+        if not isinstance(got, list) or len(got) != len(want):
+            return [f"{path} (length)"]
+        return [p for i, (g, w) in enumerate(zip(got, want)) for p in numeric_mismatches(g, w, f"{path}[{i}]")]
+    if type(got) is not type(want):
+        return [f"{path} (type)"]
+    if isinstance(want, float):
+        same = (math.isnan(got) and math.isnan(want)) or math.isclose(got, want, rel_tol=N37_REL_TOL, abs_tol=0.0)
+    else:
+        same = got == want
+    return [] if same else [path]
+
+
+def take_degenerate_disclosure(got: dict, want: dict) -> tuple[bool, list[str]]:
+    """Rulings B2-6 / B2-R1 (c) under B2-N37: the engine refuses the paired SE / t of a degenerate pair (1 - rho <
+    1e-6; null, printed "na") and marks its paired block with ``degenerate`` and ``one_minus_rho``, where the legacy
+    golden holds the Python's numbers. For such a row: checks that form, removes those keys from both rows and returns
+    (True, the paths that break it); any other row is left as it is: (False, [])."""
+    g, w = got.get("paired"), want.get("paired")
+    if not isinstance(g, dict) or "degenerate" not in g:
+        return False, []
+    if not isinstance(w, dict):
+        return True, [".paired (keys)"]
+    problems = []
+    if g.pop("degenerate") is not True or "degenerate" in w or "one_minus_rho" in w:
+        problems.append(".paired.degenerate")
+    omr = g.pop("one_minus_rho", None)
+    if not (isinstance(omr, float) and omr < 1e-6):
+        problems.append(".paired.one_minus_rho")
+    for keys in N37_REFUSED:
+        gb, wb = g, w
+        for k in keys[:-1]:
+            gb, wb = gb.get(k), wb.get(k)
+        if not (isinstance(gb, dict) and isinstance(wb, dict) and keys[-1] in gb and gb.pop(keys[-1]) is None
+                and isinstance(wb.pop(keys[-1], None), float)):
+            problems.append(".paired." + ".".join(keys))
+    return True, problems
+
+
 def test_legacy_n37_numbers_reproduced(tmp_path, monkeypatch, capsys):
     """The moved scripts, run with the n37 argv on the v7.1 cells, give mega-nav-v71-summ-n37.json and the PBO JSON
-    byte for byte except nav_summ_run (script path, script SHA-256, git head) and the ledger path of each row."""
+    except nav_summ_run (script path, script SHA-256, git head, verb) and the ledger path of each row.
+
+    Ruling B2-N37: the statistics come from the engine verb (B2), whose arithmetic (summation order, fma) differs
+    from numpy's in the last bits; so every float compares at 1e-12 relative (B2-R1 (b)'s numeric form), every other
+    leaf exactly, and the golden file is unchanged. B2-6 disclosure: the n37 argv lists its reference among the dirs,
+    so exactly one row is a self pair, degenerate under B2-R1 (c) (1 - rho < 1e-6): the engine prints its paired SE /
+    t "na" (null) and adds ``degenerate`` / ``one_minus_rho`` where the legacy Python printed numbers; the test checks
+    that form and compares the rest of that row. A failure names JSON paths only when run with the blind flags
+    (``--tb=no --show-capture=no -rN``), which every real-data run uses."""
     root = os.environ.get("ATX_EQUITY_ROOT")
     if not root or Path(root).name != "build-equity" or not Path(root).is_dir():
         pytest.skip("set ATX_EQUITY_ROOT to a build-equity directory (root runs this test on the v7.1 cells)")
@@ -74,7 +136,8 @@ def test_legacy_n37_numbers_reproduced(tmp_path, monkeypatch, capsys):
     summ = equity / "mega-nav-v71-summ-n37.json"
     pbo = equity / "mega-nav-v71-pbo-n37.json"
     want_rows = json.loads(summ.read_text(encoding="utf-8"))
-    assert canonical(want_rows) == summ.read_text(encoding="utf-8")    # the file is nav_summ's canonical dump
+    is_canonical = canonical(want_rows) == summ.read_text(encoding="utf-8")
+    assert is_canonical, "the golden is nav_summ's canonical dump"
     argv = list(want_rows[0]["nav_summ_run"]["argv"])
     # the ledger as the n37 run saw it: its appended lines (if any) removed, every other line verbatim
     added = {r["ledger"]["trial_id"] for r in want_rows if r.get("ledger", {}).get("appended")}
@@ -93,16 +156,22 @@ def test_legacy_n37_numbers_reproduced(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     got_rows = json.loads((tmp_path / "summ.json").read_text(encoding="utf-8"))
     assert len(got_rows) == len(want_rows) == 37
-    for got, want in zip(got_rows, want_rows):
+    degenerate, problems = 0, []
+    for i, (got, want) in enumerate(zip(got_rows, want_rows)):
         got.pop("nav_summ_run"), want.pop("nav_summ_run")
         if "ledger" in got:
             got["ledger"]["path"] = want["ledger"]["path"]
-    assert canonical(got_rows) == canonical(want_rows)
+        is_degenerate, bad = take_degenerate_disclosure(got, want)
+        degenerate += is_degenerate
+        problems += [f"[{i}]{p}" for p in bad + numeric_mismatches(got, want)]
+    assert not problems, f"n37 rows differ from the golden (B2-N37, {N37_REL_TOL} relative) at {problems[:20]}"
+    assert degenerate == 1, "the n37 rows hold exactly one degenerate pair, the self pair (B2-6 disclosure)"
     if "--pbo-json" in argv and pbo.exists():
         got_pbo = json.loads((tmp_path / "pbo.json").read_text(encoding="utf-8"))
         want_pbo = json.loads(pbo.read_text(encoding="utf-8"))
         got_pbo.pop("nav_summ_run"), want_pbo.pop("nav_summ_run")
-        assert canonical(got_pbo) == canonical(want_pbo)
+        problems = numeric_mismatches(got_pbo, want_pbo)
+        assert not problems, f"the n37 PBO differs from the golden (B2-N37, {N37_REL_TOL} relative) at {problems[:20]}"
 
 
 # ------------------------------------------------------------------ year table
@@ -253,8 +322,9 @@ def test_variance_from_rerun_cells(tmp_path, capsys):
     q = rows[0]["deflated_ledger"]
     assert q["variance_sr"] == pytest.approx(v["variance_sr"], rel=1e-15) and q["cells"] == 4
     m = rows[0]["net_moments"]
-    sr0 = NS.expected_max_sr(v["variance_sr"], 6)
-    assert q["dsr"] == pytest.approx(NS.deflated_sharpe(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], sr0),
+    sr0, dsr = longhand_dsr(m["sr_daily"], m["sessions"], m["skew"], m["kurtosis"], v["variance_sr"], 6)
+    assert q["sr0_daily"] == pytest.approx(sr0, rel=1e-12)
+    assert q["dsr"] == pytest.approx(dsr,
                                      rel=1e-12)
     assert q["legacy_dsr"] is not None and q["legacy_cells"] == 3        # reported beside it
     # with fewer than two cells on the window there is no current variance (never a silent fallback)
@@ -407,7 +477,7 @@ def test_old_study_path_is_a_shim_to_the_moved_script(tmp_path):
     spec = importlib.util.spec_from_file_location("nav_summ_shim_probe", SHIM)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.paired_stats is NS.paired_stats or mod.paired_stats.__code__.co_filename == NS.__file__
+    assert mod.analyse is NS.analyse or mod.analyse.__code__.co_filename == NS.__file__
     done = subprocess.run([PY, str(SHIM), "--help"], capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode == 0 and "--bundle BASE FINAL" in done.stdout
     assert not (SHIM.parent / "backtest_integrity.py").exists()

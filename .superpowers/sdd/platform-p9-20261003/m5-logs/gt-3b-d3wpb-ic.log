@@ -1,0 +1,58 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WeightsV3.*:CompositionWeightRows.*:MomVolman.*:ThemeTsmomRunner.*:CharCovHedge.*
+[==========] Running 18 tests from 5 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from CompositionWeightRows
+[ RUN      ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst
+[       OK ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst (4 ms)
+[----------] 1 test from CompositionWeightRows (5 ms total)
+
+[----------] 2 tests from ThemeTsmomRunner
+[ RUN      ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule
+[       OK ] ThemeTsmomRunner.SwitchesThemesAtTheBlockSessionAndRecordsTheRule (872 ms)
+[ RUN      ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput
+[       OK ] ThemeTsmomRunner.BlockRefusalsPrecedeAnyPayloadOrOutput (244 ms)
+[----------] 2 tests from ThemeTsmomRunner (1117 ms total)
+
+[----------] 3 tests from WeightsV3
+[ RUN      ] WeightsV3.SingleRowEqualsV1Bytes
+[       OK ] WeightsV3.SingleRowEqualsV1Bytes (1187 ms)
+[ RUN      ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore
+[       OK ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore (870 ms)
+[ RUN      ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput (6773 ms)
+[----------] 3 tests from WeightsV3 (8831 ms total)
+
+[----------] 7 tests from MomVolman
+[ RUN      ] MomVolman.RegisteredConstants
+[       OK ] MomVolman.RegisteredConstants (0 ms)
+[ RUN      ] MomVolman.StepVarianceClosedForm
+[       OK ] MomVolman.StepVarianceClosedForm (0 ms)
+[ RUN      ] MomVolman.ScheduleFromTheWeightsFile
+[       OK ] MomVolman.ScheduleFromTheWeightsFile (2 ms)
+[ RUN      ] MomVolman.SharedParseAndRefusals
+[       OK ] MomVolman.SharedParseAndRefusals (25 ms)
+[ RUN      ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused
+[       OK ] MomVolman.TinyVolatilityGivesAFiniteScaleAndOverflowIsRefused (3 ms)
+[ RUN      ] MomVolman.SummaryTracePrintsTheScalePerBlock
+[       OK ] MomVolman.SummaryTracePrintsTheScalePerBlock (4 ms)
+[ RUN      ] MomVolman.SleeveFilesBeforeAndAfterScaling
+[       OK ] MomVolman.SleeveFilesBeforeAndAfterScaling (32 ms)
+[----------] 7 tests from MomVolman (69 ms total)
+
+[----------] 5 tests from CharCovHedge
+[ RUN      ] CharCovHedge.ClosedForm2Names
+[       OK ] CharCovHedge.ClosedForm2Names (0 ms)
+[ RUN      ] CharCovHedge.ClosedFormFiveNames
+[       OK ] CharCovHedge.ClosedFormFiveNames (0 ms)
+[ RUN      ] CharCovHedge.WindowSumsAreTheTrailingWindowOls
+[       OK ] CharCovHedge.WindowSumsAreTheTrailingWindowOls (2 ms)
+[ RUN      ] CharCovHedge.FutureReturnDoesNotChangePast
+[       OK ] CharCovHedge.FutureReturnDoesNotChangePast (1 ms)
+[ RUN      ] CharCovHedge.RefusesBadInputAndCountsScratch
+[       OK ] CharCovHedge.RefusesBadInputAndCountsScratch (0 ms)
+[----------] 5 tests from CharCovHedge (3 ms total)
+
+[----------] Global test environment tear-down
+[==========] 18 tests from 5 test suites ran. (10028 ms total)
+[  PASSED  ] 18 tests.

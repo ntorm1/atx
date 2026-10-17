@@ -4,7 +4,7 @@ Run: "C:/Program Files/Python312/python.exe" -m pytest -q -p no:cacheprovider at
 
 The fixture of ThemeResid.ThreeThemesEqualTheRegisteredRule (atx-impl/tests/strategy_ic_theme_resid_test.cpp) is built
 here identically; both sides compare against the same exact values of the rule (EXPECTED_BLEND), which is the "Python
-equals C++" check of the brief.
+equals C++" check of the brief. The numpy side (``ref``) lives in this file since P9 lane D3W-PB (ruling D2-3).
 """
 from fractions import Fraction
 import hashlib
@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import types
 import unittest
 import unittest.mock
 
@@ -105,7 +106,7 @@ def registered_without_tie_step(planes, mass, names: int) -> np.ndarray:
     out = np.zeros(planes.shape[1])
     for d in range(planes.shape[1] // names):
         total = planes[:, d * names:(d + 1) * names]
-        z = cres.standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total))
+        z = ref.standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total))
         row = out[d * names:(d + 1) * names]
         for t in range(len(planes)):
             names_t = np.flatnonzero(~np.isnan(z[t]))
@@ -114,12 +115,12 @@ def registered_without_tie_step(planes, mass, names: int) -> np.ndarray:
             if t == 0:
                 row[names_t] += mass[0] * z[0, names_t]
                 continue
-            e, spanned = cres.residual(z[t, names_t], np.nan_to_num(z[:t][:, names_t], nan=0.0).T)
+            e, spanned = ref.residual(z[t, names_t], np.nan_to_num(z[:t][:, names_t], nan=0.0).T)
             if spanned:
                 continue
             full, keep = np.zeros(names), np.zeros(names, dtype=bool)
             full[names_t], keep[names_t] = e, True
-            row[names_t] += mass[t] * cres.centred_tied_ranks(full, keep)[names_t]
+            row[names_t] += mass[t] * ref.centred_tied_ranks(full, keep)[names_t]
     return out
 
 
@@ -142,7 +143,7 @@ def tie_block_sums(e, z) -> np.ndarray:
 def tie_block_rank_means(e, z) -> np.ndarray:
     """Wrong tie step (finding R6C-3): the raw residual's centred ranks, each tie block's replaced by their mean (the
     rule's next step re-ranks them with the singletons' ranks)."""
-    out = cres.centred_tied_ranks(np.asarray(e, dtype=np.float64), np.ones(len(e), dtype=bool))
+    out = ref.centred_tied_ranks(np.asarray(e, dtype=np.float64), np.ones(len(e), dtype=bool))
     for b in _tie_blocks(z):
         out[b] = float(np.mean(out[b]))
     return out
@@ -159,7 +160,7 @@ def plausible_wrong_rule(planes, mass, names: int, variant: str) -> np.ndarray:
     out = np.zeros(planes.shape[1])
     for d in range(planes.shape[1] // names):
         total = planes[:, d * names:(d + 1) * names]
-        z = cres.standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total))
+        z = ref.standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total))
         row = out[d * names:(d + 1) * names]
         regressors = []                                  # per earlier theme, a names-vector (absent 0)
         for t in range(len(planes)):
@@ -177,12 +178,12 @@ def plausible_wrong_rule(planes, mass, names: int, variant: str) -> np.ndarray:
             if variant == "c":
                 e, spanned = y - x @ np.linalg.lstsq(x, y, rcond=None)[0], False
             else:
-                e, spanned = cres.residual(y, x)
+                e, spanned = ref.residual(y, x)
             residual, reranked = np.zeros(names), np.zeros(names)
             if not spanned:
                 keep = np.zeros(names, dtype=bool)
                 residual[names_t], keep[names_t] = e, True
-                reranked[names_t] = cres.centred_tied_ranks(residual, keep)[names_t]
+                reranked[names_t] = ref.centred_tied_ranks(residual, keep)[names_t]
                 row[names_t] += mass[t] * reranked[names_t]
             regressors.append({"a": residual, "b": reranked, "c": composite}[variant])
     return out
@@ -224,15 +225,149 @@ def std_blend(member, signals, weights, signs, positions, themes):
         for k, sig in enumerate(signals):
             if not weights[k] > 0:
                 continue
-            r = cres.centred_tied_ranks(sig[d], (member[d] == 1) & np.isfinite(sig[d]))
+            r = ref.centred_tied_ranks(sig[d], (member[d] == 1) & np.isfinite(sig[d]))
             ok = ~np.isnan(r)
             total[positions[k], ok] += signs[k] * weights[k] * r[ok]
             present[positions[k], ok] = True
         for t in range(themes):
-            z = cres.centred_tied_ranks(total[t], present[t])
+            z = ref.centred_tied_ranks(total[t], present[t])
             ok = ~np.isnan(z)
             out[d, ok] += mass[t] * z[ok]
     return out
+
+
+# ---------------------------------------------------------------- the runner's rule: numpy reference
+# P9 lane D3W-PB (ruling D2-3): the independent numpy reference of theme-resid-v1 that composition_resid.py
+# held until the C++ (atx-engine composition/theme_resid.hpp add_theme_residualised, the IC runner's
+# residualise stage) became the rule's only producer. A test may hold an independent oracle (G-P5 scans no
+# test): both sides meet EXPECTED_BLEND / TIE_EXPECTED, the exact values of the rule.
+def _centred_tied_ranks(values: np.ndarray, keep: np.ndarray) -> np.ndarray:
+    """Centred tied rank of each kept value among the kept ones, (less + (less + equal - 1)) / (2 (n - 1)) - .5; NaN
+    elsewhere and everywhere when fewer than two are kept."""
+    out = np.full(values.shape, np.nan)
+    idx = np.flatnonzero(keep)
+    n = len(idx)
+    if n < 2:
+        return out
+    v = values[idx]
+    for a, i in enumerate(idx):
+        less, equal = int(np.sum(v < v[a])), int(np.sum(v == v[a]))
+        out[i] = (less + (less + equal - 1)) / (2.0 * (n - 1)) - 0.5
+    return out
+
+
+def _residual(y: np.ndarray, x: np.ndarray, tolerance: float = cres.SPAN_TOLERANCE) -> tuple[np.ndarray, bool]:
+    """Least-squares residual of y on [1, x] (x: n x m) by numpy.linalg.lstsq; exactly 0 (spanned) within tolerance."""
+    design = np.column_stack([np.ones(len(y))] + ([x] if x.size else []))
+    beta = np.linalg.lstsq(design, y, rcond=None)[0]
+    e = y - design @ beta
+    centred = float(np.linalg.norm(y - y.mean()))
+    if not centred > 0 or float(np.linalg.norm(e)) <= tolerance * centred:
+        return np.zeros(len(y)), True
+    return e, False
+
+
+def _tie_block_means(e: np.ndarray, z: np.ndarray) -> np.ndarray:
+    """Rule 4's tie step (Ruling PM4-12): ``e`` with each run of exactly equal ``z`` (a tie block; the names sorted by
+    (z, position), so a block lists its names in ascending order) of two or more names replaced by the block mean,
+    summed from the block's first name in ascending name order and divided by the block size (the C++ expression and
+    order, strategy_ic_theme_resid.cpp mean_over_tie_blocks). A block of one name is untouched."""
+    out = np.array(e, dtype=np.float64)
+    order = sorted(range(len(z)), key=lambda k: (float(z[k]), k))
+    b = 0
+    while b < len(order):
+        end = b + 1
+        while end < len(order) and z[order[end]] == z[order[b]]:
+            end += 1
+        if end - b > 1:
+            total = float(e[order[b]])
+            for k in order[b + 1:end]:
+                total += float(e[k])
+            mean = total / float(end - b)
+            for k in order[b:end]:
+                out[k] = mean
+        b = end
+    return out
+
+
+def _standardise(total: np.ndarray, present: np.ndarray) -> np.ndarray:
+    """Rule 2 on one session (themes x names): the centred tied rank of each theme's sum over its present names; a lone
+    present name 0; NaN where the theme has no present member."""
+    z = np.full(total.shape, np.nan)
+    for t in range(total.shape[0]):
+        if present[t].sum() == 1:
+            z[t, present[t]] = 0.0
+        elif present[t].sum() >= 2:
+            z[t] = _centred_tied_ranks(total[t], present[t])
+    return z
+
+
+def _add_session(z: np.ndarray, mass, out: np.ndarray) -> None:
+    """Rules 3-5 on one session's standardised composites ``z`` (themes x names, registered order, NaN = absent): adds
+    W_t x the theme's term to ``out`` (names) at the names where theme t is present (two or more of them)."""
+    names = z.shape[1]
+    for t in range(z.shape[0]):
+        names_t = np.flatnonzero(~np.isnan(z[t]))
+        if len(names_t) < 2:
+            continue
+        if t == 0:
+            out[names_t] += mass[0] * z[0, names_t]
+            continue
+        x = np.nan_to_num(z[:t][:, names_t], nan=0.0).T
+        e, spanned = _residual(z[t, names_t], x)
+        if spanned:
+            continue
+        e = _tie_block_means(e, z[t, names_t])
+        full = np.zeros(names)
+        full[names_t] = e
+        keep = np.zeros(names, dtype=bool)
+        keep[names_t] = True
+        rr = _centred_tied_ranks(full, keep)
+        out[names_t] += mass[t] * rr[names_t]
+
+
+def _kernel(planes, mass, names: int) -> np.ndarray:
+    """The numpy reference of strategy_ic_theme_resid.cpp add_theme_residualised: ``planes`` one dates x names row-major
+    plane per theme (registered order) of the raw sums (NaN = no member present), ``mass`` W per theme; returns what the
+    kernel adds to a zero ``out`` (dates * names)."""
+    planes = np.asarray(planes, dtype=np.float64)
+    dates = planes.shape[1] // names
+    out = np.zeros(dates * names)
+    for d in range(dates):
+        total = planes[:, d * names:(d + 1) * names]
+        _add_session(_standardise(np.nan_to_num(total, nan=0.0), ~np.isnan(total)), mass,
+                    out[d * names:(d + 1) * names])
+    return out
+
+
+def _blend(member: np.ndarray, signals: list[np.ndarray], weights: list[float], signs: list[int], position: list[int],
+          themes: int) -> np.ndarray:
+    """theme-resid-v1 blend (dates x names): ``position[k]`` is member k's theme position in the registered order;
+    W_t sums the theme's positive weights; members with weight 0 or sign 0 add no rank; nonmember cells NaN, as the IC
+    composition writes them."""
+    dates, names = member.shape
+    out = np.where(member == 1, 0.0, np.nan)
+    mass = np.zeros(themes)
+    for k, w in enumerate(weights):
+        if w > 0:
+            mass[position[k]] += w
+    for d in range(dates):
+        total = np.zeros((themes, names))
+        present = np.zeros((themes, names), dtype=bool)
+        for k, sig in enumerate(signals):
+            if not (weights[k] > 0) or signs[k] == 0:
+                continue
+            row = sig[d]
+            r = _centred_tied_ranks(row, (member[d] == 1) & np.isfinite(row))
+            ok = ~np.isnan(r)
+            total[position[k], ok] += signs[k] * weights[k] * r[ok]
+            present[position[k], ok] = True
+        _add_session(_standardise(total, present), mass, out[d])
+    return out
+
+
+ref = types.SimpleNamespace(**{name: globals()[f"_{name}"] for name in (
+    "centred_tied_ranks", "residual", "tie_block_means", "standardise", "add_session", "kernel", "blend")})
 
 
 class DeclaredRule(unittest.TestCase):
@@ -266,6 +401,8 @@ class DeclaredRule(unittest.TestCase):
         self.assertIsNotNone(listed)
         cpp = tuple(re.findall(r'"([a-z0-9_]+)"', listed.group(1)))
         self.assertEqual(cpp[:len(fcw.PRIOR_THEMES)], fcw.PRIOR_THEMES)
+        # Pins today's 13 themes on purpose (D1 review minor, P9 lane D2): the first theme a lane registers updates
+        # this tuple and test_fit_composition_rule_plugins' list-of-record check in the same commit.
         self.assertEqual(cpp, cres.FROZEN_PREFIX + ("filing_events", "price_volume", "merger_arbitrage"))
         self.assertEqual(cres.registered_order(cpp), cpp)
 
@@ -302,7 +439,7 @@ class RunnerReference(unittest.TestCase):
         """Python equals C++: the numpy reference (lstsq) gives the exact values that strategy_ic_theme_resid_test.cpp
         pins."""
         member, signals = fixture()
-        out = cres.blend(member, signals, WEIGHTS, SIGNS, POSITIONS, 3)
+        out = ref.blend(member, signals, WEIGHTS, SIGNS, POSITIONS, 3)
         for d in range(DAYS):
             for i in range(WIDTH):
                 want = EXPECTED_BLEND[d][i]
@@ -314,23 +451,23 @@ class RunnerReference(unittest.TestCase):
         self.assertGreater(np.nanmax(np.abs(out - std)), 0.05)                  # the rule changes the blend
         # date 2: theme b is theme a, so it adds nothing; theme a is the standardised composite
         a_only = std_blend(member, signals, [0.2, 0.15, 0, 0, 0], SIGNS, POSITIONS, 1)
-        b_equal_a = cres.blend(member, signals, [0.2, 0.15, 0.2, 0.2, 0], SIGNS, POSITIONS, 2)
+        b_equal_a = ref.blend(member, signals, [0.2, 0.15, 0.2, 0.2, 0], SIGNS, POSITIONS, 2)
         np.testing.assert_allclose(b_equal_a[2, :7], a_only[2, :7], rtol=0, atol=1e-15)
         # the order is the rule: b first changes the blend (by exactly 1/40 at most, on date 2, with PM4-12's tie step;
         # the three-theme kernel case below and ThemeResidRunner's 3-cycle are the stronger order checks)
-        swapped = cres.blend(member, signals, WEIGHTS, SIGNS, [1, 1, 0, 0, 2], 3)
+        swapped = ref.blend(member, signals, WEIGHTS, SIGNS, [1, 1, 0, 0, 2], 3)
         self.assertGreater(np.nanmax(np.abs(out - swapped)), 0.02)
 
     def test_first_theme_is_its_standardised_composite(self):
         member, signals = fixture()
         one = [0.2, 0.15, 0, 0, 0]
-        np.testing.assert_array_equal(cres.blend(member, signals, one, SIGNS, POSITIONS, 1),
+        np.testing.assert_array_equal(ref.blend(member, signals, one, SIGNS, POSITIONS, 1),
                                       std_blend(member, signals, one, SIGNS, POSITIONS, 1))
 
     def test_two_theme_residual_is_the_closed_form_and_orthogonal(self):
         rng = np.random.default_rng(11)
         y, x = rng.normal(size=9), rng.normal(size=9)
-        e, spanned = cres.residual(y, x.reshape(-1, 1))
+        e, spanned = ref.residual(y, x.reshape(-1, 1))
         xc, yc = x - x.mean(), y - y.mean()
         closed = yc - (xc @ yc / (xc @ xc)) * xc
         self.assertFalse(spanned)
@@ -342,14 +479,14 @@ class RunnerReference(unittest.TestCase):
         """Ruling PM4-12: names tied in a theme's own composite get one value of it, the re-ranked mean of their
         residuals (exact fractions; the C++ kernel test pins the same); on date 1 the block means reorder the levels;
         the registered text without the tie step spreads each block (TIE_SPREAD)."""
-        got = cres.kernel(TIE_PLANES, [0.5, 0.5], TIE_NAMES)
+        got = ref.kernel(TIE_PLANES, [0.5, 0.5], TIE_NAMES)
         np.testing.assert_allclose(got, [float(x) for x in TIE_EXPECTED], rtol=0, atol=1e-15)
         spread = registered_without_tie_step(TIE_PLANES, [0.5, 0.5], TIE_NAMES)
         np.testing.assert_allclose(spread, [float(x) for x in TIE_SPREAD], rtol=0, atol=1e-15)
         self.assertGreater(np.max(np.abs(got - spread)), 0.05)
         for d in range(2):
             cells = slice(d * TIE_NAMES, (d + 1) * TIE_NAMES)
-            first = cres.centred_tied_ranks(np.array(TIE_PLANES[0][cells], dtype=float), np.ones(TIE_NAMES, bool))
+            first = ref.centred_tied_ranks(np.array(TIE_PLANES[0][cells], dtype=float), np.ones(TIE_NAMES, bool))
             second = got[cells] - 0.5 * first                                   # theme 1's add per name
             flag = np.array(TIE_PLANES[1][cells])
             for level in set(flag.tolist()):
@@ -363,11 +500,11 @@ class RunnerReference(unittest.TestCase):
         block of one name is untouched (its bits kept)."""
         e = np.array([1e16, 0.3, 1.0, -1e16])
         z = np.array([0.5, -0.5, 0.5, 0.5])
-        got = cres.tie_block_means(e, z)
+        got = ref.tie_block_means(e, z)
         self.assertEqual(got[1], 0.3)                                          # a block of one: untouched
         self.assertEqual(list(got[[0, 2, 3]]), [0.0, 0.0, 0.0])               # ((1e16 + 1) - 1e16) / 3 in this order
         self.assertNotEqual((1e16 + -1e16 + 1.0) / 3, 0.0)                    # another order gives 1/3
-        np.testing.assert_array_equal(cres.tie_block_means(e, np.arange(4.0)), e)
+        np.testing.assert_array_equal(ref.tie_block_means(e, np.arange(4.0)), e)
 
     def test_unequal_tie_blocks_beside_singletons_pin_the_block_mean(self):
         """Finding R6C-3 (Ruling PM5-12, the Python half): tie blocks of three and two names beside three singletons,
@@ -375,9 +512,9 @@ class RunnerReference(unittest.TestCase):
         ranks (UNEQUAL_*). The rule gives UNEQUAL_EXPECTED, one value per block; a block sum or rank averaging gives
         UNEQUAL_WRONG, each at least 2/7 away on some name; without the tie step the blocks spread."""
         mass = [0.5, 0.5]
-        got = cres.kernel(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
+        got = ref.kernel(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
         np.testing.assert_allclose(got, [float(x) for x in UNEQUAL_EXPECTED], rtol=0, atol=1e-15)
-        first = cres.centred_tied_ranks(np.array(UNEQUAL_PLANES[0], dtype=float), np.ones(UNEQUAL_NAMES, dtype=bool))
+        first = ref.centred_tied_ranks(np.array(UNEQUAL_PLANES[0], dtype=float), np.ones(UNEQUAL_NAMES, dtype=bool))
         add = got - mass[0] * first                                            # theme 1's add per name
         blocks = _tie_blocks(UNEQUAL_PLANES[1])
         self.assertEqual(sorted(map(len, blocks)), [2, 3])                    # unequal blocks beside 3 singletons
@@ -385,8 +522,8 @@ class RunnerReference(unittest.TestCase):
             self.assertLess(np.ptp(add[b]), 1e-15, b)                          # one value per block
         self.assertEqual(sorted(range(UNEQUAL_NAMES), key=lambda k: (add[k], k)), [0, 1, 5, 7, 2, 4, 6, 3])
         for variant, values in UNEQUAL_WRONG.items():
-            with unittest.mock.patch.object(cres, "tie_block_means", WRONG_TIE_STEPS[variant]):
-                wrong = cres.kernel(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
+            with unittest.mock.patch.object(sys.modules[__name__], "_tie_block_means", WRONG_TIE_STEPS[variant]):
+                wrong = ref.kernel(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
             np.testing.assert_allclose(wrong, [float(x) for x in values], rtol=0, atol=1e-15, err_msg=variant)
             self.assertGreater(np.max(np.abs(wrong - got)), 2 / 7 - 1e-12, variant)
         spread = registered_without_tie_step(UNEQUAL_PLANES, mass, UNEQUAL_NAMES)
@@ -404,7 +541,7 @@ class RunnerReference(unittest.TestCase):
                 planes[2, d * names + i] = float((2 * i + 3 * d + 1) % 7) - 3.0
         planes[1, names + 2] = NAN
         planes[2, 5] = NAN
-        got = cres.kernel(planes, [0.3, 0.45, 0.25], names)
+        got = ref.kernel(planes, [0.3, 0.45, 0.25], names)
         want = registered_without_tie_step(planes, [0.3, 0.45, 0.25], names)
         self.assertEqual(got.view(np.uint64).tolist(), want.view(np.uint64).tolist())
         self.assertGreater(np.max(np.abs(got)), 0.05)
@@ -414,7 +551,7 @@ class RunnerReference(unittest.TestCase):
         the registered rule (theme t on an intercept and the earlier composites) gives SMALL_EXPECTED; regressing on the
         earlier pre-rank residuals (a), on their re-ranked residuals (b) or without the intercept (c) gives SMALL_WRONG,
         each at least 1/12 away. No composite has a tie, so the tie step leaves the registered text bit for bit."""
-        got = cres.kernel(SMALL_PLANES, SMALL_MASS, SMALL_NAMES)
+        got = ref.kernel(SMALL_PLANES, SMALL_MASS, SMALL_NAMES)
         np.testing.assert_allclose(got, [float(x) for x in SMALL_EXPECTED], rtol=0, atol=1e-15)
         want = registered_without_tie_step(SMALL_PLANES, SMALL_MASS, SMALL_NAMES)
         self.assertEqual(got.view(np.uint64).tolist(), want.view(np.uint64).tolist())
@@ -429,13 +566,13 @@ class RunnerReference(unittest.TestCase):
         position map (2, 0, 1) and the plausible wrong rules (a)-(c) give CYCLE_WRONG, each at least 1/20 away."""
         member = np.ones((1, WIDTH), dtype=np.uint8)
         signals = [np.array([s]) for s in CYCLE_SIGNALS]
-        got = cres.blend(member, signals, CYCLE_WEIGHTS, [1, 1, 1], [1, 2, 0], 3)[0]
+        got = ref.blend(member, signals, CYCLE_WEIGHTS, [1, 1, 1], [1, 2, 0], 3)[0]
         np.testing.assert_allclose(got, [float(x) for x in CYCLE_EXPECTED], rtol=0, atol=1e-15)
         order = [2, 0, 1]                                  # the registered order: resid_c, resid_a, resid_b
         planes, mass = [CYCLE_SIGNALS[k] for k in order], [CYCLE_WEIGHTS[k] for k in order]
-        np.testing.assert_allclose(cres.kernel(planes, mass, WIDTH), got, rtol=0, atol=1e-15)
+        np.testing.assert_allclose(ref.kernel(planes, mass, WIDTH), got, rtol=0, atol=1e-15)
         wrong = {v: plausible_wrong_rule(planes, mass, WIDTH, v) for v in "abc"}
-        wrong["d"] = cres.blend(member, signals, CYCLE_WEIGHTS, [1, 1, 1], [2, 0, 1], 3)[0]
+        wrong["d"] = ref.blend(member, signals, CYCLE_WEIGHTS, [1, 1, 1], [2, 0, 1], 3)[0]
         for variant, values in CYCLE_WRONG.items():
             np.testing.assert_allclose(wrong[variant], [float(x) for x in values], rtol=0, atol=1e-12,
                                        err_msg=variant)
@@ -443,14 +580,14 @@ class RunnerReference(unittest.TestCase):
 
     def test_spanned_and_dependent_regressors(self):
         x = np.array([0.5, -0.25, 1 / 6, -1 / 3, 0.125, 0.0])
-        e, spanned = cres.residual(2 * x - 1, x.reshape(-1, 1))
+        e, spanned = ref.residual(2 * x - 1, x.reshape(-1, 1))
         self.assertTrue(spanned)
         self.assertEqual(e.tolist(), [0.0] * 6)
         y = np.array([0.1, 0.4, -0.3, 0.2, -0.5, 0.05])
-        one, _ = cres.residual(y, x.reshape(-1, 1))
-        dup, _ = cres.residual(y, np.column_stack([x, 3 * x + 2, np.zeros(6)]))
+        one, _ = ref.residual(y, x.reshape(-1, 1))
+        dup, _ = ref.residual(y, np.column_stack([x, 3 * x + 2, np.zeros(6)]))
         np.testing.assert_allclose(dup, one, rtol=0, atol=1e-14)            # a dependent column changes nothing
-        e, spanned = cres.residual(np.full(4, 0.25), np.empty((4, 0)))
+        e, spanned = ref.residual(np.full(4, 0.25), np.empty((4, 0)))
         self.assertTrue(spanned)                                            # a constant composite adds nothing
 
 
@@ -598,8 +735,9 @@ class FitterEndToEnd(unittest.TestCase):
 
     def test_the_re_fit_is_checked_against_the_parent_cells_file(self):
         """Finding R6B-O-5: with --theme-resid-parent the re-fit must be the parent cell's weights file plus the block;
-        provenance.resid and the summary record the parent's SHA-256. A changed fitter file (script_sha256, and the
-        admission SHA it moves) is the one tolerated difference."""
+        provenance.resid and the summary record the parent's SHA-256. A changed fitter (its identity, and the admission
+        SHA it moves) is the one tolerated difference: producer_fingerprint since CM-5 (P9 lane D2), script_sha256 in a
+        parent fitted before CM-5."""
         parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
         sha = hashlib.sha256(parent.read_bytes()).hexdigest()
         code, summary = self.resid_fit("checked", parent)
@@ -612,18 +750,33 @@ class FitterEndToEnd(unittest.TestCase):
         del doc[cres.BLOCK]
         del doc["provenance"]["resid"]
         self.assertEqual(fcw.canonical_bytes(doc), parent.read_bytes())
-        with unittest.mock.patch.object(fcw, "SCRIPT_SHA256", "0" * 64):       # the fitter file changed in between
+        with unittest.mock.patch.object(fcw, "producer_fingerprint", lambda funcs: "0" * 64):  # a fitter code change
             code, _ = self.resid_fit("new-script", parent)
         self.assertEqual(code, fcw.EXIT_OK)
         moved = json.loads((self.root / "new-script" / fcw.OUTPUT_WEIGHTS).read_bytes())["provenance"]
         before = json.loads(parent.read_bytes())["provenance"]
-        self.assertEqual(moved["script_sha256"], "0" * 64)
+        self.assertEqual(moved["producer_fingerprint"], "0" * 64)
         self.assertNotEqual(moved["admission_sha256"], before["admission_sha256"])
+        # CM-5: a parent fitted before CM-5 names the fitter by script_sha256 (inputs and provenance): tolerated too
+        legacy = self.root / "legacy-parent"
+        legacy.mkdir()
+        adm = json.loads((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        del adm["inputs"]["producer_fingerprint"]
+        adm["inputs"]["script_sha256"] = "1" * 64
+        adm_bytes = fcw.canonical_bytes(adm)
+        doc = json.loads(parent.read_bytes())
+        del doc["provenance"]["producer_fingerprint"]
+        doc["provenance"].update(script_sha256="1" * 64, admission_sha256=hashlib.sha256(adm_bytes).hexdigest())
+        (legacy / fcw.OUTPUT_ADMISSION).write_bytes(adm_bytes)
+        (legacy / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
+        code, _ = self.resid_fit("legacy-out", legacy / fcw.OUTPUT_WEIGHTS)
+        self.assertEqual(code, fcw.EXIT_OK)
 
     def test_a_re_fit_that_is_not_the_parent_cells_file_is_refused(self):
         """Finding R6B-O-5: another composition's file, a parent whose weights or admission were changed, a parent with
         a key the re-fit lacks (even a null one), a parent that already carries the block, a wrong pin, a pooled (era)
-        fit and incomplete flags are refused before any output."""
+        fit and incomplete flags are refused before any output; so is a parent fitted before P9 lane D2 (its rule
+        block names its code by module_sha256), with the cause and the remedy (review S-5)."""
         parent = self.root / "std" / fcw.OUTPUT_WEIGHTS
         tampered = self.root / "tampered"
         tampered.mkdir()
@@ -646,7 +799,20 @@ class FitterEndToEnd(unittest.TestCase):
         doc["provenance"]["note"] = None
         (extra / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
         (extra / fcw.OUTPUT_ADMISSION).write_bytes((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        pre_d2 = self.root / "pre-d2"                     # review S-5: a parent as a fitter before P9 lane D2 wrote it
+        pre_d2.mkdir()
+        adm = json.loads((self.root / "std" / fcw.OUTPUT_ADMISSION).read_bytes())
+        adm["inputs"]["script_sha256"] = adm["inputs"].pop("producer_fingerprint")
+        doc = json.loads(parent.read_bytes())
+        doc["provenance"]["script_sha256"] = doc["provenance"].pop("producer_fingerprint")
+        doc["provenance"]["std"]["module_sha256"] = doc["provenance"]["std"].pop("producer_fingerprint")
+        doc["provenance"]["admission_sha256"] = hashlib.sha256(fcw.canonical_bytes(adm)).hexdigest()
+        (pre_d2 / fcw.OUTPUT_ADMISSION).write_bytes(fcw.canonical_bytes(adm))
+        (pre_d2 / fcw.OUTPUT_WEIGHTS).write_bytes(fcw.canonical_bytes(doc))
         cases = [("other-rule", self.root / cis.RULE_ID / fcw.OUTPUT_WEIGHTS, {}, "is not the parent cell's"),
+                 ("pre-d2", pre_d2 / fcw.OUTPUT_WEIGHTS, {},
+                  r"fitted before P9 lane D2: its provenance blocks \['std'\] name their code by module_sha256.*"
+                  r"refit the parent cell with this fitter"),
                  ("tampered", tampered / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['weights'"),
                  ("moved", moved / fcw.OUTPUT_WEIGHTS, {}, r"admission.json differs .*\['rules'\]"),
                  ("extra-null", extra / fcw.OUTPUT_WEIGHTS, {}, r"differ: \['provenance.note'\]"),

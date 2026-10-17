@@ -1,0 +1,443 @@
+{
+  "head": "cb1c8e37b2201c6fb02146ad6fec1a49ed071da0",
+  "branch": "feat/platform-p9-20261003",
+  "status": "M .superpowers/sdd/platform-p9-20261003/progress.md\n?? docs/plans/2026-10-02-x5-equity-curve.png\n?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png\n?? docs/plans/2026-10-03-wq-explore-equity-curve.png\n?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png\n?? docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png",
+  "model": "GPT-6 Astra",
+  "host": "free RAM 2.92 of 15.69 GB (2986 MiB); C: 36.2 GB free",
+  "crt": "ucrtbase.dll (C:\\Windows\\System32) file version 10.0.26100.7623 (WinBuild.160101.0800) SHA-256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF (= the P9-B0 record, C.6)",
+  "policy": "No wait, build, measurement, PNG read/hash or spec mutation.",
+  "source_diff_from_receipt": "",
+  "delta_since_repin": "scripts/specs/p9/rules/info-clock-rate-v1.json\nscripts/specs/p9/rules/mom-volman-v1.json\nscripts/specs/p9/rules/mv-aim-v1.json\nscripts/specs/p9/rules/theme-cov-hedge-v1.json\nscripts/specs/p9/templates/info-clock-rate-v1-cal.json\nscripts/specs/p9/templates/info-clock-rate-v1-gm.json\nscripts/specs/p9/templates/info-clock-rate-v1.json\nscripts/specs/p9/templates/info-clock.json\nscripts/specs/p9/templates/label-terminal-cal.json\nscripts/specs/p9/templates/label-terminal-gm.json\nscripts/specs/p9/templates/label-terminal.json\nscripts/specs/p9/templates/mom-volman-v1-cal.json\nscripts/specs/p9/templates/mom-volman-v1-gm.json\nscripts/specs/p9/templates/mom-volman-v1.json\nscripts/specs/p9/templates/mom-volman.json\nscripts/specs/p9/templates/mv-aim-v1-cal.json\nscripts/specs/p9/templates/mv-aim-v1-gm.json\nscripts/specs/p9/templates/mv-aim-v1.json\nscripts/specs/p9/templates/mv-aim.json\nscripts/specs/p9/templates/p9x-leverage.json\nscripts/specs/p9/templates/theme-cov-hedge-ready.json\nscripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-cal.json\nscripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json\nscripts/specs/p9/templates/theme-cov-hedge-v1-attempt2.json\nscripts/specs/p9/templates/theme-cov-hedge-v1.json\nscripts/specs/p9/templates/theme-cov-hedge.json\nscripts/specs/p9/waves/p9c-info-clock.json\nscripts/specs/p9/waves/p9h-cov-hedge-attempt2.json\nscripts/specs/p9/waves/p9h-cov-hedge.json\nscripts/specs/p9/waves/p9m-mom-volman.json\nscripts/specs/p9/waves/p9mv-mv-aim.json\nscripts/specs/v8/lib-v8ysb-gm.json\nscripts/tests/test_wave_commit_policy.py\nscripts/wave_context.py\nscripts/wave_steps.py",
+  "executables": [
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-alpha-tests",
+      "sha256": "534efe4928e84ae3f9fcc9f0ed79b7e823b51689987edd84c513b6ba7917bf56",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-book-tests",
+      "sha256": "88f195dba54faa428eed45b4d53cf64d7e8f8a28702c7f3b3d68dd80ab4af0ac",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-factory-tests",
+      "sha256": "6bf91318724f77c0413dfaada365708d4360fbc754320f05a9e074655575483c",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-admission-tests",
+      "sha256": "39c4a81bda54df9712e2e818684cb78293486e7d664dec8b308883c505da1581",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-catalog-tests",
+      "sha256": "c996b733b5b92f58bee1760a0c7505ec6349c3847bb392d5014e762b58dfefc5",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-composition-tests",
+      "sha256": "17cee392663a5df0432e3293bec06bb5126f6931672b0d827cdaa0e336a731f6",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-eval-tests",
+      "sha256": "2b9910b3665798c6d93cca37998580db5942cc7284b88cfef4b9830b946a4a02",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-fields-tests",
+      "sha256": "165ebeea3d7f01fb330856240c12d125b18c0a491bac66183ab9a229c49b3651",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-ledger-tests",
+      "sha256": "bfe2afc39770a316810ea5f33650e6d15f66ad013374b123ea16e42f8865bf94",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-research-store-tests",
+      "sha256": "bf9c312941fc5d8668bb7024c476f915138679fb26f3f3fa21fd88e94d953d26",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-engine-risk-tests",
+      "sha256": "b654425d22fc671b3b24a7dbbb35ccad4288b655afb8d1925853362ca624e99d",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-equity-strategy",
+      "sha256": "f883f81f0fbb928cb8fe2e8b1931841e0eef058e7b6398810e10de68cb0495a4",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-equity-strategy-ic",
+      "sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-equity-strategy-mine",
+      "sha256": "daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-equity-strategy-risk",
+      "sha256": "0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-equity-strategy-targets",
+      "sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-impl",
+      "sha256": "71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-impl-strategy-ic-tests",
+      "sha256": "9e979065f2b56f135c819baab9da80c89e5745b6ba249c284c428d3497d0fb5b",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-impl-strategy-mine-tests",
+      "sha256": "2ae349c689f9423f2847ffbb63a3ad9598b4c26aab0ca63136dc16a83019fa68",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-impl-strategy-target-tests",
+      "sha256": "5e781705c1fab53c42cb49d0777753a1f792ff022847923f4dce901411cd6db5",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-impl-strategy-tests",
+      "sha256": "0ae6ab3f4a09af6a33d4dec3f6eba8fe8324e7c3ea85aaae6f745cb5e03712e1",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-impl-tests",
+      "sha256": "9f4cf8076d17b93891a70fb5944e3f43975230a84bc0a82a1e8fb46d90e0b545",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-research-admission",
+      "sha256": "f53d9277e4ad2e3915343ccca032df3f0098a1a1cd7b4d832b640f5f7437063f",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-research-composition",
+      "sha256": "04db0d67c1563184edd6fe8ff66796877c8db20239d5cfb423fa78e047df16f2",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-research-eval",
+      "sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-research-fields",
+      "sha256": "883c5b74a95731eb310cfd30cb1ab39ee102e077ab2d7318bd5db941f486584a",
+      "match": true
+    },
+    {
+      "tag": "p9-3f",
+      "name": "atx-research-store",
+      "sha256": "0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-alpha-tests",
+      "sha256": "3f8f1c7ce851998d3b2e515cdcbc9ae1634a61550ac2d975a3828850356c9637",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-book-tests",
+      "sha256": "6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-factory-tests",
+      "sha256": "a9d538ae4d922afa26c78da60e7114b6cabcf78dc32c3274d7f698cf339354d6",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-admission-tests",
+      "sha256": "310aa78298b1bbb75c5d6104f1af581aa962c909cccfdd846d5b6628e8200a62",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-catalog-tests",
+      "sha256": "b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-composition-tests",
+      "sha256": "76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-eval-tests",
+      "sha256": "58b5681bc8373e9a1ddf0a84602d5502acc01070708a09ddc52d747106ec3557",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-fields-tests",
+      "sha256": "a037964fc902f143541d204624e9bd31e0249c7e3a216bd9dac325ab1d47ef7d",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-ledger-tests",
+      "sha256": "8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-research-store-tests",
+      "sha256": "d2330e4b387b832545ada353706c62cb41c02981bff61728365ac7329713661f",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-engine-risk-tests",
+      "sha256": "0008934517be7b3a36eede7eae65fde92cab50dab10b9835af585186e26bbbb1",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-equity-strategy",
+      "sha256": "47d341c2541e792873ec5d3db0b739af6de61e9962ba46667c755a1ca56ca9a4",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-equity-strategy-ic",
+      "sha256": "adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-equity-strategy-mine",
+      "sha256": "4dee20571d4c4481bcf175d8bb688574ba95c60ae29d08b4bb474849f7945412",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-equity-strategy-risk",
+      "sha256": "6696da719374777aefb49ce9e6b4707187549dff9b838e0c2338d21e852b47a1",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-equity-strategy-targets",
+      "sha256": "5dced610e204ba860bd2c8c8da5c3c6bd58a1ef98c242bec352a6b64d8762a8f",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-impl",
+      "sha256": "7095d4477dd7fee80ead2d9bbdb516a726ed3ab943beed95ac1dc5335af63e55",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-impl-strategy-ic-tests",
+      "sha256": "55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-impl-strategy-mine-tests",
+      "sha256": "7502d0fb39e125a9cce9feabab4c35a8da5681a37eacad974b793c555822abb0",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-impl-strategy-target-tests",
+      "sha256": "18f3855468ca76c083eae9fabdb8d0cd1a237996ac8bba3136ed06782eb74318",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-impl-strategy-tests",
+      "sha256": "6dc6d4426370e256dc1e1331292e84da180a292cb72c86456c70eb9255246fba",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-impl-tests",
+      "sha256": "20f3e2378ea4373e4812ba6c1d5bf1257945b2c5a9488cabeb6df04071f523db",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-research-admission",
+      "sha256": "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-research-composition",
+      "sha256": "212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-research-eval",
+      "sha256": "4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-research-fields",
+      "sha256": "1c670d86a0fdcae6a86b0eff56a184902d1eed8b244f8af6ab31425e18185fac",
+      "match": true
+    },
+    {
+      "tag": "p9-3g",
+      "name": "atx-research-store",
+      "sha256": "a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73",
+      "match": true
+    }
+  ],
+  "references": [
+    {
+      "directory": "p9-b0-r2-nav",
+      "files": 27,
+      "listing_sha256": "04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd",
+      "match": true
+    },
+    {
+      "directory": "p9-b0g-x10-nav",
+      "files": 27,
+      "listing_sha256": "6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d",
+      "match": true
+    },
+    {
+      "directory": "p9-b0g-y1-nav",
+      "files": 28,
+      "listing_sha256": "cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813",
+      "match": true
+    },
+    {
+      "directory": "p9-b0g-yf0-u",
+      "files": 5,
+      "listing_sha256": "1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa",
+      "match": true
+    },
+    {
+      "directory": "p9-b0g-yf0-w",
+      "files": 12,
+      "listing_sha256": "ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1",
+      "match": true
+    },
+    {
+      "directory": "p9-b0g-yf0-nav",
+      "files": 27,
+      "listing_sha256": "e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797",
+      "match": true
+    }
+  ],
+  "ledger": {
+    "lines": 139,
+    "sha256": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+    "prefix138_sha256": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8"
+  },
+  "accounting": {
+    "counts": {
+      "construction": {
+        "TRAIN 2020-01-06..2022-12-30": 37,
+        "TRAIN 2020-01-06..2023-12-29": 2,
+        "TRAIN 2020-01-03..2023-12-29": 29
+      },
+      "admission": {
+        "TRAIN 2020-01-01..2023-12-31": 61
+      }
+    },
+    "N_hand": 129,
+    "M": 110,
+    "history_reads": 0,
+    "N_tot": 239
+  },
+  "cache_files": 686,
+  "absent": {
+    "build-equity/research-store": true,
+    "build-equity\\mega-candidate-cache-v8-lo3\\index.sqlite": true,
+    "build-equity/train-2020-2023-lo3-fields-v9": true,
+    "build-equity/train-2020-2023-lo3-fields-v10": true,
+    "build-equity/train-2020-2023-lo3-fields-v13": true,
+    "build-equity/train-2020-2023-lo3-fields-v14": true,
+    "build-equity/train-2020-2023-lo3-fields-v15a": true
+  },
+  "stores": {
+    "v11": {
+      "manifest_sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7",
+      "container": {
+        "bytes": 510677824,
+        "file": "model.atxcov",
+        "file_sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3",
+        "format": "atx.cov-container/1.0",
+        "root_sha256": "b39a1b776639e7d0b88c70e8a43bb9f6c5e6dacb92a336a327234dfc5d312e1d"
+      },
+      "producer": {
+        "engine_git_sha": "c8ddf7368f92d85217fb35a581fbad5d3b934b37-dirty",
+        "executable_sha256": "ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811"
+      }
+    },
+    "covv1": {
+      "manifest_sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3",
+      "container": {
+        "bytes": 510678016,
+        "file": "model.atxcov",
+        "file_sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a",
+        "format": "atx.cov-container/1.0",
+        "root_sha256": "20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e"
+      },
+      "producer": {
+        "engine_git_sha": "c8ddf7368f92d85217fb35a581fbad5d3b934b37-dirty",
+        "executable_sha256": "ccc73cd10ddc0c4454de50a51f2624e8f38f440e1ea5b47b984cbab06444d811"
+      }
+    }
+  },
+  "fields": {
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "payloads": 84,
+    "witnessed": 70,
+    "risk_fields_covered": 11
+  },
+  "COV9_returns_applied": false
+}

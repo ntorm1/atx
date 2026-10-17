@@ -1,0 +1,3 @@
+v11 rel: {'BLOCKS': True, 'BLOCK_HASHES': True, 'DATE_INDEX': True}; payload files equal 10/10
+covv1 rel: {'BLOCKS': True, 'BLOCK_HASHES': True, 'DATE_INDEX': True}; payload files equal 10/10
+reproduces root's rel bytes: True

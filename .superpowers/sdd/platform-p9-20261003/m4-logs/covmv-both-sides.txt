@@ -1,0 +1,6 @@
+atx-impl/src/book/nav_decide.cpp
+atx-impl/src/book/nav_lockstep.cpp
+atx-impl/src/book/nav_rules.cpp
+atx-impl/src/book/nav_rules.hpp
+atx-impl/src/strategy_nav_v7.cpp
+atx-impl/tests/CMakeLists.txt

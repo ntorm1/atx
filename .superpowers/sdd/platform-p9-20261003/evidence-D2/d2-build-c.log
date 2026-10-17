@@ -1,0 +1,49 @@
+﻿{
+    "Source":  "a17319fb37d571f4e5b1ec755e542428a228679e",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  4,
+    "ConfiguredProvenance":  "a17319fb37d571f4e5b1ec755e542428a228679e",
+    "Jobs":  4,
+    "FreeMiB":  4582,
+    "CommitMiB":  3737,
+    "Targets":  [
+                    "atx-equity-strategy-ic",
+                    "atx-impl-strategy-ic-tests",
+                    "atx-engine-combine-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  54.389588599999996,
+    "CompiledTUs":  9,
+    "Links":  5,
+    "Tag":  "p9-d2-c",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-20\\build-equity",
+    "Executables":  {
+                        "atx-equity-strategy-ic":  {
+                                                       "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+                                                       "Sha256":  "65d62e27d6f10d3ff6823654ac90cc656a48ce0a626e93b5569a15eca46f0302"
+                                                   },
+                        "atx-impl-strategy-ic-tests":  {
+                                                           "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+                                                           "Sha256":  "9db70f9ce35c1b5ee4b6440cab1ba68757b40cb39b7e89fb2a25d2aeac55ec1f"
+                                                       },
+                        "atx-engine-combine-tests":  {
+                                                         "Path":  "C:\\atx-wt\\pool-20\\build-equity\\bin\\atx-engine-combine-tests.exe",
+                                                         "Sha256":  "8836762d47cfc8a8ab753a33a150b4907da185df9e06bcffa5cb55d97cc1a776"
+                                                     }
+                    }
+}
+[1/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+[2/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+[3/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+[4/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+[5/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+[6/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+[7/15] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+[8/15] Linking CXX static library lib\spdlogd.lib
+[9/15] Linking CXX executable bin\atx-engine-combine-tests.exe
+[10/15] Building CXX object atx-impl\tests\CMakeFiles\atx-impl-strategy-ic-tests.dir\strategy_ic_rules_test.cpp.obj
+[11/15] Building CXX object atx-impl\CMakeFiles\atx-impl-core.dir\src\strategy_ic_rules.cpp.obj
+[12/15] Linking CXX static library lib\atx-impl-core.lib
+[13/15] Linking CXX executable bin\atx-equity-strategy-ic.exe
+[14/15] Linking CXX executable bin\atx-impl-strategy-ic-tests.exe

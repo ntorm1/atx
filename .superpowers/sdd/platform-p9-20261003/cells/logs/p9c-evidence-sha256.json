@@ -1,0 +1,122 @@
+[
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-prelaunch.json",
+    "bytes": 2114,
+    "sha256": "ea2c1f1a99ada1763f86f2c89bb98ed320be6c18258a0e880879d328e980ce0e",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-native-wall.json",
+    "bytes": 93,
+    "sha256": "7878f9871e4a0b939c0dc7a6ac71b96f8003d2c4a69a47f4cf751a0e59037255",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-seal-complete.txt",
+    "bytes": 11010,
+    "sha256": "dc919d9b3a371b4f925e5d82946227b69d665543e20d089ca669a598a960f45c",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-freeze-complete.txt",
+    "bytes": 2882,
+    "sha256": "a35fad919f947bc97932edbd48d33028e301745719e2e1cb0e4a8b2ef38f9953",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-frozen-exes.json",
+    "bytes": 8621,
+    "sha256": "8ce0623ec92516475fcb262cf41b878e83016618ab97a32f8d078ddd75be12bd",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-input-commit-audit.json",
+    "bytes": 4079,
+    "sha256": "cc1d020ebc1c5cac772c7de85773b32b8a0ad1617cd39909011569e6ab82f6e0",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-final-receipt-flags.json",
+    "bytes": 8056,
+    "sha256": "a9982d9337d32652261de1774ab456b459836087235456e7b046cce760101376",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-audit-status.txt",
+    "bytes": 2406,
+    "sha256": "2f4ca8e1ae0c2f8455b617fd39d53336d639c703244f0c45d8c2def98a2d0ebf",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-mechanics-first.json",
+    "bytes": 863,
+    "sha256": "f02e3fcaa2403757bb95cc7f75807d979488db4006b5a9181a3e39dd498038d7",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-rho-first.txt",
+    "bytes": 746,
+    "sha256": "7dd62a67dd9ca4ea8d936f702fdc55452fc39dd43245d18c90c6b0890e8e23fb",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-registered-prints.json",
+    "bytes": 742,
+    "sha256": "605b4ed7dbad82b02438cdcdb369dcdfd4f0a8bc9eece6d2a152f22ee063c357",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-clock-prints.json",
+    "bytes": 18700,
+    "sha256": "9d0318798adc013144fac7ff8c59eb31c4f414a7aa63c3b1f86bde35a913b601",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-ledger-completion.json",
+    "bytes": 474,
+    "sha256": "cb811f0d22c6be9bebe1bfba68a0f311775e577f7f4df78af5ab80aca664f160",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-accounting.txt",
+    "bytes": 789,
+    "sha256": "45229656f44c51d8446685c622b8e16f724741bbaebbbeb79f0395ac14292cb9",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-timings-only.json",
+    "bytes": 1665,
+    "sha256": "db06446eb12313839acbc1385efba0b7731448a7faba4d28ca52394a0f4220e0",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-timing-summary.json",
+    "bytes": 461,
+    "sha256": "cea1ace556c619468ce1b7c69b800317192a2d7e3841e682bbaf906abf8a9e4d",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-output-files-sha256.txt",
+    "bytes": 13159,
+    "sha256": "9ec8b9052add2944d3da0e25ae6967bc807391f173df659eecebe6113c667c2a",
+    "content_committed": true
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-native-console.txt",
+    "bytes": 10025,
+    "sha256": "6f188c11fe3b5746e44bee30429c97fa10fdad1a88c10aa85fd1bc11f6ef35c8",
+    "content_committed": false
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-scoreboard-unread.txt",
+    "bytes": 3066,
+    "sha256": "44017566e888330bb4e1e79068485068e83f93d14fb7a902f621fc967109d8c6",
+    "content_committed": false
+  },
+  {
+    "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-scoreboard-unread.json",
+    "bytes": 3491,
+    "sha256": "e50b7a5565445117b7c70098b5ea01547f9f9ac6b7e2c6dcd4c1b8a66c7b2f1e",
+    "content_committed": false
+  }
+]

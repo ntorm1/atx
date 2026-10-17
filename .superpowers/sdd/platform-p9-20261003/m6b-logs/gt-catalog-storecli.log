@@ -1,0 +1,22 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = StoreCli.*
+[==========] Running 6 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 6 tests from StoreCli
+[ RUN      ] StoreCli.ExitCodes
+[       OK ] StoreCli.ExitCodes (358 ms)
+[ RUN      ] StoreCli.SealedRootRefusedBeforeAnythingIsRead
+[       OK ] StoreCli.SealedRootRefusedBeforeAnythingIsRead (185 ms)
+[ RUN      ] StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb
+[       OK ] StoreCli.RebuildOpensTheOldCatalogLikeEveryVerb (74 ms)
+[ RUN      ] StoreCli.DuplicateCandidateIdIsARefusal
+[       OK ] StoreCli.DuplicateCandidateIdIsARefusal (131 ms)
+[ RUN      ] StoreCli.QueryRowsOrderedByKey
+[       OK ] StoreCli.QueryRowsOrderedByKey (326 ms)
+[ RUN      ] StoreCli.SchemaJsonEqualsStoreInfo
+[       OK ] StoreCli.SchemaJsonEqualsStoreInfo (125 ms)
+[----------] 6 tests from StoreCli (1202 ms total)
+
+[----------] Global test environment tear-down
+[==========] 6 tests from 1 test suite ran. (1203 ms total)
+[  PASSED  ] 6 tests.

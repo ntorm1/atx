@@ -1,0 +1,20 @@
+root before A4 (HEAD^1):
+   ftd_shares_ratio21: kind python builder research_fields_holdings owner builder:FIELD_MODULES formula cce14201f3010416
+   regsho_threshold_days63: kind python builder research_fields_holdings owner builder:FIELD_MODULES formula 7e869d7de916b8b6
+   coskew_60m: kind python builder research_fields_price owner builder:FIELD_MODULES formula e9d807ea2f8edd27
+   xrd0_ttm: kind python builder research_fields_price owner builder:FIELD_MODULES formula 2561cf4d97372dce
+pre-flip merged (HEAD):
+   ftd_shares_ratio21: kind python builder research_fields_holdings owner builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine formula cce14201f3010416
+   regsho_threshold_days63: kind python builder research_fields_holdings owner builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine formula 7e869d7de916b8b6
+   coskew_60m: kind python builder research_fields_price owner builder:FIELD_MODULES formula e9d807ea2f8edd27
+   xrd0_ttm: kind python builder research_fields_price owner builder:FIELD_MODULES formula 2561cf4d97372dce
+flip ftd (69141218):
+   ftd_shares_ratio21: kind engine builder ftd_shares_ratio21 owner builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine formula cce14201f3010416
+   regsho_threshold_days63: kind python builder research_fields_holdings owner builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine formula 7e869d7de916b8b6
+   coskew_60m: kind python builder research_fields_price owner builder:FIELD_MODULES formula e9d807ea2f8edd27
+   xrd0_ttm: kind python builder research_fields_price owner builder:FIELD_MODULES formula 2561cf4d97372dce
+flip regsho (59d807ea):
+   ftd_shares_ratio21: kind engine builder ftd_shares_ratio21 owner builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine formula cce14201f3010416
+   regsho_threshold_days63: kind engine builder regsho_threshold_days63 owner builder:FIELD_MODULES; engine-shim:prepare_research_fields_engine formula 7e869d7de916b8b6
+   coskew_60m: kind python builder research_fields_price owner builder:FIELD_MODULES formula e9d807ea2f8edd27
+   xrd0_ttm: kind python builder research_fields_price owner builder:FIELD_MODULES formula 2561cf4d97372dce

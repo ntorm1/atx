@@ -18,8 +18,13 @@ module's source panel; open_adj, high_adj, low_adj on the ohlc module's bar pane
 ``research_fields_price.open_return_rows`` / ``ceq_iss_rows`` and ``research_fields_ohlc.bar_rows``: the module still
 reads its own panel (so the manifest's source checks are unchanged), the engine builds the routed fields of one panel in
 one call (``--price-source`` passed as the spec's ``price_source``), and its read statistics must equal the module's
-panel's (``same_panel``), else the engine path refuses. The builder entry (``prepare_research_fields.py --registry``)
-calls ``engine_path`` the same way for its engine rows when it is given an executable.
+panel's (``same_panel``), else the engine path refuses. The holdings fields of P9 lane A4 (ftd_shares_ratio21,
+regsho_threshold_days63) are routed at ``research_fields_holdings.build_ftd`` / ``build_regsho``: the module still pins its stages and assembles the entry, the
+engine reads the same pinned stages (and this run's ``shares_out.f64``), every stage file it read must be its stage
+manifest's bytes and is recorded in the module's stage reads, and its stage checks, clock and seal pins must be the
+module's, so the manifest's sources and ``source_checks.holdings`` are the Python path's. The builder entry
+(``prepare_research_fields.py --registry``) calls ``engine_path`` the same way for its engine rows when it is given an
+executable.
 
 What the engine path claims (fields review FD-1): each engine field's payload bytes and coverage equal the Python
 builder's, and its manifest entry says who produced them. Every engine entry carries the producer identity of K-P9-3,
@@ -53,24 +58,32 @@ import subprocess
 import sys
 import time
 
+import field_registry as fr                # same directory: the registry's spec text (a holdings formula fingerprint)
 import prepare_research_fields as builder  # same directory: the builder (it does not import this module)
+import research_fields_holdings as hold    # same directory: the holdings late module (bound into the builder)
 import research_fields_ohlc as ohlc        # same directory: the bar fields' draft module (bound by its shim)
 import research_fields_price as price      # same directory: vol_126's module (bound into the builder)
 
 REGISTRY = Path(__file__).resolve().parent / "field_registry.json"   # K-P9-1 (the engine rows: kind "engine")
 REGISTRY_SCHEMA = "atx.field-registry/v1"
-# The fields this wrapper can route (its producer hooks: finra_field, volume_mean_rows, and for the vendor-panel fields
-# of P9 lane A3 open_return_rows / ceq_iss_rows and bar_rows); the registry decides which of them are engine rows.
+# The fields this wrapper can route (its producer hooks: finra_field, volume_mean_rows, for the vendor-panel fields of
+# P9 lane A3 open_return_rows / ceq_iss_rows and bar_rows, for the holdings fields of P9 lane A4 build_ftd /
+# build_regsho); the registry decides which of them are engine rows.
 # Public name kept: the builder entry (lane A1) validates engine rows against it.
 PRICE_FIELDS = ("ret_overnight", "ret_intraday", "ceq_iss_5y")     # research_fields_price.py, on its source panel
 BAR_FIELDS = ("open_adj", "high_adj", "low_adj")                   # research_fields_ohlc.py, on its bar panel
-ENGINE_FIELDS = ("si_shares", "si_dtc", "vol_126") + PRICE_FIELDS + BAR_FIELDS
+HOLD_ROUTES = ("ftd_shares_ratio21", "regsho_threshold_days63")   # research_fields_holdings.py (P9 lane A4)
+ENGINE_FIELDS = ("si_shares", "si_dtc", "vol_126") + PRICE_FIELDS + BAR_FIELDS + HOLD_ROUTES
 # The engine's name of a Python vendor-panel read statistic where the two differ (sources/vendor_panel.hpp).
 SCAN_KEYS = {"rows_scanned": "rows_in_file", "rows_on_or_after_seal_skipped": "rows_sealed_dropped"}
 # The read statistics both Python panels always record (research_fields_price.source_panel, research_fields_ohlc.
 # bar_panel): a panel guard without them would compare nothing, so it refuses (fail closed).
 PANEL_KEYS = ("rows_scanned", "rows_on_or_after_seal_skipped", "rows_selected", "rows_off_calendar",
               "duplicate_keys_quarantined")
+# The share statistics of the price panel (research_fields_price.source_panel): Python records them as 0 when it loads no
+# shares, the engine only when its panel loads shares (A3 re-review N-1), so a 0 the engine does not report is no
+# difference; any other value still has to be the engine's.
+SHARE_KEYS = ("shares_rows_above_a9_ceiling",)
 SPEC_SCHEMA = "atx.research-fields-spec/v1"
 RECEIPT_SCHEMA = "atx.research-fields-receipt/v1"
 RECEIPT_DIR = "engine_fields"
@@ -160,10 +173,20 @@ def lag_of(name: str) -> int:
     return ohlc.LAG_SESSIONS if name in BAR_FIELDS else price.LAG_SESSIONS
 
 
+def formula_of(name: str) -> str:
+    """This builder's formula fingerprint of a routed field (its registry row's ``formula_sha256``): a module's spec at
+    that module's lag; a holdings field's spec text as the registry generates it (``field_registry.spec_text``)."""
+    if name in HOLD_ROUTES:
+        return builder.formula_id(name, fr.spec_text(hold.HOLD_FIELDS[name], builder.FUND_LAG_SESSIONS_DECLARED))
+    return builder.formula_id(name, builder.spec_definition(name, lag_of(name)))
+
+
 def build_fields(exe: EngineExe, names, role, output: Path, budget, finra: Path | None = None,
-                 price_source: Path | None = None) -> dict:
+                 price_source: Path | None = None, stages: dict | None = None, shares_out: tuple | None = None) -> dict:
     """Run ``exe build`` once for ``names`` (in that order; the vendor-panel fields of one call share one panel):
-    {name: (its checked receipt entry, the call's producer block)}, each <output>/<name>.f64 written."""
+    {name: (its checked receipt entry, the call's producer block)}, each <output>/<name>.f64 written. ``stages``
+    ({spec key: a pinned holdings Stage}) and ``shares_out`` ((path, SHA-256) of this run's payload) are the holdings
+    kinds' inputs."""
     names = list(names)
     tag = "+".join(names)
     work = Path(output) / RECEIPT_DIR
@@ -175,6 +198,10 @@ def build_fields(exe: EngineExe, names, role, output: Path, budget, finra: Path 
         spec["finra"] = str(Path(finra).resolve())
     if price_source is not None:
         spec["price_source"] = str(Path(price_source).resolve())
+    for key, stage in (stages or {}).items():
+        spec[key] = {"dir": str(Path(stage.dir).resolve()), "manifest_sha256": stage.manifest_source["sha256"]}
+    if shares_out is not None:
+        spec["shares_out"] = {"path": str(Path(shares_out[0]).resolve()), "sha256": shares_out[1]}
     spec_path, receipt_path = work / f"{tag}.spec.json", work / f"{tag}.receipt.json"
     with spec_path.open("xb") as f:
         f.write((json.dumps(spec, indent=2, sort_keys=True) + "\n").encode("utf-8"))
@@ -204,8 +231,7 @@ def build_fields(exe: EngineExe, names, role, output: Path, budget, finra: Path 
             raise EngineError(f"{name}: payload SHA-256 {digest} differs from the receipt's {entry['sha256']}")
         if builder.canonical(quantiles) != builder.canonical(entry["coverage"]["member_finite_quantiles"]):
             raise EngineError(f"{name}: the engine's member quantiles differ from numpy's (identity broken)")
-        formula = builder.formula_id(name, builder.spec_definition(name, lag_of(name)))
-        if entry.get("formula_sha256") != formula:
+        if entry.get("formula_sha256") != formula_of(name):
             raise EngineError(f"{name}: the engine's formula fingerprint differs from this builder's (spec text drift)")
         out[name] = (entry, producer)
     return out
@@ -263,9 +289,11 @@ def same_panel(name: str, entry: dict, stats: dict) -> None:
     same factor-break-v1 outcome. The price fields' bits depend on the panel's history (a repaired step before the role
     divides both factors of a ratio), and the engine sets that history from the fields of its own call, so a run whose
     Python panel reaches further (coskew_60m without ceq_iss_5y, or ceq_iss_5y left to Python) is refused here. Fail
-    closed: statistics that are not a dict, or lack any of ``PANEL_KEYS``, refuse (an empty comparison proves nothing),
-    as does an engine entry without its panel's statistics."""
-    if not isinstance(stats, dict) or any(k not in stats for k in PANEL_KEYS):
+    closed: statistics that are not a dict, or lack any of ``PANEL_KEYS`` or hold None for one (A3 re-review S-R2: an
+    empty comparison proves nothing, and a None statistic is skipped below), refuse, as does an engine entry without its
+    panel's statistics. A ``SHARE_KEYS`` statistic that is 0 here and absent from the engine's block (its panel loaded
+    no shares) is not compared (A3 re-review N-1)."""
+    if not isinstance(stats, dict) or any(stats.get(k) is None for k in PANEL_KEYS):
         raise EngineError(f"{name}: this builder's vendor panel recorded no read statistics "
                           f"({', '.join(PANEL_KEYS)} needed); refusing")
     checks = entry.get("source_checks")
@@ -274,7 +302,8 @@ def same_panel(name: str, entry: dict, stats: dict) -> None:
         raise EngineError(f"{name}: the engine's receipt carries no vendor panel statistics; refusing")
     for key, want in stats.items():
         other = SCAN_KEYS.get(key, key)
-        if key == "rule" or (want is None and other not in got):
+        if key == "rule" or (want is None and other not in got) or (key in SHARE_KEYS and want == 0
+                                                                    and other not in got):
             continue
         if got.get(other) != want:
             raise EngineError(f"{name}: the engine's vendor panel differs from this builder's ({key}: "
@@ -368,6 +397,104 @@ def bar_producers(base_panel, base_rows, exe: EngineExe, names):
     return bar_panel, bar_rows
 
 
+def stage_reads(name: str, entry: dict, reads) -> None:
+    """Refuse unless the stage files the engine read (its ``source_checks.stage_files``, per stage in path order) are
+    exactly ``reads`` ([(a pinned Stage, the relative names it read)]) at their stage manifests' bytes; then record
+    them in each Stage's reads as ``Stage.blob`` does, so the module's ``sources()`` and ``check()`` are the Python
+    path's."""
+    want = []
+    for stage, rels in reads:
+        group = []
+        for rel in rels:
+            pin = stage.manifest["files"].get(rel) if isinstance(rel, str) else None
+            if not isinstance(pin, dict):
+                raise EngineError(f"{name}: the engine read {rel!r}, which the {stage.key} stage manifest does "
+                                  "not list")
+            group.append({"path": str((stage.dir / rel).resolve()), "bytes": int(pin["bytes"]),
+                          "sha256": pin["sha256"]})
+        want.append(sorted(group, key=lambda x: x["path"]))
+    checks = entry.get("source_checks") if isinstance(entry.get("source_checks"), dict) else {}
+    got = checks.get("stage_files")
+    flat = [x for group in want for x in group]
+    if not isinstance(got, list) or not all(isinstance(x, dict) for x in got) or \
+            [(x.get("bytes"), x.get("sha256")) for x in got] != [(x["bytes"], x["sha256"]) for x in flat]:
+        raise EngineError(f"{name}: the engine read other stage files than its stage check lists")
+    for (stage, _), group in zip(reads, want):
+        stage.read.extend(x for x in group if x not in stage.read)
+
+
+def holdings_entry(name: str, entry: dict, stages: dict, key: str, inputs: list) -> tuple:
+    """The engine's ``source_checks.<key>`` statistics of a holdings field and its entry extras for the module (the
+    NaN reasons), once every pin the module writes itself is the engine's too: the stage checks (after
+    ``stage_reads``), the visibility rule, the seal, the stage manifest pins and the dependencies; ``inputs``: this
+    builder's source records of the field (the stage manifests, then shares_out when it divides by it)."""
+    checks = entry.get("source_checks") if isinstance(entry.get("source_checks"), dict) else {}
+    extra = entry.get("extra") if isinstance(entry.get("extra"), dict) else {}
+    if checks.get("stage") != {k: s.check() for k, s in stages.items()}:
+        raise EngineError(f"{name}: the engine's stage checks differ from this builder's")
+    spec = hold.HOLD_FIELDS[name]
+    want = {"visibility_rule": hold.VISIBILITY_RULE, "seal_date": hold.seal_pin(),
+            "stage_manifest_sha256": {k: s.manifest_source["sha256"] for k, s in stages.items()}}
+    if "requires" in spec:
+        want["depends_on"] = list(spec["requires"])
+    for k, v in want.items():
+        if extra.get(k) != v:
+            raise EngineError(f"{name}: the engine's {k} differs from this builder's")
+    if checks.get("visibility_rule") != hold.VISIBILITY_RULE or checks.get("seal") != hold.seal_pin():
+        raise EngineError(f"{name}: the engine's source checks name another visibility rule or seal")
+    same_sources(name, entry.get("sources") or [], inputs)
+    st = checks.get(key)
+    reasons = extra.get("nan_reasons_member_cells")
+    if not isinstance(st, dict) or not isinstance(reasons, dict):
+        raise EngineError(f"{name}: the engine's receipt carries no {key} statistics or NaN reasons")
+    return st, {"nan_reasons_member_cells": reasons}
+
+
+def holdings_producers(base_ftd, base_regsho, exe: EngineExe, names):
+    """``research_fields_holdings.build_ftd`` / ``build_regsho`` with the named fields computed by the engine (the
+    module's return shapes: ({name: writer}, the kind's source check, {name: entry extras})). The module pins the
+    stages (``open_stages``) and checks this run's shares_out before; the engine reads the same pinned bytes."""
+    def call(ctx, name, stages, shares_out=None):
+        inputs = [s.manifest_source for s in stages.values()]
+        so = None
+        if shares_out is not None:
+            if ctx.so is None or not shares_out.is_file():
+                raise EngineError(f"{name}: this run's shares_out.f64 is not loaded")
+            so = (shares_out, file_sha256(shares_out))
+            inputs.append({"path": str(shares_out.resolve()), "bytes": shares_out.stat().st_size, "sha256": so[1]})
+        entry, producer = build_fields(exe, [name], ctx.role, ctx.output, ctx.budget, stages=stages,
+                                       shares_out=so)[name]
+        return entry, producer, inputs
+
+    def build_ftd(ctx, kind_names, stage):
+        if list(kind_names) != ["ftd_shares_ratio21"] or "ftd_shares_ratio21" not in names:
+            return base_ftd(ctx, kind_names, stage)
+        name = "ftd_shares_ratio21"
+        entry, producer, inputs = call(ctx, name, {"ftd": stage}, Path(ctx.output) / "shares_out.f64")
+        st = (entry.get("source_checks") or {}).get("ftd")
+        files = st.get("files") if isinstance(st, dict) else None
+        stage_reads(name, entry, [(stage, files if isinstance(files, list) else [None])])
+        st, extra = holdings_entry(name, entry, {"ftd": stage}, "ftd", inputs)
+        return {name: EngineWriter(Path(ctx.output) / entry["file"], entry["coverage"])}, st, \
+            {name: dict(extra, producer=producer)}
+
+    def build_regsho(ctx, kind_names, stage, names_stage):
+        if list(kind_names) != ["regsho_threshold_days63"] or "regsho_threshold_days63" not in names:
+            return base_regsho(ctx, kind_names, stage, names_stage)
+        name = "regsho_threshold_days63"
+        stages = {"regsho_threshold": stage, "security_master": names_stage}
+        entry, producer, inputs = call(ctx, name, stages)
+        st = (entry.get("source_checks") or {}).get("regsho_threshold")
+        files = st.get("threshold_files") if isinstance(st, dict) else None
+        stage_reads(name, entry, [(stage, ["lists.parquet", *(files if isinstance(files, list) else [None])]),
+                                  (names_stage, ["finra_names.parquet"])])
+        st, extra = holdings_entry(name, entry, stages, "regsho_threshold", inputs)
+        return {name: EngineWriter(Path(ctx.output) / entry["file"], entry["coverage"])}, st, \
+            {name: dict(extra, producer=producer)}
+
+    return build_ftd, build_regsho
+
+
 @contextlib.contextmanager
 def engine_path(exe: Path, names):
     """Route the named fields' producers to the engine for the duration of one build."""
@@ -380,6 +507,7 @@ def engine_path(exe: Path, names):
     base_finra, base_volume = ns["finra_field"], price.volume_mean_rows
     base_price = price.open_return_rows, price.ceq_iss_rows
     base_bars = ohlc.bar_panel, ohlc.bar_rows
+    base_hold = hold.build_ftd, hold.build_regsho
     ns["finra_field"] = finra_producer(base_finra, engine, set(names))
     if "vol_126" in names:
         price.volume_mean_rows = volume_producer(engine)
@@ -387,12 +515,15 @@ def engine_path(exe: Path, names):
         price.open_return_rows, price.ceq_iss_rows = price_producers(*base_price, engine, names)
     if set(names) & set(BAR_FIELDS):
         ohlc.bar_panel, ohlc.bar_rows = bar_producers(*base_bars, engine, names)
+    if set(names) & set(HOLD_ROUTES):
+        hold.build_ftd, hold.build_regsho = holdings_producers(*base_hold, engine, set(names))
     try:
         yield
     finally:
         ns["finra_field"], price.volume_mean_rows = base_finra, base_volume
         price.open_return_rows, price.ceq_iss_rows = base_price
         ohlc.bar_panel, ohlc.bar_rows = base_bars
+        hold.build_ftd, hold.build_regsho = base_hold
 
 
 def run(role_dir, role_sha256, output, fields, *, engine_fields=None, engine_exe=None, **kw):

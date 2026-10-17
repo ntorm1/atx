@@ -1,0 +1,30 @@
+{
+    "Source":  "19e967d095bb9a6058952dad8b85aae2cbbb5f34",
+    "Preset":  "equity-dev",
+    "DirtyEntries":  0,
+    "ConfiguredProvenance":  "19e967d095bb9a6058952dad8b85aae2cbbb5f34",
+    "Jobs":  4,
+    "FreeMiB":  3602,
+    "CommitMiB":  7579,
+    "Targets":  [
+                    "atx-impl-strategy-target-tests",
+                    "atx-engine-book-tests"
+                ],
+    "ExitCode":  0,
+    "WallSeconds":  298.9058884,
+    "CompiledTUs":  165,
+    "Links":  7,
+    "Tag":  "p9-covmv-i",
+    "Script":  "scripts/research-build.ps1",
+    "BuildDir":  "C:\\atx-wt\\pool-31\\build-equity",
+    "Executables":  {
+                        "atx-impl-strategy-target-tests":  {
+                                                               "Path":  "C:\\atx-wt\\pool-31\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+                                                               "Sha256":  "4c9894aae1de2d2a2af7d54a1d6d8ae66619ce95a20e3f8ecbdc86035f0d0d34"
+                                                           },
+                        "atx-engine-book-tests":  {
+                                                      "Path":  "C:\\atx-wt\\pool-31\\build-equity\\bin\\atx-engine-book-tests.exe",
+                                                      "Sha256":  "a7b568a86e372ef9521b35c39f0dbd890de839a0db8aa3b73a98a8982428231f"
+                                                  }
+                    }
+}

@@ -1,0 +1,2341 @@
+{
+  "scope": "R15-FREEZE-PREP metadata only; no statistical run",
+  "utc": "2026-10-17T18:21:18.872464+00:00",
+  "head": "71226ef9be8816e2c5e6b0ded657249d9c81b712",
+  "branch": "feat/platform-p9-20261003",
+  "main": "e696e208ef622aeb8a9ffbcc4bd3e4ea16a74548",
+  "origin_main": "8786863866bcecfbfe3d6f7a90a132bc85a6915c",
+  "status": "M .superpowers/sdd/platform-p9-20261003/progress.md\n?? docs/plans/2026-10-02-x5-equity-curve.png\n?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png\n?? docs/plans/2026-10-03-wq-explore-equity-curve.png\n?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png\n?? docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png",
+  "mismatches": [],
+  "frozen_exes": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+      "bytes": 5448704,
+      "sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-ic.exe",
+      "bytes": 4490240,
+      "sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy.exe",
+      "bytes": 1123328,
+      "sha256": "f883f81f0fbb928cb8fe2e8b1931841e0eef058e7b6398810e10de68cb0495a4",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+      "bytes": 1092608,
+      "sha256": "0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-mine.exe",
+      "bytes": 3739648,
+      "sha256": "daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-eval.exe",
+      "bytes": 809472,
+      "sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-composition.exe",
+      "bytes": 581632,
+      "sha256": "04db0d67c1563184edd6fe8ff66796877c8db20239d5cfb423fa78e047df16f2",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-admission.exe",
+      "bytes": 464896,
+      "sha256": "f53d9277e4ad2e3915343ccca032df3f0098a1a1cd7b4d832b640f5f7437063f",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-store.exe",
+      "bytes": 3410432,
+      "sha256": "0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-fields.exe",
+      "bytes": 1889792,
+      "sha256": "883c5b74a95731eb310cfd30cb1ab39ee102e077ab2d7318bd5db941f486584a",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl.exe",
+      "bytes": 8428032,
+      "sha256": "71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-ic-tests.exe",
+      "bytes": 13018112,
+      "sha256": "9e979065f2b56f135c819baab9da80c89e5745b6ba249c284c428d3497d0fb5b",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-target-tests.exe",
+      "bytes": 17934336,
+      "sha256": "5e781705c1fab53c42cb49d0777753a1f792ff022847923f4dce901411cd6db5",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-tests.exe",
+      "bytes": 45385216,
+      "sha256": "9f4cf8076d17b93891a70fb5944e3f43975230a84bc0a82a1e8fb46d90e0b545",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-tests.exe",
+      "bytes": 2302976,
+      "sha256": "0ae6ab3f4a09af6a33d4dec3f6eba8fe8324e7c3ea85aaae6f745cb5e03712e1",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-mine-tests.exe",
+      "bytes": 4766208,
+      "sha256": "2ae349c689f9423f2847ffbb63a3ad9598b4c26aab0ca63136dc16a83019fa68",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-alpha-tests.exe",
+      "bytes": 5925888,
+      "sha256": "534efe4928e84ae3f9fcc9f0ed79b7e823b51689987edd84c513b6ba7917bf56",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-factory-tests.exe",
+      "bytes": 7335936,
+      "sha256": "6bf91318724f77c0413dfaada365708d4360fbc754320f05a9e074655575483c",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-book-tests.exe",
+      "bytes": 5976576,
+      "sha256": "88f195dba54faa428eed45b4d53cf64d7e8f8a28702c7f3b3d68dd80ab4af0ac",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-risk-tests.exe",
+      "bytes": 8913408,
+      "sha256": "b654425d22fc671b3b24a7dbbb35ccad4288b655afb8d1925853362ca624e99d",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-fields-tests.exe",
+      "bytes": 4097024,
+      "sha256": "165ebeea3d7f01fb330856240c12d125b18c0a491bac66183ab9a229c49b3651",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-admission-tests.exe",
+      "bytes": 863744,
+      "sha256": "39c4a81bda54df9712e2e818684cb78293486e7d664dec8b308883c505da1581",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-store-tests.exe",
+      "bytes": 2647040,
+      "sha256": "bf9c312941fc5d8668bb7024c476f915138679fb26f3f3fa21fd88e94d953d26",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-catalog-tests.exe",
+      "bytes": 4070400,
+      "sha256": "c996b733b5b92f58bee1760a0c7505ec6349c3847bb392d5014e762b58dfefc5",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-composition-tests.exe",
+      "bytes": 1176064,
+      "sha256": "17cee392663a5df0432e3293bec06bb5126f6931672b0d827cdaa0e336a731f6",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-ledger-tests.exe",
+      "bytes": 452608,
+      "sha256": "bfe2afc39770a316810ea5f33650e6d15f66ad013374b123ea16e42f8865bf94",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-eval-tests.exe",
+      "bytes": 1354752,
+      "sha256": "2b9910b3665798c6d93cca37998580db5942cc7284b88cfef4b9830b946a4a02",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+      "bytes": 12909056,
+      "sha256": "5dced610e204ba860bd2c8c8da5c3c6bd58a1ef98c242bec352a6b64d8762a8f",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+      "bytes": 8010752,
+      "sha256": "adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy.exe",
+      "bytes": 2992128,
+      "sha256": "47d341c2541e792873ec5d3db0b739af6de61e9962ba46667c755a1ca56ca9a4",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+      "bytes": 4505088,
+      "sha256": "6696da719374777aefb49ce9e6b4707187549dff9b838e0c2338d21e852b47a1",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-mine.exe",
+      "bytes": 9806336,
+      "sha256": "4dee20571d4c4481bcf175d8bb688574ba95c60ae29d08b4bb474849f7945412",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-eval.exe",
+      "bytes": 2241024,
+      "sha256": "4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-composition.exe",
+      "bytes": 1702400,
+      "sha256": "212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-admission.exe",
+      "bytes": 1196544,
+      "sha256": "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-store.exe",
+      "bytes": 5955072,
+      "sha256": "a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-fields.exe",
+      "bytes": 3925504,
+      "sha256": "1c670d86a0fdcae6a86b0eff56a184902d1eed8b244f8af6ab31425e18185fac",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl.exe",
+      "bytes": 18133504,
+      "sha256": "7095d4477dd7fee80ead2d9bbdb516a726ed3ab943beed95ac1dc5335af63e55",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+      "bytes": 14844928,
+      "sha256": "55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+      "bytes": 23562752,
+      "sha256": "18f3855468ca76c083eae9fabdb8d0cd1a237996ac8bba3136ed06782eb74318",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-tests.exe",
+      "bytes": 51814400,
+      "sha256": "20f3e2378ea4373e4812ba6c1d5bf1257945b2c5a9488cabeb6df04071f523db",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-tests.exe",
+      "bytes": 4011520,
+      "sha256": "6dc6d4426370e256dc1e1331292e84da180a292cb72c86456c70eb9255246fba",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-mine-tests.exe",
+      "bytes": 10608640,
+      "sha256": "7502d0fb39e125a9cce9feabab4c35a8da5681a37eacad974b793c555822abb0",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-alpha-tests.exe",
+      "bytes": 9859584,
+      "sha256": "3f8f1c7ce851998d3b2e515cdcbc9ae1634a61550ac2d975a3828850356c9637",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-factory-tests.exe",
+      "bytes": 11063296,
+      "sha256": "a9d538ae4d922afa26c78da60e7114b6cabcf78dc32c3274d7f698cf339354d6",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-book-tests.exe",
+      "bytes": 12827136,
+      "sha256": "6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-risk-tests.exe",
+      "bytes": 18928128,
+      "sha256": "0008934517be7b3a36eede7eae65fde92cab50dab10b9835af585186e26bbbb1",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-fields-tests.exe",
+      "bytes": 6024704,
+      "sha256": "a037964fc902f143541d204624e9bd31e0249c7e3a216bd9dac325ab1d47ef7d",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-admission-tests.exe",
+      "bytes": 1631232,
+      "sha256": "310aa78298b1bbb75c5d6104f1af581aa962c909cccfdd846d5b6628e8200a62",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-store-tests.exe",
+      "bytes": 3917824,
+      "sha256": "d2330e4b387b832545ada353706c62cb41c02981bff61728365ac7329713661f",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+      "bytes": 6481408,
+      "sha256": "b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+      "bytes": 2319360,
+      "sha256": "76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-ledger-tests.exe",
+      "bytes": 830464,
+      "sha256": "8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd",
+      "match": true
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-eval-tests.exe",
+      "bytes": 2804736,
+      "sha256": "58b5681bc8373e9a1ddf0a84602d5502acc01070708a09ddc52d747106ec3557",
+      "match": true
+    }
+  ],
+  "pins": [
+    {
+      "path": "C:\\Windows\\System32\\ucrtbase.dll",
+      "bytes": 1373280,
+      "sha256": "2c08e77f86b0953cffa505bdbe64e87ecb7c088db65d5acb9a2eee65a32565ef",
+      "match": true
+    },
+    {
+      "path": "build-equity\\train-2020-2023-lo3-fields-v15\\manifest.json",
+      "bytes": 765005,
+      "sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+      "match": true
+    },
+    {
+      "path": "build-equity\\train-2020-2023-lo3\\manifest.json",
+      "bytes": 602407,
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9-m2i-dcov-v11\\manifest.json",
+      "bytes": 33768,
+      "sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9-m2i-dcov-v11\\model.atxcov",
+      "bytes": 510677824,
+      "sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9-m2i-dcov-covv1\\manifest.json",
+      "bytes": 34534,
+      "sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9-m2i-dcov-covv1\\model.atxcov",
+      "bytes": 510678016,
+      "sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a",
+      "match": true
+    }
+  ],
+  "references": [
+    {
+      "listing": {
+        "path": ".superpowers\\sdd\\platform-p9-20261003\\gate-logs\\b0-files-p9-b0-r2-nav.txt",
+        "bytes": 3001,
+        "sha256": "04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd",
+        "match": true
+      },
+      "files": [
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\daily_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 937495,
+          "sha256": "d63f40c9639eecc4c9998a18f5d77e67ecb26d4baada2a1439b8cb5ee1e49700",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\daily_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 940623,
+          "sha256": "ac9e99359a6e5b151dabe42259ada92c82d069bde68ed7458ba644db954917d3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\daily_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 941555,
+          "sha256": "e70faf2414944e8c267140052484fc0ed1ef4c5f90588a56f0d4f09bcc1f70dd",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\daily_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 942179,
+          "sha256": "371b65d4030d2be84f6bbb421fed99a60d04629041b8ac65de223453f0f9820b",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\daily_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 943191,
+          "sha256": "bd336eee1f81008a5a07667855e668e4e0690ece96c127f4c6b332ac365b6bb1",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\events_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 62620,
+          "sha256": "cbebc963f3f82c205bce20de1b9b9ab69bcd07d21c4d309df1c552ebd8c6296d",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\events_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 65170,
+          "sha256": "1d9e3ea8c4de6e9950777dd83920874e890657f87d491ed4daf7bde5d8285cdd",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\events_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 65358,
+          "sha256": "19df1339de6626ad1d72dd770f72a50b2bbf92b9d3b949bb69967ce5c3b9fe5a",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\events_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 65758,
+          "sha256": "e8288e3402ca5828b38af802f79dcaa4e49a50a0b988cfc093b60bed204b7323",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\events_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 66270,
+          "sha256": "cb57f79d2300ee8cdd6dd2e8519619f81635d8cd82f5d705fe46eeb3b6a4e3e4",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\recipe.json",
+          "bytes": 20275,
+          "sha256": "1098e4bb2c61cd9f1efaa0976207197b48d3c32e9dcb29f7cf67d198070a5809",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity\\summary.json",
+          "bytes": 148003,
+          "sha256": "3b3e2b9c5745c4151aef1a8e88ac8d5afff0299e978cfec183813e412a7cca74",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\capacity_curve.csv",
+          "bytes": 1962,
+          "sha256": "b99b1cd14237067c06b6af36b2b3b472fee7e0aee9a6524bb80a680ebcfca3db",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 906584,
+          "sha256": "e39644f0c38d5670f6296e4a50b3a39c3c2a20525f2800fbcc46fb3d0133f322",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 940632,
+          "sha256": "55a47e65e7365c995c68eb6bafd8843be3614e8d95bf2737d8d77235bcf972b1",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 893962,
+          "sha256": "c4754c76d9168fef39038c12d8364d0d041be8950a82e5a6d8edebdaf2673c3f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 940623,
+          "sha256": "ac9e99359a6e5b151dabe42259ada92c82d069bde68ed7458ba644db954917d3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 928374,
+          "sha256": "9831ba31b0529684230f1f6d1a6220fd45503c74851fa6144df2df5396134fe4",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\events_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 60999,
+          "sha256": "4f322d9bca8b2cb92e1a3e467f9a7829ae1bf4c19d64447e4f8cb5ec474faf31",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\events_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 65193,
+          "sha256": "7c80d052875b091d50b65db56450050b9e75a55eb502c0b36a41a48d44ce3952",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\events_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 65315,
+          "sha256": "f7233732256dbb488504e0e491c534e9eeaa666992c7566282b99cc889eb7ae7",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\events_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 65170,
+          "sha256": "1d9e3ea8c4de6e9950777dd83920874e890657f87d491ed4daf7bde5d8285cdd",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 103666,
+          "sha256": "1d9e68edaf876e603a41f5ab2719db76732d21fca62f5189c6d68039decd0f42",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\recipe.json",
+          "bytes": 20328,
+          "sha256": "248eb1e82867754a5dafcf96fff2fe832ad83616dba62ee62a98ffdbcfb8fe5e",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\summary.json",
+          "bytes": 149074,
+          "sha256": "48a52f6adb06c2e966cb366f2c71c9dbef55ba48de243afc2cce01df3085c1b9",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\v7_extras.json",
+          "bytes": 5114,
+          "sha256": "6efa888eed32d5e09d58048c109979b84cdce0ac99741eeb8511e1afebf45cad",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0-r2-nav\\v7_transfer_coefficient.csv",
+          "bytes": 500474,
+          "sha256": "88713653896e3126064b368e7f83ae6de9025000b983e595af989f97a8e49abc",
+          "match": true
+        }
+      ],
+      "extra": [],
+      "missing": []
+    },
+    {
+      "listing": {
+        "path": ".superpowers\\sdd\\platform-p9-20261003\\gate-logs\\b0-files-p9-b0g-x10-nav.txt",
+        "bytes": 3001,
+        "sha256": "6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d",
+        "match": true
+      },
+      "files": [
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\daily_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 937059,
+          "sha256": "3f92acfcbb692524d196d9125ddc8a266b50a64d1864f7d4f932113b7a614ccd",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\daily_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 938706,
+          "sha256": "66be2a02363858d001e19f9120bebbda89d763558a0755177f5c6ff59e46e950",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\daily_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 939795,
+          "sha256": "d63ac5947b7499fe51db20fdf033d92098f99624d876f96768a8ea93b584ee6f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\daily_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 940107,
+          "sha256": "ae134694a45b4a00ec3a40d308f4d584ae4684cf3db7967d37372ccfe0fca973",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\daily_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 940883,
+          "sha256": "50be026851d09694552677b595b7057040650c6ddff7552833d01c25d8543d45",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\events_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 65401,
+          "sha256": "47d1b977bbc5d8dc70ba72a8519809e90b6c12d558a9adca529ba44871cb143c",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\events_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 65570,
+          "sha256": "194dfb4b2bfb56ea1481a8638bef97340fd5c611737cb186563981d43f034d8a",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\events_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 66296,
+          "sha256": "1aa1bef193da82c663f02b37b7f224f34a6017fa1e2cd2acae463fd103731df9",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\events_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 66933,
+          "sha256": "16c4fc94250cb5c8e8ef4d14627ddd6d853d8d75ca262c93673e3a7f420f09b8",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\events_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 67028,
+          "sha256": "df349b0a8385d06e6e0a101d95a9ec8ced25ef08f3b7649e08528aaf825d198f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\recipe.json",
+          "bytes": 20272,
+          "sha256": "f2e9936a7dd816ff9c7a2b817847df6bdd72c1605c9e3c37e431c0515e8f4423",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity\\summary.json",
+          "bytes": 147820,
+          "sha256": "e797a6abf2194c01d6ca1a77ef44a838f0452955f97a90d72e94dbff966e8d0a",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\capacity_curve.csv",
+          "bytes": 1956,
+          "sha256": "dff88d942a54b0ef27d073938e100785df96363b8980eae3679d952bc88afa61",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 903796,
+          "sha256": "47189ed15799ebb589cbe2f589c450a6b5074c73dbe754c11164f9791030250c",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 938564,
+          "sha256": "9ed122790fd2fe19839d9fc92d459e2655bc33ce04965c19373f403cd293176f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 892144,
+          "sha256": "e7c3674ef748b530f1e816b4f810b9a30eb3b3b7d7c8db284662da47f43cc1f4",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 938706,
+          "sha256": "66be2a02363858d001e19f9120bebbda89d763558a0755177f5c6ff59e46e950",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 926732,
+          "sha256": "1ea605a449bd469b3e1c68199f31e96bde6bdaa4b1e7c92c55f56125c4dc21a8",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\events_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 61207,
+          "sha256": "96c3ed20dbf7f04a5ec8e7d06d8e6823834b5ad617ad6a9c11a37da5ca7626e3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\events_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 65545,
+          "sha256": "b608a744a72ee68849a8cb2d596d970089d38fd4c4b491f5aff9fa2ae73c0b5f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\events_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 65606,
+          "sha256": "14d0c5734fff5a218e4626e2b7900a1416ae4de120feecf53a5482ce3265fe11",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\events_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 65570,
+          "sha256": "194dfb4b2bfb56ea1481a8638bef97340fd5c611737cb186563981d43f034d8a",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 104100,
+          "sha256": "81526211d13e3a4d7dbd63e09e308a6c78758901f2b44820d27ea54433d5ec0b",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\recipe.json",
+          "bytes": 20325,
+          "sha256": "0587f86e8a0f76d495de33cdb216bb07ad394f381aece1f8198336b39a038004",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\summary.json",
+          "bytes": 148936,
+          "sha256": "deabe71b5e2dedfb0b224fb46fdcd0e7194a6950ad8f5ecabe9601cd786bd0bd",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\v7_extras.json",
+          "bytes": 5103,
+          "sha256": "ecfa44d466b427ec08447746bf9b63890c98c8c0cd460861c187c26ca8631147",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-x10-nav\\v7_transfer_coefficient.csv",
+          "bytes": 500501,
+          "sha256": "485a55ad567b429227d41e4cfca0579b58e78b9e111b8a8670a7950c35c64060",
+          "match": true
+        }
+      ],
+      "extra": [],
+      "missing": []
+    },
+    {
+      "listing": {
+        "path": ".superpowers\\sdd\\platform-p9-20261003\\gate-logs\\b0-files-p9-b0g-y1-nav.txt",
+        "bytes": 3089,
+        "sha256": "cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813",
+        "match": true
+      },
+      "files": [
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\daily_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 936501,
+          "sha256": "f0636adfd4dfbf2b888b90e332b188b687247a529eb134abbb97264a4abf6fc3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\daily_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 938782,
+          "sha256": "68b3af9412acf3548e7730965d4b4ae772c90a294cd1944d0fa731b56f66f7a8",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\daily_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 939908,
+          "sha256": "ecbde13a5ec18d82d62b8974e5fa49a6ed8cc9626066bf8e4ba43719bd13fd59",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\daily_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 940208,
+          "sha256": "a9af5ed101e8313ca33f2d5f2aab4b53250ed163e59e185cef5687beca5d7008",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\daily_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 941232,
+          "sha256": "144558079fff134f2300357cd7630fe537700d30147851e3e9fbd6a8876c2704",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\events_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 65406,
+          "sha256": "e8bfcc72a53fc63cc5262d35ae7958d2fbe6f6567e3b35193c3c773dace3b49a",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\events_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 65475,
+          "sha256": "680926140d2dce94c9257e95b5144246a05cf3ab02dd15fd6dd76dc8ea45f12f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\events_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 66055,
+          "sha256": "a554a9842c49d8727448c944843ee4733f88f6f84d28255e13d16de573122b78",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\events_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 66596,
+          "sha256": "e300bb3421fa4740d3e7d4f8d4e8bce7f61cf6e9547c06fa5b3483342f83bcf3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\events_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 67018,
+          "sha256": "1c1498c5441c6addf2cbc02eb69fa30a338dc04901a461845ce0ad0c1ba5e2f9",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\recipe.json",
+          "bytes": 21793,
+          "sha256": "5499035e7d35559d59b9f185555e2ea51f92e5f645d8c968756a73e2d65b76d7",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity\\summary.json",
+          "bytes": 149325,
+          "sha256": "f9572d8b8e0e0dd46b128010ffb59bbe48acd478dd6f49668efbd1430d9aa36f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\capacity_curve.csv",
+          "bytes": 1961,
+          "sha256": "1f16bdf5c85b7032a4cdd6f73f6a4fcd0056549807db8a86b8ab8b36dfea4062",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 904131,
+          "sha256": "c10d20a6a991e8ece2450a0f47abb823a6e987bed5705f0929707fddce52c68b",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 938691,
+          "sha256": "ae3b25b549d4f90394efd91c6fb508c8f7ef37c801b72990917970992bb498c6",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 892295,
+          "sha256": "7ddef45164a4c6073827dac3a356943ece5300b89b998d58a23bfd79742e4a95",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 938782,
+          "sha256": "68b3af9412acf3548e7730965d4b4ae772c90a294cd1944d0fa731b56f66f7a8",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 926844,
+          "sha256": "db891fa116efdfc2fb0e0254196d39b4a9f3b20f3ce2f0aca2b1cd515f806012",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\events_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 61188,
+          "sha256": "c930d6e62a60c81e59f45ce463d88337a7073759e36930c83948893182ade77d",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\events_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 65490,
+          "sha256": "0480c69789645c0ca4bcfac033972dfefebccfe098a9c9e3ee3c015145f14cc8",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\events_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 65575,
+          "sha256": "3cbdd1a64af999eabd38e76284c2e36f2ff7ce45958c9c85038cddda546f5564",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\events_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 65475,
+          "sha256": "680926140d2dce94c9257e95b5144246a05cf3ab02dd15fd6dd76dc8ea45f12f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 103972,
+          "sha256": "c9c1cb1e75a9da37228f204bf699cc8f38d98d40e77ddf539707ef5bf268d773",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\recipe.json",
+          "bytes": 21846,
+          "sha256": "2060d9d04b8a11e3eb8be1eca6aeacb8094676d48e9a7c6b5f96f66c0c9c765f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\summary.json",
+          "bytes": 155091,
+          "sha256": "b0d4dcbf53e81aff3863ca1d9c7230da73a5c0a911a60f622c9f78aa3796c028",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\v7_extras.json",
+          "bytes": 11383,
+          "sha256": "befbbabb63ccae6f633de789adf7f281b120565c8dbe0d8e0c80f177c409f864",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\v7_transfer_coefficient.csv",
+          "bytes": 500486,
+          "sha256": "99b8800494108f19728cfb0a0156c971a1848a67fad163c699810585181cfabd",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-y1-nav\\vol_target.csv",
+          "bytes": 883853,
+          "sha256": "8e614ea7bbf47d363a5c357b7442c7b3a7b86df753879715f5d20bd083f767a7",
+          "match": true
+        }
+      ],
+      "extra": [],
+      "missing": []
+    },
+    {
+      "listing": {
+        "path": ".superpowers\\sdd\\platform-p9-20261003\\gate-logs\\b0-files-p9-b0g-yf0-u.txt",
+        "bytes": 445,
+        "sha256": "1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa",
+        "match": true
+      },
+      "files": [
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-u\\orientations.json",
+          "bytes": 456471,
+          "sha256": "d0d16f302cb3907aa98118d925d1cdcc65db394c67764d950258a9c8eace4d51",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-u\\recipe.json",
+          "bytes": 2674,
+          "sha256": "b9b4029c97d8fca4029ba6bae8e6a076ea59724d0969d42df0941f174ffdb17a",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-u\\summary.json",
+          "bytes": 443515,
+          "sha256": "acbf61cef24e909bb8975668b1b2206708b5c96cf03194a0728564445fae12b8",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-u\\train_candidates.jsonl",
+          "bytes": 213521,
+          "sha256": "8f4d2bb15171767a3d2d165f041bc103c31d27f458f2100129250564ba843941",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-u\\train_daily_ic.csv",
+          "bytes": 16837730,
+          "sha256": "c8714175d1639fdee6529dcd3b671a9eed79fd99788116320373824914b3789e",
+          "match": true
+        }
+      ],
+      "extra": [],
+      "missing": []
+    },
+    {
+      "listing": {
+        "path": ".superpowers\\sdd\\platform-p9-20261003\\gate-logs\\b0-files-p9-b0g-yf0-w.txt",
+        "bytes": 1115,
+        "sha256": "ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1",
+        "match": true
+      },
+      "files": [
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\orientations.json",
+          "bytes": 456471,
+          "sha256": "8d1a7f6491efb3b43ce76518cbf8feff3ec5f85c33df417eecae931167ae8c5f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\recipe.json",
+          "bytes": 2985,
+          "sha256": "c248eff78c9652de4f8f56bfbe4a8a785fbaf3adf267d2f3dbe2904fd592ef6d",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\summary.json",
+          "bytes": 457194,
+          "sha256": "f772b394a6885b5965d0c5ad93e4f023515a74ed7e02064a772814357ee904f2",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_candidates.jsonl",
+          "bytes": 218562,
+          "sha256": "d48705ffbf03f126df421f850b9b465b2b4b2daaa1872ee2f8ce83714e6eabff",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_combined.f64",
+          "bytes": 66563280,
+          "sha256": "70d863f934c0cd21c78504ae89ebe7be07831c335acccd9fa7c8b7715f1bbee4",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_combined.json",
+          "bytes": 2414,
+          "sha256": "e13fbc4dab75c00cc47d7a06d8fcfbefd2d1368407565e99001136d19de9da8c",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_combined_finite.u8",
+          "bytes": 8320410,
+          "sha256": "c61f5b629a3cdbccd2e12c5c35ac0ca26d78cf0bce58ad2de37cc82455a2fab2",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_combined_ids.u64",
+          "bytes": 47376,
+          "sha256": "761bd1dfdf7f9c738563e459ce9649b6bdbe3e3c08bef43f5edc2a8e73ffd296",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_combined_member.u8",
+          "bytes": 8320410,
+          "sha256": "c61f5b629a3cdbccd2e12c5c35ac0ca26d78cf0bce58ad2de37cc82455a2fab2",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_combined_sessions.i64",
+          "bytes": 11240,
+          "sha256": "ab24480200996d577a53dd753ab27f1add9929bbac95e2f3de18f6e9405884b7",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_daily_ic.csv",
+          "bytes": 17137143,
+          "sha256": "45261f20cbbe182240b05d1319f5cb16a8368364767473d6e76b171cf3895e55",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-w\\train_planned_targets.csv",
+          "bytes": 112436,
+          "sha256": "cb744a74fe0e149b610910a5bada05bfe72cfbdf3293966dc4b51c904370b158",
+          "match": true
+        }
+      ],
+      "extra": [],
+      "missing": []
+    },
+    {
+      "listing": {
+        "path": ".superpowers\\sdd\\platform-p9-20261003\\gate-logs\\b0-files-p9-b0g-yf0-nav.txt",
+        "bytes": 3001,
+        "sha256": "e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797",
+        "match": true
+      },
+      "files": [
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\daily_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 936659,
+          "sha256": "98f5d54160217e7f61af6db400dfced319992e7e6faa41b73d59976deeab3064",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\daily_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 939290,
+          "sha256": "e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\daily_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 940297,
+          "sha256": "c4dad5f3680153a46593927ec7d2c55862e277b1a78b10a01ca16ee1de8c4eb1",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\daily_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 941431,
+          "sha256": "65f6dcef175e582ebf349f9c36a6184a80c636f3a1161a389bc7fdf9af712760",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\daily_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 941958,
+          "sha256": "43575bbfed9add226e503541f464b955ccb1ed6a7306a86e95dafa16e5023e3d",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\events_capacity-x0p5-v1+swap-fin-v1.csv",
+          "bytes": 64819,
+          "sha256": "89052fbd7b0f0804233b62fec5eb68898a56113ef099650e5d7cbc499a255e0e",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\events_capacity-x1-v1+swap-fin-v1.csv",
+          "bytes": 64815,
+          "sha256": "621f89da44e85ad95b2a1ec9cb5087717dd30402dcc21e1e01b342826ef43427",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\events_capacity-x2-v1+swap-fin-v1.csv",
+          "bytes": 65061,
+          "sha256": "c8d2f1fda39c7d98074f67f01ebed85e0c31414cc2ae52f7bcdd9b1ac9912b7b",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\events_capacity-x4-v1+swap-fin-v1.csv",
+          "bytes": 65789,
+          "sha256": "93ba8933f272150c0590812d99e9e9e4a919a5348f46682e33c4758dda3bf35d",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\events_capacity-x8-v1+swap-fin-v1.csv",
+          "bytes": 66232,
+          "sha256": "6ff6ed39d1db93af8deb2c91f69459a8e50519b01cccb6a380059898a3bb5059",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\recipe.json",
+          "bytes": 20275,
+          "sha256": "7ab6f4a55ac768c2583c014d7fc445236629f97b2b19302e9a7a460a49b8dabc",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity\\summary.json",
+          "bytes": 147825,
+          "sha256": "29b81fc1d9cbe3ce2899db012964ce4da8a0e32eba8d77bf0985b7b0c9b75299",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\capacity_curve.csv",
+          "bytes": 1962,
+          "sha256": "edf1001d5afa0e81f7d41b76b73f8e8ece5441c77b2fb23dbaa28457f4b0691f",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 905357,
+          "sha256": "22f31398db5ecdcf8d807bd9a148f9c11449f76bd516872583550294ee379921",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 939359,
+          "sha256": "dbeddebee72086824f137c8c94a28698a8ee65876585dccb1edf06da7ca6eeac",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 893282,
+          "sha256": "a4fc667e8f99fc407e773985314d6c3e968dab52355e9e5bc72d980d47cfae47",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 939290,
+          "sha256": "e7eb57201ea5e87e9962881f3c2a775f49b62a150fd7dddefcadbbf3c78fe3b3",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 927549,
+          "sha256": "b525b1a126c44eecbb17cebd5587695ef5e2194e7461f8c55ec9ae4bdfb820d9",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\events_linear-6bps-stale5-v1+swap-fin-v1.csv",
+          "bytes": 60680,
+          "sha256": "9c0a63ffc85cf3f8366da9ee9d1bd9508616bb76b11950007ae29b97e84a8ca0",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\events_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+          "bytes": 64815,
+          "sha256": "ae665c671dc67522c2303ef738188ce6f011002c2dec2fe0275abb8f544e4399",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\events_modeled-1bn-stale5-v1+flat-300-v0.csv",
+          "bytes": 64929,
+          "sha256": "ca16e435639865c9f9674d2db03af40472bdb3581ae9ad2383c27be8393c3a01",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\events_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+          "bytes": 64815,
+          "sha256": "621f89da44e85ad95b2a1ec9cb5087717dd30402dcc21e1e01b342826ef43427",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+          "bytes": 102921,
+          "sha256": "a8fbb2b4598785abceb9765f2482ac431e0209c796c63b192c7f42dee9a0ef30",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\recipe.json",
+          "bytes": 20328,
+          "sha256": "23f59aa32ad6a948dda0e8f7d5aa9d6e3c5181450299c4209eb774b49930d72c",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\summary.json",
+          "bytes": 156179,
+          "sha256": "826d5ec65329c24c4c0c1b72ee1f57dcdbdb136cf00d4113c6463310e79b8f38",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\v7_extras.json",
+          "bytes": 5112,
+          "sha256": "dba69f9f6120e182bb2dad6b2e6a124012244e799f5845fe13a87656d0ea2eff",
+          "match": true
+        },
+        {
+          "path": "C:\\atx-wt\\pool-2\\build-equity\\p9-b0g-yf0-nav\\v7_transfer_coefficient.csv",
+          "bytes": 500552,
+          "sha256": "c8207e108b577366cd41ad2bd60df256125aeeafcae55c3b7de5465616dc4d6d",
+          "match": true
+        }
+      ],
+      "extra": [],
+      "missing": []
+    }
+  ],
+  "absent": {
+    "build-equity/research-store": true,
+    "build-equity/mega-candidate-cache-v8-lo3/index.sqlite": true,
+    "build-equity/train-2020-2023-lo3-fields-v9": true,
+    "build-equity/train-2020-2023-lo3-fields-v10": true,
+    "build-equity/train-2020-2023-lo3-fields-v13": true,
+    "build-equity/train-2020-2023-lo3-fields-v14": true,
+    "build-equity/train-2020-2023-lo3-fields-v15a": true
+  },
+  "ledger": {
+    "lines": 140,
+    "sha256": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d",
+    "original133_prefix_sha256": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554",
+    "Nc": 69,
+    "Nhand": 130,
+    "M": 110,
+    "Ntot": 240,
+    "history": 0,
+    "window_reruns": 8,
+    "canonical_source_sha256": "3def2b12eb87dd58b58fff2f3ecfcd760c1f3afbdb43f26c96097d0ecbbbadd9",
+    "method": "AST selected unchanged pure canonical accounting definitions only"
+  },
+  "progress_snapshot": {
+    "lines": 1147,
+    "sha256": "e7c70c64af50ea17403c80adea163f60e788035f7ad8a7738eacd1e292d48bab",
+    "read_from_line": 1050,
+    "last_line": "- Ruling R15-FREEZE-PREP: after root7 reports all five adoption commands complete and source/rho barriers committed, dispatch a fresh GPT-6 Astra verification/docs root under r14-prompts/freeze-root-preparation.md plus freeze-root-prompt.md. It may read standing contracts, verify frozen metadata/refs/leases/accounting and completed cell evidence while root7 finishes adoption documentation; no code/data/statistical run, final gate decision, PM document edit or commit. Missing/unfinished adoption/OD3/index documents are deferred, not presumed checked. It may save only its own preparation evidence and hand back READY. Final authorization follows the adoption read/OD3 disposition and all PM freeze rulings, with the actual final index snapshot checked before commit -- parallel read-only preparation shortens closeout without creating another research root or claiming a premature freeze -- cost if wrong: the final handoff distinguishes the early metadata snapshot from later documents and verifies changed state before asserting completion."
+  },
+  "v_outputs": [
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\cycle_verdict.json",
+      "bytes": 9359,
+      "sha256": "fa18caa9e5fb0656afa4da72212926b6dcc71fca5a282ea448a61ea4547d3c6c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\pbo.json",
+      "bytes": 336558,
+      "sha256": "a05b54ba9405304ffe8b9300427b9b28997d8f24662f06948deaae455234c30f",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\receipt.json",
+      "bytes": 9152,
+      "sha256": "6b70c33262eba62749a60b8e6b12c7a8658ce8c4931fc179d483a8bb9b7b9d59",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\start.json",
+      "bytes": 7032,
+      "sha256": "119e90919d415c836c48107c491f482daac0d3fcc95e20bbde421fe5bb095149",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\stderr.log",
+      "bytes": 326,
+      "sha256": "7d5ea0b9735f03e8a947c5e12f4ee469e76e52b94972b85904f545ac1bc35272",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\stdout.log",
+      "bytes": 448872,
+      "sha256": "601ca9cd134ba3c2a2f735af22e1767aedfb9d99c49947796f83484d290338e9",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ.json",
+      "bytes": 1457599,
+      "sha256": "df28656f5f987eebcda95c6a7b1461e2e9e26569421e7ac4dde0099ffffa8855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov\\monitor.json",
+      "bytes": 96594,
+      "sha256": "3ee79492ba3c318b841d0290d5caccd93b2960e9b6f36bd3171cac01b43d9409",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\receipt.json",
+      "bytes": 2198,
+      "sha256": "ab56406d42b6d759addd71e960b52a4c861a2a985c5793baca1e29a2a5e0df2e",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\start.json",
+      "bytes": 1684,
+      "sha256": "7b7a90b73c5f77c2cdd5808a84a00c81b249317c5bb5c49d3f57a5c41d1e443a",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\stdout.log",
+      "bytes": 184,
+      "sha256": "3398fca51370d001f4bc94273c1b1156eb054ede9376595407032cf2a16544a4",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\daily_capacity-x0p5-v1+swap-fin-v1.csv",
+      "bytes": 941574,
+      "sha256": "f4304c6a985b6174088765a7ef0b89c8eed16b17a7069ec703d39fac9c825408",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\daily_capacity-x1-v1+swap-fin-v1.csv",
+      "bytes": 943656,
+      "sha256": "7c00ceb75e22b64722fdc999f7814cd88960577bdc4158aea829864bbde726c4",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\daily_capacity-x2-v1+swap-fin-v1.csv",
+      "bytes": 944464,
+      "sha256": "fe6fa1d3140705f5fd2defb6a448420ee992e45d47eb176fa4cfcd9366fc769e",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\daily_capacity-x4-v1+swap-fin-v1.csv",
+      "bytes": 944853,
+      "sha256": "ad7c0164c0ae60af66cee46dacf4119255145ee1ca83c50468ab3e72b24a2e9c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\daily_capacity-x8-v1+swap-fin-v1.csv",
+      "bytes": 944978,
+      "sha256": "4dd7a9998bde2f35b3a4d6fcc0af863877175bf2304756ff626baf99f246e991",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\events_capacity-x0p5-v1+swap-fin-v1.csv",
+      "bytes": 65467,
+      "sha256": "1f99086c0219301a0b731425efc2ea821c27d58414cb9cb979ccd1428d3d0c9e",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\events_capacity-x1-v1+swap-fin-v1.csv",
+      "bytes": 65332,
+      "sha256": "600bb9a1421c6d59dc6c084c912ef4c7b890c83239552c038ec2288a0e436a26",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\events_capacity-x2-v1+swap-fin-v1.csv",
+      "bytes": 65869,
+      "sha256": "37aa2677c308a376b5a914a67dddb500d9062f57c828a91c2fa71971d20dbdcd",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\events_capacity-x4-v1+swap-fin-v1.csv",
+      "bytes": 66409,
+      "sha256": "c737972af87208e1e7dda51b584a8a10e45e47be87bad70e5119de6983e8a3de",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\events_capacity-x8-v1+swap-fin-v1.csv",
+      "bytes": 66690,
+      "sha256": "8e2235c5c83402768fd47b6d361cf14dc1a0845c520b3d5383ff391084c0a134",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\recipe.json",
+      "bytes": 21793,
+      "sha256": "a1a5ece9d05cd6e5aeb6d0117f48ba14fef96bb56e7396cbf62030c1f5b2f922",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity\\summary.json",
+      "bytes": 149365,
+      "sha256": "c4d9a9723156a9ec76bc3555431546d495771147ce645a8a12c84ce99e7d7bca",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\capacity_curve.csv",
+      "bytes": 1962,
+      "sha256": "5a555d53ac6fdc44c630f3a4d23670cf9cc20e06914a3a8315b8a4f18fae064c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "bytes": 908907,
+      "sha256": "76cd3954f05a8af89a37dcf3d5112732b4db4487edda11ee569c629172332ddf",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "bytes": 943829,
+      "sha256": "b3f239ba2dff4ee3c23ab48486f09f91b407581f578fd0b34fbd9d69a7952f63",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "bytes": 892999,
+      "sha256": "762becd608c957530daed1fe5e82ac1c52fdffe696b7eb2c8c0da1f1ac1dd309",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "bytes": 943656,
+      "sha256": "7c00ceb75e22b64722fdc999f7814cd88960577bdc4158aea829864bbde726c4",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "bytes": 931522,
+      "sha256": "c0d69182466dff21af77631a2f8bf5d72c9c0d60c71406fdaa0f887c74c79c33",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\events_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "bytes": 61295,
+      "sha256": "2673b90d072ebcd585a7f158c64a5401d6c3f54dffd82dfe944e8deee60d54a0",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\events_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "bytes": 65334,
+      "sha256": "45d8f715bcd4ff494c858e096193a1d8cd0d77593bfdae17fd8303f34c65b6ea",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\events_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "bytes": 65387,
+      "sha256": "f7e9ec296de41db5f949f0ffce0afacbfcb1793b728d62971e891f2bc0adaf25",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\events_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "bytes": 65332,
+      "sha256": "600bb9a1421c6d59dc6c084c912ef4c7b890c83239552c038ec2288a0e436a26",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "bytes": 103776,
+      "sha256": "9805da3aea71d9fa691509c792a7b397f518803b3e0407c8ebabb08922270749",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\recipe.json",
+      "bytes": 21846,
+      "sha256": "ea2944eb2160f7c1327b6adfb8e1f4da74f91bca5189f27e1f2de2dfd00f6222",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\summary.json",
+      "bytes": 162515,
+      "sha256": "ac83c97006150d45a05bec4e5c9895bc773cc9afee73c2878c38d68003d57233",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\v7_extras.json",
+      "bytes": 11380,
+      "sha256": "ad90483402adf9599752c28e8dce4d503fb8eaedb326b2979fb6cc5bd07c3997",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\v7_transfer_coefficient.csv",
+      "bytes": 500508,
+      "sha256": "3f89abad6a14fdd1a7a51a404bccf713cecf0fdf09821e24fe7d0cdc411dd451",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov\\vol_target.csv",
+      "bytes": 926183,
+      "sha256": "38a963fc9d530c4e1d08de616bcd9b96758c6accb640303dabc454f935994065",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\cycle_binding.json",
+      "bytes": 309,
+      "sha256": "ab2f70b72f7767399409869260b6db12fc7e0151023e756e6d6b68356f93fa3a",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\receipt.json",
+      "bytes": 3984,
+      "sha256": "e737f364176ea6754c00be0000d1b9572f84b33fa6ed0f01aaec0aa5fb9f867f",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\start.json",
+      "bytes": 3469,
+      "sha256": "0a5ccd570923f84af25266ef167a29e1868d52e55f8d44972371afb1fe13aa8a",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\stdout.log",
+      "bytes": 2771,
+      "sha256": "9510bc5f9673e62d20be0bd44481a86f9e2c630a0f492f0d5bf2b4896c1ed6fc",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\receipt.json",
+      "bytes": 2456,
+      "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\start.json",
+      "bytes": 1945,
+      "sha256": "7bebaa63383d797e06fbcc4106b56c01495e6a95cf4f96b1664e2366b490236d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\stdout.log",
+      "bytes": 180,
+      "sha256": "5e93c363313f12343f96244902446c93007335f0b928e91e83587f9a82eb312c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book.csv",
+      "bytes": 95310443,
+      "sha256": "ccda2610e3e89ac732a50cd1d59e9e40863310bca89963098e3ea9f30c4656f8",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\daily_capacity-x0p5-v1+swap-fin-v1.csv",
+      "bytes": 941636,
+      "sha256": "dd6d018eb2b40a793250924e5bf0d2ebbeceb6888cc0baa6b7067188702b8168",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\daily_capacity-x1-v1+swap-fin-v1.csv",
+      "bytes": 944534,
+      "sha256": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\daily_capacity-x2-v1+swap-fin-v1.csv",
+      "bytes": 945579,
+      "sha256": "57cfe735d66e311a171454270ced45db9ff143451adbb703b2a32e5acc07b954",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\daily_capacity-x4-v1+swap-fin-v1.csv",
+      "bytes": 946615,
+      "sha256": "7733db7b44f05d46f99f325b30ff1fd3491ea4a1e028e5498ae97e8684d696a0",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\daily_capacity-x8-v1+swap-fin-v1.csv",
+      "bytes": 946733,
+      "sha256": "1ca67240a1608687470d0837b93b25c43ac861a525982414a3af2e061dedfbbc",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\events_capacity-x0p5-v1+swap-fin-v1.csv",
+      "bytes": 64730,
+      "sha256": "4897633201cc7c5153c28b10090599c18d0bb318c9c805b88f94f4ea9849c147",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\events_capacity-x1-v1+swap-fin-v1.csv",
+      "bytes": 64812,
+      "sha256": "1fa99eede67a3274df434a9066d1851b71208cfa009408390141760116ae92cd",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\events_capacity-x2-v1+swap-fin-v1.csv",
+      "bytes": 65001,
+      "sha256": "d15ae648dd48366f5aa75d7b26eccce0627ad1f3694ba7d9a181797cbb5888f2",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\events_capacity-x4-v1+swap-fin-v1.csv",
+      "bytes": 65392,
+      "sha256": "31381c010a61e25e62aa0bf4070801a6f235b7e0dc7cd1da40e6c8366a30c2f8",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\events_capacity-x8-v1+swap-fin-v1.csv",
+      "bytes": 66073,
+      "sha256": "5924c3c461bb8b48a6fef937913692d2505d6dea78f5e2c1ddae9cfe267af0dd",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\recipe.json",
+      "bytes": 20275,
+      "sha256": "939de4bbf8913c50a2103b6adf374dc6be4645c2a5f152bb3554f855fa0fa695",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity\\summary.json",
+      "bytes": 147871,
+      "sha256": "4caf397d64907b57c6048f47917408225c5e187e9f89452da18640252952c6f6",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\capacity_curve.csv",
+      "bytes": 1955,
+      "sha256": "ed26cab56147d36f5cfd99b840e91236a489285da94a443fa2542faf396d14ee",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\daily_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "bytes": 910493,
+      "sha256": "0e4e8b0b8249a79d3faae49453b14486ece5434f79f11faef1907ec865308d6a",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\daily_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "bytes": 944716,
+      "sha256": "74655bc75e74413419d4455ed49a6491ace40ed563daebc4f37178f882b177b3",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\daily_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "bytes": 893813,
+      "sha256": "014a437b402fdbedf68a521b43881040ce370fe1f1b17b699bbbeaf99e33f278",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\daily_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "bytes": 944534,
+      "sha256": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\daily_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "bytes": 932593,
+      "sha256": "cd1988cbdaec58323204156ff4d781392d52c533b4e1880d746af93db6cdad74",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\events_linear-6bps-stale5-v1+swap-fin-v1.csv",
+      "bytes": 60605,
+      "sha256": "ac46053b2a173d29522cb011823cad5e1c437ed047389d40104e2ab7f2bb9aba",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\events_modeled-1bn-stale5-v1+engine-tiers-v1.csv",
+      "bytes": 64802,
+      "sha256": "2e5001d509cda01c384fa04f8ef90dbdc105de925ce795584566fb67482748c5",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\events_modeled-1bn-stale5-v1+flat-300-v0.csv",
+      "bytes": 64951,
+      "sha256": "f3fe4f147619191786762c3c440ceaf5e31ef7ffd936e1f86bdd80b71c48aec4",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\events_modeled-1bn-stale5-v1+swap-fin-v1.csv",
+      "bytes": 64812,
+      "sha256": "1fa99eede67a3274df434a9066d1851b71208cfa009408390141760116ae92cd",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\events_modeled-1bn-terminal-adverse-v1+swap-fin-v1.csv",
+      "bytes": 102997,
+      "sha256": "4db90cdb02bc8a2d5ea11c4c2283833f5da5f3cec3a9c387e957685bd6d2eaf3",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\recipe.json",
+      "bytes": 20328,
+      "sha256": "b96417ad93090ccd2dc42cb173013d88b396f9bb17d752835816a792b1df509d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\summary.json",
+      "bytes": 157230,
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\v7_extras.json",
+      "bytes": 5106,
+      "sha256": "713111429f6a205feb649bc562e37d08bf80a3fab68af2fb14644179f7f00784",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav\\v7_transfer_coefficient.csv",
+      "bytes": 500504,
+      "sha256": "54f267a96c8a4d33af4bfc716ae9130b8ea8577a88f5ef78628e77879d5e00c7",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\receipt.json",
+      "bytes": 3918,
+      "sha256": "0bac14e9d4b2610c20b0a7a5738bd81abd262ff52e15bb62da09895a5ff01882",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\start.json",
+      "bytes": 3407,
+      "sha256": "59ea4306495d3784ed90341cfd2ce81205dabe006213023701920b2c69bf0b3d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\stdout.log",
+      "bytes": 3118,
+      "sha256": "17ab9cbeaad71be58490c731aac249ef8a80b5c1fe0fc8474f7959e87ddb4bc0",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-holdings\\holdings.f64",
+      "bytes": 169865696,
+      "sha256": "8baf2c4323c434152fa477c3b685523392af84d7b993622793fb3d6decfffd08",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-holdings\\holdings_days.csv",
+      "bytes": 300767,
+      "sha256": "a54580eb174fa82013bda2dfa947362a0df6a16ec137971f33a1467d1705869f",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-holdings\\holdings_index.json",
+      "bytes": 175467,
+      "sha256": "06e725dc2f7888f8d182bdedfe4dd13f69033a44b7ed12d9050190285a574617",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-holdings\\manifest.json",
+      "bytes": 3396,
+      "sha256": "1245c1e744a2c27df30d7cc77cbd18164689285f2f02c7f67f7676b98d11f635",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\receipt.json",
+      "bytes": 6616,
+      "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\start.json",
+      "bytes": 6104,
+      "sha256": "a92a9bb6aea18ebb3e5ddf8c473d6f016042c62f2b78ec4a4b230cf20028a843",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\stdout.log",
+      "bytes": 89,
+      "sha256": "ee37f486d03bdeb100a286df4e9397602adfc0b930efc12f4642df2962e865b3",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book.json",
+      "bytes": 2778,
+      "sha256": "b4126a9c82a6da0fd44d02713e64ff06467dbc210bca01423427054c226772ec",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\receipt.json",
+      "bytes": 3463,
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\start.json",
+      "bytes": 2951,
+      "sha256": "3385ebc183a1523696d9ce6271bfad4ab2376ba34819f143b68fb3da4ce3fff5",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\stdout.log",
+      "bytes": 88,
+      "sha256": "850996635c8b8c5daa2ce8c689f3748c506e49e4b5ef70ca3c1608ffd7080b54",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics.json",
+      "bytes": 1297,
+      "sha256": "3c4a645db5cdddfc9d58dfbbcd72bff672fd3b1ce8cbc81bda591639729787e5",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\receipt.json",
+      "bytes": 5082,
+      "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\start.json",
+      "bytes": 4569,
+      "sha256": "2dd71c259f0aa8741520bca0524030c8b50855c738918960a8f77be91f82be9f",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\stdout.log",
+      "bytes": 679,
+      "sha256": "44fa5ed271276ddd6accfb88c7d859606776d3100b95b1e08567fbdf4469df25",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair.json",
+      "bytes": 5158,
+      "sha256": "a8d3da1576d5f620369e48dd8f747395a8f1a2dcec47adf75c17f4de5c1a6303",
+      "match": true
+    }
+  ],
+  "v_listing": {
+    "path": "C:\\atx-wt\\pool-2\\.superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-final-output-sha256.txt",
+    "bytes": 13552,
+    "sha256": "6c393a339133d1d84a4db935d668edbeb5d477e4e95c2030daed018a8e6fb2ef",
+    "match": true
+  },
+  "v_sources": [
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\start.json",
+      "bytes": 3469,
+      "sha256": "0a5ccd570923f84af25266ef167a29e1868d52e55f8d44972371afb1fe13aa8a",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\receipt.json",
+      "bytes": 3984,
+      "sha256": "e737f364176ea6754c00be0000d1b9572f84b33fa6ed0f01aaec0aa5fb9f867f",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\stdout.log",
+      "bytes": 2771,
+      "sha256": "9510bc5f9673e62d20be0bd44481a86f9e2c630a0f492f0d5bf2b4896c1ed6fc",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-nav-p9v-vol-target-cov-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-cycle-raw.log",
+      "bytes": 7931,
+      "sha256": "1ec93a7e85509b36fd14c35a8fcbe72c278f1a0f348e94d59ce4cb2fffc0ffba",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\start.json",
+      "bytes": 2951,
+      "sha256": "3385ebc183a1523696d9ce6271bfad4ab2376ba34819f143b68fb3da4ce3fff5",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\receipt.json",
+      "bytes": 3463,
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\stdout.log",
+      "bytes": 88,
+      "sha256": "850996635c8b8c5daa2ce8c689f3748c506e49e4b5ef70ca3c1608ffd7080b54",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\mechanics-run1\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-mechanics-raw.log",
+      "bytes": 3463,
+      "sha256": "1aa2ed9feab9ea353797a2ea3b5ac7693bef8926d36e6fea17ff3a8954a54b4d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\start.json",
+      "bytes": 4569,
+      "sha256": "2dd71c259f0aa8741520bca0524030c8b50855c738918960a8f77be91f82be9f",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\receipt.json",
+      "bytes": 5082,
+      "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\stdout.log",
+      "bytes": 679,
+      "sha256": "44fa5ed271276ddd6accfb88c7d859606776d3100b95b1e08567fbdf4469df25",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\pair-run1\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-pair-raw.log",
+      "bytes": 5082,
+      "sha256": "a7ead1b930e84b3ecf57035330c35791299c74d6affeb1b42802da43e468400c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\start.json",
+      "bytes": 6104,
+      "sha256": "a92a9bb6aea18ebb3e5ddf8c473d6f016042c62f2b78ec4a4b230cf20028a843",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\receipt.json",
+      "bytes": 6616,
+      "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\stdout.log",
+      "bytes": 89,
+      "sha256": "ee37f486d03bdeb100a286df4e9397602adfc0b930efc12f4642df2962e865b3",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-vol-target-cov-readers\\book-run1\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-book-raw.log",
+      "bytes": 6616,
+      "sha256": "ae140942faafd395220543d58be436fa095bc3480feb2eb2af82dc46ba5da4e6",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\start.json",
+      "bytes": 3407,
+      "sha256": "59ea4306495d3784ed90341cfd2ce81205dabe006213023701920b2c69bf0b3d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\receipt.json",
+      "bytes": 3918,
+      "sha256": "0bac14e9d4b2610c20b0a7a5738bd81abd262ff52e15bb62da09895a5ff01882",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\stdout.log",
+      "bytes": 3118,
+      "sha256": "17ab9cbeaad71be58490c731aac249ef8a80b5c1fe0fc8474f7959e87ddb4bc0",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-h-nav-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-b8a-h-nav-raw.log",
+      "bytes": 3918,
+      "sha256": "0bac14e9d4b2610c20b0a7a5738bd81abd262ff52e15bb62da09895a5ff01882",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\start.json",
+      "bytes": 1945,
+      "sha256": "7bebaa63383d797e06fbcc4106b56c01495e6a95cf4f96b1664e2366b490236d",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\receipt.json",
+      "bytes": 2456,
+      "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\stdout.log",
+      "bytes": 180,
+      "sha256": "5e93c363313f12343f96244902446c93007335f0b928e91e83587f9a82eb312c",
+      "match": true
+    },
+    {
+      "path": "build-equity\\p9v-b8a-book-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-b8a-book-raw.log",
+      "bytes": 2456,
+      "sha256": "382111bec38a7f813ac25c6befa8eaed8617870f7b14b5a3b5b7f31b91cb2dfe",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-b8a-risk-v11-raw.log",
+      "bytes": 702,
+      "sha256": "74a7f7c14c43279351114def7deb6802d20010083745575a156e77ea74eda0e0",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\start.json",
+      "bytes": 1684,
+      "sha256": "7b7a90b73c5f77c2cdd5808a84a00c81b249317c5bb5c49d3f57a5c41d1e443a",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\receipt.json",
+      "bytes": 2198,
+      "sha256": "ab56406d42b6d759addd71e960b52a4c861a2a985c5793baca1e29a2a5e0df2e",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\stdout.log",
+      "bytes": 184,
+      "sha256": "3398fca51370d001f4bc94273c1b1156eb054ede9376595407032cf2a16544a4",
+      "match": true
+    },
+    {
+      "path": "build-equity\\mega-monitor-p9v-vol-target-cov-run\\stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-monitor-raw.log",
+      "bytes": 7324,
+      "sha256": "ad06898162a51a8251fee4780316844a870c5a41f933253e560ffa3632f139f5",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\start.json",
+      "bytes": 7032,
+      "sha256": "119e90919d415c836c48107c491f482daac0d3fcc95e20bbde421fe5bb095149",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\receipt.json",
+      "bytes": 9152,
+      "sha256": "6b70c33262eba62749a60b8e6b12c7a8658ce8c4931fc179d483a8bb9b7b9d59",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\stdout.log",
+      "bytes": 448872,
+      "sha256": "601ca9cd134ba3c2a2f735af22e1767aedfb9d99c49947796f83484d290338e9",
+      "match": true
+    },
+    {
+      "path": "build-equity\\cycle-p9v-vol-target-cov\\summ-run1\\stderr.log",
+      "bytes": 326,
+      "sha256": "7d5ea0b9735f03e8a947c5e12f4ee469e76e52b94972b85904f545ac1bc35272",
+      "match": true
+    },
+    {
+      "path": ".superpowers\\sdd\\platform-p9-20261003\\cells\\logs\\p9v-completion-raw.log",
+      "bytes": 12343,
+      "sha256": "260e35f0987966cdd8a994f7755fa9186bc2e733e7cd9a16ad2aa76ebb4cc1b7",
+      "match": true
+    }
+  ],
+  "lease_status": "pool-1  [cold]  branch=feat/vol-resume4-20261016  LEASED run_id=vol-20261017-root6 | agent=pm-root6 | owner_kind=heartbeat | owner=alive | keeper_pid=20932 | branch=feat/vol-resume4-20261016 | acquired=2026-10-17T17:37:56.3400437Z\npool-2  [cold]  branch=feat/platform-p9-20261003  LEASED run_id=aes-codex-integ-20260925 | agent=codex-orchestrator | owner_kind=heartbeat | owner=dead | keeper_pid=4620 | branch=feat/aes-codex-integration-20260925 | acquired=2026-09-25T20:42:46.5625686Z\npool-3  [cold]  branch=feat/vol-batch-pricing-20261017  LEASED run_id=vol-20261017r6-rereview-batch-pricing | agent=rereview-batch-pricing | owner_kind=heartbeat | owner=alive | keeper_pid=8604 | branch=feat/vol-batch-pricing-20261017 | acquired=2026-10-17T17:47:21.2132145Z\npool-4  [cold]  branch=feat/vol-al-speed-20261017  LEASED run_id=vol-20261017r6-al-speed-finish | agent=al-speed-finish | owner_kind=heartbeat | owner=alive | keeper_pid=15796 | branch=feat/vol-al-speed-20261017 | acquired=2026-10-17T17:48:31.1816001Z\npool-8  [cold]  branch=feat/p9-alclock-20261004  LEASED run_id=p9-alclock-20261004 | agent=p9-alclock | owner_kind=heartbeat | owner=dead | keeper_pid=14068 | branch=feat/p9-alclock-20261004 | acquired=2026-10-04T23:40:02.6173557Z\npool-12  [cold]  branch=feat/p9-a3-20261003  LEASED run_id=p9-a1-20261003 | agent=p9-a1 | owner_kind=heartbeat | owner=dead | keeper_pid=26400 | branch=feat/p9-a1-20261003 | acquired=2026-10-03T10:07:08.6296500Z\npool-13  [cold]  branch=feat/p9-sql3-20261004  LEASED run_id=p9-sql3-20261004 | agent=p9-sql3 | owner_kind=heartbeat | owner=dead | keeper_pid=25496 | branch=feat/p9-sql3-20261004 | acquired=2026-10-04T23:41:00.6392719Z\npool-14  [cold]  branch=feat/p9-b2-20261003  LEASED run_id=p9-b1-20261003 | agent=p9-b1 | owner_kind=heartbeat | owner=dead | keeper_pid=25384 | branch=feat/p9-b1-20261003 | acquired=2026-10-03T10:08:15.5892323Z\npool-15  [cold]  branch=feat/p9-c3-20261004  LEASED run_id=p9-c3-20261004 | agent=p9-c3 | owner_kind=heartbeat | owner=dead | keeper_pid=24052 | branch=feat/p9-c3-20261004 | acquired=2026-10-04T17:41:22.1495341Z\npool-17  [cold]  branch=feat/p9-e2-20261003  LEASED run_id=p9-e1-20261003 | agent=p9-e1 | owner_kind=heartbeat | owner=dead | keeper_pid=17736 | branch=feat/p9-e1-20261003 | acquired=2026-10-03T10:08:46.9030664Z\npool-18  [cold]  branch=feat/p9-s2-20261003  LEASED run_id=p9-s1-20261003 | agent=p9-s1 | owner_kind=heartbeat | owner=dead | keeper_pid=26256 | branch=feat/p9-s1-20261003 | acquired=2026-10-03T10:09:16.6409837Z\npool-19  [cold]  branch=feat/p9-alcomb-20261003  LEASED run_id=p9-t1-20261003 | agent=p9-t1 | owner_kind=heartbeat | owner=dead | keeper_pid=13684 | branch=feat/p9-t1-20261003 | acquired=2026-10-03T10:09:35.5289337Z\npool-20  [cold]  branch=feat/p9-d2-20261003  LEASED run_id=p9-d1-20261003 | agent=p9-d1 | owner_kind=heartbeat | owner=dead | keeper_pid=11120 | branch=feat/p9-d1-20261003 | acquired=2026-10-03T10:09:54.1489497Z\npool-21  [cold]  branch=feat/p9-od3p-20261004  LEASED run_id=p9-od3p-20261004 | agent=p9-od3p | owner_kind=heartbeat | owner=dead | keeper_pid=19732 | branch=feat/p9-od3p-20261004 | acquired=2026-10-04T23:41:42.2363387Z\npool-22  [cold]  branch=feat/p9-t2-20261003  LEASED run_id=p9-t2-20261003 | agent=p9-t2 | owner_kind=heartbeat | owner=dead | keeper_pid=9856 | branch=feat/p9-t2-20261003 | acquired=2026-10-03T19:24:37.8189792Z\npool-23  [cold]  branch=feat/p9-d3w-20261005  LEASED run_id=p9-d3w-20261005 | agent=p9-d3w | owner_kind=heartbeat | owner=dead | keeper_pid=16948 | branch=feat/p9-d3w-20261005 | acquired=2026-10-05T21:56:26.9328582Z\npool-24  [cold]  branch=feat/p9-cov-20261003  LEASED run_id=p9-cov-20261003 | agent=p9-cov | owner_kind=heartbeat | owner=dead | keeper_pid=19248 | branch=feat/p9-cov-20261003 | acquired=2026-10-03T20:32:14.2895415Z\npool-25  [cold]  branch=merge/p9-into-main-20261003  LEASED run_id=p9-main-merge-20261003 | agent=pm-main-merge | owner_kind=heartbeat | owner=dead | keeper_pid=20308 | branch=merge/p9-into-main-20261003 | acquired=2026-10-04T02:58:05.4693485Z\npool-26  [cold]  branch=feat/statarb-20261004  LEASED run_id=statarb-20261004 | agent=statarb-pm | owner_kind=heartbeat | owner=dead | keeper_pid=3988 | branch=feat/statarb-20261004 | acquired=2026-10-04T12:19:48.1084291Z\npool-27  [cold]  branch=feat/p9-a4-20261005  LEASED run_id=p9-a4-20261005 | agent=p9-a4 | owner_kind=heartbeat | owner=dead | keeper_pid=20752 | branch=feat/p9-a4-20261005 | acquired=2026-10-05T23:45:48.0236607Z\npool-28  [cold]  branch=feat/p9-abs-20261006  LEASED run_id=p9-abs-20261006 | agent=p9-abs | owner_kind=heartbeat | owner=dead | keeper_pid=18164 | branch=feat/p9-abs-20261006 | acquired=2026-10-06T22:07:18.7119453Z\npool-29  [cold]  branch=feat/p9-sign-20261006  LEASED run_id=p9-sign-20261006 | agent=p9-sign | owner_kind=heartbeat | owner=dead | keeper_pid=30460 | branch=feat/p9-sign-20261006 | acquired=2026-10-06T22:08:35.8569428Z\npool-30  [cold]  branch=feat/p9-alclock2-20261007  LEASED run_id=p9-alclock2-20261007 | agent=p9-alclock2 | owner_kind=heartbeat | owner=dead | keeper_pid=8240 | branch=feat/p9-alclock2-20261007 | acquired=2026-10-07T21:43:06.6124948Z\npool-31  [cold]  branch=feat/p9-covmv2-20261007  LEASED run_id=p9-covmv2-20261007 | agent=p9-covmv2 | owner_kind=heartbeat | owner=dead | keeper_pid=21036 | branch=feat/p9-covmv2-20261007 | acquired=2026-10-07T21:43:47.8765211Z\npool-32  [cold]  branch=feat/p9-sql4-20261008  LEASED run_id=p9-sql4-20261008 | agent=p9-sql4 | owner_kind=heartbeat | owner=alive | keeper_pid=11816 | branch=feat/p9-sql4-20261008 | acquired=2026-10-08T23:18:37.7467716Z\npool-33  [cold]  branch=feat/vol-knot-ladder-20261017  LEASED run_id=vol-20261017r6-knot-ladder-fix1 | agent=knot-ladder-fix1 | owner_kind=heartbeat | owner=alive | keeper_pid=18552 | branch=feat/vol-knot-ladder-20261017 | acquired=2026-10-17T17:48:32.1506769Z\npool-34  [cold]  branch=feat/vol-surface-archive-20261017  LEASED run_id=vol-20261017r6-surface-archive-fix1 | agent=surface-archive-fix1 | owner_kind=heartbeat | owner=alive | keeper_pid=14876 | branch=feat/vol-surface-archive-20261017 | acquired=2026-10-17T17:48:41.5931199Z\npool-35  [cold]  branch=HEAD  free\npool-36  [cold]  branch=HEAD  free\n",
+  "lease_note": "Read-only status; foreign pool35 free versus RESUME15 start alive. P9 pool32 alive, other P9 owners dead. No lease/pool action.",
+  "commands": "git rev-parse HEAD main origin/main; git branch --show-current; git status --short; powershell -NoProfile -File scripts/lease-worktree.ps1 -Status; Python312 inline metadata verification using 1MiB streamed SHA256 and unchanged canonical accounting definitions",
+  "receipt_continuity": [
+    {
+      "path": "build-equity/mega-p9-3f-receipt.json",
+      "sha256": "47fc43a31e049f71ddcd4c0e789dc261c3fc0cb87546e62fbb59c4617aa13c47",
+      "source": "5f48a25d3730789914941fbc7aa42f4458cea6b1",
+      "tag": "p9-3f",
+      "executables": 27,
+      "match": true
+    },
+    {
+      "path": "build-equity/mega-p9-3g-receipt.json",
+      "sha256": "ef46a3700f47d022b6836e12c3bbb1aaa9c251565a454ec58e8792e6480ae35a",
+      "source": "5f48a25d3730789914941fbc7aa42f4458cea6b1",
+      "tag": "p9-3g",
+      "executables": 27,
+      "match": true
+    }
+  ],
+  "crt_version": "10.0.26100.7623 (WinBuild.160101.0800)",
+  "commit_scopes": {
+    "253cf8eb": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-accounting-after-ledger.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-completion-outputs.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-ledger-completion.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-ledger-cycle-filtered.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-monitor-cycle-filtered.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-seal-ledger.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9l-seal-monitor.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9l-label-terminal-record.md",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-2.md"
+    ],
+    "3f21e65e": [
+      ".superpowers/sdd/platform-p9-20261003/cells/p9h-cov-hedge-record.md",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-3.md",
+      ".superpowers/sdd/platform-p9-20261003/progress.md",
+      ".superpowers/sdd/platform-p9-20261003/r14-prompts/cells-prompt-4.md",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-18.txt"
+    ],
+    "6065767a": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-accounting.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-evidence-sha256.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-exe-dbg-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-exe-rel-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-final-receipt-flags.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-freeze-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-input-commit-audit.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-ledger-completion.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-mechanics-first.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-native-wall.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-output-files-sha256.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-registered-prints.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-rho-first.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-schedule-traces.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-seal-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-sleeve-train-prints.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-timing-summary.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-timings-only.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9m-mom-volman-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9m-mom-volman/ledger-head.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9m-mom-volman/wave-log.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9m-mom-volman/wave-result.json",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-4.md",
+      ".superpowers/sdd/platform-p9-20261003/integration-log.md"
+    ],
+    "fa76811a": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-accounting.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-audit-status.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-clock-prints.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-evidence-sha256.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-final-receipt-flags.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-freeze-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-frozen-exes.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-input-commit-audit.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-ledger-completion.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-mechanics-first.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-native-wall.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-output-files-sha256.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-prelaunch.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-registered-prints.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-rho-first.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-seal-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-timing-summary.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9c-timings-only.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9c-info-clock-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/tools/p9c_complete_audit.py",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9c-info-clock/ledger-head.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9c-info-clock/wave-log.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9c-info-clock/wave-result.json",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-4.md",
+      ".superpowers/sdd/platform-p9-20261003/integration-log.md"
+    ],
+    "3c699d40": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-accounting.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-final-receipt-flags.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-freeze-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-frozen-exes.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-input-commit-audit.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-ledger-completion.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-mechanics-first.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-native-wall.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-output-sha256.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-registered-prints.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-rho-first.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-scoreboard-timings.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-seal-complete.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9mv-timing-summary.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9mv-mv-aim-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/tools/p9mv_complete_audit.py",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9mv-mv-aim/ledger-head.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9mv-mv-aim/wave-log.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/waves/p9mv-mv-aim/wave-result.json",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-5.md",
+      ".superpowers/sdd/platform-p9-20261003/integration-log.md"
+    ],
+    "cb1c8e37": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-accounting-v8.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-completion-accounting.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-completion-invocation.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-completion-metadata.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-completion-source.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-final-frozen-checks.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-final-output-sha256.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-final-state.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-final-summary-metadata.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-monitor-invocation.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-monitor-metadata.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-monitor-source.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9x-leverage-record.md",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-5.md",
+      ".superpowers/sdd/platform-p9-20261003/integration-log.md"
+    ],
+    "11489ee3": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-accounting-v8.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-completion-audit.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-completion-launch.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-completion-raw.log",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-completion-source.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-final-output-sha256.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-monitor-launch.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-monitor-raw.log",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-monitor-source.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9v-vol-target-cov-record.md",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-6.md"
+    ],
+    "86fcd5df": [
+      ".superpowers/sdd/platform-p9-20261003/cells/p9l-label-terminal-deriv.md"
+    ],
+    "04d4d43a": [
+      ".superpowers/sdd/platform-p9-20261003/cells/p9x-leverage-deriv.md"
+    ],
+    "161781af": [
+      ".superpowers/sdd/platform-p9-20261003/cells/p9v-vol-target-cov-deriv.md"
+    ],
+    "c3e3735f": [
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9-adoption-preparation-stops.txt",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9-adoption-source-controls.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/logs/p9-adoption-start.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9-adoption-plan.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9-adoption-proposal.json",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9c-info-clock-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9m-mom-volman-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9mv-mv-aim-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/p9x-leverage-record.md",
+      ".superpowers/sdd/platform-p9-20261003/cells/tools/p9_adoption_conditional.py",
+      ".superpowers/sdd/platform-p9-20261003/cells/tools/p9_adoption_prepare.py",
+      ".superpowers/sdd/platform-p9-20261003/handoff-root-cells-7.md",
+      ".superpowers/sdd/platform-p9-20261003/progress.md",
+      ".superpowers/sdd/platform-p9-20261003/r14-prompts/adoption-resume15.md",
+      ".superpowers/sdd/platform-p9-20261003/r14-prompts/cells-prompt-7.md",
+      ".superpowers/sdd/platform-p9-20261003/r14-prompts/idx-final-preparation.md",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-35.txt",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-36.txt",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-37.txt",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-38.txt",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-39.txt",
+      ".superpowers/sdd/platform-p9-20261003/resume15-ledger-40.txt"
+    ]
+  },
+  "historical_prefixes": {
+    "133": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554",
+    "134": "b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61",
+    "135": "7b87d61ccb3285e9ea94aefb52222e610f74287b5559988339eccf09aed07e00",
+    "136": "c98dd0c4d59bada990fb34c7bf5efc3ae59873acc313de771a2d025a449013b7",
+    "137": "21522bb42c9adf7859dbf042878338b3b0374b2f920055a8f2e59980c2a9a76b",
+    "138": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8",
+    "139": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+    "140": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d"
+  },
+  "document_snapshot": {
+    "handoff-root-cells-7.md": {
+      "exists": true,
+      "sha256": "aa41299d6fa2af4ebc5e57dede2810f7da62736ed7b46b4e25f5eece553e055a",
+      "last_commit": "c3e3735fb12b14cef0495141d7a8776cc355a536",
+      "final_status": "existing documentary evidence"
+    },
+    "goal-two-tracks.md": {
+      "exists": true,
+      "sha256": "942c1da2fe389e16213fd1d7167ffe2cde18d97601dd243ec8397ffd930e5a9f",
+      "last_commit": "211a7021fbf23a6fcd61f0ba345a5a2381cc3ef6",
+      "final_status": "existing documentary evidence"
+    },
+    "platform-track-report.md": {
+      "exists": true,
+      "sha256": "3a24fbf086cd618e4d43ec1248d472789c654147148e81841887c658e167fad5",
+      "last_commit": "2c22d439433b37167cc7d9167bd3d7694925843b",
+      "final_status": "existing documentary evidence"
+    },
+    "freeze-verdict.md": {
+      "exists": true,
+      "sha256": "be105a13e12990341c39d47556894fe95d806c935566a5440d3401cdd5abaeca",
+      "last_commit": "",
+      "final_status": "deferred"
+    },
+    "final-report.md": {
+      "exists": true,
+      "sha256": "e04f485acb8d6e68ce348916a8960474694b726423d1966a0a309d943f668bbe",
+      "last_commit": "",
+      "final_status": "deferred"
+    },
+    "adoption-print.md": {
+      "exists": false,
+      "sha256": null,
+      "last_commit": "",
+      "final_status": "deferred"
+    },
+    "od3-read.md": {
+      "exists": false,
+      "sha256": null,
+      "last_commit": "",
+      "final_status": "deferred"
+    },
+    "rulings-index-final.md": {
+      "exists": false,
+      "sha256": null,
+      "last_commit": "",
+      "final_status": "deferred"
+    }
+  },
+  "document_check_end_utc": "2026-10-17T18:23:06.917472+00:00",
+  "head_at_document_check_end": "71226ef9be8816e2c5e6b0ded657249d9c81b712",
+  "permission_refusals": [],
+  "ordinary_lookup_errors": [
+    "rg literal scripts/ledger* invalid Windows path; absent validation/ledger.py path; build receipt Executables incorrectly indexed as list, corrected to documented mapping. No data/statistical command, mutation or permission refusal."
+  ]
+}

@@ -1,0 +1,5 @@
+﻿[atx-build] cmake --build C:\atx-wt\pool-2\build-equity --parallel 4 --target atx-engine-alpha-tests 
+atx-impl-strategy-ic-tests
+[0/2] Re-checking globbed directories...
+[1/3] Building CXX object atx-engine\tests\CMakeFiles\atx-engine-alpha-tests.dir\alpha\alpha_lit_golden_test.cpp.obj
+[2/3] Linking CXX executable bin\atx-engine-alpha-tests.exe

@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
@@ -189,6 +190,19 @@ TEST(NavReplayCancellation, PinnedRunCancelledBeforeAnyInputOrOutputIo) {
   stop.request_stop();
   std::ostringstream progress;
   const auto status = st::run_nav_replay({}, {}, {}, {}, {}, {}, progress, stop.get_token());
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().code(), co::ErrorCode::Cancelled);
+  EXPECT_TRUE(progress.str().empty());
+}
+
+TEST(NavReplayCancellation, CalibratedRunCancelledBeforeAnyInputOrOutputIo) {
+  std::stop_source stop;
+  stop.request_stop();
+  std::ostringstream progress;
+  st::NavCalibrateOptions calibrate;
+  calibrate.target_gross = 1.0;
+  const auto status = st::run_nav_replay({}, {}, {}, {}, {}, {}, calibrate,
+                                        progress, stop.get_token());
   ASSERT_FALSE(status);
   EXPECT_EQ(status.error().code(), co::ErrorCode::Cancelled);
   EXPECT_TRUE(progress.str().empty());
@@ -3469,4 +3483,293 @@ TEST(ConstructionGrid, RefusesBadGridsBeforeAnyOutput) {
   ASSERT_TRUE(std::filesystem::remove(never));
   ASSERT_EQ(run("ok.json", {}), 0) << err.str();
   EXPECT_EQ(file_names(never), (std::vector<std::string>{"a", "grid_manifest.json"}));
+}
+
+namespace {
+std::string calibrate_file_bytes(const std::filesystem::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+std::vector<std::string> calibrate_tree(const std::filesystem::path& root) {
+  std::vector<std::string> names;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(root))
+    if (e.is_regular_file())
+      names.push_back(std::filesystem::relative(e.path(), root).generic_string());
+  std::sort(names.begin(), names.end());
+  return names;
+}
+// The primary S2 book's all-rows mean gross of a published directory as nav_summ computes it:
+// numpy's mean of the daily CSV's gross_leverage column (17 significant digits round-trip).
+f64 calibrate_gross_of(const std::filesystem::path& dir) {
+  const auto label = read_json(dir / "summary.json").at("primary_scenario").get<std::string>();
+  std::ifstream in(dir / ("daily_" + label + ".csv"));
+  std::string line;
+  std::getline(in, line);
+  usize column = 0;
+  {
+    std::stringstream header(line);
+    for (std::string cell; std::getline(header, cell, ',') && cell != "gross_leverage";) ++column;
+  }
+  std::vector<f64> gross;
+  while (std::getline(in, line)) {
+    std::stringstream row(line);
+    std::string cell;
+    for (usize k = 0; k <= column && std::getline(row, cell, ','); ++k) {}
+    gross.push_back(std::stod(cell));
+  }
+  return st::numpy_mean(gross);
+}
+} // namespace
+
+// P9 C2 (--calibrate-gross) with the borrow fields: mixed tiers (MARK's financing, the locate
+// block, the census and the holdings export read the recorded tiers) and aim-partial-v5 at a
+// 3-session cadence. One correction publishes the plain run at L' (the two-process result) byte
+// for byte from pass 1's recorded construction (construction_reused), and the --emit-holdings
+// directory (no hold band: still reused) is the plain run's byte for byte.
+TEST(CalibrateGross, TieredRunReusesTheConstructionByteForByte) {
+  Panel p(36, 10);
+  randomize_rows(p, 17, 0);
+  for (f64& v : p.volume) v *= 1e5; // liquid enough that the $1bn books fill (absent: NaN stays)
+  const auto f = random_fields(p, 29);
+  Directory dir;
+  auto a = write_artifact(dir.path, p);
+  const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+  a.cfg.target.rule = st::TargetReplayRule::AimPartialV5;
+  a.cfg.target.cadence = 3;
+  a.cfg.target.trade_fraction = 0.25;
+  std::ostringstream progress;
+  const f64 off = std::numeric_limits<f64>::quiet_NaN();
+  const auto run = [&](const std::string& name, f64 leverage, f64 target,
+                       const std::string& holdings) {
+    auto cfg = a.cfg;
+    cfg.output_directory = (dir.path / name).string();
+    cfg.target.aim_leverage = leverage;
+    st::NavEmitOptions emit;
+    if (!holdings.empty()) emit.holdings_directory = (dir.path / holdings).string();
+    st::NavCalibrateOptions calibrate;
+    calibrate.target_gross = target;
+    calibrate.tolerance = 1e-6; // a 10% gap is a correction whatever the fixture's gross
+    return st::run_nav_replay(cfg, st::NavTurnoverLimits{}, pin, st::NavRateOptions{},
+                              st::NavExecutionOptions{}, emit, calibrate, progress);
+  };
+  const auto first = run("first", 1.5, off, "");
+  ASSERT_TRUE(first) << first.error().to_string();
+  const f64 g = calibrate_gross_of(dir.path / "first");
+  ASSERT_GT(g, 1e-3) << "the fixture's books must build";
+  const f64 target = g * 1.1;
+  const auto corrected = st::leverage_4_decimals(1.5 * target / g);
+  ASSERT_TRUE(corrected);
+  ASSERT_TRUE(*corrected >= 1.0 && *corrected <= 2.0) << *corrected;
+  const auto second = run("second", *corrected, off, "second-holdings");
+  ASSERT_TRUE(second) << second.error().to_string();
+  const auto calibrated = run("calibrated", 1.5, target, "calibrated-holdings");
+  ASSERT_TRUE(calibrated) << calibrated.error().to_string();
+  const auto names = calibrate_tree(dir.path / "calibrated");
+  EXPECT_EQ(names, calibrate_tree(dir.path / "second"));
+  for (const auto& name : names) {
+    if (name == "summary.json") continue;
+    EXPECT_TRUE(calibrate_file_bytes(dir.path / "calibrated" / name) ==
+                calibrate_file_bytes(dir.path / "second" / name)) << name;
+  }
+  auto summary = read_json(dir.path / "calibrated" / "summary.json");
+  EXPECT_EQ(summary.at("primary_scenario"), "modeled-1bn-stale5-v1+swap-fin-v1");
+  const auto calibration = summary.at("calibration");
+  summary.erase("calibration");
+  EXPECT_EQ(summary, read_json(dir.path / "second" / "summary.json"));
+  EXPECT_EQ(calibration.at("corrected"), true);
+  EXPECT_EQ(calibration.at("construction_reused"), true);
+  EXPECT_EQ(std::bit_cast<u64>(calibration.at("leverage").get<f64>()),
+            std::bit_cast<u64>(*corrected));
+  EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross_requested").get<f64>()),
+            std::bit_cast<u64>(g));
+  EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross").get<f64>()),
+            std::bit_cast<u64>(calibrate_gross_of(dir.path / "second")));
+  const auto held = calibrate_tree(dir.path / "calibrated-holdings");
+  EXPECT_EQ(held, calibrate_tree(dir.path / "second-holdings"));
+  EXPECT_GE(held.size(), 3U);
+  for (const auto& name : held)
+    EXPECT_TRUE(calibrate_file_bytes(dir.path / "calibrated-holdings" / name) ==
+                calibrate_file_bytes(dir.path / "second-holdings" / name)) << name;
+}
+
+// P9 C2 fix round 1 (review S2): with X-5's construction keys (price-risk-v1 neutralization,
+// locate-in-aim, the delta order basis, the liquidity cache) pass 2 replays the recorded
+// construction; where the construction reads the leverage or a state pass 1 does not form
+// (adv-hold-v1's cap; --emit-holdings with a declared hold band) pass 2 forms it again
+// (construction_reused false). Every case publishes the plain run at L' byte for byte (summary.json
+// with calibration dropped; the holdings directory too), and its calibration record is the plain
+// runs' own: gross_requested = the S2 all-rows G of the plain run at L, leverage = L' (4 decimals of
+// L x G_P / G), gross = the plain run at L''s G, bit for bit. Fix round 2 (review R5): the X-5 keys
+// under a warm start (every X-5-lineage cell runs --warm-start-sessions): the record covers the
+// warm-up decisions too, and the contract is the same against the plain warm-started runs.
+TEST(CalibrateGross, ReuseAndItsExclusionsPublishThePlainRunAtTheFinalLeverage) {
+  Panel p(48, 12);
+  randomize_rows(p, 23, 0);
+  for (f64& v : p.volume) v *= 1e5; // liquid enough that the $1bn books fill (absent: NaN stays)
+  const auto f = random_fields(p, 31);
+  constexpr usize score_begin = 30, warm_sessions = 18; // the warm case: decisions from row 12
+  const char* const names[] = {"x5-keys", "adv-hold", "hold-band-holdings", "x5-keys-warm-start"};
+  for (int c = 0; c < 4; ++c) {
+    SCOPED_TRACE(names[c]);
+    const bool warm = c == 3;
+    Directory dir;
+    auto a = warm ? artifact_from(dir.path, p, score_begin) : write_artifact(dir.path, p);
+    const auto pin = write_fields(dir.path, a, p, f, [](Json&) {});
+    auto& target = a.cfg.target;
+    target.rule = st::TargetReplayRule::AimPartialV5;
+    target.cadence = 3;
+    target.trade_fraction = 0.25;
+    st::NavExecutionOptions execution;
+    const bool holdings = c == 2;
+    if (c == 0 || warm) {
+      const auto daily = construction_daily();
+      target.neutralize = daily.neutralize;
+      target.price_risk = daily.price_risk;
+      execution.locate_in_aim = true;
+      execution.order_basis = st::NavOrderBasis::Delta;
+      execution.liquidity_cache = true;
+      if (warm) execution.warm_start_sessions = warm_sessions;
+    } else if (c == 1) {
+      target.adv_hold_q = 0.5;
+    } else {
+      target.hold_band = 0.5;
+    }
+    std::ostringstream progress;
+    const auto run = [&](const std::string& name, f64 leverage, f64 gross, bool emit) {
+      auto cfg = a.cfg;
+      cfg.output_directory = (dir.path / name).string();
+      cfg.target.aim_leverage = leverage;
+      st::NavEmitOptions out;
+      if (emit) out.holdings_directory = (dir.path / (name + "-holdings")).string();
+      st::NavCalibrateOptions calibrate;
+      calibrate.target_gross = gross;
+      calibrate.tolerance = 1e-6;
+      return st::run_nav_replay(cfg, st::NavTurnoverLimits{}, pin, st::NavRateOptions{},
+                                execution, out, calibrate, progress);
+    };
+    const f64 off = std::numeric_limits<f64>::quiet_NaN();
+    const auto first = run("first", 1.5, off, false);
+    ASSERT_TRUE(first) << first.error().to_string();
+    const f64 g = calibrate_gross_of(dir.path / "first");
+    ASSERT_GT(g, 1e-3) << "the fixture's books must build";
+    const f64 gross = g * 1.1;
+    const auto corrected = st::leverage_4_decimals(1.5 * gross / g); // the exe's L x G_P / G
+    ASSERT_TRUE(corrected);
+    const auto second = run("second", *corrected, off, holdings);
+    ASSERT_TRUE(second) << second.error().to_string();
+    const auto calibrated = run("calibrated", 1.5, gross, holdings);
+    ASSERT_TRUE(calibrated) << calibrated.error().to_string();
+    for (const char* tail : {"", "-holdings"}) {
+      if (*tail && !holdings) continue;
+      const auto mine = dir.path / (std::string("calibrated") + tail);
+      const auto theirs = dir.path / (std::string("second") + tail);
+      const auto files = calibrate_tree(mine);
+      EXPECT_EQ(files, calibrate_tree(theirs)) << tail;
+      for (const auto& file : files)
+        if (file != "summary.json")
+          EXPECT_TRUE(calibrate_file_bytes(mine / file) == calibrate_file_bytes(theirs / file))
+              << tail << ' ' << file;
+    }
+    auto summary = read_json(dir.path / "calibrated" / "summary.json");
+    const auto calibration = summary.at("calibration");
+    summary.erase("calibration");
+    EXPECT_EQ(summary, read_json(dir.path / "second" / "summary.json"));
+    EXPECT_EQ(calibration.at("corrected"), true);
+    EXPECT_EQ(calibration.at("construction_reused").get<bool>(), c == 0 || warm);
+    EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross_requested").get<f64>()),
+              std::bit_cast<u64>(g));
+    EXPECT_EQ(std::bit_cast<u64>(calibration.at("leverage").get<f64>()),
+              std::bit_cast<u64>(*corrected));
+    EXPECT_EQ(std::bit_cast<u64>(calibration.at("gross").get<f64>()),
+              std::bit_cast<u64>(calibrate_gross_of(dir.path / "second")));
+    if (warm) { // the warm start ran (recorded as the plain warm run records it) on scored rows only
+      EXPECT_EQ(summary.at("warm_start").at("sessions"), warm_sessions);
+      EXPECT_EQ(summary.at("warm_start").at("score_begin_row"), score_begin);
+      const auto daily = "daily_" + summary.at("primary_scenario").get<std::string>() + ".csv";
+      EXPECT_EQ(lines(dir.path / "calibrated" / daily).size(), p.d - score_begin + 1);
+    }
+  }
+}
+
+namespace {
+// Every file under `a` (recursively: the capacity directory too) is under `b` with the same
+// bytes, and nothing else is.
+void expect_same_tree(const std::filesystem::path& a, const std::filesystem::path& b) {
+  const auto names = calibrate_tree(a);
+  ASSERT_FALSE(names.empty()) << a;
+  ASSERT_EQ(names, calibrate_tree(b)) << a << " vs " << b;
+  for (const auto& name : names)
+    EXPECT_TRUE(file_bytes(a / name) == file_bytes(b / name)) << name;
+}
+} // namespace
+
+// P9 C3, ruling P13 (the NAV half of the C++ seal consumer; S2's IC half is
+// IcFieldsSeal.ManifestSealMustBeThisBuildsOrAbsent): a --fields manifest built under this build's
+// research seal (seal.exclusive_end 2024-01-01) is bound; one without a seal (or a seal block
+// without exclusive_end) is a legacy manifest, accepted and logged; one built under another seal,
+// or with a malformed seal block, is refused before any output. The seal is never published: the
+// daily and event files of the sealed and the legacy run are the same bytes.
+TEST(NavFieldsSeal, ManifestSealMustBeThisBuildsOrAbsent) {
+  const auto p = publication_panel();
+  Fields f(p);
+  for (usize t = 0; t < p.d; ++t) f.set(p, t, 0, 1e6, 5e5);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const auto run = [&](const std::string& name, const Json& seal, std::string& log) {
+    const auto root = dir.path / ("seal-" + name);
+    EXPECT_TRUE(std::filesystem::create_directory(root)) << name;
+    const auto pin = write_fields(root, a, p, f, [&](Json& m) {
+      if (!seal.is_null()) m["seal"] = seal;
+    });
+    std::ostringstream out, err;
+    const int code = dispatch(nav_args(a, root / "nav", joined(v5_flags, {"--fields",
+                                       pin.manifest_path, "--fields-sha256",
+                                       pin.manifest_sha256})), out, err);
+    log = out.str() + err.str();
+    return code;
+  };
+  constexpr const char* legacy = "nav replay: fields-seal seal=absent accepted-as-legacy-manifest";
+  std::string log;
+  ASSERT_EQ(run("absent", nullptr, log), 0) << log;
+  EXPECT_NE(log.find(legacy), std::string::npos) << log;
+  ASSERT_EQ(run("match", Json{{"exclusive_end", "2024-01-01"}, {"window_id", "research-window-v2"}},
+                log), 0) << log;
+  EXPECT_EQ(log.find("seal=absent"), std::string::npos) << log;
+  for (const auto& name : file_names(dir.path / "seal-match" / "nav"))
+    if (name.rfind("daily_", 0) == 0 || name.rfind("events_", 0) == 0)
+      EXPECT_TRUE(file_bytes(dir.path / "seal-match" / "nav" / name) ==
+                  file_bytes(dir.path / "seal-absent" / "nav" / name)) << name;
+  ASSERT_EQ(run("keyless", Json{{"window_id", "research-window-v2"}}, log), 0) << log;
+  EXPECT_NE(log.find(legacy), std::string::npos) << log;
+  const std::vector<std::tuple<std::string, Json, std::string>> refused{
+      {"later", Json{{"exclusive_end", "2025-01-01"}},
+       "fields manifest was built under the seal \"2025-01-01\"; this build's seal is 2024-01-01"},
+      {"numeric", Json{{"exclusive_end", 20240101}}, "fields manifest was built under the seal"},
+      {"flat", Json("2024-01-01"), "fields manifest seal block is not an object"}};
+  for (const auto& [name, seal, message] : refused) {
+    EXPECT_EQ(run(name, seal, log), 1) << name;
+    EXPECT_NE(log.find(message), std::string::npos) << log;
+    EXPECT_FALSE(std::filesystem::exists(dir.path / ("seal-" + name) / "nav")) << name;
+  }
+}
+
+// P9 C3, W1-MIN M-1 (before any spec sets --book-workers): aim-partial-v6 with the v2 cost laws,
+// the capacity curve (its books in the main lockstep, per-multiple adv-hold caps) and adv-hold-v1
+// on a pool of 4 publishes every byte of the one-worker run, the capacity directory included.
+TEST(NavBookWorkers, V6CostV2CapacityAdvHoldOnFourEqualsOne) {
+  const auto p = noisy_panel(90, 12, 21);
+  Directory dir; const auto a = write_artifact(dir.path, p);
+  const std::vector<std::string> v6{"--rule", "aim-partial-v6", "--cadence", "1",
+                                    "--trade-fraction", ".5", "--dust-multiple", ".1",
+                                    "--aim-leverage", "1.5", "--exit-rate", ".05", "--cost-v2",
+                                    "--capacity-curve", "--adv-hold-q", ".05"};
+  std::ostringstream out, err;
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "one", v6), out, err), 0) << err.str();
+  ASSERT_EQ(dispatch(nav_args(a, dir.path / "four", joined(v6, {"--book-workers", "4"})), out,
+                     err), 0) << err.str();
+  expect_same_tree(dir.path / "four", dir.path / "one");
+  EXPECT_TRUE(std::filesystem::exists(dir.path / "one" / "capacity" / "summary.json"));
+  EXPECT_TRUE(std::filesystem::exists(dir.path / "one" / "v7_extras.json"));
+  EXPECT_EQ(read_json(dir.path / "one" / "summary.json").at("rule").get<std::string>().rfind(
+                "aim-partial-v6", 0),
+            0U);
 }

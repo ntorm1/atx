@@ -1,0 +1,14 @@
+{
+  "stage": "monitor",
+  "command": [
+    "C:/Program Files/Python312/python.exe",
+    "-u",
+    "scripts/research_cycle.py",
+    "run",
+    "scripts/specs/p9/templates/p9v-vol-target-cov.json",
+    "--stop-after",
+    "monitor"
+  ],
+  "exit_code": 0,
+  "outer_seconds": 4.218999999924563
+}

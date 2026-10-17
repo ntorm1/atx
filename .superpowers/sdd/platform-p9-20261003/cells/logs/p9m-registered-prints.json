@@ -1,0 +1,30 @@
+{
+  "decision": {
+    "rule": "pm7-34",
+    "accepted": false,
+    "dsr": -0.03834150043478579
+  },
+  "checks": {
+    "dsr_positive": false,
+    "mechanics": true
+  },
+  "paired": {
+    "dsr": -0.03834150043478579,
+    "memmel_se": 0.05245282932751416,
+    "sr": 1.8366806364573005,
+    "sr_reference": 1.8750221368920863
+  },
+  "p_two_sided": 0.286,
+  "p_one_sided": 0.8498,
+  "books": {
+    "cell": {
+      "tau_per_gross": 0.027238060526679764,
+      "x4_net_sharpe": 1.7327918281525585
+    },
+    "parent": {
+      "tau_per_gross": 0.027439791063976805,
+      "x4_net_sharpe": 1.759566530994928
+    }
+  },
+  "expected_effect_nondeciding": "+.01 to +.03 [est]"
+}

@@ -1,0 +1,2 @@
+{"run_dir":"build-equity/fx-nav-run1","ord":0,"path":"scripts/specs/v8/fx-base.json","sha256":"606b7a859dcca03d0bfe4b642a878b494d6992e01f93bd48f8beabf97fae459e"}
+{"run_dir":"build-equity/fx-nav-run1","ord":1,"path":"C:\\elsewhere\\not-in-the-tree\\bound.json","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}

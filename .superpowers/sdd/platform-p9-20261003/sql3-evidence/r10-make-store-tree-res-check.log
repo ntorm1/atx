@@ -1,0 +1,2 @@
+root == TREE True | path(rel) under root True
+hook off for TREE True | catalog file False | exe False

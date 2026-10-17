@@ -10,6 +10,7 @@
 //   strategy_ic_signal_cache.cpp  VM identity + source pin, candidate signal cache, report
 //   strategy_ic_result_cache.cpp  IC identity + source pin, IC-result cache
 //   strategy_ic_runner.cpp        score_role, outputs, run_ic, dispatch_ic
+//   strategy_ic_absent.cpp        absent-members-v1 list (strategy_ic_absent.hpp; P9 lane ABS)
 #include <array>
 #include <bitset>
 #include <cstddef>
@@ -122,8 +123,12 @@ struct FieldFile {
 };
 // A role's pinned fields manifest (empty sha: none pinned), the referenced subset
 // to load (in Library::extra_fields order), each with its manifest-pinned SHA256
-// and exact extent, and every declared extra's definition.
-struct RoleFields { std::string directory,sha; std::vector<FieldFile> load; std::map<std::string,Json> declared; };
+// and exact extent, and every declared extra's definition. `seal` (P9 S2, ruling P13): the
+// manifest's research seal, "match" or "absent" (a present seal other than this build's refuses).
+struct RoleFields {
+  std::string directory,sha; std::vector<FieldFile> load; std::map<std::string,Json> declared;
+  std::string seal{};
+};
 // `bytes`: the admitted working bytes; `memory`: their terms by name (admit), printed by a
 // --plan-only refused for the budget. `memory` keeps a default member initializer, so an
 // aggregate initialised up to `fields` (strategy_research_role.cpp) stays warning-free.
@@ -164,6 +169,19 @@ struct PinnedWeights {
   // two-speed-v1 (platform v8 Y-5, strategy_ic_two_speed.cpp): a theme_sleeves block on that rerank-true
   // block; `sleeves` its rule ("" none), the fast flag per composition theme index, the fast themes.
   std::string sleeves; std::vector<u8> sleeve_fast; std::vector<std::string> sleeve_fast_themes;
+  // P9 lane AL-COMB (ruling ALCOMB-5 S-3: what the role summary prints; empty unless the rule's
+  // block is present): mom-volman-v1's sigma, target and scale per schedule block, and
+  // theme-cov-hedge-v1's theme names by composition theme index.
+  std::vector<f64> volman_sigma,volman_target,volman_scale; std::vector<std::string> hedge_themes;
+  // P9 lane D3W (contract K-P9-8, schema atx.dsl-composition-weights/v3; strategy_ic_rules.cpp
+  // composition_walk_forward): mom-volman-v1's price_momentum composition theme index, and the
+  // walk_forward block: its rule ("" none), per row its first session and its weights (library
+  // order). Empty for v1 / v2 files, so nothing downstream changes.
+  usize volman_theme{};
+  std::string walk_forward; std::vector<i64> weight_from; std::vector<std::vector<f64>> weight_rows;
+  // P9 lane D3W (ruling ALCOMB-6): mom-volman-v1's recorded sleeve and its sessions (empty unless
+  // the rule's block is present), for the sleeve files a scored role writes.
+  std::vector<i64> volman_sessions; std::vector<f64> volman_sleeve;
   std::vector<const CompositionRule*> rules;
   // What the composition's grouping stage and admission receive: the standardised themes, else
   // the (possibly empty) within-theme-v1 themes.
@@ -180,6 +198,7 @@ using FieldShas=std::map<std::string,std::string>;
 struct CacheKey {
   std::filesystem::path dir; std::string stem; // v2 location: dir/stem.{f64,json}
   std::string role_sha; u64 dates{},instruments{}; std::string vm_identity;
+  std::string eval_mode;            // vm_eval_mode, or vm_eval_mode_audit (P9 S2)
   FieldShas fields;                 // every extra field the DSL reads (empty: base)
   std::string fields_manifest_sha;  // pinned manifest, provenance only (field candidates)
   std::string signal_key;           // SHA256(signal_key_text)
@@ -312,11 +331,33 @@ co::Result<Json> frozen_weights_binding(const IcRunnerConfig& cfg,const PinnedWe
                                         const FrozenTrain& frozen);
 co::Result<std::string> frozen_field_definitions(const Library& lib,const FrozenTrain& frozen,const Role& train,
                                                  const Role& validation);
+// ---- P9 S2: IC method options (strategy_ic_admission.cpp) --------------------
+// --min-coverage, --ic-hac-rule, --label-terminal and the label role pins, checked before any
+// payload: min_coverage in (0, 1]; a known rule name; each label pin a path/SHA pair; label pins
+// only with --label-terminal, which needs one for every scored role (validation_only: TRAIN is not
+// scored, so its pin is optional and, when given, bound to the frozen TRAIN recipe's).
+co::Status check_ic_method_options(const IcRunnerConfig& cfg,bool validation_only);
+// The IC screen's HAC rule (Bartlett2hV1 when --ic-hac-rule is absent).
+ex::IcHacRule ic_hac_rule(const IcRunnerConfig& cfg) noexcept;
+// ---- P9 S2: --label-terminal imputed-v1 (strategy_ic_admission.cpp) ----------
+// The label role pinned for scored role `role_name` ("train" / "validation"): {path, sha}.
+struct LabelRolePin { std::string path,sha; };
+LabelRolePin label_role_pin(const IcRunnerConfig& cfg,const std::string& role_name);
+// Metadata only, before any payload: the pinned label role manifest declares applied delisting
+// returns (universe.delisting.returns_applied true; the E-10 signal-role refusal is relaxed for
+// this label-only column, never for a signal or field) and has `role`'s dates, instruments, score
+// window and sessions/ids receipts.
+co::Status admit_label_role(const IcRunnerConfig& cfg,const Role& role);
+// After both payloads load: the label role's axes are the role's and, on every cell the role
+// presents, the label role presents the same close bit for bit (it may add presence only).
+co::Status bind_label_role(const engine::data::StrategyRoleData& role,
+                           const engine::data::StrategyRoleData& label);
 // The composition blocks' parses (theme-resid-v1 in strategy_ic_theme_resid.cpp, theme-tsmom-v1
 // in strategy_ic_theme_tsmom.cpp, two-speed-v1 in strategy_ic_two_speed.cpp, the rest in
 // strategy_ic_rules.cpp) are declared in strategy_ic_rules.hpp with the rule table.
 // ---- strategy_ic_signal_cache.cpp --------------------------------------------
-std::string vm_identity();
+// `audit_exact` (P9 S2): the AuditExact tier's identity, the ResearchFast one + "_audit".
+std::string vm_identity(bool audit_exact=false);
 co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,HashMeter* meter);
 std::filesystem::path cache_root(const IcRunnerConfig& cfg);
 Json fields_json(const FieldShas& fields);
@@ -330,24 +371,39 @@ co::Status cache_load(const CacheHit& hit,usize cells,std::vector<f64>& out,Hash
 co::Result<bool> publish_new(const std::filesystem::path& partial,const std::filesystem::path& final);
 co::Result<std::string> write_partial(const PartialFile& partial,std::span<const std::byte> bytes,
                                       HashMeter* meter=nullptr);
+// P9 lane SQL4: `index` is the candidate cache's SQLite index (--candidate-cache-index sqlite;
+// strategy_ic_cache_index.hpp) or null (files: today's code and bytes). With an index the rows
+// are the entries (no sidecar or IC-result file is written) and legacy files are read through.
 co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role& spec,
-    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,HashMeter& meter);
+    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,
+    HashMeter& meter,CacheIndex* index);
 co::Result<CacheResolution> cache_resolve(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
-                                          const KnownManifests& known);
+                                          const KnownManifests& known,CacheIndex* index);
 co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
-                            const KnownManifests& known);
+                            const KnownManifests& known,CacheIndex* index);
 co::Result<Json> cache_report(const IcRunnerConfig& cfg,const Library& lib,const std::vector<Role>& roles,
                               const KnownManifests& known);
 // ---- strategy_ic_result_cache.cpp --------------------------------------------
 std::string ic_identity();
 IcSeries scratch_series(const ex::ResearchIcScratch& scratch);
 IcSeries cached_series(const CachedIc& cached);
+// The labels an IC-result scope keys (P9 S2). Absent `terminal` (no --label-terminal): nothing, so
+// the key keeps its bytes. Under --label-terminal: ImputedV1 keys the rule and its label role pin;
+// MissingExitV1 is the IC under today's labels printed beside it (ruling S2-3), keyed by the rule
+// name alone: its own scope, never the flag-absent one, whose entries such a run cannot write.
+struct IcLabelScope {
+  std::optional<ex::LabelTerminalRule> terminal;
+  std::string label_role_sha;
+};
 co::Result<IcCacheScope> ic_cache_scope(const Role& spec,const engine::data::StrategyRoleData& role,
     const ex::IcScreenConfig& ic,const ex::ResearchIcOptions& options,std::span<const u32> guard,
-    HashMeter& meter);
+    const IcLabelScope& labels,HashMeter& meter);
+// `index` (P9 lane SQL4): as cache_store above; `path` then names the row (entry_dir = its
+// directory under the index, id = its stem).
 co::Result<std::optional<CachedIc>> ic_cache_lookup(const std::filesystem::path& path,
     const IcCacheScope& scope,const Candidate& c,const std::string& signal_sha,
-    const ex::ResearchIcScratch& scratch,usize active);
+    const ex::ResearchIcScratch& scratch,usize active,CacheIndex* index);
 co::Status ic_cache_store(const std::filesystem::path& path,const IcCacheScope& scope,const Candidate& c,
-    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,usize workers);
+    const std::string& signal_sha,const ex::ResearchIcResult& result,const IcSeries& daily,
+    usize workers,CacheIndex* index);
 } // namespace atx::impl::strategy::ic_detail

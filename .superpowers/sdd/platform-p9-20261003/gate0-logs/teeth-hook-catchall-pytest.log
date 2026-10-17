@@ -1,0 +1,90 @@
+............F.                                                           [100%]
+================================== FAILURES ===================================
+___________________ test_an_unexpected_error_is_one_warning ___________________
+
+cls = <class 'research_store.Store'>
+path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-gate0/bt-teeth/test_an_unexpected_error_is_on0/r/build-equity/research-store/catalog.sqlite')
+
+    @classmethod
+    def open(cls, path) -> "Store":
+        path = Path(path)
+        if str(path).startswith(("\\\\", "//")) or str(path.resolve()).startswith(("\\\\", "//")):
+            raise StoreError(f"store path refused (UNC path; WAL needs a local disk): {path}")
+        if not path.is_file():
+            raise StoreError(f"no store at {path}")
+        # mode=rw: an existing file only; sqlite3.connect would otherwise create an empty one.
+        con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True, isolation_level=None, timeout=30.0)
+        try:
+            con.execute("PRAGMA foreign_keys = ON")
+            con.execute("PRAGMA trusted_schema = OFF")
+            con.execute("PRAGMA busy_timeout = 30000")
+            application_id = con.execute("PRAGMA application_id").fetchone()[0] & 0xFFFFFFFF
+            user_version = con.execute("PRAGMA user_version").fetchone()[0]
+            try:
+>               found = con.execute("SELECT value FROM store_info WHERE key = 'schema_json'").fetchone()
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E               sqlite3.OperationalError: no such table: store_info
+
+atx-engine\tools\research_store.py:175: OperationalError
+
+The above exception was the direct cause of the following exception:
+
+tmp_path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-gate0/bt-teeth/test_an_unexpected_error_is_on0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000220ACCFBFE0>
+capsys = <_pytest.capture.CaptureFixture object at 0x00000220ACCFAE10>
+
+    def test_an_unexpected_error_is_one_warning(tmp_path, monkeypatch, capsys):
+        # STORE-S S-1, the catch-all: ingest exits 0, then the real check opens the planted empty catalog (StoreError)
+        root = catalog_on(tmp_path / "r")
+        doc = dict(F.candidate("alpha_a"), schema=WQ.SCHEMA, status="proposed", wave=None,
+                   history=[{"status": "proposed", "at": "2026-10-02", "by": "lane"}])
+        WQ.write(tmp_path / "plain", doc)                                   # the bytes of a write without the hook
+        rel = f"{WQ.QUEUE_DIR}/alpha_a.json"
+        monkeypatch.setattr(H, "subprocess", Ingests())
+>       assert WQ.write(root, doc) == root / WQ.QUEUE_DIR / "alpha_a.json"   # the writer's return value unchanged
+               ^^^^^^^^^^^^^^^^^^^
+
+scripts\tests\test_research_store_hook.py:475: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\wave_queue.py:146: in write
+    research_store_hook.record(root, Path(d or QUEUE_DIR) / p.name, "wave-candidate")   # root-relative (SQL3-WQ)
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\research_store_hook.py:155: in record
+    why = ingest(base, rel, cls, catalog) or check(base, rel, cls, catalog)
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+scripts\research_store_hook.py:210: in check
+    found = rsi.check_one(db, rel, cls, root=root, registry=reg)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+atx-engine\tools\research_store_identity.py:319: in check_one
+    with rs.Store.open(db) as store:
+         ^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cls = <class 'research_store.Store'>
+path = WindowsPath('C:/Users/natha/AppData/Local/Temp/claude/c--atx/2a54b18d-50af-4385-9bb7-113c392a6360/scratchpad/root-gate0/bt-teeth/test_an_unexpected_error_is_on0/r/build-equity/research-store/catalog.sqlite')
+
+    @classmethod
+    def open(cls, path) -> "Store":
+        path = Path(path)
+        if str(path).startswith(("\\\\", "//")) or str(path.resolve()).startswith(("\\\\", "//")):
+            raise StoreError(f"store path refused (UNC path; WAL needs a local disk): {path}")
+        if not path.is_file():
+            raise StoreError(f"no store at {path}")
+        # mode=rw: an existing file only; sqlite3.connect would otherwise create an empty one.
+        con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True, isolation_level=None, timeout=30.0)
+        try:
+            con.execute("PRAGMA foreign_keys = ON")
+            con.execute("PRAGMA trusted_schema = OFF")
+            con.execute("PRAGMA busy_timeout = 30000")
+            application_id = con.execute("PRAGMA application_id").fetchone()[0] & 0xFFFFFFFF
+            user_version = con.execute("PRAGMA user_version").fetchone()[0]
+            try:
+                found = con.execute("SELECT value FROM store_info WHERE key = 'schema_json'").fetchone()
+            except sqlite3.DatabaseError as exc:
+>               raise StoreError(f"{path}: no store_info table ({exc})") from exc
+E               research_store.StoreError: C:\Users\natha\AppData\Local\Temp\claude\c--atx\2a54b18d-50af-4385-9bb7-113c392a6360\scratchpad\root-gate0\bt-teeth\test_an_unexpected_error_is_on0\r\build-equity\research-store\catalog.sqlite: no store_info table (no such table: store_info)
+
+atx-engine\tools\research_store.py:177: StoreError
+=========================== short test summary info ===========================
+FAILED scripts/tests/test_research_store_hook.py::test_an_unexpected_error_is_one_warning
+1 failed, 13 passed in 8.75s

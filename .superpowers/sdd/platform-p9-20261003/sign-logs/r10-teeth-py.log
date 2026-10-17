@@ -1,0 +1,64 @@
+== P1 receipt schema check off (scripts/wave_rules.py): pytest exit 1: 1 failed in 5.73s; restored True, hash-object == HEAD blob True
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m1\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m1\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[schema]
+== P2 receipt rule / rows SHA-256 check off (scripts/wave_rules.py): pytest exit 1: 2 failed in 9.00s; restored True, hash-object == HEAD blob True
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m2\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m2\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m2\\test_a_receipt_that_is_not_the1\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m2\\test_a_receipt_that_is_not_the1\\r\\out\\waves\\w1\\receipts
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[rule]
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[rows sha]
+== P3 receipt row count check off (scripts/wave_rules.py): pytest exit 1: 1 failed in 1.82s; restored True, hash-object == HEAD blob True
+   E   AssertionError: screen: out/waves/w1/sign/receipt-1.json: the receipt's kept / dropped do not list its verdicts in wave order
+   C:\atx-wt\pool-29\scripts\tests\test_wave_sign_verb.py:234: AssertionError: screen: out/waves/w1/sign/receipt-1.json: the receipt's kept / dropped do not list its verdicts in wave order
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[a row missing]
+== P4 receipt echo check off (scripts/wave_rules.py): pytest exit 1: 2 failed in 9.87s; restored True, hash-object == HEAD blob True
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m4\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m4\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m4\\test_a_receipt_that_is_not_the1\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m4\\test_a_receipt_that_is_not_the1\\r\\out\\waves\\w1\\receipts
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[rows reordered]
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[an echo changed]
+== P5 receipt verdict check off (scripts/wave_rules.py): pytest exit 1: 1 failed in 2.35s; restored True, hash-object == HEAD blob True
+   E   AssertionError: screen: out/waves/w1/sign/receipt-1.json: the receipt's kept / dropped do not list its verdicts in wave order
+   C:\atx-wt\pool-29\scripts\tests\test_wave_sign_verb.py:234: AssertionError: screen: out/waves/w1/sign/receipt-1.json: the receipt's kept / dropped do not list its verdicts in wave order
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[an unknown verdict]
+== P6 receipt kept / dropped check off (scripts/wave_rules.py): pytest exit 1: 2 failed in 8.39s; restored True, hash-object == HEAD blob True
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m6\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m6\\test_a_receipt_that_is_not_the0\\r\\out\\waves\\w1\\receipts
+   E   FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m6\\test_a_receipt_that_is_not_the1\\r\\out\\waves\\w1\\receipts\\03-screen.failed-1.json'
+   C:\Program Files\Python312\Lib\pathlib.py:1013: FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\natha\\AppData\\Local\\Temp\\claude\\c--atx\\a17fe032-fb48-4307-ab8e-95f10be06ca8\\scratchpad\\sign-pyt\\r10-teeth-py3\\m6\\test_a_receipt_that_is_not_the1\\r\\out\\waves\\w1\\receipts
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[kept inconsistent]
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_receipt_that_is_not_the_verbs_answer_stops_the_screen[a flipped verdict]
+== P7 missing admission row not refused (scripts/wave_rules.py): pytest exit 1: 1 failed in 2.53s; restored True, hash-object == HEAD blob True
+   E   assert (4 == 4 and "no admission row for ['alpha_c']" in "KeyError: 'alpha_c'")
+   C:\atx-wt\pool-29\scripts\tests\test_wave_sign_verb.py:183: assert (4 == 4 and "no admission row for ['alpha_c']" in "KeyError: 'alpha_c'")
+   FAILED scripts/tests/test_wave_sign_verb.py::test_a_string_without_an_admission_row_stops_the_screen_before_the_verb
+== P8 IC exe pin check off (scripts/wave_stage_library.py): pytest exit 1: 1 failed in 1.14s; restored True, hash-object == HEAD blob True
+   E   Failed: DID NOT RAISE <class 'stage_chain.StageError'>
+   C:\atx-wt\pool-29\scripts\tests\test_wave_sign_verb.py:276: Failed: DID NOT RAISE <class 'stage_chain.StageError'>
+   FAILED scripts/tests/test_wave_sign_verb.py::test_the_ic_exe_must_be_its_pin
+== P9 spec stage receipt pin off (scripts/wave_stage_library.py): pytest exit 1: 1 failed in 4.67s; restored True, hash-object == HEAD blob True
+   E   assert 0 == 3
+   C:\atx-wt\pool-29\scripts\tests\test_wave_sign_verb.py:260: assert 0 == 3
+   FAILED scripts/tests/test_wave_sign_verb.py::test_the_spec_stage_refuses_a_receipt_changed_after_the_screen
+== P10 the stage back on the Python rule (scripts/wave_stage_library.py): pytest exit 1: 1 failed in 3.36s; restored True, hash-object == HEAD blob True
+   E   AssertionError: ['== preflight', "   preflight: manifest commit 0be4e00504cf, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...atx/a17fe032-fb48-4307-ab8e-95f10be06ca8/scratchpad/sign-pyt/r10-teeth-py3/m10/test_the_screen_stage_runs_the0/r', ...]
+   C:\atx-wt\pool-29\scripts\tests\test_wave_sign_verb.py:157: AssertionError: ['== preflight', "   preflight: manifest commit 0be4e00504cf, parent p0 (L 1.1474), fields 8914e5028c9c, ledger 2 line...atx/a17fe032-fb48-4307-ab8e-95f10be06ca8/scratchpad/sign-pyt/r10-teeth-py3/m10/test_the_screen_stage_ru
+   FAILED scripts/tests/test_wave_sign_verb.py::test_the_screen_stage_runs_the_sign_verb_once_and_records_its_receipt
+
+| mutation | pytest exit | result | every node failed, file restored |
+|---|---|---|---|
+| P1 receipt schema check off | 1 | 1 failed in 5.73s | yes |
+| P2 receipt rule / rows SHA-256 check off | 1 | 2 failed in 9.00s | yes |
+| P3 receipt row count check off | 1 | 1 failed in 1.82s | yes |
+| P4 receipt echo check off | 1 | 2 failed in 9.87s | yes |
+| P5 receipt verdict check off | 1 | 1 failed in 2.35s | yes |
+| P6 receipt kept / dropped check off | 1 | 2 failed in 8.39s | yes |
+| P7 missing admission row not refused | 1 | 1 failed in 2.53s | yes |
+| P8 IC exe pin check off | 1 | 1 failed in 1.14s | yes |
+| P9 spec stage receipt pin off | 1 | 1 failed in 4.67s | yes |
+| P10 the stage back on the Python rule | 1 | 1 failed in 3.36s | yes |
+git status --porcelain empty: True
+RESULT PASS: every mutation caught by its own test(s)

@@ -1,0 +1,44 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = ResearchCatalog.*
+[==========] Running 17 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 17 tests from ResearchCatalog
+[ RUN      ] ResearchCatalog.LedgerHeadFromResearchLedger
+[       OK ] ResearchCatalog.LedgerHeadFromResearchLedger (267 ms)
+[ RUN      ] ResearchCatalog.RecordedHeadsArePrefixHeads
+[       OK ] ResearchCatalog.RecordedHeadsArePrefixHeads (645 ms)
+[ RUN      ] ResearchCatalog.RecordsSchemaJsonEqualsFixture
+[       OK ] ResearchCatalog.RecordsSchemaJsonEqualsFixture (11 ms)
+[ RUN      ] ResearchCatalog.IngestsSyntheticTree
+[       OK ] ResearchCatalog.IngestsSyntheticTree (137 ms)
+[ RUN      ] ResearchCatalog.DigestReproducibleFromScratch
+[       OK ] ResearchCatalog.DigestReproducibleFromScratch (297 ms)
+[ RUN      ] ResearchCatalog.DigestIndependentOfIngestOrder
+[       OK ] ResearchCatalog.DigestIndependentOfIngestOrder (215 ms)
+[ RUN      ] ResearchCatalog.PinsResolvedAndStaleDetected
+[       OK ] ResearchCatalog.PinsResolvedAndStaleDetected (240 ms)
+[ RUN      ] ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared
+[       OK ] ResearchCatalog.DeclaredPayloadNeverOpenedAndMarkedDeclared (194 ms)
+[ RUN      ] ResearchCatalog.VerifyPayloadsUpgradesToVerified
+[       OK ] ResearchCatalog.VerifyPayloadsUpgradesToVerified (457 ms)
+[ RUN      ] ResearchCatalog.UnparsedJsonCataloguedAsArtifact
+[       OK ] ResearchCatalog.UnparsedJsonCataloguedAsArtifact (100 ms)
+[ RUN      ] ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder
+[       OK ] ResearchCatalog.DuplicateKeyAcrossFilesRefusedInEveryOrder (272 ms)
+[ RUN      ] ResearchCatalog.CrlfAndLfDetected
+[       OK ] ResearchCatalog.CrlfAndLfDetected (135 ms)
+[ RUN      ] ResearchCatalog.IngestIsIdempotent
+[       OK ] ResearchCatalog.IngestIsIdempotent (78 ms)
+[ RUN      ] ResearchCatalog.TrialLinesAppendOnly
+[       OK ] ResearchCatalog.TrialLinesAppendOnly (146 ms)
+[ RUN      ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder
+[       OK ] ResearchCatalog.LedgerHeadSeamReceivesLinesInFileOrder (114 ms)
+[ RUN      ] ResearchCatalog.ClassifierUsesGlobsAndSchemas
+[       OK ] ResearchCatalog.ClassifierUsesGlobsAndSchemas (0 ms)
+[ RUN      ] ResearchCatalog.CacheImportMatchesRecordStore
+[       OK ] ResearchCatalog.CacheImportMatchesRecordStore (632 ms)
+[----------] 17 tests from ResearchCatalog (3952 ms total)
+
+[----------] Global test environment tear-down
+[==========] 17 tests from 1 test suite ran. (3952 ms total)
+[  PASSED  ] 17 tests.

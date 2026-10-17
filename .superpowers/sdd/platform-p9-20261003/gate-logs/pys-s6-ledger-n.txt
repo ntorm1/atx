@@ -1,0 +1,9 @@
+PY-S S-6 (ledger :904): the Python ledger_n vs the eval verb's N, once by hand; gate agent 2, 2026-10-16T13:38:47Z; eval exe build-equity-rel/bin/atx-research-eval.exe sha256 e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c (Release p9-3f); trial ledger 133 lines 27e40f9f
+py n_scored 62 n_unscored 63 lines 133 head 5a3ef9d9bf242dbb
+WIN research-window-v2 TID 0ad7ea4c5122ebe3
+verb unscored exit 0
+verb scored exit 0
+n-unscored.json house_v1.n 63 tot.v8.n 63 | construction trials of the ledger by the defect rule + 1 (this cell, not yet ledgered)
+n-scored.json house_v1.n 62 tot.v8.n 62 | construction trials of the ledger by the defect rule
+synthetic net series: 300 placeholder rows (N does not read them); no dsr / sr0 / variance field read
+PY-S S-6 VERDICT: equal (unscored: py 63 = house_v1.n 63 = tot.v8.n 63, n_rule '+ 1'; scored: py 62 = house_v1.n 62 = tot.v8.n 62, n_rule without '+ 1')

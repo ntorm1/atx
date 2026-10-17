@@ -1,0 +1,31 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+Note: Google Test filter = WeightsV3.*:CompositionWeightRows.*
+[==========] Running 4 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 1 test from CompositionWeightRows
+[ RUN      ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst
+..\atx-impl\tests\strategy_ic_composition_test.cpp(815): error: Value of: same_date(*one, *two, 2)
+  Actual: true
+Expected: false
+Google Test trace:
+..\atx-impl\tests\strategy_ic_composition_test.cpp(800): true
+
+[  FAILED  ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst (12 ms)
+[----------] 1 test from CompositionWeightRows (12 ms total)
+
+[----------] 3 tests from WeightsV3
+[ RUN      ] WeightsV3.SingleRowEqualsV1Bytes
+[       OK ] WeightsV3.SingleRowEqualsV1Bytes (2485 ms)
+[ RUN      ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore
+[       OK ] WeightsV3.RowsSwitchAtTheirSessionAndTheBookIsFlatBefore (2312 ms)
+[ RUN      ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput
+[       OK ] WeightsV3.RefusalsPrecedeAnyPayloadOrOutput (17862 ms)
+[----------] 3 tests from WeightsV3 (22661 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 2 test suites ran. (22675 ms total)
+[  PASSED  ] 3 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] CompositionWeightRows.RowInForcePerDateAndFlatBeforeTheFirst
+
+ 1 FAILED TEST

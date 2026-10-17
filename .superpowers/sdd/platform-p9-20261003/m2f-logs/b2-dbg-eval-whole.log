@@ -1,0 +1,68 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 24 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from EvalVerb
+[ RUN      ] EvalVerb.TieMomentsAndPsr
+[       OK ] EvalVerb.TieMomentsAndPsr (616 ms)
+[ RUN      ] EvalVerb.TieDsrCrossLoAndHouse
+[       OK ] EvalVerb.TieDsrCrossLoAndHouse (0 ms)
+[ RUN      ] EvalVerb.TieOncAndEffectiveNDsr
+[       OK ] EvalVerb.TieOncAndEffectiveNDsr (0 ms)
+[ RUN      ] EvalVerb.TiePbo
+[       OK ] EvalVerb.TiePbo (0 ms)
+[ RUN      ] EvalVerb.TiePaired
+[       OK ] EvalVerb.TiePaired (0 ms)
+[ RUN      ] EvalVerb.TieNormPpf
+[       OK ] EvalVerb.TieNormPpf (0 ms)
+[ RUN      ] EvalVerb.JsonSchema
+[       OK ] EvalVerb.JsonSchema (0 ms)
+[ RUN      ] EvalVerb.HandRowIsThePrefixState
+[       OK ] EvalVerb.HandRowIsThePrefixState (898 ms)
+[ RUN      ] EvalVerb.CliWritesTheDocumentAndRefuses
+[       OK ] EvalVerb.CliWritesTheDocumentAndRefuses (34 ms)
+[ RUN      ] EvalVerb.ProtocolDefaultsFollowNavSumm
+[       OK ] EvalVerb.ProtocolDefaultsFollowNavSumm (0 ms)
+[----------] 10 tests from EvalVerb (1551 ms total)
+
+[----------] 3 tests from ResearchEvalRng
+[ RUN      ] ResearchEvalRng.CbbStartsAreDefaultRngIntegers
+[       OK ] ResearchEvalRng.CbbStartsAreDefaultRngIntegers (12 ms)
+[ RUN      ] ResearchEvalRng.OncDrawsAreTheRecordedPicks
+[       OK ] ResearchEvalRng.OncDrawsAreTheRecordedPicks (34 ms)
+[ RUN      ] ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes
+[       OK ] ResearchEvalRng.ReplayedPicksGiveTheRecordedClustersAndSilhouettes (21 ms)
+[----------] 3 tests from ResearchEvalRng (69 ms total)
+
+[----------] 3 tests from Conditional
+[ RUN      ] Conditional.ClosedFormNormalCase
+[       OK ] Conditional.ClosedFormNormalCase (0 ms)
+[ RUN      ] Conditional.UnselectedCellsAreListedNotSummed
+[       OK ] Conditional.UnselectedCellsAreListedNotSummed (0 ms)
+[ RUN      ] Conditional.RefusesANonPositiveSe
+[       OK ] Conditional.RefusesANonPositiveSe (0 ms)
+[----------] 3 tests from Conditional (0 ms total)
+
+[----------] 8 tests from EvalEdges
+[ RUN      ] EvalEdges.FixtureCoversTheRulingsCases
+[       OK ] EvalEdges.FixtureCoversTheRulingsCases (8 ms)
+[ RUN      ] EvalEdges.PairedTiesWithinTheConditioningBound
+[       OK ] EvalEdges.PairedTiesWithinTheConditioningBound (524 ms)
+[ RUN      ] EvalEdges.PairedRefusesADegeneratePair
+[       OK ] EvalEdges.PairedRefusesADegeneratePair (494 ms)
+[ RUN      ] EvalEdges.VerbPrintsADegeneratePairAsRefused
+[       OK ] EvalEdges.VerbPrintsADegeneratePairAsRefused (33 ms)
+[ RUN      ] EvalEdges.CscvConstantCandidateHasSharpeZero
+[       OK ] EvalEdges.CscvConstantCandidateHasSharpeZero (1 ms)
+[ RUN      ] EvalEdges.HouseNormPpfIsThePythonBisectionForAnyN
+[ house_norm_ppf ] 33 of 34 quantiles bit-equal to the Python; ppf_lo@N=10000 engine 3.9644158719723457 Python 3.964415871972343
+[ house_norm_ppf ] the Acklam SR* (before B2-9) worst rel 5.509e-12 at N 1000000
+[       OK ] EvalEdges.HouseNormPpfIsThePythonBisectionForAnyN (0 ms)
+[ RUN      ] EvalEdges.HouseDsrTiesThePythonForAnyN
+[       OK ] EvalEdges.HouseDsrTiesThePythonForAnyN (2 ms)
+[ RUN      ] EvalEdges.VerbHouseRowsTieThePythonForAnyN
+[       OK ] EvalEdges.VerbHouseRowsTieThePythonForAnyN (92 ms)
+[----------] 8 tests from EvalEdges (1159 ms total)
+
+[----------] Global test environment tear-down
+[==========] 24 tests from 4 test suites ran. (2781 ms total)
+[  PASSED  ] 24 tests.

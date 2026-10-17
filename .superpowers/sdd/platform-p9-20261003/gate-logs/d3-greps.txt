@@ -1,0 +1,13 @@
+GATE step 3, the D3-Q2 and D3-S1 greps (ledger "Ruling D3-Q2" :727, "Ruling D3-S1" :754), gate agent 2, 2026-10-16,
+head aef2e033 (code 06dc9e5a). Scope: every JSON file under scripts/specs/p9/ (28 files: blocked/ 2, candidates/ 1,
+diagnostics/ 1, kinds/ 10 + kinds/templates/ 5, rules/ 4 incl. the registrations, templates/ 4, od3/; no P9 cell
+manifest exists yet: the cells root re-runs both greps on each manifest at its registration commit).
+
+Structural walk (python json, every key path):
+  D3-Q2 (a `constants.set` entry naming `fields.output`): 0 hits
+  D3-S1 (a direct `nav.rule` set: a key "nav.rule", a `.../nav/rule` path, or a value "nav.rule"): 0 hits
+Text grep `grep -rn -E "fields\.output|nav\.rule" scripts/specs/p9`: 1 line,
+  scripts/specs/p9/rules/info-clock-rate-v1.json:63 "nav_flag_note" (prose: "...carries the parent's --rule
+  aim-partial-v5 once (nav.rule)..."): a description string, not a set.
+`"rule"` keys in kinds/*.json: the judge's verdict rule ("rule": "pm7-34", e.g. kinds/new-nav-rule.json:15), not nav.rule.
+Result: D3-Q2 holds (no cell sets fields.output), D3-S1 holds (no direct nav.rule set outside a kind rule wave's row).

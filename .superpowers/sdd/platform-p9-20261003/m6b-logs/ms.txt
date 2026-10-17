@@ -1,0 +1,26 @@
+M6B-FINISH item 6 (marginal shard identity; RECEIPT build-equity/mega-v8-b0b-train-u-v8ys-marginal-poolonly-run/receipt.json = the Y-S pool-only argv of record; exe p9-3e adffe742)
+time 2026-10-15T19:09:20Z free RAM 5224 MiB, C: 59G free; real candidate cache index.sqlite present (refusal 2): sha256 3a177dfddbd86dcc
+ms-a-cold completed exit 0 exe adffe7421781145a wall_seconds 241.9 peak_rss_mib 252 pair-cache build-equity/p9-m6bf-ms-P1 index-flag False
+ms-a-warm completed exit 0 exe adffe7421781145a wall_seconds 232.9 peak_rss_mib 299 pair-cache build-equity/p9-m6bf-ms-P1 index-flag False
+P1 after (a): 1 files, 418149 bytes
+cache index build-equity/p9-m6bf-ms-P2/index.sqlite
+warning (SQL1-MON): book_monitor.py --fit-work does not yet read records stored only in this index; no P9 cell uses a cache index (SQL-11); delete it after the identity run
+cache init P2 exit 0; P2: index.sqlite 
+ms-b-cold completed exit 0 exe adffe7421781145a wall_seconds 245.9 peak_rss_mib 254 pair-cache build-equity/p9-m6bf-ms-P2 index-flag ['--pair-cache-index', 'sqlite']
+ms-b-cold admission waited_seconds 1014 (a foreign C:/atx-wt/pool-33 atx-vol build compiling; the runner's no-compiler admission)
+ms-b-cold completed exit 0 exe adffe7421781145a wall_seconds 245.9 peak_rss_mib 254 pair-cache build-equity/p9-m6bf-ms-P2 index-flag ['--pair-cache-index', 'sqlite']
+ms-b-warm completed exit 0 exe adffe7421781145a wall_seconds 249.0 peak_rss_mib 257 pair-cache build-equity/p9-m6bf-ms-P2 index-flag ['--pair-cache-index', 'sqlite'] admission_wait 0
+cmp (a) cold vs (b) cold, allowed /inputs/pair_cache + /stage_seconds: TOTAL outside the list: 0
+cmp (a) warm vs (b) warm, same allowed: TOTAL outside the list: 0
+p9-m6b-ms-a-cold/marginal_ic.json: candidates 73 | pair_cache cached_pairs=0 computed=2628 hits=0 shards_read=0
+p9-m6b-ms-a-warm/marginal_ic.json: candidates 73 | pair_cache cached_pairs=2628 computed=0 hits=2628 shards_read=1
+p9-m6b-ms-b-cold/marginal_ic.json: candidates 73 | pair_cache cached_pairs=0 computed=2628 hits=0 index=sqlite legacy_rows_imported=0 legacy_shards_read=0 rows_read=0 rows_written=2628
+p9-m6b-ms-b-warm/marginal_ic.json: candidates 73 | pair_cache cached_pairs=2628 computed=0 hits=2628 index=sqlite legacy_rows_imported=0 legacy_shards_read=0 rows_read=2628 rows_written=0
+a-cold working_bytes present True candidates 73
+a-warm working_bytes present True candidates 73
+b-cold working_bytes present True candidates 73
+b-warm working_bytes present True candidates 73
+working_bytes equal cold-cold True warm-warm True
+P1: 1 files; P2 files: index.sqlite 
+real candidate cache index.sqlite after item 6: sha256 3a177dfddbd86dcc (unchanged: yes); -wal/-shm 0
+P1 (build-equity/p9-m6bf-ms-P1) and P2 (build-equity/p9-m6bf-ms-P2) deleted by literal name 2026-10-15T19:47:12Z

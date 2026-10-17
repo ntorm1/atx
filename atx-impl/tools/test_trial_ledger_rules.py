@@ -200,6 +200,23 @@ def test_the_chain_covers_the_37_legacy_lines(tmp_path):
     assert BI.ledger_head(crlf) == BI.ledger_head(ledger) and len(BI.ledger_read(crlf)) == 38
 
 
+def test_a_null_prev_line_folds_for_chain_head_as_for_the_reader(tmp_path):
+    """P9 review B2 S2: a legacy line written with "prev_sha256": null is unchained for chain_head (the head a verdict
+    records) as for _walk (the verified head), so the two agree on every prefix."""
+    legacy = legacy_ledger(tmp_path / "fixture-ledger.jsonl", 3)
+    rec = json.loads(legacy[1])
+    rec["prev_sha256"] = None
+    lines = [legacy[0], json.dumps(rec, sort_keys=True, separators=(",", ":")), legacy[2]]
+    for k in (2, 3):
+        cut = tmp_path / f"null-prev-{k}.jsonl"
+        cut.write_text("\n".join(lines[:k]) + "\n", encoding="utf-8")
+        assert BI.chain_head(lines[:k]) == BI.ledger_head(cut)
+    fold = BI.CHAIN_GENESIS
+    for line in lines:
+        fold = BI.fold_head(fold, line)
+    assert BI.chain_head(lines) == fold
+
+
 # ------------------------------------------------------------------ C-5
 def trial_counts_before_c5(records: list[dict]) -> list[int]:
     """The defect rule as coded before review C-5 (a blind re-run counted, its replaced target 0), for the identity

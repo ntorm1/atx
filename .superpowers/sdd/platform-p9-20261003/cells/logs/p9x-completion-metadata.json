@@ -1,0 +1,17 @@
+{
+  "source_sha": "aafbddce3bbf6c29ea52f1a5e27c1839938e9809",
+  "argv_sha256": "42a363cad1d6d7391787bb78525158cd67400110ac4900b0cae29e57d178165f",
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 8.609000000054948,
+  "sampled_peak_tree_rss_bytes": 73801728,
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "source_other": 0,
+  "cycle_complete": true,
+  "generic_verdict_read": false,
+  "unregistered_statistics_read": false
+}

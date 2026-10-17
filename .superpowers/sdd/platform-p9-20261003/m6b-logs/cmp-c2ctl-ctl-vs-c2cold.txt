@@ -1,0 +1,8 @@
+same   orientations.json c0efa61c
+same   recipe.json aab90534
+DIFF   summary.json c9d891d9 vs cde46fac: 360 leaves, 360 allowed, 0 outside
+         allowed path classes: ['/roles/*/candidate_cache/directory', '/roles/*/candidate_cache/entries/*/payload', '/roles/*/candidate_cache/entries/*/sidecar', '/roles/*/candidate_cache/fields_directory', '/roles/*/candidate_cache/index', '/roles/*/candidates/*/stage_seconds/cache_write', '/roles/*/candidates/*/stage_seconds/ic', '/roles/*/candidates/*/stage_seconds/vm', '/roles/*/candidates/*/wall_seconds', '/roles/*/hash_seconds', '/roles/*/stage_seconds/cache_write', '/roles/*/stage_seconds/fields_load']
+DIFF   train_candidates.jsonl 638e1b65 vs aaa314a5: 232 leaves, 232 allowed, 0 outside
+         allowed path classes: ['/stage_seconds/cache_write', '/stage_seconds/ic', '/stage_seconds/vm', '/wall_seconds']
+same   train_daily_ic.csv b03f7170
+TOTAL outside the list: 0

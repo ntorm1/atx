@@ -1,0 +1,11 @@
+﻿54d46a6e750418c5f9c025cd9dce9eafe1d7299c5917e2ac581bf43fdc956734  consoles/001-ic-rule-table.log
+eff9c7d8f1960e3f28cad9e3e0f8a117462c89a2d968fb4aa0ee67961262c8e1  consoles/002-nav-rule-table.log
+7831d10765d957e0d727ec28ed66269e26bc951b1eb77e6a654415d3ce21bab0  consoles/003-lock-the-rule-cell.log
+ca0e09dce758eb3bd2ad3368b6dd77b4f9a7c3d2d7cf2d96d22cb66e55f58edd  consoles/004-commit.log
+cb59bb366796f2df447f74ebba84dc1dbae1bf144f881b508483bd287444118b  consoles/005-commit.log
+c096a3d21dce380e1532610db030cd53da9f9557d409519420dd1a368bc533e4  consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log
+a635b4c6ebba330ebf23c2c98a2b20ca63e9bc8861e69c4114d4bf8c5da658c2  receipts/01-preflight.json
+0e57e4a1ce7a9ea14bfe8e8a0b82f364749e5b5bb84f56724b63e1116c857eda  receipts/02-register.json
+fa313822a4bfdb039ced9edfa596c388222ea0342b8701c98b64dfb98c975512  receipts/03-screen.json
+ecebb647c4333638409213520ee3e010171fd7d0bffd6f4e04ac47a363c8e316  receipts/04-spec.json
+6e4cf1ca61404e61928af862e4f9b800366d11493713c6549bfae8ab8e468652  receipts/05-run.failed-1.json

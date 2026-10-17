@@ -1,0 +1,12 @@
+﻿# Cells root 3 restart, P9-H 2026-10-17T14:02:13Z
+trial ledger build-equity/trials.jsonl: 134 lines, sha256 b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61
+build-equity/research-store/: absent
+build-equity/mega-candidate-cache-v8-lo3/index.sqlite: absent
+reference p9-b0-r2-nav: 27 files, listing sha256 04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd = gate-logs/b0-files-p9-b0-r2-nav.txt
+reference p9-b0g-x10-nav: 27 files, listing sha256 6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d = gate-logs/b0-files-p9-b0g-x10-nav.txt
+reference p9-b0g-y1-nav: 28 files, listing sha256 cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813 = gate-logs/b0-files-p9-b0g-y1-nav.txt
+reference p9-b0g-yf0-u: 5 files, listing sha256 1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa = gate-logs/b0-files-p9-b0g-yf0-u.txt
+reference p9-b0g-yf0-w: 12 files, listing sha256 ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1 = gate-logs/b0-files-p9-b0g-yf0-w.txt
+reference p9-b0g-yf0-nav: 27 files, listing sha256 e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797 = gate-logs/b0-files-p9-b0g-yf0-nav.txt
+ucrtbase.dll (C:\Windows\System32) file version 10.0.26100.7623 (WinBuild.160101.0800) SHA-256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF (= the P9-B0 record, C.6)
+host: free RAM 3.25 of 15.69 GB (3327 MiB); C: 40.1 GB free

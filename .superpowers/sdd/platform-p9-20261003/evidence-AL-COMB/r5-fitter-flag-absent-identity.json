@@ -1,0 +1,82 @@
+{
+ "std": {
+  "files": [
+   "admission.csv",
+   "admission.json",
+   "composition_weights.json"
+  ],
+  "differing": {
+   "admission.json": [
+    "inputs.producer_fingerprint"
+   ],
+   "composition_weights.json": [
+    "provenance.admission_sha256",
+    "provenance.producer_fingerprint"
+   ]
+  }
+ },
+ "std-erc": {
+  "files": [
+   "admission.csv",
+   "admission.json",
+   "composition_weights.json"
+  ],
+  "differing": {
+   "admission.json": [
+    "inputs.producer_fingerprint"
+   ],
+   "composition_weights.json": [
+    "provenance.admission_sha256",
+    "provenance.producer_fingerprint"
+   ]
+  }
+ },
+ "std-erc-tsmom": {
+  "files": [
+   "admission.csv",
+   "admission.json",
+   "composition_weights.json"
+  ],
+  "differing": {
+   "admission.json": [
+    "inputs.producer_fingerprint"
+   ],
+   "composition_weights.json": [
+    "provenance.admission_sha256",
+    "provenance.producer_fingerprint"
+   ]
+  }
+ },
+ "shrink": {
+  "files": [
+   "admission.csv",
+   "admission.json",
+   "composition_weights.json"
+  ],
+  "differing": {
+   "admission.json": [
+    "inputs.producer_fingerprint"
+   ],
+   "composition_weights.json": [
+    "provenance.admission_sha256",
+    "provenance.producer_fingerprint"
+   ]
+  }
+ },
+ "std-twospeed": {
+  "files": [
+   "admission.csv",
+   "admission.json",
+   "composition_weights.json"
+  ],
+  "differing": {
+   "admission.json": [
+    "inputs.producer_fingerprint"
+   ],
+   "composition_weights.json": [
+    "provenance.admission_sha256",
+    "provenance.producer_fingerprint"
+   ]
+  }
+ }
+}

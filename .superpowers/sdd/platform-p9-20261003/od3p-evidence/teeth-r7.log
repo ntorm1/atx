@@ -1,0 +1,22 @@
+R1 capability absent-members-v1 refused: CAUGHT (exit 1; 3 failed, 1 passed, 27 deselected in 2.64s); restored byte-identical
+R2 a drop with no history role refused: CAUGHT (exit 1; 1 failed, 30 deselected in 2.16s); restored byte-identical
+R3 history roles only: CAUGHT (exit 1; 1 failed, 30 deselected in 2.24s); restored byte-identical
+R4 the flags reach the steps: CAUGHT (exit 1; 1 failed, 30 deselected in 2.22s); restored byte-identical
+R5 the runner binds the list: CAUGHT (exit 1; 1 failed, 30 deselected in 2.30s); restored byte-identical
+R6 the u pass gets the flags too: CAUGHT (exit 1; 1 failed, 30 deselected in 2.21s); restored byte-identical
+R7 the carry zeroes no weight: CAUGHT (exit 1; 3 failed, 27 deselected in 0.74s); restored byte-identical
+R7b the carry zeroes no weight (cycle run): CAUGHT (exit 1; 1 failed, 30 deselected in 5.07s); restored byte-identical
+R8 carry.json records the list: CAUGHT (exit 1; 3 failed, 27 deselected in 0.80s); restored byte-identical
+R9 no --era refused: CAUGHT (exit 1; 1 failed, 29 deselected in 0.48s); restored byte-identical
+R10 theme-erc / ic-shrink bases accepted: CAUGHT (exit 1; 2 failed, 1 passed, 27 deselected in 1.21s); restored byte-identical
+M1 unknown member id: CAUGHT (exit 1; 1 failed, 29 deselected in 0.45s); restored byte-identical
+M2 pending rules: CAUGHT (exit 1; 2 failed, 28 deselected in 0.86s); restored byte-identical
+M3 flagged rule in the base: CAUGHT (exit 1; 2 failed, 28 deselected in 0.76s); restored byte-identical
+M5 v1/v2 weights only: CAUGHT (exit 1; 1 failed, 29 deselected in 0.52s); restored byte-identical
+M6 repeated id: CAUGHT (exit 1; 1 failed, 29 deselected in 0.45s); restored byte-identical
+M9 risk-model refusal on history: CAUGHT (exit 1; 4 failed, 27 deselected in 2.22s); restored byte-identical
+M10 risk-model refusal reads ref.flags: CAUGHT (exit 1; 1 failed, 30 deselected in 1.94s); restored byte-identical
+M11 drop rule refusal in the cycle: CAUGHT (exit 1; 3 failed, 1 passed, 27 deselected in 2.28s); restored byte-identical
+M12 drop list reaches the carry argv: CAUGHT (exit 1; 2 failed, 29 deselected in 10.00s); restored byte-identical
+M13 T1 refusal in make_cycle: CAUGHT (exit 1; 1 failed, 30 deselected in 2.45s); restored byte-identical
+M14 per-era label pins (T4): CAUGHT (exit 1; 1 failed, 30 deselected in 2.46s); restored byte-identical

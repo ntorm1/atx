@@ -20,6 +20,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import research_cycle as RC  # noqa: E402
+import cycle.phases as CP  # noqa: E402  (P9 E2 split: Cycle reads window_id from its own module)
 
 FIX = HERE / "fixtures"
 V61 = HERE.parent / "specs" / "v61.json"
@@ -1390,7 +1391,8 @@ def test_build_key_resolves_exe_dir(tmp_path):
     rel = dict(spec, build="equity-rel")
     c = RC.Cycle(rel, RC.Resolver(root))
     assert c.spec["exes"] == {"ic": "build-equity-rel/bin/atx-equity-strategy-ic.exe",
-                              "nav": "build-equity-rel/bin/atx-equity-strategy-targets.exe"}
+                              "nav": "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+                              "eval": "build-equity-rel/bin/atx-research-eval.exe"}   # a summ spec: the verb (B2-R3)
     assert c.spec["env_path_prepend"] == ["C:/atx-cache/vcpkg_installed/x64-windows/bin"]
     assert c.env()["PATH"].startswith(str(Path("C:/atx-cache/vcpkg_installed/x64-windows/bin")) + os.pathsep)
     steps = {s.phase: s for s in c.steps()}
@@ -1398,8 +1400,10 @@ def test_build_key_resolves_exe_dir(tmp_path):
     assert u[u.index("--") + 1] == "build-equity-rel/bin/atx-equity-strategy-ic.exe"
     assert nav[nav.index("--") + 1:nav.index("--") + 3] == ["build-equity-rel/bin/atx-equity-strategy-targets.exe",
                                                              "nav"]
+    assert steps["summ"].argv[2:4] == ["--engine-stats", "build-equity-rel/bin/atx-research-eval.exe"]
     dbg = RC.Cycle(dict(spec, build="equity", exes={"ic": "my-ic.exe", "nav": "x/nav.exe"}), RC.Resolver(root))
-    assert dbg.spec["exes"] == {"ic": "build-equity/bin/my-ic.exe", "nav": "x/nav.exe"}   # a bare name, a path
+    assert dbg.spec["exes"] == {"ic": "build-equity/bin/my-ic.exe", "nav": "x/nav.exe",   # a bare name, a path
+                                "eval": "build-equity/bin/atx-research-eval.exe"}
     assert dbg.spec["env_path_prepend"][0].endswith("debug/bin")
     pinned = RC.Cycle(dict(rel, env_path_prepend=["D:/dlls"]), RC.Resolver(root))
     assert pinned.spec["env_path_prepend"] == ["D:/dlls"]                   # an explicit DLL path wins
@@ -1432,7 +1436,7 @@ def test_runner_phase_caps_follow_the_od2_rule_and_the_spec(tmp_path):
 
 
 def test_out_root_places_outputs_and_derives_shared_stores(tmp_path, monkeypatch):
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root, sp = make_root(tmp_path)
     spec = json.loads(sp.read_text())
     spec["out_root"] = "research"
@@ -1453,7 +1457,7 @@ def test_out_root_places_outputs_and_derives_shared_stores(tmp_path, monkeypatch
 
     def absent():
         raise LookupError("no research window")
-    monkeypatch.setattr(RC, "window_id", absent)
+    monkeypatch.setattr(CP, "window_id", absent)
     with pytest.raises(RC.CycleError) as e:
         cycle_of(root, sp).steps()
     assert e.value.code == RC.EXIT_USAGE and "cannot be derived" in str(e.value)
@@ -1758,7 +1762,11 @@ FAKE_IC_PLAN = r'''
 import hashlib, json, os, re, sys
 from pathlib import Path
 a = sys.argv[1:]
-if "--help" in a:
+if a == ["--list-rules", "--json"]:                  # K-P9-6: the rule table and the capabilities (P9 E2 reads them)
+    print(json.dumps({"schema": "atx.composition-rules/v1", "rules": [],
+                      "capabilities": ["list-rules", "marginal", "no-composition", "theme-registry"]}))
+    sys.exit(0)
+if "--help" in a:                                    # the v8 probe's text: no longer read (P9 E2)
     print("equity-strategy-ic --library JSON ... [--no-composition]\n  equity-strategy-ic marginal --candidate-cache DIR")
     sys.exit(0)
 if os.environ.get("FAKE_IC_ARGV"):                     # opt-in: the last plan argv, for the tests that read it
@@ -1925,7 +1933,9 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path, monkeypatch):
     (root / "bin").mkdir()
     (root / "bin" / "fake_ic.py").write_text(FAKE_IC_PLAN)
     (root / "bin" / "ic.cmd").write_text(f'@"{sys.executable}" "%~dp0fake_ic.py" %*\n')
-    assert RC.exe_capabilities("bin/ic.cmd", root) == CAPS and RC.exe_capabilities("bin/none.exe", root) == frozenset()
+    caps = RC.exe_capabilities("bin/ic.cmd", root)                                   # the envelope's list (P9 E2)
+    assert CAPS <= caps == {"list-rules", "marginal", "no-composition", "theme-registry"}
+    assert RC.exe_capabilities("bin/none.exe", root) == frozenset()
     spec = json.loads((root / "scripts" / "specs" / "v70.json").read_text())
     spec["exes"]["ic"] = "bin/ic.cmd"
     (root / "scripts" / "specs" / "v70.json").write_text(json.dumps(spec))
@@ -1952,7 +1962,7 @@ def test_add_alpha_validates_through_the_exe_plan(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- PM addition: cache gc
 def test_cache_gc_keeps_referenced_stores_and_never_touches_state(tmp_path, monkeypatch):
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root, sp = make_root(tmp_path)
     spec = json.loads(sp.read_text())
     spec["ic"]["cache"], spec["fit"]["work_dir"] = "build-equity/mega-candidate-cache-v2", "build-equity/mega-fit-work-v2"
@@ -1996,7 +2006,7 @@ def test_cache_gc_keeps_a_referenced_store_however_the_paths_are_spelled(tmp_pat
     used to name no referenced store, so --apply deleted them all; a spec's store spelled with './', a trailing slash or
     another case is the same store too."""
     import research_gc
-    monkeypatch.setattr(RC, "window_id", lambda: "research-window-v2")
+    monkeypatch.setattr(CP, "window_id", lambda: "research-window-v2")
     root, sp = make_root(tmp_path)
     spec = json.loads(sp.read_text())
     cache = "./BUILD-EQUITY/mega-candidate-cache-v2/" if os.name == "nt" else "./build-equity//mega-candidate-cache-v2/"
@@ -2016,3 +2026,23 @@ def test_cache_gc_keeps_a_referenced_store_however_the_paths_are_spelled(tmp_pat
     rep = research_gc.gc([sp], root, spellings, apply=True, log=lambda s: None)       # one listing, however spelled
     assert rep["deleted"] == ["build-equity/mega-candidate-cache-v1"] and len(rep["keep"]) == 2
     assert all((root / "build-equity" / r / "s" / "x.f64").is_file() for r in kept)
+
+
+def test_theme_registry_input_reaches_the_ic_passes(tmp_path):
+    """P9 lane E2 (D1's --theme-registry, K-P9-6): inputs.theme_registry gives the u and w passes --theme-registry PATH
+    --theme-registry-sha256 PIN, bound in their receipts; without the input their argv is that of before."""
+    root, sp = make_root(tmp_path)
+    plain = {st.phase: st.argv for st in cycle_of(root, sp).steps() if st.phase in ("u", "w")}
+    assert all("--theme-registry" not in argv for argv in plain.values())
+    (root / "lib" / "registry.json").write_text('{"schema": "atx.alpha-registry/v1", "themes": []}')
+    doc = json.loads(sp.read_text())
+    doc["inputs"]["theme_registry"] = {"path": "lib/registry.json", "sha256": None}
+    sp.write_text(json.dumps(doc))
+    pin = hashlib.sha256((root / "lib" / "registry.json").read_bytes()).hexdigest()
+    got = {st.phase: st.argv for st in cycle_of(root, sp).steps() if st.phase in ("u", "w")}
+    assert set(got) == {"u", "w"}
+    for phase, argv in got.items():
+        assert argv[-4:] == ["--theme-registry", "lib/registry.json", "--theme-registry-sha256", pin], phase
+        bind = argv.index("lib/registry.json")
+        assert bind < argv.index("--") and argv[bind - 1] == "--bind"                 # bound in the receipt
+        assert argv[:bind - 1] + argv[bind + 1:-4] == plain[phase]                    # nothing else moved

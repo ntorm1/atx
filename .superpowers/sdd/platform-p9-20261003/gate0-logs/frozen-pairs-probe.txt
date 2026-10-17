@@ -1,0 +1,28 @@
+FROZEN_AT d7c1c520; FROZEN_PAIRS 40; ALLOWLIST rows 8
+== definitions of the candidate names in SCOPE (ast.walk: functions and methods)
+  scripts/research_ledger.py: ledger_n
+  atx-impl/tools/backtest_integrity.py: chain_head, dsr_variance, fold_head, ledger_n, trial_counts
+  atx-impl/tools/composition_mom_volman.py: schedule
+  atx-impl/tools/composition_resid.py: registered_order, theme_order
+  atx-impl/tools/composition_theme_tsmom.py: masses, schedule, sleeves, theme_masses, trailing
+== as committed
+  test_no_new_python_mirror: pass
+  test_every_row_names_an_existing_definition: pass
+  test_bindings_still_call_the_core: pass
+  test_the_allowlist_only_shrinks_and_names_rule_owner_and_lane: pass
+  test_rows_retired_by_a_p9_lane_are_gone_at_the_freeze: pass
+  test_the_scan_sees_the_known_mirrors_and_skips_tests: pass
+== pairs added to FROZEN_PAIRS only (in memory)
+  test_no_new_python_mirror: FAIL Python mirror(s) of a C++-decided rule outside the allowlist frozen at d7c1c520 (G-P5): call the engine instead: ['atx-impl/tools/backtest_integrity.py: def chain_head', 'atx-impl/tools/backtest_integrity.py: def dsr_variance', 'atx-impl/tools/backtest_integrity.py: def fold_head', 'atx-impl/tools/backtest_integrity.py: def ledger_n', 'atx-impl/tools/backtest_integrity.py: def trial_counts', 'atx-impl/tools/composition_mom_volman.py: def schedule', 'atx-impl/tools/composition_resid.py: def registered_order', 'atx-impl/tools/composition_resid.py: def theme_order', 'atx-impl/tools/composition_th
+  test_every_row_names_an_existing_definition: pass
+  test_bindings_still_call_the_core: pass
+  test_the_allowlist_only_shrinks_and_names_rule_owner_and_lane: pass
+  test_rows_retired_by_a_p9_lane_are_gone_at_the_freeze: pass
+  test_the_scan_sees_the_known_mirrors_and_skips_tests: pass
+== pairs in FROZEN_PAIRS plus P10 ALLOWLIST rows (in memory)
+  test_no_new_python_mirror: FAIL Python mirror(s) of a C++-decided rule outside the allowlist frozen at d7c1c520 (G-P5): call the engine instead: ['scripts/research_ledger.py: def ledger_n']
+  test_every_row_names_an_existing_definition: pass
+  test_bindings_still_call_the_core: pass
+  test_the_allowlist_only_shrinks_and_names_rule_owner_and_lane: pass
+  test_rows_retired_by_a_p9_lane_are_gone_at_the_freeze: pass
+  test_the_scan_sees_the_known_mirrors_and_skips_tests: pass

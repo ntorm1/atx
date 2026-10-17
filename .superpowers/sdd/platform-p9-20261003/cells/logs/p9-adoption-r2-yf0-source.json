@@ -1,0 +1,221 @@
+{
+  "stage": "r2-yf0",
+  "files": [
+    {
+      "path": "build-equity/p9-adoption-readers/r2-yf0-run1/start.json",
+      "sha256": "a3db57f9a1ddeb7fed9951b1a8b3b2c0f2aadae95fd864036affc43793e8805b",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 155,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 156,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 157,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 158,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 159,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 72,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 76,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 80,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9-adoption-readers/r2-yf0-run1/receipt.json",
+      "sha256": "a7b8169f1917218066b0f269bdaf086fcc50e08da8387183afe10d203064dfd3",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 155,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 156,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 157,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 158,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 159,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 72,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 76,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 80,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9-adoption-readers/r2-yf0-run1/stdout.log",
+      "sha256": "ff53e7fae61d45776383a24cb4d19aafa8902135d2776b909c9290e72a00d223",
+      "hits": [
+        {
+          "line": 1,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/p9-adoption-readers/r2-yf0-run1/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9-adoption-r2-yf0-raw.log",
+      "sha256": "a7b8169f1917218066b0f269bdaf086fcc50e08da8387183afe10d203064dfd3",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 155,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 156,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 157,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 158,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 159,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 72,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 76,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        },
+        {
+          "line": 80,
+          "token": "20261003",
+          "form": "compact",
+          "source": "OWN_SCRIPT"
+        }
+      ]
+    }
+  ],
+  "other": 0
+}

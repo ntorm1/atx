@@ -1,0 +1,5 @@
+research-store after: absent
+atx-research-store d8a500d84dc2a25130c69b226d8f5deec47b8dabb6256522c83c00764d3d9d65
+atx-research-eval 4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b
+atx-equity-strategy-targets 7e101b564d800c9e4b57541e11a30d17d8f32d5f74fd2c5ccc95d3b2e5b5f0dc
+atx-equity-strategy-ic ef3974cfa82d1cc86d6a8079394e5d0964e8abcea8fd36a068b12f8b8bc99b38

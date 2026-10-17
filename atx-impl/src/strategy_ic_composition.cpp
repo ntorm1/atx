@@ -10,6 +10,7 @@
 #include <utility>
 #include "atx/engine/combine/group_rerank.hpp"
 #include "atx/engine/parallel/det_pool.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include "strategy_ic_theme_resid.hpp"
 
 namespace atx::impl::strategy {
@@ -30,8 +31,11 @@ bool safe_name(const std::string& s) {
   });
 }
 // The validated shape of a stage list: the grouping's rule (redistribute without a grouping),
-// whether there is a grouping and whether sleeves are built.
-struct StagePlan { IcThemeRule rule{IcThemeRule::redistribute}; bool grouped{}, sleeves{}; };
+// whether there is a grouping, whether sleeves are built and whether the themes are hedged.
+struct StagePlan {
+  IcThemeRule rule{IcThemeRule::redistribute};
+  bool grouped{}, sleeves{}, hedge{};
+};
 co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
   StagePlan plan;
   bool standardise = false, residualise = false, rides = false;
@@ -57,6 +61,9 @@ co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
       case IcStageKind::sleeves:
         rides = plan.sleeves = true;
         break;
+      case IcStageKind::hedge:
+        rides = plan.hedge = true;
+        break;
     }
   }
   const bool redistribute = !kinds.empty() && kinds.front() == IcStageKind::redistribute;
@@ -65,6 +72,9 @@ co::Result<StagePlan> stage_plan(std::span<const IcStageKind> kinds) {
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: stages must be one theme "
                    "grouping (redistribute or standardise), then on standardise residualise, or "
                    "schedule and/or sleeves");
+  if (plan.sleeves && plan.hedge) // theme-cov-hedge-v1 (P9 AL-COMB) hedges the blend, not sleeves
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: a theme hedge stage and a sleeves stage are exclusive");
   return co::Ok(plan);
 }
 // f64 planes per theme: redistribute keeps a blend and a present-weight plane,
@@ -132,12 +142,33 @@ co::Result<u64> ic_composition_working_bytes(usize dates, usize names, usize cou
 }
 
 co::Result<u64> ic_composition_stage_bytes(usize dates, usize names, usize count, usize themes,
-                                           std::span<const IcStageKind> kinds) {
+                                           std::span<const IcStageKind> kinds,
+                                           usize weight_rows) {
   ATX_TRY(const auto plan, stage_plan(kinds));
   if (!plan.grouped && themes)
     return co::Err(co::ErrorCode::InvalidArgument,
                    "IC composition: themes without a grouping stage");
-  return ic_composition_working_bytes(dates, names, count, themes, plan.rule, plan.sleeves);
+  ATX_TRY(u64 bytes,
+          ic_composition_working_bytes(dates, names, count, themes, plan.rule, plan.sleeves));
+  // P9 lane D3W: the per-date weight rows, the row index per date and a flag per candidate.
+  if (weight_rows) {
+    const u64 max = std::numeric_limits<u64>::max();
+    const auto add = [&](u64 n, u64 width) {
+      if (width && n > (max - bytes) / width) return false;
+      bytes += n * width;
+      return true;
+    };
+    if (weight_rows > max / count || !add(static_cast<u64>(weight_rows) * count, sizeof(f64)) ||
+        !add(dates, sizeof(usize)) || !add(count, 1))
+      return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
+  }
+  if (!plan.hedge) return co::Ok(bytes);
+  // theme-cov-hedge-v1 (P9 AL-COMB): session returns, the hedged plane, the kernel's scratch and
+  // the printed hedge ratios.
+  ATX_TRY(const u64 hedge, theme_hedge_working_bytes(dates, names, themes));
+  if (hedge > std::numeric_limits<u64>::max() - bytes)
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: working bytes overflow");
+  return co::Ok(bytes + hedge);
 }
 
 struct IcComposition::Impl {
@@ -161,10 +192,31 @@ struct IcComposition::Impl {
   bool residualise{}; // theme-resid-v1 on the std planes (theme index = registered-order position)
   std::vector<IcThemeBlock> schedule; // theme-tsmom-v1 mass schedule on the std planes (empty: W_theme throughout)
   std::vector<u8> sleeve_of;          // two-speed-v1: per theme index 1 fast, 0 slow (empty: no sleeves)
+  // theme-cov-hedge-v1 (P9 AL-COMB): on (a hedge stage or set_theme_hedge) and the role's session
+  // returns set_theme_hedge took (empty until then; finish refuses a hedge without them).
+  bool hedge{};
+  std::vector<f64> hedge_returns;
+  // P9 lane D3W (empty: off): the per-date weight rows (library order), the row in force per date
+  // (no_row before the first) and per candidate whether any row weights it.
+  std::vector<std::vector<f64>> row_weights;
+  std::vector<usize> row_of;
+  std::vector<u8> row_weighted;
   IcCompositionResult result;
   usize next{};
   bool finished{};
+  // The weight candidate `index` enters with at date `d` (ruling D3W-S S-3: the one place add and
+  // add_standardised read it): the weight of the per-date row in force (P9 lane D3W; 0 before the
+  // first row), else its pinned (or default) weight.
+  [[nodiscard]] f64 weight_at(usize index, usize d) const noexcept;
 };
+namespace {
+constexpr usize no_row = std::numeric_limits<usize>::max();
+} // namespace
+f64 IcComposition::Impl::weight_at(usize index, usize d) const noexcept {
+  if (row_of.empty()) return weights[index];
+  const usize r = row_of[d];
+  return r == no_row ? 0.0 : row_weights[r][index];
+}
 IcComposition::IcComposition(std::unique_ptr<Impl> p) : impl_(std::move(p)) {}
 IcComposition::~IcComposition() = default;
 IcComposition::IcComposition(IcComposition&&) noexcept = default;
@@ -272,11 +324,14 @@ co::Result<IcComposition> IcComposition::create_from_stages(const IcCompositionC
                    "IC composition: a theme grouping stage and pinned themes go together");
   ATX_TRY(auto composition,
           create(cfg, candidates, member, stages.weights, stages.themes, plan.rule));
+  if (!stages.weight_rows.empty()) ATX_TRY_VOID(composition.set_weight_rows(stages.weight_rows));
   for (const auto& stage : stages.stages) {
     if (stage.kind == IcStageKind::schedule)
       ATX_TRY_VOID(composition.schedule_theme_masses(stage.blocks));
     if (stage.kind == IcStageKind::sleeves)
       ATX_TRY_VOID(composition.set_theme_sleeves(stage.fast));
+    // theme-cov-hedge-v1: the runner attaches the role's returns next (set_theme_hedge).
+    if (stage.kind == IcStageKind::hedge) composition.impl_->hedge = true;
   }
   return co::Ok(std::move(composition));
 }
@@ -290,10 +345,13 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
   if (signal.size() != p.result.signal.size() && !(sign == 0 && signal.empty()))
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: signal shape mismatch");
   // Default weights are strictly positive, so the weight test alters only pinned
-  // zeros: skipping adds of +/-0 leaves every accumulator bit unchanged.
-  if (sign == 0 || p.weights[index] == 0) { ++p.next; return co::Ok(); }
+  // zeros: skipping adds of +/-0 leaves every accumulator bit unchanged. Per-date weights (P9
+  // lane D3W) skip a candidate no row weights, and below every date whose weight is 0.
+  const bool dated = !p.row_of.empty();
+  if (sign == 0 || (dated ? p.row_weighted[index] == 0 : p.weights[index] == 0)) {
+    ++p.next; return co::Ok();
+  }
   if (!p.std_theme.empty()) return add_standardised(index, signal, sign, pool);
-  const f64 weight = p.weights[index];
   // Pinned themes: the candidate accumulates into its theme's blend plane and adds
   // its weight to the theme's present-weight plane (folded by finish); otherwise
   // straight into the blend, the unchanged expression on the same cells.
@@ -304,16 +362,18 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
   // has capacity for every name, so ranking never allocates.
   const auto rank_dates = [&](usize begin, usize end, std::vector<Ranked>& row) {
     for (usize d = begin; d < end; ++d) {
+      const f64 w = p.weight_at(index, d);
+      if (dated && !(w > 0)) continue;
       row.clear(); const auto offset = d * p.cfg.instruments;
       for (usize i = 0; i < p.cfg.instruments; ++i)
         if (p.member[offset + i] && std::isfinite(signal[offset + i]))
           row.emplace_back(signal[offset + i], i);
       if (row.size() < 2) continue;
       cb::for_each_centered_rank(row, [&](usize i, f64 r) {
-        blend[offset + i] += static_cast<f64>(sign) * weight * r;
-        if (present != nullptr) present[offset + i] += weight;
+        blend[offset + i] += static_cast<f64>(sign) * w * r;
+        if (present != nullptr) present[offset + i] += w;
       });
-      p.result.contribution_fraction[d] += weight * static_cast<f64>(row.size());
+      p.result.contribution_fraction[d] += w * static_cast<f64>(row.size());
     }
   };
   if (pool == nullptr || pool->n_workers() < 2 || p.cfg.dates < 2) {
@@ -354,19 +414,23 @@ co::Status IcComposition::add(usize index, std::span<const f64> signal, int sign
 co::Status IcComposition::add_standardised(usize index, std::span<const f64> signal, int sign,
                                            engine::parallel::DetPool* pool) {
   auto& p = *impl_;
-  const f64 weight = p.weights[index];
   f64* const plane = p.std_plane[p.std_theme[index]].data();
+  // P9 lane D3W: the weight of the row in force at each date (Impl::weight_at, as add); a
+  // zero-weight date makes no cell of the plane present.
+  const bool dated = !p.row_of.empty();
   const auto rank_dates = [&](usize begin, usize end, std::vector<Ranked>& row) {
     for (usize d = begin; d < end; ++d) {
+      const f64 w = p.weight_at(index, d);
+      if (dated && !(w > 0)) continue;
       row.clear(); const auto offset = d * p.cfg.instruments;
       for (usize i = 0; i < p.cfg.instruments; ++i)
         if (p.member[offset + i] && std::isfinite(signal[offset + i]))
           row.emplace_back(signal[offset + i], i);
       if (row.size() < 2) continue;
       cb::for_each_centered_rank(row, [&](usize i, f64 r) {
-        cb::accumulate_group_cell(plane[offset + i], static_cast<f64>(sign) * weight * r);
+        cb::accumulate_group_cell(plane[offset + i], static_cast<f64>(sign) * w * r);
       });
-      p.result.contribution_fraction[d] += weight * static_cast<f64>(row.size());
+      p.result.contribution_fraction[d] += w * static_cast<f64>(row.size());
     }
   };
   if (pool == nullptr || pool->n_workers() < 2 || p.cfg.dates < 2) {
@@ -440,6 +504,76 @@ co::Status IcComposition::set_theme_sleeves(std::span<const u8> fast) {
   return co::Ok();
 }
 
+co::Status IcComposition::set_theme_hedge(std::vector<f64> session_returns) {
+  if (!impl_ || impl_->finished)
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: theme hedge after finish");
+  auto& p = *impl_;
+  if (p.std_mass.empty() || p.residualise || !p.sleeve_of.empty())
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: a theme hedge "
+                   "(theme-cov-hedge-v1) needs the standardise rule without theme sleeves");
+  if (session_returns.size() != p.member.size())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: theme hedge returns need one value per date and name");
+  ATX_TRY(const u64 bytes, ic_composition_working_bytes(p.cfg.dates, p.cfg.instruments,
+                                                        p.candidates.size(), p.std_mass.size(),
+                                                        IcThemeRule::standardise, false));
+  ATX_TRY(const u64 hedge,
+          theme_hedge_working_bytes(p.cfg.dates, p.cfg.instruments, p.std_mass.size()));
+  if (bytes > p.cfg.max_working_bytes || hedge > p.cfg.max_working_bytes - bytes)
+    return co::Err(co::ErrorCode::OutOfRange,
+                   "IC composition: working budget exceeded (theme hedge)");
+  p.hedge = true;
+  p.hedge_returns = std::move(session_returns);
+  return co::Ok();
+}
+
+co::Status IcComposition::set_weight_rows(std::span<const IcWeightRow> rows) {
+  if (!impl_ || impl_->finished || impl_->next != 0)
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: weight rows after an add or finish");
+  auto& p = *impl_;
+  if (!p.theme.empty())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC composition: weight rows are refused under the redistribute grouping");
+  const usize count = p.candidates.size();
+  usize last = 0;
+  for (const auto& row : rows) {
+    if (row.begin < last || row.begin > p.cfg.dates || row.weights.size() != count ||
+        std::any_of(row.weights.begin(), row.weights.end(),
+                    [](f64 w) { return !std::isfinite(w) || w < 0; }))
+      return co::Err(co::ErrorCode::InvalidArgument, "IC composition: weight rows need a "
+                     "non-decreasing begin <= dates and one finite weight >= 0 per candidate");
+    last = row.begin;
+  }
+  if (rows.empty())
+    return co::Err(co::ErrorCode::InvalidArgument, "IC composition: no weight row");
+  try {
+    std::vector<std::vector<f64>> weights;
+    weights.reserve(rows.size());
+    std::vector<u8> weighted(count, 0U);
+    for (const auto& row : rows) {
+      weights.push_back(row.weights);
+      for (usize k = 0; k < count; ++k)
+        if (row.weights[k] > 0) weighted[k] = 1U;
+    }
+    // The row in force at d: the last row whose begin is <= d (rows with one begin: the later).
+    std::vector<usize> row_of(p.cfg.dates, no_row);
+    usize r = 0;
+    for (usize d = 0; d < p.cfg.dates; ++d) {
+      while (r < rows.size() && rows[r].begin <= d) ++r;
+      if (r > 0) row_of[d] = r - 1U;
+    }
+    p.row_weights = std::move(weights);
+    p.row_of = std::move(row_of);
+    p.row_weighted = std::move(weighted);
+  } catch (const std::bad_alloc&) {
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: weight row allocation");
+  } catch (const std::length_error&) {
+    return co::Err(co::ErrorCode::OutOfRange, "IC composition: weight row allocation");
+  }
+  return co::Ok();
+}
+
 co::Result<IcCompositionResult> IcComposition::finish() {
   if (!impl_ || impl_->finished || impl_->next != impl_->candidates.size())
     return co::Err(co::ErrorCode::InvalidArgument, "IC composition: incomplete/finished input");
@@ -459,6 +593,18 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   // theme-resid-v1 instead residualises the re-ranked planes in index order per date.
   if (p.residualise) {
     ATX_TRY_VOID(add_theme_residualised(p.std_plane, p.std_mass, p.cfg.instruments, out.signal, p.row));
+  } else if (p.hedge) {
+    // theme-cov-hedge-v1 (P9 AL-COMB): each theme's re-rank hedged on its own sleeve's covariance
+    // loading, times the mass in force (W_theme before the first block), themes in index order; a
+    // date before the hedge ratio's first estimate adds the re-rank itself, as the branches below.
+    // The hedge ratios per theme and block go to the result (the runner prints them).
+    if (p.hedge_returns.empty() || !p.sleeve_of.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+                     "IC composition: a theme hedge needs its session returns and no theme "
+                     "sleeves");
+    ATX_TRY_VOID(add_theme_hedged(p.std_plane, p.std_mass, p.schedule, p.hedge_returns,
+                                  p.cfg.instruments, out.signal, &out.hedge_block,
+                                  &out.hedge_ratio));
   } else if (p.schedule.empty()) {
     for (usize t = 0; t < p.std_plane.size(); ++t)
       ATX_TRY_VOID(cb::add_group_rerank(p.std_plane[t], p.cfg.instruments, 0, p.cfg.dates, p.std_mass[t],
@@ -508,6 +654,7 @@ co::Result<IcCompositionResult> IcComposition::finish() {
   }
   std::vector<IcThemeBlock>().swap(p.schedule);
   std::vector<std::vector<f64>>().swap(p.std_plane);
+  std::vector<f64>().swap(p.hedge_returns);
   for (usize d = 0; d < p.cfg.dates; ++d)
     out.contribution_fraction[d] = out.eligible_names[d]
       ? out.contribution_fraction[d] / static_cast<f64>(out.eligible_names[d]) : 0;

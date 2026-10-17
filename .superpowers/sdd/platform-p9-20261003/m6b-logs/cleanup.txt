@@ -1,0 +1,8 @@
+M6B-FINISH item 8 (clean-up; review item 12) 2026-10-15T19:49:29Z
+build-equity/mega-candidate-cache-v8-lo3: 352 files, 7799612800 bytes, listing sha256 fb444f7d316a1a4c
+end listing without the index.sqlite row: 351 files, digest 155872de50833fca = the M6b start listing (cache-lo3-listing-start.txt): True ; extra rows: ['index.sqlite 73728']
+index files in the real cache dir: index.sqlite (refusal 2; OWNER to delete); -wal/-shm: 0
+index.sqlite anywhere under build-equity (depth 3): build-equity/mega-candidate-cache-v8-lo3/index.sqlite 
+copies of the cache dir: none made (case 1b used cache init on the real dir, not a copy)
+D / E / P1 / P2: 1 left
+build-equity/research-store/: absent

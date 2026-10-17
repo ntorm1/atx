@@ -1,0 +1,4 @@
+{"catalog_run_id":"2026-10-15T18:52:50.250277Z","path":"build-equity/fx-nav/extra_nan.json","reason":"unparsed"}
+{"catalog_run_id":"2026-10-15T18:52:50.250277Z","path":"build-equity/fx-sources/src.json","reason":"outside-roots"}
+{"catalog_run_id":"2026-10-15T18:52:50.250277Z","path":"build-equity/unpinned/notes.json","reason":"outside-roots"}
+{"catalog_run_id":"2026-10-15T18:52:50.250277Z","path":"build-equity/waves/fx-w1/role-2023-2024","reason":"seal-name"}

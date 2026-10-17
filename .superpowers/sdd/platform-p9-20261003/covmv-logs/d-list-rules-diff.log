@@ -1,0 +1,3 @@
+schema/caps equal: True True
+old rows a prefix of new: True
+added: [('mv-aim-v1', 'target')]

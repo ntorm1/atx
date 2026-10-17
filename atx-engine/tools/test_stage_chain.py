@@ -157,8 +157,8 @@ def test_stage_names_and_unknown_until(tmp_path):
 
 
 def test_content_digest_chains_without_time_keys(tmp_path):
-    """P9 OR section 3: digest="content" chains each receipt's content digest (canonical JSON without started_utc and
-    seconds) as previous_receipt_content_sha256, so two runs at different times chain the same digests; the default
+    """P9 OR section 3: digest="content" chains each receipt's content digest (canonical JSON without the time keys at
+    any depth) as previous_receipt_content_sha256, so two runs at different times chain the same digests; the default
     "file" rule keeps previous_receipt_sha256 (the file's SHA-256, time included); a state dir is read under one
     rule (a receipt recorded under the other is stale)."""
     digests = {}
@@ -181,9 +181,60 @@ def test_content_digest_chains_without_time_keys(tmp_path):
     assert SC.content_sha256(p) == first                                      # time keys, order, layout aside
     p.write_text(json.dumps({"stage": "a", "outputs": {"x": 2}, "started_utc": "T1", "seconds": 1.5}))
     assert SC.content_sha256(p) != first                                      # content is digested
+    # review E1 minor: time values nested in the outputs (phase rows, process rows) move no digest either
+    rows = lambda s, mib, x: {"stage": "a", "seconds": s, "outputs": {  # noqa: E731
+        "phases": [{"phase": "u", "outcome": "completed", "seconds": s, "peak_mib": mib, "wall_seconds": s}],
+        "timings": {"processes": [{"what": "u", "calls": 1, "seconds": s}]}, "x": x}}
+    p.write_text(json.dumps(rows(1.5, 100, 1)))
+    nested = SC.content_sha256(p)
+    p.write_text(json.dumps(rows(7.25, 900, 1)))
+    assert SC.content_sha256(p) == nested
+    p.write_text(json.dumps(rows(1.5, 100, 2)))
+    assert SC.content_sha256(p) != nested
     ctx = Ctx(tmp_path / "content-2020")                                      # one rule per state dir
     ch = SC.Chain("test", [make("a"), make("b")], ctx.root / "state", clock=lambda: "T")
     with pytest.raises(SC.ChainError, match=r"STALE \[b\].*previous_receipt_content_sha256, previous_receipt_sha256") \
             as e:
         ch.run(ctx, log=lambda s: None)
     assert e.value.code == SC.EXIT_STALE
+
+
+def test_on_write_once_per_written_receipt_never_for_a_done_stage(tmp_path, capsys):
+    """P9 SQL3: ``on_write`` gets the path of each receipt the chain has just written, once per ok receipt and once
+    per failed receipt, never for a done (skipped) stage; a callback that raises changes nothing (one stderr line);
+    without one (the default) the receipts are those of before, byte for byte."""
+    seen: list[Path] = []
+    ctx = Ctx(tmp_path)
+    ch = SC.Chain("test", [make("a"), make("b"), make("c")], tmp_path / "state", clock=lambda: "T",
+                  on_write=seen.append)
+    ctx.fail.add("b")
+    with pytest.raises(SC.ChainError) as e:
+        ch.run(ctx, log=lambda s: None)
+    assert e.value.code == 4
+    assert seen == [ch.receipt_path(0), ch.receipt_dir() / "02-b.failed-1.json"]
+    assert all(p.is_file() for p in seen)                       # called after the write
+    ctx.fail.clear()
+    ch.run(ctx, log=lambda s: None)                             # a done: skipped, not handed over again
+    assert seen[2:] == [ch.receipt_path(1), ch.receipt_path(2)]
+    ch.run(ctx, log=lambda s: None)
+    assert len(seen) == 4                                       # all done: nothing written, nothing called
+    # a raising callback: the same chain, receipts and exit codes as without one
+    def boom(path):
+        raise RuntimeError("hook down")
+    for name, cb in (("plain", None), ("boom", boom)):
+        c2 = Ctx(tmp_path / name)
+        c2.fail.add("c")
+        ch2 = SC.Chain("test", [make("a"), make("b"), make("c")], c2.root / "state", clock=lambda: "T",
+                       on_write=cb)
+        with pytest.raises(SC.ChainError) as e2:
+            ch2.run(c2, log=lambda s: None)
+        assert e2.value.code == 4 and c2.calls == ["a", "b", "c"]
+    err = capsys.readouterr().err
+    assert err.count("stage_chain: warning: on_write") == 3 and "RuntimeError: hook down" in err
+    names = sorted(p.name for p in (tmp_path / "plain" / "state" / "receipts").iterdir())
+    assert names == ["01-a.json", "02-b.json", "03-c.failed-1.json"]
+    assert names == sorted(p.name for p in (tmp_path / "boom" / "state" / "receipts").iterdir())
+    for rel in names:                                           # equal but for the measured seconds
+        docs = [SC.time_free(json.loads((tmp_path / d / "state" / "receipts" / rel).read_text()))
+                for d in ("plain", "boom")]
+        assert docs[0] == docs[1]

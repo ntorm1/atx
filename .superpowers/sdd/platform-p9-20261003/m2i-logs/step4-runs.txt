@@ -1,0 +1,2 @@
+p9-m2i-cov-y1-nav runner-exit 0 shell-wall 31s exe-before 53ca5dd481a2ddc1 :: outcome completed exit 0 wall_s 30.5 peak_MiB 1079 exe 53ca5dd481a2ddc1 source f1d2a102 build_type Release
+argv after the exe: reference 52 tokens, this run 52; differing tokens 3: [(14, 'build-equity/p9-b0-y1-nav', 'build-equity/p9-m2i-cov-y1-nav'), (45, 'build-equity/v8-risk-lo3-v10', 'build-equity/p9-m2d-cov-risk-container'), (47, '862515d92623be37fbd4b126c8f0350a20135e7977f1cbf66c6c33f1644ecd5a', '9c12852ea0cd578d2cf968fc858ae7cb986c308f4b533824a34d273ca7e017c7')]

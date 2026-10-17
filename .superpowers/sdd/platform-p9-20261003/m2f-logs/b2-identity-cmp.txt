@@ -1,0 +1,56 @@
+
+== X5: Erel vs P
+  stdout: 31 vs 31 lines, byte-equal True
+  stderr: 145 vs 145 bytes, byte-equal True
+  json rows 1 vs 1; close() problems 0; float leaves bit-equal 76, differing within tolerance or not 13; largest relative difference 5.044e-14
+  degenerate / one_minus_rho keys: none
+  P nav_summ_run names a verb: False
+  Erel nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe sha256 a57a2090999c0f71 = file True
+  RESULT IDENTICAL under B2-R1 (b)
+
+== X5: Edbg vs P
+  stdout: 31 vs 31 lines, byte-equal True
+  stderr: 145 vs 145 bytes, byte-equal True
+  json rows 1 vs 1; close() problems 0; float leaves bit-equal 76, differing within tolerance or not 13; largest relative difference 5.044e-14
+  degenerate / one_minus_rho keys: none
+  P nav_summ_run names a verb: False
+  Edbg nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity\bin\atx-research-eval.exe sha256 bd8b5e08a984ebb6 = file True
+  RESULT IDENTICAL under B2-R1 (b)
+
+== X5: Edbg vs Erel
+  stdout: 31 vs 31 lines, byte-equal True
+  stderr: 145 vs 145 bytes, byte-equal True
+  json rows 1 vs 1; close() problems 0; float leaves bit-equal 89, differing within tolerance or not 0; largest relative difference 0.000e+00
+  degenerate / one_minus_rho keys: none
+  Erel nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe sha256 a57a2090999c0f71 = file True
+  Edbg nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity\bin\atx-research-eval.exe sha256 bd8b5e08a984ebb6 = file True
+  RESULT IDENTICAL under B2-R1 (b)
+
+== YF0: Erel vs P
+  stdout: 31 vs 31 lines, byte-equal True
+  stderr: 145 vs 145 bytes, byte-equal True
+  json rows 1 vs 1; close() problems 0; float leaves bit-equal 78, differing within tolerance or not 11; largest relative difference 5.854e-15
+  degenerate / one_minus_rho keys: none
+  P nav_summ_run names a verb: False
+  Erel nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe sha256 a57a2090999c0f71 = file True
+  RESULT IDENTICAL under B2-R1 (b)
+
+== YF0: Edbg vs P
+  stdout: 31 vs 31 lines, byte-equal True
+  stderr: 145 vs 145 bytes, byte-equal True
+  json rows 1 vs 1; close() problems 0; float leaves bit-equal 78, differing within tolerance or not 11; largest relative difference 5.854e-15
+  degenerate / one_minus_rho keys: none
+  P nav_summ_run names a verb: False
+  Edbg nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity\bin\atx-research-eval.exe sha256 bd8b5e08a984ebb6 = file True
+  RESULT IDENTICAL under B2-R1 (b)
+
+== YF0: Edbg vs Erel
+  stdout: 31 vs 31 lines, byte-equal True
+  stderr: 145 vs 145 bytes, byte-equal True
+  json rows 1 vs 1; close() problems 0; float leaves bit-equal 89, differing within tolerance or not 0; largest relative difference 0.000e+00
+  degenerate / one_minus_rho keys: none
+  Erel nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe sha256 a57a2090999c0f71 = file True
+  Edbg nav_summ_run engine_exe C:\atx-wt\pool-2\build-equity\bin\atx-research-eval.exe sha256 bd8b5e08a984ebb6 = file True
+  RESULT IDENTICAL under B2-R1 (b)
+
+OVERALL HOLDS

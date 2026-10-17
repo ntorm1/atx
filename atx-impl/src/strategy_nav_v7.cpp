@@ -21,6 +21,8 @@
 #include "atx/core/sha256.hpp"
 #include "atx/engine/book/risk_target.hpp"
 #include "atx/engine/book/two_speed.hpp"
+#include "book/nav_rules.hpp" // P9 C3: --cost-law / --target-rule registry ids
+#include "strategy_mv_aim.hpp"   // P9 COV-MV: mv_aim::Rule (the header forward-declares it)
 #include "strategy_risk_target.hpp"
 #include "strategy_spo_v3.hpp"
 #include "strategy_target_replay_detail.hpp"
@@ -58,7 +60,8 @@ struct ScopedNavExtension::State {
                             : nullptr),
         scaler(o.risk_target.on
                    ? std::make_unique<risk_target::Scaler>(o.risk_target, o.spo_risk)
-                   : nullptr) {
+                   : nullptr),
+        mv(o.mv_aim ? std::make_unique<mv_aim::Rule>(o.spo_risk) : nullptr) {
     // Review SPO-4: the capacity engine has no primary book, so Ruling E-31a never reads a
     // capacity book's limits; it binds the main pass, whose rows hold no capacity book.
     if (capacity_engine) capacity_engine->set_primary_book({});
@@ -78,10 +81,15 @@ struct ScopedNavExtension::State {
   std::unique_ptr<spo::Engine> capacity_engine;
   // v8 R-8 (--risk-target): the scaler of the loose seam's books and every book's records.
   std::unique_ptr<risk_target::Scaler> scaler;
+  // P9 COV-MV (--target-rule mv-aim-v1): the target rule on the shared desired target.
+  std::unique_ptr<mv_aim::Rule> mv;
   std::string void_reason;             // capture(): the tripwire voided the run
   // configure(): the replay's books carry --adv-hold-q (P9 C1 fix 1: picks the spo-v3 capacity
   // sentence of the summary, holdings manifest and v7_extras.json; a recipe reads its own key).
   bool adv_hold{};
+  // configure(): the replay's books run --rate info-clock-rate-v1 (P9 AL-CLOCK fix 1, review S-1:
+  // picks the capacity sentence that names the rate; a recipe reads its own rate key).
+  bool info_clock{};
   // A capacity book: in the capacity pass every book; in the main pass a capacity id under
   // --capacity-curve (P9 C1: the capacity books join the main lockstep).
   [[nodiscard]] bool is_capacity(const NavScenario& scenario) const {
@@ -143,6 +151,10 @@ bool risk_target_flag(std::string_view key) {
   return key == "--risk-target" || key == "--risk-target-bias" || key == "--risk-target-cadence";
 }
 // The store flags the risk target shares with the spo rules.
+// P9 C3 (K-P9-7): the flags whose value is a registry id (book/nav_rules.hpp).
+bool registry_flag(std::string_view key) {
+  return key == "--cost-law" || key == "--target-rule";
+}
 bool risk_model_flag(std::string_view key) {
   return key == "--risk-model" || key == "--risk-model-sha256";
 }
@@ -197,6 +209,21 @@ constexpr const char* capacity_declaration =
     "book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding "
     "are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the "
     "histogram bound times m); fixed rate only; x1 is S2 bit for bit";
+// Under --rate info-clock-rate-v1 (P9 AL-CLOCK fix 1, review S-1; Ruling ALCLOCK-3): the same
+// sentence naming the rate the capacity books run; every other run keeps the one above byte for
+// byte (flag absent: its recipe, summary, holdings manifest and v7_extras.json unchanged).
+constexpr const char* capacity_info_clock_declaration =
+    "capacity by replay (R4.2): S2 at NAV multiples m in {.5,1,2,4,8} of the initial NAV, run as "
+    "S2 books at the initial NAV with impact_y * m^0.5 and max_participation / m (the replay is "
+    "scale invariant in every dollar except the impact law and the participation cap, so each "
+    "book is the NAV-m book divided by m: returns, Sharpe, cost per traded dollar and cap binding "
+    "are the NAV-m book's; dollar columns are scaled back by m; participation p95 is the "
+    "histogram bound times m); the fixed rate or info-clock-rate-v1, this run's (Ruling "
+    "ALCLOCK-3: it reads no NAV, so each capacity book moves at the members' clock rates as the "
+    "main books do); x1 is S2 bit for bit";
+[[nodiscard]] constexpr const char* capacity_rule(bool info_clock) noexcept {
+  return info_clock ? capacity_info_clock_declaration : capacity_declaration;
+}
 constexpr const char* capacity_v6_declaration =
     "aim-partial-v6 in the capacity pass: each capacity book prices its c_i with its own law (S2 "
     "with impact_y * m^0.5), which at the base-scale reference trade q equals the S2 law at the "
@@ -274,8 +301,9 @@ constexpr const char* tc_declaration =
     "alpha_i / sigma_i^2 with Grinold-Kahn alpha_i = IC sigma_i z_i, z = the neutralized rank "
     "aim) and the planned weight w_i after the rule";
 
-// adv_hold: the --adv-hold-q in force (the spo-v3 capacity sentence; P9 C1 fix 1).
-Json declarations(const ScopedNavExtension::State& s, bool adv_hold) {
+// adv_hold: the --adv-hold-q in force (the spo-v3 capacity sentence; P9 C1 fix 1). info_clock:
+// the books run --rate info-clock-rate-v1 (the capacity sentence; P9 AL-CLOCK fix 1).
+Json declarations(const ScopedNavExtension::State& s, bool adv_hold, bool info_clock) {
   const auto& v6 = s.options.v6;
   Json j{{"hook", "platform-v7 lane L4 NAV extension (strategy_nav_v7)"},
          {"pass", pass_name(s.pass)},
@@ -287,7 +315,7 @@ Json declarations(const ScopedNavExtension::State& s, bool adv_hold) {
     j["s2_fim"] = fim_declaration;
   }
   if (s.options.capacity) {
-    j["capacity"] = capacity_declaration;
+    j["capacity"] = capacity_rule(info_clock);
     j["capacity_multiples"] = Json(std::vector<f64>(cost_v2::capacity_multiples.begin(),
                                                     cost_v2::capacity_multiples.end()));
     if (s.options.aim_v6) j["capacity_aim_partial_v6"] = capacity_v6_declaration;
@@ -308,6 +336,15 @@ Json declarations(const ScopedNavExtension::State& s, bool adv_hold) {
     j[spo::json_key(s.options.spo_params)] = std::move(block);
   }
   return j;
+}
+// P9 COV-MV: the "mv_aim" block (with the run's counts when `counts`; the capacity pass, recipe
+// and holdings manifest: the parameters) and the rule id suffix +mv-aim-v1, which precedes the
+// leverage rule's; nothing without --target-rule mv-aim-v1.
+void add_mv_aim(const ScopedNavExtension::State& s, Json& doc, bool counts) {
+  if (!s.mv || !doc.is_object()) return;
+  doc["mv_aim"] = counts ? s.mv->summary_json() : s.mv->parameters_json();
+  if (doc.contains("rule") && doc.at("rule").is_string())
+    doc["rule"] = doc.at("rule").get<std::string>() + "+" + std::string(mv_aim::rule_id);
 }
 // v8 R-8: the "risk_target" block (with the per-book summary of `books` when non-null) and the
 // rule id suffix of recipe.json, summary.json and the holdings manifest; nothing without
@@ -457,7 +494,7 @@ co::Result<std::string> write_extras(const std::filesystem::path& dir,
     ATX_TRY(auto sha, co::sha256_file(path.string()));
     files["capacity_curve.csv"] = sha;
     extras["capacity"] = std::move(rows);
-    extras["capacity_rule"] = capacity_declaration;
+    extras["capacity_rule"] = capacity_rule(s.info_clock);
     if (o.aim_v6) extras["capacity_aim_partial_v6"] = capacity_v6_declaration;
     extras["capacity_x1_equals_primary_bit_for_bit"] =
         primary && unit && same_bits(primary->net_returns, unit->net_returns);
@@ -573,7 +610,7 @@ void summarize(const ScopedNavExtension::State& s, Json& summary, std::span<cons
           {"decisions_at_clip_hi", at_hi}};
     books[book] = std::move(entry);
   }
-  summary["v7"] = Json{{"declarations", declarations(s, s.adv_hold)},
+  summary["v7"] = Json{{"declarations", declarations(s, s.adv_hold, s.info_clock)},
                        {"books", std::move(books)}, {"extras", extras}};
   // The pass's own engine: spo-v3's capacity pass (Ruling E-37) summarises its capacity books.
   const spo::Engine* engine =
@@ -587,6 +624,7 @@ void summarize(const ScopedNavExtension::State& s, Json& summary, std::span<cons
   if (const char* id = rule_id(s.options);
       id && summary.contains("rule") && summary.at("rule").is_string())
     summary["rule"] = relabel_v6(summary.at("rule").get<std::string>(), id);
+  add_mv_aim(s, summary, s.pass == NavV7Pass::Main); // P9 COV-MV
   // v8 R-8: the per-book block over the main books' records (the capacity pass: parameters).
   add_risk_target(s, summary, s.pass == NavV7Pass::Main ? &leverage : nullptr);
 }
@@ -757,6 +795,7 @@ void ScopedNavExtension::begin_run(NavV7Pass pass) {
   if (state_->engine) state_->engine->begin_run();
   if (state_->capacity_engine) state_->capacity_engine->begin_run();
   if (state_->scaler) state_->scaler->begin_run();
+  if (state_->mv) state_->mv->begin_run();
 }
 std::span<const TcRecord> ScopedNavExtension::tc_records() const noexcept { return state_->tc; }
 std::span<const BookRecord> ScopedNavExtension::books() const noexcept { return state_->books; }
@@ -767,6 +806,7 @@ const spo::Engine* ScopedNavExtension::spo_capacity_engine() const noexcept {
 const risk_target::Scaler* ScopedNavExtension::risk_target_scaler() const noexcept {
   return state_->scaler.get();
 }
+const mv_aim::Rule* ScopedNavExtension::mv_aim_rule() const noexcept { return state_->mv.get(); }
 const std::string& ScopedNavExtension::void_reason() const noexcept { return state_->void_reason; }
 
 bool claims_nav_args(int argc, char** argv) {
@@ -774,7 +814,7 @@ bool claims_nav_args(int argc, char** argv) {
     const std::string_view key = argv[i];
     if (key == "--cost-v2" || key == "--capacity-curve" || key == "--cost-shrink-kappa" ||
         key == "--band-b" || key == "--band-exponent" || key == "--rate-clip" || spo_flag(key) ||
-        risk_target_flag(key) || key == "--vol-target")
+        risk_target_flag(key) || key == "--vol-target" || registry_flag(key))
       return true;
     if (key == "--rule" && i + 1 < argc &&
         (std::string_view(argv[i + 1]) == "aim-partial-v6" || spo_rule(argv[i + 1])))
@@ -832,6 +872,7 @@ void configure(NavReplayConfig& cfg) {
   auto* s = active_state;
   if (!s) return;
   s->adv_hold = cfg.target.adv_hold_q > 0; // adv_hold_on (P9 C1 fix 1)
+  s->info_clock = cfg.rate == NavRateRule::InfoClockV1; // P9 AL-CLOCK fix 1 (review S-1)
   if (!s->options.risk_target.on || cfg.leverage.law != NavLeverageLaw::Fixed) return;
   cfg.leverage = risk_target::leverage_rule(s->options.risk_target, s->options.spo_risk);
 }
@@ -925,6 +966,18 @@ RunRecords run_records(std::span<const NavScenario> scenarios,
 
 bool installed() { return active_state != nullptr; }
 
+co::Status apply_target_rule(const TargetReplayInput& x, usize d, std::span<const u8> no_short,
+                             std::vector<f64>& desired) {
+  auto* s = active_state;
+  if (!s || !s->mv) return co::Ok();
+  return s->mv->apply(x, d, no_short, desired);
+}
+
+u64 extension_workspace_bytes(usize names) {
+  const auto* s = active_state;
+  return s && s->mv ? mv_aim::workspace_bytes(names) : 0U;
+}
+
 CapacityPublication::CapacityPublication() {
   if (auto* s = active_state) {
     previous_ = s->pass;
@@ -961,11 +1014,15 @@ void extend_recipe(Json& recipe) {
   const auto* s = active_state;
   if (!s || !recipe.is_object()) return;
   // The recipe's own adv_hold_rule key (adv_hold_on) picks the spo-v3 capacity sentence, so the
-  // decide path, which runs no replay, forms the run's recipe (P9 C1 fix 1).
-  recipe["v7"] = declarations(*s, recipe.contains("adv_hold_rule"));
+  // decide path, which runs no replay, forms the run's recipe (P9 C1 fix 1); its own rate key
+  // (nav_write: set only under the rule) picks the capacity sentence (P9 AL-CLOCK fix 1).
+  const bool info_clock = recipe.contains("rate") && recipe.at("rate").is_string() &&
+                          recipe.at("rate").get<std::string>() == nav_info_clock_rate_id;
+  recipe["v7"] = declarations(*s, recipe.contains("adv_hold_rule"), info_clock);
   if (const char* id = rule_id(s->options);
       id && recipe.contains("rule") && recipe.at("rule").is_string())
     recipe["rule"] = relabel_v6(recipe.at("rule").get<std::string>(), id);
+  add_mv_aim(*s, recipe, false); // P9 COV-MV
   add_risk_target(*s, recipe, nullptr);
   // P9 C1: under --capacity-curve every capacity book's ADV cap reads its multiple's NAV.
   if (s->options.capacity && recipe.contains("adv_hold_rule"))
@@ -989,10 +1046,11 @@ void extend_summary(Json& summary, const RunRecords& records, const Json& bindin
 void extend_holdings(Json& manifest) {
   const auto* s = active_state;
   if (!s || !manifest.is_object()) return;
-  manifest["v7"] = declarations(*s, s->adv_hold);
+  manifest["v7"] = declarations(*s, s->adv_hold, s->info_clock);
   if (const char* id = rule_id(s->options);
       id && manifest.contains("rule") && manifest.at("rule").is_string())
     manifest["rule"] = relabel_v6(manifest.at("rule").get<std::string>(), id);
+  add_mv_aim(*s, manifest, false); // P9 COV-MV
   add_risk_target(*s, manifest, nullptr);
 }
 
@@ -1000,9 +1058,17 @@ void append_help(std::ostream& out) {
   out << "v7 (lane L4; any of these adds <output>/v7_transfer_coefficient.csv and "
          "v7_extras.json before summary.json, which binds them): [--cost-v2 (stress books S2-KO "
          "modeled-1bn-ko-v1 and S2-FIM modeled-1bn-fim-v1 beside S1/S2/S3; S2 stays PRIMARY)] "
+         "[--cost-law ID (P9 C3, K-P9-7: a cost-law row of --list-rules by id; cost-sqrt-v2 is "
+         "--cost-v2, one of the two)] [--target-rule ID (P9 C3, K-P9-7: a target row of "
+         "--list-rules by id; mv-aim-v1 (P9 COV-MV): the desired target's priced members become "
+         "P V_d^-1 P alpha at their gross on the --risk-model DIR --risk-model-sha256 SHA store; "
+         "needs --rule aim-partial-v5; not with an spo rule, aim-partial-v6, --two-speed, "
+         "--adv-hold-q, --hold-band or --construction-grid; adds the mv_aim blocks and the rule "
+         "id +mv-aim-v1)] "
          "[--capacity-curve (the capacity books S2 at NAV x .5,1,2,4,8 in the main lockstep, "
          "published into <output>/capacity, then <output>/capacity_curve.csv; with "
-         "--adv-hold-q each capacity book's cap reads its multiple's NAV; fixed rate only; "
+         "--adv-hold-q each capacity book's cap reads its multiple's NAV; the fixed rate or "
+         "--rate info-clock-rate-v1 (Ruling ALCLOCK-3: it reads no NAV), not per-name-v1; "
          "--emit-holdings observes the main primary book only)] [--rule aim-partial-v6 "
          "(aim-partial-v5 flags plus a cost-scaled target, "
          "band and regime rate; fixed rate only) --cost-shrink-kappa 1 --band-b "
@@ -1083,8 +1149,36 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
       const std::string key = argv[i];
       if (key == "--cost-v2" || key == "--capacity-curve") {
-        if (!seen.insert(key).second) throw std::invalid_argument("duplicate flag " + key);
+        if (!seen.insert(key).second)
+          throw std::invalid_argument("duplicate flag " + key + (key == "--cost-v2"
+                                          ? " (--cost-law cost-sqrt-v2 is --cost-v2)" : ""));
         (key == "--cost-v2" ? o.stress : o.capacity) = true;
+        continue;
+      }
+      if (registry_flag(key)) { // P9 C3 (K-P9-7): a registry row by id (book/nav_rules.hpp)
+        if (!seen.insert(key).second || i + 1 >= argc)
+          throw std::invalid_argument("duplicate/missing value: " + key);
+        const std::string value = argv[++i];
+        const auto kind =
+            key == "--cost-law" ? nav_rules::Kind::CostLaw : nav_rules::Kind::Target;
+        const auto* row = nav_rules::find(kind, value);
+        if (!row || row->x_flag.empty()) {
+          const auto ids = nav_rules::flag_ids(kind);
+          throw std::invalid_argument("unknown " + key + ' ' + value + " (" +
+                                      (ids.empty() ? std::string("none registered") : ids) + ")");
+        }
+        // P9 COV-MV: the target rule mv-aim-v1 (strategy_mv_aim.hpp; its refusals below).
+        if (kind == nav_rules::Kind::Target && value == mv_aim::rule_id) {
+          o.mv_aim = true;
+          continue;
+        }
+        // cost-sqrt-v2: the v2 stress books, byte for byte the run --cost-v2 gives (one of the
+        // two). A registered row without a handler here is refused, never silently ignored.
+        if (value != nav_rules::cost_sqrt_v2_id)
+          throw std::invalid_argument(key + ' ' + value + " has no handler in this build");
+        if (!seen.insert("--cost-v2").second)
+          throw std::invalid_argument("--cost-law cost-sqrt-v2 is --cost-v2: give one of them");
+        o.stress = true;
         continue;
       }
       if (key == "--cost-shrink-kappa" || key == "--band-b" || key == "--band-exponent" ||
@@ -1193,10 +1287,45 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
     if (o.aim_v6 && std::find(args.begin(), args.end(), "--rank-shape") != args.end())
       throw std::invalid_argument("--rank-shape norm-score-v1 needs aim-partial-v5 (refused with "
                                   "--rule aim-partial-v6)");
-    // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8); every other spo
-    // value flag needs an spo rule.
+    // P9 COV-MV (mv-aim-v1, its row's incompatible[]): the rule rewrites the shared desired
+    // target that aim-partial-v5 moves toward, once per decision for every book, on the pinned
+    // store. Refused with a rule that replaces that plan or optimises against V itself (spo,
+    // aim-partial-v6), with a shaping whose state or cap the rewrite would undo or split per book
+    // (two-speed-v1's fast sleeve, adv-hold-v1's ADV cap, hold-band-v1's rank band), with a grid
+    // (variants that could disagree on the rule's own target), and without the store.
+    if (o.mv_aim) {
+      const auto* rule = value_of("--rule");
+      const auto given = [&](std::string_view flag) {
+        return std::find(args.begin(), args.end(), flag) != args.end();
+      };
+      const auto stored = [&](std::string_view flag) {
+        return std::any_of(spo_values.begin(), spo_values.end(),
+                           [&](const auto& e) { return e.first == flag; });
+      };
+      if (o.spo_v1)
+        throw std::invalid_argument("--target-rule mv-aim-v1 is refused with --rule spo-v1|v2|v3 "
+                                    "(they optimise against V themselves)");
+      if (o.aim_v6)
+        throw std::invalid_argument("--target-rule mv-aim-v1 is refused with --rule "
+                                    "aim-partial-v6 (it reshapes the target by cost)");
+      if (!rule || *rule != "aim-partial-v5")
+        throw std::invalid_argument("--target-rule mv-aim-v1 needs --rule aim-partial-v5 (the "
+                                    "rule whose aim is --aim-leverage x desired)");
+      for (const char* flag : {"--two-speed", "--adv-hold-q", "--hold-band",
+                               "--construction-grid"})
+        if (given(flag))
+          throw std::invalid_argument(std::string("--target-rule mv-aim-v1 is refused with ") +
+                                      flag + " (two-speed-v1's fast sleeve, adv-hold-v1's cap, "
+                                             "hold-band-v1's band and a grid's variants shape "
+                                             "the target the rule rewrites)");
+      if (!stored("--risk-model") || !stored("--risk-model-sha256"))
+        throw std::invalid_argument("--target-rule mv-aim-v1 needs --risk-model and "
+                                    "--risk-model-sha256 (the pinned store it reads)");
+    }
+    // --risk-model / --risk-model-sha256 also serve the risk target (v8 R-8) and mv-aim-v1 (P9
+    // COV-MV); every other spo value flag needs an spo rule.
     const bool spo_only = std::any_of(spo_values.begin(), spo_values.end(), [&](const auto& e) {
-      return !(o.risk_target.on && risk_model_flag(e.first));
+      return !((o.risk_target.on || o.mv_aim) && risk_model_flag(e.first));
     });
     if (spo_only && !o.spo_v1)
       throw std::invalid_argument(
@@ -1305,9 +1434,12 @@ co::Result<NavV7Command> parse_nav_v7_args(int argc, char** argv) {
       if (!valid) throw std::invalid_argument(valid.error().to_string());
     }
     if (!output || output->empty()) throw std::invalid_argument("--output is required");
-    if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed")
-      throw std::invalid_argument("aim-partial-v6 and --capacity-curve need the fixed rate "
-                                  "(per-name-v1 reads the NAV)");
+    // P9 AL-CLOCK: info-clock-rate-v1 reads no NAV (each rate is the member's clock at the
+    // decision), so the capacity books run it as the main books do; aim-partial-v6 still refuses.
+    if ((o.aim_v6 || o.capacity) && rate && *rate != "fixed" &&
+        (o.aim_v6 || *rate != nav_info_clock_rate_id))
+      throw std::invalid_argument("aim-partial-v6 needs the fixed rate, --capacity-curve the "
+                                  "fixed rate or info-clock-rate-v1 (per-name-v1 reads the NAV)");
     if (o.aim_v6) {
       if (!band_given) o.v6.band_b = dust ? number(*dust) : 0.0; // median band = the dust band
       const auto valid = cost_v2::validate_aim_v6(o.v6, theta ? number(*theta) : 0.25);
@@ -1328,9 +1460,9 @@ int dispatch_nav_v7(int argc, char** argv, std::ostream& out, std::ostream& err)
     if (!parsed) { err << parsed.error().to_string() << '\n'; return 2; }
     NavV7Options& o = parsed->options;
     const std::vector<std::string>& args = parsed->args;
-    // The pinned risk model of the same role (refused before any replay work): the spo rules'
-    // and the risk target's (v8 R-8), one store.
-    if (o.spo_v1 || o.risk_target.on) {
+    // The pinned risk model of the same role (refused before any replay work): the spo rules',
+    // the risk target's (v8 R-8) and mv-aim-v1's (P9 COV-MV), one store.
+    if (o.spo_v1 || o.risk_target.on || o.mv_aim) {
       std::string role_sha;
       for (usize k = 1; k + 1 < args.size(); ++k)
         if (args[k] == "--role-sha256") role_sha = args[k + 1];

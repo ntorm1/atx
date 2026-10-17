@@ -19,6 +19,7 @@
 #include <vector>
 #include "atx/engine/build_flavor.hpp"
 #include "build_provenance.hpp"
+#include "strategy_ic_cache_index.hpp"
 
 namespace atx::impl::strategy::ic_detail {
 namespace {
@@ -39,7 +40,7 @@ constexpr int dsl_vm_semantics_version=1;
 // a semantic change bumps dsl_vm_semantics_version (clean cache miss); either way
 // the pin is re-set. The test also fails if a listed file includes an unlisted
 // atx/engine header, so the list cannot silently fall behind the closure.
-constexpr std::array<std::string_view,34> dsl_vm_sources{
+constexpr std::array<std::string_view,35> dsl_vm_sources{
     "atx-engine/include/atx/engine/alpha/asof_ops.hpp",
     "atx-engine/include/atx/engine/alpha/bytecode.hpp",
     "atx-engine/include/atx/engine/alpha/cs_ops.hpp",
@@ -49,6 +50,7 @@ constexpr std::array<std::string_view,34> dsl_vm_sources{
     "atx-engine/include/atx/engine/alpha/fwd.hpp",
     "atx-engine/include/atx/engine/alpha/lexer.hpp",
     "atx-engine/include/atx/engine/alpha/lit_ops.hpp",
+    "atx-engine/include/atx/engine/alpha/op_traits.hpp",
     "atx-engine/include/atx/engine/alpha/panel.hpp",
     "atx-engine/include/atx/engine/alpha/parser.hpp",
     "atx-engine/include/atx/engine/alpha/registry.hpp",
@@ -77,8 +79,13 @@ constexpr std::array<std::string_view,34> dsl_vm_sources{
 // v8 lane YOPS re-pinned WITHOUT a bump: it adds opcodes and kernels (group_sum,
 // group_delay, the as-of rank family; asof_ops.hpp) and changes no evaluated bit of
 // any pre-existing DSL string (a string naming a new op could not parse before).
+// P9 S2 re-pinned WITHOUT a bump: the per-opcode table (op_traits.hpp, joining the closure)
+// replaces hand-written predicate lists with the same sets, the serial kernels run in worker bands
+// of their chunk axis (byte-identical at every pool size; serial without a pool) and the W2 Ts
+// windows are sliced from a once-extracted column (the same values in the same order). No
+// evaluated bit changes; the worker-parity and slot-reuse suites pin it.
 constexpr std::string_view dsl_vm_sources_sha256=
-    "fcf8021e76ee5ac3c161302367a27b8f6c49cd28a580d1339ff801d9feca1619";
+    "5bcd55c78814451391063cd9278852f765f02b5378a04d7598c188a568f712b2";
 // Entries written before this identity existed sit directly under DIR/<sha>/ with
 // no vm_identity key. They came from engine builds 429cbe43/6d85ac2a (clang-cl
 // 18.1.8, dev preset, no /arch) and no alpha, parallel or core source changed
@@ -95,9 +102,13 @@ constexpr const char* cache_layout="date-major-little-endian-f64;non-finite-stor
 // which shares the VM-instantiating runner TU's flag set (strategy_ic_detail.hpp). The equity-dev
 // Debug flavour keeps the empty token, so its identity, cache root and summaries keep their bytes;
 // any other flavour (equity-rel) appends one and gets its own cache root: no shared entries.
-std::string vm_identity() {
+// P9 S2: --eval-mode audit-exact entries carry the "_audit" token (their own cache root and
+// sidecar identity), so AuditExact and ResearchFast signals never share an entry; the default
+// (ResearchFast) identity keeps its bytes.
+std::string vm_identity(bool audit_exact) {
   return "dslvm"+std::to_string(dsl_vm_semantics_version)+"_"+std::string(vm_compiler)+
-      std::string(vm_fp_flavor)+atx::engine::build_flavor_suffix(ATX_ENGINE_BUILD_FLAVOR);
+      std::string(vm_fp_flavor)+atx::engine::build_flavor_suffix(ATX_ENGINE_BUILD_FLAVOR)+
+      (audit_exact?"_audit":"");
 }
 // ---- Candidate signal cache -------------------------------------------------
 // ROOT is DIR/<vm identity>/ (DIR itself for the legacy identity), so a VM or
@@ -140,7 +151,8 @@ co::Status metered_update(co::Sha256& digest,std::span<const std::byte> bytes,Ha
   return status;
 }
 std::filesystem::path cache_root(const IcRunnerConfig& cfg) {
-  const auto root=std::filesystem::path(cfg.candidate_cache_directory); const auto identity=vm_identity();
+  const auto root=std::filesystem::path(cfg.candidate_cache_directory);
+  const auto identity=vm_identity(cfg.audit_exact);
   return identity==legacy_vm_identity?root:root/identity;
 }
 namespace {
@@ -151,7 +163,7 @@ std::string field_lines(const FieldShas& fields) {
 }
 // The exact bytes the signal key hashes (see the layout comment above).
 std::string signal_key_text(const CacheKey& key,const std::string& dsl_sha) {
-  return std::string(signal_key_schema)+"\nvm_identity="+key.vm_identity+"\neval_mode="+vm_eval_mode+
+  return std::string(signal_key_schema)+"\nvm_identity="+key.vm_identity+"\neval_mode="+key.eval_mode+
       "\nlayout="+cache_layout+"\nrole_manifest_sha256="+key.role_sha+"\ndates="+std::to_string(key.dates)+
       "\ninstruments="+std::to_string(key.instruments)+"\ndsl_sha256="+dsl_sha+"\n"+field_lines(key.fields);
 }
@@ -166,7 +178,8 @@ co::Result<CacheKey> cache_key(const IcRunnerConfig& cfg,const Role& role,const 
   CacheKey key;
   key.stem=c.id+"."+c.dsl_sha.substr(0,16); key.role_sha=role.sha;
   key.dates=role.metadata.at("dates").get<u64>(); key.instruments=role.metadata.at("instruments").get<u64>();
-  key.vm_identity=vm_identity(); key.dir=cache_root(cfg)/role.sha;
+  key.vm_identity=vm_identity(cfg.audit_exact); key.dir=cache_root(cfg)/role.sha;
+  key.eval_mode=cfg.audit_exact?vm_eval_mode_audit:vm_eval_mode;
   for (const auto& name:c.extra_fields) {
     const auto bound=std::find_if(role.fields.load.begin(),role.fields.load.end(),
         [&](const FieldFile& field) { return field.name==name; });
@@ -274,14 +287,18 @@ std::vector<std::pair<std::string,FieldShas>> role_manifests(const Role& role,co
     if (manifest.role_sha==role.sha && sha!=role.fields.sha) out.emplace_back(sha,manifest.fields);
   return out;
 }
-co::Result<std::optional<Json>> read_sidecar(const std::filesystem::path& path,const Candidate& c) {
+// `text` (P9 lane SQL4; null: unused): receives the exact bytes of a present sidecar, which an
+// indexed run imports into its row.
+co::Result<std::optional<Json>> read_sidecar(const std::filesystem::path& path,const Candidate& c,
+                                             std::string* text=nullptr) {
   std::error_code ec; const bool present=std::filesystem::exists(path,ec);
   if (ec) return co::Err(co::ErrorCode::IoError,"IC runner: candidate cache probe: "+c.id);
   if (!present) return co::Ok(std::optional<Json>{});
-  ATX_TRY(auto text,metadata_text(path.string()));
-  auto j=Json::parse(text,nullptr,false);
+  ATX_TRY(auto bytes,metadata_text(path.string()));
+  auto j=Json::parse(bytes,nullptr,false);
   if (j.is_discarded())
     return co::Err(co::ErrorCode::InvalidArgument,"IC runner: candidate cache sidecar JSON: "+c.id);
+  if (text) *text=std::move(bytes);
   return co::Ok(std::optional<Json>(std::move(j)));
 }
 std::string text_field(const Json& j,const char* key) {
@@ -293,7 +310,7 @@ u64 count_field(const Json& j,const char* key) {
 // Checks shared by both layouts: this candidate on this role geometry and eval mode.
 bool same_geometry(const Json& j,const CacheKey& key,const Candidate& c) {
   return j.is_object() && text_field(j,"candidate_id")==c.id && text_field(j,"dsl_sha256")==c.dsl_sha &&
-      text_field(j,"role_manifest_sha256")==key.role_sha && text_field(j,"eval_mode")==vm_eval_mode &&
+      text_field(j,"role_manifest_sha256")==key.role_sha && text_field(j,"eval_mode")==key.eval_mode &&
       text_field(j,"layout")==cache_layout && count_field(j,"dates")==key.dates &&
       count_field(j,"instruments")==key.instruments &&
       count_field(j,"bytes")==key.dates*key.instruments*sizeof(f64);
@@ -327,35 +344,144 @@ co::Result<std::optional<std::string>> v1_payload_sha(const Json& j,const CacheK
   return co::Ok(std::optional<std::string>(std::move(sha)));
 }
 co::Result<std::optional<CacheHit>> v1_probe(const std::filesystem::path& dir,const std::string& fields_sha,
-                                             const CacheKey& key,const Candidate& c) {
-  ATX_TRY(auto sidecar,read_sidecar(dir/(c.id+".json"),c));
+                                             const CacheKey& key,const Candidate& c,
+                                             std::string* text) {
+  ATX_TRY(auto sidecar,read_sidecar(dir/(c.id+".json"),c,text));
   if (!sidecar) return co::Ok(std::optional<CacheHit>{});
   ATX_TRY(auto sha,v1_payload_sha(*sidecar,key,c,fields_sha));
   if (!sha) return co::Ok(std::optional<CacheHit>{});
   return co::Ok(std::optional<CacheHit>(CacheHit{dir,c.id,std::move(*sha),true}));
 }
+using RoleManifests=std::vector<std::pair<std::string,FieldShas>>;
+// A known manifest's payload SHA256s agree with the key on every field it reads.
+bool manifest_agrees(const FieldShas& key_fields,const FieldShas& known) {
+  return std::all_of(key_fields.begin(),key_fields.end(),[&known](const auto& field) {
+    const auto at=known.find(field.first);
+    return at!=known.end() && at->second==field.second;
+  });
+}
 // nullopt: no entry (evaluate and write v2). Order: the v2 entry, then v1 in
 // place -- the base directory for a base candidate, else each of `manifests`
 // (pinned first) whose payload SHA256s agree with the key on every field read.
-co::Result<std::optional<CacheHit>> cache_lookup(const std::filesystem::path& root,const CacheKey& key,
-    const Candidate& c,const std::vector<std::pair<std::string,FieldShas>>& manifests) {
-  ATX_TRY(auto sidecar,read_sidecar(key.dir/(key.stem+".json"),c));
+// `text` (P9 lane SQL4; null: unused): the exact sidecar bytes of the entry returned.
+co::Result<std::optional<CacheHit>> cache_lookup(const std::filesystem::path& root,
+    const CacheKey& key,const Candidate& c,const RoleManifests& manifests,
+    std::string* text=nullptr) {
+  ATX_TRY(auto sidecar,read_sidecar(key.dir/(key.stem+".json"),c,text));
   if (sidecar) {
     ATX_TRY(auto sha,v2_payload_sha(*sidecar,key,c));
     return co::Ok(std::optional<CacheHit>(CacheHit{key.dir,key.stem,std::move(sha),false}));
   }
-  if (key.fields.empty()) return v1_probe(root/key.role_sha,{},key,c);
+  if (key.fields.empty()) return v1_probe(root/key.role_sha,{},key,c,text);
   for (const auto& manifest:manifests) {
-    const auto& known=manifest.second;
-    const bool agrees=std::all_of(key.fields.begin(),key.fields.end(),[&known](const auto& field) {
-      const auto at=known.find(field.first);
-      return at!=known.end() && at->second==field.second;
-    });
-    if (!agrees) continue;
-    ATX_TRY(auto hit,v1_probe(root/manifest.first,manifest.first,key,c));
+    if (!manifest_agrees(key.fields,manifest.second)) continue;
+    ATX_TRY(auto hit,v1_probe(root/manifest.first,manifest.first,key,c,text));
     if (hit) return co::Ok(std::move(hit));
   }
   return co::Ok(std::optional<CacheHit>{});
+}
+// ---- P9 lane SQL4: the signal cache on its SQLite index (strategy_ic_cache_index.hpp) --------
+// With --candidate-cache-index sqlite an entry is its payload file plus ONE ic_signal row under
+// the signal key: the row is the commit marker (payload published no-replace first, row second;
+// a payload without a row is a miss), its columns hold the key parts and the payload's '/'-path
+// under DIR, and `sidecar` holds the sidecar document's exact text. No sidecar file is written.
+// A lookup reads the row first; with no row (or a v1 row this run's manifests cannot use) the
+// legacy files are read exactly as without the index and the entry found is imported (one row,
+// the sidecar file's own bytes), so which entries hit or miss for a key never changes.
+using IcSignalRow=atx::engine::research::store::IcSignalRow;
+i64 payload_bytes(const CacheKey& key) {
+  return static_cast<i64>(key.dates*key.instruments*sizeof(f64));
+}
+co::Result<IcSignalRow> signal_row(const CacheIndex& index,const CacheKey& key,const Candidate& c,
+    const CacheHit& hit,std::string schema,std::string sidecar) {
+  ATX_TRY(auto payload,index.relative(hit.dir/(hit.stem+".f64")));
+  return co::Ok(IcSignalRow{key.signal_key,std::move(schema),key.role_sha,c.id,c.dsl_sha,
+      key.vm_identity,key.eval_mode,std::move(payload),hit.payload_sha,payload_bytes(key),
+      std::move(sidecar)});
+}
+// A row found under the key. Every column must be this request's (a row whose key parts differ
+// refuses as a mismatching sidecar does), then its sidecar text is checked exactly as a sidecar
+// file of its layout is. nullopt: a v1 field row whose manifest is not one of `manifests` agreeing
+// with the key (today's lookup would not probe that directory either).
+co::Result<std::optional<CacheHit>> row_hit(const CacheIndex& index,const IcSignalRow& row,
+    const std::filesystem::path& root,const CacheKey& key,const Candidate& c,
+    const RoleManifests& manifests) {
+  const auto mismatch=[&c] {
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC runner: candidate cache entry mismatch: "+c.id);
+  };
+  if (row.key_sha256!=key.signal_key || row.role_sha256!=key.role_sha || row.id!=c.id ||
+      row.dsl_sha256!=c.dsl_sha || row.vm_identity!=key.vm_identity ||
+      row.eval_mode!=key.eval_mode || row.payload_bytes!=payload_bytes(key))
+    return mismatch();
+  const auto doc=Json::parse(row.sidecar,nullptr,false);
+  if (doc.is_discarded()) return mismatch();
+  CacheHit hit;
+  if (row.schema==cache_schema_v2) {
+    ATX_TRY(hit.payload_sha,v2_payload_sha(doc,key,c));
+    hit.dir=key.dir; hit.stem=key.stem;
+  } else if (row.schema==cache_schema) {
+    const auto fields_sha=key.fields.empty()?std::string{}:text_field(doc,"fields_manifest_sha256");
+    if (!key.fields.empty()) {
+      const auto known=std::find_if(manifests.begin(),manifests.end(),
+          [&fields_sha](const auto& manifest) { return manifest.first==fields_sha; });
+      if (known==manifests.end() || !manifest_agrees(key.fields,known->second))
+        return co::Ok(std::optional<CacheHit>{});
+    }
+    ATX_TRY(auto sha,v1_payload_sha(doc,key,c,fields_sha));
+    if (!sha) return mismatch();
+    hit=CacheHit{root/(fields_sha.empty()?key.role_sha:fields_sha),c.id,std::move(*sha),true};
+  } else {
+    return mismatch();
+  }
+  ATX_TRY(const auto payload,index.relative(hit.dir/(hit.stem+".f64")));
+  if (hit.payload_sha!=row.payload_sha256 || payload!=row.payload) return mismatch();
+  return co::Ok(std::optional<CacheHit>(std::move(hit)));
+}
+co::Result<std::optional<CacheHit>> indexed_lookup(CacheIndex& index,
+    const std::filesystem::path& root,const CacheKey& key,const Candidate& c,
+    const RoleManifests& manifests) {
+  ATX_TRY(const auto row,index.find_signal(key.signal_key));
+  if (row) {
+    ATX_TRY(auto hit,row_hit(index,*row,root,key,c,manifests));
+    if (hit) return co::Ok(std::move(hit));
+  }
+  // Read-through: the legacy files, verified exactly as without the index, then imported. A row
+  // this run could not use (a v1 row of an unknown manifest) gives way to the entry found.
+  std::string text;
+  ATX_TRY(auto hit,cache_lookup(root,key,c,manifests,&text));
+  if (!hit || !index.writable()) return co::Ok(std::move(hit));
+  ATX_TRY(const auto imported,
+      signal_row(index,key,c,*hit,hit->legacy?cache_schema:cache_schema_v2,std::move(text)));
+  // Present: a concurrent run imported or stored the key first; its row is checked when read.
+  ATX_TRY(const auto put,index.put_signal(imported,row.has_value()));
+  (void)put;
+  return co::Ok(std::move(hit));
+}
+// Commits a stored v2 entry's row. A row already under the key is a concurrent writer's: a v2 row
+// must record this payload (else the refusal of a raced sidecar); a v1 row (one this run could not
+// use) gives way to the v2 entry, as a v2 sidecar file takes precedence over v1 files.
+co::Status commit_signal_row(CacheIndex& index,const CacheKey& key,const Candidate& c,
+                             const CacheHit& hit,const std::string& text) {
+  ATX_TRY(const auto row,signal_row(index,key,c,hit,cache_schema_v2,text));
+  ATX_TRY(const auto put,index.put_signal(row,false));
+  if (put.outcome!=IndexPut::Present) return co::Ok();
+  if (!put.existing)
+    return co::Err(co::ErrorCode::Internal,"IC runner: candidate cache index row vanished: "+c.id);
+  if (put.existing->schema!=cache_schema_v2) {
+    ATX_TRY(const auto replaced,index.put_signal(row,true));
+    (void)replaced;
+    return co::Ok();
+  }
+  const auto committed=Json::parse(put.existing->sidecar,nullptr,false);
+  if (committed.is_discarded())
+    return co::Err(co::ErrorCode::InvalidArgument,
+                   "IC runner: candidate cache entry mismatch: "+c.id);
+  ATX_TRY(const auto committed_sha,v2_payload_sha(committed,key,c));
+  if (committed_sha!=hit.payload_sha || put.existing->payload!=row.payload)
+    return co::Err(co::ErrorCode::AlreadyExists,
+        "IC runner: candidate cache sidecar raced with different bytes: "+c.id);
+  return co::Ok();
 }
 } // namespace
 // Reads a pinned date-major f64 payload into `out` (reused; no second copy),
@@ -453,9 +579,11 @@ co::Result<std::string> cache_store_payload(const std::filesystem::path& final,
 // and composition admit a cell only via std::isfinite, so no-cache results are
 // unchanged. Writes the v2 entry; the sidecar is published last: it is the
 // entry's commit record. Returns the committed entry (its payload SHA256 keys
-// the IC-result cache).
+// the IC-result cache). With `index` (P9 lane SQL4) the ic_signal row is the
+// commit record instead and no sidecar file is written.
 co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,const Role& spec,
-    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,HashMeter& meter) {
+    const engine::data::StrategyRoleData& role,const Candidate& c,std::span<f64> signal,
+    HashMeter& meter,CacheIndex* index) {
   if (signal.size()!=key.dates*key.instruments)
     return co::Err(co::ErrorCode::Internal,"IC runner: candidate cache geometry");
   for (auto& v:signal) if (!std::isfinite(v)) v=quiet_nan;
@@ -467,13 +595,18 @@ co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,c
       {"role_manifest_sha256",key.role_sha},{"role",spec.name},{"source_sha256",role.source_sha256},
       {"dates",key.dates},{"instruments",key.instruments},{"bytes",signal.size()*sizeof(f64)},
       {"layout",cache_layout},{"payload",key.stem+".f64"},{"payload_sha256",sha},
-      {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",vm_eval_mode},
+      {"semantics","raw-unoriented-pre-composition-single-VM-root"},{"eval_mode",key.eval_mode},
       {"vm_workers",cfg.workers},{"engine_git_sha",std::string(build_engine_git_sha())},
       {"vm_identity",key.vm_identity},{"field_payload_sha256",fields_json(key.fields)},
       {"signal_key_sha256",key.signal_key}};
   // Provenance only: the manifest this run pinned (never matched on lookup).
   if (!key.fields_manifest_sha.empty()) sidecar["fields_manifest_sha256"]=key.fields_manifest_sha;
   const auto text=sidecar.dump(2)+"\n";
+  if (index) {
+    CacheHit stored{key.dir,key.stem,std::move(sha),false};
+    ATX_TRY_VOID(commit_signal_row(*index,key,c,stored,text));
+    return co::Ok(std::move(stored));
+  }
   const auto final=key.dir/(key.stem+".json");
   const PartialFile partial(final);
   ATX_TRY_VOID(write_partial(partial,std::as_bytes(std::span(text.data(),text.size()))));
@@ -490,13 +623,14 @@ co::Result<CacheHit> cache_store(const CacheKey& key,const IcRunnerConfig& cfg,c
   return co::Ok(CacheHit{key.dir,key.stem,std::move(sha),false});
 }
 co::Result<CacheResolution> cache_resolve(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
-                                          const KnownManifests& known) {
+                                          const KnownManifests& known,CacheIndex* index) {
   ATX_TRY_VOID(fields_bound(lib,role));
   const auto manifests=role_manifests(role,known); const auto root=cache_root(cfg);
   CacheResolution out;
   for (const auto& c:lib.candidates) {
     ATX_TRY(auto key,cache_key(cfg,role,c));
-    ATX_TRY(auto hit,cache_lookup(root,key,c,manifests));
+    ATX_TRY(auto hit,index?indexed_lookup(*index,root,key,c,manifests)
+                          :cache_lookup(root,key,c,manifests));
     if (hit) {
       const auto payload=hit->dir/(hit->stem+".f64");
       std::error_code ec; const auto size=std::filesystem::file_size(payload,ec);
@@ -511,12 +645,13 @@ co::Result<CacheResolution> cache_resolve(const IcRunnerConfig& cfg,const Librar
 }
 // Metadata-only readiness for --plan-only.
 co::Result<Json> cache_plan(const IcRunnerConfig& cfg,const Library& lib,const Role& role,
-                            const KnownManifests& known) {
-  ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known));
+                            const KnownManifests& known,CacheIndex* index) {
+  ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known,index));
   Json plan{{"role",role.name},{"directory",(cache_root(cfg)/role.sha).string()},{"layout",cache_schema_v2},
       {"ready_entries",resolved.ready},{"legacy_ready_entries",resolved.legacy},
-      {"candidates",lib.candidates.size()},{"vm_identity",vm_identity()}};
+      {"candidates",lib.candidates.size()},{"vm_identity",vm_identity(cfg.audit_exact)}};
   if (!lib.extra_fields.empty()) plan["fields_directory"]=(cache_root(cfg)/role.fields.sha).string();
+  if (index) plan["index"]=std::string(kCacheIndexSqlite); // P9 lane SQL4: present only indexed
   return co::Ok(std::move(plan));
 }
 namespace {
@@ -576,11 +711,12 @@ co::Status scan_entries(const std::filesystem::path& dir,const std::set<std::str
 co::Result<Json> cache_report(const IcRunnerConfig& cfg,const Library& lib,const std::vector<Role>& roles,
                               const KnownManifests& known) {
   const auto root=cache_root(cfg);
-  Json report{{"mode","cache-report"},{"root",root.string()},{"vm_identity",vm_identity()},
+  Json report{{"mode","cache-report"},{"root",root.string()},
+      {"vm_identity",vm_identity(cfg.audit_exact)},
       {"layout",cache_schema_v2},{"roles",Json::array()}};
   std::set<std::string> referenced;
   for (const auto& role:roles) {
-    ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known));
+    ATX_TRY(auto resolved,cache_resolve(cfg,lib,role,known,nullptr)); // files only (run_ic)
     Json rows=Json::array(); u64 hit_bytes=0;
     for (usize k=0;k<lib.candidates.size();++k) {
       const auto& hit=resolved.hits[k]; const auto& key=resolved.keys[k];

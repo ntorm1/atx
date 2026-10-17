@@ -25,7 +25,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import research_ledger  # noqa: E402
+import research_common  # noqa: E402
 import research_tree  # noqa: E402
 import wave_result  # noqa: E402
 
@@ -57,15 +57,11 @@ def load_results(root: Path, patterns: list[str]) -> list[dict]:
 
 def ledger_view(root: Path, rel: str) -> tuple[dict, dict]:
     """({trial_id: line}, {path, lines, head, n}) of the ledger, its chain verified."""
-    bi = research_ledger.backtest_integrity()
-    p = root / rel
     try:
-        records = bi.ledger_read(p)
-        head = bi.ledger_head(p)
+        records, view = research_common.ledger_view(root / rel, rel)
     except (OSError, ValueError) as exc:
         raise ScoreboardError(f"ledger {rel}: {exc}") from exc
-    return {r.get("trial_id"): r for r in records}, {"path": rel, "lines": len(records), "head": head,
-                                                     "n": bi.ledger_n(records, True)}
+    return {r.get("trial_id"): r for r in records}, view
 
 
 def row(doc: dict) -> dict:

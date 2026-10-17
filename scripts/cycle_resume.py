@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import json
 
+from research_common import run_dir_of
 import research_spec
+import research_store_hook
 import research_tree
 
 BINDING = "cycle_binding.json"
@@ -67,7 +69,7 @@ def nav_run_dirs(out: str, attempts: int) -> list[str]:
     """The run dirs research_cycle gives the NAV (or ref) output ``out``, in attempt order: <out>-run, then
     <out>-run<k> for k = 2..attempts (``--attempt nav=k``); each may hold attempt-k sub-dirs (attempt_dirs). The one
     enumeration of them: research_cycle's ref skip and the wave's verify both read it (review E1t0, minor 3)."""
-    return [f"{out}-run"] + [f"{out}-run{k}" for k in range(2, attempts + 1)]
+    return [run_dir_of(out)] + [run_dir_of(out, k) for k in range(2, attempts + 1)]
 
 
 def completed_exes(res, out: str, attempts: int) -> list[str]:
@@ -142,8 +144,9 @@ def check_receipt_exe(cycle, st) -> tuple[str | None, str | None]:
     matched, a note for a reuse on another executable); (None, None) for a receipt that predates K-P9-10 (no
     argv_sha256) or records no executable_sha256: reused as before.
 
-      pinned    the step's exe key has an exes_sha256 pin (Cycle.reuse_pin: the parent's resolved spec's for an output
-                a template inherited, else this spec's): a receipt naming another SHA raises ResumeError (exit 3)
+      pinned    the step's exe key has an exes_sha256 pin (Cycle.reuse_pin: for an output a template inherited, the
+                resolved spec's of the ancestor that made it, however far up the chain (review E1-N3); else this
+                spec's): a receipt naming another SHA raises ResumeError (exit 3)
       unpinned  no pin: a receipt naming another SHA than the exe on disk now is reused, with a note (one log line)
     """
     r = cycle.receipt(st.run_dir)
@@ -187,6 +190,7 @@ def write_binding(cycle, st) -> dict:
         doc["spec_rule"] = SPEC_RULE
     doc["argv_sha256"] = argv_digest(step_args(st))
     cycle.res.path(f"{st.run_dir}/{BINDING}").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    research_store_hook.record(cycle.res.root, f"{st.run_dir}/{BINDING}", "cycle-binding")   # P9 SQL3 item 5
     return doc
 
 

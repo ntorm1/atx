@@ -1,0 +1,4 @@
+build-equity/mega-candidate-cache-v8-lo3: scope ic1_b479dd191f59cbff: 117 IC-result records; label_terminal {'<absent: flag-absent scope>': 117}; records without a readable key 0; ic_identity ['dslic1_clang18.1_simd2']; recorded engine_git_sha ['5b9af8ba5ba6ccdc358ce74c5b7ad4a514b3a278', '5c65cee80401ee1ea8ea2ce7bf0cce2edfd26516', '807af678a690272a3964f59534c1f331c7a10c41']
+build-equity/mega-candidate-cache-v8-lo3: scope ic1_bd3efc02e34c061b: 67 IC-result records; label_terminal {'<absent: flag-absent scope>': 67}; records without a readable key 0; ic_identity ['dslic1_clang18.1_simd2_opt_md_ndebug_xs13.0.0']; recorded engine_git_sha ['5f48a25d3730789914941fbc7aa42f4458cea6b1-dirty']
+scope dirs 2, IC-result records 184, imputed-v1 records 0
+S2-6: HOLDS (no imputed-v1 IC-result entry under the cache roots the cell reads)

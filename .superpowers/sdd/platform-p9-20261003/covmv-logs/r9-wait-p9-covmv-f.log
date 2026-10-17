@@ -1,0 +1,29 @@
+2026-10-07T18:08:35 idle free=1745; grace 90 s
+2026-10-07T18:10:58 idle free=1712; grace 90 s
+2026-10-07T18:12:29 launch p9-covmv-f free=1361
+2026-10-07T18:12:36 admission refused; retry
+2026-10-07T18:13:36 idle free=2993; grace 90 s
+2026-10-07T18:15:07 launch p9-covmv-f free=1747
+2026-10-07T18:15:13 admission refused; retry
+2026-10-07T18:16:14 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2290
+2026-10-07T18:17:14 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3123
+2026-10-07T18:18:15 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2037
+2026-10-07T18:19:15 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2819
+2026-10-07T18:20:16 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3618
+2026-10-07T18:21:16 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3058
+2026-10-07T18:22:17 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2641
+2026-10-07T18:23:17 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3111
+2026-10-07T18:24:18 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2429
+2026-10-07T18:25:18 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3839
+2026-10-07T18:26:18 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2733
+2026-10-07T18:27:19 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2098
+2026-10-07T18:28:19 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=2188
+2026-10-07T18:29:20 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=1981
+2026-10-07T18:30:20 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3103
+2026-10-07T18:31:20 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3157
+2026-10-07T18:32:21 wait busy=[powershell.exe,cmake.exe,ninja.exe,clang-cl.exe,clang-cl.exe] free=3537
+2026-10-07T18:33:21 idle free=3876; grace 90 s
+2026-10-07T18:33:56 stopped by the lane before launch (PM ruling TEST-1: one Debug build of the target tests, no canary); tag p9-covmv-f unused
+2026-10-07T18:34:53 idle free=3815; grace 90 s
+2026-10-07T18:36:23 launch p9-covmv-f free=4582
+2026-10-07T18:48:21 done p9-covmv-f exit=0

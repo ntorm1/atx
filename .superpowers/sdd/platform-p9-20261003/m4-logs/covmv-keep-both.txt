@@ -1,0 +1,16 @@
+COV-MV merge 5c811b56 tree 8568b855 vs git merge-tree --write-tree 858a4fca 25e11b32 = 5991248f (one conflicted file):
+atx-impl/tests/CMakeLists.txt
+merge-base 094bcd3b
+atx-impl/src/book/nav_decide.cpp
+atx-impl/src/book/nav_lockstep.cpp
+atx-impl/src/book/nav_rules.cpp
+atx-impl/src/book/nav_rules.hpp
+atx-impl/src/strategy_nav_v7.cpp
+atx-impl/tests/CMakeLists.txt
+atx-impl/src/book/nav_decide.cpp: ours 5 hunks (merged :5-5, :9-36, :255-272, :295-296, :338-340) kept True; theirs 1 hunks (merged :71-77) kept True; PASS
+atx-impl/src/book/nav_lockstep.cpp: ours 5 hunks (merged :69-70, :74-74, :202-210, :223-223, :270-270) kept True; theirs 1 hunks (merged :76-77) kept True; PASS
+atx-impl/src/book/nav_rules.cpp: ours 2 hunks (merged :56-59, :76-83) kept True; theirs 3 hunks (merged :7-7, :109-132, :205-205) kept True; PASS
+atx-impl/src/book/nav_rules.hpp: ours 1 hunks (merged :11-12) kept True; theirs 1 hunks (merged :17-18) kept True; PASS
+atx-impl/src/strategy_nav_v7.cpp: ours 1 hunks (merged :1413-1416) kept True; theirs 16 hunks (merged :25-25, :63-64, :84-85, :321-329, :608-608, :779-779, :790-790, :949-960, :1002-1002, :1030-1030, :1040-1044, :1146-1150, :1152-1152, :1266-1302, :1304-1304, :1439-1441) kept True; PASS
+atx-impl/tests/CMakeLists.txt: ours 1 hunks (merged :210-214) kept True; theirs 1 hunks (merged :215-217) kept True; PASS
+RESULT PASS

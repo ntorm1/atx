@@ -1,0 +1,291 @@
+P9-V registration
+
+R15-V-READY exact candidate; no measurement.
+
+{
+  "template_path": "scripts/specs/p9/templates/p9v-vol-target-cov.json",
+  "template_sha256": "95cf5c05d1c9257ee10592f255a2321a16f0112edb2305b7876bee973d4e98ed",
+  "template": {
+    "schema": "atx.research-cycle-template/v1",
+    "name": "p9v-vol-target-cov",
+    "description": "P9-V prereg B.8: replace only the X vol-target risk store by pinned covv1. Hand v1 cycle, no gross matching; independent derivation before trial write.",
+    "parent": "p9x-leverage.json",
+    "requires": [],
+    "change": {
+      "set": {
+        "nav.output": "build-equity/mega-nav-p9v-vol-target-cov",
+        "nav.leverage": "2.0",
+        "monitor.output": "build-equity/mega-monitor-p9v-vol-target-cov",
+        "exes_sha256": {
+          "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+          "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+          "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+        }
+      },
+      "flags": {
+        "nav": {
+          "--vol-target": "vol-target-v1",
+          "--risk-model": "build-equity/p9-m2i-dcov-covv1",
+          "--risk-model-sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+        }
+      }
+    },
+    "locked": {
+      "reference_cell": {
+        "path": "build-equity/mega-nav-p9x-leverage/summary.json",
+        "sha256": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108"
+      },
+      "reference_admission": {
+        "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+        "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+      }
+    }
+  },
+  "closed_template_delta_vs_X": [
+    {
+      "path": "/change/flags/nav/--risk-model",
+      "old": "build-equity/p9-m2i-dcov-v11",
+      "new": "build-equity/p9-m2i-dcov-covv1"
+    },
+    {
+      "path": "/change/flags/nav/--risk-model-sha256",
+      "old": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7",
+      "new": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+    },
+    {
+      "path": "/change/set/monitor.output",
+      "old": "build-equity/mega-monitor-p9x-leverage",
+      "new": "build-equity/mega-monitor-p9v-vol-target-cov"
+    },
+    {
+      "path": "/change/set/nav.output",
+      "old": "build-equity/mega-nav-p9x-leverage",
+      "new": "build-equity/mega-nav-p9v-vol-target-cov"
+    },
+    {
+      "path": "/description",
+      "old": "P9-X prereg B.7: vol-target-v1 at cap 2.0 on accepted H, pinned Release v11 store. NAV-only hand v1 cycle; no gross matching. Scaled mechanics and X-10 acceptance are derived independently before any hand trial write.",
+      "new": "P9-V prereg B.8: replace only the X vol-target risk store by pinned covv1. Hand v1 cycle, no gross matching; independent derivation before trial write."
+    },
+    {
+      "path": "/locked/reference_cell/path",
+      "old": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "new": "build-equity/mega-nav-p9x-leverage/summary.json"
+    },
+    {
+      "path": "/locked/reference_cell/sha256",
+      "old": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+      "new": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108"
+    },
+    {
+      "path": "/name",
+      "old": "p9x-leverage",
+      "new": "p9v-vol-target-cov"
+    },
+    {
+      "path": "/parent",
+      "old": "theme-cov-hedge-v1-attempt2-gm.json",
+      "new": "p9x-leverage.json"
+    }
+  ],
+  "resolved_delta_vs_X": [
+    {
+      "path": "/description",
+      "old": "P9-X prereg B.7: vol-target-v1 at cap 2.0 on accepted H, pinned Release v11 store. NAV-only hand v1 cycle; no gross matching. Scaled mechanics and X-10 acceptance are derived independently before any hand trial write.",
+      "new": "P9-V prereg B.8: replace only the X vol-target risk store by pinned covv1. Hand v1 cycle, no gross matching; independent derivation before trial write."
+    },
+    {
+      "path": "/inputs/reference_cell/dir",
+      "old": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+      "new": "build-equity/mega-nav-p9x-leverage"
+    },
+    {
+      "path": "/inputs/reference_cell/path",
+      "old": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "new": "build-equity/mega-nav-p9x-leverage/summary.json"
+    },
+    {
+      "path": "/inputs/reference_cell/sha256",
+      "old": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+      "new": "da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108"
+    },
+    {
+      "path": "/monitor/output",
+      "old": "build-equity/mega-monitor-p9x-leverage",
+      "new": "build-equity/mega-monitor-p9v-vol-target-cov"
+    },
+    {
+      "path": "/name",
+      "old": "p9x-leverage",
+      "new": "p9v-vol-target-cov"
+    },
+    {
+      "path": "/nav/flags",
+      "old": [
+        "--cadence",
+        "1",
+        "--trade-fraction",
+        ".05",
+        "--dust-multiple",
+        ".1",
+        "--aim-leverage",
+        "{leverage}",
+        "--daily-turnover-mean-max",
+        ".20",
+        "--daily-turnover-p95-max",
+        ".30",
+        "--neutralize",
+        "price-risk-v1",
+        "--max-bytes",
+        "1073741824",
+        "--order-basis",
+        "delta",
+        "--exit-rate",
+        ".05",
+        "--locate-in-aim",
+        "--liquidity-cache",
+        "--warm-start-sessions",
+        "60",
+        "--capacity-curve",
+        "--ann-mean-gross",
+        "--info-clock-print",
+        "--vol-target",
+        "vol-target-v1",
+        "--risk-model",
+        "build-equity/p9-m2i-dcov-v11",
+        "--risk-model-sha256",
+        "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
+      ],
+      "new": [
+        "--cadence",
+        "1",
+        "--trade-fraction",
+        ".05",
+        "--dust-multiple",
+        ".1",
+        "--aim-leverage",
+        "{leverage}",
+        "--daily-turnover-mean-max",
+        ".20",
+        "--daily-turnover-p95-max",
+        ".30",
+        "--neutralize",
+        "price-risk-v1",
+        "--max-bytes",
+        "1073741824",
+        "--order-basis",
+        "delta",
+        "--exit-rate",
+        ".05",
+        "--locate-in-aim",
+        "--liquidity-cache",
+        "--warm-start-sessions",
+        "60",
+        "--capacity-curve",
+        "--ann-mean-gross",
+        "--info-clock-print",
+        "--vol-target",
+        "vol-target-v1",
+        "--risk-model",
+        "build-equity/p9-m2i-dcov-covv1",
+        "--risk-model-sha256",
+        "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+      ]
+    },
+    {
+      "path": "/nav/output",
+      "old": "build-equity/mega-nav-p9x-leverage",
+      "new": "build-equity/mega-nav-p9v-vol-target-cov"
+    }
+  ],
+  "native_bounded_nav_argv": [
+    "C:/Program Files/Python312/python.exe",
+    "scripts/run_bounded_research.py",
+    "--seconds",
+    "180",
+    "--max-rss-mib",
+    "1536",
+    "--min-free-mib",
+    "512",
+    "--output",
+    "build-equity/mega-nav-p9v-vol-target-cov-run",
+    "--bind",
+    "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+    "--bind",
+    "build-equity/mega-p9w-train-theme-cov-hedge-1/train_combined.json",
+    "--bind",
+    "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+    "--bind",
+    "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+    "--",
+    "build-equity-rel/bin/atx-equity-strategy-targets.exe",
+    "nav",
+    "--combined",
+    "build-equity/mega-p9w-train-theme-cov-hedge-1/train_combined.json",
+    "--combined-sha256",
+    "fe7b64c6006863bb155c14fb7e5a8bf009535912f7ce4232259ecb731974e6e6",
+    "--role",
+    "build-equity/train-2020-2023-lo3/manifest.json",
+    "--role-sha256",
+    "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+    "--fields",
+    "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+    "--fields-sha256",
+    "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+    "--output",
+    "build-equity/mega-nav-p9v-vol-target-cov",
+    "--rule",
+    "aim-partial-v5",
+    "--cadence",
+    "1",
+    "--trade-fraction",
+    ".05",
+    "--dust-multiple",
+    ".1",
+    "--aim-leverage",
+    "2.0",
+    "--daily-turnover-mean-max",
+    ".20",
+    "--daily-turnover-p95-max",
+    ".30",
+    "--neutralize",
+    "price-risk-v1",
+    "--max-bytes",
+    "1073741824",
+    "--order-basis",
+    "delta",
+    "--exit-rate",
+    ".05",
+    "--locate-in-aim",
+    "--liquidity-cache",
+    "--warm-start-sessions",
+    "60",
+    "--capacity-curve",
+    "--ann-mean-gross",
+    "--info-clock-print",
+    "--vol-target",
+    "vol-target-v1",
+    "--risk-model",
+    "build-equity/p9-m2i-dcov-covv1",
+    "--risk-model-sha256",
+    "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3",
+    "--label-role",
+    "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+    "--label-role-sha256",
+    "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+  ],
+  "source_files": {
+    "scripts/research_spec.py": "a6118ff9f71d19fc9fa2bef6159011d57d8f6990d8a94a4f8a34c96bc4eaff16",
+    "scripts/cycle/phases.py": "9f392948fffdc5147e8d621e7737aac86f019947efd73f32a068fda454ea4bc4",
+    "scripts/cycle/cli.py": "78dc6cdeb522c26f485816a66836cdf2668606b3638878c16df03b3ec17f00ba",
+    "scripts/wave_readers.py": "9837530ce43878efe08be4411f4240bec2acc27955651dff5472540037a83c02",
+    "atx-impl/tools/nav_summ.py": "7b5c5e242e789cb78f2a3fc6c6be2c359344f76f476a2aa31f2cfc4edb29ab69",
+    "atx-impl/tools/book_diagnostics.py": "b2274b4037d2e9315847e74f2296e2a110ac02a4728c6d6d3d8bd132b922c9da",
+    "atx-impl/src/strategy_risk_verb.cpp": "b74618f49e7dd94fafbd03fd1e09ebefb5f996a53caccb2e2b6557810e683740",
+    "C:\\atx-wt\\pool-2\\.superpowers\\sdd\\platform-p9-20261003\\cells\\tools\\p9x_read_filter.py": "d079a1eaabfc7ea597cc5c5cd62182e2571af4f4202bddda3a3dd80bcfdf2a5a"
+  }
+}
+
+Inherited H phases reused; both ann-mean-gross and info-clock-print once; flag-absent fit. One covv1 store; no MV target or calibration.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

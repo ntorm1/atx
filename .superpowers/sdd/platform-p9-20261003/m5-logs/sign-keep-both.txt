@@ -1,0 +1,5 @@
+atx-impl/CMakeLists.txt: ours 1 hunks (merged :305-307) kept True; theirs 1 hunks (merged :308-312) kept True; PASS
+atx-impl/tests/CMakeLists.txt: ours 1 hunks (merged :211-217) kept False; theirs 1 hunks (merged :218-220) kept False; FAIL
+scripts/tests/test_no_python_mirror.py: ours 5 hunks (merged :45-46, :49-51, :53-53, :55-55, :58-58) kept True; theirs 3 hunks (merged :37-37, :64-64, :66-66) kept True; PASS
+RESULT FAIL
+atx-impl/tests/CMakeLists.txt: blank-insensitive keep-both: merged non-blank added lines = ours (7) then theirs (3) in order: True; blank lines added: ours 1, theirs 1, merged 1 (both sides open with the same blank line; git keeps one)

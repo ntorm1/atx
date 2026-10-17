@@ -4,6 +4,12 @@
 #include <array>
 #include <utility>
 
+#include "atx/engine/research/fields/gia_13f_field.hpp"
+#include "atx/engine/research/fields/holdings_fields.hpp"
+#include "atx/engine/research/fields/russell_recon_field.hpp"
+#include "atx/engine/research/fields/sources/russell_proxy.hpp"
+#include "atx/engine/research/fields/sources/short_side.hpp"
+#include "atx/engine/research/fields/sources/thirteenf.hpp"
 #include "atx/engine/research/fields/vendor_fields.hpp"
 #include "atx/engine/research/fields/volume_mean_field.hpp"
 
@@ -226,7 +232,7 @@ using Paths = std::vector<std::filesystem::path>;
 }
 
 // The kind table. Its order is engine_field_names()' (research_fields_cli.hpp).
-constexpr std::array<BuilderKind, 9> kKinds{{
+constexpr std::array<BuilderKind, 13> kKinds{{
     {"si_shares", &parse_si_shares, &build_finra_kind},
     {"si_dtc", &parse_si_dtc, &build_finra_kind},
     {"vol_126", &parse_vol_126, &build_vol_126_kind},
@@ -236,6 +242,10 @@ constexpr std::array<BuilderKind, 9> kKinds{{
     {"open_adj", &parse_open_adj, &build_vendor_kind},
     {"high_adj", &parse_high_adj, &build_vendor_kind},
     {"low_adj", &parse_low_adj, &build_vendor_kind},
+    {"gia_13f", &parse_gia_13f_kind, &build_gia_13f_kind},             // lane AL-SIG (DEC-5)
+    {"russell_recon", &parse_russell_recon_kind, &build_russell_recon_kind}, // lane AL-SIG
+    {"ftd_shares_ratio21", &parse_ftd_kind, &build_ftd_kind},                // lane A4
+    {"regsho_threshold_days63", &parse_regsho_kind, &build_regsho_kind},     // lane A4
 }};
 
 constexpr std::array<std::string_view, kKinds.size()> kKindIds = [] {
@@ -320,6 +330,40 @@ core::Result<std::vector<FieldPlan>> plan_fields(const BuildSpec &spec,
     std::stable_sort(plans.begin(), plans.end(), registered_before);
   }
   return core::Ok(std::move(plans));
+}
+
+core::Status check_kind_request(const FieldSpec &spec, std::string_view field,
+                                const nlohmann::json &options) {
+  return check_request(spec, field, options);
+}
+
+core::Status check_stage_pins(const BuildSpec &spec) {
+  if (spec.thirteenf) {
+    const auto stage = PinnedStage::open(*spec.thirteenf, kThirteenfStage);
+    if (!stage) {
+      return core::Err(stage.error());
+    }
+  }
+  if (spec.indexes) {
+    const auto stage = PinnedStage::open(*spec.indexes, kIndexesStage);
+    if (!stage) {
+      return core::Err(stage.error());
+    }
+  }
+  // P9 lane A4: the short-side stages, under the same rule.
+  const std::array<std::pair<const std::optional<StageRequest> *, const StageContract *>, 3>
+      short_side{{{&spec.ftd, &kFtdStage},
+                  {&spec.regsho_threshold, &kRegshoStage},
+                  {&spec.security_master, &kSecurityMasterStage}}};
+  for (const auto &[request, contract] : short_side) {
+    if (*request) {
+      const auto stage = PinnedStage::open(**request, *contract);
+      if (!stage) {
+        return core::Err(stage.error());
+      }
+    }
+  }
+  return core::Ok();
 }
 
 } // namespace atx::engine::research::fields

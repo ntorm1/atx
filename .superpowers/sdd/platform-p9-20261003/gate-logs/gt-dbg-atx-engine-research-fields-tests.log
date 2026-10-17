@@ -1,0 +1,292 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 110 tests from 22 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from ResearchFieldsClock
+[ RUN      ] ResearchFieldsClock.CivilDaysMatchPython
+[       OK ] ResearchFieldsClock.CivilDaysMatchPython (1 ms)
+[ RUN      ] ResearchFieldsClock.IsoDatesAreStrict
+[       OK ] ResearchFieldsClock.IsoDatesAreStrict (0 ms)
+[ RUN      ] ResearchFieldsClock.SealComesFromTheResearchWindow
+[       OK ] ResearchFieldsClock.SealComesFromTheResearchWindow (0 ms)
+[ RUN      ] ResearchFieldsClock.PythonFloatRepr
+[       OK ] ResearchFieldsClock.PythonFloatRepr (0 ms)
+[ RUN      ] ResearchFieldsClock.JsonStringEscapesAsPython
+[       OK ] ResearchFieldsClock.JsonStringEscapesAsPython (0 ms)
+[ RUN      ] ResearchFieldsClock.FormulaFingerprintsEqualThePython
+[       OK ] ResearchFieldsClock.FormulaFingerprintsEqualThePython (0 ms)
+[ RUN      ] ResearchFieldsClock.FormulaFingerprintMovesWithTheDefinition
+[       OK ] ResearchFieldsClock.FormulaFingerprintMovesWithTheDefinition (0 ms)
+[----------] 7 tests from ResearchFieldsClock (2 ms total)
+
+[----------] 8 tests from ResearchFieldsWriter
+[ RUN      ] ResearchFieldsWriter.PairwiseSumIsNumpys
+[       OK ] ResearchFieldsWriter.PairwiseSumIsNumpys (0 ms)
+[ RUN      ] ResearchFieldsWriter.LinearQuantileIsNumpys
+[       OK ] ResearchFieldsWriter.LinearQuantileIsNumpys (0 ms)
+[ RUN      ] ResearchFieldsWriter.ReduceMinMaxAreNumpys
+[       OK ] ResearchFieldsWriter.ReduceMinMaxAreNumpys (0 ms)
+[ RUN      ] ResearchFieldsWriter.QuantilesPartitionLikeNumpy
+[       OK ] ResearchFieldsWriter.QuantilesPartitionLikeNumpy (0 ms)
+[ RUN      ] ResearchFieldsWriter.RoundedFractionIsPythonRound
+[       OK ] ResearchFieldsWriter.RoundedFractionIsPythonRound (0 ms)
+[ RUN      ] ResearchFieldsWriter.RoleAxesRefuseAWrongPinAndASealedSession
+[       OK ] ResearchFieldsWriter.RoleAxesRefuseAWrongPinAndASealedSession (11 ms)
+[ RUN      ] ResearchFieldsWriter.CanonicalNanAndCoverage
+[       OK ] ResearchFieldsWriter.CanonicalNanAndCoverage (20 ms)
+[ RUN      ] ResearchFieldsWriter.ExclusiveCreateAndShapeChecks
+[       OK ] ResearchFieldsWriter.ExclusiveCreateAndShapeChecks (9 ms)
+[----------] 8 tests from ResearchFieldsWriter (42 ms total)
+
+[----------] 6 tests from ResearchFieldsVolumeMean
+[ RUN      ] ResearchFieldsVolumeMean.ClosedFormWindowOfThree
+[       OK ] ResearchFieldsVolumeMean.ClosedFormWindowOfThree (0 ms)
+[ RUN      ] ResearchFieldsVolumeMean.NegativeZeroIsAcceptedAndCounted
+[       OK ] ResearchFieldsVolumeMean.NegativeZeroIsAcceptedAndCounted (0 ms)
+[ RUN      ] ResearchFieldsVolumeMean.SumOrderIsNumpys
+[       OK ] ResearchFieldsVolumeMean.SumOrderIsNumpys (0 ms)
+[ RUN      ] ResearchFieldsVolumeMean.NegativeVolumeIsNotAccepted
+[       OK ] ResearchFieldsVolumeMean.NegativeVolumeIsNotAccepted (0 ms)
+[ RUN      ] ResearchFieldsVolumeMean.LookAheadProbeHoldsAndCatchesALeak
+[       OK ] ResearchFieldsVolumeMean.LookAheadProbeHoldsAndCatchesALeak (0 ms)
+[ RUN      ] ResearchFieldsVolumeMean.Vol126OnATinyRole
+[       OK ] ResearchFieldsVolumeMean.Vol126OnATinyRole (22 ms)
+[----------] 6 tests from ResearchFieldsVolumeMean (22 ms total)
+
+[----------] 5 tests from ResearchFieldsFinraAsof
+[ RUN      ] ResearchFieldsFinraAsof.CsvContract
+[       OK ] ResearchFieldsFinraAsof.CsvContract (0 ms)
+[ RUN      ] ResearchFieldsFinraAsof.AsofRuleClosedForm
+[       OK ] ResearchFieldsFinraAsof.AsofRuleClosedForm (0 ms)
+[ RUN      ] ResearchFieldsFinraAsof.LookAheadProbeHoldsAndCatchesALeak
+[       OK ] ResearchFieldsFinraAsof.LookAheadProbeHoldsAndCatchesALeak (0 ms)
+[ RUN      ] ResearchFieldsFinraAsof.SiSharesOnATinyRole
+[       OK ] ResearchFieldsFinraAsof.SiSharesOnATinyRole (22 ms)
+[ RUN      ] ResearchFieldsFinraAsof.InputsAreChecked
+[       OK ] ResearchFieldsFinraAsof.InputsAreChecked (23 ms)
+[----------] 5 tests from ResearchFieldsFinraAsof (46 ms total)
+
+[----------] 3 tests from ResearchFieldsFixture
+[ RUN      ] ResearchFieldsFixture.RoleAxesMatchThePythonRole
+[       OK ] ResearchFieldsFixture.RoleAxesMatchThePythonRole (3 ms)
+[ RUN      ] ResearchFieldsFixture.Vol126IsByteIdentical
+[       OK ] ResearchFieldsFixture.Vol126IsByteIdentical (42 ms)
+[ RUN      ] ResearchFieldsFixture.FinraFieldsAreByteIdentical
+[       OK ] ResearchFieldsFixture.FinraFieldsAreByteIdentical (43 ms)
+[----------] 3 tests from ResearchFieldsFixture (88 ms total)
+
+[----------] 3 tests from ResearchFieldsCli
+[ RUN      ] ResearchFieldsCli.SpecContract
+[       OK ] ResearchFieldsCli.SpecContract (15 ms)
+[ RUN      ] ResearchFieldsCli.ReceiptEqualsThePythonManifest
+[       OK ] ResearchFieldsCli.ReceiptEqualsThePythonManifest (59 ms)
+[ RUN      ] ResearchFieldsCli.MainPublishesTheReceiptLastAndOnce
+[       OK ] ResearchFieldsCli.MainPublishesTheReceiptLastAndOnce (47 ms)
+[----------] 3 tests from ResearchFieldsCli (122 ms total)
+
+[----------] 7 tests from ResearchFieldsRegistry
+[ RUN      ] ResearchFieldsRegistry.KindLookup
+[       OK ] ResearchFieldsRegistry.KindLookup (2 ms)
+[ RUN      ] ResearchFieldsRegistry.UnknownKindRefused
+[       OK ] ResearchFieldsRegistry.UnknownKindRefused (3 ms)
+[ RUN      ] ResearchFieldsRegistry.RowRequestsAKindRefuses
+[       OK ] ResearchFieldsRegistry.RowRequestsAKindRefuses (3 ms)
+[ RUN      ] ResearchFieldsRegistry.ParseRoundTrip
+[       OK ] ResearchFieldsRegistry.ParseRoundTrip (2 ms)
+[ RUN      ] ResearchFieldsRegistry.RowContract
+[       OK ] ResearchFieldsRegistry.RowContract (5 ms)
+[ RUN      ] ResearchFieldsRegistry.PlansKeepSourceOrderAndRegistrationOrder
+[       OK ] ResearchFieldsRegistry.PlansKeepSourceOrderAndRegistrationOrder (1 ms)
+[ RUN      ] ResearchFieldsRegistry.SpecSchemaFollowsTheRegistryFlag
+[       OK ] ResearchFieldsRegistry.SpecSchemaFollowsTheRegistryFlag (2 ms)
+[----------] 7 tests from ResearchFieldsRegistry (21 ms total)
+
+[----------] 8 tests from ResearchFieldsManifest
+[ RUN      ] ResearchFieldsManifest.PublishLast
+[       OK ] ResearchFieldsManifest.PublishLast (13 ms)
+[ RUN      ] ResearchFieldsManifest.ProducerBlock
+[       OK ] ResearchFieldsManifest.ProducerBlock (0 ms)
+[ RUN      ] ResearchFieldsManifest.RegistryBuildPublishesTheManifestLast
+[       OK ] ResearchFieldsManifest.RegistryBuildPublishesTheManifestLast (67 ms)
+[ RUN      ] ResearchFieldsManifest.ReuseHitOnTheSameExecutable
+[       OK ] ResearchFieldsManifest.ReuseHitOnTheSameExecutable (94 ms)
+[ RUN      ] ResearchFieldsManifest.ReuseMissOnAnotherOrUnknownExecutable
+[       OK ] ResearchFieldsManifest.ReuseMissOnAnotherOrUnknownExecutable (108 ms)
+[ RUN      ] ResearchFieldsManifest.ReuseMissReasons
+[       OK ] ResearchFieldsManifest.ReuseMissReasons (79 ms)
+[ RUN      ] ResearchFieldsManifest.ReuseRefusesAnotherSealRoleOrPin
+[       OK ] ResearchFieldsManifest.ReuseRefusesAnotherSealRoleOrPin (147 ms)
+[ RUN      ] ResearchFieldsManifest.ReuseRefusesACorruptPriorPayload
+[       OK ] ResearchFieldsManifest.ReuseRefusesACorruptPriorPayload (94 ms)
+[----------] 8 tests from ResearchFieldsManifest (606 ms total)
+
+[----------] 3 tests from ResearchFieldsNyseCalendar
+[ RUN      ] ResearchFieldsNyseCalendar.RuleSessions
+[       OK ] ResearchFieldsNyseCalendar.RuleSessions (0 ms)
+[ RUN      ] ResearchFieldsNyseCalendar.ExtendedAxisIsThePythonAxis
+[       OK ] ResearchFieldsNyseCalendar.ExtendedAxisIsThePythonAxis (1 ms)
+[ RUN      ] ResearchFieldsNyseCalendar.SessionCalendarPinIsThePythonPin
+[       OK ] ResearchFieldsNyseCalendar.SessionCalendarPinIsThePythonPin (13 ms)
+[----------] 3 tests from ResearchFieldsNyseCalendar (15 ms total)
+
+[----------] 1 test from ResearchFieldsFactorBreak
+[ RUN      ] ResearchFieldsFactorBreak.ClosedForm
+[       OK ] ResearchFieldsFactorBreak.ClosedForm (0 ms)
+[----------] 1 test from ResearchFieldsFactorBreak (0 ms total)
+
+[----------] 6 tests from ResearchFieldsVendorPanel
+[ RUN      ] ResearchFieldsVendorPanel.DuplicateKeysAreQuarantinedEverywhere
+[       OK ] ResearchFieldsVendorPanel.DuplicateKeysAreQuarantinedEverywhere (0 ms)
+[ RUN      ] ResearchFieldsVendorPanel.ToF32RoundsAsNumpy
+[       OK ] ResearchFieldsVendorPanel.ToF32RoundsAsNumpy (0 ms)
+[ RUN      ] ResearchFieldsVendorPanel.RefusesAFileThatIsNotTheRoles
+[       OK ] ResearchFieldsVendorPanel.RefusesAFileThatIsNotTheRoles (91 ms)
+[ RUN      ] ResearchFieldsVendorPanel.HashOnce
+[       OK ] ResearchFieldsVendorPanel.HashOnce (87 ms)
+[ RUN      ] ResearchFieldsVendorPanel.SealPushDown
+[       OK ] ResearchFieldsVendorPanel.SealPushDown (168 ms)
+[ RUN      ] ResearchFieldsVendorPanel.SealedValuesOfAStraddlingGroupReachNothing
+[       OK ] ResearchFieldsVendorPanel.SealedValuesOfAStraddlingGroupReachNothing (187 ms)
+[----------] 6 tests from ResearchFieldsVendorPanel (535 ms total)
+
+[----------] 5 tests from ResearchFieldsVendorFields
+[ RUN      ] ResearchFieldsVendorFields.OpenReturnsLookAheadProbe
+[       OK ] ResearchFieldsVendorFields.OpenReturnsLookAheadProbe (77 ms)
+[ RUN      ] ResearchFieldsVendorFields.CeqIssuanceLookAheadProbe
+[       OK ] ResearchFieldsVendorFields.CeqIssuanceLookAheadProbe (44 ms)
+[ RUN      ] ResearchFieldsVendorFields.CeqIssuanceSharesLagNinetyDays
+[       OK ] ResearchFieldsVendorFields.CeqIssuanceSharesLagNinetyDays (39 ms)
+[ RUN      ] ResearchFieldsVendorFields.OhlcBarsLookAheadProbe
+[       OK ] ResearchFieldsVendorFields.OhlcBarsLookAheadProbe (94 ms)
+[ RUN      ] ResearchFieldsVendorFields.FormulaFingerprintsAreTheRegistrys
+[       OK ] ResearchFieldsVendorFields.FormulaFingerprintsAreTheRegistrys (41 ms)
+[----------] 5 tests from ResearchFieldsVendorFields (297 ms total)
+
+[----------] 4 tests from ResearchFieldsVendorFixture
+[ RUN      ] ResearchFieldsVendorFixture.UnionPanelIsThePythonPricePanel
+[       OK ] ResearchFieldsVendorFixture.UnionPanelIsThePythonPricePanel (46 ms)
+[ RUN      ] ResearchFieldsVendorFixture.BarPanelIsThePythonOhlcPanel
+[       OK ] ResearchFieldsVendorFixture.BarPanelIsThePythonOhlcPanel (63 ms)
+[ RUN      ] ResearchFieldsVendorFixture.FieldsAreByteIdentical
+[       OK ] ResearchFieldsVendorFixture.FieldsAreByteIdentical (114 ms)
+[ RUN      ] ResearchFieldsVendorFixture.RegistryBuildEntriesAreThePythonEntries
+[       OK ] ResearchFieldsVendorFixture.RegistryBuildEntriesAreThePythonEntries (118 ms)
+[----------] 4 tests from ResearchFieldsVendorFixture (343 ms total)
+
+[----------] 8 tests from ResearchFieldsAlSigThirteenf
+[ RUN      ] ResearchFieldsAlSigThirteenf.QuarterCalendar
+[       OK ] ResearchFieldsAlSigThirteenf.QuarterCalendar (0 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.EffectiveFilingsRule
+[       OK ] ResearchFieldsAlSigThirteenf.EffectiveFilingsRule (0 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.IndexVisibilityDeadlineAndSeal
+[       OK ] ResearchFieldsAlSigThirteenf.IndexVisibilityDeadlineAndSeal (0 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.RowScreen
+[       OK ] ResearchFieldsAlSigThirteenf.RowScreen (0 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.QuarterPositionsClosedForm
+[       OK ] ResearchFieldsAlSigThirteenf.QuarterPositionsClosedForm (0 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.BasisFactorsDetectASplit
+[       OK ] ResearchFieldsAlSigThirteenf.BasisFactorsDetectASplit (0 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.StagePinAndContract
+[       OK ] ResearchFieldsAlSigThirteenf.StagePinAndContract (12 ms)
+[ RUN      ] ResearchFieldsAlSigThirteenf.SealedPartIsNeverOpenedAndTheProbeHasTeeth
+[       OK ] ResearchFieldsAlSigThirteenf.SealedPartIsNeverOpenedAndTheProbeHasTeeth (1 ms)
+[----------] 8 tests from ResearchFieldsAlSigThirteenf (14 ms total)
+
+[----------] 6 tests from ResearchFieldsAlSigGia
+[ RUN      ] ResearchFieldsAlSigGia.CenteredRanksClosedForm
+[       OK ] ResearchFieldsAlSigGia.CenteredRanksClosedForm (0 ms)
+[ RUN      ] ResearchFieldsAlSigGia.HoldingsReturnsClosedForm
+[       OK ] ResearchFieldsAlSigGia.HoldingsReturnsClosedForm (0 ms)
+[ RUN      ] ResearchFieldsAlSigGia.HolderScoresClosedForm
+[       OK ] ResearchFieldsAlSigGia.HolderScoresClosedForm (0 ms)
+[ RUN      ] ResearchFieldsAlSigGia.RowClockAnchorStalenessNoSkipBack
+[       OK ] ResearchFieldsAlSigGia.RowClockAnchorStalenessNoSkipBack (0 ms)
+[ RUN      ] ResearchFieldsAlSigGia.AccumulatorVisibilityAndManagerFloor
+[       OK ] ResearchFieldsAlSigGia.AccumulatorVisibilityAndManagerFloor (0 ms)
+[ RUN      ] ResearchFieldsAlSigGia.PlantedLeakProbeHasTeeth
+[       OK ] ResearchFieldsAlSigGia.PlantedLeakProbeHasTeeth (0 ms)
+[----------] 6 tests from ResearchFieldsAlSigGia (1 ms total)
+
+[----------] 6 tests from ResearchFieldsAlSigRussell
+[ RUN      ] ResearchFieldsAlSigRussell.SnapshotsFromRows
+[       OK ] ResearchFieldsAlSigRussell.SnapshotsFromRows (0 ms)
+[ RUN      ] ResearchFieldsAlSigRussell.UndeclaredIndexIdsAreRefused
+[       OK ] ResearchFieldsAlSigRussell.UndeclaredIndexIdsAreRefused (0 ms)
+[ RUN      ] ResearchFieldsAlSigRussell.IndexesStageRule
+[       OK ] ResearchFieldsAlSigRussell.IndexesStageRule (57 ms)
+[ RUN      ] ResearchFieldsAlSigRussell.MovesClosedForm
+[       OK ] ResearchFieldsAlSigRussell.MovesClosedForm (0 ms)
+[ RUN      ] ResearchFieldsAlSigRussell.EventWindowClock
+[       OK ] ResearchFieldsAlSigRussell.EventWindowClock (0 ms)
+[ RUN      ] ResearchFieldsAlSigRussell.PlantedLeakProbeHasTeeth
+[       OK ] ResearchFieldsAlSigRussell.PlantedLeakProbeHasTeeth (0 ms)
+[----------] 6 tests from ResearchFieldsAlSigRussell (58 ms total)
+
+[----------] 6 tests from ResearchFieldsAlSigFixture
+[ RUN      ] ResearchFieldsAlSigFixture.CommittedRowsPinTheSpecs
+[       OK ] ResearchFieldsAlSigFixture.CommittedRowsPinTheSpecs (21 ms)
+[ RUN      ] ResearchFieldsAlSigFixture.BuildMatchesTheOracle
+[       OK ] ResearchFieldsAlSigFixture.BuildMatchesTheOracle (158 ms)
+[ RUN      ] ResearchFieldsAlSigFixture.ReuseFollowsTheStagePin
+[       OK ] ResearchFieldsAlSigFixture.ReuseFollowsTheStagePin (198 ms)
+[ RUN      ] ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin
+[       OK ] ResearchFieldsAlSigFixture.ReuseRefusesAWrongStagePin (231 ms)
+[ RUN      ] ResearchFieldsAlSigFixture.KindsRefuseWithoutTheirStage
+[       OK ] ResearchFieldsAlSigFixture.KindsRefuseWithoutTheirStage (25 ms)
+[ RUN      ] ResearchFieldsAlSigFixture.SpecKeysParseAndRefuseBadPins
+[       OK ] ResearchFieldsAlSigFixture.SpecKeysParseAndRefuseBadPins (24 ms)
+[----------] 6 tests from ResearchFieldsAlSigFixture (660 ms total)
+
+[----------] 3 tests from ResearchFieldsA4Reuse
+[ RUN      ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel
+[       OK ] ResearchFieldsA4Reuse.RebuiltPriceFieldUsesTheWholeBuildsPanel (171 ms)
+[ RUN      ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory
+[       OK ] ResearchFieldsA4Reuse.PriceFieldReusedOnlyWithTheBuildsPanelHistory (130 ms)
+[ RUN      ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision
+[       OK ] ResearchFieldsA4Reuse.EachInputFileIsDigestedOncePerDecision (112 ms)
+[----------] 3 tests from ResearchFieldsA4Reuse (414 ms total)
+
+[----------] 6 tests from ResearchFieldsA4Clock
+[ RUN      ] ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar
+[       OK ] ResearchFieldsA4Clock.SessionCalendarIsThePythonCalendar (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark
+[       OK ] ResearchFieldsA4Clock.UsableFromIsStrictlyAfterTheMark (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.SessionCalendarRefusesABadRole
+[       OK ] ResearchFieldsA4Clock.SessionCalendarRefusesABadRole (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.LatestRowsIsThePythonPointer
+[       OK ] ResearchFieldsA4Clock.LatestRowsIsThePythonPointer (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.LatestRowsBeforeIsStrict
+[       OK ] ResearchFieldsA4Clock.LatestRowsBeforeIsStrict (0 ms)
+[ RUN      ] ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit
+[       OK ] ResearchFieldsA4Clock.WindowedSumsAreThePythonSumsBitForBit (0 ms)
+[----------] 6 tests from ResearchFieldsA4Clock (0 ms total)
+
+[----------] 5 tests from ResearchFieldsHoldingsFixture
+[ RUN      ] ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys
+[       OK ] ResearchFieldsHoldingsFixture.FormulaFingerprintsAreTheRegistrys (29 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.FtdIsThePythonField
+[       OK ] ResearchFieldsHoldingsFixture.FtdIsThePythonField (23 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.RegshoIsThePythonField
+[       OK ] ResearchFieldsHoldingsFixture.RegshoIsThePythonField (35 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries
+[       OK ] ResearchFieldsHoldingsFixture.RegistryBuildEntriesAreThePythonEntries (96 ms)
+[ RUN      ] ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused
+[       OK ] ResearchFieldsHoldingsFixture.MissingOrWrongInputsAreRefused (5 ms)
+[----------] 5 tests from ResearchFieldsHoldingsFixture (190 ms total)
+
+[----------] 2 tests from ResearchFieldsHoldingsProbe
+[ RUN      ] ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth
+[       OK ] ResearchFieldsHoldingsProbe.FtdLookAheadProbeHasTeeth (24 ms)
+[ RUN      ] ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth
+[       OK ] ResearchFieldsHoldingsProbe.RegshoLookAheadProbeHasTeeth (14 ms)
+[----------] 2 tests from ResearchFieldsHoldingsProbe (39 ms total)
+
+[----------] 2 tests from ResearchFieldsHoldingsKernel
+[ RUN      ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder
+[       OK ] ResearchFieldsHoldingsKernel.FtdRingIsTheFullMatrixInAnyOrder (23 ms)
+[ RUN      ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches
+[       OK ] ResearchFieldsHoldingsKernel.RegshoLateRuleIsPerFileAcrossBatches (8 ms)
+[----------] 2 tests from ResearchFieldsHoldingsKernel (32 ms total)
+
+[----------] Global test environment tear-down
+[==========] 110 tests from 22 test suites ran. (3559 ms total)
+[  PASSED  ] 110 tests.

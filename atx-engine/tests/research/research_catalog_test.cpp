@@ -365,7 +365,7 @@ TEST(ResearchCatalog, TrialLinesAppendOnly) {
 }
 
 TEST(ResearchCatalog, LedgerHeadSeamReceivesLinesInFileOrder) {
-  EXPECT_FALSE(static_cast<bool>(cat::default_ledger_head())); // B2 not bound at this base
+  EXPECT_TRUE(static_cast<bool>(cat::default_ledger_head())); // bound to B2's chain_head (SQL4)
   const auto tree = t::tree_copy();
   auto db = t::open_new(t::temp_dir("db") / "catalog.sqlite");
   std::vector<std::string> seen;

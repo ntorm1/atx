@@ -1,0 +1,4 @@
+M6B-FINISH SQL-11 re-check at head 6618abe1 (review item 11): cache-index flags outside atx-impl/src, atx-impl/tests, docs/plans, the sprint dir:
+atx-impl/CMakeLists.txt:315:# (strategy_ic_cache_index.hpp) behind --candidate-cache-index / --pair-cache-index; it opens
+end
+in scripts/specs (cell specs / kinds / templates): 0 files

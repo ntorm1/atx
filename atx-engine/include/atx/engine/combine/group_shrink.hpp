@@ -88,15 +88,23 @@ group_shrink_shares(std::span<const atx::f64> estimate, std::span<const atx::usi
   return co::Ok(std::move(out));
 }
 
+// One capping pass of cap_across_groups, recorded when the caller passes a trace (P9 lane D2: the
+// composition fit verb reports what composition_rules.member_cap reports): the members set to
+// the cap in that pass (ascending) and each group's excess (0 for a group with none).
+struct GroupCapPass {
+  std::vector<atx::usize> capped;
+  std::vector<atx::f64> excess;
+};
+
 // Caps `weights` in place (see the header comment) and returns the number of capping passes
 // (0: no member was above the bound). Refuses (InvalidArgument): `group` not one index per
 // weight, groups == 0, an index >= groups, a negative or non-finite weight, a cap that is not
 // positive and finite, a negative or non-finite tolerance, or an infeasible cap. On a refusal
-// `weights` holds a partial result (basic guarantee): callers pass a working copy.
-[[nodiscard]] inline atx::core::Result<atx::usize> cap_across_groups(std::span<atx::f64> weights,
-                                                                     std::span<const atx::usize> group,
-                                                                     atx::usize groups, atx::f64 cap,
-                                                                     atx::f64 tolerance) {
+// `weights` holds a partial result (basic guarantee): callers pass a working copy. A non-null
+// `trace` receives one GroupCapPass per capping pass; it never changes the arithmetic.
+[[nodiscard]] inline atx::core::Result<atx::usize>
+cap_across_groups(std::span<atx::f64> weights, std::span<const atx::usize> group, atx::usize groups,
+                  atx::f64 cap, atx::f64 tolerance, std::vector<GroupCapPass>* trace = nullptr) {
   namespace co = atx::core;
   const atx::usize n = weights.size();
   const auto bad_weight = [](atx::f64 w) { return !(w >= 0.0) || !std::isfinite(w); };
@@ -109,8 +117,10 @@ group_shrink_shares(std::span<const atx::f64> estimate, std::span<const atx::usi
   const atx::f64 bound = cap * (1.0 + tolerance);
   std::vector<atx::u8> frozen(n, 0U);
   std::vector<atx::f64> excess(groups, 0.0), base(n, 0.0);
+  std::vector<atx::usize> capped;
   for (atx::usize pass = 0; pass <= n; ++pass) {
     std::fill(excess.begin(), excess.end(), 0.0);
+    capped.clear();
     bool over = false;
     for (atx::usize k = 0; k < n; ++k) {
       if (frozen[k] != 0U || !(weights[k] > bound)) continue;
@@ -118,8 +128,10 @@ group_shrink_shares(std::span<const atx::f64> estimate, std::span<const atx::usi
       weights[k] = cap;
       frozen[k] = 1U;
       over = true;
+      if (trace != nullptr) capped.push_back(k);
     }
     if (!over) return co::Ok(pass);
+    if (trace != nullptr) trace->push_back(GroupCapPass{capped, excess});
     std::copy(weights.begin(), weights.end(), base.begin());
     for (atx::usize g = 0; g < groups; ++g) {
       if (!(excess[g] > 0.0)) continue;

@@ -1,0 +1,5 @@
+PY_DIRS ['scripts', 'atx-engine/tools', 'atx-impl/tools']
+today 2026-10-15
+scanned_files 930
+distinct_literals 132
+unregistered 0

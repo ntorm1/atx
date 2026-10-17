@@ -1,10 +1,10 @@
 """The research-store class registry guard (P9 SQL2; sql-design section 3.9, synthetic).
 
-Every ``atx.<name>/v<n>`` literal in non-test Python under ``scripts/``, ``atx-engine/tools/``, ``atx-impl/tools/`` and
-in C++ under ``atx-engine/include/``, ``atx-engine/src/``, ``atx-impl/src/`` must name a file class of
-``atx-engine/schemas/research_store/classes.json`` (a class's ``schemas`` or ``registers``), a digest / document
-domain (``domains``) or a dated ``legacy_allow`` row that has not expired. A new writer schema therefore lands with
-its class row (or an explicit, dated exception), and the catalog never meets an unclassified document by surprise.
+Every ``atx.<name>/v<n>`` literal in non-test Python under ``scripts/``, ``atx-engine/tools/``, ``atx-impl/tools/``,
+``atx-impl/strategies/`` and in C++ under ``atx-engine/include/``, ``atx-engine/src/``, ``atx-impl/src/`` must name a
+file class of ``atx-engine/schemas/research_store/classes.json`` (a class's ``schemas`` or ``registers``), a digest /
+document domain (``domains``) or a dated ``legacy_allow`` row that has not expired. A new writer schema therefore lands
+with its class row (or an explicit, dated exception), and the catalog never meets an unclassified document by surprise.
 The scan reads file text (comments and docstrings included); test files (``test_*.py``, ``*_test.py``,
 ``conftest.py``) and anything under a ``tests`` or ``fixtures`` directory are skipped.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 REGISTRY = REPO / "atx-engine" / "schemas" / "research_store" / "classes.json"
 LITERAL = re.compile(r"atx\.[a-z0-9][a-z0-9_.-]*/v[0-9]+")
-PY_DIRS = ("scripts", "atx-engine/tools", "atx-impl/tools")
+PY_DIRS = ("scripts", "atx-engine/tools", "atx-impl/tools", "atx-impl/strategies")
 CPP_DIRS = ("atx-engine/include", "atx-engine/src", "atx-impl/src")
 CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".ipp", ".inl"})
 SKIP_DIRS = frozenset({"tests", "fixtures", "__pycache__"})

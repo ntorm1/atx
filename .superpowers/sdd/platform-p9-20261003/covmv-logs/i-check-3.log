@@ -1,0 +1,24 @@
+﻿exit=0
+[atx-build] check: 'atx-impl\tests\strategy_mv_aim_rule_test.cpp' matches 2 objects (building all):
+  atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_mv_aim_rule_test.cpp.obj
+  atx-impl/tests/CMakeFiles/atx-impl-strategy-target-tests.dir/strategy_mv_aim_rule_test.cpp.obj
+[atx-build] ninja -C C:\atx-wt\pool-31\build-equity -j 1 atx-engine/CMakeFiles/atx-engine.dir/src/book/mv_target.cpp.obj atx-impl/CMakeFiles/atx-impl-strategy.dir/src/strategy_mv_aim.cpp.obj atx-impl/CMakeFiles/atx-impl-strategy.dir/src/strategy_nav_v7.cpp.obj atx-impl/CMakeFiles/atx-impl-strategy.dir/src/book/nav_rules.cpp.obj atx-impl/CMakeFiles/atx-impl-strategy.dir/src/book/nav_decide.cpp.obj atx-engine/tests/CMakeFiles/atx-engine-book-tests.dir/book/book_mv_target_test.cpp.obj atx-impl/tests/CMakeFiles/atx-impl-tests.dir/strategy_mv_aim_rule_test.cpp.obj atx-impl/tests/CMakeFiles/atx-impl-strategy-target-tests.dir/strategy_mv_aim_rule_test.cpp.obj
+ninja: Entering directory `C:\atx-wt\pool-31\build-equity'
+[0/2] Re-checking globbed directories...
+[1/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\spdlog.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[2/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\stdout_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[3/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\color_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[4/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\file_sinks.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[5/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\async.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[6/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\cfg.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[7/10] Building CXX object C:\atx-cache\deps\spdlog-build\CMakeFiles\spdlog.dir\src\bundled_fmtlib_format.cpp.obj
+clang-cl: warning: argument unused during compilation: '/MP' [-Wunused-command-line-argument]
+[8/10] Linking CXX static library lib\spdlogd.lib
+[9/10] Linking CXX executable bin\atx-shm-worker.exe
+

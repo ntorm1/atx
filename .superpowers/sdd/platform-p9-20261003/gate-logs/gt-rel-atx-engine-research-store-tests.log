@@ -1,0 +1,72 @@
+Running main() from C:\Users\natha\vcpkg\buildtrees\gtest\src\v1.17.0-0c449efaff.clean\googletest\src\gtest_main.cc
+[==========] Running 27 tests from 4 test suites.
+[----------] Global test environment set-up.
+[----------] 10 tests from ResearchStoreTable
+[ RUN      ] ResearchStoreTable.ToyDdlExactText
+[       OK ] ResearchStoreTable.ToyDdlExactText (7 ms)
+[ RUN      ] ResearchStoreTable.BindReadRoundTripEveryType
+[       OK ] ResearchStoreTable.BindReadRoundTripEveryType (1 ms)
+[ RUN      ] ResearchStoreTable.NullOptionalRoundTrip
+[       OK ] ResearchStoreTable.NullOptionalRoundTrip (0 ms)
+[ RUN      ] ResearchStoreTable.U64BitPatternRoundTrip
+[       OK ] ResearchStoreTable.U64BitPatternRoundTrip (0 ms)
+[ RUN      ] ResearchStoreTable.ReadRejectsNullInRequiredColumn
+[       OK ] ResearchStoreTable.ReadRejectsNullInRequiredColumn (0 ms)
+[ RUN      ] ResearchStoreTable.AppendOnlyRefusesUpdateAndDelete
+[       OK ] ResearchStoreTable.AppendOnlyRefusesUpdateAndDelete (0 ms)
+[ RUN      ] ResearchStoreTable.UpsertReplacesNonKeyColumns
+[       OK ] ResearchStoreTable.UpsertReplacesNonKeyColumns (0 ms)
+[ RUN      ] ResearchStoreTable.SelectAllOrderedByKeyUnderReverseUnorderedSelects
+[       OK ] ResearchStoreTable.SelectAllOrderedByKeyUnderReverseUnorderedSelects (0 ms)
+[ RUN      ] ResearchStoreTable.BindRefusesNanAndNegativeZeroReal
+[       OK ] ResearchStoreTable.BindRefusesNanAndNegativeZeroReal (0 ms)
+[ RUN      ] ResearchStoreTable.TypeChecksRefuseBadValues
+[       OK ] ResearchStoreTable.TypeChecksRefuseBadValues (0 ms)
+[----------] 10 tests from ResearchStoreTable (11 ms total)
+
+[----------] 3 tests from ResearchStoreSchema
+[ RUN      ] ResearchStoreSchema.GroupJsonEqualsFixture
+[       OK ] ResearchStoreSchema.GroupJsonEqualsFixture (16 ms)
+[ RUN      ] ResearchStoreSchema.DdlAppliesOnVendoredSqlite
+[       OK ] ResearchStoreSchema.DdlAppliesOnVendoredSqlite (3 ms)
+[ RUN      ] ResearchStoreSchema.DbDocumentHasEveryGroupInOrder
+[       OK ] ResearchStoreSchema.DbDocumentHasEveryGroupInOrder (2 ms)
+[----------] 3 tests from ResearchStoreSchema (22 ms total)
+
+[----------] 4 tests from ResearchStoreDigest
+[ RUN      ] ResearchStoreDigest.EncodingLiteral
+[       OK ] ResearchStoreDigest.EncodingLiteral (0 ms)
+[ RUN      ] ResearchStoreDigest.GoldenVectors
+[       OK ] ResearchStoreDigest.GoldenVectors (3 ms)
+[ RUN      ] ResearchStoreDigest.VolatileColumnsExcluded
+[       OK ] ResearchStoreDigest.VolatileColumnsExcluded (0 ms)
+[ RUN      ] ResearchStoreDigest.RealsByBitPattern
+[       OK ] ResearchStoreDigest.RealsByBitPattern (0 ms)
+[----------] 4 tests from ResearchStoreDigest (3 ms total)
+
+[----------] 10 tests from ResearchStoreOpen
+[ RUN      ] ResearchStoreOpen.CreateThenReopen
+[       OK ] ResearchStoreOpen.CreateThenReopen (28 ms)
+[ RUN      ] ResearchStoreOpen.MigratesToyV1ToV2
+[       OK ] ResearchStoreOpen.MigratesToyV1ToV2 (53 ms)
+[ RUN      ] ResearchStoreOpen.RefusesForeignApplicationId
+[       OK ] ResearchStoreOpen.RefusesForeignApplicationId (22 ms)
+[ RUN      ] ResearchStoreOpen.RefusesNewerVersion
+[       OK ] ResearchStoreOpen.RefusesNewerVersion (18 ms)
+[ RUN      ] ResearchStoreOpen.StoreInfoHoldsSchemaJson
+[       OK ] ResearchStoreOpen.StoreInfoHoldsSchemaJson (36 ms)
+[ RUN      ] ResearchStoreOpen.ReadsPythonCreatedFixture
+[       OK ] ResearchStoreOpen.ReadsPythonCreatedFixture (10 ms)
+[ RUN      ] ResearchStoreOpen.CatalogDigestIndependentOfInsertOrder
+[       OK ] ResearchStoreOpen.CatalogDigestIndependentOfInsertOrder (50 ms)
+[ RUN      ] ResearchStoreOpen.RefusesSchemaDriftAtSameVersion
+[       OK ] ResearchStoreOpen.RefusesSchemaDriftAtSameVersion (40 ms)
+[ RUN      ] ResearchStoreOpen.RequiresExactlyOneStoreInfoGroup
+[       OK ] ResearchStoreOpen.RequiresExactlyOneStoreInfoGroup (21 ms)
+[ RUN      ] ResearchStoreOpen.OpenCacheNeverCreatesAnIndex
+[       OK ] ResearchStoreOpen.OpenCacheNeverCreatesAnIndex (21 ms)
+[----------] 10 tests from ResearchStoreOpen (306 ms total)
+
+[----------] Global test environment tear-down
+[==========] 27 tests from 4 test suites ran. (345 ms total)
+[  PASSED  ] 27 tests.

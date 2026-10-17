@@ -7,7 +7,9 @@ The record stage (wave_stages.record) builds both from the stage receipts' outpu
    budget{id, admission_used, admission_new, admission_new_ids, admission_cap, admission_cycle_prefix |
    admission_cycle_prefixes, admission_origin, construction_cap} (preflight's count), parent{spec, spec_digest,
    library, nav, leverage}, screen{spec, gate_exit, rows[], kept[], dropped[], sign_rule} | null, cell{spec,
-   spec_digest, library, kind, nav, leverage, gross, gross_parent, corrected} | null, marginal{source, mode, rows[]} |
+   spec_digest, library, kind, nav, leverage, gross, gross_parent, corrected[, run_spec, run_spec_digest: gross_match
+   pm6-6-engine only, the calibrating recipe that made the NAV; spec is then the plain cell of record at the published
+   L, P9 C2-R2]} | null, marginal{source, mode, rows[]} |
    null (report only), mechanics{rule, pass, rows[]} | null, nav_exe{parent, cell, equal, ref} | null (verify's NAV
    exe SHA-256s, P9 OR-2),
    stats{cell, parent} (the book reader's rows) | null, paired{...} | null, bundle{...} | null, dsr{...} | null,
@@ -31,18 +33,25 @@ def _f(x, spec: str = ".4f") -> str:
 
 
 def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
-    """``seal``: the record stage's scan of every log the wave produced (the hidden-data line)."""
+    """``seal``: the record stage's scan of every log the wave produced (the hidden-data line). The first act once the
+    cell is formed is the digest re-check of its spec files (cell_digest_problems; P9 rulings C2-10, C3-12): a cell of
+    record (or run recipe) whose file no longer has the digest the match stage recorded is refused, exit 3, before
+    anything is built or written."""
     m, pre = w.manifest, done["preflight"]
     sc, sp, mt = done.get("screen") or {}, done.get("spec") or {}, done.get("match") or {}
     jd, vf = done.get("judge") or {}, done.get("verify") or {}
     library = "candidates" in m
     cell = None
     if sp.get("cell_spec"):
-        cell = {"spec": mt["cell_spec"], "spec_digest": mt.get("spec_digest") or sp["spec_digest"],
+        cell = {"spec": mt.get("record_spec") or mt["cell_spec"],
+                "spec_digest": mt.get("record_spec_digest") or mt.get("spec_digest") or sp["spec_digest"],
                 "library": sp["library"], "kind": sp["kind"], "nav": mt["nav"], "leverage": mt["leverage"],
                 "gross": mt["g_cell"], "gross_parent": mt["g_parent"], "gross_calibration": mt["g_calibration"],
                 "leverage_calibration": mt["leverage_calibration"], "corrected": mt["corrected"],
                 "gross_match": mt["mode"]}
+        if mt.get("record_spec"):   # P9 C2 (Ruling C2-R2): the plain cell of record above; the recipe that ran here
+            cell["run_spec"], cell["run_spec_digest"] = mt["cell_spec"], mt.get("spec_digest")
+        refuse_cell_digests(w, cell)
         if (done.get("run") or {}).get("exe_notes"):     # ruling E1-REUSE-a2: only when the run stage noted one
             cell["exe_notes"] = done["run"]["exe_notes"]
     verdict = jd.get("verdict") or {"accepted": False, "reason": sp.get("reason") or "no cell"}
@@ -81,6 +90,32 @@ def build(w, done: dict, ledger: dict, seal: dict | None = None) -> dict:
         doc["stage_seconds"] = stage_seconds(w)
         doc["processes"] = stage_processes(w, done)
     return doc
+
+
+def cell_digest_problems(w, cell: dict) -> list[str]:
+    """The cell's spec files whose digest now (research_spec.spec_digest, as the match stage computed it) is not the
+    one recorded: the cell of record (spec / spec_digest) and, engine mode, the run recipe (run_spec /
+    run_spec_digest). P9 ruling C2-10 (S14): an edit committed while the same chain run was still in the judge stage
+    (verify's own input pins ran before it) would otherwise reach wave-result.json and next_parent unchecked."""
+    out = []
+    for key in ("spec", "run_spec"):
+        rel, want = cell.get(key), cell.get(f"{key}_digest")
+        if rel is None:
+            continue
+        now = w.spec_digest(rel) if w.exists(rel) else None
+        if now != want:
+            out.append(f"{key} {rel} has digest {now}, the match stage recorded {want}")
+    return out
+
+
+def refuse_cell_digests(w, cell: dict) -> None:
+    """StageError (exit 3) when cell_digest_problems finds any: no wave result is written (rulings C2-10, C3-12)."""
+    problems = cell_digest_problems(w, cell)
+    if problems:
+        from wave_stage_util import EXIT_PIN, StageError  # noqa: PLC0415  (the scoreboard imports this module alone)
+        raise StageError("record: the cell's spec changed after the match stage (ruling C2-10): " +
+                         "; ".join(problems) + ": no wave result is written (start a new state dir, or restore the "
+                         "file)", EXIT_PIN)
 
 
 def helper_rows(w) -> list[dict]:
@@ -215,7 +250,8 @@ def log_section(doc: dict) -> str:
                 (f" -> corrected to L {cell['leverage']}, G {_f(cell['gross'], '.10f')}" if cell["corrected"] else
                  " (stands)") + ".", ""]
         if cell.get("exe_notes"):
-            out += ["**Exe notes** (outputs reused on a rebuilt exe without an exes_sha256 pin, ruling E1-REUSE-a2): "
+            out += ["**Exe notes** (outputs made by another executable than the one on disk now, reused under the "
+                    "exes_sha256 pin rule, ruling E1-REUSE-a2): "
                     + "; ".join(cell["exe_notes"]) + ".", ""]
         mech = doc.get("mechanics") or {}
         out += [f"**Mechanics (S2, read before any return): {'PASS' if mech.get('pass') else 'FAIL'}** (" +

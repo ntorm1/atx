@@ -1,0 +1,13 @@
+B2-13 rho of the P9 pairs' references (engine eval verb on nav_summ's paired series; no return statistic)
+verb C:\atx-wt\pool-2\build-equity-rel\bin\atx-research-eval.exe  sha256 e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c
+
+Y-1 vs X-10 (gate P9-B0 refs)
+  child     build-equity/p9-b0g-y1-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 68b3af9412ac
+  reference build-equity/p9-b0g-x10-nav  scenario modeled-1bn-stale5-v1+swap-fin-v1  daily sha256 66be2a023638
+  T (common sessions) verb 1005 / aligned 1005
+  rho (verb)              0.9947113980219978
+  1 - rho (verb, stable)  0.005288601978002811
+  verb degenerate flag    False
+  '1 - rho < 1e-6' flag   False
+  cross-check |rho verb - rho numpy| 9.992e-16
+  class: paired test defined (1 - rho >= 1e-6)

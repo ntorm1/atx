@@ -1,7 +1,9 @@
 #include "strategy_ic_runner.hpp"
+#include "strategy_ic_absent.hpp"
 #include "strategy_ic_composition.hpp"
 #include "strategy_ic_detail.hpp"
 #include "strategy_ic_rules.hpp"
+#include "strategy_ic_theme_hedge.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -140,6 +142,8 @@ co::Result<Json> save_combined_artifact(const IcRunnerConfig& cfg,const Role& sp
     if (rule->stage==IcStageKind::residualise)
       manifest["composition_residualise_order"]=theme_order_json(pinned.residualise_order);
   }
+  // P9 lane D3W: per-date weights (a v3 file's walk_forward rows; absent otherwise).
+  if (!pinned.walk_forward.empty()) manifest["composition_walk_forward"]=pinned.walk_forward;
   // two-speed-v1 (v8 Y-5; absent otherwise): the fast and slow sleeves and the fast share per date in
   // their own manifest (the combined file set above stays the five files every consumer admits),
   // pinned here by name and SHA-256.
@@ -192,7 +196,28 @@ Json estimate_json(const ex::IcScreenEstimate& x,int sign) {
       {"upper_abs_ic",x.defined?Json(x.upper_abs_ic):Json(nullptr)},
       {"required_hac_lag",x.hac_lag}, {"segment_safeguard","heuristic-not-regime-recall-guarantee"}};
 }
-Json result_json(const ex::ResearchIcResult& result,int sign) {
+// P9 S2: what an IC result prints beyond today's bytes (default: nothing).
+//   * `hac` (--ic-hac-rule given): every estimate gains a "hac" block naming the active rule and,
+//     under BOTH rules, its standard error and lag, recomputed from `daily` (the exact series the
+//     estimate was made from) with ex::estimate_daily_ic.
+//   * `terminal` (--label-terminal given): every coverage gains terminal_imputed_pairs and
+//     missing_exit_share (missing-exit pairs over decision-eligible pairs; null when none).
+struct IcPrint {
+  const ex::IcScreenConfig* hac{nullptr};
+  const IcSeries* daily{nullptr};
+  bool terminal{false};
+};
+Json hac_json(std::span<const f64> daily,usize horizon,const ex::IcScreenConfig& ic) {
+  Json out{{"rule",std::string(ex::ic_hac_rule_name(ic.hac_rule))}};
+  for (const auto rule:{ex::IcHacRule::Bartlett2hV1,ex::IcHacRule::HorizonAwareV3}) {
+    auto config=ic; config.hac_rule=rule;
+    const auto x=ex::estimate_daily_ic(daily,horizon,config);
+    out[std::string(ex::ic_hac_rule_name(rule))]={{"inference_defined",x.defined},
+        {"standard_error",x.defined?Json(x.standard_error):Json(nullptr)},{"hac_lag",x.hac_lag}};
+  }
+  return out;
+}
+Json result_json(const ex::ResearchIcResult& result,int sign,const IcPrint& print={}) {
   Json horizons=Json::array();
   for (usize k=0;k<result.active_horizons;++k) {
     const auto& h=result.screen.horizons[k]; const auto& c=result.coverage[k];
@@ -206,6 +231,17 @@ Json result_json(const ex::ResearchIcResult& result,int sign) {
           {"guard_excluded_pairs",c.guard_excluded_pairs},{"invalid_price_pairs",c.invalid_price_pairs},
           {"nonfinite_return_pairs",c.nonfinite_return_pairs},
           {"endpoint_reason_counts_overlap",true}}}});
+    auto& row=horizons.back();
+    if (print.hac!=nullptr && print.daily!=nullptr && k<print.daily->rank.size()) {
+      row["pearson"]["hac"]=hac_json(print.daily->pearson[k],h.horizon,*print.hac);
+      row["rank"]["hac"]=hac_json(print.daily->rank[k],h.horizon,*print.hac);
+    }
+    if (print.terminal) {
+      row["coverage"]["terminal_imputed_pairs"]=c.terminal_imputed_pairs;
+      row["coverage"]["missing_exit_share"]=c.decision_eligible_pairs!=0
+          ?Json(static_cast<f64>(c.missing_exit_pairs)/static_cast<f64>(c.decision_eligible_pairs))
+          :Json(nullptr);
+    }
   }
   return {{"reject",result.screen.reject},{"enough_evidence",result.screen.enough_evidence},
       {"reason",ex::ic_screen_reason_name(result.screen.reason)},{"horizons",std::move(horizons)}};
@@ -236,7 +272,8 @@ struct SignalTiming { f64 vm{},cache_load{},cache_write{}; bool hit{}; std::opti
 co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& spec,
     const engine::data::StrategyRoleData& role,FieldResidency& fields,usize k,const Candidate& candidate,
     const CacheKey* signal_cache,const std::optional<CacheHit>& hit,engine::parallel::DetPool* pool,
-    std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,HashMeter& meter,std::ostream& progress) {
+    std::unique_ptr<al::Engine>& vm,std::vector<f64>& buffer,HashMeter& meter,CacheIndex* index,
+    std::ostream& progress) {
   using steady=std::chrono::steady_clock;
   const auto since=[](steady::time_point from) { return std::chrono::duration<f64>(steady::now()-from).count(); };
   SignalTiming out;
@@ -275,7 +312,7 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
   buffer=std::move(evaluated.alphas.front().values);
   if (signal_cache) {
     const auto write_started=steady::now();
-    ATX_TRY(auto stored,cache_store(*signal_cache,cfg,spec,role,candidate,buffer,meter));
+    ATX_TRY(auto stored,cache_store(*signal_cache,cfg,spec,role,candidate,buffer,meter,index));
     out.entry=std::move(stored); out.cache_write=since(write_started);
     progress<<"IC cache-write "<<candidate.id<<" role="<<spec.name<<" seconds="<<out.cache_write<<'\n'<<std::flush;
   }
@@ -285,13 +322,19 @@ co::Result<SignalTiming> candidate_signal(const IcRunnerConfig& cfg,const Role& 
 // within weights; pinned.signs: blend signs, empty = the TRAIN IC orientation) and the composition
 // rule table rows the file carries; the rows whose stage runs are the composition's ordered stage
 // list (composition_stages, strategy_ic_rules.hpp) and the combined manifest's rule keys.
+// `absent` (absent-members-v1, P9 lane ABS; empty: no list): per candidate 1 when listed.
 co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const Role& spec,
-    const KnownManifests& known,const PinnedWeights& pinned,std::vector<int>& signs,Json& frozen,
-    const std::string& recipe_sha,const std::string& orientation_pin,std::ostream& progress) {
+    const KnownManifests& known,const PinnedWeights& pinned,std::span<const u8> absent,
+    std::vector<int>& signs,Json& frozen,const std::string& recipe_sha,
+    const std::string& orientation_pin,CacheIndex* index,std::ostream& progress) {
   const std::span<const f64> weights(pinned.values);
   const std::span<const int> blend_signs(pinned.signs);
   const auto started=std::chrono::steady_clock::now();
   progress<<"IC loading "<<spec.name<<" admitted_bytes="<<spec.bytes<<'\n'<<std::flush;
+  // P9 S2 (ruling P13): a pinned fields manifest without a research seal is a legacy manifest,
+  // accepted and logged (bind_fields refused one built under another seal).
+  if (!spec.fields.sha.empty() && spec.fields.seal=="absent")
+    progress<<"IC fields-seal role="<<spec.name<<" seal=absent accepted-as-legacy-manifest\n"<<std::flush;
   ATX_TRY_VOID(fields_bound(lib,spec));
   // Fail fast (T1 review M2): every candidate's entry is resolved once (v2, or v1
   // read in place), identity-checked and its payload extent stat'ed before the
@@ -299,7 +342,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   // loop. Payload hashes are still verified on load.
   CacheResolution cache;
   if (!cfg.candidate_cache_directory.empty()) {
-    ATX_TRY(cache,cache_resolve(cfg,lib,spec,known));
+    ATX_TRY(cache,cache_resolve(cfg,lib,spec,known,index));
     progress<<"IC cache-preflight role="<<spec.name<<" ready="<<cache.ready<<'/'<<lib.candidates.size()
             <<" legacy="<<cache.legacy<<'\n'<<std::flush;
   }
@@ -332,13 +375,52 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   ATX_TRY(auto guard,engine::data::research_return_guard(role));
   auto ic=ex::research_window_ic_config(role.score_begin,role.score_end,cfg.min_names,cfg.min_dates,
       cfg.max_working_bytes);
+  // P9 S2: the coverage gate and HAC rule (their defaults are the screen's own: no byte changes).
+  ic.min_coverage=cfg.min_coverage; ic.hac_rule=ic_hac_rule(cfg);
   const ex::ResearchIcOptions ic_options{3,true,cfg.workers};
   const auto label_started=std::chrono::steady_clock::now();
+  // P9 S2 (--label-terminal imputed-v1): the pinned label role is read, bound to the role and
+  // prices the terminal exits of the labels, then dropped before any VM: no signal or field ever
+  // reads it. Today's labels are prepared beside the imputed ones (ic_missing_exit_v1).
+  const bool terminal=!cfg.label_terminal.empty();
+  std::string label_role_sha;
+  ex::ResearchIcTerminal terminal_labels;
+  std::optional<engine::data::StrategyRoleData> label_role;
+  std::vector<u32> label_guard; // fix round 1: the label role's own return guard (terminal step)
+  if (terminal) {
+    const auto pin=label_role_pin(cfg,spec.name);
+    ATX_TRY(auto loaded,engine::data::read_strategy_role(pin.path,cfg.max_working_bytes));
+    if (loaded.manifest_sha256!=pin.sha)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: label role manifest changed after admission");
+    ATX_TRY_VOID(bind_label_role(role,loaded));
+    ATX_TRY(label_guard,engine::data::research_return_guard(loaded));
+    label_role.emplace(std::move(loaded));
+    label_role_sha=pin.sha;
+    terminal_labels.rule=ex::LabelTerminalRule::ImputedV1;
+    terminal_labels.label=&label_role->panel;
+    terminal_labels.price_field=ic_price_field;
+    terminal_labels.label_bad_return_prefix=label_guard;
+  }
   ATX_TRY(auto labels,ex::prepare_research_ic(role.panel,ic,ic_options,role.decision_member,guard,
-      ic_price_field));
+      ic_price_field,terminal_labels));
+  label_role.reset(); terminal_labels.label=nullptr;
+  terminal_labels.label_bad_return_prefix={}; std::vector<u32>().swap(label_guard);
   ATX_TRY(auto scratch,ex::prepare_research_ic_scratch(labels));
   if (labels.bytes()>cfg.max_working_bytes || scratch.bytes()>cfg.max_working_bytes-labels.bytes())
     return co::Err(co::ErrorCode::Unavailable,"IC runner: actual IC cache/scratch exceeds admitted budget");
+  std::optional<ex::ResearchIcCache> legacy_labels; std::optional<ex::ResearchIcScratch> legacy_scratch;
+  if (terminal) {
+    ATX_TRY(auto prepared,ex::prepare_research_ic(role.panel,ic,ic_options,role.decision_member,guard,
+        ic_price_field));
+    ATX_TRY(auto prepared_scratch,ex::prepare_research_ic_scratch(prepared));
+    const auto used=labels.bytes()+scratch.bytes();
+    if (prepared.bytes()>cfg.max_working_bytes-used ||
+        prepared_scratch.bytes()>cfg.max_working_bytes-used-prepared.bytes())
+      return co::Err(co::ErrorCode::Unavailable,
+          "IC runner: actual missing-exit-v1 IC cache/scratch exceeds admitted budget");
+    legacy_labels.emplace(std::move(prepared)); legacy_scratch.emplace(std::move(prepared_scratch));
+  }
+  const IcPrint print{cfg.ic_hac_rule.empty()?nullptr:&ic,nullptr,terminal};
   const auto label_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-label_started).count();
   // Lifetime order matters: Engine borrows the pool and dies first. Candidate
   // evaluation is driven by THIS main thread; Cs and Ts jobs never nest.
@@ -367,15 +449,26 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     ATX_TRY(auto stages,composition_stages(pinned,role.session_keys));
     ATX_TRY(auto created,IcComposition::create_from_stages(cc,candidates,effective,stages));
     composition.emplace(std::move(created));
+    // theme-cov-hedge-v1 (P9 lane AL-COMB): the role's session returns for its stage; else nothing.
+    ATX_TRY_VOID(attach_theme_hedge(pinned,role,*composition));
   }
   // One key per candidate (empty = cache off); directories are created on write.
   const bool signal_cache=!cache.keys.empty();
   // IC-result cache: on exactly when the signal cache is (its entries key on the
   // signal payload SHA256); one scope per scored role, entries per candidate dir.
-  std::optional<IcCacheScope> ic_scope; usize ic_hits=0;
+  std::optional<IcCacheScope> ic_scope,legacy_scope; usize ic_hits=0,legacy_ic_hits=0;
   if (signal_cache) {
-    ATX_TRY(auto scope,ic_cache_scope(spec,role,ic,ic_options,guard,meter));
+    IcLabelScope scoped;
+    if (terminal) scoped=IcLabelScope{ex::LabelTerminalRule::ImputedV1,label_role_sha};
+    ATX_TRY(auto scope,ic_cache_scope(spec,role,ic,ic_options,guard,scoped,meter));
     ic_scope.emplace(std::move(scope));
+    // P9 S2 (ruling S2-3): the missing-exit-v1 IC beside --label-terminal is cached under its own
+    // scope (keyed label_terminal = missing-exit-v1), never the flag-absent one.
+    if (terminal) {
+      ATX_TRY(auto legacy,ic_cache_scope(spec,role,ic,ic_options,guard,
+          IcLabelScope{ex::LabelTerminalRule::MissingExitV1,{}},meter));
+      legacy_scope.emplace(std::move(legacy));
+    }
   }
   std::vector<f64> signal_buffer; usize cache_hits=0,legacy_hits=0; Json cache_entries=Json::array();
   f64 total_cache_load_seconds=0,total_cache_write_seconds=0;
@@ -392,6 +485,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   f64 total_vm_seconds=0,total_ic_seconds=0,total_composition_seconds=0;
   for (usize k=0;k<lib.candidates.size();++k) {
     const auto& candidate=lib.candidates[k];
+    const bool listed=!absent.empty() && absent[k]!=0; // absent-members-v1
     ledger<<Json{{"id",candidate.id},{"status","started"},{"number",k+1}}.dump()<<'\n'<<std::flush;
     if (!ledger) return co::Err(co::ErrorCode::IoError,"IC runner: candidate receipt");
     const auto candidate_started=std::chrono::steady_clock::now();
@@ -401,20 +495,30 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // A verified IC-result hit replaces evaluate_research_ic; a miss scores and,
     // with the cache on, commits that result keyed on the exact signal bytes.
     std::optional<CachedIc> cached_ic; std::filesystem::path ic_entry; bool ic_probed=false; f64 probe_seconds=0;
+    // P9 S2 (ruling S2-3): the missing-exit-v1 IC beside --label-terminal, from its own scope.
+    std::optional<CachedIc> cached_legacy; std::filesystem::path legacy_entry; bool legacy_probed=false;
     // --no-composition: nothing but IC reads the signal, and an IC entry is keyed on
     // the payload SHA256 its sidecar records, so a signal hit whose IC result is
     // cached too is never loaded (its bytes were verified when that entry was made).
-    if (cfg.no_composition && ic_scope && cache.hits[k]) {
+    // Under --label-terminal both IC results must be cached (each reads the signal). Never for a
+    // listed member (absent-members-v1 is refused with --no-composition; its IC is never cached).
+    if (cfg.no_composition && ic_scope && cache.hits[k] && !listed) {
       const auto probe_started=std::chrono::steady_clock::now();
       const auto& hit=*cache.hits[k];
       ic_entry=hit.dir/ic_scope->directory/(hit.stem+".json");
       ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,hit.payload_sha,scratch,
-          ic_options.active_horizons));
+          ic_options.active_horizons,index));
       ic_probed=true;
+      if (legacy_scope) {
+        legacy_entry=hit.dir/legacy_scope->directory/(hit.stem+".json");
+        ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,hit.payload_sha,
+            *legacy_scratch,ic_options.active_horizons,index));
+        legacy_probed=true;
+      }
       probe_seconds=std::chrono::duration<f64>(std::chrono::steady_clock::now()-probe_started).count();
     }
     SignalTiming acquired;
-    if (cached_ic) {
+    if (cached_ic && (!legacy_scope || cached_legacy)) {
       release(signal_buffer); // no stale signal outlives its candidate
       acquired.hit=true; acquired.entry=*cache.hits[k];
       progress<<"IC cache-hit "<<candidate.id<<" role="<<spec.name<<" layout="<<(acquired.entry->legacy?"v1":"v2")
@@ -422,8 +526,12 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     } else {
       ATX_TRY(acquired,candidate_signal(cfg,spec,role,fields,k,candidate,
           signal_cache?&cache.keys[k]:nullptr,signal_cache?cache.hits[k]:std::nullopt,pool.get(),vm,
-          signal_buffer,meter,progress));
+          signal_buffer,meter,index,progress));
     }
+    // absent-members-v1 (P9 lane ABS, OD3P-1): a listed member's data is removed here, after the
+    // candidate cache served or stored its exact bytes. Every cell non-finite: its IC rows, its
+    // TRAIN orientation and every composition rule see a member with no data on any date.
+    if (listed) std::fill(signal_buffer.begin(),signal_buffer.end(),quiet_nan);
     const std::span<const f64> signal(signal_buffer);
     const auto vm_seconds=acquired.vm; total_vm_seconds+=vm_seconds;
     total_cache_load_seconds+=acquired.cache_load; total_cache_write_seconds+=acquired.cache_write;
@@ -437,7 +545,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"signal_key_sha256",key.signal_key}});
     }
     const auto ic_started=std::chrono::steady_clock::now();
-    if (ic_scope) {
+    // A listed member's IC is scored from its blanked signal and never read from or written to the
+    // IC-result cache, whose entries key on the real signal bytes (absent-members-v1).
+    const bool ic_cached=ic_scope.has_value() && !listed;
+    const bool legacy_cached=legacy_scope.has_value() && !listed;
+    if (ic_cached) {
       if (!acquired.entry || !hash_valid(acquired.entry->payload_sha))
         return co::Err(co::ErrorCode::Internal,
             "IC runner: signal payload SHA256 missing for IC-result cache");
@@ -445,7 +557,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       if (!ic_probed) {
         ic_entry=acquired.entry->dir/ic_scope->directory/(acquired.entry->stem+".json");
         ATX_TRY(cached_ic,ic_cache_lookup(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scratch,
-            ic_options.active_horizons));
+            ic_options.active_horizons,index));
       }
     }
     ex::ResearchIcResult scored; IcSeries daily_series;
@@ -454,9 +566,31 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     } else {
       ATX_TRY(scored,ex::evaluate_research_ic(signal,labels,scratch,pool.get()));
       daily_series=scratch_series(scratch);
-      if (ic_scope) {
+      if (ic_cached) {
         ATX_TRY_VOID(ic_cache_store(ic_entry,*ic_scope,candidate,acquired.entry->payload_sha,scored,
-            daily_series,cfg.workers));
+            daily_series,cfg.workers,index));
+      }
+    }
+    // P9 S2: the same signal under today's labels (--label-terminal), from its own IC-result scope
+    // when the cache is on (ruling S2-3), else one IC pass beside the imputed one.
+    std::optional<ex::ResearchIcResult> legacy_scored; IcSeries legacy_series;
+    if (legacy_labels) {
+      if (legacy_cached && !legacy_probed) {
+        legacy_entry=acquired.entry->dir/legacy_scope->directory/(acquired.entry->stem+".json");
+        ATX_TRY(cached_legacy,ic_cache_lookup(legacy_entry,*legacy_scope,candidate,
+            acquired.entry->payload_sha,*legacy_scratch,ic_options.active_horizons,index));
+      }
+      if (cached_legacy) {
+        legacy_scored.emplace(cached_legacy->result); legacy_series=cached_series(*cached_legacy);
+        ++legacy_ic_hits;
+      } else {
+        ATX_TRY(auto legacy,ex::evaluate_research_ic(signal,*legacy_labels,*legacy_scratch,pool.get()));
+        legacy_series=scratch_series(*legacy_scratch);
+        if (legacy_cached) {
+          ATX_TRY_VOID(ic_cache_store(legacy_entry,*legacy_scope,candidate,acquired.entry->payload_sha,
+              legacy,legacy_series,cfg.workers,index));
+        }
+        legacy_scored.emplace(std::move(legacy));
       }
     }
     const auto ic_seconds=probe_seconds+
@@ -465,6 +599,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     const auto& orientation=scored.screen.horizons[1].rank;
     const bool fit=orientation.valid_dates>0 && std::isfinite(orientation.mean) && orientation.mean!=0;
     const int sample_sign=fit?(orientation.mean>0?1:-1):0;
+    IcPrint candidate_print=print; candidate_print.daily=&daily_series;
     if (train) {
       const int sign=sample_sign; signs.push_back(sign);
       frozen.push_back({{"id",candidate.id},{"family",candidate.family},{"dsl_sha256",candidate.dsl_sha},
@@ -472,7 +607,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
           {"orientation_horizon",21},{"orientation_dates",orientation.valid_dates},
           {"diagnostic_keep",!scored.screen.reject},{"composition_selection","all-fixed-candidates-no-screen-selection"},{"reason",ex::ic_screen_reason_name(scored.screen.reason)},
           {"fit_status","noisy-TRAIN-sample-orientation-not-significance"},
-          {"ic",result_json(scored,sign)}});
+          {"ic",result_json(scored,sign,candidate_print)}});
     }
     const auto sign=signs[k];
     // Pinned signs orient the blend only; every IC diagnostic keeps `sign`.
@@ -485,7 +620,11 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       total_composition_seconds+=composition_seconds;
     }
     series(daily,candidate.id,role,daily_series,sign);
-    auto summary=result_json(scored,sign);
+    auto summary=result_json(scored,sign,candidate_print);
+    if (legacy_scored) {
+      IcPrint legacy_print=print; legacy_print.daily=&legacy_series;
+      summary["ic_missing_exit_v1"]=result_json(*legacy_scored,sign,legacy_print);
+    }
     summary["id"]=candidate.id; summary["family"]=candidate.family;
     summary["frozen_train_sign"]=sign; summary["status"]="complete";
     // Present only with pinned weights: the applied blend weight/sign (NR input).
@@ -501,6 +640,7 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
       summary["stage_seconds"]["cache_write"]=acquired.cache_write;
       summary["signal_cache"]=acquired.hit?"hit":"miss";
       summary["ic_result_cache"]=cached_ic?"hit":"miss";
+      if (legacy_scope) summary["ic_missing_exit_v1_result_cache"]=cached_legacy?"hit":"miss";
     }
     summaries.push_back(summary); ledger<<summary.dump()<<'\n'<<std::flush;
     if (!daily || !ledger) return co::Err(co::ErrorCode::IoError,"IC runner: candidate output");
@@ -517,16 +657,24 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   fields.drop_all(vm); release(signal_buffer);
   // --no-composition stops at the member rows: no blend, `__combined__` rows,
   // planned targets or saved artifact.
-  std::optional<IcCompositionResult> combined; Json combined_ic_json;
+  std::optional<IcCompositionResult> combined; Json combined_ic_json,combined_legacy_json;
   if (composition) {
     const auto finish_started=std::chrono::steady_clock::now();
     ATX_TRY(combined,composition->finish());
     total_composition_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-finish_started).count();
     const auto combined_ic_started=std::chrono::steady_clock::now();
     ATX_TRY(auto combined_ic,ex::evaluate_research_ic(combined->signal,labels,scratch,pool.get()));
+    const auto combined_series=scratch_series(scratch);
+    IcPrint combined_print=print; combined_print.daily=&combined_series;
+    if (legacy_labels) {
+      ATX_TRY(auto legacy,ex::evaluate_research_ic(combined->signal,*legacy_labels,*legacy_scratch,pool.get()));
+      const auto legacy_series=scratch_series(*legacy_scratch);
+      IcPrint legacy_print=print; legacy_print.daily=&legacy_series;
+      combined_legacy_json=result_json(legacy,1,legacy_print);
+    }
     total_ic_seconds+=std::chrono::duration<f64>(std::chrono::steady_clock::now()-combined_ic_started).count();
-    series(daily,"__combined__",role,scratch_series(scratch),1);
-    combined_ic_json=result_json(combined_ic,1);
+    series(daily,"__combined__",role,combined_series,1);
+    combined_ic_json=result_json(combined_ic,1,combined_print);
     std::ofstream targets(dir/(spec.name+"_planned_targets.csv"),std::ios::binary);
     if (!targets) return co::Err(co::ErrorCode::IoError,"IC runner: target proxy output");
     targets.imbue(std::locale::classic()); targets<<std::setprecision(17);
@@ -561,9 +709,16 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
   if (combined) {
     result["stage_seconds"]["composition"]=total_composition_seconds;
     result["combined_ic"]=std::move(combined_ic_json);
+    if (terminal) result["combined_ic_missing_exit_v1"]=std::move(combined_legacy_json);
     result["planned_target_proxy"]={{"total_turnover",combined->total_planned_turnover},
         {"deployment_turnover",combined->deployment_turnover},{"deployment_date",combined->deployment_date},
         {"initial_deployment_included",true},{"actual_trades_or_costs",false}};
+    // P9 lane AL-COMB (ruling ALCOMB-5 S-3): theme-cov-hedge-v1's hedge ratios per theme and block
+    // and mom-volman-v1's scale per block; nothing unless those rules run.
+    ATX_TRY_VOID(add_theme_hedge_trace(pinned,role.session_keys,*combined,result));
+    ATX_TRY_VOID(add_mom_volman_trace(pinned,result));
+    // P9 lane D3W (ruling ALCOMB-6): the sleeve's series files; nothing unless that rule runs.
+    ATX_TRY_VOID(write_mom_volman_sleeves(pinned,role.session_keys,dir,spec.name));
   }
   if (save) {
     result["combined_artifact"]=std::move(saved);
@@ -575,20 +730,33 @@ co::Result<Json> score_role(const IcRunnerConfig& cfg,const Library& lib,const R
     // `directory`/`fields_directory` are the v1 locations (kept for v1 readers);
     // `entries` names each candidate's exact entry in either layout.
     result["candidate_cache"]={
-        {"directory",(cache_root(cfg)/spec.sha).string()},{"vm_identity",vm_identity()},
+        {"directory",(cache_root(cfg)/spec.sha).string()},{"vm_identity",vm_identity(cfg.audit_exact)},
         {"layout",cache_schema_v2},{"hits",cache_hits},{"legacy_hits",legacy_hits},
         {"misses",lib.candidates.size()-cache_hits},{"vm_evaluations",lib.candidates.size()-cache_hits},
         {"entries",std::move(cache_entries)}};
+    // P9 lane SQL4: present only under --candidate-cache-index sqlite (the entries are rows of
+    // DIR/index.sqlite; `sidecar` and the IC-result paths then name their rows' locations).
+    if (index) result["candidate_cache"]["index"]=std::string(kCacheIndexSqlite);
     if (!lib.extra_fields.empty())
       result["candidate_cache"]["fields_directory"]=(cache_root(cfg)/spec.fields.sha).string();
     // Entries live beside each signal entry: <entry dir>/<subdirectory>/<entry stem>.json.
     result["candidate_cache"]["ic_results"]={{"subdirectory",ic_scope->directory},
         {"identity",ic_identity()},{"key",ic_scope->key},{"hits",ic_hits},
         {"misses",lib.candidates.size()-ic_hits}};
+    // Present exactly under --label-terminal (P9 S2, ruling S2-3): the missing-exit-v1 IC's scope.
+    if (legacy_scope)
+      result["candidate_cache"]["ic_results"]["missing_exit_v1"]={
+          {"subdirectory",legacy_scope->directory},{"key",legacy_scope->key},
+          {"hits",legacy_ic_hits},{"misses",lib.candidates.size()-legacy_ic_hits}};
   }
   // SHA-256 spent by this role (field and cache payload verification, cache
   // writes, IC-result scope) and the pinned payload bytes hashed to verify them.
   result["hash_seconds"]=meter.seconds; result["verify_bytes"]=meter.verify_bytes;
+  // Present exactly under --label-terminal (P9 S2): the rule, its label role and the second label cache.
+  if (terminal)
+    result["label_terminal"]={{"rule",cfg.label_terminal},{"label_role_manifest_sha256",label_role_sha},
+        {"missing_exit_v1_ic_cache_bytes",legacy_labels->bytes()},
+        {"missing_exit_v1_ic_scratch_bytes",legacy_scratch->bytes()}};
   // Present exactly when a fields manifest is pinned for this role.
   if (!spec.fields.sha.empty()) {
     Json loaded=Json::array(),files=Json::object();
@@ -626,17 +794,41 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (cfg.no_composition && !cfg.composition_weights_path.empty())
       return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --no-composition builds no blend, so "
           "--composition-weights (which only weight the blend) is refused with it");
-    if (cfg.audit_exact && !cfg.candidate_cache_directory.empty())
-      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --eval-mode audit-exact is refused with "
-          "--candidate-cache (its entries are keyed on ResearchFast)");
+    // P9 lane SQL4: the index needs its cache; --cache-report lists the file layout, which an
+    // indexed cache does not have.
+    const bool indexed=cfg.candidate_cache_index==CacheIndexMode::Sqlite;
+    if (indexed && cfg.candidate_cache_directory.empty())
+      return co::Err(co::ErrorCode::InvalidArgument,
+          "IC runner: --candidate-cache-index sqlite needs --candidate-cache");
+    if (indexed && cfg.cache_report)
+      return co::Err(co::ErrorCode::InvalidArgument,"IC runner: --cache-report lists the cache's "
+          "file layout; refused with --candidate-cache-index sqlite");
+    // P9 S2: --eval-mode audit-exact is allowed with --candidate-cache (its entries live under their
+    // own identity, vm_identity(true)); the IC method options are checked before any payload.
+    ATX_TRY_VOID(check_ic_method_options(cfg,validation_only));
     ATX_TRY(auto lib,library(cfg));
     // The theme table (P9 lane D1): --theme-registry's themes, else the built-in table.
     ATX_TRY(const auto themes,theme_table(cfg));
     // Both new options are fully validated here, before any role payload.
     ATX_TRY(const auto pinned,composition_weights(cfg,lib,themes));
+    // absent-members-v1 (P9 lane ABS): the list, checked against the library before any role
+    // payload or output (nullopt without the flag).
+    ATX_TRY(const auto absent,absent_members(cfg,lib));
+    const std::span<const u8> absent_mask=
+        absent?std::span<const u8>(absent->absent):std::span<const u8>{};
     const bool pinned_signs=!pinned.signs.empty();
     ATX_TRY_VOID(cache_preflight(cfg,lib));
     ATX_TRY(const auto known,legacy_manifests(cfg));
+    // P9 lane SQL4: the cache's one index object for the run (DIR/index.sqlite, never created
+    // here; opened before any role payload). --plan-only only reads it and prints no index line.
+    std::optional<CacheIndex> opened_index;
+    if (indexed) {
+      const auto access=metadata_only?IndexAccess::ReadOnly:IndexAccess::ReadWrite;
+      ATX_TRY(auto opened,CacheIndex::open(cfg.candidate_cache_directory,
+          metadata_only?nullptr:&progress,access));
+      opened_index.emplace(std::move(opened));
+    }
+    CacheIndex* const cache_index=opened_index?&*opened_index:nullptr;
     std::vector<Role> roles;
     // Fields bind at admission (metadata only); an unscored frozen TRAIN needs none. A scored role
     // over the memory budget is refused here, except under --plan-only, which prints every role's
@@ -644,12 +836,15 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     ATX_TRY(auto train,admit(cfg,lib,cfg.train_manifest,cfg.train_sha256,"train",pinned));
     if (!validation_only && !cfg.plan_only) ATX_TRY_VOID(within_budget(cfg,lib,train));
     ATX_TRY_VOID(bind_fields(lib,train,cfg.train_fields_directory,cfg.train_fields_sha256,!validation_only));
+    // P9 S2: a scored role's label role binds here, from both manifests (metadata only).
+    if (!cfg.label_terminal.empty() && !validation_only) ATX_TRY_VOID(admit_label_role(cfg,train));
     roles.push_back(std::move(train));
     if (!cfg.validation_manifest.empty()) {
       ATX_TRY(auto val,admit(cfg,lib,cfg.validation_manifest,cfg.validation_sha256,"validation",
                              pinned));
       if (!cfg.plan_only) ATX_TRY_VOID(within_budget(cfg,lib,val));
       ATX_TRY_VOID(bind_fields(lib,val,cfg.validation_fields_directory,cfg.validation_fields_sha256,true));
+      if (!cfg.label_terminal.empty()) ATX_TRY_VOID(admit_label_role(cfg,val));
       ATX_TRY_VOID(same_field_definitions(lib,roles.front(),val));
       if (roles.front().metadata.at("score_end_ns").get<i64>()>val.metadata.at("score_start_ns").get<i64>())
         return co::Err(co::ErrorCode::InvalidArgument,"IC runner: overlapping/nonchronological roles");
@@ -673,18 +868,21 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       progress<<listing.dump(2)<<'\n'; return co::Ok();
     }
     if (cfg.plan_only) {
-      // A scored role over the memory budget (P9 lane D1): the plan still prints, each role with
-      // within_budget and its memory terms (admit), then the run refuses exactly as an unplanned
-      // run does (the first such role's required_bytes message; exit 1). Within budget the plan's
-      // bytes are unchanged.
+      // A scored role over the memory budget (P9 lane D1): the plan still prints (without the K1
+      // candidate rows), each role with within_budget and its memory terms (admit), then the run
+      // refuses exactly as an unplanned run does (the first such role's required_bytes message;
+      // exit 1). Within budget the plan's bytes are unchanged.
       const auto over=std::find_if(roles.begin(),roles.end(),[&](const Role& role) {
         return role.bytes>cfg.max_working_bytes;
       });
-      // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count.
+      // `candidates`: contract K1 rows (candidate_plan_rows); the count is candidate_count. P9 lane
+      // D2 (D1 review minor): a refused plan omits the K1 rows, so its saved stdout can never load
+      // as a valid K1 plan (--plan-json); within budget the keys and bytes are the v8 plan's.
       Json plan{{"mode","metadata-only-no-payload"},{"candidate_count",lib.candidates.size()},
-          {"candidates",candidate_plan_rows(lib)},{"max_working_bytes",cfg.max_working_bytes},
+          {"max_working_bytes",cfg.max_working_bytes},
           {"max_compiled_slots",lib.max_slots},{"required_lookback",lib.lookback},{"workers",cfg.workers},
           {"library_sha256",cfg.library_sha256},{"roles",Json::array()}};
+      if (over==roles.end()) plan["candidates"]=candidate_plan_rows(lib);
       for (const auto& role:roles) {
         Json row{{"role",role.name},{"manifest_sha256",role.sha},{"required_bytes",role.bytes}};
         if (over!=roles.end()) {
@@ -720,7 +918,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
       if (!cfg.candidate_cache_directory.empty()) {
         plan["candidate_cache"]=Json::array();
         for (const auto& role:roles) {
-          ATX_TRY(auto entry,cache_plan(cfg,lib,role,known)); plan["candidate_cache"].push_back(std::move(entry));
+          ATX_TRY(auto entry,cache_plan(cfg,lib,role,known,cache_index));
+          plan["candidate_cache"].push_back(std::move(entry));
         }
       }
       progress<<plan.dump(2)<<'\n';
@@ -729,6 +928,17 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     auto recipe=method_recipe(cfg,true,pinned_signs,&pinned);
     for (const auto& role:roles) recipe["role_manifest_sha256"][role.name]=role.sha;
+    // P9 S2: each scored role's label role pin. `roles` holds only scored roles here (a
+    // validation-only run erased its frozen TRAIN above), so an unscored TRAIN's optional pin is
+    // never written, empty or not; its real pin travels in frozen_train_recipe (fix round 1).
+    if (!cfg.label_terminal.empty())
+      for (const auto& role:roles) {
+        const auto pin=label_role_pin(cfg,role.name).sha;
+        if (pin.empty())
+          return co::Err(co::ErrorCode::Internal,
+              "IC runner: scored "+role.name+" role without a label role pin");
+        recipe["label_role_manifest_sha256"][role.name]=pin;
+      }
     if (fields_pinned(cfg)) recipe["research_fields"]=fields_recipe(fields_pins(cfg),lib);
     if (validation_only) {
       recipe["role_manifest_sha256"]["train"]=cfg.train_sha256;
@@ -754,6 +964,9 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     if (recipe.contains("research_fields")) report["research_fields"]=recipe.at("research_fields");
     // Not a method input (recipe unchanged): the pass scored IC and orientations only.
     if (cfg.no_composition) report["composition"]="skipped";
+    // Present only with --absent-members (P9 lane ABS): the list the pass applied. Not a method
+    // input either: the recipe and every cache key are those of the run on the data removed.
+    if (absent) report["absent_members"]=absent_members_record(*absent);
     std::vector<int> signs; Json orientations=Json::array();
     if (validation_only) {
       signs=std::move(recovered.signs);
@@ -768,8 +981,8 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
     }
     ATX_TRY_VOID(write_json(dir/"summary.json",report));
     for (const auto& role:roles) {
-      auto scored=score_role(cfg,lib,role,known,pinned,signs,orientations,recipe_sha,
-          report.value("orientations_artifact_sha256",std::string{}),progress);
+      auto scored=score_role(cfg,lib,role,known,pinned,absent_mask,signs,orientations,recipe_sha,
+          report.value("orientations_artifact_sha256",std::string{}),cache_index,progress);
       if (!scored) {
         report["status"]="failed"; report["error"]=scored.error().to_string();
         ATX_TRY_VOID(write_json(dir/"summary.json",report)); return co::Err(scored.error());
@@ -804,20 +1017,29 @@ co::Status run_ic(const IcRunnerConfig& cfg,std::ostream& progress) {
 }
 int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
   IcRunnerConfig cfg;
+  // absent-members-v1 (P9 lane ABS): each of its two flags at most once ([0] list, [1] pin).
+  std::array<bool,2> absent_given{};
+  bool cache_index_given=false; // P9 lane SQL4: --candidate-cache-index
   try {
     // K-P9-6 (P9 lane D1): `--list-rules --json` prints the composition rule table and the exe's
     // capabilities (strategy_ic_rules.hpp list_rules_json) and nothing else; it takes no other
-    // option (JSON is its only format).
-    for (int i=1;i<argc;++i)
-      if (std::string_view(argv[i])=="--list-rules") {
-        const bool json_flag=argc==3 &&
-            (std::string_view(argv[1])=="--json" || std::string_view(argv[2])=="--json");
-        if (!json_flag) throw std::invalid_argument("--list-rules takes exactly --json");
+    // option (JSON is its only format). P9 lane D2 (D1 review minor): the verb is argv[1] and
+    // argv[2] alone (either order), so an option value spelled --list-rules is an ordinary value;
+    // a --list-rules anywhere else reaches the general parse, which refuses it (unknown option).
+    if (argc>=2 && std::string_view(argv[1])=="--list-rules" && argc!=3)
+      throw std::invalid_argument("--list-rules takes exactly --json");
+    if (argc==3) {
+      const std::string_view first(argv[1]),second(argv[2]);
+      if (first=="--list-rules" || second=="--list-rules") {
+        const bool pair=(first=="--list-rules" && second=="--json") ||
+                        (first=="--json" && second=="--list-rules");
+        if (!pair) throw std::invalid_argument("--list-rules takes exactly --json");
         const auto listing=list_rules_json();
         if (!listing) { err<<listing.error().to_string()<<'\n'; return 1; }
         out<<listing->dump(2)<<'\n';
         return 0;
       }
+    }
     for (int i=1;i<argc;++i) {
       const std::string key=argv[i];
       if (key=="--plan-only") { cfg.plan_only=true; continue; }
@@ -827,11 +1049,16 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       if (key=="--help") {
         out<<"equity-strategy-ic --library JSON --library-sha256 SHA --train MANIFEST --train-sha256 SHA --output NEWDIR "
                "[--validation MANIFEST --validation-sha256 SHA --max-memory-mib N --min-names N --min-dates N --workers 1..16 --plan-only --save-combined] [--orientations TRAIN_ARTIFACT --orientations-sha256 SHA] "
-               "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report]] "
+               "[--candidate-cache DIR [--cache-legacy-fields DIR]... [--cache-report] "
+               "[--candidate-cache-index files|sqlite]] "
                "[--composition-weights JSON --composition-weights-sha256 SHA] "
                "[--train-fields DIR --train-fields-sha256 SHA] [--validation-fields DIR --validation-fields-sha256 SHA] "
                "[--no-composition] [--eval-mode audit-exact] "
                "[--theme-registry JSON --theme-registry-sha256 SHA] "
+               "[--min-coverage F] [--ic-hac-rule bartlett-2h-v1|horizon-aware-v3] "
+               "[--label-terminal imputed-v1 --train-label-role MANIFEST --train-label-role-sha256 SHA "
+               "[--validation-label-role MANIFEST --validation-label-role-sha256 SHA]] "
+               "[--absent-members JSON --absent-members-sha256 SHA] "
                "| --list-rules --json\n"
                "  verbs: marginal (marginal IC of each candidate against a saved blend, contract K6; see\n"
                "    `atx-equity-strategy-ic marginal --help`); ic (this option list, also the default).\n"
@@ -845,13 +1072,33 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
                "    run's), no blend, __combined__ rows, planned targets or saved blend; with --candidate-cache a\n"
                "    candidate whose signal and IC result are both cached is not loaded. Refuses --composition-weights.\n"
                "  --eval-mode audit-exact: task H-2 cost measurement; every candidate under the VM's AuditExact mode\n"
-               "    (the recipe's vm names it); refused with --candidate-cache (its entries are keyed on ResearchFast).\n"
+               "    (the recipe's vm names it); with --candidate-cache its entries live under their own identity\n"
+               "    (<vm-identity>_audit), never shared with ResearchFast entries.\n"
+               "  --min-coverage F: the IC screen's coverage gate in (0, 1] (default .8); a non-default value is\n"
+               "    recorded in the recipe and keys the IC-result cache.\n"
+               "  --ic-hac-rule: the IC screen's HAC rule (default bartlett-2h-v1: Bartlett lag max(2h, NW) with\n"
+               "    an IID floor; horizon-aware-v3: eval/hac.hpp's combine rule); given, the recipe records it and\n"
+               "    every estimate prints its standard error and lag under both rules.\n"
+               "  --label-terminal imputed-v1: a name whose exit session is absent exits at the first session in\n"
+               "    (d+1, d+1+h] its pinned label role (the role builder's --delisting-returns build of that\n"
+               "    role) prices, at that imputed close, then holds cash; read as labels only. Each candidate\n"
+               "    also prints its IC under today's labels (ic_missing_exit_v1) and the missing-exit share.\n"
+               "  --absent-members: absent-members-v1, an atx.od3-flagged-members/v1 list\n"
+               "    ({schema, members: [id, ...]}, other keys ignored): each listed candidate is\n"
+               "    treated on every date as a member with no data (its mass stays in its theme;\n"
+               "    weights, signs and verify unchanged); summary.json records absent_members.\n"
+               "    Each flag at most once; refused with --no-composition.\n"
                "  --*-fields: atx.research-role-fields/v1 directory bound to that role; SHA pins DIR/manifest.json.\n"
                "  --candidate-cache: content-keyed entries (v2) under DIR[/<vm-identity>]/<role-sha>/[fp_<fk16>/]\n"
                "    <id>.<dsl16>.{f64,json}, keyed on the DSL and the payload SHA256 of each field it reads; v1 entries\n"
                "    (<role-or-fields-sha>/<id>.{f64,json}) are read in place. Publication does not fsync; killed writes\n"
                "    leave inert .partial files (safe to delete); a foreign/corrupt entry refuses loudly. It also caches\n"
                "    IC results beside each entry: ic<v>_<key>/<stem>.json, keyed on signal bytes.\n"
+               "  --candidate-cache-index files|sqlite (default files: the layout above): sqlite\n"
+               "    keeps signal and IC-result entries as rows of DIR/index.sqlite (made only by\n"
+               "    atx-research-store cache init DIR; refused without it); payloads stay files,\n"
+               "    legacy files are read through and imported, and summary.json's\n"
+               "    candidate_cache records \"index\": \"sqlite\".\n"
                "  --cache-legacy-fields DIR (repeatable): a fields directory whose manifest keyed v1 field entries;\n"
                "    such an entry hits when every field its DSL reads has the pinned manifest's payload SHA256.\n"
                "  --cache-report: metadata only; prints per-role hits/misses and the unreferenced cache entries with\n"
@@ -892,6 +1139,11 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
       else if (key=="--orientations-sha256") cfg.orientations_sha256=value;
       else if (key=="--output") cfg.output_directory=value;
       else if (key=="--candidate-cache") cfg.candidate_cache_directory=value;
+      else if (key=="--candidate-cache-index") {
+        const auto mode=parse_cache_index_mode(value);
+        if (!mode) throw std::invalid_argument("--candidate-cache-index takes files or sqlite");
+        cfg.candidate_cache_index=*mode; cache_index_given=true;
+      }
       else if (key=="--cache-legacy-fields") cfg.candidate_cache_legacy_fields.push_back(value);
       else if (key=="--composition-weights") cfg.composition_weights_path=value;
       else if (key=="--composition-weights-sha256") cfg.composition_weights_sha256=value;
@@ -909,8 +1161,37 @@ int dispatch_ic(int argc,char** argv,std::ostream& out,std::ostream& err) {
         if (value!="audit-exact") throw std::invalid_argument("--eval-mode takes audit-exact");
         cfg.audit_exact=true;
       }
+      // P9 S2: IC method options (run_ic checks each before any payload).
+      else if (key=="--min-coverage") {
+        if (value.empty() || value.front()=='-' || value.front()=='+')
+          throw std::invalid_argument("--min-coverage takes a number in (0, 1]");
+        usize used{}; const auto v=std::stod(value,&used);
+        if (used!=value.size() || !std::isfinite(v)) throw std::invalid_argument("--min-coverage: invalid number");
+        cfg.min_coverage=v;
+      }
+      else if (key=="--ic-hac-rule") cfg.ic_hac_rule=value;
+      else if (key=="--label-terminal") cfg.label_terminal=value;
+      else if (key=="--train-label-role") cfg.train_label_role=value;
+      else if (key=="--train-label-role-sha256") cfg.train_label_role_sha256=value;
+      else if (key=="--validation-label-role") cfg.validation_label_role=value;
+      else if (key=="--validation-label-role-sha256") cfg.validation_label_role_sha256=value;
+      else if (key=="--absent-members" || key=="--absent-members-sha256") {
+        // A second list or pin would silently replace the first: refused (contract section 3).
+        const bool pin=key=="--absent-members-sha256";
+        if (std::exchange(absent_given[pin?1U:0U],true))
+          throw std::invalid_argument(key+" given more than once");
+        (pin?cfg.absent_members_sha256:cfg.absent_members_path)=value;
+      }
       else throw std::invalid_argument("unknown option: "+key);
     }
+    // P9 lane SQL4: usage refusals (exit 2). The index is never created here; its presence only
+    // refuses, it never selects a backend.
+    if (cache_index_given && cfg.candidate_cache_directory.empty())
+      throw std::invalid_argument("--candidate-cache-index needs --candidate-cache");
+    if (cfg.candidate_cache_index==CacheIndexMode::Sqlite &&
+        !cache_index_present(cfg.candidate_cache_directory))
+      throw std::invalid_argument("--candidate-cache-index sqlite needs DIR/index.sqlite (made by "
+                                  "atx-research-store cache init DIR)");
     const auto result=run_ic(cfg,out);
     if (!result) { err<<result.error().to_string()<<'\n'; return 1; }
     return 0;
