@@ -14,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "atx/vol/api/fitting/expiry_record.hpp"
@@ -515,6 +516,78 @@ TEST(ChainTickRecords, ShapeErrorsAreRefusedAndTheTickAllocatesNothing) {
   const std::uint64_t n = atx::vol::testkit::count_allocations(
       [&] { (void)refresh_chain_records(101.0, v, *recs, ov); });
   EXPECT_EQ(n, 0u);
+}
+
+// Serve-path item 5: the opt-in multi-worker record build
+// (ChainRecordPolicy::build_workers) is perf-only. For 3 workers and for auto (0)
+// the bank, the contract map, every certificate and every served value are
+// bit-identical to the default inline build.
+TEST(ChainTickRecords, ParallelBuildIsBitIdenticalToTheInlineBuild) {
+  const SmallChain c = make_chain();
+  const Result<ChainRecords> ref = ChainRecords::build(kS0, c.view());
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_EQ(ChainRecordPolicy{}.build_workers, 1u) << "the default stays inline";
+  std::size_t compared = 0;
+  for (const unsigned workers : {3u, 0u}) {
+    ChainRecordPolicy pol;
+    pol.build_workers = workers;
+    const Result<ChainRecords> par = ChainRecords::build(kS0, c.view(), pol);
+    ASSERT_TRUE(par.has_value()) << "workers=" << workers;
+    ASSERT_EQ(par->bank().size(), ref->bank().size());
+    EXPECT_TRUE(bits_equal(par->worst_certified_error_fwd(), ref->worst_certified_error_fwd()));
+    ASSERT_EQ(par->record_of_contract().size(), ref->record_of_contract().size());
+    for (std::size_t i = 0; i < c.strike.size(); ++i) {
+      EXPECT_EQ(par->record_of_contract()[i], ref->record_of_contract()[i]) << i;
+    }
+    for (std::size_t r = 0; r < ref->bank().size(); ++r) {
+      const ExpiryRecord &a = *ref->bank().at(r);
+      const ExpiryRecord &b = *par->bank().at(r);
+      EXPECT_TRUE(bits_equal(a.certified_max_abs_error_fwd(), b.certified_max_abs_error_fwd()));
+      EXPECT_EQ(a.certified_points(), b.certified_points());
+      EXPECT_EQ(a.side(), b.side());
+      EXPECT_TRUE(bits_equal(a.expiry(), b.expiry()));
+      for (int j = 0; j <= 20; ++j) {
+        const double k = a.k_min() + (a.k_max() - a.k_min()) * j / 20.0;
+        const double K = kS0 * a.forward_factor() * std::exp(k);
+        for (int m = 0; m <= 8; ++m) {
+          const double sig = a.sigma_min() + (a.sigma_max() - a.sigma_min()) * m / 8.0;
+          const RecordGreeks ga = a.greeks(kS0, K, sig);
+          const RecordGreeks gb = b.greeks(kS0, K, sig);
+          EXPECT_TRUE(bits_equal(ga.price, gb.price) && bits_equal(ga.delta, gb.delta) &&
+                      bits_equal(ga.gamma, gb.gamma) && bits_equal(ga.vega, gb.vega))
+              << "record " << r << " k=" << k << " sig=" << sig;
+          ++compared;
+        }
+      }
+    }
+  }
+  EXPECT_GT(compared, 1500u);
+}
+
+// ... and on failure it reports exactly the inline build's error: the first
+// failing group in input order. Here a put group in the double-continuation
+// regime (q < r <= 0), which ExpiryRecord::build refuses as NotImplemented,
+// follows the four valid groups.
+TEST(ChainTickRecords, ParallelBuildReportsTheInlineBuildsError) {
+  SmallChain c = make_chain();
+  for (int j = 0; j < 3; ++j) {
+    c.strike.push_back(kS0 * (0.95 + 0.05 * j));
+    c.expiry.push_back(0.25);
+    c.sigma.push_back(0.3);
+    c.rate.push_back(-0.01);
+    c.carry.push_back(-0.02);
+    c.side.push_back(Side::Put);
+  }
+  ChainRecordPolicy pol;
+  pol.certify = false;
+  const Result<ChainRecords> serial = ChainRecords::build(kS0, c.view(), pol);
+  ASSERT_FALSE(serial.has_value());
+  EXPECT_EQ(serial.error().code(), ErrorCode::NotImplemented);
+  pol.build_workers = 3;
+  const Result<ChainRecords> par = ChainRecords::build(kS0, c.view(), pol);
+  ASSERT_FALSE(par.has_value());
+  EXPECT_EQ(par.error().code(), serial.error().code());
+  EXPECT_EQ(par.error().to_string(), serial.error().to_string());
 }
 
 // ── Implied vol against the record (audit item 3) ────────────────────────────

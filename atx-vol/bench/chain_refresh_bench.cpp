@@ -55,7 +55,8 @@
 //   all 2,000 contracts (audit item 3); see run_iv below.
 //   chain/serve/<route>/n2000 compare the serving routes at S0 (run_serve) and
 //   chain/catchup/jump7/<order>_b<budget>/n{600,2000} time the spot ladder's
-//   catch-up after a +7% jump (run_catchup).
+//   catch-up after a +7% jump (run_catchup); chain/records/build/<variant>/n2000
+//   time one refit-time ChainRecords::build (run_records_build).
 //   NOT IMPLEMENTED: markov_batch (opt-in, never gated per §4).
 //
 // Every number this bench prints on a shared host is UNQUALIFIED. Only a quiet
@@ -83,6 +84,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_batch.hpp"
 #include "atx/vol/api/pricing/chain_tick.hpp"
+#include "pricing/al_probe.hpp" // opt-in AL zone profile of the record-build rows
 
 #include "bench_util.hpp"
 
@@ -1096,6 +1098,88 @@ void run_catchup(benchmark::State &state, bool n600, SpotLadderRebuildOrder orde
   state.counters["contracts"] = static_cast<double>(n);
 }
 
+// ── Record build (serve-path lane, 2026-10-17, item 5) ───────────────────────
+//
+// Rows chain/records/build/<variant>/n2000: one iteration is one refit-time
+// ChainRecords::build of the 2,000-contract chain (40 records). `certified` is
+// the default policy; `uncertified` sets ChainRecordPolicy::certify = false, so
+// `uncertified` alone is the sampling pass (one boundary solve per sigma node,
+// the box-end edge solves and 192 premium samples per record) and the
+// difference is the certification pass (one accurate boundary solve per check
+// sigma plus the cold reference prices). `certified_w3` is the default policy
+// with the opt-in ChainRecordPolicy::build_workers = 3 (records built on three
+// worker threads; identical records). Counters: ms_per_build (p50), records,
+// cert_err_fwd_max, build_workers, and rec_fp_hi / rec_fp_lo: the two 32-bit
+// halves (exact in a double) of an FNV-1a hash over every record's certificate,
+// certified point count and greeks() on a 9 x 5 (k, sigma) grid, so two builds
+// or two binaries can be compared for bit-identical records.
+
+[[nodiscard]] std::uint64_t records_fingerprint(const ChainRecords &recs) {
+  std::uint64_t h = 0xCBF29CE484222325ull;
+  for (std::size_t r = 0; r < recs.bank().size(); ++r) {
+    const ExpiryRecord &rec = *recs.bank().at(r);
+    fnv_mix(h, rec.certified_max_abs_error_fwd());
+    fnv_mix(h, static_cast<double>(rec.certified_points()));
+    for (int j = 0; j <= 8; ++j) {
+      const double k = rec.k_min() + (rec.k_max() - rec.k_min()) * j / 8.0;
+      const double K = kSpot0 * rec.forward_factor() * std::exp(k);
+      for (int m = 0; m <= 4; ++m) {
+        const double sig = rec.sigma_min() + (rec.sigma_max() - rec.sigma_min()) * m / 4.0;
+        const RecordGreeks g = rec.greeks(kSpot0, K, sig);
+        fnv_mix(h, g.price);
+        fnv_mix(h, g.delta);
+        fnv_mix(h, g.gamma);
+        fnv_mix(h, g.vega);
+      }
+    }
+  }
+  return h;
+}
+
+void run_records_build(benchmark::State &state, bool certify, unsigned workers) {
+  const SyntheticChain &c = chain();
+  ChainRecordPolicy pol;
+  pol.certify = certify;
+  pol.build_workers = workers;
+  std::vector<double> lat;
+  lat.reserve(static_cast<std::size_t>(state.max_iterations));
+  double worst_cert = 0.0;
+  std::size_t records = 0;
+  std::uint64_t fp = 0;
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    const Clock::time_point t0 = Clock::now();
+    Result<ChainRecords> r = ChainRecords::build(kSpot0, c.view(), pol);
+    const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+    if (!r) {
+      state.SkipWithError("ChainRecords::build failed");
+      break;
+    }
+    benchmark::DoNotOptimize(r->bank().size());
+    state.SetIterationTime(dt);
+    if (lat.size() < lat.capacity()) {
+      lat.push_back(dt);
+    }
+    worst_cert = r->worst_certified_error_fwd();
+    records = r->bank().size();
+    fp = records_fingerprint(*r); // untimed: after the clock stopped
+  }
+  state.counters["rec_fp_hi"] = static_cast<double>(fp >> 32);
+  state.counters["rec_fp_lo"] = static_cast<double>(fp & 0xFFFFFFFFull);
+  std::sort(lat.begin(), lat.end());
+  state.counters["ms_per_build"] = 1.0e-3 * quantile_us(lat, 0.5);
+  state.counters["records"] = static_cast<double>(records);
+  state.counters["cert_err_fwd_max"] = certify ? worst_cert : 0.0;
+  state.counters["build_workers"] = static_cast<double>(workers);
+  // Profile (opt-in, off by default): with ATX_VOL_AL_PROBE=z the Andersen-Lake
+  // zone table (boundary solves vs premium / price quadratures) of every build
+  // this process ran goes to stderr. The table is process-cumulative, so run one
+  // row per process when reading it.
+  if (alprobe::enabled()) {
+    alprobe::dump(stderr);
+  }
+}
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -1191,6 +1275,24 @@ const bool kRegistered = [] {
           run_catchup(state, row.n600, row.order, row.budget);
         });
     apply_common(b)->UseManualTime()->Iterations(10)->Unit(benchmark::kMicrosecond);
+  }
+  // Record build (item 5): certified (default), the sampling pass alone, and the
+  // opt-in three-worker build.
+  struct BuildRow {
+    const char *name;
+    bool certify;
+    unsigned workers;
+  };
+  constexpr std::array<BuildRow, 3> kBuildRows = {{
+      {"chain/records/build/certified/n2000", true, 1u},
+      {"chain/records/build/uncertified/n2000", false, 1u},
+      {"chain/records/build/certified_w3/n2000", true, 3u},
+  }};
+  for (const BuildRow &row : kBuildRows) {
+    benchmark::internal::Benchmark *b = benchmark::RegisterBenchmark(
+        row.name,
+        [row](benchmark::State &state) { run_records_build(state, row.certify, row.workers); });
+    apply_common(b)->UseManualTime()->Iterations(3)->Unit(benchmark::kMillisecond);
   }
   return true;
 }();

@@ -264,12 +264,22 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
     s_nodes[j] = detail::cheb_from_unit(detail::cheb_node(j, kNs), spec.sigma_min, spec.sigma_max);
   }
 
+  // The edge pass's two box-end boundaries (sigma_min, sigma_max). With the
+  // default sampling scheme (sample_opts == nullopt, the accurate preset) they are
+  // exactly the boundaries certification's two box-end rows would solve, so
+  // certification reuses them instead of solving them again (serve-path item 5:
+  // 2 of the record's 27 boundary solves). A cold solve re-initialises its nodes,
+  // geometry and seed (al_solve_put_boundary), so the reused state is the one a
+  // fresh solve produces.
+  std::unique_ptr<BoundaryWork[]> ends;
+  double e_lo = kNaN;
+  double e_hi = kNaN;
   if (rec.american_) {
     const amer::AlScheme sch = amer::scheme_from_opts(spec.sample_opts);
     // One retained boundary per sigma node (~45 KB each, build-time heap only):
     // the edge pass and the sampling pass share them instead of re-solving.
     const auto rows = std::make_unique<BoundaryWork[]>(kNs);
-    const auto work = std::make_unique<BoundaryWork>();
+    ends = std::make_unique<BoundaryWork[]>(2);
     std::array<double, kNs> kstar{};
     for (std::uint16_t j = 0; j < kNs; ++j) {
       kstar[j] = solve_edge(rows[j], ip, T, s_nodes[j], S1, sch);
@@ -280,8 +290,8 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
     }
     // The edge is monotone in sigma, so its extent over the box is set by the two
     // box ends; Chebyshev nodes are interior, hence the two extra solves.
-    const double e_lo = solve_edge(*work, ip, T, spec.sigma_min, S1, sch);
-    const double e_hi = solve_edge(*work, ip, T, spec.sigma_max, S1, sch);
+    e_lo = solve_edge(ends[0], ip, T, spec.sigma_min, S1, sch);
+    e_hi = solve_edge(ends[1], ip, T, spec.sigma_max, S1, sch);
     double e_min = std::min(e_lo, e_hi);
     double e_max = std::max(e_lo, e_hi);
     for (const double e : kstar) {
@@ -336,6 +346,8 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
 
     const amer::AlScheme acc = amer::scheme_from_opts(std::nullopt);
     const auto work = std::make_unique<BoundaryWork>();
+    const bool reuse_ends = rec.american_ && !spec.sample_opts.has_value();
+    BoundaryWork *cur = work.get(); // the accurate boundary of the current check sigma
     double worst = 0.0;
     std::uint32_t pts = 0;
     std::uint32_t refused_rows = 0;
@@ -345,7 +357,7 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
       if (!rec.american_) {
         cold = black76_price(1.0, K, T, sigma, rec.df_, spec.side);
       } else if (cold_ok) {
-        cold = cold_price_at(*work, ip, k, sigma, T, S1);
+        cold = cold_price_at(*cur, ip, k, sigma, T, S1);
       } else {
         return;
       }
@@ -354,9 +366,15 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
       worst = std::max(worst, std::isfinite(err) ? err : kInf);
       ++pts;
     };
-    for (const double sc : s_check) {
+    for (std::size_t c = 0; c < s_check.size(); ++c) {
+      const double sc = s_check[c];
       bool cold_ok = true;
-      if (rec.american_) {
+      cur = work.get();
+      if (reuse_ends && (c == 0u || c == kNs)) {
+        // s_check[0] == sigma_min and s_check[kNs] == sigma_max exactly.
+        cur = &ends[c == 0u ? 0u : 1u];
+        cold_ok = std::isfinite(c == 0u ? e_lo : e_hi);
+      } else if (rec.american_) {
         cold_ok = std::isfinite(solve_edge(*work, ip, T, sc, S1, acc));
       }
       if (!cold_ok) {

@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "core/parallel_for.hpp" // opt-in refit-time record fan-out
 
 namespace atx::vol {
 
@@ -113,11 +115,10 @@ Result<ChainRecords> ChainRecords::build(double spot, const ChainContractsView &
     group_of[i] = static_cast<std::uint32_t>(g);
   }
 
-  ChainRecords out;
-  out.bank_ = ExpiryRecordBank(groups.size());
-  out.worst_cert_ = 0.0;
-  for (const Group &G : groups) {
-    ExpiryRecordSpec spec;
+  std::vector<ExpiryRecordSpec> specs(groups.size());
+  for (std::size_t g = 0; g < groups.size(); ++g) {
+    const Group &G = groups[g];
+    ExpiryRecordSpec &spec = specs[g];
     spec.expiry = G.T;
     spec.carry = ExpiryCarry{G.r, G.q, {}};
     spec.side = G.side;
@@ -133,7 +134,20 @@ Result<ChainRecords> ChainRecords::build(double spot, const ChainContractsView &
     }
     spec.sample_opts = policy.sample_opts;
     spec.certify = policy.certify;
-    Result<ExpiryRecord> rec = ExpiryRecord::build(spec);
+  }
+  // Each worker writes only its own slot, from its own spec (a pure function of
+  // the spec), so the records are identical for any worker count (serve-path
+  // item 5). The bank is filled serially in group order afterwards, so the error
+  // returned is the one the serial loop would have stopped at. A worker count of
+  // 1 runs the loop inline (parallel_for_dynamic's serial width).
+  std::vector<std::optional<Result<ExpiryRecord>>> built(groups.size());
+  parallel_for_dynamic(groups.size(), policy.build_workers,
+                       [&](std::size_t g) { built[g].emplace(ExpiryRecord::build(specs[g])); });
+  ChainRecords out;
+  out.bank_ = ExpiryRecordBank(groups.size());
+  out.worst_cert_ = 0.0;
+  for (std::size_t g = 0; g < groups.size(); ++g) {
+    const Result<ExpiryRecord> &rec = *built[g];
     if (!rec) {
       return Err(rec.error());
     }

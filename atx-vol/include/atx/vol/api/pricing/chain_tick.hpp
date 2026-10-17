@@ -11,7 +11,10 @@
 //   * INLINE on the calling thread. Nothing here dispatches to the pricing pool:
 //     a PricingExecutor wake costs ~124 us (pricing_executor.cpp), 41% of the
 //     300 us chain budget, so the tick path must never touch it. Pin the calling
-//     thread to an isolated P-core instead (the bench does, audit item 5a).
+//     thread to an isolated P-core instead (the bench does, audit item 5a). The
+//     one exception is opt-in and off the tick: the refit-time ChainRecords::build
+//     may fan its records out over its own worker threads
+//     (ChainRecordPolicy::build_workers; default 1 = inline).
 //   * Caller-owned structure-of-arrays outputs, sized once and reused per tick.
 //   * One `TickStatus` byte per contract instead of a per-contract
 //     Result<..., std::string>; `Status` reports only call-shape errors, at the
@@ -126,6 +129,14 @@ struct ChainRecordPolicy {
   double sigma_hi_mult = 1.6;
   std::optional<AlOpts> sample_opts = std::nullopt; // nullopt = accurate preset
   bool certify = true;
+  // Refit-time worker threads for ChainRecords::build. 1 (default) builds every
+  // record inline on the calling thread; N > 1 builds the independent
+  // per-(T, r, q, side) records on N std::jthread workers (never the pricing
+  // pool); 0 resolves to ATX_VOL_FIT_WORKERS, else the hardware thread count.
+  // Opt-in and perf-only: each record is built from its own spec alone and the
+  // bank is filled in group order afterwards, so the records, the contract map
+  // and the reported error are identical for any worker count.
+  unsigned build_workers = 1;
 };
 
 // The records of one chain plus the contract -> record map. Built once per refit
