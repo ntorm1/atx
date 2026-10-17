@@ -1,0 +1,34 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "info-clock-rate-v1",
+  "description": "P9 cell P9-C (lane AL-CLOCK, task-AL-CLOCK-report.md; plan DEC-16: ruled distinct from Y-5 before any Y read; registration scripts/specs/p9/rules/info-clock-rate-v1.json, every constant fixed blind before any read): NAV trade-rate rule info-clock-rate-v1. Hypothesis (Bowles, Reed, Ringgenberg and Thornock 2024, Anomaly Time, Journal of Finance 79(5), sample 1990-2019, lit section 2.3 [29]: anomaly returns concentrate in the first month after a firm's information release and decay soon after; Engelberg, McLean and Pontiff 2018, Journal of Finance 73(5) [28]: anomaly returns are several times higher on earnings days): a book that moves a name toward its aim faster in the month after the name's latest earnings announcement holds more of the signal while it still pays, at the same aim and the same total trade toward it (a step change: only the participation per day changes). Rule (atx-impl book/nav_decide.cpp nav_info_clock_rates; strategy_nav_replay.hpp states it): at each rebalance decision d, aim-partial-v5's theta per member i is theta_f = 1 - 2^(-C/5) at the rebalance cadence C (Y-5's registered two_speed_fast_theta, Ruling W3-16; .12945 at C = 1) when the role field ea_days_since (sessions since the reaction session of the name's latest visible primary earnings announcement, row d) lies in [0, 21] (one month, [29]), else theta_s = .05 (the parent's theta, two_speed_slow_theta; a NaN clock, no fresh announcement, is slow); one rate vector per decision for every book; the aim (L x desired), the dust band, the exit and every other rule of the parent are unchanged. The change comes only from the atx.research-wave/v2 manifest's rules block [{name: info-clock-rate-v1, params: {}}] (Ruling ALCOMB-1; the NAV flag --rate info-clock-rate-v1 is derived from the NAV exe's K-P9-7 row x-flag through wave_kinds.rule_flags, never from this template); the parent must run --rule aim-partial-v5 at --trade-fraction .05 with the fixed rate, without --two-speed, aim-partial-v6 or an spo rule (the NAV exe refuses each), and its --fields manifest must list ea_days_since, point in time (the NAV exe refuses otherwise). --capacity-curve runs with the rule (Ruling ALCLOCK-3). NAV-only: the u, w, fit and card passes are the parent's; nav and monitor outputs renamed. Gross matching (PM6-6, gross_match pm6-6-engine in the wave manifest) binds the cell: the per-name rates change the book's planned gross, so the cell is judged at the parent's dollar gross through C2's calibration. Acceptance (PM7-34 default): paired S2 net dSR > 0 against the parent AND mechanics. Printed, deciding nothing, under --info-clock-print (Ruling ALCLOCK-1: print-only, not a rule flag; root names it on the Y-F0 reference at the wave-3 P9-B0 and the cell inherits it from its parent, so both books carry the same C++ producer): each scenario's info_clock block of summary.json (name-days of the scored effective rebalances, fast and missing name-days, the fast-rate share of name-days, planned turnover and its share on fast name-days: the OD-3 prediction 'turnover share up' compares this block on the cell and on its parent), cost per traded dollar, net Sharpe at 4x NAV (plan section 5.2 P9-C row). Identity before the cell: the parent's NAV argv re-run on the new build is byte-identical without the rule (InfoClockPrint.FlagAbsentLoadsNoClock; the tiny-world canary goldens).",
+  "parent": "theme-cov-hedge-v1-attempt2-gm.json",
+  "nominal_parent": "../../v8/lib-v8ysb-gm.json",
+  "requires": [],
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-p9-info-clock",
+      "monitor.output": "build-equity/mega-monitor-p9-info-clock",
+      "exes_sha256": {
+        "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+        "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+        "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+      }
+    },
+    "flags": {
+      "nav": {
+        "--rate": "info-clock-rate-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    }
+  }
+}
