@@ -323,5 +323,181 @@ TEST(AmericanMarkovSeeds, VarianceTimeKnotLayoutIsRefusedBeforeAnyInversion) {
   EXPECT_TRUE(estimate_american_markov_quote_seeds({100, intervals, {}, {}}, quotes, layout));
 }
 
+// ---------------------------------------------------------------------------
+// SigmaInterval (opt-in sparse-market estimator). Quotes are built from
+// independent Black-Scholes prices at chosen bid/ask volatilities; with zero
+// carry the American call equals the European one, so equivalent IVs are exact.
+// ---------------------------------------------------------------------------
+
+AmericanMarkovFitQuote bounded(std::size_t expiry, double years, double bid_sigma,
+                               double ask_sigma, double strike = 100) {
+  const double bid = bid_sigma > 0 ? call(100, strike, bid_sigma * bid_sigma * years) : 0.0;
+  return {expiry, strike, Side::Call, bid, call(100, strike, ask_sigma * ask_sigma * years), 1};
+}
+
+AmericanMarkovSeedConfig interval_config() {
+  AmericanMarkovSeedConfig config;
+  config.estimator = AmericanMarkovSeedEstimator::SigmaInterval;
+  return config;
+}
+
+TEST(AmericanMarkovSeedInterval, WideAndBidlessQuotesBoundSigmaThatBidMidAskRefuses) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  const std::array quotes{bounded(0, 0.5, 0.4, 0.9), bounded(0, 0.5, 0.0, 0.8, 105)};
+  const auto legacy = estimate_american_markov_quote_seeds({100, intervals, {}, {}}, quotes);
+  ASSERT_TRUE(legacy);
+  EXPECT_TRUE(legacy->initial_sigmas.empty());
+  EXPECT_EQ(legacy->quotes[0].status, QuoteStatus::WideSpread);
+  EXPECT_EQ(legacy->quotes[1].status, QuoteStatus::Bidless);
+  EXPECT_FALSE(legacy->sigma_interval);
+
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, {}, interval_config());
+  ASSERT_TRUE(result);
+  ASSERT_EQ(result->initial_sigmas.size(), 1U);
+  // Feasible interval: lower from the wide bid, upper = min(0.9, 0.8) from the bidless ask.
+  EXPECT_NEAR(result->initial_sigmas[0], std::sqrt(0.4 * 0.8), 1e-5);
+  ASSERT_TRUE(result->sigma_interval);
+  const auto &s = *result->sigma_interval;
+  EXPECT_NEAR(*s.lower, 0.4, 1e-5);
+  EXPECT_NEAR(*s.upper, 0.8, 1e-5);
+  EXPECT_FALSE(s.crossed);
+  EXPECT_NEAR(s.log_width, std::log(2.0), 1e-4);
+  EXPECT_EQ(s.lower_bound_quotes, 1U);
+  EXPECT_EQ(s.upper_bound_quotes, 2U);
+  EXPECT_EQ(result->quotes[0].status, QuoteStatus::Used);
+  EXPECT_TRUE(result->quotes[0].lower_bound && result->quotes[0].upper_bound);
+  EXPECT_FALSE(result->quotes[0].equivalent_vols[1]); // Never inverts a midpoint.
+  EXPECT_EQ(result->quotes[1].status, QuoteStatus::Used);
+  EXPECT_FALSE(result->quotes[1].lower_bound);
+  EXPECT_TRUE(result->quotes[1].upper_bound);
+  // Work: two calls for the two-sided quote, one for the bidless ask.
+  EXPECT_EQ(result->inversion_calls, 3U);
+  EXPECT_EQ(result->reserved_root_iteration_slots, 3U * 32U);
+  EXPECT_EQ(result->parameters[0].status, ParameterStatus::Ready);
+  ASSERT_TRUE(result->expiries[0].sigma_interval);
+  EXPECT_NEAR(result->expiries[0].total_variance->midpoint, 0.4 * 0.8 * 0.5, 1e-5);
+}
+
+TEST(AmericanMarkovSeedInterval, OneSidedIntervalClosesWithTheLayoutBound) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  const std::array quotes{bounded(0, 0.5, 0.0, 0.8), bounded(0, 0.5, 0.0, 1.1, 95)};
+  AmericanMarkovSeedLayout layout;
+  layout.min_sigma = 0.05;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, interval_config());
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->sigma_interval);
+  EXPECT_FALSE(result->sigma_interval->lower);
+  EXPECT_EQ(result->sigma_interval->effective_lower, layout.min_sigma);
+  ASSERT_EQ(result->initial_sigmas.size(), 1U);
+  EXPECT_NEAR(result->initial_sigmas[0], std::sqrt(0.05 * 0.8), 1e-5);
+  EXPECT_EQ(result->inversion_calls, 2U);
+}
+
+TEST(AmericanMarkovSeedInterval, UnboundedBothWaysIsRefusedNotDefaulted) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  // A bidless ask above the max_sigma price bounds nothing inside the layout.
+  const std::array quotes{bounded(0, 0.5, 0.0, 0.9)};
+  AmericanMarkovSeedLayout layout;
+  layout.max_sigma = 0.5;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, interval_config());
+  ASSERT_TRUE(result);
+  EXPECT_TRUE(result->initial_sigmas.empty());
+  EXPECT_FALSE(result->sigma_interval);
+  EXPECT_EQ(result->quotes[0].status, QuoteStatus::Bidless);
+  EXPECT_GT(*result->quotes[0].equivalent_vols[2], layout.max_sigma); // Preserved, not clipped.
+  EXPECT_EQ(result->parameters[0].status, ParameterStatus::MissingEndpoint);
+  EXPECT_EQ(result->inversion_calls, 1U);
+}
+
+TEST(AmericanMarkovSeedInterval, CrossedBoundsAreReportedAndNeverRepaired) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  const std::array quotes{bounded(0, 0.5, 0.5, 0.6), bounded(0, 0.5, 0.2, 0.3, 105)};
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, {}, interval_config());
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->sigma_interval);
+  const auto &s = *result->sigma_interval;
+  EXPECT_TRUE(s.crossed);
+  EXPECT_NEAR(*s.lower, 0.5, 1e-5);
+  EXPECT_NEAR(*s.upper, 0.3, 1e-5);
+  EXPECT_LT(s.log_width, 0.0);
+  ASSERT_EQ(result->initial_sigmas.size(), 1U);
+  EXPECT_NEAR(result->initial_sigmas[0], std::sqrt(0.5 * 0.3), 1e-5);
+  // The descriptive band is ordered even when the bounds cross.
+  EXPECT_LT(result->parameters[0].variance_rate->lower, result->parameters[0].variance_rate->upper);
+}
+
+TEST(AmericanMarkovSeedInterval, PerVarianceIntervalDifferencesGeometricMidpointVariance) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0, 0, 0},
+                             AmericanMarkovFitInterval{1, 1, 0, 0, 0}};
+  const std::array quotes{bounded(0, 0.25, 0.15, 0.25), bounded(1, 1, 0.3, 0.4)};
+  AmericanMarkovSeedLayout layout;
+  layout.time_shape = AmericanMarkovFitTimeShape::PerVarianceInterval;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, interval_config());
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->sigma_interval); // Shared-only summary.
+  ASSERT_EQ(result->initial_sigmas.size(), 2U);
+  const double first = 0.15 * 0.25;
+  const double second = (0.3 * 0.4 * 1.0 - first * 0.25) / 0.75;
+  EXPECT_NEAR(result->initial_sigmas[0], std::sqrt(first), 1e-5);
+  EXPECT_NEAR(result->initial_sigmas[1], std::sqrt(second), 1e-5);
+  // No adjacent-support requirement: the conservative band may go negative.
+  EXPECT_EQ(result->parameters[1].status, ParameterStatus::Ready);
+  ASSERT_TRUE(result->variance_endpoints[1].sigma_interval);
+  // A decreasing geometric-midpoint total variance is refused, never clipped.
+  const std::array decreasing{bounded(0, 0.25, 0.8, 0.9), bounded(1, 1, 0.1, 0.2)};
+  const auto negative = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, decreasing, layout, interval_config());
+  ASSERT_TRUE(negative);
+  EXPECT_TRUE(negative->initial_sigmas.empty());
+  EXPECT_EQ(negative->parameters[1].status, ParameterStatus::NegativeForwardVariance);
+}
+
+TEST(AmericanMarkovSeedInterval, BudgetChargesOnlyInformativeSidesAndRefusesWholeQuotes) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0},
+                             AmericanMarkovFitInterval{1, 1, 0, 0, 0}};
+  const std::array quotes{bounded(0, 0.5, 0.3, 0.6), bounded(0, 0.5, 0.3, 0.6, 105),
+                          bounded(1, 1, 0.0, 0.7)};
+  auto config = interval_config();
+  config.max_inversions = 3;
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, {}, config);
+  ASSERT_TRUE(result);
+  // Rank 0: expiry 0 two-sided (2 calls), expiry 1 bidless (1 call); rank 1 cannot fit.
+  EXPECT_EQ(result->inversion_calls, 3U);
+  EXPECT_EQ(result->reserved_root_iteration_slots, 3U * config.max_iv_iterations);
+  EXPECT_EQ(result->quotes[0].status, QuoteStatus::Used);
+  EXPECT_EQ(result->quotes[1].status, QuoteStatus::InversionBudget);
+  EXPECT_EQ(result->quotes[2].status, QuoteStatus::Used);
+  EXPECT_EQ(result->used_quotes, 2U);
+  EXPECT_EQ(result->refused_quotes, 1U);
+}
+
+TEST(AmericanMarkovSeedInterval, IntrinsicAskFarMoneynessAndConflictsAreExplicit) {
+  const std::array intervals{AmericanMarkovFitInterval{0.5, 0.5, 0, 0, 0}};
+  std::array quotes{bounded(0, 0.5, 0.0, 0.5, 150), bounded(0, 0.5, 0.0, 0.3),
+                    bounded(0, 0.5, 0.0, 0.3, 105)};
+  quotes[1].strike = 85; // ITM call (inside the band) asked at intrinsic: no information.
+  quotes[1].ask = 15;
+  AmericanMarkovSeedLayout layout;
+  layout.min_sigma = 0.4; // The third quote's ask says sigma <= 0.3: conflicts.
+  const auto result = estimate_american_markov_quote_seeds(
+      {100, intervals, {}, {}}, quotes, layout, interval_config());
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->quotes[0].status, QuoteStatus::FarMoneyness);
+  EXPECT_EQ(result->quotes[1].status, QuoteStatus::IntrinsicPlateau);
+  EXPECT_EQ(result->quotes[2].status, QuoteStatus::SigmaBounds);
+  EXPECT_LT(*result->quotes[2].equivalent_vols[2], layout.min_sigma);
+  EXPECT_TRUE(result->initial_sigmas.empty());
+  EXPECT_EQ(result->inversion_calls, 1U);
+  AmericanMarkovSeedConfig invalid;
+  invalid.estimator = static_cast<AmericanMarkovSeedEstimator>(9);
+  EXPECT_FALSE(estimate_american_markov_quote_seeds({100, intervals, {}, {}}, quotes, {}, invalid));
+}
+
 } // namespace
 } // namespace atx::vol

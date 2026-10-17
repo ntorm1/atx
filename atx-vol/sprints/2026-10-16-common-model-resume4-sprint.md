@@ -73,3 +73,21 @@ where no vendor carry exists.
   lanes, focused test targets only, vol presets limited to the vol closure.
 - Source and document edits are made with the editor tools, not scripts.
 - Time-knot fitter `f4416a74` integrated at `fc5ffb84` after APPROVE.
+
+## Integration log (root branch `feat/vol-resume4-20261016`)
+
+| Merge | Lane SHA | Outcome |
+| --- | --- | --- |
+| `fc5ffb84` | time-knots `f4416a74` | APPROVE; 2 minor deferred |
+| `3495635f` | policy-experiments `9c1005ac` | compose tool + note; X1 modest gain; status hybrid 75.7% at 0.292 |
+| `d7f4b6b5` | implied-forward `a5d2018a` | APPROVE; mode stays off (supplied carry equals the label carry); 4 minor deferred |
+| `da3a4179` | build-infra `5cecf923` | vol-only presets, `vol-rel`, lease configure fix, test slices; root adopted `vol-rel` |
+| `ac01702c` | cohort builder `6703f85d` | dev200b built; ranking holds; spread-normalised MAE adopted |
+| `dc064a1e` | tick-path `94208f57` | BLOCK at `dcb6e3f1` (out-of-box ladder certificate) -> fix -> APPROVE; chain refresh p99 ~106-181 us unqualified |
+| `be85fd21` | markov-fit `88c77c5d` | APPROVE; LM ends evaluation-limit stalls; seed-as-prior 0.3519 -> 0.3391 on the R104 rows (post-hoc); MINOR-1 one-sided seed bound must be fixed before holdout |
+
+| `b9374ae7` | dividend-schedule `a402d615` | APPROVE; payers 0.224->0.211 (dev200) and 0.295->0.232 (dev200b); ASML blocked by lattice strike kinks |
+| `31cdfeac` (ff) | slice-coverage `03583b45` + merge | BLOCK -> fix -> APPROVE -> merge APPROVE; graded admission 78.7% coverage at own MAE 0.235 vs mid 0.333; knot spline best family |
+
+Pending: serve-path records lane; smooth dated-dividend lattice lane;
+review-cleanup lane; composite benchmark on both cohorts; knot-first ladder.

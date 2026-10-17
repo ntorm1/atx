@@ -14,7 +14,17 @@ enum class CommonInitializationMode { Configured, QuoteSeed };
 
 struct CommonInitializationConfig {
   CommonInitializationMode mode = CommonInitializationMode::Configured;
+  // seed.estimator selects the primary estimator. interval_fallback (policy
+  // spelling "bid-mid-ask-then-sigma-interval") runs SigmaInterval only when the
+  // BidMidAsk seed is incomplete or errors, within the SAME configured
+  // inversion/slot budgets (the remainder after the primary attempt).
   atx::vol::AmericanMarkovSeedConfig seed;
+  bool interval_fallback = false;
+  // Policy "prior": "seed". With wide/bidless quotes the hinge interval loss is
+  // flat, so only the prior acts and a fit returns to the configured prior
+  // centre whatever the seed. This opt-in makes an applied seed vector the
+  // prior centre too; incomplete/refused seeds keep the configured prior.
+  bool prior_from_seed = false;
 };
 
 // Owns every vector later borrowed by the synchronous fitter. No fit-config
@@ -28,6 +38,8 @@ struct CommonFitInitialization {
 // Closed native JSON spelling shared by policy parsing, expanded definitions,
 // seed layouts and fit reports: shared, per-variance-interval, variance-time-knots.
 [[nodiscard]] const char *common_time_shape_name(atx::vol::AmericanMarkovFitTimeShape shape);
+// coordinate-pattern, levenberg-marquardt.
+[[nodiscard]] const char *common_search_name(atx::vol::AmericanMarkovFitSearch search);
 
 [[nodiscard]] CommonInitializationConfig parse_common_initialization(const nlohmann::json &entry);
 [[nodiscard]] nlohmann::json common_initialization_json(const CommonInitializationConfig &config);
@@ -40,6 +52,8 @@ struct CommonFitInitialization {
 // Only the initial vector can change. Incomplete/error results retain the full
 // configured vector. The original configured prior is always materialized first.
 // This never retries fitting, changes model caps, or selects the fitter's quotes.
+// With interval_fallback, a second (SigmaInterval) estimator call is a seed
+// retry within the remaining seed budget, never a fit retry.
 void apply_common_quote_seeds(const atx::vol::AmericanMarkovFitMarket &market,
     std::span<const atx::vol::AmericanMarkovFitQuote> quotes,
     const atx::vol::AmericanMarkovFitConfig &fit,

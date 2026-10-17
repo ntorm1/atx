@@ -115,34 +115,47 @@ struct RawContract {
                "quote fit policy: no-arbitrage controls must remain enabled");
   }
   std::size_t minimum = 4u;
-  switch (cfg.curve.kind) {
-  case VolCurveKind::ConvexDense:
-    if (!cfg.curve.convex.bound_slope_below || !nonnegative(cfg.curve.convex.lambda) ||
-        cfg.curve.convex.node_cap < 2 || cfg.curve.convex.max_iter < 1) {
+  // Channel controls are validated for every profile: a point profile's channel
+  // configuration still drives its B/C refits under graded admission.
+  if (!validate_quote_slice_channel(cfg.channel)) {
+    return Err(ErrorCode::InvalidArgument, "quote fit policy: invalid channel configuration");
+  }
+  if (cfg.method != QuoteSliceFitMethod::PointCurve &&
+      cfg.method != QuoteSliceFitMethod::ChannelSpline) {
+    return Err(ErrorCode::InvalidArgument, "quote fit policy: unknown fit method");
+  }
+  // The channel objective is not a point-count family: its own channel
+  // controls bound it, and min_quotes only grades point evidence.
+  if (cfg.method == QuoteSliceFitMethod::PointCurve) {
+    switch (cfg.curve.kind) {
+    case VolCurveKind::ConvexDense:
+      if (!cfg.curve.convex.bound_slope_below || !nonnegative(cfg.curve.convex.lambda) ||
+          cfg.curve.convex.node_cap < 2 || cfg.curve.convex.max_iter < 1) {
+        return Err(ErrorCode::InvalidArgument,
+                   "quote fit policy: invalid constrained dense configuration");
+      }
+      break;
+    case VolCurveKind::Essvi:
+      minimum = std::max<std::size_t>(minimum, cfg.curve.parametric.min_obs_per_slice);
+      if (cfg.curve.parametric.essvi_asymmetric_rho || !cfg.curve.parametric.residual_disable) {
+        minimum = std::max<std::size_t>(minimum, 8u);
+      }
+      break;
+    case VolCurveKind::Svi:
+      minimum = std::max<std::size_t>(6u, cfg.curve.parametric.min_obs_per_slice);
+      break;
+    case VolCurveKind::C8:
+      minimum = std::max<std::size_t>(10u, cfg.curve.parametric.min_obs_per_slice);
+      break;
+    case VolCurveKind::SplineVol:
+      minimum = std::max<std::size_t>(6u, cfg.curve.spline.min_obs);
+      break;
+    case VolCurveKind::LinearVariance:
       return Err(ErrorCode::InvalidArgument,
-                 "quote fit policy: invalid constrained dense configuration");
+                 "quote fit policy: linear variance is not a risk-fit family");
+    default:
+      return Err(ErrorCode::InvalidArgument, "quote fit policy: unknown curve family");
     }
-    break;
-  case VolCurveKind::Essvi:
-    minimum = std::max<std::size_t>(minimum, cfg.curve.parametric.min_obs_per_slice);
-    if (cfg.curve.parametric.essvi_asymmetric_rho || !cfg.curve.parametric.residual_disable) {
-      minimum = std::max<std::size_t>(minimum, 8u);
-    }
-    break;
-  case VolCurveKind::Svi:
-    minimum = std::max<std::size_t>(6u, cfg.curve.parametric.min_obs_per_slice);
-    break;
-  case VolCurveKind::C8:
-    minimum = std::max<std::size_t>(10u, cfg.curve.parametric.min_obs_per_slice);
-    break;
-  case VolCurveKind::SplineVol:
-    minimum = std::max<std::size_t>(6u, cfg.curve.spline.min_obs);
-    break;
-  case VolCurveKind::LinearVariance:
-    return Err(ErrorCode::InvalidArgument,
-               "quote fit policy: linear variance is not a risk-fit family");
-  default:
-    return Err(ErrorCode::InvalidArgument, "quote fit policy: unknown curve family");
   }
   if (cfg.min_quotes < minimum || !positive(cfg.spread_floor) || !nonnegative(cfg.min_time_value) ||
       !positive(cfg.iv_tolerance) || cfg.max_iv_iterations == 0u ||

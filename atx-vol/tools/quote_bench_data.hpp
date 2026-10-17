@@ -15,6 +15,9 @@ struct InputRow {
   std::uint64_t chain{};
   atx::vol::QuoteSliceMarket market{};
   atx::vol::QuoteSliceQuote quote{};
+  // Raw `ddiv` (undiscounted cash dividends to expiry). Read only by the opt-in
+  // inferred-schedule dividend routing; NaN when the column is absent.
+  double dividend_sum{std::numeric_limits<double>::quiet_NaN()};
   std::string input_status;
   // Underlier, deliverable root, canonical expiry day, canonical exact snapshot.
   std::array<std::string, 4> identity;
@@ -32,6 +35,7 @@ struct Prediction {
   std::string actual_curve;
   std::string vol_status{"not_evaluated"};
   std::string model{"quote-slice"};
+  std::string grade; // graded admission only: A, B or C when served
 };
 
 } // namespace quote_bench
