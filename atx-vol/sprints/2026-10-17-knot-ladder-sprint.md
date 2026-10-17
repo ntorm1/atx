@@ -38,6 +38,8 @@ row became `InvalidVolatility` with neither price nor vol. Now it is
 `fitted_iv` is NaN, `evaluate_quote_slice` still refuses the contract, and
 `prices_produced` counts Success + PriceOnly. Both calendar repairs refresh and
 re-imply PriceOnly rows, so a PriceOnly row can become Success again (tested).
+**Superseded in fix round 1 (section 9):** a PriceOnly row is final; a later
+calendar repair refreshes its price only, and `evaluate_quote_slice` refuses it.
 
 Bench: top-level policy key `price_only` (boolean; static and graded). On, a
 PriceOnly row is `status=ok_price_only` with its price, blank vol and
@@ -247,8 +249,9 @@ graded-v1 37 + 10 (dev200), v3 30 (dev200).
   quotes outside bid/ask.
 - dev200b vol coverage (89.30%) is below v3's 90.49%, which serves gated point
   fallbacks outside the market.
-- Untested path: the knot-fit branch of the ladder repair rung (knot slice
-  certified only with the channel repair) has no unit test; it serves one
+- Untested path (closed in fix round 1, section 9): the knot-fit branch of the
+  ladder repair rung (knot slice certified only with the channel repair) has no
+  unit test; it serves one
   cohort5 slice. The held-point calendar rung is tested (`8a4caeb4`) and serves
   one slice on each benchmark cohort (the other `calendar` fallbacks are
   stronger-prior retries).
@@ -274,3 +277,87 @@ graded-v1 37 + 10 (dev200), v3 30 (dev200).
   with Write.
 - `-Jobs 2` and `ATX_VOL_FIT_WORKERS=2` (PM message) instead of the shared
   brief's 3.
+
+## 9. Fix round 1 (lane `knot-ladder-fix1`, resume 6)
+
+Fresh implementer, pool `pool-33` (run id `vol-20261017r6-knot-ladder-fix1`),
+base `901757ec`. Findings from the partial review
+(`C:/atx-cache/quote-benchmark/knot-ladder-901757ec-review-v1/review.md`);
+report `.superpowers/sdd/2026-10-17-vol-resume6/lane-knot-ladder-fix1-report.md`.
+
+| SHA | What |
+|---|---|
+| `b627d0cc` | PriceOnly is final (library), None/strip docs, gtests |
+| `81f5a69d` | Native bench tests producing `ok_price_only`, bench/doc text |
+| `90d12701` | gtest: a surface calendar repair that removes a volatility flags PriceOnly |
+| (this commit) | this section |
+
+What changed and why:
+
+- **PriceOnly is final (MINOR-1).** With `price_only` off a PriceOnly row could
+  be re-implied to Success by a calendar repair and published `ok` (0 cases on
+  the cohorts, but not behind a key). Now `commit_calendar_repair` refreshes a
+  PriceOnly row's certified price and never re-implies it, and the per-node-side
+  mask `QuoteSliceFit::price_only_nodes` (set wherever a row becomes PriceOnly,
+  carried through the surface's repair trials) makes `evaluate_quote_slice`
+  refuse the same contract. A price-only outcome is therefore `ok_price_only`
+  (key on) or `invalid_volatility` (key off), never a vol row, in the library
+  and in the bench alike. This restores the base (`24e01644`) row-status rule
+  (a row that lost its volatility never regains it) while keeping the price.
+- **Knot branch of the repair rung tested (MAJOR-1):** a micro-kinked expiry
+  whose prior-pulled refits exceed the channel repair's node budget reaches the
+  rung; its prior-free knot fit with the repair serves (method `channel`).
+- **Bench PriceOnly end to end (MAJOR-2):** deep in-the-money puts with a
+  per-row yield zig-zag produce `ok_price_only` rows in the native CLI (static
+  and graded), the key-off mapping, the calendar-refusal reset, and a
+  prepare -> run -> score test of the scorer's price/vol rule.
+- **`ladder_fallback=none` (MINOR-4):** the knot slice served, or it certified
+  inside the market without own point evidence and the channel refits decide.
+  The point fit can never serve such a slice at pass A (it shares the knot
+  fit's admission and is refused `insufficient_quotes`), so `none` never labels
+  a pass-A point fit. Documented (header, `graded_semantics`, docs) and tested.
+- **String mappings (MINOR-3)** all tested; a refused slice's PriceOnly rows
+  become NoFit (documented, tested); `prices_produced` counts PriceOnly rows
+  (documented diagnostic, not emitted).
+- **Normalisation proof (MINOR-2):** a strict checker
+  (`knot-ladder-fix1-20261017-scripts/normalise_vol_status.py`) fails on any
+  deviation from the claim; self-test 6/6; the lane's original script accepted
+  two of those violations with exit 0.
+
+Gates, parity and cohort runs (binary `knot-ladder-fix1-20261017-bin`, sha256
+`2a67075a5c4f95fa591a634ca585b525c271e7bc8f872c9de7b31d20c8699b38`, built from
+`81f5a69d`; `90d12701` changes only `quote_surface_test.cpp`; vol-rel,
+`ATX_VOL_FIT_WORKERS=3`):
+
+| gate | result |
+|---|---|
+| gtest quote-slice / implied-forward | 113/113, 27/27 |
+| ctest quote-slice, implied-forward, quote-benchmark-{tools,native,campaign} | 5/5 |
+| pytest test_quote_bench_cli / test_quote_benchmark | 61/61, 97/97 |
+| PCH-off `vol-hygiene`, 9 TUs covering `quote_slice.hpp` | 13 objects, 0 diagnostics |
+
+| run (keys off) | sha256 | vs `901757ec` |
+|---|---|---|
+| dev200 `auto` | `c89d0739...` | identical |
+| dev200b `auto` | `4b273b08...` | identical |
+| dev200 graded-v1 | `fc277413...` -> normalised `1348f63d...` (564 rows) | identical |
+| dev200b graded-v1 | `46ad6c26...` -> normalised `4c70d2bc...` (429 rows) | identical |
+| cohort5 graded-v1 | `171fa2d2...` -> normalised `7fa3c415...` (2 rows) | identical |
+
+| run (keys on, lane policies) | sha256 | vs `knot-ladder-20261017-bench-v2` |
+|---|---|---|
+| cohort5 point | `232d2c0d...` | identical |
+| cohort5 strict | `21f4ee58...` | identical |
+| dev200 point | `6ebd63c5...` | identical |
+| dev200 strict | `858d6512...` | identical |
+| dev200b point | `d53d2a0d...` | identical |
+| dev200b strict | `c5ab9121...` | identical |
+
+Cohort5: AAPL 2026-11-20 168/168 `ok` and SPY 2026-11-06 334/334 `ok` under
+both policies (graded-v1 0/168, 0/334); 0 monotone / convexity / calendar
+violations over 47,188 (point) and 46,318 (strict) pairs. Every number of
+sections 5-6 therefore stands unchanged (byte-identical outputs).
+
+Not addressed (stated in the report): the pre-existing `make_prior` sort tie
+(a default-path change), the ladder vs dominance-gate/knot-spline combination
+and the union-of-knots calendar clamp (follow-up lanes).
