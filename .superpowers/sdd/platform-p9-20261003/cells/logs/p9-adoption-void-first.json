@@ -1,0 +1,16 @@
+{
+  "pass": true,
+  "proposal_sha256": "c0f44d62d9c3877430c7dfca6f9948c51b350a64a85d4cc0f32bbcd1956ec4d0",
+  "bound_entries": 67,
+  "frozen_exes": 54,
+  "reference_files": 126,
+  "crt_version": "10.0.26100.7623 (WinBuild.160101.0800)",
+  "ledger_sha256": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d",
+  "ledger_lines": 140,
+  "prefix133_139": "unchanged",
+  "source_bindings_verified": true,
+  "no_retired_fields_store_or_index": true,
+  "role_returns_applied_is_false": true,
+  "source_scan": "per-stage before reads; exact25 route",
+  "existing_H_X_void_checks": "reused completed records; no rerun"
+}
