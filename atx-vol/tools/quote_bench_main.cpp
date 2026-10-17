@@ -372,6 +372,7 @@ struct RunStatistics {
   bool graded{false};
   bool graded_channel_repair{false}; // opt-in graded keys seen in this run
   bool graded_dominance{false};
+  bool graded_ladder{false};
   Json graded_stats = Json::object();
   // Opt-in policy key `price_only`: rows served as ok_price_only (never in `served`).
   bool price_only{false};
@@ -519,6 +520,18 @@ bool publish_price_only(const QuoteSliceRow &row, bool serve, Prediction &predic
   return true;
 }
 
+// Knot-first ladder provenance of one graded slice (emitted only with the ladder).
+void add_ladder_fields(const QuoteSurfaceSlice &slice, Json &entry) {
+  entry["method"] = to_string(slice.method);
+  entry["ladder_fallback"] = to_string(slice.ladder_fallback);
+  entry["knot_status"] = to_string(slice.knot_status);
+  entry["knot_error"] = slice.knot_error;
+  entry["point_error"] = slice.point_error;
+  entry["repair_rung"] = slice.repair_rung;
+  entry["outside_fraction"] = slice.outside_fraction;
+  entry["outside_quotes"] = slice.outside_quotes;
+}
+
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
 // consistency is enforced inside fit_quote_surface on the final prices. A
@@ -614,6 +627,14 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         entry["point_gated"] = slice.point_gated;
         entry["point_fallback"] = slice.point_fallback;
       }
+      const bool ladder = surface.ladder == QuoteSurfaceLadder::KnotFirst;
+      const std::string method = to_string(slice.method);
+      stats.graded_ladder = stats.graded_ladder || ladder;
+      if (ladder) {
+        add_ladder_fields(slice, entry);
+        count_into(graded["method_chains"][method], grade);
+        count_into(graded["ladder_fallback_chains"][to_string(slice.ladder_fallback)], grade);
+      }
       graded["slices"].push_back(std::move(entry));
       count_into(graded["chains"], grade);
       if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);
@@ -651,6 +672,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           prediction.status = "ok";
           prediction.grade = grade;
           count_into(graded["served_rows"], grade);
+          if (ladder) count_into(graded["method_rows"], method);
           ++stats.served;
         } else if (!served) {
           prediction.status = slice.refusal;
@@ -658,6 +680,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           if (publish_price_only(result, stats.price_only, prediction)) {
             prediction.grade = grade;
             count_into(graded["price_only_rows"], grade);
+            if (ladder) count_into(graded["method_price_only_rows"], method);
             ++stats.price_only_rows;
           }
         } else {
@@ -1329,6 +1352,24 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
           "calendar-consistent with it; otherwise it is kept (point_fallback, A becomes B); "
           "after an adoption, calendar refusals are re-checked against the final served set "
           "(calendar_readmitted, B/C); the gate never refuses an expiry";
+    }
+    if (stats.graded_ladder) {
+      report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
+          "; ladder knot-first: pass A serves the term-prior-free channel (knot) fit when it "
+          "certifies, is inside the market and has own point evidence, else the point fit "
+          "when it certifies and is inside the market (method channel/point, ladder_fallback "
+          "certificate/knot_failure/containment), both graded by the unchanged A rule; other "
+          "expiries take the channel refits (channel_refit); the repair rung tries the knot "
+          "fit, then the point fit; no rung serves prices outside bid/ask on more than "
+          "ladder_max_outside_fraction (point fits) or ladder_channel_max_outside_fraction "
+          "(channel fits), and at least ladder_min_outside_quotes, of the strictly two-sided "
+          "quotes (a refit outside is refused outside_market); calendar: one visit per slice "
+          "in the order grade tier, own or convexity-repaired prices before channel-repaired "
+          "or repair-rung prices, more strictly two-sided quotes, nearer maturity, each "
+          "resolved against the higher-confidence slices only: own bounded-move repair, the "
+          "in-market point fit of a knot-served slice clean then repaired (ladder_fallback "
+          "calendar), the stronger-prior retry, the channel calendar repairs, else refused; "
+          "the dominance gate does not run";
     }
   }
   if (stats.price_only) {

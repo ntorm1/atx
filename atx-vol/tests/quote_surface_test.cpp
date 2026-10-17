@@ -1135,5 +1135,206 @@ TEST(QuoteSurface, DominanceGateNeverCostsAnExpiryTheCalendarPassServed) {
   EXPECT_FALSE((*refit)[1].point_fallback);
 }
 
+// ── Opt-in knot-first ladder ─────────────────────────────────────────────────
+
+QuoteSurfaceConfig knot_first() {
+  QuoteSurfaceConfig surface;
+  surface.ladder = QuoteSurfaceLadder::KnotFirst;
+  return surface;
+}
+
+void expect_same_prices(const QuoteSliceFit &served, const QuoteSliceFit &alone) {
+  ASSERT_EQ(served.rows.size(), alone.rows.size());
+  for (std::size_t i = 0; i < served.rows.size(); ++i) {
+    EXPECT_EQ(served.rows[i].fitted_price, alone.rows[i].fitted_price) << i;
+    EXPECT_EQ(served.rows[i].fitted_iv, alone.rows[i].fitted_iv) << i;
+  }
+}
+
+TEST(QuoteSurfaceLadder, PassAServesTheCertifiedKnotSliceInsideTheMarket) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
+  const auto on = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, knot_first());
+  ASSERT_TRUE(on) << on.error().to_string();
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    // Without the ladder: the point fit, and the ladder fields keep their defaults.
+    const auto &point = (*off)[e];
+    EXPECT_EQ(point.method, QuoteSurfaceMethod::Point);
+    EXPECT_EQ(point.ladder_fallback, QuoteSurfaceLadderFallback::None);
+    EXPECT_EQ(point.knot_status, QuoteSliceFitStatus::InsufficientQuotes);
+    EXPECT_EQ(point.outside_fraction, 0.0);
+    const auto &slice = (*on)[e];
+    ASSERT_EQ(slice.grade, QuoteSliceGrade::A) << e << " " << slice.refusal << " " << slice.error;
+    EXPECT_EQ(slice.method, QuoteSurfaceMethod::Channel);
+    EXPECT_EQ(slice.ladder_fallback, QuoteSurfaceLadderFallback::None);
+    EXPECT_EQ(slice.knot_status, QuoteSliceFitStatus::Success);
+    EXPECT_EQ(slice.point_status, QuoteSliceFitStatus::Success);
+    EXPECT_FALSE(slice.channel_refit);
+    EXPECT_TRUE(slice.fit.diagnostics.channel.used);
+    EXPECT_FALSE(slice.fit.diagnostics.channel.term_prior);
+    EXPECT_LE(slice.outside_fraction, 0.05);
+    // Pass A's knot rung is the standalone term-prior-free channel fit.
+    const auto knot =
+        fit_quote_slice_channel(chains[e].market, chains[e].quotes, QuoteSliceConfig{}, nullptr);
+    ASSERT_TRUE(knot) << knot.error().to_string();
+    ASSERT_EQ(knot->fit_status, QuoteSliceFitStatus::Success);
+    expect_same_prices(slice.fit, *knot);
+  }
+  expect_calendar_consistent(*on);
+}
+
+TEST(QuoteSurfaceLadder, KnotFailureFallsBackToThePointFitAtGradeA) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01)};
+  QuoteSliceConfig config;
+  config.channel.min_channel_quotes = 100000; // no knot slice can be fitted
+  const auto on = fit_quote_surface(expiries(chains), config, knot_first());
+  ASSERT_TRUE(on) << on.error().to_string();
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    const auto &slice = (*on)[e];
+    ASSERT_EQ(slice.grade, QuoteSliceGrade::A) << e << " " << slice.refusal << " " << slice.error;
+    EXPECT_EQ(slice.method, QuoteSurfaceMethod::Point);
+    EXPECT_EQ(slice.knot_status, QuoteSliceFitStatus::InsufficientQuotes);
+    EXPECT_FALSE(slice.knot_error.empty());
+    EXPECT_EQ(slice.ladder_fallback, QuoteSurfaceLadderFallback::KnotFailure);
+    const auto point = fit_quote_slice(chains[e].market, chains[e].quotes, config);
+    ASSERT_TRUE(point) << point.error().to_string();
+    expect_same_prices(slice.fit, *point);
+  }
+}
+
+TEST(QuoteSurfaceLadder, PointRungServesOnlyInsideTheMarketUnlessThePolicyRelaxesIt) {
+  // One-cent quotes; the middle expiry is kinked, so its point fit lies outside
+  // some of them. No knot slice and no channel refit can be fitted.
+  const auto chains = tight_chains();
+  QuoteSliceConfig config;
+  config.channel.min_channel_quotes = 100000;
+  const auto off = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ((*off)[1].grade, QuoteSliceGrade::A) << (*off)[1].refusal;
+  const std::size_t kinked_outside = outside_quotes((*off)[1].fit, chains[1].quotes);
+  ASSERT_GT(kinked_outside, 0u);
+  const auto strict = fit_quote_surface(expiries(chains), config, knot_first());
+  ASSERT_TRUE(strict) << strict.error().to_string();
+  EXPECT_EQ((*strict)[1].grade, QuoteSliceGrade::Refused);
+  EXPECT_FALSE((*strict)[1].fit.prices);
+  EXPECT_EQ((*strict)[1].ladder_fallback, QuoteSurfaceLadderFallback::KnotFailure);
+  // Explicitly relaxed (a limit of 1, or a count above the kinked expiry's):
+  // the point fit serves at grade A with its own prices.
+  QuoteSurfaceConfig open = knot_first();
+  open.ladder_max_outside_fraction = 1.0;
+  QuoteSurfaceConfig count = knot_first();
+  count.ladder_min_outside_quotes = kinked_outside + 1;
+  for (const QuoteSurfaceConfig &relaxed : {open, count}) {
+    const auto served = fit_quote_surface(expiries(chains), config, relaxed);
+    ASSERT_TRUE(served) << served.error().to_string();
+    for (std::size_t e = 0; e < chains.size(); ++e) {
+      const auto &slice = (*served)[e];
+      ASSERT_EQ(slice.grade, QuoteSliceGrade::A) << e << " " << slice.refusal;
+      EXPECT_EQ(slice.method, QuoteSurfaceMethod::Point);
+      expect_same_prices(slice.fit, (*off)[e].fit);
+    }
+    EXPECT_EQ((*served)[1].outside_quotes, kinked_outside);
+    EXPECT_GT((*served)[1].outside_fraction, 0.0);
+  }
+}
+
+TEST(QuoteSurfaceLadder, AChannelRefitOutsideTheMarketIsRefused) {
+  // The middle expiry has three one-cent strikes near the money only (no point
+  // evidence), quoted at a higher level than both neighbours, so it takes the
+  // channel passes. A wide channel half-width floor (min_half_width_vol, the
+  // channel objective's unit) lets the neighbours' prior pull its refit off
+  // those one-cent quotes without a channel penalty.
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01),
+                                  chain(0.5, 0.30, -0.08, 0.0, 95, 105),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  QuoteSliceConfig config;
+  config.channel.min_half_width_vol = 0.05;
+  QuoteSurfaceConfig open = knot_first();
+  open.ladder_channel_max_outside_fraction = 1.0;
+  const auto served = fit_quote_surface(expiries(chains), config, open);
+  ASSERT_TRUE(served) << served.error().to_string();
+  const auto &sparse = (*served)[1];
+  ASSERT_NE(sparse.grade, QuoteSliceGrade::Refused) << sparse.refusal << " " << sparse.error;
+  EXPECT_NE(sparse.grade, QuoteSliceGrade::A);
+  EXPECT_EQ(sparse.method, QuoteSurfaceMethod::ChannelRefit);
+  EXPECT_TRUE(sparse.channel_refit);
+  ASSERT_GT(sparse.outside_quotes, 0u);
+  EXPECT_EQ(sparse.outside_quotes, outside_quotes(sparse.fit, chains[1].quotes));
+  // The default channel limit (5%, at least one quote) refuses that refit.
+  const auto strict = fit_quote_surface(expiries(chains), config, knot_first());
+  ASSERT_TRUE(strict) << strict.error().to_string();
+  const auto &outside = (*strict)[1];
+  EXPECT_EQ(outside.grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ(outside.refusal, "outside_market") << outside.error;
+  EXPECT_FALSE(outside.fit.prices);
+  EXPECT_EQ((*strict)[0].grade, QuoteSliceGrade::A);
+  EXPECT_EQ((*strict)[2].grade, QuoteSliceGrade::A);
+}
+
+TEST(QuoteSurfaceLadder, CalendarPassNeverLetsALowerConfidenceSliceBlockARepair) {
+  // X (13 strikes) is quoted richly; H (9 strikes, 5% spreads) slightly too
+  // cheap, a crossing its bounded-move repair fixes against X alone; E sits
+  // between them in maturity with only 7 strikes and one-cent quotes, priced
+  // like X, so it is consistent with X but crosses H once H is lifted. No knot
+  // slice or channel refit can be fitted, so every slice is a point fit (A).
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.375, 0.30, 0.0, 0.0, 85, 115, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  QuoteSliceConfig config;
+  config.channel.min_channel_quotes = 100000;
+  QuoteSurfaceConfig surface;
+  surface.calendar_repair_half_spreads = 1.0;
+  // Without the ladder, the two-pass calendar pass accepts every clean slice
+  // first: E is accepted beside X, and H's repair must then clear E as well.
+  const auto off = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ((*off)[0].grade, QuoteSliceGrade::A);
+  ASSERT_EQ((*off)[1].grade, QuoteSliceGrade::A) << (*off)[1].refusal;
+  ASSERT_EQ((*off)[2].refusal, "calendar_arbitrage");
+  // The ladder visits once in confidence order (X, H, E): H is repaired against
+  // X before E is visited, and E, the lower-confidence slice, is the one refused.
+  surface.ladder = QuoteSurfaceLadder::KnotFirst;
+  surface.ladder_max_outside_fraction = 1.0; // containment is not under test
+  const auto on = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  EXPECT_EQ((*on)[0].grade, QuoteSliceGrade::A);
+  const auto &h = (*on)[2];
+  ASSERT_EQ(h.grade, QuoteSliceGrade::B) << h.refusal << " " << h.error;
+  EXPECT_TRUE(h.calendar_repaired);
+  EXPECT_EQ(h.method, QuoteSurfaceMethod::Point);
+  EXPECT_EQ((*on)[1].grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ((*on)[1].refusal, "calendar_arbitrage");
+  expect_calendar_consistent(*on);
+}
+
+TEST(QuoteSurfaceLadder, RejectsAChannelProfileTheDominanceGateAndBadLimits) {
+  const std::vector<Chain> one{chain(0.25, 0.22, 0.0, 0.01)};
+  EXPECT_EQ(fit_quote_surface(expiries(one), channel_config(), knot_first()).error().code(),
+            ErrorCode::InvalidArgument);
+  QuoteSliceConfig gated;
+  gated.channel.point_max_outside_fraction = 0.05;
+  EXPECT_EQ(fit_quote_surface(expiries(one), gated, knot_first()).error().code(),
+            ErrorCode::InvalidArgument);
+  for (const auto mutate : {+[](QuoteSurfaceConfig &s) { s.ladder_max_outside_fraction = -0.1; },
+                            +[](QuoteSurfaceConfig &s) { s.ladder_max_outside_fraction = 1.5; },
+                            +[](QuoteSurfaceConfig &s) {
+                              s.ladder_channel_max_outside_fraction = std::nan("");
+                            },
+                            +[](QuoteSurfaceConfig &s) { s.ladder_min_outside_quotes = 0; },
+                            +[](QuoteSurfaceConfig &s) {
+                              s.ladder = static_cast<QuoteSurfaceLadder>(7);
+                            }}) {
+    QuoteSurfaceConfig bad = knot_first();
+    mutate(bad);
+    EXPECT_EQ(fit_quote_surface(expiries(one), QuoteSliceConfig{}, bad).error().code(),
+              ErrorCode::InvalidArgument);
+  }
+  EXPECT_STREQ(to_string(QuoteSurfaceMethod::ChannelRefit), "channel_refit");
+  EXPECT_STREQ(to_string(QuoteSurfaceLadderFallback::KnotFailure), "knot_failure");
+  EXPECT_STREQ(to_string(QuoteSurfaceLadderFallback::Calendar), "calendar");
+}
+
 } // namespace
 } // namespace atx::vol

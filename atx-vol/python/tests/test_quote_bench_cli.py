@@ -699,6 +699,112 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
         assert "repair" not in entry and "point_gated" not in entry
 
 
+PROFILE_NAMES = ("dense", "ordinary", "sparse")
+
+
+def test_native_ladder_and_price_only_keys_are_strict(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    knot = [{"name": name, "base": name, "curve": "knot-spline"} for name in PROFILE_NAMES]
+    gated = [{"name": name, "base": name, "channel": {"point_max_outside_fraction": 0.05}}
+             for name in PROFILE_NAMES]
+    graded = {"schema_version": 1, "admission": "graded"}
+    for document, message in (
+            ({"schema_version": 1, "price_only": "yes"}, "price_only must be true or false"),
+            ({"schema_version": 1, "price_only": 1}, "price_only must be true or false"),
+            ({**graded, "price_only": None}, "price_only must be true or false"),
+            ({"schema_version": 1, "graded": {"ladder": "knot-first"}},
+             "require admission graded"),
+            ({**graded, "graded": {"ladder": "point-first"}}, "must be off or knot-first"),
+            ({**graded, "graded": {"ladder_max_outside_fraction": 0.1}},
+             "containment keys require ladder knot-first"),
+            ({**graded, "graded": {"ladder": "off", "ladder_min_outside_quotes": 4}},
+             "containment keys require ladder knot-first"),
+            ({**graded, "graded": {"ladder": "off", "ladder_channel_max_outside_fraction": 1}},
+             "containment keys require ladder knot-first"),
+            ({**graded, "graded": {"ladder": "knot-first", "ladder_max_outside_fraction": 1.5}},
+             "outside supported bounds"),
+            ({**graded, "graded": {"ladder": "knot-first",
+                                   "ladder_channel_max_outside_fraction": -0.1}},
+             "outside supported bounds"),
+            ({**graded, "graded": {"ladder": "knot-first", "ladder_min_outside_quotes": 0}},
+             "outside supported bounds"),
+            ({**graded, "graded": {"ladder": "knot-first"}, "profiles": knot},
+             "requires point profiles"),
+            ({**graded, "graded": {"ladder": "knot-first"}, "profiles": gated},
+             "replaces the dominance gate")):
+        policy = write_policy(tmp_path / "policy.json", document)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+
+
+def test_native_price_only_and_ladder_off_keys_leave_predictions_unchanged(binary, tmp_path):
+    # Clean quotes: no served price is a repaired node without a volatility, so
+    # price_only changes no row; "ladder": "off" is the historical admission.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    runs = {}
+    for name, document in (
+            ("plain", {"schema_version": 1, "admission": "graded"}),
+            ("keyed", {"schema_version": 1, "admission": "graded", "price_only": True,
+                       "graded": {"ladder": "off"}}),
+            ("static", {"schema_version": 1}),
+            ("static_keyed", {"schema_version": 1, "price_only": True})):
+        output = tmp_path / f"{name}.csv"
+        result = invoke(binary, source, output, "--policy",
+                        str(write_policy(tmp_path / f"{name}.json", document)))
+        assert result.returncode == 0, result.stderr
+        runs[name] = (output.read_bytes(), json.loads(result.stdout))
+    assert runs["keyed"][0] == runs["plain"][0]
+    assert runs["static_keyed"][0] == runs["static"][0]
+    for keyed, plain in (("keyed", "plain"), ("static_keyed", "static")):
+        report, plain_report = runs[keyed][1], runs[plain][1]
+        assert report["policy_definition"]["price_only"] is True
+        assert "price_only" not in plain_report["policy_definition"]
+        assert report["price_only_rows"] == 0
+        assert "ok_price_only" in report["price_only_semantics"]
+        assert "price_only_rows" not in plain_report
+    keyed_report = runs["keyed"][1]
+    assert "ladder" not in keyed_report["policy_definition"]["graded"]
+    assert "ladder knot-first" not in keyed_report["graded_semantics"]
+    for entry in keyed_report["graded_stats"]["slices"]:
+        assert "method" not in entry and "ladder_fallback" not in entry
+
+
+def test_native_knot_first_ladder_serves_the_knot_slice_with_provenance(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    expected = make_quotes(source)
+    policy = write_policy(tmp_path / "ladder.json", {
+        "schema_version": 1, "admission": "graded", "price_only": True,
+        "graded": {"ladder": "knot-first", "ladder_max_outside_fraction": 0.05,
+                   "ladder_channel_max_outside_fraction": 0.05,
+                   "ladder_min_outside_quotes": 1}})
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert all(row["status"] == "ok" for row in rows)
+    assert all(row["grade"] in {"A", "B"} for row in rows)
+    assert max(abs(float(row["predicted_price"]) - value)
+               for row, value in zip(rows, expected)) < 0.03
+    report = json.loads(result.stdout)
+    definition = report["policy_definition"]["graded"]
+    assert definition["ladder"] == "knot-first"
+    assert definition["ladder_max_outside_fraction"] == 0.05
+    assert definition["ladder_channel_max_outside_fraction"] == 0.05
+    assert definition["ladder_min_outside_quotes"] == 1
+    assert "ladder knot-first" in report["graded_semantics"]
+    (entry,) = report["graded_stats"]["slices"]
+    # Pass A: the certified, in-market knot slice serves (channel, no fallback).
+    assert entry["method"] == "channel"
+    assert entry["ladder_fallback"] == "none"
+    assert entry["knot_status"] == "success"
+    assert entry["outside_fraction"] <= 0.05
+    assert entry["outside_quotes"] >= 0
+    assert report["price_only_rows"] == 0
+
+
 def test_native_knot_spline_profile_serves_a_channel_spline(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     expected = make_quotes(source)
