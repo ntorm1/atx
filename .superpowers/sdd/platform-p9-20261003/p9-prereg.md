@@ -702,6 +702,12 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   `7783967471f5b06dc1407d4425605156f7a3e647f28edd2a3ca5f2fb1a989d37` (`6ea79e5a`; `--calibrate-gross` G_parent
   `0.9862134133265011`, `--calibrate-tolerance 0.005`, PRE-3); the limits and the verdict arithmetic in
   `cells/p9l-label-terminal-plan.md`; the cell of record `label-terminal-gm.json` follows the calibration run (PRE-27)]
+  [PRE-40 restatement, P9L-WBUDGET, 2026-10-17, `f560f741`: only w's IC admission
+  `--max-memory-mib` and runner `--max-rss-mib` become 3584; an admission budget, not a research input.
+  Template SHA-256 `1d15513e74851e776a7e40d538f528690fbab04c4a92bb8afdcc240a805e3170`;
+  regenerated run recipe SHA-256 `1f00e19ec9dc3092ebe570b9645700910062881835dc9cd391623cff76c00062`.
+  G_parent, tolerance, flags, pins and all other settings stay as registered. Resume w attempt 2 after
+  free RAM >= 4608 MiB and C: >= 15 GB; completed u / fit / card and failed w run1 are preserved.]
 - **Change.** `--label-terminal imputed-v1` with `--train-label-role <label role> --train-label-role-sha256 <pin>` on
   the IC passes (u and w), on the parent; fit, card, w and NAV follow (plan section 2.4 S2 :490-498;
   `task-S2-report.md:23`). Label role: `build-equity/train-2020-2023-lo3-dlret`
@@ -2327,6 +2333,10 @@ the gate's final hand-back:
    `7483f4b10513d9000cfc89036c3f8f7f49626a9dd9c57999bcce11a258754219`, inheriting the parent's `nav.flags`; the run
    recipe `label-terminal-cal.json` `7783967471f5b06dc1407d4425605156f7a3e647f28edd2a3ca5f2fb1a989d37` (`6ea79e5a`);
    B.1 "Shape")
+   [PRE-40 restatement, P9L-WBUDGET, `f560f741`: template SHA-256
+   `1d15513e74851e776a7e40d538f528690fbab04c4a92bb8afdcc240a805e3170`; run recipe SHA-256
+   `1f00e19ec9dc3092ebe570b9645700910062881835dc9cd391623cff76c00062`; only w's two memory
+   admission budgets become 3584 MiB; B.1 and the plan amendment govern the resume.]
 8. B.1 P9-L parent / paired reference dirs and SHA-256 - root, wave-3 P9-B0 (= item 2). (part B2b: = item 2) (filled,
    part B2b: = item 2; the re-pinned parent spec `3631679c`) [re-stated, FLAGS-ROUTE `f8d852f3`:
    `a4ef6c0459f5a208f8efdc3c69a97519fbf1460cd3154793a475f94bd000c06a`; the re-pin of record stays `2078f877`; no pin

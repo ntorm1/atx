@@ -149,3 +149,20 @@ identity-bridge flag line as the record form requires.
   the block: the u-pass blend is not read by fit, card, gate or w.
 - The u / w passes write new IC-result scope dirs (`label_terminal` in the key) into the real cache: additions only.
 - The cell's NAV is one calibrated run (`-cal`, the run recipe that ran); the cell of record `-gm` is bound to it.
+
+## 7. Pre-resume resource amendment (2026-10-17; P9L-WBUDGET)
+
+Code registration `f560f741` changes only `change.set.ic.w_flags.--max-memory-mib` to `"3584"`
+and `change.set.runner.phases.w.max_rss_mib` to 3584 in the template and regenerated calibration recipe.
+Template SHA-256 `1d15513e74851e776a7e40d538f528690fbab04c4a92bb8afdcc240a805e3170`;
+run recipe SHA-256 `1f00e19ec9dc3092ebe570b9645700910062881835dc9cd391623cff76c00062`.
+The template was re-locked with `--write --exes`; the calibration recipe was regenerated with
+`wave_stage_cell.calibrated_doc`, the same note, G_parent and tolerance; dry lock succeeded.
+The complete JSON diff is four added lines, two per file. No research input changes.
+
+Resume exactly `research_cycle.py run scripts/specs/p9/templates/label-terminal.json --stop-after w --attempt w=2
+--admission-wait 1800`, preserving completed u / fit / card and failed w run1. Require free RAM >= 4608 MiB
+and C: >= 15 GB immediately before launch; if RAM is low, poll every 60 seconds for at most 180 minutes.
+A second refusal stops. The remainder of section 3 stands; B.0 void (3) requires mechanics PASS before
+return / IC / Sharpe reads. Commit own derivation, then stop for fresh DERIV before any trial-ledger write.
+SEAL-HAND supplies the hand scan after each stage. No separate -cal NAV directory or second NAV is planned.
