@@ -373,6 +373,9 @@ struct RunStatistics {
   bool graded_channel_repair{false}; // opt-in graded keys seen in this run
   bool graded_dominance{false};
   Json graded_stats = Json::object();
+  // Opt-in policy key `price_only`: rows served as ok_price_only (never in `served`).
+  bool price_only{false};
+  std::size_t price_only_rows{};
   // Inferred dividend schedules and per-chain routes; empty unless a profile
   // sets the policy key `dividends` to an inferred-schedule mode.
   Json dividend_schedules = Json::array();
@@ -498,6 +501,22 @@ Json repair_json(const QuoteSliceRepairRecord &r) {
           {"material_nodes", r.material_nodes}, {"max_price_move", r.max_price_move},
           {"max_vol_move", r.max_vol_move}, {"max_unquoted_vol_move", r.max_unquoted_vol_move},
           {"unidentified", r.unidentified}};
+}
+
+// A served fit's PriceOnly row: a certified price without an identifiable
+// American volatility. Its vol_status records that the volatility was evaluated
+// and is unidentifiable. With the policy key `price_only` the price is served
+// (status ok_price_only, blank vol; returns true); otherwise the row keeps the
+// historical status invalid_volatility and no price.
+bool publish_price_only(const QuoteSliceRow &row, bool serve, Prediction &prediction) {
+  prediction.vol_status = "unidentifiable";
+  if (!serve) {
+    prediction.status = "invalid_volatility";
+    return false;
+  }
+  prediction.price = row.fitted_price;
+  prediction.status = "ok_price_only";
+  return true;
 }
 
 // Graded admission: one surface fit per exact snapshot. Routing has already
@@ -635,6 +654,12 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           ++stats.served;
         } else if (!served) {
           prediction.status = slice.refusal;
+        } else if (result.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+          if (publish_price_only(result, stats.price_only, prediction)) {
+            prediction.grade = grade;
+            count_into(graded["price_only_rows"], grade);
+            ++stats.price_only_rows;
+          }
         } else {
           prediction.status = to_string(result.evaluation_status);
         }
@@ -887,6 +912,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   if (args.curve.empty()) {
     policy.emplace(quote_bench_policy::load(args.policy, dividends));
     stats.policy_definition = policy->definition;
+    stats.price_only = policy->price_only;
   } else {
     const auto kind = parse_curve_kind(args.curve);
     if (!kind) throw std::runtime_error(kind.error().to_string());
@@ -1108,6 +1134,11 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
           ++stats.served;
         } else if (fit->fit_status != QuoteSliceFitStatus::Success) {
           prediction.status = to_string(fit->fit_status);
+        } else if (result.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+          if (publish_price_only(result, stats.price_only, prediction)) {
+            if (stats.graded) prediction.grade = fallback_grade(*fit, chain.profile->config);
+            ++stats.price_only_rows;
+          }
         } else {
           prediction.status = to_string(result.evaluation_status);
         }
@@ -1151,8 +1182,10 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     fitted_chains.erase(chain);
     for (const auto index : chains.at(chain)) {
       if (predictions[index].status == "ok") --stats.served;
+      if (predictions[index].status == "ok_price_only") --stats.price_only_rows;
       predictions[index].price = kNaN;
       predictions[index].vol = kNaN;
+      predictions[index].vol_status = "not_evaluated"; // the whole expiry is refused
       predictions[index].grade.clear();
       predictions[index].status = ambiguous_expiries.contains(chain)
           ? "ambiguous_expiry" : "calendar_arbitrage";
@@ -1173,6 +1206,9 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     add_count(counts, "rows");
     add_count(counts, "admitted_quotes", prediction.admitted ? 1U : 0U);
     add_count(counts, "served_rows", prediction.status == "ok" ? 1U : 0U);
+    if (stats.price_only) {
+      add_count(counts, "price_only_rows", prediction.status == "ok_price_only" ? 1U : 0U);
+    }
     if (prediction.actual_curve.empty()) add_count(counts, "no_curve_rows");
     else add_count(counts["actual_curve_rows"], prediction.actual_curve);
     add_count(counts["row_status_counts"], prediction.status);
@@ -1294,6 +1330,13 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
           "after an adoption, calendar refusals are re-checked against the final served set "
           "(calendar_readmitted, B/C); the gate never refuses an expiry";
     }
+  }
+  if (stats.price_only) {
+    report["price_only_rows"] = stats.price_only_rows;
+    report["price_only_semantics"] = "policy price_only: a served row whose certified price "
+        "has no identifiable American volatility under its own carry (a repaired node) is "
+        "status ok_price_only with that price, a blank vol and vol_status unidentifiable; it is "
+        "never counted in served_rows (price-served = ok | ok_price_only, vol-served = ok)";
   }
   if (!stats.dividend_schedules.empty()) {
     report["dividend_schedule"] = {

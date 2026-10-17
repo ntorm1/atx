@@ -355,11 +355,37 @@ TEST(QuoteSurface, BoundedCalendarRepairAdmitsASmallCrossing) {
   expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
 }
 
+// Every PriceOnly row carries its certified price and no volatility, and the
+// library query refuses the same contract; prices_produced counts Success and
+// PriceOnly rows. Returns the number of PriceOnly rows.
+std::size_t expect_price_only_rows(const QuoteSliceFit &fit,
+                                   std::span<const QuoteSliceQuote> quotes) {
+  std::size_t price_only = 0;
+  std::size_t priced = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fit.rows[i];
+    priced += row.evaluation_status == QuoteSliceEvaluationStatus::Success;
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) continue;
+    ++price_only;
+    ++priced;
+    EXPECT_TRUE(std::isnan(row.fitted_iv)) << i;
+    const auto certified = fit.prices->price(quotes[i].strike, quotes[i].side);
+    EXPECT_TRUE(certified) << i;
+    if (certified) {
+      EXPECT_EQ(row.fitted_price, *certified) << i;
+    }
+    EXPECT_FALSE(evaluate_quote_slice(fit, quotes[i].strike, quotes[i].side)) << i;
+  }
+  EXPECT_EQ(fit.diagnostics.prices_produced, priced);
+  return price_only;
+}
+
 TEST(QuoteSurface, MovedNodeWithoutAnIdentifiableVolatilityIsNeverServedWithTheCurveVol) {
   // A calendar floor at the certificate's upper edge (call S - 1e-4 K, put
   // K (1 - 2e-4): linear, so convex, and inside every price bound) lifts every
   // node above any finite-volatility American price: the served prices have no
   // identifiable volatility, so the rows must not keep the curve's volatility.
+  // They are PriceOnly: the certified price, a NaN volatility.
   const auto c = chain(0.5, 0.25, 0.0, 0.01, 80, 120, 5);
   auto fit = fit_quote_slice(c.market, c.quotes);
   ASSERT_TRUE(fit) << fit.error().to_string();
@@ -372,16 +398,159 @@ TEST(QuoteSurface, MovedNodeWithoutAnIdentifiableVolatilityIsNeverServedWithTheC
   ASSERT_TRUE(floor) << floor.error().to_string();
   const std::array<const AmericanPriceSlice *, 1> earlier{&*floor};
   ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0e9));
-  std::size_t invalid = 0;
-  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
-    const auto &row = fit->rows[i];
-    if (row.evaluation_status != QuoteSliceEvaluationStatus::InvalidVolatility) continue;
-    ++invalid;
-    EXPECT_TRUE(std::isnan(row.fitted_iv)) << i;
-    EXPECT_TRUE(std::isnan(row.fitted_price)) << i;
-    EXPECT_FALSE(evaluate_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side)) << i;
+  EXPECT_GT(expect_price_only_rows(*fit, c.quotes), 0u);
+  EXPECT_STREQ(to_string(QuoteSliceEvaluationStatus::PriceOnly), "price_only");
+}
+
+// The fit's node prices shifted by `shift` on both sides (a constant shift keeps
+// convexity, slopes and the call-minus-put spread), certified on the fit's bounds.
+AmericanPriceSlice shifted_slice(const QuoteSliceFit &fit, double shift) {
+  std::vector<AmericanPriceNode> nodes;
+  for (const auto &node : fit.prices->nodes()) {
+    nodes.push_back({node.strike, node.call + shift, node.put + shift});
   }
-  EXPECT_GT(invalid, 0u);
+  auto slice = AmericanPriceSlice::create(nodes, fit.prices->bounds());
+  if (!slice) {
+    ADD_FAILURE() << slice.error().to_string();
+    return *fit.prices;
+  }
+  return std::move(*slice);
+}
+
+// A carry zig-zag far wider than the quotes' noise on deep in-the-money call
+// strikes (64-88 every 4, volatility 0.15; 4% yield at the end strikes and every
+// other one, zero at the others). A deep high-yield call is exercised (worth
+// about its intrinsic S - K), a zero-yield call is worth at least S - K e^{-rT}:
+// above the chord of its two high-yield neighbours, so the greatest convex
+// minorant lowers it below its own zero-volatility American value. Both sides
+// stay monotone (the strike step outweighs the yield's forward shift), and the
+// hull keeps both high-yield end nodes, so the repaired slopes stay in bounds.
+Chain wide_zigzag_chain() {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, 0.5, 0.5, 0.03, 0.0, 0.0};
+  for (int strike = 64; strike <= 88; strike += 4) {
+    const double q = ((strike - 64) / 4) % 2 == 0 ? 0.04 : 0.0;
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(100.0, static_cast<double>(strike), 0.5, 0.15, 0.03, q, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.05);
+      out.quotes.push_back({static_cast<double>(strike), side, std::max(*price - spread, 0.0),
+                            *price + spread, q});
+    }
+  }
+  return out;
+}
+
+QuoteSliceConfig unbounded_convexity_repair() {
+  auto config = channel_config();
+  config.channel.repair_half_spreads = 1.0e6; // accept any move
+  return config;
+}
+
+TEST(QuoteSliceChannel, ConvexityRepairBelowTheZeroVolatilityValueServesPriceOnlyRows) {
+  const auto c = wide_zigzag_chain();
+  auto config = unbounded_convexity_repair();
+  const auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
+  EXPECT_GT(fit->diagnostics.channel.repaired_nodes, 0u);
+  ASSERT_FALSE(fit->moved_nodes.empty());
+  EXPECT_GT(expect_price_only_rows(*fit, c.quotes), 0u);
+  // Every PriceOnly row sits at a node the convexity repair moved.
+  const auto nodes = fit->prices->nodes();
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (fit->rows[i].evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) continue;
+    const auto at = std::find_if(nodes.begin(), nodes.end(), [&](const AmericanPriceNode &n) {
+      return n.strike == c.quotes[i].strike;
+    });
+    ASSERT_NE(at, nodes.end());
+    const unsigned bit = c.quotes[i].side == Side::Call ? 1u : 2u;
+    EXPECT_NE(fit->moved_nodes[static_cast<std::size_t>(at - nodes.begin())] & bit, 0u) << i;
+  }
+  // Without the repair the same slice fails its certificate.
+  config.channel.repair_half_spreads = 0.0;
+  const auto refused = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(refused);
+  EXPECT_EQ(refused->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+}
+
+TEST(QuoteSliceChannel, CalendarRepairReimpliesAPriceOnlyRowItMoves) {
+  // The convexity-repaired PriceOnly slice above, then a calendar floor 1.5
+  // above every node (a constant shift keeps the floor certified): the
+  // calendar repair lifts every node, so each formerly PriceOnly row is
+  // re-implied at its new price, and one that is now identifiable is Success.
+  const auto c = wide_zigzag_chain();
+  auto fit = fit_quote_slice(c.market, c.quotes, unbounded_convexity_repair());
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  std::vector<std::size_t> price_only;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (fit->rows[i].evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+      price_only.push_back(i);
+    }
+  }
+  ASSERT_FALSE(price_only.empty());
+  const AmericanPriceSlice floor = shifted_slice(*fit, 1.5);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0e9));
+  std::size_t recovered = 0;
+  for (const std::size_t i : price_only) {
+    const auto &row = fit->rows[i];
+    const auto certified = fit->prices->price(c.quotes[i].strike, c.quotes[i].side);
+    ASSERT_TRUE(certified);
+    EXPECT_EQ(row.fitted_price, *certified) << i; // refreshed either way
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success) continue;
+    const auto repriced = andersen_lake(c.market.spot, c.quotes[i].strike,
+                                        c.market.variance_years, row.fitted_iv, 0.03,
+                                        *c.quotes[i].continuous_yield, c.quotes[i].side);
+    ASSERT_TRUE(repriced);
+    EXPECT_NEAR(*repriced, row.fitted_price, 1.0e-4) << i;
+    ++recovered;
+  }
+  EXPECT_GT(recovered, 0u);
+  static_cast<void>(expect_price_only_rows(*fit, c.quotes));
+}
+
+TEST(QuoteSliceChannel, CalendarRepairFlagsAreOredIntoConvexityRepairFlags) {
+  // A convexity-repaired knot slice (mild carry zig-zag), then a calendar floor
+  // only over strikes >= 100, 0.002 above them: the calendar repair moves those
+  // nodes, and the moved-node mask is the union of both repairs.
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05);
+  auto config = channel_config();
+  config.channel.repair_half_spreads = 20.0;
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_FALSE(fit->moved_nodes.empty());
+  const std::vector<std::uint8_t> convexity = fit->moved_nodes;
+  const auto before = fit->prices->nodes();
+  const std::vector<AmericanPriceNode> original(before.begin(), before.end());
+  std::vector<AmericanPriceNode> upper;
+  for (const auto &node : original) {
+    if (node.strike >= 100.0) upper.push_back({node.strike, node.call + 0.002, node.put + 0.002});
+  }
+  auto floor = AmericanPriceSlice::create(upper, fit->prices->bounds());
+  ASSERT_TRUE(floor) << floor.error().to_string();
+  const std::array<const AmericanPriceSlice *, 1> earlier{&*floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0e9));
+  const auto after = fit->prices->nodes();
+  ASSERT_EQ(fit->moved_nodes.size(), original.size());
+  std::size_t added = 0;
+  for (std::size_t n = 0; n < original.size(); ++n) {
+    const std::uint8_t calendar = static_cast<std::uint8_t>(
+        (after[n].call != original[n].call ? 1u : 0u) | (after[n].put != original[n].put ? 2u : 0u));
+    EXPECT_EQ(fit->moved_nodes[n], convexity[n] | calendar) << n;
+    added += (calendar & ~convexity[n]) != 0u;
+  }
+  EXPECT_GT(added, 0u);
+  std::size_t convexity_only = 0;
+  for (std::size_t n = 0; n < original.size(); ++n) {
+    convexity_only += convexity[n] != 0u && original[n].strike < 100.0;
+  }
+  EXPECT_GT(convexity_only, 0u); // flags the calendar repair did not set survive
+  expect_moved_nodes_reimplied(*fit, c.quotes);
 }
 
 TEST(QuoteSurface, KnotSplineProfileGradesAOnlyWithOwnEvidenceAndUnmovedPrices) {
@@ -477,21 +646,6 @@ QuoteSliceConfig channel_repair_config(std::size_t max_nodes = 64) {
   config.repair.mode = QuoteSliceRepairMode::Channel;
   config.repair.max_nodes = max_nodes;
   return config;
-}
-
-// The fit's node prices shifted by `shift` on both sides (a constant shift keeps
-// convexity, slopes and the call-minus-put spread), certified on the fit's bounds.
-AmericanPriceSlice shifted_slice(const QuoteSliceFit &fit, double shift) {
-  std::vector<AmericanPriceNode> nodes;
-  for (const auto &node : fit.prices->nodes()) {
-    nodes.push_back({node.strike, node.call + shift, node.put + shift});
-  }
-  auto slice = AmericanPriceSlice::create(nodes, fit.prices->bounds());
-  if (!slice) {
-    ADD_FAILURE() << slice.error().to_string();
-    return *fit.prices;
-  }
-  return std::move(*slice);
 }
 
 TEST(QuoteSliceChannel, RepairIsOptInAndServesAMicroKinkedPointFitInsideItsChannels) {

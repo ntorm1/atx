@@ -55,6 +55,11 @@ LABEL_SCHEMA = pa.schema([
     ("reference_vol", pa.float64()),
 ])
 PREDICTION_COLUMNS = ("row_id", "predicted_price", "predicted_vol", "status", "chain_id")
+# A row's PRICE is served when its status is one of these; its VOLATILITY only when
+# the status is "ok". "ok_price_only" (native policy key price_only) carries a
+# certified price whose volatility is unidentifiable, with a blank predicted_vol.
+PRICE_SERVED_STATUSES = ("ok", "ok_price_only")
+VOL_SERVED_STATUS = "ok"
 POLICY_METADATA_COLUMNS = ("resolved_profile", "policy_source", "configured_curve", "actual_curve")
 POLICY_METADATA_STATES = {
     "reported": "nonempty metadata supplied by this prediction artifact",
@@ -658,6 +663,7 @@ def _error_metrics(error: pl.Expr, prefix: str) -> list[pl.Expr]:
 def _metrics() -> list[pl.Expr]:
     result = [pl.len().alias("rows"), pl.col("eligible").sum().alias("eligible_rows"),
               pl.col("predicted").sum().alias("predicted_rows"),
+              pl.col("price_only_predicted").sum().alias("price_only_predicted_rows"),
               pl.col("price_prediction_valid").sum().alias("price_prediction_rows"),
               pl.col("vol_prediction_valid").sum().alias("vol_prediction_rows"),
               pl.col("price_reference_valid").sum().alias("price_label_rows"),
@@ -726,12 +732,16 @@ def _load_evaluation(dataset: Path, receipt_path: Path, split: str,
         return pl.col(col).is_not_null() & pl.col(col).is_finite()
     joined = joined.with_columns(
         (pl.col("input_status") == "ok").alias("eligible"),
-        (pl.col("status") == "ok").fill_null(False).alias("predicted"),
+        # Price-served; vol-served is the narrower "ok" (PRICE_SERVED_STATUSES).
+        pl.col("status").is_in(PRICE_SERVED_STATUSES).fill_null(False).alias("predicted"),
+        (pl.col("status") == VOL_SERVED_STATUS).fill_null(False).alias("vol_predicted"),
     ).with_columns(
         (pl.col("eligible") & pl.col("predicted") & good("predicted_price")
          & (pl.col("predicted_price") >= 0)).fill_null(False).alias("price_prediction_valid"),
-        (pl.col("eligible") & pl.col("predicted") & good("predicted_vol")
+        (pl.col("eligible") & pl.col("vol_predicted") & good("predicted_vol")
          & (pl.col("predicted_vol") > 0)).fill_null(False).alias("vol_prediction_valid"),
+        (pl.col("eligible") & pl.col("predicted") & ~pl.col("vol_predicted"))
+          .alias("price_only_predicted"),
         (pl.col("eligible") & good("reference_price") & (pl.col("reference_price") >= 0))
           .fill_null(False).alias("price_reference_valid"),
         (pl.col("eligible") & good("reference_vol") & (pl.col("reference_vol") > 0))
@@ -844,6 +854,7 @@ def score(args: argparse.Namespace) -> dict:
                   "price errors are dollars per share; vol errors are absolute volatility basis points",
                   "spread-normalized errors divide by max(ask-bid,tick_size)",
                   "coverage denominators include every raw-input-eligible row, including solver failures",
+                  "price coverage counts status ok and ok_price_only; vol coverage counts ok only",
                   "standard_symbol means no adjusted numeric suffix; it is not verified deliverable metadata",
                   "reference NBBO location is an evaluation diagnostic, never an admission rule",
                   "policy strata partition all selected rows, including explicit missing metadata groups",

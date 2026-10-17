@@ -337,6 +337,8 @@ const char *to_string(QuoteSliceEvaluationStatus value) noexcept {
     return "invalid_volatility";
   case QuoteSliceEvaluationStatus::PricingFailure:
     return "pricing_failure";
+  case QuoteSliceEvaluationStatus::PriceOnly:
+    return "price_only";
   }
   return "unknown";
 }
@@ -1176,10 +1178,13 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       row.evaluation_status = QuoteSliceEvaluationStatus::PricingFailure;
       continue;
     }
+    row.fitted_price = *price;
+    row.evaluation_status = QuoteSliceEvaluationStatus::Success;
+    ++diag.prices_produced;
     if (!repaired.empty()) {
       // A repaired node's served price is no longer the curve's: report the
       // volatility of the certified price, and never the curve's pre-repair
-      // volatility when the served price has none.
+      // volatility when the served price has none (PriceOnly).
       const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
       const unsigned bit = quote.side == Side::Call ? 1u : 2u;
       if (at != strikes.end() && *at == quote.strike &&
@@ -1188,17 +1193,14 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         QuoteSliceConfig query;
         query.discrete_div_steps = out.discrete_div_steps;
         const auto iv = contract_iv(out, quote, *price, query, q);
-        if (!iv || !positive(*iv)) {
+        if (iv && positive(*iv)) {
+          row.fitted_iv = *iv;
+        } else {
           row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
-          row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
-          continue;
+          row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
         }
-        row.fitted_iv = *iv;
       }
     }
-    row.fitted_price = *price;
-    row.evaluation_status = QuoteSliceEvaluationStatus::Success;
-    ++diag.prices_produced;
   }
   if (std::any_of(repaired.begin(), repaired.end(), [](std::uint8_t m) { return m != 0u; })) {
     out.moved_nodes = std::move(repaired);
@@ -1578,8 +1580,9 @@ bool above_floors(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> n
 }
 
 // Publishes a certified calendar repair: replaces fit.prices, refreshes the
-// served rows (moved nodes re-implied; no identifiable volatility -> NaN price
-// and volatility, InvalidVolatility) and ORs `moved` into fit.moved_nodes.
+// rows carrying a price (Success and PriceOnly; a moved node is re-implied: no
+// identifiable volatility -> PriceOnly with the certified price and NaN
+// volatility, else Success) and ORs `moved` into fit.moved_nodes.
 void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
                             AmericanPriceSlice certified,
                             std::span<const AmericanPriceNode> nodes,
@@ -1588,14 +1591,20 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
   std::vector<double> strikes;
   strikes.reserve(nodes.size());
   for (const auto &node : nodes) strikes.push_back(node.strike);
+  auto &produced = fit.diagnostics.prices_produced;
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     auto &row = fit.rows[i];
-    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success) continue;
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+        row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+      continue;
+    }
     const QuoteSliceQuote &quote = quotes[i];
     const auto price = fit.prices->price(quote.strike, quote.side);
     if (!price || !nonnegative(*price)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::PricingFailure;
       row.fitted_price = std::numeric_limits<double>::quiet_NaN();
+      row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
+      if (produced > 0) --produced; // the row no longer carries a price
       continue;
     }
     row.fitted_price = *price;
@@ -1609,12 +1618,12 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
       const auto iv = contract_iv(fit, quote, *price, query, q);
       if (iv && positive(*iv)) {
         row.fitted_iv = *iv;
+        row.evaluation_status = QuoteSliceEvaluationStatus::Success;
       } else {
         // The served price has no identifiable volatility: never pair it with
         // the curve's pre-repair volatility.
         row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
-        row.fitted_price = std::numeric_limits<double>::quiet_NaN();
-        row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
+        row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
       }
     }
   }

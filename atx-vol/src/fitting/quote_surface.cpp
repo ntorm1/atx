@@ -724,7 +724,8 @@ private:
     for (QuoteSliceRow &row : fit.rows) {
       row.fitted_iv = kNaN;
       row.fitted_price = kNaN;
-      if (row.evaluation_status == QuoteSliceEvaluationStatus::Success) {
+      if (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+          row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
         row.evaluation_status = QuoteSliceEvaluationStatus::NoFit;
       }
     }

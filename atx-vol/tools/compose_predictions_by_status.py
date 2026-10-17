@@ -2,8 +2,10 @@
 """Compose one prediction CSV from an ordered model list using only row status.
 
 Each output row is copied from the FIRST input whose status column marks the row
-as served (default status value ``ok``). When no input serves a row, the first
-input's (refusal) row is copied unchanged. Selection reads only the status
+as served: its status is one of the ``--served-status`` values (default ``ok``
+only; pass ``--served-status ok ok_price_only`` to also route price-only rows,
+which carry a certified price and a blank vol). When no input serves a row, the
+first input's (refusal) row is copied unchanged. Selection reads only the status
 column: it never opens labels, reference prices, errors or quotes, so the
 composition is a deterministic routing rule, not a fitted ensemble.
 
@@ -64,7 +66,16 @@ def read_text_csv(path: Path) -> pl.DataFrame:
     return frame
 
 
-def compose(frames: list[pl.DataFrame], labels: list[str], served_status: str) -> tuple[pl.DataFrame, dict]:
+def selection_rule(served_status: list[str]) -> str:
+    """Receipt text; a single value keeps the historical wording byte for byte."""
+    if len(served_status) == 1:
+        return f"first input whose status == {served_status[0]!r}; otherwise input 0's row unchanged"
+    return (f"first input whose status is one of {tuple(served_status)!r}; "
+            "otherwise input 0's row unchanged")
+
+
+def compose(frames: list[pl.DataFrame], labels: list[str],
+            served_status: list[str]) -> tuple[pl.DataFrame, dict]:
     first = frames[0]
     for index, frame in enumerate(frames[1:], start=1):
         if frame.height != first.height:
@@ -76,7 +87,7 @@ def compose(frames: list[pl.DataFrame], labels: list[str], served_status: str) -
     columns: list[str] = []
     for frame in frames:
         columns.extend(name for name in frame.columns if name not in columns)
-    served = [(frame["status"] == served_status).fill_null(False) for frame in frames]
+    served = [frame["status"].is_in(served_status).fill_null(False) for frame in frames]
     # First served source wins; rows nobody serves fall back to input 0.
     choice = pl.Series("source_index", [len(frames)] * first.height, dtype=pl.Int64)
     for index in reversed(range(len(frames))):
@@ -116,7 +127,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--receipts", nargs="+", type=Path,
                     help="optional quote_benchmark run receipt per input (verifies hashes, enables scoring)")
     ap.add_argument("--output", required=True, type=Path)
-    ap.add_argument("--served-status", default="ok", help="status value that marks a served row")
+    ap.add_argument("--served-status", nargs="+", default=["ok"],
+                    help="status value(s) that mark a served row (default: ok)")
     return ap
 
 
@@ -129,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--labels must name each input once, uniquely")
         if args.receipts is not None and len(args.receipts) != len(args.inputs):
             raise ValueError("--receipts must list one run receipt per input")
+        if len(set(args.served_status)) != len(args.served_status) or not all(args.served_status):
+            raise ValueError("--served-status values must be non-empty and distinct")
         output = args.output.resolve()
         receipt_path = Path(str(output) + ".run.json")
         inputs = [path.resolve() for path in args.inputs]
@@ -161,8 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             "schema_version": SCHEMA_VERSION, "kind": "status-routed-composition",
             "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "tool": str(Path(__file__).resolve()), "tool_sha256": TOOL_SHA256,
-            "selection_rule": f"first input whose status == {args.served_status!r}; "
-                              "otherwise input 0's row unchanged",
+            "selection_rule": selection_rule(args.served_status),
             "selection_inputs": "status column only; labels, references and errors are never read",
             "inputs": [{"index": i, "label": label, "predictions": str(path), "sha256": digest,
                         **({"run_receipt": receipts[i]} if receipts else {})}

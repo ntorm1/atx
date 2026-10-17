@@ -589,13 +589,24 @@ struct LoadedPolicy {
   std::map<std::string, DividendRouting, std::less<>> dividend_routing;
   bool graded{false};
   QuoteSurfaceConfig surface{};
+  // Opt-in (top-level `price_only`, static and graded): a served row whose
+  // certified price has no identifiable volatility (PriceOnly) is published as
+  // status ok_price_only with that price and a blank volatility.
+  bool price_only{false};
 };
 
 inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel dividends) {
   const Json document = selection == "auto" ? Json{{"schema_version", 1}} :
                                              read_document(selection);
   keys(document, {"schema_version", "profiles", "symbol_overrides", "regimes", "admission",
-                  "graded"});
+                  "graded", "price_only"});
+  bool price_only = false;
+  if (document.contains("price_only")) {
+    if (!document.at("price_only").is_boolean()) {
+      throw std::runtime_error("Policy price_only must be true or false");
+    }
+    price_only = document.at("price_only").get<bool>();
+  }
   if (!document.contains("schema_version") || !document.at("schema_version").is_number_integer() ||
       document.at("schema_version") != 1) {
     throw std::runtime_error("Policy schema_version must be 1");
@@ -717,6 +728,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     definition["admission"] = "graded";
     definition["graded"] = surface_json(surface, repair);
   }
+  if (price_only) definition["price_only"] = true; // provenance only when opted in
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
     profile.config.repair = repair;
@@ -748,7 +760,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
-  return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface};
+  return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface,
+          price_only};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {

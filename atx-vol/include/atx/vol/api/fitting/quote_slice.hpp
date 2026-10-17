@@ -116,7 +116,9 @@ struct QuoteSliceChannelConfig {
   // many of its own quote half-spreads (bidless: half the ask; a side without a
   // quote uses the other side's). This bounds the move; it does not keep a
   // price inside [bid, ask]. The unchanged certificate then runs again; moved
-  // nodes are flagged in QuoteSliceFit::moved_nodes. 0 disables the repair.
+  // nodes are flagged in QuoteSliceFit::moved_nodes and report the volatility
+  // of their served price, or PriceOnly (certified price, NaN volatility) when
+  // that price has no identifiable American volatility. 0 disables the repair.
   double repair_half_spreads = 0.0;
   // Opt-in channel dominance under graded admission (fit_quote_surface), run
   // after every other rung (pass A, channel passes, repair rung, calendar
@@ -249,12 +251,19 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
   WideSpreadVol,
   LowVegaWeight
 };
+// PriceOnly: the row carries a certified price (fitted_price) but no volatility
+// (fitted_iv NaN), because a repair moved its node to a price that has no
+// identifiable American volatility under the row's own carry (for example
+// below the zero-volatility exercise value). evaluate_quote_slice refuses the
+// same contract. InvalidVolatility is a curve without a positive volatility at
+// the strike; such a row carries neither price nor volatility.
 enum class QuoteSliceEvaluationStatus : std::uint8_t {
   Success,
   InvalidContract,
   NoFit,
   InvalidVolatility,
-  PricingFailure
+  PricingFailure,
+  PriceOnly
 };
 enum class QuoteSliceFitStatus : std::uint8_t {
   Success, InsufficientQuotes, FitFailure, ArbitrageFailure
@@ -305,7 +314,7 @@ struct QuoteSliceDiagnostics {
   std::size_t iv_attempted = 0;
   std::size_t quotes_admitted = 0;
   std::size_t distinct_strikes = 0;
-  std::size_t prices_produced = 0;
+  std::size_t prices_produced = 0; // rows carrying a certified price (Success or PriceOnly)
   std::size_t weights_capped = 0;
   double forward = 0.0;
   double discount = 0.0;
@@ -435,11 +444,13 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // remains satisfied and the unchanged AmericanPriceSlice certificate passes.
 // The bound limits the move; it does not keep a price inside [bid, ask]. On
 // success replaces fit.prices, flags moved nodes in fit.moved_nodes, refreshes
-// row prices (moved nodes report the volatility of the served price, or
-// InvalidVolatility with NaN price and volatility when that price has no
-// identifiable volatility) and returns true; otherwise leaves `fit` unchanged. The largest required move, in
-// half-spreads, is written to `required` when non-null. The caller must still
-// check the result against every accepted slice.
+// the prices of Success and PriceOnly rows (a moved node is re-implied: the
+// volatility of the served price, or PriceOnly with the certified price and a
+// NaN volatility when that price has no identifiable volatility, so a PriceOnly
+// row can become Success) and returns true; otherwise leaves `fit` unchanged.
+// The largest required move, in half-spreads, is written to `required` when
+// non-null. The caller must still check the result against every accepted
+// slice.
 [[nodiscard]] bool repair_quote_slice_calendar(QuoteSliceFit &fit,
                                                std::span<const QuoteSliceQuote> quotes,
                                                std::span<const AmericanPriceSlice *const> earlier,
