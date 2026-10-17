@@ -138,3 +138,14 @@ receipt JSON field provenance and no checker edit. All deviations disclosed to P
 remain under cells/waves/p9m-mom-volman/. Raw native/sleeve/scoreboard consoles remain preserved
 unread apart from declared metadata/source filtering, not broadly staged. No permission refusal,
 foreign-pool/ref/lease action, PNG access, build, suite or next-cell work. final-report.md untouched.
+
+## Historical accounting clarification (R15-APPENDIX-SPLIT)
+
+This is a documentation-only clarification of the original checkpoint, not a recount:
+N_c65, N_hand126, M110, N_tot236. Historical admissions61 =12(v8)+25(X hand)
++9(X4 re-screens)+15(Y hand); P9 admission additions0. K_a40 historical hand-written
+strings/P9+0; M110 inherited/P9 mining0; eight historical window reruns add0.
+The native accounting evidence is cells/logs/p9m-accounting.txt (relative to the sprint
+directory); its historical/native wording is preserved. Final V totals do not replace
+this checkpoint. The original research-window/history and full identity-bridge flags
+above remain in force and unchanged; no producer rerun, ledger write or disposition change.

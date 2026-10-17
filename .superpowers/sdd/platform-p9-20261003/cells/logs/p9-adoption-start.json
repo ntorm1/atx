@@ -1,0 +1,421 @@
+{
+  "mode": "metadata only; no result parsing",
+  "head": "2c22d439433b37167cc7d9167bd3d7694925843b",
+  "branch": "feat/platform-p9-20261003",
+  "main": "e696e208ef622aeb8a9ffbcc4bd3e4ea16a74548",
+  "origin_main": "8786863866bcecfbfe3d6f7a90a132bc85a6915c",
+  "status": "M .superpowers/sdd/platform-p9-20261003/progress.md\n M .superpowers/sdd/platform-p9-20261003/r14-prompts/freeze-root-prompt.md\n?? docs/plans/2026-10-02-x5-equity-curve.png\n?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png\n?? docs/plans/2026-10-03-wq-explore-equity-curve.png\n?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png\n?? docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png",
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "bytes": 178888,
+    "sha256": "086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d"
+  },
+  "original139_prefix": "verified",
+  "frozen_exes": [
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+      "sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-ic.exe",
+      "sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy.exe",
+      "sha256": "f883f81f0fbb928cb8fe2e8b1931841e0eef058e7b6398810e10de68cb0495a4",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-risk.exe",
+      "sha256": "0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-mine.exe",
+      "sha256": "daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-eval.exe",
+      "sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-composition.exe",
+      "sha256": "04db0d67c1563184edd6fe8ff66796877c8db20239d5cfb423fa78e047df16f2",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-admission.exe",
+      "sha256": "f53d9277e4ad2e3915343ccca032df3f0098a1a1cd7b4d832b640f5f7437063f",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-store.exe",
+      "sha256": "0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-research-fields.exe",
+      "sha256": "883c5b74a95731eb310cfd30cb1ab39ee102e077ab2d7318bd5db941f486584a",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl.exe",
+      "sha256": "71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-ic-tests.exe",
+      "sha256": "9e979065f2b56f135c819baab9da80c89e5745b6ba249c284c428d3497d0fb5b",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-target-tests.exe",
+      "sha256": "5e781705c1fab53c42cb49d0777753a1f792ff022847923f4dce901411cd6db5",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-tests.exe",
+      "sha256": "9f4cf8076d17b93891a70fb5944e3f43975230a84bc0a82a1e8fb46d90e0b545",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-tests.exe",
+      "sha256": "0ae6ab3f4a09af6a33d4dec3f6eba8fe8324e7c3ea85aaae6f745cb5e03712e1",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-impl-strategy-mine-tests.exe",
+      "sha256": "2ae349c689f9423f2847ffbb63a3ad9598b4c26aab0ca63136dc16a83019fa68",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-alpha-tests.exe",
+      "sha256": "534efe4928e84ae3f9fcc9f0ed79b7e823b51689987edd84c513b6ba7917bf56",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-factory-tests.exe",
+      "sha256": "6bf91318724f77c0413dfaada365708d4360fbc754320f05a9e074655575483c",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-book-tests.exe",
+      "sha256": "88f195dba54faa428eed45b4d53cf64d7e8f8a28702c7f3b3d68dd80ab4af0ac",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-risk-tests.exe",
+      "sha256": "b654425d22fc671b3b24a7dbbb35ccad4288b655afb8d1925853362ca624e99d",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-fields-tests.exe",
+      "sha256": "165ebeea3d7f01fb330856240c12d125b18c0a491bac66183ab9a229c49b3651",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-admission-tests.exe",
+      "sha256": "39c4a81bda54df9712e2e818684cb78293486e7d664dec8b308883c505da1581",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-store-tests.exe",
+      "sha256": "bf9c312941fc5d8668bb7024c476f915138679fb26f3f3fa21fd88e94d953d26",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-catalog-tests.exe",
+      "sha256": "c996b733b5b92f58bee1760a0c7505ec6349c3847bb392d5014e762b58dfefc5",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-composition-tests.exe",
+      "sha256": "17cee392663a5df0432e3293bec06bb5126f6931672b0d827cdaa0e336a731f6",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-ledger-tests.exe",
+      "sha256": "bfe2afc39770a316810ea5f33650e6d15f66ad013374b123ea16e42f8865bf94",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-engine-research-eval-tests.exe",
+      "sha256": "2b9910b3665798c6d93cca37998580db5942cc7284b88cfef4b9830b946a4a02",
+      "tag": "p9-3f"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-targets.exe",
+      "sha256": "5dced610e204ba860bd2c8c8da5c3c6bd58a1ef98c242bec352a6b64d8762a8f",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-ic.exe",
+      "sha256": "adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy.exe",
+      "sha256": "47d341c2541e792873ec5d3db0b739af6de61e9962ba46667c755a1ca56ca9a4",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-risk.exe",
+      "sha256": "6696da719374777aefb49ce9e6b4707187549dff9b838e0c2338d21e852b47a1",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-equity-strategy-mine.exe",
+      "sha256": "4dee20571d4c4481bcf175d8bb688574ba95c60ae29d08b4bb474849f7945412",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-eval.exe",
+      "sha256": "4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-composition.exe",
+      "sha256": "212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-admission.exe",
+      "sha256": "411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-store.exe",
+      "sha256": "a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-research-fields.exe",
+      "sha256": "1c670d86a0fdcae6a86b0eff56a184902d1eed8b244f8af6ab31425e18185fac",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl.exe",
+      "sha256": "7095d4477dd7fee80ead2d9bbdb516a726ed3ab943beed95ac1dc5335af63e55",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-ic-tests.exe",
+      "sha256": "55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-target-tests.exe",
+      "sha256": "18f3855468ca76c083eae9fabdb8d0cd1a237996ac8bba3136ed06782eb74318",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-tests.exe",
+      "sha256": "20f3e2378ea4373e4812ba6c1d5bf1257945b2c5a9488cabeb6df04071f523db",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-tests.exe",
+      "sha256": "6dc6d4426370e256dc1e1331292e84da180a292cb72c86456c70eb9255246fba",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-impl-strategy-mine-tests.exe",
+      "sha256": "7502d0fb39e125a9cce9feabab4c35a8da5681a37eacad974b793c555822abb0",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-alpha-tests.exe",
+      "sha256": "3f8f1c7ce851998d3b2e515cdcbc9ae1634a61550ac2d975a3828850356c9637",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-factory-tests.exe",
+      "sha256": "a9d538ae4d922afa26c78da60e7114b6cabcf78dc32c3274d7f698cf339354d6",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-book-tests.exe",
+      "sha256": "6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-risk-tests.exe",
+      "sha256": "0008934517be7b3a36eede7eae65fde92cab50dab10b9835af585186e26bbbb1",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-fields-tests.exe",
+      "sha256": "a037964fc902f143541d204624e9bd31e0249c7e3a216bd9dac325ab1d47ef7d",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-admission-tests.exe",
+      "sha256": "310aa78298b1bbb75c5d6104f1af581aa962c909cccfdd846d5b6628e8200a62",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-store-tests.exe",
+      "sha256": "d2330e4b387b832545ada353706c62cb41c02981bff61728365ac7329713661f",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-catalog-tests.exe",
+      "sha256": "b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-composition-tests.exe",
+      "sha256": "76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-ledger-tests.exe",
+      "sha256": "8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd",
+      "tag": "p9-3g"
+    },
+    {
+      "path": "C:\\atx-wt\\pool-2\\build-equity\\bin\\atx-engine-research-eval-tests.exe",
+      "sha256": "58b5681bc8373e9a1ddf0a84602d5502acc01070708a09ddc52d747106ec3557",
+      "tag": "p9-3g"
+    }
+  ],
+  "references": [
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-files-p9-b0-r2-nav.txt",
+      "bytes": 3001,
+      "sha256": "04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd",
+      "files": 27,
+      "verified": true
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-files-p9-b0g-x10-nav.txt",
+      "bytes": 3001,
+      "sha256": "6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d",
+      "files": 27,
+      "verified": true
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-files-p9-b0g-y1-nav.txt",
+      "bytes": 3089,
+      "sha256": "cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813",
+      "files": 28,
+      "verified": true
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-files-p9-b0g-yf0-u.txt",
+      "bytes": 445,
+      "sha256": "1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa",
+      "files": 5,
+      "verified": true
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-files-p9-b0g-yf0-w.txt",
+      "bytes": 1115,
+      "sha256": "ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1",
+      "files": 12,
+      "verified": true
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/gate-logs/b0-files-p9-b0g-yf0-nav.txt",
+      "bytes": 3001,
+      "sha256": "e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797",
+      "files": 27,
+      "verified": true
+    }
+  ],
+  "pins": [
+    {
+      "path": "C:/Windows/System32/ucrtbase.dll",
+      "bytes": 1373280,
+      "sha256": "2c08e77f86b0953cffa505bdbe64e87ecb7c088db65d5acb9a2eee65a32565ef"
+    },
+    {
+      "path": "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+      "bytes": 765005,
+      "sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+    },
+    {
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "bytes": 602407,
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/manifest.json",
+      "bytes": 33768,
+      "sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/model.atxcov",
+      "bytes": 510677824,
+      "sha256": "cd48d5749dd7484ca69ae6b0b9df142b73e2beb64c814d3c143982ec59bb2ce3"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-covv1/manifest.json",
+      "bytes": 34534,
+      "sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-covv1/model.atxcov",
+      "bytes": 510678016,
+      "sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a"
+    },
+    {
+      "path": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+      "bytes": 4713,
+      "sha256": "1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f"
+    },
+    {
+      "path": "scripts/specs/p9/templates/p9x-leverage.json",
+      "bytes": 1494,
+      "sha256": "e8a308b593b67c16111f3e4792c92983e9c5cfd412c7e42d485ecfe089b549db"
+    },
+    {
+      "path": "build-equity/cycle-v8y-vol-target-y-1/pbo.json",
+      "bytes": 338538,
+      "sha256": "2beb256ccd64325d28f0b7f95d3eae8e94b10b4ab57197f48c7681e7876f4ea6"
+    },
+    {
+      "path": "build-equity/cycle-v8ysb-gm/pbo.json",
+      "bytes": 332783,
+      "sha256": "556192c0161051011587467b86c848b916ae4ff8de3fbfbd79cd1d7b4f23aa10"
+    }
+  ],
+  "crt_version": "10.0.26100.7623 (WinBuild.160101.0800)",
+  "role_returns_applied_is_false": true,
+  "absent": [
+    "build-equity/research-store",
+    "build-equity/mega-candidate-cache-v8-lo3/index.sqlite",
+    "build-equity/train-2020-2023-lo3-fields-v9",
+    "build-equity/train-2020-2023-lo3-fields-v10",
+    "build-equity/train-2020-2023-lo3-fields-v13",
+    "build-equity/train-2020-2023-lo3-fields-v14",
+    "build-equity/train-2020-2023-lo3-fields-v15a"
+  ],
+  "free_C_bytes": 36067098624,
+  "proposal_sha256": "c0f44d62d9c3877430c7dfca6f9948c51b350a64a85d4cc0f32bbcd1956ec4d0",
+  "preparation_host_free_ram_mib": 4298.62109375,
+  "preparation_host_ram_total_mib": 16068.73828125,
+  "source_control_evidence": "cells/logs/p9-adoption-source-controls.json",
+  "original133_prefix_sha256": "27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554",
+  "original_H_X_nav_listing_checks": [
+    {
+      "book": "H",
+      "listing": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9h-attempt2-output-files-sha256.txt",
+      "sha256": "c3743d1f3c5fcd8b15312b2797efe900375fed49fcb05aa3387ccf143764b05d",
+      "bound_nav_files": 7,
+      "match": true
+    },
+    {
+      "book": "X",
+      "listing": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-final-output-sha256.txt",
+      "sha256": "c314eaeceef66e9014bc6a825e6ed4dd0cccde9ee84031fc1a7c326caee65347",
+      "bound_nav_files": 7,
+      "match": true
+    }
+  ],
+  "source_python_ast": "PASS; parse only, no data adapter execution"
+}

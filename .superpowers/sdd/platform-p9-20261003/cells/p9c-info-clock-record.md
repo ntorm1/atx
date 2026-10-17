@@ -132,3 +132,14 @@ Native record copies in cells/waves/p9c-info-clock match original bytes. Raw nat
 SHA6f188c11fe3b5746e44bee30429c97fa10fdad1a88c10aa85fd1bc11f6ef35c8 and scoreboard outputs
 remain preserved unread except declared metadata, unstaged. final-report.md untouched; owner
 PNGs never opened/hashed/staged/moved/deleted; no foreign-pool/ref/lease action.
+
+## Historical accounting clarification (R15-APPENDIX-SPLIT)
+
+This is a documentation-only clarification of the original checkpoint, not a recount:
+N_c66, N_hand127, M110, N_tot237. Historical admissions61 =12(v8)+25(X hand)
++9(X4 re-screens)+15(Y hand); P9 admission additions0. K_a40 historical hand-written
+strings/P9+0; M110 inherited/P9 mining0; eight historical window reruns add0.
+The native accounting evidence is cells/logs/p9c-accounting.txt (relative to the sprint
+directory); its historical/native wording is preserved. Final V totals do not replace
+this checkpoint. The original research-window/history and full identity-bridge flags
+above remain in force and unchanged; no producer rerun, ledger write or disposition change.

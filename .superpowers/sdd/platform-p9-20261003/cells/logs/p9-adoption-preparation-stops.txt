@@ -1,0 +1,11 @@
+Metadata-only command, cwd C:/atx-wt/pool-2:
+& 'C:/Program Files/Python312/python.exe' .superpowers/sdd/platform-p9-20261003/cells/tools/p9_adoption_prepare.py
+PYTHONDONTWRITEBYTECODE=1
+Stopped at line72 before any output write or statistical command:
+AssertionError: build-equity/p9-m2d-cov-risk-container/manifest.json
+
+Cause: preparer selected the old risk-container path for the distinct covv1 store pin.
+Source correction verified against cells/p9v-vol-target-cov-proposal.json:25-26,234,238:
+the registered path is build-equity/p9-m2i-dcov-covv1. Corrected only the preparer's
+path, not a stored pin, reference or input. PM notified. The initial stop is retained.
+This is a metadata-helper selection defect, no native/resource/permission stop.

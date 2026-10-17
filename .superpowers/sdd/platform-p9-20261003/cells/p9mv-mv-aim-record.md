@@ -112,3 +112,14 @@ and raw scoreboard SHA `05a9e42cf543d280dba3f17af9ba42a53526f66e19995697925c52d6
 remain unread except declared metadata and unstaged. PM final-report/freeze-verdict/
 cells-root5-x drafts untouched; owner PNGs unopened/unhashed/unstaged/unmoved/undeleted.
 STOP before W/X/V/adoption for PM's explicit MV disposition.
+
+## Historical accounting clarification (R15-APPENDIX-SPLIT)
+
+This is a documentation-only clarification of the original checkpoint, not a recount:
+N_c67, N_hand128, M110, N_tot238. Historical admissions61 =12(v8)+25(X hand)
++9(X4 re-screens)+15(Y hand); P9 admission additions0. K_a40 historical hand-written
+strings/P9+0; M110 inherited/P9 mining0; eight historical window reruns add0.
+The native accounting evidence is cells/logs/p9mv-accounting.txt (relative to the sprint
+directory); its historical/native wording is preserved. Final V totals do not replace
+this checkpoint. The original research-window/history and full identity-bridge flags
+above remain in force and unchanged; no producer rerun, ledger write or disposition change.

@@ -191,3 +191,14 @@ in completion. PM drafts and owner PNGs remain untouched.
 X is fully closed. Stop here; no V/adoption preparation or execution.
 Recommend fresh root6 for V to keep ample context for that separate hand cell;
 all exact X state, artifacts and standing boundaries are committed in the handoff.
+
+## Historical accounting clarification (R15-APPENDIX-SPLIT)
+
+This is a documentation-only clarification of the original checkpoint, not a recount:
+N_c68, N_hand129, M110, N_tot239. Historical admissions61 =12(v8)+25(X hand)
++9(X4 re-screens)+15(Y hand); P9 admission additions0. K_a40 historical hand-written
+strings/P9+0; M110 inherited/P9 mining0; eight historical window reruns add0.
+The native accounting evidence is cells/logs/p9x-accounting.txt and cells/logs/p9x-accounting-v8.txt (relative to the sprint
+directory); its historical/native wording is preserved. Final V totals do not replace
+this checkpoint. The original research-window/history and full identity-bridge flags
+above remain in force and unchanged; no producer rerun, ledger write or disposition change.

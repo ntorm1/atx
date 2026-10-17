@@ -1,0 +1,10 @@
+{
+  "command": ["C:/Program Files/Python312/python.exe", ".superpowers/sdd/platform-p9-20261003/cells/tools/p9_adoption_conditional.py", "controls"],
+  "cwd": "C:/atx-wt/pool-2",
+  "PYTHONDONTWRITEBYTECODE": "1",
+  "exit_code": 0,
+  "positive_receipt_and_equal_echo": "PASS",
+  "wrong_field_root_argv_hash_echo_and_free_text": "PASS",
+  "scientific_input_reads": 0,
+  "statistical_commands": 0
+}
