@@ -19,7 +19,9 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 
+#include "atx/vol/api/core/types.hpp"        // Status
 #include "atx/vol/api/pricing/american.hpp"  // AlOpts (scheme_from_opts input)
 #include "pricing/american_detail.hpp"        // detail::AlSeedMode (AlScheme::seed default)
 
@@ -298,6 +300,32 @@ struct AlSolveResid {
 [[nodiscard]] double al_put_premium_from_boundary(const AlBoundary& bnd, const AlWorkspace& ws,
                                                   double S, double sigma, double r,
                                                   double q) noexcept;
+
+// ── Serve-path seam (2026-10-16): the correction-cache build's exercise edge ──
+//
+// andersen_lake_put_slice / andersen_lake_call_slice solve ONE early-exercise
+// boundary per (T, sigma) row of a CorrectionCache build. The cache keeps each
+// row's CURRENT exercise edge so the session serve path can route queries near
+// the boundary off the tensor (the tensor is smooth across the edge's kink, so it
+// is least accurate there). These run the public slices' own code — prices are
+// bit-identical — and additionally write the boundary at tau = T into
+// *b_now_out (nullable):
+//   put slice  — the boundary for the reference strike strikes[0] (it scales
+//                linearly in K by homogeneity);
+//   call slice — the McDonald-Schroder internal-put boundary (internal strike S,
+//                internal spot = the call strike).
+// *b_now_out is NaN when no boundary was solved (degenerate T or sigma, the
+// European regime, or an error return).
+[[nodiscard]] Status al_put_slice_with_edge(double S, std::span<const double> strikes, double T,
+                                            double sigma, double r, double q,
+                                            std::span<double> price_out,
+                                            const std::optional<AlOpts>& opts,
+                                            double* b_now_out);
+[[nodiscard]] Status al_call_slice_with_edge(double S, std::span<const double> strikes, double T,
+                                             double sigma, double r, double q,
+                                             std::span<double> price_out,
+                                             const std::optional<AlOpts>& opts,
+                                             double* b_now_out);
 
 // ── P2 (WS-P) seam: the PURE collocation residual R(y; sigma, r) ──────────
 //

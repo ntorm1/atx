@@ -73,6 +73,60 @@ namespace atx::vol {
 
 struct CanonicalPreparedExpiry;
 class PricerFitter;
+struct SessionRecords; // records-mode serving state (session.cpp; opaque here)
+
+// ── Serve policy (serve-path lane, 2026-10-16) ─────────────────────────────
+//
+// How a session's const queries (fair_value / greeks / the ladders) re-price a
+// fitted vol. Two independent knobs:
+//
+//   * `mode` — Tier (default) serves exactly as `query_pricing_tier` always has.
+//     Records is OPT-IN: at build (and at every slice refit) the session builds
+//     one certified per-expiry ExpiryRecord per fitted expiry and side, at that
+//     expiry's exact carry (api/fitting/expiry_record.hpp). A query at a fitted
+//     expiry whose (k, sigma) is inside the record box and whose certificate is
+//     within policy is served from the record (QueryPricingRoute::Record) and
+//     carries a per-contract certified error (VolaSession::served_certificate_usd);
+//     every other query — off-expiry T, out of the box, uncertified or over-policy
+//     record — is priced by the cold Andersen-Lake path. Records mode never serves
+//     the correction tensor. Greeks from a record carry price/delta/gamma/vega/
+//     theta; rho/vanna/volga/charm are NaN there (the record has no r or T axis).
+//
+//   * `exercise_edge_gate` — applies to the correction-tensor route of the Tier
+//     mode: an in-box query whose distance from the cache's recorded exercise edge
+//     (CorrectionCache::exercise_edge_distance) is not more than
+//     `exercise_edge_band` sigma sqrt(T) is priced cold instead
+//     (QueryPricingRoute::ExerciseEdgeFallback). OFF by default, by measurement
+//     (chain/serve/* rows of the chain-refresh bench, 2,000 contracts at S0, vs
+//     cold accurate AL; unqualified timings): the tensor's kink error is not
+//     confined near the edge, so a 1.0 band re-prices 417 contracts cold (21%)
+//     and only cuts the max error from $0.97 to $0.45 at ~10x the chain serve
+//     time; a 3.0 band re-prices 832 (42%), ~20x the time, and still leaves
+//     $0.07. Records mode serves the same chain at $1.1e-4 max in ~1/7 of the
+//     tensor's time; the gate is a partial mitigation for callers that must keep
+//     the tensor (sprints/2026-10-16-serve-path-records-sprint.md).
+enum class SessionServeMode : std::uint8_t {
+  Tier = 0,    // serve per query_pricing_tier (historical behaviour)
+  Records = 1, // certified ExpiryRecords at fitted expiries; cold everywhere else
+};
+
+struct SessionServePolicy {
+  SessionServeMode mode{SessionServeMode::Tier};
+  bool exercise_edge_gate{false};
+  double exercise_edge_band{1.0}; // sigma sqrt(T) units, >= 0
+  // Records mode: a record serves a contract only when its dollar certificate
+  // (certified forward-unit error x F, plus an ulp-scale floor) is at most
+  // max(record_max_cert_usd, record_max_cert_rel x F) — an absolute floor plus a
+  // forward-scaled allowance, so a $5,000 underlying is not refused wholesale.
+  double record_max_cert_usd{5.0e-4};
+  double record_max_cert_rel{5.0e-7};
+  // Record box sizing (ChainRecordPolicy semantics): the moneyness box covers the
+  // expiry's listed strikes padded by record_spot_move in ln-spot both ways; the
+  // sigma box is [lo_mult x min, hi_mult x max] of the fitted vol over that box.
+  double record_spot_move{0.05};
+  double record_sigma_lo_mult{0.6};
+  double record_sigma_hi_mult{1.6};
+};
 
 // Market/pricing snapshot a session is built from. Maps 1:1 onto
 // `SurfaceParityInputs` when driving `run_surface_parity`; the same fields are
@@ -240,14 +294,17 @@ struct SessionInputs {
   // Appended last (post-v1); no positional-compatibility promise, per the
   // construction contract above.
   PreparationPolicyRequest prep{};
+  // Serve policy (records mode, exercise-edge gate); see SessionServePolicy.
+  // The default is bit-identical to the historical serving. Appended post-v1.
+  SessionServePolicy serve{};
 };
 
-// Drift pin (plan item 4.2). SessionInputs has exactly TWENTY-FOUR fields.
+// Drift pin (plan item 4.2). SessionInputs has exactly TWENTY-FIVE fields.
 // Adding, removing or splitting one breaks this line, which is the point: it
 // forces whoever changes the struct to read the construction contract above
 // instead of appending a knob "for compatibility" with positional initializers
 // that are no longer part of the API.
-static_assert(detail::aggregate_arity_is_v<SessionInputs, 24>,
+static_assert(detail::aggregate_arity_is_v<SessionInputs, 25>,
               "SessionInputs field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 
@@ -598,9 +655,28 @@ public:
   //                      (fitted vol above the sigma ceiling, or T/moneyness past
   //                      the padded box): the serve path falls back to the cold
   //                      Andersen-Lake pricer instead of a box-edge-clamped mark.
+  //   ExerciseEdgeFallback — the query is inside the box but the exercise-edge
+  //                      gate (SessionServePolicy::exercise_edge_gate) keeps it
+  //                      off the tensor: the cold pricer.
+  //   Record           — records mode: a certified per-expiry record serves it.
+  // In records mode every non-Record query reports ColdReference (no record at
+  // that T) or ColdFallback (a record exists but the query is out of its box or
+  // its certificate is over policy, or the record is uncertified).
   // Returns ColdReference for an invalid (non-finite / non-positive) K or T (the
   // domain on which fair_value itself returns InvalidArgument).
   [[nodiscard]] QueryPricingRoute query_route(double K, double T, Side side) const noexcept;
+
+  // Records mode: the certified price error, in dollars, of the value fair_value
+  // / greeks serve at (K, T, side) — the record's certified forward-unit error
+  // x F plus an ulp-scale floor. NaN when that query is NOT record-served (Tier
+  // mode, or a cold route), i.e. exactly when query_route != Record. The bound
+  // is measured on the record's certification grid against the cold accurate
+  // Andersen-Lake solver (ExpiryRecord "Certification"); it covers price only.
+  [[nodiscard]] double served_certificate_usd(double K, double T, Side side) const noexcept;
+
+  // Records mode: the number of populated per-expiry records (both sides); 0 in
+  // Tier mode.
+  [[nodiscard]] std::size_t record_count() const noexcept;
 
   // ── Strike-ladder queries (SoA; reprice a whole expiry in one call) ────────
   //
@@ -837,6 +913,12 @@ private:
                                                            const CanonicalPreparedExpiry &prepared);
   [[nodiscard]] Status refresh_refit_diagnostics();
   void build_fast_query_cache_bank(const Underlying &under);
+  // Records mode: (re)build the per-expiry records — every fitted slice when
+  // `only_slice` is empty, else that slice alone (the rest are shared with the
+  // previous generation). `under` supplies listed strikes for the moneyness box
+  // (nullptr: a +/-4 sigma_ATM sqrt(T) box). No-op in Tier mode.
+  void build_serving_records(const Underlying *under,
+                             std::optional<std::size_t> only_slice = std::nullopt);
 
   // The interpolated term forward and effective carry at a queried T.
   struct ForwardCarry {
@@ -868,6 +950,13 @@ private:
   // log-discount state between bracketing slices. Precondition: at least one slice
   // (guaranteed — build errors on an empty surface).
   [[nodiscard]] ForwardCarry interp_forward(double T) const noexcept;
+
+  // Records mode: the record that serves (K, T, side) at the fitted vol `sigma`
+  // and carry `fc` with its dollar certificate, or no record plus the cold
+  // route's reason. Defined in session.cpp (it names the Tier-B ExpiryRecord).
+  struct RecordServe;
+  [[nodiscard]] RecordServe record_serve(double K, double T, Side side, double sigma,
+                                         const ForwardCarry &fc) const noexcept;
 
   // Model-vol source, dispatching to the polymorphic override when present and to
   // the eSSVI VolSurface otherwise. Every query (iv / fair_value / greeks /
@@ -960,6 +1049,11 @@ private:
   // Immutable and shared across copy-on-write generations. A spread-only refit
   // never changes certified prices/IVs, so cloning this history is wasted work.
   std::shared_ptr<const IncrementalObservationStore> incremental_observations_;
+  // Records mode serving state (SessionServePolicy::mode == Records): one record
+  // pair per fitted slice, ‖ ctx_. Immutable once published and shared across
+  // copy-on-write generations; a slice refit publishes a new set. Null in Tier
+  // mode.
+  std::shared_ptr<const SessionRecords> records_;
 };
 
 } // namespace atx::vol

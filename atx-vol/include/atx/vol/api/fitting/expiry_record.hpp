@@ -116,8 +116,14 @@ struct RecordGreeks {
   double gamma = 0.0;
   double vega = 0.0;
   double theta = 0.0;
-  bool exercised = false; // spot in the exercise region: intrinsic, theta 0
+  bool exercised = false; // served intrinsic: the exercise region, or a floored
+                          // continuation value (see `floored`); theta 0
   bool in_box = true;     // (k, sigma) inside the record box; outside it clamps
+  // The continuation value fell to (or below) intrinsic on the continuation side
+  // of the recorded edge, so intrinsic was served — with the exercise Greeks
+  // (delta +/-1, gamma = vega = theta = 0), exactly as in the exercise region,
+  // so the Greeks always belong to the served price. `exercised` is set too.
+  bool floored = false;
 };
 
 // Outcome of an implied-vol inversion against a record (audit item 3). One byte;
@@ -175,9 +181,13 @@ public:
   [[nodiscard]] bool has_exercise_edge() const noexcept { return has_edge_; }
 
   // Max |record price - cold accurate AL price| / F over the certification grid,
-  // and the number of grid points it covers. NaN / 0 when not certified.
+  // and the number of grid points it covers. NaN / 0 when not certified. A
+  // certification sigma row whose accurate boundary the cold solver cannot solve
+  // is REFUSED, not skipped: the record is then uncertified (NaN) and
+  // uncertified_rows() counts the refused rows, so every consumer refuses it.
   [[nodiscard]] double certified_max_abs_error_fwd() const noexcept { return cert_err_; }
   [[nodiscard]] std::uint32_t certified_points() const noexcept { return cert_pts_; }
+  [[nodiscard]] std::uint32_t uncertified_rows() const noexcept { return cert_refused_rows_; }
 
   // Finite point inside the closed (k, sigma) box of a populated record.
   [[nodiscard]] bool contains(double k_log, double sigma) const noexcept;
@@ -224,8 +234,16 @@ private:
   };
   [[nodiscard]] Jet eval_jet(double k_log, double sigma, bool want_k) const noexcept;
   [[nodiscard]] bool in_exercise_region(double k_log, double sigma) const noexcept;
+  // price_and_vega past its argument checks, on the (S, K)-only pieces it
+  // derives: F = S e^{(r-q)T}, k = ln(K / F), raw intrinsic and sqrt(T).
+  // implied_vol hoists those out of its Newton loop.
+  [[nodiscard]] double value_and_vega_at(double F, double K, double k_log, double intr,
+                                         double sigma, double sqrt_t,
+                                         double *vega_out) const noexcept;
 
-  std::array<double, static_cast<std::size_t>(kNk) * kNs> coefs_{}; // [j * kNk + i]
+  // Moneyness-major [i * kNs + j] (term i, sigma row j): one Clenshaw step reads
+  // every sigma row's term contiguously (lockstep row evaluation).
+  std::array<double, static_cast<std::size_t>(kNk) * kNs> coefs_{};
   std::array<double, kNs> edge_{};   // unclamped k*(sigma), Chebyshev in sigma
   std::array<double, kNs> domain_{}; // continuation-domain endpoint d(sigma)
   double T_ = 0.0;
@@ -239,6 +257,7 @@ private:
   double s_max_ = 0.0;
   double cert_err_ = 0.0;
   std::uint32_t cert_pts_ = 0;
+  std::uint32_t cert_refused_rows_ = 0;
   Side side_ = Side::Put;
   bool populated_ = false;
   bool american_ = false;

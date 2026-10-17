@@ -23,6 +23,7 @@
 #include "fitting/counters.hpp"         // counters::ledger — V2 per-board solve attribution
 #include "atx/vol/api/fitting/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/api/marketdata/data.hpp"             // data_install
+#include "atx/vol/api/fitting/expiry_record.hpp"    // ExpiryRecord (records serve mode)
 #include "fitting/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
 #include "atx/vol/api/pricing/dividend.hpp"         // hybrid_forward (representative carry)
 #include "fitting/essvi_anchored.hpp"   // apply_anchored_env_policy (opt-in)
@@ -906,9 +907,19 @@ struct SessionCacheGeom {
 // cold Andersen-Lake pricer — mirroring the archived PricedSurface certified-box
 // ColdFallback route (query_pricing.hpp). Single source of truth for every serve
 // site and for VolaSession::query_route.
+//
+// Serve policy (2026-10-16): records mode never serves the tensor (a served
+// cached price must carry a certificate, and the tensor has none), and the
+// opt-in exercise-edge gate keeps in-box queries within `exercise_edge_band`
+// sigma sqrt(T) of the cache's recorded edge off it. The default policy reduces
+// to the historical usable && contains test.
 [[nodiscard]] inline bool cache_serves(const CorrectionBlend &correction, Side side, double k_log,
-                                       double T, double sigma) noexcept {
-  return correction.usable(side) && correction.contains(k_log, T, sigma);
+                                       double T, double sigma,
+                                       const SessionServePolicy &policy) noexcept {
+  return policy.mode == SessionServeMode::Tier && correction.usable(side) &&
+         correction.contains(k_log, T, sigma) &&
+         (!policy.exercise_edge_gate ||
+          correction.clear_of_exercise_edge(k_log, T, sigma, policy.exercise_edge_band));
 }
 
 // `SessionInputs::deam.caches` is a BUILD-TIME BORROW: a non-owning pair of
@@ -1009,6 +1020,210 @@ void VolaSession::build_fast_query_cache_bank(const Underlying &under) {
     entry.put = std::move(built.put);
     query_cache_bank_.push_back(std::move(entry));
   }
+}
+
+// ── Records serve mode (serve-path lane, 2026-10-16) ─────────────────────────
+//
+// One certified ExpiryRecord pair per fitted slice, at the slice's exact carry
+// (the same interp_forward(T) carry every query at that T re-prices with), so a
+// record-served price and the cold price it replaces differ only by the record's
+// certified error. Built at session build and rebuilt for a slice at every slice
+// refit; immutable once published (shared across clones).
+
+struct SessionRecords {
+  struct Slice {
+    double T{0.0};
+    double rate{0.0};
+    double q_eff{0.0};
+    // Unpadded moneyness extent ln(K / F) of the listed strikes the box was sized
+    // from; a slice refit reuses it (the refit path has no Underlying).
+    double k_lo{0.0};
+    double k_hi{0.0};
+    std::optional<ExpiryRecord> call{};
+    std::optional<ExpiryRecord> put{};
+  };
+  std::vector<Slice> slices; // ‖ VolaSession::ctx_ (ascending T)
+};
+
+struct VolaSession::RecordServe {
+  const ExpiryRecord *record{nullptr};
+  double cert_usd{std::numeric_limits<double>::quiet_NaN()};
+  QueryPricingRoute route{QueryPricingRoute::ColdReference}; // Record iff record != nullptr
+};
+
+namespace {
+
+// Ulp-scale floor added to every dollar certificate: the record certificate is a
+// forward-unit grid bound, and comparing a served price against the cold solver
+// at a few hundred dollars carries rounding the forward grid cannot see (the
+// tick-path review measured a 5e-13 overshoot at S ~ 631). 8 ulps of the larger
+// of F and K covers that with margin.
+constexpr double kCertUlps = 8.0;
+
+[[nodiscard]] double record_cert_usd(double cert_fwd, double F, double K) noexcept {
+  return cert_fwd * F + kCertUlps * std::numeric_limits<double>::epsilon() * std::max(F, K);
+}
+
+[[nodiscard]] AmericanGreeks greeks_from_record(const RecordGreeks &g) noexcept {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  AmericanGreeks out;
+  out.price = g.price;
+  out.delta = g.delta;
+  out.gamma = g.gamma;
+  out.vega = g.vega;
+  out.theta = g.theta;
+  // The record has no r or T axis and no second sigma derivative series: these
+  // are not served on the record route (documented on SessionServePolicy).
+  out.rho = kNaN;
+  out.vanna = kNaN;
+  out.volga = kNaN;
+  out.charm = kNaN;
+  return out;
+}
+
+} // namespace
+
+void VolaSession::build_serving_records(const Underlying *under,
+                                        std::optional<std::size_t> only_slice) {
+  if (in_.serve.mode != SessionServeMode::Records || ctx_.empty() || !(in_.S > 0.0)) {
+    return;
+  }
+  const SessionServePolicy &policy = in_.serve;
+  std::vector<SessionRecords::Slice> slices;
+  if (records_ != nullptr && records_->slices.size() == ctx_.size()) {
+    slices = records_->slices; // a slice refit replaces one entry, keeps the rest
+  } else {
+    slices.assign(ctx_.size(), SessionRecords::Slice{});
+    only_slice.reset();
+  }
+  const auto build_slice = [&](std::size_t i) {
+    SessionRecords::Slice &out = slices[i];
+    const double T = ctx_[i].T;
+    const ForwardCarry fc = interp_forward(T);
+    out.T = T;
+    out.rate = fc.rate;
+    out.q_eff = fc.q_eff;
+    out.call.reset();
+    out.put.reset();
+    const double F_rec = in_.S * std::exp((fc.rate - fc.q_eff) * T);
+    if (!(T > 0.0) || !(F_rec > 0.0) || !std::isfinite(F_rec) || !(fc.forward > 0.0)) {
+      return;
+    }
+    // Moneyness extent: the listed strikes at this expiry (a refit reuses the
+    // extent the slice was first sized from); no strikes => +/-4 sigma_ATM sqrt(T).
+    if (under != nullptr) {
+      out.k_lo = std::numeric_limits<double>::infinity();
+      out.k_hi = -std::numeric_limits<double>::infinity();
+      for (const Chain &c : under->chains) {
+        if (c.T != T) {
+          continue;
+        }
+        for (const double K : c.strikes) {
+          if (K > 0.0 && std::isfinite(K)) {
+            out.k_lo = std::min(out.k_lo, std::log(K / F_rec));
+            out.k_hi = std::max(out.k_hi, std::log(K / F_rec));
+          }
+        }
+      }
+    }
+    if (!(std::isfinite(out.k_lo) && std::isfinite(out.k_hi) && out.k_hi >= out.k_lo) ||
+        (under == nullptr && out.k_lo == 0.0 && out.k_hi == 0.0)) {
+      const double atm = model_iv(std::log(F_rec / fc.forward), T);
+      const double half = 4.0 * (std::isfinite(atm) && atm > 0.0 ? atm : 0.3) * std::sqrt(T);
+      out.k_lo = -half;
+      out.k_hi = half;
+    }
+    const double pad = std::max(policy.record_spot_move, 1.0e-3);
+    ExpiryRecordSpec spec;
+    spec.expiry = T;
+    spec.carry = ExpiryCarry{fc.rate, fc.q_eff, {}};
+    spec.k_min = out.k_lo - pad;
+    spec.k_max = out.k_hi + pad;
+    // Sigma extent: the fitted vol over the padded box, in the session's own
+    // k = ln(K / forward) convention.
+    double s_lo = std::numeric_limits<double>::infinity();
+    double s_hi = 0.0;
+    constexpr int kSigmaProbes = 33;
+    for (int m = 0; m < kSigmaProbes; ++m) {
+      const double k_rec = spec.k_min + (spec.k_max - spec.k_min) * static_cast<double>(m) /
+                                            static_cast<double>(kSigmaProbes - 1);
+      const double s = model_iv(std::log(F_rec * std::exp(k_rec) / fc.forward), T);
+      if (std::isfinite(s) && s > 0.0) {
+        s_lo = std::min(s_lo, s);
+        s_hi = std::max(s_hi, s);
+      }
+    }
+    if (!std::isfinite(s_lo) || !(s_hi > 0.0)) {
+      return;
+    }
+    spec.sigma_min = policy.record_sigma_lo_mult * s_lo;
+    spec.sigma_max = policy.record_sigma_hi_mult * s_hi;
+    if (!(spec.sigma_max > spec.sigma_min)) {
+      spec.sigma_max = 1.25 * spec.sigma_min;
+    }
+    spec.sample_opts = std::nullopt; // accurate sampling
+    spec.certify = true;
+    for (const Side side : {Side::Call, Side::Put}) {
+      spec.side = side;
+      Result<ExpiryRecord> rec = ExpiryRecord::build(spec);
+      if (rec) {
+        (side == Side::Call ? out.call : out.put) = std::move(*rec);
+      }
+    }
+  };
+  if (only_slice.has_value()) {
+    if (*only_slice < slices.size()) {
+      build_slice(*only_slice);
+    }
+  } else {
+    // Independent per slice; each worker writes only its own pre-sized slot.
+    parallel_for_dynamic(slices.size(), in_.fit_workers, build_slice);
+  }
+  auto published = std::make_shared<SessionRecords>();
+  published->slices = std::move(slices);
+  records_ = std::move(published);
+}
+
+VolaSession::RecordServe VolaSession::record_serve(double K, double T, Side side, double sigma,
+                                                   const ForwardCarry &fc) const noexcept {
+  RecordServe out;
+  if (records_ == nullptr) {
+    return out;
+  }
+  const std::vector<SessionRecords::Slice> &slices = records_->slices;
+  const auto it = std::lower_bound(
+      slices.begin(), slices.end(), T,
+      [](const SessionRecords::Slice &s, double maturity) noexcept { return s.T < maturity; });
+  if (it == slices.end() || it->T != T) {
+    return out; // off a fitted expiry: no record (ColdReference)
+  }
+  const std::optional<ExpiryRecord> &rec = (side == Side::Call) ? it->call : it->put;
+  if (!rec.has_value() || !rec->populated()) {
+    return out;
+  }
+  out.route = QueryPricingRoute::ColdFallback;
+  // The record is only valid at the carry it was built with.
+  if (rec->rate() != fc.rate || rec->carry() != fc.q_eff || !(K > 0.0) || !(sigma > 0.0)) {
+    return out;
+  }
+  const double F = in_.S * rec->forward_factor();
+  if (!rec->contains(std::log(K / F), sigma)) {
+    return out;
+  }
+  const double cert_fwd = rec->certified_max_abs_error_fwd();
+  if (!std::isfinite(cert_fwd)) {
+    return out; // uncertified: refused
+  }
+  const double cert = record_cert_usd(cert_fwd, F, K);
+  const double limit =
+      std::max(in_.serve.record_max_cert_usd, in_.serve.record_max_cert_rel * F);
+  if (!(cert <= limit)) {
+    return out;
+  }
+  out.record = &*rec;
+  out.cert_usd = cert;
+  out.route = QueryPricingRoute::Record;
+  return out;
 }
 
 void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
@@ -1471,6 +1686,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     // layer can spell WHY a chain never reached expiries()/parity().
     session.expiry_fit_reports_ = std::move(crep.expiry_reports);
     session.build_fast_query_cache_bank(under);
+    session.build_serving_records(&under); // no-op unless serve.mode == Records
     if (time_build) {
       session.diag_.fit_timings.total_wall_ms =
           std::chrono::duration<double, std::milli>(BuildClock::now() - build_start).count();
@@ -1675,6 +1891,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // can spell WHY a chain never reached expiries()/parity().
   session.expiry_fit_reports_ = std::move(rep.expiry_reports);
   session.build_fast_query_cache_bank(under);
+  session.build_serving_records(&under); // no-op unless serve.mode == Records
   if (time_build) {
     session.diag_.fit_timings.total_wall_ms =
         std::chrono::duration<double, std::milli>(BuildClock::now() - build_start).count();
@@ -1722,6 +1939,7 @@ VolaSession VolaSession::clone() const {
   copy.incremental_observations_ = incremental_observations_;
   copy.expiry_fit_reports_ = expiry_fit_reports_;
   copy.query_cache_bank_ = query_cache_bank_;
+  copy.records_ = records_; // immutable once published: shared, not copied
   return copy;
 }
 
@@ -1994,11 +2212,22 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
   const double k = std::log(K / fc.forward);
   const double sigma = model_iv(k, T);
 
+  // Records mode: a certified record serves the fitted expiry; anything it does
+  // not certify falls through to the cold pricer below (never the tensor).
+  if (in_.serve.mode == SessionServeMode::Records) {
+    const RecordServe rs = record_serve(K, T, side, sigma, fc);
+    if (rs.record != nullptr) {
+      const double px = rs.record->price(in_.S, K, sigma);
+      if (std::isfinite(px)) {
+        return Ok(px);
+      }
+    }
+  }
   // Resolve the explicit query tier: cached/blended correction for a fast tier,
   // or cold Andersen-Lake when the tier/session policy requires it OR the query
   // is out of the correction box (PR-C1: out-of-box would clamp to the box edge).
   const CorrectionBlend correction = correction_blend_at(T, side);
-  if (cache_serves(correction, side, k, T, sigma)) {
+  if (cache_serves(correction, side, k, T, sigma, in_.serve)) {
     const double fv =
         american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
     if (!std::isfinite(fv)) {
@@ -2024,8 +2253,17 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   // (PR-C1) uses American finite differences on the SAME cold american_price the
   // fair_value branch prices with, so greeks().price == fair_value() bit-identical
   // (American, not Black-76).
+  if (in_.serve.mode == SessionServeMode::Records) {
+    const RecordServe rs = record_serve(K, T, side, sigma, fc);
+    if (rs.record != nullptr) {
+      const RecordGreeks g = rs.record->greeks(in_.S, K, sigma);
+      if (std::isfinite(g.price)) {
+        return Ok(greeks_from_record(g));
+      }
+    }
+  }
   const CorrectionBlend correction = correction_blend_at(T, side);
-  if (cache_serves(correction, side, k, T, sigma)) {
+  if (cache_serves(correction, side, k, T, sigma, in_.serve)) {
     return american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
   }
   return american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
@@ -2039,6 +2277,9 @@ QueryPricingRoute VolaSession::query_route(double K, double T, Side side) const 
   const ForwardCarry fc = interp_forward(T);
   const double k = std::log(K / fc.forward);
   const double sigma = model_iv(k, T);
+  if (in_.serve.mode == SessionServeMode::Records) {
+    return record_serve(K, T, side, sigma, fc).route;
+  }
   const CorrectionBlend correction = correction_blend_at(T, side);
   if (!correction.usable(side)) {
     return QueryPricingRoute::ColdReference;
@@ -2046,9 +2287,33 @@ QueryPricingRoute VolaSession::query_route(double K, double T, Side side) const 
   if (!correction.contains(k, T, sigma)) {
     return QueryPricingRoute::ColdFallback;
   }
+  if (!cache_serves(correction, side, k, T, sigma, in_.serve)) {
+    return QueryPricingRoute::ExerciseEdgeFallback;
+  }
   return (in_.query_pricing_tier == QueryPricingTier::CarryBank)
              ? QueryPricingRoute::CarryBank
              : QueryPricingRoute::RepresentativeFast;
+}
+
+double VolaSession::served_certificate_usd(double K, double T, Side side) const noexcept {
+  if (!valid_query(K, T) || in_.serve.mode != SessionServeMode::Records) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const ForwardCarry fc = interp_forward(T);
+  const double sigma = model_iv(std::log(K / fc.forward), T);
+  const RecordServe rs = record_serve(K, T, side, sigma, fc);
+  return rs.record != nullptr ? rs.cert_usd : std::numeric_limits<double>::quiet_NaN();
+}
+
+std::size_t VolaSession::record_count() const noexcept {
+  if (records_ == nullptr) {
+    return 0u;
+  }
+  std::size_t n = 0u;
+  for (const SessionRecords::Slice &s : records_->slices) {
+    n += (s.call.has_value() ? 1u : 0u) + (s.put.has_value() ? 1u : 0u);
+  }
+  return n;
 }
 
 Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
@@ -2093,7 +2358,15 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
-    if (cache_serves(correction, side, k, T, sigma)) {
+    if (in_.serve.mode == SessionServeMode::Records) {
+      const RecordServe rs = record_serve(K, T, side, sigma, fc);
+      const double px = rs.record != nullptr ? rs.record->price(in_.S, K, sigma) : kNaN;
+      if (std::isfinite(px)) {
+        out[i] = px;
+        continue;
+      }
+    }
+    if (cache_serves(correction, side, k, T, sigma, in_.serve)) {
       queue_cached(i, side, sigma);
     } else {
       const auto p = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
@@ -2133,10 +2406,20 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
+    if (in_.serve.mode == SessionServeMode::Records) {
+      const RecordServe rs = record_serve(K, T, side, sigma, fc);
+      if (rs.record != nullptr) {
+        const RecordGreeks rg = rs.record->greeks(in_.S, K, sigma);
+        if (std::isfinite(rg.price)) {
+          out[i] = greeks_from_record(rg);
+          continue;
+        }
+      }
+    }
     // Cached hot path differentiates the cached graph; the null-cache OR out-of-box
     // (PR-C1) cold path finite-differences american_price so greeks.price == the
     // cold fair_value.
-    const auto g = cache_serves(correction, side, k, T, sigma)
+    const auto g = cache_serves(correction, side, k, T, sigma, in_.serve)
                        ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
                        : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
                                             in_.deam.method, in_.deam.al_opts);
@@ -2237,7 +2520,26 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
       iv_out[i] = sigma;
     }
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
-    const bool serve_cached = cache_serves(correction, side, k, T, sigma);
+    if (in_.serve.mode == SessionServeMode::Records &&
+        (!greeks_out.empty() || !price_out.empty())) {
+      const RecordServe rs = record_serve(K, T, side, sigma, fc);
+      if (rs.record != nullptr) {
+        const RecordGreeks rg = !greeks_out.empty() ? rs.record->greeks(in_.S, K, sigma)
+                                                    : RecordGreeks{};
+        const double px =
+            !greeks_out.empty() ? rg.price : rs.record->price(in_.S, K, sigma);
+        if (std::isfinite(px)) {
+          if (!greeks_out.empty()) {
+            greeks_out[i] = greeks_from_record(rg);
+          }
+          if (!price_out.empty()) {
+            price_out[i] = px;
+          }
+          continue;
+        }
+      }
+    }
+    const bool serve_cached = cache_serves(correction, side, k, T, sigma, in_.serve);
     if (!greeks_out.empty()) {
       const auto result =
           serve_cached ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
@@ -2300,6 +2602,7 @@ VolaSession VolaSession::clone_for_refit() const {
   copy.incremental_observations_ = incremental_observations_;
   copy.expiry_fit_reports_ = expiry_fit_reports_;
   copy.query_cache_bank_ = query_cache_bank_;
+  copy.records_ = records_; // a refit publishes a new set; the shared one stays intact
   return copy;
 }
 
@@ -2384,6 +2687,9 @@ Result<FitDiag> VolaSession::apply_prepared_essvi_refit(std::size_t slice_idx,
   refreshed.chi2_dof_underdetermined = chi2_dof_underdetermined;
   parity_[slice_idx] = refreshed;
   ATX_TRY_VOID(refresh_refit_diagnostics());
+  // Records mode: the slice's smile and carry changed, so its records are rebuilt
+  // (the other slices' records are shared with the previous generation).
+  build_serving_records(nullptr, slice_idx);
   return Ok(fit_diag);
 }
 
@@ -2816,6 +3122,7 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx, std::span<const 
     }
     ++incremental.committed;
     incremental.last_committed = true;
+    build_serving_records(nullptr, slice_idx); // records mode: the slice's smile moved
     incremental.last_total_ms = elapsed_ms(total_begin, RefitClock::now());
     return Ok(fit_diag);
   }
@@ -2876,6 +3183,7 @@ Result<FitDiag> VolaSession::refit_slice(std::size_t slice_idx, std::span<const 
   diag_.calendar_arb_free = cal.has_value() && cal->empty();
   ++incremental.committed;
   incremental.last_committed = true;
+  build_serving_records(nullptr, slice_idx); // records mode: the slice's smile moved
   incremental.last_total_ms =
       std::chrono::duration<double, std::milli>(RefitClock::now() - total_begin).count();
 

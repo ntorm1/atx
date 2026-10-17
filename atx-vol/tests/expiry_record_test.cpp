@@ -14,6 +14,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "atx/vol/api/fitting/expiry_record.hpp"
@@ -89,6 +90,7 @@ TEST(ExpiryRecord, CertifiedErrorIsSmallAndCoversTheGrid) {
                 b.spec.side == Side::Put ? "put" : "call", b.rec.has_exercise_edge() ? 1 : 0, err,
                 b.rec.certified_points());
     EXPECT_TRUE(std::isfinite(err));
+    EXPECT_EQ(b.rec.uncertified_rows(), 0u) << "every certification row has a cold reference";
     EXPECT_GT(b.rec.certified_points(), 150u);
     // Measured 2026-10-16: <= 1.3e-8 forward units on these six records.
     EXPECT_LT(err, 1.0e-7) << "T=" << b.spec.expiry;
@@ -198,6 +200,101 @@ TEST(ExpiryRecord, PriceIsContinuousAcrossTheExerciseEdge) {
     const double out = b.rec.price(kS0, F * std::exp(edge + 1.0e-7), sig);
     EXPECT_NEAR(in, out, 1.0e-3) << "T=" << b.spec.expiry;
   }
+}
+
+// Tick-path review nit 12: the Greeks belong to the served price. Wherever the
+// record serves intrinsic (past the edge, or a continuation value that fell to
+// intrinsic before it) it reports exercised with delta +/-1 and zero gamma, vega
+// and theta, and price_and_vega agrees (vega 0); everywhere else the served
+// price is strictly above intrinsic.
+TEST(ExpiryRecord, GreeksBelongToTheServedPriceAtTheIntrinsicFloor) {
+  std::size_t exercised = 0, floored = 0, above = 0;
+  for (const Built &b : records()) {
+    const double T = b.spec.expiry;
+    const bool put = b.spec.side == Side::Put;
+    const double F = kS0 * b.rec.forward_factor();
+    for (int j = 0; j <= 80; ++j) {
+      const double k = b.spec.k_min + (b.spec.k_max - b.spec.k_min) * j / 80.0;
+      const double K = F * std::exp(k);
+      const double sig = smile(k);
+      const double intr = std::max(put ? K - kS0 : kS0 - K, 0.0);
+      const RecordGreeks g = b.rec.greeks(kS0, K, sig);
+      double vega = -1.0;
+      const double px = b.rec.price_and_vega(kS0, K, sig, &vega);
+      if (g.exercised) {
+        ++exercised;
+        floored += g.floored ? 1u : 0u;
+        EXPECT_DOUBLE_EQ(g.price, intr) << "T=" << T << " K=" << K;
+        EXPECT_EQ(g.delta, put ? -1.0 : 1.0) << "T=" << T << " K=" << K;
+        EXPECT_EQ(g.gamma, 0.0);
+        EXPECT_EQ(g.vega, 0.0);
+        EXPECT_EQ(g.theta, 0.0);
+        EXPECT_EQ(vega, 0.0) << "price_and_vega must agree at the floor; T=" << T << " K=" << K;
+        EXPECT_DOUBLE_EQ(px, intr);
+      } else {
+        ++above;
+        EXPECT_FALSE(g.floored);
+        EXPECT_GT(g.price, intr) << "T=" << T << " K=" << K;
+      }
+    }
+  }
+  std::printf("[record] floor grid: %zu exercised (%zu floored before the edge), %zu above\n",
+              exercised, floored, above);
+  EXPECT_GT(exercised, 0u);
+  EXPECT_GT(above, 0u);
+}
+
+// One price map, three evaluation routes: price() (value rows), price_and_vega()
+// (value + first-derivative rows) and greeks() (value + two derivative rows)
+// serve the SAME price bit for bit — inside the box, past the exercise edge and
+// clamped outside the box, at the sigma nodes' midpoints and beyond the sigma
+// box. The record plane is evaluated with its sigma rows in lockstep (serve-path
+// lane item 4); each order must reproduce the row values of the others exactly,
+// and implied_vol's hoisted evaluator must reproduce price_and_vega's.
+TEST(ExpiryRecord, PriceRoutesServeOneValueBitForBit) {
+  std::size_t checked = 0;
+  std::size_t iv_checked = 0;
+  for (const Built &b : records()) {
+    const double F = kS0 * b.rec.forward_factor();
+    const double width = b.spec.k_max - b.spec.k_min;
+    const double s_width = b.spec.sigma_max - b.spec.sigma_min;
+    for (int j = -4; j <= 44; ++j) {
+      const double k = b.spec.k_min + width * j / 40.0; // 10% past both box ends
+      const double K = F * std::exp(k);
+      for (int m = -2; m <= 26; ++m) {
+        const double sig = b.spec.sigma_min + s_width * m / 24.0;
+        if (!(sig > 0.0)) {
+          continue;
+        }
+        const double p = b.rec.price(kS0, K, sig);
+        double vega = 0.0;
+        const double pv = b.rec.price_and_vega(kS0, K, sig, &vega);
+        const RecordGreeks g = b.rec.greeks(kS0, K, sig);
+        ASSERT_TRUE(std::isfinite(p)) << "k=" << k << " sig=" << sig;
+        EXPECT_TRUE(bits_equal(p, pv)) << "T=" << b.spec.expiry << " k=" << k << " sig=" << sig;
+        EXPECT_TRUE(bits_equal(p, g.price)) << "T=" << b.spec.expiry << " k=" << k << " sig=" << sig;
+        ++checked;
+        // implied_vol at this price, seeded on the answer: its first evaluation
+        // is price_and_vega at that sigma, so an in-box answer returns Ok (or
+        // VegaFloor where the price is flat) in ONE evaluation, unchanged.
+        if (b.rec.contains(k, sig) && j % 4 == 0 && m % 4 == 0) {
+          const RecordIv iv = b.rec.implied_vol(kS0, K, p, sig);
+          if (iv.status == RecordIvStatus::Ok || iv.status == RecordIvStatus::VegaFloor) {
+            if (iv.status == RecordIvStatus::Ok) {
+              EXPECT_EQ(iv.evaluations, 1u) << "T=" << b.spec.expiry << " k=" << k;
+              EXPECT_TRUE(bits_equal(iv.sigma, sig)) << "T=" << b.spec.expiry << " k=" << k;
+            }
+            ++iv_checked;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[record] one price map: %zu points bit-identical across price / price_and_vega / "
+              "greeks; %zu seeded IV round trips\n",
+              checked, iv_checked);
+  EXPECT_GT(checked, 6000u);
+  EXPECT_GT(iv_checked, 50u);
 }
 
 // ── Box handling, regimes, refusals ──────────────────────────────────────────
@@ -419,6 +516,78 @@ TEST(ChainTickRecords, ShapeErrorsAreRefusedAndTheTickAllocatesNothing) {
   const std::uint64_t n = atx::vol::testkit::count_allocations(
       [&] { (void)refresh_chain_records(101.0, v, *recs, ov); });
   EXPECT_EQ(n, 0u);
+}
+
+// Serve-path item 5: the opt-in multi-worker record build
+// (ChainRecordPolicy::build_workers) is perf-only. For 3 workers and for auto (0)
+// the bank, the contract map, every certificate and every served value are
+// bit-identical to the default inline build.
+TEST(ChainTickRecords, ParallelBuildIsBitIdenticalToTheInlineBuild) {
+  const SmallChain c = make_chain();
+  const Result<ChainRecords> ref = ChainRecords::build(kS0, c.view());
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_EQ(ChainRecordPolicy{}.build_workers, 1u) << "the default stays inline";
+  std::size_t compared = 0;
+  for (const unsigned workers : {3u, 0u}) {
+    ChainRecordPolicy pol;
+    pol.build_workers = workers;
+    const Result<ChainRecords> par = ChainRecords::build(kS0, c.view(), pol);
+    ASSERT_TRUE(par.has_value()) << "workers=" << workers;
+    ASSERT_EQ(par->bank().size(), ref->bank().size());
+    EXPECT_TRUE(bits_equal(par->worst_certified_error_fwd(), ref->worst_certified_error_fwd()));
+    ASSERT_EQ(par->record_of_contract().size(), ref->record_of_contract().size());
+    for (std::size_t i = 0; i < c.strike.size(); ++i) {
+      EXPECT_EQ(par->record_of_contract()[i], ref->record_of_contract()[i]) << i;
+    }
+    for (std::size_t r = 0; r < ref->bank().size(); ++r) {
+      const ExpiryRecord &a = *ref->bank().at(r);
+      const ExpiryRecord &b = *par->bank().at(r);
+      EXPECT_TRUE(bits_equal(a.certified_max_abs_error_fwd(), b.certified_max_abs_error_fwd()));
+      EXPECT_EQ(a.certified_points(), b.certified_points());
+      EXPECT_EQ(a.side(), b.side());
+      EXPECT_TRUE(bits_equal(a.expiry(), b.expiry()));
+      for (int j = 0; j <= 20; ++j) {
+        const double k = a.k_min() + (a.k_max() - a.k_min()) * j / 20.0;
+        const double K = kS0 * a.forward_factor() * std::exp(k);
+        for (int m = 0; m <= 8; ++m) {
+          const double sig = a.sigma_min() + (a.sigma_max() - a.sigma_min()) * m / 8.0;
+          const RecordGreeks ga = a.greeks(kS0, K, sig);
+          const RecordGreeks gb = b.greeks(kS0, K, sig);
+          EXPECT_TRUE(bits_equal(ga.price, gb.price) && bits_equal(ga.delta, gb.delta) &&
+                      bits_equal(ga.gamma, gb.gamma) && bits_equal(ga.vega, gb.vega))
+              << "record " << r << " k=" << k << " sig=" << sig;
+          ++compared;
+        }
+      }
+    }
+  }
+  EXPECT_GT(compared, 1500u);
+}
+
+// ... and on failure it reports exactly the inline build's error: the first
+// failing group in input order. Here a put group in the double-continuation
+// regime (q < r <= 0), which ExpiryRecord::build refuses as NotImplemented,
+// follows the four valid groups.
+TEST(ChainTickRecords, ParallelBuildReportsTheInlineBuildsError) {
+  SmallChain c = make_chain();
+  for (int j = 0; j < 3; ++j) {
+    c.strike.push_back(kS0 * (0.95 + 0.05 * j));
+    c.expiry.push_back(0.25);
+    c.sigma.push_back(0.3);
+    c.rate.push_back(-0.01);
+    c.carry.push_back(-0.02);
+    c.side.push_back(Side::Put);
+  }
+  ChainRecordPolicy pol;
+  pol.certify = false;
+  const Result<ChainRecords> serial = ChainRecords::build(kS0, c.view(), pol);
+  ASSERT_FALSE(serial.has_value());
+  EXPECT_EQ(serial.error().code(), ErrorCode::NotImplemented);
+  pol.build_workers = 3;
+  const Result<ChainRecords> par = ChainRecords::build(kS0, c.view(), pol);
+  ASSERT_FALSE(par.has_value());
+  EXPECT_EQ(par.error().code(), serial.error().code());
+  EXPECT_EQ(par.error().to_string(), serial.error().to_string());
 }
 
 // ── Implied vol against the record (audit item 3) ────────────────────────────

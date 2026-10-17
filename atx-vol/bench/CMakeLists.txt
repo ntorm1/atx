@@ -572,6 +572,21 @@ if(Python3_Interpreter_FOUND)
             --required chain/refresh/record_ladder/n2000
             --required chain/iv/record_warm/n2000
             --required chain/iv/record_cold/n2000
+            --required chain/serve/cached/n2000
+            --required chain/serve/gated_b0.5/n2000
+            --required chain/serve/gated_b1/n2000
+            --required chain/serve/gated_b2/n2000
+            --required chain/serve/gated_b3/n2000
+            --required chain/serve/records/n2000
+            --required chain/catchup/jump7/index_b32/n600
+            --required chain/catchup/jump7/atm_b32/n600
+            --required chain/catchup/jump7/atm_b64/n600
+            --required chain/catchup/jump7/index_b32/n2000
+            --required chain/catchup/jump7/atm_b32/n2000
+            --required chain/catchup/jump7/atm_b64/n2000
+            --required chain/records/build/certified/n2000
+            --required chain/records/build/uncertified/n2000
+            --required chain/records/build/certified_w3/n2000
     )
     set_tests_properties(atx-vol-chain-refresh-name-coverage PROPERTIES LABELS atx_vol)
 endif()

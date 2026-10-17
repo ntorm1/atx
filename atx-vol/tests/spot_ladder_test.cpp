@@ -13,6 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/fitting/expiry_record.hpp"
@@ -48,14 +49,14 @@ struct SmallChain {
 
 // Three expiries (1 day .. 1.5 years) x 7 strikes over +/-3 sigma sqrt(T) x both
 // sides = 42 contracts: not a multiple of the 4-lane block, on purpose.
-[[nodiscard]] SmallChain make_chain() {
+[[nodiscard]] SmallChain make_chain(double s0 = kS0) {
   SmallChain c;
   for (const double T : {1.0 / 365.0, 0.25, 1.5}) {
     const double half = 3.0 * 0.25 * std::sqrt(T);
     for (const Side sd : {Side::Call, Side::Put}) {
       for (int j = 0; j <= 6; ++j) {
         const double k = -half + 2.0 * half * j / 6.0;
-        c.strike.push_back(kS0 * std::exp((kR - kQ) * T + k));
+        c.strike.push_back(s0 * std::exp((kR - kQ) * T + k));
         c.expiry.push_back(T);
         c.sigma.push_back(smile(k));
         c.rate.push_back(kR);
@@ -108,6 +109,11 @@ struct Outputs {
   return rec.contains(k, chain().sigma[i]);
 }
 
+[[nodiscard]] double intrinsic(std::size_t i, double S) {
+  const double v = chain().side[i] == Side::Put ? chain().strike[i] - S : S - chain().strike[i];
+  return v > 0.0 ? v : 0.0;
+}
+
 TEST(ChainSpotLadder, EveryContractIsCertifiedWithinPolicy) {
   ChainSpotLadder lad = build_ladder();
   ASSERT_EQ(lad.size(), chain().strike.size());
@@ -150,6 +156,7 @@ TEST(ChainSpotLadder, TickTracksTheColdSolverIncludingGreeks) {
   ChainSpotLadder lad = build_ladder();
   Outputs out(chain().strike.size());
   double wp = 0.0, wd = 0.0, wg = 0.0, wv = 0.0, wt = 0.0;
+  double worst_slack = -1.0;
   for (const double S : {99.6, 100.0, 100.3}) {
     ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
     for (std::size_t i = 0; i < out.price.size(); ++i) {
@@ -169,11 +176,16 @@ TEST(ChainSpotLadder, TickTracksTheColdSolverIncludingGreeks) {
       wg = std::max(wg, std::abs(out.gamma[i] - ref->gamma));
       wv = std::max(wv, std::abs(out.vega[i] - ref->vega));
       wt = std::max(wt, std::abs(out.theta[i] - ref->theta));
-      EXPECT_LE(std::abs(out.price[i] - ref->price), lad.certified_error_usd()[i] + 1.0e-6) << i;
+      // The certificate itself, no allowance (review dcb6e3f1 nit: the old
+      // +1e-6 $ slack was larger than most certificates it was checking).
+      const double err = std::abs(out.price[i] - ref->price);
+      worst_slack = std::max(worst_slack, err - lad.certified_error_usd()[i]);
+      EXPECT_LE(err, lad.certified_error_usd()[i]) << i;
     }
   }
-  std::printf("[ladder] vs cold: price %.3e delta %.3e gamma %.3e vega %.3e theta %.3e\n", wp, wd,
-              wg, wv, wt);
+  std::printf("[ladder] vs cold: price %.3e delta %.3e gamma %.3e vega %.3e theta %.3e "
+              "(worst err - cert %.3e)\n",
+              wp, wd, wg, wv, wt, worst_slack);
   EXPECT_LT(wd, 2.0e-3);
   EXPECT_LT(wg, 2.0e-3);
   EXPECT_LT(wv, 5.0e-2);
@@ -195,6 +207,10 @@ TEST(ChainSpotLadder, WindowExitRebuildsWithinBudgetThenCatchesUpNextTick) {
   ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
   EXPECT_EQ(lad.rebuilds(), 32u);
   EXPECT_EQ(lad.fallbacks(), n - 32u);
+  // Every contract is in its box: all of them are budget pressure, none a refit.
+  EXPECT_EQ(lad.counters().budget_fallbacks, n - 32u);
+  EXPECT_EQ(lad.counters().out_of_box_fallbacks, 0u);
+  EXPECT_EQ(lad.counters().refused_fallbacks, 0u);
   for (std::size_t i = 0; i < n; ++i) {
     const RecordGreeks g = record_of(i).greeks(S, chain().strike[i], chain().sigma[i]);
     if (out.status[i] == TickStatus::Fallback) {
@@ -212,6 +228,148 @@ TEST(ChainSpotLadder, WindowExitRebuildsWithinBudgetThenCatchesUpNextTick) {
   }
   ASSERT_TRUE(lad.refresh(S * 1.001, out.view()).has_value());
   EXPECT_EQ(lad.rebuilds(), n) << "a rebuilt window must contain the next small move";
+}
+
+// Rebuild-priority key of contract i at spot S, computed exactly as the ladder
+// does (same expression, same operand order), so ties and near-ties rank alike.
+[[nodiscard]] double rebuild_key(std::size_t i, double S) {
+  const double ln_k_over_g = std::log(chain().strike[i]) - std::log(record_of(i).forward_factor());
+  const double inv_sd = 1.0 / (chain().sigma[i] * std::sqrt(chain().expiry[i]));
+  return std::abs(ln_k_over_g - std::log(S)) * inv_sd;
+}
+
+// A jump every contract leaves its window for, inside every record box (see the
+// test above), with a budget of 8 of the 42 exits.
+constexpr double kJump = 0.045;
+constexpr std::uint32_t kSmallBudget = 8;
+
+[[nodiscard]] SpotLadderPolicy budget_policy(SpotLadderRebuildOrder order, std::uint32_t budget) {
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = budget;
+  pol.rebuild_order = order;
+  return pol;
+}
+
+// Opt-in NearestAtmFirst (serve-path item 3): when the budget runs short, the
+// contracts rebuilt are exactly the `budget` smallest z = |ln(K / F)| /
+// (sigma sqrt T) at the tick's spot, ties on the contract index (a call and a
+// put at one strike share z); the rest are served from their record.
+TEST(ChainSpotLadder, NearestAtmFirstRebuildsTheSmallestStandardisedMoneynessFirst) {
+  ChainSpotLadder lad =
+      build_ladder(budget_policy(SpotLadderRebuildOrder::NearestAtmFirst, kSmallBudget));
+  const std::size_t n = chain().strike.size();
+  Outputs out(n);
+  const double S = kS0 * std::exp(kJump);
+  ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
+  EXPECT_EQ(lad.rebuilds(), kSmallBudget);
+  EXPECT_EQ(lad.counters().budget_fallbacks, n - kSmallBudget);
+  EXPECT_EQ(lad.counters().out_of_box_fallbacks + lad.counters().refused_fallbacks, 0u);
+
+  std::vector<std::pair<double, std::size_t>> ranked;
+  for (std::size_t i = 0; i < n; ++i) {
+    ranked.emplace_back(rebuild_key(i, S), i);
+  }
+  std::sort(ranked.begin(), ranked.end());
+  std::vector<std::uint8_t> expect_rebuilt(n, 0u);
+  for (std::size_t r = 0; r < kSmallBudget; ++r) {
+    expect_rebuilt[ranked[r].second] = 1u;
+  }
+  double worst_rebuilt = 0.0;
+  double best_waiting = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < n; ++i) {
+    const bool rebuilt = out.status[i] != TickStatus::Fallback;
+    EXPECT_EQ(rebuilt, expect_rebuilt[i] != 0u) << i;
+    const RecordGreeks g = record_of(i).greeks(S, chain().strike[i], chain().sigma[i]);
+    if (rebuilt) {
+      worst_rebuilt = std::max(worst_rebuilt, rebuild_key(i, S));
+      EXPECT_LE(std::abs(out.price[i] - g.price), lad.certified_error_usd()[i] + 1.0e-12) << i;
+    } else {
+      best_waiting = std::min(best_waiting, rebuild_key(i, S));
+      EXPECT_TRUE(bits_equal(out.price[i], g.price)) << i;
+    }
+  }
+  std::printf("[ladder] nearest-ATM catch-up tick: rebuilt z <= %.4f, waiting z >= %.4f\n",
+              worst_rebuilt, best_waiting);
+  EXPECT_LE(worst_rebuilt, best_waiting);
+}
+
+// The default order rebuilds the waiting contracts in input order: 0..7 here.
+TEST(ChainSpotLadder, ContractIndexOrderRebuildsTheFirstContractsInInputOrder) {
+  ChainSpotLadder lad =
+      build_ladder(budget_policy(SpotLadderRebuildOrder::ContractIndex, kSmallBudget));
+  EXPECT_EQ(SpotLadderPolicy{}.rebuild_order, SpotLadderRebuildOrder::ContractIndex)
+      << "the default must stay the pre-2026-10-17 order (opt-in rule)";
+  const std::size_t n = chain().strike.size();
+  Outputs out(n);
+  ASSERT_TRUE(lad.refresh(kS0 * std::exp(kJump), out.view()).has_value());
+  EXPECT_EQ(lad.rebuilds(), kSmallBudget);
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_EQ(out.status[i] != TickStatus::Fallback, i < kSmallBudget) << i;
+  }
+}
+
+// Either order catches the whole chain up in ceil(42 / 8) = 6 ticks at a steady
+// spot (the order moves contracts within the catch-up, not its length), and once
+// caught up the two ladders serve bit-identical ticks.
+TEST(ChainSpotLadder, BothRebuildOrdersCatchUpInTheSameTicksThenAgreeBitForBit) {
+  const std::size_t n = chain().strike.size();
+  const std::size_t expect_ticks = (n + kSmallBudget - 1u) / kSmallBudget;
+  ChainSpotLadder atm =
+      build_ladder(budget_policy(SpotLadderRebuildOrder::NearestAtmFirst, kSmallBudget));
+  ChainSpotLadder idx =
+      build_ladder(budget_policy(SpotLadderRebuildOrder::ContractIndex, kSmallBudget));
+  Outputs oa(n);
+  Outputs oi(n);
+  const double S = kS0 * std::exp(kJump);
+  std::size_t ticks_atm = 0;
+  std::size_t ticks_idx = 0;
+  for (std::size_t t = 0; t < 2u * expect_ticks; ++t) {
+    const std::uint64_t before_a = atm.counters().budget_fallbacks;
+    const std::uint64_t before_i = idx.counters().budget_fallbacks;
+    ASSERT_TRUE(atm.refresh(S, oa.view()).has_value());
+    ASSERT_TRUE(idx.refresh(S, oi.view()).has_value());
+    ticks_atm += (atm.counters().budget_fallbacks != before_a) ? 1u : 0u;
+    ticks_idx += (idx.counters().budget_fallbacks != before_i) ? 1u : 0u;
+  }
+  // The last catch-up tick rebuilds the remainder without a budget fallback.
+  EXPECT_EQ(ticks_atm + 1u, expect_ticks);
+  EXPECT_EQ(ticks_idx + 1u, expect_ticks);
+  EXPECT_EQ(atm.rebuilds(), n);
+  EXPECT_EQ(idx.rebuilds(), n);
+  // Rebuilt windows are centred on the same spot in both, so the next ticks match.
+  for (const double s : {S * 1.0004, S * 0.9997}) {
+    ASSERT_TRUE(atm.refresh(s, oa.view()).has_value());
+    ASSERT_TRUE(idx.refresh(s, oi.view()).has_value());
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_TRUE(bits_equal(oa.price[i], oi.price[i])) << i;
+      EXPECT_TRUE(bits_equal(oa.delta[i], oi.delta[i])) << i;
+      EXPECT_TRUE(bits_equal(oa.theta[i], oi.theta[i])) << i;
+      EXPECT_EQ(oa.status[i], oi.status[i]) << i;
+    }
+  }
+}
+
+// With a budget that covers every exit, the opt-in order never ranks and the
+// ladder is bit-identical to the default on a walk with rebuilds.
+TEST(ChainSpotLadder, NearestAtmFirstIsBitIdenticalToTheDefaultWhenTheBudgetSuffices) {
+  ChainSpotLadder atm = build_ladder(budget_policy(SpotLadderRebuildOrder::NearestAtmFirst, 1000));
+  ChainSpotLadder def = build_ladder(budget_policy(SpotLadderRebuildOrder::ContractIndex, 1000));
+  const std::size_t n = chain().strike.size();
+  Outputs oa(n);
+  Outputs od(n);
+  for (const double x : {0.0, 0.01, 0.045, 0.03, -0.02, -0.06, 0.0}) {
+    const double S = kS0 * std::exp(x);
+    ASSERT_TRUE(atm.refresh(S, oa.view()).has_value());
+    ASSERT_TRUE(def.refresh(S, od.view()).has_value());
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_TRUE(bits_equal(oa.price[i], od.price[i])) << "x=" << x << " i=" << i;
+      EXPECT_TRUE(bits_equal(oa.gamma[i], od.gamma[i])) << "x=" << x << " i=" << i;
+      EXPECT_EQ(oa.status[i], od.status[i]) << "x=" << x << " i=" << i;
+    }
+  }
+  EXPECT_GT(atm.rebuilds(), 0u);
+  EXPECT_EQ(atm.rebuilds(), def.rebuilds());
+  EXPECT_EQ(atm.fallbacks(), def.fallbacks());
 }
 
 // Review finding (dcb6e3f1): a rebuilt window used to extend past the record's
@@ -266,7 +424,7 @@ TEST(ChainSpotLadder, WalkPastTheRecordBoxNeverServesAnUncertifiedLane) {
         const double cert = lad.certified_error_usd()[i];
         worst_served = std::max(worst_served, err);
         worst_slack = std::max(worst_slack, err - cert);
-        EXPECT_LE(err, cert + 1.0e-6) << "x=" << x << " i=" << i;
+        EXPECT_LE(err, cert) << "x=" << x << " i=" << i; // no allowance
       } else if (!box) {
         worst_fallback = std::max(worst_fallback, err);
       }
@@ -295,6 +453,14 @@ TEST(ChainSpotLadder, RebuildBudgetExhaustedServesTheRecordFlaggedFallback) {
   ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
   EXPECT_EQ(lad.rebuilds(), 0u);
   EXPECT_EQ(lad.fallbacks(), out.price.size());
+  // -6% is past spot_move for the outer strikes: those are out of their box (a
+  // refit), the rest are budget pressure. Each lane lands in exactly one bucket.
+  std::size_t out_of_box = 0;
+  for (std::size_t i = 0; i < out.price.size(); ++i) {
+    out_of_box += in_record_box(i, S) ? 0u : 1u;
+  }
+  EXPECT_EQ(lad.counters().out_of_box_fallbacks, out_of_box);
+  EXPECT_EQ(lad.counters().budget_fallbacks, out.price.size() - out_of_box);
   for (std::size_t i = 0; i < out.price.size(); ++i) {
     EXPECT_EQ(out.status[i], TickStatus::Fallback) << i;
     const RecordGreeks g = record_of(i).greeks(S, chain().strike[i], chain().sigma[i]);
@@ -306,6 +472,7 @@ TEST(ChainSpotLadder, RebuildBudgetExhaustedServesTheRecordFlaggedFallback) {
 TEST(ChainSpotLadder, UncertifiableContractsAreRefusedAndServedFromTheRecord) {
   SpotLadderPolicy pol;
   pol.max_cert_usd = 1.0e-300; // nothing can meet it
+  pol.max_cert_rel = 0.0;
   ChainSpotLadder lad = build_ladder(pol);
   EXPECT_GT(lad.refused_contracts(), 0u);
   Outputs out(chain().strike.size());
@@ -317,6 +484,184 @@ TEST(ChainSpotLadder, UncertifiableContractsAreRefusedAndServedFromTheRecord) {
       EXPECT_TRUE(bits_equal(out.price[i], g.price)) << i;
     }
   }
+}
+
+// Review dcb6e3f1 regression: a record built with certify = false has no
+// certificate to stand on, so every contract on it is REFUSED — served from the
+// record, flagged Fallback, never rebuilt and never reported Ok — and the
+// fallbacks land in the refused bucket (a refit, not budget pressure).
+TEST(ChainSpotLadder, UncertifiedRecordsAreRefusedAndNeverServedOk) {
+  ChainRecordPolicy rp;
+  rp.certify = false;
+  const Result<ChainRecords> recs = ChainRecords::build(kS0, chain().view(), rp);
+  ASSERT_TRUE(recs.has_value());
+  for (const std::uint32_t r : recs->record_of_contract()) {
+    ASSERT_TRUE(std::isnan(recs->bank().at(r)->certified_max_abs_error_fwd()));
+  }
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = 1000;
+  Result<ChainSpotLadder> lad = ChainSpotLadder::build(kS0, chain().view(), *recs, pol);
+  ASSERT_TRUE(lad.has_value());
+  const std::size_t n = chain().strike.size();
+  EXPECT_EQ(lad->refused_contracts(), n);
+  EXPECT_EQ(lad->sigma_out_of_box_contracts(), 0u);
+  for (const double cert : lad->certified_error_usd()) {
+    EXPECT_TRUE(std::isnan(cert));
+  }
+  Outputs out(n);
+  for (const double S : {kS0, kS0 * std::exp(0.03)}) {
+    ASSERT_TRUE(lad->refresh(S, out.view()).has_value());
+    for (std::size_t i = 0; i < n; ++i) {
+      const ExpiryRecord &rec = *recs->bank().at(recs->record_of_contract()[i]);
+      const RecordGreeks g = rec.greeks(S, chain().strike[i], chain().sigma[i]);
+      EXPECT_EQ(out.status[i], TickStatus::Fallback) << i;
+      EXPECT_TRUE(bits_equal(out.price[i], g.price)) << i;
+      EXPECT_TRUE(bits_equal(out.delta[i], g.delta)) << i;
+      EXPECT_TRUE(bits_equal(out.vega[i], g.vega)) << i;
+    }
+  }
+  const SpotLadderCounters k = lad->counters();
+  EXPECT_EQ(k.rebuilds, 0u) << "a refused contract is never rebuilt";
+  EXPECT_EQ(k.refused_fallbacks, 2u * n);
+  EXPECT_EQ(k.budget_fallbacks, 0u);
+  EXPECT_EQ(k.out_of_box_fallbacks, 0u);
+  EXPECT_EQ(k.sigma_out_of_box_fallbacks, 0u);
+  EXPECT_EQ(lad->fallbacks(), 2u * n);
+}
+
+// Review dcb6e3f1 regression: a contract whose sigma has moved outside its
+// record's sigma box has no certified window at any spot. It is served from the
+// record (clamped), flagged Fallback, never rebuilt, has a NaN certificate and
+// counts as sigma_out_of_box — never as budget pressure.
+TEST(ChainSpotLadder, SigmaOutsideTheRecordBoxIsServedFromTheRecordAndNeverRebuilt) {
+  SmallChain moved = chain();
+  const std::size_t hi = 3;  // 1-day call, ATM
+  const std::size_t lo = 30; // 1.5y call
+  moved.sigma[hi] = record_of(hi).sigma_max() * 1.05;
+  moved.sigma[lo] = record_of(lo).sigma_min() * 0.95;
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = 1000;
+  Result<ChainSpotLadder> lad = ChainSpotLadder::build(kS0, moved.view(), records(), pol);
+  ASSERT_TRUE(lad.has_value());
+  const std::size_t n = moved.strike.size();
+  EXPECT_EQ(lad->sigma_out_of_box_contracts(), 2u);
+  EXPECT_EQ(lad->refused_contracts(), 0u);
+  EXPECT_TRUE(std::isnan(lad->certified_error_usd()[hi]));
+  EXPECT_TRUE(std::isnan(lad->certified_error_usd()[lo]));
+  Outputs out(n);
+  for (const double S : {kS0, kS0 * std::exp(0.01)}) {
+    ASSERT_TRUE(lad->refresh(S, out.view()).has_value());
+    for (std::size_t i = 0; i < n; ++i) {
+      if (i == hi || i == lo) {
+        const RecordGreeks g = record_of(i).greeks(S, moved.strike[i], moved.sigma[i]);
+        EXPECT_FALSE(g.in_box) << i;
+        EXPECT_EQ(out.status[i], TickStatus::Fallback) << i;
+        EXPECT_TRUE(bits_equal(out.price[i], g.price)) << i;
+        EXPECT_TRUE(bits_equal(out.delta[i], g.delta)) << i;
+      } else {
+        EXPECT_NE(out.status[i], TickStatus::Fallback) << i;
+      }
+    }
+  }
+  const SpotLadderCounters k = lad->counters();
+  EXPECT_EQ(k.rebuilds, 0u);
+  EXPECT_EQ(k.sigma_out_of_box_fallbacks, 4u); // 2 contracts x 2 ticks
+  EXPECT_EQ(k.budget_fallbacks + k.out_of_box_fallbacks + k.refused_fallbacks, 0u);
+  EXPECT_EQ(lad->fallbacks(), 4u);
+}
+
+// Review dcb6e3f1: the acceptance threshold scales with the forward. The record
+// certificate is a forward-unit bound and the series error grows with the price
+// level, so a fixed $5e-4 starves a high-priced underlying; max(max_cert_usd,
+// max_cert_rel x F_max) does not. Below F ~ $1,000 the floor binds, so the $100
+// chain is certified bit-identically with and without the relative term. These
+// fixture records certify to <= 1.3e-8 fwd, so the fixed floor only starts to
+// refuse past F ~ $38,000 (a BRK.A-scale price); the 40 bench records (<= 3.3e-7
+// fwd, LEDGER) already cross it at F ~ $1,500.
+TEST(ChainSpotLadder, CertificateThresholdScalesWithTheForward) {
+  SpotLadderPolicy abs_only;
+  abs_only.max_cert_rel = 0.0; // the pre-2026-10-16 fixed threshold
+  ChainSpotLadder base = build_ladder();
+  ChainSpotLadder fixed = build_ladder(abs_only);
+  ASSERT_EQ(base.size(), fixed.size());
+  for (std::size_t i = 0; i < base.size(); ++i) {
+    EXPECT_TRUE(bits_equal(base.certified_error_usd()[i], fixed.certified_error_usd()[i])) << i;
+  }
+
+  constexpr double kBig = 50000.0;
+  const SmallChain big = make_chain(kBig);
+  const Result<ChainRecords> recs = ChainRecords::build(kBig, big.view());
+  ASSERT_TRUE(recs.has_value());
+  Result<ChainSpotLadder> scaled = ChainSpotLadder::build(kBig, big.view(), *recs);
+  const Result<ChainSpotLadder> starved = ChainSpotLadder::build(kBig, big.view(), *recs, abs_only);
+  ASSERT_TRUE(scaled.has_value());
+  ASSERT_TRUE(starved.has_value());
+  double worst = 0.0;
+  for (std::size_t i = 0; i < scaled->size(); ++i) {
+    const double cert = scaled->certified_error_usd()[i];
+    worst = std::max(worst, cert);
+    // F_max <= S0 e^{window_max} x the largest forward factor (1.5y) < 1.1 S0.
+    EXPECT_LE(cert, SpotLadderPolicy{}.max_cert_rel * 1.1 * kBig) << i;
+  }
+  std::printf("[ladder] $%.0f chain: refused %zu (relative threshold) vs %zu (fixed $%.1e); "
+              "worst certificate %.3e $\n",
+              kBig, scaled->refused_contracts(), starved->refused_contracts(),
+              abs_only.max_cert_usd, worst);
+  EXPECT_EQ(scaled->refused_contracts(), 0u);
+  EXPECT_GT(starved->refused_contracts(), 0u);
+
+  // The scaled ladder's ticks stay within their certificates of the record.
+  Outputs out(big.strike.size());
+  ASSERT_TRUE(scaled->refresh(kBig * 1.001, out.view()).has_value());
+  for (std::size_t i = 0; i < out.price.size(); ++i) {
+    ASSERT_NE(out.status[i], TickStatus::Fallback) << i;
+    const ExpiryRecord &rec = *recs->bank().at(recs->record_of_contract()[i]);
+    const double ref = rec.price(kBig * 1.001, big.strike[i], big.sigma[i]);
+    EXPECT_LE(std::abs(out.price[i] - ref), scaled->certified_error_usd()[i]) << i;
+  }
+}
+
+// Review dcb6e3f1 nit 12: the Greeks belong to the price that is served. A lane
+// served intrinsic (past the edge, or the series floored there) reports
+// Exercised with the exercise Greeks; a lane floored at a worthless zero reports
+// zero Greeks; every other served lane is strictly above intrinsic.
+TEST(ChainSpotLadder, ServedGreeksBelongToTheServedPrice) {
+  ChainSpotLadder lad = build_ladder();
+  const std::size_t n = chain().strike.size();
+  Outputs out(n);
+  std::size_t exercised = 0, above = 0, worthless = 0;
+  for (int t = -12; t <= 12; ++t) {
+    const double S = kS0 * std::exp(0.0025 * t);
+    ASSERT_TRUE(lad.refresh(S, out.view()).has_value());
+    for (std::size_t i = 0; i < n; ++i) {
+      const double intr = intrinsic(i, S);
+      const double unit = chain().side[i] == Side::Put ? -1.0 : 1.0;
+      if (out.status[i] == TickStatus::Exercised) {
+        ++exercised;
+        EXPECT_TRUE(bits_equal(out.price[i], intr)) << "t=" << t << " i=" << i;
+        EXPECT_EQ(out.delta[i], unit) << "t=" << t << " i=" << i;
+        EXPECT_EQ(out.gamma[i], 0.0);
+        EXPECT_EQ(out.vega[i], 0.0);
+        EXPECT_EQ(out.theta[i], 0.0);
+      } else if (out.status[i] == TickStatus::Ok) {
+        if (out.price[i] > intr) {
+          ++above;
+          continue;
+        }
+        ++worthless;
+        EXPECT_EQ(out.price[i], 0.0) << "t=" << t << " i=" << i;
+        EXPECT_EQ(intr, 0.0) << "an Ok lane at a positive intrinsic must be Exercised";
+        EXPECT_EQ(out.delta[i], 0.0);
+        EXPECT_EQ(out.gamma[i], 0.0);
+        EXPECT_EQ(out.vega[i], 0.0);
+        EXPECT_EQ(out.theta[i], 0.0);
+      }
+    }
+  }
+  std::printf("[ladder] served lanes: %zu above intrinsic, %zu exercised, %zu worthless\n", above,
+              exercised, worthless);
+  EXPECT_GT(exercised, 0u);
+  EXPECT_GT(above, 0u);
 }
 
 TEST(ChainSpotLadder, DeepInTheMoneyPutsPastTheSplitAreIntrinsic) {
@@ -350,6 +695,22 @@ TEST(ChainSpotLadder, TicksAllocateNothingEvenWhenTheyRebuild) {
   EXPECT_EQ(n, 0u);
 }
 
+// The opt-in order's ranking (std::nth_element on build-sized scratch) runs on a
+// budget-limited tick and still allocates nothing.
+TEST(ChainSpotLadder, NearestAtmFirstRankingAllocatesNothing) {
+  ChainSpotLadder lad =
+      build_ladder(budget_policy(SpotLadderRebuildOrder::NearestAtmFirst, kSmallBudget));
+  Outputs out(chain().strike.size());
+  const ChainTickOutputs ov = out.view();
+  const std::uint64_t n = atx::vol::testkit::count_allocations([&] {
+    (void)lad.refresh(kS0 * std::exp(kJump), ov); // 42 exits, 8 rebuilt: ranks
+    (void)lad.refresh(kS0 * std::exp(kJump), ov); // ranks again
+  });
+  EXPECT_EQ(lad.rebuilds(), 2u * kSmallBudget);
+  EXPECT_GT(lad.counters().budget_fallbacks, 0u);
+  EXPECT_EQ(n, 0u);
+}
+
 TEST(ChainSpotLadder, ShapeErrorsAreRefusedWithoutWriting) {
   ChainSpotLadder lad = build_ladder();
   Outputs short_out(chain().strike.size() - 1u);
@@ -364,6 +725,9 @@ TEST(ChainSpotLadder, ShapeErrorsAreRefusedWithoutWriting) {
   SpotLadderPolicy bad;
   bad.window_min = 0.0;
   EXPECT_FALSE(ChainSpotLadder::build(kS0, chain().view(), records(), bad).has_value());
+  SpotLadderPolicy bad_order;
+  bad_order.rebuild_order = static_cast<SpotLadderRebuildOrder>(7);
+  EXPECT_FALSE(ChainSpotLadder::build(kS0, chain().view(), records(), bad_order).has_value());
 }
 
 TEST(ChainSpotLadder, TwoThousandContractsFitInL2) {

@@ -53,6 +53,10 @@
 //   worst build-time certified error (`cert_err_fwd_max`, forward units).
 //   chain/iv/record_{warm,cold}/n2000 time American IV against the records for
 //   all 2,000 contracts (audit item 3); see run_iv below.
+//   chain/serve/<route>/n2000 compare the serving routes at S0 (run_serve) and
+//   chain/catchup/jump7/<order>_b<budget>/n{600,2000} time the spot ladder's
+//   catch-up after a +7% jump (run_catchup); chain/records/build/<variant>/n2000
+//   time one refit-time ChainRecords::build (run_records_build).
 //   NOT IMPLEMENTED: markov_batch (opt-in, never gated per §4).
 //
 // Every number this bench prints on a shared host is UNQUALIFIED. Only a quiet
@@ -80,6 +84,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_batch.hpp"
 #include "atx/vol/api/pricing/chain_tick.hpp"
+#include "pricing/al_probe.hpp" // opt-in AL zone profile of the record-build rows
 
 #include "bench_util.hpp"
 
@@ -783,6 +788,398 @@ void run_iv(benchmark::State &state, bool warm) {
       static_cast<double>(n_status[1] + n_status[5] + n_status[6]);
 }
 
+// ── Serve-path gate (serve-path lane, 2026-10-16, item 1) ────────────────────
+//
+// Rows chain/serve/<route>/n2000: one iteration re-marks all 2,000 contracts at
+// S0 the way a session serve path would, and the row reports the FULL-chain
+// price error against cold accurate Andersen-Lake at S0 (every contract, not the
+// rotating 5% sample of the tick rows):
+//   cached        the correction tensor everywhere (session default today)
+//   gated_bX      the exercise-edge gate at band X sigma sqrt(T)
+//                 (CorrectionBlend::clear_of_exercise_edge on the cache's own
+//                 recorded edge, the SessionServePolicy predicate): a contract
+//                 that fails it is re-priced cold, american_greeks_al with
+//                 al_fast_opts and vega (3 boundary solves) — the Fast preset's
+//                 scheme; the session's own cold Greek route
+//                 (american_greeks_fd) costs more
+//   records       refresh_chain_records: the records serve mode's route
+// Counters: flips (contracts routed cold), price_max_abs / p99 / n_gt_1mil over
+// all 2,000, served_cached_max_abs (the tensor-served subset), ms_per_chain p50.
+
+[[nodiscard]] const std::vector<double> &cold_accurate_s0() {
+  static const std::vector<double> ref = [] {
+    const SyntheticChain &c = chain();
+    std::vector<double> out(kContracts, kNaN);
+    for (std::size_t i = 0; i < kContracts; ++i) {
+      const Result<double> p = andersen_lake(kSpot0, c.strike[i], c.expiry[i], c.sigma[i],
+                                             c.rate[i], c.carry[i], c.side[i], std::nullopt);
+      out[i] = p ? *p : kNaN;
+    }
+    return out;
+  }();
+  return ref;
+}
+
+// band < 0: ungated tensor; band >= 0: gated. records: the record route.
+void run_serve(benchmark::State &state, double band, bool records) {
+  const SyntheticChain &c = chain();
+  const std::vector<double> &ref = cold_accurate_s0();
+  const AmericanCorrectionCaches caches = session_style_caches().view();
+  const BuiltRecords &b = chain_records();
+  if (records && !b.recs) {
+    state.SkipWithError("ChainRecords::build failed");
+    return;
+  }
+  OutputStore out(kContracts);
+  const ChainTickOutputs ov = out.view();
+  // Which contracts the gate routes cold (fixed at S0, computed once, untimed).
+  std::vector<std::uint8_t> cold(kContracts, 0u);
+  std::size_t flips = 0;
+  if (!records && band >= 0.0) {
+    for (std::size_t i = 0; i < kContracts; ++i) {
+      const CorrectionBlend blend = CorrectionBlend::single(caches.for_side(c.side[i]));
+      const double F = kSpot0 * std::exp((c.rate[i] - c.carry[i]) * c.expiry[i]);
+      const double k = std::log(c.strike[i] / F);
+      if (!blend.clear_of_exercise_edge(k, c.expiry[i], c.sigma[i], band)) {
+        cold[i] = 1u;
+        ++flips;
+      }
+    }
+  }
+  const AlOpts cold_opts = al_fast_opts();
+  std::vector<double> lat;
+  lat.reserve(static_cast<std::size_t>(state.max_iterations));
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    const Clock::time_point t0 = Clock::now();
+    if (records) {
+      const Status st = refresh_chain_records(kSpot0, c.view(), *b.recs, ov);
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+    } else {
+      const Status st = refresh_chain_cached(kSpot0, c.view(), caches, ov);
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+      for (std::size_t i = 0; i < kContracts; ++i) {
+        if (cold[i] == 0u) {
+          continue;
+        }
+        const Result<AmericanGreeks> g =
+            american_greeks_al(kSpot0, c.strike[i], c.expiry[i], c.sigma[i], c.rate[i],
+                               c.carry[i], c.side[i], cold_opts, /*need_vega=*/true,
+                               /*need_rho=*/false, /*need_charm=*/false);
+        out.price[i] = g ? g->price : kNaN;
+        out.delta[i] = g ? g->delta : kNaN;
+        out.gamma[i] = g ? g->gamma : kNaN;
+        out.vega[i] = g ? g->vega : kNaN;
+        out.theta[i] = g ? g->theta : kNaN;
+        out.status[i] = g ? TickStatus::Fallback : TickStatus::Unpriceable;
+      }
+    }
+    benchmark::DoNotOptimize(out.price.data());
+    benchmark::ClobberMemory();
+    const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+    state.SetIterationTime(dt);
+    if (lat.size() < lat.capacity()) {
+      lat.push_back(dt);
+    }
+  }
+  std::vector<double> sorted(lat);
+  std::sort(sorted.begin(), sorted.end());
+  ErrStats all;
+  double served_cached_max = 0.0;
+  std::size_t n_gt_mil = 0;
+  std::size_t worst = 0;
+  for (std::size_t i = 0; i < kContracts; ++i) {
+    const double e = std::abs(out.price[i] - ref[i]);
+    if (e > all.max_abs || !std::isfinite(e)) {
+      worst = i;
+    }
+    all.add(out.price[i] - ref[i]);
+    n_gt_mil += (e <= 1.0e-3) ? 0u : 1u;
+    if (!records && cold[i] == 0u) {
+      served_cached_max = std::max(served_cached_max, std::isfinite(e) ? e : 1.0e300);
+    }
+  }
+  std::fprintf(stderr, "[chain-serve] %s worst: i=%zu T=%.4f %s K=%.2f err=%.4e\n",
+               state.name().c_str(), worst, c.expiry[worst],
+               c.side[worst] == Side::Put ? "put" : "call", c.strike[worst],
+               out.price[worst] - ref[worst]);
+  state.counters["ms_per_chain_p50"] = 1.0e-3 * quantile_us(sorted, 0.5);
+  state.counters["flips"] = static_cast<double>(flips);
+  state.counters["price_max_abs"] = all.max_abs;
+  state.counters["price_p99_abs"] = all.p99();
+  state.counters["price_n_gt_1mil"] = static_cast<double>(n_gt_mil);
+  state.counters["served_cached_max_abs"] = records ? 0.0 : served_cached_max;
+  state.counters["contracts"] = static_cast<double>(kContracts);
+}
+
+// ── Catch-up after a +7% jump (serve-path lane, 2026-10-17, item 3) ──────────
+//
+// Rows chain/catchup/jump7/<order>_b<budget>/n{600,2000}: one iteration builds a
+// ChainSpotLadder at S0 (untimed), then the spot jumps +7% in one tick and walks
+// the 1 bp tape from there (spot_t = 1.07 x tape[t]). Every in-box contract has
+// left its window, so the per-tick rebuild budget binds. The iteration ends on
+// the first tick with no budget fallback (the "clean" tick), then times
+// kCatchupSettleTicks more ticks. <order> is the SpotLadderPolicy rebuild order:
+// `index` = ContractIndex (default), `atm` = NearestAtmFirst (opt-in). n600 is
+// the strikes with j % 10 in {0, 3, 6} of every (expiry, side) run, with its own
+// records. Manual time = the catch-up ticks, jump tick through the clean tick.
+// Counters (identical every iteration: the scenario is deterministic):
+//   catchup_ticks        ticks that carried a budget fallback
+//   atm_catchup_tick     1-based tick from which every in-box contract with
+//                        z = |ln(K / F)| / (sigma sqrt T) <= 1 is served Ok /
+//                        Exercised (0 = never within kCatchupMaxTicks)
+//   atm_lanes            in-box z <= 1 contracts on the jump tick
+//   out_of_box_lanes     out-of-box record fallbacks on the clean tick: lanes the
+//                        jump took outside their record box, which need a refit
+//   jump_tick_us, catchup_tick_p50_us / _max_us, settled_tick_p50_us
+
+constexpr double kCatchupJump = 1.07;
+constexpr std::size_t kCatchupMaxTicks = 256;
+constexpr std::size_t kCatchupSettleTicks = 50;
+
+// Strikes j % 10 in {0, 3, 6} of every run: 15 of 50 -> 600 contracts.
+[[nodiscard]] const SyntheticChain &chain600() {
+  static const SyntheticChain s = [] {
+    const SyntheticChain &full = chain();
+    SyntheticChain out;
+    for (std::size_t i = 0; i < full.strike.size(); ++i) {
+      const std::size_t j = (i % kStrikesPerExpiry) % 10u;
+      if (j != 0u && j != 3u && j != 6u) {
+        continue;
+      }
+      out.strike.push_back(full.strike[i]);
+      out.expiry.push_back(full.expiry[i]);
+      out.sigma.push_back(full.sigma[i]);
+      out.rate.push_back(full.rate[i]);
+      out.carry.push_back(full.carry[i]);
+      out.side.push_back(full.side[i]);
+    }
+    return out;
+  }();
+  return s;
+}
+
+[[nodiscard]] const BuiltRecords &chain600_records() {
+  static const BuiltRecords built = [] {
+    BuiltRecords b;
+    const auto t0 = std::chrono::steady_clock::now();
+    Result<ChainRecords> r = ChainRecords::build(kSpot0, chain600().view(), ChainRecordPolicy{});
+    b.build_ms = 1.0e3 * std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (r) {
+      b.worst_cert_fwd = r->worst_certified_error_fwd();
+      b.recs = std::move(*r);
+    } else {
+      std::fprintf(stderr, "[chain-catchup] ChainRecords::build (n600) failed: %s\n",
+                   r.error().to_string().c_str());
+    }
+    return b;
+  }();
+  return built;
+}
+
+// What one catch-up scenario observed (the timings go to the caller's arrays).
+struct CatchupObs {
+  std::size_t catchup_ticks = 0;
+  std::size_t atm_catchup_tick = 0;
+  std::size_t atm_lanes = 0;
+  std::uint64_t out_of_box_lanes = 0;
+  double total_s = 0.0;
+  bool clean = false;
+};
+
+// In-box z <= 1 contracts still served Fallback at `spot`, after the tick.
+[[nodiscard]] std::size_t atm_fallbacks(const SyntheticChain &c, const ChainRecords &recs,
+                                        double spot, std::span<const TickStatus> status,
+                                        std::size_t *atm_lanes) {
+  const std::span<const std::uint32_t> rec_of = recs.record_of_contract();
+  std::size_t waiting = 0;
+  std::size_t lanes = 0;
+  for (std::size_t i = 0; i < c.strike.size(); ++i) {
+    const ExpiryRecord &rec = *recs.bank().at(rec_of[i]);
+    const double k = std::log(c.strike[i] / (spot * rec.forward_factor()));
+    if (!(std::abs(k) <= c.sigma[i] * std::sqrt(c.expiry[i])) || !rec.contains(k, c.sigma[i])) {
+      continue;
+    }
+    ++lanes;
+    waiting += (status[i] == TickStatus::Fallback) ? 1u : 0u;
+  }
+  if (atm_lanes != nullptr) {
+    *atm_lanes = lanes;
+  }
+  return waiting;
+}
+
+void run_catchup(benchmark::State &state, bool n600, SpotLadderRebuildOrder order,
+                 std::uint32_t budget) {
+  const SyntheticChain &c = n600 ? chain600() : chain();
+  const BuiltRecords &b = n600 ? chain600_records() : chain_records();
+  if (!b.recs) {
+    state.SkipWithError("ChainRecords::build failed");
+    return;
+  }
+  const std::size_t n = c.strike.size();
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = budget;
+  pol.rebuild_order = order;
+  OutputStore out(n);
+  const ChainTickOutputs ov = out.view();
+  const std::vector<double> &spots = tape();
+  std::vector<double> jump_lat, catchup_lat, settled_lat;
+  const auto iters = static_cast<std::size_t>(state.max_iterations);
+  jump_lat.reserve(iters);
+  catchup_lat.reserve(iters * kCatchupMaxTicks);
+  settled_lat.reserve(iters * kCatchupSettleTicks);
+  CatchupObs last;
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    Result<ChainSpotLadder> built = ChainSpotLadder::build(kSpot0, c.view(), *b.recs, pol);
+    if (!built) {
+      state.SkipWithError("ChainSpotLadder::build failed");
+      break;
+    }
+    ChainSpotLadder lad = std::move(*built);
+    CatchupObs obs;
+    std::size_t t = 0;
+    for (; t < kCatchupMaxTicks && !obs.clean; ++t) {
+      const double spot = kCatchupJump * spots[t];
+      const std::uint64_t budget_before = lad.counters().budget_fallbacks;
+      const std::uint64_t oob_before = lad.counters().out_of_box_fallbacks;
+      const Clock::time_point t0 = Clock::now();
+      const Status st = lad.refresh(spot, ov);
+      benchmark::DoNotOptimize(out.price.data());
+      benchmark::ClobberMemory();
+      const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+      obs.total_s += dt;
+      if (t == 0u) {
+        jump_lat.push_back(dt);
+      }
+      const bool pressure = lad.counters().budget_fallbacks != budget_before;
+      if (pressure) {
+        ++obs.catchup_ticks;
+        catchup_lat.push_back(dt);
+      } else {
+        obs.clean = true;
+        obs.out_of_box_lanes = lad.counters().out_of_box_fallbacks - oob_before;
+      }
+      if (obs.atm_catchup_tick == 0u &&
+          atm_fallbacks(c, *b.recs, spot, out.status, t == 0u ? &obs.atm_lanes : nullptr) == 0u) {
+        obs.atm_catchup_tick = t + 1u;
+      }
+    }
+    for (std::size_t s = 0; s < kCatchupSettleTicks; ++s, ++t) {
+      const Clock::time_point t0 = Clock::now();
+      const Status st = lad.refresh(kCatchupJump * spots[t], ov);
+      benchmark::DoNotOptimize(out.price.data());
+      benchmark::ClobberMemory();
+      settled_lat.push_back(std::chrono::duration<double>(Clock::now() - t0).count());
+      bool ok = st.has_value();
+      benchmark::DoNotOptimize(ok);
+    }
+    state.SetIterationTime(obs.total_s);
+    last = obs;
+  }
+  std::sort(jump_lat.begin(), jump_lat.end());
+  std::sort(catchup_lat.begin(), catchup_lat.end());
+  std::sort(settled_lat.begin(), settled_lat.end());
+  state.counters["catchup_ticks"] = static_cast<double>(last.catchup_ticks);
+  state.counters["caught_up"] = last.clean ? 1.0 : 0.0;
+  state.counters["atm_catchup_tick"] = static_cast<double>(last.atm_catchup_tick);
+  state.counters["atm_lanes"] = static_cast<double>(last.atm_lanes);
+  state.counters["out_of_box_lanes"] = static_cast<double>(last.out_of_box_lanes);
+  state.counters["jump_tick_us"] = quantile_us(jump_lat, 0.5);
+  state.counters["catchup_tick_p50_us"] = quantile_us(catchup_lat, 0.5);
+  state.counters["catchup_tick_max_us"] = catchup_lat.empty() ? 0.0 : 1.0e6 * catchup_lat.back();
+  state.counters["settled_tick_p50_us"] = quantile_us(settled_lat, 0.5);
+  state.counters["budget"] = static_cast<double>(budget);
+  state.counters["contracts"] = static_cast<double>(n);
+}
+
+// ── Record build (serve-path lane, 2026-10-17, item 5) ───────────────────────
+//
+// Rows chain/records/build/<variant>/n2000: one iteration is one refit-time
+// ChainRecords::build of the 2,000-contract chain (40 records). `certified` is
+// the default policy; `uncertified` sets ChainRecordPolicy::certify = false, so
+// `uncertified` alone is the sampling pass (one boundary solve per sigma node,
+// the box-end edge solves and 192 premium samples per record) and the
+// difference is the certification pass (one accurate boundary solve per check
+// sigma plus the cold reference prices). `certified_w3` is the default policy
+// with the opt-in ChainRecordPolicy::build_workers = 3 (records built on three
+// worker threads; identical records). Counters: ms_per_build (p50), records,
+// cert_err_fwd_max, build_workers, and rec_fp_hi / rec_fp_lo: the two 32-bit
+// halves (exact in a double) of an FNV-1a hash over every record's certificate,
+// certified point count and greeks() on a 9 x 5 (k, sigma) grid, so two builds
+// or two binaries can be compared for bit-identical records.
+
+[[nodiscard]] std::uint64_t records_fingerprint(const ChainRecords &recs) {
+  std::uint64_t h = 0xCBF29CE484222325ull;
+  for (std::size_t r = 0; r < recs.bank().size(); ++r) {
+    const ExpiryRecord &rec = *recs.bank().at(r);
+    fnv_mix(h, rec.certified_max_abs_error_fwd());
+    fnv_mix(h, static_cast<double>(rec.certified_points()));
+    for (int j = 0; j <= 8; ++j) {
+      const double k = rec.k_min() + (rec.k_max() - rec.k_min()) * j / 8.0;
+      const double K = kSpot0 * rec.forward_factor() * std::exp(k);
+      for (int m = 0; m <= 4; ++m) {
+        const double sig = rec.sigma_min() + (rec.sigma_max() - rec.sigma_min()) * m / 4.0;
+        const RecordGreeks g = rec.greeks(kSpot0, K, sig);
+        fnv_mix(h, g.price);
+        fnv_mix(h, g.delta);
+        fnv_mix(h, g.gamma);
+        fnv_mix(h, g.vega);
+      }
+    }
+  }
+  return h;
+}
+
+void run_records_build(benchmark::State &state, bool certify, unsigned workers) {
+  const SyntheticChain &c = chain();
+  ChainRecordPolicy pol;
+  pol.certify = certify;
+  pol.build_workers = workers;
+  std::vector<double> lat;
+  lat.reserve(static_cast<std::size_t>(state.max_iterations));
+  double worst_cert = 0.0;
+  std::size_t records = 0;
+  std::uint64_t fp = 0;
+  using Clock = std::chrono::steady_clock;
+  for (auto _ : state) {
+    const Clock::time_point t0 = Clock::now();
+    Result<ChainRecords> r = ChainRecords::build(kSpot0, c.view(), pol);
+    const double dt = std::chrono::duration<double>(Clock::now() - t0).count();
+    if (!r) {
+      state.SkipWithError("ChainRecords::build failed");
+      break;
+    }
+    benchmark::DoNotOptimize(r->bank().size());
+    state.SetIterationTime(dt);
+    if (lat.size() < lat.capacity()) {
+      lat.push_back(dt);
+    }
+    worst_cert = r->worst_certified_error_fwd();
+    records = r->bank().size();
+    fp = records_fingerprint(*r); // untimed: after the clock stopped
+  }
+  state.counters["rec_fp_hi"] = static_cast<double>(fp >> 32);
+  state.counters["rec_fp_lo"] = static_cast<double>(fp & 0xFFFFFFFFull);
+  std::sort(lat.begin(), lat.end());
+  state.counters["ms_per_build"] = 1.0e-3 * quantile_us(lat, 0.5);
+  state.counters["records"] = static_cast<double>(records);
+  state.counters["cert_err_fwd_max"] = certify ? worst_cert : 0.0;
+  state.counters["build_workers"] = static_cast<double>(workers);
+  // Profile (opt-in, off by default): with ATX_VOL_AL_PROBE=z the Andersen-Lake
+  // zone table (boundary solves vs premium / price quadratures) of every build
+  // this process ran goes to stderr. The table is process-cumulative, so run one
+  // row per process when reading it.
+  if (alprobe::enabled()) {
+    alprobe::dump(stderr);
+  }
+}
+
 // ── Registration ─────────────────────────────────────────────────────────────
 
 void add_context_once() {
@@ -831,6 +1228,71 @@ const bool kRegistered = [] {
         warm ? "chain/iv/record_warm/n2000" : "chain/iv/record_cold/n2000",
         [warm](benchmark::State &state) { run_iv(state, warm); });
     apply_common(b)->UseManualTime()->Iterations(200)->Unit(benchmark::kMicrosecond);
+  }
+  // Serve-path gate (item 1): full-chain accuracy at S0 per serving route.
+  struct ServeRow {
+    const char *name;
+    double band;
+    bool records;
+    int iterations;
+  };
+  constexpr std::array<ServeRow, 6> kServeRows = {{
+      {"chain/serve/cached/n2000", -1.0, false, 20},
+      {"chain/serve/gated_b0.5/n2000", 0.5, false, 5},
+      {"chain/serve/gated_b1/n2000", 1.0, false, 5},
+      {"chain/serve/gated_b2/n2000", 2.0, false, 5},
+      {"chain/serve/gated_b3/n2000", 3.0, false, 5},
+      {"chain/serve/records/n2000", -1.0, true, 50},
+  }};
+  for (const ServeRow &row : kServeRows) {
+    benchmark::internal::Benchmark *b = benchmark::RegisterBenchmark(
+        row.name, [row](benchmark::State &state) { run_serve(state, row.band, row.records); });
+    apply_common(b)
+        ->UseManualTime()
+        ->Iterations(row.iterations)
+        ->Unit(benchmark::kMillisecond);
+  }
+  // Catch-up after a +7% jump (item 3): rebuild order x budget x chain size.
+  struct CatchupRow {
+    const char *name;
+    bool n600;
+    SpotLadderRebuildOrder order;
+    std::uint32_t budget;
+  };
+  constexpr SpotLadderRebuildOrder kIndex = SpotLadderRebuildOrder::ContractIndex;
+  constexpr SpotLadderRebuildOrder kAtm = SpotLadderRebuildOrder::NearestAtmFirst;
+  constexpr std::array<CatchupRow, 6> kCatchupRows = {{
+      {"chain/catchup/jump7/index_b32/n600", true, kIndex, 32},
+      {"chain/catchup/jump7/atm_b32/n600", true, kAtm, 32},
+      {"chain/catchup/jump7/atm_b64/n600", true, kAtm, 64},
+      {"chain/catchup/jump7/index_b32/n2000", false, kIndex, 32},
+      {"chain/catchup/jump7/atm_b32/n2000", false, kAtm, 32},
+      {"chain/catchup/jump7/atm_b64/n2000", false, kAtm, 64},
+  }};
+  for (const CatchupRow &row : kCatchupRows) {
+    benchmark::internal::Benchmark *b =
+        benchmark::RegisterBenchmark(row.name, [row](benchmark::State &state) {
+          run_catchup(state, row.n600, row.order, row.budget);
+        });
+    apply_common(b)->UseManualTime()->Iterations(10)->Unit(benchmark::kMicrosecond);
+  }
+  // Record build (item 5): certified (default), the sampling pass alone, and the
+  // opt-in three-worker build.
+  struct BuildRow {
+    const char *name;
+    bool certify;
+    unsigned workers;
+  };
+  constexpr std::array<BuildRow, 3> kBuildRows = {{
+      {"chain/records/build/certified/n2000", true, 1u},
+      {"chain/records/build/uncertified/n2000", false, 1u},
+      {"chain/records/build/certified_w3/n2000", true, 3u},
+  }};
+  for (const BuildRow &row : kBuildRows) {
+    benchmark::internal::Benchmark *b = benchmark::RegisterBenchmark(
+        row.name,
+        [row](benchmark::State &state) { run_records_build(state, row.certify, row.workers); });
+    apply_common(b)->UseManualTime()->Iterations(3)->Unit(benchmark::kMillisecond);
   }
   return true;
 }();

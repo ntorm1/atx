@@ -5,12 +5,16 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <algorithm>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_boundary.hpp" // amer:: boundary seam (exercise-edge reference)
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/correction_detail.hpp" // Chebyshev primitives (kChebMaxNodes, cheb_*)
@@ -1372,5 +1376,127 @@ TEST(Pin, EvalPartialsMatchesEvalGradAndPinnedScale) {
 }
 
 } // namespace pin
+
+// ── Exercise edge (serve-path lane, 2026-10-16) ─────────────────────────────
+//
+// build() records each (T_j, sigma_l) row's current exercise edge from the
+// boundary its slice already solves. exercise_edge_distance() is the signed
+// distance into the continuation side in sigma sqrt(T) units.
+
+namespace edge {
+
+constexpr double kR = 0.05;
+constexpr double kQ = 0.01;
+constexpr double kTmin = 0.1;
+constexpr double kTmax = 1.0;
+constexpr double kSmin = 0.1;
+constexpr double kSmax = 0.6;
+
+[[nodiscard]] CorrectionCache make(Side side, double q) {
+  auto c = CorrectionCache::build(16, 8, 12, kR, q, -0.5, 0.5, kTmin, kTmax, kSmin, kSmax, side,
+                                  atx::vol::al_fast_opts());
+  EXPECT_TRUE(c.has_value());
+  return c ? std::move(*c) : CorrectionCache{};
+}
+
+// Unclamped put edge k* = ln S1 - ln(b / K) (K = 1, F = 1) from a fresh solve.
+[[nodiscard]] double put_edge(double T, double sigma, const std::optional<atx::vol::AlOpts> &o) {
+  namespace amer = atx::vol::amer;
+  const amer::AlScheme sch = amer::scheme_from_opts(o);
+  auto work = std::make_unique<std::pair<amer::AlBoundary, amer::AlWorkspace>>();
+  EXPECT_EQ(amer::al_solve_put_boundary(1.0, T, sigma, kR, kQ, sch, work->first, work->second),
+            amer::AlSolveStatus::Ok);
+  return -(kR - kQ) * T - std::log(amer::al_boundary_now(work->first));
+}
+
+TEST(CorrectionCacheExerciseEdge, NodeEdgesReproduceTheSolvedBoundary) {
+  const CorrectionCache put = make(Side::Put, kQ);
+  // At a (T, sigma) node the recorded edge is the row's own solved boundary
+  // (rescaled from the row's reference strike), so the distance at k = k*
+  // vanishes to round-off.
+  for (const std::uint16_t j : {std::uint16_t{0}, std::uint16_t{3}, std::uint16_t{7}}) {
+    for (const std::uint16_t l : {std::uint16_t{0}, std::uint16_t{5}, std::uint16_t{11}}) {
+      const double T = detail::cheb_from_unit(detail::cheb_node(j, 8), kTmin, kTmax);
+      const double s = detail::cheb_from_unit(detail::cheb_node(l, 12), kSmin, kSmax);
+      const double k_star = put_edge(T, s, atx::vol::al_fast_opts());
+      // 1e-5: the slice reuses one reference-strike boundary by homogeneity,
+      // which matches a fresh K = 1 solve only to ~1e-7 relative (T16a).
+      EXPECT_NEAR(put.exercise_edge_distance(k_star, T, s), 0.0, 1.0e-5)
+          << "j=" << j << " l=" << l;
+    }
+  }
+}
+
+TEST(CorrectionCacheExerciseEdge, OffNodeEdgeTracksTheAccurateBoundary) {
+  const CorrectionCache put = make(Side::Put, kQ);
+  double worst = 0.0;
+  for (const double T : {0.13, 0.37, 0.61, 0.93}) {
+    for (const double s : {0.13, 0.27, 0.44, 0.57}) {
+      const double k_star = put_edge(T, s, std::nullopt);
+      worst = std::max(worst, std::abs(put.exercise_edge_distance(k_star, T, s)));
+    }
+  }
+  // Interpolated over the box from fast-preset node solves, against an accurate
+  // reference: the edge is located far inside the 0.5-3 sigma sqrt(T) gate bands.
+  EXPECT_LT(worst, 0.05);
+  std::cout << "[edge] worst off-node |distance at accurate k*| = " << worst << "\n";
+}
+
+TEST(CorrectionCacheExerciseEdge, DistanceSignsAndMonotonicity) {
+  const CorrectionCache put = make(Side::Put, kQ);
+  const CorrectionCache call = make(Side::Call, 0.03); // q > 0: early exercise
+  const double T = 0.5;
+  const double s = 0.3;
+  double prev_put = std::numeric_limits<double>::infinity();
+  double prev_call = -std::numeric_limits<double>::infinity();
+  for (int m = 0; m <= 20; ++m) {
+    const double k = -0.5 + 0.05 * m;
+    const double dp = put.exercise_edge_distance(k, T, s);
+    const double dc = call.exercise_edge_distance(k, T, s);
+    ASSERT_TRUE(std::isfinite(dp) && std::isfinite(dc));
+    EXPECT_LT(dp, prev_put) << "a put moves toward exercise as K rises";
+    EXPECT_GT(dc, prev_call) << "a call moves away from exercise as K rises";
+    prev_put = dp;
+    prev_call = dc;
+  }
+  // Deep ITM put (k = 0.5) is past its edge; deep OTM (k = -0.5) is far inside.
+  EXPECT_LT(put.exercise_edge_distance(0.5, T, s), 0.0);
+  EXPECT_GT(put.exercise_edge_distance(-0.5, T, s), 1.0);
+}
+
+TEST(CorrectionCacheExerciseEdge, EuropeanRegimeIsInfinitelyClearAndUnknownIsNaN) {
+  const CorrectionCache call_no_div = make(Side::Call, 0.0); // a call never exercises
+  EXPECT_EQ(call_no_div.exercise_edge_distance(0.0, 0.5, 0.3),
+            std::numeric_limits<double>::infinity());
+  const CorrectionCache empty;
+  EXPECT_TRUE(std::isnan(empty.exercise_edge_distance(0.0, 0.5, 0.3)));
+  const CorrectionCache put = make(Side::Put, kQ);
+  EXPECT_TRUE(std::isnan(put.exercise_edge_distance(0.0, 0.0, 0.3)));
+  EXPECT_TRUE(std::isnan(put.exercise_edge_distance(0.0, 0.5, -0.1)));
+  EXPECT_TRUE(std::isnan(
+      put.exercise_edge_distance(std::numeric_limits<double>::quiet_NaN(), 0.5, 0.3)));
+}
+
+TEST(CorrectionCacheExerciseEdge, BlendClearanceUsesEveryEvaluatedEndpoint) {
+  const CorrectionCache lo = make(Side::Put, kQ);
+  const CorrectionCache hi = make(Side::Put, 0.02);
+  const double T = 0.5;
+  const double s = 0.3;
+  const double k = -0.2;
+  const double d_lo = lo.exercise_edge_distance(k, T, s);
+  const double d_hi = hi.exercise_edge_distance(k, T, s);
+  ASSERT_TRUE(std::isfinite(d_lo) && std::isfinite(d_hi) && d_lo != d_hi);
+  const double band = 0.5 * (d_lo + d_hi); // between the two distances
+  const CorrectionBlend single_lo = CorrectionBlend::single(&lo);
+  const CorrectionBlend interior{&lo, &hi, 0.5};
+  EXPECT_EQ(single_lo.clear_of_exercise_edge(k, T, s, band), d_lo > band);
+  EXPECT_FALSE(interior.clear_of_exercise_edge(k, T, s, band)) << "both endpoints must clear";
+  EXPECT_TRUE(interior.clear_of_exercise_edge(k, T, s, std::min(d_lo, d_hi) - 1.0e-9));
+  EXPECT_FALSE(
+      single_lo.clear_of_exercise_edge(k, T, s, std::numeric_limits<double>::quiet_NaN()));
+  EXPECT_FALSE(CorrectionBlend{}.clear_of_exercise_edge(k, T, s, 0.0));
+}
+
+} // namespace edge
 
 } // namespace

@@ -39,28 +39,8 @@ constexpr std::uint16_t kNs = ExpiryRecord::kNs;
 constexpr double kMinDomainFrac = 0.05;
 constexpr double kMaxDomainOvershoot = 1.0;
 
-// Clenshaw for p(x) = c0 + sum_{k>=1} c_k T_k(x) and its first two x-derivatives
-// (differentiated recurrences; same full-c0 form as detail::cheb_clenshaw1d).
-struct ChebD2 {
-  double v = 0.0, d = 0.0, dd = 0.0;
-};
-[[nodiscard]] ChebD2 clenshaw_d2(const double *c, std::uint16_t n, double x) noexcept {
-  double b1 = 0.0, b2 = 0.0, d1 = 0.0, d2 = 0.0, e1 = 0.0, e2 = 0.0;
-  const double two_x = 2.0 * x;
-  for (int k = static_cast<int>(n) - 1; k >= 1; --k) {
-    const double b = c[k] + two_x * b1 - b2;
-    const double d = 2.0 * b1 + two_x * d1 - d2;
-    const double e = 4.0 * d1 + two_x * e1 - e2;
-    b2 = b1;
-    b1 = b;
-    d2 = d1;
-    d1 = d;
-    e2 = e1;
-    e1 = e;
-  }
-  return ChebD2{c[0] + x * b1 - b2, b1 + x * d1 - d2, 2.0 * d1 + x * e1 - e2};
-}
-
+// Clenshaw for p(x) = c0 + sum_{k>=1} c_k T_k(x) and its first x-derivative
+// (differentiated recurrence; same full-c0 form as detail::cheb_clenshaw1d).
 struct ChebD1 {
   double v = 0.0, d = 0.0;
 };
@@ -76,6 +56,55 @@ struct ChebD1 {
     d1 = d;
   }
   return ChebD1{c[0] + x * b1 - b2, b1 + x * d1 - d2};
+}
+
+// The kNs sigma rows of the record plane, each a kNk-term moneyness series,
+// evaluated at one u in LOCKSTEP (serve-path lane item 4). The plane is stored
+// moneyness-major (coefs[i * kNs + j], sigma row j contiguous per term i), so
+// each Clenshaw step reads one contiguous kNs-double row for every sigma row and
+// the row loop vectorizes. Row j's recurrence is exactly
+// detail::cheb_clenshaw1d's (Order 0), clenshaw_d1's (Order 1) or clenshaw_d2's
+// (Order 2) — the same operations in the same order — so every output is
+// bit-identical to evaluating that row on its own; interleaving only turns kNs
+// serial dependency chains into one throughput-bound loop. `vu` / `vuu` may be
+// null below the order that writes them.
+template <int Order>
+void eval_rows(const double *coefs, double u, double *v, double *vu, double *vuu) noexcept {
+  static_assert(Order >= 0 && Order <= 2, "value, first or second u-derivative");
+  std::array<double, kNs> b1{};
+  std::array<double, kNs> b2{};
+  std::array<double, kNs> d1{};
+  std::array<double, kNs> d2{};
+  std::array<double, kNs> e1{};
+  std::array<double, kNs> e2{};
+  const double two_u = 2.0 * u;
+  for (int k = static_cast<int>(kNk) - 1; k >= 1; --k) {
+    const double *ck = coefs + static_cast<std::size_t>(k) * kNs;
+    for (std::size_t j = 0; j < kNs; ++j) {
+      const double b = ck[j] + two_u * b1[j] - b2[j];
+      if constexpr (Order >= 1) {
+        const double d = 2.0 * b1[j] + two_u * d1[j] - d2[j];
+        if constexpr (Order >= 2) {
+          const double e = 4.0 * d1[j] + two_u * e1[j] - e2[j];
+          e2[j] = e1[j];
+          e1[j] = e;
+        }
+        d2[j] = d1[j];
+        d1[j] = d;
+      }
+      b2[j] = b1[j];
+      b1[j] = b;
+    }
+  }
+  for (std::size_t j = 0; j < kNs; ++j) {
+    v[j] = coefs[j] + u * b1[j] - b2[j];
+    if constexpr (Order >= 1) {
+      vu[j] = b1[j] + u * d1[j] - d2[j];
+    }
+    if constexpr (Order >= 2) {
+      vuu[j] = 2.0 * d1[j] + u * e1[j] - e2[j];
+    }
+  }
 }
 
 // One AL boundary + workspace (~45 KB): heap-held for the duration of a build so
@@ -140,6 +169,8 @@ struct InternalPut {
   return amer::al_put_price_from_boundary(w.bnd, w.ws, /*S=*/K, /*K=*/S1, T, sigma, ip.rp, ip.qp);
 }
 
+// 2-D DCT of the sampled plane: `vals` is sigma-row-major (vals[j * kNk + i]),
+// `coefs` is written moneyness-major (coefs[i * kNs + j]) for eval_rows.
 void dct2d(const std::array<double, static_cast<std::size_t>(kNk) * kNs> &vals,
            std::array<double, static_cast<std::size_t>(kNk) * kNs> &coefs) noexcept {
   std::array<double, kNk> in{};
@@ -162,7 +193,7 @@ void dct2d(const std::array<double, static_cast<std::size_t>(kNk) * kNs> &vals,
     }
     detail::cheb_dct2(col.data(), col_out.data(), kNs);
     for (std::uint16_t j = 0; j < kNs; ++j) {
-      coefs[static_cast<std::size_t>(j) * kNk + i] = col_out[j];
+      coefs[static_cast<std::size_t>(i) * kNs + j] = col_out[j];
     }
   }
 }
@@ -233,12 +264,22 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
     s_nodes[j] = detail::cheb_from_unit(detail::cheb_node(j, kNs), spec.sigma_min, spec.sigma_max);
   }
 
+  // The edge pass's two box-end boundaries (sigma_min, sigma_max). With the
+  // default sampling scheme (sample_opts == nullopt, the accurate preset) they are
+  // exactly the boundaries certification's two box-end rows would solve, so
+  // certification reuses them instead of solving them again (serve-path item 5:
+  // 2 of the record's 27 boundary solves). A cold solve re-initialises its nodes,
+  // geometry and seed (al_solve_put_boundary), so the reused state is the one a
+  // fresh solve produces.
+  std::unique_ptr<BoundaryWork[]> ends;
+  double e_lo = kNaN;
+  double e_hi = kNaN;
   if (rec.american_) {
     const amer::AlScheme sch = amer::scheme_from_opts(spec.sample_opts);
     // One retained boundary per sigma node (~45 KB each, build-time heap only):
     // the edge pass and the sampling pass share them instead of re-solving.
     const auto rows = std::make_unique<BoundaryWork[]>(kNs);
-    const auto work = std::make_unique<BoundaryWork>();
+    ends = std::make_unique<BoundaryWork[]>(2);
     std::array<double, kNs> kstar{};
     for (std::uint16_t j = 0; j < kNs; ++j) {
       kstar[j] = solve_edge(rows[j], ip, T, s_nodes[j], S1, sch);
@@ -249,8 +290,8 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
     }
     // The edge is monotone in sigma, so its extent over the box is set by the two
     // box ends; Chebyshev nodes are interior, hence the two extra solves.
-    const double e_lo = solve_edge(*work, ip, T, spec.sigma_min, S1, sch);
-    const double e_hi = solve_edge(*work, ip, T, spec.sigma_max, S1, sch);
+    e_lo = solve_edge(ends[0], ip, T, spec.sigma_min, S1, sch);
+    e_hi = solve_edge(ends[1], ip, T, spec.sigma_max, S1, sch);
     double e_min = std::min(e_lo, e_hi);
     double e_max = std::max(e_lo, e_hi);
     for (const double e : kstar) {
@@ -305,15 +346,18 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
 
     const amer::AlScheme acc = amer::scheme_from_opts(std::nullopt);
     const auto work = std::make_unique<BoundaryWork>();
+    const bool reuse_ends = rec.american_ && !spec.sample_opts.has_value();
+    BoundaryWork *cur = work.get(); // the accurate boundary of the current check sigma
     double worst = 0.0;
     std::uint32_t pts = 0;
+    std::uint32_t refused_rows = 0;
     const auto check = [&](double k, double sigma, bool cold_ok) {
       const double K = std::exp(k);
       double cold = 0.0;
       if (!rec.american_) {
         cold = black76_price(1.0, K, T, sigma, rec.df_, spec.side);
       } else if (cold_ok) {
-        cold = cold_price_at(*work, ip, k, sigma, T, S1);
+        cold = cold_price_at(*cur, ip, k, sigma, T, S1);
       } else {
         return;
       }
@@ -322,10 +366,22 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
       worst = std::max(worst, std::isfinite(err) ? err : kInf);
       ++pts;
     };
-    for (const double sc : s_check) {
+    for (std::size_t c = 0; c < s_check.size(); ++c) {
+      const double sc = s_check[c];
       bool cold_ok = true;
-      if (rec.american_) {
+      cur = work.get();
+      if (reuse_ends && (c == 0u || c == kNs)) {
+        // s_check[0] == sigma_min and s_check[kNs] == sigma_max exactly.
+        cur = &ends[c == 0u ? 0u : 1u];
+        cold_ok = std::isfinite(c == 0u ? e_lo : e_hi);
+      } else if (rec.american_) {
         cold_ok = std::isfinite(solve_edge(*work, ip, T, sc, S1, acc));
+      }
+      if (!cold_ok) {
+        // No reference at this sigma: the grid would have a hole the
+        // certificate cannot vouch for, so the record is refused below.
+        ++refused_rows;
+        continue;
       }
       const double edge = rec.exercise_edge(sc);
       // Continuation-side moneyness checks: the u-node midpoints of this sigma's
@@ -355,8 +411,9 @@ Result<ExpiryRecord> ExpiryRecord::build(const ExpiryRecordSpec &spec) {
         }
       }
     }
-    rec.cert_err_ = worst;
+    rec.cert_err_ = (refused_rows == 0u) ? worst : kNaN;
     rec.cert_pts_ = pts;
+    rec.cert_refused_rows_ = refused_rows;
   }
   return Ok(rec);
 }
@@ -411,18 +468,10 @@ ExpiryRecord::Jet ExpiryRecord::eval_jet(double k_log, double sigma, bool want_k
   std::array<double, kNs> v{};
   std::array<double, kNs> vu{};
   std::array<double, kNs> vuu{};
-  for (std::uint16_t j = 0; j < kNs; ++j) {
-    const double *row = coefs_.data() + static_cast<std::size_t>(j) * kNk;
-    if (want_k) {
-      const ChebD2 r = clenshaw_d2(row, kNk, u);
-      v[j] = r.v;
-      vu[j] = r.d;
-      vuu[j] = r.dd;
-    } else {
-      const ChebD1 r = clenshaw_d1(row, kNk, u);
-      v[j] = r.v;
-      vu[j] = r.d;
-    }
+  if (want_k) {
+    eval_rows<2>(coefs_.data(), u, v.data(), vu.data(), vuu.data());
+  } else {
+    eval_rows<1>(coefs_.data(), u, v.data(), vu.data(), nullptr);
   }
   const ChebD1 cs = clenshaw_d1(v.data(), kNs, xs);
   const double c_u = detail::cheb_clenshaw1d(vu.data(), kNs, xs);
@@ -459,9 +508,7 @@ double ExpiryRecord::premium_fwd(double k_log, double sigma) const noexcept {
   const double hi = put ? d : k_max_;
   const double u = detail::cheb_to_unit(atx::core::clamp(k_log, lo, hi), lo, hi);
   std::array<double, kNs> v{};
-  for (std::uint16_t j = 0; j < kNs; ++j) {
-    v[j] = detail::cheb_clenshaw1d(coefs_.data() + static_cast<std::size_t>(j) * kNk, kNk, u);
-  }
+  eval_rows<0>(coefs_.data(), u, v.data(), nullptr, nullptr);
   const double c = detail::cheb_clenshaw1d(v.data(), kNs, xs);
   return (c > 0.0) ? c : 0.0;
 }
@@ -498,15 +545,23 @@ double ExpiryRecord::price_and_vega(double S, double K, double sigma,
   const double F = S * growth_;
   const double k = std::log(K / F);
   const double intr = (side_ == Side::Put) ? (K - S) : (S - K);
+  return value_and_vega_at(F, K, k, intr, sigma, std::sqrt(T_), vega_out);
+}
+
+double ExpiryRecord::value_and_vega_at(double F, double K, double k, double intr, double sigma,
+                                       double sqrt_t, double *vega_out) const noexcept {
   if (in_exercise_region(k, sigma)) {
     if (vega_out != nullptr) {
       *vega_out = 0.0;
     }
     return (intr > 0.0) ? intr : 0.0;
   }
-  const Black76ValueVega bv = black76_value_and_vega(F, K, T_, sigma, df_, side_);
+  // sqrt_t == std::sqrt(T_), the value black76_value_and_vega computes itself
+  // when it is not passed, so the result is bit-identical either way.
+  const Black76ValueVega bv = black76_value_and_vega(F, K, T_, sigma, df_, side_, sqrt_t);
   const Jet j = eval_jet(k, sigma, /*want_k=*/false);
-  double px = bv.price + F * j.c;
+  const double cont = bv.price + F * j.c;
+  double px = cont;
   if (intr > px) {
     px = intr;
   }
@@ -514,7 +569,9 @@ double ExpiryRecord::price_and_vega(double S, double K, double sigma,
     px = bv.price;
   }
   if (vega_out != nullptr) {
-    *vega_out = bv.vega + F * j.c_s;
+    // A price floored at intrinsic is flat in sigma there: its vega is 0, the
+    // same as greeks() reports for it.
+    *vega_out = (intr > 0.0 && !(cont > intr)) ? 0.0 : bv.vega + F * j.c_s;
   }
   return (px > 0.0) ? px : 0.0;
 }
@@ -540,14 +597,20 @@ RecordGreeks ExpiryRecord::greeks(double S, double K, double sigma) const noexce
   }
   const Black76Greeks bg = black76_greeks(F, K, T_, sigma, r_, df_, side_);
   const Jet j = eval_jet(k, sigma, /*want_k=*/true);
-  double px = bg.price + F * j.c;
-  if (intr > px) {
-    px = intr;
+  const double cont = bg.price + F * j.c;
+  if (intr > 0.0 && !(cont > intr)) {
+    // The continuation value fell to intrinsic on the continuation side of the
+    // recorded edge: serve intrinsic with the exercise Greeks, so the Greeks
+    // belong to the served price (tick-path review nit 12).
+    g.floored = true;
+    g.exercised = true;
+    g.price = intr;
+    g.delta = put ? -1.0 : 1.0;
+    return g; // gamma = vega = theta = 0
   }
-  if (bg.price > px) {
-    px = bg.price;
-  }
-  g.price = (px > 0.0) ? px : 0.0;
+  // c >= 0 (eval_jet's served max(0, polynomial)) keeps cont >= Black-76 >= 0, so
+  // neither the European nor the zero floor can bind here.
+  g.price = (cont > 0.0) ? cont : 0.0;
   const double D = bg.greeks.delta + j.c - j.c_k; // dP/dF
   g.delta = m * D;
   g.gamma = m * m * (bg.greeks.gamma + (j.c_kk - j.c_k) / F);
@@ -571,6 +634,13 @@ RecordIv ExpiryRecord::implied_vol(double S, double K, double target_price, doub
   const double floor_v = vega_floor * K;
   const double intr_raw = (side_ == Side::Put) ? (K - S) : (S - K);
   const double intr = (intr_raw > 0.0) ? intr_raw : 0.0;
+  // Hoisted out of the Newton loop: everything price_and_vega derives from (S, K)
+  // alone (the forward, the log-moneyness and sqrt T), computed exactly as it
+  // computes them, so each evaluation is bit-identical to price_and_vega(S, K,
+  // sigma) without repeating the log and the square root (serve-path item 4).
+  const double F = S * growth_;
+  const double k_log = std::log(K / F);
+  const double sqrt_t = std::sqrt(T_);
   if (target_price < intr - tol) {
     out.status = RecordIvStatus::BelowIntrinsic;
     return out;
@@ -593,7 +663,7 @@ RecordIv ExpiryRecord::implied_vol(double S, double K, double target_price, doub
   constexpr int kMaxEvaluations = 16;
   for (int it = 0; it < kMaxEvaluations; ++it) {
     double vega = 0.0;
-    const double p = price_and_vega(S, K, sig, &vega);
+    const double p = value_and_vega_at(F, K, k_log, intr_raw, sig, sqrt_t, &vega);
     out.evaluations = static_cast<std::uint8_t>(it + 1);
     last_vega = vega;
     const double f = p - target_price;
