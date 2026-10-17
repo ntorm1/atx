@@ -1309,6 +1309,39 @@ TEST(QuoteSurfaceLadder, CalendarPassNeverLetsALowerConfidenceSliceBlockARepair)
   expect_calendar_consistent(*on);
 }
 
+TEST(QuoteSurfaceLadder, ASliceOutsideTheMarketNeverOutranksOneInsideItForTheCalendarSlot) {
+  // K (one-cent quotes, kinked smile, 11 strikes): its point fit lies outside
+  // some of its quotes. L, later and quoted far cheaper (7 strikes), crosses it.
+  // Neither can be repaired or refitted, so the calendar order alone decides.
+  const std::vector<Chain> chains{kinked_chain(0.25, 0.0),
+                                  chain(0.5, 0.15, 0.0, 0.005, 85, 115, 5)};
+  QuoteSliceConfig config;
+  config.channel.min_channel_quotes = 100000; // no knot slice, no channel refit
+  const auto off = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ((*off)[0].grade, QuoteSliceGrade::A) << (*off)[0].refusal;
+  ASSERT_EQ((*off)[1].refusal, "calendar_arbitrage"); // K keeps the slot (more evidence)
+  // K's point fit serves only because the policy relaxes the point limit; the
+  // channel limit stays 5%, so K is not inside the market under the smaller
+  // limit and ranks after L, which is: L keeps the slot.
+  QuoteSurfaceConfig relaxed = knot_first();
+  relaxed.ladder_max_outside_fraction = 1.0;
+  const auto on = fit_quote_surface(expiries(chains), config, relaxed);
+  ASSERT_TRUE(on) << on.error().to_string();
+  ASSERT_GT((*on)[0].outside_fraction, 0.05);
+  EXPECT_EQ((*on)[1].outside_quotes, 0u);
+  EXPECT_EQ((*on)[1].grade, QuoteSliceGrade::A) << (*on)[1].refusal;
+  EXPECT_EQ((*on)[0].grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ((*on)[0].refusal, "calendar_arbitrage");
+  // Both limits relaxed: containment no longer separates them, so the
+  // two-sided quote count does and K keeps the slot again.
+  relaxed.ladder_channel_max_outside_fraction = 1.0;
+  const auto open = fit_quote_surface(expiries(chains), config, relaxed);
+  ASSERT_TRUE(open) << open.error().to_string();
+  EXPECT_EQ((*open)[0].grade, QuoteSliceGrade::A) << (*open)[0].refusal;
+  EXPECT_EQ((*open)[1].refusal, "calendar_arbitrage");
+}
+
 TEST(QuoteSurfaceLadder, RejectsAChannelProfileTheDominanceGateAndBadLimits) {
   const std::vector<Chain> one{chain(0.25, 0.22, 0.0, 0.01)};
   EXPECT_EQ(fit_quote_surface(expiries(one), channel_config(), knot_first()).error().code(),

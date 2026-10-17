@@ -669,11 +669,14 @@ struct QuoteSurfaceSlice {
 // pass-A rung or repair rung outside is skipped, a channel refit outside is
 // refused ("outside_market"), and every calendar repair or retry must end
 // inside. CALENDAR (confidence-ordered, single pass): slices are visited once
-// in a total order on intrinsic slice properties (grade A, B, C, where a pass-A
-// slice keeps its A rank until the final relabel; then served prices that are
-// the fit's own or moved only by the bounded-move convexity repair before
-// prices certified by the channel repair or a repair rung; then more strictly
-// two-sided quotes; then the nearer maturity) and each one is resolved against
+// in a total order on intrinsic slice properties (first the slices inside the
+// market under the smaller of the two limits, so a slice served only under an
+// explicitly relaxed limit never out-ranks one inside the market; then grade
+// A, B, C, where a pass-A slice keeps its A rank until the final relabel; then
+// served prices that are the fit's own or moved only by the bounded-move
+// convexity repair before prices certified by the channel repair or a repair
+// rung; then more strictly two-sided quotes; then the nearer maturity) and
+// each one is resolved against
 // the slices already accepted before the next is visited, so a lower-confidence
 // slice can never constrain a higher-confidence one. A slice that crosses gets,
 // in order: its own bounded-move calendar repair; the point fit (knot-served

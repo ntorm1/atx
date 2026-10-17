@@ -186,7 +186,8 @@ public:
                 const QuoteSurfaceConfig &surface)
       : expiries_(expiries), config_(config), base_config_(without_repair(config)),
         surface_(surface), out_(expiries.size()), breadth_(expiries.size()),
-        two_sided_(expiries.size()), held_point_(expiries.size()) {}
+        two_sided_(expiries.size()), contained_(expiries.size(), 0),
+        held_point_(expiries.size()) {}
 
   [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>> run() {
     if (ladder()) {
@@ -825,14 +826,27 @@ private:
            slice.fit.diagnostics.repair.outcome == QuoteSliceRepairOutcome::Applied;
   }
 
+  // Market containment under the strictest limit the policy states (the smaller
+  // of the point and channel limits). Every slice reaching the calendar pass
+  // met its own rung's limit; only a slice served under an explicitly relaxed
+  // limit (a limit above the other one) can fail this.
+  [[nodiscard]] bool contained(std::size_t i) const {
+    const double limit = std::min(surface_.ladder_max_outside_fraction,
+                                  surface_.ladder_channel_max_outside_fraction);
+    const OutsideShare share = outside_share(out_[i].fit, expiries_[i].quotes, true);
+    return !(share.fraction > limit && share.count >= surface_.ladder_min_outside_quotes);
+  }
+
   // Confidence order of the ladder's calendar pass, a total order on intrinsic
-  // slice properties (never on processing order): grade tier (own evidence
-  // first; a pass-A slice keeps its A tier until the final relabel), then prices
-  // still the fit's own before channel-repaired ones (channel_repaired), then
-  // more strictly two-sided quotes (more market information), then the nearer
-  // maturity (distinct maturities make it total). Containment needs no key:
-  // every slice reaching this pass is inside the market (in_market).
+  // slice properties (never on processing order): contained slices first (a
+  // slice whose prices leave the market, served only under a relaxed limit,
+  // never out-ranks one inside it), then grade tier (own evidence first; a
+  // pass-A slice keeps its A tier until the final relabel), then prices still
+  // the fit's own before channel-repaired ones (channel_repaired), then more
+  // strictly two-sided quotes (more market information), then the nearer
+  // maturity (distinct maturities make it total).
   [[nodiscard]] bool ladder_ranks_before(std::size_t a, std::size_t b) const {
+    if (contained_[a] != contained_[b]) return contained_[a] != 0;
     if (out_[a].grade != out_[b].grade) return out_[a].grade < out_[b].grade;
     const bool repaired_a = channel_repaired(a);
     const bool repaired_b = channel_repaired(b);
@@ -850,7 +864,10 @@ private:
   [[nodiscard]] Status ladder_calendar_pass() {
     std::vector<std::size_t> order;
     for (std::size_t i = 0; i < out_.size(); ++i) {
-      if (served(i) && out_[i].fit.prices) order.push_back(i);
+      if (served(i) && out_[i].fit.prices) {
+        order.push_back(i);
+        contained_[i] = contained(i) ? 1 : 0;
+      }
     }
     std::sort(order.begin(), order.end(),
               [this](std::size_t a, std::size_t b) { return ladder_ranks_before(a, b); });
@@ -1051,6 +1068,7 @@ private:
   std::vector<QuoteSurfaceSlice> out_;
   std::vector<std::size_t> breadth_;
   std::vector<std::size_t> two_sided_; // ladder only: strictly two-sided quotes
+  std::vector<std::uint8_t> contained_; // ladder only: contained() at the calendar pass
   // Ladder only: the in-market point fit of a knot-served expiry (calendar rung).
   std::vector<std::optional<QuoteSliceFit>> held_point_;
 };
