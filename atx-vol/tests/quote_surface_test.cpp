@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -550,11 +551,13 @@ TEST(QuoteSliceChannel, CalendarRepairNeverTurnsAPriceOnlyRowIntoAVolatilityRow)
 // between. A 4% put is worth about K - S e^{-qT}, above the chord of its zero-
 // yield neighbours (about K - S), so the convexity repair lowers it below its
 // own zero-volatility value: PriceOnly rows (the bench CLI fixture, in C++).
-Chain put_zigzag_chain(double years, double sigma) {
+// `lo` and `step` set the strikes; `yield` (when set) replaces the zig-zag.
+Chain put_zigzag_chain(double years, double sigma, int step = 4,
+                       std::optional<double> yield = std::nullopt, int lo = 100) {
   Chain out;
   out.market = QuoteSliceMarket{100.0, years, years, 0.0, 0.0, 0.0};
-  for (int strike = 100; strike <= 148; strike += 4) {
-    const double q = ((strike - 100) / 4) % 2 == 1 ? 0.04 : 0.0;
+  for (int strike = lo; strike <= 148; strike += step) {
+    const double q = yield ? *yield : (((strike - lo) / step) % 2 == 1 ? 0.04 : 0.0);
     const auto price =
         andersen_lake(100.0, static_cast<double>(strike), years, sigma, 0.0, q, Side::Put);
     if (!price) {
@@ -624,6 +627,40 @@ TEST(QuoteSurface, PriceOnlyRowsSurviveTheSurfaceCalendarRepairAndAreStrippedWhe
     }
   }
   EXPECT_EQ(stripped, 1u);
+}
+
+TEST(QuoteSurface, ASurfaceCalendarRepairThatLeavesNoVolatilityFlagsTheRowPriceOnly) {
+  // N: puts at a 4% yield everywhere (0.45 y, 15%; zero-volatility value about
+  // K - 98.2), 9 strikes 116-148 every 4. F: later zero-yield puts at 5% from
+  // 92 to 148 every 4 (10 mid strikes), worth about K - 100: below N's zero-
+  // volatility value. With 10 mid strikes required for B, N is C and F is B, so
+  // F ranks first and N crosses it; the bounded calendar repair (inside the
+  // surface's repair trial) caps N's nodes onto F's prices (F's knots are N's
+  // nodes there), where they have no identifiable volatility: rows that were
+  // Success become PriceOnly, flagged, and refused by the query, as after a
+  // convexity repair.
+  const std::vector<Chain> chains{put_zigzag_chain(0.45, 0.15, 4, 0.04, 116),
+                                  put_zigzag_chain(0.5, 0.05, 4, 0.0, 92)};
+  QuoteSliceConfig config;
+  config.channel.repair_half_spreads = 100.0;
+  QuoteSurfaceConfig surface;
+  surface.grade_b_min_mid_strikes = 10;
+  const auto clean = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(clean) << clean.error().to_string();
+  ASSERT_EQ((*clean)[0].refusal, "calendar_arbitrage") << (*clean)[0].error;
+  ASSERT_EQ((*clean)[1].grade, QuoteSliceGrade::B) << (*clean)[1].refusal;
+  QuoteSurfaceConfig repairing = surface;
+  repairing.calendar_repair_half_spreads = 100.0;
+  const auto repaired = fit_quote_surface(expiries(chains), config, repairing);
+  ASSERT_TRUE(repaired) << repaired.error().to_string();
+  const auto &near = (*repaired)[0];
+  ASSERT_NE(near.grade, QuoteSliceGrade::Refused)
+      << near.refusal << " " << near.error << " required " << near.calendar_repair_required
+      << " gap " << near.calendar_gap << " at " << near.calendar_gap_strike;
+  EXPECT_TRUE(near.calendar_repaired);
+  EXPECT_EQ(count_price_only(near.fit), expect_price_only_rows(near.fit, chains[0].quotes));
+  EXPECT_GT(count_price_only(near.fit), 0u);
+  expect_calendar_consistent(*repaired);
 }
 
 TEST(QuoteSliceChannel, CalendarRepairFlagsAreOredIntoConvexityRepairFlags) {
