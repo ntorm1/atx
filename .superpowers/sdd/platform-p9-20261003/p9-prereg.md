@@ -789,6 +789,16 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   stale; a pinned registration is not edited (an edit would move a registered SHA-256 for a comment). Every P9 template
   names `pm6-6-engine` (C2-9, C2-11); a manifest that follows the note literally is refused at preflight by C3b's
   retirement of the Python `pm6-6` route; root checks that the template names `pm6-6-engine` before the re-pin.
+  [PRE-40, P9-H registration `818e0750`: template SHA-256
+  `1f56c19428b7b62de9788e37ec21bf20a78f122e411fb8fb948a0cc0347ec082`; registration SHA-256
+  `6b4c3b0d3eebdf5752e41394d316766e75a1b0df22552bc85449740ae36f2516`. Closed JSON diff in the commit body:
+  `/parent` = `label-terminal-gm.json`, description removes `ex-ante and `, registration template hash consequence
+  only; `manifest_note` unchanged. The actual gross-match key is on the new v2 wave manifest
+  `scripts/specs/p9/waves/p9h-cov-hedge.json` (`a27afd5a301f13f7037f3e85c29e0765c24f1121f56913536da1c563becb781a`),
+  `pm6-6-engine`; the template has no literal gross_match key. The paired parent is accepted P9-L's
+  `mega-nav-p9l-label-terminal-gm`; its plain template SHA is `de44a668999ab8997c7118afb52efd93551ac2e7df93efe9118edbf719aa9a4d`.
+  Required NAV print flags each occur once by inheritance; `cells/logs/p9h-resolved-plan.txt` records them.
+  No measurement yet: generated-cell lock and internal-commit route remain pending the PM's route ruling.]
 - **Rule and constants.** Per theme t and decision d on ew-theme-std-v1's re-rank R_t: beta of each name on its own
   theme sleeve over the trailing 252 decisions ending d-2 (>= 126 pairs), orthogonalised to R_t; H_t = its centred
   rank; h_t = OLS slope of the sleeve on the hedge leg, re-estimated every 21 decisions from decision 253 (0 before);
@@ -809,6 +819,8 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
   - q_lit = .0671 >= .05: registered.
 - **gross_match** `pm6-6-engine` (plan section 5.2 :916-917; C2-9, C2-11). **Acceptance (decides)** `pm7-34`: paired S2
   net dSR > 0 vs the parent AND mechanics (`scripts/wave_rules.py:143`).
+  [SG-3, P9-H registration: current `scripts/wave_rules.py:174-181` implements this predicate; `:96-114`
+  implements v8-mech. The historic line citation above is retained.]
 - **Registered predictions and producers** (ALCOMB-9 (b), ledger :448; PRE-7, PRE-7a, C3-9; PRE-25):
   - realised vol ratio (cell / parent) < 1; producer (PRE-38, ledger :603, correcting ALCOMB-9 (b)'s
     `atx-research-eval`, which prints no vol: its moments are sessions, sr_daily, skew, kurtosis, `atx-engine/src/
@@ -823,12 +835,17 @@ closest pair measured so far is X-10 vs Y-F0, 1 - rho 5.1e-4 (C.11).
     item 5); ALCOMB-9 (b) keeps the line only if Q5 prints it. [ROUND 2b-ii: filled at the cell's registration commit
     by root - Appendix IV item 11] (root removes "ex-ante" from the template description in the same commit as the
     re-pin above).
+    [PRE-40, P9-H registration `818e0750`: Appendix IV item 11 filled; exact description cut
+    `book ex-ante and realised vol ratio` -> `book realised vol ratio`. No prediction or constant otherwise changed.]
 - **Printed only.** Hedge ratio per theme and block (IC exe `composition_hedge_trace`, AL-COMB S-3); turnover per unit
   gross (`scripts/wave_readers.py`, `book`); cost per traded dollar (C++ `cost_bps_per_traded_dollar`,
   `atx-impl/src/strategy_nav_v7.cpp:360`); net Sharpe at 4x NAV (`capacity_curve.csv`, `strategy_nav_v7.cpp:357-382`).
 - **Fit mode** [ROUND 2b-ii: flag-absent (the Python fit): the parent reference's mode, D3-Q1a DIFFERENT at the gate,
   so `--engine-fit` is on no P9-H argv (B.0 "Fit mode") - `gate-logs/d3q1a.txt`; `root-gate-report.md:151`; ledger
   :975, :981]. Eval mode: B.0.
+  [SG-3, P9-H registration: the cited historic fit-mode row now reads `root-gate-report.md:173`.
+  Resolved accepted P9-L fit is ew-theme-std-v1 plus theme-erc-v1, flag-absent, without resid/two-speed;
+  H retains it and the registered rule supplies the theme hedge.]
 - **Undefined (0).** Parent outside the list above; the exe or fitter refuses. **Lapsed:** not applicable (registered,
   PRE-6).
 - **Expected effect** +.05 to +.15 [est] (registration `predictions.expected_effect`), printed, deciding nothing. On
@@ -2348,8 +2365,11 @@ the gate's final hand-back:
    moved; EXE-FREEZE unaffected]
 9. B.1 P9-L fit mode - root, wave-3 P9-B0 (ALCOMB-7; D3's C++ sleeve). (filled, part B2a: flag-absent)
 10. B.2 P9-H re-pinned template SHA-256 - root's registration commit. (part A: registration commit)
+    [PRE-40, filled `818e0750`: template `1f56c19428b7b62de9788e37ec21bf20a78f122e411fb8fb948a0cc0347ec082`,
+    registration `6b4c3b0d3eebdf5752e41394d316766e75a1b0df22552bc85449740ae36f2516`; B.2 bracket governs.]
 11. B.2 P9-H "ex-ante" cut from the template description - root, same commit (ALCOMB-9 (b)). (part A: registration
     commit)
+    [PRE-40, filled `818e0750`: removed exactly `ex-ante and `; B.2 records the before/after text.]
 12. B.2 P9-H fit mode - root, wave-3 P9-B0 (ALCOMB-7). (filled, part B2a: flag-absent)
 13. B.3 P9-M re-pinned template SHA-256 (parent, PRE-8 description) - root's registration commit. (part A:
     registration commit)
