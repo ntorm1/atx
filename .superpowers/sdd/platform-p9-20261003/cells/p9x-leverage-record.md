@@ -1,4 +1,12 @@
-# P9-X own derivation, awaiting fresh DERIV
+# P9-X final record
+
+Final disposition: **ACCEPTED**, R15-X-DERIV / R15-X-COMPLETE. Fresh DERIV agrees;
+the supported monitor/summ completion wrote exactly one native construction
+trial. Ledger139 / SHA5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd.
+Final completion evidence follows the historical own-derivation checkpoint below.
+No V/adoption work is released by this record.
+
+## Historical own-derivation checkpoint (ab478725, before DERIV/completion)
 
 Own X-10 result: PASS; formal PM disposition and trial completion remain pending.
 No monitor/summ/trial was run. Generic cycle_verdict does not exist and is
@@ -129,3 +137,57 @@ Those new source paths require the PM's exact later release; current predicates
 do not silently cover them. No completion phase has run. Stop for fresh DERIV
 and PM literal completion release. No V/adoption work. Context remains sufficient
 for X completion; a fresh root for subsequent V is available if PM prefers.
+
+
+## Final DERIV agreement, PM acceptance and native completion
+
+Fresh independent report04d4d43af6ffffb8c8ef0a95901ba17823be123c agrees. PM accepted
+its disclosed incidental navigation/heading/key-name exposures: prereg heading
+titles, C12/C15 first-heading text, G-B3 descriptive floor/target and JSON key
+names. These exposed no unlisted result values, root derivation or X verdict;
+this is not a pristine-blindness claim. Ordinary 1-rho subtraction was inequality
+arithmetic, not a new stable-form statistic. R15-X-DERIV formally accepted that
+limited-scope independence, and X is ACCEPTED under PRE-11/B.7 X-10.
+
+R15-X-COMPLETE release/source note committedaafbddce before the two invocations.
+Unchanged supported monitor-stop command ran once, then its exact five source
+files and receipt were checked before the supported full command ran once.
+H input phases/X NAV were reused; monitor reused in full completion. No retry,
+new variant, reader or producer mutation. The generic cycle_verdict and all
+unregistered monitor/summ/PBO statistics remain unread/non-authoritative.
+The previous prelaunch filter remains unchanged with its historical138 expectation.
+
+Native summ appended construction trial `4b3e8c853dac51c2`, count1, origin prior,
+window research-window-v2. Exactly one X row; raw138-line prefix SHA
+`fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8` unchanged.
+Final139-line ledger SHA
+`5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd`.
+Canonical N_c68, historical admissions61/P9+0, N_hand129, M110, N_tot239;
+eight historical window reruns add0. Full native v8 Appendix A block is in
+`cells/logs/p9x-accounting-v8.txt`; the producer's 'admission trials this sprint61'
+label is historical admissions61/P9 additions0. TRAIN2020-2023; hidden2024+
+unread in this sprint; validation reads before v8:2 (2023-2024); history reads0;
+2025+ never read. Identity-bridge/survivorship flags above continue unchanged.
+X adds no G-B7 step. P9-F0=P9-F0h=H; X qualifies for the P9-F fallback branch,
+final selection awaits V; V pairs with X regardless of X's acceptance.
+
+Monitor launch at5219MiB RAM/C35.9GB: outer2.297000000020489s, native1.312000000034459s,
+peak132.28515625MiB. Full completion launch at5312MiB RAM/C35.9GB:
+outer9.671999999904074s, native summ8.609000000054948s, peak70.3828125MiB.
+Both180s/1536MiB/floor512MiB, no wait/host-budget. All six fresh bounded phases
+sum30.077000000164844s; six outer invocations sum34.04800000006799s. Reused H
+historical115.047s stays separate; G-P1 unawarded. NAV original18.844s and peak
+1142.4453125MiB remain unchanged; no NAV rerun occurred.
+
+Final source30 files: OWN_UTC15, OWNER_RECEIPT75, OWNER_HEADER15, SEED78, OTHER0.
+All source and receipt hashes preserved; final54 exes/126 references/CRT/v15/
+both store manifests and models match, as do all original52 output files.
+Final66 own output/receipt/raw files are in `cells/logs/p9x-final-output-sha256.txt`,
+listing SHA `c314eaeceef66e9014bc6a825e6ed4dd0cccde9ee84031fc1a7c326caee65347`.
+Generic cycle_verdict was hashed only, never inspected for result fields.
+No new void, cap conflict, permission stop or result-scope deviation occurred
+in completion. PM drafts and owner PNGs remain untouched.
+
+X is fully closed. Stop here; no V/adoption preparation or execution.
+Recommend fresh root6 for V to keep ample context for that separate hand cell;
+all exact X state, artifacts and standing boundaries are committed in the handoff.

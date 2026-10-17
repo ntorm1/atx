@@ -62,3 +62,25 @@ paths/source proposal is cells/p9x-completion-proposal.json; not executed.
 Stop for DERIV and literal PM completion release. No V/adoption release.
 Context sufficient to finish X; no need for owner intervention or RAM waiting.
 PM final-report/freeze/V/adoption drafts and owner PNGs remain untouched.
+
+
+## X final closed checkpoint after R15-X-COMPLETE
+
+X ACCEPTED, own and fresh DERIV agree; DERIV04d4d43a scope limitations are retained
+in scratch28 and the final X record (no pristine-blindness claim). Completion
+releaseaafbddce preceded one monitor-stop and one full native completion; both
+completed within180s/1536MiB/floor512, no waiting or retry. Generic verdict and
+unregistered monitor/summ/PBO results remain unread/non-authoritative.
+
+Native construction trial4b3e8c853dac51c2 count1; ledger139 SHA
+5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd; raw138prefix
+fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8 unchanged.
+Canonical Nc68, historical admissions61/P9+0, Nhand129,M110,Ntot239.
+F0=F0h=H; X qualifies fallback, final selection awaits V; V pairs with X.
+
+Source30 files OTHER0; final54exes/126refs/CRT/v15/both manifests/models and
+original52outputs unchanged. Final66-output listing c314eaeceef66e9014bc6a825e6ed4dd0cccde9ee84031fc1a7c326caee65347.
+Exact final receipt/resource/accounting evidence is in cells/p9x-leverage-record.md
+and cells/logs/p9x-{final-summary-metadata,completion-accounting}.json.
+No V/adoption work authorized or performed. Stop; recommend fresh root6 for V
+with this closed handoff. Owner files and PM unreleased drafts remain untouched.

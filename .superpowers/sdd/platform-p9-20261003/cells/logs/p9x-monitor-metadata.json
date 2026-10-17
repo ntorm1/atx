@@ -1,0 +1,16 @@
+{
+  "source_sha": "aafbddce3bbf6c29ea52f1a5e27c1839938e9809",
+  "argv_sha256": "70bba116f3db9b7d393833a01f9b878075b6d0459545c918f39fcd0d78753fb6",
+  "outcome": "completed",
+  "exit_code": 0,
+  "wall_seconds": 1.312000000034459,
+  "sampled_peak_tree_rss_bytes": 138711040,
+  "limits": {
+    "seconds": 180.0,
+    "max_rss_mib": 1536,
+    "min_free_mib": 512
+  },
+  "ledger_unchanged": true,
+  "source_other": 0,
+  "stopped_after": "monitor"
+}

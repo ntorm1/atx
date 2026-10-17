@@ -1,0 +1,605 @@
+{
+  "stage": "completion",
+  "files": [
+    {
+      "path": "build-equity/cycle-p9x-leverage/summ-run1/start.json",
+      "sha256": "688bfff41a8dd77359829c68b435351d003602a67e28d5cd067a408a6558353a",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 132,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 133,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 134,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 135,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 136,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/cycle-p9x-leverage/summ-run1/receipt.json",
+      "sha256": "5e95e972555f56daf74a41c5843e50a5184ec6128408fda3a2ca19bf8aef00bb",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 132,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 133,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 134,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 135,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 136,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/cycle-p9x-leverage/summ-run1/stdout.log",
+      "sha256": "b5738010f38d3ab37914811069a9126156d7b646dbb4670dc3a0a024b2bb9a0f",
+      "hits": [
+        {
+          "line": 17,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 39,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 61,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 83,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 105,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 127,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 149,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 171,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 193,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 215,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 237,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 259,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 281,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 303,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 325,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 347,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 369,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 391,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 413,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 435,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 457,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 479,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 501,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 523,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 545,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 567,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 589,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 611,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 633,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 655,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 677,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 699,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 715,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 737,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 759,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 775,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 797,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 819,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 842,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 866,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 890,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 914,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 938,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 962,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 986,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1004,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1028,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1052,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1076,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1100,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1123,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1146,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1169,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1192,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1215,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1238,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1255,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1272,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1296,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1320,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1344,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1368,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1392,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1416,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1440,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1464,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1488,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1512,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1536,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1560,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1584,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1608,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1633,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1657,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1681,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 1705,
+          "token": "20260929",
+          "form": "compact",
+          "source": "SEED"
+        },
+        {
+          "line": 2017,
+          "token": "20260927",
+          "form": "compact",
+          "source": "SEED"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/cycle-p9x-leverage/summ-run1/stderr.log",
+      "sha256": "94efd93806a8af66697e6e06cc8ae0f4a9f3871075da3cc29ee23dc590b25ebd",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9x-completion-raw.log",
+      "sha256": "9c5d07e16a5bb28730c4ca04080e1e29e8efbd13564d8f1b7ed5d1bbe55585bb",
+      "hits": [
+        {
+          "line": 1,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        }
+      ]
+    }
+  ],
+  "counts": {
+    "OWN_UTC": 2,
+    "OWNER_RECEIPT": 10,
+    "SEED": 77,
+    "OWNER_HEADER": 5
+  },
+  "other": 0
+}

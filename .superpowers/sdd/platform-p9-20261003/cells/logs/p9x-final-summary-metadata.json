@@ -1,0 +1,21 @@
+{
+  "source_files": 30,
+  "source_counts": {
+    "OWN_UTC": 15,
+    "OWNER_RECEIPT": 75,
+    "OWNER_HEADER": 15,
+    "SEED": 78
+  },
+  "other": 0,
+  "output_files": 66,
+  "output_list_sha256": "c314eaeceef66e9014bc6a825e6ed4dd0cccde9ee84031fc1a7c326caee65347",
+  "ledger_sha256": "5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd",
+  "fresh_bounded_seconds": 30.077000000164844,
+  "outer_invocation_seconds": 34.04800000006799,
+  "monitor_peak_mib": 132.28515625,
+  "summ_peak_mib": 70.3828125,
+  "generic_verdict_hash_only": "8e0f9a7b7ce02429c853a27bfcbe74da431660152a010ddfd5545398a065ca54",
+  "generic_verdict_read": false,
+  "unregistered_result_stats_read": false,
+  "earlier_filter_138_expectation_preserved": true
+}
