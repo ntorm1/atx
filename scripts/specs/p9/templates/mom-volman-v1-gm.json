@@ -1,0 +1,38 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "mom-volman-v1-gm",
+  "description": "P9 cell P9-M (lane AL-COMB, task-AL-COMB-report.md; plan DEC-16: after the Y-2 read; registration scripts/specs/p9/rules/mom-volman-v1.json, every constant fixed blind before any read): composition schedule mom-volman-v1. Hypothesis (Barroso and Santa-Clara 2015, JFE 116(1), 1927:03-2011:12: scaling WML by its six-month realised volatility lifts its Sharpe .53 -> .97; Daniel and Moskowitz 2016, JFE 122(2); real-time form Cederburg, O'Doherty, Wang and Yan 2020, JFE 138(1), sample to 2016:12: volatility management fails in real time for about half of 103 strategies, and momentum is among the exceptions; lit section 1.6 [16]-[19]): momentum's own realised volatility forecasts its next-month volatility but not its mean. Only the price_momentum theme's mass moves; Y-1 (book volatility) and theme-tsmom-v1 (every theme's trailing sign) are other objects (lit section 7 restatement risk; the PM rules distinctness before any read). Rule (strategy_ic_mom_volman.cpp; the fitter only records the sleeve, composition_mom_volman.py): sleeve r(d) = the price_momentum theme's sleeve over the parent fit's role decisions as theme-tsmom-v1's step 1 forms it (sum over its members of (w_k / W_t) s_k f_k(d), f formed at d and realised at d + 2); block b starts at decision j_b = 127 + 21 b; sigma_b = sqrt(mean of r(d)^2 over the 126 decisions ending j_b - 2); target_b = the running mean of sigma_0 .. sigma_b (Cederburg's real-time constant, no full-sample constant); the block's masses are the parent's W_t except W_price_momentum x target_b / sigma_b; before the first block the parent's masses; no cap. The IC runner applies the masses through the theme schedule theme-tsmom-v1 uses (theme_schedule block, rule mom-volman-v1; the two schedules exclude each other). The change comes only from the atx.research-wave/v2 manifest's rules block [{name: mom-volman-v1, params: {}}] (Ruling ALCOMB-1; the fitter flag --mom-volman mom-volman-v1 is derived from the IC exe's rule table through wave_kinds.COMPOSITION_FLAGS, never from this template); the parent's fit must be --composition ew-theme-std-v1 or --composition ic-shrink-v1, with or without --theme-erc theme-erc-v1 or --theme-hedge theme-cov-hedge-v1 (the parents the fitter's --mom-volman accepts, composition_mom_volman.PARENT_RULES), weight price_momentum, and carry neither theme-tsmom-v1 nor theme-resid-v1 (the fitter and the IC exe refuse both); the fit runs without --engine-fit (refused with --mom-volman: the C++ composition fit records no momentum sleeve). Downstream outputs renamed (fit, card, w, nav, monitor); the u pass is the parent's. Gross matching (PM6-6) binds the cell (plan section 5.2): the schedule changes the momentum mass, so the cell is judged at the parent's dollar gross through C2's calibration. Acceptance (PM7-34 default): paired S2 net dSR > 0 against the parent AND mechanics. Printed, deciding nothing: per block of the recorded sleeve its realised volatility sigma_b (before scaling), the target_b it is scaled to and the scale_b (the IC exe's summary.json, each scored role's composition_schedule_trace), turnover per unit gross, net Sharpe at 4x NAV. Conditional on lane D3 (Ruling ALCOMB-6): the sleeve's realised volatility and Sharpe before and after scaling (plan section 5.2 P9-M) are printed only if D3 has made the IC exe write the momentum sleeve's daily series before and after scaling and atx-research-eval prints them from those files (no Python derivation); PRE round 2 cuts this sentence before registration if D3 has not delivered it. Identity before the cell: the parent's w argv re-run on the new build is byte-identical (no theme_schedule block); MomVolman.SharedParseAndRefusals keeps theme-tsmom-v1's parse and refusals. Wave p9m-mom-volman at matched gross (Ruling PM6-6 in one process, P9 C2): the plain recipe of the NAV build-equity/mega-nav-p9-mom-volman-gm, which mom-volman-v1-cal.json published calibrating at L 1.1674 toward 0.986241893721804 (summary.json calibration); L = 1.1674.",
+  "parent": "theme-cov-hedge-v1-attempt2-gm.json",
+  "nominal_parent": "../../v8/x-theme-erc.json",
+  "requires": [],
+  "change": {
+    "set": {
+      "fit.output": "build-equity/mega-weights-p9-mom-volman",
+      "card.output": "build-equity/mega-cards-p9-mom-volman",
+      "ic.w_output": "build-equity/mega-p9w-train-mom-volman",
+      "nav.output": "build-equity/mega-nav-p9-mom-volman-gm",
+      "monitor.output": "build-equity/mega-monitor-p9-mom-volman",
+      "exes_sha256": {
+        "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+        "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+        "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+      },
+      "nav.leverage": "1.1674"
+    },
+    "flags": {
+      "fit": {
+        "--mom-volman": "mom-volman-v1"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    }
+  }
+}
