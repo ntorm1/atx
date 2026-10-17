@@ -171,6 +171,11 @@ set(ATX_VOL_STORAGE_SOURCES
     # catalog, which is genuinely lakehouse-only).
     src/storage/writer_lock.cpp
     src/storage/surface_archive.cpp
+    # ATXVFA fitted-surface archive (docs/storage/ARCHIVE_FORMAT.md): opt-in,
+    # no existing path reads or writes it.
+    src/storage/fit_archive.cpp
+    src/storage/fit_archive_records.cpp
+    src/storage/fit_archive_series.cpp
     src/storage/run_archive.cpp
     src/storage/run_diagnostics.cpp
     src/storage/surface_db.cpp
@@ -936,6 +941,15 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-american-markov-storage-bench
         tools/american_markov_storage_bench_main.cpp)
     target_link_libraries(atx-vol-american-markov-storage-bench PRIVATE
+        atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # ATXVFA archive CLI: inspect | dump | verify (docs/storage/ARCHIVE_FORMAT.md).
+    add_executable(atx-vol-surface-archive tools/surface_archive_main.cpp)
+    target_link_libraries(atx-vol-surface-archive PRIVATE atx::vol atx::core atx_warnings)
+    # Its write / open / random-read benchmark over a graded quote-slice run.
+    # Named fit-archive: bench/ already owns atx-vol-surface-archive-bench (the
+    # ATXVSA2 bench).
+    add_executable(atx-vol-fit-archive-bench tools/surface_archive_bench_main.cpp)
+    target_link_libraries(atx-vol-fit-archive-bench PRIVATE
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
     # Label-free benchmark runner. Reference values exist only in the separate
     # Python scorer; the native tool accepts a closed raw-quote input schema.

@@ -64,6 +64,30 @@ add_test(NAME atx-vol-dividend-schedule COMMAND atx-vol-dividend-schedule-tests)
 set_tests_properties(atx-vol-dividend-schedule PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# ATXVFA fitted-surface archive (docs/storage/ARCHIVE_FORMAT.md). Focused and
+# PCH-less: framing refusals, record round trips, series, the CLI. Links
+# support/alloc_counter.cpp (replaces global operator new), so these files stay
+# out of the monolithic atx-vol-tests. The series test drives the private
+# storage/writer_lock.hpp to hold the lock.
+add_executable(atx-vol-fit-archive-tests
+    fit_archive_test.cpp fit_archive_records_test.cpp fit_archive_series_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-fit-archive-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-fit-archive-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(ATX_BUILD_TOOLS)
+    # The CLI tool is defined after this directory; the generator expression and
+    # the dependency resolve at generate time.
+    target_sources(atx-vol-fit-archive-tests PRIVATE fit_archive_cli_test.cpp)
+    target_compile_definitions(atx-vol-fit-archive-tests PRIVATE
+        "ATX_VOL_SURFACE_ARCHIVE_CLI=\"$<TARGET_FILE:atx-vol-surface-archive>\"")
+    add_dependencies(atx-vol-fit-archive-tests atx-vol-surface-archive)
+endif()
+add_test(NAME atx-vol-fit-archive COMMAND atx-vol-fit-archive-tests)
+set_tests_properties(atx-vol-fit-archive PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 # The opt-in strike-smoothing lattice schemes of the dated-cash American route
 # (DiscreteDivScheme, api/pricing/american.hpp). Focused executable for the same
 # reason as the schedule target above: its allocation test replaces global
