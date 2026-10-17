@@ -147,8 +147,10 @@ gtest_discover_tests(atx-vol-tick-path-tests
 # Chain-level batch price / Greeks / implied vol (batch-pricing lane, 2026-10-17):
 # api/pricing/batch_chain.hpp. Focused, and this suite lives ONLY here (not in
 # atx-vol-tests or a slice), so atx_vol_fast runs each case once.
-# support/alloc_counter.cpp replaces global operator new for THIS binary only.
-add_executable(atx-vol-chain-batch-tests batch_chain_test.cpp support/alloc_counter.cpp)
+# support/process_alloc_counter.cpp replaces global operator new for THIS binary only
+# (alloc_counter.hpp's thread-local tally plus a process-wide one that sees the pool
+# workers).
+add_executable(atx-vol-chain-batch-tests batch_chain_test.cpp support/process_alloc_counter.cpp)
 target_link_libraries(atx-vol-chain-batch-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 target_include_directories(atx-vol-chain-batch-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -23,7 +24,7 @@
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/batch_chain.hpp"
 #include "atx/vol/api/pricing/pricing_executor.hpp"
-#include "support/alloc_counter.hpp"
+#include "support/process_alloc_counter.hpp"
 
 namespace atx::vol {
 namespace {
@@ -424,7 +425,116 @@ struct IvOuts {
   return o;
 }
 
-// The per-contract IV loop the PerContract route must reproduce.
+// american_iv.cpp's zero-volatility American value, written out again from its
+// formula: the sup over exercise dates t in [0, T] of A e^{-a t} - B e^{-b t}
+// (call: A = S, a = q, B = K, b = r; put: the roles swap), floored at 0.
+[[nodiscard]] double zero_vol_ref(double S, double K, double T, double r, double q, Side sd) {
+  const bool call = sd == Side::Call;
+  const double A = call ? S : K;
+  const double a = call ? q : r;
+  const double B = call ? K : S;
+  const double b = call ? r : q;
+  const auto pay = [&](double t) { return A * std::exp(-a * t) - B * std::exp(-b * t); };
+  const double f0 = pay(0.0);
+  const double fT = pay(T);
+  if (!std::isfinite(f0) || !std::isfinite(fT)) {
+    return kNaN;
+  }
+  double best = std::fmax(f0, fT);
+  const double ts = std::log((a * A) / (b * B)) / (a - b);
+  if (std::isfinite(ts) && ts > 0.0 && ts < T) {
+    const double fs = pay(ts);
+    if (std::isfinite(fs)) {
+      best = std::fmax(best, fs);
+    }
+  }
+  return std::fmax(best, 0.0);
+}
+
+[[nodiscard]] double ceiling_ref(double S, double K, double T, double r, double q, Side sd) {
+  return sd == Side::Call ? S * std::fmax(1.0, std::exp(-q * T))
+                          : K * std::fmax(1.0, std::exp(-r * T));
+}
+
+[[nodiscard]] double band_ref(double P, double ceiling, const ChainIvOptions &o) {
+  return std::max(std::max(o.intrinsic_tol, 1.0e-9) * ceiling, o.price_tol * std::max(1.0, P)) +
+         1.0e-12;
+}
+
+// The screen as the header's "One implied-vol refusal rule" (1) states it.
+[[nodiscard]] ChainRowStatus screen_ref(double P, double S, double K, double T, double r,
+                                        double q, Side sd, const ChainIvOptions &o) {
+  const double ceiling = ceiling_ref(S, K, T, r, q, sd);
+  const double zv = zero_vol_ref(S, K, T, r, q, sd);
+  if (!std::isfinite(ceiling) || !std::isfinite(zv)) {
+    return ChainRowStatus::Unpriceable;
+  }
+  const double band = band_ref(P, ceiling, o);
+  const double immediate = sd == Side::Call ? std::fmax(S - K, 0.0) : std::fmax(K - S, 0.0);
+  if (P > ceiling + band || P < immediate - band) {
+    return ChainRowStatus::OutOfBand;
+  }
+  if (std::abs(P - zv) <= band) {
+    return ChainRowStatus::VegaFloor;
+  }
+  return P < zv - band ? ChainRowStatus::OutOfBand : ChainRowStatus::Ok;
+}
+
+[[nodiscard]] double al_ref(double S, double K, double T, double sig, double r, double q, Side sd,
+                            const std::optional<AlOpts> &opts = std::nullopt) {
+  const Result<double> p = andersen_lake(S, K, T, sig, r, q, sd, opts);
+  return p && std::isfinite(*p) ? *p : kNaN;
+}
+
+// The rule's (2) cold-map verification of american_implied_vol's answer x: a chord
+// to x (1 - 1e-4), then up to 4 secant steps.
+[[nodiscard]] ChainRowStatus verify_ref(double P, double S, double K, double T, double r,
+                                        double q, Side sd, const ChainIvOptions &o, double &x) {
+  const double ptol = o.price_tol * std::max(1.0, P);
+  const double vmin = o.vega_floor * K;
+  const double xb = x * (1.0 - 1.0e-4);
+  double fx = al_ref(S, K, T, x, r, q, sd, o.al_opts) - P;
+  const double fb = al_ref(S, K, T, xb, r, q, sd, o.al_opts) - P;
+  if (!std::isfinite(fx) || !std::isfinite(fb)) {
+    return ChainRowStatus::Unpriceable;
+  }
+  double slope = (fx - fb) / (x - xb);
+  if (!(slope > vmin)) {
+    return ChainRowStatus::VegaFloor;
+  }
+  for (int k = 0;; ++k) {
+    if (std::abs(fx) <= ptol && slope > vmin && std::abs(fx) <= o.sigma_tol * slope) {
+      return ChainRowStatus::Ok;
+    }
+    if (k == 4) {
+      return ChainRowStatus::NoConvergence;
+    }
+    const double xn = x - fx / slope;
+    if (!(xn > kIvMin)) {
+      return ChainRowStatus::VegaFloor;
+    }
+    if (!(xn < kIvMax)) {
+      return ChainRowStatus::OutOfBand;
+    }
+    if (xn == x) {
+      return ChainRowStatus::NoConvergence;
+    }
+    const double fn = al_ref(S, K, T, xn, r, q, sd, o.al_opts) - P;
+    if (!std::isfinite(fn)) {
+      return ChainRowStatus::Unpriceable;
+    }
+    const double span = std::abs(xn - x);
+    slope = (fn - fx) / (xn - x);
+    x = xn;
+    fx = fn;
+    if (!(slope > vmin)) {
+      return span >= 1.0e-4 * x ? ChainRowStatus::VegaFloor : ChainRowStatus::NoConvergence;
+    }
+  }
+}
+
+// The per-contract IV loop the PerContract route must reproduce: the screen,
+// american_implied_vol warm-seeded at the contract's sigma, the verification.
 [[nodiscard]] IvOuts reference_iv(const Chain &c, std::span<const double> target,
                                   const ChainIvOptions &o) {
   IvOuts out(c.size());
@@ -439,33 +549,82 @@ struct IvOuts {
       continue;
     }
     const double K = c.strike[i];
-    const bool call = c.side[i] == Side::Call;
-    const double intr = call ? std::max(c.spot - K, 0.0) : std::max(K - c.spot, 0.0);
-    const double band = o.intrinsic_tol * K;
-    if (target[i] < intr - band || target[i] >= (call ? c.spot : K)) {
-      put(ChainRowStatus::OutOfBand, kNaN);
+    const std::uint32_t e = c.expiry[i];
+    const double T = c.T[e];
+    const double r = c.rate[e];
+    const ChainRowStatus scr = screen_ref(target[i], c.spot, K, T, r, q, c.side[i], o);
+    if (scr != ChainRowStatus::Ok) {
+      put(scr, kNaN);
       continue;
     }
-    if (target[i] <= intr + band) {
+    const Result<double> iv = american_implied_vol(target[i], c.spot, K, T, r, q, c.side[i],
+                                                   AmericanMethod::AndersenLake, o.sigma_tol,
+                                                   o.max_iter, o.al_opts, nullptr, c.sigma[i], 0.0);
+    if (!iv) {
+      const ErrorCode code = iv.error().code();
+      put(code == ErrorCode::OutOfRange    ? ChainRowStatus::OutOfBand
+          : code == ErrorCode::Unavailable ? ChainRowStatus::NoConvergence
+                                           : ChainRowStatus::Unpriceable,
+          kNaN);
+      continue;
+    }
+    double x = *iv;
+    if (!(x > kIvMin)) {
       put(ChainRowStatus::VegaFloor, kNaN);
       continue;
     }
-    const std::uint32_t e = c.expiry[i];
-    const Result<double> iv = american_implied_vol(target[i], c.spot, K, c.T[e], c.rate[e], q,
-                                                   c.side[i], AmericanMethod::AndersenLake,
-                                                   o.sigma_tol, o.max_iter, o.al_opts, nullptr,
-                                                   c.sigma[i], 0.0);
-    if (iv) {
-      *iv > kIvMin ? put(ChainRowStatus::Ok, *iv) : put(ChainRowStatus::VegaFloor, kNaN);
-    } else if (iv.error().code() == ErrorCode::OutOfRange) {
+    if (!(x < kIvMax)) {
       put(ChainRowStatus::OutOfBand, kNaN);
-    } else if (iv.error().code() == ErrorCode::Unavailable) {
-      put(ChainRowStatus::NoConvergence, kNaN);
-    } else {
-      put(ChainRowStatus::Unpriceable, kNaN);
+      continue;
     }
+    const ChainRowStatus st = verify_ref(target[i], c.spot, K, T, r, q, c.side[i], o, x);
+    put(st, st == ChainRowStatus::Ok ? x : kNaN);
   }
   return out;
+}
+
+// Smallest sigma in [kIvMin, kIvMax] with andersen_lake(sigma) >= target (a
+// 200-step bisection); NaN when the target is outside the image.
+[[nodiscard]] double bisect_root(double P, double S, double K, double T, double r, double q,
+                                 Side sd) {
+  double lo = kIvMin;
+  double hi = kIvMax;
+  if (!(al_ref(S, K, T, lo, r, q, sd) < P) || !(al_ref(S, K, T, hi, r, q, sd) >= P)) {
+    return kNaN;
+  }
+  for (int it = 0; it < 200; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    if (mid <= lo || mid >= hi) {
+      break;
+    }
+    (al_ref(S, K, T, mid, r, q, sd) >= P ? hi : lo) = mid;
+  }
+  return hi;
+}
+
+// A one-expiry chain of single contracts at the given strikes / sides / seeds.
+[[nodiscard]] Chain one_expiry(double S, double T, double r, double carry, double div_pv,
+                               const std::vector<double> &strikes, const std::vector<Side> &sides,
+                               double seed) {
+  Chain c;
+  c.spot = S;
+  c.T = {T};
+  c.rate = {r};
+  c.carry = {carry};
+  c.div_pv = {div_pv};
+  for (std::size_t j = 0; j < strikes.size(); ++j) {
+    c.strike.push_back(strikes[j]);
+    c.side.push_back(sides[j]);
+    c.sigma.push_back(seed);
+    c.expiry.push_back(0u);
+  }
+  return c;
+}
+
+[[nodiscard]] ChainIvOptions iv_route(ChainIvRoute route) {
+  ChainIvOptions o;
+  o.route = route;
+  return o;
 }
 
 TEST(ChainBatchIv, PerContractIsBitIdenticalToTheWarmSeededLoop) {
@@ -569,7 +728,7 @@ TEST(ChainBatchIv, OutputsAreIdenticalForEveryThreadCount) {
     ChainIvOptions o;
     o.route = route;
     const IvOuts base = run_iv(c, target, o);
-    for (const unsigned nt : {2u, 3u, 0u}) {
+    for (const unsigned nt : {1u, 2u, 3u, 4u, 0u}) {
       ChainIvOptions fan = o;
       fan.executor = &pricing_executor();
       fan.n_threads = nt;
@@ -578,6 +737,255 @@ TEST(ChainBatchIv, OutputsAreIdenticalForEveryThreadCount) {
       EXPECT_EQ(base.status, got.status);
     }
   }
+}
+
+// ── Implied vol: the shared refusal rule (review fe6a516f, fix round 1) ─────
+
+// dev200 TSM row 1295 (K = 185 call, seed 0.30, target = AL(0.309)): the whole time
+// value above the zero-vol American value is 8.5e-8 USD, inside the 4.4e-7 band.
+// Lockstep used to return Ok 0.306194 on the residual alone (2.8e-3 off the root).
+TEST(ChainBatchIv, ZeroVolBandTargetIsVegaFloorOnBothRoutes) {
+  const double S = 436.80999755859375;
+  const double T = 0.25411561131477356;
+  const double r = 0.046193607151508331;
+  const double carry = -0.0084914956241846102;
+  const double D = 1.0776369571685791;
+  const Chain c = one_expiry(S, T, r, carry, D, {185.0}, {Side::Call}, 0.3);
+  const double q = chain_effective_carry(S, T, carry, D);
+  const double target = al_ref(S, 185.0, T, 0.309, r, q, Side::Call);
+  const double zv = zero_vol_ref(S, 185.0, T, r, q, Side::Call);
+  const double band = band_ref(target, ceiling_ref(S, 185.0, T, r, q, Side::Call), {});
+  ASSERT_GT(target - zv, 1.0e-8); // above the zero-vol value ...
+  ASSERT_LT(target - zv, band);   // ... but inside its band
+  ASSERT_GT(target, S - 185.0 + 1.0e-9 * 185.0); // and above the old intrinsic screen
+  for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+    const std::vector<double> t{target};
+    const IvOuts got = run_iv(c, t, iv_route(route));
+    EXPECT_EQ(got.status[0], ChainRowStatus::VegaFloor) << static_cast<int>(route);
+    EXPECT_TRUE(std::isnan(got.iv[0]));
+  }
+}
+
+// Deep-ITM put S=50 K=100 T=1 r=.05 and call S=100 K=40 q=.08, seed 0.3, targets just
+// above the zero-vol band inside the flat exercise interval (P = intrinsic for every
+// sigma up to the edge, 0.493 / 0.703). PerContract used to return Ok 0.300001 at
+// intrinsic + 2e-7 (0.193 vol error), 0.468540 and 0.673506 at + 1e-6.
+TEST(ChainBatchIv, FlatExerciseIntervalTargetsNeverReturnAWrongVol) {
+  struct Case {
+    double S, K, r, q;
+    Side sd;
+  };
+  for (const Case k : {Case{50.0, 100.0, 0.05, 0.0, Side::Put},
+                       Case{100.0, 40.0, 0.05, 0.08, Side::Call}}) {
+    const Chain c = one_expiry(k.S, 1.0, k.r, k.q, 0.0, {k.K}, {k.sd}, 0.3);
+    const double intr = k.sd == Side::Put ? k.K - k.S : k.S - k.K;
+    for (const double dt : {2.0e-7, 1.0e-6, 1.0e-4, 1.0e-2}) {
+      const std::vector<double> t{intr + dt};
+      const double root = bisect_root(t[0], k.S, k.K, 1.0, k.r, k.q, k.sd);
+      ASSERT_TRUE(std::isfinite(root));
+      for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+        const IvOuts got = run_iv(c, t, iv_route(route));
+        if (got.status[0] == ChainRowStatus::Ok) {
+          EXPECT_NEAR(got.iv[0], root, 1.0e-6)
+              << "route " << static_cast<int>(route) << " K=" << k.K << " +" << dt;
+        } else {
+          EXPECT_EQ(got.status[0], ChainRowStatus::VegaFloor) << static_cast<int>(route);
+        }
+        if (route == ChainIvRoute::PerContract && dt <= 1.0e-6) {
+          // american_implied_vol stops inside the flat interval: the verification
+          // finds a flat chord there and refuses.
+          EXPECT_EQ(got.status[0], ChainRowStatus::VegaFloor) << "K=" << k.K << " +" << dt;
+        }
+      }
+    }
+    // A loose (valid) price_tol: Lockstep used to accept the seed 0.300000 on its
+    // first step through the Black-76 slope. The target is now within price_tol of
+    // the zero-vol value, so both routes refuse.
+    ChainIvOptions loose;
+    loose.price_tol = 1.0e-6;
+    for (const double dt : {1.0e-6, 1.0e-5, 4.0e-5}) {
+      const std::vector<double> t{intr + dt};
+      for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+        ChainIvOptions o = loose;
+        o.route = route;
+        const IvOuts got = run_iv(c, t, o);
+        EXPECT_EQ(got.status[0], ChainRowStatus::VegaFloor)
+            << "route " << static_cast<int>(route) << " K=" << k.K << " +" << dt;
+      }
+    }
+  }
+}
+
+// A loose sigma_tol makes the Lockstep bracket close long before the residual is
+// met; Ok must still mean the price is reproduced (it used to accept the bracket
+// alone, 1e-2-scale vol errors).
+TEST(ChainBatchIv, BracketWidthAloneNeverAcceptsARoot) {
+  const Chain c = make_chain();
+  const std::vector<double> target = targets_at(c, 1.05);
+  for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+    ChainIvOptions o = iv_route(route);
+    o.sigma_tol = 0.25;
+    const IvOuts got = run_iv(c, target, o);
+    std::size_t ok = 0;
+    for (std::size_t i = 0; i < c.size(); ++i) {
+      if (got.status[i] != ChainRowStatus::Ok) {
+        continue;
+      }
+      ++ok;
+      double q = 0.0;
+      ASSERT_TRUE(row_valid(c, i, &q));
+      const std::uint32_t e = c.expiry[i];
+      const double p = al_ref(c.spot, c.strike[i], c.T[e], got.iv[i], c.rate[e], q, c.side[i]);
+      // The laned map matches andersen_lake to ~1e-13 (kernel gate), hence the slack.
+      EXPECT_LE(std::abs(p - target[i]), o.price_tol * std::max(1.0, target[i]) + 1.0e-11)
+          << "route " << static_cast<int>(route) << " i=" << i;
+      EXPECT_NEAR(got.iv[i], 1.05 * c.sigma[i], 1.0e-6) << static_cast<int>(route) << " i=" << i;
+    }
+    EXPECT_EQ(ok, c.size()) << static_cast<int>(route);
+  }
+}
+
+// Targets around the zero-vol value: inside the band both routes refuse
+// (VegaFloor), below it both refuse (OutOfBand). Just above it they agree except in
+// one documented case: an ITM row in the flat exercise interval, where
+// american_implied_vol stops at a sigma whose chord is flat (PerContract refuses,
+// VegaFloor) while the Lockstep bracket walks on to the root (Ok, checked against
+// a bisection root).
+TEST(ChainBatchIv, RoutesAgreeOnNearZeroVolTargets) {
+  const Chain c = make_chain();
+  std::size_t compared = 0;
+  std::size_t flat_scalar = 0;
+  std::size_t multi_root = 0;
+  for (const double m : {-3.0, -0.9, -0.5, 0.0, 0.5, 0.9, 3.0, 30.0}) {
+    std::vector<double> t(c.size(), kNaN);
+    for (std::size_t i = 0; i < c.size(); ++i) {
+      double q = 0.0;
+      ASSERT_TRUE(row_valid(c, i, &q));
+      const std::uint32_t e = c.expiry[i];
+      const double zv = zero_vol_ref(c.spot, c.strike[i], c.T[e], c.rate[e], q, c.side[i]);
+      const double band =
+          band_ref(zv, ceiling_ref(c.spot, c.strike[i], c.T[e], c.rate[e], q, c.side[i]), {});
+      t[i] = zv + m * band;
+    }
+    const IvOuts pc = run_iv(c, t, iv_route(ChainIvRoute::PerContract));
+    const IvOuts ls = run_iv(c, t, iv_route(ChainIvRoute::Lockstep));
+    for (std::size_t i = 0; i < c.size(); ++i) {
+      ++compared;
+      if (m > 1.0 && pc.status[i] == ChainRowStatus::VegaFloor &&
+          ls.status[i] == ChainRowStatus::Ok) {
+        double q = 0.0;
+        ASSERT_TRUE(row_valid(c, i, &q));
+        const std::uint32_t e = c.expiry[i];
+        const double S = c.spot, K = c.strike[i], T = c.T[e], r = c.rate[e];
+        const Result<double> x = american_implied_vol(t[i], S, K, T, r, q, c.side[i],
+                                                      AmericanMethod::AndersenLake, 1.0e-7, 64,
+                                                      std::nullopt, nullptr, c.sigma[i], 0.0);
+        ASSERT_TRUE(x.has_value()) << "m=" << m << " i=" << i;
+        const double xb = *x * (1.0 - 1.0e-4);
+        const double chord = (al_ref(S, K, T, *x, r, q, c.side[i]) -
+                              al_ref(S, K, T, xb, r, q, c.side[i])) /
+                             (*x - xb);
+        EXPECT_LE(chord, 1.0e-8 * K) << "m=" << m << " i=" << i; // the scalar stopped flat
+        EXPECT_LE(std::abs(al_ref(S, K, T, ls.iv[i], r, q, c.side[i]) - t[i]),
+                  1.0e-10 * std::max(1.0, t[i]) + 1.0e-11)
+            << "m=" << m << " i=" << i; // Lockstep's answer is a root of the cold map
+        ++flat_scalar;
+        continue;
+      }
+      EXPECT_EQ(pc.status[i], ls.status[i]) << "m=" << m << " i=" << i;
+      if (std::abs(m) < 1.0) {
+        EXPECT_EQ(pc.status[i], ChainRowStatus::VegaFloor) << "m=" << m << " i=" << i;
+      }
+      if (m <= -3.0 && t[i] >= 0.0) {
+        EXPECT_EQ(pc.status[i], ChainRowStatus::OutOfBand) << "m=" << m << " i=" << i;
+      }
+      if (pc.status[i] == ChainRowStatus::Ok && ls.status[i] == ChainRowStatus::Ok &&
+          std::abs(pc.iv[i] - ls.iv[i]) > 1.0e-6) {
+        // Two different Ok roots: legal only where the cold map is not monotone in
+        // sigma (an Andersen-Lake artifact on long-dated deep-ITM puts: P rises up
+        // to ~8e-6 USD above intrinsic below the flat edge, then falls back), so it
+        // must dip below the target between them. Both must reproduce the target.
+        double q = 0.0;
+        ASSERT_TRUE(row_valid(c, i, &q));
+        const std::uint32_t e = c.expiry[i];
+        const double S = c.spot, K = c.strike[i], T = c.T[e], r = c.rate[e];
+        const double lo = std::min(pc.iv[i], ls.iv[i]);
+        const double hi = std::max(pc.iv[i], ls.iv[i]);
+        double dip = std::numeric_limits<double>::infinity();
+        for (int g = 1; g < 64; ++g) {
+          dip = std::min(dip, al_ref(S, K, T, lo + (hi - lo) * g / 64.0, r, q, c.side[i]));
+        }
+        EXPECT_LT(dip, t[i] - 1.0e-10) << "m=" << m << " i=" << i;
+        const double ptol = 1.0e-10 * std::max(1.0, t[i]) + 1.0e-11;
+        EXPECT_LE(std::abs(al_ref(S, K, T, pc.iv[i], r, q, c.side[i]) - t[i]), ptol);
+        EXPECT_LE(std::abs(al_ref(S, K, T, ls.iv[i], r, q, c.side[i]) - t[i]), ptol);
+        ++multi_root;
+      }
+    }
+  }
+  std::printf("[near-zero-vol] %zu rows compared, %zu PerContract VegaFloor / Lockstep Ok "
+              "where the scalar stopped on a flat chord, %zu Ok on both at different roots of "
+              "a non-monotone map\n",
+              compared, flat_scalar, multi_root);
+  EXPECT_EQ(compared, 8u * c.size());
+}
+
+// A slice of the dev200 TSM chain: the expiry of row 1295 (calls whose zero-vol
+// value, the discounted forward intrinsic, sits above the immediate intrinsic) plus
+// row 27's expiry, both sides. The routes used to disagree on K = 185.
+TEST(ChainBatchIv, Dev200TsmSliceRefusalsAgreeAcrossRoutes) {
+  Chain c;
+  c.spot = 436.80999755859375;
+  c.T = {0.25411561131477356, 0.0093978382647037506};
+  c.rate = {0.046193607151508331, 0.044896867126226432};
+  c.carry = {-0.0084914956241846102, -0.00115431449376047};
+  c.div_pv = {1.0776369571685791, 0.0};
+  const std::vector<double> k0 = {85.0,  100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 130.0, 135.0,
+                                  140.0, 145.0, 150.0, 155.0, 160.0, 165.0, 170.0, 175.0, 180.0,
+                                  185.0, 190.0, 200.0, 250.0, 300.0, 400.0, 430.0, 440.0, 500.0};
+  for (const double K : k0) {
+    for (const Side sd : {Side::Call, Side::Put}) {
+      c.strike.push_back(K);
+      c.side.push_back(sd);
+      c.sigma.push_back(0.3);
+      c.expiry.push_back(0u);
+    }
+  }
+  for (const double K : {260.0, 400.0, 435.0, 440.0}) {
+    for (const Side sd : {Side::Call, Side::Put}) {
+      c.strike.push_back(K);
+      c.side.push_back(sd);
+      c.sigma.push_back(0.3);
+      c.expiry.push_back(1u);
+    }
+  }
+  const std::vector<double> target = targets_at(c, 1.03); // AL(0.309), as the bench
+  const IvOuts pc = run_iv(c, target, iv_route(ChainIvRoute::PerContract));
+  const IvOuts ls = run_iv(c, target, iv_route(ChainIvRoute::Lockstep));
+  std::size_t disagree = 0;
+  std::size_t in_band = 0;
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    disagree += pc.status[i] != ls.status[i] ? 1u : 0u;
+    EXPECT_EQ(pc.status[i], ls.status[i]) << "i=" << i << " K=" << c.strike[i];
+    double q = 0.0;
+    ASSERT_TRUE(row_valid(c, i, &q));
+    const std::uint32_t e = c.expiry[i];
+    const double zv = zero_vol_ref(c.spot, c.strike[i], c.T[e], c.rate[e], q, c.side[i]);
+    const double band = band_ref(
+        target[i], ceiling_ref(c.spot, c.strike[i], c.T[e], c.rate[e], q, c.side[i]), {});
+    if (std::abs(target[i] - zv) <= band) {
+      ++in_band;
+      EXPECT_EQ(pc.status[i], ChainRowStatus::VegaFloor) << "i=" << i;
+    }
+    if (pc.status[i] == ChainRowStatus::Ok && ls.status[i] == ChainRowStatus::Ok) {
+      EXPECT_NEAR(pc.iv[i], 0.309, 1.0e-6) << "i=" << i;
+      EXPECT_NEAR(ls.iv[i], 0.309, 1.0e-6) << "i=" << i;
+    }
+  }
+  std::printf("[dev200-slice] %zu rows, %zu in the zero-vol band, %zu status disagreements\n",
+              c.size(), in_band, disagree);
+  EXPECT_GE(in_band, 16u);
+  EXPECT_EQ(disagree, 0u);
 }
 
 // ── Workspace and allocation ─────────────────────────────────────────────────
@@ -594,6 +1002,34 @@ TEST(ChainBatchWorkspace, ReservesGrowsAndNeverShrinks) {
   Outs o(c.size());
   ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), o.all(), {}, small).has_value());
   EXPECT_EQ(small.expiry_capacity(), c.T.size());
+}
+
+// A moved-from workspace used to dereference a null Impl in reserve(), impl() and
+// expiry_capacity(); it is now empty and usable again.
+TEST(ChainBatchWorkspace, MovedFromWorkspaceIsEmptyAndUsable) {
+  const Chain c = make_chain(3);
+  const std::vector<double> target = targets_at(c, 1.05);
+  const Outs ref = run_batch(c, {});
+  const IvOuts iv_ref = run_iv(c, target, {});
+  ChainBatchWorkspace a;
+  a.reserve(c.T.size());
+  ChainBatchWorkspace b(std::move(a));
+  EXPECT_EQ(b.expiry_capacity(), c.T.size());
+  EXPECT_EQ(a.expiry_capacity(), 0u); // NOLINT(bugprone-use-after-move): the contract under test
+  Outs o(c.size());
+  ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), o.all(), {}, a).has_value());
+  EXPECT_TRUE(same_outs(ref, o));
+  EXPECT_EQ(a.expiry_capacity(), c.T.size());
+  ChainBatchWorkspace d;
+  d = std::move(a);
+  IvOuts iv(c.size());
+  ASSERT_TRUE(
+      implied_vol_chain_batch(c.spot, c.exp(), c.con(), target, iv.iv, iv.status, {}, a));
+  EXPECT_TRUE(same_bits(iv_ref.iv, iv.iv));
+  EXPECT_EQ(iv_ref.status, iv.status);
+  ChainBatchWorkspace e(std::move(d));
+  d.reserve(2); // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(d.expiry_capacity(), 2u);
 }
 
 TEST(ChainBatchAlloc, ScalarRouteAddsNoAllocationToTheKernelsOwn) {
@@ -633,6 +1069,56 @@ TEST(ChainBatchAlloc, LockstepIvIsAllocationFreeOnAReservedWorkspace) {
     EXPECT_TRUE(r.has_value());
   });
   EXPECT_EQ(n, 0u);
+}
+
+// The thread-local counter above cannot see pool workers; this one counts every
+// thread. Each execution context first runs all four routes inline once (the
+// kernels keep per-thread state they build on first use, e.g. american_implied_vol's
+// retained pricer), then every route is measured inline and fanned out.
+TEST(ChainBatchAlloc, EveryRouteIsAllocationFreeOnEveryThreadOnceWarm) {
+  PricingExecutor &ex = pricing_executor();
+  const Chain c = make_chain(9); // 72 contracts: chunks of 32, 32, 8
+  const std::vector<double> target = targets_at(c, 1.05);
+  const auto run_all = [&](PricingExecutor *exec, ChainBatchWorkspace &ws, Outs &o, IvOuts &iv) {
+    for (const ChainBatchRoute route : {ChainBatchRoute::Scalar, ChainBatchRoute::LanedAvx2}) {
+      ChainBatchOptions opt;
+      opt.route = route;
+      opt.executor = exec;
+      EXPECT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), o.all(), opt, ws).has_value());
+    }
+    for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+      ChainIvOptions opt = iv_route(route);
+      opt.executor = exec;
+      EXPECT_TRUE(implied_vol_chain_batch(c.spot, c.exp(), c.con(), target, iv.iv, iv.status, opt,
+                                          ws)
+                      .has_value());
+    }
+  };
+  // One warm-up per execution context: run_blocks gives every context >= 1 index.
+  const std::size_t contexts = static_cast<std::size_t>(ex.size()) + 1u;
+  ex.run_blocks(4u * contexts, 0u, [&](std::size_t) {
+    ChainBatchWorkspace ws;
+    Outs o(c.size());
+    IvOuts iv(c.size());
+    run_all(nullptr, ws, o, iv);
+  });
+  ChainBatchWorkspace ws;
+  ws.reserve(c.T.size());
+  Outs o(c.size());
+  IvOuts iv(c.size());
+  run_all(&ex, ws, o, iv);
+  const std::uint64_t inline_n =
+      testkit::count_process_allocations([&] { run_all(nullptr, ws, o, iv); });
+  const std::uint64_t fanned_n =
+      testkit::count_process_allocations([&] { run_all(&ex, ws, o, iv); });
+  std::printf("[alloc] process-wide, 4 routes x 72 contracts: inline %llu, fanned out %llu "
+              "(pool workers %u)\n",
+              static_cast<unsigned long long>(inline_n),
+              static_cast<unsigned long long>(fanned_n), ex.size());
+  EXPECT_EQ(inline_n, 0u);
+  EXPECT_EQ(fanned_n, 0u);
+  EXPECT_TRUE(std::all_of(iv.status.begin(), iv.status.end(),
+                          [](ChainRowStatus s) { return s == ChainRowStatus::Ok; }));
 }
 
 } // namespace

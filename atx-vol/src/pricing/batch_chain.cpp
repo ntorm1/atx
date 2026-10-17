@@ -35,6 +35,12 @@ ChainBatchWorkspace::ChainBatchWorkspace(ChainBatchWorkspace &&) noexcept = defa
 ChainBatchWorkspace &ChainBatchWorkspace::operator=(ChainBatchWorkspace &&) noexcept = default;
 
 void ChainBatchWorkspace::reserve(std::size_t max_expiries) {
+  // A moved-from workspace has no Impl: recreate it. Both entry points reserve
+  // before they read impl(), so a moved-from workspace is usable again (review
+  // 2026-10-17, minor: this used to dereference null).
+  if (!impl_) {
+    impl_ = std::make_unique<Impl>();
+  }
   Impl &w = *impl_;
   if (w.q_eff.size() < max_expiries) {
     w.q_eff.resize(max_expiries);
@@ -45,7 +51,9 @@ void ChainBatchWorkspace::reserve(std::size_t max_expiries) {
   }
 }
 
-std::size_t ChainBatchWorkspace::expiry_capacity() const noexcept { return impl_->q_eff.size(); }
+std::size_t ChainBatchWorkspace::expiry_capacity() const noexcept {
+  return impl_ ? impl_->q_eff.size() : 0u;
+}
 
 // ── Carry ────────────────────────────────────────────────────────────────────
 

@@ -15,8 +15,9 @@
 //   * Optional dev200 sample (rows chain/batch/dev200/...): a CSV named by
 //     ATX_VOL_BATCH_DEV200_CSV with columns spot,expiry,years,rate,carry,div_pv,
 //     strike,is_call,bid,ask (one underlier, one snapshot, every expiry). Its pricing
-//     sigma is the PerContract implied vol of the quote mid (seed 0.3; 0.3 where the
-//     mid has none). Rows skip with an error when the variable is unset.
+//     sigma is the implied vol of the quote mid as the fe6a516f PerContract route
+//     computed it (seed 0.3; 0.3 where the mid has none), frozen so the fixture does
+//     not move with the IV rule. Rows skip with an error when the variable is unset.
 //
 // ── Rows ────────────────────────────────────────────────────────────────────
 //   chain/batch/loop/{greeks,price}/n2000      the per-contract loop (baseline)
@@ -187,6 +188,8 @@ void fill_iv_targets(BatchChain &c) {
   return out;
 }
 
+[[nodiscard]] bool contract_valid(const BatchChain &c, std::size_t i, double *q); // below
+
 [[nodiscard]] BatchChain load_dev200() {
   BatchChain c;
   const std::string path = env_or_empty("ATX_VOL_BATCH_DEV200_CSV");
@@ -230,20 +233,32 @@ void fill_iv_targets(BatchChain &c) {
     mids.push_back(v[8] > 0.0 && v[9] > v[8] ? 0.5 * (v[8] + v[9]) : kNaN);
     fnv_mix(c.spec_hash, v[6]);
   }
-  // Pricing sigma: the PerContract IV of the mid (seed 0.3), 0.3 where none.
+  // Pricing sigma: the implied vol of the mid (seed 0.3), 0.3 where none, FROZEN at
+  // the fe6a516f PerContract definition (that commit's screen, then raw
+  // american_implied_vol, Ok above kIvMin). The chain is a fixture: it must not move
+  // when the batch IV rule changes (fix round 1 did), or the dev200 Greeks hash
+  // e3e9bb01908a6013 would stop being comparable across commits.
   c.sigma.assign(c.size(), 0.3);
-  std::vector<double> iv(c.size(), kNaN);
-  std::vector<ChainRowStatus> st(c.size(), ChainRowStatus::InvalidInput);
-  ChainBatchWorkspace ws;
-  const Result<std::size_t> r =
-      implied_vol_chain_batch(c.spot, c.exp(), c.con(), mids, iv, st, ChainIvOptions{}, ws);
-  if (!r) {
-    c.error = "mid IV failed: " + r.error().to_string();
-    return c;
-  }
   for (std::size_t i = 0; i < c.size(); ++i) {
-    if (st[i] == ChainRowStatus::Ok) {
-      c.sigma[i] = iv[i];
+    double q = 0.0;
+    const double P = mids[i];
+    if (!contract_valid(c, i, &q) || !std::isfinite(P)) { // q_eff finite => T, carry valid
+      continue;
+    }
+    const double K = c.strike[i];
+    const bool call = c.side[i] == Side::Call;
+    const double intr = call ? std::max(c.spot - K, 0.0) : std::max(K - c.spot, 0.0);
+    const double band = 1.0e-9 * K;
+    if (P < intr - band || P <= intr + band || P >= (call ? c.spot : K)) {
+      continue;
+    }
+    const std::uint32_t e = c.expiry[i];
+    const Result<double> iv =
+        american_implied_vol(P, c.spot, K, c.T[e], c.rate[e], q, c.side[i],
+                             AmericanMethod::AndersenLake, 1.0e-7, 64, std::nullopt, nullptr,
+                             /*warm_start=*/0.3, /*price_tol=*/0.0);
+    if (iv && *iv > kIvMin) {
+      c.sigma[i] = *iv;
     }
   }
   fill_iv_targets(c);
@@ -334,8 +349,90 @@ void loop_greeks(const BatchChain &c, Outs &o, bool price_only) {
   }
 }
 
-// The per-contract IV loop: the batch screen, then american_implied_vol warm-seeded
-// at the contract's sigma.
+// The header's IV refusal rule written out for the loop: the zero-vol American
+// value (american_iv.cpp's sup over exercise dates), the price ceiling, the band.
+[[nodiscard]] double zero_vol_value(double S, double K, double T, double r, double q, Side sd) {
+  const bool call = sd == Side::Call;
+  const double A = call ? S : K;
+  const double a = call ? q : r;
+  const double B = call ? K : S;
+  const double b = call ? r : q;
+  const auto pay = [&](double t) { return A * std::exp(-a * t) - B * std::exp(-b * t); };
+  const double f0 = pay(0.0);
+  const double fT = pay(T);
+  if (!std::isfinite(f0) || !std::isfinite(fT)) {
+    return kNaN;
+  }
+  double best = std::fmax(f0, fT);
+  const double ts = std::log((a * A) / (b * B)) / (a - b);
+  if (std::isfinite(ts) && ts > 0.0 && ts < T) {
+    const double fs = pay(ts);
+    if (std::isfinite(fs)) {
+      best = std::fmax(best, fs);
+    }
+  }
+  return std::fmax(best, 0.0);
+}
+
+[[nodiscard]] double cold_price(const BatchChain &c, std::size_t i, double sigma, double q,
+                                const ChainIvOptions &opt) {
+  const std::uint32_t e = c.expiry[i];
+  const Result<double> p = andersen_lake(c.spot, c.strike[i], c.T[e], sigma, c.rate[e], q,
+                                         c.side[i], opt.al_opts);
+  return p && std::isfinite(*p) ? *p : kNaN;
+}
+
+// The rule's verification of american_implied_vol's answer x on the cold map.
+[[nodiscard]] ChainRowStatus loop_verify(const BatchChain &c, std::size_t i, double q,
+                                         const ChainIvOptions &opt, double &x) {
+  const double P = c.target[i];
+  const double ptol = opt.price_tol * std::max(1.0, P);
+  const double vmin = opt.vega_floor * c.strike[i];
+  const double xb = x * (1.0 - 1.0e-4);
+  double fx = cold_price(c, i, x, q, opt) - P;
+  const double fb = cold_price(c, i, xb, q, opt) - P;
+  if (!std::isfinite(fx) || !std::isfinite(fb)) {
+    return ChainRowStatus::Unpriceable;
+  }
+  double slope = (fx - fb) / (x - xb);
+  if (!(slope > vmin)) {
+    return ChainRowStatus::VegaFloor;
+  }
+  for (int k = 0;; ++k) {
+    if (std::abs(fx) <= ptol && slope > vmin && std::abs(fx) <= opt.sigma_tol * slope) {
+      return ChainRowStatus::Ok;
+    }
+    if (k == 4) {
+      return ChainRowStatus::NoConvergence;
+    }
+    const double xn = x - fx / slope;
+    if (!(xn > kIvMin)) {
+      return ChainRowStatus::VegaFloor;
+    }
+    if (!(xn < kIvMax)) {
+      return ChainRowStatus::OutOfBand;
+    }
+    if (xn == x) {
+      return ChainRowStatus::NoConvergence;
+    }
+    const double fn = cold_price(c, i, xn, q, opt) - P;
+    if (!std::isfinite(fn)) {
+      return ChainRowStatus::Unpriceable;
+    }
+    const double span = std::abs(xn - x);
+    slope = (fn - fx) / (xn - x);
+    x = xn;
+    fx = fn;
+    if (!(slope > vmin)) {
+      return span >= 1.0e-4 * x ? ChainRowStatus::VegaFloor : ChainRowStatus::NoConvergence;
+    }
+  }
+}
+
+// The per-contract IV loop: the header's screen, american_implied_vol warm-seeded at
+// the contract's sigma, the cold-map verification. It restates the PerContract rule,
+// so identical_to_loop checks the batch plumbing, not the rule (the chain-batch
+// tests pin the rule).
 void loop_iv(const BatchChain &c, Outs &o) {
   const ChainIvOptions opt{};
   for (std::size_t i = 0; i < c.size(); ++i) {
@@ -346,36 +443,57 @@ void loop_iv(const BatchChain &c, Outs &o) {
       o.status[i] = ChainRowStatus::InvalidInput;
       continue;
     }
+    const double S = c.spot;
     const double K = c.strike[i];
-    const bool call = c.side[i] == Side::Call;
-    const double intr = call ? std::max(c.spot - K, 0.0) : std::max(K - c.spot, 0.0);
-    const double band = opt.intrinsic_tol * K;
-    if (P < intr - band || P >= (call ? c.spot : K)) {
+    const std::uint32_t e = c.expiry[i];
+    const double T = c.T[e];
+    const double r = c.rate[e];
+    const Side sd = c.side[i];
+    const double ceiling = sd == Side::Call ? S * std::fmax(1.0, std::exp(-q * T))
+                                            : K * std::fmax(1.0, std::exp(-r * T));
+    const double zv = zero_vol_value(S, K, T, r, q, sd);
+    if (!std::isfinite(ceiling) || !std::isfinite(zv)) {
+      o.status[i] = ChainRowStatus::Unpriceable;
+      continue;
+    }
+    const double band = std::max(std::max(opt.intrinsic_tol, 1.0e-9) * ceiling,
+                                 opt.price_tol * std::max(1.0, P)) +
+                        1.0e-12;
+    const double immediate = sd == Side::Call ? std::fmax(S - K, 0.0) : std::fmax(K - S, 0.0);
+    if (P > ceiling + band || P < immediate - band) {
       o.status[i] = ChainRowStatus::OutOfBand;
       continue;
     }
-    if (P <= intr + band) {
+    if (std::abs(P - zv) <= band) {
       o.status[i] = ChainRowStatus::VegaFloor;
       continue;
     }
-    const std::uint32_t e = c.expiry[i];
-    const Result<double> iv = american_implied_vol(P, c.spot, K, c.T[e], c.rate[e], q, c.side[i],
-                                                   AmericanMethod::AndersenLake, opt.sigma_tol,
-                                                   opt.max_iter, opt.al_opts, nullptr,
-                                                   c.sigma[i], 0.0);
-    if (iv) {
-      if (*iv > kIvMin) {
-        o.iv[i] = *iv;
-        o.status[i] = ChainRowStatus::Ok;
-      } else {
-        o.status[i] = ChainRowStatus::VegaFloor;
-      }
-    } else if (iv.error().code() == ErrorCode::OutOfRange) {
+    if (P < zv - band) {
       o.status[i] = ChainRowStatus::OutOfBand;
-    } else if (iv.error().code() == ErrorCode::Unavailable) {
-      o.status[i] = ChainRowStatus::NoConvergence;
-    } else {
-      o.status[i] = ChainRowStatus::Unpriceable;
+      continue;
+    }
+    const Result<double> iv =
+        american_implied_vol(P, S, K, T, r, q, sd, AmericanMethod::AndersenLake, opt.sigma_tol,
+                             opt.max_iter, opt.al_opts, nullptr, c.sigma[i], 0.0);
+    if (!iv) {
+      const ErrorCode code = iv.error().code();
+      o.status[i] = code == ErrorCode::OutOfRange    ? ChainRowStatus::OutOfBand
+                    : code == ErrorCode::Unavailable ? ChainRowStatus::NoConvergence
+                                                     : ChainRowStatus::Unpriceable;
+      continue;
+    }
+    double x = *iv;
+    if (!(x > kIvMin)) {
+      o.status[i] = ChainRowStatus::VegaFloor;
+      continue;
+    }
+    if (!(x < kIvMax)) {
+      o.status[i] = ChainRowStatus::OutOfBand;
+      continue;
+    }
+    o.status[i] = loop_verify(c, i, q, opt, x);
+    if (o.status[i] == ChainRowStatus::Ok) {
+      o.iv[i] = x;
     }
   }
 }

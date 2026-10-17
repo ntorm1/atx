@@ -1,5 +1,18 @@
 // Chain-level batch American implied vol. See api/pricing/batch_chain.hpp for the
 // contract; the shared validation and hoisting live in batch_chain.cpp.
+//
+// Both routes apply ONE refusal rule (fix round 1, 2026-10-17):
+//   1. screen(): american_implied_vol's identifiable-range screen, replicated (its
+//      helpers are file-local in american_iv.cpp): the price ceiling, the immediate
+//      intrinsic and the zero-volatility American value, with its tolerance band.
+//   2. accept(): an Ok vol is a point the cold Andersen-Lake map was evaluated at,
+//      whose residual meets price_tol, whose slope (a chord of evaluated American
+//      points, never the Black-76 seed slope) is above vega_floor * K, and whose
+//      Newton correction |f / slope| is at most sigma_tol (Lockstep may instead
+//      have both bracket ends evaluated within sigma_tol of each other).
+// PerContract runs american_implied_vol and then verifies its answer on the cold map:
+// a flat slope there is VegaFloor, and a root that misses the rule gets at most
+// kPolishSteps secant steps on the same map before it is NoConvergence.
 
 #include <algorithm>
 #include <array>
@@ -29,6 +42,53 @@ namespace {
 
 namespace bcd = batch_chain_detail;
 
+// american_implied_vol's band: band_tol = 1e-9 * ceiling + 1e-12 (american_iv.cpp).
+constexpr double kScalarBandRel = 1.0e-9;
+constexpr double kBandAbs = 1.0e-12;
+// Relative sigma step of a slope probe: a chord this wide is "resolved" (far above
+// the map's price noise), so a flat one is a flat map, not noise.
+constexpr double kSlopeProbeRel = 1.0e-4;
+// PerContract: cold secant steps allowed after american_implied_vol's answer.
+constexpr unsigned kPolishSteps = 4;
+
+// Replica of american_iv.cpp zero_vol_american_value (file-local there; see its
+// comment for the derivation): the sigma -> 0 American value, the sup over exercise
+// dates of the deterministic discounted payoff, max over {0, T, t*}. NaN when the
+// carry x maturity overflows the payoff.
+[[nodiscard]] double zero_vol_value(double S, double K, double T, double r, double q,
+                                    Side side) noexcept {
+  const bool call = side == Side::Call;
+  const double A = call ? S : K;
+  const double a = call ? q : r;
+  const double B = call ? K : S;
+  const double b = call ? r : q;
+  const auto payoff = [A, a, B, b](double t) noexcept {
+    return A * std::exp(-a * t) - B * std::exp(-b * t);
+  };
+  const double at_0 = payoff(0.0);
+  const double at_T = payoff(T);
+  if (!std::isfinite(at_0) || !std::isfinite(at_T)) {
+    return bcd::kNaN;
+  }
+  double best = std::fmax(at_0, at_T);
+  const double t_star = std::log((a * A) / (b * B)) / (a - b);
+  if (std::isfinite(t_star) && t_star > 0.0 && t_star < T) {
+    const double at_star = payoff(t_star);
+    if (std::isfinite(at_star)) {
+      best = std::fmax(best, at_star);
+    }
+  }
+  return std::fmax(best, 0.0);
+}
+
+// Replica of american_iv.cpp american_price_ceiling: S * max(1, e^{-qT}) for a call,
+// K * max(1, e^{-rT}) for a put (negative carry lifts the naive S / K bound).
+[[nodiscard]] double price_ceiling(double S, double K, double T, double r, double q,
+                                   Side side) noexcept {
+  return (side == Side::Call) ? S * std::fmax(1.0, std::exp(-q * T))
+                              : K * std::fmax(1.0, std::exp(-r * T));
+}
+
 struct IvCall {
   double spot;
   const ChainExpiryColumns &expiries;
@@ -45,8 +105,12 @@ void fail(const IvCall &c, std::size_t i, ChainRowStatus st) noexcept {
   c.status[i] = st;
 }
 
-// The no-arbitrage / well-posedness screen both routes apply before inverting. Ok
-// means "invert this row".
+[[nodiscard]] double price_tol_abs(const IvCall &c, std::size_t i) noexcept {
+  return c.o.price_tol * std::max(1.0, c.target[i]);
+}
+
+// The identifiable-range screen both routes apply before inverting, in
+// american_implied_vol's order. Ok means "invert this row".
 [[nodiscard]] ChainRowStatus screen(const IvCall &c, std::size_t i) noexcept {
   if (!bcd::contract_ok(c.contracts, c.w, c.expiries.size(), i)) {
     return ChainRowStatus::InvalidInput;
@@ -55,25 +119,119 @@ void fail(const IvCall &c, std::size_t i, ChainRowStatus st) noexcept {
   if (!std::isfinite(P)) {
     return ChainRowStatus::InvalidInput;
   }
+  const std::uint32_t e = c.contracts.expiry[i];
+  const double S = c.spot;
   const double K = c.contracts.strike[i];
-  const bool call = c.contracts.side[i] == Side::Call;
-  const double intrinsic = call ? std::max(c.spot - K, 0.0) : std::max(K - c.spot, 0.0);
-  const double band = c.o.intrinsic_tol * K;
-  if (P < intrinsic - band) {
+  const double T = c.expiries.T[e];
+  const double r = c.expiries.rate[e];
+  const double q = c.w.q_eff[e];
+  const Side side = c.contracts.side[i];
+  const double ceiling = price_ceiling(S, K, T, r, q, side);
+  const double zero_vol = zero_vol_value(S, K, T, r, q, side);
+  if (!std::isfinite(ceiling) || !std::isfinite(zero_vol)) {
+    return ChainRowStatus::Unpriceable; // the zero-vol bound overflows: no usable map
+  }
+  // Never narrower than american_implied_vol's own band, so PerContract (which
+  // runs that screen again inside the scalar) and Lockstep refuse the same rows; a
+  // looser price_tol widens it (a target that close to the floor matches every
+  // sigma up to it).
+  const double band = std::max(std::max(c.o.intrinsic_tol, kScalarBandRel) * ceiling,
+                               price_tol_abs(c, i)) +
+                      kBandAbs;
+  if (P > ceiling + band) {
     return ChainRowStatus::OutOfBand;
   }
-  // Every sigma up to the exercise edge reproduces intrinsic, so a target there
-  // has no identifiable vol (ledgered trap, 2026-10-16).
-  if (P <= intrinsic + band) {
+  const double immediate =
+      (side == Side::Call) ? std::fmax(S - K, 0.0) : std::fmax(K - S, 0.0);
+  if (P < immediate - band) {
+    return ChainRowStatus::OutOfBand;
+  }
+  // At the zero-vol value every sigma up to the exercise edge (or below kIvMin)
+  // reproduces the target: no identifiable vol (ledgered trap, 2026-10-16).
+  if (std::abs(P - zero_vol) <= band) {
     return ChainRowStatus::VegaFloor;
   }
-  if (P >= (call ? c.spot : K)) {
+  // Below the sigma -> 0 value no sigma reproduces it. Andersen-Lake reproduces the
+  // analytic limit to 1.3e-13 (american_iv.cpp), so the scalar's map probe at
+  // kIvMin refuses the same rows.
+  if (P < zero_vol - band) {
     return ChainRowStatus::OutOfBand;
   }
   return ChainRowStatus::Ok;
 }
 
-// PerContract route: american_implied_vol warm-started at the row's own sigma.
+// The shared Ok rule at an evaluated point: residual f, chord slope through it,
+// `collapsed` = both bracket ends evaluated within sigma_tol (Lockstep only).
+[[nodiscard]] bool accept(const IvCall &c, double f, double slope, double ptol, double vega_min,
+                          bool collapsed) noexcept {
+  return std::abs(f) <= ptol && slope > vega_min &&
+         (std::abs(f) <= c.o.sigma_tol * slope || collapsed);
+}
+
+// Cold-map residual P(sigma) - target for row i; false when the kernel refuses.
+[[nodiscard]] bool cold_residual(const IvCall &c, std::size_t i, double sigma, double &f) {
+  const std::uint32_t e = c.contracts.expiry[i];
+  const Result<double> p =
+      andersen_lake(c.spot, c.contracts.strike[i], c.expiries.T[e], sigma, c.expiries.rate[e],
+                    c.w.q_eff[e], c.contracts.side[i], c.o.al_opts);
+  if (!p || !std::isfinite(*p)) {
+    return false;
+  }
+  f = *p - c.target[i];
+  return true;
+}
+
+// Verifies (and if needed polishes) american_implied_vol's answer x on the cold map.
+[[nodiscard]] ChainRowStatus verify_root(const IvCall &c, std::size_t i, double &x) {
+  const double ptol = price_tol_abs(c, i);
+  const double vega_min = c.o.vega_floor * c.contracts.strike[i];
+  double fx = 0.0;
+  double fb = 0.0;
+  const double xb = x * (1.0 - kSlopeProbeRel);
+  if (!cold_residual(c, i, x, fx) || !cold_residual(c, i, xb, fb)) {
+    return ChainRowStatus::Unpriceable;
+  }
+  double slope = (fx - fb) / (x - xb);
+  // A resolved flat chord ending at the answer: the price does not move with sigma
+  // there (the scalar stopped inside the flat exercise interval, review 2026-10-17
+  // M2), so the answer identifies no vol.
+  if (!(slope > vega_min)) {
+    return ChainRowStatus::VegaFloor;
+  }
+  for (unsigned k = 0;; ++k) {
+    if (accept(c, fx, slope, ptol, vega_min, false)) {
+      return ChainRowStatus::Ok;
+    }
+    if (k == kPolishSteps) {
+      return ChainRowStatus::NoConvergence;
+    }
+    const double xn = x - fx / slope;
+    if (!(xn > kIvMin)) {
+      return ChainRowStatus::VegaFloor; // the root sits at or below the vol floor
+    }
+    if (!(xn < kIvMax)) {
+      return ChainRowStatus::OutOfBand;
+    }
+    if (xn == x) {
+      return ChainRowStatus::NoConvergence;
+    }
+    double fn = 0.0;
+    if (!cold_residual(c, i, xn, fn)) {
+      return ChainRowStatus::Unpriceable;
+    }
+    const double span = std::abs(xn - x);
+    slope = (fn - fx) / (xn - x);
+    x = xn;
+    fx = fn;
+    if (!(slope > vega_min)) {
+      return span >= kSlopeProbeRel * x ? ChainRowStatus::VegaFloor
+                                        : ChainRowStatus::NoConvergence;
+    }
+  }
+}
+
+// PerContract route: american_implied_vol warm-started at the row's own sigma, then
+// verify_root.
 void invert_row_per_contract(const IvCall &c, std::size_t i) noexcept {
   const ChainRowStatus scr = screen(c, i);
   if (scr != ChainRowStatus::Ok) {
@@ -86,27 +244,42 @@ void invert_row_per_contract(const IvCall &c, std::size_t i) noexcept {
       c.w.q_eff[e], c.contracts.side[i], AmericanMethod::AndersenLake, c.o.sigma_tol,
       c.o.max_iter, c.o.al_opts, /*correction=*/nullptr, /*warm_start=*/c.contracts.sigma[i],
       /*price_tol=*/0.0);
-  if (iv) {
-    // A root at the kIvMin floor is the scalar's "not identifiable" clamp.
-    if (*iv > kIvMin) {
-      c.iv[i] = *iv;
-      c.status[i] = ChainRowStatus::Ok;
-    } else {
-      fail(c, i, ChainRowStatus::VegaFloor);
+  if (!iv) {
+    switch (iv.error().code()) {
+    case ErrorCode::OutOfRange:
+      fail(c, i, ChainRowStatus::OutOfBand);
+      return;
+    case ErrorCode::Unavailable:
+      fail(c, i, ChainRowStatus::NoConvergence);
+      return;
+    default: // NotImplemented regimes, Internal: the kernel refused the row
+      fail(c, i, ChainRowStatus::Unpriceable);
+      return;
     }
+  }
+  double x = *iv;
+  // A root at the kIvMin floor is the scalar's "not identifiable" clamp; one past
+  // kIvMax (its bracket reaches 40) is outside the image the contract promises.
+  if (!(x > kIvMin)) {
+    fail(c, i, ChainRowStatus::VegaFloor);
     return;
   }
-  switch (iv.error().code()) {
-  case ErrorCode::OutOfRange:
+  if (!(x < kIvMax)) {
     fail(c, i, ChainRowStatus::OutOfBand);
     return;
-  case ErrorCode::Unavailable:
-    fail(c, i, ChainRowStatus::NoConvergence);
-    return;
-  default: // NotImplemented regimes, Internal: the kernel refused the row
-    fail(c, i, ChainRowStatus::Unpriceable);
+  }
+  ChainRowStatus st = ChainRowStatus::Unpriceable;
+  try {
+    st = verify_root(c, i, x);
+  } catch (const std::bad_alloc &) {
+    st = ChainRowStatus::Unpriceable;
+  }
+  if (st != ChainRowStatus::Ok) {
+    fail(c, i, st);
     return;
   }
+  c.iv[i] = x;
+  c.status[i] = ChainRowStatus::Ok;
 }
 
 // ── Lockstep route ───────────────────────────────────────────────────────────
@@ -116,12 +289,16 @@ void invert_row_per_contract(const IvCall &c, std::size_t i) noexcept {
 // internal put P(K, S, q, r)); a pack is always sent 4 wide (converged lanes keep
 // their last sigma, a short pack repeats lane 0) so the kernel never takes its
 // scalar tail. Then the lane arithmetic updates each active lane's bracket [lo, hi],
-// slope and next iterate: the closed-form Black-76 vega at the forward on the first
-// step, the secant slope afterwards, bisection whenever the step leaves the bracket.
-// P is increasing in sigma, so f = P - target > 0 moves hi down and f <= 0 moves lo
-// up. lo / hi start at [kIvMin, kIvMax] unevaluated; lo_set / hi_set record whether
-// an evaluated point sits on that side, which tells a converged root from a target
-// outside the image of the vol range.
+// slope and next iterate. P is increasing in sigma, so f = P - target > 0 moves hi
+// down and f <= 0 moves lo up. lo / hi start at [kIvMin, kIvMax] unevaluated; lo_set /
+// hi_set record whether an evaluated point sits on that side, which tells a converged
+// root from a target outside the image of the vol range.
+//
+// Stepping uses the closed-form Black-76 vega on the first step only (no chord
+// exists yet), the secant afterwards, bisection whenever the step leaves the
+// bracket. Acceptance never uses the Black-76 slope: accept() needs a chord of two
+// evaluated points. A lane whose residual is met before it has a usable chord
+// takes one probe step of kSlopeProbeRel * sigma to measure one.
 
 constexpr std::size_t kL = kChainBatchLanes;
 
@@ -129,7 +306,9 @@ struct Lanes {
   std::size_t m = 0;
   std::array<std::size_t, kL> row{};
   std::array<double, kL> target{};
-  // Black-76 inputs (first-step slope) and the original strike (vega floor).
+  std::array<double, kL> ptol{};
+  std::array<double, kL> vega_min{};
+  // Black-76 inputs (first step only).
   std::array<double, kL> K{};
   std::array<double, kL> F{};
   std::array<double, kL> df{};
@@ -162,6 +341,8 @@ void load_lane(const IvCall &c, Lanes &s, std::size_t i) noexcept {
   const bool call = c.contracts.side[i] == Side::Call;
   s.row[l] = i;
   s.target[l] = c.target[i];
+  s.ptol[l] = price_tol_abs(c, i);
+  s.vega_min[l] = c.o.vega_floor * K;
   s.K[l] = K;
   s.F[l] = c.spot * c.w.fwd[e];
   s.df[l] = c.w.df[e];
@@ -196,16 +377,10 @@ void step_lane(const IvCall &c, Lanes &s, std::size_t l, double P) noexcept {
   }
   const double sig = s.sig[l];
   const double f = P - s.target[l];
-  const bool secant = s.have_prev[l] != 0u && sig != s.sig_prev[l];
-  const double slope = secant ? (f - s.f_prev[l]) / (sig - s.sig_prev[l])
-                              : black76_value_and_vega(s.F[l], s.K[l], s.T[l], sig, s.df[l],
-                                                       s.side[l], s.sqrt_t[l])
-                                    .vega;
-  const double vega_min = c.o.vega_floor * s.K[l];
-  if (std::abs(f) <= c.o.price_tol * std::max(1.0, s.target[l])) {
-    finish(c, s, l, slope > vega_min ? ChainRowStatus::Ok : ChainRowStatus::VegaFloor);
-    return;
-  }
+  const double vega_min = s.vega_min[l];
+  const bool chord = s.have_prev[l] != 0u && sig != s.sig_prev[l];
+  const double slope = chord ? (f - s.f_prev[l]) / (sig - s.sig_prev[l]) : bcd::kNaN;
+  const bool resolved = chord && std::abs(sig - s.sig_prev[l]) >= kSlopeProbeRel * sig;
   if (f > 0.0) {
     s.hi[l] = sig;
     s.hi_set[l] = 1u;
@@ -213,21 +388,50 @@ void step_lane(const IvCall &c, Lanes &s, std::size_t l, double P) noexcept {
     s.lo[l] = sig;
     s.lo_set[l] = 1u;
   }
-  if (s.hi[l] - s.lo[l] <= c.o.sigma_tol) {
-    // Bracket collapsed onto sig. Without an evaluated point above the target the
-    // target is beyond P(kIvMax); without one below it the root is at the floor.
-    ChainRowStatus st = ChainRowStatus::Ok;
-    if (s.hi_set[l] == 0u) {
-      st = ChainRowStatus::OutOfBand;
-    } else if (s.lo_set[l] == 0u || !(slope > vega_min)) {
-      st = ChainRowStatus::VegaFloor;
-    }
-    finish(c, s, l, st);
+  const bool collapsed = s.lo_set[l] != 0u && s.hi_set[l] != 0u && s.hi[l] - s.lo[l] <= c.o.sigma_tol;
+  const bool met = std::abs(f) <= s.ptol[l];
+  if (chord && accept(c, f, slope, s.ptol[l], vega_min, collapsed)) {
+    finish(c, s, l, ChainRowStatus::Ok);
     return;
   }
-  double next = (slope > 0.0 && std::isfinite(slope)) ? sig - f / slope : bcd::kNaN;
+  // A match on a resolved flat chord: every sigma along it reproduces the target.
+  if (met && resolved && !(slope > vega_min)) {
+    finish(c, s, l, ChainRowStatus::VegaFloor);
+    return;
+  }
+  if (s.hi[l] - s.lo[l] <= c.o.sigma_tol) {
+    // The bracket closed on an unevaluated end: without a point above the target it
+    // is beyond P(kIvMax); without one below it the root is at the floor.
+    if (s.hi_set[l] == 0u) {
+      finish(c, s, l, ChainRowStatus::OutOfBand);
+      return;
+    }
+    if (s.lo_set[l] == 0u) {
+      finish(c, s, l, ChainRowStatus::VegaFloor);
+      return;
+    }
+  }
+  double next = bcd::kNaN;
+  if (met && !(chord && slope > vega_min)) {
+    // Matched but no usable chord yet: probe one.
+    const double h = kSlopeProbeRel * sig;
+    next = (sig + h < s.hi[l]) ? sig + h : sig - h;
+  } else {
+    const double step_slope =
+        chord ? slope
+              : black76_value_and_vega(s.F[l], s.K[l], s.T[l], sig, s.df[l], s.side[l],
+                                       s.sqrt_t[l])
+                    .vega;
+    if (step_slope > 0.0 && std::isfinite(step_slope)) {
+      next = sig - f / step_slope;
+    }
+  }
   if (!(next > s.lo[l] && next < s.hi[l])) {
     next = 0.5 * (s.lo[l] + s.hi[l]);
+  }
+  if (next == sig) {
+    finish(c, s, l, ChainRowStatus::NoConvergence); // no representable progress left
+    return;
   }
   s.sig_prev[l] = sig;
   s.f_prev[l] = f;

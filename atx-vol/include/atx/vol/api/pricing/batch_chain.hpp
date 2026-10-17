@@ -28,13 +28,38 @@
 //     ineligible lanes through scalar american_greeks_al and match it within their
 //     documented economic gate: NOT bit-identical to Scalar.
 //   * ChainIvRoute::PerContract (default) calls american_implied_vol per contract,
-//     warm-started at the contract's own sigma.
+//     warm-started at the contract's own sigma, then verifies the answer on the
+//     cold andersen_lake map (below).
 //   * ChainIvRoute::Lockstep (opt-in) runs a safeguarded Newton-secant on 4
 //     contracts at a time in lockstep: each iteration prices the whole pack in one
 //     call of the public laned AVX2 put kernel simd::american_put_boundary_batch
 //     (calls through the McDonald-Schroder put map, ForceAvx2), and the iterate /
 //     bracket / slope updates run over the lane arrays. The map matches
 //     andersen_lake within that kernel's gate: not bit-identical to PerContract.
+//
+// ## One implied-vol refusal rule (both routes)
+//
+//   1. Screen, american_implied_vol's own (replicated): with band = max(max(
+//      intrinsic_tol, 1e-9) * ceiling, price_tol * max(1, target)) + 1e-12 and
+//      ceiling = american_price_ceiling (S max(1, e^{-qT}) call, K max(1, e^{-rT})
+//      put), a target above ceiling + band or below the immediate intrinsic - band
+//      is OutOfBand; one within the band of the zero-volatility American value is
+//      VegaFloor; one below that value - band is OutOfBand. At the defaults the
+//      band is the scalar's 1e-9 * ceiling + 1e-12 whenever the ceiling is >= 0.1.
+//   2. Ok, at a sigma the cold map was evaluated at: |P(sigma) - target| <=
+//      price_tol * max(1, target), the slope there (a chord of two evaluated
+//      American prices; never the Black-76 vega) is above vega_floor * K, and the
+//      Newton correction |P(sigma) - target| / slope is <= sigma_tol (Lockstep: or
+//      both bracket ends are evaluated within sigma_tol). A resolved flat chord at
+//      a matching sigma is VegaFloor.
+//   PerContract applies 2 to american_implied_vol's answer: a flat chord ending
+//   there (the scalar stopped inside the flat exercise interval) is VegaFloor, and
+//   an answer that misses the rule gets up to 4 secant steps on the cold map, then
+//   NoConvergence. So an Ok row of either route carries the same accuracy bound,
+//   and PerContract's iv equals american_implied_vol's bit for bit on every row
+//   that already met it. The engines still differ: PerContract can refuse a row
+//   Lockstep solves (the scalar stopped in a flat region the Lockstep bracket walks
+//   out of), and either can run out of budget where the other converges.
 //
 // ## Status, errors, allocation
 //
@@ -85,13 +110,17 @@ enum class ChainRowStatus : std::uint8_t {
   InvalidInput = 1,  // failed boundary validation (strike, sigma, target, expiry index or
                      // the expiry's own T/rate/carry/div_pv); never sent to the kernel
   Unpriceable = 2,   // the kernel refused the contract (e.g. the double-continuation
-                     // regime) or returned a non-finite requested output
-  VegaFloor = 3,     // implied vol: ill-posed. An ITM target at intrinsic (every sigma up
-                     // to the exercise edge reproduces it), a root at the kIvMin floor, or
-                     // a slope below the vega floor at the root
-  OutOfBand = 4,     // implied vol: target below intrinsic, at/above the upper bound
-                     // (S for a call, K for a put), or beyond the image of [kIvMin, kIvMax]
-  NoConvergence = 5, // implied vol: the iteration cap was reached
+                     // regime), returned a non-finite requested output, or (implied vol)
+                     // the zero-vol bound overflows
+  VegaFloor = 3,     // implied vol: ill-posed. A target within the band of the zero-vol
+                     // American value (every sigma up to the exercise edge, or below
+                     // kIvMin, reproduces it), a root at or below kIvMin, or a slope at or
+                     // below vega_floor * K where the target is matched (PerContract:
+                     // also at american_implied_vol's answer)
+  OutOfBand = 4,     // implied vol: target above the price ceiling, below the immediate
+                     // intrinsic or the zero-vol value by more than the band, or beyond
+                     // the image of [kIvMin, kIvMax]
+  NoConvergence = 5, // implied vol: the acceptance rule was not met within the budget
 };
 
 // One entry per expiry e. T is the year fraction (> 0), rate / carry the continuous
@@ -172,15 +201,17 @@ enum class ChainIvRoute : std::uint8_t {
 struct ChainIvOptions {
   std::optional<AlOpts> al_opts = std::nullopt; // the forward map's preset (nullopt = accurate)
   ChainIvRoute route = ChainIvRoute::PerContract;
-  // PerContract: american_implied_vol's tol. Lockstep: the bracket width that stops.
+  // Both routes: the largest accepted Newton correction |f / slope| (Lockstep: or the
+  // evaluated bracket width). PerContract also passes it to american_implied_vol.
   double sigma_tol = 1.0e-7;
+  // PerContract: american_implied_vol's cap. Lockstep: pack iterations.
   std::uint16_t max_iter = 64;
-  // Lockstep: stop when |P(sigma) - target| <= price_tol * max(1, target).
+  // Both routes: an Ok row has |P(sigma) - target| <= price_tol * max(1, target).
   double price_tol = 1.0e-10;
-  // Both routes: a target within intrinsic_tol * K of intrinsic is VegaFloor (ill-posed),
-  // and one more than that below intrinsic is OutOfBand.
+  // Both routes: the zero-vol band's width relative to the price ceiling (raised to
+  // american_implied_vol's 1e-9 when smaller; see "One implied-vol refusal rule").
   double intrinsic_tol = 1.0e-9;
-  // Lockstep: a root whose slope dP/dsigma is below vega_floor * K is VegaFloor.
+  // Both routes: a matching sigma whose American slope is <= vega_floor * K is VegaFloor.
   double vega_floor = 1.0e-8;
   PricingExecutor *executor = nullptr;
   unsigned n_threads = 0;
@@ -196,7 +227,8 @@ struct ChainIvOptions {
 // Caller-owned scratch: the per-expiry hoisted constants. Single-owner (one per
 // concurrent call). reserve() allocates; a call on an undersized workspace grows it
 // first (on the calling thread, before any fan-out) and allocates only then. A
-// moved-from workspace may only be destroyed or assigned to.
+// moved-from workspace has expiry_capacity() 0 and stays usable: its next reserve()
+// or call allocates fresh storage.
 class ChainBatchWorkspace {
 public:
   ChainBatchWorkspace();
@@ -212,6 +244,8 @@ public:
   [[nodiscard]] std::size_t expiry_capacity() const noexcept;
 
   // Implementation access for the batch_chain sources; the type is opaque here.
+  // Precondition: reserve() ran since construction or the last move-from (both entry
+  // points reserve first).
   struct Impl;
   [[nodiscard]] Impl &impl() noexcept { return *impl_; }
 
