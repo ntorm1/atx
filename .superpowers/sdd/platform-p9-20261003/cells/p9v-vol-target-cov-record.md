@@ -179,3 +179,45 @@ proposal; their strict parsed metadata/header extension requires separate PM
 release. No summ.ledger_copy destination; native summ alone would append one trial.
 Generic cycle verdict and unregistered monitor/summ/PBO statistics remain unread
 and non-authoritative. No completion, adoption or OD3 execution is authorized yet.
+
+## R15-V-COMPLETE prelaunch amendment
+
+The preceding completion status is historical. Fresh DERIV161781afb993de16c4ce1f5891a123ae93c4df97
+agrees; PM R15-V-DERIV formally accepts its disclosed anchoring to accepted X,
+prereg historical diagnostics/findings, the plan's preparation disclosures and
+preprinted limits. Root's verdict/derived checks and ledger stayed unread;
+absent annual-name probes supplied no result. Independent derivation with stated
+limits, not pristine blindness. PM has ruled V REJECTED, P9-F=X,F0=F0h=H.
+
+R15-V-COMPLETE releases only unchanged completion proposala6283917 after this
+note/PM documents are committed. Exact source paths are the proposal's ten:
+start.json,receipt.json,stdout.log,stderr.log in
+`build-equity/mega-monitor-p9v-vol-target-cov-run` and
+`build-equity/cycle-p9v-vol-target-cov/summ-run1`, plus
+`cells/logs/p9v-monitor-raw.log` and `cells/logs/p9v-completion-raw.log`.
+Unchanged X strict source_text predicates apply only to those files: own2026-10-17
+started_utc spans, exact five closed owner-PNG dirty entries and equal receipt
+echoes; canonical complete dirty-header entries only in the two named consoles.
+Seeds/seal-reference forms unchanged; OTHER stops. No broad date/path exemption.
+The separate completion helper safely imports unchanged source helpers and
+checks original88 output hashes plus native done phases before both commands.
+After monitor, actual sources/receipt must pass before full completion. Caps
+180s/1536MiB/floor512MiB/C:>=15GB, immediate no-wait, no auto retry. Native summ
+alone may append one row; all result statistics and generic verdict stay unread.
+No spec/NAV/input rerun or adoption. Parallel platform work owns only its report;
+platform delivery and leverage returns are not proof of alpha (goal-two-tracks).
+
+Full identity-bridge flag (expands the earlier abbreviation): universe
+`linked-operating-v3` and the fields reading `identity-bridge-v2-pit` depend on
+2026-dated inputs through the identity bridge (paths listed in
+`al-data/atx-db-request.md` A0); size unmeasured. Absolute Sharpe / return figures
+are possibly overstated by survivorship; the evidence of record is the paired,
+relative tests.
+
+Expanded Appendix A before completion:139 lines,Nc68,Nhand129,M110,Ntot239.
+Historical admissions61=12+25+9+15/P9+0; K_a40 historical/P9+0; M110 inherited/P9
+mining0. Eight historical window reruns add0. Window research-window-v2(2020-2023);
+hidden2024+unread in this sprint; historical validation reads2(2023-2024);
+history0;2025+neverread. Prospective140/Nc69/Nhand130/Ntot240 is not asserted
+until native append and exact prefix/count checks hold. No scientific rerun
+is needed for these documentation corrections.
