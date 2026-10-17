@@ -172,3 +172,12 @@ The committed read plan and filter now target fresh attempt2 state, with distinc
 and explicit scoreboard result path. Mechanics, then existing-bundle rho provenance, then paired read boundary
 is unchanged. G-P1 zero-spec-edits-on-retry is UNMET; a later success cannot award G-P1. This preparation is not
 a retry execution or scientific result. Await PM verification/release before launch; no next cell released.
+
+## Attempt2 actual seal stop and prepared continuation
+
+R15-H-LAUNCH2 committed `d5301d33`; attempt2 ran once, external131.2085962s, stopping at verify after completed
+run67.828s and match59.406s. No judge/trial/paired read. Full stopped record, per-hit metadata sources, native reuse
+proof and R15-SEAL-D / R15-H-VERIFY-RESUME preparation are in `cells/p9h-attempt2-seal-stop.md`.
+Source checker37 controls PASS; actual29-log rescan A4/B2/C6/D16/OTHER0. All32 wave files preserved;197 additional
+output/run files hashed; ledger134 unchanged. Frozen54/54 and CRT match, cache686/no index. Same-state resume
+is prepared but not launched pending PM verification; first six stages must reuse. G-P1 remains unawarded.

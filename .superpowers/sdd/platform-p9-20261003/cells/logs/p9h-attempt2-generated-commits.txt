@@ -1,0 +1,38 @@
+commit bd837403e794c9665d410a5e738fba1021099788
+Author:     Nathan Tormaschy <nathan.tormaschy@gmail.com>
+AuthorDate: Sat Oct 17 10:42:59 2026 -0400
+Commit:     Nathan Tormaschy <nathan.tormaschy@gmail.com>
+CommitDate: Sat Oct 17 10:42:59 2026 -0400
+
+    wave p9h-cov-hedge: theme-cov-hedge-v1-attempt2-gm.json at L 1.1674, the plain recipe of the calibrated NAV (PM6-6, P9 C2)
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+ .../templates/theme-cov-hedge-v1-attempt2-gm.json  | 38 ++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+commit b1a9f925cdf82b3537358a457b26c2c88f12bed1
+Author:     Nathan Tormaschy <nathan.tormaschy@gmail.com>
+AuthorDate: Sat Oct 17 10:42:02 2026 -0400
+Commit:     Nathan Tormaschy <nathan.tormaschy@gmail.com>
+CommitDate: Sat Oct 17 10:42:02 2026 -0400
+
+    wave p9h-cov-hedge: theme-cov-hedge-v1-attempt2-cal.json calibrated in one process (PM6-6, P9 C2)
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+ .../templates/theme-cov-hedge-v1-attempt2-cal.json | 41 ++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+commit 6f19b1e5334fd9973c89aaedbbd2f7ac09b57db3
+Author:     Nathan Tormaschy <nathan.tormaschy@gmail.com>
+AuthorDate: Sat Oct 17 10:40:52 2026 -0400
+Commit:     Nathan Tormaschy <nathan.tormaschy@gmail.com>
+CommitDate: Sat Oct 17 10:40:52 2026 -0400
+
+    wave p9h-cov-hedge: rule cell theme-cov-hedge-v1-attempt2.json on scripts/specs/p9/templates/label-terminal-gm.json
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+ .../p9/templates/theme-cov-hedge-v1-attempt2.json  | 37 ++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)

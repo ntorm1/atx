@@ -956,3 +956,9 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | item | result | evidence |
 |---|---|---|
 | G-P1 first native P9 v2 attempt | NOT EVALUATED: kind rule, 67 inherited members, one rule, zero new admission candidates; not the 73-member add-alpha example. One native wave invocation, no hand research-stage orchestration or retry. Stopped before any bounded child phase because generated template retains four requires entries. External wall 3.7267768s; completed stage seconds 0.828 + 0 + 0 + 1.219 and failed run 0.578 (sum2.625s); no complete phase-wall sum or scoreboard result, so no <=300s/<=600s pass claim. Native generated spec commit21c78bfd has exact scope/trailer/exclusion; frozen exes unchanged. No H result or trial. | `cells/p9h-cov-hedge-record.md` native attempt1; `cells/logs/p9h-native-wall.txt`, `p9h-stopped-files-sha256.txt`; `build-equity/waves/p9h-cov-hedge/receipts/05-run.failed-1.json` |
+
+### P9-H native attempt2 seal stop, 2026-10-17 (R15-H-LAUNCH2)
+
+| item | result | evidence |
+|---|---|---|
+| G-P1 interrupted native attempt2 | Kind rule67 inherited/one rule/zero admissions; external131.2085962s, stage sum129.858s including failed verify0.297s. Fresh fit/card/w/NAV phase sum116.328s; inherited u51.578s separately reused. Completed run67.828s and match59.406s; stopped solely on22 unallowed ISO provenance tokens before judge. No complete scoreboard result or throughput pass. Zero-spec-edits-on-retry UNMET after explicitly ruled metadata clones; no later success awards G-P1. | `cells/p9h-attempt2-seal-stop.md`; `cells/logs/p9h-attempt2-native-wall.txt`, `p9h-attempt2-phases-final.json`, `p9h-attempt2-verify-failed.json` |

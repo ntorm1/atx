@@ -1,0 +1,21 @@
+{
+  "chain": "atx.research-wave",
+  "code": 4,
+  "error": "verify: 22 date token(s) at or after the seal 2024-01-01 in ['build-equity/waves/p9h-cov-hedge-attempt2/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log', 'build-equity/waves/p9h-cov-hedge-attempt2/consoles/007-mechanics-reader.log', 'build-equity/waves/p9h-cov-hedge-attempt2/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log', 'build-equity/waves/p9h-cov-hedge-attempt2/consoles/012-mechanics-reader.log'] (inspect: a data date is a seal breach; a token that is not one is allowed by ruling: research_wave.py run ... --seal-allow TOKEN=RULING): stop for the PM's ruling (the cell ran; no ledger line was written)",
+  "index": 7,
+  "inputs": {
+    "match.readers": {
+      "mech-matched": "7a1537f5dd162912759f2559aaa94b3edec7952e3e380b5f7a6c4862ff81f50e",
+      "mech-parent": "ce7c37fe9943dba7f62903dc1012aba61f073d3181c3dff906e6da66978c5a27"
+    },
+    "match.record_spec_digest": "0e04a009da8c4f1b73cbce7d6a971b036c6288a3655f59f83a23c92b11571a97",
+    "match.spec_digest": "90c581679cfc39ebac0682cedaa861a9c9300bf61efdc6f16bc3300ddc797802",
+    "previous_receipt_content_sha256": "16d2b4890f3041b663af4702667cd89ea4d52446d7e0524ba78dbeca38b0a569"
+  },
+  "outputs": {},
+  "schema": "atx.stage-receipt/v1",
+  "seconds": 0.297,
+  "stage": "verify",
+  "started_utc": "2026-10-17T14:42:59+00:00",
+  "status": "failed"
+}

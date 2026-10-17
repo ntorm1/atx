@@ -77,3 +77,21 @@ Policy validation: exact node `scripts/tests/test_wave_commit_policy.py::test_wa
 Real Git scope/trailer/unrelated staged files, no-op reuse, default/empty argv and invalid exclusion are checked.
 The initial test fixture lacked Wave's thread state and failed before Git mutation; corrected fixture then passed,
 and the same test passed again after negative-exclusion validation. All three logs preserved; no suite or build.
+
+R15-H-VERIFY-RESUME update: attempt2 stopped at verify after successful run/match, solely on22 ISO metadata
+tokens. R15-SEAL-D's37-control/29-log audit classifies all actual sources A4/B2/C6/D16, OTHER0; exact evidence and
+preserved output/receipt hashes are in `cells/p9h-attempt2-seal-stop.md`. Pending PM verification/release, use the
+same manifest/state and the same three environment values with this exact supported continuation:
+
+```text
+"C:/Program Files/Python312/python.exe" -u scripts/research_cycle.py wave run scripts/specs/p9/waves/p9h-cov-hedge-attempt2.json --seal-allow 20261003=R15-SEAL-C --seal-allow 2026-10-02=R15-SEAL-D --seal-allow 2026-10-03=R15-SEAL-D --seal-allow 2026-10-06=R15-SEAL-D --seal-allow 2026-10-17=R15-SEAL-D
+```
+
+Before launch, recheck preserved binding hashes/native status and state free RAM/C: space, then immediate bounded
+execution without RAM waiting. First six stages must reuse their ok receipts; a rerun or stale binding stops.
+Keep failed07-verify.failed-1.json and all output bytes. Raw resumed console goes to
+`cells/logs/p9h-attempt2-resume-console.txt`, outer time/exit to `p9h-attempt2-resume-wall.txt`. No spec/manifest
+edit or scientific rerun. The existing first-rho log path and all reading gates above remain binding. The native
+judge's first monitor/summ/bundle is new registered work, not a rerun. All actual sources must be checked again
+before rho/paired read; identical tokens in another source remain a stop. Preserve interrupted/full/resumed timing
+separately; G-P1 remains unawarded. No P9-M release.
