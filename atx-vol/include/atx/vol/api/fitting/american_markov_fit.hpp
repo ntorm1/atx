@@ -40,17 +40,21 @@ struct AmericanMarkovFitQuote {
 };
 
 enum class AmericanMarkovFitTimeShape { Shared, PerVarianceInterval, VarianceTimeKnots };
-// ObjectiveTolerance/GradientTolerance/DampingLimit are reported only by the
-// opt-in LevenbergMarquardt search; the default coordinate search never uses them.
+// ObjectiveTolerance/GradientTolerance/DampingLimit/JacobianFailure are
+// reported only by the opt-in LevenbergMarquardt search; the default coordinate
+// search never uses them. JacobianFailure: every probe of one Jacobian column
+// was refused (see jacobian_log_step), so no gradient test was attempted.
 enum class AmericanMarkovFitTermination {
-  StepTolerance, EvaluationLimit, SweepLimit, ObjectiveTolerance, GradientTolerance, DampingLimit
+  StepTolerance, EvaluationLimit, SweepLimit, ObjectiveTolerance, GradientTolerance, DampingLimit,
+  JacobianFailure
 };
 
 // CoordinatePattern (default) is the historical derivative-free compass search
 // in log sigma: +/-step per coordinate, step halved after a sweep without any
 // improvement. LevenbergMarquardt is opt-in damped Gauss-Newton on the same
-// objective's residual vector, with a bounded forward-difference price Jacobian
-// (one objective evaluation per parameter per iteration) and box projection.
+// objective's residual vector, with a bounded one-sided-difference price
+// Jacobian (one objective evaluation per parameter per iteration, plus one
+// retry per refused probe) and box projection.
 // Neither certifies a global optimum.
 enum class AmericanMarkovFitSearch { CoordinatePattern, LevenbergMarquardt };
 
@@ -123,10 +127,17 @@ struct AmericanMarkovFitConfig {
   // gradient_tolerance terminates (0 stops only on an exactly zero gradient).
   double objective_tolerance = 0.0;
   double gradient_tolerance = 0.0;
-  // Forward-difference step in log sigma; mirrored to a backward step at max_sigma.
+  // One-sided difference step in log sigma: forward, or backward when the
+  // forward room to max_sigma is shorter than this step (the side with more
+  // room when both are). A refused probe (e.g. over max_rollback_work) is
+  // retried once in the other direction within the evaluation budget; if no
+  // probe of a column succeeds the search stops with JacobianFailure rather
+  // than test a gradient with a missing column.
   double jacobian_log_step = 1.0e-3;
   // Marquardt damping relative to diag(J'J); grows on rejected trial steps.
   // A rejection that would exceed max_damping terminates with DampingLimit.
+  // A damped system that is not numerically positive definite grows the
+  // damping without spending an evaluation.
   double initial_damping = 1.0e-3;
   double max_damping = 1.0e10;
 };

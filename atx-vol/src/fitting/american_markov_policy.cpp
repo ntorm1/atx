@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
@@ -17,6 +19,16 @@ using atx::core::Ok;
 
 bool positive(double x) noexcept { return std::isfinite(x) && x > 0.0; }
 bool nonnegative(double x) noexcept { return std::isfinite(x) && x >= 0.0; }
+
+// The validators shared with the fitter speak as "Markov fit:"; a catalog
+// refusal keeps the "Markov policy:" prefix of every other profile check.
+// Code and message body are unchanged.
+[[nodiscard]] Status as_policy_refusal(Status status) {
+  constexpr std::string_view fit_prefix = "Markov fit: ";
+  if (status || !status.error().message().starts_with(fit_prefix)) return status;
+  return Err(status.error().code(),
+             "Markov policy: " + status.error().message().substr(fit_prefix.size()));
+}
 
 bool valid_name(std::string_view name) noexcept {
   return !name.empty() && name.size() <= kAmericanMarkovPolicyMaxNameBytes &&
@@ -99,8 +111,8 @@ Status validate_fit(const AmericanMarkovPolicyProfile &profile) {
       }
     }
   }
-  ATX_TRY_VOID(detail::validate_markov_fit_search(c));
-  ATX_TRY_VOID(detail::validate_markov_time_knots(c));
+  ATX_TRY_VOID(as_policy_refusal(detail::validate_markov_fit_search(c)));
+  ATX_TRY_VOID(as_policy_refusal(detail::validate_markov_time_knots(c)));
   const auto knots = std::max(std::size_t{1}, c.log_state_knots.size());
   const auto fixed_groups = c.time_shape == AmericanMarkovFitTimeShape::Shared ? 1U :
       c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots

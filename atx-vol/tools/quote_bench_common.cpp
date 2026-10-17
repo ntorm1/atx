@@ -90,6 +90,7 @@ const char *termination_name(AmericanMarkovFitTermination value) {
   case AmericanMarkovFitTermination::ObjectiveTolerance: return "objective_tolerance";
   case AmericanMarkovFitTermination::GradientTolerance: return "gradient_tolerance";
   case AmericanMarkovFitTermination::DampingLimit: return "damping_limit";
+  case AmericanMarkovFitTermination::JacobianFailure: return "jacobian_failure";
   }
   return "unknown";
 }
@@ -601,7 +602,11 @@ CommonRun run_common_markov(const std::vector<InputRow> &rows, const std::string
     count(p["row_status_counts"], prediction.status);
     count(p["vol_status_counts"], prediction.vol_status);
   }
-  result.report = {{"schema_version", 3}, {"model", "common-markov"}, {"rows", rows.size()},
+  // Schema 4: each decision's fit record replaced interval_groups with
+  // time_shape, variance_time_knots, interval_time_weights and time_basis
+  // (plus time_interpolation for knot mode), and fit termination may be
+  // jacobian_failure. Every other key is as in schema 3.
+  result.report = {{"schema_version", 4}, {"model", "common-markov"}, {"rows", rows.size()},
       {"chains", chain_identity.size()}, {"snapshots", groups.size()},
       {"fitted_snapshots", fitted_snapshots}, {"fitted_chains", fitted_chains},
       {"served_rows", served}, {"served_vol_rows", vol_served}, {"admitted_quotes", served},

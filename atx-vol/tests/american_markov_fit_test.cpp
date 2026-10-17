@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
+#include "fitting/american_markov_fit_lm.hpp"
 #include "fitting/american_markov_time_basis.hpp"
 
 namespace atx::vol {
@@ -1751,6 +1752,221 @@ TEST(AmericanMarkovFitSearch, LevenbergMarquardtTerminationsAreExplicitAndDeterm
   EXPECT_LE(a->diagnostics().best_evaluation, a->diagnostics().evaluations);
   EXPECT_LE(a->diagnostics().evaluations, a->diagnostics().evaluation_budget);
   EXPECT_GT(a->diagnostics().final_damping, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Levenberg-Marquardt refusal paths. ExplicitEuler on its fixed default grid
+// subdivides each interval by a CFL count proportional to sigma^2, so a
+// max_rollback_work cap equal to one flat-sigma evaluation refuses exactly the
+// probes and trials whose sigma is larger. Each test asserts that premise.
+// ---------------------------------------------------------------------------
+
+// One objective evaluation's rollback work at a flat sigma (ExplicitEuler).
+std::size_t flat_work(const AmericanMarkovFitMarket &market,
+                      std::span<const AmericanMarkovFitQuote> quotes, double sigma) {
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.initial_sigma = sigma;
+  config.max_evaluations = 1; // Below one LM iteration: the initial model only.
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  EXPECT_TRUE(fit) << fit.error().to_string();
+  return fit ? quote_work(fit->model(), quotes) : 0U;
+}
+
+TEST(AmericanMarkovFitSearch, RefusedJacobianProbeIsRetriedInTheOtherDirection) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  const std::array knots{0.0};
+  const std::array target{0.2};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, target, strikes, 0.002);
+  ASSERT_FALSE(quotes.empty());
+  const auto cap = flat_work(market, quotes, 0.25);
+  ASSERT_GT(flat_work(market, quotes, 0.25 * std::exp(0.5)), cap);
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.jacobian_log_step = 0.5; // Forward probe 0.41 is refused; backward 0.15 is not.
+  config.max_rollback_work = cap;
+  config.max_sweeps = 4;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  EXPECT_NE(d.termination, AmericanMarkovFitTermination::JacobianFailure);
+  EXPECT_GE(d.failed_evaluations, 1U);
+  // The first column needed the fallback: a refused probe, then an admitted one.
+  EXPECT_GE(d.jacobian_evaluations, 2U);
+  EXPECT_GT(d.gradient_norm, 0.0);
+  EXPECT_GE(d.accepted_steps, 1U);
+  EXPECT_LT(d.objective, d.initial_objective);
+  EXPECT_LT(fit->sigmas()[0], 0.25);
+}
+
+TEST(AmericanMarkovFitSearch, ColumnWithoutAnAdmittedProbeStopsWithJacobianFailure) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  const std::array knots{0.0};
+  const std::array target{0.31};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, target, strikes, 0.002);
+  ASSERT_FALSE(quotes.empty());
+  const auto cap = flat_work(market, quotes, 0.2);
+  ASSERT_GT(flat_work(market, quotes, 0.2 * std::exp(0.5)), cap);
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  // At min_sigma the backward probe cannot move, so the refused forward probe
+  // has no fallback. Before the fix the zero column passed the gradient test.
+  config.min_sigma = 0.2;
+  config.initial_sigma = 0.2;
+  config.jacobian_log_step = 0.5;
+  config.max_rollback_work = cap;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  EXPECT_EQ(d.termination, AmericanMarkovFitTermination::JacobianFailure);
+  EXPECT_EQ(d.evaluations, 2U);
+  EXPECT_EQ(d.jacobian_evaluations, 1U);
+  EXPECT_EQ(d.failed_evaluations, 1U);
+  EXPECT_EQ(d.gradient_norm, 0.0); // No gradient test on a missing column.
+  EXPECT_EQ(d.accepted_steps, 0U);
+  EXPECT_EQ(d.completed_sweeps, 0U);
+  EXPECT_EQ(fit->sigmas()[0], 0.2);
+  EXPECT_EQ(d.objective, d.initial_objective);
+}
+
+TEST(AmericanMarkovFitSearch, ForwardRoomShorterThanTheStepProbesBackward) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const auto market = resolvent_market(intervals);
+  const std::array knots{0.0};
+  const std::array target{0.25};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, target, strikes, 0.002);
+  ASSERT_FALSE(quotes.empty());
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.max_sigma = 0.3;
+  config.initial_sigma = 0.2999; // Forward room log(0.3/0.2999) is far below the step.
+  config.jacobian_log_step = 0.01;
+  config.gradient_tolerance = 1.0e6; // Stop after the first Jacobian.
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  EXPECT_EQ(d.termination, AmericanMarkovFitTermination::GradientTolerance);
+  EXPECT_EQ(d.jacobian_evaluations, 1U);
+  // The full backward probe moved toward the quotes and became the best model;
+  // a forward probe would have been truncated to max_sigma (away from them).
+  EXPECT_EQ(d.best_evaluation, 2U);
+  EXPECT_EQ(bits_of(fit->sigmas()[0]), bits_of(std::exp(std::log(0.2999) - 0.01)));
+}
+
+// DampingLimit: with max_damping == initial_damping, the first rejected trial
+// (refused here by the work cap) cannot grow the damping and ends the search.
+TEST(AmericanMarkovFitSearch, FirstRejectedTrialAtMaxDampingStopsWithDampingLimit) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  const std::array knots{0.0};
+  const std::array target{0.31};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, target, strikes, 0.002);
+  ASSERT_FALSE(quotes.empty());
+  const auto cap = flat_work(market, quotes, 0.25);
+  ASSERT_GT(flat_work(market, quotes, 0.28), cap);
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.max_rollback_work = cap;
+  config.max_damping = config.initial_damping;
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  EXPECT_EQ(d.termination, AmericanMarkovFitTermination::DampingLimit);
+  EXPECT_EQ(d.rejected_steps, 1U);
+  EXPECT_EQ(d.accepted_steps, 0U);
+  EXPECT_EQ(d.completed_sweeps, 0U);
+  EXPECT_GE(d.failed_evaluations, 1U); // The trial toward 0.31 exceeded the work cap.
+  EXPECT_EQ(d.evaluations, 1U + d.jacobian_evaluations + 1U);
+  EXPECT_EQ(d.final_damping, 2.0 * config.initial_damping);
+}
+
+// The Cholesky refusal is unreachable from finite public inputs (a finite J'J
+// plus the Marquardt diagonal is positive definite), so the solver's contract
+// is driven directly through the private header.
+TEST(AmericanMarkovFitSearch, DampedStepSolvesPositiveSystemsAndRefusesTheRest) {
+  std::vector<double> system(4);
+  std::vector<double> step(2);
+  const std::array normal{4.0, 0.0, 0.0, 9.0};
+  const std::array gradient{2.0, -3.0};
+  ASSERT_TRUE(detail::markov_lm_damped_step(normal, gradient, 1.0, system, step));
+  EXPECT_DOUBLE_EQ(step[0], -2.0 / 8.0); // (A + 1 * diag(A)) x = -g.
+  EXPECT_DOUBLE_EQ(step[1], 3.0 / 18.0);
+  const std::array indefinite{1.0, 2.0, 2.0, 1.0};
+  EXPECT_FALSE(detail::markov_lm_damped_step(indefinite, gradient, 1.0e-3, system, step));
+  const std::array nonfinite{std::numeric_limits<double>::infinity(), 0.0, 0.0, 1.0};
+  EXPECT_FALSE(detail::markov_lm_damped_step(nonfinite, gradient, 1.0e-3, system, step));
+  const std::array nan_gradient{std::numeric_limits<double>::quiet_NaN(), 0.0};
+  EXPECT_FALSE(detail::markov_lm_damped_step(normal, nan_gradient, 1.0, system, step));
+}
+
+// VarianceTimeKnots is the shape whose reuse rule is non-trivial: interpolation
+// groups plus paused rows. Interval 1 is paused but maps onto knot 1, so knot
+// 1's probe conservatively reprices expiries 1..2 and reuses expiry 0 only.
+// The best model is that reused probe; its stored prices must equal a full
+// fitter-identical repricing bit for bit.
+TEST(AmericanMarkovFitSearch, TimeKnotProbeReusesOnlyTheUnaffectedPrefixBitForBit) {
+  const std::array intervals{AmericanMarkovFitInterval{0.1, 0.1, 0.0, 0.0, 0.0},
+                             AmericanMarkovFitInterval{0.2, 0.1, 0.0, 0.0, 0.0},
+                             AmericanMarkovFitInterval{0.5, 0.5, 0.0, 0.0, 0.0}};
+  const auto market = resolvent_market(intervals);
+  const std::array time_knots{0.05, 0.4};
+  std::vector<AmericanMarkovFitQuote> quotes;
+  for (std::size_t expiry = 0; expiry < intervals.size(); ++expiry) {
+    for (const auto side : {Side::Call, Side::Put}) {
+      for (const double strike : {85.0, 95.0, 100.0, 105.0, 115.0}) {
+        quotes.push_back({expiry, strike, side, 0.0, 1000.0, 1.0});
+      }
+    }
+  }
+  const auto price_at = [&](std::span<const double> controls) {
+    auto config = knot_config(time_knots);
+    config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+    config.initial_sigmas = controls;
+    return fit_american_markov_intervals(market, quotes, config);
+  };
+  const std::array truth{0.25, 0.35};
+  const auto generator = price_at(truth);
+  ASSERT_TRUE(generator) << generator.error().to_string();
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const double price = generator->quote_prices()[i];
+    quotes[i].bid = std::max(0.0, price - 0.0005);
+    quotes[i].ask = price + 0.0005;
+  }
+  const double step = 0.02;
+  const std::array initial{truth[0], truth[1] * std::exp(-step)};
+  const auto start = price_at(initial);
+  ASSERT_TRUE(start) << start.error().to_string();
+
+  auto config = knot_config(time_knots);
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.initial_sigmas = initial;
+  config.max_evaluations = 64;
+  config.jacobian_log_step = step;   // Knot 1's forward probe lands on the truth.
+  config.gradient_tolerance = 1.0e6; // Stop after the first Jacobian.
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  ASSERT_EQ(d.termination, AmericanMarkovFitTermination::GradientTolerance);
+  ASSERT_EQ(d.jacobian_evaluations, 2U);
+  ASSERT_EQ(d.best_evaluation, 3U) << "the knot-1 probe must be the stored model";
+  const std::size_t prefix = 10; // Expiry 0: five strikes, two sides.
+  EXPECT_EQ(d.reused_quote_prices, prefix);
+  EXPECT_EQ(d.priced_quotes + d.reused_quote_prices, d.evaluations * quotes.size());
+  EXPECT_LT(d.objective, d.initial_objective);
+  const auto repriced = batch_reprice(fit->model(), quotes);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    EXPECT_EQ(bits_of(repriced[i]), bits_of(fit->quote_prices()[i])) << i;
+    if (quotes[i].expiry_index == 0) {
+      // The reused prefix is the starting model's own price, bit for bit.
+      EXPECT_EQ(bits_of(fit->quote_prices()[i]), bits_of(start->quote_prices()[i])) << i;
+    }
+  }
 }
 
 } // namespace

@@ -8,6 +8,7 @@
 
 #include "atx/vol/api/pricing/american_markov_batch.hpp"
 #include "fitting/american_markov_fit_controls.hpp"
+#include "fitting/american_markov_fit_lm.hpp"
 #include "fitting/american_markov_time_basis.hpp"
 
 namespace atx::vol {
@@ -123,8 +124,8 @@ struct Layout {
 // One owned row per ORIGINAL interval, including paused variance. The compiler
 // applies the same schedule predicates; checking here keeps every represented
 // midpoint finite before any knot interpolation.
-Status map_time_weights(const AmericanMarkovFitMarket &m, const AmericanMarkovFitConfig &c,
-                        Layout &out) {
+[[nodiscard]] Status map_time_weights(const AmericanMarkovFitMarket &m,
+                                      const AmericanMarkovFitConfig &c, Layout &out) {
   const bool time_knots = c.time_shape == AmericanMarkovFitTimeShape::VarianceTimeKnots;
   if (time_knots) out.time_groups = out.time_knots.size();
   out.time_weights.reserve(m.intervals.size());
@@ -160,8 +161,9 @@ Status map_time_weights(const AmericanMarkovFitMarket &m, const AmericanMarkovFi
 // the model's own volatility budget. The represented interval log-sigma basis
 // must pass its fixed numerical admission over the final quoted prefix; the
 // objective's prior/roughness terms are never consulted, so they cannot rescue it.
-Status admit_time_knots(const AmericanMarkovFitMarket &m,
-                        std::span<const AmericanMarkovFitQuote> quotes, Layout &out) {
+[[nodiscard]] Status admit_time_knots(const AmericanMarkovFitMarket &m,
+                                      std::span<const AmericanMarkovFitQuote> quotes,
+                                      Layout &out) {
   const auto capacity = m.model_config.max_stored_volatility_values;
   if (capacity == 0 || capacity > kAmericanMarkovMaxStoredVolatilityValues ||
       m.intervals.size() > capacity / out.knots.size()) {
@@ -342,6 +344,9 @@ struct Evaluator {
           const double sigma = interpolated_sigma(sigmas[mapping.left_group * knot_count + j],
                                                   sigmas[mapping.right_group * knot_count + j],
                                                   mapping.right_weight);
+          // Defensive invariant, unreachable: interpolated_sigma brackets its
+          // result between two in-bounds controls. Were it ever to fire, the
+          // trial would only count as a failed evaluation.
           if (!positive(sigma) || sigma < config.min_sigma || sigma > config.max_sigma) {
             return Err(ErrorCode::OutOfRange, "Markov fit: interpolated sigma loses range");
           }
@@ -599,11 +604,12 @@ double normal_equations(const Evaluator &e, std::span<const double> prices,
   return norm;
 }
 
-// Cholesky solve of (A + damping * diag(max(A_jj, floor))) x = -g, with the
-// Marquardt floor relative to the largest diagonal. False when the damped
-// system is not numerically positive definite or the step is nonfinite.
-bool damped_step(std::span<const double> normal, std::span<const double> gradient,
-                 double damping, std::vector<double> &system, std::vector<double> &step) {
+} // namespace
+
+namespace detail {
+bool markov_lm_damped_step(std::span<const double> normal, std::span<const double> gradient,
+                           double damping, std::vector<double> &system,
+                           std::vector<double> &step) {
   const auto n = gradient.size();
   double largest = 0.0;
   for (std::size_t j = 0; j < n; ++j) largest = std::max(largest, normal[j * n + j]);
@@ -637,7 +643,9 @@ bool damped_step(std::span<const double> normal, std::span<const double> gradien
   }
   return true;
 }
+} // namespace detail
 
+namespace {
 // Linear-model decrease ||r||^2 - ||r + J step||^2 = -2 g'step - step'A step.
 double predicted_decrease(std::span<const double> normal, std::span<const double> gradient,
                           std::span<const double> step) {
@@ -654,127 +662,197 @@ double predicted_decrease(std::span<const double> normal, std::span<const double
 constexpr std::size_t kMaxDampingAttempts = 128; // Damping at least doubles per rejection.
 constexpr double kMinDamping = 1.0e-12;
 
+// The Levenberg-Marquardt iterate (which moves only on strict decrease), its
+// damping state and every scratch buffer, allocated once per fit.
+struct LmState {
+  std::vector<double> sigmas;
+  std::vector<double> prices;
+  double value = 0.0;
+  double damping = 0.0;
+  double growth = 2.0;
+  double low = 0.0;  // log(min_sigma)
+  double high = 0.0; // log(max_sigma)
+  std::vector<double> jacobian;
+  std::vector<double> normal;
+  std::vector<double> gradient;
+  std::vector<double> system;
+  std::vector<double> step;
+  std::vector<double> trial;
+
+  [[nodiscard]] double bounded(double log_sigma, const AmericanMarkovFitConfig &c) const {
+    return std::clamp(std::exp(std::clamp(log_sigma, low, high)), c.min_sigma, c.max_sigma);
+  }
+};
+
+// Jacobian probes and trials are fully evaluated models: one that beats the
+// stored best replaces it, without moving the LM iterate.
+void adopt(SearchState &s, Candidate &candidate, std::span<const double> controls) {
+  if (!(candidate.loss.total < s.best.loss.total)) return;
+  s.best = std::move(candidate);
+  s.sigmas.assign(controls.begin(), controls.end());
+  s.diagnostics.best_evaluation = s.diagnostics.evaluations;
+}
+
+// Column p of d price / d log sigma by a one-sided difference, reusing the
+// exact unaffected quote prefix. The primary probe is a full jacobian_log_step
+// forward unless the forward room to max_sigma is shorter (then backward, so
+// the step never shrinks toward one ulp near the bound; with both rooms short,
+// the side with more room). A refused probe is retried once in the other
+// direction if the budget allows. A probe that rounds back to the centre is
+// skipped without an evaluation; if neither can move (a box narrower than the
+// rounding of one step) the column stays zero, an exact "no sensitivity".
+// Returns false only when every evaluated probe was refused.
+bool jacobian_column(SearchState &s, LmState &lm, std::size_t p, std::size_t first_order) {
+  const auto &c = s.config;
+  auto &d = s.diagnostics;
+  const auto q = s.evaluator.quotes.size();
+  const auto column = std::span<double>(lm.jacobian).subspan(p * q, q);
+  std::fill(column.begin(), column.end(), 0.0);
+  const double center = std::log(lm.sigmas[p]);
+  const double room_up = lm.high - center;
+  const double room_down = center - lm.low;
+  const bool forward = room_up >= c.jacobian_log_step ||
+                       (room_down < c.jacobian_log_step && room_up >= room_down);
+  const double first = forward ? 1.0 : -1.0;
+  bool refused = false;
+  for (const double direction : {first, -first}) {
+    // A sigma on a bound has no room that way; exp(log(bound)) rounding must
+    // not manufacture a sub-ulp probe there.
+    if (!((direction > 0.0 ? room_up : room_down) > 0.0)) continue;
+    const double probe = lm.bounded(center + direction * c.jacobian_log_step, c);
+    const double delta = std::log(probe) - center;
+    if (delta == 0.0) continue;
+    if (d.evaluations >= s.budget) return false; // A refused primary cannot be retried.
+    lm.trial = lm.sigmas;
+    lm.trial[p] = probe;
+    ++d.evaluations;
+    ++d.jacobian_evaluations;
+    auto candidate = evaluate(s.evaluator, lm.trial, lm.prices, first_order);
+    if (!candidate) {
+      ++d.failed_evaluations;
+      refused = true;
+      continue;
+    }
+    for (std::size_t i = 0; i < q; ++i) column[i] = (candidate->prices[i] - lm.prices[i]) / delta;
+    adopt(s, *candidate, lm.trial);
+    return true;
+  }
+  return !refused;
+}
+
+// Every column at the current iterate. One column without a successful probe
+// stops the search (JacobianFailure): a zero column would freeze that
+// parameter, and a gradient test on the partial gradient could report a false
+// stationary point. Budget is re-checked per column because retries spend it.
+bool refresh_jacobian(SearchState &s, LmState &lm, std::span<const std::size_t> suffix) {
+  auto &d = s.diagnostics;
+  for (std::size_t p = 0; p < lm.sigmas.size(); ++p) {
+    if (d.evaluations >= s.budget) {
+      d.termination = AmericanMarkovFitTermination::EvaluationLimit;
+      return false;
+    }
+    if (!jacobian_column(s, lm, p, suffix[p])) {
+      d.termination = AmericanMarkovFitTermination::JacobianFailure;
+      return false;
+    }
+  }
+  return true;
+}
+
+// Damped, box-projected trials from the current iterate until one strictly
+// decreases the objective (Nielsen damping update; returns true) or the search
+// stops with a termination code (returns false): step or objective tolerance,
+// budget, or damping beyond max_damping (DampingLimit). A Cholesky refusal
+// grows the damping without spending an evaluation.
+bool damped_trials(SearchState &s, LmState &lm) {
+  const auto &c = s.config;
+  auto &d = s.diagnostics;
+  const auto n = lm.sigmas.size();
+  const auto grow = [&] {
+    lm.damping *= lm.growth;
+    lm.growth *= 2.0;
+    d.final_damping = lm.damping;
+    return lm.damping <= c.max_damping;
+  };
+  for (std::size_t attempt = 0; attempt < kMaxDampingAttempts; ++attempt) {
+    if (!detail::markov_lm_damped_step(lm.normal, lm.gradient, lm.damping, lm.system, lm.step)) {
+      if (!grow()) break;
+      continue;
+    }
+    double largest = 0.0;
+    for (std::size_t p = 0; p < n; ++p) {
+      lm.trial[p] = lm.bounded(std::log(lm.sigmas[p]) + lm.step[p], c);
+      lm.step[p] = std::log(lm.trial[p]) - std::log(lm.sigmas[p]);
+      largest = std::max(largest, std::abs(lm.step[p]));
+    }
+    d.final_log_step = largest;
+    if (largest < c.min_log_step) {
+      d.termination = AmericanMarkovFitTermination::StepTolerance;
+      return false;
+    }
+    if (d.evaluations >= s.budget) {
+      d.termination = AmericanMarkovFitTermination::EvaluationLimit;
+      return false;
+    }
+    const double predicted = predicted_decrease(lm.normal, lm.gradient, lm.step);
+    ++d.evaluations;
+    auto candidate = evaluate(s.evaluator, lm.trial);
+    if (!candidate || !(candidate->loss.total < lm.value)) {
+      d.failed_evaluations += candidate ? 0U : 1U;
+      ++d.rejected_steps;
+      if (!grow()) break;
+      continue;
+    }
+    const double decrease = lm.value - candidate->loss.total;
+    const double ratio = predicted > 0.0 ? decrease / predicted : 0.0;
+    const double cube = (2.0 * ratio - 1.0) * (2.0 * ratio - 1.0) * (2.0 * ratio - 1.0);
+    lm.damping = std::max(lm.damping * std::max(1.0 / 3.0, 1.0 - cube), kMinDamping);
+    lm.growth = 2.0;
+    d.final_damping = lm.damping;
+    const bool converged = decrease <= c.objective_tolerance * lm.value;
+    lm.value = candidate->loss.total;
+    lm.prices = candidate->prices;
+    lm.sigmas = lm.trial;
+    ++d.accepted_steps;
+    adopt(s, *candidate, lm.trial);
+    if (converged) {
+      ++d.completed_sweeps;
+      d.termination = AmericanMarkovFitTermination::ObjectiveTolerance;
+      return false;
+    }
+    return true;
+  }
+  d.termination = AmericanMarkovFitTermination::DampingLimit;
+  return false;
+}
+
 // Damped Gauss-Newton in log sigma (Nielsen damping update), box-projected.
-// One iteration costs n Jacobian evaluations plus >= 1 trial evaluation, and
-// is attempted only if the remaining budget covers n + 1. The iterate moves
-// only on strict decrease; Jacobian probes that happen to beat the stored best
-// replace it (they are fully evaluated models) without moving the iterate.
+// One iteration costs n Jacobian evaluations (plus any probe retries) and >= 1
+// trial evaluation, and is attempted only if the remaining budget covers n + 1.
 void levenberg_marquardt(SearchState &s) {
-  auto &e = s.evaluator;
   const auto &c = s.config;
   auto &d = s.diagnostics;
   const auto n = s.sigmas.size();
-  const auto q = e.quotes.size();
-  const double low = std::log(c.min_sigma);
-  const double high = std::log(c.max_sigma);
-  const auto bounded = [&](double log_sigma) {
-    return std::clamp(std::exp(std::clamp(log_sigma, low, high)), c.min_sigma, c.max_sigma);
-  };
-  const auto suffix = repriced_suffixes(e.quotes, s.shape, n);
-  std::vector<double> sigmas = s.sigmas;
-  std::vector<double> prices = s.best.prices;
-  double value = s.best.loss.total;
-  std::vector<double> jacobian(n * q), normal(n * n), gradient(n), system(n * n), step(n);
-  std::vector<double> trial(n);
-  double damping = c.initial_damping;
-  double growth = 2.0;
-  d.final_damping = damping;
-  const auto adopt = [&](Candidate &candidate, std::span<const double> controls) {
-    if (!(candidate.loss.total < s.best.loss.total)) return;
-    s.best = std::move(candidate);
-    s.sigmas.assign(controls.begin(), controls.end());
-    d.best_evaluation = d.evaluations;
-  };
-  const auto grow = [&] {
-    damping *= growth;
-    growth *= 2.0;
-    d.final_damping = damping;
-    return damping <= c.max_damping;
-  };
+  const auto q = s.evaluator.quotes.size();
+  const auto suffix = repriced_suffixes(s.evaluator.quotes, s.shape, n);
+  LmState lm{s.sigmas, s.best.prices, s.best.loss.total, c.initial_damping, 2.0,
+             std::log(c.min_sigma), std::log(c.max_sigma), std::vector<double>(n * q),
+             std::vector<double>(n * n), std::vector<double>(n), std::vector<double>(n * n),
+             std::vector<double>(n), std::vector<double>(n)};
+  d.final_damping = lm.damping;
   for (std::size_t iteration = 0; iteration < c.max_sweeps; ++iteration) {
     if (s.budget - d.evaluations < n + 1) {
       d.termination = AmericanMarkovFitTermination::EvaluationLimit;
       return;
     }
-    for (std::size_t p = 0; p < n; ++p) {
-      const auto column = std::span<double>(jacobian).subspan(p * q, q);
-      std::fill(column.begin(), column.end(), 0.0);
-      const double center = std::log(sigmas[p]);
-      double probe = bounded(center + c.jacobian_log_step);
-      if (probe == sigmas[p]) probe = bounded(center - c.jacobian_log_step);
-      const double delta = std::log(probe) - center;
-      trial = sigmas;
-      trial[p] = probe;
-      ++d.evaluations;
-      ++d.jacobian_evaluations;
-      auto candidate = evaluate(e, trial, prices, suffix[p]);
-      if (!candidate) {
-        ++d.failed_evaluations; // Column stays zero: p is frozen this iteration.
-        continue;
-      }
-      if (delta != 0.0) {
-        for (std::size_t i = 0; i < q; ++i) column[i] = (candidate->prices[i] - prices[i]) / delta;
-      }
-      adopt(*candidate, trial);
-    }
-    d.gradient_norm = normal_equations(e, prices, sigmas, jacobian, normal, gradient);
+    if (!refresh_jacobian(s, lm, suffix)) return;
+    d.gradient_norm =
+        normal_equations(s.evaluator, lm.prices, lm.sigmas, lm.jacobian, lm.normal, lm.gradient);
     if (!(d.gradient_norm > c.gradient_tolerance)) {
       d.termination = AmericanMarkovFitTermination::GradientTolerance;
       return;
     }
-    bool accepted = false;
-    for (std::size_t attempt = 0; attempt < kMaxDampingAttempts && !accepted; ++attempt) {
-      if (!damped_step(normal, gradient, damping, system, step)) {
-        if (!grow()) break;
-        continue;
-      }
-      double largest = 0.0;
-      for (std::size_t p = 0; p < n; ++p) {
-        trial[p] = bounded(std::log(sigmas[p]) + step[p]);
-        step[p] = std::log(trial[p]) - std::log(sigmas[p]);
-        largest = std::max(largest, std::abs(step[p]));
-      }
-      d.final_log_step = largest;
-      if (largest < c.min_log_step) {
-        d.termination = AmericanMarkovFitTermination::StepTolerance;
-        return;
-      }
-      if (d.evaluations >= s.budget) {
-        d.termination = AmericanMarkovFitTermination::EvaluationLimit;
-        return;
-      }
-      const double predicted = predicted_decrease(normal, gradient, step);
-      ++d.evaluations;
-      auto candidate = evaluate(e, trial);
-      if (!candidate || !(candidate->loss.total < value)) {
-        d.failed_evaluations += candidate ? 0U : 1U;
-        ++d.rejected_steps;
-        if (!grow()) break;
-        continue;
-      }
-      const double decrease = value - candidate->loss.total;
-      const double ratio = predicted > 0.0 ? decrease / predicted : 0.0;
-      const double cube = (2.0 * ratio - 1.0) * (2.0 * ratio - 1.0) * (2.0 * ratio - 1.0);
-      damping = std::max(damping * std::max(1.0 / 3.0, 1.0 - cube), kMinDamping);
-      growth = 2.0;
-      d.final_damping = damping;
-      const bool converged = decrease <= c.objective_tolerance * value;
-      value = candidate->loss.total;
-      prices = candidate->prices;
-      sigmas = trial;
-      ++d.accepted_steps;
-      adopt(*candidate, trial);
-      accepted = true;
-      if (converged) {
-        ++d.completed_sweeps;
-        d.termination = AmericanMarkovFitTermination::ObjectiveTolerance;
-        return;
-      }
-    }
-    if (!accepted) {
-      d.termination = AmericanMarkovFitTermination::DampingLimit;
-      return;
-    }
+    if (!damped_trials(s, lm)) return;
     ++d.completed_sweeps;
   }
   d.termination = AmericanMarkovFitTermination::SweepLimit;

@@ -19,6 +19,24 @@ const char *to_string(QuoteSliceCarryMode value) noexcept {
   return "unknown";
 }
 
+const char *to_string(QuoteSliceCarryFallback value) noexcept {
+  switch (value) {
+  case QuoteSliceCarryFallback::None:
+    return "none";
+  case QuoteSliceCarryFallback::DatedCash:
+    return "dated_cash";
+  case QuoteSliceCarryFallback::InvalidMarket:
+    return "invalid_market";
+  case QuoteSliceCarryFallback::EstimateRefused:
+    return "estimate_refused";
+  case QuoteSliceCarryFallback::NoModelYield:
+    return "no_model_yield";
+  case QuoteSliceCarryFallback::SliceRefused:
+    return "slice_refused";
+  }
+  return "unknown";
+}
+
 namespace detail {
 namespace {
 
@@ -153,12 +171,14 @@ Result<QuoteSliceFit> fit_quote_slice_resolving_carry(const QuoteSliceMarket &ma
     return Err(ErrorCode::InvalidArgument, "quote slice: unknown carry mode");
   }
   if (config.dividend_model == QuoteSliceDividendModel::DatedCash) {
+    resolution.fallback = QuoteSliceCarryFallback::DatedCash;
     resolution.reason = "dated-cash lattice forward is not an implied-forward model";
     return fit_supplied(market, quotes, supplied, dividends, resolution);
   }
   if (!positive(market.spot) || !positive(market.variance_years) ||
       !positive(market.calendar_years) || !std::isfinite(market.rate)) {
     // The Supplied fit reports the malformed market exactly as it always has.
+    resolution.fallback = QuoteSliceCarryFallback::InvalidMarket;
     resolution.reason = "invalid market";
     return fit_supplied(market, quotes, supplied, dividends, resolution);
   }
@@ -179,6 +199,7 @@ Result<QuoteSliceFit> fit_quote_slice_resolving_carry(const QuoteSliceMarket &ma
       estimate_implied_forward(estimator_market, pairs, config.carry.implied);
   record_estimate(resolution, estimate);
   if (estimate.status != ImpliedForwardStatus::Ok) {
+    resolution.fallback = QuoteSliceCarryFallback::EstimateRefused;
     return fit_supplied(market, quotes, supplied, dividends, resolution);
   }
 
@@ -186,6 +207,7 @@ Result<QuoteSliceFit> fit_quote_slice_resolving_carry(const QuoteSliceMarket &ma
   implied_market.continuous_yield = model_yield(market, config.dividend_model, estimate.forward);
   resolution.implied_yield = implied_market.continuous_yield;
   if (!std::isfinite(implied_market.continuous_yield)) {
+    resolution.fallback = QuoteSliceCarryFallback::NoModelYield;
     resolution.reason = "implied forward has no yield under the dividend model";
     return fit_supplied(market, quotes, supplied, dividends, resolution);
   }
@@ -197,6 +219,7 @@ Result<QuoteSliceFit> fit_quote_slice_resolving_carry(const QuoteSliceMarket &ma
   }
   auto fit = fit_quote_slice(implied_market, implied_quotes, supplied, dividends);
   if (!fit) {
+    resolution.fallback = QuoteSliceCarryFallback::SliceRefused;
     resolution.reason = "slice refused the implied carry";
     return fit_supplied(market, quotes, supplied, dividends, resolution);
   }

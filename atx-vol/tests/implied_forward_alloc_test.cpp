@@ -7,8 +7,13 @@
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <vector>
+
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 #include <gtest/gtest.h>
 
@@ -18,12 +23,37 @@
 namespace implied_forward_alloc {
 std::atomic<bool> g_armed{false};
 std::atomic<std::size_t> g_count{0};
+
+void count() noexcept {
+  if (g_armed.load(std::memory_order_relaxed)) {
+    g_count.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+// Over-aligned requests (alignof > __STDCPP_DEFAULT_NEW_ALIGNMENT__) never
+// reach operator new(size_t): the MSVC runtime serves them with
+// _aligned_malloc. They are replaced and counted too, so an over-aligned
+// allocation cannot slip past a zero-allocation test.
+void *aligned_allocate(std::size_t size, std::size_t alignment) noexcept {
+  const std::size_t bytes = size == 0 ? 1 : size;
+#if defined(_WIN32)
+  return _aligned_malloc(bytes, alignment);
+#else
+  return std::aligned_alloc(alignment, (bytes + alignment - 1) / alignment * alignment);
+#endif
+}
+
+void aligned_release(void *p) noexcept {
+#if defined(_WIN32)
+  _aligned_free(p);
+#else
+  std::free(p);
+#endif
+}
 } // namespace implied_forward_alloc
 
 void *operator new(std::size_t size) {
-  if (implied_forward_alloc::g_armed.load(std::memory_order_relaxed)) {
-    implied_forward_alloc::g_count.fetch_add(1, std::memory_order_relaxed);
-  }
+  implied_forward_alloc::count();
   if (void *p = std::malloc(size == 0 ? 1 : size)) {
     return p;
   }
@@ -31,6 +61,22 @@ void *operator new(std::size_t size) {
 }
 void operator delete(void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+
+// The array and nothrow forms default to these scalar replacements.
+void *operator new(std::size_t size, std::align_val_t alignment) {
+  implied_forward_alloc::count();
+  const auto bytes_alignment = static_cast<std::size_t>(alignment);
+  if (void *p = implied_forward_alloc::aligned_allocate(size, bytes_alignment)) {
+    return p;
+  }
+  throw std::bad_alloc();
+}
+void operator delete(void *p, std::align_val_t) noexcept {
+  implied_forward_alloc::aligned_release(p);
+}
+void operator delete(void *p, std::size_t, std::align_val_t) noexcept {
+  implied_forward_alloc::aligned_release(p);
+}
 
 namespace atx::vol {
 namespace {
@@ -43,6 +89,27 @@ struct Counted {
   ~Counted() { implied_forward_alloc::g_armed.store(false); }
   std::size_t count() const { return implied_forward_alloc::g_count.load(); }
 };
+
+// Escapes allocations so the optimizer cannot elide the new-expressions.
+void *volatile g_sink = nullptr;
+
+// Self-check of the replacement: plain and over-aligned requests both count.
+TEST(ImpliedForwardAllocation, OverAlignedAllocationsAreCounted) {
+  struct alignas(64) Wide {
+    double values[8];
+  };
+  static_assert(alignof(Wide) > __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+  std::size_t allocations = 0;
+  {
+    const Counted counted;
+    const auto wide = std::make_unique<Wide>();
+    g_sink = wide.get();
+    const auto plain = std::make_unique<double>(1.0);
+    g_sink = plain.get();
+    allocations = counted.count();
+  }
+  EXPECT_EQ(allocations, 2u);
+}
 
 std::vector<ImpliedForwardPair> chain(bool american) {
   const double spot = 100.0;

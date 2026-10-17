@@ -105,6 +105,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/term_prior.cpp
     src/fitting/quote_fit_policy.cpp
     src/fitting/american_markov_fit.cpp
+    src/fitting/american_markov_time_basis.cpp
     src/fitting/american_markov_seed.cpp
     src/fitting/american_markov_policy.cpp
     src/fitting/american_price_slice.cpp

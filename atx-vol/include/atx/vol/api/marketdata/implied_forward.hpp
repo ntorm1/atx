@@ -26,7 +26,10 @@
 //     MEASURES its own early-exercise bias (one Andersen-Lake correction per
 //     selected pair at the parity forward) and refuses as `Contaminated` when that
 //     bias exceeds `max_exercise_shift_sd` standard deviations of moneyness. It
-//     never silently publishes an EEP-biased forward.
+//     never silently publishes an EEP-biased forward: a pair whose bias cannot
+//     be measured (its correction fails) is marked `Unidentified` (or
+//     `Contaminated`) and excluded, and the measured pairs are re-located, so
+//     `forward` can then differ from `parity_forward` (all stage-1 pairs).
 //   * AmericanAlignment — Parity seeds a per-pair fixed point that removes the
 //     EEP: at each selected strike it finds the forward at which the call and the
 //     put have the SAME American implied volatility under the library's

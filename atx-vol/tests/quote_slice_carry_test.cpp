@@ -83,6 +83,7 @@ TEST(QuoteSliceCarry, ImpliedForwardReplacesAWrongSuppliedCarry) {
   ASSERT_TRUE(fit) << fit.error().to_string();
   const auto &res = fit->carry_resolution;
   ASSERT_TRUE(res.applied) << res.reason;
+  EXPECT_EQ(res.fallback, QuoteSliceCarryFallback::None);
   EXPECT_EQ(res.status, ImpliedForwardStatus::Ok);
   EXPECT_NEAR(res.implied_forward / forward - 1.0, 0.0, 5.0e-6);
   EXPECT_NEAR(res.implied_yield, true_yield, 5.0e-6);
@@ -154,6 +155,7 @@ TEST(QuoteSliceCarry, RefusalFallsBackBitIdenticallyToSuppliedCarry) {
   const auto supplied = fit_quote_slice(market, quotes);
   ASSERT_TRUE(refused && supplied);
   EXPECT_FALSE(refused->carry_resolution.applied);
+  EXPECT_EQ(refused->carry_resolution.fallback, QuoteSliceCarryFallback::EstimateRefused);
   EXPECT_EQ(refused->carry_resolution.status, ImpliedForwardStatus::InsufficientPairs);
   EXPECT_EQ(refused->carry_resolution.mode, QuoteSliceCarryMode::ImpliedForward);
   EXPECT_DOUBLE_EQ(refused->market.continuous_yield, 0.01);
@@ -170,6 +172,8 @@ TEST(QuoteSliceCarry, DatedCashModelIsNotImpliedAndFallsBack) {
   const auto fit = fit_quote_slice(market, quotes, cfg);
   ASSERT_TRUE(fit) << fit.error().to_string();
   EXPECT_FALSE(fit->carry_resolution.applied);
+  EXPECT_EQ(fit->carry_resolution.fallback, QuoteSliceCarryFallback::DatedCash);
+  EXPECT_STREQ(to_string(fit->carry_resolution.fallback), "dated_cash");
   EXPECT_DOUBLE_EQ(fit->market.continuous_yield, 0.01);
   auto supplied_cfg = cfg;
   supplied_cfg.carry.mode = QuoteSliceCarryMode::Supplied;

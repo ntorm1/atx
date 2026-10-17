@@ -386,7 +386,8 @@ Json carry_resolution_json(const QuoteSliceCarryResolution &r, std::uint64_t cha
   return {{"chain_id", chain}, {"underlier", row.identity[0]}, {"root", row.identity[1]},
           {"expiry_days", row.identity[2]}, {"calendar_years", market.calendar_years},
           {"variance_years", market.variance_years}, {"mode", to_string(r.mode)},
-          {"applied", r.applied}, {"status", to_string(r.status)}, {"reason", r.reason},
+          {"applied", r.applied}, {"fallback_cause", to_string(r.fallback)},
+          {"status", to_string(r.status)}, {"reason", r.reason},
           {"supplied_forward", finite_or_null(r.supplied_forward)},
           {"supplied_yield", finite_or_null(r.supplied_yield)},
           {"implied_forward", finite_or_null(r.implied_forward)},
@@ -999,8 +1000,13 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         const auto &carry = fit->carry_resolution;
         stats.carry_resolutions.push_back(
             carry_resolution_json(carry, chain_id, rows[indices.front()], market));
-        const std::string key = std::string(carry.applied ? "applied:" : "fallback:") +
-                                to_string(carry.status);
+        // An estimator refusal is named by its status; every other fallback
+        // also names its typed cause (a post-estimate fallback has status ok).
+        std::string key = std::string(carry.applied ? "applied:" : "fallback:") +
+                          to_string(carry.status);
+        if (!carry.applied && carry.fallback != QuoteSliceCarryFallback::EstimateRefused) {
+          key += std::string(":") + to_string(carry.fallback);
+        }
         stats.carry_status_counts[key] = stats.carry_status_counts.value(key, std::size_t{}) + 1U;
       }
       if (fit->fit_status == QuoteSliceFitStatus::Success) {

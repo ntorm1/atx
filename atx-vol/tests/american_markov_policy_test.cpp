@@ -449,6 +449,13 @@ TEST(AmericanMarkovPolicy, RejectsInvalidVarianceTimeKnotProfiles) {
            {0.5}, {1.0, 0.5}, {0.5, 0.5}, {-0.1, 0.5}, {0.0, nan}}) {
     EXPECT_FALSE(create([&](auto &c) { knot_shape(c, bad); }));
   }
+  // A refusal from the validator shared with the fitter keeps its code but
+  // speaks with the catalog's own prefix.
+  const std::vector<double> unordered{1.0, 0.5};
+  const auto refused = create([&](auto &c) { knot_shape(c, unordered); });
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(refused.error().message(), "Markov policy: invalid variance-time knot grid");
   // Dense has five state knots and 64 parameters: 12 time knots fit, 13 do not.
   std::vector<double> many(13);
   for (std::size_t i = 0; i < many.size(); ++i) many[i] = static_cast<double>(i);

@@ -95,6 +95,13 @@ inline void parse_carry(const Json &entry, QuoteSliceCarryConfig &carry) {
     }
   }
   if (!entry.contains("implied_forward")) return;
+  // Under the resolved Supplied carry the block would be parsed and silently
+  // inert (and absent from the expanded definition): refuse it, like every
+  // other ineffective policy input.
+  if (carry.mode == QuoteSliceCarryMode::Supplied) {
+    throw std::runtime_error("Policy implied_forward requires carry_mode implied-forward or "
+                             "implied-forward-parity");
+  }
   const auto &j = entry.at("implied_forward");
   keys(j, {"min_pairs", "max_pairs", "band_sd", "spread_floor", "max_weight_ratio", "huber_k",
            "max_dispersion_sd", "max_leave_one_out_sd", "max_exercise_shift_sd",
@@ -140,22 +147,32 @@ inline const char *al_preset_name(const std::optional<AlOpts> &opts) {
   return "custom";
 }
 
+// Every estimator control that changes results, so the expanded definition is
+// complete runtime provenance. A "custom" preset also records its AlOpts.
 inline Json carry_json(const QuoteSliceCarryConfig &carry) {
   const auto &f = carry.implied;
-  return {{"method", to_string(f.method)}, {"min_pairs", f.min_pairs},
-          {"max_pairs", f.max_pairs}, {"band_sd", f.band_sd}, {"spread_floor", f.spread_floor},
-          {"max_weight_ratio", f.max_weight_ratio}, {"huber_k", f.huber_k},
-          {"max_dispersion_sd", f.max_dispersion_sd},
-          {"max_leave_one_out_sd", f.max_leave_one_out_sd},
-          {"max_exercise_shift_sd", f.max_exercise_shift_sd},
-          {"max_pair_exercise_shift_sd", f.max_pair_exercise_shift_sd},
-          {"min_time_value", f.min_time_value},
-          {"min_time_value_fraction", f.min_time_value_fraction},
-          {"al_preset", al_preset_name(f.al_opts)}, {"iv_tolerance", f.iv_tolerance},
-          {"max_iv_iterations", f.max_iv_iterations},
-          {"fixed_point_tolerance", f.fixed_point_tolerance},
-          {"max_fixed_point_iterations", f.max_fixed_point_iterations},
-          {"exercise", f.exercise == ImpliedForwardExercise::American ? "american" : "european"}};
+  Json out{{"method", to_string(f.method)}, {"min_pairs", f.min_pairs},
+           {"max_pairs", f.max_pairs}, {"band_sd", f.band_sd}, {"spread_floor", f.spread_floor},
+           {"max_weight_ratio", f.max_weight_ratio}, {"huber_k", f.huber_k},
+           {"max_dispersion_sd", f.max_dispersion_sd},
+           {"max_leave_one_out_sd", f.max_leave_one_out_sd},
+           {"max_outlier_fraction", f.max_outlier_fraction},
+           {"max_exercise_shift_sd", f.max_exercise_shift_sd},
+           {"max_pair_exercise_shift_sd", f.max_pair_exercise_shift_sd},
+           {"min_time_value", f.min_time_value},
+           {"min_time_value_fraction", f.min_time_value_fraction},
+           {"al_preset", al_preset_name(f.al_opts)}, {"iv_tolerance", f.iv_tolerance},
+           {"max_iv_iterations", f.max_iv_iterations},
+           {"fixed_point_tolerance", f.fixed_point_tolerance},
+           {"max_fixed_point_iterations", f.max_fixed_point_iterations},
+           {"exercise", f.exercise == ImpliedForwardExercise::American ? "american" : "european"}};
+  if (f.al_opts && std::string_view(al_preset_name(f.al_opts)) == "custom") {
+    const auto &a = *f.al_opts;
+    out["al_opts"] = {{"n_collocation", a.n_collocation}, {"n_quadrature", a.n_quadrature},
+                      {"n_quad_price", a.n_quad_price}, {"max_newton_iter", a.max_newton_iter},
+                      {"tol", a.tol}};
+  }
+  return out;
 }
 
 // Opt-in per-profile dividend routing (quote_bench_main.cpp). `aggregate` (the
