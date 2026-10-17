@@ -29,3 +29,9 @@ No pin/source/helper mutation, changed argv or permission refusal. No second run
 new result exposure or remaining-command launch. PM notified with exact metadata.
 Await a specific metadata ruling; do not broaden a folder/date allowance or change
 the committed proposal. Raw result and all receipts remain preserved unread.
+
+Subsequent resolution: R15-ADOPT-PM-METADATA adjudicated only these three byte-bound
+PM_DOC_METADATA spans. Separate exception certificate and exact PM draft committed
+f065ee97; original OTHER certificate/failed command remain unchanged. Completed
+dsr-years output reused without rerun. Remaining four commands completed once,
+source OTHER0; registered reads followed mechanics and committed rho barriers.

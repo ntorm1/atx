@@ -57,3 +57,25 @@ The latest PM source/boundary issues are resolved prospectively; no new PM quest
 Commit registered adoption print/support after execution, hand back G-B lines and wait
 for **Adoption print read**. Only after that line write the OD3 default not-read file.
 STOP here: preparation authorization is exhausted, no execution release inferred.
+
+## Execution completion under subsequent R15-ADOPT-EXEC
+
+The preparation-only status above is historical. Release committed6d4bc265;
+all five exact proposal commands completed once inside caps, no retry/wait.
+Original dsr-years OTHER3 source stop preserved; exact R15-ADOPT-PM-METADATA
+exception committed f065ee97 before reuse/remaining launches. All remaining
+source audits OTHER0; void/mechanics certificates preceded statistics; three
+rho-only certificates committed71226ef9 before paired scalars.
+
+adoption-print.md contains every E row, side/year/conditional/PBO historical
+print and limitation. G-B1/2/4/6/9 met; B3/5/7 nondeciding; B8 not evaluated.
+G-B2 remains plan placeholder, not owner-stated. H unlevered adoption rule met.
+Final-count DSR and conditional point adjustments retain their nondeciding labels.
+Ledger140 and original133/139 prefixes unchanged, Nc69/Nhand130/M110/Ntot240/history0.
+Final metadata audit checks69 source/input/NAV/PBO bindings; no permission refusal.
+Evidence/output hashes and exact receipts preserved. No new trial, NAV, fit, PBO,
+history, data access, ref/lease action, build or suite; owner PNGs name-only.
+
+Read boundary: STOP for PM Adoption print read. OD3 record remains unwritten.
+PM scratch43/progress/freeze preparation prompt are included by explicit direction;
+no final-report/freeze-verdict or fresh verifier evidence staged.
