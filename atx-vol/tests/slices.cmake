@@ -38,7 +38,7 @@ set(ATX_VOL_SLICE_OWNED_ELSEWHERE
     american_markov_pwl american_markov_grid pwl_strike
     american_markov_fit american_markov_seed                        # atx-vol-american-markov-*-tests
     american_markov_market american_markov_policy
-    dividend_schedule                                               # atx-vol-dividend-schedule-tests
+    dividend_schedule                                               # atx-vol-dividend-schedule-*
     vol_umbrella)                                                   # atx-vol-umbrella-tests
 
 set(ATX_VOL_SLICE_core_STEMS
