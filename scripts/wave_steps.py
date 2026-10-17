@@ -136,8 +136,13 @@ def bundle_argv(py: str, base_nav: str, cell_nav: str, out: str, run_dir: str, r
                         cmd, root, driver)
 
 
-def commit_argvs(paths: list[str], message: str) -> list[list[str]]:
-    return [["git", "add", "--", *paths], ["git", "commit", "-q", "-m", message, "--", *paths]]
+def commit_argvs(paths: list[str], message: str, *, trailer: str | None = None,
+                 exclude: str | None = None) -> list[list[str]]:
+    """Exact positive paths, with optional literal commit metadata; absent options preserve the original argv."""
+    selected = [*paths, *([exclude] if exclude else [])]
+    paragraphs = ["-m", trailer] if trailer else []
+    return [["git", "add", "--", *selected],
+            ["git", "commit", "-q", "-m", message, *paragraphs, "--", *selected]]
 
 
 # ------------------------------------------------------------------ spec files
