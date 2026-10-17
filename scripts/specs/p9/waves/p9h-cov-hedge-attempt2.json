@@ -1,0 +1,55 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "p9h-cov-hedge",
+  "kind": "rule",
+  "description": "P9-H prereg B.2, R15-ROOT3: theme-cov-hedge-v1 on accepted P9-L; unchanged registered constants, pm7-34, pm6-6-engine. No admission wait, host budget, automatic retry or engine timing flag.",
+  "parent": {
+    "spec": "scripts/specs/p9/templates/label-terminal-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-prereg-construction",
+    "construction_cap": 71
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 63
+  },
+  "out_dir": "build-equity/waves/p9h-cov-hedge-attempt2",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-p9-20261003/cells/waves"
+  },
+  "driver": {
+    "lock_exes": true,
+    "receipt_digest": "content",
+    "keep_verdicts": true,
+    "timings": true
+  },
+  "rule_cell": {
+    "template": "scripts/specs/p9/templates/theme-cov-hedge-ready.json",
+    "template_sha256": "5e9eae0aa660e9de3e538a1e659b16234e36597cd4e6dc07eecc956740d7f168",
+    "name": "theme-cov-hedge-v1-attempt2",
+    "source_sample_end": 2017,
+    "predicted_mechanism": "each theme's composite is long the names that load on the theme's own factor beyond what the theme's characteristic explains; shorting that loading at a walk-forward minimum-variance ratio lowers the book's variance at about the same gross alpha",
+    "data_class": "H"
+  },
+  "rules": [
+    {
+      "name": "theme-cov-hedge-v1",
+      "params": {}
+    }
+  ]
+}
