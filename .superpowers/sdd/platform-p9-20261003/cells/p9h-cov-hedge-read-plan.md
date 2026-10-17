@@ -3,7 +3,8 @@
 Before any H measurement, R15-WAVE-COMMIT and R15-WAVE-READ govern this plan. Registration `818e0750`
 predates those rulings; it remains unchanged. Native driver source commits `5352c820` and `5bbe1231` only
 add optional literal Git metadata and reject nonnegative/targetless exclusions. Frozen producer exes remain unchanged.
-Independent review and PM release are required before launch.
+Independent review APPROVE `a8f06490` and PM R15-H-LAUNCH now release the native launch after this clarification
+and the PM ledger are committed; registered stops remain binding.
 
 Exact environment in the native wave process:
 
@@ -42,7 +43,10 @@ After successful native completion, in order:
    receipt and the frozen eval producer, and verifies exact H/L paths. It prints only paired.sessions, rho,
    one_minus_rho and degenerate plus provenance. Save its output as `cells/logs/p9h-rho-first.txt` and record it
    before opening any other paired figure. No engine/statistical run is involved. `nav_summ.py:259-272` omits
-   one_minus_rho and degenerate for nondegenerate pairs; omitted keys are explicitly `not_supplied`, never invented.
+   one_minus_rho and degenerate for nondegenerate pairs. Under R15-V2-RHO both absent means the threshold flag is
+   FALSE, explicitly inferred from that documented encoding, while numeric stable difference stays `not supplied
+   by bundle`. A supplied degenerate key must be true with a valid supplied stable difference; inconsistent
+   encoding, invalid structure/producer/pair or a rounding-boundary concern stops before other paired figures.
 3. Read only pm7-34's deciding dSR and mechanics and the registered paired SE/p lines, then H's registered
    printed rows: IC hedge trace per theme/block, turnover per gross, C++ cost per traded dollar, capacity 4x net
    Sharpe. Predictions compare C++ S2 ann_vol ratio <1 and ann_mean_gross ratio in [.90,1.10]; ex-ante line stays cut.
@@ -56,7 +60,9 @@ After successful native completion, in order:
    phase receipts are identified separately from this invocation. Add one factual integration-log row.
 
 G-P1 is pending, not awarded. Read filters are postprocessing only and never orchestrate a research stage.
-The actual kind rule/roster size is not equated to the plan's 73-member add-alpha example. Any stop/checkpoint
+The actual kind rule has 67 inherited candidates, zero new candidates and one registered rule, counted from the
+pinned library configuration before launch; it is not equated to the plan's 73-member add-alpha example. Cache
+before launch has 686 files, no index.sqlite and no research-store. Any stop/checkpoint
 or required retry is recorded and cannot be presented as an uninterrupted end-to-end pass. P9-M remains unreleased.
 
 Policy validation: exact node `scripts/tests/test_wave_commit_policy.py::test_wave_commit_policy_real_git` under
