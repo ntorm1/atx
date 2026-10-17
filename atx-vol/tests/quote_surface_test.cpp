@@ -854,12 +854,14 @@ TEST(QuoteSurface, ChannelCalendarRepairServesACrossingTheBoundedRepairAndRetryC
   ASSERT_TRUE(fixed.fit.prices);
   expect_calendar_consistent(*on);
   expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
-  // No moved price ends farther outside its own quote than the point fit put it.
+  // Every served price is inside its own quote (the point fit already was, and
+  // no moved price ends farther outside its channel than the point fit put it).
   const auto point = fit_quote_slice(chains[1].market, chains[1].quotes);
   ASSERT_TRUE(point);
   for (std::size_t i = 0; i < chains[1].quotes.size(); ++i) {
     const auto &quote = chains[1].quotes[i];
-    if (fixed.fit.rows[i].evaluation_status != QuoteSliceEvaluationStatus::Success) continue;
+    ASSERT_EQ(fixed.fit.rows[i].evaluation_status, QuoteSliceEvaluationStatus::Success) << i;
+    EXPECT_EQ(channel_distance(fixed.fit.rows[i].fitted_price, quote), 0.0) << i;
     EXPECT_LE(channel_distance(fixed.fit.rows[i].fitted_price, quote),
               channel_distance(point->rows[i].fitted_price, quote) + 1.0e-12)
         << i;

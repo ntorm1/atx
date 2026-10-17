@@ -14,6 +14,11 @@ and `C:/atx-cache/quote-benchmark/plots-20261017` (the figure). Numbers below
 come from `slice-repair-20261017-bench/RESULTS.md`. Timings are unqualified
 (loaded host).
 
+**Fix round 1** (commit `7d883fa1`, section 9) follows a BLOCK review of
+`04203854`. It replaces the dominance-gate behaviour described in sections 3, 6
+and 7, together with their gate numbers, and it corrects the disclosure in
+section 8. Sections 1-8 are kept as the first lane wrote them.
+
 ## 1. Reproduction at 7ca31c95
 
 The base binary (`slice-repair-20261017-bin/base-7ca31c95`, sha256 `df8a2613...`)
@@ -230,3 +235,157 @@ fits become channel refits that cross their neighbours.
   a share) for tiny chains is the obvious next variant; it is not done here.
 - `repair_quote_slice_calendar_in_channel` holds unquoted sides fixed, so a
   crossing on an unquoted side stays a refusal.
+
+## 9. Fix round 1 (review of 04203854: BLOCK, 2 MAJOR)
+
+Run id `vol-20261017-slice-repair-fix1`, pool lease `pool-3`, code commit
+`7d883fa1`. Artifacts (new folders, each with `sha256.txt`):
+`C:/atx-cache/quote-benchmark/slice-repair-20261017-{policies-v2,bin-v2,diag-v2,bench-v2,gates-v2}`
+and `plots-20261017-v2`. Numbers come from `slice-repair-20261017-bench-v2/RESULTS.md`.
+
+### MAJOR-1: the gate no longer refuses
+
+The cause was the order of the passes. The gate replaced a point fit with its
+channel refit **before** the calendar pass. A refit that then crossed a
+neighbour was refused, and the point fit was never offered again. It also had
+no minimum count, so RIVN 23 d was gated at 3 of 48.
+
+The dominance gate (`point_max_outside_fraction`) now runs **last**: after
+pass A, the channel passes, the repair rung and the calendar pass. Its steps:
+
+1. **Measure.** It measures the final point fit of each expiry, served or
+   refused only for a calendar crossing. It gates the fit when the share of
+   two-sided quotes outside [bid, ask] is above the limit **and** the count is
+   at least the new `channel.point_min_outside_quotes` (default 1; a policy
+   key that requires the fraction).
+2. **Offer a refit.** It offers a channel refit under the prior of the served
+   expiries, with gated point fits left out of the prior.
+3. **Adopt only if consistent.** It adopts the refit only when the final
+   served set stays calendar-consistent with it. The bounded-move and channel
+   calendar repairs are allowed. Adoptions that still cross are undone, lowest
+   confidence first.
+4. **Otherwise keep the point fit.** The point fit is kept (`point_fallback`),
+   and a served A becomes B.
+5. **Re-admit.** Once a refit has been adopted, calendar refusals are
+   re-checked against the final served set (`calendar_readmitted`).
+
+So the gate never refuses an expiry and never changes another served one. It
+also covers the repair rung (minor a): the rung's fits are measured like any
+other point fit.
+
+Results, all keys ON:
+
+- **dev200.** Coverage 84.89%, against 84.53% for the reviewed gate and 83.71%
+  for repair-v2. The intersection with graded-v1 is 49,112 rows, at -1.49% MAE.
+  4,626 rows are newly served, at MAE $0.138. 719 graded-v1 rows are lost:
+  exactly repair-v2's calendar displacement, and **0 from the gate** (the
+  reviewed gate lost 2,334). 48 slices are gated: 28 refits adopted, 11 point
+  fits kept, and 9 that were already calendar refusals stay refused.
+- **dev200b.** Coverage 90.49% and -2.07% intersection MAE. 2,356 rows are
+  newly served, at $0.331; 286 are lost, all repair-v2's. Against the same
+  keys minus the gate (repair-ceil6-v2), the gate run is a strict superset.
+- **Cohort.** Coverage 62.73%. 146 rows are lost, all repair-v2's.
+- **RIVN** is back to **4 of 4**. Its 37 d slice (6 of 30 outside) keeps its
+  point fit as B.
+- **CRWV Nov 20** is still served by its refit, with 1 of 41 strikes outside.
+  **MSTR Nov 20** is served. **SPY** is served on 44 d.
+- **AAPL Nov 20 is refused again** (calendar), as in graded-v1. Neither its
+  refit nor its own fit is consistent with the served AAPL expiries. The first
+  lane served it only by refusing AAPL 5 d, 128 d and 246 d. Serving it
+  without that loss needs the confidence-ordered eviction, which the PM
+  deferred. The first lane's Done criterion "AAPL Nov 20 served" therefore no
+  longer holds.
+- **Minimum count, 4 vs 1.** It changes no served price on dev200 or cohort5;
+  only the grade differs, on 40 and 38 rows.
+
+### MAJOR-2: tests that fail on revert
+
+These are in `atx-vol-quote-slice-tests`; there are now 97 tests. Each was run
+against its revert, with logs in `slice-repair-20261017-gates-v2/revert-*.txt`:
+
+- **`QuoteSurface.ChannelCalendarRepairServesACrossingTheBoundedRepairAndRetryCannot`.**
+  The bounded-move repair is off and no refit can be served. The later expiry
+  is served B with `calendar_channel_repaired`, every price inside its quote,
+  and calendar-consistent. Removing the two calendar-stage `repair_in_channel`
+  call sites fails it: grade Refused.
+- **`QuoteSliceChannel.RepairVolBudgetBindsOnlyUnquotedNodeSides`.** The chain
+  is quoted out of the money only, and the refusal is VolBudget. It fails on
+  revert of the step-outcome fix (the record said Infeasible).
+- **`QuoteSliceChannel.ChannelCalendarRepairIsNotCertifiedWhenANeighbourKnotStillCrosses`.**
+  A later neighbour has knots between this slice's nodes.
+  `repair_quote_slice_calendar_in_channel` now runs `check_american_calendar`
+  against every earlier and later slice, so the result is NotCertified and the
+  slice is unchanged. Without that check the repair returned true.
+- **`QuoteSurface.DominanceGateNeedsTheMinimumOutsideCount`.** It fails with
+  the count condition removed.
+- **`QuoteSurface.DominanceGateNeverCostsAnExpiryTheCalendarPassServed`.** This
+  is the review's RIVN case. A gated expiry's refit crosses a served
+  neighbour, while its point fit does not. The expiry is served (point kept,
+  B) and every price equals gate-off. With the old order emulated (gate before
+  the calendar pass, refit adopted unchecked), it fails with
+  `1 calendar_arbitrage American calendar price crossing`.
+- **`QuoteSurface.DominanceGateKeepsThePointFitWhenNoRefitIsServed`.**
+
+Two earlier tests are now pinned to the path that actually fires
+(review NIT):
+
+- `RepairRefusesWhenNoConvexPriceSetFitsInsideTheQuotes` expects LeftChannel.
+- The micro-kinked surface test expects the channel refit, not the rung.
+
+### Minors
+
+- **(b) Stale bounded-repair diagnostics.** `repaired_nodes` is reset to 0
+  when the bounded result is discarded for the channel repair. On dev200 this
+  goes from 7 stale slices to 0.
+- **(c) Disclosure, corrected.** These were all chosen during development,
+  with the five figure slices and the dev200 aggregates in view:
+  - the budgets: 32 strikes, and 1 vol point for unquoted sides;
+  - the 0.05 gate;
+  - `point_min_outside_quotes` 4;
+  - the dense `mult_ceil 6`;
+  - the $5e-4 immaterial-price floor (`repair_immaterial_price`, a library
+    default the policies inherit);
+  - the 20,000-sweep projection cap;
+  - the uniform projection weights.
+
+  SPY is served by the dense `mult_ceil 6` plus the bounded-move calendar
+  repair, **not by the channel repair**. In the first lane's figure policy,
+  SPY 23 d and 44 d had no channel-repair move. Under v3, SPY 44 d is
+  cal.-repaired only.
+- **(d) What the vol budget bounds.** `repair_max_vol` binds only on sides
+  without a quote, and those sides move only through the residual-lowering
+  step, because the projection holds them fixed. A quoted side is bounded only
+  by its own channel, [min(bid, fitted), max(ask, fitted)]; its IV can move by
+  that channel's IV width. On dev200, over 58 applied repairs,
+  `max_unquoted_vol_move` is 0.0 everywhere and the largest quoted-side move
+  is 3.71 vol points. So on real chains the budget does not bind; the test
+  above shows where it does. This is stated in `quote_slice.hpp` and in the
+  quote-bench semantics text.
+- **Deferred by PM ruling, not done here:**
+  - confidence-ordered eviction (MINOR-1), the 719 and 286 displaced rows;
+  - point fits escaping the market when the gate is off (MINOR-2).
+
+### Gates (at 7d883fa1)
+
+Logs are in `slice-repair-20261017-gates-v2/`.
+
+- **Tests.** quote-slice 97/97; implied-forward 25/25; quote-bench pytest 48
+  passed.
+- **ctest.** The 5 focused ctests passed.
+- **PCH-off.** `vol-hygiene check`, with 0 warnings and 0 errors, on 7 TUs:
+  `quote_slice.cpp`, `quote_surface.cpp`, `quote_bench_main.cpp`,
+  `quote_bench_common_policy.cpp` and the 3 test TUs.
+- **Keys-OFF parity on the final binary** (`021cb029...`):
+
+  | Run | sha256 |
+  |---|---|
+  | dev200 auto | `c89d0739...` |
+  | dev200 graded-v1 | `1348f63d...` |
+  | dev200b auto | `4b273b08...` |
+  | dev200b graded-v1 | `4c70d2bc...` |
+  | cohort5 graded-v1 | `7fa3c415...` |
+
+  repair-v2 is byte-identical to the first lane's output on all three
+  datasets.
+- **Shape check.** `check_served.py` finds 0 violations in every served set.
+- **Figure.** `plots-20261017-v2/smile-comparison-20261014-slice-repair-v3-r2.png`.
