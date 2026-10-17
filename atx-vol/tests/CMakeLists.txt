@@ -76,6 +76,14 @@ target_link_libraries(atx-vol-fit-archive-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 target_include_directories(atx-vol-fit-archive-tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(ATX_BUILD_TOOLS)
+    # The CLI tool is defined after this directory; the generator expression and
+    # the dependency resolve at generate time.
+    target_sources(atx-vol-fit-archive-tests PRIVATE fit_archive_cli_test.cpp)
+    target_compile_definitions(atx-vol-fit-archive-tests PRIVATE
+        "ATX_VOL_SURFACE_ARCHIVE_CLI=\"$<TARGET_FILE:atx-vol-surface-archive>\"")
+    add_dependencies(atx-vol-fit-archive-tests atx-vol-surface-archive)
+endif()
 add_test(NAME atx-vol-fit-archive COMMAND atx-vol-fit-archive-tests)
 set_tests_properties(atx-vol-fit-archive PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")

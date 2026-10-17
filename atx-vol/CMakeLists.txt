@@ -938,6 +938,9 @@ if(ATX_BUILD_TOOLS)
         tools/american_markov_storage_bench_main.cpp)
     target_link_libraries(atx-vol-american-markov-storage-bench PRIVATE
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # ATXVFA archive CLI: inspect | dump | verify (docs/storage/ARCHIVE_FORMAT.md).
+    add_executable(atx-vol-surface-archive tools/surface_archive_main.cpp)
+    target_link_libraries(atx-vol-surface-archive PRIVATE atx::vol atx::core atx_warnings)
     # Label-free benchmark runner. Reference values exist only in the separate
     # Python scorer; the native tool accepts a closed raw-quote input schema.
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
