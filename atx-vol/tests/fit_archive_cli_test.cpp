@@ -152,23 +152,25 @@ TEST(FitArchiveCli, VerifyRefusesACurveNodeCountThatWrapsU32) {
 
 // Review MINOR-1 through the tool: verify and inspect of a series whose manifest
 // names any file but the writer's own segment refuse the series. A valid copy of
-// segment 1 sits beside the series, so following "..\" would have succeeded.
+// segment 1 sits beside each series, so following "..\" would have succeeded.
+// Each case keeps its own directory (case-<k>/series, the outside copy and
+// name.txt), so the crafted series remain as inputs for the crafted-file table.
 TEST(FitArchiveCli, VerifyRefusesASeriesWhoseManifestNamesAForeignFile) {
   const auto dir = testkit::scratch_dir("cli-series-escape");
-  const auto series = dir / "series";
-  ASSERT_TRUE(append_fit_archive_segment(series.string(), sample_writer(kSnapshot)).has_value());
-  ASSERT_TRUE(append_fit_archive_segment(series.string(), sample_writer(kSnapshot + 1)).has_value());
-  fs::copy_file(series / "seg-000000000001.atxvfa", dir / "seg-000000000001.atxvfa");
-  const auto manifest = series / std::string(kFitArchiveSeriesManifest);
-  const auto pristine = testkit::read_file(manifest);
-  for (const std::string &name : testkit::foreign_segment_names()) {
-    ASSERT_TRUE(publish_fit_archive(manifest.string(), pristine).has_value());
-    testkit::forge_segment_name(series, 0, name);
+  const auto names = testkit::foreign_segment_names();
+  for (std::size_t k = 0; k < names.size(); ++k) {
+    const auto root = dir / ("case-" + std::to_string(k));
+    const auto series = root / "series";
+    ASSERT_TRUE(append_fit_archive_segment(series.string(), sample_writer(kSnapshot)).has_value());
+    ASSERT_TRUE(append_fit_archive_segment(series.string(), sample_writer(kSnapshot + 1)).has_value());
+    fs::copy_file(series / "seg-000000000001.atxvfa", root / "seg-000000000001.atxvfa");
+    std::ofstream(root / "name.txt") << testkit::printable(names[k]) << "\n";
+    testkit::forge_segment_name(series, 0, names[k]);
     for (const std::string command : {"verify ", "inspect "}) {
-      const CliRun run = run_cli(dir, command + series.string());
-      EXPECT_EQ(run.code, 2) << command << testkit::printable(name) << "\n" << run.out;
+      const CliRun run = run_cli(root, command + series.string());
+      EXPECT_EQ(run.code, 2) << command << testkit::printable(names[k]) << "\n" << run.out;
       EXPECT_NE(run.out.find("REFUSED record-invalid section=series-segments(80)"), std::string::npos)
-          << command << testkit::printable(name) << "\n" << run.out;
+          << command << testkit::printable(names[k]) << "\n" << run.out;
     }
   }
 }
