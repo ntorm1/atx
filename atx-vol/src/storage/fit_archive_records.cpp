@@ -28,6 +28,7 @@
 #include "atx/vol/api/fitting/spline_curve.hpp"
 #include "atx/vol/api/fitting/vol_curve.hpp"
 #include "atx/vol/api/fitting/vol_surface.hpp"
+#include "atx/vol/api/storage/fit_archive_series.hpp" // fit_archive_segment_name_ok
 #include "storage/surface_archive_payload.hpp" // write_archive_payload (padding-free param blits)
 
 namespace atx::vol {
@@ -106,16 +107,20 @@ template <class T> [[nodiscard]] std::span<const T> slice_of(std::span<const T> 
   return pool.subspan(ref.first, ref.count);
 }
 
-[[nodiscard]] std::uint32_t expected_curve_words(std::uint8_t kind, std::uint32_t n) noexcept {
+// In 64 bits: a u32 node count up to 2^32 - 1 cannot wrap the product, so a
+// payload matches only when it really holds every node (review MAJOR-1: the
+// u32 form let node_count >= 2^31 pass with a 13-, 6- or 0-word payload).
+[[nodiscard]] std::uint64_t expected_curve_words(std::uint8_t kind, std::uint32_t n) noexcept {
+  const std::uint64_t nodes = std::uint64_t{2} * n;
   switch (static_cast<VolCurveKind>(kind)) {
-  case VolCurveKind::ConvexDense: return kFitCurveConvexFixedWords + 2u * n;
+  case VolCurveKind::ConvexDense: return kFitCurveConvexFixedWords + nodes;
   case VolCurveKind::Essvi: return kFitCurveEssviWords;
   case VolCurveKind::Svi: return kFitCurveSviWords;
-  case VolCurveKind::LinearVariance: return 2u * n;
+  case VolCurveKind::LinearVariance: return nodes;
   case VolCurveKind::C8: return kFitCurveC8Words;
-  case VolCurveKind::SplineVol: return kFitCurveSplineFixedWords + 2u * n;
+  case VolCurveKind::SplineVol: return kFitCurveSplineFixedWords + nodes;
   }
-  return std::numeric_limits<std::uint32_t>::max();
+  return std::numeric_limits<std::uint64_t>::max();
 }
 
 [[nodiscard]] bool kind_has_nodes(std::uint8_t kind) noexcept {
@@ -237,7 +242,7 @@ template <class T> [[nodiscard]] std::span<const T> slice_of(std::span<const T> 
   o.channel.repaired_nodes = c.repaired_nodes;
   o.channel.max_violation_half_widths = c.max_violation_half_widths;
   o.channel.prior_strength = c.prior_strength;
-  o.channel.solve_seconds = c.solve_seconds;
+  // solve_seconds (wall clock) is not part of the record: see FitTimings.
   o.channel.repair_max_price = c.repair_max_price;
   o.channel.repair_max_half_spreads = c.repair_max_half_spreads;
   o.channel.flags = static_cast<std::uint8_t>((c.used ? kChannelUsed : 0u) |
@@ -283,7 +288,7 @@ template <class T> [[nodiscard]] std::span<const T> slice_of(std::span<const T> 
   c.term_prior = (o.channel.flags & kChannelTermPrior) != 0u;
   c.converged = (o.channel.flags & kChannelConverged) != 0u;
   c.iterations = static_cast<std::size_t>(o.channel.iterations);
-  c.solve_seconds = o.channel.solve_seconds;
+  c.solve_seconds = 0.0; // from FitTimings when present (decode_fit)
   c.repaired_nodes = static_cast<std::size_t>(o.channel.repaired_nodes);
   c.repair_max_price = o.channel.repair_max_price;
   c.repair_max_half_spreads = o.channel.repair_max_half_spreads;
@@ -416,13 +421,15 @@ struct FitArchiveWriter::Impl {
   std::vector<FitArchiveMarkovInterval> markov_intervals;
   std::vector<AmericanMarkovLocalVolNode> markov_local_vol;
   std::vector<double> markov_words;
+  std::vector<FitArchiveFitTimings> fit_timings; // parallel to fits; emitted only when `timings`
   std::string strings;
   std::vector<std::byte> provenance;
   bool overflow{false};
+  bool timings{false};
 
   // Sizes of every staging vector, for all-or-nothing adds.
   struct Mark {
-    std::array<std::size_t, 21> n{};
+    std::array<std::size_t, 22> n{};
   };
   [[nodiscard]] Mark mark() const noexcept {
     return Mark{{surface_symbol.size(), fit_symbol.size(), expiry_symbol.size(), ladder_symbol.size(),
@@ -430,7 +437,7 @@ struct FitArchiveWriter::Impl {
                  expiry_data.size(), ladders.size(), markov.size(), price_nodes.size(), rows.size(),
                  moved.size(), dividends.size(), carry_points.size(), curve_words.size(),
                  ladder_contracts.size(), markov_intervals.size(), markov_local_vol.size(),
-                 markov_words.size()}};
+                 markov_words.size(), fit_timings.size()}};
   }
   void rollback(const Mark &m, std::size_t string_size) {
     surface_symbol.resize(m.n[0]);
@@ -454,6 +461,7 @@ struct FitArchiveWriter::Impl {
     markov_intervals.resize(m.n[18]);
     markov_local_vol.resize(m.n[19]);
     markov_words.resize(m.n[20]);
+    fit_timings.resize(m.n[21]);
     strings.resize(string_size);
   }
 
@@ -651,6 +659,8 @@ void FitArchiveWriter::set_provenance(std::span<const std::byte> bytes) {
   impl_->provenance.assign(bytes.begin(), bytes.end());
 }
 
+void FitArchiveWriter::record_timings(bool on) noexcept { impl_->timings = on; }
+
 ArchiveOutcome FitArchiveWriter::add_surface(const FitArchiveSurfaceInput &in) {
   Impl &w = *impl_;
   const std::size_t n = in.slices.size();
@@ -703,6 +713,7 @@ ArchiveOutcome FitArchiveWriter::add_surface(const FitArchiveSurfaceInput &in) {
     }
     ++s.grade_counts[r.slice.grade];
     w.fits.push_back(r);
+    w.fit_timings.push_back({slice.fit.diagnostics.channel.solve_seconds});
     w.fit_symbol.emplace_back(in.underlier);
   }
   w.surfaces.push_back(s);
@@ -727,6 +738,7 @@ ArchiveOutcome FitArchiveWriter::add_fit(const FitArchiveFitInput &in) {
   }
   r.surface = kFitArchiveNone;
   w.fits.push_back(r);
+  w.fit_timings.push_back({in.fit->diagnostics.channel.solve_seconds});
   w.fit_symbol.emplace_back(in.underlier);
   return {};
 }
@@ -951,7 +963,12 @@ ArchiveOutcome FitArchiveWriter::copy_from(const FitArchive &src) {
     w.surfaces.push_back(s);
     w.surface_symbol.emplace_back(name);
   }
+  const auto src_timings = src.view<FitArchiveFitTimings>(Type::FitTimings);
+  const bool src_has_timings = src.section(Type::FitTimings) != nullptr;
+  std::size_t fit_ordinal = 0;
   for (FitArchiveFitRecord f : src.fits()) {
+    w.fit_timings.push_back(fit_ordinal < src_timings.size() ? src_timings[fit_ordinal] : FitArchiveFitTimings{});
+    ++fit_ordinal;
     const std::string_view name = src.underlier_name(f.key.underlier);
     f.key.underlier = 0;
     const bool ok = rebase(f.rows, rows_base) && rebase(f.moved_nodes, moved_base) &&
@@ -995,6 +1012,7 @@ ArchiveOutcome FitArchiveWriter::copy_from(const FitArchive &src) {
     w.markov.push_back(r);
     w.markov_symbol.emplace_back(name);
   }
+  if (src_has_timings) w.timings = true; // only once the whole copy has succeeded
   return {};
 }
 
@@ -1097,6 +1115,8 @@ ArchiveResult<std::vector<std::byte>> FitArchiveWriter::finish(const FitArchiveF
   pool(Type::Dividends, w.dividends, 8);
   pool(Type::CarryPoints, w.carry_points, 8);
   pool(Type::CurveWords, w.curve_words, 8);
+  // Optional (not Required): a reader that does not know it loses only timings.
+  if (w.timings && !w.fit_timings.empty()) s.push_back(section_of(Type::FitTimings, w.fit_timings, 8, 0u));
   keyed(Type::ExpiryMeta, expiry, ei);
   if (!w.expiry_data.empty()) {
     s.push_back(FitArchiveSectionInput{Type::ExpiryData, 1, 0, kFitArchiveExpiryRecordBytes, 8,
@@ -1256,6 +1276,14 @@ ArchiveResult<QuoteSliceFit> decode_fit(const FitArchive &a, const FitArchiveFit
   const auto carry = fit_carry_curve(a, r);
   fit.carry_curve.assign(carry.begin(), carry.end());
   fit.carry_resolution = decode_carry(r.carry, a.string(r.carry.reason));
+  // Wall-clock timings: only for a record of this archive, from FitTimings.
+  const auto fits = a.fits();
+  const auto timings = a.view<FitArchiveFitTimings>(Type::FitTimings);
+  const std::less<const FitArchiveFitRecord *> before;
+  if (!fits.empty() && !before(&r, fits.data()) && before(&r, fits.data() + fits.size())) {
+    const auto i = static_cast<std::size_t>(&r - fits.data());
+    if (i < timings.size()) fit.diagnostics.channel.solve_seconds = timings[i].channel_solve_seconds;
+  }
   return fit;
 }
 
@@ -1449,7 +1477,7 @@ template <class R>
   const bool grad_ok = (f.flags & kFitDiagHasGradNorm) != 0u || bits_of(f.final_grad_norm) == 0u;
   return f.termination <= kMaxTermination && f.projection <= kMaxProjection && f.flags <= 7u &&
          f.reserved0 == 0u && f.reserved1 == 0u && grad_ok && d.channel.flags <= 7u &&
-         zero_bytes(d.channel.reserved) && repair_ok(d.repair);
+         bits_of(d.channel.reserved_timing) == 0u && zero_bytes(d.channel.reserved) && repair_ok(d.repair);
 }
 
 // Curve payload shape, plus the bytes of native params that must be valid
@@ -1482,6 +1510,10 @@ template <class R>
   const auto nodes = a.view<AmericanPriceNode>(Type::PriceNodes);
   const std::size_t blob = a.section_bytes(Type::Strings).size();
   const auto surfaces = a.surfaces();
+  // FitTimings, when present, has exactly one element per fit record.
+  if (a.section(Type::FitTimings) != nullptr && a.view<FitArchiveFitTimings>(Type::FitTimings).size() != fits.size()) {
+    return archive_error(ArchiveStatus::RecordInvalid, Type::FitTimings);
+  }
   for (std::size_t i = 0; i < fits.size(); ++i) {
     const FitArchiveFitRecord &r = fits[i];
     const bool refs = ref_in(r.rows, rows) && ref_in(r.moved_nodes, moved) && ref_in(r.dividends, divs) &&
@@ -1541,12 +1573,15 @@ template <class R>
     bool ok = s.key.expiry_day == 0 && s.key.sub == 0u && s.flags == 0u && s.reserved0 == 0u &&
               zero_bytes(s.reserved);
     std::array<std::uint32_t, 4> counts{};
-    for (std::uint32_t k = 0; ok && k < s.fit_count; ++k) {
-      const FitArchiveFitRecord &f = fits[s.first_fit + k];
+    // Indices in size_t: first_fit + k stays below fits.size() (ref_in above)
+    // and cannot wrap the way a u32 sum could.
+    const std::size_t first = s.first_fit;
+    for (std::size_t k = 0; ok && k < s.fit_count; ++k) {
+      const FitArchiveFitRecord &f = fits[first + k];
       ok = f.surface == i && f.slice.present == 1u && f.slice.grade <= kMaxGrade &&
            f.key.underlier == s.key.underlier &&
            f.key.snapshot_ns == s.key.snapshot_ns && f.key.sub == 0u &&
-           (k == 0 || fits[s.first_fit + k - 1].key.expiry_day < f.key.expiry_day);
+           (k == 0 || fits[first + k - 1].key.expiry_day < f.key.expiry_day);
       if (ok) ++counts[f.slice.grade];
     }
     if (!ok || counts != s.grade_counts) return archive_error(ArchiveStatus::RecordInvalid, Type::SurfaceRecords, i);
@@ -1612,7 +1647,8 @@ template <class R>
     bool ok = l.has_sample_opts <= 1u && (l.has_sample_opts == 1u || zero_bytes(l.sample_opts)) &&
               l.certify <= 1u && l.rebuild_on_exit <= 1u && l.rebuild_order <= kMaxRebuildOrder &&
               zero_bytes(l.reserved);
-    for (std::uint32_t k = 0; ok && k < l.record_count; ++k) ok = metas[l.first_record + k].ladder == i;
+    const std::size_t first = l.first_record;
+    for (std::size_t k = 0; ok && k < l.record_count; ++k) ok = metas[first + k].ladder == i;
     for (const FitArchiveLadderContract &c : slice_of(contracts, l.contracts)) {
       ok = ok && c.record < l.record_count && c.side <= kMaxSide && zero_bytes(c.reserved);
     }
@@ -1662,9 +1698,11 @@ template <class R>
   for (std::size_t i = 0; i < segments.size(); ++i) {
     const FitArchiveSeriesSegment &s = segments[i];
     const auto end = std::find(s.file_name.begin(), s.file_name.end(), '\0');
+    // The name must be the writer's own for the sequence, so a manifest can
+    // never point a reader (or compaction's delete) outside the series folder.
     bool ok = end != s.file_name.begin() && end != s.file_name.end() &&
               std::all_of(end, s.file_name.end(), [](char c) { return c == '\0'; }) && s.reserved == 0u &&
-              s.sequence != 0u;
+              s.sequence != 0u && fit_archive_segment_name_ok(s);
     // Manifest order is read order; sequences (hence file names) are unique.
     for (std::size_t j = 0; ok && j < i; ++j) ok = segments[j].sequence != s.sequence;
     if (!ok) return archive_error(ArchiveStatus::RecordInvalid, Type::SeriesSegments, i);

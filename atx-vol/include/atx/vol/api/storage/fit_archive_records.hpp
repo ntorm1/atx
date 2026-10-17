@@ -119,8 +119,16 @@ struct FitArchiveMarkovInput {
 // Copies every input on add_* (inputs are never retained), assigns symbol ids,
 // sorts each index, refuses duplicate keys and frames the archive on finish().
 // Records are stored in insertion order (a surface's expiries contiguous and in
-// expiry order); lookups go through the sorted index. Identical add sequences
-// give byte-identical files. Single-threaded object; allocates.
+// expiry order); lookups go through the sorted index. Single-threaded object;
+// allocates.
+//
+// Determinism: the archive is a function of the added values and the
+// FitArchiveFileInfo only. Wall-clock fit diagnostics (today
+// QuoteSliceChannelDiagnostics::solve_seconds) differ run to run, so by default
+// they are not stored and decode as 0: two archives of the same inputs and info
+// are byte-identical, and an archive's sha256 can pin a parity check. With
+// record_timings(true) they are kept in the optional FitTimings section and
+// decode bit-exactly.
 class FitArchiveWriter {
 public:
   explicit FitArchiveWriter(FitArchiveFileInfo info = {});
@@ -139,9 +147,13 @@ public:
   [[nodiscard]] ArchiveOutcome add_chain_records(const FitArchiveChainInput &input);
   [[nodiscard]] ArchiveOutcome add_markov(const FitArchiveMarkovInput &input);
   // Transfer every record of `source` as stored (only symbol ids and pool
-  // references are rebased): merge and compaction never re-encode a fit.
+  // references are rebased): merge and compaction never re-encode a fit. A
+  // source carrying FitTimings turns record_timings on, so its timings survive.
   [[nodiscard]] ArchiveOutcome copy_from(const FitArchive &source);
   void set_provenance(std::span<const std::byte> bytes);
+  // Keep wall-clock fit diagnostics in a FitTimings section (default off; see
+  // the class comment). Applies to every fit in the writer, added before or after.
+  void record_timings(bool on) noexcept;
 
   [[nodiscard]] std::size_t surface_count() const noexcept;
   [[nodiscard]] std::size_t fit_count() const noexcept;
@@ -179,9 +191,12 @@ markov_local_vol(const FitArchive &archive, const FitArchiveMarkovInterval &inte
 
 // ── Owned reconstructions (allocate; independent of the archive) ────────────
 
-// Bit-identical to the object that was written. RecordInvalid when a stored
-// curve or price slice does not rebuild (cannot happen for a validated archive
-// written by this library; it guards foreign writers).
+// Bit-identical to the object that was written, except that wall-clock timings
+// decode as 0 unless the archive has a FitTimings section and `fit` is an
+// element of archive.fits(). RecordInvalid when a stored curve or price slice
+// does not rebuild or a curve's node count disagrees with its payload (cannot
+// happen for a validated archive written by this library; it guards foreign
+// writers and record copies edited by the caller).
 [[nodiscard]] ArchiveResult<std::unique_ptr<IVolCurve>> decode_curve(const FitArchive &archive,
                                                                     const FitArchiveFitRecord &fit);
 [[nodiscard]] ArchiveResult<QuoteSliceFit> decode_fit(const FitArchive &archive,

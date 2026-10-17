@@ -44,7 +44,7 @@ struct SectionSpec {
   bool evolvable; // fixed-stride record type whose stride may grow by minor
 };
 
-constexpr std::array<SectionSpec, 25> kSpecs{{
+constexpr std::array<SectionSpec, 26> kSpecs{{
     {Type::Symbols, "symbols", 48, 48, 8, false},
     {Type::Strings, "strings", 1, 1, 1, false},
     {Type::Provenance, "provenance", 1, 1, 1, false},
@@ -58,6 +58,7 @@ constexpr std::array<SectionSpec, 25> kSpecs{{
     {Type::Dividends, "dividends", 16, 16, 8, false},
     {Type::CarryPoints, "carry-points", 16, 16, 8, false},
     {Type::CurveWords, "curve-words", 8, 8, 8, false},
+    {Type::FitTimings, "fit-timings", 8, 8, 8, true},
     {Type::ExpiryMeta, "expiry-meta", 128, 128, 8, true},
     {Type::ExpiryData, "expiry-data", kFitArchiveExpiryRecordBytes,
      kFitArchiveExpiryRecordBytes, 8, false},
@@ -481,6 +482,10 @@ ArchiveResult<FitArchive> FitArchive::open_impl(std::span<const std::byte> bytes
     }
     // Minor evolution: copy each element's known prefix into a zeroed element of
     // this reader's size (older minor: missing tail reads as zero; newer: ignored).
+    // The served size is checked in 64 bits before anything is allocated or viewed.
+    if (e.element_count > std::numeric_limits<std::size_t>::max() / spec.stride) {
+      return archive_error(ArchiveStatus::SectionStride, e.type, slot.table_index);
+    }
     const std::uint64_t served_bytes = e.element_count * spec.stride;
     auto &copy = a.upgraded_.emplace_back(static_cast<std::size_t>((served_bytes + 7u) / 8u), 0u);
     // SAFETY: u64 storage written through a byte view; the copy is only ever read

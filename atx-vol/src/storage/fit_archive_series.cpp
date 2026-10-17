@@ -4,6 +4,8 @@
 #include "atx/vol/api/storage/fit_archive_series.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -97,6 +99,11 @@ struct Range {
 
 [[nodiscard]] ArchiveResult<FitArchive> open_segment(const fs::path &dir, const FitArchiveSeriesSegment &e,
                                                      const FitArchiveOpenOptions &options) {
+  // The manifest's record pass already refused a foreign name; checked again
+  // here because this is where the name becomes a path.
+  if (!fit_archive_segment_name_ok(e)) {
+    return archive_error(ArchiveStatus::RecordInvalid, Type::SeriesSegments, e.sequence);
+  }
   auto a = FitArchive::open((dir / entry_name(e)).string(), options);
   if (!a) return tl::unexpected(a.error());
   if (a->header().segment_sequence != e.sequence || a->header().file_size != e.file_size ||
@@ -173,6 +180,32 @@ template <class R, class Find>
 
 } // namespace
 
+bool fit_archive_segment_name_ok(const FitArchiveSeriesSegment &segment) noexcept {
+  constexpr std::string_view kPrefix{"seg-"};
+  constexpr std::string_view kSuffix{".atxvfa"};
+  constexpr std::size_t kMinDigits = 12;
+  std::array<char, 24> digits{};
+  const auto [digits_end, ec] = std::to_chars(digits.data(), digits.data() + digits.size(), segment.sequence);
+  if (ec != std::errc{}) return false;
+  const auto n = static_cast<std::size_t>(digits_end - digits.data());
+  const std::size_t pad = n < kMinDigits ? kMinDigits - n : 0;
+  const auto &name = segment.file_name;
+  const std::size_t length = kPrefix.size() + pad + n + kSuffix.size();
+  if (length >= name.size()) return false; // at least one NUL must follow
+  std::size_t at = 0;
+  const auto take = [&](std::string_view part) noexcept {
+    const bool same = std::equal(part.begin(), part.end(), name.begin() + static_cast<std::ptrdiff_t>(at));
+    at += part.size();
+    return same;
+  };
+  if (!take(kPrefix)) return false;
+  for (std::size_t k = 0; k < pad; ++k) {
+    if (name[at++] != '0') return false;
+  }
+  return take(std::string_view{digits.data(), n}) && take(kSuffix) &&
+         std::all_of(name.begin() + static_cast<std::ptrdiff_t>(at), name.end(), [](char c) { return c == '\0'; });
+}
+
 ArchiveResult<std::uint64_t> append_fit_archive_segment(std::string_view directory,
                                                         const FitArchiveWriter &writer,
                                                         const FitArchiveSeriesOptions &options) {
@@ -244,7 +277,7 @@ ArchiveResult<FitArchiveCompaction> compact_fit_archive_series(std::string_view 
   }
   for (std::size_t i = begin; i < end; ++i) {
     std::error_code ec;
-    if (fs::remove(dir / entry_name((*entries)[i]), ec) && !ec) {
+    if (fit_archive_segment_name_ok((*entries)[i]) && fs::remove(dir / entry_name((*entries)[i]), ec) && !ec) {
       ++out.removed;
     } else {
       ++out.kept;

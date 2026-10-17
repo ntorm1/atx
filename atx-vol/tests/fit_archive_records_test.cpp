@@ -83,6 +83,7 @@ TEST(FitArchiveRecords, GradedSurfaceRoundTripIsBitExact) {
   const auto surface = testkit::synthetic_surface();
   ASSERT_EQ(surface.slices.size(), 3u);
   FitArchiveWriter w;
+  w.record_timings(true); // bit-exact including the wall-clock solve time
   ASSERT_TRUE(w.add_surface({"AAPL", kSnapshot, surface.slices, surface.expiry_days, surface.config, digest(),
                              "ordinary", "raw-liquidity"})
                   .has_value());
@@ -125,6 +126,7 @@ TEST(FitArchiveRecords, EveryCurveKindAndEveryOptionalFieldRoundTrips) {
     days.push_back(21000 + kind);
   }
   FitArchiveWriter w;
+  w.record_timings(true);
   ASSERT_TRUE(w.add_surface({"SPY", kSnapshot, slices, days, {}, {}, "dense", "symbol"}).has_value());
   const auto image = w.finish();
   ASSERT_TRUE(image.has_value());
@@ -148,6 +150,7 @@ TEST(FitArchiveRecords, StandaloneFitDecodesWithDefaultSliceFields) {
   const auto surface = testkit::synthetic_surface();
   const QuoteSurfaceSlice exotic = testkit::exotic_slice(surface.slices[0], VolCurveKind::SplineVol);
   FitArchiveWriter w;
+  w.record_timings(true);
   ASSERT_TRUE(w.add_fit({"TSLA", kSnapshot, 20800, 3, &exotic.fit}).has_value());
   const FitArchive a = open_image(*w.finish());
   ASSERT_EQ(a.fits().size(), 1u);
@@ -181,6 +184,7 @@ TEST(FitArchiveRecords, StrippedRepairedSliceKeepsMovedNodesWithoutPrices) {
   slices.push_back(stripped());
   const std::vector<std::int32_t> days{20770, 20833};
   FitArchiveWriter w;
+  w.record_timings(true);
   ASSERT_TRUE(
       w.add_surface({"META", kSnapshot, slices, days, surface.config, digest(), "ordinary", "raw-liquidity"})
           .has_value());
@@ -215,6 +219,71 @@ TEST(FitArchiveRecords, WritesAreDeterministicAndCopyIsByteIdentical) {
   FitArchiveWriter copy({42, 9, 0});
   ASSERT_TRUE(copy.copy_from(a).has_value());
   EXPECT_EQ(*copy.finish(), first) << "copy_from must be bit-exact";
+}
+
+// Two fits of the same inputs differ only in wall-clock timings (review NIT:
+// solve_seconds sat in the checksummed fit record, so archive sha256s could not
+// pin parity). By default the archives are byte-identical and timings decode
+// as 0; record_timings keeps them, bit-exact, in the optional FitTimings section.
+TEST(FitArchiveRecords, ArchivesOfTheSameInputsAreByteIdenticalWhateverTheTimings) {
+  const auto surface = testkit::synthetic_surface();
+  const auto slices_with = [&](double solve_seconds) {
+    std::vector<QuoteSurfaceSlice> slices;
+    for (std::size_t i = 0; i < surface.slices.size(); ++i) {
+      slices.push_back(testkit::exotic_slice(surface.slices[i], static_cast<VolCurveKind>(i)));
+      slices.back().fit.diagnostics.channel.solve_seconds = solve_seconds + static_cast<double>(i);
+    }
+    return slices;
+  };
+  const auto write = [&](const std::vector<QuoteSurfaceSlice> &slices, bool timings) {
+    FitArchiveWriter w({42, 9, 0});
+    w.record_timings(timings);
+    EXPECT_TRUE(w.add_surface({"AAPL", kSnapshot, slices, surface.expiry_days, surface.config, digest(),
+                               "ordinary", "raw-liquidity"})
+                    .has_value());
+    EXPECT_TRUE(w.add_fit({"ZM", kSnapshot, 20900, 0, &slices[0].fit}).has_value());
+    return *w.finish();
+  };
+  const auto run1 = slices_with(0.25);
+  const auto run2 = slices_with(0.75);
+  ASSERT_FALSE(bits(run1[0].fit.diagnostics.channel.solve_seconds, run2[0].fit.diagnostics.channel.solve_seconds));
+
+  // Default: byte-identical, no FitTimings, timings decode as 0, the rest bit-exact.
+  const auto a1 = write(run1, false);
+  const auto a2 = write(run2, false);
+  EXPECT_EQ(a1, a2) << "same inputs, different wall-clock timings: bytes must not differ";
+  const FitArchive a = open_image(a1);
+  EXPECT_EQ(a.section(FitArchiveSectionType::FitTimings), nullptr);
+  ASSERT_EQ(a.fits().size(), run1.size() + 1);
+  for (std::size_t i = 0; i < run1.size(); ++i) {
+    auto decoded = decode_surface_slice(a, a.fits()[i]);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(bits(decoded->fit.diagnostics.channel.solve_seconds, 0.0));
+    QuoteSurfaceSlice expected = testkit::exotic_slice(surface.slices[i], static_cast<VolCurveKind>(i));
+    expected.fit.diagnostics.channel.solve_seconds = 0.0;
+    EXPECT_EQ(diff_slice(*decoded, expected), "") << i;
+  }
+
+  // Opt-in: timings archived (so the bytes differ) and decoded bit-exactly.
+  const auto t1 = write(run1, true);
+  const auto t2 = write(run2, true);
+  EXPECT_NE(t1, t2);
+  const FitArchive t = open_image(t1);
+  ASSERT_NE(t.section(FitArchiveSectionType::FitTimings), nullptr);
+  for (std::size_t i = 0; i < run1.size(); ++i) {
+    auto decoded = decode_surface_slice(t, t.fits()[i]);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(diff_slice(*decoded, run1[i]), "") << i;
+  }
+  // A record copy is not an element of the archive: no timing is attributed.
+  const FitArchiveFitRecord detached = t.fits()[0];
+  auto loose = decode_fit(t, detached);
+  ASSERT_TRUE(loose.has_value());
+  EXPECT_TRUE(bits(loose->diagnostics.channel.solve_seconds, 0.0));
+  // copy_from keeps a source's timings, byte for byte.
+  FitArchiveWriter copy({42, 9, 0});
+  ASSERT_TRUE(copy.copy_from(t).has_value());
+  EXPECT_EQ(*copy.finish(), t1);
 }
 
 ExpiryRecord build_record(Side side, double expiry, bool certify) {

@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <span>
@@ -32,6 +34,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/storage/fit_archive.hpp"
 #include "atx/vol/api/storage/fit_archive_records.hpp"
+#include "atx/vol/api/storage/fit_archive_series.hpp"
 
 namespace atx::vol::testkit {
 
@@ -219,6 +222,7 @@ struct SyntheticSurface {
   f.diagnostics.channel.term_prior = true;
   f.diagnostics.channel.converged = true;
   f.diagnostics.channel.repair_max_half_spreads = std::numeric_limits<double>::infinity();
+  f.diagnostics.channel.solve_seconds = 0.0123; // wall clock: archived only with record_timings
   f.diagnostics.repair = {QuoteSliceRepairOutcome::Applied, 2, 1, 0.012, 0.004, 0.0, 1};
   f.curve = curve_of(kind);
   f.prices = real.fit.prices;
@@ -568,6 +572,36 @@ inline void reseal(std::vector<std::byte> &image) {
                                                FitArchiveVerify verify = FitArchiveVerify::Full) {
   auto a = FitArchive::open_copy(image, verify);
   return a ? ArchiveStatus::Ok : a.error().status;
+}
+
+[[nodiscard]] inline std::vector<std::byte> read_file(const std::filesystem::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  const std::vector<char> raw{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  std::vector<std::byte> out(raw.size());
+  if (!raw.empty()) std::memcpy(out.data(), raw.data(), raw.size());
+  return out;
+}
+
+// Rewrite the file name of manifest entry `index` in the series at `series_dir`
+// and re-sign every checksum, so only the planted name can cause a refusal.
+inline void forge_segment_name(const std::filesystem::path &series_dir, std::size_t index,
+                               std::string_view name) {
+  const auto path = series_dir / std::string(kFitArchiveSeriesManifest);
+  const auto image = read_file(path);
+  ASSERT_GE(image.size(), sizeof(FitArchiveHeader));
+  const auto h = read_at<FitArchiveHeader>(image, 0);
+  auto sections = split_image(image);
+  ImageSection *segments = find_section(sections, FitArchiveSectionType::SeriesSegments);
+  ASSERT_NE(segments, nullptr);
+  const std::size_t at = index * sizeof(FitArchiveSeriesSegment);
+  ASSERT_LE(at + sizeof(FitArchiveSeriesSegment), segments->bytes.size());
+  auto entry = read_at<FitArchiveSeriesSegment>(segments->bytes, at);
+  ASSERT_LT(name.size(), entry.file_name.size());
+  entry.file_name.fill('\0');
+  std::copy(name.begin(), name.end(), entry.file_name.begin());
+  write_at(segments->bytes, at, entry);
+  const auto forged = join_image(sections, {h.created_unix_ns, h.archive_id, h.segment_sequence});
+  ASSERT_TRUE(publish_fit_archive(path.string(), forged).has_value());
 }
 
 } // namespace atx::vol::testkit

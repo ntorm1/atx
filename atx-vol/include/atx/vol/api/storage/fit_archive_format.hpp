@@ -56,6 +56,7 @@ enum class FitArchiveSectionType : std::uint32_t {
   Dividends = 37,
   CarryPoints = 38,
   CurveWords = 39,
+  FitTimings = 40, // optional: wall-clock fit diagnostics, written only on request
   ExpiryMeta = 48,
   ExpiryData = 49,
   ExpiryIndex = 50,
@@ -284,7 +285,9 @@ struct FitArchiveChannelDiag {
   std::uint64_t repaired_nodes{};
   double max_violation_half_widths{};
   double prior_strength{};
-  double solve_seconds{};
+  // Always 0. The channel solve's wall-clock time differs run to run, so it is
+  // not part of the record: it lives in the optional FitTimings section.
+  double reserved_timing{};
   double repair_max_price{};
   double repair_max_half_spreads{};
   std::uint8_t flags{};
@@ -570,8 +573,16 @@ struct FitArchiveSeriesSegment {
   std::uint64_t expiry_records{};
   std::uint64_t ladder_records{};
   std::uint64_t markov_records{};
-  std::array<char, 40> file_name{}; // NUL padded, no directory part
+  // NUL padded. Exactly the writer's name for `sequence`: "seg-", the decimal
+  // sequence zero-padded to at least 12 digits, ".atxvfa". Anything else (a
+  // directory part, "..", a drive letter, another sequence) is RecordInvalid.
+  std::array<char, 40> file_name{};
   std::uint64_t reserved{};
+};
+
+// One per FitRecords element, same order (FitTimings section, optional).
+struct FitArchiveFitTimings {
+  double channel_solve_seconds{}; // QuoteSliceChannelDiagnostics::solve_seconds
 };
 
 // ── Layout pins (ARCHIVE_FORMAT.md) ──────────────────────────────────────────
@@ -639,6 +650,7 @@ static_assert(offsetof(FitArchiveMarkovRecord, diffusion_method) == 168);
 static_assert(kFitArchivePod<FitArchiveMarkovInterval> &&
               sizeof(FitArchiveMarkovInterval) == 56);
 static_assert(kFitArchivePod<FitArchiveSeriesSegment> && sizeof(FitArchiveSeriesSegment) == 128);
+static_assert(kFitArchivePod<FitArchiveFitTimings> && sizeof(FitArchiveFitTimings) == 8);
 
 // Curve payload word counts per VolCurveKind (ARCHIVE_FORMAT.md section 6). The
 // fixed counts are the native parameter-struct sizes / 8, pinned again against

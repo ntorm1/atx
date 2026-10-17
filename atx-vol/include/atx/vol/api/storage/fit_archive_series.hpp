@@ -32,6 +32,14 @@ class FitArchiveWriter;
 inline constexpr std::string_view kFitArchiveSeriesManifest{"series.atxvfa"};
 inline constexpr std::string_view kFitArchiveSeriesLock{"series.lock"};
 
+// True when `segment.file_name` is exactly the writer's name for its sequence:
+// "seg-", the decimal sequence zero-padded to at least 12 digits, ".atxvfa",
+// then NUL padding. A manifest entry naming anything else (a directory part,
+// "..", a drive letter, an absolute path, another sequence) is refused with
+// RecordInvalid when the manifest opens, so no series operation ever reads,
+// maps or deletes a file outside the series directory.
+[[nodiscard]] bool fit_archive_segment_name_ok(const FitArchiveSeriesSegment &segment) noexcept;
+
 struct FitArchiveSeriesOptions {
   std::int64_t created_unix_ns{0};
   std::uint64_t archive_id{0};
