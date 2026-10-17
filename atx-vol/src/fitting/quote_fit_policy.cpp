@@ -161,6 +161,7 @@ struct RawContract {
       !positive(cfg.iv_tolerance) || cfg.max_iv_iterations == 0u ||
       !nonnegative(cfg.atm_log_band) || cfg.discrete_div_steps < 1 ||
       cfg.discrete_div_steps > kDiscreteDivMaxSteps ||
+      !discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps) ||
       (cfg.side_policy != QuoteSliceSidePolicy::All &&
        cfg.side_policy != QuoteSliceSidePolicy::OutOfTheMoney) ||
       (cfg.dividend_model != QuoteSliceDividendModel::ContinuousYield &&

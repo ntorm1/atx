@@ -180,7 +180,8 @@ inline Json carry_json(const QuoteSliceCarryConfig &carry) {
 // aggregate-PV model. `inferred-schedule` infers the chain's dated cash schedule
 // from its (ddiv, ddiv_pv, rate) ladder (api/marketdata/dividend_schedule.hpp) and
 // sends every expiry with an inferred ex-date inside its life through the
-// discrete-dividend route (discrete_div_route -> DatedCash V&N lattice).
+// discrete-dividend route (discrete_div_route -> DatedCash lattice, scheme per
+// `dividend_lattice`; the escrowed schemes fit the escrowed stock's vol).
 // `inferred-schedule-exact` does the same only where every event in the life is
 // exactly dated (no split or non-integer event).
 enum class DividendRouting : std::uint8_t { Aggregate, InferredSchedule, InferredScheduleExact };
@@ -207,12 +208,36 @@ inline DividendRouting parse_dividend_routing(const Json &entry) {
       "Policy dividends must be aggregate, inferred-schedule or inferred-schedule-exact");
 }
 
+// Opt-in lattice scheme of the dated-cash route (american.hpp, DiscreteDivScheme)
+// and its step count. Both act only where a chain is routed to the DatedCash
+// lattice (`dividends` above); the aggregate models ignore them. Absent keys
+// keep the historical spliced 301-step lattice.
+inline void parse_lattice_options(const Json &entry, QuoteSliceConfig &cfg) {
+  if (entry.contains("dividend_lattice")) {
+    const auto name = text(entry.at("dividend_lattice"));
+    bool known = false;
+    for (const auto scheme : {DiscreteDivScheme::SplicedCrr, DiscreteDivScheme::SplicedBbs,
+                              DiscreteDivScheme::SplicedBbsr, DiscreteDivScheme::EscrowedBbs,
+                              DiscreteDivScheme::EscrowedLeisenReimer}) {
+      if (name == to_string(scheme)) {
+        cfg.discrete_div_scheme = scheme;
+        known = true;
+      }
+    }
+    if (!known) {
+      throw std::runtime_error("Policy dividend_lattice must be spliced, spliced-bbs, "
+                               "spliced-bbsr, escrowed-bbs or escrowed-lr");
+    }
+  }
+  numeric(entry, "dividend_lattice_steps", cfg.discrete_div_steps, 1, kDiscreteDivMaxSteps);
+}
+
 inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
                           std::vector<double> &spline_grid) {
   keys(entry, {"name", "base", "curve", "min_quotes", "quality", "parametric", "convex",
                "spline", "side_policy", "atm_log_band", "spread_floor", "min_time_value",
                "iv_tolerance", "max_iv_iterations", "carry_mode", "implied_forward",
-               "channel", "dividends"});
+               "channel", "dividends", "dividend_lattice", "dividend_lattice_steps"});
   profile.name = text(entry.at("name"), true);
   auto &cfg = profile.config;
   if (entry.contains("curve")) {
@@ -348,6 +373,7 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
     }
   }
   parse_carry(entry, cfg.carry);
+  parse_lattice_options(entry, cfg);
   // These are mandatory controls, never user-adjustable escape hatches.
   cfg.curve.convex.bound_slope_below = true;
 }
@@ -450,6 +476,10 @@ inline Json profile_json(const QuoteFitProfile &profile) {
   if (c.carry.mode != QuoteSliceCarryMode::Supplied) {
     out["carry_mode"] = to_string(c.carry.mode);
     out["implied_forward"] = carry_json(c.carry);
+  }
+  // Emitted only when opted in, so the historical lattice provenance is unchanged.
+  if (c.discrete_div_scheme != DiscreteDivScheme::SplicedCrr) {
+    out["dividend_lattice"] = to_string(c.discrete_div_scheme);
   }
   return out;
 }
@@ -567,6 +597,13 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       auto profile = *found;
       parse_profile(list[i], profile, grids[i]);
       const auto dividends = parse_dividend_routing(list[i]);
+      // The lattice keys act only on routed chains; on an aggregate profile they
+      // would be silently inert, so they are refused instead.
+      if (dividends == DividendRouting::Aggregate &&
+          (list[i].contains("dividend_lattice") || list[i].contains("dividend_lattice_steps"))) {
+        throw std::runtime_error("Policy dividend_lattice and dividend_lattice_steps require "
+                                 "dividends inferred-schedule or inferred-schedule-exact");
+      }
       if (dividends != DividendRouting::Aggregate) routing[profile.name] = dividends;
       profiles.push_back(std::move(profile));
     }

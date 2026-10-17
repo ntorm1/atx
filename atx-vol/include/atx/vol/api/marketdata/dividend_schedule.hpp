@@ -38,18 +38,27 @@
 //     the ladder (only then are they consecutive dividends). Each increment
 //     holds n = round(inc / unit) events, capped by how many fit in its window
 //     at `cadence_spacing_fraction * cadence` (or `min_event_spacing_days` when
-//     the cadence is unknown) and by `max_events_per_increment`. The cap is what
-//     keeps a special dividend from being read as a run of regular ones.
+//     the cadence is unknown) and by `max_events_per_increment`. A window that
+//     holds ONE event keeps the increment whole and exactly dated, so a special
+//     dividend in a bracket narrower than about that spacing + 1 day is never
+//     read as a run of regular ones. In a WIDER bracket the amount alone cannot
+//     tell a special from a run: a special worth no more units than its window
+//     holds apart IS split as a run (flagged SumSplit), while an increment
+//     holding MORE units than its window holds apart (room for two or more)
+//     cannot be a run and is kept as ONE event at its PV-exact time, flagged
+//     NonIntegerDay — never split into fewer events than its units.
 //  3. Place (THE DECLARED SPLIT RULE). An increment with n >= 2 is split into n
 //     EQUAL amounts inc/n at EQUALLY SPACED times t_j = t_1 + (j-1)*h inside its
 //     window. The spacing h is the cadence when known, else window width / n;
 //     t_1 is solved in closed form so the n events reproduce the increment's PV
 //     at that expiry's rate exactly, and h is shrunk by bisection when the
 //     events would leave the window. Times stay fractional (PV-exact); every
-//     split event is flagged SumSplit. An increment with n == 1 whose time is
-//     not an integer day is ONE event at its PV-exact time, flagged
-//     NonIntegerDay. Nothing is guessed silently: both kinds make the schedule
-//     Ambiguous and are counted.
+//     split event is flagged SumSplit. An increment with n == 1 is ONE event,
+//     its time re-solved against the FINAL events before it (pass 1 dated it
+//     against provisional single-event stand-ins for earlier split increments)
+//     and classified from that final time: Exact at the integer day when it is
+//     one, else at its PV-exact time, flagged NonIntegerDay. Nothing is guessed
+//     silently: both flagged kinds make the schedule Ambiguous and are counted.
 //
 // A final pass reprices every expiry's sum and PV from the finished schedule and
 // reports the worst residual; a gross PV miss (> `pv_inconsistent_relative`)
@@ -273,7 +282,9 @@ dividend_schedule_expiry_events(const DividendScheduleResult &schedule, std::int
 // expiry_ns = expiry_day * kDividendScheduleNsPerDay: the instant window then
 // admits exactly the events `dividend_schedule_expiry_events` returns.
 //
-// @return events written; 0 when `out` is smaller than `schedule.n_events`
+// @return events written; 0 when `out` is smaller than `schedule.n_events`, and
+//         0 when an instant could overflow int64 nanoseconds (|valuation_day|
+//         above about 67,600, i.e. past the year 2155 on the 1970 epoch)
 [[nodiscard]] std::size_t dividend_schedule_instants(const DividendScheduleResult &schedule,
                                                      std::span<DividendEvent> out) noexcept;
 

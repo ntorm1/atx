@@ -304,7 +304,17 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
   row.quote = {real(get("strike"), "strike"), side == 1U ? Side::Call : Side::Put,
                real(get("bid"), "bid"), real(get("ask"), "ask")};
   row.quote.continuous_yield = row.market.continuous_yield;
-  if (header.contains("ddiv")) row.dividend_sum = real(get("ddiv"), "ddiv");
+  if (header.contains("ddiv")) {
+    // Never throws (InputRow::dividend_sum): only the opt-in schedule reads it.
+    const auto cell = get("ddiv");
+    double value = kNaN;
+    const auto [end, error] = std::from_chars(cell.data(), cell.data() + cell.size(), value);
+    if (error == std::errc{} && end == cell.data() + cell.size()) {
+      row.dividend_sum = value;
+    } else {
+      row.dividend_sum_malformed = !cell.empty();
+    }
+  }
   return row;
 }
 
@@ -371,6 +381,9 @@ struct RunStatistics {
   Json route_chain_counts = Json::object();
   Json route_contract_counts = Json::object();
   Json route_reason_counts = Json::object();
+  // Opted-in rows whose ddiv cell is not a number (their snapshot's schedule
+  // is refused as non_finite_input).
+  std::size_t malformed_ddiv_rows{};
   std::vector<double> lattice_chain_microseconds;
   std::vector<double> escrow_chain_microseconds;
 };
@@ -594,7 +607,8 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
 // opts in, each snapshot's (ddiv, ddiv_pv, rate) expiry ladder becomes a dated
 // schedule (api/marketdata/dividend_schedule.hpp) and every expiry whose life
 // holds an inferred ex-date goes through the shared discrete-dividend route
-// (discrete_div_route, Lattice) into the quote slice's DatedCash V&N lattice.
+// (discrete_div_route, Lattice) into the quote slice's DatedCash lattice under
+// the profile's `dividend_lattice` scheme (spliced V&N unless set).
 // Every other expiry keeps the historical aggregate path bit for bit. Day
 // numbering: the UTC day of snapshot_ns is the valuation date (US listed
 // sessions end before 00:00 UTC); expiry_days is already a day number.
@@ -663,7 +677,7 @@ infer_schedules(const std::vector<InputRow> &rows,
                 const std::map<std::uint64_t, PreparedChain> &prepared,
                 const quote_bench_policy::LoadedPolicy &policy, RunStatistics &stats) {
   std::map<SnapshotIdentity, ScheduleRecord> schedules;
-  bool any_sum = false;
+  bool any_cell = false;
   for (const auto &[identity, ids] : snapshot_chains) {
     std::vector<DividendLadderExpiry> ladder;
     auto routing = DividendRouting::Aggregate;
@@ -676,9 +690,14 @@ infer_schedules(const std::vector<InputRow> &rows,
       const auto &indices = chains.at(id);
       std::vector<double> sums;
       sums.reserve(indices.size());
-      for (const auto i : indices) sums.push_back(rows[i].dividend_sum);
+      for (const auto i : indices) {
+        sums.push_back(rows[i].dividend_sum);
+        if (rows[i].dividend_sum_malformed) ++stats.malformed_ddiv_rows;
+        // A present cell, readable or not, shows the column exists.
+        any_cell = any_cell || std::isfinite(rows[i].dividend_sum) ||
+                   rows[i].dividend_sum_malformed;
+      }
       const double sum = median(std::move(sums));
-      any_sum = any_sum || std::isfinite(sum);
       ladder.push_back({number<std::int32_t>(rows[indices.front()].identity[2], "expiry_days"),
                         chain.market.calendar_years, chain.market.rate, sum,
                         chain.market.dividend_pv});
@@ -694,7 +713,7 @@ infer_schedules(const std::vector<InputRow> &rows,
     stats.dividend_schedules.push_back(schedule_json(identity, record));
     schedules.emplace(identity, std::move(record));
   }
-  if (!schedules.empty() && !any_sum) {
+  if (!schedules.empty() && !any_cell) {
     throw std::runtime_error("inferred-schedule dividends require the ddiv column");
   }
   return schedules;
@@ -746,19 +765,24 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
       static_cast<double>(expiry_ns - now_ns) / kCalendarYearNs, market.rate,
       DiscreteDivPolicy::Lattice);
   std::string reason;
+  // The count comparison runs BEFORE applies(): an empty route with events in
+  // the life (dividend_schedule_instants' overflow guard returns 0, or a route
+  // refusal) is a window mismatch, never "no ex-date".
   if (life.coverage != DividendExpiryCoverage::Covered) {
     reason = std::string("schedule_") + to_string(life.coverage);
-  } else if (!route.applies()) {
-    reason = "no_ex_date_in_life";
   } else if (route.schedule.size() != life.count || route.n_outside_tau_window != 0U) {
     reason = "route_window_mismatch";
+  } else if (!route.applies()) {
+    reason = "no_ex_date_in_life";
   } else if (record.routing == DividendRouting::InferredScheduleExact && life.ambiguous > 0U) {
     reason = "ambiguous_events_excluded";
   }
   std::string route_name{"escrow"};
   std::string reason_key = reason;
   std::optional<Result<QuoteSliceFit>> fit;
-  if (reason.empty()) {
+  // The lattice scheme and step count are provenance only where the lattice ran.
+  const bool lattice_attempted = reason.empty();
+  if (lattice_attempted) {
     QuoteSliceMarket dated = market;
     dated.dividend_pv = 0.0; // the dated cash replaces the aggregate PV, never both
     QuoteSliceConfig config = chain.profile->config;
@@ -800,6 +824,11 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
        {"forward", finite_or_null(used)},
        {"forward_shift_bp", finite_or_null(1.0e4 * (used / reference - 1.0))},
        {"fit_status", *fit ? Json(to_string((*fit)->fit_status)) : Json("error")},
+       {"lattice_steps", lattice_attempted ? Json(chain.profile->config.discrete_div_steps)
+                                           : Json(nullptr)},
+       {"lattice_scheme", lattice_attempted
+                              ? Json(to_string(chain.profile->config.discrete_div_scheme))
+                              : Json(nullptr)},
        {"chain_us", us}});
   return std::move(*fit);
 }
@@ -1206,18 +1235,28 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
             "median exactly dated amount), capped by its window at half the cadence) is split "
             "into n equal amounts at equally spaced times (spacing = cadence, else window/n, "
             "shrunk to fit), first time solved so the n events reproduce the increment's PV "
-            "exactly; flagged sum_split, never silent"},
+            "exactly; flagged sum_split, never silent. An increment holding more units than "
+            "its window holds apart (room for two or more) is kept as one event at its "
+            "PV-exact time (clamped to the window), flagged non_integer_day"},
         {"day_numbering", "valuation date = UTC day of snapshot_ns; ex-dates in whole days"},
         {"clock_mapping", "tau = years_calendar * days / (expiry_day - valuation_day); an "
             "ex-date on the expiry date lands at tau = T"},
         {"route", "discrete_div_route(Lattice) admits an ex-date in (valuation, expiry] -> "
-            "QuoteSliceDividendModel::DatedCash (V&N lattice, 301 steps, dividend_pv = 0, "
-            "per-strike sdiv kept as residual yield) for IV inversion and repricing; "
-            "otherwise the --dividends aggregate model unchanged"},
+            "QuoteSliceDividendModel::DatedCash lattice for IV inversion and repricing "
+            "(dividend_pv = 0, per-strike sdiv kept as residual yield): the profile's "
+            "dividend_lattice scheme at dividend_lattice_steps (301 unless set; per route: "
+            "lattice_scheme, lattice_steps, null where the lattice did not run). spliced "
+            "(default) is the V&N spliced CRR on spot; spliced-bbs adds a Broadie-Detemple "
+            "analytic final step, spliced-bbsr that plus Richardson in the step count; "
+            "escrowed-bbs (CRR + BBS) and escrowed-lr (Leisen-Reimer) are the ESCROWED-dividend "
+            "model, whose implied and reported vols are the escrowed stock's (spot net of the "
+            "discounted cash in the option's life), not spot vols. Otherwise the --dividends "
+            "aggregate model unchanged"},
         {"route_granularity", "per chain (one expiry); every contract of a chain shares its "
             "route, joinable on chain_id"},
         {"schedule_status_counts", stats.schedule_status_counts},
         {"schedule_reason_counts", stats.schedule_reason_counts},
+        {"malformed_ddiv_rows", stats.malformed_ddiv_rows},
         {"event_kind_counts", stats.event_kind_counts},
         {"route_chain_counts", stats.route_chain_counts},
         {"route_contract_counts", stats.route_contract_counts},

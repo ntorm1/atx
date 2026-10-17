@@ -143,6 +143,11 @@ struct QuoteSliceConfig {
   QuoteSliceCarryConfig carry{};
   QuoteSliceFitMethod method = QuoteSliceFitMethod::PointCurve;
   QuoteSliceChannelConfig channel{};
+  // Lattice scheme of the DatedCash model (american.hpp, DiscreteDivScheme),
+  // used for IV inversion AND certified repricing so the two stay one model.
+  // Ignored by every other dividend model. SplicedCrr is the historical lattice
+  // bit for bit; discrete_div_scheme_admits states the step requirements.
+  DiscreteDivScheme discrete_div_scheme = DiscreteDivScheme::SplicedCrr;
 };
 
 enum class QuoteSliceQuoteStatus : std::uint8_t {
@@ -250,6 +255,7 @@ struct QuoteSliceFit {
   QuoteSliceDividendModel dividend_model = QuoteSliceDividendModel::ContinuousYield;
   std::optional<AlOpts> al_opts;
   int discrete_div_steps = kDiscreteDivDefaultSteps;
+  DiscreteDivScheme discrete_div_scheme = DiscreteDivScheme::SplicedCrr;
   std::vector<CashDividend> variance_clock_dividends;
   // Empty when no quote supplies a yield override. Otherwise owns one
   // resolved carry per valid contract strike, including rejected bid/ask rows.

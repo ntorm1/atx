@@ -38,6 +38,7 @@ set(ATX_VOL_SLICE_OWNED_ELSEWHERE
     american_markov_pwl american_markov_grid pwl_strike
     american_markov_fit american_markov_seed                        # atx-vol-american-markov-*-tests
     american_markov_market american_markov_policy
+    dividend_schedule                                               # atx-vol-dividend-schedule-*
     vol_umbrella)                                                   # atx-vol-umbrella-tests
 
 set(ATX_VOL_SLICE_core_STEMS
@@ -59,7 +60,7 @@ set(ATX_VOL_SLICE_fitting_STEMS
 set(ATX_VOL_SLICE_marketdata_STEMS
     universe data opra_panel opra_hive opra_batch corpus listed_opra
     listed_definitions_cache occ_ess ingest_scale catalog spy_real spy_fit_corpus
-    opra_breadth_corpus breadth_regime spy_bidask_regression dividend_schedule)
+    opra_breadth_corpus breadth_regime spy_bidask_regression)
 set(ATX_VOL_SLICE_storage_STEMS
     run_archive run_diagnostics surface_db surface_db_populate surface_db_build
     surface_db_admin surface_db_populate_policy backtest_db backtest_db_build research_db

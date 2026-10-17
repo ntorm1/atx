@@ -38,6 +38,9 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
        cfg.method != QuoteSliceFitMethod::ChannelSpline)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid fitting configuration");
   }
+  if (!discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps)) {
+    return Err(ErrorCode::InvalidArgument, "quote slice: invalid lattice scheme");
+  }
   if (!nonnegative(cfg.quality.min_bid) || !nonnegative(cfg.quality.max_spread_to_mid) ||
       !nonnegative(cfg.quality.max_spread_vol) || !nonnegative(cfg.quality.min_vega_weight) ||
       !positive(cfg.quality.max_weight)) {
@@ -193,7 +196,8 @@ Result<double> model_price(const QuoteSliceFit &fit, double strike, Side side, d
   if (fit.dividend_model == QuoteSliceDividendModel::DatedCash) {
     return american_discrete_div_price(m.spot, strike, m.variance_years, sigma, d.effective_rate,
                                        q_effective, side, fit.variance_clock_dividends,
-                                       fit.discrete_div_steps);
+                                       fit.discrete_div_steps, ExerciseStyle::American,
+                                       fit.discrete_div_scheme);
   }
   return andersen_lake(m.spot, strike, m.variance_years, sigma, d.effective_rate, q_effective,
                        side, fit.al_opts);
@@ -203,12 +207,15 @@ Result<double> model_price(const QuoteSliceFit &fit, double strike, Side side, d
 // Use that SAME map throughout the bracket; never substitute a continuous IV.
 // The CRR probability imposes sigma > |r-q|*sqrt(dt), so the lower endpoint
 // must honor the lattice domain instead of treating its error as a zero price.
+// Under BBSR the coarse lattice has the larger dt, so it sets the bound.
 Result<double> dated_cash_iv(const QuoteSliceFit &fit, const QuoteSliceQuote &quote, double target,
                              const QuoteSliceConfig &cfg, double q_effective) {
   const auto &d = fit.diagnostics;
+  const int bound_steps =
+      discrete_div_coarsest_steps(fit.discrete_div_steps, fit.discrete_div_scheme);
   const double min_lattice_sigma =
       std::abs(d.effective_rate - q_effective) *
-      std::sqrt(fit.market.variance_years / static_cast<double>(fit.discrete_div_steps));
+      std::sqrt(fit.market.variance_years / static_cast<double>(bound_steps));
   double lo = std::max(kIvMin, min_lattice_sigma * (1.0 + 1.0e-6));
   if (!(lo < kIvMax)) {
     return Err(ErrorCode::OutOfRange, "dated-cash IV: lattice has no admissible volatility range");
@@ -399,6 +406,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.dividend_model = config.dividend_model;
   out.al_opts = config.al_opts;
   out.discrete_div_steps = config.discrete_div_steps;
+  out.discrete_div_scheme = config.discrete_div_scheme;
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
