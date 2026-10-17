@@ -163,6 +163,40 @@ TEST(FitArchiveRecords, StandaloneFitDecodesWithDefaultSliceFields) {
   EXPECT_EQ(fit->grade, QuoteSliceGrade::Refused);
 }
 
+// A slice refused after a repair is stripped (quote_surface.cpp strip resets
+// prices but keeps moved_nodes): its flags must archive and return unchanged
+// with no prices (15 dev200 graded-v1 surfaces carry such a slice).
+TEST(FitArchiveRecords, StrippedRepairedSliceKeepsMovedNodesWithoutPrices) {
+  const auto surface = testkit::synthetic_surface();
+  const auto stripped = [&] {
+    QuoteSurfaceSlice s = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
+    s.fit.prices.reset();
+    s.grade = QuoteSliceGrade::Refused;
+    return s;
+  };
+  const QuoteSurfaceSlice expected = stripped();
+  ASSERT_FALSE(expected.fit.moved_nodes.empty());
+  std::vector<QuoteSurfaceSlice> slices;
+  slices.push_back(testkit::exotic_slice(surface.slices[0], VolCurveKind::Essvi));
+  slices.push_back(stripped());
+  const std::vector<std::int32_t> days{20770, 20833};
+  FitArchiveWriter w;
+  ASSERT_TRUE(
+      w.add_surface({"META", kSnapshot, slices, days, surface.config, digest(), "ordinary", "raw-liquidity"})
+          .has_value());
+  const auto image = w.finish();
+  ASSERT_TRUE(image.has_value());
+  const FitArchive a = open_image(*image);
+  ASSERT_EQ(a.fits().size(), 2u);
+  const FitArchiveFitRecord &r = a.fits()[1];
+  EXPECT_EQ(r.prices.present, 0u);
+  EXPECT_EQ(a.moved_nodes(r).size(), expected.fit.moved_nodes.size());
+  auto decoded = decode_surface_slice(a, r);
+  ASSERT_TRUE(decoded.has_value()) << to_string(decoded.error().status);
+  EXPECT_EQ(diff_slice(*decoded, expected), "");
+  EXPECT_FALSE(decoded->fit.prices.has_value());
+}
+
 TEST(FitArchiveRecords, WritesAreDeterministicAndCopyIsByteIdentical) {
   const auto surface = testkit::synthetic_surface();
   const auto exotic = testkit::exotic_slice(surface.slices[2], VolCurveKind::C8);

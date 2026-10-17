@@ -564,9 +564,9 @@ ArchiveOutcome FitArchiveWriter::Impl::encode_curve(const IVolCurve &c, FitArchi
 }
 
 ArchiveOutcome FitArchiveWriter::Impl::encode_fit(const QuoteSliceFit &fit, FitArchiveFitRecord &r) {
-  if (!fit.moved_nodes.empty() && (!fit.prices || fit.moved_nodes.size() != fit.prices->nodes().size())) {
-    return archive_error(ArchiveStatus::InvalidArgument, Type::MovedNodes);
-  }
+  // moved_nodes is stored as the fit holds it, with no tie to `prices`: a slice
+  // stripped after a repair (quote_surface.cpp strip) keeps its flags with no
+  // prices, and consumers bound-check the index (quote_slice.cpp).
   r.market = FitArchiveMarket{fit.market.spot, fit.market.variance_years, fit.market.calendar_years,
                               fit.market.rate, fit.market.continuous_yield, fit.market.dividend_pv};
   r.diagnostics = encode_diagnostics(fit.diagnostics);
@@ -1506,8 +1506,7 @@ template <class R>
         (r.has_al_opts == 1u || zero_bytes(r.al_opts)) && zero_bytes(r.reserved) &&
         diagnostics_ok(r.diagnostics) && c.mode <= kMaxCarryMode && c.applied <= 1u &&
         c.fallback <= kMaxCarryFallback && c.status <= kMaxForwardStatus && c.reserved == 0u &&
-        curve_ok(r.curve, slice_of(words, r.curve.payload)) && prices_ok && slice_ok &&
-        (r.moved_nodes.count == 0u || (p.present == 1u && r.moved_nodes.count == p.nodes.count));
+        curve_ok(r.curve, slice_of(words, r.curve.payload)) && prices_ok && slice_ok;
     if (!ok) return archive_error(ArchiveStatus::RecordInvalid, Type::FitRecords, i);
     if (r.surface != kFitArchiveNone) {
       const FitArchiveSurfaceRecord &owner = surfaces[r.surface];
