@@ -59,7 +59,7 @@
     "kind": "rule",
     "rule_cell": {
       "template": "scripts/specs/p9/templates/theme-cov-hedge.json",
-      "template_sha256": "7c6778bbd6c5759e3c431bae3cf301700240e672ea8406926b549927688dfb15",
+      "template_sha256": "1f56c19428b7b62de9788e37ec21bf20a78f122e411fb8fb948a0cc0347ec082",
       "name": "theme-cov-hedge-v1",
       "source_sample_end": 2017,
       "predicted_mechanism": "each theme's composite is long the names that load on the theme's own factor beyond what the theme's characteristic explains; shorting that loading at a walk-forward minimum-variance ratio lowers the book's variance at about the same gross alpha",
