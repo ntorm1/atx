@@ -1,0 +1,49 @@
+# dirty outside the code pathspec (listed, not a stop): docs/plans/2026-10-02-x5-equity-curve.png, docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png, docs/plans/2026-10-03-wq-explore-equity-curve.png, docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png, docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png
+# research_cycle p9v-vol-target-cov: spec scripts\specs\p9\templates\p9v-vol-target-cov.json sha256 95cf5c05d1c9257ee10592f255a2321a16f0112edb2305b7876bee973d4e98ed (spec digest over the template chain f662afeb0bc2575d856bfbd7c38f5d501caf5b758ed4a57566a06fd79402aac0); root C:\atx-wt\pool-2; suffix none; attempts auto; runner overrides none
+# pin library: atx-impl/strategies/fund_industry_ic_v8ysb.json 41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5 [locked, verified]
+# pin recipe: atx-impl/strategies/fund_industry_ic_v8ysb.recipe.v2.json 9d357c757943379a2aff1978de73594a2c7cbd70983f10ac65c0dd02df458759 [locked, verified]
+# pin role: build-equity/train-2020-2023-lo3/manifest.json e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 [locked, verified]
+# pin label_role: build-equity/train-2020-2023-lo3-dlret/manifest.json 95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069 [locked, verified]
+# pin reference_cell: build-equity/mega-nav-p9x-leverage/summary.json da726a7dd1db5d867bb291d0cbfe15e281fc5e364cc47efb9784a23bbf9b0108 [locked, verified]
+# pin reference_admission: build-equity/mega-weights-p9-theme-cov-hedge/admission.json 52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d [locked, verified]
+# pin exe eval: build-equity-rel/bin/atx-research-eval.exe e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c [exes_sha256, verified]
+# pin exe ic: build-equity-rel/bin/atx-equity-strategy-ic.exe ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 [exes_sha256, verified]
+# pin exe nav: build-equity-rel/bin/atx-equity-strategy-targets.exe 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 [exes_sha256, verified]
+# template p9v-vol-target-cov.json: parent p9x-leverage.json
+# template p9x-leverage.json: parent theme-cov-hedge-v1-attempt2-gm.json
+# template theme-cov-hedge-v1-attempt2-gm.json: parent label-terminal-gm.json
+# template label-terminal-gm.json: parent lib-v8ysb-gm.json
+== fields: done (build-equity/train-2020-2023-lo3-fields-v15)
+fields check: pinned build-equity/train-2020-2023-lo3-fields-v15/manifest.json sha256 26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09: 84 rows == the spec list
+== u: done (build-equity/mega-p9l-train-u-label-terminal-1)
+   receipt argv: argv sha256 a46dbe1647ddefc70da69f03cef5bfc3a3809f3e3cd6193e87ce5a85442485e2 (build-equity/mega-p9l-train-u-label-terminal-run1/receipt.json)
+   receipt exe: executable sha256 ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 = the ancestor's (3 templates up) exes_sha256 pin of ic
+== fit: done (build-equity/mega-weights-p9-theme-cov-hedge)
+   receipt argv: argv sha256 22dbd0442eda69e96656e2173f6cca22d875d6fcaee7a6e3c23bec8e999f301b (build-equity/mega-weights-p9-theme-cov-hedge-run1/receipt.json)
+   receipt exe: executable sha256 624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181 (C:/Program Files/Python312/python.exe)
+== card: done (build-equity/mega-cards-p9-theme-cov-hedge)
+   receipt argv: argv sha256 1acca284cf9b5aeb04a163958cf418fc9ac93cba84805c5a7ab3b8fb09f65064 (build-equity/mega-cards-p9-theme-cov-hedge-run/receipt.json)
+   receipt exe: executable sha256 624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181 (C:/Program Files/Python312/python.exe)
+   ledger build-equity/trials.jsonl: 0 admission trial line(s) appended, 9 already ledgered
+gate p1-v8ysb so_wang_rev: status reject_turnover failed ['turnover']; runner sign 1 vs prior 1 (agrees True); HAC t 0.1607; tau 0.9659 (limit 0.7); max |rho| 0.4122 with ind_adj_rev_5; redundant_with None; train days 999
+gate p1-v8ysb iv_vol_of_vol: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 1.4488; tau 0.0677 (limit 0.7); max |rho| 0.4833 with ind_mom_12_1; redundant_with None; train days 1004
+gate p1-v8ysb day_rev_freq: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 1.7052; tau 0.0879 (limit 0.7); max |rho| 0.3733 with res_mom_12_1; redundant_with None; train days 1004
+gate p1-v8ysb mom_turn: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 1.8163; tau 0.0287 (limit 0.7); max |rho| 0.6746 with res_mom_12_1; redundant_with None; train days 1004
+gate p1-v8ysb ea_uvol: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 1.7888; tau 0.0358 (limit 0.7); max |rho| 0.5648 with k8_intensity; redundant_with None; train days 1004
+gate p1-v8ysb dato: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 0.3461; tau 0.0285 (limit 0.7); max |rho| 0.5978 with fscore; redundant_with None; train days 1004
+gate p1-v8ysb fscore_hbm: status admitted failed []; runner sign 0 vs prior 1 (agrees False); HAC t 1.6378; tau 0.0414 (limit 0.7); max |rho| 0.5647 with q5_eg_f49g; redundant_with None; train days 1004
+gate p1-v8ysb stio_trade: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t 1.5353; tau 0.0340 (limit 0.7); max |rho| 0.1738 with sv_flow; redundant_with None; train days 1004
+gate p1-v8ysb deal_target: status admitted failed []; runner sign 1 vs prior 1 (agrees True); HAC t -0.2471; tau 0.0516 (limit 0.7); max |rho| 0.2690 with sv_flow; redundant_with None; train days 1004
+  reference members vs build-equity/mega-weights-p9-theme-cov-hedge/admission.json: 0 status changes 
+gate p1-v8ysb: 7 of 9 listed candidates admitted with the prior sign (require any)
+gate p1-v8ysb PASS
+== w: done (build-equity/mega-p9w-train-theme-cov-hedge-1)
+   receipt argv: argv sha256 5b07743cf0c7d036804f0c5615d46a8f62e858d5f9ae77367beeebf515a70edf (build-equity/mega-p9w-train-theme-cov-hedge-run1/receipt.json)
+   receipt exe: executable sha256 ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 = the ancestor's (2 templates up) exes_sha256 pin of ic
+== nav: done (build-equity/mega-nav-p9v-vol-target-cov)
+   binding: spec sha256 f662afeb0bc2575d856bfbd7c38f5d501caf5b758ed4a57566a06fd79402aac0, argv sha256 1c2d38c22e425c32f0fbe5d16ee222e3c7fcb14e4eb0832578713bc198f6d989 (build-equity/mega-nav-p9v-vol-target-cov-run/cycle_binding.json)
+   receipt exe: executable sha256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = the spec's exes_sha256 pin of nav
+== monitor
+"C:/Program Files/Python312/python.exe" scripts/run_bounded_research.py --seconds 180 --max-rss-mib 1536 --min-free-mib 512 --output build-equity/mega-monitor-p9v-vol-target-cov-run --bind atx-impl/tools/book_monitor.py -- "C:/Program Files/Python312/python.exe" atx-impl/tools/book_monitor.py --baseline --daily-ic build-equity/mega-p9l-train-u-label-terminal-1/train_daily_ic.csv --admission build-equity/mega-weights-p9-theme-cov-hedge/admission.json --fit-work build-equity/fit-work --sleeve-daily build-equity/mega-cards-p9-theme-cov-hedge/daily_sleeve.csv --output build-equity/mega-monitor-p9v-vol-target-cov
+   receipt: outcome completed exit 0 2.5 s peak 133 MiB
+== stopped after monitor (--stop-after)

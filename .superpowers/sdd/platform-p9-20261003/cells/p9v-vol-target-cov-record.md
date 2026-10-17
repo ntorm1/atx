@@ -221,3 +221,47 @@ hidden2024+unread in this sprint; historical validation reads2(2023-2024);
 history0;2025+neverread. Prospective140/Nc69/Nhand130/Ntot240 is not asserted
 until native append and exact prefix/count checks hold. No scientific rerun
 is needed for these documentation corrections.
+
+## Final native completion checkpoint
+
+R15-V-COMPLETE was executed after source/prelaunch commit
+211a7021fbf23a6fcd61f0ba345a5a2381cc3ef6. The exact proposed monitor then
+full-run commands both exited 0, reusing native u/fit/card/w/nav outputs.
+Monitor wall 2.453 s, peak 133.84765625 MiB; summ wall 15.188 s, peak
+71.13671875 MiB. Each retained 180 s/1536 MiB/floor512 MiB limits and immediate
+launch. Outer elapsed times were 4.219 s and 17.782 s. No retry or NAV rerun.
+Monitor receipt SHA256 ab56406d42b6d759addd71e960b52a4c861a2a985c5793baca1e29a2a5e0df2e;
+summ receipt SHA256 6b70c33262eba62749a60b8e6b12c7a8658ce8c4931fc179d483a8bb9b7b9d59.
+Completed phase time totals 69.607 s across eight phases; outer time including
+the stopped diagnostic wrapper totals 76.720 s across nine invocations.
+Historical reused work of 115.047 s remains separate.
+
+Native summ appended exactly one construction trial c39e04e6f3a7b885.
+Ledger now has 140 lines, SHA256
+086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d;
+the original 139-line prefix remains SHA256
+5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd.
+Final Appendix A: Nc69, Nhand130, M110, Ntot240. Historical admissions
+61=12+25+9+15, P9 admissions+0; K_a40 historical/P9+0; inherited mining110,
+P9 mining0. Eight historical window reruns add0. Window research-window-v2
+(2020-2023); hidden2024+ unread in this sprint; historical validation reads2
+(2023-2024); history reads0;2025+ never read. Canonical text is
+cells/logs/p9v-accounting-v8.txt. The full identity-bridge flag above applies.
+
+Final evidence: cells/logs/p9v-completion-audit.json pins all41 actual source
+files, with OWN_UTC21, OWNER_RECEIPT105, OWNER_HEADER15, SEED79, OTHER0.
+Both stages' ten prospective source paths passed the unchanged exact predicates.
+All54 frozen exes, CRT,126 references, v15, both models/manifests, source pins
+and original88 outputs still match. Final100-file size/SHA256 listing is
+cells/logs/p9v-final-output-sha256.txt, SHA256
+6c393a339133d1d84a4db935d668edbeb5d477e4e95c2030daed018a8e6fb2ef.
+Raw consoles and launch/source JSONs are retained byte-exact. Generic cycle
+verdict and unregistered monitor/summ/PBO statistics remain unread.
+
+V remains REJECTED with literal fresh DERIV agreement and PM ruling;
+P9-F=X, F0=F0h=H. B8(a) remains not produced after the recorded internal
+validation stop, not a permission-system refusal; no covv1 diagnostic attempt.
+Both preparation scope disclosures and limited independence remain in force.
+G-P1 is unawarded; leverage returns do not establish alpha. No adoption or OD3
+was executed. PM final-report/freeze-verdict/adoption drafts and the parallel
+platform report remain outside this commit's scope.

@@ -62,3 +62,65 @@ Source/void -> mechanics committed -> rho committed -> scalar/printed reads ->
 own verdict/hashes -> STOP fresh DERIV. Diagnostic actual H argv retains original
 calibration; all other output bytes must match or (a) not produced, no workaround.
 Only literal DERIV agrees and separate completion release may write V's trial.
+
+## CURRENT handoff: completed V, adoption not released
+
+This section supersedes the historical pending statuses above. Read the complete
+cells/p9v-vol-target-cov-record.md for the fixed test, disclosures, diagnostics,
+full identity-bridge flag and final Appendix A. Fresh DERIV commit
+161781afb993de16c4ce1f5891a123ae93c4df97 agrees; PM resume15-ledger-34.txt
+R15-V-DERIV/COMPLETE formally rules V REJECTED and releases its completed native
+monitor/summ. Selected books: P9-F=X, F0=F0h=H. No adoption/OD3 release exists.
+
+Commit chain: preparation1ad619ef, registrationae92cf3a, prelauncha0c6ec5d,
+mechanics/guard eecf6ebe, rho86f0acb9, own7392a76d, DERIV161781af,
+completion prelaunch211a7021. Mechanics were committed before returns and rho
+before paired scalars; exact original receipt input bindings were checked.
+V spec SHA25695cf5c05d1c9257ee10592f255a2321a16f0112edb2305b7876bee973d4e98ed;
+X spec SHA256e8a308b593b67c16111f3e4792c92983e9c5cfd412c7e42d485ecfe089b549db.
+Existing accepted X NAV: build-equity/mega-nav-p9x-leverage. V NAV is
+build-equity/mega-nav-p9v-vol-target-cov. Exact H routes/pins are in the committed
+proposal and record; use their literal paths, never infer replacement inputs.
+
+Completion commands were unchanged cells/p9v-completion-proposal.json arrays,
+monitor then full run, both exit0, with native existing phases reused. Final
+ledger140 SHA256086ca77e40806bb8f71039bd5e4b824325dcb2124b845b81ffd5784e364e8f5d;
+original139 prefix5caaccd36762571fffd9ff6fe1fdddfffca69790d2777755df3424fd0643a2dd;
+new trial c39e04e6f3a7b885, construction count1. Nc69/Nhand130/M110/Ntot240,
+history0. No manual append. Final audit cells/logs/p9v-completion-audit.json
+pins41 source files OTHER0 and all100 output sizes/hashes. Listing
+cells/logs/p9v-final-output-sha256.txt SHA256
+6c393a339133d1d84a4db935d668edbeb5d477e4e95c2030daed018a8e6fb2ef.
+Canonical accounting cells/logs/p9v-accounting-v8.txt. Monitor/summ receipts,
+launch/source logs and raw consoles are retained. Do not read generic cycle
+verdict or unregistered monitor/summ/PBO statistics; outputs were hash-only.
+
+B8(a): exact H27/27 output identity passed and registered serializer produced
+CSV95,310,443 bytes SHA256ccda2610e3e89ac732a50cd1d59e9e40863310bca89963098e3ea9f30c4656f8.
+First risk wrapper stopped exit2 before native launch because full CSV binding
+is prohibited by its internal validation. No risk receipt/output, no retry,
+no dropping bind, no covv1 attempt. Diagnostic not produced, not PERM.
+B8(b)-(e) registered prints complete. Retain both pre-V exposure disclosures:
+covv1 diagnostic/manifest run mean_r2 and v11 si_shares coverage/quantiles were
+inadvertently printed during preparation; no fixed scientific choice changed.
+DERIV independence has disclosed limits, not pristine blindness.
+
+Recommended next actor: fresh root for adoption preparation/execution, after a
+separate explicit PM release. Current root has undergone context compaction;
+this handoff and exact committed records should anchor the next task. First
+read its full dispatch/amendments, latest PM ruling, standing prereg/contracts,
+goal-two-tracks.md, this record and completion evidence through authorized
+projections. PM owns final-report.md, freeze-verdict.md and adoption draft;
+platform agent owns platform-track-report.md. Await named release/scope for any
+adoption action. PM plans a later docs-only expansion of M/C/MV/X historical
+admission splits from prereg E, retaining their checkpoint counts; no rerun.
+
+Keep frozen54 exes, no builds, protected five PNGs name-only, atx-db untouched,
+no data2024+, no history reads, no other pools/main/origin actions. Use streaming
+hashes/native reuse, immediate bounded launch only when released, no RAM polling
+or admission-wait/host-budget arguments; preserve every actual stop/no retry.
+Old p9v_guard pins expect ledger139: do not rerun old guards/audits or generators
+against the completed140 state. Never import sealsrc.py (side effects).
+Unchanged X source helpers are safe only within explicit future scope. Every
+commit needs exact positive paths, literal mypy-cache exclusion and required
+Claude Opus5.5 co-author trailer. No result values in commit messages.

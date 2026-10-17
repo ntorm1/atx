@@ -1,0 +1,136 @@
+{
+  "stage": "monitor",
+  "files": [
+    {
+      "path": "build-equity/mega-monitor-p9v-vol-target-cov-run/start.json",
+      "sha256": "7b7a90b73c5f77c2cdd5808a84a00c81b249317c5bb5c49d3f57a5c41d1e443a",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 41,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 42,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 43,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 44,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 45,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/mega-monitor-p9v-vol-target-cov-run/receipt.json",
+      "sha256": "ab56406d42b6d759addd71e960b52a4c861a2a985c5793baca1e29a2a5e0df2e",
+      "hits": [
+        {
+          "line": 4,
+          "token": "2026-10-17",
+          "form": "iso",
+          "source": "OWN_UTC"
+        },
+        {
+          "line": 41,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 42,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 43,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 44,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        },
+        {
+          "line": 45,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_RECEIPT"
+        }
+      ]
+    },
+    {
+      "path": "build-equity/mega-monitor-p9v-vol-target-cov-run/stdout.log",
+      "sha256": "3398fca51370d001f4bc94273c1b1156eb054ede9376595407032cf2a16544a4",
+      "hits": []
+    },
+    {
+      "path": "build-equity/mega-monitor-p9v-vol-target-cov-run/stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hits": []
+    },
+    {
+      "path": ".superpowers/sdd/platform-p9-20261003/cells/logs/p9v-monitor-raw.log",
+      "sha256": "ad06898162a51a8251fee4780316844a870c5a41f933253e560ffa3632f139f5",
+      "hits": [
+        {
+          "line": 1,
+          "token": "2026-10-02",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-03",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        },
+        {
+          "line": 1,
+          "token": "2026-10-06",
+          "form": "iso",
+          "source": "OWNER_HEADER"
+        }
+      ]
+    }
+  ],
+  "other": 0
+}
