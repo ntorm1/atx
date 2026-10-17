@@ -1,10 +1,10 @@
 # P9 adoption print
 
-Executed under R15-ADOPT-EXEC and the committed c3e3735 plan; proposal SHA-256 c0f44d62d9c3877430c7dfca6f9948c51b350a64a85d4cc0f32bbcd1956ec4d0. F0=F0h=H; selected levered F=X. Scenario modeled-1bn-stale5-v1+swap-fin-v1; research-window-v2 (2020â€“2023). This is the registered E print. The unlevered adoption rule (H net Sharpe>=1.0 AND mechanics) is met. No owner deployment decision or history evidence is implied. OD3-DB remains unanswered; stop for PM **Adoption print read** before the separate OD3 record.
+Executed under R15-ADOPT-EXEC and the committed c3e3735 plan; proposal SHA-256 c0f44d62d9c3877430c7dfca6f9948c51b350a64a85d4cc0f32bbcd1956ec4d0. F0=F0h=H; selected levered F=X. Scenario modeled-1bn-stale5-v1+swap-fin-v1; research-window-v2 (2020-2023). This is the registered E print. The unlevered adoption rule (H net Sharpe>=1.0 AND mechanics) is met. No owner deployment decision or history evidence is implied. OD3-DB remains unanswered; stop for PM **Adoption print read** before the separate OD3 record.
 
 ## Producer and evidence identities
 
-Every table below uses these named aliases; full output/source identities are also bound in cells/logs/p9-adoption-final-output-sha256.txt and the unchanged proposal. Aggregate paired/DSR/conditional statistics use frozen native atx-research-eval.exe SHA-256 e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c. Existing NAV/summary/capacity metrics use frozen atx-nav.exe SHA-256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565. Year rows are the explicit nondeciding R15-ADOPT-YEAR exception: atx-impl/tools/nav_summ.py year_table:585â€“605 and bundle years:633â€“656, Python source SHA-256 7b5c5e242e789cb78f2a3fc6c6be2c359344f76f476a2aa31f2cfc4edb29ab69; remaining centralization gap goes to P10.
+Every table below uses these named aliases; full output/source identities are also bound in cells/logs/p9-adoption-final-output-sha256.txt and the unchanged proposal. Aggregate paired/DSR/conditional statistics use frozen native atx-research-eval.exe SHA-256 e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c. Existing NAV/summary/capacity metrics use frozen atx-nav.exe SHA-256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565. Year rows are the explicit nondeciding R15-ADOPT-YEAR exception: atx-impl/tools/nav_summ.py year_table:585-605 and bundle years:633-656, Python source SHA-256 7b5c5e242e789cb78f2a3fc6c6be2c359344f76f476a2aa31f2cfc4edb29ab69; remaining centralization gap goes to P10.
 
 | Alias | Path | SHA-256 |
 |---|---|---|
@@ -32,7 +32,7 @@ Every table below uses these named aliases; full output/source identities are al
 | G-B3 | PRINT ONLY: all three per-unit gross returns exceed historical X-5 .0654; selected X absolute gross annual .11346345795103402 exceeds target .10. Distinct quantities below. | YF0/H/X summary + bound all-rows mechanics/book |
 | G-B4 | MET H and X: x4 Sharpe >=1.50 and >=parent-.10. H 1.759566530994928 vs L 1.6994264697927697; X 1.678945115577997 vs H 1.759566530994928. Target1.70 met H, unmet X. | Xprint/Hprint frozen NAV capacity_curve.csv multiple4 |
 | G-B5 | PRINT ONLY: H/X DSR_tot and DSR_hand below .80 target; DSR_v8 above .80. Never gates. | DSR/year native eval; exact N table below |
-| G-B6 | MET: Hâˆ’R2 dSR .6190779300146116; one-sided p .0372 <.05; target .01 unmet. | r2-h native eval; full registered bundle below |
+| G-B6 | MET: H-R2 dSR .6190779300146116; one-sided p .0372 <.05; target .01 unmet. | r2-h native eval; full registered bundle below |
 | G-B7 | PRINT ONLY: six-step raw sum .6719401105622261; conditional adjusted sum -1.6477111820020742. | Conditional native eval; explicit six steps below |
 | G-B8 | NOT EVALUATED: OD3-DB unanswered; actual history0. No OD3 record yet. | Canonical unchanged ledger / Appendix A; no historical run |
 | G-B9 | MET: both H/X six mechanics limits and realised gross cap<=2 PASS; X L_t cap PASS. | Mechanics certificate, exact values below |
@@ -66,9 +66,9 @@ Both bindings are in canonical ledger140, research-window-v2. Native full-ledger
 
 ### Three registered paired bundles
 
-All native eval; block21, seed20260929, draws4999, 1005 sessions. All three rho-only certificates committed in 71226ef9 before paired scalars. Optional degenerate/one_minus_rho leaves were absent; inferred FALSE under the documented nondegenerate encoding. Rho respectively .7729073584239163, .8653199607726447, .8995266242016284; none near the conservative abs1e-12 boundary about 1-rho=1e-6. Only Hâˆ’R2 supplies G-B6; other bundles are prints.
+All native eval; block21, seed20260929, draws4999, 1005 sessions. All three rho-only certificates committed in 71226ef9 before paired scalars. Optional degenerate/one_minus_rho leaves were absent; inferred FALSE under the documented nondegenerate encoding. Rho respectively .7729073584239163, .8653199607726447, .8995266242016284; none near the conservative abs1e-12 boundary about 1-rho=1e-6. Only H-R2 supplies G-B6; other bundles are prints.
 
-| Producer (finalâˆ’base) | dSR | Memmel SE | t | p two-sided | p one-sided |
+| Producer (final-base) | dSR | Memmel SE | t | p two-sided | p one-sided |
 |---|---|---|---|---|---|
 | r2-h | 0.6190779300146116 | 0.33914502635893456 | 1.8254076630904494 | 0.0834 | 0.0372 |
 | yf0-h | 0.02554011056222616 | 0.2615496420444564 | 0.09764918950982554 | 0.9322 | 0.4744 |
@@ -183,7 +183,7 @@ PM dispositions: L ACCEPTED (protocol-only); H ACCEPTED; X ACCEPTED; M REJECTED;
 
 Beside MV REJECTED, prereg B.5/PRE-24a prior: spo-v1 rejected for implementation defect (gross .65, mechanics fail), no research content. spo-v2 rejected as research: paired dSR -.794, Memmel SE .476; cost per traded dollar +27%; held names1,514 vs1,930. With a binding gross budget the risk term does not discipline the book; alpha IC sigma z tilts to high specific-vol, lower-ADV names. MV is distinct: closed-form gross-normalised P V^-1 P alpha divides by specific variance and tilts toward low specific-vol, with no optimiser, cost term or gross cap inside the target rule; trading remains aim-partial. No prior rerun.
 
-Prereg A.8 power line: MDE80%=2.49*SE; combination SE~.2 detects~.5, sign-level evidence. This limits interpretation of cumulative G-B6 and history G-B8; history MDE~.40â€“.45. This is the registered planning statement, not post-hoc power.
+Prereg A.8 power line: MDE80%=2.49*SE; combination SE~.2 detects~.5, sign-level evidence. This limits interpretation of cumulative G-B6 and history G-B8; history MDE~.40-.45. This is the registered planning statement, not post-hoc power.
 
 Historical PBO only (R15-ADOPT-PBO): nav_summ CSCV whole-ledger grid70 candidates,16 blocks,12,870 splits,754 common sessions2020-01-06..2022-12-30: .1526029526029526, evidence build-equity/cycle-v8y-vol-target-y-1/pbo.json SHA2beb256ccd64325d28f0b7f95d3eae8e94b10b4ab57197f48c7681e7876f4ea6. YF0 own-cycle65 candidates: .07661227661227661, evidence build-equity/cycle-v8ysb-gm/pbo.json SHA556192c0161051011587467b86c848b916ae4ff8de3fbfbd79cd1d7b4f23aa10. Both copied from root-R0-12-report.md section5, hash-verified without parsing PBO objects. These are historical scopes, not estimates of final H/X overfitting risk; no new PBO run.
 
@@ -196,11 +196,11 @@ ALD-DIAG copied from prereg C.2: role train-2020-2023-lo3, manifest SHAe1c671010
 |2022|2,325|106|.046|102 / 1 / 0 / 3 / 0|0|
 |2023|2,186|95|.043|88 / 2 / 0 / 5 / 0|2 within30 days of seal|
 
-3,256 distinct names;387 classified exits+2 unclassified, a lower bound. Mostly M&A; five performance exits, few failure exits. Prereg C.25 cost-model limitation: modelled net Sharpe optimism about .06â€“.10 is a plan estimate/OD5-5, not a measured adjustment to an offered book. Fee-aware model absent; no data purchase.
+3,256 distinct names;387 classified exits+2 unclassified, a lower bound. Mostly M&A; five performance exits, few failure exits. Prereg C.25 cost-model limitation: modelled net Sharpe optimism about .06-.10 is a plan estimate/OD5-5, not a measured adjustment to an offered book. Fee-aware model absent; no data purchase.
 
 ## Appendix A: canonical accounting and limitation
 
-Native backtest_integrity appendix_a/appendix_a_v8 block, exact isolated stdout copy at cells/logs/p9-adoption-accounting.txt SHA-256 36a81dcb1209d4417c31a1298d4970d6e4985dc4494b8413f33e1be6c8572c32; source script SHA3def2b12eb87dd58b58fff2f3ecfcd760c1f3afbdb43f26c96097d0ecbbbadd9:
+Existing Python backtest_integrity appendix_a/appendix_a_v8 block, exact isolated stdout copy at cells/logs/p9-adoption-accounting.txt SHA-256 36a81dcb1209d4417c31a1298d4970d6e4985dc4494b8413f33e1be6c8572c32; source script SHA3def2b12eb87dd58b58fff2f3ecfcd760c1f3afbdb43f26c96097d0ecbbbadd9:
 
 ```text
 Appendix A (trial ledger build-equity/trials.jsonl): 130 trials in 140 ledger lines
