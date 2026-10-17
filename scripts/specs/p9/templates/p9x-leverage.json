@@ -1,0 +1,36 @@
+{
+  "schema": "atx.research-cycle-template/v1",
+  "name": "p9x-leverage",
+  "description": "P9-X prereg B.7: vol-target-v1 at cap 2.0 on accepted H, pinned Release v11 store. NAV-only hand v1 cycle; no gross matching. Scaled mechanics and X-10 acceptance are derived independently before any hand trial write.",
+  "parent": "theme-cov-hedge-v1-attempt2-gm.json",
+  "requires": [],
+  "change": {
+    "set": {
+      "nav.output": "build-equity/mega-nav-p9x-leverage",
+      "nav.leverage": "2.0",
+      "monitor.output": "build-equity/mega-monitor-p9x-leverage",
+      "exes_sha256": {
+        "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+        "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+        "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+      }
+    },
+    "flags": {
+      "nav": {
+        "--vol-target": "vol-target-v1",
+        "--risk-model": "build-equity/p9-m2i-dcov-v11",
+        "--risk-model-sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
+      }
+    }
+  },
+  "locked": {
+    "reference_cell": {
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    "reference_admission": {
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    }
+  }
+}
