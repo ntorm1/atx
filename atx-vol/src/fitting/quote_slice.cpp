@@ -393,8 +393,14 @@ Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double st
       [](const AmericanPriceNode &value, double k) { return value.strike < k; });
   const auto index = static_cast<std::size_t>(node - nodes.begin());
   const unsigned bit = side == Side::Call ? 1u : 2u;
+  const bool at_node = node != nodes.end() && node->strike == strike;
+  if (at_node && index < fit.price_only_nodes.size() && (fit.price_only_nodes[index] & bit) != 0u) {
+    // A PriceOnly row's node side: its volatility stays refused even when a later
+    // calendar repair moved the price (QuoteSliceFit::price_only_nodes).
+    return Err(ErrorCode::OutOfRange, "quote slice: node side served price-only (no IV)");
+  }
   const bool moved = index < fit.moved_nodes.size() && (fit.moved_nodes[index] & bit) != 0u;
-  if (node != nodes.end() && node->strike == strike && !moved) {
+  if (at_node && !moved) {
     const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
     if (!positive(sigma)) {
       return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
@@ -1070,6 +1076,13 @@ std::optional<AmericanPriceSlice> channel_repair_slice(
   return std::nullopt;
 }
 
+// Flags node side `bit` (1 call, 2 put) of node `node` among `nodes` as served
+// price-only (QuoteSliceFit::price_only_nodes).
+void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::size_t nodes) {
+  if (fit.price_only_nodes.size() != nodes) fit.price_only_nodes.assign(nodes, 0);
+  fit.price_only_nodes[node] = static_cast<std::uint8_t>(fit.price_only_nodes[node] | bit);
+}
+
 // Stage 3: reprice every valid strike from out.curve, certify the final
 // American prices and fill the rows. Sets fit_status/fit_error on refusal.
 // A positive `repair_half_spreads` enables the bounded-move convexity repair;
@@ -1186,9 +1199,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       // volatility of the certified price, and never the curve's pre-repair
       // volatility when the served price has none (PriceOnly).
       const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
+      const auto node = static_cast<std::size_t>(at - strikes.begin());
       const unsigned bit = quote.side == Side::Call ? 1u : 2u;
-      if (at != strikes.end() && *at == quote.strike &&
-          (repaired[static_cast<std::size_t>(at - strikes.begin())] & bit) != 0u) {
+      if (at != strikes.end() && *at == quote.strike && (repaired[node] & bit) != 0u) {
         const double q = effective_yield(out, calendar_yield_at(out, quote.strike));
         QuoteSliceConfig query;
         query.discrete_div_steps = out.discrete_div_steps;
@@ -1198,6 +1211,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         } else {
           row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
           row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
+          mark_price_only(out, node, bit, strikes.size());
         }
       }
     }
@@ -1580,9 +1594,11 @@ bool above_floors(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> n
 }
 
 // Publishes a certified calendar repair: replaces fit.prices, refreshes the
-// rows carrying a price (Success and PriceOnly; a moved node is re-implied: no
-// identifiable volatility -> PriceOnly with the certified price and NaN
-// volatility, else Success) and ORs `moved` into fit.moved_nodes.
+// prices of the rows carrying one (Success and PriceOnly), re-implies a moved
+// node of a Success row (no identifiable volatility -> PriceOnly with the
+// certified price and NaN volatility, flagged in fit.price_only_nodes) and ORs
+// `moved` into fit.moved_nodes. A PriceOnly row is never re-implied: it stays
+// PriceOnly, so a price-only outcome can never become a volatility row.
 void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
                             AmericanPriceSlice certified,
                             std::span<const AmericanPriceNode> nodes,
@@ -1608,22 +1624,23 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
       continue;
     }
     row.fitted_price = *price;
+    if (row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) continue; // final
     const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
+    const auto node = static_cast<std::size_t>(at - strikes.begin());
     const unsigned bit = quote.side == Side::Call ? 1u : 2u;
-    if (at != strikes.end() && *at == quote.strike &&
-        (moved[static_cast<std::size_t>(at - strikes.begin())] & bit) != 0u) {
+    if (at != strikes.end() && *at == quote.strike && (moved[node] & bit) != 0u) {
       const double q = effective_yield(fit, calendar_yield_at(fit, quote.strike));
       QuoteSliceConfig query;
       query.discrete_div_steps = fit.discrete_div_steps;
       const auto iv = contract_iv(fit, quote, *price, query, q);
       if (iv && positive(*iv)) {
         row.fitted_iv = *iv;
-        row.evaluation_status = QuoteSliceEvaluationStatus::Success;
       } else {
         // The served price has no identifiable volatility: never pair it with
         // the curve's pre-repair volatility.
         row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
         row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
+        mark_price_only(fit, node, bit, nodes.size());
       }
     }
   }

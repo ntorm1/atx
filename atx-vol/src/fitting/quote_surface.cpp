@@ -284,7 +284,10 @@ private:
   // serves (A) when it certifies, is inside the market and has own point
   // evidence; else the point fit serves (A) when it certifies and is inside the
   // market; else the expiry takes the channel passes. A knot-served expiry keeps
-  // its in-market point fit for the calendar rung (held_point_).
+  // its in-market point fit for the calendar rung (held_point_). ladder_fallback
+  // stays None for an in-market knot slice without own evidence: the point fit
+  // shares its admission, so it cannot be served either (the `point_ok` branch
+  // is reached only when the knot slice failed) and the channel passes decide.
   void knot_pass() {
     for (std::size_t i = 0; i < expiries_.size(); ++i) {
       const QuoteSurfaceExpiry &e = expiries_[i];
@@ -1031,6 +1034,7 @@ private:
     trial.rows = fit.rows;
     trial.prices = fit.prices;
     trial.moved_nodes = fit.moved_nodes;
+    trial.price_only_nodes = fit.price_only_nodes;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;
   }
@@ -1038,6 +1042,7 @@ private:
   static void commit(QuoteSliceFit &fit, QuoteSliceFit &trial) {
     fit.prices = std::move(trial.prices);
     fit.moved_nodes = std::move(trial.moved_nodes);
+    fit.price_only_nodes = std::move(trial.price_only_nodes);
     fit.rows = std::move(trial.rows);
   }
 
