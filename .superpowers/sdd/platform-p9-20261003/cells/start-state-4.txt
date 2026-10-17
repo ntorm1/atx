@@ -1,0 +1,97 @@
+# CELLS ROOT4 step0 preparation only 2026-10-17T15:11:11Z
+trial ledger build-equity/trials.jsonl: 135 lines, sha256 7b87d61ccb3285e9ea94aefb52222e610f74287b5559988339eccf09aed07e00
+build-equity/research-store/: absent
+build-equity/mega-candidate-cache-v8-lo3/index.sqlite: absent
+reference p9-b0-r2-nav: 27 files, listing sha256 04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd = gate-logs/b0-files-p9-b0-r2-nav.txt
+reference p9-b0g-x10-nav: 27 files, listing sha256 6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d = gate-logs/b0-files-p9-b0g-x10-nav.txt
+reference p9-b0g-y1-nav: 28 files, listing sha256 cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813 = gate-logs/b0-files-p9-b0g-y1-nav.txt
+reference p9-b0g-yf0-u: 5 files, listing sha256 1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa = gate-logs/b0-files-p9-b0g-yf0-u.txt
+reference p9-b0g-yf0-w: 12 files, listing sha256 ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1 = gate-logs/b0-files-p9-b0g-yf0-w.txt
+reference p9-b0g-yf0-nav: 27 files, listing sha256 e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797 = gate-logs/b0-files-p9-b0g-yf0-nav.txt
+ucrtbase.dll (C:\Windows\System32) file version 10.0.26100.7623 (WinBuild.160101.0800) SHA-256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF (= the P9-B0 record, C.6)
+host: free RAM 3.52 of 15.69 GB (3603 MiB); C: 38.6 GB free
+
+# Executable freeze verification: first 27 Release, next 27 Debug
+atx-engine-alpha-tests: newest receipt p9-3f source 5f48a25d sha256 534efe4928e84ae3f9fcc9f0ed79b7e823b51689987edd84c513b6ba7917bf56 disk = receipt
+atx-engine-book-tests: newest receipt p9-3f source 5f48a25d sha256 88f195dba54faa428eed45b4d53cf64d7e8f8a28702c7f3b3d68dd80ab4af0ac disk = receipt
+atx-engine-factory-tests: newest receipt p9-3f source 5f48a25d sha256 6bf91318724f77c0413dfaada365708d4360fbc754320f05a9e074655575483c disk = receipt
+atx-engine-research-admission-tests: newest receipt p9-3f source 5f48a25d sha256 39c4a81bda54df9712e2e818684cb78293486e7d664dec8b308883c505da1581 disk = receipt
+atx-engine-research-catalog-tests: newest receipt p9-3f source 5f48a25d sha256 c996b733b5b92f58bee1760a0c7505ec6349c3847bb392d5014e762b58dfefc5 disk = receipt
+atx-engine-research-composition-tests: newest receipt p9-3f source 5f48a25d sha256 17cee392663a5df0432e3293bec06bb5126f6931672b0d827cdaa0e336a731f6 disk = receipt
+atx-engine-research-eval-tests: newest receipt p9-3f source 5f48a25d sha256 2b9910b3665798c6d93cca37998580db5942cc7284b88cfef4b9830b946a4a02 disk = receipt
+atx-engine-research-fields-tests: newest receipt p9-3f source 5f48a25d sha256 165ebeea3d7f01fb330856240c12d125b18c0a491bac66183ab9a229c49b3651 disk = receipt
+atx-engine-research-ledger-tests: newest receipt p9-3f source 5f48a25d sha256 bfe2afc39770a316810ea5f33650e6d15f66ad013374b123ea16e42f8865bf94 disk = receipt
+atx-engine-research-store-tests: newest receipt p9-3f source 5f48a25d sha256 bf9c312941fc5d8668bb7024c476f915138679fb26f3f3fa21fd88e94d953d26 disk = receipt
+atx-engine-risk-tests: newest receipt p9-3f source 5f48a25d sha256 b654425d22fc671b3b24a7dbbb35ccad4288b655afb8d1925853362ca624e99d disk = receipt
+atx-equity-strategy: newest receipt p9-3f source 5f48a25d sha256 f883f81f0fbb928cb8fe2e8b1931841e0eef058e7b6398810e10de68cb0495a4 disk = receipt
+atx-equity-strategy-ic: newest receipt p9-3f source 5f48a25d sha256 ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 disk = receipt
+atx-equity-strategy-mine: newest receipt p9-3f source 5f48a25d sha256 daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba disk = receipt
+atx-equity-strategy-risk: newest receipt p9-3f source 5f48a25d sha256 0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b disk = receipt
+atx-equity-strategy-targets: newest receipt p9-3f source 5f48a25d sha256 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 disk = receipt
+atx-impl: newest receipt p9-3f source 5f48a25d sha256 71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9 disk = receipt
+atx-impl-strategy-ic-tests: newest receipt p9-3f source 5f48a25d sha256 9e979065f2b56f135c819baab9da80c89e5745b6ba249c284c428d3497d0fb5b disk = receipt
+atx-impl-strategy-mine-tests: newest receipt p9-3f source 5f48a25d sha256 2ae349c689f9423f2847ffbb63a3ad9598b4c26aab0ca63136dc16a83019fa68 disk = receipt
+atx-impl-strategy-target-tests: newest receipt p9-3f source 5f48a25d sha256 5e781705c1fab53c42cb49d0777753a1f792ff022847923f4dce901411cd6db5 disk = receipt
+atx-impl-strategy-tests: newest receipt p9-3f source 5f48a25d sha256 0ae6ab3f4a09af6a33d4dec3f6eba8fe8324e7c3ea85aaae6f745cb5e03712e1 disk = receipt
+atx-impl-tests: newest receipt p9-3f source 5f48a25d sha256 9f4cf8076d17b93891a70fb5944e3f43975230a84bc0a82a1e8fb46d90e0b545 disk = receipt
+atx-research-admission: newest receipt p9-3f source 5f48a25d sha256 f53d9277e4ad2e3915343ccca032df3f0098a1a1cd7b4d832b640f5f7437063f disk = receipt
+atx-research-composition: newest receipt p9-3f source 5f48a25d sha256 04db0d67c1563184edd6fe8ff66796877c8db20239d5cfb423fa78e047df16f2 disk = receipt
+atx-research-eval: newest receipt p9-3f source 5f48a25d sha256 e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c disk = receipt
+atx-research-fields: newest receipt p9-3f source 5f48a25d sha256 883c5b74a95731eb310cfd30cb1ab39ee102e077ab2d7318bd5db941f486584a disk = receipt
+atx-research-store: newest receipt p9-3f source 5f48a25d sha256 0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818 disk = receipt
+atx-engine-alpha-tests: newest receipt p9-3g source 5f48a25d sha256 3f8f1c7ce851998d3b2e515cdcbc9ae1634a61550ac2d975a3828850356c9637 disk = receipt
+atx-engine-book-tests: newest receipt p9-3g source 5f48a25d sha256 6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360 disk = receipt
+atx-engine-factory-tests: newest receipt p9-3g source 5f48a25d sha256 a9d538ae4d922afa26c78da60e7114b6cabcf78dc32c3274d7f698cf339354d6 disk = receipt
+atx-engine-research-admission-tests: newest receipt p9-3g source 5f48a25d sha256 310aa78298b1bbb75c5d6104f1af581aa962c909cccfdd846d5b6628e8200a62 disk = receipt
+atx-engine-research-catalog-tests: newest receipt p9-3g source 5f48a25d sha256 b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a disk = receipt
+atx-engine-research-composition-tests: newest receipt p9-3g source 5f48a25d sha256 76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9 disk = receipt
+atx-engine-research-eval-tests: newest receipt p9-3g source 5f48a25d sha256 58b5681bc8373e9a1ddf0a84602d5502acc01070708a09ddc52d747106ec3557 disk = receipt
+atx-engine-research-fields-tests: newest receipt p9-3g source 5f48a25d sha256 a037964fc902f143541d204624e9bd31e0249c7e3a216bd9dac325ab1d47ef7d disk = receipt
+atx-engine-research-ledger-tests: newest receipt p9-3g source 5f48a25d sha256 8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd disk = receipt
+atx-engine-research-store-tests: newest receipt p9-3g source 5f48a25d sha256 d2330e4b387b832545ada353706c62cb41c02981bff61728365ac7329713661f disk = receipt
+atx-engine-risk-tests: newest receipt p9-3g source 5f48a25d sha256 0008934517be7b3a36eede7eae65fde92cab50dab10b9835af585186e26bbbb1 disk = receipt
+atx-equity-strategy: newest receipt p9-3g source 5f48a25d sha256 47d341c2541e792873ec5d3db0b739af6de61e9962ba46667c755a1ca56ca9a4 disk = receipt
+atx-equity-strategy-ic: newest receipt p9-3g source 5f48a25d sha256 adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d disk = receipt
+atx-equity-strategy-mine: newest receipt p9-3g source 5f48a25d sha256 4dee20571d4c4481bcf175d8bb688574ba95c60ae29d08b4bb474849f7945412 disk = receipt
+atx-equity-strategy-risk: newest receipt p9-3g source 5f48a25d sha256 6696da719374777aefb49ce9e6b4707187549dff9b838e0c2338d21e852b47a1 disk = receipt
+atx-equity-strategy-targets: newest receipt p9-3g source 5f48a25d sha256 5dced610e204ba860bd2c8c8da5c3c6bd58a1ef98c242bec352a6b64d8762a8f disk = receipt
+atx-impl: newest receipt p9-3g source 5f48a25d sha256 7095d4477dd7fee80ead2d9bbdb516a726ed3ab943beed95ac1dc5335af63e55 disk = receipt
+atx-impl-strategy-ic-tests: newest receipt p9-3g source 5f48a25d sha256 55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b disk = receipt
+atx-impl-strategy-mine-tests: newest receipt p9-3g source 5f48a25d sha256 7502d0fb39e125a9cce9feabab4c35a8da5681a37eacad974b793c555822abb0 disk = receipt
+atx-impl-strategy-target-tests: newest receipt p9-3g source 5f48a25d sha256 18f3855468ca76c083eae9fabdb8d0cd1a237996ac8bba3136ed06782eb74318 disk = receipt
+atx-impl-strategy-tests: newest receipt p9-3g source 5f48a25d sha256 6dc6d4426370e256dc1e1331292e84da180a292cb72c86456c70eb9255246fba disk = receipt
+atx-impl-tests: newest receipt p9-3g source 5f48a25d sha256 20f3e2378ea4373e4812ba6c1d5bf1257945b2c5a9488cabeb6df04071f523db disk = receipt
+atx-research-admission: newest receipt p9-3g source 5f48a25d sha256 411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26 disk = receipt
+atx-research-composition: newest receipt p9-3g source 5f48a25d sha256 212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e disk = receipt
+atx-research-eval: newest receipt p9-3g source 5f48a25d sha256 4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b disk = receipt
+atx-research-fields: newest receipt p9-3g source 5f48a25d sha256 1c670d86a0fdcae6a86b0eff56a184902d1eed8b244f8af6ab31425e18185fac disk = receipt
+atx-research-store: newest receipt p9-3g source 5f48a25d sha256 a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73 disk = receipt
+
+# Metadata supplement (read-only)
+branch feat/platform-p9-20261003
+HEAD 3f21e65e846a4f117cd29b528de3f08b30261bf8
+Tracked state clean. Only five owner PNG names untracked; none opened, hashed or staged.
+PM final-report.md untouched and unstaged.
+ledger prefix133 27e40f9f6314585e5ff002ad5e3eacdcdb34e8960d9dc62111074487b34d8554
+ledger prefix134 b5eeab30594960c6bb52af2366b7a6d5d3ab90b0c84b13a05de0ab14a015ae61
+cache file count 686; index absent as above.
+build-equity/train-2020-2023-lo3-fields-v15/manifest.json 26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09
+build-equity/p9-m2i-dcov-v11/manifest.json 397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7
+build-equity/p9-m2i-dcov-covv1/manifest.json ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3
+D-COV hashes are reference checks only; M has no added risk-model flag.
+H template SHA 1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f
+H composition_weights.json SHA 153943b58587d6023917f410af2088987b185384d25415ae5ceec89850b352ae
+H fit flags: --orientation prior --screen v4-prior-v1 --composition ew-theme-std-v1 --theme-erc theme-erc-v1 --theme-hedge theme-cov-hedge-v1
+Explicit leaf checks: price_momentum_positive_weight True; theme_schedule_present False; theme_residualise_present False.
+H resolved inputs lack baseline_fields; pinned v15 is retained. Fit mode flag-absent.
+w IC admission 3584 MiB; w runner 300 s / 3584 MiB; system-free floor 512 MiB.
+M native state/manifest and generated mom-volman-v1.json / mom-volman-v1-gm.json absent.
+Original M template blob d9abc33844064951ade53d5a6c24c438659aacef
+Original M rule blob 8509fcbcca7e96c90e073bb068388539dad32112
+Ancestor exit0: 9d518317,6ec102fb,08f04e07,5061579d,1e6c4336,bd837403.
+Reviewer098e6ccd ancestry exit1; its review was copied at5061579d, not falsely claimed merged.
+Classifier .superpowers/sdd/platform-p9-20261003/tools/sealsrc.py SHA fd1aa3e60bf63c0988f74fa3fc0994d4dd9523904bd715079dbf5c7ef3eea551
+No graph MCP exposed; scoped rg fallback used.
+No build, suite, M execution, new statistic, cache-index, atx-db, 2024+ data, ref/lease action, or permission refusal.
+Preparation-only probes corrected a weights.json filename to composition_weights.json and a classifier path to sprint/tools/sealsrc.py.
+Read-scope excess: a theme_standardise whole-object print exposed inherited H-fit ERC covariance/shares; see prerequisite record. No scientific choice changed.
