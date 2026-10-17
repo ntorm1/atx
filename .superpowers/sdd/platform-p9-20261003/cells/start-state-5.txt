@@ -1,0 +1,110 @@
+P9-MV preparation only; GPT-6 Astra; no build, test, probe or scientific computation.
+branch feat/platform-p9-20261003
+HEAD fa76811ab571bb585556685125153854b71c4fca
+status (names only; owner PNG bytes untouched):
+M .superpowers/sdd/platform-p9-20261003/progress.md
+?? docs/plans/2026-10-02-x5-equity-curve.png
+?? docs/plans/2026-10-03-p9-b0-yf0-equity-curve.png
+?? docs/plans/2026-10-03-wq-explore-equity-curve.png
+?? docs/plans/2026-10-03-wq-explore-sharpe-vs-turnover.png
+?? docs/plans/2026-10-06-p9-f0-yf0-equity-curve.png
+# root5 read-only restart 2026-10-17T16:06:01Z
+trial ledger build-equity/trials.jsonl: 137 lines, sha256 21522bb42c9adf7859dbf042878338b3b0374b2f920055a8f2e59980c2a9a76b
+build-equity/research-store/: absent
+build-equity/mega-candidate-cache-v8-lo3/index.sqlite: absent
+reference p9-b0-r2-nav: 27 files, listing sha256 04bb8060aadf692a63e7f1baafd23f297db67c24d9c1f0a43dce6678a755b1bd = gate-logs/b0-files-p9-b0-r2-nav.txt
+reference p9-b0g-x10-nav: 27 files, listing sha256 6c87c8d516d7782c2484d6cc397323359f9f9b61cc242a5f894885240a74f31d = gate-logs/b0-files-p9-b0g-x10-nav.txt
+reference p9-b0g-y1-nav: 28 files, listing sha256 cac882e19a5baee9d3d60581d93a278f9f4fc6b769ed0e9154dd408b1552b813 = gate-logs/b0-files-p9-b0g-y1-nav.txt
+reference p9-b0g-yf0-u: 5 files, listing sha256 1cb087abaa50746392269b3452491be8fa2999b9a39e1212f01049acec2916aa = gate-logs/b0-files-p9-b0g-yf0-u.txt
+reference p9-b0g-yf0-w: 12 files, listing sha256 ec69344005107bf0e2ab0bb859583db083889521a652dcfe134b2304e27c8ae1 = gate-logs/b0-files-p9-b0g-yf0-w.txt
+reference p9-b0g-yf0-nav: 27 files, listing sha256 e205d6ecb16e75cba02194b90b313849404c2052b3e1738c4bf020e486fcf797 = gate-logs/b0-files-p9-b0g-yf0-nav.txt
+ucrtbase.dll (C:\Windows\System32) file version 10.0.26100.7623 (WinBuild.160101.0800) SHA-256 2C08E77F86B0953CFFA505BDBE64E87ECB7C088DB65D5ACB9A2EEE65A32565EF (= the P9-B0 record, C.6)
+host: free RAM 5.23 of 15.69 GB (5352 MiB); C: 36.7 GB free
+prefix136 c98dd0c4d59bada990fb34c7bf5efc3ae59873acc313de771a2d025a449013b7
+PM canonical counts: Nc66; historical admissions61/P9+0; Nhand127; M110; Ntot237; eight window reruns count0.
+exe p9-3f atx-engine-alpha-tests 534efe4928e84ae3f9fcc9f0ed79b7e823b51689987edd84c513b6ba7917bf56 = frozen receipt
+exe p9-3f atx-engine-book-tests 88f195dba54faa428eed45b4d53cf64d7e8f8a28702c7f3b3d68dd80ab4af0ac = frozen receipt
+exe p9-3f atx-engine-factory-tests 6bf91318724f77c0413dfaada365708d4360fbc754320f05a9e074655575483c = frozen receipt
+exe p9-3f atx-engine-research-admission-tests 39c4a81bda54df9712e2e818684cb78293486e7d664dec8b308883c505da1581 = frozen receipt
+exe p9-3f atx-engine-research-catalog-tests c996b733b5b92f58bee1760a0c7505ec6349c3847bb392d5014e762b58dfefc5 = frozen receipt
+exe p9-3f atx-engine-research-composition-tests 17cee392663a5df0432e3293bec06bb5126f6931672b0d827cdaa0e336a731f6 = frozen receipt
+exe p9-3f atx-engine-research-eval-tests 2b9910b3665798c6d93cca37998580db5942cc7284b88cfef4b9830b946a4a02 = frozen receipt
+exe p9-3f atx-engine-research-fields-tests 165ebeea3d7f01fb330856240c12d125b18c0a491bac66183ab9a229c49b3651 = frozen receipt
+exe p9-3f atx-engine-research-ledger-tests bfe2afc39770a316810ea5f33650e6d15f66ad013374b123ea16e42f8865bf94 = frozen receipt
+exe p9-3f atx-engine-research-store-tests bf9c312941fc5d8668bb7024c476f915138679fb26f3f3fa21fd88e94d953d26 = frozen receipt
+exe p9-3f atx-engine-risk-tests b654425d22fc671b3b24a7dbbb35ccad4288b655afb8d1925853362ca624e99d = frozen receipt
+exe p9-3f atx-equity-strategy f883f81f0fbb928cb8fe2e8b1931841e0eef058e7b6398810e10de68cb0495a4 = frozen receipt
+exe p9-3f atx-equity-strategy-ic ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705 = frozen receipt
+exe p9-3f atx-equity-strategy-mine daf889437983628ccbc375e76a078d3decf079a9d3a79b6cca79cbcc4a063eba = frozen receipt
+exe p9-3f atx-equity-strategy-risk 0c110534dd2df43e995040a07e5368eac788166b5e55cc2e0e2fa5e088be586b = frozen receipt
+exe p9-3f atx-equity-strategy-targets 255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565 = frozen receipt
+exe p9-3f atx-impl 71f0c6311aaffffaa48f4c221c18c94e009a3b7ebc5a45798baff009d75bbdb9 = frozen receipt
+exe p9-3f atx-impl-strategy-ic-tests 9e979065f2b56f135c819baab9da80c89e5745b6ba249c284c428d3497d0fb5b = frozen receipt
+exe p9-3f atx-impl-strategy-mine-tests 2ae349c689f9423f2847ffbb63a3ad9598b4c26aab0ca63136dc16a83019fa68 = frozen receipt
+exe p9-3f atx-impl-strategy-target-tests 5e781705c1fab53c42cb49d0777753a1f792ff022847923f4dce901411cd6db5 = frozen receipt
+exe p9-3f atx-impl-strategy-tests 0ae6ab3f4a09af6a33d4dec3f6eba8fe8324e7c3ea85aaae6f745cb5e03712e1 = frozen receipt
+exe p9-3f atx-impl-tests 9f4cf8076d17b93891a70fb5944e3f43975230a84bc0a82a1e8fb46d90e0b545 = frozen receipt
+exe p9-3f atx-research-admission f53d9277e4ad2e3915343ccca032df3f0098a1a1cd7b4d832b640f5f7437063f = frozen receipt
+exe p9-3f atx-research-composition 04db0d67c1563184edd6fe8ff66796877c8db20239d5cfb423fa78e047df16f2 = frozen receipt
+exe p9-3f atx-research-eval e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c = frozen receipt
+exe p9-3f atx-research-fields 883c5b74a95731eb310cfd30cb1ab39ee102e077ab2d7318bd5db941f486584a = frozen receipt
+exe p9-3f atx-research-store 0eeac21bb95677d8da5268ca829b88dc668521a4c9f625e0fbbde92f96fb3818 = frozen receipt
+exe p9-3g atx-engine-alpha-tests 3f8f1c7ce851998d3b2e515cdcbc9ae1634a61550ac2d975a3828850356c9637 = frozen receipt
+exe p9-3g atx-engine-book-tests 6977a5a75b386d283c81e148c0fec31a2da1f95536dc98cab2366d424d1f8360 = frozen receipt
+exe p9-3g atx-engine-factory-tests a9d538ae4d922afa26c78da60e7114b6cabcf78dc32c3274d7f698cf339354d6 = frozen receipt
+exe p9-3g atx-engine-research-admission-tests 310aa78298b1bbb75c5d6104f1af581aa962c909cccfdd846d5b6628e8200a62 = frozen receipt
+exe p9-3g atx-engine-research-catalog-tests b73b2199db7fd1bc451bd12872a5eb0851453db4299ed29e812dbbd151d9835a = frozen receipt
+exe p9-3g atx-engine-research-composition-tests 76b664b7483a77a717015a3fdebb38f97dc39fbcfecd04a98e52d3cd016023a9 = frozen receipt
+exe p9-3g atx-engine-research-eval-tests 58b5681bc8373e9a1ddf0a84602d5502acc01070708a09ddc52d747106ec3557 = frozen receipt
+exe p9-3g atx-engine-research-fields-tests a037964fc902f143541d204624e9bd31e0249c7e3a216bd9dac325ab1d47ef7d = frozen receipt
+exe p9-3g atx-engine-research-ledger-tests 8c5a6065f31f061fe6a06b474b0bd9987f45a640c5f59a9ade4b61b25fe322cd = frozen receipt
+exe p9-3g atx-engine-research-store-tests d2330e4b387b832545ada353706c62cb41c02981bff61728365ac7329713661f = frozen receipt
+exe p9-3g atx-engine-risk-tests 0008934517be7b3a36eede7eae65fde92cab50dab10b9835af585186e26bbbb1 = frozen receipt
+exe p9-3g atx-equity-strategy 47d341c2541e792873ec5d3db0b739af6de61e9962ba46667c755a1ca56ca9a4 = frozen receipt
+exe p9-3g atx-equity-strategy-ic adffe7421781145a9718e67be05b46038b89a46311f26390eeb3312da236d56d = frozen receipt
+exe p9-3g atx-equity-strategy-mine 4dee20571d4c4481bcf175d8bb688574ba95c60ae29d08b4bb474849f7945412 = frozen receipt
+exe p9-3g atx-equity-strategy-risk 6696da719374777aefb49ce9e6b4707187549dff9b838e0c2338d21e852b47a1 = frozen receipt
+exe p9-3g atx-equity-strategy-targets 5dced610e204ba860bd2c8c8da5c3c6bd58a1ef98c242bec352a6b64d8762a8f = frozen receipt
+exe p9-3g atx-impl 7095d4477dd7fee80ead2d9bbdb516a726ed3ab943beed95ac1dc5335af63e55 = frozen receipt
+exe p9-3g atx-impl-strategy-ic-tests 55db8666c03533439ecadd10d9412f4c65167581e0a11a806de2572ea69ebd6b = frozen receipt
+exe p9-3g atx-impl-strategy-mine-tests 7502d0fb39e125a9cce9feabab4c35a8da5681a37eacad974b793c555822abb0 = frozen receipt
+exe p9-3g atx-impl-strategy-target-tests 18f3855468ca76c083eae9fabdb8d0cd1a237996ac8bba3136ed06782eb74318 = frozen receipt
+exe p9-3g atx-impl-strategy-tests 6dc6d4426370e256dc1e1331292e84da180a292cb72c86456c70eb9255246fba = frozen receipt
+exe p9-3g atx-impl-tests 20f3e2378ea4373e4812ba6c1d5bf1257945b2c5a9488cabeb6df04071f523db = frozen receipt
+exe p9-3g atx-research-admission 411af33a0def5a6c28983dbf1ffc2fbc324694e8ac2e6b24401b27b693c9fa26 = frozen receipt
+exe p9-3g atx-research-composition 212f8b9941f0be705ebac138c03e83279fc863ab12051f00dd09501db7eed98e = frozen receipt
+exe p9-3g atx-research-eval 4791019131c0d74603b83cb772ef027ec8641167fd95844c4674e75bdf39893b = frozen receipt
+exe p9-3g atx-research-fields 1c670d86a0fdcae6a86b0eff56a184902d1eed8b244f8af6ab31425e18185fac = frozen receipt
+exe p9-3g atx-research-store a54955e965ee2aa035e66cc9ed668a16246c089684a53515431dea428b605c73 = frozen receipt
+frozen exes 54 PASS; re-pin2078f877; source5f48a25d; no rebuild
+ancestor 5c811b56 PASS
+ancestor 25e11b32 PASS
+ancestor 2078f877 PASS
+ancestor f8d852f3 PASS
+ancestor bd837403 PASS
+pin scripts/specs/p9/templates/mv-aim.json 83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870 PASS
+pin scripts/specs/p9/rules/mv-aim-v1.json 4b4af6e238b529d5d7eabccd2699022dc653da52fa45801eb3f61896bd6680b4 PASS
+pin scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json 1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f PASS
+pin build-equity/train-2020-2023-lo3-fields-v15/manifest.json 26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09 PASS
+pin build-equity/p9-m2i-dcov-covv1/manifest.json ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3 PASS
+pin build-equity/p9-m2i-dcov-covv1/model.atxcov 0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a PASS
+pin build-equity/p9-m2i-dcov-v11/manifest.json 397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7 PASS
+pin atx-impl/strategies/fund_industry_ic_v8ysb.json 41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5 PASS
+pin .superpowers/sdd/platform-p9-20261003/tools/sealsrc.py fd1aa3e60bf63c0988f74fa3fc0994d4dd9523904bd715079dbf5c7ef3eea551 PASS
+original Git blob scripts/specs/p9/templates/mv-aim.json 63917df794f55696830021c330e0e5f93b9f12a2
+original Git blob scripts/specs/p9/rules/mv-aim-v1.json 31bcf217be335e768658e3e490155f2322e207f6
+container {"bytes": 510678016, "file": "model.atxcov", "file_sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a", "format": "atx.cov-container/1.0", "root_sha256": "20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e"}
+risk fit role {"manifest_sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4", "path": "build-equity/train-2020-2023-lo3/manifest.json"} universe.delisting.returns_applied=false
+v15 fields 84 manifest pin verified; no payload read
+build-equity\train-2020-2023-lo3-fields-v9 absent
+build-equity\train-2020-2023-lo3-fields-v10 absent
+build-equity\train-2020-2023-lo3-fields-v13 absent
+build-equity\train-2020-2023-lo3-fields-v14 absent
+build-equity\train-2020-2023-lo3-fields-v15a absent
+cache files 686 index absent; research-store absent
+H selected resolved metadata {"card": {"flags": ["--workers", "4", "--work-dir", "build-equity/fit-work"], "output": "build-equity/mega-cards-p9-theme-cov-hedge", "script": "atx-impl/tools/alpha_report_card.py"}, "fit": {"flags": ["--orientation", "prior", "--screen", "v4-prior-v1", "--composition", "ew-theme-std-v1", "--theme-erc", "theme-erc-v1", "--theme-hedge", "theme-cov-hedge-v1"], "max_passes": 3, "max_seconds": 150, "output": "build-equity/mega-weights-p9-theme-cov-hedge", "script": "atx-impl/tools/fit_composition_weights.py", "work_dir": "build-equity/fit-work"}, "ic": {"cache": "build-equity/mega-candidate-cache-v8-lo3", "flags": ["--max-memory-mib", "2560", "--min-names", "1000", "--workers", "4", "--save-combined", "--label-terminal", "imputed-v1", "--train-label-role", "build-equity/train-2020-2023-lo3-dlret/manifest.json", "--train-label-role-sha256", "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"], "u_output": "build-equity/mega-p9l-train-u-label-terminal", "w_flags": {"--max-memory-mib": "3584"}, "w_output": "build-equity/mega-p9w-train-theme-cov-hedge"}, "nav": {"flags": ["--cadence", "1", "--trade-fraction", ".05", "--dust-multiple", ".1", "--aim-leverage", "{leverage}", "--daily-turnover-mean-max", ".20", "--daily-turnover-p95-max", ".30", "--neutralize", "price-risk-v1", "--max-bytes", "1073741824", "--order-basis", "delta", "--exit-rate", ".05", "--locate-in-aim", "--liquidity-cache", "--warm-start-sessions", "60", "--capacity-curve", "--ann-mean-gross", "--info-clock-print"], "leverage": "1.1674", "output": "build-equity/mega-nav-p9-theme-cov-hedge-gm", "rule": "aim-partial-v5"}, "runner": {"max_rss_mib": 1536, "min_free_mib": 512, "phases": {"card": {"max_rss_mib": 2560, "seconds": 300}, "u": {"max_rss_mib": 2560, "seconds": 300}, "w": {"max_rss_mib": 3584, "seconds": 300}}, "script": "scripts/run_bounded_research.py", "seconds": 180}}
+completed reused receipt build-equity\mega-p9l-train-u-label-terminal-run1\receipt.json 5ec77576ab1e7c5a5d8bc968f35e2dea70ecad96f0688cdc7275557e0fbfd5df
+completed reused receipt build-equity\mega-weights-p9-theme-cov-hedge-run1\receipt.json f08600e01776ca10f89b9f68ebf523af9846d4218164d7a7c9375c697d41a9f3
+completed reused receipt build-equity\mega-p9w-train-theme-cov-hedge-run1\receipt.json eeb4d3fa5b5e6d8e692ac3ab4e5977b96e7315503515b52936ee3000b98706e2
+completed reused receipt build-equity\mega-cards-p9-theme-cov-hedge-run\receipt.json afc77107833bf538efa319d6e419d0885e5b8a69a13be45017c839986126da20
+No native MV manifest/output created; final-report.md untouched; owner PNGs unopened/unhashed/unstaged/unmoved/undeleted.
