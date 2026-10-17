@@ -204,5 +204,105 @@ All gates ran on `vol-rel` with `-Jobs 2` unless noted.
 ## Open
 
 - Integrator: confirm the two storage-slice failures above on the frozen base.
+  (Done by the review: all three fail identically at `24e01644`, so they predate
+  the lane.)
 - Not in v1: compression, network transport, `gc` of segments that compaction
   left unreferenced, and any default serve path that reads the archive.
+
+## Fix round 1 (resume 6)
+
+The exact-SHA review of `431b724f` returned BLOCK: 1 major, 3 minor, 4 nit
+(`C:/atx-cache/quote-benchmark/surface-archive-431b724f-review-v1/`). Resume 5
+checkpointed a partial fix as `c0545fe9`; resume 6 finished it in `3a1f663b`
+(code, tests, format doc) and `45955ea2` (the CLI test keeps one crafted series
+per name on disk). The archive stays opt-in: outside the archive files the diff
+from `24e01644` is still 14 + 24 added CMake lines, and dev200 default
+`c89d0739` reproduces (below).
+
+| Finding | Fix | Covering tests |
+| --- | --- | --- |
+| MAJOR-1: u32 wrap in `expected_curve_words` | Word count in u64 (`c0545fe9`); `decode_curve` now runs open's whole `curve_ok` shape check, so an edited record copy is refused before any payload read; manifest record counts are ORed, not summed (a forged u64 sum could wrap to 0 and hide a segment) | `FitArchiveRecordRefusal.CurveNodeCountThatWrapsU32IsRefusedForEveryCurveKind` (6 kinds x node_count {n + 2^31, 2^31, 2^32 - 1} x Framing / Full / Paranoid, all `RecordInvalid` at `FitRecords`); `...DecodersRefuseARecordCopyWhoseNodeCountWraps`; `FitArchiveSeries.RecordCountsWhoseSumWrapsStillRouteLookups`; `FitArchiveCli.VerifyRefusesACurveNodeCountThatWrapsU32` |
+| MINOR-1: segment names escape the series folder | Name must equal the writer's `seg-<sequence>.atxvfa` (`fit_archive_segment_name_ok`), checked at (a) the manifest record pass, (b) `open_segment`, (c) before compaction's delete (`c0545fe9`) | `FitArchiveSeries.SegmentNameRuleAcceptsOnlyTheWritersOwnName`, `...ForeignSegmentNameIsRefusedWhenTheManifestOpens` (a), `...SeriesOpenNeverFollowsAForeignSegmentName` (b), `...CompactionNeverOpensOrDeletesAFileOutsideTheSeries` (sentinel; c); `FitArchiveCli.VerifyRefusesASeriesWhoseManifestNamesAForeignFile`. Names: `..\`, `../`, `C:\` absolute, `C:` drive-relative, two embedded-NUL forms, `sub\`, another sequence, unpadded |
+| MINOR-2: bench parity was payload parity | The bench reopens the published file (Paranoid), decodes every surface and repeats the reference row check on decoded values; it also compares every archived `ExpiryRecord` (1820 value bytes) with the built one; any difference exits 1 | bench runs below |
+| MINOR-3: raw handle and buffer in the bench | `FileHandle` / `PageBuffer` RAII owners, every Win32 return checked, short read refused | bench runs below; PCH-off check |
+| NIT-1: archive bytes depend on wall time | Done at `c0545fe9` (`reserved_timing` slot, optional `FitTimings` section 40 via `record_timings(true)`); now documented (ARCHIVE_FORMAT.md sections 4, 5.1, 9, 11) and the bench takes `--created-unix-ns` and `--timings on/off` | `FitArchiveRecords.ArchivesOfTheSameInputsAreByteIdenticalWhateverTheTimings`; two-run sha256 below |
+| NIT-4: pool-struct `sizeof` pins | Already present (`fit_archive_records.hpp:47-52`) | build |
+
+Not done (nits, deferred): NIT-2 `intern_reason` keeps every distinct foreign
+reason string; NIT-3 the temp file is left behind when the final rename of
+`publish_fit_archive` fails.
+
+Size-arithmetic audit (every size or offset product and sum over file data in
+`fit_archive_*`): `fit_archive.cpp` builds the table end as
+`256 + u64(section_count) * 64` after `section_count <= 256`; checks section
+bounds in subtraction form (`length <= footer_offset - offset`) and the count
+as `count == length / stride`, so `offset + length` cannot wrap; checks the
+stride-upgrade size as `count <= SIZE_MAX / stride` before `count * stride`
+(allocation) and copies element `k` at `k * stride < length`;
+`fit_archive_records.cpp` computes curve word counts in u64
+(`fixed + 2 * u64(n)`, then `13 + n` / `13 + 2n` / `6 + n` in `size_t` only
+after the payload length equals that count), checks every pool reference as
+`first <= pool && count <= pool - first`, sums surface and ladder indices in
+`size_t` after that check, addresses the ExpiryRecord bytes at
+`i * 1824 < section length`, and keeps writer pool totals below 2^32 before
+narrowing; `fit_archive_series.cpp` ORs the manifest record counts and bounds
+segment names below 40 bytes before indexing. The bench rounds a file size up to
+a page only after `size <= SIZE_MAX - 4096`.
+
+Revert evidence (each restored by the exact inverse Edit; `git hash-object`
+equals `HEAD:` for both sources, `git status --porcelain` empty):
+- Wall time back in the record, check (a) removed, counts summed: exactly
+  `ArchivesOfTheSame...Timings`, `ForeignSegmentNameIsRefusedWhenTheManifestOpens`
+  and `RecordCountsWhoseSumWrapsStillRouteLookups` fail (50 of 53 pass). The (b)
+  and (c) tests still pass, so (b) catches what (a) misses.
+- (a) and (b) removed: the series-open, compaction and CLI tests fail too; CLI
+  `verify` prints `OK` for the `..\` series. The sentinel assertions still
+  pass: (c) alone kept the outside file.
+- (a), (b) and (c) removed: the compaction test reports `sentinel deleted` for
+  both `..\` and `../`.
+- 32-bit word count: the in-place revert was denied by the permission system,
+  so the evidence is the reviewed binary. `atx-vol-surface-archive` built at
+  `431b724f` verifies the three node-kind crafted files below as `OK`; the fixed
+  build refuses all six.
+
+Bench (`atx-vol-fit-archive-bench` at `45955ea2`, sha256 `e41d3123...`,
+`ATX_VOL_FIT_WORKERS=3`, `--workers 3 --reps 9 --lookups 262144 --ladders on
+--created-unix-ns 1792000000000000000 --timings off`). Run 1 went to
+`surface-archive-fix1-20261017-bench-run1` (exit 0, 84 s, load 39% before and
+9% after); run 2 went to `...-bench-run2` (exit 0, 110 s, load 87% before and
+80% after):
+- Round trip, decoded from the published file in both runs: fits 1,138/1,138;
+  served rows 50,348, price exact 50,348, vol exact 50,348, grade 50,348;
+  unserved in both 12,878; ExpiryRecords bit-identical 1,926/1,926. This equals
+  the payload parity.
+- Archive: 12,140,032 B, sha256
+  `50cac1218af04e73ae1471c80dc103e59841f3bf2da02112ed72d078dac434c1` in both
+  runs (and in a scratch smoke run of the `3a1f663b` binary). With the time
+  pinned and timings off, the bytes are reproducible.
+- Timings, run 1, unqualified (loaded host, other lanes building): finish 12.0
+  ms median; publish with fsync 33.6 ms; mapped open Framing 8.7, Full 14.9,
+  Paranoid 12.0 ms; Read+Full 22.7 ms; unbuffered read 10.0 ms then Full
+  validate 2.7 ms; ExpiryRecord lookup + price single op median 500 ns, p99 1.3
+  us; fit lookup single op median 200 ns, p99 500 ns; owned fit decode median
+  3.8 us. Slower than the lane's first run on the open path (5.4 ms Full),
+  consistent with the load; nothing here is a qualified number.
+
+Crafted files (`C:/atx-cache/quote-benchmark/surface-archive-fix1-20261017-crafted/`,
+`sha256.txt` 86 files): the review's 22 inputs copied unchanged, the 6
+node-count files written by the overflow test and the 9 foreign-name series
+written by the CLI test. `atx-vol-surface-archive verify` at `45955ea2`
+(`cli-verify-45955ea2.txt`): every malformed input is refused with a typed
+status (the review's 19 plus all 15 new ones, including review cases 16, 17 and
+18 that `431b724f` accepted). The three valid controls (`00-valid`,
+`16c-control`, `18-outside-segment`) open `OK`. `cli-verify-431b724f.txt`
+holds the reviewed binary's results on the 15 new inputs.
+
+Parity: `atx-vol-quote-bench --model quote-slice --policy auto --dividends
+funding-pv` on dev200, built at `45955ea2`, exit 0, csv sha256
+`c89d07393c90ad86860a6bcacd3d1a84ede85f4647d9cce136567e34763d5b7c` (MATCH);
+`surface-archive-fix1-20261017-parity/`.
+
+Gates at `45955ea2`: `atx-vol-fit-archive-tests` 53/53 (44 before the round);
+ctest `^atx-vol-fit-archive$` 1/1; PCH-off (`vol-hygiene`) on the 3 sources, 4
+test TUs and 2 tools, each exit 0 with 0 diagnostics; build of the 4 targets
+with 0 warnings.
