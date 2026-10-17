@@ -1,0 +1,20 @@
+{
+  "path": "build-equity\\waves\\p9m-mom-volman\\bundle.json",
+  "sha256": "9ed6f66be49c5f9eac96e6c924d7fc691d36ed8e7cf32a41339dd32607582ce2",
+  "base": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+  "final": "build-equity/mega-nav-p9-mom-volman-gm",
+  "engine_exe_sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.9945889831439336,
+    "one_minus_rho": null,
+    "degenerate": null
+  },
+  "not_supplied": [
+    "one_minus_rho",
+    "degenerate"
+  ],
+  "one_minus_rho_text": "not supplied by bundle",
+  "threshold_flag": false,
+  "threshold_flag_provenance": "inferred from documented nondegenerate encoding, nav_summ.py:249-273; R15-V2-RHO"
+}

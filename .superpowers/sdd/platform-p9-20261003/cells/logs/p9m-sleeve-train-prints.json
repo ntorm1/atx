@@ -1,0 +1,19 @@
+{
+  "source": "build-equity/p9m-sleeve-train.json",
+  "sha256": "6f2107368c19adf16257fe4a1ee830468526094e8354f5ef09f21d3d6072fad7",
+  "in_sample_TRAIN": true,
+  "cells": [
+    {
+      "label": "raw",
+      "path": "build-equity/mega-p9w-train-mom-volman-1/train_mom_volman_sleeve_raw.csv",
+      "vol_annual": 0.05118135527570024,
+      "sharpe_annual": 0.22183996508882853
+    },
+    {
+      "label": "scaled",
+      "path": "build-equity/mega-p9w-train-mom-volman-1/train_mom_volman_sleeve_scaled.csv",
+      "vol_annual": 0.06155166510470397,
+      "sharpe_annual": 0.3596893007948714
+    }
+  ]
+}

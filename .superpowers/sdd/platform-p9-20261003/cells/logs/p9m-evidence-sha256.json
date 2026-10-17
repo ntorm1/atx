@@ -1,0 +1,12 @@
+{
+  "build-equity/waves/p9m-mom-volman/wave-result.json": "e7b88c31fcdc47f8e3bbf14186de725fb4cdb3c3d4e984b8a38a6bee17388d2f",
+  "scripts/specs/p9/templates/mom-volman-v1.json": "2a4843b770a9489d331f34b59361e71dec71de8cecb5e0cb060fd3eef1157138",
+  "scripts/specs/p9/templates/mom-volman-v1-cal.json": "94f74b79b2074812afe8d9622f2333c34e52cd7bb87ffb407350d533a37286e1",
+  "scripts/specs/p9/templates/mom-volman-v1-gm.json": "350a74418bcf52384a303f3dae8e7bcff48a01a2979b1a3a0c66a55e1549cfa3",
+  ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-mechanics-first.json": "8ea178b6ded84dafa2951ec92e2efa66e1557064e4f30386d868f1cbc9639dfa",
+  ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-rho-first.txt": "862138198924f3eecd300c436e4553f9aa408e8085ab2498dc721814800840a6",
+  ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-registered-prints.json": "bdc34919923eac1a5a71279d8b3c74725565753429a5d56f1a9ee3009c737033",
+  ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-schedule-traces.json": "3200a8e5ca84ed9ec5fd9bd91da980454f7b7c68e0bfa24dc74faebea125bc0a",
+  ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-sleeve-train-prints.json": "d5d572d4b6e80e5d7c99d5d2aba1c4067badc7f4546ca659ef10506a62e462df",
+  ".superpowers/sdd/platform-p9-20261003/cells/logs/p9m-output-files-sha256.txt": "550eeb2fcd9ac97dcfab842800afc5a9b1f317bba9e00a69a85a8b6f42c7cffb"
+}

@@ -1,0 +1,22 @@
+{
+  "exit_code": 0,
+  "elapsed_seconds": 162.25,
+  "argv": [
+    "C:\\Program Files\\Python312\\python.exe",
+    "-u",
+    "scripts/research_cycle.py",
+    "wave",
+    "run",
+    "scripts/specs/p9/waves/p9m-mom-volman.json",
+    "--seal-allow",
+    "20261003=R15-SEAL-C",
+    "--seal-allow",
+    "2026-10-02=SEAL-ALLOW",
+    "--seal-allow",
+    "2026-10-03=R15-SEAL-D",
+    "--seal-allow",
+    "2026-10-06=R15-SEAL-D",
+    "--seal-allow",
+    "2026-10-17=SEAL-ALLOW"
+  ]
+}

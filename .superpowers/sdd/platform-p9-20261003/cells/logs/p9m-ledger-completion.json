@@ -1,0 +1,27 @@
+{
+  "before_lines": 135,
+  "after_lines": 136,
+  "sha256": "c98dd0c4d59bada990fb34c7bf5efc3ae59873acc313de771a2d025a449013b7",
+  "prefix135_unchanged": true,
+  "new_row": {
+    "trial_id": "2355b99d4f19143d",
+    "kind": "construction",
+    "cell": "build-equity/mega-nav-p9-mom-volman-gm",
+    "count": 1,
+    "origin": "prior",
+    "prev_sha256": "1568e4a9ef832de9fc76493579fc0119f4c8898ee7a1638395746d8ca50c1cd2"
+  },
+  "counts": {
+    "construction": {
+      "TRAIN 2020-01-06..2022-12-30": 37,
+      "TRAIN 2020-01-06..2023-12-29": 2,
+      "TRAIN 2020-01-03..2023-12-29": 26
+    },
+    "admission": {
+      "TRAIN 2020-01-01..2023-12-31": 61
+    }
+  },
+  "N_hand": 126,
+  "M": 110,
+  "N_tot": 236
+}

@@ -1,0 +1,598 @@
+{
+  "schema": "atx.wave-result/v1",
+  "wave": "p9m-mom-volman",
+  "kind": "rule",
+  "description": "P9-M prereg B.3, R15-M-READY: mom-volman-v1 on accepted P9-H; registered constants, pm7-34, pm6-6-engine. R15-RAM-NOW immediate bounded route.",
+  "manifest": {
+    "commit": "a11bfb9d2c655b9204fb0c8ee6b9f17e6f49fb42",
+    "path": "scripts/specs/p9/waves/p9m-mom-volman.json",
+    "sha256": "0bfdd92284afc5209cedc979d4ab317fced7878c3772deeda570749484adf0fc"
+  },
+  "library": null,
+  "template": "scripts/specs/p9/templates/mom-volman.json",
+  "budget": {
+    "construction_cap": 71,
+    "id": "p9-prereg-construction"
+  },
+  "parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "spec_digest": "0e04a009da8c4f1b73cbce7d6a971b036c6288a3655f59f83a23c92b11571a97",
+    "library": "v8ysb",
+    "nav": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+    "leverage": "1.1674"
+  },
+  "screen": null,
+  "cell": {
+    "spec": "scripts/specs/p9/templates/mom-volman-v1-gm.json",
+    "spec_digest": "a07b7126d36c082d916ba88b98ed60140a88adb181dc639a16cd4b610e618345",
+    "library": "v8ysb",
+    "kind": "rule",
+    "nav": "build-equity/mega-nav-p9-mom-volman-gm",
+    "leverage": "1.1674",
+    "gross": 0.9871897027739895,
+    "gross_parent": 0.986241893721804,
+    "gross_calibration": 0.9871897027739895,
+    "leverage_calibration": "1.1674",
+    "corrected": false,
+    "gross_match": "pm6-6-engine",
+    "run_spec": "scripts/specs/p9/templates/mom-volman-v1-cal.json",
+    "run_spec_digest": "17a44803814fc32373c07b258037390e7ba557aa26fb2678fd64efcaf8255fc7"
+  },
+  "marginal": null,
+  "mechanics": {
+    "pass": true,
+    "rows": [
+      {
+        "check": "gross_all_rows",
+        "limit": "[0.9, 1.05]",
+        "pass": true,
+        "value": 0.9871897027739895
+      },
+      {
+        "check": "abs_net_all_rows",
+        "limit": "<= 0.02",
+        "pass": true,
+        "value": 0.0050520407340104104
+      },
+      {
+        "check": "tau_mean",
+        "limit": "<= 0.2",
+        "pass": true,
+        "value": 0.026889132875472933
+      },
+      {
+        "check": "tau_p95",
+        "limit": "<= 0.3",
+        "pass": true,
+        "value": 0.03219613151215636
+      },
+      {
+        "check": "max_return_identity_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 3.870601755773251e-16
+      },
+      {
+        "check": "max_cash_book_relative_error",
+        "limit": "<= 1e-09",
+        "pass": true,
+        "value": 8.659177728057526e-14
+      }
+    ],
+    "rule": "v8-mech"
+  },
+  "nav_exe": {
+    "cell": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+    "equal": true,
+    "parent": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+    "ref": "none"
+  },
+  "seal_scan": {
+    "files": 40,
+    "seal": "2024-01-01",
+    "forms": [
+      "iso",
+      "compact",
+      "year",
+      "quarter"
+    ],
+    "tokens_at_or_after_seal": 0,
+    "where": [],
+    "seal_references": {
+      "tokens": 0,
+      "files": []
+    },
+    "allowed": [
+      {
+        "token": "2026-10-02",
+        "ruling": "SEAL-ALLOW",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/p9m-mom-volman/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log",
+          "build-equity/waves/p9m-mom-volman/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log",
+          "build-equity/waves/p9m-mom-volman/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/016-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/p9m-mom-volman/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9m-mom-volman/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-03",
+        "ruling": "R15-SEAL-D",
+        "tokens": 21,
+        "files": [
+          "build-equity/waves/p9m-mom-volman/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log",
+          "build-equity/waves/p9m-mom-volman/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log",
+          "build-equity/waves/p9m-mom-volman/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/016-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/p9m-mom-volman/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9m-mom-volman/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-06",
+        "ruling": "R15-SEAL-D",
+        "tokens": 7,
+        "files": [
+          "build-equity/waves/p9m-mom-volman/consoles/006-the-cell-s-inputs----stop-after-w--its-nav-runs-.log",
+          "build-equity/waves/p9m-mom-volman/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/011-calibrated-run----stop-after-nav--nav---calibrat.log",
+          "build-equity/waves/p9m-mom-volman/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/016-the-cell-s-monitor-and-summ--nav-summ-scores-and.log",
+          "build-equity/waves/p9m-mom-volman/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9m-mom-volman/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "2026-10-17",
+        "ruling": "SEAL-ALLOW",
+        "tokens": 4,
+        "files": [
+          "build-equity/waves/p9m-mom-volman/consoles/007-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/012-mechanics-reader.log",
+          "build-equity/waves/p9m-mom-volman/consoles/017-bundle--pm5-23.log",
+          "build-equity/waves/p9m-mom-volman/consoles/018-book-reader.log"
+        ]
+      },
+      {
+        "token": "20260927",
+        "ruling": "nav_summ's default bootstrap seed (not a date)",
+        "tokens": 1,
+        "files": [
+          "build-equity/cycle-mom-volman-v1-gm/summ-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20260929",
+        "ruling": "nav_summ's --protocol v8 bootstrap seed and the sprint id platform-v8-20260929 (not a date)",
+        "tokens": 74,
+        "files": [
+          "build-equity/cycle-mom-volman-v1-gm/summ-run1/stdout.log",
+          "build-equity/waves/p9m-mom-volman/bundle-run1/stdout.log"
+        ]
+      },
+      {
+        "token": "20261003",
+        "ruling": "R15-SEAL-C",
+        "tokens": 6,
+        "files": [
+          "build-equity/waves/p9m-mom-volman/consoles/004-commit.log",
+          "build-equity/waves/p9m-mom-volman/consoles/005-commit.log",
+          "build-equity/waves/p9m-mom-volman/consoles/009-commit.log",
+          "build-equity/waves/p9m-mom-volman/consoles/010-commit.log",
+          "build-equity/waves/p9m-mom-volman/consoles/014-commit.log",
+          "build-equity/waves/p9m-mom-volman/consoles/015-commit.log"
+        ]
+      }
+    ],
+    "rulings": {
+      "2026-10-02": "SEAL-ALLOW",
+      "2026-10-03": "R15-SEAL-D",
+      "2026-10-06": "R15-SEAL-D",
+      "2026-10-17": "SEAL-ALLOW",
+      "20261003": "R15-SEAL-C"
+    }
+  },
+  "stats": {
+    "cell": {
+      "ann_vol": 0.03177909262152223,
+      "annual_costs": {
+        "borrow": 0.0033111444125084916,
+        "long_financing": 0.002014121796472428,
+        "trade_cost": 0.008367442449983099
+      },
+      "cagr": 0.05956350594798221,
+      "cost_bps_traded": 12.501136744312777,
+      "daily_csv_sha256": "999469173de5a20280793031d82fca0126c3c86768292fe6688f4fc3f944c784",
+      "dir": "build-equity/mega-nav-p9-mom-volman-gm",
+      "gross_annual": 0.07206075272109704,
+      "gross_sharpe": 2.2672469336932415,
+      "max_drawdown": 0.02257165575826514,
+      "mean_gross_leverage_all_rows": 0.9871897027739895,
+      "net_annual": 0.058368044062133015,
+      "net_sharpe": 1.8366806364573027,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.026889132875472933,
+      "tau_per_gross": 0.027238060526679764,
+      "x4_net_sharpe": 1.7327918281525585
+    },
+    "parent": {
+      "ann_vol": 0.030344611264587394,
+      "annual_costs": {
+        "borrow": 0.003302611384998739,
+        "long_financing": 0.0020122563350613203,
+        "trade_cost": 0.008405900683058918
+      },
+      "cagr": 0.058053229805862694,
+      "cost_bps_traded": 12.490795824692832,
+      "daily_csv_sha256": "d0bfba7604e2d83ef6765f145d6e7541092d8a20cd9ad8e0cbb3837379b0d5dc",
+      "dir": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+      "gross_annual": 0.07061758625960535,
+      "gross_sharpe": 2.326823088920012,
+      "max_drawdown": 0.02203729312571523,
+      "mean_gross_leverage_all_rows": 0.986241893721804,
+      "net_annual": 0.05689681785648637,
+      "net_sharpe": 1.875022136892088,
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "tau_gmv_mean": 0.02706227150226712,
+      "tau_per_gross": 0.027439791063976805,
+      "x4_net_sharpe": 1.759566530994928
+    }
+  },
+  "paired": {
+    "cbb_ci": [
+      -0.10718350908522657,
+      0.03199132717443943
+    ],
+    "dsr": -0.03834150043478579,
+    "lw_p": 0.286,
+    "se": 0.05245282932751416
+  },
+  "bundle": {
+    "cbb_ci95": [
+      -0.10718350908522657,
+      0.03199132717443943
+    ],
+    "dsr": -0.03834150043478579,
+    "freeze_gate": false,
+    "lw_ci95": [
+      -0.10757321793188322,
+      0.030852037821273437
+    ],
+    "memmel_se": 0.05245282932751416,
+    "p_one_sided": 0.8498,
+    "p_two_sided": 0.286,
+    "path": "build-equity/waves/p9m-mom-volman/bundle.json",
+    "rho": 0.9945889831439336,
+    "sessions": 1005,
+    "sha256": "9ed6f66be49c5f9eac96e6c924d7fc691d36ed8e7cf32a41339dd32607582ce2"
+  },
+  "dsr": {
+    "cell_count": 0.823883927718029,
+    "effective_n": 0.873572930071441,
+    "legacy": {
+      "cells": 37,
+      "dsr": 0.964982997257505,
+      "note": "legacy variance (ledger lines without a window_id): reported, gates nothing"
+    },
+    "n": 65,
+    "source": "nav_summ --dsr-ledger (deflated_ledger)",
+    "variance_cells": 36,
+    "variance_sr": 0.0013144284216355625,
+    "window_id": "research-window-v2"
+  },
+  "pbo": 0.13543123543123542,
+  "verdict": {
+    "accepted": false,
+    "checks": {
+      "criteria": false,
+      "dsr_positive": false,
+      "mechanics": true
+    },
+    "criteria": [
+      {
+        "criterion": "capacity-4x-higher",
+        "met": false,
+        "printed": "unmet",
+        "text": "net Sharpe at 4x NAV (capacity_curve.csv) higher than the parent's"
+      },
+      {
+        "criterion": "turnover-per-gross-not-higher",
+        "met": true,
+        "printed": "met",
+        "text": "turnover per unit gross (tau_gmv_mean / all-rows gross) not higher than the parent's"
+      }
+    ],
+    "decided_by": [
+      "dsr_positive",
+      "mechanics"
+    ],
+    "dsr": -0.03834150043478579,
+    "rule": "pm7-34",
+    "text": "paired S2 net dSR > 0 AND mechanics (PM7-34); criteria printed, decide nothing"
+  },
+  "ledger": {
+    "path": "build-equity/trials.jsonl",
+    "lines_before": 135,
+    "lines_after": 136,
+    "head": "daa7783f00183fd1cf680ccdfdc3cf2927e0e85fe935ca028acce601348ffa21",
+    "n_before": 64,
+    "n_after": 65,
+    "trial_id": "2355b99d4f19143d",
+    "admission_lines": []
+  },
+  "next_parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "library": "v8ysb"
+  },
+  "timings": [
+    {
+      "executable_sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 933,
+      "phase": "u",
+      "run_dir": "build-equity/mega-p9l-train-u-label-terminal-run1",
+      "seconds": 51.57799999997951
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 66,
+      "phase": "fit",
+      "run_dir": "build-equity/mega-weights-p9-mom-volman-run1",
+      "seconds": 2.468999999924563
+    },
+    {
+      "executable_sha256": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1757,
+      "phase": "w",
+      "run_dir": "build-equity/mega-p9w-train-mom-volman-run1",
+      "seconds": 42.35999999998603
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 1379,
+      "phase": "card",
+      "run_dir": "build-equity/mega-cards-p9-mom-volman-run",
+      "seconds": 32.26599999994505
+    },
+    {
+      "executable_sha256": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 693,
+      "phase": "nav",
+      "run_dir": "build-equity/mega-nav-p9-mom-volman-gm-run",
+      "seconds": 45.73499999998603
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 134,
+      "phase": "monitor",
+      "run_dir": "build-equity/mega-monitor-p9-mom-volman-run",
+      "seconds": 2.968999999924563
+    },
+    {
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181",
+      "exit_code": 0,
+      "outcome": "completed",
+      "peak_mib": 70,
+      "phase": "summ",
+      "run_dir": "build-equity/cycle-mom-volman-v1-gm/summ-run1",
+      "seconds": 14.030999999959022
+    },
+    {
+      "phase": "reader:book",
+      "run_dir": "build-equity/waves/p9m-mom-volman/readers/book-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.8279999999795109,
+      "peak_mib": 40,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    },
+    {
+      "phase": "reader:mech-matched",
+      "run_dir": "build-equity/waves/p9m-mom-volman/readers/mech-matched-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.8120000000344589,
+      "peak_mib": 39,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    },
+    {
+      "phase": "reader:mech-parent",
+      "run_dir": "build-equity/waves/p9m-mom-volman/readers/mech-parent-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 0.7970000000204891,
+      "peak_mib": 34,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    },
+    {
+      "phase": "bundle",
+      "run_dir": "build-equity/waves/p9m-mom-volman/bundle-run1",
+      "outcome": "completed",
+      "exit_code": 0,
+      "seconds": 1.077999999979511,
+      "peak_mib": 54,
+      "executable_sha256": "624bbc0586d8855633b875e911883bbef8a0e8b8711e11126df480dd86f54181"
+    }
+  ],
+  "receipts": {
+    "01-preflight": "c77bb7c4730a79583841a9eb3902c74d15a98fa35dbee68519fee26ddf0f77c5",
+    "02-register": "97ce6789d919fa3cbe1b35f6134866206acf1b80412dc9b34b84b60bb23196e0",
+    "03-screen": "6733f66f6d20a1076cebc408ff3235d972b74aa611096440bf9646b3760f62d3",
+    "04-spec": "f48d8324140f0806c601e0e9b8e3472b6e02b9628151313c63b6358aacd98c70",
+    "05-run": "23ffc14e50d8679769b356e39922fab67a4e3ab7a2866dee0c4cfdac92907f49",
+    "06-match": "f5f10b2fd5a0db9eb3a0817cb3dde5b5ed78fbfe82516004e4feab5276a0f225",
+    "07-verify": "a62bcc51e3fd7a16faeef9997697f22e55652274ad62f86be5a8030e6479909e",
+    "08-judge": "70a87bb65f16acf37e093015dc3d1213bc430874939d44e7eba7bf18b8308492"
+  },
+  "exes_sha256": {
+    "cell": {
+      "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+    },
+    "differ": [],
+    "parent": {
+      "eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+      "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705",
+      "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"
+    }
+  },
+  "stage_seconds": {
+    "preflight": 0.656,
+    "register": 0.0,
+    "screen": 0.0,
+    "spec": 1.266,
+    "run": 81.515,
+    "match": 53.89,
+    "verify": 0.172,
+    "judge": 24.0
+  },
+  "processes": [
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.062,
+      "what": "git status"
+    },
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.047,
+      "what": "git log"
+    },
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.016,
+      "what": "ic rule table"
+    },
+    {
+      "stage": "preflight",
+      "calls": 1,
+      "seconds": 0.032,
+      "what": "nav rule table"
+    },
+    {
+      "stage": "spec",
+      "calls": 3,
+      "seconds": 0.281,
+      "what": "git status"
+    },
+    {
+      "stage": "spec",
+      "calls": 1,
+      "seconds": 0.656,
+      "what": "lock the rule cell"
+    },
+    {
+      "stage": "spec",
+      "calls": 2,
+      "seconds": 0.25,
+      "what": "commit"
+    },
+    {
+      "stage": "spec",
+      "calls": 1,
+      "seconds": 0.047,
+      "what": "git rev-parse"
+    },
+    {
+      "stage": "run",
+      "calls": 1,
+      "seconds": 81.109,
+      "what": "the cell's inputs (--stop-after w: its NAV runs once, calibrated, in the match stage)"
+    },
+    {
+      "stage": "match",
+      "calls": 2,
+      "seconds": 2.937,
+      "what": "mechanics reader"
+    },
+    {
+      "stage": "match",
+      "calls": 2,
+      "seconds": 0.124,
+      "what": "git diff"
+    },
+    {
+      "stage": "match",
+      "calls": 5,
+      "seconds": 0.53,
+      "what": "git status"
+    },
+    {
+      "stage": "match",
+      "calls": 1,
+      "seconds": 0.641,
+      "what": "lock (dry: every pin of the run recipe verified)"
+    },
+    {
+      "stage": "match",
+      "calls": 4,
+      "seconds": 0.61,
+      "what": "commit"
+    },
+    {
+      "stage": "match",
+      "calls": 2,
+      "seconds": 0.063,
+      "what": "git rev-parse"
+    },
+    {
+      "stage": "match",
+      "calls": 1,
+      "seconds": 47.906,
+      "what": "calibrated run (--stop-after nav, nav --calibrate-gross)"
+    },
+    {
+      "stage": "match",
+      "calls": 1,
+      "seconds": 0.672,
+      "what": "lock (dry: every pin of the cell of record verified)"
+    },
+    {
+      "stage": "judge",
+      "calls": 1,
+      "seconds": 20.297,
+      "what": "the cell's monitor and summ (nav_summ scores and ledgers the cell)"
+    },
+    {
+      "stage": "judge",
+      "calls": 1,
+      "seconds": 1.687,
+      "what": "bundle (PM5-23)"
+    },
+    {
+      "stage": "judge",
+      "calls": 2,
+      "seconds": 0.141,
+      "what": "git diff"
+    },
+    {
+      "stage": "judge",
+      "calls": 1,
+      "seconds": 1.546,
+      "what": "book reader"
+    },
+    {
+      "stage": "record",
+      "what": "git status",
+      "calls": 1,
+      "seconds": 0.109
+    }
+  ]
+}

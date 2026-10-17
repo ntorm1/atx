@@ -1,0 +1,78 @@
+[
+  {
+    "wave": "p9m-mom-volman",
+    "phases": {
+      "u": {
+        "runs": 1,
+        "seconds": 51.57799999997951,
+        "peak_mib": 933
+      },
+      "fit": {
+        "runs": 1,
+        "seconds": 2.468999999924563,
+        "peak_mib": 66
+      },
+      "w": {
+        "runs": 1,
+        "seconds": 42.35999999998603,
+        "peak_mib": 1757
+      },
+      "card": {
+        "runs": 1,
+        "seconds": 32.26599999994505,
+        "peak_mib": 1379
+      },
+      "nav": {
+        "runs": 1,
+        "seconds": 45.73499999998603,
+        "peak_mib": 693
+      },
+      "monitor": {
+        "runs": 1,
+        "seconds": 2.968999999924563,
+        "peak_mib": 134
+      },
+      "summ": {
+        "runs": 1,
+        "seconds": 14.030999999959022,
+        "peak_mib": 70
+      },
+      "reader:book": {
+        "runs": 1,
+        "seconds": 0.8279999999795109,
+        "peak_mib": 40
+      },
+      "reader:mech-matched": {
+        "runs": 1,
+        "seconds": 0.8120000000344589,
+        "peak_mib": 39
+      },
+      "reader:mech-parent": {
+        "runs": 1,
+        "seconds": 0.7970000000204891,
+        "peak_mib": 34
+      },
+      "bundle": {
+        "runs": 1,
+        "seconds": 1.077999999979511,
+        "peak_mib": 54
+      },
+      "git": {
+        "runs": 24,
+        "seconds": 2.2640000000000002,
+        "peak_mib": 0
+      }
+    },
+    "seconds": 161.5,
+    "stages": {
+      "preflight": 0.656,
+      "register": 0.0,
+      "screen": 0.0,
+      "spec": 1.266,
+      "run": 81.515,
+      "match": 53.89,
+      "verify": 0.172,
+      "judge": 24.0
+    }
+  }
+]

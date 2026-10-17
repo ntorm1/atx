@@ -968,3 +968,9 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | item | result | evidence |
 |---|---|---|
 | P9-H / G-P1 | H ACCEPTED by native pm7-34; one construction trial, ledger134->135. First6 stages reused; verify/judge/record continuation24.3026102s. Attempt2 summed invocation155.5112064s; start-to-final elapsed680.5601286s includes PM checkpoint. Fresh core phases132.610s, with readers/bundle135.596s; inherited u51.578s separately reused, full receipt phase sum187.174s (<300target/<600hard). Scoreboard displayed total152.4 is documented stage_seconds override, not phase-column sum. G-P1 UNAWARDED: retry metadata edits and interrupted67-member rule route are retained limitations, not73-member add-alpha equivalence. No source fix/extra run. | `cells/p9h-cov-hedge-record.md` final timing; `cells/logs/p9h-timing-summary.json`, `p9h-scoreboard-timings.txt`, native result copies `cells/waves/p9h-cov-hedge/` |
+
+### P9-M native completion, 2026-10-17 (R15-M-LAUNCH)
+
+| item | result | evidence |
+|---|---|---|
+| P9-M / G-P1 | Native pm7-34 REJECTED; one construction trial, ledger135->136. One uninterrupted native invocation162.25s; fresh phases/readers/bundle143.345s; inherited u51.578s reused, total receipt phases194.923s (<300target/<600hard). Scoreboard161.5 is stage_seconds override, record0.312s separate. Registered sleeve eval0.265s is outside native wave. G-P1 remains UNAWARDED;67-member rule wave is not the73-member add-alpha example. | `cells/p9m-mom-volman-record.md`; `cells/logs/p9m-timing-summary.json`; `cells/waves/p9m-mom-volman/` |
