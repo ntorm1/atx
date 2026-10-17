@@ -52,6 +52,44 @@ The built-in profiles are starting configurations, not calibrated universal
 settings. Every profile retains the same final strike and calendar admission
 requirements, and rejected contracts remain in coverage reporting.
 
+Graded admission is opt-in (`"admission": "graded"`, default `"static"`). Each
+snapshot is fitted by `fit_quote_surface`. Pass A runs the profile's own method
+(the point fitter, or for a `knot-spline`/`channel.family` profile the
+term-prior-free channel fit under the flat default shape). Grade A means the
+expiry's own admitted point evidence meets the profile's `min_quotes`, pass A
+served it with no term prior, and no repair moved a served price (under point
+profiles these keep the static path's exact prices). A pass-A slice whose
+prices a repair moved is grade B. The other expiries are refitted on the
+channel objective (every contract's bid/ask volatility channel, a
+spread-normalised mid anchor, and the leave-one-out term prior when another
+expiry supplies a node, else the flat default shape), graded B (at least
+`grade_b_min_mid_strikes` mid strikes) or C; static-fallback B/C are
+term-prior-free. Graded admission rejects profiles with a `carry_mode` or with
+`dividends` other than `aggregate`. Repairs are bounded-move: each
+node moves at most `repair_half_spreads` (convexity) or
+`calendar_repair_half_spreads` (calendar) of its own quote half-spread from its
+fitted price, which bounds the move but does not keep the price inside
+[bid, ask]. Calendar crossings refuse only the lower-confidence slice after an
+optional repair and one stronger-prior retry. A snapshot with more than 128
+expiries falls back to the static path (`graded_stats.static_fallback`). Top-level
+`"graded"` keys: `term_prior_weight`, `prior_decay_log_time`,
+`prior_quote_halflife`, `channel_node_weight`, `calendar_retry_factor`,
+`grade_b_min_mid_strikes`, `calendar_repair_half_spreads`. Profile `"channel"`
+keys tune the channel spline (`channel_weight`, `mid_weight`, `itm_mid_weight`,
+`default_shape_weight`, `prior_scale`, `roughness`, `min_half_width_vol`,
+`mult_floor`, `mult_ceil`, `max_iterations`, `min_channel_quotes`,
+`repair_half_spreads`); `"curve": "knot-spline"` makes it the profile's point
+method as well. `channel.family` (`knot-spline` default, or `essvi`, `svi`,
+`c8-event`, `convex-dense`, `spline-vol`) solves the same channel objective with
+that point family by bounded active-set reweighting (`family_iterations`,
+default 12); predictions report `configured_curve` `channel-<family>`. Graded
+output appends a `grade` column and the native report adds `graded_stats`
+(per-grade chains/rows and per-slice diagnostics, including the channel solve
+time `solve_us` and refit count). Every served slice still passes the unchanged
+American price and calendar certificates; refusals keep their reason. Graded
+admission requires supplied carry (no `carry_mode`); channel controls are
+validated for every profile (`channel_weight > 0`, `mult_ceil > mult_floor`).
+
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of
 distinct underliers, not source rows. `--max-underliers` performs a preliminary

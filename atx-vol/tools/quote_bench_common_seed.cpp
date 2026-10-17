@@ -21,6 +21,12 @@ const char *mode_name(CommonInitializationMode mode) {
   return mode == CommonInitializationMode::QuoteSeed ? "quote-seed" : "configured";
 }
 
+const char *estimator_name(const CommonInitializationConfig &config) {
+  if (config.interval_fallback) return "bid-mid-ask-then-sigma-interval";
+  return config.seed.estimator == AmericanMarkovSeedEstimator::SigmaInterval
+      ? "sigma-interval" : "bid-mid-ask";
+}
+
 bool quadrature(std::uint16_t n) {
   return n == 8 || n == 16 || n == 24 || n == 32 || n == 48 || n == 64;
 }
@@ -42,6 +48,16 @@ Json seed_config_json(const AmericanMarkovSeedConfig &c) {
 Json band_json(const std::optional<AmericanMarkovSeedVarianceBand> &band) {
   if (!band) return nullptr;
   return {{"lower", band->lower}, {"midpoint", band->midpoint}, {"upper", band->upper}};
+}
+
+Json interval_json(const std::optional<AmericanMarkovSeedSigmaInterval> &s) {
+  if (!s) return nullptr;
+  const auto optional = [](const std::optional<double> &x) { return x ? Json(*x) : Json(nullptr); };
+  return {{"lower", optional(s->lower)}, {"upper", optional(s->upper)},
+          {"effective_lower", s->effective_lower}, {"effective_upper", s->effective_upper},
+          {"geometric_midpoint", s->geometric_midpoint}, {"log_width", s->log_width},
+          {"crossed", s->crossed}, {"lower_bound_quotes", s->lower_bound_quotes},
+          {"upper_bound_quotes", s->upper_bound_quotes}};
 }
 
 void increment(Json &counts, const char *status) {
@@ -71,22 +87,50 @@ const char *common_time_shape_name(AmericanMarkovFitTimeShape shape) {
   throw std::runtime_error("Common fit time_shape is invalid");
 }
 
+const char *common_search_name(AmericanMarkovFitSearch search) {
+  switch (search) {
+  case AmericanMarkovFitSearch::CoordinatePattern: return "coordinate-pattern";
+  case AmericanMarkovFitSearch::LevenbergMarquardt: return "levenberg-marquardt";
+  }
+  throw std::runtime_error("Common fit search is invalid");
+}
+
 CommonInitializationConfig parse_common_initialization(const Json &entry) {
-  keys(entry, {"mode", "seed"});
+  keys(entry, {"mode", "seed", "prior"});
   if (!entry.contains("mode")) throw std::runtime_error("Common initialization requires mode");
   const auto mode = quote_bench_policy::text(entry.at("mode"));
   CommonInitializationConfig out;
   if (mode == "quote-seed") out.mode = CommonInitializationMode::QuoteSeed;
   else if (mode != "configured") throw std::runtime_error("Unknown common initialization mode");
-  if (entry.contains("seed") && out.mode != CommonInitializationMode::QuoteSeed) {
+  if ((entry.contains("seed") || entry.contains("prior")) &&
+      out.mode != CommonInitializationMode::QuoteSeed) {
     throw std::runtime_error("Seed controls require quote-seed initialization mode");
+  }
+  if (entry.contains("prior")) {
+    const auto prior = quote_bench_policy::text(entry.at("prior"));
+    if (prior == "seed") out.prior_from_seed = true;
+    else if (prior != "configured") {
+      throw std::runtime_error("Common initialization prior must be configured or seed");
+    }
   }
   if (!entry.contains("seed")) return out;
   const auto &j = entry.at("seed");
   keys(j, {"max_abs_log_forward_moneyness", "max_relative_spread", "min_time_value_over_spot",
       "iv_tolerance", "max_iv_iterations", "max_input_quotes", "max_expiries",
-      "candidates_per_expiry", "max_inversions", "max_root_iteration_slots", "inversion_options"});
+      "candidates_per_expiry", "max_inversions", "max_root_iteration_slots", "inversion_options",
+      "estimator"});
   auto &c = out.seed;
+  if (j.contains("estimator")) {
+    const auto name = quote_bench_policy::text(j.at("estimator"));
+    if (name == "sigma-interval") {
+      c.estimator = AmericanMarkovSeedEstimator::SigmaInterval;
+    } else if (name == "bid-mid-ask-then-sigma-interval") {
+      out.interval_fallback = true;
+    } else if (name != "bid-mid-ask") {
+      throw std::runtime_error("Common seed estimator must be bid-mid-ask, sigma-interval or "
+                               "bid-mid-ask-then-sigma-interval");
+    }
+  }
 #define FIELD(name, lower, upper) numeric(j, #name, c.name, lower, upper)
   FIELD(max_abs_log_forward_moneyness, 0, 64);
   FIELD(max_relative_spread, 0, 2);
@@ -119,7 +163,7 @@ CommonInitializationConfig parse_common_initialization(const Json &entry) {
 }
 
 Json common_initialization_json(const CommonInitializationConfig &config) {
-  return {{"mode", mode_name(config.mode)}, {"seed", seed_config_json(config.seed)},
+  Json result{{"mode", mode_name(config.mode)}, {"seed", seed_config_json(config.seed)},
       {"application", "complete seeds only; initializer error/incomplete falls back to configured "
           "initial; no fitter retry; configured prior and full quote set preserved"},
       {"iv_convention", "Andersen-Lake flat-to-expiry American IV: variance time T, "
@@ -130,6 +174,23 @@ Json common_initialization_json(const CommonInitializationConfig &config) {
           "flat across state knots"},
       {"limits", "support/MAD are heuristic, not statistical confidence or arbitrage bounds; "
           "root iteration slots reserve root-loop capacity, not total ALO pricing work"}};
+  // Added only when opted in, so the default expanded definition keeps its bytes.
+  if (config.interval_fallback ||
+      config.seed.estimator != AmericanMarkovSeedEstimator::BidMidAsk) {
+    result["seed"]["estimator"] = estimator_name(config);
+    result["interval_estimator"] = "near-forward quotes incl. bidless/wide; ask-implied sigma is "
+        "an upper bound, bid-implied sigma (bid above intrinsic floor) a lower bound; feasible "
+        "interval = [max lower, min upper], missing side = layout sigma bound; seed = geometric "
+        "midpoint (shared: all used quotes; per-interval: endpoint midpoints differenced); "
+        "refused only when unbounded both ways; crossed intervals reported, never repaired; "
+        "fallback runs only after an incomplete bid-mid-ask seed, within the remaining budget";
+  }
+  if (config.prior_from_seed) {
+    result["prior"] = "seed";
+    result["prior_application"] = "an applied quote seed (any estimator) also replaces the "
+        "regularization prior centre; refused/incomplete seeds keep the configured prior";
+  }
+  return result;
 }
 
 Json common_initialization_pending(const CommonInitializationConfig &config) {
@@ -191,6 +252,143 @@ CommonFitInitialization configured_common_fit_initialization(
   return result;
 }
 
+namespace {
+// The configured prior was materialized before seeding; only prior "seed"
+// replaces it, and only with a complete applied seed vector.
+void use_seed(const std::vector<double> &seed, const CommonInitializationConfig &config,
+              CommonFitInitialization &result) {
+  result.initial_sigmas = seed;
+  if (config.prior_from_seed) {
+    result.prior_sigmas = seed;
+    result.diagnostics["effective_prior_source"] = "quote_seed";
+  }
+  effective_vectors(result);
+}
+
+// Every count, refusal, parameter and endpoint of one estimator call. Interval
+// provenance (which quotes bounded sigma, interval widths) only for SigmaInterval.
+void record_seeds(const AmericanMarkovQuoteSeeds &seeds, Json &d) {
+  // The pending record pre-creates both counters; a fallback record does not.
+  for (const auto *key : {"quote_status_counts", "parameter_status_counts"}) {
+    if (!d[key].is_object()) d[key] = Json::object();
+  }
+  d["eligible_quotes"] = seeds.eligible_quotes;
+  d["used_quotes"] = seeds.used_quotes;
+  d["refused_quotes"] = seeds.refused_quotes;
+  d["inversion_calls"] = seeds.inversion_calls;
+  d["reserved_root_iteration_slots"] = seeds.reserved_root_iteration_slots;
+  d["inversion_error_samples"] = Json::array();
+  d["inversion_errors_not_sampled"] = 0;
+  d["inversion_error_sample_limit"] = 32;
+  for (std::size_t index = 0; index < seeds.quotes.size(); ++index) {
+    const auto &quote = seeds.quotes[index];
+    increment(d["quote_status_counts"], to_string(quote.status));
+    if (quote.inversion_error.empty()) continue;
+    // Every refusal remains counted. Error text is a bounded diagnostic sample,
+    // not a quote-selection rule; the fitter still receives all original rows.
+    if (d["inversion_error_samples"].size() < 32U) {
+      d["inversion_error_samples"].push_back({{"quote_index", index},
+          {"error", quote.inversion_error.substr(0, 1024)},
+          {"error_text_truncated", quote.inversion_error.size() > 1024U}});
+    } else {
+      d["inversion_errors_not_sampled"] = d["inversion_errors_not_sampled"].get<std::size_t>() + 1U;
+    }
+  }
+  d["parameters"] = Json::array();
+  for (const auto &parameter : seeds.parameters) {
+    increment(d["parameter_status_counts"], to_string(parameter.status));
+    d["parameters"].push_back({{"status", to_string(parameter.status)},
+        {"sigma", parameter.sigma ? Json(*parameter.sigma) : Json(nullptr)},
+        {"variance_rate", band_json(parameter.variance_rate)}});
+  }
+  const bool interval = seeds.configuration.estimator == AmericanMarkovSeedEstimator::SigmaInterval;
+  d["expiries"] = Json::array();
+  for (const auto &expiry : seeds.expiries) {
+    d["expiries"].push_back({{"calendar_end", expiry.calendar_end},
+        {"variance_end", expiry.variance_end}, {"integrated_rate", expiry.integrated_rate},
+        {"integrated_yield", expiry.integrated_yield}, {"eligible_quotes", expiry.eligible_quotes},
+        {"used_quotes", expiry.used_quotes}, {"total_variance", band_json(expiry.total_variance)},
+        {"total_variance_mad", expiry.total_variance_mad},
+        {"median_relative_spread", expiry.median_relative_spread}});
+    if (interval) d["expiries"].back()["sigma_interval"] = interval_json(expiry.sigma_interval);
+  }
+  d["variance_endpoints"] = Json::array();
+  for (const auto &endpoint : seeds.variance_endpoints) {
+    d["variance_endpoints"].push_back({{"variance_end", endpoint.variance_end},
+        {"expiry_indices", endpoint.expiry_indices}, {"supported_expiries", endpoint.supported_expiries},
+        {"total_variance", band_json(endpoint.total_variance)},
+        {"total_variance_mad", endpoint.total_variance_mad}});
+    if (interval) {
+      d["variance_endpoints"].back()["sigma_interval"] = interval_json(endpoint.sigma_interval);
+    }
+  }
+  if (!interval) return;
+  d["estimator"] = "sigma-interval";
+  d["sigma_interval"] = interval_json(seeds.sigma_interval);
+  d["interval_quotes"] = Json::array();
+  for (std::size_t index = 0; index < seeds.quotes.size(); ++index) {
+    const auto &quote = seeds.quotes[index];
+    if (quote.status != AmericanMarkovSeedQuoteStatus::Used) continue;
+    d["interval_quotes"].push_back({{"quote_index", index},
+        {"lower_sigma", quote.lower_bound ? Json(*quote.equivalent_vols[0]) : Json(nullptr)},
+        {"upper_sigma", quote.upper_bound ? Json(*quote.equivalent_vols[2]) : Json(nullptr)}});
+  }
+}
+
+// SigmaInterval retry after an incomplete BidMidAsk seed, inside the same
+// configured inversion/slot caps: it receives only what the primary left.
+void apply_interval_fallback(const AmericanMarkovFitMarket &market,
+    std::span<const AmericanMarkovFitQuote> quotes, const AmericanMarkovFitConfig &fit,
+    const AmericanMarkovSeedLayout &layout, const CommonInitializationConfig &config,
+    const AmericanMarkovQuoteSeeds &primary, CommonFitInitialization &result) {
+  auto &d = result.diagnostics;
+  Json f{{"attempted", false}, {"applied", false}};
+  auto seed = config.seed;
+  seed.estimator = AmericanMarkovSeedEstimator::SigmaInterval;
+  seed.max_inversions = config.seed.max_inversions - primary.inversion_calls;
+  seed.max_root_iteration_slots =
+      config.seed.max_root_iteration_slots - primary.reserved_root_iteration_slots;
+  f["remaining_max_inversions"] = seed.max_inversions;
+  f["remaining_max_root_iteration_slots"] = seed.max_root_iteration_slots;
+  if (seed.max_inversions < 3U || seed.max_root_iteration_slots < 3U * seed.max_iv_iterations) {
+    f["state"] = "budget_exhausted";
+    d["interval_fallback"] = std::move(f);
+    return;
+  }
+  f["attempted"] = true;
+  const auto seeds = estimate_american_markov_quote_seeds(market, quotes, layout, seed);
+  if (!seeds) {
+    f["state"] = "error";
+    f["reason"] = seeds.error().to_string();
+    f["error_code"] = atx::core::to_string(seeds.error().code());
+    d["interval_fallback"] = std::move(f);
+    return;
+  }
+  record_seeds(*seeds, f);
+  // Top-level work is the total over both estimator calls.
+  d["primary_inversion_calls"] = primary.inversion_calls;
+  d["primary_reserved_root_iteration_slots"] = primary.reserved_root_iteration_slots;
+  d["inversion_calls"] = primary.inversion_calls + seeds->inversion_calls;
+  d["reserved_root_iteration_slots"] =
+      primary.reserved_root_iteration_slots + seeds->reserved_root_iteration_slots;
+  if (seeds->initial_sigmas.empty()) {
+    f["state"] = "incomplete";
+  } else if (!valid_vector(seeds->initial_sigmas, fit, result.initial_sigmas.size())) {
+    f["state"] = "layout_mismatch";
+  } else {
+    f["state"] = "applied";
+    f["applied"] = true;
+    d["state"] = "applied_interval_fallback";
+    d["applied"] = true;
+    d["reason"] = config.prior_from_seed
+        ? "Bid-mid-ask seed incomplete; sigma-interval seed applied as initial and prior"
+        : "Bid-mid-ask seed incomplete; sigma-interval seed applied; configured prior retained";
+    use_seed(seeds->initial_sigmas, config, result);
+  }
+  d["interval_fallback"] = std::move(f);
+}
+} // namespace
+
 void apply_common_quote_seeds(const AmericanMarkovFitMarket &market,
     std::span<const AmericanMarkovFitQuote> quotes, const AmericanMarkovFitConfig &fit,
     const CommonInitializationConfig &config, CommonFitInitialization &result) {
@@ -208,58 +406,18 @@ void apply_common_quote_seeds(const AmericanMarkovFitMarket &market,
     d["reason"] = seeds.error().to_string();
     d["error_code"] = atx::core::to_string(seeds.error().code());
     // A failed estimator Result has no work/selection ledger. Do not invent it.
+    // Its refusals are layout/schedule validation, which a fallback shares.
     d["inversion_calls"] = nullptr;
     d["reserved_root_iteration_slots"] = nullptr;
     return;
   }
-  d["eligible_quotes"] = seeds->eligible_quotes;
-  d["used_quotes"] = seeds->used_quotes;
-  d["refused_quotes"] = seeds->refused_quotes;
-  d["inversion_calls"] = seeds->inversion_calls;
-  d["reserved_root_iteration_slots"] = seeds->reserved_root_iteration_slots;
-  d["inversion_error_samples"] = Json::array();
-  d["inversion_errors_not_sampled"] = 0;
-  d["inversion_error_sample_limit"] = 32;
-  for (std::size_t index = 0; index < seeds->quotes.size(); ++index) {
-    const auto &quote = seeds->quotes[index];
-    increment(d["quote_status_counts"], to_string(quote.status));
-    if (quote.inversion_error.empty()) continue;
-    // Every refusal remains counted. Error text is a bounded diagnostic sample,
-    // not a quote-selection rule; the fitter still receives all original rows.
-    if (d["inversion_error_samples"].size() < 32U) {
-      d["inversion_error_samples"].push_back({{"quote_index", index},
-          {"error", quote.inversion_error.substr(0, 1024)},
-          {"error_text_truncated", quote.inversion_error.size() > 1024U}});
-    } else {
-      d["inversion_errors_not_sampled"] = d["inversion_errors_not_sampled"].get<std::size_t>() + 1U;
-    }
-  }
-  d["parameters"] = Json::array();
-  for (const auto &parameter : seeds->parameters) {
-    increment(d["parameter_status_counts"], to_string(parameter.status));
-    d["parameters"].push_back({{"status", to_string(parameter.status)},
-        {"sigma", parameter.sigma ? Json(*parameter.sigma) : Json(nullptr)},
-        {"variance_rate", band_json(parameter.variance_rate)}});
-  }
-  d["expiries"] = Json::array();
-  for (const auto &expiry : seeds->expiries) {
-    d["expiries"].push_back({{"calendar_end", expiry.calendar_end},
-        {"variance_end", expiry.variance_end}, {"integrated_rate", expiry.integrated_rate},
-        {"integrated_yield", expiry.integrated_yield}, {"eligible_quotes", expiry.eligible_quotes},
-        {"used_quotes", expiry.used_quotes}, {"total_variance", band_json(expiry.total_variance)},
-        {"total_variance_mad", expiry.total_variance_mad},
-        {"median_relative_spread", expiry.median_relative_spread}});
-  }
-  d["variance_endpoints"] = Json::array();
-  for (const auto &endpoint : seeds->variance_endpoints) {
-    d["variance_endpoints"].push_back({{"variance_end", endpoint.variance_end},
-        {"expiry_indices", endpoint.expiry_indices}, {"supported_expiries", endpoint.supported_expiries},
-        {"total_variance", band_json(endpoint.total_variance)},
-        {"total_variance_mad", endpoint.total_variance_mad}});
-  }
+  record_seeds(*seeds, d);
   if (seeds->initial_sigmas.empty()) {
     d["state"] = "fallback_incomplete";
     d["reason"] = "At least one requested seed parameter is unready; configured initial retained";
+    if (config.interval_fallback) {
+      apply_interval_fallback(market, quotes, fit, layout, config, *seeds, result);
+    }
     return;
   }
   if (!valid_vector(seeds->initial_sigmas, fit, result.initial_sigmas.size())) {
@@ -268,10 +426,10 @@ void apply_common_quote_seeds(const AmericanMarkovFitMarket &market,
     d["error_code"] = "seed_layout_mismatch";
     return;
   }
-  result.initial_sigmas = seeds->initial_sigmas;
   d["state"] = "applied";
   d["applied"] = true;
-  d["reason"] = "Complete quote seed applied; configured prior retained";
-  effective_vectors(result);
+  d["reason"] = config.prior_from_seed ? "Complete quote seed applied as initial and prior"
+                                       : "Complete quote seed applied; configured prior retained";
+  use_seed(seeds->initial_sigmas, config, result);
 }
 } // namespace quote_bench

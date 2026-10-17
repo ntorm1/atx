@@ -359,6 +359,8 @@ struct RunStatistics {
   // Per-expiry carry decisions; empty unless a profile opts out of supplied carry.
   Json carry_resolutions = Json::array();
   Json carry_status_counts = Json::object();
+  bool graded{false};
+  Json graded_stats = Json::object();
   // Inferred dividend schedules and per-chain routes; empty unless a profile
   // sets the policy key `dividends` to an inferred-schedule mode.
   Json dividend_schedules = Json::array();
@@ -399,6 +401,14 @@ Json carry_resolution_json(const QuoteSliceCarryResolution &r, std::uint64_t cha
           {"pairs_valid", r.pairs_valid}, {"pairs_selected", r.pairs_selected},
           {"pairs_retained", r.pairs_retained}, {"pairs_contaminated", r.pairs_contaminated},
           {"pairs_unidentified", r.pairs_unidentified}};
+}
+
+// Configured fit family as reported in predictions and decisions.
+std::string configured_curve(const QuoteFitProfile &profile) {
+  const auto &c = profile.config;
+  if (c.method != QuoteSliceFitMethod::ChannelSpline) return to_string(c.curve.kind);
+  return c.channel.family ? "channel-" + std::string{to_string(*c.channel.family)}
+                          : std::string{"knot-spline"};
 }
 
 // Contract-level underlying quotes can differ inside one recorded chain snapshot.
@@ -460,6 +470,121 @@ struct PreparedChain {
   std::string source;
 };
 using SnapshotIdentity = std::array<std::string, 3>;
+using ChainRows = std::map<std::uint64_t, std::vector<std::size_t>>;
+
+void count_into(Json &counts, const std::string &key, std::size_t count = 1U) {
+  if (counts.is_null()) counts = Json::object();
+  counts[key] = counts.value(key, std::size_t{}) + count;
+}
+
+// Graded admission: one surface fit per exact snapshot. Routing has already
+// refused ambiguous expiries and resolved ONE profile per snapshot; calendar
+// consistency is enforced inside fit_quote_surface on the final prices. A
+// snapshot with more than kQuoteSurfaceMaxExpiries expiries is left to the
+// static per-expiry path (`static_fallback`) rather than refused wholesale.
+void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedChain> &prepared,
+                const std::map<SnapshotIdentity, std::vector<std::uint64_t>> &snapshot_chains,
+                const std::set<std::uint64_t> &ambiguous, const QuoteSurfaceConfig &surface,
+                std::vector<Prediction> &predictions, RunStatistics &stats,
+                std::set<std::uint64_t> &fitted_chains, std::set<std::uint64_t> &static_fallback) {
+  auto &graded = stats.graded_stats;
+  for (const auto &[identity, ids] : snapshot_chains) {
+    static_cast<void>(identity);
+    std::vector<std::uint64_t> members;
+    for (const auto id : ids) {
+      if (!ambiguous.contains(id) && prepared.at(id).profile) members.push_back(id);
+    }
+    if (members.empty()) continue;
+    if (members.size() > kQuoteSurfaceMaxExpiries) {
+      static_fallback.insert(members.begin(), members.end());
+      count_into(graded["static_fallback"], "snapshots");
+      count_into(graded["static_fallback"], "chains", members.size());
+      continue;
+    }
+    const auto &profile = *prepared.at(members.front()).profile;
+    std::vector<QuoteSurfaceExpiry> expiries;
+    expiries.reserve(members.size());
+    for (const auto id : members) {
+      const auto &chain = prepared.at(id);
+      expiries.push_back({chain.market, chain.quotes, {}});
+      count_into(stats.per_profile_counts[profile.name], "attempted_chains");
+      if (chain.market.dividend_pv > 0.0) ++stats.dividend_chains;
+    }
+    const auto start = Clock::now();
+    const auto fitted = fit_quote_surface(expiries, profile.config, surface);
+    const double per_chain = std::chrono::duration<double, std::micro>(Clock::now() - start)
+        .count() / static_cast<double>(members.size());
+    for (std::size_t s = 0; s < members.size(); ++s) {
+      stats.chain_microseconds.push_back(per_chain);
+      const auto &indices = chains.at(members[s]);
+      if (!fitted) {
+        ++stats.fit_failures[fitted.error().to_string()];
+        for (const auto i : indices) predictions[i].status = "invalid_market";
+        continue;
+      }
+      const auto &slice = (*fitted)[s];
+      if (slice.refusal == "invalid_input") {
+        ++stats.fit_failures[slice.error];
+        for (const auto i : indices) predictions[i].status = "invalid_market";
+        continue;
+      }
+      const auto &fit = slice.fit;
+      const bool served = slice.grade != QuoteSliceGrade::Refused;
+      const std::string grade = served ? to_string(slice.grade) : slice.refusal;
+      const auto &d = fit.diagnostics;
+      graded["slices"].push_back({
+          {"chain_id", members[s]}, {"profile", profile.name},
+          {"variance_years", fit.market.variance_years}, {"grade", grade},
+          {"error", slice.error}, {"point_status", to_string(slice.point_status)},
+          {"admitted", d.quotes_admitted}, {"distinct_strikes", d.distinct_strikes},
+          {"channel_refit", slice.channel_refit}, {"channel_quotes", d.channel.channel_quotes},
+          {"mid_strikes", d.channel.mid_strikes}, {"violations", d.channel.violations},
+          {"max_violation_half_widths", d.channel.max_violation_half_widths},
+          {"prior_strength", d.channel.prior_strength}, {"term_prior", d.channel.term_prior},
+          {"converged", d.channel.converged}, {"iterations", d.channel.iterations},
+          {"solve_us", d.channel.solve_seconds * 1.0e6},
+          {"repaired_nodes", d.channel.repaired_nodes},
+          {"repair_max_price", d.channel.repair_max_price},
+          {"repair_max_half_spreads", std::isfinite(d.channel.repair_max_half_spreads)
+              ? Json(d.channel.repair_max_half_spreads) : Json("inf")},
+          {"calendar_retry", slice.calendar_retry},
+          {"calendar_repaired", slice.calendar_repaired}, {"calendar_gap", slice.calendar_gap},
+          {"calendar_repair_required", std::isfinite(slice.calendar_repair_required)
+              ? Json(slice.calendar_repair_required) : Json("inf")},
+          {"calendar_gap_strike", slice.calendar_gap_strike}});
+      count_into(graded["chains"], grade);
+      if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);
+      if (slice.calendar_retry) count_into(graded["calendar_retry_chains"], grade);
+      if (slice.calendar_repaired) count_into(graded["calendar_repaired_chains"], grade);
+      if (served) {
+        ++stats.fitted;
+        fitted_chains.insert(members[s]);
+      } else {
+        ++stats.fit_failures[slice.error.empty() ? slice.refusal : slice.error];
+      }
+      stats.admitted += fit.diagnostics.quotes_admitted;
+      for (std::size_t j = 0; j < indices.size(); ++j) {
+        const auto &result = fit.rows[j];
+        auto &prediction = predictions[indices[j]];
+        if (fit.curve) prediction.actual_curve = to_string(fit.curve->kind());
+        prediction.quote_status = to_string(result.quote_status);
+        prediction.admitted = result.admitted;
+        if (served && result.evaluation_status == QuoteSliceEvaluationStatus::Success) {
+          prediction.price = result.fitted_price;
+          prediction.vol = result.fitted_iv;
+          prediction.status = "ok";
+          prediction.grade = grade;
+          count_into(graded["served_rows"], grade);
+          ++stats.served;
+        } else if (!served) {
+          prediction.status = slice.refusal;
+        } else {
+          prediction.status = to_string(result.evaluation_status);
+        }
+      }
+    }
+  }
+}
 
 // ── Opt-in inferred dividend schedule (policy key `dividends`) ──────────────
 //
@@ -802,12 +927,12 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     decision["status"] = "resolved";
     decision["resolved_profile"] = profile->name;
     decision["policy_source"] = source;
-    decision["configured_curve"] = to_string(profile->config.curve.kind);
+    decision["configured_curve"] = configured_curve(*profile);
     if (!stats.per_profile_counts.contains(profile->name)) {
       stats.per_profile_counts[profile->name] = {
           {"resolved_snapshots", 0U}, {"attempted_chains", 0U}, {"fitted_chains", 0U},
           {"rows", 0U}, {"admitted_quotes", 0U}, {"served_rows", 0U}, {"no_curve_rows", 0U},
-          {"configured_curve", to_string(profile->config.curve.kind)},
+          {"configured_curve", configured_curve(*profile)},
           {"actual_curve_rows", Json::object()}, {"row_status_counts", Json::object()}};
     }
     add_count(stats.per_profile_counts[profile->name], "resolved_snapshots");
@@ -817,7 +942,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       for (const auto i : chains.at(id)) {
         predictions[i].resolved_profile = profile->name;
         predictions[i].policy_source = source;
-        predictions[i].configured_curve = to_string(profile->config.curve.kind);
+        predictions[i].configured_curve = configured_curve(*profile);
       }
     }
     stats.policy_decisions.push_back(std::move(decision));
@@ -837,7 +962,26 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   // independently chosen carry transformations.
   std::map<SnapshotIdentity, std::vector<PublishedSlice>> surfaces;
   std::set<std::uint64_t> fitted_chains;
+  std::set<std::uint64_t> static_fallback;
+  if (policy && policy->graded) {
+    stats.graded = true;
+    fit_graded(chains, prepared, snapshot_chains, ambiguous_expiries, policy->surface,
+               predictions, stats, fitted_chains, static_fallback);
+  }
+  // Grade of a static-fallback expiry under graded admission: the pass-A rule
+  // without a term prior (own point evidence and unmoved prices => A).
+  const auto fallback_grade = [&](const QuoteSliceFit &fit, const QuoteSliceConfig &config) {
+    const auto &d = fit.diagnostics;
+    const bool evidence = d.quotes_admitted >= config.min_quotes &&
+                          d.distinct_strikes >= config.min_quotes;
+    if (evidence) return std::string{fit.moved_nodes.empty() ? "A" : "B"};
+    return std::string{d.channel.mid_strikes >= policy->surface.grade_b_min_mid_strikes ? "B"
+                                                                                       : "C"};
+  };
   for (const auto &[chain_id, chain] : prepared) {
+    // Graded admission fitted and published every snapshot above except the
+    // static-fallback ones, which take this path and the static calendar rule.
+    if (stats.graded && !static_fallback.contains(chain_id)) continue;
     if (!chain.profile) continue;
     const auto &indices = chains.at(chain_id);
     const auto chain_start = Clock::now();
@@ -880,6 +1024,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
           prediction.price = result.fitted_price;
           prediction.vol = result.fitted_iv;
           prediction.status = "ok";
+          if (stats.graded) prediction.grade = fallback_grade(*fit, chain.profile->config);
           ++stats.served;
         } else if (fit->fit_status != QuoteSliceFitStatus::Success) {
           prediction.status = to_string(fit->fit_status);
@@ -892,7 +1037,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         std::chrono::duration<double, std::micro>(Clock::now() - chain_start).count());
   }
   std::set<std::uint64_t> calendar_failures;
-  for (auto &[identity, slices] : surfaces) {
+  for (auto &[identity, slices] : surfaces) { // graded admission: static-fallback snapshots only
     static_cast<void>(identity);
     std::sort(slices.begin(), slices.end(),
               [](const auto &a, const auto &b) { return a.years < b.years; });
@@ -928,6 +1073,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       if (predictions[index].status == "ok") --stats.served;
       predictions[index].price = kNaN;
       predictions[index].vol = kNaN;
+      predictions[index].grade.clear();
       predictions[index].status = ambiguous_expiries.contains(chain)
           ? "ambiguous_expiry" : "calendar_arbitrage";
     }
@@ -956,11 +1102,12 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
 }
 
 void write_predictions(const std::filesystem::path &path, const std::vector<InputRow> &rows,
-                       const std::vector<Prediction> &predictions) {
+                       const std::vector<Prediction> &predictions, bool graded = false) {
   std::ofstream stream{path};
   if (!stream) throw std::runtime_error("Cannot open prediction output");
   stream << "row_id,predicted_price,predicted_vol,status,chain_id,quote_status,admitted,"
-            "resolved_profile,policy_source,configured_curve,actual_curve,vol_status,model\n";
+            "resolved_profile,policy_source,configured_curve,actual_curve,vol_status,model"
+         << (graded ? ",grade\n" : "\n");
   stream << std::setprecision(17);
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &prediction = predictions[i];
@@ -974,7 +1121,9 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
            << prediction.configured_curve << ','
            << prediction.actual_curve << ','
            << (prediction.model == "quote-slice" && std::isfinite(prediction.vol)
-                   ? "ok" : prediction.vol_status) << ',' << prediction.model << '\n';
+                   ? "ok" : prediction.vol_status) << ',' << prediction.model;
+    if (graded) stream << ',' << prediction.grade;
+    stream << '\n';
   }
   stream.close();
   if (!stream) throw std::runtime_error("Prediction output write failed");
@@ -1029,6 +1178,19 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
                                "otherwise per-strike supplied yield";
     report["carry_status_counts"] = stats.carry_status_counts;
     report["carry_resolutions"] = stats.carry_resolutions;
+  }
+  if (stats.graded) {
+    report["admission"] = "graded";
+    report["graded_stats"] = stats.graded_stats;
+    report["graded_semantics"] = "A: own admitted point evidence >= the profile minimum, served "
+        "by the profile's own method (point fit, or the term-prior-free channel fit of a "
+        "knot-spline/channel.family profile, under the flat default shape) with no term prior and "
+        "no served price moved by a repair; B: a pass-A slice whose prices a bounded-move repair "
+        "moved, or a channel refit (under the leave-one-out term prior when another expiry "
+        "supplies a node, else the flat default shape) with >= grade_b_min_mid_strikes mid "
+        "strikes; C: other channel refits; calendar crossings refuse only the lower-confidence "
+        "slice after a bounded-move repair and one retry; snapshots above the expiry cap use the "
+        "static path (static_fallback; its B/C are term-prior-free channel fits)";
   }
   if (!stats.dividend_schedules.empty()) {
     report["dividend_schedule"] = {
@@ -1124,7 +1286,7 @@ int main(int argc, char **argv) {
     }
     RunStatistics stats;
     const auto predictions = run(args, rows, stats);
-    write_predictions(args.output, rows, predictions);
+    write_predictions(args.output, rows, predictions, stats.graded);
     write_report(std::cout, args, rows.size(), stats);
     if (!args.report.empty()) {
       std::ofstream report{args.report};
