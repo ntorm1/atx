@@ -65,7 +65,7 @@
     "kind": "rule",
     "rule_cell": {
       "template": "scripts/specs/p9/templates/mom-volman.json",
-      "template_sha256": "7e9b26c1bc4a6453447ccbf9fee2612ecb50a293330f239cfc93d035e45db6fb",
+      "template_sha256": "a731e7889a2fdccb352ba4cc07aa8dd896c33821db248969533fdca666c2a30a",
       "name": "mom-volman-v1",
       "source_sample_end": 2016,
       "predicted_mechanism": "the momentum sleeve's volatility clusters and is unrelated to its next-month mean, so holding the price_momentum theme's mass inversely to its trailing six-month realised volatility, against the running mean of those estimates, cuts momentum-crash variance at about the same momentum return",

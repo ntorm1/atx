@@ -1,0 +1,54 @@
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "p9m-mom-volman",
+  "kind": "rule",
+  "description": "P9-M prereg B.3, R15-M-READY: mom-volman-v1 on accepted P9-H; registered constants, pm7-34, pm6-6-engine. R15-RAM-NOW immediate bounded route.",
+  "parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "capacity-4x-higher",
+      "turnover-per-gross-not-higher"
+    ]
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-prereg-construction",
+    "construction_cap": 71
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 64
+  },
+  "out_dir": "build-equity/waves/p9m-mom-volman",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-p9-20261003/cells/waves"
+  },
+  "driver": {
+    "lock_exes": true,
+    "receipt_digest": "content",
+    "keep_verdicts": true,
+    "timings": true
+  },
+  "rule_cell": {
+    "template": "scripts/specs/p9/templates/mom-volman.json",
+    "template_sha256": "a731e7889a2fdccb352ba4cc07aa8dd896c33821db248969533fdca666c2a30a",
+    "name": "mom-volman-v1",
+    "source_sample_end": 2016,
+    "predicted_mechanism": "the momentum sleeve's volatility clusters and is unrelated to its next-month mean, so holding the price_momentum theme's mass inversely to its trailing six-month realised volatility, against the running mean of those estimates, cuts momentum-crash variance at about the same momentum return",
+    "data_class": "H"
+  },
+  "rules": [
+    {
+      "name": "mom-volman-v1",
+      "params": {}
+    }
+  ]
+}
