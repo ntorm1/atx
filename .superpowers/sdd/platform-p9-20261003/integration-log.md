@@ -986,3 +986,5 @@ runs; lines 11-16 there), appended here as the brief's step 7 says (GATE-REV S-3
 | item | result | evidence |
 |---|---|---|
 | P9-MV / G-P1 | Native pm7-34 REJECTED; one construction trial, ledger137->138. One uninterrupted invocation46.0159724s; fresh phases/readers/bundle38.438s, reused u/fit/w/card115.047s, receipt phase sum153.485s (<300target/<600hard). Scoreboard45.6 is stage_seconds override45.562s, record.187s separate. Actual NAV26.094s/1182.453125MiB, caps180s/1536MiB/floor512MiB; no admission wait/host budget. G-P1 UNAWARDED; prior67-member rule-route limitations retained. | `cells/p9mv-mv-aim-record.md`; `cells/logs/p9mv-timing-summary.json`; `cells/waves/p9mv-mv-aim/` |
+
+- Root5 X own derivation complete under R15-X-LAUNCH: registration ac60bd39, prelaunch d964df86, mechanics4b441f5d before returns, rho668de9a3 before paired scalars; own X-10 PASS, pending fresh DERIV. NAV-only plus registered readers, ledger138 unchanged. Exact record/hashes and later completion metadata in cells/p9x-leverage-record.md and cells/p9x-completion-proposal.json. No monitor/summ/trial or V.

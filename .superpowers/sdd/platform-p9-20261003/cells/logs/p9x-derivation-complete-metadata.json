@@ -1,0 +1,76 @@
+{
+  "source_counts": {
+    "OWN_UTC": 11,
+    "OWNER_RECEIPT": 55,
+    "OWNER_HEADER": 5,
+    "SEED": 1
+  },
+  "source_files": 20,
+  "receipts": [
+    {
+      "stage": "cycle",
+      "path": "build-equity/mega-nav-p9x-leverage-run/receipt.json",
+      "sha256": "067f8bc4146a016f8b0a210551b7112ccdb077ed5d4b282cd1f8cdc1065168ea",
+      "source_sha": "d964df8600014b3c136ab0fbe595d0065915a48b",
+      "argv_sha256": "de3ab7f123a63ec1ba8ada48478577b679ea665e5db775261545f3953d47ad5e",
+      "wall_seconds": 18.844000000040978,
+      "peak_mib": 1142.4453125,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      }
+    },
+    {
+      "stage": "mechanics",
+      "path": "build-equity/p9x-leverage-readers/mechanics-run1/receipt.json",
+      "sha256": "fe79e0e662b3738e8a7950653a6db9bdd92a5efa022e1986aad0f26589c7a635",
+      "source_sha": "d964df8600014b3c136ab0fbe595d0065915a48b",
+      "argv_sha256": "2521313b03a5e5c4688028cdb975a03cd988ee69b7e5f58d1847437fa992833b",
+      "wall_seconds": 0.26500000001396984,
+      "peak_mib": 5.97265625,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      }
+    },
+    {
+      "stage": "pair",
+      "path": "build-equity/p9x-leverage-readers/pair-run1/receipt.json",
+      "sha256": "73eff67e06d7ee5d83e446f0b087af87371b463bcc8f67a81e5fcb1926b330b1",
+      "source_sha": "4b441f5d7ab9a943c83ab74664c9b2d81097c8ce",
+      "argv_sha256": "741ee783d7ca4bbe11f2c829d2c75b74a2fbcfb4b12f57bf76a1a070af6a5355",
+      "wall_seconds": 0.5150000000139698,
+      "peak_mib": 48.5390625,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      }
+    },
+    {
+      "stage": "book",
+      "path": "build-equity/p9x-leverage-readers/book-run1/receipt.json",
+      "sha256": "e8acdb801d9222f2cdc9ab460c7f168b7a139dfece5b0c15c0e12675bcef9d16",
+      "source_sha": "668de9a323ae99cf2033fad46be6c3271bfaa642",
+      "argv_sha256": "90cf1c0af985877272d90a36bcf03d4272aea875269e1ccc1abc77a611bf8dde",
+      "wall_seconds": 0.5320000000065193,
+      "peak_mib": 43.49609375,
+      "limits": {
+        "seconds": 180.0,
+        "max_rss_mib": 1536,
+        "min_free_mib": 512
+      }
+    }
+  ],
+  "current_binding_hashes_checked": 49,
+  "output_hash_files": 52,
+  "output_list_sha256": "2fefe012431a7f500d7aa0faed9a642b549a507c8742690d0ab7d7b395f8d4e5",
+  "ledger_lines": 138,
+  "ledger_sha256": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8",
+  "fresh_bounded_seconds": 20.156000000075437,
+  "outer_invocation_seconds": 22.079000000143424,
+  "no_monitor": true,
+  "no_generic_verdict": true
+}

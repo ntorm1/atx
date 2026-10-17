@@ -42,3 +42,23 @@ Stop for PM's explicit MV disposition and next dispatch. Do not execute the X dr
 If continued, read the new PM ruling first and preserve all standing contracts,
 immediate bounded/no-wait policy, scalar boundaries, explicit paths+negative
 pathspec+literal trailer. No next-cell command is authorized by this checkpoint.
+
+
+## X own-derivation checkpoint after R15-X-LAUNCH
+
+This supersedes the historical MV-only next-step paragraph above. Registration
+ac60bd39, prelaunch d964df86, own mechanics 4b441f5d, rho-first668de9a3.
+One NAV-only run and three bounded readers completed. Own X-10 PASS: net annual
+.08986194230342487 > H .05689681785648637; net SR1.8407322968760098 >=
+H1.875022136892088-.100; all six scaled mechanics hold. Paired dSR
+-.0342898400160776 is print-only. Cap/schema checks hold, source OTHER0.
+No monitor/summ/trial yet; ledger138/SHAfe1bc97e unchanged.
+
+Evidence: cells/p9x-leverage-record.md, ordered logs and 52-file output hash list
+SHA2fefe012431a7f500d7aa0faed9a642b549a507c8742690d0ab7d7b395f8d4e5.
+Fresh DERIV uses PM's committed r14-prompts/deriv-p9x-resume15.md, excludes own
+record/verdict/derived PASS labels. Exact later supported completion argv,
+paths/source proposal is cells/p9x-completion-proposal.json; not executed.
+Stop for DERIV and literal PM completion release. No V/adoption release.
+Context sufficient to finish X; no need for owner intervention or RAM waiting.
+PM final-report/freeze/V/adoption drafts and owner PNGs remain untouched.

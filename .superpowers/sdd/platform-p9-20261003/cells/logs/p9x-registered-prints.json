@@ -1,0 +1,60 @@
+{
+  "books": {
+    "parent": {
+      "net_annual": 0.05689681785648637,
+      "net_sharpe": 1.875022136892088,
+      "x4_net_sharpe": 1.759566530994928,
+      "ann_vol": 0.030344611264587394,
+      "max_drawdown": 0.02203729312571523,
+      "mean_L_t": 1.1674,
+      "L_t_provenance": "fixed registered leverage parameter; not observed exposure"
+    },
+    "cell": {
+      "net_annual": 0.08986194230342487,
+      "net_sharpe": 1.8407322968760098,
+      "x4_net_sharpe": 1.678945115577997,
+      "ann_vol": 0.04881858293893884,
+      "max_drawdown": 0.032292584985299744,
+      "mean_L_t": 1.864660752885562,
+      "L_t_rows": 1004
+    },
+    "yf0": {
+      "net_annual": 0.05653814276222473,
+      "net_sharpe": 1.849482026329859,
+      "x4_net_sharpe": 1.6994264697927697,
+      "ann_vol": 0.030569717335626075,
+      "max_drawdown": 0.02580037230369092,
+      "mean_L_t": 1.1828,
+      "L_t_provenance": "fixed registered leverage parameter; not observed exposure"
+    }
+  },
+  "paired": {
+    "dsr": -0.0342898400160776,
+    "memmel_se": 0.03854238099854994,
+    "t": -0.8896658464708672,
+    "p_two_sided": 0.309,
+    "p_one_sided": 0.853
+  },
+  "checks": {
+    "net_annual_above_parent": true,
+    "net_sharpe_within_point100": true,
+    "scaled_mechanics": true
+  },
+  "accepted": true,
+  "paired_deciding": false,
+  "book_receipt": {
+    "path": "build-equity/p9x-leverage-readers/book-run1/receipt.json",
+    "sha256": "e8acdb801d9222f2cdc9ab460c7f168b7a139dfece5b0c15c0e12675bcef9d16",
+    "source_sha": "668de9a323ae99cf2033fad46be6c3271bfaa642",
+    "argv_sha256": "90cf1c0af985877272d90a36bcf03d4272aea875269e1ccc1abc77a611bf8dde",
+    "wall_seconds": 0.5320000000065193,
+    "peak_mib": 43.49609375,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    }
+  },
+  "book_sha256": "a4ff52666727e9401a00bce89d6b0fdc219977c935c2d01e13425a2585718d38",
+  "vol_target_sha256": "ed25e4267dff32c07a377a23b44ebd50bbc007a749d2030a5592d756259960b0"
+}
