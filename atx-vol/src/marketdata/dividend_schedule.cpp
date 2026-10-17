@@ -314,14 +314,23 @@ Reason place_events(std::int32_t valuation_day, const DividendScheduleConfig &c,
       inc.kind = DividendEventKind::SumSplit;
       continue;
     }
+    // A single event is dated AND classified from the final events before it:
+    // pass 1 judged its time against provisional single-event stand-ins for
+    // earlier split increments, priced at another expiry's rate (review M2).
+    const double first = static_cast<double>(inc.lo) + 1.0;
+    const double last = static_cast<double>(inc.hi);
+    const double t = -std::log(rest / inc.amount) * c.day_basis / e.rate;
+    const double nearest = std::round(t);
+    const bool integer = std::isfinite(t) && std::abs(t - nearest) <= c.day_tolerance &&
+                         nearest >= first && nearest <= last;
     double days = inc.days;
-    if (inc.integer && inc.count == 1 && !inc.overfull) {
+    if (inc.count == 1 && !inc.overfull && integer) {
       inc.kind = DividendEventKind::Exact;
+      days = nearest;
     } else {
       inc.kind = DividendEventKind::NonIntegerDay;
-      const double t = -std::log(rest / inc.amount) * c.day_basis / e.rate;
       if (std::isfinite(t)) {
-        days = std::clamp(t, static_cast<double>(inc.lo) + 1.0, static_cast<double>(inc.hi));
+        days = std::clamp(t, first, last);
       }
     }
     out.events[out.n_events++] =

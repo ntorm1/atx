@@ -29,11 +29,11 @@ struct TrueEvent {
 // Distinct per-expiry rates so a peel that reused one rate would be caught.
 std::vector<DividendLadderExpiry> ladder(const std::vector<TrueEvent> &events,
                                          const std::vector<int> &expiry_days,
-                                         double base_rate = 0.045) {
+                                         double base_rate = 0.045, double rate_slope = 2.0e-4) {
   std::vector<DividendLadderExpiry> out;
   for (std::size_t k = 0; k < expiry_days.size(); ++k) {
     const int d = expiry_days[k];
-    const double rate = base_rate + 2.0e-4 * static_cast<double>(k);
+    const double rate = base_rate + rate_slope * static_cast<double>(k);
     double sum = 0.0;
     double pv = 0.0;
     for (const TrueEvent &e : events) {
@@ -199,6 +199,29 @@ TEST(DividendSchedule, ASpecialWorthNoMoreUnitsThanItsWindowHoldsIsSplitAsARun) 
   }
   EXPECT_EQ(s.split_increments, 1u);
   expect_reprices(s, input, 1e-12);
+}
+
+// The review probe (M2): a four-dividend run split in (120, 480], then a lone
+// 0.5 dividend at day 566 in (480, 600]. Pass 1 dates day 566 against a single
+// provisional stand-in for the run, so with a steep per-expiry rate slope it
+// read as a non-integer day (30 and 80 bp per expiry) although the final events
+// place it at 566.000000. Its kind is now decided from the final events, so it
+// is Exact at every slope.
+TEST(DividendSchedule, ASingleEventAfterASplitIsClassifiedAgainstTheFinalEvents) {
+  const std::vector<TrueEvent> truth{{0.5, 20},  {0.5, 111}, {0.5, 202}, {0.5, 293},
+                                     {0.5, 384}, {0.5, 475}, {0.5, 566}};
+  for (const double slope : {2.0e-4, 30.0e-4, 80.0e-4}) {
+    const auto input = ladder(truth, {30, 120, 480, 600}, 0.045, slope);
+    const auto s = infer_dividend_schedule(kValuationDay, input);
+    ASSERT_EQ(s.status, DividendScheduleStatus::Ambiguous) << slope;
+    ASSERT_EQ(s.n_events, 7u) << slope;
+    for (std::size_t i = 2; i < 6; ++i) EXPECT_EQ(s.events[i].kind, DividendEventKind::SumSplit);
+    EXPECT_EQ(s.events[6].kind, DividendEventKind::Exact) << slope;
+    EXPECT_EQ(s.events[6].days, 566.0) << slope;
+    EXPECT_EQ(s.exact_increments, 3u) << slope;
+    EXPECT_EQ(s.non_integer_increments, 0u) << slope;
+    expect_reprices(s, input, 1e-9);
+  }
 }
 
 TEST(DividendSchedule, RoundTripOfAConstructedTableReproducesEverySumAndPv) {

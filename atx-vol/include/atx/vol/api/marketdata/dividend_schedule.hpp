@@ -53,10 +53,12 @@
 //     t_1 is solved in closed form so the n events reproduce the increment's PV
 //     at that expiry's rate exactly, and h is shrunk by bisection when the
 //     events would leave the window. Times stay fractional (PV-exact); every
-//     split event is flagged SumSplit. An increment with n == 1 whose time is
-//     not an integer day is ONE event at its PV-exact time, flagged
-//     NonIntegerDay. Nothing is guessed silently: both kinds make the schedule
-//     Ambiguous and are counted.
+//     split event is flagged SumSplit. An increment with n == 1 is ONE event,
+//     its time re-solved against the FINAL events before it (pass 1 dated it
+//     against provisional single-event stand-ins for earlier split increments)
+//     and classified from that final time: Exact at the integer day when it is
+//     one, else at its PV-exact time, flagged NonIntegerDay. Nothing is guessed
+//     silently: both flagged kinds make the schedule Ambiguous and are counted.
 //
 // A final pass reprices every expiry's sum and PV from the finished schedule and
 // reports the worst residual; a gross PV miss (> `pv_inconsistent_relative`)
