@@ -1,0 +1,11 @@
+{
+  "scoreboard_stage_override_seconds": 45.6,
+  "stage_sum_before_record": 45.562000000000005,
+  "record_seconds": 0.187,
+  "invocation_seconds": 46.01597240008414,
+  "receipt_phase_sum_including_reused": 153.48500000021886,
+  "reused_phases_seconds": 115.04699999990407,
+  "fresh_phases_readers_bundle_seconds": 38.43800000031479,
+  "git_seconds": 1.172,
+  "G_P1": "unawarded; prior limitations retained; 67-member rule wave versus 73-member add-alpha example"
+}

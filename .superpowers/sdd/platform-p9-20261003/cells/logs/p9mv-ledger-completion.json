@@ -1,0 +1,18 @@
+{
+  "ledger_lines": 138,
+  "ledger_sha256": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8",
+  "N_c": 67,
+  "historical_admissions": 61,
+  "P9_admission_additions": 0,
+  "N_hand": 128,
+  "M": 110,
+  "N_tot": 238,
+  "new_trial": {
+    "trial_id": "ff4ebc47d077f89a",
+    "kind": "construction",
+    "origin": "prior",
+    "cell": "build-equity/mega-nav-p9-mv-aim-gm",
+    "window_id": "research-window-v2"
+  },
+  "new_trial_count": 1
+}

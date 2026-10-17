@@ -1,0 +1,20 @@
+{
+  "path": "build-equity\\waves\\p9mv-mv-aim\\bundle.json",
+  "sha256": "cb7cf71df3be0707cd2190c045da4858587408efedf39e65ac2eedf1ffb447ea",
+  "base": "build-equity/mega-nav-p9-theme-cov-hedge-gm",
+  "final": "build-equity/mega-nav-p9-mv-aim-gm",
+  "engine_exe_sha256": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c",
+  "paired": {
+    "sessions": 1005,
+    "rho": 0.71139102799493,
+    "one_minus_rho": null,
+    "degenerate": null
+  },
+  "not_supplied": [
+    "one_minus_rho",
+    "degenerate"
+  ],
+  "one_minus_rho_text": "not supplied by bundle",
+  "threshold_flag": false,
+  "threshold_flag_provenance": "inferred FALSE from documented nondegenerate encoding; R15-V2-RHO"
+}

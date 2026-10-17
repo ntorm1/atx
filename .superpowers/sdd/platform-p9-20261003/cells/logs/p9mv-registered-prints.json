@@ -1,0 +1,157 @@
+{
+  "decision": {
+    "rule": "pm7-34",
+    "accepted": false,
+    "dsr": -0.43062895540654544
+  },
+  "checks": {
+    "dsr_positive": false,
+    "mechanics": true
+  },
+  "paired": {
+    "dsr": -0.43062895540654544,
+    "memmel_se": 0.38230684773579077,
+    "sr": 1.4443931814855409,
+    "sr_reference": 1.8750221368920863
+  },
+  "p_two_sided": 0.2802,
+  "p_one_sided": 0.8612,
+  "books": {
+    "parent": {
+      "source": "build-equity\\mega-nav-p9-theme-cov-hedge-gm\\summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25",
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "ann_vol": 0.030344611264587394,
+      "ann_mean_gross": 0.07061758625960741,
+      "tau_per_gross": 0.027439791063976805,
+      "cost_bps_traded": 12.490795824692832,
+      "x4_net_sharpe": 1.759566530994928,
+      "capacity": [
+        {
+          "multiple": 1.0,
+          "book": "capacity-x1-v1+swap-fin-v1",
+          "net_sharpe": 1.875022136892088
+        },
+        {
+          "multiple": 2.0,
+          "book": "capacity-x2-v1+swap-fin-v1",
+          "net_sharpe": 1.8304570050460083
+        },
+        {
+          "multiple": 4.0,
+          "book": "capacity-x4-v1+swap-fin-v1",
+          "net_sharpe": 1.759566530994928
+        },
+        {
+          "multiple": 8.0,
+          "book": "capacity-x8-v1+swap-fin-v1",
+          "net_sharpe": 1.6461249461037744
+        }
+      ],
+      "cost_bps_per_traded_dollar": 12.490795824692793,
+      "capacity_source": "build-equity\\mega-nav-p9-theme-cov-hedge-gm\\capacity_curve.csv",
+      "capacity_sha256": "ed26cab56147d36f5cfd99b840e91236a489285da94a443fa2542faf396d14ee"
+    },
+    "cell": {
+      "source": "build-equity\\mega-nav-p9-mv-aim-gm\\summary.json",
+      "sha256": "c5d3ad27977e511347b7052702871ea0ff313fe7475f61f196398f18d13d9928",
+      "scenario": "modeled-1bn-stale5-v1+swap-fin-v1",
+      "ann_vol": 0.016085432847256758,
+      "ann_mean_gross": 0.03606928637839791,
+      "tau_per_gross": 0.030727107493891164,
+      "cost_bps_traded": 10.478643400023898,
+      "x4_net_sharpe": 1.2823481830580357,
+      "capacity": [
+        {
+          "multiple": 1.0,
+          "book": "capacity-x1-v1+swap-fin-v1",
+          "net_sharpe": 1.4443931814855426
+        },
+        {
+          "multiple": 2.0,
+          "book": "capacity-x2-v1+swap-fin-v1",
+          "net_sharpe": 1.3499180560329287
+        },
+        {
+          "multiple": 4.0,
+          "book": "capacity-x4-v1+swap-fin-v1",
+          "net_sharpe": 1.2823481830580357
+        },
+        {
+          "multiple": 8.0,
+          "book": "capacity-x8-v1+swap-fin-v1",
+          "net_sharpe": 1.1856839060395608
+        }
+      ],
+      "cost_bps_per_traded_dollar": 10.478643400023913,
+      "capacity_source": "build-equity\\mega-nav-p9-mv-aim-gm\\capacity_curve.csv",
+      "capacity_sha256": "0000fff8b4662388d4909039c90675e10c463506b922767dfe2fee4f680f19fe",
+      "mv_aim": {
+        "rule": "mv-aim-v1",
+        "risk_model": {
+          "directory": "build-equity/p9-m2i-dcov-covv1",
+          "manifest_sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+        },
+        "decisions": {
+          "formed": 1004,
+          "applied": 1004,
+          "pass_through": {
+            "no_forecast": 0,
+            "fewer_than_two_priced": 0,
+            "flat": 0
+          }
+        },
+        "warm_up_decisions": {
+          "formed": 60,
+          "applied": 60
+        },
+        "priced_names": {
+          "n": 1004,
+          "mean": 1846.2509960159362,
+          "min": 1758.0,
+          "max": 1930.0
+        },
+        "unpriced_members": {
+          "n": 1004,
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "specific_vol_ratio": {
+          "pooled": 0.8139623573626082,
+          "per_decision": {
+            "n": 1004,
+            "mean": 0.8124645060977332,
+            "min": 0.7491636182634464,
+            "max": 0.8641709070316781
+          }
+        },
+        "special_tier_negative": {
+          "locate_in_aim": true,
+          "name_decisions": 8675,
+          "decisions": 995
+        },
+        "eigen_00_02_share": {
+          "mv": {
+            "n": 1004,
+            "mean": 0.1043607673526362,
+            "min": 3.9206465071829006e-10,
+            "max": 0.3967351286542671
+          },
+          "desired": {
+            "n": 1004,
+            "mean": 0.008343193108808319,
+            "min": 3.477415783638688e-09,
+            "max": 0.06754934125755375
+          }
+        }
+      }
+    }
+  },
+  "nondeciding_predictions": {
+    "ann_vol_ratio": 0.5300919068298856,
+    "vol_ratio_lt_1": true,
+    "ann_mean_gross_ratio": 0.5107691764739515,
+    "gross_ratio_in_band": false
+  }
+}

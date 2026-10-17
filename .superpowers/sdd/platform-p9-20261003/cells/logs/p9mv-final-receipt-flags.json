@@ -1,0 +1,228 @@
+[
+  {
+    "path": "build-equity\\waves\\p9mv-mv-aim\\bundle-run1\\receipt.json",
+    "sha256": "10f7440d806622f8961805620f3b7ad6013d0b6fd2c7fa79386ba64e35656b18",
+    "outcome": "completed",
+    "wall_seconds": 0.5470000000204891,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 48.2265625,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\waves\\p9mv-mv-aim\\readers\\book-run1\\receipt.json",
+    "sha256": "3d52e4194270f598a5654bbccb74640f787947b3ad3570cd1c8e40243d80fa38",
+    "outcome": "completed",
+    "wall_seconds": 0.5310000000754371,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 45.07421875,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\waves\\p9mv-mv-aim\\readers\\mech-matched-run1\\receipt.json",
+    "sha256": "d729189e6eaddf50106e7dd19aa174b676ab7172b20346e849dadfa5b5168dea",
+    "outcome": "completed",
+    "wall_seconds": 0.26500000001396984,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 5.80859375,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\waves\\p9mv-mv-aim\\readers\\mech-parent-run1\\receipt.json",
+    "sha256": "e270fe3d42f90d8c6946aeecf78196bcde88cf18522697e767c7b0b46c340dae",
+    "outcome": "completed",
+    "wall_seconds": 0.5320000000065193,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 44.82421875,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\cycle-mv-aim-v1-gm\\summ-run1\\receipt.json",
+    "sha256": "04e414ee8d9532738a94c7fcbe1a365a257002608ca0cf14bb39908ea14a988c",
+    "outcome": "completed",
+    "wall_seconds": 8.891000000061467,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 70.83984375,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\mega-p9l-train-u-label-terminal-run1\\receipt.json",
+    "sha256": "5ec77576ab1e7c5a5d8bc968f35e2dea70ecad96f0688cdc7275557e0fbfd5df",
+    "outcome": "completed",
+    "wall_seconds": 51.57799999997951,
+    "limits": {
+      "seconds": 300.0,
+      "max_rss_mib": 2560,
+      "min_free_mib": 512,
+      "admission_wait_seconds": 1800.0
+    },
+    "peak_mib": 933.9296875,
+    "reused": true,
+    "historical_admission_waited_seconds": 0.016,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\mega-weights-p9-theme-cov-hedge-run1\\receipt.json",
+    "sha256": "f08600e01776ca10f89b9f68ebf523af9846d4218164d7a7c9375c697d41a9f3",
+    "outcome": "completed",
+    "wall_seconds": 3.077999999979511,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 66.67578125,
+    "reused": true,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\mega-p9w-train-theme-cov-hedge-run1\\receipt.json",
+    "sha256": "eeb4d3fa5b5e6d8e692ac3ab4e5977b96e7315503515b52936ee3000b98706e2",
+    "outcome": "completed",
+    "wall_seconds": 35.60999999998603,
+    "limits": {
+      "seconds": 300.0,
+      "max_rss_mib": 3584,
+      "min_free_mib": 512
+    },
+    "peak_mib": 1757.1328125,
+    "reused": true,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\mega-nav-p9-mv-aim-gm-run\\receipt.json",
+    "sha256": "7ee416f2688092201ebeef3459c6d43b24d938838741ce2f840bac5220300dc1",
+    "outcome": "completed",
+    "wall_seconds": 26.094000000040978,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 1182.453125,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": [
+      "C:\\atx-wt\\pool-2\\build-equity-rel\\bin\\atx-equity-strategy-targets.exe",
+      "nav",
+      "--combined",
+      "build-equity/mega-p9w-train-theme-cov-hedge-1/train_combined.json",
+      "--combined-sha256",
+      "fe7b64c6006863bb155c14fb7e5a8bf009535912f7ce4232259ecb731974e6e6",
+      "--role",
+      "build-equity/train-2020-2023-lo3/manifest.json",
+      "--role-sha256",
+      "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4",
+      "--fields",
+      "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+      "--fields-sha256",
+      "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09",
+      "--output",
+      "build-equity/mega-nav-p9-mv-aim-gm",
+      "--rule",
+      "aim-partial-v5",
+      "--cadence",
+      "1",
+      "--trade-fraction",
+      ".05",
+      "--dust-multiple",
+      ".1",
+      "--aim-leverage",
+      "1.1674",
+      "--daily-turnover-mean-max",
+      ".20",
+      "--daily-turnover-p95-max",
+      ".30",
+      "--neutralize",
+      "price-risk-v1",
+      "--max-bytes",
+      "1073741824",
+      "--order-basis",
+      "delta",
+      "--exit-rate",
+      ".05",
+      "--locate-in-aim",
+      "--liquidity-cache",
+      "--warm-start-sessions",
+      "60",
+      "--capacity-curve",
+      "--ann-mean-gross",
+      "--info-clock-print",
+      "--risk-model",
+      "build-equity/p9-m2i-dcov-covv1",
+      "--risk-model-sha256",
+      "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3",
+      "--target-rule",
+      "mv-aim-v1",
+      "--calibrate-gross",
+      "0.986241893721804",
+      "--calibrate-tolerance",
+      "0.005",
+      "--label-role",
+      "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+      "--label-role-sha256",
+      "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+    ]
+  },
+  {
+    "path": "build-equity\\mega-cards-p9-theme-cov-hedge-run\\receipt.json",
+    "sha256": "afc77107833bf538efa319d6e419d0885e5b8a69a13be45017c839986126da20",
+    "outcome": "completed",
+    "wall_seconds": 24.780999999959022,
+    "limits": {
+      "seconds": 300.0,
+      "max_rss_mib": 2560,
+      "min_free_mib": 512
+    },
+    "peak_mib": 1441.48828125,
+    "reused": true,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  },
+  {
+    "path": "build-equity\\mega-monitor-p9-mv-aim-run\\receipt.json",
+    "sha256": "3b0ae9875c3725493dd6dc628f5b7bc4203508441a7f6ca9cf79cc1cd104f697",
+    "outcome": "completed",
+    "wall_seconds": 1.5780000000959262,
+    "limits": {
+      "seconds": 180.0,
+      "max_rss_mib": 1536,
+      "min_free_mib": 512
+    },
+    "peak_mib": 131.27734375,
+    "reused": false,
+    "historical_admission_waited_seconds": null,
+    "nav_command": null
+  }
+]

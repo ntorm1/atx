@@ -1,0 +1,142 @@
+{
+  "generated_commits": [
+    {
+      "sha": "a6a74f0b3e567eba4a76a2cf3ef282d58ae87e5b",
+      "paths": [
+        "scripts/specs/p9/templates/mv-aim-v1.json"
+      ],
+      "trailer": true
+    },
+    {
+      "sha": "4b05d1d9ece1b24e04e454d4137aa54da88d561c",
+      "paths": [
+        "scripts/specs/p9/templates/mv-aim-v1-cal.json"
+      ],
+      "trailer": true
+    },
+    {
+      "sha": "064d029536d64564174055cff7b57ee1225cf8e9",
+      "paths": [
+        "scripts/specs/p9/templates/mv-aim-v1-gm.json"
+      ],
+      "trailer": true
+    }
+  ],
+  "cell_spec_sha256": "c82792ec5a4b67de61ba9ac2a10cdd7043f6273dccc04509c66eda8d26025689",
+  "fit_reused_unchanged": true,
+  "fit_flags": [
+    "--orientation",
+    "prior",
+    "--screen",
+    "v4-prior-v1",
+    "--composition",
+    "ew-theme-std-v1",
+    "--theme-erc",
+    "theme-erc-v1",
+    "--theme-hedge",
+    "theme-cov-hedge-v1"
+  ],
+  "nav_flags": [
+    "--cadence",
+    "1",
+    "--trade-fraction",
+    ".05",
+    "--dust-multiple",
+    ".1",
+    "--aim-leverage",
+    "{leverage}",
+    "--daily-turnover-mean-max",
+    ".20",
+    "--daily-turnover-p95-max",
+    ".30",
+    "--neutralize",
+    "price-risk-v1",
+    "--max-bytes",
+    "1073741824",
+    "--order-basis",
+    "delta",
+    "--exit-rate",
+    ".05",
+    "--locate-in-aim",
+    "--liquidity-cache",
+    "--warm-start-sessions",
+    "60",
+    "--capacity-curve",
+    "--ann-mean-gross",
+    "--info-clock-print",
+    "--risk-model",
+    "build-equity/p9-m2i-dcov-covv1",
+    "--risk-model-sha256",
+    "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3",
+    "--target-rule",
+    "mv-aim-v1"
+  ],
+  "nav_rule": "aim-partial-v5",
+  "nav_output": "build-equity/mega-nav-p9-mv-aim-gm",
+  "inputs": [
+    {
+      "key": "library",
+      "path": "atx-impl/strategies/fund_industry_ic_v8ysb.json",
+      "sha256": "41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5"
+    },
+    {
+      "key": "recipe",
+      "path": "atx-impl/strategies/fund_industry_ic_v8ysb.recipe.v2.json",
+      "sha256": "9d357c757943379a2aff1978de73594a2c7cbd70983f10ac65c0dd02df458759"
+    },
+    {
+      "key": "role",
+      "path": "build-equity/train-2020-2023-lo3/manifest.json",
+      "sha256": "e1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4"
+    },
+    {
+      "key": "label_role",
+      "path": "build-equity/train-2020-2023-lo3-dlret/manifest.json",
+      "sha256": "95e16cfe3ad0e0c9e7cf94acb6df4004e6f286ae59dff7c0e725ea33aace5069"
+    },
+    {
+      "key": "reference_cell",
+      "path": "build-equity/mega-nav-p9-theme-cov-hedge-gm/summary.json",
+      "sha256": "533d0ef1fffcae07dcdbe1d241373b201a7108eeec842e1d96a40c2988bdca25"
+    },
+    {
+      "key": "reference_admission",
+      "path": "build-equity/mega-weights-p9-theme-cov-hedge/admission.json",
+      "sha256": "52c84c3aa0f9217af4d01e2fb7c36254fe1dd62720649dabce3b2e0b4faffe0d"
+    },
+    {
+      "path": "build-equity/train-2020-2023-lo3-fields-v15/manifest.json",
+      "sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-covv1/manifest.json",
+      "sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-covv1/model.atxcov",
+      "sha256": "0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a"
+    },
+    {
+      "path": "build-equity/p9-m2i-dcov-v11/manifest.json",
+      "sha256": "397366473b3a3b0985ed4fb78868f4d894e16ae6c6dec05afda8d0c5126823c7"
+    }
+  ],
+  "cache_files": 686,
+  "ledger": {
+    "lines": 138,
+    "sha256": "fe1bc97ecf9ccef7f042d637730581c3410792798ef2ab0a4a7a7fa2bfbc05f8",
+    "prefix137_unchanged": true
+  },
+  "stage_seconds": {
+    "01-preflight.json": 0.39,
+    "02-register.json": 0.0,
+    "03-screen.json": 0.0,
+    "04-spec.json": 0.594,
+    "05-run.json": 0.578,
+    "06-match.json": 29.859,
+    "07-verify.json": 0.125,
+    "08-judge.json": 14.016,
+    "09-record.json": 0.187
+  },
+  "frozen_exes": 54
+}
