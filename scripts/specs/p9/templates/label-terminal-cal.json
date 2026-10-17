@@ -6,6 +6,8 @@
   "nominal_parent": "../../v8/lib-v8ysb-gm.json",
   "change": {
     "set": {
+      "ic.w_flags.--max-memory-mib": "3584",
+      "runner.phases.w.max_rss_mib": 3584,
       "ic.u_output": "build-equity/mega-p9l-train-u-label-terminal",
       "fit.output": "build-equity/mega-weights-p9l-label-terminal",
       "card.output": "build-equity/mega-cards-p9l-label-terminal",
