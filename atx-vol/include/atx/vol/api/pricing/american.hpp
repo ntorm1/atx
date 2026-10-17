@@ -894,7 +894,7 @@ inline constexpr int kDiscreteDivMaxSteps = 20001;
 // `AmericanPriceSlice` certification (fixed 1e-8 + 1e-9*max(S, K) tolerance)
 // when each strike is priced at its OWN fitted vol. Two separate defects stop the
 // spliced CRR doing that on dividend-paying chains (per-strike diagnosis in
-// sprints/2026-10-16-smooth-dividend-lattice-sprint.md):
+// sprints/2026-10-17-smooth-div-sprint.md):
 //   1. LATTICE NOISE. A plain CRR price is piecewise LINEAR in strike between
 //      terminal nodes (the terminal distribution is a staircase), and per-strike
 //      vols move the nodes between neighbouring strikes: concave kinks of 1e-2

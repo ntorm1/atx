@@ -297,13 +297,14 @@ TEST(DiscreteDivScheme, BbsrCoarseLatticeSetsTheProbabilityWindow) {
 TEST(DiscreteDivScheme, LeisenReimerPricesAStrikeTooFarForItsCentredTree) {
   // sigma*sqrt(T) ~ 4e-4 puts K = 90 some 250 standard deviations in the money:
   // the Peizer-Pratt probability rounds to 1, and the CRR geometry prices it.
+  // Measured error against the forward intrinsic: 1.3e-12.
   const std::vector<CashDividend> divs{{0.05, 0.5}};
   const double T = 0.18;
   const double sigma = 1.0e-3;
   const double F = dated_forward(100.0, T, 0.04, 0.0, divs);
   const double got = price(100.0, 90.0, T, sigma, 0.04, 0.0, Side::Call, divs, 301,
                            ExerciseStyle::European, DiscreteDivScheme::EscrowedLeisenReimer);
-  EXPECT_NEAR(got, std::exp(-0.04 * T) * (F - 90.0), 1.0e-9);
+  EXPECT_NEAR(got, std::exp(-0.04 * T) * (F - 90.0), 1.0e-10);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -343,6 +344,7 @@ TEST(DiscreteDivScheme, LeisenReimerPricesAStrikeTooFarForItsCentredTree) {
   return value[0];
 }
 
+// Measured worst |difference| over sides, styles and strikes: 6.7e-13.
 TEST(DiscreteDivScheme, BbsSchemesWithoutCashMatchAnIndependentBbs) {
   for (const Side side : {Side::Call, Side::Put}) {
     for (const bool american : {false, true}) {
@@ -388,7 +390,8 @@ TEST(DiscreteDivScheme, CashAtExpiryIsAnExactStrikeShiftForTheEuropeanBbs) {
     // call: (max(S - D, 0) - K)+ == (S - (K + D))+, the same lattice at K + D.
     EXPECT_EQ(price(100.0, K, T, 0.25, 0.04, 0.01, Side::Call, at_expiry, 301, kEu, kBbs),
               price(100.0, K + D, T, 0.25, 0.04, 0.01, Side::Call, {}, 301, kEu, kBbs));
-    // put: (K - max(S - D, 0))+ == put(K + D) - put(D), on the same nodes.
+    // put: (K - max(S - D, 0))+ == put(K + D) - put(D), on the same nodes
+    // (measured difference: exactly 0 at all three strikes).
     const double put = price(100.0, K, T, 0.25, 0.04, 0.01, Side::Put, at_expiry, 301, kEu, kBbs);
     const double shifted = price(100.0, K + D, T, 0.25, 0.04, 0.01, Side::Put, {}, 301, kEu, kBbs) -
                            price(100.0, D, T, 0.25, 0.04, 0.01, Side::Put, {}, 301, kEu, kBbs);
@@ -398,7 +401,8 @@ TEST(DiscreteDivScheme, CashAtExpiryIsAnExactStrikeShiftForTheEuropeanBbs) {
 
 TEST(DiscreteDivScheme, CashOnStepNMinusOneIsAppliedAnalyticallyAndConverges) {
   // The BBS continuation is evaluated at each node's post-dividend level, so
-  // this splice interpolates nothing.
+  // this splice interpolates nothing. Measured |error|: 1.3e-3 to 1.9e-3 at
+  // 300 steps, halving per doubling to 3.2e-4 to 4.7e-4 at 1200.
   const double T = 0.5;
   const double D = 3.0;
   for (const Side side : {Side::Call, Side::Put}) {
@@ -415,31 +419,42 @@ TEST(DiscreteDivScheme, CashOnStepNMinusOneIsAppliedAnalyticallyAndConverges) {
         EXPECT_LT(err, previous) << "K=" << K << " n=" << n;
         previous = err;
       }
-      EXPECT_LT(previous, 2.0e-3) << "K=" << K;
+      EXPECT_LT(previous, 1.0e-3) << "K=" << K;
     }
   }
 }
 
 TEST(DiscreteDivScheme, AnEarlyExDateConvergesThroughTheGridBottom) {
-  // Cash on step 1 sends the low nodes below the grid: the splice's quadratic
-  // grid-bottom rule prices them, BBS or not.
+  // Cash 0.01 years in (step 3 at 300 steps, step 24 at 2400) sends the low
+  // nodes below the grid at every count: the splice's quadratic grid-bottom rule
+  // prices them, BBS or not. The error is not monotone in between (measured BBS
+  // at the money: +5.2e-3, +6.6e-3, +4.8e-3, +1.3e-3 at 300/600/1200/2400), so
+  // the test pins the end points. Measured max |error|: 7.8e-3 at 300 (K = 140)
+  // and 1.3e-3 at 2400 (K = 100), hence the 2.5e-3 bound.
+  //
+  // An ex-date ON step 1 (tau = T/n) is deliberately not a convergence case: two
+  // nodes survive, the splice extrapolates linearly across the whole cash
+  // amount, and the European error stays near Gamma*D^2/2 however many steps
+  // run (measured at the money: -0.252 CRR / -0.239 BBS at 300 steps, -0.242 /
+  // -0.240 at 2400). That is the historical spliced rule, shared by every
+  // spliced scheme; the escrowed schemes interpolate nothing.
   const double T = 1.0;
   const double D = 6.0;
+  const double tau = 0.01;
+  const std::vector<CashDividend> early{{tau, D}};
   for (const Side side : {Side::Call, Side::Put}) {
     for (const double K : {60.0, 100.0, 140.0}) {
-      double previous = std::numeric_limits<double>::infinity();
-      for (const int n : {300, 600, 1200}) {
-        const double tau = T / static_cast<double>(n);
-        const std::vector<CashDividend> first_step{{tau, D}};
-        const double exact =
-            spliced_european_one_dividend(100.0, K, T, 0.3, 0.03, 0.0, D, tau, side);
-        const double err = std::abs(price(100.0, K, T, 0.3, 0.03, 0.0, side, first_step, n,
-                                          ExerciseStyle::European, DiscreteDivScheme::SplicedBbs) -
-                                    exact);
-        EXPECT_LT(err, previous) << "K=" << K << " n=" << n;
-        previous = err;
-      }
-      EXPECT_LT(previous, 2.0e-3) << "K=" << K;
+      const double exact =
+          spliced_european_one_dividend(100.0, K, T, 0.3, 0.03, 0.0, D, tau, side);
+      const auto error_at = [&](int n) {
+        return std::abs(price(100.0, K, T, 0.3, 0.03, 0.0, side, early, n,
+                              ExerciseStyle::European, DiscreteDivScheme::SplicedBbs) -
+                        exact);
+      };
+      const double coarse = error_at(300);
+      const double fine = error_at(2400);
+      EXPECT_LT(fine, coarse) << "K=" << K;
+      EXPECT_LT(fine, 2.5e-3) << "K=" << K;
     }
   }
 }
@@ -448,9 +463,16 @@ TEST(DiscreteDivScheme, AnEarlyExDateConvergesThroughTheGridBottom) {
 //  Convergence of each scheme to an independent reference for its own model
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(DiscreteDivScheme, SplicedBbsEuropeanConvergesMonotonicallyToTheExactValue) {
-  // tau = 0.25 lands on a step at 300/600/1200, so the only error left is the
-  // lattice's own: smooth, one-signed, roughly halving per doubling.
+TEST(DiscreteDivScheme, SplicedBbsEuropeanErrorIsOneSignedAndShrinks) {
+  // tau = 0.25 lands on a step at every count below, so the only error left is
+  // the lattice's own. Measured (BBS; all three strikes, either side): +3.7e-3
+  // to +4.6e-3 at 300, +4.5e-3 to +6.0e-3 at 600, then +1.4e-3 to +1.7e-3,
+  // +8.2e-4 to +1.17e-3 and +4.4e-4 to +5.7e-4 at 1200/2400/4800. ONE-SIGNED at
+  // every count, where the spliced CRR changes sign at the money (-3.0e-3,
+  // +2.2e-3, -1.9e-4 at 300/600/1200). It does not halve per doubling: the
+  // splice's linear interpolation still ripples with where S - D falls between
+  // nodes. So the test pins one sign, a factor of at least 2 from 1200 to 4800
+  // steps (measured 3.0 to 3.1), and |error| < 1e-3 at 4800 (measured 5.7e-4).
   const double T = 0.5;
   const double D = 2.0;
   const double tau = 0.25;
@@ -459,17 +481,20 @@ TEST(DiscreteDivScheme, SplicedBbsEuropeanConvergesMonotonicallyToTheExactValue)
     for (const double K : {90.0, 100.0, 110.0}) {
       const double exact =
           spliced_european_one_dividend(100.0, K, T, 0.25, 0.04, 0.01, D, tau, side);
-      double e[3];
-      int idx = 0;
-      for (const int n : {300, 600, 1200}) {
-        e[idx++] = price(100.0, K, T, 0.25, 0.04, 0.01, side, one, n, ExerciseStyle::European,
-                         DiscreteDivScheme::SplicedBbs) -
-                   exact;
+      const auto error_at = [&](int n) {
+        return price(100.0, K, T, 0.25, 0.04, 0.01, side, one, n, ExerciseStyle::European,
+                     DiscreteDivScheme::SplicedBbs) -
+               exact;
+      };
+      const double first = error_at(300);
+      for (const int n : {600, 1200, 2400}) {
+        EXPECT_GT(first * error_at(n), 0.0) << "one-signed, K=" << K << " n=" << n;
       }
-      EXPECT_GT(e[0] * e[1], 0.0) << "one-signed, K=" << K;
-      EXPECT_GT(e[1] * e[2], 0.0) << "one-signed, K=" << K;
-      EXPECT_NEAR(e[0] / e[1], 2.0, 0.6) << "K=" << K;
-      EXPECT_NEAR(e[1] / e[2], 2.0, 0.6) << "K=" << K;
+      const double at_1200 = error_at(1200);
+      const double at_4800 = error_at(4800);
+      EXPECT_GT(first * at_4800, 0.0) << "one-signed, K=" << K << " n=4800";
+      EXPECT_LT(std::abs(at_4800), 0.5 * std::abs(at_1200)) << "K=" << K;
+      EXPECT_LT(std::abs(at_4800), 1.0e-3) << "K=" << K;
     }
   }
 }
@@ -484,6 +509,8 @@ TEST(DiscreteDivScheme, EscrowedEuropeansConvergeToBlack76AtTheDatedForward) {
   for (const Side side : {Side::Call, Side::Put}) {
     for (const double K : {80.0, 100.0, 120.0}) {
       const double black = black76_price(F, K, T, 0.25, std::exp(-r * T), side);
+      // Measured |error| at 301 steps: escrowed-bbs 8.1e-4 to 1.8e-3, shrinking
+      // about 4x by 1201; escrowed-lr 2.1e-7 to 4.4e-6, shrinking about 16x.
       for (const DiscreteDivScheme scheme :
            {DiscreteDivScheme::EscrowedBbs, DiscreteDivScheme::EscrowedLeisenReimer}) {
         const double e301 =
@@ -493,11 +520,12 @@ TEST(DiscreteDivScheme, EscrowedEuropeansConvergeToBlack76AtTheDatedForward) {
         EXPECT_LT(std::abs(e1201), std::abs(e301)) << atx::vol::to_string(scheme) << " K=" << K;
         EXPECT_LT(std::abs(e301), 5.0e-3) << atx::vol::to_string(scheme) << " K=" << K;
       }
-      // Leisen-Reimer's O(1/n^2): two orders below the BBS lattice at 301.
+      // Leisen-Reimer's O(1/n^2): more than two orders below the BBS lattice at
+      // 301 (measured 4.4e-6 at the money, against 1.8e-3).
       EXPECT_LT(std::abs(price(S, K, T, 0.25, r, q, side, three, 301, ExerciseStyle::European,
                                DiscreteDivScheme::EscrowedLeisenReimer) -
                          black),
-                5.0e-5)
+                1.0e-5)
           << "K=" << K;
     }
   }
@@ -505,7 +533,12 @@ TEST(DiscreteDivScheme, EscrowedEuropeansConvergeToBlack76AtTheDatedForward) {
 
 TEST(DiscreteDivScheme, EscrowedAmericanCallConvergesToRollGeskeWhaley) {
   // One cash dividend, q = 0: RGW is the escrowed model's exact American call.
-  // The ex-date sits on a step of both lattices compared (301 and 903 = 3*301).
+  // The ex-date sits on a step of both lattices compared (301 and 3311 =
+  // 11*301). The American error oscillates with the step count (measured,
+  // escrowed-lr K = 90: -2.7e-3, -1.7e-5, -1.3e-4, -1.9e-4 at 301/903/1505/3311),
+  // so the test pins the end points. Measured max |error|: 3.3e-3 at 301
+  // (escrowed-bbs K = 100) and 2.7e-4 at 3311 (escrowed-lr K = 100); every
+  // strike and scheme improves from 301 to 3311.
   const double S = 100.0;
   const double T = 0.5;
   const double sigma = 0.20;
@@ -520,28 +553,32 @@ TEST(DiscreteDivScheme, EscrowedAmericanCallConvergesToRollGeskeWhaley) {
       const double e301 = std::abs(
           price(S, K, T, sigma, r, 0.0, Side::Call, one, 301, ExerciseStyle::American, scheme) -
           exact);
-      const double e903 = std::abs(
-          price(S, K, T, sigma, r, 0.0, Side::Call, one, 903, ExerciseStyle::American, scheme) -
+      const double e3311 = std::abs(
+          price(S, K, T, sigma, r, 0.0, Side::Call, one, 3311, ExerciseStyle::American, scheme) -
           exact);
-      EXPECT_LT(e903, e301 + 1.0e-6) << atx::vol::to_string(scheme) << " K=" << K;
+      EXPECT_LT(e3311, e301) << atx::vol::to_string(scheme) << " K=" << K;
       EXPECT_LT(e301, 5.0e-3) << atx::vol::to_string(scheme) << " K=" << K;
+      EXPECT_LT(e3311, 5.0e-4) << atx::vol::to_string(scheme) << " K=" << K;
     }
   }
 }
 
 TEST(DiscreteDivScheme, AmericanSchemesConvergeAgainstTheirOwnHighStepReference) {
   // The reference lane's three-dividend contract (S = K = 100, T = 0.75).
+  // Measured |P(301) - P(4801)|: spliced family 2.2e-2 to 3.2e-2 (BBSR's call
+  // the largest), escrowed family 3.3e-4 to 2.2e-3; P(1201) is closer to P(4801)
+  // than P(301) for every scheme and side. Bounds: 4e-2 and 4e-3.
   const std::vector<CashDividend> three{{0.10, 2.0}, {0.35, 2.0}, {0.60, 2.0}};
   for (const DiscreteDivScheme scheme : kAllSchemes) {
+    const double bound = escrowed(scheme) ? 4.0e-3 : 4.0e-2;
     for (const Side side : {Side::Call, Side::Put}) {
       const auto at = [&](int n) {
         return price(100.0, 100.0, 0.75, 0.25, 0.045, 0.0, side, three, n,
                      ExerciseStyle::American, scheme);
       };
       const double ref = at(4801);
-      EXPECT_LT(std::abs(at(1201) - ref), std::abs(at(301) - ref) + 1.0e-6)
-          << atx::vol::to_string(scheme);
-      EXPECT_LT(std::abs(at(301) - ref), 2.5e-2) << atx::vol::to_string(scheme);
+      EXPECT_LT(std::abs(at(1201) - ref), std::abs(at(301) - ref)) << atx::vol::to_string(scheme);
+      EXPECT_LT(std::abs(at(301) - ref), bound) << atx::vol::to_string(scheme);
     }
   }
 }
@@ -556,28 +593,40 @@ TEST(DiscreteDivScheme, EuropeanParityHoldsOnEveryScheme) {
   const double r = 0.041;
   const double q = 0.008;
   const int n = 301;
-  const double dt = T / n;
   // Six interior ex-dates (none on the expiry step, where the spliced put
   // carries the zero-floor term put(D)).
   const std::vector<CashDividend> six{{0.096768, 1.98}, {0.347905, 2.15}, {0.592603, 1.95},
                                       {0.838835, 2.05}, {1.089590, 2.15}, {1.250000, 2.35}};
   // The spliced lattice pays each amount on its rounded step; the escrowed
   // schemes discount it from its exact date into the forward.
-  double spliced_pv = 0.0;
-  for (const CashDividend &dv : six) {
-    const double t = std::nearbyint(dv.tau / dt) * dt;
-    spliced_pv += dv.amount * std::exp(-r * t) * std::exp(-q * (T - t));
-  }
+  const auto spliced_pv = [&](int steps) {
+    const double dt = T / static_cast<double>(steps);
+    double pv = 0.0;
+    for (const CashDividend &dv : six) {
+      const double t = std::nearbyint(dv.tau / dt) * dt;
+      pv += dv.amount * std::exp(-r * t) * std::exp(-q * (T - t));
+    }
+    return pv;
+  };
+  // BBSR combines two lattices whose ex-steps round differently, so its parity
+  // carries the same Richardson combination of their two dividend PVs (without
+  // it the residual is a constant 4.9e-5, measured).
+  const int coarse = atx::vol::discrete_div_richardson_coarse_steps(n);
+  const double richardson_pv =
+      (static_cast<double>(n) * spliced_pv(n) - static_cast<double>(coarse) * spliced_pv(coarse)) /
+      static_cast<double>(n - coarse);
   const double forward = dated_forward(S, T, r, q, six);
+  // Measured worst |residual| over the three strikes: 2.0e-11 to 3.6e-11.
   for (const DiscreteDivScheme scheme : kAllSchemes) {
+    const double pv =
+        scheme == DiscreteDivScheme::SplicedBbsr ? richardson_pv : spliced_pv(n);
     for (const double K : {700.0, 780.0, 860.0}) {
       const double c = price(S, K, T, 0.18, r, q, Side::Call, six, n, ExerciseStyle::European,
                              scheme);
       const double p = price(S, K, T, 0.18, r, q, Side::Put, six, n, ExerciseStyle::European,
                              scheme);
-      const double want = escrowed(scheme)
-                              ? std::exp(-r * T) * (forward - K)
-                              : S * std::exp(-q * T) - spliced_pv - K * std::exp(-r * T);
+      const double want = escrowed(scheme) ? std::exp(-r * T) * (forward - K)
+                                           : S * std::exp(-q * T) - pv - K * std::exp(-r * T);
       EXPECT_NEAR(c - p, want, 1.0e-9) << atx::vol::to_string(scheme) << " K=" << K;
     }
   }
@@ -597,13 +646,19 @@ struct SyntheticChain {
   std::vector<double> sigmas;
 };
 
+// The share of a run's own butterfly a synthetic chain keeps (see below).
+constexpr double kSmoothSmile = 1.0;  // the smile itself: no run is touched
+constexpr double kNearlyTight = 0.02; // 2% of each run's butterfly survives
+constexpr double kExactlyTight = 0.0; // the chord: zero butterflies on the run
+
 // An ASML-shaped chain (dev200, 2027-04-16): spot 1712, two 3.18 dividends,
 // strikes 860..2640 by 20. The vol curve is CONVEX IN BLACK76 PRICE SPACE at the
-// dated-cash forward by construction: a skewed smile, optionally with three runs
-// of strikes replaced by the chord between their end points (a dense convex fit
-// is tight exactly like this — zero butterflies on runs of strikes), then
-// inverted back to per-strike Black vols.
-[[nodiscard]] SyntheticChain asml_shaped_chain(bool tight_runs) {
+// dated-cash forward by construction: a skewed smile whose call prices on three
+// runs of strikes are pulled toward the chord between the run's end points,
+// keeping the share `run_keep` of the smile's own convexity there (a dense
+// convex fit is tight exactly like this: zero or near-zero butterflies on runs
+// of strikes), then inverted back to per-strike Black vols.
+[[nodiscard]] SyntheticChain asml_shaped_chain(double run_keep) {
   SyntheticChain c{1711.835, 0.50136, 0.047639, -0.0072149,
                    {{0.0326974, 3.1771}, {0.2806524, 3.1771}}, {}, {}};
   const double F = dated_forward(c.S, c.T, c.r, c.q, c.divs);
@@ -614,19 +669,18 @@ struct SyntheticChain {
     c.strikes.push_back(K);
     call.push_back(black76_price(F, K, c.T, 0.40 - 0.10 * k + 0.25 * k * k, df, Side::Call));
   }
-  if (tight_runs) {
-    const auto chord = [&](double lo, double hi) {
-      const auto a = static_cast<std::size_t>((lo - 860.0) / 20.0);
-      const auto b = static_cast<std::size_t>((hi - 860.0) / 20.0);
-      for (std::size_t i = a + 1U; i < b; ++i) {
-        const double w = (c.strikes[i] - c.strikes[a]) / (c.strikes[b] - c.strikes[a]);
-        call[i] = (1.0 - w) * call[a] + w * call[b];
-      }
-    };
-    chord(1780.0, 1920.0);
-    chord(2060.0, 2240.0);
-    chord(2360.0, 2560.0);
-  }
+  const auto pull_to_chord = [&](double lo, double hi) {
+    const auto a = static_cast<std::size_t>((lo - 860.0) / 20.0);
+    const auto b = static_cast<std::size_t>((hi - 860.0) / 20.0);
+    for (std::size_t i = a + 1U; i < b; ++i) {
+      const double w = (c.strikes[i] - c.strikes[a]) / (c.strikes[b] - c.strikes[a]);
+      const double chord = (1.0 - w) * call[a] + w * call[b];
+      call[i] = (1.0 - run_keep) * chord + run_keep * call[i];
+    }
+  };
+  pull_to_chord(1780.0, 1920.0);
+  pull_to_chord(2060.0, 2240.0);
+  pull_to_chord(2360.0, 2560.0);
   for (std::size_t i = 0; i < c.strikes.size(); ++i) {
     c.sigmas.push_back(black_iv(call[i], F, c.strikes[i], c.T, df, Side::Call));
   }
@@ -659,20 +713,45 @@ struct SyntheticChain {
   return AmericanPriceSlice::create(nodes, bounds_for(c)).has_value();
 }
 
-TEST(DiscreteDivSchemeStrikeShape, BbsRemovesTheLatticeStaircaseOnASmoothSmile) {
-  const SyntheticChain chain = asml_shaped_chain(false);
+// Measured on this chain at 301 steps (also at 10-wide strikes, and with the
+// cash removed): every single-rollback scheme, the default included, certifies
+// the untouched smile. Its curvature is far above the certification tolerance,
+// so the CRR staircase alone breaks nothing there. (BBSR is left out: it
+// certifies this chain at 20-wide strikes but is refused at 10-wide ones; the
+// Richardson step amplifies the exercise-boundary ripple, header.)
+TEST(DiscreteDivSchemeStrikeShape, EverySingleRollbackSchemeCertifiesASmoothSmile) {
+  const SyntheticChain chain = asml_shaped_chain(kSmoothSmile);
+  for (const DiscreteDivScheme scheme :
+       {DiscreteDivScheme::SplicedCrr, DiscreteDivScheme::SplicedBbs,
+        DiscreteDivScheme::EscrowedBbs, DiscreteDivScheme::EscrowedLeisenReimer}) {
+    EXPECT_TRUE(certifies(chain, scheme)) << atx::vol::to_string(scheme);
+  }
+}
+
+// The lattice-noise half of the trap: where the fitted curve keeps only 2% of
+// its convexity on a run, the per-strike-vol CRR slice is refused (measured:
+// node 48, the first run) while both BBS lattices and the Leisen-Reimer tree
+// certify. Measured identically with the cash removed.
+TEST(DiscreteDivSchemeStrikeShape, BbsRemovesTheLatticeStaircaseOnNearlyTightRuns) {
+  const SyntheticChain chain = asml_shaped_chain(kNearlyTight);
   EXPECT_FALSE(certifies(chain, DiscreteDivScheme::SplicedCrr))
       << "the trap this lane exists for: a per-strike-vol CRR slice is refused";
   EXPECT_TRUE(certifies(chain, DiscreteDivScheme::SplicedBbs));
+  EXPECT_TRUE(certifies(chain, DiscreteDivScheme::EscrowedBbs));
   EXPECT_TRUE(certifies(chain, DiscreteDivScheme::EscrowedLeisenReimer));
 }
 
-TEST(DiscreteDivSchemeStrikeShape, OnlyTheEscrowedLeisenReimerTreeSurvivesTightConvexRuns) {
-  const SyntheticChain chain = asml_shaped_chain(true);
-  // Smoothing alone is not enough: the spliced European differs from Black76
-  // at the same forward by a smooth term that is concave across the runs.
+// Zero butterflies on a run: only a European accurate far below the tolerance
+// keeps the run convex. Every smoothed CRR lattice (O(1/N) European error,
+// smooth but not small: 8e-4 to 1.8e-3 at 301 steps) bends it; the
+// Leisen-Reimer tree (O(1/N^2), 4.4e-6 at the money) does not. Measured the same
+// with the cash removed, so this is the lattices' own European error, not only
+// the spliced model's departure from Black76 at the dated forward (sprint note).
+TEST(DiscreteDivSchemeStrikeShape, OnlyTheEscrowedLeisenReimerTreeSurvivesExactlyTightRuns) {
+  const SyntheticChain chain = asml_shaped_chain(kExactlyTight);
   EXPECT_FALSE(certifies(chain, DiscreteDivScheme::SplicedCrr));
   EXPECT_FALSE(certifies(chain, DiscreteDivScheme::SplicedBbs));
+  EXPECT_FALSE(certifies(chain, DiscreteDivScheme::EscrowedBbs));
   EXPECT_TRUE(certifies(chain, DiscreteDivScheme::EscrowedLeisenReimer));
 }
 

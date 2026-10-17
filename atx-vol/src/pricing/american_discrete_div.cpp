@@ -256,7 +256,7 @@ void bbs_final_step(std::span<const double> level, std::span<double> value, std:
   }
 }
 
-// `bbs` selects the Broadie-Detemple final step (header, DiscreteDivSmoothing):
+// `bbs` selects the Broadie-Detemple final step (header, DiscreteDivScheme):
 // the step N-1 continuation becomes `FinalStepValue` evaluated at each node's
 // own (post-dividend) level. Every other step is the plain V&N rollback, and
 // with `bbs == false` the arithmetic is the historical kernel's, operation for
