@@ -136,6 +136,16 @@ dev200b; knot-ladder point policy unreviewed), restated with the SpiderRock read
 
 ## Next steps the evidence supports
 
+**Supersedes the list below for sequencing:** `docs/plans/2026-10-17-atx-vol-sota-fit-dag-plan.md`
+(DAG sprint plan: speed targets ≤ 30 ms per expiry / ≤ 1 s SPY surface single-threaded, accuracy
+targets per surface-shape class, waves W0-W4 with gates, file ownership and opt-in key names). Its
+W0 is exactly item 0 here; W1 measures (fit profile, latency harness, shape cohorts); W2 is the
+speed core; W3 the accuracy lanes (items 1, 5 below and more); W4 quiet-host qualification and the
+single held-out promotion run (item 4). Measured fit speed at the stop: SPY 1.7-3.2 s per expiry,
+55-106 s per surface single-threaded
+(`C:/atx-cache/quote-benchmark/fit-timing-20261017-cohort5/RESULTS.md`) — two orders of magnitude
+off the target; the plan's §0 explains why.
+
 0. Land the in-flight lanes: fresh full review of knot-ladder → integrate; finish/redo the
    al-speed review (incl. the default-path timing probe) → integrate; finish deferred-tests
    → light review → integrate; then the FULL parity set on the final binary and C6 (ladder → m6).
