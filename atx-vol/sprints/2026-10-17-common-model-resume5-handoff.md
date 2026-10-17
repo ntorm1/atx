@@ -186,4 +186,17 @@ Nothing pinned; no "fastest" claim is justified yet.
 composite `composite-20261017`, plots `plots-20261017`, `plots-20261017-v2`.
 Every results note and review JSON carries SHA256s; nothing under that root may
 be overwritten. Sprint workspace: `C:/atx/.superpowers/sdd/2026-10-17-vol-resume5/`
-(git-ignored; copy anything you need to keep into `atx-vol/sprints/`).
+(git-ignored; its ledger is copied to `2026-10-17-resume5-pm-ledger.md` beside
+this file).
+
+## Handoff commit and lease disposition
+
+- Handoff committed on `feat/vol-resume4-20261016` as `26673577` (this file +
+  `2026-10-17-resume5-pm-ledger.md`); this closing section is a second docs
+  commit on top of it — the branch head at the stop is that second commit.
+- Root lease pool-1 (RunId `vol-20261017-root5`, keeper 18700) released by the PM
+  right after the closing commit; every lane pool (3, 4, 33, 34, 35, 36) was
+  released by its lane. `lease-worktree.ps1 -Status` should show no live
+  `vol-20261017-*` lease. Lane branch tips: knot-ladder `901757ec`, al-speed
+  `c2bf8bb8`, batch-pricing `583e3a75`, surface-archive `c0545fe9`,
+  composite-bench `bf3acaae` (merged).
