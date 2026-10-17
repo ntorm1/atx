@@ -403,6 +403,7 @@ private:
     trial.dividend_model = fit.dividend_model;
     trial.al_opts = fit.al_opts;
     trial.discrete_div_steps = fit.discrete_div_steps;
+    trial.discrete_div_scheme = fit.discrete_div_scheme;
     trial.variance_clock_dividends = fit.variance_clock_dividends;
     trial.carry_curve = fit.carry_curve;
     trial.diagnostics = fit.diagnostics;

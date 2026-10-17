@@ -757,7 +757,9 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
   std::string route_name{"escrow"};
   std::string reason_key = reason;
   std::optional<Result<QuoteSliceFit>> fit;
-  if (reason.empty()) {
+  // The lattice scheme and step count are provenance only where the lattice ran.
+  const bool lattice_attempted = reason.empty();
+  if (lattice_attempted) {
     QuoteSliceMarket dated = market;
     dated.dividend_pv = 0.0; // the dated cash replaces the aggregate PV, never both
     QuoteSliceConfig config = chain.profile->config;
@@ -799,8 +801,11 @@ Result<QuoteSliceFit> fit_with_schedule(std::uint64_t chain_id, const InputRow &
        {"forward", finite_or_null(used)},
        {"forward_shift_bp", finite_or_null(1.0e4 * (used / reference - 1.0))},
        {"fit_status", *fit ? Json(to_string((*fit)->fit_status)) : Json("error")},
-       {"lattice_steps", chain.profile->config.discrete_div_steps},
-       {"lattice_scheme", to_string(chain.profile->config.discrete_div_scheme)},
+       {"lattice_steps", lattice_attempted ? Json(chain.profile->config.discrete_div_steps)
+                                           : Json(nullptr)},
+       {"lattice_scheme", lattice_attempted
+                              ? Json(to_string(chain.profile->config.discrete_div_scheme))
+                              : Json(nullptr)},
        {"chain_us", us}});
   return std::move(*fit);
 }
@@ -1209,7 +1214,8 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         {"route", "discrete_div_route(Lattice) admits an ex-date in (valuation, expiry] -> "
             "QuoteSliceDividendModel::DatedCash (V&N lattice, the profile's "
             "dividend_lattice_steps (301 unless set) and dividend_lattice scheme (spliced unless "
-            "set; per route: lattice_steps, lattice_scheme), dividend_pv = 0, per-strike sdiv "
+            "set; per route: lattice_steps, lattice_scheme, null where the lattice did not "
+            "run), dividend_pv = 0, per-strike sdiv "
             "kept as residual yield) for IV inversion and repricing; otherwise the "
             "--dividends aggregate model unchanged"},
         {"route_granularity", "per chain (one expiry); every contract of a chain shares its "

@@ -579,6 +579,13 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       auto profile = *found;
       parse_profile(list[i], profile, grids[i]);
       const auto dividends = parse_dividend_routing(list[i]);
+      // The lattice keys act only on routed chains; on an aggregate profile they
+      // would be silently inert, so they are refused instead.
+      if (dividends == DividendRouting::Aggregate &&
+          (list[i].contains("dividend_lattice") || list[i].contains("dividend_lattice_steps"))) {
+        throw std::runtime_error("Policy dividend_lattice and dividend_lattice_steps require "
+                                 "dividends inferred-schedule or inferred-schedule-exact");
+      }
       if (dividends != DividendRouting::Aggregate) routing[profile.name] = dividends;
       profiles.push_back(std::move(profile));
     }

@@ -650,3 +650,54 @@ def test_native_channel_family_solves_the_channel_objective(binary, tmp_path):
              "channel": {"family": family}}]})
         result = invoke(binary, source, output, "--policy", str(bad))
         assert result.returncode != 0, family
+
+
+def test_native_dividend_lattice_keys_are_strict_and_recorded(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    write_quotes(source, [dict(row, ddiv="0") for row in read_quotes(source)])
+    for extra, message in (
+            ({"dividend_lattice": "crr"}, "dividend_lattice must be"),
+            ({"dividend_lattice": 3}, "must be a string"),
+            ({"dividend_lattice_steps": 0}, "outside supported bounds"),
+            ({"dividend_lattice_steps": 20002}, "outside supported bounds"),
+            ({"dividend_lattice_steps": 301.5}, "correct type"),
+            ({"dividend_lattice": "spliced-bbsr", "dividend_lattice_steps": 1},
+             "invalid quote quality or model point count")):
+        profiles = [{"name": name, "base": name, "dividends": "inferred-schedule", **extra}
+                    for name in ("dense", "ordinary", "sparse")]
+        policy = write_policy(tmp_path / "policy.json",
+                              {"schema_version": 1, "profiles": profiles})
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, extra
+        assert message in result.stderr, (extra, result.stderr)
+    # On an aggregate profile the keys would be inert, so they are refused.
+    for extra in ({"dividend_lattice": "escrowed-lr"}, {"dividend_lattice_steps": 401},
+                  {"dividends": "aggregate", "dividend_lattice": "escrowed-lr"}):
+        profiles = [{"name": name, "base": name, **extra}
+                    for name in ("dense", "ordinary", "sparse")]
+        policy = write_policy(tmp_path / "policy.json",
+                              {"schema_version": 1, "profiles": profiles})
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, extra
+        assert "require dividends inferred-schedule" in result.stderr, (extra, result.stderr)
+    # A routed profile records both keys; the default records no scheme.
+    profiles = [{"name": name, "base": name, "dividends": "inferred-schedule",
+                 "dividend_lattice": "escrowed-lr", "dividend_lattice_steps": 401}
+                for name in ("dense", "ordinary", "sparse")]
+    policy = write_policy(tmp_path / "policy.json", {"schema_version": 1, "profiles": profiles})
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    definition = report["policy_definition"]["profiles"]
+    assert all(profile["dividend_lattice"] == "escrowed-lr" for profile in definition)
+    assert all(profile["discrete_div_steps"] == 401 for profile in definition)
+    # No cash in life: the chain never reaches the lattice, so no scheme is claimed.
+    route, = report["dividend_schedule"]["routes"]
+    assert route["reason"] == "no_ex_date_in_life"
+    assert route["lattice_scheme"] is None and route["lattice_steps"] is None
+    default = invoke(binary, source, output)
+    assert default.returncode == 0, default.stderr
+    definition = json.loads(default.stdout)["policy_definition"]["profiles"]
+    assert all("dividend_lattice" not in profile for profile in definition)
+    assert all(profile["discrete_div_steps"] == 301 for profile in definition)
