@@ -587,11 +587,74 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "requires dividends aggregate"),
             ({"schema_version": 1, "admission": "graded", "profiles": [
                 {"name": "dense", "base": "dense", "dividends": "inferred-schedule-exact"}]},
-             "requires dividends aggregate")):
+             "requires dividends aggregate"),
+            # Opt-in channel repair and channel dominance keys.
+            ({"schema_version": 1, "admission": "graded", "graded": {"repair": "lower"}},
+             "must be off or channel"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"repair_max_nodes": 8}},
+             "budgets require repair channel"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"repair": "off", "repair_max_vol": 0.02}},
+             "budgets require repair channel"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"repair": "channel", "repair_max_nodes": 0}},
+             "outside supported bounds"),
+            ({"schema_version": 1, "admission": "graded", "profiles": [
+                {"name": "dense", "base": "dense",
+                 "channel": {"point_max_outside_fraction": 1.5}}]},
+             "outside supported bounds"),
+            ({"schema_version": 1, "profiles": [
+                {"name": "dense", "base": "dense",
+                 "channel": {"point_max_outside_fraction": 0.05}}]},
+             "point_max_outside_fraction requires admission graded")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
         assert message in result.stderr, (document, result.stderr)
+
+
+def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
+    # On clean quotes every point fit certifies and meets its quotes, so the
+    # opt-in rungs never run: the predictions are byte-identical to graded
+    # without them, and only the opt-in provenance is added to the report.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    plain_output, keyed_output = tmp_path / "plain.csv", tmp_path / "keyed.csv"
+    plain_policy = write_policy(tmp_path / "plain.json",
+                                {"schema_version": 1, "admission": "graded"})
+    plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
+    assert plain.returncode == 0, plain.stderr
+    keyed_policy = write_policy(tmp_path / "keyed.json", {
+        "schema_version": 1, "admission": "graded",
+        "graded": {"repair": "channel", "repair_max_nodes": 32, "repair_max_vol": 0.01},
+        "profiles": [{"name": name, "base": name,
+                      "channel": {"point_max_outside_fraction": 1.0}}
+                     for name in ("dense", "ordinary", "sparse")]})
+    keyed = invoke(binary, source, keyed_output, "--policy", str(keyed_policy))
+    assert keyed.returncode == 0, keyed.stderr
+    assert keyed_output.read_bytes() == plain_output.read_bytes()
+    plain_report, report = json.loads(plain.stdout), json.loads(keyed.stdout)
+    graded = report["policy_definition"]["graded"]
+    assert graded["repair"] == "channel"
+    assert graded["repair_max_nodes"] == 32
+    assert graded["repair_max_vol"] == 0.01
+    assert graded["repair_immaterial_price"] == 5.0e-4
+    assert "repair" not in plain_report["policy_definition"]["graded"]
+    for profile in report["policy_definition"]["profiles"]:
+        assert profile["channel"]["point_max_outside_fraction"] == 1.0
+    assert "repair channel" in report["graded_semantics"]
+    assert "point_max_outside_fraction" in report["graded_semantics"]
+    assert "repair channel" not in plain_report["graded_semantics"]
+    slices = report["graded_stats"]["slices"]
+    assert slices
+    for entry in slices:
+        assert entry["repair"]["outcome"] == "not_attempted"
+        assert entry["repair_rung"] is False
+        assert entry["calendar_channel_repaired"] is False
+        assert entry["point_gated"] is False
+        assert entry["point_fallback"] is False
+    for entry in plain_report["graded_stats"]["slices"]:
+        assert "repair" not in entry and "point_gated" not in entry
 
 
 def test_native_knot_spline_profile_serves_a_channel_spline(binary, tmp_path):

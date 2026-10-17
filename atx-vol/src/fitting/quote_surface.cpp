@@ -12,7 +12,10 @@
 // is graded A only when no repair moved its served prices, B otherwise. Every
 // acceptance keeps the AmericanPriceSlice certificate and every accepted pair
 // passes check_american_calendar. Work is bounded: at most three channel fits
-// per expiry and O(expiries^2) calendar checks.
+// per expiry and O(expiries^2) calendar checks. The opt-in channel repair
+// (config.repair) and dominance gate (config.channel.point_max_outside_fraction)
+// add fallback rungs (repair_rung, point_fallback, repair_in_channel): at most
+// one more pass-A fit and two channel calendar repairs per expiry.
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
@@ -47,6 +50,26 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
   }
   return Ok();
+}
+
+// Share of the strictly two-sided quotes whose served price lies outside
+// [bid, ask]; quotes without a served price are not counted.
+[[nodiscard]] double outside_fraction(const QuoteSliceFit &fit,
+                                      std::span<const QuoteSliceQuote> quotes) {
+  std::size_t two_sided = 0;
+  std::size_t outside = 0;
+  for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
+    const QuoteSliceQuote &quote = quotes[i];
+    const QuoteSliceRow &row = fit.rows[i];
+    if (!positive(quote.bid) || !std::isfinite(quote.ask) || !(quote.ask > quote.bid) ||
+        row.evaluation_status != QuoteSliceEvaluationStatus::Success) {
+      continue;
+    }
+    ++two_sided;
+    if (row.fitted_price < quote.bid || row.fitted_price > quote.ask) ++outside;
+  }
+  return two_sided == 0 ? 0.0
+                        : static_cast<double>(outside) / static_cast<double>(two_sided);
 }
 
 // Raw two-sided breadth: distinct strikes carrying a strictly two-sided quote.
@@ -119,16 +142,26 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   return TermPrior::create(nodes, TermPriorConfig{surface.prior_decay_log_time});
 }
 
+// Pass A never runs the channel repair: it is a fallback rung (repair_rung()).
+[[nodiscard]] QuoteSliceConfig without_repair(const QuoteSliceConfig &config) {
+  QuoteSliceConfig out = config;
+  out.repair.mode = QuoteSliceRepairMode::Off;
+  return out;
+}
+
 class SurfaceFitter {
 public:
   SurfaceFitter(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSliceConfig &config,
                 const QuoteSurfaceConfig &surface)
-      : expiries_(expiries), config_(config), surface_(surface), out_(expiries.size()),
-        breadth_(expiries.size()) {}
+      : expiries_(expiries), config_(config), base_config_(without_repair(config)),
+        surface_(surface), out_(expiries.size()), breadth_(expiries.size()),
+        gated_(expiries.size()) {}
 
   [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>> run() {
     point_pass();
     ATX_TRY_VOID(channel_passes());
+    repair_rung();
+    point_fallback();
     ATX_TRY_VOID(calendar_pass());
     for (QuoteSurfaceSlice &slice : out_) {
       if (slice.grade == QuoteSliceGrade::Refused) {
@@ -147,20 +180,84 @@ private:
     for (std::size_t i = 0; i < expiries_.size(); ++i) {
       const QuoteSurfaceExpiry &e = expiries_[i];
       breadth_[i] = two_sided_strikes(e.quotes);
-      auto fit = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
+      auto fit = fit_quote_slice(e.market, e.quotes, base_config_, e.calendar_dividends);
       if (!fit) {
         out_[i].refusal = "invalid_input";
         out_[i].error = fit.error().to_string();
         continue;
       }
       out_[i].point_status = fit->fit_status;
+      out_[i].point_error = fit->fit_error;
       out_[i].fit = std::move(*fit);
       const auto &diag = out_[i].fit.diagnostics;
       if (out_[i].fit.fit_status == QuoteSliceFitStatus::Success &&
           diag.quotes_admitted >= config_.min_quotes &&
           diag.distinct_strikes >= config_.min_quotes) {
         out_[i].grade = QuoteSliceGrade::A;
+        gate(i);
       }
+    }
+  }
+
+  // Channel dominance (opt-in): a point fit outside the two-sided quotes on more
+  // than the configured share is no pass-A evidence. It becomes a channel
+  // candidate; the point fit is kept only as the fallback of a refused refit.
+  void gate(std::size_t i) {
+    const auto &limit = config_.channel.point_max_outside_fraction;
+    if (!limit || config_.method != QuoteSliceFitMethod::PointCurve) return;
+    QuoteSurfaceSlice &slice = out_[i];
+    slice.point_outside_fraction = outside_fraction(slice.fit, expiries_[i].quotes);
+    if (slice.point_outside_fraction <= *limit) return;
+    slice.point_gated = true;
+    slice.grade = QuoteSliceGrade::Refused;
+    gated_[i] = std::move(slice.fit);
+    slice.fit = QuoteSliceFit{};
+    // The candidate keeps the point fit's row provenance until a refit replaces it.
+    slice.fit.rows = gated_[i]->rows;
+    slice.fit.diagnostics = gated_[i]->diagnostics;
+    slice.fit.market = gated_[i]->market;
+    slice.fit.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+  }
+
+  // A gated slice whose channel refit was not served falls back to its point fit
+  // (grade B: it failed the containment evidence for A).
+  void point_fallback() {
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      QuoteSurfaceSlice &slice = out_[i];
+      if (!gated_[i] || slice.grade != QuoteSliceGrade::Refused) continue;
+      slice.fit = std::move(*gated_[i]);
+      gated_[i].reset();
+      slice.grade = QuoteSliceGrade::B;
+      slice.refusal.clear();
+      slice.error.clear();
+      slice.channel_refit = false;
+      slice.point_fallback = true;
+    }
+  }
+
+  // Channel repair rung (config.repair.mode == Channel): an expiry still refused
+  // for a failed certificate after both channel passes (which already ran with
+  // the repair) whose pass-A fit also failed its certificate gets that pass-A
+  // fit again WITH the repair; served, it is grade B.
+  void repair_rung() {
+    if (config_.repair.mode != QuoteSliceRepairMode::Channel) return;
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      QuoteSurfaceSlice &slice = out_[i];
+      if (slice.grade != QuoteSliceGrade::Refused || slice.refusal != "arbitrage_failure" ||
+          slice.point_status != QuoteSliceFitStatus::ArbitrageFailure) {
+        continue;
+      }
+      const QuoteSurfaceExpiry &e = expiries_[i];
+      auto fit = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
+      if (!fit) continue;
+      slice.rung_repair = fit->diagnostics.repair;
+      if (fit->fit_status != QuoteSliceFitStatus::Success) continue;
+      slice.fit = std::move(*fit);
+      slice.grade = QuoteSliceGrade::B;
+      slice.refusal.clear();
+      slice.error.clear();
+      slice.channel_refit = false;
+      slice.repair_rung = true;
     }
   }
 
@@ -361,7 +458,9 @@ private:
     }
     // Per rejected slice, in confidence order: a bounded-move repair of its own
     // prices; else refit once with a stronger prior built from accepted slices
-    // (and repair that refit); else refuse. Every acceptance is re-checked.
+    // (and repair that refit); else (opt-in fallback rung) a channel calendar
+    // repair of its own prices, then of the refit; else refuse. Every
+    // acceptance is re-checked.
     ATX_TRY(const TermPrior accepted_prior, make_prior(nodes(true, &accepted), surface_));
     for (const std::size_t i : rejected) {
       if (repair(out_[i].fit, i, accepted)) {
@@ -371,7 +470,8 @@ private:
       }
       out_[i].calendar_retry = true;
       auto fit = channel_fit(i, accepted_prior, surface_.calendar_retry_factor);
-      if (fit && fit->fit_status == QuoteSliceFitStatus::Success) {
+      const bool refit = fit && fit->fit_status == QuoteSliceFitStatus::Success;
+      if (refit) {
         const bool clean = consistent(*fit, accepted);
         if (clean || repair(*fit, i, accepted)) {
           adopt(i, std::move(*fit));
@@ -380,24 +480,79 @@ private:
           continue;
         }
       }
+      if (repair_in_channel(out_[i].fit, i, accepted)) {
+        mark_repaired(i);
+        accepted.push_back(i);
+        continue;
+      }
+      if (refit && repair_in_channel(*fit, i, accepted)) {
+        adopt(i, std::move(*fit));
+        mark_repaired(i);
+        accepted.push_back(i);
+        continue;
+      }
       measure_gap(i, accepted);
       refuse_calendar(i);
     }
     return Ok();
   }
 
-  // Calendar repair of `fit` (expiry i) against the accepted slices; true only
-  // when the repaired prices are certified and consistent with all of them.
-  [[nodiscard]] bool repair(QuoteSliceFit &fit, std::size_t i,
-                            const std::vector<std::size_t> &accepted) {
-    if (!(surface_.calendar_repair_half_spreads > 0.0) || !fit.prices) return false;
-    std::vector<const AmericanPriceSlice *> earlier;
-    std::vector<const AmericanPriceSlice *> later;
+  // The accepted slices' certified prices, split by maturity around `fit`.
+  void neighbours(const QuoteSliceFit &fit, const std::vector<std::size_t> &accepted,
+                  std::vector<const AmericanPriceSlice *> &earlier,
+                  std::vector<const AmericanPriceSlice *> &later) const {
     for (const std::size_t j : accepted) {
       const QuoteSliceFit &other = out_[j].fit;
       (other.market.calendar_years < fit.market.calendar_years ? earlier : later)
           .push_back(&*other.prices);
     }
+  }
+
+  // Bounded-move calendar repair of `fit` (expiry i) against the accepted
+  // slices; true only when the repaired prices are certified and consistent
+  // with all of them.
+  [[nodiscard]] bool repair(QuoteSliceFit &fit, std::size_t i,
+                            const std::vector<std::size_t> &accepted) {
+    if (!(surface_.calendar_repair_half_spreads > 0.0) || !fit.prices) return false;
+    std::vector<const AmericanPriceSlice *> earlier;
+    std::vector<const AmericanPriceSlice *> later;
+    neighbours(fit, accepted, earlier, later);
+    QuoteSliceFit trial = trial_copy(fit);
+    double required = 0.0;
+    const bool repaired = repair_quote_slice_calendar(trial, expiries_[i].quotes, earlier, later,
+                                                      surface_.calendar_repair_half_spreads,
+                                                      &required);
+    out_[i].calendar_repair_required = std::max(out_[i].calendar_repair_required, required);
+    if (!repaired || !consistent(trial, accepted)) return false;
+    commit(fit, trial);
+    return true;
+  }
+
+  // Opt-in channel calendar repair (config.repair.mode == Channel), the same
+  // contract as repair(); it runs only after the bounded-move repair and the
+  // stronger-prior retry have both failed.
+  [[nodiscard]] bool repair_in_channel(QuoteSliceFit &fit, std::size_t i,
+                                       const std::vector<std::size_t> &accepted) {
+    if (config_.repair.mode != QuoteSliceRepairMode::Channel || !fit.prices) return false;
+    std::vector<const AmericanPriceSlice *> earlier;
+    std::vector<const AmericanPriceSlice *> later;
+    neighbours(fit, accepted, earlier, later);
+    QuoteSliceFit trial = trial_copy(fit);
+    QuoteSliceRepairRecord &record = out_[i].calendar_channel_repair;
+    const bool repaired = repair_quote_slice_calendar_in_channel(
+        trial, expiries_[i].quotes, earlier, later, config_.repair, &record);
+    if (!repaired) return false;
+    if (!consistent(trial, accepted)) {
+      record.outcome = QuoteSliceRepairOutcome::NotCertified;
+      return false;
+    }
+    commit(fit, trial);
+    out_[i].calendar_channel_repaired = true;
+    return true;
+  }
+
+  // A repair trial: everything a repair reads or writes, with an owned curve.
+  [[nodiscard]] static QuoteSliceFit trial_copy(const QuoteSliceFit &fit) {
     QuoteSliceFit trial;
     trial.market = fit.market;
     trial.dividend_model = fit.dividend_model;
@@ -410,18 +565,13 @@ private:
     trial.prices = fit.prices;
     trial.moved_nodes = fit.moved_nodes;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
-    double required = 0.0;
-    const bool repaired = repair_quote_slice_calendar(trial, expiries_[i].quotes, earlier, later,
-                                                      surface_.calendar_repair_half_spreads,
-                                                      &required);
-    out_[i].calendar_repair_required = std::max(out_[i].calendar_repair_required, required);
-    if (!repaired || !consistent(trial, accepted)) {
-      return false;
-    }
+    return trial;
+  }
+
+  static void commit(QuoteSliceFit &fit, QuoteSliceFit &trial) {
     fit.prices = std::move(trial.prices);
     fit.moved_nodes = std::move(trial.moved_nodes);
     fit.rows = std::move(trial.rows);
-    return true;
   }
 
   void mark_repaired(std::size_t i) {
@@ -445,9 +595,11 @@ private:
 
   std::span<const QuoteSurfaceExpiry> expiries_;
   const QuoteSliceConfig &config_;
+  QuoteSliceConfig base_config_; // config_ without the channel repair (pass A)
   const QuoteSurfaceConfig &surface_;
   std::vector<QuoteSurfaceSlice> out_;
   std::vector<std::size_t> breadth_;
+  std::vector<std::optional<QuoteSliceFit>> gated_; // dominance-gated point fits
 };
 
 } // namespace
@@ -458,6 +610,7 @@ fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSlice
   ATX_TRY_VOID(validate_surface(surface));
   // Shared configuration: refuse it once rather than as a per-expiry failure.
   ATX_TRY_VOID(validate_quote_slice_channel(config.channel));
+  ATX_TRY_VOID(validate_quote_slice_repair(config.repair));
   if (config.carry.mode != QuoteSliceCarryMode::Supplied) {
     return Err(ErrorCode::InvalidArgument,
                "quote surface: graded admission requires supplied carry");

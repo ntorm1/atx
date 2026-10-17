@@ -216,7 +216,7 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
     keys(j, {"channel_weight", "mid_weight", "itm_mid_weight", "default_shape_weight",
              "prior_scale", "roughness", "min_half_width_vol", "mult_floor", "mult_ceil",
              "max_iterations", "min_channel_quotes", "repair_half_spreads", "family",
-             "family_iterations"});
+             "family_iterations", "point_max_outside_fraction"});
     auto &c = cfg.channel;
     if (j.contains("family")) {
       // The family that solves the channel objective; knot-spline is the native solver.
@@ -245,6 +245,13 @@ inline void parse_profile(const Json &entry, QuoteFitProfile &profile,
     numeric(j, "max_iterations", c.max_iterations, 1, 1000);
     numeric(j, "min_channel_quotes", c.min_channel_quotes, 1, 100000);
     numeric(j, "repair_half_spreads", c.repair_half_spreads, 0, 100);
+    // Opt-in channel dominance of point fits under graded admission (see
+    // QuoteSliceChannelConfig::point_max_outside_fraction).
+    if (j.contains("point_max_outside_fraction")) {
+      double fraction = 0.0;
+      numeric(j, "point_max_outside_fraction", fraction, 0, 1);
+      c.point_max_outside_fraction = fraction;
+    }
   }
   numeric(entry, "min_quotes", cfg.min_quotes, 4, 100000);
   numeric(entry, "atm_log_band", cfg.atm_log_band, 0, 5);
@@ -450,6 +457,9 @@ inline Json channel_json(const QuoteSliceChannelConfig &c) {
     out["family"] = to_string(*c.family);
     out["family_iterations"] = c.family_iterations;
   }
+  if (c.point_max_outside_fraction) {
+    out["point_max_outside_fraction"] = *c.point_max_outside_fraction;
+  }
   return out;
 }
 
@@ -465,14 +475,23 @@ inline Json profile_json_with_options(const QuoteFitProfile &profile, bool grade
   return out;
 }
 
-inline Json surface_json(const QuoteSurfaceConfig &s) {
-  return {{"term_prior_weight", s.term_prior_weight},
-          {"prior_decay_log_time", s.prior_decay_log_time},
-          {"prior_quote_halflife", s.prior_quote_halflife},
-          {"channel_node_weight", s.channel_node_weight},
-          {"calendar_retry_factor", s.calendar_retry_factor},
-          {"grade_b_min_mid_strikes", s.grade_b_min_mid_strikes},
-          {"calendar_repair_half_spreads", s.calendar_repair_half_spreads}};
+// Opt-in graded keys (channel repair, channel dominance) are provenance only
+// when set, so every pre-existing graded definition is unchanged.
+inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConfig &repair) {
+  Json out{{"term_prior_weight", s.term_prior_weight},
+           {"prior_decay_log_time", s.prior_decay_log_time},
+           {"prior_quote_halflife", s.prior_quote_halflife},
+           {"channel_node_weight", s.channel_node_weight},
+           {"calendar_retry_factor", s.calendar_retry_factor},
+           {"grade_b_min_mid_strikes", s.grade_b_min_mid_strikes},
+           {"calendar_repair_half_spreads", s.calendar_repair_half_spreads}};
+  if (repair.mode == QuoteSliceRepairMode::Channel) {
+    out["repair"] = "channel";
+    out["repair_max_nodes"] = repair.max_nodes;
+    out["repair_max_vol"] = repair.max_vol_move;
+    out["repair_immaterial_price"] = repair.immaterial_price_move;
+  }
+  return out;
 }
 
 inline Json regimes_json(const QuoteFitRegimeConfig &r) {
@@ -598,12 +617,14 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     }
   }
   QuoteSurfaceConfig surface;
+  QuoteSliceRepairConfig repair; // graded only; applied to every profile
   if (document.contains("graded")) {
     if (!graded) throw std::runtime_error("Policy graded options require admission graded");
     const auto &j = document.at("graded");
     keys(j, {"term_prior_weight", "prior_decay_log_time", "prior_quote_halflife",
              "channel_node_weight", "calendar_retry_factor", "grade_b_min_mid_strikes",
-             "calendar_repair_half_spreads"});
+             "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
+             "repair_immaterial_price"});
     numeric(j, "term_prior_weight", surface.term_prior_weight, 0, 1.0e6);
     numeric(j, "prior_decay_log_time", surface.prior_decay_log_time, 1.0e-3, 100);
     numeric(j, "prior_quote_halflife", surface.prior_quote_halflife, 1.0e-3, 1.0e6);
@@ -611,20 +632,43 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     numeric(j, "calendar_retry_factor", surface.calendar_retry_factor, 1, 1.0e6);
     numeric(j, "grade_b_min_mid_strikes", surface.grade_b_min_mid_strikes, 1, 100000);
     numeric(j, "calendar_repair_half_spreads", surface.calendar_repair_half_spreads, 0, 100);
+    // Opt-in channel repair (quote_slice.hpp QuoteSliceRepairConfig): a fallback
+    // rung under graded admission; "off" is the historical behaviour.
+    if (j.contains("repair")) {
+      const auto mode = text(j.at("repair"));
+      if (mode == "channel") {
+        repair.mode = QuoteSliceRepairMode::Channel;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded repair must be off or channel");
+      }
+    }
+    if ((j.contains("repair_max_nodes") || j.contains("repair_max_vol") ||
+         j.contains("repair_immaterial_price")) &&
+        repair.mode != QuoteSliceRepairMode::Channel) {
+      throw std::runtime_error("Policy graded repair budgets require repair channel");
+    }
+    numeric(j, "repair_max_nodes", repair.max_nodes, 1, 100000);
+    numeric(j, "repair_max_vol", repair.max_vol_move, 1.0e-6, 10);
+    numeric(j, "repair_immaterial_price", repair.immaterial_price_move, 0, 1.0e3);
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};
   if (graded) {
     definition["admission"] = "graded";
-    definition["graded"] = surface_json(surface);
+    definition["graded"] = surface_json(surface, repair);
   }
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
+    profile.config.repair = repair;
     // Policy-key rejection matrix for graded admission: it requires supplied
     // carry (no carry_mode) and the aggregate dividend model. A lattice-routed
     // expiry needs its own dated-cash config, schedule and aggregate fallback,
     // which fit_quote_surface (one config per snapshot) does not take yet.
     const auto routed = routing.find(profile.name);
+    if (!graded && profile.config.channel.point_max_outside_fraction) {
+      throw std::runtime_error(
+          "Policy channel point_max_outside_fraction requires admission graded");
+    }
     if (graded && profile.config.carry.mode != QuoteSliceCarryMode::Supplied) {
       throw std::runtime_error("Policy admission graded requires supplied carry");
     }
