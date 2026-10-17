@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -498,6 +499,45 @@ TEST(BawCriticalDerivative, FdParityAtReviewPoints) {
         << "side=" << (c.side == Side::Call ? "C" : "P")
         << " analytic derivative off vs review truth: " << e.fprime << " vs " << c.truth;
   }
+}
+
+// al-speed tier 1 (2026-10-17): the critical-price Newton now evaluates the residual
+// and its derivative through ONE fused evaluator (shared d1, Sx-invariant terms
+// hoisted). That is only admissible if it is a pure refactor, so it must reproduce
+// the separate put/call residual + derivative BIT FOR BIT — across both sides,
+// short and long T, low and high vol, zero/positive yield, deep and near Sx.
+TEST(BawResidualEval, FusedPairMatchesSeparateBits) {
+  using atx::vol::detail::baw_residual_eval;
+  using atx::vol::detail::BawResidualEval;
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  const double K = 100.0;
+  int checked = 0;
+  for (const Side side : {Side::Put, Side::Call}) {
+    for (const double T : {1.0 / 365.0, 0.02, 0.25, 1.0, 4.0}) {
+      for (const double sigma : {0.05, 0.2, 0.6, 1.4}) {
+        for (const double r : {0.001, 0.03, 0.09}) {
+          for (const double q : {0.0, 0.015, 0.12}) {
+            for (const double m : {0.35, 0.7, 0.93, 1.07, 1.6, 3.0}) {
+              const double Sx = (side == Side::Put ? m : 1.0 / m) * K;
+              const BawResidualEval e = baw_residual_eval(Sx, K, T, sigma, r, q, side);
+              if (!e.ok) {
+                continue;
+              }
+              ++checked;
+              ASSERT_EQ(bits(e.f), bits(e.f_pair))
+                  << "f side=" << (side == Side::Call ? "C" : "P") << " T=" << T
+                  << " sigma=" << sigma << " r=" << r << " q=" << q << " Sx=" << Sx;
+              ASSERT_EQ(bits(e.fprime), bits(e.fprime_pair))
+                  << "f' side=" << (side == Side::Call ? "C" : "P") << " T=" << T
+                  << " sigma=" << sigma << " r=" << r << " q=" << q << " Sx=" << Sx;
+            }
+          }
+        }
+      }
+    }
+  }
+  // The regime gate drops the European corners; the rest must actually be checked.
+  EXPECT_GT(checked, 1000);
 }
 
 TEST(BawCriticalConvergence, NewtonConvergesNotBisectionExhaustion) {

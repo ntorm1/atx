@@ -169,6 +169,13 @@ struct AlWorkspace {
   // so a retained workspace carries it across a sigma sweep exactly as it does zc.
   std::array<double, kGeoBarySize> geo_bary;      // wbary[k] / (zc_ji - z[k])
   std::array<double, kGeoBaryPairs> geo_bary_den; // sum_k of the above, same order
+  // al-speed tier 1 (2026-10-17): the two per-collocation-node terms every sweep
+  // recomputed at every node — the eqn_b drift factor K * exp(-(r - q) * tau_j) and
+  // sqrt(tau_j) of the tip — are sigma-independent, so the same static bind lays
+  // them down once (same expressions, bit-identical) and a retained workspace
+  // carries them across a sigma sweep with the rest of the static geometry.
+  std::array<double, kAlMaxNodes> geo_alpha;     // K * exp(-(r - q) * tau_j)
+  std::array<double, kAlMaxNodes> geo_sqrt_tau;  // sqrt(tau_j)
   std::array<std::int8_t, kGeoBaryPairs> geo_bary_hit;  // exact-node index; -1 = none
 #ifndef NDEBUG
   // R-30: Debug-only bind key naming the contract the sweep-invariant static

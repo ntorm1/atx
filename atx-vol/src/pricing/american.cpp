@@ -123,6 +123,73 @@ inline constexpr unsigned kAlMaxQuad = detail::kMaxQuadNodes; // 64
   return 1.0 - dq * Np - (1.0 - dq * Np) / q2 + dq * phip / (q2 * v);
 }
 
+// al-speed tier 1 (2026-10-17): the safeguarded critical-price Newton below
+// evaluated put_residual AND put_residual_deriv at every iterate, and between them
+// they recomputed every Sx-independent term — sqrt(T) five times, exp(-qT) twice,
+// the forward and discount exps, sigma*sqrt(T) — plus d1, log(Sx/K) and N(-d1)
+// twice. The cold Andersen-Lake seed runs this Newton at every collocation node
+// (6.3 iterations per node on the ladder grid), so it was ~25% of a bulk-preset
+// price. The pair below evaluates both from ONE d1 and the hoisted terms.
+//
+// BIT-IDENTICAL, not close: every hoisted term is formed by the exact expression
+// the separate functions evaluate (same operands, same operator order, and the
+// same multiply-add shapes, so FMA contraction is unchanged), and std::log /
+// std::exp / norm_cdf are pure. The Black-76 leg goes through
+// black76_price_from_lnfk with ln(F/K) and sqrt(T) passed in, which is
+// black76_price's own body. Proved by BawResidualEval.FusedPairMatchesSeparateBits
+// and by the al_preset_ladder_bench fingerprint (sprints/2026-10-17-al-speed).
+struct BawResidualTerms {
+  double sqrt_t = 0.0; // std::sqrt(T)
+  double v = 0.0;      // sigma * std::sqrt(T)
+  double drift = 0.0;  // r - q + 0.5 * sigma * sigma (d1_of)
+  double fwd = 0.0;    // std::exp((r - q) * T)      (euro_*_sk forward factor)
+  double df = 0.0;     // std::exp(-r * T)           (euro_*_sk discount factor)
+  double dq = 0.0;     // std::exp(-q * T)
+};
+
+[[nodiscard]] BawResidualTerms baw_residual_terms(double T, double sigma, double r,
+                                                  double q) noexcept {
+  BawResidualTerms t;
+  t.sqrt_t = std::sqrt(T);
+  t.v = sigma * t.sqrt_t;
+  t.drift = r - q + 0.5 * sigma * sigma;
+  t.fwd = std::exp((r - q) * T);
+  t.df = std::exp(-r * T);
+  t.dq = std::exp(-q * T);
+  return t;
+}
+
+struct BawResidualPair {
+  double f = 0.0;  // put_residual / call_residual
+  double fp = 0.0; // put_residual_deriv / call_residual_deriv
+};
+
+[[nodiscard]] BawResidualPair put_residual_pair(double Sx, double K, double T, double sigma,
+                                                double q1, const BawResidualTerms &t) noexcept {
+  const double F = Sx * t.fwd;
+  const double pE =
+      black76_price_from_lnfk(F, K, T, sigma, t.df, std::log(F / K), t.sqrt_t, Side::Put);
+  const double d1 = (std::log(Sx / K) + t.drift * T) / t.v;
+  const double Nm = norm_cdf(-d1);
+  const double bit = 1.0 - t.dq * Nm;
+  const double phim = norm_pdf(-d1);
+  return {K - Sx - pE + Sx * bit / q1,
+          -1.0 + t.dq * Nm + (1.0 - t.dq * Nm) / q1 + t.dq * phim / (q1 * t.v)};
+}
+
+[[nodiscard]] BawResidualPair call_residual_pair(double Sx, double K, double T, double sigma,
+                                                 double q2, const BawResidualTerms &t) noexcept {
+  const double F = Sx * t.fwd;
+  const double cE =
+      black76_price_from_lnfk(F, K, T, sigma, t.df, std::log(F / K), t.sqrt_t, Side::Call);
+  const double d1 = (std::log(Sx / K) + t.drift * T) / t.v;
+  const double Np = norm_cdf(d1);
+  const double bit = 1.0 - t.dq * Np;
+  const double phip = norm_pdf(d1);
+  return {Sx - K - cE - Sx * bit / q2,
+          1.0 - t.dq * Np - (1.0 - t.dq * Np) / q2 + t.dq * phip / (q2 * t.v)};
+}
+
 // A1 convergence contract (finding 8). Reports how the safeguarded critical-price
 // Newton terminated so callers can reject a silently non-converged root and tests
 // can pin the iteration count. `converged` is true iff a Newton/step tolerance
@@ -209,10 +276,12 @@ enum class BracketRecovery : std::uint8_t { Off, On };
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
+  const BawResidualTerms terms = baw_residual_terms(T, sigma, r, q);
   std::uint16_t it = 0;
   for (; it < max_iter; ++it) {
-    const double f = put_residual(Sx, K, T, sigma, r, q, q1);
-    const double fp = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
+    const BawResidualPair ev = put_residual_pair(Sx, K, T, sigma, q1, terms);
+    const double f = ev.f;
+    const double fp = ev.fp;
     if (f > 0.0) {
       lo = Sx;
     } else {
@@ -233,13 +302,13 @@ enum class BracketRecovery : std::uint8_t { Off, On };
     if (std::fabs(dS) < tol * K) {
       if (stats) {
         *stats = {static_cast<std::uint16_t>(it + 1),
-                  put_residual(Sx, K, T, sigma, r, q, q1), true};
+                  put_residual_pair(Sx, K, T, sigma, q1, terms).f, true};
       }
       return Sx;
     }
   }
   if (stats) {
-    *stats = {it, put_residual(Sx, K, T, sigma, r, q, q1), false};
+    *stats = {it, put_residual_pair(Sx, K, T, sigma, q1, terms).f, false};
   }
   return Sx;
 }
@@ -284,10 +353,12 @@ enum class BracketRecovery : std::uint8_t { Off, On };
   if (!(Sx > lo && Sx < hi)) {
     Sx = 0.5 * (lo + hi);
   }
+  const BawResidualTerms terms = baw_residual_terms(T, sigma, r, q);
   std::uint16_t it = 0;
   for (; it < max_iter; ++it) {
-    const double f = call_residual(Sx, K, T, sigma, r, q, q2);
-    const double fp = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
+    const BawResidualPair ev = call_residual_pair(Sx, K, T, sigma, q2, terms);
+    const double f = ev.f;
+    const double fp = ev.fp;
     if (f < 0.0) {
       lo = Sx;
     } else {
@@ -308,13 +379,13 @@ enum class BracketRecovery : std::uint8_t { Off, On };
     if (std::fabs(dS) < tol * K) {
       if (stats) {
         *stats = {static_cast<std::uint16_t>(it + 1),
-                  call_residual(Sx, K, T, sigma, r, q, q2), true};
+                  call_residual_pair(Sx, K, T, sigma, q2, terms).f, true};
       }
       return Sx;
     }
   }
   if (stats) {
-    *stats = {it, call_residual(Sx, K, T, sigma, r, q, q2), false};
+    *stats = {it, call_residual_pair(Sx, K, T, sigma, q2, terms).f, false};
   }
   return Sx;
 }
@@ -1170,11 +1241,18 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
     g_specialize_off_fallbacks.fetch_add(1, std::memory_order_relaxed);
     return;
   }
+  // al-speed tier 1: the exp tallies are summed and published once per bind rather
+  // than per (node, quad node) pair — same totals, one thread-local touch.
+  unsigned exp_pairs = 0;
   for (std::uint16_t j = 1; j < bnd.n; ++j) {
     const double tau = bnd.tau[j];
     if (tau <= 1.0e-14) {
       continue; // sweeps skip this node entirely
     }
+    // The sweeps' per-node terms (see AlWorkspace::geo_alpha): the SAME expressions
+    // al_jn_sweep_impl / al_fp_sweep_impl / eqn_b_ND_impl evaluate inline.
+    ws.geo_alpha[j] = bnd.K * std::exp(-(r - q) * tau);
+    ws.geo_sqrt_tau[j] = std::sqrt(tau);
     const double half_tau = 0.5 * tau;
     const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
     const unsigned bpair = (static_cast<unsigned>(j) - 1u) * nq;
@@ -1192,8 +1270,7 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
       ws.geo_zc[gbase + i] = zc;
       ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
       ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
-      ATX_VOL_COUNT_N(ExpCalls, 2); // exp(r·u), exp(q·u) — now paid ONCE per solve
-      counters::lightweight::record_exp_calls(2u);
+      ++exp_pairs; // exp(r·u), exp(q·u) — paid ONCE per solve
       // A6: the barycentric denominator half at this zc — the SAME expression, the
       // SAME operands and the SAME accumulation order al_cheb_eval_t ran inline on
       // every sweep. That is what makes al_cheb_eval_hoisted bit-identical to it.
@@ -1213,6 +1290,10 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
       ws.geo_bary_den[bpair + i] = den;
       ws.geo_bary_hit[bpair + i] = static_cast<std::int8_t>(hit);
     }
+  }
+  if (exp_pairs != 0) {
+    ATX_VOL_COUNT_N(ExpCalls, 2u * exp_pairs);
+    counters::lightweight::record_exp_calls(2u * exp_pairs);
   }
   ws.geo_static_bound = true;
 #ifndef NDEBUG
@@ -1288,10 +1369,20 @@ void al_bind_geometry(const AlBoundary &bnd, AlWorkspace &ws, double sigma, doub
 // path AND the un-hoisted scalar reference (recomputes the geometry inline exactly
 // as before this task). NB>0 reads the al_bind_geometry precompute — a pure hoist,
 // so the two paths are bit-identical.
+//
+// `tip_out` (nullable) receives the tip's sigma*sqrt(tau) and its shared d+/- base.
+// eqn_b_NDd evaluates exactly those two expressions from the same operands, so the
+// Jacobi-Newton sweep reuses them (eqn_b_NDd_from_tip) instead of paying a second
+// sqrt, log and divide per node (al-speed tier 1; bit-identical).
+struct EqnBTip {
+  double v = 0.0;    // sigma * sqrt(tau)
+  double base = 0.0; // (log(b/K) + (r - q) * tau) / v
+};
+
 template <unsigned NB, unsigned NQ>
 void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_idx, double tau,
                    double b_val, double sigma, double r, double q, double &N_out,
-                   double &D_out) noexcept {
+                   double &D_out, EqnBTip *tip_out = nullptr) noexcept {
   const double K = bnd.K;
   if (tau <= 1.0e-14) {
     if (b_val < K) {
@@ -1309,8 +1400,13 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
   // F7 (perf finding 7): d_plus and d_minus at the tip both recompute
   // sigma*sqrt(tau) and log(b_val/K). Share them once as base +/- v/2 — bit-identical
   // to the two d_plus/d_minus calls (same op order), saving one log + one sqrt/node.
-  const double tip_v = sigma * std::sqrt(tau);
+  // The specialized kernel reads sqrt(tau) from the static bind (geo_sqrt_tau).
+  const double tip_v = (NB != 0) ? sigma * ws.geo_sqrt_tau[node_idx] : sigma * std::sqrt(tau);
   const double tip_base = (std::log(b_val / K) + (r - q) * tau) / tip_v;
+  if (tip_out != nullptr) {
+    tip_out->v = tip_v;
+    tip_out->base = tip_base;
+  }
   const double tip_p = norm_cdf(tip_base + 0.5 * tip_v);
   const double tip_m = norm_cdf(tip_base - 0.5 * tip_v);
   ATX_VOL_COUNT_N(NormCdfCalls, 2); // tip_p, tip_m
@@ -1417,6 +1513,24 @@ void eqn_b_NDd(const AlBoundary &bnd, double tau, double b_val, double sigma, do
   Dd_out = norm_pdf(dpv) / (b_val * v);
 }
 
+// eqn_b_NDd at a node whose eqn_b_ND_impl tip already formed v and base (same
+// expressions, same operands): bit-identical, minus the sqrt, log and divide. Valid
+// only for tau > 1e-14, which is every node a sweep reaches eqn_b_NDd at.
+void eqn_b_NDd_from_tip(double b_val, const EqnBTip &tip, double &Nd_out,
+                        double &Dd_out) noexcept {
+  if (!(b_val > 0.0)) {
+    Nd_out = 0.0;
+    Dd_out = 0.0;
+    return;
+  }
+  const double v = tip.v;
+  const double base = tip.base;
+  const double dpv = base + 0.5 * v;
+  const double dmv = base - 0.5 * v;
+  Nd_out = norm_pdf(dmv) / (b_val * v);
+  Dd_out = norm_pdf(dpv) / (b_val * v);
+}
+
 // One sweep's outcome. `max_dy` is the collocation residual max|Δy| — but ONLY over
 // the nodes that actually moved: a node whose fixed-point denominator D has
 // collapsed is frozen at its current value and skips the |Δy| update, so it cannot
@@ -1452,18 +1566,25 @@ template <unsigned NB, unsigned NQ>
     const double b_val = b_from_y(b.y[i], b.xmax);
     double Nv = 0.0;
     double Dv = 0.0;
-    eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv);
+    EqnBTip tip;
+    eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv, &tip);
     if (!(Dv > 1.0e-300)) {
       ws.next_y[i] = b.y[i];
       ++n_frozen;
       continue;
     }
-    const double alpha = b.K * std::exp(-(r - q) * tau);
+    // The specialized kernel reads the node's drift factor and tip from the static
+    // bind / eqn_b_ND_impl (al-speed tier 1); the generic <0,0> reference stays inline.
+    const double alpha = (NB != 0) ? ws.geo_alpha[i] : b.K * std::exp(-(r - q) * tau);
     const double f = alpha * Nv / Dv;
 
     double Nd = 0.0;
     double Dd = 0.0;
-    eqn_b_NDd(b, tau, b_val, sigma, r, q, Nd, Dd);
+    if constexpr (NB != 0) {
+      eqn_b_NDd_from_tip(b_val, tip, Nd, Dd);
+    } else {
+      eqn_b_NDd(b, tau, b_val, sigma, r, q, Nd, Dd);
+    }
     const double fprime = alpha * (Nd / Dv - Dd * Nv / (Dv * Dv));
 
     const double denom = fprime - 1.0;
@@ -1564,7 +1685,7 @@ template <unsigned NB, unsigned NQ>
       ++n_frozen;
       continue;
     }
-    const double alpha = b.K * std::exp(-(r - q) * tau);
+    const double alpha = (NB != 0) ? ws.geo_alpha[i] : b.K * std::exp(-(r - q) * tau);
     double b_new = alpha * Nv / Dv;
     if (b_new > b.xmax) {
       b_new = b.xmax;
@@ -1614,9 +1735,13 @@ template <unsigned NB, unsigned NQ>
 // b.xmax * pc->bfac[i] == al_boundary_at(b, rem) bit-for-bit — so the shared dp/return
 // below produce identical bits. The exp counters live only on the inline branch; the
 // cached exps are counted once at al_bind_premium.
+//
+// al-speed tier 1: `evals` counts the nodes that reach the evaluation (the old
+// per-node always-on ledger bump, and on the inline branch its 2 exps), so the
+// caller publishes the tallies once per quadrature instead of per node.
 [[nodiscard]] double premium_integrand_put(double z, const AlBoundary &b, double S, double sigma,
                                            double r, double q, const AlPremiumCache *pc,
-                                           unsigned i) noexcept {
+                                           unsigned i, unsigned &evals) noexcept {
   const double t = z * z;
   if (t <= 1.0e-14) {
     return 0.0;
@@ -1640,11 +1765,10 @@ template <unsigned NB, unsigned NQ>
     dq = std::exp(-q * t);
     dr = std::exp(-r * t);
     ATX_VOL_COUNT_N(ExpCalls, 2);
-    counters::lightweight::record_exp_calls(2u);
   }
   const double dp = std::log(S * dq / (b_t * dr)) / v + 0.5 * v;
   ATX_VOL_COUNT(PremiumQuadEvals);
-  counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals); // V1 always-on
+  ++evals;
   ATX_VOL_COUNT(LogCalls);
   ATX_VOL_COUNT_N(NormCdfCalls, 2);
   return 2.0 * z * (r * b.K * dr * norm_cdf(-dp + v) - q * S * dq * norm_cdf(-dp));
@@ -1663,9 +1787,16 @@ template <unsigned NP>
   const double *xs = ws.qx_price;
   const double *wv = ws.qw_price;
   const unsigned nq = (NP != 0) ? NP : ws.n_quad_price;
+  unsigned evals = 0;
   for (unsigned i = 0; i < nq; ++i) {
     const double zi = half_sqrtT * (1.0 + xs[i]);
-    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q, pc, i);
+    total += wv[i] * premium_integrand_put(zi, b, S, sigma, r, q, pc, i, evals);
+  }
+  if (evals != 0) {
+    counters::ledger::bump(counters::ledger::Solve::AlPremiumEvals, evals); // V1 always-on
+    if (pc == nullptr) {
+      counters::lightweight::record_exp_calls(2u * evals);
+    }
   }
   total *= half_sqrtT;
   return (total > 0.0) ? total : 0.0;
@@ -4463,6 +4594,10 @@ BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma, d
     out.q_exp = q1;
     out.f = put_residual(Sx, K, T, sigma, r, q, q1);
     out.fprime = put_residual_deriv(Sx, K, T, sigma, r, q, q1);
+    const BawResidualPair pair =
+        put_residual_pair(Sx, K, T, sigma, q1, baw_residual_terms(T, sigma, r, q));
+    out.f_pair = pair.f;
+    out.fprime_pair = pair.fp;
   } else {
     const double q2 = 0.5 * (-(N - 1.0) + sqrt_disc);
     if (!(q2 > 1.0)) {
@@ -4471,6 +4606,10 @@ BawResidualEval baw_residual_eval(double Sx, double K, double T, double sigma, d
     out.q_exp = q2;
     out.f = call_residual(Sx, K, T, sigma, r, q, q2);
     out.fprime = call_residual_deriv(Sx, K, T, sigma, r, q, q2);
+    const BawResidualPair pair =
+        call_residual_pair(Sx, K, T, sigma, q2, baw_residual_terms(T, sigma, r, q));
+    out.f_pair = pair.f;
+    out.fprime_pair = pair.fp;
   }
   out.ok = true;
   return out;

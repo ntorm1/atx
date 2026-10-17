@@ -109,9 +109,16 @@ enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
 // baw_american does. `ok == false` on the European / degenerate / no-valid-
 // exponent corners (f, fprime, q_exp left 0). Lets the test central-difference
 // `f` and pin the analytic derivative's sign and magnitude (finding 1).
+//
+// `f_pair` / `fprime_pair` are the same two quantities from the FUSED evaluator the
+// critical-price Newton actually runs (one d1, Sx-invariant terms hoisted; al-speed
+// tier 1, 2026-10-17). That evaluator is a pure refactor, so they must equal `f` /
+// `fprime` BIT FOR BIT; the test seam exists to prove it.
 struct BawResidualEval {
   double f = 0.0;
   double fprime = 0.0;
+  double f_pair = 0.0;
+  double fprime_pair = 0.0;
   double q_exp = 0.0; // q1 (put) or q2 (call)
   bool ok = false;
 };
