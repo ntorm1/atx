@@ -1162,6 +1162,23 @@ fixed-rate-only capacity x1 test limitation/P10 remains. No scientific criterion
     (`build-equity/mega-nav-p9-mv-aim`) and `monitor.output`; `parent` null, nominal parent `../../v8/lib-v8ysb-gm.json`
     (Y-F0), root sets it - `sha256sum`; `task-COV-MV-report.md:215-218`; template `:2-19`]; the re-pinned template with
     `parent` set: [ROUND 2b-ii: filled at the cell's registration commit by root - Appendix IV item 17].
+    [PRE-40, R15-MV-READY registration `0afd08b4`: template
+    `d4dc2ff7916fdda924590da597e7c8325358cc369a6c567f2c1b9d7df145e5c6`, registration
+    `d88e393a49c8efc9bf08af019eaf427af106092feec23a9d47151ce34cdd8712`; original blobs
+    `63917df794f55696830021c330e0e5f93b9f12a2` / `31bcf217be335e768658e3e490155f2322e207f6`
+    preserved. Exact delta: template parent null -> accepted H
+    `theme-cov-hedge-v1-attempt2-gm.json`, five proved template requires -> [] under
+    the explicit extension to COVMV-PIN-2, and rule template_sha256 re-pin only.
+    All scientific text, historical rule requires, constants and source2010 stay.
+    Native `scripts/specs/p9/waves/p9mv-mv-aim.json` SHA
+    `95ab9777cbfe0fb099f0008120cd6104606f7d589f286f2c31ae7bc912b070b0`, H/libraryv8ysb,
+    v15/covv1 pins, n_before66/cap71, pm7-34/pm6-6-engine, no admissions; completed
+    u/fit/card/w reused. Both print flags inherited once, target and risk flags
+    derived once from the registered row; H fixed rate, no rejected C rate.
+    Source/pin/void/mechanics then bound existing rho then exact registered scalar
+    leaves: cells/p9mv-mv-aim-read-plan.md and cells/tools/p9mv_read_filter.py. Eigen null
+    encoding is disclosed, never imputed. R15-MV-LAUNCH releases one immediate
+    bounded native run after these committed checks; no retry or next-cell work.]
   - **Manifest fragment and the store pin (PRE-9).** [ROUND 2b-ii: `gross_match: "pm6-6-engine"`; `rules: [{name:
     mv-aim-v1, params: {risk_model: build-equity/p9-m2i-dcov-covv1, risk_model_sha256:
     ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3}}]`; E2's `rule_flags` derives exactly
@@ -2435,6 +2452,11 @@ the gate's final hand-back:
     PRE-24a carries, fit mode) - lane COV-MV, its review and root's merge; fit mode at the wave-3 P9-B0. (filled, part A;
     open: the parent's fit mode and COMPOSE-1, part B; the re-pinned template / registration SHA-256, registration
     commit) (fit mode and COMPOSE-1 filled, part B2a: flag-absent; COMPOSE-1a ACCEPT, store-backed)
+    [PRE-40, filled `0afd08b4`, R15-MV-READY: B.5 records the exact closed parent/
+    prerequisite/pin delta and complete new template/rule/manifest hashes. The
+    parent is fixed-rate accepted H, compatible flag-absent fit, completed phases
+    reused; both print flags inherited once. Historical X-5 identity CUT stands.
+    R15-MV-LAUNCH read/source/runtime contract is committed before measurement.]
 18. B.6 P9-W block (manifest shape, fit mode, per-date weights producer, template and SHA-256) - lane D3. (filled, part
     A, from lanes D3 and D3W; open: D3-Q1a's outcome, part B; the generated cell spec's and the manifest's SHA-256,
     registration commit) (D3-Q1a's outcome filled, part B2a: DIFFERENT, P9-W LAPSED (0))

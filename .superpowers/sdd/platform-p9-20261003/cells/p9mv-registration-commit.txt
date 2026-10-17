@@ -1,0 +1,82 @@
+feat(p9-mv): register mv-aim-v1 on accepted H
+
+R15-MV-READY exact closed delta; all unlisted leaves unchanged.
+scripts/specs/p9/templates/mv-aim.json
+{"pointer": "/parent", "before": null, "after": "theme-cov-hedge-v1-attempt2-gm.json"}
+{"pointer": "/requires", "before": ["lane COV-MV merged in root and reviewed APPROVE before the P9 cells start (Ruling COV-7; else P9-MV lapses at 0, PRE-14)", "P9-MV registered by the PM in the P9 prereg with its store pin build-equity/p9-m2i-dcov-covv1 manifest SHA-256 ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3 (Rulings W3-10, PRE-29), the registration's and this template's SHA-256 and the spo-v2 line printed beside it as the prior of record (Ruling PRE-24a)", "root checks universe.delisting.returns_applied == false on the role the store was fitted on (Rulings COV-9, S9) and re-pins the lineage parent to the wave-3 P9-B0 references (W1-I2) before the cell", "root sets parent to the last accepted cell, whose NAV runs --rule aim-partial-v5 without --two-speed, --adv-hold-q, --hold-band, --construction-grid, an spo rule or aim-partial-v6, and runs the cell as an atx.research-wave/v2 kind rule wave with gross_match pm6-6-engine whose rules block is [{name: mv-aim-v1, params: {risk_model: build-equity/p9-m2i-dcov-covv1, risk_model_sha256: ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3}}] (Rulings ALCOMB-1, PRE-9)", "the NAV exe pinned by the cell (exes_sha256, E1-REUSE-a2) is a Release build of a head containing mv-aim-v1 (M2c-RED-2 (e)), and its nav --list-rules --json lists the target row mv-aim-v1"], "after": []}
+scripts/specs/p9/rules/mv-aim-v1.json
+{"pointer": "/manifest_fragment/rule_cell/template_sha256", "before": "83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870", "after": "d4dc2ff7916fdda924590da597e7c8325358cc369a6c567f2c1b9d7df145e5c6"}
+Original template blob63917df794f55696830021c330e0e5f93b9f12a2 SHA83391f2c526b28008d48e250f0e7d26e7c3f8661786d43a8f3d76439f664d870
+Original rule blob31bcf217be335e768658e3e490155f2322e207f6 SHA4b4af6e238b529d5d7eabccd2699022dc653da52fa45801eb3f61896bd6680b4
+New manifest scripts/specs/p9/waves/p9mv-mv-aim.json
+{
+  "schema": "atx.research-wave/v2",
+  "wave": "p9mv-mv-aim",
+  "kind": "rule",
+  "description": "P9-MV prereg B.5: mv-aim-v1 on accepted H; pinned covv1, pm7-34, pm6-6-engine; immediate bounded native route.",
+  "parent": {
+    "spec": "scripts/specs/p9/templates/theme-cov-hedge-v1-attempt2-gm.json",
+    "library": "v8ysb"
+  },
+  "fields": {
+    "dir": "build-equity/train-2020-2023-lo3-fields-v15",
+    "manifest_sha256": "26fee5ce301b9b0bffa1d72b45e014d973d3d73a080dd59ea55cda976f133b09"
+  },
+  "acceptance": {
+    "rule": "pm7-34",
+    "printed": [
+      "turnover-per-gross-not-higher",
+      "capacity-4x-higher",
+      "cost-bps-lower"
+    ]
+  },
+  "gross_match": "pm6-6-engine",
+  "budget": {
+    "id": "p9-prereg-construction",
+    "construction_cap": 71
+  },
+  "ledger": "build-equity/trials.jsonl",
+  "expect": {
+    "n_before": 66
+  },
+  "out_dir": "build-equity/waves/p9mv-mv-aim",
+  "record": {
+    "copy_to": ".superpowers/sdd/platform-p9-20261003/cells/waves"
+  },
+  "driver": {
+    "lock_exes": true,
+    "receipt_digest": "content",
+    "keep_verdicts": true,
+    "timings": true
+  },
+  "rule_cell": {
+    "template": "scripts/specs/p9/templates/mv-aim.json",
+    "template_sha256": "d4dc2ff7916fdda924590da597e7c8325358cc369a6c567f2c1b9d7df145e5c6",
+    "name": "mv-aim-v1",
+    "source_sample_end": 2010,
+    "predicted_mechanism": "V^{-1} tilt lowers ex-ante and realised vol at equal gross alpha",
+    "data_class": "H"
+  },
+  "rules": [
+    {
+      "name": "mv-aim-v1",
+      "params": {
+        "risk_model": "build-equity/p9-m2i-dcov-covv1",
+        "risk_model_sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3"
+      }
+    }
+  ]
+}
+Inherited nav.rule: aim-partial-v5; fixed rate (no --rate). Inherited NAV flags: ["--cadence", "1", "--trade-fraction", ".05", "--dust-multiple", ".1", "--aim-leverage", "{leverage}", "--daily-turnover-mean-max", ".20", "--daily-turnover-p95-max", ".30", "--neutralize", "price-risk-v1", "--max-bytes", "1073741824", "--order-basis", "delta", "--exit-rate", ".05", "--locate-in-aim", "--liquidity-cache", "--warm-start-sessions", "60", "--capacity-curve", "--ann-mean-gross", "--info-clock-print"]
+Native row-derived flags, each absent from parent and supplied once: {"nav": {"--risk-model": "build-equity/p9-m2i-dcov-covv1", "--risk-model-sha256": "ea58691fc40745049a2eaf51e48136cd84bfc3cd56f397eb4630af8ec3a0f0f3", "--target-rule": "mv-aim-v1"}}
+Inherited fit flags: ["--orientation", "prior", "--screen", "v4-prior-v1", "--composition", "ew-theme-std-v1", "--theme-erc", "theme-erc-v1", "--theme-hedge", "theme-cov-hedge-v1"]
+Inherited bounded runner: {"script": "scripts/run_bounded_research.py", "seconds": 180, "max_rss_mib": 1536, "min_free_mib": 512, "phases": {"u": {"seconds": 300, "max_rss_mib": 2560}, "w": {"seconds": 300, "max_rss_mib": 3584}, "card": {"seconds": 300, "max_rss_mib": 2560}}}
+Frozen executable pins: {"eval": "e2b48c46055c6aefcda0b992f8c0341f7275274793bc30fbb07791f7a58d962c", "ic": "ccd54db605f67fef1aa480050a6c785ffe179dae2f77e978dd6d01a5c117d705", "nav": "255b58acedf7df82a1caa672ff30a58c317a8f0dccf7dbe7d3b7393b91063565"}
+Parent H SHA1d8eecaa077844d093b05a861db18787ead3223317154c25094cfc98f029e88f; library v8ysb SHA41010b0bbc662922e6e873057e1fc39d046d6f01a0a5124dd8a601c25a1308f5
+covv1 container root20919f7b338dfbd786994cbbcb506bdaabd9c3af3266d4394d4d2e07d90c9f8e; model.atxcov SHA0f90bf7c78203ca8c93d6003d58c8b2894747045485137756fbc13a32e3b642a; fit role SHAe1c6710104594b4777616714195e5ecc78f22fed7820577692b6423612d395f4 with universe.delisting.returns_applied=false.
+No admissions; supported native reuse of completed H u/fit/card/w. Scientific choices and historical rule requires unchanged.
+scripts/specs/p9/templates/mv-aim.json SHA256 d4dc2ff7916fdda924590da597e7c8325358cc369a6c567f2c1b9d7df145e5c6
+scripts/specs/p9/rules/mv-aim-v1.json SHA256 d88e393a49c8efc9bf08af019eaf427af106092feec23a9d47151ce34cdd8712
+scripts/specs/p9/waves/p9mv-mv-aim.json SHA256 95ab9777cbfe0fb099f0008120cd6104606f7d589f286f2c31ae7bc912b070b0
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,8 +1,8 @@
-# P9-MV proposed native launch and scalar allowlist
+# P9-MV native launch and scalar allowlist
 
-Premeasurement proposal; no run authorized by this document. After PM rules the
-exact proposal, registration precedes every measurement. Implement the reader from
-this explicit allowlist and commit it before launch; no broad nested result printing.
+Released by R15-MV-READY / R15-MV-LAUNCH (resume15-ledger-25), registration0afd08b4.
+The exact proposal is registered before measurement. tools/p9mv_read_filter.py
+implements this allowlist and is committed before launch; no broad nested result printing.
 Existing source checker stays unchanged; no test/build/probe or new rho computation.
 
 Working directory C:/atx-wt/pool-2. Exact environment:
@@ -15,7 +15,7 @@ Every manual/generated commit has explicit positive paths, that negative pathspe
 and the literal trailer. Actual agent GPT-6 Astra. PM final-report.md and owner PNGs
 remain untouched/unstaged. No new source/tool allowance is inferred from M.
 
-Proposed command, only after explicit release and required prelaunch source check:
+Exact released command, after the required prelaunch source check:
 ```text
 "C:/Program Files/Python312/python.exe" -u scripts/research_cycle.py wave run scripts/specs/p9/waves/p9mv-mv-aim.json --seal-allow 20261003=R15-SEAL-C --seal-allow 2026-10-02=SEAL-ALLOW --seal-allow 2026-10-03=R15-SEAL-D --seal-allow 2026-10-06=R15-SEAL-D --seal-allow 2026-10-17=SEAL-ALLOW
 ```
@@ -102,6 +102,9 @@ The native judge may compute/write its registered verdict before human reads.
    phase/stage-override/outer-wall distinctions. G-P1 unawarded. No DERIV, W/X/V or
    adoption work until PM rules MV. Record any absent registered producer; no rerun.
 
-Pending: PM exact closure/delta/manifest/source/read release, registration and the
-implementation of this scalar filter before measurement. There is no new source
-checker change and its existing 37 controls are not rerun.
+Registration0afd08b4 preserves the complete closed delta/full manifest/pins/flags
+in its body and cells/p9mv-registration-commit.txt. Template d4dc2ff7, rule d88e393a,
+manifest95ab9777 match the released proposal. Prelaunch source CLI found zero hits
+(p9mv-seal-prelaunch.txt); the completed source scan remains mandatory. This docs
+commit binds the filter and adjacent B.5/Appendix IV17 notes before launch. There
+is no source checker change and its existing 37 controls are not rerun.
