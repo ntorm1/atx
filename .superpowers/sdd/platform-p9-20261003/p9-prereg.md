@@ -1635,6 +1635,8 @@ file.
    parameter states its cap on realised leverage in its registration (C3-4, ledger :537). Production leverage stays the
    owner's decision after the freeze (OD5-7).
 5. **Timings off** for every pinned run (W1-MIN M-3, ledger :316).
+   [PRE-40, R15-WAVE-READ: this forbids engine timing flags. Native driver.timings process/receipt telemetry and
+   scoreboard --timings are allowed for G-P1; they change no engine or research input.]
 6. **CRT record** (M2c-RED-2 (d), ledger :441; CRT-2, :588): `ucrtbase.dll` file version and SHA-256 recorded at each
    P9-B0 and before each cell; a change means P9-B0 and the re-pin are redone before any further cell. The two
    Release-built D-COV stores (`p9-m2i-dcov-v11`, `p9-m2i-dcov-covv1`) are recorded as built under `ucrtbase.dll`
@@ -1671,6 +1673,11 @@ file.
     1 - rho < 1e-6 prints SE / t / p "na"; root logs rho before each paired read; a printed value on a rounding
     boundary is listed and reported to the PM, never auto-accepted. Measured (Release verb `a57a2090`; T = 1,005 common
     sessions; scenario `modeled-1bn-stale5-v1+swap-fin-v1`; ledger :502, :510; gate report item 3):
+    [PRE-40, R15-WAVE-READ: for v2 cells the read boundary is the agent's registered read, distinct from the
+    native judge's automatic computation/trial write. Preserve raw console unread; seal/void and mechanics first,
+    then existing pinned-eval bundle's rho-only keys logged before any paired figure. No new statistic is computed.
+    `cells/p9h-cov-hedge-read-plan.md` fixes H's exact filter/extraction scope. C.11's threshold/fallback is unchanged;
+    hand cells retain their ordered route.]
 
 | pair | rho | 1 - rho (stable form) | B2-R1 tolerance | class |
 |---|---|---|---|---|

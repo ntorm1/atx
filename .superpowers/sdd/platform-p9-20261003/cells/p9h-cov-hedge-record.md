@@ -63,3 +63,18 @@ Absolute Sharpe may be overstated by survivor inputs; paired evidence concerns r
 No permission refusal. No build, test suite, atx-db access, 2024+ session read, reference/lease mutation or trial
 write. A read-only Python -c attempt suffered shell quote stripping (`NameError: name 'scripts' is not defined`);
 the subsequently saved read-only planning helper avoids shell quotation and makes no data run.
+
+## PM route rulings and policy repair (still before measurement)
+
+R15-WAVE-COMMIT / R15-WAVE-READ were received after registration `818e0750`; PM explicitly accepted that
+ordering. Docs `6573d5f6` committed those ledger rulings as they stood. Native commit policy source `5352c820`,
+then negative-exclusion validation `5bbe1231`, changes only scripts/wave_steps.py, scripts/wave_context.py and
+scripts/tests/test_wave_commit_policy.py. The exact H registration is unchanged. The earlier route incompatibility
+above is historical evidence, not a permanent H block. No executor injection or hand calibration is used.
+Fresh independent review and PM measurement release are pending. `cells/p9h-cov-hedge-read-plan.md` fixes the
+native full-wave route, optional Git metadata environment, raw-console filter, human rho-first read and G-P1 scope.
+
+The single named real-Git test passed after a fixture correction, and passed again after the PM-requested
+negative-exclusion validation: `cells/logs/p9h-commit-policy-test-final.txt` (1 passed, 1.33 seconds).
+Initial failure and first pass are retained in `p9h-commit-policy-test.txt` and `p9h-commit-policy-test-fixed.txt`.
+No H data execution, return read, construction trial or disposition yet; current ledger SHA remains the initial value.
