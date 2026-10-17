@@ -243,6 +243,59 @@ TEST(ExpiryRecord, GreeksBelongToTheServedPriceAtTheIntrinsicFloor) {
   EXPECT_GT(above, 0u);
 }
 
+// One price map, three evaluation routes: price() (value rows), price_and_vega()
+// (value + first-derivative rows) and greeks() (value + two derivative rows)
+// serve the SAME price bit for bit — inside the box, past the exercise edge and
+// clamped outside the box, at the sigma nodes' midpoints and beyond the sigma
+// box. The record plane is evaluated with its sigma rows in lockstep (serve-path
+// lane item 4); each order must reproduce the row values of the others exactly,
+// and implied_vol's hoisted evaluator must reproduce price_and_vega's.
+TEST(ExpiryRecord, PriceRoutesServeOneValueBitForBit) {
+  std::size_t checked = 0;
+  std::size_t iv_checked = 0;
+  for (const Built &b : records()) {
+    const double F = kS0 * b.rec.forward_factor();
+    const double width = b.spec.k_max - b.spec.k_min;
+    const double s_width = b.spec.sigma_max - b.spec.sigma_min;
+    for (int j = -4; j <= 44; ++j) {
+      const double k = b.spec.k_min + width * j / 40.0; // 10% past both box ends
+      const double K = F * std::exp(k);
+      for (int m = -2; m <= 26; ++m) {
+        const double sig = b.spec.sigma_min + s_width * m / 24.0;
+        if (!(sig > 0.0)) {
+          continue;
+        }
+        const double p = b.rec.price(kS0, K, sig);
+        double vega = 0.0;
+        const double pv = b.rec.price_and_vega(kS0, K, sig, &vega);
+        const RecordGreeks g = b.rec.greeks(kS0, K, sig);
+        ASSERT_TRUE(std::isfinite(p)) << "k=" << k << " sig=" << sig;
+        EXPECT_TRUE(bits_equal(p, pv)) << "T=" << b.spec.expiry << " k=" << k << " sig=" << sig;
+        EXPECT_TRUE(bits_equal(p, g.price)) << "T=" << b.spec.expiry << " k=" << k << " sig=" << sig;
+        ++checked;
+        // implied_vol at this price, seeded on the answer: its first evaluation
+        // is price_and_vega at that sigma, so an in-box answer returns Ok (or
+        // VegaFloor where the price is flat) in ONE evaluation, unchanged.
+        if (b.rec.contains(k, sig) && j % 4 == 0 && m % 4 == 0) {
+          const RecordIv iv = b.rec.implied_vol(kS0, K, p, sig);
+          if (iv.status == RecordIvStatus::Ok || iv.status == RecordIvStatus::VegaFloor) {
+            if (iv.status == RecordIvStatus::Ok) {
+              EXPECT_EQ(iv.evaluations, 1u) << "T=" << b.spec.expiry << " k=" << k;
+              EXPECT_TRUE(bits_equal(iv.sigma, sig)) << "T=" << b.spec.expiry << " k=" << k;
+            }
+            ++iv_checked;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[record] one price map: %zu points bit-identical across price / price_and_vega / "
+              "greeks; %zu seeded IV round trips\n",
+              checked, iv_checked);
+  EXPECT_GT(checked, 6000u);
+  EXPECT_GT(iv_checked, 50u);
+}
+
 // ── Box handling, regimes, refusals ──────────────────────────────────────────
 
 TEST(ExpiryRecord, BoxCornersAreInsideAndOutsideIsFlaggedNotRefused) {

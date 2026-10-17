@@ -234,8 +234,16 @@ private:
   };
   [[nodiscard]] Jet eval_jet(double k_log, double sigma, bool want_k) const noexcept;
   [[nodiscard]] bool in_exercise_region(double k_log, double sigma) const noexcept;
+  // price_and_vega past its argument checks, on the (S, K)-only pieces it
+  // derives: F = S e^{(r-q)T}, k = ln(K / F), raw intrinsic and sqrt(T).
+  // implied_vol hoists those out of its Newton loop.
+  [[nodiscard]] double value_and_vega_at(double F, double K, double k_log, double intr,
+                                         double sigma, double sqrt_t,
+                                         double *vega_out) const noexcept;
 
-  std::array<double, static_cast<std::size_t>(kNk) * kNs> coefs_{}; // [j * kNk + i]
+  // Moneyness-major [i * kNs + j] (term i, sigma row j): one Clenshaw step reads
+  // every sigma row's term contiguously (lockstep row evaluation).
+  std::array<double, static_cast<std::size_t>(kNk) * kNs> coefs_{};
   std::array<double, kNs> edge_{};   // unclamped k*(sigma), Chebyshev in sigma
   std::array<double, kNs> domain_{}; // continuation-domain endpoint d(sigma)
   double T_ = 0.0;
