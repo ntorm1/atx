@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <vector>
@@ -1655,6 +1656,303 @@ TEST(QuoteSurfaceLadder, EveryNewStatusHasItsReportString) {
   EXPECT_STREQ(to_string(static_cast<QuoteSliceEvaluationStatus>(200)), "unknown");
   EXPECT_STREQ(to_string(static_cast<QuoteSurfaceMethod>(200)), "unknown");
   EXPECT_STREQ(to_string(static_cast<QuoteSurfaceLadderFallback>(200)), "unknown");
+}
+
+// ── Ladder containment after pass A, and the channel_repaired calendar key ───
+
+// Share of the strictly two-sided quotes (0 < bid < ask) whose fitted price is
+// outside [bid, ask]: the ladder's containment measure on a fit whose rows all
+// carry a price.
+double outside_share_of(const QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes) {
+  std::size_t two_sided = 0;
+  std::size_t outside = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    if (!(quotes[i].bid > 0.0) || !(quotes[i].ask > quotes[i].bid)) continue;
+    ++two_sided;
+    outside += !(channel_distance(fit.rows[i].fitted_price, quotes[i]) <= 0.0);
+  }
+  return two_sided == 0 ? 0.0 : static_cast<double>(outside) / static_cast<double>(two_sided);
+}
+
+std::size_t two_sided_quotes(std::span<const QuoteSliceQuote> quotes) {
+  return static_cast<std::size_t>(
+      std::count_if(quotes.begin(), quotes.end(), [](const QuoteSliceQuote &q) {
+        return q.bid > 0.0 && q.ask > q.bid;
+      }));
+}
+
+// The chain with its in-the-money calls at `strikes` re-quoted `width` wide,
+// `offset` above their model price (the old mid). The point fit prices the
+// out-of-the-money side only, so it reprices those calls at the model, below
+// their bids. A channel fit sees them, but its objective floors a channel's
+// half-width at channel.min_half_width_vol, which on a deep call (small vega) is
+// far wider than such a quote, and the put at the same strike holds the knot
+// slice at the model: it can sit below those bids as well.
+Chain off_market_itm_calls(Chain c, std::initializer_list<double> strikes, double offset,
+                           double width) {
+  for (auto &quote : c.quotes) {
+    const bool listed = std::find(strikes.begin(), strikes.end(), quote.strike) != strikes.end();
+    if (quote.side != Side::Call || !listed) continue;
+    const double mid = 0.5 * (quote.bid + quote.ask);
+    quote.bid = mid + offset;
+    quote.ask = quote.bid + width;
+  }
+  return c;
+}
+
+TEST(QuoteSurfaceLadder, RepairRungSkipsAKnotFitItsRepairCertifiesOutsideTheMarket) {
+  // N (0.25 y, 14%, 10% half-spreads) serves its knot slice at pass A. Z is the
+  // micro-kinked carry zig-zag of RepairRungServesTheKnotSliceItsChannelRepair-
+  // Certifies with its three deepest in-the-money calls (80, 82, 84) re-quoted
+  // one cent wide, eight cents above the model. Both pass-A fits fail their
+  // certificates and the strong prior's refits exceed the repair's node budget,
+  // so Z reaches the repair rung. There the prior-free knot fit WITH the channel
+  // repair certifies, but outside the market on more than 5% of Z's quotes: the
+  // rung skips it (default channel limit) and serves the point fit with the
+  // repair, which this policy lets serve outside (ladder_max_outside_fraction 1).
+  const Chain z = off_market_itm_calls(zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05),
+                                       {80.0, 82.0, 84.0}, 0.08, 0.01);
+  const std::vector<Chain> chains{chain(0.25, 0.14, 0.0, 0.1, 85, 115, 5), z};
+  const QuoteSliceConfig config = channel_repair_config(3);
+  const auto knot = fit_quote_slice_channel(z.market, z.quotes, config, nullptr);
+  ASSERT_TRUE(knot) << knot.error().to_string();
+  ASSERT_EQ(knot->fit_status, QuoteSliceFitStatus::Success) << knot->fit_error;
+  EXPECT_EQ(knot->diagnostics.repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(outside_share_of(*knot, z.quotes), 0.05);
+  const auto point = fit_quote_slice(z.market, z.quotes, config);
+  ASSERT_TRUE(point) << point.error().to_string();
+  ASSERT_EQ(point->fit_status, QuoteSliceFitStatus::Success) << point->fit_error;
+  QuoteSurfaceConfig surface = knot_first();
+  surface.term_prior_weight = 100.0;
+  surface.ladder_max_outside_fraction = 1.0;
+  const auto on = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  EXPECT_EQ((*on)[0].grade, QuoteSliceGrade::A) << (*on)[0].refusal;
+  const auto &served = (*on)[1];
+  EXPECT_EQ(served.knot_status, QuoteSliceFitStatus::ArbitrageFailure);
+  EXPECT_EQ(served.point_status, QuoteSliceFitStatus::ArbitrageFailure);
+  ASSERT_NE(served.grade, QuoteSliceGrade::Refused) << served.refusal << " " << served.error;
+  EXPECT_TRUE(served.repair_rung);
+  ASSERT_EQ(served.method, QuoteSurfaceMethod::Point)
+      << "ladder_repair_rung served the knot fit outside the market (method "
+      << to_string(served.method) << ", outside share " << served.outside_fraction << ")";
+  expect_same_prices(served.fit, *point);
+  EXPECT_EQ(served.outside_quotes, outside_quotes(*point, z.quotes));
+}
+
+TEST(QuoteSurfaceLadder, RepairRungSkipsAPointFitItsRepairCertifiesOutsideTheMarket) {
+  // Z with three in-the-money calls (84, 88, 92) re-quoted two cents wide, five
+  // cents above the model. They pull the knot slice against the puts at the
+  // same strikes, so the rung's knot fit exceeds the repair's node budget. The
+  // rung's point fit (out-of-the-money side) certifies with the repair but
+  // reprices those calls below their bids: 3 of 42 quotes, more than 5%. The
+  // rung skips it under the default point limit and Z stays refused; only an
+  // explicitly relaxed limit lets the rung serve it.
+  const Chain z = off_market_itm_calls(zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05),
+                                       {84.0, 88.0, 92.0}, 0.05, 0.02);
+  const std::vector<Chain> chains{chain(0.25, 0.14, 0.0, 0.1, 85, 115, 5), z};
+  const QuoteSliceConfig config = channel_repair_config(3);
+  const auto knot = fit_quote_slice_channel(z.market, z.quotes, config, nullptr);
+  ASSERT_TRUE(knot) << knot.error().to_string();
+  EXPECT_EQ(knot->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+  EXPECT_EQ(knot->diagnostics.repair.outcome, QuoteSliceRepairOutcome::NodeBudget)
+      << to_string(knot->diagnostics.repair.outcome);
+  const auto point = fit_quote_slice(z.market, z.quotes, config);
+  ASSERT_TRUE(point) << point.error().to_string();
+  ASSERT_EQ(point->fit_status, QuoteSliceFitStatus::Success) << point->fit_error;
+  EXPECT_EQ(point->diagnostics.repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(outside_share_of(*point, z.quotes), 0.05);
+  QuoteSurfaceConfig surface = knot_first();
+  surface.term_prior_weight = 100.0;
+  const auto strict = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(strict) << strict.error().to_string();
+  EXPECT_EQ((*strict)[0].grade, QuoteSliceGrade::A) << (*strict)[0].refusal;
+  const auto &refused = (*strict)[1];
+  EXPECT_EQ(refused.grade, QuoteSliceGrade::Refused)
+      << "ladder_repair_rung served the point fit outside the market (method "
+      << to_string(refused.method) << ", outside share " << refused.outside_fraction << ")";
+  EXPECT_EQ(refused.refusal, "arbitrage_failure");
+  EXPECT_FALSE(refused.repair_rung);
+  EXPECT_FALSE(refused.fit.prices);
+  surface.ladder_max_outside_fraction = 1.0;
+  const auto relaxed = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(relaxed) << relaxed.error().to_string();
+  const auto &served = (*relaxed)[1];
+  ASSERT_NE(served.grade, QuoteSliceGrade::Refused) << served.refusal << " " << served.error;
+  EXPECT_TRUE(served.repair_rung);
+  EXPECT_EQ(served.method, QuoteSurfaceMethod::Point);
+  expect_same_prices(served.fit, *point);
+  EXPECT_GT(served.outside_fraction, 0.05);
+}
+
+TEST(QuoteSurfaceLadder, ABoundedCalendarRepairThatLeavesTheMarketIsRefused) {
+  // The bounded-repair pair with L (0.5 y, nine strikes, 5% half-spreads) quoted
+  // further below X (0.25 y): L's bounded-move calendar repair needs 2.6 of its
+  // half-spreads, within this policy's bound (10), certifies and is consistent
+  // with X, but lifts L above its asks on more than 5% of its quotes. No knot
+  // slice and no channel refit can be fitted, so no later rung can serve L: it
+  // is refused. With the point limit relaxed the same repair serves L.
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.21, 0.0, 0.05, 80, 120, 5)};
+  QuoteSliceConfig config;
+  config.channel.min_channel_quotes = 100000;
+  QuoteSurfaceConfig surface = knot_first();
+  surface.calendar_repair_half_spreads = 10.0;
+  const auto strict = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(strict) << strict.error().to_string();
+  EXPECT_EQ((*strict)[0].grade, QuoteSliceGrade::A) << (*strict)[0].refusal;
+  const auto &refused = (*strict)[1];
+  EXPECT_EQ(refused.grade, QuoteSliceGrade::Refused)
+      << "a bounded calendar repair served L outside the market (outside share "
+      << refused.outside_fraction << ")";
+  EXPECT_EQ(refused.refusal, "calendar_arbitrage");
+  EXPECT_FALSE(refused.calendar_repaired);
+  EXPECT_GT(refused.calendar_repair_required, 1.0);
+  EXPECT_LE(refused.calendar_repair_required, surface.calendar_repair_half_spreads);
+  surface.ladder_max_outside_fraction = 1.0;
+  const auto relaxed = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(relaxed) << relaxed.error().to_string();
+  const auto &moved = (*relaxed)[1];
+  ASSERT_EQ(moved.grade, QuoteSliceGrade::B) << moved.refusal << " " << moved.error;
+  EXPECT_TRUE(moved.calendar_repaired);
+  EXPECT_EQ(moved.method, QuoteSurfaceMethod::Point);
+  EXPECT_GT(moved.outside_fraction, 0.05);
+  EXPECT_EQ(moved.outside_quotes, outside_quotes(moved.fit, chains[1].quotes));
+  expect_calendar_consistent(*relaxed);
+}
+
+TEST(QuoteSurfaceLadder, AChannelCalendarRepairThatEndsOutsideTheMarketIsRefused) {
+  // The bounded-repair pair without the bounded repair: L (0.5 y, nine strikes,
+  // 5% half-spreads) crosses X (0.25 y) by less than its half-spreads. The
+  // channel calendar repair of L's own (knot) prices exceeds the repair's node
+  // budget (3). The stronger-prior retry lifts L towards X far above its asks
+  // and still crosses X; the channel calendar repair of the retry's prices fits
+  // the budget and certifies, but leaves L outside its quotes: refused
+  // (left_channel). With the channel limit relaxed it serves the retry.
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  const QuoteSliceConfig config = channel_repair_config(3);
+  {
+    auto own = fit_quote_slice_channel(chains[1].market, chains[1].quotes, QuoteSliceConfig{},
+                                       nullptr);
+    const auto x = fit_quote_slice_channel(chains[0].market, chains[0].quotes,
+                                           QuoteSliceConfig{}, nullptr);
+    ASSERT_TRUE(own && own->fit_status == QuoteSliceFitStatus::Success);
+    ASSERT_TRUE(x && x->fit_status == QuoteSliceFitStatus::Success);
+    const std::array<const AmericanPriceSlice *, 1> earlier{&*x->prices};
+    QuoteSliceRepairRecord record;
+    EXPECT_FALSE(repair_quote_slice_calendar_in_channel(*own, chains[1].quotes, earlier, {},
+                                                        config.repair, &record));
+    EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::NodeBudget) << to_string(record.outcome);
+  }
+  QuoteSurfaceConfig surface = knot_first();
+  surface.term_prior_weight = 3.0;
+  const auto strict = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(strict) << strict.error().to_string();
+  EXPECT_EQ((*strict)[0].grade, QuoteSliceGrade::A) << (*strict)[0].refusal;
+  const auto &refused = (*strict)[1];
+  EXPECT_EQ(refused.grade, QuoteSliceGrade::Refused)
+      << "a channel calendar repair served L outside the market (outside share "
+      << refused.outside_fraction << ", method " << to_string(refused.method) << ")";
+  EXPECT_EQ(refused.refusal, "calendar_arbitrage");
+  EXPECT_TRUE(refused.calendar_retry);
+  EXPECT_FALSE(refused.calendar_channel_repaired);
+  EXPECT_EQ(refused.calendar_channel_repair.outcome, QuoteSliceRepairOutcome::LeftChannel)
+      << to_string(refused.calendar_channel_repair.outcome);
+  surface.ladder_channel_max_outside_fraction = 1.0;
+  const auto relaxed = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(relaxed) << relaxed.error().to_string();
+  const auto &served = (*relaxed)[1];
+  ASSERT_EQ(served.grade, QuoteSliceGrade::B) << served.refusal << " " << served.error;
+  EXPECT_EQ(served.method, QuoteSurfaceMethod::ChannelRefit); // the retry, not the own fit
+  EXPECT_TRUE(served.calendar_channel_repaired);
+  EXPECT_TRUE(served.calendar_repaired);
+  EXPECT_EQ(served.calendar_channel_repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_LE(served.calendar_channel_repair.material_nodes, config.repair.max_nodes);
+  EXPECT_EQ(served.ladder_fallback, QuoteSurfaceLadderFallback::Calendar);
+  EXPECT_GT(served.outside_fraction, 0.05);
+  expect_calendar_consistent(*relaxed);
+}
+
+TEST(QuoteSurfaceLadder, ACleanRetryOutsideTheMarketIsRefused) {
+  // X (0.25 y, 40%) and L (0.5 y, 15%, seven strikes, one-cent quotes): L's knot
+  // slice and its held point fit cross X, and no calendar repair is enabled. A
+  // wide channel half-width floor (min_half_width_vol 0.2) and a strong prior
+  // let the stronger-prior retry lift L to X's level: consistent with X (clean)
+  // but outside every one of L's quotes, so it is refused. With the channel
+  // limit relaxed the same clean retry serves L.
+  const std::vector<Chain> chains{chain(0.25, 0.40, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.15, 0.0, 0.0, 85, 115, 5)};
+  QuoteSliceConfig config;
+  config.channel.min_half_width_vol = 0.2;
+  QuoteSurfaceConfig surface = knot_first();
+  surface.term_prior_weight = 100.0;
+  const auto strict = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(strict) << strict.error().to_string();
+  EXPECT_EQ((*strict)[0].grade, QuoteSliceGrade::A) << (*strict)[0].refusal;
+  const auto &refused = (*strict)[1];
+  EXPECT_EQ(refused.grade, QuoteSliceGrade::Refused)
+      << "the stronger-prior retry served L outside the market (outside share "
+      << refused.outside_fraction << ", method " << to_string(refused.method) << ")";
+  EXPECT_EQ(refused.refusal, "calendar_arbitrage");
+  EXPECT_TRUE(refused.calendar_retry);
+  EXPECT_FALSE(refused.channel_refit);
+  surface.ladder_channel_max_outside_fraction = 1.0;
+  const auto relaxed = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(relaxed) << relaxed.error().to_string();
+  const auto &served = (*relaxed)[1];
+  ASSERT_EQ(served.grade, QuoteSliceGrade::B) << served.refusal << " " << served.error;
+  EXPECT_EQ(served.method, QuoteSurfaceMethod::ChannelRefit);
+  EXPECT_EQ(served.ladder_fallback, QuoteSurfaceLadderFallback::Calendar);
+  EXPECT_FALSE(served.calendar_repaired); // clean: no repair moved it
+  EXPECT_FALSE(served.calendar_channel_repaired);
+  EXPECT_GT(served.outside_fraction, 0.05);
+  expect_calendar_consistent(*relaxed);
+}
+
+TEST(QuoteSurfaceLadder, AnUnrepairedSliceKeepsTheCalendarSlotOverAChannelRepairedOne) {
+  // Equal containment and grade tier: U (0.25 y, 45%, five strikes: no own
+  // point evidence) is served by a channel refit at its fit's own prices, grade
+  // B; R (the micro-kinked carry zig-zag, 0.5 y, 21 strikes) fails both pass-A
+  // certificates and its channel refit certifies only with the channel repair,
+  // grade B. Both are inside the market. U is quoted far above R, so they cross,
+  // and no repair or retry reconciles them: one keeps the calendar slot. R has
+  // more strictly two-sided quotes, but U's prices are its fit's own: U keeps it.
+  const Chain u = chain(0.25, 0.45, 0.0, 0.01, 90, 110, 5);
+  const Chain r = zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05);
+  const std::vector<Chain> only_u{u};
+  const std::vector<Chain> only_r{r};
+  const std::vector<Chain> pair{u, r};
+  const QuoteSliceConfig config = channel_repair_config();
+  ASSERT_LT(two_sided_quotes(u.quotes), two_sided_quotes(r.quotes));
+  // Alone, each is served by a channel refit at grade B inside the market.
+  const auto alone_u = fit_quote_surface(expiries(only_u), config, knot_first());
+  ASSERT_TRUE(alone_u) << alone_u.error().to_string();
+  ASSERT_EQ((*alone_u)[0].grade, QuoteSliceGrade::B) << (*alone_u)[0].refusal;
+  EXPECT_EQ((*alone_u)[0].method, QuoteSurfaceMethod::ChannelRefit);
+  EXPECT_EQ((*alone_u)[0].fit.diagnostics.repair.outcome, QuoteSliceRepairOutcome::NotAttempted);
+  EXPECT_LE((*alone_u)[0].outside_fraction, 0.05);
+  const auto alone_r = fit_quote_surface(expiries(only_r), config, knot_first());
+  ASSERT_TRUE(alone_r) << alone_r.error().to_string();
+  ASSERT_EQ((*alone_r)[0].grade, QuoteSliceGrade::B) << (*alone_r)[0].refusal;
+  EXPECT_EQ((*alone_r)[0].method, QuoteSurfaceMethod::ChannelRefit);
+  EXPECT_EQ((*alone_r)[0].fit.diagnostics.repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_LE((*alone_r)[0].outside_fraction, 0.05);
+  const auto both = fit_quote_surface(expiries(pair), config, knot_first());
+  ASSERT_TRUE(both) << both.error().to_string();
+  const auto &kept = (*both)[0];
+  const auto &dropped = (*both)[1];
+  ASSERT_EQ(kept.grade, QuoteSliceGrade::B)
+      << "the channel-repaired slice kept the calendar slot: U " << kept.refusal << ", R "
+      << to_string(dropped.grade) << " " << dropped.refusal;
+  EXPECT_EQ(kept.method, QuoteSurfaceMethod::ChannelRefit);
+  EXPECT_EQ(kept.fit.diagnostics.repair.outcome, QuoteSliceRepairOutcome::NotAttempted);
+  EXPECT_FALSE(kept.calendar_repaired);
+  EXPECT_TRUE(kept.fit.moved_nodes.empty());
+  EXPECT_EQ(dropped.grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ(dropped.refusal, "calendar_arbitrage");
+  EXPECT_TRUE(dropped.channel_refit);
+  EXPECT_EQ(dropped.fit.diagnostics.repair.outcome, QuoteSliceRepairOutcome::Applied);
 }
 
 } // namespace
