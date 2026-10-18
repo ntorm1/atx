@@ -1840,14 +1840,16 @@ TEST(AmericanMarkovFitSearch, ColumnWithoutAnAdmittedProbeStopsWithJacobianFailu
 // retry). So when the bound is a few ulps away the retry is evaluated with a
 // few-ulp delta, and its difference quotient becomes the Jacobian column.
 //
-// The review named the bound max_sigma. That case is unreachable through the
-// public API: with room_up < jacobian_log_step <= room_down the primary probe is
-// backward (jacobian_column's `forward` rule), so a few-ulp forward retry needs a
-// refused backward probe, and the only refusal a caller can arrange,
-// max_rollback_work, charges ExplicitEuler work that rises with sigma (CFL count
-// proportional to sigma^2), so a probe below an admitted centre is never refused.
-// This is the reachable mirror at min_sigma: the forward primary is refused by
-// the work cap and the backward retry runs over a few-ulp room.
+// The review named the bound max_sigma. That case is not reachable through any
+// refusal a caller can arrange: with room_up < jacobian_log_step <= room_down the
+// primary probe is backward (jacobian_column's `forward` rule), so a few-ulp
+// forward retry needs a refused backward probe, and the caller-set caps
+// (max_rollback_work, the compiler's transition/row/work limits) charge work that
+// rises with sigma (ExplicitEuler CFL count proportional to sigma^2) or stays
+// flat, so they never refuse a probe below an admitted centre. (Numerical-range
+// refusals are not proven monotone; see the sprint note.) This is the reachable
+// mirror at min_sigma: the forward primary is refused by the work cap and the
+// backward retry runs over a few-ulp room.
 TEST(AmericanMarkovFitSearch, RetryTowardAFewUlpRoomIsEvaluatedWithAFewUlpDelta) {
   const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
   const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
