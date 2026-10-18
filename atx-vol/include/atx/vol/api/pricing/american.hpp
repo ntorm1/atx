@@ -80,17 +80,23 @@ struct CorrectionBlend;
 //                    fewer per quadrature node;
 //                (3) the BAW seed shares one d1 between its Black-76 leg and its
 //                    smooth-pasting term (2 Phi per Newton step instead of 3).
-//              The differences from Reference are rounding-level. MEASURED bound,
-//              Fast vs Reference on the SAME scheme (accurate / fast / bulk), over
+//              The differences from Reference are rounding-level. MEASURED, Fast vs
+//              Reference on the SAME scheme (accurate / fast / bulk), worst case over
 //              the AL ladder grid, a 6,000-contract random set and 10,694 dev200
 //              contracts (bench rows american/fast_profile_error/*; numbers in
-//              sprints/2026-10-17-al-speed-sprint.md):
-//                price   max |dP| 8.0e-13 abs; max 1.9e-13 relative (P >= 0.01)
-//                IV      max 0.0054 bp, p99 <= 2e-8 bp (one target price inverted
-//                        under each profile, tol 1e-10)
-//                Greeks  p99 |d| (american_greeks_al): delta 1.8e-13, gamma 1.7e-11,
-//                        vega 1.4e-10, theta 5.5e-8, rho 1.5e-9, vanna 1.2e-10,
-//                        volga 5.2e-7, charm 1.5e-7
+//              sprints/2026-10-17-al-speed-sprint.md). Convention: each value is the
+//              measured worst case (max, or p99 where stated) to 5 significant
+//              figures; the BOUND in brackets is its next 2-figure round-up, so every
+//              bound is >= its measurement:
+//                price   max |dP| 7.9581e-13 abs [8.0e-13]; max relative (P >= 0.01)
+//                        1.8534e-13 [1.9e-13]
+//                IV      max 5.3660e-3 bp [0.0054]; p99 1.9638e-8 bp [2.0e-8] (one
+//                        target price inverted under each profile, tol 1e-10)
+//                Greeks  p99 |d| (american_greeks_al): delta 1.7941e-13 [1.8e-13],
+//                        gamma 1.6880e-11 [1.7e-11], vega 1.4211e-10 [1.5e-10],
+//                        theta 5.4645e-8 [5.5e-8], rho 1.4921e-9 [1.5e-9],
+//                        vanna 1.2206e-10 [1.3e-10], volga 5.1159e-7 [5.2e-7],
+//                        charm 1.4977e-7 [1.5e-7]
 //              TESTED bound (AlFastProfile.* in tests/american_test.cpp):
 //                |dP| <= 1e-12 * max(P, 1); |dIV| <= 0.01 bp on vega-bearing
 //                contracts; per-Greek p99 bounds ~100x the measured p99; the call
