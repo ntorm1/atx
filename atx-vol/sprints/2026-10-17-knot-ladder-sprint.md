@@ -245,10 +245,25 @@ graded-v1 37 + 10 (dev200), v3 30 (dev200).
   displaced rows but 84.66% vol coverage and refused AAPL Nov 20 (dev3a); the
   two-sided quote count was kept.
 - **Containment losses** (dev200 1,726 / dev200b 539 / cohort5 1,921 graded-v1
-  rows) are the rule working: graded-v1 served those prices with 6-61% of the
-  quotes outside bid/ask.
-- dev200b vol coverage (89.30%) is below v3's 90.49%, which serves gated point
-  fallbacks outside the market.
+  rows) are the rule working: graded-v1 served those prices with 5.06%-60.6% of
+  their strictly two-sided quotes outside bid/ask (dev200, re-measured by the
+  full review; corrected in fix round 2, this bullet said "6-61%").
+- **dev200b vol coverage** (89.30%) is below v3's 90.49%: -1.19 pts net. Of the
+  2,311 vol rows v3 serves and the ladder does not vol-serve (3.71 pts gross),
+  1,593 rows (2.55 pts, 29 chains) are displacement (calendar 1,349,
+  certificate 244), 599 (0.96 pts, 6 chains) are v3's out-of-market slices
+  (containment), and 119 (0.19 pts) moved to `ok_price_only`; 1,567 ladder-only
+  vol rows (2.51 pts) offset part of it. The gap is mostly displacement, the
+  same class as dev200's 1,038 rows that follow-up L3a targets. (Corrected in
+  fix round 2: this bullet attributed the gap to v3's out-of-market point
+  fallbacks, which explain about a quarter of the gross loss; figures from the
+  full review, `L0a-knot-ladder-2e60186c-review-v1/review.md` section 5 (b).)
+- **Vol accuracy (bp) is not reported above**: sections 5-6 give USD MAE only.
+  On the official paired intersections the vol MAE in bp is worse while the
+  median improves: dev200 vs graded-v1 1549.0 -> 1590.7 bp (+2.69%; median
+  174.8 -> 159.9 bp; tail-driven, p95 7400 -> 7961 bp), vs v3 +4.71%; dev200b
+  vs graded-v1 +4.31%, vs v3 +3.43% (full review, NOTES). The W2/W3 lanes
+  should report vol-bp MAE beside the USD headline.
 - Untested path (closed in fix round 1, section 9): the knot-fit branch of the
   ladder repair rung (knot slice certified only with the channel repair) has no
   unit test; it serves one
@@ -361,3 +376,50 @@ sections 5-6 therefore stands unchanged (byte-identical outputs).
 Not addressed (stated in the report): the pre-existing `make_prior` sort tie
 (a default-path change), the ladder vs dominance-gate/knot-spline combination
 and the union-of-knots calendar clamp (follow-up lanes).
+
+## 10. Fix round 2 (lane `L0a-fix2-knot-ladder`, sprint 2026-10-18-vol-sota)
+
+Fresh implementer, pool `pool-4` (run id `vol-20261018s-L0a-fix2-knot-ladder`),
+base `2e60186c`. Findings from the full review
+(`C:/atx-cache/quote-benchmark/L0a-knot-ladder-2e60186c-review-v1/review.md`:
+MAJOR-1, MAJOR-2, MINOR-1); report
+`.superpowers/sdd/2026-10-18-vol-sota/lane-L0a-fix2-knot-ladder-report.md`.
+Tests and this note only; no library change.
+
+| SHA | What |
+|---|---|
+| `a8810c1e` | Six `QuoteSurfaceLadder` gtests (below) |
+| (this commit) | Section 7 corrections (dev200b attribution, 5.06%-60.6%, vol-bp note), this section |
+
+Each check now has a test that fails with it removed (temporary edit of
+`quote_surface.cpp`, build, full `atx-vol-quote-slice-tests` run, inverse edit,
+restored blob `5913374a` == HEAD every time):
+
+| removed | test that fails | run |
+|---|---|---|
+| repair rung, knot: `served_in_market(*knot, i)` | `RepairRungSkipsAKnotFitItsRepairCertifiesOutsideTheMarket` | 118/119 |
+| repair rung, point: `served_in_market(*point, i)` | `RepairRungSkipsAPointFitItsRepairCertifiesOutsideTheMarket` | 118/119 |
+| clean retry: `&& in_market(*fit, i)` | `ACleanRetryOutsideTheMarketIsRefused` | 118/119 |
+| bounded calendar repair: `ladder() && !in_market` | `ABoundedCalendarRepairThatLeavesTheMarketIsRefused` | 118/119 |
+| channel calendar repair: `LeftChannel` block | `AChannelCalendarRepairThatEndsOutsideTheMarketIsRefused` | 118/119 |
+| calendar key 3 `channel_repaired` (review revert RH) | `AnUnrepairedSliceKeepsTheCalendarSlotOverAChannelRepairedOne` | 118/119 |
+| all five containment checks (review revert REI) | the five containment tests | 114/119 |
+
+Fixtures (synthetic chains, each with a relaxed-limit positive control that
+serves the same rung): deep in-the-money calls quoted off-model and narrower
+than the channel half-width floor put a certified repair-rung fit outside the
+market; a bounded repair allowed 10 half-spreads lifts a cheap later expiry
+above its asks; on the bounded-repair pair, the own fit's channel calendar
+repair exceeds a node budget of 3 while the stronger-prior retry's fits it
+and ends a third outside; a wide half-width floor and a strong prior make a
+clean retry that misses every one-cent quote. Finding: the channel calendar
+repair of a slice's own served prices can never leave the market (its box
+keeps an inside node inside), so the `LeftChannel` check binds only on the
+retry's prices.
+
+Gates at `a8810c1e` (vol-rel, `-Jobs 4`): gtest quote-slice 119/119; ctest
+quote-slice, implied-forward, quote-benchmark-{tools,native,campaign} 5/5;
+dev200 `--policy auto` with the lane binary `c89d0739...` (identical;
+`ATX_VOL_FIT_WORKERS=3`). Evidence:
+`C:/atx-cache/quote-benchmark/L0a-fix2-knot-ladder-20261018-evidence/`
+(`sha256.txt`).
