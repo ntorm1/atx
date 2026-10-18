@@ -365,6 +365,10 @@ void run_rung(benchmark::State &state, const Rung &rung) {
 //   * ATX_VOL_AL_PROFILE=1 registers american/ladder_profile/<preset> (the bare
 //     grid loop, for alprobe zone attribution under ATX_VOL_AL_PROBE=z, dumped at
 //     exit), the BAW seed Newton iteration census, and libm unit-cost rows.
+//   * ATX_VOL_AL_DEV200=<csv> (a kernel-input file, see load_kernel_inputs) also
+//     registers american/ladder_latency_dev200/<preset>: the ladder_latency timing
+//     loop over that file's contracts instead of the 104-point grid (al-speed fix
+//     round 1). The grid stays the declared latency set; this row is supplementary.
 
 [[nodiscard]] std::string env_text(const char *name) {
 #if defined(_MSC_VER)
@@ -413,15 +417,21 @@ struct Preset {
   return s[idx];
 }
 
-void run_latency(benchmark::State &state, const Preset &preset) {
-  const Grid &g = grid();
+// Times every single cold price over `pts`. An empty set is skipped, never spun: a
+// zero manual time per iteration would never reach the minimum run time.
+void run_latency_on(benchmark::State &state, const std::vector<GridPt> &pts,
+                    const Preset &preset) {
+  if (pts.empty()) {
+    state.SkipWithError("no contracts to time (unreadable or empty kernel-input file)");
+    return;
+  }
   constexpr std::size_t kCap = std::size_t{1} << 18;
   std::vector<double> samples_us;
   samples_us.reserve(kCap);
   double sink = 0.0;
   for (auto _ : state) {
     double total_us = 0.0;
-    for (const GridPt &p : g.pts) {
+    for (const GridPt &p : pts) {
       const auto t0 = std::chrono::steady_clock::now();
       const atx::vol::Result<double> r =
           atx::vol::andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, preset.opts);
@@ -442,14 +452,18 @@ void run_latency(benchmark::State &state, const Preset &preset) {
     mean += v;
   }
   mean = samples_us.empty() ? 0.0 : mean / static_cast<double>(samples_us.size());
-  const double ops = static_cast<double>(state.iterations()) * static_cast<double>(g.pts.size());
+  const double ops = static_cast<double>(state.iterations()) * static_cast<double>(pts.size());
   state.SetItemsProcessed(static_cast<std::int64_t>(ops));
-  state.counters["grid"] = static_cast<double>(g.pts.size());
+  state.counters["grid"] = static_cast<double>(pts.size()); // contracts per iteration
   state.counters["samples"] = static_cast<double>(samples_us.size());
   state.counters["p50_us"] = sorted_quantile(samples_us, 0.50);
   state.counters["p90_us"] = sorted_quantile(samples_us, 0.90);
   state.counters["p99_us"] = sorted_quantile(samples_us, 0.99);
   state.counters["mean_us"] = mean;
+}
+
+void run_latency(benchmark::State &state, const Preset &preset) {
+  run_latency_on(state, grid().pts, preset);
 }
 
 // ── Fingerprint ───────────────────────────────────────────────────────────────
@@ -1033,6 +1047,18 @@ const bool kRegistered = [] {
                      name, [&preset](benchmark::State &state) { run_latency(state, preset); }))
         ->UseManualTime()
         ->Unit(benchmark::kMicrosecond);
+  }
+  if (!env_text("ATX_VOL_AL_DEV200").empty()) {
+    for (const Preset &preset : presets()) {
+      const std::string name = std::string("american/ladder_latency_dev200/") + preset.name;
+      apply_common(benchmark::RegisterBenchmark(name,
+                                                [&preset](benchmark::State &state) {
+                                                  run_latency_on(
+                                                      state, err_points(ErrSet::Dev200), preset);
+                                                }))
+          ->UseManualTime()
+          ->Unit(benchmark::kMicrosecond);
+    }
   }
   for (const Preset &preset : presets()) {
     const std::string name = std::string("american/greeks_latency/") + preset.name;
