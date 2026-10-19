@@ -34,6 +34,7 @@ set(ATX_VOL_SLICES core pricing simd fitting marketdata storage analytics backte
 set(ATX_VOL_SLICE_OWNED_ELSEWHERE
     quote_slice american_price_slice quote_fit_policy               # atx-vol-quote-slice-tests
     quote_surface slice_channel term_prior                          # atx-vol-quote-slice-tests
+    quote_slice_vol_space                                           # atx-vol-quote-slice-tests
     american_markov american_markov_batch american_markov_resolvent # atx-vol-american-markov-tests
     american_markov_pwl american_markov_grid pwl_strike
     american_markov_fit american_markov_seed                        # atx-vol-american-markov-*-tests

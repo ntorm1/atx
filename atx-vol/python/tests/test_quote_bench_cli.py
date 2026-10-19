@@ -702,7 +702,21 @@ def test_native_graded_options_are_strict(binary, tmp_path):
                 {"name": "dense", "base": "dense",
                  "channel": {"point_max_outside_fraction": 0.05,
                              "point_min_outside_quotes": 0}}]},
-             "outside supported bounds")):
+             "outside supported bounds"),
+            # Opt-in per-quote de-Am IV cache keys (lane L2a).
+            ({"schema_version": 1, "admission": "graded", "graded": {"fit_space": "variance"}},
+             "fit_space must be price or vol"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"deam_cache": True}},
+             "require fit_space vol"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "price", "deam_profile": "fast"}},
+             "require fit_space vol"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "quick"}},
+             "deam_profile must be accurate or fast"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_cache": 1}},
+             "deam_cache must be true or false")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -756,6 +770,29 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
         assert entry["point_outside_quotes"] >= 0
     for entry in plain_report["graded_stats"]["slices"]:
         assert "repair" not in entry and "point_gated" not in entry
+
+
+def test_native_accurate_iv_cache_is_byte_identical_and_opt_in(binary, tmp_path):
+    # The accurate-kernel cache serves exactly the price-channel predictions;
+    # only the opt-in provenance is added to the report.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    plain_output, cached_output = tmp_path / "plain.csv", tmp_path / "cached.csv"
+    plain_policy = write_policy(tmp_path / "plain.json",
+                                {"schema_version": 1, "admission": "graded"})
+    plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
+    assert plain.returncode == 0, plain.stderr
+    cached_policy = write_policy(tmp_path / "cached.json", {
+        "schema_version": 1, "admission": "graded",
+        "graded": {"fit_space": "vol", "deam_profile": "accurate", "deam_cache": True}})
+    cached = invoke(binary, source, cached_output, "--policy", str(cached_policy))
+    assert cached.returncode == 0, cached.stderr
+    assert cached_output.read_bytes() == plain_output.read_bytes()
+    graded = json.loads(cached.stdout)["policy_definition"]["graded"]
+    assert (graded["fit_space"], graded["deam_profile"], graded["deam_cache"]) == (
+        "vol", "accurate", True)
+    plain_graded = json.loads(plain.stdout)["policy_definition"]["graded"]
+    assert not {"fit_space", "deam_profile", "deam_cache"} & set(plain_graded)
 
 
 PROFILE_NAMES = ("dense", "ordinary", "sparse")

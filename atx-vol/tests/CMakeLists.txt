@@ -29,7 +29,8 @@ set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 # Keep a focused executable so numerical and include checks stay inexpensive.
 add_executable(atx-vol-quote-slice-tests
     quote_slice_test.cpp american_price_slice_test.cpp quote_fit_policy_test.cpp
-    quote_surface_test.cpp slice_channel_test.cpp term_prior_test.cpp)
+    quote_surface_test.cpp slice_channel_test.cpp term_prior_test.cpp
+    quote_slice_vol_space_test.cpp)
 target_link_libraries(atx-vol-quote-slice-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 # The channel/term-prior suites test internal fitting headers (src/fitting/).
@@ -39,7 +40,7 @@ target_include_directories(atx-vol-quote-slice-tests PRIVATE ${CMAKE_CURRENT_SOU
 # tests never ran under this ctest).
 string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* QuoteFitPolicy.*
        QuoteSliceChannel.* QuoteSurface.* QuoteSurfaceLadder.* QuoteSurfaceTiming.* SliceChannel.*
-       SliceChannelFamily.* TermPrior.*)
+       SliceChannelFamily.* TermPrior.* QuoteSliceVolSpace.* DeAmIvCache.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
@@ -238,6 +239,7 @@ add_executable(atx-vol-tests
     cstar_calib_test.cpp
     dense_slice_test.cpp
     quote_slice_test.cpp
+    quote_slice_vol_space_test.cpp
     quote_slice_carry_test.cpp
     implied_forward_test.cpp
     quote_surface_test.cpp
