@@ -1,11 +1,16 @@
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <utility>
+
+#include "atx/vol/api/pricing/american.hpp"
 
 namespace atx::vol {
 namespace {
@@ -197,6 +202,314 @@ using atx::core::Ok;
   return Ok();
 }
 
+// ── Model-priced certification (L2b al-geometry, 2026-10-19) ─────────────
+
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+[[nodiscard]] Status pricing_error(std::size_t index, const atx::core::Error &error) {
+  return Err(error.code(), "AmericanPriceSlice: node " + std::to_string(index) +
+                               ": model pricing failed: " + error.message());
+}
+
+// Prices model nodes (a call and a put each) with one kernel and one AL scheme and
+// counts the andersen_lake prices it computes. Batched keeps ONE geometry, for the
+// yield of the current run, and re-prepares it when a run of another yield starts;
+// it is allocated on first use, so the Scalar kernel allocates nothing here.
+class NodePricer {
+public:
+  NodePricer(std::span<const AmericanCertificationNode> nodes, double spot,
+             const AmericanCertificationModel &model, std::optional<AlOpts> opts,
+             CertificationKernel kernel)
+      : nodes_(nodes), spot_(spot), T_(model.T), rate_(model.rate), opts_(std::move(opts)),
+        kernel_(kernel) {}
+
+  // Prices nodes [begin, end) into prices[begin, end); stops at the first node that
+  // andersen_lake refuses and returns its error. Requires end <= nodes.size() ==
+  // prices.size().
+  [[nodiscard]] Status price(std::size_t begin, std::size_t end,
+                             std::span<AmericanPriceNode> prices) {
+    if (kernel_ == CertificationKernel::Batched) {
+      return price_batched(begin, end, prices);
+    }
+    for (std::size_t i = begin; i < end; ++i) {
+      ATX_TRY_VOID(price_scalar(i, prices[i]));
+    }
+    return Ok();
+  }
+
+  [[nodiscard]] std::size_t priced() const noexcept { return priced_; }
+
+private:
+  [[nodiscard]] Status price_scalar(std::size_t i, AmericanPriceNode &out) {
+    const AmericanCertificationNode &n = nodes_[i];
+    ++priced_;
+    const Result<double> call =
+        andersen_lake(spot_, n.strike, T_, n.sigma, rate_, n.yield, Side::Call, opts_);
+    if (!call) {
+      return pricing_error(i, call.error());
+    }
+    ++priced_;
+    const Result<double> put =
+        andersen_lake(spot_, n.strike, T_, n.sigma, rate_, n.yield, Side::Put, opts_);
+    if (!put) {
+      return pricing_error(i, put.error());
+    }
+    out = {n.strike, *call, *put};
+    return Ok();
+  }
+
+  [[nodiscard]] Status price_batched(std::size_t begin, std::size_t end,
+                                     std::span<AmericanPriceNode> prices) {
+    std::size_t i = begin;
+    while (i < end) {
+      const double yield = nodes_[i].yield;
+      std::size_t run_end = i + 1u;
+      while (run_end < end && same_bits(nodes_[run_end].yield, yield)) {
+        ++run_end;
+      }
+      if (!geometry_) {
+        geometry_.emplace();
+      }
+      if (!geometry_ready_ || !same_bits(geometry_yield_, yield)) {
+        geometry_->prepare(T_, rate_, yield, opts_);
+        geometry_yield_ = yield;
+        geometry_ready_ = true;
+      }
+      const std::size_t m = run_end - i;
+      contracts_.resize(2u * m);
+      sigma_.resize(2u * m);
+      values_.resize(2u * m);
+      for (std::size_t k = 0; k < m; ++k) {
+        const AmericanCertificationNode &n = nodes_[i + k];
+        contracts_[2u * k] = AlContract{.S = spot_, .K = n.strike, .side = Side::Call};
+        contracts_[2u * k + 1u] = AlContract{.S = spot_, .K = n.strike, .side = Side::Put};
+        sigma_[2u * k] = n.sigma;
+        sigma_[2u * k + 1u] = n.sigma;
+      }
+      ATX_TRY_VOID(al_price_pack(*geometry_, contracts_, sigma_, values_, {}));
+      priced_ += 2u * m;
+      for (std::size_t k = 0; k < m; ++k) {
+        const std::size_t node = i + k;
+        const double call = values_[2u * k];
+        const double put = values_[2u * k + 1u];
+        if (std::isnan(call) || std::isnan(put)) {
+          // NaN is the pack's channel for an andersen_lake error: the scalar price of
+          // this node returns that exact error (or, failing that, the same values).
+          ATX_TRY_VOID(price_scalar(node, prices[node]));
+          continue;
+        }
+        prices[node] = {nodes_[node].strike, call, put};
+      }
+      i = run_end;
+    }
+    return Ok();
+  }
+
+  std::span<const AmericanCertificationNode> nodes_;
+  double spot_;
+  double T_;
+  double rate_;
+  std::optional<AlOpts> opts_;
+  CertificationKernel kernel_;
+  std::size_t priced_ = 0;
+  std::optional<AlExpiryGeometry> geometry_;
+  double geometry_yield_ = 0.0;
+  bool geometry_ready_ = false;
+  std::vector<AlContract> contracts_;
+  std::vector<double> sigma_;
+  std::vector<double> values_;
+};
+
+// The Fast-kernel allowance of one price (see kCertificationFastAllowance).
+[[nodiscard]] double fast_allowance(double price) noexcept {
+  return kCertificationFastAllowance * std::max(std::abs(price), 1.0);
+}
+
+[[nodiscard]] std::string screen_reason(std::size_t index, const char *reason) {
+  return "AmericanPriceSlice: node " + std::to_string(index) + ": certification screen: " +
+         reason + " beyond the Fast-kernel allowance";
+}
+
+// create()'s price-independent admission (bounds, node count, strikes). The screen runs
+// only when it holds, so malformed input still gets create()'s own error.
+[[nodiscard]] bool screenable(std::span<const AmericanCertificationNode> nodes,
+                              const AmericanPriceBounds &bounds) noexcept {
+  if (!valid_bounds(bounds) || nodes.size() < 2u) {
+    return false;
+  }
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const double strike = nodes[i].strike;
+    if (!std::isfinite(strike) || !(strike > 0.0) ||
+        !std::isfinite(strike * bounds.discount_max) ||
+        !std::isfinite(strike * bounds.discount_min)) {
+      return false;
+    }
+    if (i > 0u && !(strike > nodes[i - 1u].strike)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// validate_node's bounds, each widened by the allowance of the prices it reads. Every
+// refusal here implies the accurate node fails the same bound: |accurate - Fast| <=
+// allowance per price.
+[[nodiscard]] std::optional<std::string> screen_node(const AmericanPriceNode &node,
+                                                     const AmericanPriceBounds &bounds,
+                                                     std::size_t index) {
+  const double tol = price_tolerance(bounds.spot, node.strike);
+  const double ec = fast_allowance(node.call);
+  const double ep = fast_allowance(node.put);
+  if (node.call + ec < std::max(bounds.spot - node.strike, 0.0) - tol ||
+      node.put + ep < std::max(node.strike - bounds.spot, 0.0) - tol) {
+    return screen_reason(index, "American intrinsic bound violated");
+  }
+  if (node.call - ec - bounds.prepaid_max > tol ||
+      node.put - ep - node.strike * bounds.discount_max > tol) {
+    return screen_reason(index, "American upper price bound violated");
+  }
+  const double difference = node.call - node.put;
+  const double lower = bounds.prepaid_min - node.strike * bounds.discount_max;
+  const double upper = bounds.prepaid_max - node.strike * bounds.discount_min;
+  if (difference + ec + ep < lower - tol || difference - ec - ep > upper + tol) {
+    return screen_reason(index, "affine call-minus-put bound violated");
+  }
+  return std::nullopt;
+}
+
+// validate_vertical_spreads + validate_call_lower_slopes, widened. Each running extremum
+// is taken over the allowance-shifted Fast prices on the side that weakens the check,
+// so a refusal names a pair (i, j) whose accurate prices violate the same inequality.
+[[nodiscard]] std::optional<std::string>
+screen_vertical_spreads(std::span<const AmericanPriceNode> p, const AmericanPriceBounds &bounds) {
+  const double dmax = bounds.discount_max;
+  double call_high_min = p.front().call + fast_allowance(p.front().call); // min (C + e)
+  double put_low_max = p.front().put - fast_allowance(p.front().put);     // max (P - e)
+  std::size_t low = 0u;  // argmin over j of (P_j + e_j) - dmax * K_j
+  std::size_t high = 0u; // argmax over j of (C_j - e_j) + dmax * K_j
+  for (std::size_t i = 1u; i < p.size(); ++i) {
+    const AmericanPriceNode &node = p[i];
+    const double tol = price_tolerance(bounds.spot, node.strike);
+    const double ec = fast_allowance(node.call);
+    const double ep = fast_allowance(node.put);
+    const AmericanPriceNode &l = p[low];
+    const AmericanPriceNode &h = p[high];
+    const double l_high = l.put + fast_allowance(l.put);
+    const double h_low = h.call - fast_allowance(h.call);
+    const double put_change = (node.put - ep) - l_high - dmax * (node.strike - l.strike);
+    const double call_change = (node.call + ec) - h_low + dmax * (node.strike - h.strike);
+    if ((node.call - ec) - call_high_min > tol || put_low_max - (node.put + ep) > tol ||
+        put_change > tol || call_change < -tol) {
+      return screen_reason(i, "American vertical-spread slope bound violated");
+    }
+    call_high_min = std::min(call_high_min, node.call + ec);
+    put_low_max = std::max(put_low_max, node.put - ep);
+    if ((node.put + ep) - l_high - dmax * (node.strike - l.strike) < 0.0) {
+      low = i;
+    }
+    if ((node.call - ec) - h_low + dmax * (node.strike - h.strike) > 0.0) {
+      high = i;
+    }
+  }
+  return std::nullopt;
+}
+
+// validate_convex_envelope, widened. The chord between two Fast hull points lies above
+// the WHOLE accurate slice's lower envelope once shifted by the larger allowance of its
+// ends, so a node above it by more than tol + its own allowance violates convexity in
+// the accurate prices too — whatever nodes the prefix has not priced yet.
+[[nodiscard]] std::optional<std::string>
+screen_convexity(std::span<const AmericanPriceNode> p, const AmericanPriceBounds &bounds,
+                 Side side, std::vector<std::size_t> &hull) {
+  const auto value = [side](const AmericanPriceNode &node) noexcept {
+    return side == Side::Call ? node.call : node.put;
+  };
+  hull.clear();
+  for (std::size_t i = 0u; i < p.size(); ++i) {
+    while (hull.size() >= 2u) {
+      const AmericanPriceNode &left = p[hull[hull.size() - 2u]];
+      const AmericanPriceNode &middle = p[hull.back()];
+      const AmericanPriceNode &right = p[i];
+      const double fraction = (middle.strike - left.strike) / (right.strike - left.strike);
+      if (value(middle) <= std::lerp(value(left), value(right), fraction)) break;
+      hull.pop_back();
+    }
+    hull.push_back(i);
+  }
+  for (std::size_t segment = 1u; segment < hull.size(); ++segment) {
+    const AmericanPriceNode &left = p[hull[segment - 1u]];
+    const AmericanPriceNode &right = p[hull[segment]];
+    const double chord_allowance =
+        std::max(fast_allowance(value(left)), fast_allowance(value(right)));
+    for (std::size_t i = hull[segment - 1u] + 1u; i < hull[segment]; ++i) {
+      const AmericanPriceNode &node = p[i];
+      const double fraction = (node.strike - left.strike) / (right.strike - left.strike);
+      const double envelope = std::lerp(value(left), value(right), fraction);
+      const double slack = fast_allowance(value(node)) + chord_allowance;
+      if (value(node) - envelope > price_tolerance(bounds.spot, node.strike) + slack) {
+        return screen_reason(i, "call/put convexity violated above the global lower convex "
+                                "envelope");
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+// Every widened check of create() on the priced prefix; node bounds only for the
+// nodes priced since the last call (`fresh_from`).
+[[nodiscard]] std::optional<std::string>
+screen_prefix(std::span<const AmericanPriceNode> prefix, std::size_t fresh_from,
+              const AmericanPriceBounds &bounds, std::vector<std::size_t> &hull) {
+  for (std::size_t i = fresh_from; i < prefix.size(); ++i) {
+    if (auto why = screen_node(prefix[i], bounds, i)) {
+      return why;
+    }
+  }
+  if (auto why = screen_vertical_spreads(prefix, bounds)) {
+    return why;
+  }
+  if (auto why = screen_convexity(prefix, bounds, Side::Call, hull)) {
+    return why;
+  }
+  return screen_convexity(prefix, bounds, Side::Put, hull);
+}
+
+// The Fast screen: prices chunk by chunk in strike order and checks every priced
+// prefix. Returns a certain violation's message, or nullopt (the accurate pass decides),
+// including when a Fast price errors or is not finite. `prices` is scratch here.
+[[nodiscard]] std::optional<std::string>
+fast_screen(std::span<const AmericanCertificationNode> nodes,
+            const AmericanCertificationModel &model, const AmericanPriceBounds &bounds,
+            const std::optional<AlOpts> &opts, CertificationKernel kernel,
+            std::span<AmericanPriceNode> prices, AmericanCertificationStats &stats) {
+  NodePricer fast(nodes, bounds.spot, model, al_fast_profile(opts), kernel);
+  std::vector<std::size_t> hull;
+  hull.reserve(nodes.size());
+  std::optional<std::string> verdict;
+  for (std::size_t done = 0; done < nodes.size();) {
+    const std::size_t next = std::min(nodes.size(), done + kCertificationScreenChunk);
+    if (!fast.price(done, next, prices)) {
+      break;
+    }
+    bool finite = true;
+    for (std::size_t i = done; i < next; ++i) {
+      finite = finite && std::isfinite(prices[i].call) && std::isfinite(prices[i].put);
+    }
+    if (!finite) {
+      break;
+    }
+    verdict = screen_prefix(prices.first(next), done, bounds, hull);
+    if (verdict) {
+      break;
+    }
+    done = next;
+  }
+  stats.fast_prices = fast.priced();
+  return verdict;
+}
+
 } // namespace
 
 AmericanPriceSlice::AmericanPriceSlice(std::vector<AmericanPriceNode> nodes,
@@ -223,6 +536,37 @@ Result<AmericanPriceSlice> AmericanPriceSlice::create(std::span<const AmericanPr
   ATX_TRY_VOID(validate_convex_envelope(nodes, bounds, Side::Call, hull));
   ATX_TRY_VOID(validate_convex_envelope(nodes, bounds, Side::Put, hull));
   return Ok(AmericanPriceSlice(std::vector<AmericanPriceNode>(nodes.begin(), nodes.end()), bounds));
+}
+
+Result<AmericanPriceSlice> AmericanPriceSlice::create(
+    std::span<const AmericanCertificationNode> nodes, const AmericanCertificationModel &model,
+    const AmericanPriceBounds &bounds, CertificationKernel kernel, CertificationScreen screen,
+    AmericanCertificationStats *stats) {
+  AmericanCertificationStats local;
+  AmericanCertificationStats &st = (stats != nullptr) ? *stats : local;
+  st = AmericanCertificationStats{};
+  const bool kernel_ok =
+      kernel == CertificationKernel::Scalar || kernel == CertificationKernel::Batched;
+  const bool screen_ok = screen == CertificationScreen::AccurateOnly ||
+                         screen == CertificationScreen::FastThenAccurate;
+  if (!kernel_ok || !screen_ok) {
+    return Err(ErrorCode::InvalidArgument,
+               "AmericanPriceSlice: unknown certification kernel or screen");
+  }
+  const std::optional<AlOpts> opts =
+      (model.al_opts != nullptr) ? std::optional<AlOpts>(*model.al_opts) : std::nullopt;
+  std::vector<AmericanPriceNode> prices(nodes.size());
+  if (screen == CertificationScreen::FastThenAccurate && screenable(nodes, bounds)) {
+    if (auto why = fast_screen(nodes, model, bounds, opts, kernel, prices, st)) {
+      st.screen_refused = true;
+      return Err(ErrorCode::InvalidArgument, std::move(*why));
+    }
+  }
+  NodePricer accurate(nodes, bounds.spot, model, opts, kernel);
+  const Status priced = accurate.price(0u, nodes.size(), prices);
+  st.accurate_prices = accurate.priced();
+  ATX_TRY_VOID(priced);
+  return create(prices, bounds);
 }
 
 std::optional<double> AmericanPriceSlice::price(double strike, Side side) const noexcept {

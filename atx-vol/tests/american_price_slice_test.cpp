@@ -2,23 +2,38 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/api/fitting/american_price_slice.hpp"
+#include "atx/vol/api/pricing/american.hpp"
 
 namespace {
 
+using atx::vol::al_fast_opts;
+using atx::vol::AlOpts;
+using atx::vol::AmericanCertificationModel;
+using atx::vol::AmericanCertificationNode;
+using atx::vol::AmericanCertificationStats;
 using atx::vol::AmericanPriceBounds;
 using atx::vol::AmericanPriceNode;
 using atx::vol::AmericanPriceSlice;
+using atx::vol::andersen_lake;
+using atx::vol::CertificationKernel;
+using atx::vol::CertificationScreen;
 using atx::vol::check_american_calendar;
 using atx::vol::check_nondividend_american;
+using atx::vol::kCertificationFastAllowance;
+using atx::vol::kCertificationScreenChunk;
 using atx::vol::Side;
 
 constexpr AmericanPriceBounds kBounds{100.0, 1.0, 1.0, 100.0, 100.0};
@@ -431,6 +446,298 @@ TEST(AmericanPriceSlice, NondividendUpperBoundFindsHiddenScaledKnotViolation) {
   ASSERT_FALSE(check.has_value());
   EXPECT_NE(check.error().message().find("scaled European upper bound"), std::string::npos);
   EXPECT_NE(check.error().message().find("99.000000"), std::string::npos);
+}
+
+// ── Model-priced certification (L2b al-geometry, 2026-10-19) ─────────────
+
+constexpr double kCertSpot = 100.0;
+constexpr double kCertT = 0.25;
+constexpr double kCertRate = 0.05;
+
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+[[nodiscard]] std::optional<AlOpts> opts_of(const AmericanCertificationModel &model) {
+  return model.al_opts != nullptr ? std::optional<AlOpts>(*model.al_opts) : std::nullopt;
+}
+
+// The bounds the quote-slice certification derives (quote_slice.cpp certify_and_serve):
+// the unit-straddling discount range and the yield range's prepaid range.
+[[nodiscard]] AmericanPriceBounds model_bounds(std::span<const AmericanCertificationNode> nodes) {
+  double q_min = nodes.front().yield;
+  double q_max = q_min;
+  for (const auto &node : nodes) {
+    q_min = std::min(q_min, node.yield);
+    q_max = std::max(q_max, node.yield);
+  }
+  const double discount = std::exp(-kCertRate * kCertT);
+  return {kCertSpot, std::min(1.0, discount), std::max(1.0, discount),
+          kCertSpot * std::exp(-std::max(q_max, 0.0) * kCertT),
+          kCertSpot * std::exp(std::max(-q_min, 0.0) * kCertT)};
+}
+
+// What every caller composes today: andersen_lake per price (NaN where it errors).
+[[nodiscard]] std::vector<AmericanPriceNode>
+model_prices(std::span<const AmericanCertificationNode> nodes, const std::optional<AlOpts> &opts) {
+  std::vector<AmericanPriceNode> prices;
+  for (const auto &n : nodes) {
+    const auto call =
+        andersen_lake(kCertSpot, n.strike, kCertT, n.sigma, kCertRate, n.yield, Side::Call, opts);
+    const auto put =
+        andersen_lake(kCertSpot, n.strike, kCertT, n.sigma, kCertRate, n.yield, Side::Put, opts);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    prices.push_back({n.strike, call ? *call : nan, put ? *put : nan});
+  }
+  return prices;
+}
+
+// A clean smile on `count` strikes from 70, 2.5 apart, at one yield.
+[[nodiscard]] std::vector<AmericanCertificationNode> smile_nodes(std::size_t count, double yield) {
+  std::vector<AmericanCertificationNode> nodes;
+  for (std::size_t i = 0; i < count; ++i) {
+    const double strike = 70.0 + 2.5 * static_cast<double>(i);
+    const double m = std::log(strike / kCertSpot);
+    nodes.push_back({strike, 0.25 + 0.3 * m * m, yield});
+  }
+  return nodes;
+}
+
+[[nodiscard]] bool same_nodes(const AmericanPriceSlice &a, const AmericanPriceSlice &b) {
+  if (a.nodes().size() != b.nodes().size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.nodes().size(); ++i) {
+    const auto &x = a.nodes()[i];
+    const auto &y = b.nodes()[i];
+    if (!same_bits(x.strike, y.strike) || !same_bits(x.call, y.call) || !same_bits(x.put, y.put)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Both accepted with bit-identical nodes, or both refused with the same message.
+[[nodiscard]] bool same_verdict(const atx::core::Result<AmericanPriceSlice> &a,
+                                const atx::core::Result<AmericanPriceSlice> &b) {
+  if (a.has_value() != b.has_value()) {
+    return false;
+  }
+  if (a) {
+    return same_nodes(*a, *b);
+  }
+  return a.error().code() == b.error().code() && a.error().message() == b.error().message();
+}
+
+TEST(AmericanCertification, DefaultOverloadEqualsPricingThenCreate) {
+  const std::vector<std::optional<AlOpts>> schemes{std::nullopt, al_fast_opts()};
+  for (const auto &opts : schemes) {
+    const AmericanCertificationModel model{
+        .T = kCertT, .rate = kCertRate, .al_opts = opts ? &*opts : nullptr};
+    auto clean = smile_nodes(25, 0.01);
+    auto spiked = clean;
+    spiked[12].sigma = 0.6; // a butterfly no price-input create() admits
+    for (const auto &nodes : {clean, spiked}) {
+      const AmericanPriceBounds bounds = model_bounds(nodes);
+      const auto want = AmericanPriceSlice::create(model_prices(nodes, opts_of(model)), bounds);
+      AmericanCertificationStats stats;
+      const auto got = AmericanPriceSlice::create(nodes, model, bounds,
+                                                  CertificationKernel::Scalar,
+                                                  CertificationScreen::AccurateOnly, &stats);
+      EXPECT_TRUE(same_verdict(want, got))
+          << (want ? std::string("accepted") : want.error().to_string()) << " | "
+          << (got ? std::string("accepted") : got.error().to_string());
+      EXPECT_EQ(stats.accurate_prices, 2u * nodes.size());
+      EXPECT_EQ(stats.fast_prices, 0u);
+      EXPECT_FALSE(stats.screen_refused);
+      // The defaulted trailing parameters are the same path.
+      EXPECT_TRUE(same_verdict(want, AmericanPriceSlice::create(nodes, model, bounds)));
+    }
+    EXPECT_TRUE(AmericanPriceSlice::create(model_prices(clean, opts_of(model)),
+                                           model_bounds(clean))
+                    .has_value());
+    EXPECT_FALSE(AmericanPriceSlice::create(model_prices(spiked, opts_of(model)),
+                                            model_bounds(spiked))
+                     .has_value());
+  }
+}
+
+TEST(AmericanCertification, BatchedKernelIsBitIdenticalToScalar) {
+  // Yields that change in runs, return to an earlier value, and come as singletons: the
+  // batched kernel re-prepares its one geometry per run and must never price a node on
+  // another run's geometry.
+  auto varying = smile_nodes(30, 0.01);
+  for (std::size_t i = 0; i < varying.size(); ++i) {
+    const double step = (i < 8u) ? 0.0 : (i < 13u) ? 1.0e-4 : (i == 17u || i == 21u) ? 2.0e-4 : 0.0;
+    varying[i].yield = 0.01 + step;
+  }
+  auto spiked = smile_nodes(30, 0.01);
+  spiked[9].sigma = 0.7;
+  const std::vector<std::vector<AmericanCertificationNode>> slices{smile_nodes(30, 0.01), varying,
+                                                                   spiked};
+  const std::vector<std::optional<AlOpts>> schemes{std::nullopt, al_fast_opts()};
+  std::size_t accepted = 0;
+  for (const auto &opts : schemes) {
+    const AmericanCertificationModel model{
+        .T = kCertT, .rate = kCertRate, .al_opts = opts ? &*opts : nullptr};
+    for (const auto &nodes : slices) {
+      const AmericanPriceBounds bounds = model_bounds(nodes);
+      for (const auto screen :
+           {CertificationScreen::AccurateOnly, CertificationScreen::FastThenAccurate}) {
+        AmericanCertificationStats scalar_stats;
+        AmericanCertificationStats batched_stats;
+        const auto scalar = AmericanPriceSlice::create(nodes, model, bounds,
+                                                       CertificationKernel::Scalar, screen,
+                                                       &scalar_stats);
+        const auto batched = AmericanPriceSlice::create(nodes, model, bounds,
+                                                        CertificationKernel::Batched, screen,
+                                                        &batched_stats);
+        EXPECT_TRUE(same_verdict(scalar, batched))
+            << (scalar ? std::string("accepted") : scalar.error().to_string()) << " | "
+            << (batched ? std::string("accepted") : batched.error().to_string());
+        EXPECT_EQ(scalar_stats.accurate_prices, batched_stats.accurate_prices);
+        EXPECT_EQ(scalar_stats.fast_prices, batched_stats.fast_prices);
+        EXPECT_EQ(scalar_stats.screen_refused, batched_stats.screen_refused);
+        accepted += scalar.has_value() ? 1u : 0u;
+      }
+    }
+  }
+  EXPECT_EQ(accepted, 8u); // the clean and the varying-yield slices, both schemes and screens
+}
+
+// Review Focus #1 (a): a convexity violation larger than the tolerance but within the
+// Fast allowance cannot be proven by the screen, so the accurate kernel confirms it
+// (2N accurate prices) and the refusal is the accurate create()'s own.
+TEST(AmericanCertification, FastScreenConfirmsASubAllowanceViolationAccurately) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  std::vector<AmericanCertificationNode> nodes{
+      {95.0, 0.3, 0.01}, {100.0, 0.3, 0.01}, {105.0, 0.3, 0.01}};
+  // Raise the middle node's yield (its put up, its call down) until the accurate put
+  // sits above the 95-105 chord by tol + half the screen's slack.
+  const auto excess = [&nodes](double q) {
+    nodes[1].yield = q;
+    const auto p = model_prices(nodes, std::nullopt);
+    const auto allowance = [](double x) { return kCertificationFastAllowance * std::max(x, 1.0); };
+    const double slack = allowance(p[1].put) + std::max(allowance(p[0].put), allowance(p[2].put));
+    const double tol = 1.0e-8 + 1.0e-9 * kCertSpot;
+    const double above = p[1].put - std::lerp(p[0].put, p[2].put, 0.5) - tol;
+    return std::pair{above - 0.5 * slack, slack};
+  };
+  double lo = 0.01;
+  double hi = 0.5;
+  ASSERT_LT(excess(lo).first, 0.0);
+  ASSERT_GT(excess(hi).first, 0.0);
+  bool found = false;
+  for (int it = 0; it < 200 && !found; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    const auto [f, slack] = excess(mid);
+    if (std::abs(f) < 0.3 * slack) {
+      found = true;
+    } else if (f < 0.0) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  ASSERT_TRUE(found) << "no yield puts the violation inside the screen's slack";
+  const AmericanPriceBounds bounds = model_bounds(nodes);
+  AmericanCertificationStats accurate_stats;
+  const auto accurate = AmericanPriceSlice::create(nodes, model, bounds,
+                                                   CertificationKernel::Scalar,
+                                                   CertificationScreen::AccurateOnly,
+                                                   &accurate_stats);
+  ASSERT_FALSE(accurate.has_value());
+  EXPECT_NE(accurate.error().message().find("convexity"), std::string::npos)
+      << accurate.error().message();
+  for (const auto kernel : {CertificationKernel::Scalar, CertificationKernel::Batched}) {
+    AmericanCertificationStats stats;
+    const auto screened = AmericanPriceSlice::create(
+        nodes, model, bounds, kernel, CertificationScreen::FastThenAccurate, &stats);
+    ASSERT_FALSE(screened.has_value());
+    EXPECT_EQ(screened.error().message(), accurate.error().message());
+    EXPECT_FALSE(stats.screen_refused);
+    EXPECT_EQ(stats.fast_prices, 2u * nodes.size());
+    EXPECT_EQ(stats.accurate_prices, 2u * nodes.size());
+  }
+}
+
+// Review Focus #1 (b): a violation beyond the allowance is refused by the screen on
+// the priced prefix, without a single accurate price.
+TEST(AmericanCertification, FastScreenRefusesACertainViolationWithoutAccuratePrices) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  auto nodes = smile_nodes(40, 0.01);
+  nodes[3].yield = 0.3; // its put jumps above its right neighbour's
+  const AmericanPriceBounds bounds = model_bounds(nodes);
+  AmericanCertificationStats accurate_stats;
+  const auto accurate = AmericanPriceSlice::create(nodes, model, bounds,
+                                                   CertificationKernel::Scalar,
+                                                   CertificationScreen::AccurateOnly,
+                                                   &accurate_stats);
+  ASSERT_FALSE(accurate.has_value()); // the verdicts agree
+  EXPECT_EQ(accurate_stats.accurate_prices, 2u * nodes.size());
+  for (const auto kernel : {CertificationKernel::Scalar, CertificationKernel::Batched}) {
+    AmericanCertificationStats stats;
+    const auto screened = AmericanPriceSlice::create(
+        nodes, model, bounds, kernel, CertificationScreen::FastThenAccurate, &stats);
+    ASSERT_FALSE(screened.has_value());
+    EXPECT_EQ(screened.error().code(), atx::core::ErrorCode::InvalidArgument);
+    EXPECT_NE(screened.error().message().find("certification screen"), std::string::npos)
+        << screened.error().message();
+    EXPECT_TRUE(stats.screen_refused);
+    EXPECT_EQ(stats.accurate_prices, 0u);
+    // Refused on the first chunk's prefix: the other 32 nodes are never priced.
+    EXPECT_EQ(stats.fast_prices, 2u * kCertificationScreenChunk);
+  }
+}
+
+TEST(AmericanCertification, AcceptedSliceUnderTheScreenEqualsAccurateOnly) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  const auto nodes = smile_nodes(25, 0.01);
+  const AmericanPriceBounds bounds = model_bounds(nodes);
+  const auto accurate = AmericanPriceSlice::create(nodes, model, bounds);
+  ASSERT_TRUE(accurate.has_value()) << accurate.error().to_string();
+  AmericanCertificationStats stats;
+  const auto screened =
+      AmericanPriceSlice::create(nodes, model, bounds, CertificationKernel::Scalar,
+                                 CertificationScreen::FastThenAccurate, &stats);
+  ASSERT_TRUE(screened.has_value()) << screened.error().to_string();
+  EXPECT_TRUE(same_nodes(*accurate, *screened));
+  EXPECT_FALSE(stats.screen_refused);
+  EXPECT_EQ(stats.fast_prices, 2u * nodes.size());
+  EXPECT_EQ(stats.accurate_prices, 2u * nodes.size());
+}
+
+TEST(AmericanCertification, MalformedInputKeepsCreatesOwnErrorUnderTheScreen) {
+  const AmericanCertificationModel model{.T = kCertT, .rate = kCertRate, .al_opts = nullptr};
+  const auto clean = smile_nodes(10, 0.01);
+  auto unordered = clean;
+  std::swap(unordered[4], unordered[5]);
+  auto refused = clean;
+  refused[6].sigma = std::numeric_limits<double>::quiet_NaN(); // andersen_lake refuses
+  AmericanPriceBounds bad_bounds = model_bounds(clean);
+  bad_bounds.discount_max = 0.5; // must contain one
+  const std::vector<std::pair<std::vector<AmericanCertificationNode>, AmericanPriceBounds>> cases{
+      {unordered, model_bounds(unordered)}, {refused, model_bounds(clean)}, {clean, bad_bounds}};
+  for (const auto &[nodes, bounds] : cases) {
+    const auto accurate = AmericanPriceSlice::create(nodes, model, bounds);
+    AmericanCertificationStats stats;
+    const auto screened =
+        AmericanPriceSlice::create(nodes, model, bounds, CertificationKernel::Batched,
+                                   CertificationScreen::FastThenAccurate, &stats);
+    ASSERT_FALSE(accurate.has_value());
+    EXPECT_TRUE(same_verdict(accurate, screened))
+        << accurate.error().to_string() << " | "
+        << (screened ? std::string("accepted") : screened.error().to_string());
+    EXPECT_FALSE(stats.screen_refused);
+  }
+  const auto pricing = AmericanPriceSlice::create(refused, model, model_bounds(clean));
+  ASSERT_FALSE(pricing.has_value());
+  EXPECT_NE(pricing.error().message().find("node 6: model pricing failed"), std::string::npos)
+      << pricing.error().message();
+  const auto bad_kernel = AmericanPriceSlice::create(clean, model, model_bounds(clean),
+                                                     static_cast<CertificationKernel>(7));
+  ASSERT_FALSE(bad_kernel.has_value());
+  EXPECT_EQ(bad_kernel.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 } // namespace
