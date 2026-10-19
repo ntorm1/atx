@@ -2312,46 +2312,14 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
 // AlSolveStatus and the three entry points below (al_solve_put_boundary[_warm],
 // al_put_price_from_boundary) are part of the boundary seam (amer) reused by
 // boundary_interp.cpp. The enum's declaration is in american_boundary.hpp.
-} // namespace
-// linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
-namespace amer {
 
-// S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
-// `bnd`/`ws` hold a boundary ready for al_put_price_from_boundary — NOT necessarily
-// a CONVERGED one; the sweep budget is fixed and Ok is returned however far it got.
-// `resid_out` carries that evidence; see AlSolveResid in american_boundary.hpp.
-[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma, double r,
-                                                  double q, const AlScheme &sch, AlBoundary &bnd,
-                                                  AlWorkspace &ws, bool specialize,
-                                                  AlSolveResid *resid_out) noexcept { // hdr dflts
-  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
-  // Publish the pessimistic evidence up front so EVERY early return below — the
-  // pre-sweep Collapsed/TableMissing corners included — leaves the caller holding a
-  // report that reads "not converged" rather than a default-constructed one.
-  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
-  if (resid_out != nullptr) {
-    *resid_out = rep;
-  }
-  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
-  if (!(bnd.xmax > 0.0)) {
-    // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
-    return AlSolveStatus::Collapsed;
-  }
-  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
-  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
-  if (!fp || !fp->ok || !pr || !pr->ok) {
-    return AlSolveStatus::TableMissing;
-  }
-  ws.specialize = specialize;
-  ws.fast = (sch.profile == AlProfile::Fast);
-  ws.qx_fp = fp->nodes.data();
-  ws.qw_fp = fp->weights.data();
-  ws.n_quad_fp = sch.n_quad_fp;
-  ws.qx_price = pr->nodes.data();
-  ws.qw_price = pr->weights.data();
-  ws.n_quad_price = sch.n_quad_price;
-  al_bind_geometry(bnd, ws, sigma, r, q);
-
+// The seed + Jacobi-Newton / fixed-point schedule of a cold boundary solve, from
+// geometry already bound for (sigma, r, q): the tail al_solve_put_boundary and
+// al_solve_put_boundary_prepared share, so a prepared solve runs the very same code.
+[[nodiscard]] AlSolveStatus al_seed_and_sweep(double sigma, double r, double q,
+                                              const AlScheme &sch, AlBoundary &bnd,
+                                              AlWorkspace &ws, AlSolveResid rep,
+                                              AlSolveResid *resid_out) noexcept {
   // A6: the scheme selects the cold critical-boundary seed. QdPlus (Li 2010)
   // steepens the QD/BAW exponent near expiry where the frozen-θ approximation is
   // worst; it reaches the SAME converged fixed point as BAW but from a closer
@@ -2407,6 +2375,136 @@ namespace amer {
     *resid_out = rep;
   }
   return AlSolveStatus::Ok;
+}
+
+// Process-unique ids for prepared orientations (AlOrientedGeometry::id): a retained
+// solve scratch compares ids, never addresses, so a geometry rebuilt in place at the
+// same address can never be mistaken for the one the scratch was loaded from.
+std::atomic<std::uint64_t> g_oriented_geometry_ids{0};
+
+} // namespace
+// linkage in atx::vol::amer; reopened right after al_put_price_from_boundary.
+
+namespace amer {
+
+// S-independent: init nodes, bind quadrature, seed + iterate the boundary. On Ok,
+// `bnd`/`ws` hold a boundary ready for al_put_price_from_boundary — NOT necessarily
+// a CONVERGED one; the sweep budget is fixed and Ok is returned however far it got.
+// `resid_out` carries that evidence; see AlSolveResid in american_boundary.hpp.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary(double K, double T, double sigma, double r,
+                                                  double q, const AlScheme &sch, AlBoundary &bnd,
+                                                  AlWorkspace &ws, bool specialize,
+                                                  AlSolveResid *resid_out) noexcept { // hdr dflts
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
+  // Publish the pessimistic evidence up front so EVERY early return below — the
+  // pre-sweep Collapsed/TableMissing corners included — leaves the caller holding a
+  // report that reads "not converged" rather than a default-constructed one.
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
+    return AlSolveStatus::Collapsed;
+  }
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  ws.specialize = specialize;
+  ws.fast = (sch.profile == AlProfile::Fast);
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
+  return al_seed_and_sweep(sigma, r, q, sch, bnd, ws, rep, resid_out);
+}
+
+// Prepare one orientation: exactly al_solve_put_boundary's prefix (node grid, table
+// pointers, flags, static bind) at K = 1, so the stored geo_alpha[j] is 1.0 * the
+// bind's exp — the exp itself — and a solve multiplies it by its own strike.
+void al_prepare_oriented_geometry(double T, double rate, double yield, const AlScheme &sch,
+                                  AlOrientedGeometry &g) noexcept {
+  g.id = 0;
+  g.tables_ok = false;
+  g.sch = sch;
+  g.rate = rate;
+  g.yield = yield;
+  if (!(std::isfinite(T) && T > 0.0 && std::isfinite(rate) && std::isfinite(yield))) {
+    return;
+  }
+  al_init_nodes(g.grid, sch.n_boundary, T, /*K=*/1.0, rate, yield);
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  g.tables_ok = fp != nullptr && fp->ok && pr != nullptr && pr->ok;
+  g.alpha_exp.fill(0.0);
+  if (g.tables_ok) {
+    AlWorkspace &ws = g.ws;
+    ws.specialize = true;
+    ws.fast = (sch.profile == AlProfile::Fast);
+    ws.qx_fp = fp->nodes.data();
+    ws.qw_fp = fp->weights.data();
+    ws.n_quad_fp = sch.n_quad_fp;
+    ws.qx_price = pr->nodes.data();
+    ws.qw_price = pr->weights.data();
+    ws.n_quad_price = sch.n_quad_price;
+    ws.geo_static_bound = false;
+    al_bind_geometry_static(g.grid, ws, rate, yield);
+    if (ws.geo_static_bound) {
+      for (std::uint16_t j = 1; j < g.grid.n; ++j) {
+        if (g.grid.tau[j] > 1.0e-14) {
+          g.alpha_exp[j] = ws.geo_alpha[j]; // 1.0 * exp(-(rate - yield) * tau_j)
+        }
+      }
+    }
+  }
+  g.id = g_oriented_geometry_ids.fetch_add(1, std::memory_order_relaxed) + 1u;
+}
+
+// al_solve_put_boundary from a prepared orientation. The order of the early returns,
+// the rep published up front and the probe zone match the cold solve.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_prepared(const AlOrientedGeometry &g, double K,
+                                                           double sigma, AlBoundary &bnd,
+                                                           AlWorkspace &ws, std::uint64_t *loaded,
+                                                           AlSolveResid *resid_out) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
+  AlSolveResid rep{/*resid=*/1.0, /*tol=*/g.sch.tol};
+  if (resid_out != nullptr) {
+    *resid_out = rep;
+  }
+  if (loaded == nullptr || *loaded != g.id) {
+    // The sweeps never write the static part, so one load serves every later solve
+    // of this orientation through the same scratch.
+    bnd = g.grid;
+    ws = g.ws;
+    if (loaded != nullptr) {
+      *loaded = g.id;
+    }
+  }
+  // al_init_nodes' strike-dependent fields; y is zeroed as it zeroes it.
+  bnd.K = K;
+  bnd.xmax = al_xmax_put(K, g.rate, g.yield);
+  bnd.y.fill(0.0);
+  if (!(bnd.xmax > 0.0)) {
+    return AlSolveStatus::Collapsed;
+  }
+  if (!g.tables_ok) {
+    return AlSolveStatus::TableMissing;
+  }
+  if (ws.geo_static_bound) {
+    for (std::uint16_t j = 1; j < bnd.n; ++j) {
+      if (bnd.tau[j] > 1.0e-14) {
+        ws.geo_alpha[j] = K * g.alpha_exp[j]; // == bnd.K * std::exp(-(r - q) * tau)
+      }
+    }
+  }
+  al_bind_geometry_sigma(bnd, ws, sigma, g.rate, g.yield);
+  return al_seed_and_sweep(sigma, g.rate, g.yield, g.sch, bnd, ws, rep, resid_out);
 }
 
 // Init-ONLY path for the AVX2 boundary batch (Task A5; supersedes A1's
@@ -2815,15 +2913,13 @@ constexpr const char *kDoubleContinuationMsg =
   return std::max(euro_lim, spot_intr > 0.0 ? spot_intr : 0.0);
 }
 
-// Shared core of the public andersen_lake entry point, parameterized on `specialize`
-// so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
-// kernel for the SAME scheme and prove the specialized path is bit-identical.
-[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T, double sigma,
-                                                double r, double q, Side side,
-                                                const std::optional<AlOpts> &opts, bool specialize,
-                                                std::optional<detail::AlSeedMode> seed_override =
-                                                    std::nullopt,
-                                                std::uint16_t n_quad_price_override = 0) {
+// The andersen_lake decision tree — validation, the degenerate T / sigma closed forms
+// and the regime switch — with the American arm supplied by the caller. The cold
+// entry point and the prepared-geometry overload share it, so they cannot drift.
+template <class AmericanArm>
+[[nodiscard]] Result<double> andersen_lake_dispatch(double S, double K, double T, double sigma,
+                                                    double r, double q, Side side,
+                                                    AmericanArm &&american) {
   if (!(K > 0.0 && S > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake: S and K must be > 0");
   }
@@ -2863,22 +2959,93 @@ constexpr const char *kDoubleContinuationMsg =
   case ExerciseRegime::American:
     break;
   }
+  return american();
+}
 
-  AlScheme sch = scheme_from_opts(opts);
-  // A6 measurement seam: force a specific seed / premium-quad order on top of the
-  // preset so the shootout can A/B (BAW vs QD+, 16 vs 8 premium nodes) in one
-  // build. Both overrides are inert (nullopt / 0) on every production call.
-  if (seed_override) {
-    sch.seed = *seed_override;
+// Shared core of the public andersen_lake entry point, parameterized on `specialize`
+// so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
+// kernel for the SAME scheme and prove the specialized path is bit-identical.
+[[nodiscard]] Result<double> andersen_lake_core(double S, double K, double T, double sigma,
+                                                double r, double q, Side side,
+                                                const std::optional<AlOpts> &opts, bool specialize,
+                                                std::optional<detail::AlSeedMode> seed_override =
+                                                    std::nullopt,
+                                                std::uint16_t n_quad_price_override = 0) {
+  return andersen_lake_dispatch(S, K, T, sigma, r, q, side, [&]() -> Result<double> {
+    AlScheme sch = scheme_from_opts(opts);
+    // A6 measurement seam: force a specific seed / premium-quad order on top of the
+    // preset so the shootout can A/B (BAW vs QD+, 16 vs 8 premium nodes) in one
+    // build. Both overrides are inert (nullopt / 0) on every production call.
+    if (seed_override) {
+      sch.seed = *seed_override;
+    }
+    if (n_quad_price_override != 0) {
+      sch.n_quad_price = n_quad_price_override;
+    }
+    if (side == Side::Put) {
+      return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
+    }
+    // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
+    return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
+  });
+}
+
+// Maps a boundary-solve status to andersen_lake's error for it (Ok -> Ok()).
+[[nodiscard]] Status al_solve_status_error(AlSolveStatus st) {
+  switch (st) {
+  case AlSolveStatus::Collapsed:
+    return Err(ErrorCode::NotImplemented,
+               "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
+  case AlSolveStatus::TableMissing:
+    return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+  case AlSolveStatus::NotConverged:
+    return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
+  case AlSolveStatus::Ok:
+    break;
   }
-  if (n_quad_price_override != 0) {
-    sch.n_quad_price = n_quad_price_override;
-  }
-  if (side == Side::Put) {
-    return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
-  }
-  // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
-  return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
+  return Ok();
+}
+
+// The internal put of (side, S, K, r, q): McDonald-Schroder maps a call to the put
+// with spot K, strike S, rate q and yield r (the same swap andersen_lake_core makes).
+struct AlInternalPut {
+  double S;
+  double K;
+  double rate;
+  double yield;
+};
+[[nodiscard]] inline AlInternalPut al_internal_put(Side side, double S, double K, double r,
+                                                   double q) noexcept {
+  return side == Side::Put ? AlInternalPut{S, K, r, q} : AlInternalPut{K, S, q, r};
+}
+
+// The American arm of andersen_lake through a prepared orientation: the boundary
+// solve of al_solve_put (same statuses, same messages) and the same price call.
+[[nodiscard]] Result<double> al_solve_put_prepared(const AlOrientedGeometry &g,
+                                                   const AlInternalPut &p, double T, double sigma,
+                                                   AlPreparedScratch &s) {
+  ATX_TRY_VOID(al_solve_status_error(
+      al_solve_put_boundary_prepared(g, p.K, sigma, s.bnd, s.ws, &s.loaded)));
+  return Ok(al_put_price_from_boundary(s.bnd, s.ws, p.S, p.K, T, sigma, p.rate, p.yield));
+}
+
+// andersen_lake through an expiry geometry with caller-retained scratch (one per
+// orientation, so alternating calls and puts never reload).
+[[nodiscard]] Result<double> andersen_lake_prepared(const AlExpiryGeometry::Impl &g, double S,
+                                                    double K, double sigma, Side side,
+                                                    AlPreparedScratch &put_scratch,
+                                                    AlPreparedScratch &call_scratch) {
+  return andersen_lake_dispatch(S, K, g.T, sigma, g.r, g.q, side, [&]() -> Result<double> {
+    const AlInternalPut p = al_internal_put(side, S, K, g.r, g.q);
+    const AlOrientedGeometry &orient = (side == Side::Put) ? g.put : g.call;
+    if (orient.id == 0) {
+      // Not prepared for this regime (unreachable once dispatch said American with a
+      // valid expiry); the cold solve keeps the answer exact regardless.
+      return andersen_lake_core(S, K, g.T, sigma, g.r, g.q, side, g.opts, /*specialize=*/true);
+    }
+    return al_solve_put_prepared(orient, p, g.T, sigma,
+                                 side == Side::Put ? put_scratch : call_scratch);
+  });
 }
 
 // ── American Greeks (chain rule + analytic correction derivatives) ───────
@@ -3242,6 +3409,224 @@ AlOpts al_fast_profile(const std::optional<AlOpts> &opts) noexcept {
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
+}
+
+// ── Shared expiry geometry, boundary handle, price pack (L2b, 2026-10-18) ──
+
+AlExpiryGeometry::AlExpiryGeometry() : impl_(std::make_unique<Impl>()) {}
+AlExpiryGeometry::~AlExpiryGeometry() = default;
+AlExpiryGeometry::AlExpiryGeometry(AlExpiryGeometry &&) noexcept = default;
+AlExpiryGeometry &AlExpiryGeometry::operator=(AlExpiryGeometry &&) noexcept = default;
+
+void AlExpiryGeometry::prepare(double T, double r, double q, const std::optional<AlOpts> &opts) {
+  if (!impl_) {
+    impl_ = std::make_unique<Impl>();
+  }
+  Impl &g = *impl_;
+  g.T = T;
+  g.r = r;
+  g.q = q;
+  g.opts = opts;
+  g.sch = scheme_from_opts(opts);
+  g.put.id = 0;
+  g.call.id = 0;
+  // Only an orientation andersen_lake would actually solve is prepared: a valid,
+  // non-degenerate expiry and its side's American regime (put: rate r, yield q;
+  // call: the internal put's rate q, yield r).
+  const bool solvable = std::isfinite(T) && T > 1.0e-12 && std::isfinite(r) && std::isfinite(q);
+  if (solvable && classify_regime(/*rate=*/r, /*yield=*/q) == ExerciseRegime::American) {
+    al_prepare_oriented_geometry(T, r, q, g.sch, g.put);
+  }
+  if (solvable && classify_regime(/*rate=*/q, /*yield=*/r) == ExerciseRegime::American) {
+    al_prepare_oriented_geometry(T, q, r, g.sch, g.call);
+  }
+  g.prepared = true;
+}
+
+bool AlExpiryGeometry::prepared() const noexcept { return impl_ && impl_->prepared; }
+double AlExpiryGeometry::T() const noexcept {
+  return prepared() ? impl_->T : std::numeric_limits<double>::quiet_NaN();
+}
+double AlExpiryGeometry::r() const noexcept {
+  return prepared() ? impl_->r : std::numeric_limits<double>::quiet_NaN();
+}
+double AlExpiryGeometry::q() const noexcept {
+  return prepared() ? impl_->q : std::numeric_limits<double>::quiet_NaN();
+}
+
+AlExpiryGeometry prepare_al_geometry(double T, double r, double q,
+                                     const std::optional<AlOpts> &opts) {
+  AlExpiryGeometry g;
+  g.prepare(T, r, q, opts);
+  return g;
+}
+
+Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, double sigma,
+                             Side side) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  // Stateless: one scratch per call (loaded once, ~46 KB of stack).
+  AlPreparedScratch scratch;
+  return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch);
+}
+
+struct AlBoundaryHandle::State {
+  const AlExpiryGeometry::Impl *g = nullptr;
+  Side side = Side::Call;
+  double anchor = 0.0; // internal-put strike: the spot (call) or the strike (put)
+  double sigma = 0.0;
+  bool solved = false;   // solve() succeeded (boundary or a closed-form regime)
+  bool boundary = false; // ... and laid down a boundary in `scratch`
+  AlPreparedScratch scratch;
+};
+
+AlBoundaryHandle::AlBoundaryHandle(const AlExpiryGeometry &geometry, Side side, double anchor)
+    : st_(std::make_unique<State>()) {
+  st_->g = geometry.impl();
+  st_->side = side;
+  st_->anchor = anchor;
+}
+AlBoundaryHandle::~AlBoundaryHandle() = default;
+AlBoundaryHandle::AlBoundaryHandle(AlBoundaryHandle &&) noexcept = default;
+AlBoundaryHandle &AlBoundaryHandle::operator=(AlBoundaryHandle &&) noexcept = default;
+
+Status AlBoundaryHandle::solve(double sigma) {
+  if (!st_) {
+    return Err(ErrorCode::InvalidArgument, "AlBoundaryHandle: moved-from handle");
+  }
+  State &st = *st_;
+  st.solved = false;
+  st.boundary = false;
+  st.sigma = sigma;
+  if (st.g == nullptr || !st.g->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  const AlExpiryGeometry::Impl &g = *st.g;
+  // andersen_lake's own decision tree at S = K = anchor: validation and regime depend
+  // on neither beyond their sign, so this takes the branch every contract of the
+  // handle takes; the American arm solves the anchor's boundary once.
+  const Result<double> r = andersen_lake_dispatch(
+      st.anchor, st.anchor, g.T, sigma, g.r, g.q, st.side, [&]() -> Result<double> {
+        const AlOrientedGeometry &orient = (st.side == Side::Put) ? g.put : g.call;
+        if (orient.id == 0) {
+          return Err(ErrorCode::Internal, "AlBoundaryHandle: orientation not prepared");
+        }
+        ATX_TRY_VOID(al_solve_status_error(al_solve_put_boundary_prepared(
+            orient, st.anchor, sigma, st.scratch.bnd, st.scratch.ws, &st.scratch.loaded)));
+        st.boundary = true;
+        return Ok(0.0);
+      });
+  if (!r) {
+    return Err(r.error());
+  }
+  st.solved = true;
+  return Ok();
+}
+
+double AlBoundaryHandle::price_from_boundary(double S, double K) const noexcept {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  if (!st_ || !st_->solved) {
+    return kNaN;
+  }
+  const State &st = *st_;
+  const double internal_strike = (st.side == Side::Put) ? K : S;
+  if (std::bit_cast<std::uint64_t>(internal_strike) != std::bit_cast<std::uint64_t>(st.anchor)) {
+    return kNaN;
+  }
+  const AlExpiryGeometry::Impl &g = *st.g;
+  // SAFETY: the dispatch only builds an error message (which may allocate and throw)
+  // on paths that solve() already proved unreachable for this anchor and sigma; the
+  // catch keeps the noexcept contract regardless.
+  try {
+    const Result<double> r =
+        andersen_lake_dispatch(S, K, g.T, st.sigma, g.r, g.q, st.side, [&]() -> Result<double> {
+          if (!st.boundary) {
+            return Err(ErrorCode::Internal, "AlBoundaryHandle: no boundary");
+          }
+          const AlInternalPut p = al_internal_put(st.side, S, K, g.r, g.q);
+          return Ok(al_put_price_from_boundary(st.scratch.bnd, st.scratch.ws, p.S, p.K, g.T,
+                                               st.sigma, p.rate, p.yield));
+        });
+    return r ? *r : kNaN;
+  } catch (...) {
+    return kNaN;
+  }
+}
+
+namespace {
+
+// One sigma level of an al_price_pack call: a retained scratch per orientation plus
+// the (internal strike, sigma) its boundary was solved at, so a contract with the
+// same key prices from it without a re-solve.
+struct PackLevel {
+  AlPreparedScratch put;
+  AlPreparedScratch call;
+  std::uint64_t put_key_k = 0;
+  std::uint64_t put_key_sigma = 0;
+  bool put_valid = false;
+  std::uint64_t call_key_k = 0;
+  std::uint64_t call_key_sigma = 0;
+  bool call_valid = false;
+};
+
+[[nodiscard]] double pack_price(const AlExpiryGeometry::Impl &g, PackLevel &lvl,
+                                const AlContract &c, double sigma) {
+  const Result<double> r =
+      andersen_lake_dispatch(c.S, c.K, g.T, sigma, g.r, g.q, c.side, [&]() -> Result<double> {
+        const bool put = (c.side == Side::Put);
+        const AlOrientedGeometry &orient = put ? g.put : g.call;
+        if (orient.id == 0) {
+          return andersen_lake_core(c.S, c.K, g.T, sigma, g.r, g.q, c.side, g.opts,
+                                    /*specialize=*/true);
+        }
+        const AlInternalPut p = al_internal_put(c.side, c.S, c.K, g.r, g.q);
+        AlPreparedScratch &s = put ? lvl.put : lvl.call;
+        bool &valid = put ? lvl.put_valid : lvl.call_valid;
+        std::uint64_t &key_k = put ? lvl.put_key_k : lvl.call_key_k;
+        std::uint64_t &key_sigma = put ? lvl.put_key_sigma : lvl.call_key_sigma;
+        const std::uint64_t k_bits = std::bit_cast<std::uint64_t>(p.K);
+        const std::uint64_t s_bits = std::bit_cast<std::uint64_t>(sigma);
+        if (!valid || key_k != k_bits || key_sigma != s_bits) {
+          valid = false;
+          ATX_TRY_VOID(al_solve_status_error(
+              al_solve_put_boundary_prepared(orient, p.K, sigma, s.bnd, s.ws, &s.loaded)));
+          valid = true;
+          key_k = k_bits;
+          key_sigma = s_bits;
+        }
+        return Ok(al_put_price_from_boundary(s.bnd, s.ws, p.S, p.K, g.T, sigma, p.rate,
+                                             p.yield));
+      });
+  return r ? *r : std::numeric_limits<double>::quiet_NaN();
+}
+
+} // namespace
+
+Status al_price_pack(const AlExpiryGeometry &g, std::span<const AlContract> contracts,
+                     std::span<const double> sigma, std::span<double> price,
+                     std::span<double> price_sigma_bumped) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "al_price_pack: expiry geometry is not prepared");
+  }
+  const std::size_t n = contracts.size();
+  if (sigma.size() != n || price.size() != n ||
+      (!price_sigma_bumped.empty() && price_sigma_bumped.size() != n)) {
+    return Err(ErrorCode::InvalidArgument, "al_price_pack: span lengths differ");
+  }
+  // ~185 KB of retained solve state: one heap block per call, not worker stack.
+  const auto levels = std::make_unique<std::array<PackLevel, 2>>();
+  PackLevel &base = (*levels)[0];
+  PackLevel &bumped = (*levels)[1];
+  for (std::size_t i = 0; i < n; ++i) {
+    price[i] = pack_price(*impl, base, contracts[i], sigma[i]);
+    if (!price_sigma_bumped.empty()) {
+      price_sigma_bumped[i] = pack_price(*impl, bumped, contracts[i], sigma[i] + kAlPackSigmaBump);
+    }
+  }
+  return Ok();
 }
 
 // T1: the residual seam. Deliberately mirrors andersen_lake_core's validation,
@@ -4353,9 +4738,17 @@ double american_vega(double S, double K, double T, double sigma, double r, doubl
   return euro_vega + F * dc_ds;
 }
 
-Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double sigma, double r,
-                                          double q, Side side, const std::optional<AlOpts> &opts,
-                                          bool need_vega, bool need_rho, bool need_charm) {
+namespace {
+
+// Body of american_greeks_al. `base_geo` (nullable) is the prepared orientation of
+// the contract's internal put (puts: rate r, yield q; calls: rate q, yield r): a
+// boundary whose (rate, yield) are bitwise that orientation's — the base and the
+// sigma +/- solves — is solved through it (bit-identical, american_boundary.hpp);
+// the rate-bumped solves are another orientation and solve fresh.
+[[nodiscard]] Result<AmericanGreeks>
+american_greeks_al_core(double S, double K, double T, double sigma, double r, double q, Side side,
+                        const std::optional<AlOpts> &opts, bool need_vega, bool need_rho,
+                        bool need_charm, const AlOrientedGeometry *base_geo) {
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks_al: S, K, T, sigma must be > 0");
   }
@@ -4417,6 +4810,11 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
   const auto solve = [&](AlBoundary &b, AlWorkspace &w, double sig_s, double dr) -> AlSolveStatus {
     const double rate = is_call ? q : (r + dr);
     const double yield = is_call ? (r + dr) : q;
+    if (base_geo != nullptr && base_geo->id != 0 &&
+        std::bit_cast<std::uint64_t>(rate) == std::bit_cast<std::uint64_t>(base_geo->rate) &&
+        std::bit_cast<std::uint64_t>(yield) == std::bit_cast<std::uint64_t>(base_geo->yield)) {
+      return al_solve_put_boundary_prepared(*base_geo, Kb, sig_s, b, w, /*loaded=*/nullptr);
+    }
     return al_solve_put_boundary(Kb, T, sig_s, rate, yield, sch, b, w);
   };
   AlBoundary b0, bvp, bvm, brp, brm;
@@ -4503,6 +4901,27 @@ Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double s
     }
   }
   return Ok(out);
+}
+
+} // namespace
+
+Result<AmericanGreeks> american_greeks_al(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, const std::optional<AlOpts> &opts,
+                                          bool need_vega, bool need_rho, bool need_charm) {
+  return american_greeks_al_core(S, K, T, sigma, r, q, side, opts, need_vega, need_rho,
+                                 need_charm, /*base_geo=*/nullptr);
+}
+
+Result<AmericanGreeks> american_greeks_al(const AlExpiryGeometry &g, double S, double K,
+                                          double sigma, Side side, bool need_vega, bool need_rho,
+                                          bool need_charm) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "american_greeks_al: expiry geometry is not prepared");
+  }
+  const AlOrientedGeometry &base = (side == Side::Call) ? impl->call : impl->put;
+  return american_greeks_al_core(S, K, impl->T, sigma, impl->r, impl->q, side, impl->opts,
+                                 need_vega, need_rho, need_charm, &base);
 }
 
 // ── Carry sensitivities: ∂P/∂q and ∂P/∂Div (G2, gaps-review finding 2) ────
