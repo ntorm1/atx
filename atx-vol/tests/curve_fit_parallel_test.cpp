@@ -18,6 +18,7 @@
 #include "atx/vol/api/fitting/arb.hpp"             // QuoteFlag, to_u8 (kill-mask rescue probe)
 #include "atx/vol/api/fitting/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
 #include "core/parallel_for.hpp"                   // atx_auto_worker_count
+#include "fitting/expiry_schedule.hpp"             // ScopedExpiryDispatchTrace
 #include "atx/vol/api/pricing/dividend.hpp"        // hybrid_forward, HybridDivParams
 #include "atx/vol/api/marketdata/opra_panel.hpp"   // load_opra_cbbo_parquet, OpraLoadSpec
 #include "atx/vol/api/fitting/surface_parity.hpp"  // SurfaceParityInputs, SliceContext, CalendarRepair
@@ -994,4 +995,68 @@ TEST(CurveFitItmLegRescue, RefusalNamesTheItmFallbackState) {
   ASSERT_FALSE(rep.has_value());
   EXPECT_NE(rep.error().message().find("itm_fallback=off"), std::string::npos)
       << rep.error().message();
+}
+
+// ── Longest-first dispatch of every per-chain fan-out (L2d) ─────────────────
+
+namespace {
+
+// A totally starved board (the tight spread cap starves Configured prep on
+// every chain) whose chains list more strikes at each later maturity, under
+// the last-resort Legacy-prep retry, so phase 1.75 fans out over all four.
+[[nodiscard]] Underlying widening_board() {
+  Underlying under;
+  under.spot = kSpot;
+  const double years[] = {0.10, 0.30, 0.60, 1.00};
+  const int strikes[] = {11, 15, 19, 23};
+  for (std::size_t c = 0; c < 4; ++c) {
+    under.chains.push_back(make_chain(years[c], strikes[c]));
+  }
+  return under;
+}
+
+[[nodiscard]] SurfaceParityInputs starved_retry_inputs(unsigned workers) {
+  SurfaceParityInputs in = base_inputs(workers);
+  in.calib.max_spread_to_mid_pct = 0.001; // starves Configured prep everywhere
+  in.board_starved_legacy_prep_fallback = true;
+  return in;
+}
+
+} // namespace
+
+// The prepass already started the chain with the most strikes first. The
+// starved retry (phase 1.75) now uses the same order instead of index order.
+// Observed through the calling thread's dispatch trace at fit_workers = 1.
+TEST(CurveFitParallel, StarvedRetryDispatchesTheDensestChainFirst) {
+  const Underlying under = widening_board();
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi; // the thin-board family; no k-coverage gate
+
+  std::vector<std::size_t> trace;
+  {
+    const atx::vol::detail::ScopedExpiryDispatchTrace arm{trace};
+    const auto rep = fit_curve_surface(under, starved_retry_inputs(1), cfg);
+    ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+    EXPECT_GE(rep->n_slices_legacy_rescued, 1u) << "the starved retry must have run";
+  }
+  // phase 1 (prepass), then phase 1.75 (starved retry)
+  EXPECT_EQ(trace, (std::vector<std::size_t>{3, 2, 1, 0, 3, 2, 1, 0}));
+}
+
+// Review Focus #3 on the curve-fit driver: the starved-retry board, fanned out
+// at 2, 7 and AUTO workers, is bit-identical to the serial fit.
+TEST(CurveFitParallel, StarvedRetryBoardBitIdenticalAcrossWorkers) {
+  const Underlying under = widening_board();
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+
+  const auto rep1 = fit_curve_surface(under, starved_retry_inputs(1), cfg);
+  ASSERT_TRUE(rep1.has_value()) << rep1.error().to_string();
+  for (const unsigned workers : {2u, 7u, 0u}) {
+    const auto rep = fit_curve_surface(under, starved_retry_inputs(workers), cfg);
+    ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+    EXPECT_EQ(rep->n_slices_legacy_rescued, rep1->n_slices_legacy_rescued) << workers;
+    expect_bit_identical(*rep1, *rep, /*strict_finite*/ false);
+    expect_per_expiry_bit_identical(*rep1, *rep);
+  }
 }
