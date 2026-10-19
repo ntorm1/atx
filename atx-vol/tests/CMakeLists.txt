@@ -34,8 +34,12 @@ target_link_libraries(atx-vol-quote-slice-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 # The channel/term-prior suites test internal fitting headers (src/fitting/).
 target_include_directories(atx-vol-quote-slice-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+# Every suite the executable links must be listed: a gtest filter silently drops
+# an unlisted one (QuoteSurfaceLadder.* was missing until L2d, so the knot-ladder
+# tests never ran under this ctest).
 string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* QuoteFitPolicy.*
-       QuoteSliceChannel.* QuoteSurface.* SliceChannel.* SliceChannelFamily.* TermPrior.*)
+       QuoteSliceChannel.* QuoteSurface.* QuoteSurfaceLadder.* SliceChannel.*
+       SliceChannelFamily.* TermPrior.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")

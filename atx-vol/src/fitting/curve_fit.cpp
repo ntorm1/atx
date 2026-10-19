@@ -26,6 +26,7 @@
 #include "atx/vol/api/fitting/calib.hpp"  // build_observations_european, ObsSet, FitObs
 #include "atx/vol/api/fitting/deamer.hpp" // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
 #include "core/parallel_for.hpp"     // parallel_for (block-partition fan-out)
+#include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "atx/vol/api/fitting/parity.hpp"           // chain_parity, ParityInputs, ParityReport
 #include "fitting/prepared_fitting.hpp" // canonical configured preparation
 #include "atx/vol/api/marketdata/universe.hpp"         // Chain, chain_index
@@ -681,6 +682,20 @@ void carry_trace_row(std::string_view ticker, double T, int err,
                static_cast<int>(carry->source));
 }
 
+// Dispatch order shared by every per-chain fan-out below: `tasks` (chain
+// indices) with the most strikes first, ties in their incoming order. Cost
+// grows with the strike count (Andersen-Lake per strike). The admitted count is
+// not known yet, because admission runs inside each task. Order only: every
+// task owns its slot, so the output is unchanged.
+[[nodiscard]] std::vector<std::size_t> chains_longest_first(const Underlying &under,
+                                                            std::vector<std::size_t> tasks) {
+  std::vector<std::size_t> strikes(under.chains.size());
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    strikes[i] = under.chains[i].n_strikes();
+  }
+  return detail::longest_first(std::move(tasks), strikes);
+}
+
 [[nodiscard]] std::vector<ChainPrepass> run_deam_prepass(const Underlying &under,
                                                          const SurfaceParityInputs &in,
                                                          VolCurveKind kind, unsigned n_threads,
@@ -700,11 +715,10 @@ void carry_trace_row(std::string_view ticker, double T, int err,
   // output remains deterministic because every task owns prepass[i].
   std::vector<std::size_t> schedule(under.chains.size());
   std::iota(schedule.begin(), schedule.end(), std::size_t{0});
-  std::stable_sort(schedule.begin(), schedule.end(), [&](std::size_t a, std::size_t b) {
-    return under.chains[a].n_strikes() > under.chains[b].n_strikes();
-  });
+  schedule = chains_longest_first(under, std::move(schedule));
   parallel_for_dynamic(schedule.size(), n_threads, [&](std::size_t task) {
     const std::size_t i = schedule[task];
+    detail::note_expiry_dispatch(i);
     const Chain &chain = under.chains[i];
     ChainPrepass &slot = prepass[i];
     const double T = chain.T;
@@ -971,8 +985,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     // pattern as phase 1). A slice too thin even with a valid fallback carry still
     // starves truthfully.
     const bool use_fit_cache = allow_fit_cache(in, cfg.kind);
+    repair_idx = chains_longest_first(under, std::move(repair_idx));
     parallel_for_dynamic(repair_idx.size(), in.fit_workers, [&](std::size_t task) {
       const std::size_t i = repair_idx[task];
+      detail::note_expiry_dispatch(i);
       ChainPrepass &pre = prepass[i];
       // Stamp the fallback certification carry FIRST (retain the raw solve's
       // tallies for diagnostics), marked available but NEVER confident and NEVER
@@ -1043,8 +1059,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     const bool allow_legacy = board_legacy_retry || in.per_slice_legacy_prep_fallback;
     const bool allow_itm = board_itm_retry || in.per_slice_itm_leg_fallback;
     const bool use_fit_cache = allow_fit_cache(in, cfg.kind);
+    starved_idx = chains_longest_first(under, std::move(starved_idx));
     parallel_for_dynamic(starved_idx.size(), in.fit_workers, [&](std::size_t task) {
       const std::size_t i = starved_idx[task];
+      detail::note_expiry_dispatch(i);
       prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache, allow_legacy,
                                   allow_itm, time_stages, i, prepass[i]);
     });

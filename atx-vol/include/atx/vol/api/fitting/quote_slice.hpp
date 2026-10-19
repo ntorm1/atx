@@ -548,6 +548,14 @@ struct QuoteSurfaceConfig {
   double ladder_max_outside_fraction = 0.05;
   double ladder_channel_max_outside_fraction = 0.05;
   std::size_t ladder_min_outside_quotes = 1; // >= 1
+  // Expiry fan-out width of the per-expiry stages (pass A or the ladder's pass
+  // A, then the B1 and B2 channel refits), longest expiry first: 1 = serial on
+  // the calling thread (the historical path), N = N workers, 0 = auto
+  // (ATX_VOL_FIT_WORKERS when set to a positive integer, else
+  // hardware_concurrency). It changes speed only. Every expiry writes its own
+  // slot and every cross-expiry stage (priors, calendar, repair rungs,
+  // dominance) stays serial, so results are bit-identical for any value.
+  unsigned fit_workers = 1;
 };
 
 // Which fitter produced a slice's served (or last attempted) fit: the pass-A
