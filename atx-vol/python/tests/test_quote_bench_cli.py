@@ -50,10 +50,10 @@ def make_quotes(path: Path) -> list[float]:
     return values
 
 
-def invoke(binary: Path, source: Path, output: Path, *extra: str):
+def invoke(binary: Path, source: Path, output: Path, *extra: str, env=None):
     return subprocess.run(
         [str(binary), "--input", str(source), "--output", str(output), *extra],
-        capture_output=True, text=True, timeout=60, check=False,
+        capture_output=True, text=True, timeout=60, check=False, env=env,
     )
 
 
@@ -618,9 +618,11 @@ def test_native_timing_detail_reports_per_chain_counters_and_real_latency_percen
     make_wide_snapshot(source, 4)
     policy = write_policy(tmp_path / "graded.json", {"schema_version": 1, "admission": "graded"})
     plain_output, timed_output = tmp_path / "plain.csv", tmp_path / "timed.csv"
-    plain = invoke(binary, source, plain_output, "--policy", str(policy))
+    serial = {**os.environ, "ATX_VOL_FIT_WORKERS": "1"}
+    plain = invoke(binary, source, plain_output, "--policy", str(policy), env=serial)
     assert plain.returncode == 0, plain.stderr
-    timed = invoke(binary, source, timed_output, "--policy", str(policy), "--timing-detail")
+    timed = invoke(binary, source, timed_output, "--policy", str(policy), "--timing-detail",
+                   env=serial)
     assert timed.returncode == 0, timed.stderr
     # Opt-in: the predictions are byte-identical and the plain report has no timing keys.
     assert timed_output.read_bytes() == plain_output.read_bytes()
@@ -649,6 +651,7 @@ def test_native_timing_detail_reports_per_chain_counters_and_real_latency_percen
     assert detail["surfaces"] == 1
     assert detail["chain_wall_us"] == sum(walls)
     # Chain time is a subset of the surface wall (up to per-bucket microsecond rounding).
+    # Serial only: L2d's fan-out overlaps chains at fit_workers > 1, hence the pin above.
     assert detail["surface_wall_us"] + 4 * len(TIMING_BUCKETS) >= sum(walls)
     refused = invoke(binary, source, tmp_path / "markov.csv", "--model", "common-markov",
                      "--timing-detail")
