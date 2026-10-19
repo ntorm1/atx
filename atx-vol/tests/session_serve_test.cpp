@@ -257,6 +257,45 @@ TEST(SessionServeRecords, OverPolicyCertificatesAreRefusedToTheColdRoute) {
   }
 }
 
+// Serve-path review MINOR-2: a record whose certification REFUSED a row (no cold
+// reference at a check sigma) is uncertified, and the session refuses it. A
+// record_sigma_lo_mult of 1e-6 starts every record's sigma box near zero, where
+// the CALL side at this carry (internal put rate q_eff ~ 0.008, yield r = 0.04) is
+// the cold solver's frozen corner: each call record builds but refuses its
+// sigma_min row (ExpiryRecord.ACertificationRowWithoutAColdReference... pins the
+// record half). The put records certify with a finite (large) error, and the
+// dollar limit is opened so far that any finite certificate is within policy, so
+// a call can only be refused for its NaN certificate.
+TEST(SessionServeRecords, RecordsWithARefusedCertificationRowAreNeverServed) {
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+  SessionInputs in = records_inputs(spec);
+  in.serve.record_sigma_lo_mult = 1.0e-6;
+  in.serve.record_max_cert_usd = 1.0e6;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+  // Both sides of every fitted expiry built a record: a refused row is not a
+  // build failure (that would route ColdReference, not ColdFallback).
+  ASSERT_EQ(sess->record_count(), 2u * sess->expiries().size());
+  std::size_t puts_served = 0;
+  for (const auto &ctx : sess->expiries()) {
+    for (const double K : spec.strikes) {
+      EXPECT_EQ(sess->query_route(K, ctx.T, Side::Call), QueryPricingRoute::ColdFallback)
+          << "T=" << ctx.T << " K=" << K;
+      EXPECT_TRUE(std::isnan(sess->served_certificate_usd(K, ctx.T, Side::Call)));
+      const auto fv = sess->fair_value(K, ctx.T, Side::Call);
+      ASSERT_TRUE(fv.has_value());
+      EXPECT_TRUE(same_bits(*fv, session_cold(*sess, K, ctx.T, Side::Call)));
+      if (sess->query_route(K, ctx.T, Side::Put) == QueryPricingRoute::Record) {
+        ++puts_served;
+      }
+    }
+  }
+  EXPECT_GT(puts_served, 0u) << "finite certificates are within this policy";
+}
+
 TEST(SessionServeRecords, LaddersAndClonesServeTheSameBitsAsScalarQueries) {
   const SynthPanelSpec spec = make_spec();
   Universe u;

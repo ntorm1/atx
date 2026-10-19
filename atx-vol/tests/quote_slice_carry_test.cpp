@@ -1,8 +1,11 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -214,6 +217,141 @@ TEST(QuoteSliceCarry, MalformedQuoteIsRejectedBeforeCarryResolution) {
   const auto bad_config = fit_quote_slice(market, quotes, config);
   ASSERT_FALSE(bad_config);
   EXPECT_EQ(bad_config.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Post-estimate fallback causes (cleanup review 3465221c, MINOR) ───────────
+//
+// NoModelYield and SliceRefused arrive with estimator status Ok, so only the
+// typed fallback cause explains them (quote_slice_carry.hpp). Each test drives
+// the public fit_quote_slice to that cause and checks the documented outcome:
+// the supplied carry is kept and the fit is bit-identical to a Supplied fit.
+
+// NoModelYield: the calendar clock is the smallest subnormal year fraction, so
+// the implied forward's calendar yield r - ln(F / S) / T_cal overflows to +inf.
+// validate() admits the clock (positive, finite) and the estimator runs on the
+// variance clock, where the funding rate rescales to rate * T_cal / T_var == 0,
+// so the chain is priced at r = 0 on that clock and the estimate is Ok.
+TEST(QuoteSliceCarry, ForwardWithoutAFiniteModelYieldFallsBackAsNoModelYield) {
+  const double calendar = std::numeric_limits<double>::denorm_min();
+  const double true_yield = 0.02;
+  const double forward = 100.0 * std::exp(-true_yield);
+  const auto quotes = american_quotes(100.0, 1.0, 0.0, true_yield, forward);
+  const QuoteSliceMarket market{100.0, 1.0, calendar, 0.04, 0.01, 0.0};
+  const auto fit = fit_quote_slice(market, quotes, implied_config());
+  const auto supplied = fit_quote_slice(market, quotes);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_TRUE(supplied) << supplied.error().to_string();
+  const auto &res = fit->carry_resolution;
+  EXPECT_FALSE(res.applied);
+  EXPECT_EQ(res.mode, QuoteSliceCarryMode::ImpliedForward);
+  EXPECT_EQ(res.fallback, QuoteSliceCarryFallback::NoModelYield);
+  EXPECT_STREQ(to_string(res.fallback), "no_model_yield");
+  EXPECT_STREQ(res.reason, "implied forward has no yield under the dividend model");
+  // The estimate itself succeeded and is recorded beside the cause.
+  EXPECT_EQ(res.status, ImpliedForwardStatus::Ok);
+  EXPECT_NEAR(res.implied_forward / forward - 1.0, 0.0, 5.0e-6);
+  EXPECT_FALSE(std::isfinite(res.implied_yield));
+  EXPECT_DOUBLE_EQ(fit->market.continuous_yield, 0.01);
+  expect_same_fit(*fit, *supplied);
+}
+
+// Unit-spot American chain (strikes 0.60 .. 1.60) priced by Andersen-Lake at
+// `true_yield`; spreads are proportional with a 5e-5 floor.
+std::vector<QuoteSliceQuote> unit_spot_quotes(double years, double rate, double true_yield) {
+  const double forward = std::exp((rate - true_yield) * years);
+  std::vector<QuoteSliceQuote> quotes;
+  for (int i = 0; i <= 20; ++i) {
+    const double k = 0.60 + 0.05 * i;
+    const double sigma = 0.30 - 0.08 * std::log(k / forward);
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(1.0, k, years, sigma, rate, true_yield, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return {};
+      }
+      const double half = std::max(5.0e-5, 0.01 * *price);
+      quotes.push_back({k, side, std::max(*price - half, 1.0e-5), *price + half});
+    }
+  }
+  return quotes;
+}
+
+// SliceRefused: AggregateFundingPresentValue keeps the supplied PV and restates
+// F as q = -ln((F e^{-r T} + PV) / S) / T. With PV = 1e16 (ulp 2) and
+// F e^{-r T} < 1, the sum rounds to PV, and at unit spot and T == 1 the slice's
+// retained-cash fraction PV e^{q T} / S is then EXACTLY 1 (ln S == 0, and q T ==
+// -ln PV cancels ln PV), so prepare_fit refuses the derived carry. The supplied
+// q = -37.5 leaves a fraction of about 0.52, which the slice represents, so the
+// fit falls back to it.
+TEST(QuoteSliceCarry, CarryTheSliceCannotRepresentFallsBackAsSliceRefused) {
+  const double rate = 0.04;
+  const double pv = 1.0e16;
+  const auto quotes = unit_spot_quotes(1.0, rate, rate); // F == 1
+  ASSERT_FALSE(quotes.empty());
+  const QuoteSliceMarket market{1.0, 1.0, 1.0, rate, -37.5, pv};
+  auto cfg = implied_config();
+  cfg.dividend_model = QuoteSliceDividendModel::AggregateFundingPresentValue;
+  cfg.carry.implied.spread_floor = 1.0e-4; // price units, scaled to the unit spot
+  auto supplied_cfg = cfg;
+  supplied_cfg.carry.mode = QuoteSliceCarryMode::Supplied;
+  const auto fit = fit_quote_slice(market, quotes, cfg);
+  const auto supplied = fit_quote_slice(market, quotes, supplied_cfg);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_TRUE(supplied) << supplied.error().to_string();
+  const auto &res = fit->carry_resolution;
+  EXPECT_FALSE(res.applied);
+  EXPECT_EQ(res.fallback, QuoteSliceCarryFallback::SliceRefused);
+  EXPECT_STREQ(to_string(res.fallback), "slice_refused");
+  EXPECT_STREQ(res.reason, "slice refused the implied carry");
+  EXPECT_EQ(res.status, ImpliedForwardStatus::Ok);
+  EXPECT_NEAR(res.implied_forward - 1.0, 0.0, 1.0e-4);
+  EXPECT_EQ(res.implied_yield, -std::log(pv)); // finite: not NoModelYield
+  EXPECT_DOUBLE_EQ(fit->market.continuous_yield, -37.5);
+  expect_same_fit(*fit, *supplied);
+  // Premise: the slice refuses exactly that carry on its own.
+  QuoteSliceMarket implied = market;
+  implied.continuous_yield = res.implied_yield;
+  const auto direct = fit_quote_slice(implied, quotes, supplied_cfg);
+  ASSERT_FALSE(direct);
+  EXPECT_EQ(direct.error().code(), ErrorCode::OutOfRange);
+}
+
+// InvalidMarket cannot reach a caller: fit_quote_slice validates the market
+// before carry resolution (quote_slice.cpp, fit_quote_slice), the carry guard's
+// predicate (spot, both clocks, rate) is a subset of validate()'s, and inside the
+// carry seam the cause would ride only on the Supplied fit's error, which carries
+// no resolution (fit_supplied records it on success only). What a caller CAN
+// observe is the documented contract, "the Supplied fit reports it", for every
+// field the guard covers.
+TEST(QuoteSliceCarry, EveryMalformedMarketFieldReportsTheSuppliedError) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const QuoteSliceMarket good{100.0, 1.0, 1.0, 0.04, 0.01, 0.0};
+  std::vector<QuoteSliceMarket> bad;
+  for (const double v : {0.0, -1.0, nan, inf}) {
+    for (double QuoteSliceMarket::*field : {&QuoteSliceMarket::spot,
+                                           &QuoteSliceMarket::variance_years,
+                                           &QuoteSliceMarket::calendar_years}) {
+      QuoteSliceMarket m = good;
+      m.*field = v;
+      bad.push_back(m);
+    }
+  }
+  for (const double v : {nan, inf, -inf}) {
+    QuoteSliceMarket m = good;
+    m.rate = v;
+    bad.push_back(m);
+  }
+  const std::vector<QuoteSliceQuote> quotes{{100.0, Side::Call, 1.0, 1.1}};
+  for (std::size_t i = 0; i < bad.size(); ++i) {
+    const auto implied = fit_quote_slice(bad[i], quotes, implied_config());
+    const auto supplied = fit_quote_slice(bad[i], quotes);
+    ASSERT_FALSE(implied) << i;
+    ASSERT_FALSE(supplied) << i;
+    EXPECT_EQ(implied.error().code(), ErrorCode::InvalidArgument) << i;
+    EXPECT_EQ(implied.error().to_string(), supplied.error().to_string()) << i;
+  }
+  EXPECT_EQ(bad.size(), 15u);
 }
 
 } // namespace

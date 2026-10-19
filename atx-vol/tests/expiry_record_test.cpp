@@ -21,6 +21,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/pricing/chain_tick.hpp"
+#include "fitting/counters.hpp" // counters::ledger (always-on boundary-solve tally)
 #include "pricing/american_boundary.hpp"
 #include "support/alloc_counter.hpp"
 
@@ -698,6 +699,172 @@ TEST(RecordImpliedVol, ChainEntryMatchesPerContractAndAllocatesNothing) {
   }
   std::vector<double> short_sig(n - 1u);
   EXPECT_FALSE(implied_vols_from_records(kS0, c.view(), *recs, target, short_sig, st).has_value());
+}
+
+// ── Refused certification rows (serve-path review MINOR-2) ───────────────────
+
+// The cold solver's frozen corner: a put with q >> r at a near-zero sigma, where
+// the boundary sweep cannot move and al_solve_put_boundary reports NotConverged
+// (the same corner as simd_american_test.cpp's AvxBoundary frozen band). A record
+// box whose sigma_min sits there still builds, because every Chebyshev sampling
+// node is interior and solvable, but its sigma_min certification row has no cold
+// reference.
+constexpr double kFrozenR = 0.05;
+constexpr double kFrozenQ = 0.50;
+constexpr double kFrozenSigma = 1.0e-7;
+
+[[nodiscard]] ExpiryRecordSpec frozen_corner_spec() {
+  ExpiryRecordSpec s;
+  s.expiry = 1.0;
+  s.carry = ExpiryCarry{kFrozenR, kFrozenQ, {}};
+  s.side = Side::Put;
+  s.k_min = -0.5;
+  s.k_max = 0.5;
+  s.sigma_min = kFrozenSigma;
+  s.sigma_max = 0.3;
+  return s;
+}
+
+// A row the cold solver cannot price is REFUSED, never skipped: the record is
+// uncertified (NaN certificate) and uncertified_rows() counts the row.
+TEST(ExpiryRecord, ACertificationRowWithoutAColdReferenceLeavesTheRecordUncertified) {
+  const ExpiryRecordSpec spec = frozen_corner_spec();
+  // Premise: the accurate cold solver refuses sigma_min and prices inside the box.
+  EXPECT_FALSE(andersen_lake(kS0, kS0, spec.expiry, kFrozenSigma, kFrozenR, kFrozenQ, Side::Put,
+                             std::nullopt)
+                   .has_value());
+  EXPECT_TRUE(andersen_lake(kS0, kS0, spec.expiry, 0.15, kFrozenR, kFrozenQ, Side::Put,
+                            std::nullopt)
+                  .has_value());
+  const Result<ExpiryRecord> rec = ExpiryRecord::build(spec);
+  ASSERT_TRUE(rec.has_value()) << rec.error().to_string();
+  EXPECT_TRUE(rec->populated());
+  EXPECT_EQ(rec->uncertified_rows(), 1u);
+  EXPECT_TRUE(std::isnan(rec->certified_max_abs_error_fwd()));
+  EXPECT_GT(rec->certified_points(), 0u) << "the solvable rows were still checked";
+
+  // The same box starting at a sigma the solver can price certifies.
+  ExpiryRecordSpec solvable = spec;
+  solvable.sigma_min = 0.05;
+  const Result<ExpiryRecord> ok = ExpiryRecord::build(solvable);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_EQ(ok->uncertified_rows(), 0u);
+  EXPECT_TRUE(std::isfinite(ok->certified_max_abs_error_fwd()));
+}
+
+// ... and every consumer refuses it: the chain records report the NaN, and the
+// spot ladder refuses every contract on it — served from the record, flagged
+// Fallback, never Ok (the ladder half of the review's request; the session half
+// is SessionServeRecords.RecordsWithARefusedCertificationRowAreNeverServed).
+TEST(ChainTickRecords, ARecordWithARefusedCertificationRowIsRefusedByTheSpotLadder) {
+  SmallChain c;
+  const double T = 1.0;
+  const double sigma = 0.2;
+  for (int j = -2; j <= 2; ++j) {
+    c.strike.push_back(kS0 * std::exp((kFrozenR - kFrozenQ) * T + 0.1 * j));
+    c.expiry.push_back(T);
+    c.sigma.push_back(sigma);
+    c.rate.push_back(kFrozenR);
+    c.carry.push_back(kFrozenQ);
+    c.side.push_back(Side::Put);
+  }
+  ChainRecordPolicy rp;
+  rp.sigma_lo_mult = kFrozenSigma / sigma; // sigma box starts in the frozen corner
+  const Result<ChainRecords> recs = ChainRecords::build(kS0, c.view(), rp);
+  ASSERT_TRUE(recs.has_value()) << recs.error().to_string();
+  ASSERT_EQ(recs->bank().size(), 1u);
+  const ExpiryRecord &rec = *recs->bank().at(0);
+  EXPECT_EQ(rec.uncertified_rows(), 1u);
+  EXPECT_TRUE(std::isnan(rec.certified_max_abs_error_fwd()));
+  EXPECT_TRUE(std::isnan(recs->worst_certified_error_fwd()));
+
+  SpotLadderPolicy pol;
+  pol.max_rebuilds_per_tick = 1000;
+  Result<ChainSpotLadder> lad = ChainSpotLadder::build(kS0, c.view(), *recs, pol);
+  ASSERT_TRUE(lad.has_value()) << lad.error().to_string();
+  const std::size_t n = c.strike.size();
+  EXPECT_EQ(lad->refused_contracts(), n);
+  for (const double cert : lad->certified_error_usd()) {
+    EXPECT_TRUE(std::isnan(cert));
+  }
+  Outputs out(n);
+  for (const double S : {kS0, kS0 * std::exp(0.02)}) {
+    ASSERT_TRUE(lad->refresh(S, out.view()).has_value());
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_EQ(out.status[i], TickStatus::Fallback) << i;
+      EXPECT_TRUE(bits_equal(out.price[i], rec.greeks(S, c.strike[i], c.sigma[i]).price)) << i;
+    }
+  }
+  EXPECT_EQ(lad->rebuilds(), 0u) << "a refused contract is never rebuilt";
+}
+
+// ── Box-end boundary reuse (serve-path item 5, review MINOR-3) ───────────────
+
+// With the default accurate sampling scheme (sample_opts == nullopt) the
+// certification pass reuses the two box-end boundaries the edge pass solved
+// (sigma_min and sigma_max) instead of solving them again. The reuse is keyed on
+// sample_opts being EMPTY, so an explicit AlOpts that maps to the same accurate
+// scheme turns it off: the record must be bit-identical for exactly two more
+// boundary solves (one per box end).
+TEST(ExpiryRecord, CertificationReusesTheBoxEndBoundariesBitIdentically) {
+  namespace ledger = atx::vol::counters::ledger;
+  const AlOpts accurate{.n_collocation = 12,
+                        .n_quadrature = 24,
+                        .n_quad_price = 48,
+                        .max_newton_iter = 6,
+                        .tol = 1.0e-10};
+  // Premise: the explicit preset IS the accurate scheme.
+  const amer::AlScheme a = amer::scheme_from_opts(std::nullopt);
+  const amer::AlScheme b = amer::scheme_from_opts(accurate);
+  ASSERT_EQ(a.n_boundary, b.n_boundary);
+  ASSERT_EQ(a.n_quad_fp, b.n_quad_fp);
+  ASSERT_EQ(a.n_quad_price, b.n_quad_price);
+  ASSERT_EQ(a.n_iter_jn, b.n_iter_jn);
+  ASSERT_EQ(a.n_iter_fp, b.n_iter_fp);
+  ASSERT_TRUE(bits_equal(a.tol, b.tol));
+  ASSERT_EQ(a.seed, b.seed);
+
+  // Every cold boundary solve seeds once (counters.hpp: AlBoundarySolves). The
+  // edge pass solves kNs sampling rows + 2 box ends; certification has kNs + 1
+  // rows (both box ends and the kNs - 1 node midpoints).
+  constexpr std::uint64_t kEdgePass = ExpiryRecord::kNs + 2u;
+  constexpr std::uint64_t kCertRows = ExpiryRecord::kNs + 1u;
+  std::size_t compared = 0;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const ExpiryRecordSpec reuse = spec_for(0.5, side);
+    ExpiryRecordSpec fresh = reuse;
+    fresh.sample_opts = accurate;
+    const std::uint64_t s0 = ledger::snapshot().get(ledger::Solve::AlBoundarySolves);
+    const Result<ExpiryRecord> r = ExpiryRecord::build(reuse);
+    const std::uint64_t s1 = ledger::snapshot().get(ledger::Solve::AlBoundarySolves);
+    const Result<ExpiryRecord> f = ExpiryRecord::build(fresh);
+    const std::uint64_t s2 = ledger::snapshot().get(ledger::Solve::AlBoundarySolves);
+    ASSERT_TRUE(r.has_value() && f.has_value());
+    EXPECT_EQ(s1 - s0, kEdgePass + kCertRows - 2u) << "box-end rows reused";
+    EXPECT_EQ(s2 - s1, kEdgePass + kCertRows) << "every certification row solved";
+
+    EXPECT_TRUE(bits_equal(r->certified_max_abs_error_fwd(), f->certified_max_abs_error_fwd()));
+    EXPECT_TRUE(std::isfinite(r->certified_max_abs_error_fwd()));
+    EXPECT_EQ(r->certified_points(), f->certified_points());
+    EXPECT_EQ(r->uncertified_rows(), f->uncertified_rows());
+    EXPECT_EQ(r->has_exercise_edge(), f->has_exercise_edge());
+    for (int m = 0; m <= 8; ++m) {
+      const double sig = r->sigma_min() + (r->sigma_max() - r->sigma_min()) * m / 8.0;
+      EXPECT_TRUE(bits_equal(r->exercise_edge(sig), f->exercise_edge(sig))) << sig;
+      for (int j = 0; j <= 20; ++j) {
+        const double k = r->k_min() + (r->k_max() - r->k_min()) * j / 20.0;
+        const double K = kS0 * r->forward_factor() * std::exp(k);
+        const RecordGreeks gr = r->greeks(kS0, K, sig);
+        const RecordGreeks gf = f->greeks(kS0, K, sig);
+        EXPECT_TRUE(bits_equal(gr.price, gf.price) && bits_equal(gr.delta, gf.delta) &&
+                    bits_equal(gr.gamma, gf.gamma) && bits_equal(gr.vega, gf.vega) &&
+                    bits_equal(gr.theta, gf.theta) && gr.exercised == gf.exercised)
+            << "side=" << (side == Side::Put ? "put" : "call") << " k=" << k << " sig=" << sig;
+        ++compared;
+      }
+    }
+  }
+  EXPECT_EQ(compared, 2u * 9u * 21u);
 }
 
 } // namespace
