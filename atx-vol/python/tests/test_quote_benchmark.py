@@ -1059,3 +1059,129 @@ def test_composer_refuses_duplicate_served_statuses(tmp_path):
     assert compose_tool.main(["--inputs", str(graded), str(markov), "--labels", "a", "b",
                               "--served-status", "ok", "ok", "--output", str(output)]) == 2
     assert not output.exists()
+
+
+NEAR, FAR = dt.date(2026, 10, 16), dt.date(2027, 1, 15)
+# AAA calls on NEAR and FAR, BBB calls on FAR. AAA NEAR 12/8/3 breaks convexity at K=100
+# (chord 7.5) and crosses FAR (14/7/2.5) at K=100 and K=110: one convex and two calendar breaks.
+SHAPE_LEGS = ([("AAA", NEAR, k) for k in (90., 100., 110.)] + [("AAA", FAR, k) for k in (90., 100., 110.)]
+              + [("BBB", FAR, k) for k in (90., 100., 110.)])
+SHAPE_PRICES = [12., 8., 3., 14., 7., 2.5, 13., 6., 2.]
+
+
+def shape_source() -> pa.Table:
+    n = len(SHAPE_LEGS)
+    snap = dt.datetime(2026, 10, 14, 14, 30, tzinfo=dt.timezone.utc)
+    return pa.table({
+        "okey_tk": [u for u, _, _ in SHAPE_LEGS], "okey_dt": [e for _, e, _ in SHAPE_LEGS],
+        "okey_xx": [k for _, _, k in SHAPE_LEGS], "okey_cp": ["Call"] * n,
+        "date": [snap] * n, "timestamp": [snap] * n,
+        "undSecKey_tk": [u for u, _, _ in SHAPE_LEGS], "uBid": [99.99] * n, "uAsk": [100.01] * n,
+        "bidPrc": [p - .5 for p in SHAPE_PRICES], "askPrc": [p + .5 for p in SHAPE_PRICES],
+        "bidSz": [10] * n, "askSz": [10] * n, "years": [.3] * n, "yearsC": [.25] * n,
+        "rate": [.04] * n, "sdiv": [.01] * n, "ddiv": [0.] * n, "ddivPv": [0.] * n,
+        "exType": ["American"] * n, "srPrc": [p - .1 for p in SHAPE_PRICES], "srVol": [.3] * n,
+    })
+
+
+def class_manifest(dataset: Path, classes: dict, *, quotes_hash: str | None = None) -> Path:
+    folder = dataset / "classes"
+    folder.mkdir(exist_ok=True)
+    entries = []
+    for name, (kind, keys) in classes.items():
+        path = folder / f"{name}.csv"
+        pl.DataFrame({"cohort": ["t"] * len(keys), "underlier": [u for u, _ in keys],
+                      "expiry_days": [(e - dt.date(1970, 1, 1)).days for _, e in keys]},
+                     schema={"cohort": pl.String, "underlier": pl.String,
+                             "expiry_days": pl.Int32}).write_csv(path)
+        entries.append({"name": name, "kind": kind, "file": path.name,
+                        "sha256": qb.sha256(path), "rule": f"test rule {name}"})
+    manifest = folder / "manifest.json"
+    qb.write_json(manifest, {"schema_version": 1, "classes": entries, "cohorts": {"t": {
+        "quotes_parquet_sha256": quotes_hash or qb.sha256(dataset / "quotes.parquet")}}})
+    return manifest
+
+
+SHAPE_CLASSES = {"aaa": ("symbol", [("AAA", NEAR), ("AAA", FAR)]),
+                 "far": ("expiry", [("AAA", FAR), ("BBB", FAR)]),
+                 "near": ("expiry", [("AAA", NEAR)])}
+
+
+def score_to(dataset: Path, receipt: Path, name: str, *extra: str) -> dict:
+    args = qb.parser().parse_args(["score", "--dataset", str(dataset), "--run-receipt", str(receipt),
+                                  "--output", str(dataset / name), "--split", "all", *extra])
+    return qb.score(args)
+
+
+def shape_run(tmp_path: Path) -> tuple[Path, Path]:
+    dataset, _ = prepare(tmp_path, shape_source())
+    receipt = candidate_receipt(dataset, "shape", list(range(len(SHAPE_LEGS))), SHAPE_PRICES,
+                                [.31] * len(SHAPE_LEGS))
+    return dataset, receipt
+
+
+def test_class_manifest_is_opt_in_and_only_adds_class_strata(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    manifest = class_manifest(dataset, SHAPE_CLASSES)
+    plain = score_to(dataset, receipt, "plain.json")
+    flagged = score_to(dataset, receipt, "flagged.json", "--class-manifest", str(manifest))
+    assert "class_strata" not in plain
+    assert "class_strata" not in json.loads((dataset / "plain.json").read_text(encoding="utf-8"))
+    strata = flagged.pop("class_strata")
+    assert flagged == plain
+    assert strata["cohort"] == "t" and strata["manifest_sha256"] == qb.sha256(manifest)
+    assert json.loads((dataset / "flagged.json").read_text(encoding="utf-8"))["class_strata"] == strata
+
+
+def test_class_strata_score_each_class_and_attribute_served_shape_breaks(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    manifest = class_manifest(dataset, SHAPE_CLASSES)
+    result = score_to(dataset, receipt, "flagged.json", "--class-manifest", str(manifest))
+    rows = {r["shape_class"]: r for r in result["class_strata"]["classes"]}
+    assert list(rows) == ["aaa", "far", "near", "no_symbol_class", "all_rows"]
+    aaa = rows["aaa"]
+    assert (aaa["kind"], aaa["rule"], aaa["underliers"], aaa["expiries"]) == ("symbol", "test rule aaa", 1, 2)
+    assert (aaa["rows"], aaa["eligible_rows"], aaa["price_coverage"]) == (6, 6, 1.0)
+    assert aaa["price_mae"] == pytest.approx(.1)
+    assert aaa["price_in_spreads_mae"] == pytest.approx(.1)
+    assert aaa["price_quote_containment"] == 1.0
+    assert aaa["vol_bp_median_abs"] == pytest.approx(100.)
+    assert aaa["standard_symbol_price_coverage"] == 1.0
+    assert aaa["served_shape_violations"] == {"monotone": 0, "convex": 1, "calendar": 2}
+    # Calendar breaks count wherever either expiry is a member; the convex one sits on NEAR.
+    assert rows["far"]["served_shape_violations"] == {"monotone": 0, "convex": 0, "calendar": 2}
+    assert rows["near"]["served_shape_violations"] == {"monotone": 0, "convex": 1, "calendar": 2}
+    rest = rows["no_symbol_class"]
+    assert (rest["rows"], rest["underliers"], rest["kind"]) == (3, 1, "complement")
+    assert rest["served_shape_violations"] == {"monotone": 0, "convex": 0, "calendar": 0}
+    everything = rows["all_rows"]
+    assert everything["served_shape_violations"] == {"monotone": 0, "convex": 1, "calendar": 2}
+    assert everything["served_duplicate_strike_disagreements"] == 0
+    assert {k: everything[k] for k in result["metrics"]} == result["metrics"]
+
+
+def test_an_empty_class_reports_zero_rows_and_no_metric(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    manifest = class_manifest(dataset, {"none": ("symbol", [])})
+    rows = {r["shape_class"]: r for r in score_to(
+        dataset, receipt, "flagged.json", "--class-manifest", str(manifest))["class_strata"]["classes"]}
+    assert (rows["none"]["rows"], rows["none"]["price_coverage"], rows["none"]["price_mae"]) == (0, None, None)
+    assert rows["no_symbol_class"]["rows"] == 9
+
+
+def test_class_manifest_must_bind_to_this_dataset_and_its_files(tmp_path):
+    dataset, receipt = shape_run(tmp_path)
+    foreign = class_manifest(dataset, SHAPE_CLASSES, quotes_hash="0" * 64)
+    with pytest.raises(ValueError, match="no unique cohort"):
+        score_to(dataset, receipt, "a.json", "--class-manifest", str(foreign))
+    manifest = class_manifest(dataset, SHAPE_CLASSES)
+    with (manifest.parent / "far.csv").open("a", encoding="utf-8") as stream:
+        stream.write("t,BBB,20000\n")
+    with pytest.raises(ValueError, match="class file hash mismatch: far.csv"):
+        score_to(dataset, receipt, "b.json", "--class-manifest", str(manifest))
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["classes"][1] = dict(document["classes"][0])
+    qb.write_json(manifest, document)
+    with pytest.raises(ValueError, match="unique name"):
+        score_to(dataset, receipt, "c.json", "--class-manifest", str(manifest))
+    assert not any((dataset / name).exists() for name in ("a.json", "b.json", "c.json"))
