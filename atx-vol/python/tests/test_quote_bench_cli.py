@@ -835,3 +835,57 @@ def test_native_malformed_ddiv_cell_is_a_typed_schedule_refusal_not_an_abort(bin
     route, = block["routes"]
     assert route["route"] == "escrow" and route["reason"] == "schedule_not_covered"
     assert output.read_bytes() == expected
+
+
+def write_dated_dividend_chain(path: Path, valuation_day: int) -> None:
+    # The make_quotes chain on a dated clock: valued on `valuation_day`, expiring
+    # 182 days later, rate 5%, and one 1.00 cash dividend whose PV identity dates
+    # it exactly 91 days out (ddiv_pv = exp(-r * 91 / 365), ACT/365).
+    make_quotes(path)
+    rate, horizon = 0.05, 182
+    pv = math.exp(-rate * 91 / 365.0)
+    years = str(horizon / 365.0)
+    write_quotes(path, [dict(row, rate=str(rate), ddiv="1", ddiv_pv=repr(pv), years=years,
+                             years_calendar=years, expiry_days=str(valuation_day + horizon),
+                             snapshot_ns=str(valuation_day * 86_400 * 10**9))
+                        for row in read_quotes(path)])
+
+
+def test_native_empty_route_over_cash_in_life_is_a_window_mismatch(binary, tmp_path):
+    # Smooth-div review N2 (tools/quote_bench_main.cpp, fit_with_schedule): the
+    # route's event count is compared with the life's BEFORE applies(), so an
+    # empty route over a life that holds an ex-date is route_window_mismatch, not
+    # no_ex_date_in_life. The input that reaches it: a valuation day past
+    # dividend_schedule_instants' int64 guard (valuation_day * ns/day plus 36,526
+    # days must stay below 9e18, i.e. day < ~67,640; dividend_schedule.cpp). The
+    # instants come back empty there while the schedule, which counts days only,
+    # still dates the dividend inside the option's life.
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    profiles = [{"name": name, "base": name, "dividends": "inferred-schedule"}
+                for name in ("dense", "ordinary", "sparse")]
+    policy = write_policy(tmp_path / "policy.json", {"schema_version": 1, "profiles": profiles})
+
+    def route_of(valuation_day):
+        write_dated_dividend_chain(source, valuation_day)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode == 0, result.stderr
+        block = json.loads(result.stdout)["dividend_schedule"]
+        schedule, = block["schedules"]
+        # The schedule is the same on either side of the guard: one exact dividend.
+        assert (schedule["status"], schedule["reason"]) == ("ok", "none")
+        event, = schedule["events"]
+        assert (event["days"], event["amount"], event["kind"]) == (91.0, 1.0, "exact")
+        route, = block["routes"]
+        assert route["coverage"] == "covered" and route["events_in_life"] == 1
+        return route
+
+    # Control inside the guard: the route admits the same ex-date.
+    control = route_of(20_000)
+    assert control["route_events"] == 1
+    assert control["reason"] not in ("route_window_mismatch", "no_ex_date_in_life")
+    # Past the guard (day 69,000, year 2158): an empty route, labelled a mismatch.
+    route = route_of(69_000)
+    assert route["route_events"] == 0 and route["n_outside_tau_window"] == 0
+    assert route["route"] == "escrow"
+    assert route["reason"] == "route_window_mismatch"
+    assert route["lattice_scheme"] is None and route["lattice_steps"] is None

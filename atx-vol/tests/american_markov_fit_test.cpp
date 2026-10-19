@@ -1833,6 +1833,91 @@ TEST(AmericanMarkovFitSearch, ColumnWithoutAnAdmittedProbeStopsWithJacobianFailu
   EXPECT_EQ(d.objective, d.initial_objective);
 }
 
+// CHARACTERISATION (cleanup review 3465221c, Markov nit; pins current behaviour,
+// changes nothing): a refused primary probe is retried toward the other bound
+// however little room is left that way (american_markov_fit.cpp, jacobian_column:
+// only a room of exactly zero or a probe that rounds back to the centre skips the
+// retry). So when the bound is a few ulps away the retry is evaluated with a
+// few-ulp delta, and its difference quotient becomes the Jacobian column.
+//
+// The review named the bound max_sigma. That case is not reachable through any
+// refusal a caller can arrange: with room_up < jacobian_log_step <= room_down the
+// primary probe is backward (jacobian_column's `forward` rule), so a few-ulp
+// forward retry needs a refused backward probe, and the caller-set caps
+// (max_rollback_work, the compiler's transition/row/work limits) charge work that
+// rises with sigma (ExplicitEuler CFL count proportional to sigma^2) or stays
+// flat, so they never refuse a probe below an admitted centre. (Numerical-range
+// refusals are not proven monotone; see the sprint note.) This is the reachable
+// mirror at min_sigma: the forward primary is refused by the work cap and the
+// backward retry runs over a few-ulp room.
+TEST(AmericanMarkovFitSearch, RetryTowardAFewUlpRoomIsEvaluatedWithAFewUlpDelta) {
+  const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
+  const AmericanMarkovFitMarket market{100.0, intervals, {}, {}};
+  const std::array knots{0.0};
+  const std::array target{0.31};
+  const std::array strikes{90.0, 100.0, 110.0};
+  const auto quotes = smile_quotes(market, knots, target, strikes, 0.002);
+  ASSERT_FALSE(quotes.empty());
+  AmericanMarkovFitConfig config;
+  config.search = AmericanMarkovFitSearch::LevenbergMarquardt;
+  config.min_sigma = 0.2;
+  config.initial_sigma = 0.2 * (1.0 + 1.0e-15); // A few ulps above min_sigma.
+  config.jacobian_log_step = 0.5;
+  config.gradient_tolerance = 1.0e6; // Stop after the first Jacobian.
+  // Premises, in jacobian_column's own arithmetic: the room toward min_sigma is
+  // nonzero but a few ulps, and the retry probe (LmState::bounded) lands on a
+  // sigma whose log differs from the centre's by a nonzero few-ulp delta.
+  const double low = std::log(config.min_sigma);
+  const double high = std::log(config.max_sigma);
+  const double center = std::log(config.initial_sigma);
+  const double room_down = center - low;
+  ASSERT_GT(room_down, 0.0);
+  ASSERT_LT(room_down, 1.0e-14);
+  ASSERT_GE(high - center, config.jacobian_log_step) << "the primary probe is forward";
+  const double probe =
+      std::clamp(std::exp(std::clamp(center - config.jacobian_log_step, low, high)),
+                 config.min_sigma, config.max_sigma);
+  const double delta = std::log(probe) - center;
+  ASSERT_LT(delta, 0.0);
+  ASSERT_GT(delta, -1.0e-14);
+  // Work premise: the centre and the retry probe are admitted, the forward probe
+  // is refused.
+  const auto cap = flat_work(market, quotes, config.initial_sigma);
+  ASSERT_LE(flat_work(market, quotes, probe), cap);
+  ASSERT_GT(flat_work(market, quotes, config.initial_sigma * std::exp(0.5)), cap);
+  config.max_rollback_work = cap;
+
+  const auto fit = fit_american_markov_intervals(market, quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const auto &d = fit->diagnostics();
+  // Current behaviour: the few-ulp retry is evaluated and its quotient is the
+  // column, so the search goes on to the gradient test (contrast
+  // ColumnWithoutAnAdmittedProbeStopsWithJacobianFailure: a centre exactly ON
+  // min_sigma has zero room, so the retry is skipped and the column fails).
+  EXPECT_EQ(d.termination, AmericanMarkovFitTermination::GradientTolerance);
+  EXPECT_EQ(d.evaluations, 3U); // Initial model, refused forward probe, few-ulp retry.
+  EXPECT_EQ(d.jacobian_evaluations, 2U);
+  EXPECT_EQ(d.failed_evaluations, 1U);
+  EXPECT_EQ(d.best_evaluation, 1U); // The retry moved away from the quotes.
+  EXPECT_EQ(bits_of(fit->sigmas()[0]), bits_of(config.initial_sigma));
+  ASSERT_TRUE(std::isfinite(d.gradient_norm));
+  ASSERT_GT(d.gradient_norm, 0.0);
+
+  // What that column is worth on this chain: against a reference whose 1e-3
+  // forward probe is admitted (no work cap), measured 113554.955 vs 113576.875,
+  // a 2e-4 difference inside the reference's own O(step) truncation, with a
+  // delta of -1.11e-15 (5 ulps of log sigma). The few-ulp quotient is not noise
+  // here; it is pinned loosely because its low bits depend on the pricing ISA.
+  AmericanMarkovFitConfig reference = config;
+  reference.max_rollback_work = AmericanMarkovFitConfig{}.max_rollback_work;
+  reference.jacobian_log_step = 1.0e-3;
+  const auto ref = fit_american_markov_intervals(market, quotes, reference);
+  ASSERT_TRUE(ref) << ref.error().to_string();
+  ASSERT_EQ(ref->diagnostics().jacobian_evaluations, 1U);
+  ASSERT_EQ(ref->diagnostics().failed_evaluations, 0U);
+  EXPECT_NEAR(d.gradient_norm / ref->diagnostics().gradient_norm, 1.0, 1.0e-2);
+}
+
 TEST(AmericanMarkovFitSearch, ForwardRoomShorterThanTheStepProbesBackward) {
   const std::array intervals{AmericanMarkovFitInterval{0.25, 0.25, 0.0, 0.0, 0.0}};
   const auto market = resolvent_market(intervals);
