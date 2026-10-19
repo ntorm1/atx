@@ -1573,8 +1573,8 @@ TEST(AmericanIvNonMonotone, GateScalesWithStrikeAndSquaredMaturity) {
   EXPECT_DOUBLE_EQ(al_non_monotone_gate(kNmK, kNmT, al_fast_opts()), 4.0e-4 * kNmK * 4.0);
   EXPECT_TRUE(std::isnan(al_non_monotone_gate(0.0, 1.0, std::nullopt)));
   EXPECT_TRUE(std::isnan(al_non_monotone_gate(100.0, 0.0, std::nullopt)));
-  EXPECT_TRUE(
-      std::isnan(al_non_monotone_gate(std::numeric_limits<double>::quiet_NaN(), 1.0, std::nullopt)));
+  const double nan_strike = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isnan(al_non_monotone_gate(nan_strike, 1.0, std::nullopt)));
 }
 
 // With refuse_non_monotone false the typed overload IS the positional one: same bits,
