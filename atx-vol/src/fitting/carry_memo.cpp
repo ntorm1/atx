@@ -44,12 +44,16 @@ template <typename T>
 
 // Field-by-field, never `memcmp` over the struct: hashing an aggregate's padding
 // bytes would make two equal keys hash differently and silently cost a re-solve.
+// `profile` is part of the key: AlProfile::Fast runs the same scheme with other
+// arithmetic (american.hpp), so its carry can differ from the Reference carry in
+// the last bits and must never answer a Reference lookup, nor the reverse.
 [[nodiscard]] std::uint64_t hash_al_opts(std::uint64_t h, const AlOpts &o) noexcept {
   h = hash_bytes(h, &o.n_collocation, sizeof(o.n_collocation));
   h = hash_bytes(h, &o.n_quadrature, sizeof(o.n_quadrature));
   h = hash_bytes(h, &o.n_quad_price, sizeof(o.n_quad_price));
   h = hash_bytes(h, &o.max_newton_iter, sizeof(o.max_newton_iter));
-  return hash_bytes(h, &o.tol, sizeof(o.tol));
+  h = hash_bytes(h, &o.tol, sizeof(o.tol));
+  return hash_bytes(h, &o.profile, sizeof(o.profile));
 }
 
 [[nodiscard]] std::uint64_t hash_key(const Key &k) noexcept {
@@ -109,7 +113,7 @@ template <typename T>
 [[nodiscard]] bool same_al_opts(const AlOpts &a, const AlOpts &b) noexcept {
   return a.n_collocation == b.n_collocation && a.n_quadrature == b.n_quadrature &&
          a.n_quad_price == b.n_quad_price && a.max_newton_iter == b.max_newton_iter &&
-         std::memcmp(&a.tol, &b.tol, sizeof(a.tol)) == 0;
+         std::memcmp(&a.tol, &b.tol, sizeof(a.tol)) == 0 && a.profile == b.profile;
 }
 
 [[nodiscard]] bool same_key(const OwnedKey &a, const Key &b) noexcept {

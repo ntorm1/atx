@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <optional>
@@ -733,6 +735,57 @@ TEST(AdjointGreeksAmerican, VolgaAmplifiedBandIsStillCeded) {
     // Ceded is not broken: the FD bundle still serves a finite bundle.
     EXPECT_TRUE(std::isfinite(g->price)) << "sigma=" << sigma;
   }
+}
+
+// al-speed fix round 1 (review v2 MINOR-3): the bundle differentiates the Reference
+// map, so american_put_adjoint pins AlProfile::Reference for its taped solve AND for
+// the volga tail's cold sigma +- hvol re-solves, whatever profile the caller's opts
+// select (adjoint_greeks.cpp, `sch`). Wherever the adjoint path serves, Fast opts must
+// therefore take the same path and return the Reference bundle bit for bit. The FD
+// fallback (took == false) honours the caller's profile by design, so those points are
+// not compared. With the pin reverted the volga re-solves run the Fast arithmetic and
+// the bundle moves in its last bits.
+TEST(AdjointGreeksAmerican, FastProfileOptsServeTheReferenceAdjointBits) {
+  const double S = 100.0;
+  const std::optional<atx::vol::AlOpts> schemes[] = {std::nullopt, atx::vol::al_fast_opts(),
+                                                     atx::vol::al_bulk_opts()};
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  int compared = 0;
+  int total = 0;
+  for (std::size_t s = 0; s < std::size(schemes); ++s) {
+    const std::optional<atx::vol::AlOpts>& ref = schemes[s];
+    const std::optional<atx::vol::AlOpts> fast{atx::vol::al_fast_profile(ref)};
+    ASSERT_TRUE(fast->profile == atx::vol::AlProfile::Fast);
+    for (const APt& p : amer_grid()) {
+      const std::string at = "scheme=" + std::to_string(s) + " K=" + std::to_string(p.K) +
+                             " T=" + std::to_string(p.T) + " sig=" + std::to_string(p.sigma) +
+                             " r=" + std::to_string(p.r) + " q=" + std::to_string(p.q);
+      bool took_ref = false;
+      bool took_fast = false;
+      const auto gr =
+          american_greeks_adjoint(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put, ref, &took_ref);
+      const auto gf =
+          american_greeks_adjoint(S, p.K, p.T, p.sigma, p.r, p.q, Side::Put, fast, &took_fast);
+      ASSERT_TRUE(gr.has_value()) << at;
+      ASSERT_TRUE(gf.has_value()) << at;
+      ++total;
+      EXPECT_EQ(took_fast, took_ref) << "path " << at;
+      if (!took_ref || !took_fast) {
+        continue;
+      }
+      ++compared;
+      EXPECT_EQ(bits(gf->price), bits(gr->price)) << "price " << at;
+      EXPECT_EQ(bits(gf->delta), bits(gr->delta)) << "delta " << at;
+      EXPECT_EQ(bits(gf->gamma), bits(gr->gamma)) << "gamma " << at;
+      EXPECT_EQ(bits(gf->vega), bits(gr->vega)) << "vega " << at;
+      EXPECT_EQ(bits(gf->theta), bits(gr->theta)) << "theta " << at;
+      EXPECT_EQ(bits(gf->rho), bits(gr->rho)) << "rho " << at;
+      EXPECT_EQ(bits(gf->vanna), bits(gr->vanna)) << "vanna " << at;
+      EXPECT_EQ(bits(gf->volga), bits(gr->volga)) << "volga " << at;
+      EXPECT_EQ(bits(gf->charm), bits(gr->charm)) << "charm " << at;
+    }
+  }
+  EXPECT_GT(compared, total / 2) << "adjoint path served " << compared << " of " << total;
 }
 
 // Informal perf sanity (DISABLED — run with --gtest_also_run_disabled_tests on a

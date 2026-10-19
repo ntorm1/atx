@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
@@ -31,6 +32,8 @@ namespace {
 
 using atx::vol::al_default_opts;
 using atx::vol::al_fast_opts;
+using atx::vol::al_fast_profile;
+using atx::vol::AlProfile;
 using atx::vol::american_implied_vol;
 using atx::vol::american_price;
 using atx::vol::AmericanMethod;
@@ -803,6 +806,55 @@ TEST(DeAmer, CarryMemoStillAppliesTheConfidenceGateOnAHit) {
   const auto again = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, ungated);
   ASSERT_TRUE(again.has_value());
   EXPECT_EQ(bits(again->borrow), bits(probe->borrow));
+}
+
+// The AL kernel profile is load-bearing (al-speed, 2026-10-17): AlProfile::Fast
+// runs the SAME scheme with other arithmetic, so a carry solved under one profile
+// must never answer a lookup under the other — in particular, an opt-in Fast
+// caller must not leave behind an entry that a default (Reference) caller reads.
+// Each profile still memoizes its own repeat.
+TEST(DeAmer, CarryMemoKeysOnTheAlKernelProfile) {
+  namespace led = atx::vol::counters::ledger;
+
+  const Scenario sc;
+  const std::vector<double> strikes{92.0, 94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0, 108.0};
+  const Chain chain = make_synthetic_chain(sc, 0.021, strikes);
+  DeAmOptions ref;
+  ref.hyb = sc.hyb;
+  ASSERT_TRUE(ref.carry_al_opts.has_value());
+  ASSERT_EQ(ref.carry_al_opts->profile, AlProfile::Reference);
+  DeAmOptions fast = ref;
+  fast.carry_al_opts = al_fast_profile(ref.carry_al_opts);
+  ASSERT_EQ(fast.carry_al_opts->profile, AlProfile::Fast);
+
+  const auto solves = [&](const DeAmOptions &opts) {
+    led::reset();
+    auto out = resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
+    return std::pair{std::move(out), led::snapshot().get(led::Solve::AlBoundarySolves)};
+  };
+
+  atx::vol::carry_memo_reset();
+  const auto [fast_cold, fast_cold_solves] = solves(fast);
+  const auto [ref_after_fast, ref_after_fast_solves] = solves(ref);
+  const auto [fast_again, fast_again_solves] = solves(fast);
+  atx::vol::carry_memo_reset();
+  const auto [ref_cold, ref_cold_solves] = solves(ref);
+  const auto [fast_after_ref, fast_after_ref_solves] = solves(fast);
+
+  ASSERT_TRUE(fast_cold.has_value()) << fast_cold.error().to_string();
+  ASSERT_TRUE(ref_after_fast.has_value()) << ref_after_fast.error().to_string();
+  ASSERT_TRUE(fast_again.has_value()) << fast_again.error().to_string();
+  ASSERT_TRUE(ref_cold.has_value()) << ref_cold.error().to_string();
+  ASSERT_TRUE(fast_after_ref.has_value()) << fast_after_ref.error().to_string();
+  EXPECT_GT(fast_cold_solves, 0u);
+  EXPECT_GT(ref_cold_solves, 0u);
+  EXPECT_GT(ref_after_fast_solves, 0u) << "a Reference lookup was served from a Fast entry";
+  EXPECT_GT(fast_after_ref_solves, 0u) << "a Fast lookup was served from a Reference entry";
+  EXPECT_EQ(fast_again_solves, 0u) << "a repeated Fast resolve must still be memoized";
+  EXPECT_EQ(bits(ref_after_fast->borrow), bits(ref_cold->borrow));
+  EXPECT_EQ(bits(ref_after_fast->forward), bits(ref_cold->forward));
+  EXPECT_EQ(bits(fast_after_ref->borrow), bits(fast_cold->borrow));
+  EXPECT_EQ(bits(fast_again->borrow), bits(fast_cold->borrow));
 }
 
 TEST(DeAmer, RobustCarrySupportsHardToBorrowStrip) {

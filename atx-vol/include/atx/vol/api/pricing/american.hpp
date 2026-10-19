@@ -64,6 +64,51 @@ struct CorrectionBlend;
 // Tier-A (frozen v1 surface): this reorder is the LAST layout change allowed.
 // After v1 the order is fixed and new knobs append at the end WITHOUT any
 // positional-compatibility promise — designated init is the only contract.
+
+// Andersen-Lake kernel arithmetic profile (al-speed lane, 2026-10-17).
+//
+//   Reference  the shipped kernel; every pinned hash (dev200 c89d0739 etc.) is on it.
+//   Fast       OPT-IN. The SAME scheme — collocation nodes, quadrature orders, sweep
+//              schedule, BAW seed, every guard and clamp — with three substitutions
+//              that are identities in exact arithmetic:
+//                (1) Phi / phi by the validated scalar Cody rational kernels
+//                    (pricing/scalar_erfc.hpp, ~1e-16 vs std::erfc) instead of
+//                    std::erfc, which costs ~20 ns/call on the reference host;
+//                (2) the boundary ratio in log space: with b = xmax*exp(-sqrt(y)),
+//                    log(b_i/b(u)) = sqrt(y(u)) - sqrt(y_i) and
+//                    log(S/b(t)) = log(S/xmax) + sqrt(y(t)) — one exp and one log
+//                    fewer per quadrature node;
+//                (3) the BAW seed shares one d1 between its Black-76 leg and its
+//                    smooth-pasting term (2 Phi per Newton step instead of 3).
+//              The differences from Reference are rounding-level. MEASURED, Fast vs
+//              Reference on the SAME scheme (accurate / fast / bulk), worst case over
+//              the AL ladder grid, a 6,000-contract random set and 10,694 dev200
+//              contracts (bench rows american/fast_profile_error/*; numbers in
+//              sprints/2026-10-17-al-speed-sprint.md). Convention: each value is the
+//              measured worst case (max, or p99 where stated) to 5 significant
+//              figures; the BOUND in brackets is its next 2-figure round-up, so every
+//              bound is >= its measurement:
+//                price   max |dP| 7.9581e-13 abs [8.0e-13]; max relative (P >= 0.01)
+//                        1.8534e-13 [1.9e-13]
+//                IV      max 5.3660e-3 bp [0.0054]; p99 1.9638e-8 bp [2.0e-8] (one
+//                        target price inverted under each profile, tol 1e-10)
+//                Greeks  p99 |d| (american_greeks_al): delta 1.7941e-13 [1.8e-13],
+//                        gamma 1.6880e-11 [1.7e-11], vega 1.4211e-10 [1.5e-10],
+//                        theta 5.4645e-8 [5.5e-8], rho 1.4921e-9 [1.5e-9],
+//                        vanna 1.2206e-10 [1.3e-10], volga 5.1159e-7 [5.2e-7],
+//                        charm 1.4977e-7 [1.5e-7]
+//              TESTED bound (AlFastProfile.* in tests/american_test.cpp):
+//                |dP| <= 1e-12 * max(P, 1); |dIV| <= 0.01 bp on vega-bearing
+//                contracts; per-Greek p99 bounds ~100x the measured p99; the call
+//                slice stays bit-identical to the scalar Fast call.
+//              Not adopted by the AVX2 batch kernel (its own vector math) or by the
+//              adjoint tape (it differentiates the Reference map; its bumped
+//              re-solves pin Reference too).
+enum class AlProfile : std::uint8_t {
+  Reference = 0,
+  Fast = 1,
+};
+
 struct AlOpts {
   std::uint16_t n_collocation = 12; // Chebyshev boundary nodes
   std::uint16_t n_quadrature = 24;  // Gauss-Legendre fixed-point order
@@ -84,16 +129,30 @@ struct AlOpts {
   std::uint16_t n_quad_price = 0;
   std::uint16_t max_newton_iter = 8; // total Jacobi-Newton + fixed-point sweeps
   double tol = 1.0e-10;              // convergence tol on the boundary residual
+  // Kernel arithmetic profile (al-speed, 2026-10-17; appended per the v1 contract
+  // above). Reference — the default — is the shipped arithmetic, byte for byte.
+  // Fast is OPT-IN: see AlProfile for what it changes and its measured bound.
+  // Like n_quad_price before it, this knob is runtime-only: no AlOpts record format
+  // (surface_db / surface_archive / priced_surface_view) persists it, so a stored
+  // config always reads back Reference.
+  AlProfile profile = AlProfile::Reference;
 };
 
-// Drift pin (plan item 4.2). AlOpts has exactly FIVE fields. Adding, removing or
-// splitting one breaks this line, which is the point: it forces whoever changes
-// the struct to read the construction contract above instead of appending a knob
-// "for compatibility" with positional initializers that are no longer part of
-// the API.
-static_assert(detail::aggregate_arity_is_v<AlOpts, 5>,
+// Drift pin (plan item 4.2). AlOpts has exactly SIX fields (the sixth, `profile`,
+// appended 2026-10-17). Adding, removing or splitting one breaks this line, which
+// is the point: it forces whoever changes the struct to read the construction
+// contract above instead of appending a knob "for compatibility" with positional
+// initializers that are no longer part of the API.
+static_assert(detail::aggregate_arity_is_v<AlOpts, 6>,
               "AlOpts field count changed: update this pin, and confirm every "
               "construction site still uses designated initializers.");
+
+// `opts` resolved to an EXPLICIT AlOpts that selects the same scheme with
+// `profile = AlProfile::Fast`. nullopt (the ACCURATE preset) resolves to its
+// explicit equivalent {12, 24, price 48, 6 sweeps, 1e-10}, which maps to exactly
+// the nullopt scheme, so this is the one way to ask for the accurate preset on the
+// fast kernel. The opt-in "policy key" for callers that thread AlOpts.
+[[nodiscard]] AlOpts al_fast_profile(const std::optional<AlOpts> &opts) noexcept;
 
 // The C `ats_pricer_al_default_opts()`: {12, 24, 8, 1e-10}.
 //
