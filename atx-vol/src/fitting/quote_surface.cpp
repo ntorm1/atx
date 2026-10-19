@@ -23,6 +23,10 @@
 // ladder_calendar_pass): two pass-A fits per expiry, at most two repair-rung
 // fits, one retry with its prior per crossing expiry, O(expiries^2) calendar
 // checks; every rung's result must be inside the market (in_market).
+// Only the per-expiry stages (pass A or knot_pass, B1, B2) fan out over
+// surface.fit_workers (for_each_expiry). Priors, the calendar passes, the
+// repair rungs and the dominance gate stay serial, so output is bit-identical
+// for any worker count.
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
@@ -36,6 +40,8 @@
 #include <utility>
 #include <vector>
 
+#include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
+#include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "fitting/term_prior.hpp"
 
 namespace atx::vol {
@@ -187,7 +193,11 @@ public:
       : expiries_(expiries), config_(config), base_config_(without_repair(config)),
         surface_(surface), out_(expiries.size()), breadth_(expiries.size()),
         two_sided_(expiries.size()), contained_(expiries.size(), 0),
-        held_point_(expiries.size()) {}
+        held_point_(expiries.size()), cost_(expiries.size()) {
+    for (std::size_t i = 0; i < expiries.size(); ++i) {
+      cost_[i] = two_sided_quotes(expiries[i].quotes);
+    }
+  }
 
   [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>> run() {
     if (ladder()) {
@@ -218,15 +228,40 @@ public:
   }
 
 private:
+  // Runs body(i) once for every expiry index in `tasks`, fanned out over
+  // surface_.fit_workers in longest-first order: the strictly two-sided quote
+  // count, the pre-fit proxy for the admitted count, descending, with ties by
+  // index. CONTRACT: body(i) writes only expiry i's slots (out_[i], breadth_[i],
+  // two_sided_[i], held_point_[i]) and otherwise reads state no task writes
+  // (expiries_, the configs, a prior built before the call). The fan-out joins
+  // before it returns, so every write happens before the caller's next read.
+  // Each slot is a function of its own inputs alone, so the result is identical
+  // for any order and any worker count. A throwing body propagates to the caller
+  // (parallel_for_dynamic rethrows the first exception after the join), as the
+  // serial loop did.
+  template <class Body> void for_each_expiry(std::vector<std::size_t> tasks, const Body &body) {
+    tasks = detail::longest_first(std::move(tasks), cost_);
+    parallel_for_dynamic(tasks.size(), surface_.fit_workers, [&](std::size_t task) {
+      detail::note_expiry_dispatch(tasks[task]);
+      body(tasks[task]);
+    });
+  }
+
+  [[nodiscard]] std::vector<std::size_t> every_expiry() const {
+    std::vector<std::size_t> all(expiries_.size());
+    for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
+    return all;
+  }
+
   void point_pass() {
-    for (std::size_t i = 0; i < expiries_.size(); ++i) {
+    for_each_expiry(every_expiry(), [this](std::size_t i) {
       const QuoteSurfaceExpiry &e = expiries_[i];
       breadth_[i] = two_sided_strikes(e.quotes);
       auto fit = fit_quote_slice(e.market, e.quotes, base_config_, e.calendar_dividends);
       if (!fit) {
         out_[i].refusal = "invalid_input";
         out_[i].error = fit.error().to_string();
-        continue;
+        return;
       }
       out_[i].point_status = fit->fit_status;
       out_[i].point_error = fit->fit_error;
@@ -235,7 +270,7 @@ private:
       if (out_[i].fit.fit_status == QuoteSliceFitStatus::Success && own_evidence(out_[i].fit)) {
         out_[i].grade = QuoteSliceGrade::A;
       }
-    }
+    });
   }
 
   [[nodiscard]] bool ladder() const { return surface_.ladder == QuoteSurfaceLadder::KnotFirst; }
@@ -289,7 +324,7 @@ private:
   // shares its admission, so it cannot be served either (the `point_ok` branch
   // is reached only when the knot slice failed) and the channel passes decide.
   void knot_pass() {
-    for (std::size_t i = 0; i < expiries_.size(); ++i) {
+    for_each_expiry(every_expiry(), [this](std::size_t i) {
       const QuoteSurfaceExpiry &e = expiries_[i];
       breadth_[i] = two_sided_strikes(e.quotes);
       two_sided_[i] = two_sided_quotes(e.quotes);
@@ -300,7 +335,7 @@ private:
       if (!knot || !point) {
         slice.refusal = "invalid_input";
         slice.error = (!knot ? knot.error() : point.error()).to_string();
-        continue;
+        return;
       }
       slice.knot_status = knot->fit_status;
       slice.knot_error = knot->fit_error;
@@ -322,7 +357,7 @@ private:
         slice.fit = std::move(*knot); // the channel passes replace it
         slice.method = QuoteSurfaceMethod::Channel;
       }
-    }
+    });
   }
 
   // Channel dominance (opt-in, QuoteSliceChannelConfig::point_max_outside_fraction),
@@ -649,21 +684,23 @@ private:
     if (candidates.empty()) {
       return Ok();
     }
-    // B1: prior from point-fitted expiries only.
+    // B1: prior from point-fitted expiries only. Each stage's prior is built
+    // before its fan-out and only read inside it, so a refit depends on no
+    // other refit of the same stage (for_each_expiry's contract).
     ATX_TRY(const TermPrior point_prior, make_prior(nodes(false, nullptr), surface_));
-    for (const std::size_t i : candidates) {
+    for_each_expiry(candidates, [&](std::size_t i) {
       auto fit = channel_fit(i, point_prior, 1.0);
       if (!fit) {
         out_[i].refusal = "fit_failure";
         out_[i].error = fit.error().to_string();
-        continue;
+        return;
       }
       adopt(i, std::move(*fit));
-    }
+    });
     // B2: leave-one-out prior from every fitted expiry, B1 nodes down-weighted.
     ATX_TRY(const TermPrior full_prior, make_prior(nodes(true, nullptr), surface_));
-    for (const std::size_t i : candidates) {
-      if (!out_[i].refusal.empty()) continue;
+    for_each_expiry(candidates, [&](std::size_t i) {
+      if (!out_[i].refusal.empty()) return;
       auto fit = channel_fit(i, full_prior, 1.0);
       if (fit && fit->fit_status == QuoteSliceFitStatus::Success) {
         adopt(i, std::move(*fit));
@@ -676,7 +713,7 @@ private:
       } else if (ladder() && !in_market(out_[i].fit, i)) {
         refuse_outside(i);
       }
-    }
+    });
     return Ok();
   }
 
@@ -1076,6 +1113,7 @@ private:
   std::vector<std::uint8_t> contained_; // ladder only: contained() at the calendar pass
   // Ladder only: the in-market point fit of a knot-served expiry (calendar rung).
   std::vector<std::optional<QuoteSliceFit>> held_point_;
+  std::vector<std::size_t> cost_; // fan-out order key: strictly two-sided quotes
 };
 
 } // namespace

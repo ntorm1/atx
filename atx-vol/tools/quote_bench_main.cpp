@@ -1085,8 +1085,15 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   std::set<std::uint64_t> static_fallback;
   if (policy && policy->graded) {
     stats.graded = true;
-    fit_graded(chains, prepared, snapshot_chains, ambiguous_expiries, policy->surface,
-               predictions, stats, fitted_chains, static_fallback);
+    // Expiry fan-out of every graded surface fit at the library's AUTO width
+    // (QuoteSurfaceConfig::fit_workers = 0). ATX_VOL_FIT_WORKERS=N caps it to
+    // N workers (1 = serial); 0, unset or unparseable means
+    // hardware_concurrency. Speed only: predictions are byte-identical for any
+    // width.
+    QuoteSurfaceConfig surface = policy->surface;
+    surface.fit_workers = 0U;
+    fit_graded(chains, prepared, snapshot_chains, ambiguous_expiries, surface, predictions, stats,
+               fitted_chains, static_fallback);
   }
   // Grade of a static-fallback expiry under graded admission: the pass-A rule
   // without a term prior (own point evidence and unmoved prices => A).
