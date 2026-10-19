@@ -18,6 +18,11 @@
 // dominance gate (config.channel.point_max_outside_fraction) runs last
 // (dominance_pass): at most one more channel fit and its calendar repairs per
 // gated expiry, adopted only when consistent with every other served expiry.
+// The opt-in knot-first ladder (surface.ladder) replaces pass A, the repair
+// rung and the calendar pass (knot_pass, ladder_repair_rung,
+// ladder_calendar_pass): two pass-A fits per expiry, at most two repair-rung
+// fits, one retry with its prior per crossing expiry, O(expiries^2) calendar
+// checks; every rung's result must be inside the market (in_market).
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
@@ -48,7 +53,12 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       !positive(s.prior_decay_log_time) || !positive(s.prior_quote_halflife) ||
       !positive(s.channel_node_weight) || !std::isfinite(s.calendar_retry_factor) ||
       s.calendar_retry_factor < 1.0 || !std::isfinite(s.calendar_repair_half_spreads) ||
-      s.calendar_repair_half_spreads < 0.0) {
+      s.calendar_repair_half_spreads < 0.0 ||
+      (s.ladder != QuoteSurfaceLadder::Off && s.ladder != QuoteSurfaceLadder::KnotFirst) ||
+      !(s.ladder_max_outside_fraction >= 0.0 && s.ladder_max_outside_fraction <= 1.0) ||
+      !(s.ladder_channel_max_outside_fraction >= 0.0 &&
+        s.ladder_channel_max_outside_fraction <= 1.0) ||
+      s.ladder_min_outside_quotes < 1) {
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
   }
   return Ok();
@@ -60,16 +70,23 @@ struct OutsideShare {
 };
 
 // Share and count of the strictly two-sided quotes whose fitted price lies
-// outside [bid, ask]; quotes without a fitted price are not counted.
+// outside [bid, ask]; quotes without a fitted price are not counted. Success
+// rows always count; PriceOnly rows (a certified price without a volatility)
+// count only with `with_price_only` (the ladder's containment rule; the
+// dominance gate keeps its historical Success-only measure).
 [[nodiscard]] OutsideShare outside_share(const QuoteSliceFit &fit,
-                                         std::span<const QuoteSliceQuote> quotes) {
+                                         std::span<const QuoteSliceQuote> quotes,
+                                         bool with_price_only = false) {
   std::size_t two_sided = 0;
   std::size_t outside = 0;
   for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
     const QuoteSliceQuote &quote = quotes[i];
     const QuoteSliceRow &row = fit.rows[i];
+    const bool priced = row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+                        (with_price_only &&
+                         row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly);
     if (!positive(quote.bid) || !std::isfinite(quote.ask) || !(quote.ask > quote.bid) ||
-        row.evaluation_status != QuoteSliceEvaluationStatus::Success) {
+        !priced) {
       continue;
     }
     ++two_sided;
@@ -79,18 +96,25 @@ struct OutsideShare {
   return {static_cast<double>(outside) / static_cast<double>(two_sided), outside};
 }
 
+[[nodiscard]] bool two_sided(const QuoteSliceQuote &quote) noexcept {
+  return positive(quote.strike) && positive(quote.bid) && std::isfinite(quote.ask) &&
+         quote.ask > quote.bid;
+}
+
 // Raw two-sided breadth: distinct strikes carrying a strictly two-sided quote.
 [[nodiscard]] std::size_t two_sided_strikes(std::span<const QuoteSliceQuote> quotes) {
   std::vector<double> strikes;
   strikes.reserve(quotes.size());
   for (const QuoteSliceQuote &quote : quotes) {
-    if (positive(quote.strike) && positive(quote.bid) && std::isfinite(quote.ask) &&
-        quote.ask > quote.bid) {
-      strikes.push_back(quote.strike);
-    }
+    if (two_sided(quote)) strikes.push_back(quote.strike);
   }
   std::sort(strikes.begin(), strikes.end());
   return static_cast<std::size_t>(std::unique(strikes.begin(), strikes.end()) - strikes.begin());
+}
+
+// Raw two-sided evidence: strictly two-sided quotes (both sides of a strike count).
+[[nodiscard]] std::size_t two_sided_quotes(std::span<const QuoteSliceQuote> quotes) {
+  return static_cast<std::size_t>(std::count_if(quotes.begin(), quotes.end(), two_sided));
 }
 
 // ATM level and shape of a fitted curve on kTermPriorGrid. Points where the curve
@@ -161,14 +185,26 @@ public:
   SurfaceFitter(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSliceConfig &config,
                 const QuoteSurfaceConfig &surface)
       : expiries_(expiries), config_(config), base_config_(without_repair(config)),
-        surface_(surface), out_(expiries.size()), breadth_(expiries.size()) {}
+        surface_(surface), out_(expiries.size()), breadth_(expiries.size()),
+        two_sided_(expiries.size()), contained_(expiries.size(), 0),
+        held_point_(expiries.size()) {}
 
   [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>> run() {
-    point_pass();
+    if (ladder()) {
+      knot_pass();
+    } else {
+      point_pass();
+    }
     ATX_TRY_VOID(channel_passes());
-    repair_rung();
-    ATX_TRY_VOID(calendar_pass());
-    ATX_TRY_VOID(dominance_pass());
+    if (ladder()) {
+      ladder_repair_rung();
+      ATX_TRY_VOID(ladder_calendar_pass());
+      measure_containment();
+    } else {
+      repair_rung();
+      ATX_TRY_VOID(calendar_pass());
+      ATX_TRY_VOID(dominance_pass());
+    }
     for (QuoteSurfaceSlice &slice : out_) {
       if (slice.grade == QuoteSliceGrade::Refused) {
         strip(slice.fit);
@@ -194,12 +230,97 @@ private:
       }
       out_[i].point_status = fit->fit_status;
       out_[i].point_error = fit->fit_error;
+      out_[i].method = pass_a_method();
       out_[i].fit = std::move(*fit);
-      const auto &diag = out_[i].fit.diagnostics;
-      if (out_[i].fit.fit_status == QuoteSliceFitStatus::Success &&
-          diag.quotes_admitted >= config_.min_quotes &&
-          diag.distinct_strikes >= config_.min_quotes) {
+      if (out_[i].fit.fit_status == QuoteSliceFitStatus::Success && own_evidence(out_[i].fit)) {
         out_[i].grade = QuoteSliceGrade::A;
+      }
+    }
+  }
+
+  [[nodiscard]] bool ladder() const { return surface_.ladder == QuoteSurfaceLadder::KnotFirst; }
+
+  // The pass-A method of the profile without the ladder (diagnostic only).
+  [[nodiscard]] QuoteSurfaceMethod pass_a_method() const {
+    return config_.method == QuoteSliceFitMethod::ChannelSpline ? QuoteSurfaceMethod::Channel
+                                                                 : QuoteSurfaceMethod::Point;
+  }
+
+  // The A rule's own-evidence half: the profile minimum of admitted point quotes
+  // and distinct strikes (a successful point fit always meets it).
+  [[nodiscard]] bool own_evidence(const QuoteSliceFit &fit) const {
+    return fit.diagnostics.quotes_admitted >= config_.min_quotes &&
+           fit.diagnostics.distinct_strikes >= config_.min_quotes;
+  }
+
+  // Ladder containment (QuoteSurfaceConfig::ladder_max_outside_fraction for a
+  // point fit, ladder_channel_max_outside_fraction for a channel fit: every
+  // channel fit records channel diagnostics, a point fit never does).
+  [[nodiscard]] bool in_market(const QuoteSliceFit &fit, std::size_t i) const {
+    const double limit = fit.diagnostics.channel.used ? surface_.ladder_channel_max_outside_fraction
+                                                      : surface_.ladder_max_outside_fraction;
+    const OutsideShare share = outside_share(fit, expiries_[i].quotes, true);
+    return !(share.fraction > limit && share.count >= surface_.ladder_min_outside_quotes);
+  }
+
+  [[nodiscard]] bool served_in_market(const QuoteSliceFit &fit, std::size_t i) const {
+    return fit.fit_status == QuoteSliceFitStatus::Success && in_market(fit, i);
+  }
+
+  [[nodiscard]] static QuoteSurfaceLadderFallback knot_reason(const QuoteSliceFit &knot) {
+    switch (knot.fit_status) {
+    case QuoteSliceFitStatus::Success:
+      return QuoteSurfaceLadderFallback::Containment;
+    case QuoteSliceFitStatus::ArbitrageFailure:
+      return QuoteSurfaceLadderFallback::Certificate;
+    case QuoteSliceFitStatus::InsufficientQuotes:
+    case QuoteSliceFitStatus::FitFailure:
+      return QuoteSurfaceLadderFallback::KnotFailure;
+    }
+    return QuoteSurfaceLadderFallback::KnotFailure;
+  }
+
+  // Ladder pass A: both pass-A rungs of every expiry, eagerly. The knot slice
+  // serves (A) when it certifies, is inside the market and has own point
+  // evidence; else the point fit serves (A) when it certifies and is inside the
+  // market; else the expiry takes the channel passes. A knot-served expiry keeps
+  // its in-market point fit for the calendar rung (held_point_). ladder_fallback
+  // stays None for an in-market knot slice without own evidence: the point fit
+  // shares its admission, so it cannot be served either (the `point_ok` branch
+  // is reached only when the knot slice failed) and the channel passes decide.
+  void knot_pass() {
+    for (std::size_t i = 0; i < expiries_.size(); ++i) {
+      const QuoteSurfaceExpiry &e = expiries_[i];
+      breadth_[i] = two_sided_strikes(e.quotes);
+      two_sided_[i] = two_sided_quotes(e.quotes);
+      auto knot =
+          fit_quote_slice_channel(e.market, e.quotes, base_config_, nullptr, e.calendar_dividends);
+      auto point = fit_quote_slice(e.market, e.quotes, base_config_, e.calendar_dividends);
+      QuoteSurfaceSlice &slice = out_[i];
+      if (!knot || !point) {
+        slice.refusal = "invalid_input";
+        slice.error = (!knot ? knot.error() : point.error()).to_string();
+        continue;
+      }
+      slice.knot_status = knot->fit_status;
+      slice.knot_error = knot->fit_error;
+      slice.point_status = point->fit_status;
+      slice.point_error = point->fit_error;
+      const bool knot_ok = served_in_market(*knot, i);
+      const bool point_ok = served_in_market(*point, i);
+      slice.ladder_fallback = knot_ok ? QuoteSurfaceLadderFallback::None : knot_reason(*knot);
+      if (knot_ok && own_evidence(*knot)) {
+        slice.fit = std::move(*knot);
+        slice.method = QuoteSurfaceMethod::Channel;
+        slice.grade = QuoteSliceGrade::A;
+        if (point_ok) held_point_[i] = std::move(*point);
+      } else if (point_ok) {
+        slice.fit = std::move(*point);
+        slice.method = QuoteSurfaceMethod::Point;
+        slice.grade = QuoteSliceGrade::A;
+      } else {
+        slice.fit = std::move(*knot); // the channel passes replace it
+        slice.method = QuoteSurfaceMethod::Channel;
       }
     }
   }
@@ -346,6 +467,7 @@ private:
     slice.fit = std::move(point.fit);
     slice.grade = point.grade;
     slice.channel_refit = false;
+    slice.method = QuoteSurfaceMethod::Point;
     slice.calendar_repaired = point.calendar_repaired;
     slice.calendar_channel_repaired = point.calendar_channel_repaired;
   }
@@ -400,7 +522,53 @@ private:
       slice.error.clear();
       slice.channel_refit = false;
       slice.repair_rung = true;
+      slice.method = pass_a_method();
     }
+  }
+
+  // Ladder repair rung (config.repair.mode == Channel): an expiry still refused
+  // for a failed certificate after both channel passes gets the pass-A rung(s)
+  // that failed their certificate again WITH the repair, the knot fit first,
+  // then the point fit; the first certified fit inside the market serves (the
+  // point fit as B, the knot fit graded like a channel fit by its mid strikes).
+  void ladder_repair_rung() {
+    if (config_.repair.mode != QuoteSliceRepairMode::Channel) return;
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      QuoteSurfaceSlice &slice = out_[i];
+      if (slice.grade != QuoteSliceGrade::Refused || slice.refusal != "arbitrage_failure") {
+        continue;
+      }
+      const QuoteSurfaceExpiry &e = expiries_[i];
+      if (slice.knot_status == QuoteSliceFitStatus::ArbitrageFailure) {
+        auto knot =
+            fit_quote_slice_channel(e.market, e.quotes, config_, nullptr, e.calendar_dividends);
+        if (knot) slice.rung_repair = knot->diagnostics.repair;
+        if (knot && served_in_market(*knot, i)) {
+          serve_rung(i, std::move(*knot), QuoteSurfaceMethod::Channel);
+          continue;
+        }
+      }
+      if (slice.point_status == QuoteSliceFitStatus::ArbitrageFailure) {
+        auto point = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
+        if (point) slice.rung_repair = point->diagnostics.repair;
+        if (point && served_in_market(*point, i)) {
+          serve_rung(i, std::move(*point), QuoteSurfaceMethod::Point);
+        }
+      }
+    }
+  }
+
+  void serve_rung(std::size_t i, QuoteSliceFit fit, QuoteSurfaceMethod method) {
+    QuoteSurfaceSlice &slice = out_[i];
+    slice.fit = std::move(fit);
+    const bool thin = method == QuoteSurfaceMethod::Channel &&
+                      slice.fit.diagnostics.channel.mid_strikes < surface_.grade_b_min_mid_strikes;
+    slice.grade = thin ? QuoteSliceGrade::C : QuoteSliceGrade::B;
+    slice.refusal.clear();
+    slice.error.clear();
+    slice.channel_refit = false;
+    slice.repair_rung = true;
+    slice.method = method;
   }
 
   [[nodiscard]] bool candidate(std::size_t i) const {
@@ -463,6 +631,7 @@ private:
     QuoteSurfaceSlice &slice = out_[i];
     slice.fit = std::move(fit);
     slice.channel_refit = true;
+    slice.method = QuoteSurfaceMethod::ChannelRefit;
     if (slice.fit.fit_status == QuoteSliceFitStatus::Success) {
       slice.grade = slice.fit.diagnostics.channel.mid_strikes >= surface_.grade_b_min_mid_strikes
                         ? QuoteSliceGrade::B
@@ -504,9 +673,21 @@ private:
       if (out_[i].grade == QuoteSliceGrade::Refused) {
         out_[i].refusal = to_string(out_[i].fit.fit_status);
         out_[i].error = out_[i].fit.fit_error;
+      } else if (ladder() && !in_market(out_[i].fit, i)) {
+        refuse_outside(i);
       }
     }
     return Ok();
+  }
+
+  // Ladder containment of a served channel refit: refused, never served outside.
+  void refuse_outside(std::size_t i) {
+    QuoteSurfaceSlice &slice = out_[i];
+    const OutsideShare share = outside_share(slice.fit, expiries_[i].quotes, true);
+    slice.grade = QuoteSliceGrade::Refused;
+    slice.refusal = "outside_market";
+    slice.error = "served prices outside bid/ask on " + std::to_string(share.count) +
+                  " strictly two-sided quotes (share " + std::to_string(share.fraction) + ")";
   }
 
   [[nodiscard]] bool consistent(const QuoteSliceFit &fit,
@@ -636,6 +817,150 @@ private:
     return Ok();
   }
 
+  // Whether a slice's served prices left its own fit substantively: certified
+  // only by the channel repair, or served by a repair rung (a quoted side can
+  // move across its whole bid/ask channel). The bounded-move convexity repair
+  // (each node within channel.repair_half_spreads of its own half-spread) does
+  // not count: it removes sub-spread kinks and leaves the fit's prices in place
+  // to quote precision.
+  [[nodiscard]] bool channel_repaired(std::size_t i) const {
+    const QuoteSurfaceSlice &slice = out_[i];
+    return slice.repair_rung ||
+           slice.fit.diagnostics.repair.outcome == QuoteSliceRepairOutcome::Applied;
+  }
+
+  // Market containment under the strictest limit the policy states (the smaller
+  // of the point and channel limits). Every slice reaching the calendar pass
+  // met its own rung's limit; only a slice served under an explicitly relaxed
+  // limit (a limit above the other one) can fail this.
+  [[nodiscard]] bool contained(std::size_t i) const {
+    const double limit = std::min(surface_.ladder_max_outside_fraction,
+                                  surface_.ladder_channel_max_outside_fraction);
+    const OutsideShare share = outside_share(out_[i].fit, expiries_[i].quotes, true);
+    return !(share.fraction > limit && share.count >= surface_.ladder_min_outside_quotes);
+  }
+
+  // Confidence order of the ladder's calendar pass, a total order on intrinsic
+  // slice properties (never on processing order): contained slices first (a
+  // slice whose prices leave the market, served only under a relaxed limit,
+  // never out-ranks one inside it), then grade tier (own evidence first; a
+  // pass-A slice keeps its A tier until the final relabel), then prices still
+  // the fit's own before channel-repaired ones (channel_repaired), then more
+  // strictly two-sided quotes (more market information), then the nearer
+  // maturity (distinct maturities make it total).
+  [[nodiscard]] bool ladder_ranks_before(std::size_t a, std::size_t b) const {
+    if (contained_[a] != contained_[b]) return contained_[a] != 0;
+    if (out_[a].grade != out_[b].grade) return out_[a].grade < out_[b].grade;
+    const bool repaired_a = channel_repaired(a);
+    const bool repaired_b = channel_repaired(b);
+    if (repaired_a != repaired_b) return repaired_b;
+    if (two_sided_[a] != two_sided_[b]) return two_sided_[a] > two_sided_[b];
+    return expiries_[a].market.calendar_years < expiries_[b].market.calendar_years;
+  }
+
+  // Ladder calendar pass: ONE visit per slice in confidence order, each resolved
+  // against the slices accepted before it (ladder_resolve) before the next is
+  // visited. A lower-confidence slice therefore never constrains a
+  // higher-confidence one's repair or fallback (the two-pass calendar_pass
+  // accepts every clean slice first, so a newly served low-confidence slice can
+  // block a higher-confidence slice's repair: the displacement this removes).
+  [[nodiscard]] Status ladder_calendar_pass() {
+    std::vector<std::size_t> order;
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      if (served(i) && out_[i].fit.prices) {
+        order.push_back(i);
+        contained_[i] = contained(i) ? 1 : 0;
+      }
+    }
+    std::sort(order.begin(), order.end(),
+              [this](std::size_t a, std::size_t b) { return ladder_ranks_before(a, b); });
+    std::vector<std::size_t> accepted;
+    accepted.reserve(order.size());
+    for (const std::size_t i : order) {
+      if (consistent(out_[i].fit, accepted)) {
+        accepted.push_back(i);
+        continue;
+      }
+      ATX_TRY(const bool kept, ladder_resolve(i, accepted));
+      if (kept) {
+        accepted.push_back(i);
+        continue;
+      }
+      measure_gap(i, accepted);
+      refuse_calendar(i);
+    }
+    return Ok();
+  }
+
+  // A crossing slice's ladder rungs against the accepted slices, in order: its
+  // own bounded-move repair; the held point fit (knot-served slices), clean then
+  // repaired; the stronger-prior retry, clean then repaired; the channel
+  // calendar repair of its own prices, then of the retry's. Every result is
+  // inside the market (repair, repair_in_channel and the clean retry check it).
+  [[nodiscard]] Result<bool> ladder_resolve(std::size_t i, const std::vector<std::size_t> &accepted) {
+    if (repair(out_[i].fit, i, accepted)) {
+      mark_repaired(i);
+      return Ok(true);
+    }
+    if (held_point_[i]) {
+      const bool clean = consistent(*held_point_[i], accepted);
+      if (clean || repair(*held_point_[i], i, accepted)) {
+        serve_held_point(i);
+        if (!clean) mark_repaired(i);
+        return Ok(true);
+      }
+    }
+    out_[i].calendar_retry = true;
+    ATX_TRY(const TermPrior prior, make_prior(nodes(true, &accepted), surface_));
+    auto fit = channel_fit(i, prior, surface_.calendar_retry_factor);
+    const bool refit = fit && fit->fit_status == QuoteSliceFitStatus::Success;
+    if (refit) {
+      const bool clean = consistent(*fit, accepted) && in_market(*fit, i);
+      if (clean || repair(*fit, i, accepted)) {
+        adopt_retry(i, std::move(*fit), !clean);
+        return Ok(true);
+      }
+    }
+    if (repair_in_channel(out_[i].fit, i, accepted)) {
+      mark_repaired(i);
+      return Ok(true);
+    }
+    if (refit && repair_in_channel(*fit, i, accepted)) {
+      adopt_retry(i, std::move(*fit), true);
+      return Ok(true);
+    }
+    return Ok(false);
+  }
+
+  void serve_held_point(std::size_t i) {
+    QuoteSurfaceSlice &slice = out_[i];
+    slice.fit = std::move(*held_point_[i]);
+    held_point_[i].reset();
+    slice.method = QuoteSurfaceMethod::Point;
+    slice.channel_refit = false;
+    if (slice.ladder_fallback == QuoteSurfaceLadderFallback::None) {
+      slice.ladder_fallback = QuoteSurfaceLadderFallback::Calendar;
+    }
+  }
+
+  void adopt_retry(std::size_t i, QuoteSliceFit fit, bool repaired) {
+    adopt(i, std::move(fit));
+    if (repaired) mark_repaired(i);
+    if (out_[i].ladder_fallback == QuoteSurfaceLadderFallback::None) {
+      out_[i].ladder_fallback = QuoteSurfaceLadderFallback::Calendar;
+    }
+  }
+
+  // Ladder provenance: the final prices' containment (before a refusal strips them).
+  void measure_containment() {
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      if (!out_[i].fit.prices) continue;
+      const OutsideShare share = outside_share(out_[i].fit, expiries_[i].quotes, true);
+      out_[i].outside_fraction = share.fraction;
+      out_[i].outside_quotes = share.count;
+    }
+  }
+
   // The accepted slices' certified prices, split by maturity around `fit`.
   void neighbours(const QuoteSliceFit &fit, const std::vector<std::size_t> &accepted,
                   std::vector<const AmericanPriceSlice *> &earlier,
@@ -663,6 +988,7 @@ private:
                                                       &required);
     out_[i].calendar_repair_required = std::max(out_[i].calendar_repair_required, required);
     if (!repaired || !consistent(trial, accepted)) return false;
+    if (ladder() && !in_market(trial, i)) return false; // a bounded move can leave the quotes
     commit(fit, trial);
     return true;
   }
@@ -685,6 +1011,10 @@ private:
       record.outcome = QuoteSliceRepairOutcome::NotCertified;
       return false;
     }
+    if (ladder() && !in_market(trial, i)) {
+      record.outcome = QuoteSliceRepairOutcome::LeftChannel;
+      return false;
+    }
     commit(fit, trial);
     out_[i].calendar_channel_repaired = true;
     return true;
@@ -704,6 +1034,7 @@ private:
     trial.rows = fit.rows;
     trial.prices = fit.prices;
     trial.moved_nodes = fit.moved_nodes;
+    trial.price_only_nodes = fit.price_only_nodes;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;
   }
@@ -711,6 +1042,7 @@ private:
   static void commit(QuoteSliceFit &fit, QuoteSliceFit &trial) {
     fit.prices = std::move(trial.prices);
     fit.moved_nodes = std::move(trial.moved_nodes);
+    fit.price_only_nodes = std::move(trial.price_only_nodes);
     fit.rows = std::move(trial.rows);
   }
 
@@ -724,7 +1056,8 @@ private:
     for (QuoteSliceRow &row : fit.rows) {
       row.fitted_iv = kNaN;
       row.fitted_price = kNaN;
-      if (row.evaluation_status == QuoteSliceEvaluationStatus::Success) {
+      if (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+          row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
         row.evaluation_status = QuoteSliceEvaluationStatus::NoFit;
       }
     }
@@ -739,9 +1072,41 @@ private:
   const QuoteSurfaceConfig &surface_;
   std::vector<QuoteSurfaceSlice> out_;
   std::vector<std::size_t> breadth_;
+  std::vector<std::size_t> two_sided_; // ladder only: strictly two-sided quotes
+  std::vector<std::uint8_t> contained_; // ladder only: contained() at the calendar pass
+  // Ladder only: the in-market point fit of a knot-served expiry (calendar rung).
+  std::vector<std::optional<QuoteSliceFit>> held_point_;
 };
 
 } // namespace
+
+const char *to_string(QuoteSurfaceMethod value) noexcept {
+  switch (value) {
+  case QuoteSurfaceMethod::Point:
+    return "point";
+  case QuoteSurfaceMethod::Channel:
+    return "channel";
+  case QuoteSurfaceMethod::ChannelRefit:
+    return "channel_refit";
+  }
+  return "unknown";
+}
+
+const char *to_string(QuoteSurfaceLadderFallback value) noexcept {
+  switch (value) {
+  case QuoteSurfaceLadderFallback::None:
+    return "none";
+  case QuoteSurfaceLadderFallback::Certificate:
+    return "certificate";
+  case QuoteSurfaceLadderFallback::KnotFailure:
+    return "knot_failure";
+  case QuoteSurfaceLadderFallback::Containment:
+    return "containment";
+  case QuoteSurfaceLadderFallback::Calendar:
+    return "calendar";
+  }
+  return "unknown";
+}
 
 Result<std::vector<QuoteSurfaceSlice>>
 fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSliceConfig &config,
@@ -753,6 +1118,15 @@ fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSlice
   if (config.carry.mode != QuoteSliceCarryMode::Supplied) {
     return Err(ErrorCode::InvalidArgument,
                "quote surface: graded admission requires supplied carry");
+  }
+  // The ladder's own knot rung and containment rule replace a knot-spline pass A
+  // and the dominance gate; combining them is refused rather than guessed.
+  if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&
+      (config.method != QuoteSliceFitMethod::PointCurve ||
+       config.channel.point_max_outside_fraction.has_value())) {
+    return Err(ErrorCode::InvalidArgument,
+               "quote surface: the knot-first ladder requires a point profile without the "
+               "dominance gate");
   }
   if (expiries.size() > kQuoteSurfaceMaxExpiries) {
     return Err(ErrorCode::InvalidArgument, "quote surface: too many expiries");

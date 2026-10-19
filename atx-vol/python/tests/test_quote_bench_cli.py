@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import csv
+import datetime as dt
+import importlib.util
 import json
 import math
 import os
@@ -697,6 +699,312 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
         assert entry["point_outside_quotes"] >= 0
     for entry in plain_report["graded_stats"]["slices"]:
         assert "repair" not in entry and "point_gated" not in entry
+
+
+PROFILE_NAMES = ("dense", "ordinary", "sparse")
+
+
+def test_native_ladder_and_price_only_keys_are_strict(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    knot = [{"name": name, "base": name, "curve": "knot-spline"} for name in PROFILE_NAMES]
+    gated = [{"name": name, "base": name, "channel": {"point_max_outside_fraction": 0.05}}
+             for name in PROFILE_NAMES]
+    graded = {"schema_version": 1, "admission": "graded"}
+    for document, message in (
+            ({"schema_version": 1, "price_only": "yes"}, "price_only must be true or false"),
+            ({"schema_version": 1, "price_only": 1}, "price_only must be true or false"),
+            ({**graded, "price_only": None}, "price_only must be true or false"),
+            ({"schema_version": 1, "graded": {"ladder": "knot-first"}},
+             "require admission graded"),
+            ({**graded, "graded": {"ladder": "point-first"}}, "must be off or knot-first"),
+            ({**graded, "graded": {"ladder_max_outside_fraction": 0.1}},
+             "containment keys require ladder knot-first"),
+            ({**graded, "graded": {"ladder": "off", "ladder_min_outside_quotes": 4}},
+             "containment keys require ladder knot-first"),
+            ({**graded, "graded": {"ladder": "off", "ladder_channel_max_outside_fraction": 1}},
+             "containment keys require ladder knot-first"),
+            ({**graded, "graded": {"ladder": "knot-first", "ladder_max_outside_fraction": 1.5}},
+             "outside supported bounds"),
+            ({**graded, "graded": {"ladder": "knot-first",
+                                   "ladder_channel_max_outside_fraction": -0.1}},
+             "outside supported bounds"),
+            ({**graded, "graded": {"ladder": "knot-first", "ladder_min_outside_quotes": 0}},
+             "outside supported bounds"),
+            ({**graded, "graded": {"ladder": "knot-first"}, "profiles": knot},
+             "requires point profiles"),
+            ({**graded, "graded": {"ladder": "knot-first"}, "profiles": gated},
+             "replaces the dominance gate")):
+        policy = write_policy(tmp_path / "policy.json", document)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+
+
+def test_native_price_only_and_ladder_off_keys_leave_predictions_unchanged(binary, tmp_path):
+    # Clean quotes: no served price is a repaired node without a volatility, so
+    # price_only changes no row; "ladder": "off" is the historical admission.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    runs = {}
+    for name, document in (
+            ("plain", {"schema_version": 1, "admission": "graded"}),
+            ("keyed", {"schema_version": 1, "admission": "graded", "price_only": True,
+                       "graded": {"ladder": "off"}}),
+            ("static", {"schema_version": 1}),
+            ("static_keyed", {"schema_version": 1, "price_only": True})):
+        output = tmp_path / f"{name}.csv"
+        result = invoke(binary, source, output, "--policy",
+                        str(write_policy(tmp_path / f"{name}.json", document)))
+        assert result.returncode == 0, result.stderr
+        runs[name] = (output.read_bytes(), json.loads(result.stdout))
+    assert runs["keyed"][0] == runs["plain"][0]
+    assert runs["static_keyed"][0] == runs["static"][0]
+    for keyed, plain in (("keyed", "plain"), ("static_keyed", "static")):
+        report, plain_report = runs[keyed][1], runs[plain][1]
+        assert report["policy_definition"]["price_only"] is True
+        assert "price_only" not in plain_report["policy_definition"]
+        assert report["price_only_rows"] == 0
+        assert "ok_price_only" in report["price_only_semantics"]
+        assert "price_only_rows" not in plain_report
+    keyed_report = runs["keyed"][1]
+    assert "ladder" not in keyed_report["policy_definition"]["graded"]
+    assert "ladder knot-first" not in keyed_report["graded_semantics"]
+    for entry in keyed_report["graded_stats"]["slices"]:
+        assert "method" not in entry and "ladder_fallback" not in entry
+
+
+def test_native_knot_first_ladder_serves_the_knot_slice_with_provenance(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    expected = make_quotes(source)
+    policy = write_policy(tmp_path / "ladder.json", {
+        "schema_version": 1, "admission": "graded", "price_only": True,
+        "graded": {"ladder": "knot-first", "ladder_max_outside_fraction": 0.05,
+                   "ladder_channel_max_outside_fraction": 0.05,
+                   "ladder_min_outside_quotes": 1}})
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    with output.open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert all(row["status"] == "ok" for row in rows)
+    assert all(row["grade"] in {"A", "B"} for row in rows)
+    assert max(abs(float(row["predicted_price"]) - value)
+               for row, value in zip(rows, expected)) < 0.03
+    report = json.loads(result.stdout)
+    definition = report["policy_definition"]["graded"]
+    assert definition["ladder"] == "knot-first"
+    assert definition["ladder_max_outside_fraction"] == 0.05
+    assert definition["ladder_channel_max_outside_fraction"] == 0.05
+    assert definition["ladder_min_outside_quotes"] == 1
+    assert "ladder knot-first" in report["graded_semantics"]
+    (entry,) = report["graded_stats"]["slices"]
+    # Pass A: the certified, in-market knot slice serves (channel, no fallback).
+    assert entry["method"] == "channel"
+    assert entry["ladder_fallback"] == "none"
+    assert entry["knot_status"] == "success"
+    assert entry["outside_fraction"] <= 0.05
+    assert entry["outside_quotes"] >= 0
+    assert report["price_only_rows"] == 0
+
+
+def european_put(strike: float, years: float, sigma: float, q: float) -> float:
+    # Zero rate: an American put has no early-exercise premium, so this is its price.
+    sigma_t = sigma * math.sqrt(years)
+    d1 = (math.log(100.0 / strike) - q * years) / sigma_t + 0.5 * sigma_t
+    d2 = d1 - sigma_t
+    def phi(x: float) -> float:
+        return 0.5 * math.erfc(-x / math.sqrt(2.0))
+    return strike * phi(-d2) - 100.0 * math.exp(-q * years) * phi(-d1)
+
+
+def price_only_puts(years: float = 0.5, sigma: float = 0.15,
+                    zigzag: bool = True) -> list[tuple[int, float, float]]:
+    """(strike, yield, price) of the PriceOnly fixture (quote_surface_test put_zigzag_chain).
+
+    Deep in-the-money puts, zero rate, strikes 100-148 every 4, per-row yield 0 at
+    even positions (both ends) and 4% between. A 4% put is worth about K - S e^{-qT},
+    above the chord of its zero-yield neighbours (about K - S), so a channel fit's
+    convexity repair lowers it below its own zero-volatility value: a certified
+    price without an identifiable volatility (library status PriceOnly).
+    """
+    out = []
+    for index, strike in enumerate(range(100, 149, 4)):
+        q = 0.04 if zigzag and index % 2 == 1 else 0.0
+        out.append((strike, q, european_put(strike, years, sigma, q)))
+    return out
+
+
+def write_price_only_quotes(path: Path, *, crossing: bool = False) -> None:
+    # crossing adds a later expiry quoted far below the first: a calendar crossing.
+    chains = [(17, 0.5, 21000, price_only_puts())]
+    if crossing:
+        chains.append((18, 1.0, 21183, price_only_puts(1.0, 0.05, zigzag=False)))
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow([
+            "row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+            "years", "years_calendar", "rate", "sdiv", "ddiv_pv",
+            "input_status", "exercise", "underlier", "root", "expiry_days", "snapshot_ns",
+        ])
+        row = 0
+        for chain, years, days, puts in chains:
+            for strike, q, price in puts:
+                spread = max(0.01, 0.05 * price)
+                writer.writerow([row, chain, strike, 0, 100, max(price - spread, 0.0),
+                                 price + spread, years, years, 0, q, 0, "ok", "American",
+                                 "AAA", "AAA", days, 1])
+                row += 1
+
+
+def price_only_policy(path: Path, *, graded: bool, price_only: bool | None) -> Path:
+    # Point profiles in graded admission (the channel refits repair convexity);
+    # knot-spline profiles on the static path. Unbounded convexity repair.
+    profiles = [{"name": name, "base": name, "channel": {"repair_half_spreads": 100},
+                 **({} if graded else {"curve": "knot-spline"})} for name in PROFILE_NAMES]
+    document = {"schema_version": 1, "profiles": profiles}
+    if graded:
+        document["admission"] = "graded"
+    if price_only is not None:
+        document["price_only"] = price_only
+    return write_policy(path, document)
+
+
+@pytest.mark.parametrize("graded", [False, True], ids=["static", "graded"])
+def test_native_price_only_rows_are_served_only_under_the_key(binary, tmp_path, graded):
+    source = tmp_path / "quotes.csv"
+    write_price_only_quotes(source)
+    runs = {}
+    for name, key in (("on", True), ("off", False), ("absent", None)):
+        output = tmp_path / f"{name}.csv"
+        policy = price_only_policy(tmp_path / f"{name}.json", graded=graded, price_only=key)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode == 0, result.stderr
+        runs[name] = (output.read_bytes(), read_quotes(output), json.loads(result.stdout))
+    # Off is the historical behaviour: byte-identical to a policy without the key.
+    assert runs["off"][0] == runs["absent"][0]
+    on, off = runs["on"][1], runs["off"][1]
+    price_only = [i for i, row in enumerate(on) if row["status"] == "ok_price_only"]
+    assert price_only, "the fixture must produce PriceOnly rows"
+    served = [i for i, row in enumerate(on) if row["status"] == "ok"]
+    assert len(served) + len(price_only) == len(on)
+    for i in price_only:
+        # Key on: the certified price, a blank volatility, never a vol row.
+        assert float(on[i]["predicted_price"]) > 0.0
+        assert on[i]["predicted_vol"] == ""
+        assert on[i]["vol_status"] == "unidentifiable"
+        assert on[i].get("grade", "") == ("B" if graded else "")
+        # Key off: refused invalid_volatility, no price; the same vol_status.
+        assert off[i]["status"] == "invalid_volatility"
+        assert off[i]["predicted_price"] == "" and off[i]["predicted_vol"] == ""
+        assert off[i]["vol_status"] == "unidentifiable"
+        assert off[i].get("grade", "") == ""
+    for i in served:
+        assert on[i] == off[i]
+        assert float(on[i]["predicted_vol"]) > 0.0 and on[i]["vol_status"] == "ok"
+    report, off_report = runs["on"][2], runs["off"][2]
+    assert report["price_only_rows"] == len(price_only)
+    assert report["served_rows"] == off_report["served_rows"] == len(served)
+    assert "price_only_rows" not in off_report
+    (profile,) = [counts for counts in report["per_profile_counts"].values() if counts.get("rows")]
+    assert profile["price_only_rows"] == len(price_only)
+    assert profile["row_status_counts"] == {"ok": len(served), "ok_price_only": len(price_only)}
+    if graded:
+        assert report["graded_stats"]["price_only_rows"] == {"B": len(price_only)}
+        assert report["graded_stats"]["served_rows"] == {"B": len(served)}
+
+
+@pytest.mark.parametrize("graded", [False, True], ids=["static", "graded"])
+def test_native_calendar_refusal_resets_price_only_rows(binary, tmp_path, graded):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    write_price_only_quotes(source, crossing=True)
+    policy = price_only_policy(tmp_path / "policy.json", graded=graded, price_only=True)
+    result = invoke(binary, source, output, "--policy", str(policy))
+    assert result.returncode == 0, result.stderr
+    rows = read_quotes(output)
+    report = json.loads(result.stdout)
+    refused = [row for row in rows if row["status"] == "calendar_arbitrage"]
+    # A refused expiry carries no price, no volatility and no evaluated vol_status.
+    assert refused
+    for row in refused:
+        assert row["predicted_price"] == "" and row["predicted_vol"] == ""
+        assert row["vol_status"] == "not_evaluated"
+        assert row.get("grade", "") == ""
+    price_only = [row for row in rows if row["status"] == "ok_price_only"]
+    assert report["price_only_rows"] == len(price_only)
+    if graded:
+        # Inside the surface the later, lower-confidence expiry is refused; the
+        # first keeps its PriceOnly rows.
+        assert {row["chain_id"] for row in refused} == {"18"}
+        assert price_only and all(row["chain_id"] == "17" for row in price_only)
+    else:
+        # The static rule refuses both slices of the crossing pair, so every
+        # price-only row of the first is withdrawn from price_only_rows.
+        assert len(refused) == len(rows)
+        assert report["calendar_rejected_chains"] == 2
+        assert report["served_rows"] == 0 and not price_only
+
+
+def load_quote_benchmark():
+    spec = importlib.util.spec_from_file_location(
+        "quote_benchmark_for_native_cli",
+        Path(__file__).resolve().parents[2] / "tools" / "quote_benchmark.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_native_price_only_rows_are_scored_as_price_served_never_vol_served(binary, tmp_path):
+    # End to end: raw quotes -> prepare -> native run (graded, key on and off) -> score.
+    qb = load_quote_benchmark()
+    puts = price_only_puts()
+    n = len(puts)
+    when = dt.datetime(2026, 10, 14, 14, 30, tzinfo=dt.timezone.utc)
+    source = tmp_path / "source.parquet"
+    qb.pq.write_table(qb.pa.table({
+        "okey_tk": ["AAA"] * n, "okey_dt": [dt.date(2027, 1, 15)] * n,
+        "okey_xx": [float(strike) for strike, _, _ in puts], "okey_cp": ["Put"] * n,
+        "date": [when] * n, "timestamp": [when + dt.timedelta(seconds=1)] * n,
+        "undSecKey_tk": ["AAA"] * n, "uBid": [100.0] * n, "uAsk": [100.0] * n,
+        "bidPrc": [max(price - max(0.01, 0.05 * price), 0.0) for _, _, price in puts],
+        "askPrc": [price + max(0.01, 0.05 * price) for _, _, price in puts],
+        "bidSz": [10] * n, "askSz": [10] * n, "years": [0.5] * n, "yearsC": [0.5] * n,
+        "rate": [0.0] * n, "sdiv": [q for _, q, _ in puts], "ddiv": [0.0] * n,
+        "ddivPv": [0.0] * n, "exType": ["American"] * n,
+        "srPrc": [price for _, _, price in puts], "srVol": [0.15] * n,
+        "bidIV": [998.0] * n, "askIV": [999.0] * n, "synSpot": [9999.0] * n,
+        "atmVol": [999.0] * n, "error": [999] * n,
+    }), source)
+    dataset = tmp_path / "dataset"
+    qb.prepare(qb.parser().parse_args(["prepare", "--source", str(source), "--output",
+                                       str(dataset), "--split", "all", "--csv"]))
+    metrics = {}
+    for name, key in (("on", True), ("off", False)):
+        output = tmp_path / f"{name}.csv"
+        policy = price_only_policy(tmp_path / f"{name}.json", graded=True, price_only=key)
+        qb.run_native(qb.parser().parse_args(["run", "--dataset", str(dataset), "--binary",
+                                              str(binary), "--output", str(output),
+                                              "--policy", str(policy)]))
+        statuses = [row["status"] for row in read_quotes(output)]
+        scored = qb.score(qb.parser().parse_args([
+            "score", "--dataset", str(dataset), "--run-receipt", str(output) + ".run.json",
+            "--output", str(tmp_path / f"{name}-score.json"), "--split", "all"]))["metrics"]
+        ok, price_only = statuses.count("ok"), statuses.count("ok_price_only")
+        assert scored["eligible_rows"] == n
+        # Price-served = ok | ok_price_only; vol-served = ok only.
+        assert scored["predicted_rows"] == scored["price_prediction_rows"] == ok + price_only
+        assert scored["price_only_predicted_rows"] == price_only
+        assert scored["vol_prediction_rows"] == scored["vol_scored_rows"] == ok
+        assert scored["price_coverage"] == pytest.approx((ok + price_only) / n)
+        assert scored["vol_coverage"] == pytest.approx(ok / n)
+        metrics[name] = (scored, ok, price_only)
+    (on, on_ok, on_price_only), (off, off_ok, off_price_only) = metrics["on"], metrics["off"]
+    assert on_price_only > 0 and off_price_only == 0
+    assert on_ok == off_ok
+    assert on["predicted_rows"] == off["predicted_rows"] + on_price_only
+    # The key changes price coverage only: every volatility metric is identical.
+    for metric in ("vol_prediction_rows", "vol_scored_rows", "vol_coverage", "vol_bp_mae",
+                   "vol_bp_p99_abs"):
+        assert on[metric] == off[metric], metric
 
 
 def test_native_knot_spline_profile_serves_a_channel_spline(binary, tmp_path):

@@ -116,7 +116,10 @@ struct QuoteSliceChannelConfig {
   // many of its own quote half-spreads (bidless: half the ask; a side without a
   // quote uses the other side's). This bounds the move; it does not keep a
   // price inside [bid, ask]. The unchanged certificate then runs again; moved
-  // nodes are flagged in QuoteSliceFit::moved_nodes. 0 disables the repair.
+  // nodes are flagged in QuoteSliceFit::moved_nodes and report the volatility
+  // of their served price, or PriceOnly (certified price, NaN volatility,
+  // flagged in QuoteSliceFit::price_only_nodes) when that price has no
+  // identifiable American volatility. 0 disables the repair.
   double repair_half_spreads = 0.0;
   // Opt-in channel dominance under graded admission (fit_quote_surface), run
   // after every other rung (pass A, channel passes, repair rung, calendar
@@ -249,12 +252,22 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
   WideSpreadVol,
   LowVegaWeight
 };
+// PriceOnly: the row carries a certified price (fitted_price) but no volatility
+// (fitted_iv NaN), because a repair moved its node to a price that has no
+// identifiable American volatility under the row's own carry (for example
+// below the zero-volatility exercise value). evaluate_quote_slice refuses the
+// same contract. PriceOnly is final for the life of the fit: a later calendar
+// repair refreshes the row's certified price but never re-implies a volatility
+// for it (QuoteSliceFit::price_only_nodes), so a PriceOnly row is never served
+// with a volatility. InvalidVolatility is a curve without a positive volatility
+// at the strike; such a row carries neither price nor volatility.
 enum class QuoteSliceEvaluationStatus : std::uint8_t {
   Success,
   InvalidContract,
   NoFit,
   InvalidVolatility,
-  PricingFailure
+  PricingFailure,
+  PriceOnly
 };
 enum class QuoteSliceFitStatus : std::uint8_t {
   Success, InsufficientQuotes, FitFailure, ArbitrageFailure
@@ -305,7 +318,7 @@ struct QuoteSliceDiagnostics {
   std::size_t iv_attempted = 0;
   std::size_t quotes_admitted = 0;
   std::size_t distinct_strikes = 0;
-  std::size_t prices_produced = 0;
+  std::size_t prices_produced = 0; // rows carrying a certified price (Success or PriceOnly)
   std::size_t weights_capped = 0;
   double forward = 0.0;
   double discount = 0.0;
@@ -339,6 +352,12 @@ struct QuoteSliceFit {
   // per prices->nodes() entry: value 1 = call moved, 2 = put moved (OR'd). At
   // such a node the curve's volatility is not the served price's.
   std::vector<std::uint8_t> moved_nodes;
+  // Empty unless a row became PriceOnly. Otherwise one entry per
+  // prices->nodes() entry: value 1 = call, 2 = put (OR'd), the node sides whose
+  // served price had no identifiable volatility. They stay price-only for the
+  // life of the fit: evaluate_quote_slice refuses their volatility, and a later
+  // calendar repair refreshes their price but never re-implies them.
+  std::vector<std::uint8_t> price_only_nodes;
   std::vector<QuoteSliceRow> rows; // same order and length as input quotes
   QuoteSliceMarket market;
   QuoteSliceDividendModel dividend_model = QuoteSliceDividendModel::ContinuousYield;
@@ -391,7 +410,9 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
 
 // Query inside the certified price domain. At a grid node the fitted IV is
 // cached through the immutable curve, except at a node a repair moved off the
-// curve (moved_nodes), which is inverted like a point between nodes. Between
+// curve (moved_nodes), which is inverted like a point between nodes, and at a
+// node side served price-only (price_only_nodes), whose volatility is refused
+// with OutOfRange exactly like the PriceOnly row it serves. Between
 // nodes, invert the certified piecewise-linear price using the snapshot's local
 // carry and American model; this keeps returned price and IV consistent.
 // Outside-domain requests fail.
@@ -435,11 +456,14 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // remains satisfied and the unchanged AmericanPriceSlice certificate passes.
 // The bound limits the move; it does not keep a price inside [bid, ask]. On
 // success replaces fit.prices, flags moved nodes in fit.moved_nodes, refreshes
-// row prices (moved nodes report the volatility of the served price, or
-// InvalidVolatility with NaN price and volatility when that price has no
-// identifiable volatility) and returns true; otherwise leaves `fit` unchanged. The largest required move, in
-// half-spreads, is written to `required` when non-null. The caller must still
-// check the result against every accepted slice.
+// the prices of Success and PriceOnly rows (a moved node of a Success row is
+// re-implied: the volatility of the served price, or PriceOnly with the
+// certified price and a NaN volatility, flagged in fit.price_only_nodes, when
+// that price has no identifiable volatility; a PriceOnly row stays PriceOnly
+// and is never re-implied) and returns true; otherwise leaves `fit` unchanged.
+// The largest required move, in half-spreads, is written to `required` when
+// non-null. The caller must still check the result against every accepted
+// slice.
 [[nodiscard]] bool repair_quote_slice_calendar(QuoteSliceFit &fit,
                                                std::span<const QuoteSliceQuote> quotes,
                                                std::span<const AmericanPriceSlice *const> earlier,
@@ -493,6 +517,11 @@ struct QuoteSurfaceExpiry {
   std::span<const CashDividend> calendar_dividends{};
 };
 
+// Admission ladder of fit_quote_surface. Off is the historical point-first
+// admission, bit for bit. KnotFirst (opt-in, point profiles only) is described
+// at fit_quote_surface.
+enum class QuoteSurfaceLadder : std::uint8_t { Off, KnotFirst };
+
 struct QuoteSurfaceConfig {
   double term_prior_weight = 1.0;     // scale of the neighbour prior's strength
   double prior_decay_log_time = 1.0;  // confidence e-folding in |ln(T/T_nearest)|
@@ -504,11 +533,56 @@ struct QuoteSurfaceConfig {
   // (repair_quote_slice_calendar); 0 disables it. A repaired pass-A slice is
   // graded B because its served prices are no longer its fit's.
   double calendar_repair_half_spreads = 0.0;
+  QuoteSurfaceLadder ladder = QuoteSurfaceLadder::Off;
+  // Market containment of the knot-first ladder (unused when it is off): no
+  // rung serves a slice whose final prices lie outside [bid, ask] on more than
+  // this share of its strictly two-sided quotes (0 < bid < ask) AND on at least
+  // ladder_min_outside_quotes of them. ladder_max_outside_fraction governs the
+  // point-fit rungs (pass A, the repair rung, the calendar point fallback);
+  // ladder_channel_max_outside_fraction the channel-fit rungs (the knot rung,
+  // its repair rung, every channel refit), whose objective already penalises
+  // leaving the channel but floors a channel's half-width at
+  // channel.min_half_width_vol, so a channel fit can sit outside a market that
+  // is narrower than that floor. Each in [0, 1]; 1 lets those rungs serve
+  // regardless of containment, so only an explicit setting relaxes the rule.
+  double ladder_max_outside_fraction = 0.05;
+  double ladder_channel_max_outside_fraction = 0.05;
+  std::size_t ladder_min_outside_quotes = 1; // >= 1
 };
+
+// Which fitter produced a slice's served (or last attempted) fit: the pass-A
+// point fitter (also the point repair rung), the pass-A term-prior-free channel
+// fit (a ChannelSpline profile's pass A, or the knot-first ladder's knot rung,
+// also its repair rung), or a channel refit (term prior or flat default shape:
+// B1, B2, the calendar retry).
+enum class QuoteSurfaceMethod : std::uint8_t { Point, Channel, ChannelRefit };
+
+// Knot-first ladder only: why the knot rung does not serve the slice. None:
+// it does; or the knot slice certified inside the market but lacks the A
+// rule's own point evidence, and the slice takes the channel passes as without
+// the ladder (method channel_refit when a refit serves). The point fit can
+// never serve such a slice at pass A: it shares the knot fit's quote admission,
+// so it lacks the same evidence and is refused (InsufficientQuotes). Hence None
+// never labels a slice that pass A serves with its point fit; that fallback
+// always names the knot rung's failure. Certificate: the knot slice failed its
+// price certificate after its bounded-move convexity repair. KnotFailure: too few
+// usable channels or a numerical failure. Containment: the knot slice is
+// outside the market (QuoteSurfaceConfig::ladder_channel_max_outside_fraction).
+// Calendar: the knot slice crossed a higher-confidence slice and its own
+// bounded-move calendar repair did not fix it, so a later rung (the point fit,
+// clean then repaired, or the stronger-prior retry) serves the slice.
+enum class QuoteSurfaceLadderFallback : std::uint8_t {
+  None, Certificate, KnotFailure, Containment, Calendar
+};
+
+[[nodiscard]] const char *to_string(QuoteSurfaceMethod value) noexcept;
+[[nodiscard]] const char *to_string(QuoteSurfaceLadderFallback value) noexcept;
 
 struct QuoteSurfaceSlice {
   // For a refused expiry the fit keeps its diagnostics and row provenance but
-  // never carries certified prices or fitted values.
+  // never carries certified prices or fitted values: its Success and PriceOnly
+  // rows become NoFit with a NaN price and volatility (other row statuses keep
+  // their reason).
   QuoteSliceFit fit;
   QuoteSliceGrade grade = QuoteSliceGrade::Refused;
   // Empty when served. Otherwise one of: invalid_input, insufficient_quotes,
@@ -550,6 +624,18 @@ struct QuoteSurfaceSlice {
   // A calendar refusal served after the gate adopted a refit (its own or a
   // neighbour's), re-checked against the final served set; grade B or C.
   bool calendar_readmitted = false;
+  // Fitter of the served (or last attempted) fit; filled with or without the
+  // ladder (diagnostic).
+  QuoteSurfaceMethod method = QuoteSurfaceMethod::Point;
+  // Knot-first ladder only (defaults otherwise): the knot rung's status and
+  // error, why it does not serve, and the final served prices' share and count
+  // of strictly two-sided quotes outside [bid, ask] (measured before a refused
+  // slice is stripped).
+  QuoteSurfaceLadderFallback ladder_fallback = QuoteSurfaceLadderFallback::None;
+  QuoteSliceFitStatus knot_status = QuoteSliceFitStatus::InsufficientQuotes;
+  std::string knot_error;
+  double outside_fraction = 0.0;
+  std::size_t outside_quotes = 0;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation
@@ -584,6 +670,41 @@ struct QuoteSurfaceSlice {
 // configuration (including config.channel and config.repair) is Err;
 // per-expiry input errors are
 // refusals with refusal == "invalid_input".
+//
+// Knot-first ladder (surface.ladder == KnotFirst; a point profile, without the
+// dominance gate, else Err). Pass A computes both pass-A rungs of every expiry:
+// the term-prior-free channel fit (the knot rung: the profile's channel config,
+// the native knot spline unless channel.family is set, with its bounded-move
+// convexity repair) and the point fit. The knot slice serves when it certifies,
+// is inside the market and has the A rule's own point evidence; otherwise the
+// point fit serves when it certifies and is inside the market (ladder_fallback
+// names why the knot slice did not). Either is grade A under the unchanged A
+// rule (B once a repair moved its served prices). Expiries neither rung serves take the channel passes as
+// without the ladder; the repair rung tries the knot fit with the channel
+// repair, then the point fit. MARKET CONTAINMENT: no rung serves a slice whose
+// prices lie outside [bid, ask] on more than its limit's share of its strictly
+// two-sided quotes (0 < bid < ask) and on at least ladder_min_outside_quotes of
+// them; the limit is ladder_max_outside_fraction for a point fit and
+// ladder_channel_max_outside_fraction for a channel fit (knot slice or refit). A
+// pass-A rung or repair rung outside is skipped, a channel refit outside is
+// refused ("outside_market"), and every calendar repair or retry must end
+// inside. CALENDAR (confidence-ordered, single pass): slices are visited once
+// in a total order on intrinsic slice properties (first the slices inside the
+// market under the smaller of the two limits, so a slice served only under an
+// explicitly relaxed limit never out-ranks one inside the market; then grade
+// A, B, C, where a pass-A slice keeps its A rank until the final relabel; then
+// served prices that are the fit's own or moved only by the bounded-move
+// convexity repair before prices certified by the channel repair or a repair
+// rung; then more strictly two-sided quotes; then the nearer maturity) and
+// each one is resolved against
+// the slices already accepted before the next is visited, so a lower-confidence
+// slice can never constrain a higher-confidence one. A slice that crosses gets,
+// in order: its own bounded-move calendar repair; the point fit (knot-served
+// slices with an in-market point fit only), clean then repaired; the
+// stronger-prior retry under the accepted slices' prior, clean then repaired;
+// the channel calendar repair of its own prices, then of the retry's
+// (config.repair.mode == Channel); else it is refused. The dominance gate does
+// not run (the containment rule replaces it).
 inline constexpr std::size_t kQuoteSurfaceMaxExpiries = 128;
 
 [[nodiscard]] Result<std::vector<QuoteSurfaceSlice>>

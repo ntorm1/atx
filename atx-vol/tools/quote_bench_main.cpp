@@ -372,7 +372,11 @@ struct RunStatistics {
   bool graded{false};
   bool graded_channel_repair{false}; // opt-in graded keys seen in this run
   bool graded_dominance{false};
+  bool graded_ladder{false};
   Json graded_stats = Json::object();
+  // Opt-in policy key `price_only`: rows served as ok_price_only (never in `served`).
+  bool price_only{false};
+  std::size_t price_only_rows{};
   // Inferred dividend schedules and per-chain routes; empty unless a profile
   // sets the policy key `dividends` to an inferred-schedule mode.
   Json dividend_schedules = Json::array();
@@ -500,6 +504,34 @@ Json repair_json(const QuoteSliceRepairRecord &r) {
           {"unidentified", r.unidentified}};
 }
 
+// A served fit's PriceOnly row: a certified price without an identifiable
+// American volatility. Its vol_status records that the volatility was evaluated
+// and is unidentifiable. With the policy key `price_only` the price is served
+// (status ok_price_only, blank vol; returns true); otherwise the row keeps the
+// historical status invalid_volatility and no price.
+bool publish_price_only(const QuoteSliceRow &row, bool serve, Prediction &prediction) {
+  prediction.vol_status = "unidentifiable";
+  if (!serve) {
+    prediction.status = "invalid_volatility";
+    return false;
+  }
+  prediction.price = row.fitted_price;
+  prediction.status = "ok_price_only";
+  return true;
+}
+
+// Knot-first ladder provenance of one graded slice (emitted only with the ladder).
+void add_ladder_fields(const QuoteSurfaceSlice &slice, Json &entry) {
+  entry["method"] = to_string(slice.method);
+  entry["ladder_fallback"] = to_string(slice.ladder_fallback);
+  entry["knot_status"] = to_string(slice.knot_status);
+  entry["knot_error"] = slice.knot_error;
+  entry["point_error"] = slice.point_error;
+  entry["repair_rung"] = slice.repair_rung;
+  entry["outside_fraction"] = slice.outside_fraction;
+  entry["outside_quotes"] = slice.outside_quotes;
+}
+
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
 // consistency is enforced inside fit_quote_surface on the final prices. A
@@ -595,6 +627,14 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         entry["point_gated"] = slice.point_gated;
         entry["point_fallback"] = slice.point_fallback;
       }
+      const bool ladder = surface.ladder == QuoteSurfaceLadder::KnotFirst;
+      const std::string method = to_string(slice.method);
+      stats.graded_ladder = stats.graded_ladder || ladder;
+      if (ladder) {
+        add_ladder_fields(slice, entry);
+        count_into(graded["method_chains"][method], grade);
+        count_into(graded["ladder_fallback_chains"][to_string(slice.ladder_fallback)], grade);
+      }
       graded["slices"].push_back(std::move(entry));
       count_into(graded["chains"], grade);
       if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);
@@ -632,9 +672,17 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           prediction.status = "ok";
           prediction.grade = grade;
           count_into(graded["served_rows"], grade);
+          if (ladder) count_into(graded["method_rows"], method);
           ++stats.served;
         } else if (!served) {
           prediction.status = slice.refusal;
+        } else if (result.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+          if (publish_price_only(result, stats.price_only, prediction)) {
+            prediction.grade = grade;
+            count_into(graded["price_only_rows"], grade);
+            if (ladder) count_into(graded["method_price_only_rows"], method);
+            ++stats.price_only_rows;
+          }
         } else {
           prediction.status = to_string(result.evaluation_status);
         }
@@ -887,6 +935,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   if (args.curve.empty()) {
     policy.emplace(quote_bench_policy::load(args.policy, dividends));
     stats.policy_definition = policy->definition;
+    stats.price_only = policy->price_only;
   } else {
     const auto kind = parse_curve_kind(args.curve);
     if (!kind) throw std::runtime_error(kind.error().to_string());
@@ -1108,6 +1157,11 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
           ++stats.served;
         } else if (fit->fit_status != QuoteSliceFitStatus::Success) {
           prediction.status = to_string(fit->fit_status);
+        } else if (result.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+          if (publish_price_only(result, stats.price_only, prediction)) {
+            if (stats.graded) prediction.grade = fallback_grade(*fit, chain.profile->config);
+            ++stats.price_only_rows;
+          }
         } else {
           prediction.status = to_string(result.evaluation_status);
         }
@@ -1151,8 +1205,10 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     fitted_chains.erase(chain);
     for (const auto index : chains.at(chain)) {
       if (predictions[index].status == "ok") --stats.served;
+      if (predictions[index].status == "ok_price_only") --stats.price_only_rows;
       predictions[index].price = kNaN;
       predictions[index].vol = kNaN;
+      predictions[index].vol_status = "not_evaluated"; // the whole expiry is refused
       predictions[index].grade.clear();
       predictions[index].status = ambiguous_expiries.contains(chain)
           ? "ambiguous_expiry" : "calendar_arbitrage";
@@ -1173,6 +1229,9 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     add_count(counts, "rows");
     add_count(counts, "admitted_quotes", prediction.admitted ? 1U : 0U);
     add_count(counts, "served_rows", prediction.status == "ok" ? 1U : 0U);
+    if (stats.price_only) {
+      add_count(counts, "price_only_rows", prediction.status == "ok_price_only" ? 1U : 0U);
+    }
     if (prediction.actual_curve.empty()) add_count(counts, "no_curve_rows");
     else add_count(counts["actual_curve_rows"], prediction.actual_curve);
     add_count(counts["row_status_counts"], prediction.status);
@@ -1294,6 +1353,37 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
           "after an adoption, calendar refusals are re-checked against the final served set "
           "(calendar_readmitted, B/C); the gate never refuses an expiry";
     }
+    if (stats.graded_ladder) {
+      report["graded_semantics"] = report["graded_semantics"].get<std::string>() +
+          "; ladder knot-first: pass A serves the term-prior-free channel (knot) fit when it "
+          "certifies, is inside the market and has own point evidence, else the point fit "
+          "when it certifies and is inside the market (method channel/point, ladder_fallback "
+          "certificate/knot_failure/containment), both graded by the unchanged A rule; other "
+          "expiries take the channel refits (channel_refit); ladder_fallback none means the knot "
+          "slice served, or certified inside the market without own point evidence (the point "
+          "fit shares its admission and is refused too) and the channel refits decide; the "
+          "repair rung tries the knot fit, then the point fit; no rung serves prices outside "
+          "bid/ask on more than "
+          "ladder_max_outside_fraction (point fits) or ladder_channel_max_outside_fraction "
+          "(channel fits), and at least ladder_min_outside_quotes, of the strictly two-sided "
+          "quotes (a refit outside is refused outside_market); calendar: one visit per slice "
+          "in the order inside the market under the smaller limit first, grade tier, own or "
+          "convexity-repaired prices before channel-repaired or repair-rung prices, more "
+          "strictly two-sided quotes, nearer maturity, each "
+          "resolved against the higher-confidence slices only: own bounded-move repair, the "
+          "in-market point fit of a knot-served slice clean then repaired (ladder_fallback "
+          "calendar), the stronger-prior retry, the channel calendar repairs, else refused; "
+          "the dominance gate does not run";
+    }
+  }
+  if (stats.price_only) {
+    report["price_only_rows"] = stats.price_only_rows;
+    report["price_only_semantics"] = "policy price_only: a served row whose certified price "
+        "has no identifiable American volatility under its own carry (a repaired node) is "
+        "status ok_price_only with that price, a blank vol and vol_status unidentifiable; it is "
+        "never counted in served_rows (price-served = ok | ok_price_only, vol-served = ok) and "
+        "never becomes a vol row (a later calendar repair refreshes its price only); without "
+        "the key such a row is refused invalid_volatility";
   }
   if (!stats.dividend_schedules.empty()) {
     report["dividend_schedule"] = {

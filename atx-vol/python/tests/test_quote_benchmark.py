@@ -991,3 +991,71 @@ def test_cohort_exclusion_requires_a_capped_draw(tmp_path):
     with pytest.raises(ValueError):
         qb.prepare(args)
     assert not (tmp_path / "x").exists()
+
+
+def test_price_only_rows_are_price_served_but_never_vol_served(tmp_path):
+    dataset, _ = prepare(tmp_path)
+    receipt = candidate_receipt(dataset, "price-only", [0, 1, 2], [1.2, 1.0, 1.1],
+                                [.31, .32, .33])
+    frame = prediction_frame(receipt).with_columns(
+        pl.Series("status", ["ok", "ok_price_only", "invalid_volatility"]))
+    update_prediction_artifact(receipt, frame)
+    metrics = score(dataset, receipt)["metrics"]
+    assert metrics["eligible_rows"] == 6
+    assert metrics["predicted_rows"] == 2  # price-served: ok and ok_price_only
+    assert metrics["price_only_predicted_rows"] == 1
+    assert metrics["price_prediction_rows"] == 2
+    assert metrics["price_scored_rows"] == 2
+    assert metrics["price_mae"] == pytest.approx(.1)
+    # A finite vol on a price-only row is still not a vol prediction.
+    assert metrics["vol_prediction_rows"] == 1
+    assert metrics["vol_scored_rows"] == 1
+    assert metrics["price_coverage"] == pytest.approx(2 / 6)
+    assert metrics["vol_coverage"] == pytest.approx(1 / 6)
+
+
+CSPEC = importlib.util.spec_from_file_location(
+    "compose_predictions_by_status", TOOLS / "compose_predictions_by_status.py")
+compose_tool = importlib.util.module_from_spec(CSPEC)
+CSPEC.loader.exec_module(compose_tool)
+
+
+def composer_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    graded, markov = tmp_path / "graded.csv", tmp_path / "markov.csv"
+    pl.DataFrame({"row_id": [1, 2, 3], "chain_id": [7, 7, 7],
+                  "status": ["ok", "ok_price_only", "calendar_arbitrage"],
+                  "predicted_price": ["1.5", "2.5", ""]}).write_csv(graded)
+    pl.DataFrame({"row_id": [1, 2, 3], "chain_id": [7, 7, 7], "status": ["ok", "ok", "ok"],
+                  "predicted_price": ["9", "8", "7"]}).write_csv(markov)
+    return graded, markov
+
+
+def test_composer_routes_price_only_rows_only_when_asked(tmp_path):
+    graded, markov = composer_inputs(tmp_path)
+    base = ["--inputs", str(graded), str(markov), "--labels", "graded", "markov"]
+    default = tmp_path / "default.csv"
+    assert compose_tool.main([*base, "--output", str(default)]) == 0
+    out = pl.read_csv(default, infer_schema_length=0)
+    assert out["source_model"].to_list() == ["graded", "markov", "markov"]
+    receipt = json.loads(Path(str(default) + ".run.json").read_text())
+    # A single served status keeps the historical receipt wording.
+    assert receipt["selection_rule"] == ("first input whose status == 'ok'; "
+                                         "otherwise input 0's row unchanged")
+    both = tmp_path / "both.csv"
+    assert compose_tool.main([*base, "--served-status", "ok", "ok_price_only",
+                              "--output", str(both)]) == 0
+    out = pl.read_csv(both, infer_schema_length=0)
+    assert out["source_model"].to_list() == ["graded", "graded", "markov"]
+    assert out["status"].to_list() == ["ok", "ok_price_only", "ok"]
+    assert out["predicted_price"].to_list() == ["1.5", "2.5", "7"]
+    receipt = json.loads(Path(str(both) + ".run.json").read_text())
+    assert "('ok', 'ok_price_only')" in receipt["selection_rule"]
+    assert receipt["counts"]["per_source"][0]["served_rows_in_input"] == 2
+
+
+def test_composer_refuses_duplicate_served_statuses(tmp_path):
+    graded, markov = composer_inputs(tmp_path)
+    output = tmp_path / "dup.csv"
+    assert compose_tool.main(["--inputs", str(graded), str(markov), "--labels", "a", "b",
+                              "--served-status", "ok", "ok", "--output", str(output)]) == 2
+    assert not output.exists()
