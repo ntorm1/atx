@@ -224,7 +224,8 @@ static_assert(detail::aggregate_arity_is_v<AlOpts, 6>,
 // it. They are BIT-IDENTICAL to the fresh entry points: same validation, same
 // errors, same regimes, and every value the kernel reads is computed from the same
 // operands by the same expressions (one multiply by the strike replaces the bind's
-// own). Covered by tests AlExpiryGeometry.* (tests/american_test.cpp).
+// own). Covered by tests AlExpiryGeometry.* / AlBoundaryHandle.* / AlPricePack.*
+// (tests/american_geometry_test.cpp).
 //
 // The cache key is the WHOLE tuple (T, r, q, opts — scheme and AlProfile
 // included): a geometry is never consulted for another expiry, carry or kernel
@@ -329,9 +330,11 @@ inline constexpr double kAlPackSigmaBump = 1.0e-4;
 // price_sigma_bumped is non-empty, price_sigma_bumped[i] = the same at sigma[i] +
 // kAlPackSigmaBump — both BIT-IDENTICAL to the fresh andersen_lake (NaN where it
 // errors). (bumped - price) / kAlPackSigmaBump is therefore the exact chord of the
-// served map, the slope a Newton / secant step on these prices needs; it equals the
-// central difference to O(kAlPackSigmaBump * volga) (bound pinned by
-// AlPricePack.SlopeMatchesTheCentralDifference). Shares the geometry across the pack,
+// served map, the slope a Newton / secant step on these prices needs. It differs from
+// the central difference by (P(s+h) - 2 P(s) + P(s-h)) / (2h) ~ (h / 2) volga, h =
+// kAlPackSigmaBump; the tested bound is |chord - central| <= h * |volga| + 1e-8
+// (AlPricePack.ChordSlopeMatchesTheCentralDifferenceWithinTheVolgaBound, volga from
+// american_greeks_al). Shares the geometry across the pack,
 // and one call boundary across consecutive calls at the same spot and sigma (puts
 // re-solve per strike, see AlBoundaryHandle). Scalar per contract — not an AVX2 lane
 // kernel, which would not be bit-identical. Single-thread; allocates one ~185 KB
