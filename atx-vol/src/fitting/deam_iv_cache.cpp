@@ -45,13 +45,13 @@ std::uint64_t hash_words(std::span<const std::uint64_t> words) noexcept {
 
 struct MemoEntry {
   DeAmIvKey key;
-  DeAmIvCache cache;
+  std::shared_ptr<DeAmIvCache> cache; // never null
 };
 
-// Per-thread ring of caches (FIFO eviction at capacity). unique_ptr keeps every
-// cache at a stable address while the vector grows.
+// Per-thread ring of caches (FIFO eviction at capacity). The caches are shared
+// with the fits reading them, so eviction never invalidates a cache in use.
 struct Memo {
-  std::vector<std::unique_ptr<MemoEntry>> entries;
+  std::vector<MemoEntry> entries;
   std::size_t next_eviction = 0;
 };
 
@@ -160,7 +160,7 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  words.reserve(24 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  words.reserve(28 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -170,6 +170,13 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   real(m.rate);
   real(m.continuous_yield);
   real(m.dividend_pv);
+  // The derived carry the model reads (prepare_fit): functions of the words
+  // above and the dividends, keyed directly so no rounding path is left out.
+  const QuoteSliceDiagnostics &d = prepared.diagnostics;
+  real(d.forward);
+  real(d.discount);
+  real(d.effective_rate);
+  real(d.effective_yield);
   word(static_cast<std::uint64_t>(prepared.dividend_model));
   word(static_cast<std::uint64_t>(static_cast<std::int64_t>(prepared.discrete_div_steps)));
   word(static_cast<std::uint64_t>(prepared.discrete_div_scheme));
@@ -204,28 +211,28 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   return key;
 }
 
-DeAmIvCache &deam_iv_memo(DeAmIvKey key, std::size_t quote_count, bool &reused) {
+std::shared_ptr<DeAmIvCache> deam_iv_memo(DeAmIvKey key, std::size_t quote_count,
+                                           bool &reused) {
   Memo &memo = t_memo;
-  for (const std::unique_ptr<MemoEntry> &entry : memo.entries) {
-    if (entry->key.hash == key.hash && entry->key.words == key.words &&
-        entry->cache.ivs.size() == quote_count) {
+  for (const MemoEntry &entry : memo.entries) {
+    if (entry.key.hash == key.hash && entry.key.words == key.words &&
+        entry.cache->ivs.size() == quote_count) {
       reused = true;
-      return entry->cache;
+      return entry.cache;
     }
   }
   reused = false;
-  auto fresh = std::make_unique<MemoEntry>();
-  fresh->cache.quote_set_hash = key.hash;
-  fresh->cache.ivs.assign(quote_count, DeAmQuoteIv{});
-  fresh->key = std::move(key);
+  MemoEntry fresh{std::move(key), std::make_shared<DeAmIvCache>()};
+  fresh.cache->quote_set_hash = fresh.key.hash;
+  fresh.cache->ivs.assign(quote_count, DeAmQuoteIv{});
+  std::shared_ptr<DeAmIvCache> out = fresh.cache;
   if (memo.entries.size() < kDeAmIvMemoCapacity) {
     memo.entries.push_back(std::move(fresh));
-    return memo.entries.back()->cache;
+    return out;
   }
-  std::unique_ptr<MemoEntry> &slot = memo.entries[memo.next_eviction];
-  slot = std::move(fresh);
+  memo.entries[memo.next_eviction] = std::move(fresh);
   memo.next_eviction = (memo.next_eviction + 1) % kDeAmIvMemoCapacity;
-  return slot->cache;
+  return out;
 }
 
 void deam_iv_memo_clear() noexcept {

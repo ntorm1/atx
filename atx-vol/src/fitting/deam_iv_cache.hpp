@@ -21,17 +21,26 @@
 // kernel serves exactly what the PriceChannel fit serves.
 //
 // The memo (QuoteSliceChannelConfig::deam_cache) keeps caches per thread, keyed
-// by the EXACT inputs - every bit of the market, the quotes, the dated
-// dividends, the American model and the inverter controls - compared word for
-// word; the 64-bit quote_set_hash only filters. A hit therefore returns exactly
-// what a rebuild would compute, so output never depends on hit or miss, on
-// eviction order, or on which thread fitted a chain. Thread-local: no lock, no
-// sharing; bounded at kDeAmIvMemoCapacity caches per thread (oldest evicted).
+// by the EXACT inputs - every bit of the market, the derived carry and clocks,
+// the quotes (with their contract carry), the dated dividends, the American
+// model (AlOpts and its profile), the inverter controls and the cache kernel -
+// compared word for word; the 64-bit quote_set_hash only filters. A hit
+// therefore returns exactly what a rebuild would compute, so output never
+// depends on hit or miss, on eviction order, or on which thread fitted a chain,
+// and a Fast-kernel cache can never answer an Accurate request (the kernel is a
+// key word). Thread-local: no lock, no sharing; bounded at kDeAmIvMemoCapacity
+// caches per thread (oldest evicted; a fit still holding an evicted cache keeps
+// it alive through its shared_ptr).
+//
+// Reuse across graded rungs and ladder rungs (lane L2c): a rung that fits the
+// same chain with the same carry and American model computes the same key, so
+// it shares every inversion already made, whichever rung made it.
 // Internal header (src/fitting); not part of the public API.
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -149,8 +158,9 @@ private:
 
 // The exact inputs a chain's cache depends on, as 64-bit words: two fits with
 // equal keys compute bit-identical caches. `prepared` is a fit after carry and
-// clock preparation (market, dividend model, variance-clock dividends, AlOpts,
-// lattice controls); `config` supplies the inverter controls and the profile.
+// clock preparation (market, derived forward / discount / effective rate and
+// yield, dividend model, variance-clock dividends, AlOpts, lattice controls);
+// `config` supplies the inverter controls and the cache kernel (deam_profile).
 struct DeAmIvKey {
   std::vector<std::uint64_t> words;
   std::uint64_t hash = 0; // quote_set_hash
@@ -166,9 +176,10 @@ inline constexpr std::size_t kDeAmIvMemoCapacity = kQuoteSurfaceMaxExpiries;
 
 // The calling thread's cache for `key` (ivs sized to `quote_count`), created
 // empty on a miss after evicting the oldest entry at capacity. `reused` is set
-// on a hit. The reference stays valid until this thread's next deam_iv_memo
-// call or deam_iv_memo_clear.
-[[nodiscard]] DeAmIvCache &deam_iv_memo(DeAmIvKey key, std::size_t quote_count, bool &reused);
+// on a hit. Shared ownership: the cache outlives its eviction (or
+// deam_iv_memo_clear) for as long as the caller holds it. Never null.
+[[nodiscard]] std::shared_ptr<DeAmIvCache> deam_iv_memo(DeAmIvKey key, std::size_t quote_count,
+                                                        bool &reused);
 
 // Drops every cache of the calling thread (tests; bounded memory release).
 void deam_iv_memo_clear() noexcept;

@@ -707,13 +707,14 @@ class VolSpaceCache {
 public:
   VolSpaceCache(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
                 const QuoteSliceConfig &config)
-      : model_(fit, config), cache_(&local_) {
+      : model_(fit, config) {
     QuoteSliceDeamDiagnostics &work = fit.diagnostics.deam;
     work.used = true;
     if (config.channel.deam_cache) {
-      cache_ = &deam_iv_memo(deam_iv_key(fit, quotes, config), quotes.size(), work.reused);
+      cache_ = deam_iv_memo(deam_iv_key(fit, quotes, config), quotes.size(), work.reused);
     } else {
-      local_.ivs.assign(quotes.size(), DeAmQuoteIv{});
+      cache_ = std::make_shared<DeAmIvCache>();
+      cache_->ivs.assign(quotes.size(), DeAmQuoteIv{});
     }
     view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work);
   }
@@ -727,8 +728,7 @@ public:
 
 private:
   SliceDeAmModel model_;
-  DeAmIvCache local_;
-  DeAmIvCache *cache_;
+  std::shared_ptr<DeAmIvCache> cache_; // never null after construction
   std::optional<DeAmIvView> view_;
 };
 
