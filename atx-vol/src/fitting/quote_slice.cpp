@@ -11,7 +11,9 @@
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/deam_iv_cache.hpp"
 #include "fitting/quote_slice_carry.hpp"
+#include "fitting/quote_slice_vol_space.hpp"
 #include "fitting/slice_channel.hpp"
 
 namespace atx::vol {
@@ -481,10 +483,12 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
 
 // Stage 2: point-quote admission (quality gates, mid IV, inverse-uncertainty
 // weights). Records every row's status and returns the admitted observations
-// sorted by strike, with diagnostics.distinct_strikes counted.
+// sorted by strike, with diagnostics.distinct_strikes counted. A vol-space fit
+// reads each mid IV from its chain's cache (`deam`).
 std::vector<FitObs> admit_point_observations(QuoteSliceFit &out,
                                              std::span<const QuoteSliceQuote> quotes,
-                                             const QuoteSliceConfig &config) {
+                                             const QuoteSliceConfig &config,
+                                             DeAmIvView *deam = nullptr) {
   const QuoteSliceMarket &market = out.market;
   auto &diag = out.diagnostics;
   out.rows.resize(quotes.size());
@@ -545,7 +549,8 @@ std::vector<FitObs> admit_point_observations(QuoteSliceFit &out,
     }
     ++diag.iv_attempted;
     const auto iv =
-        config.dividend_model == QuoteSliceDividendModel::DatedCash
+        deam != nullptr ? deam->mid_iv(i)
+        : config.dividend_model == QuoteSliceDividendModel::DatedCash
             ? dated_cash_iv(out, quote, mid, config, q_effective)
             : american_implied_vol(mid, market.spot, quote.strike, market.variance_years,
                                    diag.effective_rate, q_effective, quote.side,
@@ -645,6 +650,87 @@ Result<double> contract_iv(const QuoteSliceFit &fit, const QuoteSliceQuote &quot
                               AmericanMethod::AndersenLake, config.iv_tolerance,
                               config.max_iv_iterations, fit.al_opts);
 }
+
+// The slice's American model for the opt-in vol-space cache (deam_iv_cache.hpp):
+// the Accurate kernel IS model_price / contract_iv, the Fast kernel the same
+// Andersen-Lake scheme on AlProfile::Fast. Reads only fields prepare_fit fixed.
+class SliceDeAmModel final : public DeAmModel {
+public:
+  SliceDeAmModel(const QuoteSliceFit &fit, const QuoteSliceConfig &config)
+      : fit_(fit), config_(config), fast_(al_fast_profile(fit.al_opts)) {}
+
+  double effective_yield_of(double calendar_yield) const override {
+    return effective_yield(fit_, calendar_yield);
+  }
+  double local_forward_of(double calendar_yield, double q_effective) const override {
+    return local_forward(fit_, calendar_yield, q_effective);
+  }
+  double reference_yield() const override { return fit_.market.continuous_yield; }
+  bool has_fast_kernel() const override {
+    return fit_.dividend_model != QuoteSliceDividendModel::DatedCash;
+  }
+  Result<double> price(const QuoteSliceQuote &quote, double sigma, double q_effective,
+                       DeAmKernel kernel) const override {
+    if (kernel == DeAmKernel::Accurate || !has_fast_kernel() || !std::isfinite(q_effective)) {
+      return model_price(fit_, quote.strike, quote.side, sigma, q_effective);
+    }
+    return andersen_lake(fit_.market.spot, quote.strike, fit_.market.variance_years, sigma,
+                         fit_.diagnostics.effective_rate, q_effective, quote.side, fast_);
+  }
+  Result<double> implied_vol(const QuoteSliceQuote &quote, double target, double q_effective,
+                             DeAmKernel kernel) const override {
+    if (kernel == DeAmKernel::Accurate || !has_fast_kernel()) {
+      return contract_iv(fit_, quote, target, config_, q_effective);
+    }
+    return american_implied_vol(target, fit_.market.spot, quote.strike,
+                                fit_.market.variance_years, fit_.diagnostics.effective_rate,
+                                q_effective, quote.side, AmericanMethod::AndersenLake,
+                                config_.iv_tolerance, config_.max_iv_iterations, fast_);
+  }
+  double black_vega(const QuoteSliceQuote &quote, double sigma, double forward) const override {
+    return black76_value_and_vega(forward, quote.strike, fit_.market.variance_years, sigma,
+                                  fit_.diagnostics.discount, quote.side)
+        .vega;
+  }
+
+private:
+  const QuoteSliceFit &fit_;
+  const QuoteSliceConfig &config_;
+  std::optional<AlOpts> fast_;
+};
+
+// The chain cache an opt-in vol-space fit reads (QuoteSliceFitSpace::VolChannel):
+// this thread's memo entry for the exact inputs when deam_cache is set, else a
+// cache this fit owns. Construct after prepare_fit; not movable (the view holds
+// references to the members).
+class VolSpaceCache {
+public:
+  VolSpaceCache(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+                const QuoteSliceConfig &config)
+      : model_(fit, config), cache_(&local_) {
+    QuoteSliceDeamDiagnostics &work = fit.diagnostics.deam;
+    work.used = true;
+    if (config.channel.deam_cache) {
+      cache_ = &deam_iv_memo(deam_iv_key(fit, quotes, config), quotes.size(), work.reused);
+    } else {
+      local_.ivs.assign(quotes.size(), DeAmQuoteIv{});
+    }
+    view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work);
+  }
+  VolSpaceCache(const VolSpaceCache &) = delete;
+  VolSpaceCache &operator=(const VolSpaceCache &) = delete;
+  VolSpaceCache(VolSpaceCache &&) = delete;
+  VolSpaceCache &operator=(VolSpaceCache &&) = delete;
+  ~VolSpaceCache() = default;
+
+  [[nodiscard]] DeAmIvView &view() noexcept { return *view_; }
+
+private:
+  SliceDeAmModel model_;
+  DeAmIvCache local_;
+  DeAmIvCache *cache_;
+  std::optional<DeAmIvView> view_;
+};
 
 // Half-spread of each node's own quote per side (bidless: half the ask). A side
 // without a quote borrows the other side's; a strike without quotes gets zero,
@@ -1231,7 +1317,11 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       !finite_nonnegative(c.repair_half_spreads) || c.family_iterations == 0 ||
       (c.point_max_outside_fraction &&
        !(*c.point_max_outside_fraction >= 0.0 && *c.point_max_outside_fraction <= 1.0)) ||
-      c.point_min_outside_quotes < 1) {
+      c.point_min_outside_quotes < 1 ||
+      (c.fit_space != QuoteSliceFitSpace::PriceChannel &&
+       c.fit_space != QuoteSliceFitSpace::VolChannel) ||
+      (c.deam_profile != QuoteSliceDeamProfile::Accurate &&
+       c.deam_profile != QuoteSliceDeamProfile::Fast)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -1459,7 +1549,13 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
   if (!prepared) {
     return Err(prepared.error());
   }
-  const std::vector<FitObs> observations = admit_point_observations(out, quotes, config);
+  // Opt-in vol-space channel with the chain memo: admission shares its mids.
+  std::optional<VolSpaceCache> deam;
+  if (config.channel.fit_space == QuoteSliceFitSpace::VolChannel && config.channel.deam_cache) {
+    deam.emplace(out, quotes, config);
+  }
+  const std::vector<FitObs> observations =
+      admit_point_observations(out, quotes, config, deam ? &deam->view() : nullptr);
   auto &diag = out.diagnostics;
   if (diag.quotes_admitted < config.min_quotes || diag.distinct_strikes < config.min_quotes) {
     out.fit_error = "too few distinct admitted strikes";
@@ -1497,9 +1593,15 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
     return Err(prepared.error());
   }
   // Point admission still runs: it reports every row's quote status and
-  // provides the admitted mid volatilities reused below.
-  static_cast<void>(admit_point_observations(out, quotes, config));
-  const std::vector<ChannelObservation> channel = build_channel_observations(out, quotes, config);
+  // provides the admitted mid volatilities reused below. The opt-in vol-space
+  // channel reads every quote volatility from the chain's de-Am IV cache.
+  std::optional<VolSpaceCache> deam;
+  if (config.channel.fit_space == QuoteSliceFitSpace::VolChannel) deam.emplace(out, quotes, config);
+  static_cast<void>(
+      admit_point_observations(out, quotes, config, deam ? &deam->view() : nullptr));
+  const std::vector<ChannelObservation> channel =
+      deam ? vol_space_channel_observations(out, quotes, deam->view(), config.channel)
+           : build_channel_observations(out, quotes, config);
   auto &channel_diag = out.diagnostics.channel;
   if (channel.size() < config.channel.min_channel_quotes) {
     out.fit_error = "too few usable bid/ask channels";

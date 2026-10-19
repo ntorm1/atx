@@ -88,6 +88,28 @@ enum class QuoteSliceFitMethod : std::uint8_t {
   ChannelSpline
 };
 
+// Where a fit's quote volatilities come from (opt-in, lane L2a 2026-10-18).
+// PriceChannel (the default) is the historical path, bit for bit: every fit
+// inverts each quote's bid, ask and mid through the American model again.
+// VolChannel reads them from the chain's de-Americanised IV cache
+// (src/fitting/deam_iv_cache.hpp): each quote is inverted ONCE and the channel
+// objective - already a volatility-space objective - is solved on those bands by
+// the same curve family; the fitted curve is then repriced ONCE and passes the
+// unchanged AmericanPriceSlice certificate, and every repair and containment
+// rule downstream acts on those American prices, so nothing is served on
+// volatility-space evidence alone. Under VolChannel the point admission of
+// fit_quote_slice and fit_quote_slice_channel reads its mid volatilities from
+// the same cache (only when deam_cache is set for the point path).
+enum class QuoteSliceFitSpace : std::uint8_t { PriceChannel, VolChannel };
+
+// American kernel of the VolChannel cache inversions. Accurate: the fit's own
+// model, so every cached volatility is bit-identical to the PriceChannel path's.
+// Fast: the same Andersen-Lake scheme on AlProfile::Fast (american.hpp); an
+// inversion whose documented Fast bound cannot be guaranteed (no usable vega,
+// a failure, or a root at the volatility bounds) is redone on the accurate
+// kernel. The dated-cash lattice has no Fast kernel and is always accurate.
+enum class QuoteSliceDeamProfile : std::uint8_t { Accurate, Fast };
+
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
 // in the fixed volatility unit min_half_width_vol.
@@ -137,6 +159,15 @@ struct QuoteSliceChannelConfig {
   // another served one. Per profile. Unset: off. In [0, 1].
   std::optional<double> point_max_outside_fraction{};
   std::size_t point_min_outside_quotes = 1; // >= 1; used only with the fraction
+  // Opt-in vol-space channel (QuoteSliceFitSpace). The two deam_ keys act only
+  // under VolChannel; the PriceChannel path ignores them. deam_cache: keep the
+  // chain's cache in a bounded per-thread memo keyed by the EXACT inputs (market,
+  // quotes, dividends, model and inverter controls), so every later fit of the
+  // same chain - every graded rung, and the point fit - reuses its inversions;
+  // without it each fit builds its own cache.
+  QuoteSliceFitSpace fit_space = QuoteSliceFitSpace::PriceChannel;
+  QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
+  bool deam_cache = false;
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -313,6 +344,17 @@ struct QuoteSliceChannelDiagnostics {
   double repair_max_half_spreads = 0.0;
 };
 
+// The de-Americanised IV cache's part in one fit (QuoteSliceFitSpace::
+// VolChannel; all zero otherwise). The counters are the work THIS fit added to
+// the chain's cache: zero inversions on a complete reuse.
+struct QuoteSliceDeamDiagnostics {
+  bool used = false;              // quote volatilities were read from the cache
+  bool reused = false;            // the cache was built by an earlier fit (deam_cache)
+  std::size_t inversions = 0;     // American IV inversions (fallbacks included)
+  std::size_t model_prices = 0;   // American prices of the band edges (kIvMin, kIvMax)
+  std::size_t accurate_fallbacks = 0; // Fast inversions redone on the accurate kernel
+};
+
 struct QuoteSliceDiagnostics {
   std::size_t quotes_seen = 0;
   std::size_t iv_attempted = 0;
@@ -328,6 +370,7 @@ struct QuoteSliceDiagnostics {
   QuoteSliceChannelDiagnostics channel{};
   // Channel repair of this slice's own certificate (QuoteSliceConfig::repair).
   QuoteSliceRepairRecord repair{};
+  QuoteSliceDeamDiagnostics deam{};
 };
 
 struct QuoteSliceCarryPoint {
