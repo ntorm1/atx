@@ -533,6 +533,7 @@ private:
         continue;
       }
       const counters::fit_timing::ChainScope chain(slot(i), 1);
+      const counters::fit_timing::RepairRungScope repair_timing;
       const QuoteSurfaceExpiry &e = expiries_[i];
       auto fit = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
       if (!fit) continue;
@@ -561,6 +562,7 @@ private:
         continue;
       }
       counters::fit_timing::ChainScope chain(slot(i));
+      const counters::fit_timing::RepairRungScope repair_timing;
       const QuoteSurfaceExpiry &e = expiries_[i];
       if (slice.knot_status == QuoteSliceFitStatus::ArbitrageFailure) {
         chain.rung();

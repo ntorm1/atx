@@ -637,6 +637,8 @@ def test_native_timing_detail_reports_per_chain_counters_and_real_latency_percen
         assert timing["certification_passes"] >= 1
         assert timing["wall_us"] == sum(timing[key] for key in TIMING_BUCKETS)
         assert timing["al_price_calls"] == sum(timing["al_by_bucket"].values())
+        # The repair-rung cross-cut is reported, and idle without graded.repair channel.
+        assert (timing["repair_rung_visits"], timing["repair_rung_us"]) == (0, 0)
         walls.append(timing["wall_us"])
     # Real per-chain percentiles: each graded chain's own fit wall, not the surface
     # wall divided by its expiries (which made p50 = p95 = p99 for one snapshot).

@@ -2084,5 +2084,58 @@ TEST(QuoteSurfaceTiming, BucketsAreExclusiveAndAChainScopeIsAnOptInNoOp) {
   expect_partitioned(t);
 }
 
+TEST(QuoteSurfaceTiming, ARepairRungVisitIsAnInclusiveCrossCutOutsideTheBucketPartition) {
+  ft::ChainRecorder rec;
+  {
+    const ft::RepairRungScope off; // no chain current: no-op
+  }
+  {
+    const ft::ChainScope chain(&rec, 1);
+    spin_for(std::chrono::microseconds(1000));
+    const ft::RepairRungScope repair;
+    const ft::BucketScope price(ft::Bucket::Price);
+    spin_for(std::chrono::microseconds(2000));
+  }
+  const ft::FitTimingCounters t = rec.result();
+  EXPECT_EQ(t.repair_rung_visits, 1u);
+  EXPECT_GE(t.repair_rung_us, 2000u);         // inclusive of the nested price bucket
+  EXPECT_LT(t.repair_rung_us, t.wall_us);     // the 1 ms before the visit is outside it
+  EXPECT_GE(t.price_us, 2000u);               // the bucket still charges its own time
+  expect_partitioned(t);                      // and the cross-cut is not in wall_us
+}
+
+TEST(QuoteSurfaceTiming, BothRepairRungsTimeOnlyTheExpiryTheyRefit) {
+  // The fixture of QuoteSurfaceLadder.RepairRungServesTheKnotSliceItsChannelRepairCertifies:
+  // N certifies at pass A; Z (micro-kinked carry zig-zag) fails both pass-A certificates
+  // and both prior-pulled channel refits, so it reaches the repair rung still refused.
+  const std::vector<Chain> chains{chain(0.25, 0.14, 0.0, 0.1, 85, 115, 5),
+                                  zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05)};
+  const QuoteSliceConfig config = channel_repair_config(3);
+  QuoteSurfaceConfig graded;
+  graded.term_prior_weight = 100.0;
+  QuoteSurfaceConfig ladder = knot_first();
+  ladder.term_prior_weight = 100.0;
+  for (const QuoteSurfaceConfig &surface : {graded, ladder}) {
+    const bool knot = surface.ladder == QuoteSurfaceLadder::KnotFirst;
+    const auto off = fit_quote_surface(expiries(chains), config, surface);
+    ASSERT_TRUE(off) << off.error().to_string();
+    ft::SurfaceTrace trace;
+    const auto on = fit_quote_surface(expiries(chains), config, surface);
+    ASSERT_TRUE(on) << on.error().to_string();
+    expect_same_surface(*off, *on);
+    ASSERT_EQ(trace.chains.size(), chains.size()) << knot;
+    ASSERT_EQ((*on)[1].point_status, QuoteSliceFitStatus::ArbitrageFailure) << knot;
+    ASSERT_NE((*on)[1].rung_repair.outcome, QuoteSliceRepairOutcome::NotAttempted) << knot;
+    EXPECT_EQ(trace.chains[0].repair_rung_visits, 0u) << knot;
+    EXPECT_EQ(trace.chains[0].repair_rung_us, 0u) << knot;
+    const ft::FitTimingCounters &z = trace.chains[1];
+    EXPECT_EQ(z.repair_rung_visits, 1u) << knot;
+    EXPECT_GT(z.repair_rung_us, 0u) << knot;
+    // Inclusive, so within the chain wall (up to the per-bucket microsecond rounding).
+    EXPECT_LE(z.repair_rung_us, z.wall_us + ft::kBucketCount) << knot;
+    expect_partitioned(z);
+  }
+}
+
 } // namespace
 } // namespace atx::vol

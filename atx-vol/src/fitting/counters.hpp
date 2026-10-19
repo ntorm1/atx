@@ -1116,8 +1116,10 @@ private:
 //   certify  — the AmericanPriceSlice certificate, its repairs and row re-implication;
 //   calendar — calendar pair checks and calendar repairs;
 //   other    — everything else charged to the chain (preparation, containment, ...).
-// Buckets are EXCLUSIVE: a scope opened inside another charges its own time and the
-// outer bucket resumes on exit, so the seven buckets partition the chain's wall.
+// Buckets are EXCLUSIVE, not inclusive: a scope opened inside another charges its own
+// time and the outer bucket resumes on exit, so the seven buckets partition the
+// chain's wall. One cross-cut sits beside them: repair_rung_us, the INCLUSIVE wall of
+// the surface fitter's repair rungs (RepairRungScope), which overlaps the buckets.
 //
 // Zero cost when off. This is the solve ledger's StepTrace/StepScope discipline, not
 // the compile-time gate (the tool must stay the shipping build): nothing is armed
@@ -1165,6 +1167,10 @@ struct FitTimingCounters {
   std::uint64_t calendar_us{0};
   std::uint64_t other_us{0};
   std::array<std::uint32_t, kBucketCount> al_by_bucket{}; // al_price_calls split by Bucket
+  // Cross-cut, NOT a bucket: the surface fitter's repair rungs (repair_rung /
+  // ladder_repair_rung) INCLUSIVE of every bucket their refits charge; not in wall_us.
+  std::uint32_t repair_rung_visits{0}; // repair-rung visits of the chain
+  std::uint64_t repair_rung_us{0};     // their inclusive wall
 };
 
 class ChainRecorder;
@@ -1197,6 +1203,12 @@ public:
   // Charges the elapsed interval to the active bucket and stops charging.
   void pause() noexcept { charge(); }
 
+  // Adds one repair-rung visit's inclusive wall (RepairRungScope; not a bucket).
+  void charge_repair_rung(std::chrono::steady_clock::duration elapsed) noexcept {
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    repair_ns_ += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+  }
+
   // Charges the elapsed interval to the active bucket, then makes `b` active.
   [[nodiscard]] Bucket switch_to(Bucket b) noexcept {
     charge();
@@ -1227,6 +1239,7 @@ public:
     out.al_price_calls = detail::saturate(al_total);
     out.iv_newton_iters = detail::saturate(iv_iters_);
     out.al_greeks_calls = detail::saturate(greeks_);
+    out.repair_rung_us = (repair_ns_ + 500u) / 1000u;
     return out;
   }
 
@@ -1263,6 +1276,7 @@ private:
   std::array<std::uint64_t, kBucketCount> al_{};
   std::uint64_t iv_iters_{0};
   std::uint64_t greeks_{0};
+  std::uint64_t repair_ns_{0};
   Bucket active_{Bucket::Other};
   Clock::time_point mark_{};
   std::uint64_t al_mark_{0};
@@ -1329,6 +1343,32 @@ public:
 private:
   ChainRecorder *rec_;
   Bucket prev_{Bucket::Other};
+};
+
+// Cross-cut timer, not a bucket: one repair-rung visit of the chain current on this
+// thread, INCLUSIVE of the buckets its refits charge (so repair_rung_us overlaps them
+// and is not part of wall_us). Open it inside the visit's ChainScope. No chain current
+// (timing off): one branch, no clock read.
+class RepairRungScope {
+public:
+  RepairRungScope() noexcept : rec_(detail::t_chain) {
+    if (rec_ == nullptr) return;
+    ++rec_->counts.repair_rung_visits;
+    start_ = std::chrono::steady_clock::now();
+  }
+
+  ~RepairRungScope() {
+    if (rec_ != nullptr) rec_->charge_repair_rung(std::chrono::steady_clock::now() - start_);
+  }
+
+  RepairRungScope(const RepairRungScope &) = delete;
+  RepairRungScope &operator=(const RepairRungScope &) = delete;
+  RepairRungScope(RepairRungScope &&) = delete;
+  RepairRungScope &operator=(RepairRungScope &&) = delete;
+
+private:
+  ChainRecorder *rec_;
+  std::chrono::steady_clock::time_point start_{};
 };
 
 // Adds `n` to one event count of the chain current on this thread (if any).

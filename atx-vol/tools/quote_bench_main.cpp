@@ -546,7 +546,8 @@ void add_ladder_fields(const QuoteSurfaceSlice &slice, Json &entry) {
   entry["outside_quotes"] = slice.outside_quotes;
 }
 
-// --timing-detail: one chain's fit timing counters (exclusive wall per bucket).
+// --timing-detail: one chain's fit timing counters (exclusive wall per bucket, plus
+// the inclusive repair-rung cross-cut).
 Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
   namespace ft = counters::fit_timing;
   Json al_by_bucket = Json::object();
@@ -562,7 +563,8 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"channel_solves", t.channel_solves}, {"jacobian_evals", t.jacobian_evals},
           {"rung_attempts", t.rung_attempts}, {"calendar_pairs", t.calendar_pairs},
           {"projections", t.projections}, {"iv_newton_iters", t.iv_newton_iters},
-          {"al_by_bucket", std::move(al_by_bucket)}};
+          {"al_by_bucket", std::move(al_by_bucket)},
+          {"repair_rung_visits", t.repair_rung_visits}, {"repair_rung_us", t.repair_rung_us}};
 }
 
 // Graded admission: one surface fit per exact snapshot. Routing has already
@@ -1370,14 +1372,19 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "wall (sum of its exclusive fit_timing buckets; surface-level work such as term-prior "
         "construction is in graded_stats.timing_detail surface_wall_us - chain_wall_us); a "
         "static-path chain's latency is its own wall as without the flag";
-    report["timing_detail_semantics"] = "graded_stats.slices[].timing: exclusive wall per "
-        "bucket in microseconds (deam = American IV inversions of the quotes and the channel "
+    report["timing_detail_semantics"] = "graded_stats.slices[].timing: EXCLUSIVE (not "
+        "inclusive) wall per bucket in microseconds: a nested scope's time is charged only to "
+        "its own bucket, so the buckets partition the chain wall (deam = American IV "
+        "inversions of the quotes and the channel "
         "floor/cap prices; solve = point curve solve or channel native/family solve; project = "
         "project_in_channel; price = certification grid reprice; certify = AmericanPriceSlice "
         "certificate, its repairs and row re-implication; calendar = calendar pair checks and "
         "calendar repairs; other = the rest charged to the chain); wall_us is their sum; "
         "al_price_calls / al_by_bucket / iv_newton_iters / al_greeks_calls are the fitting "
         "thread's solve-ledger deltas (AL boundary solves, IV iterations, Greek bundles); "
+        "repair_rung_visits / repair_rung_us are a cross-cut, not a bucket: the surface "
+        "fitter's repair-rung visits and their INCLUSIVE wall, overlapping the buckets their "
+        "refits charge and not part of wall_us; "
         "instrumented, timing unqualified unless the host is quiet";
   }
   if (stats.graded) {
