@@ -528,9 +528,50 @@ inline Json profile_json_with_options(const QuoteFitProfile &profile, bool grade
   return out;
 }
 
-// Opt-in graded keys (channel repair, channel dominance) are provenance only
-// when set, so every pre-existing graded definition is unchanged.
-inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConfig &repair) {
+// Opt-in vol-space channel (graded fit_space / deam_profile / deam_cache;
+// quote_slice.hpp QuoteSliceFitSpace), applied to every profile like the repair.
+struct FitSpaceOptions {
+  QuoteSliceFitSpace fit_space = QuoteSliceFitSpace::PriceChannel;
+  QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
+  bool deam_cache = false;
+};
+
+inline FitSpaceOptions parse_fit_space(const Json &graded) {
+  FitSpaceOptions out;
+  if (graded.contains("fit_space")) {
+    const auto name = text(graded.at("fit_space"));
+    if (name == "vol") {
+      out.fit_space = QuoteSliceFitSpace::VolChannel;
+    } else if (name != "price") {
+      throw std::runtime_error("Policy graded fit_space must be price or vol");
+    }
+  }
+  // Under the price-space channel both keys would be silently inert: refuse them.
+  if ((graded.contains("deam_profile") || graded.contains("deam_cache")) &&
+      out.fit_space != QuoteSliceFitSpace::VolChannel) {
+    throw std::runtime_error("Policy graded deam_profile and deam_cache require fit_space vol");
+  }
+  if (graded.contains("deam_profile")) {
+    const auto name = text(graded.at("deam_profile"));
+    if (name == "fast") {
+      out.deam_profile = QuoteSliceDeamProfile::Fast;
+    } else if (name != "accurate") {
+      throw std::runtime_error("Policy graded deam_profile must be accurate or fast");
+    }
+  }
+  if (graded.contains("deam_cache")) {
+    if (!graded.at("deam_cache").is_boolean()) {
+      throw std::runtime_error("Policy graded deam_cache must be true or false");
+    }
+    out.deam_cache = graded.at("deam_cache").get<bool>();
+  }
+  return out;
+}
+
+// Opt-in graded keys (channel repair, channel dominance, vol-space channel) are
+// provenance only when set, so every pre-existing graded definition is unchanged.
+inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConfig &repair,
+                         const FitSpaceOptions &space = {}) {
   Json out{{"term_prior_weight", s.term_prior_weight},
            {"prior_decay_log_time", s.prior_decay_log_time},
            {"prior_quote_halflife", s.prior_quote_halflife},
@@ -549,6 +590,12 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
     out["ladder_channel_max_outside_fraction"] = s.ladder_channel_max_outside_fraction;
     out["ladder_min_outside_quotes"] = s.ladder_min_outside_quotes;
+  }
+  if (space.fit_space == QuoteSliceFitSpace::VolChannel) {
+    out["fit_space"] = "vol";
+    out["deam_profile"] =
+        space.deam_profile == QuoteSliceDeamProfile::Fast ? "fast" : "accurate";
+    out["deam_cache"] = space.deam_cache;
   }
   return out;
 }
@@ -695,6 +742,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   QuoteSurfaceConfig surface;
   QuoteSliceRepairConfig repair; // graded only; applied to every profile
+  FitSpaceOptions space;         // graded only; applied to every profile
   if (document.contains("graded")) {
     if (!graded) throw std::runtime_error("Policy graded options require admission graded");
     const auto &j = document.at("graded");
@@ -702,7 +750,9 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "channel_node_weight", "calendar_retry_factor", "grade_b_min_mid_strikes",
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
-             "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes"});
+             "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
+             "deam_profile", "deam_cache"});
+    space = parse_fit_space(j);
     // Opt-in knot-first ladder (quote_slice.hpp fit_quote_surface); "off" is the
     // historical point-first admission.
     if (j.contains("ladder")) {
@@ -753,12 +803,15 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};
   if (graded) {
     definition["admission"] = "graded";
-    definition["graded"] = surface_json(surface, repair);
+    definition["graded"] = surface_json(surface, repair, space);
   }
   if (price_only) definition["price_only"] = true; // provenance only when opted in
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
     profile.config.repair = repair;
+    profile.config.channel.fit_space = space.fit_space;
+    profile.config.channel.deam_profile = space.deam_profile;
+    profile.config.channel.deam_cache = space.deam_cache;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.
     if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&
