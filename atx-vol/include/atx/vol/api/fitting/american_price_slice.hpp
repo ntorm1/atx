@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <vector>
@@ -8,10 +10,68 @@
 
 namespace atx::vol {
 
+struct AlOpts; // api/pricing/american.hpp
+
 struct AmericanPriceNode {
   double strike{};
   double call{};
   double put{};
+};
+
+// ── Model-priced certification (L2b al-geometry, 2026-10-19; opt-in) ──────
+//
+// The second AmericanPriceSlice::create overload prices every node itself with
+// Andersen-Lake — the call and the put at the node's volatility and yield, the model's
+// expiry, rate and AlOpts, at bounds.spot — and certifies those prices with the SAME
+// checks as the price-input create(). Its defaults (Scalar, AccurateOnly) are exactly
+// the composition a caller writes today: andersen_lake per price, then create().
+//
+// CertificationKernel::Batched prices through al_price_pack on one AlExpiryGeometry per
+// run of consecutive equal-yield nodes: bit-identical prices, hence the same verdict.
+//
+// CertificationScreen::FastThenAccurate runs a Fast-kernel screen first. Nodes are
+// priced in strike order on al_fast_profile(opts) (the same scheme on the Fast kernel)
+// in chunks of kCertificationScreenChunk, and after each chunk the priced prefix is
+// checked with every inequality of create() WIDENED by the Fast allowance
+// kCertificationFastAllowance * max(|P|, 1) of each price it reads (a chord by the
+// larger allowance of its two ends). A violation that survives the widening is certain
+// for the accurate prices too — a prefix's convexity chord lies above the whole slice's
+// lower envelope, and its running extrema are a subset of the full ones — so the slice
+// is refused (InvalidArgument, "certification screen" in the message) with no accurate
+// price. Otherwise, or when the screen cannot run (malformed bounds or strikes, a Fast
+// price that errors or is not finite), every node is priced accurately and certified
+// exactly as AccurateOnly: an accepted slice, and every refusal the screen could not
+// prove, carry the accurate kernel's own verdict and message. The allowance is 100x the
+// AlProfile::Fast price bound pinned by AlFastProfile.* (american.hpp, 1e-12 * max(P, 1)).
+enum class CertificationKernel : std::uint8_t { Scalar = 0, Batched = 1 };
+enum class CertificationScreen : std::uint8_t { AccurateOnly = 0, FastThenAccurate = 1 };
+
+inline constexpr double kCertificationFastAllowance = 1.0e-10;
+inline constexpr std::size_t kCertificationScreenChunk = 8;
+
+// One model-priced node: its strike, volatility and continuous yield (strike-varying
+// carry is allowed; Batched shares a geometry across consecutive equal yields).
+struct AmericanCertificationNode {
+  double strike{};
+  double sigma{};
+  double yield{};
+};
+
+// The model every node shares: expiry (year fraction) and continuous rate. `al_opts`
+// observes the caller's options for the call's duration; nullptr selects andersen_lake's
+// accurate preset (its std::nullopt).
+struct AmericanCertificationModel {
+  double T{};
+  double rate{};
+  const AlOpts *al_opts = nullptr;
+};
+
+// Price counts of one model-priced create(): accurate-kernel and Fast-kernel
+// andersen_lake prices, and whether the Fast screen alone refused the slice.
+struct AmericanCertificationStats {
+  std::size_t accurate_prices = 0;
+  std::size_t fast_prices = 0;
+  bool screen_refused = false;
 };
 
 // Bounds on discount factors and prepaid stock values over the exercise
@@ -51,6 +111,16 @@ public:
   // input returns an explicit error and never creates a usable slice.
   [[nodiscard]] static Result<AmericanPriceSlice> create(std::span<const AmericanPriceNode> nodes,
                                                          const AmericanPriceBounds &bounds);
+
+  // Model-priced certification (see CertificationKernel / CertificationScreen above).
+  // A node andersen_lake refuses returns its error, prefixed with the node index; an
+  // out-of-range kernel or screen value returns InvalidArgument. `stats` (nullable) is
+  // reset, then receives the price counts. Allocates; thread-compatible.
+  [[nodiscard]] static Result<AmericanPriceSlice>
+  create(std::span<const AmericanCertificationNode> nodes, const AmericanCertificationModel &model,
+         const AmericanPriceBounds &bounds, CertificationKernel kernel = CertificationKernel::Scalar,
+         CertificationScreen screen = CertificationScreen::AccurateOnly,
+         AmericanCertificationStats *stats = nullptr);
 
   [[nodiscard]] std::span<const AmericanPriceNode> nodes() const noexcept { return nodes_; }
   [[nodiscard]] const AmericanPriceBounds &bounds() const noexcept { return bounds_; }

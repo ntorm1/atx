@@ -294,6 +294,60 @@ struct AlSolveResid {
                                                 double K, double T, double sigma,
                                                 double r, double q) noexcept;
 
+// ── Prepared expiry geometry seam (L2b al-geometry, 2026-10-18) ──────────────
+//
+// WHAT IS SHARED. A cold solve of an internal put (strike K, rate, yield, T, sigma)
+// first lays down the node grid (al_init_nodes: z, wbary, x, tau depend on (n, T)
+// only), points the workspace at the process-wide Gauss-Legendre tables, and runs
+// the sweep-invariant static bind (al_bind_geometry_static: geo_zc, geo_weru,
+// geo_wequ, geo_bary*, geo_sqrt_tau depend on (T, rate, yield, scheme); the one
+// strike-dependent entry is geo_alpha = K * exp(-(rate - yield) * tau_j)). An
+// AlOrientedGeometry holds that strike- and sigma-free state for ONE orientation
+// (rate, yield), bound once at K = 1 so alpha_exp[j] is exactly the exp the bind
+// multiplies by K. A prepared solve at (K, sigma) loads it, writes geo_alpha[j] =
+// K * alpha_exp[j] (the same product the bind forms), binds sigma
+// (al_bind_geometry_sigma) and runs the SAME seed + sweep code as
+// al_solve_put_boundary, so every value the kernel reads equals the cold path's:
+// the boundary, and every price from it, is bit-identical.
+//
+// OWNERSHIP / THREADS. An AlOrientedGeometry is immutable after
+// al_prepare_oriented_geometry and may be read by any number of threads at once.
+// The solve state (bnd, ws) is the caller's and is single-thread scratch.
+struct AlOrientedGeometry {
+  AlScheme sch{};
+  AlBoundary grid{};  // n, T, z, wbary, x, tau; y == 0; K/xmax are set per solve
+  AlWorkspace ws{};   // table pointers, flags and the static bind (made at K = 1)
+  std::array<double, kAlMaxNodes> alpha_exp{};  // exp(-(rate - yield) * tau_j)
+  double rate = 0.0;
+  double yield = 0.0;
+  std::uint64_t id = 0;  // process-unique per prepare; 0 = not prepared
+  bool tables_ok = false;
+};
+
+// Prepare `g` for the orientation (rate, yield) of an expiry T under `sch`. Requires
+// finite T > 0 and finite rate / yield (callers validate first); otherwise `g` is left
+// unprepared (id 0). Each call stamps a new process-unique id.
+void al_prepare_oriented_geometry(double T, double rate, double yield, const AlScheme& sch,
+                                  AlOrientedGeometry& g) noexcept;
+
+// Solve the boundary at (K, sigma) from a prepared orientation. (bnd, ws) are loaded
+// from `g` unless `*loaded == g.id` (they already hold its static part — the solve
+// never writes it); on return `*loaded == g.id`. A null `loaded` always loads.
+// Bit-identical to al_solve_put_boundary(K, g.grid.T, sigma, g.rate, g.yield, g.sch,
+// bnd, ws, /*specialize=*/true, resid_out), statuses included.
+[[nodiscard]] AlSolveStatus al_solve_put_boundary_prepared(const AlOrientedGeometry& g,
+                                                           double K, double sigma,
+                                                           AlBoundary& bnd, AlWorkspace& ws,
+                                                           std::uint64_t* loaded,
+                                                           AlSolveResid* resid_out = nullptr) noexcept;
+
+// Caller-owned retained solve state for prepared solves (one per thread; ~46 KB).
+struct AlPreparedScratch {
+  AlBoundary bnd{};
+  AlWorkspace ws{};
+  std::uint64_t loaded = 0;
+};
+
 // ── Tick-path record seam (pricing hot-path audit 2026-10-16, item 2) ─────────
 //
 // The per-expiry calibration record (fitting/expiry_record.cpp) samples the
@@ -422,3 +476,24 @@ void al_seed_boundary_into(const AlBoundary& bnd, double sigma, double r, double
                            double* y_out) noexcept;
 
 }  // namespace atx::vol::amer
+
+namespace atx::vol {
+
+// The prepared state behind the public AlExpiryGeometry (api/pricing/american.hpp).
+// `put` is the puts' orientation (rate r, yield q; internal strike = the strike);
+// `call` is the calls' McDonald-Schroder internal put (rate q, yield r; internal
+// strike = the spot). An orientation is prepared only when the expiry is
+// non-degenerate (finite T > 1e-12, finite r and q) and its side is in the American
+// regime; every other case prices in closed form or errors before any solve.
+struct AlExpiryGeometry::Impl {
+  double T = 0.0;
+  double r = 0.0;
+  double q = 0.0;
+  std::optional<AlOpts> opts{};
+  amer::AlScheme sch{};
+  amer::AlOrientedGeometry put{};
+  amer::AlOrientedGeometry call{};
+  bool prepared = false;
+};
+
+}  // namespace atx::vol
