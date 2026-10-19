@@ -544,6 +544,12 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
     out["repair_max_vol"] = repair.max_vol_move;
     out["repair_immaterial_price"] = repair.immaterial_price_move;
   }
+  if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
+    out["ladder"] = "knot-first";
+    out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
+    out["ladder_channel_max_outside_fraction"] = s.ladder_channel_max_outside_fraction;
+    out["ladder_min_outside_quotes"] = s.ladder_min_outside_quotes;
+  }
   return out;
 }
 
@@ -589,13 +595,24 @@ struct LoadedPolicy {
   std::map<std::string, DividendRouting, std::less<>> dividend_routing;
   bool graded{false};
   QuoteSurfaceConfig surface{};
+  // Opt-in (top-level `price_only`, static and graded): a served row whose
+  // certified price has no identifiable volatility (PriceOnly) is published as
+  // status ok_price_only with that price and a blank volatility.
+  bool price_only{false};
 };
 
 inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel dividends) {
   const Json document = selection == "auto" ? Json{{"schema_version", 1}} :
                                              read_document(selection);
   keys(document, {"schema_version", "profiles", "symbol_overrides", "regimes", "admission",
-                  "graded"});
+                  "graded", "price_only"});
+  bool price_only = false;
+  if (document.contains("price_only")) {
+    if (!document.at("price_only").is_boolean()) {
+      throw std::runtime_error("Policy price_only must be true or false");
+    }
+    price_only = document.at("price_only").get<bool>();
+  }
   if (!document.contains("schema_version") || !document.at("schema_version").is_number_integer() ||
       document.at("schema_version") != 1) {
     throw std::runtime_error("Policy schema_version must be 1");
@@ -684,7 +701,28 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     keys(j, {"term_prior_weight", "prior_decay_log_time", "prior_quote_halflife",
              "channel_node_weight", "calendar_retry_factor", "grade_b_min_mid_strikes",
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
-             "repair_immaterial_price"});
+             "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
+             "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes"});
+    // Opt-in knot-first ladder (quote_slice.hpp fit_quote_surface); "off" is the
+    // historical point-first admission.
+    if (j.contains("ladder")) {
+      const auto mode = text(j.at("ladder"));
+      if (mode == "knot-first") {
+        surface.ladder = QuoteSurfaceLadder::KnotFirst;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded ladder must be off or knot-first");
+      }
+    }
+    if ((j.contains("ladder_max_outside_fraction") ||
+         j.contains("ladder_channel_max_outside_fraction") ||
+         j.contains("ladder_min_outside_quotes")) &&
+        surface.ladder != QuoteSurfaceLadder::KnotFirst) {
+      throw std::runtime_error("Policy graded ladder containment keys require ladder knot-first");
+    }
+    numeric(j, "ladder_max_outside_fraction", surface.ladder_max_outside_fraction, 0, 1);
+    numeric(j, "ladder_channel_max_outside_fraction", surface.ladder_channel_max_outside_fraction,
+            0, 1);
+    numeric(j, "ladder_min_outside_quotes", surface.ladder_min_outside_quotes, 1, 100000);
     numeric(j, "term_prior_weight", surface.term_prior_weight, 0, 1.0e6);
     numeric(j, "prior_decay_log_time", surface.prior_decay_log_time, 1.0e-3, 100);
     numeric(j, "prior_quote_halflife", surface.prior_quote_halflife, 1.0e-3, 1.0e6);
@@ -717,9 +755,22 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     definition["admission"] = "graded";
     definition["graded"] = surface_json(surface, repair);
   }
+  if (price_only) definition["price_only"] = true; // provenance only when opted in
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
     profile.config.repair = repair;
+    // The ladder brings its own knot rung and containment rule: a knot-spline
+    // profile (already knot-first) or the dominance gate would be ambiguous.
+    if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&
+        profile.config.method == QuoteSliceFitMethod::ChannelSpline) {
+      throw std::runtime_error("Policy graded ladder knot-first requires point profiles; profile " +
+                               profile.name + " is already curve knot-spline");
+    }
+    if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&
+        profile.config.channel.point_max_outside_fraction) {
+      throw std::runtime_error("Policy graded ladder knot-first replaces the dominance gate; "
+                               "drop channel point_max_outside_fraction");
+    }
     // Policy-key rejection matrix for graded admission: it requires supplied
     // carry (no carry_mode) and the aggregate dividend model. A lattice-routed
     // expiry needs its own dated-cash config, schedule and aggregate fallback,
@@ -748,7 +799,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
-  return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface};
+  return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface,
+          price_only};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {

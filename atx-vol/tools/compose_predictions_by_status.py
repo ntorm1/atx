@@ -2,8 +2,10 @@
 """Compose one prediction CSV from an ordered model list using only row status.
 
 Each output row is copied from the FIRST input whose status column marks the row
-as served (default status value ``ok``). When no input serves a row, the first
-input's (refusal) row is copied unchanged. Selection reads only the status
+as served: its status is one of the ``--served-status`` values (default ``ok``
+only; pass ``--served-status ok ok_price_only`` to also route price-only rows,
+which carry a certified price and a blank vol). When no input serves a row, the
+first input's (refusal) row is copied unchanged. Selection reads only the status
 column: it never opens labels, reference prices, errors or quotes, so the
 composition is a deterministic routing rule, not a fitted ensemble.
 
@@ -100,7 +102,22 @@ def parse_restrictions(specs: list[str] | None, n_inputs: int) -> dict[int, Path
     return result
 
 
-def compose(frames: list[pl.DataFrame], labels: list[str], served_status: str,
+def status_clause(served_status: list[str]) -> str:
+    """Receipt wording for the served-status test; one value keeps the historical text."""
+    if len(served_status) == 1:
+        return f"status == {served_status[0]!r}"
+    return f"status is one of {tuple(served_status)!r}"
+
+
+def selection_rule(served_status: list[str], routing: bool = False) -> str:
+    """Receipt text; a single value without routing keeps the historical wording byte for byte."""
+    if not routing:
+        return f"first input whose {status_clause(served_status)}; otherwise input 0's row unchanged"
+    return (f"first input allowed on the row whose {status_clause(served_status)}; "
+            "otherwise the first allowed input's row unchanged")
+
+
+def compose(frames: list[pl.DataFrame], labels: list[str], served_status: list[str],
             allowed: dict[int, pl.Series] | None = None) -> tuple[pl.DataFrame, dict]:
     first = frames[0]
     for index, frame in enumerate(frames[1:], start=1):
@@ -116,7 +133,7 @@ def compose(frames: list[pl.DataFrame], labels: list[str], served_status: str,
     allowed = allowed or {}
     every = pl.Series("allowed", [True] * first.height, dtype=pl.Boolean)
     permitted = [allowed.get(index, every) for index in range(len(frames))]
-    raw_served = [(frame["status"] == served_status).fill_null(False) for frame in frames]
+    raw_served = [frame["status"].is_in(served_status).fill_null(False) for frame in frames]
     served = [raw_served[index] & permitted[index] for index in range(len(frames))]
     # First served source wins; rows nobody serves fall back to the first input
     # allowed on the row (input 0 whenever no restriction is given).
@@ -172,7 +189,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--receipts", nargs="+", type=Path,
                     help="optional quote_benchmark run receipt per input (verifies hashes, enables scoring)")
     ap.add_argument("--output", required=True, type=Path)
-    ap.add_argument("--served-status", default="ok", help="status value that marks a served row")
+    ap.add_argument("--served-status", nargs="+", default=["ok"],
+                    help="status value(s) that mark a served row (default: ok)")
     ap.add_argument("--restrict", action="append", metavar="INDEX=ROWS.csv",
                     help="input INDEX may serve only the row_ids listed in ROWS.csv (column row_id); "
                          "other rows skip it, refusals fall back to the first allowed input; "
@@ -189,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--labels must name each input once, uniquely")
         if args.receipts is not None and len(args.receipts) != len(args.inputs):
             raise ValueError("--receipts must list one run receipt per input")
+        if len(set(args.served_status)) != len(args.served_status) or not all(args.served_status):
+            raise ValueError("--served-status values must be non-empty and distinct")
         output = args.output.resolve()
         receipt_path = Path(str(output) + ".run.json")
         inputs = [path.resolve() for path in args.inputs]
@@ -231,10 +251,7 @@ def main(argv: list[str] | None = None) -> int:
             "schema_version": SCHEMA_VERSION, "kind": "status-routed-composition",
             "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             "tool": str(Path(__file__).resolve()), "tool_sha256": TOOL_SHA256,
-            "selection_rule": (f"first input whose status == {args.served_status!r}; "
-                               "otherwise input 0's row unchanged") if not routing else
-                              (f"first input allowed on the row whose status == {args.served_status!r}; "
-                               "otherwise the first allowed input's row unchanged"),
+            "selection_rule": selection_rule(args.served_status, routing=bool(routing)),
             "selection_inputs": "status column only; labels, references and errors are never read"
                                 if not routing else
                                 "status column plus the restriction row lists; labels, references "

@@ -90,6 +90,51 @@ American price and calendar certificates; refusals keep their reason. Graded
 admission requires supplied carry (no `carry_mode`); channel controls are
 validated for every profile (`channel_weight > 0`, `mult_ceil > mult_floor`).
 
+The knot-first ladder is opt-in (`"graded": {"ladder": "knot-first"}`, default
+`"off"`, which is the point-first admission above, byte for byte). It requires
+point profiles (no `knot-spline` curve) and replaces the dominance gate
+(`channel.point_max_outside_fraction` is refused with it). Pass A fits both the
+term-prior-free knot slice and the point fit of every expiry: the knot slice
+serves when it certifies, lies inside the market and has own point evidence,
+else the point fit when it certifies and lies inside the market; both keep the
+unchanged A rule. Market containment: no rung serves prices outside [bid, ask]
+on more than `ladder_max_outside_fraction` (point fits) or
+`ladder_channel_max_outside_fraction` (knot slices and channel refits) of the
+strictly two-sided quotes and on at least `ladder_min_outside_quotes` of them
+(defaults 0.05, 0.05, 1; a refit outside is refused `outside_market`; 1 lets a
+rung serve regardless, so only an explicit policy relaxes the rule). The
+calendar pass visits every slice once in a stated confidence order (slices
+inside the market under the smaller of the two limits first, so a slice served
+only under a relaxed limit never out-ranks one inside the market; grade tier;
+own or convexity-repaired prices before channel-repaired or repair-rung prices;
+more strictly two-sided quotes; nearer maturity) and resolves each crossing
+against higher-confidence slices only: own bounded-move repair, then the
+in-market point fit of a knot-served slice (clean, then repaired), then the
+stronger-prior retry, then the channel calendar repairs. Per-slice provenance
+adds `method` (`point`, `channel`, `channel_refit`), `ladder_fallback` (`none`,
+`certificate`, `knot_failure`, `containment`, `calendar`), `knot_status`,
+`knot_error`, `outside_fraction` and `outside_quotes`. `ladder_fallback=none`
+means the knot slice served, or that it certified inside the market without
+the A rule's own point evidence; then the point fit, which shares its quote
+admission, is refused too (`insufficient_quotes`) and the channel refits decide
+(`method=channel_refit`). A slice that pass A serves with its point fit always
+names the knot rung's failure (`certificate`, `knot_failure` or `containment`).
+
+Top-level `"price_only": true` (opt-in, static or graded) publishes a served row
+whose certified price has no identifiable American volatility (a node a repair
+moved below the zero-volatility value) as `status=ok_price_only` with the price,
+a blank `predicted_vol` and `vol_status=unidentifiable`; without the key such a
+row stays `status=invalid_volatility` with no price (its `vol_status` reads
+`unidentifiable`, previously `not_evaluated`: the only keys-off output change).
+A price-only row is final in the library (`QuoteSliceFit::price_only_nodes`): a
+later calendar repair refreshes its certified price but never re-implies a
+volatility, and `evaluate_quote_slice` refuses it, so with or without the key a
+price-only outcome is never published as an `ok` row with a volatility.
+The scorer counts price coverage over
+`ok | ok_price_only` and volatility coverage over `ok` only, and
+`compose_predictions_by_status.py --served-status ok ok_price_only` routes both
+(default `ok` only).
+
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of
 distinct underliers, not source rows. `--max-underliers` performs a preliminary
