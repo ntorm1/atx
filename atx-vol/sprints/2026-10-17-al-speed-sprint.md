@@ -281,6 +281,9 @@ Protocol:
 - A run was rejected and re-run (up to 4 attempts) when its 2 s load sample before or
   after exceeded 25%. 40 attempts were rejected; 28 of 32 slots were kept. Four slots
   never got a clean run: tier 1 in cycles 2, 4 and 6, and the A/A copy in cycle 2.
+  The kept runs are therefore not position-balanced for tier 1 (its five kept runs sit
+  at positions 2, 2, 3, 3 and 4); this does not change the "not resolved" verdict
+  (integration note, re-review NIT-5).
 - Load over 669 continuous 2 s samples: mean 21.7%, median 14.9%, p90 53.5%, 50.2% under
   15%. That gives the label **unqualified (loaded host)**. Window: 2026-10-18
   23:21-23:52 UTC.
