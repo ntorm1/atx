@@ -127,6 +127,9 @@ struct AlScheme {
   // see the qdplus_critical_put note in american.cpp. Defaulting to Baw leaves the
   // accurate / reference / boundary_interp schemes byte-unchanged.
   detail::AlSeedMode seed = detail::AlSeedMode::Baw;
+  // Kernel arithmetic (AlOpts::profile; american.hpp AlProfile). Reference keeps
+  // every solve byte-identical; Fast is the opt-in al-speed tier-2 kernel.
+  AlProfile profile = AlProfile::Reference;
 };
 
 struct AlBoundary {
@@ -156,6 +159,10 @@ struct AlWorkspace {
   // True only after the sigma-independent geometry below has been bound for the
   // current (T,r,q,node-grid) contract. Retained pricers clear it on reset.
   bool geo_static_bound = false;
+  // AlProfile::Fast kernel selected for this solve (set from AlScheme::profile by
+  // every entry that binds a scheme; false — the Reference kernel — everywhere
+  // else, including the AVX2 batch init and the adjoint tape).
+  bool fast = false;
   // Sweep-invariant geometry for eqn_b_ND. zc/weru/wequ are bound once per
   // contract; geo_v is rebound for each sigma. NOT zero-init'd (active elements
   // are filled before read), so stacked workspaces do not pay four 512-double
@@ -169,6 +176,13 @@ struct AlWorkspace {
   // so a retained workspace carries it across a sigma sweep exactly as it does zc.
   std::array<double, kGeoBarySize> geo_bary;      // wbary[k] / (zc_ji - z[k])
   std::array<double, kGeoBaryPairs> geo_bary_den; // sum_k of the above, same order
+  // al-speed tier 1 (2026-10-17): the two per-collocation-node terms every sweep
+  // recomputed at every node — the eqn_b drift factor K * exp(-(r - q) * tau_j) and
+  // sqrt(tau_j) of the tip — are sigma-independent, so the same static bind lays
+  // them down once (same expressions, bit-identical) and a retained workspace
+  // carries them across a sigma sweep with the rest of the static geometry.
+  std::array<double, kAlMaxNodes> geo_alpha;     // K * exp(-(r - q) * tau_j)
+  std::array<double, kAlMaxNodes> geo_sqrt_tau;  // sqrt(tau_j)
   std::array<std::int8_t, kGeoBaryPairs> geo_bary_hit;  // exact-node index; -1 = none
 #ifndef NDEBUG
   // R-30: Debug-only bind key naming the contract the sweep-invariant static
