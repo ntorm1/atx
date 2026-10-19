@@ -831,11 +831,142 @@ def _policy_metrics(frame: pl.LazyFrame) -> dict:
     return result
 
 
+# Opt-in shape-class stratum (score --class-manifest; tools/shape_cohort.py writes the manifest).
+CLASS_MANIFEST_SCHEMA = 1
+CLASS_KINDS = ("symbol", "expiry")
+SHAPE_TOLERANCE = 1.0e-6  # absorbs CSV rounding only (knot-ladder check_served.py definition)
+SHAPE_KINDS = ("monotone", "convex", "calendar")
+
+
+def _class_membership(path: Path, dataset_manifest: dict) -> tuple[dict, str, pl.DataFrame]:
+    """Verified (shape_class, underlier, expiry_days) members of this dataset's cohort."""
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != CLASS_MANIFEST_SCHEMA:
+        raise ValueError("unsupported class manifest schema version")
+    quotes_hash = dataset_manifest["files"]["quotes.parquet"]["sha256"]
+    cohorts = [name for name, info in manifest.get("cohorts", {}).items()
+               if info.get("quotes_parquet_sha256") == quotes_hash]
+    if len(cohorts) != 1:
+        raise ValueError("class manifest has no unique cohort for this dataset's quotes")
+    frames, names = [], set()
+    for entry in manifest.get("classes", []):
+        name, file = entry.get("name"), entry.get("file")
+        if (not isinstance(name, str) or not name or name in names
+                or name in ("no_symbol_class", "all_rows") or entry.get("kind") not in CLASS_KINDS
+                or not isinstance(file, str) or Path(file).name != file):
+            raise ValueError("class manifest entry needs a unique name, a symbol/expiry kind "
+                             "and a bare file name")
+        names.add(name)
+        member_path = path.parent / file
+        if sha256(member_path) != entry.get("sha256"):
+            raise ValueError(f"class file hash mismatch: {file}")
+        members = pl.read_csv(member_path, schema_overrides={
+            "cohort": pl.String, "underlier": pl.String, "expiry_days": pl.Int32})
+        frames.append(members.filter(pl.col("cohort") == cohorts[0])
+                      .select("underlier", "expiry_days").unique()
+                      .with_columns(pl.lit(name).alias("shape_class")))
+    if not frames:
+        raise ValueError("class manifest lists no classes")
+    return manifest, cohorts[0], pl.concat(frames)
+
+
+def _shape_breaks(frame: pl.LazyFrame) -> pl.DataFrame:
+    """One row per served-price shape break: kind, underlier, expiry_days, expiry_days_late.
+
+    Per chain and side over served strikes: calls non-increasing and puts non-decreasing in
+    strike, each interior price at most the chord of its neighbours; across expiries of one
+    (underlier, root, snapshot) at a served strike and side, the earlier price at most the
+    later one. Duplicate (chain, side, strike) rows take their minimum price and a spread
+    beyond the tolerance is reported as kind "duplicate".
+    """
+    served = frame.filter(pl.col("status").is_in(PRICE_SERVED_STATUSES)
+                          & pl.col("predicted_price").is_finite())
+    keys = ["chain_id", "underlier", "root", "snapshot_ns", "expiry_days", "is_call", "strike"]
+    nodes = served.group_by(keys).agg(pl.col("predicted_price").min().alias("price"),
+                                      pl.col("predicted_price").max().alias("price_high"))
+    nodes = nodes.sort("chain_id", "is_call", "strike")
+    side = ["chain_id", "is_call"]
+    nodes = nodes.with_columns(pl.col("price").shift(1).over(side).alias("price_left"),
+                               pl.col("price").shift(-1).over(side).alias("price_right"),
+                               pl.col("strike").shift(1).over(side).alias("strike_left"),
+                               pl.col("strike").shift(-1).over(side).alias("strike_right"))
+    step = (pl.when(pl.col("is_call") == 1).then(pl.col("price") - pl.col("price_left"))
+            .otherwise(pl.col("price_left") - pl.col("price")))
+    weight = ((pl.col("strike") - pl.col("strike_left"))
+              / (pl.col("strike_right") - pl.col("strike_left")))
+    excess = pl.col("price") - (pl.col("price_left") * (1.0 - weight) + pl.col("price_right") * weight)
+    out = ["kind", "underlier", "expiry_days", "expiry_days_late"]
+    late = pl.lit(None, dtype=pl.Int32).alias("expiry_days_late")
+    local = pl.concat([
+        nodes.filter(step > SHAPE_TOLERANCE).with_columns(pl.lit("monotone").alias("kind"), late),
+        nodes.filter(excess > SHAPE_TOLERANCE).with_columns(pl.lit("convex").alias("kind"), late),
+        nodes.filter(pl.col("price_high") - pl.col("price") > SHAPE_TOLERANCE)
+             .with_columns(pl.lit("duplicate").alias("kind"), late),
+    ]).select(out)
+    pair = ["underlier", "root", "snapshot_ns", "is_call", "strike"]
+    calendar = nodes.select(*pair, "expiry_days", "price").join(
+        nodes.select(*pair, pl.col("expiry_days").alias("expiry_days_late"),
+                     pl.col("price").alias("price_late")), on=pair).filter(
+        (pl.col("expiry_days") < pl.col("expiry_days_late"))
+        & (pl.col("price") - pl.col("price_late") > SHAPE_TOLERANCE)
+    ).with_columns(pl.lit("calendar").alias("kind")).select(out)
+    return pl.concat([local, calendar]).collect().with_row_index("break_id")
+
+
+def _class_strata(joined: pl.LazyFrame, path: Path, dataset_manifest: dict) -> dict:
+    """Per-class metrics; a row in several classes counts in each class."""
+    manifest, cohort, members = _class_membership(path, dataset_manifest)
+    keys = ["underlier", "expiry_days"]
+    pairs = joined.select(keys).unique().collect()
+    symbol = [e["name"] for e in manifest["classes"] if e["kind"] == "symbol"]
+    complement = pairs.join(members.filter(pl.col("shape_class").is_in(symbol)), on=keys, how="anti")
+    groups = [(e["name"], e["kind"], e.get("rule")) for e in manifest["classes"]] + [
+        ("no_symbol_class", "complement", "rows of no symbol class"),
+        ("all_rows", "all", "every selected row")]
+    members = pl.concat([members,
+                         complement.with_columns(pl.lit("no_symbol_class").alias("shape_class")),
+                         pairs.with_columns(pl.lit("all_rows").alias("shape_class"))])
+    breaks = _shape_breaks(joined)
+    attributed = pl.concat([
+        breaks.join(members, on=keys, how="inner"),
+        breaks.filter(pl.col("kind") == "calendar").join(
+            members, left_on=["underlier", "expiry_days_late"], right_on=keys, how="inner")
+        .select(breaks.columns + ["shape_class"]),
+    ], how="diagonal_relaxed").unique(["break_id", "shape_class"])
+    standard = pl.col("contract_kind") == "standard_symbol"
+    extra = [(pl.col("eligible") & standard).sum().alias("standard_symbol_eligible_rows"),
+             (pl.col("price_prediction_valid") & standard).sum()
+             .alias("standard_symbol_price_prediction_rows")]
+    rows = []
+    for name, kind, rule in groups:
+        member = members.filter(pl.col("shape_class") == name).select(keys)
+        frame = joined.join(member.lazy(), on=keys, how="semi")
+        metrics = _with_coverage(frame.select(_metrics() + extra).collect(engine="streaming").to_dicts()[0])
+        eligible = metrics["standard_symbol_eligible_rows"]
+        metrics["standard_symbol_price_coverage"] = (
+            metrics["standard_symbol_price_prediction_rows"] / eligible if eligible else None)
+        mine = attributed.filter(pl.col("shape_class") == name)
+        counts = dict(mine.group_by("kind").len().iter_rows())
+        rows.append({"shape_class": name, "kind": kind, "rule": rule,
+                     "underliers": member["underlier"].n_unique(), "expiries": member.height,
+                     **metrics,
+                     "served_shape_violations": {k: counts.get(k, 0) for k in SHAPE_KINDS},
+                     "served_duplicate_strike_disagreements": counts.get("duplicate", 0)})
+    return {"manifest": str(path.resolve()), "manifest_sha256": sha256(path), "cohort": cohort,
+            "tolerance": SHAPE_TOLERANCE, "classes": rows,
+            "notes": ["membership joins rows on (underlier, expiry_days); classes may overlap",
+                      "no_symbol_class holds rows of no symbol class; all_rows every selected row",
+                      "served = status ok or ok_price_only with a finite predicted price",
+                      "a calendar break counts in a class when either expiry is a member",
+                      "standard_symbol coverage excludes adjusted-suffix roots from the denominator"]}
+
+
 def score(args: argparse.Namespace) -> dict:
     output = args.output.resolve()
     if output.exists():
         raise ValueError("score output already exists; use a new output path")
-    _, receipt, joined = _load_evaluation(args.dataset, args.run_receipt, args.split, args.tick_size)
+    dataset_manifest, receipt, joined = _load_evaluation(args.dataset, args.run_receipt, args.split,
+                                                         args.tick_size)
     metrics = _aggregate(joined)
     status = joined.group_by("input_status", "status").agg(pl.len().alias("rows"))
     result = {
@@ -861,6 +992,8 @@ def score(args: argparse.Namespace) -> dict:
                   "configured_curve describes selection; actual_curve may be absent after a fit failure",
                   "exact quantiles; scoring memory scales with selected cohort size"],
     }
+    if getattr(args, "class_manifest", None) is not None:
+        result["class_strata"] = _class_strata(joined, args.class_manifest, dataset_manifest)
     # Exclusive creation also closes the race between the initial existence
     # check and scoring. Neither aliases nor a concurrently created artifact
     # may be overwritten after it has served as provenance evidence.
@@ -1002,6 +1135,9 @@ def parser() -> argparse.ArgumentParser:
     scoring.add_argument("--output", required=True, type=Path)
     scoring.add_argument("--split", choices=["development", "validation", "all"], default="development")
     scoring.add_argument("--tick-size", type=float, default=0.01)
+    scoring.add_argument("--class-manifest", type=Path,
+                         help="opt-in: shape_cohort.py manifest.json; adds per-class rows "
+                              "(class_strata) to the score output")
     scoring.set_defaults(func=score)
     comparison = sub.add_parser("compare", help="compare two runs on exact price/vol intersections")
     comparison.add_argument("--dataset", required=True, type=Path)
