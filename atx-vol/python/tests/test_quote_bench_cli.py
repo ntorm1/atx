@@ -599,6 +599,63 @@ def test_native_graded_snapshot_above_expiry_cap_falls_back_to_static(binary, tm
     assert report["served_rows"] == len(served)
 
 
+TIMING_BUCKETS = ("deam_us", "solve_us", "project_us", "price_us", "certify_us", "calendar_us",
+                  "other_us")
+
+
+def report_quantile(values: list[float], p: float) -> float:
+    # quote_bench_main.cpp quantile(): linear interpolation between order statistics.
+    ordered = sorted(values)
+    location = p * (len(ordered) - 1)
+    lo = int(location)
+    hi = min(lo + 1, len(ordered) - 1)
+    return ordered[lo] + (location - lo) * (ordered[hi] - ordered[lo])
+
+
+def test_native_timing_detail_reports_per_chain_counters_and_real_latency_percentiles(
+        binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_wide_snapshot(source, 4)
+    policy = write_policy(tmp_path / "graded.json", {"schema_version": 1, "admission": "graded"})
+    plain_output, timed_output = tmp_path / "plain.csv", tmp_path / "timed.csv"
+    plain = invoke(binary, source, plain_output, "--policy", str(policy))
+    assert plain.returncode == 0, plain.stderr
+    timed = invoke(binary, source, timed_output, "--policy", str(policy), "--timing-detail")
+    assert timed.returncode == 0, timed.stderr
+    # Opt-in: the predictions are byte-identical and the plain report has no timing keys.
+    assert timed_output.read_bytes() == plain_output.read_bytes()
+    plain_report, timed_report = json.loads(plain.stdout), json.loads(timed.stdout)
+    assert "chain_latency_scope" not in plain_report
+    assert "timing_detail" not in plain_report["graded_stats"]
+    assert all("timing" not in entry for entry in plain_report["graded_stats"]["slices"])
+    slices = timed_report["graded_stats"]["slices"]
+    assert len(slices) == 4
+    walls = []
+    for entry in slices:
+        timing = entry["timing"]
+        assert timing["rung_attempts"] >= 1
+        assert timing["certification_passes"] >= 1
+        assert timing["wall_us"] == sum(timing[key] for key in TIMING_BUCKETS)
+        assert timing["al_price_calls"] == sum(timing["al_by_bucket"].values())
+        # The repair-rung cross-cut is reported, and idle without graded.repair channel.
+        assert (timing["repair_rung_visits"], timing["repair_rung_us"]) == (0, 0)
+        walls.append(timing["wall_us"])
+    # Real per-chain percentiles: each graded chain's own fit wall, not the surface
+    # wall divided by its expiries (which made p50 = p95 = p99 for one snapshot).
+    for p, name in ((0.50, "p50"), (0.95, "p95"), (0.99, "p99")):
+        assert timed_report[f"chain_latency_us_{name}"] == pytest.approx(
+            report_quantile(walls, p), rel=1e-12, abs=1e-9)
+    detail = timed_report["graded_stats"]["timing_detail"]
+    assert detail["surfaces"] == 1
+    assert detail["chain_wall_us"] == sum(walls)
+    # Chain time is a subset of the surface wall (up to per-bucket microsecond rounding).
+    assert detail["surface_wall_us"] + 4 * len(TIMING_BUCKETS) >= sum(walls)
+    refused = invoke(binary, source, tmp_path / "markov.csv", "--model", "common-markov",
+                     "--timing-detail")
+    assert refused.returncode != 0
+    assert "--timing-detail requires --model quote-slice" in refused.stderr
+
+
 def test_native_graded_options_are_strict(binary, tmp_path):
     source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
     make_quotes(source)

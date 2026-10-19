@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
+#include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "fitting/term_prior.hpp"
 
@@ -193,7 +194,9 @@ public:
       : expiries_(expiries), config_(config), base_config_(without_repair(config)),
         surface_(surface), out_(expiries.size()), breadth_(expiries.size()),
         two_sided_(expiries.size()), contained_(expiries.size(), 0),
-        held_point_(expiries.size()), cost_(expiries.size()) {
+        held_point_(expiries.size()), cost_(expiries.size()),
+        trace_(counters::fit_timing::armed_surface()),
+        timing_(trace_ != nullptr ? expiries.size() : 0) {
     for (std::size_t i = 0; i < expiries.size(); ++i) {
       cost_[i] = two_sided_quotes(expiries[i].quotes);
     }
@@ -224,6 +227,7 @@ public:
         slice.grade = QuoteSliceGrade::B;
       }
     }
+    publish_timing();
     return Ok(std::move(out_));
   }
 
@@ -255,6 +259,7 @@ private:
 
   void point_pass() {
     for_each_expiry(every_expiry(), [this](std::size_t i) {
+      const counters::fit_timing::ChainScope chain(slot(i), 1);
       const QuoteSurfaceExpiry &e = expiries_[i];
       breadth_[i] = two_sided_strikes(e.quotes);
       auto fit = fit_quote_slice(e.market, e.quotes, base_config_, e.calendar_dividends);
@@ -274,6 +279,19 @@ private:
   }
 
   [[nodiscard]] bool ladder() const { return surface_.ladder == QuoteSurfaceLadder::KnotFirst; }
+
+  // Expiry i's opt-in timing slot (counters::fit_timing), null when timing is off.
+  [[nodiscard]] counters::fit_timing::ChainRecorder *slot(std::size_t i) const {
+    return timing_.empty() ? nullptr : &timing_[i];
+  }
+
+  void publish_timing() const {
+    if (trace_ == nullptr) return;
+    trace_->chains.clear();
+    for (const counters::fit_timing::ChainRecorder &rec : timing_) {
+      trace_->chains.push_back(rec.result());
+    }
+  }
 
   // The pass-A method of the profile without the ladder (diagnostic only).
   [[nodiscard]] QuoteSurfaceMethod pass_a_method() const {
@@ -325,6 +343,7 @@ private:
   // is reached only when the knot slice failed) and the channel passes decide.
   void knot_pass() {
     for_each_expiry(every_expiry(), [this](std::size_t i) {
+      const counters::fit_timing::ChainScope chain(slot(i), 2);
       const QuoteSurfaceExpiry &e = expiries_[i];
       breadth_[i] = two_sided_strikes(e.quotes);
       two_sided_[i] = two_sided_quotes(e.quotes);
@@ -404,6 +423,7 @@ private:
     std::vector<std::optional<HeldPoint>> held(n);
     for (const std::size_t i : order) { // phase 1
       if (!gated[i] || !served(i)) continue;
+      const counters::fit_timing::ChainScope chain(slot(i));
       std::vector<std::size_t> settled;
       for (std::size_t j = 0; j < n; ++j) {
         if (j != i && served(j) && !(gated[j] && !held[j])) settled.push_back(j);
@@ -421,6 +441,7 @@ private:
       undone = false;
       for (auto it = order.rbegin(); it != order.rend() && !undone; ++it) {
         const std::size_t i = *it;
+        const counters::fit_timing::ChainScope chain(slot(i));
         if (!held[i] || consistent(out_[i].fit, served_except(i))) continue;
         restore_point(i, *held[i]);
         held[i].reset();
@@ -433,6 +454,7 @@ private:
       if (!any || served(i) || out_[i].refusal != "calendar_arbitrage" || !out_[i].fit.prices) {
         continue;
       }
+      const counters::fit_timing::ChainScope chain(slot(i));
       const std::vector<std::size_t> others = served_except(i);
       if (gated[i]) {
         std::vector<std::size_t> evidence;
@@ -546,6 +568,8 @@ private:
           slice.point_status != QuoteSliceFitStatus::ArbitrageFailure) {
         continue;
       }
+      const counters::fit_timing::ChainScope chain(slot(i), 1);
+      const counters::fit_timing::RepairRungScope repair_timing;
       const QuoteSurfaceExpiry &e = expiries_[i];
       auto fit = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
       if (!fit) continue;
@@ -573,8 +597,11 @@ private:
       if (slice.grade != QuoteSliceGrade::Refused || slice.refusal != "arbitrage_failure") {
         continue;
       }
+      counters::fit_timing::ChainScope chain(slot(i));
+      const counters::fit_timing::RepairRungScope repair_timing;
       const QuoteSurfaceExpiry &e = expiries_[i];
       if (slice.knot_status == QuoteSliceFitStatus::ArbitrageFailure) {
+        chain.rung();
         auto knot =
             fit_quote_slice_channel(e.market, e.quotes, config_, nullptr, e.calendar_dividends);
         if (knot) slice.rung_repair = knot->diagnostics.repair;
@@ -584,6 +611,7 @@ private:
         }
       }
       if (slice.point_status == QuoteSliceFitStatus::ArbitrageFailure) {
+        chain.rung();
         auto point = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
         if (point) slice.rung_repair = point->diagnostics.repair;
         if (point && served_in_market(*point, i)) {
@@ -623,6 +651,7 @@ private:
   // by `factor`. Without a prior node the flat default shape applies.
   [[nodiscard]] Result<QuoteSliceFit> channel_fit(std::size_t i, const TermPrior &prior,
                                                   double factor) const {
+    const counters::fit_timing::ChainScope chain(slot(i), 1);
     const QuoteSurfaceExpiry &e = expiries_[i];
     const auto point = prior.at(e.market.variance_years, static_cast<std::uint64_t>(i));
     if (!point || !(surface_.term_prior_weight > 0.0)) {
@@ -729,7 +758,9 @@ private:
 
   [[nodiscard]] bool consistent(const QuoteSliceFit &fit,
                                 const std::vector<std::size_t> &accepted) const {
+    const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
     for (const std::size_t j : accepted) {
+      counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::calendar_pairs);
       const QuoteSliceFit &other = out_[j].fit;
       const bool earlier = fit.market.calendar_years < other.market.calendar_years;
       const auto status = earlier ? check_american_calendar(*fit.prices, *other.prices)
@@ -804,6 +835,7 @@ private:
     std::vector<std::size_t> rejected;
     accepted.reserve(order.size());
     for (const std::size_t i : order) {
+      const counters::fit_timing::ChainScope chain(slot(i));
       if (consistent(out_[i].fit, accepted)) {
         accepted.push_back(i);
       } else {
@@ -820,6 +852,7 @@ private:
     // acceptance is re-checked.
     ATX_TRY(const TermPrior accepted_prior, make_prior(nodes(true, &accepted), surface_));
     for (const std::size_t i : rejected) {
+      const counters::fit_timing::ChainScope chain(slot(i));
       if (repair(out_[i].fit, i, accepted)) {
         mark_repaired(i);
         accepted.push_back(i);
@@ -914,6 +947,7 @@ private:
     std::vector<std::size_t> accepted;
     accepted.reserve(order.size());
     for (const std::size_t i : order) {
+      const counters::fit_timing::ChainScope chain(slot(i));
       if (consistent(out_[i].fit, accepted)) {
         accepted.push_back(i);
         continue;
@@ -1114,6 +1148,10 @@ private:
   // Ladder only: the in-market point fit of a knot-served expiry (calendar rung).
   std::vector<std::optional<QuoteSliceFit>> held_point_;
   std::vector<std::size_t> cost_; // fan-out order key: strictly two-sided quotes
+  // Opt-in per-expiry fit timing: armed only when the caller armed a SurfaceTrace
+  // on its thread (else empty); slot i is written only while expiry i is fitted.
+  counters::fit_timing::SurfaceTrace *trace_;
+  mutable std::vector<counters::fit_timing::ChainRecorder> timing_;
 };
 
 } // namespace
