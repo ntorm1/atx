@@ -891,6 +891,135 @@ Result<double> american_implied_vol(double price, double S, double K, double T, 
   }
 }
 
+// ── Opt-in non-monotone refusal (L1c, 2026-10-18; contract in american_iv.hpp) ──
+
+namespace {
+
+// Gate kappa (american_iv.hpp al_non_monotone_gate): ~4x the largest exercise-region
+// artifact the region map measured per scheme class, relative to K * max(1, T)^2.
+constexpr double kNonMonotoneGateAccurate = 5.0e-6;
+constexpr double kNonMonotoneGateWide = 4.0e-4;
+// Scalar certificate inside the band: slope probe width (relative), slope floor
+// (relative to K, the chain batch's default vega_floor) and the largest accepted
+// Newton correction on the cold map, in vol units.
+constexpr double kCertProbeRel = 1.0e-4;
+constexpr double kCertSlopeFloorRel = 1.0e-8;
+constexpr double kCertSigmaTol = 1.0e-4;
+
+// The accurate scheme: nullopt, or its explicit equivalent under either profile.
+[[nodiscard]] bool accurate_scheme(const std::optional<AlOpts> &opts) noexcept {
+  if (!opts) {
+    return true;
+  }
+  const AlOpts a = al_fast_profile(std::nullopt);
+  return opts->n_collocation == a.n_collocation && opts->n_quadrature == a.n_quadrature &&
+         opts->n_quad_price == a.n_quad_price && opts->max_newton_iter == a.max_newton_iter &&
+         opts->tol == a.tol;
+}
+
+// Spot on the exercise side of the kernel's own boundary at sigma. Not noexcept: the
+// kernel's Error path builds a message string.
+[[nodiscard]] bool in_exercise_region(double S, double K, double T, double r, double q,
+                                      Side side, double sigma,
+                                      const std::optional<AlOpts> &opts) {
+  const Result<double> b = exercise_boundary(K, T, sigma, r, q, side, opts);
+  if (!b || !std::isfinite(*b)) {
+    return false; // European regime (no boundary) or a regime the kernel refuses
+  }
+  return (side == Side::Put) ? (S <= *b) : (S >= *b);
+}
+
+[[nodiscard]] bool in_band(double price, double S, double K, double T, double r, double q,
+                           Side side, const std::optional<AlOpts> &opts) noexcept {
+  const double zv = zero_vol_american_value(S, K, T, r, q, side);
+  return price - zv <= al_non_monotone_gate(K, T, opts); // NaN anywhere -> false
+}
+
+// The scalar's answer x, refused (false) inside the band when x lies in the exercise
+// region, or (x above kIvMin) when the cold map does not certify it as its root.
+[[nodiscard]] bool scalar_answer_certified(double price, double S, double K, double T, double r,
+                                           double q, Side side, double x,
+                                           const std::optional<AlOpts> &opts) {
+  if (!in_band(price, S, K, T, r, q, side, opts)) {
+    return true;
+  }
+  if (in_exercise_region(S, K, T, r, q, side, x, opts)) {
+    return false;
+  }
+  if (!(x > kIvMin)) {
+    return true; // the documented floor clamp, outside the exercise region
+  }
+  const double xb = x * (1.0 - kCertProbeRel);
+  const Result<double> px = andersen_lake(S, K, T, x, r, q, side, opts);
+  const Result<double> pb = andersen_lake(S, K, T, xb, r, q, side, opts);
+  if (!px || !pb || !std::isfinite(*px) || !std::isfinite(*pb)) {
+    return false;
+  }
+  const double slope = (*px - *pb) / (x - xb);
+  if (!(slope > kCertSlopeFloorRel * K)) {
+    return false;
+  }
+  return std::fabs(*px - price) <= kCertSigmaTol * slope;
+}
+
+[[nodiscard]] IvStatus iv_status_of(ErrorCode code) noexcept {
+  switch (code) {
+  case ErrorCode::InvalidArgument:
+    return IvStatus::InvalidArgument;
+  case ErrorCode::OutOfRange:
+    return IvStatus::OutOfRange;
+  case ErrorCode::Unavailable:
+    return IvStatus::NoConvergence;
+  default: // NotImplemented regimes, Internal (allocation), anything the pricer raised
+    return IvStatus::Unpriceable;
+  }
+}
+
+} // namespace
+
+double al_non_monotone_gate(double K, double T, const std::optional<AlOpts> &opts) noexcept {
+  if (!(K > 0.0) || !(T > 0.0) || !std::isfinite(K) || !std::isfinite(T)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double kappa = accurate_scheme(opts) ? kNonMonotoneGateAccurate : kNonMonotoneGateWide;
+  return kappa * K * std::fmax(1.0, T * T);
+}
+
+bool al_non_monotone_region(double price, double S, double K, double T, double r, double q,
+                            Side side, double sigma, const std::optional<AlOpts> &opts) noexcept {
+  if (!in_band(price, S, K, T, r, q, side, opts)) {
+    return false;
+  }
+  try {
+    return in_exercise_region(S, K, T, r, q, side, sigma, opts);
+  } catch (const std::bad_alloc &) {
+    return true; // refuse is the safe side
+  }
+}
+
+IvResult american_implied_vol(double price, double S, double K, double T, double r, double q,
+                              Side side, const IvOpts &opts) noexcept {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  try {
+    const Result<double> iv =
+        american_implied_vol_impl(price, S, K, T, r, q, side, opts.method, opts.tol,
+                                  opts.max_iter, opts.al_opts, opts.correction, opts.warm_start,
+                                  opts.price_tol);
+    if (!iv) {
+      return IvResult{kNaN, iv_status_of(iv.error().code())};
+    }
+    const bool cold_al =
+        opts.method == AmericanMethod::AndersenLake && !cache_usable(opts.correction, side);
+    if (opts.refuse_non_monotone && cold_al &&
+        !scalar_answer_certified(price, S, K, T, r, q, side, *iv, opts.al_opts)) {
+      return IvResult{kNaN, IvStatus::NonMonotoneRegion};
+    }
+    return IvResult{*iv, IvStatus::Ok};
+  } catch (const std::bad_alloc &) {
+    return IvResult{kNaN, IvStatus::Unpriceable};
+  }
+}
+
 // Test/measurement seam (declared in american_iv_test.cpp, not the public
 // header). Runs the cold Andersen-Lake inversion and additionally reports the
 // polish bracket [xl, xh] captured at polish entry, whether the A3

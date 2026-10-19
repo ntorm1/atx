@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -1432,4 +1433,287 @@ TEST(AmericanIv, FusedTraversalIvEconomicParityFixture) {
     }
   }
   EXPECT_EQ(n, 198);
+}
+
+// ── L1c (2026-10-19): the opt-in non-monotone refusal ─────────────────────
+//
+// The cold Andersen-Lake map is not monotone in sigma inside the kernel's own
+// exercise region close to the zero-vol value (american_iv.hpp, "Typed entry point
+// with the opt-in non-monotone refusal"; region map and gate constants in
+// sprints/2026-10-18-L1c-al-nonmonotone-sprint.md). Pinned here: the ledgered
+// contract, the gate, the flag-off identity of the typed overload, and where the
+// refusal fires and where it does not.
+
+namespace {
+
+using atx::vol::al_non_monotone_gate;
+using atx::vol::al_non_monotone_region;
+using atx::vol::andersen_lake;
+using atx::vol::ErrorCode;
+using atx::vol::exercise_boundary;
+using atx::vol::IvOpts;
+using atx::vol::IvResult;
+using atx::vol::IvStatus;
+using atx::vol::kIvMin;
+
+// The ledgered trap contract (LEDGER 2026-10-17 | trap |): put S=100 K=128.989 T=2.
+constexpr double kNmS = 100.0;
+constexpr double kNmK = 128.989;
+constexpr double kNmT = 2.0;
+constexpr double kNmR = 0.05;
+constexpr double kNmQ = 0.015;
+
+[[nodiscard]] double cold_al(double S, double K, double T, double sig, double r, double q,
+                             Side sd) {
+  const atx::core::Result<double> p = andersen_lake(S, K, T, sig, r, q, sd);
+  return p && std::isfinite(*p) ? *p : std::numeric_limits<double>::quiet_NaN();
+}
+
+// Spot on the exercise side of the kernel's own boundary at sigma (put S <= B).
+[[nodiscard]] bool spot_exercises(double S, double K, double T, double sig, double r, double q,
+                                  Side sd) {
+  const atx::core::Result<double> b = exercise_boundary(K, T, sig, r, q, sd);
+  return b && std::isfinite(*b) && (sd == Side::Put ? S <= *b : S >= *b);
+}
+
+// The sigma -> 0 American value, written out from its formula: the sup over exercise
+// dates t in [0, T] of A e^{-a t} - B e^{-b t}, floored at 0.
+[[nodiscard]] double zero_vol_value(double S, double K, double T, double r, double q, Side sd) {
+  const bool call = sd == Side::Call;
+  const double A = call ? S : K;
+  const double a = call ? q : r;
+  const double B = call ? K : S;
+  const double b = call ? r : q;
+  const auto pay = [&](double t) { return A * std::exp(-a * t) - B * std::exp(-b * t); };
+  double best = std::fmax(pay(0.0), pay(T));
+  const double ts = std::log((a * A) / (b * B)) / (a - b);
+  if (std::isfinite(ts) && ts > 0.0 && ts < T) {
+    best = std::fmax(best, pay(ts));
+  }
+  return std::fmax(best, 0.0);
+}
+
+// The typed status the positional overload's Error maps to (american_iv.hpp).
+[[nodiscard]] IvStatus status_of(const atx::core::Result<double> &r) {
+  if (r) {
+    return IvStatus::Ok;
+  }
+  const ErrorCode c = r.error().code();
+  return c == ErrorCode::InvalidArgument ? IvStatus::InvalidArgument
+         : c == ErrorCode::OutOfRange    ? IvStatus::OutOfRange
+         : c == ErrorCode::Unavailable   ? IvStatus::NoConvergence
+                                         : IvStatus::Unpriceable;
+}
+
+[[nodiscard]] IvResult typed_iv(double price, double S, double K, double T, double r, double q,
+                                Side sd, bool refuse,
+                                AmericanMethod method = AmericanMethod::AndersenLake) {
+  IvOpts o;
+  o.method = method;
+  o.refuse_non_monotone = refuse;
+  return american_implied_vol(price, S, K, T, r, q, sd, o);
+}
+
+[[nodiscard]] bool same_double(double a, double b) {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+} // namespace
+
+// The ledgered numbers: +7.745e-6 above the zero-vol value at sigma 0.14, flat at
+// it on [0.17, 0.18], +7.4e-4 at 0.185. Every decreasing step lies in the kernel's
+// own exercise region (S <= B(T; sigma)); the map rises again once S leaves it.
+TEST(AmericanIvNonMonotone, LedgerContractDipsOnlyInsideTheKernelExerciseRegion) {
+  const auto P = [](double sig) { return cold_al(kNmS, kNmK, kNmT, sig, kNmR, kNmQ, Side::Put); };
+  const auto ex = [](double sig) {
+    return spot_exercises(kNmS, kNmK, kNmT, sig, kNmR, kNmQ, Side::Put);
+  };
+  const double zv = zero_vol_value(kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put);
+  EXPECT_EQ(zv, kNmK - kNmS); // r > q: the immediate intrinsic binds
+  EXPECT_NEAR(P(0.14) - zv, 7.745e-6, 1.0e-9);
+  for (const double sig : {0.17, 0.175, 0.18}) {
+    EXPECT_LE(std::abs(P(sig) - zv), 1.0e-12) << sig;
+  }
+  EXPECT_NEAR(P(0.185) - zv, 7.4027e-4, 1.0e-7);
+  int n_dec = 0;
+  double prev = P(0.14);
+  for (int k = 1; k <= 6; ++k) {
+    const double sig = 0.14 + 0.005 * k;
+    const double p = P(sig);
+    if (p < prev) {
+      ++n_dec;
+      EXPECT_TRUE(ex(sig)) << "decreasing step outside the exercise region at " << sig;
+    }
+    prev = p;
+  }
+  EXPECT_EQ(n_dec, 6); // 0.145 .. 0.17
+  EXPECT_TRUE(ex(0.14));
+  EXPECT_FALSE(ex(0.185));
+  // The band and the region predicate classify the peak target.
+  const double tgt = P(0.14);
+  EXPECT_LE(tgt - zv, al_non_monotone_gate(kNmK, kNmT, std::nullopt));
+  EXPECT_TRUE(al_non_monotone_region(tgt, kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put, 0.14,
+                                     std::nullopt));
+  EXPECT_FALSE(al_non_monotone_region(tgt, kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put, 0.185,
+                                      std::nullopt));
+  // Far above the band the predicate is false even with the spot in the region.
+  EXPECT_FALSE(al_non_monotone_region(P(0.3), kNmS, kNmK, kNmT, kNmR, kNmQ, Side::Put, 0.14,
+                                      std::nullopt));
+}
+
+// kappa * K * max(1, T)^2: kappa 5e-6 for the accurate scheme (nullopt or its explicit
+// Fast-profile equivalent), 4e-4 for any other scheme; NaN for invalid K / T.
+TEST(AmericanIvNonMonotone, GateScalesWithStrikeAndSquaredMaturity) {
+  using atx::vol::al_fast_opts;
+  using atx::vol::al_fast_profile;
+  EXPECT_DOUBLE_EQ(al_non_monotone_gate(100.0, 0.5, std::nullopt), 5.0e-6 * 100.0);
+  EXPECT_DOUBLE_EQ(al_non_monotone_gate(kNmK, kNmT, std::nullopt), 5.0e-6 * kNmK * 4.0);
+  EXPECT_DOUBLE_EQ(al_non_monotone_gate(kNmK, kNmT, al_fast_profile(std::nullopt)),
+                   5.0e-6 * kNmK * 4.0);
+  EXPECT_DOUBLE_EQ(al_non_monotone_gate(kNmK, kNmT, al_fast_opts()), 4.0e-4 * kNmK * 4.0);
+  EXPECT_TRUE(std::isnan(al_non_monotone_gate(0.0, 1.0, std::nullopt)));
+  EXPECT_TRUE(std::isnan(al_non_monotone_gate(100.0, 0.0, std::nullopt)));
+  const double nan_strike = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(std::isnan(al_non_monotone_gate(nan_strike, 1.0, std::nullopt)));
+}
+
+// With refuse_non_monotone false the typed overload IS the positional one: same bits,
+// mapped status, over deep-ITM long-dated contracts whose targets sit on, near and far
+// above the zero-vol value. With it true, the only change is Ok -> NonMonotoneRegion,
+// and only for targets inside the band.
+TEST(AmericanIvNonMonotone, FlagOffIsThePositionalOverloadAndFlagOnOnlyRefuses) {
+  const double S = 100.0;
+  std::size_t n = 0;
+  std::size_t refused = 0;
+  std::size_t kept_ok = 0;
+  for (const Side sd : {Side::Put, Side::Call}) {
+    for (const double m : {1.05, 1.2, 1.29, 1.4}) {
+      const double K = sd == Side::Put ? S * m : S / m;
+      for (const double T : {0.5, 2.0, 5.0}) {
+        for (const std::array<double, 2> rq :
+             {std::array<double, 2>{0.05, 0.0}, std::array<double, 2>{0.05, 0.015},
+              std::array<double, 2>{0.05, 0.05}}) {
+          // Calls mirror the put carries (q and r swap roles).
+          const double r = sd == Side::Put ? rq[0] : rq[1];
+          const double q = sd == Side::Put ? rq[1] : rq[0];
+          const double zv = zero_vol_value(S, K, T, r, q, sd);
+          const double gate = al_non_monotone_gate(K, T, std::nullopt);
+          std::vector<double> targets;
+          for (const double sig : {0.1, 0.2, 0.4}) {
+            targets.push_back(cold_al(S, K, T, sig, r, q, sd));
+          }
+          for (const double x : {1.0e-6, 1.0e-5, 1.0e-4}) {
+            targets.push_back(zv + x * K); // inside the band, or above it at short T
+          }
+          for (const double p : targets) {
+            ++n;
+            const atx::core::Result<double> pos = american_implied_vol(p, S, K, T, r, q, sd);
+            const IvResult off = typed_iv(p, S, K, T, r, q, sd, false);
+            const IvResult on = typed_iv(p, S, K, T, r, q, sd, true);
+            ASSERT_EQ(off.status, status_of(pos)) << "K=" << K << " T=" << T << " p=" << p;
+            if (pos) {
+              EXPECT_TRUE(same_double(off.iv, *pos)) << "K=" << K << " T=" << T << " p=" << p;
+            } else {
+              EXPECT_TRUE(std::isnan(off.iv));
+            }
+            if (on.status == IvStatus::NonMonotoneRegion) {
+              ++refused;
+              EXPECT_EQ(off.status, IvStatus::Ok);
+              EXPECT_TRUE(std::isnan(on.iv));
+              EXPECT_LE(p - zv, gate) << "refused above the band: K=" << K << " T=" << T;
+              continue;
+            }
+            EXPECT_EQ(on.status, off.status) << "K=" << K << " T=" << T << " p=" << p;
+            EXPECT_TRUE(same_double(on.iv, off.iv) || (std::isnan(on.iv) && std::isnan(off.iv)));
+            kept_ok += on.status == IvStatus::Ok ? 1u : 0u;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[non-monotone scalar] %zu targets, %zu refused, %zu Ok kept\n", n, refused,
+              kept_ok);
+  EXPECT_EQ(n, 2u * 4u * 3u * 3u * 6u);
+  EXPECT_GT(refused, 0u);
+  EXPECT_GT(kept_ok, refused);
+}
+
+// Inside the band the flag refuses both kinds of wrong Ok: an answer inside the
+// kernel's exercise region (one of several roots, or the kIvMin clamp at the
+// intrinsic) and an answer outside it that the cold map does not certify (the warm
+// search stopped 0.002-0.02 vol off; LEDGER 2026-10-17 trap).
+TEST(AmericanIvNonMonotone, RefusesWrongOkAnswersInsideTheRegion) {
+  struct Case {
+    const char *name;
+    double K, T, r, q;
+    double sig_true; // target = cold AL at sig_true; <= 0: target = zero-vol value - sig_true
+    double off_iv;   // today's (flag-off) answer
+    bool off_in_region;
+  };
+  const Case cases[] = {
+      {"ledger bump", kNmK, kNmT, kNmR, kNmQ, -5.0e-6, 0.0913378, true},
+      {"ledger peak", kNmK, kNmT, kNmR, kNmQ, 0.14, 0.0913378, true},
+      {"N2 K140 T5", 140.0, 5.0, 0.05, 0.0, 0.2, 0.2190581, false},
+      {"K130 T5 r=q", 130.0, 5.0, 0.05, 0.05, 0.1, 0.1022202, false},
+      {"intrinsic clamp", 140.0, 1.0, 0.05, 0.0, 0.0, kIvMin, true},
+  };
+  const double S = 100.0;
+  for (const Case &c : cases) {
+    const double zv = zero_vol_value(S, c.K, c.T, c.r, c.q, Side::Put);
+    const double p =
+        c.sig_true > 0.0 ? cold_al(S, c.K, c.T, c.sig_true, c.r, c.q, Side::Put) : zv - c.sig_true;
+    ASSERT_LE(p - zv, al_non_monotone_gate(c.K, c.T, std::nullopt)) << c.name;
+    const IvResult off = typed_iv(p, S, c.K, c.T, c.r, c.q, Side::Put, false);
+    ASSERT_EQ(off.status, IvStatus::Ok) << c.name;
+    EXPECT_NEAR(off.iv, c.off_iv, 1.0e-6) << c.name;
+    EXPECT_EQ(spot_exercises(S, c.K, c.T, off.iv, c.r, c.q, Side::Put), c.off_in_region)
+        << c.name;
+    if (!c.off_in_region) {
+      // Not a root of the cold map: the residual is far above any certified answer's.
+      EXPECT_GT(std::abs(cold_al(S, c.K, c.T, off.iv, c.r, c.q, Side::Put) - p), 1.0e-5)
+          << c.name;
+    }
+    const IvResult on = typed_iv(p, S, c.K, c.T, c.r, c.q, Side::Put, true);
+    EXPECT_EQ(on.status, IvStatus::NonMonotoneRegion) << c.name;
+    EXPECT_TRUE(std::isnan(on.iv)) << c.name;
+  }
+}
+
+// Outside the region the flag changes nothing: a target far above the band on the
+// ledgered contract, an ATM contract, the kIvMin clamp of a European-regime call (no
+// exercise region), and the BAW route (the refusal is for the cold Andersen-Lake map).
+TEST(AmericanIvNonMonotone, KeepsAnswersOutsideTheRegionBitIdentical) {
+  const double S = 100.0;
+  struct Case {
+    const char *name;
+    double K, T, r, q;
+    Side sd;
+    double price;
+    AmericanMethod method;
+  };
+  const double call_zv = S - 90.0 * std::exp(-0.05); // K=90 T=1 r=.05 q=0 call
+  const Case cases[] = {
+      {"ledger at 0.3", kNmK, kNmT, kNmR, kNmQ, Side::Put,
+       cold_al(S, kNmK, kNmT, 0.3, kNmR, kNmQ, Side::Put), AmericanMethod::AndersenLake},
+      {"ATM put", 100.0, 1.0, 0.05, 0.0, Side::Put,
+       cold_al(S, 100.0, 1.0, 0.25, 0.05, 0.0, Side::Put), AmericanMethod::AndersenLake},
+      {"European-regime clamp", 90.0, 1.0, 0.05, 0.0, Side::Call, call_zv,
+       AmericanMethod::AndersenLake},
+      {"BAW in the band", kNmK, kNmT, kNmR, kNmQ, Side::Put, kNmK - kNmS + 5.0e-6,
+       AmericanMethod::Baw},
+  };
+  for (const Case &c : cases) {
+    const IvResult off = typed_iv(c.price, S, c.K, c.T, c.r, c.q, c.sd, false, c.method);
+    const IvResult on = typed_iv(c.price, S, c.K, c.T, c.r, c.q, c.sd, true, c.method);
+    EXPECT_EQ(on.status, off.status) << c.name;
+    EXPECT_TRUE(same_double(on.iv, off.iv) || (std::isnan(on.iv) && std::isnan(off.iv)))
+        << c.name;
+  }
+  // Pin what the first and third return, so "unchanged" is not "both refused".
+  const IvResult ledger = typed_iv(cases[0].price, S, kNmK, kNmT, kNmR, kNmQ, Side::Put, true);
+  ASSERT_EQ(ledger.status, IvStatus::Ok);
+  EXPECT_NEAR(ledger.iv, 0.3, 1.0e-5);
+  const IvResult clamp = typed_iv(call_zv, S, 90.0, 1.0, 0.05, 0.0, Side::Call, true);
+  ASSERT_EQ(clamp.status, IvStatus::Ok);
+  EXPECT_EQ(clamp.iv, kIvMin);
 }

@@ -10,7 +10,9 @@
 // ever sees it.
 //
 // The forward map P(sigma) = american_price(..., sigma, ..., method, opts) is
-// monotone increasing in sigma, so a bracketing root-find is robust. The
+// monotone increasing in sigma, so a bracketing root-find is robust (except inside
+// the Andersen-Lake kernel's exercise region close to the zero-volatility value,
+// where it is not: see "Typed entry point with the opt-in non-monotone refusal"). The
 // inverter is a safeguarded Newton (Numerical Recipes `rtsafe`): a Newton step
 // driven by the American vega (american_greeks().vega) accelerates convergence,
 // while a maintained [lo, hi] bracket with a forced-bisection fallback
@@ -28,6 +30,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 
@@ -106,6 +109,83 @@ american_implied_vol(double price, double S, double K, double T, double r, doubl
                      AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,
                      std::uint16_t max_iter = 64, const std::optional<AlOpts> &opts = std::nullopt,
                      double warm_start = 0.0, double price_tol = 0.0) noexcept;
+
+// ── Typed entry point with the opt-in non-monotone refusal (L1c, 2026-10-18) ──
+//
+// The cold Andersen-Lake map P(sigma) is NOT monotone everywhere (region map:
+// sprints/2026-10-18-L1c-al-nonmonotone-sprint.md). Every decreasing step of it lies
+// in the kernel's OWN exercise region at t = 0: spot on the exercise side of
+// exercise_boundary(K, T, sigma, r, q, side, opts) (put S <= B, call S >= B). There
+// the exact American value is the intrinsic, but the kernel prices euro + premium
+// floored only at the intrinsic, so it prints a premium artifact that rises and falls
+// with sigma (measured up to 1.2e-6 * K * max(1, T)^2 above the zero-volatility value
+// on the accurate preset and its Fast profile, 9.1e-5 on al_fast_opts). A target that
+// close to the zero-volatility value can have several roots, and an inverter returns
+// whichever its path meets: Ok answers 0.005-0.18 vol apart on the same target.
+//
+// IvOpts::refuse_non_monotone (default false: every output is bit-identical to the
+// positional overload above) types those answers as IvStatus::NonMonotoneRegion on the
+// cold Andersen-Lake route (method AndersenLake and no usable correction cache; the
+// BAW and cached maps never refuse). An Ok answer x is refused when the target lies
+// in the band price - zero_vol <= al_non_monotone_gate(K, T, opts) and EITHER x lies
+// in the kernel's exercise region (al_non_monotone_region), OR x is above kIvMin and
+// not certified on the cold map: the chord slope over [x (1 - 1e-4), x] is <= 1e-8 K,
+// or the Newton correction |P(x) - price| / slope exceeds 1e-4 vol. Targets above the
+// band, and the kIvMin floor clamp outside the exercise region, keep today's answer.
+
+enum class IvStatus : std::uint8_t {
+  Ok = 0,
+  InvalidArgument = 1,   // S/K/T <= 0 (ErrorCode::InvalidArgument)
+  OutOfRange = 2,        // non-finite input or price outside the identifiable band
+  NoConvergence = 3,     // root-find did not converge in max_iter (ErrorCode::Unavailable)
+  Unpriceable = 4,       // the pricer refused (NotImplemented regimes) or allocation failed
+  NonMonotoneRegion = 5, // opt-in refusal: see above
+};
+
+// The positional overload's controls as one struct, plus the opt-in refusal. Same
+// meanings and defaults as american_implied_vol above (al_opts is its `opts`).
+struct IvOpts {
+  AmericanMethod method = AmericanMethod::AndersenLake;
+  double tol = 1.0e-7;
+  std::uint16_t max_iter = 64;
+  std::optional<AlOpts> al_opts = std::nullopt;
+  const CorrectionCache *correction = nullptr;
+  double warm_start = 0.0;
+  double price_tol = 0.0;
+  bool refuse_non_monotone = false; // OPT-IN (L1c): see the section comment above
+};
+
+struct IvResult {
+  double iv = std::numeric_limits<double>::quiet_NaN(); // the vol on Ok, NaN otherwise
+  IvStatus status = IvStatus::InvalidArgument;
+};
+
+// american_implied_vol with typed statuses. With refuse_non_monotone false, iv equals
+// the positional overload's value bit for bit and status maps its Error code
+// (InvalidArgument, OutOfRange, Unavailable -> NoConvergence, anything else ->
+// Unpriceable).
+[[nodiscard]] IvResult american_implied_vol(double price, double S, double K, double T,
+                                            double r, double q, Side side,
+                                            const IvOpts &opts) noexcept;
+
+// Width of the non-monotone band above the zero-volatility value:
+// kappa * K * max(1, T)^2 with kappa = 5e-6 for the accurate scheme (nullopt, or its
+// explicit equivalent al_fast_profile(nullopt) under either AlProfile) and 4e-4 for
+// any other scheme. kappa is ~4x the largest exercise-region artifact the map measured
+// for that scheme class (accurate / Fast profile 1.2e-6; al_fast_opts 9.1e-5,
+// al_bulk_opts 3.2e-5); unmapped schemes take the wide value. NaN for non-finite or
+// non-positive K / T.
+[[nodiscard]] double al_non_monotone_gate(double K, double T,
+                                          const std::optional<AlOpts> &opts) noexcept;
+
+// True iff `price` lies in the non-monotone band (price - zero_vol <= the gate) AND the
+// spot lies in the kernel's exercise region at `sigma` (one exercise_boundary solve,
+// paid only inside the band). A boundary the kernel refuses (the European regime has
+// none) is outside the region; an allocation failure answers true (refuse is the safe
+// side). The predicate the batch routes apply to their Ok rows (batch_chain.hpp).
+[[nodiscard]] bool al_non_monotone_region(double price, double S, double K, double T, double r,
+                                          double q, Side side, double sigma,
+                                          const std::optional<AlOpts> &opts) noexcept;
 
 // Batch inversion over a strike axis (scalar-backed; mirrors the library's
 // *_batch shape and the parallel-status failure convention of
