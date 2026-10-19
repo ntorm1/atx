@@ -4,6 +4,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/marketdata/dividend_schedule.hpp"
 #include "atx/vol/api/pricing/dividend.hpp"
+#include "fitting/counters.hpp"
 #include "quote_bench_policy.hpp"
 #include "quote_bench_common.hpp"
 #include "quote_bench_progress.hpp"
@@ -56,6 +57,7 @@ struct Arguments {
   QuoteSliceQualityConfig quality;
   std::size_t min_quotes{6};
   bool help_requested{false};
+  bool timing_detail{false}; // opt-in per-chain fit timing counters (graded admission)
 };
 
 template <class T> T number(std::string_view value, std::string_view column) {
@@ -103,11 +105,17 @@ Arguments arguments(int argc, char **argv) {
                    "[--progress fresh-progress.jsonl] "
                    "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
-                   "[--max-weight 1000]\n"
+                   "[--max-weight 1000] [--timing-detail]\n"
                    "Defaults: --policy auto --dividends funding-pv. "
-                   "Quality/min-quotes flags require explicit --curve.\n";
+                   "Quality/min-quotes flags require explicit --curve. "
+                   "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
+                   "graded_stats.slices[].timing and real per-chain graded latencies.\n";
       args.help_requested = true;
       return args;
+    }
+    if (key == "--timing-detail") {
+      args.timing_detail = true;
+      continue;
     }
     if (i + 1 == argc) throw std::runtime_error("Missing value for " + std::string(key));
     const std::string value{argv[++i]};
@@ -143,6 +151,9 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.model == "quote-slice" && seen.contains("--common-policy")) {
     throw std::runtime_error("--common-policy requires --model common-markov");
+  }
+  if (args.timing_detail && args.model != "quote-slice") {
+    throw std::runtime_error("--timing-detail requires --model quote-slice");
   }
   if (seen.contains("--progress") &&
       (args.model != "common-markov" || args.progress.empty())) {
@@ -392,6 +403,9 @@ struct RunStatistics {
   std::size_t malformed_ddiv_rows{};
   std::vector<double> lattice_chain_microseconds;
   std::vector<double> escrow_chain_microseconds;
+  // Opt-in --timing-detail: graded chain latency is each chain's own fit wall
+  // (counters::fit_timing) instead of its surface wall divided by its expiries.
+  bool timing_detail{false};
 };
 
 void bump(Json &counts, const std::string &key, std::size_t count = 1U) {
@@ -532,6 +546,25 @@ void add_ladder_fields(const QuoteSurfaceSlice &slice, Json &entry) {
   entry["outside_quotes"] = slice.outside_quotes;
 }
 
+// --timing-detail: one chain's fit timing counters (exclusive wall per bucket).
+Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
+  namespace ft = counters::fit_timing;
+  Json al_by_bucket = Json::object();
+  for (unsigned b = 0; b < ft::kBucketCount; ++b) {
+    al_by_bucket[ft::kBucketNames[b]] = t.al_by_bucket[b];
+  }
+  return {{"wall_us", t.wall_us}, {"deam_us", t.deam_us}, {"solve_us", t.solve_us},
+          {"project_us", t.project_us}, {"price_us", t.price_us},
+          {"certify_us", t.certify_us}, {"calendar_us", t.calendar_us},
+          {"other_us", t.other_us}, {"al_price_calls", t.al_price_calls},
+          {"al_greeks_calls", t.al_greeks_calls},
+          {"certification_passes", t.certification_passes},
+          {"channel_solves", t.channel_solves}, {"jacobian_evals", t.jacobian_evals},
+          {"rung_attempts", t.rung_attempts}, {"calendar_pairs", t.calendar_pairs},
+          {"projections", t.projections}, {"iv_newton_iters", t.iv_newton_iters},
+          {"al_by_bucket", std::move(al_by_bucket)}};
+}
+
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
 // consistency is enforced inside fit_quote_surface on the final prices. A
@@ -565,12 +598,25 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       count_into(stats.per_profile_counts[profile.name], "attempted_chains");
       if (chain.market.dividend_pv > 0.0) ++stats.dividend_chains;
     }
+    std::optional<counters::fit_timing::SurfaceTrace> trace;
+    if (stats.timing_detail) trace.emplace();
     const auto start = Clock::now();
     const auto fitted = fit_quote_surface(expiries, profile.config, surface);
-    const double per_chain = std::chrono::duration<double, std::micro>(Clock::now() - start)
-        .count() / static_cast<double>(members.size());
+    const double surface_us =
+        std::chrono::duration<double, std::micro>(Clock::now() - start).count();
+    const double per_chain = surface_us / static_cast<double>(members.size());
+    const bool timed = trace && trace->chains.size() == members.size();
+    if (timed) {
+      std::uint64_t chain_us = 0;
+      for (const auto &t : trace->chains) chain_us += t.wall_us;
+      count_into(graded["timing_detail"], "surfaces");
+      graded["timing_detail"]["surface_wall_us"] =
+          graded["timing_detail"].value("surface_wall_us", 0.0) + surface_us;
+      count_into(graded["timing_detail"], "chain_wall_us", chain_us);
+    }
     for (std::size_t s = 0; s < members.size(); ++s) {
-      stats.chain_microseconds.push_back(per_chain);
+      stats.chain_microseconds.push_back(timed ? static_cast<double>(trace->chains[s].wall_us)
+                                               : per_chain);
       const auto &indices = chains.at(members[s]);
       if (!fitted) {
         ++stats.fit_failures[fitted.error().to_string()];
@@ -635,6 +681,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         count_into(graded["method_chains"][method], grade);
         count_into(graded["ladder_fallback_chains"][to_string(slice.ladder_fallback)], grade);
       }
+      if (timed) entry["timing"] = timing_json(trace->chains[s]);
       graded["slices"].push_back(std::move(entry));
       count_into(graded["chains"], grade);
       if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);
@@ -1318,6 +1365,21 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
     report["carry_status_counts"] = stats.carry_status_counts;
     report["carry_resolutions"] = stats.carry_resolutions;
   }
+  if (stats.timing_detail) {
+    report["chain_latency_scope"] = "--timing-detail: a graded chain's latency is its own fit "
+        "wall (sum of its exclusive fit_timing buckets; surface-level work such as term-prior "
+        "construction is in graded_stats.timing_detail surface_wall_us - chain_wall_us); a "
+        "static-path chain's latency is its own wall as without the flag";
+    report["timing_detail_semantics"] = "graded_stats.slices[].timing: exclusive wall per "
+        "bucket in microseconds (deam = American IV inversions of the quotes and the channel "
+        "floor/cap prices; solve = point curve solve or channel native/family solve; project = "
+        "project_in_channel; price = certification grid reprice; certify = AmericanPriceSlice "
+        "certificate, its repairs and row re-implication; calendar = calendar pair checks and "
+        "calendar repairs; other = the rest charged to the chain); wall_us is their sum; "
+        "al_price_calls / al_by_bucket / iv_newton_iters / al_greeks_calls are the fitting "
+        "thread's solve-ledger deltas (AL boundary solves, IV iterations, Greek bundles); "
+        "instrumented, timing unqualified unless the host is quiet";
+  }
   if (stats.graded) {
     report["admission"] = "graded";
     report["graded_stats"] = stats.graded_stats;
@@ -1486,6 +1548,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     RunStatistics stats;
+    stats.timing_detail = args.timing_detail;
     const auto predictions = run(args, rows, stats);
     write_predictions(args.output, rows, predictions, stats.graded);
     write_report(std::cout, args, rows.size(), stats);

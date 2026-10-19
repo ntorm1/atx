@@ -29,6 +29,9 @@
 // that the ON build is still representative (it is a diagnostic build, not the
 // baseline build).
 //
+// (The runtime-armed per-chain fit timing plane, `fit_timing`, is at the end of
+// this file; it is not behind this gate.)
+//
 // ## Usage
 //
 //   #include "fitting/counters.hpp"
@@ -1022,6 +1025,13 @@ inline void bump(Solve s, std::uint64_t n = 1) noexcept {
   cell.store(cell.load(std::memory_order_relaxed) + n, std::memory_order_relaxed);
 }
 
+// The CALLING thread's own tally of `s` (no lock, no merge): a relaxed load of the
+// thread's block. For per-thread deltas around work that stays on this thread
+// (fit_timing below); a fit that fans work out to other threads is not seen.
+[[nodiscard]] inline std::uint64_t this_thread(Solve s) noexcept {
+  return detail::t_reg.block.v[static_cast<unsigned>(s)].load(std::memory_order_relaxed);
+}
+
 // Merge retired + every live block into a plain-value Counts. Takes the registry
 // lock; call at a step/board boundary, never inside the priced fan-out.
 [[nodiscard]] inline Counts snapshot() noexcept {
@@ -1094,5 +1104,260 @@ private:
 };
 
 } // namespace ledger
+
+// ── Per-chain fit timing (L1 fit profile, 2026-10-18) — opt-in, slot-local ────
+//
+// Attributes one expiry chain's quote-slice fit wall and work to its stages:
+//   deam     — American IV inversions of the quotes (point admission mid IVs, channel
+//              bid/ask/mid IVs) and the channel floor/cap prices;
+//   solve    — the curve solve (point fit_slice_curve, channel native/family solve);
+//   project  — the channel projection (project_in_channel);
+//   price    — the certification grid reprice (two American prices per strike);
+//   certify  — the AmericanPriceSlice certificate, its repairs and row re-implication;
+//   calendar — calendar pair checks and calendar repairs;
+//   other    — everything else charged to the chain (preparation, containment, ...).
+// Buckets are EXCLUSIVE: a scope opened inside another charges its own time and the
+// outer bucket resumes on exit, so the seven buckets partition the chain's wall.
+//
+// Zero cost when off. This is the solve ledger's StepTrace/StepScope discipline, not
+// the compile-time gate (the tool must stay the shipping build): nothing is armed
+// by default, and a producer scope or count() is one thread_local pointer load and
+// a branch — no clock read, no atomic, no allocation, no change to any value the
+// fit computes. A surface fitter arms its per-expiry recorders only when its CALLER
+// armed a SurfaceTrace on the calling thread (quote-bench --timing-detail).
+//
+// Threading: one ChainRecorder per expiry, a per-expiry slot owned by the surface
+// fitter and written only by the thread fitting that expiry while a ChainScope for
+// it is open on that thread (t_chain names the slot). There is no shared mutable
+// accumulator, so a fan-out over expiries stays race-free. AL work is read from the
+// calling thread's own solve-ledger block, so work a fit hands to OTHER threads is
+// not counted (attribution runs use fit_workers = 1).
+namespace fit_timing {
+
+enum class Bucket : unsigned { Other = 0, Deam, Solve, Project, Price, Certify, Calendar, Count_ };
+
+inline constexpr unsigned kBucketCount = static_cast<unsigned>(Bucket::Count_);
+inline constexpr const char *kBucketNames[kBucketCount] = {
+    "other", "deam", "solve", "project", "price", "certify", "calendar"};
+
+static_assert(every_name_present(kBucketNames),
+              "fit_timing::kBucketNames is short: append the new Bucket's name in enum order");
+
+// One chain's counters (the interface later lanes read by name).
+struct FitTimingCounters {
+  std::uint32_t al_price_calls{0};       // AL boundary solves on the fitting thread (every AL
+                                         // price, including those inside American IV inversions)
+  std::uint32_t al_greeks_calls{0};      // AL full-Greek bundles (any route) on that thread
+  std::uint32_t certification_passes{0}; // certify_and_serve runs (each a full American reprice)
+  std::uint32_t channel_solves{0};       // channel objective solves started (native or family)
+  std::uint32_t jacobian_evals{0};       // channel solver iterations of the solves that returned
+                                         // (native: Newton steps; family: refits of the family)
+  std::uint32_t rung_attempts{0};        // per-expiry fits the surface fitter ran for the chain
+  std::uint32_t calendar_pairs{0};       // check_american_calendar pairs charged to the chain
+  std::uint32_t projections{0};          // project_in_channel calls
+  std::uint32_t iv_newton_iters{0};      // American IV inversion iterations (solve ledger)
+  std::uint64_t wall_us{0};              // the sum of the seven exclusive buckets below
+  std::uint64_t deam_us{0};
+  std::uint64_t solve_us{0};
+  std::uint64_t project_us{0};
+  std::uint64_t price_us{0};
+  std::uint64_t certify_us{0};
+  std::uint64_t calendar_us{0};
+  std::uint64_t other_us{0};
+  std::array<std::uint32_t, kBucketCount> al_by_bucket{}; // al_price_calls split by Bucket
+};
+
+class ChainRecorder;
+class SurfaceTrace;
+
+namespace detail {
+inline thread_local ChainRecorder *t_chain{nullptr};   // the chain this thread is fitting
+inline thread_local SurfaceTrace *t_surface{nullptr};  // armed by a fit_quote_surface caller
+
+[[nodiscard]] inline std::uint32_t saturate(std::uint64_t n) noexcept {
+  return n > std::numeric_limits<std::uint32_t>::max() ? std::numeric_limits<std::uint32_t>::max()
+                                                       : static_cast<std::uint32_t>(n);
+}
+} // namespace detail
+
+// One expiry's recorder. Event counts accumulate in `counts`; wall and AL work are
+// charged to the active bucket at every bucket or chain switch.
+class ChainRecorder {
+public:
+  FitTimingCounters counts{};
+
+  // Starts charging (the chain becomes current on this thread).
+  void resume() noexcept {
+    mark_ = Clock::now();
+    al_mark_ = ledger::this_thread(ledger::Solve::AlBoundarySolves);
+    iv_mark_ = ledger::this_thread(ledger::Solve::IvNewtonIters);
+    greeks_mark_ = greeks_now();
+  }
+
+  // Charges the elapsed interval to the active bucket and stops charging.
+  void pause() noexcept { charge(); }
+
+  // Charges the elapsed interval to the active bucket, then makes `b` active.
+  [[nodiscard]] Bucket switch_to(Bucket b) noexcept {
+    charge();
+    const Bucket previous = active_;
+    active_ = b;
+    return previous;
+  }
+
+  // The counters with wall (microseconds, rounded per bucket) and AL work filled in.
+  [[nodiscard]] FitTimingCounters result() const noexcept {
+    FitTimingCounters out = counts;
+    std::array<std::uint64_t, kBucketCount> us{};
+    std::uint64_t al_total = 0;
+    out.wall_us = 0;
+    for (unsigned b = 0; b < kBucketCount; ++b) {
+      us[b] = (ns_[b] + 500u) / 1000u;
+      out.wall_us += us[b];
+      out.al_by_bucket[b] = detail::saturate(al_[b]);
+      al_total += al_[b];
+    }
+    out.other_us = us[static_cast<unsigned>(Bucket::Other)];
+    out.deam_us = us[static_cast<unsigned>(Bucket::Deam)];
+    out.solve_us = us[static_cast<unsigned>(Bucket::Solve)];
+    out.project_us = us[static_cast<unsigned>(Bucket::Project)];
+    out.price_us = us[static_cast<unsigned>(Bucket::Price)];
+    out.certify_us = us[static_cast<unsigned>(Bucket::Certify)];
+    out.calendar_us = us[static_cast<unsigned>(Bucket::Calendar)];
+    out.al_price_calls = detail::saturate(al_total);
+    out.iv_newton_iters = detail::saturate(iv_iters_);
+    out.al_greeks_calls = detail::saturate(greeks_);
+    return out;
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+
+  [[nodiscard]] static std::uint64_t greeks_now() noexcept {
+    return ledger::this_thread(ledger::Solve::GreeksBundlesFd) +
+           ledger::this_thread(ledger::Solve::GreeksBundlesAnalytic) +
+           ledger::this_thread(ledger::Solve::GreeksBundlesAdjoint);
+  }
+
+  void charge() noexcept {
+    const auto now = Clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark_).count();
+    ns_[static_cast<unsigned>(active_)] += elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0u;
+    mark_ = now;
+    const std::uint64_t al = ledger::this_thread(ledger::Solve::AlBoundarySolves);
+    const std::uint64_t iv = ledger::this_thread(ledger::Solve::IvNewtonIters);
+    const std::uint64_t greeks = greeks_now();
+    // Saturating deltas: a ledger::reset() (test seam) between two marks reads as 0.
+    const auto delta = [](std::uint64_t after, std::uint64_t before) noexcept {
+      return after >= before ? after - before : std::uint64_t{0};
+    };
+    al_[static_cast<unsigned>(active_)] += delta(al, al_mark_);
+    iv_iters_ += delta(iv, iv_mark_);
+    greeks_ += delta(greeks, greeks_mark_);
+    al_mark_ = al;
+    iv_mark_ = iv;
+    greeks_mark_ = greeks;
+  }
+
+  std::array<std::uint64_t, kBucketCount> ns_{};
+  std::array<std::uint64_t, kBucketCount> al_{};
+  std::uint64_t iv_iters_{0};
+  std::uint64_t greeks_{0};
+  Bucket active_{Bucket::Other};
+  Clock::time_point mark_{};
+  std::uint64_t al_mark_{0};
+  std::uint64_t iv_mark_{0};
+  std::uint64_t greeks_mark_{0};
+};
+
+// Makes `rec` the chain this thread is fitting for the scope's lifetime and charges
+// the scope's wall to it. Null `rec` (timing off) is one branch. Re-entering the
+// chain that is already current only counts (the outer scope keeps timing it); a
+// different current chain is paused and resumed around this one.
+class ChainScope {
+public:
+  explicit ChainScope(ChainRecorder *rec, std::uint32_t rungs = 0) noexcept : slot_(rec) {
+    if (rec == nullptr) return;
+    rec->counts.rung_attempts += rungs;
+    prev_ = detail::t_chain;
+    if (prev_ == rec) return;
+    if (prev_ != nullptr) prev_->pause();
+    detail::t_chain = rec;
+    rec->resume();
+    owner_ = true;
+  }
+
+  ~ChainScope() {
+    if (!owner_) return;
+    slot_->pause();
+    detail::t_chain = prev_;
+    if (prev_ != nullptr) prev_->resume();
+  }
+
+  ChainScope(const ChainScope &) = delete;
+  ChainScope &operator=(const ChainScope &) = delete;
+  ChainScope(ChainScope &&) = delete;
+  ChainScope &operator=(ChainScope &&) = delete;
+
+  // One more per-expiry fit attempt charged to the chain.
+  void rung() noexcept {
+    if (slot_ != nullptr) ++slot_->counts.rung_attempts;
+  }
+
+private:
+  ChainRecorder *slot_;
+  ChainRecorder *prev_{nullptr};
+  bool owner_{false};
+};
+
+// Charges its lifetime to bucket `b` of the chain current on this thread (if any).
+class BucketScope {
+public:
+  explicit BucketScope(Bucket b) noexcept : rec_(detail::t_chain) {
+    if (rec_ != nullptr) prev_ = rec_->switch_to(b);
+  }
+
+  ~BucketScope() {
+    if (rec_ != nullptr) static_cast<void>(rec_->switch_to(prev_));
+  }
+
+  BucketScope(const BucketScope &) = delete;
+  BucketScope &operator=(const BucketScope &) = delete;
+  BucketScope(BucketScope &&) = delete;
+  BucketScope &operator=(BucketScope &&) = delete;
+
+private:
+  ChainRecorder *rec_;
+  Bucket prev_{Bucket::Other};
+};
+
+// Adds `n` to one event count of the chain current on this thread (if any).
+inline void count(std::uint32_t FitTimingCounters::*field, std::uint32_t n = 1) noexcept {
+  if (ChainRecorder *rec = detail::t_chain) rec->counts.*field += n;
+}
+
+// Armed by a caller on its own thread around fit_quote_surface: the fitter records
+// one FitTimingCounters per expiry (input order) into `chains` when it returns Ok.
+// RAII; nesting restores the prior trace.
+class SurfaceTrace {
+public:
+  SurfaceTrace() noexcept : prev_(detail::t_surface) { detail::t_surface = this; }
+  ~SurfaceTrace() { detail::t_surface = prev_; }
+
+  SurfaceTrace(const SurfaceTrace &) = delete;
+  SurfaceTrace &operator=(const SurfaceTrace &) = delete;
+  SurfaceTrace(SurfaceTrace &&) = delete;
+  SurfaceTrace &operator=(SurfaceTrace &&) = delete;
+
+  std::vector<FitTimingCounters> chains;
+
+private:
+  SurfaceTrace *prev_;
+};
+
+// The trace armed on the calling thread, or null (timing off).
+[[nodiscard]] inline SurfaceTrace *armed_surface() noexcept { return detail::t_surface; }
+
+} // namespace fit_timing
 
 } // namespace atx::vol::counters

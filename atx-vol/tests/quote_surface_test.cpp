@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "fitting/counters.hpp"
 
 namespace atx::vol {
 namespace {
@@ -1953,6 +1955,133 @@ TEST(QuoteSurfaceLadder, AnUnrepairedSliceKeepsTheCalendarSlotOverAChannelRepair
   EXPECT_EQ(dropped.refusal, "calendar_arbitrage");
   EXPECT_TRUE(dropped.channel_refit);
   EXPECT_EQ(dropped.fit.diagnostics.repair.outcome, QuoteSliceRepairOutcome::Applied);
+}
+
+// ── Opt-in per-chain fit timing (counters::fit_timing, L1 fit profile) ──────────
+
+namespace ft = counters::fit_timing;
+
+[[nodiscard]] std::uint32_t al_in(const ft::FitTimingCounters &t, ft::Bucket b) {
+  return t.al_by_bucket[static_cast<unsigned>(b)];
+}
+
+// The buckets partition the chain wall and the AL work.
+void expect_partitioned(const ft::FitTimingCounters &t) {
+  EXPECT_EQ(t.wall_us, t.deam_us + t.solve_us + t.project_us + t.price_us + t.certify_us +
+                           t.calendar_us + t.other_us);
+  std::uint64_t al = 0;
+  for (const std::uint32_t n : t.al_by_bucket) al += n;
+  EXPECT_EQ(al, t.al_price_calls);
+}
+
+void expect_same_surface(const std::vector<QuoteSurfaceSlice> &a,
+                         const std::vector<QuoteSurfaceSlice> &b) {
+  ASSERT_EQ(a.size(), b.size());
+  for (std::size_t e = 0; e < a.size(); ++e) {
+    EXPECT_EQ(a[e].grade, b[e].grade) << e;
+    EXPECT_EQ(a[e].refusal, b[e].refusal) << e;
+    EXPECT_EQ(a[e].method, b[e].method) << e;
+    expect_same_prices(a[e].fit, b[e].fit);
+    for (std::size_t i = 0; i < a[e].fit.rows.size() && i < b[e].fit.rows.size(); ++i) {
+      EXPECT_EQ(a[e].fit.rows[i].evaluation_status, b[e].fit.rows[i].evaluation_status) << i;
+    }
+  }
+}
+
+void spin_for(std::chrono::microseconds duration) {
+  const auto until = std::chrono::steady_clock::now() + duration;
+  for (std::uint64_t guard = 0; guard < (1ull << 40) && std::chrono::steady_clock::now() < until;
+       ++guard) {
+  }
+}
+
+TEST(QuoteSurfaceTiming, ArmedTraceCountsEachPointServedExpiryWithoutChangingTheFit) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  ASSERT_EQ(ft::armed_surface(), nullptr); // off by default
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
+  std::vector<ft::FitTimingCounters> counted;
+  {
+    ft::SurfaceTrace trace;
+    ASSERT_EQ(ft::armed_surface(), &trace);
+    const auto on = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+    ASSERT_TRUE(on) << on.error().to_string();
+    expect_same_surface(*off, *on);
+    counted = trace.chains;
+  }
+  EXPECT_EQ(ft::armed_surface(), nullptr);
+  ASSERT_EQ(counted.size(), chains.size());
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    const ft::FitTimingCounters &t = counted[e];
+    ASSERT_EQ((*off)[e].grade, QuoteSliceGrade::A) << e;
+    EXPECT_EQ(t.rung_attempts, 1u) << e;        // the point pass only
+    EXPECT_EQ(t.certification_passes, 1u) << e; // one American reprice + certificate
+    EXPECT_EQ(t.channel_solves, 0u) << e;
+    EXPECT_EQ(t.jacobian_evals, 0u) << e;
+    EXPECT_EQ(t.projections, 0u) << e;
+    // Calendar order is the nearer maturity first: expiry e is checked against e others.
+    EXPECT_EQ(t.calendar_pairs, e) << e;
+    EXPECT_GT(t.iv_newton_iters, 0u) << e;                // mid IVs of the admitted quotes
+    EXPECT_GT(al_in(t, ft::Bucket::Price), 0u) << e;      // the certification grid reprice
+    EXPECT_EQ(al_in(t, ft::Bucket::Solve), 0u) << e;      // the curve solve prices no American
+    EXPECT_EQ(al_in(t, ft::Bucket::Calendar), 0u) << e;   // pair checks read certified prices
+    EXPECT_EQ(t.al_greeks_calls, 0u) << e;
+    expect_partitioned(t);
+  }
+}
+
+TEST(QuoteSurfaceTiming, KnotFirstLadderChargesBothPassARungsAndTheKnotChannelSolve) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, knot_first());
+  ASSERT_TRUE(off) << off.error().to_string();
+  ft::SurfaceTrace trace;
+  const auto on = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, knot_first());
+  ASSERT_TRUE(on) << on.error().to_string();
+  expect_same_surface(*off, *on);
+  ASSERT_EQ(trace.chains.size(), chains.size());
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    const ft::FitTimingCounters &t = trace.chains[e];
+    ASSERT_EQ((*on)[e].method, QuoteSurfaceMethod::Channel) << e;
+    EXPECT_EQ(t.rung_attempts, 2u) << e;        // knot fit + point fit, eagerly
+    EXPECT_EQ(t.channel_solves, 1u) << e;       // the knot fit's channel solve
+    EXPECT_GE(t.jacobian_evals, 1u) << e;       // its Newton steps
+    EXPECT_EQ(t.certification_passes, 2u) << e; // each rung certifies once
+    EXPECT_EQ(t.calendar_pairs, e) << e;
+    EXPECT_EQ(al_in(t, ft::Bucket::Solve), 0u) << e; // the channel solve is in vol space
+    EXPECT_GT(al_in(t, ft::Bucket::Deam), 0u) << e;  // bid/ask/mid IVs and floor/cap prices
+    expect_partitioned(t);
+  }
+}
+
+TEST(QuoteSurfaceTiming, BucketsAreExclusiveAndAChainScopeIsAnOptInNoOp) {
+  ft::ChainRecorder rec;
+  {
+    const ft::ChainScope off(nullptr, 5);
+    const ft::BucketScope nothing(ft::Bucket::Deam); // no chain current: no-op
+    ft::count(&ft::FitTimingCounters::projections);
+  }
+  {
+    const ft::ChainScope chain(&rec, 1);
+    const ft::BucketScope deam(ft::Bucket::Deam);
+    spin_for(std::chrono::microseconds(2000));
+    {
+      const ft::BucketScope price(ft::Bucket::Price);
+      ft::count(&ft::FitTimingCounters::projections, 3);
+      const ft::ChainScope again(&rec, 1); // re-entering the current chain only counts
+      spin_for(std::chrono::microseconds(3000));
+    }
+    spin_for(std::chrono::microseconds(1000));
+  }
+  const ft::FitTimingCounters t = rec.result();
+  EXPECT_EQ(t.rung_attempts, 2u);
+  EXPECT_EQ(t.projections, 3u);
+  EXPECT_GE(t.price_us, 3000u);
+  EXPECT_GE(t.deam_us, 3000u);        // 2 ms before and 1 ms after the nested price scope
+  EXPECT_LT(t.deam_us, t.wall_us);    // ...and never the nested 3 ms
+  EXPECT_GE(t.wall_us, 6000u);
+  expect_partitioned(t);
 }
 
 } // namespace
