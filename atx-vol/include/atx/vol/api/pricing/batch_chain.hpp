@@ -64,13 +64,14 @@
 //      Andersen-Lake map is not monotone in sigma inside the kernel's own exercise
 //      region close to the zero-vol value (american_iv.hpp, "Typed entry point with
 //      the opt-in non-monotone refusal"), so a target there can have several roots
-//      and the two engines return different ones. With the flag, a row is
-//      NonMonotoneRegion (a) when a resolved chord of two evaluated points has a
-//      slope below -vega_floor * K (the slope floor: PerContract's verification
-//      chords, Lockstep's iterate chords), or (b) when its Ok vol satisfies
-//      al_non_monotone_region (target within al_non_monotone_gate of the zero-vol
-//      value and the spot in the kernel's exercise region at that vol: one more
-//      boundary solve, inside that band only).
+//      and the two engines return different ones. With the flag, a row whose target
+//      lies within al_non_monotone_gate of its zero-vol value is NonMonotoneRegion
+//      (a) when a resolved chord of two evaluated points has a slope below
+//      -vega_floor * K (the slope floor: PerContract's verification chords,
+//      Lockstep's iterate chords), or (b) when its Ok vol satisfies
+//      al_non_monotone_region (the spot in the kernel's exercise region at that vol:
+//      one more boundary solve, inside the band only). Targets above the band are
+//      never refused by rule 3.
 //
 // ## Status, errors, allocation
 //

@@ -988,6 +988,239 @@ TEST(ChainBatchIv, Dev200TsmSliceRefusalsAgreeAcrossRoutes) {
   EXPECT_EQ(disagree, 0u);
 }
 
+// ── Implied vol: the non-monotone Andersen-Lake region (L1c, 2026-10-19) ─────
+//
+// Rule 3 of "One implied-vol refusal rule" (opt-in ChainIvOptions::refuse_non_monotone)
+// and the deferred batch-pricing minor N2 (PerContract's 4-step polish runs out on
+// long-dated deep-ITM puts that Lockstep solves). Region map and gate constants:
+// sprints/2026-10-18-L1c-al-nonmonotone-sprint.md.
+
+// Three long-dated deep-ITM put expiries: the ledgered contract (LEDGER 2026-10-17
+// trap: S=100 K=128.989 T=2 r=.05 q=.015) and the scalar trap line's K=140 T=5 r=.05
+// q=0 and K=130 T=5 r=q=.05. Rows 0-2: one ambiguous target (zero-vol value + 5e-6,
+// three roots: ~0.091 and ~0.105 in the kernel's exercise region, ~0.184 outside it)
+// from three seeds; rows 3-5: targets AL(0.14), AL(0.2), AL(0.1); row 6: AL(0.3).
+struct NonMonotoneChain {
+  Chain c;
+  std::vector<double> target;
+};
+
+[[nodiscard]] NonMonotoneChain non_monotone_chain() {
+  NonMonotoneChain n;
+  Chain &c = n.c;
+  c.spot = 100.0;
+  c.T = {2.0, 5.0, 5.0};
+  c.rate = {0.05, 0.05, 0.05};
+  c.carry = {0.015, 0.0, 0.05};
+  c.div_pv = {0.0, 0.0, 0.0};
+  const auto add = [&](std::uint32_t e, double K, double seed, double target) {
+    c.strike.push_back(K);
+    c.side.push_back(Side::Put);
+    c.sigma.push_back(seed);
+    c.expiry.push_back(e);
+    n.target.push_back(target);
+  };
+  const auto al = [&](std::uint32_t e, double K, double sig) {
+    return al_ref(c.spot, K, c.T[e], sig, c.rate[e], c.carry[e], Side::Put);
+  };
+  const double bump = zero_vol_ref(100.0, 128.989, 2.0, 0.05, 0.015, Side::Put) + 5.0e-6;
+  add(0u, 128.989, 0.30, bump);
+  add(0u, 128.989, 0.16, bump);
+  add(0u, 128.989, 0.15, bump);
+  add(0u, 128.989, 0.30, al(0u, 128.989, 0.14));
+  add(1u, 140.0, 0.30, al(1u, 140.0, 0.2));
+  add(2u, 130.0, 0.30, al(2u, 130.0, 0.1));
+  add(0u, 128.989, 0.30, al(0u, 128.989, 0.3));
+  return n;
+}
+
+[[nodiscard]] ChainIvOptions refusing(ChainIvRoute route) {
+  ChainIvOptions o = iv_route(route);
+  o.refuse_non_monotone = true;
+  return o;
+}
+
+[[nodiscard]] bool is_cold_root(const Chain &c, std::size_t i, double target, double x) {
+  const std::uint32_t e = c.expiry[i];
+  const double p = al_ref(c.spot, c.strike[i], c.T[e], x, c.rate[e], c.carry[e], c.side[i]);
+  return std::abs(p - target) <= 1.0e-10 * std::max(1.0, target) + 1.0e-11;
+}
+
+// Flag on vs flag off: every row is bit-identical except the rows the flag turns
+// into NonMonotoneRegion, and those had a target inside al_non_monotone_gate.
+// Returns the number of refused rows.
+[[nodiscard]] std::size_t expect_flag_only_refuses(const Chain &c, std::span<const double> target,
+                                                   ChainIvRoute route) {
+  const IvOuts off = run_iv(c, target, iv_route(route));
+  const IvOuts on = run_iv(c, target, refusing(route));
+  std::size_t refused = 0;
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    EXPECT_NE(off.status[i], ChainRowStatus::NonMonotoneRegion) << i;
+    if (on.status[i] == ChainRowStatus::NonMonotoneRegion) {
+      ++refused;
+      EXPECT_TRUE(std::isnan(on.iv[i])) << i;
+      double q = 0.0;
+      EXPECT_TRUE(row_valid(c, i, &q));
+      const std::uint32_t e = c.expiry[i];
+      const double zv = zero_vol_ref(c.spot, c.strike[i], c.T[e], c.rate[e], q, c.side[i]);
+      EXPECT_LE(target[i] - zv, al_non_monotone_gate(c.strike[i], c.T[e], std::nullopt))
+          << "route " << static_cast<int>(route) << " i=" << i;
+      continue;
+    }
+    EXPECT_EQ(on.status[i], off.status[i]) << "route " << static_cast<int>(route) << " i=" << i;
+    EXPECT_TRUE(same_bits(std::span<const double>(&on.iv[i], 1),
+                          std::span<const double>(&off.iv[i], 1)))
+        << "route " << static_cast<int>(route) << " i=" << i;
+  }
+  return refused;
+}
+
+// N2 (batch-pricing re-review MINOR-2, untested until now): PerContract verifies
+// american_implied_vol's answer on the cold map and polishes it with at most 4 secant
+// steps; on these long-dated deep-ITM puts the scalar stops 0.02 vol off (row 4:
+// 0.219 for 0.2) on a map that is flat-then-steep there, the polish runs out and the
+// row is NoConvergence, while Lockstep's bracket walks to a root of the cold map.
+TEST(ChainBatchIv, PerContractPolishRunsOutWhereLockstepSolves) {
+  const NonMonotoneChain n = non_monotone_chain();
+  const IvOuts pc = run_iv(n.c, n.target, iv_route(ChainIvRoute::PerContract));
+  const IvOuts ls = run_iv(n.c, n.target, iv_route(ChainIvRoute::Lockstep));
+  for (const std::size_t i : {std::size_t{3}, std::size_t{4}}) {
+    EXPECT_EQ(pc.status[i], ChainRowStatus::NoConvergence) << i;
+    EXPECT_TRUE(std::isnan(pc.iv[i])) << i;
+    ASSERT_EQ(ls.status[i], ChainRowStatus::Ok) << i;
+    EXPECT_TRUE(is_cold_root(n.c, i, n.target[i], ls.iv[i])) << i;
+  }
+  // Row 4 is AL(0.2): Lockstep returns the generating vol. Row 3 is AL(0.14), the peak
+  // of the ledgered dip: Lockstep returns the root past the exercise edge instead.
+  EXPECT_NEAR(ls.iv[4], 0.2, 1.0e-6);
+  EXPECT_NEAR(ls.iv[3], 0.1839973, 1.0e-6);
+  // The scalar answer PerContract starts its polish from (warm-started at the seed).
+  const Result<double> x = american_implied_vol(n.target[4], 100.0, 140.0, 5.0, 0.05, 0.0,
+                                                Side::Put, AmericanMethod::AndersenLake, 1.0e-7,
+                                                64, std::nullopt, nullptr, 0.3, 0.0);
+  ASSERT_TRUE(x.has_value());
+  EXPECT_GT(*x - 0.2, 0.01);
+  EXPECT_FALSE(is_cold_root(n.c, 4, n.target[4], *x));
+}
+
+// Rule 3 surfaces on both routes, through both of its triggers: an Ok vol inside
+// al_non_monotone_region (PerContract row 0, Lockstep row 4) and a resolved falling
+// chord (row 1: PerContract's verification chord, Lockstep's iterate chord; the
+// Lockstep flag-off answer there is outside the exercise region, so only the chord
+// can refuse it). Flag off, the ambiguous rows 0-2 return three different Ok roots
+// across routes and seeds; that is what the flag refuses.
+TEST(ChainBatchIv, NonMonotoneRegionSurfacesOnBothRoutesWhenOptedIn) {
+  using St = ChainRowStatus;
+  const NonMonotoneChain n = non_monotone_chain();
+  const IvOuts pc_off = run_iv(n.c, n.target, iv_route(ChainIvRoute::PerContract));
+  const IvOuts ls_off = run_iv(n.c, n.target, iv_route(ChainIvRoute::Lockstep));
+  const IvOuts pc_on = run_iv(n.c, n.target, refusing(ChainIvRoute::PerContract));
+  const IvOuts ls_on = run_iv(n.c, n.target, refusing(ChainIvRoute::Lockstep));
+  const std::vector<St> want_pc_off{St::Ok,        St::VegaFloor, St::Ok, St::NoConvergence,
+                                    St::NoConvergence, St::VegaFloor, St::Ok};
+  const std::vector<St> want_ls_off{St::Ok, St::Ok, St::Ok, St::Ok, St::Ok, St::Ok, St::Ok};
+  const std::vector<St> want_pc_on{St::NonMonotoneRegion, St::NonMonotoneRegion,
+                                   St::NonMonotoneRegion, St::NoConvergence,
+                                   St::NoConvergence,     St::NonMonotoneRegion,
+                                   St::Ok};
+  const std::vector<St> want_ls_on{St::Ok,
+                                   St::NonMonotoneRegion,
+                                   St::NonMonotoneRegion,
+                                   St::Ok,
+                                   St::NonMonotoneRegion,
+                                   St::NonMonotoneRegion,
+                                   St::Ok};
+  EXPECT_EQ(pc_off.status, want_pc_off);
+  EXPECT_EQ(ls_off.status, want_ls_off);
+  EXPECT_EQ(pc_on.status, want_pc_on);
+  EXPECT_EQ(ls_on.status, want_ls_on);
+  // Flag off, the ambiguous target has Ok answers ~0.079 vol apart; all are roots.
+  EXPECT_NEAR(pc_off.iv[0], 0.1046251, 1.0e-6);
+  EXPECT_NEAR(ls_off.iv[0], 0.1839836, 1.0e-6);
+  for (std::size_t i = 0; i < n.c.size(); ++i) {
+    if (ls_off.status[i] == St::Ok) {
+      EXPECT_TRUE(is_cold_root(n.c, i, n.target[i], ls_off.iv[i])) << i;
+    }
+  }
+  // Rows the flag keeps are bit-identical (rows 0 and 3 on Lockstep: roots past the
+  // exercise edge; row 6: well posed).
+  EXPECT_TRUE(same_bits(std::span<const double>(&ls_on.iv[0], 1),
+                        std::span<const double>(&ls_off.iv[0], 1)));
+  EXPECT_TRUE(same_bits(std::span<const double>(&ls_on.iv[3], 1),
+                        std::span<const double>(&ls_off.iv[3], 1)));
+  EXPECT_NEAR(pc_on.iv[6], 0.3, 1.0e-6);
+  EXPECT_EQ(expect_flag_only_refuses(n.c, n.target, ChainIvRoute::PerContract), 4u);
+  EXPECT_EQ(expect_flag_only_refuses(n.c, n.target, ChainIvRoute::Lockstep), 4u);
+}
+
+// Well-posed chains (the 36-row test chain at two vol bumps) never meet the region:
+// with the flag on both routes are bit-identical to the flag off. Targets near the
+// zero-vol value of the same chain (its T = 2 deep-ITM puts are the ledgered
+// contract's neighbours) only ever change rows into NonMonotoneRegion, inside the gate.
+TEST(ChainBatchIv, NonMonotoneFlagOnlyEverTurnsRowsIntoRefusals) {
+  const Chain c = make_chain(9);
+  for (const double bump : {0.97, 1.05}) {
+    const std::vector<double> t = targets_at(c, bump);
+    for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+      EXPECT_EQ(expect_flag_only_refuses(c, t, route), 0u)
+          << "bump " << bump << " route " << static_cast<int>(route);
+    }
+  }
+  std::size_t refused_pc = 0;
+  std::size_t refused_ls = 0;
+  for (const double f : {0.01, 0.1, 0.5, 2.0}) {
+    std::vector<double> t(c.size(), kNaN);
+    for (std::size_t i = 0; i < c.size(); ++i) {
+      double q = 0.0;
+      ASSERT_TRUE(row_valid(c, i, &q));
+      const std::uint32_t e = c.expiry[i];
+      const double zv = zero_vol_ref(c.spot, c.strike[i], c.T[e], c.rate[e], q, c.side[i]);
+      t[i] = zv + f * al_non_monotone_gate(c.strike[i], c.T[e], std::nullopt);
+    }
+    refused_pc += expect_flag_only_refuses(c, t, ChainIvRoute::PerContract);
+    refused_ls += expect_flag_only_refuses(c, t, ChainIvRoute::Lockstep);
+  }
+  std::printf("[non-monotone chain] near-zero-vol targets refused: PerContract %zu, Lockstep "
+              "%zu of %zu\n",
+              refused_pc, refused_ls, 4u * c.size());
+  EXPECT_GT(refused_pc, 0u);
+  EXPECT_GT(refused_ls, 0u);
+}
+
+// dev200 kernel-input rows 9100-9118 (calls, S = 152.32, T = 0.254, K 60-75, sigma
+// 0.83-0.93, seed 0.3; targets 0.43-0.63 USD above the zero-vol value, ~1,000x the
+// gate). Lockstep's first iterates pass through the low-vol dip of these deep-ITM
+// calls on the way to the one root, so an ungated falling chord refused K = 68-74
+// (resume 2026-10-19 count run). Rule 3 never refuses a target above the band.
+TEST(ChainBatchIv, NonMonotoneFlagNeverRefusesTargetsAboveTheBand) {
+  const double S = 152.31999969482422;
+  const double T = 0.25411561131477356;
+  const double r = 0.046193607151508331;
+  const double q = 0.031131176216856259;
+  const std::vector<double> strikes{60.0, 65.0, 68.0, 69.0, 70.0, 71.0, 72.0, 73.0, 74.0, 75.0};
+  const std::vector<double> sig{0.93070864145646215, 0.89576923672585029, 0.87547672771706431,
+                                0.86881270020774737, 0.86219580086613001, 0.85562436194740155,
+                                0.84909677596540301, 0.84261149239938049, 0.83616701462566434,
+                                0.82976189705743242};
+  const Chain c = one_expiry(S, T, r, q, 0.0, strikes,
+                             std::vector<Side>(strikes.size(), Side::Call), 0.3);
+  std::vector<double> t(c.size(), kNaN);
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    t[i] = al_ref(S, strikes[i], T, sig[i], r, q, Side::Call);
+    const double zv = zero_vol_ref(S, strikes[i], T, r, q, Side::Call);
+    ASSERT_GT(t[i] - zv, 100.0 * al_non_monotone_gate(strikes[i], T, std::nullopt)) << i;
+  }
+  for (const ChainIvRoute route : {ChainIvRoute::PerContract, ChainIvRoute::Lockstep}) {
+    EXPECT_EQ(expect_flag_only_refuses(c, t, route), 0u) << static_cast<int>(route);
+    const IvOuts on = run_iv(c, t, refusing(route));
+    for (std::size_t i = 0; i < c.size(); ++i) {
+      ASSERT_EQ(on.status[i], ChainRowStatus::Ok) << "route " << static_cast<int>(route)
+                                                  << " K=" << strikes[i];
+      EXPECT_NEAR(on.iv[i], sig[i], 1.0e-6) << "route " << static_cast<int>(route) << " i=" << i;
+    }
+  }
+}
+
 // ── Workspace and allocation ─────────────────────────────────────────────────
 
 TEST(ChainBatchWorkspace, ReservesGrowsAndNeverShrinks) {

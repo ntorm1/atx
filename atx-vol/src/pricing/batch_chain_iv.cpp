@@ -13,10 +13,14 @@
 // PerContract runs american_implied_vol and then verifies its answer on the cold map:
 // a flat slope there is VegaFloor, and a root that misses the rule gets at most
 // kPolishSteps secant steps on the same map before it is NoConvergence.
-// Opt-in rule 3 (ChainIvOptions::refuse_non_monotone, L1c 2026-10-18): a resolved
-// chord falling faster than vega_floor * K, or an Ok vol inside al_non_monotone_region,
-// is NonMonotoneRegion. Every check below reads the flag first, so with it off the
-// routes evaluate exactly what they did before.
+// Opt-in rule 3 (ChainIvOptions::refuse_non_monotone, L1c 2026-10-18): a row whose
+// target lies within al_non_monotone_gate of its zero-vol value is NonMonotoneRegion
+// when a resolved chord falls faster than vega_floor * K, or when its Ok vol is inside
+// al_non_monotone_region. Every check below reads the flag first, so with it off the
+// routes evaluate exactly what they did before. (Resume 2026-10-19: the falling chord
+// is gated on the band too. Ungated, Lockstep refused 7 dev200 calls whose targets sat
+// 0.43-0.63 USD above the zero-vol value, ~1,000x the gate, on a chord its first
+// iterates took through the low-vol dip on the way to the one root.)
 
 #include <algorithm>
 #include <array>
@@ -172,11 +176,24 @@ void fail(const IvCall &c, std::size_t i, ChainRowStatus st) noexcept {
          (std::abs(f) <= c.o.sigma_tol * slope || collapsed);
 }
 
-// Rule 3 (opt-in) on an evaluated chord: a resolved slope below -vega_min proves the
-// cold map is not monotone in sigma here.
-[[nodiscard]] bool falling_chord(const IvCall &c, double slope, double vega_min,
+// Rule 3 (opt-in): row i's target lies within al_non_monotone_gate of its zero-vol
+// value, the only band where the map measured more than one root (a NaN bound is
+// outside it).
+[[nodiscard]] bool target_in_non_monotone_band(const IvCall &c, std::size_t i) noexcept {
+  const std::uint32_t e = c.contracts.expiry[i];
+  const double K = c.contracts.strike[i];
+  const double T = c.expiries.T[e];
+  const double zero_vol =
+      zero_vol_value(c.spot, K, T, c.expiries.rate[e], c.w.q_eff[e], c.contracts.side[i]);
+  return c.target[i] - zero_vol <= al_non_monotone_gate(K, T, c.o.al_opts);
+}
+
+// Rule 3 (opt-in) on an evaluated chord of row i: a resolved slope below -vega_min
+// proves the cold map is not monotone in sigma here; inside the band it is refused.
+[[nodiscard]] bool falling_chord(const IvCall &c, std::size_t i, double slope, double vega_min,
                                  bool resolved) noexcept {
-  return c.o.refuse_non_monotone && resolved && slope < -vega_min;
+  return c.o.refuse_non_monotone && resolved && slope < -vega_min &&
+         target_in_non_monotone_band(c, i);
 }
 
 // Rule 3 (opt-in) on an Ok vol x of row i (american_iv.hpp al_non_monotone_region).
@@ -218,8 +235,8 @@ void fail(const IvCall &c, std::size_t i, ChainRowStatus st) noexcept {
   // there (the scalar stopped inside the flat exercise interval, review 2026-10-17
   // M2), so the answer identifies no vol.
   if (!(slope > vega_min)) {
-    return falling_chord(c, slope, vega_min, true) ? ChainRowStatus::NonMonotoneRegion
-                                                   : ChainRowStatus::VegaFloor;
+    return falling_chord(c, i, slope, vega_min, true) ? ChainRowStatus::NonMonotoneRegion
+                                                      : ChainRowStatus::VegaFloor;
   }
   for (unsigned k = 0;; ++k) {
     if (accept(c, fx, slope, ptol, vega_min, false)) {
@@ -248,7 +265,7 @@ void fail(const IvCall &c, std::size_t i, ChainRowStatus st) noexcept {
     fx = fn;
     if (!(slope > vega_min)) {
       const bool resolved = span >= kSlopeProbeRel * x;
-      if (falling_chord(c, slope, vega_min, resolved)) {
+      if (falling_chord(c, i, slope, vega_min, resolved)) {
         return ChainRowStatus::NonMonotoneRegion;
       }
       return resolved ? ChainRowStatus::VegaFloor : ChainRowStatus::NoConvergence;
@@ -414,7 +431,7 @@ void step_lane(const IvCall &c, Lanes &s, std::size_t l, double P) noexcept {
   const bool chord = s.have_prev[l] != 0u && sig != s.sig_prev[l];
   const double slope = chord ? (f - s.f_prev[l]) / (sig - s.sig_prev[l]) : bcd::kNaN;
   const bool resolved = chord && std::abs(sig - s.sig_prev[l]) >= kSlopeProbeRel * sig;
-  if (falling_chord(c, slope, vega_min, resolved)) {
+  if (falling_chord(c, s.row[l], slope, vega_min, resolved)) {
     finish(c, s, l, ChainRowStatus::NonMonotoneRegion); // the bracket holds two roots
     return;
   }
