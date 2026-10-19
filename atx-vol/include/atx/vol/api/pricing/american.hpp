@@ -213,6 +213,140 @@ static_assert(detail::aggregate_arity_is_v<AlOpts, 6>,
                                            double q, Side side,
                                            const std::optional<AlOpts> &opts = std::nullopt);
 
+// ── Shared expiry geometry (L2b al-geometry, 2026-10-18) ─────────────────
+//
+// Every cold Andersen-Lake solve rebuilds its expiry's Chebyshev node grid and the
+// sweep-invariant quadrature geometry (the Gauss-Legendre node/weight products,
+// the barycentric table, exp(r u) / exp(q u) weights), although none of it depends
+// on the strike or the volatility. An AlExpiryGeometry prepares that state ONCE per
+// (T, r, q, opts) — for the puts' orientation (rate r, yield q) and for the calls'
+// McDonald-Schroder internal put (rate q, yield r) — and the overloads below reuse
+// it. They are BIT-IDENTICAL to the fresh entry points: same validation, same
+// errors, same regimes, and every value the kernel reads is computed from the same
+// operands by the same expressions (one multiply by the strike replaces the bind's
+// own). Covered by tests AlExpiryGeometry.* / AlBoundaryHandle.* / AlPricePack.*
+// (tests/american_geometry_test.cpp).
+//
+// The cache key is the WHOLE tuple (T, r, q, opts — scheme and AlProfile
+// included): a geometry is never consulted for another expiry, carry or kernel
+// profile, and a prepare() rebuilds it completely.
+//
+// OWNERSHIP / THREADS. Move-only owner of ~90 KB of prepared tables. Immutable
+// between prepare() calls: any number of threads may price through one const
+// geometry concurrently; prepare() and destruction need exclusive access. No global
+// mutable table is involved (the Gauss-Legendre tables are process-wide constants).
+class AlExpiryGeometry {
+public:
+  AlExpiryGeometry();
+  ~AlExpiryGeometry();
+  AlExpiryGeometry(AlExpiryGeometry &&) noexcept;
+  AlExpiryGeometry &operator=(AlExpiryGeometry &&) noexcept;
+  AlExpiryGeometry(const AlExpiryGeometry &) = delete;
+  AlExpiryGeometry &operator=(const AlExpiryGeometry &) = delete;
+
+  // (Re)prepare for (T, r, q, opts). Allocates only when the storage is missing
+  // (a moved-from geometry); a prepared geometry is rebuilt in place. Never fails:
+  // inputs andersen_lake would refuse (non-finite r/q, negative T) are recorded and
+  // refused again by the pricing overloads with andersen_lake's own error.
+  void prepare(double T, double r, double q, const std::optional<AlOpts> &opts = std::nullopt);
+
+  [[nodiscard]] bool prepared() const noexcept;
+  [[nodiscard]] double T() const noexcept;
+  [[nodiscard]] double r() const noexcept;
+  [[nodiscard]] double q() const noexcept;
+
+  // Implementation access for the pricing sources; the type is opaque here.
+  struct Impl;
+  [[nodiscard]] const Impl *impl() const noexcept { return impl_.get(); }
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
+
+// A geometry prepared for (T, r, q, opts).
+[[nodiscard]] AlExpiryGeometry prepare_al_geometry(double T, double r, double q,
+                                                   const std::optional<AlOpts> &opts = std::nullopt);
+
+// Bit-identical to andersen_lake(S, K, g.T(), sigma, g.r(), g.q(), side, opts-of-g).
+// InvalidArgument when `g` is not prepared.
+[[nodiscard]] Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K,
+                                           double sigma, Side side);
+
+// ── Boundary handle: one solved boundary, many prices ────────────────────
+//
+// The exercise boundary of a call depends on its internal-put strike, which is the
+// SPOT (McDonald-Schroder), not the call strike: one solve at (spot, sigma) serves
+// every call strike of the expiry at that sigma. A put's boundary depends on its own
+// strike in absolute terms inside the kernel (alpha = K e^{-(r-q)tau}, the clamp
+// xmax = K min(1, r/q)), so a strike-rescaled reuse is NOT bit-identical (see
+// andersen_lake_put_slice); a put handle therefore serves one strike at any spot.
+//
+// The handle is bound to (geometry, side, anchor) with anchor = the internal-put
+// strike: the spot for Side::Call, the strike for Side::Put. solve(sigma) solves
+// that boundary once (or records a closed-form regime); price_from_boundary(S, K)
+// then prices any contract whose internal-put strike equals the anchor (call: S ==
+// anchor; put: K == anchor) BIT-IDENTICALLY to andersen_lake(S, K, T, sigma, r, q,
+// side, opts) — and returns NaN for any other contract, before solve(), after a
+// failed solve, or where andersen_lake would return an error.
+//
+// OWNERSHIP / THREADS. Mutable per-thread state (~46 KB, allocated at construction);
+// observes the geometry, which must outlive the handle and must not be re-prepared
+// while the handle is used. Not thread-safe; const price_from_boundary calls may run
+// concurrently with each other but not with solve().
+class AlBoundaryHandle {
+public:
+  AlBoundaryHandle(const AlExpiryGeometry &geometry, Side side, double anchor);
+  ~AlBoundaryHandle();
+  AlBoundaryHandle(AlBoundaryHandle &&) noexcept;
+  AlBoundaryHandle &operator=(AlBoundaryHandle &&) noexcept;
+  AlBoundaryHandle(const AlBoundaryHandle &) = delete;
+  AlBoundaryHandle &operator=(const AlBoundaryHandle &) = delete;
+
+  // Solve (or classify) at sigma. Errors are andersen_lake's for this anchor: an
+  // unprepared geometry, invalid T / sigma / r / q / anchor, the double-continuation
+  // regime, a collapsed or unsolvable boundary.
+  [[nodiscard]] Status solve(double sigma);
+  [[nodiscard]] double price_from_boundary(double S, double K) const noexcept;
+
+private:
+  struct State;
+  std::unique_ptr<State> st_;
+};
+
+// ── Price pack: one expiry, many contracts, price + exact Newton chord ───
+//
+// One contract of an al_price_pack call. Every contract shares the geometry's
+// (T, r, q, opts).
+struct AlContract {
+  double S{};
+  double K{};
+  Side side{Side::Call};
+};
+
+// The sigma step of the pack's bumped price, in absolute vol units.
+inline constexpr double kAlPackSigmaBump = 1.0e-4;
+
+// price[i] = andersen_lake(g, S_i, K_i, sigma[i], side_i) and, when
+// price_sigma_bumped is non-empty, price_sigma_bumped[i] = the same at sigma[i] +
+// kAlPackSigmaBump — both BIT-IDENTICAL to the fresh andersen_lake (NaN where it
+// errors). (bumped - price) / kAlPackSigmaBump is therefore the exact chord of the
+// served map, the slope a Newton / secant step on these prices needs. It differs from
+// the central difference by (P(s+h) - 2 P(s) + P(s-h)) / (2h) ~ (h / 2) volga, h =
+// kAlPackSigmaBump; the tested bound is |chord - central| <= h * |volga| + 1e-8
+// (AlPricePack.ChordSlopeMatchesTheCentralDifferenceWithinTheVolgaBound, volga from
+// american_greeks_al). Shares the geometry across the pack,
+// and one call boundary across consecutive calls at the same spot and sigma (puts
+// re-solve per strike, see AlBoundaryHandle). Scalar per contract — not an AVX2 lane
+// kernel, which would not be bit-identical. Single-thread; allocates one ~185 KB
+// block of solve scratch per call. Pure in its inputs: concurrent calls on one const
+// geometry are safe with disjoint outputs.
+//
+// @return InvalidArgument when `g` is not prepared or the spans' lengths differ
+//         (nothing is written); otherwise Ok.
+[[nodiscard]] Status al_price_pack(const AlExpiryGeometry &g, std::span<const AlContract> contracts,
+                                   std::span<const double> sigma, std::span<double> price,
+                                   std::span<double> price_sigma_bumped);
+
 // ── Boundary-convergence evidence (what `andersen_lake` does NOT tell you) ──
 //
 // The Andersen-Lake exercise boundary is solved by a FIXED sweep budget with an
@@ -607,6 +741,15 @@ american_greeks_fd(double S, double K, double T, double sigma, double r, double 
 american_greeks_al(double S, double K, double T, double sigma, double r, double q, Side side,
                    const std::optional<AlOpts> &opts = std::nullopt, bool need_vega = true,
                    bool need_rho = true, bool need_charm = true);
+
+// Bit-identical to american_greeks_al(S, K, g.T(), sigma, g.r(), g.q(), side,
+// opts-of-g, need_vega, need_rho, need_charm). The base and sigma +/- boundaries
+// reuse the prepared geometry; the rate-bumped boundaries (another orientation) and
+// every fallback path solve fresh. InvalidArgument when `g` is not prepared.
+[[nodiscard]] Result<AmericanGreeks> american_greeks_al(const AlExpiryGeometry &g, double S,
+                                                        double K, double sigma, Side side,
+                                                        bool need_vega = true, bool need_rho = true,
+                                                        bool need_charm = true);
 
 // American delta ONLY (∂price/∂S) — the single sensitivity the strike-from-delta
 // solver's bisection consumes, WITHOUT the full american_greeks_fd bundle's other
