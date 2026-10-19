@@ -107,6 +107,11 @@ Greeks (`american_greeks_al`, p99 of |Fast - Reference|, worst preset per set):
 | random | 1.4e-13 | 5.0e-12 | 1.4e-11 | 2.6e-8 | 1.4e-10 | 1.1e-10 | 5.2e-8 | 1.5e-7 |
 | dev200 | 1.8e-13 | 1.7e-11 | 1.4e-10 | 5.5e-8 | 1.5e-9 | 1.2e-10 | 5.1e-7 | 1.1e-7 |
 
+The table values are measurements rounded to 2 figures; two of them round DOWN
+(vega 1.4211e-10, vanna 1.2206e-10), so do not read them as bounds. The exact
+measured worst cases and their round-up bounds are in section 8 (MINOR-4) and in
+the `AlProfile` comment.
+
 Restated bound: max price error 8.0e-13 abs (1.9e-13 relative); IV max
 0.0054 bp, p99 <= 2e-8 bp (the max sits on flat-vega contracts, ill-conditioned
 for both profiles); Greeks p99 <= 5.2e-7 (volga, measured 5.12e-7). Tested bound
@@ -115,7 +120,13 @@ api/pricing/american.hpp): |dP| <= 1e-12 * max(P, 1); |dIV| <= 0.01 bp on
 vega-bearing contracts; per-Greek p99 ~100x the measured value; the call slice
 stays bit-identical to the scalar Fast call.
 
-## 4. Interleaved A/B (UNQUALIFIED, loaded host)
+## 4. Interleaved A/B — CONFOUNDED (resume 6), superseded by section 8
+
+**Kept for the record only.** Review v2 (MINOR-1) found this A/B confounded: a
+fixed arm order every round, and tier 2 ran 12 rows (53 s) against 3 (12 s) on
+base / tier 1. Its tier comparisons are replaced by the counterbalanced A/B in
+section 8. Its Fast-vs-Reference ratios come from the same confounded run and
+stay unqualified; section 8 says why they were not re-measured.
 
 Protocol: three binaries built in pool-4 from their SHAs (`vol-rel-avx2`, clean
 tree each time): base = `16291525` (bench rows on the `24e01644` kernel), tier 1 =
@@ -225,3 +236,142 @@ from the cold one (bits 4581709936198087010 vs 4581709936198087003, 7 ulp).
 - Batch: `american_price_batch_resolved` with Fast opts keeps Reference on its
   AVX2 lanes; the batch-pricing lane's four kernel-interface requests are a
   separate later lane.
+
+## 8. Fix round 1 (2026-10-18, lane L0b-fix-al-speed, pool-3)
+
+Closes review v2 (`C:\atx-cache\quote-benchmark\L0b-al-speed-409ee7aa-review-v2\review.md`)
+MINOR-1 to MINOR-4. Raw output: `C:\atx-cache\quote-benchmark\L0b-fix-al-speed-20261018-al-ab\`
+(manifest `sha256.txt`). Wrapped up early on a PM directive (fewer long benchmarks):
+the attribution pass and the Fast-vs-Reference pass were not run.
+
+| SHA | what |
+|---|---|
+| `683b2ad2` | bench only: `american/ladder_latency_dev200/<preset>` rows (MINOR-2 option (a)) |
+| `ebdaccba` | test: adjoint bundle pinned to Reference under Fast opts (MINOR-3) |
+| `e9b9b58a` | `AlProfile` comment: measured values plus round-up bounds (MINOR-4) |
+| (this commit) | this section |
+
+### Declared timing set (MINOR-2)
+
+- **Latency set: the 104-contract ladder grid** (`grid()` in
+  `bench/al_preset_ladder_bench.cpp`, rows `american/ladder_latency/<preset>`).
+  Every latency number in this note is on that grid.
+- **Error-bound set: the dev200 kernel-input CSV**
+  `C:\atx-cache\quote-benchmark\al-speed-20261017-dev200-kernel-inputs\dev200-kernel-inputs.csv`
+  (10,694 contracts, sha256 `8fb2f3d30c9e36e20f529350ab864ade704eedaf7f11997fddc55fb725cb644a`),
+  with the grid and the 6,000-contract random set (section 3).
+- Option (a) was also taken (`683b2ad2`, bench only, fingerprint unchanged):
+  `ATX_VOL_AL_DEV200=<csv>` now also registers `american/ladder_latency_dev200/<preset>`,
+  the same per-op timing loop over the dev200 contracts. It is supplementary. No
+  counterbalanced numbers exist for it yet (only a one-run smoke).
+
+### Counterbalanced A/B (MINOR-1): UNQUALIFIED (loaded host)
+
+Protocol:
+- Binaries were built in one tree (pool-3, `vol-rel-avx2`) and copied to SHA-named
+  files: base `16291525`, tier 1 `a64dfb83`, an A/A control (a byte-identical copy of
+  the tier-1 exe under a second label), and tier 2 `409ee7aa`.
+- Before any timing, the kernel fingerprint `53c4df68...dcea` MATCHED on every binary.
+- Every arm ran the same filter, `^american/ladder_latency/(accurate|fast|bulk)/`. The
+  review's `...)$` form matches no row, because the run names end in
+  `/min_warmup_time:0.500/repeats:5/manual_time`.
+- Order: a 4-arm Williams square, run twice (8 cycles). Each arm runs once per position
+  per square, and each ordered pair of arms is adjacent once.
+- `ATX_VOL_FIT_WORKERS=1`. Every kept run shows `-> PINNED` (CPU 7).
+- A run was rejected and re-run (up to 4 attempts) when its 2 s load sample before or
+  after exceeded 25%. 40 attempts were rejected; 28 of 32 slots were kept. Four slots
+  never got a clean run: tier 1 in cycles 2, 4 and 6, and the A/A copy in cycle 2.
+- Load over 669 continuous 2 s samples: mean 21.7%, median 14.9%, p90 53.5%, 50.2% under
+  15%. That gives the label **unqualified (loaded host)**. Window: 2026-10-18
+  23:21-23:52 UTC.
+
+Single-op cold price latency, us. Each run's value is the median of 5 in-process
+repetitions; the table gives the min and median across kept runs.
+
+| preset | arm | n | p50 min | p50 median | p99 min | p99 median |
+|---|---|---:|---:|---:|---:|---:|
+| accurate | base | 8 | 106.90 | 107.55 | 121.80 | 134.60 |
+| | tier 1 | 5 | 106.20 | 107.20 | 127.20 | 153.80 |
+| | tier 1 A/A | 7 | 106.30 | 106.50 | 125.30 | 130.60 |
+| | tier 2 Reference | 8 | 106.00 | 106.90 | 123.60 | 132.15 |
+| fast | base | 8 | 27.00 | 27.10 | 32.70 | 34.50 |
+| | tier 1 | 5 | 26.60 | 27.00 | 31.40 | 36.80 |
+| | tier 1 A/A | 7 | 26.60 | 26.60 | 30.80 | 32.70 |
+| | tier 2 Reference | 8 | 26.60 | 26.95 | 31.30 | 35.15 |
+| bulk | base | 8 | 12.90 | 12.95 | 15.20 | 16.60 |
+| | tier 1 | 5 | 12.30 | 12.30 | 14.40 | 15.70 |
+| | tier 1 A/A | 7 | 12.30 | 12.30 | 15.00 | 15.60 |
+| | tier 2 Reference | 8 | 12.30 | 12.30 | 14.90 | 15.55 |
+
+Paired per-cycle tier 2 - tier 1 on p50, in us (the open question of section 4). The
+A/A spread is the largest |A/A - tier 1| over the cycles.
+
+- **accurate (primary): not resolved.**
+  - n=5. Per cycle: -1.00, +0.80, -0.90, +3.20, +17.10.
+  - Mean +3.84, median +0.80, signs 3 up / 2 down. Bootstrap 95% CI of the mean
+    [-0.60, +10.70].
+  - A/A spread 4.30 us.
+  - The CI includes 0 and the mean is inside the A/A spread. One pair (+17.10, cycle
+    8) carries the mean. The arm medians are 106.90 (tier 2) and 107.20 (tier 1).
+- **fast: not resolved.** Mean +0.08, CI [-1.86, +1.86], A/A spread 4.00.
+- **bulk: not resolved.** Mean -0.02, CI [-0.06, 0.00], A/A spread 0.30.
+
+**No tier-2 default-path slowdown is confirmed, so no kernel change was made (PM
+resolution 5).**
+
+By the same rule, tier 1 - base on bulk p50 is -0.68 us: 5 of 5 pairs are negative,
+the CI is [-0.74, -0.62], and the A/A spread is 0.30. Tier 1 (and tier 2 Reference, 8
+of 8 pairs) is about 5% faster than base on the bulk rung: 12.30 vs 12.95 us median.
+This is unqualified (loaded host) and revises section 2's "below this host's
+resolution" for bulk only. On accurate and fast, tier 1 - base is within noise.
+
+Not run, on the PM directive of 2026-10-18:
+- the alprobe zone attribution pass;
+- the counterbalanced Fast-vs-Reference pass on tier 2 (grid and dev200 rows).
+
+The only Fast-vs-Reference ratios in this note are section 4's confounded, unqualified
+ones. Do not quote them as qualified. The quiet-host pin of section 7 is still owed.
+
+### MINOR-3: adjoint Reference pin test (`ebdaccba`)
+
+`AdjointGreeksAmerican.FastProfileOptsServeTheReferenceAdjointBits`
+(tests/adjoint_greeks_test.cpp):
+- It runs the American put grid on the accurate, fast and bulk schemes, once with
+  Reference opts and once with `al_fast_profile(...)`.
+- It requires the same path, and all 9 fields bit-identical, wherever the adjoint
+  path serves.
+- Pin removed (`s.profile = AlProfile::Reference` in adjoint_greeks.cpp, blob
+  `678c81bd`): the test fails with 276 volga mismatches.
+- Pin restored (blob `1bc0c66d`, equal to HEAD): the test passes.
+
+### MINOR-4: `AlProfile` bound text (`e9b9b58a`, comment only)
+
+The values are the measured worst cases from the review v2 fast-error rerun (279/279
+counters equal to the lane's), to 5 figures. The bound in brackets is the next 2-figure
+round-up.
+
+| quantity | measured | bound |
+|---|---:|---:|
+| price max abs | 7.9581e-13 | 8.0e-13 |
+| price max rel | 1.8534e-13 | 1.9e-13 |
+| IV max (bp) | 5.3660e-3 | 0.0054 |
+| IV p99 (bp) | 1.9638e-8 | 2.0e-8 |
+| delta p99 | 1.7941e-13 | 1.8e-13 |
+| gamma p99 | 1.6880e-11 | 1.7e-11 |
+| vega p99 | 1.4211e-10 | **1.5e-10** (was printed 1.4e-10) |
+| theta p99 | 5.4645e-8 | 5.5e-8 |
+| rho p99 | 1.4921e-9 | 1.5e-9 |
+| vanna p99 | 1.2206e-10 | **1.3e-10** (was printed 1.2e-10) |
+| volga p99 | 5.1159e-7 | 5.2e-7 |
+| charm p99 | 1.4977e-7 | 1.5e-7 |
+
+### Gates at `e9b9b58a` (`-Preset vol-rel` unless stated)
+
+- `^pricing/(AdjointGreeksAmerican|AdjointGreeksEuropean|AlFastProfile)\.`
+  (`ATX_VOL_FIT_WORKERS=3`): 25/25 passed, 2 disabled. This includes
+  `AlFastProfile.*` 6/6 and the new test.
+- PCH-off `vol-hygiene` check of american.cpp, adjoint_greeks.cpp,
+  adjoint_greeks_test.cpp and american_test.cpp: exit 0, 0 diagnostics.
+- Kernel fingerprint (`vol-rel-avx2` ladder bench, sha256 `17eb3ab8...`):
+  `53c4df68...dcea` MATCH.
+- Parity keys OFF: dev200 `c89d0739` MATCH (quote-bench sha256 `b81588c5...`).
