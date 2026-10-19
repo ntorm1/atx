@@ -38,8 +38,8 @@ target_include_directories(atx-vol-quote-slice-tests PRIVATE ${CMAKE_CURRENT_SOU
 # an unlisted one (QuoteSurfaceLadder.* was missing until L2d, so the knot-ladder
 # tests never ran under this ctest).
 string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* QuoteFitPolicy.*
-       QuoteSliceChannel.* QuoteSurface.* QuoteSurfaceLadder.* SliceChannel.*
-       SliceChannelFamily.* TermPrior.*)
+       QuoteSliceChannel.* QuoteSurface.* QuoteSurfaceLadder.* QuoteSurfaceTiming.*
+       SliceChannel.* SliceChannelFamily.* TermPrior.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")

@@ -11,6 +11,7 @@
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "fitting/counters.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/slice_channel.hpp"
 
@@ -485,6 +486,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
 std::vector<FitObs> admit_point_observations(QuoteSliceFit &out,
                                              std::span<const QuoteSliceQuote> quotes,
                                              const QuoteSliceConfig &config) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Deam);
   const QuoteSliceMarket &market = out.market;
   auto &diag = out.diagnostics;
   out.rows.resize(quotes.size());
@@ -933,6 +935,8 @@ struct CalendarClamp {
 bool project_in_channel(std::vector<AmericanPriceNode> &nodes,
                         std::span<const QuoteSliceQuote> quotes,
                         const AmericanPriceBounds &bounds, const CalendarClamp *clamp) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Project);
+  counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::projections);
   const NodeChannels channel = node_channels(nodes, quotes);
   std::vector<double> strikes(nodes.size());
   for (std::size_t i = 0; i < nodes.size(); ++i) strikes[i] = nodes[i].strike;
@@ -1091,6 +1095,8 @@ void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::si
 void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quotes,
                        double repair_half_spreads = 0.0,
                        const QuoteSliceRepairConfig *channel_repair = nullptr) {
+  const counters::fit_timing::BucketScope price_timing(counters::fit_timing::Bucket::Price);
+  counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::certification_passes);
   const QuoteSliceMarket &market = out.market;
   auto &diag = out.diagnostics;
   // Certify the FINAL American prices. A no-arbitrage European IV curve is
@@ -1127,6 +1133,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     }
     prices.push_back({strike, *call, *put});
   }
+  const counters::fit_timing::BucketScope certify_timing(counters::fit_timing::Bucket::Certify);
   AmericanPriceBounds bounds{market.spot, std::min(1.0, diag.discount),
                              std::max(1.0, diag.discount), 0.0, 0.0};
   bounds.prepaid_max = market.spot * std::exp(std::max(-q_min, 0.0) * market.variance_years);
@@ -1272,6 +1279,7 @@ ChannelFitConfig channel_fit_config(const QuoteSliceChannelConfig &c) {
 std::vector<ChannelObservation> build_channel_observations(QuoteSliceFit &out,
                                                            std::span<const QuoteSliceQuote> quotes,
                                                            const QuoteSliceConfig &config) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Deam);
   const auto &diag = out.diagnostics;
   std::vector<ChannelObservation> channel;
   channel.reserve(quotes.size());
@@ -1465,6 +1473,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     out.fit_error = "too few distinct admitted strikes";
     return Ok(std::move(out));
   }
+  const counters::fit_timing::BucketScope solve_timing(counters::fit_timing::Bucket::Solve);
   auto curve = fit_slice_curve(
       config.curve, observations, diag.forward, market.variance_years, diag.discount, {}, {},
       {-std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()},
@@ -1513,6 +1522,8 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
     applied.strength = prior->strength;
   }
   const ChannelPrior *used_prior = prior != nullptr ? &applied : nullptr;
+  const counters::fit_timing::BucketScope solve_timing(counters::fit_timing::Bucket::Solve);
+  counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::channel_solves);
   const auto solve_start = std::chrono::steady_clock::now();
   const auto solved = config.channel.family
                           ? solve_channel_family(out, channel, used_prior, config)
@@ -1536,6 +1547,8 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   channel_diag.term_prior = d.used_term_prior;
   channel_diag.converged = d.converged;
   channel_diag.iterations = d.iterations;
+  counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::jacobian_evals,
+                              counters::fit_timing::detail::saturate(d.iterations));
   certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair);
   return Ok(std::move(out));
 }
@@ -1657,6 +1670,7 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
                                  std::span<const AmericanPriceSlice *const> earlier,
                                  std::span<const AmericanPriceSlice *const> later,
                                  double half_spreads, double *required) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
   if (required != nullptr) *required = 0.0;
   if (!fit.prices || !fit.curve || !(half_spreads > 0.0) || !std::isfinite(half_spreads) ||
       fit.rows.size() != quotes.size()) {
@@ -1713,6 +1727,7 @@ bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
                                             std::span<const AmericanPriceSlice *const> later,
                                             const QuoteSliceRepairConfig &budget,
                                             QuoteSliceRepairRecord *record) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
   QuoteSliceRepairRecord local;
   QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
   out = QuoteSliceRepairRecord{};
