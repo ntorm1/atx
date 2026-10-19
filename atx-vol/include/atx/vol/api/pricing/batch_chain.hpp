@@ -60,6 +60,17 @@
 //   that already met it. The engines still differ: PerContract can refuse a row
 //   Lockstep solves (the scalar stopped in a flat region the Lockstep bracket walks
 //   out of), and either can run out of budget where the other converges.
+//   3. Opt-in (ChainIvOptions::refuse_non_monotone; L1c, 2026-10-18): the cold
+//      Andersen-Lake map is not monotone in sigma inside the kernel's own exercise
+//      region close to the zero-vol value (american_iv.hpp, "Typed entry point with
+//      the opt-in non-monotone refusal"), so a target there can have several roots
+//      and the two engines return different ones. With the flag, a row is
+//      NonMonotoneRegion (a) when a resolved chord of two evaluated points has a
+//      slope below -vega_floor * K (the slope floor: PerContract's verification
+//      chords, Lockstep's iterate chords), or (b) when its Ok vol satisfies
+//      al_non_monotone_region (target within al_non_monotone_gate of the zero-vol
+//      value and the spot in the kernel's exercise region at that vol: one more
+//      boundary solve, inside that band only).
 //
 // ## Status, errors, allocation
 //
@@ -121,6 +132,9 @@ enum class ChainRowStatus : std::uint8_t {
                      // intrinsic or the zero-vol value by more than the band, or beyond
                      // the image of [kIvMin, kIvMax]
   NoConvergence = 5, // implied vol: the acceptance rule was not met within the budget
+  NonMonotoneRegion = 6, // implied vol, opt-in (ChainIvOptions::refuse_non_monotone): the
+                         // answer sits where the cold Andersen-Lake map is not monotone
+                         // in sigma (rule 3 of "One implied-vol refusal rule")
 };
 
 // One entry per expiry e. T is the year fraction (> 0), rate / carry the continuous
@@ -215,6 +229,9 @@ struct ChainIvOptions {
   double vega_floor = 1.0e-8;
   PricingExecutor *executor = nullptr;
   unsigned n_threads = 0;
+  // OPT-IN (L1c, 2026-10-18): rule 3 of "One implied-vol refusal rule". false keeps
+  // every output bit-identical to the routes without it.
+  bool refuse_non_monotone = false;
 };
 
 // q_eff = carry - log1p(-div_pv / spot) / T: the continuous carry whose forward
