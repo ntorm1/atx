@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "fitting/expiry_schedule.hpp" // ScopedExpiryDispatchTrace (fan-out order seam)
 
 namespace atx::vol {
 namespace {
@@ -1283,6 +1285,161 @@ TEST(QuoteSurface, DominanceGateNeverCostsAnExpiryTheCalendarPassServed) {
   ASSERT_TRUE(refit) << refit.error().to_string();
   EXPECT_TRUE((*refit)[1].channel_refit);
   EXPECT_FALSE((*refit)[1].point_fallback);
+}
+
+// ── Expiry fan-out (QuoteSurfaceConfig::fit_workers) ─────────────────────────
+
+// Every field a caller reads from a slice, bit for bit (doubles by bit pattern,
+// so a stripped NaN row compares equal to itself).
+void expect_bit_identical(const std::vector<QuoteSurfaceSlice> &a,
+                          const std::vector<QuoteSurfaceSlice> &b, unsigned workers) {
+  ASSERT_EQ(a.size(), b.size()) << "workers " << workers;
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  for (std::size_t e = 0; e < a.size(); ++e) {
+    const QuoteSurfaceSlice &x = a[e];
+    const QuoteSurfaceSlice &y = b[e];
+    const auto where = [&] { return ::testing::Message() << "workers " << workers << " e " << e; };
+    EXPECT_EQ(x.grade, y.grade) << where();
+    EXPECT_EQ(x.refusal, y.refusal) << where();
+    EXPECT_EQ(x.error, y.error) << where();
+    EXPECT_EQ(x.method, y.method) << where();
+    EXPECT_EQ(x.point_status, y.point_status) << where();
+    EXPECT_EQ(x.knot_status, y.knot_status) << where();
+    EXPECT_EQ(x.ladder_fallback, y.ladder_fallback) << where();
+    EXPECT_EQ(x.channel_refit, y.channel_refit) << where();
+    EXPECT_EQ(x.calendar_retry, y.calendar_retry) << where();
+    EXPECT_EQ(x.calendar_repaired, y.calendar_repaired) << where();
+    EXPECT_EQ(bits(x.calendar_gap), bits(y.calendar_gap)) << where();
+    EXPECT_EQ(bits(x.outside_fraction), bits(y.outside_fraction)) << where();
+    EXPECT_EQ(x.fit.fit_status, y.fit.fit_status) << where();
+    EXPECT_EQ(x.fit.diagnostics.quotes_admitted, y.fit.diagnostics.quotes_admitted) << where();
+    EXPECT_EQ(x.fit.diagnostics.channel.iterations, y.fit.diagnostics.channel.iterations)
+        << where();
+    ASSERT_EQ(x.fit.rows.size(), y.fit.rows.size()) << where();
+    for (std::size_t i = 0; i < x.fit.rows.size(); ++i) {
+      const QuoteSliceRow &p = x.fit.rows[i];
+      const QuoteSliceRow &q = y.fit.rows[i];
+      EXPECT_EQ(p.evaluation_status, q.evaluation_status) << where() << " row " << i;
+      EXPECT_EQ(bits(p.fitted_price), bits(q.fitted_price)) << where() << " row " << i;
+      EXPECT_EQ(bits(p.fitted_iv), bits(q.fitted_iv)) << where() << " row " << i;
+    }
+  }
+}
+
+std::size_t strictly_two_sided(const Chain &c) {
+  return static_cast<std::size_t>(std::count_if(
+      c.quotes.begin(), c.quotes.end(),
+      [](const QuoteSliceQuote &q) { return q.bid > 0.0 && q.ask > q.bid; }));
+}
+
+// Four well-quoted expiries, each listing more strikes than the one before, so
+// the densest-first order is the reverse of the index order.
+std::vector<Chain> widening_chains() {
+  return {chain(0.25, 0.22, -0.10, 0.01, 85, 115), chain(0.5, 0.24, -0.08, 0.01, 80, 120),
+          chain(1.0, 0.26, -0.06, 0.01, 75, 125), chain(1.5, 0.27, -0.05, 0.01, 70, 130)};
+}
+
+// Review Focus #3: the expiry fan-out is a scheduling change only. A surface
+// that exercises every fanned-out stage (pass A, B1/B2 refits of a sparse
+// expiry) and the serial stages behind them (a calendar crossing and its
+// retry) is bit-identical at 2, 7 and AUTO workers to the serial fit, with and
+// without the knot-first ladder (knot_pass).
+TEST(QuoteSurface, FanOutIsBitIdenticalForEveryWorkerCount) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01),
+                                  chain(0.5, 0.24, -0.08, 0.15, 95, 105),
+                                  chain(1.0, 0.26, -0.06, 0.01), chain(1.5, 0.12, 0.0, 0.005, 85, 115)};
+  QuoteSurfaceConfig ladder;
+  ladder.ladder = QuoteSurfaceLadder::KnotFirst;
+  for (const QuoteSurfaceConfig &base : {QuoteSurfaceConfig{}, ladder}) {
+    QuoteSurfaceConfig serial = base;
+    serial.fit_workers = 1;
+    const auto reference = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, serial);
+    ASSERT_TRUE(reference) << reference.error().to_string();
+    // The fixture really reaches the channel stages and the calendar pass.
+    EXPECT_TRUE((*reference)[1].channel_refit);
+    EXPECT_TRUE(std::any_of(reference->begin(), reference->end(),
+                            [](const QuoteSurfaceSlice &s) { return s.calendar_retry; }));
+    for (const unsigned workers : {2u, 7u, 0u}) {
+      QuoteSurfaceConfig fanned = base;
+      fanned.fit_workers = workers;
+      const auto result = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, fanned);
+      ASSERT_TRUE(result) << result.error().to_string();
+      expect_bit_identical(*reference, *result, workers);
+    }
+  }
+}
+
+// Longest-expected-first: pass A starts the expiry with the most strictly
+// two-sided quotes first (ties by index), for the point pass and the ladder's
+// knot pass alike. Observed through the calling thread's dispatch trace at
+// fit_workers = 1, where every task runs inline in dispatch order.
+TEST(QuoteSurface, FanOutDispatchesTheDensestExpiryFirst) {
+  const std::vector<Chain> chains = widening_chains();
+  for (std::size_t e = 1; e < chains.size(); ++e) {
+    ASSERT_LT(strictly_two_sided(chains[e - 1]), strictly_two_sided(chains[e])) << e;
+  }
+  QuoteSurfaceConfig ladder;
+  ladder.ladder = QuoteSurfaceLadder::KnotFirst;
+  for (const QuoteSurfaceConfig &surface : {QuoteSurfaceConfig{}, ladder}) {
+    ASSERT_EQ(surface.fit_workers, 1u); // the default is the serial width
+    std::vector<std::size_t> trace;
+    {
+      const detail::ScopedExpiryDispatchTrace arm{trace};
+      const auto fitted = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+      ASSERT_TRUE(fitted) << fitted.error().to_string();
+      for (const QuoteSurfaceSlice &slice : *fitted) {
+        ASSERT_EQ(slice.grade, QuoteSliceGrade::A) << slice.refusal; // pass A only
+      }
+    }
+    EXPECT_EQ(trace, (std::vector<std::size_t>{3, 2, 1, 0}));
+  }
+}
+
+// The B1 and B2 channel refits keep the same order. Every expiry is bidless
+// away from the money (no point fit), so all three take both channel stages,
+// and each stage starts the densest expiry first.
+TEST(QuoteSurface, FanOutOrdersTheChannelStagesDensestFirst) {
+  std::vector<Chain> chains;
+  const std::array<double, 3> years{0.1, 0.3, 0.7};
+  const std::array<int, 3> half_width{15, 20, 25};
+  for (std::size_t e = 0; e < years.size(); ++e) {
+    chains.push_back(chain(years[e], 0.35, -0.05, 0.08, 100 - half_width[e],
+                           100 + half_width[e], 5, 0.04));
+  }
+  for (std::size_t e = 1; e < chains.size(); ++e) {
+    ASSERT_LT(strictly_two_sided(chains[e - 1]), strictly_two_sided(chains[e])) << e;
+  }
+  std::vector<std::size_t> trace;
+  {
+    const detail::ScopedExpiryDispatchTrace arm{trace};
+    const auto fitted = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+    ASSERT_TRUE(fitted) << fitted.error().to_string();
+    for (const QuoteSurfaceSlice &slice : *fitted) {
+      ASSERT_EQ(slice.point_status, QuoteSliceFitStatus::InsufficientQuotes);
+      ASSERT_TRUE(slice.channel_refit);
+      ASSERT_NE(slice.grade, QuoteSliceGrade::Refused) << slice.refusal << " " << slice.error;
+    }
+  }
+  // pass A, then B1, then B2
+  EXPECT_EQ(trace, (std::vector<std::size_t>{2, 1, 0, 2, 1, 0, 2, 1, 0}));
+}
+
+// Above one worker the per-expiry stages leave the calling thread: its armed
+// trace sees no task at fit_workers = 4, and sees every pass-A task at 1. The
+// result is the same either way (FanOutIsBitIdenticalForEveryWorkerCount).
+TEST(QuoteSurface, FanOutRunsOffTheCallingThreadAboveOneWorker) {
+  const std::vector<Chain> chains = widening_chains();
+  for (const unsigned workers : {1u, 4u}) {
+    QuoteSurfaceConfig surface;
+    surface.fit_workers = workers;
+    std::vector<std::size_t> trace;
+    {
+      const detail::ScopedExpiryDispatchTrace arm{trace};
+      const auto fitted = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+      ASSERT_TRUE(fitted) << fitted.error().to_string();
+    }
+    EXPECT_EQ(trace.size(), workers == 1u ? chains.size() : 0u) << "workers " << workers;
+  }
 }
 
 // ── Opt-in knot-first ladder ─────────────────────────────────────────────────

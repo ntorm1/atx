@@ -21,6 +21,7 @@
 #include "atx/vol/api/core/types.hpp"          // Side
 #include "atx/vol/api/marketdata/universe.hpp"       // Underlying, Chain, chain_index
 #include "atx/vol/api/fitting/vol_curve.hpp"      // CurveConfig, IVolCurve
+#include "fitting/expiry_schedule.hpp"            // ScopedExpiryDispatchTrace
 
 // Decision B — term-structure carry fallback (bt-hotpath sprint).
 //
@@ -375,6 +376,88 @@ TEST(CurveFitCarryFallback, ZeroConfidentBoardRecoversViaMoneynessBoundedAnchor)
   const auto refused = fit_curve_surface(under, no_tier, CurveConfig{});
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().code(), ErrorCode::NotFound);
+}
+
+// ── L2d: the carry-repair fan-out dispatches the densest expiry first ─────────
+
+namespace {
+
+// One confident anchor (T = 0.10, 15 strikes) and three non-confident expiries
+// that list more strikes at each later maturity (11, 13, 15), so all three are
+// deferred to the phase-1.5 repair pass.
+[[nodiscard]] Underlying widening_repair_board() {
+  Underlying under;
+  under.spot = kSpot;
+  under.chains.push_back(make_carry_chain(0.10, borrow_of_T(0.10), /*n_pairs=*/15, /*n_total=*/15));
+  under.chains.push_back(make_carry_chain(0.30, borrow_of_T(0.30), /*n_pairs=*/2, /*n_total=*/11));
+  under.chains.push_back(make_carry_chain(0.60, borrow_of_T(0.60), /*n_pairs=*/2, /*n_total=*/13));
+  under.chains.push_back(make_carry_chain(1.00, borrow_of_T(1.00), /*n_pairs=*/2, /*n_total=*/15));
+  return under;
+}
+
+} // namespace
+
+// The prepass orders by strike count (15, 11, 13, 15 -> 0, 3, 2, 1). The
+// repair pass over expiries 1..3 now uses the same order (3, 2, 1) instead of
+// index order. Observed through the calling thread's dispatch trace at
+// fit_workers = 1.
+TEST(CurveFitCarryFallback, RepairPassDispatchesTheDensestExpiryFirst) {
+  const Underlying under = widening_repair_board();
+  std::vector<std::size_t> trace;
+  {
+    const atx::vol::detail::ScopedExpiryDispatchTrace arm{trace};
+    const auto rep = fit_curve_surface(under, carry_inputs(true), CurveConfig{});
+    ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+    ASSERT_EQ(rep->expiry_reports.size(), 4u);
+    EXPECT_EQ(rep->expiry_reports[0].carry_source, CarrySource::Solved);
+    for (std::size_t e = 1; e < 4; ++e) {
+      EXPECT_NE(rep->expiry_reports[e].carry_source, CarrySource::Solved) << "expiry " << e;
+    }
+  }
+  // phase 1 (prepass), then phase 1.5 (carry repair)
+  EXPECT_EQ(trace, (std::vector<std::size_t>{0, 3, 2, 1, 3, 2, 1}));
+}
+
+// Review Focus #3 on the repair pass: fanned out at 2, 7 and AUTO workers the
+// board commits the same slices, carries and curves, bit for bit.
+TEST(CurveFitCarryFallback, RepairPassBitIdenticalAcrossWorkers) {
+  const Underlying under = widening_repair_board();
+  const SurfaceParityInputs serial = carry_inputs(true);
+  const auto rep1 = fit_curve_surface(under, serial, CurveConfig{});
+  ASSERT_TRUE(rep1.has_value()) << rep1.error().to_string();
+  constexpr double kGrid[] = {-0.10, -0.05, 0.0, 0.05, 0.10};
+  for (const unsigned workers : {2u, 7u, 0u}) {
+    SurfaceParityInputs in = serial;
+    in.fit_workers = workers;
+    const auto rep = fit_curve_surface(under, in, CurveConfig{});
+    ASSERT_TRUE(rep.has_value()) << rep.error().to_string();
+    ASSERT_EQ(rep->n_slices, rep1->n_slices) << workers;
+    ASSERT_EQ(rep->context.size(), rep1->context.size()) << workers;
+    for (std::size_t i = 0; i < rep->context.size(); ++i) {
+      EXPECT_EQ(rep->context[i].T, rep1->context[i].T) << workers << " " << i;
+      EXPECT_EQ(rep->context[i].forward, rep1->context[i].forward) << workers << " " << i;
+      EXPECT_EQ(rep->context[i].borrow, rep1->context[i].borrow) << workers << " " << i;
+      EXPECT_EQ(rep->context[i].q_eff, rep1->context[i].q_eff) << workers << " " << i;
+      EXPECT_EQ(rep->context[i].n_used, rep1->context[i].n_used) << workers << " " << i;
+    }
+    ASSERT_EQ(rep->expiry_reports.size(), rep1->expiry_reports.size()) << workers;
+    for (std::size_t e = 0; e < rep->expiry_reports.size(); ++e) {
+      EXPECT_EQ(rep->expiry_reports[e].outcome, rep1->expiry_reports[e].outcome) << workers;
+      EXPECT_EQ(rep->expiry_reports[e].carry_source, rep1->expiry_reports[e].carry_source)
+          << workers;
+    }
+    ASSERT_EQ(rep->surface.n_slices(), rep1->surface.n_slices()) << workers;
+    for (std::size_t s = 0; s < rep->surface.n_slices(); ++s) {
+      for (const double k : kGrid) {
+        const double a = rep1->surface.slices()[s]->iv(k);
+        const double b = rep->surface.slices()[s]->iv(k);
+        EXPECT_EQ(std::isfinite(a), std::isfinite(b)) << workers << " " << s << " " << k;
+        if (std::isfinite(a) && std::isfinite(b)) {
+          EXPECT_EQ(a, b) << workers << " " << s << " " << k;
+        }
+      }
+    }
+  }
 }
 
 // Stage B (session admission gate). A board whose non-confident expiries were
