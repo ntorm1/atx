@@ -20,6 +20,7 @@
 #include "fitting/quote_slice_vol_space.hpp"
 #include "fitting/rung_memo.hpp"
 #include "fitting/slice_channel.hpp"
+#include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
 namespace {
@@ -693,6 +694,28 @@ public:
                                 q_effective, quote.side, AmericanMethod::AndersenLake,
                                 config_.iv_tolerance, config_.max_iv_iterations, fast_);
   }
+  // Premium (L2e): contract_iv's own forward map and controls; a fallback returns
+  // contract_iv's value bit for bit (american_iv_premium.hpp). The dated-cash lattice
+  // has no Premium route: contract_iv itself.
+  Result<double> implied_vol_premium(const QuoteSliceQuote &quote, double target,
+                                     double q_effective, IvPremiumMemory *memory,
+                                     IvPremiumStats &stats) const override {
+    if (fit_.dividend_model == QuoteSliceDividendModel::DatedCash) {
+      stats = IvPremiumStats{};
+      return contract_iv(fit_, quote, target, config_, q_effective);
+    }
+    IvOpts opts;
+    opts.tol = config_.iv_tolerance;
+    opts.max_iter = config_.max_iv_iterations;
+    opts.al_opts = fit_.al_opts;
+    const IvResult iv = american_implied_vol_premium(
+        target, fit_.market.spot, quote.strike, fit_.market.variance_years,
+        fit_.diagnostics.effective_rate, q_effective, quote.side, opts, memory, stats);
+    if (iv.status != IvStatus::Ok) {
+      return Err(ErrorCode::Unavailable, "quote slice: no American implied volatility");
+    }
+    return Ok(iv.iv);
+  }
   double black_vega(const QuoteSliceQuote &quote, double sigma, double forward) const override {
     return black76_value_and_vega(forward, quote.strike, fit_.market.variance_years, sigma,
                                   fit_.diagnostics.discount, quote.side)
@@ -726,7 +749,8 @@ public:
       cache_ = std::make_shared<DeAmIvCache>();
       cache_->ivs.assign(quotes.size(), DeAmQuoteIv{});
     }
-    view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work);
+    view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work,
+                  config.channel.deam_inversion);
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1371,7 +1395,11 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       (c.fit_space != QuoteSliceFitSpace::PriceChannel &&
        c.fit_space != QuoteSliceFitSpace::VolChannel) ||
       (c.deam_profile != QuoteSliceDeamProfile::Accurate &&
-       c.deam_profile != QuoteSliceDeamProfile::Fast)) {
+       c.deam_profile != QuoteSliceDeamProfile::Fast) ||
+      (c.deam_inversion != QuoteSliceDeamInversion::Search &&
+       c.deam_inversion != QuoteSliceDeamInversion::Premium) ||
+      (c.deam_inversion == QuoteSliceDeamInversion::Premium &&
+       c.deam_profile != QuoteSliceDeamProfile::Accurate)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {

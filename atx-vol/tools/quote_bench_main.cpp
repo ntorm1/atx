@@ -58,6 +58,7 @@ struct Arguments {
   std::size_t min_quotes{6};
   bool help_requested{false};
   bool timing_detail{false}; // opt-in per-chain fit timing counters (graded admission)
+  bool deam_audit{false};    // opt-in: every Premium de-Am inversion also runs Search (L2e)
 };
 
 template <class T> T number(std::string_view value, std::string_view column) {
@@ -105,16 +106,23 @@ Arguments arguments(int argc, char **argv) {
                    "[--progress fresh-progress.jsonl] "
                    "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
-                   "[--max-weight 1000] [--timing-detail]\n"
+                   "[--max-weight 1000] [--timing-detail] [--deam-audit]\n"
                    "Defaults: --policy auto --dividends funding-pv. "
                    "Quality/min-quotes flags require explicit --curve. "
                    "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
-                   "graded_stats.slices[].timing and real per-chain graded latencies.\n";
+                   "graded_stats.slices[].timing and real per-chain graded latencies. "
+                   "--deam-audit (with --timing-detail) also runs the Search inversion beside "
+                   "every graded.deam_inversion premium one and reports the pair statistics "
+                   "(the predictions are the premium ones).\n";
       args.help_requested = true;
       return args;
     }
     if (key == "--timing-detail") {
       args.timing_detail = true;
+      continue;
+    }
+    if (key == "--deam-audit") {
+      args.deam_audit = true;
       continue;
     }
     if (i + 1 == argc) throw std::runtime_error("Missing value for " + std::string(key));
@@ -154,6 +162,9 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.timing_detail && args.model != "quote-slice") {
     throw std::runtime_error("--timing-detail requires --model quote-slice");
+  }
+  if (args.deam_audit && !args.timing_detail) {
+    throw std::runtime_error("--deam-audit requires --timing-detail");
   }
   if (seen.contains("--progress") &&
       (args.model != "common-markov" || args.progress.empty())) {
@@ -564,7 +575,19 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"rung_attempts", t.rung_attempts}, {"calendar_pairs", t.calendar_pairs},
           {"projections", t.projections}, {"iv_newton_iters", t.iv_newton_iters},
           {"al_by_bucket", std::move(al_by_bucket)},
-          {"repair_rung_visits", t.repair_rung_visits}, {"repair_rung_us", t.repair_rung_us}};
+          {"repair_rung_visits", t.repair_rung_visits}, {"repair_rung_us", t.repair_rung_us},
+          {"deam_inversions", t.deam_inversions}, {"deam_inversion_al", t.deam_inversion_al},
+          {"deam_inversion_al_max", t.deam_inversion_al_max}, {"deam_premium", t.deam_premium},
+          {"deam_premium_fallbacks", t.deam_premium_fallbacks},
+          {"deam_premium_fallback_by_reason", t.deam_premium_fallback_by_reason},
+          {"deam_premium_max_residual_usd", t.deam_premium_max_residual_usd},
+          {"deam_audit_pairs", t.deam_audit_pairs},
+          {"deam_audit_status_mismatch", t.deam_audit_status_mismatch},
+          {"deam_audit_max_dsigma", t.deam_audit_max_dsigma},
+          {"deam_audit_dsigma_decades", t.deam_audit_dsigma_decades},
+          {"deam_audit_max_newton_premium", t.deam_audit_max_newton_premium},
+          {"deam_audit_max_newton_search", t.deam_audit_max_newton_search},
+          {"deam_audit_search_farther", t.deam_audit_search_farther}};
 }
 
 // Graded admission: one surface fit per exact snapshot. Routing has already
@@ -1392,6 +1415,16 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "repair_rung_visits / repair_rung_us are a cross-cut, not a bucket: the surface "
         "fitter's repair-rung visits and their INCLUSIVE wall, overlapping the buckets their "
         "refits charge and not part of wall_us; "
+        "deam_* (graded.fit_space vol only): the de-Am IV cache inversions, the AL boundary "
+        "solves inside them (deam_inversion_al, most per inversion _max), the "
+        "graded.deam_inversion premium attempts, their fallbacks to Search by reason (index = "
+        "IvPremiumFallback: 1 not applicable, 2 range edge or non-monotone band, 3 no seed, "
+        "4 not increasing, 5 vol bound, 6 pricer failure, 7 no convergence) and the largest "
+        "last-solve residual in USD of an accepted premium root; deam_audit_* (--deam-audit) "
+        "compare each premium answer with Search (fallbacks count as exact pairs): decade "
+        "histogram of |dsigma|, bin 0 = 0, bin b = [1e-(17-b), 1e-(16-b)); for differing "
+        "pairs the largest accurate-map Newton distance of each answer and the count with "
+        "Search farther from the root; "
         "instrumented, timing unqualified unless the host is quiet";
   }
   if (stats.graded) {
@@ -1563,6 +1596,7 @@ int main(int argc, char **argv) {
     }
     RunStatistics stats;
     stats.timing_detail = args.timing_detail;
+    counters::fit_timing::arm_deam_audit(args.deam_audit); // before any fit starts
     const auto predictions = run(args, rows, stats);
     write_predictions(args.output, rows, predictions, stats.graded);
     write_report(std::cout, args, rows.size(), stats);

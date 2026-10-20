@@ -110,6 +110,15 @@ enum class QuoteSliceFitSpace : std::uint8_t { PriceChannel, VolChannel };
 // kernel. The dated-cash lattice has no Fast kernel and is always accurate.
 enum class QuoteSliceDeamProfile : std::uint8_t { Accurate, Fast };
 
+// Inversion strategy of the VolChannel cache on the accurate kernel (opt-in, lane L2e
+// 2026-10-19; american_iv.hpp IvStrategy). Search (the default) is the historical
+// inverter, bit for bit. Premium inverts by de-Americanisation: a seed-leg model
+// confirmed by cold Andersen-Lake solves, accepted at the same vol tolerance
+// (QuoteSliceConfig::iv_tolerance), falling back to Search everywhere it cannot
+// accept; a quote's bid and ask are seeded from its mid's cold points. Requires
+// deam_profile Accurate. The dated-cash lattice always uses Search.
+enum class QuoteSliceDeamInversion : std::uint8_t { Search, Premium };
+
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
 // in the fixed volatility unit min_half_width_vol.
@@ -168,6 +177,7 @@ struct QuoteSliceChannelConfig {
   QuoteSliceFitSpace fit_space = QuoteSliceFitSpace::PriceChannel;
   QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
   bool deam_cache = false;
+  QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // opt-in (L2e)
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -366,6 +376,8 @@ struct QuoteSliceDeamDiagnostics {
   std::size_t inversions = 0;     // American IV inversions (fallbacks included)
   std::size_t model_prices = 0;   // American prices of the band edges (kIvMin, kIvMax)
   std::size_t accurate_fallbacks = 0; // Fast inversions redone on the accurate kernel
+  std::size_t premium_inversions = 0; // inversions attempted by the Premium strategy
+  std::size_t premium_fallbacks = 0;  // ... of which handed to Search
 };
 
 struct QuoteSliceDiagnostics {

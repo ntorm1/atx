@@ -9,6 +9,7 @@
 
 #include "atx/vol/api/fitting/aggregate_arity.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "fitting/counters.hpp"
 
 namespace atx::vol {
 namespace {
@@ -61,8 +62,13 @@ thread_local Memo t_memo;
 
 DeAmIvView::DeAmIvView(DeAmIvCache &cache, const DeAmModel &model,
                        std::span<const QuoteSliceQuote> quotes, QuoteSliceDeamProfile profile,
-                       QuoteSliceDeamDiagnostics &work) noexcept
-    : cache_(cache), model_(model), quotes_(quotes), profile_(profile), work_(work) {}
+                       QuoteSliceDeamDiagnostics &work, QuoteSliceDeamInversion inversion) noexcept
+    : cache_(cache), model_(model), quotes_(quotes), profile_(profile), work_(work),
+      inversion_(inversion) {}
+
+bool DeAmIvView::premium() const noexcept {
+  return inversion_ == QuoteSliceDeamInversion::Premium && kernel() == DeAmKernel::Accurate;
+}
 
 DeAmKernel DeAmIvView::kernel() const noexcept {
   return profile_ == QuoteSliceDeamProfile::Fast && model_.has_fast_kernel() ? DeAmKernel::Fast
@@ -82,7 +88,94 @@ DeAmQuoteIv &DeAmIvView::carry(std::size_t i) {
 }
 
 Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
-                                  const DeAmQuoteIv &entry) {
+                                  const DeAmQuoteIv &entry, IvPremiumMemory *memory) {
+  namespace ft = counters::fit_timing;
+  namespace ledger = counters::ledger;
+  ft::FitTimingCounters *const timing = ft::current_counts();
+  const std::uint64_t al0 = timing ? ledger::this_thread(ledger::Solve::AlBoundarySolves) : 0u;
+  IvPremiumStats stats;
+  Result<double> out = premium() ? invert_premium(quote, target, entry, memory, stats)
+                                 : invert_search(quote, target, entry);
+  if (timing == nullptr) {
+    return out;
+  }
+  const std::uint64_t al = ledger::this_thread(ledger::Solve::AlBoundarySolves) - al0;
+  const std::uint32_t spent = ft::detail::saturate(al);
+  ++timing->deam_inversions;
+  timing->deam_inversion_al += spent;
+  timing->deam_inversion_al_max = std::max(timing->deam_inversion_al_max, spent);
+  if (!premium()) {
+    return out;
+  }
+  ++timing->deam_premium;
+  const bool fell_back = stats.fallback != IvPremiumFallback::None;
+  if (fell_back) {
+    ++timing->deam_premium_fallbacks;
+    const auto reason = static_cast<std::size_t>(stats.fallback);
+    if (reason < timing->deam_premium_fallback_by_reason.size()) {
+      ++timing->deam_premium_fallback_by_reason[reason];
+    }
+  } else {
+    timing->deam_premium_max_residual_usd =
+        std::max(timing->deam_premium_max_residual_usd, stats.last_residual_usd);
+  }
+  if (ft::deam_audit_armed()) {
+    // A fallback IS the Search answer (bit for bit, pinned by AmericanIvPremium tests):
+    // a pair at 0 without a second inversion. An accepted root is compared with Search.
+    double dsigma = 0.0;
+    if (!fell_back) {
+      const Result<double> search =
+          model_.implied_vol(quote, target, entry.q_effective, DeAmKernel::Accurate);
+      if (static_cast<bool>(search) != static_cast<bool>(out)) {
+        ++timing->deam_audit_status_mismatch;
+      } else if (search && out) {
+        dsigma = std::fabs(*out - *search);
+      }
+      if (dsigma > 0.0) {
+        const Result<double> pp = model_.price(quote, *out, entry.q_effective, DeAmKernel::Accurate);
+        const Result<double> ps =
+            model_.price(quote, *search, entry.q_effective, DeAmKernel::Accurate);
+        if (pp && ps) {
+          const double chord = std::fabs((*pp - *ps) / (*out - *search));
+          if (chord > 0.0 && std::isfinite(chord)) {
+            const double np = std::fabs(*pp - target) / chord;
+            const double ns = std::fabs(*ps - target) / chord;
+            timing->deam_audit_max_newton_premium =
+                std::max(timing->deam_audit_max_newton_premium, np);
+            timing->deam_audit_max_newton_search =
+                std::max(timing->deam_audit_max_newton_search, ns);
+            timing->deam_audit_search_farther += ns > np ? 1u : 0u;
+          }
+        }
+      }
+    }
+    ++timing->deam_audit_pairs;
+    timing->deam_audit_max_dsigma = std::max(timing->deam_audit_max_dsigma, dsigma);
+    std::size_t bin = 0;
+    if (dsigma > 0.0) {
+      const double decade = std::floor(std::log10(dsigma)) + 17.0; // 1e-16 -> bin 1
+      bin = static_cast<std::size_t>(std::clamp(decade, 1.0, 16.0));
+    }
+    ++timing->deam_audit_dsigma_decades[bin];
+  }
+  return out;
+}
+
+Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double target,
+                                          const DeAmQuoteIv &entry, IvPremiumMemory *memory,
+                                          IvPremiumStats &stats) {
+  ++cache_.inversions;
+  ++work_.inversions;
+  ++work_.premium_inversions;
+  Result<double> iv = model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats);
+  if (stats.fallback != IvPremiumFallback::None) {
+    ++work_.premium_fallbacks;
+  }
+  return iv;
+}
+
+Result<double> DeAmIvView::invert_search(const QuoteSliceQuote &quote, double target,
+                                         const DeAmQuoteIv &entry) {
   ++cache_.inversions;
   ++work_.inversions;
   if (kernel() == DeAmKernel::Accurate) {
@@ -106,7 +199,8 @@ Result<double> DeAmIvView::mid_iv(std::size_t i) {
   if ((entry.computed & DeAmQuoteIv::kMid) == 0u) {
     const QuoteSliceQuote &quote = quotes_[i];
     const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
-    const auto iv = invert(quote, mid, entry);
+    // Premium: the mid from scratch; its cold points seed the band edges.
+    const auto iv = invert(quote, mid, entry, premium() ? &entry.mid_memory : nullptr);
     entry.mid_iv = iv && positive(*iv) ? *iv : std::numeric_limits<double>::quiet_NaN();
     entry.computed = static_cast<std::uint8_t>(entry.computed | DeAmQuoteIv::kMid);
   }
@@ -148,14 +242,32 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   if (!(quote.bid < filled.cap_price) || !(quote.ask > filled.floor_price)) {
     return publish();
   }
+  // Premium: the mid first (exactly as the channel builder would ask for it: a
+  // two-sided quote whose mid lies inside the identifiable range), then each edge from
+  // a copy of the mid's cold points; without a mid, the edges from scratch.
+  bool seeded = false;
+  if (premium() && quote.bid > 0.0) {
+    const double mid = 0.5 * quote.bid + 0.5 * quote.ask;
+    if (mid > filled.floor_price && mid < filled.cap_price) {
+      static_cast<void>(mid_iv(i));
+      // mid_iv wrote the slot (entry); carry its mid fields into the local copy so
+      // that publish() keeps the mid and its memory (W2b merge of L2c x L2e).
+      filled.mid_iv = entry.mid_iv;
+      filled.mid_memory = entry.mid_memory;
+      filled.computed = entry.computed;
+      seeded = entry.mid_memory.points > 0u;
+    }
+  }
+  IvPremiumMemory bid_memory = filled.mid_memory;
+  IvPremiumMemory ask_memory = filled.mid_memory;
   // A bid at or below the minimum-volatility price carries no lower
   // information; an ask at or above the maximum-volatility price no upper.
   if (quote.bid > filled.floor_price) {
-    const auto lo = invert(quote, quote.bid, filled);
+    const auto lo = invert(quote, quote.bid, filled, seeded ? &bid_memory : nullptr);
     filled.bid_iv = lo && positive(*lo) ? *lo : 0.0;
   }
   if (quote.ask < filled.cap_price) {
-    const auto hi = invert(quote, quote.ask, filled);
+    const auto hi = invert(quote, quote.ask, filled, seeded ? &ask_memory : nullptr);
     if (hi && positive(*hi)) {
       filled.ask_iv = *hi;
     }
@@ -202,6 +314,8 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   real(config.iv_tolerance);
   word(config.max_iv_iterations);
   word(static_cast<std::uint64_t>(config.channel.deam_profile));
+  word(static_cast<std::uint64_t>(config.channel.deam_inversion)); // a Premium cache never
+                                                                   // answers a Search fit
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);

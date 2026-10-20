@@ -142,6 +142,31 @@ enum class IvStatus : std::uint8_t {
   NonMonotoneRegion = 5, // opt-in refusal: see above
 };
 
+// ── Opt-in de-Americanised inversion strategy (L2e, 2026-10-19) ──
+//
+// Search (the default) is the safeguarded Newton above, bit for bit. Premium inverts
+// by de-Americanisation: P_am(sigma) = A(sigma) + D(sigma) with a cheap seed leg A
+// (Barone-Adesi-Whaley where the contract has an exercise region, Black-76 elsewhere)
+// whose remainder D varies slowly in sigma. The leg inverted at the quote gives sigma0;
+// one cold Andersen-Lake solve gives D(sigma0); the leg inverted at `price - D(sigma0)`
+// gives sigma1, and each further iterate solves the leg plus the D chord through the
+// last two cold points exactly (no American solve), confirmed by one cold solve. A
+// root is ACCEPTED only when its Newton distance on the cold map, |P_am(sigma) - price|
+// / slope (slope: the leg's slope plus that D chord), is <= tol: the vol-unit
+// tolerance the Search route's bracket and polish stop on. The accepted value is that
+// Newton-corrected sigma.
+// Everything else FALLS BACK to the Search route unchanged (bit-identical answer): any
+// input the Search route refuses, a price at the identifiable-range edges or inside
+// the non-monotone band (al_non_monotone_gate), no European seed, a chord that is not
+// an increasing slope, a root at the volatility floor or above the search ceiling, a
+// pricer failure, or no acceptance within 4 cold solves. Premium applies only on the
+// cold Andersen-Lake route with warm_start 0 and price_tol 0 (any other route runs
+// Search), and refuse_non_monotone acts on its answer exactly as on Search.
+enum class IvStrategy : std::uint8_t {
+  Search = 0,  // the default safeguarded Newton (historical, bit for bit)
+  Premium = 1, // OPT-IN: early-exercise-premium inversion with a Search fallback
+};
+
 // The positional overload's controls as one struct, plus the opt-in refusal. Same
 // meanings and defaults as american_implied_vol above (al_opts is its `opts`).
 struct IvOpts {
@@ -152,7 +177,13 @@ struct IvOpts {
   const CorrectionCache *correction = nullptr;
   double warm_start = 0.0;
   double price_tol = 0.0;
-  bool refuse_non_monotone = false; // OPT-IN (L1c): see the section comment above
+  bool refuse_non_monotone = false;         // OPT-IN (L1c): see the section comment above
+  IvStrategy strategy = IvStrategy::Search; // OPT-IN (L2e): see IvStrategy
+  // Premium only: the kernel profile of the iterate (seed) solves. Unset (the default)
+  // or al_opts' own profile: every solve is on al_opts, the accurate kernel the Search
+  // route inverts on. Another profile: iterates run al_opts' scheme on that profile and
+  // the accepted root is confirmed by one solve on al_opts (Newton distance <= tol).
+  std::optional<AlProfile> seed_profile = std::nullopt;
 };
 
 struct IvResult {
@@ -160,10 +191,10 @@ struct IvResult {
   IvStatus status = IvStatus::InvalidArgument;
 };
 
-// american_implied_vol with typed statuses. With refuse_non_monotone false, iv equals
-// the positional overload's value bit for bit and status maps its Error code
-// (InvalidArgument, OutOfRange, Unavailable -> NoConvergence, anything else ->
-// Unpriceable).
+// american_implied_vol with typed statuses. With refuse_non_monotone false and the
+// Search strategy, iv equals the positional overload's value bit for bit and status
+// maps its Error code (InvalidArgument, OutOfRange, Unavailable -> NoConvergence,
+// anything else -> Unpriceable). A Premium fallback returns exactly that as well.
 [[nodiscard]] IvResult american_implied_vol(double price, double S, double K, double T,
                                             double r, double q, Side side,
                                             const IvOpts &opts) noexcept;
