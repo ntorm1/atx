@@ -1230,7 +1230,14 @@ struct ColdPoint {
   }
 
   const double slope_floor = kCertSlopeFloorRel * K;
-  for (std::uint32_t solve = 0; solve < kIvPremiumMaxSolves; ++solve) {
+  // Newton distances of the last two iterates: a solve beyond the budget is spent only
+  // while they shrink geometrically (kIvPremiumShrink per solve).
+  double abs_d = std::numeric_limits<double>::infinity();
+  double prev_abs_d = std::numeric_limits<double>::infinity();
+  for (std::uint32_t solve = 0; solve < kIvPremiumMaxSolves + kIvPremiumExtraSolves; ++solve) {
+    if (solve >= kIvPremiumMaxSolves && !(abs_d <= kIvPremiumShrink * prev_abs_d)) {
+      return fail(IvPremiumFallback::NoConvergence);
+    }
     const double s = *x;
     if (!(s > kSigmaLo && s < kSigmaHi)) {
       return fail(IvPremiumFallback::VolBound);
@@ -1298,7 +1305,9 @@ struct ColdPoint {
       return fail(IvPremiumFallback::NotIncreasing);
     }
     const double d = res / *slope;
-    if (std::fabs(d) <= tol) {
+    prev_abs_d = abs_d;
+    abs_d = std::fabs(d);
+    if (abs_d <= tol) {
       stats.last_residual_usd = std::fabs(res);
       return accept(s - d, *slope);
     }

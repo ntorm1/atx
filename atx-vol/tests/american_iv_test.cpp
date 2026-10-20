@@ -1736,6 +1736,7 @@ using atx::vol::IvPremiumFallback;
 using atx::vol::IvPremiumMemory;
 using atx::vol::IvPremiumStats;
 using atx::vol::IvStrategy;
+using atx::vol::kIvPremiumExtraSolves;
 using atx::vol::kIvPremiumMaxSolves;
 
 [[nodiscard]] std::uint64_t al_solves_now() {
@@ -1819,7 +1820,7 @@ TEST(AmericanIvPremium, ConvergesToTheSearchRootOrFallsBackBitForBit) {
     al_premium += static_cast<std::size_t>(a2 - a1);
     ++why[static_cast<std::size_t>(stats.fallback)];
     max_solves = std::max<std::size_t>(max_solves, stats.premium_solves);
-    ASSERT_LE(stats.premium_solves, kIvPremiumMaxSolves);
+    ASSERT_LE(stats.premium_solves, kIvPremiumMaxSolves + kIvPremiumExtraSolves);
     const std::string where = "K=" + std::to_string(c.K) + " T=" + std::to_string(c.T) +
                               " r=" + std::to_string(c.r) + " q=" + std::to_string(c.q) +
                               (c.sd == Side::Put ? " put" : " call") +
@@ -1939,11 +1940,57 @@ TEST(AmericanIvPremium, ANonConvergentAttemptFallsBackToSearchBitForBit) {
   IvPremiumStats stats;
   const IvResult prem =
       american_implied_vol_premium(p, S, c.K, c.T, c.r, c.q, c.sd, o, nullptr, stats);
-  EXPECT_EQ(stats.fallback, IvPremiumFallback::NoConvergence);
-  EXPECT_EQ(stats.premium_solves, kIvPremiumMaxSolves);
+  // Never accepted: the budget runs out, or a noise-floor distance happens to shrink
+  // enough to earn an extra solve whose chord to the previous iterate is then noise
+  // (NotIncreasing). Either way the attempt spends at least the budget and at most the
+  // budget plus the extra solves.
+  EXPECT_NE(stats.fallback, IvPremiumFallback::None);
+  EXPECT_TRUE(stats.fallback == IvPremiumFallback::NoConvergence ||
+              stats.fallback == IvPremiumFallback::NotIncreasing)
+      << static_cast<int>(stats.fallback);
+  EXPECT_GE(stats.premium_solves, kIvPremiumMaxSolves);
+  EXPECT_LE(stats.premium_solves, kIvPremiumMaxSolves + kIvPremiumExtraSolves);
   const IvResult search = american_implied_vol(p, S, c.K, c.T, c.r, c.q, c.sd, o);
   EXPECT_EQ(prem.status, search.status);
   EXPECT_TRUE(same_double(prem.iv, search.iv) || (std::isnan(prem.iv) && std::isnan(search.iv)));
+}
+
+// The budget extension: a cold solve beyond kIvPremiumMaxSolves is spent only while the
+// Newton distance keeps shrinking by kIvPremiumShrink per solve. These SPY graded-v1
+// deep-ITM puts (cohort5 slice, market prices, accurate kernel, no memory) converged
+// geometrically but needed a 5th or 6th solve: without the extra solves they fall back
+// after 4 (resume brief item 2: 392 of 395 budget fallbacks were still shrinking), with
+// them they are accepted on the cold map within tol.
+TEST(AmericanIvPremium, ExtraSolvesWhileShrinkingAcceptTheSlowDeepItmPuts) {
+  const double S = 772.9949951171875;
+  const double T = 1.6703925132751465;
+  const double r = 0.051124785095453262;
+  const double q = 0.0068890395460387381;
+  struct Case {
+    double K, price;
+  };
+  const std::array<Case, 3> cases{{{1300.0, 529.5}, {1310.0, 539.5}, {1320.0, 549.5}}};
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0;
+  for (const Case &c : cases) {
+    IvPremiumStats stats;
+    const IvResult prem = american_implied_vol_premium(c.price, S, c.K, T, r, q, Side::Put,
+                                                       IvOpts{}, nullptr, stats);
+    if (stats.fallback != IvPremiumFallback::None) {
+      continue;
+    }
+    ++accepted;
+    ASSERT_EQ(prem.status, IvStatus::Ok) << c.K;
+    EXPECT_GT(stats.premium_solves, kIvPremiumMaxSolves) << c.K;
+    EXPECT_LE(stats.premium_solves, kIvPremiumMaxSolves + kIvPremiumExtraSolves) << c.K;
+    const double h = 1.0e-6; // Newton distance on the cold map (chord over 1e-6 vol)
+    const double slope = (cold_al(S, c.K, T, prem.iv + h, r, q, Side::Put) -
+                          cold_al(S, c.K, T, prem.iv - h, r, q, Side::Put)) /
+                         (2.0 * h);
+    EXPECT_LE(std::abs(cold_al(S, c.K, T, prem.iv, r, q, Side::Put) - c.price) / slope, tol)
+        << c.K;
+  }
+  EXPECT_EQ(accepted, cases.size());
 }
 
 // Inside the non-monotone band Premium never answers: it falls back (RangeEdge) and

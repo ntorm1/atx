@@ -38,8 +38,13 @@ enum class IvPremiumFallback : std::uint8_t {
 inline constexpr std::size_t kIvPremiumFallbackCount = 8;
 
 // Cold iterate solves one Premium attempt may spend before it falls back (plus one
-// accurate confirming solve when IvOpts::seed_profile selects another kernel).
+// accurate confirming solve when IvOpts::seed_profile selects another kernel), and the
+// extra solves it may add one at a time while the Newton distance keeps shrinking by at
+// least kIvPremiumShrink per solve (SPY graded-v1: 392 of the 395 budget fallbacks were
+// still converging geometrically at the 4th solve).
 inline constexpr std::uint32_t kIvPremiumMaxSolves = 4;
+inline constexpr std::uint32_t kIvPremiumExtraSolves = 2;
+inline constexpr double kIvPremiumShrink = 0.25;
 
 // The cold Andersen-Lake points of one contract: sigma and the remainder D = P_am - A
 // of the seed leg A (Barone-Adesi-Whaley where the contract has an exercise region,
