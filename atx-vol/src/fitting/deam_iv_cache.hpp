@@ -46,6 +46,7 @@
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
+#include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
 
@@ -69,6 +70,10 @@ struct DeAmQuoteIv {
   // carrying at least one finite edge.
   bool well_posed = false;
   std::uint8_t computed = 0; // kCarry | kMid | kBand
+  // QuoteSliceDeamInversion::Premium: the cold points of the mid's inversion (made from
+  // scratch); the bid and the ask are each seeded from a copy, so every cached value
+  // is a function of the quote alone, whatever order the fits ask for them in.
+  IvPremiumMemory mid_memory{};
 };
 
 struct DeAmIvCache {
@@ -98,6 +103,18 @@ public:
                                              double q_effective, DeAmKernel kernel) const = 0;
   [[nodiscard]] virtual Result<double> implied_vol(const QuoteSliceQuote &quote, double target,
                                                    double q_effective, DeAmKernel kernel) const = 0;
+  // The accurate-kernel IV under QuoteSliceDeamInversion::Premium (american_iv_premium.hpp),
+  // with the quote's memory (nullptr: none) and the attempt's stats. A model without a
+  // Premium route (the default here; the dated-cash lattice) runs implied_vol on the
+  // Accurate kernel and reports NotApplicable.
+  [[nodiscard]] virtual Result<double> implied_vol_premium(const QuoteSliceQuote &quote,
+                                                           double target, double q_effective,
+                                                           IvPremiumMemory *memory,
+                                                           IvPremiumStats &stats) const {
+    static_cast<void>(memory);
+    stats = IvPremiumStats{};
+    return implied_vol(quote, target, q_effective, DeAmKernel::Accurate);
+  }
   // False when the model has no Fast kernel (the dated-cash lattice).
   [[nodiscard]] virtual bool has_fast_kernel() const = 0;
   // Black-76 vega of the contract at `sigma` on `forward` (the Fast guard).
@@ -132,8 +149,12 @@ inline constexpr double kDeAmFastMinRelativeVega = 1.0e-5;
 // for (same order, ivs sized to match).
 class DeAmIvView {
 public:
+  // `inversion` Premium (accurate kernel only; ignored under the Fast profile, which
+  // validate_channel refuses in combination): every inversion runs the Premium strategy,
+  // a band's mid first.
   DeAmIvView(DeAmIvCache &cache, const DeAmModel &model, std::span<const QuoteSliceQuote> quotes,
-             QuoteSliceDeamProfile profile, QuoteSliceDeamDiagnostics &work) noexcept;
+             QuoteSliceDeamProfile profile, QuoteSliceDeamDiagnostics &work,
+             QuoteSliceDeamInversion inversion = QuoteSliceDeamInversion::Search) noexcept;
 
   // The quote's mid IV exactly as point admission inverts it: Err when the
   // inversion fails or returns a non-positive volatility. Precondition: quote
@@ -145,15 +166,24 @@ public:
 
 private:
   [[nodiscard]] DeAmQuoteIv &carry(std::size_t i);
+  // One inversion of the quote's contract at `target` (memory: Premium only), charged
+  // to the fit's work and, when timing is armed, to the chain's fit_timing counters.
   [[nodiscard]] Result<double> invert(const QuoteSliceQuote &quote, double target,
-                                      const DeAmQuoteIv &entry);
+                                      const DeAmQuoteIv &entry, IvPremiumMemory *memory);
+  [[nodiscard]] Result<double> invert_premium(const QuoteSliceQuote &quote, double target,
+                                              const DeAmQuoteIv &entry, IvPremiumMemory *memory,
+                                              IvPremiumStats &stats);
+  [[nodiscard]] Result<double> invert_search(const QuoteSliceQuote &quote, double target,
+                                             const DeAmQuoteIv &entry);
   [[nodiscard]] DeAmKernel kernel() const noexcept;
+  [[nodiscard]] bool premium() const noexcept;
 
   DeAmIvCache &cache_;
   const DeAmModel &model_;
   std::span<const QuoteSliceQuote> quotes_;
   QuoteSliceDeamProfile profile_;
   QuoteSliceDeamDiagnostics &work_;
+  QuoteSliceDeamInversion inversion_;
 };
 
 // The exact inputs a chain's cache depends on, as 64-bit words: two fits with

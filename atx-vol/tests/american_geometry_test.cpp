@@ -12,6 +12,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -413,6 +414,41 @@ TEST(AlBoundaryHandle, ClosedFormRegimesAndRefusalsMatchAndersenLake) {
     EXPECT_FALSE(std::isnan(h.price_from_boundary(100.0, 100.0)));
     ASSERT_FALSE(h.solve(-0.1));
     EXPECT_TRUE(std::isnan(h.price_from_boundary(100.0, 100.0)));
+  }
+}
+
+// L2f (inherited L2b review m2): a handle observes its geometry, so a temporary
+// geometry must not bind. The rvalue constructor is deleted; an lvalue still binds.
+static_assert(!std::is_constructible_v<AlBoundaryHandle, AlExpiryGeometry &&, Side, double>,
+              "AlBoundaryHandle must not bind a temporary AlExpiryGeometry");
+static_assert(!std::is_constructible_v<AlBoundaryHandle, const AlExpiryGeometry &&, Side, double>,
+              "AlBoundaryHandle must not bind a const temporary AlExpiryGeometry");
+static_assert(std::is_constructible_v<AlBoundaryHandle, const AlExpiryGeometry &, Side, double>);
+
+// L2f (inherited L2b review m2): re-preparing the geometry after solve() moves (T, r, q)
+// under the solved boundary. The handle refuses to price (NaN) until it is solved again,
+// and the re-solve prices the new expiry bit-identically to andersen_lake.
+TEST(AlBoundaryHandle, RePreparedGeometryRefusesUntilSolvedAgain) {
+  for (const Side side : {Side::Put, Side::Call}) {
+    const double anchor = 100.0;
+    const double S = side == Side::Put ? 95.0 : anchor;
+    const double K = side == Side::Put ? anchor : 105.0;
+    AlExpiryGeometry g = prepare_al_geometry(0.5, 0.05, 0.03);
+    AlBoundaryHandle h(g, side, anchor);
+    ASSERT_TRUE(h.solve(0.3));
+    const double before = h.price_from_boundary(S, K);
+    ASSERT_TRUE(same_bits(before, *andersen_lake(S, K, 0.5, 0.3, 0.05, 0.03, side)));
+    g.prepare(2.0, 0.05, 0.03); // another expiry: the solved boundary is stale
+    EXPECT_TRUE(std::isnan(h.price_from_boundary(S, K)))
+        << "stale boundary priced: " << h.price_from_boundary(S, K);
+    ASSERT_TRUE(h.solve(0.3));
+    const double after = h.price_from_boundary(S, K);
+    EXPECT_TRUE(same_bits(after, *andersen_lake(S, K, 2.0, 0.3, 0.05, 0.03, side)))
+        << after << " vs " << *andersen_lake(S, K, 2.0, 0.3, 0.05, 0.03, side);
+    // A re-prepare with IDENTICAL inputs still refuses: the generation, not the
+    // values, decides (the handle cannot see what changed).
+    g.prepare(2.0, 0.05, 0.03);
+    EXPECT_TRUE(std::isnan(h.price_from_boundary(S, K)));
   }
 }
 

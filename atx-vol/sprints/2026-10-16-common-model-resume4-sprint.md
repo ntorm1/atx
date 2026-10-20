@@ -104,6 +104,9 @@ where no vendor carry exists.
 | `c5358ec8` | L2a-vol-space `a045a0e6` (vol-sota W2) | review APPROVE (2 minor, 1 nit); opt-in per-quote de-Am IV cache (`graded.fit_space vol` + `deam_cache`, accurate kernel byte-identical to the price channel; `deam_profile fast` changes the CSV); 2 conflicts resolved as the union: `quote_slice.cpp` (`DeAmIvView *deam` parameter + L1's Deam `BucketScope`; blob `4c5eeb06` = prebase-W3) and the quote-slice ctest suite list (12 suites, 135 cases; `7baf281f`); root gates quote-slice 135/135, native CLI pytest 163/163, chain-batch 31/31, PCH-off 14 TUs 0 diagnostics |
 | `8be778b5` | L1b-shape-cohorts `54e9488d` (vol-sota W1) | review APPROVE (2 minor latent); tool-only nine-class shape manifest `ad323ccb` + opt-in `score --class-manifest`; no conflicts; root gate `atx-vol-quote-benchmark-tools` 163 passed |
 | `b92d9006` | L2b-al-geometry `9fe45298` (vol-sota W2) | review APPROVE (0 blocker/major); `AlExpiryGeometry` / `AlBoundaryHandle` / `al_price_pack` bit-identical to the fresh kernels, opt-in batched / Fast-screened certification overload (library API, no quote-bench key); no conflicts; root gates identity 11/11, certification 6/6 (`AmericanCertification.*` not yet in the quote-slice ctest filter: exe 141 / 13 suites vs ctest 135 / 12, L2c), combined anchored ctest 211/211, pricing/simd name set at cap 3 = `52324ef8` modulo the documented `PricingExecutor.NestedDispatch_ReachesAPoolWorkerAndWakesThePool` load flake (3/3 alone), PCH-off 24 TUs 0 diagnostics; full parity, keys-ON and G2 below |
+| `1a0b2b1a` | L2c-rung-memo `3d5fe7fa` (vol-sota W2b) | review APPROVE (0 blocker/major, 3 minor); opt-in per-expiry rung memo (`graded.rung_memo`): the de-Am IV cache owned per expiry slot and shared by every rung / repair / ladder attempt across fan-out threads, candidate certification-grid memo, fan-out exceptions -> typed surface error, kBand published after the fill, band fills charged to the deam bucket; 3 conflicts resolved with the Edit tool as the union: `quote_surface.cpp` (root blob = prebase blob, so the union is the lane's text; resolved `16446b35` = the lane's), `quote_surface_test.cpp` (`474dba43` = the lane's), quote-slice ctest suite list (root wrapping + `AmericanCertification.* QuoteSurfaceRungMemo.*`, 14 suites, `aa9fa1b0`); root gates quote-slice 150/150, native CLI pytest 164/164, curve-fit set 40/40 (+ 2 real-board skips), PCH-off 16 TUs 0 diagnostics |
+| `f6fc7452` | L2e-deam-inversion `9923ce4c` (vol-sota W2b) | review APPROVE (0 blocker/major, 3 minor m1-m3; checkpoint + `review-L2e-finish`); opt-in Premium American IV inversion in the de-Am cache (`graded.deam_inversion premium`: BAW / Black-76 seed leg, cold accurate confirm per iterate, bit-for-bit Search fallback, bounded budget extension, `--deam-audit`; roots <= 2.4e-10 vol from the accurate root, ruling (a)); 3 conflicts resolved with the Edit tool as the union: `deam_iv_cache.cpp` `DeAmIvView::band` (L2c's local-copy publish x L2e's mid-first seeding: the range test and the edge inversions read the local, and the slot's mid fields are carried into the local after `mid_iv(i)` so publish() keeps them; blob `3e7c28d2`), `quote_bench_policy.hpp` graded key list (`54c47803`), CLI strict-option cases (`baaf07d0`); root gates AmericanIvPremium + AlFastProfile 12/12, QuoteSliceVolSpace + DeAmIvCache 9/9, chain-batch 31/31, quote-slice 151/151, native CLI pytest 165/165, PCH-off 67 TUs 0 diagnostics |
+| `27eba264` | L2f-al-fast-tier `4ba287c9` (vol-sota W2b) | review APPROVE (0 blocker/major, 3 minor); opt-in `AlProfile::Screen` + `al_screen_opts()` seed-grade kernel tier (7 nodes, l 16, 2 JN + 3 FP sweeps, p 48; pinned |dP| <= 7.8e-4 max(P,1), 4.6e-6 for T <= 0.1, |dIV| <= 0.48 bp; never served), `AlBoundaryHandle` generation guard (L2b m2), bench status-array fix; no conflicts (kernel blobs `849c3cb3` / `d8b692cb` / `b0a2b84b` = the lane's); root gates 42 focused pricing gtests, chain-batch 31/31, combined anchored ctest 223/223, pricing/simd name set at cap 3 = `52324ef8` modulo the `PricingExecutor.NestedDispatch_ReachesAPoolWorkerAndWakesThePool` load flake (3/3 alone), AL fingerprint `53c4df68` MATCH (vol-rel-avx2 of `27eba264`), PCH-off 19 TUs 0 diagnostics; full parity, keys-ON and G2 below |
 
 **Wave W0 of the vol-sota sprint (G0, 2026-10-18).** Final root `05a7da3e`, quote-bench sha256
 `9ce6f6c6afc3aa51a5feded37c6473a0cd39e15574f2e0e3a47c5fc7db3d1a12`, `ATX_VOL_FIT_WORKERS=3`,
@@ -161,6 +164,38 @@ key sets equal W0 on 9 parity outputs. Name set `^(pricing|simd)/` at cap 3 = `5
 wall at 1 / 0 workers): plan §1.1 "Today" column not updated. Unqualified side readings from the
 identity runs only: SPY graded-v1 + accurate cache 25.7 s wall at 3 workers, 12.4 s at all cores (16
 threads, load 23-36%). No default moved, no holdout touched, nothing pushed.
+
+**Wave W2b of the vol-sota sprint (2026-10-20).** Merged in this order on `f4a5028e`: L2c `3d5fe7fa` at
+`1a0b2b1a` (3 conflicts: `quote_surface.cpp` and `quote_surface_test.cpp` resolved to the lane's blobs `16446b35` /
+`474dba43` because root = prebase there; ctest suite union `aa9fa1b0`), L2e `9923ce4c` at `f6fc7452` (3 conflicts:
+`deam_iv_cache.cpp` `DeAmIvView::band` union `3e7c28d2` — L2c's local-copy publish x L2e's mid-first seeding, the
+slot's mid fields carried into the local after `mid_iv(i)`; `quote_bench_policy.hpp` key list `54c47803`; CLI strict
+cases `baaf07d0`), L2f `4ba287c9` at `27eba264` (clean). Final root binary (`27eba264`) quote-bench sha256
+`e86e0b98d979dd03fa64795f8a47b0f58c80670fafdfecbc46937f90e88206b8`, `ATX_VOL_FIT_WORKERS=3`, outputs
+`C:/atx-cache/quote-benchmark/integrate-W2b-20261020-parity/` and `.../integrate-W2b-20261020-g2/`. Full default
+parity 13/13 MATCH, every RAW hash exact (the W2 set: dev200 `c89d0739`, dev200b `4b273b08`, divsched `abc75955` /
+`747d3e6c`, divsmooth `2cfda793` / `5a9c1f5f`, graded-v1 `fc277413` / `46ad6c26` / `171fa2d2`, repair-dominance-v3
+`a714e814` / `b11971e7` / `b0451d61`, R104 `6b129f64`). W0 keys-ON ladder set 6/6 = W0 = W2. AL fingerprint `53c4df68`
+MATCH (vol-rel-avx2 of `27eba264`; covers L1c + L2b + L2f). W2 identities re-proven 6/6 (L2d at 1 / 0, ladder at 0,
+L2a SPY `087e6a54` at 3 and 0). W2b identities: L2c rung memo ON = OFF by hash 4/4 (`171fa2d2` / `232d2c0d` /
+`21f4ee58` / SPY `087e6a54`); L2e premium own hash set bit-identical to the lane's and both reviews' (SPY `2c8b113c`,
+cohort5 `bb5df194`, dev200 `196387bb`), served / refused set identical to OFF (diff EMPTY, 0 status mismatches), max
+|dprice| 2.0e-5 / 4.1e-5 / 2.8e-4 USD = Search's distance from the accurate root (Premium roots <= 2.44e-10 vol;
+ruling (a)), COUNT 191,511 -> 75,153 (0.392) and the fallback reasons identical to the lane's (the `band()` union
+preserved L2e exactly). Name set `^(pricing|simd)/` at cap 3 = `52324ef8` (929 tests; the PricingExecutor load flake
+excepted, 3/3 alone). **G2 measured, ALL keys that exist at W2b** (`fit_space vol` + `deam_cache` accurate +
+`rung_memo` + `deam_inversion premium` + `fit_workers`; unqualified, one run each, 16 CPUs, load 4-23 %): SPY graded-v1
+fit+reprice **15.0 s single-thread** (wall 15.2; W0 87.8-91, W2 52.7) and **3.35 s all cores** (wall 3.6; W2 12.4),
+chain p50 401 ms @1; the two levers: **75,153 de-Am AL boundary solves per SPY surface** (W0 191,511; L2e cuts them,
+L2c keeps the count at 75,153 under the fan-out) at **~149 µs per solve** (the unchanged Reference kernel; Screen and
+the family are not wired yet) plus 28,908 certification-grid prices (34,694); cohort5 graded-v1 82.5 -> 33.0 s @1 /
+5.4 s @0 (p50 187 -> 151 ms, p99 3,935 -> 1,483), ladder point 137.4 -> 36.8 s @1 / 8.8 s @0, dev200 graded-v1 23.3 s
+@0 (p50 36.6 ms, p99 795). Served sets identical OFF vs ALL (lost 0 / gained 0 on cohort5 graded, ladder, SPY),
+containment 91.59 % / 98.51 % and MAE/spread 0.2102 / 0.0848 unchanged to 1e-7; the all-keys ladder cohort5 hash
+`270f1218` is first recorded. Plan §1.1 "Today" column updated: every speed row NOT MET (SPY 15x / 22x short), byte-identity
+at any `fit_workers` MET; **SPY single-thread = 15.0 s, all cores = 3.35 s: unusable against the ≤ 1 s bar.** The HFT
+sub-table (research §7.2) added under §1.1; the research report copied to `atx-vol/research/`. No default moved, no
+holdout touched, nothing pushed.
 
 Pending: knot-first ladder (inherits the AAPL Nov 20 / SPY 23 d calendar slot holders from slice-repair).
 

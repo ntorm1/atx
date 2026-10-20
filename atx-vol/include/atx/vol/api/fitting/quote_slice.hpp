@@ -110,6 +110,15 @@ enum class QuoteSliceFitSpace : std::uint8_t { PriceChannel, VolChannel };
 // kernel. The dated-cash lattice has no Fast kernel and is always accurate.
 enum class QuoteSliceDeamProfile : std::uint8_t { Accurate, Fast };
 
+// Inversion strategy of the VolChannel cache on the accurate kernel (opt-in, lane L2e
+// 2026-10-19; american_iv.hpp IvStrategy). Search (the default) is the historical
+// inverter, bit for bit. Premium inverts by de-Americanisation: a seed-leg model
+// confirmed by cold Andersen-Lake solves, accepted at the same vol tolerance
+// (QuoteSliceConfig::iv_tolerance), falling back to Search everywhere it cannot
+// accept; a quote's bid and ask are seeded from its mid's cold points. Requires
+// deam_profile Accurate. The dated-cash lattice always uses Search.
+enum class QuoteSliceDeamInversion : std::uint8_t { Search, Premium };
+
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
 // in the fixed volatility unit min_half_width_vol.
@@ -168,6 +177,7 @@ struct QuoteSliceChannelConfig {
   QuoteSliceFitSpace fit_space = QuoteSliceFitSpace::PriceChannel;
   QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
   bool deam_cache = false;
+  QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // opt-in (L2e)
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -322,6 +332,18 @@ struct QuoteSliceRow {
   bool weight_capped = false;
 };
 
+// Pre-solve screen of a channel fit (lane L2c, 2026-10-19): the typed reason a channel
+// fit is refused BEFORE its solve, read from the usable bid/ask volatility bands only
+// (the de-Am IV cache under VolChannel). EmptyBand: no quote has a usable band (every
+// band empty or entirely outside the model's identifiable price range); TooFewChannels:
+// some, but fewer than channel.min_channel_quotes. Both are today's "too few usable
+// bid/ask channels" refusal (fit_status InsufficientQuotes, unchanged), now typed. Only
+// necessary conditions of a served fit qualify, so the screen never refuses a slice
+// the solve would serve.
+enum class QuoteSlicePreScreen : std::uint8_t { Pass, EmptyBand, TooFewChannels };
+
+[[nodiscard]] const char *to_string(QuoteSlicePreScreen value) noexcept;
+
 // Populated only by the channel method.
 struct QuoteSliceChannelDiagnostics {
   bool used = false;
@@ -342,6 +364,7 @@ struct QuoteSliceChannelDiagnostics {
   std::size_t repaired_nodes = 0;
   double repair_max_price = 0.0;
   double repair_max_half_spreads = 0.0;
+  QuoteSlicePreScreen prescreen = QuoteSlicePreScreen::Pass; // Pass unless refused pre-solve
 };
 
 // The de-Americanised IV cache's part in one fit (QuoteSliceFitSpace::
@@ -353,6 +376,8 @@ struct QuoteSliceDeamDiagnostics {
   std::size_t inversions = 0;     // American IV inversions (fallbacks included)
   std::size_t model_prices = 0;   // American prices of the band edges (kIvMin, kIvMax)
   std::size_t accurate_fallbacks = 0; // Fast inversions redone on the accurate kernel
+  std::size_t premium_inversions = 0; // inversions attempted by the Premium strategy
+  std::size_t premium_fallbacks = 0;  // ... of which handed to Search
 };
 
 struct QuoteSliceDiagnostics {
@@ -599,6 +624,16 @@ struct QuoteSurfaceConfig {
   // slot and every cross-expiry stage (priors, calendar, repair rungs,
   // dominance) stays serial, so results are bit-identical for any value.
   unsigned fit_workers = 1;
+  // Opt-in per-expiry rung memo (lane L2c, 2026-10-19; default off = the historical
+  // path). Every expiry's slot owns a memo that all of its per-expiry fits share,
+  // whichever thread runs them: (1) under QuoteSliceChannelConfig::deam_cache the
+  // expiry's de-Am IV cache lives in the slot instead of the fitting thread's memo, so
+  // the expiry's quotes are inverted ONCE per surface fit at any fit_workers; (2) an
+  // unchanged candidate (the same chain inputs and the same fitted volatility at every
+  // certification strike, as when a repair rung refits the pass-A fit with the repair
+  // on) reuses its American certification grid instead of repricing it. Both are
+  // exact-keyed, so results are bit-identical with or without the memo. Speed only.
+  bool rung_memo = false;
 };
 
 // Which fitter produced a slice's served (or last attempted) fit: the pass-A

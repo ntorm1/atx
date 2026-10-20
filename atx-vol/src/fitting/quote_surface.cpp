@@ -26,7 +26,9 @@
 // Only the per-expiry stages (pass A or knot_pass, B1, B2) fan out over
 // surface.fit_workers (for_each_expiry). Priors, the calendar passes, the
 // repair rungs and the dominance gate stay serial, so output is bit-identical
-// for any worker count.
+// for any worker count. The opt-in rung memo (surface.rung_memo, rung_memo.hpp)
+// gives every expiry slot one memo that all of that expiry's fits share, on
+// whichever thread they run; it changes speed only.
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
@@ -34,15 +36,19 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
+#include <new>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
+#include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 #include "fitting/term_prior.hpp"
 
 namespace atx::vol {
@@ -196,7 +202,8 @@ public:
         two_sided_(expiries.size()), contained_(expiries.size(), 0),
         held_point_(expiries.size()), cost_(expiries.size()),
         trace_(counters::fit_timing::armed_surface()),
-        timing_(trace_ != nullptr ? expiries.size() : 0) {
+        timing_(trace_ != nullptr ? expiries.size() : 0),
+        memos_(surface.rung_memo ? expiries.size() : 0) {
     for (std::size_t i = 0; i < expiries.size(); ++i) {
       cost_[i] = two_sided_quotes(expiries[i].quotes);
     }
@@ -242,13 +249,22 @@ private:
   // Each slot is a function of its own inputs alone, so the result is identical
   // for any order and any worker count. A throwing body propagates to the caller
   // (parallel_for_dynamic rethrows the first exception after the join), as the
-  // serial loop did.
+  // serial loop did; fit_quote_surface converts it to its typed error, so no
+  // partially written slot is ever returned. Each task runs with its expiry's rung
+  // memo installed (none when surface_.rung_memo is off).
   template <class Body> void for_each_expiry(std::vector<std::size_t> tasks, const Body &body) {
     tasks = detail::longest_first(std::move(tasks), cost_);
     parallel_for_dynamic(tasks.size(), surface_.fit_workers, [&](std::size_t task) {
+      detail::run_expiry_task_hook(tasks[task]);
       detail::note_expiry_dispatch(tasks[task]);
+      const detail::ScopedRungMemo memo(memo_of(tasks[task]));
       body(tasks[task]);
     });
+  }
+
+  // Expiry i's opt-in rung memo (rung_memo.hpp), null when surface_.rung_memo is off.
+  [[nodiscard]] detail::ExpiryRungMemo *memo_of(std::size_t i) const {
+    return memos_.empty() ? nullptr : &memos_[i];
   }
 
   [[nodiscard]] std::vector<std::size_t> every_expiry() const {
@@ -570,6 +586,7 @@ private:
       }
       const counters::fit_timing::ChainScope chain(slot(i), 1);
       const counters::fit_timing::RepairRungScope repair_timing;
+      const detail::ScopedRungMemo memo(memo_of(i));
       const QuoteSurfaceExpiry &e = expiries_[i];
       auto fit = fit_quote_slice(e.market, e.quotes, config_, e.calendar_dividends);
       if (!fit) continue;
@@ -599,6 +616,7 @@ private:
       }
       counters::fit_timing::ChainScope chain(slot(i));
       const counters::fit_timing::RepairRungScope repair_timing;
+      const detail::ScopedRungMemo memo(memo_of(i));
       const QuoteSurfaceExpiry &e = expiries_[i];
       if (slice.knot_status == QuoteSliceFitStatus::ArbitrageFailure) {
         chain.rung();
@@ -652,6 +670,7 @@ private:
   [[nodiscard]] Result<QuoteSliceFit> channel_fit(std::size_t i, const TermPrior &prior,
                                                   double factor) const {
     const counters::fit_timing::ChainScope chain(slot(i), 1);
+    const detail::ScopedRungMemo memo(memo_of(i));
     const QuoteSurfaceExpiry &e = expiries_[i];
     const auto point = prior.at(e.market.variance_years, static_cast<std::uint64_t>(i));
     if (!point || !(surface_.term_prior_weight > 0.0)) {
@@ -1152,7 +1171,29 @@ private:
   // on its thread (else empty); slot i is written only while expiry i is fitted.
   counters::fit_timing::SurfaceTrace *trace_;
   mutable std::vector<counters::fit_timing::ChainRecorder> timing_;
+  // Opt-in rung memo per expiry (surface_.rung_memo, else empty); slot i is touched
+  // only while expiry i is fitted, by the one thread fitting it (rung_memo.hpp).
+  mutable std::vector<detail::ExpiryRungMemo> memos_;
 };
+
+// fit_quote_surface's typed error for an exception that escaped the fit: a worker's
+// exception rethrown on the calling thread after the fan-out's join (for example
+// std::bad_alloc), a std::system_error from creating a worker thread, or any throw of a
+// serial stage. The fit's slots are discarded, never returned. Call only inside a catch
+// handler.
+[[nodiscard]] Status caught_exception() {
+  try {
+    throw;
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "quote surface: out of memory");
+  } catch (const std::system_error &e) {
+    return Err(ErrorCode::Unavailable, std::string("quote surface: system error: ") + e.what());
+  } catch (const std::exception &e) {
+    return Err(ErrorCode::Internal, std::string("quote surface: ") + e.what());
+  } catch (...) {
+    return Err(ErrorCode::Internal, "quote surface: unknown exception");
+  }
+}
 
 } // namespace
 
@@ -1216,8 +1257,14 @@ fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSlice
   if (std::adjacent_find(maturities.begin(), maturities.end()) != maturities.end()) {
     return Err(ErrorCode::InvalidArgument, "quote surface: duplicate calendar maturity");
   }
-  SurfaceFitter fitter(expiries, config, surface);
-  return fitter.run();
+  // Specified to return errors: no exception (a worker's, rethrown after the
+  // fan-out's join, or a serial stage's) escapes.
+  try {
+    SurfaceFitter fitter(expiries, config, surface);
+    return fitter.run();
+  } catch (...) {
+    return Err(caught_exception().error());
+  }
 }
 
 } // namespace atx::vol

@@ -15,8 +15,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <initializer_list>
+#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -270,6 +272,88 @@ TEST(QuoteSliceVolSpace, FastKernelCacheNeverAnswersAnAccurateRequest) {
   deam_iv_memo_clear();
 }
 
+// Opt-in Premium inversion of the cache (lane L2e, QuoteSliceDeamInversion::Premium):
+// on the SPY-shaped grid it serves the same rows (statuses, admission, fit status) as
+// the Search cache with quote volatilities within the inversion tolerance band; its
+// memo entry never answers a Search fit (key word), so a Search fit after it is the
+// PriceChannel fit bit for bit; its values do not depend on the order the fits ask for
+// them (mids first, edges from the mid's points); Premium on the Fast kernel is refused.
+TEST(QuoteSliceVolSpace, PremiumCacheServesTheSearchRowsAndNeverAnswersASearchFit) {
+  const std::vector<GridCase> grid = {
+      {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t premium_inversions = 0, premium_fallbacks = 0, compared = 0;
+  double max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    const QuoteSliceConfig search = vol_config(off, true);
+    QuoteSliceConfig premium = search;
+    premium.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    // Premium in the graded order (point fit first: mids), then channel-only on a
+    // cleared memo: the same bits either way.
+    const auto prem_point = fit_quote_slice(c.market, c.quotes, premium);
+    const auto prem_channel = fit_quote_slice_channel(c.market, c.quotes, premium, nullptr);
+    ASSERT_TRUE(reference && prem_point && prem_channel);
+    EXPECT_TRUE(prem_channel->diagnostics.deam.reused);
+    // The Search cache after the Premium one: a separate entry, the PriceChannel fit.
+    const auto search_after = fit_quote_slice_channel(c.market, c.quotes, search, nullptr);
+    ASSERT_TRUE(search_after);
+    EXPECT_FALSE(search_after->diagnostics.deam.reused);
+    EXPECT_EQ(search_after->diagnostics.deam.premium_inversions, 0u);
+    EXPECT_EQ(deam_iv_memo_size(), 2u);
+    expect_identical(*reference, *search_after, "search after premium");
+    deam_iv_memo_clear();
+    const auto prem_alone = fit_quote_slice_channel(c.market, c.quotes, premium, nullptr);
+    ASSERT_TRUE(prem_alone);
+    expect_identical(*prem_channel, *prem_alone, "premium, channel only");
+    premium_inversions += prem_point->diagnostics.deam.premium_inversions +
+                          prem_channel->diagnostics.deam.premium_inversions;
+    premium_fallbacks += prem_point->diagnostics.deam.premium_fallbacks +
+                         prem_channel->diagnostics.deam.premium_fallbacks;
+    // Same rows served as the Search cache (= the PriceChannel fit), vols within band.
+    EXPECT_EQ(prem_channel->fit_status, reference->fit_status);
+    ASSERT_EQ(prem_channel->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &p = prem_channel->rows[i];
+      const QuoteSliceRow &r = reference->rows[i];
+      EXPECT_EQ(p.quote_status, r.quote_status) << i;
+      EXPECT_EQ(p.evaluation_status, r.evaluation_status) << i;
+      EXPECT_EQ(p.admitted, r.admitted) << i;
+      if (std::isfinite(p.market_iv) && std::isfinite(r.market_iv)) {
+        ++compared;
+        max_dsigma = std::max(max_dsigma, std::abs(p.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+  }
+  std::printf("[premium cache] %zu inversions, %zu fallbacks, %zu mid IVs compared, max "
+              "|dsigma| vs Search %.3g\n",
+              premium_inversions, premium_fallbacks, compared, max_dsigma);
+  EXPECT_GT(premium_inversions, 0u);
+  EXPECT_LT(premium_fallbacks * 10, premium_inversions);
+  EXPECT_GT(compared, 0u);
+  deam_iv_memo_clear();
+  // Premium is defined on the accurate kernel only.
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig fast =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true,
+                 QuoteSliceDeamProfile::Fast);
+  fast.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  const auto refused = fit_quote_slice_channel(c.market, c.quotes, fast, nullptr);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  deam_iv_memo_clear();
+}
+
 // A scripted American model: an Accurate inversion returns 0.25 * target, a Fast
 // one 0.25 * target + fast_offset (or fast_result when set); prices bound the
 // identifiable range at [floor_price, cap_price].
@@ -285,12 +369,13 @@ public:
   mutable int fast_calls = 0;
   mutable int accurate_calls = 0;
   mutable int price_calls = 0;
+  mutable int throw_on_price_call = -1; // the price call (0-based) that throws bad_alloc
 
   double effective_yield_of(double calendar_yield) const override { return calendar_yield; }
   double local_forward_of(double, double) const override { return 100.0; }
   double reference_yield() const override { return 0.0; }
   Result<double> price(const QuoteSliceQuote &, double sigma, double, DeAmKernel) const override {
-    ++price_calls;
+    if (price_calls++ == throw_on_price_call) throw std::bad_alloc();
     return Ok(sigma == kIvMin ? floor_price : cap_price);
   }
   Result<double> implied_vol(const QuoteSliceQuote &, double target, double,
@@ -421,6 +506,31 @@ TEST(DeAmIvCache, BandEdgesFollowTheChannelBuilderAndAreComputedOnce) {
   ASSERT_TRUE(view.mid_iv(0));
   EXPECT_EQ(model.price_calls, prices);
   EXPECT_EQ(model.accurate_calls, inversions + 1);
+}
+
+// review-L2a minor (fixed in lane L2c): a band fill that throws mid-way (here the cap
+// price, after the floor price) publishes nothing, so the next request refills the
+// whole band instead of serving a half-filled entry as final.
+TEST(DeAmIvCache, ABandFillThatThrowsIsRefilledNotServedHalfFilled) {
+  const std::vector<QuoteSliceQuote> quotes = {{100.0, Side::Call, 1.0, 1.2}};
+  ScriptedModel model;
+  model.floor_price = 0.5;
+  model.cap_price = 8.0;
+  model.throw_on_price_call = 1; // the second model price of the fill: the cap price
+  DeAmIvCache cache;
+  cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+  QuoteSliceDeamDiagnostics work;
+  DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Accurate, work);
+  EXPECT_THROW(static_cast<void>(view.band(0)), std::bad_alloc);
+  EXPECT_EQ(cache.ivs[0].computed & DeAmQuoteIv::kBand, 0);
+  const DeAmQuoteIv &band = view.band(0);
+  EXPECT_NE(band.computed & DeAmQuoteIv::kBand, 0);
+  EXPECT_TRUE(band.well_posed);
+  EXPECT_DOUBLE_EQ(band.floor_price, 0.5);
+  EXPECT_DOUBLE_EQ(band.cap_price, 8.0);
+  EXPECT_DOUBLE_EQ(band.bid_iv, 0.25);
+  EXPECT_DOUBLE_EQ(band.ask_iv, 0.30);
+  EXPECT_EQ(model.price_calls, 4); // two of the failed fill, two of the refill
 }
 
 // A prepared fit and its inputs with every key field away from its default.

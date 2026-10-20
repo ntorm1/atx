@@ -534,6 +534,7 @@ struct FitSpaceOptions {
   QuoteSliceFitSpace fit_space = QuoteSliceFitSpace::PriceChannel;
   QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
   bool deam_cache = false;
+  QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // opt-in (L2e)
 };
 
 inline FitSpaceOptions parse_fit_space(const Json &graded) {
@@ -564,6 +565,24 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
       throw std::runtime_error("Policy graded deam_cache must be true or false");
     }
     out.deam_cache = graded.at("deam_cache").get<bool>();
+  }
+  // Opt-in Premium inversion of the cache (quote_slice.hpp QuoteSliceDeamInversion):
+  // inert under the price channel and undefined on the Fast kernel, so refused there.
+  if (graded.contains("deam_inversion")) {
+    if (out.fit_space != QuoteSliceFitSpace::VolChannel) {
+      throw std::runtime_error("Policy graded deam_inversion requires fit_space vol");
+    }
+    const auto name = text(graded.at("deam_inversion"));
+    if (name == "premium") {
+      out.deam_inversion = QuoteSliceDeamInversion::Premium;
+    } else if (name != "search") {
+      throw std::runtime_error("Policy graded deam_inversion must be search or premium");
+    }
+    if (out.deam_inversion == QuoteSliceDeamInversion::Premium &&
+        out.deam_profile != QuoteSliceDeamProfile::Accurate) {
+      throw std::runtime_error("Policy graded deam_inversion premium requires deam_profile "
+                               "accurate");
+    }
   }
   return out;
 }
@@ -596,7 +615,11 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
     out["deam_profile"] =
         space.deam_profile == QuoteSliceDeamProfile::Fast ? "fast" : "accurate";
     out["deam_cache"] = space.deam_cache;
+    if (space.deam_inversion == QuoteSliceDeamInversion::Premium) {
+      out["deam_inversion"] = "premium"; // provenance only when opted in
+    }
   }
+  if (s.rung_memo) out["rung_memo"] = true;
   return out;
 }
 
@@ -751,8 +774,16 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
-             "deam_profile", "deam_cache"});
+             "deam_profile", "deam_cache", "rung_memo", "deam_inversion"});
     space = parse_fit_space(j);
+    // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
+    // exact-keyed reuse across an expiry's rungs, speed only.
+    if (j.contains("rung_memo")) {
+      if (!j.at("rung_memo").is_boolean()) {
+        throw std::runtime_error("Policy graded rung_memo must be true or false");
+      }
+      surface.rung_memo = j.at("rung_memo").get<bool>();
+    }
     // Opt-in knot-first ladder (quote_slice.hpp fit_quote_surface); "off" is the
     // historical point-first admission.
     if (j.contains("ladder")) {
@@ -812,6 +843,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.fit_space = space.fit_space;
     profile.config.channel.deam_profile = space.deam_profile;
     profile.config.channel.deam_cache = space.deam_cache;
+    profile.config.channel.deam_inversion = space.deam_inversion;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.
     if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&

@@ -132,6 +132,13 @@ struct AlScheme {
   AlProfile profile = AlProfile::Reference;
 };
 
+// The workspace's Fast-arithmetic flag (AlWorkspace::fast) for a scheme: every opt-in
+// profile (Fast, and Screen's small scheme on the same arithmetic) runs it; Reference
+// keeps the shipped arithmetic.
+[[nodiscard]] constexpr bool al_fast_arithmetic(const AlScheme& sch) noexcept {
+  return sch.profile != AlProfile::Reference;
+}
+
 struct AlBoundary {
   std::array<double, kAlMaxNodes> z{};
   std::array<double, kAlMaxNodes> wbary{};  // 2nd-kind barycentric weights (fixed)
@@ -494,6 +501,9 @@ struct AlExpiryGeometry::Impl {
   amer::AlOrientedGeometry put{};
   amer::AlOrientedGeometry call{};
   bool prepared = false;
+  // Bumped by every prepare(): a boundary handle records it at solve() and refuses to
+  // price once the geometry has been re-prepared (L2b review m2, enforced by L2f).
+  std::uint64_t generation = 0;
 };
 
 }  // namespace atx::vol

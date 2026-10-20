@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -15,7 +18,9 @@
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/quote_slice_vol_space.hpp"
+#include "fitting/rung_memo.hpp"
 #include "fitting/slice_channel.hpp"
+#include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
 namespace {
@@ -689,6 +694,28 @@ public:
                                 q_effective, quote.side, AmericanMethod::AndersenLake,
                                 config_.iv_tolerance, config_.max_iv_iterations, fast_);
   }
+  // Premium (L2e): contract_iv's own forward map and controls; a fallback returns
+  // contract_iv's value bit for bit (american_iv_premium.hpp). The dated-cash lattice
+  // has no Premium route: contract_iv itself.
+  Result<double> implied_vol_premium(const QuoteSliceQuote &quote, double target,
+                                     double q_effective, IvPremiumMemory *memory,
+                                     IvPremiumStats &stats) const override {
+    if (fit_.dividend_model == QuoteSliceDividendModel::DatedCash) {
+      stats = IvPremiumStats{};
+      return contract_iv(fit_, quote, target, config_, q_effective);
+    }
+    IvOpts opts;
+    opts.tol = config_.iv_tolerance;
+    opts.max_iter = config_.max_iv_iterations;
+    opts.al_opts = fit_.al_opts;
+    const IvResult iv = american_implied_vol_premium(
+        target, fit_.market.spot, quote.strike, fit_.market.variance_years,
+        fit_.diagnostics.effective_rate, q_effective, quote.side, opts, memory, stats);
+    if (iv.status != IvStatus::Ok) {
+      return Err(ErrorCode::Unavailable, "quote slice: no American implied volatility");
+    }
+    return Ok(iv.iv);
+  }
   double black_vega(const QuoteSliceQuote &quote, double sigma, double forward) const override {
     return black76_value_and_vega(forward, quote.strike, fit_.market.variance_years, sigma,
                                   fit_.diagnostics.discount, quote.side)
@@ -702,9 +729,10 @@ private:
 };
 
 // The chain cache an opt-in vol-space fit reads (QuoteSliceFitSpace::VolChannel):
-// this thread's memo entry for the exact inputs when deam_cache is set, else a
-// cache this fit owns. Construct after prepare_fit; not movable (the view holds
-// references to the members).
+// when deam_cache is set, the expiry's entry for the exact inputs in the rung memo
+// installed by the surface fitter (QuoteSurfaceConfig::rung_memo, rung_memo.hpp), else
+// in this thread's memo; without deam_cache a cache this fit owns. Construct after
+// prepare_fit; not movable (the view holds references to the members).
 class VolSpaceCache {
 public:
   VolSpaceCache(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
@@ -713,12 +741,16 @@ public:
     QuoteSliceDeamDiagnostics &work = fit.diagnostics.deam;
     work.used = true;
     if (config.channel.deam_cache) {
-      cache_ = deam_iv_memo(deam_iv_key(fit, quotes, config), quotes.size(), work.reused);
+      DeAmIvKey key = deam_iv_key(fit, quotes, config);
+      detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
+      cache_ = memo != nullptr ? memo->deam_cache(std::move(key), quotes.size(), work.reused)
+                               : deam_iv_memo(std::move(key), quotes.size(), work.reused);
     } else {
       cache_ = std::make_shared<DeAmIvCache>();
       cache_->ivs.assign(quotes.size(), DeAmQuoteIv{});
     }
-    view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work);
+    view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work,
+                  config.channel.deam_inversion);
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1173,11 +1205,38 @@ void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::si
   fit.price_only_nodes[node] = static_cast<std::uint8_t>(fit.price_only_nodes[node] | bit);
 }
 
+// Rung memo key of a certification candidate (rung_memo.hpp): the fit-level words of
+// the American model (deam_iv_key of the prepared fit with no quotes and fixed
+// inverter controls, so only the market, derived carry and clocks, dividend model and
+// dated dividends, AlOpts and lattice controls vary), then per strike the strike, the
+// fitted volatility and the contract yield, bit for bit. Also folds every yield into
+// [q_min, q_max] exactly as the grid loop does. Empty when a volatility is not
+// positive: the caller then runs the historical loop, which reports that refusal.
+std::vector<std::uint64_t> certification_grid_key(const QuoteSliceFit &out,
+                                                  std::span<const double> strikes,
+                                                  double &q_min, double &q_max) {
+  std::vector<std::uint64_t> key = deam_iv_key(out, {}, QuoteSliceConfig{}).words;
+  key.reserve(key.size() + 3 * strikes.size());
+  for (const double strike : strikes) {
+    const double q = effective_yield(out, calendar_yield_at(out, strike));
+    q_min = std::min(q_min, q);
+    q_max = std::max(q_max, q);
+    const double sigma = out.curve->iv(std::log(strike / out.diagnostics.forward));
+    if (!positive(sigma)) return {};
+    key.push_back(std::bit_cast<std::uint64_t>(strike));
+    key.push_back(std::bit_cast<std::uint64_t>(sigma));
+    key.push_back(std::bit_cast<std::uint64_t>(q));
+  }
+  return key;
+}
+
 // Stage 3: reprice every valid strike from out.curve, certify the final
 // American prices and fill the rows. Sets fit_status/fit_error on refusal.
 // A positive `repair_half_spreads` enables the bounded-move convexity repair;
 // a Channel `channel_repair` then gets the remaining failures. Nodes either
-// repair moved are flagged in out.moved_nodes.
+// repair moved are flagged in out.moved_nodes. Under an installed rung memo
+// (QuoteSurfaceConfig::rung_memo) an unchanged candidate reuses its memoised
+// grid prices (bit-identical to a reprice) and certifies them as below.
 void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quotes,
                        double repair_half_spreads = 0.0,
                        const QuoteSliceRepairConfig *channel_repair = nullptr) {
@@ -1200,7 +1259,14 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   prices.reserve(strikes.size());
   double q_min = diag.effective_yield;
   double q_max = diag.effective_yield;
-  for (const double strike : strikes) {
+  detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
+  std::vector<std::uint64_t> grid_key;
+  if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
+  const std::vector<AmericanPriceNode> *const memoised =
+      grid_key.empty() ? nullptr : memo->grid(grid_key);
+  if (memoised != nullptr) prices = *memoised;
+  for (std::size_t s = 0; memoised == nullptr && s < strikes.size(); ++s) {
+    const double strike = strikes[s];
     const double q = effective_yield(out, calendar_yield_at(out, strike));
     q_min = std::min(q_min, q);
     q_max = std::max(q_max, q);
@@ -1219,6 +1285,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     }
     prices.push_back({strike, *call, *put});
   }
+  if (memoised == nullptr && !grid_key.empty()) memo->remember_grid(std::move(grid_key), prices);
   const counters::fit_timing::BucketScope certify_timing(counters::fit_timing::Bucket::Certify);
   AmericanPriceBounds bounds{market.spot, std::min(1.0, diag.discount),
                              std::max(1.0, diag.discount), 0.0, 0.0};
@@ -1328,7 +1395,11 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       (c.fit_space != QuoteSliceFitSpace::PriceChannel &&
        c.fit_space != QuoteSliceFitSpace::VolChannel) ||
       (c.deam_profile != QuoteSliceDeamProfile::Accurate &&
-       c.deam_profile != QuoteSliceDeamProfile::Fast)) {
+       c.deam_profile != QuoteSliceDeamProfile::Fast) ||
+      (c.deam_inversion != QuoteSliceDeamInversion::Search &&
+       c.deam_inversion != QuoteSliceDeamInversion::Premium) ||
+      (c.deam_inversion == QuoteSliceDeamInversion::Premium &&
+       c.deam_profile != QuoteSliceDeamProfile::Accurate)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -1431,6 +1502,19 @@ std::vector<ChannelObservation> build_channel_observations(QuoteSliceFit &out,
   channel_diag.mid_strikes = static_cast<std::size_t>(
       std::unique(mid_strikes.begin(), mid_strikes.end()) - mid_strikes.begin());
   return channel;
+}
+
+// Pre-solve screen (QuoteSlicePreScreen, lane L2c): necessary conditions of a served
+// channel fit read from its usable bid/ask bands alone. `channels` counts the quotes
+// whose band is usable (non-empty, inside the model's identifiable price range, with
+// at least one finite edge); under VolChannel they come from the de-Am IV cache, so the
+// screen costs no American work beyond the one inversion pass. Exactly today's
+// pre-solve refusal, typed: it can never refuse a slice the solve would serve.
+QuoteSlicePreScreen prescreen_slice(std::size_t channels,
+                                    const QuoteSliceChannelConfig &config) noexcept {
+  if (channels == 0) return QuoteSlicePreScreen::EmptyBand;
+  if (channels < config.min_channel_quotes) return QuoteSlicePreScreen::TooFewChannels;
+  return QuoteSlicePreScreen::Pass;
 }
 
 // The native knot-spline solve of the channel objective, served as SplineVol.
@@ -1608,11 +1692,15 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   if (config.channel.fit_space == QuoteSliceFitSpace::VolChannel) deam.emplace(out, quotes, config);
   static_cast<void>(
       admit_point_observations(out, quotes, config, deam ? &deam->view() : nullptr));
-  const std::vector<ChannelObservation> channel =
-      deam ? vol_space_channel_observations(out, quotes, deam->view(), config.channel)
-           : build_channel_observations(out, quotes, config);
+  const std::vector<ChannelObservation> channel = [&] {
+    // The cache's band fills are this fit's de-Am work (fit_timing Deam bucket).
+    const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Deam);
+    return deam ? vol_space_channel_observations(out, quotes, deam->view(), config.channel)
+                : build_channel_observations(out, quotes, config);
+  }();
   auto &channel_diag = out.diagnostics.channel;
-  if (channel.size() < config.channel.min_channel_quotes) {
+  channel_diag.prescreen = prescreen_slice(channel.size(), config.channel);
+  if (channel_diag.prescreen != QuoteSlicePreScreen::Pass) {
     out.fit_error = "too few usable bid/ask channels";
     return Ok(std::move(out));
   }
@@ -1880,6 +1968,18 @@ const char *to_string(QuoteSliceGrade value) noexcept {
     return "C";
   case QuoteSliceGrade::Refused:
     return "refused";
+  }
+  return "unknown";
+}
+
+const char *to_string(QuoteSlicePreScreen value) noexcept {
+  switch (value) {
+  case QuoteSlicePreScreen::Pass:
+    return "pass";
+  case QuoteSlicePreScreen::EmptyBand:
+    return "empty_band";
+  case QuoteSlicePreScreen::TooFewChannels:
+    return "too_few_channels";
   }
   return "unknown";
 }

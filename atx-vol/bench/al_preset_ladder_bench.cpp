@@ -401,6 +401,8 @@ struct Preset {
       {"accurate_fastprofile", atx::vol::al_fast_profile(std::nullopt)},
       {"fast_fastprofile", atx::vol::al_fast_profile(atx::vol::al_fast_opts())},
       {"bulk_fastprofile", atx::vol::al_fast_profile(atx::vol::al_bulk_opts())},
+      // L2f al-fast-tier (2026-10-19): the opt-in Screen tier.
+      {"screen", atx::vol::al_screen_opts()},
   };
   return p;
 }
@@ -928,16 +930,56 @@ private:
   return v;
 }
 
-enum class ErrSet { Grid, Random, Dev200 };
+// L2f al-fast-tier (2026-10-19): the SPY 23 d chain (cohort5 SPY 2026-11-06, the L1
+// attribution's target chain). The file holds one quote per line after a header:
+// S,K,T,r,q,is_call,bid,ask. Each mid is inverted ONCE here, outside any timing, on the
+// accurate Reference kernel (tol 1e-10, 100 iterations) to give the contract a sigma;
+// a quote whose mid does not invert is dropped.
+[[nodiscard]] std::vector<GridPt> load_quote_inputs(const std::string &path) {
+  std::vector<GridPt> v;
+  std::ifstream in(path);
+  std::string line;
+  if (!std::getline(in, line)) {
+    return v; // empty or missing file
+  }
+  while (std::getline(in, line)) {
+    double f[8] = {};
+    const char *c = line.c_str();
+    bool ok = true;
+    for (int k = 0; k < 8 && ok; ++k) {
+      char *end = nullptr;
+      f[k] = std::strtod(c, &end);
+      ok = end != c;
+      c = (*end == ',') ? end + 1 : end;
+    }
+    if (!ok) {
+      continue;
+    }
+    const Side side = f[5] != 0.0 ? Side::Call : Side::Put;
+    const double mid = 0.5 * (f[6] + f[7]);
+    const atx::vol::Result<double> iv = atx::vol::american_implied_vol(
+        mid, f[0], f[1], f[2], f[3], f[4], side, atx::vol::AmericanMethod::AndersenLake, 1.0e-10,
+        100, std::nullopt);
+    if (iv.has_value() && std::isfinite(*iv) && *iv > 0.0) {
+      v.push_back(GridPt{f[0], f[1], f[2], *iv, f[3], f[4], side});
+    }
+  }
+  return v;
+}
+
+enum class ErrSet { Grid, Random, Dev200, Spy23 };
 
 [[nodiscard]] const std::vector<GridPt> &err_points(ErrSet s) {
   static const std::vector<GridPt> random = fingerprint_contracts(6000);
   static const std::vector<GridPt> dev200 = load_kernel_inputs(env_text("ATX_VOL_AL_DEV200"));
+  static const std::vector<GridPt> spy23 = load_quote_inputs(env_text("ATX_VOL_AL_SPY23"));
   switch (s) {
   case ErrSet::Grid:
     return grid().pts;
   case ErrSet::Random:
     return random;
+  case ErrSet::Spy23:
+    return spy23;
   case ErrSet::Dev200:
     break;
   }
@@ -1033,6 +1075,279 @@ void run_fast_greeks_error(benchmark::State &state, ErrSet set, const Preset &pr
   }
 }
 
+// ── L2f al-fast-tier (2026-10-19): SPY 23 d rows and the Screen scan ──────────
+//
+//   * ATX_VOL_AL_SPY23=<csv> (load_quote_inputs) registers, per preset,
+//     american/spy23_latency/<preset> (run_latency_on over the chain),
+//     american/spy23_profile/<preset> (the bare loop, for alprobe zones under
+//     ATX_VOL_AL_PROBE=z) and american/spy23_iv/<preset> (one american_implied_vol of
+//     the contract's Reference price per op on the preset's own kernel, tol 1e-10,
+//     100 iterations: the unit the fit's de-Am inversions pay).
+//   * ATX_VOL_AL_SCREEN_SCAN=1 registers american/screen_scan/<set>/<candidate> over
+//     grid, random, and spy23 / dev200 when their files are named: |P - P_ref| against
+//     the accurate Reference (nullopt) — max abs, p99 abs, max relative on P_ref >=
+//     0.01 — the worst contract's inputs (stderr), the IV error of the candidate's
+//     inversion of P_ref, and the candidate's single-op p50 / mean latency.
+
+void run_profile_on(benchmark::State &state, const std::vector<GridPt> &pts,
+                    const Preset &preset) {
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  double sink = 0.0;
+  for (auto _ : state) {
+    for (const GridPt &p : pts) {
+      const atx::vol::Result<double> r =
+          atx::vol::andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, preset.opts);
+      sink += r.has_value() ? *r : 0.0;
+    }
+    benchmark::DoNotOptimize(sink);
+  }
+  const double ops = static_cast<double>(state.iterations()) * static_cast<double>(pts.size());
+  state.SetItemsProcessed(static_cast<std::int64_t>(ops));
+  state.counters["us_per_op"] =
+      benchmark::Counter(ops * 1e-6, benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+}
+
+// One inversion per op: the Reference price of each contract, inverted on the preset.
+void run_iv_on(benchmark::State &state, const std::vector<GridPt> &pts, const Preset &preset) {
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  std::vector<double> target(pts.size());
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const GridPt &p = pts[i];
+    const atx::vol::Result<double> r =
+        atx::vol::andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, std::nullopt);
+    target[i] = r.has_value() ? *r : std::numeric_limits<double>::quiet_NaN();
+  }
+  std::vector<double> samples_us;
+  double sink = 0.0;
+  double failed = 0.0;
+  for (auto _ : state) {
+    double total_us = 0.0;
+    failed = 0.0;
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+      const GridPt &p = pts[i];
+      const auto t0 = std::chrono::steady_clock::now();
+      const atx::vol::Result<double> iv = atx::vol::american_implied_vol(
+          target[i], p.S, p.K, p.T, p.r, p.q, p.side, atx::vol::AmericanMethod::AndersenLake,
+          1.0e-10, 100, preset.opts);
+      const auto t1 = std::chrono::steady_clock::now();
+      sink += iv.has_value() ? *iv : 0.0;
+      failed += iv.has_value() ? 0.0 : 1.0;
+      const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+      total_us += us;
+      samples_us.push_back(us);
+    }
+    benchmark::DoNotOptimize(sink);
+    state.SetIterationTime(total_us * 1.0e-6);
+  }
+  std::sort(samples_us.begin(), samples_us.end());
+  double mean = 0.0;
+  for (const double v : samples_us) {
+    mean += v;
+  }
+  mean = samples_us.empty() ? 0.0 : mean / static_cast<double>(samples_us.size());
+  state.counters["grid"] = static_cast<double>(pts.size());
+  state.counters["failed"] = failed;
+  state.counters["p50_us"] = sorted_quantile(samples_us, 0.50);
+  state.counters["p99_us"] = sorted_quantile(samples_us, 0.99);
+  state.counters["mean_us"] = mean;
+}
+
+struct ScreenCandidate {
+  const char *name;
+  AlOpts opts;
+};
+
+// (n_boundary, fixed-point order l, sweeps m, premium order p) on the Screen profile.
+// m maps to Jacobi-Newton first (min(2, m)), then fixed-point sweeps.
+[[nodiscard]] const std::vector<ScreenCandidate> &screen_candidates() {
+  using atx::vol::AlProfile;
+  static const std::vector<ScreenCandidate> c = [] {
+    std::vector<ScreenCandidate> v;
+    struct K {
+      const char *name;
+      std::uint16_t nb, l, m, p;
+      double tol;
+    };
+    // Round 1 (scan-wip1/2 in the lane folder) ranged nb 4-9, l 8/16, m 1-5, p 16-32;
+    // round 2 (scan-wip3) the nb 6-9 / m 4-6 / p 32-48 neighbourhood; round 3 (this
+    // list) the chosen (7, 16, 5, 48) point, its neighbours and its early-exit tol.
+    constexpr K kCands[] = {
+        {"nb5_l8_m1_p16", 5, 8, 1, 16, 1e-8},          {"nb7_l8_m5_p48", 7, 8, 5, 48, 1e-8},
+        {"nb7_l16_m4_p48", 7, 16, 4, 48, 1e-8},        {"nb7_l16_m5_p48", 7, 16, 5, 48, 1e-8},
+        {"nb7_l16_m5_p48_tol1e-7", 7, 16, 5, 48, 1e-7}, {"nb7_l16_m5_p48_tol1e-6", 7, 16, 5, 48, 1e-6},
+        {"nb7_l16_m6_p48", 7, 16, 6, 48, 1e-8},        {"nb6_l16_m5_p48", 6, 16, 5, 48, 1e-8},
+    };
+    for (const K &k : kCands) {
+      v.push_back(ScreenCandidate{k.name, AlOpts{.n_collocation = k.nb,
+                                                 .n_quadrature = k.l,
+                                                 .n_quad_price = k.p,
+                                                 .max_newton_iter = k.m,
+                                                 .tol = k.tol,
+                                                 .profile = AlProfile::Screen}});
+    }
+    v.push_back(ScreenCandidate{"al_screen_opts", atx::vol::al_screen_opts()});
+    return v;
+  }();
+  return c;
+}
+
+// Per set, computed once and shared by every candidate row: the accurate Reference
+// price, the Reference inversion of that price (tol 1e-10, 100 iterations), and whether
+// the contract is vega-bearing on the American map: a central sigma bump of +/- 1e-4
+// moves the Reference price by at least 1e-2 * max(P, 1) per unit vol. A deep-ITM price
+// pinned at intrinsic (the exercise region) inverts to a band of vols under ANY kernel,
+// so its IV difference measures the target, not the kernel.
+struct ScanRef {
+  std::vector<double> price;
+  std::vector<double> iv;
+  std::vector<bool> vega_bearing;
+};
+
+[[nodiscard]] const ScanRef &scan_ref(ErrSet set) {
+  using namespace atx::vol;
+  static ScanRef cache[4];
+  static bool ready[4] = {false, false, false, false};
+  const auto k = static_cast<std::size_t>(set);
+  if (!ready[k]) {
+    const std::vector<GridPt> &pts = err_points(set);
+    ScanRef &r = cache[k];
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    r.price.assign(pts.size(), nan);
+    r.iv.assign(pts.size(), nan);
+    r.vega_bearing.assign(pts.size(), false);
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+      const GridPt &p = pts[i];
+      const Result<double> a = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, std::nullopt);
+      if (!a.has_value()) {
+        continue;
+      }
+      r.price[i] = *a;
+      const Result<double> up =
+          andersen_lake(p.S, p.K, p.T, p.sigma + 1.0e-4, p.r, p.q, p.side, std::nullopt);
+      const Result<double> dn =
+          andersen_lake(p.S, p.K, p.T, p.sigma - 1.0e-4, p.r, p.q, p.side, std::nullopt);
+      if (up.has_value() && dn.has_value()) {
+        r.vega_bearing[i] = (*up - *dn) / 2.0e-4 >= 1.0e-2 * std::max(*a, 1.0);
+      }
+      const Result<double> iv = american_implied_vol(*a, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                     AmericanMethod::AndersenLake, 1.0e-10, 100,
+                                                     std::nullopt);
+      r.iv[i] = iv.has_value() ? *iv : nan;
+    }
+    ready[k] = true;
+  }
+  return cache[k];
+}
+
+void run_screen_scan(benchmark::State &state, ErrSet set, const char *set_name,
+                     const ScreenCandidate &cand) {
+  using namespace atx::vol;
+  const std::vector<GridPt> &pts = err_points(set);
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  const ScanRef &sr = scan_ref(set);
+  ErrDist p_abs, p_rel, iv_bp;
+  double mismatch = 0.0;
+  double iv_mismatch = 0.0;
+  double worst_abs = -1.0;
+  double worst_rel = -1.0;
+  std::size_t worst_abs_i = 0;
+  std::size_t worst_rel_i = 0;
+  std::vector<double> ref(pts.size());
+  std::vector<double> got(pts.size());
+  std::vector<double> samples_us;
+  samples_us.reserve(3 * pts.size());
+  for (auto _ : state) {
+    for (int pass = 0; pass < 3; ++pass) {
+      for (std::size_t i = 0; i < pts.size(); ++i) {
+        const GridPt &p = pts[i];
+        const auto t0 = std::chrono::steady_clock::now();
+        const Result<double> b = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, cand.opts);
+        const auto t1 = std::chrono::steady_clock::now();
+        got[i] = b.has_value() ? *b : std::numeric_limits<double>::quiet_NaN();
+        samples_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+    }
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+      const GridPt &p = pts[i];
+      ref[i] = sr.price[i];
+      if (std::isfinite(ref[i]) != std::isfinite(got[i])) {
+        mismatch += 1.0;
+        continue;
+      }
+      if (!std::isfinite(ref[i])) {
+        continue;
+      }
+      const double d = std::abs(got[i] - ref[i]);
+      p_abs.add(d);
+      if (d > worst_abs) {
+        worst_abs = d;
+        worst_abs_i = i;
+      }
+      if (ref[i] >= 0.01) {
+        p_rel.add(d / ref[i]);
+        if (d / ref[i] > worst_rel) {
+          worst_rel = d / ref[i];
+          worst_rel_i = i;
+        }
+      }
+      // IV: the candidate's and the Reference's inversions of the SAME target, on
+      // vega-bearing contracts (ScanRef).
+      if (!sr.vega_bearing[i] || !std::isfinite(sr.iv[i])) {
+        continue;
+      }
+      const Result<double> iva = american_implied_vol(ref[i], p.S, p.K, p.T, p.r, p.q, p.side,
+                                                      AmericanMethod::AndersenLake, 1.0e-10, 100,
+                                                      cand.opts);
+      if (!iva.has_value()) {
+        iv_mismatch += 1.0;
+      } else {
+        iv_bp.add(std::abs(*iva - sr.iv[i]) * 1.0e4);
+      }
+    }
+  }
+  std::sort(samples_us.begin(), samples_us.end());
+  double mean = 0.0;
+  for (const double v : samples_us) {
+    mean += v;
+  }
+  mean = samples_us.empty() ? 0.0 : mean / static_cast<double>(samples_us.size());
+  state.counters["points"] = static_cast<double>(pts.size());
+  state.counters["status_mismatch"] = mismatch;
+  state.counters["price_max_abs"] = p_abs.max();
+  state.counters["price_p99_abs"] = p_abs.quantile(0.99);
+  state.counters["price_max_rel"] = p_rel.max();
+  state.counters["price_p99_rel"] = p_rel.quantile(0.99);
+  state.counters["iv_failed"] = iv_mismatch;
+  state.counters["iv_p50_bp"] = iv_bp.quantile(0.50);
+  state.counters["iv_p99_bp"] = iv_bp.quantile(0.99);
+  state.counters["iv_max_bp"] = iv_bp.max();
+  state.counters["p50_us"] = sorted_quantile(samples_us, 0.50);
+  state.counters["mean_us"] = mean;
+  const auto describe = [&](const char *what, std::size_t i, double e) {
+    const GridPt &p = pts[i];
+    std::fprintf(stderr,
+                 "[screen-scan] %s/%s %s=%.6g S=%.17g K=%.17g T=%.17g sigma=%.17g r=%.17g "
+                 "q=%.17g side=%s ref=%.17g got=%.17g\n",
+                 set_name, cand.name, what, e, p.S, p.K, p.T, p.sigma, p.r, p.q,
+                 p.side == Side::Call ? "C" : "P", ref[i], got[i]);
+  };
+  if (worst_abs >= 0.0) {
+    describe("worst_abs", worst_abs_i, worst_abs);
+  }
+  if (worst_rel >= 0.0) {
+    describe("worst_rel", worst_rel_i, worst_rel);
+  }
+}
+
 const bool kRegistered = [] {
   using atx::vol::bench::apply_common;
   for (const Rung &rung : rungs()) {
@@ -1087,6 +1402,54 @@ const bool kRegistered = [] {
         benchmark::RegisterBenchmark(
             "american/fast_profile_error/greeks/" + tail,
             [s, &preset](benchmark::State &state) { run_fast_greeks_error(state, s, preset); })
+            ->Iterations(1)
+            ->Unit(benchmark::kMillisecond);
+      }
+    }
+  }
+  if (!env_text("ATX_VOL_AL_SPY23").empty()) {
+    for (const Preset &preset : presets()) {
+      const std::string tail = preset.name;
+      apply_common(benchmark::RegisterBenchmark("american/spy23_latency/" + tail,
+                                                [&preset](benchmark::State &state) {
+                                                  run_latency_on(
+                                                      state, err_points(ErrSet::Spy23), preset);
+                                                }))
+          ->UseManualTime()
+          ->Unit(benchmark::kMicrosecond);
+      benchmark::RegisterBenchmark("american/spy23_profile/" + tail,
+                                   [&preset](benchmark::State &state) {
+                                     run_profile_on(state, err_points(ErrSet::Spy23), preset);
+                                   })
+          ->MinTime(1.0)
+          ->Unit(benchmark::kMicrosecond);
+      benchmark::RegisterBenchmark("american/spy23_iv/" + tail,
+                                   [&preset](benchmark::State &state) {
+                                     run_iv_on(state, err_points(ErrSet::Spy23), preset);
+                                   })
+          ->Iterations(3)
+          ->UseManualTime()
+          ->Unit(benchmark::kMicrosecond);
+    }
+  }
+  if (!env_text("ATX_VOL_AL_SCREEN_SCAN").empty()) {
+    std::vector<std::pair<const char *, ErrSet>> sets = {{"grid", ErrSet::Grid},
+                                                         {"random", ErrSet::Random}};
+    if (!env_text("ATX_VOL_AL_SPY23").empty()) {
+      sets.emplace_back("spy23", ErrSet::Spy23);
+    }
+    if (!env_text("ATX_VOL_AL_DEV200").empty()) {
+      sets.emplace_back("dev200", ErrSet::Dev200);
+    }
+    for (const auto &[label, set] : sets) {
+      for (const ScreenCandidate &cand : screen_candidates()) {
+        const ErrSet s = set;
+        const char *set_name = label;
+        benchmark::RegisterBenchmark(std::string("american/screen_scan/") + label + "/" +
+                                         cand.name,
+                                     [s, set_name, &cand](benchmark::State &state) {
+                                       run_screen_scan(state, s, set_name, cand);
+                                     })
             ->Iterations(1)
             ->Unit(benchmark::kMillisecond);
       }

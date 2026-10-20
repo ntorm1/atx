@@ -719,7 +719,23 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "deam_profile must be accurate or fast"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_cache": 1}},
-             "deam_cache must be true or false")):
+             "deam_cache must be true or false"),
+            # Opt-in per-expiry rung memo (lane L2c).
+            ({"schema_version": 1, "admission": "graded", "graded": {"rung_memo": "yes"}},
+             "rung_memo must be true or false"),
+            ({"schema_version": 1, "graded": {"rung_memo": True}},
+             "require admission graded"),
+            # Opt-in Premium inversion of the cache (lane L2e).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"deam_inversion": "premium"}},
+             "deam_inversion requires fit_space vol"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_inversion": "newton"}},
+             "deam_inversion must be search or premium"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "fast",
+                         "deam_inversion": "premium"}},
+             "deam_inversion premium requires deam_profile accurate")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -796,6 +812,65 @@ def test_native_accurate_iv_cache_is_byte_identical_and_opt_in(binary, tmp_path)
         "vol", "accurate", True)
     plain_graded = json.loads(plain.stdout)["policy_definition"]["graded"]
     assert not {"fit_space", "deam_profile", "deam_cache"} & set(plain_graded)
+    assert "deam_inversion" not in graded
+
+
+def test_native_premium_inversion_is_opt_in_with_audit_counters(binary, tmp_path):
+    # graded.deam_inversion premium (lane L2e): provenance only when opted in; the
+    # --deam-audit run serves the same predictions as the plain premium run and reports
+    # the premium attempts and the audit pairs per chain; --deam-audit needs
+    # --timing-detail.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = write_policy(tmp_path / "premium.json", {
+        "schema_version": 1, "admission": "graded",
+        "graded": {"fit_space": "vol", "deam_cache": True, "deam_inversion": "premium"}})
+    plain_output, audit_output = tmp_path / "premium.csv", tmp_path / "audit.csv"
+    plain = invoke(binary, source, plain_output, "--policy", str(policy))
+    assert plain.returncode == 0, plain.stderr
+    assert json.loads(plain.stdout)["policy_definition"]["graded"]["deam_inversion"] == "premium"
+    audit = invoke(binary, source, audit_output, "--policy", str(policy), "--timing-detail",
+                   "--deam-audit")
+    assert audit.returncode == 0, audit.stderr
+    assert audit_output.read_bytes() == plain_output.read_bytes()
+    slices = json.loads(audit.stdout)["graded_stats"]["slices"]
+    timings = [entry["timing"] for entry in slices if "timing" in entry]
+    assert timings
+    premium = sum(t["deam_premium"] for t in timings)
+    assert premium > 0
+    assert premium == sum(t["deam_inversions"] for t in timings)
+    assert sum(t["deam_audit_pairs"] for t in timings) == premium
+    assert all(sum(t["deam_audit_dsigma_decades"]) == t["deam_audit_pairs"] for t in timings)
+    assert all(sum(t["deam_premium_fallback_by_reason"]) == t["deam_premium_fallbacks"]
+               for t in timings)
+    refused = invoke(binary, source, tmp_path / "refused.csv", "--policy", str(policy),
+                     "--deam-audit")
+    assert refused.returncode != 0
+    assert "--deam-audit requires --timing-detail" in refused.stderr
+
+
+def test_native_rung_memo_is_byte_identical_and_opt_in(binary, tmp_path):
+    # The per-expiry rung memo (lane L2c) is exact-keyed reuse: with and without the
+    # vol-space cache it serves exactly the plain graded predictions; only the opt-in
+    # provenance is added to the report.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    plain_output = tmp_path / "plain.csv"
+    plain_policy = write_policy(tmp_path / "plain.json",
+                                {"schema_version": 1, "admission": "graded"})
+    plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
+    assert plain.returncode == 0, plain.stderr
+    for name, graded_keys in (
+            ("memo", {"rung_memo": True}),
+            ("memo-vol", {"fit_space": "vol", "deam_cache": True, "rung_memo": True})):
+        output = tmp_path / f"{name}.csv"
+        policy = write_policy(tmp_path / f"{name}.json", {
+            "schema_version": 1, "admission": "graded", "graded": graded_keys})
+        keyed = invoke(binary, source, output, "--policy", str(policy))
+        assert keyed.returncode == 0, keyed.stderr
+        assert output.read_bytes() == plain_output.read_bytes(), name
+        assert json.loads(keyed.stdout)["policy_definition"]["graded"]["rung_memo"] is True
+    assert "rung_memo" not in json.loads(plain.stdout)["policy_definition"]["graded"]
 
 
 PROFILE_NAMES = ("dense", "ordinary", "sparse")

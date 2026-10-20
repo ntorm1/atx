@@ -620,9 +620,19 @@ void run_row(benchmark::State &state, const BatchChain &c, Eval ev) {
   const std::uint64_t fp = o.fp();
   state.counters["fp_hi"] = static_cast<double>(fp >> 32);
   state.counters["fp_lo"] = static_cast<double>(fp & 0xFFFFFFFFull);
-  std::array<std::size_t, 6> n_st{};
+  // One slot per ChainRowStatus enumerator. The enum ends at NonMonotoneRegion (L1c);
+  // the static_assert below breaks when one is appended without growing this count,
+  // and the guarded index keeps an unexpected value from writing past the array.
+  constexpr std::size_t kChainRowStatusCount = 7;
+  static_assert(static_cast<std::size_t>(ChainRowStatus::NonMonotoneRegion) + 1 ==
+                    kChainRowStatusCount,
+                "ChainRowStatus changed: resize the bench's status histogram");
+  std::array<std::size_t, kChainRowStatusCount> n_st{};
   for (const ChainRowStatus s : o.status) {
-    ++n_st[static_cast<std::size_t>(s)];
+    const auto idx = static_cast<std::size_t>(s);
+    if (idx < n_st.size()) {
+      ++n_st[idx];
+    }
   }
   state.counters["st_ok"] = static_cast<double>(n_st[0]);
   state.counters["st_invalid"] = static_cast<double>(n_st[1]);
@@ -630,6 +640,7 @@ void run_row(benchmark::State &state, const BatchChain &c, Eval ev) {
   state.counters["st_vega_floor"] = static_cast<double>(n_st[3]);
   state.counters["st_out_of_band"] = static_cast<double>(n_st[4]);
   state.counters["st_no_convergence"] = static_cast<double>(n_st[5]);
+  state.counters["st_non_monotone"] = static_cast<double>(n_st[6]);
   if (ev.loop) {
     return;
   }

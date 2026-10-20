@@ -1171,6 +1171,32 @@ struct FitTimingCounters {
   // ladder_repair_rung) INCLUSIVE of every bucket their refits charge; not in wall_us.
   std::uint32_t repair_rung_visits{0}; // repair-rung visits of the chain
   std::uint64_t repair_rung_us{0};     // their inclusive wall
+  // De-Am IV cache inversions (lane L2e; VolChannel only, zero otherwise): count, the AL
+  // boundary solves inside them (fallbacks included) and the most one inversion spent;
+  // the Premium attempts, their fallbacks to Search by IvPremiumFallback reason
+  // (index = enum value) and the largest last-solve price residual (USD) of an accepted
+  // Premium root.
+  std::uint32_t deam_inversions{0};
+  std::uint32_t deam_inversion_al{0};
+  std::uint32_t deam_inversion_al_max{0};
+  std::uint32_t deam_premium{0};
+  std::uint32_t deam_premium_fallbacks{0};
+  std::array<std::uint32_t, 8> deam_premium_fallback_by_reason{};
+  double deam_premium_max_residual_usd{0.0};
+  // Opt-in audit (arm_deam_audit): each Premium inversion is ALSO run on Search and the
+  // pair compared; |sigma_premium - sigma_search| histogram by decade (bin 0: exactly
+  // 0; bin b in 1..16: [1e-(17-b), 1e-(16-b)), bin 1 open below, bin 16 open above).
+  std::uint32_t deam_audit_pairs{0};
+  std::uint32_t deam_audit_status_mismatch{0}; // one Ok and the other not
+  double deam_audit_max_dsigma{0.0};
+  std::array<std::uint32_t, 17> deam_audit_dsigma_decades{};
+  // Pairs that differ: each answer's Newton distance |P_am(sigma) - target| / slope on
+  // the accurate map (slope = the map's chord between the two answers; two extra
+  // solves per differing pair), the largest of each, and how many pairs have Search
+  // farther from the accurate root than Premium.
+  double deam_audit_max_newton_premium{0.0};
+  double deam_audit_max_newton_search{0.0};
+  std::uint32_t deam_audit_search_farther{0};
 };
 
 class ChainRecorder;
@@ -1374,6 +1400,25 @@ private:
 // Adds `n` to one event count of the chain current on this thread (if any).
 inline void count(std::uint32_t FitTimingCounters::*field, std::uint32_t n = 1) noexcept {
   if (ChainRecorder *rec = detail::t_chain) rec->counts.*field += n;
+}
+
+// The counters of the chain current on this thread, or null (timing off).
+[[nodiscard]] inline FitTimingCounters *current_counts() noexcept {
+  ChainRecorder *rec = detail::t_chain;
+  return rec != nullptr ? &rec->counts : nullptr;
+}
+
+// Process-wide opt-in for the de-Am Premium audit (quote-bench --deam-audit): set once
+// before any fit starts and only read by the fitting threads (relaxed: a plain flag,
+// no data is published through it).
+namespace detail {
+inline std::atomic<bool> g_deam_audit{false};
+} // namespace detail
+inline void arm_deam_audit(bool on) noexcept {
+  detail::g_deam_audit.store(on, std::memory_order_relaxed);
+}
+[[nodiscard]] inline bool deam_audit_armed() noexcept {
+  return detail::g_deam_audit.load(std::memory_order_relaxed);
 }
 
 // Armed by a caller on its own thread around fit_quote_surface: the fitter records
