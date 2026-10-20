@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <new>
 #include <optional>
 #include <string>
 #include <utility>
@@ -285,12 +286,13 @@ public:
   mutable int fast_calls = 0;
   mutable int accurate_calls = 0;
   mutable int price_calls = 0;
+  mutable int throw_on_price_call = -1; // the price call (0-based) that throws bad_alloc
 
   double effective_yield_of(double calendar_yield) const override { return calendar_yield; }
   double local_forward_of(double, double) const override { return 100.0; }
   double reference_yield() const override { return 0.0; }
   Result<double> price(const QuoteSliceQuote &, double sigma, double, DeAmKernel) const override {
-    ++price_calls;
+    if (price_calls++ == throw_on_price_call) throw std::bad_alloc();
     return Ok(sigma == kIvMin ? floor_price : cap_price);
   }
   Result<double> implied_vol(const QuoteSliceQuote &, double target, double,
@@ -421,6 +423,31 @@ TEST(DeAmIvCache, BandEdgesFollowTheChannelBuilderAndAreComputedOnce) {
   ASSERT_TRUE(view.mid_iv(0));
   EXPECT_EQ(model.price_calls, prices);
   EXPECT_EQ(model.accurate_calls, inversions + 1);
+}
+
+// review-L2a minor (fixed in lane L2c): a band fill that throws mid-way (here the cap
+// price, after the floor price) publishes nothing, so the next request refills the
+// whole band instead of serving a half-filled entry as final.
+TEST(DeAmIvCache, ABandFillThatThrowsIsRefilledNotServedHalfFilled) {
+  const std::vector<QuoteSliceQuote> quotes = {{100.0, Side::Call, 1.0, 1.2}};
+  ScriptedModel model;
+  model.floor_price = 0.5;
+  model.cap_price = 8.0;
+  model.throw_on_price_call = 1; // the second model price of the fill: the cap price
+  DeAmIvCache cache;
+  cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+  QuoteSliceDeamDiagnostics work;
+  DeAmIvView view(cache, model, quotes, QuoteSliceDeamProfile::Accurate, work);
+  EXPECT_THROW(static_cast<void>(view.band(0)), std::bad_alloc);
+  EXPECT_EQ(cache.ivs[0].computed & DeAmQuoteIv::kBand, 0);
+  const DeAmQuoteIv &band = view.band(0);
+  EXPECT_NE(band.computed & DeAmQuoteIv::kBand, 0);
+  EXPECT_TRUE(band.well_posed);
+  EXPECT_DOUBLE_EQ(band.floor_price, 0.5);
+  EXPECT_DOUBLE_EQ(band.cap_price, 8.0);
+  EXPECT_DOUBLE_EQ(band.bid_iv, 0.25);
+  EXPECT_DOUBLE_EQ(band.ask_iv, 0.30);
+  EXPECT_EQ(model.price_calls, 4); // two of the failed fill, two of the refill
 }
 
 // A prepared fit and its inputs with every key field away from its default.

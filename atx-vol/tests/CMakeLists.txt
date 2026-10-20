@@ -40,7 +40,8 @@ target_include_directories(atx-vol-quote-slice-tests PRIVATE ${CMAKE_CURRENT_SOU
 # tests never ran under this ctest).
 string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* QuoteFitPolicy.*
        QuoteSliceChannel.* QuoteSurface.* QuoteSurfaceLadder.* QuoteSurfaceTiming.* SliceChannel.*
-       SliceChannelFamily.* TermPrior.* QuoteSliceVolSpace.* DeAmIvCache.*)
+       SliceChannelFamily.* TermPrior.* QuoteSliceVolSpace.* DeAmIvCache.*
+       AmericanCertification.* QuoteSurfaceRungMemo.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")

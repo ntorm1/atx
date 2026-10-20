@@ -597,6 +597,7 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
         space.deam_profile == QuoteSliceDeamProfile::Fast ? "fast" : "accurate";
     out["deam_cache"] = space.deam_cache;
   }
+  if (s.rung_memo) out["rung_memo"] = true;
   return out;
 }
 
@@ -751,8 +752,16 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
-             "deam_profile", "deam_cache"});
+             "deam_profile", "deam_cache", "rung_memo"});
     space = parse_fit_space(j);
+    // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
+    // exact-keyed reuse across an expiry's rungs, speed only.
+    if (j.contains("rung_memo")) {
+      if (!j.at("rung_memo").is_boolean()) {
+        throw std::runtime_error("Policy graded rung_memo must be true or false");
+      }
+      surface.rung_memo = j.at("rung_memo").get<bool>();
+    }
     // Opt-in knot-first ladder (quote_slice.hpp fit_quote_surface); "off" is the
     // historical point-first admission.
     if (j.contains("ladder")) {
