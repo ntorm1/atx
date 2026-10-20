@@ -66,6 +66,9 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/american_batch.cpp
     src/pricing/adjoint_greeks.cpp
     src/pricing/boundary_interp.cpp
+    # L2h sigma-family (2026-10-19): the per-(expiry, side) sigma-Chebyshev boundary
+    # family on the prepared AL geometry (AlSigmaFamily, api/pricing/american.hpp).
+    src/pricing/american_sigma_family.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
     src/pricing/dividend.cpp
