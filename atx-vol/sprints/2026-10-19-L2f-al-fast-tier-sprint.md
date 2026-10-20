@@ -1,7 +1,9 @@
 # L2f al-fast-tier sprint note (vol-sota W3, 2026-10-19)
 
 Lane `feat/vol-L2f-al-fast-tier-20261019`, based on the PM prebase `feat/vol-w3-prebase-20261019
-@ 53ba6a3f` (root + L2d + L1 + L1c + L2a + L2b). Pool-3, RunId `vol-20261019s-L2f`. Plan
+@ 53ba6a3f` (root + L2d + L1 + L1c + L2a + L2b). Pool-3, RunId `vol-20261019s-L2f` (checkpoint
+`87c803e7` at the user stop), resumed 2026-10-19 on the same pool, RunId `vol-20261019r2-L2f`
+(gates, probe, manifests; the source tree is unchanged since `87c803e7`). Plan
 `docs/plans/2026-10-17-atx-vol-sota-fit-dag-plan.md` (W3 "L2f"). User directive: anything above
 1 s to fit SPY is unusable; this lane owns the microseconds per Andersen-Lake (AL) solve.
 
@@ -128,14 +130,39 @@ solve, and 10.6x Reference per inversion, at <= 1.2e-6 relative on SPY 23 d. Tar
 (unqualified). `al_bulk_opts` costs the same but is 6e-5 relative on SPY 23 d and 2e-4 on dev200
 (scan-wip3 `nb7_l8_m2_p32`): Screen is the same price for ~50x less error.
 
-## 4. Non-monotone region on Screen (L1c probe) — NOT RUN (user stop)
+## 4. Non-monotone region on Screen (L1c probe)
 
-Prepared, not built or run: `L2f-al-fast-tier-20261019-nonmonotone/` holds L1c's probe
-(`nonmonotone_map.cpp`, copy of sha256 `ba585693...` with the preset list cut to
-`fast_profile` + `screen`), `build_probe.cmd` (pool-3 vol-rel libraries) and `map_summary.py`
-(gates 5e-6 / 4e-4). Next: `build_probe.cmd`, then `nonmonotone_map_screen.exe map <dir>` with
-`ATX_VOL_FIT_WORKERS=2`, then `python -I map_summary.py <dir>/map-cells.csv`; the fast_profile
-row must reproduce L1c's (387 dip cells, 1.101e-6) before the screen row is read.
+`L2f-al-fast-tier-20261019-nonmonotone/` holds L1c's probe (`nonmonotone_map.cpp`, copy of
+sha256 `ba585693...` with ONLY the preset list changed to `fast_profile` + `screen`; the copy is
+`2cfb3d3f...`), `build_probe.cmd` (pool-3 vol-rel libraries at `87c803e7`) and `map_summary.py`
+(gates 5e-6 / 4e-4). Run 2026-10-19 (resume): `build_probe.cmd nonmonotone_map_screen` exit 0,
+`nonmonotone_map_screen.exe map <dir>/map` with `ATX_VOL_FIT_WORKERS=2` exit 0 (5,376 cells, 63 s,
+load 13 % before / 20-42 % after), `python -I map_summary.py map/map-cells.csv` exit 0
+(`map/map-summary.txt`, sha256 in the folder manifest). S = 100, 8 T x 21 m x 8 (r, q) x 2 sides
+per preset, as L1c.
+
+| preset | dip cells | n_dec | outside ex-region | max ex-region excess (rel K max(1,T)^2) | max dip (rel) | gate kappa | headroom | cells over gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fast_profile (= L1c's row) | 387 | 3,394 | 2 | 1.101e-6 | 1.101e-6 | 5e-6 | 4.54x | 0 |
+| **screen** | **1,560** | **8,092** | **24** | **4.264e-6** | **3.735e-6** | 4e-4 | **93.8x** | **0** |
+
+The `fast_profile` row reproduces L1c's row exactly (387 / 3,394 / 2 / 1.101e-6, same argmax
+cell: call T 1, m 1.02, r 0.02, q 0.07), so the probe is the same probe. Screen:
+- Largest relative dip 3.735e-6 (Fast 1.101e-6, 3.4x); largest exercise-region excess 4.264e-6
+  at call T 1, m 1.01, r 0.02, q 0.07 (K 99.01, sig_edge 0.0325): 94x under the WIDE gate 4e-4
+  that `al_non_monotone_gate` gives every non-accurate scheme (Screen is one: `accurate_scheme`
+  matches only nullopt / `al_fast_profile(nullopt)`), and 1.17x under the accurate kappa 5e-6.
+- Region bounds are the same as Fast's (T in [0.1, 5], m in [1.01, 1.6]) but the region is
+  DENSER: 4.0x the dip cells, and it now covers r = q (295 call + 295 put cells at zero carry
+  advantage, where the accurate scheme has none) and 24 cells with a decrease outside the
+  exercise region (Fast 2). Zero cells over the gate on either preset; n_err 0.
+- FINDING for L2g (not tuned away here): the Screen dips are not an exercise-region artifact
+  only; they are the 5-sweep truncation error itself (3.7e-6 relative to K, the same order as the
+  tested price bound on these inputs). A Screen inversion that lands in the band
+  `price - zero_vol <= 4e-4 K max(1, T^2)` is refused as NonMonotoneRegion over a band ~80x
+  wider than the accurate route's; L2g must treat that refusal as "seed unavailable -> accurate
+  inversion", never as a quote refusal, and must never classify Screen as the accurate scheme
+  (its headroom under 5e-6 is only 1.17x).
 
 ## 5. The follow-up hook (`deam_profile = screen`)
 
@@ -168,8 +195,9 @@ one tree). The hook is one enum value:
   written past it. Now 7 slots (`kChainRowStatusCount`) with a `static_assert` tied to the last
   enumerator, a guarded index, and an `st_non_monotone` counter.
 
-## 7. Gates (WIP checkpoint at the user stop)
+## 7. Gates
 
+Checkpoint (`87c803e7`, RunId `vol-20261019s-L2f`):
 - AL fingerprint (vol-rel-avx2 `american/ladder_fingerprint`): `53c4df68...dcea` MATCH at the first
   plumbing build (`L2f-ladder-wip1`, exe sha256 `b9079b98...`) and at the final source
   (`L2f-ladder-final`, exe sha256 `658c4be0...`); ten section fnv1a lines equal L2b's
@@ -177,11 +205,64 @@ one tree). The hook is one enum value:
 - vol-rel build of pricing / simd slices, chain-batch tests, quote-slice tests, quote-bench:
   exit 0. Direct run `atx-vol-pricing-slice.exe --gtest_filter=AlScreenProfile.*:AlFastProfile.*:
   AlBoundaryHandle.*:AlExpiryGeometry.*:AlPricePack.*:AdjointGreeksAmerican.*`: 37 passed.
+
+Resume (RunId `vol-20261019r2-L2f`, same source tree, pool-3 rebuilt at the tip; evidence
+`L2f-al-fast-tier-20261019-gates/` with `sha256.txt`; `-Jobs 2`, `ATX_VOL_FIT_WORKERS` 2 except
+the cap-3 name set):
+- `^(pricing|simd)/` ctest at cap 3 (`ATX_VOL_FIT_WORKERS=3`, ctest `-Jobs 2`): exit 8, 923 tests,
+  2 failed (the two known: `AmericanIv.PricePolishDefaultOffIsBitForBitControl`,
+  `SimdNanSafety.BaryEvalPd_ExactNodeHit_ReturnsNodeValue`), 90 s, load 20 % before / 14 % after.
+  Failed/skipped/not-run name set via the review-v2 `gates/names.sh` (`abe9a35c...`): 19 names,
+  sha256 `52324ef8...` = the W0 root set byte for byte (the PricingExecutor load flake did not
+  appear).
+- Default parity, dev200 `--policy auto`, cap 2, lane binary `atx-vol-quote-bench-87c803e7.exe`
+  (`b453db05...`): `c89d0739...` MATCH, exit 0, 13 s, stderr 0 bytes.
+- `^chain-batch:` ctest: 31/31, exit 0. Direct gtest `AlFastProfile.*:AlScreenProfile.*:
+  AdjointGreeks*:AlExpiryGeometry.*:AlBoundaryHandle.*:AlPricePack.*`: 42 passed (= the 37 of the
+  checkpoint + the 5 `AdjointGreeksEuropean` the wider `AdjointGreeks*` filter adds); printed
+  Screen worst 7.71555e-4 / short-dated 4.52596e-6 / IV 0.471574 bp, Fast worst 1.42e-14 /
+  1.49e-8 bp (unchanged).
+- PCH-off `vol-hygiene`: `configure -Preset vol-hygiene` exit 0; `check` of 19 TUs (every .cpp
+  includer of `american_boundary.hpp` incl. `american_boundary_avx2.cpp`, plus the first-order
+  `american.hpp` includers american_geometry_test, batch_chain(+test), american_iv(+test),
+  american_batch, deam_iv_cache, american_price_slice, quote_slice) exit 0, 45 s, 0 diag lines.
+  The two touched bench TUs are NOT in the vol-hygiene configure (`check: no object target
+  found`; bench targets are not built under that preset) — they compile PCH-on under vol-rel and
+  vol-rel-avx2 (exit 0 above); pre-existing preset scope, not a lane finding.
+- AL fingerprint at the tip source (fresh vol-rel-avx2 build `ede388ef...`): fp blob sha256
+  `53c4df68...dcea` MATCH (= the checkpoint's `fp-final.bin` byte for byte), ten section fnv1a
+  lines identical (`ladder_grid_rungs e439b788...`, ..., `batch_resolved affa6f14...`). The docs
+  commits after `87c803e7` touch no source file (`git diff --stat` in the report).
+- Probe: section 4 (Fast row = L1c's; Screen 0 cells over its gate).
 - Revert checks (one combined build, each revert guarded by a distinct test; restored blobs
   `american.cpp 849c3cb3`, `american_boundary.hpp d8b692cb`, `american.hpp fc2f60d6` at the time,
   before the comment-only header text): Screen arithmetic -> Fast only, node floor 6, tier at 2
   sweeps, handle generation check removed => 6 tests FAILED (NeverTheDefault scheme, NodeFloor,
   RunsTheFastArithmetic bits, PriceWithinMeasuredBound, ImpliedVolWithinMeasuredBound, handle
   RePrepared); rvalue-ctor delete removed => both `static_assert`s fail to compile.
-- NOT RUN at the stop: `^(pricing|simd)/` name-set ctest at cap 3, default parity `c89d0739`,
-  chain-batch ctest, PCH-off `vol-hygiene` on the touched headers, the L1c probe (section 4).
+- Not measured in this lane (ruled out of scope): SPY wall with `deam_profile = screen` (L2g).
+
+## 8. What L2g must assume
+
+- **The Screen bound is a price bound, not a rounding twin.** `al_screen_opts()` vs the accurate
+  Reference: |dP| <= 7.8e-4 * max(P, 1) on the ledger grid (worst: a low-vol, long-dated,
+  deep-carry put that 5 sweeps do not finish), <= 4.6e-6 * max(P, 1) for T <= 0.1, |dIV| <= 0.48 bp
+  on vega-bearing contracts (tests `AlScreenProfile.*`); measured 1.2e-6 relative on SPY 23 d,
+  1.5e-5 on dev200 (8.7e-3 USD worst), up to 2e-3 relative on the random set's benign flat corner.
+  The Fast-kernel guard `kDeAmFastMinRelativeVega = 1e-5` (built for a 1e-12 bound) does not
+  transfer; L2b's certification allowance (1e-10 * max(|P|, 1)) does not either.
+- **Seed only (section 5).** A Screen IV is a seed: finish with one accurate Newton / polish on the
+  Reference map (`american_implied_vol(..., warm_start = screen_iv)` or one `andersen_lake` +
+  chord), or widen every downstream band test by the bound. Never serve a Screen IV or price.
+- **Non-monotone region (section 4).** Screen takes the WIDE gate 4e-4 * K * max(1, T^2)
+  (headroom 94x; 0 cells over it on L1c's map), but its dip region is 4x denser than Fast's and
+  includes r = q. A Screen `NonMonotoneRegion` refusal must route to the accurate inversion, not
+  to a quote refusal; Screen must never be classified as the accurate scheme (1.17x headroom
+  under 5e-6).
+- **Cost (section 3, unqualified).** ~21-24 us per cold boundary solve + price and ~107 us per
+  Screen inversion on SPY 23 d (vs 260 / 1,130 Reference, 69 / 474 Fast), so a Screen seed plus
+  one accurate confirm (one cold Reference solve ~160-260 us, or Fast ~69 us) is bounded below by
+  the confirm; L2g should measure a Fast-confirm variant as the status file suggests.
+- **Opt-in only.** `AlProfile::Screen` is reachable only through an explicit `AlOpts`
+  (`al_screen_opts()` or the knobs); no preset, policy key, stored config or record format selects
+  it. The hook is one enum value (section 5); `deam_iv_key` already hashes `AlOpts::profile`.
