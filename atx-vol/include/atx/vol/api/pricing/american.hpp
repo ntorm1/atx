@@ -104,9 +104,21 @@ struct CorrectionBlend;
 //              Not adopted by the AVX2 batch kernel (its own vector math) or by the
 //              adjoint tape (it differentiates the Reference map; its bumped
 //              re-solves pin Reference too).
+//   Screen     OPT-IN, never a default (L2f al-fast-tier, 2026-10-19). A cheap SCREENING
+//              tier for inversion seeds / iterations that an accurate confirm finishes:
+//              the Fast arithmetic above on a SMALL scheme. It is not a rounding-level
+//              twin of Reference — it truncates the scheme — so its contract is the
+//              measured truncation bound documented on al_screen_opts() and pinned by
+//              AlScreenProfile.* (tests/american_test.cpp). Under Screen the explicit
+//              knobs are honoured (scheme_from_opts) with ONE difference: the boundary
+//              node floor is 4 instead of 6, so a caller may ask for an even cheaper
+//              screen (3 interior nodes) than the measured one; only al_screen_opts()
+//              carries a measured bound. Same exclusions as Fast (AVX2 batch, adjoint
+//              tape); the carry memo and the de-Am IV cache key already include it.
 enum class AlProfile : std::uint8_t {
   Reference = 0,
   Fast = 1,
+  Screen = 2,
 };
 
 struct AlOpts {
@@ -190,6 +202,34 @@ static_assert(detail::aggregate_arity_is_v<AlOpts, 6>,
 // AlOpts record formats — it must never be baked into a stored pricing config; see
 // DeAmOptions::serve_al_opts (deamer.hpp).
 [[nodiscard]] AlOpts al_bulk_opts() noexcept;
+
+// The measured AlProfile::Screen tier (L2f al-fast-tier, 2026-10-19). OPT-IN only: no
+// default, preset or stored config selects it. See AlProfile::Screen.
+//
+// Scheme: 7 Chebyshev nodes, fixed-point Gauss-Legendre l = 16, 5 sweeps (2 Jacobi-Newton
+// + 3 fixed-point, early exit at tol 1e-8), premium Gauss-Legendre p = 48, on the Fast
+// arithmetic. Chosen from a 27-point (nodes, l, sweeps, p, tol) scan (bench rows
+// american/screen_scan/*; sprints/2026-10-19-L2f-al-fast-tier-sprint.md) as the most
+// accurate point under ~20 us per solve + price; the accurate Reference preset is
+// {12, 24, 6 sweeps, 48}.
+//
+// MEASURED vs the ACCURATE Reference (nullopt), |P_screen - P_ref| (USD of the set's spot;
+// relative on P_ref >= 0.01):
+//   SPY 2026-11-06 chain (23 d, 317 quotes, sigma = each mid's Reference IV):
+//       max abs 2.65e-5, max rel 1.17e-6; IV p99 0.018 bp, max 0.028 bp
+//   dev200 kernel inputs (10,694 contracts):
+//       max abs 8.70e-3 (put S 1711.8, K 2900, T 2.17), max rel 1.48e-5;
+//       IV p99 0.043 bp, max 0.73 bp (vega-bearing)
+//   AL ladder grid (104): max abs 2.06e-5, max rel 2.56e-6
+//   6,000-contract random set (T to 5 y, q to 25 %, sigma to 1.5):
+//       max abs 4.86e-3, max rel 2.0e-3 (on P >= 0.01), p99 rel 6.8e-5
+// TESTED bound (AlScreenProfile.* in tests/american_test.cpp, 1,404-contract grid):
+//   |dP| <= 7.8e-4 * max(P, 1) everywhere, <= 4.6e-6 * max(P, 1) for T <= 0.1;
+//   |dIV| <= 0.48 bp on vega-bearing contracts.
+// A caller using Screen for an inversion seed / screen must finish with an accurate
+// confirm (or widen any certificate by at least the bound above): Screen is NOT a
+// rounding-level twin of Reference the way Fast is.
+[[nodiscard]] AlOpts al_screen_opts() noexcept;
 
 // Andersen-Lake American price under Black-76 dynamics with continuous dividend
 // yield q (cash divs folded into the forward beforehand).
@@ -290,12 +330,15 @@ private:
 // failed solve, or where andersen_lake would return an error.
 //
 // OWNERSHIP / THREADS. Mutable per-thread state (~46 KB, allocated at construction);
-// observes the geometry, which must outlive the handle and must not be re-prepared
-// while the handle is used. Not thread-safe; const price_from_boundary calls may run
-// concurrently with each other but not with solve().
+// observes the geometry, which must outlive the handle. Enforced (L2f, from the L2b
+// review): a temporary geometry cannot bind (the rvalue constructor is deleted), and a
+// geometry re-prepared after solve() makes price_from_boundary return NaN until the
+// handle is solved again. Not thread-safe; const price_from_boundary calls may run
+// concurrently with each other but not with solve() or the geometry's prepare().
 class AlBoundaryHandle {
 public:
   AlBoundaryHandle(const AlExpiryGeometry &geometry, Side side, double anchor);
+  AlBoundaryHandle(const AlExpiryGeometry &&geometry, Side side, double anchor) = delete;
   ~AlBoundaryHandle();
   AlBoundaryHandle(AlBoundaryHandle &&) noexcept;
   AlBoundaryHandle &operator=(AlBoundaryHandle &&) noexcept;

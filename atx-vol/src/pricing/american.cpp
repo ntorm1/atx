@@ -998,10 +998,13 @@ namespace amer {
   // the column existed decodes as 0 and must keep resolving to the boundary it has
   // always resolved to. Treating 0 as a request for 6 would silently re-price every
   // such stored surface. Same convention as n_quad_price below: 0 == unset.
+  // L2f: the opt-in Screen profile admits a smaller boundary (floor 4: three interior
+  // Chebyshev nodes); Reference and Fast keep the floor of 6 byte for byte.
+  const std::uint16_t node_floor = (o.profile == AlProfile::Screen) ? 4 : 6;
   if (o.n_collocation == 0) {
     // leave s.n_boundary at the default
-  } else if (o.n_collocation < 6) {
-    s.n_boundary = 6; // cheapest supported boundary
+  } else if (o.n_collocation < node_floor) {
+    s.n_boundary = node_floor; // cheapest supported boundary
   } else if (o.n_collocation > kAlMaxNodes) {
     s.n_boundary = kAlMaxNodes;
   } else {
@@ -2414,7 +2417,7 @@ namespace amer {
     return AlSolveStatus::TableMissing;
   }
   ws.specialize = specialize;
-  ws.fast = (sch.profile == AlProfile::Fast);
+  ws.fast = al_fast_arithmetic(sch);
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
@@ -2446,7 +2449,7 @@ void al_prepare_oriented_geometry(double T, double rate, double yield, const AlS
   if (g.tables_ok) {
     AlWorkspace &ws = g.ws;
     ws.specialize = true;
-    ws.fast = (sch.profile == AlProfile::Fast);
+    ws.fast = al_fast_arithmetic(sch);
     ws.qx_fp = fp->nodes.data();
     ws.qw_fp = fp->weights.data();
     ws.n_quad_fp = sch.n_quad_fp;
@@ -2566,7 +2569,7 @@ void al_prepare_oriented_geometry(double T, double rate, double yield, const AlS
     return AlSolveStatus::TableMissing;
   }
   ws.specialize = true;
-  ws.fast = (sch.profile == AlProfile::Fast);
+  ws.fast = al_fast_arithmetic(sch);
   ws.qx_fp = fp->nodes.data();
   ws.qw_fp = fp->weights.data();
   ws.n_quad_fp = sch.n_quad_fp;
@@ -3215,7 +3218,7 @@ void AloPricer::reset(double S, double K, double T, double r, double q, Side sid
   s.ws.n_quad_price = 0;
   s.T = T;
   s.sch = scheme_from_opts(opts);
-  s.ws.fast = (s.sch.profile == AlProfile::Fast);
+  s.ws.fast = al_fast_arithmetic(s.sch);
   // Internal put contract. Put: as-is. Call: McDonald-Schroder swap (S<->K, r<->q).
   if (side == Side::Put) {
     s.Sp = S;
@@ -3395,6 +3398,17 @@ AlOpts al_bulk_opts() noexcept {
       .tol = 1.0e-8};
 }
 
+// L2f al-fast-tier: the measured Screen tier (bound and scheme choice on
+// al_screen_opts in american.hpp; scan in sprints/2026-10-19-L2f-al-fast-tier-sprint.md).
+AlOpts al_screen_opts() noexcept {
+  return AlOpts{.n_collocation = 7,
+                .n_quadrature = 16,
+                .n_quad_price = 48,
+                .max_newton_iter = 5,
+                .tol = 1.0e-8,
+                .profile = AlProfile::Screen};
+}
+
 // al-speed tier 2. nullopt's ACCURATE scheme is {12, 24, 48, 2 JN + 4 FP, 1e-10};
 // the explicit opts below map to exactly that through scheme_from_opts (6 sweeps
 // split 2 + 4, price order 48), so only the profile differs.
@@ -3423,6 +3437,7 @@ void AlExpiryGeometry::prepare(double T, double r, double q, const std::optional
     impl_ = std::make_unique<Impl>();
   }
   Impl &g = *impl_;
+  ++g.generation; // invalidates every handle solved on the previous preparation
   g.T = T;
   g.r = r;
   g.q = q;
@@ -3479,6 +3494,7 @@ struct AlBoundaryHandle::State {
   double sigma = 0.0;
   bool solved = false;   // solve() succeeded (boundary or a closed-form regime)
   bool boundary = false; // ... and laid down a boundary in `scratch`
+  std::uint64_t generation = 0; // the geometry's generation at the last solve()
   AlPreparedScratch scratch;
 };
 
@@ -3504,6 +3520,7 @@ Status AlBoundaryHandle::solve(double sigma) {
     return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
   }
   const AlExpiryGeometry::Impl &g = *st.g;
+  st.generation = g.generation;
   // andersen_lake's own decision tree at S = K = anchor: validation and regime depend
   // on neither beyond their sign, so this takes the branch every contract of the
   // handle takes; the American arm solves the anchor's boundary once.
@@ -3531,6 +3548,11 @@ double AlBoundaryHandle::price_from_boundary(double S, double K) const noexcept 
     return kNaN;
   }
   const State &st = *st_;
+  // A geometry re-prepared after solve() has moved (T, r, q, opts) under the boundary
+  // in `scratch`: refuse rather than price the stale boundary (L2b review m2).
+  if (st.g == nullptr || st.g->generation != st.generation) {
+    return kNaN;
+  }
   const double internal_strike = (st.side == Side::Put) ? K : S;
   if (std::bit_cast<std::uint64_t>(internal_strike) != std::bit_cast<std::uint64_t>(st.anchor)) {
     return kNaN;
@@ -3789,7 +3811,7 @@ Status call_slice_impl(double S, std::span<const double> strikes, double T, doub
   ws.qx_price = pr->nodes.data();
   ws.qw_price = pr->weights.data();
   ws.n_quad_price = sch.n_quad_price;
-  ws.fast = (sch.profile == AlProfile::Fast);
+  ws.fast = al_fast_arithmetic(sch);
   al_bind_geometry(bnd, ws, sigma, rp, qp);
 
   al_seed_boundary_for(bnd, ws, sigma, rp, qp);

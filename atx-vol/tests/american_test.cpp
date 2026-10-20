@@ -10,6 +10,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -4570,6 +4571,204 @@ TEST(AlFastProfile, SlicesAgreeWithScalarFastPrices) {
     }
   }
   std::cout << "[AlFastProfile] put slice bit_equal=" << bit_equal << "/" << checked << "\n";
+}
+
+// ── L2f al-fast-tier (2026-10-19): the opt-in AlProfile::Screen tier ──────────
+//
+// Screen is the Fast arithmetic on a SMALL scheme (al_screen_opts: 7 nodes, l = 16,
+// 2 JN + 3 FP sweeps, p = 48), so against the accurate Reference its contract is a
+// measured TRUNCATION bound, documented on al_screen_opts (american.hpp) and pinned
+// here; the scan behind the choice is in sprints/2026-10-19-L2f-al-fast-tier-sprint.md.
+namespace al_screen_profile_test {
+
+// fast_profile_grid's shape plus a short-dated index-like slice (S = 773, T = 23 d,
+// r = 4.5%, q = 0.16%: the SPY 2026-11-06 chain's carry) across the smile.
+std::vector<al_fast_profile_test::Pt> screen_grid() {
+  std::vector<al_fast_profile_test::Pt> v = al_fast_profile_test::fast_profile_grid();
+  for (const Side side : {Side::Put, Side::Call}) {
+    for (const double m : {0.80, 0.90, 0.95, 0.98, 1.0, 1.02, 1.05, 1.10, 1.20}) {
+      for (const double sigma : {0.12, 0.2, 0.35}) {
+        v.push_back(al_fast_profile_test::Pt{773.0, 773.0 * m, 0.068, sigma, 0.045, 0.0016,
+                                             side});
+      }
+    }
+  }
+  return v;
+}
+
+} // namespace al_screen_profile_test
+
+// Nothing selects Screen unless asked: defaults and every shipped preset stay on
+// Reference, and al_screen_opts resolves to the measured scheme.
+TEST(AlScreenProfile, NeverTheDefaultAndSelectsTheMeasuredScheme) {
+  using atx::vol::AlProfile;
+  EXPECT_EQ(AlOpts{}.profile, AlProfile::Reference);
+  EXPECT_EQ(al_fast_opts().profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::al_bulk_opts().profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::al_default_opts().profile, AlProfile::Reference);
+  EXPECT_EQ(atx::vol::al_fast_profile(std::nullopt).profile, AlProfile::Fast);
+  const AlOpts s = atx::vol::al_screen_opts();
+  EXPECT_EQ(s.profile, AlProfile::Screen);
+  const atx::vol::amer::AlScheme sch = atx::vol::amer::scheme_from_opts(s);
+  EXPECT_EQ(sch.n_boundary, 7);
+  EXPECT_EQ(sch.n_quad_fp, 16);
+  EXPECT_EQ(sch.n_quad_price, 48);
+  EXPECT_EQ(sch.n_iter_jn, 2);
+  EXPECT_EQ(sch.n_iter_fp, 3);
+  EXPECT_EQ(sch.tol, 1.0e-8);
+  EXPECT_EQ(sch.profile, AlProfile::Screen);
+}
+
+// The one scheme-mapping difference: Screen's boundary-node floor is 4, every other
+// profile keeps 6 (so no existing AlOpts resolves differently).
+TEST(AlScreenProfile, NodeFloorIsFourOnlyUnderScreen) {
+  using atx::vol::AlProfile;
+  using atx::vol::amer::scheme_from_opts;
+  for (const std::uint16_t n : {std::uint16_t{1}, std::uint16_t{3}, std::uint16_t{4},
+                                std::uint16_t{5}, std::uint16_t{6}, std::uint16_t{7}}) {
+    AlOpts o{.n_collocation = n, .n_quadrature = 8, .max_newton_iter = 2, .tol = 1.0e-8};
+    EXPECT_EQ(scheme_from_opts(o).n_boundary, std::max<std::uint16_t>(n, 6)) << n;
+    o.profile = AlProfile::Fast;
+    EXPECT_EQ(scheme_from_opts(o).n_boundary, std::max<std::uint16_t>(n, 6)) << n;
+    o.profile = AlProfile::Screen;
+    EXPECT_EQ(scheme_from_opts(o).n_boundary, std::max<std::uint16_t>(n, 4)) << n;
+  }
+  // 0 stays "unset" (the stored-record convention) under every profile.
+  EXPECT_EQ(scheme_from_opts(AlOpts{.n_collocation = 0, .profile = AlProfile::Screen}).n_boundary,
+            12);
+  // A 4-node Screen boundary prices (three interior collocation nodes).
+  const AlOpts tiny{.n_collocation = 4, .n_quadrature = 8, .n_quad_price = 16,
+                    .max_newton_iter = 1, .tol = 1.0e-8, .profile = AlProfile::Screen};
+  const auto p = andersen_lake(100.0, 105.0, 0.5, 0.25, 0.05, 0.01, Side::Put, tiny);
+  const auto ref = andersen_lake(100.0, 105.0, 0.5, 0.25, 0.05, 0.01, Side::Put);
+  ASSERT_TRUE(p.has_value());
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_NEAR(*p, *ref, 5.0e-3 * std::max(*ref, 1.0));
+}
+
+// Screen runs the Fast arithmetic: on a scheme both profiles express (n >= 6) a
+// Screen price is al_fast_profile's price bit for bit — and therefore differs from
+// the Reference arithmetic on the same scheme somewhere.
+TEST(AlScreenProfile, RunsTheFastArithmeticOnItsScheme) {
+  AlOpts as_fast = atx::vol::al_screen_opts();
+  as_fast.profile = atx::vol::AlProfile::Reference;
+  const AlOpts fast = atx::vol::al_fast_profile(as_fast);
+  const AlOpts screen = atx::vol::al_screen_opts();
+  int checked = 0;
+  int differs_from_reference = 0;
+  for (const auto &p : al_screen_profile_test::screen_grid()) {
+    const auto s = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, screen);
+    const auto f = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, fast);
+    const auto r = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, as_fast);
+    ASSERT_EQ(s.has_value(), f.has_value());
+    if (!s.has_value()) {
+      continue;
+    }
+    ++checked;
+    ASSERT_EQ(std::bit_cast<std::uint64_t>(*s), std::bit_cast<std::uint64_t>(*f))
+        << "K=" << p.K << " T=" << p.T << " screen=" << *s << " fast=" << *f;
+    differs_from_reference += (r.has_value() && *r != *s) ? 1 : 0;
+  }
+  EXPECT_GT(checked, 1300);
+  EXPECT_GT(differs_from_reference, 0) << "Screen produced the Reference arithmetic's bits";
+}
+
+// The measured truncation bound against the ACCURATE Reference (nullopt), pinned with
+// round-up headroom (al_screen_opts comment). Fails when the tier is made cheaper
+// than measured (fewer sweeps / nodes / quadrature) or its arithmetic regresses.
+TEST(AlScreenProfile, PriceWithinMeasuredBoundOfReference) {
+  // |P_screen - P_ref| <= bound * max(P_ref, 1): the whole grid (T to 4 y, carry to 9%,
+  // sigma to 0.7) and the short-dated regime (T <= 0.1) the fit inverts most. Measured
+  // on this grid: 7.7156e-4 (put S=K=100, T=4, sigma=0.08, r=0.1, q=0) and 4.5260e-6
+  // (the same put at T=0.1); the bounds are their 2-figure round-ups.
+  constexpr double kWholeGrid = 7.8e-4;
+  constexpr double kShortDated = 4.6e-6;
+  const AlOpts screen = atx::vol::al_screen_opts();
+  int checked = 0;
+  double worst = 0.0;
+  double worst_short = 0.0;
+  std::string worst_at;
+  std::string worst_short_at;
+  for (const auto &p : al_screen_profile_test::screen_grid()) {
+    const auto a = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side);
+    const auto b = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, screen);
+    ASSERT_EQ(a.has_value(), b.has_value()) << "status differs K=" << p.K << " T=" << p.T;
+    if (!a.has_value()) {
+      EXPECT_EQ(a.error().code(), b.error().code());
+      continue;
+    }
+    ++checked;
+    const double rel = std::abs(*b - *a) / std::max(*a, 1.0);
+    std::ostringstream where;
+    where << "side=" << (p.side == Side::Call ? "C" : "P") << " S=" << p.S << " K=" << p.K
+          << " T=" << p.T << " sigma=" << p.sigma << " r=" << p.r << " q=" << p.q
+          << " ref=" << *a << " screen=" << *b;
+    if (rel > worst) {
+      worst = rel;
+      worst_at = where.str();
+    }
+    EXPECT_LE(rel, kWholeGrid) << where.str();
+    if (p.T <= 0.1) {
+      if (rel > worst_short) {
+        worst_short = rel;
+        worst_short_at = where.str();
+      }
+      EXPECT_LE(rel, kShortDated) << "short-dated " << where.str();
+    }
+  }
+  EXPECT_GT(checked, 1300);
+  std::cout << "[AlScreenProfile] checked=" << checked << " worst |dP|/max(P,1)=" << worst
+            << " at " << worst_at << "\n[AlScreenProfile] short-dated worst=" << worst_short
+            << " at " << worst_short_at << "\n";
+}
+
+// The same target inverts to (nearly) the same vol on Screen as on Reference, on
+// vega-bearing contracts.
+TEST(AlScreenProfile, ImpliedVolWithinMeasuredBoundOfReference) {
+  // Measured 0.47157 bp (call S=100, K=70, T=4, sigma=0.25, r=4.5%, q=9%); round-up.
+  constexpr double kBoundBp = 0.48;
+  const AlOpts screen = atx::vol::al_screen_opts();
+  int solved = 0;
+  double worst_bp = 0.0;
+  std::string worst_at;
+  for (const auto &p : al_screen_profile_test::screen_grid()) {
+    const auto px = andersen_lake(p.S, p.K, p.T, p.sigma, p.r, p.q, p.side);
+    const auto up = andersen_lake(p.S, p.K, p.T, p.sigma + 1.0e-4, p.r, p.q, p.side);
+    const auto dn = andersen_lake(p.S, p.K, p.T, p.sigma - 1.0e-4, p.r, p.q, p.side);
+    if (!px.has_value() || !up.has_value() || !dn.has_value()) {
+      continue;
+    }
+    // Vega-bearing on the American map (the bench scan's rule): a price pinned in the
+    // exercise region inverts to a band of vols under any kernel (L1c), so its IV
+    // difference measures the target, not the kernel.
+    if (!((*up - *dn) / 2.0e-4 >= 1.0e-2 * std::max(*px, 1.0))) {
+      continue;
+    }
+    const auto ia = atx::vol::american_implied_vol(*px, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                   AmericanMethod::AndersenLake, 1.0e-10, 100,
+                                                   std::nullopt);
+    const auto ib = atx::vol::american_implied_vol(*px, p.S, p.K, p.T, p.r, p.q, p.side,
+                                                   AmericanMethod::AndersenLake, 1.0e-10, 100,
+                                                   screen);
+    ASSERT_EQ(ia.has_value(), ib.has_value()) << "K=" << p.K << " T=" << p.T;
+    if (!ia.has_value()) {
+      continue;
+    }
+    ++solved;
+    const double bp = std::abs(*ib - *ia) * 1.0e4;
+    std::ostringstream where;
+    where << "side=" << (p.side == Side::Call ? "C" : "P") << " S=" << p.S << " K=" << p.K
+          << " T=" << p.T << " sigma=" << p.sigma << " r=" << p.r << " q=" << p.q
+          << " iv_ref=" << *ia << " iv_screen=" << *ib;
+    if (bp > worst_bp) {
+      worst_bp = bp;
+      worst_at = where.str();
+    }
+    EXPECT_LE(bp, kBoundBp) << where.str();
+  }
+  EXPECT_GT(solved, 500);
+  std::cout << "[AlScreenProfile] iv solved=" << solved << " worst bp=" << worst_bp << " at "
+            << worst_at << "\n";
 }
 
 } // namespace
