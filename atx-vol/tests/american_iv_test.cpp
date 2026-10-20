@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -20,6 +23,7 @@
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
+#include "pricing/american_iv_premium.hpp"
 #include "atx/vol/api/core/types.hpp"
 
 // American implied-vol inverter coverage.
@@ -1716,4 +1720,303 @@ TEST(AmericanIvNonMonotone, KeepsAnswersOutsideTheRegionBitIdentical) {
   const IvResult clamp = typed_iv(call_zv, S, 90.0, 1.0, 0.05, 0.0, Side::Call, true);
   ASSERT_EQ(clamp.status, IvStatus::Ok);
   EXPECT_EQ(clamp.iv, kIvMin);
+}
+
+// ── Opt-in Premium (de-Americanised) inversion strategy (L2e, 2026-10-19) ──
+// Contract: american_iv.hpp IvStrategy; per-contract memory: src/pricing/
+// american_iv_premium.hpp. Pinned here: an accepted Premium root is the cold map's
+// root to the Search tolerance and agrees with Search; a fallback IS Search bit for
+// bit; the default strategy is Search; the opt-in refusal still fires; the memory
+// cuts the cold solves of a second price of the same contract.
+
+namespace {
+
+using atx::vol::american_implied_vol_premium;
+using atx::vol::IvPremiumFallback;
+using atx::vol::IvPremiumMemory;
+using atx::vol::IvPremiumStats;
+using atx::vol::IvStrategy;
+using atx::vol::kIvPremiumMaxSolves;
+
+[[nodiscard]] std::uint64_t al_solves_now() {
+  return atx::vol::counters::ledger::this_thread(
+      atx::vol::counters::ledger::Solve::AlBoundarySolves);
+}
+
+// One contract of the grid and its target (cold AL at sig_true).
+struct PremiumCase {
+  double K, T, r, q;
+  Side sd;
+  double sig_true;
+};
+
+[[nodiscard]] std::vector<PremiumCase> premium_grid() {
+  std::vector<PremiumCase> out;
+  const double S = 100.0;
+  // r - q positive, zero and negative; q = 0 (no dividend) and q > 0.
+  const std::array<std::array<double, 2>, 4> carries{
+      {{0.05, 0.0}, {0.04, 0.04}, {0.01, 0.05}, {0.03, 0.015}}};
+  for (const Side sd : {Side::Put, Side::Call}) {
+    for (const double m : {0.6, 0.85, 0.97, 1.0, 1.03, 1.2, 1.5}) {
+      const double K = sd == Side::Put ? S * m : S / m; // m > 1: in the money
+      for (const double T : {0.03, 0.25, 1.0, 3.0}) {
+        for (const auto &rq : carries) {
+          for (const double sig : {0.12, 0.3, 0.8}) {
+            out.push_back({K, T, rq[0], rq[1], sd, sig});
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] IvResult premium_iv(double price, double S, const PremiumCase &c,
+                                  IvPremiumMemory *memory, IvPremiumStats &stats,
+                                  bool refuse = false) {
+  IvOpts o;
+  o.refuse_non_monotone = refuse;
+  return american_implied_vol_premium(price, S, c.K, c.T, c.r, c.q, c.sd, o, memory, stats);
+}
+
+} // namespace
+
+// Over puts/calls, deep ITM to deep OTM, 11 days to 3 years, carry positive / zero /
+// negative, with and without a dividend yield: every accepted Premium root reprices
+// the target on the cold map to within the Search tolerance (Newton distance with the
+// cold map's own chord slope) and lies within 4 tol of the Search answer (the Search
+// polish may stop up to kPolishMaxDriftTols = 4 tol from its rtsafe root); every
+// fallback returns the Search answer bit for bit. Premium spends at most 4 cold
+// solves before a fallback and, accepted, fewer AL solves than Search on average.
+TEST(AmericanIvPremium, ConvergesToTheSearchRootOrFallsBackBitForBit) {
+  const double S = 100.0;
+  const double tol = IvOpts{}.tol;
+  std::size_t n = 0, accepted = 0, max_solves = 0;
+  std::size_t al_search = 0, al_premium = 0;
+  std::array<std::size_t, atx::vol::kIvPremiumFallbackCount> why{};
+  double max_dsig = 0.0;
+  double max_newton = 0.0;
+  double us_search = 0.0, us_premium = 0.0;
+  std::size_t search_off = 0; // accepted cases more than 4 tol from Search
+  for (const PremiumCase &c : premium_grid()) {
+    const double p = cold_al(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    if (!std::isfinite(p)) {
+      continue;
+    }
+    ++n;
+    const std::uint64_t a0 = al_solves_now();
+    const auto t0 = std::chrono::steady_clock::now();
+    const IvResult search = typed_iv(p, S, c.K, c.T, c.r, c.q, c.sd, false);
+    const auto t1 = std::chrono::steady_clock::now();
+    const std::uint64_t a1 = al_solves_now();
+    IvPremiumStats stats;
+    const IvResult prem = premium_iv(p, S, c, nullptr, stats);
+    const auto t2 = std::chrono::steady_clock::now();
+    const std::uint64_t a2 = al_solves_now();
+    us_search += std::chrono::duration<double, std::micro>(t1 - t0).count();
+    us_premium += std::chrono::duration<double, std::micro>(t2 - t1).count();
+    al_search += static_cast<std::size_t>(a1 - a0);
+    al_premium += static_cast<std::size_t>(a2 - a1);
+    ++why[static_cast<std::size_t>(stats.fallback)];
+    max_solves = std::max<std::size_t>(max_solves, stats.premium_solves);
+    ASSERT_LE(stats.premium_solves, kIvPremiumMaxSolves);
+    const std::string where = "K=" + std::to_string(c.K) + " T=" + std::to_string(c.T) +
+                              " r=" + std::to_string(c.r) + " q=" + std::to_string(c.q) +
+                              (c.sd == Side::Put ? " put" : " call") +
+                              " sig=" + std::to_string(c.sig_true);
+    if (stats.fallback != IvPremiumFallback::None) {
+      ASSERT_EQ(prem.status, search.status) << where;
+      EXPECT_TRUE(same_double(prem.iv, search.iv) ||
+                  (std::isnan(prem.iv) && std::isnan(search.iv)))
+          << where;
+      continue;
+    }
+    ++accepted;
+    ASSERT_EQ(prem.status, IvStatus::Ok) << where;
+    ASSERT_EQ(search.status, IvStatus::Ok) << where;
+    // Newton distance of an answer on the cold map (chord over 1e-6 vol at the answer).
+    const auto newton_distance = [&](double iv) {
+      const double h = 1.0e-6;
+      const double slope = (cold_al(S, c.K, c.T, iv + h, c.r, c.q, c.sd) -
+                            cold_al(S, c.K, c.T, iv - h, c.r, c.q, c.sd)) /
+                           (2.0 * h);
+      return std::abs(cold_al(S, c.K, c.T, iv, c.r, c.q, c.sd) - p) / slope;
+    };
+    const double newton = newton_distance(prem.iv);
+    max_newton = std::max(max_newton, newton);
+    EXPECT_LE(newton, tol) << where;
+    // The same root: the two answers differ by at most Search's own distance from the
+    // cold root (its warm-map search and drift-capped polish; LEDGER 2026-10-17 trap)
+    // plus the shared tolerance band.
+    const double dsig = std::abs(prem.iv - search.iv);
+    max_dsig = std::max(max_dsig, dsig);
+    if (dsig > 4.0 * tol) {
+      ++search_off;
+    }
+    EXPECT_LE(dsig, newton_distance(search.iv) + 2.0 * tol)
+        << where << " premium " << prem.iv << " search " << search.iv;
+  }
+  std::printf("[premium grid] %zu targets, %zu accepted, max |dsigma| vs Search %.3g, max "
+              "Newton distance %.3g, AL solves Search %zu / Premium %zu (max per attempt %zu)\n",
+              n, accepted, max_dsig, max_newton, al_search, al_premium, max_solves);
+  std::printf("[premium grid] wall us Search %.0f / Premium %.0f (unqualified); accepted "
+              "answers > 4 tol from Search %zu\n",
+              us_search, us_premium, search_off);
+  std::printf("[premium grid] fallbacks:");
+  for (std::size_t i = 1; i < why.size(); ++i) {
+    std::printf(" %zu=%zu", i, why[i]);
+  }
+  std::printf("\n");
+  EXPECT_GT(accepted, n * 3 / 4);
+  // The only fallbacks on this grid: targets within the non-monotone band (tiny deep
+  // OTM prices and near-intrinsic deep ITM ones) and a handful of slow convergences.
+  EXPECT_LE(why[static_cast<std::size_t>(IvPremiumFallback::NoConvergence)], n / 50);
+}
+
+// Opt-in only: IvOpts defaults to Search with no seed profile, and the typed overload
+// under the default IS the positional inverter. seed_profile unset and seed_profile =
+// al_opts' own (Reference) profile are the same kernel: same bits, same solves. A Fast
+// seed profile keeps the accepted root on the accurate map (one confirming solve).
+TEST(AmericanIvPremium, DefaultsAreSearchAndTheAccurateSeedKernel) {
+  const IvOpts defaults;
+  EXPECT_EQ(defaults.strategy, IvStrategy::Search);
+  EXPECT_FALSE(defaults.seed_profile.has_value());
+  const double S = 100.0;
+  const double tol = defaults.tol;
+  std::size_t fast_accepted = 0;
+  for (const PremiumCase &c : premium_grid()) {
+    if (c.T != 1.0 || c.sig_true != 0.3) {
+      continue; // a slice of the grid is enough here
+    }
+    const double p = cold_al(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    const atx::core::Result<double> pos = american_implied_vol(p, S, c.K, c.T, c.r, c.q, c.sd);
+    const IvResult typed = american_implied_vol(p, S, c.K, c.T, c.r, c.q, c.sd, defaults);
+    ASSERT_EQ(typed.status, status_of(pos));
+    if (pos) {
+      EXPECT_TRUE(same_double(typed.iv, *pos));
+    }
+    IvPremiumStats unset_stats;
+    const IvResult unset = premium_iv(p, S, c, nullptr, unset_stats);
+    IvOpts own;
+    own.seed_profile = atx::vol::AlProfile::Reference;
+    IvPremiumStats own_stats;
+    const IvResult explicit_own =
+        american_implied_vol_premium(p, S, c.K, c.T, c.r, c.q, c.sd, own, nullptr, own_stats);
+    EXPECT_EQ(explicit_own.status, unset.status);
+    EXPECT_TRUE(same_double(explicit_own.iv, unset.iv) ||
+                (std::isnan(explicit_own.iv) && std::isnan(unset.iv)));
+    EXPECT_EQ(own_stats.premium_solves, unset_stats.premium_solves);
+    EXPECT_EQ(own_stats.fallback, unset_stats.fallback);
+    IvOpts fast;
+    fast.seed_profile = atx::vol::AlProfile::Fast;
+    IvPremiumStats fast_stats;
+    const IvResult fast_iv =
+        american_implied_vol_premium(p, S, c.K, c.T, c.r, c.q, c.sd, fast, nullptr, fast_stats);
+    if (fast_stats.fallback == IvPremiumFallback::None) {
+      ++fast_accepted;
+      ASSERT_EQ(fast_iv.status, IvStatus::Ok);
+      EXPECT_LE(std::abs(fast_iv.iv - c.sig_true), tol);
+    }
+    // Through the public typed overload, Premium is the same computation.
+    IvOpts pub;
+    pub.strategy = IvStrategy::Premium;
+    const IvResult via_public = american_implied_vol(p, S, c.K, c.T, c.r, c.q, c.sd, pub);
+    EXPECT_TRUE(same_double(via_public.iv, unset.iv) ||
+                (std::isnan(via_public.iv) && std::isnan(unset.iv)));
+  }
+  EXPECT_GT(fast_accepted, 0u);
+}
+
+// A constructed non-convergent case: a tolerance below the cold map's own noise floor
+// can never be accepted, so the attempt spends its budget and falls back to Search,
+// whose answer it then returns bit for bit.
+TEST(AmericanIvPremium, ANonConvergentAttemptFallsBackToSearchBitForBit) {
+  const double S = 100.0;
+  const PremiumCase c{120.0, 1.0, 0.05, 0.0, Side::Put, 0.3};
+  const double p = cold_al(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+  IvOpts o;
+  o.tol = 1.0e-17;
+  IvPremiumStats stats;
+  const IvResult prem =
+      american_implied_vol_premium(p, S, c.K, c.T, c.r, c.q, c.sd, o, nullptr, stats);
+  EXPECT_EQ(stats.fallback, IvPremiumFallback::NoConvergence);
+  EXPECT_EQ(stats.premium_solves, kIvPremiumMaxSolves);
+  const IvResult search = american_implied_vol(p, S, c.K, c.T, c.r, c.q, c.sd, o);
+  EXPECT_EQ(prem.status, search.status);
+  EXPECT_TRUE(same_double(prem.iv, search.iv) || (std::isnan(prem.iv) && std::isnan(search.iv)));
+}
+
+// Inside the non-monotone band Premium never answers: it falls back (RangeEdge) and
+// returns Search's answer bit for bit, so with refuse_non_monotone the L1c refusal
+// still fires exactly where it fires on Search.
+TEST(AmericanIvPremium, TheNonMonotoneBandFallsBackAndTheRefusalStillFires) {
+  const double S = 100.0;
+  struct Case {
+    double K, T, r, q, sig_true;
+  };
+  // The L1c refusal cases (RefusesWrongOkAnswersInsideTheRegion), puts.
+  const Case cases[] = {{kNmK, kNmT, kNmR, kNmQ, 0.14},
+                        {140.0, 5.0, 0.05, 0.0, 0.2},
+                        {130.0, 5.0, 0.05, 0.05, 0.1}};
+  for (const Case &k : cases) {
+    const PremiumCase c{k.K, k.T, k.r, k.q, Side::Put, k.sig_true};
+    const double p = cold_al(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    for (const bool refuse : {false, true}) {
+      IvPremiumStats stats;
+      const IvResult prem = premium_iv(p, S, c, nullptr, stats, refuse);
+      const IvResult search = typed_iv(p, S, c.K, c.T, c.r, c.q, c.sd, refuse);
+      EXPECT_EQ(stats.fallback, IvPremiumFallback::RangeEdge) << c.K << " " << refuse;
+      EXPECT_EQ(prem.status, search.status) << c.K << " " << refuse;
+      EXPECT_TRUE(same_double(prem.iv, search.iv) ||
+                  (std::isnan(prem.iv) && std::isnan(search.iv)));
+      if (refuse) {
+        EXPECT_EQ(prem.status, IvStatus::NonMonotoneRegion) << c.K;
+      }
+    }
+  }
+}
+
+// The cache's band edges: the mid inverted from scratch, then the bid and the ask each
+// from a COPY of the mid's memory. Every edge is accepted on the cold map within tol,
+// and the memory cuts the edges' cold solves (most need one).
+TEST(AmericanIvPremium, TheMidMemoryCutsTheBandEdgeSolves) {
+  const double S = 100.0;
+  const double tol = IvOpts{}.tol;
+  std::size_t edges = 0, with_memory = 0, without_memory = 0, one_solve = 0;
+  for (const PremiumCase &c : premium_grid()) {
+    const double mid = cold_al(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    const double half = std::max(0.01, 0.02 * mid);
+    if (!(mid - half > 0.05)) {
+      continue; // two-sided quotes only
+    }
+    IvPremiumMemory memory;
+    IvPremiumStats mid_stats;
+    const IvResult m = premium_iv(mid, S, c, &memory, mid_stats);
+    if (mid_stats.fallback != IvPremiumFallback::None) {
+      continue;
+    }
+    ASSERT_EQ(m.status, IvStatus::Ok);
+    ASSERT_GE(memory.points, 1u);
+    for (const double edge : {mid - half, mid + half}) {
+      IvPremiumMemory copy = memory;
+      IvPremiumStats seeded;
+      const IvResult a = premium_iv(edge, S, c, &copy, seeded);
+      IvPremiumStats cold;
+      const IvResult b = premium_iv(edge, S, c, nullptr, cold);
+      if (seeded.fallback != IvPremiumFallback::None || cold.fallback != IvPremiumFallback::None) {
+        continue;
+      }
+      ++edges;
+      with_memory += seeded.premium_solves;
+      without_memory += cold.premium_solves;
+      one_solve += seeded.premium_solves == 1u ? 1u : 0u;
+      EXPECT_LE(std::abs(a.iv - b.iv), 2.0 * tol) << c.K << " " << c.T;
+    }
+  }
+  std::printf("[premium memory] %zu band edges: cold solves %zu with the mid's memory, %zu "
+              "without; %zu edges in one solve\n",
+              edges, with_memory, without_memory, one_solve);
+  ASSERT_GT(edges, 100u);
+  EXPECT_LT(with_memory * 10, without_memory * 7); // at least 30% fewer cold solves
+  EXPECT_GT(one_solve * 2, edges);                  // most edges need one solve
 }

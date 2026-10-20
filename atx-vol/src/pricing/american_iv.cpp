@@ -1,5 +1,7 @@
 #include "atx/vol/api/pricing/american_iv.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -10,8 +12,10 @@
 #include <utility>
 
 #include "pricing/al_probe.hpp" // env-gated AL hot-path zone timers (Perf 2b step 1)
+#include "pricing/american_iv_premium.hpp"
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp" // CorrectionCache, american_price_cached hot path
 #include "fitting/counters.hpp"
 #include "atx/vol/api/pricing/implied_vol.hpp"
@@ -997,26 +1001,386 @@ bool al_non_monotone_region(double price, double S, double K, double T, double r
   }
 }
 
+namespace {
+
+// The Search route of the typed entry point (also every Premium fallback). Not
+// noexcept: the inversion allocates; the public entry points contain bad_alloc.
+[[nodiscard]] IvResult search_typed(double price, double S, double K, double T, double r,
+                                    double q, Side side, const IvOpts &opts) {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  const Result<double> iv =
+      american_implied_vol_impl(price, S, K, T, r, q, side, opts.method, opts.tol, opts.max_iter,
+                                opts.al_opts, opts.correction, opts.warm_start, opts.price_tol);
+  if (!iv) {
+    return IvResult{kNaN, iv_status_of(iv.error().code())};
+  }
+  const bool cold_al =
+      opts.method == AmericanMethod::AndersenLake && !cache_usable(opts.correction, side);
+  if (opts.refuse_non_monotone && cold_al &&
+      !scalar_answer_certified(price, S, K, T, r, q, side, *iv, opts.al_opts)) {
+    return IvResult{kNaN, IvStatus::NonMonotoneRegion};
+  }
+  return IvResult{*iv, IvStatus::Ok};
+}
+
+// ── Premium strategy (L2e; contract in american_iv.hpp IvStrategy) ──
+
+// The approximation leg A of the decomposition P_am(sigma) = A(sigma) + D(sigma). Where
+// the kernel has an exercise region it is the Barone-Adesi-Whaley price: its quadratic
+// approximation already carries most of the early-exercise premium, so the remainder
+// D = P_am - A is nearly flat in sigma even deep in the money (where the premium
+// itself is strongly curved: on a 3-year deep-ITM put the Black-76 remainder moved the
+// iterates linearly). Elsewhere it is Black-76 on the kernel's forward, where the
+// American map IS Black-76 and D = 0. A is only ever a seed model: every accepted root
+// is confirmed on the cold Andersen-Lake map.
+class Leg {
+public:
+  Leg(double S, double K, double T, double r, double q, Side side) noexcept
+      : S_(S), K_(K), T_(T), r_(r), q_(q), side_(side), F_(S * std::exp((r - q) * T)),
+        df_(std::exp(-r * T)),
+        baw_((side == Side::Put) ? r > 0.0 : q > 0.0) {}
+
+  [[nodiscard]] bool valid() const noexcept {
+    return F_ > 0.0 && std::isfinite(F_) && df_ > 0.0 && std::isfinite(df_);
+  }
+
+  // A(sigma); nullopt where the BAW critical-price search fails.
+  [[nodiscard]] std::optional<double> price(double sigma) const {
+    if (!baw_) {
+      return black76_price(F_, K_, T_, sigma, df_, side_);
+    }
+    const Result<double> p = baw_american(S_, K_, T_, sigma, r_, q_, side_, kBawIter, kBawTol);
+    if (!p || !std::isfinite(*p)) {
+      return std::nullopt;
+    }
+    return *p;
+  }
+
+  // dA/dsigma: Black-76 vega, or a central difference of the BAW price.
+  [[nodiscard]] std::optional<double> slope(double sigma) const {
+    if (!baw_) {
+      return black76_value_and_vega(F_, K_, T_, sigma, df_, side_).vega;
+    }
+    const double h = kBawSlopeStep * sigma;
+    const std::optional<double> up = price(sigma + h);
+    const std::optional<double> dn = price(sigma - h);
+    if (!up || !dn) {
+      return std::nullopt;
+    }
+    return (*up - *dn) / (2.0 * h);
+  }
+
+  // Solves A(sigma) + d0 + e * (sigma - s0) = target from `start`: Newton kept inside the
+  // sign-change bracket it learns (bisection otherwise), bounded. nullopt when the
+  // model has no increasing root inside (kIvMin, kSigmaHi).
+  [[nodiscard]] std::optional<double> solve(double target, double d0, double s0, double e,
+                                            double start) const {
+    constexpr int kMaxModelSteps = 48;
+    double lo = kSigmaLo;
+    double hi = kSigmaHi;
+    double x = std::fmin(std::fmax(start, kSigmaLo * 1.001), kSigmaHi * 0.999);
+    for (int i = 0; i < kMaxModelSteps; ++i) {
+      const std::optional<double> a = price(x);
+      const std::optional<double> da = slope(x);
+      if (!a || !da) {
+        return std::nullopt;
+      }
+      const double g = *a + d0 + e * (x - s0) - target;
+      const double dg = *da + e;
+      if (!std::isfinite(g) || !std::isfinite(dg)) {
+        return std::nullopt;
+      }
+      if (g == 0.0) {
+        return x;
+      }
+      (g > 0.0 ? hi : lo) = x;
+      double next = (dg > 0.0) ? x - g / dg : 0.5 * (lo + hi);
+      if (!(next > lo && next < hi)) {
+        next = 0.5 * (lo + hi);
+      }
+      if (std::fabs(next - x) <= 1.0e-15 + 1.0e-13 * x) {
+        return (next > kSigmaLo && next < kSigmaHi) ? std::optional<double>{next} : std::nullopt;
+      }
+      x = next;
+    }
+    return std::nullopt;
+  }
+
+  // The Black-76 IV of `target` (the American IV's upper bound: P_am >= P_eu).
+  [[nodiscard]] std::optional<double> euro_iv(double target) const {
+    const Result<double> v = implied_vol(target, F_, K_, T_, df_, side_);
+    if (v && std::isfinite(*v) && *v > kSigmaLo && *v < kSigmaHi) {
+      return *v;
+    }
+    return std::nullopt;
+  }
+
+private:
+  static constexpr std::uint16_t kBawIter = 64;
+  static constexpr double kBawTol = 1.0e-12;
+  static constexpr double kBawSlopeStep = 1.0e-5; // relative central-difference step
+  double S_, K_, T_, r_, q_;
+  Side side_;
+  double F_, df_;
+  bool baw_; // the kernel has an exercise region: put r > 0, call q > 0
+};
+
+// One cold point of the contract: sigma, its American price and its remainder D.
+struct ColdPoint {
+  double sigma;
+  double price;
+  double rest;
+};
+
+// The Premium root, or nullopt with stats.fallback set (the caller then runs Search).
+// Not noexcept: andersen_lake's Error path builds a message string.
+[[nodiscard]] std::optional<double> premium_root(double price, double S, double K, double T,
+                                                 double r, double q, Side side, double tol,
+                                                 const std::optional<AlOpts> &opts,
+                                                 const std::optional<AlOpts> &seed_opts,
+                                                 bool confirm, IvPremiumMemory *memory,
+                                                 IvPremiumStats &stats) {
+  const auto fail = [&stats](IvPremiumFallback why) {
+    stats.fallback = why;
+    return std::optional<double>{};
+  };
+  // An accepted iterate's root; with a seed kernel other than the accurate one it is
+  // confirmed by one accurate solve (Newton distance <= tol on the accurate map).
+  const auto accept = [&](double root, double slope) -> std::optional<double> {
+    if (!(root > kSigmaLo && root < kSigmaHi)) {
+      return fail(IvPremiumFallback::VolBound);
+    }
+    if (confirm) {
+      counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+      const Result<double> pc = andersen_lake(S, K, T, root, r, q, side, opts);
+      ++stats.premium_solves;
+      if (!pc || !std::isfinite(*pc)) {
+        return fail(IvPremiumFallback::PricerFailure);
+      }
+      const double dc = (*pc - price) / slope;
+      stats.last_residual_usd = std::fabs(*pc - price);
+      if (!(std::fabs(dc) <= tol)) {
+        return fail(IvPremiumFallback::NoConvergence);
+      }
+      root -= dc;
+      if (!(root > kSigmaLo && root < kSigmaHi)) {
+        return fail(IvPremiumFallback::VolBound);
+      }
+    }
+    stats.fallback = IvPremiumFallback::None;
+    return root;
+  };
+  if (!std::isfinite(price) || !std::isfinite(S) || !std::isfinite(K) || !std::isfinite(T) ||
+      !std::isfinite(r) || !std::isfinite(q) || !(S > 0.0) || !(K > 0.0) || !(T > 0.0) ||
+      !(tol > 0.0)) {
+    return fail(IvPremiumFallback::NotApplicable);
+  }
+  // The Search route's identifiable range [zero_vol, ceiling]. Premium stays strictly
+  // inside it and above the non-monotone band, where P_am(sigma) is one increasing
+  // branch; at the edges the Search route's own clamps decide.
+  const double ceiling = american_price_ceiling(S, K, T, r, q, side);
+  const double zero_vol = zero_vol_american_value(S, K, T, r, q, side);
+  if (!std::isfinite(ceiling) || !std::isfinite(zero_vol)) {
+    return fail(IvPremiumFallback::NotApplicable);
+  }
+  const double band_tol = 1.0e-9 * ceiling + 1.0e-12;
+  const double gate = al_non_monotone_gate(K, T, opts);
+  if (!(price < ceiling - band_tol) || !(price - zero_vol > std::fmax(gate, band_tol))) {
+    return fail(IvPremiumFallback::RangeEdge);
+  }
+  const Leg leg(S, K, T, r, q, side);
+  if (!leg.valid()) {
+    return fail(IvPremiumFallback::NotApplicable);
+  }
+
+  // Up to two cold points, most recent first: the memory's, then this attempt's.
+  std::array<ColdPoint, 2> pts{};
+  std::size_t n = 0;
+  if (memory != nullptr) {
+    for (std::size_t i = 0; i < memory->points && i < 2; ++i) {
+      const std::optional<double> a = leg.price(memory->sigma[i]);
+      if (!a) {
+        return fail(IvPremiumFallback::NoEuropeanSeed);
+      }
+      pts[n++] = ColdPoint{memory->sigma[i], *a + memory->rest[i], memory->rest[i]};
+    }
+  }
+  // The remainder chord through two points with distinct sigmas (nullopt: none).
+  const auto chord = [](const ColdPoint &a, const ColdPoint &b) -> std::optional<double> {
+    if (a.sigma == b.sigma) {
+      return std::nullopt;
+    }
+    const double e = (a.rest - b.rest) / (a.sigma - b.sigma);
+    return std::isfinite(e) ? std::optional<double>{e} : std::nullopt;
+  };
+
+  // Seed: the leg inverted at the quote less the remembered remainder (constant, or its
+  // chord), started from the European IV (an upper bound) or the remembered sigma.
+  std::optional<double> x;
+  if (n == 0) {
+    if (const std::optional<double> eu = leg.euro_iv(price)) {
+      x = leg.solve(price, 0.0, 0.0, 0.0, *eu);
+    }
+  } else {
+    const std::optional<double> e = n >= 2 ? chord(pts[0], pts[1]) : std::nullopt;
+    x = leg.solve(price, pts[0].rest, pts[0].sigma, e.value_or(0.0), pts[0].sigma);
+  }
+  if (!x) {
+    return fail(IvPremiumFallback::NoEuropeanSeed);
+  }
+
+  const double slope_floor = kCertSlopeFloorRel * K;
+  for (std::uint32_t solve = 0; solve < kIvPremiumMaxSolves; ++solve) {
+    const double s = *x;
+    if (!(s > kSigmaLo && s < kSigmaHi)) {
+      return fail(IvPremiumFallback::VolBound);
+    }
+    counters::ledger::bump(counters::ledger::Solve::IvNewtonIters); // one inversion iterate
+    const Result<double> pa = andersen_lake(S, K, T, s, r, q, side, seed_opts);
+    ++stats.premium_solves;
+    const std::optional<double> a = leg.price(s);
+    if (!pa || !std::isfinite(*pa)) {
+      return fail(IvPremiumFallback::PricerFailure);
+    }
+    if (!a) {
+      return fail(IvPremiumFallback::NoEuropeanSeed);
+    }
+    const ColdPoint cur{s, *pa, *pa - *a};
+    const double res = cur.price - price;
+    // Slope of the cold map at the new point: the leg's own slope plus the remainder
+    // chord to the most recent point at another sigma (only the nearly flat remainder
+    // is approximated by a chord). With no such point, the leg slope alone where the
+    // whole remainder is within tol of vol (its chord then moves the Newton step by
+    // |D'| / A' times a step that is itself <= tol; exact where D is 0). The raw
+    // cold-map chord between the two points must itself rise: one increasing branch.
+    std::optional<double> slope;
+    const ColdPoint *partner = nullptr;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (pts[i].sigma != s) {
+        partner = &pts[i];
+        break;
+      }
+    }
+    const std::optional<double> leg_slope = leg.slope(s);
+    if (!leg_slope) {
+      return fail(IvPremiumFallback::NoEuropeanSeed);
+    }
+    if (partner != nullptr) {
+      const double raw = (cur.price - partner->price) / (s - partner->sigma);
+      if (!(std::isfinite(raw) && raw > 0.0)) {
+        return fail(IvPremiumFallback::NotIncreasing);
+      }
+      slope = *leg_slope + (cur.rest - partner->rest) / (s - partner->sigma);
+    } else if (std::fabs(cur.rest) <= tol * *leg_slope) {
+      slope = *leg_slope;
+    }
+    if (memory != nullptr) {
+      memory->sigma[1] = memory->sigma[0];
+      memory->rest[1] = memory->rest[0];
+      memory->sigma[0] = s;
+      memory->rest[0] = cur.rest;
+      memory->points = static_cast<std::uint8_t>(std::min<std::size_t>(memory->points + 1u, 2u));
+    }
+    const std::optional<ColdPoint> prev =
+        partner != nullptr ? std::optional<ColdPoint>{*partner} : std::nullopt;
+    pts[1] = pts[0];
+    pts[0] = cur;
+    n = std::min<std::size_t>(n + 1, 2);
+    if (!slope) {
+      // First cold point with a remainder above tol: the remainder-constant step.
+      x = leg.solve(price, cur.rest, s, 0.0, s);
+      if (!x) {
+        return fail(IvPremiumFallback::NoEuropeanSeed);
+      }
+      continue;
+    }
+    if (!(std::isfinite(*slope) && *slope > slope_floor)) {
+      return fail(IvPremiumFallback::NotIncreasing);
+    }
+    const double d = res / *slope;
+    if (std::fabs(d) <= tol) {
+      stats.last_residual_usd = std::fabs(res);
+      return accept(s - d, *slope);
+    }
+    // Next iterate: the leg plus the remainder chord through the two latest cold points,
+    // solved exactly; the plain Newton step on the cold map if that model has no root.
+    std::optional<double> next;
+    if (prev) {
+      if (const auto e = chord(cur, *prev)) {
+        next = leg.solve(price, cur.rest, s, *e, s - d);
+      }
+    }
+    x = next ? *next : s - d;
+    if (*x == s) {
+      return fail(IvPremiumFallback::NoConvergence);
+    }
+  }
+  return fail(IvPremiumFallback::NoConvergence);
+}
+
+[[nodiscard]] bool premium_route(const IvOpts &opts, Side side) noexcept {
+  return opts.method == AmericanMethod::AndersenLake && !cache_usable(opts.correction, side) &&
+         opts.warm_start == 0.0 && opts.price_tol == 0.0;
+}
+
+// The kernel the Premium iterates run on (IvOpts::seed_profile): al_opts itself when
+// the profile is unset or is al_opts' own profile (then every solve is the accurate
+// confirming solve), else al_opts' scheme on that profile.
+[[nodiscard]] std::optional<AlOpts> premium_seed_opts(const IvOpts &opts) noexcept {
+  const AlProfile own = opts.al_opts ? opts.al_opts->profile : AlProfile::Reference;
+  if (!opts.seed_profile || *opts.seed_profile == own) {
+    return opts.al_opts;
+  }
+  AlOpts seed = al_fast_profile(opts.al_opts); // the explicit scheme of al_opts
+  seed.profile = *opts.seed_profile;
+  return seed;
+}
+
+// The Premium strategy: its root when accepted (then the same opt-in refusal gate as
+// Search), else the Search route unchanged.
+[[nodiscard]] IvResult premium_typed(double price, double S, double K, double T, double r,
+                                     double q, Side side, const IvOpts &opts,
+                                     IvPremiumMemory *memory, IvPremiumStats &stats) {
+  stats = IvPremiumStats{};
+  if (premium_route(opts, side)) {
+    const std::optional<AlOpts> seed_opts = premium_seed_opts(opts);
+    const AlProfile own = opts.al_opts ? opts.al_opts->profile : AlProfile::Reference;
+    const bool confirm = opts.seed_profile.has_value() && *opts.seed_profile != own;
+    if (const std::optional<double> root =
+            premium_root(price, S, K, T, r, q, side, opts.tol, opts.al_opts, seed_opts, confirm,
+                         memory, stats)) {
+      if (opts.refuse_non_monotone &&
+          !scalar_answer_certified(price, S, K, T, r, q, side, *root, opts.al_opts)) {
+        return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::NonMonotoneRegion};
+      }
+      return IvResult{*root, IvStatus::Ok};
+    }
+  }
+  return search_typed(price, S, K, T, r, q, side, opts);
+}
+
+} // namespace
+
 IvResult american_implied_vol(double price, double S, double K, double T, double r, double q,
                               Side side, const IvOpts &opts) noexcept {
-  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   try {
-    const Result<double> iv =
-        american_implied_vol_impl(price, S, K, T, r, q, side, opts.method, opts.tol,
-                                  opts.max_iter, opts.al_opts, opts.correction, opts.warm_start,
-                                  opts.price_tol);
-    if (!iv) {
-      return IvResult{kNaN, iv_status_of(iv.error().code())};
+    if (opts.strategy == IvStrategy::Premium) {
+      IvPremiumStats stats;
+      return premium_typed(price, S, K, T, r, q, side, opts, nullptr, stats);
     }
-    const bool cold_al =
-        opts.method == AmericanMethod::AndersenLake && !cache_usable(opts.correction, side);
-    if (opts.refuse_non_monotone && cold_al &&
-        !scalar_answer_certified(price, S, K, T, r, q, side, *iv, opts.al_opts)) {
-      return IvResult{kNaN, IvStatus::NonMonotoneRegion};
-    }
-    return IvResult{*iv, IvStatus::Ok};
+    return search_typed(price, S, K, T, r, q, side, opts);
   } catch (const std::bad_alloc &) {
-    return IvResult{kNaN, IvStatus::Unpriceable};
+    return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::Unpriceable};
+  }
+}
+
+IvResult american_implied_vol_premium(double price, double S, double K, double T, double r,
+                                      double q, Side side, const IvOpts &opts,
+                                      IvPremiumMemory *memory, IvPremiumStats &stats) noexcept {
+  try {
+    return premium_typed(price, S, K, T, r, q, side, opts, memory, stats);
+  } catch (const std::bad_alloc &) {
+    return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::Unpriceable};
   }
 }
 
