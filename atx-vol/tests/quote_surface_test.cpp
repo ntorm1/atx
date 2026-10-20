@@ -1,13 +1,19 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <new>
 #include <optional>
 #include <span>
+#include <stdexcept>
+#include <system_error>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -16,7 +22,9 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "fitting/counters.hpp"
+#include "fitting/deam_iv_cache.hpp"   // deam_iv_memo_clear (rung memo tests)
 #include "fitting/expiry_schedule.hpp" // ScopedExpiryDispatchTrace (fan-out order seam)
+#include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 
 namespace atx::vol {
 namespace {
@@ -2292,6 +2300,393 @@ TEST(QuoteSurfaceTiming, BothRepairRungsTimeOnlyTheExpiryTheyRefit) {
     EXPECT_LE(z.repair_rung_us, z.wall_us + ft::kBucketCount) << knot;
     expect_partitioned(z);
   }
+}
+
+// ── Opt-in rung memo, pre-screen, fan-out errors (lane L2c) ──────────────────
+
+QuoteSliceConfig vol_keys(QuoteSliceConfig config) {
+  config.channel.fit_space = QuoteSliceFitSpace::VolChannel;
+  config.channel.deam_cache = true;
+  return config;
+}
+
+// Every served or reported value of two slice fits, bit for bit.
+void expect_same_fit(const QuoteSliceFit &a, const QuoteSliceFit &b) {
+  const auto bits = [](double v) { return std::bit_cast<std::uint64_t>(v); };
+  EXPECT_EQ(a.fit_status, b.fit_status);
+  EXPECT_EQ(a.fit_error, b.fit_error);
+  EXPECT_EQ(a.moved_nodes, b.moved_nodes);
+  EXPECT_EQ(a.price_only_nodes, b.price_only_nodes);
+  ASSERT_EQ(a.rows.size(), b.rows.size());
+  for (std::size_t i = 0; i < a.rows.size(); ++i) {
+    EXPECT_EQ(a.rows[i].quote_status, b.rows[i].quote_status) << i;
+    EXPECT_EQ(a.rows[i].evaluation_status, b.rows[i].evaluation_status) << i;
+    EXPECT_EQ(bits(a.rows[i].market_iv), bits(b.rows[i].market_iv)) << i;
+    EXPECT_EQ(bits(a.rows[i].fitted_iv), bits(b.rows[i].fitted_iv)) << i;
+    EXPECT_EQ(bits(a.rows[i].fitted_price), bits(b.rows[i].fitted_price)) << i;
+  }
+  ASSERT_EQ(a.prices.has_value(), b.prices.has_value());
+  if (!a.prices) return;
+  const auto na = a.prices->nodes();
+  const auto nb = b.prices->nodes();
+  ASSERT_EQ(na.size(), nb.size());
+  for (std::size_t i = 0; i < na.size(); ++i) {
+    EXPECT_EQ(bits(na[i].call), bits(nb[i].call)) << i;
+    EXPECT_EQ(bits(na[i].put), bits(nb[i].put)) << i;
+  }
+}
+
+// Runs `fit` on a fresh thread with `memo` installed there (null: none), as the
+// surface fan-out runs every stage's expiry tasks on freshly spawned workers.
+template <class Fit> auto on_fresh_thread(detail::ExpiryRungMemo *memo, const Fit &fit) {
+  std::optional<decltype(fit())> out;
+  std::jthread([&] {
+    const detail::ScopedRungMemo installed(memo);
+    out.emplace(fit());
+  }).join();
+  return std::move(*out);
+}
+
+// Brief acceptance: three rungs of one expiry -> one inversion pass + two hits, on
+// whichever thread each rung runs. The thread-local memo (the historical carrier)
+// misses on every fresh thread.
+TEST(QuoteSurfaceRungMemo, ThreeRungsOfOneExpiryShareOneInversionPassOnAnyThread) {
+  const Chain c = chain(0.5, 0.24, -0.08, 0.02);
+  const QuoteSliceConfig config = vol_keys(QuoteSliceConfig{});
+  const std::vector<double> z{-2.0, -1.0, 0.0, 1.0, 2.0};
+  const std::vector<double> multiples{1.2, 1.08, 1.0, 0.96, 0.95};
+  const QuoteSlicePrior prior{0.24, z, multiples, 0.5};
+  const auto knot_rung = [&] {
+    return fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+  };
+  const auto point_rung = [&] { return fit_quote_slice(c.market, c.quotes, config); };
+  const auto prior_rung = [&] {
+    return fit_quote_slice_channel(c.market, c.quotes, config, &prior);
+  };
+  deam_iv_memo_clear();
+  const auto knot_alone = on_fresh_thread(nullptr, knot_rung);
+  const auto point_alone = on_fresh_thread(nullptr, point_rung);
+  const auto prior_alone = on_fresh_thread(nullptr, prior_rung);
+  ASSERT_TRUE(knot_alone && point_alone && prior_alone);
+  EXPECT_FALSE(point_alone->diagnostics.deam.reused); // a fresh thread's memo is empty
+  EXPECT_GT(point_alone->diagnostics.deam.inversions, 0u);
+
+  detail::ExpiryRungMemo memo;
+  const auto knot = on_fresh_thread(&memo, knot_rung);
+  const auto point = on_fresh_thread(&memo, point_rung);
+  const auto refit = on_fresh_thread(&memo, prior_rung);
+  ASSERT_TRUE(knot && point && refit);
+  EXPECT_EQ(memo.deam_misses(), 1u); // the one inversion pass
+  EXPECT_EQ(memo.deam_hits(), 2u);
+  EXPECT_FALSE(knot->diagnostics.deam.reused);
+  EXPECT_GT(knot->diagnostics.deam.inversions, 0u);
+  for (const QuoteSliceFit *fit : {&*point, &*refit}) {
+    EXPECT_TRUE(fit->diagnostics.deam.reused);
+    EXPECT_EQ(fit->diagnostics.deam.inversions, 0u); // nothing left to invert
+    EXPECT_EQ(fit->diagnostics.deam.model_prices, 0u);
+  }
+  EXPECT_EQ(knot->fit_status, QuoteSliceFitStatus::Success) << knot->fit_error;
+  expect_same_fit(*knot, *knot_alone);
+  expect_same_fit(*point, *point_alone);
+  expect_same_fit(*refit, *prior_alone);
+  deam_iv_memo_clear();
+}
+
+// A repair rung that refits the pass-A candidate with the channel repair re-presents
+// an unchanged candidate (same chain, same fitted volatility at every certification
+// strike): it reuses the memoised American grid and serves exactly what a full
+// reprice serves. Another curve (a prior) is a changed candidate and misses.
+TEST(QuoteSurfaceRungMemo, ARepairRungReusesTheGridOfAnUnchangedCandidate) {
+  const Chain zz = zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05);
+  QuoteSliceConfig pass_a = channel_repair_config(3);
+  pass_a.repair.mode = QuoteSliceRepairMode::Off; // pass A never runs the channel repair
+  const QuoteSliceConfig rung = channel_repair_config(3);
+  const std::vector<double> z{-1.0, 0.0, 1.0};
+  const std::vector<double> multiples{1.05, 1.0, 1.0};
+  const QuoteSlicePrior prior{0.25, z, multiples, 0.5};
+  for (const bool knot : {true, false}) {
+    SCOPED_TRACE(knot ? "knot rung" : "point rung");
+    const auto fit = [&](const QuoteSliceConfig &config) {
+      return knot ? fit_quote_slice_channel(zz.market, zz.quotes, config, nullptr)
+                  : fit_quote_slice(zz.market, zz.quotes, config);
+    };
+    const auto pass_a_alone = fit(pass_a);
+    const auto rung_alone = fit(rung);
+    ASSERT_TRUE(pass_a_alone && rung_alone);
+    ASSERT_EQ(pass_a_alone->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+    ASSERT_NE(rung_alone->diagnostics.repair.outcome, QuoteSliceRepairOutcome::NotAttempted);
+    detail::ExpiryRungMemo memo;
+    const detail::ScopedRungMemo installed(&memo);
+    const auto first = fit(pass_a);
+    const auto second = fit(rung);
+    ASSERT_TRUE(first && second);
+    EXPECT_EQ(memo.grid_misses(), 1u);
+    EXPECT_EQ(memo.grid_hits(), 1u); // the rung did not reprice
+    expect_same_fit(*first, *pass_a_alone);
+    expect_same_fit(*second, *rung_alone);
+    if (knot) {
+      const auto changed = fit_quote_slice_channel(zz.market, zz.quotes, rung, &prior);
+      ASSERT_TRUE(changed);
+      EXPECT_EQ(memo.grid_misses(), 2u);
+      EXPECT_EQ(memo.grid_hits(), 1u);
+    }
+  }
+}
+
+// Review Focus #2: memoised state never crosses a quote-set boundary. One changed
+// bid misses both the IV cache and the grid, serves exactly what an unmemoised fit
+// of the changed chain serves, and that differs from the unchanged chain's prices;
+// the unchanged chain still hits afterwards.
+TEST(QuoteSurfaceRungMemo, OneChangedBidMissesTheMemoAndChangesTheServedPrices) {
+  const Chain c = chain(0.5, 0.24, -0.08, 0.02);
+  Chain moved = c;
+  const auto atm = std::find_if(moved.quotes.begin(), moved.quotes.end(), [](const auto &q) {
+    return q.strike == 100.0 && q.side == Side::Call;
+  });
+  ASSERT_NE(atm, moved.quotes.end());
+  atm->bid += 0.5 * (atm->ask - atm->bid);
+  const QuoteSliceConfig config = vol_keys(QuoteSliceConfig{});
+  deam_iv_memo_clear();
+  const auto alone = fit_quote_slice_channel(moved.market, moved.quotes, config, nullptr);
+  deam_iv_memo_clear();
+  ASSERT_TRUE(alone);
+  detail::ExpiryRungMemo memo;
+  const detail::ScopedRungMemo installed(&memo);
+  const auto original = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+  const auto changed = fit_quote_slice_channel(moved.market, moved.quotes, config, nullptr);
+  ASSERT_TRUE(original && changed);
+  EXPECT_EQ(memo.deam_misses(), 2u);
+  EXPECT_EQ(memo.deam_hits(), 0u);
+  EXPECT_EQ(memo.grid_misses(), 2u);
+  EXPECT_EQ(memo.grid_hits(), 0u);
+  EXPECT_FALSE(changed->diagnostics.deam.reused);
+  expect_same_fit(*changed, *alone);
+  ASSERT_EQ(original->fit_status, QuoteSliceFitStatus::Success) << original->fit_error;
+  ASSERT_EQ(changed->fit_status, QuoteSliceFitStatus::Success) << changed->fit_error;
+  std::size_t differing = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (original->rows[i].fitted_price != changed->rows[i].fitted_price) ++differing;
+  }
+  EXPECT_GT(differing, 0u);
+  const auto again = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+  ASSERT_TRUE(again);
+  EXPECT_EQ(memo.deam_hits(), 1u);
+  EXPECT_EQ(memo.grid_hits(), 1u);
+  expect_same_fit(*again, *original);
+}
+
+struct TracedSurface {
+  std::vector<QuoteSurfaceSlice> slices;
+  std::uint64_t deam_al = 0;  // AL solves in the deam bucket, summed over the chains
+  std::uint64_t price_al = 0; // AL solves of the certification grids
+};
+
+TracedSurface traced_fit(const std::vector<Chain> &chains, const QuoteSliceConfig &config,
+                         const QuoteSurfaceConfig &surface) {
+  deam_iv_memo_clear(); // the calling thread starts with an empty thread-local memo
+  TracedSurface out;
+  ft::SurfaceTrace trace;
+  auto fitted = fit_quote_surface(expiries(chains), config, surface);
+  deam_iv_memo_clear();
+  if (!fitted) {
+    ADD_FAILURE() << fitted.error().to_string();
+    return out;
+  }
+  out.slices = std::move(*fitted);
+  for (const ft::FitTimingCounters &t : trace.chains) {
+    out.deam_al += al_in(t, ft::Bucket::Deam);
+    out.price_al += al_in(t, ft::Bucket::Price);
+  }
+  return out;
+}
+
+// The memo is a speed change only: bit-identical surfaces with it at every width, for
+// the graded and the ladder admission, price and vol channels. Under the vol-space
+// cache it makes the inversion work independent of the width: the memo at 2 workers
+// inverts exactly what the serial thread-local memo inverts, and less than the
+// thread-local memo at 2 workers (whose fresh worker threads miss across stages).
+TEST(QuoteSurfaceRungMemo, SurfacesAreBitIdenticalAndInvertEachExpiryOnceAtAnyWidth) {
+  const std::vector<Chain> chains{
+      chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.15, 95, 105),
+      chain(1.0, 0.26, -0.06, 0.01), chain(1.5, 0.12, 0.0, 0.005, 85, 115)};
+  for (const bool ladder : {false, true}) {
+    for (const bool vol : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << "ladder " << ladder << " vol " << vol);
+      const QuoteSliceConfig config = vol ? vol_keys(QuoteSliceConfig{}) : QuoteSliceConfig{};
+      QuoteSurfaceConfig off = ladder ? knot_first() : QuoteSurfaceConfig{};
+      off.fit_workers = 1;
+      const TracedSurface reference = traced_fit(chains, config, off);
+      ASSERT_EQ(reference.slices.size(), chains.size());
+      EXPECT_TRUE(reference.slices[1].channel_refit); // the fixture reaches B1/B2
+      QuoteSurfaceConfig off_wide = off;
+      off_wide.fit_workers = 2;
+      const TracedSurface thread_local_wide = traced_fit(chains, config, off_wide);
+      expect_bit_identical(reference.slices, thread_local_wide.slices, 2);
+      for (const unsigned workers : {1u, 2u, 0u}) {
+        QuoteSurfaceConfig on = off;
+        on.rung_memo = true;
+        on.fit_workers = workers;
+        const TracedSurface memo = traced_fit(chains, config, on);
+        expect_bit_identical(reference.slices, memo.slices, workers);
+        if (!vol) continue;
+        EXPECT_EQ(memo.deam_al, reference.deam_al) << "workers " << workers;
+        EXPECT_LT(memo.deam_al, thread_local_wide.deam_al) << "workers " << workers;
+        EXPECT_LE(memo.price_al, reference.price_al) << "workers " << workers;
+      }
+    }
+  }
+}
+
+// Brief item 6: under the vol-space cache the band fills are de-Am work: charged to
+// the deam bucket, so a chain's "other" bucket prices no American option.
+TEST(QuoteSurfaceRungMemo, VolSpaceBandFillsAreChargedToTheDeamBucket) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  QuoteSurfaceConfig surface = knot_first();
+  surface.rung_memo = true;
+  deam_iv_memo_clear();
+  ft::SurfaceTrace trace;
+  const auto fitted = fit_quote_surface(expiries(chains), vol_keys(QuoteSliceConfig{}), surface);
+  ASSERT_TRUE(fitted) << fitted.error().to_string();
+  ASSERT_EQ(trace.chains.size(), chains.size());
+  for (std::size_t e = 0; e < chains.size(); ++e) {
+    const ft::FitTimingCounters &t = trace.chains[e];
+    EXPECT_EQ(t.rung_attempts, 2u) << e; // knot fit + point fit
+    EXPECT_GT(al_in(t, ft::Bucket::Deam), 0u) << e;
+    EXPECT_EQ(al_in(t, ft::Bucket::Other), 0u) << e;
+    expect_partitioned(t);
+  }
+  deam_iv_memo_clear();
+}
+
+// Deep in-the-money quotes whose asks sit below intrinsic value (and so below the
+// minimum-volatility price): no quote has a usable bid/ask band. `atm_calls` adds
+// that many well-posed near-the-money calls.
+Chain empty_band_chain(int atm_calls) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, 0.5, 0.5, 0.03, 0.01, 0.0};
+  for (int strike = 70; strike <= 90; strike += 5) {
+    const double intrinsic = 100.0 - strike;
+    out.quotes.push_back({static_cast<double>(strike), Side::Call, 0.5 * intrinsic,
+                          0.9 * intrinsic});
+    const double put_strike = 200.0 - strike;
+    out.quotes.push_back({put_strike, Side::Put, 0.5 * (put_strike - 100.0),
+                          0.9 * (put_strike - 100.0)});
+  }
+  for (int i = 0; i < atm_calls; ++i) {
+    const double strike = 100.0 + 5.0 * i;
+    const auto price = andersen_lake(100.0, strike, 0.5, 0.25, 0.03, 0.01, Side::Call);
+    if (!price) {
+      ADD_FAILURE() << price.error().to_string();
+      return out;
+    }
+    out.quotes.push_back({strike, Side::Call, *price - 0.05, *price + 0.05});
+  }
+  return out;
+}
+
+// Brief item 3: the pre-solve screen refuses a constructed empty-band slice with its
+// typed reason before any solve, in both channel spaces, exactly as today's refusal
+// (InsufficientQuotes, same message); a slice with one usable band is TooFewChannels.
+TEST(QuoteSurfaceRungMemo, PreScreenRefusesAnEmptyBandSliceBeforeAnySolve) {
+  struct Case {
+    int atm_calls;
+    QuoteSlicePreScreen expected;
+  };
+  for (const Case &k : {Case{0, QuoteSlicePreScreen::EmptyBand},
+                        Case{1, QuoteSlicePreScreen::TooFewChannels}}) {
+    const Chain c = empty_band_chain(k.atm_calls);
+    for (const bool vol : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << "atm " << k.atm_calls << " vol " << vol);
+      const QuoteSliceConfig config = vol ? vol_keys(QuoteSliceConfig{}) : QuoteSliceConfig{};
+      const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      ASSERT_TRUE(fit) << fit.error().to_string();
+      EXPECT_EQ(fit->diagnostics.channel.prescreen, k.expected)
+          << to_string(fit->diagnostics.channel.prescreen);
+      EXPECT_EQ(fit->fit_status, QuoteSliceFitStatus::InsufficientQuotes);
+      EXPECT_EQ(fit->fit_error, "too few usable bid/ask channels");
+      EXPECT_EQ(fit->diagnostics.channel.channel_quotes,
+                static_cast<std::size_t>(k.atm_calls));
+      EXPECT_EQ(fit->diagnostics.channel.iterations, 0u); // no solve ran
+      EXPECT_FALSE(fit->prices.has_value());
+    }
+    deam_iv_memo_clear();
+  }
+  EXPECT_STREQ(to_string(QuoteSlicePreScreen::EmptyBand), "empty_band");
+  EXPECT_STREQ(to_string(QuoteSlicePreScreen::TooFewChannels), "too_few_channels");
+  EXPECT_STREQ(to_string(QuoteSlicePreScreen::Pass), "pass");
+}
+
+// ...and never refuses a slice the solve serves: over every chain shape of this file
+// (table), each served channel fit, price or vol space, passed the screen.
+TEST(QuoteSurfaceRungMemo, PreScreenPassesEverySliceTheSolveServes) {
+  const std::vector<Chain> table{
+      chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.15, 95, 105),
+      chain(1.0, 0.26, -0.06, 0.01), chain(1.5, 0.12, 0.0, 0.005, 85, 115),
+      chain(0.1, 0.35, -0.05, 0.08, 85, 115, 5, 0.04),
+      zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05), empty_band_chain(3)};
+  std::size_t served = 0;
+  for (const Chain &c : table) {
+    for (const bool vol : {false, true}) {
+      const QuoteSliceConfig config = vol ? vol_keys(QuoteSliceConfig{}) : QuoteSliceConfig{};
+      const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      ASSERT_TRUE(fit) << fit.error().to_string();
+      if (fit->fit_status != QuoteSliceFitStatus::Success) continue;
+      ++served;
+      EXPECT_EQ(fit->diagnostics.channel.prescreen, QuoteSlicePreScreen::Pass);
+    }
+  }
+  EXPECT_GE(served, 8u);
+  deam_iv_memo_clear();
+}
+
+// review-L2d minor F2: a fan-out task that throws (here through the test-only task
+// hook) is returned as the surface's typed error at every width; nothing escapes.
+std::atomic<int> g_injected_kind{0};
+
+void throw_on_expiry_one(std::size_t expiry) {
+  if (expiry != 1) return;
+  switch (g_injected_kind.load()) {
+  case 0:
+    throw std::bad_alloc();
+  case 1:
+    throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+  default:
+    throw std::runtime_error("injected expiry failure");
+  }
+}
+
+TEST(QuoteSurfaceRungMemo, AnExpiryTaskThatThrowsIsReturnedAsTheSurfaceError) {
+  const std::vector<Chain> chains = widening_chains();
+  const auto reference = fit_quote_surface(expiries(chains), QuoteSliceConfig{});
+  ASSERT_TRUE(reference) << reference.error().to_string();
+  struct Case {
+    int kind;
+    ErrorCode code;
+  };
+  for (const unsigned workers : {1u, 2u}) {
+    for (const Case &k : {Case{0, ErrorCode::Unavailable}, Case{1, ErrorCode::Unavailable},
+                          Case{2, ErrorCode::Internal}}) {
+      SCOPED_TRACE(::testing::Message() << "workers " << workers << " kind " << k.kind);
+      QuoteSurfaceConfig surface;
+      surface.fit_workers = workers;
+      g_injected_kind.store(k.kind);
+      std::optional<Result<std::vector<QuoteSurfaceSlice>>> fitted;
+      {
+        const detail::ScopedExpiryTaskHook hook(&throw_on_expiry_one);
+        EXPECT_NO_THROW(
+            fitted.emplace(fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface)));
+      }
+      ASSERT_TRUE(fitted.has_value());
+      ASSERT_FALSE(*fitted);
+      EXPECT_EQ(fitted->error().code(), k.code) << fitted->error().to_string();
+    }
+  }
+  QuoteSurfaceConfig wide;
+  wide.fit_workers = 2;
+  const auto again = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, wide);
+  ASSERT_TRUE(again) << again.error().to_string();
+  expect_bit_identical(*reference, *again, 2);
 }
 
 } // namespace

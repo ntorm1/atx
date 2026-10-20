@@ -719,7 +719,12 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "deam_profile must be accurate or fast"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_cache": 1}},
-             "deam_cache must be true or false")):
+             "deam_cache must be true or false"),
+            # Opt-in per-expiry rung memo (lane L2c).
+            ({"schema_version": 1, "admission": "graded", "graded": {"rung_memo": "yes"}},
+             "rung_memo must be true or false"),
+            ({"schema_version": 1, "graded": {"rung_memo": True}},
+             "require admission graded")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -796,6 +801,30 @@ def test_native_accurate_iv_cache_is_byte_identical_and_opt_in(binary, tmp_path)
         "vol", "accurate", True)
     plain_graded = json.loads(plain.stdout)["policy_definition"]["graded"]
     assert not {"fit_space", "deam_profile", "deam_cache"} & set(plain_graded)
+
+
+def test_native_rung_memo_is_byte_identical_and_opt_in(binary, tmp_path):
+    # The per-expiry rung memo (lane L2c) is exact-keyed reuse: with and without the
+    # vol-space cache it serves exactly the plain graded predictions; only the opt-in
+    # provenance is added to the report.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    plain_output = tmp_path / "plain.csv"
+    plain_policy = write_policy(tmp_path / "plain.json",
+                                {"schema_version": 1, "admission": "graded"})
+    plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
+    assert plain.returncode == 0, plain.stderr
+    for name, graded_keys in (
+            ("memo", {"rung_memo": True}),
+            ("memo-vol", {"fit_space": "vol", "deam_cache": True, "rung_memo": True})):
+        output = tmp_path / f"{name}.csv"
+        policy = write_policy(tmp_path / f"{name}.json", {
+            "schema_version": 1, "admission": "graded", "graded": graded_keys})
+        keyed = invoke(binary, source, output, "--policy", str(policy))
+        assert keyed.returncode == 0, keyed.stderr
+        assert output.read_bytes() == plain_output.read_bytes(), name
+        assert json.loads(keyed.stdout)["policy_definition"]["graded"]["rung_memo"] is True
+    assert "rung_memo" not in json.loads(plain.stdout)["policy_definition"]["graded"]
 
 
 PROFILE_NAMES = ("dense", "ordinary", "sparse")

@@ -121,39 +121,48 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   if ((entry.computed & DeAmQuoteIv::kBand) != 0u) {
     return entry;
   }
-  entry.computed = static_cast<std::uint8_t>(entry.computed | DeAmQuoteIv::kBand);
+  // Filled into a local copy and published, with the kBand bit, only once complete:
+  // an exception mid-fill (a model price or inversion throwing std::bad_alloc) leaves
+  // the entry without the bit, so a later call refills it instead of serving a
+  // half-filled band as final (review-L2a minor, fixed in lane L2c).
+  DeAmQuoteIv filled = entry;
   const QuoteSliceQuote &quote = quotes_[i];
-  if (!positive(entry.local_forward) || !std::isfinite(entry.q_effective)) {
+  const auto publish = [&entry, &filled]() -> const DeAmQuoteIv & {
+    filled.computed = static_cast<std::uint8_t>(filled.computed | DeAmQuoteIv::kBand);
+    entry = filled;
     return entry;
+  };
+  if (!positive(filled.local_forward) || !std::isfinite(filled.q_effective)) {
+    return publish();
   }
   const DeAmKernel k = kernel();
-  const auto floor_price = model_.price(quote, kIvMin, entry.q_effective, k);
-  const auto cap_price = model_.price(quote, kIvMax, entry.q_effective, k);
+  const auto floor_price = model_.price(quote, kIvMin, filled.q_effective, k);
+  const auto cap_price = model_.price(quote, kIvMax, filled.q_effective, k);
   cache_.model_prices += 2;
   work_.model_prices += 2;
   if (!floor_price || !cap_price) {
-    return entry;
+    return publish();
   }
-  entry.floor_price = *floor_price;
-  entry.cap_price = *cap_price;
-  if (!(quote.bid < entry.cap_price) || !(quote.ask > entry.floor_price)) {
-    return entry;
+  filled.floor_price = *floor_price;
+  filled.cap_price = *cap_price;
+  if (!(quote.bid < filled.cap_price) || !(quote.ask > filled.floor_price)) {
+    return publish();
   }
   // A bid at or below the minimum-volatility price carries no lower
   // information; an ask at or above the maximum-volatility price no upper.
-  if (quote.bid > entry.floor_price) {
-    const auto lo = invert(quote, quote.bid, entry);
-    entry.bid_iv = lo && positive(*lo) ? *lo : 0.0;
+  if (quote.bid > filled.floor_price) {
+    const auto lo = invert(quote, quote.bid, filled);
+    filled.bid_iv = lo && positive(*lo) ? *lo : 0.0;
   }
-  if (quote.ask < entry.cap_price) {
-    const auto hi = invert(quote, quote.ask, entry);
+  if (quote.ask < filled.cap_price) {
+    const auto hi = invert(quote, quote.ask, filled);
     if (hi && positive(*hi)) {
-      entry.ask_iv = *hi;
+      filled.ask_iv = *hi;
     }
   }
-  entry.well_posed = entry.ask_iv > entry.bid_iv &&
-                     (entry.bid_iv > 0.0 || std::isfinite(entry.ask_iv));
-  return entry;
+  filled.well_posed = filled.ask_iv > filled.bid_iv &&
+                      (filled.bid_iv > 0.0 || std::isfinite(filled.ask_iv));
+  return publish();
 }
 
 DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQuote> quotes,
