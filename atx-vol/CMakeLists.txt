@@ -72,6 +72,9 @@ set(ATX_VOL_PRICING_SOURCES
     # L3g family-greeks (2026-10-20): analytic Greeks, the exact Newton slope, chain and
     # shock-grid evaluation and the detached serve copy on that family.
     src/pricing/american_family_greeks.cpp
+    # L2h-b sigma-q family (2026-10-21): the (sigma, q) tensor boundary family — the
+    # per-strike effective yield as a second interpolation axis (AlSigmaQFamily).
+    src/pricing/american_sigma_q_family.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
     src/pricing/dividend.cpp
