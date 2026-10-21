@@ -217,6 +217,7 @@ add_executable(atx-vol-tests
     american_test.cpp
     american_batch_test.cpp
     american_geometry_test.cpp
+    american_family_greeks_test.cpp
     counters_test.cpp
     phase_profile_test.cpp
     correction_test.cpp

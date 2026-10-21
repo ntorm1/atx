@@ -69,6 +69,9 @@ set(ATX_VOL_PRICING_SOURCES
     # L2h sigma-family (2026-10-19): the per-(expiry, side) sigma-Chebyshev boundary
     # family on the prepared AL geometry (AlSigmaFamily, api/pricing/american.hpp).
     src/pricing/american_sigma_family.cpp
+    # L3g family-greeks (2026-10-20): analytic Greeks, the exact Newton slope, chain and
+    # shock-grid evaluation and the detached serve copy on that family.
+    src/pricing/american_family_greeks.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
     src/pricing/dividend.cpp
