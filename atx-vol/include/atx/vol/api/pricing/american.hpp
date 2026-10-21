@@ -464,7 +464,7 @@ struct AlSigmaFamilyChord {
 // The σ-axis the Chebyshev nodes are laid on: log σ (the nodes then cluster toward
 // the low end of the box in σ, where the boundary moves fastest) or σ itself. Both
 // are measured in the sprint note (§4): at 12 nodes LogSigma is the tighter axis on
-// every set (SPY 23 d chain 1.3e-10 vs 1.8e-8 max relative; the 1,350-contract grid's
+// every set (SPY 23 d chain 1.5e-10 vs 1.8e-8 max relative; the 1,350-contract grid's
 // [0.08, 0.7] box 1.8e-6 vs 5.4e-5), at 8 nodes Sigma is — so LogSigma is the default
 // and Sigma stays selectable for a measured reason.
 enum class AlSigmaFamilyAxis : std::uint8_t {
@@ -496,10 +496,11 @@ public:
   // [kAlSigmaFamilyMinNodes, kAlSigmaFamilyMaxNodes], the anchor is not > 0, or the
   // expiry is below kAlSigmaFamilyMinTau; with NotImplemented when the side is not
   // in the American regime on this geometry (closed-form / double-continuation
-  // expiries have no boundary family) or a node boundary collapses; with Internal
-  // when a node solve reports TableMissing / NotConverged (andersen_lake's own
-  // statuses). Strong guarantee: on any refusal the previous preparation, if any,
-  // is discarded (prepared() == false).
+  // expiries have no boundary family), a node boundary collapses (xmax <= 0), or a
+  // node's boundary sweep cannot move (the kernel's NotConverged, mapped exactly as
+  // andersen_lake's al_solve_status_error maps it); with Internal only when a node
+  // solve reports TableMissing (Gauss-Legendre table unavailable). Strong guarantee:
+  // on any refusal the previous preparation, if any, is discarded (prepared() == false).
   [[nodiscard]] Status prepare(double sigma_lo, double sigma_hi, std::uint16_t n_sigma,
                                AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma);
 
