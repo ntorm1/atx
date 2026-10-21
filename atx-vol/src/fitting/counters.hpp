@@ -1204,7 +1204,7 @@ struct FitTimingCounters {
   // inversions routed to accurate iterates by the seed tier's non-monotone gate, and the
   // largest gate bound (eps_A + eps_r) / v_min (vol) of a skipped root.
   std::array<std::uint32_t, 6> deam_al_by_reason{};
-  std::uint32_t deam_confirms{0};
+  std::uint32_t deam_confirms{0}; // confirming SOLVES (= deam_al_by_reason confirm), not roots
   std::uint32_t deam_confirms_skipped{0};
   std::uint32_t deam_ambiguous_edges{0};
   std::uint32_t deam_seed_routed{0};

@@ -525,7 +525,7 @@ struct QuoteSliceDeamDiagnostics {
   // routed to the accurate kernel because the price lay inside the seed tier's
   // non-monotone gate.
   std::size_t ambiguous_edges = 0;
-  std::size_t confirms = 0;
+  std::size_t confirms = 0; // confirming SOLVES (a root may take kIvPremiumConfirmSolves = 2)
   std::size_t confirms_skipped = 0;
   std::size_t seed_routed = 0;
   // Sigma-family iterates (deam_family; zero otherwise): families this fit built (0 when

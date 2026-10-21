@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <new>
 #include <optional>
 #include <string>
@@ -668,6 +669,7 @@ TEST(QuoteSliceVolSpace, FamilyIteratesServeConfirmedVolatilities) {
 TEST(QuoteSliceVolSpace, FastCertificationGridMovesServedPricesWithinTheFastBoundOnly) {
   std::size_t compared = 0, differing = 0;
   double max_rel = 0.0;
+  double min_headroom = std::numeric_limits<double>::infinity(); // allowance / Fast bound
   for (const double years : {0.03, 0.15, 0.75}) {
     SCOPED_TRACE("T=" + std::to_string(years));
     const Chain c = spy_chain(years, false, 0.0);
@@ -693,13 +695,23 @@ TEST(QuoteSliceVolSpace, FastCertificationGridMovesServedPricesWithinTheFastBoun
         max_rel = std::max(max_rel, rel);
         EXPECT_LE(rel, 1.0e-11) << i; // 10x the tested Fast price bound
         if (!same_bits(a.fitted_price, b.fitted_price)) ++differing;
+        // review-SPY1s-p1 minor: the Fast bound sits under the certificate's allowance
+        // 1e-8 + 1e-9 max(S, K) (quote_slice.cpp certificate_tolerance) at every served node,
+        // and so does the measured move.
+        const double allowance = 1.0e-8 + 1.0e-9 * std::max(c.market.spot, c.quotes[i].strike);
+        const double fast_bound = al_profile_price_bound(AlProfile::Fast, a.fitted_price, years);
+        EXPECT_LT(fast_bound, allowance) << i;
+        EXPECT_LT(std::abs(a.fitted_price - b.fitted_price), allowance) << i;
+        min_headroom = std::min(min_headroom, allowance / fast_bound);
       }
     }
   }
-  std::printf("[fast grid] %zu served prices compared, %zu differ, max |dP| / max(P, 1) %.3g\n",
-              compared, differing, max_rel);
+  std::printf("[fast grid] %zu served prices compared, %zu differ, max |dP| / max(P, 1) %.3g; "
+              "min certificate allowance / Fast bound %.3g\n",
+              compared, differing, max_rel, min_headroom);
   EXPECT_GT(compared, 0u);
   EXPECT_GT(differing, 0u);
+  EXPECT_GT(min_headroom, 100.0); // >= 1000x by arithmetic (P <= max(S, K)); 100x asserted
 }
 
 // A scripted American model: an Accurate inversion returns 0.25 * target, a Fast
