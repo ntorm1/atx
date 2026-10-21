@@ -59,6 +59,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -1348,6 +1349,414 @@ void run_screen_scan(benchmark::State &state, ErrSet set, const char *set_name,
   }
 }
 
+// ── L2h sigma-family (2026-10-19): AlSigmaFamily build / price / chord / error rows ──
+//
+//   * ATX_VOL_AL_FAMILY=1 registers, for n_sigma in {8, 12, 16} and both axes
+//     (sigma, logsigma):
+//       american/spy23_family/<axis>/n<N>            (needs ATX_VOL_AL_SPY23)
+//       american/family_error/<set>/<axis>/n<N>      sets: grid, fastgrid, deepcarry,
+//                                                    dev200 (needs ATX_VOL_AL_DEV200),
+//                                                    spy23offnode (ATX_VOL_AL_SPY23)
+//     Each row groups the set's contracts by (S, T, r, q, side) — one expiry side —
+//     builds ONE family per group on a Reference geometry over the group's sigma box
+//     (0.95 * min .. 1.05 * max, widened to >= 0.02 and kAlPackSigmaBump of chord
+//     headroom; L2i's recommended rule), times the build (median of 5 repetitions per
+//     group, reported per family), then prices every contract through the family and
+//     reports: build_us (per family), price p50 / p99 us and chord p50 us per contract
+//     (3 timed passes), |P_family - P_ref| vs the accurate cold Reference (max abs,
+//     p99 abs, max rel and p99 rel on P_ref >= 0.01), the IV error of a safeguarded
+//     Newton on the family's own chord vs the Reference inversion of the same target
+//     (bp, vega-bearing contracts only), refusals (contracts the family would not
+//     price: below the guards / outside the box / a non-American side) and the worst
+//     contracts' full inputs on stderr. The spy23offnode set replaces each SPY
+//     contract's sigma by the midpoint of the two family nodes around it (the P2.5
+//     off-node pattern on the real chain's strikes).
+
+struct FamilyKey {
+  double S, T, r, q;
+  Side side;
+  [[nodiscard]] bool operator<(const FamilyKey &o) const noexcept {
+    if (S != o.S) {
+      return S < o.S;
+    }
+    if (T != o.T) {
+      return T < o.T;
+    }
+    if (r != o.r) {
+      return r < o.r;
+    }
+    if (q != o.q) {
+      return q < o.q;
+    }
+    return static_cast<int>(side) < static_cast<int>(o.side);
+  }
+};
+
+enum class FamilySet { Grid, FastGrid, DeepCarry, Dev200, Spy23, Spy23OffNode };
+
+// The AlFastProfile 1,350-contract grid (tests/american_test.cpp fast_profile_grid).
+[[nodiscard]] std::vector<GridPt> fast_profile_grid_pts() {
+  std::vector<GridPt> v;
+  for (const Side side : {Side::Put, Side::Call}) {
+    for (const double T : {0.02, 0.1, 0.5, 1.5, 4.0}) {
+      for (const double sigma : {0.08, 0.25, 0.7}) {
+        for (const double r : {0.005, 0.045, 0.1}) {
+          for (const double q : {0.0, 0.02, 0.09}) {
+            for (const double m : {0.7, 0.9, 1.0, 1.1, 1.4}) {
+              v.push_back(GridPt{100.0, 100.0 * m, T, sigma, r, q, side});
+            }
+          }
+        }
+      }
+    }
+  }
+  return v;
+}
+
+// Screen's worst corner: long-dated, low-vol, deep-carry at-the-money puts.
+[[nodiscard]] std::vector<GridPt> deep_carry_pts() {
+  std::vector<GridPt> v;
+  for (const double T : {2.0, 3.0, 4.0, 5.0}) {
+    for (const double sigma : {0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12}) {
+      for (const double r : {0.05, 0.06, 0.075, 0.09, 0.1}) {
+        for (const double q : {0.0, 0.01, 0.02, 0.03}) {
+          v.push_back(GridPt{100.0, 100.0, T, sigma, r, q, Side::Put});
+        }
+      }
+    }
+  }
+  return v;
+}
+
+[[nodiscard]] const std::vector<GridPt> &family_points(FamilySet s) {
+  static const std::vector<GridPt> fastgrid = fast_profile_grid_pts();
+  static const std::vector<GridPt> deep = deep_carry_pts();
+  switch (s) {
+  case FamilySet::Grid:
+    return grid().pts;
+  case FamilySet::FastGrid:
+    return fastgrid;
+  case FamilySet::DeepCarry:
+    return deep;
+  case FamilySet::Dev200:
+    return err_points(ErrSet::Dev200);
+  case FamilySet::Spy23:
+  case FamilySet::Spy23OffNode:
+    break;
+  }
+  return err_points(ErrSet::Spy23);
+}
+
+// The family's sigma nodes on [lo, hi] (Chebyshev-Lobatto; the family's own form).
+[[nodiscard]] std::vector<double> family_nodes(double lo, double hi, unsigned n,
+                                               atx::vol::AlSigmaFamilyAxis axis) {
+  const bool logax = axis == atx::vol::AlSigmaFamilyAxis::LogSigma;
+  const double ulo = logax ? std::log(lo) : lo;
+  const double uhi = logax ? std::log(hi) : hi;
+  std::vector<double> v;
+  for (unsigned s = 0; s < n; ++s) {
+    double z = -std::cos(3.14159265358979323846 * static_cast<double>(s) /
+                         static_cast<double>(n - 1));
+    if (s == 0) {
+      z = -1.0;
+    }
+    if (s == n - 1) {
+      z = 1.0;
+    }
+    const double u = ulo + 0.5 * (uhi - ulo) * (z + 1.0);
+    v.push_back(logax ? std::exp(u) : u);
+  }
+  return v;
+}
+
+// L2i's recommended box rule over a group's admitted sigmas.
+struct FamilyBox {
+  double lo;
+  double hi;
+};
+[[nodiscard]] FamilyBox family_box(double smin, double smax) noexcept {
+  double lo = std::max(atx::vol::kAlSigmaFamilyMinSigma, 0.95 * smin);
+  double hi = 1.05 * smax + 2.0 * atx::vol::kAlPackSigmaBump;
+  if (hi - lo < 0.02) {
+    const double mid = 0.5 * (lo + hi);
+    lo = std::max(atx::vol::kAlSigmaFamilyMinSigma, mid - 0.01);
+    hi = mid + 0.01;
+  }
+  return FamilyBox{lo, hi};
+}
+
+// Safeguarded Newton on the family's chord (the inversion an L2i caller iterates).
+[[nodiscard]] double family_invert(const atx::vol::AlSigmaFamily &f, double S, double K,
+                                   double target, double lo, double hi) {
+  using atx::vol::AlSigmaFamilyChord;
+  using atx::vol::AlSigmaFamilyStatus;
+  double a = lo;
+  double b = hi - 2.0 * atx::vol::kAlPackSigmaBump;
+  double x = 0.5 * (a + b);
+  for (int it = 0; it < 60; ++it) {
+    const AlSigmaFamilyChord c = f.price_and_chord(S, K, x);
+    if (c.status != AlSigmaFamilyStatus::Ok) {
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double fx = c.price - target;
+    if (std::abs(fx) <= 1.0e-13 * std::max(target, 1.0)) {
+      return x;
+    }
+    if (fx > 0.0) {
+      b = x;
+    } else {
+      a = x;
+    }
+    const double slope = (c.price_sigma_bumped - c.price) / atx::vol::kAlPackSigmaBump;
+    double nx = (slope > 0.0) ? x - fx / slope : 0.5 * (a + b);
+    if (!(nx > a && nx < b)) {
+      nx = 0.5 * (a + b);
+    }
+    if (std::abs(nx - x) <= 1.0e-12) {
+      return nx;
+    }
+    x = nx;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+void run_family(benchmark::State &state, FamilySet set, const char *set_name, unsigned n_sigma,
+                atx::vol::AlSigmaFamilyAxis axis) {
+  using namespace atx::vol;
+  const std::vector<GridPt> &pts = family_points(set);
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  // Group by (S, T, r, q, side) — one geometry each — but take the sigma BOX from the
+  // whole (S, T, side) chain: the quote files carry a per-row sdiv (the SPY 23 d
+  // file has 74 distinct q over 322 rows), which would otherwise split a chain into
+  // narrow-box families and flatter the interpolation. Every family of a chain
+  // therefore spans the chain's full admitted sigma range, as L2i's one family per
+  // (expiry, side) would.
+  std::map<FamilyKey, std::vector<std::size_t>> groups;
+  std::map<FamilyKey, std::pair<double, double>> chain_range; // (S, T, side) -> (min, max)
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const GridPt &p = pts[i];
+    groups[FamilyKey{p.S, p.T, p.r, p.q, p.side}].push_back(i);
+    if (p.sigma >= atx::vol::kAlSigmaFamilyMinSigma) {
+      auto [it, fresh] = chain_range.try_emplace(FamilyKey{p.S, p.T, 0.0, 0.0, p.side},
+                                                 std::pair<double, double>{p.sigma, p.sigma});
+      if (!fresh) {
+        it->second.first = std::min(it->second.first, p.sigma);
+        it->second.second = std::max(it->second.second, p.sigma);
+      }
+    }
+  }
+  const auto group_box = [&](const FamilyKey &key) -> std::optional<FamilyBox> {
+    const auto it = chain_range.find(FamilyKey{key.S, key.T, 0.0, 0.0, key.side});
+    if (it == chain_range.end()) {
+      return std::nullopt;
+    }
+    return family_box(it->second.first, it->second.second);
+  };
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> query_sigma(pts.size(), nan); // the sigma actually queried
+  std::vector<double> ref_price(pts.size(), nan);
+  std::vector<double> got(pts.size(), nan);
+  std::vector<double> build_us;
+  std::vector<double> price_us;
+  std::vector<double> chord_us;
+  double refused = 0.0;
+  double families = 0.0;
+  double cold_groups = 0.0;
+  for (auto _ : state) {
+    build_us.clear();
+    price_us.clear();
+    chord_us.clear();
+    refused = 0.0;
+    families = 0.0;
+    cold_groups = 0.0;
+    for (const auto &[key, idx] : groups) {
+      const std::optional<FamilyBox> box_opt = group_box(key);
+      if (!box_opt) {
+        refused += static_cast<double>(idx.size());
+        continue;
+      }
+      const FamilyBox box = *box_opt;
+      const AlExpiryGeometry g = prepare_al_geometry(key.T, key.r, key.q);
+      const double anchor = key.S;
+      AlSigmaFamily fam(g, key.side, anchor);
+      // Build: median of 5 repetitions.
+      std::vector<double> reps;
+      bool built = false;
+      for (int rep = 0; rep < 5; ++rep) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Status st = fam.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis);
+        const auto t1 = std::chrono::steady_clock::now();
+        built = st.has_value();
+        if (!built) {
+          break;
+        }
+        reps.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+      if (!built) {
+        cold_groups += 1.0; // the whole expiry side prices cold (guards / regime)
+        refused += static_cast<double>(idx.size());
+        continue;
+      }
+      std::sort(reps.begin(), reps.end());
+      build_us.push_back(reps[reps.size() / 2]);
+      families += 1.0;
+      const std::vector<double> nodes = family_nodes(box.lo, box.hi, n_sigma, axis);
+      for (const std::size_t i : idx) {
+        const GridPt &p = pts[i];
+        double sigma = p.sigma;
+        if (set == FamilySet::Spy23OffNode) {
+          // The midpoint of the two nodes around the contract's own sigma.
+          for (std::size_t k = 1; k < nodes.size(); ++k) {
+            if (sigma <= nodes[k] || k + 1 == nodes.size()) {
+              sigma = 0.5 * (nodes[k - 1] + nodes[k]);
+              break;
+            }
+          }
+        }
+        query_sigma[i] = sigma;
+        const Result<double> a = andersen_lake(g, p.S, p.K, sigma, p.side);
+        ref_price[i] = a.has_value() ? *a : nan;
+        AlSigmaFamilyPrice fp{};
+        for (int pass = 0; pass < 3; ++pass) {
+          const auto t0 = std::chrono::steady_clock::now();
+          fp = fam.price(p.S, p.K, sigma);
+          const auto t1 = std::chrono::steady_clock::now();
+          price_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+        }
+        for (int pass = 0; pass < 3; ++pass) {
+          const auto t0 = std::chrono::steady_clock::now();
+          AlSigmaFamilyChord c = fam.price_and_chord(p.S, p.K, sigma);
+          const auto t1 = std::chrono::steady_clock::now();
+          benchmark::DoNotOptimize(c);
+          chord_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+        }
+        if (fp.status != AlSigmaFamilyStatus::Ok) {
+          refused += 1.0;
+          got[i] = nan;
+          continue;
+        }
+        got[i] = fp.price;
+      }
+    }
+  }
+  // Error distributions vs the cold Reference at the queried sigma.
+  ErrDist p_abs, p_rel, iv_bp;
+  double worst_abs = -1.0;
+  double worst_rel = -1.0;
+  double worst_iv = -1.0;
+  std::size_t worst_abs_i = 0;
+  std::size_t worst_rel_i = 0;
+  std::size_t worst_iv_i = 0;
+  double iv_failed = 0.0;
+  double priced = 0.0;
+  std::vector<double> iv_family(pts.size(), nan);
+  std::vector<double> iv_ref(pts.size(), nan);
+  for (const auto &[key, idx] : groups) {
+    // Rebuild the group's family once more (untimed) for the IV pass.
+    const std::optional<FamilyBox> box_opt = group_box(key);
+    if (!box_opt) {
+      continue;
+    }
+    const FamilyBox box = *box_opt;
+    const AlExpiryGeometry g = prepare_al_geometry(key.T, key.r, key.q);
+    AlSigmaFamily fam(g, key.side, key.S);
+    if (!fam.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis)) {
+      continue;
+    }
+    for (const std::size_t i : idx) {
+      const GridPt &p = pts[i];
+      if (!std::isfinite(ref_price[i]) || !std::isfinite(got[i])) {
+        continue;
+      }
+      priced += 1.0;
+      const double d = std::abs(got[i] - ref_price[i]);
+      p_abs.add(d);
+      if (d > worst_abs) {
+        worst_abs = d;
+        worst_abs_i = i;
+      }
+      if (ref_price[i] >= 0.01) {
+        p_rel.add(d / ref_price[i]);
+        if (d / ref_price[i] > worst_rel) {
+          worst_rel = d / ref_price[i];
+          worst_rel_i = i;
+        }
+      }
+      // IV on vega-bearing contracts: Newton on the family vs the Reference inversion
+      // of the same Reference target.
+      const double sigma = query_sigma[i];
+      const Result<double> up = andersen_lake(g, p.S, p.K, sigma + 1.0e-4, p.side);
+      const Result<double> dn = andersen_lake(g, p.S, p.K, sigma - 1.0e-4, p.side);
+      if (!up.has_value() || !dn.has_value() ||
+          !((*up - *dn) / 2.0e-4 >= 1.0e-2 * std::max(ref_price[i], 1.0))) {
+        continue;
+      }
+      const Result<double> ivr =
+          american_implied_vol(ref_price[i], p.S, p.K, p.T, p.r, p.q, p.side,
+                               AmericanMethod::AndersenLake, 1.0e-10, 100, std::nullopt);
+      if (!ivr.has_value()) {
+        continue;
+      }
+      const double ivf = family_invert(fam, p.S, p.K, ref_price[i], box.lo, box.hi);
+      if (!std::isfinite(ivf)) {
+        iv_failed += 1.0;
+        continue;
+      }
+      iv_ref[i] = *ivr;
+      iv_family[i] = ivf;
+      const double bp = std::abs(ivf - *ivr) * 1.0e4;
+      iv_bp.add(bp);
+      if (bp > worst_iv) {
+        worst_iv = bp;
+        worst_iv_i = i;
+      }
+    }
+  }
+  std::sort(price_us.begin(), price_us.end());
+  std::sort(chord_us.begin(), chord_us.end());
+  std::sort(build_us.begin(), build_us.end());
+  state.counters["points"] = static_cast<double>(pts.size());
+  state.counters["families"] = families;
+  state.counters["cold_groups"] = cold_groups;
+  state.counters["refused"] = refused;
+  state.counters["priced"] = priced;
+  state.counters["build_us_p50"] = sorted_quantile(build_us, 0.50);
+  state.counters["build_us_max"] = build_us.empty() ? 0.0 : build_us.back();
+  state.counters["price_us_p50"] = sorted_quantile(price_us, 0.50);
+  state.counters["price_us_p99"] = sorted_quantile(price_us, 0.99);
+  state.counters["chord_us_p50"] = sorted_quantile(chord_us, 0.50);
+  state.counters["price_max_abs"] = p_abs.max();
+  state.counters["price_p99_abs"] = p_abs.quantile(0.99);
+  state.counters["price_max_rel"] = p_rel.max();
+  state.counters["price_p99_rel"] = p_rel.quantile(0.99);
+  state.counters["iv_solved"] = static_cast<double>(iv_bp.size());
+  state.counters["iv_failed"] = iv_failed;
+  state.counters["iv_p99_bp"] = iv_bp.quantile(0.99);
+  state.counters["iv_max_bp"] = iv_bp.max();
+  state.counters["state_bytes"] = static_cast<double>(AlSigmaFamily::state_bytes());
+  const char *axis_name = axis == AlSigmaFamilyAxis::LogSigma ? "logsigma" : "sigma";
+  const auto describe = [&](const char *what, std::size_t i, double e) {
+    const GridPt &p = pts[i];
+    std::fprintf(stderr,
+                 "[family] %s/%s/n%u %s=%.6g S=%.17g K=%.17g T=%.17g sigma=%.17g r=%.17g "
+                 "q=%.17g side=%s ref=%.17g got=%.17g iv_ref=%.17g iv_family=%.17g\n",
+                 set_name, axis_name, n_sigma, what, e, p.S, p.K, p.T, query_sigma[i], p.r, p.q,
+                 p.side == Side::Call ? "C" : "P", ref_price[i], got[i], iv_ref[i], iv_family[i]);
+  };
+  if (worst_abs >= 0.0) {
+    describe("worst_abs", worst_abs_i, worst_abs);
+  }
+  if (worst_rel >= 0.0) {
+    describe("worst_rel", worst_rel_i, worst_rel);
+  }
+  if (worst_iv >= 0.0) {
+    describe("worst_iv_bp", worst_iv_i, worst_iv);
+  }
+}
+
 const bool kRegistered = [] {
   using atx::vol::bench::apply_common;
   for (const Rung &rung : rungs()) {
@@ -1452,6 +1861,45 @@ const bool kRegistered = [] {
                                      })
             ->Iterations(1)
             ->Unit(benchmark::kMillisecond);
+      }
+    }
+  }
+  if (!env_text("ATX_VOL_AL_FAMILY").empty()) {
+    using atx::vol::AlSigmaFamilyAxis;
+    std::vector<std::pair<const char *, FamilySet>> sets = {
+        {"grid", FamilySet::Grid}, {"fastgrid", FamilySet::FastGrid},
+        {"deepcarry", FamilySet::DeepCarry}};
+    if (!env_text("ATX_VOL_AL_DEV200").empty()) {
+      sets.emplace_back("dev200", FamilySet::Dev200);
+    }
+    if (!env_text("ATX_VOL_AL_SPY23").empty()) {
+      sets.emplace_back("spy23offnode", FamilySet::Spy23OffNode);
+    }
+    const std::pair<const char *, AlSigmaFamilyAxis> axes[] = {
+        {"sigma", AlSigmaFamilyAxis::Sigma}, {"logsigma", AlSigmaFamilyAxis::LogSigma}};
+    for (const unsigned n : {8u, 12u, 16u}) {
+      for (const auto &[axis_name, axis] : axes) {
+        const AlSigmaFamilyAxis ax = axis;
+        if (!env_text("ATX_VOL_AL_SPY23").empty()) {
+          benchmark::RegisterBenchmark(std::string("american/spy23_family/") + axis_name + "/n" +
+                                           std::to_string(n),
+                                       [n, ax](benchmark::State &state) {
+                                         run_family(state, FamilySet::Spy23, "spy23", n, ax);
+                                       })
+              ->Iterations(1)
+              ->Unit(benchmark::kMillisecond);
+        }
+        for (const auto &[label, set] : sets) {
+          const FamilySet s = set;
+          const char *set_name = label;
+          benchmark::RegisterBenchmark(std::string("american/family_error/") + label + "/" +
+                                           axis_name + "/n" + std::to_string(n),
+                                       [s, set_name, n, ax](benchmark::State &state) {
+                                         run_family(state, s, set_name, n, ax);
+                                       })
+              ->Iterations(1)
+              ->Unit(benchmark::kMillisecond);
+        }
       }
     }
   }

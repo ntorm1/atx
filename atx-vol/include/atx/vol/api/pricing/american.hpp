@@ -28,6 +28,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -389,6 +390,146 @@ inline constexpr double kAlPackSigmaBump = 1.0e-4;
 [[nodiscard]] Status al_price_pack(const AlExpiryGeometry &g, std::span<const AlContract> contracts,
                                    std::span<const double> sigma, std::span<double> price,
                                    std::span<double> price_sigma_bumped);
+
+// ── σ-Chebyshev boundary family: one expiry, one side, every (K, σ) ──────
+//
+// L2h sigma-family (2026-10-19). The dimensionless Andersen-Lake boundary y[] of an
+// internal put depends only on (σ, r, q, τ) — never on the strike — and is smooth in
+// σ. A family solves that boundary on n_σ Chebyshev-Lobatto σ-nodes of a box
+// [σ_lo, σ_hi] (n_σ Reference-accuracy solves when the geometry is Reference; a
+// Fast / Screen geometry gives its tier's nodes) and then prices ANY contract of the
+// (expiry, side) at ANY σ inside the box with no solve at all: interpolate y[] at σ
+// (2nd-kind barycentric, the scheme the P2.5 slice `andersen_lake_*_slice_sigma`
+// shipped on — the evaluator is duplicated in american_sigma_family.cpp with a
+// comment naming its twin so the slice stays bit-identical), rescale the boundary to
+// the contract's internal strike (T8 homogeneity: y[] is strike-free, only K and
+// xmax = K min(1, r/q) change), and run the premium quadrature at the geometry's p.
+// Cost: n_σ solves to build, then one quadrature (a few µs) per price.
+//
+// ACCURACY CONTRACT (PM ruling (a): distance to the accurate root, not "equal to
+// the old path"). At a σ-node and at the anchor strike a family price equals the
+// cold solve to rounding (~1e-14 relative); between nodes the σ-interpolation error
+// enters (exponentially small in n_σ); at another strike the homogeneity rescale is
+// a few ULP from a fresh solve (the kernel carries K in absolute terms; LEDGER
+// 2026-10-19 "a put boundary is reusable only at its own strike" — reusable to a
+// few ULP, which this contract accepts). Measured against the cold Reference and
+// pinned by AlSigmaFamily.* (tests/american_geometry_test.cpp); the numbers are in
+// sprints/2026-10-19-L2h-sigma-family-sprint.md. NOTHING default selects a family:
+// no fitting path, preset, policy key or record format constructs one.
+//
+// THE ANCHOR. `anchor` is the internal-put strike the node solves run at: the
+// reference strike of a put family, the spot of a call family (McDonald-Schroder:
+// C(S, K; r, q) = P(K, S; q, r), internal strike = S). Any other internal strike is
+// served by the rescale, so a call family built at spot S0 still prices the chain
+// after the spot moves to S1 — at the rescale's few-ULP distance from a fresh solve
+// at S1, NOT bit-identically; the tests measure a 1 % spot move. One family per
+// (expiry, side) is the intended shape; rebuilding on a spot move is unnecessary.
+//
+// OWNERSHIP / THREADS. Move-only; observes the geometry (which must outlive it; a
+// temporary cannot bind) and allocates its ~6 KB of state once at construction.
+// prepare() needs exclusive access. After prepare() the family is IMMUTABLE and
+// price() / price_and_chord() are const, allocation-free and safe to call from any
+// number of threads at once on one const family (scratch lives on the caller's
+// stack; the premium quadrature reads only const tables) — the shape the
+// certification fan-out and the rung memo need. A geometry re-prepared after
+// prepare() makes every price refuse (GeometryRePrepared) until the family is
+// prepared again.
+//
+// REFUSALS are typed and allocation-free on every path (price() never returns NaN
+// on a refusal: `status != Ok` and `price` is NaN together). The L1c non-monotone
+// refusal is NOT the family's to make — it is keyed on an inversion TARGET, which a
+// pricer does not see — so a family-based inversion must test the band with
+// al_non_monotone_gate (american_iv.hpp) BEFORE iterating on the family and route
+// band rows to the accurate cold inversion (sprint note §"What L2i must assume").
+enum class AlSigmaFamilyStatus : std::uint8_t {
+  Ok = 0,
+  NotPrepared = 1,         // prepare() has not succeeded (or the family is moved-from)
+  GeometryRePrepared = 2,  // the geometry was re-prepared after prepare()
+  InvalidArgument = 3,     // S or K not > 0 / not finite, or sigma not finite
+  SigmaBelowGuard = 4,     // sigma < kAlSigmaFamilyMinSigma (the small-sigma guard)
+  SigmaOutsideBox = 5,     // sigma outside [sigma_lo, sigma_hi] (never extrapolated)
+};
+
+struct AlSigmaFamilyPrice {
+  double price = std::numeric_limits<double>::quiet_NaN(); // NaN unless status == Ok
+  AlSigmaFamilyStatus status = AlSigmaFamilyStatus::NotPrepared;
+};
+
+struct AlSigmaFamilyChord {
+  double price = std::numeric_limits<double>::quiet_NaN();              // at sigma
+  double price_sigma_bumped = std::numeric_limits<double>::quiet_NaN(); // at sigma + h
+  AlSigmaFamilyStatus status = AlSigmaFamilyStatus::NotPrepared;
+};
+
+// The σ-axis the Chebyshev nodes are laid on: log σ (the nodes then cluster toward
+// the low end of the box in σ, where the boundary moves fastest) or σ itself. Both
+// are measured in the sprint note (§4): at 12 nodes LogSigma is the tighter axis on
+// every set (SPY 23 d chain 1.5e-10 vs 1.8e-8 max relative; the 1,350-contract grid's
+// [0.08, 0.7] box 1.8e-6 vs 5.4e-5), at 8 nodes Sigma is — so LogSigma is the default
+// and Sigma stays selectable for a measured reason.
+enum class AlSigmaFamilyAxis : std::uint8_t {
+  LogSigma = 0,
+  Sigma = 1,
+};
+
+// Guards shared with the P2.5 slice (SigmaInterpOptions): no family below this
+// expiry (the whole expiry prices cold), no price below this σ.
+inline constexpr double kAlSigmaFamilyMinTau = 3.0 / 365.0;
+inline constexpr double kAlSigmaFamilyMinSigma = 0.01;
+inline constexpr std::uint16_t kAlSigmaFamilyMinNodes = 4;
+inline constexpr std::uint16_t kAlSigmaFamilyMaxNodes = 16;
+
+class AlSigmaFamily {
+public:
+  AlSigmaFamily(const AlExpiryGeometry &geometry, Side side, double anchor);
+  AlSigmaFamily(const AlExpiryGeometry &&geometry, Side side, double anchor) = delete;
+  ~AlSigmaFamily();
+  AlSigmaFamily(AlSigmaFamily &&) noexcept;
+  AlSigmaFamily &operator=(AlSigmaFamily &&) noexcept;
+  AlSigmaFamily(const AlSigmaFamily &) = delete;
+  AlSigmaFamily &operator=(const AlSigmaFamily &) = delete;
+
+  // Solve the n_sigma node boundaries over [sigma_lo, sigma_hi]. Refuses — leaving
+  // the family UNPREPARED, never half-built — with InvalidArgument when the geometry
+  // is not prepared, the box is degenerate (sigma_lo < kAlSigmaFamilyMinSigma, or
+  // sigma_hi - sigma_lo <= 1e-9, or non-finite), n_sigma is outside
+  // [kAlSigmaFamilyMinNodes, kAlSigmaFamilyMaxNodes], the anchor is not > 0, or the
+  // expiry is below kAlSigmaFamilyMinTau; with NotImplemented when the side is not
+  // in the American regime on this geometry (closed-form / double-continuation
+  // expiries have no boundary family), a node boundary collapses (xmax <= 0), or a
+  // node's boundary sweep cannot move (the kernel's NotConverged, mapped exactly as
+  // andersen_lake's al_solve_status_error maps it); with Internal only when a node
+  // solve reports TableMissing (Gauss-Legendre table unavailable). Strong guarantee:
+  // on any refusal the previous preparation, if any, is discarded (prepared() == false).
+  [[nodiscard]] Status prepare(double sigma_lo, double sigma_hi, std::uint16_t n_sigma,
+                               AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma);
+
+  [[nodiscard]] bool prepared() const noexcept;
+  [[nodiscard]] double sigma_lo() const noexcept;
+  [[nodiscard]] double sigma_hi() const noexcept;
+  [[nodiscard]] std::uint16_t n_sigma() const noexcept;
+  [[nodiscard]] double anchor() const noexcept;
+  [[nodiscard]] Side side() const noexcept;
+
+  // The (S, K) contract of this family's side at sigma. Ok iff S, K > 0 and finite,
+  // sigma finite, sigma >= kAlSigmaFamilyMinSigma and inside the box; otherwise the
+  // typed refusal with a NaN price. Const, allocation-free, thread-safe (above).
+  [[nodiscard]] AlSigmaFamilyPrice price(double S, double K, double sigma) const noexcept;
+
+  // price(S, K, sigma) and price(S, K, sigma + kAlPackSigmaBump) from the same
+  // boundary family: (bumped - price) / kAlPackSigmaBump is the forward chord of the
+  // family's map, the Newton slope an inversion on the family needs. Refuses as
+  // price() does for EITHER sigma (so the box needs kAlPackSigmaBump of headroom
+  // above the highest query); nothing is written on a refusal but the status.
+  [[nodiscard]] AlSigmaFamilyChord price_and_chord(double S, double K, double sigma) const noexcept;
+
+  // Bytes of state this family owns (one heap block; for the memory budget).
+  [[nodiscard]] static std::size_t state_bytes() noexcept;
+
+private:
+  struct State;
+  std::unique_ptr<State> st_;
+};
 
 // ── Boundary-convergence evidence (what `andersen_lake` does NOT tell you) ──
 //
