@@ -716,7 +716,7 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "require fit_space vol"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "quick"}},
-             "deam_profile must be accurate or fast"),
+             "deam_profile must be accurate, fast or screen"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_cache": 1}},
              "deam_cache must be true or false"),
@@ -735,7 +735,29 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "fast",
                          "deam_inversion": "premium"}},
-             "deam_inversion premium requires deam_profile accurate")):
+             "deam_inversion premium requires deam_profile accurate or screen"),
+            # Screen seed tier, confirm policy / kernel, grid kernel (SPY1s Phase 1).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen"}},
+             "deam_profile screen requires deam_inversion premium"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "accurate",
+                         "deam_inversion": "premium", "confirm": "band"}},
+             "confirm keys require deam_profile screen"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "confirm": "sometimes"}},
+             "confirm must be always, band or never"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "confirm": "band", "confirm_k": 0}},
+             "confirm_k must be a positive number"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "confirm_kernel": "screen"}},
+             "confirm_kernel must be reference or fast"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"grid_kernel": "screen"}},
+             "grid_kernel must be reference or fast")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document

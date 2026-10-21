@@ -565,6 +565,10 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
   for (unsigned b = 0; b < ft::kBucketCount; ++b) {
     al_by_bucket[ft::kBucketNames[b]] = t.al_by_bucket[b];
   }
+  Json deam_al_by_reason = Json::object();
+  for (unsigned r = 0; r < ft::kDeamReasonCount; ++r) {
+    deam_al_by_reason[ft::kDeamReasonNames[r]] = t.deam_al_by_reason[r];
+  }
   return {{"wall_us", t.wall_us}, {"deam_us", t.deam_us}, {"solve_us", t.solve_us},
           {"project_us", t.project_us}, {"price_us", t.price_us},
           {"certify_us", t.certify_us}, {"calendar_us", t.calendar_us},
@@ -587,7 +591,15 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_audit_dsigma_decades", t.deam_audit_dsigma_decades},
           {"deam_audit_max_newton_premium", t.deam_audit_max_newton_premium},
           {"deam_audit_max_newton_search", t.deam_audit_max_newton_search},
-          {"deam_audit_search_farther", t.deam_audit_search_farther}};
+          {"deam_audit_search_farther", t.deam_audit_search_farther},
+          {"deam_al_by_reason", std::move(deam_al_by_reason)},
+          {"deam_confirms", t.deam_confirms},
+          {"deam_confirms_skipped", t.deam_confirms_skipped},
+          {"deam_ambiguous_edges", t.deam_ambiguous_edges},
+          {"deam_seed_routed", t.deam_seed_routed},
+          {"deam_gate_max_bound_vol", t.deam_gate_max_bound_vol},
+          {"deam_audit_skipped_pairs", t.deam_audit_skipped_pairs},
+          {"deam_audit_max_newton_skipped", t.deam_audit_max_newton_skipped}};
 }
 
 // Graded admission: one surface fit per exact snapshot. Routing has already

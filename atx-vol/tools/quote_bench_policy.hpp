@@ -535,6 +535,11 @@ struct FitSpaceOptions {
   QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
   bool deam_cache = false;
   QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // opt-in (L2e)
+  // Opt-in seed-tier confirm policy / kernel and certification-grid kernel (SPY1s P1).
+  QuoteSliceDeamConfirm confirm = QuoteSliceDeamConfirm::Always;
+  double confirm_k = 10.0;
+  QuoteSliceDeamConfirmKernel confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
+  QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate;
 };
 
 inline FitSpaceOptions parse_fit_space(const Json &graded) {
@@ -556,8 +561,10 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
     const auto name = text(graded.at("deam_profile"));
     if (name == "fast") {
       out.deam_profile = QuoteSliceDeamProfile::Fast;
+    } else if (name == "screen") {
+      out.deam_profile = QuoteSliceDeamProfile::Screen;
     } else if (name != "accurate") {
-      throw std::runtime_error("Policy graded deam_profile must be accurate or fast");
+      throw std::runtime_error("Policy graded deam_profile must be accurate, fast or screen");
     }
   }
   if (graded.contains("deam_cache")) {
@@ -579,9 +586,59 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
       throw std::runtime_error("Policy graded deam_inversion must be search or premium");
     }
     if (out.deam_inversion == QuoteSliceDeamInversion::Premium &&
-        out.deam_profile != QuoteSliceDeamProfile::Accurate) {
+        out.deam_profile == QuoteSliceDeamProfile::Fast) {
       throw std::runtime_error("Policy graded deam_inversion premium requires deam_profile "
-                               "accurate");
+                               "accurate or screen");
+    }
+  }
+  // The Screen seed tier exists only inside the Premium inversion (quote_slice.hpp
+  // QuoteSliceDeamProfile::Screen): a Search fit on Screen would serve seed-grade values.
+  if (out.deam_profile == QuoteSliceDeamProfile::Screen &&
+      out.deam_inversion != QuoteSliceDeamInversion::Premium) {
+    throw std::runtime_error("Policy graded deam_profile screen requires deam_inversion premium");
+  }
+  // Opt-in confirm policy / kernel of a Screen-seeded root (quote_slice.hpp deam_confirm,
+  // deam_confirm_k, deam_confirm_kernel): inert without a seed tier, so refused there.
+  if ((graded.contains("confirm") || graded.contains("confirm_k") ||
+       graded.contains("confirm_kernel")) &&
+      out.deam_profile != QuoteSliceDeamProfile::Screen) {
+    throw std::runtime_error("Policy graded confirm keys require deam_profile screen");
+  }
+  if (graded.contains("confirm")) {
+    const auto name = text(graded.at("confirm"));
+    if (name == "band") {
+      out.confirm = QuoteSliceDeamConfirm::Band;
+    } else if (name == "never") {
+      out.confirm = QuoteSliceDeamConfirm::Never;
+    } else if (name != "always") {
+      throw std::runtime_error("Policy graded confirm must be always, band or never");
+    }
+  }
+  if (graded.contains("confirm_k")) {
+    if (!graded.at("confirm_k").is_number()) {
+      throw std::runtime_error("Policy graded confirm_k must be a positive number");
+    }
+    out.confirm_k = graded.at("confirm_k").get<double>();
+    if (!(out.confirm_k > 0.0) || !std::isfinite(out.confirm_k)) {
+      throw std::runtime_error("Policy graded confirm_k must be a positive number");
+    }
+  }
+  if (graded.contains("confirm_kernel")) {
+    const auto name = text(graded.at("confirm_kernel"));
+    if (name == "fast") {
+      out.confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
+    } else if (name != "reference") {
+      throw std::runtime_error("Policy graded confirm_kernel must be reference or fast");
+    }
+  }
+  // Opt-in certification-grid kernel (quote_slice.hpp QuoteSliceGridKernel): independent
+  // of the cache keys (it acts on the served reprice of every graded profile).
+  if (graded.contains("grid_kernel")) {
+    const auto name = text(graded.at("grid_kernel"));
+    if (name == "fast") {
+      out.grid_kernel = QuoteSliceGridKernel::Fast;
+    } else if (name != "reference") {
+      throw std::runtime_error("Policy graded grid_kernel must be reference or fast");
     }
   }
   return out;
@@ -612,13 +669,23 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
   }
   if (space.fit_space == QuoteSliceFitSpace::VolChannel) {
     out["fit_space"] = "vol";
-    out["deam_profile"] =
-        space.deam_profile == QuoteSliceDeamProfile::Fast ? "fast" : "accurate";
+    out["deam_profile"] = space.deam_profile == QuoteSliceDeamProfile::Fast     ? "fast"
+                          : space.deam_profile == QuoteSliceDeamProfile::Screen ? "screen"
+                                                                                : "accurate";
     out["deam_cache"] = space.deam_cache;
     if (space.deam_inversion == QuoteSliceDeamInversion::Premium) {
       out["deam_inversion"] = "premium"; // provenance only when opted in
     }
+    if (space.deam_profile == QuoteSliceDeamProfile::Screen) {
+      out["confirm"] = space.confirm == QuoteSliceDeamConfirm::Band    ? "band"
+                       : space.confirm == QuoteSliceDeamConfirm::Never ? "never"
+                                                                       : "always";
+      out["confirm_k"] = space.confirm_k;
+      out["confirm_kernel"] =
+          space.confirm_kernel == QuoteSliceDeamConfirmKernel::Fast ? "fast" : "reference";
+    }
   }
+  if (space.grid_kernel == QuoteSliceGridKernel::Fast) out["grid_kernel"] = "fast";
   if (s.rung_memo) out["rung_memo"] = true;
   return out;
 }
@@ -774,7 +841,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
-             "deam_profile", "deam_cache", "rung_memo", "deam_inversion"});
+             "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
+             "confirm_kernel", "grid_kernel"});
     space = parse_fit_space(j);
     // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
     // exact-keyed reuse across an expiry's rungs, speed only.
@@ -844,6 +912,10 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_profile = space.deam_profile;
     profile.config.channel.deam_cache = space.deam_cache;
     profile.config.channel.deam_inversion = space.deam_inversion;
+    profile.config.channel.deam_confirm = space.confirm;
+    profile.config.channel.deam_confirm_k = space.confirm_k;
+    profile.config.channel.deam_confirm_kernel = space.confirm_kernel;
+    profile.config.grid_kernel = space.grid_kernel;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.
     if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&

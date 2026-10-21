@@ -85,8 +85,22 @@ struct DeAmIvCache {
   std::size_t accurate_fallbacks = 0;
 };
 
-// The two kernels the cache can invert with (QuoteSliceDeamProfile).
-enum class DeAmKernel : std::uint8_t { Accurate, Fast };
+// The kernels the cache can price and invert with (QuoteSliceDeamProfile). Screen (SPY1s
+// Phase 1) is a SEED kernel: it prices band edges (bound-decided) and runs the Premium
+// iterates; it never answers an inversion on its own.
+enum class DeAmKernel : std::uint8_t { Accurate, Fast, Screen };
+
+// Per-inversion controls a Premium view hands the model (SPY1s Phase 1): the seed kernel
+// (Screen: IvOpts::seed_profile Screen; Accurate: no seed tier), the confirm policy with
+// its k and the quote's half-spread in price (IvPremiumGate), and whether the confirm
+// runs on AlProfile::Fast instead of the accurate kernel.
+struct DeAmPremiumControls {
+  DeAmKernel seed_kernel = DeAmKernel::Accurate;
+  IvConfirmPolicy confirm = IvConfirmPolicy::Always;
+  double k = 10.0;
+  double half_spread_usd = 0.0;
+  bool confirm_fast = false;
+};
 
 // The slice fit's American model at one contract's own carry, implemented by
 // quote_slice.cpp so that the cache and the PriceChannel path share one forward
@@ -110,13 +124,25 @@ public:
   [[nodiscard]] virtual Result<double> implied_vol_premium(const QuoteSliceQuote &quote,
                                                            double target, double q_effective,
                                                            IvPremiumMemory *memory,
-                                                           IvPremiumStats &stats) const {
+                                                           IvPremiumStats &stats,
+                                                           const DeAmPremiumControls &controls) const {
     static_cast<void>(memory);
+    static_cast<void>(controls);
     stats = IvPremiumStats{};
     return implied_vol(quote, target, q_effective, DeAmKernel::Accurate);
   }
   // False when the model has no Fast kernel (the dated-cash lattice).
   [[nodiscard]] virtual bool has_fast_kernel() const = 0;
+  // False when the model has no Screen kernel (the default; the dated-cash lattice).
+  [[nodiscard]] virtual bool has_screen_kernel() const { return false; }
+  // The tested price bound of `kernel` versus the accurate kernel at a price near `price`
+  // (american_iv_premium.hpp al_profile_price_bound): the margin a band-edge comparison
+  // on that kernel must clear to be decided. Accurate: 0. Default for the other kernels:
+  // +inf (every comparison re-priced accurately), a model with a bound overrides.
+  [[nodiscard]] virtual double seed_price_bound(double price, DeAmKernel kernel) const {
+    static_cast<void>(price);
+    return kernel == DeAmKernel::Accurate ? 0.0 : std::numeric_limits<double>::infinity();
+  }
   // Black-76 vega of the contract at `sigma` on `forward` (the Fast guard).
   [[nodiscard]] virtual double black_vega(const QuoteSliceQuote &quote, double sigma,
                                           double forward) const = 0;
@@ -147,14 +173,25 @@ inline constexpr double kDeAmFastMinRelativeVega = 1.0e-5;
 // diagnostics) as well as to the cache's totals. The cache, model, quotes and
 // `work` must outlive the view; `quotes` must be the quotes the cache was built
 // for (same order, ivs sized to match).
+// Confirm controls of a Screen-seeded Premium view (QuoteSliceChannelConfig deam_confirm,
+// deam_confirm_k, deam_confirm_kernel); the default confirms every seed-tier root on the
+// accurate kernel.
+struct DeAmConfirmControls {
+  QuoteSliceDeamConfirm policy = QuoteSliceDeamConfirm::Always;
+  double k = 10.0;
+  QuoteSliceDeamConfirmKernel kernel = QuoteSliceDeamConfirmKernel::Accurate;
+};
+
 class DeAmIvView {
 public:
-  // `inversion` Premium (accurate kernel only; ignored under the Fast profile, which
+  // `inversion` Premium (accurate or Screen kernel; ignored under the Fast profile, which
   // validate_channel refuses in combination): every inversion runs the Premium strategy,
-  // a band's mid first.
+  // a band's mid first. Under the Screen profile the iterates run on the Screen tier with
+  // `confirm` governing the accurate confirm, and the band edges are bound-decided.
   DeAmIvView(DeAmIvCache &cache, const DeAmModel &model, std::span<const QuoteSliceQuote> quotes,
              QuoteSliceDeamProfile profile, QuoteSliceDeamDiagnostics &work,
-             QuoteSliceDeamInversion inversion = QuoteSliceDeamInversion::Search) noexcept;
+             QuoteSliceDeamInversion inversion = QuoteSliceDeamInversion::Search,
+             DeAmConfirmControls confirm = {}) noexcept;
 
   // The quote's mid IV exactly as point admission inverts it: Err when the
   // inversion fails or returns a non-positive volatility. Precondition: quote
@@ -178,12 +215,26 @@ private:
   [[nodiscard]] DeAmKernel kernel() const noexcept;
   [[nodiscard]] bool premium() const noexcept;
 
+  // One edge price (kIvMin / kIvMax) of a band: its value, the sigma it was priced at,
+  // and whether it is the accurate kernel's (decided) or the seed tier's.
+  struct Edge {
+    double value;
+    double sigma;
+    bool decided;
+  };
+  // The edge's value for a comparison with `x`: a seed-tier edge within its tested bound
+  // of `x` is first re-priced on the accurate kernel (ambiguous edge). `failed` is set
+  // when that re-price errs.
+  [[nodiscard]] double settle(Edge &edge, double x, const QuoteSliceQuote &quote,
+                              double q_effective, bool &failed);
+
   DeAmIvCache &cache_;
   const DeAmModel &model_;
   std::span<const QuoteSliceQuote> quotes_;
   QuoteSliceDeamProfile profile_;
   QuoteSliceDeamDiagnostics &work_;
   QuoteSliceDeamInversion inversion_;
+  DeAmConfirmControls confirm_;
 };
 
 // The exact inputs a chain's cache depends on, as 64-bit words: two fits with

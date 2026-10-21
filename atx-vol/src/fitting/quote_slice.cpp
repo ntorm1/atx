@@ -45,7 +45,9 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
       (cfg.side_policy != QuoteSliceSidePolicy::All &&
        cfg.side_policy != QuoteSliceSidePolicy::OutOfTheMoney) ||
       (cfg.method != QuoteSliceFitMethod::PointCurve &&
-       cfg.method != QuoteSliceFitMethod::ChannelSpline)) {
+       cfg.method != QuoteSliceFitMethod::ChannelSpline) ||
+      (cfg.grid_kernel != QuoteSliceGridKernel::Accurate &&
+       cfg.grid_kernel != QuoteSliceGridKernel::Fast)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid fitting configuration");
   }
   if (!discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps)) {
@@ -660,11 +662,13 @@ Result<double> contract_iv(const QuoteSliceFit &fit, const QuoteSliceQuote &quot
 
 // The slice's American model for the opt-in vol-space cache (deam_iv_cache.hpp):
 // the Accurate kernel IS model_price / contract_iv, the Fast kernel the same
-// Andersen-Lake scheme on AlProfile::Fast. Reads only fields prepare_fit fixed.
+// Andersen-Lake scheme on AlProfile::Fast, the Screen kernel the measured
+// al_screen_opts() seed tier (SPY1s Phase 1). Reads only fields prepare_fit fixed.
 class SliceDeAmModel final : public DeAmModel {
 public:
   SliceDeAmModel(const QuoteSliceFit &fit, const QuoteSliceConfig &config)
-      : fit_(fit), config_(config), fast_(al_fast_profile(fit.al_opts)) {}
+      : fit_(fit), config_(config), fast_(al_fast_profile(fit.al_opts)),
+        screen_(al_screen_opts()) {}
 
   double effective_yield_of(double calendar_yield) const override {
     return effective_yield(fit_, calendar_yield);
@@ -676,17 +680,35 @@ public:
   bool has_fast_kernel() const override {
     return fit_.dividend_model != QuoteSliceDividendModel::DatedCash;
   }
+  bool has_screen_kernel() const override { return has_fast_kernel(); }
+  // The band edges are priced at kIvMin / kIvMax, outside the sigma range of the grid that
+  // pinned the Screen bound (AlScreenProfile.*: sigma 0.12-0.7); measured at those edges over
+  // the 672-contract Premium grid the Screen error reaches 8.6e-4 max(P, 1) (9 of 1,344
+  // edges over 7.8e-4, and the short-dated 4.6e-6 does not hold at the edges;
+  // AmericanIvPremium.ScreenSeeds... printout), so a Screen edge decision clears TWICE the
+  // whole-grid bound at every maturity. Fast keeps its tested bound.
+  static constexpr double kEdgeBoundMargin = 2.0;
+  double seed_price_bound(double price, DeAmKernel kernel) const override {
+    if (kernel == DeAmKernel::Screen) {
+      return kEdgeBoundMargin * kAlScreenPriceBound * std::max(price, 1.0);
+    }
+    const AlProfile profile = kernel == DeAmKernel::Fast ? AlProfile::Fast : AlProfile::Reference;
+    return al_profile_price_bound(profile, price, fit_.market.variance_years);
+  }
   Result<double> price(const QuoteSliceQuote &quote, double sigma, double q_effective,
                        DeAmKernel kernel) const override {
     if (kernel == DeAmKernel::Accurate || !has_fast_kernel() || !std::isfinite(q_effective)) {
       return model_price(fit_, quote.strike, quote.side, sigma, q_effective);
     }
     return andersen_lake(fit_.market.spot, quote.strike, fit_.market.variance_years, sigma,
-                         fit_.diagnostics.effective_rate, q_effective, quote.side, fast_);
+                         fit_.diagnostics.effective_rate, q_effective, quote.side,
+                         kernel == DeAmKernel::Screen ? screen_ : fast_);
   }
+  // Search on the Screen kernel is never asked for (validate_channel: Screen requires the
+  // Premium inversion); it answers on the accurate kernel if it ever is.
   Result<double> implied_vol(const QuoteSliceQuote &quote, double target, double q_effective,
                              DeAmKernel kernel) const override {
-    if (kernel == DeAmKernel::Accurate || !has_fast_kernel()) {
+    if (kernel != DeAmKernel::Fast || !has_fast_kernel()) {
       return contract_iv(fit_, quote, target, config_, q_effective);
     }
     return american_implied_vol(target, fit_.market.spot, quote.strike,
@@ -696,10 +718,12 @@ public:
   }
   // Premium (L2e): contract_iv's own forward map and controls; a fallback returns
   // contract_iv's value bit for bit (american_iv_premium.hpp). The dated-cash lattice
-  // has no Premium route: contract_iv itself.
+  // has no Premium route: contract_iv itself. Under the Screen seed kernel (SPY1s Phase
+  // 1) the iterates run on al_screen_opts() and the confirm follows `controls`.
   Result<double> implied_vol_premium(const QuoteSliceQuote &quote, double target,
                                      double q_effective, IvPremiumMemory *memory,
-                                     IvPremiumStats &stats) const override {
+                                     IvPremiumStats &stats,
+                                     const DeAmPremiumControls &controls) const override {
     if (fit_.dividend_model == QuoteSliceDividendModel::DatedCash) {
       stats = IvPremiumStats{};
       return contract_iv(fit_, quote, target, config_, q_effective);
@@ -708,9 +732,18 @@ public:
     opts.tol = config_.iv_tolerance;
     opts.max_iter = config_.max_iv_iterations;
     opts.al_opts = fit_.al_opts;
+    IvPremiumGate gate;
+    if (controls.seed_kernel == DeAmKernel::Screen) {
+      opts.seed_profile = AlProfile::Screen;
+      gate.policy = controls.confirm;
+      gate.k = controls.k;
+      gate.half_spread_usd = controls.half_spread_usd;
+      gate.min_relative_slope = kDeAmFastMinRelativeVega;
+      if (controls.confirm_fast) gate.confirm_opts = fast_;
+    }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
-        fit_.diagnostics.effective_rate, q_effective, quote.side, opts, memory, stats);
+        fit_.diagnostics.effective_rate, q_effective, quote.side, opts, memory, stats, &gate);
     if (iv.status != IvStatus::Ok) {
       return Err(ErrorCode::Unavailable, "quote slice: no American implied volatility");
     }
@@ -726,6 +759,7 @@ private:
   const QuoteSliceFit &fit_;
   const QuoteSliceConfig &config_;
   std::optional<AlOpts> fast_;
+  std::optional<AlOpts> screen_;
 };
 
 // The chain cache an opt-in vol-space fit reads (QuoteSliceFitSpace::VolChannel):
@@ -750,7 +784,9 @@ public:
       cache_->ivs.assign(quotes.size(), DeAmQuoteIv{});
     }
     view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work,
-                  config.channel.deam_inversion);
+                  config.channel.deam_inversion,
+                  DeAmConfirmControls{config.channel.deam_confirm, config.channel.deam_confirm_k,
+                                      config.channel.deam_confirm_kernel});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1216,7 +1252,7 @@ std::vector<std::uint64_t> certification_grid_key(const QuoteSliceFit &out,
                                                   std::span<const double> strikes,
                                                   double &q_min, double &q_max) {
   std::vector<std::uint64_t> key = deam_iv_key(out, {}, QuoteSliceConfig{}).words;
-  key.reserve(key.size() + 3 * strikes.size());
+  key.reserve(key.size() + 3 * strikes.size() + 1); // + certify_and_serve's grid-kernel word
   for (const double strike : strikes) {
     const double q = effective_yield(out, calendar_yield_at(out, strike));
     q_min = std::min(q_min, q);
@@ -1237,9 +1273,12 @@ std::vector<std::uint64_t> certification_grid_key(const QuoteSliceFit &out,
 // repair moved are flagged in out.moved_nodes. Under an installed rung memo
 // (QuoteSurfaceConfig::rung_memo) an unchanged candidate reuses its memoised
 // grid prices (bit-identical to a reprice) and certifies them as below.
+// `grid_kernel` Fast (opt-in, SPY1s Phase 1 arm D) prices the certification grid on
+// AlProfile::Fast (al_fast_profile of the fit's AlOpts); the dated-cash lattice ignores it.
 void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quotes,
                        double repair_half_spreads = 0.0,
-                       const QuoteSliceRepairConfig *channel_repair = nullptr) {
+                       const QuoteSliceRepairConfig *channel_repair = nullptr,
+                       QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate) {
   const counters::fit_timing::BucketScope price_timing(counters::fit_timing::Bucket::Price);
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::certification_passes);
   const QuoteSliceMarket &market = out.market;
@@ -1259,9 +1298,25 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   prices.reserve(strikes.size());
   double q_min = diag.effective_yield;
   double q_max = diag.effective_yield;
+  // The grid's kernel: the fit's own model, or (opt-in) the same scheme on AlProfile::Fast
+  // for the continuous-carry models; keyed into the memo so a Fast grid never answers an
+  // accurate request.
+  const bool fast_grid = grid_kernel == QuoteSliceGridKernel::Fast &&
+                         out.dividend_model != QuoteSliceDividendModel::DatedCash;
+  const std::optional<AlOpts> fast_opts =
+      fast_grid ? std::optional<AlOpts>{al_fast_profile(out.al_opts)} : std::nullopt;
+  const auto grid_price = [&](double strike, Side side, double sigma, double q) {
+    if (!fast_grid) return model_price(out, strike, side, sigma, q);
+    if (!std::isfinite(q)) {
+      return Result<double>{Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow")};
+    }
+    return andersen_lake(market.spot, strike, market.variance_years, sigma, diag.effective_rate, q,
+                         side, fast_opts);
+  };
   detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
   std::vector<std::uint64_t> grid_key;
   if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
+  if (!grid_key.empty()) grid_key.push_back(fast_grid ? 1u : 0u);
   const std::vector<AmericanPriceNode> *const memoised =
       grid_key.empty() ? nullptr : memo->grid(grid_key);
   if (memoised != nullptr) prices = *memoised;
@@ -1276,8 +1331,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       out.fit_error = "American price certification: invalid grid volatility";
       return;
     }
-    const auto call = model_price(out, strike, Side::Call, sigma, q);
-    const auto put = model_price(out, strike, Side::Put, sigma, q);
+    const auto call = grid_price(strike, Side::Call, sigma, q);
+    const auto put = grid_price(strike, Side::Put, sigma, q);
     if (!call || !put) {
       out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
       out.fit_error = "American price certification: grid repricing failed";
@@ -1395,11 +1450,25 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       (c.fit_space != QuoteSliceFitSpace::PriceChannel &&
        c.fit_space != QuoteSliceFitSpace::VolChannel) ||
       (c.deam_profile != QuoteSliceDeamProfile::Accurate &&
-       c.deam_profile != QuoteSliceDeamProfile::Fast) ||
+       c.deam_profile != QuoteSliceDeamProfile::Fast &&
+       c.deam_profile != QuoteSliceDeamProfile::Screen) ||
       (c.deam_inversion != QuoteSliceDeamInversion::Search &&
        c.deam_inversion != QuoteSliceDeamInversion::Premium) ||
       (c.deam_inversion == QuoteSliceDeamInversion::Premium &&
-       c.deam_profile != QuoteSliceDeamProfile::Accurate)) {
+       c.deam_profile == QuoteSliceDeamProfile::Fast) ||
+      // The Screen tier seeds the Premium inversion only (a Search fit on Screen would
+      // serve seed-grade values); the confirm keys act on a Screen seed only.
+      (c.deam_profile == QuoteSliceDeamProfile::Screen &&
+       c.deam_inversion != QuoteSliceDeamInversion::Premium) ||
+      (c.deam_confirm != QuoteSliceDeamConfirm::Always &&
+       c.deam_confirm != QuoteSliceDeamConfirm::Band &&
+       c.deam_confirm != QuoteSliceDeamConfirm::Never) ||
+      (c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate &&
+       c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Fast) ||
+      !positive(c.deam_confirm_k) ||
+      ((c.deam_confirm != QuoteSliceDeamConfirm::Always ||
+        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate) &&
+       c.deam_profile != QuoteSliceDeamProfile::Screen)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -1664,7 +1733,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     return Ok(std::move(out));
   }
   out.curve = std::move(*curve);
-  certify_and_serve(out, quotes, 0.0, &config.repair);
+  certify_and_serve(out, quotes, 0.0, &config.repair, config.grid_kernel);
   return Ok(std::move(out));
 }
 
@@ -1739,7 +1808,8 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   channel_diag.iterations = d.iterations;
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::jacobian_evals,
                               counters::fit_timing::detail::saturate(d.iterations));
-  certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair);
+  certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair,
+                    config.grid_kernel);
   return Ok(std::move(out));
 }
 
