@@ -1943,7 +1943,11 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
   GreekErr e_delta_b, e_gamma_b, e_vega_b, e_theta_b, e_vanna_b, e_volga_b, e_rho_b;
   GreekErr e_delta_r, e_gamma_r, e_vega_r, e_theta_r, e_vanna_r, e_volga_r;
   GreekErr e_rho_y, e_rho_bb, e_phi_y, e_phi_bb, e_rhoB_vs_fam2, e_phiB_vs_fam2;
+  // The served (carry set) rho / phi vs the re-solved bundle, the cold q ± h central
+  // difference and the second-family price difference; the frozen rho vs the bundle.
+  GreekErr e_rhoC_b, e_rhoC_fam2, e_phiC_cold, e_phiC_fam2, e_rhoY_b;
   double refused = 0.0, priced = 0.0, exercised = 0.0, one_sided = 0.0, fam2_failed = 0.0;
+  double carry_failed = 0.0;
   std::vector<double> query_sigma(pts.size(), std::numeric_limits<double>::quiet_NaN());
   for (auto _ : state) {
     for (const auto &[key, idx] : groups) {
@@ -1971,6 +1975,10 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
                          frm.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis);
       const bool fam_q = fqp.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis) &&
                          fqm.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis);
+      // The served rho / phi (L3g resume r4): the carry set of the same family.
+      AlSigmaFamilyCarryBumps carry;
+      const bool have_carry = carry.prepare(fam, Mask{Mask::kRho | Mask::kPhi}).has_value();
+      carry_failed += have_carry ? 0.0 : 1.0;
       const std::vector<double> nodes = family_nodes(box.lo, box.hi, n_sigma, axis);
       for (const std::size_t i : idx) {
         const GridPt &p = pts[i];
@@ -1984,7 +1992,9 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
           }
         }
         query_sigma[i] = sigma;
-        const AlSigmaFamilyGreeks a = family_greeks(fam, p.S, p.K, sigma, Mask::all());
+        const AlSigmaFamilyGreeks a = have_carry
+                                          ? family_greeks(fam, carry, p.S, p.K, sigma, Mask::all())
+                                          : family_greeks(fam, p.S, p.K, sigma, Mask::all());
         if (a.status != AlSigmaFamilyStatus::Ok) {
           refused += 1.0;
           continue;
@@ -2005,7 +2015,7 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
           e_theta_b.add(i, a.theta, b->theta, fp);
           e_vanna_b.add(i, a.vanna, b->vanna, 1.0e-3);
           e_volga_b.add(i, a.volga, b->volga, fp);
-          e_rho_b.add(i, a.rho, b->rho, fp);
+          e_rhoC_b.add(i, a.rho, b->rho, fp); // NaN (skipped) when the carry set refused
         }
         // (ii) Richardson on the cold kernel.
         const ColdRef c = cold_richardson(g, p, sigma);
@@ -2028,8 +2038,10 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
             const double rho2 = (up.price - dn.price) / (2.0 * hr);
             e_rho_y.add(i, rv.rho_frozen_y, rho2, fp);
             e_rho_bb.add(i, rv.rho_frozen_b, rho2, fp);
+            e_rhoC_fam2.add(i, a.rho, rho2, fp);
             if (b.has_value()) {
               e_rhoB_vs_fam2.add(i, b->rho, rho2, fp);
+              e_rhoY_b.add(i, rv.rho_frozen_y, b->rho, fp);
             }
           } else {
             fam2_failed += 1.0;
@@ -2044,11 +2056,13 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
             const double phi2 = (up.price - dn.price) / (2.0 * hr);
             e_phi_y.add(i, rv.phi_frozen_y, phi2, fp);
             e_phi_bb.add(i, rv.phi_frozen_b, phi2, fp);
+            e_phiC_fam2.add(i, a.phi, phi2, fp);
             // The cold q ± h central difference (what a carry bundle would re-solve).
             const Result<double> cu = andersen_lake(gqp, p.S, p.K, sigma, p.side);
             const Result<double> cd = andersen_lake(gqm, p.S, p.K, sigma, p.side);
             if (cu.has_value() && cd.has_value()) {
               e_phiB_vs_fam2.add(i, (*cu - *cd) / (2.0 * hr), phi2, fp);
+              e_phiC_cold.add(i, a.phi, (*cu - *cd) / (2.0 * hr), fp);
             }
           } else {
             fam2_failed += 1.0;
@@ -2065,13 +2079,18 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
   state.counters["exercised"] = exercised;
   state.counters["one_sided_ref"] = one_sided;
   state.counters["fam2_failed"] = fam2_failed;
+  state.counters["carry_failed"] = carry_failed;
   e_delta_b.publish(state, "delta_vs_bundle");
   e_gamma_b.publish(state, "gamma_vs_bundle");
   e_vega_b.publish(state, "vega_vs_bundle");
   e_theta_b.publish(state, "theta_vs_bundle");
   e_vanna_b.publish(state, "vanna_vs_bundle");
   e_volga_b.publish(state, "volga_vs_bundle");
-  e_rho_b.publish(state, "rhoY_vs_bundle");
+  e_rhoC_b.publish(state, "rhoC_vs_bundle");
+  e_rhoY_b.publish(state, "rhoY_vs_bundle");
+  e_rhoC_fam2.publish(state, "rhoC_vs_fam2");
+  e_phiC_cold.publish(state, "phiC_vs_cold");
+  e_phiC_fam2.publish(state, "phiC_vs_fam2");
   e_delta_r.publish(state, "delta_vs_rich");
   e_gamma_r.publish(state, "gamma_vs_rich");
   e_vega_r.publish(state, "vega_vs_rich");
@@ -2104,7 +2123,11 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
   describe("theta_vs_bundle", e_theta_b);
   describe("vanna_vs_bundle", e_vanna_b);
   describe("volga_vs_bundle", e_volga_b);
-  describe("rhoY_vs_bundle", e_rho_b);
+  describe("rhoC_vs_bundle", e_rhoC_b);
+  describe("rhoY_vs_bundle", e_rhoY_b);
+  describe("rhoC_vs_fam2", e_rhoC_fam2);
+  describe("phiC_vs_cold", e_phiC_cold);
+  describe("phiC_vs_fam2", e_phiC_fam2);
   describe("delta_vs_rich", e_delta_r);
   describe("gamma_vs_rich", e_gamma_r);
   describe("vega_vs_rich", e_vega_r);
@@ -2147,10 +2170,14 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
                     : row == GreeksRow::All   ? Mask::all()
                                               : Mask::price_only();
   std::vector<double> us;
+  std::vector<double> carry_ms; // L3g r4: the carry set's build per (S, T, r, q, side)
+  const bool with_carry = mask.has(Mask::kRho) || mask.has(Mask::kPhi);
   double sink = 0.0;
   double refused = 0.0;
+  double carry_refused = 0.0;
   for (auto _ : state) {
     us.clear();
+    carry_ms.clear();
     double total_us = 0.0;
     for (const auto &[key, idx] : groups) {
       const FamilyBox box =
@@ -2161,6 +2188,14 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
       if (!fam.prepare(box.lo, box.hi, 12, AlSigmaFamilyAxis::LogSigma)) {
         refused += static_cast<double>(idx.size());
         continue;
+      }
+      AlSigmaFamilyCarryBumps carry;
+      if (with_carry) {
+        const auto c0 = std::chrono::steady_clock::now();
+        const bool ok = carry.prepare(fam, mask).has_value();
+        const auto c1 = std::chrono::steady_clock::now();
+        carry_ms.push_back(std::chrono::duration<double, std::milli>(c1 - c0).count());
+        carry_refused += ok ? 0.0 : static_cast<double>(idx.size());
       }
       for (const std::size_t i : idx) {
         const GridPt &p = pts[i];
@@ -2173,6 +2208,10 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
           const AlSigmaFamilyChord c = fam.price_and_chord(p.S, p.K, p.sigma);
           sink += c.price_sigma_bumped;
           refused += c.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+        } else if (with_carry) {
+          const AlSigmaFamilyGreeks a = family_greeks(fam, carry, p.S, p.K, p.sigma, mask);
+          sink += a.price + a.delta + a.rho;
+          refused += a.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
         } else {
           const AlSigmaFamilyGreeks a = family_greeks(fam, p.S, p.K, p.sigma, mask);
           sink += a.price + a.delta;
@@ -2198,6 +2237,16 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
   state.counters["p90_us"] = sorted_quantile(us, 0.90);
   state.counters["p99_us"] = sorted_quantile(us, 0.99);
   state.counters["mean_us"] = us.empty() ? 0.0 : mean / static_cast<double>(us.size());
+  if (with_carry) {
+    double cm = 0.0;
+    for (const double v : carry_ms) {
+      cm += v;
+    }
+    state.counters["carry_sets"] = static_cast<double>(carry_ms.size());
+    state.counters["carry_build_mean_ms"] =
+        carry_ms.empty() ? 0.0 : cm / static_cast<double>(carry_ms.size());
+    state.counters["carry_refused_rows"] = carry_refused;
+  }
 }
 
 // The reference bundles' µs on the same contracts: american_greeks_al(g, …) accurate /
@@ -2366,12 +2415,28 @@ void run_family_chain(benchmark::State &state, bool spy, GreeksRow row) {
                     : row == GreeksRow::Eight ? Mask::eight()
                     : row == GreeksRow::All   ? Mask::all()
                                               : Mask::price_only();
+  // rho / phi rows ride the carry sets of both families (built outside the timed call;
+  // their build is reported beside it).
+  const bool with_carry = mask.has(Mask::kRho) || mask.has(Mask::kPhi);
+  AlSigmaFamilyCarryBumps put_carry, call_carry;
+  double carry_build_ms = 0.0;
+  if (with_carry) {
+    const auto c0 = std::chrono::steady_clock::now();
+    const bool pc = put_ok && put_carry.prepare(put, mask).has_value();
+    const bool cc = call_ok && call_carry.prepare(call, mask).has_value();
+    const auto c1 = std::chrono::steady_clock::now();
+    carry_build_ms = std::chrono::duration<double, std::milli>(c1 - c0).count();
+    state.counters["put_carry"] = pc ? 1.0 : 0.0;
+    state.counters["call_carry"] = cc ? 1.0 : 0.0;
+  }
   ChainColumns cols(c.K.size());
   double refused = 0.0;
   for (auto _ : state) {
     const auto t0 = std::chrono::steady_clock::now();
-    const Status st = family_chain_greeks(put_ok ? &put : nullptr, call_ok ? &call : nullptr, c.S,
-                                          c.K, c.sigma, c.side, mask, cols.view(), cols.status);
+    const Status st = family_chain_greeks(
+        put_ok ? &put : nullptr, call_ok ? &call : nullptr, c.S, c.K, c.sigma, c.side, mask,
+        cols.view(), cols.status, with_carry && put_carry.prepared() ? &put_carry : nullptr,
+        with_carry && call_carry.prepared() ? &call_carry : nullptr);
     const auto t1 = std::chrono::steady_clock::now();
     benchmark::DoNotOptimize(cols.price.data());
     if (!st.has_value()) {
@@ -2388,6 +2453,14 @@ void run_family_chain(benchmark::State &state, bool spy, GreeksRow row) {
   state.counters["refused"] = refused;
   state.counters["put_family"] = put_ok ? 1.0 : 0.0;
   state.counters["call_family"] = call_ok ? 1.0 : 0.0;
+  if (with_carry) {
+    std::size_t carry_refused = 0;
+    for (const std::uint8_t f : cols.flags) {
+      carry_refused += (f & 8u) != 0 ? 1u : 0u;
+    }
+    state.counters["carry_build_ms_both_sides"] = carry_build_ms;
+    state.counters["rho_phi_refused_rows"] = static_cast<double>(carry_refused);
+  }
 }
 
 void run_family_shock(benchmark::State &state, bool chain) {
