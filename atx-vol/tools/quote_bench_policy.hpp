@@ -528,27 +528,56 @@ inline Json profile_json_with_options(const QuoteFitProfile &profile, bool grade
   return out;
 }
 
-// Opt-in vol-space channel (graded fit_space / deam_profile / deam_cache;
-// quote_slice.hpp QuoteSliceFitSpace), applied to every profile like the repair.
+// Vol-space channel controls (graded fit_space / deam_profile / deam_cache / deam_inversion /
+// confirm / confirm_k / confirm_kernel / grid_kernel; quote_slice.hpp QuoteSliceFitSpace),
+// applied to every profile like the repair. The member defaults are the library's historical
+// path: a static (non-graded) policy keeps them; a graded policy starts from
+// graded_default_fit_space() instead.
 struct FitSpaceOptions {
   QuoteSliceFitSpace fit_space = QuoteSliceFitSpace::PriceChannel;
   QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
   bool deam_cache = false;
-  QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // opt-in (L2e)
-  // Opt-in seed-tier confirm policy / kernel and certification-grid kernel (SPY1s P1).
+  QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // L2e
+  // Seed-tier confirm policy / kernel and certification-grid kernel (SPY1s P1).
   QuoteSliceDeamConfirm confirm = QuoteSliceDeamConfirm::Always;
   double confirm_k = 10.0;
   QuoteSliceDeamConfirmKernel confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate;
 };
 
-inline FitSpaceOptions parse_fit_space(const Json &graded) {
+// The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
+// vol-space channel on the per-thread de-Am IV cache (L2a), Premium inversion (L2e) seeded on
+// AlProfile::Screen with bound-decided band edges, every accepted root confirmed by one
+// AlProfile::Fast solve (confirm always), the Fast certification grid, and the per-expiry
+// rung memo (L2c; kGradedDefaultRungMemo, QuoteSurfaceConfig::rung_memo). Each key still opts
+// out on its own (parse_fit_space): fit_space price (every vol-space control then takes the
+// library value), deam_inversion search (deam_profile then defaults to accurate), deam_profile
+// fast (deam_inversion then defaults to search), confirm band / never, confirm_kernel
+// reference, grid_kernel reference, rung_memo false. {fit_space price, grid_kernel reference,
+// rung_memo false} is the pre-R3 graded path byte for byte (the kill switch).
+[[nodiscard]] inline FitSpaceOptions graded_default_fit_space() {
   FitSpaceOptions out;
+  out.fit_space = QuoteSliceFitSpace::VolChannel;
+  out.deam_profile = QuoteSliceDeamProfile::Screen;
+  out.deam_cache = true;
+  out.deam_inversion = QuoteSliceDeamInversion::Premium;
+  out.confirm = QuoteSliceDeamConfirm::Always;
+  out.confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
+  out.grid_kernel = QuoteSliceGridKernel::Fast;
+  return out;
+}
+inline constexpr bool kGradedDefaultRungMemo = true;
+
+// The graded keys over graded_default_fit_space(). Throws std::runtime_error on an unknown
+// value, a vol-space key under fit_space price, or a combination the library refuses.
+[[nodiscard]] inline FitSpaceOptions parse_fit_space(const Json &graded) {
+  FitSpaceOptions out = graded_default_fit_space();
+  const FitSpaceOptions library{};
   if (graded.contains("fit_space")) {
     const auto name = text(graded.at("fit_space"));
-    if (name == "vol") {
-      out.fit_space = QuoteSliceFitSpace::VolChannel;
-    } else if (name != "price") {
+    if (name == "price") {
+      out.fit_space = QuoteSliceFitSpace::PriceChannel;
+    } else if (name != "vol") {
       throw std::runtime_error("Policy graded fit_space must be price or vol");
     }
   }
@@ -557,13 +586,22 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
       out.fit_space != QuoteSliceFitSpace::VolChannel) {
     throw std::runtime_error("Policy graded deam_profile and deam_cache require fit_space vol");
   }
+  // The price channel ignores every vol-space control; carry the library values so that the
+  // profile config (and the policy provenance) is the historical one exactly.
+  if (out.fit_space != QuoteSliceFitSpace::VolChannel) {
+    out.deam_profile = library.deam_profile;
+    out.deam_cache = library.deam_cache;
+    out.deam_inversion = library.deam_inversion;
+  }
   if (graded.contains("deam_profile")) {
     const auto name = text(graded.at("deam_profile"));
-    if (name == "fast") {
+    if (name == "accurate") {
+      out.deam_profile = QuoteSliceDeamProfile::Accurate;
+    } else if (name == "fast") {
       out.deam_profile = QuoteSliceDeamProfile::Fast;
     } else if (name == "screen") {
       out.deam_profile = QuoteSliceDeamProfile::Screen;
-    } else if (name != "accurate") {
+    } else {
       throw std::runtime_error("Policy graded deam_profile must be accurate, fast or screen");
     }
   }
@@ -573,8 +611,8 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
     }
     out.deam_cache = graded.at("deam_cache").get<bool>();
   }
-  // Opt-in Premium inversion of the cache (quote_slice.hpp QuoteSliceDeamInversion):
-  // inert under the price channel and undefined on the Fast kernel, so refused there.
+  // Premium inversion of the cache (quote_slice.hpp QuoteSliceDeamInversion): inert under
+  // the price channel and undefined on the Fast kernel, so refused there.
   if (graded.contains("deam_inversion")) {
     if (out.fit_space != QuoteSliceFitSpace::VolChannel) {
       throw std::runtime_error("Policy graded deam_inversion requires fit_space vol");
@@ -582,7 +620,9 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
     const auto name = text(graded.at("deam_inversion"));
     if (name == "premium") {
       out.deam_inversion = QuoteSliceDeamInversion::Premium;
-    } else if (name != "search") {
+    } else if (name == "search") {
+      out.deam_inversion = QuoteSliceDeamInversion::Search;
+    } else {
       throw std::runtime_error("Policy graded deam_inversion must be search or premium");
     }
     if (out.deam_inversion == QuoteSliceDeamInversion::Premium &&
@@ -591,26 +631,43 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
                                "accurate or screen");
     }
   }
+  // An explicit choice resolves its partner's default: Premium is undefined on the Fast
+  // kernel (deam_profile fast alone means Search), and the Screen seed tier exists only
+  // inside Premium (deam_inversion search alone means the accurate kernel).
+  if (!graded.contains("deam_inversion") && out.deam_profile == QuoteSliceDeamProfile::Fast) {
+    out.deam_inversion = QuoteSliceDeamInversion::Search;
+  }
+  if (!graded.contains("deam_profile") && out.deam_inversion == QuoteSliceDeamInversion::Search) {
+    out.deam_profile = QuoteSliceDeamProfile::Accurate;
+  }
   // The Screen seed tier exists only inside the Premium inversion (quote_slice.hpp
   // QuoteSliceDeamProfile::Screen): a Search fit on Screen would serve seed-grade values.
   if (out.deam_profile == QuoteSliceDeamProfile::Screen &&
       out.deam_inversion != QuoteSliceDeamInversion::Premium) {
     throw std::runtime_error("Policy graded deam_profile screen requires deam_inversion premium");
   }
-  // Opt-in confirm policy / kernel of a Screen-seeded root (quote_slice.hpp deam_confirm,
-  // deam_confirm_k, deam_confirm_kernel): inert without a seed tier, so refused there.
+  // Confirm policy / kernel of a Screen-seeded root (quote_slice.hpp deam_confirm,
+  // deam_confirm_k, deam_confirm_kernel): inert without a seed tier, so refused there; the
+  // library refuses any non-library value off Screen, so those take the library values.
   if ((graded.contains("confirm") || graded.contains("confirm_k") ||
        graded.contains("confirm_kernel")) &&
       out.deam_profile != QuoteSliceDeamProfile::Screen) {
     throw std::runtime_error("Policy graded confirm keys require deam_profile screen");
   }
+  if (out.deam_profile != QuoteSliceDeamProfile::Screen) {
+    out.confirm = library.confirm;
+    out.confirm_k = library.confirm_k;
+    out.confirm_kernel = library.confirm_kernel;
+  }
   if (graded.contains("confirm")) {
     const auto name = text(graded.at("confirm"));
-    if (name == "band") {
+    if (name == "always") {
+      out.confirm = QuoteSliceDeamConfirm::Always;
+    } else if (name == "band") {
       out.confirm = QuoteSliceDeamConfirm::Band;
     } else if (name == "never") {
       out.confirm = QuoteSliceDeamConfirm::Never;
-    } else if (name != "always") {
+    } else {
       throw std::runtime_error("Policy graded confirm must be always, band or never");
     }
   }
@@ -627,25 +684,31 @@ inline FitSpaceOptions parse_fit_space(const Json &graded) {
     const auto name = text(graded.at("confirm_kernel"));
     if (name == "fast") {
       out.confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
-    } else if (name != "reference") {
+    } else if (name == "reference") {
+      out.confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
+    } else {
       throw std::runtime_error("Policy graded confirm_kernel must be reference or fast");
     }
   }
-  // Opt-in certification-grid kernel (quote_slice.hpp QuoteSliceGridKernel): independent
-  // of the cache keys (it acts on the served reprice of every graded profile).
+  // Certification-grid kernel (quote_slice.hpp QuoteSliceGridKernel): independent of the
+  // cache keys (it acts on the served reprice of every graded profile).
   if (graded.contains("grid_kernel")) {
     const auto name = text(graded.at("grid_kernel"));
     if (name == "fast") {
       out.grid_kernel = QuoteSliceGridKernel::Fast;
-    } else if (name != "reference") {
+    } else if (name == "reference") {
+      out.grid_kernel = QuoteSliceGridKernel::Accurate;
+    } else {
       throw std::runtime_error("Policy graded grid_kernel must be reference or fast");
     }
   }
   return out;
 }
 
-// Opt-in graded keys (channel repair, channel dominance, vol-space channel) are
-// provenance only when set, so every pre-existing graded definition is unchanged.
+// Opt-in graded keys (channel repair, channel dominance) and every vol-space / grid / memo
+// control that differs from the historical path are provenance only when set, so the
+// kill-switch definition {fit_space price, grid_kernel reference, rung_memo false} prints
+// the pre-R3 graded definition unchanged.
 inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConfig &repair,
                          const FitSpaceOptions &space = {}) {
   Json out{{"term_prior_weight", s.term_prior_weight},
@@ -831,8 +894,10 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     }
   }
   QuoteSurfaceConfig surface;
+  surface.rung_memo = graded && kGradedDefaultRungMemo; // R3 graded default
   QuoteSliceRepairConfig repair; // graded only; applied to every profile
-  FitSpaceOptions space;         // graded only; applied to every profile
+  // Applied to every profile: the library values for a static policy, R3's for a graded one.
+  FitSpaceOptions space = graded ? graded_default_fit_space() : FitSpaceOptions{};
   if (document.contains("graded")) {
     if (!graded) throw std::runtime_error("Policy graded options require admission graded");
     const auto &j = document.at("graded");
@@ -844,8 +909,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel"});
     space = parse_fit_space(j);
-    // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
-    // exact-keyed reuse across an expiry's rungs, speed only.
+    // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
+    // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
     if (j.contains("rung_memo")) {
       if (!j.at("rung_memo").is_boolean()) {
         throw std::runtime_error("Policy graded rung_memo must be true or false");

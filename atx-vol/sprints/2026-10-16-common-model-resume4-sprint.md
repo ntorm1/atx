@@ -197,6 +197,41 @@ at any `fit_workers` MET; **SPY single-thread = 15.0 s, all cores = 3.35 s: unus
 sub-table (research §7.2) added under §1.1; the research report copied to `atx-vol/research/`. No default moved, no
 holdout touched, nothing pushed.
 
+**R3 default promotion (integrate-W2c-a, 2026-10-21, PM ruling R3).** Every graded policy now defaults to the SPY1s
+Phase 1 arm D key set (`tools/quote_bench_policy.hpp` `graded_default_fit_space()` + `kGradedDefaultRungMemo`):
+`fit_space vol`, `deam_profile screen`, `deam_cache true`, `deam_inversion premium`, `confirm always` (`confirm_k` 10),
+`confirm_kernel fast`, `grid_kernel fast`, `rung_memo true`. The library struct defaults and every static policy are
+unchanged; the band gate (`confirm band`), ladder-strict and the box certificate stay opt-in. Kill switch:
+`{"fit_space": "price", "grid_kernel": "reference", "rung_memo": false}` reproduces the pre-R3 graded path byte for
+byte. Evidence gate (new default vs the W2b default CSVs; `C:/atx-cache/quote-benchmark/integrate-W2c-a-20261021-parity/score/`):
+PASS on dev200 / dev200b / cohort5 — served sets and status counts identical, 0 served violations, containment −1 / −1 /
+0 rows (one-sided, bid 0, float32 ask edge, |Δprice| 2.4e-8 / 8.4e-8 USD), MAE and MAE/spread within 1.2e-6 relative,
+every served root ≤ 2.3e-10 vol from the accurate root where the old Search answers sat up to 1.75e-3. Expected hashes
+from now on (exact commands: `quote_benchmark.py run --dataset <cohort> --binary <bin> --output <csv> --model quote-slice
+--policy <policy> --dividends funding-pv -- --report <json>` at `ATX_VOL_FIT_WORKERS=3`, the integrate-W2b
+`run_parity.ps1` rows; SPY: `atx-vol-quote-bench --input quotes-SPY.csv --model quote-slice --policy graded-v1.json
+--dividends funding-pv --timing-detail`):
+
+| Output | Expected sha256 after R3 | Before R3 (= the kill switch now) |
+| --- | --- | --- |
+| graded-v1 dev200 | `2bc7777df4448c7f1818d10571859074646d51e12cab4731471947cdd75738f6` | `fc277413` |
+| graded-v1 dev200b | `ed34eef7b51d4735748e5534a651569ff69026e07c1655cbb7b2fa6dad1264f2` | `46ad6c26` |
+| graded-v1 cohort5 | `45e491ea311b352ec107658809429ca2583b5bfbdf2215f9c224b86f7fbc1581` | `171fa2d2` |
+| graded-v1 SPY (direct, `fit_workers` 1 and 0) | `feac8d2c41a63ff8687e5e991d4026eeecccdf6e88418edcc874c8fc2ca8425b` | `087e6a54` |
+| repair-dominance-v3 cohort5 / dev200 / dev200b | `c6ea5360` / `81572d79` / `09c8e212` | `a714e814` / `b11971e7` / `b0451d61` |
+| knot-ladder v2 point cohort5 / dev200 / dev200b | `1fab44fd` / `0657a828` / `1a274084` | `232d2c0d` / `6ebd63c5` / `d53d2a0d` |
+| knot-ladder v2 strict cohort5 / dev200 / dev200b | `333826fb` / `025e69c5` / `93d6543b` | `21f4ee58` / `858d6512` / `c5ab9121` |
+| unchanged (static): dev200 / dev200b auto, divsched, divsmooth, R104 | `c89d0739` / `4b273b08`, `abc75955` / `747d3e6c`, `2cfda793` / `5a9c1f5f`, `6b129f64` | same |
+
+The graded-v1 rows equal the owner's arm D hashes (`SPY1s-20261020-phase1/runs.log`). The opt-in graded families move
+with the defaults: repair-dominance-v3 and the ladders keep their served sets except ONE dev200 chain (rows 4769480-4769592,
+4 strikes, a channel refit whose outside share goes 0 -> 0.2): ladder-strict refuses it (`outside_market`, −8 of 54,762
+rows), ladder-point serves it calendar-repaired (2 rows each on it and on its calendar neighbour move, max 0.105 USD);
+outside that chain containment loses 1-2 rows per dev cohort, each on a float32 ask edge with |Δprice| ≤ 8.4e-8 USD
+(one of them two-sided: dev200b row 8340964 under both ladders, 2.6e-8); MAE / MAE-spread never higher by more than
+1.1e-5 relative; 0 served violations
+in every family; full tables in `score/rebaseline/`.
+
 Pending: knot-first ladder (inherits the AAPL Nov 20 / SPY 23 d calendar slot holders from slice-repair).
 
 ## Resume 5 wave 1 complete

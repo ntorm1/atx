@@ -510,14 +510,31 @@ def write_policy(path: Path, document: dict) -> Path:
     return path
 
 
-def test_native_graded_admission_adds_grades_without_changing_point_prices(binary, tmp_path):
+# PM ruling R3 (integrate-W2c-a, 2026-10-21): graded admission defaults to SPY1s Phase 1
+# arm D. ARM_D_GRADED spells that default out key by key; HISTORICAL_GRADED (the kill switch)
+# restores the pre-R3 graded path byte for byte.
+ARM_D_GRADED = {"fit_space": "vol", "deam_profile": "screen", "deam_cache": True,
+                "deam_inversion": "premium", "confirm": "always", "confirm_k": 10.0,
+                "confirm_kernel": "fast", "grid_kernel": "fast", "rung_memo": True}
+HISTORICAL_GRADED = {"fit_space": "price", "grid_kernel": "reference", "rung_memo": False}
+# A served price of the arm D default sits within the price image of the inversion
+# tolerance (2 x 1e-7 vol x vega <= 1e-5 USD here) of the historical one (Premium vs Search
+# roots, AlProfile::Fast confirm and grid at 1e-12 relative).
+ARM_D_PRICE_TOLERANCE = 1.0e-5
+
+
+@pytest.mark.parametrize("graded_keys", [None, HISTORICAL_GRADED], ids=["default", "historical"])
+def test_native_graded_admission_adds_grades_without_changing_point_prices(binary, tmp_path,
+                                                                           graded_keys):
     source = tmp_path / "quotes.csv"
     make_quotes(source)
     static_output, graded_output = tmp_path / "static.csv", tmp_path / "graded.csv"
     static = invoke(binary, source, static_output)
     assert static.returncode == 0, static.stderr
-    policy = write_policy(tmp_path / "graded.json",
-                          {"schema_version": 1, "admission": "graded"})
+    document = {"schema_version": 1, "admission": "graded"}
+    if graded_keys is not None:
+        document["graded"] = graded_keys
+    policy = write_policy(tmp_path / "graded.json", document)
     graded = invoke(binary, source, graded_output, "--policy", str(policy))
     assert graded.returncode == 0, graded.stderr
     with static_output.open(newline="") as stream:
@@ -532,8 +549,14 @@ def test_native_graded_admission_adds_grades_without_changing_point_prices(binar
     assert all(row["status"] == "ok" for row in static_rows)
     for before, after in zip(static_rows, graded_rows):
         if before["status"] == "ok":
-            # A point-fitted expiry is served unchanged and graded A.
-            assert after["predicted_price"] == before["predicted_price"]
+            # A point-fitted expiry is served unchanged (historical: byte for byte; the
+            # arm D default: within its documented price tolerance) and graded A.
+            if graded_keys is None:
+                assert after["status"] == "ok"
+                assert abs(float(after["predicted_price"]) - float(before["predicted_price"])) \
+                    <= ARM_D_PRICE_TOLERANCE
+            else:
+                assert after["predicted_price"] == before["predicted_price"]
             assert after["grade"] == "A"
         if after["status"] == "ok":
             assert after["grade"] in {"A", "B", "C"}
@@ -574,14 +597,18 @@ def make_wide_snapshot(path: Path, expiries: int) -> None:
                 row += 1
 
 
-def test_native_graded_snapshot_above_expiry_cap_falls_back_to_static(binary, tmp_path):
+@pytest.mark.parametrize("graded_keys", [None, HISTORICAL_GRADED], ids=["default", "historical"])
+def test_native_graded_snapshot_above_expiry_cap_falls_back_to_static(binary, tmp_path,
+                                                                      graded_keys):
     source = tmp_path / "quotes.csv"
     make_wide_snapshot(source, 129)  # kQuoteSurfaceMaxExpiries is 128
     static_output, graded_output = tmp_path / "static.csv", tmp_path / "graded.csv"
     static = invoke(binary, source, static_output)
     assert static.returncode == 0, static.stderr
-    policy = write_policy(tmp_path / "graded.json",
-                          {"schema_version": 1, "admission": "graded"})
+    document = {"schema_version": 1, "admission": "graded"}
+    if graded_keys is not None:
+        document["graded"] = graded_keys
+    policy = write_policy(tmp_path / "graded.json", document)
     graded = invoke(binary, source, graded_output, "--policy", str(policy))
     assert graded.returncode == 0, graded.stderr
     with static_output.open(newline="") as stream:
@@ -592,7 +619,12 @@ def test_native_graded_snapshot_above_expiry_cap_falls_back_to_static(binary, tm
     assert len(served) > 0.9 * len(static_rows)
     for before, after in zip(static_rows, graded_rows):
         assert after["status"] == before["status"]
-        assert after["predicted_price"] == before["predicted_price"]
+        if graded_keys is None and before["status"] == "ok":
+            # The static fallback runs the graded profiles' arm D controls.
+            assert abs(float(after["predicted_price"]) - float(before["predicted_price"])) \
+                <= ARM_D_PRICE_TOLERANCE
+        else:
+            assert after["predicted_price"] == before["predicted_price"]
         assert after["grade"] == ("A" if before["status"] == "ok" else "")
     report = json.loads(graded.stdout)
     assert report["graded_stats"]["static_fallback"] == {"snapshots": 1, "chains": 129}
@@ -709,7 +741,8 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             # Opt-in per-quote de-Am IV cache keys (lane L2a).
             ({"schema_version": 1, "admission": "graded", "graded": {"fit_space": "variance"}},
              "fit_space must be price or vol"),
-            ({"schema_version": 1, "admission": "graded", "graded": {"deam_cache": True}},
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "price", "deam_cache": True}},
              "require fit_space vol"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "price", "deam_profile": "fast"}},
@@ -727,7 +760,7 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "require admission graded"),
             # Opt-in Premium inversion of the cache (lane L2e).
             ({"schema_version": 1, "admission": "graded",
-              "graded": {"deam_inversion": "premium"}},
+              "graded": {"fit_space": "price", "deam_inversion": "premium"}},
              "deam_inversion requires fit_space vol"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_inversion": "newton"}},
@@ -738,8 +771,17 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "deam_inversion premium requires deam_profile accurate or screen"),
             # Screen seed tier, confirm policy / kernel, grid kernel (SPY1s Phase 1).
             ({"schema_version": 1, "admission": "graded",
-              "graded": {"fit_space": "vol", "deam_profile": "screen"}},
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "search"}},
              "deam_profile screen requires deam_inversion premium"),
+            # The R3 default's opt-outs resolve the partner keys: off the Screen seed tier
+            # (price channel, or Search implying the accurate kernel) the confirm keys are inert.
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "price", "confirm_kernel": "fast"}},
+             "confirm keys require deam_profile screen"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"deam_inversion": "search", "confirm": "band"}},
+             "confirm keys require deam_profile screen"),
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "accurate",
                          "deam_inversion": "premium", "confirm": "band"}},
@@ -814,18 +856,20 @@ def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
 
 
 def test_native_accurate_iv_cache_is_byte_identical_and_opt_in(binary, tmp_path):
-    # The accurate-kernel cache serves exactly the price-channel predictions;
-    # only the opt-in provenance is added to the report.
+    # The accurate-kernel Search cache (L2a) serves exactly the historical price-channel
+    # predictions (the R3 kill switch); only its provenance is added to the report.
     source = tmp_path / "quotes.csv"
     make_quotes(source)
     plain_output, cached_output = tmp_path / "plain.csv", tmp_path / "cached.csv"
-    plain_policy = write_policy(tmp_path / "plain.json",
-                                {"schema_version": 1, "admission": "graded"})
+    plain_policy = write_policy(tmp_path / "plain.json", {
+        "schema_version": 1, "admission": "graded", "graded": HISTORICAL_GRADED})
     plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
     assert plain.returncode == 0, plain.stderr
     cached_policy = write_policy(tmp_path / "cached.json", {
         "schema_version": 1, "admission": "graded",
-        "graded": {"fit_space": "vol", "deam_profile": "accurate", "deam_cache": True}})
+        "graded": {"fit_space": "vol", "deam_profile": "accurate", "deam_cache": True,
+                   "deam_inversion": "search", "grid_kernel": "reference",
+                   "rung_memo": False}})
     cached = invoke(binary, source, cached_output, "--policy", str(cached_policy))
     assert cached.returncode == 0, cached.stderr
     assert cached_output.read_bytes() == plain_output.read_bytes()
@@ -833,8 +877,8 @@ def test_native_accurate_iv_cache_is_byte_identical_and_opt_in(binary, tmp_path)
     assert (graded["fit_space"], graded["deam_profile"], graded["deam_cache"]) == (
         "vol", "accurate", True)
     plain_graded = json.loads(plain.stdout)["policy_definition"]["graded"]
-    assert not {"fit_space", "deam_profile", "deam_cache"} & set(plain_graded)
-    assert "deam_inversion" not in graded
+    assert not set(ARM_D_GRADED) & set(plain_graded)
+    assert not {"deam_inversion", "confirm", "grid_kernel", "rung_memo"} & set(graded)
 
 
 def test_native_premium_inversion_is_opt_in_with_audit_counters(binary, tmp_path):
@@ -873,26 +917,70 @@ def test_native_premium_inversion_is_opt_in_with_audit_counters(binary, tmp_path
 
 def test_native_rung_memo_is_byte_identical_and_opt_in(binary, tmp_path):
     # The per-expiry rung memo (lane L2c) is exact-keyed reuse: with and without the
-    # vol-space cache it serves exactly the plain graded predictions; only the opt-in
-    # provenance is added to the report.
+    # accurate vol-space cache it serves exactly the historical graded predictions, and
+    # under the R3 default (memo on) exactly the default's predictions with the memo off;
+    # only the memo's provenance differs in the report.
     source = tmp_path / "quotes.csv"
     make_quotes(source)
-    plain_output = tmp_path / "plain.csv"
-    plain_policy = write_policy(tmp_path / "plain.json",
-                                {"schema_version": 1, "admission": "graded"})
-    plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
-    assert plain.returncode == 0, plain.stderr
-    for name, graded_keys in (
-            ("memo", {"rung_memo": True}),
-            ("memo-vol", {"fit_space": "vol", "deam_cache": True, "rung_memo": True})):
+    reference = {}
+    for name, graded_keys in (("historical", HISTORICAL_GRADED),
+                              ("default-off", {"rung_memo": False})):
+        reference[name] = tmp_path / f"{name}.csv"
+        policy = write_policy(tmp_path / f"{name}.json", {
+            "schema_version": 1, "admission": "graded", "graded": graded_keys})
+        plain = invoke(binary, source, reference[name], "--policy", str(policy))
+        assert plain.returncode == 0, plain.stderr
+        assert "rung_memo" not in json.loads(plain.stdout)["policy_definition"]["graded"]
+    for name, base, graded_keys in (
+            ("memo", "historical", {**HISTORICAL_GRADED, "rung_memo": True}),
+            ("memo-vol", "historical", {"fit_space": "vol", "deam_profile": "accurate",
+                                        "deam_cache": True, "deam_inversion": "search",
+                                        "grid_kernel": "reference", "rung_memo": True}),
+            ("memo-default", "default-off", {})):
         output = tmp_path / f"{name}.csv"
         policy = write_policy(tmp_path / f"{name}.json", {
             "schema_version": 1, "admission": "graded", "graded": graded_keys})
         keyed = invoke(binary, source, output, "--policy", str(policy))
         assert keyed.returncode == 0, keyed.stderr
-        assert output.read_bytes() == plain_output.read_bytes(), name
+        assert output.read_bytes() == reference[base].read_bytes(), name
         assert json.loads(keyed.stdout)["policy_definition"]["graded"]["rung_memo"] is True
-    assert "rung_memo" not in json.loads(plain.stdout)["policy_definition"]["graded"]
+
+
+def test_native_graded_default_is_arm_d_and_the_kill_switch_restores_the_historical_path(
+        binary, tmp_path):
+    # PM ruling R3: a graded policy without vol-space keys runs SPY1s Phase 1 arm D (its
+    # explicit policy is byte-identical and prints the same definition); HISTORICAL_GRADED
+    # prints the pre-R3 definition (no vol-space, grid or memo key) and serves the same rows
+    # as the default within the documented price tolerance; a static policy is untouched.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    runs = {}
+    for name, document in (
+            ("default", {"schema_version": 1, "admission": "graded"}),
+            ("arm-d", {"schema_version": 1, "admission": "graded", "graded": ARM_D_GRADED}),
+            ("historical", {"schema_version": 1, "admission": "graded",
+                            "graded": HISTORICAL_GRADED}),
+            ("static", {"schema_version": 1})):
+        output = tmp_path / f"{name}.csv"
+        result = invoke(binary, source, output, "--policy",
+                        str(write_policy(tmp_path / f"{name}.json", document)))
+        assert result.returncode == 0, result.stderr
+        with output.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        runs[name] = (output.read_bytes(), json.loads(result.stdout), rows)
+    default = runs["default"][1]["policy_definition"]["graded"]
+    for key, value in ARM_D_GRADED.items():
+        assert default[key] == value, key
+    assert runs["arm-d"][0] == runs["default"][0]
+    assert runs["arm-d"][1]["policy_definition"] == runs["default"][1]["policy_definition"]
+    assert not set(ARM_D_GRADED) & set(runs["historical"][1]["policy_definition"]["graded"])
+    assert "graded" not in runs["static"][1]["policy_definition"]
+    for on, off in zip(runs["default"][2], runs["historical"][2]):
+        assert (on["row_id"], on["status"], on["grade"]) == (off["row_id"], off["status"],
+                                                            off["grade"])
+        if on["status"] == "ok":
+            assert abs(float(on["predicted_price"]) - float(off["predicted_price"])) \
+                <= ARM_D_PRICE_TOLERANCE
 
 
 PROFILE_NAMES = ("dense", "ordinary", "sparse")
