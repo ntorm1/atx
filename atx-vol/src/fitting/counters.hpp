@@ -1197,7 +1197,35 @@ struct FitTimingCounters {
   double deam_audit_max_newton_premium{0.0};
   double deam_audit_max_newton_search{0.0};
   std::uint32_t deam_audit_search_farther{0};
+  // Seed-tier wiring (SPY1s Phase 1, 2026-10-20; QuoteSliceDeamProfile::Screen): the
+  // cache's AL boundary solves by reason (index = DeamReason; the brief's four plus the
+  // band gate's chord solve and the Search route's solves, fallbacks included), the
+  // confirms done and skipped, the ambiguous band edges re-priced accurately, the
+  // inversions routed to accurate iterates by the seed tier's non-monotone gate, and the
+  // largest gate bound (eps_A + eps_r) / v_min (vol) of a skipped root.
+  std::array<std::uint32_t, 6> deam_al_by_reason{};
+  std::uint32_t deam_confirms{0};
+  std::uint32_t deam_confirms_skipped{0};
+  std::uint32_t deam_ambiguous_edges{0};
+  std::uint32_t deam_seed_routed{0};
+  double deam_gate_max_bound_vol{0.0};
+  // --deam-audit, skipped confirms only: pairs and the largest accurate-map Newton
+  // distance of a root the band gate accepted without a confirm.
+  std::uint32_t deam_audit_skipped_pairs{0};
+  double deam_audit_max_newton_skipped{0.0};
 };
+
+// Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::
+// deam_al_by_reason): the kIvMin / kIvMax band-edge prices, the inversion iterates (seed
+// tier or accurate), the confirming solve, an ambiguous edge re-priced accurately, the
+// band gate's chord solve, and the Search route's solves (plain Search inversions and
+// Premium fallbacks).
+enum class DeamReason : unsigned { RangeEdge = 0, Iterate, Confirm, AmbiguousEdge, Gate, Search, Count_ };
+inline constexpr unsigned kDeamReasonCount = static_cast<unsigned>(DeamReason::Count_);
+inline constexpr const char *kDeamReasonNames[kDeamReasonCount] = {
+    "range_edge", "iterate", "confirm", "ambiguous_edge", "gate", "search"};
+static_assert(decltype(FitTimingCounters::deam_al_by_reason){}.size() == kDeamReasonCount,
+              "deam_al_by_reason is sized by DeamReason");
 
 class ChainRecorder;
 class SurfaceTrace;

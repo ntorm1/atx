@@ -108,7 +108,18 @@ enum class QuoteSliceFitSpace : std::uint8_t { PriceChannel, VolChannel };
 // inversion whose documented Fast bound cannot be guaranteed (no usable vega,
 // a failure, or a root at the volatility bounds) is redone on the accurate
 // kernel. The dated-cash lattice has no Fast kernel and is always accurate.
-enum class QuoteSliceDeamProfile : std::uint8_t { Accurate, Fast };
+// Screen (opt-in, SPY1s Phase 1 / L2g 2026-10-20): the measured al_screen_opts() tier
+// (american.hpp AlProfile::Screen, |dP| <= 7.8e-4 max(P, 1), 4.6e-6 for T <= 0.1) is
+// the SEED kernel of the Premium inversion (requires deam_inversion Premium): the
+// iterates run on Screen, every accepted root is confirmed by one solve on the
+// accurate kernel (or on AlProfile::Fast, deam_confirm_kernel) unless the band gate
+// (deam_confirm) skips it; a price inside Screen's wide non-monotone gate runs its
+// iterates on the accurate kernel instead. The kIvMin / kIvMax band edges are priced
+// on Screen and every edge comparison is decided only when the quote clears the edge
+// price by more than the tested bound; otherwise that edge is re-priced on the
+// accurate kernel first (ambiguous_edges). A Screen value is never served or cached
+// unconfirmed. The dated-cash lattice has no Screen kernel and stays accurate.
+enum class QuoteSliceDeamProfile : std::uint8_t { Accurate, Fast, Screen };
 
 // Inversion strategy of the VolChannel cache on the accurate kernel (opt-in, lane L2e
 // 2026-10-19; american_iv.hpp IvStrategy). Search (the default) is the historical
@@ -116,8 +127,21 @@ enum class QuoteSliceDeamProfile : std::uint8_t { Accurate, Fast };
 // confirmed by cold Andersen-Lake solves, accepted at the same vol tolerance
 // (QuoteSliceConfig::iv_tolerance), falling back to Search everywhere it cannot
 // accept; a quote's bid and ask are seeded from its mid's cold points. Requires
-// deam_profile Accurate. The dated-cash lattice always uses Search.
+// deam_profile Accurate or Screen (never Fast). The dated-cash lattice always uses Search.
 enum class QuoteSliceDeamInversion : std::uint8_t { Search, Premium };
+
+// Confirm policy and confirm kernel of a seed-tier Premium root (QuoteSliceChannelConfig
+// deam_confirm / deam_confirm_kernel; SPY1s Phase 1, 2026-10-20).
+enum class QuoteSliceDeamConfirm : std::uint8_t { Always, Band, Never };
+enum class QuoteSliceDeamConfirmKernel : std::uint8_t { Accurate, Fast };
+
+// Kernel of the certification grid (certify_and_serve's American reprice of the fitted
+// curve at every strike; the served prices). Accurate (the default): the fit's own
+// model, the historical path bit for bit. Fast (opt-in, SPY1s Phase 1 arm D; research
+// R3): the same Andersen-Lake scheme on AlProfile::Fast, |dP| <= 1e-12 max(P, 1) below
+// the certificate's allowance 1e-8 + 1e-9 max(S, K); a MEASUREMENT arm with its own hash
+// set - the PM promotes or not at integration. The dated-cash lattice ignores it.
+enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast };
 
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
@@ -178,6 +202,24 @@ struct QuoteSliceChannelConfig {
   QuoteSliceDeamProfile deam_profile = QuoteSliceDeamProfile::Accurate;
   bool deam_cache = false;
   QuoteSliceDeamInversion deam_inversion = QuoteSliceDeamInversion::Search; // opt-in (L2e)
+  // Opt-in confirm policy of a seed-tier (deam_profile Screen) Premium root (SPY1s Phase
+  // 1, 2026-10-20; research R2 / gap report 5a). Always (the default): every accepted
+  // seed-tier root is confirmed by one solve on the confirm kernel. Band: the confirm is
+  // skipped only where (eps_A + eps_r) / v_min < half-spread-in-vol / deam_confirm_k -
+  // eps_A the seed tier's tested price bound at the contract, eps_r the root's residual
+  // on the seed map, v_min the seed map's chord slope at the root less its chord bound
+  // (floored at the Fast-vega guard); a non-positive v_min, a price inside the seed
+  // tier's non-monotone gate, a bidless quote or a root at the volatility bounds always
+  // confirms. Never: the seed-tier root as is (MEASUREMENT ARM ONLY; never a candidate
+  // default). Both require deam_profile Screen. The accuracy a skipped root carries is
+  // measured, not assumed: quote-bench --deam-audit reports the max accurate-map Newton
+  // distance of the skipped roots.
+  QuoteSliceDeamConfirm deam_confirm = QuoteSliceDeamConfirm::Always;
+  double deam_confirm_k = 10.0; // > 0
+  // The confirming solve's kernel (deam_profile Screen only): the fit's accurate kernel
+  // (the default) or the same scheme on AlProfile::Fast (|dP| <= 1e-12 max(P, 1); research
+  // R3 measurement arm - the PM promotes or not at integration).
+  QuoteSliceDeamConfirmKernel deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -264,6 +306,7 @@ struct QuoteSliceConfig {
   double min_time_value = 1.0e-5;
   double iv_tolerance = 1.0e-7;
   std::uint16_t max_iv_iterations = 64;
+  QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate; // opt-in (SPY1s P1)
   int discrete_div_steps = kDiscreteDivDefaultSteps;
   // Opt-in carry resolution (quote_slice_carry.hpp). The default Supplied mode
   // is the historical path, unchanged.
@@ -378,6 +421,16 @@ struct QuoteSliceDeamDiagnostics {
   std::size_t accurate_fallbacks = 0; // Fast inversions redone on the accurate kernel
   std::size_t premium_inversions = 0; // inversions attempted by the Premium strategy
   std::size_t premium_fallbacks = 0;  // ... of which handed to Search
+  // Seed-tier wiring (QuoteSliceDeamProfile::Screen; zero otherwise): band edges whose
+  // comparison lay inside the seed tier's bound and were re-priced on the accurate
+  // kernel; accepted Premium roots confirmed by a solve on the confirm kernel; roots
+  // whose confirm the band gate skipped (deam_confirm); inversions whose iterates were
+  // routed to the accurate kernel because the price lay inside the seed tier's
+  // non-monotone gate.
+  std::size_t ambiguous_edges = 0;
+  std::size_t confirms = 0;
+  std::size_t confirms_skipped = 0;
+  std::size_t seed_routed = 0;
 };
 
 struct QuoteSliceDiagnostics {

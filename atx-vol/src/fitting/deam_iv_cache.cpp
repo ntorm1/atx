@@ -62,18 +62,41 @@ thread_local Memo t_memo;
 
 DeAmIvView::DeAmIvView(DeAmIvCache &cache, const DeAmModel &model,
                        std::span<const QuoteSliceQuote> quotes, QuoteSliceDeamProfile profile,
-                       QuoteSliceDeamDiagnostics &work, QuoteSliceDeamInversion inversion) noexcept
+                       QuoteSliceDeamDiagnostics &work, QuoteSliceDeamInversion inversion,
+                       DeAmConfirmControls confirm) noexcept
     : cache_(cache), model_(model), quotes_(quotes), profile_(profile), work_(work),
-      inversion_(inversion) {}
+      inversion_(inversion), confirm_(confirm) {}
 
 bool DeAmIvView::premium() const noexcept {
-  return inversion_ == QuoteSliceDeamInversion::Premium && kernel() == DeAmKernel::Accurate;
+  return inversion_ == QuoteSliceDeamInversion::Premium && kernel() != DeAmKernel::Fast;
 }
 
 DeAmKernel DeAmIvView::kernel() const noexcept {
-  return profile_ == QuoteSliceDeamProfile::Fast && model_.has_fast_kernel() ? DeAmKernel::Fast
-                                                                             : DeAmKernel::Accurate;
+  if (profile_ == QuoteSliceDeamProfile::Fast && model_.has_fast_kernel()) {
+    return DeAmKernel::Fast;
+  }
+  if (profile_ == QuoteSliceDeamProfile::Screen && model_.has_screen_kernel()) {
+    return DeAmKernel::Screen;
+  }
+  return DeAmKernel::Accurate;
 }
+
+namespace {
+
+// The calling thread's AL boundary solve count when timing is armed (0 otherwise).
+[[nodiscard]] std::uint64_t al_solves(const counters::fit_timing::FitTimingCounters *timing) noexcept {
+  namespace ledger = counters::ledger;
+  return timing != nullptr ? ledger::this_thread(ledger::Solve::AlBoundarySolves) : 0u;
+}
+
+void charge_reason(counters::fit_timing::FitTimingCounters *timing,
+                   counters::fit_timing::DeamReason reason, std::uint64_t solves) noexcept {
+  if (timing == nullptr || solves == 0u) return;
+  std::uint32_t &slot = timing->deam_al_by_reason[static_cast<std::size_t>(reason)];
+  slot += counters::fit_timing::detail::saturate(solves);
+}
+
+} // namespace
 
 DeAmQuoteIv &DeAmIvView::carry(std::size_t i) {
   DeAmQuoteIv &entry = cache_.ivs[i];
@@ -105,8 +128,22 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   timing->deam_inversion_al += spent;
   timing->deam_inversion_al_max = std::max(timing->deam_inversion_al_max, spent);
   if (!premium()) {
+    charge_reason(timing, ft::DeamReason::Search, al);
     return out;
   }
+  // Reason split (gap report 3a): the Premium attempt's solves are iterates plus the
+  // confirm plus the band gate's chord solve; whatever the inversion spent beyond them is
+  // the Search route's (a fallback).
+  const std::uint64_t premium_solves = stats.premium_solves;
+  const std::uint64_t confirm_solves = std::min<std::uint64_t>(stats.confirm_solves, premium_solves);
+  const std::uint64_t gate_solves =
+      std::min<std::uint64_t>(stats.gate_solves, premium_solves - confirm_solves);
+  charge_reason(timing, ft::DeamReason::Iterate, premium_solves - confirm_solves - gate_solves);
+  charge_reason(timing, ft::DeamReason::Confirm, confirm_solves);
+  charge_reason(timing, ft::DeamReason::Gate, gate_solves);
+  charge_reason(timing, ft::DeamReason::Search, al > premium_solves ? al - premium_solves : 0u);
+  timing->deam_confirms += stats.confirm_solves;
+  if (stats.seed_routed) ++timing->deam_seed_routed;
   ++timing->deam_premium;
   const bool fell_back = stats.fallback != IvPremiumFallback::None;
   if (fell_back) {
@@ -118,6 +155,13 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   } else {
     timing->deam_premium_max_residual_usd =
         std::max(timing->deam_premium_max_residual_usd, stats.last_residual_usd);
+    if (stats.confirm_skipped) {
+      ++timing->deam_confirms_skipped;
+      if (std::isfinite(stats.gate_bound_vol)) {
+        timing->deam_gate_max_bound_vol =
+            std::max(timing->deam_gate_max_bound_vol, stats.gate_bound_vol);
+      }
+    }
   }
   if (ft::deam_audit_armed()) {
     // A fallback IS the Search answer (bit for bit, pinned by AmericanIvPremium tests):
@@ -145,9 +189,16 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
             timing->deam_audit_max_newton_search =
                 std::max(timing->deam_audit_max_newton_search, ns);
             timing->deam_audit_search_farther += ns > np ? 1u : 0u;
+            if (stats.confirm_skipped) {
+              // The band gate's accuracy is MEASURED here: the accurate-map Newton
+              // distance of a root accepted without a confirm.
+              timing->deam_audit_max_newton_skipped =
+                  std::max(timing->deam_audit_max_newton_skipped, np);
+            }
           }
         }
       }
+      if (stats.confirm_skipped) ++timing->deam_audit_skipped_pairs;
     }
     ++timing->deam_audit_pairs;
     timing->deam_audit_max_dsigma = std::max(timing->deam_audit_max_dsigma, dsigma);
@@ -167,11 +218,53 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
   ++cache_.inversions;
   ++work_.inversions;
   ++work_.premium_inversions;
-  Result<double> iv = model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats);
+  DeAmPremiumControls controls;
+  controls.seed_kernel = kernel();
+  controls.confirm = confirm_.policy == QuoteSliceDeamConfirm::Band    ? IvConfirmPolicy::Band
+                     : confirm_.policy == QuoteSliceDeamConfirm::Never ? IvConfirmPolicy::Never
+                                                                       : IvConfirmPolicy::Always;
+  controls.k = confirm_.k;
+  // The quote's half-spread in price; a bidless quote has no band and always confirms.
+  controls.half_spread_usd =
+      quote.bid > 0.0 && quote.ask > quote.bid ? 0.5 * (quote.ask - quote.bid) : 0.0;
+  controls.confirm_fast = confirm_.kernel == QuoteSliceDeamConfirmKernel::Fast;
+  Result<double> iv =
+      model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats, controls);
   if (stats.fallback != IvPremiumFallback::None) {
     ++work_.premium_fallbacks;
+  } else {
+    work_.confirms += stats.confirm_solves;
+    if (stats.confirm_skipped) ++work_.confirms_skipped;
   }
+  if (stats.seed_routed) ++work_.seed_routed;
   return iv;
+}
+
+double DeAmIvView::settle(Edge &edge, double x, const QuoteSliceQuote &quote, double q_effective,
+                          bool &failed) {
+  if (edge.decided || failed) {
+    return edge.value;
+  }
+  const DeAmKernel k = kernel();
+  if (!(std::fabs(x - edge.value) <= model_.seed_price_bound(edge.value, k))) {
+    return edge.value; // the quote clears the seed tier's bound: decided on the seed price
+  }
+  // Ambiguous edge (gap report 1a): the accurate kernel's edge price decides.
+  namespace ft = counters::fit_timing;
+  ft::FitTimingCounters *const timing = ft::current_counts();
+  const std::uint64_t al0 = al_solves(timing);
+  const auto exact = model_.price(quote, edge.sigma, q_effective, DeAmKernel::Accurate);
+  charge_reason(timing, ft::DeamReason::AmbiguousEdge, al_solves(timing) - al0);
+  if (timing != nullptr) ++timing->deam_ambiguous_edges;
+  ++cache_.model_prices;
+  ++work_.model_prices;
+  ++work_.ambiguous_edges;
+  if (!exact) {
+    failed = true;
+    return edge.value;
+  }
+  edge = Edge{*exact, edge.sigma, true};
+  return edge.value;
 }
 
 Result<double> DeAmIvView::invert_search(const QuoteSliceQuote &quote, double target,
@@ -230,43 +323,66 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
     return publish();
   }
   const DeAmKernel k = kernel();
+  namespace ft = counters::fit_timing;
+  ft::FitTimingCounters *const timing = ft::current_counts();
+  const std::uint64_t al0 = al_solves(timing);
   const auto floor_price = model_.price(quote, kIvMin, filled.q_effective, k);
   const auto cap_price = model_.price(quote, kIvMax, filled.q_effective, k);
+  charge_reason(timing, ft::DeamReason::RangeEdge, al_solves(timing) - al0);
   cache_.model_prices += 2;
   work_.model_prices += 2;
   if (!floor_price || !cap_price) {
     return publish();
   }
-  filled.floor_price = *floor_price;
-  filled.cap_price = *cap_price;
-  if (!(quote.bid < filled.cap_price) || !(quote.ask > filled.floor_price)) {
+  // Bound-decided edges (gap report 1a, SPY1s Phase 1): on the Screen seed tier every
+  // comparison a quote makes with an edge price - the bid and the ask against both edges
+  // here, the mid against both (the builder's own test, vol_space_channel_observations)
+  // - is decided only when the quote clears the edge by more than the tier's tested
+  // bound; otherwise that edge is first re-priced on the accurate kernel (settle). The
+  // settled edges are what the entry publishes, so every later comparison agrees. On the
+  // accurate and Fast kernels every edge is decided as priced: the historical path.
+  const bool decided = k != DeAmKernel::Screen;
+  Edge floor_edge{*floor_price, kIvMin, decided};
+  Edge cap_edge{*cap_price, kIvMax, decided};
+  bool failed = false;
+  const double q_eff = filled.q_effective;
+  const bool bid_below_cap = quote.bid < settle(cap_edge, quote.bid, quote, q_eff, failed);
+  const bool ask_above_floor = quote.ask > settle(floor_edge, quote.ask, quote, q_eff, failed);
+  const bool bid_above_floor = quote.bid > settle(floor_edge, quote.bid, quote, q_eff, failed);
+  const bool ask_below_cap = quote.ask < settle(cap_edge, quote.ask, quote, q_eff, failed);
+  const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
+  const bool mid_inside = quote.bid > 0.0 && mid > settle(floor_edge, mid, quote, q_eff, failed) &&
+                          mid < settle(cap_edge, mid, quote, q_eff, failed);
+  if (failed) {
+    return publish(); // an accurate edge re-price erred: the band stays undecided
+  }
+  filled.floor_price = floor_edge.value;
+  filled.cap_price = cap_edge.value;
+  if (!bid_below_cap || !ask_above_floor) {
     return publish();
   }
   // Premium: the mid first (exactly as the channel builder would ask for it: a
   // two-sided quote whose mid lies inside the identifiable range), then each edge from
   // a copy of the mid's cold points; without a mid, the edges from scratch.
   bool seeded = false;
-  if (premium() && quote.bid > 0.0) {
-    const double mid = 0.5 * quote.bid + 0.5 * quote.ask;
-    if (mid > filled.floor_price && mid < filled.cap_price) {
-      static_cast<void>(mid_iv(i));
-      // mid_iv wrote the slot (entry); carry its mid fields into the local copy so
-      // that publish() keeps the mid and its memory (W2b merge of L2c x L2e).
-      filled.mid_iv = entry.mid_iv;
-      filled.mid_memory = entry.mid_memory;
-      filled.computed = entry.computed;
-      seeded = entry.mid_memory.points > 0u;
-    }
+  if (premium() && mid_inside) {
+    static_cast<void>(mid_iv(i));
+    // mid_iv wrote the slot (entry); carry its mid fields into the local copy so
+    // that publish() keeps the mid and its memory (W2b merge of L2c x L2e).
+    filled.mid_iv = entry.mid_iv;
+    filled.mid_memory = entry.mid_memory;
+    filled.computed = entry.computed;
+    seeded = entry.mid_memory.points > 0u;
   }
   IvPremiumMemory bid_memory = filled.mid_memory;
   IvPremiumMemory ask_memory = filled.mid_memory;
   // A bid at or below the minimum-volatility price carries no lower
   // information; an ask at or above the maximum-volatility price no upper.
-  if (quote.bid > filled.floor_price) {
+  if (bid_above_floor) {
     const auto lo = invert(quote, quote.bid, filled, seeded ? &bid_memory : nullptr);
     filled.bid_iv = lo && positive(*lo) ? *lo : 0.0;
   }
-  if (quote.ask < filled.cap_price) {
+  if (ask_below_cap) {
     const auto hi = invert(quote, quote.ask, filled, seeded ? &ask_memory : nullptr);
     if (hi && positive(*hi)) {
       filled.ask_iv = *hi;

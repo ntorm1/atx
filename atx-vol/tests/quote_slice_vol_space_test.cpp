@@ -354,6 +354,142 @@ TEST(QuoteSliceVolSpace, PremiumCacheServesTheSearchRowsAndNeverAnswersASearchFi
   deam_iv_memo_clear();
 }
 
+// Screen-seeded Premium cache (SPY1s Phase 1, QuoteSliceDeamProfile::Screen): on the
+// SPY-shaped grid it serves the same rows (statuses, admission, fit status) as the
+// PriceChannel fit with every quote volatility CONFIRMED on the accurate kernel (within
+// the inversion tolerance band of the Search values; confirms counted, none skipped under
+// deam_confirm Always); under deam_confirm Band the gate skips confirms and the served
+// rows stay the same; a Search fit on Screen and confirm keys without Screen are refused.
+TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
+  const std::vector<GridCase> grid = {
+      {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t confirms = 0, ambiguous = 0, routed = 0, compared = 0, band_skipped = 0;
+  double max_dsigma = 0.0, max_band_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig screen = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    screen.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto seeded = fit_quote_slice_channel(c.market, c.quotes, screen, nullptr);
+    ASSERT_TRUE(reference && seeded);
+    const QuoteSliceDeamDiagnostics &work = seeded->diagnostics.deam;
+    EXPECT_TRUE(work.used);
+    EXPECT_GT(work.premium_inversions, 0u);
+    EXPECT_EQ(work.confirms_skipped, 0u);
+    confirms += work.confirms;
+    ambiguous += work.ambiguous_edges;
+    routed += work.seed_routed;
+    EXPECT_EQ(seeded->fit_status, reference->fit_status);
+    ASSERT_EQ(seeded->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &p = seeded->rows[i];
+      const QuoteSliceRow &r = reference->rows[i];
+      EXPECT_EQ(p.quote_status, r.quote_status) << i;
+      EXPECT_EQ(p.evaluation_status, r.evaluation_status) << i;
+      EXPECT_EQ(p.admitted, r.admitted) << i;
+      if (std::isfinite(p.market_iv) && std::isfinite(r.market_iv)) {
+        ++compared;
+        max_dsigma = std::max(max_dsigma, std::abs(p.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+    // Band gate, k = 10: confirms skipped, the same rows served.
+    QuoteSliceConfig band = screen;
+    band.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+    deam_iv_memo_clear();
+    const auto gated = fit_quote_slice_channel(c.market, c.quotes, band, nullptr);
+    ASSERT_TRUE(gated);
+    band_skipped += gated->diagnostics.deam.confirms_skipped;
+    EXPECT_EQ(gated->fit_status, reference->fit_status);
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      EXPECT_EQ(gated->rows[i].quote_status, reference->rows[i].quote_status) << i;
+      EXPECT_EQ(gated->rows[i].admitted, reference->rows[i].admitted) << i;
+      if (std::isfinite(gated->rows[i].market_iv) && std::isfinite(reference->rows[i].market_iv)) {
+        max_band_dsigma =
+            std::max(max_band_dsigma, std::abs(gated->rows[i].market_iv - reference->rows[i].market_iv));
+      }
+    }
+  }
+  std::printf("[screen cache] %zu confirms, %zu ambiguous edges, %zu routed, %zu mid IVs compared, "
+              "max |dsigma| vs Search %.3g; band gate skipped %zu confirms, max |dsigma| %.3g\n",
+              confirms, ambiguous, routed, compared, max_dsigma, band_skipped, max_band_dsigma);
+  EXPECT_GT(confirms, 0u);
+  // SliceDeAmModel::seed_price_bound's Screen margin (2x the whole-grid bound 7.8e-4 max(P, 1))
+  // is not inert: on these three chains 54 edges are re-priced with it, 34 with a zero margin
+  // (bidless quotes sitting exactly on a zero floor price), so the threshold pins the margin.
+  EXPECT_GE(ambiguous, 50u);
+  EXPECT_GT(compared, 0u);
+  EXPECT_GT(band_skipped, 0u);
+  deam_iv_memo_clear();
+  // Screen seeds exist only inside the Premium inversion; the confirm keys only on Screen.
+  const Chain c = spy_chain(0.15, false, 0.0);
+  const QuoteSliceConfig search_on_screen =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true,
+                 QuoteSliceDeamProfile::Screen);
+  const auto refused = fit_quote_slice_channel(c.market, c.quotes, search_on_screen, nullptr);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  QuoteSliceConfig band_on_accurate =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true);
+  band_on_accurate.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  band_on_accurate.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+  const auto refused_band = fit_quote_slice_channel(c.market, c.quotes, band_on_accurate, nullptr);
+  ASSERT_FALSE(refused_band);
+  EXPECT_EQ(refused_band.error().code(), ErrorCode::InvalidArgument);
+  deam_iv_memo_clear();
+}
+
+// Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
+// served prices are the grid's, so under grid_kernel Fast every served price moves by at most
+// the Fast bound 1e-12 max(P, 1) (below the certificate's allowance) with the same rows served
+// and the same statuses; the default is the accurate grid bit for bit; at least one price
+// differs (the key is not inert).
+TEST(QuoteSliceVolSpace, FastCertificationGridMovesServedPricesWithinTheFastBoundOnly) {
+  std::size_t compared = 0, differing = 0;
+  double max_rel = 0.0;
+  for (const double years : {0.03, 0.15, 0.75}) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const Chain c = spy_chain(years, false, 0.0);
+    const QuoteSliceConfig off = price_config(QuoteSliceDividendModel::ContinuousYield);
+    QuoteSliceConfig fast_grid = off;
+    fast_grid.grid_kernel = QuoteSliceGridKernel::Fast;
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto fast = fit_quote_slice_channel(c.market, c.quotes, fast_grid, nullptr);
+    const auto again = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    ASSERT_TRUE(reference && fast && again);
+    expect_identical(*reference, *again, "accurate grid twice");
+    EXPECT_EQ(fast->fit_status, reference->fit_status);
+    ASSERT_EQ(fast->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &a = reference->rows[i];
+      const QuoteSliceRow &b = fast->rows[i];
+      EXPECT_EQ(a.quote_status, b.quote_status) << i;
+      EXPECT_EQ(a.evaluation_status, b.evaluation_status) << i;
+      EXPECT_EQ(a.admitted, b.admitted) << i;
+      if (std::isfinite(a.fitted_price) && std::isfinite(b.fitted_price)) {
+        ++compared;
+        const double rel = std::abs(a.fitted_price - b.fitted_price) / std::max(a.fitted_price, 1.0);
+        max_rel = std::max(max_rel, rel);
+        EXPECT_LE(rel, 1.0e-11) << i; // 10x the tested Fast price bound
+        if (!same_bits(a.fitted_price, b.fitted_price)) ++differing;
+      }
+    }
+  }
+  std::printf("[fast grid] %zu served prices compared, %zu differ, max |dP| / max(P, 1) %.3g\n",
+              compared, differing, max_rel);
+  EXPECT_GT(compared, 0u);
+  EXPECT_GT(differing, 0u);
+}
+
 // A scripted American model: an Accurate inversion returns 0.25 * target, a Fast
 // one 0.25 * target + fast_offset (or fast_result when set); prices bound the
 // identifiable range at [floor_price, cap_price].
@@ -366,17 +502,33 @@ public:
   double vega = 1.0;
   double floor_price = 0.0;
   double cap_price = 1.0e6;
+  // Screen seed tier (SPY1s Phase 1): its edge prices sit screen_offset off the accurate
+  // ones, inside the tested bound screen_bound.
+  bool screen_kernel = true;
+  double screen_offset = 0.0;
+  double screen_bound = 0.0;
   mutable int fast_calls = 0;
   mutable int accurate_calls = 0;
   mutable int price_calls = 0;
+  mutable int screen_price_calls = 0;
   mutable int throw_on_price_call = -1; // the price call (0-based) that throws bad_alloc
 
   double effective_yield_of(double calendar_yield) const override { return calendar_yield; }
   double local_forward_of(double, double) const override { return 100.0; }
   double reference_yield() const override { return 0.0; }
-  Result<double> price(const QuoteSliceQuote &, double sigma, double, DeAmKernel) const override {
+  Result<double> price(const QuoteSliceQuote &, double sigma, double,
+                       DeAmKernel kernel) const override {
     if (price_calls++ == throw_on_price_call) throw std::bad_alloc();
-    return Ok(sigma == kIvMin ? floor_price : cap_price);
+    const double exact = sigma == kIvMin ? floor_price : cap_price;
+    if (kernel == DeAmKernel::Screen) {
+      ++screen_price_calls;
+      return Ok(exact + screen_offset);
+    }
+    return Ok(exact);
+  }
+  bool has_screen_kernel() const override { return screen_kernel; }
+  double seed_price_bound(double, DeAmKernel kernel) const override {
+    return kernel == DeAmKernel::Screen ? screen_bound : 0.0;
   }
   Result<double> implied_vol(const QuoteSliceQuote &, double target, double,
                              DeAmKernel kernel) const override {
@@ -506,6 +658,58 @@ TEST(DeAmIvCache, BandEdgesFollowTheChannelBuilderAndAreComputedOnce) {
   ASSERT_TRUE(view.mid_iv(0));
   EXPECT_EQ(model.price_calls, prices);
   EXPECT_EQ(model.accurate_calls, inversions + 1);
+}
+
+// Bound-decided band edges on the Screen seed tier (SPY1s Phase 1, gap report 1a): an edge
+// comparison is decided on the Screen price only when the quote clears it by more than
+// the tier's tested bound; a quote inside the bound has THAT edge re-priced on the accurate
+// kernel first, so the band is admitted / refused exactly as under the accurate profile.
+TEST(DeAmIvCache, ScreenBandEdgesAreDecidedWithTheBoundOrRepricedAccurately) {
+  const std::vector<QuoteSliceQuote> quotes = {
+      {100.0, Side::Call, 0.505, 1.2}, // bid 0.005 above the accurate floor: inside the bound
+      {100.0, Side::Put, 1.0, 1.2},    // clears both edges by far
+      {105.0, Side::Call, 1.0, 7.995}, // ask 0.005 below the accurate cap: inside the bound
+      {110.0, Side::Call, 0.1, 0.4},   // band entirely below the floor, far from it
+  };
+  ScriptedModel model;
+  model.floor_price = 0.5;
+  model.cap_price = 8.0;
+  model.screen_offset = 0.01; // Screen prices the floor at 0.51 and the cap at 8.01 ...
+  model.screen_bound = 0.02;  // ... inside a tested bound of 0.02
+  QuoteSliceDeamDiagnostics accurate_work;
+  DeAmIvCache accurate_cache;
+  accurate_cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+  DeAmIvView accurate(accurate_cache, model, quotes, QuoteSliceDeamProfile::Accurate,
+                      accurate_work, QuoteSliceDeamInversion::Premium);
+  QuoteSliceDeamDiagnostics screen_work;
+  DeAmIvCache screen_cache;
+  screen_cache.ivs.assign(quotes.size(), DeAmQuoteIv{});
+  DeAmIvView screen(screen_cache, model, quotes, QuoteSliceDeamProfile::Screen, screen_work,
+                    QuoteSliceDeamInversion::Premium);
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    SCOPED_TRACE(i);
+    const DeAmQuoteIv &a = accurate.band(i);
+    const DeAmQuoteIv &s = screen.band(i);
+    EXPECT_EQ(s.well_posed, a.well_posed);
+    EXPECT_TRUE(same_bits(s.bid_iv, a.bid_iv));
+    EXPECT_TRUE(same_bits(s.ask_iv, a.ask_iv));
+  }
+  // Strictly on the Screen prices quote 0's bid (0.505) would sit BELOW the Screen floor
+  // (0.51) and lose its lower edge; the accurate floor (0.5) gives it one.
+  EXPECT_GT(screen.band(0).bid_iv, 0.0);
+  EXPECT_TRUE(std::isfinite(screen.band(2).ask_iv));
+  // Two ambiguous edges (quote 0's floor, quote 2's cap) were re-priced accurately; the
+  // other six edges were decided on Screen. Quote 3's floor is 0.1 away: decided on Screen.
+  EXPECT_EQ(screen_work.ambiguous_edges, 2u);
+  EXPECT_EQ(screen_work.model_prices, 2u * quotes.size() + 2u);
+  EXPECT_EQ(model.screen_price_calls, 2 * static_cast<int>(quotes.size()));
+  EXPECT_EQ(accurate_work.ambiguous_edges, 0u);
+  // The published edges are the settled ones: the vol-space builder's own mid test
+  // (mid > floor && mid < cap) then agrees with the accurate decision.
+  EXPECT_DOUBLE_EQ(screen.band(0).floor_price, 0.5);
+  EXPECT_DOUBLE_EQ(screen.band(0).cap_price, 8.01);
+  EXPECT_DOUBLE_EQ(screen.band(2).cap_price, 8.0);
+  EXPECT_DOUBLE_EQ(screen.band(1).floor_price, 0.51);
 }
 
 // review-L2a minor (fixed in lane L2c): a band fill that throws mid-way (here the cap
