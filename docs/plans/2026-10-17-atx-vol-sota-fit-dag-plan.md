@@ -49,33 +49,41 @@ arms, ≥ 5 repetitions, min and median reported; `fit_workers = 1` unless state
 
 | Metric | Today (unqualified) | Target | Stretch |
 | --- | --- | --- | --- |
-| Per-expiry fit+reprice+certify, ≤ 400 admitted quotes, median | 0.39-3.2 s (W0) → 1,597 ms SPY p50 (W2) → W2b all keys: SPY 401 ms @1, cohort5 graded 151 ms @1, dev200 37 ms @0 — NOT MET (`integrate-W2b-20261020-g2/RESULTS.md`) | ≤ 30 ms | ≤ 10 ms |
-| Per-expiry, p99 over dev200 chains | ~3 s (W0) → W2b all keys @0: 795 ms — NOT MET (RESULTS.md) | ≤ 100 ms | ≤ 40 ms |
-| SPY surface (33 expiries, 5,196 admitted quotes), single thread | 55-106 s (W0, 87.8-91 measured) → 52.7 s (W2, L2a) → **15.0 s** (W2b all keys, fit+reprice; wall 15.2) — NOT MET (RESULTS.md) | ≤ 1.0 s | ≤ 0.4 s |
-| SPY surface, `fit_workers = 0` (all cores) | 20-35 s at 3 workers (W0) → 12.4 s (W2 side reading) → **3.35 s** (W2b all keys; wall 3.6) — NOT MET (RESULTS.md) | ≤ 150 ms | ≤ 60 ms |
-| dev200 (191 surfaces, ~1,138 fits), all cores, graded + repair + ladder stack | to be pinned in L1 → W2b graded-v1 all keys @0: 23.3 s (graded only; repair + ladder stack not run) — NOT MET (RESULTS.md) | ≤ 10 s | ≤ 4 s |
-| Served-path record IV warm (unchanged scope) | 404 ns quiet (not re-measured at W2b; serve path untouched) | ≤ 500 ns | — |
-| Fit output byte-identical for any `fit_workers` | holds (W2b all keys: SPY `2c8b113c`, cohort5 graded `bb5df194`, ladder `270f1218` identical at `fit_workers` 1 and 0) — MET | holds | — |
+| Per-expiry fit+reprice+certify, ≤ 400 admitted quotes, median | 0.39-3.2 s (W0) → 1,597 ms SPY p50 (W2) → W2b all keys: SPY 401 ms @1, cohort5 graded 151 ms @1, dev200 37 ms @0 (`integrate-W2b-20261020-g2/RESULTS.md`) → W2c-a R3 default (arm D): SPY 279 ms @1, cohort5 63.6 ms @1, dev200 16.3 ms @0 — NOT MET (`integrate-W2c-a-20261021-g2/RESULTS.md`) | ≤ 30 ms | ≤ 10 ms |
+| Per-expiry, p99 over dev200 chains | ~3 s (W0) → W2b all keys @0: 795 ms → W2c-a R3 default @0: 497 ms — NOT MET (W2c-a RESULTS.md) | ≤ 100 ms | ≤ 40 ms |
+| SPY surface (33 expiries, 5,196 admitted quotes), single thread | 55-106 s (W0, 87.8-91 measured) → 52.7 s (W2, L2a) → 15.0 s (W2b all keys) → **10.88 s** (W2c-a R3 default = arm D, fit+reprice; wall 11.06; host 63-93 % loaded) — NOT MET (W2c-a RESULTS.md) | ≤ 1.0 s | ≤ 0.4 s |
+| SPY surface, `fit_workers = 0` (all cores) | 20-35 s at 3 workers (W0) → 12.4 s (W2 side reading) → 3.35 s (W2b all keys) → **2.24 s** (W2c-a R3 default; wall 2.44) — NOT MET (W2c-a RESULTS.md) | ≤ 150 ms | ≤ 60 ms |
+| dev200 (191 surfaces, ~1,138 fits), all cores, graded + repair + ladder stack | to be pinned in L1 → W2b graded-v1 all keys @0: 23.3 s → W2c-a R3 default @0: 12.4 s (graded only; repair + ladder stack not run) — NOT MET (W2c-a RESULTS.md) | ≤ 10 s | ≤ 4 s |
+| Served-path record IV warm (unchanged scope) | 404 ns quiet (not re-measured at W2b / W2c-a; serve path untouched) | ≤ 500 ns | — |
+| Fit output byte-identical for any `fit_workers` | holds (W2b all keys: SPY `2c8b113c`, cohort5 graded `bb5df194`, ladder `270f1218`; W2c-a R3 default: SPY `feac8d2c`, cohort5 `45e491ea` at `fit_workers` 1 and 0, dev200 `2bc7777d` at 0 and 3) — MET | holds | — |
 
 W2b G2 (2026-10-20, root `27eba264`, unqualified, one run each): the two levers on the SPY surface are 75,153 de-Am AL
 boundary solves (W0 191,511; L2e's Premium inversion, kept under the fan-out by L2c's rung memo) at ~149 µs per solve
 (unchanged Reference kernel) plus 28,908 certification-grid prices; **SPY single-thread 15.0 s, all cores 3.35 s: unusable
 against the ≤ 1 s bar** (`C:/atx-cache/quote-benchmark/integrate-W2b-20261020-g2/RESULTS.md`).
 
+W2c-a G2 (2026-10-21, root `bbaf9aa1`, PM ruling R3: SPY1s Phase 1 arm D is the graded default; unqualified, host 63-93 %
+loaded, one run each): 106,232 de-Am AL solves per SPY surface (arm D adds one `AlProfile::Fast` confirm per accepted
+root: 22,590 Screen edges + 50,308 Screen iterates + 28,551 Fast confirms + 2,734 ambiguous edges + 2,655 Search) at ~81 µs
+per solve blended (W2b ~149) plus 28,908 Fast certification-grid prices at ~73 µs; **SPY single-thread 10.88 s, all cores
+2.24 s: unusable against the ≤ 1 s bar** (`C:/atx-cache/quote-benchmark/integrate-W2c-a-20261021-g2/RESULTS.md`). The next
+lever is the L2h σ-family in the fit (owner Phase 2; the (σ, q) family L2h-b for per-strike yields).
+
 #### HFT-grade core-algorithm targets (user directive 2026-10-19; sources: research-sota report §7.2)
 
 Rows, proposed targets and status tags copied verbatim from `atx-vol/research/2026-10-19-sota-american-hft-pricing-iv-fitting.md`
-§7.2 (the PM's provisional column is in that table); "Today" is the unqualified in-tree state at the W2b root.
+§7.2 (the PM's provisional column is in that table); "Today" is the unqualified in-tree state at the W2b root, with the
+W2c-a root (`bbaf9aa1`, R3 default) appended after "→ W2c-a".
 
 | Row | Target | Today (unqualified) | Source / status |
 | --- | --- | --- | --- |
 | Served American price + Greeks (certified record, warm) | ≤ 150 ns p50 per contract; ≤ 100 ns is the published requirement for a theo in an automated strategy | 47-142 ns per contract (in-tree, serve path); records not yet built in the fit loop | [22] (requirement), [43 L485] (47-142 ns measured), [41] (budget) — Inferential target, Verified feasibility |
-| Cold American price, Reference-class accuracy, scalar | ≤ 10 µs p50 (published class [1][2]); ≤ 5 µs **only** via a shared / σ-interpolated boundary (one build per expiry, 3-7 µs per price [44]) or Healy's batched boundary (5.6 µs [2]) | Reference 160-260 µs; Fast 69-72; Screen 20.7-23.3 (seed-grade, L2f merged at W2b); W2b fit: ~149 µs per de-Am solve on SPY — NOT met; L2h family is the route (3-7 µs projected) | [1][2][44] — **PM's 5 µs scalar has no published scalar source; keep as a shared-boundary target** |
-| Fast-tier (screen) price, ≤ 1e-5 relative | ≤ 20 µs p50 (Screen 20.7 [44]; Healy m=5 25.6 at 1.6e-4 RRMSE [2]) | Screen 20.7-23.3 µs at ≤ 1.2e-6 rel on SPY 23 d (L2f; opt-in, not yet wired into the fit — L2g) — met (unqualified) | Verified in-tree, unqualified |
-| American IV, served root (bid/ask band input) | ≤ 25 µs p50 is **PM-proposed, no source**; consistent arithmetic: 1.8 family quadratures (≈ 10 µs) + band-gated confirm (0 or 69 µs Fast); record-based IV ≤ 500 ns was the prior budget [41] | 107 µs on Screen, 1,130 µs Reference (L2f µs table) — NOT met | [44][45][47] — Inferential |
-| American IV, certified to the accurate root | ≤ 100 µs p50 (1.8 iterates + one Fast confirm 69 µs [44]); today 1,130 µs Reference | 1.768 cold AL per inversion (L2e, merged) × ~149-183 µs per solve (W2b SPY @1) ≈ 260-320 µs — NOT met | Inferential arithmetic on Verified parts |
+| Cold American price, Reference-class accuracy, scalar | ≤ 10 µs p50 (published class [1][2]); ≤ 5 µs **only** via a shared / σ-interpolated boundary (one build per expiry, 3-7 µs per price [44]) or Healy's batched boundary (5.6 µs [2]) | Reference 160-260 µs; Fast 69-72; Screen 20.7-23.3 (seed-grade, L2f merged at W2b); W2b fit: ~149 µs per de-Am solve on SPY — NOT met; L2h family is the route (3-7 µs projected) → W2c-a: fit ~81 µs blended per de-Am solve (Screen seeds + Fast confirms, SPY @1, loaded); L2h σ-family merged (opt-in, no fit caller): 4.7 µs p50 per price after a 1.14 ms build per (expiry, side) — NOT met in the fit | [1][2][44] — **PM's 5 µs scalar has no published scalar source; keep as a shared-boundary target** |
+| Fast-tier (screen) price, ≤ 1e-5 relative | ≤ 20 µs p50 (Screen 20.7 [44]; Healy m=5 25.6 at 1.6e-4 RRMSE [2]) | Screen 20.7-23.3 µs at ≤ 1.2e-6 rel on SPY 23 d (L2f; opt-in, not yet wired into the fit — L2g) — met (unqualified) → W2c-a: Screen is the default seed tier of every graded fit (R3), never served unconfirmed | Verified in-tree, unqualified |
+| American IV, served root (bid/ask band input) | ≤ 25 µs p50 is **PM-proposed, no source**; consistent arithmetic: 1.8 family quadratures (≈ 10 µs) + band-gated confirm (0 or 69 µs Fast); record-based IV ≤ 500 ns was the prior budget [41] | 107 µs on Screen, 1,130 µs Reference (L2f µs table) — NOT met → W2c-a fit: 2.72 AL solves per inversion × ~81 µs ≈ 220 µs (SPY @1, R3 default) — NOT met | [44][45][47] — Inferential |
+| American IV, certified to the accurate root | ≤ 100 µs p50 (1.8 iterates + one Fast confirm 69 µs [44]); today 1,130 µs Reference | 1.768 cold AL per inversion (L2e, merged) × ~149-183 µs per solve (W2b SPY @1) ≈ 260-320 µs — NOT met → W2c-a: every served root confirmed on Fast (≤ 2.3e-10 vol from the accurate root), ≈ 220 µs per inversion — NOT met | Inferential arithmetic on Verified parts |
 | 300-strike chain price + Greeks, single thread | ≤ 1 ms is a **serve-path** row (300 × 47-142 ns ≈ 15-45 µs measured [43 L485]) — adopt as ≤ 100 µs served; a *cold* price-only chain through one σ-family is ≈ 300 × 3-7 µs ≈ 1-2 ms [44]; cold Greeks are 950 µs per contract today [43 L534] and cannot meet it | 15-45 µs served (met); cold Greeks 950 µs per contract (not a target) | Verified in-tree; PM row restated |
-| SPY surface fit, single thread / all cores | ≤ 1 s single-thread is at vendor-cadence parity or better (SpiderRock 45 s equities / < 10 s index [19]; Vela ≥ 5 s [23]); ≤ 150 ms all-cores has **no source** — the only sub-second published surface fits are European-IV parametric fits of ~1k quotes ([26] 0.01 s C estimate; [29] 123 ms) | W2b all keys: 15.0 s / 3.35 s (fit+reprice; RESULTS.md) — NOT met | Verified cadences; PM's 150 ms stays PM-proposed |
+| SPY surface fit, single thread / all cores | ≤ 1 s single-thread is at vendor-cadence parity or better (SpiderRock 45 s equities / < 10 s index [19]; Vela ≥ 5 s [23]); ≤ 150 ms all-cores has **no source** — the only sub-second published surface fits are European-IV parametric fits of ~1k quotes ([26] 0.01 s C estimate; [29] 123 ms) | W2b all keys: 15.0 s / 3.35 s (fit+reprice; RESULTS.md) — NOT met → W2c-a R3 default: 10.88 s / 2.24 s (loaded host; `integrate-W2c-a-20261021-g2/RESULTS.md`) — NOT met | Verified cadences; PM's 150 ms stays PM-proposed |
 
 ### 1.2 Accuracy (development cohorts dev200 / dev200b per shape class; holdout only at §5 gate)
 

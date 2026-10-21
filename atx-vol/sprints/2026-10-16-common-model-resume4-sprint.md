@@ -107,6 +107,12 @@ where no vendor carry exists.
 | `1a0b2b1a` | L2c-rung-memo `3d5fe7fa` (vol-sota W2b) | review APPROVE (0 blocker/major, 3 minor); opt-in per-expiry rung memo (`graded.rung_memo`): the de-Am IV cache owned per expiry slot and shared by every rung / repair / ladder attempt across fan-out threads, candidate certification-grid memo, fan-out exceptions -> typed surface error, kBand published after the fill, band fills charged to the deam bucket; 3 conflicts resolved with the Edit tool as the union: `quote_surface.cpp` (root blob = prebase blob, so the union is the lane's text; resolved `16446b35` = the lane's), `quote_surface_test.cpp` (`474dba43` = the lane's), quote-slice ctest suite list (root wrapping + `AmericanCertification.* QuoteSurfaceRungMemo.*`, 14 suites, `aa9fa1b0`); root gates quote-slice 150/150, native CLI pytest 164/164, curve-fit set 40/40 (+ 2 real-board skips), PCH-off 16 TUs 0 diagnostics |
 | `f6fc7452` | L2e-deam-inversion `9923ce4c` (vol-sota W2b) | review APPROVE (0 blocker/major, 3 minor m1-m3; checkpoint + `review-L2e-finish`); opt-in Premium American IV inversion in the de-Am cache (`graded.deam_inversion premium`: BAW / Black-76 seed leg, cold accurate confirm per iterate, bit-for-bit Search fallback, bounded budget extension, `--deam-audit`; roots <= 2.4e-10 vol from the accurate root, ruling (a)); 3 conflicts resolved with the Edit tool as the union: `deam_iv_cache.cpp` `DeAmIvView::band` (L2c's local-copy publish x L2e's mid-first seeding: the range test and the edge inversions read the local, and the slot's mid fields are carried into the local after `mid_iv(i)` so publish() keeps them; blob `3e7c28d2`), `quote_bench_policy.hpp` graded key list (`54c47803`), CLI strict-option cases (`baaf07d0`); root gates AmericanIvPremium + AlFastProfile 12/12, QuoteSliceVolSpace + DeAmIvCache 9/9, chain-batch 31/31, quote-slice 151/151, native CLI pytest 165/165, PCH-off 67 TUs 0 diagnostics |
 | `27eba264` | L2f-al-fast-tier `4ba287c9` (vol-sota W2b) | review APPROVE (0 blocker/major, 3 minor); opt-in `AlProfile::Screen` + `al_screen_opts()` seed-grade kernel tier (7 nodes, l 16, 2 JN + 3 FP sweeps, p 48; pinned |dP| <= 7.8e-4 max(P,1), 4.6e-6 for T <= 0.1, |dIV| <= 0.48 bp; never served), `AlBoundaryHandle` generation guard (L2b m2), bench status-array fix; no conflicts (kernel blobs `849c3cb3` / `d8b692cb` / `b0a2b84b` = the lane's); root gates 42 focused pricing gtests, chain-batch 31/31, combined anchored ctest 223/223, pricing/simd name set at cap 3 = `52324ef8` modulo the `PricingExecutor.NestedDispatch_ReachesAPoolWorkerAndWakesThePool` load flake (3/3 alone), AL fingerprint `53c4df68` MATCH (vol-rel-avx2 of `27eba264`), PCH-off 19 TUs 0 diagnostics; full parity, keys-ON and G2 below |
+| `e63fa7ba` | SPY1s-owner Phase 1 + M1 `c20e40bc` (vol-sota W2c-a; contains L2h `6e94ba40` via `7980a6d3`) | review-SPY1s-p1 BLOCK on MAJOR M1 only (PROMOTION CASE SUPPORTED) -> M1 fix `c20e40bc` (`deam_iv_key` carries `deam_confirm` / `confirm_k` / `confirm_kernel`) -> rereview APPROVE (0 blocker/major); Screen-seeded Premium inversion with bound-decided band edges, confirm policy (always / band / never) and confirm kernel (reference / fast), Fast certification grid, seed routing, the reason-split counters; L2h σ-family `AlSigmaFamily` (rereview APPROVE; opt-in, no fit caller yet); clean (merged tree = `c20e40bc`'s tree `97f29471`); gates: pricing 73/73 + 1 skip (AlSigmaFamily 11, AmericanIvPremium 9), quote-slice owner suites 26/26, chain-batch 31/31 |
+| (no-op) | L2h-sigma-family `6e94ba40` (vol-sota W2c-a) | `git merge --no-ff 6e94ba40` -> "Already up to date" (an ancestor through the owner's branch) |
+| `f4f48299` | L3e-xcal `78e9f653` (vol-sota W2c-a) | review APPROVE (0 blocker/major, 5 minor deferred); opt-in cross-source calendar / convexity certificate in `compose_predictions_by_status.py` (`off` byte-identical); clean; composer pytest 20/20 |
+| `5fb4d3ec` | L3p-shootout `c22312c1` (vol-sota W2c-a) | measurement lane, sprint note only; clean |
+| `212f5ad7` | L5u-universe `27538985` (vol-sota W2c-a) | tooling lane: label-free universe builder + test (the dataset is never scored); the test registered in `atx-vol-quote-benchmark-tools` (`tests/CMakeLists.txt` blob `553e0546`); tools pytest 176/176 (L5u 4) |
+| `bbaf9aa1` | R3 default promotion (integrate-W2c-a) | PM ruling R3: SPY1s arm D = the graded default (`quote_bench_policy.hpp` blob `6071627b`), kill switch byte-identical, gate PASS on dev200 / dev200b / cohort5, hash set re-baselined (R3 table below); CLI pytest 168/168 (69 in `test_quote_bench_cli.py`; 3 fail on the pre-promotion binary) |
 
 **Wave W0 of the vol-sota sprint (G0, 2026-10-18).** Final root `05a7da3e`, quote-bench sha256
 `9ce6f6c6afc3aa51a5feded37c6473a0cd39e15574f2e0e3a47c5fc7db3d1a12`, `ATX_VOL_FIT_WORKERS=3`,
@@ -231,6 +237,26 @@ outside that chain containment loses 1-2 rows per dev cohort, each on a float32 
 (one of them two-sided: dev200b row 8340964 under both ladders, 2.6e-8); MAE / MAE-spread never higher by more than
 1.1e-5 relative; 0 served violations
 in every family; full tables in `score/rebaseline/`.
+
+**Wave W2c-a of the vol-sota sprint (2026-10-21).** Merged on `be379ad4`, all clean: SPY1s-owner Phase 1 + M1
+`c20e40bc` at `e63fa7ba` (contains L2h `6e94ba40`; the L2h merge is then "Already up to date"), L3e `78e9f653` at
+`f4f48299`, L3p `c22312c1` at `5fb4d3ec`, L5u `27538985` at `212f5ad7` (+ its test registration); R3 promotion
+`bbaf9aa1`. Merge-root binary (`212f5ad7`) quote-bench sha256 `f550f2b9...`, final (`bbaf9aa1`) `d6824606...`,
+`ATX_VOL_FIT_WORKERS=3`, outputs `C:/atx-cache/quote-benchmark/integrate-W2c-a-20261021-parity/` and `.../-g2/`. On the
+merge root: full default parity 13/13 RAW MATCH (the W2b set); keys-ON 29/29 (W0 ladder 6, W2 6, W2b 9, the owner's arm
+hash set 8: SPY A `19d47b61` / B `5985dfe1` / B3 `3b72a083` / C `8f80be87` / D `feac8d2c`, arm D cohort5 / dev200 / dev200b
+`45e491ea` / `2bc7777d` / `ed34eef7`, every arm serving the keys-OFF 1,410 SPY rows); L1 report key sets 9/9; AL fingerprint
+`53c4df68` MATCH; name set at cap 3 `52324ef8` EQUAL; CLI 66/66 on HEAD's tests. On the final root: the R3 table above
+(new default = arm D bit for bit, kill switch 5/5, static rows 7/7); combined anchored ctest 244/244 (quote-slice 154 /
+14 suites, tools 176, native CLI 168, campaign 22). **G2 with ALL keys = the R3 default (unqualified, host 63-93 % loaded):
+SPY graded-v1 fit+reprice 10.88 s single-thread (wall 11.06; W2b 15.0) and 2.24 s all cores (wall 2.44; W2b 3.35);
+the two levers: 106,232 de-Am AL solves per SPY surface (W2b 75,153: arm D adds one Fast confirm per accepted root;
+22,590 Screen edges + 50,308 Screen iterates + 28,551 Fast confirms + 2,734 ambiguous + 2,655 search) at ~81 us per solve
+blended (W2b ~149) + 28,908 Fast grid prices at ~73 us; cohort5 14.9 s @1 / 4.5 s @0 (p50 63.6 ms, p99 738 ms @1),
+dev200 graded 12.4 s @0 (p50 16.3 ms, p99 497 ms); the SPY dated-cash row (static, inferred-schedule) 8.07 s vs auto 6.06 s,
+0 rows served either way.** Plan §1.1 updated: every speed row NOT MET, byte-identity at any `fit_workers` MET; **SPY
+single-thread = 10.9 s, all cores = 2.24 s: unusable against the ≤ 1 s bar.** No holdout touched, nothing pushed; the only
+default moved is R3's.
 
 Pending: knot-first ladder (inherits the AAPL Nov 20 / SPY 23 d calendar slot holders from slice-repair).
 
