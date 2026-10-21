@@ -880,6 +880,111 @@ TEST(QuoteSliceChannel, RepairRefusesWhenNoConvexPriceSetFitsInsideTheQuotes) {
       << to_string(fit->diagnostics.repair.outcome);
 }
 
+// ── Opt-in box certificate (lane L3r1 dense-certificate, 2026-10-20) ────────
+
+QuoteSliceConfig box_certificate_config(double half_ticks = 0.5) {
+  QuoteSliceConfig config;
+  config.repair.certificate = QuoteSliceCertificate::Box;
+  config.repair.box_half_ticks = half_ticks;
+  return config;
+}
+
+TEST(QuoteSliceBoxCertificate, ServesAMicroKinkedPointFitInsideTheWidenedQuotes) {
+  // The same micro-kinked zig-zag the exact certificate refuses (above). Under
+  // the box certificate the fitted prices are projected into every quote's
+  // [bid - h, ask + h] and the UNCHANGED certificate passes the projected
+  // curve; there is no node budget, the channel repair stays off.
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05);
+  const auto exact = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(exact) << exact.error().to_string();
+  ASSERT_EQ(exact->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << exact->fit_error;
+  EXPECT_EQ(exact->diagnostics.box.outcome, QuoteSliceRepairOutcome::NotAttempted);
+  const auto config = box_certificate_config();
+  const auto on = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  const auto &record = on->diagnostics.box;
+  ASSERT_EQ(on->fit_status, QuoteSliceFitStatus::Success)
+      << on->fit_error << " box " << to_string(record.outcome);
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(record.nodes, 0u);
+  EXPECT_GT(record.max_price_move, 0.0);
+  EXPECT_EQ(on->diagnostics.repair.outcome, QuoteSliceRepairOutcome::NotAttempted);
+  ASSERT_TRUE(on->prices);
+  EXPECT_TRUE(AmericanPriceSlice::create(on->prices->nodes(), on->prices->bounds()));
+  EXPECT_FALSE(on->moved_nodes.empty());
+  expect_moved_nodes_reimplied(*on, c.quotes);
+  // Every served price lies inside its own quote widened by h on each side.
+  const double h = config.repair.box_half_ticks * config.repair.box_tick;
+  std::size_t served = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    const auto &row = on->rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+        row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+      continue;
+    }
+    ++served;
+    EXPECT_GE(row.fitted_price, c.quotes[i].bid - h) << i;
+    EXPECT_LE(row.fitted_price, c.quotes[i].ask + h) << i;
+  }
+  EXPECT_EQ(served, c.quotes.size());
+  // No widening: the market's exact [bid, ask] boxes still hold a curve.
+  const auto tight = fit_quote_slice(c.market, c.quotes, box_certificate_config(0.0));
+  ASSERT_TRUE(tight) << tight.error().to_string();
+  EXPECT_EQ(tight->fit_status, QuoteSliceFitStatus::Success) << tight->fit_error;
+}
+
+TEST(QuoteSliceBoxCertificate, RefusesWhenNoArbitrageFreeCurveFitsInsideTheQuotes) {
+  // The carry zig-zag far wider than the one-cent quotes: no convex curve lies
+  // inside the boxes even widened by half a tick, so the slice stays refused
+  // and the record says why.
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.005, 0.015, 0.0);
+  const auto fit = fit_quote_slice(c.market, c.quotes, box_certificate_config());
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << fit->fit_error;
+  EXPECT_FALSE(fit->prices);
+  EXPECT_EQ(fit->diagnostics.box.outcome, QuoteSliceRepairOutcome::Infeasible)
+      << to_string(fit->diagnostics.box.outcome);
+  // The exact certificate's error is what the refusal reports.
+  EXPECT_NE(fit->fit_error.find("AmericanPriceSlice"), std::string::npos) << fit->fit_error;
+}
+
+TEST(QuoteSurface, BoxCertificateServesThePassAFitAsGradeBWithoutARepairRung) {
+  // Under graded admission the box certificate acts at pass A (it is the
+  // certificate, not a fallback rung): the micro-kinked expiry serves from its
+  // own point fit, relabelled B because its served prices left the fit.
+  std::vector<Chain> one{zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05)};
+  const auto exact = fit_quote_surface(expiries(one), QuoteSliceConfig{});
+  ASSERT_TRUE(exact) << exact.error().to_string();
+  ASSERT_EQ(exact->size(), 1u);
+  EXPECT_EQ((*exact)[0].grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ((*exact)[0].refusal, "arbitrage_failure");
+  const auto box = fit_quote_surface(expiries(one), box_certificate_config());
+  ASSERT_TRUE(box) << box.error().to_string();
+  ASSERT_EQ(box->size(), 1u);
+  const QuoteSurfaceSlice &slice = (*box)[0];
+  EXPECT_TRUE(slice.refusal.empty()) << slice.refusal << ": " << slice.error;
+  EXPECT_EQ(slice.grade, QuoteSliceGrade::B);
+  EXPECT_FALSE(slice.channel_refit);
+  EXPECT_FALSE(slice.repair_rung);
+  EXPECT_EQ(slice.fit.diagnostics.box.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_FALSE(slice.fit.moved_nodes.empty());
+}
+
+TEST(QuoteSliceBoxCertificate, ConfigurationIsValidatedAtTheSharedBoundary) {
+  QuoteSliceRepairConfig config;
+  EXPECT_TRUE(validate_quote_slice_repair(config));
+  config.certificate = QuoteSliceCertificate::Box;
+  EXPECT_TRUE(validate_quote_slice_repair(config));
+  config.box_half_ticks = -0.5;
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.box_half_ticks = 0.0;
+  config.box_tick = 0.0;
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.box_tick = 0.01;
+  config.certificate = static_cast<QuoteSliceCertificate>(9);
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+}
+
 TEST(QuoteSliceChannel, ChannelCalendarRepairLiftsACrossingInsideTheQuotes) {
   // An accepted earlier slice 0.2 cent above every node: a crossing inside
   // every channel (half-spreads >= 1 cent) but beyond 0.1 half-spreads.

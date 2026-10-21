@@ -604,6 +604,10 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
     out["repair_max_vol"] = repair.max_vol_move;
     out["repair_immaterial_price"] = repair.immaterial_price_move;
   }
+  if (repair.certificate == QuoteSliceCertificate::Box) {
+    out["certificate"] = "box"; // provenance only when opted in (lane L3r1)
+    out["certificate_box_half_ticks"] = repair.box_half_ticks;
+  }
   if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
     out["ladder"] = "knot-first";
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
@@ -774,7 +778,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
-             "deam_profile", "deam_cache", "rung_memo", "deam_inversion"});
+             "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "certificate",
+             "certificate_box_half_ticks"});
     space = parse_fit_space(j);
     // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
     // exact-keyed reuse across an expiry's rungs, speed only.
@@ -829,6 +834,21 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     numeric(j, "repair_max_nodes", repair.max_nodes, 1, 100000);
     numeric(j, "repair_max_vol", repair.max_vol_move, 1.0e-6, 10);
     numeric(j, "repair_immaterial_price", repair.immaterial_price_move, 0, 1.0e3);
+    // Opt-in box certificate (quote_slice.hpp QuoteSliceCertificate, lane L3r1):
+    // "exact" is the historical certificate; the half-tick key is inert without it.
+    if (j.contains("certificate")) {
+      const auto mode = text(j.at("certificate"));
+      if (mode == "box") {
+        repair.certificate = QuoteSliceCertificate::Box;
+      } else if (mode != "exact") {
+        throw std::runtime_error("Policy graded certificate must be exact or box");
+      }
+    }
+    if (j.contains("certificate_box_half_ticks") &&
+        repair.certificate != QuoteSliceCertificate::Box) {
+      throw std::runtime_error("Policy graded certificate_box_half_ticks requires certificate box");
+    }
+    numeric(j, "certificate_box_half_ticks", repair.box_half_ticks, 0, 100);
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};

@@ -136,6 +136,68 @@ private:
   AmericanPriceBounds bounds_;
 };
 
+// ── Box certificate (lane L3r1 dense-certificate, 2026-10-20; opt-in) ──────
+//
+// The exact certificate asks "is this point curve arbitrage-free to the numerical
+// allowance?". A quote can only answer "does an arbitrage-free curve exist inside
+// the bid/ask boxes?". certify_american_box answers the second question and, when
+// the answer is yes, returns that curve: the fitted node prices are projected
+// (least squares, Dykstra, uniform weights) side by side onto the set the exact
+// certificate's strike checks describe — convex in strike, call slopes in
+// [-discount_max, 0], put slopes in [0, discount_max], the intrinsic and upper
+// price bounds — intersected with every node side's box, and the UNCHANGED
+// create() then certifies the projected curve P*. Nothing about certification is
+// relaxed: P* passes exactly the tests the fitted prices failed. The caller
+// chooses the boxes (a quote's [bid - h, ask + h]; a side without a quote is
+// held at its fitted price with lo == hi). Nodes whose constraints never bind
+// keep their fitted price bit for bit.
+
+// Per node, the interval each side's price may take; lo <= hi, finite. A side
+// held fixed has lo == hi == its fitted price.
+struct AmericanPriceBox {
+  double call_lo{};
+  double call_hi{};
+  double put_lo{};
+  double put_hi{};
+};
+
+// The certified in-box curve and its distance from the fitted prices.
+struct AmericanBoxCertificate {
+  AmericanPriceSlice slice;        // P*, certified by create()
+  std::vector<std::uint8_t> moved; // per node: 1 = call moved, 2 = put moved (OR'd)
+  std::size_t moved_nodes = 0;     // strikes whose call or put price moved
+  double max_price_move = 0.0;     // largest |P* - fitted| over both sides
+};
+
+// Weighted least-squares projection of one side's node prices `prices` (in
+// place) onto { convex in strike; first slope >= slope_min; last slope <=
+// slope_max; lo <= p <= hi }: argmin sum w_i (p_i - p0_i)^2 by Dykstra's
+// algorithm (Hildreth's form for the half-spaces, a full increment for the
+// box). Convex + end slopes cover every vertical-spread bound of the
+// certificate. Nodes whose constraints never bind are untouched bit for bit.
+// Bounded: at most 20,000 sweeps of O(n). Returns false when a box is empty
+// (lo > hi) or the sweeps do not settle; `prices` is then unspecified.
+// Requires equal lengths, strictly increasing finite strikes, positive weights.
+[[nodiscard]] bool project_convex_price_box(std::span<const double> strikes,
+                                            std::span<double> prices, std::span<const double> lo,
+                                            std::span<const double> hi,
+                                            std::span<const double> weights, double slope_min,
+                                            double slope_max);
+
+// Box certificate of `fitted` (one box per node, same order). Each side's box
+// is first intersected with the certificate's own per-node bounds (intrinsic,
+// upper); an empty intersection, a box set with no convex curve inside it (the
+// greatest convex minorant of the upper edges falls below a lower edge — an
+// exact test), or a projection that does not settle returns Unavailable ("no
+// arbitrage-free curve inside the boxes"). The projected curve is then handed
+// to create(); its refusal (for example the affine call-minus-put bound, which
+// couples the two sides) is returned with create()'s code and message. Malformed
+// input (sizes, non-finite values, a box with lo > hi, non-increasing strikes,
+// invalid bounds) is InvalidArgument. Allocates O(n); thread-compatible.
+[[nodiscard]] Result<AmericanBoxCertificate>
+certify_american_box(std::span<const AmericanPriceNode> fitted,
+                     std::span<const AmericanPriceBox> boxes, const AmericanPriceBounds &bounds);
+
 // Check later >= earlier for both American calls and puts at every knot in
 // the overlap of their strike domains. Their difference is affine between
 // consecutive union knots, so this certifies the whole overlap to the fixed

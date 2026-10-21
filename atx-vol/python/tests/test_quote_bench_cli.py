@@ -735,11 +735,57 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "fast",
                          "deam_inversion": "premium"}},
-             "deam_inversion premium requires deam_profile accurate")):
+             "deam_inversion premium requires deam_profile accurate"),
+            # Opt-in box certificate (lane L3r1).
+            ({"schema_version": 1, "admission": "graded", "graded": {"certificate": "loose"}},
+             "certificate must be exact or box"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"certificate_box_half_ticks": 1}},
+             "certificate_box_half_ticks requires certificate box"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"certificate": "exact", "certificate_box_half_ticks": 0.5}},
+             "certificate_box_half_ticks requires certificate box"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"certificate": "box", "certificate_box_half_ticks": 200}},
+             "outside supported bounds"),
+            ({"schema_version": 1, "graded": {"certificate": "box"}},
+             "require admission graded")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
         assert message in result.stderr, (document, result.stderr)
+
+
+def test_native_box_certificate_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.certificate box (lane L3r1): on clean quotes every point fit passes the
+    # exact certificate, so the box certificate never runs and the predictions are
+    # byte-identical to plain graded; only the opt-in provenance is added. An
+    # explicit "exact" adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    plain_output, box_output, exact_output = (
+        tmp_path / "plain.csv", tmp_path / "box.csv", tmp_path / "exact.csv")
+    plain_policy = write_policy(tmp_path / "plain.json",
+                                {"schema_version": 1, "admission": "graded"})
+    plain = invoke(binary, source, plain_output, "--policy", str(plain_policy))
+    assert plain.returncode == 0, plain.stderr
+    box_policy = write_policy(tmp_path / "box.json", {
+        "schema_version": 1, "admission": "graded",
+        "graded": {"certificate": "box", "certificate_box_half_ticks": 0.25}})
+    box = invoke(binary, source, box_output, "--policy", str(box_policy))
+    assert box.returncode == 0, box.stderr
+    assert box_output.read_bytes() == plain_output.read_bytes()
+    graded = json.loads(box.stdout)["policy_definition"]["graded"]
+    assert graded["certificate"] == "box"
+    assert graded["certificate_box_half_ticks"] == 0.25
+    plain_graded = json.loads(plain.stdout)["policy_definition"]["graded"]
+    assert not {"certificate", "certificate_box_half_ticks"} & set(plain_graded)
+    exact_policy = write_policy(tmp_path / "exact.json", {
+        "schema_version": 1, "admission": "graded", "graded": {"certificate": "exact"}})
+    exact = invoke(binary, source, exact_output, "--policy", str(exact_policy))
+    assert exact.returncode == 0, exact.stderr
+    assert exact_output.read_bytes() == plain_output.read_bytes()
+    assert json.loads(exact.stdout)["policy_definition"]["graded"] == plain_graded
 
 
 def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):

@@ -217,15 +217,39 @@ enum class QuoteSliceRepairMode : std::uint8_t { Off, Channel };
 // unchanged certificate then runs again; nothing about certification is
 // relaxed. Moved nodes are flagged in QuoteSliceFit::moved_nodes and re-implied
 // as for the other repairs.
+// Which question the price certificate answers (lane L3r1, 2026-10-20; opt-in).
+// Exact (the historical default, bit for bit): the fitted node prices themselves
+// must pass AmericanPriceSlice::create. Box: when they fail (and the bounded-move
+// and channel repairs, where enabled, have not fixed it), the fitted prices are
+// projected (american_price_slice.hpp certify_american_box: Dykstra, uniform
+// weights — the channel repair's projection) onto the certificate's strike
+// constraints intersected with every node side's QUOTE box [bid - h, ask + h]
+// (bidless: [0, ask + h]; a side without a quote is held at its fitted price),
+// h = box_half_ticks * box_tick, and the UNCHANGED certificate certifies that
+// curve P*. No node or volatility budget applies: the box is the budget, so P*
+// never leaves the market by more than h. P* is served where the exact curve
+// failed and P* passes; its moved nodes are flagged in QuoteSliceFit::moved_nodes
+// and re-implied exactly like a repair's (PriceOnly where the served price has no
+// volatility), and QuoteSliceDiagnostics::box records the move. The
+// non-monotone refusal, the nondividend joint check and every calendar rule
+// downstream are unchanged and act on P*. The box certificate runs wherever the
+// certificate runs (pass A included); it is a certificate, not a fallback rung.
+enum class QuoteSliceCertificate : std::uint8_t { Exact, Box };
+
 struct QuoteSliceRepairConfig {
   QuoteSliceRepairMode mode = QuoteSliceRepairMode::Off;
   std::size_t max_nodes = 16;            // >= 1
   double max_vol_move = 0.01;            // > 0, volatility units
   double immaterial_price_move = 5.0e-4; // >= 0, price units
+  // Opt-in box certificate (QuoteSliceCertificate); Exact is the historical path.
+  QuoteSliceCertificate certificate = QuoteSliceCertificate::Exact;
+  double box_half_ticks = 0.5; // >= 0, finite: each box edge is widened by this many ticks
+  double box_tick = 0.01;      // > 0, finite, price units
 };
 
-// InvalidArgument unless the mode is known and every budget is finite and in
-// range. fit_quote_slice and fit_quote_surface apply it before any fit.
+// InvalidArgument unless the mode and certificate are known and every budget and
+// box control is finite and in range. fit_quote_slice and fit_quote_surface
+// apply it before any fit.
 [[nodiscard]] Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config);
 
 enum class QuoteSliceRepairOutcome : std::uint8_t {
@@ -395,6 +419,12 @@ struct QuoteSliceDiagnostics {
   QuoteSliceChannelDiagnostics channel{};
   // Channel repair of this slice's own certificate (QuoteSliceConfig::repair).
   QuoteSliceRepairRecord repair{};
+  // Box certificate of this slice's fitted prices (QuoteSliceRepairConfig::
+  // certificate Box): Applied with the price moves (max_vol_move is not
+  // measured: the box bounds the price), Infeasible when no arbitrage-free
+  // curve exists inside the quote boxes, NotCertified when the in-box curve
+  // failed a cross-side check; NotAttempted under Exact or a passed certificate.
+  QuoteSliceRepairRecord box{};
   QuoteSliceDeamDiagnostics deam{};
 };
 

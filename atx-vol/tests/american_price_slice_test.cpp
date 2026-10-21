@@ -740,4 +740,159 @@ TEST(AmericanCertification, MalformedInputKeepsCreatesOwnErrorUnderTheScreen) {
   EXPECT_EQ(bad_kernel.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
+// ── Box certificate (lane L3r1 dense-certificate, 2026-10-20) ──────────────
+
+using atx::vol::AmericanPriceBox;
+using atx::vol::certify_american_box;
+using atx::vol::project_convex_price_box;
+
+// Carry bounds with slack in the affine call-minus-put band (a 1 % discount
+// range, a 1 % prepaid range), as real quotes have; kBounds' zero-width band
+// would turn the exact certificate into a put-call-parity equality.
+constexpr AmericanPriceBounds kBoxBounds{100.0, 0.99, 1.0, 99.0, 100.0};
+
+// An arbitrage-free market whose three middle call nodes are collinear (the call
+// envelope is affine there), so any lift at the middle strike is a kink. Puts
+// keep put-call parity at zero carry.
+[[nodiscard]] std::vector<AmericanPriceNode> flat_segment_market() {
+  return {{80.0, 22.0, 2.0}, {90.0, 14.0, 4.0}, {100.0, 9.0, 9.0}, {110.0, 4.0, 14.0},
+          {120.0, 2.0, 22.0}};
+}
+
+// Each side's box of half-width `h` around the market price.
+[[nodiscard]] std::vector<AmericanPriceBox> boxes_around(std::span<const AmericanPriceNode> market,
+                                                         double h) {
+  std::vector<AmericanPriceBox> out;
+  out.reserve(market.size());
+  for (const auto &node : market) {
+    out.push_back({node.call - h, node.call + h, node.put - h, node.put + h});
+  }
+  return out;
+}
+
+TEST(AmericanBoxCertificate, ServesASubTickKinkTheExactCertificateRefuses) {
+  // The fit sits 5e-5 above the affine call envelope at the middle strike: the
+  // exact certificate refuses it (allowance ~1.3e-7), yet the market's boxes of
+  // half a tick contain an arbitrage-free curve. The box certificate serves that
+  // curve, moving no node by more than the kink and no put at all.
+  const auto market = flat_segment_market();
+  auto fitted = market;
+  fitted[2].call += 5.0e-5;
+  const auto exact = AmericanPriceSlice::create(fitted, kBoxBounds);
+  ASSERT_FALSE(exact.has_value());
+  EXPECT_NE(exact.error().message().find("convexity"), std::string::npos)
+      << exact.error().message();
+  const auto boxes = boxes_around(market, 0.005);
+  const auto box = certify_american_box(fitted, boxes, kBoxBounds);
+  ASSERT_TRUE(box.has_value()) << box.error().to_string();
+  EXPECT_TRUE(AmericanPriceSlice::create(box->slice.nodes(), kBoxBounds).has_value());
+  EXPECT_GE(box->moved_nodes, 1u);
+  EXPECT_GT(box->max_price_move, 0.0);
+  EXPECT_LE(box->max_price_move, 5.0e-5);
+  const auto nodes = box->slice.nodes();
+  ASSERT_EQ(nodes.size(), fitted.size());
+  ASSERT_EQ(box->moved.size(), fitted.size());
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    EXPECT_GE(nodes[i].call, boxes[i].call_lo) << i;
+    EXPECT_LE(nodes[i].call, boxes[i].call_hi) << i;
+    // Puts were never in question: untouched bit for bit, never flagged.
+    EXPECT_EQ(nodes[i].put, fitted[i].put) << i;
+    EXPECT_EQ(box->moved[i] & 2u, 0u) << i;
+    EXPECT_EQ((box->moved[i] & 1u) != 0u, nodes[i].call != fitted[i].call) << i;
+  }
+  EXPECT_LT(nodes[2].call, fitted[2].call);
+}
+
+TEST(AmericanBoxCertificate, RefusesAKinkTwoTicksAboveTheMarketEnvelope) {
+  // Here the MARKET itself is kinked two ticks above its envelope: no convex
+  // curve passes through boxes of half a tick, and the exact feasibility test
+  // (greatest convex minorant of the upper edges against the lower edges) says
+  // so before any projection, naming the node.
+  auto market = flat_segment_market();
+  market[2].call += 0.02;
+  const auto boxes = boxes_around(market, 0.005);
+  const auto box = certify_american_box(market, boxes, kBoxBounds);
+  ASSERT_FALSE(box.has_value());
+  EXPECT_EQ(box.error().code(), atx::core::ErrorCode::Unavailable);
+  EXPECT_NE(box.error().message().find("node 2: no arbitrage-free curve inside the boxes"),
+            std::string::npos)
+      << box.error().message();
+  // The neighbours may rise by h and the middle fall by h, closing 2h of the
+  // 0.02 kink: three-quarter-tick boxes still cannot hold it, full-tick boxes
+  // hold it exactly (the middle node lands on its lower edge).
+  EXPECT_FALSE(
+      certify_american_box(market, boxes_around(market, 0.0075), kBoxBounds).has_value());
+  const auto exact_fit = certify_american_box(market, boxes_around(market, 0.01), kBoxBounds);
+  ASSERT_TRUE(exact_fit.has_value()) << exact_fit.error().to_string();
+  EXPECT_LE(exact_fit->max_price_move, 0.01 + 1.0e-9);
+  EXPECT_NEAR(exact_fit->slice.nodes()[2].call, 9.01, 1.0e-9);
+}
+
+TEST(AmericanBoxCertificate, MalformedBoxesAreInvalidAndExerciseBoundsAreHard) {
+  const auto market = flat_segment_market();
+  auto boxes = boxes_around(market, 0.005);
+  // One box per node, lo <= hi, finite: anything else is the caller's error.
+  EXPECT_EQ(certify_american_box(market, std::span(boxes).first(4), kBoxBounds).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+  auto inverted = boxes;
+  inverted[1].put_lo = inverted[1].put_hi + 1.0;
+  EXPECT_EQ(certify_american_box(market, inverted, kBoxBounds).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+  auto open = boxes;
+  open[3].call_hi = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(certify_american_box(market, open, kBoxBounds).error().code(),
+            atx::core::ErrorCode::InvalidArgument);
+  // A quote entirely below intrinsic (the 120 put is worth at least 20) is no
+  // box: refused as infeasible, never served.
+  auto stale = boxes;
+  stale[4].put_lo = 19.0;
+  stale[4].put_hi = 19.5;
+  const auto refused = certify_american_box(market, stale, kBoxBounds);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), atx::core::ErrorCode::Unavailable);
+  EXPECT_NE(refused.error().message().find("exercise bounds"), std::string::npos)
+      << refused.error().message();
+  // A side held fixed (lo == hi) stays exactly where it is while the other side
+  // is projected.
+  auto fitted = market;
+  fitted[2].call += 5.0e-5;
+  auto fixed_puts = boxes;
+  for (std::size_t i = 0; i < fixed_puts.size(); ++i) {
+    fixed_puts[i].put_lo = fitted[i].put;
+    fixed_puts[i].put_hi = fitted[i].put;
+  }
+  const auto box = certify_american_box(fitted, fixed_puts, kBoxBounds);
+  ASSERT_TRUE(box.has_value()) << box.error().to_string();
+  for (std::size_t i = 0; i < fitted.size(); ++i) {
+    EXPECT_EQ(box->slice.nodes()[i].put, fitted[i].put) << i;
+  }
+}
+
+TEST(AmericanBoxCertificate, ProjectionLeavesAFeasibleCurveBitForBit) {
+  // Nothing binds: every multiplier stays zero and the box clamp is the identity,
+  // so the first sweep settles and no price changes in any bit.
+  const auto market = flat_segment_market();
+  std::vector<double> strikes;
+  std::vector<double> prices;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  for (const auto &node : market) {
+    strikes.push_back(node.strike);
+    prices.push_back(node.call);
+    lo.push_back(node.call - 1.0);
+    hi.push_back(node.call + 1.0);
+  }
+  const std::vector<double> weights(prices.size(), 1.0);
+  const auto before = prices;
+  ASSERT_TRUE(project_convex_price_box(strikes, prices, lo, hi, weights, -1.0, 0.0));
+  for (std::size_t i = 0; i < prices.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(prices[i]), std::bit_cast<std::uint64_t>(before[i]))
+        << i;
+  }
+  // An empty box is refused outright.
+  auto empty_hi = hi;
+  empty_hi[0] = lo[0] - 1.0;
+  EXPECT_FALSE(project_convex_price_box(strikes, prices, lo, empty_hi, weights, -1.0, 0.0));
+}
+
 } // namespace

@@ -929,84 +929,8 @@ double channel_distance(double price, double lo, double hi) noexcept {
   return std::max({lo - price, price - hi, 0.0});
 }
 
-// Weighted least-squares projection (weights `w`) of one side's prices `p` (in place)
-// onto { convex in strike; first slope >= slope_min; last slope <= slope_max;
-// lo <= p <= hi }: argmin sum w_i (p_i - p0_i)^2 by Dykstra's algorithm, in
-// Hildreth's form for the half-spaces (one nonnegative multiplier each) plus a
-// full increment for the box. Convex + end slopes covers every vertical-spread
-// bound of the certificate. Nodes whose constraints never bind are untouched
-// bit for bit. Bounded: at most kMaxSweeps sweeps of O(n). False when the box
-// is empty or the sweeps do not settle; the caller then refuses the repair.
-bool project_convex_box(std::span<const double> strikes, std::vector<double> &p,
-                        std::span<const double> lo, std::span<const double> hi,
-                        std::span<const double> w, double slope_min, double slope_max) {
-  constexpr int kMaxSweeps = 20000;
-  const std::size_t n = p.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    if (!(lo[i] <= hi[i])) return false;
-  }
-  if (n < 2) return true;
-  // Half-space j: sum_k a_jk p_k >= b_j over three (convexity) or two (slope)
-  // consecutive nodes starting at first[j].
-  struct HalfSpace {
-    std::size_t first;
-    std::size_t count;
-    std::array<double, 3> a;
-    double b;
-    double norm; // a W^-1 a
-    double mu;   // Dykstra multiplier, >= 0
-  };
-  std::vector<HalfSpace> spaces;
-  spaces.reserve(n);
-  const auto inverse_norm = [&](HalfSpace &h) {
-    h.norm = 0.0;
-    for (std::size_t k = 0; k < h.count; ++k) h.norm += h.a[k] * h.a[k] / w[h.first + k];
-  };
-  for (std::size_t i = 1; i + 1 < n; ++i) {
-    const double left = 1.0 / (strikes[i] - strikes[i - 1]);
-    const double right = 1.0 / (strikes[i + 1] - strikes[i]);
-    HalfSpace h{i - 1, 3, {left, -(left + right), right}, 0.0, 0.0, 0.0};
-    inverse_norm(h);
-    spaces.push_back(h);
-  }
-  const double first_width = 1.0 / (strikes[1] - strikes[0]);
-  const double last_width = 1.0 / (strikes[n - 1] - strikes[n - 2]);
-  HalfSpace first{0, 2, {-first_width, first_width, 0.0}, slope_min, 0.0, 0.0};
-  HalfSpace last{n - 2, 2, {last_width, -last_width, 0.0}, -slope_max, 0.0, 0.0};
-  inverse_norm(first);
-  inverse_norm(last);
-  spaces.push_back(first);
-  spaces.push_back(last);
-  std::vector<double> box(n, 0.0);
-  double scale = 1.0;
-  for (const double value : p) scale = std::max(scale, std::abs(value));
-  const double tolerance = 1.0e-13 * scale;
-  for (int sweep = 0; sweep < kMaxSweeps; ++sweep) {
-    double change = 0.0;
-    for (HalfSpace &h : spaces) {
-      double dot = 0.0;
-      for (std::size_t k = 0; k < h.count; ++k) dot += h.a[k] * p[h.first + k];
-      const double mu = std::max(0.0, h.mu + (h.b - dot) / h.norm);
-      const double step = mu - h.mu;
-      if (step == 0.0) continue;
-      h.mu = mu;
-      for (std::size_t k = 0; k < h.count; ++k) {
-        const double delta = step * h.a[k] / w[h.first + k];
-        p[h.first + k] += delta;
-        change = std::max(change, std::abs(delta));
-      }
-    }
-    for (std::size_t i = 0; i < n; ++i) {
-      const double z = p[i] + box[i];
-      const double clamped = std::clamp(z, lo[i], hi[i]);
-      change = std::max(change, std::abs(clamped - p[i]));
-      box[i] = z - clamped;
-      p[i] = clamped;
-    }
-    if (change <= tolerance) return true;
-  }
-  return false;
-}
+// The projection itself is the certificate's: project_convex_price_box
+// (american_price_slice.hpp), shared with the box certificate since lane L3r1.
 
 // Per-node box of one side for the channel projection: the node's own quote
 // channel widened to contain the starting price (so no node can end farther
@@ -1075,7 +999,7 @@ bool project_in_channel(std::vector<AmericanPriceNode> &nodes,
     // Calls fall with slope >= -discount_max; puts rise with slope <= discount_max.
     const double slope_min = call ? -bounds.discount_max : 0.0;
     const double slope_max = call ? 0.0 : bounds.discount_max;
-    if (!project_convex_box(strikes, p, lo, hi, w, slope_min, slope_max)) return false;
+    if (!project_convex_price_box(strikes, p, lo, hi, w, slope_min, slope_max)) return false;
     for (std::size_t i = 0; i < nodes.size(); ++i) (call ? nodes[i].call : nodes[i].put) = p[i];
   }
   std::vector<std::uint8_t> lowered;
@@ -1198,6 +1122,68 @@ std::optional<AmericanPriceSlice> channel_repair_slice(
   return std::nullopt;
 }
 
+// ── Box certificate (QuoteSliceCertificate::Box, lane L3r1 2026-10-20) ──────
+
+// Quote boxes of the box certificate: every node side's own quote channel
+// (node_channels) widened by `h` on each side, a bidless quote [0, ask + h]; a
+// side without a quote is held at its fitted price.
+std::vector<AmericanPriceBox> quote_boxes(std::span<const AmericanPriceNode> nodes,
+                                          std::span<const QuoteSliceQuote> quotes, double h) {
+  const NodeChannels channel = node_channels(nodes, quotes);
+  std::vector<AmericanPriceBox> boxes(nodes.size());
+  const auto edges = [h](double bid, double ask, double fitted, double &lo, double &hi) {
+    if (!std::isfinite(ask)) {
+      lo = fitted;
+      hi = fitted;
+      return;
+    }
+    lo = bid > 0.0 ? std::max(bid - h, 0.0) : 0.0;
+    hi = ask + h;
+  };
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    edges(channel.call_lo[i], channel.call_hi[i], nodes[i].call, boxes[i].call_lo,
+          boxes[i].call_hi);
+    edges(channel.put_lo[i], channel.put_hi[i], nodes[i].put, boxes[i].put_lo, boxes[i].put_hi);
+  }
+  return boxes;
+}
+
+// Box certificate of a failed exact certificate: certify_american_box on the
+// FITTED prices inside their quote boxes. On success replaces `prices` with the
+// in-box curve and `repaired` with its moved nodes; `record` keeps what it did
+// (Applied, with the price moves; max_vol_move is not measured, the box bounds
+// the price) or why it refused (Infeasible: no arbitrage-free curve inside the
+// boxes; NotCertified: the in-box curve failed a cross-side check). No node or
+// volatility budget: the box is the budget.
+std::optional<AmericanPriceSlice> box_certify_slice(std::span<const QuoteSliceQuote> quotes,
+                                                    std::vector<AmericanPriceNode> &prices,
+                                                    const AmericanPriceBounds &bounds,
+                                                    const QuoteSliceRepairConfig &config,
+                                                    std::vector<std::uint8_t> &repaired,
+                                                    QuoteSliceRepairRecord &record) {
+  record = QuoteSliceRepairRecord{};
+  const double h = config.box_half_ticks * config.box_tick;
+  auto box = certify_american_box(prices, quote_boxes(prices, quotes, h), bounds);
+  if (!box) {
+    record.outcome = box.error().code() == ErrorCode::Unavailable
+                         ? QuoteSliceRepairOutcome::Infeasible
+                         : QuoteSliceRepairOutcome::NotCertified;
+    return std::nullopt;
+  }
+  record.outcome = QuoteSliceRepairOutcome::Applied;
+  record.nodes = box->moved_nodes;
+  record.max_price_move = box->max_price_move;
+  const auto after = box->slice.nodes();
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    const double move = std::max(std::abs(after[i].call - prices[i].call),
+                                 std::abs(after[i].put - prices[i].put));
+    if (move > config.immaterial_price_move) ++record.material_nodes;
+  }
+  prices.assign(after.begin(), after.end());
+  repaired = std::move(box->moved);
+  return std::move(box->slice);
+}
+
 // Flags node side `bit` (1 call, 2 put) of node `node` among `nodes` as served
 // price-only (QuoteSliceFit::price_only_nodes).
 void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::size_t nodes) {
@@ -1299,10 +1285,13 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   auto certified = AmericanPriceSlice::create(prices, bounds);
   const bool channel_mode =
       channel_repair != nullptr && channel_repair->mode == QuoteSliceRepairMode::Channel;
-  // The channel repair starts from the fitted prices, never from a bounded-move
-  // repair that moved them and still failed (only copied when it can run).
+  const bool box_mode = channel_repair != nullptr &&
+                        channel_repair->certificate == QuoteSliceCertificate::Box;
+  // The channel repair and the box certificate start from the fitted prices,
+  // never from a bounded-move repair that moved them and still failed (only
+  // copied when one of them can run).
   std::vector<AmericanPriceNode> fitted;
-  if (!certified && channel_mode) fitted = prices;
+  if (!certified && (channel_mode || box_mode)) fitted = prices;
   std::vector<std::uint8_t> repaired;
   if (!certified && repair_half_spreads > 0.0 &&
       repair_convexity(prices, quotes, repair_half_spreads, diag.channel, repaired)) {
@@ -1317,17 +1306,29 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         channel_repair_slice(out, quotes, fitted, bounds, *channel_repair, repaired, diag.repair);
     if (channel_certified) prices = std::move(fitted);
   }
-  if (!certified && !channel_certified) {
+  std::optional<AmericanPriceSlice> box_certified;
+  if (!certified && !channel_certified && box_mode) {
+    // The box certificate is the last rung (QuoteSliceCertificate::Box): the
+    // fitted prices inside their quote boxes; the served moves are its own,
+    // recorded in diag.box.
+    if (!repaired.empty()) diag.channel.repaired_nodes = 0;
+    box_certified = box_certify_slice(quotes, fitted, bounds, *channel_repair, repaired, diag.box);
+    if (box_certified) prices = std::move(fitted);
+  }
+  if (!certified && !channel_certified && !box_certified) {
     out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
     out.fit_error = certified.error().to_string();
     return;
   }
-  AmericanPriceSlice &accepted = channel_certified ? *channel_certified : *certified;
+  AmericanPriceSlice &accepted = box_certified       ? *box_certified
+                                 : channel_certified ? *channel_certified
+                                                     : *certified;
   if (q_min == 0.0 && q_max == 0.0 && out.variance_clock_dividends.empty() &&
       diag.effective_rate >= 0.0) {
     const auto joint = check_nondividend_american(accepted, diag.discount);
     if (!joint) {
       if (channel_certified) diag.repair.outcome = QuoteSliceRepairOutcome::NotCertified;
+      if (box_certified) diag.box.outcome = QuoteSliceRepairOutcome::NotCertified;
       out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
       out.fit_error = joint.error().to_string();
       return;
@@ -1612,8 +1613,11 @@ Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
 
 Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {
   if ((config.mode != QuoteSliceRepairMode::Off && config.mode != QuoteSliceRepairMode::Channel) ||
+      (config.certificate != QuoteSliceCertificate::Exact &&
+       config.certificate != QuoteSliceCertificate::Box) ||
       config.max_nodes < 1 || !positive(config.max_vol_move) ||
-      !nonnegative(config.immaterial_price_move)) {
+      !nonnegative(config.immaterial_price_move) || !nonnegative(config.box_half_ticks) ||
+      !positive(config.box_tick)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel repair configuration");
   }
   return Ok();

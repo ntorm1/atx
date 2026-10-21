@@ -1,0 +1,72 @@
+# Sprint note — L3r1 dense-certificate: certify the quote BOX, not the point (2026-10-20)
+
+Lane `L3r1-dense-certificate`, branch `feat/vol-L3r1-dense-certificate-20261020`, base
+`be379ad4` (the W2b root), pool-3, RunId `vol-20261020r3-L3r1`. Brief:
+`.superpowers/sdd/2026-10-18-vol-sota/lane-L3r1-dense-certificate-brief.md`; evidence
+`C:\atx-cache\quote-benchmark\L3r1-20261020-evidence\` (`RESULTS.md`, `sha256.txt`). Fable 5.1.
+Checkpoint 1 = lever 1 (the box certificate). Levers 2 (calendar at quote resolution) and 3
+(market wing cap) are NOT in this checkpoint; see §6.
+
+## 1. Why
+
+The robustness audit (`audit-robustness-report.md` §1-3) found the single fit routes refuse whole
+chains for sub-tick certificate kinks: SPY (cohort5 graded-v1) 28 of 32 chains refused (convexity 15,
+vertical slope 9, calendar 4), 89.0 % of rows unserved, served containment 68.2 %; dev200 graded-v1
+13,594 unserved rows = 50.8 % calendar crossings + 39.1 % certificate failures. LEDGER L524 names the
+mechanism: per-strike carry noise leaves nodes <= 7e-5 above their convex envelope. The exact
+certificate asks "is this point curve arbitrage-free to 1e-6?"; a quote can only answer "does an
+arbitrage-free curve exist inside the bid/ask boxes?". This lane makes the certificate ask the box.
+
+## 2. What (opt-in: `graded.certificate = "box"`, default `exact` byte-identical)
+
+- `american_price_slice.hpp/.cpp`: `AmericanPriceBox`, `AmericanBoxCertificate`,
+  `project_convex_price_box` (the Dykstra projection MOVED here from `quote_slice.cpp`, unchanged
+  numerics: uniform weights, Hildreth half-spaces for convexity + end slopes, a full increment for the
+  box, 20,000-sweep cap) and `certify_american_box(fitted, boxes, bounds)`: each side's box is
+  intersected with the certificate's hard per-node bounds (intrinsic, upper); an EXACT feasibility test
+  (the greatest convex minorant of the upper edges must dominate the lower edges — necessary and
+  sufficient for "a convex curve exists inside the boxes") refuses before any projection, naming the
+  node; then the projection; then the UNCHANGED `AmericanPriceSlice::create` certifies P*. Refusals:
+  `Unavailable` = no arbitrage-free curve inside the boxes; create()'s own code/message when P* fails a
+  cross-side check (affine call-minus-put); `InvalidArgument` = malformed input.
+- `quote_slice.hpp`: `QuoteSliceCertificate { Exact, Box }`, `QuoteSliceRepairConfig::certificate /
+  box_half_ticks (0.5) / box_tick (0.01)`, `QuoteSliceDiagnostics::box` (a `QuoteSliceRepairRecord`).
+- `quote_slice.cpp`: `quote_boxes` (a node side's own quote channel widened by h = half_ticks x tick
+  on each side; bidless [0, ask + h]; a side without a quote held at its fitted price),
+  `box_certify_slice`, and the `certify_and_serve` rung: exact certificate -> bounded-move repair ->
+  channel repair (if on) -> BOX certificate (if on) -> refuse. P*'s moved nodes go through the
+  existing `moved_nodes` path (re-implied; PriceOnly where the served price has no volatility), the
+  nondividend joint check and every calendar rule act on P*. No node / volatility budget: the box is
+  the budget. Under graded admission the box certificate acts at pass A too (it is the certificate,
+  not a fallback rung); a pass-A slice whose served prices moved is relabelled B by the existing rule.
+- `quote_bench_policy.hpp`: graded keys `certificate` ("exact" | "box") and
+  `certificate_box_half_ticks` (0..100; refused without `certificate: box`); provenance emitted only
+  when opted in.
+- Tests: `AmericanBoxCertificate.*` (4), `QuoteSliceBoxCertificate.*` (3),
+  `QuoteSurface.BoxCertificateServesThePassAFitAsGradeBWithoutARepairRung`, five strict CLI cases and
+  `test_native_box_certificate_is_opt_in_with_provenance`; the two new suites added to
+  `ATX_VOL_QUOTE_SLICE_SUITES` (the ctest's configure-time filter silently drops unlisted suites).
+
+## 3. Numbers
+
+(filled from `RESULTS.md` — see the lane report until then)
+
+## 4. Hashes
+
+(filled from `RESULTS.md`)
+
+## 5. Traps found
+
+- `atx-vol-quote-slice` runs `--gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES}`: a new suite that is not
+  added to that CMake list passes ctest without ever running (the direct exe run caught the only
+  failing assertion of the lane's first test draft; the ctest said 100 %).
+- Boxes of half-width h close a kink of up to 2h (the neighbours rise by h, the middle falls by h):
+  a 2-tick market kink is held exactly by full-tick boxes and refused by three-quarter-tick ones.
+
+## 6. Remaining levers (not in checkpoint 1)
+
+- Lever 2, calendar at quote resolution (`quote_surface.cpp` :841 hunk): a crossing counts only when
+  it exceeds h_short + h_long; below that the pair is repaired by a box-constrained calendar
+  projection (calendar clamp + quote boxes, no budget) and marked `calendar_channel_repaired`.
+- Lever 3, market wing cap (`graded.wing_mult_source = "policy" | "market"`): `mult_ceil` for the
+  dense knot wing = max(3.0, market served multiple at the outermost two-sided strike x 1.1), <= 6.0.
