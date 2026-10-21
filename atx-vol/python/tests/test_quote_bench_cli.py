@@ -749,6 +749,14 @@ def test_native_graded_options_are_strict(binary, tmp_path):
               "graded": {"certificate": "box", "certificate_box_half_ticks": 200}},
              "outside supported bounds"),
             ({"schema_version": 1, "graded": {"certificate": "box"}},
+             "require admission graded"),
+            # Opt-in market wing ceiling (lane L3r1 lever 3).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"wing_mult_source": "quotes"}},
+             "wing_mult_source must be policy or market"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"wing_mult_source": 1}},
+             "must be a string"),
+            ({"schema_version": 1, "graded": {"wing_mult_source": "market"}},
              "require admission graded")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
@@ -786,6 +794,33 @@ def test_native_box_certificate_is_opt_in_with_provenance(binary, tmp_path):
     assert exact.returncode == 0, exact.stderr
     assert exact_output.read_bytes() == plain_output.read_bytes()
     assert json.loads(exact.stdout)["policy_definition"]["graded"] == plain_graded
+
+
+def test_native_market_wing_ceiling_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.wing_mult_source market (lane L3r1 lever 3): on clean quotes no served
+    # multiple reaches the policy ceiling, so the predictions are byte-identical to
+    # plain graded; only the opt-in provenance is added. An explicit "policy" adds
+    # nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    outputs = {name: tmp_path / f"{name}.csv" for name in ("plain", "market", "policy")}
+    graded = {"plain": None, "market": {"wing_mult_source": "market"},
+              "policy": {"wing_mult_source": "policy"}}
+    reports = {}
+    for name, keys in graded.items():
+        document = {"schema_version": 1, "admission": "graded"}
+        if keys is not None:
+            document["graded"] = keys
+        policy = write_policy(tmp_path / f"{name}.json", document)
+        result = invoke(binary, source, outputs[name], "--policy", str(policy))
+        assert result.returncode == 0, (name, result.stderr)
+        reports[name] = json.loads(result.stdout)["policy_definition"]["graded"]
+    plain_bytes = outputs["plain"].read_bytes()
+    assert outputs["market"].read_bytes() == plain_bytes
+    assert outputs["policy"].read_bytes() == plain_bytes
+    assert reports["market"]["wing_mult_source"] == "market"
+    assert "wing_mult_source" not in reports["plain"]
+    assert reports["policy"] == reports["plain"]
 
 
 def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):

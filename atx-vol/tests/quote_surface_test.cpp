@@ -985,6 +985,96 @@ TEST(QuoteSliceBoxCertificate, ConfigurationIsValidatedAtTheSharedBoundary) {
   EXPECT_FALSE(validate_quote_slice_repair(config));
 }
 
+// ── Opt-in market wing ceiling (lane L3r1 lever 3, 2026-10-21) ──────────────
+
+// American quotes (three-month, 2 % relative half-spread, one-cent floor) on an
+// arbitrage-free put wing that saturates far from the money:
+// sigma(k) = atm + amplitude * (1 - exp(k / scale)) for k < 0, flat atm above.
+// Its far-wing multiple approaches (atm + amplitude) / atm while the slope stays
+// mild where the wing is far out of the money.
+Chain wing_chain(double atm, double amplitude, double scale) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, 0.25, 0.25, 0.03, 0.01, 0.0};
+  for (int strike = 60; strike <= 120; strike += 5) {
+    const double k = std::log(static_cast<double>(strike) / 100.0);
+    const double sigma = k < 0.0 ? atm + amplitude * (1.0 - std::exp(k / scale)) : atm;
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(100.0, static_cast<double>(strike), 0.25, sigma, 0.03, 0.01, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.02);
+      out.quotes.push_back(
+          {static_cast<double>(strike), side, std::max(*price - spread, 0.0), *price + spread});
+    }
+  }
+  return out;
+}
+
+// The 60 put: the outermost (two-sided) strike of the put wing.
+std::size_t outermost_put(const Chain &c) {
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].side == Side::Put && c.quotes[i].strike == 60.0) return i;
+  }
+  ADD_FAILURE() << "no 60 put";
+  return 0;
+}
+
+TEST(QuoteSliceChannel, MarketWingCeilingServesAWingTheThreeTimesAtmClampCuts) {
+  // At K = 60 the market volatility is ~4 x ATM. The policy ceiling (mult_ceil
+  // 3) clamps the served knot spline onto 3 x ATM from K = 75 outwards; the
+  // clamp's concave kink fails the price certificate (convexity), so the whole
+  // slice is refused. The market ceiling lifts it to 1.1 x the market's own
+  // outermost two-sided multiple: the slice certifies and every put of the wing
+  // is served inside its quote.
+  const auto c = wing_chain(0.12, 0.45, 0.3);
+  auto config = channel_config();
+  const auto policy = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(policy) << policy.error().to_string();
+  EXPECT_EQ(policy->diagnostics.channel.wing_mult_cap, 0.0);
+  EXPECT_EQ(policy->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << policy->fit_error;
+  EXPECT_NE(policy->fit_error.find("convexity"), std::string::npos) << policy->fit_error;
+  config.repair.wing_mult_source = QuoteSliceWingMultSource::Market;
+  const auto market = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(market) << market.error().to_string();
+  ASSERT_EQ(market->fit_status, QuoteSliceFitStatus::Success) << market->fit_error;
+  const double cap = market->diagnostics.channel.wing_mult_cap;
+  EXPECT_GT(cap, 4.0);
+  EXPECT_LT(cap, kQuoteSliceMarketWingMultMax);
+  std::size_t wing_puts = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].side != Side::Put || c.quotes[i].strike > 80.0) continue;
+    const auto &row = market->rows[i];
+    ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << i;
+    EXPECT_GE(row.fitted_price, c.quotes[i].bid - 1.0e-9) << i;
+    EXPECT_LE(row.fitted_price, c.quotes[i].ask + 1.0e-9) << i;
+    ++wing_puts;
+  }
+  EXPECT_EQ(wing_puts, 5u);
+  EXPECT_GT(market->rows[outermost_put(c)].fitted_iv, 3.0 * 0.12);
+}
+
+TEST(QuoteSliceChannel, MarketWingCeilingIsBoundedAndNeverBelowThePolicyCeiling) {
+  // ~5.8 x ATM at K = 60 (x 1.1 > 6): the market ceiling stops at
+  // kQuoteSliceMarketWingMultMax.
+  const auto c = wing_chain(0.12, 0.8, 0.4);
+  auto config = channel_config();
+  config.repair.wing_mult_source = QuoteSliceWingMultSource::Market;
+  const auto bounded = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(bounded) << bounded.error().to_string();
+  EXPECT_EQ(bounded->diagnostics.channel.wing_mult_cap, kQuoteSliceMarketWingMultMax);
+  // A policy ceiling above the bound is kept: the market source only raises it.
+  config.channel.mult_ceil = 8.0;
+  const auto kept = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(kept) << kept.error().to_string();
+  EXPECT_EQ(kept->diagnostics.channel.wing_mult_cap, 8.0);
+  QuoteSliceRepairConfig invalid;
+  invalid.wing_mult_source = static_cast<QuoteSliceWingMultSource>(7);
+  EXPECT_FALSE(validate_quote_slice_repair(invalid));
+}
+
 TEST(QuoteSliceChannel, ChannelCalendarRepairLiftsACrossingInsideTheQuotes) {
   // An accepted earlier slice 0.2 cent above every node: a crossing inside
   // every channel (half-spreads >= 1 cent) but beyond 0.1 half-spreads.

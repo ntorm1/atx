@@ -1561,6 +1561,29 @@ QuoteSlicePreScreen prescreen_slice(std::size_t channels,
   return QuoteSlicePreScreen::Pass;
 }
 
+// The served-multiple ceiling of QuoteSliceWingMultSource::Market (lane L3r1 lever 3):
+// the market's multiple at the outermost two-sided channel quote of each wing (both
+// edges informative: sigma_lo > 0 and a finite sigma_hi), the larger of the two, times
+// the margin, at most kQuoteSliceMarketWingMultMax and never below `policy_cap`. A
+// quote's level is its mid volatility, else its channel's centre.
+double market_wing_mult_cap(std::span<const ChannelObservation> channel, double atm_vol,
+                            double policy_cap) noexcept {
+  const ChannelObservation *low = nullptr;
+  const ChannelObservation *high = nullptr;
+  for (const ChannelObservation &o : channel) {
+    if (!positive(o.sigma_lo) || !std::isfinite(o.sigma_hi) || !std::isfinite(o.k)) continue;
+    if (low == nullptr || o.k < low->k) low = &o;
+    if (high == nullptr || o.k > high->k) high = &o;
+  }
+  if (low == nullptr || !positive(atm_vol)) return policy_cap;
+  const auto level = [](const ChannelObservation &o) {
+    return positive(o.sigma_mid) ? o.sigma_mid : 0.5 * (o.sigma_lo + o.sigma_hi);
+  };
+  const double multiple = std::max(level(*low), level(*high)) / atm_vol;
+  return std::max(policy_cap, std::min(kQuoteSliceMarketWingMultMax,
+                                       kQuoteSliceMarketWingMultMargin * multiple));
+}
+
 // The native knot-spline solve of the channel objective, served as SplineVol.
 Result<ChannelFitDiagnostics> solve_channel_native(QuoteSliceFit &out,
                                                    std::span<const ChannelObservation> channel,
@@ -1568,6 +1591,12 @@ Result<ChannelFitDiagnostics> solve_channel_native(QuoteSliceFit &out,
                                                    const QuoteSliceConfig &config) {
   ATX_TRY(ChannelFit fitted, fit_slice_channel(channel, out.market.variance_years, prior,
                                                channel_fit_config(config.channel)));
+  if (config.repair.wing_mult_source == QuoteSliceWingMultSource::Market) {
+    // The solve never reads the ceiling: raising it changes only the served clamp.
+    fitted.params.mult_cap =
+        market_wing_mult_cap(channel, fitted.params.atm_vol, fitted.params.mult_cap);
+    out.diagnostics.channel.wing_mult_cap = fitted.params.mult_cap;
+  }
   out.curve = std::make_unique<SplineVolCurve>(fitted.params, out.market.variance_years,
                                                out.diagnostics.forward, out.diagnostics.discount);
   return Ok(fitted.diagnostics);
@@ -1658,6 +1687,8 @@ Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {
   if ((config.mode != QuoteSliceRepairMode::Off && config.mode != QuoteSliceRepairMode::Channel) ||
       (config.certificate != QuoteSliceCertificate::Exact &&
        config.certificate != QuoteSliceCertificate::Box) ||
+      (config.wing_mult_source != QuoteSliceWingMultSource::Policy &&
+       config.wing_mult_source != QuoteSliceWingMultSource::Market) ||
       config.max_nodes < 1 || !positive(config.max_vol_move) ||
       !nonnegative(config.immaterial_price_move) || !nonnegative(config.box_half_ticks) ||
       !positive(config.box_tick)) {

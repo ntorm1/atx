@@ -608,6 +608,9 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
     out["certificate"] = "box"; // provenance only when opted in (lane L3r1)
     out["certificate_box_half_ticks"] = repair.box_half_ticks;
   }
+  if (repair.wing_mult_source == QuoteSliceWingMultSource::Market) {
+    out["wing_mult_source"] = "market"; // provenance only when opted in (lane L3r1)
+  }
   if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
     out["ladder"] = "knot-first";
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
@@ -779,7 +782,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "certificate",
-             "certificate_box_half_ticks"});
+             "certificate_box_half_ticks", "wing_mult_source"});
     space = parse_fit_space(j);
     // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
     // exact-keyed reuse across an expiry's rungs, speed only.
@@ -849,6 +852,16 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       throw std::runtime_error("Policy graded certificate_box_half_ticks requires certificate box");
     }
     numeric(j, "certificate_box_half_ticks", repair.box_half_ticks, 0, 100);
+    // Opt-in market wing ceiling (quote_slice.hpp QuoteSliceWingMultSource, lane L3r1):
+    // "policy" is each profile's channel mult_ceil, the historical ceiling.
+    if (j.contains("wing_mult_source")) {
+      const auto source = text(j.at("wing_mult_source"));
+      if (source == "market") {
+        repair.wing_mult_source = QuoteSliceWingMultSource::Market;
+      } else if (source != "policy") {
+        throw std::runtime_error("Policy graded wing_mult_source must be policy or market");
+      }
+    }
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};
