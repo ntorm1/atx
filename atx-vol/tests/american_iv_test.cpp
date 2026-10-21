@@ -2262,6 +2262,116 @@ TEST(AmericanIvPremium, APriceInsideScreensNonMonotoneGateRunsAccurateIteratesNo
   // returned Ok roots - the routing guard is in front regardless, pinned above.)
 }
 
+// Opt-in seed-tier routing gate (SPY1s Phase 2, IvPremiumGate::seed_gate_kappa): with kappa
+// = 4.3e-5 (10x the measured Screen dip) a price whose excess over the zero-vol value lies
+// between kappa K max(1, T^2) and Screen's own wide gate 4e-4 K max(1, T^2) iterates on
+// Screen and is CONFIRMED on the accurate kernel instead of being routed to accurate
+// iterates; inside the narrowed gate it is still routed; kappa 0 is the tier's own gate.
+// Every accepted root stays at the accurate root (the r = q grid of the routing test, and
+// the Premium grid under the key: Newton distance <= 4 tol, Search's acceptances kept).
+TEST(AmericanIvPremium, SeedGateKappaNarrowsTheRoutingBandAndConfirmsScreenIteratedRoots) {
+  using atx::vol::iv_premium_seed_gate;
+  const double S = 100.0;
+  const double tol = IvOpts{}.tol;
+  constexpr double kKappa = 4.3e-5;
+  // The gate helper: the tier's own gate without a kappa, the kappa band with one.
+  IvPremiumGate off;
+  IvPremiumGate keyed;
+  keyed.seed_gate_kappa = kKappa;
+  EXPECT_EQ(iv_premium_seed_gate(100.0, 2.0, al_screen_opts(), nullptr),
+            al_non_monotone_gate(100.0, 2.0, al_screen_opts()));
+  EXPECT_EQ(iv_premium_seed_gate(100.0, 2.0, al_screen_opts(), &off),
+            al_non_monotone_gate(100.0, 2.0, al_screen_opts()));
+  EXPECT_DOUBLE_EQ(iv_premium_seed_gate(100.0, 2.0, al_screen_opts(), &keyed), kKappa * 100.0 * 4.0);
+  EXPECT_DOUBLE_EQ(iv_premium_seed_gate(100.0, 0.5, al_screen_opts(), &keyed), kKappa * 100.0);
+  EXPECT_TRUE(std::isnan(iv_premium_seed_gate(0.0, 1.0, al_screen_opts(), &keyed)));
+  EXPECT_TRUE(std::isnan(iv_premium_seed_gate(100.0, 0.0, al_screen_opts(), &keyed)));
+  std::size_t candidates = 0, unrouted = 0, still_routed = 0, routed_off = 0;
+  double max_unrouted_newton = 0.0;
+  for (const double rq : {0.02, 0.03, 0.05}) {
+    for (const double T : {0.5, 1.0, 2.0}) {
+      for (const double m : {1.01, 1.02, 1.05, 1.1}) {
+        for (const Side sd : {Side::Put, Side::Call}) {
+          const double K = sd == Side::Put ? S * m : S / m; // in the money
+          const PremiumCase c{K, T, rq, rq, sd, 0.0};
+          const auto floor = andersen_lake(S, K, T, atx::vol::kIvMin, rq, rq, sd);
+          if (!floor) continue;
+          const double wide = al_non_monotone_gate(K, T, al_screen_opts());
+          const double narrow = kKappa * K * std::fmax(1.0, T * T);
+          for (const double frac : {0.5, 0.05}) {
+            const double price = *floor + frac * wide;
+            const IvResult s = american_implied_vol(price, S, K, T, rq, rq, sd, IvOpts{});
+            if (s.status != IvStatus::Ok) continue;
+            // Classified away from both gate edges (the library's zero-vol value is the
+            // test's own replica to a few ULP).
+            const double excess = price - zero_vol_value(S, K, T, rq, rq, sd);
+            ++candidates;
+            IvPremiumStats st_off, st_key;
+            const IvResult r_off = screen_seeded_iv(price, S, c, st_off, &off);
+            const IvResult r_key = screen_seeded_iv(price, S, c, st_key, &keyed);
+            ASSERT_EQ(r_off.status, IvStatus::Ok) << K << " " << T;
+            ASSERT_EQ(r_key.status, IvStatus::Ok) << K << " " << T;
+            if (st_off.fallback == IvPremiumFallback::None && excess < 0.95 * wide) {
+              EXPECT_TRUE(st_off.seed_routed) << K << " " << T << " " << frac;
+              routed_off += st_off.seed_routed ? 1u : 0u;
+            }
+            if (st_key.fallback != IvPremiumFallback::None) continue; // = Search, bit for bit
+            if (excess > 1.05 * narrow) {
+              EXPECT_FALSE(st_key.seed_routed) << K << " " << T << " " << frac;
+              EXPECT_EQ(st_key.seed_nodes, al_screen_opts().n_collocation);
+              EXPECT_GE(st_key.confirm_solves, 1u);
+              EXPECT_FALSE(st_key.confirm_skipped);
+              unrouted += st_key.seed_routed ? 0u : 1u;
+              // Near the intrinsic the forward-chord Newton distance is not a sharp yardstick
+              // (L1c): the confirmed root's accurate-map price residual against Search's own.
+              const auto pr = andersen_lake(S, K, T, r_key.iv, rq, rq, sd);
+              const auto ps = andersen_lake(S, K, T, s.iv, rq, rq, sd);
+              ASSERT_TRUE(pr && ps);
+              EXPECT_LE(std::abs(*pr - price),
+                        2.0 * std::abs(*ps - price) + 1.0e-9 * std::max(price, 1.0))
+                  << K << " " << T << " " << frac;
+              const double nd = accurate_newton_distance(price, S, c, r_key.iv);
+              if (std::isfinite(nd)) max_unrouted_newton = std::max(max_unrouted_newton, nd);
+            } else if (excess < 0.95 * narrow) {
+              EXPECT_TRUE(st_key.seed_routed) << K << " " << T << " " << frac;
+              still_routed += st_key.seed_routed ? 1u : 0u;
+            }
+          }
+        }
+      }
+    }
+  }
+  // The general Premium grid under the key: the accurate root, Search's acceptances.
+  std::size_t accepted = 0, grid_routed = 0;
+  double max_newton = 0.0;
+  for (const PremiumCase &c : premium_grid()) {
+    const auto p = andersen_lake(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    if (!p || !(*p > 0.0)) continue;
+    IvPremiumStats st;
+    const IvResult r = screen_seeded_iv(*p, S, c, st, &keyed);
+    const IvResult s = american_implied_vol(*p, S, c.K, c.T, c.r, c.q, c.sd, IvOpts{});
+    ASSERT_EQ(r.status == IvStatus::Ok, s.status == IvStatus::Ok) << c.K << " " << c.T;
+    if (st.fallback != IvPremiumFallback::None) continue;
+    ++accepted;
+    grid_routed += st.seed_routed ? 1u : 0u;
+    const double nd = accurate_newton_distance(*p, S, c, r.iv);
+    if (std::isfinite(nd)) {
+      max_newton = std::max(max_newton, nd);
+      EXPECT_LE(nd, 4.0 * tol) << c.K << " " << c.T << " " << c.sig_true;
+    }
+  }
+  std::printf("[seed gate kappa %.2g] r = q candidates %zu: routed without the key %zu; with it "
+              "iterated on Screen and confirmed %zu (max accurate-map Newton %.3g), still routed "
+              "%zu; Premium grid accepted %zu (routed %zu), max accurate-map Newton %.3g\n",
+              kKappa, candidates, routed_off, unrouted, max_unrouted_newton, still_routed,
+              accepted, grid_routed, max_newton);
+  EXPECT_GT(candidates, 0u);
+  EXPECT_GT(routed_off, 0u);
+  EXPECT_GT(unrouted, 0u); // the key moves prices out of the routing band (fails on revert)
+  EXPECT_GT(accepted, 100u);
+  EXPECT_LE(max_newton, 4.0 * tol);
+}
+
 TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {
   const double S = 100.0;
   const double tol = IvOpts{}.tol;

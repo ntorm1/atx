@@ -989,6 +989,17 @@ double al_non_monotone_gate(double K, double T, const std::optional<AlOpts> &opt
   return kappa * K * std::fmax(1.0, T * T);
 }
 
+double iv_premium_seed_gate(double K, double T, const std::optional<AlOpts> &seed_opts,
+                            const IvPremiumGate *gate) noexcept {
+  if (gate == nullptr || !(gate->seed_gate_kappa > 0.0)) {
+    return al_non_monotone_gate(K, T, seed_opts);
+  }
+  if (!(K > 0.0) || !(T > 0.0) || !std::isfinite(K) || !std::isfinite(T)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return gate->seed_gate_kappa * K * std::fmax(1.0, T * T);
+}
+
 bool al_non_monotone_region(double price, double S, double K, double T, double r, double q,
                             Side side, double sigma, const std::optional<AlOpts> &opts) noexcept {
   if (!in_band(price, S, K, T, r, q, side, opts)) {
@@ -1263,8 +1274,9 @@ struct ColdPoint {
     // Seed-tier routing (L2f note section 4): inside the seed tier's own, wider
     // non-monotone gate its map may dip where the accurate map does not (Screen: 4e-4 K
     // max(1, T)^2, dips at r = q), so the iterates run on the accurate kernel instead -
-    // no confirm is then needed, and a seed-tier refusal never reaches the quote.
-    if (!(price - zero_vol > al_non_monotone_gate(K, T, seed_opts))) {
+    // no confirm is then needed, and a seed-tier refusal never reaches the quote. The
+    // gate's seed_gate_kappa (opt-in) narrows that band to a multiple of the measured dip.
+    if (!(price - zero_vol > iv_premium_seed_gate(K, T, seed_opts, gate))) {
       seed_opts = opts;
       confirm = false;
       stats.seed_routed = true;

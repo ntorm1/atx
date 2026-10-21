@@ -476,6 +476,89 @@ TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
   deam_iv_memo_clear();
 }
 
+// Opt-in seed-tier routing gate (SPY1s Phase 2, deam_seed_gate_kappa): on the SPY-shaped grid
+// the narrowed gate (kappa 4.3e-5 = 10x the measured Screen dip) routes FEWER inversions to
+// accurate iterates than Screen's own wide gate, the extra Screen-iterated roots are confirmed
+// (none skipped), and the fit serves the same rows with every quote volatility within the
+// inversion tolerance band of the Search values; the key is a cache-key word (the default
+// Screen entry never answers a keyed fit on one memo); kappa without Screen, a negative or a
+// non-finite kappa are refused.
+TEST(QuoteSliceVolSpace, SeedGateKappaRoutesFewerInversionsAndServesConfirmedVolatilities) {
+  const std::vector<GridCase> grid = {
+      {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t routed_default = 0, routed_keyed = 0, confirms_default = 0, confirms_keyed = 0;
+  std::size_t compared = 0;
+  double max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig screen = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    screen.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    QuoteSliceConfig keyed = screen;
+    keyed.channel.deam_seed_gate_kappa = 4.3e-5;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto seeded = fit_quote_slice_channel(c.market, c.quotes, screen, nullptr);
+    const auto narrowed = fit_quote_slice_channel(c.market, c.quotes, keyed, nullptr);
+    ASSERT_TRUE(reference && seeded && narrowed);
+    EXPECT_FALSE(narrowed->diagnostics.deam.reused); // its own cache entry on the same memo
+    EXPECT_EQ(deam_iv_memo_size(), 2u);
+    const QuoteSliceDeamDiagnostics &work = narrowed->diagnostics.deam;
+    EXPECT_EQ(work.confirms_skipped, 0u);
+    EXPECT_LE(work.seed_routed, seeded->diagnostics.deam.seed_routed);
+    routed_default += seeded->diagnostics.deam.seed_routed;
+    routed_keyed += work.seed_routed;
+    confirms_default += seeded->diagnostics.deam.confirms;
+    confirms_keyed += work.confirms;
+    EXPECT_EQ(narrowed->fit_status, reference->fit_status);
+    ASSERT_EQ(narrowed->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &p = narrowed->rows[i];
+      const QuoteSliceRow &r = reference->rows[i];
+      EXPECT_EQ(p.quote_status, r.quote_status) << i;
+      EXPECT_EQ(p.evaluation_status, r.evaluation_status) << i;
+      EXPECT_EQ(p.admitted, r.admitted) << i;
+      if (std::isfinite(p.market_iv) && std::isfinite(r.market_iv)) {
+        ++compared;
+        max_dsigma = std::max(max_dsigma, std::abs(p.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+  }
+  std::printf("[seed gate kappa] routed %zu -> %zu, confirms %zu -> %zu, %zu mid IVs compared, "
+              "max |dsigma| vs Search %.3g\n",
+              routed_default, routed_keyed, confirms_default, confirms_keyed, compared, max_dsigma);
+  EXPECT_LT(routed_keyed, routed_default); // fails with the key ignored
+  EXPECT_GT(confirms_keyed, confirms_default);
+  EXPECT_GT(compared, 0u);
+  deam_iv_memo_clear();
+  // Refusals: kappa without the Screen seed tier, negative, non-finite.
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig on_accurate =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true);
+  on_accurate.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  on_accurate.channel.deam_seed_gate_kappa = 4.3e-5;
+  QuoteSliceConfig negative = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                         true, QuoteSliceDeamProfile::Screen);
+  negative.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  negative.channel.deam_seed_gate_kappa = -1.0e-5;
+  QuoteSliceConfig nan_kappa = negative;
+  nan_kappa.channel.deam_seed_gate_kappa = std::numeric_limits<double>::quiet_NaN();
+  for (const QuoteSliceConfig *bad : {&on_accurate, &negative, &nan_kappa}) {
+    const auto refused = fit_quote_slice_channel(c.market, c.quotes, *bad, nullptr);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  }
+  deam_iv_memo_clear();
+}
+
 // Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
 // served prices are the grid's, so under grid_kernel Fast every served price moves by at most
 // the Fast bound 1e-12 max(P, 1) (below the certificate's allowance) with the same rows served
@@ -839,6 +922,8 @@ TEST(DeAmIvCache, MemoKeyCoversEveryInputThatChangesAnInversion) {
        [](KeyInputs &in) {
          in.config.channel.deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
        }},
+      // SPY1s Phase 2: the routing gate decides which kernel runs a root's iterates.
+      {"seed gate kappa", [](KeyInputs &in) { in.config.channel.deam_seed_gate_kappa = 4.3e-5; }},
       {"dividend date", [](KeyInputs &in) { in.fit.variance_clock_dividends[0].tau = 0.06; }},
       {"dividend amount", [](KeyInputs &in) { in.fit.variance_clock_dividends[1].amount = 1.9; }},
       {"dividend count", [](KeyInputs &in) { in.fit.variance_clock_dividends.pop_back(); }},

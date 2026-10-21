@@ -93,13 +93,16 @@ enum class DeAmKernel : std::uint8_t { Accurate, Fast, Screen };
 // Per-inversion controls a Premium view hands the model (SPY1s Phase 1): the seed kernel
 // (Screen: IvOpts::seed_profile Screen; Accurate: no seed tier), the confirm policy with
 // its k and the quote's half-spread in price (IvPremiumGate), and whether the confirm
-// runs on AlProfile::Fast instead of the accurate kernel.
+// runs on AlProfile::Fast instead of the accurate kernel. seed_gate_kappa (SPY1s Phase 2,
+// opt-in): the seed tier's routing gate kappa (IvPremiumGate::seed_gate_kappa; 0 = the
+// tier's own non-monotone gate).
 struct DeAmPremiumControls {
   DeAmKernel seed_kernel = DeAmKernel::Accurate;
   IvConfirmPolicy confirm = IvConfirmPolicy::Always;
   double k = 10.0;
   double half_spread_usd = 0.0;
   bool confirm_fast = false;
+  double seed_gate_kappa = 0.0;
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -174,12 +177,13 @@ inline constexpr double kDeAmFastMinRelativeVega = 1.0e-5;
 // `work` must outlive the view; `quotes` must be the quotes the cache was built
 // for (same order, ivs sized to match).
 // Confirm controls of a Screen-seeded Premium view (QuoteSliceChannelConfig deam_confirm,
-// deam_confirm_k, deam_confirm_kernel); the default confirms every seed-tier root on the
-// accurate kernel.
+// deam_confirm_k, deam_confirm_kernel, deam_seed_gate_kappa); the default confirms every
+// seed-tier root on the accurate kernel and routes inside the seed tier's own gate.
 struct DeAmConfirmControls {
   QuoteSliceDeamConfirm policy = QuoteSliceDeamConfirm::Always;
   double k = 10.0;
   QuoteSliceDeamConfirmKernel kernel = QuoteSliceDeamConfirmKernel::Accurate;
+  double seed_gate_kappa = 0.0;
 };
 
 class DeAmIvView {

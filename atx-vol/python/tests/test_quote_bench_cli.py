@@ -833,7 +833,16 @@ def test_native_graded_options_are_strict(binary, tmp_path):
               "graded": {"market_distance": "gate", "market_distance_spreads": -1}},
              "outside supported bounds"),
             ({"schema_version": 1, "graded": {"market_distance": "gate"}},
-             "require admission graded")):
+             "require admission graded"),
+            # Screen routing gate kappa (SPY1s Phase 2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "accurate",
+                         "deam_inversion": "premium", "seed_gate_kappa": 4.3e-5}},
+             "seed_gate_kappa requires deam_profile screen"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "seed_gate_kappa": 0}},
+             "seed_gate_kappa must be a positive number")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document

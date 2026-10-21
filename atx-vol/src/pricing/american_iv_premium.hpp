@@ -130,7 +130,19 @@ struct IvPremiumGate {
   // The confirming solve's kernel: nullopt = opts.al_opts (the accurate kernel), else
   // this scheme (the R3 measurement arm passes al_fast_profile(opts.al_opts)).
   std::optional<AlOpts> confirm_opts = std::nullopt;
+  // Seed-tier routing gate (SPY1s Phase 2, opt-in): > 0 routes a price to the accurate
+  // iterates only when price - zero_vol <= seed_gate_kappa * K * max(1, T^2) instead of
+  // inside the seed tier's own non-monotone gate (al_non_monotone_gate of the seed opts;
+  // Screen 4e-4, about 100x the dip L2f measured, 4.3e-6). 0 (the default): the seed
+  // tier's own gate, bit for bit. Every root outside the gate is still confirmed (or
+  // gated) on the confirm kernel exactly as before; only which iterates run changes.
+  double seed_gate_kappa = 0.0;
 };
+
+// The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else
+// the seed tier's own non-monotone gate (NaN for an invalid K or T, which routes).
+[[nodiscard]] double iv_premium_seed_gate(double K, double T, const std::optional<AlOpts> &seed_opts,
+                                          const IvPremiumGate *gate) noexcept;
 
 // IvOpts-typed inversion under the Premium strategy with optional per-contract memory
 // (nullptr: none). `opts.strategy` is ignored (this IS Premium); every other field

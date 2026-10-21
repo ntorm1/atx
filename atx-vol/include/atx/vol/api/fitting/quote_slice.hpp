@@ -225,6 +225,13 @@ struct QuoteSliceChannelConfig {
   // (the default) or the same scheme on AlProfile::Fast (|dP| <= 1e-12 max(P, 1); research
   // R3 measurement arm - the PM promotes or not at integration).
   QuoteSliceDeamConfirmKernel deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
+  // Seed-tier routing gate (deam_profile Screen only; SPY1s Phase 2, opt-in): 0 (the
+  // default) runs a price's iterates on the accurate kernel inside Screen's own wide
+  // non-monotone gate (4e-4 K max(1, T^2), about 100x the measured Screen dip); > 0 narrows
+  // that band to deam_seed_gate_kappa K max(1, T^2) (the measured dip times a margin, e.g.
+  // 4.3e-5 = 10 x 4.3e-6), so more inversions iterate on Screen. Every Screen-iterated root
+  // is confirmed (or band-gated) on the confirm kernel exactly as under the default. >= 0.
+  double deam_seed_gate_kappa = 0.0;
 };
 
 // InvalidArgument unless every channel control is finite and in range

@@ -742,6 +742,7 @@ public:
       gate.half_spread_usd = controls.half_spread_usd;
       gate.min_relative_slope = kDeAmFastMinRelativeVega;
       if (controls.confirm_fast) gate.confirm_opts = fast_;
+      gate.seed_gate_kappa = controls.seed_gate_kappa;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -788,7 +789,8 @@ public:
     view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work,
                   config.channel.deam_inversion,
                   DeAmConfirmControls{config.channel.deam_confirm, config.channel.deam_confirm_k,
-                                      config.channel.deam_confirm_kernel});
+                                      config.channel.deam_confirm_kernel,
+                                      config.channel.deam_seed_gate_kappa});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1511,9 +1513,10 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
        c.deam_confirm != QuoteSliceDeamConfirm::Never) ||
       (c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate &&
        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Fast) ||
-      !positive(c.deam_confirm_k) ||
+      !positive(c.deam_confirm_k) || !finite_nonnegative(c.deam_seed_gate_kappa) ||
       ((c.deam_confirm != QuoteSliceDeamConfirm::Always ||
-        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate) &&
+        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate ||
+        c.deam_seed_gate_kappa > 0.0) &&
        c.deam_profile != QuoteSliceDeamProfile::Screen)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }

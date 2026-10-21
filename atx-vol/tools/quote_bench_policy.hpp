@@ -543,6 +543,8 @@ struct FitSpaceOptions {
   double confirm_k = 10.0;
   QuoteSliceDeamConfirmKernel confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate;
+  // Opt-in seed-tier routing gate kappa (quote_slice.hpp deam_seed_gate_kappa; SPY1s P2).
+  double seed_gate_kappa = 0.0;
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -690,6 +692,20 @@ inline constexpr bool kGradedDefaultRungMemo = true;
       throw std::runtime_error("Policy graded confirm_kernel must be reference or fast");
     }
   }
+  // Opt-in seed-tier routing gate (quote_slice.hpp deam_seed_gate_kappa): a Screen-only
+  // control (inert, so refused, elsewhere); a positive finite kappa.
+  if (graded.contains("seed_gate_kappa")) {
+    if (out.deam_profile != QuoteSliceDeamProfile::Screen) {
+      throw std::runtime_error("Policy graded seed_gate_kappa requires deam_profile screen");
+    }
+    if (!graded.at("seed_gate_kappa").is_number()) {
+      throw std::runtime_error("Policy graded seed_gate_kappa must be a positive number");
+    }
+    out.seed_gate_kappa = graded.at("seed_gate_kappa").get<double>();
+    if (!(out.seed_gate_kappa > 0.0) || !std::isfinite(out.seed_gate_kappa)) {
+      throw std::runtime_error("Policy graded seed_gate_kappa must be a positive number");
+    }
+  }
   // Certification-grid kernel (quote_slice.hpp QuoteSliceGridKernel): independent of the
   // cache keys (it acts on the served reprice of every graded profile).
   if (graded.contains("grid_kernel")) {
@@ -762,6 +778,9 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
       out["confirm_k"] = space.confirm_k;
       out["confirm_kernel"] =
           space.confirm_kernel == QuoteSliceDeamConfirmKernel::Fast ? "fast" : "reference";
+      if (space.seed_gate_kappa > 0.0) {
+        out["seed_gate_kappa"] = space.seed_gate_kappa; // provenance only when opted in
+      }
     }
   }
   if (space.grid_kernel == QuoteSliceGridKernel::Fast) out["grid_kernel"] = "fast";
@@ -925,7 +944,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
-             "ladder_wing_tail"});
+             "ladder_wing_tail", "seed_gate_kappa"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1058,6 +1077,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_confirm = space.confirm;
     profile.config.channel.deam_confirm_k = space.confirm_k;
     profile.config.channel.deam_confirm_kernel = space.confirm_kernel;
+    profile.config.channel.deam_seed_gate_kappa = space.seed_gate_kappa;
     profile.config.grid_kernel = space.grid_kernel;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.

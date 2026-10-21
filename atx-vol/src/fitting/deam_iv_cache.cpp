@@ -228,6 +228,7 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
   controls.half_spread_usd =
       quote.bid > 0.0 && quote.ask > quote.bid ? 0.5 * (quote.ask - quote.bid) : 0.0;
   controls.confirm_fast = confirm_.kernel == QuoteSliceDeamConfirmKernel::Fast;
+  controls.seed_gate_kappa = confirm_.seed_gate_kappa;
   Result<double> iv =
       model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats, controls);
   if (stats.fallback != IvPremiumFallback::None) {
@@ -397,9 +398,10 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  // 29 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
-  // inverter + kernel 4, confirm 3, two counts), then 2 per dividend and 6 per quote.
-  words.reserve(29 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  // 30 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
+  // inverter + kernel 4, confirm 3, seed gate 1, two counts), then 2 per dividend and 6 per
+  // quote.
+  words.reserve(30 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -440,6 +442,9 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   word(static_cast<std::uint64_t>(config.channel.deam_confirm));
   real(config.channel.deam_confirm_k);
   word(static_cast<std::uint64_t>(config.channel.deam_confirm_kernel));
+  // The seed-tier routing gate (SPY1s Phase 2): it decides which kernel runs the iterates,
+  // so a root (within tol) depends on it.
+  real(config.channel.deam_seed_gate_kappa);
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);
