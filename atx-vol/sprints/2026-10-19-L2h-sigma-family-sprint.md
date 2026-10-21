@@ -62,8 +62,14 @@ stay bit-identical by construction; their `SigmaInterp.*` tests pass unchanged, 
 
 ## 3. Cost (SPY 23 d, avx2, unqualified, one run)
 
-Rows `american/spy23_family/<axis>/n<N>` of `L2h-sigma-family-20261019-us/family-spy23-sets.txt`
-(sha256 `4a79d9ef…`): the SPY 2026-11-06 chain (`L2f-al-fast-tier-20261019-inputs/spy23-quotes.csv`,
+Rows `american/spy23_family/<axis>/n<N>` of `L2h-fix1-20261020/spy/spy-rows-66467db1.txt`
+(sha256 `fcc87622…`; `atx-vol-al-preset-ladder-bench.exe` built from the committed source at
+`66467db1`, exe sha256 `eb74f0d9…`, run 2026-10-20T19:36:44-04:00). **Provenance (review-L2h M1):**
+the SPY 23 d and off-node rows first published in this note came from lane 1's 21:49 pre-checkpoint
+build, whose family source was never archived and differs from the committed one in the SPY-only
+path; every SPY / off-node digit in §3 / §4 / §5 / §7 was replaced at this SHA by the committed
+binary's run (fix round L2h-fix1). Inputs: the SPY 2026-11-06 chain
+(`L2f-al-fast-tier-20261019-inputs/spy23-quotes.csv`, sha256 `0c68bb76…`, verified before the run,
 317 contracts with their own σ), grouped by (S, T, r, q, side) = 148 families (the file carries a
 per-row sdiv: 74 distinct q over 322 rows, see §7 item 6), each built on a Reference geometry over
 the chain's box (§7 item 3), build = median of 5 `prepare()` calls per family, price / chord = 3
@@ -71,23 +77,25 @@ timed passes per contract. Per-node = build p50 / n.
 
 | axis | n_σ | build per family p50 / max µs | per node solve µs | `price` p50 / p99 µs | `price_and_chord` p50 µs |
 | --- | --- | --- | --- | --- | --- |
-| LogSigma | 8 | 771.9 / 825.1 | 96 | 4.6 / 5.4 | 9.2 |
-| **LogSigma** | **12** | **1,140.0 / 1,238.4** | **95** | **4.7 / 5.8** | **9.3** |
-| LogSigma | 16 | 2,371.0 / 2,794.2 | 148 | 7.1 / 8.8 | 14.1 |
-| Sigma | 8 | 944.5 / 1,583.6 | 118 | 5.6 / 6.8 | 11.1 |
-| Sigma | 12 | 1,197.9 / 1,325.2 | 100 | 4.7 / 5.7 | 9.2 |
-| Sigma | 16 | 2,571.3 / 3,124.2 | 161 | 7.6 / 10.3 | 15.0 |
+| LogSigma | 8 | 826.5 / 1,089.4 | 103 | 4.6 / 6.5 | 9.2 |
+| **LogSigma** | **12** | **1,240.4 / 1,535.5** | **103** | **4.7 / 6.6** | **9.3** |
+| LogSigma | 16 | 1,653.5 / 2,677.1 | 103 | 4.9 / 7.5 | 9.6 |
+| Sigma | 8 | 1,146.1 / 1,666.8 | 143 | 6.9 / 9.6 | 13.6 |
+| Sigma | 12 | 1,248.5 / 1,552.5 | 104 | 4.8 / 7.3 | 9.3 |
+| Sigma | 16 | 1,663.2 / 1,962.4 | 104 | 4.8 / 6.3 | 9.4 |
 
 Against the cold tiers per boundary solve + price on the same chain (L2f note §5, one run each;
 the lane's loaded run / the review's / the probe's): **Reference 260.1 / 159.7 / 169 µs**, Fast
 68.6 / 71.7 / 69.8, Screen 20.7 / 23.3 / 23.7. A family price at 12 nodes (4.7 µs) is therefore
 34-55× below a Reference solve, ~15× below Fast and 4.4-5× below Screen; a chord (two prices from
 the same family, the Newton slope) 9.3 µs vs a cold pack's two solves 320-520 µs. Break-even of
-one 12-node LogSigma family: 1,140 / (160 − 4.7) ≈ 7.3 Reference prices replaced (4.5 at 260 µs);
-≈ 18 Fast prices; ≈ 71 Screen prices. The 16-node rows pay 1.5× more per price (the
-n_boundary × n_σ barycentric grows, and those rows ran last in the run — see the load note in §5).
-No Fast-node build time was measured (the bench builds on Reference geometries only; a Fast node
-solve is ~69 µs vs ~95 µs here, so ~0.8 ms per 12-node family is the arithmetic, not a number).
+one 12-node LogSigma family: 1,240 / (160 − 4.7) ≈ 8.0 Reference prices replaced (4.9 at 260 µs);
+≈ 19 Fast prices; ≈ 78 Screen prices. The 16-node rows build 1.33× slower (1,653 vs 1,240 µs: the
+per-node solve cost is flat at ~103 µs, so build scales with n_σ) and price within noise of 12 nodes
+(4.9 vs 4.7 µs p50) — the 1.5× per-price gap at 16 nodes in the superseded table was host drift in
+lane 1's run (its 16-node rows ran last), not the n_boundary × n_σ barycentric. No Fast-node build
+time was measured (the bench builds on Reference geometries only; a Fast node solve is ~69 µs vs
+~103 µs here, so ~0.8 ms per 12-node family is the arithmetic, not a number).
 
 ## 4. Error vs the cold Reference kernel
 
@@ -109,12 +117,12 @@ row is registered behind `ATX_VOL_AL_DEV200`; order-of-magnitude rule — listed
 
 | set | n_σ | priced / refused | max abs USD | p99 abs | max rel | p99 rel | IV max / p99 bp | iv_solved |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| spy23 | 8 | 317 / 0 | 4.02e-4 | 3.44e-4 | 1.25e-5 | 1.04e-5 | 0.304 / 0.281 | 301 |
-| spy23 | **12** | 317 / 0 | **4.94e-9** | 4.05e-9 | **1.33e-10** | **9.70e-11** | **0.0104 / 0.0052** | 301 |
-| spy23 | 16 | 317 / 0 | 1.01e-9 | 2.69e-10 | 1.40e-11 | 5.54e-12 | 0.0104 / 0.0052 | 301 |
-| spy23offnode | 8 | 317 / 0 | 4.57e-4 | 4.11e-4 | 1.21e-5 | 1.15e-5 | 1.603 / 0.428 | 296 |
-| spy23offnode | **12** | 317 / 0 | 7.52e-9 | 5.14e-9 | **1.98e-10** | 1.41e-10 | **0.0672 / 0.0062** | 296 |
-| spy23offnode | 16 | 317 / 0 | 1.04e-9 | 2.98e-10 | 1.44e-11 | 6.54e-12 | 0.0319 / 0.0093 | 300 |
+| spy23 | 8 | 317 / 0 | 4.08e-4 | 3.47e-4 | 1.27e-5 | 1.04e-5 | 0.304 / 0.278 | 301 |
+| spy23 | **12** | 317 / 0 | **4.96e-9** | 4.01e-9 | **1.49e-10** | **1.39e-10** | **0.0104 / 0.0052** | 301 |
+| spy23 | 16 | 317 / 0 | 1.01e-9 | 2.61e-10 | 1.41e-11 | 7.96e-12 | 0.0104 / 0.0052 | 301 |
+| spy23offnode | 8 | 317 / 0 | 4.59e-4 | 4.17e-4 | 1.23e-5 | 1.17e-5 | 1.792 / 0.448 | 296 |
+| spy23offnode | **12** | 317 / 0 | 7.67e-9 | 5.23e-9 | **2.02e-10** | 1.61e-10 | **0.0947 / 0.0065** | 296 |
+| spy23offnode | 16 | 317 / 0 | 1.03e-9 | 2.94e-10 | 1.43e-11 | 6.57e-12 | 0.0375 / 0.0092 | 300 |
 | grid | 8 | 104 / 0 | 4.89e-11 | 3.31e-11 | 2.60e-12 | 2.20e-12 | 3.80e-4 / 2.81e-4 | 88 |
 | grid | **12** | 104 / 0 | 8.79e-12 | 6.28e-12 | **1.28e-12** | 6.18e-13 | 3.80e-4 / 2.81e-4 | 88 |
 | grid | 16 | 104 / 0 | 9.44e-12 | 3.88e-12 | 4.78e-13 | 4.05e-13 | 3.80e-4 / 2.81e-4 | 88 |
@@ -129,12 +137,12 @@ row is registered behind `ATX_VOL_AL_DEV200`; order-of-magnitude rule — listed
 
 | set | n_σ | priced / refused | max abs USD | p99 abs | max rel | p99 rel | IV max / p99 bp | iv_solved |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| spy23 | 8 | 317 / 0 | 5.57e-5 | 4.65e-5 | 1.97e-6 | 1.13e-6 | 0.0626 / 0.0415 | 301 |
-| spy23 | 12 | 317 / 0 | 5.97e-7 | 5.08e-7 | 1.80e-8 | 1.52e-8 | 0.0113 / 0.0056 | 301 |
-| spy23 | 16 | 317 / 0 | 7.73e-9 | 6.78e-9 | 2.60e-10 | 1.90e-10 | 0.0104 / 0.0052 | 301 |
-| spy23offnode | 8 | 317 / 0 | 6.16e-5 | 5.48e-5 | 1.92e-6 | 1.78e-6 | 0.146 / 0.0553 | 295 |
-| spy23offnode | 12 | 317 / 0 | 6.97e-7 | 5.72e-7 | 1.83e-8 | 1.68e-8 | 0.0616 / 0.0066 | 298 |
-| spy23offnode | 16 | 317 / 0 | 8.96e-9 | 7.36e-9 | 2.80e-10 | 1.93e-10 | 0.0317 / 0.0116 | 296 |
+| spy23 | 8 | 317 / 0 | 5.68e-5 | 5.13e-5 | 2.03e-6 | 1.85e-6 | 0.0635 / 0.0424 | 301 |
+| spy23 | 12 | 317 / 0 | 6.06e-7 | 5.15e-7 | 1.83e-8 | 1.53e-8 | 0.0113 / 0.0053 | 301 |
+| spy23 | 16 | 317 / 0 | 7.83e-9 | 6.97e-9 | 2.68e-10 | 2.05e-10 | 0.0104 / 0.0052 | 301 |
+| spy23offnode | 8 | 317 / 0 | 6.25e-5 | 5.57e-5 | 1.95e-6 | 1.77e-6 | 0.154 / 0.0567 | 295 |
+| spy23offnode | 12 | 317 / 0 | 7.10e-7 | 5.82e-7 | 1.87e-8 | 1.71e-8 | 0.0784 / 0.0069 | 298 |
+| spy23offnode | 16 | 317 / 0 | 9.17e-9 | 7.53e-9 | 2.86e-10 | 2.30e-10 | 0.0362 / 0.0122 | 296 |
 | grid | 8 | 104 / 0 | 1.51e-11 | 1.18e-11 | 1.66e-12 | 1.20e-12 | 3.80e-4 / 2.81e-4 | 88 |
 | grid | 12 | 104 / 0 | 1.51e-11 | 1.37e-11 | 1.49e-12 | 9.84e-13 | 3.80e-4 / 2.81e-4 | 88 |
 | grid | 16 | 104 / 0 | 2.06e-11 | 1.00e-11 | 1.47e-12 | 1.02e-12 | 3.80e-4 / 2.81e-4 | 88 |
@@ -147,11 +155,17 @@ row is registered behind `ATX_VOL_AL_DEV200`; order-of-magnitude rule — listed
 
 ### 4.3 Reading the tables
 
-- **Axis.** At 8 nodes Sigma is tighter on EVERY set (spy23 1.97e-6 vs 1.25e-5, fastgrid 2.1e-3 vs
-  9.5e-3, deepcarry 3.5e-6 vs 1.1e-5; IV fastgrid 5.0 vs 13.3 bp, spy23offnode 0.15 vs 1.60 bp).
-  At 12 and 16 nodes LogSigma is tighter on every set (spy23 1.33e-10 vs 1.80e-8, fastgrid 1.85e-6 vs
-  5.39e-5, deepcarry 1.22e-7 vs 1.23e-7, grid 1.28e-12 vs 1.49e-12). The header comment on
-  `AlSigmaFamilyAxis` states exactly this; LogSigma is the default, Sigma stays selectable.
+- **Axis.** At 8 nodes Sigma is tighter on EVERY set (spy23 2.03e-6 vs 1.27e-5, fastgrid 2.1e-3 vs
+  9.5e-3, deepcarry 3.5e-6 vs 1.1e-5; IV fastgrid 5.0 vs 13.3 bp, spy23offnode 0.15 vs 1.79 bp).
+  At 12 and 16 nodes LogSigma is tighter on every set in price (spy23 1.49e-10 vs 1.83e-8,
+  spy23offnode 2.02e-10 vs 1.87e-8, fastgrid 1.85e-6 vs 5.39e-5, deepcarry 1.22e-7 vs 1.23e-7, grid
+  1.28e-12 vs 1.49e-12); the rows reproduced at `66467db1` did not flip this. The one column where
+  Sigma reads lower at 12 nodes is the spy23offnode IV max (0.078 vs 0.095 bp; the superseded table
+  had the same ordering, 0.062 vs 0.067): both are the deep-ITM K 811 put, where the family's IV is
+  within 1e-8 of the queried σ while the Reference inversion of the Reference price sits 0.07-0.09 bp
+  from it — the cold inversion's tolerance floor on a low-vega contract, not the interpolation (see
+  "IV floors" below). The header comment on `AlSigmaFamilyAxis` states exactly this; LogSigma is the
+  default, Sigma stays selectable.
 - **Refusals.** The only refusals in any set are fastgrid's 225 = 15 cold groups × 15 contracts: the
   **q = 0 CALL orientations** (5 T × 3 r). `classify_regime(rate = q = 0, yield = r > 0)` is
   `European` (american.hpp), so `AlExpiryGeometry::prepare` builds no call orientation (`id == 0`) and
@@ -159,9 +173,11 @@ row is registered behind `ATX_VOL_AL_DEV200`; order-of-magnitude rule — listed
   the whole (expiry, side) prices cold — where the American call IS the European call. Neither σ
   guard (box low edge 0.076 > 0.01) nor τ guard (T 0.02 > 3/365) refused anything; no price-time
   `SigmaOutsideBox` occurred because the box is taken from the chain's own σ range (§7 item 3).
-- **Worst cases at 12 nodes, LogSigma** (full inputs in `family-spy23-sets.err.txt`): spy23 max rel
-  1.325e-10 at S 772.99, K 806, T 0.0682; max abs 4.94e-9 USD at K 835; IV max 0.0104 bp at K 845.
-  spy23offnode max rel 1.977e-10 and IV max 0.0672 bp both at K 811. fastgrid max rel 1.850e-6 at
+- **Worst cases at 12 nodes, LogSigma** (SPY inputs in `L2h-fix1-20261020/spy/spy-rows-66467db1.err.txt`,
+  the other sets' in `family-spy23-sets.err.txt`): spy23 max rel 1.493e-10 at S 772.99, K 776, T 0.0682
+  (ref 10.075000104086472, family 10.07500010258221); max abs 4.96e-9 USD at K 835 (ref
+  62.044997620915531, family 62.044997625880356); IV max 0.0104 bp at K 845. spy23offnode max rel
+  2.017e-10, max abs 7.67e-9 USD and IV max 0.0947 bp all at K 811. fastgrid max rel 1.850e-6 at
   put S = K = 100, T 4, σ 0.08, r 0.10, q 0 (Screen's worst corner, the low edge of the wide box);
   max abs 1.55e-5 USD at K 140, T 4, σ 0.25, r 0.045; IV max 1.066 bp at K 70, T 4, σ 0.25, r 0.045.
   deepcarry max rel 1.216e-7 at S = K = 100, T 5, σ 0.05, r 0.10. grid max rel 1.28e-12 at S 600,
@@ -185,38 +201,47 @@ row is registered behind `ATX_VOL_AL_DEV200`; order-of-magnitude rule — listed
   versus a converged reference is NOT included** in any pinned bound — the family is measured against
   the Reference kernel, and the fingerprint's `convergence n=600` section is the only in-tree
   convergence evidence for the kernel itself.
-- The brief's target (≤ 1e-6 relative p99 on SPY 23 d at 12 nodes, max rel ≤ 1e-5) is met by four
-  orders of magnitude (p99 9.7e-11, max 1.33e-10); the wide-box fastgrid holds max 1.85e-6 / p99
+- The brief's target (≤ 1e-6 relative p99 on SPY 23 d at 12 nodes, max rel ≤ 1e-5) is met by close
+  to four orders of magnitude (p99 1.39e-10, max 1.49e-10); the wide-box fastgrid holds max 1.85e-6 / p99
   2.2e-7 at 12 nodes and needs 16 nodes for ≤ 1e-7 (3.2e-8).
 
 ## 5. µs table
 
-All 30 rows of the one run (avx2, `build-vol-rel-avx2` of the lane tree at the checkpoint source,
-2026-10-19T21:50:06-04:00; `family-spy23-sets.txt` / `.json` sha256 `4a79d9ef…` / `c56fcb41…`).
-Timings per family (build) and per contract (price, chord); every row's error columns are in §4.
+Two one-run sources, each avx2 with the main thread pinned. The 12 SPY rows (`spy23_family`,
+`family_error/spy23offnode`, marked `(66467db1)`) are the committed source's binary at `66467db1`
+(exe sha256 `eb74f0d9…`, 2026-10-20T19:36:44-04:00; `L2h-fix1-20261020/spy/spy-rows-66467db1.txt` /
+`.json` / `.err.txt` sha256 `fcc87622…` / `e0bb22c6…` / `52c324cb…`). The 18 non-SPY rows (grid,
+fastgrid, deepcarry) are lane 1's run of 2026-10-19T21:50:06-04:00 on its 21:49 pre-checkpoint build
+(exe `30415b6b…`, archived in `L2h-sigma-family-20261019-gates/`; `family-spy23-sets.txt` / `.json`
+sha256 `4a79d9ef…` / `c56fcb41…`); their n12 ERROR digits were reproduced on the committed binary by
+the review (`L2h-66467db1-review-v1/family/family-n12.txt`, six rows equal to the digit); their µs
+were not re-run. Timings per family (build) and per contract (price, chord); every row's error
+columns are in §4.
 
-| row | build p50 / max µs | price p50 / p99 µs | chord p50 µs |
+| row (source build) | build p50 / max µs | price p50 / p99 µs | chord p50 µs |
 | --- | --- | --- | --- |
-| spy23_family/logsigma/n8 · n12 · n16 | 771.9 / 825.1 · 1,140.0 / 1,238.4 · 2,371.0 / 2,794.2 | 4.6 / 5.4 · 4.7 / 5.8 · 7.1 / 8.8 | 9.2 · 9.3 · 14.1 |
-| spy23_family/sigma/n8 · n12 · n16 | 944.5 / 1,583.6 · 1,197.9 / 1,325.2 · 2,571.3 / 3,124.2 | 5.6 / 6.8 · 4.7 / 5.7 · 7.6 / 10.3 | 11.1 · 9.2 · 15.0 |
+| spy23_family/logsigma/n8 · n12 · n16 (66467db1) | 826.5 / 1,089.4 · 1,240.4 / 1,535.5 · 1,653.5 / 2,677.1 | 4.6 / 6.5 · 4.7 / 6.6 · 4.9 / 7.5 | 9.2 · 9.3 · 9.6 |
+| spy23_family/sigma/n8 · n12 · n16 (66467db1) | 1,146.1 / 1,666.8 · 1,248.5 / 1,552.5 · 1,663.2 / 1,962.4 | 6.9 / 9.6 · 4.8 / 7.3 · 4.8 / 6.3 | 13.6 · 9.3 · 9.4 |
 | family_error/grid/logsigma/n8 · n12 · n16 | 785.1 / 933.9 · 1,140.4 / 1,264.3 · 2,305.0 / 2,475.0 | 4.9 / 6.1 · 4.9 / 5.3 · 7.3 / 8.5 | 9.7 · 9.7 · 14.5 |
 | family_error/fastgrid/logsigma/n8 · n12 · n16 | 779.2 / 918.2 · 1,176.5 / 1,572.7 · 2,425.0 / 3,609.3 | 4.6 / 5.3 · 4.7 / 6.3 · 7.3 / 10.0 | 9.2 · 9.3 · 14.5 |
 | family_error/deepcarry/logsigma/n8 · n12 · n16 | 742.1 / 880.9 · 1,111.4 / 1,144.3 · 2,235.3 / 2,484.9 | 4.3 / 5.3 · 4.3 / 4.8 · 6.5 / 7.7 | 8.4 · 8.5 · 12.8 |
-| family_error/spy23offnode/logsigma/n8 · n12 · n16 | 798.8 / 957.0 · **1,853.1 / 2,914.1** · 2,361.6 / 2,616.2 | 4.6 / 5.6 · **8.5 / 14.7** · 7.2 / 9.3 | 9.2 · **16.9** · 14.2 |
+| family_error/spy23offnode/logsigma/n8 · n12 · n16 (66467db1) | 826.0 / 1,054.3 · 1,241.3 / 1,550.3 · 1,653.5 / 2,019.5 | 4.7 / 6.4 · 4.8 / 7.0 · 4.8 / 7.1 | 9.2 · 9.5 · 9.5 |
 | family_error/grid/sigma/n8 · n12 · n16 | 935.7 / 1,040.2 · 1,140.0 / 1,264.4 · 2,425.3 / 2,605.3 | 5.7 / 6.7 · 4.9 / 5.3 · 7.6 / 9.6 | 11.4 · 9.7 · 15.2 |
 | family_error/fastgrid/sigma/n8 · n12 · n16 | 783.8 / 929.1 · 1,178.0 / 1,419.6 · 2,468.8 / 2,892.4 | 4.6 / 5.3 · 4.7 / 5.8 · 7.3 / 9.1 | 9.2 · 9.3 · 14.5 |
 | family_error/deepcarry/sigma/n8 · n12 · n16 | 749.8 / 929.0 · 1,111.5 / 1,233.4 · 2,319.0 / 3,236.7 | 4.4 / 5.8 · 4.3 / 5.1 · 6.8 / 10.9 | 8.7 · 8.5 · 13.4 |
-| family_error/spy23offnode/sigma/n8 · n12 · n16 | 804.5 / 1,372.7 · 1,199.7 / 1,439.1 · 2,369.6 / 3,002.5 | 4.7 / 6.7 · 4.7 / 5.6 · 7.1 / 10.6 | 9.2 · 9.2 · 14.1 |
+| family_error/spy23offnode/sigma/n8 · n12 · n16 (66467db1) | 1,032.3 / 1,569.0 · 1,248.2 / 1,528.7 · 1,663.4 / 2,057.6 | 5.9 / 10.2 · 4.7 / 7.0 · 4.7 / 6.7 | 11.6 · 9.3 · 9.4 |
 
-**Load line (UNQUALIFIED).** The run's banner (`family-spy23-sets.err.txt`): bench quiet-window
-protocol, build ISA avx2, main thread pinned to P-core 7 (`cpu=7 observed=7 pcore=1 affinity=1
-priority=1 throttle_off=1 -> PINNED`, pool mask 0x3f). Lane 1 did NOT sample the host load before /
-after the run; two other lanes (L2e-resume, research-cold-start-gap) were live on the box at the
-time (workspace `progress.md`). The `spy23offnode/logsigma/n12` row (bold) is a visible load spike
-against its neighbours (build 1,853 vs 1,140-1,200, price 8.5 vs 4.7); it is reported as measured
-and not re-run (user directive: order of magnitude first, one run is the deliverable). The 16-node
-rows ran last and carry part of the same drift. Numbers cited elsewhere in this note are the
-`spy23_family/logsigma/n12` row: build 1.14 ms per family, price 4.7 / 5.8 µs, chord 9.3 µs.
+**Load line (UNQUALIFIED).** SPY rows (this SHA's run): host load 11.8 % before / 12.5 % after
+(`Get-Counter '\Processor(_Total)\% Processor Time'`), 4.64 GB free of 15.7, two other lanes live
+(SPY1s-owner, integrate-W2b); banner in `spy-rows-66467db1.err.txt`: bench quiet-window protocol,
+build ISA avx2, main thread pinned to P-core 7 (`cpu=7 observed=7 pcore=1 affinity=1 priority=1
+throttle_off=1 -> PINNED`, pool mask 0x3f). Lane 1's run (the non-SPY rows) did NOT sample the host
+load; two other lanes (L2e-resume, research-cold-start-gap) were live then (workspace `progress.md`).
+The load spike lane 1's table showed on `spy23offnode/logsigma/n12` (build 1,853 µs, price 8.5 µs)
+and the 1.5× per-price cost of its 16-node rows are absent from the reproduced run (1,241 µs / 4.8 µs;
+16 nodes 4.9 µs per price) — host drift, not the kernel. Numbers cited elsewhere in this note are the
+`spy23_family/logsigma/n12` row of this SHA's run: build 1.24 ms per family (max 1.54), price
+4.7 / 6.6 µs, chord 9.3 µs.
 
 ## 6. Gates
 
@@ -240,11 +265,13 @@ resume lane (2026-10-20, pool-3, RunId `vol-20261020r3-L2h`, `-Jobs 2`, `ATX_VOL
 | name set | `ATX_VOL_FIT_WORKERS=3; B -Ctest -Preset vol-rel -Jobs 2 -R "^(pricing\|simd)/"` → `names.sh` (`abe9a35c…`) | 934 tests, 2 known failures (exit 8 as in every prior run); 19 names, sha256 `52324ef8…` EQUAL to `names-pre-L2b-8be778b5-cap3.txt` |
 | PCH-off hygiene | `B configure -Preset vol-hygiene`; `B check <21 TUs: the L1c/L2f american.hpp includer set + american_sigma_family.cpp> -Preset vol-hygiene -Jobs 2` | exit 0 / exit 0: 25 objects observed compiling, `diag_lines=0` (bench TU outside the preset — ledgered) |
 | AL fingerprint | `B build atx-vol-al-preset-ladder-bench -Preset vol-rel-avx2 -Jobs 2`; `ATX_VOL_AL_FINGERPRINT=…\fingerprint\fp-850b6d4f.bin atx-vol-al-preset-ladder-bench.exe --benchmark_filter=american/ladder_fingerprint` | exit 0: 48,660 doubles, ten section fnv1a lines equal to lane 1's `fp-lane.err.txt`, `fp-850b6d4f.bin` sha256 `53c4df68…` MATCH (re-run at the final SHA in the report) |
+| fix round L2h-fix1 (2026-10-20, pool-3, RunId `vol-20261020r3-L2h-fix1`; review-L2h M1 + m1, docs / comments only) | SPY rows: `ATX_VOL_AL_FAMILY=1 ATX_VOL_AL_SPY23=<csv 0c68bb76…> atx-vol-al-preset-ladder-bench.exe --benchmark_filter='american/(spy23_family\|family_error/spy23offnode)/'` on the `66467db1` avx2 binary (`eb74f0d9…`); then, after the `american.hpp` comment edit: `B build atx-vol-pricing-slice -Preset vol-rel -Jobs 2`; `atx-vol-pricing-slice.exe --gtest_filter=AlSigmaFamily.*`; `B build atx-vol-al-preset-ladder-bench -Preset vol-rel-avx2 -Jobs 2` + the fingerprint run; `B configure -Preset vol-hygiene`; `B check atx-vol\src\pricing\american_sigma_family.cpp -Preset vol-hygiene` | SPY run exit 0 (§3-§5 digits; `L2h-fix1-20261020/`); build exit 0 (149 objects); gtest exit 0: 11/11, every `[AlSigmaFamily]` printout unchanged; avx2 build exit 0 (128 objects); fingerprint exit 0, `fp-L2h-fix1.bin` sha256 `53c4df68…` MATCH, ten section fnv1a equal; hygiene configure / check exit 0 / 0, 1 object compiled, `diag_lines=0` |
 
 Nothing default moved: the fingerprint, the parity hash and the name set are the three proofs; no
 caller constructs an `AlSigmaFamily` (L2i). `boundary_interp.*` untouched: the `SigmaInterp.*`
-suite (6 passed + the counters skip) ran inside the focused gtest above. Timing numbers in §3 / §5
-are lane 1's one run; the resume lane re-ran no bench row (no code change forced one).
+suite (6 passed + the counters skip) ran inside the focused gtest above. Timing numbers in §3 / §5:
+the SPY rows are the fix round's run at `66467db1` (review-L2h M1 — provenance, §3), the non-SPY
+rows lane 1's one run; no code change forced any re-run.
 
 ## 7. What L2i must assume
 
@@ -278,7 +305,7 @@ are lane 1's one run; the resume lane re-ran no bench row (no code change forced
    sigma)` on one put and one call family per expiry (anchors below), accepted at a node only where
    the family's pinned bound at that node is below the certificate allowance `1.0e-8 + 1.0e-9 ·
    max(spot, strike)` (:842; also :1685 / :1703) — otherwise, and on any typed refusal, that node
-   is priced cold. On SPY 23 d the family's max abs 4.9e-9 USD is under the allowance (≥ 1e-8 +
+   is priced cold. On SPY 23 d the family's max abs 5.0e-9 USD is under the allowance (≥ 1e-8 +
    7.7e-7) everywhere; on the wide fastgrid box the max abs 1.55e-5 is NOT (K 140, T 4), so the
    acceptance test is per node, not per family.
 3. **The box rule** (what the bench used, `family_box` in `al_preset_ladder_bench.cpp`): over the
@@ -289,7 +316,7 @@ are lane 1's one run; the resume lane re-ran no bench row (no code change forced
    mid ± 0.01. One box per (expiry, side) from the WHOLE chain, not per (T, r, q) group (item 6).
    A query outside the box is a typed `SigmaOutsideBox` refusal, never an extrapolation: the
    iterate then prices cold (count it; a frequent refusal means the box was wrong — widen and
-   rebuild, 1.14 ms). The band floor / cap prices at kIvMin / kIvMax (`deam_iv_cache.cpp:130-131`)
+   rebuild, 1.24 ms). The band floor / cap prices at kIvMin / kIvMax (`deam_iv_cache.cpp:130-131`)
    are outside any chain box by construction and stay cold (or get a dedicated wide family only
    where item 7's count pays for it).
 4. **Refusals that route to a cold solve.** `prepare()`: `InvalidArgument` (unprepared geometry,
@@ -298,8 +325,8 @@ are lane 1's one run; the resume lane re-ran no bench row (no code change forced
    puts; a node boundary collapsed; a node sweep could not move = the kernel's NotConverged, mapped
    as american.cpp's `al_solve_status_error` maps it) and `Internal` (Gauss-Legendre table missing)
    → the whole (expiry, side) prices cold, exactly as the P2.5 slice's `min_tau` guard does. (The
-   `prepare()` header comment lists NotConverged under `Internal`; the TU returns `NotImplemented`
-   for it — a comment-only mismatch left for review, no caller branches on the two codes.)
+   `prepare()` header comment used to list NotConverged under `Internal`; corrected at this SHA to
+   the TU's `NotImplemented` — review-L2h m1, comment only; no caller branches on the two codes.)
    `price()` / `price_and_chord()`: `NotPrepared` / `GeometryRePrepared` → rebuild (the geometry's
    generation stamp moved) or cold; `InvalidArgument` → the cold path's own refusal;
    `SigmaBelowGuard` (σ < 0.01) and `SigmaOutsideBox` → cold solve. **The L1c non-monotone refusal
@@ -320,7 +347,7 @@ are lane 1's one run; the resume lane re-ran no bench row (no code change forced
    rescale, LEDGER 2026-10-19 L574, ruling (a)). A geometry is keyed on (T, r, q, AlOpts): the
    quote files carry a per-row effective yield (`calendar_yield_at`, quote_slice.cpp:1204 — 74
    distinct q over 322 SPY 23 d rows), so a family per distinct (T, r, q, side) would be 148
-   families × 1.14 ms = 169 ms for 317 contracts (build-dominated, the bench's own grouping); L2i
+   families × 1.24 ms = 184 ms for 317 contracts (build-dominated, the bench's own grouping); L2i
    must build on the expiry's `effective_yield` (one geometry per expiry, two families) and route
    the strikes whose calendar-yield adjustment moves the price beyond the allowance to the cold
    path — or count calls per geometry key under item 7 before building.
@@ -331,12 +358,12 @@ are lane 1's one run; the resume lane re-ran no bench row (no code change forced
    ⇒ N > n_σ · cold / (cold − family) = 12 · 160 / 155.3 ≈ 12.4 calls (12.2 at cold = 260 µs); c = 3
    puts the threshold 6× above break-even so a mis-estimated count never makes cold start slower
    (the research's warning). SPY 23 d arithmetic, one expiry: 317 quotes × 1.8 ≈ 571 iterate prices
-   + 2 × 160 strikes × ~3 passes ≈ 960 grid prices ≈ 1,530 calls ≫ 72 → build; cost 2 × 1.14 ms +
-   1,530 × 4.7 µs ≈ 9.5 ms against 1,530 × 160-260 µs ≈ 245-400 ms cold (26-42×). A thin dev200
+   + 2 × 160 strikes × ~3 passes ≈ 960 grid prices ≈ 1,530 calls ≫ 72 → build; cost 2 × 1.24 ms +
+   1,530 × 4.7 µs ≈ 9.7 ms against 1,530 × 160-260 µs ≈ 245-400 ms cold (25-41×). A thin dev200
    chain (6 quotes): 6 × 1.8 + 2 × 6 × 3 ≈ 47 < 72 → stay cold (Screen / Fast). Full board: 57,281
-   solved expiries × 2 sides × 1.14 ms ≈ 131 CPU-s if built unconditionally — the rule exists so
+   solved expiries × 2 sides × 1.24 ms ≈ 142 CPU-s if built unconditionally — the rule exists so
    that number is paid only where the chain pays it back. Fast-node build time: not measured (§3).
-8. **Recommendation: n_σ = 12 on the LogSigma axis (the default)** — SPY 23 d max rel 1.33e-10 /
-   p99 9.7e-11, IV 0.0104 bp max, build 1.14 ms, price 4.7 µs; 16 nodes (2.37 ms, 7.1 µs per price)
+8. **Recommendation: n_σ = 12 on the LogSigma axis (the default)** — SPY 23 d max rel 1.49e-10 /
+   p99 1.39e-10, IV 0.0104 bp max, build 1.24 ms, price 4.7 µs; 16 nodes (1.65 ms, 4.9 µs per price)
    only for a wide box that must hold ≤ 1e-7 (fastgrid [0.08, 0.7] at T 4: 1.85e-6 → 3.2e-8); 8
-   nodes are not Reference-class on the real chain (1.25e-5 / 0.30 bp). Pinned bounds: §4.3.
+   nodes are not Reference-class on the real chain (1.27e-5 / 0.30 bp). Pinned bounds: §4.3.
