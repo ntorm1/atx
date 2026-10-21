@@ -183,6 +183,13 @@ struct IvOpts {
   // or al_opts' own profile: every solve is on al_opts, the accurate kernel the Search
   // route inverts on. Another profile: iterates run al_opts' scheme on that profile and
   // the accepted root is confirmed by one solve on al_opts (Newton distance <= tol).
+  // AlProfile::Screen (SPY1s Phase 1, 2026-10-20) selects the MEASURED Screen tier
+  // al_screen_opts() (american.hpp: 7 nodes, l 16, 5 sweeps, p 48 - the only Screen
+  // scheme with a tested bound), not al_opts' scheme on the Screen arithmetic. A price
+  // inside Screen's wide non-monotone gate (al_non_monotone_gate of al_screen_opts())
+  // runs its iterates on al_opts instead (the accurate kernel; no confirm needed), so a
+  // Screen refusal never becomes a quote refusal and Screen is never classified as the
+  // accurate scheme (L2f note section 4).
   std::optional<AlProfile> seed_profile = std::nullopt;
 };
 

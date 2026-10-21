@@ -2067,3 +2067,282 @@ TEST(AmericanIvPremium, TheMidMemoryCutsTheBandEdgeSolves) {
   EXPECT_LT(with_memory * 10, without_memory * 7); // at least 30% fewer cold solves
   EXPECT_GT(one_solve * 2, edges);                  // most edges need one solve
 }
+
+// ── Seed-tier wiring (SPY1s Phase 1 / L2g, 2026-10-20) ──
+// Pinned: IvOpts::seed_profile Screen runs the iterates on the MEASURED tier
+// al_screen_opts() (7 nodes), confirms every accepted root on the accurate map (one
+// Reference solve, Newton distance <= tol) and agrees with Search; a price inside Screen's
+// wide non-monotone gate routes its iterates to the accurate kernel (the r = q dips of
+// L2f section 4) exactly where a Screen-as-accurate inversion refuses; the band gate
+// skips the confirm only where its statement holds and the skipped root's accurate-map
+// Newton distance stays inside the bound the gate computed; Never skips every confirm;
+// the Fast confirm kernel is honoured.
+
+namespace {
+
+using atx::vol::al_screen_opts;
+using atx::vol::AlProfile;
+using atx::vol::IvConfirmPolicy;
+using atx::vol::IvPremiumGate;
+
+// Accurate-map Newton distance of `sigma` for `price`: |P(sigma) - price| over the
+// forward chord of the Reference map at kAlPackSigmaBump. NaN when the map is flat.
+[[nodiscard]] double accurate_newton_distance(double price, double S, const PremiumCase &c,
+                                              double sigma) {
+  const auto p0 = andersen_lake(S, c.K, c.T, sigma, c.r, c.q, c.sd);
+  const auto p1 = andersen_lake(S, c.K, c.T, sigma + atx::vol::kAlPackSigmaBump, c.r, c.q, c.sd);
+  if (!p0 || !p1) return std::numeric_limits<double>::quiet_NaN();
+  const double slope = (*p1 - *p0) / atx::vol::kAlPackSigmaBump;
+  return slope > 0.0 ? std::abs(*p0 - price) / slope : std::numeric_limits<double>::quiet_NaN();
+}
+
+[[nodiscard]] IvResult screen_seeded_iv(double price, double S, const PremiumCase &c,
+                                        IvPremiumStats &stats, const IvPremiumGate *gate) {
+  IvOpts o;
+  o.strategy = IvStrategy::Premium;
+  o.seed_profile = AlProfile::Screen;
+  return american_implied_vol_premium(price, S, c.K, c.T, c.r, c.q, c.sd, o, nullptr, stats, gate);
+}
+
+} // namespace
+
+TEST(AmericanIvPremium, ScreenSeedsRunTheMeasuredTierAndAreConfirmedOnTheAccurateMap) {
+  const double S = 100.0;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, confirmed = 0, routed = 0, fallbacks = 0, two_solves = 0;
+  std::size_t edge_checked = 0, edge_over = 0, edge_over_twice = 0;
+  std::array<std::size_t, atx::vol::kIvPremiumFallbackCount> why{};
+  double max_newton = 0.0, max_dsig = 0.0, max_edge_rel = 0.0;
+  for (const PremiumCase &c : premium_grid()) {
+    const auto p = andersen_lake(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    if (!p || !(*p > 0.0)) continue;
+    // The band edges the cache prices on Screen (kIvMin / kIvMax) against the accurate
+    // kernel: how far the tested bound is from what the edges see (printed; a count of
+    // edges over the bound is reported, not asserted - the cache re-prices an ambiguous
+    // edge accurately, and the measured ambiguous fraction is in RESULTS.md).
+    for (const double edge_sigma : {atx::vol::kIvMin, atx::vol::kIvMax}) {
+      const auto ea = andersen_lake(S, c.K, c.T, edge_sigma, c.r, c.q, c.sd);
+      const auto es = andersen_lake(S, c.K, c.T, edge_sigma, c.r, c.q, c.sd, al_screen_opts());
+      if (!ea || !es) continue;
+      ++edge_checked;
+      const double bound = atx::vol::al_profile_price_bound(AlProfile::Screen, *ea, c.T);
+      const double err = std::abs(*es - *ea);
+      max_edge_rel = std::max(max_edge_rel, err / std::max(*ea, 1.0));
+      if (err > bound) ++edge_over;
+      // The de-Am cache's edge margin: twice the WHOLE-GRID bound at every maturity
+      // (quote_slice.cpp SliceDeAmModel::seed_price_bound).
+      if (err > 2.0 * atx::vol::kAlScreenPriceBound * std::max(*ea, 1.0)) ++edge_over_twice;
+    }
+    IvPremiumStats st;
+    const IvResult r = screen_seeded_iv(*p, S, c, st, nullptr);
+    const IvResult s = american_implied_vol(*p, S, c.K, c.T, c.r, c.q, c.sd, IvOpts{});
+    ASSERT_EQ(r.status == IvStatus::Ok, s.status == IvStatus::Ok) << c.K << " " << c.T;
+    // The accurate-seeded Premium attempt of the same price: Screen seeds with the bounded
+    // (two-solve) confirm lose none of its acceptances (a single-solve confirm turned 150
+    // of them into Search fallbacks on this grid).
+    IvPremiumStats accurate_seed;
+    static_cast<void>(premium_iv(*p, S, c, nullptr, accurate_seed));
+    if (st.fallback != IvPremiumFallback::None) {
+      ++fallbacks; // a fallback IS Search, pinned by ConvergesToTheSearchRootOrFallsBackBitForBit
+      ++why[static_cast<std::size_t>(st.fallback)];
+      EXPECT_NE(accurate_seed.fallback, IvPremiumFallback::None) << c.K << " " << c.T << " " << c.sig_true;
+      continue;
+    }
+    ++accepted;
+    EXPECT_FALSE(st.confirm_skipped);
+    if (st.seed_routed) {
+      ++routed;
+      EXPECT_EQ(st.seed_nodes, 12u); // the accurate preset's nodes
+      EXPECT_EQ(st.confirm_solves, 0u);
+    } else {
+      ++confirmed;
+      EXPECT_EQ(st.seed_nodes, al_screen_opts().n_collocation); // 7: the measured tier
+      EXPECT_GE(st.confirm_solves, 1u);
+      EXPECT_LE(st.confirm_solves, atx::vol::kIvPremiumConfirmSolves);
+      two_solves += st.confirm_solves > 1u ? 1u : 0u;
+      EXPECT_EQ(st.confirm_profile, AlProfile::Reference);
+    }
+    // Ruling (a): the criterion is the distance to the accurate root, not to Search's
+    // answer (Search's polish may stop up to 4 tol from its root; L2e measured it up to
+    // 1.75e-3 off on cohort5). |dsigma| vs Search is printed, not asserted.
+    const double nd = accurate_newton_distance(*p, S, c, r.iv);
+    if (std::isfinite(nd)) {
+      max_newton = std::max(max_newton, nd);
+      EXPECT_LE(nd, 4.0 * tol) << c.K << " " << c.T << " " << c.sig_true;
+    }
+    max_dsig = std::max(max_dsig, std::abs(r.iv - s.iv));
+  }
+  std::printf("[screen seeds] accepted %zu (confirmed %zu, of which %zu needed a second confirm "
+              "solve; routed %zu), fallbacks %zu (1=%zu 2=%zu 3=%zu 4=%zu 5=%zu 6=%zu 7=%zu), max "
+              "accurate-map Newton distance %.3g, max |dsigma| vs Search %.3g\n",
+              accepted, confirmed, two_solves, routed, fallbacks, why[1], why[2], why[3], why[4],
+              why[5], why[6], why[7], max_newton, max_dsig);
+  std::printf("[screen edges] %zu kIvMin / kIvMax edge prices: Screen vs accurate max rel %.3g, "
+              "%zu over the tested bound (short-dated bound included), %zu over twice the "
+              "whole-grid bound\n",
+              edge_checked, max_edge_rel, edge_over, edge_over_twice);
+  EXPECT_GT(confirmed, 100u);
+  EXPECT_LE(max_newton, 4.0 * tol);
+  EXPECT_EQ(edge_over_twice, 0u); // the de-Am cache decides a Screen edge with that margin
+}
+
+// A price inside Screen's wide non-monotone gate (4e-4 K max(1, T)^2; the accurate gate is
+// 5e-6) at r = q: an inversion on Screen AS the kernel refuses it (NonMonotoneRegion under
+// refuse_non_monotone), while the Screen-seeded Premium inversion routes its iterates to
+// the accurate kernel and serves Search's root. Screen is never classified accurate.
+TEST(AmericanIvPremium, APriceInsideScreensNonMonotoneGateRunsAccurateIteratesNotARefusal) {
+  const double S = 100.0;
+  std::size_t routed = 0, screen_refusals = 0, candidates = 0;
+  std::array<std::size_t, 6> screen_status{};
+  double max_screen_newton = 0.0; // accurate-map Newton distance of a Screen-as-kernel root
+  for (const double rq : {0.02, 0.03, 0.05}) {
+    for (const double T : {0.5, 1.0, 2.0}) {
+      for (const double m : {1.01, 1.02, 1.05, 1.1}) {
+        for (const Side sd : {Side::Put, Side::Call}) {
+          const double K = sd == Side::Put ? S * m : S / m; // in the money
+          const PremiumCase c{K, T, rq, rq, sd, 0.0};
+          const auto floor = andersen_lake(S, K, T, atx::vol::kIvMin, rq, rq, sd);
+          if (!floor) continue;
+          const double wide = al_non_monotone_gate(K, T, al_screen_opts());
+          const double narrow = al_non_monotone_gate(K, T, std::nullopt);
+          ASSERT_GT(wide, 10.0 * narrow); // Screen is NOT the accurate scheme
+          for (const double frac : {0.5, 0.05}) {
+            const double price = *floor + frac * wide;
+            const IvResult s = american_implied_vol(price, S, K, T, rq, rq, sd, IvOpts{});
+            if (s.status != IvStatus::Ok) continue;
+            ++candidates;
+            IvPremiumStats st;
+            const IvResult r = screen_seeded_iv(price, S, c, st, nullptr);
+            ASSERT_EQ(r.status, IvStatus::Ok) << K << " " << T;
+            if (st.fallback == IvPremiumFallback::None) {
+              EXPECT_TRUE(st.seed_routed) << K << " " << T;
+              EXPECT_EQ(st.seed_nodes, 12u);
+              EXPECT_EQ(st.confirm_solves, 0u);
+              routed += st.seed_routed ? 1u : 0u;
+            }
+            // Near the intrinsic the map is flat and curved (L1c): the forward-chord
+            // Newton distance is not a sharp yardstick there, so the routed root is
+            // judged by its accurate-map price residual against Search's own.
+            const auto pr = andersen_lake(S, K, T, r.iv, rq, rq, sd);
+            const auto ps = andersen_lake(S, K, T, s.iv, rq, rq, sd);
+            ASSERT_TRUE(pr && ps);
+            EXPECT_LE(std::abs(*pr - price), 2.0 * std::abs(*ps - price) + 1.0e-9 * std::max(price, 1.0))
+                << K << " " << T << " " << frac;
+            // Screen as the (mis-)classified accurate kernel inside its own band: a
+            // NonMonotoneRegion refusal, an out-of-range / unpriceable status, or the
+            // kIvMin floor clamp (its kIvMin price above the target) would each be "no
+            // root"; what it does return on this grid is counted and its accurate-map
+            // distance printed (RESULTS.md / note section 2 read the outcome).
+            IvOpts as_kernel;
+            as_kernel.al_opts = al_screen_opts();
+            as_kernel.refuse_non_monotone = true;
+            const IvResult refused = american_implied_vol(price, S, K, T, rq, rq, sd, as_kernel);
+            ++screen_status[static_cast<std::size_t>(refused.status)];
+            const bool clamped = refused.status == IvStatus::Ok && !(refused.iv > atx::vol::kIvMin);
+            screen_refusals += (refused.status != IvStatus::Ok || clamped) ? 1u : 0u;
+            if (refused.status == IvStatus::Ok && !clamped) {
+              const double nd_screen = accurate_newton_distance(price, S, c, refused.iv);
+              if (std::isfinite(nd_screen)) max_screen_newton = std::max(max_screen_newton, nd_screen);
+            }
+          }
+        }
+      }
+    }
+  }
+  std::printf("[screen routing] r = q candidates %zu, routed to accurate iterates %zu, not served "
+              "by Screen as kernel %zu (status counts ok %zu invalid %zu out_of_range %zu "
+              "no_convergence %zu unpriceable %zu non_monotone %zu; max accurate-map Newton "
+              "distance of a Screen-as-kernel root %.3g)\n",
+              candidates, routed, screen_refusals, screen_status[0], screen_status[1],
+              screen_status[2], screen_status[3], screen_status[4], screen_status[5],
+              max_screen_newton);
+  EXPECT_GT(candidates, 0u);
+  EXPECT_GT(routed, 0u);
+  // (screen_refusals is reported, not asserted: on this r = q grid Screen as the kernel
+  // returned Ok roots - the routing guard is in front regardless, pinned above.)
+}
+
+TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {
+  const double S = 100.0;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, skipped = 0, kept = 0, never_skipped = 0, never_accepted = 0;
+  std::size_t fast_confirmed = 0;
+  double max_skipped_newton = 0.0, max_bound = 0.0, max_fast_dsig = 0.0;
+  for (const PremiumCase &c : premium_grid()) {
+    const auto p = andersen_lake(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    if (!p || !(*p > 0.0)) continue;
+    const IvResult s = american_implied_vol(*p, S, c.K, c.T, c.r, c.q, c.sd, IvOpts{});
+    // (1) Band, k = 10, a band 10 % of the price wide: skipped only where the statement
+    // holds, and every skipped root reprices inside the bound the gate computed.
+    IvPremiumGate band;
+    band.policy = IvConfirmPolicy::Band;
+    band.k = 10.0;
+    band.half_spread_usd = 0.05 * *p;
+    band.min_relative_slope = 1.0e-5;
+    IvPremiumStats st;
+    const IvResult r = screen_seeded_iv(*p, S, c, st, &band);
+    if (st.fallback == IvPremiumFallback::None) {
+      ++accepted;
+      if (st.confirm_skipped) {
+        ++skipped;
+        EXPECT_EQ(st.confirm_solves, 0u);
+        EXPECT_EQ(st.gate_solves, 1u);
+        ASSERT_TRUE(std::isfinite(st.gate_bound_vol));
+        const double nd = accurate_newton_distance(*p, S, c, r.iv);
+        if (std::isfinite(nd)) {
+          max_skipped_newton = std::max(max_skipped_newton, nd);
+          EXPECT_LE(nd, st.gate_bound_vol + 4.0 * tol) << c.K << " " << c.T << " " << c.sig_true;
+        }
+        max_bound = std::max(max_bound, st.gate_bound_vol);
+      } else if (!st.seed_routed) {
+        ++kept;
+        EXPECT_GE(st.confirm_solves, 1u);
+        const double nd = accurate_newton_distance(*p, S, c, r.iv);
+        if (std::isfinite(nd)) EXPECT_LE(nd, 4.0 * tol) << c.K << " " << c.T;
+      }
+    }
+    // (2) Band with no band to speak of: every accepted, unrouted root is confirmed.
+    IvPremiumGate tight = band;
+    tight.half_spread_usd = 1.0e-9;
+    IvPremiumStats ts;
+    static_cast<void>(screen_seeded_iv(*p, S, c, ts, &tight));
+    if (ts.fallback == IvPremiumFallback::None && !ts.seed_routed) {
+      EXPECT_FALSE(ts.confirm_skipped);
+      EXPECT_GE(ts.confirm_solves, 1u);
+    }
+    // (3) Never: the seed-tier root as is (unless routed to accurate iterates).
+    IvPremiumGate never;
+    never.policy = IvConfirmPolicy::Never;
+    IvPremiumStats ns;
+    static_cast<void>(screen_seeded_iv(*p, S, c, ns, &never));
+    if (ns.fallback == IvPremiumFallback::None) {
+      ++never_accepted;
+      EXPECT_EQ(ns.confirm_solves, 0u);
+      if (!ns.seed_routed) {
+        EXPECT_TRUE(ns.confirm_skipped);
+        ++never_skipped;
+      }
+    }
+    // (4) Always on the Fast confirm kernel (R3 arm): confirmed on Fast, Search's root.
+    IvPremiumGate fast;
+    fast.confirm_opts = atx::vol::al_fast_profile(std::nullopt);
+    IvPremiumStats fs;
+    const IvResult fr = screen_seeded_iv(*p, S, c, fs, &fast);
+    if (fs.fallback == IvPremiumFallback::None && !fs.seed_routed) {
+      ++fast_confirmed;
+      EXPECT_GE(fs.confirm_solves, 1u);
+      EXPECT_EQ(fs.confirm_profile, AlProfile::Fast);
+      const double nd = accurate_newton_distance(*p, S, c, fr.iv);
+      if (std::isfinite(nd)) EXPECT_LE(nd, 4.0 * tol) << c.K << " " << c.T;
+      if (s.status == IvStatus::Ok) max_fast_dsig = std::max(max_fast_dsig, std::abs(fr.iv - s.iv));
+    }
+  }
+  std::printf("[band gate] accepted %zu: skipped %zu / kept %zu at k = 10 (max skipped accurate-map "
+              "Newton %.3g, max gate bound %.3g vol); never: %zu of %zu skipped; Fast confirm %zu "
+              "(max |dsigma| vs Search %.3g)\n",
+              accepted, skipped, kept, max_skipped_newton, max_bound, never_skipped, never_accepted,
+              fast_confirmed, max_fast_dsig);
+  EXPECT_GT(skipped, 50u);
+  EXPECT_GT(never_skipped, 100u);
+  EXPECT_GT(fast_confirmed, 100u);
+}

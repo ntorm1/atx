@@ -1134,37 +1134,108 @@ struct ColdPoint {
 
 // The Premium root, or nullopt with stats.fallback set (the caller then runs Search).
 // Not noexcept: andersen_lake's Error path builds a message string.
+// `seed_opts` / `confirm` are taken by value: a price inside the seed tier's own
+// non-monotone gate re-routes the iterates to `opts` (the accurate kernel) below.
 [[nodiscard]] std::optional<double> premium_root(double price, double S, double K, double T,
                                                  double r, double q, Side side, double tol,
                                                  const std::optional<AlOpts> &opts,
-                                                 const std::optional<AlOpts> &seed_opts,
-                                                 bool confirm, IvPremiumMemory *memory,
+                                                 std::optional<AlOpts> seed_opts, bool confirm,
+                                                 const IvPremiumGate *gate, IvPremiumMemory *memory,
                                                  IvPremiumStats &stats) {
   const auto fail = [&stats](IvPremiumFallback why) {
     stats.fallback = why;
     return std::optional<double>{};
   };
+  // The band gate (IvPremiumGate, policy Band; gap report 5a): the seed-tier root may
+  // skip its confirm only when its vol-unit error bound (eps_A + eps_r) / v_min is under
+  // the quote's half-spread in vol divided by k. eps_A = the seed tier's tested price
+  // bound at this contract, eps_r = the root's residual on the seed map, v_min = the seed
+  // map's chord at the root (one more seed-tier solve a kAlPackSigmaBump away) less its
+  // chord bound h |volga| + 1e-8 (volga from the chord to the previous cold point; a 2x
+  // margin when there is none), floored at min_relative_slope max(price, 1); the
+  // half-spread is converted with the chord PLUS that margin (the conservative side).
+  // Both sides are in vol units (the brief's statement read on the vol scale).
+  const auto band_gate_holds = [&](double slope, const ColdPoint &last,
+                                   const ColdPoint *partner) -> bool {
+    if (gate == nullptr || !(gate->half_spread_usd > 0.0) || !(gate->k > 0.0)) {
+      return false;
+    }
+    const AlProfile seed_profile = seed_opts ? seed_opts->profile : AlProfile::Reference;
+    const double eps_a = al_profile_price_bound(seed_profile, price, T);
+    const double eps_r = std::fabs(last.price - price);
+    const double h = last.sigma + kAlPackSigmaBump < kSigmaHi ? kAlPackSigmaBump : -kAlPackSigmaBump;
+    const Result<double> pb = andersen_lake(S, K, T, last.sigma + h, r, q, side, seed_opts);
+    ++stats.premium_solves;
+    ++stats.gate_solves;
+    if (!pb || !std::isfinite(*pb)) {
+      return false;
+    }
+    const double chord = (*pb - last.price) / h;
+    double margin = 0.5 * std::fabs(chord) + 1.0e-8;
+    if (partner != nullptr && partner->sigma != last.sigma) {
+      const double back = (last.price - partner->price) / (last.sigma - partner->sigma);
+      const double span = 0.5 * (std::fabs(h) + std::fabs(last.sigma - partner->sigma));
+      const double volga = std::fabs(chord - back) / span;
+      margin = std::fabs(h) * volga + 1.0e-8;
+    }
+    const double v_min = std::fmin(chord, slope) - margin;
+    const double v_max = std::fmax(chord, slope) + margin;
+    const double floor = gate->min_relative_slope * std::fmax(price, 1.0);
+    if (!(v_min > 0.0) || !(v_min > floor) || !std::isfinite(v_max)) {
+      return false;
+    }
+    const double bound_vol = (eps_a + eps_r) / v_min;
+    stats.gate_bound_vol = bound_vol;
+    return bound_vol < gate->half_spread_usd / (v_max * gate->k);
+  };
   // An accepted iterate's root; with a seed kernel other than the accurate one it is
-  // confirmed by one accurate solve (Newton distance <= tol on the accurate map).
-  const auto accept = [&](double root, double slope) -> std::optional<double> {
+  // confirmed by one solve on the confirm kernel (Newton distance <= tol on that map)
+  // unless the gate's policy skips the confirm (Never, or Band when the statement holds).
+  const auto accept = [&](double root, double slope, const ColdPoint &last,
+                          const ColdPoint *partner) -> std::optional<double> {
     if (!(root > kSigmaLo && root < kSigmaHi)) {
       return fail(IvPremiumFallback::VolBound);
     }
     if (confirm) {
-      counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
-      const Result<double> pc = andersen_lake(S, K, T, root, r, q, side, opts);
-      ++stats.premium_solves;
-      if (!pc || !std::isfinite(*pc)) {
-        return fail(IvPremiumFallback::PricerFailure);
+      const IvConfirmPolicy policy = gate != nullptr ? gate->policy : IvConfirmPolicy::Always;
+      const bool skip = policy == IvConfirmPolicy::Never ||
+                        (policy == IvConfirmPolicy::Band && band_gate_holds(slope, last, partner));
+      if (skip) {
+        stats.confirm_skipped = true;
+        stats.fallback = IvPremiumFallback::None;
+        return root;
       }
-      const double dc = (*pc - price) / slope;
-      stats.last_residual_usd = std::fabs(*pc - price);
-      if (!(std::fabs(dc) <= tol)) {
-        return fail(IvPremiumFallback::NoConvergence);
-      }
-      root -= dc;
-      if (!(root > kSigmaLo && root < kSigmaHi)) {
-        return fail(IvPremiumFallback::VolBound);
+      const std::optional<AlOpts> &confirm_opts =
+          gate != nullptr && gate->confirm_opts ? gate->confirm_opts : opts;
+      stats.confirm_profile = confirm_opts ? confirm_opts->profile : AlProfile::Reference;
+      // A seed-tier root sits up to the tier's price bound off the confirm map (Screen:
+      // 7.8e-4 max(P, 1), often > tol in vol), so the confirm is a bounded Newton on the
+      // confirm map: a solve whose distance is <= tol accepts (then corrects the root); a
+      // larger one takes the step and confirms once more; kIvPremiumConfirmSolves solves
+      // at most, else the Search fallback.
+      for (std::uint32_t attempt = 0;; ++attempt) {
+        counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+        const Result<double> pc = andersen_lake(S, K, T, root, r, q, side, confirm_opts);
+        ++stats.premium_solves;
+        ++stats.confirm_solves;
+        if (!pc || !std::isfinite(*pc)) {
+          return fail(IvPremiumFallback::PricerFailure);
+        }
+        const double dc = (*pc - price) / slope;
+        stats.last_residual_usd = std::fabs(*pc - price);
+        if (!std::isfinite(dc)) {
+          return fail(IvPremiumFallback::NotIncreasing);
+        }
+        root -= dc;
+        if (!(root > kSigmaLo && root < kSigmaHi)) {
+          return fail(IvPremiumFallback::VolBound);
+        }
+        if (std::fabs(dc) <= tol) {
+          break;
+        }
+        if (attempt + 1u >= kIvPremiumConfirmSolves) {
+          return fail(IvPremiumFallback::NoConvergence);
+        }
       }
     }
     stats.fallback = IvPremiumFallback::None;
@@ -1184,10 +1255,22 @@ struct ColdPoint {
     return fail(IvPremiumFallback::NotApplicable);
   }
   const double band_tol = 1.0e-9 * ceiling + 1.0e-12;
-  const double gate = al_non_monotone_gate(K, T, opts);
-  if (!(price < ceiling - band_tol) || !(price - zero_vol > std::fmax(gate, band_tol))) {
+  const double accurate_gate = al_non_monotone_gate(K, T, opts);
+  if (!(price < ceiling - band_tol) || !(price - zero_vol > std::fmax(accurate_gate, band_tol))) {
     return fail(IvPremiumFallback::RangeEdge);
   }
+  if (confirm) {
+    // Seed-tier routing (L2f note section 4): inside the seed tier's own, wider
+    // non-monotone gate its map may dip where the accurate map does not (Screen: 4e-4 K
+    // max(1, T)^2, dips at r = q), so the iterates run on the accurate kernel instead -
+    // no confirm is then needed, and a seed-tier refusal never reaches the quote.
+    if (!(price - zero_vol > al_non_monotone_gate(K, T, seed_opts))) {
+      seed_opts = opts;
+      confirm = false;
+      stats.seed_routed = true;
+    }
+  }
+  stats.seed_nodes = seed_opts ? seed_opts->n_collocation : kAlAccurateCollocation;
   const Leg leg(S, K, T, r, q, side);
   if (!leg.valid()) {
     return fail(IvPremiumFallback::NotApplicable);
@@ -1309,7 +1392,7 @@ struct ColdPoint {
     abs_d = std::fabs(d);
     if (abs_d <= tol) {
       stats.last_residual_usd = std::fabs(res);
-      return accept(s - d, *slope);
+      return accept(s - d, *slope, cur, prev ? &*prev : nullptr);
     }
     // Next iterate: the leg plus the remainder chord through the two latest cold points,
     // solved exactly; the plain Newton step on the cold map if that model has no root.
@@ -1334,11 +1417,16 @@ struct ColdPoint {
 
 // The kernel the Premium iterates run on (IvOpts::seed_profile): al_opts itself when
 // the profile is unset or is al_opts' own profile (then every solve is the accurate
-// confirming solve), else al_opts' scheme on that profile.
+// confirming solve); AlProfile::Screen selects the measured tier al_screen_opts() (the
+// only Screen scheme with a tested bound; american_iv.hpp); any other profile al_opts'
+// scheme on that profile.
 [[nodiscard]] std::optional<AlOpts> premium_seed_opts(const IvOpts &opts) noexcept {
   const AlProfile own = opts.al_opts ? opts.al_opts->profile : AlProfile::Reference;
   if (!opts.seed_profile || *opts.seed_profile == own) {
     return opts.al_opts;
+  }
+  if (*opts.seed_profile == AlProfile::Screen) {
+    return al_screen_opts();
   }
   AlOpts seed = al_fast_profile(opts.al_opts); // the explicit scheme of al_opts
   seed.profile = *opts.seed_profile;
@@ -1346,10 +1434,12 @@ struct ColdPoint {
 }
 
 // The Premium strategy: its root when accepted (then the same opt-in refusal gate as
-// Search), else the Search route unchanged.
+// Search), else the Search route unchanged. `gate` governs a seed-tier root's confirm
+// (nullptr: Always on al_opts).
 [[nodiscard]] IvResult premium_typed(double price, double S, double K, double T, double r,
                                      double q, Side side, const IvOpts &opts,
-                                     IvPremiumMemory *memory, IvPremiumStats &stats) {
+                                     IvPremiumMemory *memory, IvPremiumStats &stats,
+                                     const IvPremiumGate *gate) {
   stats = IvPremiumStats{};
   if (premium_route(opts, side)) {
     const std::optional<AlOpts> seed_opts = premium_seed_opts(opts);
@@ -1357,7 +1447,7 @@ struct ColdPoint {
     const bool confirm = opts.seed_profile.has_value() && *opts.seed_profile != own;
     if (const std::optional<double> root =
             premium_root(price, S, K, T, r, q, side, opts.tol, opts.al_opts, seed_opts, confirm,
-                         memory, stats)) {
+                         confirm ? gate : nullptr, memory, stats)) {
       if (opts.refuse_non_monotone &&
           !scalar_answer_certified(price, S, K, T, r, q, side, *root, opts.al_opts)) {
         return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::NonMonotoneRegion};
@@ -1375,7 +1465,7 @@ IvResult american_implied_vol(double price, double S, double K, double T, double
   try {
     if (opts.strategy == IvStrategy::Premium) {
       IvPremiumStats stats;
-      return premium_typed(price, S, K, T, r, q, side, opts, nullptr, stats);
+      return premium_typed(price, S, K, T, r, q, side, opts, nullptr, stats, nullptr);
     }
     return search_typed(price, S, K, T, r, q, side, opts);
   } catch (const std::bad_alloc &) {
@@ -1385,9 +1475,10 @@ IvResult american_implied_vol(double price, double S, double K, double T, double
 
 IvResult american_implied_vol_premium(double price, double S, double K, double T, double r,
                                       double q, Side side, const IvOpts &opts,
-                                      IvPremiumMemory *memory, IvPremiumStats &stats) noexcept {
+                                      IvPremiumMemory *memory, IvPremiumStats &stats,
+                                      const IvPremiumGate *gate) noexcept {
   try {
-    return premium_typed(price, S, K, T, r, q, side, opts, memory, stats);
+    return premium_typed(price, S, K, T, r, q, side, opts, memory, stats, gate);
   } catch (const std::bad_alloc &) {
     return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::Unpriceable};
   }
