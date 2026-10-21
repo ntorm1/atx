@@ -47,13 +47,39 @@ arbitrage-free curve exist inside the bid/ask boxes?". This lane makes the certi
   `test_native_box_certificate_is_opt_in_with_provenance`; the two new suites added to
   `ATX_VOL_QUOTE_SLICE_SUITES` (the ctest's configure-time filter silently drops unlisted suites).
 
-## 3. Numbers
+## 3. Numbers (USER STOP checkpoint, 2026-10-20 ~22:15 EDT; lever 1 + lever 2 at `01b5cfa3`)
 
-(filled from `RESULTS.md` — see the lane report until then)
+SPY-only input (`fit-timing-20261017-cohort5\input\quotes-SPY.csv`, final binary `47d5dc69`,
+`spy-final\`): exact graded-v1 served 1,410 / 12,866 eligible (unserved 89.04 %, containment 68.23 %,
+MAE/spread 0.773; CSV identity `087e6a54` = the known SPY graded-v1 identity); box h = 0.5 tick
+served 5,738 (unserved 55.40 %, containment 87.19 %, MAE 0.184, MAE/spread 0.250, 14 / 33 chains);
+box h = 0 served 1,336 (unserved 89.62 %, containment 100.00 %, MAE 0.132, MAE/spread 0.148, 4 / 33
+chains). Final binary, cohorts (`box-final\`, `audit-final\`): cohort5 graded-v1 served 8,375 -> 13,071
+(unserved 61.58 -> 40.04 %), containment 91.59 -> 92.17 %, MAE 0.083 -> 0.110, MAE/spread 0.210 -> 0.166,
+newly served 5,898 rows at 88.0 % containment, 1,202 rows no longer served (calendar displacement; they
+had 71.9 % containment); box h = 0: served 8,669 (unserved 60.24 %), containment 97.08 %, MAE/spread
+0.108; ladder point -> ladder box: served 10,157 -> 11,607 (53.41 -> 46.76 %), containment 98.51 ->
+97.67 %; dev200 graded: unserved 21.26 -> 16.53 %, containment 98.82 -> 98.66 %, MAE/spread 0.1085 ->
+0.1183 (served-in-both 0.1088 -> 0.1096); dev200b graded: 12.85 -> 9.46 %, 98.83 -> 98.83 %, 0.1164 ->
+0.1163 (served-in-both 0.1161 -> 0.1162). Pooled dev200 + dev200b class / shape rows: 0 worse than the
+brief's rule; cohort5 rows worse: high_vol (+4.6 pt unserved: MSTR 245 d lost to a calendar crossing),
+long_dated (containment -4.4 pt: SPY long-dated chains newly served at 70-94 %). `check_served.py` on
+the lever-1 box CSVs: 0 monotone / 0 convex / 0 calendar violations on all five (final CSVs not
+re-checked before the user stop). Remaining SPY refusals are CALENDAR crossings of
+0.5-2 cents at far-wing bidless placeholder quotes (`ask 0.01 / 0.02`): the rejected slice cannot absorb
+them inside its own exact box because the accepted neighbour is pinned at its ask (a bidirectional
+repair, out of scope). Targets (SPY <= 40 % unserved AND >= 98.5 % containment) NOT met in this
+checkpoint: h = 0.5 buys coverage at box-edge containment, h = 0 buys containment without coverage.
 
-## 4. Hashes
+## 4. Hashes (final binary `47d5dc69fa3b2bdbc6cf539ed831b3a14b9b27da535562df570f124f148d1269`)
 
-(filled from `RESULTS.md`)
+Keys-OFF RAW parity at `01b5cfa3`, `ATX_VOL_FIT_WORKERS = 2`: dev200 auto `c89d0739` MATCH, dev200
+graded-v1 `fc277413` MATCH, dev200b graded-v1 `46ad6c26` MATCH, cohort5 graded-v1 `171fa2d2` MATCH,
+cohort5 ladder point `232d2c0d` MATCH (`L3r1-20261020-evidence\runs.log`). Keys-ON (box-final):
+cohort5 graded-v1-box `61721aec`, graded-v1-box-h0 `716ae476`, ladder-point-box `8957d9f7`, dev200
+graded-v1-box `92559918`, dev200b graded-v1-box `5eacbfb0`; SPY box `a3859ea1` (reproduced 3 / 3 on the
+final binary), SPY box-h0 `05f64ba6`. Open: an identical-source relink (`76cc9303`) gave SPY box
+`91f626fd`, differing from `a3859ea1` by <= 4.5e-13 USD on 44 rows of one chain (statuses identical).
 
 ## 5. Traps found
 
