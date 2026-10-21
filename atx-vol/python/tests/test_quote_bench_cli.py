@@ -842,7 +842,20 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "screen",
                          "deam_inversion": "premium", "seed_gate_kappa": 0}},
-             "seed_gate_kappa must be a positive number")):
+             "seed_gate_kappa must be a positive number"),
+            # Sigma-family iterates (SPY1s Phase 2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "sometimes"}},
+             "family must be off, adaptive or always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "confirm": "band", "family": "adaptive"}},
+             "family requires deam_profile screen and confirm always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family_c": 3}},
+             "family_c requires family adaptive or always")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document

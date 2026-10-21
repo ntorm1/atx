@@ -1213,6 +1213,13 @@ struct FitTimingCounters {
   // distance of a root the band gate accepted without a confirm.
   std::uint32_t deam_audit_skipped_pairs{0};
   double deam_audit_max_newton_skipped{0.0};
+  // Sigma-family iterates (SPY1s Phase 2; QuoteSliceDeamFamily): families built and the
+  // wall of their node solves (NOT in al_price_calls' reason split: built outside any
+  // inversion), iterates priced on a family, Premium attempts a family refused.
+  std::uint32_t deam_family_builds{0};
+  std::uint64_t deam_family_build_us{0};
+  std::uint32_t deam_family_prices{0};
+  std::uint32_t deam_family_refused{0};
 };
 
 // Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::

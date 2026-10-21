@@ -135,6 +135,19 @@ enum class QuoteSliceDeamInversion : std::uint8_t { Search, Premium };
 enum class QuoteSliceDeamConfirm : std::uint8_t { Always, Band, Never };
 enum class QuoteSliceDeamConfirmKernel : std::uint8_t { Accurate, Fast };
 
+// Sigma-family iterates of a Screen-seeded Premium inversion (QuoteSliceChannelConfig
+// deam_family; SPY1s Phase 2, opt-in; requires deam_profile Screen and deam_confirm
+// Always). Off (the default): every iterate is a cold Screen solve. Adaptive: the chain's
+// cache builds one AlSigmaFamily per side (american.hpp; 12 Reference node boundaries over
+// the box of the side's two-sided mid Black-76 IVs, at the expiry's representative yield)
+// when 5.4 x the side's two-sided quotes exceeds deam_family_c x 2 x 12, and the iterates
+// price the D-model A(sigma; own q) + D_family(sigma) on it instead of a cold solve (a
+// family refusal: the cold Screen iterate). Always: a family whenever one can be built
+// (measurement arm). Every accepted root is confirmed on the confirm kernel at the
+// contract's own yield as under Off. The dated-cash lattice and expiries below
+// kAlSigmaFamilyMinTau never build one.
+enum class QuoteSliceDeamFamily : std::uint8_t { Off, Adaptive, Always };
+
 // Kernel of the certification grid (certify_and_serve's American reprice of the fitted
 // curve at every strike; the served prices). Accurate (the default): the fit's own
 // model, the historical path bit for bit. Fast (opt-in, SPY1s Phase 1 arm D; research
@@ -232,6 +245,10 @@ struct QuoteSliceChannelConfig {
   // 4.3e-5 = 10 x 4.3e-6), so more inversions iterate on Screen. Every Screen-iterated root
   // is confirmed (or band-gated) on the confirm kernel exactly as under the default. >= 0.
   double deam_seed_gate_kappa = 0.0;
+  // Sigma-family iterates (QuoteSliceDeamFamily; SPY1s Phase 2) and the adaptive build's
+  // threshold constant c (> 0).
+  QuoteSliceDeamFamily deam_family = QuoteSliceDeamFamily::Off;
+  double deam_family_c = 3.0;
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -511,6 +528,11 @@ struct QuoteSliceDeamDiagnostics {
   std::size_t confirms = 0;
   std::size_t confirms_skipped = 0;
   std::size_t seed_routed = 0;
+  // Sigma-family iterates (deam_family; zero otherwise): families this fit built (0 when
+  // the cache was reused), iterates priced on a family, Premium attempts a family refused.
+  std::size_t family_builds = 0;
+  std::size_t family_prices = 0;
+  std::size_t family_refused = 0;
 };
 
 struct QuoteSliceDiagnostics {

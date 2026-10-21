@@ -82,6 +82,11 @@ struct IvPremiumStats {
   bool seed_routed = false;
   bool confirm_skipped = false;
   double gate_bound_vol = std::numeric_limits<double>::quiet_NaN();
+  // Family iterates (IvPremiumGate::family; SPY1s Phase 2): iterates whose cold point was
+  // the family D-model (no Andersen-Lake solve; not in premium_solves), and whether a
+  // family refusal sent the rest of the attempt's iterates to the seed kernel.
+  std::uint32_t family_prices = 0;
+  bool family_refused = false;
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp
@@ -137,6 +142,18 @@ struct IvPremiumGate {
   // tier's own gate, bit for bit. Every root outside the gate is still confirmed (or
   // gated) on the confirm kernel exactly as before; only which iterates run changes.
   double seed_gate_kappa = 0.0;
+  // Kernel-free family iterates (SPY1s Phase 2, opt-in; policy Always only - the band
+  // gate's bound is the seed TIER's, not the family's). When `family` is set (the
+  // contract's side, built at yield `family_q`), every seed-tier iterate's cold point is
+  // the D-model A(sigma; q) + D(sigma), D = P_family(sigma; family_q) - A(sigma;
+  // family_q), A the seed leg (Barone-Adesi-Whaley / Black-76) - the leg carries the
+  // contract's own q, the family the de-Americanisation remainder at the expiry's q. A
+  // family refusal (sigma outside the box or below the guard, an unprepared family) runs
+  // that attempt's remaining iterates on the seed kernel. The confirm is unchanged: a
+  // root is served only after the confirm kernel at the contract's own q accepts it.
+  // Observed, not owned: the family outlives the call.
+  const AlSigmaFamily *family = nullptr;
+  double family_q = std::numeric_limits<double>::quiet_NaN();
 };
 
 // The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else

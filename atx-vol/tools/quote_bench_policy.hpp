@@ -545,6 +545,9 @@ struct FitSpaceOptions {
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate;
   // Opt-in seed-tier routing gate kappa (quote_slice.hpp deam_seed_gate_kappa; SPY1s P2).
   double seed_gate_kappa = 0.0;
+  // Opt-in sigma-family iterates (quote_slice.hpp deam_family / deam_family_c; SPY1s P2).
+  QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off;
+  double family_c = 3.0;
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -706,6 +709,36 @@ inline constexpr bool kGradedDefaultRungMemo = true;
       throw std::runtime_error("Policy graded seed_gate_kappa must be a positive number");
     }
   }
+  // Opt-in sigma-family iterates (quote_slice.hpp deam_family): a Screen-seeded,
+  // always-confirmed inversion only; family_c only with a family.
+  if (graded.contains("family")) {
+    const auto name = text(graded.at("family"));
+    if (name == "adaptive") {
+      out.family = QuoteSliceDeamFamily::Adaptive;
+    } else if (name == "always") {
+      out.family = QuoteSliceDeamFamily::Always;
+    } else if (name != "off") {
+      throw std::runtime_error("Policy graded family must be off, adaptive or always");
+    }
+    if (out.family != QuoteSliceDeamFamily::Off &&
+        (out.deam_profile != QuoteSliceDeamProfile::Screen ||
+         out.confirm != QuoteSliceDeamConfirm::Always)) {
+      throw std::runtime_error("Policy graded family requires deam_profile screen and confirm "
+                               "always");
+    }
+  }
+  if (graded.contains("family_c")) {
+    if (out.family == QuoteSliceDeamFamily::Off) {
+      throw std::runtime_error("Policy graded family_c requires family adaptive or always");
+    }
+    if (!graded.at("family_c").is_number()) {
+      throw std::runtime_error("Policy graded family_c must be a positive number");
+    }
+    out.family_c = graded.at("family_c").get<double>();
+    if (!(out.family_c > 0.0) || !std::isfinite(out.family_c)) {
+      throw std::runtime_error("Policy graded family_c must be a positive number");
+    }
+  }
   // Certification-grid kernel (quote_slice.hpp QuoteSliceGridKernel): independent of the
   // cache keys (it acts on the served reprice of every graded profile).
   if (graded.contains("grid_kernel")) {
@@ -780,6 +813,10 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
           space.confirm_kernel == QuoteSliceDeamConfirmKernel::Fast ? "fast" : "reference";
       if (space.seed_gate_kappa > 0.0) {
         out["seed_gate_kappa"] = space.seed_gate_kappa; // provenance only when opted in
+      }
+      if (space.family != QuoteSliceDeamFamily::Off) {
+        out["family"] = space.family == QuoteSliceDeamFamily::Always ? "always" : "adaptive";
+        out["family_c"] = space.family_c;
       }
     }
   }
@@ -944,7 +981,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
-             "ladder_wing_tail", "seed_gate_kappa"});
+             "ladder_wing_tail", "seed_gate_kappa", "family", "family_c"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1078,6 +1115,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_confirm_k = space.confirm_k;
     profile.config.channel.deam_confirm_kernel = space.confirm_kernel;
     profile.config.channel.deam_seed_gate_kappa = space.seed_gate_kappa;
+    profile.config.channel.deam_family = space.family;
+    profile.config.channel.deam_family_c = space.family_c;
     profile.config.grid_kernel = space.grid_kernel;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.

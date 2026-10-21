@@ -14,6 +14,7 @@
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/quote_slice_carry.hpp"
@@ -743,6 +744,8 @@ public:
       gate.min_relative_slope = kDeAmFastMinRelativeVega;
       if (controls.confirm_fast) gate.confirm_opts = fast_;
       gate.seed_gate_kappa = controls.seed_gate_kappa;
+      gate.family = controls.family;
+      gate.family_q = controls.family_q;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -756,6 +759,42 @@ public:
     return black76_value_and_vega(forward, quote.strike, fit_.market.variance_years, sigma,
                                   fit_.diagnostics.discount, quote.side)
         .vega;
+  }
+  double black_iv(const QuoteSliceQuote &quote, double target, double forward) const override {
+    // Qualified: the member implied_vol (the American inversion) hides the Black-76 one.
+    const Result<double> iv =
+        atx::vol::implied_vol(target, forward, quote.strike, fit_.market.variance_years,
+                              fit_.diagnostics.discount, quote.side);
+    return iv ? *iv : std::numeric_limits<double>::quiet_NaN();
+  }
+  // The expiry's sigma families (SPY1s Phase 2) on the ACCURATE kernel (the fit's al_opts)
+  // at effective yield q, anchored at the spot (a put family rescales to every strike; L2h
+  // section 7). Continuous-carry models only; none below kAlSigmaFamilyMinTau.
+  std::shared_ptr<const DeAmSigmaFamilies> sigma_families(double q, double put_lo, double put_hi,
+                                                          double call_lo,
+                                                          double call_hi) const override {
+    const double T = fit_.market.variance_years;
+    if (!has_fast_kernel() || !(T >= kAlSigmaFamilyMinTau) || !std::isfinite(q)) {
+      return nullptr;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    auto holder = std::make_shared<DeAmSigmaFamilies>();
+    holder->q = q;
+    holder->geometry.prepare(T, fit_.diagnostics.effective_rate, holder->q, fit_.al_opts);
+    const auto build = [&](std::optional<AlSigmaFamily> &slot, Side side, double lo, double hi) {
+      if (!(hi > lo)) return;
+      slot.emplace(holder->geometry, side, fit_.market.spot);
+      if (!slot->prepare(lo, hi, kDeAmFamilyNodes, kDeAmFamilyAxis)) slot.reset();
+    };
+    build(holder->put, Side::Put, put_lo, put_hi);
+    build(holder->call, Side::Call, call_lo, call_hi);
+    if (holder->of(Side::Put) == nullptr && holder->of(Side::Call) == nullptr) {
+      return nullptr;
+    }
+    holder->build_us = std::chrono::duration<double, std::micro>(
+                           std::chrono::steady_clock::now() - t0)
+                           .count();
+    return holder;
   }
 
 private:
@@ -790,7 +829,8 @@ public:
                   config.channel.deam_inversion,
                   DeAmConfirmControls{config.channel.deam_confirm, config.channel.deam_confirm_k,
                                       config.channel.deam_confirm_kernel,
-                                      config.channel.deam_seed_gate_kappa});
+                                      config.channel.deam_seed_gate_kappa,
+                                      config.channel.deam_family, config.channel.deam_family_c});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1517,7 +1557,16 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       ((c.deam_confirm != QuoteSliceDeamConfirm::Always ||
         c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate ||
         c.deam_seed_gate_kappa > 0.0) &&
-       c.deam_profile != QuoteSliceDeamProfile::Screen)) {
+       c.deam_profile != QuoteSliceDeamProfile::Screen) ||
+      // Sigma-family iterates: a Screen-seeded, always-confirmed inversion only (the band
+      // gate's bound is the Screen tier's, not the family D-model's).
+      (c.deam_family != QuoteSliceDeamFamily::Off &&
+       c.deam_family != QuoteSliceDeamFamily::Adaptive &&
+       c.deam_family != QuoteSliceDeamFamily::Always) ||
+      !positive(c.deam_family_c) ||
+      (c.deam_family != QuoteSliceDeamFamily::Off &&
+       (c.deam_profile != QuoteSliceDeamProfile::Screen ||
+        c.deam_confirm != QuoteSliceDeamConfirm::Always))) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {

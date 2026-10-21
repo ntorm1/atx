@@ -559,6 +559,107 @@ TEST(QuoteSliceVolSpace, SeedGateKappaRoutesFewerInversionsAndServesConfirmedVol
   deam_iv_memo_clear();
 }
 
+// Opt-in sigma-family iterates (SPY1s Phase 2, deam_family): on the SPY-shaped grid (strike
+// carry on two chains) the chain's cache builds its side families once (none for a reused
+// cache), the Premium iterates are priced on them, and the fit serves the same rows as the
+// PriceChannel fit with every quote volatility within the inversion tolerance band of the
+// Search values (every root confirmed at the strike's own yield); the dated-cash lattice
+// builds none; Adaptive with a huge c builds none; the family needs Screen + confirm always.
+TEST(QuoteSliceVolSpace, FamilyIteratesServeConfirmedVolatilities) {
+  const std::vector<GridCase> grid = {
+      {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t builds = 0, prices = 0, refused = 0, compared = 0;
+  double max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig family = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    family.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    family.channel.deam_family = QuoteSliceDeamFamily::Always;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto fitted = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    const auto again = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    ASSERT_TRUE(reference && fitted && again);
+    const QuoteSliceDeamDiagnostics &work = fitted->diagnostics.deam;
+    EXPECT_EQ(work.family_builds, 2u); // one per side, once per cache
+    EXPECT_TRUE(again->diagnostics.deam.reused);
+    EXPECT_EQ(again->diagnostics.deam.family_builds, 0u);
+    builds += work.family_builds;
+    prices += work.family_prices;
+    refused += work.family_refused;
+    EXPECT_EQ(work.confirms_skipped, 0u);
+    EXPECT_EQ(fitted->fit_status, reference->fit_status);
+    ASSERT_EQ(fitted->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &p = fitted->rows[i];
+      const QuoteSliceRow &r = reference->rows[i];
+      EXPECT_EQ(p.quote_status, r.quote_status) << i;
+      EXPECT_EQ(p.evaluation_status, r.evaluation_status) << i;
+      EXPECT_EQ(p.admitted, r.admitted) << i;
+      if (std::isfinite(p.market_iv) && std::isfinite(r.market_iv)) {
+        ++compared;
+        max_dsigma = std::max(max_dsigma, std::abs(p.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+    // Adaptive with an unreachable threshold: no family, the Screen iterates.
+    QuoteSliceConfig sparse = family;
+    sparse.channel.deam_family = QuoteSliceDeamFamily::Adaptive;
+    sparse.channel.deam_family_c = 1.0e6;
+    const auto unbuilt = fit_quote_slice_channel(c.market, c.quotes, sparse, nullptr);
+    ASSERT_TRUE(unbuilt);
+    EXPECT_FALSE(unbuilt->diagnostics.deam.reused); // the mode and c are key words
+    EXPECT_EQ(unbuilt->diagnostics.deam.family_builds, 0u);
+    EXPECT_EQ(unbuilt->diagnostics.deam.family_prices, 0u);
+  }
+  std::printf("[family iterates] %zu families built, %zu family-priced iterates, %zu attempts "
+              "refused, %zu mid IVs compared, max |dsigma| vs Search %.3g\n",
+              builds, prices, refused, compared, max_dsigma);
+  EXPECT_GT(prices, 100u); // fails with the family ignored by the iterates
+  EXPECT_GT(compared, 0u);
+  deam_iv_memo_clear();
+  // The dated-cash lattice never builds a family.
+  {
+    const Chain c = spy_chain(0.15, false, 0.0);
+    QuoteSliceConfig lattice =
+        vol_config(price_config(QuoteSliceDividendModel::DatedCash), true,
+                   QuoteSliceDeamProfile::Screen);
+    lattice.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    lattice.channel.deam_family = QuoteSliceDeamFamily::Always;
+    const auto dated = fit_quote_slice_channel(c.market, c.quotes, lattice, nullptr);
+    if (dated) EXPECT_EQ(dated->diagnostics.deam.family_builds, 0u);
+  }
+  deam_iv_memo_clear();
+  // Refusals: a family without Screen, under the band policy, a non-positive c.
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig on_accurate =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true);
+  on_accurate.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  on_accurate.channel.deam_family = QuoteSliceDeamFamily::Adaptive;
+  QuoteSliceConfig band = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true,
+                                     QuoteSliceDeamProfile::Screen);
+  band.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  band.channel.deam_family = QuoteSliceDeamFamily::Adaptive;
+  band.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+  QuoteSliceConfig zero_c = band;
+  zero_c.channel.deam_confirm = QuoteSliceDeamConfirm::Always;
+  zero_c.channel.deam_family_c = 0.0;
+  for (const QuoteSliceConfig *bad : {&on_accurate, &band, &zero_c}) {
+    const auto refusal = fit_quote_slice_channel(c.market, c.quotes, *bad, nullptr);
+    ASSERT_FALSE(refusal);
+    EXPECT_EQ(refusal.error().code(), ErrorCode::InvalidArgument);
+  }
+  deam_iv_memo_clear();
+}
+
 // Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
 // served prices are the grid's, so under grid_kernel Fast every served price moves by at most
 // the Fast bound 1e-12 max(P, 1) (below the certificate's allowance) with the same rows served
@@ -924,6 +1025,11 @@ TEST(DeAmIvCache, MemoKeyCoversEveryInputThatChangesAnInversion) {
        }},
       // SPY1s Phase 2: the routing gate decides which kernel runs a root's iterates.
       {"seed gate kappa", [](KeyInputs &in) { in.config.channel.deam_seed_gate_kappa = 4.3e-5; }},
+      {"family adaptive",
+       [](KeyInputs &in) { in.config.channel.deam_family = QuoteSliceDeamFamily::Adaptive; }},
+      {"family always",
+       [](KeyInputs &in) { in.config.channel.deam_family = QuoteSliceDeamFamily::Always; }},
+      {"family c", [](KeyInputs &in) { in.config.channel.deam_family_c = 4.0; }},
       {"dividend date", [](KeyInputs &in) { in.fit.variance_clock_dividends[0].tau = 0.06; }},
       {"dividend amount", [](KeyInputs &in) { in.fit.variance_clock_dividends[1].amount = 1.9; }},
       {"dividend count", [](KeyInputs &in) { in.fit.variance_clock_dividends.pop_back(); }},

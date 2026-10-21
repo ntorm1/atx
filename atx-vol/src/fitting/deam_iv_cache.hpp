@@ -41,11 +41,13 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
+#include "atx/vol/api/pricing/american.hpp" // AlExpiryGeometry, AlSigmaFamily
 #include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
@@ -76,6 +78,38 @@ struct DeAmQuoteIv {
   IvPremiumMemory mid_memory{};
 };
 
+// The sigma families of one expiry (QuoteSliceDeamFamily; SPY1s Phase 2): one prepared
+// geometry at the expiry's representative yield `q` and the side families built on it.
+// The families observe the geometry, so the holder never moves (heap-held, not copyable or
+// movable); immutable once built, shared read-only by every fit of the cache.
+struct DeAmSigmaFamilies {
+  DeAmSigmaFamilies() = default;
+  DeAmSigmaFamilies(const DeAmSigmaFamilies &) = delete;
+  DeAmSigmaFamilies &operator=(const DeAmSigmaFamilies &) = delete;
+  DeAmSigmaFamilies(DeAmSigmaFamilies &&) = delete;
+  DeAmSigmaFamilies &operator=(DeAmSigmaFamilies &&) = delete;
+  ~DeAmSigmaFamilies() = default;
+
+  AlExpiryGeometry geometry;
+  std::optional<AlSigmaFamily> put;
+  std::optional<AlSigmaFamily> call;
+  double q = std::numeric_limits<double>::quiet_NaN();
+  double build_us = 0.0; // wall time of the node solves (diagnostics)
+
+  // The prepared family of `side`, nullptr when none was built.
+  [[nodiscard]] const AlSigmaFamily *of(Side side) const noexcept {
+    const std::optional<AlSigmaFamily> &f = side == Side::Put ? put : call;
+    return f && f->prepared() ? &*f : nullptr;
+  }
+};
+
+// The sigma-family nodes and axis of the de-Am cache (L2h section 7: 12 LogSigma nodes).
+inline constexpr std::uint16_t kDeAmFamilyNodes = 12;
+inline constexpr AlSigmaFamilyAxis kDeAmFamilyAxis = AlSigmaFamilyAxis::LogSigma;
+// Expected family-priced calls per two-sided quote of a side (the adaptive rule): the
+// inversions of the mid, bid and ask at ~1.8 iterates each.
+inline constexpr double kDeAmFamilyCallsPerQuote = 5.4;
+
 struct DeAmIvCache {
   std::uint64_t quote_set_hash = 0;
   std::vector<DeAmQuoteIv> ivs; // one per input quote, input order
@@ -83,6 +117,10 @@ struct DeAmIvCache {
   std::size_t inversions = 0;
   std::size_t model_prices = 0;
   std::size_t accurate_fallbacks = 0;
+  // Sigma families (QuoteSliceDeamFamily): decided once per cache, on the first Premium
+  // inversion that could use one; nullptr when none was built.
+  bool families_decided = false;
+  std::shared_ptr<const DeAmSigmaFamilies> families;
 };
 
 // The kernels the cache can price and invert with (QuoteSliceDeamProfile). Screen (SPY1s
@@ -103,6 +141,10 @@ struct DeAmPremiumControls {
   double half_spread_usd = 0.0;
   bool confirm_fast = false;
   double seed_gate_kappa = 0.0;
+  // The quote's side family and the yield it was built at (IvPremiumGate::family; nullptr:
+  // cold seed-tier iterates).
+  const AlSigmaFamily *family = nullptr;
+  double family_q = std::numeric_limits<double>::quiet_NaN();
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -149,6 +191,28 @@ public:
   // Black-76 vega of the contract at `sigma` on `forward` (the Fast guard).
   [[nodiscard]] virtual double black_vega(const QuoteSliceQuote &quote, double sigma,
                                           double forward) const = 0;
+  // Sigma families (QuoteSliceDeamFamily; SPY1s Phase 2). black_iv: the Black-76 IV of
+  // `target` for the quote's contract on `forward` (the family box), NaN when none.
+  // sigma_families: the expiry's families over the per-side boxes [lo, hi] (an empty box,
+  // lo >= hi, builds no family of that side), at effective yield `q` on the model's
+  // accurate kernel; nullptr when the model has none (the default; the dated-cash lattice,
+  // expiries below kAlSigmaFamilyMinTau) or no side could be built.
+  [[nodiscard]] virtual double black_iv(const QuoteSliceQuote &quote, double target,
+                                        double forward) const {
+    static_cast<void>(quote);
+    static_cast<void>(target);
+    static_cast<void>(forward);
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  [[nodiscard]] virtual std::shared_ptr<const DeAmSigmaFamilies>
+  sigma_families(double q, double put_lo, double put_hi, double call_lo, double call_hi) const {
+    static_cast<void>(q);
+    static_cast<void>(put_lo);
+    static_cast<void>(put_hi);
+    static_cast<void>(call_lo);
+    static_cast<void>(call_hi);
+    return nullptr;
+  }
 
 protected:
   DeAmModel() = default;
@@ -184,6 +248,8 @@ struct DeAmConfirmControls {
   double k = 10.0;
   QuoteSliceDeamConfirmKernel kernel = QuoteSliceDeamConfirmKernel::Accurate;
   double seed_gate_kappa = 0.0;
+  QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off; // deam_family
+  double family_c = 3.0;                                   // deam_family_c
 };
 
 class DeAmIvView {
@@ -218,6 +284,12 @@ private:
                                              const DeAmQuoteIv &entry);
   [[nodiscard]] DeAmKernel kernel() const noexcept;
   [[nodiscard]] bool premium() const noexcept;
+  // Decides (once per cache) and builds the chain's sigma families under deam_family
+  // Adaptive / Always: one box from the Black-76 IVs of the out-of-the-money two-sided mids
+  // of both sides (lo = max(kAlSigmaFamilyMinSigma, 0.5 min), hi = 1.5 max + 2
+  // kAlPackSigmaBump), a side built when its two-sided count passes the adaptive rule (or
+  // Always); no-op otherwise. Charged to the fit's work and fit_timing counters.
+  void ensure_families();
 
   // One edge price (kIvMin / kIvMax) of a band: its value, the sigma it was priced at,
   // and whether it is the accurate kernel's (decided) or the seed tier's.

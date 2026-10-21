@@ -1287,6 +1287,19 @@ struct ColdPoint {
   if (!leg.valid()) {
     return fail(IvPremiumFallback::NotApplicable);
   }
+  // Family iterates (IvPremiumGate::family, SPY1s Phase 2): seed-tier iterates only (a
+  // routed price iterates on the accurate kernel); the leg at the family's yield gives the
+  // remainder D the family carries.
+  const AlSigmaFamily *family = confirm && gate != nullptr && gate->family != nullptr &&
+                                        gate->policy == IvConfirmPolicy::Always &&
+                                        gate->family->side() == side &&
+                                        std::isfinite(gate->family_q)
+                                    ? gate->family
+                                    : nullptr;
+  const Leg family_leg(S, K, T, r, family != nullptr ? gate->family_q : q, side);
+  if (family != nullptr && !family_leg.valid()) {
+    family = nullptr;
+  }
 
   // Up to two cold points, most recent first: the memory's, then this attempt's.
   std::array<ColdPoint, 2> pts{};
@@ -1338,11 +1351,38 @@ struct ColdPoint {
       return fail(IvPremiumFallback::VolBound);
     }
     counters::ledger::bump(counters::ledger::Solve::IvNewtonIters); // one inversion iterate
-    const Result<double> pa = andersen_lake(S, K, T, s, r, q, side, seed_opts);
-    ++stats.premium_solves;
-    const std::optional<double> a = leg.price(s);
-    if (!pa || !std::isfinite(*pa)) {
-      return fail(IvPremiumFallback::PricerFailure);
+    std::optional<double> pa;
+    std::optional<double> a;
+    if (family != nullptr) {
+      // The D-model point A(s; q) + P_family(s; q_family) - A(s; q_family); any refusal
+      // sends this and every later iterate of the attempt to the seed kernel.
+      a = leg.price(s);
+      const AlSigmaFamilyPrice fp = family->price(S, K, s);
+      const std::optional<double> af =
+          a && fp.status == AlSigmaFamilyStatus::Ok ? family_leg.price(s) : std::nullopt;
+      const double model = af ? *a + (fp.price - *af) : std::numeric_limits<double>::quiet_NaN();
+      if (std::isfinite(model)) {
+        pa = model;
+        ++stats.family_prices;
+      } else {
+        // The D-model points (this attempt's and the memory's) never meet a seed-kernel
+        // point in one chord: the attempt restarts its remainder model from this solve.
+        family = nullptr;
+        stats.family_refused = true;
+        n = 0;
+        if (memory != nullptr) memory->points = 0;
+      }
+    }
+    if (!pa) {
+      const Result<double> cold = andersen_lake(S, K, T, s, r, q, side, seed_opts);
+      ++stats.premium_solves;
+      if (!a) {
+        a = leg.price(s);
+      }
+      if (!cold || !std::isfinite(*cold)) {
+        return fail(IvPremiumFallback::PricerFailure);
+      }
+      pa = *cold;
     }
     if (!a) {
       return fail(IvPremiumFallback::NoEuropeanSeed);

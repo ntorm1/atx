@@ -2372,6 +2372,92 @@ TEST(AmericanIvPremium, SeedGateKappaNarrowsTheRoutingBandAndConfirmsScreenItera
   EXPECT_LE(max_newton, 4.0 * tol);
 }
 
+// Kernel-free family iterates (SPY1s Phase 2, IvPremiumGate::family): the Screen-seeded
+// Premium iterates price the D-model A(sigma; own q) + P_family(sigma; q_family) -
+// A(sigma; q_family) on an AlSigmaFamily built at a REPRESENTATIVE yield (the strike's own
+// q differs by up to 5e-4), every accepted root is confirmed on the accurate map at the
+// strike's own q (Newton distance <= 4 tol); a family that refuses (a box the iterates
+// leave) sends the attempt to the Screen iterates with the same accuracy; under the band
+// policy the family is not used (its bound is not the Screen tier's).
+TEST(AmericanIvPremium, FamilyIteratesAreConfirmedAtTheStrikesOwnYield) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaFamily;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double q_family = 0.01;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, family_priced = 0, narrow_refused = 0, narrow_accepted = 0;
+  std::size_t band_family = 0;
+  double max_newton = 0.0, max_narrow_newton = 0.0;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, q_family);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaFamily wide(g, sd, S);
+      ASSERT_TRUE(wide.prepare(0.05, 1.2, 12));
+      AlSigmaFamily narrow(g, sd, S);
+      ASSERT_TRUE(narrow.prepare(0.9, 1.0, 12)); // no root of the grid below lies inside
+      for (const double dq : {0.0, 2.0e-4, 5.0e-4}) {
+        const double q = q_family + dq;
+        for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+          for (const double sig : {0.15, 0.3, 0.6}) {
+            const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+            if (!p || !(*p > 0.0)) continue;
+            const PremiumCase c{K, T, r, q, sd, sig};
+            IvPremiumGate gate;
+            gate.family = &wide;
+            gate.family_q = q_family;
+            IvPremiumStats st;
+            const IvResult res = screen_seeded_iv(*p, S, c, st, &gate);
+            ASSERT_EQ(res.status, IvStatus::Ok) << K << " " << T << " " << sig;
+            if (st.fallback == IvPremiumFallback::None && !st.seed_routed) {
+              ++accepted;
+              family_priced += st.family_prices > 0u ? 1u : 0u;
+              EXPECT_GE(st.confirm_solves, 1u);
+              const double nd = accurate_newton_distance(*p, S, c, res.iv);
+              if (std::isfinite(nd)) {
+                max_newton = std::max(max_newton, nd);
+                EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << dq;
+              }
+            }
+            IvPremiumGate refusing = gate;
+            refusing.family = &narrow;
+            IvPremiumStats ns;
+            const IvResult nr = screen_seeded_iv(*p, S, c, ns, &refusing);
+            ASSERT_EQ(nr.status, IvStatus::Ok);
+            narrow_refused += ns.family_refused ? 1u : 0u;
+            if (ns.fallback == IvPremiumFallback::None && !ns.seed_routed) {
+              ++narrow_accepted;
+              const double nd = accurate_newton_distance(*p, S, c, nr.iv);
+              if (std::isfinite(nd)) {
+                max_narrow_newton = std::max(max_narrow_newton, nd);
+                EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << dq;
+              }
+            }
+            IvPremiumGate band = gate;
+            band.policy = IvConfirmPolicy::Band;
+            band.half_spread_usd = 0.05;
+            IvPremiumStats bs;
+            static_cast<void>(screen_seeded_iv(*p, S, c, bs, &band));
+            band_family += bs.family_prices;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[family iterates] accepted %zu, of which family-priced %zu, max accurate-map "
+              "Newton %.3g; refusing family: refused %zu, accepted %zu, max Newton %.3g; band "
+              "policy family prices %zu\n",
+              accepted, family_priced, max_newton, narrow_refused, narrow_accepted,
+              max_narrow_newton, band_family);
+  EXPECT_GT(accepted, 50u);
+  EXPECT_GT(family_priced, accepted / 2); // the family carries the iterates (fails on revert)
+  EXPECT_LE(max_newton, 4.0 * tol);
+  EXPECT_GT(narrow_refused, 0u);
+  EXPECT_GT(narrow_accepted, 0u);
+  EXPECT_EQ(band_family, 0u);
+}
+
 TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {
   const double S = 100.0;
   const double tol = IvOpts{}.tol;
