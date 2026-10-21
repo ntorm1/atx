@@ -397,7 +397,9 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  words.reserve(28 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  // 29 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
+  // inverter + kernel 4, confirm 3, two counts), then 2 per dividend and 6 per quote.
+  words.reserve(29 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -432,6 +434,12 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   word(static_cast<std::uint64_t>(config.channel.deam_profile));
   word(static_cast<std::uint64_t>(config.channel.deam_inversion)); // a Premium cache never
                                                                    // answers a Search fit
+  // The confirm controls of a seed-tier root (review-SPY1s-p1 M1): a cache filled under
+  // confirm band / never holds unconfirmed seed roots and never answers a confirm-always
+  // fit, nor a cache confirmed on one kernel a fit asking for the other.
+  word(static_cast<std::uint64_t>(config.channel.deam_confirm));
+  real(config.channel.deam_confirm_k);
+  word(static_cast<std::uint64_t>(config.channel.deam_confirm_kernel));
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);

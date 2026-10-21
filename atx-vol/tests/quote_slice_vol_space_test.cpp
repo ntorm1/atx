@@ -359,7 +359,8 @@ TEST(QuoteSliceVolSpace, PremiumCacheServesTheSearchRowsAndNeverAnswersASearchFi
 // PriceChannel fit with every quote volatility CONFIRMED on the accurate kernel (within
 // the inversion tolerance band of the Search values; confirms counted, none skipped under
 // deam_confirm Always); under deam_confirm Band the gate skips confirms and the served
-// rows stay the same; a Search fit on Screen and confirm keys without Screen are refused.
+// rows stay the same; caches of different confirm policies never answer each other on one
+// memo (review-SPY1s-p1 M1); a Search fit on Screen and confirm keys without Screen are refused.
 TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
   const std::vector<GridCase> grid = {
       {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
@@ -402,12 +403,15 @@ TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
         EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
       }
     }
-    // Band gate, k = 10: confirms skipped, the same rows served.
+    // Band gate, k = 10, on the SAME memo as the Always fit (review-SPY1s-p1 M1: the confirm
+    // controls are key words, so the Always entry never answers the Band fit): confirms
+    // skipped, the same rows served.
     QuoteSliceConfig band = screen;
     band.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
-    deam_iv_memo_clear();
     const auto gated = fit_quote_slice_channel(c.market, c.quotes, band, nullptr);
     ASSERT_TRUE(gated);
+    EXPECT_FALSE(gated->diagnostics.deam.reused);
+    EXPECT_EQ(deam_iv_memo_size(), 2u);
     band_skipped += gated->diagnostics.deam.confirms_skipped;
     EXPECT_EQ(gated->fit_status, reference->fit_status);
     for (std::size_t i = 0; i < reference->rows.size(); ++i) {
@@ -429,6 +433,30 @@ TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
   EXPECT_GE(ambiguous, 50u);
   EXPECT_GT(compared, 0u);
   EXPECT_GT(band_skipped, 0u);
+  // The other direction (review-SPY1s-p1 M1): a confirm-never cache (unconfirmed seed roots)
+  // filled first on the same memo never answers a confirm-always fit of the same chain; that
+  // fit is the one a fresh memo gives, bit for bit.
+  {
+    const Chain chain = spy_chain(0.15, true, 4.0);
+    QuoteSliceConfig always =
+        vol_config(price_config(QuoteSliceDividendModel::AggregateFundingPresentValue), true,
+                   QuoteSliceDeamProfile::Screen);
+    always.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    QuoteSliceConfig never = always;
+    never.channel.deam_confirm = QuoteSliceDeamConfirm::Never;
+    deam_iv_memo_clear();
+    const auto fresh = fit_quote_slice_channel(chain.market, chain.quotes, always, nullptr);
+    deam_iv_memo_clear();
+    const auto unconfirmed = fit_quote_slice_channel(chain.market, chain.quotes, never, nullptr);
+    const auto confirmed = fit_quote_slice_channel(chain.market, chain.quotes, always, nullptr);
+    ASSERT_TRUE(fresh && unconfirmed && confirmed);
+    EXPECT_GT(unconfirmed->diagnostics.deam.confirms_skipped, 0u);
+    EXPECT_FALSE(confirmed->diagnostics.deam.reused);
+    EXPECT_GT(confirmed->diagnostics.deam.confirms, 0u);
+    EXPECT_EQ(confirmed->diagnostics.deam.confirms_skipped, 0u);
+    EXPECT_EQ(deam_iv_memo_size(), 2u);
+    expect_identical(*fresh, *confirmed, "always after never, same memo");
+  }
   deam_iv_memo_clear();
   // Screen seeds exist only inside the Premium inversion; the confirm keys only on Screen.
   const Chain c = spy_chain(0.15, false, 0.0);
@@ -801,6 +829,16 @@ TEST(DeAmIvCache, MemoKeyCoversEveryInputThatChangesAnInversion) {
       {"iv iterations", [](KeyInputs &in) { in.config.max_iv_iterations = 65; }},
       {"cache kernel",
        [](KeyInputs &in) { in.config.channel.deam_profile = QuoteSliceDeamProfile::Fast; }},
+      // review-SPY1s-p1 M1: a band / never cache holds unconfirmed seed roots.
+      {"confirm policy band",
+       [](KeyInputs &in) { in.config.channel.deam_confirm = QuoteSliceDeamConfirm::Band; }},
+      {"confirm policy never",
+       [](KeyInputs &in) { in.config.channel.deam_confirm = QuoteSliceDeamConfirm::Never; }},
+      {"confirm k", [](KeyInputs &in) { in.config.channel.deam_confirm_k = 3.0; }},
+      {"confirm kernel",
+       [](KeyInputs &in) {
+         in.config.channel.deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
+       }},
       {"dividend date", [](KeyInputs &in) { in.fit.variance_clock_dividends[0].tau = 0.06; }},
       {"dividend amount", [](KeyInputs &in) { in.fit.variance_clock_dividends[1].amount = 1.9; }},
       {"dividend count", [](KeyInputs &in) { in.fit.variance_clock_dividends.pop_back(); }},

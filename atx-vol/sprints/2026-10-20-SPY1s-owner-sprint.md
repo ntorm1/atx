@@ -558,3 +558,34 @@ with it (fails on revert).
    7. Arms on SPY @1 (D-family adaptive, D-family-always, B-family; @0 for D-family), load across the run; the
    two-lever table; served-set diff; cohort5 + a 40-symbol dev200 sample during development; the three cohorts once at
    the end; parity `c89d0739` / `4b273b08` / `171fa2d2`; fingerprint `53c4df68`; PCH-off; note; report; release.
+
+## 4. review-SPY1s-p1 M1 fixed (lane SPY1s-M1, 2026-10-21; one commit on `d2402dc5`)
+
+What: `deam_iv_key` (`src/fitting/deam_iv_cache.cpp`) now words `deam_confirm`, `deam_confirm_k` (bit-cast) and
+`deam_confirm_kernel` after `deam_inversion`; the fixed-word reserve is the exact count 29 (was 28 for 26 words).
+Why: both memos (the per-thread `deam_iv_memo`, the rung memo's `deam_cache`) reuse a `DeAmIvCache` by this key, so a
+cache filled under `confirm band` / `never` (unconfirmed seed roots, up to 1.12e-5 / 2.52e-4 off the accurate map) was
+served bit for bit to a later `confirm always` fit of the same chain on the same thread, and vice versa — against the
+key's contract "equal keys compute bit-identical caches". Not reachable in quote-bench (one policy per process), so
+no recorded hash moves; reachable by any in-process A/B and any library caller. Same commit, same class (review minor):
+`certification_grid_key` reserves the one word `certify_and_serve` appends (the grid-kernel word), so a memo-on
+certify pass no longer reallocates the key. The grid key carries the three new words at their `QuoteSliceConfig{}`
+defaults (constant within and across runs: no hit / miss changes).
+
+Tests (`tests/quote_slice_vol_space_test.cpp`): `DeAmIvCache.MemoKeyCoversEveryInputThatChangesAnInversion` gains four
+flips (confirm band, confirm never, confirm k, confirm kernel); `QuoteSliceVolSpace.ScreenSeededPremiumCacheServes
+ConfirmedVolatilities` loses the masking `deam_iv_memo_clear()` between the Always and the Band fit (`:408` at
+`d2402dc5`; the Band fit now runs on the Always fit's memo and must miss: `reused` false, memo size 2, band skipped
+323 as before) and gains the dangerous direction: a `confirm never` fit fills the memo first, then a `confirm always`
+fit of the same chain must miss, confirm (> 0 confirms, 0 skipped) and equal a fresh-memo Always fit bit for bit.
+Fail-on-revert: the source reverted to the committed blob `0077cc87` → both tests FAIL (the four key flips; Band
+`reused`, memo size 1 vs 2, band skipped 0 vs > 0; Always-after-Never reused, 0 confirms, 162 bit mismatches);
+restored (blob `e5e05b4f`) → 20 / 20 PASS with the Phase 1 printouts unchanged. The other Phase 1 suites at the fix:
+`AmericanIvPremium.*:AmericanCertification.*` 9 / 9 (printouts = Phase 1), `atx-vol-chain-batch-tests` 31 / 31, ctest
+`atx-vol-quote-benchmark-native` 1 / 1.
+
+Re-proof on the fix binary `eab01fd5…` (2,519,040 B; ATX_VOL_FIT_WORKERS 2, SPY @1): dev200 default `c89d0739`
+MATCH; SPY arm D @1 `feac8d2c` MATCH (= the Phase 1 lane's and the review's; 7.96 s fit_and_reprice, load 2-13 %
+sampled before / after, unqualified); cohort5 arm D `45e491ea` MATCH (10 s). Evidence
+`C:\atx-cache\quote-benchmark\SPY1s-20261021-m1\` (`runs.log`, `gates\`, `sha256.txt`). No header touched (PCH-off
+not applicable); no Phase 2 lever started.

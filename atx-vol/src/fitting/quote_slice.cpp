@@ -1252,7 +1252,7 @@ std::vector<std::uint64_t> certification_grid_key(const QuoteSliceFit &out,
                                                   std::span<const double> strikes,
                                                   double &q_min, double &q_max) {
   std::vector<std::uint64_t> key = deam_iv_key(out, {}, QuoteSliceConfig{}).words;
-  key.reserve(key.size() + 3 * strikes.size());
+  key.reserve(key.size() + 3 * strikes.size() + 1); // + certify_and_serve's grid-kernel word
   for (const double strike : strikes) {
     const double q = effective_yield(out, calendar_yield_at(out, strike));
     q_min = std::min(q_min, q);
