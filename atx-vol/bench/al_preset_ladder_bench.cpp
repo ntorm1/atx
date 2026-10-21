@@ -2438,6 +2438,330 @@ void run_family_shock(benchmark::State &state, bool chain) {
   state.counters["refused"] = refused;
 }
 
+// ── L2h-b sigma-q family (2026-10-21): AlSigmaQFamily build / price / error rows ──
+//
+//   * ATX_VOL_AL_SQFAMILY=1 registers, for n_q in {3, 4, 6} (n_sigma 12, LogSigma):
+//       american/sqfamily/spy23/nq<N>    (needs ATX_VOL_AL_SPY23: the SPY 23 d chain)
+//       american/sqfamily/spylong/nq<N>  (needs ATX_VOL_AL_SPYLONG: one more chain in the
+//                                         same S,K,T,r,q,is_call,bid,ask format — SPY 2.17 y)
+//       american/sqfamily/spyall/nq<N>   (needs ATX_VOL_AL_SPYALL: every SPY expiry)
+//     and american/sqfamily/<set>/sigma_family_qmid — the representative-q baseline: ONE
+//     AlSigmaFamily per expiry side at the box-mid q, every strike priced at that q.
+//     A row groups the set's contracts by (S, T, r, side) — one expiry side — takes the
+//     group's q box = [min q, max q] of its rows and its σ box = family_box over its
+//     admitted σ, builds ONE family per group on a Reference geometry at the box-mid q
+//     (median of 5 timed builds), and queries every contract at its OWN q at n_sig σ
+//     values spanning the box (log-uniform cell midpoints of [σ_lo, σ_hi - 2h], off the
+//     nodes; 16 for spy23 / spylong, 4 for spyall) against the cold Reference
+//     andersen_lake(S, K, T, σ, r, q_K) — computed once per set, shared by the rows.
+//     Counters: build per family (p50 / max) and the set's build total (ms), price p50 /
+//     p99 and chord p50 µs per query, |dP| max / p99, max rel and p99 rel on P >= 0.01,
+//     max |dP| / max(P, 1), groups the family refused (whole side cold) and why (stderr).
+
+enum class SqSet { Spy23, SpyLong, SpyAll };
+
+struct SqGroup {
+  double S = 0.0;
+  double T = 0.0;
+  double r = 0.0;
+  Side side = Side::Put;
+  double q_lo = 0.0;
+  double q_hi = 0.0;
+  double s_lo = 0.0;
+  double s_hi = 0.0;
+  std::vector<std::size_t> idx;
+  std::vector<double> sigmas; // the queried σ grid
+  std::vector<double> ref;    // ref[local * sigmas.size() + k]; NaN where the cold errs
+};
+
+struct SqData {
+  const std::vector<GridPt> *pts = nullptr;
+  std::vector<SqGroup> groups;
+  std::size_t queries = 0;
+};
+
+[[nodiscard]] SqData build_sq_data(const std::vector<GridPt> &pts, unsigned n_sig) {
+  SqData d;
+  d.pts = &pts;
+  std::map<FamilyKey, std::vector<std::size_t>> by_side;
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const GridPt &p = pts[i];
+    by_side[FamilyKey{p.S, p.T, p.r, 0.0, p.side}].push_back(i);
+  }
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const auto &[key, idx] : by_side) {
+    SqGroup g;
+    g.S = key.S;
+    g.T = key.T;
+    g.r = key.r;
+    g.side = key.side;
+    g.idx = idx;
+    g.q_lo = std::numeric_limits<double>::infinity();
+    g.q_hi = -std::numeric_limits<double>::infinity();
+    double smin = std::numeric_limits<double>::infinity();
+    double smax = 0.0;
+    for (const std::size_t i : idx) {
+      g.q_lo = std::min(g.q_lo, pts[i].q);
+      g.q_hi = std::max(g.q_hi, pts[i].q);
+      if (pts[i].sigma >= atx::vol::kAlSigmaFamilyMinSigma) {
+        smin = std::min(smin, pts[i].sigma);
+        smax = std::max(smax, pts[i].sigma);
+      }
+    }
+    if (!(smax > 0.0)) {
+      smin = 0.2;
+      smax = 0.2;
+    }
+    const FamilyBox box = family_box(smin, smax);
+    g.s_lo = box.lo;
+    g.s_hi = box.hi;
+    const double a = std::log(box.lo);
+    const double b = std::log(box.hi - 2.0 * atx::vol::kAlPackSigmaBump);
+    for (unsigned k = 0; k < n_sig; ++k) {
+      g.sigmas.push_back(
+          std::exp(a + (b - a) * (static_cast<double>(k) + 0.5) / static_cast<double>(n_sig)));
+    }
+    g.ref.assign(idx.size() * n_sig, nan);
+    for (std::size_t l = 0; l < idx.size(); ++l) {
+      const GridPt &p = pts[idx[l]];
+      for (unsigned k = 0; k < n_sig; ++k) {
+        const atx::vol::Result<double> c =
+            atx::vol::andersen_lake(p.S, p.K, p.T, g.sigmas[k], p.r, p.q, p.side);
+        g.ref[l * n_sig + k] = c.has_value() ? *c : nan;
+      }
+    }
+    d.queries += idx.size() * n_sig;
+    d.groups.push_back(std::move(g));
+  }
+  return d;
+}
+
+[[nodiscard]] const SqData &sq_data(SqSet s) {
+  static const std::vector<GridPt> lng = load_quote_inputs(env_text("ATX_VOL_AL_SPYLONG"));
+  static const std::vector<GridPt> all = load_quote_inputs(env_text("ATX_VOL_AL_SPYALL"));
+  switch (s) {
+  case SqSet::Spy23: {
+    static const SqData d = build_sq_data(err_points(ErrSet::Spy23), 16);
+    return d;
+  }
+  case SqSet::SpyLong: {
+    static const SqData d = build_sq_data(lng, 16);
+    return d;
+  }
+  case SqSet::SpyAll:
+    break;
+  }
+  static const SqData d = build_sq_data(all, 4);
+  return d;
+}
+
+// One group's family (the q-family at n_q, or the representative-q σ-family baseline
+// when n_q == 0): build timing + prices into got[], or the refusal text.
+struct SqGroupRun {
+  bool built = false;
+  double build_us = 0.0;
+  std::string refusal;
+};
+
+// got[local * n_sig + k] receives the family price (NaN on a refusal); price_us /
+// chord_us one sample per query per timed pass (3 passes each).
+[[nodiscard]] SqGroupRun run_sq_group(const SqGroup &g, unsigned n_q, unsigned n_sigma,
+                                      const std::vector<GridPt> &pts, std::vector<double> &got,
+                                      std::vector<double> &price_us,
+                                      std::vector<double> &chord_us) {
+  using namespace atx::vol;
+  SqGroupRun out;
+  const AlExpiryGeometry geo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+  AlSigmaQFamily qf(geo, g.side, g.S);
+  AlSigmaFamily sf(geo, g.side, g.S);
+  const auto ns = static_cast<std::uint16_t>(n_sigma);
+  std::vector<double> reps;
+  for (int rep = 0; rep < 5; ++rep) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const Status st = (n_q == 0) ? sf.prepare(g.s_lo, g.s_hi, ns)
+                                 : qf.prepare(g.s_lo, g.s_hi, ns, g.q_lo, g.q_hi,
+                                              static_cast<std::uint16_t>(n_q));
+    const auto t1 = std::chrono::steady_clock::now();
+    if (!st) {
+      out.refusal = st.error().to_string();
+      return out;
+    }
+    reps.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+  }
+  std::sort(reps.begin(), reps.end());
+  out.built = true;
+  out.build_us = reps[reps.size() / 2];
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::size_t n_sig = g.sigmas.size();
+  got.assign(g.idx.size() * n_sig, nan);
+  for (std::size_t l = 0; l < g.idx.size(); ++l) {
+    const GridPt &p = pts[g.idx[l]];
+    for (std::size_t k = 0; k < n_sig; ++k) {
+      const double sigma = g.sigmas[k];
+      double price = nan;
+      for (int pass = 0; pass < 3; ++pass) {
+        const auto t0 = std::chrono::steady_clock::now();
+        if (n_q == 0) {
+          const AlSigmaFamilyPrice fp = sf.price(p.S, p.K, sigma);
+          price = fp.status == AlSigmaFamilyStatus::Ok ? fp.price : nan;
+        } else {
+          const AlSigmaQFamilyPrice fp = qf.price(p.S, p.K, sigma, p.q);
+          price = fp.status == AlSigmaQFamilyStatus::Ok ? fp.price : nan;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        benchmark::DoNotOptimize(price);
+        price_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+      for (int pass = 0; pass < 3 && n_q != 0; ++pass) {
+        const auto t0 = std::chrono::steady_clock::now();
+        AlSigmaQFamilyChord c = qf.price_and_chord(p.S, p.K, sigma, p.q);
+        const auto t1 = std::chrono::steady_clock::now();
+        benchmark::DoNotOptimize(c);
+        chord_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+      got[l * n_sig + k] = price;
+    }
+  }
+  return out;
+}
+
+// n_q == 0: the representative-q σ-family baseline.
+void run_sqfamily(benchmark::State &state, SqSet set, const char *set_name, unsigned n_q,
+                  unsigned n_sigma) {
+  using namespace atx::vol;
+  const SqData &d = sq_data(set);
+  if (d.pts == nullptr || d.pts->empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  const std::vector<GridPt> &pts = *d.pts;
+  std::vector<double> build_us;
+  std::vector<double> price_us;
+  std::vector<double> chord_us;
+  ErrDist p_abs;
+  ErrDist p_rel;
+  double max_scaled = 0.0;
+  double worst_rel = -1.0;
+  std::string worst_at;
+  double refused = 0.0;
+  double cold_groups = 0.0;
+  double priced = 0.0;
+  double q_spread_max = 0.0;
+  std::vector<double> got;
+  for (auto _ : state) {
+    for (const SqGroup &g : d.groups) {
+      const SqGroupRun run = run_sq_group(g, n_q, n_sigma, pts, got, price_us, chord_us);
+      if (!run.built) {
+        cold_groups += 1.0;
+        refused += static_cast<double>(g.idx.size() * g.sigmas.size());
+        std::fprintf(stderr,
+                     "[sqfamily] %s/nq%u/ns%u cold group T=%.6g side=%s q=[%.6g, %.6g]: %s\n",
+                     set_name, n_q, n_sigma, g.T, g.side == Side::Call ? "C" : "P", g.q_lo,
+                     g.q_hi, run.refusal.c_str());
+        continue;
+      }
+      build_us.push_back(run.build_us);
+      q_spread_max = std::max(q_spread_max, g.q_hi - g.q_lo);
+      const std::size_t n_sig = g.sigmas.size();
+      for (std::size_t l = 0; l < g.idx.size(); ++l) {
+        for (std::size_t k = 0; k < n_sig; ++k) {
+          const double ref = g.ref[l * n_sig + k];
+          const double fam = got[l * n_sig + k];
+          if (!std::isfinite(ref) || !std::isfinite(fam)) {
+            refused += 1.0;
+            continue;
+          }
+          priced += 1.0;
+          const double dd = std::abs(fam - ref);
+          p_abs.add(dd);
+          max_scaled = std::max(max_scaled, dd / std::max(ref, 1.0));
+          if (ref >= 0.01) {
+            p_rel.add(dd / ref);
+            if (dd / ref > worst_rel) {
+              worst_rel = dd / ref;
+              const GridPt &p = pts[g.idx[l]];
+              char buf[400];
+              std::snprintf(buf, sizeof(buf),
+                            "S=%.17g K=%.17g T=%.17g sigma=%.17g r=%.17g q=%.17g side=%s "
+                            "q_box=[%.17g, %.17g] ref=%.17g got=%.17g",
+                            p.S, p.K, p.T, g.sigmas[k], p.r, p.q,
+                            p.side == Side::Call ? "C" : "P", g.q_lo, g.q_hi, ref, fam);
+              worst_at = buf;
+            }
+          }
+        }
+      }
+    }
+  }
+  double build_total_us = 0.0;
+  for (const double b : build_us) {
+    build_total_us += b;
+  }
+  std::sort(build_us.begin(), build_us.end());
+  std::sort(price_us.begin(), price_us.end());
+  std::sort(chord_us.begin(), chord_us.end());
+  state.counters["contracts"] = static_cast<double>(pts.size());
+  state.counters["queries"] = static_cast<double>(d.queries);
+  state.counters["groups"] = static_cast<double>(d.groups.size());
+  state.counters["families"] = static_cast<double>(build_us.size());
+  state.counters["cold_groups"] = cold_groups;
+  state.counters["refused"] = refused;
+  state.counters["priced"] = priced;
+  state.counters["n_q"] = static_cast<double>(n_q);
+  state.counters["q_spread_max"] = q_spread_max;
+  state.counters["build_us_p50"] = sorted_quantile(build_us, 0.50);
+  state.counters["build_us_max"] = build_us.empty() ? 0.0 : build_us.back();
+  state.counters["build_ms_total"] = build_total_us * 1.0e-3;
+  state.counters["price_us_p50"] = sorted_quantile(price_us, 0.50);
+  state.counters["price_us_p99"] = sorted_quantile(price_us, 0.99);
+  state.counters["chord_us_p50"] = sorted_quantile(chord_us, 0.50);
+  state.counters["price_max_abs"] = p_abs.max();
+  state.counters["price_p99_abs"] = p_abs.quantile(0.99);
+  state.counters["price_max_rel"] = p_rel.max();
+  state.counters["price_p99_rel"] = p_rel.quantile(0.99);
+  state.counters["price_max_scaled"] = max_scaled;
+  state.counters["state_bytes"] = static_cast<double>(
+      n_q == 0 ? AlSigmaFamily::state_bytes() : AlSigmaQFamily::state_bytes());
+  state.counters["n_sigma"] = static_cast<double>(n_sigma);
+  if (worst_rel >= 0.0) {
+    std::fprintf(stderr, "[sqfamily] %s/nq%u/ns%u worst_rel=%.6g %s\n", set_name, n_q, n_sigma,
+                 worst_rel, worst_at.c_str());
+  }
+}
+
+const bool kRegisteredSigmaQ = [] {
+  if (env_text("ATX_VOL_AL_SQFAMILY").empty()) {
+    return false;
+  }
+  const std::pair<const char *, SqSet> sets[] = {
+      {"spy23", SqSet::Spy23}, {"spylong", SqSet::SpyLong}, {"spyall", SqSet::SpyAll}};
+  const char *envs[] = {"ATX_VOL_AL_SPY23", "ATX_VOL_AL_SPYLONG", "ATX_VOL_AL_SPYALL"};
+  for (std::size_t si = 0; si < 3; ++si) {
+    if (env_text(envs[si]).empty()) {
+      continue;
+    }
+    const SqSet s = sets[si].second;
+    const char *set_name = sets[si].first;
+    // (n_q, n_sigma): the n_q sweep at the σ-family's 12 nodes, then 16 σ nodes at n_q 4
+    // (the long-dated σ floor); n_q 0 = the representative-q σ-family baseline.
+    const std::pair<unsigned, unsigned> shapes[] = {{0u, 12u}, {3u, 12u}, {4u, 12u},
+                                                    {6u, 12u}, {4u, 16u}};
+    for (const auto &[nq_v, ns_v] : shapes) {
+      const unsigned n_q = nq_v;
+      const unsigned n_sigma = ns_v;
+      const std::string tail = (n_q == 0) ? "sigma_family_qmid" : "nq" + std::to_string(n_q);
+      benchmark::RegisterBenchmark(std::string("american/sqfamily/") + set_name + "/" + tail +
+                                       "/ns" + std::to_string(n_sigma),
+                                   [s, set_name, n_q, n_sigma](benchmark::State &state) {
+                                     run_sqfamily(state, s, set_name, n_q, n_sigma);
+                                   })
+          ->Iterations(1)
+          ->Unit(benchmark::kMillisecond);
+    }
+  }
+  return true;
+}();
+
 const bool kRegistered = [] {
   using atx::vol::bench::apply_common;
   for (const Rung &rung : rungs()) {
