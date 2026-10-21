@@ -1032,6 +1032,46 @@ TEST(QuoteSliceChannel, ChannelCalendarRepairLiftsACrossingInsideTheQuotes) {
   EXPECT_TRUE(far.moved_nodes.empty());
 }
 
+TEST(QuoteSliceBoxCertificate, BoxCalendarRepairLiftsACrossingInsideTheQuotesWithoutABudget) {
+  // The same 0.2-cent crossing as above. Under the box certificate the calendar
+  // repair projects into the quote boxes (here h = 0: the exact [bid, ask]) and
+  // has no node budget: max_nodes 2 refuses the channel repair above, the box
+  // repair serves, every price inside its quote. A floor above every ask is
+  // outside the quotes: infeasible.
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  const auto fitted = [&] {
+    auto fit = fit_quote_slice(c.market, c.quotes);
+    EXPECT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+    return std::move(*fit);
+  };
+  auto fit = fitted();
+  const AmericanPriceSlice floor = shifted_slice(fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  QuoteSliceRepairConfig budget; // mode Off: the box certificate alone opens the repair
+  budget.max_nodes = 2;
+  budget.certificate = QuoteSliceCertificate::Box;
+  budget.box_half_ticks = 0.0;
+  QuoteSliceRepairRecord record;
+  ASSERT_TRUE(repair_quote_slice_calendar_in_channel(fit, c.quotes, earlier, {}, budget, &record))
+      << to_string(record.outcome);
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_EQ(record.nodes, floor.nodes().size());
+  EXPECT_GT(record.material_nodes, budget.max_nodes);
+  EXPECT_NEAR(record.max_price_move, 0.002, 1.0e-9);
+  EXPECT_TRUE(check_american_calendar(floor, *fit.prices));
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    EXPECT_GE(fit.rows[i].fitted_price, c.quotes[i].bid) << i;
+    EXPECT_LE(fit.rows[i].fitted_price, c.quotes[i].ask) << i;
+  }
+  expect_moved_nodes_reimplied(fit, c.quotes);
+  auto far = fitted();
+  const AmericanPriceSlice high = shifted_slice(far, 5.0);
+  const std::array<const AmericanPriceSlice *, 1> above{&high};
+  EXPECT_FALSE(repair_quote_slice_calendar_in_channel(far, c.quotes, above, {}, budget, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Infeasible);
+  EXPECT_TRUE(far.moved_nodes.empty());
+}
+
 TEST(QuoteSliceChannel, RejectsAnInvalidRepairOrDominanceConfiguration) {
   const auto c = chain(0.5, 0.25, 0.0, 0.02);
   const std::vector<Chain> one{c};
@@ -1286,6 +1326,39 @@ TEST(QuoteSurface, ChannelCalendarRepairServesACrossingTheBoundedRepairAndRetryC
     EXPECT_LE(channel_distance(fixed.fit.rows[i].fitted_price, quote),
               channel_distance(point->rows[i].fitted_price, quote) + 1.0e-12)
         << i;
+  }
+}
+
+TEST(QuoteSurface, BoxCertificateOpensTheCalendarRepairInsideTheQuotesWithTheChannelRepairOff) {
+  // The crossing of the test above, with the channel repair OFF: the box
+  // certificate alone opens the calendar repair, now into the exact quote boxes
+  // (h = 0), so the later expiry serves inside every quote and the surface is
+  // calendar-consistent; under the exact certificate it stays refused.
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  QuoteSliceConfig exact;
+  exact.channel.min_channel_quotes = 100000;
+  const auto off = fit_quote_surface(expiries(chains), exact);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ((*off)[1].refusal, "calendar_arbitrage");
+  QuoteSliceConfig config = box_certificate_config(0.0);
+  config.channel.min_channel_quotes = 100000;
+  ASSERT_EQ(config.repair.mode, QuoteSliceRepairMode::Off);
+  const auto on = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  const auto &fixed = (*on)[1];
+  ASSERT_EQ(fixed.grade, QuoteSliceGrade::B)
+      << fixed.refusal << " " << fixed.error << " box calendar repair "
+      << to_string(fixed.calendar_channel_repair.outcome);
+  EXPECT_TRUE(fixed.calendar_channel_repaired);
+  EXPECT_EQ(fixed.calendar_channel_repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(fixed.calendar_channel_repair.nodes, 0u);
+  EXPECT_FALSE(fixed.repair_rung);
+  expect_calendar_consistent(*on);
+  expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
+  for (std::size_t i = 0; i < chains[1].quotes.size(); ++i) {
+    ASSERT_EQ(fixed.fit.rows[i].evaluation_status, QuoteSliceEvaluationStatus::Success) << i;
+    EXPECT_EQ(channel_distance(fixed.fit.rows[i].fitted_price, chains[1].quotes[i]), 0.0) << i;
   }
 }
 

@@ -580,7 +580,11 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // check_american_calendar against every slice in `earlier` and `later` (the
 // clamp acts at this slice's own nodes only, so a neighbour's knot between
 // them can still cross); either failure is NotCertified. `record` (when
-// non-null) receives what the repair did or why it was refused.
+// non-null) receives what the repair did or why it was refused. Under
+// `budget.certificate` Box (lane L3r1) the boxes are the box certificate's quote
+// boxes [bid - h, ask + h] instead of the fitted-widened channels and no node or
+// volatility budget applies (the box is the budget): a calendar crossing is
+// repaired exactly when the quotes can absorb it, and Infeasible otherwise.
 [[nodiscard]] bool repair_quote_slice_calendar_in_channel(
     QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
     std::span<const AmericanPriceSlice *const> earlier,
