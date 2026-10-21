@@ -448,3 +448,113 @@ refused by Screen as kernel: all 144 Ok, ≤ 1.26e-6 vol off).
 
 Untouched: `american.hpp`, `american.cpp`, `american_sigma_family.cpp` (fingerprint `53c4df68` MATCH), `quote_surface.*`,
 `quote_slice_carry.cpp`, every default path (parity above).
+
+## 3. Phase 2 — the σ-family in the fit (the L2i spec on L2h `6e94ba40`): CHECKPOINT at the user stop (2026-10-20 ~21:45 EDT)
+
+Base: `85476626` (Phase 1) merged with the APPROVED L2h kernel `6e94ba40` as `7980a6d3` (`--no-ff`, 6 files, +1,962, no
+conflicts; `american.hpp`, `american_sigma_family.cpp`, `american_geometry_test.cpp`, the bench, the L2h note, the
+pricing CMake list). Pool-33, RunId `vol-20261020r3-SPY1s-p2`. The lane branch `feat/vol-spy1s-20261020` was checked
+out in pool-4 by `review-SPY1s-p1`, so the lease's `git switch` failed and this work sits on the branch
+**`feat/vol-spy1s-20261020-p2`** at the same tip (fast-forward of the lane branch by one merge commit; the PM or the
+owner fast-forwards `feat/vol-spy1s-20261020` once pool-4 releases it). L3g (`price_and_vega`) had no `## Outcome` and
+no review at the start: NOT merged; the Newton slope stays `price_and_chord` (L2h §7 item 1). No source change, no
+build, no run was made before the stop (nothing under `C:\atx-cache\quote-benchmark\` written; no evidence folder).
+
+### 3.1 The binding first item — the per-strike effective yield, MEASURED on SPY (every expiry)
+
+Input `fit-timing-20261017-cohort5\input\quotes-SPY.csv` (`b3fafd80…`; 13,168 rows, 12,866 `ok`, 33 chains). The
+bench reads each row's `sdiv` into `quote.continuous_yield` (`quote_bench_main.cpp:328`), `build_carry_curve` makes it
+the per-strike carry, `effective_yield(fit, calendar_yield_at(fit, K))` the per-strike q of every price (ddiv_pv = 0 on
+SPY, so q_eff = sdiv on the variance clock); the chain's representative q is the median sdiv. Per expiry (rows with
+`input_status ok`; `spread` = max − min sdiv over the chain's two-sided rows; `dP` = the first-order price move
+T·S·½·Δq of a representative-q family versus the strike's own q; allowance = 1e-8 + 1e-9·max(S, K) ≈ 7.7e-7 USD):
+
+| expiry_days | rows | T (y) | distinct sdiv | sdiv min … max | spread Δq | dP ≈ T·S·½·Δq (USD) | dP / allowance |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| 20741 | 302 | 0.0059 | 1 | 0.017441 | 0 | 0 | 0 (T < kAlSigmaFamilyMinTau: cold anyway) |
+| 20742 | 474 | 0.0094 | 20 | −0.008997 … −0.007177 | 1.82e-3 | 6.6e-3 | 8.5e3 |
+| 20745 | 302 | 0.0150 | 23 | 0.002571 … 0.002611 | 4.0e-5 | 2.3e-4 | 3.0e2 |
+| 20746 | 292 | 0.0185 | 37 | 0.004053 … 0.004110 | 5.7e-5 | 4.1e-4 | 5.3e2 |
+| 20747 | 302 | 0.0220 | 29 | 0.005314 … 0.005332 | 1.8e-5 | 1.5e-4 | 2.0e2 |
+| 20748 | 292 | 0.0255 | 38 | 0.006665 … 0.006688 | 2.3e-5 | 2.2e-4 | 2.9e2 |
+| 20749 | 342 | 0.0290 | 28 | 0.001539 … 0.001546 | 7.8e-6 | 8.8e-5 | 1.1e2 |
+| 20752 | 298 | 0.0346 | 37 | 0.004396 … 0.004406 | 1.0e-5 | 1.3e-4 | 1.7e2 |
+| 20753 | 298 | 0.0381 | 39 | 0.004895 … 0.004905 | 9.6e-6 | 1.4e-4 | 1.8e2 |
+| 20754 | 60 | 0.0416 | 4 | 0.003259 … 0.003846 | 5.9e-4 | 9.4e-3 | 1.2e4 |
+| 20756 | 498 | 0.0486 | 40 | 0.002019 … 0.002052 | 3.3e-5 | 6.2e-4 | 8.0e2 |
+| 20763 | 334 | 0.0682 | 74 | 0.001589 … 0.001678 | 9.0e-5 | 2.4e-3 | 3.1e3 |
+| 20770 | 334 | 0.0878 | 85 | 0.001443 … 0.001471 | 2.9e-5 | 9.7e-4 | 1.3e3 |
+| 20777 | 442 | 0.1074 | 89 | 0.001316 … 0.001324 | 7.9e-6 | 3.3e-4 | 4.3e2 |
+| 20784 | 302 | 0.1232 | 81 | 0.000381 … 0.000393 | 1.2e-5 | 5.9e-4 | 7.6e2 |
+| 20787 | 564 | 0.1288 | 106 | 0.001125 … 0.001132 | 7.4e-6 | 3.7e-4 | 4.8e2 |
+| **20805** | 516 | 0.1820 | **1** | 0.002046 | 0 | 0 | 0 — the ONE expiry a representative-q family serves exactly |
+| 20818 | 650 | 0.2139 | 144 | 0.002673 … 0.002693 | 2.1e-5 | 1.7e-3 | 2.2e3 |
+| 20833 | 478 | 0.2541 | 22 | −0.000263 … 0.000918 | 1.18e-3 | 0.116 | 1.5e5 |
+| 20847 | 360 | 0.2908 | 124 | −0.000757 … −0.000348 | 4.1e-4 | 0.046 | 6.0e4 |
+| 20868 | 222 | 0.3472 | 28 | −0.000924 … −0.000922 | 1.6e-6 | 2.1e-4 | 2.7e2 |
+| 20875 | 294 | 0.3667 | 100 | −0.001024 … −0.001020 | 3.1e-6 | 4.4e-4 | 5.8e2 |
+| 20896 | 398 | 0.4255 | 28 | −0.001269 … −0.000827 | 4.4e-4 | 0.073 | 9.4e4 |
+| 20908 | 388 | 0.4552 | 43 | −0.000373 … −0.000354 | 1.9e-5 | 3.3e-3 | 4.3e3 |
+| 20986 | 486 | 0.6717 | 29 | −0.001792 … −0.001441 | 3.5e-4 | 0.091 | 1.2e5 |
+| 20999 | 368 | 0.7049 | 142 | −0.001145 … −0.000317 | 8.3e-4 | 0.226 | 2.9e5 |
+| 21078 | 496 | 0.9225 | 36 | −0.001940 … −0.001063 | 8.8e-4 | 0.313 | 4.0e5 |
+| 21091 | 370 | 0.9582 | 117 | −0.001384 … −0.001335 | 4.9e-5 | 0.018 | 2.3e4 |
+| 21169 | 506 | 1.1734 | 42 | −0.001826 … −0.000656 | 1.17e-3 | 0.531 | 6.9e5 |
+| 21204 | 506 | 1.2664 | 54 | −0.001998 … −0.000841 | 1.16e-3 | 0.566 | 7.3e5 |
+| 21351 | 510 | 1.6704 | 64 | −0.002616 … −0.001932 | 6.8e-4 | 0.442 | 5.7e5 |
+| 21533 | 456 | 2.1673 | 74 | −0.003298 … −0.002272 | 1.03e-3 | 0.860 | 1.1e6 |
+| 21568 | 426 | 2.2579 | 52 | −0.002165 … −0.002057 | 1.1e-4 | 0.095 | 1.2e5 |
+
+Total distinct (expiry, sdiv) pairs: **1,831** → 3,662 families if keyed per distinct q (× 1.24 ms = 4.5 s of builds for
+a 8.5 s surface: dead). The induced price error of ONE family per (expiry, side) at the representative q is 2e-4 to
+0.86 USD per strike on 30 of 33 expiries — 2 to 6 orders of magnitude above the family bound (SPY-like 3.7e-12
+relative = 2e-10 USD) AND above the certificate allowance; in vol units ΔP / vega ≈ 1e-6 … 3e-3, so even as a SEED
+the mismatch costs the second bounded confirm solve (69 µs Fast) on most strikes, more than the iterates save
+(1.77 × (21 − 9.3) ≈ 20 µs). q-buckets (b) under the allowance need Δq < 3e-7 (shortest) … 1e-9 (longest expiry),
+i.e. buckets = the distinct values = the 3,662 families above. (The first-order estimate T·S·½·Δq is the order of
+magnitude; the kernel measurement |P(σ; q_rep) − P(σ; q_eff)| at the chain's ATM node was planned as two extra cold
+solves per family build under the key and was NOT run before the stop.)
+
+**Decision state (recorded, not executed):** (a) one representative-q family — REJECTED by the table for every price
+that is SERVED or DECIDES a band (the grid and the kIvMin / kIvMax edges); exact only on expiry 20805 (and 20741,
+below kAlSigmaFamilyMinTau). (b) q-buckets — REJECTED (buckets = distinct values; the adaptive rule N > 72 refuses
+~every group: ~160 strikes / 74 q per expiry ≈ 2 strikes per family). (c) q as a second interpolation axis
+(σ, q) — a kernel change in `american_sigma_family.cpp` (the boundary y[] AND the premium quadrature's exp(q u)
+weights depend on q): the arithmetic that makes it the real lever is 64 × (12 σ × 3-4 q) node solves ≈ 0.25-0.3 s of
+Reference builds per SPY surface against iterates + edges + grid ≈ 3.3 s on Screen / Fast today → ≈ 0.8 s; **this
+is the PM's call (hand back and ask first, per the L2i brief)**. The kernel-free design I had chosen for the ITERATES
+before the stop (not built): one family per (expiry, side) at the representative (r, q) supplies only the
+de-Americanisation REMAINDER D(σ) = P_fam(σ; q_rep) − A_BAW(σ; q_rep) and its chord, while the Premium leg A runs at
+the contract's own q_eff (the leg carries the q-dependence exactly to first order; D's q-sensitivity is ~1 % of P's);
+every root confirmed on the confirm kernel at q_eff as today; the grid on the family ONLY where the strike's q equals
+the family's q bit for bit (SPY: one expiry); the band edges stay cold (L2h §7 item 3: kIvMin / kIvMax are outside
+any chain box). Expected saving on SPY ≈ 0.6 s (iterates 50k × (21 → 9.3 µs)) + 0.08 s of builds — the family
+lever is worth ≈ 0.6 s of arm D's 8.55 s under per-strike q, not the 2.4 s of the Phase 0 plan (§1 row 5), because
+the grid (1.74 s) and the edges (0.47 s) cannot be family-priced at a q they were not built at.
+
+### 3.2 The other Phase 2 lever (PM ruling, Phase 1 results item 3), planned, not built
+
+Opt-in key `graded.seed_gate_kappa` (policy → `QuoteSliceChannelConfig`, requires `deam_profile screen`): the Screen
+routing test `price − zero_vol ≤ al_non_monotone_gate(K, T, seed_opts)` (kappa 4e-4) becomes `≤ kappa_key · K ·
+max(1, T²)` with kappa_key = 10 × the measured Screen dip (Phase 1: 4.3e-6 → 4.3e-5). Expected: the 5,849 routed
+inversions (19.7 %, ≈ 10k Reference iterates ≈ 1.6 s) run on Screen (+5.8k Fast confirms ≈ 0.4 s) → ≈ −1.0 s on arm
+D. Accuracy by construction under `confirm always`: a mis-seeded root fails the confirm and falls back to Search
+bit for bit. Test: a price inside the wide gate but above kappa_key·K·max(1, T²) is routed without the key and not
+with it (fails on revert).
+
+### 3.3 Remaining steps, in order (none started)
+
+1. PM ruling on §3.1 (c): a (σ, q) family in the kernel (L2h / L2h-fix1 own `american_sigma_family.cpp`) or the
+   kernel-free D-model iterates only. 2. `seed_gate_kappa` key + test + the SPY arm-D-plus-gate @1 row. 3. Family
+   provisioning per (expiry, side) in the rung-memo slot (`rung_memo.hpp` holder: geometry + put + call families,
+   `shared_ptr<const>`, built once at `VolSpaceCache` construction when 5.4 × two-sided quotes per side > c·2·n_σ,
+   c = 3; `always` forces it; box from the Black-76 IVs of the two-sided mids, lo = max(kMin, 0.5·min), hi = 1.5·max
+   + 2·kAlPackSigmaBump), keyed into `deam_iv_key` (family mode, c, n_σ, axis words) + the
+   `MemoKeyCoversEveryInputThatChangesAnInversion` extension. 4. `premium_root`: the family D-model iterate
+   (`IvPremiumGate::family` pointer + the family's q and leg; every refusal → the Screen iterate), counters
+   `family_build` / `family_price` / `family_refused` in the §6.3 reason split + `--timing-detail`. 5. The grid on the
+   family where q_eff == q_rep and the family bound < allowance, else cold (test fails on revert). 6. The band gate
+   with the family's bound (B-family arm; eps_A = family bound + a per-family measured q-term, measurement arm).
+   7. Arms on SPY @1 (D-family adaptive, D-family-always, B-family; @0 for D-family), load across the run; the
+   two-lever table; served-set diff; cohort5 + a 40-symbol dev200 sample during development; the three cohorts once at
+   the end; parity `c89d0739` / `4b273b08` / `171fa2d2`; fingerprint `53c4df68`; PCH-off; note; report; release.
