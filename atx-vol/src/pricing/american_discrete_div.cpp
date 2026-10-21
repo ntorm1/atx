@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/black76.hpp"
+#include "pricing/american_discrete_div_detail.hpp"
 
 // Vellekoop-Nieuwenhuis (2006) spliced Cox-Ross-Rubinstein lattice for American
 // (and European) options on an underlier paying DISCRETE CASH dividends. The
@@ -29,6 +30,18 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
+// The lattice primitives are DECLARED in pricing/american_discrete_div_detail.hpp
+// (the seam the workspace kernel TU prices through) and DEFINED here, below, at
+// the same lines they always occupied; these using-declarations keep every
+// unqualified call site in this file as it was.
+using ddiv_detail::LatticeBuffers;
+using ddiv_detail::LatticeOutcome;
+using ddiv_detail::richardson_price;
+using ddiv_detail::run_escrowed_lattice;
+using ddiv_detail::run_lattice;
+using ddiv_detail::run_single_rollback;
+using ddiv_detail::validate;
+
 namespace {
 
 // Turns "stock level minus strike" into the exercise payoff for either side.
@@ -40,31 +53,9 @@ namespace {
   return std::max(sgn * (level - strike), 0.0);
 }
 
-// Price + every greek ONE rollback can carry. `delta`/`gamma`/`theta` need
-// `steps >= 2` and `charm` needs `steps >= 3`; below those counts the field
-// stays 0 and the public entry that would expose it refuses first, so a
-// fabricated 0 never reaches a caller. Under the BBS final step only `price` is
-// meaningful (no public entry exposes smoothed greeks).
-struct LatticeOutcome {
-  double price = 0.0;
-  double delta = 0.0;
-  double gamma = 0.0;
-  double theta = 0.0; // dP/dt, calendar convention, per year
-  double charm = 0.0; // d(delta)/dt, calendar convention
-};
-
-// The per-call lattice workspace: the dividend step map, the node levels, the
-// node values and the splice scratch. A public entry owns ONE of these and every
-// rollback it runs reuses it — the greek bundle's eight rollbacks and BBSR's
-// coarse rollback included — so a call allocates these buffers once, sized by
-// its first (largest) rollback. `scratch` is grown only when a dividend lands
-// inside the window, exactly as before the workspace existed.
-struct LatticeBuffers {
-  std::vector<double> step_amount;
-  std::vector<double> level;
-  std::vector<double> value;
-  std::vector<double> scratch;
-};
+// `LatticeOutcome` (price + the greeks one rollback carries) and `LatticeBuffers`
+// (the per-call workspace: step map, levels, values, splice scratch) are defined
+// in pricing/american_discrete_div_detail.hpp, with their contracts.
 
 // The analytic continuation over the LAST lattice step (Broadie-Detemple BBS):
 // the European value at t_{N-1} of the expiry payoff, as a function of the
@@ -102,10 +93,12 @@ struct FinalStepValue {
   }
 };
 
+} // namespace
+
 // Boundary validation (agent profile §4): every external input is checked ONCE,
 // here, and the kernel below assumes the validated invariants.
-[[nodiscard]] Status validate(double S, double K, double T, double sigma, double r, double q,
-                              std::span<const CashDividend> dividends, int steps) {
+Status ddiv_detail::validate(double S, double K, double T, double sigma, double r, double q,
+                             std::span<const CashDividend> dividends, int steps) {
   if (!(S > 0.0) || !std::isfinite(S)) {
     return Err(ErrorCode::InvalidArgument, "spot must be finite and > 0");
   }
@@ -138,6 +131,8 @@ struct FinalStepValue {
   }
   return Ok();
 }
+
+namespace {
 
 // Detail 1 of 3 (header): at an ex-step BELOW expiry the continuation value is
 // re-read on the shifted grid by LINEAR interpolation. Above the top node it is
@@ -256,16 +251,18 @@ void bbs_final_step(std::span<const double> level, std::span<double> value, std:
   }
 }
 
+} // namespace
+
 // `bbs` selects the Broadie-Detemple final step (header, DiscreteDivScheme):
 // the step N-1 continuation becomes `FinalStepValue` evaluated at each node's
 // own (post-dividend) level. Every other step is the plain V&N rollback, and
 // with `bbs == false` the arithmetic is the historical kernel's, operation for
 // operation.
-[[nodiscard]] Result<LatticeOutcome> run_lattice(double S, double K, double T, double sigma,
-                                                 double r, double q, Side side,
-                                                 std::span<const CashDividend> dividends, int steps,
-                                                 ExerciseStyle exercise, bool bbs,
-                                                 LatticeBuffers &buffers) {
+Result<LatticeOutcome> ddiv_detail::run_lattice(double S, double K, double T, double sigma,
+                                                double r, double q, Side side,
+                                                std::span<const CashDividend> dividends, int steps,
+                                                ExerciseStyle exercise, bool bbs,
+                                                LatticeBuffers &buffers) {
   const int n_steps = steps;
   const std::size_t n_nodes = static_cast<std::size_t>(n_steps) + 1U;
   const bool american = (exercise == ExerciseStyle::American);
@@ -444,6 +441,8 @@ void bbs_final_step(std::span<const double> level, std::span<double> value, std:
   return Ok(out);
 }
 
+namespace {
+
 // ── The escrowed-dividend lattices (header, EscrowedBbs / EscrowedLeisenReimer)
 //
 // The lattice carries the escrowed stock X = S - (cash still to come,
@@ -527,13 +526,16 @@ void escrowed_exercise(std::span<const double> level, std::span<double> value, s
   }
 }
 
+} // namespace
+
 // `leisen_reimer` selects the strike-centred Leisen-Reimer tree (an even
 // `steps` is rounded up to the next odd count, Leisen-Reimer's own convention)
 // with the plain terminal payoff; otherwise a CRR tree with the BBS final step.
-[[nodiscard]] Result<LatticeOutcome>
-run_escrowed_lattice(double S, double K, double T, double sigma, double r, double q, Side side,
-                     std::span<const CashDividend> dividends, int steps, ExerciseStyle exercise,
-                     bool leisen_reimer, LatticeBuffers &buffers) {
+Result<LatticeOutcome>
+ddiv_detail::run_escrowed_lattice(double S, double K, double T, double sigma, double r, double q,
+                                  Side side, std::span<const CashDividend> dividends, int steps,
+                                  ExerciseStyle exercise, bool leisen_reimer,
+                                  LatticeBuffers &buffers) {
   const int n_steps = (leisen_reimer && steps % 2 == 0) ? steps + 1 : steps;
   const std::size_t n_nodes = static_cast<std::size_t>(n_steps) + 1U;
   const bool american = (exercise == ExerciseStyle::American);
@@ -642,6 +644,8 @@ run_escrowed_lattice(double S, double K, double T, double sigma, double r, doubl
   return Ok(out);
 }
 
+namespace {
+
 // Solve 8 of 8 — the bumped leg of the SpiderRock secant theta, P(T - horizon).
 //
 // The schedule is passed UNCHANGED and `run_lattice` re-applies its own
@@ -674,12 +678,15 @@ run_escrowed_lattice(double S, double K, double T, double sigma, double r, doubl
   return Ok(leg->price);
 }
 
+} // namespace
+
 // The schemes that are ONE rollback: the spliced CRR with or without the BBS
 // final step, and the escrowed lattice on a CRR+BBS or Leisen-Reimer tree.
-[[nodiscard]] Result<LatticeOutcome>
-run_single_rollback(DiscreteDivScheme scheme, double S, double K, double T, double sigma, double r,
-                    double q, Side side, std::span<const CashDividend> dividends, int steps,
-                    ExerciseStyle exercise, LatticeBuffers &buffers) {
+Result<LatticeOutcome>
+ddiv_detail::run_single_rollback(DiscreteDivScheme scheme, double S, double K, double T,
+                                 double sigma, double r, double q, Side side,
+                                 std::span<const CashDividend> dividends, int steps,
+                                 ExerciseStyle exercise, LatticeBuffers &buffers) {
   switch (scheme) {
   case DiscreteDivScheme::SplicedCrr:
     return run_lattice(S, K, T, sigma, r, q, side, dividends, steps, exercise, false, buffers);
@@ -699,11 +706,10 @@ run_single_rollback(DiscreteDivScheme scheme, double S, double K, double T, doub
 
 // SplicedBbsr (header): two-point Richardson on the BBS lattice's leading 1/N
 // term. The coarse rollback runs SECOND so it reuses the fine one's buffers.
-[[nodiscard]] Result<double> richardson_price(double S, double K, double T, double sigma,
-                                              double r, double q, Side side,
-                                              std::span<const CashDividend> dividends, int steps,
-                                              ExerciseStyle exercise) {
-  LatticeBuffers buffers;
+Result<double> ddiv_detail::richardson_price(double S, double K, double T, double sigma, double r,
+                                             double q, Side side,
+                                             std::span<const CashDividend> dividends, int steps,
+                                             ExerciseStyle exercise, LatticeBuffers &buffers) {
   const Result<LatticeOutcome> fine =
       run_lattice(S, K, T, sigma, r, q, side, dividends, steps, exercise, true, buffers);
   if (!fine) {
@@ -725,8 +731,6 @@ run_single_rollback(DiscreteDivScheme scheme, double S, double K, double T, doub
                            : 0.0;
   return Ok(std::max(extrapolated, floor));
 }
-
-} // namespace
 
 const char *to_string(DiscreteDivScheme value) noexcept {
   switch (value) {
@@ -756,10 +760,12 @@ Result<double> american_discrete_div_price(double S, double K, double T, double 
     return Err(ErrorCode::InvalidArgument,
                "unknown discrete-dividend lattice scheme, or too few steps for it");
   }
-  if (scheme == DiscreteDivScheme::SplicedBbsr) {
-    return richardson_price(S, K, T, sigma, r, q, side, dividends, steps, exercise);
-  }
+  // One per-call workspace for whichever scheme runs (BBSR's two rollbacks share
+  // it, the coarse one second): the same four rows as before the seam existed.
   LatticeBuffers buffers;
+  if (scheme == DiscreteDivScheme::SplicedBbsr) {
+    return richardson_price(S, K, T, sigma, r, q, side, dividends, steps, exercise, buffers);
+  }
   const Result<LatticeOutcome> out =
       run_single_rollback(scheme, S, K, T, sigma, r, q, side, dividends, steps, exercise, buffers);
   if (!out) {

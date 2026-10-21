@@ -58,6 +58,10 @@ set(ATX_VOL_PRICING_SOURCES
     # Andersen-Lake machinery, while its public entries sit beside them in
     # api/pricing/american.hpp.
     src/pricing/american_discrete_div.cpp
+    # Its caller-owned workspace, Screen tier and seeded inversion (lane L3f,
+    # 2026-10-20): prices through the seam src/pricing/american_discrete_div_detail.hpp;
+    # public header api/pricing/american_discrete_div_kernel.hpp (Tier-B).
+    src/pricing/american_discrete_div_kernel.cpp
     src/pricing/american_markov.cpp
     src/pricing/american_markov_grid.cpp
     src/pricing/american_markov_batch.cpp
