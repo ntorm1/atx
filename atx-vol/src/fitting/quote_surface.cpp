@@ -219,11 +219,13 @@ public:
     if (ladder()) {
       ladder_repair_rung();
       ATX_TRY_VOID(ladder_calendar_pass());
+      market_distance_pass();
       measure_containment();
     } else {
       repair_rung();
       ATX_TRY_VOID(calendar_pass());
       ATX_TRY_VOID(dominance_pass());
+      market_distance_pass();
     }
     for (QuoteSurfaceSlice &slice : out_) {
       if (slice.grade == QuoteSliceGrade::Refused) {
@@ -900,6 +902,11 @@ private:
         accepted.push_back(i);
         continue;
       }
+      if (repair_joint(i, accepted)) { // opt-in bidirectional rung (lane L3q)
+        mark_repaired(i);
+        accepted.push_back(i);
+        continue;
+      }
       measure_gap(i, accepted);
       refuse_calendar(i);
     }
@@ -1019,6 +1026,10 @@ private:
       adopt_retry(i, std::move(*fit), true);
       return Ok(true);
     }
+    if (repair_joint(i, accepted)) { // opt-in bidirectional rung (lane L3q)
+      mark_repaired(i);
+      return Ok(true);
+    }
     return Ok(false);
   }
 
@@ -1114,6 +1125,152 @@ private:
     commit(fit, trial);
     out_[i].calendar_channel_repaired = true;
     return true;
+  }
+
+  // ── Distance to market (QuoteSliceMarketDistance, lane L3q 2026-10-21) ──────
+
+  [[nodiscard]] bool market_repair_on() const {
+    return config_.repair.market_distance == QuoteSliceMarketDistance::Repair;
+  }
+
+  // Bidirectional calendar rung (Repair only), after every one-sided rung failed:
+  // expiry i is projected jointly (repair_quote_slice_calendar_joint) first with the
+  // accepted slices it crosses, the others fixed, then with EVERY accepted slice,
+  // because a crossing can need a chain of maturities to move (deep in-the-money
+  // puts pinned at intrinsic under per-expiry spots a cent apart). The trials are
+  // committed only when every member certifies and is calendar-consistent with every
+  // other and, under the ladder, every moved member is still inside the market; a
+  // moved accepted slice is marked repaired (grade B).
+  [[nodiscard]] bool repair_joint(std::size_t i, const std::vector<std::size_t> &accepted) {
+    if (!market_repair_on() || !out_[i].fit.prices || accepted.empty()) return false;
+    // First the accepted slices i crosses (the others fixed: a small projection),
+    // then every accepted slice (a chain of maturities can need to move).
+    std::vector<std::size_t> partners;
+    for (const std::size_t j : accepted) {
+      if (!consistent(out_[i].fit, std::vector<std::size_t>{j})) partners.push_back(j);
+    }
+    if (joint_attempt(i, partners, accepted)) return true;
+    return partners.size() < accepted.size() && joint_attempt(i, accepted, accepted);
+  }
+
+  // One bidirectional attempt: expiry i and `partners` move, the rest of `accepted`
+  // stays fixed.
+  [[nodiscard]] bool joint_attempt(std::size_t i, const std::vector<std::size_t> &partners,
+                                   const std::vector<std::size_t> &accepted) {
+    if (partners.empty()) return false;
+    std::vector<std::size_t> slots{i};
+    slots.insert(slots.end(), partners.begin(), partners.end());
+    std::vector<QuoteSliceFit> trials;
+    trials.reserve(slots.size());
+    std::vector<QuoteSliceJointMember> members;
+    members.reserve(slots.size());
+    for (const std::size_t s : slots) trials.push_back(trial_copy(out_[s].fit));
+    for (std::size_t m = 0; m < slots.size(); ++m) {
+      members.push_back({&trials[m], expiries_[slots[m]].quotes});
+    }
+    std::vector<QuoteSliceCalendarNeighbour> fixed;
+    for (const std::size_t j : accepted) {
+      if (std::find(partners.begin(), partners.end(), j) != partners.end()) continue;
+      fixed.push_back({&*out_[j].fit.prices, out_[j].fit.market.calendar_years});
+    }
+    std::vector<std::size_t> moved;
+    if (!repair_quote_slice_calendar_joint(members, fixed, config_.repair, &moved,
+                                           &out_[i].calendar_channel_repair)) {
+      return false;
+    }
+    for (std::size_t m = 0; ladder() && m < slots.size(); ++m) {
+      if (moved[m] > 0 && !in_market(trials[m], slots[m])) return false;
+    }
+    for (std::size_t m = 0; m < slots.size(); ++m) {
+      if (moved[m] == 0) continue;
+      commit(out_[slots[m]].fit, trials[m]);
+      if (m > 0) {
+        mark_repaired(slots[m]);
+        out_[slots[m]].calendar_joint_partner_moves += moved[m];
+      }
+    }
+    out_[i].calendar_joint_repaired = true;
+    return true;
+  }
+
+  // Largest distance to market (spreads) over expiry i's served rows (Success or
+  // PriceOnly with a valid quote); `checked` (nullable) receives how many it measured.
+  [[nodiscard]] double market_distance(std::size_t i, std::size_t *checked = nullptr) const {
+    const std::span<const QuoteSliceQuote> quotes = expiries_[i].quotes;
+    const std::vector<QuoteSliceRow> &rows = out_[i].fit.rows;
+    double worst = 0.0;
+    std::size_t count = 0;
+    for (std::size_t k = 0; k < quotes.size() && k < rows.size(); ++k) {
+      const QuoteSliceRow &row = rows[k];
+      if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+          row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+        continue;
+      }
+      const double d = market_distance_spreads(row.fitted_price, quotes[k].bid, quotes[k].ask,
+                                               config_.repair.box_tick);
+      if (std::isnan(d)) continue;
+      ++count;
+      worst = std::max(worst, d);
+    }
+    if (checked != nullptr) *checked = count;
+    return worst;
+  }
+
+  // The distance-to-market certificate (Gate / Repair), last, on the final served
+  // set in maturity order: under Repair a slice with a row beyond the bound first
+  // gets the in-box market repair against every other served slice
+  // (repair_quote_slice_market); then every served row still beyond the bound is
+  // refused row by row (MarketDistanceFailure: no volatility, not a served price).
+  void market_distance_pass() {
+    if (config_.repair.market_distance == QuoteSliceMarketDistance::Off) return;
+    const double bound = config_.repair.market_distance_spreads;
+    std::vector<std::size_t> order;
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      if (served(i) && out_[i].fit.prices) order.push_back(i);
+    }
+    std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) {
+      return expiries_[a].market.calendar_years < expiries_[b].market.calendar_years;
+    });
+    for (const std::size_t i : order) {
+      QuoteSurfaceSlice &slice = out_[i];
+      slice.market_max_spreads = market_distance(i, &slice.market_checked_rows);
+      if (market_repair_on() && slice.market_max_spreads > bound) {
+        std::vector<std::size_t> others;
+        for (const std::size_t j : served_except(i)) {
+          if (out_[j].fit.prices) others.push_back(j);
+        }
+        std::vector<const AmericanPriceSlice *> earlier;
+        std::vector<const AmericanPriceSlice *> later;
+        neighbours(slice.fit, others, earlier, later);
+        QuoteSliceFit trial = trial_copy(slice.fit);
+        if (repair_quote_slice_market(trial, expiries_[i].quotes, earlier, later, config_.repair,
+                                      &slice.market_repair)) {
+          commit(slice.fit, trial);
+        }
+      }
+      slice.market_max_spreads_after = market_distance(i);
+      gate_rows(i, bound);
+    }
+  }
+
+  void gate_rows(std::size_t i, double bound) {
+    QuoteSurfaceSlice &slice = out_[i];
+    const std::span<const QuoteSliceQuote> quotes = expiries_[i].quotes;
+    for (std::size_t k = 0; k < quotes.size() && k < slice.fit.rows.size(); ++k) {
+      QuoteSliceRow &row = slice.fit.rows[k];
+      if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+          row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+        continue;
+      }
+      const double d = market_distance_spreads(row.fitted_price, quotes[k].bid, quotes[k].ask,
+                                               config_.repair.box_tick);
+      if (!(d > bound)) continue;
+      row.evaluation_status = QuoteSliceEvaluationStatus::MarketDistanceFailure;
+      row.fitted_iv = kNaN;
+      auto &produced = slice.fit.diagnostics.prices_produced;
+      if (produced > 0) --produced;
+      ++slice.market_gated_rows;
+    }
   }
 
   // A repair trial: everything a repair reads or writes, with an owned curve.

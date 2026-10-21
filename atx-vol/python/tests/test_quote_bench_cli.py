@@ -757,6 +757,18 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded", "graded": {"wing_mult_source": 1}},
              "must be a string"),
             ({"schema_version": 1, "graded": {"wing_mult_source": "market"}},
+             "require admission graded"),
+            # Opt-in distance-to-market gate / repair (lane L3q).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"market_distance": "clip"}},
+             "market_distance must be off, gate or repair"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"market_distance_spreads": 1.0}},
+             "market_distance_spreads requires market_distance gate or repair"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"market_distance": "gate", "market_distance_spreads": -1}},
+             "outside supported bounds"),
+            ({"schema_version": 1, "graded": {"market_distance": "gate"}},
              "require admission graded")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
@@ -821,6 +833,38 @@ def test_native_market_wing_ceiling_is_opt_in_with_provenance(binary, tmp_path):
     assert reports["market"]["wing_mult_source"] == "market"
     assert "wing_mult_source" not in reports["plain"]
     assert reports["policy"] == reports["plain"]
+
+
+def test_native_market_distance_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.market_distance (lane L3q): with a bound no served row reaches (the
+    # synthetic quotes are 0.002 wide, so the scorer's one-tick spread floor applies),
+    # neither the gate nor the repair changes a prediction; only the opt-in
+    # provenance is added. An explicit "off" adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    graded = {"plain": None,
+              "gate": {"market_distance": "gate", "market_distance_spreads": 1000},
+              "repair": {"market_distance": "repair", "market_distance_spreads": 500},
+              "off": {"market_distance": "off"}}
+    outputs = {name: tmp_path / f"{name}.csv" for name in graded}
+    reports = {}
+    for name, keys in graded.items():
+        document = {"schema_version": 1, "admission": "graded"}
+        if keys is not None:
+            document["graded"] = keys
+        policy = write_policy(tmp_path / f"{name}.json", document)
+        result = invoke(binary, source, outputs[name], "--policy", str(policy))
+        assert result.returncode == 0, (name, result.stderr)
+        reports[name] = json.loads(result.stdout)["policy_definition"]["graded"]
+    plain_bytes = outputs["plain"].read_bytes()
+    for name in ("gate", "repair", "off"):
+        assert outputs[name].read_bytes() == plain_bytes, name
+    assert reports["gate"]["market_distance"] == "gate"
+    assert reports["gate"]["market_distance_spreads"] == 1000
+    assert reports["repair"]["market_distance"] == "repair"
+    assert reports["repair"]["market_distance_spreads"] == 500
+    assert not {"market_distance", "market_distance_spreads"} & set(reports["plain"])
+    assert reports["off"] == reports["plain"]
 
 
 def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
