@@ -37,6 +37,7 @@
 // it shares every inversion already made, whichever rung made it.
 // Internal header (src/fitting); not part of the public API.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -95,17 +96,65 @@ struct DeAmSigmaFamilies {
   std::optional<AlSigmaFamily> call;
   double q = std::numeric_limits<double>::quiet_NaN();
   double build_us = 0.0; // wall time of the node solves (diagnostics)
+  // (sigma, q) families (deam_family_q; L2h-b AlSigmaQFamily): one geometry per side at a
+  // yield inside that side's q box (a call orientation needs q > 0), the side family over
+  // the chain's (sigma box) x (q box), and its MEASURED relative price bound versus the
+  // cold accurate kernel (10x the worst of kDeAmFamilyProbes off-node probes over the
+  // chain's strike ends, the spot, both q ends and the sigma box, floored at 1e-12): the
+  // bound the band gate (B-family) and the certification grid use.
+  AlExpiryGeometry q_geometry_put;
+  AlExpiryGeometry q_geometry_call;
+  std::optional<AlSigmaQFamily> q_put;
+  std::optional<AlSigmaQFamily> q_call;
+  double q_bound_put = std::numeric_limits<double>::infinity();
+  double q_bound_call = std::numeric_limits<double>::infinity();
 
   // The prepared family of `side`, nullptr when none was built.
   [[nodiscard]] const AlSigmaFamily *of(Side side) const noexcept {
     const std::optional<AlSigmaFamily> &f = side == Side::Put ? put : call;
     return f && f->prepared() ? &*f : nullptr;
   }
+  [[nodiscard]] const AlSigmaQFamily *of_q(Side side) const noexcept {
+    const std::optional<AlSigmaQFamily> &f = side == Side::Put ? q_put : q_call;
+    return f && f->prepared() ? &*f : nullptr;
+  }
+  [[nodiscard]] double q_bound(Side side) const noexcept {
+    return side == Side::Put ? q_bound_put : q_bound_call;
+  }
 };
 
 // The sigma-family nodes and axis of the de-Am cache (L2h section 7: 12 LogSigma nodes).
 inline constexpr std::uint16_t kDeAmFamilyNodes = 12;
 inline constexpr AlSigmaFamilyAxis kDeAmFamilyAxis = AlSigmaFamilyAxis::LogSigma;
+// (sigma, q) families (L2h-b note section 3: n_sigma 16 meets 1e-9 relative on the whole
+// SPY board; n_q 4, or 3 where T x q-width <= 1e-5, the 23 d chain's floor), and the
+// off-node probes of the measured bound.
+inline constexpr std::uint16_t kDeAmQFamilySigmaNodes = 16;
+inline constexpr std::uint16_t kDeAmQFamilyQNodes = 4;
+inline constexpr std::uint16_t kDeAmQFamilyNarrowQNodes = 3;
+inline constexpr double kDeAmQFamilyNarrowCarry = 1.0e-5;
+inline constexpr std::size_t kDeAmFamilyProbes = 6;
+// The certification grid prices a node on a (sigma, q) family only inside this log-moneyness
+// band |ln(K / S)| (its bound is probed at the band's ends and the spot): the deep wings
+// carry the family's largest relative error near the exercise boundary (SPY 0.18 y calls at
+// K / S 0.3: 8.8e-8 relative = 4.8e-5 USD, missed by probes at the chain's strike ends).
+inline constexpr double kDeAmFamilyGridLogBand = 0.25;
+
+// What a cache asks its model to build (DeAmModel::sigma_families): per side (0 put, 1
+// call) the sigma box (empty, lo >= hi: no family of that side); the sigma families' yield
+// `q`; with `sigma_q` the (sigma, q) families over the chain's q box [q_lo, q_hi] instead.
+struct DeAmFamilyRequest {
+  std::array<double, 2> sigma_lo{1.0, 1.0};
+  std::array<double, 2> sigma_hi{0.0, 0.0};
+  double q = std::numeric_limits<double>::quiet_NaN();
+  bool sigma_q = false;
+  double q_lo = std::numeric_limits<double>::quiet_NaN();
+  double q_hi = std::numeric_limits<double>::quiet_NaN();
+  // The chain's strike range (the measured bound probes its ends: the deep wings carry the
+  // family's largest relative error).
+  double strike_lo = std::numeric_limits<double>::quiet_NaN();
+  double strike_hi = std::numeric_limits<double>::quiet_NaN();
+};
 // Expected family-priced calls per two-sided quote of a side (the adaptive rule): the
 // inversions of the mid, bid and ask at ~1.8 iterates each.
 inline constexpr double kDeAmFamilyCallsPerQuote = 5.4;
@@ -145,6 +194,10 @@ struct DeAmPremiumControls {
   // cold seed-tier iterates).
   const AlSigmaFamily *family = nullptr;
   double family_q = std::numeric_limits<double>::quiet_NaN();
+  // The quote's side (sigma, q) family and its measured relative bound
+  // (IvPremiumGate::qfamily; deam_family_q).
+  const AlSigmaQFamily *qfamily = nullptr;
+  double qfamily_bound = std::numeric_limits<double>::infinity();
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -193,8 +246,7 @@ public:
                                           double forward) const = 0;
   // Sigma families (QuoteSliceDeamFamily; SPY1s Phase 2). black_iv: the Black-76 IV of
   // `target` for the quote's contract on `forward` (the family box), NaN when none.
-  // sigma_families: the expiry's families over the per-side boxes [lo, hi] (an empty box,
-  // lo >= hi, builds no family of that side), at effective yield `q` on the model's
+  // sigma_families: the expiry's families of `request` (DeAmFamilyRequest) on the model's
   // accurate kernel; nullptr when the model has none (the default; the dated-cash lattice,
   // expiries below kAlSigmaFamilyMinTau) or no side could be built.
   [[nodiscard]] virtual double black_iv(const QuoteSliceQuote &quote, double target,
@@ -205,12 +257,8 @@ public:
     return std::numeric_limits<double>::quiet_NaN();
   }
   [[nodiscard]] virtual std::shared_ptr<const DeAmSigmaFamilies>
-  sigma_families(double q, double put_lo, double put_hi, double call_lo, double call_hi) const {
-    static_cast<void>(q);
-    static_cast<void>(put_lo);
-    static_cast<void>(put_hi);
-    static_cast<void>(call_lo);
-    static_cast<void>(call_hi);
+  sigma_families(const DeAmFamilyRequest &request) const {
+    static_cast<void>(request);
     return nullptr;
   }
 
@@ -250,6 +298,7 @@ struct DeAmConfirmControls {
   double seed_gate_kappa = 0.0;
   QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off; // deam_family
   double family_c = 3.0;                                   // deam_family_c
+  bool family_q = false;                                   // deam_family_q
 };
 
 class DeAmIvView {

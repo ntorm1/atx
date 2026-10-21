@@ -1220,6 +1220,11 @@ struct FitTimingCounters {
   std::uint64_t deam_family_build_us{0};
   std::uint32_t deam_family_prices{0};
   std::uint32_t deam_family_refused{0};
+  // grid_kernel Family (step 5): certification-grid prices served by a (sigma, q) family,
+  // and those priced on Fast instead (no family of the side, a refusal, a bound over the
+  // node's allowance).
+  std::uint32_t deam_family_grid_prices{0};
+  std::uint32_t deam_family_grid_cold{0};
 };
 
 // Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::

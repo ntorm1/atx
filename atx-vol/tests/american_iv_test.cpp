@@ -2458,6 +2458,94 @@ TEST(AmericanIvPremium, FamilyIteratesAreConfirmedAtTheStrikesOwnYield) {
   EXPECT_EQ(band_family, 0u);
 }
 
+// (sigma, q) family iterates (SPY1s Phase 2 step 5, IvPremiumGate::qfamily; L2h-b
+// AlSigmaQFamily): the iterates price each strike at its OWN q on the family (strike yields
+// spread over the q box), every accepted root under Always is confirmed at the accurate root
+// (Newton distance <= 4 tol); under Band (the B-family arm) the gate runs on the family's
+// bound and chord (no Andersen-Lake gate solve): it skips confirms and every skipped root
+// sits within the gate's own vol bound of the accurate root; a yield outside the q box
+// refuses and the attempt iterates on Screen; Never never uses the family.
+TEST(AmericanIvPremium, SigmaQFamilyIteratesPriceTheStrikesOwnYield) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaQFamily;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double q_lo = 0.010;
+  const double q_hi = 0.012;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, family_priced = 0, band_skipped = 0, band_gate_solves = 0;
+  std::size_t outside_refused = 0, never_family = 0;
+  double max_newton = 0.0, max_skipped_excess = 0.0;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.011);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaQFamily fam(g, sd, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, q_lo, q_hi, 4));
+      for (const double q : {0.0100, 0.0107, 0.0120, 0.0130}) {
+        for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+          for (const double sig : {0.15, 0.3, 0.6}) {
+            const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+            if (!p || !(*p > 0.0)) continue;
+            const PremiumCase c{K, T, r, q, sd, sig};
+            IvPremiumGate gate;
+            gate.qfamily = &fam;
+            gate.qfamily_bound = 1.0e-9;
+            IvPremiumStats st;
+            const IvResult res = screen_seeded_iv(*p, S, c, st, &gate);
+            ASSERT_EQ(res.status, IvStatus::Ok) << K << " " << T << " " << sig;
+            const bool in_box = q <= q_hi;
+            if (!in_box) outside_refused += st.family_refused ? 1u : 0u;
+            if (st.fallback == IvPremiumFallback::None && !st.seed_routed) {
+              ++accepted;
+              family_priced += in_box && st.family_prices > 0u ? 1u : 0u;
+              const double nd = accurate_newton_distance(*p, S, c, res.iv);
+              if (std::isfinite(nd)) {
+                max_newton = std::max(max_newton, nd);
+                EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << q;
+              }
+            }
+            IvPremiumGate band = gate;
+            band.policy = IvConfirmPolicy::Band;
+            band.half_spread_usd = 0.05;
+            IvPremiumStats bs;
+            const IvResult br = screen_seeded_iv(*p, S, c, bs, &band);
+            ASSERT_EQ(br.status, IvStatus::Ok);
+            if (in_box && bs.confirm_skipped) {
+              ++band_skipped;
+              band_gate_solves += bs.gate_solves;
+              const double nd = accurate_newton_distance(*p, S, c, br.iv);
+              if (std::isfinite(nd) && std::isfinite(bs.gate_bound_vol)) {
+                // The gate's statement bounds the skipped root's distance (plus the
+                // root's own Newton tolerance on the family map).
+                max_skipped_excess = std::max(max_skipped_excess, nd - bs.gate_bound_vol - tol);
+              }
+            }
+            IvPremiumGate never = gate;
+            never.policy = IvConfirmPolicy::Never;
+            IvPremiumStats ns;
+            static_cast<void>(screen_seeded_iv(*p, S, c, ns, &never));
+            never_family += ns.family_prices;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[sigma-q iterates] accepted %zu, of which family-priced %zu, max accurate-map "
+              "Newton %.3g; band: skipped %zu with %zu AL gate solves, max skipped distance over "
+              "its gate bound %.3g; outside the q box refused %zu; never-policy family prices %zu\n",
+              accepted, family_priced, max_newton, band_skipped, band_gate_solves,
+              max_skipped_excess, outside_refused, never_family);
+  EXPECT_GT(accepted, 50u);
+  EXPECT_GT(family_priced, accepted / 2); // fails with the family ignored by the iterates
+  EXPECT_LE(max_newton, 4.0 * tol);
+  EXPECT_GT(band_skipped, 20u);
+  EXPECT_EQ(band_gate_solves, 0u); // the B-family chord is the family's own
+  EXPECT_LE(max_skipped_excess, 0.0);
+  EXPECT_GT(outside_refused, 0u);
+  EXPECT_EQ(never_family, 0u);
+}
+
 TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {
   const double S = 100.0;
   const double tol = IvOpts{}.tol;

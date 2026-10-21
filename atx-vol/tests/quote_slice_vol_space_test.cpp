@@ -661,6 +661,93 @@ TEST(QuoteSliceVolSpace, FamilyIteratesServeConfirmedVolatilities) {
   deam_iv_memo_clear();
 }
 
+// (sigma, q) families + the family certification grid (SPY1s Phase 2 step 5; deam_family_q,
+// grid_kernel Family): on the SPY-shaped grid (strike carry on two chains) the fit serves the
+// same rows and statuses as the same keys with the Fast grid, every served price within the
+// certificate's allowance 1e-8 + 1e-9 max(S, K) of the Fast grid's, at least one price
+// served from a family (the key is not inert); the iterates under (sigma, q) families keep
+// every quote volatility within the inversion tolerance band of Search; the family grid
+// without (sigma, q) families, and (sigma, q) families without a family mode, are refused.
+TEST(QuoteSliceVolSpace, SigmaQFamilyGridServesWithinTheCertificateAllowance) {
+  const std::vector<GridCase> grid = {
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t compared = 0, differing = 0, iv_compared = 0, builds = 0;
+  double max_excess = -std::numeric_limits<double>::infinity(), max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig fast = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    fast.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    fast.channel.deam_family = QuoteSliceDeamFamily::Always;
+    fast.channel.deam_family_q = true;
+    fast.grid_kernel = QuoteSliceGridKernel::Fast;
+    QuoteSliceConfig family = fast;
+    family.grid_kernel = QuoteSliceGridKernel::Family;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto a = fit_quote_slice_channel(c.market, c.quotes, fast, nullptr);
+    deam_iv_memo_clear();
+    const auto b = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    ASSERT_TRUE(reference && a && b);
+    builds += a->diagnostics.deam.family_builds;
+    EXPECT_EQ(a->fit_status, b->fit_status);
+    ASSERT_EQ(a->rows.size(), b->rows.size());
+    for (std::size_t i = 0; i < a->rows.size(); ++i) {
+      const QuoteSliceRow &x = a->rows[i];
+      const QuoteSliceRow &y = b->rows[i];
+      EXPECT_EQ(x.quote_status, y.quote_status) << i;
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status) << i;
+      EXPECT_EQ(x.admitted, y.admitted) << i;
+      if (std::isfinite(x.fitted_price) && std::isfinite(y.fitted_price)) {
+        ++compared;
+        const double allowance =
+            1.0e-8 + 1.0e-9 * std::max(c.market.spot, c.quotes[i].strike);
+        const double move = std::abs(x.fitted_price - y.fitted_price);
+        max_excess = std::max(max_excess, move - allowance);
+        EXPECT_LT(move, allowance) << i;
+        if (!same_bits(x.fitted_price, y.fitted_price)) ++differing;
+      }
+      const QuoteSliceRow &r = reference->rows[i];
+      if (std::isfinite(x.market_iv) && std::isfinite(r.market_iv)) {
+        ++iv_compared;
+        max_dsigma = std::max(max_dsigma, std::abs(x.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(x.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+  }
+  std::printf("[sigma-q grid] %zu families built, %zu served prices compared, %zu from a family "
+              "differ from the Fast grid, max move less allowance %.3g; %zu mid IVs, max |dsigma| "
+              "vs Search %.3g\n",
+              builds, compared, differing, max_excess, iv_compared, max_dsigma);
+  EXPECT_GT(builds, 0u);
+  EXPECT_GT(compared, 0u);
+  EXPECT_GT(differing, 0u); // the family grid served prices (fails on revert)
+  EXPECT_GT(iv_compared, 0u);
+  deam_iv_memo_clear();
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig no_q = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true,
+                                     QuoteSliceDeamProfile::Screen);
+  no_q.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  no_q.channel.deam_family = QuoteSliceDeamFamily::Always;
+  no_q.grid_kernel = QuoteSliceGridKernel::Family;
+  QuoteSliceConfig no_mode = no_q;
+  no_mode.grid_kernel = QuoteSliceGridKernel::Fast;
+  no_mode.channel.deam_family = QuoteSliceDeamFamily::Off;
+  no_mode.channel.deam_family_q = true;
+  for (const QuoteSliceConfig *bad : {&no_q, &no_mode}) {
+    const auto refusal = fit_quote_slice_channel(c.market, c.quotes, *bad, nullptr);
+    ASSERT_FALSE(refusal);
+    EXPECT_EQ(refusal.error().code(), ErrorCode::InvalidArgument);
+  }
+  deam_iv_memo_clear();
+}
+
 // Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
 // served prices are the grid's, so under grid_kernel Fast every served price moves by at most
 // the Fast bound 1e-12 max(P, 1) (below the certificate's allowance) with the same rows served

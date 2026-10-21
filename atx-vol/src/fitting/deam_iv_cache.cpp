@@ -146,24 +146,50 @@ void DeAmIvView::ensure_families() {
   if (!(hi >= lo) || yields.empty()) return; // no out-of-the-money two-sided mid: no box
   const auto mid = yields.begin() + static_cast<std::ptrdiff_t>(yields.size() / 2);
   std::nth_element(yields.begin(), mid, yields.end());
-  const double family_q = *mid;
-  const double needed = confirm_.family_c * 2.0 * static_cast<double>(kDeAmFamilyNodes);
-  std::array<double, 2> box_lo{1.0, 1.0};
-  std::array<double, 2> box_hi{0.0, 0.0}; // empty: no family of that side
+  DeAmFamilyRequest request;
+  request.q = *mid;
+  request.sigma_q = confirm_.family_q;
+  if (request.sigma_q) {
+    // The (sigma, q) families' q box: every quote's effective yield (each iterate and each
+    // grid strike prices at its own q).
+    request.q_lo = std::numeric_limits<double>::infinity();
+    request.q_hi = -std::numeric_limits<double>::infinity();
+    request.strike_lo = std::numeric_limits<double>::infinity();
+    request.strike_hi = 0.0;
+    for (std::size_t i = 0; i < quotes_.size(); ++i) {
+      const double q = carry(i).q_effective;
+      if (!std::isfinite(q) || !positive(quotes_[i].strike)) continue;
+      request.q_lo = std::min(request.q_lo, q);
+      request.q_hi = std::max(request.q_hi, q);
+      request.strike_lo = std::min(request.strike_lo, quotes_[i].strike);
+      request.strike_hi = std::max(request.strike_hi, quotes_[i].strike);
+    }
+    if (!(request.q_hi >= request.q_lo) || !(request.strike_hi >= request.strike_lo)) return;
+  }
+  const double nodes = request.sigma_q ? static_cast<double>(kDeAmQFamilySigmaNodes) *
+                                             static_cast<double>(kDeAmQFamilyQNodes)
+                                       : static_cast<double>(kDeAmFamilyNodes);
+  const double needed = confirm_.family_c * 2.0 * nodes;
   for (std::size_t s = 0; s < 2; ++s) {
     const bool wanted = count[s] > 0u && (confirm_.family == QuoteSliceDeamFamily::Always ||
                                           kDeAmFamilyCallsPerQuote * static_cast<double>(count[s]) >
                                               needed);
     if (wanted) {
-      box_lo[s] = std::max(kAlSigmaFamilyMinSigma, 0.5 * lo);
-      box_hi[s] = 1.5 * hi + 2.0 * kAlPackSigmaBump;
+      request.sigma_lo[s] = std::max(kAlSigmaFamilyMinSigma, 0.5 * lo);
+      request.sigma_hi[s] = 1.5 * hi + 2.0 * kAlPackSigmaBump;
     }
   }
-  if (!(box_hi[0] > box_lo[0]) && !(box_hi[1] > box_lo[1])) return;
-  cache_.families = model_.sigma_families(family_q, box_lo[0], box_hi[0], box_lo[1], box_hi[1]);
+  if (!(request.sigma_hi[0] > request.sigma_lo[0]) &&
+      !(request.sigma_hi[1] > request.sigma_lo[1])) {
+    return;
+  }
+  cache_.families = model_.sigma_families(request);
   if (!cache_.families) return;
-  const std::size_t built = (cache_.families->of(Side::Put) != nullptr ? 1u : 0u) +
-                            (cache_.families->of(Side::Call) != nullptr ? 1u : 0u);
+  const DeAmSigmaFamilies &f = *cache_.families;
+  const std::size_t built = (f.of(Side::Put) != nullptr ? 1u : 0u) +
+                            (f.of(Side::Call) != nullptr ? 1u : 0u) +
+                            (f.of_q(Side::Put) != nullptr ? 1u : 0u) +
+                            (f.of_q(Side::Call) != nullptr ? 1u : 0u);
   work_.family_builds += built;
   namespace ft = counters::fit_timing;
   if (ft::FitTimingCounters *const timing = ft::current_counts()) {
@@ -297,6 +323,8 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
   if (cache_.families) {
     controls.family = cache_.families->of(quote.side);
     controls.family_q = cache_.families->q;
+    controls.qfamily = cache_.families->of_q(quote.side);
+    controls.qfamily_bound = cache_.families->q_bound(quote.side);
   }
   Result<double> iv =
       model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats, controls);
@@ -469,10 +497,10 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  // 34 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
-  // inverter + kernel 4, confirm 3, seed gate 1, family 4, two counts), then 2 per dividend
-  // and 6 per quote.
-  words.reserve(34 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  // 37 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
+  // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 3, two counts),
+  // then 2 per dividend and 6 per quote.
+  words.reserve(37 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -522,6 +550,10 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   real(config.channel.deam_family_c);
   word(kDeAmFamilyNodes);
   word(static_cast<std::uint64_t>(kDeAmFamilyAxis));
+  // Step 5: (sigma, q) families instead (their node counts are constants of this build).
+  word(config.channel.deam_family_q ? 1u : 0u);
+  word(kDeAmQFamilySigmaNodes);
+  word(kDeAmQFamilyQNodes);
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);

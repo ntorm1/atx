@@ -154,6 +154,15 @@ struct IvPremiumGate {
   // Observed, not owned: the family outlives the call.
   const AlSigmaFamily *family = nullptr;
   double family_q = std::numeric_limits<double>::quiet_NaN();
+  // (sigma, q) family iterates (SPY1s Phase 2 step 5, opt-in; takes precedence over
+  // `family`): every seed-tier iterate's cold point is qfamily->price(S, K, sigma, q) at
+  // the strike's OWN q (L2h-b AlSigmaQFamily) - no D-model. Policy Always: confirmed as
+  // above. Policy Band (the B-family arm): the band gate's eps_A is qfamily_bound *
+  // max(P, 1) (the family's measured relative bound) and its chord is the family's own
+  // (price_and_chord; no Andersen-Lake solve). A refusal restarts the attempt on the seed
+  // kernel (and the gate then uses the seed tier's bound as before).
+  const AlSigmaQFamily *qfamily = nullptr;
+  double qfamily_bound = std::numeric_limits<double>::infinity();
 };
 
 // The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else

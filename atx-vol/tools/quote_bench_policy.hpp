@@ -548,6 +548,7 @@ struct FitSpaceOptions {
   // Opt-in sigma-family iterates (quote_slice.hpp deam_family / deam_family_c; SPY1s P2).
   QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off;
   double family_c = 3.0;
+  bool family_q = false; // quote_slice.hpp deam_family_q (step 5)
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -720,12 +721,24 @@ inline constexpr bool kGradedDefaultRungMemo = true;
     } else if (name != "off") {
       throw std::runtime_error("Policy graded family must be off, adaptive or always");
     }
-    if (out.family != QuoteSliceDeamFamily::Off &&
-        (out.deam_profile != QuoteSliceDeamProfile::Screen ||
-         out.confirm != QuoteSliceDeamConfirm::Always)) {
-      throw std::runtime_error("Policy graded family requires deam_profile screen and confirm "
-                               "always");
+  }
+  // Step 5: (sigma, q) families (quote_slice.hpp deam_family_q) refine a family mode; with
+  // them the band gate may run on the family bound (B-family: confirm band).
+  if (graded.contains("family_q")) {
+    if (!graded.at("family_q").is_boolean()) {
+      throw std::runtime_error("Policy graded family_q must be true or false");
     }
+    out.family_q = graded.at("family_q").get<bool>();
+    if (out.family_q && out.family == QuoteSliceDeamFamily::Off) {
+      throw std::runtime_error("Policy graded family_q requires family adaptive or always");
+    }
+  }
+  if (out.family != QuoteSliceDeamFamily::Off &&
+      (out.deam_profile != QuoteSliceDeamProfile::Screen ||
+       out.confirm == QuoteSliceDeamConfirm::Never ||
+       (out.confirm == QuoteSliceDeamConfirm::Band && !out.family_q))) {
+    throw std::runtime_error("Policy graded family requires deam_profile screen and confirm "
+                             "always (band only with family_q)");
   }
   if (graded.contains("family_c")) {
     if (out.family == QuoteSliceDeamFamily::Off) {
@@ -747,8 +760,17 @@ inline constexpr bool kGradedDefaultRungMemo = true;
       out.grid_kernel = QuoteSliceGridKernel::Fast;
     } else if (name == "reference") {
       out.grid_kernel = QuoteSliceGridKernel::Accurate;
+    } else if (name == "family") {
+      // Step 5: the chain cache's (sigma, q) families price the grid where their bound
+      // allows; they exist only under the vol-space cache with family_q.
+      if (!out.family_q || !out.deam_cache || out.fit_space != QuoteSliceFitSpace::VolChannel) {
+        throw std::runtime_error("Policy graded grid_kernel family requires family_q and "
+                                 "deam_cache");
+      }
+      out.grid_kernel = QuoteSliceGridKernel::Family;
     } else {
-      throw std::runtime_error("Policy graded grid_kernel must be reference or fast");
+      throw std::runtime_error("Policy graded grid_kernel must be reference or fast (or family "
+                               "with family_q)");
     }
   }
   return out;
@@ -817,10 +839,12 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
       if (space.family != QuoteSliceDeamFamily::Off) {
         out["family"] = space.family == QuoteSliceDeamFamily::Always ? "always" : "adaptive";
         out["family_c"] = space.family_c;
+        if (space.family_q) out["family_q"] = true;
       }
     }
   }
   if (space.grid_kernel == QuoteSliceGridKernel::Fast) out["grid_kernel"] = "fast";
+  if (space.grid_kernel == QuoteSliceGridKernel::Family) out["grid_kernel"] = "family";
   if (s.rung_memo) out["rung_memo"] = true;
   return out;
 }
@@ -981,7 +1005,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
-             "ladder_wing_tail", "seed_gate_kappa", "family", "family_c"});
+             "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1117,6 +1141,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_seed_gate_kappa = space.seed_gate_kappa;
     profile.config.channel.deam_family = space.family;
     profile.config.channel.deam_family_c = space.family_c;
+    profile.config.channel.deam_family_q = space.family_q;
     profile.config.grid_kernel = space.grid_kernel;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.

@@ -154,7 +154,12 @@ enum class QuoteSliceDeamFamily : std::uint8_t { Off, Adaptive, Always };
 // R3): the same Andersen-Lake scheme on AlProfile::Fast, |dP| <= 1e-12 max(P, 1) below
 // the certificate's allowance 1e-8 + 1e-9 max(S, K); a MEASUREMENT arm with its own hash
 // set - the PM promotes or not at integration. The dated-cash lattice ignores it.
-enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast };
+// Family (opt-in, SPY1s Phase 2 step 5; requires the vol-space cache with deam_family_q):
+// each grid price on the chain cache's (sigma, q) family of its side at the strike's own q
+// where the family's measured bound x max(P, 1) is under the certificate's allowance 1e-8
+// + 1e-9 max(S, K); otherwise (no family, a refusal, a bound over the allowance) on
+// AlProfile::Fast as under Fast.
+enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast, Family };
 
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
@@ -249,6 +254,14 @@ struct QuoteSliceChannelConfig {
   // threshold constant c (> 0).
   QuoteSliceDeamFamily deam_family = QuoteSliceDeamFamily::Off;
   double deam_family_c = 3.0;
+  // (sigma, q) families (SPY1s Phase 2 step 5, opt-in; requires deam_family Adaptive /
+  // Always): the cache builds L2h-b AlSigmaQFamily per side instead - n_sigma 16 over the
+  // sigma box, n_q 4 (3 where T x q-width <= 1e-5) over the chain's q box (all quotes'
+  // effective yields) - with a MEASURED relative bound (off-node probes against the cold
+  // accurate kernel); the iterates price each strike at its OWN q on it (no D-model). With
+  // deam_confirm Band (allowed here: the B-family arm) the band gate uses that measured
+  // bound and the family's own chord. The adaptive rule counts n_sigma x n_q nodes.
+  bool deam_family_q = false;
 };
 
 // InvalidArgument unless every channel control is finite and in range

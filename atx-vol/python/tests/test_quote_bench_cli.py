@@ -855,7 +855,17 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "screen",
                          "deam_inversion": "premium", "family_c": 3}},
-             "family_c requires family adaptive or always")):
+             "family_c requires family adaptive or always"),
+            # (sigma, q) families and the family grid (SPY1s Phase 2 step 5).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family_q": True}},
+             "family_q requires family adaptive or always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen", "deam_cache": True,
+                         "deam_inversion": "premium", "family": "adaptive",
+                         "grid_kernel": "family"}},
+             "grid_kernel family requires family_q and deam_cache")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document

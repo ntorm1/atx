@@ -603,7 +603,9 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_family_builds", t.deam_family_builds},
           {"deam_family_build_us", t.deam_family_build_us},
           {"deam_family_prices", t.deam_family_prices},
-          {"deam_family_refused", t.deam_family_refused}};
+          {"deam_family_refused", t.deam_family_refused},
+          {"deam_family_grid_prices", t.deam_family_grid_prices},
+          {"deam_family_grid_cold", t.deam_family_grid_cold}};
 }
 
 // Graded admission: one surface fit per exact snapshot. Routing has already

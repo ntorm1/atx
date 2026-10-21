@@ -1157,6 +1157,10 @@ struct ColdPoint {
     stats.fallback = why;
     return std::optional<double>{};
   };
+  // (sigma, q) family iterates (IvPremiumGate::qfamily; set below): the family, and whether
+  // the attempt's points are still the family's (a refusal clears it).
+  const AlSigmaQFamily *qfamily = nullptr;
+  bool on_qfamily = false;
   // The band gate (IvPremiumGate, policy Band; gap report 5a): the seed-tier root may
   // skip its confirm only when its vol-unit error bound (eps_A + eps_r) / v_min is under
   // the quote's half-spread in vol divided by k. eps_A = the seed tier's tested price
@@ -1172,16 +1176,27 @@ struct ColdPoint {
       return false;
     }
     const AlProfile seed_profile = seed_opts ? seed_opts->profile : AlProfile::Reference;
-    const double eps_a = al_profile_price_bound(seed_profile, price, T);
+    double eps_a = al_profile_price_bound(seed_profile, price, T);
     const double eps_r = std::fabs(last.price - price);
-    const double h = last.sigma + kAlPackSigmaBump < kSigmaHi ? kAlPackSigmaBump : -kAlPackSigmaBump;
-    const Result<double> pb = andersen_lake(S, K, T, last.sigma + h, r, q, side, seed_opts);
-    ++stats.premium_solves;
-    ++stats.gate_solves;
-    if (!pb || !std::isfinite(*pb)) {
+    double h = last.sigma + kAlPackSigmaBump < kSigmaHi ? kAlPackSigmaBump : -kAlPackSigmaBump;
+    double bumped = std::numeric_limits<double>::quiet_NaN();
+    if (on_qfamily) {
+      // B-family: the family's measured bound and its own chord (no Andersen-Lake solve).
+      eps_a = gate->qfamily_bound * std::fmax(price, 1.0);
+      h = kAlPackSigmaBump;
+      const AlSigmaQFamilyChord fc = qfamily->price_and_chord(S, K, last.sigma, q);
+      ++stats.family_prices;
+      if (fc.status == AlSigmaQFamilyStatus::Ok) bumped = fc.price_sigma_bumped;
+    } else {
+      const Result<double> pb = andersen_lake(S, K, T, last.sigma + h, r, q, side, seed_opts);
+      ++stats.premium_solves;
+      ++stats.gate_solves;
+      if (pb) bumped = *pb;
+    }
+    if (!std::isfinite(bumped) || !std::isfinite(eps_a)) {
       return false;
     }
-    const double chord = (*pb - last.price) / h;
+    const double chord = (bumped - last.price) / h;
     double margin = 0.5 * std::fabs(chord) + 1.0e-8;
     if (partner != nullptr && partner->sigma != last.sigma) {
       const double back = (last.price - partner->price) / (last.sigma - partner->sigma);
@@ -1300,6 +1315,14 @@ struct ColdPoint {
   if (family != nullptr && !family_leg.valid()) {
     family = nullptr;
   }
+  // (sigma, q) family iterates (IvPremiumGate::qfamily, step 5): the strike's own q, no
+  // D-model; policy Always or Band (the B-family gate), never Never.
+  if (confirm && gate != nullptr && gate->qfamily != nullptr && gate->qfamily->side() == side &&
+      gate->policy != IvConfirmPolicy::Never) {
+    qfamily = gate->qfamily;
+    on_qfamily = true;
+    family = nullptr;
+  }
 
   // Up to two cold points, most recent first: the memory's, then this attempt's.
   std::array<ColdPoint, 2> pts{};
@@ -1368,6 +1391,20 @@ struct ColdPoint {
         // The D-model points (this attempt's and the memory's) never meet a seed-kernel
         // point in one chord: the attempt restarts its remainder model from this solve.
         family = nullptr;
+        stats.family_refused = true;
+        n = 0;
+        if (memory != nullptr) memory->points = 0;
+      }
+    } else if (on_qfamily) {
+      // The (sigma, q) family's price at the strike's own q (the accurate map to its
+      // measured bound); a refusal restarts the attempt's points on the seed kernel.
+      const AlSigmaQFamilyPrice fp = qfamily->price(S, K, s, q);
+      a = leg.price(s);
+      if (fp.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fp.price)) {
+        pa = fp.price;
+        ++stats.family_prices;
+      } else {
+        on_qfamily = false;
         stats.family_refused = true;
         n = 0;
         if (memory != nullptr) memory->points = 0;
