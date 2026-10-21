@@ -149,3 +149,302 @@ confirm fraction, max accurate-map Newton distance of skipped roots, served-set 
 all-keys-OFF, the usable / unusable line; one dated-cash lattice row beside arm A (PM decision 1: the bar
 stays on funding-pv); the clock declaration and the four manifest lines in `RESULTS.md`
 (`C:\atx-cache\quote-benchmark\SPY1s-20261020-phase1\`).
+
+## 2. Phase 1 — Screen seeds + confirm policy (the L2g spec, items 1-13, on the W2b root)
+
+Base: `1da69e2e` merged with the W2b root `be379ad4` as `92d4ba0d` (`--no-ff`, no conflicts, 35 files). Pool-4,
+RunId `vol-20261020r3-SPY1s-p1`, `-Jobs 2`, `ATX_VOL_FIT_WORKERS` 2 for parity / cohort runs and 1 for the bar rows.
+Evidence `C:\atx-cache\quote-benchmark\SPY1s-20261020-phase1\` (`runs.log`, `spy\`, `audit\`, `cohort5\`, `dev200\`,
+`dev200b\`, `score\`, `policies\`, `scripts\`, `bin\`, `RESULTS.md`, `sha256.txt`). Every timing is UNQUALIFIED
+(shared host; the host load is sampled every 2 s ACROSS each bar run and its mean / max stand beside the number).
+The two binaries: the merged root before any Phase 1 change `bin\atx-vol-quote-bench-92d4ba0d.exe` (`6a63a9cb…`)
+and the Phase 1 source `bin\atx-vol-quote-bench-phase1.exe` (`ed3667cc…`, = the final SHA's `build-vol-rel` binary).
+
+### 2.1 Concern-1: the W2b `band()` merge (PM ruling: read the three re-sync lines and state a verdict)
+
+`deam_iv_cache.cpp` `DeAmIvView::band` at `be379ad4`: `filled` is copied from the slot `entry` at the top; the
+mid-first block then calls `mid_iv(i)`, which writes the SLOT (`entry.mid_iv`, `entry.mid_memory` through the
+inversion's memory pointer, `entry.computed |= kMid`); `publish()` ends with `entry = filled`. Without the three
+lines `filled.mid_iv = entry.mid_iv; filled.mid_memory = entry.mid_memory; filled.computed = entry.computed;` the
+publish would overwrite the fresh mid with the stale copy (NaN mid, empty memory, no kMid) — exactly the drop the
+integrator described. The three lines copy precisely the fields `mid_iv()` mutates and nothing else (`carry(i)` ran
+before the copy, so q_effective / local_forward / kCarry are already equal), and `seeded` reads the slot's memory
+after the copy. **Verdict: the merge is correct — the minimal faithful union of L2c's local-fill-then-publish and
+L2e's mid-first seeding.** Phase 1 keeps the three lines (the block now sits behind `mid_inside`, section 2.2 (4)).
+
+### 2.2 What was built (all opt-in; every key refused where it would be inert)
+
+1. **`graded.deam_profile = "screen"`** → `QuoteSliceDeamProfile::Screen` (requires `deam_inversion premium`;
+   a Search fit on Screen is refused by `validate_channel` and by the policy loader). The cache's `kernel()` is
+   `DeAmKernel::Screen`; `SliceDeAmModel` holds `al_screen_opts()` beside the Fast profile and prices band edges on it;
+   `implied_vol_premium` sets `IvOpts::seed_profile = AlProfile::Screen` and hands the model's `DeAmPremiumControls`
+   (seed kernel, confirm policy / k / half-spread, confirm kernel) to `american_implied_vol_premium(..., gate)`.
+2. **`IvOpts::seed_profile = Screen` selects the MEASURED tier `al_screen_opts()`** (7 nodes, l 16, 5 sweeps, p 48),
+   not al_opts' 12-node scheme on the Screen arithmetic (which would cost Fast's 69 µs, not Screen's 21). Pinned by
+   `IvPremiumStats::seed_nodes` = 7 (`AmericanIvPremium.ScreenSeedsRunTheMeasuredTierAndAreConfirmedOnTheAccurateMap`).
+3. **The confirm is a bounded Newton on the confirm kernel** (`kIvPremiumConfirmSolves = 2`): a Screen root sits up
+   to 7.8e-4·max(P, 1) off the accurate map, in vol often > tol = 1e-7, so L2e's single-solve rule (|dc| ≤ tol or
+   fall back) turned 150 of the 672-contract grid's 551 accepted roots into Search fallbacks (first build: 271
+   fallbacks vs Search's 121). Now the first confirming solve accepts when its Newton distance is ≤ tol, else takes
+   the step and one more solve confirms; a second miss falls back to Search. Grid: 551 accepted = Search's set,
+   150 of 502 confirmed roots needed the second solve, max accurate-map Newton distance 1.34e-11.
+4. **Item 6 — the r = q guard as a routing**: before the iterates, a price with `price − zero_vol ≤
+   al_non_monotone_gate(K, T, seed_opts)` (Screen: the WIDE gate 4e-4·K·max(1, T²), 80× the accurate 5e-6) runs its
+   iterates on the ACCURATE kernel (seed_opts := al_opts, no confirm needed; `IvPremiumStats::seed_routed`,
+   counter `deam_seed_routed`). Screen is never classified as the accurate scheme (the gate call is on the Screen
+   opts). A Screen refusal therefore cannot reach a quote: the routed inversion IS the accurate Premium inversion
+   (max Newton 1.3e-11 on the grid) and its own fallback is Search. On the constructed r = q grid (3 carries × 3
+   maturities × 4 moneyness × 2 sides × 2 offsets inside the wide gate) 122 of 144 candidates were routed (the other
+   22 are RangeEdge fallbacks = Search); Screen AS the kernel on those contracts returned Ok roots up to 1.26e-6 vol
+   off the accurate root rather than a `NonMonotoneRegion` refusal — the brief's "Screen refuses" half could not be
+   constructed there (reported, not asserted; see Concerns).
+5. **Item 1a — bound-decided band edges**: `band()` prices kIvMin / kIvMax on Screen; every comparison a quote
+   makes with an edge (bid / ask against both, the mid against both = the vol-space builder's own test) is
+   `settle()`d: decided on the Screen price when the quote clears it by more than the margin, else THAT edge is
+   re-priced on the accurate kernel first (counter `ambiguous_edges`, reason `ambiguous_edge`); the settled edges are
+   what the entry publishes, so `vol_space_channel_observations`' mid test agrees. Margin: the Screen bound was pinned
+   on sigma 0.12-0.7 (AlScreenProfile.*), and at kIvMin / kIvMax over the 672-contract grid the Screen error reaches
+   8.6e-4·max(P, 1) with 9 of 1,344 edges over 7.8e-4 and the short-dated 4.6e-6 not holding at all, so a Screen edge
+   decision clears TWICE the whole-grid bound at every maturity (0 of 1,344 edges over it; asserted). Accurate and
+   Fast kernels keep strict comparisons (the historical path, byte-identical: parity below).
+6. **Item 3a — reason split** `FitTimingCounters::deam_al_by_reason` {range_edge, iterate, confirm, ambiguous_edge,
+   gate, search} (+ `deam_confirms`, `deam_confirms_skipped`, `deam_ambiguous_edges`, `deam_seed_routed`,
+   `deam_gate_max_bound_vol`, `deam_audit_skipped_pairs`, `deam_audit_max_newton_skipped`) in `--timing-detail`.
+7. **Items 5 / 5a — `graded.confirm = always | band | never`, `confirm_k`** (requires `deam_profile screen`).
+   `band`: skip the confirm iff (ε_A + ε_r) / v_min < half_spread / (v_max · k) — both sides in VOL units (the
+   brief's statement read on the vol scale: the half-spread in price is converted with the chord PLUS its margin,
+   the conservative side). ε_A = `al_profile_price_bound(Screen, P, T)` (7.8e-4·max(P,1); 4.6e-6 for T ≤ 0.1);
+   ε_r = the root's residual on the seed map; the chord = one more Screen solve a kAlPackSigmaBump (1e-4) away
+   (reason `gate`); volga from the chord to the previous cold point (a 2× margin without one); v_min = min(chord,
+   Premium slope) − (h·|volga| + 1e-8), floored at kDeAmFastMinRelativeVega·max(P, 1); v_max = max(..) + margin. A
+   non-positive v_min, a bidless quote (half-spread 0), a routed price or a root at the vol bounds confirms.
+   `never`: the Screen root as is (measurement arm C). The skipped root's bound (ε_A + ε_r)/v_min is recorded
+   (`gate_bound_vol`) and `--deam-audit` MEASURES the skipped roots' accurate-map Newton distance.
+8. **Item 7 / arm D — `graded.confirm_kernel = reference | fast`** (confirm on `al_fast_profile(al_opts)`) and
+   **`graded.grid_kernel = reference | fast`** (the certification grid of `certify_and_serve` priced on
+   `al_fast_profile(out.al_opts)` for the continuous-carry models; the dated-cash lattice ignores it; the candidate
+   memo key carries the grid kernel word). Both measurement arms (own hash set), nothing promoted.
+9. Tests (`atx-vol-pricing-slice` AmericanIvPremium.* 9/9, `atx-vol-quote-slice-tests` QuoteSliceVolSpace.* +
+   DeAmIvCache.* 11/11 incl. the new `ScreenSeeds…`, `APriceInsideScreensNonMonotoneGate…`, `BandGate…`,
+   `DeAmIvCache.ScreenBandEdgesAreDecidedWithTheBoundOrRepricedAccurately`,
+   `QuoteSliceVolSpace.ScreenSeededPremiumCacheServesConfirmedVolatilities`; CLI strict cases for the six key
+   rules). Fail-on-revert: section 2.9.
+
+### 2.3 The SPY matrix (graded-v1, funding-pv, `fit_workers` 1 unless noted; direct binary; `spy\*`)
+
+| row (binary) | `fit_and_reprice_s` | `wall_s` | load mean / max | chain p50 / p95 / p99 ms | served | CSV sha256 |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| before: W2b all keys (`92d4ba0d`, load not sampled — the sampler failed on this row) | **18.385** | — | — | 576 / 1,009 / 1,025 | 1,410 | `2c8b113c` (= W2b) |
+| before: W2b all keys, re-run (`92d4ba0d`) | 33.569 | 34.25 | 71 % / 91 % | 897 / 1,717 / 1,972 | 1,410 | `2c8b113c` |
+| W2b all keys on the Phase 1 binary (identity: Screen off) | 17.023 | 17.24 | 22 % / 30 % | 486 / 980 / 1,012 | 1,410 | `2c8b113c` MATCH |
+| **arm A** — Screen seeds + 1a edges, Reference confirm (`confirm always`) | **13.680** | 13.96 | 24 % / 41 % | 391 / 737 / 809 | 1,410 | `19d47b61` |
+| **arm B** — `confirm band`, k = 10 | **11.549** | 11.74 | 15 % / 26 % | 263 / 713 / 760 | 1,410 | `5985dfe1` |
+| **arm B3** — `confirm band`, k = 3 | **12.137** | 12.34 | 32 % / 47 % | 331 / 767 / 790 | 1,410 | `3b72a083` |
+| **arm C** — `confirm never` (measurement only) | **9.118** | 9.33 | 21 % / 29 % | 260 / 511 / 520 | 1,410 | `8f80be87` |
+| **arm D** — arm A + `confirm_kernel fast` + `grid_kernel fast` | **8.549** | 8.75 | 21 % / 32 % | 233 / 531 / 544 | 1,410 | `feac8d2c` |
+| arm A at `fit_workers` 0 (information) | 2.912 | 3.13 | 65 % / 79 % | 834 / 1,994 / 2,062 | 1,410 | `19d47b61` (= @1) |
+
+**Every arm is UNUSABLE against the 1 s bar (8.5-13.7 s @1).** The W2b "before" on this host: 18.4 s (the
+integrator's 15.0 s was at 9-14 % load); the same W2b work on the Phase 1 binary 17.0 s at 22 %.
+
+### 2.4 The two levers and the reason split (SPY surface, 32 timed chains; `scripts\summarize_phase1.py`)
+
+| arm | de-Am AL solves (`deam_work`) | by reason: range_edge / iterate / confirm / ambiguous_edge / gate / search | grid prices | µs per de-Am solve / per grid price | `deam` wall s | `price` wall s | inversions, AL per inversion, fallbacks |
+| --- | ---: | --- | ---: | --- | ---: | ---: | --- |
+| W2b all keys (Phase 1 binary) | 75,153 | 22,590 / 50,308 / 0 / 0 / 0 / 2,634 (all Reference) | 28,908 | 171.9 / 137.0 | 12.92 | 3.96 | 29,725, 1.768, 781 (239 / 381 / 157 / 4) |
+| arm A | 106,232 | 22,590 Screen / 50,308 Screen / 28,551 Ref / 2,734 Ref / 0 / 2,655 Ref | 28,908 Ref | 86.9 / 148.7 | 9.23 | 4.30 | 29,725, 2.722, 787 (239 / 380 / 157 / 11) |
+| arm B (k = 10) | 117,257 | 22,590 / 50,308 / 15,940 / 2,734 / 23,636 Screen / 2,655 | 28,908 | 65.5 / 129.2 | 7.68 | 3.73 | 29,725, 3.093, 787 |
+| arm B3 (k = 3) | 106,150 | 22,590 / 50,308 / 4,856 / 2,734 / 23,636 / 2,632 | 28,908 | 70.3 / 156.4 | 7.46 | 4.52 | 29,725, 2.719, 780 |
+| arm C (never) | 77,884 | 22,590 / 50,308 / 0 / 2,734 / 0 / 2,632 | 28,908 | 64.0 / 138.3 | 4.98 | 4.00 | 29,725, 1.768, 780 |
+| arm D (Fast confirm + grid) | 106,232 | 22,590 / 50,308 / 28,551 Fast / 2,734 / 0 / 2,655 | 28,908 Fast | 62.8 / 60.0 | 6.67 | 1.74 | 29,725, 2.722, 787 |
+
+Per arm the fixed buckets are `solve` 0.11-0.13 s, `certify` 0.01 s. Seed routing (item 6): **5,849 of 29,725
+inversions (19.7 %)** lie inside Screen's wide gate and run Reference iterates — their ~10k solves sit in the
+`iterate` reason beside the Screen ones. Ambiguous edges: **2,881 of 22,590 (12.75 %)** → 2,734 accurate re-prices.
+Confirms (arm A): 23,089 confirmed roots (28,938 accepted − 5,849 routed) took 28,551 Reference solves = 1.24 per
+root (the second confirm solve on 24 % of them). Band gate: k = 10 skipped 10,476 of 23,636 gated roots (44 %; max
+gate bound 0.033 vol); k = 3 skipped 19,415 (82 %; max bound 0.49 vol) — and every gated root paid one Screen chord
+solve (23,636 × ~21 µs ≈ 0.5 s), so at k = 10 the gate saves 10,476 × ~169 µs − 0.5 s ≈ 1.3 s net.
+
+Reading against the Phase 0 arithmetic (arm A projected ≈ 11.6 s, D ≈ 5.7, B ≈ 3.9 on a quiet host): (i) the
+confirm is the bucket — 28,551 Reference solves ≈ 4.8 s in arm A (the second solve adds 24 %), Fast confirm 6.67 −
+4.98 ≈ 1.7 s in arm D; (ii) the item-6 routing sends a fifth of the inversions to Reference iterates (~1.7 s); (iii)
+the gate skips 44 % at k = 10, not the 80-95 % the band-width arithmetic promised (the vol-unit statement with v_max
+on the band side is strict: the Screen bound 7.8e-4·max(P,1) is 0.3-0.5 bp of vol only on vega-rich contracts); (iv)
+the host ran 15-32 % loaded. Arm C (never) at 9.1 s is the floor Screen seeds alone reach with the Reference grid
+(4.0 s) and the routed / fallback Reference work; the grid (28,908 × 137-149 µs ≈ 4 s) is now the largest single
+bucket, as Phase 0 predicted — arm D's Fast grid takes it to 1.7 s.
+
+### 2.5 Confirm fraction, skipped roots, audit (`audit\*`, `--deam-audit`; filled from the audit rows below)
+
+Rows `audit\<arm>-audit-w1` (`--deam-audit`: every accepted Premium root AND the OFF Search root of the same quote
+re-priced on the accurate map; `fit_workers` 1). These rows ran while the cohort runner was active (load 48-83 %),
+so their seconds (55-83 s) are NOT bar numbers; their counts equal the bar rows' (same CSV hashes: A `19d47b61`,
+B `5985dfe1`, B3 `3b72a083`, C `8f80be87`, D `feac8d2c`). 29,725 inversions per arm, 28,938 accepted Premium roots
+(780-787 Search fallbacks: `range_edge` 239, `no_seed` 380, `not_increasing` 157, `no_convergence` 4-11),
+`audit_status_mismatch` 0 in every arm (a Screen-seeded inversion never changes a quote's status).
+
+| arm | confirm solves (per accepted root) | roots gated (one Screen chord solve each) | confirms skipped | max accurate-map Newton distance of a SKIPPED root (vol) | max Newton, accepted Premium roots | max Newton, the OFF Search roots | max price residual USD | max gate bound (vol) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A (`always`, Reference) | 28,551 (0.987; 1.24 per confirmed root) | 0 | 0 | — | 7.72e-11 | 1.75e-3 | 3.0e-5 | — |
+| B (`band`, k = 10) | 15,940 (0.551) | 23,636 | 10,476 (44.3 % of gated) | **1.12e-5** (112 × tol) | 1.12e-5 | 1.75e-3 | 4.0e-5 | 0.033 |
+| B3 (`band`, k = 3) | 4,856 (0.168) | 23,636 | 19,415 (82.1 %) | **2.52e-4** | 2.52e-4 | 1.75e-3 | 4.0e-5 | 0.485 |
+| C (`never`) | 0 | 0 | 23,636 (100 %) | 2.52e-4 | 2.52e-4 | 1.75e-3 | 4.4e-5 | — |
+| D (`always`, Fast confirm) | 28,551 (0.987) | 0 | 0 | — | 7.72e-11 | 1.75e-3 | 3.0e-5 | — |
+
+Reading: (i) with `confirm always` every served root is within 7.7e-11 vol of the accurate map (tol 1e-7) on BOTH
+confirm kernels — the Fast confirm (D) is as good as Reference here, as its 1e-12·max(P, 1) bound predicts; (ii) under
+`band` a skipped root is NOT 1e-7-accurate: 1.12e-5 at k = 10 and 2.52e-4 at k = 3 (= the unconfirmed Screen root,
+arm C's number) — these are FIT INPUTS off the accurate root by up to that distance, inside the gate's own
+statement (half-spread / k in vol) but outside the brief's 1e-7 (manifest line 1 below: 1e-7 binds served roots;
+band inputs carry the seed tier's bound, reported here as the max Newton distance); (iii) the OFF Search roots sit
+up to 1.75e-3 Newton-distance off the accurate map — Search's bracket is 1e-7 in vol, so this is the yardstick
+(price residual / local slope) blowing up at a near-intrinsic contract, not a 1.75e-3 vol error; it means the
+Newton yardstick overstates vol error where the slope is small (the routing test's near-intrinsic cases needed a
+price-residual criterion for the same reason, §2.9).
+
+### 2.6 Served set, accuracy gate, parity (filled from the cohort rows below)
+
+**Served set vs the same binary, all keys OFF (SPY; `scripts\served_compare.py`; OFF row `spy-graded-v1-off-w1`
+= `087e6a54` MATCH, 99.2 s at 66 % / 91 % load).** Every arm serves the same 1,410 rows (lost 0, gained 0, status
+counts identical). Max |Δprice| USD / max |Δvol| over the served rows (rows differing by > 1e-9): W2b all keys
+2.012e-5 / 7.571e-8 (rows 26947337 / 26947299); arm A 2.012e-5 / 7.571e-8 (469 rows); B 1.996e-5 / 7.513e-8 (563);
+B3 2.468e-5 / 1.052e-7 (913); C 2.281e-4 / 7.619e-7 (997); D 2.012e-5 / 7.571e-8 (469). Arms A and D reproduce the
+W2b differences exactly (the confirmed roots ARE the accurate roots to 7.7e-11; the W2b-vs-OFF difference is
+Search-vs-Premium, L2e); B / B3 / C move the served prices by the unconfirmed roots' distance (C: 10× A).
+
+**Parity at the Phase 1 binary** (`bin\atx-vol-quote-bench-phase1.exe` `ed3667cc…`; `fit_workers` 2; `runs.log`,
+once each): dev200 auto `c89d0739` MATCH; dev200b auto `4b273b08` MATCH; cohort5 graded-v1 `171fa2d2` MATCH;
+dev200 graded-v1 `fc277413` MATCH; dev200b graded-v1 `46ad6c26` MATCH; SPY graded-v1 `087e6a54` MATCH; W2b all
+keys SPY `2c8b113c` MATCH. AL fingerprint (`vol-rel-avx2` `atx-vol-al-preset-ladder-bench`, exe `0431af54…`,
+`american/ladder_fingerprint` → `fingerprint\ladder_fingerprint-phase1.bin`) `53c4df68…dcea` MATCH, the ten section
+fnv1a lines unchanged (`american.hpp` / `american.cpp` / `american_sigma_family.cpp` untouched).
+
+**Accuracy gate** (`quote_benchmark.py score --split all`, keys-OFF graded-v1 vs the arm on the same binary;
+`score\*-score.json`, `gate\*-gate.txt`, `scripts\gate_summary.py`; served = rows with status ok / ok_price_only;
+MAE / p99 are the scorer's `price_mae` / `price_mae_per_spread` (= `price_in_spreads_mae`) / `price_p99_abs`):
+
+| cohort / arm | served OFF → ON | coverage | containment | MAE USD | MAE / spread | p99 USD | max Δprice / Δvol (served rows) | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| cohort5 / A | 8,375 = 8,375 | 0.38415669 = | 0.9159403 = | 0.0834123 → 0.0834122 | 0.2101858 → 0.2101860 | 1.561321 = | 4.1e-5 / 5.6e-7 | **PASS** |
+| cohort5 / B | 8,375 = | = | = | → 0.0834113 | → 0.2101856 | = | 3.5e-4 / 3.3e-6 | **PASS** |
+| cohort5 / B3 | 8,375 = | = | = | → 0.0834114 | → 0.2101858 | 1.561321 → 1.5613218 | 3.5e-4 / 3.3e-6 | **PASS** |
+| cohort5 / D | 8,375 = | = | = | → 0.0834122 | → 0.2101860 | = | 4.1e-5 / 5.6e-7 | **PASS** |
+| dev200 / A | 50,348 = 50,348 | 0.78740108 = | 0.98816239 → 0.98814253 (**−1 row**) | 0.23426128 → 0.23426124 | 0.10850518 → 0.10850514 | 1.9718781 = | 2.8e-4 / 1.14 (3 rows, below) | PASS on every field but containment: −1 row, explained below |
+| dev200 / D | 50,348 = | = | −1 row (the same row) | → 0.23426124 | → 0.10850514 | = | 2.8e-4 / 1.61 | as A |
+| dev200b / A | 54,355 = 54,355 | 0.87150668 = | 0.98828075 → 0.98826235 (**−1 row**) | 0.23928121 → 0.23928122 | 0.11635936 → 0.11635937 | 1.7600043 → 1.7600015 | 4.0e-5 / 1.07 (12 rows) | as dev200 / A |
+| dev200b / D | 54,355 = | = | −1 row (the same row) | → 0.23928122 | → 0.11635937 | → 1.7600015 | 4.0e-5 / 1.48 | as A |
+
+MAE USD and MAE / spread move by ≤ 2e-6 relative (cohort5 ≤ 1.2e-5), p99 by ≤ 1.6e-6 relative — all far inside
+1e-3. The containment row: dev200 `row_id` 21049805 (PHAT, 20777 d, 12.5 C, `bidless_quote`, bid 0 / ask
+0.15000000596 — the float32 of 0.15): served price OFF 0.14999999558 (inside by 4.4e-9), arms A / D 0.15000001976
+(outside by 1.4e-8), |Δprice| 2.4e-8 USD; dev200b `row_id` 4558128 (BMEA, 21204 d, 1 P, `bidless_quote`, ask
+0.55000001192): 0.54999993386 → 0.55000001786, |Δprice| 8.4e-8. Both are a served price sitting ON a float32
+quote edge and moving by < 1e-7 USD with the refit — the distance-to-the-accurate-root explanation the brief allows
+(the fit inputs moved by the Search-vs-Premium root difference, ≤ 1.5e-6 vol on the Premium grid, L2e) — but the
+literal "containment not lower" is violated by one row in each cohort; PM ruling requested. The large |Δvol| rows
+(3 / 12, all `quote_status excluded_side`, grade B) have IDENTICAL served prices (e.g. dev200 row 466851: price
+24.605 in both, vol 0.005 ↔ 1.1439; dev200b row 11725080: 5.84 in both, vol 1.0703 ↔ 0.005): the price sits at
+intrinsic, where the price-vol map is flat and the reported vol of an excluded-side row is unidentifiable (it flips
+between the kIvMin clamp and a far root under any change of the inversion path); vol MAE moves by ≤ 1.7e-4 relative
+(1531.30 → 1531.15 / 1530.87 bp on dev200; 1450.09 → 1450.18 / 1450.34 on dev200b) and vol is not a gate field.
+No run in this phase exceeded 151 s (dev200 graded-v1 OFF at cap 2); the hygiene check 195 s (PM directive
+2026-10-20: ≤ ~10 min per run).
+
+### 2.7 The dated-cash row (item 12; PM note 2026-10-20: the loader refuses `dividend_lattice` under graded admission)
+
+Run as the existing NON-graded pair on the SPY cohort5 file, `fit_workers` 1: `policy-divsched-v1.json`
+(`46ee9efc…`, every profile `dividends: inferred-schedule`, spliced lattice) vs the same profiles with `--policy auto`
+(aggregate funding-pv). `datedcash-divsched-v1-w1`: **5.574 s** (wall 5.71, load 8 % / 10 %), 33 chains, 17 with an
+ex-date in life (`cash_dividend_chains`), routes `escrow` 16 (`no_ex_date_in_life`) / `escrow_fallback` 17
+(`lattice_certification_refused` 16, `lattice_refused` 1) — every lattice attempt fell back to the aggregate fit,
+`lattice_chains_seconds` 0.0 (no lattice chain certified). `datedcash-ctl-auto-w1`: **4.280 s** (wall 4.38, load
+10 % / 13 %). Gap: **+1.29 s (+30 %) for the 17 lattice attempts (≈ 76 ms per attempted chain) on this snapshot.**
+Caveats: (a) both rows serve 0 rows (`fitted_chains` 0; the static per-expiry path refuses every SPY chain:
+6 calendar crossings + convexity / slope certificate failures — the graded surface is what serves SPY), so the gap is
+pricing work, not a serving comparison; (b) chain-level lattice-vs-AL timings are not like-for-like — DatedCash skips
+the implied-forward carry (`quote_slice_carry.cpp:173-176`, research-cash-dividend-report.md §2.6); (c) graded
+admission + lattice routing is lane L3f's. The bar stays on funding-pv (PM decision 1); the CSV of both rows is
+`333ae87c` (identical: no lattice chain reached the output).
+
+### 2.8 Usable / unusable and what Phase 2-3 must change
+
+- Arm A: UNUSABLE (13.7 s). Arm B: UNUSABLE (11.5). Arm B3: UNUSABLE (12.1). Arm C: UNUSABLE (9.1; measurement
+  only). Arm D: UNUSABLE (8.5). The best accuracy-preserving arm (D: Fast confirm + Fast grid, every root confirmed)
+  is 8.5× the bar; the best measurement arm (C) 9×.
+- Where the seconds are now (arm D, @1, 21 % load): confirms on Fast ≈ 2.0 s (28,551 × 69), Screen iterates + edges
+  ≈ 1.5 s (72.9k × 21), routed + fallback Reference iterates ≈ 2.2 s (10k + 2.7k × 169), ambiguous edges 0.5 s, grid
+  1.7 s, fixed 0.15 s. Phase 2 (the σ-family) replaces the Screen iterates / edges / grid (→ ≈ 0.4 s) but NOT the
+  confirms, the routed iterates or the fallbacks: those three (≈ 4.2 s here) are the Phase 3 levers — narrow the
+  item-6 routing band to the MEASURED Screen dip (4.3e-6 relative, L2f §4, vs the 4e-4 gate: a ~100× narrower band
+  would route < 1 % instead of 20 %), make the second confirm solve rarer (a better seed: the mid's family chord),
+  gate with a sharper v_min (the family's exact chord) and address the 781 Search fallbacks (Phase 0 lever 6).
+- PM information (2026-10-20): L3r1-dense-certificate will GROW the served set (today 1,410 of 13,168 SPY rows;
+  28 of 32 chains refused) — every additional served row costs iterates / confirms / grid prices; the Phase 3
+  arithmetic must budget for a served set several times larger. Noted; its policy key `graded.certificate` is
+  additive in `quote_bench_policy.hpp` (union merge expected with the keys above).
+
+### 2.9 Tests and fail-on-revert
+
+At the final source (`vol-rel`, `-Jobs 2`, `ATX_VOL_FIT_WORKERS` 2): `atx-vol-pricing-slice
+--gtest_filter=AmericanIvPremium.*:AmericanCertification.*` **9 / 9 PASSED**; `atx-vol-quote-slice-tests
+--gtest_filter=QuoteSliceVolSpace.*:DeAmIvCache.*:QuoteSurfaceRungMemo.*` **20 / 20 PASSED**; ctest
+`atx-vol-quote-benchmark-native` **1 / 1 Passed** (12.1 s; pytest 165 passed — `test_native_graded_options_are_strict`
++ 6 new cases: screen without premium, confirm keys without screen, `confirm sometimes`, `confirm_k 0`,
+`confirm_kernel screen`, `grid_kernel screen`). PCH-off hygiene: `configure -Preset vol-hygiene` exit 0, `check` of
+the 68 direct `.cpp` includers of the six touched headers exit 0, 102 objects, 0 diagnostics, 195 s. New tests:
+`AmericanIvPremium.ScreenSeedsRunTheMeasuredTierAndAreConfirmedOnTheAccurateMap` (`[screen seeds] accepted 551
+(confirmed 502, of which 150 needed a second confirm solve; routed 49), fallbacks 121 (= Search's), max accurate-map
+Newton distance 1.34e-11`; `[screen edges] 1344 … max rel 0.000861, 9 over the tested bound, 0 over twice the
+whole-grid bound`), `…APriceInsideScreensNonMonotoneGateRunsAccurateIteratesNotARefusal` (`r = q candidates 144,
+routed 122, not served by Screen as kernel 0`), `…BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll`
+(`skipped 502 / kept 0 at k = 10 (max skipped Newton 1.16e-5, max gate bound 0.0062 vol); never 502 of 551; Fast
+confirm 502`), `DeAmIvCache.ScreenBandEdgesAreDecidedWithTheBoundOrRepricedAccurately` (scripted model: 2 ambiguous
+edges re-priced, published edges 0.5 / 8.01, 8.0, 0.51), `QuoteSliceVolSpace.ScreenSeededPremiumCacheServesConfirmedVolatilities`
+(`413 confirms, 54 ambiguous edges, 36 routed, 50 mid IVs compared, max |dsigma| vs Search 2.13e-7; band gate skipped
+323`; Screen + Search and Band + Accurate refused), `QuoteSliceVolSpace.FastCertificationGridMovesServedPricesWithinTheFastBoundOnly`
+(`84 served prices compared, 56 differ, max |dP| / max(P, 1) 2.12e-14`).
+
+Fail-on-revert (each: inverse `Edit`, focused rebuild, run, restore by the inverse `Edit`; the restored file's
+`git hash-object` = the committed blob):
+
+| # | inversion (file) | failing test | failure (verbatim head) | restored blob |
+| --- | --- | --- | --- | --- |
+| R1 | `premium_seed_opts`: Screen branch removed (seed = `al_fast_profile`, profile Screen) — `american_iv.cpp` | `ScreenSeeds…` | `american_iv_test.cpp(2159): Expected equality … Which is: 12 / Which is: 7` (`seed_nodes`), × 551 | `b78f1bbf` |
+| R2 | routing with the ACCURATE gate `al_non_monotone_gate(K, T, opts)` instead of `seed_opts` | `APriceInsideScreens…` | `[screen routing] … routed to accurate iterates 0`; `EXPECT_TRUE(st.seed_routed)` × 122; `(routed) > (0u)` | `b78f1bbf` |
+| R3 | Band never skips (`&& false` after `band_gate_holds`) | `BandGateSkips…` | `american_iv_test.cpp(2345): Expected: (skipped) > (50u), actual: 0 vs 50` (`skipped 0 / kept 502`) | `b78f1bbf` |
+| R4 | `gate->confirm_opts` ignored (confirm on `al_opts`) | `BandGateSkips…` | `american_iv_test.cpp(2334): Expected equality … <00> vs <01>` (`confirm_profile` Fast), × 502 | `b78f1bbf` |
+| R5 | `kIvPremiumConfirmSolves` 2 → 1 — `american_iv_premium.hpp` | `ScreenSeeds…` | `american_iv_test.cpp(2148): Expected: (accurate_seed.fallback) != (None)` × 150 (`accepted 401, fallbacks 271 (7=150)`) | `937cb68d` |
+| R6 | `decided = true` in `band()` — `deam_iv_cache.cpp` | `DeAmIvCache.ScreenBandEdges…` + `ScreenSeededPremiumCache…` | `quote_slice_vol_space_test.cpp(691): same_bits(s.bid_iv, a.bid_iv) … Expected: true`; `(696): (screen.band(0).bid_iv) > (0.0), actual: 0`; `ambiguous 0` | `0077cc87` |
+| R7 | `fast_grid … && false` — `quote_slice.cpp` | `FastCertificationGrid…` | `quote_slice_vol_space_test.cpp(487): Expected: (differing) > (0u), actual: 0 vs 0` (`84 compared, 0 differ`) | `6b674fb3` |
+| R8 | the loader's "screen requires premium" throw removed — `quote_bench_policy.hpp` | `test_native_graded_options_are_strict` | `test_quote_bench_cli.py:764: assert 'deam_profile screen requires deam_inversion premium' in 'quote-bench: InvalidArgument: quote fit policy: invalid channel configuration'` (the library's `validate_channel` still refuses; 1 failed, 164 passed) | `250b04f2` |
+| R9 | `SliceDeAmModel::seed_price_bound` Screen margin × 0.0 — `quote_slice.cpp` | `ScreenSeededPremiumCache…` | `quote_slice_vol_space_test.cpp(429): Expected: (ambiguous) >= (50u), actual: 34 vs 50` | `6b674fb3` |
+
+R3's first form (the Band clause deleted outright) did not build: `-Werror,-Wunused-parameter 'last' / 'partner'`,
+`-Wunused-variable 'band_gate_holds'` — the second form was used. NOT pinned by a failing test (gaps for review): the
+`deam_al_by_reason` counters and the new `--timing-detail` JSON fields (observability, evidenced by the SPY
+reports); the Screen edge margin's VALUE is pinned only by the data threshold (54 edges re-priced vs 34 at a zero
+margin) and by the american_iv_test edge statistic; the "Screen refuses" half of item 6 (no r = q candidate was
+refused by Screen as kernel: all 144 Ok, ≤ 1.26e-6 vol off).
+
+### 2.10 Hunks (final SHA vs `92d4ba0d`; `git diff -U0`; L2h is kernel-only and touches none of these files)
+
+| file | hunks (`-old +new`) |
+| --- | --- |
+| `atx-vol/include/atx/vol/api/fitting/quote_slice.hpp` | -111 +111,12; -119 +130; -121,0 +133,13; -180,0 +205,18; -266,0 +309; -380,0 +424,10 |
+| `atx-vol/include/atx/vol/api/pricing/american_iv.hpp` | -185,0 +186,7 |
+| `atx-vol/src/pricing/american_iv_premium.hpp` | -47,0 +48,4; -63,0 +68,65; -70 +139,3; -74 +145,2 |
+| `atx-vol/src/pricing/american_iv.cpp` | -1136,0 +1137,2; -1140,2 +1142,2; -1146,0 +1149,42; -1148,2 +1192,4; -1154,5 +1200,7; -1160,8 +1208,31; -1187,2 +1258,2; -1190,0 +1262,12; -1312 +1395; -1337 +1420,3; -1342,0 +1428,3; -1349 +1437,2; -1352 +1441,2; -1360 +1450; -1378 +1468; -1388 +1478,2; -1390 +1481 |
+| `atx-vol/src/fitting/counters.hpp` | -1199,0 +1200,16; -1201,0 +1218,12 |
+| `atx-vol/src/fitting/deam_iv_cache.hpp` | -88,2 +88,16; -113 +127,2; -114,0 +130; -119,0 +136,10; -149,0 +176,9; -152 +187; -154 +189,2; -157 +193,2; -180,0 +218,13; -186,0 +237 |
+| `atx-vol/src/fitting/deam_iv_cache.cpp` | -65 +65,2; -67 +68; -70 +71; -74,2 +75,15; -77,0 +92,9; -107,0 +131; -109,0 +134,13; -120,0 +158,7; -147,0 +192,6; -150,0 +201; -170 +221,12; -172,0 +235,3; -173,0 +239; -176,0 +243,27; -232,0 +326,3; -234,0 +331; -240,3 +337,25; -249,11 +368,8; -265 +381; -269 +385 |
+| `atx-vol/src/fitting/quote_slice.cpp` | -48 +48,3; -663 +665,2; -667 +670,2; -678,0 +683,15; -685 +704,2; -686,0 +707,2; -689 +711; -699 +721,2; -702 +725,2; -710,0 +735,9; -713 +746; -728,0 +762; -753 +787,3; -1239,0 +1276,2; -1242 +1280,2; -1261,0 +1301,15; -1264,0 +1319; -1279,2 +1334,2; -1398 +1453,2; -1402 +1458,14; -1667 +1736; -1742 +1811,2 |
+| `atx-vol/tools/quote_bench_policy.hpp` | -537,0 +538,5; -558,0 +564,2; -560 +567; -582 +589; -584 +591,51; -615,2 +672,3; -620,0 +679,8; -621,0 +688; -777 +844,2; -846,0 +915,4 |
+| `atx-vol/tools/quote_bench_main.cpp` | -567,0 +568,4; -590 +594,9 |
+| `atx-vol/tests/american_iv_test.cpp` | -2069,0 +2070,279 |
+| `atx-vol/tests/quote_slice_vol_space_test.cpp` | -356,0 +357,136; -368,0 +505,5; -371,0 +513; -377 +519,2; -379 +522,10; -510,0 +663,52 |
+| `atx-vol/python/tests/test_quote_bench_cli.py` | -719 +719; -738 +738,23 |
+| `atx-vol/sprints/2026-10-20-SPY1s-owner-sprint.md` | -151,0 +152,… (this section) |
+
+Untouched: `american.hpp`, `american.cpp`, `american_sigma_family.cpp` (fingerprint `53c4df68` MATCH), `quote_surface.*`,
+`quote_slice_carry.cpp`, every default path (parity above).
