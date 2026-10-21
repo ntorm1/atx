@@ -851,7 +851,8 @@ void run_secant_twin(benchmark::State &state, Set set) {
   for (const double v : lattices) {
     mean += v;
   }
-  state.counters["lattices_mean"] = lattices.empty() ? 0.0 : mean / static_cast<double>(lattices.size());
+  state.counters["lattices_mean"] =
+      lattices.empty() ? 0.0 : mean / static_cast<double>(lattices.size());
   state.counters["dist_max"] = quantile(dist, 1.0);
   std::fprintf(stderr,
                "[ddiv-twin] %s roots %zu errors %zu us p50 %.1f p99 %.1f | lattices p50 %.0f "

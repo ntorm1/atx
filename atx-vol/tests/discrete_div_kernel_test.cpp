@@ -321,7 +321,8 @@ TEST(DiscreteDivScreenTier, ScreenPriceIsTheScreenSchemeAtTheScreenSteps) {
   constexpr double kFirstEx = 0.182;
   constexpr double kCadence = 0.25;
   constexpr double kCash = 1.8311;
-  constexpr double kLogMoneyness[] = {-0.30, -0.20, -0.12, -0.06, -0.02, 0.0, 0.02, 0.06, 0.12, 0.20};
+  constexpr double kLogMoneyness[] = {-0.30, -0.20, -0.12, -0.06, -0.02,
+                                      0.0,   0.02,  0.06,  0.12,  0.20};
   for (const int quarters : {0, 1, 3, 8}) {
     const double T = kFirstEx + kCadence * static_cast<double>(quarters);
     std::vector<CashDividend> divs;

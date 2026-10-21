@@ -77,7 +77,8 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // dated_cash_iv's lower endpoint: the CRR probability window of the coarsest
 // lattice a scheme runs, sigma > |r - q| sqrt(T / steps), nudged inside.
-[[nodiscard]] double lattice_sigma_floor(double T, double r, double q, int coarsest_steps) noexcept {
+[[nodiscard]] double lattice_sigma_floor(double T, double r, double q,
+                                         int coarsest_steps) noexcept {
   const double min_lattice_sigma =
       std::abs(r - q) * std::sqrt(T / static_cast<double>(coarsest_steps));
   return std::max(kIvMin, min_lattice_sigma * (1.0 + 1.0e-6));
