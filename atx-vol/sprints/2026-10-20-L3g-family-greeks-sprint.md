@@ -29,9 +29,21 @@ chain / shock entries); the AL fingerprint `53c4df68`, the dev200 default parity
   Δ / Γ / speed at the fixed (spot-independent) boundary; vega / vanna / volga = explicit σ-terms + the
   boundary term through dy_k/dσ (nodal Chebyshev differentiation matrices D⁽¹⁾ / D⁽²⁾ applied to the
   σ-series, interpolated by the same barycentric basis — exact for the polynomial, stable at and near a
-  node); θ / charm from the continuation-region PDE identity; rho / phi frozen-boundary (frozen y, the
-  explicit xmax(K, rate, yield) rescale differentiated; dy/dr, dy/dq NOT included — measured in §4).
-  Calls through McDonald-Schroder + the homogeneity identities of the internal put.
+  node); θ / charm from the continuation-region PDE identity; rho / phi ONLY through a carry set
+  (resume r4, below). Calls through McDonald-Schroder + the homogeneity identities of the internal put.
+- **Resume r4 (2026-10-21, PM ruling: the frozen-boundary rho is never served)**:
+  `AlSigmaFamilyCarryBumps` (`prepare(base, axes)`) builds SECOND families at r ± h and q ± h
+  (h = `kAlSigmaFamilyCarryBump` = 1e-4, the bundle's own bump; the base geometry's AlOpts, the base's
+  side / anchor / box / nodes / axis) and keeps only dY_{k,s}/dr, dY_{k,s}/dq of their σ-series (A5:
+  forward difference vs the base when the down bump leaves the American regime); `family_greeks(fam,
+  carry, S, K, σ, mask)` adds the boundary term Σ ∂P/∂y_k · dy_k/dθ in the SAME fused pass (one more
+  τ-barycentric accumulator, no extra quadrature). Without a carry set a requested rho / phi is NaN with
+  `carry = NoCarryBumps`; a set built from another family (side, anchor, (T, r, q), box, nodes, axis,
+  profile, two series sentinel rows) or lacking a requested axis gives `CarryBumpsMismatch`.
+  `family_chain_greeks` takes optional `put_carry` / `call_carry` (trailing, defaulted); flags bit 3
+  marks a refused rho / phi. All pinned bounds filled (2-figure round-ups of the measured worst), the
+  wrong call exercise fixture fixed (call S 100 K 40 with q < r is a continuation row), one revert
+  spot-check per Greek class on the SOURCE (§6).
 - NEW `tests/american_family_greeks_test.cpp` (`AlSigmaFamilyGreeks.*`, in `atx-vol-pricing-slice`),
   additive bench rows in `bench/al_preset_ladder_bench.cpp` (env `ATX_VOL_AL_FAMILY_GREEKS=1`).
 
@@ -71,22 +83,34 @@ chain / shock entries); the AL fingerprint `53c4df68`, the dev200 default parity
   (one geometry per expiry), so an FD-in-T theta does not exist on it; the identity is exact in the
   continuation region given exact V, Δ, Γ (which these are, for the served map). θ is compared against
   the adjoint-free bundle's PDE θ in §4 (same identity, FD Δ / Γ).
-- **rho, phi**: frozen-boundary (frozen y): ∂I/∂rate ∝ K e^{−rt}(1 − rt) Φ(−d−) − (t/v) G, ∂I/∂yield ∝
+- **rho, phi**: frozen-y part: ∂I/∂rate ∝ K e^{−rt}(1 − rt) Φ(−d−) − (t/v) G, ∂I/∂yield ∝
   (t/v) G − S e^{−qt}(1 − qt) Φ(−d+), plus the explicit xmax(K, rate, yield) = K min(1, rate/yield)
   rescale of B (∂ ln xmax/∂rate = 1/rate, ∂/∂yield = −1/yield when rate < yield — the SPY call
-  orientation; 0 otherwise), plus the European leg. dy/dr, dy/dq — the boundary's own motion — is NOT
-  included (no r / q axis). Both conventions (frozen y = served; frozen B = without the xmax term) are
-  measured against a second family at r ± 1e-4 / q ± 1e-4 in §4; the PM rules on the policy.
+  orientation; 0 otherwise), plus the European leg. The frozen part ALONE is up to 2.42× off the
+  re-solved rho (§4) — the boundary's own motion is first order for the budget-limited y*, not the
+  envelope-small term the research assumed — so it is never served (PM ruling r4). The served rho / phi
+  add the boundary term exactly as vega adds dy/dσ: ∂I/∂B · dB/dθ ∝ −G s'_θ/v, s'_θ = y'_θ/(2√y),
+  y'_θ = Σ_k ℓ_k(u_j) Σ_s b_s(z) D^θ_{k,s} with D^θ = (Y(θ + h) − Y(θ − h))/(2h) from the carry set's
+  bumped families (central; forward when the down bump leaves the regime). The carry set maps option
+  axes to the internal put's: a put's rate is r and yield q, a call's rate is q and yield r (so call rho
+  rides the internal YIELD term, call phi the RATE term). Cost: 2 family builds per axis per
+  (expiry, side) (§5), then ≈ free per contract (one more accumulator in the same pass). Design choice vs
+  the brute-force "second family price difference" (4 extra quadratures per contract): the same
+  derivative to O(h²) (measured §4, the formula test), ≈ 20 µs cheaper per contract and without the
+  difference-of-two-interpolants noise / 2h on wide boxes.
 - **Calls**: the internal put's bundle at (S_int = K, K_int = S; rate = q, yield = r) mapped by
   homogeneity — exact for the served map (y strike-free; xmax, E and the clamps linear in K_int):
   Δ_call = (P − S_int P_S)/K_int, Γ_call = (S_int/K_int)² P_SS, speed_call = −x³ P_SSS − 3x² P_SS/K_int,
   vanna_call = (vega − S_int vanna_int)/K_int, rho_call = ∂P/∂yield, phi_call = ∂P/∂rate; vega, volga
   unchanged; θ / charm from the PDE in the option's own (S, r, q).
-- **Regime flags** mirror `RecordGreeks`: when the kernel's intrinsic clamp fires (`intr > euro + prem`)
-  the served price is intrinsic and the exercise Greeks go with it (Δ = −1 put / +1 call, everything else
-  0, `exercised`); `floored` = the clamp fired although S_int > B(τ = T) (the continuation side of the
-  current edge: B_now = xmax e^{−√y[n−1]}, an exact node hit). The flags agree with the bundle's own clamp
-  test along a spot ladder through the edge (`ExerciseRegionServesIntrinsicWithTheExerciseGreeks`).
+- **Regime flags** mirror `RecordGreeks`: when the internal spot is on the exercise side of the current
+  edge (S_int ≤ B_now = xmax e^{−√y[n−1]}, an exact node hit), or the served price is intrinsic to the
+  bundle's tolerance (≤ intr + 1e-9 K — the kernel's clamp, or the decomposition reproducing K − S to
+  quadrature noise, which it does in and just above the exercise region), the exercise Greeks go with
+  the unchanged price (Δ = −1 put / +1 call, everything else 0 — rho / phi 0 with a carry set,
+  `exercised`); `floored` = that regime on the continuation side of the edge. The flags agree with the
+  bundle's own intrinsic test along a 41-point spot ladder through the edge (41/41,
+  `ExerciseRegionServesIntrinsicWithTheExerciseGreeks`).
 - **Mask**: price-only IS `price()` (the same `price_at`); every other mask runs the fused pass and
   skips the accumulators (and the σ tables) it does not need; a requested field is bit-identical across
   masks (each accumulator's sequence is its own: `MaskSelectsWhatIsComputedAndRequestedFieldsAreMaskIndependent`).
@@ -102,30 +126,150 @@ chain / shock entries); the AL fingerprint `53c4df68`, the dev200 default parity
 
 ## 3. Formula check — Richardson on the family's own map
 
-(filled from the gtest run)
+`AlSigmaFamilyGreeks.GreeksMatchRichardsonOnTheFamilyMapWithinBound` (vol-rel, final source; the same
+digits at `a4b34521`): relative gap of each analytic Greek vs a Richardson central difference of the
+FAMILY's own price (spot step min(1e-3 S, 0.02 S σ √T), σ step 5e-4 / 2.5e-4; floors Δ / vanna 1e-3,
+Γ 1e-6 S, vega / volga 1e-3 max(P, 1), charm 1e-2 max(P, 1)); continuation rows whose stencil stays
+3 h off the exercise edge. Bound = the pinned 2-figure round-up.
+
+| set (n) | Δ | Γ | vega | vanna | volga | charm |
+| --- | --- | --- | --- | --- | --- | --- |
+| SPY-like 23 d (229) | 2.31e-8 [2.4e-8] | 1.34e-7 [1.4e-7] | 1.83e-8 [1.9e-8] | 6.27e-7 [6.3e-7] | 4.31e-5 [4.4e-5] | 6.16e-5 [6.2e-5] |
+| deep-carry (180) | 7.02e-8 [7.1e-8] | 3.07e-8 [3.1e-8] | 3.24e-10 [3.3e-10] | 4.20e-4 [4.3e-4] | 6.16e-9 [6.2e-9] | 1.35e-4 [1.4e-4] |
+| profile grid [0.08, 0.7] (967) | 2.36e-8 [2.4e-8] | 1.21e-6 [1.3e-6] | 4.80e-7 [4.8e-7] | 4.92e-6 [5.0e-6] | 1.13e-4 [1.2e-4] | 5.96e-3 [6.0e-3] |
+
+Worst contracts (printed by the test): SPY volga at the ATM call σ 0.306 (volga ≈ 0 under the 1e-3·P
+floor — the reference's σ step is the limit); deep-carry vanna / charm at S = K = 100, σ 0.052, T 2-5
+(1.3 % above the edge: the FD stencil's own truncation); grid charm at put K 140 T 0.5 σ 0.32 (the spot
+difference of the served θ). Δ / vega are 1e-8-class, Γ 1e-7 (1e-6 on 7-day rows), second order 1e-6
+to 1e-4 where the REFERENCE resolves it — the research's "1e-8 first order / 1e-6 second order"
+expectation holds on the smooth region. The near-edge band (±3 h of the edge) is excluded: there the
+served max(decomposition, intrinsic) flickers along a spot ladder and no FD reference exists (ledger
+candidate 3 of the checkpoint).
+
+The vega boundary term is NOT small: with it removed (revert spot-check, §6) the vega gap is 2.41
+(SPY), 0.99 (deep-carry), 13.1 (grid) — the boundary's σ-motion is first order for the budget-limited
+y*, the same finding as rho's 2.42 below.
+
+`PriceAndVegaIsTheExactSlopeWithinTheVolgaBound` (the slope L2i adopts): |vega − family forward chord|
+≤ h·|volga| + 1e-8 on every row; vega vs the family's central difference at σ ± h worst 2.36e-5
+[2.4e-5]; vs the cold `al_price_pack` chord (boundary re-solved at σ and σ + h, de-biased by h/2·volga)
+worst 2.36e-5 [2.4e-5] — both at call K 927.6 σ 0.154 (n = 211 / 231).
 
 ## 4. Error tables vs the Reference bundle (i) and the Richardson / second-family reference (ii)
 
-(filled from `american/family_greeks_error/*`)
+`american/family_greeks_error/<set>/n<N>` (vol-rel-avx2 bench `e5ad3261…`, binary of `9c9f0e0a`;
+`C:\atx-cache\quote-benchmark\L3g-20261021-resume\errors\family-greeks-errors.json`). Max / p99 relative
+(|ref| ≥ floor: Δ / vanna 1e-3, Γ 1e-7 S, the rest 1e-3 max(P, 1)); EVERY priced continuation row,
+near-edge rows INCLUDED (the tests exclude ±2.5e-3 S of the edge; maxima that sit on near-edge rows are
+the kink, not the formula). (ii) = Richardson on the COLD kernel (Δ / Γ h = 1e-3 S and h/2, one-sided on
+the continuation side near the edge; σ ± 2e-3 / 1e-3 re-solves) for Δ…volga; for rho / phi (ii) = the
+second family's price difference (fam2).
+
+SPY 23 d (317, 12 LogSigma nodes) — max [p99]:
+
+| Greek | vs (ii) Richardson / fam2 | vs (i) bundle |
+| --- | --- | --- |
+| Δ | 8.3e-8 [6.6e-8] | 1.5e-3 [1.3e-3] |
+| Γ | 4.6e-5 [2.5e-7] | 5.7e-4 [5.1e-4] |
+| vega | 1.8e-6 [3.6e-7] | 1.3e-3 [5.3e-4] |
+| θ | 8.0e-4 [1.6e-6] | 4.6e-3 [6.1e-4] |
+| vanna | 2.2e-4 [1.6e-6] | 8.2e-3 [9.6e-4] |
+| volga | 8.0e-5 [2.5e-6] | 1.7e-4 [1.4e-4] |
+| rho (carry, served) | 1.5e-5 [6.1e-6] | 1.5e-5 [6.1e-6] |
+| phi (carry, served) | 1.2e-5 [4.7e-6] | 1.25e-5 [4.7e-6] vs the cold q ± h difference |
+| rho frozen-y (NOT served) | 6.3 [2.5] | 6.3 [2.5] |
+| bundle rho vs fam2 / cold phi vs fam2 | 3.9e-7 / 4.6e-7 | — |
+
+Other sets (12 nodes unless stated), max [p99] vs (ii) / served rho vs bundle:
+- ledger grid (104): Δ 2.1e-6, Γ 3.6e-7, vega 6.1e-6, θ 4.0e-6, vanna 1.1e-5, volga 2.5e-5; rho 7.3e-7,
+  phi 5.3e-7; frozen rho 0.12. vs the bundle every Greek 2.7e-3 – 8.2e-3 (the bundle's stencils).
+- deep-carry corner (640): Δ 1.2e-7, Γ 1.4e-7, vega 7.5e-7, θ 3.5e-5, vanna 2.6e-3, volga 1.8e-4; rho
+  1.4e-5, phi 1.1e-5; frozen rho 0.996 (p99 0.992: the frozen rho misses essentially ALL of rho there).
+  vs the bundle θ 1.16 / vanna 1.93 (the bundle's FD Γ / mixed stencil straddling the edge 1.3 % below
+  spot — reference-limited, LEDGER 2026-10-16).
+- profile fastgrid [0.076, 0.735] (983 of 1,350; 225 refusals = q = 0 calls + σ outside the box):
+  n12 Δ 2.3e-6 [4.8e-7], Γ 9.6e-4 [2.9e-6], vega 1.5e-3 [4.3e-5], vanna 9.9e-2 [1.2e-3], volga 3.9e-2
+  [5.4e-4]; rho 2.0e-3 [4.9e-5], phi 2.0e-3 [4.1e-5] (bundle vs fam2 itself 2.1e-3 [1.6e-5]: the wide
+  box's interpolation error); n16: Δ 3.5e-7, Γ 1.4e-3 [5.1e-7], vega 1.2e-3 [1.6e-5], volga 9.1e-2
+  [4.2e-4]; rho 1.3e-3 [4.9e-5].
+- spy23 off-node midpoints (311): p99 Δ 9.2e-8, Γ 4.7e-6, vega 6.7e-7, θ 2.8e-5, vanna 1.7e-6, volga
+  4.7e-6; rho 7.9e-6 / phi 7.1e-6 p99 (max 1.5e-4 / 1.4e-4 on near-edge rows); maxima of Γ / θ / vega
+  (1e-2 – 1.1) are the 6 near-edge rows next to the 6 exercised ones.
+
+**rho / phi decision (PM ruling r4 implemented)**: the frozen-boundary rho is 0.12 – 6.3 relative off
+(p99 2.5 on SPY) — never served. The carry set is Reference-class: 1.5e-5 max / 6e-6 p99 vs the
+re-solved bundle on SPY 23 d, 1e-5 on the deep-carry corner, 7e-7 on the ledger grid; on the wide
+fastgrid box both it and the brute-force second family sit 1e-3 from the bundle (the box's own
+interpolation error). One unattributed residual: on SPY the carry rho is 1.5e-5 from the brute-force
+second-family difference while that difference is 3.9e-7 from the bundle — both brute-force
+differences straddle the near-edge kink the same way and the analytic boundary term does not (the
+test, which excludes near-edge rows, measures 5.9e-6; NOT proven — the bench does not split near-edge
+rows out); in absolute terms the gap is ≤ 3.5e-5 USD per unit rate (≤ 3.5e-9 USD per bp). Pinned:
+`GreeksWithinMeasuredBoundOfTheReferenceBundleOnSpy23` rho 6.0e-6 / phi 5.3e-6 (measured 5.95e-6 /
+5.25e-6, near-edge excluded) and `CarryRhoPhiAreTheDerivativeOfTheSecondFamiliesWithinBound` 3.7e-4 /
+4.3e-4 (all sets incl. the wide box; the worst is the wide box's σ = 0.08 edge).
 
 ## 5. µs table (SPY 23 d, avx2, unqualified, one run)
 
-(filled from `american/spy23_family_greeks/*`, `american/family_chain/*`, `american/family_shock/*`)
+`american/spy23_family_greeks/*`, `american/family_chain/*`, `american/family_shock/*` (bench
+`e5ad3261…`, `us\family-greeks-us.json`). Host LOADED: load 37 % before the µs rows, 78 % after (five
+build lanes live) — unqualified; the price-only row (7.6 µs p50) vs L2h's 4.7 µs quiet-host number says
+this run is ≈ 1.6× slow.
+
+| row | p50 µs | p99 µs | mean µs |
+| --- | --- | --- | --- |
+| price-only (= `price()`) | 7.6 | 12.8 | 7.7 |
+| + Δ Γ vega θ (hedge) | 12.2 | 18.8 | 12.5 |
+| + 8 Greeks (eight, rho / phi via carry) | 13.7 | 35.1 | 14.4 |
+| all (+ charm) | 15.4 | 39.5 | 17.5 |
+| `family_price_and_vega` | 19.1 | 43.1 | 20.1 |
+| `price_and_chord` (two quadratures) | 21.4 | 36.6 | 21.6 |
+| `american_greeks_al` accurate / Fast, same contracts | 1,125 / 515 | 1,638 / 892 | — |
+| adjoint bundle (puts, 163) | 1,807 | 2,337 | — |
+
+(The `price_and_vega` row ran after `all` as the load rose; its p50 above `hedge` is the host, not the
+kernel — it computes a subset of hedge's accumulators. A quiet-host pin is W4's.) Carry set build:
+7.4 ms mean per (S, T, r, q, side) family (4 bumped geometries + families; 148 families on SPY 23 d
+because the funding-pv q is per strike); 8.3 ms in the `all` row. `AlSigmaFamilyCarryBumps::state_bytes()`
+≈ 8.5 KB.
+
+Chains (one single-thread `family_chain_greeks` call, ms): synthetic 300 strikes price 2.83, hedge
+5.23, eight 6.82, all 7.04; SPY 23 d chain (317 rows) price 2.91, hedge 5.71, eight 6.82, all 5.65;
+carry sets for both sides of one expiry 20 ms (outside the timed call). **Target ≤ 5 ms for 300 +
+8 Greeks: 6.82 ms on this loaded host** (price-only 2.83 ms; at the 1.6× load factor ≈ 4.3 ms quiet —
+inferential, a W4 pin decides). Shock 11 × 11 (± 10 % spot, ± 10 vol points, eight mask): 2.18 ms per
+contract; 704 ms per synthetic 300-chain (1,001 of 36,300 cells refused SigmaOutsideBox). Per contract
+vs today at p50 on the same host: ≈ 80× the accurate bundle, ≈ 130× the adjoint bundle.
 
 ## 6. Gates
 
-(filled)
+Commands, exit codes and output are in the lane report (`lane-L3g-family-greeks-report.md`).
+- `AlSigmaFamily.*` 11/11 with every `[AlSigmaFamily]` printout equal to the L2h-fix1 digits;
+  `AlSigmaFamilyGreeks.*` 15/15 (vol-rel, source `78b5db21`; the bench commit `9c9f0e0a` touches no
+  library or test source).
+- Revert spot-checks on the SOURCE (inverse Edit; restored blob `f891dcb1` = HEAD's): Δ (sign of the
+  premium spot term) → formula test fails (Δ 0.133 / 3.04 / 2.62); vega (boundary term removed) →
+  formula + slope tests fail (vega 2.41 / 0.99 / 13.1; slope vs cold 2.41); volga (D⁽²⁾ term sign) →
+  formula test fails (volga 5.45 / 1.99 / 43.9); rho (carry boundary term removed) → bundle test (rho
+  2.42) and carry-vs-fam2 test (13.7) fail.
+- AL fingerprint `53c4df68` MATCH (vol-rel-avx2, `9c9f0e0a`).
+- gates-B (sibling suites, `^pricing/AlSigmaFamily`, chain-batch, name set cap 3, hygiene, dev200
+  parity): see the lane report.
 
 ## 7. What L3h / L2i must assume
 
 1. **The calls** (api/pricing/american.hpp, the block after `AlSigmaFamily`; all opt-in, nothing default
    constructs a family): `family_greeks(fam, S, K, σ, mask)` → `AlSigmaFamilyGreeks` {price, delta, gamma,
-   vega, theta, rho, phi, vanna, volga, charm, status, exercised, floored, boundary_term_included};
+   vega, theta, rho, phi, vanna, volga, charm, status, carry, exercised, floored,
+   boundary_term_included}; `family_greeks(fam, carry, S, K, σ, mask)` (rho / phi served);
+   `AlSigmaFamilyCarryBumps::prepare(fam, Mask{kRho | kPhi})` once per (expiry, side) after the family;
    `family_price_and_vega(fam, S, K, σ)` → {price, vega, status}; `family_chain_greeks(put*, call*, S,
-   K[], σ[], side[], mask, columns, status[])` → Status (InvalidArgument on a length mismatch, nothing
-   written; per-row outcomes in status[]); `family_shock_grid(fam, S, K, σ, spot_pct[], vol_bump[],
-   mask, columns, status[])` → Status, cell (i, j) at i · n_vol + j; `family_detach(fam)` →
-   `AlSigmaFamilyDetached` with `price` / `greeks` / `price_and_vega`.
+   K[], σ[], side[], mask, columns, status[], put_carry* = null, call_carry* = null)` → Status
+   (InvalidArgument on a length mismatch, nothing written; per-row outcomes in status[]);
+   `family_shock_grid(fam, S, K, σ, spot_pct[], vol_bump[], mask, columns, status[])` → Status, cell
+   (i, j) at i · n_vol + j (rho / phi refused per cell); `family_detach(fam)` → `AlSigmaFamilyDetached`
+   with `price` / `greeks` / `price_and_vega` (rho / phi refused).
 2. **Refusal routing** = the family's: `NotPrepared` / `GeometryRePrepared` → rebuild or cold;
    `InvalidArgument` → the cold path's own refusal; `SigmaBelowGuard` (σ < 0.01) / `SigmaOutsideBox` →
    cold. On a refusal the price AND every requested Greek are NaN with the status (never NaN alone). The
@@ -140,13 +284,17 @@ chain / shock entries); the AL fingerprint `53c4df68`, the dev200 default parity
    without the kAlPackSigmaBump headroom at the box top (the box rule's `+ 2 · kAlPackSigmaBump` may
    go). NOT wired in this lane. Cost: one fused pass (§5) instead of two quadratures.
 4. **Greeks' regime caveats**: θ / charm are the PDE identity (no τ axis); in the exercise region the
-   exercise Greeks are served (flags above); rho / phi are frozen-boundary — their boundary term is the
-   measured gap of §4 (PM policy pending; if ruled insufficient, a second family at r ± h is two builds
-   per (expiry, side) ≈ 2.5 ms); `boundary_term_included` is true for vega / vanna / volga only.
+   exercise Greeks are served (flags above); rho / phi exist ONLY with a matching carry set (the frozen
+   boundary is never served — PM ruling r4): no set → NaN + `carry = NoCarryBumps`; a set from another
+   family or without the axis → NaN + `CarryBumpsMismatch`; the carry status is all-or-nothing over the
+   requested rho / phi; a carry set is a value copy (it does not observe the family) and must be rebuilt
+   when the family is (it refuses by identity otherwise). `boundary_term_included` is true when vega /
+   vanna / volga were computed; a served rho / phi always carries its (r, q) boundary term.
 5. **Column contract** (`AlSigmaFamilyGreekColumns`): a column is written iff its span is non-empty, and
    then its length must equal the row count; the mask decides what is COMPUTED, the spans what is STORED
    (an unrequested Greek with a span reads 0.0); `flags` bit 0 = exercised, bit 1 = floored, bit 2 =
-   boundary_term_included. Spans are caller-owned; the entries allocate nothing.
+   boundary_term_included, bit 3 = a requested rho / phi refused. Spans are caller-owned; the entries
+   allocate nothing (the carry set's prepare() allocates its block and two bumped geometries).
 6. **Shock axes**: spot (the homogeneity rescale, exact) and absolute vol bumps (inside the box);
    dt / dr / dq are not family axes — a time or rate shock needs another geometry (and family).
 7. **Cost per call**: §5 — the µs line of the lane report; price-only = `price()`.
