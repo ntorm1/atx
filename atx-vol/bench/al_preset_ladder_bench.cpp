@@ -2876,9 +2876,23 @@ void run_sqbuild_parts(benchmark::State &state, SqSet set) {
     state.SkipWithError("host has no AVX2");
     return;
   }
-  const SqGroup &g = d.groups.front();
   constexpr unsigned kNs = 12;
   constexpr unsigned kNq = 4;
+  // The first group the family builds (a q <= 0 call side is refused: no boundary).
+  const SqGroup *first = nullptr;
+  for (const SqGroup &cand : d.groups) {
+    const AlExpiryGeometry cg = prepare_al_geometry(cand.T, cand.r, 0.5 * (cand.q_lo + cand.q_hi));
+    AlSigmaQFamily probe(cg, cand.side, cand.S);
+    if (probe.prepare(cand.s_lo, cand.s_hi, kNs, cand.q_lo, cand.q_hi, kNq)) {
+      first = &cand;
+      break;
+    }
+  }
+  if (first == nullptr) {
+    state.SkipWithError("no group builds a family");
+    return;
+  }
+  const SqGroup &g = *first;
   const double pi = 3.14159265358979323846;
   double sig[kNs] = {};
   for (unsigned s = 0; s < kNs; ++s) {
@@ -2895,6 +2909,7 @@ void run_sqbuild_parts(benchmark::State &state, SqSet set) {
   const auto sc = std::make_unique<amer::AlPreparedScratch>();
   const auto pb = std::make_unique<amer::AlBoundary[]>(4);
   const auto pw = std::make_unique<amer::AlWorkspace[]>(4);
+  const auto pg = std::make_unique<simd::detail::NodePackScratch>();
   std::vector<double> geo_us;
   std::vector<double> solve_us;
   std::vector<double> pack_us;
@@ -2919,8 +2934,8 @@ void run_sqbuild_parts(benchmark::State &state, SqSet set) {
         const double r4[4] = {rp, rp, rp, rp};
         const double q4[4] = {qp, qp, qp, qp};
         t0 = std::chrono::steady_clock::now();
-        const unsigned mask = simd::detail::solve_put_boundaries4_avx2(K4, g.T, &sig[s0], r4, q4,
-                                                                       sch, pb.get(), pw.get());
+        const unsigned mask = simd::detail::solve_put_boundaries4_avx2(
+            K4, g.T, &sig[s0], r4, q4, sch, pb.get(), pw.get(), *pg);
         pack_us.push_back(us_since(t0));
         declined += (mask == 0xFu) ? 0.0 : 1.0;
       }

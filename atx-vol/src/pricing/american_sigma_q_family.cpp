@@ -154,18 +154,20 @@ quadrature_orientation(const AlExpiryGeometry::Impl &g, Side side) noexcept {
 }
 
 // One block of prepare-time scratch: the orientation of the current q node, the
-// retained solve state and one AVX2 pack's four node slots (heap: ~0.3 MB would crowd a
-// worker's stack). The pack workspaces are default-initialised on purpose: like the put
-// batch driver's stack `AlWorkspace ws[4]`, the kernel's init writes every field it
-// reads (table pointers, counts, flags) and never touches the large static-bind arrays,
-// so zero-filling 4 x ~46 KB per prepare would buy nothing (allocated with
-// make_unique_for_overwrite).
+// retained solve state, one AVX2 pack's four node slots and its hoisted sweep geometry
+// (heap: ~0.4 MB would crowd a worker's stack). The pack workspaces and the hoist table
+// are default-initialised on purpose: like the put batch driver's stack
+// `AlWorkspace ws[4]`, the kernel's init writes every workspace field it reads (table
+// pointers, counts, flags) and never touches the large static-bind arrays, and the
+// hoist writes every table entry before the sweeps read it, so zero-filling ~0.3 MB per
+// prepare would buy nothing (allocated with make_unique_for_overwrite).
 struct PrepareScratch {
   amer::AlOrientedGeometry geo{};
   amer::AlPreparedScratch solve{};
   int geo_node = -1; // the q node `geo` is prepared for, -1 = none yet
   amer::AlBoundary pack_bnd[4]{};
   amer::AlWorkspace pack_ws[4];
+  simd::detail::NodePackScratch pack_geo;
 };
 
 // THE BUILD's route (american.hpp): AVX2 packs iff the host / the SimdIsa override allow
@@ -244,7 +246,7 @@ void store_node(const NodePlan &p, unsigned j, unsigned s, const amer::AlBoundar
     q4[l] = rq.qp;
   }
   const unsigned mask = simd::detail::solve_put_boundaries4_avx2(K4, p.g->T, s4, r4, q4, p.g->sch,
-                                                                 w.pack_bnd, w.pack_ws);
+                                                                 w.pack_bnd, w.pack_ws, w.pack_geo);
   for (unsigned l = 0; l < 4; ++l) {
     const unsigned t = t0 + l;
     const unsigned j = t / p.n_sigma;
