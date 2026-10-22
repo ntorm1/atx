@@ -50,6 +50,7 @@
 // rung routes through the pre-existing A6 `andersen_lake_seeded` bench seam).
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -60,6 +61,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -72,9 +74,12 @@
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "pricing/adjoint_greeks.hpp"        // L3g: the adjoint bundle's µs on the same contracts
 #include "pricing/al_probe.hpp"
+#include "pricing/american_boundary.hpp"      // L2h-c: amer:: seam for the sqbuild parts row
 #include "pricing/american_detail.hpp"
 #include "pricing/american_sigma_family.hpp" // L3g: sigma_family_detail::family_rho_variants
 #include "pricing/scalar_erfc.hpp"
+#include "simd/american_boundary_nodes_avx2.hpp" // L2h-c: the 4-lane node solve (parts row)
+#include "atx/vol/api/simd/cpu.hpp"              // L2h-c: SimdIsa override for sqbuild rows
 #include "atx/core/math.hpp"
 #include "atx/vol/api/core/types.hpp"
 
@@ -2758,6 +2763,299 @@ const bool kRegisteredSigmaQ = [] {
                                    [s, set_name, n_q, n_sigma](benchmark::State &state) {
                                      run_sqfamily(state, s, set_name, n_q, n_sigma);
                                    })
+          ->Iterations(1)
+          ->Unit(benchmark::kMillisecond);
+    }
+  }
+  return true;
+}();
+
+// ── L2h-c (2026-10-21): AlSigmaQFamily BUILD rows — AVX2-batched nodes vs the scalar build ──
+//
+//   * ATX_VOL_AL_SQBUILD=1 registers (inputs: the sqfamily env files above):
+//       american/sqbuild/<set>/<isa>/nq<N>/ns<M>  for (N, M) in {(3, 12), (4, 12), (4, 16)},
+//         isa scalar (SimdIsa::ForceScalar: every node the scalar prepared solve — the L2h-b
+//         build) / avx2 (ForceAvx2: nodes 4 at a time through the AVX2 boundary kernel). One
+//         family per (S, T, r, side) group as run_sq_group lays it out, built 5x (median):
+//         build_us p50 / max per family, build_ms_total over the set, cold groups, state_bytes;
+//       american/sqbuild/parts/<set>  where one (4, 12) build's time goes, on the set's first
+//         group: one scalar prepared solve (median of the 48 nodes), one AVX2 pack of 4 nodes
+//         (median of 12), one al_prepare_oriented_geometry (median of the 4 q nodes), the
+//         whole AVX2 prepare (median of 5) and the OffNode self-check's extra cost;
+//       american/sqbuild/spy23/price_strikes300  each 23 d side at (4, 12): 300 strikes in
+//         [0.7 S, 1.3 S] at one (σ, q) through price_strikes vs 300 price() calls (median
+//         of 21), plus the bit-identity count.
+
+struct SqIsaScope {
+  explicit SqIsaScope(atx::vol::simd::SimdIsa isa) : prev_(atx::vol::simd::simd_isa_override()) {
+    atx::vol::simd::set_simd_isa_override(isa);
+  }
+  ~SqIsaScope() { atx::vol::simd::set_simd_isa_override(prev_); }
+  SqIsaScope(const SqIsaScope &) = delete;
+  SqIsaScope &operator=(const SqIsaScope &) = delete;
+  atx::vol::simd::SimdIsa prev_;
+};
+
+[[nodiscard]] double us_since(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+}
+
+[[nodiscard]] double median_of(std::vector<double> v) {
+  std::sort(v.begin(), v.end());
+  return v.empty() ? 0.0 : v[v.size() / 2];
+}
+
+void run_sqbuild(benchmark::State &state, SqSet set, const char *set_name, bool avx2,
+                 unsigned n_q, unsigned n_sigma) {
+  using namespace atx::vol;
+  const SqData &d = sq_data(set);
+  if (d.pts == nullptr || d.pts->empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  if (avx2 && !simd::have_avx2()) {
+    state.SkipWithError("host has no AVX2");
+    return;
+  }
+  const SqIsaScope scope(avx2 ? simd::SimdIsa::ForceAvx2 : simd::SimdIsa::ForceScalar);
+  std::vector<double> build_us;
+  std::vector<double> bytes;
+  double cold_groups = 0.0;
+  for (auto _ : state) {
+    for (const SqGroup &g : d.groups) {
+      const AlExpiryGeometry geo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+      AlSigmaQFamily qf(geo, g.side, g.S);
+      std::vector<double> reps;
+      for (int rep = 0; rep < 5; ++rep) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Status st = qf.prepare(g.s_lo, g.s_hi, static_cast<std::uint16_t>(n_sigma), g.q_lo,
+                                     g.q_hi, static_cast<std::uint16_t>(n_q));
+        const double us = us_since(t0);
+        if (!st) {
+          reps.clear();
+          break;
+        }
+        reps.push_back(us);
+      }
+      if (reps.empty()) {
+        cold_groups += 1.0;
+        continue;
+      }
+      build_us.push_back(median_of(reps));
+      bytes.push_back(static_cast<double>(qf.state_bytes()));
+      if (set != SqSet::SpyAll) {
+        std::fprintf(stderr, "[sqbuild] %s/%s/nq%u/ns%u T=%.6g side=%s build_us=%.1f bytes=%zu\n",
+                     set_name, avx2 ? "avx2" : "scalar", n_q, n_sigma, g.T,
+                     g.side == Side::Call ? "C" : "P", build_us.back(), qf.state_bytes());
+      }
+    }
+  }
+  double total = 0.0;
+  for (const double b : build_us) {
+    total += b;
+  }
+  std::sort(build_us.begin(), build_us.end());
+  state.counters["families"] = static_cast<double>(build_us.size());
+  state.counters["cold_groups"] = cold_groups;
+  state.counters["build_us_p50"] = sorted_quantile(build_us, 0.50);
+  state.counters["build_us_max"] = build_us.empty() ? 0.0 : build_us.back();
+  state.counters["build_ms_total"] = total * 1.0e-3;
+  state.counters["state_bytes_p50"] = median_of(bytes);
+  state.counters["n_q"] = static_cast<double>(n_q);
+  state.counters["n_sigma"] = static_cast<double>(n_sigma);
+}
+
+void run_sqbuild_parts(benchmark::State &state, SqSet set) {
+  using namespace atx::vol;
+  const SqData &d = sq_data(set);
+  if (d.pts == nullptr || d.groups.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  if (!simd::have_avx2()) {
+    state.SkipWithError("host has no AVX2");
+    return;
+  }
+  const SqGroup &g = d.groups.front();
+  constexpr unsigned kNs = 12;
+  constexpr unsigned kNq = 4;
+  const double pi = 3.14159265358979323846;
+  double sig[kNs] = {};
+  for (unsigned s = 0; s < kNs; ++s) {
+    const double z = -std::cos(pi * static_cast<double>(s) / static_cast<double>(kNs - 1));
+    sig[s] = std::exp(std::log(g.s_lo) + 0.5 * (std::log(g.s_hi) - std::log(g.s_lo)) * (z + 1.0));
+  }
+  double qn[kNq] = {};
+  for (unsigned j = 0; j < kNq; ++j) {
+    const double z = -std::cos(pi * static_cast<double>(j) / static_cast<double>(kNq - 1));
+    qn[j] = g.q_lo + 0.5 * (g.q_hi - g.q_lo) * (z + 1.0);
+  }
+  const amer::AlScheme sch = amer::scheme_from_opts(std::nullopt);
+  const auto geo = std::make_unique<amer::AlOrientedGeometry>();
+  const auto sc = std::make_unique<amer::AlPreparedScratch>();
+  const auto pb = std::make_unique<amer::AlBoundary[]>(4);
+  const auto pw = std::make_unique<amer::AlWorkspace[]>(4);
+  std::vector<double> geo_us;
+  std::vector<double> solve_us;
+  std::vector<double> pack_us;
+  double declined = 0.0;
+  for (auto _ : state) {
+    for (unsigned j = 0; j < kNq; ++j) {
+      const bool put = g.side == Side::Put;
+      const double rp = put ? g.r : qn[j];
+      const double qp = put ? qn[j] : g.r;
+      auto t0 = std::chrono::steady_clock::now();
+      amer::al_prepare_oriented_geometry(g.T, rp, qp, sch, *geo);
+      geo_us.push_back(us_since(t0));
+      for (unsigned s = 0; s < kNs; ++s) {
+        t0 = std::chrono::steady_clock::now();
+        amer::AlSolveStatus st =
+            amer::al_solve_put_boundary_prepared(*geo, g.S, sig[s], sc->bnd, sc->ws, &sc->loaded);
+        solve_us.push_back(us_since(t0));
+        benchmark::DoNotOptimize(st);
+      }
+      for (unsigned s0 = 0; s0 < kNs; s0 += 4) {
+        const double K4[4] = {g.S, g.S, g.S, g.S};
+        const double r4[4] = {rp, rp, rp, rp};
+        const double q4[4] = {qp, qp, qp, qp};
+        t0 = std::chrono::steady_clock::now();
+        const unsigned mask = simd::detail::solve_put_boundaries4_avx2(K4, g.T, &sig[s0], r4, q4,
+                                                                       sch, pb.get(), pw.get());
+        pack_us.push_back(us_since(t0));
+        declined += (mask == 0xFu) ? 0.0 : 1.0;
+      }
+    }
+  }
+  const AlExpiryGeometry egeo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+  AlSigmaQFamily qf(egeo, g.side, g.S);
+  std::vector<double> prep_us;
+  std::vector<double> prep_check_us;
+  {
+    const SqIsaScope scope(simd::SimdIsa::ForceAvx2);
+    for (int rep = 0; rep < 5; ++rep) {
+      auto t0 = std::chrono::steady_clock::now();
+      const Status a = qf.prepare(g.s_lo, g.s_hi, kNs, g.q_lo, g.q_hi, kNq);
+      prep_us.push_back(us_since(t0));
+      t0 = std::chrono::steady_clock::now();
+      const Status b = qf.prepare(g.s_lo, g.s_hi, kNs, g.q_lo, g.q_hi, kNq,
+                                  AlSigmaFamilyAxis::LogSigma, AlSigmaQFamilyCheck::OffNode);
+      prep_check_us.push_back(us_since(t0));
+      if (!a || !b) {
+        state.SkipWithError("prepare refused");
+        return;
+      }
+    }
+  }
+  const double pack = median_of(pack_us);
+  const double prep = median_of(prep_us);
+  state.counters["T"] = g.T;
+  state.counters["solve_scalar_us_p50"] = median_of(solve_us);
+  state.counters["pack4_us_p50"] = pack;
+  state.counters["pack_us_per_node"] = 0.25 * pack;
+  state.counters["geometry_us_p50"] = median_of(geo_us);
+  state.counters["prepare_avx2_us_p50"] = prep;
+  state.counters["prepare_minus_packs_us"] = prep - 12.0 * pack;
+  state.counters["self_check_extra_us"] = median_of(prep_check_us) - prep;
+  state.counters["self_check_max_rel"] = qf.self_check().max_rel;
+  state.counters["packs_declined"] = declined;
+}
+
+void run_sqbuild_strikes(benchmark::State &state) {
+  using namespace atx::vol;
+  const SqData &d = sq_data(SqSet::Spy23);
+  if (d.pts == nullptr || d.groups.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  constexpr std::size_t kStrikes = 300;
+  std::vector<double> batch_us;
+  std::vector<double> single_us;
+  double mismatched = 0.0;
+  double sides = 0.0;
+  for (auto _ : state) {
+    for (const SqGroup &g : d.groups) {
+      const AlExpiryGeometry geo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+      AlSigmaQFamily qf(geo, g.side, g.S);
+      if (!qf.prepare(g.s_lo, g.s_hi, 12, g.q_lo, g.q_hi, 4)) {
+        continue;
+      }
+      sides += 1.0;
+      std::vector<double> K(kStrikes);
+      for (std::size_t i = 0; i < kStrikes; ++i) {
+        K[i] = g.S * (0.7 + 0.6 * static_cast<double>(i) / static_cast<double>(kStrikes - 1));
+      }
+      const double sigma = std::sqrt(g.s_lo * g.s_hi);
+      const double q = 0.5 * (g.q_lo + g.q_hi);
+      std::vector<double> out(kStrikes, 0.0);
+      std::vector<double> one(kStrikes, 0.0);
+      for (int rep = 0; rep < 21; ++rep) {
+        auto t0 = std::chrono::steady_clock::now();
+        AlSigmaQFamilyStatus st = qf.price_strikes(g.S, K, sigma, q, out);
+        batch_us.push_back(us_since(t0));
+        benchmark::DoNotOptimize(st);
+        t0 = std::chrono::steady_clock::now();
+        for (std::size_t i = 0; i < kStrikes; ++i) {
+          one[i] = qf.price(g.S, K[i], sigma, q).price;
+        }
+        single_us.push_back(us_since(t0));
+        benchmark::DoNotOptimize(one.data());
+      }
+      for (std::size_t i = 0; i < kStrikes; ++i) {
+        const bool same =
+            std::bit_cast<std::uint64_t>(out[i]) == std::bit_cast<std::uint64_t>(one[i]);
+        mismatched += same ? 0.0 : 1.0;
+      }
+    }
+  }
+  const double b = median_of(batch_us);
+  const double s = median_of(single_us);
+  state.counters["sides"] = sides;
+  state.counters["strikes"] = static_cast<double>(kStrikes);
+  state.counters["batch_us_300"] = b;
+  state.counters["single_us_300"] = s;
+  state.counters["batch_us_per_strike"] = b / static_cast<double>(kStrikes);
+  state.counters["single_us_per_strike"] = s / static_cast<double>(kStrikes);
+  state.counters["speedup"] = (b > 0.0) ? s / b : 0.0;
+  state.counters["mismatched"] = mismatched;
+}
+
+const bool kRegisteredSqBuild = [] {
+  if (env_text("ATX_VOL_AL_SQBUILD").empty()) {
+    return false;
+  }
+  const std::pair<const char *, SqSet> sets[] = {
+      {"spy23", SqSet::Spy23}, {"spylong", SqSet::SpyLong}, {"spyall", SqSet::SpyAll}};
+  const char *envs[] = {"ATX_VOL_AL_SPY23", "ATX_VOL_AL_SPYLONG", "ATX_VOL_AL_SPYALL"};
+  const std::pair<unsigned, unsigned> shapes[] = {{3u, 12u}, {4u, 12u}, {4u, 16u}};
+  for (std::size_t si = 0; si < 3; ++si) {
+    if (env_text(envs[si]).empty()) {
+      continue;
+    }
+    const SqSet s = sets[si].second;
+    const char *set_name = sets[si].first;
+    for (const bool avx2 : {false, true}) {
+      for (const auto &[nq_v, ns_v] : shapes) {
+        const unsigned n_q = nq_v;
+        const unsigned n_sigma = ns_v;
+        benchmark::RegisterBenchmark(std::string("american/sqbuild/") + set_name + "/" +
+                                         (avx2 ? "avx2" : "scalar") + "/nq" +
+                                         std::to_string(n_q) + "/ns" + std::to_string(n_sigma),
+                                     [s, set_name, avx2, n_q, n_sigma](benchmark::State &state) {
+                                       run_sqbuild(state, s, set_name, avx2, n_q, n_sigma);
+                                     })
+            ->Iterations(1)
+            ->Unit(benchmark::kMillisecond);
+      }
+    }
+    if (s != SqSet::SpyAll) {
+      benchmark::RegisterBenchmark(std::string("american/sqbuild/parts/") + set_name,
+                                   [s](benchmark::State &state) { run_sqbuild_parts(state, s); })
+          ->Iterations(1)
+          ->Unit(benchmark::kMillisecond);
+    }
+    if (s == SqSet::Spy23) {
+      benchmark::RegisterBenchmark("american/sqbuild/spy23/price_strikes300",
+                                   [](benchmark::State &state) { run_sqbuild_strikes(state); })
           ->Iterations(1)
           ->Unit(benchmark::kMillisecond);
     }
