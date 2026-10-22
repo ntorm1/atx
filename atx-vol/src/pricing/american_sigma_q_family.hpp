@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "pricing/american_boundary.hpp"     // amer::AlBoundary / AlWorkspace / Impl
@@ -24,8 +25,6 @@ namespace atx::vol {
 namespace sigma_q_family_detail {
 
 inline constexpr std::uint16_t kMaxQNodes = kAlSigmaQFamilyMaxQNodes;
-inline constexpr std::size_t kSeriesCapacity = static_cast<std::size_t>(amer::kAlMaxNodes) *
-                                               kMaxQNodes * sigma_family_detail::kMaxSigmaNodes;
 
 } // namespace sigma_q_family_detail
 
@@ -66,8 +65,12 @@ struct AlSigmaQFamily::State {
   double qw[sigma_q_family_detail::kMaxQNodes] = {};
   AlSigmaQFamilySelfCheck check{}; // prepare(…, OffNode)'s measurement (else NotPrepared)
   // series[(k * n_q + j) * n_sigma + s] = dimensionless y[k] at σ-node s, q-node j
-  // (packed on the prepared counts so one boundary node's tensor is contiguous).
-  double series[sigma_q_family_detail::kSeriesCapacity] = {};
+  // (packed on the prepared counts so one boundary node's tensor is contiguous). L2h-c:
+  // EXACTLY n_boundary · n_q · n_sigma doubles (was a fixed 32 x 8 x 16 capacity, 32 KB),
+  // allocated by prepare(), kept across a re-prepare of the same size, released by a
+  // refusal; the price path only reads it.
+  std::unique_ptr<double[]> series{};
+  std::size_t series_size = 0;
 
   // The refusal tree shared by every price entry (one sigma at a time).
   [[nodiscard]] AlSigmaQFamilyStatus admit(double S, double K, double sigma,

@@ -421,7 +421,9 @@ AlSigmaQFamily::~AlSigmaQFamily() = default;
 AlSigmaQFamily::AlSigmaQFamily(AlSigmaQFamily &&) noexcept = default;
 AlSigmaQFamily &AlSigmaQFamily::operator=(AlSigmaQFamily &&) noexcept = default;
 
-std::size_t AlSigmaQFamily::state_bytes() const noexcept { return sizeof(State); }
+std::size_t AlSigmaQFamily::state_bytes() const noexcept {
+  return st_ ? sizeof(State) + st_->series_size * sizeof(double) : 0u;
+}
 
 namespace {
 
@@ -502,6 +504,22 @@ Status AlSigmaQFamily::prepare(double sigma_lo, double sigma_hi, std::uint16_t n
   State &st = *st_;
   st.ok = false; // a refusal below leaves the family unprepared, never half-built
   st.check = AlSigmaQFamilySelfCheck{};
+  // A refusal also releases the previous node tensor (state_bytes() then reports the
+  // bare state block); a success keeps it for a re-prepare of the same size.
+  struct DiscardTensorOnRefusal {
+    explicit DiscardTensorOnRefusal(State &s) noexcept : state(s) {}
+    DiscardTensorOnRefusal(const DiscardTensorOnRefusal &) = delete;
+    DiscardTensorOnRefusal &operator=(const DiscardTensorOnRefusal &) = delete;
+    ~DiscardTensorOnRefusal() {
+      if (!keep) {
+        state.series.reset();
+        state.series_size = 0;
+      }
+    }
+    State &state;
+    bool keep = false;
+  };
+  DiscardTensorOnRefusal discard(st);
   if (Status in = check_prepare_inputs(st.g, st.side, st.anchor, sigma_lo, sigma_hi, n_sigma,
                                        q_lo, q_hi, n_q);
       !in) {
@@ -542,7 +560,12 @@ Status AlSigmaQFamily::prepare(double sigma_lo, double sigma_hi, std::uint16_t n
   // n_q x n_sigma solves at the anchor, at the geometry's AlOpts: four at a time through
   // the AVX2 kernel when batched_build(), the remainder (< 4) on the scalar solve.
   const std::unique_ptr<PrepareScratch> work = std::make_unique_for_overwrite<PrepareScratch>();
-  const NodePlan plan{st.g, st.side, st.anchor, sig, n_sigma, qn, nq, st.series};
+  const std::size_t tensor = static_cast<std::size_t>(g.sch.n_boundary) * nq * n_sigma;
+  if (st.series_size != tensor) {
+    st.series = std::make_unique<double[]>(tensor); // exact (L2h-c); every slot is written
+    st.series_size = tensor;
+  }
+  const NodePlan plan{st.g, st.side, st.anchor, sig, n_sigma, qn, nq, st.series.get()};
   bool have_grid = false;
   const unsigned n_nodes = static_cast<unsigned>(nq) * n_sigma;
   unsigned t = 0;
@@ -575,10 +598,12 @@ Status AlSigmaQFamily::prepare(double sigma_lo, double sigma_hi, std::uint16_t n
   st.n_q = nq;
   st.n_boundary = st.grid.n;
   st.ws = &quadrature_orientation(g, st.side)->ws;
+  assert(st.grid.n == g.sch.n_boundary); // the tensor's n_boundary is the grid's
   if (check == AlSigmaQFamilyCheck::OffNode) {
     st.check = st.measure_self_check(work->geo, work->solve);
   }
   st.ok = true;
+  discard.keep = true;
   return Ok();
 }
 

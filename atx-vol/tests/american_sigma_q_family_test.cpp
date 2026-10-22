@@ -848,14 +848,27 @@ TEST(AlSigmaQFamily, ConcurrentPricesAreBitIdenticalToTheSerialLoop) {
 }
 
 TEST(AlSigmaQFamily, StateBytesIsPinned) {
-  // One heap block per family: the fixed-capacity (kAlMaxNodes x 8 q x 16 σ) tensor plus
-  // the node grid and the self-check record. The memory budget a caller provisions per
-  // (expiry, side).
+  // L2h-c: the state block (node grid, axes, self-check record) plus the node tensor
+  // sized EXACTLY at prepare(): n_boundary (12, the Reference scheme) x n_q x n_sigma
+  // doubles — (12, 4) = 4,608 B and (16, 4) = 6,144 B of tensor where L2h-b held a fixed
+  // 32 x 8 x 16 = 32,768 B. The memory budget a caller provisions per (expiry, side).
+  constexpr std::size_t kBlock = 1864; // measured sizeof(State)
   const AlExpiryGeometry g = prepare_al_geometry(0.0682, 0.04496, 0.0016);
   AlSigmaQFamily f(g, Side::Put, 772.99);
+  EXPECT_EQ(f.state_bytes(), kBlock); // nothing prepared yet
   ASSERT_TRUE(f.prepare(0.10, 0.50, kSigmaNodes, 0.001589, 0.001678, 4));
-  std::cout << "[AlSigmaQFamily] state_bytes=" << f.state_bytes() << "\n";
-  EXPECT_EQ(f.state_bytes(), 34616u);
+  std::cout << "[AlSigmaQFamily] state_bytes (12, 4)=" << f.state_bytes() << "\n";
+  EXPECT_EQ(f.state_bytes(), kBlock + 12u * 4u * 12u * sizeof(double));
+  ASSERT_TRUE(f.prepare(0.10, 0.50, 16, 0.001589, 0.001678, 4));
+  std::cout << "[AlSigmaQFamily] state_bytes (16, 4)=" << f.state_bytes() << "\n";
+  EXPECT_EQ(f.state_bytes(), kBlock + 12u * 4u * 16u * sizeof(double));
+  ASSERT_TRUE(f.prepare(0.10, 0.50, kSigmaNodes, 0.0016, 0.0016, 4)); // collapsed: n_q 1
+  EXPECT_EQ(f.state_bytes(), kBlock + 12u * 1u * 12u * sizeof(double));
+  EXPECT_FALSE(f.prepare(0.10, 0.50, kSigmaNodes, 0.002, 0.001, 4)); // a refusal releases it
+  EXPECT_EQ(f.state_bytes(), kBlock);
+  AlSigmaQFamily moved(std::move(f));
+  EXPECT_EQ(f.state_bytes(), 0u); // NOLINT: a moved-from family owns nothing
+  EXPECT_EQ(moved.state_bytes(), kBlock);
 }
 
 TEST(AlSigmaQFamily, SelfCheckMeasuresTheFamilyOffItsNodes) {
