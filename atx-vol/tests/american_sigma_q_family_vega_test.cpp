@@ -436,10 +436,8 @@ TEST(AlSigmaQFamilyFused, FusedPriceIsPriceOnToRoundingOnTheSpyProbeGrid) {
       sq::PremiumTable table;
       ASSERT_EQ(sq::build_premium_table(b->f, table), FusedStatus::Ok);
       for (const double q : qs) {
-        sq::QTile pre;
-        sq::QTile con;
-        ASSERT_EQ(sq::contract_q(table, q, pre, sq::TileMode::Precontracted), FusedStatus::Ok);
-        ASSERT_EQ(sq::contract_q(table, q, con, sq::TileMode::Contracted), FusedStatus::Ok);
+        sq::QTile tile;
+        ASSERT_EQ(sq::contract_q(table, q, tile), FusedStatus::Ok);
         for (const double sigma : sigmas) {
           std::vector<double> vp(K.size(), 0.0);
           std::vector<double> vv(K.size(), 0.0);
@@ -463,13 +461,11 @@ TEST(AlSigmaQFamilyFused, FusedPriceIsPriceOnToRoundingOnTheSpyProbeGrid) {
             if (!same_bits(vp[i], fv.price) || !same_bits(vv[i], fv.vega)) {
               ++strike_vector_mismatch;
             }
-            for (const sq::QTile *tile : {&pre, &con}) {
-              const FusedPriceVega tv = sq::price_vega_on(table, *tile, kSpyS, K[i], sigma);
-              ASSERT_EQ(tv.status, FusedStatus::Ok);
-              worst_tab = std::max(worst_tab, std::abs(tv.price - p.price) / std::max(p.price, 1.0));
-              worst_tab = std::max(worst_tab,
-                                   std::abs(tv.vega - fv.vega) / std::max(std::abs(fv.vega), 1.0));
-            }
+            const FusedPriceVega tv = sq::price_vega_on(table, tile, kSpyS, K[i], sigma);
+            ASSERT_EQ(tv.status, FusedStatus::Ok);
+            worst_tab = std::max(worst_tab, std::abs(tv.price - p.price) / std::max(p.price, 1.0));
+            worst_tab = std::max(worst_tab,
+                                 std::abs(tv.vega - fv.vega) / std::max(std::abs(fv.vega), 1.0));
           }
         }
       }
@@ -477,7 +473,7 @@ TEST(AlSigmaQFamilyFused, FusedPriceIsPriceOnToRoundingOnTheSpyProbeGrid) {
   }
   std::cout << "[AlSigmaQFamilyFused] probe grid n=" << n << " (exercised " << exercised
             << "): fused vs price() max |dP|=" << worst_abs
-            << " max |dP|/max(P,1)=" << worst_scaled << " | table (both modes) vs price()"
+            << " max |dP|/max(P,1)=" << worst_scaled << " | table vs price()"
             << " / fused vega, max scaled=" << worst_tab << "\n  worst at " << at << "\n";
   EXPECT_EQ(n, 2u * 2u * 300u * 5u * 3u);
   EXPECT_LE(worst_scaled, kRoundingRel) << at;
@@ -841,16 +837,15 @@ TEST(AlSigmaQFamilyFused, ATransformedBoundaryAtItsZeroIsNearNodeDegenerate) {
 // ── 6. Tables, memory, threads ─────────────────────────────────────────────────────
 
 TEST(AlSigmaQFamilyFused, PremiumTableBytesArePinned) {
-  // (n_prem + 1) · n_q · n_sigma doubles of precontracted tensor + n_boundary · n_q ·
-  // n_sigma doubles of series copy + the inline block (the cost table's memory row).
+  // (n_prem + 1) · n_q · n_sigma doubles of precontracted tensor + the inline block (the
+  // cost table's memory row); the table keeps no copy of the family's τ-node series.
   const std::unique_ptr<Built> b = build(derivative_specs()[0]); // (12, 4)
   ASSERT_NE(b, nullptr);
   sq::PremiumTable t;
   ASSERT_EQ(sq::build_premium_table(b->f, t), FusedStatus::Ok);
   EXPECT_EQ(t.nodes.n, 48u);
   EXPECT_EQ(t.h_size, 49u * 4u * 12u);
-  EXPECT_EQ(t.series_size, 12u * 4u * 12u);
-  EXPECT_EQ(t.bytes(), sizeof(sq::PremiumTable) + (t.h_size + t.series_size) * sizeof(double));
+  EXPECT_EQ(t.bytes(), sizeof(sq::PremiumTable) + t.h_size * sizeof(double));
   std::cout << "[AlSigmaQFamilyFused] premium table (12, 4) bytes=" << t.bytes()
             << " (inline " << sizeof(sq::PremiumTable) << "), QTile " << sizeof(sq::QTile)
             << " B, NodeBoundary " << sizeof(sq::NodeBoundary) << " B, family state "

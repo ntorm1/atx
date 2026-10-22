@@ -99,11 +99,8 @@ TEST(AlSigmaQFamilyAlloc, FusedPriceVegaPathAllocatesNothing) {
             sum += bp[0] + bv[3];
             ++served;
           }
-          for (const sq::TileMode mode : {sq::TileMode::Precontracted, sq::TileMode::Contracted}) {
-            sq::QTile tile;
-            if (sq::contract_q(table, 0.02, tile, mode) != sq::FusedStatus::Ok) {
-              continue;
-            }
+          sq::QTile tile;
+          if (sq::contract_q(table, 0.02, tile) == sq::FusedStatus::Ok) {
             for (const double K : kStrikes) {
               const sq::FusedPriceVega t = sq::price_vega_on(table, tile, 100.0, K, sigma);
               if (t.status == sq::FusedStatus::Ok) {
@@ -115,7 +112,7 @@ TEST(AlSigmaQFamilyAlloc, FusedPriceVegaPathAllocatesNothing) {
         }
       });
       EXPECT_EQ(n, 0u) << (side == Side::Put ? "put" : "call") << " n_q=" << n_q;
-      EXPECT_EQ(served, 4u * (4u + 1u + 2u * 4u));
+      EXPECT_EQ(served, 4u * (4u + 1u + 4u));
       EXPECT_GT(sum, 0.0);
     }
   }

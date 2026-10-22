@@ -712,7 +712,6 @@ using sigma_q_family_detail::PremiumNodes;
 using sigma_q_family_detail::PremiumTable;
 using sigma_q_family_detail::QCarry;
 using sigma_q_family_detail::QTile;
-using sigma_q_family_detail::TileMode;
 
 // The normalised barycentric basis b_s(zq) on nodes z[] / weights w[] (n <= kAlMaxNodes):
 // b_s = (w_s / (zq − z_s)) / Σ_t (w_t / (zq − z_t)); an exact node hit is the unit vector.
@@ -944,40 +943,22 @@ void boundary_from_tile(const PremiumTable &t, const QTile &tile, double sigma,
   double y[kMaxPremiumNodes] = {};
   double dy[kMaxPremiumNodes] = {};
   double y_now = 0.0;
-  if (tile.mode == TileMode::Precontracted) {
-    // The τ interpolation is folded into g: two n_sigma-dots per premium node.
-    const unsigned n = t.nodes.n;
-    for (unsigned i = 0; i <= n; ++i) {
-      const double *row = &tile.g[static_cast<std::size_t>(i) * ns];
-      double a = 0.0;
-      double d = 0.0;
-      for (unsigned s = 0; s < ns; ++s) {
-        a += bs[s] * row[s];
-        d += cs[s] * row[s];
-      }
-      if (i < n) {
-        y[i] = a;
-        dy[i] = d * az.dz;
-      } else {
-        y_now = a;
-      }
+  // The τ interpolation is folded into g: two n_sigma-dots per premium node.
+  const unsigned n = t.nodes.n;
+  for (unsigned i = 0; i <= n; ++i) {
+    const double *row = &tile.g[static_cast<std::size_t>(i) * ns];
+    double a = 0.0;
+    double d = 0.0;
+    for (unsigned s = 0; s < ns; ++s) {
+      a += bs[s] * row[s];
+      d += cs[s] * row[s];
     }
-  } else {
-    double yk[amer::kAlMaxNodes] = {};
-    double dk[amer::kAlMaxNodes] = {};
-    for (unsigned k = 0; k < t.n_boundary; ++k) {
-      const double *row = &tile.g[static_cast<std::size_t>(k) * ns];
-      double a = 0.0;
-      double d = 0.0;
-      for (unsigned s = 0; s < ns; ++s) {
-        a += bs[s] * row[s];
-        d += cs[s] * row[s];
-      }
-      yk[k] = a;
-      dk[k] = d * az.dz;
+    if (i < n) {
+      y[i] = a;
+      dy[i] = d * az.dz;
+    } else {
+      y_now = a;
     }
-    tau_interpolate(t.tz, t.tw, t.n_boundary, t.nodes, yk, dk, y, dy);
-    y_now = yk[t.n_boundary - 1u];
   }
   sigma_q_family_detail::finish_node_boundary(t.nodes, y, dy, y_now, sigma, out);
 }
@@ -1252,7 +1233,7 @@ FusedStatus price_vega_strikes(const AlSigmaQFamily &f, double S, std::span<cons
 }
 
 std::size_t PremiumTable::bytes() const noexcept {
-  return sizeof(PremiumTable) + (h_size + series_size) * sizeof(double);
+  return sizeof(PremiumTable) + h_size * sizeof(double);
 }
 
 FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out) {
@@ -1282,24 +1263,15 @@ FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out) {
   std::copy(std::begin(st->sw), std::end(st->sw), std::begin(out.sw));
   std::copy(std::begin(st->qz), std::end(st->qz), std::begin(out.qz));
   std::copy(std::begin(st->qw), std::end(st->qw), std::begin(out.qw));
-  for (unsigned k = 0; k < amer::kAlMaxNodes; ++k) {
-    out.tz[k] = st->grid.z[k];
-    out.tw[k] = st->grid.wbary[k];
-  }
   const unsigned nb = st->n_boundary;
   const unsigned n = out.nodes.n;
   const std::size_t per = static_cast<std::size_t>(st->n_q) * st->n_sigma;
-  const std::size_t ss = static_cast<std::size_t>(nb) * per;
   const std::size_t hs = static_cast<std::size_t>(n + 1u) * per;
-  if (out.series_size != ss) {
-    out.series = std::make_unique<double[]>(ss);
-    out.series_size = ss;
-  }
   if (out.h_size != hs) {
     out.h = std::make_unique<double[]>(hs);
     out.h_size = hs;
   }
-  std::copy(st->series.get(), st->series.get() + ss, out.series.get());
+  const double *series = st->series.get();
   // h row i = Σ_k ℓ_k(zc_i) · Y[k, ·, ·]; the last row is the current edge (τ = T).
   for (unsigned i = 0; i < n; ++i) {
     double *row = &out.h[static_cast<std::size_t>(i) * per];
@@ -1308,23 +1280,23 @@ FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out) {
       continue;
     }
     double ell[amer::kAlMaxNodes] = {};
-    bary_basis(out.tz, out.tw, nb, out.nodes.zc[i], ell);
+    bary_basis(st->grid.z.data(), st->grid.wbary.data(), nb, out.nodes.zc[i], ell);
     for (unsigned k = 0; k < nb; ++k) {
       const double lk = ell[k];
-      const double *yk = &out.series[static_cast<std::size_t>(k) * per];
+      const double *yk = series + static_cast<std::size_t>(k) * per;
       for (std::size_t idx = 0; idx < per; ++idx) {
         row[idx] += lk * yk[idx];
       }
     }
   }
-  const double *last = &out.series[static_cast<std::size_t>(nb - 1u) * per];
+  const double *last = series + static_cast<std::size_t>(nb - 1u) * per;
   std::copy(last, last + per, &out.h[static_cast<std::size_t>(n) * per]);
   out.stamp = g_table_stamp.fetch_add(1u) + 1u;
   out.ok = true;
   return FusedStatus::Ok;
 }
 
-FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile, TileMode mode) noexcept {
+FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile) noexcept {
   tile.ok = false;
   if (!t.ok || !std::isfinite(q)) {
     return FusedStatus::Unsupported;
@@ -1341,9 +1313,8 @@ FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile, TileMode mo
   }
   const unsigned ns = t.n_sigma;
   const std::size_t per = static_cast<std::size_t>(t.n_q) * ns;
-  const bool pre = mode == TileMode::Precontracted;
-  const unsigned rows = pre ? t.nodes.n + 1u : t.n_boundary;
-  const double *src = pre ? t.h.get() : t.series.get();
+  const unsigned rows = t.nodes.n + 1u;
+  const double *src = t.h.get();
   for (unsigned r = 0; r < rows; ++r) {
     double *g = &tile.g[static_cast<std::size_t>(r) * ns];
     const double *yr = src + static_cast<std::size_t>(r) * per;
@@ -1358,7 +1329,6 @@ FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile, TileMode mo
       }
     }
   }
-  tile.mode = mode;
   tile.stamp = t.stamp;
   tile.ok = true;
   return FusedStatus::Ok;

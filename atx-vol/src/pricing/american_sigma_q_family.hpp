@@ -274,14 +274,8 @@ void finish_node_boundary(const PremiumNodes &pn, const double *y, const double 
 // QTile: the table contracted at ONE contract q (the q a strike keeps through an IV
 // inversion) — g[i · n_sigma + s] = Σ_j b_j(q) h[(i · n_q + j) · n_sigma + s] and the
 // carry — so a σ evaluation is two n_sigma-dots per premium node (y_i and dy_i/dσ), no
-// τ interpolation and no q work. TileMode::Contracted instead keeps the q-contracted
-// τ-node series (Σ_j b_j(q) Y[k, j, s]) and interpolates in τ per call — the
-// non-precontracted control the cost table compares against.
-enum class TileMode : std::uint8_t {
-  Precontracted = 0,
-  Contracted = 1,
-};
-
+// τ interpolation and no q work. (A q-contracted τ-series tile that interpolates in τ per
+// call measured 11-15% slower and was deleted; see docs/sigma-q-fused-vega.md.)
 struct PremiumTable {
   bool ok = false;
   std::uint64_t stamp = 0; // process-unique per successful build (a tile records it)
@@ -303,13 +297,9 @@ struct PremiumTable {
   double sw[sigma_family_detail::kMaxSigmaNodes] = {};
   double qz[kMaxQNodes] = {};
   double qw[kMaxQNodes] = {};
-  double tz[amer::kAlMaxNodes] = {}; // the τ grid (z, wbary): TileMode::Contracted only
-  double tw[amer::kAlMaxNodes] = {};
   PremiumNodes nodes{};
-  std::unique_ptr<double[]> h{};      // (nodes.n + 1) · n_q · n_sigma doubles
-  std::unique_ptr<double[]> series{}; // the family's Y (n_boundary · n_q · n_sigma): Contracted
+  std::unique_ptr<double[]> h{}; // (nodes.n + 1) · n_q · n_sigma doubles
   std::size_t h_size = 0;
-  std::size_t series_size = 0;
   // Heap + inline bytes this table owns.
   [[nodiscard]] std::size_t bytes() const noexcept;
 };
@@ -317,21 +307,19 @@ struct PremiumTable {
 struct QTile {
   bool ok = false;
   std::uint64_t stamp = 0; // the table's stamp at contraction
-  TileMode mode = TileMode::Precontracted;
   QCarry carry{};
-  // Precontracted: g[i · n_sigma + s], i in [0, nodes.n]; Contracted: g[k · n_sigma + s].
+  // g[i · n_sigma + s], i in [0, nodes.n] (row nodes.n = the current edge).
   double g[(kMaxPremiumNodes + 1) * sigma_family_detail::kMaxSigmaNodes] = {};
 };
 
-// Snapshot + precontract a prepared family (allocates h and, for Contracted tiles, the
-// series copy). Unsupported (table unprepared) when the family is not prepared, its
-// geometry was re-prepared, or the premium order exceeds kMaxPremiumNodes.
+// Snapshot + precontract a prepared family (allocates h). Unsupported (table unprepared)
+// when the family is not prepared, its geometry was re-prepared, or the premium order
+// exceeds kMaxPremiumNodes.
 [[nodiscard]] FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out);
 
 // Contract a table at q. OutsideBox when q is outside the table's q box, Unsupported
 // when the table is not ok or q is not finite (tile.ok false either way).
-[[nodiscard]] FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile,
-                                     TileMode mode = TileMode::Precontracted) noexcept;
+[[nodiscard]] FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile) noexcept;
 
 // price_and_vega's map at (S, K, sigma, tile.q) from a table and a tile of it. Refuses
 // Unsupported for a table / tile that is not ok or a tile of another build, an S / K
