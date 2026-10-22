@@ -213,6 +213,8 @@ struct DeAmPremiumControls {
   // (IvPremiumGate::qfamily; deam_family_q).
   const AlSigmaQFamily *qfamily = nullptr;
   double qfamily_bound = std::numeric_limits<double>::infinity();
+  // Family-native iterates on qfamily (IvPremiumGate::qfamily_native; deam_family_native).
+  bool qfamily_native = false;
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -314,6 +316,7 @@ struct DeAmConfirmControls {
   QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off; // deam_family
   double family_c = 3.0;                                   // deam_family_c
   bool family_q = false;                                   // deam_family_q
+  bool family_native = false;                              // deam_family_native
 };
 
 class DeAmIvView {

@@ -262,6 +262,12 @@ struct QuoteSliceChannelConfig {
   // deam_confirm Band (allowed here: the B-family arm) the band gate uses that measured
   // bound and the family's own chord. The adaptive rule counts n_sigma x n_q nodes.
   bool deam_family_q = false;
+  // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; requires deam_family_q and
+  // deam_confirm Always): the (sigma, q) family's own map is iterated without the
+  // Barone-Adesi-Whaley / Black-76 seed leg (a bracketed secant-Newton from the mid's
+  // family points, else from the Black-76 IV with the family's chord); any family refusal
+  // restarts the inversion on the seed-leg path. Every root is still confirmed.
+  bool deam_family_native = false;
 };
 
 // InvalidArgument unless every channel control is finite and in range

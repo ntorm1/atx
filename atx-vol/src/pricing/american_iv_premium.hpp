@@ -49,14 +49,20 @@ inline constexpr double kIvPremiumShrink = 0.25;
 // confirms when its Newton distance is <= tol; otherwise its Newton step is taken and one
 // more solve confirms (a Screen root sits up to 7.8e-4 max(P, 1) off the accurate map).
 inline constexpr std::uint32_t kIvPremiumConfirmSolves = 2;
+// Family prices one family-native attempt (IvPremiumGate::qfamily_native) may spend
+// before it hands the price to the seed-leg path (a chord counts two).
+inline constexpr std::uint32_t kIvPremiumNativePrices = 12;
 
 // The cold Andersen-Lake points of one contract: sigma and the remainder D = P_am - A
 // of the seed leg A (Barone-Adesi-Whaley where the contract has an exercise region,
-// Black-76 elsewhere; american_iv.cpp `Leg`).
+// Black-76 elsewhere; american_iv.cpp `Leg`). `native` (SPY1s Phase 3): the points are
+// family-native ones (IvPremiumGate::qfamily_native), whose remainder is the family price
+// itself (no leg); a reader of the other kind ignores them.
 struct IvPremiumMemory {
   std::array<double, 2> sigma{};
   std::array<double, 2> rest{};
   std::uint8_t points = 0; // valid entries, most recent first
+  bool native = false;
 };
 
 struct IvPremiumStats {
@@ -163,6 +169,15 @@ struct IvPremiumGate {
   // kernel (and the gate then uses the seed tier's bound as before).
   const AlSigmaQFamily *qfamily = nullptr;
   double qfamily_bound = std::numeric_limits<double>::infinity();
+  // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; with qfamily under Always): the
+  // family's own map P_family(sigma; q) at the strike's own q is iterated WITHOUT the seed
+  // leg (no Barone-Adesi-Whaley / Black-76 model): a bracketed secant-Newton seeded from
+  // the memory's family points, else from the Black-76 IV of the price (an upper bound of
+  // the American IV) with the family's own chord, at most kIvPremiumNativePrices family
+  // prices. Any refusal (a sigma outside the box, a chord that does not rise, the budget)
+  // restarts the attempt on the seed-leg path exactly as a family refusal does today. The
+  // confirm is unchanged.
+  bool qfamily_native = false;
 };
 
 // The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else

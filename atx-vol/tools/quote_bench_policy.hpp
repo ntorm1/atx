@@ -549,6 +549,7 @@ struct FitSpaceOptions {
   QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off;
   double family_c = 3.0;
   bool family_q = false; // quote_slice.hpp deam_family_q (step 5)
+  bool family_native = false; // quote_slice.hpp deam_family_native (SPY1s Phase 3 lever 1)
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -740,6 +741,19 @@ inline constexpr bool kGradedDefaultRungMemo = true;
     throw std::runtime_error("Policy graded family requires deam_profile screen and confirm "
                              "always (band only with family_q)");
   }
+  // Phase 3 lever 1: family-native iterates (quote_slice.hpp deam_family_native) iterate the
+  // (sigma, q) family's own map; confirmed roots only (confirm always).
+  if (graded.contains("family_native")) {
+    if (!graded.at("family_native").is_boolean()) {
+      throw std::runtime_error("Policy graded family_native must be true or false");
+    }
+    out.family_native = graded.at("family_native").get<bool>();
+    if (out.family_native &&
+        (!out.family_q || out.confirm != QuoteSliceDeamConfirm::Always)) {
+      throw std::runtime_error("Policy graded family_native requires family_q and confirm "
+                               "always");
+    }
+  }
   if (graded.contains("family_c")) {
     if (out.family == QuoteSliceDeamFamily::Off) {
       throw std::runtime_error("Policy graded family_c requires family adaptive or always");
@@ -840,6 +854,7 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
         out["family"] = space.family == QuoteSliceDeamFamily::Always ? "always" : "adaptive";
         out["family_c"] = space.family_c;
         if (space.family_q) out["family_q"] = true;
+        if (space.family_native) out["family_native"] = true;
       }
     }
   }
@@ -1005,7 +1020,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
-             "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q"});
+             "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
+             "family_native"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1142,6 +1158,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_family = space.family;
     profile.config.channel.deam_family_c = space.family_c;
     profile.config.channel.deam_family_q = space.family_q;
+    profile.config.channel.deam_family_native = space.family_native;
     profile.config.grid_kernel = space.grid_kernel;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.

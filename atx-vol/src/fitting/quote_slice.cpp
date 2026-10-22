@@ -753,6 +753,7 @@ public:
       gate.family_q = controls.family_q;
       gate.qfamily = controls.qfamily;
       gate.qfamily_bound = controls.qfamily_bound;
+      gate.qfamily_native = controls.qfamily_native;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -903,7 +904,8 @@ public:
                                       config.channel.deam_confirm_kernel,
                                       config.channel.deam_seed_gate_kappa,
                                       config.channel.deam_family, config.channel.deam_family_c,
-                                      config.channel.deam_family_q});
+                                      config.channel.deam_family_q,
+                                      config.channel.deam_family_native});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1684,7 +1686,10 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
         c.deam_confirm == QuoteSliceDeamConfirm::Never ||
         (c.deam_confirm == QuoteSliceDeamConfirm::Band && !c.deam_family_q))) ||
       // (sigma, q) families refine a family mode (B-family: Band allowed with them).
-      (c.deam_family_q && c.deam_family == QuoteSliceDeamFamily::Off)) {
+      (c.deam_family_q && c.deam_family == QuoteSliceDeamFamily::Off) ||
+      // Family-native iterates (Phase 3 lever 1): on (sigma, q) families, confirmed roots.
+      (c.deam_family_native &&
+       (!c.deam_family_q || c.deam_confirm != QuoteSliceDeamConfirm::Always))) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {

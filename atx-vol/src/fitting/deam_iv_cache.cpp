@@ -326,6 +326,7 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
     controls.family_q = cache_.families->q;
     controls.qfamily = cache_.families->of_q(quote.side);
     controls.qfamily_bound = cache_.families->q_bound(quote.side);
+    controls.qfamily_native = confirm_.family_native;
   }
   Result<double> iv =
       model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats, controls);
@@ -498,10 +499,10 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  // 37 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
-  // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 3, two counts),
+  // 38 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
+  // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 4, two counts),
   // then 2 per dividend and 6 per quote.
-  words.reserve(37 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  words.reserve(38 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -555,6 +556,8 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   word(config.channel.deam_family_q ? 1u : 0u);
   word(kDeAmQFamilySigmaNodes);
   word(kDeAmQFamilyQNodes);
+  // Phase 3 lever 1: family-native iterates run another iteration path (same tolerance).
+  word(config.channel.deam_family_native ? 1u : 0u);
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);

@@ -1143,6 +1143,158 @@ struct ColdPoint {
   double rest;
 };
 
+// A family-native attempt's outcome (IvPremiumGate::qfamily_native): an accepted root with
+// the Newton correction taken, the family-map slope of its last step, the last point and
+// its chord partner; not accepted = hand the price to the seed-leg path.
+struct NativeRoot {
+  bool accepted = false;
+  double root = 0.0;
+  double slope = 0.0;
+  double residual_usd = 0.0;
+  ColdPoint last{0.0, 0.0, 0.0};
+  ColdPoint partner{0.0, 0.0, 0.0};
+};
+
+// The family-native iterates (SPY1s Phase 3 lever 1): a bracketed secant-Newton on the
+// (sigma, q) family's own map at the strike's own q, no seed leg. Points are (sigma,
+// P_family) - the memory's when they are family-native ones, else none; the seed is the
+// secant through the two latest points, or (none) the Black-76 IV of the price at the
+// contract's forward clamped into the family box, priced with the family's chord. A step
+// that leaves the root bracket bisects it; a refusal of the family, a chord that does not
+// rise or the price budget ends the attempt unaccepted. Not noexcept: the Black-76
+// inversion's Error path builds a message string.
+[[nodiscard]] NativeRoot family_native_root(double price, double S, double K, double T, double r,
+                                            double q, Side side, double tol,
+                                            const AlSigmaQFamily &f, IvPremiumMemory *memory,
+                                            IvPremiumStats &stats) {
+  NativeRoot out;
+  std::array<ColdPoint, 2> pts{};
+  std::size_t n = 0;
+  if (memory != nullptr && memory->native) {
+    for (std::size_t i = 0; i < memory->points && i < 2; ++i) {
+      pts[n++] = ColdPoint{memory->sigma[i], memory->rest[i], memory->rest[i]};
+    }
+  }
+  // The root bracket [lo, hi] and the family prices at its ends once evaluated (NaN before).
+  double lo = kSigmaLo;
+  double hi = kSigmaHi;
+  double p_lo = std::numeric_limits<double>::quiet_NaN();
+  double p_hi = std::numeric_limits<double>::quiet_NaN();
+  bool falsi = false; // the last fallback step was regula falsi (the next one bisects)
+  for (std::size_t i = 0; i < n; ++i) {
+    if (pts[i].price < price && pts[i].sigma > lo) {
+      lo = pts[i].sigma;
+      p_lo = pts[i].price;
+    } else if (!(pts[i].price < price) && pts[i].sigma < hi) {
+      hi = pts[i].sigma;
+      p_hi = pts[i].price;
+    }
+  }
+  const auto remember = [&](const ColdPoint &p) {
+    pts[1] = pts[0];
+    pts[0] = p;
+    n = std::min<std::size_t>(n + 1, 2);
+    if (memory == nullptr) return;
+    if (!memory->native) memory->points = 0;
+    memory->native = true;
+    memory->sigma[1] = memory->sigma[0];
+    memory->rest[1] = memory->rest[0];
+    memory->sigma[0] = p.sigma;
+    memory->rest[0] = p.price;
+    memory->points = static_cast<std::uint8_t>(std::min<std::size_t>(memory->points + 1u, 2u));
+  };
+  double x = std::numeric_limits<double>::quiet_NaN();
+  bool need_chord = true;
+  if (n >= 2 && pts[0].sigma != pts[1].sigma) {
+    const double e = (pts[0].price - pts[1].price) / (pts[0].sigma - pts[1].sigma);
+    if (std::isfinite(e) && e > 0.0) {
+      x = pts[0].sigma + (price - pts[0].price) / e;
+      need_chord = false;
+    }
+  }
+  if (!std::isfinite(x)) {
+    const double F = S * std::exp((r - q) * T);
+    const Result<double> eu = implied_vol(price, F, K, T, std::exp(-r * T), side);
+    const double margin = 1.0e-9 * (f.sigma_hi() - f.sigma_lo());
+    x = eu && std::isfinite(*eu) ? *eu : f.sigma_hi();
+    x = std::clamp(x, f.sigma_lo() + margin, f.sigma_hi() - margin);
+    need_chord = true;
+  }
+  for (std::uint32_t spent = 0; spent < kIvPremiumNativePrices;) {
+    if (!(x > kSigmaLo && x < kSigmaHi)) return out;
+    ColdPoint cur{x, 0.0, 0.0};
+    std::optional<ColdPoint> partner;
+    if (need_chord) {
+      const AlSigmaQFamilyChord fc = f.price_and_chord(S, K, x, q);
+      spent += 2u;
+      stats.family_prices += 2u;
+      if (fc.status != AlSigmaQFamilyStatus::Ok || !std::isfinite(fc.price) ||
+          !std::isfinite(fc.price_sigma_bumped)) {
+        return out;
+      }
+      cur.price = cur.rest = fc.price;
+      partner = ColdPoint{x + kAlPackSigmaBump, fc.price_sigma_bumped, fc.price_sigma_bumped};
+      remember(*partner);
+    } else {
+      const AlSigmaQFamilyPrice fp = f.price(S, K, x, q);
+      ++spent;
+      ++stats.family_prices;
+      if (fp.status != AlSigmaQFamilyStatus::Ok || !std::isfinite(fp.price)) return out;
+      cur.price = cur.rest = fp.price;
+      for (std::size_t i = 0; i < n; ++i) {
+        if (pts[i].sigma != x) {
+          partner = pts[i];
+          break;
+        }
+      }
+    }
+    remember(cur);
+    if (!partner) {
+      need_chord = true;
+      continue;
+    }
+    const double res = cur.price - price;
+    if (res > 0.0 && x < hi) {
+      hi = x;
+      p_hi = cur.price;
+    } else if (!(res > 0.0) && x > lo) {
+      lo = x;
+      p_lo = cur.price;
+    }
+    const double slope = (cur.price - partner->price) / (cur.sigma - partner->sigma);
+    const bool rising = std::isfinite(slope) && slope > kCertSlopeFloorRel * K;
+    const double d = rising ? res / slope : std::numeric_limits<double>::quiet_NaN();
+    if (rising && std::fabs(d) <= tol) {
+      out.accepted = true;
+      out.root = x - d;
+      out.slope = slope;
+      out.residual_usd = std::fabs(res);
+      out.last = cur;
+      out.partner = *partner;
+      return out;
+    }
+    // A step outside the bracket, or no usable slope (the flat map just above a deep
+    // in-the-money put's intrinsic): regula falsi on an evaluated bracket, alternating with
+    // bisection so a convex side cannot stall it; without an evaluated bracket, unaccepted.
+    double next = rising ? x - d : std::numeric_limits<double>::quiet_NaN();
+    if (!(next > lo && next < hi)) {
+      const bool bracketed = std::isfinite(p_lo) && std::isfinite(p_hi) && p_hi > p_lo;
+      if (!bracketed) {
+        if (!rising) return out;
+        next = 0.5 * (lo + hi);
+      } else {
+        next = falsi ? 0.5 * (lo + hi) : lo + (price - p_lo) / (p_hi - p_lo) * (hi - lo);
+        falsi = !falsi;
+        if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+      }
+    }
+    if (next == x) return out;
+    x = next;
+    need_chord = false;
+  }
+  return out;
+}
+
 // The Premium root, or nullopt with stats.fallback set (the caller then runs Search).
 // Not noexcept: andersen_lake's Error path builds a message string.
 // `seed_opts` / `confirm` are taken by value: a price inside the seed tier's own
@@ -1323,11 +1475,28 @@ struct ColdPoint {
     on_qfamily = true;
     family = nullptr;
   }
+  // Family-native iterates (IvPremiumGate::qfamily_native, SPY1s Phase 3 lever 1): the
+  // family's own map without the seed leg; an unaccepted attempt restarts on the seed-leg
+  // path on the seed kernel, exactly as a family refusal does below.
+  if (on_qfamily && gate->qfamily_native && gate->policy == IvConfirmPolicy::Always) {
+    const NativeRoot native =
+        family_native_root(price, S, K, T, r, q, side, tol, *qfamily, memory, stats);
+    if (native.accepted) {
+      stats.last_residual_usd = native.residual_usd;
+      return accept(native.root, native.slope, native.last, &native.partner);
+    }
+    on_qfamily = false;
+    stats.family_refused = true;
+    if (memory != nullptr) {
+      memory->points = 0;
+      memory->native = false;
+    }
+  }
 
   // Up to two cold points, most recent first: the memory's, then this attempt's.
   std::array<ColdPoint, 2> pts{};
   std::size_t n = 0;
-  if (memory != nullptr) {
+  if (memory != nullptr && !memory->native) {
     for (std::size_t i = 0; i < memory->points && i < 2; ++i) {
       const std::optional<double> a = leg.price(memory->sigma[i]);
       if (!a) {
@@ -1454,6 +1623,8 @@ struct ColdPoint {
       slope = *leg_slope;
     }
     if (memory != nullptr) {
+      if (memory->native) memory->points = 0; // never mix family-native and leg points
+      memory->native = false;
       memory->sigma[1] = memory->sigma[0];
       memory->rest[1] = memory->rest[0];
       memory->sigma[0] = s;

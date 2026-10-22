@@ -865,7 +865,18 @@ def test_native_graded_options_are_strict(binary, tmp_path):
               "graded": {"fit_space": "vol", "deam_profile": "screen", "deam_cache": True,
                          "deam_inversion": "premium", "family": "adaptive",
                          "grid_kernel": "family"}},
-             "grid_kernel family requires family_q and deam_cache")):
+             "grid_kernel family requires family_q and deam_cache"),
+            # Family-native iterates (SPY1s Phase 3 lever 1).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "adaptive",
+                         "family_native": True}},
+             "family_native requires family_q and confirm always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "adaptive", "family_q": True,
+                         "family_native": 1}},
+             "family_native must be true or false")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
