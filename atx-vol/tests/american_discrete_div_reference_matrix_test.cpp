@@ -497,24 +497,31 @@ void write_tables(const std::vector<Row> &rows, std::FILE *md) {
   emit(md, "<!-- END D0 CONVERGENCE TABLE -->");
 }
 
+// The summary buckets: event count x tenor, disjoint except the closing "all".
+struct Bucket {
+  const char *events;
+  const char *tenor;
+  std::size_t ev_lo, ev_hi;
+  double t_lo, t_hi;
+};
+constexpr std::array<Bucket, 6> kBuckets{{{"1", "<= 0.5 y", 1, 1, 0.0, 0.5},
+                                          {"1", "0.5-1.5 y", 1, 1, 0.5, 1.5},
+                                          {"2-4", "<= 1.5 y", 2, 4, 0.0, 1.5},
+                                          {"5-8", "1.5-2.5 y", 5, 8, 1.5, 2.5},
+                                          {"9-12", "> 2 y", 9, 99, 2.0, 99.0},
+                                          {"all", "all", 0, 99, 0.0, 99.0}}};
+
+[[nodiscard]] bool in_bucket(const Bucket &b, const Case &c) {
+  const std::size_t ev = event_count(c);
+  return ev >= b.ev_lo && ev <= b.ev_hi && c.T > b.t_lo && c.T <= b.t_hi;
+}
+
 void write_summary(const std::vector<Row> &rows, std::FILE *md) {
-  struct Bucket {
-    const char *events;
-    const char *tenor;
-    std::size_t ev_lo, ev_hi;
-    double t_lo, t_hi;
-  };
-  const std::array<Bucket, 6> buckets{{{"1", "<= 0.5 y", 1, 1, 0.0, 0.5},
-                                       {"1", "0.5-1.5 y", 1, 1, 0.5, 1.5},
-                                       {"2-4", "<= 1.5 y", 2, 4, 0.0, 1.5},
-                                       {"8", "1.5-2.5 y", 5, 99, 1.5, 2.5},
-                                       {"9-12", "> 2 y", 9, 99, 2.0, 99.0},
-                                       {"all", "all", 0, 99, 0.0, 99.0}}};
   emit(md, "<!-- BEGIN D0 SUMMARY TABLE -->");
   emit(md, "| events | tenor | n | max abs d301 USD | max abs d301 IV bp (inv) | max abs dcmp USD "
            "| max abs dcmp bp | cmp claim violated | UNRESOLVED |");
   emit(md, "|---|---|---|---|---|---|---|---|---|");
-  for (const Bucket &b : buckets) {
+  for (const Bucket &b : kBuckets) {
     std::size_t n = 0;
     std::size_t unresolved = 0;
     std::size_t violated = 0;
@@ -523,11 +530,9 @@ void write_summary(const std::vector<Row> &rows, std::FILE *md) {
     double dcmp = 0.0;
     double bcmp = 0.0;
     for (const Row &r : rows) {
-      const std::size_t ev = event_count(r.c);
       // Group I's survivor rows (a convention the kernel does not implement) stay
       // out of the kernel-error buckets; the comparison table carries them.
-      if (!r.kernel_model() || ev < b.ev_lo || ev > b.ev_hi || !(r.c.T > b.t_lo) ||
-          r.c.T > b.t_hi) {
+      if (!r.kernel_model() || !in_bucket(b, r.c)) {
         continue;
       }
       ++n;
@@ -635,6 +640,110 @@ void derivative_study(const std::vector<Row> &rows, std::FILE *md) {
   emit(md, "<!-- END D0 DERIVATIVE TABLE -->");
 }
 
+// ── The step ladder behind the decision memo: each kernel-model row's default
+// scheme (SplicedCrr; EscrowedLeisenReimer for group H) at 301 / 601 / 1,201 /
+// 2,401 steps, its error in LINEARISED IV bp, -(P_N - ref) / vega (the sign of the
+// comparison table's inverted column), per row for the multi-event chains and as a
+// max by bucket over the IV-identified rows; then the per-price cost of each N on
+// the 12-event LEAPS (best of 5, this host, whatever else it was running).
+constexpr std::array<int, 4> kLadderSteps{301, 601, 1201, 2401};
+
+void step_ladder(const std::vector<Row> &rows, DiscreteDivWorkspace &ws, std::FILE *md) {
+  struct Line {
+    const Row *row = nullptr;
+    std::array<double, kLadderSteps.size()> bp{};
+  };
+  const auto price_at = [&](const Case &c, int steps, DiscreteDivScheme scheme) {
+    return american_discrete_div_price(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, c.divs, steps,
+                                       ExerciseStyle::American, scheme, ws);
+  };
+  std::vector<Line> lines;
+  for (const Row &r : rows) {
+    if (!r.kernel_model() || !r.iv_identified()) {
+      continue;
+    }
+    Line line;
+    line.row = &r;
+    for (std::size_t j = 0; j < kLadderSteps.size(); ++j) {
+      const auto p = price_at(r.c, kLadderSteps[j], r.k.scheme301);
+      EXPECT_TRUE(p.has_value()) << r.c.id << " at " << kLadderSteps[j];
+      line.bp[j] = p ? -1.0e4 * (*p - r.ref.value) / r.vega : std::nan("");
+    }
+    lines.push_back(line);
+  }
+  emit(md, "<!-- BEGIN D0 STEP LADDER TABLE -->");
+  emit(md, "| id | events | T | scheme | IV bp at 301 | 601 | 1201 | 2401 |");
+  emit(md, "|---|---|---|---|---|---|---|---|");
+  for (const Line &l : lines) {
+    if (event_count(l.row->c) < 2) {
+      continue;
+    }
+    std::string text = "| " + l.row->c.id + " | " + std::to_string(event_count(l.row->c)) +
+                       " | " + fmt("%.4g", l.row->c.T) + " | " +
+                       std::string(atx::vol::to_string(l.row->k.scheme301)) + " |";
+    for (const double bp : l.bp) {
+      text += " " + fmt("%+.3f", bp) + " |";
+    }
+    emit(md, text);
+  }
+  emit(md, "");
+  emit(md, "| events | tenor | n (IV-identified) | max abs IV bp at 301 | 601 | 1201 | 2401 |");
+  emit(md, "|---|---|---|---|---|---|---|");
+  for (const Bucket &b : kBuckets) {
+    std::size_t n = 0;
+    std::array<double, kLadderSteps.size()> worst{};
+    for (const Line &l : lines) {
+      if (!in_bucket(b, l.row->c)) {
+        continue;
+      }
+      ++n;
+      for (std::size_t j = 0; j < worst.size(); ++j) {
+        worst[j] = std::max(worst[j], std::abs(l.bp[j]));
+      }
+    }
+    std::string text = std::string("| ") + b.events + " | " + b.tenor + " | " +
+                       std::to_string(n) + " |";
+    for (const double w : worst) {
+      text += " " + fmt("%.3f", w) + " |";
+    }
+    emit(md, text);
+  }
+  emit(md, "");
+  const auto it = std::find_if(rows.begin(), rows.end(), [](const Row &r) {
+    return r.c.id == "D12p";
+  });
+  if (it != rows.end()) {
+    const auto best_us = [&](const auto &fn) {
+      double best = 1.0e300;
+      for (int rep = 0; rep < 5; ++rep) {
+        const auto t0 = std::chrono::steady_clock::now();
+        fn();
+        best = std::min(best, std::chrono::duration<double, std::micro>(
+                                  std::chrono::steady_clock::now() - t0)
+                                  .count());
+      }
+      return best;
+    };
+    std::string text = "Per-price cost on D12p (SplicedCrr, best of 5, us):";
+    for (const int steps : kLadderSteps) {
+      const double us = best_us([&] {
+        const auto p = price_at(it->c, steps, DiscreteDivScheme::SplicedCrr);
+        EXPECT_TRUE(p.has_value());
+      });
+      text += " " + std::to_string(steps) + " " + fmt("%.0f", us) + ";";
+    }
+    const double us_cmp = best_us([&] {
+      const auto p = american_discrete_div_converged_price(it->c.S, it->c.K, it->c.T, it->c.sigma,
+                                                           it->c.r, it->c.q, it->c.side,
+                                                           it->c.divs, ExerciseStyle::American, ws);
+      EXPECT_TRUE(p.has_value());
+    });
+    text += " refined comparator " + fmt("%.0f", us_cmp) + ".";
+    emit(md, text);
+  }
+  emit(md, "<!-- END D0 STEP LADDER TABLE -->");
+}
+
 TEST(DiscreteDivReferenceMatrix, FullMatrixAgainstTheLatticeKernel) {
   const auto t_all = std::chrono::steady_clock::now();
   DiscreteDivWorkspace ws(kDiscreteDivConvergedSteps);
@@ -671,6 +780,8 @@ TEST(DiscreteDivReferenceMatrix, FullMatrixAgainstTheLatticeKernel) {
   write_tables(rows, md);
   emit(md, "");
   write_summary(rows, md);
+  emit(md, "");
+  step_ladder(rows, ws, md);
   emit(md, "");
   derivative_study(rows, md);
   if (md != nullptr) {
