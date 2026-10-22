@@ -275,7 +275,7 @@ void finish_node_boundary(const PremiumNodes &pn, const double *y, const double 
 // inversion) — g[i · n_sigma + s] = Σ_j b_j(q) h[(i · n_q + j) · n_sigma + s] and the
 // carry — so a σ evaluation is two n_sigma-dots per premium node (y_i and dy_i/dσ), no
 // τ interpolation and no q work. (A q-contracted τ-series tile that interpolates in τ per
-// call measured 11-15% slower and was deleted; see docs/sigma-q-fused-vega.md.)
+// call measured 12-18% slower and was deleted; see docs/sigma-q-fused-vega.md.)
 struct PremiumTable {
   bool ok = false;
   std::uint64_t stamp = 0; // process-unique per successful build (a tile records it)

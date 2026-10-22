@@ -82,9 +82,10 @@ family's `AlSigmaQFamilyStatus`). Nothing in the evaluation path allocates
 
 **Decision.** A second tile mode was prototyped as the control. It kept the
 q-contracted τ-node series and interpolated in τ per call. On vol-rel-avx2 it measured
-4.7 µs against 4.0 µs for the precontracted tile on spy23 and spyall (12, 4), and 4.5 µs
-against 4.0 µs on spyall (16, 4). That is 11–15% slower, outside the 10% keep band, so
-it was **deleted**, together with the table's τ-grid and series copies. Evidence:
+4.7 µs against 4.0 µs for the precontracted tile on spy23 and spyall (12, 4), 4.2 against
+3.6 on spylong (12, 4), and 4.5 against 4.0 on spyall (16, 4). Across all six rows it was
+12.5–17.5% slower (the precontracted tile is 11–15% faster), outside the 10% keep band,
+so it was **deleted**, together with the table's τ-grid and series copies. Evidence:
 `C:\atx-cache\quote-benchmark\K1-20261022-fused\bench\sqfused-1.json` (`con_us_p50`).
 
 ## Equivalence and validation (vol-rel, AVX2 host; scalar and AVX2 builds)
