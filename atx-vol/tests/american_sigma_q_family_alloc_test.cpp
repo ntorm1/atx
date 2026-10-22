@@ -6,7 +6,11 @@
 // Counted with tests/support/alloc_counter.* (thread-local armed tally over a replaced
 // global operator new), linked ONLY into atx-vol-sigma-q-family-alloc-tests, never into
 // the monolithic atx-vol-tests or a slice (which must keep the default operator new).
+// L2h-c (2026-10-21): price_strikes and self_check() join the counted path (the q box
+// narrowed to [0.02, 0.021] so the 4-node family passes the q-axis accuracy guard).
+#include <array>
 #include <cstdint>
+#include <span>
 
 #include <gtest/gtest.h>
 
@@ -21,12 +25,16 @@ TEST(AlSigmaQFamilyAlloc, PricePathAllocatesNothing) {
   for (const Side side : {Side::Put, Side::Call}) {
     for (const std::uint16_t n_q : {std::uint16_t{1}, std::uint16_t{4}}) {
       AlSigmaQFamily fam(g, side, 100.0);
-      const double q_hi = (n_q == 1) ? 0.02 : 0.03;
-      ASSERT_TRUE(fam.prepare(0.1, 0.6, 12, 0.02, q_hi, n_q));
+      const double q_hi = (n_q == 1) ? 0.02 : 0.021;
+      ASSERT_TRUE(fam.prepare(0.1, 0.6, 12, 0.02, q_hi, n_q, AlSigmaFamilyAxis::LogSigma,
+                              AlSigmaQFamilyCheck::OffNode));
+      constexpr std::array<double, 4> kStrikes = {70.0, 95.0, 100.0, 120.0};
+      std::array<double, 4> batch{};
       double sum = 0.0;
       unsigned priced = 0;
+      unsigned batches = 0;
       const std::uint64_t n = testkit::count_allocations([&] {
-        for (const double K : {70.0, 95.0, 100.0, 120.0}) {
+        for (const double K : kStrikes) {
           for (const double sigma : {0.1, 0.23, 0.41, 0.59}) {
             const AlSigmaQFamilyPrice p = fam.price(100.0, K, sigma, 0.02);
             const AlSigmaQFamilyChord c = fam.price_and_chord(100.0, K, sigma, 0.02);
@@ -38,9 +46,20 @@ TEST(AlSigmaQFamilyAlloc, PricePathAllocatesNothing) {
             }
           }
         }
+        for (const double sigma : {0.1, 0.23, 0.41, 0.59}) {
+          if (fam.price_strikes(100.0, kStrikes, sigma, 0.02, batch) ==
+              AlSigmaQFamilyStatus::Ok) {
+            sum += batch[0] + batch[3];
+            ++batches;
+          }
+        }
+        if (fam.self_check().status == AlSigmaQFamilyStatus::Ok) {
+          sum += fam.self_check().max_abs_per_strike;
+        }
       });
       EXPECT_EQ(n, 0u) << (side == Side::Put ? "put" : "call") << " n_q=" << n_q;
       EXPECT_EQ(priced, 16u);
+      EXPECT_EQ(batches, 4u);
       EXPECT_GT(sum, 0.0);
     }
   }

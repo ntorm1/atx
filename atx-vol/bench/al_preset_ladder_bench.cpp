@@ -2561,6 +2561,7 @@ struct SqGroupRun {
   bool built = false;
   double build_us = 0.0;
   std::string refusal;
+  std::size_t state_bytes = 0; // L2h-c: the family's own (exactly sized) state
 };
 
 // got[local * n_sig + k] receives the family price (NaN on a refusal); price_us /
@@ -2591,6 +2592,7 @@ struct SqGroupRun {
   std::sort(reps.begin(), reps.end());
   out.built = true;
   out.build_us = reps[reps.size() / 2];
+  out.state_bytes = (n_q == 0) ? AlSigmaFamily::state_bytes() : qf.state_bytes();
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const std::size_t n_sig = g.sigmas.size();
   got.assign(g.idx.size() * n_sig, nan);
@@ -2647,10 +2649,12 @@ void run_sqfamily(benchmark::State &state, SqSet set, const char *set_name, unsi
   double cold_groups = 0.0;
   double priced = 0.0;
   double q_spread_max = 0.0;
+  double state_bytes_max = 0.0;
   std::vector<double> got;
   for (auto _ : state) {
     for (const SqGroup &g : d.groups) {
       const SqGroupRun run = run_sq_group(g, n_q, n_sigma, pts, got, price_us, chord_us);
+      state_bytes_max = std::max(state_bytes_max, static_cast<double>(run.state_bytes));
       if (!run.built) {
         cold_groups += 1.0;
         refused += static_cast<double>(g.idx.size() * g.sigmas.size());
@@ -2720,8 +2724,7 @@ void run_sqfamily(benchmark::State &state, SqSet set, const char *set_name, unsi
   state.counters["price_max_rel"] = p_rel.max();
   state.counters["price_p99_rel"] = p_rel.quantile(0.99);
   state.counters["price_max_scaled"] = max_scaled;
-  state.counters["state_bytes"] = static_cast<double>(
-      n_q == 0 ? AlSigmaFamily::state_bytes() : AlSigmaQFamily::state_bytes());
+  state.counters["state_bytes"] = state_bytes_max;
   state.counters["n_sigma"] = static_cast<double>(n_sigma);
   if (worst_rel >= 0.0) {
     std::fprintf(stderr, "[sqfamily] %s/nq%u/ns%u worst_rel=%.6g %s\n", set_name, n_q, n_sigma,

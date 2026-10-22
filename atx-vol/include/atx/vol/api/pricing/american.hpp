@@ -779,24 +779,46 @@ private:
 // per n_q in sprints/2026-10-21-L2hb-sigma-q-family-sprint.md; pinned by
 // AlSigmaQFamily.* (tests/american_sigma_q_family_test.cpp).
 //
+// THE BUILD (L2h-c, 2026-10-21; sprints/2026-10-21-L2hc-family-build-speed-sprint.md).
+// On an AVX2 host (simd::use_avx2(), i.e. unless SimdIsa::ForceScalar) under the
+// Reference profile and the Baw seed, the n_σ·n_q node boundaries are solved FOUR AT A
+// TIME through the AVX2 boundary-batch kernel (the one andersen_lake's put batch rides;
+// same scheme, same sweep budget and tol), a remainder < 4 and any lane the kernel
+// hands back on the scalar prepared solve. The AVX2 boundary differs from the scalar one
+// at rounding level (the batch's AvxBoundary parity, <= ~4e-13), so an AVX2-built family
+// is NOT bit-identical to a scalar-built one; every accuracy pin holds on both builds.
+// Under ForceScalar (or another profile / seed) every node is the scalar prepared solve.
+//
 // THE q BOX. q_hi - q_lo <= kAlSigmaQFamilyDegenerateWidth collapses the axis to ONE
-// node at the box midpoint: the family is then AlSigmaFamily at that q BIT FOR BIT
-// (pinned). Otherwise n_q in [kAlSigmaQFamilyMinQNodes, kAlSigmaQFamilyMaxQNodes]. A q
-// outside [q_lo, q_hi] refuses (YieldOutsideBox; never extrapolated). prepare()
-// refuses with NotImplemented a box on which the side is not American at both ends
-// (a call needs q > 0 — a q <= 0 call never exercises early: price it in closed form)
-// or one that straddles q = r (the boundary's scale K·min(1, r/q) has a kink there and
-// the near-expiry boundary changes form — split the box at r). ACCURACY falls with the
-// box's width relative to its distance from q = r (and, for calls, from q = 0): SPY's
-// boxes (<= 1.8e-3 wide, >= 3 % from r) sit at the σ floor with n_q = 4; a 4 %-wide box
-// needs splitting (measured in the note).
+// node at the box midpoint: the family is then AlSigmaFamily at that q — BIT FOR BIT
+// on the scalar build, within the pinned rounding bound on the AVX2 build. Otherwise
+// n_q in [kAlSigmaQFamilyMinQNodes, kAlSigmaQFamilyMaxQNodes]. A q outside [q_lo,
+// q_hi] refuses (YieldOutsideBox; never extrapolated). prepare() refuses with
+// NotImplemented a box on which the side is not American at both ends (a call needs
+// q > 0 — a q <= 0 call never exercises early: price it in closed form), one that
+// straddles q = r (the boundary's scale K·min(1, r/q) has a kink there and the
+// near-expiry boundary changes form — split the box at r), and — the ACCURACY GUARD —
+// a box too wide for its distance to q = r (the singular point of y(q) on both sides):
+// with a = |box centre − r| / box half-width and the Bernstein-ellipse factor
+// rho = a + sqrt(a² − 1), a box is refused when rho^(−n_q) >
+// kAlSigmaQFamilyMaxQAxisEstimate (a box touching r has rho = 1). Measured, the q-axis
+// price error is 0.008-0.5 × rho^(−n_q); SPY's boxes (<= 1.8e-3 wide, >= 4 % from r:
+// rho >= 116) pass at n_q >= 3, a 1 %-wide box centred 3 % from r needs n_q >= 6, a
+// 4 %-wide box near r is refused at every n_q — split it into narrower boxes (or raise
+// n_q) until each passes.
+// (q = 0 is singular for calls too, but the call's exercise premium vanishes there —
+// review-L2hb's probe priced q in [2e-5, 9e-4] calls at 0 USD error — so the guard
+// measures r only.)
 //
 // THE GEOMETRY supplies T, r, the AL scheme and the premium quadrature's tables; its
-// own q is used by no node and no price, but its orientation for `side` must be
-// prepared (the side American at the geometry's q), so build it at a q inside the box
-// (the expiry's effective yield). Anchor, ownership, threads (const, allocation-free,
-// thread-safe price calls after prepare()), the re-prepare stamp, the L1c band rule
-// and every other refusal are AlSigmaFamily's (above). Nothing default selects it.
+// own q is used by no node and no price. The quadrature header the price path reads
+// (Gauss-Legendre pointers + flags) is q- and side-free, so the family takes it from
+// the geometry's orientation for `side` or, when that side is European at the
+// geometry's q (a q > 0 call box on an expiry whose geometry q <= 0), from the other
+// side's orientation — the same scheme, the same tables (review-L2hb m1). Anchor,
+// ownership, threads (const, allocation-free, thread-safe price calls after
+// prepare()), the re-prepare stamp, the L1c band rule and every other refusal are
+// AlSigmaFamily's (above). Nothing default selects it.
 
 // AlSigmaFamilyStatus plus YieldOutsideBox; the shared enumerators carry the SAME
 // values (a caller may map one onto the other by value).
@@ -824,6 +846,36 @@ struct AlSigmaQFamilyChord {
 inline constexpr std::uint16_t kAlSigmaQFamilyMinQNodes = 2;
 inline constexpr std::uint16_t kAlSigmaQFamilyMaxQNodes = 8;
 inline constexpr double kAlSigmaQFamilyDegenerateWidth = 1.0e-12;
+// The accuracy guard's ceiling on rho^(−n_q) (THE q BOX above).
+inline constexpr double kAlSigmaQFamilyMaxQAxisEstimate = 1.0e-6;
+
+// prepare()'s optional self-check (opt-in: it costs four scalar Reference boundary
+// solves + 24 quadratures, ≈ 0.6-0.8 ms per family).
+enum class AlSigmaQFamilyCheck : std::uint8_t {
+  None = 0,    // no check (self_check() reports NotPrepared)
+  OffNode = 1, // measure the family against the cold Reference off its nodes
+};
+
+// The family's own measured error, for a certificate to cite per (expiry, side). Four
+// check points sit at the midpoints of the first and the central cell of each axis
+// (the σ axis on its LogSigma / Sigma coordinate; on a collapsed q box the q node, so
+// the points pair up); at each, the cold Reference boundary is solved by the scalar
+// prepared solve at the anchor (bit-identical to the cold al_solve_put_boundary) and
+// the family's price is compared with the price from that boundary at internal
+// moneyness S/K in {0.8, 1.0, 1.25} (K = the anchor; the price is homogeneous of
+// degree 1, so max_abs_per_strike × K estimates |dP| in USD at that moneyness). An
+// estimate, not an enclosure: the error between the check points is not bounded by it
+// (the sprint note compares it with each chain's measured worst).
+struct AlSigmaQFamilySelfCheck {
+  double max_abs_per_strike = std::numeric_limits<double>::quiet_NaN(); // max |dP| / K
+  double max_rel = std::numeric_limits<double>::quiet_NaN(); // max |dP| / P, P >= 1e-4 K
+  std::uint16_t prices = 0; // price pairs compared (0 when no check point solved)
+  AlSigmaQFamilyStatus status = AlSigmaQFamilyStatus::NotPrepared; // Ok iff measured
+};
+
+namespace sigma_q_family_detail {
+struct QFamilyAccess; // the internal accessor (src/pricing/american_sigma_q_family.hpp)
+} // namespace sigma_q_family_detail
 
 class AlSigmaQFamily {
 public:
@@ -835,21 +887,25 @@ public:
   AlSigmaQFamily(const AlSigmaQFamily &) = delete;
   AlSigmaQFamily &operator=(const AlSigmaQFamily &) = delete;
 
-  // Solve the n_sigma x n_q node boundaries over [sigma_lo, sigma_hi] x [q_lo, q_hi].
-  // Refuses — leaving the family UNPREPARED, never half-built — with InvalidArgument
-  // for every AlSigmaFamily::prepare InvalidArgument case, a non-finite or inverted q
-  // box (q_lo > q_hi), or n_q outside [kAlSigmaQFamilyMinQNodes,
+  // Solve the n_sigma x n_q node boundaries over [sigma_lo, sigma_hi] x [q_lo, q_hi]
+  // (THE BUILD above). Refuses — leaving the family UNPREPARED, never half-built — with
+  // InvalidArgument for every AlSigmaFamily::prepare InvalidArgument case, a non-finite
+  // or inverted q box (q_lo > q_hi), or n_q outside [kAlSigmaQFamilyMinQNodes,
   // kAlSigmaQFamilyMaxQNodes] on a non-degenerate box (n_q is ignored on a degenerate
-  // one); with NotImplemented when the geometry has no orientation for `side`, the side
-  // is not American at q_lo or q_hi, the box straddles q = r, a node boundary
-  // collapses or a node sweep cannot move (the kernel's NotConverged); with Internal
-  // when the Gauss-Legendre tables are missing. Allocates one ~90 KB block of solve
-  // scratch (one node orientation + the retained solve state) for its duration; the
-  // price path allocates nothing. On any refusal the previous preparation, if any, is
-  // discarded (prepared() == false).
+  // one); with NotImplemented when the geometry has no American orientation on either
+  // side, the side is not American at q_lo or q_hi, the box straddles q = r, the box
+  // fails the accuracy guard, a node boundary collapses or a node sweep cannot move
+  // (the kernel's NotConverged); with Internal when the Gauss-Legendre tables are
+  // missing. `check` == OffNode also runs the self-check (self_check()). Allocates its
+  // solve scratch (≈ 0.3 MB: one node orientation, the retained scalar solve state and
+  // one 4-lane AVX2 pack) for its duration and the node tensor (sized from (n_boundary,
+  // n_q, n_sigma); kept across a re-prepare of the same shape); the price path
+  // allocates nothing. On any refusal the previous preparation, if any, is discarded
+  // (prepared() == false).
   [[nodiscard]] Status prepare(double sigma_lo, double sigma_hi, std::uint16_t n_sigma, double q_lo,
                                double q_hi, std::uint16_t n_q,
-                               AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma);
+                               AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma,
+                               AlSigmaQFamilyCheck check = AlSigmaQFamilyCheck::None);
 
   [[nodiscard]] bool prepared() const noexcept;
   [[nodiscard]] double sigma_lo() const noexcept;
@@ -875,12 +931,30 @@ public:
   [[nodiscard]] AlSigmaQFamilyChord price_and_chord(double S, double K, double sigma,
                                                     double q) const noexcept;
 
-  // Bytes of state this family owns (one heap block, allocated at construction).
-  [[nodiscard]] static std::size_t state_bytes() noexcept;
+  // L2h-c: the strikes K[0..n) of this family's side at ONE (sigma, q) into out[i] —
+  // the boundary is interpolated ONCE, then each strike runs its rescale + European leg
+  // + premium quadrature; out[i] == price(S, K[i], sigma, q).price to the bit. K and out
+  // must have equal lengths, else InvalidArgument with nothing written. The (S, sigma,
+  // q) refusals are price()'s, with every out[i] NaN; a strike that is not finite and
+  // > 0 gets NaN while the rest are priced, and the call then returns InvalidArgument.
+  // Const, allocation-free, thread-safe.
+  [[nodiscard]] AlSigmaQFamilyStatus price_strikes(double S, std::span<const double> K,
+                                                   double sigma, double q,
+                                                   std::span<double> out) const noexcept;
 
-  struct State; // defined in src/pricing/american_sigma_q_family.hpp (not public)
+  // L2h-c: the self-check prepare(…, AlSigmaQFamilyCheck::OffNode) measured (status Ok),
+  // or the reason there is none (NotPrepared: not prepared, or prepared without the
+  // check; GeometryRePrepared). Reads stored numbers: const, allocation-free.
+  [[nodiscard]] AlSigmaQFamilySelfCheck self_check() const noexcept;
+
+  // Heap bytes this family owns: the fixed state block (allocated at construction) plus
+  // the node tensor sized at prepare() from (n_boundary, n_q, n_sigma) — n_boundary ·
+  // n_q · n_sigma doubles; 0 tensor bytes while unprepared.
+  [[nodiscard]] std::size_t state_bytes() const noexcept;
 
 private:
+  struct State; // defined in src/pricing/american_sigma_q_family.hpp (not public)
+  friend struct sigma_q_family_detail::QFamilyAccess; // L2h-c: internal const accessor
   std::unique_ptr<State> st_;
 };
 // ── end L2h-b sigma-q family ──
