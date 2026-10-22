@@ -263,3 +263,58 @@ Pending: knot-first ladder (inherits the AAPL Nov 20 / SPY 23 d calendar slot ho
 ## Resume 5 wave 1 complete
 
 Wave 1 merged four lanes into `feat/vol-resume4-20261016` (base `7ca31c95`): review-cleanup `3465221c` at `ef5bc6c3` (1a), serve-path `03a5463b` at `3fa27b00` (1b), smooth-div `4e263541` at `53f728c7` (1c) and slice-repair `5e30330c` at `37addcd0` (1d). Parity ran once, on the final root binary `37addcd0` (quote-bench sha256 `4829965a...`, `ATX_VOL_FIT_WORKERS=3`, outputs in `C:/atx-cache/quote-benchmark/integrate-1d-20261017-parity/`), with every opt-in key off: dev200 default quote-slice `c89d0739`, graded-v1 `1348f63d`, R104 common `6b129f64`, dividend default `abc75955` and dev200b default `4b273b08` all MATCH, as do dev200b divsched `747d3e6c`, dev200b graded-v1 `4c70d2bc` and cohort5 graded-v1 `7fa3c415`. The lanes' opt-in outputs also reproduce on the merged binary: escrowed-lr `2cfda793` (dev200) / `5a9c1f5f` (dev200b) and repair-dominance-v3 `97fad2f0` (cohort5) / `14d9dc6d` (dev200). No default moved, no holdout touched, nothing pushed.
+
+## W2c-c / r5 R0 integration (vol-sota master plan Sprint 0, 2026-10-22)
+
+Wave W2c-b stopped at its merge root `7344eb37` with its gates unrecorded and W2c-c was never merged (deep review F01).
+Lane R0 (run `vol-sota-r5-20261022`, pool-3) finished the W2c-b gates at that exact SHA, then merged the three remaining
+approved opt-in lanes onto a new root branch `feat/vol-resume5-20261022` cut from `7344eb37`. No default promoted;
+nothing pushed. The first four rows are the W2c-b merges already on `feat/vol-resume4-20261016`, recorded here because
+W2c-b never made its docs commit.
+
+| Merge | Lane SHA | Outcome |
+| --- | --- | --- |
+| `ef13997a` | L2h-b sigma-q family `c16f2bac` (W2c-b; brings L3g wip `a4b34521`) | review APPROVE_WITH_MINORS; clean; opt-in kernel, no caller |
+| `15b93b2c` | L3g family Greeks `e567110c` (W2c-b) | review APPROVE_WITH_MINORS; 1 conflict `american.hpp`, union of the two marked sub-blocks (blob `27b39d53`) |
+| `59029ade` | L3f cash-dividend kernel `7d0d8468` (W2c-b) | review APPROVE_WITH_MINORS; clean, opt-in; m5 moved-from `buffers()` guard deferred |
+| `7344eb37` | L3r1 dense-chain certificate `09a3c837` (W2c-b) | review APPROVE_WITH_MINORS, opt-in (default `exact`); 2 conflicts, unions (`quote_bench_policy.hpp` `1187c46b`, CLI strict cases `7821abec`) |
+| `1d5b324a` | L2h-c family build speed `af74ffe9` (r5 R0) | review APPROVE_WITH_MINORS (n1-n7); clean, kernel-only |
+| `ad205211` | L2h-c review n1 (r5 R0) | comments only: `AlSigmaQFamilySelfCheck` / `self_check()` are a 12-point sampled estimate, not a bound |
+| `b319975b` | L3q market distance `95506f61` (r5 R0) | review APPROVE_WITH_MINORS (m1-m8), opt-in (`graded.market_distance` off); 1 conflict, allow-list union (`82896af6`) |
+| `342aaf2e` | L3a wing tail `4d71ec17` (r5 R0) | review APPROVE_WITH_MINORS (m1-m6), opt-in (`graded.ladder_wing_tail` off, ladder-strict not promoted); 3 conflicts, unions (allow-list `8029c120`, `QuoteSurfaceSlice` fields `767a4ef5`, test tail) + 1 semantic: L3a's test helper `wing_chain` redefined L3r1's same-signature helper, renamed `wing_tail_chain` (`41c641d2`) |
+
+**W2c-b gates at `7344eb37`** (quote-bench `eac00b98...`, the W2c-b pool-1 build modulo the PE link stamp;
+`ATX_VOL_FIT_WORKERS=3`; outputs `C:/atx-cache/quote-benchmark/R0-20261022-integrate/base/`): the 8 default hashes MATCH;
+the W2c-a keys-ON set 29/29 equal to the W2c-a root `dad69ccb`; kill switch 5/5, R3 repair-dominance-v3 3/3, L3r1 box
+h0.5 / h0 `a3859ea1` / `05f64ba6` through the kill switch (under the R3 defaults `c3292d38` / `cb6b3680`, first recorded);
+AL fingerprint `53c4df68`; name set `52324ef8` equal (967 tests; the L3g-wip failures the L2h-b / L2h-c lanes saw are
+gone); L3f's SPY dividend default-vs-converged table identical to the lane's; gtests pricing 98 (97 + the skip),
+`AlSigmaFamily` 11, `AlSigmaQFamily` 9 + alloc, `AlSigmaFamilyGreeks` 15, chain-batch 31, L3f 17 / 88 / 28 / 21, L3r1 15;
+CLI 71; combined anchored ctest 272/272 (quote-slice 166); PCH-off 25 TUs, 0 diagnostics.
+
+**Final root `342aaf2e`** (quote-bench `9eae17dd...`, outputs `.../R0-20261022-integrate/final/`): the 8 default hashes
+byte-identical before / after:
+
+| Output | sha256 (before = after) |
+| --- | --- |
+| dev200 default `auto` | `c89d07393c90ad86860a6bcacd3d1a84ede85f4647d9cce136567e34763d5b7c` |
+| dev200b default `auto` | `4b273b084231f8a3811c7d6505d42500355ae29c864a5c2e1c2b964a7aab70fb` |
+| dev200 graded-v1 (R3) | `2bc7777df4448c7f1818d10571859074646d51e12cab4731471947cdd75738f6` |
+| dev200b graded-v1 (R3) | `ed34eef7b51d4735748e5534a651569ff69026e07c1655cbb7b2fa6dad1264f2` |
+| cohort5 graded-v1 (R3) | `45e491ea311b352ec107658809429ca2583b5bfbdf2215f9c224b86f7fbc1581` |
+| SPY graded-v1 (R3) | `feac8d2c41a63ff8687e5e991d4026eeecccdf6e88418edcc874c8fc2ca8425b` |
+| dev200 divsched | `abc75955cab8bef821c032ee2a45aa08979b0e92283daad66d3ca2d62bc3bcee` |
+| dev200b divsched | `747d3e6cfcb1122629e8add039c2b1fbe9cba784c0032ccf840030fb9daab5d3` |
+
+Keys-ON 29/29, kill switch 5/5, families 3/3 and the L3r1 rows (both arms) equal the base. The merged lanes' identities
+(their hashes were recorded on pre-R3 bases, so they are reproduced through the R3 kill switch `{"fit_space": "price",
+"grid_kernel": "reference", "rung_memo": false}`): L3q SPY box h0 + repair `2145268a` MATCH (3,992 served), L3a lever-1
+cohort5 ladder-strict + floor-price-only `7b450b5b` MATCH (9,520 served). Explicit deltas under the R3 defaults (lane
+policies unchanged; first recorded): L3q `ba413a85` (3,992 served), L3a `8b467e37` (9,523 served). L2h-c is kernel-only:
+`AlSigmaQFamily` 15/15 with the lane's digits (AVX2 vs scalar build 5.6641e-15, node/anchor 1.3221e-15) + alloc; no
+recorded hash serves through the q-family, so the AVX2 rounding-level move touches none. Fingerprint `53c4df68`; name set
+`52324ef8` equal (973 tests); L3q 6 gtests + 2 CLI, L3a 5 gtests, quote-slice 177/177, CLI 73, combined anchored ctest
+278/278 (native CLI 172, tools 176, campaign 22); PCH-off 33 TUs (every non-bench includer of a changed header except
+`american.hpp`'s 143, where the owning q-family / sigma-family TUs stand in), 0 diagnostics. **SPY graded-v1 @1 on the final
+root (one run, unqualified, load 12 -> 41 %): fit+reprice 7.61 s (wall 7.74), 106,232 de-Am solves at 56.8 us + 28,908
+grid prices at 49.8 us. No G2 / G3 claim.** No default promoted, no holdout touched, nothing pushed.
