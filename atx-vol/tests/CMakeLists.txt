@@ -109,6 +109,22 @@ add_test(NAME atx-vol-discrete-div-smoothing COMMAND atx-vol-discrete-div-smooth
 set_tests_properties(atx-vol-discrete-div-smoothing PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# The dated-cash lattice KERNEL objects (api/pricing/american_discrete_div_kernel.hpp,
+# lane L3f 2026-10-20): workspace bit-identity / concurrency, the Screen tier's
+# measured bound, the seeded inversion's root distance and typed fallbacks. Focused
+# executable for the same reason as the two above: its allocation test replaces
+# global operator new through support/alloc_counter.cpp.
+add_executable(atx-vol-discrete-div-kernel-tests
+    discrete_div_kernel_test.cpp discrete_div_kernel_alloc_test.cpp
+    support/alloc_counter.cpp)
+target_link_libraries(atx-vol-discrete-div-kernel-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-kernel-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-discrete-div-kernel COMMAND atx-vol-discrete-div-kernel-tests)
+set_tests_properties(atx-vol-discrete-div-kernel PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)

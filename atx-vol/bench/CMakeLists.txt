@@ -445,6 +445,50 @@ target_include_directories(atx-vol-al-preset-ladder-bench
         ${CMAKE_CURRENT_SOURCE_DIR}/../tests
 )
 
+# ── L3f (2026-10-20) — discrete-cash-dividend lattice kernel rows ─────────────
+# The first measurement of the V&N lattice's release cost per price
+# (american/discrete_div/price/<scheme>/<steps> on the SPY dividend ladder), the
+# Screen-tier scan and error tables against the CONVERGED lattice, the seeded
+# inversion's cost per root beside a verbatim twin of the fitting layer's
+# dated_cash_iv secant. Rows on the dev200 payer set register only when
+# ATX_VOL_DDIV_DEV200 names the input CSV (see the TU header). Own target (one
+# owner per TU).
+add_executable(atx-vol-discrete-div-bench
+    bench_main.cpp
+    discrete_div_bench.cpp
+)
+target_link_libraries(atx-vol-discrete-div-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME atx-vol-discrete-div-benchmark-name-coverage
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_benchmark_names.py
+            --exe $<TARGET_FILE:atx-vol-discrete-div-bench>
+            --required american/discrete_div/price/spliced/301
+            --required american/discrete_div/price/spliced-bbs/301
+            --required american/discrete_div/price/spliced-bbsr/301
+            --required american/discrete_div/price/escrowed-lr/301
+            --required american/discrete_div/price/spliced/2401
+            --required american/discrete_div/price_ws/spliced/301
+            --required american/discrete_div/screen_price/spy
+            --required american/discrete_div/screen_scan/spy
+            --required american/discrete_div/error/spy
+            --required american/discrete_div/iv/spy/seeded
+            --required american/discrete_div/iv/spy/unseeded
+            --required american/discrete_div/secant_twin/spy
+    )
+    set_tests_properties(atx-vol-discrete-div-benchmark-name-coverage PROPERTIES LABELS atx_vol)
+endif()
+
 # ── WS-F F-b (fit) — fused streaming fit->serialize throughput ─────────────────
 # surfaces/sec through populate_surface_db (U1 streaming per-date fit->serialize->
 # release into a SurfaceDb, ATXVSA2 writer). Distinct from corpus_build_bench.cpp
