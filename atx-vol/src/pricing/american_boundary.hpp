@@ -301,6 +301,28 @@ struct AlSolveResid {
                                                 double K, double T, double sigma,
                                                 double r, double q) noexcept;
 
+// L3k monotone (2026-10-21): the same price under an explicit exercise-region rule
+// (AlExerciseRegion, api/pricing/american.hpp). KernelFloor forwards to the function
+// above (bit-identical). Intrinsic returns K - S — no euro leg, no premium quadrature —
+// when S <= al_boundary_now(bnd), and forwards otherwise. K - S >= 0 there because
+// B(T) <= xmax = K min(1, r/q) <= K.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary& bnd,
+                                                const AlWorkspace& ws, double S,
+                                                double K, double T, double sigma,
+                                                double r, double q,
+                                                AlExerciseRegion region) noexcept;
+
+// L3k test seam for the CACHED price site (al_put_price_from_boundary_cached, file-local
+// in american.cpp, the slice / greeks engines' route): binds its premium cache for
+// (bnd, ws, sigma, r, q) first when `bind_cache` is true, so a test reaches both the
+// cache-hit and the inline arm. Same contract as the overload above.
+[[nodiscard]] double al_put_price_from_boundary_cached_probe(const AlBoundary& bnd,
+                                                            const AlWorkspace& ws, double S,
+                                                            double K, double T, double sigma,
+                                                            double r, double q,
+                                                            AlExerciseRegion region,
+                                                            bool bind_cache) noexcept;
+
 // ── Prepared expiry geometry seam (L2b al-geometry, 2026-10-18) ──────────────
 //
 // WHAT IS SHARED. A cold solve of an internal put (strike K, rate, yield, T, sigma)

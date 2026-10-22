@@ -538,8 +538,20 @@ inline void solve_put_boundary_pack_avx2(
 // exact math; ~1 ULP from the scalar al_xmax_put(S2,q,r) direct evaluation, deep
 // inside the economic gate). One solved boundary therefore serves every stencil on
 // EITHER side — the K3 lever, unchanged.
+//
+// L3k monotone (2026-10-21): `region` is the exercise-region rule (AlExerciseRegion,
+// api/pricing/american.hpp). KernelFloor (the 4-argument overload below) is the pre-L3k
+// computation, operation for operation. Intrinsic replaces the lanes whose spot is on
+// the exercise side of B(tau = T) — the boundary at zc = +1, the Lobatto endpoint, where the
+// exact-node guard returns Y[nb-1]: the node the scalar al_boundary_at(bnd, T) returns —
+// with the intrinsic strike - spot, AFTER the NaN laundering (the scalar sites return
+// K - S without evaluating the euro leg or the premium). One IEEE subtraction, so an
+// in-region lane is bit-identical to the scalar sites; the region DECISION can differ
+// from the scalar one only for a spot within the lanes' ~1e-12 relative Y[] / exp_pd
+// rounding of the edge, where the kernel price equals intrinsic to that order.
 inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
-                                      __m256d strike, __m256d xmax) noexcept {
+                                      __m256d strike, __m256d xmax,
+                                      AlExerciseRegion region) noexcept {
     const __m256d zero = _mm256_setzero_pd();
     const __m256d one = _mm256_set1_pd(1.0);
     const __m256d two = _mm256_set1_pd(2.0);
@@ -638,7 +650,20 @@ inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
     __m256d nan_in = _mm256_cmp_pd(prem_raw, prem_raw, _CMP_UNORD_Q);
     nan_in = _mm256_or_pd(nan_in, _mm256_cmp_pd(euro, euro, _CMP_UNORD_Q));
     nan_in = _mm256_or_pd(nan_in, _mm256_cmp_pd(intrinsic, intrinsic, _CMP_UNORD_Q));
-    return _mm256_or_pd(price, nan_in);
+    const __m256d laundered = _mm256_or_pd(price, nan_in);
+    if (region == AlExerciseRegion::Intrinsic) {
+        // L3k: B(T) at zc = +1 (see the contract above); a NaN spot compares false.
+        const __m256d b_now = b_from_y_pd(cheb_eval(one), XMAX);
+        const __m256d in_region = _mm256_cmp_pd(Sv, b_now, _CMP_LE_OQ);
+        return k_sel(in_region, intrinsic, laundered);
+    }
+    return laundered;
+}
+
+// The pre-L3k signature: the KernelFloor rule (bit-identical, same instructions).
+inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
+                                      __m256d strike, __m256d xmax) noexcept {
+    return price_put_pack_at_avx2(b, spot, strike, xmax, AlExerciseRegion::KernelFloor);
 }
 
 // Put spot-stencil pricer: the contract strike (b.Kv) and asymptotic level (b.XMAX)

@@ -2304,6 +2304,25 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
   return price;
 }
 
+// L3k monotone (2026-10-21): the ONE exercise-region test of the scalar price sites — the
+// spot is on the exercise side of the boundary the price reads, at tau = T (the same
+// barycentric value al_boundary_now returns). False for a NaN spot.
+[[nodiscard]] bool al_spot_in_exercise_region(const AlBoundary &bnd, double S) noexcept {
+  return S <= al_boundary_at(bnd, bnd.T);
+}
+
+// L3k: the cached site under an explicit AlExerciseRegion (contract on the uncached
+// overload, american_boundary.hpp). KernelFloor forwards bit-identically.
+[[nodiscard]] double al_put_price_from_boundary_cached(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                       const AlPremiumCache &pc, double S, double K,
+                                                       double T, double sigma, double r, double q,
+                                                       AlExerciseRegion region) noexcept {
+  if (region == AlExerciseRegion::Intrinsic && al_spot_in_exercise_region(bnd, S)) {
+    return K - S;
+  }
+  return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q);
+}
+
 // ── Boundary solve / price split (S-independence seam) ───────────────────
 //
 // The Andersen-Lake exercise boundary depends on (K, T, sigma, r, q) but NOT on
@@ -2660,6 +2679,32 @@ void al_prepare_oriented_geometry(double T, double rate, double yield, const AlS
   return price;
 }
 
+// L3k monotone (2026-10-21): the uncached site under an explicit AlExerciseRegion
+// (contract in american_boundary.hpp). KernelFloor forwards bit-identically.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                double S, double K, double T, double sigma,
+                                                double r, double q,
+                                                AlExerciseRegion region) noexcept {
+  if (region == AlExerciseRegion::Intrinsic && al_spot_in_exercise_region(bnd, S)) {
+    return K - S;
+  }
+  return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q);
+}
+
+// L3k test seam for the cached site (american_boundary.hpp).
+[[nodiscard]] double al_put_price_from_boundary_cached_probe(const AlBoundary &bnd,
+                                                            const AlWorkspace &ws, double S,
+                                                            double K, double T, double sigma,
+                                                            double r, double q,
+                                                            AlExerciseRegion region,
+                                                            bool bind_cache) noexcept {
+  AlPremiumCache pc; // invalid until bound: an unbound cache takes the inline arm
+  if (bind_cache) {
+    al_bind_premium(bnd, ws, sigma, r, q, pc);
+  }
+  return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q, region);
+}
+
 // Tick-path record seam (american_boundary.hpp): pure forwarders.
 [[nodiscard]] double al_boundary_now(const AlBoundary &bnd) noexcept {
   return al_boundary_at(bnd, bnd.T);
@@ -2867,9 +2912,11 @@ constexpr const char *kDoubleContinuationMsg =
 // Put core — used directly for puts and via McDonald-Schroder for calls. The
 // `specialize` flag (default true) forces the generic runtime-trip-count kernel when
 // false — the seam behind detail::andersen_lake_generic_kernel that proves the
-// specialized fixed-scheme kernel is bit-identical to the generic path.
+// specialized fixed-scheme kernel is bit-identical to the generic path. `region` (L3k)
+// selects the price-from-boundary rule; the KernelFloor default is every legacy caller.
 [[nodiscard]] Result<double> al_solve_put(double S, double K, double T, double sigma, double r,
-                                          double q, const AlScheme &sch, bool specialize = true) {
+                                          double q, const AlScheme &sch, bool specialize = true,
+                                          AlExerciseRegion region = AlExerciseRegion::KernelFloor) {
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
   case ExerciseRegime::European: {
     const double euro = euro_put_sk(S, K, T, sigma, r, q);
@@ -2896,7 +2943,7 @@ constexpr const char *kDoubleContinuationMsg =
   case AlSolveStatus::Ok:
     break;
   }
-  return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
+  return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q, region));
 }
 
 // A4 (PR-C4): the sigma->0 limit of an American option is the European sigma->0
@@ -2973,7 +3020,9 @@ template <class AmericanArm>
                                                 const std::optional<AlOpts> &opts, bool specialize,
                                                 std::optional<detail::AlSeedMode> seed_override =
                                                     std::nullopt,
-                                                std::uint16_t n_quad_price_override = 0) {
+                                                std::uint16_t n_quad_price_override = 0,
+                                                AlExerciseRegion region =
+                                                    AlExerciseRegion::KernelFloor) {
   return andersen_lake_dispatch(S, K, T, sigma, r, q, side, [&]() -> Result<double> {
     AlScheme sch = scheme_from_opts(opts);
     // A6 measurement seam: force a specific seed / premium-quad order on top of the
@@ -2986,10 +3035,10 @@ template <class AmericanArm>
       sch.n_quad_price = n_quad_price_override;
     }
     if (side == Side::Put) {
-      return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
+      return al_solve_put(S, K, T, sigma, r, q, sch, specialize, region);
     }
     // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
-    return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
+    return al_solve_put(K, S, T, sigma, q, r, sch, specialize, region);
   });
 }
 
@@ -3026,10 +3075,12 @@ struct AlInternalPut {
 // solve of al_solve_put (same statuses, same messages) and the same price call.
 [[nodiscard]] Result<double> al_solve_put_prepared(const AlOrientedGeometry &g,
                                                    const AlInternalPut &p, double T, double sigma,
-                                                   AlPreparedScratch &s) {
+                                                   AlPreparedScratch &s,
+                                                   AlExerciseRegion region =
+                                                       AlExerciseRegion::KernelFloor) {
   ATX_TRY_VOID(al_solve_status_error(
       al_solve_put_boundary_prepared(g, p.K, sigma, s.bnd, s.ws, &s.loaded)));
-  return Ok(al_put_price_from_boundary(s.bnd, s.ws, p.S, p.K, T, sigma, p.rate, p.yield));
+  return Ok(al_put_price_from_boundary(s.bnd, s.ws, p.S, p.K, T, sigma, p.rate, p.yield, region));
 }
 
 // andersen_lake through an expiry geometry with caller-retained scratch (one per
@@ -3037,17 +3088,20 @@ struct AlInternalPut {
 [[nodiscard]] Result<double> andersen_lake_prepared(const AlExpiryGeometry::Impl &g, double S,
                                                     double K, double sigma, Side side,
                                                     AlPreparedScratch &put_scratch,
-                                                    AlPreparedScratch &call_scratch) {
+                                                    AlPreparedScratch &call_scratch,
+                                                    AlExerciseRegion region =
+                                                        AlExerciseRegion::KernelFloor) {
   return andersen_lake_dispatch(S, K, g.T, sigma, g.r, g.q, side, [&]() -> Result<double> {
     const AlInternalPut p = al_internal_put(side, S, K, g.r, g.q);
     const AlOrientedGeometry &orient = (side == Side::Put) ? g.put : g.call;
     if (orient.id == 0) {
       // Not prepared for this regime (unreachable once dispatch said American with a
       // valid expiry); the cold solve keeps the answer exact regardless.
-      return andersen_lake_core(S, K, g.T, sigma, g.r, g.q, side, g.opts, /*specialize=*/true);
+      return andersen_lake_core(S, K, g.T, sigma, g.r, g.q, side, g.opts, /*specialize=*/true,
+                                std::nullopt, 0, region);
     }
     return al_solve_put_prepared(orient, p, g.T, sigma,
-                                 side == Side::Put ? put_scratch : call_scratch);
+                                 side == Side::Put ? put_scratch : call_scratch, region);
   });
 }
 
@@ -3425,6 +3479,14 @@ Result<double> andersen_lake(double S, double K, double T, double sigma, double 
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
 }
 
+// L3k monotone: the exercise-region rule (american.hpp AlExerciseRegion).
+Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const std::optional<AlOpts> &opts,
+                             AlExerciseRegion region) {
+  return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true, std::nullopt,
+                            0, region);
+}
+
 // ── Shared expiry geometry, boundary handle, price pack (L2b, 2026-10-18) ──
 
 AlExpiryGeometry::AlExpiryGeometry() : impl_(std::make_unique<Impl>()) {}
@@ -3485,6 +3547,17 @@ Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, doub
   // Stateless: one scratch per call (loaded once, ~46 KB of stack).
   AlPreparedScratch scratch;
   return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch);
+}
+
+// L3k monotone: the geometry overload under an explicit exercise-region rule.
+Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, double sigma,
+                             Side side, AlExerciseRegion region) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  AlPreparedScratch scratch;
+  return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch, region);
 }
 
 struct AlBoundaryHandle::State {
