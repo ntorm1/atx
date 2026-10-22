@@ -968,11 +968,33 @@ if(ATX_BUILD_TOOLS)
         atx::vol atx::core atx_warnings nlohmann_json::nlohmann_json)
     # Label-free benchmark runner. Reference values exist only in the separate
     # Python scorer; the native tool accepts a closed raw-quote input schema.
+    # Benchmark clock contract (lane B0; tools/bench_clocks.hpp, docs/benchmark-clocks.md):
+    # cold clocks, exclusive phase attribution, affinity receipt, in-process cold reset.
+    # The compile flags are embedded so every receipt names the flags of its own binary.
+    add_library(atx-vol-bench-clocks STATIC tools/bench_clocks.cpp)
+    target_include_directories(atx-vol-bench-clocks PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+    target_link_libraries(atx-vol-bench-clocks PUBLIC atx::vol atx::core
+        nlohmann_json::nlohmann_json PRIVATE atx_warnings)
+    if(WIN32)
+        target_link_libraries(atx-vol-bench-clocks PRIVATE PowrProf)
+    endif()
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _atx_bench_config)
+    string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_atx_bench_config}}" _atx_bench_flags)
+    string(REGEX REPLACE "  +" " " _atx_bench_flags "${_atx_bench_flags}")
+    target_compile_definitions(atx-vol-bench-clocks PRIVATE
+        "ATX_VOL_BENCH_CXX_FLAGS=\"${_atx_bench_flags}\""
+        "ATX_VOL_BENCH_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\"")
+    # Independent IV comparator (lane B0): brackets each served row's American IV root
+    # with the cold reference pricer by bisection (no Newton, no family) and tabulates
+    # the continuous-carry price error at the served IV.
+    add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)
+    target_link_libraries(atx-vol-iv-comparator PRIVATE atx-vol-bench-clocks atx::vol
+        atx::core atx_warnings nlohmann_json::nlohmann_json)
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
         tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp
         tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
     target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings
-        nlohmann_json::nlohmann_json)
+        nlohmann_json::nlohmann_json atx-vol-bench-clocks)
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
     # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
     # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
