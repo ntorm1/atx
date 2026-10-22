@@ -1,4 +1,5 @@
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_region.hpp" // L3k: AlExerciseRegion entry points
 
 #include "pricing/american_detail.hpp"
 

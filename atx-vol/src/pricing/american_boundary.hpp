@@ -23,6 +23,7 @@
 
 #include "atx/vol/api/core/types.hpp"        // Status
 #include "atx/vol/api/pricing/american.hpp"  // AlOpts (scheme_from_opts input)
+#include "atx/vol/api/pricing/american_region.hpp"  // AlExerciseRegion (L3k price sites)
 #include "pricing/american_detail.hpp"        // detail::AlSeedMode (AlScheme::seed default)
 
 namespace atx::vol::amer {

@@ -442,6 +442,7 @@ add_executable(atx-vol-tests
     amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
     # pricing-greeks SOTA (Agent G4) — appended target:
     american_exercise_boundary_test.cpp # G4: public exercise_boundary + assignment_risk screen
+    american_monotone_test.cpp       # L3k: AlExerciseRegion::Intrinsic (monotone AL in sigma)
     # SPY-dispersion hot-path WS-C (correctness cluster) — appended target:
     dispersion_workflow_test.cpp     # C1 point-in-time universe, C3 removals, M2 dup keys, M4 index symbol
     # SPY-dispersion hot-path WS-X (config + execution realism) — appended target:

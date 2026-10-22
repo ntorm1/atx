@@ -20,6 +20,7 @@
 
 #include "pricing/american_boundary.hpp" // amer:: seam (AlScheme/AlBoundary/al_init_put_boundary...)
 #include "atx/vol/api/pricing/american.hpp"     // classify_regime, ExerciseRegime
+#include "atx/vol/api/pricing/american_region.hpp" // AlExerciseRegion (L3k)
 #include "simd/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd2/norm_pdf_pd (+ __AVX2__ guard)
 
 #include <cstddef>

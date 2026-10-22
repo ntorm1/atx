@@ -313,37 +313,6 @@ private:
 [[nodiscard]] Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K,
                                            double sigma, Side side);
 
-// ── L3k monotone (2026-10-21): exact exercise-region evaluation, opt-in ───
-//
-// Inside its own exercise region — put: S <= B(T), the boundary the price solves at
-// tau = T; call: the McDonald-Schroder internal put (spot K, strike S, rate q, yield r)
-// in ITS region, i.e. S >= K^2 / B_put(T; strike K, rate q, yield r) by strike
-// homogeneity, the test exercise_boundary() documents — the kernel prints euro + premium
-// floored at intrinsic. There the premium quadrature lands above intrinsic by up to
-// ~1.2e-6 * K * max(1, T)^2 (accurate preset), by an amount that is not monotone in
-// sigma, so P(sigma) dips on long-dated deep-ITM contracts and an inversion can find
-// more than one root (LEDGER 2026-10-19 trap; sprints/2026-10-18-L1c-al-nonmonotone-
-// sprint.md section 2). The exact American value in the region is the intrinsic.
-enum class AlExerciseRegion : std::uint8_t {
-  KernelFloor, // euro + premium floored at intrinsic, euro and 0 — every other entry point
-  Intrinsic,   // intrinsic, exactly, when the spot is on the exercise side of B(T)
-};
-
-// andersen_lake with an explicit exercise-region rule. KernelFloor is BIT-IDENTICAL to the
-// 8-argument / geometry entry points above (same validation, errors, closed forms and
-// regimes). Intrinsic solves the same boundary and, when the spot is in its exercise
-// region, returns the intrinsic (one subtraction; no euro leg, no premium quadrature);
-// everywhere else it is bit-identical to KernelFloor. Under Intrinsic P(sigma) is flat at
-// intrinsic up to the exercise edge, so the in-region roots of an inversion disappear.
-// Tests: AlMonotone.* (tests/american_monotone_test.cpp).
-[[nodiscard]] Result<double> andersen_lake(double S, double K, double T, double sigma, double r,
-                                           double q, Side side,
-                                           const std::optional<AlOpts> &opts,
-                                           AlExerciseRegion region);
-[[nodiscard]] Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K,
-                                           double sigma, Side side, AlExerciseRegion region);
-// ── end L3k ──
-
 // ── Boundary handle: one solved boundary, many prices ────────────────────
 //
 // The exercise boundary of a call depends on its internal-put strike, which is the
