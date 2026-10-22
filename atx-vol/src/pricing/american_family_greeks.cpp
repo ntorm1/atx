@@ -1,0 +1,1112 @@
+// ── AlSigmaFamily analytics: analytic Greeks, the exact Newton slope, chains, shocks ──
+//
+// L3g family-greeks (2026-10-20). Contract on the entry points in
+// api/pricing/american.hpp (the block after AlSigmaFamily). This TU owns ONLY the
+// analytics on a prepared family (and its detached copy): it reads the family's
+// State through pricing/american_sigma_family.hpp and never solves a boundary.
+//
+// THE MAP. For the internal put (puts directly; calls through McDonald-Schroder, the
+// call's spot being the internal strike) the family serves
+//   P(S, K, σ) = clamp( E(S, K, σ) + Π ),   Π = ½√T · Σ_j w_j · I_j,
+//   I_j = 2 z_j [ r K e^{-r t_j} Φ(−d−_j) − q S e^{-q t_j} Φ(−d+_j) ],
+//   d±_j = ln( S e^{-q t_j} / (B_j e^{-r t_j}) ) / v_j ± v_j / 2,  v_j = σ √t_j,
+//   B_j = xmax · exp(−√y(T − t_j)),  y(u) = Σ_k ℓ_k(u) y_k(σ)  (τ-barycentric),
+//   y_k(σ) = Σ_s b_s(z(σ)) Y_{k,s}                               (σ-barycentric),
+// exactly the expressions american.cpp's premium_integrand_put / al_put_premium_impl /
+// al_boundary_at evaluate (the price accumulated here mirrors them operation for
+// operation, so it is the family's price to the bit — pinned by the tests; the
+// detached copy relies on it).
+//
+// THE DERIVATIVES (every one exact for that map; the sprint note measures them).
+//   S:   B_j does not depend on S, so ∂I/∂S, ∂²I/∂S², ∂³I/∂S³ differentiate d± in S at
+//        fixed B (∂d±/∂S = 1/(S v)); φ(d±) is shared across all of them.
+//   σ:   explicit terms (∂d+/∂σ = −d−/σ, ∂d−/∂σ = −d+/σ) PLUS the boundary motion:
+//        with s_j = √y_j, B_j = xmax e^{−s_j}, B'_j = −B_j s'_j, B''_j = B_j (s'_j² − s''_j),
+//        s' = y'/(2s), s'' = y''/(2s) − y'²/(4 s³) and y' = Σ_k ℓ_k dy_k/dσ. Every
+//        boundary term has a factor ∂I/∂B ∝ 1/B that cancels B, so only s', s'' enter.
+//   dy_k/dσ: the σ-interpolant's derivative. NOT the quotient rule on the barycentric
+//        formula (y' = (N' − y D')/D loses O(1/|z − z_s|) digits near a node and is
+//        0/0 at one — the exact-node erratum of Berrut & Trefethen, SIAM Review 46
+//        (2004) p. 510). Instead the nodal derivatives Y'_{k,s} = Σ_t D⁽¹⁾_{st} Y_{k,t}
+//        (D⁽¹⁾_{st} = (w_t/w_s)/(z_s − z_t), D⁽¹⁾_{ss} = −Σ_{t≠s} D⁽¹⁾_{st}: eq. (9.4)
+//        of that paper with the negative-sum diagonal) are interpolated by the same
+//        barycentric basis: y'(z) = Σ_s b_s(z) Y'_s — an identity for the degree-(n−1)
+//        polynomial (its derivative has degree n−2 and is reproduced by n nodes), so it
+//        is exact, and the basis evaluation is the forward-stable one (Higham 2004).
+//        y'' likewise through D⁽²⁾. The paper's printed D⁽²⁾ carries a sign typo; the
+//        form used is Welfert's (SIAM J. Numer. Anal. 34 (1997)) D⁽²⁾_{st} =
+//        2 D⁽¹⁾_{st} (D⁽¹⁾_{ss} − 1/(z_s − z_t)), D⁽²⁾_{ss} = −Σ_{t≠s} D⁽²⁾_{st}, verified
+//        here by AlSigmaFamilyGreeks.NodalDifferentiationIsExactOnPolynomials. At an
+//        exact node hit b = e_hit and the formula reduces to the nodal derivative, so
+//        the Greeks are continuous through the nodes (tested).
+//   r,q: frozen-boundary (frozen y): discounts, the drift in d± and the explicit
+//        xmax(K, rate, yield) = K min(1, rate/yield) rescale of B are differentiated;
+//        dy/dr, dy/dq are NOT (a σ-family has no r / q axis). Measured in the note.
+//   θ, charm: the continuation-region PDE identity (no τ axis), as RecordGreeks.
+// Calls: the internal put's bundle is mapped by homogeneity — P(S_int, K_int) =
+// K_int p(S_int / K_int) holds EXACTLY for the served map (y is strike-free, xmax and
+// the clamps are linear in K_int) — ∂P/∂K_int = (P − S_int P_S)/K_int,
+// ∂²P/∂K_int² = x² P_SS, ∂³P/∂K_int³ = −x³ P_SSS − 3 x² P_SS / K_int (x = S_int/K_int),
+// vanna_call = (vega − S_int vanna_int)/K_int, rho_call = ∂P/∂yield, phi_call = ∂P/∂rate.
+//
+// COST. One pass over the p premium nodes (p = 48 accurate): the price's log, two
+// exp, two Φ per node plus two φ and ~60 flops; the σ tables (n_σ² + n_b n_σ FMAs)
+// once per call. The nodal differentiation matrices depend on n_σ alone (the
+// Chebyshev-Lobatto grid is the same for every family with that n_σ) and live in a
+// process-wide table built on first use.
+//
+// THREADS. Everything is const and stack-only (one AlBoundary ≈ 1.3 KB plus ≈ 1 KB of
+// derivative scratch per call); N threads on one const family touch only const
+// memory — the L2h race-freedom argument, re-tested here for the Greeks entry.
+// The solve ledger is not bumped (nothing default calls this TU).
+
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <span>
+
+#include "atx/core/math.hpp" // norm_cdf / norm_pdf / clamp (the Reference kernel's Φ, φ)
+#include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"   // black76_price (the Reference European leg)
+#include "pricing/american_boundary.hpp"     // amer::AlBoundary / al_xmax_put / kAlMaxNodes
+#include "pricing/american_sigma_family.hpp" // AlSigmaFamily::State + the σ-axis evaluator
+#include "pricing/boundary_interp.hpp"       // detail::internal_put_coords
+#include "pricing/scalar_erfc.hpp"           // detail::norm_cdf_erfc / norm_pdf_cody (Fast)
+
+namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+using sigma_family_detail::axis_of;
+using sigma_family_detail::bary_eval;
+using sigma_family_detail::cheb_node;
+using sigma_family_detail::kMaxSigmaNodes;
+using sigma_family_detail::kNaN;
+
+namespace sigma_family_detail {
+
+// What the fused kernel reads: the family's State or a detached copy. Named (not in
+// the anonymous namespace) so FamilyAccess, the family's friend, can hand it out.
+struct FamilyView {
+  Side side = Side::Put;
+  AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma;
+  double u_lo = 0.0;
+  double u_hi = 0.0;
+  unsigned n_sigma = 0;
+  unsigned n_boundary = 0;
+  double rate = 0.0;
+  double yield = 0.0;
+  const double *sz = nullptr;
+  const double *sw = nullptr;
+  const double *series = nullptr; // [k * kMaxSigmaNodes + s]
+  const amer::AlBoundary *grid = nullptr;
+  const double *qx = nullptr; // the workspace header the premium quadrature reads
+  const double *qw = nullptr;
+  unsigned nq = 0;
+  bool fast = false;
+};
+
+} // namespace sigma_family_detail
+
+namespace {
+
+using Mask = AlSigmaFamilyGreeksMask;
+using sigma_family_detail::FamilyView;
+
+// ── Nodal differentiation matrices on the σ Chebyshev-Lobatto grid ─────────────
+//
+// D1[s][t] = (w_t / w_s) / (z_s − z_t) (s ≠ t), D1[s][s] = −Σ_{t≠s} D1[s][t];
+// D2[s][t] = 2 D1[s][t] (D1[s][s] − 1/(z_s − z_t)) (s ≠ t), D2[s][s] = −Σ_{t≠s} D2[s][t].
+// The grid and weights are the family's own (cheb_node, (−1)^s halved at the ends),
+// so a table depends on n alone. Built once per process for n in [kMin, kMax].
+struct DiffTables {
+  std::array<std::array<double, kMaxSigmaNodes>, kMaxSigmaNodes> d1{};
+  std::array<std::array<double, kMaxSigmaNodes>, kMaxSigmaNodes> d2{};
+};
+
+[[nodiscard]] DiffTables build_diff_tables(unsigned n) noexcept {
+  DiffTables t{};
+  double z[kMaxSigmaNodes] = {};
+  double w[kMaxSigmaNodes] = {};
+  for (unsigned s = 0; s < n; ++s) {
+    z[s] = cheb_node(s, n);
+    double ws = (s & 1u) ? -1.0 : 1.0;
+    if (s == 0 || s + 1 == n) {
+      ws *= 0.5;
+    }
+    w[s] = ws;
+  }
+  for (unsigned s = 0; s < n; ++s) {
+    double diag = 0.0;
+    for (unsigned k = 0; k < n; ++k) {
+      if (k == s) {
+        continue;
+      }
+      const double d = (w[k] / w[s]) / (z[s] - z[k]);
+      t.d1[s][k] = d;
+      diag -= d;
+    }
+    t.d1[s][s] = diag;
+  }
+  for (unsigned s = 0; s < n; ++s) {
+    double diag = 0.0;
+    for (unsigned k = 0; k < n; ++k) {
+      if (k == s) {
+        continue;
+      }
+      const double d = 2.0 * t.d1[s][k] * (t.d1[s][s] - 1.0 / (z[s] - z[k]));
+      t.d2[s][k] = d;
+      diag -= d;
+    }
+    t.d2[s][s] = diag;
+  }
+  return t;
+}
+
+[[nodiscard]] const DiffTables &diff_tables(unsigned n) noexcept {
+  static const std::array<DiffTables, kMaxSigmaNodes + 1> all = [] {
+    std::array<DiffTables, kMaxSigmaNodes + 1> a{};
+    for (unsigned n = kAlSigmaFamilyMinNodes; n <= kAlSigmaFamilyMaxNodes; ++n) {
+      a[n] = build_diff_tables(n);
+    }
+    return a;
+  }();
+  return all[n];
+}
+
+// Which internal derivatives a call needs (derived from the mask and the side).
+struct Need {
+  bool s1 = false;    // P_S
+  bool s2 = false;    // P_SS
+  bool s3 = false;    // P_SSS
+  bool sig1 = false;  // dP/dσ (total)
+  bool sig2 = false;  // d²P/dσ²
+  bool cross = false; // d²P/dS dσ
+  bool rate = false;  // ∂P/∂rate (frozen y)
+  bool yield = false; // ∂P/∂yield (frozen y)
+  [[nodiscard]] bool any_sigma() const noexcept { return sig1 || sig2 || cross; }
+};
+
+[[nodiscard]] Need need_of(Mask m, Side side) noexcept {
+  const bool call = side == Side::Call;
+  const bool theta = m.has(Mask::kTheta);
+  const bool charm = m.has(Mask::kCharm);
+  Need n;
+  n.s1 = m.has(Mask::kDelta) || theta || charm;
+  n.s2 = m.has(Mask::kGamma) || theta || charm;
+  n.s3 = charm;
+  n.sig1 = m.has(Mask::kVega) || (call && m.has(Mask::kVanna));
+  n.sig2 = m.has(Mask::kVolga);
+  n.cross = m.has(Mask::kVanna);
+  n.rate = call ? m.has(Mask::kPhi) : m.has(Mask::kRho);
+  n.yield = call ? m.has(Mask::kRho) : m.has(Mask::kPhi);
+  return n;
+}
+
+// The internal put's bundle at (S_int, K_int, σ).
+struct Internal {
+  double price = 0.0; // the served (clamped) price — the family's price to the bit
+  double dS = 0.0;
+  double dSS = 0.0;
+  double dSSS = 0.0;
+  double dsig = 0.0;
+  double dsig2 = 0.0;
+  double dSsig = 0.0;
+  double drate = 0.0;      // frozen y, xmax term included
+  double dyield = 0.0;
+  double drate_xmax = 0.0; // the xmax term alone (for the measurement hook)
+  double dyield_xmax = 0.0;
+  bool exercised = false;
+  bool floored = false;
+};
+
+// σ -> z on the family's axis, with dz/dσ and d²z/dσ² (the clamp is a rounding guard
+// at the box edges, so the derivative is the unclamped one).
+struct AxisZ {
+  double z = 0.0;
+  double dz = 0.0;
+  double d2z = 0.0;
+};
+
+[[nodiscard]] AxisZ axis_z(const FamilyView &v, double sigma) noexcept {
+  AxisZ a;
+  const double scale = 2.0 / (v.u_hi - v.u_lo);
+  double z = 2.0 * (axis_of(v.axis, sigma) - v.u_lo) / (v.u_hi - v.u_lo) - 1.0;
+  z = (z < -1.0) ? -1.0 : ((z > 1.0) ? 1.0 : z); // rounding at the box edges only
+  a.z = z;
+  if (v.axis == AlSigmaFamilyAxis::LogSigma) {
+    a.dz = scale / sigma;
+    a.d2z = -scale / (sigma * sigma);
+  } else {
+    a.dz = scale;
+    a.d2z = 0.0;
+  }
+  return a;
+}
+
+// The barycentric basis b_s(z) on the σ grid (exact node hit -> e_hit).
+void sigma_basis(const FamilyView &v, double z, double *b) noexcept {
+  double q[kMaxSigmaNodes] = {};
+  double den = 0.0;
+  for (unsigned s = 0; s < v.n_sigma; ++s) {
+    const double dz = z - v.sz[s];
+    if (dz == 0.0) {
+      for (unsigned t = 0; t < v.n_sigma; ++t) {
+        b[t] = (t == s) ? 1.0 : 0.0;
+      }
+      return;
+    }
+    q[s] = v.sw[s] / dz;
+    den += q[s];
+  }
+  for (unsigned s = 0; s < v.n_sigma; ++s) {
+    b[s] = q[s] / den;
+  }
+}
+
+// dy_k/dσ and d²y_k/dσ² for every collocation node k: c = bᵀD1, c2 = bᵀD2 once, then
+// the series dotted with them, then the chain rule through z(σ).
+void sigma_series_derivatives(const FamilyView &v, const AxisZ &az, bool second, double *dy,
+                              double *d2y) noexcept {
+  double b[kMaxSigmaNodes] = {};
+  sigma_basis(v, az.z, b);
+  const DiffTables &dt = diff_tables(v.n_sigma);
+  double c[kMaxSigmaNodes] = {};
+  double c2[kMaxSigmaNodes] = {};
+  for (unsigned s = 0; s < v.n_sigma; ++s) {
+    const double bs = b[s];
+    for (unsigned t = 0; t < v.n_sigma; ++t) {
+      c[t] += bs * dt.d1[s][t];
+      if (second) {
+        c2[t] += bs * dt.d2[s][t];
+      }
+    }
+  }
+  for (unsigned k = 0; k < v.n_boundary; ++k) {
+    const double *row = &v.series[k * kMaxSigmaNodes];
+    double yz = 0.0;
+    double yzz = 0.0;
+    for (unsigned t = 0; t < v.n_sigma; ++t) {
+      yz += c[t] * row[t];
+      if (second) {
+        yzz += c2[t] * row[t];
+      }
+    }
+    dy[k] = yz * az.dz;
+    d2y[k] = second ? (yzz * az.dz * az.dz + yz * az.d2z) : 0.0;
+  }
+}
+
+// ∂ ln xmax / ∂rate and ∂ ln xmax / ∂yield for xmax = K min(1, rate/yield) (the
+// American-regime branches of al_xmax_put; every other branch is flat in both).
+struct XmaxLog {
+  double d_rate = 0.0;
+  double d_yield = 0.0;
+};
+[[nodiscard]] XmaxLog xmax_log_derivs(double rate, double yield) noexcept {
+  XmaxLog x;
+  if (rate > 0.0 && yield > 0.0 && rate < yield) {
+    x.d_rate = 1.0 / rate;
+    x.d_yield = -1.0 / yield;
+  }
+  return x;
+}
+
+// The fused pass: price (mirrored) + the needed internal derivatives.
+void fused_internal(const FamilyView &v, double S, double K, double sigma, const Need &need,
+                    Internal &out) noexcept {
+  const double r = v.rate;
+  const double q = v.yield;
+  const amer::AlBoundary &grid = *v.grid;
+  const double T = grid.T;
+  const unsigned nb = v.n_boundary;
+
+  // ── σ-interpolate the boundary (exactly as State::price_at) ──
+  const AxisZ az = axis_z(v, sigma);
+  amer::AlBoundary bnd = grid; // stack scratch
+  for (unsigned k = 0; k < nb; ++k) {
+    bnd.y[k] = bary_eval(v.sz, v.sw, &v.series[k * kMaxSigmaNodes], v.n_sigma, az.z);
+  }
+  bnd.K = K;
+  bnd.xmax = amer::al_xmax_put(K, r, q);
+  double dy[amer::kAlMaxNodes] = {};
+  double d2y[amer::kAlMaxNodes] = {};
+  const bool want_sigma = need.any_sigma();
+  if (want_sigma) {
+    sigma_series_derivatives(v, az, need.sig2, dy, d2y);
+  }
+  const XmaxLog xl = xmax_log_derivs(r, q);
+  const bool want_xmax = (need.rate || need.yield) && (xl.d_rate != 0.0 || xl.d_yield != 0.0);
+
+  // ── European leg (bit-identical to euro_put_sk / euro_put_sk_fast) ──
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const double sqrtT = std::sqrt(T);
+  const double vT = sigma * sqrtT;
+  double euro = 0.0;
+  double d1 = 0.0;
+  if (v.fast) {
+    // black76_put_fast, term for term.
+    d1 = (std::log(F / K) + 0.5 * vT * vT) / vT;
+    const double d2 = d1 - vT;
+    euro = df * (K * detail::norm_cdf_erfc(-d2) - F * detail::norm_cdf_erfc(-d1));
+  } else {
+    euro = black76_price(F, K, T, sigma, df, Side::Put);
+    d1 = (std::log(F / K) + 0.5 * vT * vT) / vT;
+  }
+  const double d2 = d1 - vT;
+  const double eq = std::exp(-q * T);
+  const double Phi1 = v.fast ? detail::norm_cdf_erfc(-d1) : atx::core::norm_cdf(-d1);
+  const double Phi2 = v.fast ? detail::norm_cdf_erfc(-d2) : atx::core::norm_cdf(-d2);
+  const double phi1 = v.fast ? detail::norm_pdf_cody(d1) : atx::core::norm_pdf(d1);
+  double eS = -eq * Phi1;
+  double eSS = eq * phi1 / (S * vT);
+  double eSSS = -eSS * (1.0 + d1 / vT) / S;
+  double esig = S * eq * phi1 * sqrtT;
+  double esig2 = esig * d1 * d2 / sigma;
+  double eSsig = -eq * phi1 * d2 / sigma;
+  double erate = -K * T * df * Phi2;
+  double eyield = S * T * eq * Phi1;
+
+  // ── premium quadrature: the kernel's accumulation + the derivative accumulators ──
+  const double half_sqrtT = 0.5 * sqrtT;
+  const double lsx = v.fast ? std::log(S / bnd.xmax) : 0.0;
+  double total = 0.0;
+  double aS = 0.0, aSS = 0.0, aSSS = 0.0;
+  double asig = 0.0, asig2 = 0.0, aSsig = 0.0;
+  double arate = 0.0, ayield = 0.0, arate_x = 0.0, ayield_x = 0.0;
+  for (unsigned i = 0; i < v.nq; ++i) {
+    const double zi = half_sqrtT * (1.0 + v.qx[i]);
+    const double t = zi * zi;
+    double I = 0.0;
+    if (t <= 1.0e-14) {
+      total += v.qw[i] * I;
+      continue;
+    }
+    const double rem = T - t;
+    // al_boundary_at(bnd, rem) — the τ-barycentric value (and its σ-derivatives on
+    // the same weights), mirrored expression for expression.
+    double yj = 0.0;
+    double dyj = 0.0;
+    double d2yj = 0.0;
+    if (rem > 0.0) {
+      const double u_eff = (rem >= T) ? T : rem;
+      const double zq = 2.0 * std::sqrt(u_eff / T) - 1.0;
+      const double zc = atx::core::clamp(zq, -1.0, 1.0);
+      double num = 0.0;
+      double den = 0.0;
+      double num1 = 0.0;
+      double num2 = 0.0;
+      int hit = -1;
+      for (unsigned k = 0; k < nb; ++k) {
+        const double dz = zc - bnd.z[k];
+        if (dz == 0.0) {
+          hit = static_cast<int>(k);
+          break;
+        }
+        const double qq = bnd.wbary[k] / dz;
+        num += qq * bnd.y[k];
+        den += qq;
+        num1 += qq * dy[k];
+        num2 += qq * d2y[k];
+      }
+      if (hit >= 0) {
+        yj = bnd.y[static_cast<unsigned>(hit)];
+        dyj = dy[static_cast<unsigned>(hit)];
+        d2yj = d2y[static_cast<unsigned>(hit)];
+      } else {
+        yj = num / den;
+        dyj = num1 / den;
+        d2yj = num2 / den;
+      }
+    }
+    // Boundary at the node and its log-form derivatives in σ.
+    double b_t = 0.0;
+    double sy = 0.0;
+    bool skip = false;
+    if (v.fast) {
+      if (rem > 0.0) {
+        sy = std::sqrt((yj > 0.0) ? yj : 0.0);
+        if (!(sy < 745.0)) { // kFastBoundaryExpLimit
+          skip = true;
+        }
+      }
+    } else {
+      if (rem > 0.0) {
+        const double yv = (yj > 0.0) ? yj : 0.0;
+        b_t = bnd.xmax * std::exp(-std::sqrt(yv));
+      } else {
+        b_t = bnd.K;
+      }
+      if (!(b_t > 0.0)) {
+        skip = true;
+      }
+    }
+    if (skip) {
+      total += v.qw[i] * I;
+      continue;
+    }
+    const double v_ = sigma * std::sqrt(t);
+    const double dq = std::exp(-q * t);
+    const double dr = std::exp(-r * t);
+    double dp = 0.0;
+    if (v.fast) {
+      const double ld = (rem > 0.0) ? lsx + sy + (r - q) * t : std::log(S * dq / (bnd.K * dr));
+      dp = ld / v_ + 0.5 * v_;
+      I = 2.0 * zi * (r * bnd.K * dr * detail::norm_cdf_erfc(-dp + v_) -
+                      q * S * dq * detail::norm_cdf_erfc(-dp));
+    } else {
+      dp = std::log(S * dq / (b_t * dr)) / v_ + 0.5 * v_;
+      I = 2.0 * zi * (r * bnd.K * dr * atx::core::norm_cdf(-dp + v_) -
+                      q * S * dq * atx::core::norm_cdf(-dp));
+    }
+    total += v.qw[i] * I;
+
+    // ── derivative accumulators (per unit 2 z_i w_i) ──
+    const double dm = dp - v_;
+    const double a = r * bnd.K * dr;
+    const double b = q * S * dq;
+    const double phm = v.fast ? detail::norm_pdf_cody(dm) : atx::core::norm_pdf(dm);
+    const double php = v.fast ? detail::norm_pdf_cody(dp) : atx::core::norm_pdf(dp);
+    const double Phm = v.fast ? detail::norm_cdf_erfc(-dm) : atx::core::norm_cdf(-dm);
+    const double Php = v.fast ? detail::norm_cdf_erfc(-dp) : atx::core::norm_cdf(-dp);
+    const double wgt = 2.0 * zi * v.qw[i];
+    const double u = 1.0 / (S * v_);
+    const double G = a * phm - b * php;        // ∂I/∂B · B v / (2z)
+    const double qdq = q * dq;
+    if (need.s1) {
+      aS += wgt * (-a * phm * u - qdq * Php + qdq * php / v_);
+    }
+    if (need.s2) {
+      aSS += wgt * (a * phm * dp / (S * S * v_ * v_) + qdq * php / (S * v_) -
+                    qdq * dp * php / (S * v_ * v_));
+    }
+    if (need.s3) {
+      const double S2 = S * S;
+      aSSS += wgt * (a * phm / (S2 * S * v_ * v_) * ((1.0 - dm * dp) / v_ - 2.0 * dp) -
+                     qdq * php / (S2 * v_) * (dp / v_ + 1.0) -
+                     qdq * php / (S2 * v_ * v_) * ((1.0 - dp * dp) / v_ - dp));
+    }
+    // Boundary motion in σ through s = √y.
+    double sp = 0.0;
+    double spp = 0.0;
+    if (want_sigma && rem > 0.0 && yj > 0.0) {
+      const double s = std::sqrt(yj);
+      sp = dyj / (2.0 * s);
+      if (need.sig2) {
+        spp = d2yj / (2.0 * s) - dyj * dyj / (4.0 * s * s * s);
+      }
+    }
+    if (need.sig1) {
+      asig += wgt * ((a * dp * phm - b * dm * php) / sigma - G * sp / v_);
+    }
+    if (need.sig2) {
+      const double expl = (a * dm * phm * (dp * dp - 1.0) - b * dp * php * (dm * dm - 1.0) -
+                           a * dp * phm + b * dm * php) /
+                          (sigma * sigma);
+      const double cross_b = 2.0 * sp * (1.0 - dp * dm) * G / (sigma * v_);
+      const double bb = ((a * dm * phm - b * dp * php) / (v_ * v_) - G / v_) * sp * sp;
+      const double b2 = G * (sp * sp - spp) / v_;
+      asig2 += wgt * (expl + cross_b + bb + b2);
+    }
+    if (need.cross) {
+      const double dGdS = -a * dm * phm * u - qdq * php + b * dp * php * u;
+      const double expl = (a * u * phm * (1.0 - dp * dm) - qdq * dm * php -
+                           b * u * php * (1.0 - dp * dm)) /
+                          sigma;
+      aSsig += wgt * (expl - sp * dGdS / v_);
+    }
+    if (need.rate || need.yield) {
+      const double rho_d = t / v_; // ∂d±/∂rate = −∂d±/∂yield
+      if (need.rate) {
+        arate += wgt * (bnd.K * dr * (1.0 - r * t) * Phm - rho_d * G);
+      }
+      if (need.yield) {
+        ayield += wgt * (rho_d * G - S * dq * (1.0 - q * t) * Php);
+      }
+      if (want_xmax) {
+        arate_x += wgt * (G / v_) * xl.d_rate;
+        ayield_x += wgt * (G / v_) * xl.d_yield;
+      }
+    }
+  }
+  total *= half_sqrtT;
+  const double prem = (total > 0.0) ? total : 0.0;
+  const bool prem_floored = !(total > 0.0);
+  if (prem_floored) {
+    aS = aSS = aSSS = asig = asig2 = aSsig = arate = ayield = arate_x = ayield_x = 0.0;
+  }
+
+  // ── clamps (al_put_price_from_boundary's order) ──
+  double price = euro + prem;
+  const double intr = K - S;
+  bool clamped = false;
+  if (intr > price) {
+    price = intr;
+    clamped = true;
+  }
+  if (euro > price) {
+    price = euro; // unreachable with prem >= 0; kept for the mirror
+  }
+  if (price < 0.0) {
+    price = 0.0;
+  }
+  out.price = price;
+  // The exercise regime (RecordGreeks' semantics): the spot is on the exercise side of
+  // the CURRENT edge — al_boundary_now = al_boundary_at(bnd, T), an exact hit on the
+  // last collocation node (z = 1) — or the served price is intrinsic to the bundle's
+  // own tolerance (american_greeks_al: v0 <= intr + 1e-9 K). Deep in the exercise
+  // region the premium decomposition reproduces K − S exactly, so the kernel's clamp
+  // is a rounding coin-flip there; just above the edge the decomposition sits within
+  // quadrature noise of intrinsic and the clamp flickers along a spot ladder (the
+  // served price is piecewise max(decomposition, intrinsic) — no smooth derivative
+  // exists). Both cases serve the EXERCISE Greeks with the (unchanged) served price.
+  const double yT = bnd.y[nb - 1];
+  const double b_now = bnd.xmax * std::exp(-std::sqrt((yT > 0.0) ? yT : 0.0));
+  const bool inside = S <= b_now;
+  const bool at_intrinsic = intr > 0.0 && price <= intr + 1.0e-9 * K;
+  if (clamped || at_intrinsic || inside) {
+    out.dS = -1.0;
+    out.dSS = out.dSSS = out.dsig = out.dsig2 = out.dSsig = 0.0;
+    out.drate = out.dyield = out.drate_xmax = out.dyield_xmax = 0.0;
+    out.exercised = true;
+    out.floored = !inside;
+    return;
+  }
+  out.exercised = false;
+  out.floored = false;
+  out.dS = eS + half_sqrtT * aS;
+  out.dSS = eSS + half_sqrtT * aSS;
+  out.dSSS = eSSS + half_sqrtT * aSSS;
+  out.dsig = esig + half_sqrtT * asig;
+  out.dsig2 = esig2 + half_sqrtT * asig2;
+  out.dSsig = eSsig + half_sqrtT * aSsig;
+  out.drate_xmax = half_sqrtT * arate_x;
+  out.dyield_xmax = half_sqrtT * ayield_x;
+  out.drate = erate + half_sqrtT * arate + out.drate_xmax;
+  out.dyield = eyield + half_sqrtT * ayield + out.dyield_xmax;
+}
+
+// Map the internal put's bundle to the option's Greeks (homogeneity for calls, the
+// PDE identity for θ / charm) and fill only what the mask asked for.
+[[nodiscard]] AlSigmaFamilyGreeks map_to_option(const Internal &in, Side side, double S_opt,
+                                                double r_opt, double q_opt, double sigma,
+                                                double Sp, double Kp, Mask m) noexcept {
+  AlSigmaFamilyGreeks g;
+  g.status = AlSigmaFamilyStatus::Ok;
+  g.price = in.price;
+  g.exercised = in.exercised;
+  g.floored = in.floored;
+  g.boundary_term_included = m.has(Mask::kVega) || m.has(Mask::kVanna) || m.has(Mask::kVolga);
+  double delta = in.dS;
+  double gamma = in.dSS;
+  double speed = in.dSSS;
+  double vanna = in.dSsig;
+  double rho = in.drate;
+  double phi = in.dyield;
+  if (side == Side::Call) {
+    const double x = Sp / Kp;
+    delta = (in.price - Sp * in.dS) / Kp;
+    gamma = x * x * in.dSS;
+    speed = -x * x * x * in.dSSS - 3.0 * x * x * in.dSS / Kp;
+    vanna = (in.dsig - Sp * in.dSsig) / Kp;
+    rho = in.dyield;
+    phi = in.drate;
+    if (in.exercised) {
+      delta = 1.0;
+      gamma = speed = vanna = 0.0;
+    }
+  }
+  const double vega = in.dsig;
+  const double volga = in.dsig2;
+  double theta = 0.0;
+  double charm = 0.0;
+  if (!in.exercised) {
+    theta = r_opt * in.price - (r_opt - q_opt) * S_opt * delta -
+            0.5 * sigma * sigma * S_opt * S_opt * gamma;
+    charm = r_opt * delta - (r_opt - q_opt) * (delta + S_opt * gamma) -
+            0.5 * sigma * sigma * (2.0 * S_opt * gamma + S_opt * S_opt * speed);
+  }
+  if (m.has(Mask::kDelta)) {
+    g.delta = delta;
+  }
+  if (m.has(Mask::kGamma)) {
+    g.gamma = gamma;
+  }
+  if (m.has(Mask::kVega)) {
+    g.vega = vega;
+  }
+  if (m.has(Mask::kTheta)) {
+    g.theta = theta;
+  }
+  if (m.has(Mask::kRho)) {
+    g.rho = rho;
+  }
+  if (m.has(Mask::kPhi)) {
+    g.phi = phi;
+  }
+  if (m.has(Mask::kVanna)) {
+    g.vanna = vanna;
+  }
+  if (m.has(Mask::kVolga)) {
+    g.volga = volga;
+  }
+  if (m.has(Mask::kCharm)) {
+    g.charm = charm;
+  }
+  return g;
+}
+
+[[nodiscard]] AlSigmaFamilyGreeks refused(AlSigmaFamilyStatus st, Mask m) noexcept {
+  AlSigmaFamilyGreeks g;
+  g.status = st;
+  g.price = kNaN;
+  if (m.has(Mask::kDelta)) {
+    g.delta = kNaN;
+  }
+  if (m.has(Mask::kGamma)) {
+    g.gamma = kNaN;
+  }
+  if (m.has(Mask::kVega)) {
+    g.vega = kNaN;
+  }
+  if (m.has(Mask::kTheta)) {
+    g.theta = kNaN;
+  }
+  if (m.has(Mask::kRho)) {
+    g.rho = kNaN;
+  }
+  if (m.has(Mask::kPhi)) {
+    g.phi = kNaN;
+  }
+  if (m.has(Mask::kVanna)) {
+    g.vanna = kNaN;
+  }
+  if (m.has(Mask::kVolga)) {
+    g.volga = kNaN;
+  }
+  if (m.has(Mask::kCharm)) {
+    g.charm = kNaN;
+  }
+  return g;
+}
+
+// Greeks on a view whose admit tree already said Ok.
+[[nodiscard]] AlSigmaFamilyGreeks greeks_on_view(const FamilyView &v, double S, double K,
+                                                 double sigma, Mask m) noexcept {
+  const detail::InternalPutCoords c = detail::internal_put_coords(v.side, S, K);
+  const Need need = need_of(m, v.side);
+  Internal in;
+  fused_internal(v, c.Sp, c.Kp, sigma, need, in);
+  // The option's (r, q): the internal (rate, yield) for a put, swapped for a call.
+  const double r_opt = (v.side == Side::Call) ? v.yield : v.rate;
+  const double q_opt = (v.side == Side::Call) ? v.rate : v.yield;
+  return map_to_option(in, v.side, S, r_opt, q_opt, sigma, c.Sp, c.Kp, m);
+}
+
+[[nodiscard]] AlSigmaFamilyPriceVega price_vega_on_view(const FamilyView &v, double S, double K,
+                                                        double sigma) noexcept {
+  const detail::InternalPutCoords c = detail::internal_put_coords(v.side, S, K);
+  Need need;
+  need.sig1 = true;
+  Internal in;
+  fused_internal(v, c.Sp, c.Kp, sigma, need, in);
+  return AlSigmaFamilyPriceVega{in.price, in.dsig, AlSigmaFamilyStatus::Ok};
+}
+
+// The chain / shock column writer.
+void store_row(const AlSigmaFamilyGreekColumns &out, std::size_t i,
+               const AlSigmaFamilyGreeks &g) noexcept {
+  if (!out.price.empty()) {
+    out.price[i] = g.price;
+  }
+  if (!out.delta.empty()) {
+    out.delta[i] = g.delta;
+  }
+  if (!out.gamma.empty()) {
+    out.gamma[i] = g.gamma;
+  }
+  if (!out.vega.empty()) {
+    out.vega[i] = g.vega;
+  }
+  if (!out.theta.empty()) {
+    out.theta[i] = g.theta;
+  }
+  if (!out.rho.empty()) {
+    out.rho[i] = g.rho;
+  }
+  if (!out.phi.empty()) {
+    out.phi[i] = g.phi;
+  }
+  if (!out.vanna.empty()) {
+    out.vanna[i] = g.vanna;
+  }
+  if (!out.volga.empty()) {
+    out.volga[i] = g.volga;
+  }
+  if (!out.charm.empty()) {
+    out.charm[i] = g.charm;
+  }
+  if (!out.flags.empty()) {
+    std::uint8_t f = 0;
+    if (g.exercised) {
+      f |= 1u;
+    }
+    if (g.floored) {
+      f |= 2u;
+    }
+    if (g.boundary_term_included) {
+      f |= 4u;
+    }
+    out.flags[i] = f;
+  }
+}
+
+// A refused row / cell: NaN in every stored column.
+void store_refused(const AlSigmaFamilyGreekColumns &out, std::size_t i,
+                   AlSigmaFamilyStatus st) noexcept {
+  AlSigmaFamilyGreeks g = refused(st, Mask::all());
+  store_row(out, i, g);
+}
+
+[[nodiscard]] bool columns_fit(const AlSigmaFamilyGreekColumns &out, std::size_t n) noexcept {
+  const auto fits = [n](std::span<const double> s) { return s.empty() || s.size() == n; };
+  return fits(out.price) && fits(out.delta) && fits(out.gamma) && fits(out.vega) &&
+         fits(out.theta) && fits(out.rho) && fits(out.phi) && fits(out.vanna) &&
+         fits(out.volga) && fits(out.charm) && (out.flags.empty() || out.flags.size() == n);
+}
+
+} // namespace
+
+// ── The family's one friend: const reads of the prepared state ─────────────────
+//
+// Declared in american.hpp (forward) and defined here only. Every member is a const
+// read; nothing writes through it. A moved-from family has no state (alive() false);
+// a family whose admit() refused is never viewed.
+struct sigma_family_detail::FamilyAccess {
+  [[nodiscard]] static bool alive(const AlSigmaFamily &f) noexcept { return f.st_ != nullptr; }
+  // Precondition: alive(f).
+  [[nodiscard]] static AlSigmaFamilyStatus admit(const AlSigmaFamily &f, double S, double K,
+                                                 double sigma) noexcept {
+    return f.st_->admit(S, K, sigma);
+  }
+  // Precondition: admit(f, S, K, sigma) == Ok.
+  [[nodiscard]] static double price_at(const AlSigmaFamily &f, double S, double K,
+                                       double sigma) noexcept {
+    return f.st_->price_at(S, K, sigma);
+  }
+  // Precondition: admit(f, ...) == Ok (so the state is prepared and the geometry live).
+  [[nodiscard]] static FamilyView view(const AlSigmaFamily &f) noexcept {
+    const AlSigmaFamily::State &st = *f.st_;
+    FamilyView v;
+    v.side = st.side;
+    v.axis = st.axis;
+    v.u_lo = st.u_lo;
+    v.u_hi = st.u_hi;
+    v.n_sigma = st.n_sigma;
+    v.n_boundary = st.n_boundary;
+    v.rate = st.rate;
+    v.yield = st.yield;
+    v.sz = st.sz;
+    v.sw = st.sw;
+    v.series = st.series;
+    v.grid = &st.grid;
+    v.qx = st.ws->qx_price;
+    v.qw = st.ws->qw_price;
+    v.nq = st.ws->n_quad_price;
+    v.fast = st.ws->fast;
+    return v;
+  }
+  // Copies the prepared state into a detached copy; false (nothing written) when the
+  // family is not prepared or its geometry was re-prepared.
+  [[nodiscard]] static bool detach_into(const AlSigmaFamily &f,
+                                        AlSigmaFamilyDetached::State &c) noexcept;
+};
+
+using sigma_family_detail::FamilyAccess;
+
+// ── Public entries on the family ──────────────────────────────────────────────
+
+AlSigmaFamilyGreeks family_greeks(const AlSigmaFamily &fam, double S, double K, double sigma,
+                                  AlSigmaFamilyGreeksMask mask) noexcept {
+  if (!FamilyAccess::alive(fam)) {
+    return refused(AlSigmaFamilyStatus::NotPrepared, mask);
+  }
+  const AlSigmaFamilyStatus a = FamilyAccess::admit(fam, S, K, sigma);
+  if (a != AlSigmaFamilyStatus::Ok) {
+    return refused(a, mask);
+  }
+  if (mask.bits == 0) {
+    // Price-only IS price(): the same quadrature, nothing else.
+    AlSigmaFamilyGreeks g;
+    g.status = AlSigmaFamilyStatus::Ok;
+    g.price = FamilyAccess::price_at(fam, S, K, sigma);
+    return g;
+  }
+  return greeks_on_view(FamilyAccess::view(fam), S, K, sigma, mask);
+}
+
+AlSigmaFamilyPriceVega family_price_and_vega(const AlSigmaFamily &fam, double S, double K,
+                                             double sigma) noexcept {
+  if (!FamilyAccess::alive(fam)) {
+    return AlSigmaFamilyPriceVega{kNaN, kNaN, AlSigmaFamilyStatus::NotPrepared};
+  }
+  const AlSigmaFamilyStatus a = FamilyAccess::admit(fam, S, K, sigma);
+  if (a != AlSigmaFamilyStatus::Ok) {
+    return AlSigmaFamilyPriceVega{kNaN, kNaN, a};
+  }
+  return price_vega_on_view(FamilyAccess::view(fam), S, K, sigma);
+}
+
+Status family_chain_greeks(const AlSigmaFamily *put, const AlSigmaFamily *call, double S,
+                           std::span<const double> K, std::span<const double> sigma,
+                           std::span<const Side> side, AlSigmaFamilyGreeksMask mask,
+                           const AlSigmaFamilyGreekColumns &out,
+                           std::span<AlSigmaFamilyStatus> status) {
+  const std::size_t n = K.size();
+  if (sigma.size() != n || side.size() != n || status.size() != n || !columns_fit(out, n)) {
+    return Err(ErrorCode::InvalidArgument,
+               "family_chain_greeks: K / sigma / side / status / column lengths differ");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const AlSigmaFamily *fam = (side[i] == Side::Call) ? call : put;
+    if (fam == nullptr) {
+      status[i] = AlSigmaFamilyStatus::NotPrepared;
+      store_refused(out, i, status[i]);
+      continue;
+    }
+    const AlSigmaFamilyGreeks g = family_greeks(*fam, S, K[i], sigma[i], mask);
+    status[i] = g.status;
+    if (g.status != AlSigmaFamilyStatus::Ok) {
+      store_refused(out, i, g.status);
+      continue;
+    }
+    store_row(out, i, g);
+  }
+  return Ok();
+}
+
+Status family_shock_grid(const AlSigmaFamily &fam, double S, double K, double sigma,
+                         std::span<const double> spot_pct, std::span<const double> vol_bump,
+                         AlSigmaFamilyGreeksMask mask, const AlSigmaFamilyGreekColumns &out,
+                         std::span<AlSigmaFamilyStatus> status) {
+  const std::size_t n = spot_pct.size() * vol_bump.size();
+  if (status.size() != n || !columns_fit(out, n)) {
+    return Err(ErrorCode::InvalidArgument,
+               "family_shock_grid: status / column lengths differ from n_spot * n_vol");
+  }
+  for (std::size_t i = 0; i < spot_pct.size(); ++i) {
+    const double Si = S * (1.0 + spot_pct[i]);
+    for (std::size_t j = 0; j < vol_bump.size(); ++j) {
+      const std::size_t idx = i * vol_bump.size() + j;
+      const AlSigmaFamilyGreeks g = family_greeks(fam, Si, K, sigma + vol_bump[j], mask);
+      status[idx] = g.status;
+      if (g.status != AlSigmaFamilyStatus::Ok) {
+        store_refused(out, idx, g.status);
+        continue;
+      }
+      store_row(out, idx, g);
+    }
+  }
+  return Ok();
+}
+
+// ── Detached serve copy ───────────────────────────────────────────────────────
+
+struct AlSigmaFamilyDetached::State {
+  bool ok = false;
+  Side side = Side::Put;
+  AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma;
+  double sigma_lo = 0.0;
+  double sigma_hi = 0.0;
+  double u_lo = 0.0;
+  double u_hi = 0.0;
+  std::uint16_t n_sigma = 0;
+  std::uint16_t n_boundary = 0;
+  double rate = 0.0;
+  double yield = 0.0;
+  // The workspace header the premium quadrature reads. qx / qw point at the
+  // process-wide Gauss-Legendre tables (american.cpp binds every workspace to them),
+  // so they outlive any geometry.
+  const double *qx = nullptr;
+  const double *qw = nullptr;
+  unsigned nq = 0;
+  bool fast = false;
+  amer::AlBoundary grid{};
+  double sz[kMaxSigmaNodes] = {};
+  double sw[kMaxSigmaNodes] = {};
+  double series[amer::kAlMaxNodes * kMaxSigmaNodes] = {};
+
+  [[nodiscard]] AlSigmaFamilyStatus admit(double S, double K, double sigma) const noexcept {
+    if (!ok) {
+      return AlSigmaFamilyStatus::NotPrepared;
+    }
+    if (!(std::isfinite(S) && S > 0.0 && std::isfinite(K) && K > 0.0 && std::isfinite(sigma))) {
+      return AlSigmaFamilyStatus::InvalidArgument;
+    }
+    if (sigma < kAlSigmaFamilyMinSigma) {
+      return AlSigmaFamilyStatus::SigmaBelowGuard;
+    }
+    if (sigma < sigma_lo || sigma > sigma_hi) {
+      return AlSigmaFamilyStatus::SigmaOutsideBox;
+    }
+    return AlSigmaFamilyStatus::Ok;
+  }
+  [[nodiscard]] FamilyView view() const noexcept {
+    FamilyView v;
+    v.side = side;
+    v.axis = axis;
+    v.u_lo = u_lo;
+    v.u_hi = u_hi;
+    v.n_sigma = n_sigma;
+    v.n_boundary = n_boundary;
+    v.rate = rate;
+    v.yield = yield;
+    v.sz = sz;
+    v.sw = sw;
+    v.series = series;
+    v.grid = &grid;
+    v.qx = qx;
+    v.qw = qw;
+    v.nq = nq;
+    v.fast = fast;
+    return v;
+  }
+};
+
+AlSigmaFamilyDetached::AlSigmaFamilyDetached() = default;
+AlSigmaFamilyDetached::~AlSigmaFamilyDetached() = default;
+AlSigmaFamilyDetached::AlSigmaFamilyDetached(AlSigmaFamilyDetached &&) noexcept = default;
+AlSigmaFamilyDetached &AlSigmaFamilyDetached::operator=(AlSigmaFamilyDetached &&) noexcept = default;
+
+std::size_t AlSigmaFamilyDetached::state_bytes() noexcept { return sizeof(State); }
+bool AlSigmaFamilyDetached::prepared() const noexcept { return st_ && st_->ok; }
+double AlSigmaFamilyDetached::sigma_lo() const noexcept { return prepared() ? st_->sigma_lo : kNaN; }
+double AlSigmaFamilyDetached::sigma_hi() const noexcept { return prepared() ? st_->sigma_hi : kNaN; }
+Side AlSigmaFamilyDetached::side() const noexcept { return st_ ? st_->side : Side::Call; }
+
+AlSigmaFamilyPrice AlSigmaFamilyDetached::price(double S, double K, double sigma) const noexcept {
+  if (!st_) {
+    return AlSigmaFamilyPrice{kNaN, AlSigmaFamilyStatus::NotPrepared};
+  }
+  const AlSigmaFamilyStatus a = st_->admit(S, K, sigma);
+  if (a != AlSigmaFamilyStatus::Ok) {
+    return AlSigmaFamilyPrice{kNaN, a};
+  }
+  const FamilyView v = st_->view();
+  const detail::InternalPutCoords c = detail::internal_put_coords(v.side, S, K);
+  Internal in;
+  fused_internal(v, c.Sp, c.Kp, sigma, Need{}, in);
+  return AlSigmaFamilyPrice{in.price, AlSigmaFamilyStatus::Ok};
+}
+
+AlSigmaFamilyGreeks AlSigmaFamilyDetached::greeks(double S, double K, double sigma,
+                                                  AlSigmaFamilyGreeksMask mask) const noexcept {
+  if (!st_) {
+    return refused(AlSigmaFamilyStatus::NotPrepared, mask);
+  }
+  const AlSigmaFamilyStatus a = st_->admit(S, K, sigma);
+  if (a != AlSigmaFamilyStatus::Ok) {
+    return refused(a, mask);
+  }
+  return greeks_on_view(st_->view(), S, K, sigma, mask);
+}
+
+AlSigmaFamilyPriceVega AlSigmaFamilyDetached::price_and_vega(double S, double K,
+                                                             double sigma) const noexcept {
+  if (!st_) {
+    return AlSigmaFamilyPriceVega{kNaN, kNaN, AlSigmaFamilyStatus::NotPrepared};
+  }
+  const AlSigmaFamilyStatus a = st_->admit(S, K, sigma);
+  if (a != AlSigmaFamilyStatus::Ok) {
+    return AlSigmaFamilyPriceVega{kNaN, kNaN, a};
+  }
+  return price_vega_on_view(st_->view(), S, K, sigma);
+}
+
+bool sigma_family_detail::FamilyAccess::detach_into(const AlSigmaFamily &f,
+                                                    AlSigmaFamilyDetached::State &c) noexcept {
+  if (f.st_ == nullptr) {
+    return false;
+  }
+  const AlSigmaFamily::State &st = *f.st_;
+  if (!st.ok || st.g == nullptr || st.g->generation != st.generation || st.ws == nullptr) {
+    return false;
+  }
+  c.side = st.side;
+  c.axis = st.axis;
+  c.sigma_lo = st.sigma_lo;
+  c.sigma_hi = st.sigma_hi;
+  c.u_lo = st.u_lo;
+  c.u_hi = st.u_hi;
+  c.n_sigma = st.n_sigma;
+  c.n_boundary = st.n_boundary;
+  c.rate = st.rate;
+  c.yield = st.yield;
+  c.qx = st.ws->qx_price;
+  c.qw = st.ws->qw_price;
+  c.nq = st.ws->n_quad_price;
+  c.fast = st.ws->fast;
+  c.grid = st.grid;
+  for (unsigned s = 0; s < kMaxSigmaNodes; ++s) {
+    c.sz[s] = st.sz[s];
+    c.sw[s] = st.sw[s];
+  }
+  for (std::size_t i = 0; i < amer::kAlMaxNodes * kMaxSigmaNodes; ++i) {
+    c.series[i] = st.series[i];
+  }
+  c.ok = true;
+  return true;
+}
+
+AlSigmaFamilyDetached family_detach(const AlSigmaFamily &fam) {
+  AlSigmaFamilyDetached d;
+  d.st_ = std::make_unique<AlSigmaFamilyDetached::State>();
+  if (!FamilyAccess::detach_into(fam, *d.st_)) {
+    d.st_->ok = false; // unprepared copy: every call refuses with NotPrepared
+  }
+  return d;
+}
+
+// ── Measurement hook (private header): rho / phi with and without the xmax term ──
+
+namespace sigma_family_detail {
+
+FamilyRhoVariants family_rho_variants(const AlSigmaFamily &fam, double S, double K,
+                                      double sigma) noexcept {
+  FamilyRhoVariants out;
+  if (!FamilyAccess::alive(fam)) {
+    out.status = AlSigmaFamilyStatus::NotPrepared;
+    return out;
+  }
+  out.status = FamilyAccess::admit(fam, S, K, sigma);
+  if (out.status != AlSigmaFamilyStatus::Ok) {
+    return out;
+  }
+  const FamilyView v = FamilyAccess::view(fam);
+  const detail::InternalPutCoords c = detail::internal_put_coords(v.side, S, K);
+  Need need;
+  need.rate = true;
+  need.yield = true;
+  Internal in;
+  fused_internal(v, c.Sp, c.Kp, sigma, need, in);
+  const bool call = v.side == Side::Call;
+  const double rho_y = call ? in.dyield : in.drate;
+  const double phi_y = call ? in.drate : in.dyield;
+  const double rho_x = call ? in.dyield_xmax : in.drate_xmax;
+  const double phi_x = call ? in.drate_xmax : in.dyield_xmax;
+  out.rho_frozen_y = rho_y;
+  out.phi_frozen_y = phi_y;
+  out.rho_frozen_b = rho_y - rho_x;
+  out.phi_frozen_b = phi_y - phi_x;
+  out.exercised = in.exercised;
+  return out;
+}
+
+} // namespace sigma_family_detail
+
+} // namespace atx::vol

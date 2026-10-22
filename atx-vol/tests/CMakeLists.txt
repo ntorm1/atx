@@ -189,6 +189,19 @@ gtest_discover_tests(atx-vol-chain-batch-tests
     PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
+# L2h-b sigma-q family (2026-10-21): the AlSigmaQFamily price path's zero-allocation
+# count. support/alloc_counter.cpp replaces global operator new for THIS binary only, so
+# the suite lives only here (its accuracy / identity suite AlSigmaQFamily.* is in
+# atx-vol-tests and atx-vol-pricing-slice).
+add_executable(atx-vol-sigma-q-family-alloc-tests
+    american_sigma_q_family_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-sigma-q-family-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-sigma-q-family-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-tests)
+set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
 target_link_libraries(atx-vol-umbrella-tests PRIVATE
     atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)
@@ -218,6 +231,8 @@ add_executable(atx-vol-tests
     american_test.cpp
     american_batch_test.cpp
     american_geometry_test.cpp
+    american_family_greeks_test.cpp
+    american_sigma_q_family_test.cpp
     counters_test.cpp
     phase_profile_test.cpp
     correction_test.cpp

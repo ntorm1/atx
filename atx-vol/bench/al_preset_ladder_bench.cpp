@@ -70,8 +70,10 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_batch.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "pricing/adjoint_greeks.hpp"        // L3g: the adjoint bundle's µs on the same contracts
 #include "pricing/al_probe.hpp"
 #include "pricing/american_detail.hpp"
+#include "pricing/american_sigma_family.hpp" // L3g: sigma_family_detail::family_rho_variants
 #include "pricing/scalar_erfc.hpp"
 #include "atx/core/math.hpp"
 #include "atx/vol/api/core/types.hpp"
@@ -1757,6 +1759,1009 @@ void run_family(benchmark::State &state, FamilySet set, const char *set_name, un
   }
 }
 
+// ── L3g family-greeks (2026-10-20): analytic Greeks on the family — µs + error rows ──
+//
+//   * ATX_VOL_AL_FAMILY_GREEKS=1 registers:
+//       american/spy23_family_greeks/<mask>      (needs ATX_VOL_AL_SPY23) mask in
+//           price | hedge (+Δ Γ vega θ) | eight | all (+charm) | price_and_vega | chord:
+//           per-contract µs of family_greeks (p50 / p99 / mean, one timed pass per
+//           contract) on the SPY 23 d chain, one family per (S, T, r, q, side) group as
+//           the L2h rows build them; the `price` row's µs must equal the L2h price row
+//           within noise (it IS price()).
+//       american/spy23_family_greeks/reference_bundles (needs ATX_VOL_AL_SPY23):
+//           american_greeks_al(g, …) accurate and al_fast_profile, and the adjoint
+//           bundle (detail::american_greeks_adjoint, puts only), per contract.
+//       american/family_greeks_error/<set>/n<N>  sets: spy23, spy23offnode (ATX_VOL_AL_SPY23),
+//           grid, fastgrid, deepcarry; N = 12 (and 16 for fastgrid): every Greek of
+//           family_greeks(all) against TWO references on the SAME Reference geometry —
+//           (i) american_greeks_al(g, …), the cold bundle's bits, and (ii) a Richardson
+//           reference: Δ / Γ from h = 1e-3 S and h/2 central stencils of the cold price
+//           (one-sided on the continuation side when the central stencil would
+//           straddle the exercise edge — LEDGER 2026-10-16), vega / volga from σ ± 2e-3
+//           and ± 1e-3 cold re-solves, vanna from the mixed stencil at both steps, θ
+//           from the PDE identity on the Richardson Δ / Γ, and rho / phi from a SECOND
+//           FAMILY built at r ± 1e-4 / q ± 1e-4 (two builds each, central difference of
+//           its prices: the total derivative of the budget-limited map). Per Greek:
+//           max abs, p99 abs, max rel and p99 rel (on |ref| ≥ the stated floor), the
+//           worst contract's inputs on stderr. rho / phi are reported in both frozen
+//           conventions (frozen y = served; frozen B = no xmax term).
+//       american/family_chain/<chain>/<mask>  chain in spy23 (317 rows, one put + one
+//           call family at the chain's median q; ATX_VOL_AL_SPY23) | synthetic300 (S 773,
+//           23 d, 300 strikes 540..1090 on the representative skew; puts below spot,
+//           calls above): one single-thread family_chain_greeks call, ms per chain.
+//       american/family_shock/<grid>  11x11 (±10 % spot, ±10 vol points) per contract
+//           (the SPY ATM put) and per synthetic 300-chain: ms.
+//   Every timing is one pass (order of magnitude first); the load line is the lane's.
+
+struct GreekErr {
+  ErrDist abs_, rel_;
+  double worst_abs = -1.0, worst_rel = -1.0;
+  std::size_t worst_abs_i = 0, worst_rel_i = 0;
+  double worst_abs_fam = 0.0, worst_abs_ref = 0.0, worst_rel_fam = 0.0, worst_rel_ref = 0.0;
+  void add(std::size_t i, double fam, double ref, double floor) {
+    if (!std::isfinite(fam) || !std::isfinite(ref)) {
+      return;
+    }
+    const double d = std::abs(fam - ref);
+    abs_.add(d);
+    if (d > worst_abs) {
+      worst_abs = d;
+      worst_abs_i = i;
+      worst_abs_fam = fam;
+      worst_abs_ref = ref;
+    }
+    if (std::abs(ref) >= floor) {
+      const double r = d / std::abs(ref);
+      rel_.add(r);
+      if (r > worst_rel) {
+        worst_rel = r;
+        worst_rel_i = i;
+        worst_rel_fam = fam;
+        worst_rel_ref = ref;
+      }
+    }
+  }
+  void publish(benchmark::State &state, const std::string &name) const {
+    state.counters[name + "_max_abs"] = abs_.max();
+    state.counters[name + "_p99_abs"] = abs_.quantile(0.99);
+    state.counters[name + "_max_rel"] = rel_.max();
+    state.counters[name + "_p99_rel"] = rel_.quantile(0.99);
+    state.counters[name + "_n"] = static_cast<double>(abs_.size());
+  }
+};
+
+// Richardson reference on the COLD kernel (every price a fresh andersen_lake(g, …):
+// the boundary re-solved at the same σ is bit-identical, so the spot stencils are the
+// exact spot derivatives of the cold map; the σ stencils carry the re-solved boundary).
+struct ColdRef {
+  double delta = std::numeric_limits<double>::quiet_NaN();
+  double gamma = std::numeric_limits<double>::quiet_NaN();
+  double vega = std::numeric_limits<double>::quiet_NaN();
+  double volga = std::numeric_limits<double>::quiet_NaN();
+  double vanna = std::numeric_limits<double>::quiet_NaN();
+  double theta = std::numeric_limits<double>::quiet_NaN();
+  bool one_sided = false;
+  bool exercised = false;
+};
+
+[[nodiscard]] ColdRef cold_richardson(const atx::vol::AlExpiryGeometry &g, const GridPt &p,
+                                      double sigma) {
+  using namespace atx::vol;
+  ColdRef out;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const auto P = [&](double s, double sig) {
+    const Result<double> r = andersen_lake(g, s, p.K, sig, p.side);
+    return r.has_value() ? *r : nan;
+  };
+  const double P0 = P(p.S, sigma);
+  const double intr = p.side == Side::Call ? p.S - p.K : p.K - p.S;
+  if (intr > 0.0 && P0 <= intr + 1.0e-9 * p.K) {
+    out.exercised = true;
+    return out;
+  }
+  const auto clamped = [&](double s) {
+    const double v = P(s, sigma);
+    const double in = p.side == Side::Call ? s - p.K : p.K - s;
+    return in > 0.0 && v <= in + 1.0e-9 * p.K;
+  };
+  const double h1 = 1.0e-3 * p.S;
+  const bool low = clamped(p.S - 2.0 * h1);
+  const bool high = clamped(p.S + 2.0 * h1);
+  if (low && high) {
+    return out;
+  }
+  // Δ / Γ at step h with a central, forward or backward stencil (all second order).
+  const auto dg = [&](double h, double &d, double &gm) {
+    if (!low && !high) {
+      const double pp = P(p.S + h, sigma), pm = P(p.S - h, sigma);
+      d = (pp - pm) / (2.0 * h);
+      gm = (pp - 2.0 * P0 + pm) / (h * h);
+      return;
+    }
+    const double dir = low ? 1.0 : -1.0; // step away from the exercise region
+    const double p1 = P(p.S + dir * h, sigma), p2 = P(p.S + 2.0 * dir * h, sigma),
+                 p3 = P(p.S + 3.0 * dir * h, sigma);
+    d = dir * (-3.0 * P0 + 4.0 * p1 - p2) / (2.0 * h);
+    gm = (2.0 * P0 - 5.0 * p1 + 4.0 * p2 - p3) / (h * h);
+  };
+  double d1, g1, d2, g2;
+  dg(h1, d1, g1);
+  dg(0.5 * h1, d2, g2);
+  out.one_sided = low || high;
+  out.delta = (4.0 * d2 - d1) / 3.0;
+  out.gamma = (4.0 * g2 - g1) / 3.0;
+  out.theta = p.r * P0 - (p.r - p.q) * p.S * out.delta -
+              0.5 * sigma * sigma * p.S * p.S * out.gamma;
+  const double hv1 = 2.0e-3;
+  if (sigma - hv1 > 1.0e-4) {
+    const auto vv = [&](double h, double &ve, double &vo) {
+      const double pp = P(p.S, sigma + h), pm = P(p.S, sigma - h);
+      ve = (pp - pm) / (2.0 * h);
+      vo = (pp - 2.0 * P0 + pm) / (h * h);
+    };
+    double ve1, vo1, ve2, vo2;
+    vv(hv1, ve1, vo1);
+    vv(0.5 * hv1, ve2, vo2);
+    out.vega = (4.0 * ve2 - ve1) / 3.0;
+    out.volga = (4.0 * vo2 - vo1) / 3.0;
+    if (!out.one_sided) {
+      const auto vn = [&](double hs, double hsig) {
+        return (P(p.S + hs, sigma + hsig) - P(p.S + hs, sigma - hsig) -
+                P(p.S - hs, sigma + hsig) + P(p.S - hs, sigma - hsig)) /
+               (4.0 * hs * hsig);
+      };
+      out.vanna = (4.0 * vn(0.5 * h1, 0.5 * hv1) - vn(h1, hv1)) / 3.0;
+    }
+  }
+  return out;
+}
+
+void run_family_greeks_error(benchmark::State &state, FamilySet set, const char *set_name,
+                             unsigned n_sigma) {
+  using namespace atx::vol;
+  using Mask = AlSigmaFamilyGreeksMask;
+  const std::vector<GridPt> &pts = family_points(set);
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  const AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma;
+  std::map<FamilyKey, std::vector<std::size_t>> groups;
+  std::map<FamilyKey, std::pair<double, double>> chain_range;
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const GridPt &p = pts[i];
+    groups[FamilyKey{p.S, p.T, p.r, p.q, p.side}].push_back(i);
+    if (p.sigma >= kAlSigmaFamilyMinSigma) {
+      auto [it, fresh] = chain_range.try_emplace(FamilyKey{p.S, p.T, 0.0, 0.0, p.side},
+                                                 std::pair<double, double>{p.sigma, p.sigma});
+      if (!fresh) {
+        it->second.first = std::min(it->second.first, p.sigma);
+        it->second.second = std::max(it->second.second, p.sigma);
+      }
+    }
+  }
+  GreekErr e_delta_b, e_gamma_b, e_vega_b, e_theta_b, e_vanna_b, e_volga_b, e_rho_b;
+  GreekErr e_delta_r, e_gamma_r, e_vega_r, e_theta_r, e_vanna_r, e_volga_r;
+  GreekErr e_rho_y, e_rho_bb, e_phi_y, e_phi_bb, e_rhoB_vs_fam2, e_phiB_vs_fam2;
+  double refused = 0.0, priced = 0.0, exercised = 0.0, one_sided = 0.0, fam2_failed = 0.0;
+  std::vector<double> query_sigma(pts.size(), std::numeric_limits<double>::quiet_NaN());
+  for (auto _ : state) {
+    for (const auto &[key, idx] : groups) {
+      const auto it = chain_range.find(FamilyKey{key.S, key.T, 0.0, 0.0, key.side});
+      if (it == chain_range.end()) {
+        refused += static_cast<double>(idx.size());
+        continue;
+      }
+      const FamilyBox box = family_box(it->second.first, it->second.second);
+      const AlExpiryGeometry g = prepare_al_geometry(key.T, key.r, key.q);
+      AlSigmaFamily fam(g, key.side, key.S);
+      if (!fam.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis)) {
+        refused += static_cast<double>(idx.size());
+        continue;
+      }
+      // Second families at r ± h and q ± h (the total derivative of the served map).
+      const double hr = 1.0e-4;
+      const AlExpiryGeometry grp = prepare_al_geometry(key.T, key.r + hr, key.q);
+      const AlExpiryGeometry grm = prepare_al_geometry(key.T, key.r - hr, key.q);
+      const AlExpiryGeometry gqp = prepare_al_geometry(key.T, key.r, key.q + hr);
+      const AlExpiryGeometry gqm = prepare_al_geometry(key.T, key.r, key.q - hr);
+      AlSigmaFamily frp(grp, key.side, key.S), frm(grm, key.side, key.S);
+      AlSigmaFamily fqp(gqp, key.side, key.S), fqm(gqm, key.side, key.S);
+      const bool fam_r = frp.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis) &&
+                         frm.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis);
+      const bool fam_q = fqp.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis) &&
+                         fqm.prepare(box.lo, box.hi, static_cast<std::uint16_t>(n_sigma), axis);
+      const std::vector<double> nodes = family_nodes(box.lo, box.hi, n_sigma, axis);
+      for (const std::size_t i : idx) {
+        const GridPt &p = pts[i];
+        double sigma = p.sigma;
+        if (set == FamilySet::Spy23OffNode) {
+          for (std::size_t k = 1; k < nodes.size(); ++k) {
+            if (sigma <= nodes[k] || k + 1 == nodes.size()) {
+              sigma = 0.5 * (nodes[k - 1] + nodes[k]);
+              break;
+            }
+          }
+        }
+        query_sigma[i] = sigma;
+        const AlSigmaFamilyGreeks a = family_greeks(fam, p.S, p.K, sigma, Mask::all());
+        if (a.status != AlSigmaFamilyStatus::Ok) {
+          refused += 1.0;
+          continue;
+        }
+        priced += 1.0;
+        if (a.exercised) {
+          exercised += 1.0;
+          continue;
+        }
+        const double fp = 1.0e-3 * std::max(a.price, 1.0);
+        const double fg = 1.0e-7 * p.S;
+        // (i) the Reference bundle on the same geometry.
+        const Result<AmericanGreeks> b = american_greeks_al(g, p.S, p.K, sigma, p.side);
+        if (b.has_value()) {
+          e_delta_b.add(i, a.delta, b->delta, 1.0e-3);
+          e_gamma_b.add(i, a.gamma, b->gamma, fg);
+          e_vega_b.add(i, a.vega, b->vega, fp);
+          e_theta_b.add(i, a.theta, b->theta, fp);
+          e_vanna_b.add(i, a.vanna, b->vanna, 1.0e-3);
+          e_volga_b.add(i, a.volga, b->volga, fp);
+          e_rho_b.add(i, a.rho, b->rho, fp);
+        }
+        // (ii) Richardson on the cold kernel.
+        const ColdRef c = cold_richardson(g, p, sigma);
+        if (!c.exercised) {
+          one_sided += c.one_sided ? 1.0 : 0.0;
+          e_delta_r.add(i, a.delta, c.delta, 1.0e-3);
+          e_gamma_r.add(i, a.gamma, c.gamma, fg);
+          e_theta_r.add(i, a.theta, c.theta, fp);
+          e_vega_r.add(i, a.vega, c.vega, fp);
+          e_volga_r.add(i, a.volga, c.volga, fp);
+          e_vanna_r.add(i, a.vanna, c.vanna, 1.0e-3);
+        }
+        // rho / phi: both frozen conventions vs the r ± h / q ± h families.
+        const sigma_family_detail::FamilyRhoVariants rv =
+            sigma_family_detail::family_rho_variants(fam, p.S, p.K, sigma);
+        if (fam_r) {
+          const AlSigmaFamilyPrice up = frp.price(p.S, p.K, sigma);
+          const AlSigmaFamilyPrice dn = frm.price(p.S, p.K, sigma);
+          if (up.status == AlSigmaFamilyStatus::Ok && dn.status == AlSigmaFamilyStatus::Ok) {
+            const double rho2 = (up.price - dn.price) / (2.0 * hr);
+            e_rho_y.add(i, rv.rho_frozen_y, rho2, fp);
+            e_rho_bb.add(i, rv.rho_frozen_b, rho2, fp);
+            if (b.has_value()) {
+              e_rhoB_vs_fam2.add(i, b->rho, rho2, fp);
+            }
+          } else {
+            fam2_failed += 1.0;
+          }
+        } else {
+          fam2_failed += 1.0;
+        }
+        if (fam_q) {
+          const AlSigmaFamilyPrice up = fqp.price(p.S, p.K, sigma);
+          const AlSigmaFamilyPrice dn = fqm.price(p.S, p.K, sigma);
+          if (up.status == AlSigmaFamilyStatus::Ok && dn.status == AlSigmaFamilyStatus::Ok) {
+            const double phi2 = (up.price - dn.price) / (2.0 * hr);
+            e_phi_y.add(i, rv.phi_frozen_y, phi2, fp);
+            e_phi_bb.add(i, rv.phi_frozen_b, phi2, fp);
+            // The cold q ± h central difference (what a carry bundle would re-solve).
+            const Result<double> cu = andersen_lake(gqp, p.S, p.K, sigma, p.side);
+            const Result<double> cd = andersen_lake(gqm, p.S, p.K, sigma, p.side);
+            if (cu.has_value() && cd.has_value()) {
+              e_phiB_vs_fam2.add(i, (*cu - *cd) / (2.0 * hr), phi2, fp);
+            }
+          } else {
+            fam2_failed += 1.0;
+          }
+        } else {
+          fam2_failed += 1.0;
+        }
+      }
+    }
+  }
+  state.counters["points"] = static_cast<double>(pts.size());
+  state.counters["priced"] = priced;
+  state.counters["refused"] = refused;
+  state.counters["exercised"] = exercised;
+  state.counters["one_sided_ref"] = one_sided;
+  state.counters["fam2_failed"] = fam2_failed;
+  e_delta_b.publish(state, "delta_vs_bundle");
+  e_gamma_b.publish(state, "gamma_vs_bundle");
+  e_vega_b.publish(state, "vega_vs_bundle");
+  e_theta_b.publish(state, "theta_vs_bundle");
+  e_vanna_b.publish(state, "vanna_vs_bundle");
+  e_volga_b.publish(state, "volga_vs_bundle");
+  e_rho_b.publish(state, "rhoY_vs_bundle");
+  e_delta_r.publish(state, "delta_vs_rich");
+  e_gamma_r.publish(state, "gamma_vs_rich");
+  e_vega_r.publish(state, "vega_vs_rich");
+  e_theta_r.publish(state, "theta_vs_rich");
+  e_vanna_r.publish(state, "vanna_vs_rich");
+  e_volga_r.publish(state, "volga_vs_rich");
+  e_rho_y.publish(state, "rhoY_vs_fam2");
+  e_rho_bb.publish(state, "rhoB_vs_fam2");
+  e_phi_y.publish(state, "phiY_vs_fam2");
+  e_phi_bb.publish(state, "phiB_vs_fam2");
+  e_rhoB_vs_fam2.publish(state, "bundle_rho_vs_fam2");
+  e_phiB_vs_fam2.publish(state, "cold_phi_vs_fam2");
+  const auto describe = [&](const char *greek, const GreekErr &e) {
+    if (e.worst_rel < 0.0) {
+      return;
+    }
+    const GridPt &p = pts[e.worst_rel_i];
+    std::fprintf(stderr,
+                 "[family-greeks] %s/n%u %s worst_rel=%.6g fam=%.17g ref=%.17g S=%.17g K=%.17g "
+                 "T=%.17g sigma=%.17g r=%.17g q=%.17g side=%s | worst_abs=%.6g (fam=%.17g "
+                 "ref=%.17g at K=%.17g sigma=%.17g side=%s)\n",
+                 set_name, n_sigma, greek, e.worst_rel, e.worst_rel_fam, e.worst_rel_ref, p.S, p.K,
+                 p.T, query_sigma[e.worst_rel_i], p.r, p.q, p.side == Side::Call ? "C" : "P",
+                 e.worst_abs, e.worst_abs_fam, e.worst_abs_ref, pts[e.worst_abs_i].K,
+                 query_sigma[e.worst_abs_i], pts[e.worst_abs_i].side == Side::Call ? "C" : "P");
+  };
+  describe("delta_vs_bundle", e_delta_b);
+  describe("gamma_vs_bundle", e_gamma_b);
+  describe("vega_vs_bundle", e_vega_b);
+  describe("theta_vs_bundle", e_theta_b);
+  describe("vanna_vs_bundle", e_vanna_b);
+  describe("volga_vs_bundle", e_volga_b);
+  describe("rhoY_vs_bundle", e_rho_b);
+  describe("delta_vs_rich", e_delta_r);
+  describe("gamma_vs_rich", e_gamma_r);
+  describe("vega_vs_rich", e_vega_r);
+  describe("theta_vs_rich", e_theta_r);
+  describe("vanna_vs_rich", e_vanna_r);
+  describe("volga_vs_rich", e_volga_r);
+  describe("rhoY_vs_fam2", e_rho_y);
+  describe("rhoB_vs_fam2", e_rho_bb);
+  describe("phiY_vs_fam2", e_phi_y);
+  describe("phiB_vs_fam2", e_phi_bb);
+  describe("bundle_rho_vs_fam2", e_rhoB_vs_fam2);
+  describe("cold_phi_vs_fam2", e_phiB_vs_fam2);
+}
+
+// Per-contract µs of one family entry over the SPY 23 d chain (one timed pass).
+enum class GreeksRow { Price, Hedge, Eight, All, PriceVega, Chord };
+
+void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
+  using namespace atx::vol;
+  using Mask = AlSigmaFamilyGreeksMask;
+  const std::vector<GridPt> &pts = err_points(ErrSet::Spy23);
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (ATX_VOL_AL_SPY23 unreadable or empty)");
+    return;
+  }
+  std::map<FamilyKey, std::vector<std::size_t>> groups;
+  std::map<FamilyKey, std::pair<double, double>> chain_range;
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const GridPt &p = pts[i];
+    groups[FamilyKey{p.S, p.T, p.r, p.q, p.side}].push_back(i);
+    auto [it, fresh] = chain_range.try_emplace(FamilyKey{p.S, p.T, 0.0, 0.0, p.side},
+                                               std::pair<double, double>{p.sigma, p.sigma});
+    if (!fresh) {
+      it->second.first = std::min(it->second.first, p.sigma);
+      it->second.second = std::max(it->second.second, p.sigma);
+    }
+  }
+  const Mask mask = row == GreeksRow::Hedge ? Mask::hedge()
+                    : row == GreeksRow::Eight ? Mask::eight()
+                    : row == GreeksRow::All   ? Mask::all()
+                                              : Mask::price_only();
+  std::vector<double> us;
+  double sink = 0.0;
+  double refused = 0.0;
+  for (auto _ : state) {
+    us.clear();
+    double total_us = 0.0;
+    for (const auto &[key, idx] : groups) {
+      const FamilyBox box =
+          family_box(chain_range.at(FamilyKey{key.S, key.T, 0.0, 0.0, key.side}).first,
+                     chain_range.at(FamilyKey{key.S, key.T, 0.0, 0.0, key.side}).second);
+      const AlExpiryGeometry g = prepare_al_geometry(key.T, key.r, key.q);
+      AlSigmaFamily fam(g, key.side, key.S);
+      if (!fam.prepare(box.lo, box.hi, 12, AlSigmaFamilyAxis::LogSigma)) {
+        refused += static_cast<double>(idx.size());
+        continue;
+      }
+      for (const std::size_t i : idx) {
+        const GridPt &p = pts[i];
+        const auto t0 = std::chrono::steady_clock::now();
+        if (row == GreeksRow::PriceVega) {
+          const AlSigmaFamilyPriceVega pv = family_price_and_vega(fam, p.S, p.K, p.sigma);
+          sink += pv.vega;
+          refused += pv.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+        } else if (row == GreeksRow::Chord) {
+          const AlSigmaFamilyChord c = fam.price_and_chord(p.S, p.K, p.sigma);
+          sink += c.price_sigma_bumped;
+          refused += c.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+        } else {
+          const AlSigmaFamilyGreeks a = family_greeks(fam, p.S, p.K, p.sigma, mask);
+          sink += a.price + a.delta;
+          refused += a.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        const double dt = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        us.push_back(dt);
+        total_us += dt;
+      }
+    }
+    benchmark::DoNotOptimize(sink);
+    state.SetIterationTime(total_us * 1.0e-6);
+  }
+  std::sort(us.begin(), us.end());
+  double mean = 0.0;
+  for (const double v : us) {
+    mean += v;
+  }
+  state.counters["contracts"] = static_cast<double>(us.size());
+  state.counters["refused"] = refused;
+  state.counters["p50_us"] = sorted_quantile(us, 0.50);
+  state.counters["p90_us"] = sorted_quantile(us, 0.90);
+  state.counters["p99_us"] = sorted_quantile(us, 0.99);
+  state.counters["mean_us"] = us.empty() ? 0.0 : mean / static_cast<double>(us.size());
+}
+
+// The reference bundles' µs on the same contracts: american_greeks_al(g, …) accurate /
+// Fast profile, and the adjoint bundle (puts only — it declines calls).
+void run_spy23_reference_bundles(benchmark::State &state) {
+  using namespace atx::vol;
+  const std::vector<GridPt> &pts = err_points(ErrSet::Spy23);
+  if (pts.empty()) {
+    state.SkipWithError("no contracts (ATX_VOL_AL_SPY23 unreadable or empty)");
+    return;
+  }
+  std::vector<double> acc, fast, adj;
+  double sink = 0.0;
+  double adj_declined = 0.0;
+  for (auto _ : state) {
+    acc.clear();
+    fast.clear();
+    adj.clear();
+    adj_declined = 0.0;
+    double total_us = 0.0;
+    for (const GridPt &p : pts) {
+      const AlExpiryGeometry g = prepare_al_geometry(p.T, p.r, p.q);
+      const AlExpiryGeometry gf = prepare_al_geometry(p.T, p.r, p.q, al_fast_profile(std::nullopt));
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Result<AmericanGreeks> b = american_greeks_al(g, p.S, p.K, p.sigma, p.side);
+        const auto t1 = std::chrono::steady_clock::now();
+        sink += b.has_value() ? b->delta : 0.0;
+        const double dt = std::chrono::duration<double, std::micro>(t1 - t0).count();
+        acc.push_back(dt);
+        total_us += dt;
+      }
+      {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Result<AmericanGreeks> b = american_greeks_al(gf, p.S, p.K, p.sigma, p.side);
+        const auto t1 = std::chrono::steady_clock::now();
+        sink += b.has_value() ? b->delta : 0.0;
+        fast.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+      if (p.side == Side::Put) {
+        bool took = false;
+        const auto t0 = std::chrono::steady_clock::now();
+        const Result<AmericanGreeks> b = detail::american_greeks_adjoint(
+            p.S, p.K, p.T, p.sigma, p.r, p.q, p.side, std::nullopt, &took);
+        const auto t1 = std::chrono::steady_clock::now();
+        sink += b.has_value() ? b->delta : 0.0;
+        if (took) {
+          adj.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+        } else {
+          adj_declined += 1.0;
+        }
+      }
+    }
+    benchmark::DoNotOptimize(sink);
+    state.SetIterationTime(total_us * 1.0e-6);
+  }
+  std::sort(acc.begin(), acc.end());
+  std::sort(fast.begin(), fast.end());
+  std::sort(adj.begin(), adj.end());
+  state.counters["contracts"] = static_cast<double>(acc.size());
+  state.counters["bundle_accurate_p50_us"] = sorted_quantile(acc, 0.50);
+  state.counters["bundle_accurate_p99_us"] = sorted_quantile(acc, 0.99);
+  state.counters["bundle_fast_p50_us"] = sorted_quantile(fast, 0.50);
+  state.counters["bundle_fast_p99_us"] = sorted_quantile(fast, 0.99);
+  state.counters["adjoint_p50_us"] = sorted_quantile(adj, 0.50);
+  state.counters["adjoint_p99_us"] = sorted_quantile(adj, 0.99);
+  state.counters["adjoint_taken"] = static_cast<double>(adj.size());
+  state.counters["adjoint_declined"] = adj_declined;
+}
+
+// A chain for the chain / shock rows: the SPY 23 d contracts (one put + one call family
+// at the chain's median q) or a synthetic 300-strike chain at one expiry.
+struct ChainInputs {
+  double S = 0.0, T = 0.0, r = 0.0, q = 0.0;
+  std::vector<double> K, sigma;
+  std::vector<Side> side;
+  double lo = 0.0, hi = 0.0;
+};
+
+[[nodiscard]] ChainInputs chain_inputs(bool spy) {
+  using namespace atx::vol;
+  ChainInputs c;
+  if (spy) {
+    const std::vector<GridPt> &pts = err_points(ErrSet::Spy23);
+    if (pts.empty()) {
+      return c;
+    }
+    std::vector<double> qs;
+    double smin = 1.0e9, smax = 0.0;
+    for (const GridPt &p : pts) {
+      qs.push_back(p.q);
+      smin = std::min(smin, p.sigma);
+      smax = std::max(smax, p.sigma);
+      c.K.push_back(p.K);
+      c.sigma.push_back(p.sigma);
+      c.side.push_back(p.side);
+    }
+    std::sort(qs.begin(), qs.end());
+    c.S = pts[0].S;
+    c.T = pts[0].T;
+    c.r = pts[0].r;
+    c.q = qs[qs.size() / 2];
+    const FamilyBox box = family_box(smin, smax);
+    c.lo = box.lo;
+    c.hi = box.hi;
+    return c;
+  }
+  c.S = 773.0;
+  c.T = 23.0 / 365.0;
+  c.r = 0.045;
+  c.q = 0.0016;
+  double smin = 1.0e9, smax = 0.0;
+  for (int i = 0; i < 300; ++i) {
+    const double K = 540.0 + 550.0 * static_cast<double>(i) / 299.0;
+    const double F = c.S * std::exp((c.r - c.q) * c.T);
+    const double sig = representative_sigma(std::log(K / F), c.T);
+    c.K.push_back(K);
+    c.sigma.push_back(sig);
+    c.side.push_back(K < c.S ? Side::Put : Side::Call);
+    smin = std::min(smin, sig);
+    smax = std::max(smax, sig);
+  }
+  const FamilyBox box = family_box(smin, smax);
+  c.lo = box.lo;
+  c.hi = box.hi;
+  return c;
+}
+
+struct ChainColumns {
+  std::vector<double> price, delta, gamma, vega, theta, rho, phi, vanna, volga, charm;
+  std::vector<std::uint8_t> flags;
+  std::vector<atx::vol::AlSigmaFamilyStatus> status;
+  explicit ChainColumns(std::size_t n)
+      : price(n), delta(n), gamma(n), vega(n), theta(n), rho(n), phi(n), vanna(n), volga(n),
+        charm(n), flags(n), status(n) {}
+  [[nodiscard]] atx::vol::AlSigmaFamilyGreekColumns view() {
+    atx::vol::AlSigmaFamilyGreekColumns v;
+    v.price = price;
+    v.delta = delta;
+    v.gamma = gamma;
+    v.vega = vega;
+    v.theta = theta;
+    v.rho = rho;
+    v.phi = phi;
+    v.vanna = vanna;
+    v.volga = volga;
+    v.charm = charm;
+    v.flags = flags;
+    return v;
+  }
+};
+
+void run_family_chain(benchmark::State &state, bool spy, GreeksRow row) {
+  using namespace atx::vol;
+  using Mask = AlSigmaFamilyGreeksMask;
+  const ChainInputs c = chain_inputs(spy);
+  if (c.K.empty()) {
+    state.SkipWithError("no chain (ATX_VOL_AL_SPY23 unreadable or empty)");
+    return;
+  }
+  const AlExpiryGeometry g = prepare_al_geometry(c.T, c.r, c.q);
+  AlSigmaFamily put(g, Side::Put, c.S), call(g, Side::Call, c.S);
+  const bool put_ok = put.prepare(c.lo, c.hi, 12).has_value();
+  const bool call_ok = call.prepare(c.lo, c.hi, 12).has_value();
+  const Mask mask = row == GreeksRow::Hedge ? Mask::hedge()
+                    : row == GreeksRow::Eight ? Mask::eight()
+                    : row == GreeksRow::All   ? Mask::all()
+                                              : Mask::price_only();
+  ChainColumns cols(c.K.size());
+  double refused = 0.0;
+  for (auto _ : state) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const Status st = family_chain_greeks(put_ok ? &put : nullptr, call_ok ? &call : nullptr, c.S,
+                                          c.K, c.sigma, c.side, mask, cols.view(), cols.status);
+    const auto t1 = std::chrono::steady_clock::now();
+    benchmark::DoNotOptimize(cols.price.data());
+    if (!st.has_value()) {
+      state.SkipWithError("family_chain_greeks refused");
+      return;
+    }
+    refused = 0.0;
+    for (const AlSigmaFamilyStatus s : cols.status) {
+      refused += s == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+    }
+    state.SetIterationTime(std::chrono::duration<double>(t1 - t0).count());
+  }
+  state.counters["rows"] = static_cast<double>(c.K.size());
+  state.counters["refused"] = refused;
+  state.counters["put_family"] = put_ok ? 1.0 : 0.0;
+  state.counters["call_family"] = call_ok ? 1.0 : 0.0;
+}
+
+void run_family_shock(benchmark::State &state, bool chain) {
+  using namespace atx::vol;
+  using Mask = AlSigmaFamilyGreeksMask;
+  const ChainInputs c = chain_inputs(false);
+  const AlExpiryGeometry g = prepare_al_geometry(c.T, c.r, c.q);
+  AlSigmaFamily put(g, Side::Put, c.S), call(g, Side::Call, c.S);
+  // The shock grid may push σ 10 points either way: widen the box for the row.
+  const double lo = std::max(kAlSigmaFamilyMinSigma, c.lo - 0.10);
+  const double hi = c.hi + 0.10;
+  if (!put.prepare(lo, hi, 12) || !call.prepare(lo, hi, 12)) {
+    state.SkipWithError("family prepare refused");
+    return;
+  }
+  std::vector<double> spot_pct, vol_bump;
+  for (int i = -5; i <= 5; ++i) {
+    spot_pct.push_back(0.02 * i);
+    vol_bump.push_back(0.02 * i);
+  }
+  const std::size_t cells = spot_pct.size() * vol_bump.size();
+  ChainColumns cols(cells);
+  const std::size_t n = chain ? c.K.size() : 1u;
+  double refused = 0.0;
+  for (auto _ : state) {
+    refused = 0.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < n; ++i) {
+      const double K = chain ? c.K[i] : c.S;
+      const double sig = chain ? c.sigma[i] : 0.16;
+      const AlSigmaFamily &f = chain ? (c.side[i] == Side::Call ? call : put) : put;
+      const Status st =
+          family_shock_grid(f, c.S, K, sig, spot_pct, vol_bump, Mask::eight(), cols.view(), cols.status);
+      if (!st.has_value()) {
+        state.SkipWithError("family_shock_grid refused");
+        return;
+      }
+      for (const AlSigmaFamilyStatus s : cols.status) {
+        refused += s == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+      }
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    benchmark::DoNotOptimize(cols.price.data());
+    state.SetIterationTime(std::chrono::duration<double>(t1 - t0).count());
+  }
+  state.counters["cells"] = static_cast<double>(cells * n);
+  state.counters["contracts"] = static_cast<double>(n);
+  state.counters["refused"] = refused;
+}
+
+// ── L2h-b sigma-q family (2026-10-21): AlSigmaQFamily build / price / error rows ──
+//
+//   * ATX_VOL_AL_SQFAMILY=1 registers, for n_q in {3, 4, 6} (n_sigma 12, LogSigma):
+//       american/sqfamily/spy23/nq<N>    (needs ATX_VOL_AL_SPY23: the SPY 23 d chain)
+//       american/sqfamily/spylong/nq<N>  (needs ATX_VOL_AL_SPYLONG: one more chain in the
+//                                         same S,K,T,r,q,is_call,bid,ask format — SPY 2.17 y)
+//       american/sqfamily/spyall/nq<N>   (needs ATX_VOL_AL_SPYALL: every SPY expiry)
+//     and american/sqfamily/<set>/sigma_family_qmid — the representative-q baseline: ONE
+//     AlSigmaFamily per expiry side at the box-mid q, every strike priced at that q.
+//     A row groups the set's contracts by (S, T, r, side) — one expiry side — takes the
+//     group's q box = [min q, max q] of its rows and its σ box = family_box over its
+//     admitted σ, builds ONE family per group on a Reference geometry at the box-mid q
+//     (median of 5 timed builds), and queries every contract at its OWN q at n_sig σ
+//     values spanning the box (log-uniform cell midpoints of [σ_lo, σ_hi - 2h], off the
+//     nodes; 16 for spy23 / spylong, 4 for spyall) against the cold Reference
+//     andersen_lake(S, K, T, σ, r, q_K) — computed once per set, shared by the rows.
+//     Counters: build per family (p50 / max) and the set's build total (ms), price p50 /
+//     p99 and chord p50 µs per query, |dP| max / p99, max rel and p99 rel on P >= 0.01,
+//     max |dP| / max(P, 1), groups the family refused (whole side cold) and why (stderr).
+
+enum class SqSet { Spy23, SpyLong, SpyAll };
+
+struct SqGroup {
+  double S = 0.0;
+  double T = 0.0;
+  double r = 0.0;
+  Side side = Side::Put;
+  double q_lo = 0.0;
+  double q_hi = 0.0;
+  double s_lo = 0.0;
+  double s_hi = 0.0;
+  std::vector<std::size_t> idx;
+  std::vector<double> sigmas; // the queried σ grid
+  std::vector<double> ref;    // ref[local * sigmas.size() + k]; NaN where the cold errs
+};
+
+struct SqData {
+  const std::vector<GridPt> *pts = nullptr;
+  std::vector<SqGroup> groups;
+  std::size_t queries = 0;
+};
+
+[[nodiscard]] SqData build_sq_data(const std::vector<GridPt> &pts, unsigned n_sig) {
+  SqData d;
+  d.pts = &pts;
+  std::map<FamilyKey, std::vector<std::size_t>> by_side;
+  for (std::size_t i = 0; i < pts.size(); ++i) {
+    const GridPt &p = pts[i];
+    by_side[FamilyKey{p.S, p.T, p.r, 0.0, p.side}].push_back(i);
+  }
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const auto &[key, idx] : by_side) {
+    SqGroup g;
+    g.S = key.S;
+    g.T = key.T;
+    g.r = key.r;
+    g.side = key.side;
+    g.idx = idx;
+    g.q_lo = std::numeric_limits<double>::infinity();
+    g.q_hi = -std::numeric_limits<double>::infinity();
+    double smin = std::numeric_limits<double>::infinity();
+    double smax = 0.0;
+    for (const std::size_t i : idx) {
+      g.q_lo = std::min(g.q_lo, pts[i].q);
+      g.q_hi = std::max(g.q_hi, pts[i].q);
+      if (pts[i].sigma >= atx::vol::kAlSigmaFamilyMinSigma) {
+        smin = std::min(smin, pts[i].sigma);
+        smax = std::max(smax, pts[i].sigma);
+      }
+    }
+    if (!(smax > 0.0)) {
+      smin = 0.2;
+      smax = 0.2;
+    }
+    const FamilyBox box = family_box(smin, smax);
+    g.s_lo = box.lo;
+    g.s_hi = box.hi;
+    const double a = std::log(box.lo);
+    const double b = std::log(box.hi - 2.0 * atx::vol::kAlPackSigmaBump);
+    for (unsigned k = 0; k < n_sig; ++k) {
+      g.sigmas.push_back(
+          std::exp(a + (b - a) * (static_cast<double>(k) + 0.5) / static_cast<double>(n_sig)));
+    }
+    g.ref.assign(idx.size() * n_sig, nan);
+    for (std::size_t l = 0; l < idx.size(); ++l) {
+      const GridPt &p = pts[idx[l]];
+      for (unsigned k = 0; k < n_sig; ++k) {
+        const atx::vol::Result<double> c =
+            atx::vol::andersen_lake(p.S, p.K, p.T, g.sigmas[k], p.r, p.q, p.side);
+        g.ref[l * n_sig + k] = c.has_value() ? *c : nan;
+      }
+    }
+    d.queries += idx.size() * n_sig;
+    d.groups.push_back(std::move(g));
+  }
+  return d;
+}
+
+[[nodiscard]] const SqData &sq_data(SqSet s) {
+  static const std::vector<GridPt> lng = load_quote_inputs(env_text("ATX_VOL_AL_SPYLONG"));
+  static const std::vector<GridPt> all = load_quote_inputs(env_text("ATX_VOL_AL_SPYALL"));
+  switch (s) {
+  case SqSet::Spy23: {
+    static const SqData d = build_sq_data(err_points(ErrSet::Spy23), 16);
+    return d;
+  }
+  case SqSet::SpyLong: {
+    static const SqData d = build_sq_data(lng, 16);
+    return d;
+  }
+  case SqSet::SpyAll:
+    break;
+  }
+  static const SqData d = build_sq_data(all, 4);
+  return d;
+}
+
+// One group's family (the q-family at n_q, or the representative-q σ-family baseline
+// when n_q == 0): build timing + prices into got[], or the refusal text.
+struct SqGroupRun {
+  bool built = false;
+  double build_us = 0.0;
+  std::string refusal;
+};
+
+// got[local * n_sig + k] receives the family price (NaN on a refusal); price_us /
+// chord_us one sample per query per timed pass (3 passes each).
+[[nodiscard]] SqGroupRun run_sq_group(const SqGroup &g, unsigned n_q, unsigned n_sigma,
+                                      const std::vector<GridPt> &pts, std::vector<double> &got,
+                                      std::vector<double> &price_us,
+                                      std::vector<double> &chord_us) {
+  using namespace atx::vol;
+  SqGroupRun out;
+  const AlExpiryGeometry geo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+  AlSigmaQFamily qf(geo, g.side, g.S);
+  AlSigmaFamily sf(geo, g.side, g.S);
+  const auto ns = static_cast<std::uint16_t>(n_sigma);
+  std::vector<double> reps;
+  for (int rep = 0; rep < 5; ++rep) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const Status st = (n_q == 0) ? sf.prepare(g.s_lo, g.s_hi, ns)
+                                 : qf.prepare(g.s_lo, g.s_hi, ns, g.q_lo, g.q_hi,
+                                              static_cast<std::uint16_t>(n_q));
+    const auto t1 = std::chrono::steady_clock::now();
+    if (!st) {
+      out.refusal = st.error().to_string();
+      return out;
+    }
+    reps.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+  }
+  std::sort(reps.begin(), reps.end());
+  out.built = true;
+  out.build_us = reps[reps.size() / 2];
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::size_t n_sig = g.sigmas.size();
+  got.assign(g.idx.size() * n_sig, nan);
+  for (std::size_t l = 0; l < g.idx.size(); ++l) {
+    const GridPt &p = pts[g.idx[l]];
+    for (std::size_t k = 0; k < n_sig; ++k) {
+      const double sigma = g.sigmas[k];
+      double price = nan;
+      for (int pass = 0; pass < 3; ++pass) {
+        const auto t0 = std::chrono::steady_clock::now();
+        if (n_q == 0) {
+          const AlSigmaFamilyPrice fp = sf.price(p.S, p.K, sigma);
+          price = fp.status == AlSigmaFamilyStatus::Ok ? fp.price : nan;
+        } else {
+          const AlSigmaQFamilyPrice fp = qf.price(p.S, p.K, sigma, p.q);
+          price = fp.status == AlSigmaQFamilyStatus::Ok ? fp.price : nan;
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        benchmark::DoNotOptimize(price);
+        price_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+      for (int pass = 0; pass < 3 && n_q != 0; ++pass) {
+        const auto t0 = std::chrono::steady_clock::now();
+        AlSigmaQFamilyChord c = qf.price_and_chord(p.S, p.K, sigma, p.q);
+        const auto t1 = std::chrono::steady_clock::now();
+        benchmark::DoNotOptimize(c);
+        chord_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+      }
+      got[l * n_sig + k] = price;
+    }
+  }
+  return out;
+}
+
+// n_q == 0: the representative-q σ-family baseline.
+void run_sqfamily(benchmark::State &state, SqSet set, const char *set_name, unsigned n_q,
+                  unsigned n_sigma) {
+  using namespace atx::vol;
+  const SqData &d = sq_data(set);
+  if (d.pts == nullptr || d.pts->empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  const std::vector<GridPt> &pts = *d.pts;
+  std::vector<double> build_us;
+  std::vector<double> price_us;
+  std::vector<double> chord_us;
+  ErrDist p_abs;
+  ErrDist p_rel;
+  double max_scaled = 0.0;
+  double worst_rel = -1.0;
+  std::string worst_at;
+  double refused = 0.0;
+  double cold_groups = 0.0;
+  double priced = 0.0;
+  double q_spread_max = 0.0;
+  std::vector<double> got;
+  for (auto _ : state) {
+    for (const SqGroup &g : d.groups) {
+      const SqGroupRun run = run_sq_group(g, n_q, n_sigma, pts, got, price_us, chord_us);
+      if (!run.built) {
+        cold_groups += 1.0;
+        refused += static_cast<double>(g.idx.size() * g.sigmas.size());
+        std::fprintf(stderr,
+                     "[sqfamily] %s/nq%u/ns%u cold group T=%.6g side=%s q=[%.6g, %.6g]: %s\n",
+                     set_name, n_q, n_sigma, g.T, g.side == Side::Call ? "C" : "P", g.q_lo,
+                     g.q_hi, run.refusal.c_str());
+        continue;
+      }
+      build_us.push_back(run.build_us);
+      q_spread_max = std::max(q_spread_max, g.q_hi - g.q_lo);
+      const std::size_t n_sig = g.sigmas.size();
+      for (std::size_t l = 0; l < g.idx.size(); ++l) {
+        for (std::size_t k = 0; k < n_sig; ++k) {
+          const double ref = g.ref[l * n_sig + k];
+          const double fam = got[l * n_sig + k];
+          if (!std::isfinite(ref) || !std::isfinite(fam)) {
+            refused += 1.0;
+            continue;
+          }
+          priced += 1.0;
+          const double dd = std::abs(fam - ref);
+          p_abs.add(dd);
+          max_scaled = std::max(max_scaled, dd / std::max(ref, 1.0));
+          if (ref >= 0.01) {
+            p_rel.add(dd / ref);
+            if (dd / ref > worst_rel) {
+              worst_rel = dd / ref;
+              const GridPt &p = pts[g.idx[l]];
+              char buf[400];
+              std::snprintf(buf, sizeof(buf),
+                            "S=%.17g K=%.17g T=%.17g sigma=%.17g r=%.17g q=%.17g side=%s "
+                            "q_box=[%.17g, %.17g] ref=%.17g got=%.17g",
+                            p.S, p.K, p.T, g.sigmas[k], p.r, p.q,
+                            p.side == Side::Call ? "C" : "P", g.q_lo, g.q_hi, ref, fam);
+              worst_at = buf;
+            }
+          }
+        }
+      }
+    }
+  }
+  double build_total_us = 0.0;
+  for (const double b : build_us) {
+    build_total_us += b;
+  }
+  std::sort(build_us.begin(), build_us.end());
+  std::sort(price_us.begin(), price_us.end());
+  std::sort(chord_us.begin(), chord_us.end());
+  state.counters["contracts"] = static_cast<double>(pts.size());
+  state.counters["queries"] = static_cast<double>(d.queries);
+  state.counters["groups"] = static_cast<double>(d.groups.size());
+  state.counters["families"] = static_cast<double>(build_us.size());
+  state.counters["cold_groups"] = cold_groups;
+  state.counters["refused"] = refused;
+  state.counters["priced"] = priced;
+  state.counters["n_q"] = static_cast<double>(n_q);
+  state.counters["q_spread_max"] = q_spread_max;
+  state.counters["build_us_p50"] = sorted_quantile(build_us, 0.50);
+  state.counters["build_us_max"] = build_us.empty() ? 0.0 : build_us.back();
+  state.counters["build_ms_total"] = build_total_us * 1.0e-3;
+  state.counters["price_us_p50"] = sorted_quantile(price_us, 0.50);
+  state.counters["price_us_p99"] = sorted_quantile(price_us, 0.99);
+  state.counters["chord_us_p50"] = sorted_quantile(chord_us, 0.50);
+  state.counters["price_max_abs"] = p_abs.max();
+  state.counters["price_p99_abs"] = p_abs.quantile(0.99);
+  state.counters["price_max_rel"] = p_rel.max();
+  state.counters["price_p99_rel"] = p_rel.quantile(0.99);
+  state.counters["price_max_scaled"] = max_scaled;
+  state.counters["state_bytes"] = static_cast<double>(
+      n_q == 0 ? AlSigmaFamily::state_bytes() : AlSigmaQFamily::state_bytes());
+  state.counters["n_sigma"] = static_cast<double>(n_sigma);
+  if (worst_rel >= 0.0) {
+    std::fprintf(stderr, "[sqfamily] %s/nq%u/ns%u worst_rel=%.6g %s\n", set_name, n_q, n_sigma,
+                 worst_rel, worst_at.c_str());
+  }
+}
+
+const bool kRegisteredSigmaQ = [] {
+  if (env_text("ATX_VOL_AL_SQFAMILY").empty()) {
+    return false;
+  }
+  const std::pair<const char *, SqSet> sets[] = {
+      {"spy23", SqSet::Spy23}, {"spylong", SqSet::SpyLong}, {"spyall", SqSet::SpyAll}};
+  const char *envs[] = {"ATX_VOL_AL_SPY23", "ATX_VOL_AL_SPYLONG", "ATX_VOL_AL_SPYALL"};
+  for (std::size_t si = 0; si < 3; ++si) {
+    if (env_text(envs[si]).empty()) {
+      continue;
+    }
+    const SqSet s = sets[si].second;
+    const char *set_name = sets[si].first;
+    // (n_q, n_sigma): the n_q sweep at the σ-family's 12 nodes, then 16 σ nodes at n_q 4
+    // (the long-dated σ floor); n_q 0 = the representative-q σ-family baseline.
+    const std::pair<unsigned, unsigned> shapes[] = {{0u, 12u}, {3u, 12u}, {4u, 12u},
+                                                    {6u, 12u}, {4u, 16u}};
+    for (const auto &[nq_v, ns_v] : shapes) {
+      const unsigned n_q = nq_v;
+      const unsigned n_sigma = ns_v;
+      const std::string tail = (n_q == 0) ? "sigma_family_qmid" : "nq" + std::to_string(n_q);
+      benchmark::RegisterBenchmark(std::string("american/sqfamily/") + set_name + "/" + tail +
+                                       "/ns" + std::to_string(n_sigma),
+                                   [s, set_name, n_q, n_sigma](benchmark::State &state) {
+                                     run_sqfamily(state, s, set_name, n_q, n_sigma);
+                                   })
+          ->Iterations(1)
+          ->Unit(benchmark::kMillisecond);
+    }
+  }
+  return true;
+}();
+
 const bool kRegistered = [] {
   using atx::vol::bench::apply_common;
   for (const Rung &rung : rungs()) {
@@ -1902,6 +2907,85 @@ const bool kRegistered = [] {
         }
       }
     }
+  }
+  if (!env_text("ATX_VOL_AL_FAMILY_GREEKS").empty()) {
+    const std::pair<const char *, GreeksRow> rows[] = {
+        {"price", GreeksRow::Price},          {"hedge", GreeksRow::Hedge},
+        {"eight", GreeksRow::Eight},          {"all", GreeksRow::All},
+        {"price_and_vega", GreeksRow::PriceVega}, {"chord", GreeksRow::Chord}};
+    const bool spy = !env_text("ATX_VOL_AL_SPY23").empty();
+    if (spy) {
+      for (const auto &[label, row] : rows) {
+        const GreeksRow r = row;
+        benchmark::RegisterBenchmark(std::string("american/spy23_family_greeks/") + label,
+                                     [r](benchmark::State &state) {
+                                       run_spy23_family_greeks(state, r);
+                                     })
+            ->Iterations(1)
+            ->UseManualTime()
+            ->Unit(benchmark::kMillisecond);
+      }
+      benchmark::RegisterBenchmark("american/spy23_family_greeks/reference_bundles",
+                                   [](benchmark::State &state) {
+                                     run_spy23_reference_bundles(state);
+                                   })
+          ->Iterations(1)
+          ->UseManualTime()
+          ->Unit(benchmark::kMillisecond);
+    }
+    std::vector<std::pair<const char *, FamilySet>> sets = {
+        {"grid", FamilySet::Grid}, {"fastgrid", FamilySet::FastGrid},
+        {"deepcarry", FamilySet::DeepCarry}};
+    if (spy) {
+      sets.emplace_back("spy23", FamilySet::Spy23);
+      sets.emplace_back("spy23offnode", FamilySet::Spy23OffNode);
+    }
+    for (const auto &[label, set] : sets) {
+      const FamilySet s = set;
+      const char *set_name = label;
+      for (const unsigned n : {12u, 16u}) {
+        if (n == 16u && s != FamilySet::FastGrid) {
+          continue;
+        }
+        benchmark::RegisterBenchmark(std::string("american/family_greeks_error/") + label + "/n" +
+                                         std::to_string(n),
+                                     [s, set_name, n](benchmark::State &state) {
+                                       run_family_greeks_error(state, s, set_name, n);
+                                     })
+            ->Iterations(1)
+            ->Unit(benchmark::kMillisecond);
+      }
+    }
+    for (const bool chain_spy : {true, false}) {
+      if (chain_spy && !spy) {
+        continue;
+      }
+      const char *chain_name = chain_spy ? "spy23" : "synthetic300";
+      for (const auto &[label, row] : rows) {
+        if (row == GreeksRow::PriceVega || row == GreeksRow::Chord) {
+          continue;
+        }
+        const GreeksRow r = row;
+        const bool cs = chain_spy;
+        benchmark::RegisterBenchmark(std::string("american/family_chain/") + chain_name + "/" + label,
+                                     [cs, r](benchmark::State &state) {
+                                       run_family_chain(state, cs, r);
+                                     })
+            ->Iterations(1)
+            ->UseManualTime()
+            ->Unit(benchmark::kMillisecond);
+      }
+    }
+    benchmark::RegisterBenchmark("american/family_shock/11x11_contract",
+                                 [](benchmark::State &state) { run_family_shock(state, false); })
+        ->Iterations(1)
+        ->UseManualTime()
+        ->Unit(benchmark::kMillisecond);
+    benchmark::RegisterBenchmark("american/family_shock/11x11_chain300",
+                                 [](benchmark::State &state) { run_family_shock(state, true); })
+        ->Iterations(1)
+        ->UseManualTime()
+        ->Unit(benchmark::kMillisecond);
   }
   if (const std::string path = env_text("ATX_VOL_AL_FINGERPRINT"); !path.empty()) {
     benchmark::RegisterBenchmark("american/ladder_fingerprint",

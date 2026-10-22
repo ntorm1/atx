@@ -479,6 +479,12 @@ inline constexpr double kAlSigmaFamilyMinSigma = 0.01;
 inline constexpr std::uint16_t kAlSigmaFamilyMinNodes = 4;
 inline constexpr std::uint16_t kAlSigmaFamilyMaxNodes = 16;
 
+// L3g family-greeks (2026-10-20): the analytics TU's (american_family_greeks.cpp) key
+// to the prepared state — the one friend of the family; defined in that TU only.
+namespace sigma_family_detail {
+struct FamilyAccess;
+}
+
 class AlSigmaFamily {
 public:
   AlSigmaFamily(const AlExpiryGeometry &geometry, Side side, double anchor);
@@ -529,7 +535,355 @@ public:
 private:
   struct State;
   std::unique_ptr<State> st_;
+  friend struct sigma_family_detail::FamilyAccess; // L3g: the Greeks TU reads State (const)
 };
+
+// ── σ-family analytics: analytic Greeks, the exact Newton slope, chains, shocks ──
+//
+// L3g family-greeks (2026-10-20). The family price is one closed-form map of
+// (S, K, σ): P = clamp(E(S, K, σ) + Π(S, K, σ; y(σ))) with E the European put and Π
+// the early-exercise premium quadrature over the boundary B_j(σ) = xmax · exp(−√y_j(σ)),
+// y_j the τ-barycentric value of the σ-interpolated series. Every Greek below is an
+// EXACT derivative of that served map, computed in ONE fused pass over the premium
+// nodes (no stencil, no re-solve), so the Greeks always belong to the served price:
+//   Δ, Γ (and speed)  — ∂/∂S of the integrand at FIXED boundary (the internal put's
+//                       boundary does not depend on the spot: exact);
+//   calls             — through the McDonald-Schroder map C(S, K; r, q) = P(K, S; q, r)
+//                       and the homogeneity identities of the internal put
+//                       (∂P/∂K_int = (P − S_int ∂P/∂S_int)/K_int, ∂²P/∂K_int² =
+//                       (S_int/K_int)² ∂²P/∂S_int²): the call's spot is the internal
+//                       strike, which the family serves by its T8 rescale;
+//   vega, vanna, volga — the explicit σ-terms PLUS the boundary term dy_k/dσ (and d²)
+//                       from the σ-derivative of the Chebyshev interpolant (nodal
+//                       differentiation matrices D⁽¹⁾ / D⁽²⁾ applied to the series,
+//                       then interpolated — exact for the polynomial, stable at and
+//                       near a node; american_family_greeks.cpp cites the formulas);
+//                       `boundary_term_included` records that these carry it;
+//   θ (calendar, dV/dt) — the continuation-region PDE identity
+//                       θ = rV − (r − q) S Δ − ½ σ² S² Γ, the american_greeks_al /
+//                       RecordGreeks definition: the family has NO τ axis (one geometry
+//                       per expiry), so an FD-in-T theta does not exist here;
+//   charm             — ∂θ/∂S from the same identity with the analytic speed;
+//   rho, phi (∂P/∂r, ∂P/∂q) — FROZEN-BOUNDARY derivatives: the discounts, drifts and
+//                       d± are differentiated at FIXED dimensionless boundary y (the
+//                       explicit xmax(r, q) rescale of B included); the boundary term
+//                       dy/dr, dy/dq is NOT available from a σ-family (no r / q axis)
+//                       and is NOT included — its size is MEASURED in the sprint note
+//                       against a second family built at r ± h / q ± h; the PM rules
+//                       on the policy from that table.
+// Regime flags mirror RecordGreeks (fitting/expiry_record.hpp): when the spot is on
+// the exercise side of the family's current edge (B at τ = T), or the served price is
+// intrinsic to the bundle's own tolerance (≤ intrinsic + 1e-9 K — the kernel's clamp,
+// or the premium decomposition reproducing K − S to quadrature noise, which is what
+// it does in and just above the exercise region), the EXERCISE Greeks are served with
+// the unchanged price (Δ = −1 put / +1 call, every other Greek 0, `exercised`);
+// `floored` marks that regime on the CONTINUATION side of the edge (the band where
+// the served max(decomposition, intrinsic) has no smooth derivative), so both flags
+// belong to the served price.
+// Accuracy: measured, not "equal to the old path" (PM ruling (a)): the sprint note
+// 2026-10-20-L3g-family-greeks-sprint.md tabulates every Greek against the Reference
+// bundle on the same geometry AND a Richardson reference; the AlSigmaFamilyGreeks.*
+// tests pin 2-figure round-ups. Cost: price + 8 Greeks in one quadrature pass (a few
+// µs; the note's µs table). Every entry refuses exactly as AlSigmaFamily::price()
+// does (same admit tree, typed status, NaN with the status, never NaN alone), is
+// const, allocation-free and thread-safe on one const family (stack scratch only).
+// NOTHING default selects any of this: no fitting path, preset, policy key or record
+// constructs a family or calls these (L2i adopts family_price_and_vega opt-in; L3h
+// consumes the chain / shock entries).
+
+// Which Greeks a call computes. Price is always computed; an unrequested Greek is
+// left 0.0 (the K4 tier convention of american_greeks_al). Price-only costs exactly
+// AlSigmaFamily::price() (it IS that call).
+struct AlSigmaFamilyGreeksMask {
+  static constexpr std::uint16_t kDelta = 1u << 0;
+  static constexpr std::uint16_t kGamma = 1u << 1;
+  static constexpr std::uint16_t kVega = 1u << 2;
+  static constexpr std::uint16_t kTheta = 1u << 3;
+  static constexpr std::uint16_t kRho = 1u << 4;
+  static constexpr std::uint16_t kPhi = 1u << 5;
+  static constexpr std::uint16_t kVanna = 1u << 6;
+  static constexpr std::uint16_t kVolga = 1u << 7;
+  static constexpr std::uint16_t kCharm = 1u << 8;
+
+  std::uint16_t bits = 0;
+
+  [[nodiscard]] static constexpr AlSigmaFamilyGreeksMask price_only() noexcept { return {0}; }
+  // Δ, Γ, vega, θ — the hedge set ("+4").
+  [[nodiscard]] static constexpr AlSigmaFamilyGreeksMask hedge() noexcept {
+    return {kDelta | kGamma | kVega | kTheta};
+  }
+  // Δ, Γ, vega, θ, rho, phi, vanna, volga ("+8").
+  [[nodiscard]] static constexpr AlSigmaFamilyGreeksMask eight() noexcept {
+    return {kDelta | kGamma | kVega | kTheta | kRho | kPhi | kVanna | kVolga};
+  }
+  // The eight plus charm.
+  [[nodiscard]] static constexpr AlSigmaFamilyGreeksMask all() noexcept {
+    return {eight().bits | kCharm};
+  }
+  [[nodiscard]] constexpr bool has(std::uint16_t bit) const noexcept { return (bits & bit) != 0; }
+};
+
+struct AlSigmaFamilyGreeks {
+  double price = std::numeric_limits<double>::quiet_NaN(); // NaN unless status == Ok
+  double delta = 0.0;
+  double gamma = 0.0;
+  double vega = 0.0;
+  double theta = 0.0; // calendar dV/dt per year (PDE identity)
+  double rho = 0.0;   // ∂P/∂r, frozen boundary
+  double phi = 0.0;   // ∂P/∂q, frozen boundary
+  double vanna = 0.0; // ∂²P/∂S∂σ
+  double volga = 0.0; // ∂²P/∂σ²
+  double charm = 0.0; // ∂Δ/∂t = ∂θ/∂S
+  AlSigmaFamilyStatus status = AlSigmaFamilyStatus::NotPrepared;
+  bool exercised = false; // intrinsic served with the exercise Greeks
+  bool floored = false;   // exercised on the continuation side of the current edge
+  // True when vega / vanna / volga were computed: they carry the σ-boundary term
+  // dy/dσ. rho / phi never carry their (r, q) boundary term — see the block comment.
+  bool boundary_term_included = false;
+  // On a refusal every requested Greek is NaN together with the price.
+};
+
+// Price + the requested Greeks of the (S, K) contract of the family's side at sigma.
+// Refuses exactly as AlSigmaFamily::price(). Const, allocation-free, thread-safe.
+[[nodiscard]] AlSigmaFamilyGreeks family_greeks(const AlSigmaFamily &fam, double S, double K,
+                                                double sigma,
+                                                AlSigmaFamilyGreeksMask mask) noexcept;
+
+struct AlSigmaFamilyPriceVega {
+  double price = std::numeric_limits<double>::quiet_NaN();
+  double vega = std::numeric_limits<double>::quiet_NaN(); // dP/dσ of the family map
+  AlSigmaFamilyStatus status = AlSigmaFamilyStatus::NotPrepared;
+};
+
+// The exact Newton slope for a family-based inversion: price(S, K, sigma) and the
+// analytic dP/dσ of the SAME map in one fused pass — replaces price_and_chord's two
+// quadratures and its O(h/2 · volga) chord bias (the sprint note §"What L2i must
+// assume" gives the one-line opt-in). Refuses as price() does; needs NO headroom
+// above sigma (the chord's kAlPackSigmaBump requirement goes away).
+[[nodiscard]] AlSigmaFamilyPriceVega family_price_and_vega(const AlSigmaFamily &fam, double S,
+                                                           double K, double sigma) noexcept;
+
+// Caller-owned output columns for the chain / shock entries. A column is written
+// iff it is non-empty, and then its length must equal the row count; the mask
+// decides what is COMPUTED, the spans decide what is STORED (a requested Greek with
+// an empty span is computed and dropped; an unrequested Greek with a span gets 0.0).
+// `flags` (optional) receives bit 0 = exercised, bit 1 = floored, bit 2 =
+// boundary_term_included per row.
+struct AlSigmaFamilyGreekColumns {
+  std::span<double> price{};
+  std::span<double> delta{};
+  std::span<double> gamma{};
+  std::span<double> vega{};
+  std::span<double> theta{};
+  std::span<double> rho{};
+  std::span<double> phi{};
+  std::span<double> vanna{};
+  std::span<double> volga{};
+  std::span<double> charm{};
+  std::span<std::uint8_t> flags{};
+};
+
+// One expiry's chain at spot S: row i is (K[i], sigma[i], side[i]) priced through
+// `put` or `call` by its side. A row whose family pointer is null carries
+// NotPrepared; a refused row carries its status; both write NaN to every stored
+// column. Allocation-free, const on both families, single-thread per call (rows
+// may be split across threads by the caller with disjoint spans).
+// @return InvalidArgument when the span lengths disagree (nothing is written);
+//         otherwise Ok — per-row outcomes are in `status`.
+[[nodiscard]] Status family_chain_greeks(const AlSigmaFamily *put, const AlSigmaFamily *call,
+                                         double S, std::span<const double> K,
+                                         std::span<const double> sigma,
+                                         std::span<const Side> side, AlSigmaFamilyGreeksMask mask,
+                                         const AlSigmaFamilyGreekColumns &out,
+                                         std::span<AlSigmaFamilyStatus> status);
+
+// Exact reprice of ONE contract over a (spot shock × vol shock) grid through the same
+// family: cell (i, j), stored at index i * vol_bump.size() + j, is the contract at
+// spot S · (1 + spot_pct[i]) and sigma + vol_bump[j] (absolute vol units). A spot
+// shock is the family's homogeneity rescale; a vol shock moves σ inside the box —
+// a σ outside it refuses that cell with SigmaOutsideBox (never extrapolated), a
+// non-positive shocked spot with InvalidArgument. dt and dr / dq are NOT axes of a
+// σ-family (one geometry per (T, r, q)), so this API takes none: a time or rate
+// shock needs another geometry. Columns / status hold n_spot × n_vol entries.
+// @return InvalidArgument when a non-empty column or `status` has the wrong length
+//         (nothing is written); otherwise Ok.
+[[nodiscard]] Status family_shock_grid(const AlSigmaFamily &fam, double S, double K, double sigma,
+                                       std::span<const double> spot_pct,
+                                       std::span<const double> vol_bump,
+                                       AlSigmaFamilyGreeksMask mask,
+                                       const AlSigmaFamilyGreekColumns &out,
+                                       std::span<AlSigmaFamilyStatus> status);
+
+// ── Detached serve copy: the family without its geometry ────────────────────
+//
+// A prepared family observes its AlExpiryGeometry (~90 KB per expiry, both
+// orientations) for the premium quadrature's workspace header (qx/qw_price,
+// n_quad_price, fast) and the re-prepare stamp. A detached copy owns everything
+// the fused kernel reads (the σ-series, the node grid, the quadrature pointers —
+// process-wide Gauss-Legendre tables — and the flags: `state_bytes()`), so the
+// geometry may be released after detach() while the copy keeps serving price and
+// Greeks. Its price is the family's price to the bit (the fused kernel mirrors the
+// premium quadrature expression for expression; pinned by the tests); its Greeks
+// are family_greeks' bits. No generation stamp is checked (the copy cannot go
+// stale); the admit tree is otherwise the family's. Move-only, immutable,
+// thread-safe for every const call.
+class AlSigmaFamilyDetached {
+public:
+  AlSigmaFamilyDetached();
+  ~AlSigmaFamilyDetached();
+  AlSigmaFamilyDetached(AlSigmaFamilyDetached &&) noexcept;
+  AlSigmaFamilyDetached &operator=(AlSigmaFamilyDetached &&) noexcept;
+  AlSigmaFamilyDetached(const AlSigmaFamilyDetached &) = delete;
+  AlSigmaFamilyDetached &operator=(const AlSigmaFamilyDetached &) = delete;
+
+  [[nodiscard]] bool prepared() const noexcept;
+  [[nodiscard]] double sigma_lo() const noexcept;
+  [[nodiscard]] double sigma_hi() const noexcept;
+  [[nodiscard]] Side side() const noexcept;
+
+  [[nodiscard]] AlSigmaFamilyPrice price(double S, double K, double sigma) const noexcept;
+  [[nodiscard]] AlSigmaFamilyGreeks greeks(double S, double K, double sigma,
+                                           AlSigmaFamilyGreeksMask mask) const noexcept;
+  [[nodiscard]] AlSigmaFamilyPriceVega price_and_vega(double S, double K,
+                                                      double sigma) const noexcept;
+
+  [[nodiscard]] static std::size_t state_bytes() noexcept;
+
+  struct State;
+
+private:
+  friend AlSigmaFamilyDetached family_detach(const AlSigmaFamily &fam);
+  std::unique_ptr<State> st_;
+};
+
+// The detached copy of `fam`. When `fam` is not prepared (or its geometry was
+// re-prepared) the copy is unprepared: prepared() == false and every call refuses
+// with NotPrepared. Allocates the copy's one heap block.
+[[nodiscard]] AlSigmaFamilyDetached family_detach(const AlSigmaFamily &fam);
+
+// ── L2h-b sigma-q family (2026-10-21): (σ, q) boundary family, q a second axis ──
+//
+// L2h-b (2026-10-21). Under a per-strike effective yield (the funding-pv carry: the
+// SPY cohort5 board carries 1-144 distinct q per expiry) an AlSigmaFamily built at ONE
+// q misprices every other strike by about T·S·Δq/2 — 2-6 orders above its own bound.
+// The dimensionless boundary y[] is as smooth in the internal put's carry as in σ, so
+// this family lays a TENSOR of Chebyshev-Lobatto nodes over (σ, q): the σ axis exactly
+// as AlSigmaFamily's (n_σ nodes, LogSigma / Sigma, same box rule) times n_q nodes
+// linear in q over the caller's [q_lo, q_hi] (the expiry's measured yield range).
+// Each node is one prepared boundary solve at the anchor with that node's (rate,
+// yield) — n_σ · n_q solves to build, at the geometry's own AlOpts. A price
+// interpolates y[] at (σ, q) — 2nd-kind barycentric in σ, then in q — and runs the
+// European leg and the premium quadrature at the strike's OWN q: the boundary is the
+// only interpolated quantity (the premium is first-order insensitive to a boundary
+// error, the reason the σ-family reaches ~1e-10). Measured against the cold Reference
+// per n_q in sprints/2026-10-21-L2hb-sigma-q-family-sprint.md; pinned by
+// AlSigmaQFamily.* (tests/american_sigma_q_family_test.cpp).
+//
+// THE q BOX. q_hi - q_lo <= kAlSigmaQFamilyDegenerateWidth collapses the axis to ONE
+// node at the box midpoint: the family is then AlSigmaFamily at that q BIT FOR BIT
+// (pinned). Otherwise n_q in [kAlSigmaQFamilyMinQNodes, kAlSigmaQFamilyMaxQNodes]. A q
+// outside [q_lo, q_hi] refuses (YieldOutsideBox; never extrapolated). prepare()
+// refuses with NotImplemented a box on which the side is not American at both ends
+// (a call needs q > 0 — a q <= 0 call never exercises early: price it in closed form)
+// or one that straddles q = r (the boundary's scale K·min(1, r/q) has a kink there and
+// the near-expiry boundary changes form — split the box at r). ACCURACY falls with the
+// box's width relative to its distance from q = r (and, for calls, from q = 0): SPY's
+// boxes (<= 1.8e-3 wide, >= 3 % from r) sit at the σ floor with n_q = 4; a 4 %-wide box
+// needs splitting (measured in the note).
+//
+// THE GEOMETRY supplies T, r, the AL scheme and the premium quadrature's tables; its
+// own q is used by no node and no price, but its orientation for `side` must be
+// prepared (the side American at the geometry's q), so build it at a q inside the box
+// (the expiry's effective yield). Anchor, ownership, threads (const, allocation-free,
+// thread-safe price calls after prepare()), the re-prepare stamp, the L1c band rule
+// and every other refusal are AlSigmaFamily's (above). Nothing default selects it.
+
+// AlSigmaFamilyStatus plus YieldOutsideBox; the shared enumerators carry the SAME
+// values (a caller may map one onto the other by value).
+enum class AlSigmaQFamilyStatus : std::uint8_t {
+  Ok = 0,
+  NotPrepared = 1,         // prepare() has not succeeded (or the family is moved-from)
+  GeometryRePrepared = 2,  // the geometry was re-prepared after prepare()
+  InvalidArgument = 3,     // S or K not > 0 / not finite, or sigma / q not finite
+  SigmaBelowGuard = 4,     // sigma < kAlSigmaFamilyMinSigma (the small-sigma guard)
+  SigmaOutsideBox = 5,     // sigma outside [sigma_lo, sigma_hi] (never extrapolated)
+  YieldOutsideBox = 6,     // q outside [q_lo, q_hi] (never extrapolated)
+};
+
+struct AlSigmaQFamilyPrice {
+  double price = std::numeric_limits<double>::quiet_NaN(); // NaN unless status == Ok
+  AlSigmaQFamilyStatus status = AlSigmaQFamilyStatus::NotPrepared;
+};
+
+struct AlSigmaQFamilyChord {
+  double price = std::numeric_limits<double>::quiet_NaN();              // at sigma
+  double price_sigma_bumped = std::numeric_limits<double>::quiet_NaN(); // at sigma + h
+  AlSigmaQFamilyStatus status = AlSigmaQFamilyStatus::NotPrepared;
+};
+
+inline constexpr std::uint16_t kAlSigmaQFamilyMinQNodes = 2;
+inline constexpr std::uint16_t kAlSigmaQFamilyMaxQNodes = 8;
+inline constexpr double kAlSigmaQFamilyDegenerateWidth = 1.0e-12;
+
+class AlSigmaQFamily {
+public:
+  AlSigmaQFamily(const AlExpiryGeometry &geometry, Side side, double anchor);
+  AlSigmaQFamily(const AlExpiryGeometry &&geometry, Side side, double anchor) = delete;
+  ~AlSigmaQFamily();
+  AlSigmaQFamily(AlSigmaQFamily &&) noexcept;
+  AlSigmaQFamily &operator=(AlSigmaQFamily &&) noexcept;
+  AlSigmaQFamily(const AlSigmaQFamily &) = delete;
+  AlSigmaQFamily &operator=(const AlSigmaQFamily &) = delete;
+
+  // Solve the n_sigma x n_q node boundaries over [sigma_lo, sigma_hi] x [q_lo, q_hi].
+  // Refuses — leaving the family UNPREPARED, never half-built — with InvalidArgument
+  // for every AlSigmaFamily::prepare InvalidArgument case, a non-finite or inverted q
+  // box (q_lo > q_hi), or n_q outside [kAlSigmaQFamilyMinQNodes,
+  // kAlSigmaQFamilyMaxQNodes] on a non-degenerate box (n_q is ignored on a degenerate
+  // one); with NotImplemented when the geometry has no orientation for `side`, the side
+  // is not American at q_lo or q_hi, the box straddles q = r, a node boundary
+  // collapses or a node sweep cannot move (the kernel's NotConverged); with Internal
+  // when the Gauss-Legendre tables are missing. Allocates one ~90 KB block of solve
+  // scratch (one node orientation + the retained solve state) for its duration; the
+  // price path allocates nothing. On any refusal the previous preparation, if any, is
+  // discarded (prepared() == false).
+  [[nodiscard]] Status prepare(double sigma_lo, double sigma_hi, std::uint16_t n_sigma, double q_lo,
+                               double q_hi, std::uint16_t n_q,
+                               AlSigmaFamilyAxis axis = AlSigmaFamilyAxis::LogSigma);
+
+  [[nodiscard]] bool prepared() const noexcept;
+  [[nodiscard]] double sigma_lo() const noexcept;
+  [[nodiscard]] double sigma_hi() const noexcept;
+  [[nodiscard]] double q_lo() const noexcept;
+  [[nodiscard]] double q_hi() const noexcept;
+  [[nodiscard]] std::uint16_t n_sigma() const noexcept;
+  // The q nodes actually laid down: 1 on a degenerate box, else prepare()'s n_q.
+  [[nodiscard]] std::uint16_t n_q() const noexcept;
+  [[nodiscard]] double anchor() const noexcept;
+  [[nodiscard]] Side side() const noexcept;
+
+  // The (S, K) contract of this family's side at (sigma, q), q = the strike's own
+  // effective yield. Ok iff S, K > 0 and finite, sigma and q finite, sigma >=
+  // kAlSigmaFamilyMinSigma, sigma inside the σ box and q inside the q box; otherwise
+  // the typed refusal with a NaN price. Const, allocation-free, thread-safe.
+  [[nodiscard]] AlSigmaQFamilyPrice price(double S, double K, double sigma,
+                                          double q) const noexcept;
+
+  // price(S, K, sigma, q) and price(S, K, sigma + kAlPackSigmaBump, q) from the same
+  // family (the forward chord, the Newton slope of a family inversion). Refuses as
+  // price() does for EITHER sigma; nothing is written on a refusal but the status.
+  [[nodiscard]] AlSigmaQFamilyChord price_and_chord(double S, double K, double sigma,
+                                                    double q) const noexcept;
+
+  // Bytes of state this family owns (one heap block, allocated at construction).
+  [[nodiscard]] static std::size_t state_bytes() noexcept;
+
+  struct State; // defined in src/pricing/american_sigma_q_family.hpp (not public)
+
+private:
+  std::unique_ptr<State> st_;
+};
+// ── end L2h-b sigma-q family ──
 
 // ── Boundary-convergence evidence (what `andersen_lake` does NOT tell you) ──
 //
