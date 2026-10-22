@@ -9,7 +9,9 @@
 // L2h-c (2026-10-21): review-L2hb's minors (m1 quadrature header from either
 // orientation, m2-m3 weight helpers, m5 prepare() split, m6 the q-axis accuracy guard),
 // price_strikes (one interpolation per (σ, q) for a strike vector) and the opt-in
-// OffNode self-check.
+// OffNode self-check; THE BUILD: the nodes go four at a time through the AVX2 boundary
+// kernel (simd/american_boundary_nodes_avx2.hpp) when the host and the scheme allow,
+// the scalar prepared solve otherwise and for every lane the kernel declines.
 
 #include <algorithm>
 #include <cassert>
@@ -21,10 +23,13 @@
 #include <span>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/simd/cpu.hpp"            // simd::use_avx2 (THE BUILD's route)
 #include "pricing/american_boundary.hpp"       // amer:: seam + AlExpiryGeometry::Impl
+#include "pricing/american_detail.hpp"         // detail::AlSeedMode
 #include "pricing/american_sigma_family.hpp"   // sigma_family_detail::cheb_node / axis_of
 #include "pricing/american_sigma_q_family.hpp" // State
 #include "pricing/boundary_interp.hpp"         // detail::internal_put_coords / _rates (R-31)
+#include "simd/american_boundary_nodes_avx2.hpp" // the 4-lane node solve (L2h-c)
 
 namespace atx::vol {
 
@@ -148,13 +153,28 @@ quadrature_orientation(const AlExpiryGeometry::Impl &g, Side side) noexcept {
   return nullptr;
 }
 
-// One block of prepare-time scratch: the orientation of the current q node and the
-// retained solve state (heap: ~2 x 46 KB would crowd a worker's stack).
+// One block of prepare-time scratch: the orientation of the current q node, the
+// retained solve state and one AVX2 pack's four node slots (heap: ~0.3 MB would crowd a
+// worker's stack). The pack workspaces are default-initialised on purpose: like the put
+// batch driver's stack `AlWorkspace ws[4]`, the kernel's init writes every field it
+// reads (table pointers, counts, flags) and never touches the large static-bind arrays,
+// so zero-filling 4 x ~46 KB per prepare would buy nothing (allocated with
+// make_unique_for_overwrite).
 struct PrepareScratch {
   amer::AlOrientedGeometry geo{};
   amer::AlPreparedScratch solve{};
   int geo_node = -1; // the q node `geo` is prepared for, -1 = none yet
+  amer::AlBoundary pack_bnd[4]{};
+  amer::AlWorkspace pack_ws[4];
 };
+
+// THE BUILD's route (american.hpp): AVX2 packs iff the host / the SimdIsa override allow
+// it and the scheme is the one the AVX2 kernel implements (Reference arithmetic, the
+// Barone-Adesi-Whaley seed); the scalar prepared solve otherwise.
+[[nodiscard]] bool batched_build(const amer::AlScheme &sch) noexcept {
+  return simd::use_avx2() && sch.profile == AlProfile::Reference &&
+         sch.seed == detail::AlSeedMode::Baw;
+}
 
 // The node solves' inputs (names no State: the anonymous namespace cannot).
 struct NodePlan {
@@ -168,8 +188,23 @@ struct NodePlan {
   double *series = nullptr; // (k * nq + j) * n_sigma + s
 };
 
+// Node (j, s)'s solved boundary `b` into the series; `grid` receives the node structure
+// ((n, T)-only: z, wbary, x, tau — y / K / xmax are rewritten per price) from the first
+// node stored, whichever route solved it.
+void store_node(const NodePlan &p, unsigned j, unsigned s, const amer::AlBoundary &b,
+                amer::AlBoundary &grid, bool &have_grid) noexcept {
+  if (!have_grid) {
+    grid = b;
+    have_grid = true;
+  }
+  assert(b.n == grid.n);
+  for (unsigned k = 0; k < b.n; ++k) {
+    p.series[(static_cast<std::size_t>(k) * p.nq + j) * p.n_sigma + s] = b.y[k];
+  }
+}
+
 // Node (j, s) on the scalar prepared solve (lazily preparing q node j's orientation);
-// its boundary into the series. `grid` receives the node structure on the first call.
+// its boundary into the series.
 [[nodiscard]] Status solve_node_scalar(const NodePlan &p, unsigned j, unsigned s,
                                        PrepareScratch &w, amer::AlBoundary &grid,
                                        bool &have_grid) {
@@ -187,13 +222,38 @@ struct NodePlan {
   if (stv != amer::AlSolveStatus::Ok) {
     return node_solve_error(stv);
   }
-  if (!have_grid) {
-    grid = sc.bnd; // K- and carry-independent node structure; y/K/xmax per price
-    have_grid = true;
+  store_node(p, j, s, sc.bnd, grid, have_grid);
+  return Ok();
+}
+
+// Nodes t0 .. t0 + 3 (t = j * n_sigma + s) through one AVX2 pack at the anchor; a lane
+// the kernel declines goes through the scalar prepared solve, which reports its status.
+[[nodiscard]] Status solve_pack_avx2(const NodePlan &p, unsigned t0, PrepareScratch &w,
+                                     amer::AlBoundary &grid, bool &have_grid) {
+  double K4[4] = {};
+  double s4[4] = {};
+  double r4[4] = {};
+  double q4[4] = {};
+  for (unsigned l = 0; l < 4; ++l) {
+    const unsigned t = t0 + l;
+    const detail::InternalPutRates rq =
+        detail::internal_put_rates(p.side, p.g->r, p.qn[t / p.n_sigma]);
+    K4[l] = p.anchor;
+    s4[l] = p.sig[t % p.n_sigma];
+    r4[l] = rq.rp;
+    q4[l] = rq.qp;
   }
-  assert(sc.bnd.n == grid.n);
-  for (unsigned k = 0; k < sc.bnd.n; ++k) {
-    p.series[(static_cast<std::size_t>(k) * p.nq + j) * p.n_sigma + s] = sc.bnd.y[k];
+  const unsigned mask = simd::detail::solve_put_boundaries4_avx2(K4, p.g->T, s4, r4, q4, p.g->sch,
+                                                                 w.pack_bnd, w.pack_ws);
+  for (unsigned l = 0; l < 4; ++l) {
+    const unsigned t = t0 + l;
+    const unsigned j = t / p.n_sigma;
+    const unsigned s = t % p.n_sigma;
+    if ((mask & (1u << l)) != 0u) {
+      store_node(p, j, s, w.pack_bnd[l], grid, have_grid);
+    } else if (Status ns = solve_node_scalar(p, j, s, w, grid, have_grid); !ns) {
+      return ns;
+    }
   }
   return Ok();
 }
@@ -479,15 +539,24 @@ Status AlSigmaQFamily::prepare(double sigma_lo, double sigma_hi, std::uint16_t n
     }
   }
 
-  // n_q x n_sigma solves at the anchor, at the geometry's AlOpts.
-  const std::unique_ptr<PrepareScratch> work = std::make_unique<PrepareScratch>();
+  // n_q x n_sigma solves at the anchor, at the geometry's AlOpts: four at a time through
+  // the AVX2 kernel when batched_build(), the remainder (< 4) on the scalar solve.
+  const std::unique_ptr<PrepareScratch> work = std::make_unique_for_overwrite<PrepareScratch>();
   const NodePlan plan{st.g, st.side, st.anchor, sig, n_sigma, qn, nq, st.series};
   bool have_grid = false;
-  for (unsigned j = 0; j < nq; ++j) {
-    for (unsigned s = 0; s < n_sigma; ++s) {
-      if (Status ns = solve_node_scalar(plan, j, s, *work, st.grid, have_grid); !ns) {
+  const unsigned n_nodes = static_cast<unsigned>(nq) * n_sigma;
+  unsigned t = 0;
+  if (batched_build(g.sch)) {
+    for (; t + 4u <= n_nodes; t += 4u) {
+      if (Status ns = solve_pack_avx2(plan, t, *work, st.grid, have_grid); !ns) {
         return ns;
       }
+    }
+  }
+  for (; t < n_nodes; ++t) {
+    if (Status ns = solve_node_scalar(plan, t / n_sigma, t % n_sigma, *work, st.grid, have_grid);
+        !ns) {
+      return ns;
     }
   }
 

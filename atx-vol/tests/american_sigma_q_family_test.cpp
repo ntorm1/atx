@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 
 // L2h-b sigma-q family (2026-10-21). AlSigmaQFamily lays Chebyshev-Lobatto nodes over
 // (σ, q) so ONE family per (expiry, side) prices every strike at its OWN effective
@@ -56,6 +57,7 @@ using atx::vol::kAlSigmaQFamilyMaxQNodes;
 using atx::vol::kAlSigmaQFamilyMinQNodes;
 using atx::vol::prepare_al_geometry;
 using atx::vol::Side;
+using atx::vol::simd::SimdIsa;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kSpot = 100.0;
@@ -218,13 +220,35 @@ struct QWorst {
                 strikes_around(kSpot, 0.60, 1.40, 17), log_midpoints(0.10, 0.60, 10)}};
 }
 
-TEST(AlSigmaQFamily, CollapsedQBoxIsBitIdenticalToTheSigmaFamily) {
-  // q_hi - q_lo <= kAlSigmaQFamilyDegenerateWidth: one q node, and every price / chord
-  // equals AlSigmaFamily's at that q to the last bit (both axes, both sides, at the
-  // σ nodes, between them and at the box edges; strikes off the anchor).
+// L2h-c: the process-wide SimdIsa override for one scope (THE BUILD's route switch).
+class IsaScope {
+public:
+  explicit IsaScope(SimdIsa isa) : prev_(atx::vol::simd::simd_isa_override()) {
+    atx::vol::simd::set_simd_isa_override(isa);
+  }
+  ~IsaScope() { atx::vol::simd::set_simd_isa_override(prev_); }
+  IsaScope(const IsaScope &) = delete;
+  IsaScope &operator=(const IsaScope &) = delete;
+
+private:
+  SimdIsa prev_;
+};
+
+struct CollapsedCompare {
   std::size_t checked = 0;
-  std::size_t mismatched = 0;
+  std::size_t mismatched = 0; // not bit-identical (or a status differs)
+  double scaled = 0.0;        // max |dP| / max(P, 1) over prices and chords
   std::string first;
+};
+
+// q_hi - q_lo <= kAlSigmaQFamilyDegenerateWidth: one q node; every price / chord against
+// AlSigmaFamily's at that q (both axes, both sides, at the σ nodes, between them and at
+// the box edges; strikes off the anchor), the q-family built under the current ISA.
+[[nodiscard]] CollapsedCompare compare_collapsed_with_sigma_family() {
+  CollapsedCompare out;
+  std::size_t &checked = out.checked;
+  std::size_t &mismatched = out.mismatched;
+  std::string &first = out.first;
   for (const auto &[T, r, q] : {std::tuple{0.0682, 0.04496, 0.0016}, std::tuple{0.5, 0.05, 0.02},
                                 std::tuple{2.0, 0.05, -0.003}}) {
     const AlExpiryGeometry g = prepare_al_geometry(T, r, q);
@@ -235,8 +259,8 @@ TEST(AlSigmaQFamily, CollapsedQBoxIsBitIdenticalToTheSigmaFamily) {
       for (const AlSigmaFamilyAxis axis : {AlSigmaFamilyAxis::LogSigma, AlSigmaFamilyAxis::Sigma}) {
         AlSigmaFamily sf(g, side, kSpot);
         AlSigmaQFamily qf(g, side, kSpot);
-        ASSERT_TRUE(sf.prepare(0.1, 0.6, kSigmaNodes, axis));
-        ASSERT_TRUE(qf.prepare(0.1, 0.6, kSigmaNodes, q, q, /*n_q=*/4, axis));
+        EXPECT_TRUE(sf.prepare(0.1, 0.6, kSigmaNodes, axis));
+        EXPECT_TRUE(qf.prepare(0.1, 0.6, kSigmaNodes, q, q, /*n_q=*/4, axis));
         EXPECT_EQ(qf.n_q(), 1);
         std::vector<double> sigmas = lobatto(0.1, 0.6, kSigmaNodes);
         for (const double s : log_midpoints(0.1, 0.6, 9)) {
@@ -252,12 +276,21 @@ TEST(AlSigmaQFamily, CollapsedQBoxIsBitIdenticalToTheSigmaFamily) {
             const AlSigmaFamilyChord ca = sf.price_and_chord(S, K, hs);
             const AlSigmaQFamilyChord cb = qf.price_and_chord(S, K, hs, q);
             ++checked;
-            const bool ok = a.status == AlSigmaFamilyStatus::Ok &&
-                            b.status == AlSigmaQFamilyStatus::Ok && same_bits(a.price, b.price) &&
-                            ca.status == AlSigmaFamilyStatus::Ok &&
-                            cb.status == AlSigmaQFamilyStatus::Ok &&
+            const bool statuses = a.status == AlSigmaFamilyStatus::Ok &&
+                                  b.status == AlSigmaQFamilyStatus::Ok &&
+                                  ca.status == AlSigmaFamilyStatus::Ok &&
+                                  cb.status == AlSigmaQFamilyStatus::Ok;
+            const bool ok = statuses && same_bits(a.price, b.price) &&
                             same_bits(ca.price, cb.price) &&
                             same_bits(ca.price_sigma_bumped, cb.price_sigma_bumped);
+            if (statuses) {
+              for (const auto &[x, y] : {std::pair{a.price, b.price}, std::pair{ca.price, cb.price},
+                                         std::pair{ca.price_sigma_bumped, cb.price_sigma_bumped}}) {
+                out.scaled = std::max(out.scaled, std::abs(x - y) / std::max(x, 1.0));
+              }
+            } else {
+              out.scaled = std::numeric_limits<double>::infinity();
+            }
             if (!ok) {
               if (mismatched < 5u) {
                 std::ostringstream os;
@@ -272,8 +305,16 @@ TEST(AlSigmaQFamily, CollapsedQBoxIsBitIdenticalToTheSigmaFamily) {
       }
     }
   }
-  EXPECT_EQ(mismatched, 0u) << "of " << checked << "\n" << first;
-  EXPECT_EQ(checked, 5u * 2u * 21u * 5u); // 5 (geometry, side) pairs x 2 axes x 21 sigma x 5
+  return out;
+}
+
+TEST(AlSigmaQFamily, CollapsedQBoxIsBitIdenticalToTheSigmaFamily) {
+  // On the SCALAR build (SimdIsa::ForceScalar: every node the scalar prepared solve,
+  // AlSigmaFamily's builder) a collapsed q box IS AlSigmaFamily at that q, bit for bit.
+  const IsaScope scalar(SimdIsa::ForceScalar);
+  const CollapsedCompare c = compare_collapsed_with_sigma_family();
+  EXPECT_EQ(c.mismatched, 0u) << "of " << c.checked << "\n" << c.first;
+  EXPECT_EQ(c.checked, 5u * 2u * 21u * 5u); // 5 (geometry, side) pairs x 2 axes x 21 sigma x 5
   // A box narrower than the threshold collapses too; one wider than it does not.
   const AlExpiryGeometry g = prepare_al_geometry(0.5, 0.05, 0.02);
   AlSigmaQFamily narrow(g, Side::Put, kSpot);
@@ -283,6 +324,72 @@ TEST(AlSigmaQFamily, CollapsedQBoxIsBitIdenticalToTheSigmaFamily) {
   AlSigmaQFamily wide(g, Side::Put, kSpot);
   ASSERT_TRUE(wide.prepare(0.1, 0.6, kSigmaNodes, 0.02, 0.02 + 1.0e-6, 4));
   EXPECT_EQ(wide.n_q(), 4);
+}
+
+TEST(AlSigmaQFamily, CollapsedQBoxOnTheAvx2BuildIsTheSigmaFamilyToRounding) {
+  // L2h-c THE BUILD: on an AVX2 host the nodes are AVX2-kernel boundaries (the put
+  // batch's AvxBoundary parity, <= ~4e-13 in y), so the collapsed family is AlSigmaFamily
+  // to rounding, NOT bit for bit — and must be, or the batched route is not running.
+  // Bound: 2-figure round-up of the measured; the σ-family's own tolerance vs the cold
+  // Reference on these boxes is 8.5e-10 (node / anchor) .. 4.1e-6 (12-node off-node grid
+  // set), i.e. this difference sits 3+ orders below it.
+  if (!atx::vol::simd::have_avx2()) {
+    GTEST_SKIP() << "host has no AVX2: the scalar build is the only build";
+  }
+  constexpr double kBound = 3.6e-15; // measured 3.55267e-15 (365 of 1050 differ)
+  const IsaScope avx2(SimdIsa::ForceAvx2);
+  const CollapsedCompare c = compare_collapsed_with_sigma_family();
+  EXPECT_EQ(c.checked, 5u * 2u * 21u * 5u);
+  EXPECT_GT(c.mismatched, 0u) << "the AVX2 build reproduced the scalar build bit for bit";
+  EXPECT_LE(c.scaled, kBound);
+  std::cout << "[AlSigmaQFamily] collapsed avx2 vs sigma-family: " << c.mismatched << " of "
+            << c.checked << " differ, max |dP|/max(P,1)=" << c.scaled << "\n";
+}
+
+TEST(AlSigmaQFamily, Avx2BuildMatchesTheScalarBuildToRounding) {
+  // L2h-c THE BUILD: the same SPY chains built both ways (ForceAvx2 vs ForceScalar), every
+  // strike at its own q, 12 off-node σ: the two builds agree to rounding (pinned).
+  if (!atx::vol::simd::have_avx2()) {
+    GTEST_SKIP() << "host has no AVX2";
+  }
+  constexpr double kBound = 5.7e-15; // measured 5.6641e-15 (390 of 900 differ)
+  double worst = 0.0;
+  std::size_t checked = 0;
+  std::size_t differ = 0;
+  std::vector<QCase> cases = spy23_cases();
+  for (const QCase &c : spy_long_cases()) {
+    cases.push_back(c);
+  }
+  for (const QCase &c : cases) {
+    const AlExpiryGeometry g = prepare_al_geometry(c.T, c.r, 0.5 * (c.q_lo + c.q_hi));
+    AlSigmaQFamily fa(g, c.side, c.S);
+    AlSigmaQFamily fs(g, c.side, c.S);
+    {
+      const IsaScope avx2(SimdIsa::ForceAvx2);
+      ASSERT_TRUE(fa.prepare(c.sigma_lo, c.sigma_hi, kSigmaNodes, c.q_lo, c.q_hi, 4));
+    }
+    {
+      const IsaScope scalar(SimdIsa::ForceScalar);
+      ASSERT_TRUE(fs.prepare(c.sigma_lo, c.sigma_hi, kSigmaNodes, c.q_lo, c.q_hi, 4));
+    }
+    for (std::size_t i = 0; i < c.strikes.size(); ++i) {
+      const double q = strike_q(c, i);
+      for (const double sigma : c.sigmas) {
+        const AlSigmaQFamilyPrice a = fa.price(c.S, c.strikes[i], sigma, q);
+        const AlSigmaQFamilyPrice s = fs.price(c.S, c.strikes[i], sigma, q);
+        ASSERT_EQ(a.status, AlSigmaQFamilyStatus::Ok);
+        ASSERT_EQ(s.status, AlSigmaQFamilyStatus::Ok);
+        ++checked;
+        differ += same_bits(a.price, s.price) ? 0u : 1u;
+        worst = std::max(worst, std::abs(a.price - s.price) / std::max(s.price, 1.0));
+      }
+    }
+  }
+  EXPECT_EQ(checked, 3u * 25u * 12u);
+  EXPECT_GT(differ, 0u) << "the AVX2 build reproduced the scalar build bit for bit";
+  EXPECT_LE(worst, kBound);
+  std::cout << "[AlSigmaQFamily] avx2 vs scalar build: " << differ << " of " << checked
+            << " differ, max |dP|/max(P,1)=" << worst << "\n";
 }
 
 TEST(AlSigmaQFamily, PrepareRefusesBadInputsAndLeavesTheFamilyUnprepared) {
@@ -548,30 +655,42 @@ TEST(AlSigmaQFamily, NodePricesAtTheAnchorMatchTheColdSolve) {
   // price is the cold solve's to rounding. Bound: 2-figure round-up of the measured.
   // (L2h-c: n_q 4 -> 8 on the same [1 %, 3 %] box — the 4-node box is refused by the
   // q-axis accuracy guard.)
-  constexpr double kBound = 1.6e-16; // measured 1.50707e-16 (L2h-b, n_q 4)
+  // L2h-c: the 1.6e-16 bound is the SCALAR build's (the node IS the cold solve); the
+  // AVX2 build's node is the AVX2 kernel's boundary, pinned separately (measured).
+  constexpr double kBound = 1.6e-16;     // measured 1.50707e-16 (L2h-b, n_q 4; scalar)
+  constexpr double kBoundAvx2 = 1.4e-15; // measured 1.3221e-15 (avx2; re-pinned up, L2h-c)
   constexpr std::uint16_t kQNodes = kAlSigmaQFamilyMaxQNodes;
   const AlExpiryGeometry g = prepare_al_geometry(0.5, 0.05, 0.02);
-  std::size_t checked = 0;
-  double worst = 0.0;
-  for (const Side side : {Side::Put, Side::Call}) {
-    AlSigmaQFamily f(g, side, kSpot);
-    ASSERT_TRUE(f.prepare(0.1, 0.6, kSigmaNodes, 0.01, 0.03, kQNodes, AlSigmaFamilyAxis::Sigma));
-    for (const double sigma : lobatto(0.1, 0.6, kSigmaNodes)) {
-      std::vector<double> qs = lobatto(0.01, 0.03, kQNodes);
-      qs.back() = 0.03; // the TU lays the box ends down exactly
-      for (const double q : qs) {
-        const Result<double> cold = andersen_lake(kSpot, kSpot, 0.5, sigma, 0.05, q, side);
-        const AlSigmaQFamilyPrice p = f.price(kSpot, kSpot, sigma, q);
-        ASSERT_TRUE(cold);
-        ASSERT_EQ(p.status, AlSigmaQFamilyStatus::Ok);
-        ++checked;
-        worst = std::max(worst, std::abs(p.price - *cold) / std::max(*cold, 1.0));
+  for (const SimdIsa isa : {SimdIsa::ForceScalar, SimdIsa::ForceAvx2}) {
+    if (isa == SimdIsa::ForceAvx2 && !atx::vol::simd::have_avx2()) {
+      continue;
+    }
+    const IsaScope scope(isa);
+    std::size_t checked = 0;
+    double worst = 0.0;
+    for (const Side side : {Side::Put, Side::Call}) {
+      AlSigmaQFamily f(g, side, kSpot);
+      ASSERT_TRUE(
+          f.prepare(0.1, 0.6, kSigmaNodes, 0.01, 0.03, kQNodes, AlSigmaFamilyAxis::Sigma));
+      for (const double sigma : lobatto(0.1, 0.6, kSigmaNodes)) {
+        std::vector<double> qs = lobatto(0.01, 0.03, kQNodes);
+        qs.back() = 0.03; // the TU lays the box ends down exactly
+        for (const double q : qs) {
+          const Result<double> cold = andersen_lake(kSpot, kSpot, 0.5, sigma, 0.05, q, side);
+          const AlSigmaQFamilyPrice p = f.price(kSpot, kSpot, sigma, q);
+          ASSERT_TRUE(cold);
+          ASSERT_EQ(p.status, AlSigmaQFamilyStatus::Ok);
+          ++checked;
+          worst = std::max(worst, std::abs(p.price - *cold) / std::max(*cold, 1.0));
+        }
       }
     }
+    EXPECT_EQ(checked, 2u * kSigmaNodes * kQNodes);
+    EXPECT_LE(worst, isa == SimdIsa::ForceScalar ? kBound : kBoundAvx2);
+    std::cout << "[AlSigmaQFamily] node/anchor ("
+              << (isa == SimdIsa::ForceScalar ? "scalar" : "avx2")
+              << " build) worst |dP|/max(P,1)=" << worst << "\n";
   }
-  EXPECT_EQ(checked, 2u * kSigmaNodes * kQNodes);
-  EXPECT_LE(worst, kBound);
-  std::cout << "[AlSigmaQFamily] node/anchor worst |dP|/max(P,1)=" << worst << "\n";
 }
 
 TEST(AlSigmaQFamily, Spy23ChainAtItsOwnYieldsWithinMeasuredBound) {
