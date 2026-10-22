@@ -943,7 +943,9 @@ enum class AlSigmaQFamilyCheck : std::uint8_t {
   OffNode = 1, // measure the family against the cold Reference off its nodes
 };
 
-// The family's own measured error, for a certificate to cite per (expiry, side). Four
+// A SAMPLED ESTIMATE of the family's error per (expiry, side), NOT a bound: the maxima
+// over 12 prices, measured at 0.1-0.4x of a chain's worst (review L2h-c n1), so a
+// certificate must not cite max_* as its error bar without its own margin. Four
 // check points sit at the midpoints of the first and the central cell of each axis
 // (the σ axis on its LogSigma / Sigma coordinate; on a collapsed q box the q node, so
 // the points pair up); at each, the cold Reference boundary is solved by the scalar
@@ -954,10 +956,10 @@ enum class AlSigmaQFamilyCheck : std::uint8_t {
 // estimate, not an enclosure: the error between the check points is not bounded by it
 // (the sprint note compares it with each chain's measured worst).
 struct AlSigmaQFamilySelfCheck {
-  double max_abs_per_strike = std::numeric_limits<double>::quiet_NaN(); // max |dP| / K
-  double max_rel = std::numeric_limits<double>::quiet_NaN(); // max |dP| / P, P >= 1e-4 K
+  double max_abs_per_strike = std::numeric_limits<double>::quiet_NaN(); // estimate: max |dP| / K
+  double max_rel = std::numeric_limits<double>::quiet_NaN(); // estimate: max |dP| / P, P >= 1e-4 K
   std::uint16_t prices = 0; // price pairs compared (0 when no check point solved)
-  AlSigmaQFamilyStatus status = AlSigmaQFamilyStatus::NotPrepared; // Ok iff measured
+  AlSigmaQFamilyStatus status = AlSigmaQFamilyStatus::NotPrepared; // Ok = measured, not passed
 };
 
 namespace sigma_q_family_detail {
@@ -1031,7 +1033,8 @@ public:
 
   // L2h-c: the self-check prepare(…, AlSigmaQFamilyCheck::OffNode) measured (status Ok),
   // or the reason there is none (NotPrepared: not prepared, or prepared without the
-  // check; GeometryRePrepared). Reads stored numbers: const, allocation-free.
+  // check; GeometryRePrepared). Reads stored numbers: const, allocation-free. A sampled
+  // estimate, not a bound (see AlSigmaQFamilySelfCheck).
   [[nodiscard]] AlSigmaQFamilySelfCheck self_check() const noexcept;
 
   // Heap bytes this family owns: the fixed state block (allocated at construction) plus
