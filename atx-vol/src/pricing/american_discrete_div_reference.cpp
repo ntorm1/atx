@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <span>
 #include <string>
@@ -28,6 +29,22 @@ constexpr double kEps = std::numeric_limits<double>::epsilon();
 // (Bokanowski-Maroso-Zidani 2009); in practice 1-4. The cap only turns a defect
 // into a typed error instead of an unbounded loop.
 constexpr int kMaxPolicyIterations = 200;
+
+// An iterate solves the discrete LCP "to rounding" when no row violates it by more
+// than this many ulps of the row's own term scale (the solves are backward stable).
+constexpr double kLcpRoundingUlps = 64.0;
+
+// The rounding-tie rule. Where the payoff itself nearly solves the discrete PDE
+// (r = q = 0 deep in the money: the residual is O(dt h^2)), both branches of a row
+// are feasible to rounding and exact Howard can flip those rows on rounding noise
+// forever. Measured (matrix case G4p, finest space level): 261 deep-ITM rows
+// switching every iteration at a worst violation of 70 ulps. From iteration
+// kLcpTieIteration on, an iterate whose worst violation is within this bound is
+// accepted as a rounding tie (a stall test on the switch count instead took up to
+// 31 iterations on that grid: the count drifts down on noise); the largest
+// violation accepted is reported on the result.
+constexpr double kLcpTieUlps = 1024.0;
+constexpr int kLcpTieIteration = 3;
 
 // The PDE domain's lower edge never sizes off a spot net of cash below this
 // fraction of spot (ruinous schedules would otherwise ask for ln 0).
@@ -457,6 +474,9 @@ struct PdeState {
   int max_policy_iterations = 0;
   double max_policy_time = 0.0;
   int implicit_solves = 0;
+  double max_lcp_violation = 0.0; // worst accepted relative LCP violation
+  int lcp_rounding_ties = 0;      // steps accepted by the rounding-tie rule
+  bool fresh_data = false;        // v is a payoff or a jump, not an LCP solution
 
   [[nodiscard]] double state_at(int i) const noexcept {
     return level[static_cast<std::size_t>(i)];
@@ -510,22 +530,41 @@ Status solve_lcp(PdeState &s, const Rows &rows, int seg, double t_new) {
   const double lo = rows.lo;
   const double di = rows.di;
   const double up = rows.up;
-  // Initial policy: the obstacle rows are the nodes where exercise already bound
-  // at the previous level AND pays something. A zero payoff never strictly beats
-  // holding; starting those nodes on the obstacle (V = g = 0 out of the money)
-  // made Howard release them one node per iteration as the solution spread —
-  // measured: 28 iterations on the first half step after expiry at the matrix's
-  // finest grid.
+  // Initial policy: the obstacle rows are the nodes where exercise binds on a
+  // guess of the new level AND pays something (a zero payoff never strictly beats
+  // holding; starting those nodes on the obstacle made Howard release them one
+  // node per iteration — measured: 28 iterations on the first half step after
+  // expiry at the matrix's finest grid). The guess is the previous level, which
+  // solved the same LCP one step earlier — except on a segment's first step,
+  // where the previous level is the payoff or a jump: there the guess is one
+  // unconstrained (European) step. Measured, matrix case G4p (r = 0 put): seeding
+  // from the cell-averaged payoff, which lies below g at every in-the-money node,
+  // released the band one node per iteration from the strike down, 31 iterations.
   const double shift = m.exercise_shift(seg, t_new);
   for (int i = 0; i <= n; ++i) {
     const auto k = static_cast<std::size_t>(i);
     s.obstacle[k] = payoff(m.side, s.level[k] + shift, m.K);
-    s.active[k] = (s.obstacle[k] > 0.0 && s.v[k] <= s.obstacle[k]) ? 1U : 0U;
+    s.active[k] = 0U;
   }
+  const std::vector<double> *guess = &s.v;
+  if (s.fresh_data) {
+    thomas_solve(s, lo, di, up, rows.bottom, rows.top);
+    guess = &s.work;
+    s.fresh_data = false;
+  }
+  for (int i = 0; i <= n; ++i) {
+    const auto k = static_cast<std::size_t>(i);
+    s.active[k] = (s.obstacle[k] > 0.0 && (*guess)[k] <= s.obstacle[k]) ? 1U : 0U;
+  }
+  double worst = 0.0; // the largest relative LCP violation of the last iterate
+  int worst_row = 0;
+  int flips = 0; // rows the last iteration switched
   for (int iter = 1; iter <= kMaxPolicyIterations; ++iter) {
     thomas_solve(s, lo, di, up, rows.bottom, rows.top);
     bool changed = false;
-    bool solves_lcp = true;
+    worst = 0.0;
+    worst_row = 0;
+    flips = 0;
     for (int i = 1; i < n; ++i) {
       const auto k = static_cast<std::size_t>(i);
       const double w = s.work[k];
@@ -541,29 +580,42 @@ Status solve_lcp(PdeState &s, const Rows &rows, int seg, double t_new) {
       if (want != on_obstacle) {
         s.active[k] = want ? 1U : 0U;
         changed = true;
+        ++flips;
       }
-      // Does the iterate already solve the LCP to rounding? The tolerance is the
-      // rounding of the row's OWN terms (on a fine grid the implicit entries are
-      // ~ theta dt sigma^2 / h^2 >> 1, far above |V|).
+      // How far does the iterate violate the LCP, relative to the rounding of the
+      // row's OWN terms (on a fine grid the implicit entries are ~ theta dt sigma^2
+      // / h^2 >> 1, far above |V|)?
       const double row_scale = std::abs(lo * s.work[k - 1]) + std::abs(di * w) +
                                std::abs(up * s.work[k + 1]) + std::abs(s.rhs[k]) +
                                std::abs(s.obstacle[k]) + 1.0;
       const double violation = on_obstacle ? -pde_res : -obs_res;
-      if (violation > 64.0 * kEps * row_scale) {
-        solves_lcp = false;
+      if (violation / row_scale > worst) {
+        worst = violation / row_scale;
+        worst_row = i;
       }
     }
-    if (!changed || solves_lcp) {
+    const bool solves_lcp = worst <= kLcpRoundingUlps * kEps;
+    const bool rounding_tie = iter >= kLcpTieIteration && worst <= kLcpTieUlps * kEps;
+    if (!changed || solves_lcp || rounding_tie) {
       if (iter > s.max_policy_iterations) {
         s.max_policy_iterations = iter;
         s.max_policy_time = t_new;
       }
+      if (changed && !solves_lcp) {
+        ++s.lcp_rounding_ties;
+      }
+      s.max_lcp_violation = std::max(s.max_lcp_violation, worst);
       s.v.swap(s.work);
       return Ok();
     }
   }
-  return Err(ErrorCode::Internal, "discrete-dividend reference PDE: policy iteration did not "
-                                  "settle within its cap");
+  std::array<char, 256> why{};
+  std::snprintf(why.data(), why.size(),
+                "discrete-dividend reference PDE: policy iteration did not settle within its "
+                "cap (t = %.9g; last iteration: %d rows switched, worst relative LCP violation "
+                "%.3e at node %d of %d, state %.6g)",
+                t_new, flips, worst, worst_row, n, s.state_at(worst_row));
+  return Err(ErrorCode::Internal, std::string(why.data()));
 }
 
 // One theta step to `t_new` (theta 1: implicit Euler, 0.5: Crank-Nicolson) on
@@ -596,6 +648,7 @@ Status theta_step(PdeState &s, double dt, double theta, int seg, double t_new) {
 Status run_segment(PdeState &s, int seg, double t_start, double t_end, int steps,
                    int rannacher, double grading) {
   double t_old = t_end;
+  s.fresh_data = true; // the segment starts from the payoff or a jump
   for (int k = 0; k < steps; ++k) {
     const double t_new = segment_time(t_start, t_end, steps, k + 1, grading);
     const double dt = t_old - t_new;
@@ -963,6 +1016,8 @@ Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid) {
   out.time_steps = s.implicit_solves;
   out.max_policy_iterations = s.max_policy_iterations;
   out.max_policy_time = s.max_policy_time;
+  out.max_lcp_violation = s.max_lcp_violation;
+  out.lcp_rounding_ties = s.lcp_rounding_ties;
   return Ok(out);
 }
 
@@ -1013,6 +1068,8 @@ Result<Estimate> pde_reference(const Problem &p, const PdeLadder &ladder) {
   std::array<double, kMaxLevels> space{};
   std::array<double, kMaxLevels> time{};
   int policy = 0;
+  double lcp_violation = 0.0;
+  int ties = 0;
   for (int level = 0; level < ladder.levels; ++level) {
     PdeGrid g = ladder.base;
     g.space_level = level;
@@ -1023,6 +1080,8 @@ Result<Estimate> pde_reference(const Problem &p, const PdeLadder &ladder) {
     }
     space[static_cast<std::size_t>(level)] = out->price;
     policy = std::max(policy, out->max_policy_iterations);
+    lcp_violation = std::max(lcp_violation, out->max_lcp_violation);
+    ties += out->lcp_rounding_ties;
   }
   // The shared corner (finest space, finest time) is solved once and read twice.
   time[static_cast<std::size_t>(top)] = space[static_cast<std::size_t>(top)];
@@ -1036,11 +1095,16 @@ Result<Estimate> pde_reference(const Problem &p, const PdeLadder &ladder) {
     }
     time[static_cast<std::size_t>(level)] = out->price;
     policy = std::max(policy, out->max_policy_iterations);
+    lcp_violation = std::max(lcp_violation, out->max_lcp_violation);
+    ties += out->lcp_rounding_ties;
   }
   const auto n = static_cast<std::size_t>(ladder.levels);
-  return Ok(combine(richardson_axis(std::span<const double>(space.data(), n), 2.0),
-                    richardson_axis(std::span<const double>(time.data(), n), 2.0),
-                    space[static_cast<std::size_t>(top)], policy));
+  Estimate e = combine(richardson_axis(std::span<const double>(space.data(), n), 2.0),
+                       richardson_axis(std::span<const double>(time.data(), n), 2.0),
+                       space[static_cast<std::size_t>(top)], policy);
+  e.max_lcp_violation = lcp_violation;
+  e.lcp_rounding_ties = ties;
+  return Ok(e);
 }
 
 // ── Public: the trinomial lattice ──────────────────────────────────────────

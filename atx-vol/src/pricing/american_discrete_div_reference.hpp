@@ -27,11 +27,13 @@
 //      cell-averaged over each node's control volume (kinks split exactly), and
 //      so is every node whose volume holds a kink of the post-jump curve. The
 //      American constraint is the discrete linear complementarity problem
-//      min(M V - b, V - g) = 0 solved EXACTLY each step by policy (Howard)
-//      iteration on the tridiagonal M-matrix — no penalty parameter and no SOR
-//      tolerance, so the constraint adds no error of its own beyond the
-//      discretisation. The time grid contains every ex-date bit-exactly
-//      (segments between events), the cash jump is applied there by cubic
+//      min(M V - b, V - g) = 0 solved each step by policy (Howard) iteration
+//      on the tridiagonal M-matrix to rounding (64 ulps of each row's term
+//      scale; 1024 from the third iteration, for the rounding ties r = q = 0
+//      deep-ITM rows produce) — no penalty parameter and no SOR tolerance, so
+//      the constraint adds no error of its own beyond the discretisation. The
+//      time grid contains every ex-date bit-exactly (segments between events),
+//      the cash jump is applied there by cubic
 //      Lagrange interpolation of the post-dividend value in log space, and both
 //      exercise rights are tested at the ex-date (cum-dividend against the
 //      undiluted stock, post-dividend through the post-jump value). Space and
@@ -213,6 +215,11 @@ struct PdeResult {
   int time_steps = 0;           // implicit solves performed (Rannacher half steps count)
   int max_policy_iterations = 0; // the worst step's Howard iterations (0 European)
   double max_policy_time = 0.0;  // the calendar time of that step
+  // The worst LCP violation any accepted step left, relative to its row's term
+  // scale (<= 64 eps, or <= 1024 eps on a step the rounding-tie rule accepted),
+  // and how many steps that rule accepted (0 European).
+  double max_lcp_violation = 0.0;
+  int lcp_rounding_ties = 0;
 };
 
 // One PDE solve. Errors: `validate`'s; InvalidArgument for a grid outside
@@ -242,6 +249,8 @@ struct Estimate {
   Axis space;               // PDE: space at the finest time grid; trinomial: unused (n == 0)
   Axis time;                // PDE: time at the finest space grid; trinomial: the step axis
   int max_policy_iterations = 0;
+  double max_lcp_violation = 0.0; // PDE: over the ladder's solves (PdeResult's meaning)
+  int lcp_rounding_ties = 0;      // PDE: summed over the ladder's solves
 };
 
 struct PdeLadder {

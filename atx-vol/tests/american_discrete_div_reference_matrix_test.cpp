@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -479,16 +480,19 @@ void write_tables(const std::vector<Row> &rows, std::FILE *md) {
   emit(md, "");
   emit(md, "<!-- BEGIN D0 CONVERGENCE TABLE -->");
   emit(md, "| id | PDE space (finest time; Nx 1200..9600) | PDE time (finest space; nominal "
-           "base..8x base) | lattice (steps 1000..16000) | u_ref USD | u_ref IV bp | vega | wall "
-           "s |");
-  emit(md, "|---|---|---|---|---|---|---|---|");
+           "base..8x base) | lattice (steps 1000..16000) | u_ref USD | u_ref IV bp | vega | PDE "
+           "Howard max iter / tie steps / worst LCP ulps | wall s |");
+  emit(md, "|---|---|---|---|---|---|---|---|---|");
   for (const Row &r : rows) {
-    emit(md, "| " + r.c.id + " | " + axis_text(r.ref.pde.space) + " | " +
-                 axis_text(r.ref.pde.time) + " | " + axis_text(r.ref.lattice.time) + " | " +
-                 fmt("%.1e", r.ref.uncertainty) + " | " +
+    const Estimate &pde = r.ref.pde;
+    emit(md, "| " + r.c.id + " | " + axis_text(pde.space) + " | " + axis_text(pde.time) + " | " +
+                 axis_text(r.ref.lattice.time) + " | " + fmt("%.1e", r.ref.uncertainty) + " | " +
                  (r.iv_identified() ? fmt("%.2e", 1.0e4 * r.ref.uncertainty / r.vega)
                                     : std::string("n/a")) +
-                 " | " + fmt("%.4g", r.vega) + " | " + fmt("%.1f", r.seconds) + " |");
+                 " | " + fmt("%.4g", r.vega) + " | " + std::to_string(pde.max_policy_iterations) +
+                 " / " + std::to_string(pde.lcp_rounding_ties) + " / " +
+                 fmt("%.0f", pde.max_lcp_violation / std::numeric_limits<double>::epsilon()) +
+                 " | " + fmt("%.1f", r.seconds) + " |");
   }
   emit(md, "<!-- END D0 CONVERGENCE TABLE -->");
 }

@@ -568,6 +568,32 @@ TEST(DiscreteDivReferencePde, PolicyIterationSettlesOnATinyLastSegmentAtTheFines
   EXPECT_LT(out->max_policy_iterations, 20) << "at t = " << out->max_policy_time;
 }
 
+// Regression (matrix case G4p, first official run): r = q = 0 put, four quarterly
+// dividends, on the matrix's finest grid. After the last ex-date the payoff
+// satisfies the discrete PDE to O(dt h^2) deep in the money — below the rows'
+// rounding on that grid — so the obstacle is an exact tie there and an argmin
+// policy can flip on rounding noise for its whole cap.
+TEST(DiscreteDivReferencePde, PolicyIterationSettlesOnTheZeroRateTieAtTheFinestGrid) {
+  const std::vector<CashDividend> four{{0.1, 1.0}, {0.35, 1.0}, {0.6, 1.0}, {0.85, 1.0}};
+  const Problem p = make(100, 100, 1.0, 0.25, 0.0, 0.0, Side::Put, ExerciseStyle::American, four);
+  for (const int time_level : {0, 3}) {
+    PdeGrid grid;
+    grid.space_base = 1200;
+    grid.space_level = 3;
+    grid.time_base = 300;
+    grid.time_level = time_level;
+    const auto out = pde_price(p, grid);
+    ASSERT_TRUE(out.has_value()) << out.error().to_string();
+    EXPECT_LT(out->max_policy_iterations, 20) << "at t = " << out->max_policy_time;
+    EXPECT_LE(out->max_lcp_violation, 1024.0 * std::numeric_limits<double>::epsilon());
+    std::printf("[ tie ] time level %d: %d policy iterations max, %d rounding-tie steps, "
+                "worst accepted violation %.3e (%.0f ulps)\n",
+                time_level, out->max_policy_iterations, out->lcp_rounding_ties,
+                out->max_lcp_violation,
+                out->max_lcp_violation / std::numeric_limits<double>::epsilon());
+  }
+}
+
 TEST(DiscreteDivReferencePde, GridGreeksAreFiniteAndSigned) {
   const std::vector<CashDividend> one{{0.5, 3.0}};
   const Problem p = make(100, 100, 1.0, 0.25, 0.04, 0.0, Side::Put, ExerciseStyle::American, one);
