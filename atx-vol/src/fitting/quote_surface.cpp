@@ -75,7 +75,8 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
         s.ladder_channel_max_outside_fraction <= 1.0) ||
       s.ladder_min_outside_quotes < 1 ||
       (s.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
-       s.ladder_wing_tail != QuoteSurfaceWingTail::FloorPriceOnly) ||
+       s.ladder_wing_tail != QuoteSurfaceWingTail::FloorPriceOnly &&
+       s.ladder_wing_tail != QuoteSurfaceWingTail::FloorPriceOnlyWingFloor) ||
       (s.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
        s.ladder != QuoteSurfaceLadder::KnotFirst)) {
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
@@ -199,11 +200,23 @@ struct OutsideShare {
   return out;
 }
 
+// The surface's own copy of the shared configuration: the ladder wing tail
+// FloorPriceOnlyWingFloor turns the knot wing floor on for every channel fit.
+[[nodiscard]] QuoteSliceConfig surface_config(const QuoteSliceConfig &config,
+                                              const QuoteSurfaceConfig &surface) {
+  QuoteSliceConfig out = config;
+  if (surface.ladder_wing_tail == QuoteSurfaceWingTail::FloorPriceOnlyWingFloor) {
+    out.channel.wing_floor = true;
+  }
+  return out;
+}
+
 class SurfaceFitter {
 public:
   SurfaceFitter(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSliceConfig &config,
                 const QuoteSurfaceConfig &surface)
-      : expiries_(expiries), config_(config), base_config_(without_repair(config)),
+      : expiries_(expiries), config_(surface_config(config, surface)),
+        base_config_(without_repair(config_)),
         surface_(surface), out_(expiries.size()), breadth_(expiries.size()),
         two_sided_(expiries.size()), contained_(expiries.size(), 0),
         held_point_(expiries.size()), cost_(expiries.size()),
@@ -226,7 +239,7 @@ public:
       ladder_repair_rung();
       ATX_TRY_VOID(ladder_calendar_pass());
       measure_containment();
-      if (surface_.ladder_wing_tail == QuoteSurfaceWingTail::FloorPriceOnly) {
+      if (surface_.ladder_wing_tail != QuoteSurfaceWingTail::Off) {
         price_only_floor_vols();
       }
     } else {
@@ -1207,7 +1220,7 @@ private:
   }
 
   std::span<const QuoteSurfaceExpiry> expiries_;
-  const QuoteSliceConfig &config_;
+  QuoteSliceConfig config_;      // the caller's, with the surface's opt-in wing floor
   QuoteSliceConfig base_config_; // config_ without the channel repair (pass A)
   const QuoteSurfaceConfig &surface_;
   std::vector<QuoteSurfaceSlice> out_;
@@ -1281,6 +1294,8 @@ const char *to_string(QuoteSurfaceWingTail value) noexcept {
     return "off";
   case QuoteSurfaceWingTail::FloorPriceOnly:
     return "floor-price-only";
+  case QuoteSurfaceWingTail::FloorPriceOnlyWingFloor:
+    return "floor-price-only+wing-floor";
   }
   return "unknown";
 }

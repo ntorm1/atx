@@ -444,6 +444,54 @@ private:
   KnotMatrix roughness_;
 };
 
+// ChannelFitConfig::wing_floor: `floored` = `obs` with every observation beyond the
+// outermost lower-bounded observation of its side (k < 0 / k > 0) floored at the
+// fitted volatility `v` there, when that level lies inside the observation's own
+// (lo, hi). Returns whether any bound moved.
+[[nodiscard]] bool floor_wings(const std::vector<Prepared> &obs, const Problem &fitted,
+                               const KnotVector &v, std::vector<Prepared> &floored) {
+  constexpr std::size_t kNone = std::numeric_limits<std::size_t>::max();
+  std::size_t left = kNone;
+  std::size_t right = kNone;
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    if (!(obs[i].lo > 0.0)) continue;
+    if (obs[i].k < 0.0 && (left == kNone || obs[i].k < obs[left].k)) left = i;
+    if (obs[i].k > 0.0 && (right == kNone || obs[i].k > obs[right].k)) right = i;
+  }
+  floored = obs;
+  bool moved = false;
+  for (const std::size_t edge : {left, right}) {
+    if (edge == kNone) continue;
+    const double level = fitted.sigma(edge, v);
+    if (!positive(level)) continue;
+    const double k_edge = obs[edge].k;
+    for (Prepared &o : floored) {
+      const bool beyond = edge == left ? o.k < k_edge : o.k > k_edge;
+      if (beyond && level > o.lo && level < o.hi) {
+        o.lo = level;
+        moved = true;
+      }
+    }
+  }
+  return moved;
+}
+
+// Observations of `obs` outside their channel under `problem`'s curve `v` (the basis
+// rows depend only on k, so `problem` may have been built from a floored copy).
+void count_violations(const std::vector<Prepared> &obs, const Problem &problem,
+                      const KnotVector &v, std::size_t &violations, double &max_violation) {
+  violations = 0;
+  max_violation = 0.0;
+  for (std::size_t i = 0; i < obs.size(); ++i) {
+    const double s = problem.sigma(i, v);
+    const double excess = std::max(obs[i].lo - s, s - obs[i].hi);
+    if (excess > 1.0e-9) {
+      ++violations;
+      max_violation = std::max(max_violation, excess / obs[i].h);
+    }
+  }
+}
+
 } // namespace
 
 Result<ChannelFit> fit_slice_channel(std::span<const ChannelObservation> observations,
@@ -472,11 +520,20 @@ Result<ChannelFit> fit_slice_channel(std::span<const ChannelObservation> observa
   iterations += pass.iterations;
   // Re-standardize once at the fitted ATM volatility (two solves in total).
   const double fitted_atm = first.atm(pass.v);
-  if (positive(fitted_atm) && std::abs(fitted_atm / sigma_ref - 1.0) > 1.0e-6) {
-    sigma_ref = fitted_atm;
-    const Problem second(prepared, variance_years, sigma_ref, applied, config);
+  // Opt-in wing floor (ChannelFitConfig::wing_floor): the second solve sees the
+  // floored channels, and runs whenever a floor binds.
+  std::vector<Prepared> floored;
+  const bool wings = config.wing_floor && floor_wings(prepared, first, pass.v, floored);
+  const bool restandardize =
+      positive(fitted_atm) && std::abs(fitted_atm / sigma_ref - 1.0) > 1.0e-6;
+  if (restandardize || wings) {
+    if (restandardize) sigma_ref = fitted_atm;
+    const std::vector<Prepared> &channels = wings ? floored : prepared;
+    const Problem second(channels, variance_years, sigma_ref, applied, config);
     ATX_TRY(PassResult refined, second.run());
     iterations += refined.iterations;
+    if (wings) count_violations(prepared, second, refined.v, refined.violations,
+                                refined.max_violation);
     pass = std::move(refined);
   }
   ChannelFit out;

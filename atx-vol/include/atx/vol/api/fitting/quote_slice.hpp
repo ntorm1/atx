@@ -152,6 +152,11 @@ struct QuoteSliceChannelConfig {
   // flagged in QuoteSliceFit::price_only_nodes) when that price has no
   // identifiable American volatility. 0 disables the repair.
   double repair_half_spreads = 0.0;
+  // Lane L3a (opt-in; false = the historical fit): the native knot spline's wing
+  // floor (slice_channel.hpp ChannelFitConfig::wing_floor) - beyond the outermost
+  // lower-bounded channel of each side, the second solve keeps the wing at or above
+  // the first solve's volatility at that edge, inside every quote's channel.
+  bool wing_floor = false;
   // Opt-in channel dominance under graded admission (fit_quote_surface), run
   // after every other rung (pass A, channel passes, repair rung, calendar
   // pass): an expiry whose final fit is a POINT fit (served, or refused only
@@ -601,7 +606,11 @@ enum class QuoteSurfaceLadder : std::uint8_t { Off, KnotFirst };
 // price at or below the zero-volatility value, for which american_implied_vol
 // reports kIvMin (american_iv.hpp): a bound, not a measured volatility. Prices,
 // certificates, containment and every calendar decision are unchanged.
-enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly };
+// FloorPriceOnlyWingFloor: FloorPriceOnly, and every channel fit of the surface
+// (the knot rung, its repair rung, every channel refit and retry) runs with
+// QuoteSliceChannelConfig::wing_floor, so a knot wing never droops below its
+// outermost lower-bounded quote's fitted level; this one changes fitted prices.
+enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly, FloorPriceOnlyWingFloor };
 
 [[nodiscard]] const char *to_string(QuoteSurfaceWingTail value) noexcept;
 

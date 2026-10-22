@@ -2825,6 +2825,53 @@ TEST(QuoteSurfaceLadder, WingTailIsANoOpWithoutAReimpliedFloorVolatility) {
   for (const QuoteSurfaceSlice &slice : *on) EXPECT_EQ(slice.wing_tail_price_only, 0u);
 }
 
+TEST(QuoteSurfaceLadder, WingFloorVariantServesTheWingFlooredKnotSlice) {
+  // Put-skewed chains whose OTM wings beyond |k| 0.15 are bidless. Whenever the knot
+  // rung serves, FloorPriceOnlyWingFloor's knot slice is the standalone channel fit
+  // with the wing floor and FloorPriceOnly's the plain one; on at least one chain the
+  // floor binds (the two differ). A floored fit that fails its certificate is never
+  // served by the knot rung (the point fit or the channel passes take the slice).
+  std::size_t bound = 0;
+  for (const double skew : {-0.10, -0.20, -0.30}) {
+    SCOPED_TRACE(::testing::Message() << "skew " << skew);
+    const std::vector<Chain> chains{chain(0.25, 0.22, skew, 0.01, 60, 140, 5, 0.15)};
+    QuoteSurfaceConfig surface = knot_first();
+    surface.ladder_max_outside_fraction = 1.0;
+    surface.ladder_channel_max_outside_fraction = 1.0;
+    surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnlyWingFloor;
+    const auto floored = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+    surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+    const auto plain = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+    ASSERT_TRUE(floored) << floored.error().to_string();
+    ASSERT_TRUE(plain) << plain.error().to_string();
+    const QuoteSurfaceSlice &a = (*floored)[0];
+    const QuoteSurfaceSlice &b = (*plain)[0];
+    QuoteSliceConfig config;
+    config.channel.wing_floor = true;
+    const auto knot = fit_quote_slice_channel(chains[0].market, chains[0].quotes, config, nullptr);
+    const auto unfloored =
+        fit_quote_slice_channel(chains[0].market, chains[0].quotes, QuoteSliceConfig{}, nullptr);
+    ASSERT_TRUE(knot) << knot.error().to_string();
+    ASSERT_TRUE(unfloored) << unfloored.error().to_string();
+    const bool a_knot = a.method == QuoteSurfaceMethod::Channel && a.grade == QuoteSliceGrade::A;
+    if (a_knot) expect_same_prices(a.fit, *knot);
+    if (b.method == QuoteSurfaceMethod::Channel && b.grade == QuoteSliceGrade::A) {
+      expect_same_prices(b.fit, *unfloored);
+    }
+    if (a_knot && unfloored->fit_status == QuoteSliceFitStatus::Success) {
+      for (std::size_t i = 0; i < knot->rows.size(); ++i) {
+        if (knot->rows[i].fitted_iv != unfloored->rows[i].fitted_iv) {
+          ++bound;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_GT(bound, 0u) << "fixture broken: no served knot slice where the wing floor binds";
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::FloorPriceOnlyWingFloor),
+               "floor-price-only+wing-floor");
+}
+
 TEST(QuoteSurfaceLadder, WingTailRequiresTheKnotFirstLadderAndAKnownMode) {
   const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01)};
   QuoteSurfaceConfig no_ladder;

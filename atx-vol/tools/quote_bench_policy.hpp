@@ -809,8 +809,11 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       const auto mode = text(j.at("ladder_wing_tail"));
       if (mode == "floor-price-only") {
         surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+      } else if (mode == "floor-price-only+wing-floor") {
+        surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnlyWingFloor;
       } else if (mode != "off") {
-        throw std::runtime_error("Policy graded ladder_wing_tail must be off or floor-price-only");
+        throw std::runtime_error("Policy graded ladder_wing_tail must be off, floor-price-only "
+                                 "or floor-price-only+wing-floor");
       }
       if (surface.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
           surface.ladder != QuoteSurfaceLadder::KnotFirst) {

@@ -991,14 +991,15 @@ def test_native_ladder_wing_tail_key_is_strict_echoed_and_inert_on_clean_quotes(
             ({**graded, "graded": {"ladder": "off", "ladder_wing_tail": "floor-price-only"}},
              "ladder_wing_tail requires ladder knot-first"),
             ({**graded, "graded": {"ladder": "knot-first", "ladder_wing_tail": "slope"}},
-             "ladder_wing_tail must be off or floor-price-only")):
+             "ladder_wing_tail must be off, floor-price-only or floor-price-only+wing-floor")):
         policy = write_policy(tmp_path / "bad.json", document)
         result = invoke(binary, source, tmp_path / "bad.csv", "--policy", str(policy))
         assert result.returncode != 0, document
         assert message in result.stderr, (document, result.stderr)
     runs = {}
     for name, extra in (("plain", {}), ("off", {"ladder_wing_tail": "off"}),
-                        ("on", {"ladder_wing_tail": "floor-price-only"})):
+                        ("on", {"ladder_wing_tail": "floor-price-only"}),
+                        ("floor", {"ladder_wing_tail": "floor-price-only+wing-floor"})):
         output = tmp_path / f"{name}.csv"
         policy = write_policy(tmp_path / f"{name}.json",
                               {**graded, "graded": {"ladder": "knot-first", **extra}})
@@ -1011,6 +1012,9 @@ def test_native_ladder_wing_tail_key_is_strict_echoed_and_inert_on_clean_quotes(
     assert "ladder_wing_tail" not in runs["off"][1]["policy_definition"]["graded"]
     assert runs["on"][1]["policy_definition"]["graded"]["ladder_wing_tail"] == "floor-price-only"
     assert runs["on"][1]["price_only_rows"] == 0
+    # The wing floor runs (it may move the clean chain's knot wing) and is echoed.
+    assert (runs["floor"][1]["policy_definition"]["graded"]["ladder_wing_tail"]
+            == "floor-price-only+wing-floor")
 
 
 def european_put(strike: float, years: float, sigma: float, q: float) -> float:

@@ -1429,6 +1429,7 @@ ChannelFitConfig channel_fit_config(const QuoteSliceChannelConfig &c) {
   out.mult_ceil = c.mult_ceil;
   out.max_iterations = c.max_iterations;
   out.min_observations = c.min_channel_quotes;
+  out.wing_floor = c.wing_floor; // lane L3a, opt-in
   return out;
 }
 
