@@ -564,13 +564,17 @@ private:
 //                       RecordGreeks definition: the family has NO τ axis (one geometry
 //                       per expiry), so an FD-in-T theta does not exist here;
 //   charm             — ∂θ/∂S from the same identity with the analytic speed;
-//   rho, phi (∂P/∂r, ∂P/∂q) — FROZEN-BOUNDARY derivatives: the discounts, drifts and
-//                       d± are differentiated at FIXED dimensionless boundary y (the
-//                       explicit xmax(r, q) rescale of B included); the boundary term
-//                       dy/dr, dy/dq is NOT available from a σ-family (no r / q axis)
-//                       and is NOT included — its size is MEASURED in the sprint note
-//                       against a second family built at r ± h / q ± h; the PM rules
-//                       on the policy from that table.
+//   rho, phi (∂P/∂r, ∂P/∂q) — ONLY with an AlSigmaFamilyCarryBumps (below): a σ-family
+//                       has no r / q axis, and its frozen-boundary derivative (y held)
+//                       is up to 2.4× off the re-solved rho on SPY 23 d (sprint note
+//                       §4), so it is NEVER served (PM ruling, L3g resume r4). The
+//                       carry set holds the σ-series of SECOND families built at r ± h
+//                       and q ± h (h = kAlSigmaFamilyCarryBump, the bundle's own bump);
+//                       rho / phi are then the frozen-y terms PLUS the boundary term
+//                       Σ ∂P/∂y_k · dy_k/dr (dq) with dy_k/dr the central difference of
+//                       the bumped series — the same fused pass, no extra quadrature.
+//                       Without a carry set a requested rho / phi is NaN with
+//                       `carry == AlSigmaFamilyCarryStatus::NoCarryBumps` (REFUSED).
 // Regime flags mirror RecordGreeks (fitting/expiry_record.hpp): when the spot is on
 // the exercise side of the family's current edge (B at τ = T), or the served price is
 // intrinsic to the bundle's own tolerance (≤ intrinsic + 1e-9 K — the kernel's clamp,
@@ -623,30 +627,103 @@ struct AlSigmaFamilyGreeksMask {
   [[nodiscard]] constexpr bool has(std::uint16_t bit) const noexcept { return (bits & bit) != 0; }
 };
 
+// How a requested rho / phi was served (L3g resume r4). All-or-nothing: either every
+// requested rho / phi is served (Ok) or every requested one is NaN with the reason.
+enum class AlSigmaFamilyCarryStatus : std::uint8_t {
+  NotRequested = 0,       // the mask asked for neither rho nor phi
+  Ok = 1,                 // served from the carry set's bumped families (boundary term in)
+  NoCarryBumps = 2,       // REFUSED: no carry set on this entry (the frozen boundary is not served)
+  CarryBumpsMismatch = 3, // REFUSED: the carry set is unprepared, lacks a requested axis,
+                          // or was built from a different family
+};
+
 struct AlSigmaFamilyGreeks {
   double price = std::numeric_limits<double>::quiet_NaN(); // NaN unless status == Ok
   double delta = 0.0;
   double gamma = 0.0;
   double vega = 0.0;
   double theta = 0.0; // calendar dV/dt per year (PDE identity)
-  double rho = 0.0;   // ∂P/∂r, frozen boundary
-  double phi = 0.0;   // ∂P/∂q, frozen boundary
+  double rho = 0.0;   // ∂P/∂r: carry set only (else NaN, `carry` says why)
+  double phi = 0.0;   // ∂P/∂q: carry set only (else NaN, `carry` says why)
   double vanna = 0.0; // ∂²P/∂S∂σ
   double volga = 0.0; // ∂²P/∂σ²
   double charm = 0.0; // ∂Δ/∂t = ∂θ/∂S
   AlSigmaFamilyStatus status = AlSigmaFamilyStatus::NotPrepared;
+  AlSigmaFamilyCarryStatus carry = AlSigmaFamilyCarryStatus::NotRequested;
   bool exercised = false; // intrinsic served with the exercise Greeks
   bool floored = false;   // exercised on the continuation side of the current edge
   // True when vega / vanna / volga were computed: they carry the σ-boundary term
-  // dy/dσ. rho / phi never carry their (r, q) boundary term — see the block comment.
+  // dy/dσ. A served rho / phi (carry == Ok) carries its (r, q) boundary term.
   bool boundary_term_included = false;
   // On a refusal every requested Greek is NaN together with the price.
 };
 
 // Price + the requested Greeks of the (S, K) contract of the family's side at sigma.
 // Refuses exactly as AlSigmaFamily::price(). Const, allocation-free, thread-safe.
+// A requested rho / phi is NaN with carry == NoCarryBumps (use the overload below).
 [[nodiscard]] AlSigmaFamilyGreeks family_greeks(const AlSigmaFamily &fam, double S, double K,
                                                 double sigma,
+                                                AlSigmaFamilyGreeksMask mask) noexcept;
+
+// ── rho / phi: the carry set (second families at r ± h, q ± h) ──
+//
+// The bump of the second families: the Reference bundle's own (american_greeks_al's
+// r ± 1e-4, american_carry_greeks_al's q ± 1e-4), so the two are compared like for like.
+inline constexpr double kAlSigmaFamilyCarryBump = 1.0e-4;
+
+// The (r, q)-sensitivity of ONE prepared family's boundary series. prepare(base, ...)
+// builds, on geometries at (T, r ± h, q) and / or (T, r, q ± h) with the base
+// geometry's own AlOpts, families with the base's side, anchor, σ-box, node count and
+// axis, and keeps ONLY the central differences of their σ-series (dy_{k,s}/dr,
+// dy_{k,s}/dq; the bumped geometries and families are released before prepare()
+// returns). When the DOWN bump leaves the American regime (a put with r − h <= 0, a
+// call with q − h <= 0: that family refuses NotImplemented) the forward difference
+// against the base series is kept instead and *_one_sided() says so — the A5 rule of
+// american_greeks_al / american_carry_greeks_al. Cost: 2 family builds per axis
+// (≈ the base family's build each, plus a geometry prepare); the per-contract rho /
+// phi then costs one more τ-barycentric accumulator in the same fused pass.
+// Refuses (InvalidArgument) when the base is not prepared or its geometry was
+// re-prepared, with the bumped family's own refusal when an UP-bumped family (or a
+// down-bumped one, for any reason but leaving the regime) refuses, (NotImplemented)
+// when a bumped family's collocation grid differs from the base's. Strong
+// guarantee: on a refusal the set is unprepared.
+// Move-only, immutable after prepare(), thread-safe for every const use; it does NOT
+// observe the base family (identity is checked by value on every call).
+class AlSigmaFamilyCarryBumps {
+public:
+  AlSigmaFamilyCarryBumps();
+  ~AlSigmaFamilyCarryBumps();
+  AlSigmaFamilyCarryBumps(AlSigmaFamilyCarryBumps &&) noexcept;
+  AlSigmaFamilyCarryBumps &operator=(AlSigmaFamilyCarryBumps &&) noexcept;
+  AlSigmaFamilyCarryBumps(const AlSigmaFamilyCarryBumps &) = delete;
+  AlSigmaFamilyCarryBumps &operator=(const AlSigmaFamilyCarryBumps &) = delete;
+
+  // `axes` selects the axes to build: kRho -> r ± h, kPhi -> q ± h (other bits ignored;
+  // neither bit -> InvalidArgument).
+  [[nodiscard]] Status prepare(const AlSigmaFamily &base, AlSigmaFamilyGreeksMask axes);
+
+  [[nodiscard]] bool prepared() const noexcept;
+  [[nodiscard]] bool has_rho() const noexcept;
+  [[nodiscard]] bool has_phi() const noexcept;
+  [[nodiscard]] bool rho_one_sided() const noexcept;
+  [[nodiscard]] bool phi_one_sided() const noexcept;
+  [[nodiscard]] static std::size_t state_bytes() noexcept;
+
+  struct State;
+
+private:
+  std::unique_ptr<State> st_;
+  friend struct sigma_family_detail::FamilyAccess;
+};
+
+// family_greeks(fam, …) with rho / phi served from `carry` (carry == Ok), which must
+// have been prepared from `fam` (same side, anchor, (T, r, q), box, nodes, axis,
+// profile) with every requested axis; otherwise the requested rho / phi are NaN with
+// carry == CarryBumpsMismatch and every other field is family_greeks(fam, …)'s.
+// Exercised rows serve rho = phi = 0 (intrinsic does not move with r or q).
+[[nodiscard]] AlSigmaFamilyGreeks family_greeks(const AlSigmaFamily &fam,
+                                                const AlSigmaFamilyCarryBumps &carry, double S,
+                                                double K, double sigma,
                                                 AlSigmaFamilyGreeksMask mask) noexcept;
 
 struct AlSigmaFamilyPriceVega {
@@ -668,7 +745,8 @@ struct AlSigmaFamilyPriceVega {
 // decides what is COMPUTED, the spans decide what is STORED (a requested Greek with
 // an empty span is computed and dropped; an unrequested Greek with a span gets 0.0).
 // `flags` (optional) receives bit 0 = exercised, bit 1 = floored, bit 2 =
-// boundary_term_included per row.
+// boundary_term_included, bit 3 = a requested rho / phi was REFUSED (NaN; carry
+// status NoCarryBumps or CarryBumpsMismatch) per row.
 struct AlSigmaFamilyGreekColumns {
   std::span<double> price{};
   std::span<double> delta{};
@@ -686,8 +764,11 @@ struct AlSigmaFamilyGreekColumns {
 // One expiry's chain at spot S: row i is (K[i], sigma[i], side[i]) priced through
 // `put` or `call` by its side. A row whose family pointer is null carries
 // NotPrepared; a refused row carries its status; both write NaN to every stored
-// column. Allocation-free, const on both families, single-thread per call (rows
-// may be split across threads by the caller with disjoint spans).
+// column. rho / phi rows are served through `put_carry` / `call_carry` (the carry
+// set of that side's family, family_greeks' carry overload); a null carry set
+// refuses them (NaN, flags bit 3). Allocation-free, const on every input,
+// single-thread per call (rows may be split across threads by the caller with
+// disjoint spans).
 // @return InvalidArgument when the span lengths disagree (nothing is written);
 //         otherwise Ok — per-row outcomes are in `status`.
 [[nodiscard]] Status family_chain_greeks(const AlSigmaFamily *put, const AlSigmaFamily *call,
@@ -695,7 +776,9 @@ struct AlSigmaFamilyGreekColumns {
                                          std::span<const double> sigma,
                                          std::span<const Side> side, AlSigmaFamilyGreeksMask mask,
                                          const AlSigmaFamilyGreekColumns &out,
-                                         std::span<AlSigmaFamilyStatus> status);
+                                         std::span<AlSigmaFamilyStatus> status,
+                                         const AlSigmaFamilyCarryBumps *put_carry = nullptr,
+                                         const AlSigmaFamilyCarryBumps *call_carry = nullptr);
 
 // Exact reprice of ONE contract over a (spot shock × vol shock) grid through the same
 // family: cell (i, j), stored at index i * vol_bump.size() + j, is the contract at
@@ -704,7 +787,8 @@ struct AlSigmaFamilyGreekColumns {
 // a σ outside it refuses that cell with SigmaOutsideBox (never extrapolated), a
 // non-positive shocked spot with InvalidArgument. dt and dr / dq are NOT axes of a
 // σ-family (one geometry per (T, r, q)), so this API takes none: a time or rate
-// shock needs another geometry. Columns / status hold n_spot × n_vol entries.
+// shock needs another geometry; a requested rho / phi is refused per cell (NaN,
+// flags bit 3 — no carry set here). Columns / status hold n_spot × n_vol entries.
 // @return InvalidArgument when a non-empty column or `status` has the wrong length
 //         (nothing is written); otherwise Ok.
 [[nodiscard]] Status family_shock_grid(const AlSigmaFamily &fam, double S, double K, double sigma,
@@ -724,8 +808,9 @@ struct AlSigmaFamilyGreekColumns {
 // geometry may be released after detach() while the copy keeps serving price and
 // Greeks. Its price is the family's price to the bit (the fused kernel mirrors the
 // premium quadrature expression for expression; pinned by the tests); its Greeks
-// are family_greeks' bits. No generation stamp is checked (the copy cannot go
-// stale); the admit tree is otherwise the family's. Move-only, immutable,
+// are family_greeks' bits (a requested rho / phi is refused, NoCarryBumps, as on
+// the family without a carry set). No generation stamp is checked (the copy cannot
+// go stale); the admit tree is otherwise the family's. Move-only, immutable,
 // thread-safe for every const call.
 class AlSigmaFamilyDetached {
 public:
@@ -760,6 +845,8 @@ private:
 // re-prepared) the copy is unprepared: prepared() == false and every call refuses
 // with NotPrepared. Allocates the copy's one heap block.
 [[nodiscard]] AlSigmaFamilyDetached family_detach(const AlSigmaFamily &fam);
+
+// ── end of the L3g family-greeks sub-block (union-merge marker: L2h-b / L3k add theirs) ──
 
 // ── L2h-b sigma-q family (2026-10-21): (σ, q) boundary family, q a second axis ──
 //

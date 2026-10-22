@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_sigma_family.hpp" // sigma_family_detail::family_rho_variants (frozen)
 
 // L3g family-greeks (2026-10-20). Analytic Greeks on AlSigmaFamily. Two kinds of
 // claim are pinned here, exactly as L2h / al-speed pinned theirs (2-figure round-ups
@@ -44,6 +45,8 @@ using atx::vol::AlContract;
 using atx::vol::AlExpiryGeometry;
 using atx::vol::AlSigmaFamily;
 using atx::vol::AlSigmaFamilyAxis;
+using atx::vol::AlSigmaFamilyCarryBumps;
+using atx::vol::AlSigmaFamilyCarryStatus;
 using atx::vol::AlSigmaFamilyChord;
 using atx::vol::AlSigmaFamilyDetached;
 using atx::vol::AlSigmaFamilyGreekColumns;
@@ -52,15 +55,18 @@ using atx::vol::AlSigmaFamilyGreeksMask;
 using atx::vol::AlSigmaFamilyPrice;
 using atx::vol::AlSigmaFamilyPriceVega;
 using atx::vol::AlSigmaFamilyStatus;
+using atx::vol::american_carry_greeks_al;
 using atx::vol::american_greeks_al;
 using atx::vol::AmericanGreeks;
 using atx::vol::andersen_lake;
+using atx::vol::CarryGreeks;
 using atx::vol::family_chain_greeks;
 using atx::vol::family_detach;
 using atx::vol::family_greeks;
 using atx::vol::family_price_and_vega;
 using atx::vol::family_shock_grid;
 using atx::vol::kAlPackSigmaBump;
+using atx::vol::kAlSigmaFamilyCarryBump;
 using atx::vol::kAlSigmaFamilyMinSigma;
 using atx::vol::prepare_al_geometry;
 using atx::vol::Side;
@@ -440,9 +446,18 @@ TEST(AlSigmaFamilyGreeks, GreeksMatchRichardsonOnTheFamilyMapWithinBound) {
   // Puts AND calls (the homogeneity map), continuation rows only (the FD stencil must
   // not straddle the intrinsic clamp). Relative gaps vs the Richardson stencils of the
   // family's own price; floors keep the near-zero Greeks of deep wings from dominating.
-  check_formula_on(spy_slice(), FormulaBounds{"spy23-like", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0});
-  check_formula_on(deep_carry(), FormulaBounds{"deep-carry", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0});
-  check_formula_on(profile_grid(), FormulaBounds{"grid", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0});
+  // Measured worst (L3g resume r4, a4b34521 and the final SHA; the worst contracts are
+  // printed): spy23-like Δ 2.31e-8 Γ 1.34e-7 vega 1.83e-8 vanna 6.27e-7 volga 4.31e-5
+  // charm 6.16e-5; deep-carry 7.02e-8 3.07e-8 3.24e-10 4.20e-4 6.16e-9 1.35e-4; grid
+  // 2.36e-8 1.21e-6 4.80e-7 4.92e-6 1.13e-4 5.96e-3. volga / charm / vanna at 1e-4
+  // are the REFERENCE's (σ step 5e-4 on a near-zero volga under the floor, the
+  // spot-difference of θ on 7-day / deep-carry rows), not the formula's.
+  check_formula_on(spy_slice(),
+                   FormulaBounds{"spy23-like", 2.4e-8, 1.4e-7, 1.9e-8, 6.3e-7, 4.4e-5, 6.2e-5});
+  check_formula_on(deep_carry(),
+                   FormulaBounds{"deep-carry", 7.1e-8, 3.1e-8, 3.3e-10, 4.3e-4, 6.2e-9, 1.4e-4});
+  check_formula_on(profile_grid(),
+                   FormulaBounds{"grid", 2.4e-8, 1.3e-6, 4.8e-7, 5.0e-6, 1.2e-4, 6.0e-3});
 }
 
 TEST(AlSigmaFamilyGreeks, ThetaIsThePdeIdentityOfTheServedPriceDeltaGamma) {
@@ -477,26 +492,33 @@ TEST(AlSigmaFamilyGreeks, GreeksWithinMeasuredBoundOfTheReferenceBundleOnSpy23) 
   // did not flag as exercised. Δ / Γ / θ: the family's exact spot derivatives vs the
   // bundle's hS = 1e-3 S central stencils (stencil truncation ~1e-7 in Γ: the bundle
   // is the reference-limited side, LEDGER 2026-10-16). vega / vanna / volga: the
-  // σ-interpolant's derivative vs the bundle's re-solved σ ± 1e-3 boundaries. rho:
-  // FROZEN-boundary vs the bundle's re-solved r ± 1e-4 boundaries — the gap IS the
-  // boundary term dy/dr the family cannot see (the PM's policy input; sprint note).
+  // σ-interpolant's derivative vs the bundle's re-solved σ ± 1e-3 boundaries. rho /
+  // phi: the CARRY SET's (second families at r ± 1e-4 / q ± 1e-4, boundary term in) vs
+  // the bundle's re-solved r ± 1e-4 boundaries and american_carry_greeks_al's q ± 1e-4
+  // re-solves. The frozen-boundary rho (family_rho_variants, never served) is printed
+  // beside it: its gap IS the boundary term dy/dr the carry set supplies (2.4× at
+  // a4b34521 — the reason the PM ruled it out).
   // Bounds: 2-figure round-ups of the measured worst, relative with floors.
-  constexpr double kDelta = 1.0;
-  constexpr double kGamma = 1.0;
-  constexpr double kVega = 1.0;
-  constexpr double kTheta = 1.0;
-  constexpr double kVanna = 1.0;
-  constexpr double kVolga = 1.0;
-  constexpr double kRhoFrozen = 1.0;
-  Worst wd, wg, wv, wt, wvn, wvo, wr;
+  constexpr double kDelta = 1.6e-3;  // measured 1.59154e-3
+  constexpr double kGamma = 2.5e-4;  // measured 2.41372e-4
+  constexpr double kVega = 2.4e-3;   // measured 2.35052e-3
+  constexpr double kTheta = 9.8e-4;  // measured 9.72405e-4
+  constexpr double kVanna = 2.2e-2;  // measured 2.11539e-2
+  constexpr double kVolga = 4.6e-3;  // measured 4.58928e-3
+  constexpr double kRho = 6.0e-6;    // measured 5.94877e-6 (frozen rho: 2.42482)
+  constexpr double kPhi = 5.3e-6;    // measured 5.25163e-6
+  Worst wd, wg, wv, wt, wvn, wvo, wr, wp, wrf;
   for (const Case &c : spy_slice()) {
     const AlExpiryGeometry g = prepare_al_geometry(c.T, c.r, c.q);
     AlSigmaFamily f(g, c.side, c.anchor);
     ASSERT_TRUE(f.prepare(c.lo, c.hi, kNodes));
+    AlSigmaFamilyCarryBumps carry;
+    ASSERT_TRUE(carry.prepare(f, Mask{Mask::kRho | Mask::kPhi}));
     for (const double K : c.strikes) {
       for (const double sigma : c.sigmas) {
-        const AlSigmaFamilyGreeks a = family_greeks(f, c.S, K, sigma, Mask::all());
+        const AlSigmaFamilyGreeks a = family_greeks(f, carry, c.S, K, sigma, Mask::all());
         ASSERT_EQ(a.status, AlSigmaFamilyStatus::Ok);
+        ASSERT_EQ(a.carry, AlSigmaFamilyCarryStatus::Ok);
         const Result<AmericanGreeks> b = american_greeks_al(g, c.S, K, sigma, c.side);
         ASSERT_TRUE(b) << describe(c.S, K, c.T, sigma, c.r, c.q, c.side);
         const double intr = c.side == Side::Call ? c.S - K : K - c.S;
@@ -516,6 +538,12 @@ TEST(AlSigmaFamilyGreeks, GreeksWithinMeasuredBoundOfTheReferenceBundleOnSpy23) 
         wvn.add(rel_gap(a.vanna, b->vanna, 1.0e-3), at);
         wvo.add(rel_gap(a.volga, b->volga, fp), at);
         wr.add(rel_gap(a.rho, b->rho, fp), at);
+        const Result<CarryGreeks> cq = american_carry_greeks_al(c.S, K, c.T, sigma, c.r, c.q, c.side);
+        ASSERT_TRUE(cq) << at;
+        wp.add(rel_gap(a.phi, cq->dP_dq, fp), at);
+        const atx::vol::sigma_family_detail::FamilyRhoVariants fr =
+            atx::vol::sigma_family_detail::family_rho_variants(f, c.S, K, sigma);
+        wrf.add(rel_gap(fr.rho_frozen_y, b->rho, fp), at);
       }
     }
   }
@@ -526,12 +554,227 @@ TEST(AlSigmaFamilyGreeks, GreeksWithinMeasuredBoundOfTheReferenceBundleOnSpy23) 
   EXPECT_LE(wt.rel, kTheta) << wt.at;
   EXPECT_LE(wvn.rel, kVanna) << wvn.at;
   EXPECT_LE(wvo.rel, kVolga) << wvo.at;
-  EXPECT_LE(wr.rel, kRhoFrozen) << wr.at;
+  EXPECT_LE(wr.rel, kRho) << wr.at;
+  EXPECT_LE(wp.rel, kPhi) << wp.at;
   std::cout << "[AlSigmaFamilyGreeks] spy23-like vs Reference bundle worst rel (n=" << wd.n
             << "): delta=" << wd.rel << " gamma=" << wg.rel << " vega=" << wv.rel
             << " theta=" << wt.rel << " vanna=" << wvn.rel << " volga=" << wvo.rel
-            << " rho_frozen=" << wr.rel << "\n  rho worst at " << wr.at << "\n  volga worst at "
-            << wvo.at << "\n";
+            << " rho_carry=" << wr.rel << " phi_carry=" << wp.rel
+            << " rho_frozen(not served)=" << wrf.rel << "\n  rho worst at " << wr.at
+            << "\n  phi worst at " << wp.at << "\n  frozen rho worst at " << wrf.at
+            << "\n  volga worst at " << wvo.at << "\n";
+}
+
+// ── rho / phi: the carry set ──────────────────────────────────────────────────
+
+TEST(AlSigmaFamilyGreeks, CarryRhoPhiAreTheDerivativeOfTheSecondFamiliesWithinBound) {
+  // FORMULA claim for the carry boundary term: rho / phi from the carry set (frozen-y
+  // terms + Σ ∂P/∂y_k · dY_k/dθ, one fused pass) vs the central difference of the two
+  // bumped families' PRICES at r ± h / q ± h (h = kAlSigmaFamilyCarryBump) — the
+  // derivative of the second-family map by brute force. The two differ by O(h²) and the
+  // families' interpolation noise / h; the frozen-y part alone misses by the whole
+  // boundary term (the revert check). Continuation rows away from the edge, all sets.
+  // Measured worst 3.60369e-4 / 4.21669e-4, both on the wide-box grid at its σ = 0.08
+  // edge (call K 90, T 0.1, r 0.1, q 0.09) where the REFERENCE — a difference of two
+  // interpolated family prices over 2h — carries the box's 1e-6-class interpolation
+  // noise / 2h; the SPY-like slice is 1e-6-class (sprint note §4).
+  constexpr double kRhoVsFam2 = 3.7e-4;
+  constexpr double kPhiVsFam2 = 4.3e-4;
+  const double h = kAlSigmaFamilyCarryBump;
+  Worst wr, wp;
+  std::size_t one_sided = 0;
+  std::vector<Case> cases = spy_slice();
+  for (const Case &c : deep_carry()) {
+    cases.push_back(c);
+  }
+  for (const Case &c : profile_grid()) {
+    if (c.T >= 0.1) {
+      cases.push_back(c);
+    }
+  }
+  for (const Case &c : cases) {
+    const AlExpiryGeometry g = prepare_al_geometry(c.T, c.r, c.q);
+    AlSigmaFamily f(g, c.side, c.anchor);
+    if (!f.prepare(c.lo, c.hi, kNodes)) {
+      continue;
+    }
+    AlSigmaFamilyCarryBumps carry;
+    ASSERT_TRUE(carry.prepare(f, Mask{Mask::kRho | Mask::kPhi}))
+        << describe(c.S, c.anchor, c.T, c.lo, c.r, c.q, c.side);
+    const AlExpiryGeometry grp = prepare_al_geometry(c.T, c.r + h, c.q);
+    const AlExpiryGeometry grm = prepare_al_geometry(c.T, c.r - h, c.q);
+    const AlExpiryGeometry gqp = prepare_al_geometry(c.T, c.r, c.q + h);
+    const AlExpiryGeometry gqm = prepare_al_geometry(c.T, c.r, c.q - h);
+    AlSigmaFamily frp(grp, c.side, c.anchor), frm(grm, c.side, c.anchor);
+    AlSigmaFamily fqp(gqp, c.side, c.anchor), fqm(gqm, c.side, c.anchor);
+    ASSERT_TRUE(frp.prepare(c.lo, c.hi, kNodes));
+    ASSERT_TRUE(fqp.prepare(c.lo, c.hi, kNodes));
+    const bool rho_central = frm.prepare(c.lo, c.hi, kNodes).has_value();
+    const bool phi_central = fqm.prepare(c.lo, c.hi, kNodes).has_value();
+    EXPECT_EQ(carry.rho_one_sided(), !rho_central);
+    EXPECT_EQ(carry.phi_one_sided(), !phi_central);
+    one_sided += (rho_central && phi_central) ? 0u : 1u;
+    g_case_T = c.T;
+    for (const double K : c.strikes) {
+      for (const double sigma : c.sigmas) {
+        const AlSigmaFamilyGreeks a = family_greeks(f, carry, c.S, K, sigma, Mask::all());
+        ASSERT_EQ(a.status, AlSigmaFamilyStatus::Ok);
+        ASSERT_EQ(a.carry, AlSigmaFamilyCarryStatus::Ok);
+        if (a.exercised) {
+          EXPECT_EQ(a.rho, 0.0);
+          EXPECT_EQ(a.phi, 0.0);
+          continue;
+        }
+        if (near_edge(f, c.S, K, sigma, c.side, 2.5e-3 * c.S)) {
+          continue;
+        }
+        const double p0 = f.price(c.S, K, sigma).price;
+        const double rp = frp.price(c.S, K, sigma).price;
+        const double qp = fqp.price(c.S, K, sigma).price;
+        const double rho2 = rho_central ? (rp - frm.price(c.S, K, sigma).price) / (2.0 * h)
+                                        : (rp - p0) / h;
+        const double phi2 = phi_central ? (qp - fqm.price(c.S, K, sigma).price) / (2.0 * h)
+                                        : (qp - p0) / h;
+        const std::string at = describe(c.S, K, c.T, sigma, c.r, c.q, c.side);
+        const double fp = 1.0e-3 * std::max(a.price, 1.0);
+        wr.add(rel_gap(a.rho, rho2, fp), at);
+        wp.add(rel_gap(a.phi, phi2, fp), at);
+        EXPECT_LE(rel_gap(a.rho, rho2, fp), kRhoVsFam2) << at << " rho " << a.rho << " fam2 " << rho2;
+        EXPECT_LE(rel_gap(a.phi, phi2, fp), kPhiVsFam2) << at << " phi " << a.phi << " fam2 " << phi2;
+      }
+    }
+  }
+  EXPECT_GE(wr.n, 500u);
+  std::cout << "[AlSigmaFamilyGreeks] carry vs second-family central difference worst rel (n="
+            << wr.n << ", one-sided families=" << one_sided << "): rho=" << wr.rel << " at "
+            << wr.at << "\n  phi=" << wp.rel << " at " << wp.at << "\n";
+}
+
+TEST(AlSigmaFamilyGreeks, RhoPhiAreRefusedWithoutAMatchingCarrySetNeverFrozen) {
+  const AlExpiryGeometry g = prepare_al_geometry(0.25, 0.045, 0.01);
+  AlSigmaFamily put(g, Side::Put, 100.0);
+  AlSigmaFamily call(g, Side::Call, 100.0);
+  ASSERT_TRUE(put.prepare(0.1, 0.5, kNodes));
+  ASSERT_TRUE(call.prepare(0.1, 0.5, kNodes));
+  // No carry set: a requested rho / phi is NaN with NoCarryBumps — never the frozen value
+  // (which exists and is finite: the hook computes it for the measurement only).
+  const AlSigmaFamilyGreeks a = family_greeks(put, 100.0, 95.0, 0.22, Mask::all());
+  ASSERT_EQ(a.status, AlSigmaFamilyStatus::Ok);
+  EXPECT_EQ(a.carry, AlSigmaFamilyCarryStatus::NoCarryBumps);
+  EXPECT_TRUE(std::isnan(a.rho) && std::isnan(a.phi));
+  EXPECT_TRUE(std::isfinite(a.delta) && std::isfinite(a.vega) && std::isfinite(a.charm));
+  const atx::vol::sigma_family_detail::FamilyRhoVariants fr =
+      atx::vol::sigma_family_detail::family_rho_variants(put, 100.0, 95.0, 0.22);
+  EXPECT_TRUE(std::isfinite(fr.rho_frozen_y) && fr.rho_frozen_y != 0.0);
+  EXPECT_EQ(family_greeks(put, 100.0, 95.0, 0.22, Mask::hedge()).carry,
+            AlSigmaFamilyCarryStatus::NotRequested);
+  // The detached copy has no carry set either.
+  const AlSigmaFamilyDetached d = family_detach(put);
+  const AlSigmaFamilyGreeks dg = d.greeks(100.0, 95.0, 0.22, Mask{Mask::kRho});
+  EXPECT_EQ(dg.carry, AlSigmaFamilyCarryStatus::NoCarryBumps);
+  EXPECT_TRUE(std::isnan(dg.rho));
+  // A carry set serves them; the other fields are the no-carry call's bits.
+  AlSigmaFamilyCarryBumps carry;
+  ASSERT_TRUE(carry.prepare(put, Mask{Mask::kRho | Mask::kPhi}));
+  EXPECT_TRUE(carry.prepared() && carry.has_rho() && carry.has_phi());
+  EXPECT_FALSE(carry.rho_one_sided() || carry.phi_one_sided());
+  const AlSigmaFamilyGreeks c = family_greeks(put, carry, 100.0, 95.0, 0.22, Mask::all());
+  EXPECT_EQ(c.carry, AlSigmaFamilyCarryStatus::Ok);
+  EXPECT_TRUE(std::isfinite(c.rho) && std::isfinite(c.phi));
+  EXPECT_LT(c.rho, 0.0); // a put loses value with the rate
+  EXPECT_GT(c.phi, 0.0); // and gains with the yield
+  EXPECT_TRUE(same_bits(c.price, a.price) && same_bits(c.delta, a.delta) &&
+              same_bits(c.vega, a.vega) && same_bits(c.volga, a.volga) &&
+              same_bits(c.charm, a.charm));
+  // Mask-independent: rho alone is the same bits as rho within the full mask.
+  EXPECT_TRUE(same_bits(family_greeks(put, carry, 100.0, 95.0, 0.22, Mask{Mask::kRho}).rho, c.rho));
+  EXPECT_TRUE(same_bits(family_greeks(put, carry, 100.0, 95.0, 0.22, Mask::eight()).phi, c.phi));
+  // Without rho / phi in the mask the carry overload IS the plain call.
+  EXPECT_TRUE(same_bits(family_greeks(put, carry, 100.0, 95.0, 0.22, Mask::hedge()).gamma,
+                        family_greeks(put, 100.0, 95.0, 0.22, Mask::hedge()).gamma));
+  // Mismatches refuse rho / phi (NaN) and keep everything else.
+  const AlSigmaFamilyGreeks wrong_side = family_greeks(call, carry, 100.0, 95.0, 0.22, Mask::all());
+  EXPECT_EQ(wrong_side.status, AlSigmaFamilyStatus::Ok);
+  EXPECT_EQ(wrong_side.carry, AlSigmaFamilyCarryStatus::CarryBumpsMismatch);
+  EXPECT_TRUE(std::isnan(wrong_side.rho) && std::isnan(wrong_side.phi));
+  EXPECT_TRUE(std::isfinite(wrong_side.delta));
+  AlSigmaFamily other_box(g, Side::Put, 100.0);
+  ASSERT_TRUE(other_box.prepare(0.1, 0.6, kNodes));
+  EXPECT_EQ(family_greeks(other_box, carry, 100.0, 95.0, 0.22, Mask::all()).carry,
+            AlSigmaFamilyCarryStatus::CarryBumpsMismatch);
+  const AlExpiryGeometry g2 = prepare_al_geometry(0.25, 0.046, 0.01);
+  AlSigmaFamily other_rate(g2, Side::Put, 100.0);
+  ASSERT_TRUE(other_rate.prepare(0.1, 0.5, kNodes));
+  EXPECT_EQ(family_greeks(other_rate, carry, 100.0, 95.0, 0.22, Mask::all()).carry,
+            AlSigmaFamilyCarryStatus::CarryBumpsMismatch);
+  const AlExpiryGeometry gf = prepare_al_geometry(0.25, 0.045, 0.01, al_fast_profile(std::nullopt));
+  AlSigmaFamily other_profile(gf, Side::Put, 100.0);
+  ASSERT_TRUE(other_profile.prepare(0.1, 0.5, kNodes));
+  EXPECT_EQ(family_greeks(other_profile, carry, 100.0, 95.0, 0.22, Mask::all()).carry,
+            AlSigmaFamilyCarryStatus::CarryBumpsMismatch);
+  AlSigmaFamilyCarryBumps rho_only;
+  ASSERT_TRUE(rho_only.prepare(put, Mask{Mask::kRho}));
+  EXPECT_FALSE(rho_only.has_phi());
+  EXPECT_EQ(family_greeks(put, rho_only, 100.0, 95.0, 0.22, Mask{Mask::kRho}).carry,
+            AlSigmaFamilyCarryStatus::Ok);
+  EXPECT_EQ(family_greeks(put, rho_only, 100.0, 95.0, 0.22, Mask::all()).carry,
+            AlSigmaFamilyCarryStatus::CarryBumpsMismatch);
+  const AlSigmaFamilyCarryBumps unprepared;
+  EXPECT_EQ(family_greeks(put, unprepared, 100.0, 95.0, 0.22, Mask::all()).carry,
+            AlSigmaFamilyCarryStatus::CarryBumpsMismatch);
+  // prepare() refusals leave the set unprepared.
+  AlSigmaFamilyCarryBumps bad;
+  EXPECT_FALSE(bad.prepare(put, Mask::hedge()));
+  EXPECT_FALSE(bad.prepared());
+  AlSigmaFamily unprepared_family(g, Side::Put, 100.0);
+  const Status st = bad.prepare(unprepared_family, Mask::all());
+  ASSERT_FALSE(st);
+  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_FALSE(bad.prepared());
+  // A refused call: NaN everywhere requested, carry untouched by the refusal.
+  const AlSigmaFamilyGreeks out_of_box = family_greeks(put, carry, 100.0, 95.0, 0.9, Mask::all());
+  EXPECT_EQ(out_of_box.status, AlSigmaFamilyStatus::SigmaOutsideBox);
+  EXPECT_TRUE(std::isnan(out_of_box.rho) && std::isnan(out_of_box.price));
+  // A1 / A5 regime rule: a put whose r − h leaves the American regime keeps a forward
+  // rho (one-sided), a call whose q − h does likewise for phi.
+  const AlExpiryGeometry glow = prepare_al_geometry(0.5, 0.5 * kAlSigmaFamilyCarryBump, 0.0);
+  AlSigmaFamily low_put(glow, Side::Put, 100.0);
+  if (low_put.prepare(0.1, 0.5, kNodes)) {
+    AlSigmaFamilyCarryBumps low;
+    ASSERT_TRUE(low.prepare(low_put, Mask{Mask::kRho}));
+    EXPECT_TRUE(low.rho_one_sided());
+    EXPECT_TRUE(std::isfinite(family_greeks(low_put, low, 100.0, 100.0, 0.3, Mask{Mask::kRho}).rho));
+  }
+  const AlExpiryGeometry glq = prepare_al_geometry(0.5, 0.05, 0.5 * kAlSigmaFamilyCarryBump);
+  AlSigmaFamily low_call(glq, Side::Call, 100.0);
+  ASSERT_TRUE(low_call.prepare(0.1, 0.5, kNodes));
+  AlSigmaFamilyCarryBumps lowq;
+  ASSERT_TRUE(lowq.prepare(low_call, Mask{Mask::kPhi}));
+  EXPECT_TRUE(lowq.phi_one_sided());
+  EXPECT_TRUE(std::isfinite(family_greeks(low_call, lowq, 100.0, 100.0, 0.3, Mask{Mask::kPhi}).phi));
+  // The chain entry: flags bit 3 marks the refused rho / phi without a carry set; with
+  // one, the rows are the carry overload's bits.
+  const std::array<double, 2> K{{95.0, 105.0}};
+  const std::array<double, 2> sig{{0.22, 0.2}};
+  const std::array<Side, 2> side{{Side::Put, Side::Call}};
+  std::array<double, 2> rho{};
+  std::array<std::uint8_t, 2> flags{};
+  std::array<AlSigmaFamilyStatus, 2> status{};
+  AlSigmaFamilyGreekColumns cols;
+  cols.rho = rho;
+  cols.flags = flags;
+  ASSERT_TRUE(family_chain_greeks(&put, &call, 100.0, K, sig, side, Mask::eight(), cols, status));
+  EXPECT_TRUE(std::isnan(rho[0]) && std::isnan(rho[1]));
+  EXPECT_NE(flags[0] & 8u, 0);
+  EXPECT_NE(flags[1] & 8u, 0);
+  AlSigmaFamilyCarryBumps call_carry;
+  ASSERT_TRUE(call_carry.prepare(call, Mask::eight()));
+  ASSERT_TRUE(family_chain_greeks(&put, &call, 100.0, K, sig, side, Mask::eight(), cols, status,
+                                  &carry, &call_carry));
+  EXPECT_TRUE(same_bits(rho[0], family_greeks(put, carry, 100.0, 95.0, 0.22, Mask::eight()).rho));
+  EXPECT_TRUE(same_bits(rho[1], family_greeks(call, call_carry, 100.0, 105.0, 0.2, Mask::eight()).rho));
+  EXPECT_EQ(flags[0] & 8u, 0);
+  EXPECT_EQ(flags[1] & 8u, 0);
 }
 
 // ── The exact Newton slope ────────────────────────────────────────────────────
@@ -545,8 +788,8 @@ TEST(AlSigmaFamilyGreeks, PriceAndVegaIsTheExactSlopeWithinTheVolgaBound) {
   // σ + h), after removing the chord's h/2 · volga bias, within a pinned relative gap
   // (measured worst, rounded up): the σ-interpolant's derivative against the
   // re-solved boundary's, on rows away from the exercise edge.
-  constexpr double kVsColdRel = 1.0;
-  constexpr double kVsCentralRel = 1.0;
+  constexpr double kVsColdRel = 2.4e-5;    // measured 2.36054e-5 (call K 927.6, σ 0.154)
+  constexpr double kVsCentralRel = 2.4e-5; // measured 2.35537e-5 (same contract)
   const double h = kAlPackSigmaBump;
   Worst wc, wcen;
   std::size_t with_vega = 0;
@@ -610,8 +853,10 @@ TEST(AlSigmaFamilyGreeks, ExerciseRegionServesIntrinsicWithTheExerciseGreeks) {
   ASSERT_TRUE(call.prepare(0.1, 0.5, kNodes));
   // Deep ITM put at a low spot: intrinsic served (the premium decomposition reproduces
   // K − S to quadrature rounding; the kernel's clamp may or may not fire), Δ = −1, the
-  // rest 0.
-  const AlSigmaFamilyGreeks p = family_greeks(put, 40.0, 100.0, 0.12, Mask::all());
+  // rest 0 (rho / phi with the carry set; without one they are refused like any row).
+  AlSigmaFamilyCarryBumps put_carry;
+  ASSERT_TRUE(put_carry.prepare(put, Mask::all()));
+  const AlSigmaFamilyGreeks p = family_greeks(put, put_carry, 40.0, 100.0, 0.12, Mask::all());
   ASSERT_EQ(p.status, AlSigmaFamilyStatus::Ok);
   EXPECT_TRUE(p.exercised);
   EXPECT_FALSE(p.floored);
@@ -620,16 +865,22 @@ TEST(AlSigmaFamilyGreeks, ExerciseRegionServesIntrinsicWithTheExerciseGreeks) {
   EXPECT_EQ(p.gamma, 0.0);
   EXPECT_EQ(p.vega, 0.0);
   EXPECT_EQ(p.theta, 0.0);
+  EXPECT_EQ(p.carry, AlSigmaFamilyCarryStatus::Ok);
   EXPECT_EQ(p.rho, 0.0);
   EXPECT_EQ(p.phi, 0.0);
+  EXPECT_TRUE(std::isnan(family_greeks(put, 40.0, 100.0, 0.12, Mask::all()).rho));
   EXPECT_EQ(p.vanna, 0.0);
   EXPECT_EQ(p.volga, 0.0);
   EXPECT_EQ(p.charm, 0.0);
-  // Deep ITM call (q > 0 so the call is American): intrinsic, Δ = +1.
-  const AlSigmaFamilyGreeks cg = family_greeks(call, 100.0, 40.0, 0.12, Mask::all());
+  // Deep ITM call (q > 0 so the call is American): intrinsic, Δ = +1. The call's edge
+  // is S >= K max(1, r/q) at expiry and rises with τ (the perpetual edge here is
+  // ≈ 3.0 K at σ = 0.12), so K = 25 puts S = 100 inside it; K = 40 (edge ≥ 100 at
+  // expiry, the a4b34521 fixture) is a continuation row (price 59.47, Δ 0.9947).
+  EXPECT_FALSE(family_greeks(call, 100.0, 40.0, 0.12, Mask::hedge()).exercised);
+  const AlSigmaFamilyGreeks cg = family_greeks(call, 100.0, 25.0, 0.12, Mask::all());
   ASSERT_EQ(cg.status, AlSigmaFamilyStatus::Ok);
   EXPECT_TRUE(cg.exercised);
-  EXPECT_NEAR(cg.price, 60.0, 1.0e-9 * 100.0);
+  EXPECT_NEAR(cg.price, 75.0, 1.0e-9 * 100.0);
   EXPECT_DOUBLE_EQ(cg.delta, 1.0);
   EXPECT_EQ(cg.gamma, 0.0);
   EXPECT_EQ(cg.vega, 0.0);
@@ -700,8 +951,10 @@ TEST(AlSigmaFamilyGreeks, MaskSelectsWhatIsComputedAndRequestedFieldsAreMaskInde
   EXPECT_TRUE(same_bits(all.volga, eight.volga));
   EXPECT_TRUE(same_bits(all.price, price.price));
   EXPECT_NE(all.charm, 0.0);
-  EXPECT_NE(all.rho, 0.0);
-  EXPECT_NE(all.phi, 0.0);
+  // Requested rho / phi without a carry set: refused (NaN), never the frozen value.
+  EXPECT_TRUE(std::isnan(all.rho) && std::isnan(all.phi));
+  EXPECT_EQ(all.carry, AlSigmaFamilyCarryStatus::NoCarryBumps);
+  EXPECT_EQ(hedge.carry, AlSigmaFamilyCarryStatus::NotRequested);
 }
 
 TEST(AlSigmaFamilyGreeks, RefusalsAreTypedAndCarryNaNOnEveryRequestedField) {
