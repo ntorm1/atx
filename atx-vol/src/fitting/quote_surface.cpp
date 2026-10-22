@@ -40,11 +40,13 @@
 #include <limits>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include "atx/vol/api/core/types.hpp" // kIvMin (ladder wing tail)
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
@@ -71,7 +73,11 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
       !(s.ladder_max_outside_fraction >= 0.0 && s.ladder_max_outside_fraction <= 1.0) ||
       !(s.ladder_channel_max_outside_fraction >= 0.0 &&
         s.ladder_channel_max_outside_fraction <= 1.0) ||
-      s.ladder_min_outside_quotes < 1) {
+      s.ladder_min_outside_quotes < 1 ||
+      (s.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
+       s.ladder_wing_tail != QuoteSurfaceWingTail::FloorPriceOnly) ||
+      (s.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
+       s.ladder != QuoteSurfaceLadder::KnotFirst)) {
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
   }
   return Ok();
@@ -220,6 +226,9 @@ public:
       ladder_repair_rung();
       ATX_TRY_VOID(ladder_calendar_pass());
       measure_containment();
+      if (surface_.ladder_wing_tail == QuoteSurfaceWingTail::FloorPriceOnly) {
+        price_only_floor_vols();
+      }
     } else {
       repair_rung();
       ATX_TRY_VOID(calendar_pass());
@@ -1041,6 +1050,47 @@ private:
     }
   }
 
+  // Ladder wing tail FloorPriceOnly (QuoteSurfaceConfig::ladder_wing_tail): a served
+  // row re-implied from a repaired price at the inverter's floor kIvMin has no
+  // identified volatility. It becomes PriceOnly with its certified price, as a failed
+  // re-implication does (certify_and_serve, commit_calendar_repair); prices, and so
+  // containment and calendar consistency, are untouched. Runs after the calendar pass.
+  void price_only_floor_vols() {
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      QuoteSurfaceSlice &slice = out_[i];
+      QuoteSliceFit &fit = slice.fit;
+      if (slice.grade == QuoteSliceGrade::Refused || !fit.prices || fit.moved_nodes.empty()) {
+        continue;
+      }
+      const auto nodes = fit.prices->nodes();
+      const std::span<const QuoteSliceQuote> quotes = expiries_[i].quotes;
+      const std::size_t n = std::min(fit.rows.size(), quotes.size());
+      for (std::size_t r = 0; r < n; ++r) {
+        QuoteSliceRow &row = fit.rows[r];
+        if (row.evaluation_status != QuoteSliceEvaluationStatus::Success ||
+            !(std::isfinite(row.fitted_iv) && row.fitted_iv <= kIvMin)) {
+          continue;
+        }
+        const double strike = quotes[r].strike;
+        const auto at = std::lower_bound(nodes.begin(), nodes.end(), strike,
+            [](const AmericanPriceNode &node, double k) { return node.strike < k; });
+        const auto node = static_cast<std::size_t>(at - nodes.begin());
+        const auto bit = static_cast<std::uint8_t>(quotes[r].side == Side::Call ? 1u : 2u);
+        if (at == nodes.end() || at->strike != strike || node >= fit.moved_nodes.size() ||
+            (fit.moved_nodes[node] & bit) == 0u) {
+          continue; // the curve's own volatility, not a re-implied one
+        }
+        row.fitted_iv = kNaN;
+        row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
+        if (fit.price_only_nodes.size() != nodes.size()) {
+          fit.price_only_nodes.assign(nodes.size(), 0);
+        }
+        fit.price_only_nodes[node] = static_cast<std::uint8_t>(fit.price_only_nodes[node] | bit);
+        ++slice.wing_tail_price_only;
+      }
+    }
+  }
+
   // Ladder provenance: the final prices' containment (before a refusal strips them).
   void measure_containment() {
     for (std::size_t i = 0; i < out_.size(); ++i) {
@@ -1221,6 +1271,16 @@ const char *to_string(QuoteSurfaceLadderFallback value) noexcept {
     return "containment";
   case QuoteSurfaceLadderFallback::Calendar:
     return "calendar";
+  }
+  return "unknown";
+}
+
+const char *to_string(QuoteSurfaceWingTail value) noexcept {
+  switch (value) {
+  case QuoteSurfaceWingTail::Off:
+    return "off";
+  case QuoteSurfaceWingTail::FloorPriceOnly:
+    return "floor-price-only";
   }
   return "unknown";
 }

@@ -979,6 +979,40 @@ def test_native_knot_first_ladder_serves_the_knot_slice_with_provenance(binary, 
     assert report["price_only_rows"] == 0
 
 
+def test_native_ladder_wing_tail_key_is_strict_echoed_and_inert_on_clean_quotes(binary, tmp_path):
+    # Lane L3a: graded.ladder_wing_tail. Clean quotes have no repaired node, so the
+    # key changes no row; it is echoed only when on and needs the knot-first ladder.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    graded = {"schema_version": 1, "admission": "graded", "price_only": True}
+    for document, message in (
+            ({**graded, "graded": {"ladder_wing_tail": "floor-price-only"}},
+             "ladder_wing_tail requires ladder knot-first"),
+            ({**graded, "graded": {"ladder": "off", "ladder_wing_tail": "floor-price-only"}},
+             "ladder_wing_tail requires ladder knot-first"),
+            ({**graded, "graded": {"ladder": "knot-first", "ladder_wing_tail": "slope"}},
+             "ladder_wing_tail must be off or floor-price-only")):
+        policy = write_policy(tmp_path / "bad.json", document)
+        result = invoke(binary, source, tmp_path / "bad.csv", "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+    runs = {}
+    for name, extra in (("plain", {}), ("off", {"ladder_wing_tail": "off"}),
+                        ("on", {"ladder_wing_tail": "floor-price-only"})):
+        output = tmp_path / f"{name}.csv"
+        policy = write_policy(tmp_path / f"{name}.json",
+                              {**graded, "graded": {"ladder": "knot-first", **extra}})
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode == 0, result.stderr
+        runs[name] = (output.read_bytes(), json.loads(result.stdout))
+    assert runs["off"][0] == runs["plain"][0]
+    assert runs["on"][0] == runs["plain"][0]
+    assert "ladder_wing_tail" not in runs["plain"][1]["policy_definition"]["graded"]
+    assert "ladder_wing_tail" not in runs["off"][1]["policy_definition"]["graded"]
+    assert runs["on"][1]["policy_definition"]["graded"]["ladder_wing_tail"] == "floor-price-only"
+    assert runs["on"][1]["price_only_rows"] == 0
+
+
 def european_put(strike: float, years: float, sigma: float, q: float) -> float:
     # Zero rate: an American put has no early-exercise premium, so this is its price.
     sigma_t = sigma * math.sqrt(years)

@@ -590,6 +590,21 @@ struct QuoteSurfaceExpiry {
 // at fit_quote_surface.
 enum class QuoteSurfaceLadder : std::uint8_t { Off, KnotFirst };
 
+// Knot-first ladder wing tail (lane L3a, opt-in; Off is the historical path, bit
+// for bit; refused without the ladder). FloorPriceOnly: after the ladder's
+// calendar pass, a served Success row whose volatility was RE-IMPLIED from a
+// repaired price (its node side is in QuoteSliceFit::moved_nodes) and equals the
+// inverter's reported floor kIvMin is published PriceOnly - certified price kept,
+// NaN volatility, flagged in QuoteSliceFit::price_only_nodes - exactly as when the
+// re-implication fails. A repair that moves a zero-time-value wing node (a deep
+// out-of-the-money side, or an in-the-money side at its exercise value) leaves a
+// price at or below the zero-volatility value, for which american_implied_vol
+// reports kIvMin (american_iv.hpp): a bound, not a measured volatility. Prices,
+// certificates, containment and every calendar decision are unchanged.
+enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly };
+
+[[nodiscard]] const char *to_string(QuoteSurfaceWingTail value) noexcept;
+
 struct QuoteSurfaceConfig {
   double term_prior_weight = 1.0;     // scale of the neighbour prior's strength
   double prior_decay_log_time = 1.0;  // confidence e-folding in |ln(T/T_nearest)|
@@ -616,6 +631,7 @@ struct QuoteSurfaceConfig {
   double ladder_max_outside_fraction = 0.05;
   double ladder_channel_max_outside_fraction = 0.05;
   std::size_t ladder_min_outside_quotes = 1; // >= 1
+  QuoteSurfaceWingTail ladder_wing_tail = QuoteSurfaceWingTail::Off; // ladder only
   // Expiry fan-out width of the per-expiry stages (pass A or the ladder's pass
   // A, then the B1 and B2 channel refits), longest expiry first: 1 = serial on
   // the calling thread (the historical path), N = N workers, 0 = auto
@@ -722,6 +738,8 @@ struct QuoteSurfaceSlice {
   std::string knot_error;
   double outside_fraction = 0.0;
   std::size_t outside_quotes = 0;
+  // Rows published PriceOnly by QuoteSurfaceConfig::ladder_wing_tail (0 when off).
+  std::size_t wing_tail_price_only = 0;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation

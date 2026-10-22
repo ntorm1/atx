@@ -609,6 +609,9 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
     out["ladder_channel_max_outside_fraction"] = s.ladder_channel_max_outside_fraction;
     out["ladder_min_outside_quotes"] = s.ladder_min_outside_quotes;
+    if (s.ladder_wing_tail != QuoteSurfaceWingTail::Off) {
+      out["ladder_wing_tail"] = to_string(s.ladder_wing_tail); // provenance only when on
+    }
   }
   if (space.fit_space == QuoteSliceFitSpace::VolChannel) {
     out["fit_space"] = "vol";
@@ -774,7 +777,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "calendar_repair_half_spreads", "repair", "repair_max_nodes", "repair_max_vol",
              "repair_immaterial_price", "ladder", "ladder_max_outside_fraction",
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
-             "deam_profile", "deam_cache", "rung_memo", "deam_inversion"});
+             "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "ladder_wing_tail"});
     space = parse_fit_space(j);
     // Opt-in per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo):
     // exact-keyed reuse across an expiry's rungs, speed only.
@@ -799,6 +802,20 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
          j.contains("ladder_min_outside_quotes")) &&
         surface.ladder != QuoteSurfaceLadder::KnotFirst) {
       throw std::runtime_error("Policy graded ladder containment keys require ladder knot-first");
+    }
+    // Opt-in ladder wing tail (lane L3a; quote_slice.hpp QuoteSurfaceWingTail); "off"
+    // is the historical path.
+    if (j.contains("ladder_wing_tail")) {
+      const auto mode = text(j.at("ladder_wing_tail"));
+      if (mode == "floor-price-only") {
+        surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded ladder_wing_tail must be off or floor-price-only");
+      }
+      if (surface.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
+          surface.ladder != QuoteSurfaceLadder::KnotFirst) {
+        throw std::runtime_error("Policy graded ladder_wing_tail requires ladder knot-first");
+      }
     }
     numeric(j, "ladder_max_outside_fraction", surface.ladder_max_outside_fraction, 0, 1);
     numeric(j, "ladder_channel_max_outside_fraction", surface.ladder_channel_max_outside_fraction,
