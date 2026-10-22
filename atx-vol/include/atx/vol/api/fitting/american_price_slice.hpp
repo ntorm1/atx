@@ -198,6 +198,57 @@ struct AmericanBoxCertificate {
 certify_american_box(std::span<const AmericanPriceNode> fitted,
                      std::span<const AmericanPriceBox> boxes, const AmericanPriceBounds &bounds);
 
+// ── Distance to market (lane L3q market-distance, 2026-10-21; opt-in) ──────
+//
+// The box certificate bounds how far a served curve may leave its quotes only
+// where it had to repair; a curve that certifies exactly can sit several spreads
+// outside the market. market_distance_spreads measures that distance per row in
+// the scorer's own unit (tools/quote_benchmark.py `spread_error`: an error over
+// max(ask - bid, tick)): 0 inside [bid, ask]; (price - ask) / s above the ask;
+// (bid - price) / s below the bid; s = max(ask - bid, tick). A zero bid is the
+// band [0, ask] with s = max(ask, tick) (the audit's zero-bid stratum: spread =
+// ask). NaN when the band is not a quote (a non-finite edge, bid < 0, ask <= bid,
+// tick not positive and finite) or the price is not finite. Allocation-free.
+[[nodiscard]] double market_distance_spreads(double price, double bid, double ask,
+                                             double tick) noexcept;
+
+// One slice side of a joint calendar projection (project_calendar_joint): its
+// strictly increasing finite strikes, its prices (in/out), the per-node box [lo,
+// hi], the end-slope bounds of project_convex_price_box and its certificate spot
+// (AmericanPriceBounds::spot; validated, reserved for an allowance). Spans are borrowed for
+// the call; all four have the slice's node count (>= 2).
+struct JointPriceSide {
+  std::span<const double> strikes;
+  std::span<double> prices;
+  std::span<const double> lo;
+  std::span<const double> hi;
+  double slope_min = 0.0;
+  double slope_max = 0.0;
+  double spot = 0.0;
+};
+
+// Bidirectional calendar projection: the least-squares (uniform weights, Dykstra
+// in Hildreth's form, as project_convex_price_box) projection of SEVERAL slices'
+// prices of one side at once onto { each slice convex in strike with its end
+// slopes; lo <= p <= hi per node; for every pair a < b (slices ordered by expiry,
+// earlier first) P_b(K) >= P_a(K) at every knot K of either slice inside both
+// strike domains (each P piecewise linear between its own knots) }, every
+// inequality exact (a local slack would accumulate along the certificate's global
+// envelope and along a chain of maturities). Every slice
+// may move inside its own boxes, so a crossing that neither slice can absorb
+// alone is shared between them (also along a chain of maturities). The calendar
+// spread of two piecewise-linear slices is affine between their union knots, so
+// the knot constraints cover the whole overlap; a non-adjacent pair's knot inside
+// every intermediate domain is implied by the adjacent pairs and not added. Nodes
+// whose constraints never bind keep their price bit for bit. Bounded: at most
+// 20,000 sweeps, stopped at a per-sweep change of 1e-10 x the largest price (the
+// caller's unchanged certificate and calendar checks judge the result). False when
+// a box is empty, a slice is malformed (fewer than two nodes, mismatched sizes,
+// non-increasing strikes, a negative or non-finite spot) or the sweeps do not
+// settle; the prices are then unspecified. Allocates O(total nodes);
+// thread-compatible.
+[[nodiscard]] bool project_calendar_joint(std::span<const JointPriceSide> slices);
+
 // Check later >= earlier for both American calls and puts at every knot in
 // the overlap of their strike domains. Their difference is affine between
 // consecutive union knots, so this certifies the whole overlap to the fixed

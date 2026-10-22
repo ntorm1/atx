@@ -895,4 +895,80 @@ TEST(AmericanBoxCertificate, ProjectionLeavesAFeasibleCurveBitForBit) {
   EXPECT_FALSE(project_convex_price_box(strikes, prices, lo, empty_hi, weights, -1.0, 0.0));
 }
 
+// ── Distance to market and the joint calendar projection (lane L3q) ─────────
+
+TEST(AmericanPriceSlice, MarketDistanceIsInSpreadsOfTheQuoteBand) {
+  using atx::vol::market_distance_spreads;
+  EXPECT_EQ(market_distance_spreads(1.05, 1.00, 1.10, 0.01), 0.0);
+  EXPECT_NEAR(market_distance_spreads(1.40, 1.00, 1.10, 0.01), 3.0, 1.0e-12); // above the ask
+  EXPECT_NEAR(market_distance_spreads(0.80, 1.00, 1.10, 0.01), 2.0, 1.0e-12); // below the bid
+  EXPECT_NEAR(market_distance_spreads(0.03, 0.00, 0.01, 0.01), 2.0, 1.0e-12); // zero bid: s = ask
+  EXPECT_NEAR(market_distance_spreads(1.03, 1.00, 1.001, 0.01), 2.9, 1.0e-12); // tick floor
+  EXPECT_TRUE(std::isnan(market_distance_spreads(1.0, 1.1, 1.0, 0.01)));       // crossed
+  EXPECT_TRUE(std::isnan(market_distance_spreads(1.0, -0.1, 1.0, 0.01)));
+  EXPECT_TRUE(std::isnan(market_distance_spreads(1.0, 0.9, 1.0, 0.0)));
+  EXPECT_TRUE(std::isnan(market_distance_spreads(std::nan(""), 0.9, 1.0, 0.01)));
+}
+
+TEST(AmericanPriceSlice, JointCalendarProjectionSharesACrossingNeitherSliceAbsorbsAlone) {
+  // Two expiries of one side on the same strikes: the earlier price sits 0.10
+  // above the later one at the first two strikes. Each box lets its slice move
+  // only 0.06 toward the other, so neither one-sided move can remove the
+  // crossing; the joint projection moves both and orders them at every knot.
+  using atx::vol::JointPriceSide;
+  using atx::vol::project_calendar_joint;
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  std::vector<double> near{2.0, 1.2, 0.6};
+  std::vector<double> far{1.9, 1.1, 0.9};
+  const std::vector<double> near_lo{1.94, 1.14, 0.54};
+  const std::vector<double> near_hi{2.0, 1.2, 0.6};
+  const std::vector<double> far_lo{1.9, 1.1, 0.9};
+  const std::vector<double> far_hi{1.96, 1.16, 0.96};
+  std::vector<JointPriceSide> sides{{strikes, near, near_lo, near_hi, -1.0, 0.0, 100.0},
+                                    {strikes, far, far_lo, far_hi, -1.0, 0.0, 100.0}};
+  ASSERT_TRUE(project_calendar_joint(sides));
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    EXPECT_GE(far[i] - near[i], -1.0e-9) << i;
+    EXPECT_GE(near[i], near_lo[i] - 1.0e-12) << i;
+    EXPECT_LE(near[i], near_hi[i] + 1.0e-12) << i;
+    EXPECT_GE(far[i], far_lo[i] - 1.0e-12) << i;
+    EXPECT_LE(far[i], far_hi[i] + 1.0e-12) << i;
+  }
+  EXPECT_LT(near[0], 2.0); // both moved
+  EXPECT_GT(far[0], 1.9);
+  for (const std::vector<double> *p : {&near, &far}) { // convex, decreasing (calls)
+    EXPECT_LE((*p)[1], 0.5 * ((*p)[0] + (*p)[2]) + 1.0e-9);
+    EXPECT_LE((*p)[1], (*p)[0] + 1.0e-12);
+  }
+  // One-sided (the later slice held at its prices): no curve inside the boxes.
+  std::vector<double> near2{2.0, 1.2, 0.6};
+  std::vector<double> far2{1.9, 1.1, 0.9};
+  const std::vector<double> held_box = far2;
+  std::vector<JointPriceSide> held{{strikes, near2, near_lo, near_hi, -1.0, 0.0, 100.0},
+                                   {strikes, far2, held_box, held_box, -1.0, 0.0, 100.0}};
+  EXPECT_FALSE(project_calendar_joint(held));
+}
+
+TEST(AmericanPriceSlice, JointCalendarProjectionLeavesAnOrderedPairBitForBit) {
+  using atx::vol::JointPriceSide;
+  using atx::vol::project_calendar_joint;
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  const std::vector<double> near0{1.5, 0.8, 0.4};
+  const std::vector<double> far0{2.0, 1.2, 0.7};
+  std::vector<double> near = near0;
+  std::vector<double> far = far0;
+  const std::vector<double> lo{0.0, 0.0, 0.0};
+  const std::vector<double> hi{5.0, 5.0, 5.0};
+  std::vector<JointPriceSide> sides{{strikes, near, lo, hi, -1.0, 0.0, 100.0},
+                                    {strikes, far, lo, hi, -1.0, 0.0, 100.0}};
+  ASSERT_TRUE(project_calendar_joint(sides));
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(near[i]), std::bit_cast<std::uint64_t>(near0[i]));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(far[i]), std::bit_cast<std::uint64_t>(far0[i]));
+  }
+  std::vector<double> short_prices{1.0, 0.5}; // malformed: mismatched sizes
+  std::vector<JointPriceSide> bad{{strikes, short_prices, lo, hi, -1.0, 0.0, 100.0}};
+  EXPECT_FALSE(project_calendar_joint(bad));
+}
+
 } // namespace

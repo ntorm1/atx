@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <new>
 #include <optional>
 #include <span>
@@ -2955,6 +2956,124 @@ TEST(QuoteSurfaceRungMemo, AnExpiryTaskThatThrowsIsReturnedAsTheSurfaceError) {
   const auto again = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, wide);
   ASSERT_TRUE(again) << again.error().to_string();
   expect_bit_identical(*reference, *again, 2);
+}
+
+// ── Opt-in distance-to-market gate / repair (lane L3q market-distance) ──────
+
+// The smile chain with its in-the-money call at 90 re-quoted `width` wide and
+// `spreads` widths BELOW its model price. The point fit prices the out-of-the-money
+// side only, so it serves that call near the model: about `spreads` spreads above
+// its ask, while every other row sits inside its own quote.
+Chain off_market_call(double spreads, double width) {
+  Chain c = chain(0.25, 0.20, -0.10, 0.02);
+  const double sigma = 0.20 - 0.10 * std::log(0.9);
+  const auto model = andersen_lake(100.0, 90.0, 0.25, sigma, 0.03, 0.01, Side::Call);
+  EXPECT_TRUE(model);
+  for (auto &q : c.quotes) {
+    if (q.side == Side::Call && q.strike == 90.0) {
+      q.ask = *model - spreads * width;
+      q.bid = q.ask - width;
+    }
+  }
+  return c;
+}
+
+QuoteSliceConfig market_distance_config(QuoteSliceMarketDistance mode, double bound = 1.0) {
+  QuoteSliceConfig config;
+  config.repair.market_distance = mode;
+  config.repair.market_distance_spreads = bound;
+  return config;
+}
+
+std::size_t row_index(const Chain &c, double strike, Side side) {
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].strike == strike && c.quotes[i].side == side) return i;
+  }
+  ADD_FAILURE() << "no quote at " << strike;
+  return 0;
+}
+
+TEST(QuoteSurface, MarketDistanceGateRefusesOnlyTheRowOutsideItsQuote) {
+  const std::vector<Chain> one{off_market_call(3.0, 0.04)};
+  const std::size_t r = row_index(one[0], 90.0, Side::Call);
+  const auto off = fit_quote_surface(expiries(one), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ(off->size(), 1u);
+  const QuoteSurfaceSlice &base = (*off)[0];
+  ASSERT_NE(base.grade, QuoteSliceGrade::Refused) << base.refusal << ": " << base.error;
+  ASSERT_EQ(base.fit.rows[r].evaluation_status, QuoteSliceEvaluationStatus::Success);
+  const QuoteSliceQuote &q = one[0].quotes[r];
+  const double distance = market_distance_spreads(base.fit.rows[r].fitted_price, q.bid, q.ask, 0.01);
+  ASSERT_GT(distance, 2.0); // the constructed row: ~3 spreads above its ask
+  EXPECT_EQ(base.market_checked_rows, 0u); // provenance stays at its default when off
+  const auto gate = fit_quote_surface(expiries(one),
+                                      market_distance_config(QuoteSliceMarketDistance::Gate));
+  ASSERT_TRUE(gate) << gate.error().to_string();
+  const QuoteSurfaceSlice &g = (*gate)[0];
+  EXPECT_EQ(g.grade, base.grade); // the chain still serves
+  EXPECT_EQ(g.market_gated_rows, 1u);
+  EXPECT_NEAR(g.market_max_spreads, distance, 1.0e-12);
+  EXPECT_GT(g.market_checked_rows, 1u);
+  for (std::size_t i = 0; i < one[0].quotes.size(); ++i) {
+    if (i == r) {
+      EXPECT_EQ(g.fit.rows[i].evaluation_status, QuoteSliceEvaluationStatus::MarketDistanceFailure);
+      EXPECT_TRUE(std::isnan(g.fit.rows[i].fitted_iv));
+      continue;
+    }
+    EXPECT_EQ(g.fit.rows[i].evaluation_status, base.fit.rows[i].evaluation_status) << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(g.fit.rows[i].fitted_price),
+              std::bit_cast<std::uint64_t>(base.fit.rows[i].fitted_price))
+        << i;
+  }
+  EXPECT_STREQ(to_string(QuoteSliceEvaluationStatus::MarketDistanceFailure),
+               "market_distance_failure");
+  // A bound beyond the row's distance is inert: every row as without the gate.
+  const auto loose = fit_quote_surface(
+      expiries(one), market_distance_config(QuoteSliceMarketDistance::Gate, 10.0));
+  ASSERT_TRUE(loose) << loose.error().to_string();
+  EXPECT_EQ((*loose)[0].market_gated_rows, 0u);
+  for (std::size_t i = 0; i < one[0].quotes.size(); ++i) {
+    EXPECT_EQ((*loose)[0].fit.rows[i].evaluation_status, base.fit.rows[i].evaluation_status) << i;
+  }
+}
+
+TEST(QuoteSurface, MarketDistanceRepairServesTheRowInsideItsQuoteWithTheCertificateIntact) {
+  const std::vector<Chain> one{off_market_call(3.0, 0.04)};
+  const std::size_t r = row_index(one[0], 90.0, Side::Call);
+  const auto repair = fit_quote_surface(
+      expiries(one), market_distance_config(QuoteSliceMarketDistance::Repair));
+  ASSERT_TRUE(repair) << repair.error().to_string();
+  const QuoteSurfaceSlice &s = (*repair)[0];
+  ASSERT_NE(s.grade, QuoteSliceGrade::Refused) << s.refusal << ": " << s.error;
+  EXPECT_EQ(s.market_repair.outcome, QuoteSliceRepairOutcome::Applied)
+      << to_string(s.market_repair.outcome);
+  EXPECT_GT(s.market_max_spreads, 2.0);
+  EXPECT_LE(s.market_max_spreads_after, 1.0e-9);
+  EXPECT_EQ(s.market_gated_rows, 0u);
+  EXPECT_EQ(s.grade, QuoteSliceGrade::B); // its served prices left the fit
+  const QuoteSliceRow &row = s.fit.rows[r];
+  ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+  EXPECT_GE(row.fitted_price, one[0].quotes[r].bid - 1.0e-9);
+  EXPECT_LE(row.fitted_price, one[0].quotes[r].ask + 1.0e-9);
+  ASSERT_TRUE(s.fit.prices);
+  EXPECT_TRUE(AmericanPriceSlice::create(s.fit.prices->nodes(), s.fit.prices->bounds()));
+  EXPECT_FALSE(s.fit.moved_nodes.empty());
+  expect_moved_nodes_reimplied(s.fit, one[0].quotes);
+}
+
+TEST(QuoteSurface, MarketDistanceConfigurationIsValidatedAtTheSharedBoundary) {
+  QuoteSliceRepairConfig config;
+  EXPECT_EQ(config.market_distance, QuoteSliceMarketDistance::Off);
+  config.market_distance = QuoteSliceMarketDistance::Repair;
+  config.market_distance_spreads = 0.0; // strict containment is allowed
+  EXPECT_TRUE(validate_quote_slice_repair(config));
+  config.market_distance_spreads = -1.0;
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.market_distance_spreads = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.market_distance_spreads = 1.0;
+  config.market_distance = static_cast<QuoteSliceMarketDistance>(7);
+  EXPECT_FALSE(validate_quote_slice_repair(config));
 }
 
 } // namespace

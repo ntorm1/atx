@@ -731,6 +731,12 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
   if (repair.wing_mult_source == QuoteSliceWingMultSource::Market) {
     out["wing_mult_source"] = "market"; // provenance only when opted in (lane L3r1)
   }
+  if (repair.market_distance != QuoteSliceMarketDistance::Off) {
+    // provenance only when opted in (lane L3q)
+    out["market_distance"] =
+        repair.market_distance == QuoteSliceMarketDistance::Gate ? "gate" : "repair";
+    out["market_distance_spreads"] = repair.market_distance_spreads;
+  }
   if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
     out["ladder"] = "knot-first";
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
@@ -915,7 +921,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
-             "wing_mult_source"});
+             "wing_mult_source", "market_distance", "market_distance_spreads"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -995,6 +1001,24 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
         throw std::runtime_error("Policy graded wing_mult_source must be policy or market");
       }
     }
+    // Opt-in distance-to-market gate / repair (quote_slice.hpp QuoteSliceMarketDistance,
+    // lane L3q): "off" is the historical path; the bound (spreads) is inert without it.
+    if (j.contains("market_distance")) {
+      const auto mode = text(j.at("market_distance"));
+      if (mode == "gate") {
+        repair.market_distance = QuoteSliceMarketDistance::Gate;
+      } else if (mode == "repair") {
+        repair.market_distance = QuoteSliceMarketDistance::Repair;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded market_distance must be off, gate or repair");
+      }
+    }
+    if (j.contains("market_distance_spreads") &&
+        repair.market_distance == QuoteSliceMarketDistance::Off) {
+      throw std::runtime_error("Policy graded market_distance_spreads requires market_distance "
+                               "gate or repair");
+    }
+    numeric(j, "market_distance_spreads", repair.market_distance_spreads, 0, 1000);
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};

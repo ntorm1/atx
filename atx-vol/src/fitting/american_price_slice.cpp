@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -785,6 +786,222 @@ Result<AmericanBoxCertificate> certify_american_box(std::span<const AmericanPric
     out.max_price_move = std::max({out.max_price_move, call, put});
   }
   return Ok(std::move(out));
+}
+
+// ── Distance to market (lane L3q market-distance, 2026-10-21) ─────────────
+
+double market_distance_spreads(double price, double bid, double ask, double tick) noexcept {
+  if (!std::isfinite(price) || !std::isfinite(bid) || !std::isfinite(ask) ||
+      !std::isfinite(tick) || !(tick > 0.0) || bid < 0.0 || !(ask > bid)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const double spread = std::max(ask - bid, tick);
+  if (price > ask) return (price - ask) / spread;
+  if (price < bid) return (bid - price) / spread;
+  return 0.0;
+}
+
+namespace {
+
+// One half-space sum_k a[k] x[index[k]] >= b of the joint projection (at most
+// four variables: two interpolated prices of two slices).
+struct SparseHalfSpace {
+  std::array<std::size_t, 4> index{};
+  std::array<double, 4> a{};
+  std::size_t count = 0;
+  double b = 0.0;
+  double norm = 0.0; // sum a^2 (uniform weights)
+  double mu = 0.0;   // Dykstra multiplier, >= 0
+};
+
+void add_term(SparseHalfSpace &h, std::size_t index, double a) {
+  for (std::size_t k = 0; k < h.count; ++k) {
+    if (h.index[k] == index) {
+      h.a[k] += a;
+      return;
+    }
+  }
+  h.index[h.count] = index;
+  h.a[h.count] = a;
+  ++h.count;
+}
+
+// Adds sign * P(K) of one slice (first variable `offset`) to `h`: the node price at
+// a knot, else the linear interpolation of the two knots around K. Requires K in
+// the slice's domain.
+void add_price(SparseHalfSpace &h, std::span<const double> strikes, std::size_t offset,
+               double strike, double sign) {
+  const auto right = static_cast<std::size_t>(
+      std::lower_bound(strikes.begin(), strikes.end(), strike) - strikes.begin());
+  if (right < strikes.size() && strikes[right] == strike) {
+    add_term(h, offset + right, sign);
+    return;
+  }
+  const std::size_t left = right - 1u;
+  const double fraction = (strike - strikes[left]) / (strikes[right] - strikes[left]);
+  if (fraction < 1.0) add_term(h, offset + left, sign * (1.0 - fraction));
+  if (fraction > 0.0) add_term(h, offset + right, sign * fraction);
+}
+
+void finish(SparseHalfSpace &h, std::vector<SparseHalfSpace> &spaces) {
+  h.norm = 0.0;
+  for (std::size_t k = 0; k < h.count; ++k) h.norm += h.a[k] * h.a[k];
+  if (h.norm > 0.0) spaces.push_back(h);
+}
+
+// Calendar half-spaces P_later(K) - P_earlier(K) >= 0 at union knots inside both
+// domains. A knot inside every intermediate slice's domain is implied by the
+// adjacent pairs (each pair's spread is affine between its union knots, and the
+// constraints are exact, so the chain adds no slack), so only the others are added.
+void add_calendar(std::span<const JointPriceSide> slices, std::size_t a, std::size_t b,
+                  std::span<const std::size_t> offset, std::vector<SparseHalfSpace> &spaces) {
+  const std::span<const double> earlier = slices[a].strikes;
+  const std::span<const double> later = slices[b].strikes;
+  const double lo = std::max(earlier.front(), later.front());
+  const double hi = std::min(earlier.back(), later.back());
+  if (hi < lo) return;
+  const auto implied = [&](double k) {
+    if (b == a + 1u) return false;
+    for (std::size_t c = a + 1u; c < b; ++c) {
+      if (k < slices[c].strikes.front() || k > slices[c].strikes.back()) return false;
+    }
+    return true;
+  };
+  std::vector<double> knots;
+  knots.reserve(earlier.size() + later.size());
+  for (const double k : earlier) {
+    if (k >= lo && k <= hi && !implied(k)) knots.push_back(k);
+  }
+  for (const double k : later) {
+    if (k >= lo && k <= hi && !implied(k)) knots.push_back(k);
+  }
+  std::sort(knots.begin(), knots.end());
+  knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
+  for (const double k : knots) {
+    SparseHalfSpace h;
+    add_price(h, later, offset[b], k, 1.0);
+    add_price(h, earlier, offset[a], k, -1.0);
+    finish(h, spaces);
+  }
+}
+
+// Dykstra / Hildreth over sparse half-spaces plus the box, uniform weights: the
+// loop of project_convex_price_box with general (index, coefficient) rows.
+[[nodiscard]] bool dykstra_sparse(std::span<double> x, std::span<const double> lo,
+                                  std::span<const double> hi,
+                                  std::vector<SparseHalfSpace> &spaces) {
+  constexpr int kMaxSweeps = 20000;
+  const std::size_t n = x.size();
+  std::vector<double> box(n, 0.0);
+  double scale = 1.0;
+  for (const double value : x) scale = std::max(scale, std::abs(value));
+  // Coupled slices converge more slowly than one; the unchanged certificate and
+  // calendar checks downstream judge the result, so the stop is looser than
+  // project_convex_price_box's (still ~1e-4 of the certificate allowance).
+  const double tolerance = 1.0e-10 * scale;
+  for (int sweep = 0; sweep < kMaxSweeps; ++sweep) {
+    double change = 0.0;
+    for (SparseHalfSpace &h : spaces) {
+      double dot = 0.0;
+      for (std::size_t k = 0; k < h.count; ++k) dot += h.a[k] * x[h.index[k]];
+      const double mu = std::max(0.0, h.mu + (h.b - dot) / h.norm);
+      const double step = mu - h.mu;
+      if (step == 0.0) continue;
+      h.mu = mu;
+      for (std::size_t k = 0; k < h.count; ++k) {
+        const double delta = step * h.a[k];
+        x[h.index[k]] += delta;
+        change = std::max(change, std::abs(delta));
+      }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      const double z = x[i] + box[i];
+      const double clamped = std::clamp(z, lo[i], hi[i]);
+      change = std::max(change, std::abs(clamped - x[i]));
+      box[i] = z - clamped;
+      x[i] = clamped;
+    }
+    if (change <= tolerance) return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool valid_joint_side(const JointPriceSide &s) noexcept {
+  const std::size_t n = s.strikes.size();
+  if (n < 2u || s.prices.size() != n || s.lo.size() != n || s.hi.size() != n ||
+      !std::isfinite(s.spot) || s.spot < 0.0) {
+    return false;
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(s.strikes[i]) || !std::isfinite(s.prices[i]) || !std::isfinite(s.lo[i]) ||
+        !std::isfinite(s.hi[i]) || !(s.lo[i] <= s.hi[i]) ||
+        (i > 0u && !(s.strikes[i] > s.strikes[i - 1u]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+bool project_calendar_joint(std::span<const JointPriceSide> slices) {
+  std::size_t total = 0;
+  for (const JointPriceSide &s : slices) {
+    if (!valid_joint_side(s)) return false;
+    total += s.strikes.size();
+  }
+  std::vector<double> x;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  x.reserve(total);
+  lo.reserve(total);
+  hi.reserve(total);
+  std::vector<std::size_t> offset;
+  offset.reserve(slices.size());
+  std::vector<SparseHalfSpace> spaces;
+  spaces.reserve(2u * total);
+  for (const JointPriceSide &s : slices) {
+    const std::size_t base = x.size();
+    offset.push_back(base);
+    x.insert(x.end(), s.prices.begin(), s.prices.end());
+    lo.insert(lo.end(), s.lo.begin(), s.lo.end());
+    hi.insert(hi.end(), s.hi.begin(), s.hi.end());
+    const std::size_t n = s.strikes.size();
+    // Convexity and the end slopes are exact (no slack: the certificate's global
+    // envelope test would accumulate a local one).
+    for (std::size_t i = 1; i + 1 < n; ++i) {
+      const double left = 1.0 / (s.strikes[i] - s.strikes[i - 1]);
+      const double right = 1.0 / (s.strikes[i + 1] - s.strikes[i]);
+      SparseHalfSpace h;
+      add_term(h, base + i - 1, left);
+      add_term(h, base + i, -(left + right));
+      add_term(h, base + i + 1, right);
+      finish(h, spaces);
+    }
+    const double first = 1.0 / (s.strikes[1] - s.strikes[0]);
+    const double last = 1.0 / (s.strikes[n - 1] - s.strikes[n - 2]);
+    SparseHalfSpace front;
+    add_term(front, base, -first);
+    add_term(front, base + 1, first);
+    front.b = s.slope_min;
+    finish(front, spaces);
+    SparseHalfSpace back;
+    add_term(back, base + n - 2, last);
+    add_term(back, base + n - 1, -last);
+    back.b = -s.slope_max;
+    finish(back, spaces);
+  }
+  for (std::size_t a = 0; a < slices.size(); ++a) {
+    for (std::size_t b = a + 1; b < slices.size(); ++b) {
+      add_calendar(slices, a, b, offset, spaces);
+    }
+  }
+  if (!dykstra_sparse(x, lo, hi, spaces)) return false;
+  for (std::size_t m = 0; m < slices.size(); ++m) {
+    std::copy_n(x.begin() + static_cast<std::ptrdiff_t>(offset[m]), slices[m].prices.size(),
+                slices[m].prices.begin());
+  }
+  return true;
 }
 
 Status check_american_calendar(const AmericanPriceSlice &earlier, const AmericanPriceSlice &later) {

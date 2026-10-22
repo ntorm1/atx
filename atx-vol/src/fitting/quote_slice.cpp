@@ -349,6 +349,8 @@ const char *to_string(QuoteSliceEvaluationStatus value) noexcept {
     return "pricing_failure";
   case QuoteSliceEvaluationStatus::PriceOnly:
     return "price_only";
+  case QuoteSliceEvaluationStatus::MarketDistanceFailure:
+    return "market_distance_failure";
   }
   return "unknown";
 }
@@ -1760,7 +1762,11 @@ Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {
        config.wing_mult_source != QuoteSliceWingMultSource::Market) ||
       config.max_nodes < 1 || !positive(config.max_vol_move) ||
       !nonnegative(config.immaterial_price_move) || !nonnegative(config.box_half_ticks) ||
-      !positive(config.box_tick)) {
+      !positive(config.box_tick) ||
+      (config.market_distance != QuoteSliceMarketDistance::Off &&
+       config.market_distance != QuoteSliceMarketDistance::Gate &&
+       config.market_distance != QuoteSliceMarketDistance::Repair) ||
+      !nonnegative(config.market_distance_spreads)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel repair configuration");
   }
   return Ok();
@@ -2109,6 +2115,296 @@ bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
     return false;
   }
   commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
+  return true;
+}
+
+// ── Distance to market (lane L3q, 2026-10-21; QuoteSliceMarketDistance Repair) ──
+
+namespace {
+
+// Boxes of the in-box market repair: every node side's own quote channel
+// (node_channels) widened by `widen` spreads, s = max(ask - bid, tick) (bidless:
+// [0, ask + widen s]); a side without a valid quote is held at its price.
+std::vector<AmericanPriceBox> market_boxes(std::span<const AmericanPriceNode> nodes,
+                                           std::span<const QuoteSliceQuote> quotes,
+                                           double widen, double tick) {
+  const NodeChannels channel = node_channels(nodes, quotes);
+  std::vector<AmericanPriceBox> boxes(nodes.size());
+  const auto edges = [widen, tick](double bid, double ask, double price, double &lo,
+                                   double &hi) {
+    if (!std::isfinite(ask)) {
+      lo = price;
+      hi = price;
+      return;
+    }
+    const double bid_edge = std::max(bid, 0.0);
+    const double h = widen * std::max(ask - bid_edge, tick);
+    lo = bid_edge > 0.0 ? std::max(bid_edge - h, 0.0) : 0.0;
+    hi = ask + h;
+  };
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    edges(channel.call_lo[i], channel.call_hi[i], nodes[i].call, boxes[i].call_lo,
+          boxes[i].call_hi);
+    edges(channel.put_lo[i], channel.put_hi[i], nodes[i].put, boxes[i].put_lo, boxes[i].put_hi);
+  }
+  return boxes;
+}
+
+// Projects both sides of `nodes` onto `boxes` (box_edges: intersected with the hard
+// bounds) and the calendar clamp, then lowers any residual certificate violation
+// onto its envelope. False when a box is empty or a projection does not settle.
+bool project_in_boxes(std::vector<AmericanPriceNode> &nodes,
+                      std::span<const AmericanPriceBox> boxes, const AmericanPriceBounds &bounds,
+                      const CalendarClamp &clamp) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Project);
+  counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::projections);
+  std::vector<double> strikes(nodes.size());
+  for (std::size_t i = 0; i < nodes.size(); ++i) strikes[i] = nodes[i].strike;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  std::vector<double> w;
+  std::vector<double> p(nodes.size());
+  for (const Side side : {Side::Call, Side::Put}) {
+    const bool call = side == Side::Call;
+    box_edges(nodes, side, boxes, bounds, lo, hi, w);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      lo[i] = std::max(lo[i], call ? clamp.floor_call[i] : clamp.floor_put[i]);
+      hi[i] = std::min(hi[i], call ? clamp.cap_call[i] : clamp.cap_put[i]);
+      p[i] = call ? nodes[i].call : nodes[i].put;
+    }
+    const double slope_min = call ? -bounds.discount_max : 0.0;
+    const double slope_max = call ? 0.0 : bounds.discount_max;
+    if (!project_convex_price_box(strikes, p, lo, hi, w, slope_min, slope_max)) return false;
+    for (std::size_t i = 0; i < nodes.size(); ++i) (call ? nodes[i].call : nodes[i].put) = p[i];
+  }
+  std::vector<std::uint8_t> lowered;
+  lower_violators(nodes, bounds.spot, lowered);
+  return true;
+}
+
+// check_american_calendar of `repaired` against every fixed earlier / later slice.
+bool calendar_consistent(const AmericanPriceSlice &repaired,
+                         std::span<const AmericanPriceSlice *const> earlier,
+                         std::span<const AmericanPriceSlice *const> later) {
+  for (const AmericanPriceSlice *slice : earlier) {
+    if (!check_american_calendar(*slice, repaired)) return false;
+  }
+  for (const AmericanPriceSlice *slice : later) {
+    if (!check_american_calendar(repaired, *slice)) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+bool repair_quote_slice_market(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+                               std::span<const AmericanPriceSlice *const> earlier,
+                               std::span<const AmericanPriceSlice *const> later,
+                               const QuoteSliceRepairConfig &config,
+                               QuoteSliceRepairRecord *record) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
+  QuoteSliceRepairRecord local;
+  QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
+  out = QuoteSliceRepairRecord{};
+  if (!fit.prices || fit.rows.size() != quotes.size() ||
+      !nonnegative(config.immaterial_price_move) || !positive(config.box_tick) ||
+      !nonnegative(config.market_distance_spreads)) {
+    return false;
+  }
+  const auto original = fit.prices->nodes();
+  const AmericanPriceBounds bounds = fit.prices->bounds();
+  CalendarClamp clamp;
+  if (!calendar_clamp(fit, original, earlier, later, clamp)) {
+    out.outcome = QuoteSliceRepairOutcome::Infeasible;
+    return false;
+  }
+  // The quotes themselves first; the bound's band only when no arbitrage-free curve
+  // fits inside them.
+  for (const double widen : {0.0, config.market_distance_spreads}) {
+    if (widen == 0.0 && out.outcome != QuoteSliceRepairOutcome::NotAttempted) break; // bound 0
+    std::vector<AmericanPriceNode> nodes(original.begin(), original.end());
+    if (!project_in_boxes(nodes, market_boxes(nodes, quotes, widen, config.box_tick), bounds,
+                          clamp)) {
+      out.outcome = QuoteSliceRepairOutcome::Infeasible;
+      continue;
+    }
+    std::vector<std::uint8_t> moved;
+    out.outcome = measure_move(original, nodes, config.immaterial_price_move, moved, out);
+    if (out.outcome != QuoteSliceRepairOutcome::Applied || out.material_nodes == 0) {
+      out.outcome = QuoteSliceRepairOutcome::NoMove; // an immaterial move serves nothing new
+      continue;
+    }
+    auto certified = AmericanPriceSlice::create(nodes, bounds);
+    if (!above_floors(fit, nodes, clamp) || !certified ||
+        !calendar_consistent(*certified, earlier, later)) {
+      out.outcome = QuoteSliceRepairOutcome::NotCertified;
+      continue;
+    }
+    commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
+    return true;
+  }
+  return false;
+}
+
+namespace {
+
+// One member of a joint calendar repair while it is projected: its nodes, strikes,
+// quote boxes, fixed-neighbour clamp and certificate bounds.
+struct JointWork {
+  std::size_t member = 0;
+  std::vector<AmericanPriceNode> nodes;
+  std::vector<double> strikes;
+  std::vector<AmericanPriceBox> boxes;
+  CalendarClamp clamp;
+  AmericanPriceBounds bounds{};
+  std::vector<const AmericanPriceSlice *> earlier; // fixed neighbours
+  std::vector<const AmericanPriceSlice *> later;
+};
+
+// The fixed-neighbour clamp and quote boxes of one member; false when the fixed
+// neighbours already disagree at its nodes.
+bool prepare_joint(const QuoteSliceJointMember &m, std::span<const QuoteSliceCalendarNeighbour> fixed,
+                   double h, JointWork &w) {
+  const QuoteSliceFit &fit = *m.fit;
+  const auto nodes = fit.prices->nodes();
+  w.nodes.assign(nodes.begin(), nodes.end());
+  w.strikes.resize(w.nodes.size());
+  for (std::size_t i = 0; i < w.nodes.size(); ++i) w.strikes[i] = w.nodes[i].strike;
+  w.bounds = fit.prices->bounds();
+  for (const QuoteSliceCalendarNeighbour &n : fixed) {
+    (n.calendar_years < fit.market.calendar_years ? w.earlier : w.later).push_back(n.prices);
+  }
+  w.boxes = quote_boxes(w.nodes, m.quotes, h);
+  return calendar_clamp(fit, w.nodes, w.earlier, w.later, w.clamp);
+}
+
+// One side's box of a member: its quote box widened to contain the node's current
+// price, intersected with the hard bounds (box_edges) and the fixed clamp. False
+// when a box is empty beyond the certificate allowance.
+bool joint_box(const JointWork &w, Side side, std::vector<double> &lo, std::vector<double> &hi,
+               std::vector<double> &p) {
+  const bool call = side == Side::Call;
+  std::vector<double> weights;
+  box_edges(w.nodes, side, w.boxes, w.bounds, lo, hi, weights);
+  p.resize(w.nodes.size());
+  for (std::size_t i = 0; i < w.nodes.size(); ++i) {
+    p[i] = call ? w.nodes[i].call : w.nodes[i].put;
+    lo[i] = std::max(std::min(lo[i], p[i]), call ? w.clamp.floor_call[i] : w.clamp.floor_put[i]);
+    hi[i] = std::min(std::max(hi[i], p[i]), call ? w.clamp.cap_call[i] : w.clamp.cap_put[i]);
+    if (lo[i] > hi[i]) {
+      if (lo[i] - hi[i] > certificate_tolerance(w.bounds.spot, w.strikes[i])) return false;
+      lo[i] = hi[i];
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> members,
+                                       std::span<const QuoteSliceCalendarNeighbour> fixed,
+                                       const QuoteSliceRepairConfig &config,
+                                       std::vector<std::size_t> *moved,
+                                       QuoteSliceRepairRecord *record) {
+  const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
+  QuoteSliceRepairRecord local;
+  QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
+  out = QuoteSliceRepairRecord{};
+  if (members.size() < 2u || !nonnegative(config.immaterial_price_move)) return false;
+  for (const QuoteSliceJointMember &m : members) {
+    if (m.fit == nullptr || !m.fit->prices || m.fit->rows.size() != m.quotes.size()) return false;
+  }
+  for (const QuoteSliceCalendarNeighbour &n : fixed) {
+    if (n.prices == nullptr) return false;
+  }
+  const double h = config.certificate == QuoteSliceCertificate::Box
+                       ? config.box_half_ticks * config.box_tick
+                       : 0.0;
+  // Members in maturity order (earlier first), as project_calendar_joint requires.
+  std::vector<JointWork> work(members.size());
+  for (std::size_t i = 0; i < members.size(); ++i) work[i].member = i;
+  std::sort(work.begin(), work.end(), [&](const JointWork &a, const JointWork &b) {
+    return members[a.member].fit->market.calendar_years <
+           members[b.member].fit->market.calendar_years;
+  });
+  for (JointWork &w : work) {
+    if (!prepare_joint(members[w.member], fixed, h, w)) {
+      out.outcome = QuoteSliceRepairOutcome::Infeasible;
+      return false;
+    }
+  }
+  std::vector<std::vector<double>> lo(work.size());
+  std::vector<std::vector<double>> hi(work.size());
+  std::vector<std::vector<double>> p(work.size());
+  std::vector<JointPriceSide> sides(work.size());
+  for (const Side side : {Side::Call, Side::Put}) {
+    const bool call = side == Side::Call;
+    for (std::size_t s = 0; s < work.size(); ++s) {
+      if (!joint_box(work[s], side, lo[s], hi[s], p[s])) {
+        out.outcome = QuoteSliceRepairOutcome::Infeasible;
+        return false;
+      }
+      const double dmax = work[s].bounds.discount_max;
+      sides[s] = JointPriceSide{work[s].strikes, p[s], lo[s], hi[s], call ? -dmax : 0.0,
+                                call ? 0.0 : dmax, work[s].bounds.spot};
+    }
+    if (!project_calendar_joint(sides)) {
+      out.outcome = QuoteSliceRepairOutcome::Infeasible;
+      return false;
+    }
+    for (std::size_t s = 0; s < work.size(); ++s) {
+      for (std::size_t i = 0; i < work[s].nodes.size(); ++i) {
+        (call ? work[s].nodes[i].call : work[s].nodes[i].put) = p[s][i];
+      }
+    }
+  }
+  // Certify every member, then every calendar pair (fixed neighbours and members).
+  std::vector<std::optional<AmericanPriceSlice>> certified(work.size());
+  for (std::size_t s = 0; s < work.size(); ++s) {
+    auto slice = AmericanPriceSlice::create(work[s].nodes, work[s].bounds);
+    if (!slice || !above_floors(*members[work[s].member].fit, work[s].nodes, work[s].clamp) ||
+        !calendar_consistent(*slice, work[s].earlier, work[s].later)) {
+      out.outcome = QuoteSliceRepairOutcome::NotCertified;
+      return false;
+    }
+    certified[s] = std::move(*slice);
+  }
+  for (std::size_t a = 0; a < work.size(); ++a) {
+    for (std::size_t b = a + 1; b < work.size(); ++b) {
+      if (!check_american_calendar(*certified[a], *certified[b])) {
+        out.outcome = QuoteSliceRepairOutcome::NotCertified;
+        return false;
+      }
+    }
+  }
+  if (moved != nullptr) moved->assign(members.size(), 0);
+  std::vector<std::vector<std::uint8_t>> flags(work.size());
+  bool any = false;
+  for (std::size_t s = 0; s < work.size(); ++s) {
+    QuoteSliceRepairRecord one;
+    const auto original = members[work[s].member].fit->prices->nodes();
+    if (measure_move(original, work[s].nodes, config.immaterial_price_move, flags[s], one) ==
+        QuoteSliceRepairOutcome::Applied) {
+      any = true;
+      out.nodes += one.nodes;
+      out.material_nodes += one.material_nodes;
+      out.max_price_move = std::max(out.max_price_move, one.max_price_move);
+      if (moved != nullptr) (*moved)[work[s].member] = one.nodes;
+    }
+  }
+  if (!any) {
+    out.outcome = QuoteSliceRepairOutcome::NoMove;
+    return false;
+  }
+  for (std::size_t s = 0; s < work.size(); ++s) {
+    QuoteSliceFit &fit = *members[work[s].member].fit;
+    if (std::none_of(flags[s].begin(), flags[s].end(), [](std::uint8_t f) { return f != 0u; })) {
+      continue;
+    }
+    commit_calendar_repair(fit, members[work[s].member].quotes, std::move(*certified[s]),
+                           work[s].nodes, flags[s]);
+  }
+  out.outcome = QuoteSliceRepairOutcome::Applied;
   return true;
 }
 

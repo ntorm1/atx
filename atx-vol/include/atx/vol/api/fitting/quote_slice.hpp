@@ -293,6 +293,21 @@ enum class QuoteSliceWingMultSource : std::uint8_t { Policy, Market };
 inline constexpr double kQuoteSliceMarketWingMultMax = 6.0;
 inline constexpr double kQuoteSliceMarketWingMultMargin = 1.1;
 
+// Distance-to-market certificate of fit_quote_surface (lane L3q, 2026-10-21; opt-in).
+// Off (the historical default, bit for bit): a served row may sit any distance from
+// its quotes. Gate: after every calendar pass, a served row (Success or PriceOnly)
+// whose price lies more than `market_distance_spreads` spreads outside its own quote
+// (american_price_slice.hpp market_distance_spreads, the scorer's spread) is refused
+// ROW by row (QuoteSliceEvaluationStatus::MarketDistanceFailure); the slice and its
+// certified curve are unchanged, so every served subset stays arbitrage-free.
+// Repair: Gate, preceded by (1) a BIDIRECTIONAL calendar rung — a crossing no
+// one-sided repair absorbs is projected jointly with the accepted slices it crosses,
+// each inside its own quote boxes (repair_quote_slice_calendar_joint) — and (2) per
+// served slice with a row beyond the bound, an in-box repair onto [bid, ask], then
+// onto the bound's band, under the calendar clamp of every other served slice
+// (repair_quote_slice_market); moved nodes are re-implied exactly like any repair's.
+enum class QuoteSliceMarketDistance : std::uint8_t { Off, Gate, Repair };
+
 struct QuoteSliceRepairConfig {
   QuoteSliceRepairMode mode = QuoteSliceRepairMode::Off;
   std::size_t max_nodes = 16;            // >= 1
@@ -304,11 +319,16 @@ struct QuoteSliceRepairConfig {
   double box_tick = 0.01;      // > 0, finite, price units
   // Opt-in market wing ceiling (QuoteSliceWingMultSource); Policy is the historical path.
   QuoteSliceWingMultSource wing_mult_source = QuoteSliceWingMultSource::Policy;
+  // Opt-in distance-to-market gate / repair (QuoteSliceMarketDistance, lane L3q); Off is
+  // the historical path. The bound is in spreads (>= 0, finite; 0 = strict containment:
+  // every served row inside its quote); the spread floor is box_tick.
+  QuoteSliceMarketDistance market_distance = QuoteSliceMarketDistance::Off;
+  double market_distance_spreads = 1.0;
 };
 
-// InvalidArgument unless the mode, certificate and wing source are known and every
-// budget and box control is finite and in range. fit_quote_slice and
-// fit_quote_surface apply it before any fit.
+// InvalidArgument unless the mode, certificate, wing source and market-distance mode
+// are known and every budget, box control and bound is finite and in range.
+// fit_quote_slice and fit_quote_surface apply it before any fit.
 [[nodiscard]] Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config);
 
 enum class QuoteSliceRepairOutcome : std::uint8_t {
@@ -386,13 +406,17 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
 // for it (QuoteSliceFit::price_only_nodes), so a PriceOnly row is never served
 // with a volatility. InvalidVolatility is a curve without a positive volatility
 // at the strike; such a row carries neither price nor volatility.
+// MarketDistanceFailure (lane L3q, opt-in QuoteSliceMarketDistance Gate / Repair): the
+// slice is served but this row's certified price lies more than the bound outside its
+// own quote; the row carries its (unserved) price for diagnostics and no volatility.
 enum class QuoteSliceEvaluationStatus : std::uint8_t {
   Success,
   InvalidContract,
   NoFit,
   InvalidVolatility,
   PricingFailure,
-  PriceOnly
+  PriceOnly,
+  MarketDistanceFailure
 };
 enum class QuoteSliceFitStatus : std::uint8_t {
   Success, InsufficientQuotes, FitFailure, ArbitrageFailure
@@ -664,6 +688,61 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
     std::span<const AmericanPriceSlice *const> later, const QuoteSliceRepairConfig &budget,
     QuoteSliceRepairRecord *record = nullptr);
 
+// ── Distance to market (lane L3q, 2026-10-21; QuoteSliceMarketDistance Repair) ──
+
+// In-box market repair of one served slice: its certified node prices are projected
+// (project_convex_price_box, uniform weights) per side onto the quote boxes [bid, ask]
+// (bidless [0, ask]; a side without a valid quote held at its price) intersected with
+// the certificate's hard bounds and the calendar clamp of `earlier` / `later` (as
+// repair_quote_slice_calendar_in_channel); when no arbitrage-free curve fits those
+// boxes, once more onto the bound's band [bid - b s, ask + b s] (b =
+// config.market_distance_spreads, s = max(ask - bid, config.box_tick)). The result
+// must move some node by more than config.immaterial_price_move, pass the unchanged
+// certificate and check_american_calendar against every slice in `earlier` and
+// `later`; it is then committed exactly as a calendar repair (fit.prices, row prices,
+// moved nodes re-implied or PriceOnly, fit.moved_nodes) and true is returned.
+// Otherwise `fit` is unchanged. `record` (nullable) receives the outcome and moves.
+[[nodiscard]] bool repair_quote_slice_market(QuoteSliceFit &fit,
+                                             std::span<const QuoteSliceQuote> quotes,
+                                             std::span<const AmericanPriceSlice *const> earlier,
+                                             std::span<const AmericanPriceSlice *const> later,
+                                             const QuoteSliceRepairConfig &config,
+                                             QuoteSliceRepairRecord *record = nullptr);
+
+// One slice of a bidirectional calendar repair: its fit (certified prices, non-null)
+// and its quotes (the fit's row order).
+struct QuoteSliceJointMember {
+  QuoteSliceFit *fit = nullptr;
+  std::span<const QuoteSliceQuote> quotes;
+};
+
+// An accepted slice that stays fixed during a bidirectional repair, with its
+// calendar maturity (it is a floor for later members and a cap for earlier ones).
+struct QuoteSliceCalendarNeighbour {
+  const AmericanPriceSlice *prices = nullptr;
+  double calendar_years = 0.0;
+};
+
+// Bidirectional calendar repair (lane L3q): the members' certified prices (distinct
+// maturities, any order) are projected JOINTLY per side (project_calendar_joint) —
+// each member inside its own boxes, the quote boxes [bid - h, ask + h] (h =
+// config.box_half_ticks * config.box_tick under QuoteSliceCertificate::Box, else 0;
+// bidless [0, ask + h]; unquoted sides held) widened to contain the node's current
+// price (no node ends farther outside its quote than it started), intersected with
+// the hard bounds and the calendar clamp of the `fixed` neighbours — subject to every
+// member being convex with the certificate's end slopes and calendar-ordered against
+// every other member. Accepted only
+// when every member then passes the unchanged certificate and check_american_calendar
+// against every other member and every fixed neighbour; then each member that moved
+// is committed as a calendar repair, its moved node count written to `moved` (one
+// entry per member, nullable), and true is returned. Otherwise no member changes.
+// `record` (nullable) receives the outcome, the summed node counts and the largest
+// move over all members. Bounded: one projection per side.
+[[nodiscard]] bool repair_quote_slice_calendar_joint(
+    std::span<const QuoteSliceJointMember> members,
+    std::span<const QuoteSliceCalendarNeighbour> fixed, const QuoteSliceRepairConfig &config,
+    std::vector<std::size_t> *moved = nullptr, QuoteSliceRepairRecord *record = nullptr);
+
 // ── Graded admission over one valuation surface ──────────────────────────────
 
 // Confidence grade carried by every served expiry.
@@ -829,6 +908,19 @@ struct QuoteSurfaceSlice {
   std::string knot_error;
   double outside_fraction = 0.0;
   std::size_t outside_quotes = 0;
+  // Distance-to-market provenance (QuoteSliceMarketDistance, lane L3q; defaults when
+  // Off): served rows the gate measured (a valid quote and a price), the rows it
+  // refused, the largest distance in spreads before the in-box repair and after it
+  // (the served maximum is at most the bound), the in-box repair's record, whether
+  // the slice was admitted by the bidirectional calendar rung, and how many of its
+  // nodes such a rung moved while it was a fixed-maturity partner of another slice.
+  std::size_t market_checked_rows = 0;
+  std::size_t market_gated_rows = 0;
+  double market_max_spreads = 0.0;
+  double market_max_spreads_after = 0.0;
+  QuoteSliceRepairRecord market_repair{};
+  bool calendar_joint_repaired = false;
+  std::size_t calendar_joint_partner_moves = 0;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation

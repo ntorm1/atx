@@ -719,6 +719,25 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         count_into(graded["ladder_fallback_chains"][to_string(slice.ladder_fallback)], grade);
       }
       if (timed) entry["timing"] = timing_json(trace->chains[s]);
+      if (profile.config.repair.market_distance != QuoteSliceMarketDistance::Off) {
+        // Opt-in distance-to-market provenance (lane L3q); absent when off.
+        entry["market_distance"] = {
+            {"checked_rows", slice.market_checked_rows},
+            {"gated_rows", slice.market_gated_rows},
+            {"max_spreads", slice.market_max_spreads},
+            {"max_spreads_after", slice.market_max_spreads_after},
+            {"repair", repair_json(slice.market_repair)},
+            {"calendar_joint_repaired", slice.calendar_joint_repaired},
+            {"calendar_last_channel_repair", repair_json(slice.calendar_channel_repair)},
+            {"calendar_joint_partner_moves", slice.calendar_joint_partner_moves}};
+        count_into(graded["market_distance"], "gated_rows", slice.market_gated_rows);
+        if (slice.market_repair.outcome == QuoteSliceRepairOutcome::Applied) {
+          count_into(graded["market_distance"], "repaired_chains");
+        }
+        if (slice.calendar_joint_repaired) {
+          count_into(graded["market_distance"], "calendar_joint_chains");
+        }
+      }
       graded["slices"].push_back(std::move(entry));
       count_into(graded["chains"], grade);
       if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);
