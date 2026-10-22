@@ -1,6 +1,7 @@
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -586,6 +587,204 @@ std::optional<double> AmericanPriceSlice::price(double strike, Side side) const 
   const auto left = right - 1;
   const double fraction = (strike - left->strike) / (right->strike - left->strike);
   return std::lerp(value(*left), value(*right), fraction);
+}
+
+// ── Box certificate (lane L3r1 dense-certificate, 2026-10-20) ──────────────
+
+bool project_convex_price_box(std::span<const double> strikes, std::span<double> prices,
+                              std::span<const double> lo, std::span<const double> hi,
+                              std::span<const double> weights, double slope_min,
+                              double slope_max) {
+  constexpr int kMaxSweeps = 20000;
+  const std::size_t n = prices.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!(lo[i] <= hi[i])) return false;
+  }
+  if (n < 2u) return true;
+  // Half-space j: sum_k a_jk p_k >= b_j over three (convexity) or two (slope)
+  // consecutive nodes starting at first[j].
+  struct HalfSpace {
+    std::size_t first;
+    std::size_t count;
+    std::array<double, 3> a;
+    double b;
+    double norm; // a W^-1 a
+    double mu;   // Dykstra multiplier, >= 0
+  };
+  std::vector<HalfSpace> spaces;
+  spaces.reserve(n);
+  const auto inverse_norm = [&](HalfSpace &h) {
+    h.norm = 0.0;
+    for (std::size_t k = 0; k < h.count; ++k) h.norm += h.a[k] * h.a[k] / weights[h.first + k];
+  };
+  for (std::size_t i = 1; i + 1 < n; ++i) {
+    const double left = 1.0 / (strikes[i] - strikes[i - 1]);
+    const double right = 1.0 / (strikes[i + 1] - strikes[i]);
+    HalfSpace h{i - 1, 3, {left, -(left + right), right}, 0.0, 0.0, 0.0};
+    inverse_norm(h);
+    spaces.push_back(h);
+  }
+  const double first_width = 1.0 / (strikes[1] - strikes[0]);
+  const double last_width = 1.0 / (strikes[n - 1] - strikes[n - 2]);
+  HalfSpace first{0, 2, {-first_width, first_width, 0.0}, slope_min, 0.0, 0.0};
+  HalfSpace last{n - 2, 2, {last_width, -last_width, 0.0}, -slope_max, 0.0, 0.0};
+  inverse_norm(first);
+  inverse_norm(last);
+  spaces.push_back(first);
+  spaces.push_back(last);
+  std::vector<double> box(n, 0.0);
+  double scale = 1.0;
+  for (const double value : prices) scale = std::max(scale, std::abs(value));
+  const double tolerance = 1.0e-13 * scale;
+  for (int sweep = 0; sweep < kMaxSweeps; ++sweep) {
+    double change = 0.0;
+    for (HalfSpace &h : spaces) {
+      double dot = 0.0;
+      for (std::size_t k = 0; k < h.count; ++k) dot += h.a[k] * prices[h.first + k];
+      const double mu = std::max(0.0, h.mu + (h.b - dot) / h.norm);
+      const double step = mu - h.mu;
+      if (step == 0.0) continue;
+      h.mu = mu;
+      for (std::size_t k = 0; k < h.count; ++k) {
+        const double delta = step * h.a[k] / weights[h.first + k];
+        prices[h.first + k] += delta;
+        change = std::max(change, std::abs(delta));
+      }
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      const double z = prices[i] + box[i];
+      const double clamped = std::clamp(z, lo[i], hi[i]);
+      change = std::max(change, std::abs(clamped - prices[i]));
+      box[i] = z - clamped;
+      prices[i] = clamped;
+    }
+    if (change <= tolerance) return true;
+  }
+  return false;
+}
+
+namespace {
+
+// Greatest convex minorant of `upper` on `strikes` (the pointwise largest convex
+// function below the upper edges), written to `minorant`. A convex curve inside
+// [lower, upper] exists iff this minorant dominates `lower`: every convex p <=
+// upper satisfies p <= minorant, and the minorant itself is admissible then.
+void convex_minorant(std::span<const double> strikes, std::span<const double> upper,
+                     std::vector<std::size_t> &hull, std::span<double> minorant) {
+  hull.clear();
+  for (std::size_t i = 0; i < strikes.size(); ++i) {
+    while (hull.size() >= 2u) {
+      const std::size_t l = hull[hull.size() - 2u];
+      const std::size_t m = hull.back();
+      const double fraction = (strikes[m] - strikes[l]) / (strikes[i] - strikes[l]);
+      if (upper[m] <= std::lerp(upper[l], upper[i], fraction)) break;
+      hull.pop_back();
+    }
+    hull.push_back(i);
+  }
+  for (std::size_t segment = 0; segment < hull.size(); ++segment) {
+    minorant[hull[segment]] = upper[hull[segment]];
+    if (segment == 0u) continue;
+    const std::size_t l = hull[segment - 1u];
+    const std::size_t r = hull[segment];
+    for (std::size_t i = l + 1u; i < r; ++i) {
+      const double fraction = (strikes[i] - strikes[l]) / (strikes[r] - strikes[l]);
+      minorant[i] = std::lerp(upper[l], upper[r], fraction);
+    }
+  }
+}
+
+[[nodiscard]] Status box_infeasible(std::size_t index, const char *reason) {
+  return Err(ErrorCode::Unavailable, "AmericanPriceSlice box: node " + std::to_string(index) +
+                                         ": no arbitrage-free curve inside the boxes (" +
+                                         reason + ")");
+}
+
+} // namespace
+
+Result<AmericanBoxCertificate> certify_american_box(std::span<const AmericanPriceNode> fitted,
+                                                    std::span<const AmericanPriceBox> boxes,
+                                                    const AmericanPriceBounds &bounds) {
+  if (!valid_bounds(bounds)) {
+    return Err(ErrorCode::InvalidArgument, "AmericanPriceSlice box: invalid carry bounds");
+  }
+  const std::size_t n = fitted.size();
+  if (n < 2u || boxes.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "AmericanPriceSlice box: at least two nodes and one box per node required");
+  }
+  const auto finite_box = [](double lo, double hi) noexcept {
+    return std::isfinite(lo) && std::isfinite(hi) && lo <= hi;
+  };
+  std::vector<double> strikes(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const AmericanPriceNode &node = fitted[i];
+    const AmericanPriceBox &box = boxes[i];
+    if (!std::isfinite(node.strike) || !(node.strike > 0.0) || !std::isfinite(node.call) ||
+        !std::isfinite(node.put) || (i > 0u && !(node.strike > fitted[i - 1u].strike)) ||
+        !finite_box(box.call_lo, box.call_hi) || !finite_box(box.put_lo, box.put_hi)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "AmericanPriceSlice box: node " + std::to_string(i) +
+                     ": finite increasing strikes, finite prices and boxes with lo <= hi "
+                     "required");
+    }
+    strikes[i] = node.strike;
+  }
+  std::vector<AmericanPriceNode> nodes(fitted.begin(), fitted.end());
+  std::vector<double> lo(n);
+  std::vector<double> hi(n);
+  std::vector<double> minorant(n);
+  std::vector<double> prices(n);
+  const std::vector<double> weights(n, 1.0);
+  std::vector<std::size_t> hull;
+  hull.reserve(n);
+  for (const Side side : {Side::Call, Side::Put}) {
+    const bool call = side == Side::Call;
+    for (std::size_t i = 0; i < n; ++i) {
+      const double k = strikes[i];
+      // The certificate's own per-node bounds are hard: the box is intersected
+      // with them (a quote below intrinsic or above the upper bound is no box).
+      const double intrinsic = std::max(call ? bounds.spot - k : k - bounds.spot, 0.0);
+      const double upper = call ? bounds.prepaid_max : k * bounds.discount_max;
+      lo[i] = std::max(call ? boxes[i].call_lo : boxes[i].put_lo, intrinsic);
+      hi[i] = std::min(call ? boxes[i].call_hi : boxes[i].put_hi, upper);
+      if (lo[i] > hi[i]) {
+        if (lo[i] - hi[i] > price_tolerance(bounds.spot, k)) {
+          ATX_TRY_VOID(box_infeasible(i, "box outside the exercise bounds"));
+        }
+        lo[i] = hi[i];
+      }
+      prices[i] = call ? nodes[i].call : nodes[i].put;
+    }
+    convex_minorant(strikes, hi, hull, minorant);
+    for (std::size_t i = 0; i < n; ++i) {
+      if (lo[i] - minorant[i] > price_tolerance(bounds.spot, strikes[i])) {
+        ATX_TRY_VOID(box_infeasible(i, "no convex curve inside the boxes"));
+      }
+    }
+    // Calls fall with slope >= -discount_max; puts rise with slope <= discount_max.
+    const double slope_min = call ? -bounds.discount_max : 0.0;
+    const double slope_max = call ? 0.0 : bounds.discount_max;
+    if (!project_convex_price_box(strikes, prices, lo, hi, weights, slope_min, slope_max)) {
+      ATX_TRY_VOID(box_infeasible(0u, "projection did not settle"));
+    }
+    for (std::size_t i = 0; i < n; ++i) (call ? nodes[i].call : nodes[i].put) = prices[i];
+  }
+  auto certified = AmericanPriceSlice::create(nodes, bounds);
+  if (!certified) {
+    return Err(certified.error().code(),
+               "AmericanPriceSlice box: in-box curve refused: " + certified.error().message());
+  }
+  AmericanBoxCertificate out{std::move(*certified), std::vector<std::uint8_t>(n, 0u), 0u, 0.0};
+  for (std::size_t i = 0; i < n; ++i) {
+    const double call = std::abs(nodes[i].call - fitted[i].call);
+    const double put = std::abs(nodes[i].put - fitted[i].put);
+    if (call > 0.0) out.moved[i] |= 1u;
+    if (put > 0.0) out.moved[i] |= 2u;
+    if (out.moved[i] != 0u) ++out.moved_nodes;
+    out.max_price_move = std::max({out.max_price_move, call, put});
+  }
+  return Ok(std::move(out));
 }
 
 Status check_american_calendar(const AmericanPriceSlice &earlier, const AmericanPriceSlice &later) {

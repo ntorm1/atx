@@ -1083,12 +1083,18 @@ private:
     return true;
   }
 
-  // Opt-in channel calendar repair (config.repair.mode == Channel), the same
-  // contract as repair(); it runs only after the bounded-move repair and the
+  // Opt-in channel calendar repair (config.repair.mode == Channel, or — lane
+  // L3r1 — its box-constrained form under QuoteSliceCertificate::Box: the quote
+  // boxes instead of the fitted-widened channels, no budget), the same contract
+  // as repair(); it runs only after the bounded-move repair and the
   // stronger-prior retry have both failed.
   [[nodiscard]] bool repair_in_channel(QuoteSliceFit &fit, std::size_t i,
                                        const std::vector<std::size_t> &accepted) {
-    if (config_.repair.mode != QuoteSliceRepairMode::Channel || !fit.prices) return false;
+    if ((config_.repair.mode != QuoteSliceRepairMode::Channel &&
+         config_.repair.certificate != QuoteSliceCertificate::Box) ||
+        !fit.prices) {
+      return false;
+    }
     std::vector<const AmericanPriceSlice *> earlier;
     std::vector<const AmericanPriceSlice *> later;
     neighbours(fit, accepted, earlier, later);

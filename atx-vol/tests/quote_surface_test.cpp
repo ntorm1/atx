@@ -880,6 +880,201 @@ TEST(QuoteSliceChannel, RepairRefusesWhenNoConvexPriceSetFitsInsideTheQuotes) {
       << to_string(fit->diagnostics.repair.outcome);
 }
 
+// ── Opt-in box certificate (lane L3r1 dense-certificate, 2026-10-20) ────────
+
+QuoteSliceConfig box_certificate_config(double half_ticks = 0.5) {
+  QuoteSliceConfig config;
+  config.repair.certificate = QuoteSliceCertificate::Box;
+  config.repair.box_half_ticks = half_ticks;
+  return config;
+}
+
+TEST(QuoteSliceBoxCertificate, ServesAMicroKinkedPointFitInsideTheWidenedQuotes) {
+  // The same micro-kinked zig-zag the exact certificate refuses (above). Under
+  // the box certificate the fitted prices are projected into every quote's
+  // [bid - h, ask + h] and the UNCHANGED certificate passes the projected
+  // curve; there is no node budget, the channel repair stays off.
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05);
+  const auto exact = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(exact) << exact.error().to_string();
+  ASSERT_EQ(exact->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << exact->fit_error;
+  EXPECT_EQ(exact->diagnostics.box.outcome, QuoteSliceRepairOutcome::NotAttempted);
+  const auto config = box_certificate_config();
+  const auto on = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  const auto &record = on->diagnostics.box;
+  ASSERT_EQ(on->fit_status, QuoteSliceFitStatus::Success)
+      << on->fit_error << " box " << to_string(record.outcome);
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(record.nodes, 0u);
+  EXPECT_GT(record.max_price_move, 0.0);
+  EXPECT_EQ(on->diagnostics.repair.outcome, QuoteSliceRepairOutcome::NotAttempted);
+  ASSERT_TRUE(on->prices);
+  EXPECT_TRUE(AmericanPriceSlice::create(on->prices->nodes(), on->prices->bounds()));
+  EXPECT_FALSE(on->moved_nodes.empty());
+  expect_moved_nodes_reimplied(*on, c.quotes);
+  // Every served price lies inside its own quote widened by h on each side.
+  const double h = config.repair.box_half_ticks * config.repair.box_tick;
+  std::size_t served = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    const auto &row = on->rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+        row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+      continue;
+    }
+    ++served;
+    EXPECT_GE(row.fitted_price, c.quotes[i].bid - h) << i;
+    EXPECT_LE(row.fitted_price, c.quotes[i].ask + h) << i;
+  }
+  EXPECT_EQ(served, c.quotes.size());
+  // No widening: the market's exact [bid, ask] boxes still hold a curve.
+  const auto tight = fit_quote_slice(c.market, c.quotes, box_certificate_config(0.0));
+  ASSERT_TRUE(tight) << tight.error().to_string();
+  EXPECT_EQ(tight->fit_status, QuoteSliceFitStatus::Success) << tight->fit_error;
+}
+
+TEST(QuoteSliceBoxCertificate, RefusesWhenNoArbitrageFreeCurveFitsInsideTheQuotes) {
+  // The carry zig-zag far wider than the one-cent quotes: no convex curve lies
+  // inside the boxes even widened by half a tick, so the slice stays refused
+  // and the record says why.
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.005, 0.015, 0.0);
+  const auto fit = fit_quote_slice(c.market, c.quotes, box_certificate_config());
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << fit->fit_error;
+  EXPECT_FALSE(fit->prices);
+  EXPECT_EQ(fit->diagnostics.box.outcome, QuoteSliceRepairOutcome::Infeasible)
+      << to_string(fit->diagnostics.box.outcome);
+  // The exact certificate's error is what the refusal reports.
+  EXPECT_NE(fit->fit_error.find("AmericanPriceSlice"), std::string::npos) << fit->fit_error;
+}
+
+TEST(QuoteSurface, BoxCertificateServesThePassAFitAsGradeBWithoutARepairRung) {
+  // Under graded admission the box certificate acts at pass A (it is the
+  // certificate, not a fallback rung): the micro-kinked expiry serves from its
+  // own point fit, relabelled B because its served prices left the fit.
+  std::vector<Chain> one{zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05)};
+  const auto exact = fit_quote_surface(expiries(one), QuoteSliceConfig{});
+  ASSERT_TRUE(exact) << exact.error().to_string();
+  ASSERT_EQ(exact->size(), 1u);
+  EXPECT_EQ((*exact)[0].grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ((*exact)[0].refusal, "arbitrage_failure");
+  const auto box = fit_quote_surface(expiries(one), box_certificate_config());
+  ASSERT_TRUE(box) << box.error().to_string();
+  ASSERT_EQ(box->size(), 1u);
+  const QuoteSurfaceSlice &slice = (*box)[0];
+  EXPECT_TRUE(slice.refusal.empty()) << slice.refusal << ": " << slice.error;
+  EXPECT_EQ(slice.grade, QuoteSliceGrade::B);
+  EXPECT_FALSE(slice.channel_refit);
+  EXPECT_FALSE(slice.repair_rung);
+  EXPECT_EQ(slice.fit.diagnostics.box.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_FALSE(slice.fit.moved_nodes.empty());
+}
+
+TEST(QuoteSliceBoxCertificate, ConfigurationIsValidatedAtTheSharedBoundary) {
+  QuoteSliceRepairConfig config;
+  EXPECT_TRUE(validate_quote_slice_repair(config));
+  config.certificate = QuoteSliceCertificate::Box;
+  EXPECT_TRUE(validate_quote_slice_repair(config));
+  config.box_half_ticks = -0.5;
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.box_half_ticks = 0.0;
+  config.box_tick = 0.0;
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.box_tick = 0.01;
+  config.certificate = static_cast<QuoteSliceCertificate>(9);
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+}
+
+// ── Opt-in market wing ceiling (lane L3r1 lever 3, 2026-10-21) ──────────────
+
+// American quotes (three-month, 2 % relative half-spread, one-cent floor) on an
+// arbitrage-free put wing that saturates far from the money:
+// sigma(k) = atm + amplitude * (1 - exp(k / scale)) for k < 0, flat atm above.
+// Its far-wing multiple approaches (atm + amplitude) / atm while the slope stays
+// mild where the wing is far out of the money.
+Chain wing_chain(double atm, double amplitude, double scale) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, 0.25, 0.25, 0.03, 0.01, 0.0};
+  for (int strike = 60; strike <= 120; strike += 5) {
+    const double k = std::log(static_cast<double>(strike) / 100.0);
+    const double sigma = k < 0.0 ? atm + amplitude * (1.0 - std::exp(k / scale)) : atm;
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(100.0, static_cast<double>(strike), 0.25, sigma, 0.03, 0.01, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.02);
+      out.quotes.push_back(
+          {static_cast<double>(strike), side, std::max(*price - spread, 0.0), *price + spread});
+    }
+  }
+  return out;
+}
+
+// The 60 put: the outermost (two-sided) strike of the put wing.
+std::size_t outermost_put(const Chain &c) {
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].side == Side::Put && c.quotes[i].strike == 60.0) return i;
+  }
+  ADD_FAILURE() << "no 60 put";
+  return 0;
+}
+
+TEST(QuoteSliceChannel, MarketWingCeilingServesAWingTheThreeTimesAtmClampCuts) {
+  // At K = 60 the market volatility is ~4 x ATM. The policy ceiling (mult_ceil
+  // 3) clamps the served knot spline onto 3 x ATM from K = 75 outwards; the
+  // clamp's concave kink fails the price certificate (convexity), so the whole
+  // slice is refused. The market ceiling lifts it to 1.1 x the market's own
+  // outermost two-sided multiple: the slice certifies and every put of the wing
+  // is served inside its quote.
+  const auto c = wing_chain(0.12, 0.45, 0.3);
+  auto config = channel_config();
+  const auto policy = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(policy) << policy.error().to_string();
+  EXPECT_EQ(policy->diagnostics.channel.wing_mult_cap, 0.0);
+  EXPECT_EQ(policy->fit_status, QuoteSliceFitStatus::ArbitrageFailure) << policy->fit_error;
+  EXPECT_NE(policy->fit_error.find("convexity"), std::string::npos) << policy->fit_error;
+  config.repair.wing_mult_source = QuoteSliceWingMultSource::Market;
+  const auto market = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(market) << market.error().to_string();
+  ASSERT_EQ(market->fit_status, QuoteSliceFitStatus::Success) << market->fit_error;
+  const double cap = market->diagnostics.channel.wing_mult_cap;
+  EXPECT_GT(cap, 4.0);
+  EXPECT_LT(cap, kQuoteSliceMarketWingMultMax);
+  std::size_t wing_puts = 0;
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].side != Side::Put || c.quotes[i].strike > 80.0) continue;
+    const auto &row = market->rows[i];
+    ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << i;
+    EXPECT_GE(row.fitted_price, c.quotes[i].bid - 1.0e-9) << i;
+    EXPECT_LE(row.fitted_price, c.quotes[i].ask + 1.0e-9) << i;
+    ++wing_puts;
+  }
+  EXPECT_EQ(wing_puts, 5u);
+  EXPECT_GT(market->rows[outermost_put(c)].fitted_iv, 3.0 * 0.12);
+}
+
+TEST(QuoteSliceChannel, MarketWingCeilingIsBoundedAndNeverBelowThePolicyCeiling) {
+  // ~5.8 x ATM at K = 60 (x 1.1 > 6): the market ceiling stops at
+  // kQuoteSliceMarketWingMultMax.
+  const auto c = wing_chain(0.12, 0.8, 0.4);
+  auto config = channel_config();
+  config.repair.wing_mult_source = QuoteSliceWingMultSource::Market;
+  const auto bounded = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(bounded) << bounded.error().to_string();
+  EXPECT_EQ(bounded->diagnostics.channel.wing_mult_cap, kQuoteSliceMarketWingMultMax);
+  // A policy ceiling above the bound is kept: the market source only raises it.
+  config.channel.mult_ceil = 8.0;
+  const auto kept = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(kept) << kept.error().to_string();
+  EXPECT_EQ(kept->diagnostics.channel.wing_mult_cap, 8.0);
+  QuoteSliceRepairConfig invalid;
+  invalid.wing_mult_source = static_cast<QuoteSliceWingMultSource>(7);
+  EXPECT_FALSE(validate_quote_slice_repair(invalid));
+}
+
 TEST(QuoteSliceChannel, ChannelCalendarRepairLiftsACrossingInsideTheQuotes) {
   // An accepted earlier slice 0.2 cent above every node: a crossing inside
   // every channel (half-spreads >= 1 cent) but beyond 0.1 half-spreads.
@@ -919,6 +1114,46 @@ TEST(QuoteSliceChannel, ChannelCalendarRepairLiftsACrossingInsideTheQuotes) {
   }
   expect_moved_nodes_reimplied(fit, c.quotes);
   // A floor above every ask cannot be met inside the channels.
+  auto far = fitted();
+  const AmericanPriceSlice high = shifted_slice(far, 5.0);
+  const std::array<const AmericanPriceSlice *, 1> above{&high};
+  EXPECT_FALSE(repair_quote_slice_calendar_in_channel(far, c.quotes, above, {}, budget, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Infeasible);
+  EXPECT_TRUE(far.moved_nodes.empty());
+}
+
+TEST(QuoteSliceBoxCertificate, BoxCalendarRepairLiftsACrossingInsideTheQuotesWithoutABudget) {
+  // The same 0.2-cent crossing as above. Under the box certificate the calendar
+  // repair projects into the quote boxes (here h = 0: the exact [bid, ask]) and
+  // has no node budget: max_nodes 2 refuses the channel repair above, the box
+  // repair serves, every price inside its quote. A floor above every ask is
+  // outside the quotes: infeasible.
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  const auto fitted = [&] {
+    auto fit = fit_quote_slice(c.market, c.quotes);
+    EXPECT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+    return std::move(*fit);
+  };
+  auto fit = fitted();
+  const AmericanPriceSlice floor = shifted_slice(fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  QuoteSliceRepairConfig budget; // mode Off: the box certificate alone opens the repair
+  budget.max_nodes = 2;
+  budget.certificate = QuoteSliceCertificate::Box;
+  budget.box_half_ticks = 0.0;
+  QuoteSliceRepairRecord record;
+  ASSERT_TRUE(repair_quote_slice_calendar_in_channel(fit, c.quotes, earlier, {}, budget, &record))
+      << to_string(record.outcome);
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_EQ(record.nodes, floor.nodes().size());
+  EXPECT_GT(record.material_nodes, budget.max_nodes);
+  EXPECT_NEAR(record.max_price_move, 0.002, 1.0e-9);
+  EXPECT_TRUE(check_american_calendar(floor, *fit.prices));
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    EXPECT_GE(fit.rows[i].fitted_price, c.quotes[i].bid) << i;
+    EXPECT_LE(fit.rows[i].fitted_price, c.quotes[i].ask) << i;
+  }
+  expect_moved_nodes_reimplied(fit, c.quotes);
   auto far = fitted();
   const AmericanPriceSlice high = shifted_slice(far, 5.0);
   const std::array<const AmericanPriceSlice *, 1> above{&high};
@@ -1181,6 +1416,39 @@ TEST(QuoteSurface, ChannelCalendarRepairServesACrossingTheBoundedRepairAndRetryC
     EXPECT_LE(channel_distance(fixed.fit.rows[i].fitted_price, quote),
               channel_distance(point->rows[i].fitted_price, quote) + 1.0e-12)
         << i;
+  }
+}
+
+TEST(QuoteSurface, BoxCertificateOpensTheCalendarRepairInsideTheQuotesWithTheChannelRepairOff) {
+  // The crossing of the test above, with the channel repair OFF: the box
+  // certificate alone opens the calendar repair, now into the exact quote boxes
+  // (h = 0), so the later expiry serves inside every quote and the surface is
+  // calendar-consistent; under the exact certificate it stays refused.
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  QuoteSliceConfig exact;
+  exact.channel.min_channel_quotes = 100000;
+  const auto off = fit_quote_surface(expiries(chains), exact);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ((*off)[1].refusal, "calendar_arbitrage");
+  QuoteSliceConfig config = box_certificate_config(0.0);
+  config.channel.min_channel_quotes = 100000;
+  ASSERT_EQ(config.repair.mode, QuoteSliceRepairMode::Off);
+  const auto on = fit_quote_surface(expiries(chains), config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  const auto &fixed = (*on)[1];
+  ASSERT_EQ(fixed.grade, QuoteSliceGrade::B)
+      << fixed.refusal << " " << fixed.error << " box calendar repair "
+      << to_string(fixed.calendar_channel_repair.outcome);
+  EXPECT_TRUE(fixed.calendar_channel_repaired);
+  EXPECT_EQ(fixed.calendar_channel_repair.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(fixed.calendar_channel_repair.nodes, 0u);
+  EXPECT_FALSE(fixed.repair_rung);
+  expect_calendar_consistent(*on);
+  expect_moved_nodes_reimplied(fixed.fit, chains[1].quotes);
+  for (std::size_t i = 0; i < chains[1].quotes.size(); ++i) {
+    ASSERT_EQ(fixed.fit.rows[i].evaluation_status, QuoteSliceEvaluationStatus::Success) << i;
+    EXPECT_EQ(channel_distance(fixed.fit.rows[i].fitted_price, chains[1].quotes[i]), 0.0) << i;
   }
 }
 

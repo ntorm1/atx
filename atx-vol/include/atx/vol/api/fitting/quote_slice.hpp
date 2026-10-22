@@ -259,15 +259,56 @@ enum class QuoteSliceRepairMode : std::uint8_t { Off, Channel };
 // unchanged certificate then runs again; nothing about certification is
 // relaxed. Moved nodes are flagged in QuoteSliceFit::moved_nodes and re-implied
 // as for the other repairs.
+// Which question the price certificate answers (lane L3r1, 2026-10-20; opt-in).
+// Exact (the historical default, bit for bit): the fitted node prices themselves
+// must pass AmericanPriceSlice::create. Box: when they fail (and the bounded-move
+// and channel repairs, where enabled, have not fixed it), the fitted prices are
+// projected (american_price_slice.hpp certify_american_box: Dykstra, uniform
+// weights — the channel repair's projection) onto the certificate's strike
+// constraints intersected with every node side's QUOTE box [bid - h, ask + h]
+// (bidless: [0, ask + h]; a side without a quote is held at its fitted price),
+// h = box_half_ticks * box_tick, and the UNCHANGED certificate certifies that
+// curve P*. No node or volatility budget applies: the box is the budget, so P*
+// never leaves the market by more than h. P* is served where the exact curve
+// failed and P* passes; its moved nodes are flagged in QuoteSliceFit::moved_nodes
+// and re-implied exactly like a repair's (PriceOnly where the served price has no
+// volatility), and QuoteSliceDiagnostics::box records the move. The
+// non-monotone refusal, the nondividend joint check and every calendar rule
+// downstream are unchanged and act on P*. The box certificate runs wherever the
+// certificate runs (pass A included); it is a certificate, not a fallback rung.
+enum class QuoteSliceCertificate : std::uint8_t { Exact, Box };
+
+// Source of the native knot spline's served-multiple ceiling (lane L3r1 lever 3,
+// 2026-10-21; opt-in). Policy (the historical default, bit for bit): the channel's
+// mult_ceil. Market: after the channel solve the ceiling becomes
+// max(mult_ceil, min(kQuoteSliceMarketWingMultMax, kQuoteSliceMarketWingMultMargin x m)),
+// m = the larger of the market's own multiples (mid volatility, else the channel's
+// centre, over the fit's ATM reference) at the outermost two-sided channel quote of
+// each wing; without a two-sided quote the ceiling stays mult_ceil. Only the served
+// clamp moves (the channel solve never reads the ceiling), so a dense market wing near
+// 4 x ATM is served instead of being clamped onto 3 x, whose concave kink is a
+// convexity failure of the price certificate. Native knot spline only (`family`
+// unset); the term prior's multiples keep the policy ceiling.
+enum class QuoteSliceWingMultSource : std::uint8_t { Policy, Market };
+inline constexpr double kQuoteSliceMarketWingMultMax = 6.0;
+inline constexpr double kQuoteSliceMarketWingMultMargin = 1.1;
+
 struct QuoteSliceRepairConfig {
   QuoteSliceRepairMode mode = QuoteSliceRepairMode::Off;
   std::size_t max_nodes = 16;            // >= 1
   double max_vol_move = 0.01;            // > 0, volatility units
   double immaterial_price_move = 5.0e-4; // >= 0, price units
+  // Opt-in box certificate (QuoteSliceCertificate); Exact is the historical path.
+  QuoteSliceCertificate certificate = QuoteSliceCertificate::Exact;
+  double box_half_ticks = 0.5; // >= 0, finite: each box edge is widened by this many ticks
+  double box_tick = 0.01;      // > 0, finite, price units
+  // Opt-in market wing ceiling (QuoteSliceWingMultSource); Policy is the historical path.
+  QuoteSliceWingMultSource wing_mult_source = QuoteSliceWingMultSource::Policy;
 };
 
-// InvalidArgument unless the mode is known and every budget is finite and in
-// range. fit_quote_slice and fit_quote_surface apply it before any fit.
+// InvalidArgument unless the mode, certificate and wing source are known and every
+// budget and box control is finite and in range. fit_quote_slice and
+// fit_quote_surface apply it before any fit.
 [[nodiscard]] Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config);
 
 enum class QuoteSliceRepairOutcome : std::uint8_t {
@@ -408,6 +449,9 @@ struct QuoteSliceChannelDiagnostics {
   double repair_max_price = 0.0;
   double repair_max_half_spreads = 0.0;
   QuoteSlicePreScreen prescreen = QuoteSlicePreScreen::Pass; // Pass unless refused pre-solve
+  // Served-multiple ceiling set by QuoteSliceWingMultSource::Market (lane L3r1); 0 when
+  // the policy ceiling applies (Policy, or a channel family).
+  double wing_mult_cap = 0.0;
 };
 
 // The de-Americanised IV cache's part in one fit (QuoteSliceFitSpace::
@@ -448,6 +492,12 @@ struct QuoteSliceDiagnostics {
   QuoteSliceChannelDiagnostics channel{};
   // Channel repair of this slice's own certificate (QuoteSliceConfig::repair).
   QuoteSliceRepairRecord repair{};
+  // Box certificate of this slice's fitted prices (QuoteSliceRepairConfig::
+  // certificate Box): Applied with the price moves (max_vol_move is not
+  // measured: the box bounds the price), Infeasible when no arbitrage-free
+  // curve exists inside the quote boxes, NotCertified when the in-box curve
+  // failed a cross-side check; NotAttempted under Exact or a passed certificate.
+  QuoteSliceRepairRecord box{};
   QuoteSliceDeamDiagnostics deam{};
 };
 
@@ -603,7 +653,11 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // check_american_calendar against every slice in `earlier` and `later` (the
 // clamp acts at this slice's own nodes only, so a neighbour's knot between
 // them can still cross); either failure is NotCertified. `record` (when
-// non-null) receives what the repair did or why it was refused.
+// non-null) receives what the repair did or why it was refused. Under
+// `budget.certificate` Box (lane L3r1) the boxes are the box certificate's quote
+// boxes [bid - h, ask + h] instead of the fitted-widened channels and no node or
+// volatility budget applies (the box is the budget): a calendar crossing is
+// repaired exactly when the quotes can absorb it, and Infeasible otherwise.
 [[nodiscard]] bool repair_quote_slice_calendar_in_channel(
     QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
     std::span<const AmericanPriceSlice *const> earlier,
