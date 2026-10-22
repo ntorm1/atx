@@ -49,14 +49,20 @@ inline constexpr double kIvPremiumShrink = 0.25;
 // confirms when its Newton distance is <= tol; otherwise its Newton step is taken and one
 // more solve confirms (a Screen root sits up to 7.8e-4 max(P, 1) off the accurate map).
 inline constexpr std::uint32_t kIvPremiumConfirmSolves = 2;
+// Family prices one family-native attempt (IvPremiumGate::qfamily_native) may spend
+// before it hands the price to the seed-leg path (a chord counts two).
+inline constexpr std::uint32_t kIvPremiumNativePrices = 12;
 
 // The cold Andersen-Lake points of one contract: sigma and the remainder D = P_am - A
 // of the seed leg A (Barone-Adesi-Whaley where the contract has an exercise region,
-// Black-76 elsewhere; american_iv.cpp `Leg`).
+// Black-76 elsewhere; american_iv.cpp `Leg`). `native` (SPY1s Phase 3): the points are
+// family-native ones (IvPremiumGate::qfamily_native), whose remainder is the family price
+// itself (no leg); a reader of the other kind ignores them.
 struct IvPremiumMemory {
   std::array<double, 2> sigma{};
   std::array<double, 2> rest{};
   std::uint8_t points = 0; // valid entries, most recent first
+  bool native = false;
 };
 
 struct IvPremiumStats {
@@ -82,6 +88,11 @@ struct IvPremiumStats {
   bool seed_routed = false;
   bool confirm_skipped = false;
   double gate_bound_vol = std::numeric_limits<double>::quiet_NaN();
+  // Family iterates (IvPremiumGate::family; SPY1s Phase 2): iterates whose cold point was
+  // the family D-model (no Andersen-Lake solve; not in premium_solves), and whether a
+  // family refusal sent the rest of the attempt's iterates to the seed kernel.
+  std::uint32_t family_prices = 0;
+  bool family_refused = false;
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp
@@ -130,7 +141,49 @@ struct IvPremiumGate {
   // The confirming solve's kernel: nullopt = opts.al_opts (the accurate kernel), else
   // this scheme (the R3 measurement arm passes al_fast_profile(opts.al_opts)).
   std::optional<AlOpts> confirm_opts = std::nullopt;
+  // Seed-tier routing gate (SPY1s Phase 2, opt-in): > 0 routes a price to the accurate
+  // iterates only when price - zero_vol <= seed_gate_kappa * K * max(1, T^2) instead of
+  // inside the seed tier's own non-monotone gate (al_non_monotone_gate of the seed opts;
+  // Screen 4e-4, about 100x the dip L2f measured, 4.3e-6). 0 (the default): the seed
+  // tier's own gate, bit for bit. Every root outside the gate is still confirmed (or
+  // gated) on the confirm kernel exactly as before; only which iterates run changes.
+  double seed_gate_kappa = 0.0;
+  // Kernel-free family iterates (SPY1s Phase 2, opt-in; policy Always only - the band
+  // gate's bound is the seed TIER's, not the family's). When `family` is set (the
+  // contract's side, built at yield `family_q`), every seed-tier iterate's cold point is
+  // the D-model A(sigma; q) + D(sigma), D = P_family(sigma; family_q) - A(sigma;
+  // family_q), A the seed leg (Barone-Adesi-Whaley / Black-76) - the leg carries the
+  // contract's own q, the family the de-Americanisation remainder at the expiry's q. A
+  // family refusal (sigma outside the box or below the guard, an unprepared family) runs
+  // that attempt's remaining iterates on the seed kernel. The confirm is unchanged: a
+  // root is served only after the confirm kernel at the contract's own q accepts it.
+  // Observed, not owned: the family outlives the call.
+  const AlSigmaFamily *family = nullptr;
+  double family_q = std::numeric_limits<double>::quiet_NaN();
+  // (sigma, q) family iterates (SPY1s Phase 2 step 5, opt-in; takes precedence over
+  // `family`): every seed-tier iterate's cold point is qfamily->price(S, K, sigma, q) at
+  // the strike's OWN q (L2h-b AlSigmaQFamily) - no D-model. Policy Always: confirmed as
+  // above. Policy Band (the B-family arm): the band gate's eps_A is qfamily_bound *
+  // max(P, 1) (the family's measured relative bound) and its chord is the family's own
+  // (price_and_chord; no Andersen-Lake solve). A refusal restarts the attempt on the seed
+  // kernel (and the gate then uses the seed tier's bound as before).
+  const AlSigmaQFamily *qfamily = nullptr;
+  double qfamily_bound = std::numeric_limits<double>::infinity();
+  // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; with qfamily under Always): the
+  // family's own map P_family(sigma; q) at the strike's own q is iterated WITHOUT the seed
+  // leg (no Barone-Adesi-Whaley / Black-76 model): a bracketed secant-Newton seeded from
+  // the memory's family points, else from the Black-76 IV of the price (an upper bound of
+  // the American IV) with the family's own chord, at most kIvPremiumNativePrices family
+  // prices. Any refusal (a sigma outside the box, a chord that does not rise, the budget)
+  // restarts the attempt on the seed-leg path exactly as a family refusal does today. The
+  // confirm is unchanged.
+  bool qfamily_native = false;
 };
+
+// The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else
+// the seed tier's own non-monotone gate (NaN for an invalid K or T, which routes).
+[[nodiscard]] double iv_premium_seed_gate(double K, double T, const std::optional<AlOpts> &seed_opts,
+                                          const IvPremiumGate *gate) noexcept;
 
 // IvOpts-typed inversion under the Premium strategy with optional per-contract memory
 // (nullptr: none). `opts.strategy` is ignored (this IS Premium); every other field

@@ -14,6 +14,7 @@
 
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/quote_slice_carry.hpp"
@@ -47,7 +48,12 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
       (cfg.method != QuoteSliceFitMethod::PointCurve &&
        cfg.method != QuoteSliceFitMethod::ChannelSpline) ||
       (cfg.grid_kernel != QuoteSliceGridKernel::Accurate &&
-       cfg.grid_kernel != QuoteSliceGridKernel::Fast)) {
+       cfg.grid_kernel != QuoteSliceGridKernel::Fast &&
+       cfg.grid_kernel != QuoteSliceGridKernel::Family) ||
+      // The family grid reads the vol-space cache's (sigma, q) families.
+      (cfg.grid_kernel == QuoteSliceGridKernel::Family &&
+       (!cfg.channel.deam_family_q || !cfg.channel.deam_cache ||
+        cfg.channel.fit_space != QuoteSliceFitSpace::VolChannel))) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid fitting configuration");
   }
   if (!discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps)) {
@@ -742,6 +748,12 @@ public:
       gate.half_spread_usd = controls.half_spread_usd;
       gate.min_relative_slope = kDeAmFastMinRelativeVega;
       if (controls.confirm_fast) gate.confirm_opts = fast_;
+      gate.seed_gate_kappa = controls.seed_gate_kappa;
+      gate.family = controls.family;
+      gate.family_q = controls.family_q;
+      gate.qfamily = controls.qfamily;
+      gate.qfamily_bound = controls.qfamily_bound;
+      gate.qfamily_native = controls.qfamily_native;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -756,8 +768,109 @@ public:
                                   fit_.diagnostics.discount, quote.side)
         .vega;
   }
+  double black_iv(const QuoteSliceQuote &quote, double target, double forward) const override {
+    // Qualified: the member implied_vol (the American inversion) hides the Black-76 one.
+    const Result<double> iv =
+        atx::vol::implied_vol(target, forward, quote.strike, fit_.market.variance_years,
+                              fit_.diagnostics.discount, quote.side);
+    return iv ? *iv : std::numeric_limits<double>::quiet_NaN();
+  }
+  // The expiry's sigma families (SPY1s Phase 2) on the ACCURATE kernel (the fit's al_opts),
+  // anchored at the spot (a put family rescales to every strike; L2h section 7): sigma
+  // families at the request's yield, or (sigma_q) the (sigma, q) families over the chain's
+  // q box with their measured bounds. Continuous-carry models only; none below
+  // kAlSigmaFamilyMinTau.
+  std::shared_ptr<const DeAmSigmaFamilies>
+  sigma_families(const DeAmFamilyRequest &request) const override {
+    const double T = fit_.market.variance_years;
+    if (!has_fast_kernel() || !(T >= kAlSigmaFamilyMinTau) || !std::isfinite(request.q)) {
+      return nullptr;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    auto holder = std::make_shared<DeAmSigmaFamilies>();
+    holder->q = request.q;
+    const double r = fit_.diagnostics.effective_rate;
+    if (request.sigma_q) {
+      build_sigma_q(*holder, request, Side::Put);
+      build_sigma_q(*holder, request, Side::Call);
+      if (holder->of_q(Side::Put) == nullptr && holder->of_q(Side::Call) == nullptr) {
+        return nullptr;
+      }
+    } else {
+      holder->geometry.prepare(T, r, holder->q, fit_.al_opts);
+      const auto build = [&](std::optional<AlSigmaFamily> &slot, Side side, double lo,
+                             double hi) {
+        if (!(hi > lo)) return;
+        slot.emplace(holder->geometry, side, fit_.market.spot);
+        if (!slot->prepare(lo, hi, kDeAmFamilyNodes, kDeAmFamilyAxis)) slot.reset();
+      };
+      build(holder->put, Side::Put, request.sigma_lo[0], request.sigma_hi[0]);
+      build(holder->call, Side::Call, request.sigma_lo[1], request.sigma_hi[1]);
+      if (holder->of(Side::Put) == nullptr && holder->of(Side::Call) == nullptr) {
+        return nullptr;
+      }
+    }
+    holder->build_us = std::chrono::duration<double, std::micro>(
+                           std::chrono::steady_clock::now() - t0)
+                           .count();
+    return holder;
+  }
 
 private:
+  // One side's (sigma, q) family (L2h-b note section 6): the q box is the chain's, a call
+  // side clipped to q > 0 (a q <= 0 call never exercises early; its strikes price cold),
+  // the geometry at the request's yield clamped into the box, n_q by T x width, and the
+  // measured bound: 10x deam_family_probe_worst (kDeAmFamilyProbes probes against the cold
+  // accurate kernel at the grid band's strike ends and the spot - the deep wings carry the
+  // largest relative error, measured 8.8e-8 on SPY's 0.18 y deep-ITM calls against ~1e-11
+  // at the money - x the midpoints of the q cells, where the q-interpolation error peaks
+  // (review-SPY1s-p2 M1: the q box ends are Lobatto nodes), log-sigma fractions over the
+  // box), floored at 1e-12. A refusal (a box straddling r, the q-axis accuracy guard, no
+  // American orientation, a probe failure) builds none.
+  void build_sigma_q(DeAmSigmaFamilies &holder, const DeAmFamilyRequest &request,
+                     Side side) const {
+    const std::size_t s = side == Side::Put ? 0u : 1u;
+    const double sigma_lo = request.sigma_lo[s];
+    const double sigma_hi = request.sigma_hi[s];
+    double q_lo = request.q_lo;
+    const double q_hi = request.q_hi;
+    if (!(sigma_hi > sigma_lo) || !std::isfinite(q_lo) || !std::isfinite(q_hi)) return;
+    if (side == Side::Call) {
+      constexpr double kCallMinYield = 1.0e-9;
+      if (!(q_hi > kCallMinYield)) return;
+      q_lo = std::max(q_lo, kCallMinYield);
+    }
+    const double T = fit_.market.variance_years;
+    const double r = fit_.diagnostics.effective_rate;
+    const double spot = fit_.market.spot;
+    AlExpiryGeometry &geometry =
+        side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
+    std::optional<AlSigmaQFamily> &slot = side == Side::Put ? holder.q_put : holder.q_call;
+    geometry.prepare(T, r, std::clamp(request.q, q_lo, q_hi), fit_.al_opts);
+    const std::uint16_t n_q = T * (q_hi - q_lo) <= kDeAmQFamilyNarrowCarry
+                                  ? kDeAmQFamilyNarrowQNodes
+                                  : kDeAmQFamilyQNodes;
+    slot.emplace(geometry, side, spot);
+    if (!slot->prepare(sigma_lo, sigma_hi, kDeAmQFamilySigmaNodes, q_lo, q_hi, n_q,
+                       kDeAmFamilyAxis)) {
+      slot.reset();
+      return;
+    }
+    // The grid's family band: the chain's strikes clipped to |ln(K / S)| <=
+    // kDeAmFamilyGridLogBand.
+    const double band_lo =
+        std::max(request.strike_lo, spot * std::exp(-kDeAmFamilyGridLogBand));
+    const double band_hi = std::min(request.strike_hi, spot * std::exp(kDeAmFamilyGridLogBand));
+    const std::optional<double> worst =
+        deam_family_probe_worst(*slot, spot, T, r, fit_.al_opts, band_lo, band_hi);
+    if (!worst) {
+      slot.reset();
+      return;
+    }
+    (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) =
+        std::max(10.0 * *worst, 1.0e-12);
+  }
+
   const QuoteSliceFit &fit_;
   const QuoteSliceConfig &config_;
   std::optional<AlOpts> fast_;
@@ -788,7 +901,11 @@ public:
     view_.emplace(*cache_, model_, quotes, config.channel.deam_profile, work,
                   config.channel.deam_inversion,
                   DeAmConfirmControls{config.channel.deam_confirm, config.channel.deam_confirm_k,
-                                      config.channel.deam_confirm_kernel});
+                                      config.channel.deam_confirm_kernel,
+                                      config.channel.deam_seed_gate_kappa,
+                                      config.channel.deam_family, config.channel.deam_family_c,
+                                      config.channel.deam_family_q,
+                                      config.channel.deam_family_native});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -797,6 +914,10 @@ public:
   ~VolSpaceCache() = default;
 
   [[nodiscard]] DeAmIvView &view() noexcept { return *view_; }
+  // The chain cache's sigma families (nullptr: none built; deam_family).
+  [[nodiscard]] const DeAmSigmaFamilies *families() const noexcept {
+    return cache_->families.get();
+  }
 
 private:
   SliceDeAmModel model_;
@@ -1306,10 +1427,14 @@ std::vector<std::uint64_t> certification_grid_key(const QuoteSliceFit &out,
 // grid prices (bit-identical to a reprice) and certifies them as below.
 // `grid_kernel` Fast (opt-in, SPY1s Phase 1 arm D) prices the certification grid on
 // AlProfile::Fast (al_fast_profile of the fit's AlOpts); the dated-cash lattice ignores it.
+// `grid_kernel` Family (opt-in, SPY1s Phase 2 step 5) prices a node on `families`' (sigma, q)
+// family of its side where the family's measured bound x max(P, 1) is under the node's
+// certificate allowance, and on Fast otherwise (counted: family grid prices / cold).
 void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quotes,
                        double repair_half_spreads = 0.0,
                        const QuoteSliceRepairConfig *channel_repair = nullptr,
-                       QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate) {
+                       QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate,
+                       const DeAmSigmaFamilies *families = nullptr) {
   const counters::fit_timing::BucketScope price_timing(counters::fit_timing::Bucket::Price);
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::certification_passes);
   const QuoteSliceMarket &market = out.market;
@@ -1332,14 +1457,34 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   // The grid's kernel: the fit's own model, or (opt-in) the same scheme on AlProfile::Fast
   // for the continuous-carry models; keyed into the memo so a Fast grid never answers an
   // accurate request.
-  const bool fast_grid = grid_kernel == QuoteSliceGridKernel::Fast &&
-                         out.dividend_model != QuoteSliceDividendModel::DatedCash;
+  const bool continuous = out.dividend_model != QuoteSliceDividendModel::DatedCash;
+  const bool family_grid = grid_kernel == QuoteSliceGridKernel::Family && continuous &&
+                           families != nullptr;
+  const bool fast_grid =
+      (grid_kernel == QuoteSliceGridKernel::Fast || grid_kernel == QuoteSliceGridKernel::Family) &&
+      continuous;
   const std::optional<AlOpts> fast_opts =
       fast_grid ? std::optional<AlOpts>{al_fast_profile(out.al_opts)} : std::nullopt;
   const auto grid_price = [&](double strike, Side side, double sigma, double q) {
     if (!fast_grid) return model_price(out, strike, side, sigma, q);
     if (!std::isfinite(q)) {
       return Result<double>{Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow")};
+    }
+    if (family_grid) {
+      const AlSigmaQFamily *f = std::fabs(std::log(strike / market.spot)) <= kDeAmFamilyGridLogBand
+                                    ? families->of_q(side)
+                                    : nullptr;
+      if (f != nullptr) {
+        const AlSigmaQFamilyPrice fp = f->price(market.spot, strike, sigma, q);
+        if (fp.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fp.price) &&
+            families->q_bound(side) * std::max(fp.price, 1.0) <
+                certificate_tolerance(market.spot, strike)) {
+          namespace ft = counters::fit_timing;
+          ft::count(&ft::FitTimingCounters::deam_family_grid_prices);
+          return Result<double>{Ok(fp.price)};
+        }
+      }
+      counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
     }
     return andersen_lake(market.spot, strike, market.variance_years, sigma, diag.effective_rate, q,
                          side, fast_opts);
@@ -1348,6 +1493,20 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   std::vector<std::uint64_t> grid_key;
   if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
   if (!grid_key.empty()) grid_key.push_back(fast_grid ? 1u : 0u);
+  if (!grid_key.empty() && family_grid) {
+    // The families' identity: a memoised family grid never answers another family.
+    for (const Side side : {Side::Put, Side::Call}) {
+      const AlSigmaQFamily *f = families->of_q(side);
+      grid_key.push_back(f != nullptr ? 1u : 0u);
+      if (f == nullptr) continue;
+      for (const double v : {f->sigma_lo(), f->sigma_hi(), f->q_lo(), f->q_hi(),
+                             families->q_bound(side)}) {
+        grid_key.push_back(std::bit_cast<std::uint64_t>(v));
+      }
+      grid_key.push_back(f->n_sigma());
+      grid_key.push_back(f->n_q());
+    }
+  }
   const std::vector<AmericanPriceNode> *const memoised =
       grid_key.empty() ? nullptr : memo->grid(grid_key);
   if (memoised != nullptr) prices = *memoised;
@@ -1511,10 +1670,26 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
        c.deam_confirm != QuoteSliceDeamConfirm::Never) ||
       (c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate &&
        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Fast) ||
-      !positive(c.deam_confirm_k) ||
+      !positive(c.deam_confirm_k) || !finite_nonnegative(c.deam_seed_gate_kappa) ||
       ((c.deam_confirm != QuoteSliceDeamConfirm::Always ||
-        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate) &&
-       c.deam_profile != QuoteSliceDeamProfile::Screen)) {
+        c.deam_confirm_kernel != QuoteSliceDeamConfirmKernel::Accurate ||
+        c.deam_seed_gate_kappa > 0.0) &&
+       c.deam_profile != QuoteSliceDeamProfile::Screen) ||
+      // Sigma-family iterates: a Screen-seeded, always-confirmed inversion only (the band
+      // gate's bound is the Screen tier's, not the family D-model's).
+      (c.deam_family != QuoteSliceDeamFamily::Off &&
+       c.deam_family != QuoteSliceDeamFamily::Adaptive &&
+       c.deam_family != QuoteSliceDeamFamily::Always) ||
+      !positive(c.deam_family_c) ||
+      (c.deam_family != QuoteSliceDeamFamily::Off &&
+       (c.deam_profile != QuoteSliceDeamProfile::Screen ||
+        c.deam_confirm == QuoteSliceDeamConfirm::Never ||
+        (c.deam_confirm == QuoteSliceDeamConfirm::Band && !c.deam_family_q))) ||
+      // (sigma, q) families refine a family mode (B-family: Band allowed with them).
+      (c.deam_family_q && c.deam_family == QuoteSliceDeamFamily::Off) ||
+      // Family-native iterates (Phase 3 lever 1): on (sigma, q) families, confirmed roots.
+      (c.deam_family_native &&
+       (!c.deam_family_q || c.deam_confirm != QuoteSliceDeamConfirm::Always))) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -1818,7 +1993,8 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     return Ok(std::move(out));
   }
   out.curve = std::move(*curve);
-  certify_and_serve(out, quotes, 0.0, &config.repair, config.grid_kernel);
+  certify_and_serve(out, quotes, 0.0, &config.repair, config.grid_kernel,
+                    deam ? deam->families() : nullptr);
   return Ok(std::move(out));
 }
 
@@ -1894,7 +2070,7 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::jacobian_evals,
                               counters::fit_timing::detail::saturate(d.iterations));
   certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair,
-                    config.grid_kernel);
+                    config.grid_kernel, deam ? deam->families() : nullptr);
   return Ok(std::move(out));
 }
 
