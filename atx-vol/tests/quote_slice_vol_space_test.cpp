@@ -75,6 +75,37 @@ Chain spy_chain(double years, bool strike_carry, double dividend_pv) {
   return out;
 }
 
+// An OIH-shaped wide-carry chain (dev200b OIH 0.50 y, review-SPY1s-p2 M1): spot 383.185,
+// strikes 235-545 in 5s, per-strike yields flat at 0.016534 up to K 430 and then rising
+// 3.0e-5 per strike dollar (a q box 3.45e-3 wide: n_q 4 with interior q nodes, just inside
+// the family's q-axis accuracy guard rho^-4 <= 1e-6; OIH's own 4.9e-3 box is refused by
+// that guard since L2h-c), a skewed smile priced with the engine the fitter inverts,
+// in-the-money puts to |ln K/S| 0.35 at 1.5 % half-spreads.
+Chain wide_carry_chain(double kYears) {
+  constexpr double kSpot = 383.185;
+  constexpr double kRate = 0.047639;
+  Chain out;
+  out.market = QuoteSliceMarket{kSpot, kYears, kYears, kRate, 0.016534, 0.0};
+  for (int strike = 235; strike <= 545; strike += 5) {
+    const double K = static_cast<double>(strike);
+    const double k = std::log(K / kSpot);
+    const double sigma = std::max(0.25, 0.40 - 0.20 * k + 0.60 * k * k);
+    const double q = K <= 430.0 ? 0.016534 : 0.016534 + 3.0e-5 * (K - 430.0);
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(kSpot, K, kYears, sigma, kRate, q, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double half = std::max(0.02, 0.03 * *price);
+      QuoteSliceQuote quote{K, side, std::max(*price - half, 0.0), *price + half};
+      quote.continuous_yield = q;
+      out.quotes.push_back(quote);
+    }
+  }
+  return out;
+}
+
 bool same_bits(double a, double b) {
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
@@ -727,7 +758,10 @@ TEST(QuoteSliceVolSpace, SigmaQFamilyGridServesWithinTheCertificateAllowance) {
               builds, compared, differing, max_excess, iv_compared, max_dsigma);
   EXPECT_GT(builds, 0u);
   EXPECT_GT(compared, 0u);
-  EXPECT_GT(differing, 0u); // the family grid served prices (fails on revert)
+  // Since the bound probes between q nodes (review-SPY1s-p2 M1) these synthetic strike-carry
+  // boxes measure too wide for the allowance and the grid prices them on Fast; the
+  // served-from-a-family pin is SigmaQFamilyGridOnAWideCarryChainStaysWithinTheAllowance's.
+  static_cast<void>(differing);
   EXPECT_GT(iv_compared, 0u);
   deam_iv_memo_clear();
   const Chain c = spy_chain(0.15, false, 0.0);
@@ -746,6 +780,106 @@ TEST(QuoteSliceVolSpace, SigmaQFamilyGridServesWithinTheCertificateAllowance) {
     EXPECT_EQ(refusal.error().code(), ErrorCode::InvalidArgument);
   }
   deam_iv_memo_clear();
+}
+
+// review-SPY1s-p2 M1, at the fit: on a wide-carry chain (OIH-shaped, a q box 3.45e-3 wide,
+// n_q 4, the widest the q-axis guard admits) every price the family grid serves stays within
+// the certificate allowance of the Fast grid's - in-the-money puts included - at two
+// maturities. (Its pre-fix worst was 0.16 of the allowance: since L2h-c's q-axis guard a box
+// whose q error could exceed the allowance is refused; the probe placement itself is pinned
+// by DeAmIvCache.FamilyBoundProbesSeeTheQInterpolationError.)
+TEST(QuoteSliceVolSpace, SigmaQFamilyGridOnAWideCarryChainStaysWithinTheAllowance) {
+  std::size_t compared = 0, itm_puts = 0, differing = 0, builds = 0;
+  double worst_ratio = 0.0;
+  const auto run = [&](double years) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const Chain c = wide_carry_chain(years);
+    QuoteSliceConfig fast = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                       true, QuoteSliceDeamProfile::Screen);
+    fast.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    fast.channel.deam_family = QuoteSliceDeamFamily::Always;
+    fast.channel.deam_family_q = true;
+    fast.grid_kernel = QuoteSliceGridKernel::Fast;
+    QuoteSliceConfig family = fast;
+    family.grid_kernel = QuoteSliceGridKernel::Family;
+    deam_iv_memo_clear();
+    const auto a = fit_quote_slice_channel(c.market, c.quotes, fast, nullptr);
+    deam_iv_memo_clear();
+    const auto b = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    ASSERT_TRUE(a && b);
+    ASSERT_EQ(a->fit_status, QuoteSliceFitStatus::Success) << a->fit_error;
+    EXPECT_EQ(a->fit_status, b->fit_status);
+    builds += b->diagnostics.deam.family_builds;
+    ASSERT_EQ(a->rows.size(), b->rows.size());
+    for (std::size_t i = 0; i < a->rows.size(); ++i) {
+      const QuoteSliceRow &x = a->rows[i];
+      const QuoteSliceRow &y = b->rows[i];
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status) << i;
+      if (!std::isfinite(x.fitted_price) || !std::isfinite(y.fitted_price)) continue;
+      ++compared;
+      const QuoteSliceQuote &quote = c.quotes[i];
+      if (quote.side == Side::Put && quote.strike > c.market.spot) ++itm_puts;
+      const double allowance = 1.0e-8 + 1.0e-9 * std::max(c.market.spot, quote.strike);
+      const double move = std::abs(x.fitted_price - y.fitted_price);
+      worst_ratio = std::max(worst_ratio, move / allowance);
+      if (!same_bits(x.fitted_price, y.fitted_price)) ++differing;
+      EXPECT_LT(move, allowance) << "K=" << quote.strike << " put=" << (quote.side == Side::Put);
+    }
+  };
+  run(0.4997);
+  run(1.0);
+  std::printf("[wide-carry family grid] %zu families, %zu served prices compared (%zu "
+              "in-the-money puts), %zu differ from the Fast grid, worst move / allowance %.3g\n",
+              builds, compared, itm_puts, differing, worst_ratio);
+  EXPECT_GT(builds, 0u);
+  EXPECT_GT(compared, 80u);
+  EXPECT_GT(itm_puts, 20u);
+  EXPECT_GT(differing, 0u); // the family grid served prices (the key is not inert)
+  deam_iv_memo_clear();
+}
+
+// review-SPY1s-p2 M1, at the bound itself: on an OIH-shaped wide-carry put family (q box
+// 3.45e-3, n_q 4) the family's error between q nodes is far above its error on them, and
+// deam_family_probe_worst - the measured bound's probes - must see it. Probes on the q box
+// ends (Lobatto nodes, the pre-fix placement) measure only the sigma-axis error.
+TEST(DeAmIvCache, FamilyBoundProbesSeeTheQInterpolationError) {
+  const double S = 383.185;
+  const double T = 0.4997;
+  const double r = 0.047639;
+  const double q_lo = 0.016534;
+  const double q_hi = 0.019984;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.5 * (q_lo + q_hi));
+  AlSigmaQFamily fam(g, Side::Put, S);
+  ASSERT_TRUE(fam.prepare(0.2, 1.0, kDeAmQFamilySigmaNodes, q_lo, q_hi, kDeAmQFamilyQNodes,
+                          kDeAmFamilyAxis));
+  ASSERT_EQ(fam.n_q(), 4u);
+  const double band_lo = S * std::exp(-kDeAmFamilyGridLogBand);
+  const double band_hi = S * std::exp(kDeAmFamilyGridLogBand);
+  const std::optional<double> worst =
+      deam_family_probe_worst(fam, S, T, r, std::nullopt, band_lo, band_hi);
+  ASSERT_TRUE(worst.has_value());
+  // The family's error at the probe strikes: on the q nodes (fractions 0, 1/4, 3/4, 1 of the
+  // box for n_q 4) and at the q-cell midpoints.
+  double on_nodes = 0.0;
+  double between = 0.0;
+  for (const double K : {band_lo, band_hi, S}) {
+    for (const double sigma : {0.25, 0.4, 0.6, 0.85}) {
+      for (const double frac : {0.0, 0.25, 0.75, 1.0, 0.125, 0.5, 0.875}) {
+        const double q = q_lo + frac * (q_hi - q_lo);
+        const auto cold = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+        const AlSigmaQFamilyPrice fp = fam.price(S, K, sigma, q);
+        ASSERT_TRUE(cold && fp.status == AlSigmaQFamilyStatus::Ok);
+        const double rel = std::abs(fp.price - *cold) / std::max(*cold, 1.0);
+        const bool node = frac == 0.0 || frac == 0.25 || frac == 0.75 || frac == 1.0;
+        (node ? on_nodes : between) = std::max(node ? on_nodes : between, rel);
+      }
+    }
+  }
+  std::printf("[family bound probes] measured worst %.3g; family error on q nodes %.3g, between "
+              "q nodes %.3g\n",
+              *worst, on_nodes, between);
+  EXPECT_GT(between, 10.0 * on_nodes); // the q axis dominates: the case is meaningful
+  EXPECT_GE(*worst, 0.25 * between);   // fails when the probes sit on q nodes
 }
 
 // Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
@@ -1129,6 +1263,7 @@ TEST(DeAmIvCache, MemoKeyCoversEveryInputThatChangesAnInversion) {
       {"family always",
        [](KeyInputs &in) { in.config.channel.deam_family = QuoteSliceDeamFamily::Always; }},
       {"family c", [](KeyInputs &in) { in.config.channel.deam_family_c = 4.0; }},
+      {"family q", [](KeyInputs &in) { in.config.channel.deam_family_q = true; }},
       {"dividend date", [](KeyInputs &in) { in.fit.variance_clock_dividends[0].tau = 0.06; }},
       {"dividend amount", [](KeyInputs &in) { in.fit.variance_clock_dividends[1].amount = 1.9; }},
       {"dividend count", [](KeyInputs &in) { in.fit.variance_clock_dividends.pop_back(); }},

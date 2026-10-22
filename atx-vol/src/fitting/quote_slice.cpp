@@ -819,12 +819,13 @@ private:
   // One side's (sigma, q) family (L2h-b note section 6): the q box is the chain's, a call
   // side clipped to q > 0 (a q <= 0 call never exercises early; its strikes price cold),
   // the geometry at the request's yield clamped into the box, n_q by T x width, and the
-  // measured bound: 10x the worst relative error of kDeAmFamilyProbes off-node probes
-  // (the chain's strike ends and the spot - the deep wings carry the largest relative
-  // error, measured 8.8e-8 on SPY's 0.18 y deep-ITM calls against ~1e-11 at the money -,
-  // the q box ends, log-sigma fractions over the box) against the cold accurate kernel,
-  // floored at 1e-12. A refusal (a box straddling r, no American orientation, a probe
-  // failure) builds none.
+  // measured bound: 10x deam_family_probe_worst (kDeAmFamilyProbes probes against the cold
+  // accurate kernel at the grid band's strike ends and the spot - the deep wings carry the
+  // largest relative error, measured 8.8e-8 on SPY's 0.18 y deep-ITM calls against ~1e-11
+  // at the money - x the midpoints of the q cells, where the q-interpolation error peaks
+  // (review-SPY1s-p2 M1: the q box ends are Lobatto nodes), log-sigma fractions over the
+  // box), floored at 1e-12. A refusal (a box straddling r, the q-axis accuracy guard, no
+  // American orientation, a probe failure) builds none.
   void build_sigma_q(DeAmSigmaFamilies &holder, const DeAmFamilyRequest &request,
                      Side side) const {
     const std::size_t s = side == Side::Put ? 0u : 1u;
@@ -841,40 +842,32 @@ private:
     const double T = fit_.market.variance_years;
     const double r = fit_.diagnostics.effective_rate;
     const double spot = fit_.market.spot;
-    AlExpiryGeometry &geometry = side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
+    AlExpiryGeometry &geometry =
+        side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
     std::optional<AlSigmaQFamily> &slot = side == Side::Put ? holder.q_put : holder.q_call;
     geometry.prepare(T, r, std::clamp(request.q, q_lo, q_hi), fit_.al_opts);
-    const std::uint16_t n_q =
-        T * (q_hi - q_lo) <= kDeAmQFamilyNarrowCarry ? kDeAmQFamilyNarrowQNodes : kDeAmQFamilyQNodes;
+    const std::uint16_t n_q = T * (q_hi - q_lo) <= kDeAmQFamilyNarrowCarry
+                                  ? kDeAmQFamilyNarrowQNodes
+                                  : kDeAmQFamilyQNodes;
     slot.emplace(geometry, side, spot);
     if (!slot->prepare(sigma_lo, sigma_hi, kDeAmQFamilySigmaNodes, q_lo, q_hi, n_q,
                        kDeAmFamilyAxis)) {
       slot.reset();
       return;
     }
-    // Probes (log-sigma fraction, strike): the ends of the grid's family band (the chain's
-    // strikes clipped to |ln(K / S)| <= kDeAmFamilyGridLogBand) and the spot; the q box ends
-    // alternately (even: q_lo).
-    constexpr std::array<double, kDeAmFamilyProbes> kSigmaAt{0.07, 0.31, 0.62, 0.93, 0.5, 0.2};
+    // The grid's family band: the chain's strikes clipped to |ln(K / S)| <=
+    // kDeAmFamilyGridLogBand.
     const double band_lo =
         std::max(request.strike_lo, spot * std::exp(-kDeAmFamilyGridLogBand));
     const double band_hi = std::min(request.strike_hi, spot * std::exp(kDeAmFamilyGridLogBand));
-    const std::array<double, kDeAmFamilyProbes> strike_at{band_lo, band_hi, spot,
-                                                          band_lo, band_hi, spot};
-    double worst = 0.0;
-    for (std::size_t i = 0; i < kDeAmFamilyProbes; ++i) {
-      const double sigma = sigma_lo * std::pow(sigma_hi / sigma_lo, kSigmaAt[i]);
-      const double q = i % 2u == 0u ? q_lo : q_hi;
-      const double K = std::isfinite(strike_at[i]) && strike_at[i] > 0.0 ? strike_at[i] : spot;
-      const AlSigmaQFamilyPrice fp = slot->price(spot, K, sigma, q);
-      const Result<double> cold = andersen_lake(spot, K, T, sigma, r, q, side, fit_.al_opts);
-      if (fp.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
-        slot.reset();
-        return;
-      }
-      worst = std::max(worst, std::fabs(fp.price - *cold) / std::max(*cold, 1.0));
+    const std::optional<double> worst =
+        deam_family_probe_worst(*slot, spot, T, r, fit_.al_opts, band_lo, band_hi);
+    if (!worst) {
+      slot.reset();
+      return;
     }
-    (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) = std::max(10.0 * worst, 1.0e-12);
+    (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) =
+        std::max(10.0 * *worst, 1.0e-12);
   }
 
   const QuoteSliceFit &fit_;
@@ -1484,7 +1477,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         if (fp.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fp.price) &&
             families->q_bound(side) * std::max(fp.price, 1.0) <
                 certificate_tolerance(market.spot, strike)) {
-          counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_prices);
+          namespace ft = counters::fit_timing;
+          ft::count(&ft::FitTimingCounters::deam_family_grid_prices);
           return Result<double>{Ok(fp.price)};
         }
       }

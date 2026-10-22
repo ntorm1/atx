@@ -99,8 +99,9 @@ struct DeAmSigmaFamilies {
   // (sigma, q) families (deam_family_q; L2h-b AlSigmaQFamily): one geometry per side at a
   // yield inside that side's q box (a call orientation needs q > 0), the side family over
   // the chain's (sigma box) x (q box), and its MEASURED relative price bound versus the
-  // cold accurate kernel (10x the worst of kDeAmFamilyProbes off-node probes over the
-  // chain's strike ends, the spot, both q ends and the sigma box, floored at 1e-12): the
+  // cold accurate kernel (10x deam_family_probe_worst: kDeAmFamilyProbes probes off the
+  // nodes of BOTH axes - q at the midpoints of the q cells, since the q box ends are
+  // Lobatto nodes - at the grid band's strike ends and the spot; floored at 1e-12): the
   // bound the band gate (B-family) and the certification grid use.
   AlExpiryGeometry q_geometry_put;
   AlExpiryGeometry q_geometry_call;
@@ -128,17 +129,31 @@ inline constexpr std::uint16_t kDeAmFamilyNodes = 12;
 inline constexpr AlSigmaFamilyAxis kDeAmFamilyAxis = AlSigmaFamilyAxis::LogSigma;
 // (sigma, q) families (L2h-b note section 3: n_sigma 16 meets 1e-9 relative on the whole
 // SPY board; n_q 4, or 3 where T x q-width <= 1e-5, the 23 d chain's floor), and the
-// off-node probes of the measured bound.
+// probes of the measured bound (3 strikes x 3 q cells, deam_family_probe_worst).
 inline constexpr std::uint16_t kDeAmQFamilySigmaNodes = 16;
 inline constexpr std::uint16_t kDeAmQFamilyQNodes = 4;
 inline constexpr std::uint16_t kDeAmQFamilyNarrowQNodes = 3;
 inline constexpr double kDeAmQFamilyNarrowCarry = 1.0e-5;
-inline constexpr std::size_t kDeAmFamilyProbes = 6;
+inline constexpr std::size_t kDeAmFamilyProbes = 9;
 // The certification grid prices a node on a (sigma, q) family only inside this log-moneyness
 // band |ln(K / S)| (its bound is probed at the band's ends and the spot): the deep wings
 // carry the family's largest relative error near the exercise boundary (SPY 0.18 y calls at
 // K / S 0.3: 8.8e-8 relative = 4.8e-5 USD, missed by probes at the chain's strike ends).
 inline constexpr double kDeAmFamilyGridLogBand = 0.25;
+
+// The measured error of a prepared (sigma, q) family (review-SPY1s-p2 M1): the worst
+// |P_family - P_cold| / max(P_cold, 1) over kDeAmFamilyProbes probes against the cold
+// accurate kernel (andersen_lake with `al_opts`) at spot S, maturity T, rate r - OFF the
+// nodes of BOTH axes: the strikes {band_lo, band_hi, S} x the midpoints of the first, the
+// central and the last q cell of the family's Chebyshev-Lobatto q axis (its box ends ARE
+// nodes, so a probe there sees no q-interpolation error; a collapsed q box probes its one
+// node), each at its own log-sigma fraction of the sigma box. nullopt when any probe
+// fails (a family refusal, a cold solve error). A non-finite or non-positive band end
+// probes the spot instead.
+[[nodiscard]] std::optional<double> deam_family_probe_worst(const AlSigmaQFamily &family,
+                                                            double S, double T, double r,
+                                                            const std::optional<AlOpts> &al_opts,
+                                                            double band_lo, double band_hi);
 
 // What a cache asks its model to build (DeAmModel::sigma_families): per side (0 put, 1
 // call) the sigma box (empty, lo >= hi: no family of that side); the sigma families' yield

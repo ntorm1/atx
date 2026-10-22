@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <utility>
 
@@ -602,5 +603,49 @@ void deam_iv_memo_clear() noexcept {
 }
 
 std::size_t deam_iv_memo_size() noexcept { return t_memo.entries.size(); }
+
+std::optional<double> deam_family_probe_worst(const AlSigmaQFamily &family, double S, double T,
+                                              double r, const std::optional<AlOpts> &al_opts,
+                                              double band_lo, double band_hi) {
+  // Chebyshev-Lobatto q node j of n as a fraction of the q box (cheb_node's layout:
+  // -cos(pi j / (n - 1)) on [-1, 1]); a probe sits at the midpoint of a q cell.
+  const unsigned nq = family.n_q();
+  const auto cell_mid = [nq](unsigned c) {
+    const auto node = [nq](unsigned j) {
+      return 0.5 * (1.0 - std::cos(std::numbers::pi * static_cast<double>(j) /
+                                   static_cast<double>(nq - 1u)));
+    };
+    return 0.5 * (node(c) + node(c + 1u));
+  };
+  const double q_lo = family.q_lo();
+  const double q_hi = family.q_hi();
+  std::array<double, 3> q_at{q_lo, q_lo, q_lo}; // a collapsed q box: its one node
+  if (nq >= 2u) {
+    const std::array<unsigned, 3> cells{0u, (nq - 1u) / 2u, nq - 2u};
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+      q_at[i] = q_lo + (q_hi - q_lo) * cell_mid(cells[i]);
+    }
+  }
+  const auto strike = [S](double K) { return positive(K) ? K : S; };
+  const std::array<double, 3> strike_at{strike(band_lo), strike(band_hi), S};
+  // Log-sigma fractions of the sigma box, one per probe (off the sigma axis' nodes).
+  constexpr std::array<double, kDeAmFamilyProbes> kSigmaAt{0.07, 0.31, 0.62, 0.93, 0.5,
+                                                           0.2,  0.45, 0.8,  0.15};
+  const double sigma_lo = family.sigma_lo();
+  const double sigma_hi = family.sigma_hi();
+  double worst = 0.0;
+  for (std::size_t i = 0; i < kDeAmFamilyProbes; ++i) {
+    const double K = strike_at[i % 3u];
+    const double q = q_at[i / 3u];
+    const double sigma = sigma_lo * std::pow(sigma_hi / sigma_lo, kSigmaAt[i]);
+    const AlSigmaQFamilyPrice fp = family.price(S, K, sigma, q);
+    const Result<double> cold = andersen_lake(S, K, T, sigma, r, q, family.side(), al_opts);
+    if (fp.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
+      return std::nullopt;
+    }
+    worst = std::max(worst, std::fabs(fp.price - *cold) / std::max(*cold, 1.0));
+  }
+  return worst;
+}
 
 } // namespace atx::vol
