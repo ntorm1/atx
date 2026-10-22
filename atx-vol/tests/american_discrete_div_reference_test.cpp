@@ -38,6 +38,7 @@ using atx::vol::ddiv_ref::Estimate;
 using atx::vol::ddiv_ref::event_schedule;
 using atx::vol::ddiv_ref::EventSchedule;
 using atx::vol::ddiv_ref::interp_uniform_cubic;
+using atx::vol::ddiv_ref::kMaxGridIntervals;
 using atx::vol::ddiv_ref::pde_price;
 using atx::vol::ddiv_ref::pde_reference;
 using atx::vol::ddiv_ref::PdeGrid;
@@ -48,7 +49,9 @@ using atx::vol::ddiv_ref::ReferenceOpts;
 using atx::vol::ddiv_ref::richardson_axis;
 using atx::vol::ddiv_ref::segment_steps;
 using atx::vol::ddiv_ref::time_grid;
+using atx::vol::ddiv_ref::trinomial_price;
 using atx::vol::ddiv_ref::trinomial_reference;
+using atx::vol::ddiv_ref::TrinomialGrid;
 using atx::vol::ddiv_ref::TrinomialLadder;
 using atx::vol::ddiv_ref::validate;
 
@@ -285,6 +288,47 @@ TEST(DiscreteDivReferenceValidate, RefusesMalformedInputsWithTypedErrors) {
   EXPECT_FALSE(pde_price(ok, grid).has_value());
 }
 
+// Review m3: every grid count reaches an int through a cast or a shift. Inputs that
+// would overflow one are refused with a typed error BEFORE the cast — previously
+// a sigma tiny against the cash cast ~7e9 to int (UB), and an underflowing sigma
+// cast lround(NaN).
+TEST(DiscreteDivReferenceValidate, GridsBeyondIntRangeAreRefusedBeforeAnyCast) {
+  const std::vector<CashDividend> none;
+  const std::vector<CashDividend> fifth{{0.5, 20.0}};
+  const auto code_of = [](const auto &result) {
+    return result.has_value() ? ErrorCode::Unknown : result.error().code();
+  };
+  const Problem ok = make(100, 100, 1, 0.2, 0.03, 0, Side::Put, ExerciseStyle::American, none);
+  PdeGrid pde;
+  pde.space_base = kMaxGridIntervals + 1;
+  EXPECT_EQ(code_of(pde_price(ok, pde)), ErrorCode::InvalidArgument);
+  pde = PdeGrid{};
+  pde.space_base = (kMaxGridIntervals >> 3) + 1;
+  pde.space_level = 3;
+  EXPECT_EQ(code_of(pde_price(ok, pde)), ErrorCode::InvalidArgument);
+  pde = PdeGrid{};
+  pde.time_base = std::numeric_limits<int>::max();
+  EXPECT_EQ(code_of(pde_price(ok, pde)), ErrorCode::InvalidArgument);
+  TrinomialGrid lattice;
+  lattice.steps_base = (kMaxGridIntervals >> 2) + 1;
+  lattice.level = 2;
+  EXPECT_EQ(code_of(trinomial_price(ok, lattice)), ErrorCode::InvalidArgument);
+  // sigma 1e-9 with r = q = 0 keeps every branch probability in [0, 1], so the
+  // padding band (ln(100 / 80) / dx ~ 7e9 nodes) is what must refuse it.
+  const Problem thin =
+      make(100, 100, 1, 1.0e-9, 0.0, 0.0, Side::Put, ExerciseStyle::American, fifth);
+  EXPECT_EQ(code_of(trinomial_price(thin, TrinomialGrid{})), ErrorCode::OutOfRange);
+  // A sigma whose 8 sigma sqrt(T) underflows the spacing to 0.
+  const Problem flat = make(100, 100, 1, std::numeric_limits<double>::denorm_min(), 0.03, 0.0,
+                            Side::Put, ExerciseStyle::American, none);
+  EXPECT_EQ(code_of(pde_price(flat, PdeGrid{})), ErrorCode::OutOfRange);
+  // A direct segment_steps call never overflows: counts saturate at the cap.
+  const EventSchedule events = event_schedule(1.0, none);
+  const std::vector<int> steps = segment_steps(events, 1.0, std::numeric_limits<int>::max(), 7);
+  ASSERT_EQ(steps.size(), 1U);
+  EXPECT_EQ(steps[0], kMaxGridIntervals);
+}
+
 // ── The uncertainty rule ──────────────────────────────────────────────────
 
 TEST(DiscreteDivReferenceAxis, RecoversAKnownOrderAndBoundsTheResidual) {
@@ -314,6 +358,20 @@ TEST(DiscreteDivReferenceAxis, OscillationIsNotAsymptoticAndGetsTheEnvelope) {
   EXPECT_NEAR(richardson_axis(two, 2.0).uncertainty, 0.001, 1e-15);
 }
 
+// Review m1: an exact repeat on the last level is not convergence. It used to
+// report |d1| eps (~0) as the uncertainty; the previous difference bounds it.
+TEST(DiscreteDivReferenceAxis, AnExactRepeatOnTheLastLevelKeepsThePreviousDifference) {
+  const std::array<double, 4> repeat{1.0, 1.1, 1.15, 1.15};
+  const Axis axis = richardson_axis(repeat, 2.0);
+  EXPECT_FALSE(axis.asymptotic);
+  EXPECT_EQ(axis.correction, 0.0);
+  EXPECT_DOUBLE_EQ(axis.uncertainty, std::abs(1.15 - 1.1));
+  const std::array<double, 4> flat{2.5, 2.5, 2.5, 2.5};
+  const Axis still = richardson_axis(flat, 2.0);
+  EXPECT_TRUE(still.asymptotic);
+  EXPECT_EQ(still.uncertainty, 0.0);
+}
+
 TEST(DiscreteDivReferenceInterp, CubicLagrangeIsExactOnCubicsIncludingTheEnds) {
   constexpr double kX0 = -1.3, kH = 0.125;
   std::vector<double> v(12);
@@ -327,6 +385,11 @@ TEST(DiscreteDivReferenceInterp, CubicLagrangeIsExactOnCubicsIncludingTheEnds) {
   const double top = kX0 + kH * 11.0;
   EXPECT_NEAR(interp_uniform_cubic(v, kX0, kH, top), f(top), 1e-13);
   EXPECT_NEAR(interp_uniform_cubic(v, kX0, kH, top - 0.01), f(top - 0.01), 1e-13);
+  // Below its four-node precondition (or with h <= 0) it answers NaN, never a read
+  // outside the span.
+  const std::vector<double> three{1.0, 2.0, 3.0};
+  EXPECT_TRUE(std::isnan(interp_uniform_cubic(three, 0.0, 1.0, 1.0)));
+  EXPECT_TRUE(std::isnan(interp_uniform_cubic(v, kX0, 0.0, 0.0)));
 }
 
 // ── A. The PDE against values that are not lattices ───────────────────────

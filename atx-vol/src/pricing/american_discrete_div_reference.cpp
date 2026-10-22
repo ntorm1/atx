@@ -417,7 +417,8 @@ struct LogGrid {
   int i0 = 0; // the centre node
 };
 
-[[nodiscard]] LogGrid make_log_grid(const Model &m, const Problem &p, const PdeGrid &g) {
+[[nodiscard]] Result<LogGrid> make_log_grid(const Model &m, const Problem &p,
+                                            const PdeGrid &g) {
   const double sd = ((g.domain_sigma > 0.0) ? g.domain_sigma : p.sigma) * std::sqrt(p.T);
   const double centre = std::log(m.state0);
   double lo = std::min(centre, std::log(p.K));
@@ -432,6 +433,12 @@ struct LogGrid {
   const double x_lo = lo - g.width_sd * sd;
   const double x_hi = hi + g.width_sd * sd;
   const double h0 = (x_hi - x_lo) / static_cast<double>(g.space_base);
+  // A sigma that underflows sqrt(T) * width leaves no spacing; the centre index
+  // below would be a cast of NaN.
+  if (!(h0 > 0.0) || !std::isfinite(h0)) {
+    return Err(ErrorCode::OutOfRange, "discrete-dividend reference PDE: the domain has no "
+                                      "positive finite spacing");
+  }
   const int i0_base = std::clamp(static_cast<int>(std::lround((centre - x_lo) / h0)), 2,
                                  g.space_base - 2);
   const int scale = 1 << g.space_level;
@@ -440,7 +447,7 @@ struct LogGrid {
   out.n = g.space_base * scale;
   out.i0 = i0_base * scale;
   out.x_min = centre - static_cast<double>(out.i0) * out.h;
-  return out;
+  return Ok(out);
 }
 
 // The constant-coefficient operator A (time-to-expiry form V_tau = A V) on the
@@ -670,7 +677,9 @@ Status run_segment(PdeState &s, int seg, double t_start, double t_end, int steps
 
 [[nodiscard]] Status validate_pde_grid(const PdeGrid &g) {
   if (g.space_base < 8 || g.time_base < 1 || g.space_level < 0 || g.space_level >= kMaxLevels ||
-      g.time_level < 0 || g.time_level >= kMaxLevels || !(g.width_sd > 0.0) ||
+      g.time_level < 0 || g.time_level >= kMaxLevels ||
+      g.space_base > (kMaxGridIntervals >> g.space_level) ||
+      g.time_base > (kMaxGridIntervals >> g.time_level) || !(g.width_sd > 0.0) ||
       !std::isfinite(g.width_sd) || g.rannacher_steps < 0 || !std::isfinite(g.domain_sigma) ||
       g.domain_sigma < 0.0 || !(g.time_grading >= 1.0 && g.time_grading <= 4.0)) {
     return Err(ErrorCode::InvalidArgument, "discrete-dividend reference PDE: grid outside its "
@@ -717,7 +726,8 @@ struct Branches {
 }
 
 [[nodiscard]] Status validate_trinomial_grid(const TrinomialGrid &g) {
-  if (g.steps_base < 1 || g.level < 0 || g.level >= kMaxLevels || !(g.pad_sd > 0.0) ||
+  if (g.steps_base < 1 || g.level < 0 || g.level >= kMaxLevels ||
+      g.steps_base > (kMaxGridIntervals >> g.level) || !(g.pad_sd > 0.0) ||
       !std::isfinite(g.pad_sd)) {
     return Err(ErrorCode::InvalidArgument, "discrete-dividend reference lattice: grid outside "
                                            "its range");
@@ -776,7 +786,15 @@ struct TrinomialLattice {
   }
   const double net = m.escrowed() ? m.state0 : std::max(p.S - cash, kLowestNetSpotFraction * p.S);
   const double band = grid.pad_sd * p.sigma * std::sqrt(p.T) + std::log(m.state0 / net);
-  t.pad = static_cast<int>(std::ceil(band / t.dx)) + 3;
+  // Checked in double BEFORE the cast: a sigma tiny against the cash makes band / dx
+  // arbitrarily large (sigma 1e-9 with 20 % cash: ~7e9), and the cast would be UB.
+  const double pad = std::ceil(band / t.dx) + 3.0;
+  if (!(pad <= static_cast<double>(kMaxGridIntervals - t.total))) {
+    return Err(ErrorCode::OutOfRange, "discrete-dividend reference lattice: the padding band "
+                                      "the cash needs exceeds kMaxGridIntervals nodes (sigma "
+                                      "too small for the cash to come)");
+  }
+  t.pad = static_cast<int>(pad);
   t.width = t.total + t.pad;
   t.centre = std::log(m.state0);
   return Ok(t);
@@ -902,11 +920,16 @@ std::vector<int> segment_steps(const EventSchedule &events, double T, int base, 
   bounds.push_back(T);
   std::vector<int> steps;
   steps.reserve(bounds.size() - 1U);
+  // Validated callers never reach the clamp or the cap; they keep a direct call from
+  // a negative shift or an int overflow.
+  const int lv = std::clamp(level, 0, kMaxLevels - 1);
+  const double cap = static_cast<double>(kMaxGridIntervals >> lv);
   for (std::size_t j = 0; j + 1 < bounds.size(); ++j) {
     const double share = static_cast<double>(base) * (bounds[j + 1] - bounds[j]) / T;
     // The 1e-9 keeps an exact multiple from rounding up through the division.
-    const int n0 = std::max(kMinSegmentSteps, static_cast<int>(std::ceil(share - 1.0e-9)));
-    steps.push_back(n0 << level);
+    const double n0 =
+        std::clamp(std::ceil(share - 1.0e-9), static_cast<double>(kMinSegmentSteps), cap);
+    steps.push_back(static_cast<int>(n0) << lv);
   }
   return steps;
 }
@@ -942,6 +965,9 @@ std::vector<double> time_grid(const EventSchedule &events, double T, int base, i
 
 double interp_uniform_cubic(std::span<const double> values, double x0, double h,
                             double x) noexcept {
+  if (values.size() < 4U || !(h > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
   const int n = static_cast<int>(values.size()) - 1;
   const double u = std::clamp((x - x0) / h, 0.0, static_cast<double>(n));
   const int k = std::min(static_cast<int>(std::floor(u)), n - 1);
@@ -967,7 +993,11 @@ Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid) {
   const Model m = make_model(p);
   PdeState s;
   s.model = &m;
-  s.grid = make_log_grid(m, p, grid);
+  const Result<LogGrid> log_grid = make_log_grid(m, p, grid);
+  if (!log_grid) {
+    return Err(log_grid.error());
+  }
+  s.grid = *log_grid;
   s.op = make_operator(p.sigma, p.r, p.q, s.grid.h);
   const std::size_t nodes = static_cast<std::size_t>(s.grid.n) + 1U;
   s.v.resize(nodes);
@@ -1038,8 +1068,11 @@ Axis richardson_axis(std::span<const double> values, double theory_order) noexce
   }
   const double d1 = at(axis.n - 2) - at(axis.n - 3);
   if (d2 == 0.0) {
-    // Converged to the last bit on the last level; the previous move bounds it.
-    axis.uncertainty = (d1 == 0.0) ? 0.0 : std::abs(d1) * kEps;
+    // An exact repeat on the last level (an oscillation crossing, or a value pinned
+    // at the two finest levels only) proves nothing by itself: fall back to the
+    // previous level's difference, the envelope rule's value here. Only a sequence
+    // flat over both differences is called converged.
+    axis.uncertainty = std::abs(d1);
     axis.asymptotic = (d1 == 0.0);
     return axis;
   }

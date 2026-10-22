@@ -160,7 +160,9 @@ struct EventSchedule {
 // even a sliver of a segment gets a few steps; at `level` every count times
 // 2^level, so the
 // grids of successive levels are exactly nested. Precondition: base >= 1,
-// 0 <= level < kMaxLevels.
+// 0 <= level < kMaxLevels, base * 2^level <= kMaxGridIntervals (the public solvers
+// refuse anything larger; here a level is clamped into range and a count saturates
+// at kMaxGridIntervals >> level, so no input reaches an int overflow).
 [[nodiscard]] std::vector<int> segment_steps(const EventSchedule &events, double T, int base,
                                              int level);
 
@@ -181,13 +183,20 @@ struct EventSchedule {
 
 // Cubic Lagrange interpolation of nodal `values` (node i at x0 + i h) at `x`,
 // through the four nodes around it (one-sided at the ends; x outside the grid
-// is clamped to it). Exact on cubics. Precondition: values.size() >= 4, h > 0.
+// is clamped to it). Exact on cubics. Precondition: values.size() >= 4, h > 0;
+// outside it the result is NaN (never an out-of-range read).
 [[nodiscard]] double interp_uniform_cubic(std::span<const double> values, double x0, double h,
                                           double x) noexcept;
 
 // ── A. The event-aligned PDE ─────────────────────────────────────────────
 
 inline constexpr int kMaxLevels = 8;
+
+// The largest grid either method builds, in intervals (PDE space, time steps over
+// [0, T]) or lattice half-width: base * 2^level beyond it is InvalidArgument, and a
+// lattice whose padding band would exceed it is OutOfRange. It keeps every node
+// count far inside int and the memory to a few hundred MB.
+inline constexpr int kMaxGridIntervals = 1 << 22;
 
 struct PdeGrid {
   int space_base = 400; // intervals of the log-state grid at space level 0
@@ -224,7 +233,9 @@ struct PdeResult {
 
 // One PDE solve. Errors: `validate`'s; InvalidArgument for a grid outside
 // [space_base >= 8, time_base >= 1, levels in [0, kMaxLevels), width_sd > 0,
-// rannacher_steps >= 0]; Internal if a policy iteration fails to settle.
+// rannacher_steps >= 0, base * 2^level <= kMaxGridIntervals on both axes];
+// OutOfRange when the domain degenerates (no positive finite spacing, e.g. a
+// sigma that underflows); Internal if a policy iteration fails to settle.
 [[nodiscard]] Result<PdeResult> pde_price(const Problem &p, const PdeGrid &grid);
 
 // ── Convergence and the uncertainty rule (header block above) ────────────
@@ -239,7 +250,9 @@ struct Axis {
 };
 
 // The rule above, on any refinement sequence of ratio 2. n < 3 is never
-// asymptotic (n == 2: uncertainty |d|; n < 2: 0).
+// asymptotic (n == 2: uncertainty |d|; n < 2: 0). A last difference of exactly
+// zero is not evidence of convergence on its own: the axis then takes the previous
+// difference |d1| as its uncertainty and is asymptotic only if d1 is zero too.
 [[nodiscard]] Axis richardson_axis(std::span<const double> values, double theory_order) noexcept;
 
 struct Estimate {
@@ -269,8 +282,10 @@ struct TrinomialGrid {
   double pad_sd = 7.0;  // nodes below the root band, in sigma sqrt(T) (+ the cash)
 };
 
-// One lattice. Errors: `validate`'s; InvalidArgument for the grid; OutOfRange
-// when a branch probability leaves [0, 1] (|r - q - sigma^2 / 2| dx > sigma^2).
+// One lattice. Errors: `validate`'s; InvalidArgument for the grid (steps_base *
+// 2^level <= kMaxGridIntervals); OutOfRange when a branch probability leaves
+// [0, 1] (|r - q - sigma^2 / 2| dx > sigma^2), or when the padding band the cash
+// needs would exceed kMaxGridIntervals nodes (a sigma far too small for the cash).
 [[nodiscard]] Result<double> trinomial_price(const Problem &p, const TrinomialGrid &grid);
 
 struct TrinomialLadder {

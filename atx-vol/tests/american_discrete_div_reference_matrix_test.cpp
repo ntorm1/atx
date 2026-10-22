@@ -640,6 +640,41 @@ void derivative_study(const std::vector<Row> &rows, std::FILE *md) {
   emit(md, "<!-- END D0 DERIVATIVE TABLE -->");
 }
 
+// ── What certifies a RESOLVED row (review M1). The status rests on the PDE's own
+// uncertainty u_A; the trinomial cross-checks it only to ITS uncertainty u_B. Per
+// IV-identified kernel-model row, against the 1e-7 x vega threshold: u_A, u_B and
+// the raw gap |A - B|, each as a multiple of the threshold.
+void cross_check_table(const std::vector<Row> &rows, std::FILE *md) {
+  emit(md, "<!-- BEGIN D0 CROSS-CHECK TABLE -->");
+  emit(md, "| id | status | thr = 1e-7 vega USD | u_A (PDE) / thr | u_B (lattice) / thr | "
+           "abs(A - B) / thr |");
+  emit(md, "|---|---|---|---|---|---|");
+  std::size_t resolved = 0;
+  std::size_t b_above = 0;
+  std::size_t gap_above = 0;
+  for (const Row &r : rows) {
+    if (!r.kernel_model() || !r.iv_identified()) {
+      continue;
+    }
+    const double thr = kIvContract * r.vega;
+    const double gap = std::abs(r.ref.pde.value - r.ref.lattice.value);
+    if (r.status == "RESOLVED") {
+      ++resolved;
+      b_above += (r.ref.lattice.uncertainty > thr) ? 1U : 0U;
+      gap_above += (gap > thr) ? 1U : 0U;
+    }
+    emit(md, "| " + r.c.id + " | " + r.status + " | " + fmt("%.2e", thr) + " | " +
+                 fmt("%.3f", r.ref.pde.uncertainty / thr) + " | " +
+                 fmt("%.1f", r.ref.lattice.uncertainty / thr) + " | " + fmt("%.2f", gap / thr) +
+                 " |");
+  }
+  emit(md, "");
+  emit(md, "RESOLVED rows " + std::to_string(resolved) + ": u_B above thr on " +
+               std::to_string(b_above) + ", abs(A - B) above thr on " +
+               std::to_string(gap_above) + ".");
+  emit(md, "<!-- END D0 CROSS-CHECK TABLE -->");
+}
+
 // ── The step ladder behind the decision memo: each kernel-model row's default
 // scheme (SplicedCrr; EscrowedLeisenReimer for group H) at 301 / 601 / 1,201 /
 // 2,401 steps, its error in LINEARISED IV bp, -(P_N - ref) / vega (the sign of the
@@ -675,7 +710,9 @@ void step_ladder(const std::vector<Row> &rows, DiscreteDivWorkspace &ws, std::FI
   emit(md, "| id | events | T | scheme | IV bp at 301 | 601 | 1201 | 2401 |");
   emit(md, "|---|---|---|---|---|---|---|---|");
   for (const Line &l : lines) {
-    if (event_count(l.row->c) < 2) {
+    // The multi-event chains, and B1 (the ex-date inside the first 301 step), whose
+    // step dependence the memo's first-step item rests on.
+    if (event_count(l.row->c) < 2 && l.row->c.id.rfind("B1", 0) != 0) {
       continue;
     }
     std::string text = "| " + l.row->c.id + " | " + std::to_string(event_count(l.row->c)) +
@@ -780,6 +817,8 @@ TEST(DiscreteDivReferenceMatrix, FullMatrixAgainstTheLatticeKernel) {
   write_tables(rows, md);
   emit(md, "");
   write_summary(rows, md);
+  emit(md, "");
+  cross_check_table(rows, md);
   emit(md, "");
   step_ladder(rows, ws, md);
   emit(md, "");
