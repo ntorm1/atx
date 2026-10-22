@@ -3076,5 +3076,203 @@ TEST(QuoteSurface, MarketDistanceConfigurationIsValidatedAtTheSharedBoundary) {
   EXPECT_FALSE(validate_quote_slice_repair(config));
 }
 
+// ── Opt-in ladder wing tail (lane L3a) ───────────────────────────────────────
+
+// Rows of a served slice re-implied (moved node side) at exactly the floor kIvMin.
+std::size_t floor_reimplied_rows(const QuoteSliceFit &fit,
+                                 std::span<const QuoteSliceQuote> quotes) {
+  if (!fit.prices || fit.moved_nodes.empty()) return 0;
+  const auto nodes = fit.prices->nodes();
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fit.rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success || row.fitted_iv != kIvMin) {
+      continue;
+    }
+    const auto at = std::find_if(nodes.begin(), nodes.end(), [&](const AmericanPriceNode &n) {
+      return n.strike == quotes[i].strike;
+    });
+    const unsigned bit = quotes[i].side == Side::Call ? 1u : 2u;
+    if (at != nodes.end() &&
+        (fit.moved_nodes[static_cast<std::size_t>(at - nodes.begin())] & bit) != 0u) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// A dense 36-day chain (strikes 60-140 every 4, volatility `sigma`) around a
+// non-integer spot. Below 90 the supplied yield zig-zags (0.06 / 0), so the fitted
+// deep in-the-money call prices are locally non-convex and the bounded convexity
+// repair lowers sides onto their convex minorant; the high-yield calls sit in the
+// exercise region at S - K, where the zero-volatility value is S - K itself.
+Chain wing_tail_chain(double spot, double years, double sigma) {
+  Chain out;
+  out.market = QuoteSliceMarket{spot, years, years, 0.03, 0.0, 0.0};
+  for (int strike = 60; strike <= 140; strike += 4) {
+    const double q = strike < 90 && ((strike - 60) / 4) % 2 == 0 ? 0.06 : 0.0;
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(spot, static_cast<double>(strike), years, sigma, 0.03, q, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.05);
+      out.quotes.push_back({static_cast<double>(strike), side, std::max(*price - spread, 0.0),
+                            *price + spread, q});
+    }
+  }
+  return out;
+}
+
+// The ladder with the convexity repair accepting any move and both containment
+// limits relaxed, so the repaired channel refit of wing_tail_chain serves.
+QuoteSliceConfig wing_config() {
+  QuoteSliceConfig config;
+  config.channel.repair_half_spreads = 1.0e6;
+  return config;
+}
+
+QuoteSurfaceConfig wing_surface(QuoteSurfaceWingTail tail) {
+  QuoteSurfaceConfig surface = knot_first();
+  surface.ladder_max_outside_fraction = 1.0;
+  surface.ladder_channel_max_outside_fraction = 1.0;
+  surface.ladder_wing_tail = tail;
+  return surface;
+}
+
+TEST(QuoteSurfaceLadder, WingTailFloorPriceOnlyRefusesAVolatilityReimpliedAtTheFloor) {
+  // The convexity repair lowers the exercised 68 call (yield 0.06) to S - K, its
+  // own zero-volatility value: the re-implied volatility is the inverter's floor
+  // kIvMin, a bound 14.5 vol points from the chain's 0.15. With the key off it is
+  // served as a volatility; FloorPriceOnly publishes that row PriceOnly and changes
+  // nothing else: every price, every other row's volatility and status, the grade.
+  constexpr double kSigma = 0.15;
+  const std::vector<Chain> chains{wing_tail_chain(99.71, 0.1, kSigma)};
+  const auto &quotes = chains[0].quotes;
+  const auto off =
+      fit_quote_surface(expiries(chains), wing_config(), wing_surface(QuoteSurfaceWingTail::Off));
+  ASSERT_TRUE(off) << off.error().to_string();
+  const auto on = fit_quote_surface(expiries(chains), wing_config(),
+                                    wing_surface(QuoteSurfaceWingTail::FloorPriceOnly));
+  ASSERT_TRUE(on) << on.error().to_string();
+  const QuoteSurfaceSlice &a = (*off)[0];
+  const QuoteSurfaceSlice &b = (*on)[0];
+  ASSERT_NE(a.grade, QuoteSliceGrade::Refused) << a.refusal << " " << a.error;
+  ASSERT_FALSE(a.fit.moved_nodes.empty());
+  const std::size_t floor_rows = floor_reimplied_rows(a.fit, quotes);
+  ASSERT_GT(floor_rows, 0u) << "fixture broken: no re-implied floor volatility";
+  EXPECT_EQ(a.wing_tail_price_only, 0u);
+  const std::size_t price_only_off = expect_price_only_rows(a.fit, quotes);
+
+  EXPECT_EQ(floor_reimplied_rows(b.fit, quotes), 0u);
+  EXPECT_EQ(b.wing_tail_price_only, floor_rows);
+  EXPECT_EQ(expect_price_only_rows(b.fit, quotes), price_only_off + floor_rows);
+  EXPECT_EQ(b.grade, a.grade);
+  EXPECT_EQ(b.method, a.method);
+  EXPECT_EQ(b.fit.moved_nodes, a.fit.moved_nodes);
+  ASSERT_EQ(b.fit.rows.size(), a.fit.rows.size());
+  std::size_t refused = 0;
+  for (std::size_t i = 0; i < a.fit.rows.size(); ++i) {
+    const QuoteSliceRow &x = a.fit.rows[i];
+    const QuoteSliceRow &y = b.fit.rows[i];
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(x.fitted_price),
+              std::bit_cast<std::uint64_t>(y.fitted_price)) << i;
+    const bool floor = x.evaluation_status == QuoteSliceEvaluationStatus::Success &&
+                       x.fitted_iv == kIvMin;
+    if (floor) {
+      // The tail row: served 0.005 against 0.15 with the key off; no volatility on.
+      EXPECT_GT(std::abs(x.fitted_iv - kSigma), 0.1) << i;
+      EXPECT_EQ(y.evaluation_status, QuoteSliceEvaluationStatus::PriceOnly) << i;
+      EXPECT_TRUE(std::isnan(y.fitted_iv)) << i;
+      ++refused;
+      continue;
+    }
+    EXPECT_EQ(y.evaluation_status, x.evaluation_status) << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(y.fitted_iv), std::bit_cast<std::uint64_t>(x.fitted_iv))
+        << i;
+  }
+  EXPECT_EQ(refused, floor_rows);
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::Off), "off");
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::FloorPriceOnly), "floor-price-only");
+}
+
+TEST(QuoteSurfaceLadder, WingTailIsANoOpWithoutAReimpliedFloorVolatility) {
+  // The pass-A knot chains: no repair moves a node, so the key changes nothing.
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, knot_first());
+  ASSERT_TRUE(off) << off.error().to_string();
+  QuoteSurfaceConfig surface = knot_first();
+  surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+  const auto on = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  expect_bit_identical(*off, *on, 1);
+  for (const QuoteSurfaceSlice &slice : *on) EXPECT_EQ(slice.wing_tail_price_only, 0u);
+}
+
+TEST(QuoteSurfaceLadder, WingFloorVariantServesTheWingFlooredKnotSlice) {
+  // Put-skewed chains whose OTM wings beyond |k| 0.15 are bidless. Whenever the knot
+  // rung serves, FloorPriceOnlyWingFloor's knot slice is the standalone channel fit
+  // with the wing floor and FloorPriceOnly's the plain one; on at least one chain the
+  // floor binds (the two differ). A floored fit that fails its certificate is never
+  // served by the knot rung (the point fit or the channel passes take the slice).
+  std::size_t bound = 0;
+  for (const double skew : {-0.10, -0.20, -0.30}) {
+    SCOPED_TRACE(::testing::Message() << "skew " << skew);
+    const std::vector<Chain> chains{chain(0.25, 0.22, skew, 0.01, 60, 140, 5, 0.15)};
+    QuoteSurfaceConfig surface = knot_first();
+    surface.ladder_max_outside_fraction = 1.0;
+    surface.ladder_channel_max_outside_fraction = 1.0;
+    surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnlyWingFloor;
+    const auto floored = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+    surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+    const auto plain = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+    ASSERT_TRUE(floored) << floored.error().to_string();
+    ASSERT_TRUE(plain) << plain.error().to_string();
+    const QuoteSurfaceSlice &a = (*floored)[0];
+    const QuoteSurfaceSlice &b = (*plain)[0];
+    QuoteSliceConfig config;
+    config.channel.wing_floor = true;
+    const auto knot = fit_quote_slice_channel(chains[0].market, chains[0].quotes, config, nullptr);
+    const auto unfloored =
+        fit_quote_slice_channel(chains[0].market, chains[0].quotes, QuoteSliceConfig{}, nullptr);
+    ASSERT_TRUE(knot) << knot.error().to_string();
+    ASSERT_TRUE(unfloored) << unfloored.error().to_string();
+    const bool a_knot = a.method == QuoteSurfaceMethod::Channel && a.grade == QuoteSliceGrade::A;
+    if (a_knot) expect_same_prices(a.fit, *knot);
+    if (b.method == QuoteSurfaceMethod::Channel && b.grade == QuoteSliceGrade::A) {
+      expect_same_prices(b.fit, *unfloored);
+    }
+    if (a_knot && unfloored->fit_status == QuoteSliceFitStatus::Success) {
+      for (std::size_t i = 0; i < knot->rows.size(); ++i) {
+        if (knot->rows[i].fitted_iv != unfloored->rows[i].fitted_iv) {
+          ++bound;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_GT(bound, 0u) << "fixture broken: no served knot slice where the wing floor binds";
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::FloorPriceOnlyWingFloor),
+               "floor-price-only+wing-floor");
+}
+
+TEST(QuoteSurfaceLadder, WingTailRequiresTheKnotFirstLadderAndAKnownMode) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01)};
+  QuoteSurfaceConfig no_ladder;
+  no_ladder.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+  const auto refused = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, no_ladder);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  QuoteSurfaceConfig unknown = knot_first();
+  unknown.ladder_wing_tail = static_cast<QuoteSurfaceWingTail>(7);
+  const auto bad = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, unknown);
+  ASSERT_FALSE(bad);
+  EXPECT_EQ(bad.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_STREQ(to_string(static_cast<QuoteSurfaceWingTail>(7)), "unknown");
+}
+
 } // namespace
 } // namespace atx::vol
