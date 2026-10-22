@@ -5,6 +5,42 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — an independent cash-dividend reference, and the dividend convention declared on kernel results
+
+The American discrete-cash-dividend kernel (spliced CRR, 301 steps) had only itself to be
+checked against: its refined comparator is the same splice at 2401 steps. A library-private
+reference now exists, `src/pricing/american_discrete_div_reference.{hpp,cpp}`
+(`atx::vol::ddiv_ref`). It has two methods that share the model and none of the numerics. One
+is an event-aligned Crank–Nicolson PDE in log state: Rannacher restarts, per-segment graded
+steps, every ex-date on the grid, and the American constraint solved as an exact LCP by Howard
+iteration. The other is an event-aligned trinomial lattice. Each method converges on its own
+ladder; the PDE reports time and space independently, and each axis gets a Richardson estimate
+and a conservative uncertainty. The cash-exceeds-spot treatment is a stated model choice
+(`CashProcess::SpotLiquidator`, the kernel's; `SpotSurvivor`; `Escrowed`), never substituted.
+Nothing selects it by default.
+
+`api/pricing/american_discrete_div_kernel.hpp` gains `DiscreteDivConvention` (process, cum and
+post exercise rights, cash-excess treatment, ex-date grid rule, spot or escrowed volatility) and
+the constexpr map `discrete_div_convention(DiscreteDivScheme)`. `DiscreteDivConverged` and
+`DiscreteDivIvResult` carry it as an APPENDED field (`convention`), filled from the scheme.
+**No number moves.** The change is additive and no arithmetic is touched. The dividend parity
+cohorts reproduce their control hashes on the new build: dev200 `abc75955...`, dev200b
+`747d3e6c...`. Aggregate initialisation that spelled out every member of either struct
+positionally still compiles, because the new member is last and defaulted.
+
+Tests: `atx-vol-discrete-div-reference` (fast, 22 cases: Andersen–Lake no-dividend agreement
+within the stated error, exact one-dividend European and American-call quadratures, the
+cash-at-expiry and t -> 0 limits, parity bounds, the convention map) and
+`atx-vol-discrete-div-reference-matrix` (slow, in `ATX_VOL_SLOW_FILTER`, ~3 min). The slow suite
+is a 50-case matrix against the 301-step kernel and its refined comparator, with a step ladder
+and a delta / vega bump study. The findings and the 301-step decision memo are in
+`docs/american-cash-dividend-reference.md`. In short, the 301 default is adequate to about 6 bp
+of IV for chains with at most one in-life ex-date. Multi-event spot-shift chains carry about
+-4 bp per 1 %-of-spot event (-34 bp at 12 events), and raising the step count is a weak lever
+(-6 bp still at 2401). The refined comparator misses by 2.61 USD on the review-m1 contract, where
+cash is 64 % of spot. The recommendation is event-adaptive routing plus a splice fix; this
+change promotes no default.
+
 ### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
 
 Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,
