@@ -12,6 +12,15 @@
   min / median / p95 / p99 / max of every clock over the trials; the predictions hash of
   every trial (they must all be equal) and a fast-math assertion.
 
+  SMT sibling: a trial whose pinned CPU's SMT sibling was busier than
+  -SiblingBusyThresholdPct (default 10%) over the compute window is marked
+  smt_contended = true in its record; the manifest counts contended trials and trials
+  whose sibling load was not measured, and smt_sibling_idle_all_trials is true only
+  when neither occurred. pcore_proof stays the core-type proof (every trial on the
+  requested CPU, and that CPU on a performance core); the COLD_TRIALS line prints the
+  contended count next to it. -RequireIdleSibling makes a contended or unmeasured trial
+  fail the run (exit 4).
+
   Never overwrites: -OutDir must not exist. Each trial is launched through
   System.Diagnostics.Process with its output streams read asynchronously into files (a
   PowerShell-wrapped native call has died silently under PS 5.1 before; this launch form
@@ -35,6 +44,8 @@ param(
   [int] $Affinity = -1,
   [switch] $RequirePCore,
   [switch] $TimingDetail,
+  [ValidateRange(0.0, 100.0)] [double] $SiblingBusyThresholdPct = 10.0,
+  [switch] $RequireIdleSibling,
   [ValidateSet('funding-pv', 'escrowed-pv', 'none')] [string] $Dividends = 'funding-pv',
   [string] $SourceRoot = '',
   [string] $BuildDir = '',
@@ -160,6 +171,14 @@ for ($t = 1; $t -le $Trials; ++$t) {
     $record['stages_unattributed_s'] = $bench.stages.unattributed_s
     $record['attribution_valid'] = $bench.stages.attribution_valid
   }
+  $siblingPct = @($aff.busy.smt_sibling_pct | Where-Object { $null -ne $_ })
+  $siblingMax = $null
+  if ($siblingPct.Count -gt 0) {
+    $siblingMax = [double]($siblingPct | Measure-Object -Maximum).Maximum
+  }
+  $record['smt_sibling_busy_max_pct'] = $siblingMax
+  $record['smt_contended'] = $(if ($null -eq $siblingMax) { $null }
+                               else { $siblingMax -gt $SiblingBusyThresholdPct })
   $record['affinity'] = [ordered]@{
     requested_cpu = $aff.requested_cpu; pinned = $aff.pinned; is_pcore = $aff.is_pcore
     efficiency_class = $aff.efficiency_class; core_mask = $aff.core_mask
@@ -174,10 +193,10 @@ for ($t = 1; $t -le $Trials; ++$t) {
   }
   $trialRecords += $record
   $message = ("{0} exit=0 cold_calibration_s={1:F4} legacy_s={2:F4} process_wall_s={3:F4} " +
-              "cpu={4} pcore={5} sibling_busy_pct={6} sha256={7}") -f $name,
+              "cpu={4} pcore={5} sibling_busy_pct={6} smt_contended={7} sha256={8}") -f $name,
              $record.cold_calibration_s, $record.legacy_fit_reprice_s, $record.process_wall_s,
              $aff.current_cpu_at_receipt, $aff.is_pcore, ($aff.busy.smt_sibling_pct -join '/'),
-             $predictionsSha
+             $record.smt_contended, $predictionsSha
   Write-Host $message
 }
 
@@ -208,6 +227,10 @@ $uniqueHashes = @($predictionHashes | Sort-Object -Unique)
 $offCore = @($ok | Where-Object {
     $_.affinity.is_pcore -ne $true -or $_.affinity.current_cpu_at_receipt -ne $Affinity })
 $pcoreProof = ($ok.Count -eq $Trials) -and ($Affinity -ge 0) -and ($offCore.Count -eq 0)
+$contended = @($ok | Where-Object { $_.smt_contended -eq $true })
+$unmeasured = @($ok | Where-Object { $null -eq $_.smt_contended })
+$siblingIdle = ($ok.Count -eq $Trials) -and ($contended.Count -eq 0) -and
+               ($unmeasured.Count -eq 0)
 $manifest = [ordered]@{
   schema = 'atx-vol-cold-trials-v1'
   definitions = 'atx-vol/docs/benchmark-clocks.md'
@@ -228,6 +251,11 @@ $manifest = [ordered]@{
   affinity_requested = $(if ($Affinity -ge 0) { $Affinity } else { $null })
   require_pcore = [bool]$RequirePCore
   pcore_proof = $pcoreProof
+  smt_sibling_busy_threshold_pct = $SiblingBusyThresholdPct
+  smt_contended_trials = $contended.Count
+  smt_unmeasured_trials = $unmeasured.Count
+  smt_sibling_idle_all_trials = $siblingIdle
+  require_idle_sibling = [bool]$RequireIdleSibling
   predictions_identical = ($uniqueHashes.Count -eq 1)
   predictions_sha256 = $(if ($uniqueHashes.Count -eq 1) { $uniqueHashes[0] } else { $uniqueHashes })
   summary = [ordered]@{
@@ -241,13 +269,15 @@ $manifest | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $manifestPath -E
 $s = $manifest.summary.cold_calibration_s
 if ($null -ne $s) {
   $message = ("COLD_TRIALS n={0} min={1:F4} median={2:F4} p95={3:F4} p99={4:F4} max={5:F4} " +
-              "pcore_proof={6} predictions_identical={7} fast_math={8}") -f $s.n, $s.min,
+              "pcore_proof={6} smt_contended={9}/{10} (sibling > {11}%) " +
+              "predictions_identical={7} fast_math={8}") -f $s.n, $s.min,
              $s.median, $s.p95, $s.p99, $s.max, $pcoreProof, $manifest.predictions_identical,
-             $fastMath
+             $fastMath, $contended.Count, $ok.Count, $SiblingBusyThresholdPct
   Write-Host $message
 }
 Write-Host "MANIFEST $manifestPath sha256=$(Get-Sha256 $manifestPath)"
 if ($ok.Count -ne $Trials) { exit 1 }
 if ($fastMath -eq $true) { Write-Host 'FAST_MATH binary refused'; exit 2 }
 if ($uniqueHashes.Count -ne 1) { exit 3 }
+if ($RequireIdleSibling -and -not $siblingIdle) { Write-Host 'SMT sibling not idle'; exit 4 }
 exit 0

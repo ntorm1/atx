@@ -52,32 +52,47 @@ are the run's.
 
 ## 3. Exclusive stages (`bench.stages`, requires `--timing-detail`)
 
-`PhaseClock` laps: each lap charges the time since the previous lap to one stage, so the
-laps partition `[cold start, cold end]` with no gap and no overlap. A fit lap is split by
-what the fit measured (fit_timing buckets of its chains, the de-Am stage clock); the part
-of the lap no chain claimed goes to the lap's residual stage. Over-claims are clamped and
-reported, never charged.
+`PhaseClock` laps. A harness lap charges the time since the previous mark to one stage
+(the stage's boundaries are the marks). A fit lap charges only what the fit measured:
+the fit_timing buckets of its chains, with the family build wall and the de-Am stage
+clock carved out of the deam bucket. The part of a fit lap that no chain timer measured
+(surface scheduling and the term prior on the graded path, the static path's work around
+its chain recorder) is charged to NO stage: it is accumulated as `unclaimed_lap_s`.
+Over-claims are clamped and reported as `attribution_conflict_s`, never charged.
 
 | Stage | Source |
 |---|---|
 | `normalization` | harness laps: `run()` from cold start to the fit dispatch; each snapshot's worklist build; each static chain's preparation |
-| `family_build_validation` | `seconds: null, status: not_built` at this root: no family build or family validation on the fit route |
-| `inverses` | fit_timing `deam` bucket - `endpoints` - `reference_exceptions` |
+| `family_build_validation` | fit_timing `deam_family_build_us` (sigma / (sigma, q) family node solves and probe validation, `graded.family`), carved out of the `deam` bucket. `seconds: null, status: not_built` when the run built no family (the default policy) |
+| `inverses` | fit_timing `deam` bucket - `family_build_validation` - `endpoints` - `reference_exceptions` |
 | `endpoints` | `DeAmStageClock.endpoint_ns`: band-edge prices at kIvMin / kIvMax and their ambiguous-edge accurate re-prices (`DeAmIvView::band`) |
 | `curve_repair` | fit_timing `solve` + `project` (the repair-rung cross-cut is inclusive of buckets and not added) |
 | `final_grid_validation` | fit_timing `price` + `certify` + `calendar`; the static path's calendar checks |
 | `reference_exceptions` | `DeAmStageClock`: the whole wall of every Premium inversion that fell back to Search (`premium_fallback_ns_by_reason`, index = `IvPremiumFallback`) and of every Fast inversion redone on the accurate kernel (`fast_redo_ns`) |
 | `publication` | harness laps: row publication after each fit, the post-run calendar-refusal reset and per-profile counts |
-| `fit_other` | fit_timing `other` bucket (chain preparation, containment, carry) |
-| `surface_other` | a surface-fit lap minus its chains' buckets (term prior, pass scheduling) |
+| `fit_other` | fit_timing `other` bucket only (chain preparation, containment, carry inside the chain recorder) |
 
-`sum_s` = the stage sum; `unattributed_s` = `cold_calibration_s - sum_s` (floating
-rounding only, by construction); `reconciles_within_1pct` = |unattributed| <= 1% of the
-cold clock; `attribution_conflict_s` = clamped over-claims (fit_timing rounds each bucket
-to 1 us); `attribution_valid` = one fit worker and zero conflict. With more than one fit
-worker chains overlap in wall time and the split is not exclusive: attribution runs use
+`sum_s` = the stage sum (measured time only); `unattributed_s` = `cold_calibration_s -
+sum_s`, where the cold clock is its own pair of stamps: the time no stage measured. It is
+NOT zero by construction: an uninstrumented region inside a fit lap (an untimed family
+build, surface scheduling) lands here, never in a stage. `unclaimed_lap_s` = the lap
+clock's own record of that time, and `span_check_s` = `unattributed_s - unclaimed_lap_s`
+(zero to rounding when the laps span the cold clock; nonzero means a mark was missed).
+`reconciles_within_1pct` = |unattributed_s| <= 1% of the cold clock, and it fails when the
+stages left more than 1% unmeasured (gtest
+`BenchStages.UntimedRegionIsUnattributedAndFailsTheOnePercentCheck`).
+`attribution_conflict_s` = clamped over-claims (fit_timing rounds each bucket to 1 us);
+`attribution_valid` = one fit worker and zero conflict. With more than one fit worker
+chains overlap in wall time and the split is not exclusive: attribution runs use
 `ATX_VOL_FIT_WORKERS=1`. The instrumentation reads the clock at every bucket switch:
 `--timing-detail` timings are diagnostic unless the host is quiet.
+
+Known inclusions: the harness stages `normalization` and `publication` also hold
+quote-bench's own diagnostic JSON bookkeeping (`policy_decisions`,
+`graded_stats.slices`, per-profile counts; about 10 ms on SPY) inside the cold clock.
+Under `--timing-detail` the static (non-graded) path's fits run inside a fit_timing
+`ChainRecorder`; with `--deam-audit` that also runs the audit's extra Search inversions
+on static chains (predictions unchanged; an opt-in path's cost changes).
 
 ## 4. Counters (`bench.counters`)
 
@@ -96,8 +111,10 @@ worker chains overlap in wall time and the split is not exclusive: attribution r
   `seed_routed`.
 - `deam_stage_clock` (`--timing-detail`): `endpoint_bands`, `endpoint_s`,
   `premium_fallback_s` and its ns by reason, `fast_redos`, `fast_redo_s`.
-- `families` (attempted / built / refused / lane prices / lane vegas): `unavailable: no
-  family route on this fit`.
+- `families` (`--timing-detail`, fit_timing): `built`, `build_validation_s`,
+  `iterate_prices`, `refused_premium_attempts`, `grid_prices`,
+  `grid_prices_on_fast_instead` (real counts; zero when the policy builds no family);
+  `attempted` and `lane_vegas` are `unavailable: not counted by the fit`.
 - `simd` (`vector_pack_dispatches` = complete 4-lane AVX2 packs, `scalar_equivalent_lanes`
   = known scalar wrapper lanes + scalar fallback lanes): from the exact counter plane;
   compiled out of the shipping build (`ATX_VOL_COUNTERS` off), so `unavailable`, never 0.
@@ -156,14 +173,45 @@ performance core); `predictions_identical` with the predictions sha256. Exit 0 o
 every trial exited 0, the binary is not fast-math, and every trial's predictions are
 byte-identical.
 
-## 8. Independent IV comparator (`atx-vol-iv-comparator`)
+SMT sibling: `pcore_proof` is the core-type proof only. Each trial also records
+`smt_sibling_busy_max_pct` and `smt_contended` (sibling busier than
+`-SiblingBusyThresholdPct`, default **10%**, over the compute window; null when the
+sampler did not advance). The manifest carries `smt_sibling_busy_threshold_pct`,
+`smt_contended_trials`, `smt_unmeasured_trials` and `smt_sibling_idle_all_trials`, and the
+`COLD_TRIALS` line prints `smt_contended=k/n` next to `pcore_proof`. `-RequireIdleSibling`
+fails the run (exit 4) on any contended or unmeasured trial.
+
+Named workloads (the G1 receipt names one; their numbers are not comparable):
+- **default graded-v1 SPY**: `quotes-SPY.csv` (cohort5 fit-timing input) with
+  `slice-coverage-20261016-policies/graded-v1.json` (sha256 `d7f89d13...`, the R3 graded
+  defaults, no family route).
+- **section 9 (deep review) SPY**: the same input with
+  `SPY1s-20261021-phase3/policies/graded-v1-famq-grid-native.json` (sha256 `9091b102...`:
+  `graded.family adaptive`, `family_q`, `family_native`, `grid_kernel family`,
+  `seed_gate_kappa 4.3e-05`). Needs `graded.family_native`, present from root
+  `9f05a40e` (W2c-d); older binaries refuse the policy.
+
+## 8. IV root-finding comparator (`atx-vol-iv-comparator`)
+
+**What it checks and what it does not.** The pricer is the fitter's own Andersen-Lake
+accurate preset (`std::nullopt`, `AlProfile::Reference`): the comparator's independence is
+in the ROOT FINDING only (bracket + bisection; no Newton, no family, no memo). On a
+curve-priced row the served price IS the reference price at the served IV (within 1e-10
+USD: summary `served_pair_consistent`, e.g. 1279 of 1279 bracketed SPY rows), so the IV
+check there is circular for pricer error: |served - bracketed| is bounded by the bisection
+tolerance by construction, and only the fine-scheme reference uncertainty speaks to the
+pricer. The genuine root checks are the rows whose served pair is not consistent
+(re-implied, repaired or moved nodes, excluded-side rows). The scope is served (price,
+iv) pairs; the fitter's quote inversions (de-Am bid / ask / mid IVs) are not compared.
+The bracket is seeded at the served IV; on a monotone price map the root does not depend
+on the seed. Follow-up: **PDE-backed pricer option (D0's
+`american_discrete_div_reference` with zero dividends) for true pricer independence.**
 
 For each served row (status ok) of a prediction CSV, the American IV of the served price is
-bracketed with the cold reference pricer and bisected: bracket from `served_iv * (1 -+
-1e-3)`, widened x4 inside `[kIvMin, kIvMax]`, then halved until `hi - lo <= 2 * tolerance`
-(default 1e-12). No Newton step, no family, no memo. **Units: absolute volatility (0.20 =
-20%); the requirement `1e-7` is 0.001 vol bp.** Reference: Andersen-Lake accurate preset
-(`std::nullopt`, `AlProfile::Reference`). The contract is rebuilt from the input CSV:
+bracketed and bisected: bracket from `served_iv * (1 -+ 1e-3)`, widened x4 inside
+`[kIvMin, kIvMax]`, then halved until `hi - lo <= 2 * tolerance` (default 1e-12).
+**Units: absolute volatility (0.20 = 20%); the requirement `1e-7` is 0.001 vol bp.** The
+contract is rebuilt from the input CSV:
 chain market = median of the chain's supported rows; `r_eff = rate * T_cal / T_var`;
 `q_eff` = the row's own yield on the variance clock with the `--dividends` aggregate PV
 folded in; `T = T_var`.
@@ -177,8 +225,16 @@ and whether the served IV lies in it, never counted as a root error); `unbracket
 (excluded with `--report`: not a continuous-carry contract). Reference uncertainty: the
 same price on a finer scheme (32 nodes, quadrature 64 / 64, 16 sweeps, tol 1e-14) minus
 the accurate preset at the bracketed root, in USD and through the reference vega in vol;
-`reference_unresolved_rows` counts rows whose uncertainty exceeds the threshold (those are
-not passes). Continuous-carry price table: `|P_ref(served_iv) - served_price|` in USD and
+`reference_unresolved_rows` counts rows whose uncertainty exceeds the threshold or is
+undefined (no reference vega); those are not passes.
+
+Populations (summary `populations`, per-row CSV column `population`; every served row in
+exactly one; plan 3.2): `resolved_pass` and `resolved_fail` (bracketed with a finite
+uncertainty <= the threshold, |served - bracketed| <= / > the threshold),
+`reference_unresolved` (with `reference_unresolved_over_threshold` and
+`uncertainty_undefined`), `iv_not_identified`, and `other_statuses`. The headline is
+`resolved pass / resolved fail / reference unresolved / IV not identified`; the
+`abs_iv_error.over_threshold` of all bracketed rows is not a failure count. Continuous-carry price table: `|P_ref(served_iv) - served_price|` in USD and
 relative (P >= 0.01) and its Newton distance in vol. Per-expiry and per side x moneyness
 (`|ln K/S| <= 0.1`, below, above) tables accompany every aggregate. The tool refuses to
 compile under fast-math (`#error` on `__FAST_MATH__`, `_M_FP_FAST`, finite-math) and its
@@ -198,11 +254,11 @@ summary carries the embedded build info.
 | min, median, p95, p99, max | `bench.clocks.*.summary` (in-process reps), runner `summary` (fresh trials) |
 | stage_seconds | `bench.stages` |
 | boundary_solves, inverse_iterations, confirmed_roots | `bench.counters.solve_ledger`, `fit_route` |
-| family_builds, family_prices | `bench.counters.families` (`unavailable` at this root) |
+| family_builds, family_prices | `bench.counters.families` (`built`, `iterate_prices`, `grid_prices`; `--timing-detail`) |
 | skipped_roots_by_error_class, reference_fallbacks_by_reason | `fit_route.confirms_skipped`, `premium_fallbacks_by_reason`, `deam_stage_clock` |
 | input_rows, served_price_rows, served_iv_rows, price_only_rows, refused_rows_by_reason, complete_expiries | `bench.counters.rows` |
 | eligible_price_rows, identifiable_iv_rows | scorer (`tools/quote_benchmark.py`), comparator `status_counts` |
-| price_residual_usd, independent_iv_error, reference_uncertainty | comparator summary (`price_table`, `abs_iv_error`, `reference_uncertainty_*`) |
+| price_residual_usd, independent_iv_error, reference_uncertainty | comparator summary (`price_table`, `populations`, `abs_iv_error`, `reference_uncertainty_*`, `served_pair_consistent`) |
 | greek_errors, containment, mae_usd, mae_spread, iv_bp_quantiles, shape_violations, paired/gained/lost/per-class metrics | scorer and later lanes (not B0) |
 | published_bytes, peak_memory, allocations_hot, version_race_failures | not measured by B0 |
 | commands, exit_codes, artifact_manifest | runner `command_template`, `exit_codes`, `trials[]` with report sha256 |

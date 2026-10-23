@@ -672,11 +672,11 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
 
 // Lane B0: charges the fit lap that just ended to its exclusive stages
 // (bench_clocks.hpp fit_parts): the fit_timing buckets of the lap's chains, with the
-// de-Am stage clock's endpoint and exception time of the lap carved out of their deam
-// bucket; whatever the lap held beyond the chains is charged to `residual`.
+// family build wall and the de-Am stage clock's endpoint and exception time of the lap
+// carved out of their deam bucket. Whatever the lap held beyond what the chains
+// measured is charged to no stage (PhaseClock unclaimed): it shows as unattributed_s.
 void charge_fit_lap(RunStatistics &stats,
-                    std::span<const counters::fit_timing::FitTimingCounters> chains,
-                    bench::Stage residual) {
+                    std::span<const counters::fit_timing::FitTimingCounters> chains) {
   if (!stats.phases.armed()) return;
   bench::FitWork lap;
   for (const auto &chain : chains) {
@@ -693,7 +693,7 @@ void charge_fit_lap(RunStatistics &stats,
   mark = now;
   double excess = 0.0;
   const auto parts = bench::fit_parts(lap, endpoint_ns, exception_ns, excess);
-  stats.phases.lap_split(Clock::now(), parts, residual);
+  stats.phases.lap_split(Clock::now(), parts);
   stats.phases.add_conflict(excess);
 }
 
@@ -742,7 +742,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
     const bool timed = trace && trace->chains.size() == members.size();
     if (trace) {
       using Chains = std::span<const counters::fit_timing::FitTimingCounters>;
-      charge_fit_lap(stats, timed ? Chains(trace->chains) : Chains{}, bench::Stage::SurfaceOther);
+      charge_fit_lap(stats, timed ? Chains(trace->chains) : Chains{});
     }
     if (timed) {
       std::uint64_t chain_us = 0;
@@ -1345,7 +1345,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     }();
     if (recorder) {
       const counters::fit_timing::FitTimingCounters timed = recorder->result();
-      charge_fit_lap(stats, {&timed, 1U}, bench::Stage::FitOther);
+      charge_fit_lap(stats, {&timed, 1U});
     }
     if (!fit) {
       ++stats.fit_failures[fit.error().to_string()];
@@ -1797,10 +1797,10 @@ std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputR
     const std::size_t memo_at_start = bench::deam_memo_entries();
     const auto ledger_before = counters::ledger::snapshot();
     const auto exact_before = counters::snapshot();
-    DeAmStageClock *const previous =
-        deam_stage_clock_arm(args.timing_detail ? &trial.deam_clock : nullptr);
-    auto predictions = run(args, rows, trial);
-    static_cast<void>(deam_stage_clock_arm(previous));
+    auto predictions = [&] {
+      const bench::StageClockArm armed(args.timing_detail ? &trial.deam_clock : nullptr);
+      return run(args, rows, trial);
+    }();
     const auto work = counters::ledger::snapshot() - ledger_before;
     const auto exact_after = counters::snapshot();
     legacy.push_back(trial.elapsed_seconds);
@@ -1816,18 +1816,16 @@ std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputR
     if (rep == 0U) {
       out["counters"] = {
           {"rows", rows_json(rows, predictions, trial)}, {"solve_ledger", ledger_json(work)},
-          {"families", {{"attempted", "unavailable: no family route on this fit"},
-                        {"built", "unavailable: no family route on this fit"},
-                        {"refused", "unavailable: no family route on this fit"},
-                        {"lane_prices", "unavailable: no family route on this fit"},
-                        {"lane_vegas", "unavailable: no family route on this fit"}}},
+          {"families", args.timing_detail ? bench::families_json(trial.fit_work)
+                                          : Json("unavailable: requires --timing-detail")},
           {"fit_route", args.timing_detail ? bench::fit_work_json(trial.fit_work)
                                            : Json("unavailable: requires --timing-detail")},
           {"deam_stage_clock", args.timing_detail ? bench::stage_clock_json(trial.deam_clock)
                                                   : Json("unavailable: requires --timing-detail")},
           {"simd", simd_json(exact_before, exact_after)}};
       out["stages"] = args.timing_detail
-          ? bench::stages_json(trial.phases, trial.cold_calibration_seconds, false)
+          ? bench::stages_json(trial.phases, trial.cold_calibration_seconds,
+                               trial.fit_work.deam_family_builds > 0U)
           : Json("unavailable: requires --timing-detail");
       if (args.timing_detail) {
         out["stages"]["rep"] = 1;
@@ -1949,7 +1947,7 @@ int main(int argc, char **argv) {
     RunStatistics stats;
     stats.timing_detail = args.timing_detail;
     counters::fit_timing::arm_deam_audit(args.deam_audit); // before any fit starts
-    Json bench_report = {{"schema", "atx-vol-bench-clocks-v1"},
+    Json bench_report = {{"schema", "atx-vol-bench-clocks-v2"},
                          {"definitions", "atx-vol/docs/benchmark-clocks.md"}};
     const auto cpus_before = bench::sample_cpus();
     const auto compute_start = Clock::now();
