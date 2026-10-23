@@ -32,6 +32,8 @@ constexpr double kSpot = 100.0;
 constexpr double kRate = 0.03;
 constexpr double kYield = 0.01;
 
+constexpr double kInf = std::numeric_limits<double>::infinity();
+
 std::uint64_t bits(double value) { return std::bit_cast<std::uint64_t>(value); }
 
 double smile(double strike, double forward) {
@@ -351,6 +353,7 @@ TEST(SliceServeRecord, LadderServesPriceAndFourGreeksFromOneCertifiedMap) {
         const ServeAnswer dn = record->serve(at(node.strike, side, S - h, ServeTier::Ladder,
                                                 ServeTier::Ladder));
         if (up.status != ServeStatus::Ok || dn.status != ServeStatus::Ok) continue;
+        if (a.near_edge) continue; // theta / gamma withheld: the band test below
         const double fd_delta = (up.price - dn.price) / (2.0 * h);
         const double fd_gamma = (up.price - 2.0 * a.price + dn.price) / (h * h);
         EXPECT_NEAR(a.delta, fd_delta, 1.0e-7) << node.strike;
@@ -369,6 +372,199 @@ TEST(SliceServeRecord, LadderServesPriceAndFourGreeksFromOneCertifiedMap) {
   }
   EXPECT_GT(checked, 60u);
 }
+
+// A0 fix round (review-A0 MJ1): within kServeEdgeBand sigma sqrt T of the node's converged
+// exercise edge the ladder's identity theta and its gamma are withheld with
+// NearExerciseEdge; price, delta and vega stay served; outside the band all four serve.
+// Strikes every 0.5 over 90-120. Under the default sigma half-width (0.25) a ladder's
+// low-sigma samples cross the edge first, so every tier-0 row here stays >= 0.57 sigma sqrt T
+// off it (diagnostic in the lane report); a 5 % sigma window lets ladders reach the band.
+TEST(SliceServeRecord, LadderWithholdsThetaAndGammaInsideTheNearExerciseEdgeBand) {
+  static const QuoteSliceFit fine = fit_chain(0.25, 2.0e-4, 90.0, 0.5, 61);
+  ServeRecordPolicy policy;
+  policy.ladder_sigma_half_width = 0.05;
+  const auto built = build_serve_record(fine, policy);
+  ASSERT_TRUE(built.has_value());
+  const std::shared_ptr<const SliceServeRecord> &record = *built;
+  const double sqrt_t = std::sqrt(record->tau());
+  std::size_t in_band = 0;
+  std::size_t outside = 0;
+  for (const ServedNode &node : record->nodes()) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServedNodeSide &s = side_of(node, side);
+      if (!(s.tiers & kServeNodeLadder)) continue;
+      const Result<double> edge = exercise_boundary(node.strike, record->tau(), s.sigma,
+                                                    record->rate(), s.q, side, fine.al_opts);
+      if (edge) {
+        EXPECT_EQ(bits(s.edge_spot), bits(*edge)) << node.strike;
+      } else {
+        ASSERT_EQ(edge.error().code(), ErrorCode::OutOfRange) << node.strike;
+        EXPECT_EQ(s.edge_spot, side == Side::Put ? 0.0 : kInf) << node.strike;
+      }
+      for (int j = 0; j <= 32; ++j) {
+        const double S = kSpot * std::exp(-0.04 + 0.0025 * static_cast<double>(j));
+        const ServeAnswer a =
+            record->serve(at(node.strike, side, S, ServeTier::Ladder, ServeTier::Ladder));
+        if (a.status != ServeStatus::Ok) continue;
+        const double ratio = side == Side::Put ? S / s.edge_spot : s.edge_spot / S;
+        const double want = std::log(ratio) / (s.sigma * sqrt_t);
+        if (std::isinf(want)) {
+          EXPECT_EQ(a.edge_sd, want);
+        } else {
+          EXPECT_NEAR(a.edge_sd, want, 1.0e-12 * std::max(1.0, std::abs(want))) << node.strike;
+        }
+        EXPECT_EQ(a.near_edge, a.edge_sd < kServeEdgeBand) << node.strike << " S " << S;
+        const auto reason = [&](ServeGreek g) { return a.reason[static_cast<std::size_t>(g)]; };
+        EXPECT_TRUE(std::isfinite(a.price));
+        EXPECT_EQ(reason(ServeGreek::Delta), ServeGreekReason::Served);
+        EXPECT_EQ(reason(ServeGreek::Vega), ServeGreekReason::Served);
+        EXPECT_TRUE(std::isfinite(a.delta) && std::isfinite(a.vega));
+        if (a.near_edge) {
+          EXPECT_EQ(reason(ServeGreek::Gamma), ServeGreekReason::NearExerciseEdge);
+          EXPECT_EQ(reason(ServeGreek::Theta), ServeGreekReason::NearExerciseEdge);
+          EXPECT_TRUE(std::isnan(a.gamma) && std::isnan(a.theta)) << node.strike;
+          ++in_band;
+        } else {
+          EXPECT_EQ(reason(ServeGreek::Gamma), ServeGreekReason::Served);
+          EXPECT_EQ(reason(ServeGreek::Theta), ServeGreekReason::Served);
+          EXPECT_TRUE(std::isfinite(a.gamma) && std::isfinite(a.theta)) << node.strike;
+          ++outside;
+        }
+      }
+    }
+  }
+  EXPECT_GT(in_band, 0u);
+  EXPECT_GT(outside, 100u);
+#if !ATX_VOL_SERVE_RECORD_A0
+  // Without A0's bundle the family tier has no edge and serves no theta / gamma.
+  const ServeAnswer fam =
+      record->serve(at(101.25, Side::Put, 1.003 * kSpot, ServeTier::Family, ServeTier::Family));
+  ASSERT_TRUE(answered(fam.status));
+  EXPECT_TRUE(std::isnan(fam.edge_sd));
+  EXPECT_FALSE(fam.near_edge);
+  EXPECT_TRUE(std::isnan(fam.gamma) && std::isnan(fam.theta));
+#endif
+}
+
+// The family tier claims its probed bound only inside the probed band |ln(K / S)| <= 0.25
+// (and at a node at least its measured error there); a ladder's certificate carries the
+// node's measured family error.
+TEST(SliceServeRecord, FamilyCertificateClaimsNothingOutsideTheProbedBand) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  const double S = 1.003 * kSpot;
+  const ServeAnswer inside =
+      record->serve(at(101.3, Side::Put, S, ServeTier::Family, ServeTier::Family));
+  ASSERT_TRUE(answered(inside.status));
+  EXPECT_TRUE(std::isfinite(inside.certificate_usd));
+  const ServeAnswer outside =
+      record->serve(at(71.3, Side::Put, S, ServeTier::Family, ServeTier::Family));
+  ASSERT_TRUE(answered(outside.status));
+  EXPECT_TRUE(std::isnan(outside.certificate_usd));
+  std::size_t ladders = 0;
+  for (const ServedNode &node : record->nodes()) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServedNodeSide &s = side_of(node, side);
+      if (!(s.tiers & kServeNodeLadder)) continue;
+      EXPECT_GE(s.ladder_certificate_usd, std::abs(s.family_price_delta)) << node.strike;
+      const ServeAnswer at_node =
+          record->serve(at(node.strike, side, S, ServeTier::Family, ServeTier::Family));
+      if (answered(at_node.status)) {
+        EXPECT_GE(at_node.certificate_usd, std::abs(s.family_price_delta)) << node.strike;
+      }
+      ++ladders;
+    }
+  }
+  EXPECT_GT(ladders, 10u);
+}
+
+#if ATX_VOL_SERVE_RECORD_A0
+// Lane A0 seam: the family tier serves A0's bundle verbatim - price and every Greek to the
+// bit, the reasons value for value, sticky strike held.
+TEST(SliceServeRecord, FamilyTierGreeksAreA0sBundleToTheBit) {
+  const QuoteSliceFit &fit = base_fit();
+  const auto families = detail::build_serve_families(fit, ServeRecordPolicy{});
+  ASSERT_NE(families, nullptr);
+  const auto built = detail::build_serve_record_with(fit, ServeRecordPolicy{}, families);
+  ASSERT_TRUE(built.has_value());
+  const double S = 1.007 * kSpot;
+  std::size_t checked = 0;
+  for (const ServedNode &node : (*built)->nodes()) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServedNodeSide &s = side_of(node, side);
+      if (!(s.tiers & kServeNodeFamily)) continue;
+      ServeRequest r = at(node.strike, side, S, ServeTier::Family, ServeTier::Family);
+      r.greeks = ServeGreekMask::all();
+      const ServeAnswer a = (*built)->serve(r);
+      AlSigmaQGreeksRequest req;
+      req.mask = AlFamilyGreekMask::all();
+      req.held_fixed = AlFamilyGreekHeldFixed::StickyStrike;
+      const AlSigmaQFamilyGreeks g =
+          family_greeks(*families->of_q(side), S, node.strike, s.sigma, s.q, req);
+      if (g.status != AlSigmaQFamilyStatus::Ok) continue;
+      ASSERT_TRUE(answered(a.status)) << node.strike;
+      EXPECT_EQ(a.status == ServeStatus::Exercised, g.exercised);
+      EXPECT_EQ(bits(a.price), bits(g.price)) << node.strike;
+      EXPECT_EQ(bits(a.edge_sd), bits(g.edge_sd)) << node.strike; // A0 fix round
+      EXPECT_EQ(a.near_edge, g.near_edge) << node.strike;
+      const double want[kServeGreekCount] = {g.delta, g.gamma, g.vega, g.theta, g.rho, g.phi};
+      const double got[kServeGreekCount] = {a.delta, a.gamma, a.vega, a.theta, a.rho, a.phi};
+      for (std::size_t k = 0; k < kServeGreekCount; ++k) {
+        EXPECT_EQ(static_cast<int>(a.reason[k]), static_cast<int>(g.reason[k])) << k;
+        const bool number = g.reason[k] == AlFamilyGreekReason::Served ||
+                            g.reason[k] == AlFamilyGreekReason::Exercised;
+        if (number) {
+          EXPECT_EQ(bits(got[k]), bits(want[k])) << node.strike << " greek " << k;
+        } else {
+          EXPECT_TRUE(std::isnan(got[k])) << k;
+        }
+      }
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 40u);
+}
+#endif
+
+#if ATX_VOL_SERVE_RECORD_K3
+// Lane K3 seam: where the side family's validated envelope covers it, a family root is
+// accepted by the envelope's enclosure (no confirm solve) within the 1e-7 requirement of
+// the accurate kernel's root.
+TEST(SliceServeRecord, FamilyRootsAreAcceptedByTheEnvelopesEnclosure) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  const QuoteSliceFit &fit = base_fit();
+  const double S = 0.998 * kSpot;
+  std::size_t skipped = 0;
+  for (const ServedNode &node : record->nodes()) {
+    const ServedNodeSide &s = node.put;
+    if (!(s.tiers & kServeNodeFamily) || s.family_class != ServeErrorClass::RefinementValidated) {
+      continue;
+    }
+    const ServeAnswer f =
+        record->serve(at(node.strike, Side::Put, S, ServeTier::Family, ServeTier::Family));
+    if (f.status != ServeStatus::Ok) continue;
+    const double target = f.price * (1.0 + 1.0e-3);
+    const ServeIvAnswer iv = record->implied_vol(
+        ServeIvRequest{node.strike, Side::Put, S, target, ServeTier::Family, ServeTier::Family});
+    if (iv.status != ServeStatus::Ok) continue;
+    EXPECT_EQ(iv.acceptance.kind, ServeAcceptanceKind::Skipped);
+    EXPECT_EQ(iv.acceptance.reason, ServeAcceptanceReason::FamilyEnclosure);
+    EXPECT_LE(iv.acceptance.bound_iv, 1.0e-7);
+    const Result<double> lo = andersen_lake(S, node.strike, fit.market.variance_years,
+                                            iv.sigma - 1.0e-7, fit.diagnostics.effective_rate,
+                                            s.q, Side::Put, fit.al_opts);
+    const Result<double> hi = andersen_lake(S, node.strike, fit.market.variance_years,
+                                            iv.sigma + 1.0e-7, fit.diagnostics.effective_rate,
+                                            s.q, Side::Put, fit.al_opts);
+    ASSERT_TRUE(lo.has_value() && hi.has_value());
+    EXPECT_LE(*lo, target) << node.strike; // the accurate root lies within 1e-7
+    EXPECT_GE(*hi, target) << node.strike;
+    ++skipped;
+  }
+  EXPECT_GT(skipped, 5u);
+}
+#endif
 
 // Ownership: the record owns everything it reads - destroying the fit changes no answer.
 TEST(SliceServeRecord, TheRecordOutlivesTheFitItWasBuiltFrom) {

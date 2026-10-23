@@ -211,6 +211,11 @@ struct NodeLadder {
   std::array<double, kLadderMaxSpot> price{}; // the plane contracted at v_node
   std::array<double, kLadderMaxSpot> vega{};  // its sigma-derivative at v_node
   double certificate_usd = kNaN;
+  // The near-exercise-edge band: edge_sd = edge_sign * (ln S - edge_x) * inv_sd, edge_x
+  // the log of the node's converged edge (-inf / +inf in the European regime).
+  double edge_x = kNaN;
+  double edge_sign = 1.0; // put +1, call -1
+  double inv_sd = kNaN;   // 1 / (sigma sqrt T) at the node's sigma
 };
 
 struct FamilyRead {
@@ -828,6 +833,19 @@ void attach_families(Impl &impl, const QuoteSliceFit &fit,
   impl.clocks.family_us = us_since(t0);
 }
 
+// The converged early-exercise edge at the node's (sigma, q): 0 (put) / +inf (call) in the
+// European regime, NaN when the solve refuses (the side is then ladder-ineligible).
+[[nodiscard]] double locate_edge(const Impl &impl, double strike, double sigma, double q,
+                                 Side side) {
+  const Result<double> edge =
+      exercise_boundary(strike, impl.tau, sigma, impl.rate, q, side, impl.al_opts);
+  if (edge) return *edge;
+  if (edge.error().code() == ErrorCode::OutOfRange) {
+    return side == Side::Put ? 0.0 : std::numeric_limits<double>::infinity();
+  }
+  return kNaN;
+}
+
 void attach_ladders(Impl &impl) {
   const auto t0 = Clock::now();
   for (std::size_t i = 0; i < impl.nodes.size(); ++i) {
@@ -836,6 +854,11 @@ void attach_ladders(Impl &impl) {
       const AlSigmaQFamily *f = impl.family(side);
       if (f == nullptr || !(s.tiers & kServeNodeFamily)) continue;
       ServeSideSupport &support = side == Side::Call ? impl.support.call : impl.support.put;
+      s.edge_spot = locate_edge(impl, impl.nodes[i].strike, s.sigma, s.q, side);
+      if (std::isnan(s.edge_spot)) {
+        ++support.ladders_ineligible;
+        continue;
+      }
       const LadderInputs in{impl.spot,  impl.tau, impl.rate, impl.nodes[i].strike,
                             s.sigma,    s.q,      side,      support.family_bound_rel,
                             std::abs(s.family_price_delta)};
@@ -845,6 +868,9 @@ void attach_ladders(Impl &impl) {
         ++support.ladders_ineligible;
         continue;
       }
+      l->edge_x = std::log(s.edge_spot);
+      l->edge_sign = side == Side::Put ? 1.0 : -1.0;
+      l->inv_sd = 1.0 / (s.sigma * std::sqrt(impl.tau));
       s.ladder_certificate_usd = l->certificate_usd;
       s.tiers |= kServeNodeLadder;
       impl.ladder_of[2 * i + side_slot(side)] = static_cast<std::int32_t>(impl.ladders.size());
@@ -1041,11 +1067,17 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   const double gamma = (p_xx - p_x) / (S * S);
   const double theta = impl.rate * p.v - (impl.rate - c.q) * S * delta -
                        0.5 * c.sigma * c.sigma * S * S * gamma;
+  // The band (A0 fix round): the identity theta and the map's gamma are withheld within
+  // kServeEdgeBand sigma sqrt T of the node's converged edge.
+  a.edge_sd = l->edge_sign * (x - l->edge_x) * l->inv_sd;
+  a.near_edge = a.edge_sd < kServeEdgeBand;
+  const ServeGreekReason banded =
+      a.near_edge ? ServeGreekReason::NearExerciseEdge : ServeGreekReason::Served;
   request_reasons(a, mask, ServeGreekReason::TierHasNoGreek);
   set_greek(a, mask, ServeGreek::Delta, delta, ServeGreekReason::Served);
-  set_greek(a, mask, ServeGreek::Gamma, gamma, ServeGreekReason::Served);
+  set_greek(a, mask, ServeGreek::Gamma, gamma, banded);
   set_greek(a, mask, ServeGreek::Vega, vega, ServeGreekReason::Served);
-  set_greek(a, mask, ServeGreek::Theta, theta, ServeGreekReason::Served);
+  set_greek(a, mask, ServeGreek::Theta, theta, banded);
   a.tier = ServeTier::Ladder;
   a.status = ServeStatus::Ok;
   a.route = ServeRoute::None;
@@ -1057,6 +1089,8 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
 }
 
 #if ATX_VOL_SERVE_RECORD_A0
+static_assert(kServeEdgeBand == kAlFamilyGreekEdgeBand, "the record's band is A0's");
+
 [[nodiscard]] ServeGreekReason from_a0(AlFamilyGreekReason r) noexcept {
   switch (r) {
   case AlFamilyGreekReason::NotRequested: return ServeGreekReason::NotRequested;
@@ -1068,6 +1102,7 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   case AlFamilyGreekReason::NoQAxis: return ServeGreekReason::NoQAxis;
   case AlFamilyGreekReason::NearNodeDegenerate: return ServeGreekReason::NearNodeDegenerate;
   case AlFamilyGreekReason::ConventionUnsupported: return ServeGreekReason::ConventionUnsupported;
+  case AlFamilyGreekReason::NearExerciseEdge: return ServeGreekReason::NearExerciseEdge;
   }
   return ServeGreekReason::Refused;
 }
@@ -1092,6 +1127,8 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
     return false;
   }
   map_price = g.price;
+  a.edge_sd = g.edge_sd;
+  a.near_edge = g.near_edge;
   const double values[kServeGreekCount] = {g.delta, g.gamma, g.vega, g.theta, g.rho, g.phi};
   for (std::size_t k = 0; k < kServeGreekCount; ++k) {
     set_greek(a, mask, static_cast<ServeGreek>(k), values[k], from_a0(g.reason[k]));
@@ -1586,7 +1623,7 @@ const char *to_string(ServeGreekReason value) noexcept {
   case ServeGreekReason::NoQAxis: return "no_q_axis";
   case ServeGreekReason::NearNodeDegenerate: return "near_node_degenerate";
   case ServeGreekReason::ConventionUnsupported: return "convention_unsupported";
-  case ServeGreekReason::NearExerciseBand: return "near_exercise_band";
+  case ServeGreekReason::NearExerciseEdge: return "near_exercise_edge";
   case ServeGreekReason::BundleUnavailable: return "bundle_unavailable";
   case ServeGreekReason::TierHasNoGreek: return "tier_has_no_greek";
   case ServeGreekReason::NoMap: return "no_map";

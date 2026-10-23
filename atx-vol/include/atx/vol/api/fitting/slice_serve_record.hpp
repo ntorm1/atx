@@ -129,9 +129,10 @@ enum class ServeGreek : std::uint8_t {
 inline constexpr std::size_t kServeGreekCount = 6;
 
 // Why a Greek holds what it holds. Served and Exercised carry a number, every other reason
-// carries NaN (NotRequested included). Values 0-8 are lane A0's AlFamilyGreekReason values (the
-// family bundle's reasons are carried verbatim); 9 is reserved for A0's fix-round reason
-// for the near-exercise-boundary band (theta / gamma); 32 and above are the record's own.
+// carries NaN (NotRequested included). Values 0-9 are lane A0's AlFamilyGreekReason values (the
+// family bundle's reasons are carried verbatim; 9 is A0's fix-round NearExerciseEdge: theta
+// and gamma withheld inside the near-exercise-edge band, below); 32 and above are the
+// record's own.
 enum class ServeGreekReason : std::uint8_t {
   NotRequested = 0,
   Served = 1,
@@ -142,12 +143,24 @@ enum class ServeGreekReason : std::uint8_t {
   NoQAxis = 6,
   NearNodeDegenerate = 7,
   ConventionUnsupported = 8,
-  NearExerciseBand = 9,
+  NearExerciseEdge = 9,   // theta / gamma inside the near-exercise-edge band (any tier)
   BundleUnavailable = 32, // this build carries no family Greek bundle (lane A0 seam off)
   TierHasNoGreek = 33,    // the answering tier's map has no such Greek (ladder: rho, phi)
   NoMap = 34,             // the answer has no Greek map (refusal, price-only, slice price)
 };
 using ServeGreekReasons = std::array<ServeGreekReason, kServeGreekCount>;
+
+// THE NEAR-EXERCISE-EDGE BAND (lane A0 fix round, review-A0 MJ1). edge_sd is a contract's
+// distance to the early-exercise edge in standard deviations: ln(S / S*) / (sigma sqrt T)
+// for a put, ln(S* / S) / (sigma sqrt T) for a call, S* the edge at the contract's
+// (sigma, q); > 0 on the continuation side, +inf where no finite edge exists (the
+// European regime). A continuation answer with edge_sd < kServeEdgeBand is IN THE BAND:
+// theta and gamma are NaN with NearExerciseEdge on every tier (there the identity theta
+// rP - (r - q) S delta - sigma^2 S^2 gamma / 2 -> 0 is a cancellation of O(rK) terms that
+// amplifies any map's gamma error: A0 measured it up to 138 % off, wrong sign, 0.007
+// sigma sqrt T from the edge). Price, delta and vega stay served. The value equals A0's
+// kAlFamilyGreekEdgeBand (static_assert under the A0 seam).
+inline constexpr double kServeEdgeBand = 0.25;
 
 struct ServeGreekMask {
   std::uint8_t bits = 0;
@@ -242,6 +255,11 @@ struct ServedNodeSide {
   std::uint8_t tiers = 0; // kServeNodeLadder | kServeNodeFamily
   // The family tier's per-Greek reasons at the fit's spot (BundleUnavailable without A0).
   ServeGreekReasons family_reasons{};
+  // The converged early-exercise edge S* at (tau, sigma, r, q) - exercise_boundary() on
+  // the fit's AlOpts - that the ladder's band test uses: 0 (put) / +inf (call) in the
+  // European regime; NaN when not located (no ladder candidate, or the solve refused,
+  // which makes the side ladder-ineligible).
+  double edge_spot = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct ServedNode {
@@ -384,6 +402,12 @@ struct ServeAnswer {
   // error there; NaN between nodes outside the probed band |ln(K / S)| <= 0.25), or the
   // Fast kernel's tested bound for a Fast confirm. NaN: none claimed (piecewise slice).
   double certificate_usd = std::numeric_limits<double>::quiet_NaN();
+  // The distance to the exercise edge in sigma sqrt T that masked theta / gamma (the band
+  // above): the ladder's from the node's converged edge (ServedNodeSide::edge_spot), the
+  // family's from A0's bundle (its own discretised edge). NaN when the answering map has
+  // no edge (no A0 bundle, refusal, slice-only answer); then no theta / gamma is served.
+  double edge_sd = std::numeric_limits<double>::quiet_NaN();
+  bool near_edge = false; // continuation and edge_sd < kServeEdgeBand: theta, gamma withheld
   std::int64_t age_ns = 0;
   ServeTier tier = ServeTier::Cold;
   ServeStatus status = ServeStatus::TierUnavailable;
