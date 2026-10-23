@@ -241,6 +241,19 @@ add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-
 set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# K2 (r5): the batch IV inversion's query loop allocates nothing once its scratch is warm.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only (the accuracy
+# suite IvBatch.* is in atx-vol-tests and atx-vol-pricing-slice).
+add_executable(atx-vol-iv-batch-alloc-tests
+    american_iv_batch_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-iv-batch-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-iv-batch-alloc-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-iv-batch-alloc COMMAND atx-vol-iv-batch-alloc-tests)
+set_tests_properties(atx-vol-iv-batch-alloc PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 # Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
 # arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
@@ -345,6 +358,7 @@ add_executable(atx-vol-tests
     var_report_test.cpp
     var_validation_test.cpp
     american_iv_test.cpp
+    american_iv_batch_test.cpp
     dividend_test.cpp
     s3_test.cpp
     fit_metrics_test.cpp

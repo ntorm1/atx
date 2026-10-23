@@ -21,8 +21,10 @@
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/pricing/implied_vol.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
+#include "pricing/american_iv_batch.hpp" // K2: the native lane's typed outcome / flags
 #include "pricing/american_iv_premium.hpp"
 #include "atx/vol/api/core/types.hpp"
 
@@ -2643,6 +2645,194 @@ TEST(AmericanIvPremium, FamilyNativeIteratesNeedNoSeedLeg) {
   EXPECT_EQ(ns.fallback, IvPremiumFallback::None); // fails with the native path off
   const PremiumCase deep{K2, T2, r2, q2, Side::Put, 0.1104};
   EXPECT_LE(accurate_newton_distance(*p2, S2, deep, nr.iv), 4.0 * tol);
+}
+
+// K2 (r5, 2026-10-22): the family-native attempt through the batch seam has a TYPED outcome
+// (IvPremiumStats::native_status, review-R1 MJ2) and keeps what it learned: a price whose
+// root lies above the family box is SigmaAboveBox with the box top's evaluated price kept in
+// the memory's carry, so the quote's ask above it is settled with NO family evaluation; a
+// deep in-the-money put whose Black-76 IV lies above the box (mn5: the old box-top seed could
+// never form a chord) is priced AT the box top and converges natively; a bid behind its mid
+// starts from the mid's carry (bracket side + Newton seed off the fused vega) in fewer
+// evaluations. Every native root is confirmed at the accurate root within tol (not 4 tol:
+// mn8), with the fused vega as the confirm's local slope (MJ1's required slope).
+TEST(AmericanIvPremium, FamilyNativeOutcomesAreTypedAndTheCarryKeepsTheBracket) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaQFamily;
+  using atx::vol::IvPremiumMemory;
+  using atx::vol::prepare_al_geometry;
+  namespace ib = atx::vol::iv_batch;
+  const double S = 100.0;
+  const double T = 0.5;
+  const double r = 0.04;
+  const double q = 0.011;
+  const double tol = IvOpts{}.tol;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, q);
+  AlSigmaQFamily put(g, Side::Put, S);
+  ASSERT_TRUE(put.prepare(0.1, 0.35, 16, 0.010, 0.012, 4));
+  IvPremiumGate gate;
+  gate.qfamily = &put;
+  gate.qfamily_bound = 1.0e-9;
+  gate.qfamily_native = true;
+  gate.seed_gate_kappa = 4.3e-5; // the SPY arms' routing gate
+  IvOpts o;
+  o.strategy = IvStrategy::Premium;
+  o.seed_profile = AlProfile::Screen;
+  const auto invert = [&](double price, double K, IvPremiumMemory *m, IvPremiumStats &st) {
+    return american_implied_vol_premium(price, S, K, T, r, q, Side::Put, o, m, st, &gate);
+  };
+  // (1) Above the box: typed, served by the seed-leg path, the box top kept in the carry.
+  const auto above = andersen_lake(S, 100.0, T, 0.8, r, q, Side::Put);
+  ASSERT_TRUE(above);
+  IvPremiumMemory mid_memory;
+  IvPremiumStats sa;
+  const IvResult ra = invert(*above, 100.0, &mid_memory, sa);
+  ASSERT_EQ(ra.status, IvStatus::Ok);
+  EXPECT_EQ(sa.native_status, ib::InverseStatus::SigmaAboveBox);
+  EXPECT_NEAR(ra.iv, 0.8, 1.0e-6);
+  ASSERT_TRUE(mid_memory.carry.valid);
+  EXPECT_EQ(mid_memory.carry.lo, put.sigma_hi());
+  EXPECT_LT(mid_memory.carry.p_lo, *above);
+  IvPremiumMemory ask_memory = mid_memory;
+  IvPremiumStats sk;
+  const IvResult rk = invert(1.02 * *above, 100.0, &ask_memory, sk);
+  ASSERT_EQ(rk.status, IvStatus::Ok);
+  EXPECT_TRUE(sk.native_carried);
+  EXPECT_EQ(sk.native_status, ib::InverseStatus::SigmaAboveBox);
+  EXPECT_EQ(sk.native_evaluations, 0u); // settled by the mid's evaluated box top
+  // (2) mn5: the Black-76 IV above the box top, the American root inside it (the first
+  // in-the-money put of a small grid whose seed lies above the box, off the plateau).
+  double K2 = 0.0;
+  double s2 = 0.0;
+  double deep = 0.0;
+  for (const double K : {105.0, 110.0, 115.0, 120.0, 125.0, 130.0}) {
+    for (const double sig : {0.25, 0.3, 0.33}) {
+      const auto p = andersen_lake(S, K, T, sig, r, q, Side::Put);
+      if (!p || !(*p > (K - S) + 1.0e-6 * K) || K2 > 0.0) continue;
+      const auto b76 = atx::vol::implied_vol(*p, S * std::exp((r - q) * T), K, T,
+                                             std::exp(-r * T), Side::Put);
+      if (!b76 || *b76 > put.sigma_hi()) {
+        K2 = K;
+        s2 = sig;
+        deep = *p;
+      }
+    }
+  }
+  ASSERT_GT(K2, 0.0) << "fixture: no in-the-money put with its seed above the box";
+  IvPremiumStats sd;
+  const IvResult rd = invert(deep, K2, nullptr, sd);
+  ASSERT_EQ(rd.status, IvStatus::Ok);
+  EXPECT_EQ(sd.native_status, ib::InverseStatus::Converged);
+  EXPECT_EQ(sd.fallback, IvPremiumFallback::None);
+  EXPECT_NE(sd.native_flags & ib::lane_flag::kBoxEdgeEvaluated, 0u);
+  const PremiumCase cd{K2, T, r, q, Side::Put, s2};
+  EXPECT_LE(accurate_newton_distance(deep, S, cd, rd.iv), tol);
+  // (3) A band: the mid from scratch, the bid behind it from the mid's carry.
+  std::size_t bands = 0;
+  std::uint32_t mid_evals = 0;
+  std::uint32_t bid_evals = 0;
+  double max_newton = 0.0;
+  for (const double K : {85.0, 95.0, 100.0, 105.0, 115.0}) {
+    for (const double sig : {0.18, 0.24, 0.3}) {
+      const auto p = andersen_lake(S, K, T, sig, r, q, Side::Put);
+      ASSERT_TRUE(p);
+      IvPremiumMemory m;
+      IvPremiumStats sm;
+      const IvResult rm = invert(*p, K, &m, sm);
+      if (rm.status != IvStatus::Ok || sm.native_status != ib::InverseStatus::Converged) continue;
+      IvPremiumMemory bm = m;
+      IvPremiumStats sb;
+      const double bid = 0.99 * *p;
+      const IvResult rb = invert(bid, K, &bm, sb);
+      // A bid at the identifiable range's edge never reaches the native attempt.
+      if (rb.status != IvStatus::Ok || sb.native_status == ib::InverseStatus::Inactive) continue;
+      ASSERT_EQ(sb.native_status, ib::InverseStatus::Converged) << K << " " << sig;
+      EXPECT_TRUE(sb.native_carried);
+      ++bands;
+      mid_evals += sm.native_evaluations;
+      bid_evals += sb.native_evaluations;
+      const PremiumCase c{K, T, r, q, Side::Put, sig};
+      max_newton = std::max(max_newton, accurate_newton_distance(*p, S, c, rm.iv));
+      max_newton = std::max(max_newton, accurate_newton_distance(bid, S, c, rb.iv));
+    }
+  }
+  std::printf("[family-native K2] bands %zu, evaluations mid %u bid %u, max accurate-map Newton "
+              "%.3g; above-box ask evaluations %u; deep ITM put K %g sigma %g flags 0x%02x\n",
+              bands, mid_evals, bid_evals, max_newton,
+              static_cast<unsigned>(sk.native_evaluations), K2, s2,
+              static_cast<unsigned>(sd.native_flags));
+  EXPECT_GE(bands, 12u);
+  EXPECT_LT(bid_evals, mid_evals);
+  EXPECT_LE(max_newton, tol);
+}
+
+// K2 fix round 1 (review-K2 m1): a native lane whose root is enclosed by the carried 2 tol
+// bracket but has no usable slope (none evaluated: the carry settles it at the start) is
+// typed ConvergedNoSlope — not Converged — and is not accepted: the seed-leg path serves
+// the price within tol on the accurate map. The same price without the carry converges
+// natively (Converged, with its fused vega).
+TEST(AmericanIvPremium, ANativeRootWithoutASlopeIsTypedAndServedByTheSeedLeg) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaQFamily;
+  using atx::vol::IvPremiumMemory;
+  using atx::vol::prepare_al_geometry;
+  namespace ib = atx::vol::iv_batch;
+  namespace sq = atx::vol::sigma_q_family_detail;
+  const double S = 100.0;
+  const double T = 0.5;
+  const double r = 0.04;
+  const double q = 0.011;
+  const double K = 100.0;
+  const double sig = 0.24;
+  const double tol = IvOpts{}.tol;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, q);
+  AlSigmaQFamily put(g, Side::Put, S);
+  ASSERT_TRUE(put.prepare(0.1, 0.35, 16, 0.010, 0.012, 4));
+  IvPremiumGate gate;
+  gate.qfamily = &put;
+  gate.qfamily_bound = 1.0e-9;
+  gate.qfamily_native = true;
+  gate.seed_gate_kappa = 4.3e-5;
+  IvOpts o;
+  o.strategy = IvStrategy::Premium;
+  o.seed_profile = AlProfile::Screen;
+  const auto p = andersen_lake(S, K, T, sig, r, q, Side::Put);
+  ASSERT_TRUE(p);
+  // The family map's own root of the price (bisection to adjacent doubles).
+  double lo = put.sigma_lo();
+  double hi = put.sigma_hi();
+  for (;;) {
+    const double m = 0.5 * (lo + hi);
+    if (!(m > lo && m < hi)) break;
+    const sq::FusedPriceVega pv = sq::price_and_vega(put, S, K, m, q);
+    ASSERT_EQ(pv.status, sq::FusedStatus::Ok);
+    (pv.price < *p ? lo : hi) = m;
+  }
+  IvPremiumMemory memory;
+  memory.carry.valid = true;
+  memory.carry.lo = lo - 0.4 * tol;
+  memory.carry.hi = hi + 0.4 * tol;
+  memory.carry.p_lo = sq::price_and_vega(put, S, K, memory.carry.lo, q).price;
+  memory.carry.p_hi = sq::price_and_vega(put, S, K, memory.carry.hi, q).price;
+  ASSERT_LT(memory.carry.p_lo, *p);
+  ASSERT_GE(memory.carry.p_hi, *p);
+  IvPremiumStats st;
+  const IvResult rr =
+      american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, o, &memory, st, &gate);
+  EXPECT_EQ(st.native_status, ib::InverseStatus::ConvergedNoSlope)
+      << ib::inverse_status_name(st.native_status);
+  EXPECT_EQ(st.native_evaluations, 0u);
+  EXPECT_TRUE(st.native_carried);
+  EXPECT_TRUE(st.family_refused); // not accepted: the seed-leg path ran
+  ASSERT_EQ(rr.status, IvStatus::Ok);
+  const PremiumCase c{K, T, r, q, Side::Put, sig};
+  EXPECT_LE(accurate_newton_distance(*p, S, c, rr.iv), tol);
+  IvPremiumStats s0;
+  const IvResult r0 =
+      american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, o, nullptr, s0, &gate);
+  ASSERT_EQ(r0.status, IvStatus::Ok);
+  EXPECT_EQ(s0.native_status, ib::InverseStatus::Converged);
+  EXPECT_FALSE(s0.family_refused);
 }
 
 TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {

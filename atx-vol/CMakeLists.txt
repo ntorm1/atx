@@ -83,6 +83,10 @@ set(ATX_VOL_PRICING_SOURCES
     # L2h-b sigma-q family (2026-10-21): the (sigma, q) tensor boundary family — the
     # per-strike effective yield as a second interpolation axis (AlSigmaQFamily).
     src/pricing/american_sigma_q_family.cpp
+    # K2 (r5, 2026-10-22): the varying-parameter batch IV inversion on that family (SoA
+    # lanes, bracketed Newton, typed outcomes; AVX2 kernel src/simd/american_iv_batch_avx2.cpp).
+    src/pricing/american_iv_batch.cpp
+    src/pricing/american_iv_stream.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
     src/pricing/dividend.cpp

@@ -48,7 +48,7 @@ set(ATX_VOL_SLICE_core_STEMS
 set(ATX_VOL_SLICE_pricing_STEMS
     black76 greeks implied_vol iv_seed iv_convergence scalar_erfc
     american american_batch american_bindkey american_bulk_rung american_exercise_boundary
-    american_geometry american_iv american_negrate_domain adjoint_greeks adjusted_greeks dividend rates_curve
+    american_geometry american_iv american_iv_batch american_negrate_domain adjoint_greeks adjusted_greeks dividend rates_curve
     derivatives deriv_distribution deriv_fixtures deriv_greeks cboe_strip swap_leg theo
     pricing_executor batch laned_greek_ok_stamp evaluate_resolved_ok_stamp)
 set(ATX_VOL_SLICE_fitting_STEMS

@@ -12,7 +12,9 @@
 #include <utility>
 
 #include "pricing/al_probe.hpp" // env-gated AL hot-path zone timers (Perf 2b step 1)
+#include "pricing/american_iv_batch.hpp"  // K2: the family-native lane
 #include "pricing/american_iv_premium.hpp"
+#include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
@@ -1144,153 +1146,131 @@ struct ColdPoint {
 };
 
 // A family-native attempt's outcome (IvPremiumGate::qfamily_native): an accepted root with
-// the Newton correction taken, the family-map slope of its last step, the last point and
-// its chord partner; not accepted = hand the price to the seed-leg path.
+// the Newton correction taken and the fused vega at its last point (the confirm's LOCAL
+// slope), the last point; not accepted = hand the price to the seed-leg path, the typed
+// reason in IvPremiumStats::native_status.
 struct NativeRoot {
   bool accepted = false;
   double root = 0.0;
   double slope = 0.0;
   double residual_usd = 0.0;
   ColdPoint last{0.0, 0.0, 0.0};
-  ColdPoint partner{0.0, 0.0, 0.0};
 };
 
-// The family-native iterates (SPY1s Phase 3 lever 1): a bracketed secant-Newton on the
-// (sigma, q) family's own map at the strike's own q, no seed leg. Points are (sigma,
-// P_family) - the memory's when they are family-native ones, else none; the seed is the
-// secant through the two latest points, or (none) the Black-76 IV of the price at the
-// contract's forward clamped into the family box, priced with the family's chord. A step
-// that leaves the root bracket bisects it; a refusal of the family, a chord that does not
-// rise or the price budget ends the attempt unaccepted. Not noexcept: the Black-76
-// inversion's Error path builds a message string.
+static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
+              "the native attempt's budget is the batch seam's lane cap");
+
+// The family-native iterates (SPY1s Phase 3 lever 1) through the K2 batch seam: ONE lane of
+// iv_batch::invert_many on the (sigma, q) family's own map at the strike's own q, a bounded
+// bracketed Newton on the fused price + vega (no seed leg, no chord). The lane starts from
+// the contract's native carry - the evaluated points of an earlier attempt on this contract
+// (the quote's mid behind its bid / ask) bracket the price on the side their prices are on
+// and the last one with its vega gives a Newton seed - else from the Black-76 IV of the
+// price at the contract's forward (an upper bound of the American IV); a failed or
+// out-of-box seed starts from the bracket (the box top is priced AT the box top, mn5).
+// Every attempt rewrites the carry, accepted or not. Not noexcept: the Black-76 inversion's
+// Error path builds a message string.
 [[nodiscard]] NativeRoot family_native_root(double price, double S, double K, double T, double r,
                                             double q, Side side, double tol,
                                             const AlSigmaQFamily &f, IvPremiumMemory *memory,
-                                            IvPremiumStats &stats) {
+                                            IvPremiumStats &stats, std::uint32_t stream_id) {
+  namespace ib = iv_batch;
   NativeRoot out;
-  std::array<ColdPoint, 2> pts{};
-  std::size_t n = 0;
-  if (memory != nullptr && memory->native) {
-    for (std::size_t i = 0; i < memory->points && i < 2; ++i) {
-      pts[n++] = ColdPoint{memory->sigma[i], memory->rest[i], memory->rest[i]};
+  double seed = std::numeric_limits<double>::quiet_NaN();
+  double blo = seed;
+  double bhi = seed;
+  double plo = seed;
+  double phi = seed;
+  if (memory != nullptr && memory->carry.valid) {
+    const IvPremiumNativeCarry &c = memory->carry;
+    stats.native_carried = true;
+    const auto take = [&](double s, double p) {
+      if (!std::isfinite(s) || !std::isfinite(p)) return;
+      if (p < price) {
+        if (!(blo >= s)) {
+          blo = s;
+          plo = p;
+        }
+      } else if (!(bhi <= s)) {
+        bhi = s;
+        phi = p;
+      }
+    };
+    take(c.lo, c.p_lo);
+    take(c.hi, c.p_hi);
+    take(c.sigma, c.price);
+    if (std::isfinite(c.vega) && c.vega > ib::kInverseVegaFloorRel * K) {
+      seed = c.sigma + (price - c.price) / c.vega;
     }
   }
-  // The root bracket [lo, hi] and the family prices at its ends once evaluated (NaN before).
-  double lo = kSigmaLo;
-  double hi = kSigmaHi;
-  double p_lo = std::numeric_limits<double>::quiet_NaN();
-  double p_hi = std::numeric_limits<double>::quiet_NaN();
-  bool falsi = false; // the last fallback step was regula falsi (the next one bisects)
-  for (std::size_t i = 0; i < n; ++i) {
-    if (pts[i].price < price && pts[i].sigma > lo) {
-      lo = pts[i].sigma;
-      p_lo = pts[i].price;
-    } else if (!(pts[i].price < price) && pts[i].sigma < hi) {
-      hi = pts[i].sigma;
-      p_hi = pts[i].price;
-    }
-  }
-  const auto remember = [&](const ColdPoint &p) {
-    pts[1] = pts[0];
-    pts[0] = p;
-    n = std::min<std::size_t>(n + 1, 2);
-    if (memory == nullptr) return;
-    if (!memory->native) memory->points = 0;
-    memory->native = true;
-    memory->sigma[1] = memory->sigma[0];
-    memory->rest[1] = memory->rest[0];
-    memory->sigma[0] = p.sigma;
-    memory->rest[0] = p.price;
-    memory->points = static_cast<std::uint8_t>(std::min<std::size_t>(memory->points + 1u, 2u));
-  };
-  double x = std::numeric_limits<double>::quiet_NaN();
-  bool need_chord = true;
-  if (n >= 2 && pts[0].sigma != pts[1].sigma) {
-    const double e = (pts[0].price - pts[1].price) / (pts[0].sigma - pts[1].sigma);
-    if (std::isfinite(e) && e > 0.0) {
-      x = pts[0].sigma + (price - pts[0].price) / e;
-      need_chord = false;
-    }
-  }
-  if (!std::isfinite(x)) {
+  if (!std::isfinite(seed)) {
     const double F = S * std::exp((r - q) * T);
     const Result<double> eu = implied_vol(price, F, K, T, std::exp(-r * T), side);
-    const double margin = 1.0e-9 * (f.sigma_hi() - f.sigma_lo());
-    x = eu && std::isfinite(*eu) ? *eu : f.sigma_hi();
-    x = std::clamp(x, f.sigma_lo() + margin, f.sigma_hi() - margin);
-    need_chord = true;
+    if (eu && std::isfinite(*eu)) seed = *eu;
   }
-  for (std::uint32_t spent = 0; spent < kIvPremiumNativePrices;) {
-    if (!(x > kSigmaLo && x < kSigmaHi)) return out;
-    ColdPoint cur{x, 0.0, 0.0};
-    std::optional<ColdPoint> partner;
-    if (need_chord) {
-      const AlSigmaQFamilyChord fc = f.price_and_chord(S, K, x, q);
-      spent += 2u;
-      stats.family_prices += 2u;
-      if (fc.status != AlSigmaQFamilyStatus::Ok || !std::isfinite(fc.price) ||
-          !std::isfinite(fc.price_sigma_bumped)) {
-        return out;
-      }
-      cur.price = cur.rest = fc.price;
-      partner = ColdPoint{x + kAlPackSigmaBump, fc.price_sigma_bumped, fc.price_sigma_bumped};
-      remember(*partner);
-    } else {
-      const AlSigmaQFamilyPrice fp = f.price(S, K, x, q);
-      ++spent;
-      ++stats.family_prices;
-      if (fp.status != AlSigmaQFamilyStatus::Ok || !std::isfinite(fp.price)) return out;
-      cur.price = cur.rest = fp.price;
-      for (std::size_t i = 0; i < n; ++i) {
-        if (pts[i].sigma != x) {
-          partner = pts[i];
-          break;
-        }
-      }
-    }
-    remember(cur);
-    if (!partner) {
-      need_chord = true;
-      continue;
-    }
-    const double res = cur.price - price;
-    if (res > 0.0 && x < hi) {
-      hi = x;
-      p_hi = cur.price;
-    } else if (!(res > 0.0) && x > lo) {
-      lo = x;
-      p_lo = cur.price;
-    }
-    const double slope = (cur.price - partner->price) / (cur.sigma - partner->sigma);
-    const bool rising = std::isfinite(slope) && slope > kCertSlopeFloorRel * K;
-    const double d = rising ? res / slope : std::numeric_limits<double>::quiet_NaN();
-    if (rising && std::fabs(d) <= tol) {
-      out.accepted = true;
-      out.root = x - d;
-      out.slope = slope;
-      out.residual_usd = std::fabs(res);
-      out.last = cur;
-      out.partner = *partner;
-      return out;
-    }
-    // A step outside the bracket, or no usable slope (the flat map just above a deep
-    // in-the-money put's intrinsic): regula falsi on an evaluated bracket, alternating with
-    // bisection so a convex side cannot stall it; without an evaluated bracket, unaccepted.
-    double next = rising ? x - d : std::numeric_limits<double>::quiet_NaN();
-    if (!(next > lo && next < hi)) {
-      const bool bracketed = std::isfinite(p_lo) && std::isfinite(p_hi) && p_hi > p_lo;
-      if (!bracketed) {
-        if (!rising) return out;
-        next = 0.5 * (lo + hi);
-      } else {
-        next = falsi ? 0.5 * (lo + hi) : lo + (price - p_lo) / (p_hi - p_lo) * (hi - lo);
-        falsi = !falsi;
-        if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
-      }
-    }
-    if (next == x) return out;
-    x = next;
-    need_chord = false;
+  const std::uint8_t is_call = side == Side::Call ? 1u : 0u;
+  double sigma = 0.0;
+  double lo = 0.0;
+  double hi = 0.0;
+  double p_lo = 0.0;
+  double p_hi = 0.0;
+  double res = 0.0;
+  double vega = 0.0;
+  double last = 0.0;
+  std::uint16_t evals = 0;
+  ib::InverseStatus status = ib::InverseStatus::Inactive;
+  std::uint8_t flags = 0;
+  ib::LaneAcceptance acc;
+  ib::InverseBatchIn in;
+  in.family = &f;
+  in.S = S;
+  in.tol = tol;
+  in.max_evaluations = static_cast<std::uint16_t>(kIvPremiumNativeEvaluations);
+  in.isa = ib::InverseIsa::Scalar;
+  in.K = std::span<const double>(&K, 1);
+  in.target = std::span<const double>(&price, 1);
+  in.q = std::span<const double>(&q, 1);
+  in.is_call = std::span<const std::uint8_t>(&is_call, 1);
+  in.seed_sigma = std::span<const double>(&seed, 1);
+  in.bracket_lo = std::span<const double>(&blo, 1);
+  in.bracket_hi = std::span<const double>(&bhi, 1);
+  in.price_lo = std::span<const double>(&plo, 1);
+  in.price_hi = std::span<const double>(&phi, 1);
+  const ib::InverseBatchOut o{{&sigma, 1}, {&lo, 1},     {&hi, 1},    {&p_lo, 1},
+                              {&p_hi, 1},  {&res, 1},    {&vega, 1},  {&last, 1},
+                              {&evals, 1}, {&status, 1}, {&flags, 1}, {&acc, 1}};
+  // One scratch per thread (built once; the one-lane call then allocates nothing).
+  thread_local ib::InverseScratch scratch;
+  if (ib::invert_many(in, o, scratch) != ib::InverseBatchError::None) {
+    stats.native_status = ib::InverseStatus::InvalidInput;
+    return out;
+  }
+  stats.native_status = status;
+  stats.native_evaluations = evals;
+  stats.native_flags = flags;
+  stats.family_prices += evals;
+  const double last_price = std::isfinite(res) ? price + res : res;
+  if (memory != nullptr) {
+    memory->carry = IvPremiumNativeCarry{true, lo, hi, p_lo, p_hi, last, last_price, vega,
+                                         stream_id};
+  }
+  ib::inverse_stream_annotate(stream_id, status, evals, sigma);
+  if (status != ib::InverseStatus::Converged || !std::isfinite(vega) ||
+      !(vega > ib::kInverseVegaFloorRel * K)) {
+    return out;
+  }
+  out.accepted = true;
+  out.root = sigma;
+  out.slope = vega;
+  out.residual_usd = std::fabs(res);
+  out.last = ColdPoint{last, last_price, last_price};
+  if (memory != nullptr) {
+    // The accepted point as the memory's one native point (the leg path skips native
+    // points; the de-Am cache seeds the band edges off a memory with points).
+    memory->native = true;
+    memory->points = 1;
+    memory->sigma[0] = last;
+    memory->rest[0] = last_price;
   }
   return out;
 }
@@ -1309,6 +1289,28 @@ struct NativeRoot {
     stats.fallback = why;
     return std::optional<double>{};
   };
+  // K2 (r5): the bench's recorded request stream (american_iv_stream.hpp; disarmed: one
+  // atomic load) - every Premium request, refusals included, with the family-native family
+  // when the request is native-eligible and the request whose carry it starts from.
+  std::uint32_t stream_id = iv_batch::kNoStreamId;
+  if (iv_batch::inverse_stream_armed() != nullptr) {
+    const bool eligible = gate != nullptr && gate->qfamily != nullptr && gate->qfamily_native &&
+                          gate->policy == IvConfirmPolicy::Always && confirm &&
+                          gate->qfamily->side() == side;
+    iv_batch::InverseStreamRequest rq;
+    rq.price = price;
+    rq.S = S;
+    rq.K = K;
+    rq.T = T;
+    rq.r = r;
+    rq.q = q;
+    rq.tol = tol;
+    rq.side = side;
+    const std::uint32_t carried = memory != nullptr && memory->carry.valid
+                                      ? memory->carry.stream_id
+                                      : iv_batch::kNoStreamId;
+    stream_id = iv_batch::inverse_stream_record(rq, eligible ? gate->qfamily : nullptr, carried);
+  }
   // (sigma, q) family iterates (IvPremiumGate::qfamily; set below): the family, and whether
   // the attempt's points are still the family's (a refusal clears it).
   const AlSigmaQFamily *qfamily = nullptr;
@@ -1475,22 +1477,20 @@ struct NativeRoot {
     on_qfamily = true;
     family = nullptr;
   }
-  // Family-native iterates (IvPremiumGate::qfamily_native, SPY1s Phase 3 lever 1): the
-  // family's own map without the seed leg; an unaccepted attempt restarts on the seed-leg
-  // path on the seed kernel, exactly as a family refusal does below.
+  // Family-native iterates (IvPremiumGate::qfamily_native, SPY1s Phase 3 lever 1; K2 r5:
+  // one batch-seam lane): the family's own map without the seed leg. An unaccepted attempt
+  // hands the price, with its typed outcome in stats.native_status and its bracket kept in
+  // the memory's carry, to the seed-leg path on the seed kernel, which keeps the contract's
+  // leg memory (native points are never leg points: that path skips them).
   if (on_qfamily && gate->qfamily_native && gate->policy == IvConfirmPolicy::Always) {
-    const NativeRoot native =
-        family_native_root(price, S, K, T, r, q, side, tol, *qfamily, memory, stats);
+    const NativeRoot native = family_native_root(price, S, K, T, r, q, side, tol, *qfamily,
+                                                 memory, stats, stream_id);
     if (native.accepted) {
       stats.last_residual_usd = native.residual_usd;
-      return accept(native.root, native.slope, native.last, &native.partner);
+      return accept(native.root, native.slope, native.last, nullptr);
     }
     on_qfamily = false;
     stats.family_refused = true;
-    if (memory != nullptr) {
-      memory->points = 0;
-      memory->native = false;
-    }
   }
 
   // Up to two cold points, most recent first: the memory's, then this attempt's.
