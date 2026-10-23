@@ -1689,9 +1689,12 @@ namespace {
 // the falsi of the end prices clamped into it. Typed outcomes otherwise (IvRouteOutcome):
 // an evaluation on the plateau whose intrinsic is not below the price (the price sits on the
 // plateau): PriceOnlyPlateau; C_I(kIvMin) not below the price outside the plateau:
-// PriceOnlyFloor; C_I(kSigmaHi) not above it: AboveRange; a slope whose width cannot clear
-// 2 eps_c: PriceOnlyLowVega; the per-request cap with a certified bracket: Interval, without
-// one (or a kernel refusal): Unresolved; the chain's budget spent: BudgetExhausted.
+// PriceOnlyFloor; C_I(kSigmaHiCap) - Search's own expansion ceiling - not above it:
+// AboveRange; a point C_I cannot place whose two straddling points 0.45 W away it cannot
+// place either (the slope cannot clear 2 eps_c across W): PriceOnlyLowVega; the per-request
+// cap with a certified bracket: Interval, without one (or a kernel refusal): Unresolved; the
+// chain's budget spent: BudgetExhausted. Low vega is decided only there, at the root: a chord
+// across a flat tail far from it (a deep out-of-the-money price near zero) says nothing.
 //
 // THE PATH. From the hint (the native attempt's retained bracket, best iterate and fused
 // vega, or the Black-76 IV): safeguarded Newton / secant steps kept inside the certified
@@ -1767,7 +1770,7 @@ struct ReferencePoint {
   };
   // The certified bracket (NaN price: that end is not certified yet).
   double lo = kSigmaLo;
-  double hi = kSigmaHi;
+  double hi = kSigmaHiCap;
   double p_lo = kNaN;
   double p_hi = kNaN;
   const auto stop = [&]() -> std::optional<double> {
@@ -1795,13 +1798,13 @@ struct ReferencePoint {
       p_hi = e.price;
     }
     if (e.sigma <= kSigmaLo && e.side >= 0) return IvRouteOutcome::PriceOnlyFloor;
-    if (e.sigma >= kSigmaHi && e.side <= 0) return IvRouteOutcome::AboveRange;
+    if (e.sigma >= kSigmaHiCap && e.side <= 0) return IvRouteOutcome::AboveRange;
     return std::nullopt;
   };
   const auto decided = [&](IvRouteOutcome o) -> std::optional<double> {
     if (o == IvRouteOutcome::PriceOnlyPlateau) return typed(o, 0.0, kNaN);
     if (o == IvRouteOutcome::PriceOnlyFloor) return typed(o, 0.0, kSigmaLo);
-    return typed(o, kSigmaHi, kNaN); // AboveRange
+    return typed(o, kSigmaHiCap, kNaN); // AboveRange
   };
   std::optional<ReferencePoint> prev;
   double last_step = std::numeric_limits<double>::infinity(); // the last Newton step
@@ -1855,10 +1858,6 @@ struct ReferencePoint {
       const double chord = (e->price - prev->price) / (e->sigma - prev->sigma);
       if (std::isfinite(chord) && chord > 0.0) slope = chord;
     }
-    if (!plateau && std::isfinite(slope) && !(slope * w > 2.0 * eps)) {
-      return typed(IvRouteOutcome::PriceOnlyLowVega, std::isfinite(p_lo) ? lo : kNaN,
-                   std::isfinite(p_hi) ? hi : kNaN);
-    }
     double next = kNaN;
     if (plateau) {
       intrinsic = e->price;
@@ -1897,7 +1896,7 @@ struct ReferencePoint {
       // Outside the certified bracket: bisect; an uncertified box end is evaluated at the
       // box end itself once the bracket has narrowed onto it (the floor / range decision).
       next = reference_bisect(lo, hi);
-      if (!std::isfinite(p_hi) && next > 0.75 * kSigmaHi) next = kSigmaHi;
+      if (!std::isfinite(p_hi) && next > 0.75 * kSigmaHiCap) next = kSigmaHiCap;
       if (!std::isfinite(p_lo) && next < 2.0 * kSigmaLo) next = kSigmaLo;
     }
     if (!plateau) prev = e;

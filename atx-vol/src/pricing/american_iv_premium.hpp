@@ -74,8 +74,10 @@ struct IvReferenceBudget {
   std::uint32_t refused = 0; // requests refused because the budget was spent
 };
 
-// Kernel evaluations one reference request may spend (its own cap inside the budget).
-inline constexpr std::uint16_t kIvReferenceMaxEvaluations = 16;
+// Kernel evaluations one reference request may spend (its own cap inside the budget): 32, so
+// a root in the flat high-volatility tail or just past the plateau's edge closes (16 left
+// 97 of the dev cohorts' requests an Interval one straddle short; measured, lane K4).
+inline constexpr std::uint16_t kIvReferenceMaxEvaluations = 32;
 
 // The native fit route's outcome of a family-native root the K3 acceptance left unaccepted
 // (review-K3 For K4): PriceOnly -> PriceOnlyLowVega and Interval -> Interval, typed and NOT

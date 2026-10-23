@@ -165,6 +165,39 @@ TEST(FitNativeRoute, EdgeBandRootPastThePlateausEdgeIsIdentifiedWithinTheCap) {
               static_cast<unsigned>(st.reference_evaluations));
 }
 
+// (1) The reference route's range is Search's: a root above the seed box (kSigmaHi = 5) up to
+// Search's expansion ceiling is identified, not typed AboveRange; and low vega is decided only
+// at the root - a chord across a flat far tail (an out-of-the-money put priced near zero at
+// the bisection point) is not the root's slope. Both from a dev200 chain the first native
+// route run lost (JOBX, 3.4 days, a 199.5 % carry: its out-of-the-money asks imply 6-12 vol).
+TEST(FitNativeRoute, ReferenceRangeIsSearchsAndLowVegaIsDecidedAtTheRoot) {
+  const double T = 0.01, r = 0.03, q = 0.01;
+  const auto high = andersen_lake(100.0, 150.0, T, 7.0, r, q, Side::Call,
+                                  al_fast_profile(std::nullopt));
+  ASSERT_TRUE(high);
+  IvReferenceBudget budget{8, 128};
+  const IvPremiumGate gate = native_gate(&budget);
+  IvPremiumStats st;
+  const IvResult res = american_implied_vol_premium(*high, 100.0, 150.0, T, r, q, Side::Call,
+                                                    premium_opts(), nullptr, st, &gate);
+  ASSERT_EQ(res.status, IvStatus::Ok) << static_cast<int>(st.route);
+  EXPECT_EQ(st.route, IvRouteOutcome::ReferenceRoot);
+  EXPECT_NEAR(res.iv, 7.0, kIvRootRequirement);
+  // JOBX: S 4.525, the 4-strike put's ask 0.85 (no bid), 0.0094 y, r 4.49 %, q 199.5 %.
+  const double S = 4.5250000953674316, K = 4.0, Tj = 0.0093978382647037506;
+  const double rj = 0.044896867126226425, qj = 1.9952241182327271;
+  IvPremiumStats sj;
+  const IvResult rj_res = american_implied_vol_premium(0.85000002384185791, S, K, Tj, rj, qj,
+                                                       Side::Put, premium_opts(), nullptr, sj,
+                                                       &gate);
+  ASSERT_EQ(rj_res.status, IvStatus::Ok) << static_cast<int>(sj.route);
+  EXPECT_EQ(sj.route, IvRouteOutcome::ReferenceRoot);
+  EXPECT_LE(sj.acceptance.hi - sj.acceptance.lo, kIvRootRequirement);
+  std::printf("[K4 range] sigma 7 call: %.10f in %u evaluations; JOBX put ask: %.10f in %u\n",
+              res.iv, static_cast<unsigned>(st.reference_evaluations), rj_res.iv,
+              static_cast<unsigned>(sj.reference_evaluations));
+}
+
 // (3) The reference budget: a request that finds it spent is refused (typed BudgetExhausted,
 // counted in the budget) without an evaluation; one that spends the last evaluation stops
 // there, also typed and counted - never a silent success, never a Search.
