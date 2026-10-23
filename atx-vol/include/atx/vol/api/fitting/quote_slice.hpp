@@ -156,9 +156,12 @@ enum class QuoteSliceDeamFamily : std::uint8_t { Off, Adaptive, Always };
 // set - the PM promotes or not at integration. The dated-cash lattice ignores it.
 // Family (opt-in, SPY1s Phase 2 step 5; requires the vol-space cache with deam_family_q):
 // each grid price on the chain cache's (sigma, q) family of its side at the strike's own q
-// where the family's measured bound x max(P, 1) is under the certificate's allowance 1e-8
-// + 1e-9 max(S, K); otherwise (no family, a refusal, a bound over the allowance) on
-// AlProfile::Fast as under Fast.
+// (|ln(K / S)| <= 0.25) where the family's VALIDATED domain-wide bound (lane K3: its error
+// envelope's USD bound at that band's strike ends) x max(P, 1) is under the certificate's
+// allowance 1e-8 + 1e-9 max(S, K); otherwise (no family, a refusal, an Uncovered envelope,
+// a bound over the allowance) on AlProfile::Fast as under Fast. That bound is loose: lane
+// K3 measured it over the allowance on every development cohort, where the key therefore
+// serves the Fast grid's prices.
 enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast, Family };
 
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
@@ -257,16 +260,28 @@ struct QuoteSliceChannelConfig {
   // (sigma, q) families (SPY1s Phase 2 step 5, opt-in; requires deam_family Adaptive /
   // Always): the cache builds L2h-b AlSigmaQFamily per side instead - n_sigma 16 over the
   // sigma box, n_q 4 (3 where T x q-width <= 1e-5) over the chain's q box (all quotes'
-  // effective yields) - with a MEASURED relative bound (off-node probes against the cold
-  // accurate kernel); the iterates price each strike at its OWN q on it (no D-model). With
-  // deam_confirm Band (allowed here: the B-family arm) the band gate uses that measured
-  // bound and the family's own chord. The adaptive rule counts n_sigma x n_q nodes.
+  // effective yields; a call side only where q > 0) - each with a VALIDATED error envelope
+  // built from its own nodes (lane K3: refinement-verified Chebyshev tails, audited by
+  // off-node probes against the cold accurate kernel; a probe above it makes the family
+  // Uncovered); the iterates price each strike at its OWN q on it (no D-model). Every
+  // accepted root is confirmed on the confirm kernel, except under deam_confirm Band
+  // (allowed here: the B-family arm), where a root skips its confirm solve only when two
+  // family prices and their envelope bounds enclose the accurate map's root in a bracket no
+  // wider than 1e-7 vol. The half-spread band gate never skips a confirm under this key: a
+  // quote whose side has no family is confirmed. The adaptive rule counts n_sigma x n_q
+  // nodes.
   bool deam_family_q = false;
   // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; requires deam_family_q and
   // deam_confirm Always): the (sigma, q) family's own map is iterated without the
   // Barone-Adesi-Whaley / Black-76 seed leg (a bracketed secant-Newton from the mid's
   // family points, else from the Black-76 IV with the family's chord); any family refusal
-  // restarts the inversion on the seed-leg path. Every root is still confirmed.
+  // restarts the inversion on the seed-leg path. Acceptance (lane K3): a root skips its
+  // confirm solve when two family prices and their envelope bounds enclose the accurate
+  // map's root in a bracket no wider than 1e-7 vol - so under this key deam_confirm Always
+  // does NOT confirm every root; otherwise the confirm kernel closes such a bracket (at most
+  // three solves, each end certified by the confirm kernel beyond its tested bound or by the
+  // family beyond its envelope bound), and a root it cannot bracket is answered by the
+  // Search route. No secant slope or step length is a bound.
   bool deam_family_native = false;
 };
 
