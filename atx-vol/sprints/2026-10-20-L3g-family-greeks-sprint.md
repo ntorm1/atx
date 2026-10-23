@@ -210,6 +210,29 @@ rows out); in absolute terms the gap is ≤ 3.5e-5 USD per unit rate (≤ 3.5e-9
 5.25e-6, near-edge excluded) and `CarryRhoPhiAreTheDerivativeOfTheSecondFamiliesWithinBound` 3.7e-4 /
 4.3e-4 (all sets incl. the wide box; the worst is the wide box's σ = 0.08 edge).
 
+**Correction (A0 r6, 2026-10-23 — review-L3g m1).** The attribution above is withdrawn. The
+review showed the carry-vs-brute-force rho residual is a BULK offset (p99_abs 3.24e-5 ≈ max_abs
+3.49e-5 USD per unit rate), not a near-edge outlier. The discriminator it asked for was run
+(A0 lane, pool-3, vol-rel): `AlSigmaFamilyCarryBumps::prepare`'s bump temporarily set to
+h = 5e-5, `GreeksWithinMeasuredBoundOfTheReferenceBundleOnSpy23` rerun, the bump restored and
+the test rerun at h = 1e-4 (logs `A0-20261023-greeks\logs\m1-discriminator-h{5e-5,1e-4}.log`):
+
+| h | rho_carry worst rel | phi_carry worst rel | worst row |
+| --- | --- | --- | --- |
+| 1e-4 | 5.949e-6 | 5.252e-6 | put S 773, K 811.65, T 0.068 |
+| 5e-5 | 1.996e-6 | 1.702e-6 | the same row |
+
+The gap falls 2.98× (rho) / 3.09× (phi) when h halves. Fitting gap = c h² + e: c h² = 5.3e-6
+(rho) / 4.7e-6 (phi) at h = 1e-4 and e ≈ 0.6e-6 — about 90 % of this test's residual is the
+carry set's O(h²) bump truncation (the review's candidate: the carry route's truncation
+P_y y''' h² / 6 differs from the brute-force difference's P''' h² / 6, so the two routes
+need not agree beyond O(h²)), the rest a floor from the Reference bundle and the family's
+interpolation. The bench's carry-vs-fam2 offset was not re-measured at h / 2. The (σ, q)
+family's rate-bump set shows the clean case: against the Richardson reference of its second
+families the gap falls 3.99999× (median over 136 rows) at h / 2
+(`AlSigmaQFamilyGreeks.RhoIsTheBumpedFamiliesCentralDifferenceToItsTruncation`). Serving
+impact unchanged (≤ 3.5e-9 USD per bp); the bump is not changed.
+
 ## 5. µs table (SPY 23 d, avx2, unqualified, one run)
 
 `american/spy23_family_greeks/*`, `american/family_chain/*`, `american/family_shock/*` (bench
