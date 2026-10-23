@@ -318,3 +318,39 @@ recorded hash serves through the q-family, so the AVX2 rounding-level move touch
 `american.hpp`'s 143, where the owning q-family / sigma-family TUs stand in), 0 diagnostics. **SPY graded-v1 @1 on the final
 root (one run, unqualified, load 12 -> 41 %): fit+reprice 7.61 s (wall 7.74), 106,232 de-Am solves at 56.8 us + 28,908
 grid prices at 49.8 us. No G2 / G3 claim.** No default promoted, no holdout touched, nothing pushed.
+
+## W2c-d / r5 R1 integration (vol-sota master plan, 2026-10-22)
+
+Lane W2c-d (run `vol-sota-r5-20261022`, pool-33) merged the reviewed owner rebase into the r5 root
+`feat/vol-resume5-20261022`. R1-B had cherry-picked the SPY1s owner work onto the root `9cfd3dd0` as
+`feat/vol-owner-rebase-20261022 @ 288d0d03` (code tip `ce22bdbf`; review-R1B APPROVE, 0 blocker / 0 major / 4 minor).
+No default promoted; nothing pushed.
+
+| Merge | Lane SHA | Outcome |
+| --- | --- | --- |
+| `2fce51ce` | R1-B owner rebase `288d0d03`: Phase 2 (`cb7cead0` `c9d99835` `80376a8e` `69e238be` `2e824b48` -> `42e9bc7a` `86e44826` `bfa8c014` `7f9f86ec` `b88f59d0`), M1 `9baa6d76` -> `ecf1e6c3` (patch-id equal), family-native `e648da0c` -> `ce22bdbf` (patch-id equal outside the key-list union) | review APPROVE (4 minors); clean `--no-ff` merge; the WIP certificate `1f96fca6` and the checkpoint note `1d74d36c` are excluded (R1-A MJ4) |
+
+**Tree identity.** `git rev-parse HEAD^{tree}` at `2fce51ce` = `git rev-parse 288d0d03^{tree}` = `f99efea0d5ad0d481e4f0fa248c16bbf600ae8b6`.
+Every R1-B phase-B gate therefore applies to the merge byte for byte, and no hash was rerun:
+- the 9 default hashes MATCH (the 8 of R0's table + the SPY kill switch `087e6a54`);
+- AL fingerprint `53c4df68`;
+- keys-ON native SPY `a3c0b01e` / cohort5 `60314cc1` / dev200 `e16d181e` / dev200b `0677e06a`, and famq-grid SPY `86ca3e10`;
+- served sets: lost 0, gained 0; the suites and the PCH-off check pass.
+
+The bisect `check` at `ecf1e6c3` was run by the reviewer (exit 0).
+
+**Smoke** (vol-rel, `-Jobs 1`):
+- `atx-vol-quote-bench` rebuilt cleanly (CMake re-run + 36 steps, 0 warnings). The exe equals R1-B's `7bf84c23` except
+  the 2 PE-stamp bytes at offsets 129-130.
+- ctest `^atx-vol-quote-slice`: 1/1, 183 gtests passed.
+
+**What the merged arm means.** `graded.family_native` ON vs OFF serves identical rows but moves cohort5 / dev200 prices
+by up to 1.118e-6 / 1.380e-6 USD. That is exactly vega x the fitted-vol move (|dsigma_fit| <= 2.8e-8; review-R1B
+F-R1B-1 ruling), not a root error. The arm stays opt-in and non-promotable until all three hold:
+- MJ1 (confirm slope) is fixed, by K3;
+- MJ2 (typed native refusals) is fixed, by K2;
+- a bracketed native root-error record exists (K3).
+
+Keys-ON arms gate in IV units. Docs commit: the R1-B sprint note's B1 bisect and fitted-vol wording (review minors 1-2),
+the W2c-b ledger candidates (L2h-b, L3g, L3r1, L3f m1), the R1 baseline lines and this section. Report:
+`.superpowers/sdd/2026-10-18-vol-sota/lane-W2cd-integrate-r5-report.md`.
