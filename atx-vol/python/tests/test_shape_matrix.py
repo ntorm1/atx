@@ -185,3 +185,36 @@ def test_validated_only_selection_admits_only_publication_validate_policies(tmp_
     document = json.loads(out.read_text(encoding="utf-8"))
     assert document["validated_only"] is True
     assert document["winners"] == {"dev": {"x": "valid"}}
+
+
+def test_expiry_service_counts_served_slices_and_types_every_unserved_one():
+    # One row per (chain, status, served); chain = one fitted expiry slice.
+    eligible = pl.DataFrame({
+        "chain_id": [1, 1, 2, 3, 4, 5, 6],
+        "status": ["ok", "calendar_arbitrage", "calendar_arbitrage", "arbitrage_failure",
+                   "calendar_arbitrage", "unsupported_deliverable", "market_distance_failure"],
+        "served": [True, False, False, False, False, False, False]},
+        schema_overrides={"chain_id": pl.UInt64})
+    slices = {
+        1: {"grade": "A"},
+        2: {"grade": "calendar_arbitrage", "error": "American calendar price crossing"},
+        3: {"grade": "arbitrage_failure", "error": "InvalidArgument: AmericanPriceSlice: node 11: "
+            "American vertical-spread slope bound violated"},
+        4: {"grade": "calendar_arbitrage", "error": "American calendar price crossing",
+            "publication": {"rollbacks": 2}},
+        6: {"grade": "B"},
+    }
+    got = sm.expiry_service(eligible, slices)
+    assert got["expiries"] == 6 and got["expiries_served"] == 1
+    assert got["expiry_completeness"] == pytest.approx(1 / 6)
+    assert got["unserved_reasons"] == {
+        "arbitrage:vertical_spread": 1, "calendar": 1, "not_fitted:unsupported_deliverable": 1,
+        "rows_refused:market_distance_failure": 1, "validator_rollback+calendar": 1}
+    assert sm.slice_reason({"grade": "arbitrage_failure", "error": "InvalidArgument: "
+                            "nondividend American: scaled European upper bound violated at "
+                            "strike 3.9"}, []) == "arbitrage:nondividend_upper_bound"
+    assert sm.slice_reason({"grade": "arbitrage_failure", "error": "InvalidArgument: "
+                            "AmericanPriceSlice: node 4: call/put convexity violated above the "
+                            "global lower convex envelope"}, []) == "arbitrage:convexity"
+    assert sm.slice_reason({"grade": "insufficient_quotes"}, []) == "insufficient_quotes"
+    assert sm.expiry_service(eligible.head(0), {})["expiry_completeness"] is None

@@ -198,6 +198,7 @@ def cell_classes(dataset: Path, manifest: Path, csv: Path, score: Path,
                         complement.select(keys + ["shape_class"]),
                         pairs.with_columns(pl.lit("all_rows").alias("shape_class"))])
     costs = chain_costs(native)
+    slices = native_slices(native)
     out = {}
     for name in names + ["no_symbol_class", "all_rows"]:
         member = groups.filter(pl.col("shape_class") == name).select(keys)
@@ -227,8 +228,70 @@ def cell_classes(dataset: Path, manifest: Path, csv: Path, score: Path,
             "duplicate_disagreements": metrics.get("served_duplicate_strike_disagreements"),
             "refusal_taxonomy": taxonomy, "completeness": buckets,
             "expiry_fit_ms_p50": _quantile(walls, 0.5), "expiry_fit_ms_p95": _quantile(walls, 0.95),
-            "expiries_timed": len(walls)}
+            "expiries_timed": len(walls),
+            **expiry_service(eligible.select("chain_id", "status", "served"), slices)}
     return out
+
+
+ARBITRAGE_KINDS = (("vertical-spread", "vertical_spread"), ("convexity", "convexity"),
+                   ("scaled European upper bound", "nondividend_upper_bound"),
+                   ("Legendre", "legendre"), ("call-minus-put", "parity"))
+
+
+def _dominant(statuses: list[str]) -> str:
+    counts: dict = {}
+    for status in statuses:
+        counts[status] = counts.get(status, 0) + 1
+    return min(counts, key=lambda s: (-counts[s], s)) if counts else "no_rows"
+
+
+def slice_reason(entry: dict | None, statuses: list[str]) -> str:
+    """Why one fitted expiry slice serves no eligible row: the native report's refusal (the
+    certificate's arbitrage class from its error, calendar, insufficient quotes, ...), prefixed
+    'validator_rollback+' when C2's publication validation rolled a repair of it back; a slice
+    the fitter served whose rows were all refused is 'rows_refused:<status>'; a chain the native
+    report does not list is 'not_fitted:<status>' (the dominant row status)."""
+    if entry is None:
+        return f"not_fitted:{_dominant(statuses)}"
+    grade = entry.get("grade")
+    if grade in ("A", "B", "C"):
+        refused = [s for s in statuses if s not in qb.PRICE_SERVED_STATUSES]
+        return f"rows_refused:{_dominant(refused)}"
+    if grade == "calendar_arbitrage":
+        reason = "calendar"
+    elif grade == "arbitrage_failure":
+        error = entry.get("error") or ""
+        kind = next((name for needle, name in ARBITRAGE_KINDS if needle in error), "other")
+        reason = f"arbitrage:{kind}"
+    else:
+        reason = str(grade)
+    if ((entry.get("publication") or {}).get("rollbacks") or 0) > 0:
+        reason = f"validator_rollback+{reason}"
+    return reason
+
+
+def expiry_service(eligible: pl.DataFrame, slices: dict) -> dict:
+    """Served-EXPIRY completeness of one class: expiries (chains with an eligible row), those
+    with at least one served eligible row, and the reason of every unserved one (slice_reason)."""
+    expiries, served, reasons = 0, 0, {}
+    for (chain,), frame in sorted(eligible.group_by(["chain_id"]), key=lambda g: g[0]):
+        expiries += 1
+        if frame["served"].any():
+            served += 1
+            continue
+        reason = slice_reason(slices.get(chain), frame["status"].to_list())
+        reasons[reason] = reasons.get(reason, 0) + 1
+    return {"expiries": expiries, "expiries_served": served,
+            "expiry_completeness": _ratio(served, expiries),
+            "unserved_reasons": dict(sorted(reasons.items()))}
+
+
+def native_slices(native: Path | None) -> dict:
+    """chain_id -> the native report's per-slice entry (graded_stats.slices)."""
+    if native is None:
+        return {}
+    report = json.loads(native.read_text(encoding="utf-8"))
+    return {entry["chain_id"]: entry for entry in report.get("graded_stats", {}).get("slices", [])}
 
 
 def chain_costs(native: Path | None) -> dict:
@@ -290,17 +353,18 @@ def write_table(out: Path, records: list[dict]) -> None:
              f"tool `{TOOL_SHA256[:16]}`, scorer `{sha256(SCORER)[:16]}`, split `{ALLOWED_SPLIT}`; "
              "coverage all / eligible / identified-IV; MAE USD; MAE/spread; containment; IV "
              "median / p95 bp; violations mono/convex/calendar; completeness "
-             "complete/>=0.9/>=0.5/>0/none chains; expiry fit ms p50/p95 (per-chain wall, "
+             "complete/>=0.9/>=0.5/>0/none chains; served expiries / fitted expiries and the "
+             "reason of every unserved one (slice_reason); expiry fit ms p50/p95 (per-chain wall, "
              "unqualified); refusals = the three largest non-served statuses of eligible rows.", "",
              "| cohort | policy | class | cov all | cov elig | cov IV | MAE USD | MAE/spr "
-             "| contain | IV med | IV p95 | viol | completeness | fit ms p50/p95 | refusals "
-             "| pred sha256 |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| contain | IV med | IV p95 | viol | completeness | served exp | unserved reasons "
+             "| fit ms p50/p95 | refusals | pred sha256 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for record in ordered:
         classes = record.get("classes")
         if not classes:
             lines.append(f"| {record['cohort']} | {record['policy']} | (cell failed: "
-                         f"{record.get('error') or record.get('run')}) |" + " |" * 13)
+                         f"{record.get('error') or record.get('run')}) |" + " |" * 15)
             continue
         for name, c in classes.items():
             v = c.get("violations") or {}
@@ -308,6 +372,8 @@ def write_table(out: Path, records: list[dict]) -> None:
                               if k not in qb.PRICE_SERVED_STATUSES), reverse=True)[:3]
             comp = "/".join(str(c["completeness"][k]) for k in COMPLETENESS)
             cost = f"{_fmt(c['expiry_fit_ms_p50'], 'f1')}/{_fmt(c['expiry_fit_ms_p95'], 'f1')}"
+            served = f"{c.get('expiries_served', '-')}/{c.get('expiries', '-')}"
+            why = ", ".join(f"{k} {n}" for k, n in (c.get("unserved_reasons") or {}).items()) or "-"
             lines.append(
                 f"| {record['cohort']} | {record['policy']} | {name} "
                 f"| {_fmt(c['all_row_coverage'], 'pct')} "
@@ -317,7 +383,7 @@ def write_table(out: Path, records: list[dict]) -> None:
                 f"| {_fmt(c['containment'], 'pct')} "
                 f"| {_fmt(c['iv_median_bp'], 'f1')} | {_fmt(c['iv_p95_bp'], 'f1')} "
                 f"| {v.get('monotone', '-')}/{v.get('convex', '-')}/{v.get('calendar', '-')} "
-                f"| {comp} | {cost} "
+                f"| {comp} | {served} | {why} | {cost} "
                 f"| {', '.join(f'{k} {n}' for n, k in refused) or '-'} "
                 f"| `{record.get('prediction_sha256', '')[:16]}` |")
     (out / "table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
