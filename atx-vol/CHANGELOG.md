@@ -16,8 +16,8 @@ audits it with 9 probes independent of the nodes (a violation makes the family
 Uncovered), and sets the grid's `q_bound` to the envelope's domain-wide USD bound.
 Behaviour changes on those keys: (1) a confirm is skipped only when two family prices and
 their bounds enclose the accurate root in at most 1e-7 vol; the B-family arm no longer
-skips on the half-spread band gate (the band gate now runs only on requests without a
-(sigma, q) family); (2) the family-native confirm (R1-A MJ1) closes a bracket whose ends
+skips on the half-spread band gate anywhere (a quote whose side has no family is confirmed;
+the band gate now runs only in the Screen `confirm: band` arm without `family_q`); (2) the family-native confirm (R1-A MJ1) closes a bracket whose ends
 carry certified sides instead of dividing by the iterate's secant: C at the root plus one
 solve per bracket end the envelope cannot certify (at most 3; the secant confirm spent 1-2),
 and a root it cannot bracket falls back to Search typed `PriceOnly` / `Interval` / `None`; (3) the family certification grid

@@ -552,6 +552,16 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
     controls.qfamily_bound = cache_.families->q_bound(quote.side);
     controls.qfamily_native = confirm_.family_native;
   }
+  // Lane K3: under deam_family_q (the B-family arm) the band gate is never a skip
+  // criterion: a quote whose side carries no (sigma, q) family is confirmed instead. The
+  // gate's half-spread statement is not a 1e-7 bound (measured on SPY at 3fb9d6da: 41 of
+  // the arm's 748 band-gated roots sat more than 1e-7 from the bisected accurate root, up
+  // to 9.5e-7). The Screen Band arm without family_q keeps it (RootAcceptanceReason
+  // LegacyBandGate counts it).
+  if (confirm_.family_q && controls.confirm == IvConfirmPolicy::Band &&
+      controls.qfamily == nullptr) {
+    controls.confirm = IvConfirmPolicy::Always;
+  }
   // Lane K3: the quote's side family's envelope is the root acceptance's for this one
   // inversion (american_family_error.hpp FamilyEnvelopeScope).
   const FamilyEnvelopeScope envelope(cache_.families ? cache_.families->q_envelope(quote.side)

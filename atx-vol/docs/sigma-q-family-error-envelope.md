@@ -114,6 +114,12 @@ served point clamped into [a, b] lies within b - a of sigma*. A side is certifie
 | Confirmed | NewtonContract | the established keys-OFF confirm (Newton distance on C), every non-native route |
 | Skipped | LegacyBandGate / LegacyNever | the band gate / policy Never on a request WITHOUT a (sigma, q) family |
 
+Under `deam_family_q` the band gate never decides a skip: `DeAmIvView::invert_premium`
+turns policy Band into Always for a quote whose side has no family (the B-family arm's
+non-family quotes). Measured why, on SPY at 3fb9d6da: 41 of that arm's 748 band-gated roots
+sat more than 1e-7 from the bisected accurate root (up to 9.5e-7). The Screen Band arm
+without `family_q` keeps the gate, counted as `LegacyBandGate`.
+
 W = min(tol, 1e-7) (1 - 2^-20). Placement (`confirm_bracket`): C at the native root x; if
 C certifies x's side, the other end within W of x (the family at x +- W first, else C past
 the chord's Newton point); for a far root (Newton step > W / 4) both ends at the Newton
