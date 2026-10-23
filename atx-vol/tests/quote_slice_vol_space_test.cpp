@@ -47,18 +47,19 @@ struct Chain {
 // An SPY-shaped chain: spot 670, strikes +-25% in 2.5% steps, a skewed smile
 // priced with the Andersen-Lake engine the fitter inverts, bidless far
 // out-of-the-money wings, and a deep in-the-money put whose bid sits below its
-// minimum-volatility price (a band with no lower information).
-Chain spy_chain(double years, bool strike_carry, double dividend_pv) {
+// minimum-volatility price (a band with no lower information). `yield` is the
+// reference yield (strike_carry: the strike yields yield + 0.004 ln(K / S)); a
+// negative one is a hard-to-borrow carry.
+Chain spy_chain(double years, bool strike_carry, double dividend_pv, double yield = 0.012) {
   constexpr double kSpot = 670.0;
   constexpr double kRate = 0.04;
-  constexpr double kYield = 0.012;
   Chain out;
-  out.market = QuoteSliceMarket{kSpot, years, years, kRate, kYield, dividend_pv};
+  out.market = QuoteSliceMarket{kSpot, years, years, kRate, yield, dividend_pv};
   for (int step = -10; step <= 10; ++step) {
     const double strike = std::round(kSpot * (1.0 + 0.025 * step));
     const double k = std::log(strike / kSpot);
     const double sigma = std::max(0.08, 0.16 - 0.30 * k + 0.80 * k * k);
-    const double q = strike_carry ? kYield + 0.004 * k : kYield;
+    const double q = strike_carry ? yield + 0.004 * k : yield;
     for (Side side : {Side::Call, Side::Put}) {
       const auto price = andersen_lake(kSpot, strike, years, sigma, kRate, q, side);
       if (!price) {
@@ -1445,6 +1446,106 @@ TEST(QuoteSliceVolSpace, FamilyRouteFitTypesEveryRootAndItsBracketAuditFindsNoVi
   EXPECT_EQ(violations, 0u);
   EXPECT_LE(max_skipped, kIvRootRequirement);
   EXPECT_LE(max_confirmed, kIvRootRequirement);
+}
+
+// review-K3 MJ-1 (fix round 1): under deam_family_q the band gate never decides a skip, also
+// for a quote whose side builds NO (sigma, q) family - DeAmIvView::invert_premium turns policy
+// Band into Always for it (71929cd3). A negative-carry chain (strike yields -0.009 + 0.004 k,
+// all < 0) builds the put family only: a call with q <= 0 never exercises early, so
+// build_sigma_q skips the call side. On the B-family arm (deam_confirm Band) no root is
+// LegacyBandGate and every skip is an envelope enclosure (the call side has no envelope);
+// on the chain's calls alone (no family on either side) every typed root is Confirmed. With
+// the rule reverted those calls are band-gated, which neither the served prices nor the
+// default hashes show (review-K3 E7: on SPY 41 of 748 such roots sat 1.1e-7..9.5e-7 off).
+TEST(QuoteSliceVolSpace, FamilyQBandArmConfirmsEveryRootOfASideWithoutAFamily) {
+  namespace ft = counters::fit_timing;
+  struct Tally {
+    std::array<std::uint64_t, kRootAcceptanceKindCount> kinds{};
+    std::array<std::uint64_t, kRootAcceptanceReasonCount> reasons{};
+    std::uint64_t audited = 0, unresolved = 0, violations = 0;
+    std::size_t builds = 0;
+    [[nodiscard]] std::uint64_t kind(RootAcceptanceKind k) const {
+      return kinds[static_cast<std::size_t>(k)];
+    }
+    [[nodiscard]] std::uint64_t reason(RootAcceptanceReason r) const {
+      return reasons[static_cast<std::size_t>(r)];
+    }
+  };
+  QuoteSliceConfig config = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                       true, QuoteSliceDeamProfile::Screen);
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  config.channel.deam_family_q = true;
+  config.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+  const auto run = [&](const Chain &c, Tally &t) {
+    deam_iv_memo_clear();
+    ft::ChainRecorder rec;
+    {
+      const ft::ChainScope chain(&rec, 1);
+      const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      ASSERT_TRUE(fit);
+      t.builds += fit->diagnostics.deam.family_builds;
+    }
+    const ft::FitTimingCounters r = rec.result();
+    for (std::size_t k = 0; k < t.kinds.size(); ++k) t.kinds[k] += r.deam_accept_by_kind[k];
+    for (std::size_t k = 0; k < t.reasons.size(); ++k) t.reasons[k] += r.deam_accept_by_reason[k];
+    t.audited += r.deam_audit_bracket_roots;
+    t.unresolved += r.deam_audit_bracket_unresolved;
+    t.violations += r.deam_audit_bracket_violations;
+  };
+  Tally both, calls;
+  ft::arm_deam_audit(true);
+  for (const double years : {0.15, 0.5}) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const Chain c = spy_chain(years, true, 0.0, -0.009);
+    Chain call_only{c.market, {}};
+    for (const QuoteSliceQuote &quote : c.quotes) {
+      ASSERT_LT(quote.continuous_yield.value_or(0.0), 0.0); // every call: no family (q < 0)
+      if (quote.side == Side::Call) call_only.quotes.push_back(quote);
+    }
+    const std::size_t builds = both.builds;
+    run(c, both);
+    EXPECT_EQ(both.builds - builds, 1u); // the put family only
+    run(call_only, calls);
+  }
+  ft::arm_deam_audit(false);
+  deam_iv_memo_clear();
+  const auto typed = [](const Tally &t) {
+    return t.kind(RootAcceptanceKind::Confirmed) + t.kind(RootAcceptanceKind::Skipped) +
+           t.kind(RootAcceptanceKind::PriceOnly) + t.kind(RootAcceptanceKind::Interval);
+  };
+  std::printf("[K3 no-family side] both sides: %llu typed (skipped %llu, all by enclosure %llu), "
+              "legacy band %llu, audit %llu roots / %llu violations; calls only: %llu typed, "
+              "%llu confirmed (Newton contract %llu), legacy band %llu, audit %llu roots / %llu "
+              "violations\n",
+              static_cast<unsigned long long>(typed(both)),
+              static_cast<unsigned long long>(both.kind(RootAcceptanceKind::Skipped)),
+              static_cast<unsigned long long>(both.reason(RootAcceptanceReason::FamilyEnclosure)),
+              static_cast<unsigned long long>(both.reason(RootAcceptanceReason::LegacyBandGate)),
+              static_cast<unsigned long long>(both.audited),
+              static_cast<unsigned long long>(both.violations),
+              static_cast<unsigned long long>(typed(calls)),
+              static_cast<unsigned long long>(calls.kind(RootAcceptanceKind::Confirmed)),
+              static_cast<unsigned long long>(calls.reason(RootAcceptanceReason::NewtonContract)),
+              static_cast<unsigned long long>(calls.reason(RootAcceptanceReason::LegacyBandGate)),
+              static_cast<unsigned long long>(calls.audited),
+              static_cast<unsigned long long>(calls.violations));
+  // Both sides: the band gate decides nothing; a skip rests on the put family's envelope.
+  EXPECT_EQ(both.reason(RootAcceptanceReason::LegacyBandGate), 0u);
+  EXPECT_EQ(both.reason(RootAcceptanceReason::LegacyNever), 0u);
+  EXPECT_EQ(both.kind(RootAcceptanceKind::Skipped),
+            both.reason(RootAcceptanceReason::FamilyEnclosure));
+  EXPECT_GT(typed(both), 0u);
+  EXPECT_EQ(both.unresolved, 0u);
+  EXPECT_EQ(both.violations, 0u);
+  // The no-family side alone: every typed root confirmed on the confirm kernel.
+  EXPECT_EQ(calls.builds, 0u);
+  EXPECT_GT(typed(calls), 0u);
+  EXPECT_EQ(calls.kind(RootAcceptanceKind::Confirmed), typed(calls));
+  EXPECT_EQ(calls.reason(RootAcceptanceReason::NewtonContract), typed(calls));
+  EXPECT_EQ(calls.reason(RootAcceptanceReason::LegacyBandGate), 0u);
+  EXPECT_EQ(calls.unresolved, 0u);
+  EXPECT_EQ(calls.violations, 0u);
 }
 
 } // namespace
