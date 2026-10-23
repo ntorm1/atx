@@ -1551,7 +1551,7 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
               return std::abs(a - ref) / std::max(std::abs(ref), fl);
             };
             csv << s.name << ',' << (s.side == Side::Put ? "put" : "call") << ',' << s.S << ','
-                << K << ',' << s.T << ',' << s.r << ',' << q << ',' << sigma << ',' << edge_sd
+                << K << ',' << s.T << ',' << s.r << ',' << q << ',' << sigma << ',' << g.edge_sd
                 << ',' << sb << ',' << kModelGreekName[k] << ',' << fam[k] << ','
                 << rc[k].value << ',' << tol << ',' << unc << ',' << rb[k].value << ','
                 << rel(fam[k], rc[k].value) << ',' << rel(fam[k], rb[k].value) << ','
