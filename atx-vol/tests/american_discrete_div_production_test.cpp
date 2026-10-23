@@ -406,9 +406,11 @@ TEST(DiscreteDivProductionAccuracy, FirstStepExDateAgainstTheIndependentReferenc
         opts_of(DiscreteDivAccuracy::Refined), ws);
     ASSERT_TRUE(std_p.has_value() && ref_p.has_value()) << p.id;
     EXPECT_LE(std::abs((std_p->price - p.ref) / p.vega * 1e4), 3.0) << p.id;
-    // The Refined claim is the route's (kernel header section 4, doc section 11):
-    // within 1 bp of IV of the reference. The checkpoint pinned 0.05 bp here, a bound
-    // the lane chose stricter than that claim; measured 0.110 (B1p) / 0.078 (B1c) bp
+    // The Refined claim is the lane's published ACCURACY CLASS (kernel header
+    // section 4, doc section 11): within 1 bp of IV on D0's RESOLVED rows (Standard:
+    // 3 bp). It is not a brief bound: the brief's bar is D0's own u, which the
+    // routes do not meet (doc section 11.3). The checkpoint pinned 0.05 bp here, a
+    // bound the lane chose stricter than the class; measured 0.110 (B1p) / 0.078 (B1c) bp
     // (linearised), against reference uncertainties of 1.6e-6 / 6.8e-7 USD (4.4e-4 /
     // 1.9e-4 bp). The gap is the lattice's own error at the first-step ex-date, 250 to
     // 400 times u, not reference noise; it is reported as measured (lane report,
