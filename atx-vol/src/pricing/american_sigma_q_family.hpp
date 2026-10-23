@@ -17,6 +17,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <type_traits>
 
 #include "atx/vol/api/pricing/american.hpp"
 #include "pricing/american_boundary.hpp"     // amer::AlBoundary / AlWorkspace / Impl
@@ -60,7 +61,8 @@ inline constexpr double kFusedKinkRel = 64.0 * std::numeric_limits<double>::epsi
 
 enum class FusedStatus : std::uint8_t {
   Ok = 0,                 // price and vega served
-  OutsideBox = 1,         // σ below kAlSigmaFamilyMinSigma or outside the σ box, or q outside the q box
+  OutsideBox = 1,         // σ below kAlSigmaFamilyMinSigma or outside the σ box, or q outside
+                          // the q box
   NearNodeDegenerate = 2, // price served, vega NaN: a premium node's interpolated y sits at the
                           // transform's zero (kFusedKinkRel) with dy/dσ != 0 — s = √y has no
                           // derivative there (the τ = 0 node is y = 0 by construction)
@@ -225,6 +227,29 @@ struct QFamilyAccess {
 // OutsideBox; every other refusal -> Unsupported).
 [[nodiscard]] FusedStatus fused_status_of(AlSigmaQFamilyStatus a) noexcept;
 
+// ── The σ / q basis helpers every evaluation route shares (pure functions, no state) ───
+//
+// Exposed so a lane kernel (K2) evaluates the same chain instead of re-deriving it.
+
+// The normalised barycentric basis b_s(zq) on nodes z[0..n) / weights w[0..n) (n <=
+// amer::kAlMaxNodes): b_s = (w_s / (zq − z_s)) / Σ_t (w_t / (zq − z_t)); an exact node
+// hit is the unit vector e_hit.
+void bary_basis(const double *z, const double *w, unsigned n, double zq, double *b) noexcept;
+
+// c_t = Σ_s b_s D1[s][t] — the basis's z-derivative through the nodal differentiation
+// matrix (the L3g form: no quotient rule, so no near-node cancellation and no 0/0 at a
+// hit). Precondition: 2 <= n <= sigma_family_detail::kMaxSigmaNodes.
+void bary_basis_derivative(const double *b, unsigned n, double *c) noexcept;
+
+// σ -> the family z coordinate (clamped to [−1, 1] for rounding only, as interpolate()
+// clamps) and dz/dσ (the unclamped chain: 2 / (u_hi − u_lo), times 1/σ on the log axis).
+struct SigmaZ {
+  double z = 0.0;
+  double dz = 0.0;
+};
+[[nodiscard]] SigmaZ sigma_z(AlSigmaFamilyAxis axis, double u_lo, double u_hi,
+                             double sigma) noexcept;
+
 // The carry at the contract's q for `side` on the expiry's rate r: (rp, qp) and the
 // per-node discounts of pn's live nodes.
 void carry_at(const PremiumNodes &pn, Side side, double r, double q, QCarry &out) noexcept;
@@ -276,7 +301,10 @@ void finish_node_boundary(const PremiumNodes &pn, const double *y, const double 
 // carry — so a σ evaluation is two n_sigma-dots per premium node (y_i and dy_i/dσ), no
 // τ interpolation and no q work. (A q-contracted τ-series tile that interpolates in τ per
 // call measured 12-18% slower and was deleted; see docs/sigma-q-fused-vega.md.)
-struct PremiumTable {
+//
+// Everything a PremiumTable holds but its heap tensor: trivially copyable, so the
+// table's move operations copy it whole and then reset the source.
+struct PremiumTableHeader {
   bool ok = false;
   std::uint64_t stamp = 0; // process-unique per successful build (a tile records it)
   Side side = Side::Put;
@@ -298,8 +326,25 @@ struct PremiumTable {
   double qz[kMaxQNodes] = {};
   double qw[kMaxQNodes] = {};
   PremiumNodes nodes{};
+};
+static_assert(std::is_trivially_copyable_v<PremiumTableHeader>);
+
+struct PremiumTable : PremiumTableHeader {
   std::unique_ptr<double[]> h{}; // (nodes.n + 1) · n_q · n_sigma doubles
   std::size_t h_size = 0;
+
+  PremiumTable() = default;
+  ~PremiumTable() = default;
+  PremiumTable(const PremiumTable &) = delete;
+  PremiumTable &operator=(const PremiumTable &) = delete;
+  // A move hands the snapshot over — stamp included, so a tile cut from the source serves
+  // on the target — and leaves the source exactly as a default-constructed table (ok
+  // false, stamp 0, no tensor, h_size 0): every entry refuses it (Unsupported) and
+  // build_premium_table into it allocates afresh.
+  PremiumTable(PremiumTable &&other) noexcept;
+  PremiumTable &operator=(PremiumTable &&other) noexcept;
+  // Back to the default-constructed state (frees the tensor).
+  void reset() noexcept;
   // Heap + inline bytes this table owns.
   [[nodiscard]] std::size_t bytes() const noexcept;
 };
@@ -318,8 +363,16 @@ struct QTile {
 [[nodiscard]] FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out);
 
 // Contract a table at q. OutsideBox when q is outside the table's q box, Unsupported
-// when the table is not ok or q is not finite (tile.ok false either way).
+// when the table is not ok (unbuilt, refused or moved-from) or q is not finite (tile.ok
+// false either way).
 [[nodiscard]] FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile) noexcept;
+
+// The strike-free NodeBoundary at sigma from a table and a tile of it: the stage
+// price_vega_on runs before premium_pass (two n_sigma-dots per premium node, then
+// finish_node_boundary). No checks — the caller has admitted what price_vega_on admits:
+// t.ok, tile.ok, tile.stamp == t.stamp, sigma finite and inside [t.sigma_lo, t.sigma_hi].
+void node_boundary_from_tile(const PremiumTable &t, const QTile &tile, double sigma,
+                             NodeBoundary &out) noexcept;
 
 // price_and_vega's map at (S, K, sigma, tile.q) from a table and a tile of it. Refuses
 // Unsupported for a table / tile that is not ok or a tile of another build, an S / K

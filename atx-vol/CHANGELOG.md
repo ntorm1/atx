@@ -21,9 +21,14 @@ matrix, no quotient rule); nothing in the evaluation path allocates.
 **No number changes.** `AlSigmaQFamily::price` (`price_on`) is untouched and
 stays the default evaluation; no policy routes through the family, and the SPY
 default (`feac8d2c`) and dev200b graded (`ed34eef7`) hashes match. The fused
-price equals `price_on` to 2.2e-16 scaled on the 18000-row SPY probe grid; the
+price equals `price_on` to 2.2e-16 scaled on the 18000-row SPY probe grid. The
 fused vega matches step-refined differences of the family map to 2.9e-11
-relative. On vol-rel-avx2 (spy23, 12 σ x 4 q nodes) price + vega costs 5.0 us
+relative on the RESOLVED rows (smooth 516/930, exact node hits 226/636), where
+the reference's own tolerance is within 1e-9 of the vega. Full-price
+differences barely resolve σ = 0.05 (6/212, 0/140); differencing the premium
+alone there gives 1.5e-12 (24/24 smooth) and 1.1e-11 (47/52 node hits) on
+at-the-money SPY puts. Premium tables are move-only, and a moved-from table
+is a default (refused) table. On vol-rel-avx2 (spy23, 12 σ x 4 q nodes) price + vega costs 5.0 us
 one-shot and 3.5 us from a table tile against 6.2 us for `price_on` alone and
 275 us for the scalar two-solve path; a family pays for itself after about 9
 evaluations. Design, validation tables and the full cost table:

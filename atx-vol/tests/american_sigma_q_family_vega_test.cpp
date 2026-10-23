@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "pricing/american_sigma_q_family.hpp" // the K1 fused entries (internal)
 
@@ -27,10 +28,14 @@
 //   * IDENTITY — the fused price is price()'s map to rounding (the brief's 1e-12
 //     relative is the pin); the strike vector is the scalar entry bit for bit; the
 //     precontracted table path is the family path to rounding.
-//   * FAMILY-MAP DERIVATIVE — vega against Richardson-refined central differences of the
-//     family's OWN price(), each row's tolerance derived from its stencil's observed
-//     order (the extrapolation's own error estimate); the boundary partials likewise
-//     against the interpolant's own differences. Exact node hits included.
+//   * FAMILY-MAP DERIVATIVE — vega against Richardson-refined differences of the family's
+//     OWN price(), each row held to the ladder's own error estimate plus its rounding
+//     (4 |R_l − R_{l−1}| + gain · rounding; the observed order is reported, not used);
+//     the boundary partials likewise against the interpolant's own differences. Exact
+//     node hits included. A relative claim is made on RESOLVED rows only (tolerance <=
+//     1e-9 of the reference); the rest are held to gap <= tolerance and their tolerance
+//     sizes are printed. At σ = 0.05 the full-price differences resolve almost nothing,
+//     so a separate check differences the premium alone there (section 3b).
 //   * MODEL DISTANCE — vega against the converged Andersen-Lake vega: an error TABLE,
 //     guarded only against gross breakage (it is not the family's tolerance).
 // Measured tables: the lane K1 report (.superpowers/sdd/2026-10-18-vol-sota/).
@@ -246,6 +251,7 @@ struct Table {
   double worst_rel = 0.0;   // max |gap| / |ref| over the RESOLVED rows
   double worst_ratio = 0.0; // max |gap| / tolerance over every row
   std::vector<double> orders;
+  std::vector<double> unresolved; // tol / |ref| of every row that does not resolve
   std::string at;       // where worst_rel is
   std::string ratio_at; // where worst_ratio is
   // gap = |analytic − reference|; tol = the reference's tolerance (0: always resolved).
@@ -260,6 +266,8 @@ struct Table {
       ratio_at = where;
     }
     if (tol > kResolved * std::abs(ref)) {
+      unresolved.push_back(ref != 0.0 ? tol / std::abs(ref)
+                                      : std::numeric_limits<double>::infinity());
       return;
     }
     ++n_resolved;
@@ -277,6 +285,7 @@ struct Table {
       ratio_at = o.ratio_at;
     }
     orders.insert(orders.end(), o.orders.begin(), o.orders.end());
+    unresolved.insert(unresolved.end(), o.unresolved.begin(), o.unresolved.end());
     if (o.worst_rel > worst_rel) {
       worst_rel = o.worst_rel;
       at = o.at;
@@ -290,6 +299,26 @@ struct Table {
     std::sort(o.begin(), o.end());
     return o[o.size() / 2];
   }
+  // The p-quantile of the unresolved rows' tol / |ref| (NaN when every row resolves).
+  [[nodiscard]] double unresolved_quantile(double p) const {
+    if (unresolved.empty()) {
+      return kNaN;
+    }
+    std::vector<double> o = unresolved;
+    std::sort(o.begin(), o.end());
+    const auto i = static_cast<std::size_t>(p * static_cast<double>(o.size() - 1u));
+    return o[i];
+  }
+  // "resolved a/b, unresolved tol/|ref| p50 x max y" — the resolution a claim rests on.
+  [[nodiscard]] std::string resolution() const {
+    std::ostringstream os;
+    os << "resolved " << n_resolved << "/" << n;
+    if (!unresolved.empty()) {
+      os << " (unresolved tol/|ref| p50 " << unresolved_quantile(0.5) << " max "
+         << unresolved_quantile(1.0) << ")";
+    }
+    return os.str();
+  }
 };
 
 [[nodiscard]] std::string describe(const Spec &s, double K, double sigma, double q) {
@@ -302,10 +331,14 @@ struct Table {
 
 TEST(AlSigmaQFamilyFused, BoundaryPartialsAreTheInterpolantsOwnIncludingExactNodeHits) {
   // dy_k/dσ and dy_k/dq from interpolate_derivs vs Richardson differences of
-  // interpolate() itself (the polynomial in (z_σ, z_q): its differences converge at
-  // order 2 to the exact partial), at off-node points, at the box corners (exact node
-  // hits on both axes: z = ±1 exactly) and ulps away from them (the quotient rule
-  // would lose O(1/|z − z_s|) digits there; the nodal-derivative form must not).
+  // interpolate() itself (a polynomial in (z_σ, z_q)), at off-node points, at the box
+  // corners (exact node hits on both axes: z = ±1 exactly) and ulps away from them (the
+  // quotient rule would lose O(1/|z − z_s|) digits there; the nodal-derivative form
+  // must not). The stencils' asymptotic order is 4, but the observed medians are −1.1 to
+  // −0.75 (dy/dσ) and −1.2 to 4 (dy/dq): differences of a low-degree polynomial carry
+  // almost no truncation error, so the coarse levels already sit at the rounding floor,
+  // whose ∝ 1/h growth gives log2(|D0 − D1| / |D1 − D2|) ≈ −1. The ladder's error
+  // estimate is then rounding, not truncation; the order column says which regime.
   // Resolved rows (the differences' own tolerance <= 1e-9 of the partial): measured worst
   // 2.15e-11 (dy/dσ, wideq-put-nq6) / 2.08e-11 (dy/dq, spy23); every row within the
   // differences' tolerance (measured worst gap/tol 0.045).
@@ -413,8 +446,8 @@ TEST(AlSigmaQFamilyFused, BoundaryPartialsAreTheInterpolantsOwnIncludingExactNod
 
 TEST(AlSigmaQFamilyFused, FusedPriceIsPriceOnToRoundingOnTheSpyProbeGrid) {
   // The brief's probe: SPY-shaped, 300 strikes x 5 σ x 3 q, calls and puts, at the
-  // fitter's (12, 4) and (16, 4) shapes; the fused one-shot, the strike vector and both
-  // table modes against price(). Pin: the brief's own rounding threshold (1e-12 relative
+  // fitter's (12, 4) and (16, 4) shapes; the fused one-shot, the strike vector and the
+  // table path against price(). Pin: the brief's own rounding threshold (1e-12 relative
   // to max(P, 1)) — a larger gap would be an operation-order change beyond rounding.
   constexpr double kRoundingRel = 1.0e-12;
   const std::vector<double> K = strikes_around(kSpyS, 0.7, 1.3, 300);
@@ -551,22 +584,36 @@ void map_rows(const Spec &s, const AlSigmaQFamily &f, MapResult &out) {
 
 void run_family_map(SimdIsa isa, const char *isa_name) {
   // Pins (2-figure round-ups of the measured worst per class; the printout carries
-  // them): the smooth region's relative gap and gap / (the stencil's own error
-  // estimate); node hits the same with one-sided stencils; rows whose stencil crosses
-  // the exercise clamp are reported only (no difference quotient is valid across it).
+  // them): the smooth region's relative gap on RESOLVED rows and gap / tolerance on
+  // every row; node hits the same with one-sided stencils; rows within one σ-node
+  // spacing of exercise, or whose stencil crosses the clamp, are reported only.
   // Measured worst over the resolved rows, both builds: smooth 2.3814e-11 (spy23-large-call
   // K 463.8 σ 1.2), node hits 2.94055e-11 (spy23-large-call K 386.5 σ 2.0); gap/tol 0.061 /
   // 0.042 / near-exercise 0.066. kRatio = 1 is the derived tolerance itself.
+  // Resolution (measured, scalar build): smooth 516/930 and node hits 226/636 overall;
+  // small σ (box [0.03, 0.08]) 6/212 and 0/140 — the full price's rounding ε (S + K)
+  // over the step swamps a σ = 0.05 vega except next to the money, so the relative pins
+  // say nothing there (section 3b resolves it on the premium). The per-class lines
+  // print each class's resolved / total and the unresolved rows' tol / |ref|. Medians of
+  // the observed order are 2.0 (smooth) and 2.4 (node hits), not the stencil's 4: at h0
+  // = 2e-3 σ most rows' coarse levels mix truncation with the price's rounding (whose
+  // ∝ 1/h growth pulls the log2 ratio below 4, to −1 when it dominates); only spylong
+  // and wideq (3.5-3.9) are in the asymptotic regime at the coarse levels.
   constexpr double kSmoothRel = 2.4e-11;
   constexpr double kNodeRel = 3.0e-11;
   constexpr double kRatio = 1.0;
   const IsaScope scope(isa);
   MapResult all;
+  MapResult by_class[3]; // small σ (box [0.03, 0.08]), mid, large σ (box [1, 2])
   for (const Spec &s : derivative_specs()) {
     const std::unique_ptr<Built> b = build(s);
     ASSERT_NE(b, nullptr);
     MapResult one;
     map_rows(s, b->f, one);
+    MapResult &cls = by_class[s.s_hi <= 0.1 ? 0 : (s.s_lo >= 1.0 ? 2 : 1)];
+    cls.smooth.merge(one.smooth);
+    cls.node_hits.merge(one.node_hits);
+    cls.near_edge.merge(one.near_edge);
     const auto row = [](const char *what, const Table &t) {
       std::ostringstream os;
       os << what << " n=" << t.n << " resolved=" << t.n_resolved << " rel=" << t.worst_rel
@@ -593,6 +640,16 @@ void run_family_map(SimdIsa isa, const char *isa_name) {
   }
   std::cout << "[AlSigmaQFamilyFused] family-map " << isa_name << " clamped rows (vega 0) "
             << all.clamped << "\n";
+  const char *class_names[3] = {"small sigma [0.03, 0.08]", "mid sigma", "large sigma [1, 2]"};
+  for (int c = 0; c < 3; ++c) {
+    std::cout << "[AlSigmaQFamilyFused] family-map " << isa_name << " class " << class_names[c]
+              << ": smooth " << by_class[c].smooth.resolution() << " | node-hits "
+              << by_class[c].node_hits.resolution() << " | near-exercise "
+              << by_class[c].near_edge.resolution() << "\n";
+  }
+  std::cout << "[AlSigmaQFamilyFused] family-map " << isa_name << " ALL: smooth "
+            << all.smooth.resolution() << " | node-hits " << all.node_hits.resolution()
+            << " | near-exercise " << all.near_edge.resolution() << "\n";
   EXPECT_GE(all.smooth.n_resolved, 400u);
   EXPECT_GE(all.node_hits.n_resolved, 150u);
   EXPECT_GE(all.clamped, 1u);
@@ -614,6 +671,144 @@ TEST(AlSigmaQFamilyFused, VegaIsTheFamilyMapsDerivativeOnTheAvx2Build) {
     GTEST_SKIP() << "host has no AVX2 (the AVX2 family build is unreachable)";
   }
   run_family_map(SimdIsa::ForceAvx2, "avx2");
+}
+
+// ── 3b. Small σ: the premium's own differences (review MJ2) ────────────────────────
+
+// The fused pass's European leg of the internal put at (S, K, sigma, q), bit for bit
+// (euro_leg<false>: black76_value_and_vega on the same stage data), so P − E is the fused
+// map's premium with one rounding of P instead of the European leg's ε (S + K).
+[[nodiscard]] atx::vol::Black76ValueVega euro_leg_of(const AlSigmaQFamily &f, Side side,
+                                                     double S, double K, double sigma,
+                                                     double q) {
+  const auto *st = sq::QFamilyAccess::state(f);
+  sq::PremiumNodes pn;
+  (void)st->lay_premium_nodes(pn);
+  sq::QCarry c;
+  sq::carry_at(pn, side, st->rate, q, c);
+  const bool call = side == Side::Call;
+  const double Sp = call ? K : S;
+  const double Kp = call ? S : K;
+  const double F = Sp * std::exp((c.rp - c.qp) * pn.T);
+  const double df = std::exp(-c.rp * pn.T);
+  return atx::vol::black76_value_and_vega(F, Kp, pn.T, sigma, df, Side::Put, pn.sqrtT);
+}
+
+void run_small_sigma(SimdIsa isa, const char *isa_name) {
+  // At σ = 0.05 on SPY 23 d (σ√T = 0.013) run_family_map's full-price differences resolve
+  // almost nothing: the price's rounding, ε (S + K) ≈ 3e-13, over a step small enough
+  // for the curvature leaves a tolerance far above 1e-9 of the vega. Here the reference
+  // is E's analytic vega (black76_value_and_vega, the leg the fused pass sums) plus
+  // Richardson differences of the premium alone, Π(σ) = P(σ) − E(σ), whose rounding is
+  // a few ε |P|. Strikes concentrate at the money (|ln K/S| <= 1.5 %, about 1.2 σ√T),
+  // where a σ = 0.05 vega is large; three boxes put σ = 0.05 in the interior (central
+  // stencil) and exactly on each box end (one-sided stencil). Rows within one σ-node
+  // spacing of exercise (or a stencil that exercises) are reported only, and so are rows
+  // whose premium is identically 0 over the stencil (the SPY calls: q << r floors the
+  // premium, the vega is the European leg's and the check is vacuous there).
+  // Pins (2-figure round-ups of the measured worst over the resolved rows, both builds):
+  // smooth 1.5239e-12 (avx2), node hits 1.14068e-11 (avx2, low box end); resolved
+  // smooth 24/24 and node hits 47-48/52 put rows (the other 4-5: tol/|ref| <= 4.9e-7).
+  constexpr double kSmallSmoothRel = 1.6e-12;
+  constexpr double kSmallNodeRel = 1.2e-11;
+  struct Box {
+    const char *name;
+    double s_lo;
+    double s_hi;
+    int dir; // the stencil at σ = 0.05: 0 central, ±1 one-sided from that box end
+  };
+  constexpr double kSigma = 0.05;
+  const Box boxes[] = {{"smooth [0.03, 0.08]", 0.03, 0.08, 0},
+                       {"node-hit low end [0.05, 0.12]", 0.05, 0.12, 1},
+                       {"node-hit high end [0.025, 0.05]", 0.025, 0.05, -1}};
+  const IsaScope scope(isa);
+  Table smooth;
+  Table node_hits;
+  Table near_edge;
+  Table premium_free; // premium identically 0 over the stencil: vega is E's (vacuous)
+  Table premium_rel;  // the claim rows again, gap / |premium vega| (the differenced part)
+  for (const Box &box : boxes) {
+    for (const Side side : {Side::Put, Side::Call}) {
+      Spec s{box.name, kSpyS, kSpyT, kSpyR, kSpyQlo, kSpyQhi, side, box.s_lo, box.s_hi, 12, 4,
+             {kSigma}, strikes_around(kSpyS, 0.985, 1.015, 7)};
+      const std::unique_ptr<Built> b = build(s);
+      ASSERT_NE(b, nullptr);
+      ASSERT_FALSE(sq::QFamilyAccess::state(b->f)->ws->fast); // the Reference arm's E
+      Table one;
+      const double gap_sigma = sigma_node_spacing(s, kSigma);
+      for (const double q : q_probes(s)) {
+        for (const double K : s.strikes) {
+          const FusedPriceVega fv = sq::price_and_vega(b->f, s.S, K, kSigma, q);
+          ASSERT_EQ(fv.status, FusedStatus::Ok) << describe(s, K, kSigma, q);
+          bool exercised_in_stencil = false;
+          const auto premium = [&](double x, bool &ok) {
+            const FusedPriceVega p = sq::price_and_vega(b->f, s.S, K, x, q);
+            ok = ok && p.status == FusedStatus::Ok;
+            exercised_in_stencil = exercised_in_stencil || p.exercised;
+            return p.price - euro_leg_of(b->f, side, s.S, K, x, q).price;
+          };
+          const Rich r = richardson(premium, kSigma, 2.0e-3 * kSigma, box.dir);
+          ASSERT_TRUE(r.ok) << describe(s, K, kSigma, q);
+          bool near_exercise = fv.exercised || exercised_in_stencil;
+          for (const double x : {kSigma - gap_sigma, kSigma + gap_sigma}) {
+            const double xc = std::clamp(x, s.s_lo, s.s_hi);
+            near_exercise = near_exercise || sq::price_and_vega(b->f, s.S, K, xc, q).exercised;
+          }
+          const atx::vol::Black76ValueVega e = euro_leg_of(b->f, side, s.S, K, kSigma, q);
+          const double ref = e.vega + r.value;
+          const double gap = std::abs(fv.vega - ref);
+          const double tol = 4.0 * r.err + r.gain * 4.0 * kEps * std::abs(fv.price);
+          const std::string at = std::string(isa_name) + " " +
+                                 (side == Side::Put ? "put " : "call ") +
+                                 describe(s, K, kSigma, q);
+          const bool no_premium = r.value == 0.0 && r.err == 0.0;
+          Table &t = near_exercise ? near_edge
+                                   : (no_premium ? premium_free
+                                                 : (box.dir == 0 ? smooth : node_hits));
+          t.add(gap, ref, tol, r.order, at);
+          one.add(gap, ref, tol, r.order, at);
+          if (!near_exercise && !no_premium) {
+            premium_rel.add(gap, r.value, tol, r.order, at);
+          }
+        }
+      }
+      std::cout << "[AlSigmaQFamilyFused] small-sigma " << isa_name << " " << box.name << " "
+                << (side == Side::Put ? "put" : "call") << ": n=" << one.n << " "
+                << one.resolution() << " worst rel (resolved)=" << one.worst_rel
+                << " gap/tol=" << one.worst_ratio << " order~" << one.median_order() << "\n";
+    }
+  }
+  for (const auto &[name, t] :
+       {std::pair<const char *, const Table *>{"smooth", &smooth},
+        std::pair<const char *, const Table *>{"node hits", &node_hits},
+        std::pair<const char *, const Table *>{"near-exercise (reported)", &near_edge},
+        std::pair<const char *, const Table *>{"premium-free (reported)", &premium_free},
+        std::pair<const char *, const Table *>{"vs premium vega (reported)", &premium_rel}}) {
+    std::cout << "[AlSigmaQFamilyFused] small-sigma " << isa_name << " ALL " << name
+              << ": n=" << t->n << " " << t->resolution()
+              << " worst rel (resolved)=" << t->worst_rel << " worst gap/tol=" << t->worst_ratio
+              << " median order=" << t->median_order() << "\n  rel at " << t->at
+              << "\n  gap/tol at " << t->ratio_at << "\n";
+  }
+  EXPECT_GE(smooth.n_resolved, 24u);
+  EXPECT_GE(node_hits.n_resolved, 47u);
+  EXPECT_LE(smooth.worst_rel, kSmallSmoothRel) << smooth.at;
+  EXPECT_LE(node_hits.worst_rel, kSmallNodeRel) << node_hits.at;
+  EXPECT_LE(smooth.worst_ratio, 1.0) << smooth.ratio_at;
+  EXPECT_LE(node_hits.worst_ratio, 1.0) << node_hits.ratio_at;
+  EXPECT_LE(near_edge.worst_ratio, 1.0) << near_edge.ratio_at;
+  EXPECT_LE(premium_free.worst_ratio, 1.0) << premium_free.ratio_at;
+}
+
+TEST(AlSigmaQFamilyFused, VegaAtSmallSigmaMatchesThePremiumsOwnDifferencesOnTheScalarBuild) {
+  run_small_sigma(SimdIsa::ForceScalar, "scalar");
+}
+
+TEST(AlSigmaQFamilyFused, VegaAtSmallSigmaMatchesThePremiumsOwnDifferencesOnTheAvx2Build) {
+  if (!atx::vol::simd::have_avx2()) {
+    GTEST_SKIP() << "host has no AVX2 (the AVX2 family build is unreachable)";
+  }
+  run_small_sigma(SimdIsa::ForceAvx2, "avx2");
 }
 
 // ── 4. Fused vega vs the converged model (deliverable 5b: a table, F11) ─────────────
@@ -850,6 +1045,144 @@ TEST(AlSigmaQFamilyFused, PremiumTableBytesArePinned) {
             << " (inline " << sizeof(sq::PremiumTable) << "), QTile " << sizeof(sq::QTile)
             << " B, NodeBoundary " << sizeof(sq::NodeBoundary) << " B, family state "
             << b->f.state_bytes() << " B\n";
+}
+
+TEST(AlSigmaQFamilyFused, AMovedFromPremiumTableIsUnpreparedAndRebuildsLikeAFreshOne) {
+  // K2 holds tables across batches and reuses a scratch table after moving it out
+  // (review MJ1). A move hands the snapshot over — stamp included, so the source's tiles
+  // serve on the target — and leaves the source a default table: refused by every entry,
+  // and rebuilt into at the same size exactly like a fresh table (no write through a
+  // null tensor). The moved-from object is the subject of this test.
+  const std::unique_ptr<Built> b = build(derivative_specs()[0]); // spy23-mid-put (12, 4)
+  ASSERT_NE(b, nullptr);
+  const std::vector<double> K = strikes_around(kSpyS, 0.85, 1.15, 13);
+  const auto serve = [&](const sq::PremiumTable &t, const sq::QTile &tile) {
+    std::vector<double> out;
+    for (const double sigma : {0.12, 0.27, 0.45}) {
+      for (const double k : K) {
+        const FusedPriceVega fv = sq::price_vega_on(t, tile, kSpyS, k, sigma);
+        EXPECT_EQ(fv.status, FusedStatus::Ok);
+        out.push_back(fv.price);
+        out.push_back(fv.vega);
+      }
+    }
+    return out;
+  };
+  const auto same = [](const std::vector<double> &x, const std::vector<double> &y) {
+    if (x.size() != y.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      if (!same_bits(x[i], y[i])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  sq::PremiumTable fresh;
+  ASSERT_EQ(sq::build_premium_table(b->f, fresh), FusedStatus::Ok);
+  sq::QTile fresh_tile;
+  ASSERT_EQ(sq::contract_q(fresh, kSpyQhi, fresh_tile), FusedStatus::Ok);
+  const std::vector<double> want = serve(fresh, fresh_tile);
+  ASSERT_EQ(want.size(), 2u * 3u * K.size());
+
+  sq::PremiumTable src;
+  ASSERT_EQ(sq::build_premium_table(b->f, src), FusedStatus::Ok);
+  sq::QTile src_tile;
+  ASSERT_EQ(sq::contract_q(src, kSpyQhi, src_tile), FusedStatus::Ok);
+  const std::size_t size = src.h_size;
+  const std::uint64_t stamp = src.stamp;
+  const auto default_state = [&](const sq::PremiumTable &t) {
+    EXPECT_FALSE(t.ok);
+    EXPECT_EQ(t.stamp, 0u);
+    EXPECT_EQ(t.h.get(), nullptr);
+    EXPECT_EQ(t.h_size, 0u);
+    EXPECT_EQ(t.bytes(), sizeof(sq::PremiumTable));
+    sq::QTile tile;
+    EXPECT_EQ(sq::contract_q(t, kSpyQhi, tile), FusedStatus::Unsupported);
+    EXPECT_FALSE(tile.ok);
+    EXPECT_EQ(sq::price_vega_on(t, src_tile, kSpyS, kSpyS, 0.27).status,
+              FusedStatus::Unsupported);
+  };
+
+  // Move construction: the target serves the source's tile bit for bit.
+  sq::PremiumTable target(std::move(src));
+  EXPECT_TRUE(target.ok);
+  EXPECT_EQ(target.stamp, stamp);
+  EXPECT_EQ(target.h_size, size);
+  ASSERT_NE(target.h.get(), nullptr);
+  EXPECT_TRUE(same(serve(target, src_tile), want));
+  default_state(src);
+
+  // Rebuild into the moved-from table at the same size: it allocates afresh and serves
+  // the fresh table's numbers; its old tile belongs to another build now.
+  ASSERT_EQ(sq::build_premium_table(b->f, src), FusedStatus::Ok);
+  EXPECT_TRUE(src.ok);
+  EXPECT_EQ(src.h_size, size);
+  ASSERT_NE(src.h.get(), nullptr);
+  EXPECT_NE(src.stamp, stamp);
+  sq::QTile rebuilt_tile;
+  ASSERT_EQ(sq::contract_q(src, kSpyQhi, rebuilt_tile), FusedStatus::Ok);
+  EXPECT_TRUE(same(serve(src, rebuilt_tile), want));
+  EXPECT_EQ(sq::price_vega_on(src, src_tile, kSpyS, kSpyS, 0.27).status,
+            FusedStatus::Unsupported);
+
+  // Move assignment over a built table: the same contract, and the same rebuild.
+  target = std::move(src);
+  EXPECT_TRUE(same(serve(target, rebuilt_tile), want));
+  default_state(src);
+  ASSERT_EQ(sq::build_premium_table(b->f, src), FusedStatus::Ok);
+  sq::QTile again_tile;
+  ASSERT_EQ(sq::contract_q(src, kSpyQhi, again_tile), FusedStatus::Ok);
+  EXPECT_TRUE(same(serve(src, again_tile), want));
+
+  // reset(): the default state on demand.
+  target.reset();
+  default_state(target);
+}
+
+TEST(AlSigmaQFamilyFused, TheExposedTileStagesComposeToPriceVegaOnBitForBit) {
+  // The lane-kernel contract (review m4): node_boundary_from_tile + premium_pass on a
+  // table's nodes and a tile's carry is price_vega_on, and sigma_z / bary_basis /
+  // bary_basis_derivative are the helpers it runs (exact node hit: the unit vector).
+  const std::unique_ptr<Built> b = build(derivative_specs()[3]); // spy23-mid-call
+  ASSERT_NE(b, nullptr);
+  sq::PremiumTable t;
+  ASSERT_EQ(sq::build_premium_table(b->f, t), FusedStatus::Ok);
+  sq::QTile tile;
+  ASSERT_EQ(sq::contract_q(t, kSpyQlo, tile), FusedStatus::Ok);
+  std::size_t n = 0;
+  for (const double sigma : {0.10, 0.19, 0.33, 0.50}) {
+    sq::NodeBoundary nb;
+    sq::node_boundary_from_tile(t, tile, sigma, nb);
+    for (const double K : strikes_around(kSpyS, 0.8, 1.2, 9)) {
+      const FusedPriceVega want = sq::price_vega_on(t, tile, kSpyS, K, sigma);
+      // Calls in internal-put coordinates: (S', K') = (K, S).
+      const FusedPriceVega got = sq::premium_pass(t.nodes, tile.carry, nb, K, kSpyS, t.fast,
+                                                  true);
+      EXPECT_EQ(got.status, want.status);
+      EXPECT_TRUE(same_bits(got.price, want.price) && same_bits(got.vega, want.vega))
+          << "sigma=" << sigma << " K=" << K;
+      ++n;
+    }
+  }
+  EXPECT_EQ(n, 36u);
+  const sq::SigmaZ lo = sq::sigma_z(t.axis, t.u_lo, t.u_hi, t.sigma_lo);
+  EXPECT_EQ(lo.z, -1.0);
+  EXPECT_DOUBLE_EQ(lo.dz, 2.0 / (t.u_hi - t.u_lo) / t.sigma_lo);
+  double basis[16] = {};
+  sq::bary_basis(t.sz, t.sw, t.n_sigma, lo.z, basis);
+  double deriv[16] = {};
+  sq::bary_basis_derivative(basis, t.n_sigma, deriv);
+  double sum = 0.0;
+  double dsum = 0.0;
+  for (unsigned s = 0; s < t.n_sigma; ++s) {
+    EXPECT_EQ(basis[s], t.sz[s] == -1.0 ? 1.0 : 0.0) << "s=" << s;
+    sum += basis[s];
+    dsum += deriv[s];
+  }
+  EXPECT_EQ(sum, 1.0);
+  EXPECT_NEAR(dsum, 0.0, 1.0e-12); // the derivative of a partition of unity
 }
 
 TEST(AlSigmaQFamilyFused, ConcurrentFusedCallsAreBitIdenticalToTheSerialLoop) {
