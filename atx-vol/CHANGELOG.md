@@ -33,6 +33,14 @@ imported, never edited.
 observation and only an upper bound in the channel (never a midpoint); a surface fit depends only
 on its own snapshot (`QuoteSliceAdmission.*`).
 
+**Gate G4 (lane C3 verdict): OPEN.** On the combined arm (C2 box h0 + market-distance repair +
+validate, C0 serve keys + one-spot, C3 call floor; one binary) C1 PASSES (0 served shape and
+publication violations on dev200, dev200b, cohort5 and SPY); C2 MISSES (eligible coverage dev200
+88.33 %, dev200b 93.68 %, SPY 48.80 %; 7 class cells under 98.5 % containment) and C3 MISSES (SPY
+MAE/spread 0.227, dev200b sparse 0.303; identified IV median SPY 9.7 / mega 22.5-60.6 bp), each
+with one named next experiment in the lane report (SPY: an exact in-box projection rung at h0).
+F2 is untested on this binary: G3 missed, and the K4 speed arm is not in this lane's base.
+
 ### NEW — served support, publication validation, typed joint projection (lane C2)
 
 **Served support.** `QuoteSliceFit::withheld_nodes` marks the node sides whose certified
