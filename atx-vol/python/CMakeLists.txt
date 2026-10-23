@@ -68,12 +68,24 @@ if(NOT ATXVOL_PYPROJECT_TEXT MATCHES "${ATXVOL_VERSION_KEY_RE}")
         "do not delete it: the wheel-test assertion it backs up only runs after a wheel exists.")
 endif()
 set(ATXVOL_PYPROJECT_VERSION "${CMAKE_MATCH_1}")
-if(NOT ATXVOL_PYPROJECT_VERSION VERSION_EQUAL "${atx_VERSION}")
+# The other side of the mirror is read from the ROOT directory's scope, never this one:
+# project(atx VERSION ...) runs inside the add_subdirectory() above, so `atx_VERSION` is a
+# variable of that directory and was always empty here -- which failed every wheel
+# configure with "... the root CMakeLists is ." (found 2026-10-23). An unreadable value
+# stops the configure rather than passing or misreporting the comparison.
+get_directory_property(ATXVOL_ROOT_VERSION DIRECTORY "${ATX_ROOT}" DEFINITION atx_VERSION)
+if(NOT ATXVOL_ROOT_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR
+        "could not read project(atx VERSION ...) from ${ATX_ROOT}/CMakeLists.txt (got "
+        "'${ATXVOL_ROOT_VERSION}'); the version-mirror check below needs it. If the root "
+        "project was renamed, read its <name>_VERSION here instead.")
+endif()
+if(NOT ATXVOL_PYPROJECT_VERSION VERSION_EQUAL "${ATXVOL_ROOT_VERSION}")
     message(FATAL_ERROR
         "version mirror drifted: atx-vol/python/pyproject.toml declares "
         "${ATXVOL_PYPROJECT_VERSION}, but project(atx VERSION ...) in the root CMakeLists is "
-        "${atx_VERSION}. Bump the 'version =' line in atx-vol/python/pyproject.toml to "
-        "${atx_VERSION}.")
+        "${ATXVOL_ROOT_VERSION}. Bump the 'version =' line in atx-vol/python/pyproject.toml to "
+        "${ATXVOL_ROOT_VERSION}.")
 endif()
 
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
