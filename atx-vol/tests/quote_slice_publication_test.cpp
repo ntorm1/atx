@@ -8,11 +8,16 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -240,6 +245,654 @@ TEST(QuoteSlicePublication, TheMarketRepairBandNeverPushesAnInQuoteRowOutOfItsQu
   EXPECT_EQ(left, 0u);
   if (!repaired) {
     EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::LeftChannel) << to_string(record.outcome);
+  }
+}
+
+std::uint64_t bits(double value) { return std::bit_cast<std::uint64_t>(value); }
+
+void expect_same_bits(const std::vector<double> &a, const std::vector<double> &b,
+                      const char *what) {
+  ASSERT_EQ(a.size(), b.size()) << what;
+  for (std::size_t i = 0; i < a.size(); ++i) EXPECT_EQ(bits(a[i]), bits(b[i])) << what << " " << i;
+}
+
+// ── Bounded joint projection: typed outcomes, rollback (deliverable 3) ────────────
+
+// american_price_slice_test.cpp's joint fixture: two expiries of one call side on 90 /
+// 100 / 110; the earlier sits 0.10 above the later at the first two strikes and each box
+// lets its slice move only 0.06 toward the other, so only a joint move removes the
+// crossing.
+struct JointPair {
+  std::vector<double> strikes{90.0, 100.0, 110.0};
+  std::vector<double> near{2.0, 1.2, 0.6};
+  std::vector<double> far{1.9, 1.1, 0.9};
+  std::vector<double> near_lo{1.94, 1.14, 0.54};
+  std::vector<double> near_hi{2.0, 1.2, 0.6};
+  std::vector<double> far_lo{1.9, 1.1, 0.9};
+  std::vector<double> far_hi{1.96, 1.16, 0.96};
+  [[nodiscard]] std::vector<JointPriceSide> sides() {
+    return {{strikes, near, near_lo, near_hi, -1.0, 0.0, 100.0},
+            {strikes, far, far_lo, far_hi, -1.0, 0.0, 100.0}};
+  }
+};
+
+TEST(QuoteSlicePublication, AFeasibleJointProjectionSettlesExactlyAsTheHistoricalOne) {
+  JointPair bounded;
+  JointPair historical;
+  const JointProjectionResult result = project_calendar_joint_bounded(bounded.sides());
+  ASSERT_TRUE(project_calendar_joint(historical.sides()));
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::Feasible) << to_string(result.outcome);
+  EXPECT_GT(result.sweeps, 1u);
+  EXPECT_LE(result.sweeps, JointProjectionBudget{}.max_sweeps);
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::None);
+  expect_same_bits(bounded.near, historical.near, "near");
+  expect_same_bits(bounded.far, historical.far, "far");
+  for (std::size_t i = 0; i < 3; ++i) EXPECT_GE(bounded.far[i] - bounded.near[i], -1.0e-9) << i;
+}
+
+TEST(QuoteSlicePublication, ASpentSweepBudgetIsNonConvergedAndLeavesThePricesUnchanged) {
+  JointPair pair;
+  const JointPair before;
+  const JointProjectionResult result =
+      project_calendar_joint_bounded(pair.sides(), JointProjectionBudget{1, 1.0e-10});
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::NonConverged) << to_string(result.outcome);
+  EXPECT_EQ(result.sweeps, 1u);
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::None);
+  expect_same_bits(pair.near, before.near, "near");
+  expect_same_bits(pair.far, before.far, "far");
+}
+
+TEST(QuoteSlicePublication, AnEmptyBoxIsInfeasibleDataNamingItsNode) {
+  JointPair pair;
+  pair.far_lo[2] = 0.97; // above far_hi[2] = 0.96
+  const JointPair before;
+  const JointProjectionResult result = project_calendar_joint_bounded(pair.sides());
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::InfeasibleData) << to_string(result.outcome);
+  EXPECT_EQ(result.sweeps, 0u); // the certificate refused before any sweep
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::EmptyBox) << to_string(result.conflict.kind);
+  EXPECT_EQ(result.conflict.slice, 1u);
+  EXPECT_EQ(result.conflict.node, 2u);
+  EXPECT_EQ(result.conflict.strike, 110.0);
+  EXPECT_NEAR(result.conflict.excess, 0.01, 1.0e-12);
+  expect_same_bits(pair.near, before.near, "near");
+  expect_same_bits(pair.far, before.far, "far");
+}
+
+TEST(QuoteSlicePublication, BoxesThatAdmitNoConvexCurveAreInfeasibleData) {
+  // One call side whose middle box lies wholly above the chord of its neighbours' caps
+  // (1.3 at 100): every convex curve under the caps passes 100 at or below 1.3.
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  std::vector<double> prices{2.0, 1.5, 0.6};
+  const std::vector<double> start = prices;
+  const std::vector<double> lo{1.9, 1.45, 0.5};
+  const std::vector<double> hi{2.0, 1.5, 0.6};
+  const std::vector<JointPriceSide> one{{strikes, prices, lo, hi, -1.0, 0.0, 100.0}};
+  const JointProjectionResult result = project_calendar_joint_bounded(one);
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::InfeasibleData) << to_string(result.outcome);
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::NoConvexCurve)
+      << to_string(result.conflict.kind);
+  EXPECT_EQ(result.conflict.slice, 0u);
+  EXPECT_EQ(result.conflict.node, 1u);
+  EXPECT_EQ(result.conflict.strike, 100.0);
+  EXPECT_NEAR(result.conflict.excess, 0.15, 1.0e-6);
+  expect_same_bits(prices, start, "prices");
+}
+
+TEST(QuoteSlicePublication, CalendarBoxesThatCrossAreInfeasibleDataNamingTheKnot) {
+  // The later slice held at its prices: at 90 the earlier one cannot go below 1.94 and
+  // the later one cannot go above 1.90 (the historical projection fails here too).
+  JointPair pair;
+  pair.far_hi = pair.far_lo;
+  const JointPair before;
+  const JointProjectionResult result = project_calendar_joint_bounded(pair.sides());
+  EXPECT_EQ(result.outcome, JointProjectionOutcome::InfeasibleData) << to_string(result.outcome);
+  EXPECT_EQ(result.conflict.kind, JointConflictKind::CalendarBox)
+      << to_string(result.conflict.kind);
+  EXPECT_EQ(result.conflict.slice, 0u);
+  EXPECT_EQ(result.conflict.other, 1u);
+  EXPECT_EQ(result.conflict.node, 0u);
+  EXPECT_EQ(result.conflict.strike, 90.0);
+  EXPECT_NEAR(result.conflict.excess, 0.04, 1.0e-6);
+  expect_same_bits(pair.near, before.near, "near");
+  expect_same_bits(pair.far, before.far, "far");
+}
+
+TEST(QuoteSlicePublication, AMalformedSliceOrBudgetIsInvalidInputAndChangesNothing) {
+  JointPair pair;
+  const JointPair before;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const JointProjectionBudget budget :
+       {JointProjectionBudget{0, 1.0e-10}, JointProjectionBudget{10, 0.0},
+        JointProjectionBudget{10, nan}}) {
+    EXPECT_EQ(project_calendar_joint_bounded(pair.sides(), budget).outcome,
+              JointProjectionOutcome::InvalidInput);
+  }
+  std::vector<double> short_prices{1.0, 0.5};
+  const std::vector<JointPriceSide> bad{
+      {pair.strikes, short_prices, pair.near_lo, pair.near_hi, -1.0, 0.0, 100.0}};
+  EXPECT_EQ(project_calendar_joint_bounded(bad).outcome, JointProjectionOutcome::InvalidInput);
+  expect_same_bits(pair.near, before.near, "near");
+  expect_same_bits(pair.far, before.far, "far");
+  EXPECT_STREQ(to_string(JointProjectionOutcome::Feasible), "feasible");
+  EXPECT_STREQ(to_string(JointProjectionOutcome::InfeasibleData), "infeasible_data");
+  EXPECT_STREQ(to_string(JointProjectionOutcome::NonConverged), "nonconverged");
+  EXPECT_STREQ(to_string(JointProjectionOutcome::InvalidInput), "invalid_input");
+  EXPECT_STREQ(to_string(JointConflictKind::EmptyBox), "empty_box");
+  EXPECT_STREQ(to_string(JointConflictKind::NoConvexCurve), "no_convex_curve");
+  EXPECT_STREQ(to_string(JointConflictKind::CalendarBox), "calendar_box");
+  EXPECT_STREQ(to_string(QuoteSliceRepairOutcome::NonConverged), "nonconverged");
+}
+
+QuoteSliceFit fitted(const Chain &c) {
+  auto fit = fit_quote_slice(c.market, c.quotes);
+  if (!fit || fit->fit_status != QuoteSliceFitStatus::Success) {
+    ADD_FAILURE() << "fixture chain (T " << c.market.calendar_years << ") did not fit: "
+                  << (fit ? fit->fit_error : fit.error().to_string());
+    return QuoteSliceFit{};
+  }
+  return std::move(*fit);
+}
+
+// `fit`'s certified nodes with both sides raised by `lift` (a constant shift keeps
+// convexity, slopes and the call-minus-put spread), on its own bounds.
+AmericanPriceSlice lifted(const QuoteSliceFit &fit, double lift) {
+  std::vector<AmericanPriceNode> nodes;
+  for (const AmericanPriceNode &n : fit.prices->nodes()) {
+    nodes.push_back({n.strike, n.call + lift, n.put + lift});
+  }
+  auto slice = AmericanPriceSlice::create(nodes, fit.prices->bounds());
+  if (!slice) {
+    ADD_FAILURE() << slice.error().to_string();
+    return *fit.prices;
+  }
+  return std::move(*slice);
+}
+
+// `quotes` re-quoted `half_width` around `fit`'s certified price of each contract.
+std::vector<QuoteSliceQuote> quotes_around(const QuoteSliceFit &fit,
+                                           std::span<const QuoteSliceQuote> quotes,
+                                           double half_width) {
+  std::vector<QuoteSliceQuote> out(quotes.begin(), quotes.end());
+  for (QuoteSliceQuote &q : out) {
+    const double p = fit.prices->price(q.strike, q.side).value_or(0.0);
+    q.bid = std::max(p - half_width, 0.0);
+    q.ask = p + half_width;
+  }
+  return out;
+}
+
+// Two fitted expiries of one smile (0.25 y and 0.5 y), calendar-consistent, with the
+// earlier one's certified prices then lifted by `lift`: it crosses the later one wherever
+// their difference is below the lift (the deep in-the-money puts, at their exercise
+// value in both).
+struct JointCase {
+  Chain near_chain = smile_chain(0.25, 0.03, 0.01, 0.20, -0.10, 0.02);
+  Chain far_chain = smile_chain(0.5, 0.03, 0.01, 0.20, -0.10, 0.02);
+  QuoteSliceFit near;
+  QuoteSliceFit far;
+};
+
+void make_joint_case(JointCase &c, double lift) {
+  c.near = fitted(c.near_chain);
+  c.far = fitted(c.far_chain);
+  ASSERT_TRUE(c.near.prices && c.far.prices);
+  ASSERT_TRUE(check_american_calendar(*c.near.prices, *c.far.prices));
+  c.near.prices = lifted(c.near, lift);
+  ASSERT_FALSE(check_american_calendar(*c.near.prices, *c.far.prices)); // the lift crosses
+}
+
+std::vector<AmericanPriceNode> nodes_of(const QuoteSliceFit &fit) {
+  return {fit.prices->nodes().begin(), fit.prices->nodes().end()};
+}
+
+void expect_same_nodes(const QuoteSliceFit &fit, const std::vector<AmericanPriceNode> &nodes,
+                       const char *what) {
+  const auto now = fit.prices->nodes();
+  ASSERT_EQ(now.size(), nodes.size()) << what;
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    EXPECT_EQ(bits(now[i].call), bits(nodes[i].call)) << what << " call " << i;
+    EXPECT_EQ(bits(now[i].put), bits(nodes[i].put)) << what << " put " << i;
+  }
+}
+
+TEST(QuoteSlicePublication, AJointCalendarRepairThatSettlesCommitsTheMovedMembers) {
+  JointCase c;
+  make_joint_case(c, 0.3);
+  const std::array<QuoteSliceJointMember, 2> members{
+      {{&c.near, c.near_chain.quotes}, {&c.far, c.far_chain.quotes}}};
+  QuoteSliceRepairRecord record;
+  std::vector<std::size_t> moved;
+  const bool repaired =
+      repair_quote_slice_calendar_joint(members, {}, QuoteSliceRepairConfig{}, &moved, &record);
+  ASSERT_TRUE(repaired) << to_string(record.outcome);
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(record.sweeps, 0u);
+  EXPECT_EQ(record.conflict.kind, JointConflictKind::None);
+  ASSERT_EQ(moved.size(), 2u);
+  EXPECT_GT(moved[0], 0u);
+  EXPECT_TRUE(check_american_calendar(*c.near.prices, *c.far.prices));
+}
+
+TEST(QuoteSlicePublication, AJointCalendarRepairOutOfBudgetIsNonConvergedAndRollsBack) {
+  JointCase c;
+  make_joint_case(c, 0.3);
+  const auto near_nodes = nodes_of(c.near);
+  const auto far_nodes = nodes_of(c.far);
+  const std::vector<QuoteSliceRow> near_rows = c.near.rows;
+  const std::array<QuoteSliceJointMember, 2> members{
+      {{&c.near, c.near_chain.quotes}, {&c.far, c.far_chain.quotes}}};
+  QuoteSliceRepairConfig config;
+  config.joint_max_sweeps = 1;
+  QuoteSliceRepairRecord record;
+  EXPECT_FALSE(repair_quote_slice_calendar_joint(members, {}, config, nullptr, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::NonConverged) << to_string(record.outcome);
+  EXPECT_EQ(record.sweeps, 1u);
+  EXPECT_EQ(record.conflict.kind, JointConflictKind::None);
+  expect_same_nodes(c.near, near_nodes, "near");
+  expect_same_nodes(c.far, far_nodes, "far");
+  ASSERT_EQ(c.near.rows.size(), near_rows.size());
+  for (std::size_t i = 0; i < near_rows.size(); ++i) {
+    EXPECT_EQ(bits(c.near.rows[i].fitted_price), bits(near_rows[i].fitted_price)) << i;
+    EXPECT_EQ(c.near.rows[i].evaluation_status, near_rows[i].evaluation_status) << i;
+  }
+  EXPECT_TRUE(c.near.moved_nodes.empty());
+  config.joint_max_sweeps = 0; // validated at the shared boundary
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+}
+
+TEST(QuoteSlicePublication, AJointCalendarRepairOnCrossingQuotesIsInfeasibleAndRollsBack) {
+  // Both expiries quoted 0.001 around their (lifted / fitted) prices: wherever the lift
+  // exceeds their difference by more than the two half-widths no prices inside the quotes
+  // are calendar-consistent - an infeasibility certificate, not a solver budget.
+  JointCase c;
+  make_joint_case(c, 0.3);
+  const auto near_quotes = quotes_around(c.near, c.near_chain.quotes, 0.001);
+  const auto far_quotes = quotes_around(c.far, c.far_chain.quotes, 0.001);
+  const auto near_nodes = nodes_of(c.near);
+  const auto far_nodes = nodes_of(c.far);
+  const std::array<QuoteSliceJointMember, 2> members{
+      {{&c.near, near_quotes}, {&c.far, far_quotes}}};
+  QuoteSliceRepairRecord record;
+  EXPECT_FALSE(
+      repair_quote_slice_calendar_joint(members, {}, QuoteSliceRepairConfig{}, nullptr, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Infeasible) << to_string(record.outcome);
+  EXPECT_EQ(record.conflict.kind, JointConflictKind::CalendarBox)
+      << to_string(record.conflict.kind);
+  EXPECT_GT(record.conflict.excess, 0.0);
+  expect_same_nodes(c.near, near_nodes, "near");
+  expect_same_nodes(c.far, far_nodes, "far");
+  EXPECT_TRUE(c.near.moved_nodes.empty());
+}
+
+// ── The publication validator (deliverable 1) ───────────────────────────────────────
+
+// smile_chain over strikes lo..hi every `step` (rate 3 %, yield 1 %, +/- 2 % spreads).
+Chain smile_range(double years, double atm, double skew, int lo, int hi, int step) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, years, years, 0.03, 0.01, 0.0};
+  for (int strike = lo; strike <= hi; strike += step) {
+    const double k = static_cast<double>(strike);
+    const double sigma = atm + skew * std::log(k / 100.0);
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(100.0, k, years, sigma, 0.03, 0.01, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.02);
+      out.quotes.push_back({k, side, std::max(*price - spread, 0.0), *price + spread});
+    }
+  }
+  return out;
+}
+
+TEST(QuoteSlicePublication, ACleanPublishedSliceHasNoViolationAndCountsItsPoints) {
+  const Chain c = smile_chain(0.25, 0.03, 0.01, 0.20, -0.10, 0.02);
+  const QuoteSliceFit fit = fitted(c);
+  ASSERT_TRUE(fit.prices);
+  const std::array<QuoteSlicePublicationSlice, 1> one{{{&fit, c.quotes}}};
+  const auto report = validate_published_representation(one);
+  ASSERT_TRUE(report) << report.error().to_string();
+  EXPECT_TRUE(report->clean());
+  EXPECT_EQ(report->slices, 1u);
+  EXPECT_EQ(report->calendar_pairs, 0u);
+  EXPECT_EQ(report->withheld_rows, 0u);
+  EXPECT_EQ(report->gap_segments, 0u);
+  // Every node and three interior points per node segment, per side.
+  const std::size_t nodes = fit.prices->nodes().size();
+  EXPECT_EQ(report->points, 2u * (nodes + 3u * (nodes - 1u)));
+  EXPECT_TRUE(report->findings.empty());
+}
+
+TEST(QuoteSlicePublication, ANestedDomainCalendarCrossingIsFoundAcrossANonNeighbour) {
+  // E (0.25 y, steep skew) and L (0.6 y, flat 20 %) quote 75-125; M (0.32 y, E's skew)
+  // only 90-110. E's wing variance puts its deep out-of-the-money puts above L's at 75-80,
+  // outside M's domain, while E-M and M-L are consistent: an adjacent-maturity check
+  // never compares E with L.
+  const Chain e = smile_range(0.25, 0.20, -0.60, 75, 125, 5);
+  const Chain m = smile_range(0.32, 0.20, -0.60, 90, 110, 2);
+  const Chain l = smile_range(0.60, 0.20, 0.0, 75, 125, 5);
+  const QuoteSliceFit fe = fitted(e);
+  const QuoteSliceFit fm = fitted(m);
+  const QuoteSliceFit fl = fitted(l);
+  ASSERT_TRUE(fe.prices && fm.prices && fl.prices);
+  ASSERT_TRUE(check_american_calendar(*fe.prices, *fm.prices));
+  ASSERT_TRUE(check_american_calendar(*fm.prices, *fl.prices));
+  ASSERT_FALSE(check_american_calendar(*fe.prices, *fl.prices));
+  const std::array<QuoteSlicePublicationSlice, 3> three{
+      {{&fe, e.quotes}, {&fm, m.quotes}, {&fl, l.quotes}}};
+  const auto report = validate_published_representation(three);
+  ASSERT_TRUE(report) << report.error().to_string();
+  EXPECT_EQ(report->calendar_pairs, 3u);
+  EXPECT_GT(report->count(QuoteSlicePublicationViolation::Calendar), 0u);
+  EXPECT_EQ(report->total(), report->count(QuoteSlicePublicationViolation::Calendar));
+  for (const QuoteSlicePublicationFinding &f : report->findings) {
+    EXPECT_EQ(f.expiry, 0u);
+    EXPECT_EQ(f.other, 2u);
+    EXPECT_LT(f.strike, 90.0); // outside M's domain
+    EXPECT_GT(f.excess, 0.0);
+  }
+  // Focused on M (the after-mutation form) only M's pairs are checked: clean.
+  QuoteSlicePublicationConfig focus;
+  focus.focus = 1;
+  const auto focused = validate_published_representation(three, focus);
+  ASSERT_TRUE(focused) << focused.error().to_string();
+  EXPECT_TRUE(focused->clean());
+  EXPECT_EQ(focused->calendar_pairs, 2u);
+}
+
+TEST(QuoteSlicePublication, AServedRowBeyondTheMarketDistanceBoundIsAQuoteBoxViolation) {
+  const Chain c = off_market_call(3.0, 0.04);
+  const std::size_t r = row_index(c, 90.0, Side::Call);
+  const QuoteSliceFit fit = fitted(c);
+  ASSERT_EQ(fit.rows[r].evaluation_status, QuoteSliceEvaluationStatus::Success);
+  const std::array<QuoteSlicePublicationSlice, 1> one{{{&fit, c.quotes}}};
+  const auto unbounded = validate_published_representation(one);
+  ASSERT_TRUE(unbounded) << unbounded.error().to_string();
+  EXPECT_TRUE(unbounded->clean()); // no bound, no quote-box class
+  QuoteSlicePublicationConfig config;
+  config.market_distance_spreads = 1.0;
+  const auto bounded = validate_published_representation(one, config);
+  ASSERT_TRUE(bounded) << bounded.error().to_string();
+  ASSERT_EQ(bounded->total(), 1u);
+  ASSERT_EQ(bounded->count(QuoteSlicePublicationViolation::QuoteBox), 1u);
+  const QuoteSlicePublicationFinding &f = bounded->findings.front();
+  EXPECT_EQ(f.row, r);
+  EXPECT_EQ(f.side, Side::Call);
+  EXPECT_EQ(f.strike, 90.0);
+  const double d =
+      market_distance_spreads(fit.rows[r].fitted_price, c.quotes[r].bid, c.quotes[r].ask, 0.01);
+  EXPECT_NEAR(f.excess, d - 1.0, 1.0e-9);
+}
+
+TEST(QuoteSlicePublication, ANondividendViolationOfThePublishedCurveIsFound) {
+  const Chain c = nondividend_chain();
+  QuoteSliceFit fit = fitted(c);
+  ASSERT_TRUE(fit.prices);
+  const std::array<QuoteSlicePublicationSlice, 1> one{{{&fit, c.quotes}}};
+  const auto before = validate_published_representation(one);
+  ASSERT_TRUE(before) << before.error().to_string();
+  EXPECT_TRUE(before->clean());
+  fit.prices = raised_puts(fit, 1.0); // certified, but beyond the non-dividend bound
+  const auto after = validate_published_representation(one);
+  ASSERT_TRUE(after) << after.error().to_string();
+  EXPECT_EQ(after->count(QuoteSlicePublicationViolation::Nondividend), 1u);
+}
+
+TEST(QuoteSlicePublication, InvalidInputIsRefusedAtTheBoundary) {
+  const Chain c = smile_chain(0.25, 0.03, 0.01, 0.20, -0.10, 0.02);
+  const QuoteSliceFit fit = fitted(c);
+  const std::array<QuoteSlicePublicationSlice, 1> one{{{&fit, c.quotes}}};
+  const std::array<QuoteSlicePublicationSlice, 1> null_fit{{{nullptr, c.quotes}}};
+  const std::array<QuoteSlicePublicationSlice, 1> short_rows{
+      {{&fit, std::span<const QuoteSliceQuote>(c.quotes).first(2)}}};
+  const std::array<QuoteSlicePublicationSlice, 2> twice{{{&fit, c.quotes}, {&fit, c.quotes}}};
+  EXPECT_FALSE(validate_published_representation(null_fit));
+  EXPECT_FALSE(validate_published_representation(short_rows));
+  EXPECT_FALSE(validate_published_representation(twice)); // equal maturities
+  QuoteSlicePublicationConfig config;
+  config.focus = 1;
+  EXPECT_FALSE(validate_published_representation(one, config));
+  config = {};
+  config.dense_points = 65;
+  EXPECT_FALSE(validate_published_representation(one, config));
+  config = {};
+  config.box_tick = 0.0;
+  EXPECT_FALSE(validate_published_representation(one, config));
+  config = {};
+  config.market_distance_spreads = -1.0;
+  EXPECT_FALSE(validate_published_representation(one, config));
+  EXPECT_STREQ(to_string(QuoteSlicePublicationViolation::Identification), "identification");
+  EXPECT_STREQ(to_string(QuoteSlicePublicationViolation::Calendar), "calendar");
+}
+
+// ── Combined path: repair -> revalidate -> publish -> evaluate (deliverables 1, 5) ──
+
+// lane C0's calendar-repair fixture (quote_slice_identification_test.cpp): puts from `lo`
+// to 148 every 4 at a 5 % rate, skew sigma(K) = atm + skew x clamp((116 - K) / 40, 0, 1),
+// +/- 5 % spreads (at least 0.01), each quote carrying the yield.
+Chain put_chain(double years, double atm, double skew, int lo, double yield) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, years, years, 0.05, yield, 0.0};
+  for (int strike = lo; strike <= 148; strike += 4) {
+    const double k = static_cast<double>(strike);
+    const double sigma = atm + skew * std::clamp((116.0 - k) / 40.0, 0.0, 1.0);
+    const auto price = andersen_lake(100.0, k, years, sigma, 0.05, yield, Side::Put);
+    if (!price) {
+      ADD_FAILURE() << price.error().to_string();
+      return out;
+    }
+    const double spread = std::max(0.01, *price * 0.05);
+    out.quotes.push_back({k, Side::Put, std::max(*price - spread, 0.0), *price + spread, yield});
+  }
+  return out;
+}
+
+// N (0.45 y, 50 %, 4 % yield): puts 116-148 with time value; F (0.5 y): puts 60-148, at
+// their exercise value from K 116 up. F outranks N; the bounded calendar repair caps N
+// onto F's exercise values (re-implied: FloorVol under PriceOnly), far below N's quotes.
+std::array<Chain, 2> calendar_repair_chains() {
+  return {put_chain(0.45, 0.5, 0.0, 116, 0.04), put_chain(0.5, 0.05, 0.30, 60, 0.0)};
+}
+
+Result<std::vector<QuoteSurfaceSlice>>
+fit_calendar_repair(const std::array<Chain, 2> &chains, QuoteSliceFloorPolicy policy,
+                    QuoteSliceMarketDistance gate, QuoteSurfacePublication publication) {
+  const std::array<QuoteSurfaceExpiry, 2> both{{{chains[0].market, chains[0].quotes, {}, {}},
+                                                {chains[1].market, chains[1].quotes, {}, {}}}};
+  QuoteSurfaceConfig surface;
+  surface.grade_b_min_mid_strikes = 10;
+  surface.calendar_repair_half_spreads = 100.0;
+  surface.publication = publication;
+  QuoteSliceConfig config;
+  config.side_policy = QuoteSliceSidePolicy::All;
+  config.channel.repair_half_spreads = 100.0;
+  config.floor_policy = policy;
+  config.repair.market_distance = gate;
+  return fit_quote_surface(both, config, surface);
+}
+
+// One answer per contract (lane C0's contract, checked independently of the validator):
+// every served row says what query_quote_slice says; a MarketDistanceFailure row's
+// contract is refused by every serving call. Returns the refused rows.
+std::size_t expect_one_answer_per_contract(const QuoteSliceFit &fit,
+                                           std::span<const QuoteSliceQuote> quotes,
+                                           const std::string &label) {
+  std::size_t refused = 0;
+  for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
+    const QuoteSliceRow &row = fit.rows[i];
+    const std::string at = label + " row " + std::to_string(i);
+    const auto answer = query_quote_slice(fit, quotes[i].strike, quotes[i].side);
+    if (!answer) {
+      ADD_FAILURE() << at << ": " << answer.error().to_string();
+      continue;
+    }
+    if (row.evaluation_status == QuoteSliceEvaluationStatus::MarketDistanceFailure) {
+      ++refused;
+      EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::MarketDistanceFailure) << at;
+      EXPECT_TRUE(std::isnan(answer->price)) << at;
+      const auto value = evaluate_quote_slice(fit, quotes[i].strike, quotes[i].side);
+      EXPECT_FALSE(value) << at;
+      if (!value) EXPECT_EQ(value.error().code(), ErrorCode::Unavailable) << at;
+      EXPECT_FALSE(served_quote_slice_price(fit, quotes[i].strike, quotes[i].side)) << at;
+      continue;
+    }
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+        row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+      continue;
+    }
+    EXPECT_EQ(bits(answer->price), bits(row.fitted_price)) << at;
+    const auto served = served_quote_slice_price(fit, quotes[i].strike, quotes[i].side);
+    EXPECT_TRUE(served && bits(*served) == bits(row.fitted_price)) << at;
+    if (answer->status == QuoteSliceEvaluationStatus::Success) {
+      EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << at;
+      EXPECT_EQ(vol_convention(row), answer->vol_convention) << at;
+      EXPECT_EQ(bits(row.fitted_iv), bits(answer->volatility)) << at;
+      continue;
+    }
+    EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::PriceOnly) << at;
+    EXPECT_EQ(vol_convention(row), QuoteSliceVolConvention::None) << at;
+    EXPECT_EQ(row.price_only_reason, answer->reason) << at;
+    EXPECT_EQ(bits(row.iv_lower), bits(answer->iv_lower)) << at;
+    EXPECT_EQ(bits(row.iv_upper), bits(answer->iv_upper)) << at;
+  }
+  return refused;
+}
+
+TEST(QuoteSlicePublication, ARefusedRowOpensATypedGapInTheServedSupport) {
+  const std::vector<Chain> one{off_market_call(3.0, 0.04)};
+  auto gate = fit_quote_surface(expiries(one),
+                                market_distance_config(QuoteSliceMarketDistance::Gate));
+  ASSERT_TRUE(gate) << gate.error().to_string();
+  QuoteSurfaceSlice &s = (*gate)[0];
+  ASSERT_EQ(s.market_gated_rows, 1u);
+  EXPECT_EQ(s.withheld_rows, 1u);
+  EXPECT_FALSE(served_quote_slice_price(s.fit, 90.0, Side::Call));
+  EXPECT_FALSE(served_quote_slice_price(s.fit, 91.0, Side::Call));
+  EXPECT_TRUE(served_quote_slice_price(s.fit, 85.0, Side::Call));
+  EXPECT_TRUE(served_quote_slice_price(s.fit, 90.0, Side::Put));
+  const auto value = evaluate_quote_slice(s.fit, 90.0, Side::Call);
+  ASSERT_FALSE(value);
+  EXPECT_EQ(value.error().code(), ErrorCode::Unavailable);
+  const std::vector<QuoteSliceGap> gaps = quote_slice_gaps(s.fit);
+  ASSERT_EQ(gaps.size(), 1u);
+  EXPECT_EQ(gaps[0].side, Side::Call);
+  EXPECT_EQ(gaps[0].lo, 85.0);
+  EXPECT_EQ(gaps[0].hi, 95.0);
+  EXPECT_TRUE(gaps[0].lo_open);
+  EXPECT_TRUE(gaps[0].hi_open);
+  expect_one_answer_per_contract(s.fit, one[0].quotes, "gate");
+  // The validator agrees (Support): the refused row's contract is not served.
+  const std::array<QuoteSlicePublicationSlice, 1> published{{{&s.fit, one[0].quotes}}};
+  QuoteSlicePublicationConfig config;
+  config.market_distance_spreads = 1.0;
+  const auto report = validate_published_representation(published, config);
+  ASSERT_TRUE(report) << report.error().to_string();
+  EXPECT_TRUE(report->clean());
+  EXPECT_EQ(report->withheld_rows, 1u);
+  EXPECT_EQ(report->gap_segments, 2u); // 85-90 and 90-95 on the call side
+  // Without the mask (the pre-C2 fit) the refused row's value is served: a Support
+  // violation at that row.
+  s.fit.withheld_nodes.clear();
+  const auto leak = validate_published_representation(published, config);
+  ASSERT_TRUE(leak) << leak.error().to_string();
+  ASSERT_EQ(leak->count(QuoteSlicePublicationViolation::Support), 1u);
+  EXPECT_EQ(leak->findings.front().row, row_index(one[0], 90.0, Side::Call));
+}
+
+TEST(QuoteSlicePublication, PublicationValidationIsOptInAndNamed) {
+  EXPECT_EQ(QuoteSurfaceConfig{}.publication, QuoteSurfacePublication::Off);
+  EXPECT_STREQ(to_string(QuoteSurfacePublication::Off), "off");
+  EXPECT_STREQ(to_string(QuoteSurfacePublication::Validate), "validate");
+  const std::vector<Chain> one{smile_chain(0.25, 0.03, 0.01, 0.20, -0.10, 0.02)};
+  QuoteSurfaceConfig surface;
+  surface.publication = static_cast<QuoteSurfacePublication>(7);
+  EXPECT_FALSE(fit_quote_surface(expiries(one), QuoteSliceConfig{}, surface));
+}
+
+TEST(QuoteSlicePublication, RepairRevalidatePublishEvaluateGivesOneTypedAnswerPerContract) {
+  // The combined path on lane C0's calendar-repair fixture under PriceOnly with the
+  // market-distance gate: N is repaired onto F's exercise values (moved nodes re-implied
+  // FloorVol), the repair is validated before it is committed, the gate then refuses
+  // N's repaired rows (far below its quotes) and withholds them, and the final check
+  // passes the whole published surface. Every contract gets one answer.
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  const auto off = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly,
+                                       QuoteSliceMarketDistance::Gate,
+                                       QuoteSurfacePublication::Off);
+  const auto on = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly,
+                                      QuoteSliceMarketDistance::Gate,
+                                      QuoteSurfacePublication::Validate);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_TRUE(on) << on.error().to_string();
+  const QuoteSurfaceSlice &near = (*on)[0];
+  const QuoteSurfaceSlice &far = (*on)[1];
+  ASSERT_NE(near.grade, QuoteSliceGrade::Refused) << near.refusal << ": " << near.error;
+  ASSERT_NE(far.grade, QuoteSliceGrade::Refused) << far.refusal << ": " << far.error;
+  ASSERT_TRUE(near.calendar_repaired);
+  ASSERT_GT(near.market_gated_rows, 0u);
+  // The repair was validated after its mutation (and after C0's align_with_query, which
+  // runs inside the library commit of the trial), and nothing was rolled back or found.
+  EXPECT_GT(near.publication_checks, 0u);
+  EXPECT_EQ(near.publication_rollbacks, 0u);
+  EXPECT_EQ(near.publication_violations, 0u);
+  EXPECT_EQ(far.publication_violations, 0u);
+  EXPECT_GE(near.withheld_rows, near.market_gated_rows);
+  // Validation changes nothing on a clean surface: same rows bit for bit as Off.
+  for (std::size_t s = 0; s < 2; ++s) {
+    const QuoteSliceFit &a = (*off)[s].fit;
+    const QuoteSliceFit &b = (*on)[s].fit;
+    ASSERT_EQ(a.rows.size(), b.rows.size());
+    for (std::size_t i = 0; i < a.rows.size(); ++i) {
+      EXPECT_EQ(a.rows[i].evaluation_status, b.rows[i].evaluation_status) << s << " " << i;
+      EXPECT_EQ(bits(a.rows[i].fitted_price), bits(b.rows[i].fitted_price)) << s << " " << i;
+      EXPECT_EQ(a.rows[i].price_only_reason, b.rows[i].price_only_reason) << s << " " << i;
+    }
+    EXPECT_EQ(a.withheld_nodes, b.withheld_nodes) << s;
+  }
+  EXPECT_EQ(expect_one_answer_per_contract(near.fit, chains[0].quotes, "near"),
+            near.withheld_rows);
+  expect_one_answer_per_contract(far.fit, chains[1].quotes, "far");
+  // The published surface passes the final check, labels included.
+  const std::array<QuoteSlicePublicationSlice, 2> published{
+      {{&near.fit, chains[0].quotes}, {&far.fit, chains[1].quotes}}};
+  QuoteSlicePublicationConfig config;
+  config.market_distance_spreads = 1.0;
+  const auto report = validate_published_representation(published, config);
+  ASSERT_TRUE(report) << report.error().to_string();
+  EXPECT_TRUE(report->clean());
+  EXPECT_EQ(report->withheld_rows, near.withheld_rows + far.withheld_rows);
+  EXPECT_FALSE(quote_slice_gaps(near.fit).empty());
+}
+
+TEST(QuoteSlicePublication, ALabelThatDisagreesWithTheQueryIsAnIdentificationViolation) {
+  // Validation must see the labels C0's align_with_query writes: a repaired row whose
+  // labels are stale (as they would be if the check ran before the alignment) is a
+  // finding, so the after-mutation check runs on the aligned trial.
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    auto fitted_surface = fit_calendar_repair(chains, policy, QuoteSliceMarketDistance::Off,
+                                              QuoteSurfacePublication::Off);
+    ASSERT_TRUE(fitted_surface) << fitted_surface.error().to_string();
+    QuoteSliceFit &near = (*fitted_surface)[0].fit;
+    ASSERT_TRUE((*fitted_surface)[0].calendar_repaired);
+    const std::array<QuoteSlicePublicationSlice, 1> one{{{&near, chains[0].quotes}}};
+    const auto aligned = validate_published_representation(one);
+    ASSERT_TRUE(aligned) << aligned.error().to_string();
+    EXPECT_EQ(aligned->count(QuoteSlicePublicationViolation::Identification), 0u)
+        << to_string(policy);
+    const auto floor_row = std::find_if(near.rows.begin(), near.rows.end(), [](const auto &row) {
+      return row.price_only_reason == QuoteSlicePriceOnlyReason::FloorVol;
+    });
+    ASSERT_NE(floor_row, near.rows.end()) << to_string(policy);
+    floor_row->price_only_reason = QuoteSlicePriceOnlyReason::None; // a stale label
+    const auto stale = validate_published_representation(one);
+    ASSERT_TRUE(stale) << stale.error().to_string();
+    ASSERT_EQ(stale->count(QuoteSlicePublicationViolation::Identification), 1u)
+        << to_string(policy);
+    EXPECT_EQ(stale->findings.front().row,
+              static_cast<std::size_t>(floor_row - near.rows.begin()));
   }
 }
 

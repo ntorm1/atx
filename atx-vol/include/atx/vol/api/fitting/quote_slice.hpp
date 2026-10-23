@@ -1054,6 +1054,11 @@ struct QuoteSliceCalendarNeighbour {
 //  Support:       a row disagrees with the API at its strike: a served row (Success or
 //                 PriceOnly) whose strike the API refuses or whose price differs from the
 //                 served price, or a MarketDistanceFailure row whose strike is served.
+//  Identification: a served row's labels disagree with query_quote_slice's typed answer for
+//                 its contract (lane C0's one answer per contract): an identified answer
+//                 that is not the row's Success volatility and convention bit for bit, or
+//                 an unidentified one whose reason / interval bits the row does not carry
+//                 with no row convention (under PriceOnly the row must be PriceOnly).
 // Every comparison allows the certificate's 1e-8 + 1e-9 * max(spot, K). `focus` (an index)
 // restricts the check to that slice and the calendar pairs it belongs to (the after-
 // mutation form); npos checks every slice and pair. Pure: reads the fits only.
@@ -1065,16 +1070,17 @@ enum class QuoteSlicePublicationViolation : std::uint8_t {
   QuoteBox,
   Calendar,
   Extrapolation,
-  Support
+  Support,
+  Identification
 };
-inline constexpr std::size_t kQuoteSlicePublicationViolationKinds = 8;
+inline constexpr std::size_t kQuoteSlicePublicationViolationKinds = 9;
 inline constexpr std::size_t kQuoteSlicePublicationMaxFindings = 64;
 inline constexpr std::size_t kQuoteSlicePublicationAll = static_cast<std::size_t>(-1);
 
 [[nodiscard]] const char *to_string(QuoteSlicePublicationViolation value) noexcept;
 
 // One violation: slice `expiry` (index into the checked span), the calendar partner `other`
-// (kQuoteSlicePublicationAll otherwise), the row (QuoteBox / Support; else
+// (kQuoteSlicePublicationAll otherwise), the row (QuoteBox / Support / Identification; else
 // kQuoteSlicePublicationAll), side, strike and the excess beyond the allowance (price
 // units; QuoteBox: spreads beyond the bound).
 struct QuoteSlicePublicationFinding {
@@ -1111,6 +1117,8 @@ struct QuoteSlicePublicationConfig {
   double box_tick = 0.01;                                // > 0, finite
   std::size_t dense_points = 3;                          // interior points per segment, <= 64
   std::size_t focus = kQuoteSlicePublicationAll;
+  // The Identification class (one query per served row; a moved node's re-implication).
+  bool identification = true;
 };
 
 // InvalidArgument on a null fit, a fit without certified prices, rows not matching the
@@ -1178,11 +1186,16 @@ enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly, FloorPrice
 // prices (bounded-move, channel, joint and market repairs) the mutated slice is checked by
 // validate_published_representation (focus) against the slices it was made consistent
 // with; a violation rolls the mutation back (the repair is treated as refused) and counts
-// QuoteSurfaceSlice::publication_rollbacks; (2) after the market-distance pass the whole
-// served set is checked (QuoteBox at the market-distance bound when one is set); a slice
-// with a structural violation (any class but QuoteBox and Support) is refused
-// ("publication_invalid") - for a calendar pair, the lower-confidence slice - and a
-// QuoteBox / Support row is refused and withheld.
+// QuoteSurfaceSlice::publication_rollbacks; the check runs on the repair trial after the
+// library commit, i.e. after lane C0's align_with_query, so the labels it validates are
+// the ones published; (2) last, after the market-distance pass, the whole served set is
+// checked (QuoteBox at the market-distance bound when one is set) until it is clean: a
+// slice with a structural violation (Certificate, Shape, CrossSide, Nondividend,
+// Calendar, Extrapolation) is refused ("publication_invalid") - for a calendar pair, the
+// lower-confidence slice - and a QuoteBox / Support row is refused (MarketDistanceFailure)
+// and withheld; Identification findings of the final set are counted only. Independently
+// of the mode, the market-distance gate withholds every row it refuses
+// (QuoteSliceFit::withheld_nodes), so the API refuses the same contracts.
 enum class QuoteSurfacePublication : std::uint8_t { Off, Validate };
 
 [[nodiscard]] const char *to_string(QuoteSurfacePublication value) noexcept;
@@ -1347,11 +1360,15 @@ struct QuoteSurfaceSlice {
   std::size_t joint_infeasible = 0;
   std::size_t joint_nonconverged = 0;
   // QuoteSurfacePublication::Validate only (zero otherwise): mutations of this slice the
-  // after-mutation validation checked and rolled back, and the final pass's violations of
-  // this slice (a structural one refuses it: refusal "publication_invalid").
+  // after-mutation validation checked and rolled back, the final pass's violations of
+  // this slice it acted on (a structural one refuses it: refusal "publication_invalid";
+  // a QuoteBox / Support one withholds its row), and the Identification findings of the
+  // final published slice (labels: counted, never refused - the price stays valid and
+  // query_quote_slice is the answer).
   std::size_t publication_checks = 0;
   std::size_t publication_rollbacks = 0;
   std::size_t publication_violations = 0;
+  std::size_t publication_label_violations = 0;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation

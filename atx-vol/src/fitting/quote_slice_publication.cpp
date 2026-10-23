@@ -2,6 +2,7 @@
 // representation-level publication check (quote_slice.hpp, "Served support" and
 // "Publication validation").
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
@@ -103,6 +104,8 @@ const char *to_string(QuoteSlicePublicationViolation value) noexcept {
     return "extrapolation";
   case QuoteSlicePublicationViolation::Support:
     return "support";
+  case QuoteSlicePublicationViolation::Identification:
+    return "identification";
   }
   return "unknown";
 }
@@ -122,6 +125,31 @@ namespace {
 
 [[nodiscard]] double allowance(double spot, double strike) noexcept {
   return 1.0e-8 + 1.0e-9 * std::max(spot, strike);
+}
+
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+// Lane C0's one answer per contract (quote_slice.hpp, Identification): the served row's
+// labels are query_quote_slice's typed answer for its contract, bit for bit.
+[[nodiscard]] bool agrees_with_query(const QuoteSliceFit &fit, const QuoteSliceQuote &quote,
+                                     const QuoteSliceRow &row) {
+  const auto answer = query_quote_slice(fit, quote.strike, quote.side);
+  if (!answer || !same_bits(answer->price, row.fitted_price)) return false;
+  if (answer->status == QuoteSliceEvaluationStatus::Success) {
+    return row.evaluation_status == QuoteSliceEvaluationStatus::Success &&
+           vol_convention(row) == answer->vol_convention &&
+           same_bits(row.fitted_iv, answer->volatility) &&
+           row.price_only_reason == QuoteSlicePriceOnlyReason::None &&
+           std::isnan(row.iv_lower) && std::isnan(row.iv_upper);
+  }
+  return answer->status == QuoteSliceEvaluationStatus::PriceOnly &&
+         vol_convention(row) == QuoteSliceVolConvention::None &&
+         row.price_only_reason == answer->reason && same_bits(row.iv_lower, answer->iv_lower) &&
+         same_bits(row.iv_upper, answer->iv_upper) &&
+         (fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
+          row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly);
 }
 
 class Checker {
@@ -324,6 +352,9 @@ private:
                                                                     1.0e-9) {
         add(QuoteSlicePublicationViolation::QuoteBox, s, q.side, q.strike,
             d - config_.market_distance_spreads, r);
+      }
+      if (config_.identification && !agrees_with_query(fit, q, row)) {
+        add(QuoteSlicePublicationViolation::Identification, s, q.side, q.strike, 0.0, r);
       }
     }
   }
