@@ -5,6 +5,32 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW (opt-in) — one Andersen-Lake exercise classification; exact plateau; typed two-boundary refusal
+
+`api/pricing/american_region.hpp` (Tier-B, outside the umbrella) gains
+`classify_exercise_region` / `AlExerciseClass` (continuation, exercise_plateau,
+european, expiry_limit, zero_vol_limit, unsupported_regime) and
+`andersen_lake_classified`, which returns the price with its class and the solved
+boundary B(T). The scalar uncached, scalar cached and laned AVX2 price sites now
+classify through that one function against the same boundary bits
+(`amer::al_boundary_at_expiry`), so they agree bit for bit; the L3k laned site used
+its own `exp_pd` boundary and disagreed at B and one ulp below it. Under
+`AlExerciseRegion::Intrinsic` a plateau prices exactly K - S / S - K with zero vega.
+The double-continuation regime (put q < r < 0, call r < q < 0) is a typed
+`unsupported_regime` with a NaN price on the classified entry; every other route
+already refused it and is now pinned never to serve a price there.
+
+The L3k bound pin is resolved against an independent reference: the converged
+Andersen-Lake scheme and a binomial lattice put every in-region grid cell at exactly
+the intrinsic, so KernelFloor's excess is the preset's own error — accurate / Fast
+profile 5.0e-7, al_fast_opts 9.6e-7, al_bulk_opts 3.64e-6 (x K max(1, T)^2), pinned at
+their 2-figure round-ups. The provisional 1.2e-6 for al_bulk_opts was aspirational.
+
+**Migration:** none. Every default entry point and the default kernel are
+bit-identical (KernelFloor with no class output forwards to the pre-L3k code; the 9
+default hashes and the AL fingerprint `53c4df68` match). Design note:
+`sprints/2026-10-22-C1-exercise-region-sprint.md`.
+
 ### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
 
 Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,
