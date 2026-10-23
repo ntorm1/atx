@@ -731,21 +731,24 @@ Json repair_json(const QuoteSliceRepairRecord &r) {
           {"unidentified", r.unidentified}};
 }
 
-// A served fit's PriceOnly row: a certified price without an identifiable
-// American volatility. Its vol_status records that the volatility was evaluated
-// and is unidentifiable. With the policy key `price_only` the price is served
-// (status ok_price_only, blank vol; returns true); otherwise the row keeps the
-// historical status invalid_volatility and no price.
+// A published volatility that is identified: finite with a volatility convention (an ok
+// row whose volatility query_quote_slice identifies; stamp_metadata sets the convention).
+bool vol_identified(const Prediction &prediction) {
+  return std::isfinite(prediction.vol) && prediction.vol_convention != "none";
+}
+
 // Lane C0 metadata of one published row (written only under serve.metadata): the
-// convention of the served volatility (none unless the row is served ok), the PriceOnly
-// reason and IV interval of a served slice's row, the fit's model and dividend convention,
-// and the chain's snapshot provenance.
+// convention of the served volatility (none unless the row is served ok with a volatility
+// query_quote_slice identifies), the identification reason and IV interval of a served
+// slice's Success / PriceOnly row (query_quote_slice's own; none for every other row),
+// the fit's model and dividend convention, and the chain's snapshot provenance.
 void stamp_metadata(const QuoteSliceFit &fit, const QuoteSliceRow &row,
                     const QuoteSliceSnapshotInfo &snapshot, bool slice_served,
                     Prediction &prediction) {
   prediction.vol_convention =
       prediction.status == "ok" ? to_string(vol_convention(row)) : "none";
-  if (slice_served) {
+  if (slice_served && (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+                       row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly)) {
     prediction.price_only_reason = to_string(row.price_only_reason);
     prediction.iv_lower = row.iv_lower;
     prediction.iv_upper = row.iv_upper;
@@ -755,6 +758,11 @@ void stamp_metadata(const QuoteSliceFit &fit, const QuoteSliceRow &row,
   prediction.snapshot = snapshot;
 }
 
+// A served fit's PriceOnly row: a certified price without an identifiable
+// American volatility. Its vol_status records that the volatility was evaluated
+// and is unidentifiable. With the policy key `price_only` the price is served
+// (status ok_price_only, blank vol; returns true); otherwise the row keeps the
+// historical status invalid_volatility and no price.
 bool publish_price_only(const QuoteSliceRow &row, bool serve, Prediction &prediction) {
   prediction.vol_status = "unidentifiable";
   if (!serve) {
@@ -1657,18 +1665,20 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   }
   if (stats.floor_price_only || stats.metadata) {
     // Lane C0: price coverage (ok | ok_price_only) and identified-IV coverage (ok with a
-    // volatility) are separate; an ok row at the floor would be a floor value served as
-    // an identified IV (zero under serve.floor_price_only).
+    // volatility the library query identifies, vol_convention not none) are separate; an
+    // ok row at the floor is a floor value served with a volatility (zero under
+    // serve.floor_price_only), never counted as identified.
     auto &id = stats.identifiability;
     id = {{"floor_price_only", stats.floor_price_only}, {"served_price_rows", 0U},
-          {"served_vol_rows", 0U}, {"price_only_rows", 0U}, {"identified_floor_vol_rows", 0U},
-          {"price_only_reason_counts", Json::object()},
+          {"served_vol_rows", 0U}, {"identified_vol_rows", 0U}, {"price_only_rows", 0U},
+          {"identified_floor_vol_rows", 0U}, {"price_only_reason_counts", Json::object()},
           {"vol_convention_counts", Json::object()}};
     for (const auto &prediction : predictions) {
       const bool ok = prediction.status == "ok";
       const bool price_only = prediction.status == "ok_price_only";
       if (ok || price_only) add_count(id, "served_price_rows");
       if (ok && std::isfinite(prediction.vol)) add_count(id, "served_vol_rows");
+      if (ok && vol_identified(prediction)) add_count(id, "identified_vol_rows");
       if (ok && prediction.vol <= kIvMin) add_count(id, "identified_floor_vol_rows");
       if (ok) add_count(id["vol_convention_counts"], prediction.vol_convention);
       if (price_only) {
@@ -1685,6 +1695,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
 }
 
 // Lane C0 metadata columns (serve.metadata): blank where a value is not supplied.
+// vol_valid: the published volatility is identified (vol_identified).
 void write_metadata(std::ostream &stream, const Prediction &p) {
   const auto number_or_blank = [&](double value) {
     stream << ',';
@@ -1705,7 +1716,7 @@ void write_metadata(std::ostream &stream, const Prediction &p) {
          << (p.model_kind.empty() ? "" : to_string(s.carry_convention));
   number_or_blank(s.raw_spot);
   stream << ',' << (s.spot_stale ? 1 : 0) << ',' << (std::isfinite(p.price) ? 1 : 0) << ','
-         << (std::isfinite(p.vol) ? 1 : 0);
+         << (vol_identified(p) ? 1 : 0);
 }
 
 void write_predictions(const std::filesystem::path &path, const std::vector<InputRow> &rows,
@@ -1898,8 +1909,11 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "no vega, is a PriceOnly row (reason floor_vol, flat_exercise_region, low_vega or "
         "unidentified_interval; IV interval where known) served as ok_price_only with its "
         "certified price and no volatility; served_price_rows = ok | ok_price_only, "
-        "served_vol_rows = ok with a volatility, identified_floor_vol_rows = ok rows at or "
-        "below kIvMin (a floor value served as identified; 0 under the key)";
+        "served_vol_rows = ok with a volatility, identified_vol_rows = ok with a volatility "
+        "query_quote_slice identifies (vol_convention not none), identified_floor_vol_rows "
+        "= ok rows at or below kIvMin (a floor value served with a volatility under the "
+        "Legacy policy, its vol_convention none; 0 under the key). serve.floor_price_only "
+        "implies price_only (policy_definition.price_only true)";
   }
   if (stats.metadata) {
     report["output_conventions"] = {
@@ -1908,8 +1922,13 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
             "carry_convention,raw_spot,spot_stale,price_valid,vol_valid"},
         {"vol_convention", "predicted_vol of an ok row: fitted_curve (the fitted American "
             "IV curve at an unmoved certified node) or reimplied_repaired (the certified price "
-            "re-implied under the row's own carry and American model); none otherwise. No row "
-            "is american_quoting or european_equivalent"},
+            "re-implied under the row's own carry and American model); none otherwise, "
+            "including an ok row whose volatility query_quote_slice does not identify (the "
+            "Legacy floor policy keeps its historical value; price_only_reason and the IV "
+            "interval then say why). No row is american_quoting or european_equivalent"},
+        {"price_only_reason", "query_quote_slice's reason (and iv_lower / iv_upper) for an "
+            "ok_price_only row, or an ok row whose volatility it does not identify; none on "
+            "every other row"},
         {"model_kind", "andersen_lake, or discrete_dividend_lattice for a DatedCash route"},
         {"dividend_convention", "QuoteSliceDividendModel of the fit"},
         {"quote_clock", "quote_ns: the chain's latest observation_ns (blank without the "
@@ -1921,8 +1940,8 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
             "(snapshot.one_spot); carry_version 0 = supplied carry, 1 = re-derived by the "
             "forward-preserving rebase (carry_convention forward_preserving)"},
         {"validity", "raw_spot: the chain's own spot before a rebase; spot_stale: raw_spot "
-            "beyond snapshot.stale_spot_bps of S*; price_valid / vol_valid: a published price "
-            "/ volatility"}};
+            "beyond snapshot.stale_spot_bps of S*; price_valid: a published price; vol_valid: "
+            "a published volatility that is identified (vol_convention not none)"}};
   }
   if (stats.snapshot.one_spot != quote_bench_policy::OneSpot::Off) {
     report["one_spot"] = stats.one_spot;
