@@ -2069,6 +2069,10 @@ def test_native_floor_price_only_serves_the_deep_itm_put_price_only_with_its_pri
                for i, price in served.items())
     assert on_report["policy_definition"]["serve"] == {"floor_price_only": True,
                                                        "metadata": True}
+    # serve.floor_price_only implies price_only (its PriceOnly rows - every reason,
+    # unidentified_interval included - are served ok_price_only); the definition says so.
+    assert on_report["policy_definition"]["price_only"] is True
+    assert "price_only" not in off_report["policy_definition"]
     # Without metadata the key still publishes the price-only row (historical columns).
     bare = c0_graded_policy(tmp_path / "bare.json", serve={"floor_price_only": True})
     rows, _, _ = run_c0(binary, wing_chain, tmp_path, "bare", bare)

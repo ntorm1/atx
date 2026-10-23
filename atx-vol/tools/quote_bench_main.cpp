@@ -1308,10 +1308,8 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   if (args.curve.empty()) {
     policy.emplace(quote_bench_policy::load(args.policy, dividends));
     stats.policy_definition = policy->definition;
-    stats.price_only = policy->price_only;
-    // Lane C0: serve.floor_price_only serves its PriceOnly rows as `price_only` does.
+    stats.price_only = policy->price_only; // implied by serve.floor_price_only (lane C0)
     stats.floor_price_only = policy->floor_price_only;
-    stats.price_only = stats.price_only || stats.floor_price_only;
     stats.metadata = policy->metadata;
     stats.snapshot = policy->snapshot;
   } else {

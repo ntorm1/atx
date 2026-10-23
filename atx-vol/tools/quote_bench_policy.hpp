@@ -936,12 +936,16 @@ struct LoadedPolicy {
   QuoteSurfaceConfig surface{};
   // Opt-in (top-level `price_only`, static and graded): a served row whose
   // certified price has no identifiable volatility (PriceOnly) is published as
-  // status ok_price_only with that price and a blank volatility.
+  // status ok_price_only with that price and a blank volatility. Also true under
+  // serve.floor_price_only, which implies it (echoed as `price_only: true` in the
+  // definition).
   bool price_only{false};
   // Lane C0 (top-level `serve`, opt-in). floor_price_only: every profile's
   // QuoteSliceConfig::floor_policy is PriceOnly (a volatility at the floor is never served
-  // as identified) and every PriceOnly row is served as ok_price_only, as under
-  // `price_only`. metadata: the convention / provenance columns and report blocks.
+  // as identified) AND `price_only` is implied: every PriceOnly row - the newly typed
+  // floor_vol / flat_exercise_region / low_vega rows and the historical
+  // unidentified_interval rows alike - is served as ok_price_only. metadata: the
+  // convention / provenance columns and report blocks.
   bool floor_price_only{false};
   bool metadata{false};
   SnapshotOptions snapshot{};
@@ -1009,6 +1013,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   bool floor_price_only = false;
   bool metadata = false;
   parse_serve(document, floor_price_only, metadata);
+  // serve.floor_price_only serves its PriceOnly rows, so it implies price_only.
+  price_only = price_only || floor_price_only;
   const SnapshotOptions snapshot = parse_snapshot(document);
   if (!document.contains("schema_version") || !document.at("schema_version").is_number_integer() ||
       document.at("schema_version") != 1) {
@@ -1229,7 +1235,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     definition["admission"] = "graded";
     definition["graded"] = surface_json(surface, repair, space);
   }
-  if (price_only) definition["price_only"] = true; // provenance only when opted in
+  // Provenance only when opted in, directly or implied by serve.floor_price_only.
+  if (price_only) definition["price_only"] = true;
   if (floor_price_only || metadata) {
     definition["serve"] = {{"floor_price_only", floor_price_only}, {"metadata", metadata}};
   }
