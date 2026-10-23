@@ -141,6 +141,30 @@ TEST(QuoteSliceCallFloor, AnInertOrInvalidFloorIsRefused) {
   EXPECT_STREQ(to_string(QuoteSliceCallFloor::DiscountedIntrinsic), "discounted_intrinsic");
 }
 
+// Maturity consistency: an expiry is held only to the lines of expiries at or before it
+// (C(T) >= C(T') >= S' - K * df' for T' <= T). A later line (a smaller discount, so a higher
+// floor) is ignored: applied, it would lift the short deep call above its own bound.
+TEST(QuoteSliceCallFloor, ALaterExpiryLineNeverBindsAnEarlierSlice) {
+  const std::vector<Chain> chains = soc_surface();
+  const auto e = expiries(chains);
+  QuoteSliceConfig config;
+  config.call_floor.mode = QuoteSliceCallFloor::DiscountedIntrinsic;
+  const QuoteSliceCallFloorLine own{kShortYears, kSpot, std::exp(-kShortRate * kShortYears)};
+  const QuoteSliceCallFloorLine later{kLongYears, kSpot, std::exp(-kLongRate * kLongYears)};
+  config.call_floor.lines = {later, own};
+  const auto fit = fit_quote_surface(e, config, graded_surface({}));
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  const QuoteSurfaceSlice &n = (*fit)[0];
+  ASSERT_NE(n.grade, QuoteSliceGrade::Refused) << n.refusal << ": " << n.error;
+  ASSERT_EQ(n.fit.diagnostics.call_floor_lines.size(), 1u);
+  EXPECT_EQ(n.fit.diagnostics.call_floor_lines[0].calendar_years, kShortYears);
+  EXPECT_EQ((*fit)[1].fit.diagnostics.call_floor_lines.size(), 2u); // the long expiry: both
+  const auto c15 = n.fit.prices->price(1.5, Side::Call);
+  ASSERT_TRUE(c15);
+  EXPECT_GE(*c15, short_bound(1.5) - allowance(1.5));
+  EXPECT_LT(*c15, kSpot - 1.5 * later.discount - 1.0e-3) << *c15; // the later floor: 2.0933
+}
+
 // Legacy (the historical path, pinned): the SOC defect itself. The short non-dividend
 // slice is served, and its deep call sits at S - K under S - K * df.
 TEST(QuoteSliceCallFloor, LegacyServesTheSocDeepCallBelowTheDiscountedIntrinsic) {
