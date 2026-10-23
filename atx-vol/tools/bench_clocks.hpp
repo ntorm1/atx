@@ -75,13 +75,15 @@ enum class Stage : unsigned {
   ReferenceExceptions,   // inversions that left the primary route (fallbacks)
   Publication,           // row publication and per-run bookkeeping
   FitOther,              // fit_timing other bucket only: chain preparation, containment, carry
+  ServeBuild,            // lane H1: serving records built after the fit (graded.serve_records)
   Count_
 };
 
 inline constexpr std::size_t kStageCount = static_cast<std::size_t>(Stage::Count_);
 inline constexpr std::array<const char *, kStageCount> kStageNames = {
     "normalization", "family_build_validation", "inverses", "endpoints", "curve_repair",
-    "final_grid_validation", "reference_exceptions", "publication", "fit_other"};
+    "final_grid_validation", "reference_exceptions", "publication", "fit_other",
+    "serve_build"};
 
 // One measured sub-span of a fit lap: `seconds` of the lap belong to `stage`.
 struct StagePart {
@@ -211,9 +213,10 @@ void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &
 // independently measured cold clock (its own start / end stamps), unattributed_s =
 // cold - sum (time no stage measured), the clock's unclaimed lap time that explains it,
 // span_check_s = cold - sum - unclaimed (zero when the laps span the cold clock), and
-// reconciles_within_1pct = |unattributed_s| <= 1% of the cold clock.
+// reconciles_within_1pct = |unattributed_s| <= 1% of the cold clock. serve_build (lane
+// H1) is null / not_built unless `serve_built`; built, fit_clock_s = sum - serve_build.
 [[nodiscard]] Json stages_json(const PhaseClock &clock, double cold_calibration_s,
-                               bool family_built);
+                               bool family_built, bool serve_built = false);
 
 // Compiler, flags, ISA and math-mode facts of THIS binary (embedded at compile time:
 // ATX_VOL_BENCH_CXX_FLAGS / ATX_VOL_BENCH_BUILD_TYPE from CMake, predefined macros).

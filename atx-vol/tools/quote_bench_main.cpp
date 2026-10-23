@@ -2,6 +2,8 @@
 // Numerical work lives in reusable fitting/pricing APIs, independent of data files.
 #include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
+#include "atx/vol/api/fitting/serve_book.hpp"         // lane H1: graded.serve_records
+#include "atx/vol/api/fitting/slice_serve_record.hpp" // lane H1: graded.serve_records
 #include "atx/vol/api/marketdata/dividend_schedule.hpp"
 #include "atx/vol/api/pricing/dividend.hpp"
 #include "bench_clocks.hpp"
@@ -510,6 +512,15 @@ struct RunStatistics {
   DeAmStageClock deam_clock{};
   DeAmStageClock deam_clock_mark{};
   Json bench = nullptr;
+  // Lane H1 (graded.serve_records, opt-in): the serve_build stage's book and clocks and the
+  // evaluate_quote_slice fast-path audit, reported in graded_stats.serve_records.
+  quote_bench_policy::ServeRecordsOptions serve_records{};
+  std::shared_ptr<ServeBook> serve_book;
+  double serve_build_seconds{};
+  std::vector<double> serve_first_usable_us;
+  std::vector<double> serve_total_us;
+  std::vector<double> serve_mid_off_ns;
+  std::vector<double> serve_mid_on_ns;
 };
 
 void bump(Json &counts, const std::string &key, std::size_t count = 1U) {
@@ -898,6 +909,145 @@ void charge_fit_lap(RunStatistics &stats,
   stats.phases.add_conflict(excess);
 }
 
+// ── Lane H1: the serve_build stage and the fast-path audit (graded.serve_records) ───────
+
+[[nodiscard]] ServeRecordPolicy serve_record_policy_of(quote_bench_policy::ServeRecordProfile p) {
+  using quote_bench_policy::ServeRecordProfile;
+  if (p == ServeRecordProfile::Tick) return serve_record_policy_tick();
+  ServeRecordPolicy policy;
+  policy.ladders = p != ServeRecordProfile::NoLadders;
+  return policy;
+}
+
+// Two evaluate_quote_slice answers agree: both values bit for bit, or the same refusal.
+[[nodiscard]] bool same_value(const Result<QuoteSliceValue> &a, const Result<QuoteSliceValue> &b) {
+  if (a.has_value() != b.has_value()) return false;
+  if (!a) return a.error().code() == b.error().code();
+  return std::bit_cast<std::uint64_t>(a->volatility) ==
+             std::bit_cast<std::uint64_t>(b->volatility) &&
+         std::bit_cast<std::uint64_t>(a->price) == std::bit_cast<std::uint64_t>(b->price);
+}
+
+[[nodiscard]] Json value_json(const Result<QuoteSliceValue> &v) {
+  if (!v) return {{"error", v.error().to_string()}};
+  return {{"volatility", v->volatility}, {"price", v->price}};
+}
+
+// The serve_build stage of one served slice: its record built and published into the run's
+// book (two-phase unless no_ladders) under the chain id, then the fast-path audit - every
+// served row and every node midpoint answered without and with the record attached to the
+// fit (QuoteSliceFit::serve_record; detached again before returning). Returns, per row, the
+// record's value where it differs from the record-free answer (published instead).
+std::vector<std::optional<QuoteSliceValue>>
+serve_build_slice(RunStatistics &stats, std::uint64_t chain, QuoteSliceFit &fit,
+                  std::span<const QuoteSliceQuote> quotes) {
+  std::vector<std::optional<QuoteSliceValue>> out(quotes.size());
+  Json &block = stats.graded_stats["serve_records"];
+  if (!stats.serve_book) {
+    ServeBookPolicy book_policy;
+    book_policy.build_workers = 0; // the stage publishes inline; nothing is rebuilt
+    stats.serve_book = std::make_shared<ServeBook>(book_policy);
+  }
+  stats.phases.lap(bench::Stage::Publication);
+  const auto t0 = Clock::now();
+  ServeBookEntry key;
+  key.expiry_id = chain;
+  key.tag = chain;
+  const auto profile = stats.serve_records.profile;
+  const Result<ServeBuildStage> stage =
+      serve_build(*stats.serve_book, key, fit, serve_record_policy_of(profile),
+                  profile != quote_bench_policy::ServeRecordProfile::NoLadders);
+  const auto t1 = Clock::now();
+  stats.serve_build_seconds += std::chrono::duration<double>(t1 - t0).count();
+  stats.phases.lap(bench::Stage::ServeBuild, t1);
+  if (!stage) {
+    count_into(block["build_errors"], stage.error().to_string());
+    return out;
+  }
+  count_into(block, "records");
+  stats.serve_first_usable_us.push_back(stage->first_usable_us);
+  stats.serve_total_us.push_back(stage->total_us);
+  const ServeSupport &support = stage->record->support();
+  for (const ServeSideSupport *side : {&support.call, &support.put}) {
+    if (side->family) {
+      const char *origin = side->origin == ServeFamilyOrigin::Handed  ? "handed"
+                           : side->origin == ServeFamilyOrigin::Built ? "built"
+                                                                      : "other";
+      count_into(block["family_origin"], origin);
+    }
+    count_into(block, "ladders", side->ladders);
+    count_into(block, "ladders_validated", side->ladders_validated);
+    count_into(block, "ladders_sampled", side->ladders_sampled);
+  }
+  // The audit is untimed (its record-free answers run the cold inversion): skipped.
+  const auto answer = [&fit, &stage](double strike, Side side, bool with) {
+    fit.serve_record = with ? stage->record : nullptr;
+    Result<QuoteSliceValue> v = evaluate_quote_slice(fit, strike, side);
+    fit.serve_record = nullptr;
+    return v;
+  };
+  double max_dvol = block.value("rows_max_dvol", 0.0);
+  for (std::size_t j = 0; j < quotes.size() && j < fit.rows.size(); ++j) {
+    if (fit.rows[j].evaluation_status != QuoteSliceEvaluationStatus::Success) continue;
+    const auto off = answer(quotes[j].strike, quotes[j].side, false);
+    const auto on = answer(quotes[j].strike, quotes[j].side, true);
+    count_into(block, "rows_compared");
+    if (same_value(off, on)) {
+      count_into(block, "rows_identical");
+      continue;
+    }
+    count_into(block, "rows_differ");
+    const double dvol = off && on ? std::abs(on->volatility - off->volatility) : kNaN;
+    if (std::isfinite(dvol)) max_dvol = std::max(max_dvol, dvol);
+    if (on) out[j] = *on;
+    if (block["differences"].size() < 5000U) {
+      block["differences"].push_back({{"chain_id", chain}, {"strike", quotes[j].strike},
+                                      {"side", quotes[j].side == Side::Call ? "call" : "put"},
+                                      {"off", value_json(off)}, {"on", value_json(on)},
+                                      {"abs_dvol_to_accurate_root", finite_or_null(dvol)}});
+    }
+  }
+  block["rows_max_dvol"] = max_dvol;
+  const auto nodes = fit.prices->nodes();
+  double mid_max = block.value("midpoints_max_dvol", 0.0);
+  for (std::size_t i = 0; i + 1 < nodes.size(); ++i) {
+    const double K = 0.5 * (nodes[i].strike + nodes[i + 1].strike);
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto a0 = Clock::now();
+      const auto off = answer(K, side, false);
+      const auto a1 = Clock::now();
+      const auto on = answer(K, side, true);
+      const auto a2 = Clock::now();
+      stats.serve_mid_off_ns.push_back(std::chrono::duration<double, std::nano>(a1 - a0).count());
+      stats.serve_mid_on_ns.push_back(std::chrono::duration<double, std::nano>(a2 - a1).count());
+      count_into(block, "midpoints_compared");
+      if (same_value(off, on)) {
+        count_into(block, "midpoints_identical");
+        continue;
+      }
+      count_into(block, "midpoints_differ");
+      if (off && !on) count_into(block, "midpoints_on_refused_off_ok");
+      if (off && on) mid_max = std::max(mid_max, std::abs(on->volatility - off->volatility));
+    }
+  }
+  block["midpoints_max_dvol"] = mid_max;
+  stats.phases.skip(Clock::now());
+  return out;
+}
+
+// The run's serve_records block: the profile, the stage's clock, the first-usable and final
+// publication latencies per record, the midpoint evaluation costs and the book's versions.
+void finish_serve_records(RunStatistics &stats) {
+  Json &block = stats.graded_stats["serve_records"];
+  block["profile"] = quote_bench_policy::to_string(stats.serve_records.profile);
+  block["serve_build_s"] = stats.serve_build_seconds;
+  block["first_usable_us"] = bench::summary_json(bench::summarize(stats.serve_first_usable_us));
+  block["final_us"] = bench::summary_json(bench::summarize(stats.serve_total_us));
+  block["midpoint_eval_off_ns"] = bench::summary_json(bench::summarize(stats.serve_mid_off_ns));
+  block["midpoint_eval_on_ns"] = bench::summary_json(bench::summarize(stats.serve_mid_on_ns));
+  block["book_versions"] = stats.serve_book ? stats.serve_book->version() : 0U;
+}
+
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
 // consistency is enforced inside fit_quote_surface on the final prices. A
@@ -936,7 +1086,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
     std::optional<counters::fit_timing::SurfaceTrace> trace;
     if (stats.timing_detail) trace.emplace();
     const auto start = Clock::now();
-    const auto fitted = fit_quote_surface(expiries, profile.config, surface);
+    auto fitted = fit_quote_surface(expiries, profile.config, surface); // H1: audit attaches
     const double surface_us =
         std::chrono::duration<double, std::micro>(Clock::now() - start).count();
     const double per_chain = surface_us / static_cast<double>(members.size());
@@ -1084,6 +1234,12 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         ++stats.fit_failures[slice.error.empty() ? slice.refusal : slice.error];
       }
       stats.admitted += fit.diagnostics.quotes_admitted;
+      // Lane H1 (graded.serve_records): the serve_build stage and the fast-path audit.
+      std::vector<std::optional<QuoteSliceValue>> fast;
+      if (served && stats.serve_records.on && fit.prices) {
+        fast = serve_build_slice(stats, members[s], (*fitted)[s].fit,
+                                 prepared.at(members[s]).quotes);
+      }
       for (std::size_t j = 0; j < indices.size(); ++j) {
         const auto &result = fit.rows[j];
         auto &prediction = predictions[indices[j]];
@@ -1093,6 +1249,10 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         if (served && result.evaluation_status == QuoteSliceEvaluationStatus::Success) {
           prediction.price = result.fitted_price;
           prediction.vol = result.fitted_iv;
+          if (j < fast.size() && fast[j]) { // the record's answer where it differs (H1)
+            prediction.price = fast[j]->price;
+            prediction.vol = fast[j]->volatility;
+          }
           prediction.status = "ok";
           prediction.grade = grade;
           count_into(graded["served_rows"], grade);
@@ -1365,6 +1525,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     stats.floor_price_only = policy->floor_price_only;
     stats.metadata = policy->metadata;
     stats.snapshot = policy->snapshot;
+  stats.serve_records = policy->serve_records;
   } else {
     const auto kind = parse_curve_kind(args.curve);
     if (!kind) throw std::runtime_error(kind.error().to_string());
@@ -1742,6 +1903,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   stats.phases.lap(bench::Stage::Publication, cold_end);
   stats.cold_calibration_seconds = bench::seconds_between(cold_start, cold_end);
   stats.elapsed_seconds = std::chrono::duration<double>(Clock::now() - start).count();
+  if (stats.serve_records.on) finish_serve_records(stats);
   return predictions;
 }
 
@@ -2186,7 +2348,7 @@ std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputR
           {"simd", simd_json(exact_before, exact_after)}};
       out["stages"] = args.timing_detail
           ? bench::stages_json(trial.phases, trial.cold_calibration_seconds,
-                               trial.fit_work.deam_family_builds > 0U)
+                               trial.fit_work.deam_family_builds > 0U, trial.serve_records.on)
           : Json("unavailable: requires --timing-detail");
       if (args.timing_detail) {
         out["stages"]["rep"] = 1;
@@ -2212,9 +2374,20 @@ std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputR
                   "fits, inverse memories, certification, calendar validation; excludes "
                   "file I/O and the policy load"}}},
       {"ready_to_quote_s",
-       {{"status", "not_built"},
-        {"reason", "quote-bench builds no serving tier (records, ladders, primary risk), so "
-                   "ready-to-quote is not measured; it is never reported as zero"}}}};
+       stats.serve_records.on
+           ? Json{{"status", "timed"},
+                  {"serve_build_s", stats.serve_build_seconds},
+                  {"first_usable_us",
+                   bench::summary_json(bench::summarize(stats.serve_first_usable_us))},
+                  {"final_us", bench::summary_json(bench::summarize(stats.serve_total_us))},
+                  {"scope", "rep 1's serve_build stage (graded.serve_records): every served "
+                            "slice's serving record built after its fit and published "
+                            "(first usable bundle, then the laddered record); inside "
+                            "cold_calibration_s, separated as the serve_build stage"}}
+           : Json{{"status", "not_built"},
+                  {"reason", "quote-bench builds no serving tier (records, ladders, primary "
+                             "risk), so ready-to-quote is not measured; it is never reported "
+                             "as zero"}}}};
   return first;
 }
 

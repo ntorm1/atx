@@ -405,7 +405,7 @@ Json stage_clock_json(const DeAmStageClock &c) {
                                             "convergence"}};
 }
 
-Json stages_json(const PhaseClock &clock, double cold, bool family_built) {
+Json stages_json(const PhaseClock &clock, double cold, bool family_built, bool serve_built) {
   Json stages = Json::object();
   for (std::size_t s = 0; s < kStageCount; ++s) {
     const auto stage = static_cast<Stage>(s);
@@ -415,17 +415,25 @@ Json stages_json(const PhaseClock &clock, double cold, bool family_built) {
                                            "graded.family off, or every build refused)"}};
       continue;
     }
+    if (stage == Stage::ServeBuild && !serve_built) {
+      stages[kStageNames[s]] = {{"seconds", nullptr}, {"status", "not_built"},
+                                {"reason", "no serving record was built (policy "
+                                           "graded.serve_records off)"}};
+      continue;
+    }
     stages[kStageNames[s]] = {{"seconds", clock.seconds(stage)}, {"status", "timed"}};
   }
   const double sum = clock.total();
   const double residual = cold - sum; // the cold clock has its own start / end stamps
-  return {{"stages", std::move(stages)}, {"sum_s", sum}, {"cold_calibration_s", cold},
-          {"unattributed_s", residual},
-          {"unattributed_fraction", cold > 0.0 ? residual / cold : 0.0},
-          {"unclaimed_lap_s", clock.unclaimed_seconds()},
-          {"span_check_s", residual - clock.unclaimed_seconds()},
-          {"reconciles_within_1pct", std::fabs(residual) <= 0.01 * cold},
-          {"attribution_conflict_s", clock.conflict_seconds()}};
+  Json out = {{"stages", std::move(stages)}, {"sum_s", sum}, {"cold_calibration_s", cold},
+              {"unattributed_s", residual},
+              {"unattributed_fraction", cold > 0.0 ? residual / cold : 0.0},
+              {"unclaimed_lap_s", clock.unclaimed_seconds()},
+              {"span_check_s", residual - clock.unclaimed_seconds()},
+              {"reconciles_within_1pct", std::fabs(residual) <= 0.01 * cold},
+              {"attribution_conflict_s", clock.conflict_seconds()}};
+  if (serve_built) out["fit_clock_s"] = sum - clock.seconds(Stage::ServeBuild);
+  return out;
 }
 
 Json build_info_json() {

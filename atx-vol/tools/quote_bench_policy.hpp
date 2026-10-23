@@ -975,6 +975,33 @@ struct SnapshotOptions {
   bool refuse_stale{false};
 };
 
+// Lane H1 (graded.serve_records, opt-in; graded.serve_record_profile): after each served
+// slice's fit the serve_build stage builds its serving record (slice_serve_record.hpp; from
+// the fit's hand-off when it carries one) and publishes it into the run's ServeBook
+// (serve_book.hpp: the first usable bundle, then the laddered record), then audits the
+// evaluate_quote_slice fast path against the record-free answer on every served row and
+// at every node midpoint. A row whose fast-path value differs is published with it and
+// listed (graded_stats.serve_records). Profiles: default (ServeRecordPolicy{}), tick
+// (serve_record_policy_tick()), no_ladders (tiers 1-2 only). Off: the historical path.
+enum class ServeRecordProfile : std::uint8_t { Default, Tick, NoLadders };
+
+[[nodiscard]] inline const char *to_string(ServeRecordProfile p) noexcept {
+  switch (p) {
+  case ServeRecordProfile::Default:
+    return "default";
+  case ServeRecordProfile::Tick:
+    return "tick";
+  case ServeRecordProfile::NoLadders:
+    return "no_ladders";
+  }
+  return "unknown";
+}
+
+struct ServeRecordsOptions {
+  bool on{false};
+  ServeRecordProfile profile{ServeRecordProfile::Default};
+};
+
 struct LoadedPolicy {
   QuoteFitPolicyCatalog catalog;
   Json definition;
@@ -998,6 +1025,7 @@ struct LoadedPolicy {
   bool floor_price_only{false};
   bool metadata{false};
   SnapshotOptions snapshot{};
+  ServeRecordsOptions serve_records{}; // lane H1 (graded.serve_records)
 };
 
 // The lane C0 `serve` and `snapshot` objects; absent keys keep the historical path.
@@ -1148,6 +1176,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   QuoteSurfaceConfig surface;
   surface.rung_memo = graded && kGradedDefaultRungMemo; // R3 graded default
   QuoteSliceRepairConfig repair; // graded only; applied to every profile
+  ServeRecordsOptions serve_records; // graded only (lane H1)
   // Applied to every profile: the library values for a static policy, R3's for a graded one.
   FitSpaceOptions space = graded ? graded_default_fit_space() : FitSpaceOptions{};
   if (document.contains("graded")) {
@@ -1162,7 +1191,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
-             "family_native", "publication", "native_route", "reference_budget"});
+             "family_native", "publication", "native_route", "reference_budget",
+             "serve_records", "serve_record_profile"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1287,12 +1317,38 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
         throw std::runtime_error("Policy graded publication must be off or validate");
       }
     }
+    // Opt-in serving records (lane H1; ServeRecordsOptions): false is the historical path.
+    if (j.contains("serve_records")) {
+      if (!j.at("serve_records").is_boolean()) {
+        throw std::runtime_error("Policy graded serve_records must be true or false");
+      }
+      serve_records.on = j.at("serve_records").get<bool>();
+    }
+    if (j.contains("serve_record_profile")) {
+      if (!serve_records.on) {
+        throw std::runtime_error("Policy graded serve_record_profile requires serve_records "
+                                 "true");
+      }
+      const auto name = text(j.at("serve_record_profile"));
+      if (name == "tick") {
+        serve_records.profile = ServeRecordProfile::Tick;
+      } else if (name == "no_ladders") {
+        serve_records.profile = ServeRecordProfile::NoLadders;
+      } else if (name != "default") {
+        throw std::runtime_error("Policy graded serve_record_profile must be default, tick or "
+                                 "no_ladders");
+      }
+    }
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};
   if (graded) {
     definition["admission"] = "graded";
     definition["graded"] = surface_json(surface, repair, space);
+    if (serve_records.on) { // provenance only when opted in (lane H1)
+      definition["graded"]["serve_records"] = true;
+      definition["graded"]["serve_record_profile"] = to_string(serve_records.profile);
+    }
   }
   // Provenance only when opted in, directly or implied by serve.floor_price_only.
   if (price_only) definition["price_only"] = true;
@@ -1370,7 +1426,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
   return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface,
-          price_only, floor_price_only, metadata, snapshot};
+          price_only, floor_price_only, metadata, snapshot, serve_records};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {
