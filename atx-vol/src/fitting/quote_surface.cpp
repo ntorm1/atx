@@ -1607,10 +1607,10 @@ private:
     }
     check.identification = true;
     for (const std::size_t i : published_set()) {
-      // On a copy with its own curve: query_quote_slice evaluates through the curve's cache,
-      // and a published curve whose cache the check filled serves later evaluations that
-      // differ in the last bits (measured: 74 SPY rows, <= 5.1e-13) - the check must leave
-      // the published fit untouched.
+      // On a copy with its own curve, as the after-mutation checks do: the check leaves
+      // the published fit untouched. (The SPY drift first blamed on querying the published
+      // fit - 74 rows, <= 5.1e-13 - is a pre-existing dependence on the expiry fan-out
+      // schedule of the repair rungs, seen on the base binary too: lane C2 report D3.)
       const QuoteSliceFit probe = trial_copy(out_[i].fit);
       const std::array<QuoteSlicePublicationSlice, 1> one{{{&probe, expiries_[i].quotes}}};
       ATX_TRY(const QuoteSlicePublicationReport labels,
