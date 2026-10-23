@@ -548,6 +548,46 @@ TEST(QuoteSlicePublication, AJointCalendarRepairOnCrossingQuotesIsInfeasibleAndR
   EXPECT_TRUE(c.near.moved_nodes.empty());
 }
 
+// Review m2 (lane C2 fix round 1): the joint rung's own empty-box exits name their conflict
+// like the projection's certificates. The conflict is EmptyBox, with the member (in
+// maturity order), node, strike and excess, and no member changes. The fixed earlier
+// neighbour carries the near member's prices lifted by one unit.
+// - Exit 1 (prepare): a fixed later neighbour caps the near member at its own prices,
+//   below that floor.
+// - Exit 2 (box): with no cap, the floor lies above the near member's quote box.
+TEST(QuoteSlicePublication, AJointRepairsEmptyClampedBoxIsAnEmptyBoxConflict) {
+  for (const bool capped : {true, false}) {
+    JointCase c;
+    make_joint_case(c, 0.3);
+    const AmericanPriceSlice floor = lifted(c.near, 1.0);
+    const AmericanPriceSlice cap = *c.near.prices;
+    std::vector<QuoteSliceCalendarNeighbour> fixed{{&floor, 0.1}};
+    if (capped) fixed.push_back({&cap, 0.3});
+    const auto near_quotes = quotes_around(c.near, c.near_chain.quotes, 0.001);
+    const auto near_nodes = nodes_of(c.near);
+    const auto far_nodes = nodes_of(c.far);
+    const std::array<QuoteSliceJointMember, 2> members{
+        {{&c.near, near_quotes}, {&c.far, c.far_chain.quotes}}};
+    QuoteSliceRepairRecord record;
+    const char *what = capped ? "prepare" : "box";
+    EXPECT_FALSE(repair_quote_slice_calendar_joint(members, fixed, QuoteSliceRepairConfig{},
+                                                   nullptr, &record))
+        << what;
+    EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::Infeasible) << what;
+    EXPECT_EQ(record.conflict.kind, JointConflictKind::EmptyBox)
+        << what << ": " << to_string(record.conflict.kind);
+    EXPECT_EQ(record.conflict.slice, 0u) << what;
+    EXPECT_EQ(record.conflict.other, 0u) << what;
+    EXPECT_EQ(record.conflict.node, 0u) << what;
+    EXPECT_EQ(record.conflict.strike, near_nodes.front().strike) << what;
+    // floor - cap = 1 (prepare); floor - (price + 0.001) = 0.999 (box).
+    EXPECT_NEAR(record.conflict.excess, capped ? 1.0 : 0.999, 1.0e-9) << what;
+    EXPECT_EQ(record.sweeps, 0u) << what;
+    expect_same_nodes(c.near, near_nodes, what);
+    expect_same_nodes(c.far, far_nodes, what);
+  }
+}
+
 // The channel / box calendar repair (lane C2 fix round 1, review m4). The fit is quoted
 // 2 wide around its own prices, so the box certificate's quote boxes can absorb an
 // earlier slice whose puts sit one unit above the fit's: the floor under which the

@@ -407,9 +407,13 @@ struct QuoteSliceRepairRecord {
   double max_vol_move = 0.0;       // largest |IV change| over identifiable moved node-sides
   double max_unquoted_vol_move = 0.0; // the same over node-sides without a quote (budgeted)
   std::size_t unidentified = 0;    // moved node-sides whose new price has no American IV
-  // Joint projection only (repair_quote_slice_calendar_joint, lane C2): sweeps run over
-  // both sides, and the infeasibility certificate of an Infeasible outcome (kind None
-  // otherwise; JointProjectionConflict indexes the members in maturity order).
+  // Joint projection only (repair_quote_slice_calendar_joint, lane C2): the sweeps run over
+  // both sides, and the conflict that made the outcome Infeasible. The conflict is either
+  // the projection's infeasibility certificate, or EmptyBox for the rung's own empty-box
+  // exits (fix round 1, review m2). Those exits are: the fixed neighbours' floor above
+  // their cap at a member's node, or a member's quote box outside that clamp. The kind is
+  // None for every other outcome. JointProjectionConflict indexes the members in maturity
+  // order.
   std::size_t sweeps = 0;
   JointProjectionConflict conflict{};
 };

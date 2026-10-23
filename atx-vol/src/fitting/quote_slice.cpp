@@ -2207,10 +2207,13 @@ namespace {
 
 // Fills the calendar clamp of `nodes` against accepted slices: floors from
 // `earlier`, caps from `later`, wherever a node lies inside their domains.
-// False when a floor exceeds its cap beyond the certificate allowance.
+// False when a floor exceeds its cap beyond the certificate allowance. In that case
+// `empty` (nullable; lane C2 fix round 1, review m2) receives that node as an EmptyBox
+// conflict: node, strike, and excess = floor - cap.
 bool calendar_clamp(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> nodes,
                     std::span<const AmericanPriceSlice *const> earlier,
-                    std::span<const AmericanPriceSlice *const> later, CalendarClamp &c) {
+                    std::span<const AmericanPriceSlice *const> later, CalendarClamp &c,
+                    JointProjectionConflict *empty = nullptr) {
   c.floor_call.assign(nodes.size(), 0.0);
   c.floor_put.assign(nodes.size(), 0.0);
   c.cap_call.assign(nodes.size(), std::numeric_limits<double>::infinity());
@@ -2231,7 +2234,15 @@ bool calendar_clamp(const QuoteSliceFit &fit, std::span<const AmericanPriceNode>
     }
     // Accepted slices agree only to the certificate's fixed allowance.
     const double tol = 1.0e-8 + 1.0e-9 * std::max(fit.market.spot, nodes[i].strike);
-    if (c.floor_call[i] > c.cap_call[i] + tol || c.floor_put[i] > c.cap_put[i] + tol) return false;
+    if (c.floor_call[i] > c.cap_call[i] + tol || c.floor_put[i] > c.cap_put[i] + tol) {
+      if (empty != nullptr) {
+        empty->kind = JointConflictKind::EmptyBox;
+        empty->node = i;
+        empty->strike = k;
+        empty->excess = std::max(c.floor_call[i] - c.cap_call[i], c.floor_put[i] - c.cap_put[i]);
+      }
+      return false;
+    }
     c.cap_call[i] = std::max(c.cap_call[i], c.floor_call[i]);
     c.cap_put[i] = std::max(c.cap_put[i], c.floor_put[i]);
   }
@@ -2628,10 +2639,10 @@ struct JointWork {
   std::vector<const AmericanPriceSlice *> later;
 };
 
-// The fixed-neighbour clamp and quote boxes of one member; false when the fixed
-// neighbours already disagree at its nodes.
+// The fixed-neighbour clamp and quote boxes of one member. False when the fixed
+// neighbours already disagree at its nodes; `conflict` then names the node (EmptyBox).
 bool prepare_joint(const QuoteSliceJointMember &m, std::span<const QuoteSliceCalendarNeighbour> fixed,
-                   double h, JointWork &w) {
+                   double h, JointWork &w, JointProjectionConflict &conflict) {
   const QuoteSliceFit &fit = *m.fit;
   const auto nodes = fit.prices->nodes();
   w.nodes.assign(nodes.begin(), nodes.end());
@@ -2642,14 +2653,15 @@ bool prepare_joint(const QuoteSliceJointMember &m, std::span<const QuoteSliceCal
     (n.calendar_years < fit.market.calendar_years ? w.earlier : w.later).push_back(n.prices);
   }
   w.boxes = quote_boxes(w.nodes, m.quotes, h);
-  return calendar_clamp(fit, w.nodes, w.earlier, w.later, w.clamp);
+  return calendar_clamp(fit, w.nodes, w.earlier, w.later, w.clamp, &conflict);
 }
 
 // One side's box of a member: its quote box widened to contain the node's current
 // price, intersected with the hard bounds (box_edges) and the fixed clamp. False
-// when a box is empty beyond the certificate allowance.
+// when a box is empty beyond the certificate allowance; `conflict` then names it
+// (EmptyBox: node, strike, excess = lo - hi).
 bool joint_box(const JointWork &w, Side side, std::vector<double> &lo, std::vector<double> &hi,
-               std::vector<double> &p) {
+               std::vector<double> &p, JointProjectionConflict &conflict) {
   const bool call = side == Side::Call;
   std::vector<double> weights;
   box_edges(w.nodes, side, w.boxes, w.bounds, lo, hi, weights);
@@ -2659,7 +2671,13 @@ bool joint_box(const JointWork &w, Side side, std::vector<double> &lo, std::vect
     lo[i] = std::max(std::min(lo[i], p[i]), call ? w.clamp.floor_call[i] : w.clamp.floor_put[i]);
     hi[i] = std::min(std::max(hi[i], p[i]), call ? w.clamp.cap_call[i] : w.clamp.cap_put[i]);
     if (lo[i] > hi[i]) {
-      if (lo[i] - hi[i] > certificate_tolerance(w.bounds.spot, w.strikes[i])) return false;
+      if (lo[i] - hi[i] > certificate_tolerance(w.bounds.spot, w.strikes[i])) {
+        conflict.kind = JointConflictKind::EmptyBox;
+        conflict.node = i;
+        conflict.strike = w.strikes[i];
+        conflict.excess = lo[i] - hi[i];
+        return false;
+      }
       lo[i] = hi[i];
     }
   }
@@ -2699,10 +2717,17 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
     return members[a.member].fit->market.calendar_years <
            members[b.member].fit->market.calendar_years;
   });
-  for (JointWork &w : work) {
-    if (!prepare_joint(members[w.member], fixed, h, w)) {
-      out.outcome = QuoteSliceRepairOutcome::Infeasible;
-      return false;
+  // Lane C2 fix round 1 (review m2): the rung's own empty-box exits name their conflict
+  // like the projection's certificates (EmptyBox; slice = the member in maturity order).
+  const auto empty_box = [&out](std::size_t s) {
+    out.outcome = QuoteSliceRepairOutcome::Infeasible;
+    out.conflict.slice = s;
+    out.conflict.other = s;
+    return false;
+  };
+  for (std::size_t s = 0; s < work.size(); ++s) {
+    if (!prepare_joint(members[work[s].member], fixed, h, work[s], out.conflict)) {
+      return empty_box(s);
     }
   }
   std::vector<std::vector<double>> lo(work.size());
@@ -2712,10 +2737,7 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
   for (const Side side : {Side::Call, Side::Put}) {
     const bool call = side == Side::Call;
     for (std::size_t s = 0; s < work.size(); ++s) {
-      if (!joint_box(work[s], side, lo[s], hi[s], p[s])) {
-        out.outcome = QuoteSliceRepairOutcome::Infeasible;
-        return false;
-      }
+      if (!joint_box(work[s], side, lo[s], hi[s], p[s], out.conflict)) return empty_box(s);
       const double dmax = work[s].bounds.discount_max;
       sides[s] = JointPriceSide{work[s].strikes, p[s], lo[s], hi[s], call ? -dmax : 0.0,
                                 call ? 0.0 : dmax, work[s].bounds.spot};

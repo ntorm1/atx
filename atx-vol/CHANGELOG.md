@@ -63,9 +63,11 @@ the conflict (`EmptyBox`, `NoConvexCurve`, `CalendarBox`: slice, node, partner, 
 excess), `NonConverged` or `InvalidInput`; prices change only when `Feasible`. The joint rung
 (`repair_quote_slice_calendar_joint`) uses it with `QuoteSliceRepairConfig::joint_max_sweeps`
 (default 20,000, the historical budget) and records `QuoteSliceRepairOutcome::NonConverged`
-(previously reported as `Infeasible`), the sweeps and the conflict; every outcome but a
-certified, applied projection rolls back (no member changes). `project_calendar_joint`
-keeps its historical behaviour.
+(previously reported as `Infeasible`), the sweeps and the conflict. The rung's own empty-box
+exits record an `EmptyBox` conflict too (member, node, strike, excess). Those exits are: the
+fixed neighbours' floor above their cap at a member's node, or a member's quote box outside
+that clamp. So every `Infeasible` names one. Every outcome but a certified, applied projection
+rolls back (no member changes). `project_calendar_joint` keeps its historical behaviour.
 
 ### NEW — typed price-only identifiability, one spot per snapshot, convention metadata (lane C0)
 
