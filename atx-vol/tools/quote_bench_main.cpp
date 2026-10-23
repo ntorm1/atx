@@ -855,7 +855,19 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_family_prices", t.deam_family_prices},
           {"deam_family_refused", t.deam_family_refused},
           {"deam_family_grid_prices", t.deam_family_grid_prices},
-          {"deam_family_grid_cold", t.deam_family_grid_cold}};
+          {"deam_family_grid_cold", t.deam_family_grid_cold},
+          {"deam_accept_by_kind", t.deam_accept_by_kind},
+          {"deam_accept_by_reason", t.deam_accept_by_reason},
+          {"deam_native_status", t.deam_native_status},
+          {"deam_route_outcome", t.deam_route_outcome},
+          {"deam_native_carried", t.deam_native_carried},
+          {"deam_reference_requests", t.deam_reference_requests},
+          {"deam_reference_evaluations", t.deam_reference_evaluations},
+          {"deam_reference_budget_refused", t.deam_reference_budget_refused},
+          {"deam_edges_bound_decided", t.deam_edges_bound_decided},
+          {"deam_edges_priced", t.deam_edges_priced},
+          {"deam_family_sides_requested", t.deam_family_sides_requested},
+          {"deam_family_grid_max_bound_usd", t.deam_family_grid_max_bound_usd}};
 }
 
 // Lane B0: charges the fit lap that just ended to its exclusive stages
@@ -875,6 +887,7 @@ void charge_fit_lap(RunStatistics &stats,
   DeAmStageClock &mark = stats.deam_clock_mark;
   const std::uint64_t endpoint_ns = now.endpoint_ns - mark.endpoint_ns;
   std::uint64_t exception_ns = now.fast_redo_ns - mark.fast_redo_ns;
+  exception_ns += now.reference_ns - mark.reference_ns; // K4: the bounded reference route
   for (std::size_t r = 0; r < now.premium_fallback_ns.size(); ++r) {
     exception_ns += now.premium_fallback_ns[r] - mark.premium_fallback_ns[r];
   }

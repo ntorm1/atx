@@ -152,7 +152,7 @@ struct FitWork {
   std::uint64_t deam_premium{0};
   std::uint64_t deam_premium_fallbacks{0};
   std::array<std::uint64_t, 8> deam_fallback_by_reason{};
-  std::array<std::uint64_t, 6> deam_al_by_reason{};
+  std::array<std::uint64_t, 7> deam_al_by_reason{};
   std::uint64_t deam_confirms{0};
   std::uint64_t deam_confirms_skipped{0};
   std::uint64_t deam_ambiguous_edges{0};
@@ -166,6 +166,23 @@ struct FitWork {
   std::uint64_t deam_family_refused{0};
   std::uint64_t deam_family_grid_prices{0};
   std::uint64_t deam_family_grid_cold{0};
+  // K3 typed acceptance and the K4 native fit route (fit_timing counters of the same names;
+  // zero off those routes): roots by acceptance kind / reason, requests by the native lane's
+  // InverseStatus and by the route's IvRouteOutcome, lanes started from a carry, reference
+  // requests / evaluations / budget refusals, band edges decided by bound / priced, family
+  // sides the adaptive rule asked for, and the largest per-point family grid bound (USD).
+  std::array<std::uint64_t, 5> deam_accept_by_kind{};
+  std::array<std::uint64_t, 9> deam_accept_by_reason{};
+  std::array<std::uint64_t, 11> deam_native_status{};
+  std::array<std::uint64_t, 11> deam_route_outcome{};
+  std::uint64_t deam_native_carried{0};
+  std::uint64_t deam_reference_requests{0};
+  std::uint64_t deam_reference_evaluations{0};
+  std::uint64_t deam_reference_budget_refused{0};
+  std::uint64_t deam_edges_bound_decided{0};
+  std::uint64_t deam_edges_priced{0};
+  std::uint64_t deam_family_sides_requested{0};
+  double deam_family_grid_max_bound_usd{0.0};
 };
 
 void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &chain) noexcept;

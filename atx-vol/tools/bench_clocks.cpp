@@ -206,6 +206,22 @@ void add_fit_work(FitWork &work, const ft::FitTimingCounters &c) noexcept {
   work.deam_family_refused += c.deam_family_refused;
   work.deam_family_grid_prices += c.deam_family_grid_prices;
   work.deam_family_grid_cold += c.deam_family_grid_cold;
+  const auto add = [](auto &into, const auto &from) {
+    for (std::size_t i = 0; i < into.size() && i < from.size(); ++i) into[i] += from[i];
+  };
+  add(work.deam_accept_by_kind, c.deam_accept_by_kind);
+  add(work.deam_accept_by_reason, c.deam_accept_by_reason);
+  add(work.deam_native_status, c.deam_native_status);
+  add(work.deam_route_outcome, c.deam_route_outcome);
+  work.deam_native_carried += c.deam_native_carried;
+  work.deam_reference_requests += c.deam_reference_requests;
+  work.deam_reference_evaluations += c.deam_reference_evaluations;
+  work.deam_reference_budget_refused += c.deam_reference_budget_refused;
+  work.deam_edges_bound_decided += c.deam_edges_bound_decided;
+  work.deam_edges_priced += c.deam_edges_priced;
+  work.deam_family_sides_requested += c.deam_family_sides_requested;
+  work.deam_family_grid_max_bound_usd =
+      std::max(work.deam_family_grid_max_bound_usd, c.deam_family_grid_max_bound_usd);
 }
 
 FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
@@ -248,6 +264,26 @@ FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
   d.deam_family_grid_prices =
       saturating_minus(a.deam_family_grid_prices, b.deam_family_grid_prices);
   d.deam_family_grid_cold = saturating_minus(a.deam_family_grid_cold, b.deam_family_grid_cold);
+  const auto minus = [](auto &into, const auto &x, const auto &y) {
+    for (std::size_t i = 0; i < into.size(); ++i) into[i] = saturating_minus(x[i], y[i]);
+  };
+  minus(d.deam_accept_by_kind, a.deam_accept_by_kind, b.deam_accept_by_kind);
+  minus(d.deam_accept_by_reason, a.deam_accept_by_reason, b.deam_accept_by_reason);
+  minus(d.deam_native_status, a.deam_native_status, b.deam_native_status);
+  minus(d.deam_route_outcome, a.deam_route_outcome, b.deam_route_outcome);
+  d.deam_native_carried = saturating_minus(a.deam_native_carried, b.deam_native_carried);
+  d.deam_reference_requests =
+      saturating_minus(a.deam_reference_requests, b.deam_reference_requests);
+  d.deam_reference_evaluations =
+      saturating_minus(a.deam_reference_evaluations, b.deam_reference_evaluations);
+  d.deam_reference_budget_refused =
+      saturating_minus(a.deam_reference_budget_refused, b.deam_reference_budget_refused);
+  d.deam_edges_bound_decided =
+      saturating_minus(a.deam_edges_bound_decided, b.deam_edges_bound_decided);
+  d.deam_edges_priced = saturating_minus(a.deam_edges_priced, b.deam_edges_priced);
+  d.deam_family_sides_requested =
+      saturating_minus(a.deam_family_sides_requested, b.deam_family_sides_requested);
+  d.deam_family_grid_max_bound_usd = a.deam_family_grid_max_bound_usd; // a running max
   return d;
 }
 
@@ -277,6 +313,35 @@ std::array<StagePart, 7> fit_parts(const FitWork &delta, std::uint64_t endpoint_
           StagePart{Stage::FitOther, s_us({ft::Bucket::Other})}};
 }
 
+namespace {
+
+// The K4 native fit route's counters by name (zero off the route). review-K2 m8: every
+// native lane outcome has its own counter; status_names / outcome_names are the enums'.
+Json native_route_json(const FitWork &w) {
+  static constexpr std::array<const char *, 11> kStatus = {
+      "inactive",        "converged",       "low_vega",     "exercise_flat",
+      "sigma_below_box", "sigma_above_box", "q_outside_box", "nonconverged",
+      "invalid_input",   "unsupported_isa", "converged_no_slope"};
+  static constexpr std::array<const char *, 11> kOutcome = {
+      "none",           "native_root",        "reference_root", "leg_root",
+      "price_only_plateau", "price_only_floor", "price_only_low_vega", "interval",
+      "budget_exhausted", "above_range",       "unresolved"};
+  Json status = Json::object();
+  Json outcome = Json::object();
+  for (std::size_t i = 0; i < kStatus.size(); ++i) status[kStatus[i]] = w.deam_native_status[i];
+  for (std::size_t i = 0; i < kOutcome.size(); ++i) outcome[kOutcome[i]] = w.deam_route_outcome[i];
+  return {{"native_lane_status", status},
+          {"route_outcome", outcome},
+          {"native_carried", w.deam_native_carried},
+          {"reference_requests", w.deam_reference_requests},
+          {"reference_evaluations", w.deam_reference_evaluations},
+          {"reference_budget_refused", w.deam_reference_budget_refused},
+          {"edges_bound_decided", w.deam_edges_bound_decided},
+          {"edges_priced", w.deam_edges_priced}};
+}
+
+} // namespace
+
 Json fit_work_json(const FitWork &w) {
   Json bucket_us = Json::object();
   Json al_by_bucket = Json::object();
@@ -304,7 +369,10 @@ Json fit_work_json(const FitWork &w) {
           {"premium_fallbacks_by_reason", w.deam_fallback_by_reason},
           {"inversion_al_solves_by_reason", al_by_reason}, {"confirms", w.deam_confirms},
           {"confirms_skipped", w.deam_confirms_skipped},
-          {"ambiguous_edges", w.deam_ambiguous_edges}, {"seed_routed", w.deam_seed_routed}};
+          {"ambiguous_edges", w.deam_ambiguous_edges}, {"seed_routed", w.deam_seed_routed},
+          {"accept_by_kind", w.deam_accept_by_kind},
+          {"accept_by_reason", w.deam_accept_by_reason},
+          {"native_route", native_route_json(w)}};
 }
 
 Json families_json(const FitWork &w) {
@@ -315,7 +383,10 @@ Json families_json(const FitWork &w) {
           {"refused_premium_attempts", w.deam_family_refused},
           {"grid_prices", w.deam_family_grid_prices},
           {"grid_prices_on_fast_instead", w.deam_family_grid_cold},
-          {"attempted", not_counted}, {"lane_vegas", not_counted}};
+          {"grid_max_point_bound_usd", w.deam_family_grid_max_bound_usd},
+          {"attempted", w.deam_family_sides_requested},
+          {"refused", saturating_minus(w.deam_family_sides_requested, w.deam_family_builds)},
+          {"lane_vegas", not_counted}};
 }
 
 Json stage_clock_json(const DeAmStageClock &c) {
@@ -326,6 +397,8 @@ Json stage_clock_json(const DeAmStageClock &c) {
           {"premium_fallback_s", s(fallback_ns)},
           {"premium_fallback_ns_by_reason", c.premium_fallback_ns},
           {"fast_redos", c.fast_redos}, {"fast_redo_s", s(c.fast_redo_ns)},
+          {"reference_requests", c.reference_requests}, {"reference_s", s(c.reference_ns)},
+          {"bound_decided_bands", c.bound_decided_bands},
           {"premium_fallback_reason_index", "IvPremiumFallback: 1 not applicable, 2 range edge "
                                             "or non-monotone band, 3 no European seed, 4 not "
                                             "increasing, 5 vol bound, 6 pricer failure, 7 no "
