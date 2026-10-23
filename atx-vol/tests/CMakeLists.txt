@@ -258,6 +258,23 @@ gtest_discover_tests(atx-vol-serve-record-tests
     PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
+# Lane A1 (r6, 2026-10-23): declared analytics on the live serving book
+# (api/analytics/served_analytics.hpp: hedge conventions, Taylor / exact scenarios, events,
+# failed exposure, attribution, deterministic aggregation), European-only outputs on the
+# common model (common_model_analytics.hpp) and the curve session served through the book
+# (served_session.hpp). The suites live only here (not in atx-vol-tests or a slice), so
+# atx_vol_fast runs each case once.
+add_executable(atx-vol-served-analytics-tests
+    served_analytics_test.cpp common_model_analytics_test.cpp served_session_test.cpp)
+target_link_libraries(atx-vol-served-analytics-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-served-analytics-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+gtest_discover_tests(atx-vol-served-analytics-tests
+    TEST_PREFIX "served-analytics:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
 # Chain-level batch price / Greeks / implied vol (batch-pricing lane, 2026-10-17):
 # api/pricing/batch_chain.hpp. Focused, and this suite lives ONLY here (not in
 # atx-vol-tests or a slice), so atx_vol_fast runs each case once.

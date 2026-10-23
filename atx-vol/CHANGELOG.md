@@ -25,6 +25,50 @@ most 8.3e-9 USD (a root moves inside its certified bracket). Pinned by
 review-K5 m2) `AmericanIvPremium.FamilyEnclosureCertifiesTheEndsItServes`; design note
 `docs/sigma-q-family-error-envelope.md` section 9.
 
+### NEW — served analytics: declared hedge Greeks, scenarios, attribution, European-only outputs, session wiring (lane A1)
+
+New headers under `api/analytics/`; the contract is `docs/analytics-contracts.md`. No
+existing number moves: no kernel, fitter, serve-record, serve-book, session, priced-surface
+or chain-tick file is touched (SPY default parity hash unchanged).
+
+**Declarations** (`served_analytics.hpp`). Every answer carries an `AnalyticsDeclaration`:
+book version, record digests, model (`AnalyticsModel`), the Greek map, hedge convention,
+clock and `price_map_delta`. `classify_served_answer` / `classify_served_statement`: only an
+Ok / Exercised, non-Sampled answer with an Exact, RefinementValidated or KernelTested
+statement is a certified input; Sampled or slice-only answers are `Estimate` and totalled
+apart; price-only and refused answers keep their typed reasons.
+
+**Hedge Greeks.** `hedge_greeks(reader, request)`: `ContractSigma` / `StickyStrike` (the
+record's numbers), `StickyDeltaMoneyness` (delta + vega x dsigma/dS from the fitted curve's
+slope; gamma `NeedsVannaVolga`), `RefittedSurface` (every Greek `RequiresRefit`).
+
+**Scenarios.** `served_scenarios(book, portfolio, spec)`: spot x vol x time matrices on one
+book version (one rerun on a publication, else `VersionMoved`); Taylor (spot 2, vol 1, time
+1, declared box) with a Sampled remainder estimate that measures the cross terms and the
+record-vs-cold-kernel map term; exact repricing on one map per cell (`RecordTier`,
+`ColdKernel`, `EventSettlement`); rolls through expiry or the entry's next event are event
+operations (`EventOperation` / `EventRequiresRefit`), never theta. Per-reason failed exposure
+(legs, USD premium) for each method, and like-for-like `matched_*` totals. Dated cash runs on
+D1's production lattice (`cash_dividend_scenarios`) with D1's event roll.
+
+**Attribution and aggregation.** `served_attribution`: per-leg delta / gamma / vega / theta,
+explained, actual, unexplained. Every total is a Neumaier sum over legs in input order on the
+calling thread; workers are `std::jthread`s with one reader each: bit-identical for any
+worker count.
+
+**European-only outputs** (`common_model_analytics.hpp`). `european_outputs`: density, CDF,
+variance strip and local vol on a compiled Markov common model only; the American quoting
+surface (a record or a book expiry) is refused with `AmericanQuotingSurface` and no number.
+
+**Session wiring** (`served_session.hpp`). `ServedSession` binds a `VolaSession` or
+`PricedSurface` to a `ServeBook` through public APIs: bound expiries answer from the book
+(`serve`, and `serve_chain` into `ChainTickOutputs` with each `ServedChainStatement`),
+unbound ones from the session's cold route as `TickStatus::Fallback` / `Estimate`.
+
+Bench `atx-vol-served-analytics-bench` (the A1 row: SPY 23-day chain and a 300-leg book,
+30 cells; near-boundary and ex-dividend tables). Tests: `atx-vol-served-analytics-tests`
+(34, ctest `served-analytics:`).
+
 ### NEW — live query: the fitter's hand-off, the serve book, the evaluate_quote_slice fast path (lane H1)
 
 **Hand-off.** `certify_and_serve` now ends with `detail::stamp_serve_handoff`: when the fit
