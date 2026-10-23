@@ -147,6 +147,10 @@ are folded into `policy_sha256`. With either seam off, the record's output is ev
 documented above minus that lane's fields. Both seams were verified by overlaying the lanes'
 tips on this branch (K3 `91d1f669`; A0 fix round `ed2d2e05`). Results are in the lane report.
 
+Integration W2c-i (both lanes in the root) sets both seams to 1. The default policy's
+`policy_sha256` moves from `87318ae7…cefe` (both 0) to `57902383…f3fc` (both 1); the
+serve-record suite is 28/28 with both on (the 26 plus the A0 and K3 seam tests).
+
 ## Measurement (lane H0-A, 2026-10-23, `vol-rel-avx2`, one run, unqualified)
 
 Bench `atx-vol-serve-record-bench` (sha256 `0e1b9c45…0975`, built at `3db98e3b`). The main

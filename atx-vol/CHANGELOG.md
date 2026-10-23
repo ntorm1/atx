@@ -5,6 +5,13 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
+
+`ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` now default to 1, since both lanes
+are in the root. The record's Family tier serves A0's six Greeks, and a family root can be
+accepted by K3's envelope enclosure. Every record's `policy_sha256` changes (the default
+policy: `87318ae7…cefe` to `57902383…f3fc`). No default quote-bench path builds a record.
+
 ### NEW — served support, publication validation, typed joint projection (lane C2)
 
 **Served support.** `QuoteSliceFit::withheld_nodes` marks the node sides whose certified

@@ -8,7 +8,8 @@
 //    the record compiles against them only when the integration that lands them sets the
 //    seam to 1. With a seam at 0 the record serves without that lane: the family tier's
 //    Greeks other than vega are BundleUnavailable, and every family root is Uncovered.
-//    Verified with each lane overlaid on this branch (lane report, Evidence).
+//    Verified with each lane overlaid on this branch (lane report, Evidence). Both lanes
+//    are in the root since W2c-h, so integration W2c-i sets both seams to 1.
 // 2. The phase-B hook: a record built around the chain cache's families (the de-Am IV
 //    cache's DeAmSigmaFamilies, shared, not copied), so tier 1 costs no kernel work.
 
@@ -20,10 +21,10 @@
 #include "fitting/deam_iv_cache.hpp" // DeAmSigmaFamilies
 
 #ifndef ATX_VOL_SERVE_RECORD_A0
-#define ATX_VOL_SERVE_RECORD_A0 0
+#define ATX_VOL_SERVE_RECORD_A0 1
 #endif
 #ifndef ATX_VOL_SERVE_RECORD_K3
-#define ATX_VOL_SERVE_RECORD_K3 0
+#define ATX_VOL_SERVE_RECORD_K3 1
 #endif
 
 namespace atx::vol::detail {
