@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -250,6 +251,33 @@ TEST(BenchStages, UntimedRegionIsUnattributedAndFailsTheOnePercentCheck) {
   const bench::Json none = run(microseconds(0)); // every interval measured
   EXPECT_NEAR(none["unattributed_s"].get<double>(), 0.0, kTight);
   EXPECT_TRUE(none["reconciles_within_1pct"].get<bool>());
+}
+
+// The IV comparator's population rule (bench_clocks.hpp classify_iv_row): resolved rows
+// pass or fail at the threshold; an unresolved row whose error clears the threshold by
+// more than 3 uncertainties is a decidable fail; the rest stay unresolved.
+TEST(BenchIvPopulation, RuleSeparatesResolvedDecidableAndUnresolvedRows) {
+  using bench::IvPopulation;
+  constexpr double kThreshold = 1.0e-7;
+  const auto at = [](double error, double uncertainty) {
+    return bench::classify_iv_row(error, uncertainty, kThreshold);
+  };
+  EXPECT_EQ(at(7.1e-13, 2.0e-9), IvPopulation::ResolvedPass);
+  EXPECT_EQ(at(2.0e-7, 5.0e-8), IvPopulation::ResolvedFail);
+  EXPECT_EQ(at(1.0e-7, 1.0e-7), IvPopulation::ResolvedPass); // both bounds inclusive
+  // cohort5 AAPL call K=10: error 6.839e-4 against an uncertainty of 2.612e-5.
+  EXPECT_EQ(at(6.839e-4, 2.612e-5), IvPopulation::DecidableFail);
+  // cohort5 RIVN put K=37: error 7.617e-5 inside 3 x its uncertainty 7.928e-5.
+  EXPECT_EQ(at(7.617e-5, 7.928e-5), IvPopulation::ReferenceUnresolved);
+  EXPECT_EQ(at(5.0e-8, 1.0e-6), IvPopulation::ReferenceUnresolved); // cannot be a pass
+  // The margin is strict: error == threshold + 3 u stays unresolved.
+  EXPECT_EQ(at(kThreshold + 3.0 * 1.0e-6, 1.0e-6), IvPopulation::ReferenceUnresolved);
+  EXPECT_EQ(at(kThreshold + 3.0 * 1.0e-6 + 1.0e-9, 1.0e-6), IvPopulation::DecidableFail);
+  // No reference vega (undefined uncertainty) is never decided.
+  EXPECT_EQ(at(3.0e-2, std::numeric_limits<double>::quiet_NaN()),
+            IvPopulation::ReferenceUnresolved);
+  EXPECT_STREQ(bench::iv_population_name(IvPopulation::DecidableFail), "decidable_fail");
+  EXPECT_EQ(bench::kDecidableFailMargin, 3.0);
 }
 
 struct Chain {

@@ -69,9 +69,10 @@ binary / policy / input hashes, source SHA, embedded build flags, a P-core proof
 SMT-contention flag per trial, threshold `-SiblingBusyThresholdPct` 10%) and
 `atx-vol-iv-comparator` (bisected American IV roots of served prices, in absolute vol, on
 the fitter's own Andersen-Lake accurate preset - independent root finding only, circular
-for pricer error on curve-priced rows - reported as four populations: resolved pass /
-resolved fail / reference unresolved / IV not identified, with the reference uncertainty
-and a continuous-carry price table).
+for pricer error on curve-priced rows - reported as populations: resolved pass /
+resolved fail / decidable fail (error > threshold + 3 x the reference uncertainty) /
+reference unresolved / IV not identified, with the non-circular count of each, the
+reference uncertainty and a continuous-carry price table).
 
 **Migration:** none. Predictions are byte-identical with and without every new flag; the
 report only gains the `bench` key.
