@@ -61,6 +61,10 @@ the converged model's vega (deep review F11). The two are validated separately b
 | `State::boundary_at_nodes` + `finish_node_boundary` | σ, q | `NodeBoundary`: s, s', v, skip, now factor, degenerate flag |
 | `premium_pass(pn, c, nb, S', K', fast, want_vega)` | strike | `{price, vega, status, exercised}` |
 
+The σ / q basis helpers the stages share — `bary_basis`, `bary_basis_derivative` (the
+D1 form) and `sigma_z` (z and dz/dσ) — are declared in the internal header too, so a
+lane kernel evaluates the same chain instead of re-deriving it.
+
 The only strike-dependent work is the last stage. `price_vega_strikes(f, S, K[], σ, q,
 out_price[], out_vega[])` runs stages 1–3 once and the last stage per strike. It is
 bit-identical to the per-strike `price_and_vega` calls. Statuses are `Ok`,
@@ -78,7 +82,18 @@ family's `AlSigmaQFamilyStatus`). Nothing in the evaluation path allocates
 - **`contract_q`** contracts the table at one quote q into a fixed-size `QTile` (no
   allocation).
 - **`price_vega_on(table, tile, S, K, σ)`** then costs two `n_sigma`-dots per premium
-  node plus the premium pass.
+  node plus the premium pass. Its first stage, `node_boundary_from_tile(table, tile, σ,
+  NodeBoundary&)`, is exposed for lane kernels (no checks: the caller admits what
+  `price_vega_on` admits).
+- **Ownership.** A table is move-only. A move hands the snapshot over, stamp included,
+  so tiles cut from the source serve on the target. The source is left exactly as a
+  default-constructed table (`ok` false, stamp 0, no tensor, `h_size` 0), so every entry
+  refuses it (`Unsupported`), and `build_premium_table` into it allocates afresh.
+  `reset()` gives the same state on demand. Before fix round 1, a defaulted move left the
+  source `ok` with a null tensor, and a same-size rebuild wrote through it.
+  `AlSigmaQFamilyFused.AMovedFromPremiumTableIsUnpreparedAndRebuildsLikeAFreshOne` pins
+  the contract: move-construct and move-assign, rebuild at the same size, and serve
+  bit-identically to a fresh table.
 
 **Decision.** A second tile mode was prototyped as the control. It kept the
 q-contracted τ-node series and interpolated in τ per call. On vol-rel-avx2 it measured
@@ -98,18 +113,68 @@ so it was **deleted**, together with the table's τ-grid and series copies. Evid
   the family's own interpolant, including exact node hits and an ulp off a node. Worst
   relative error on resolved rows: `dy/dσ` 2.1e-11, `dy/dq` 2.1e-11.
 - **Family-map vega** was checked against the same ladder on the family's own price map.
-  Tolerance is `4 · err + gain · rounding` from the ladder's observed convergence. Rows
-  are "resolved" when `tol ≤ 1e-9 |ref|`. The cases cover σ 0.05 / 0.3 / 1.5, small /
-  mid / large boxes, calls and puts, a 16-node long expiry, and wide q boxes at the q
-  edges.
+  - **Tolerance.** Each row's tolerance is the ladder's own error estimate plus its
+    rounding: `4 |R_l − R_{l−1}| + gain · 4ε (S + K + P)`. The observed order is
+    reported, not used.
+  - **Resolved rows.** A row is "resolved" when `tol ≤ 1e-9 |ref|`. Only resolved rows
+    carry the relative claim. Every row is held to `gap ≤ tol`.
+  - **Coverage.** σ 0.05 / 0.3 / 1.5; small / mid / large boxes; calls and puts; a
+    16-node long expiry; wide q boxes at the q edges.
 
-  | Region (each build) | n | Resolved | Worst rel | Worst gap/tol |
+  | Region (scalar / AVX2 build) | n | Resolved | Worst rel (resolved) | Worst gap/tol |
   |---|---|---|---|---|
   | Smooth | 930 | 516 / 511 | 2.38e-11 | 0.061 |
   | Exact σ-node hits | 636 | 226 / 221 | 2.94e-11 | 0.042 |
   | Within one σ-node spacing of exercise (reported) | 274 | 9 / 8 | 8.8e-12 / 3.7e-12 | 0.066 |
 
   181 clamped rows serve vega exactly 0.
+
+  **The relative claim holds on resolved rows only.** Resolution by σ class (scalar
+  build; AVX2 within a few rows), with the unresolved rows' `tol / |ref|` (p50, max):
+
+  | σ class | Smooth resolved | Unresolved tol/\|ref\| | Node hits resolved | Unresolved tol/\|ref\| |
+  |---|---|---|---|---|
+  | small, box [0.03, 0.08] | 6 / 212 | 1.1e-8, 2.6 | 0 / 140 | 5.9e-8, 6.3e8 |
+  | mid (spy23 mid, spylong, wide q) | 259 / 454 | 1.5e-8, 6.1e3 | 114 / 320 | 1.8e-8, 1.2e9 |
+  | large, box [1, 2] | 251 / 264 | 2.6e-9, 1.2e-8 | 112 / 176 | 2.1e-9, 6.4e-7 |
+
+  The huge maxima are deep out-of-the-money rows whose vega is tiny next to the price's
+  rounding.
+- **Why small σ needs its own check.** At σ = 0.05 the full price's rounding,
+  `ε (S + K)`, divided by a step small enough for the curvature, swamps the vega. A
+  separate check (`VegaAtSmallSigmaMatchesThePremiumsOwnDifferences*`) takes as reference
+  E's analytic vega plus Richardson differences of the premium alone,
+  `Π(σ) = P(σ) − E(σ)`, where E is the fused pass's own European leg bit for bit. That
+  reference's rounding is a few `ε |P|`.
+
+  The check uses SPY 23 d at-the-money strikes (|ln K/S| ≤ 1.5%) and four q probes. It
+  has three boxes:
+  - [0.03, 0.08]: σ = 0.05 interior;
+  - [0.05, 0.12]: σ = 0.05 an exact node at the box end;
+  - [0.025, 0.05]: σ = 0.05 an exact node at the box end.
+
+  | σ = 0.05, puts (scalar / AVX2) | Resolved | Worst rel (resolved) | Unresolved tol/\|ref\| | Median order |
+  |---|---|---|---|---|
+  | Smooth | 24/24 / 24/24 | 8.9e-13 / 1.5e-12 | — | 3.9 / 3.5 |
+  | Exact node hits | 47/52 / 48/52 | 6.3e-12 / 1.1e-11 | ≤ 1.3e-7 / ≤ 4.9e-7 | 3.8 / 3.8 |
+  | Near exercise (reported) | 0/8 | — | ≤ 2.6e-7 / ≤ 2.9e-7 | 4.9 |
+
+  The pins are 1.6e-12 (smooth) and 1.2e-11 (node hits), at least 24 and 47 resolved
+  rows, and `gap ≤ tol` on every row. The ladder reaches its asymptotic order here
+  (3.5–3.9). The SPY calls' premium is identically 0 at σ = 0.05 (q ≪ r floors it), so
+  their vega is the European leg's. Those 84 rows are reported as premium-free, not
+  counted as evidence.
+- **Observed order.** The 5-point stencil's asymptotic order is 4.
+  - **Family map:** the measured medians are 2.0 (smooth) and 2.4 (node hits). At
+    `h0 = 2e-3 σ`, most rows' coarse levels mix truncation with the price's rounding.
+    That rounding grows ∝ 1/h, which pulls `log2(|D0 − D1| / |D1 − D2|)` below 4, and
+    to −1 where it dominates. Only spylong and wide q (3.5–3.9), and the small-σ premium
+    check above, are asymptotic at the coarse levels.
+  - **Boundary partials:** `dy/dσ` −1.1 to −0.75. They difference a low-degree
+    polynomial with almost no truncation error, so they sit at their rounding floor from
+    the first level.
+  - **Consequence:** the reference's error estimate on most rows is its rounding, not
+    its truncation.
 - **Model vega (F11, reported, not pass/fail).** The reference is converged
   Andersen–Lake (32 / 64 nodes, tol 1e-13), with a 4-level Richardson in σ.
 

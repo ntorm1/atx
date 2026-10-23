@@ -699,22 +699,9 @@ AlSigmaQFamilySelfCheck AlSigmaQFamily::self_check() const noexcept {
 
 // ── K1 (r5, 2026-10-22): fused price + analytic vega (contract in the internal header) ──
 
-namespace {
+// The shared basis helpers (declared in the internal header for K2's lane kernels).
+namespace sigma_q_family_detail {
 
-using sigma_family_detail::diff_tables;
-using sigma_family_detail::DiffTables;
-using sigma_q_family_detail::FusedPriceVega;
-using sigma_q_family_detail::FusedStatus;
-using sigma_q_family_detail::kMaxPremiumNodes;
-using sigma_q_family_detail::NodeBoundary;
-using sigma_q_family_detail::PremiumNodeKind;
-using sigma_q_family_detail::PremiumNodes;
-using sigma_q_family_detail::PremiumTable;
-using sigma_q_family_detail::QCarry;
-using sigma_q_family_detail::QTile;
-
-// The normalised barycentric basis b_s(zq) on nodes z[] / weights w[] (n <= kAlMaxNodes):
-// b_s = (w_s / (zq − z_s)) / Σ_t (w_t / (zq − z_t)); an exact node hit is the unit vector.
 void bary_basis(const double *z, const double *w, unsigned n, double zq, double *b) noexcept {
   double qq[amer::kAlMaxNodes] = {};
   double den = 0.0;
@@ -735,11 +722,8 @@ void bary_basis(const double *z, const double *w, unsigned n, double zq, double 
   }
 }
 
-// c_t = Σ_s b_s D1[s][t] — the basis's z-derivative through the nodal differentiation
-// matrix (the L3g form: no quotient rule, so no near-node cancellation and no 0/0 at a
-// hit). Precondition: 2 <= n <= kMaxSigmaNodes.
 void bary_basis_derivative(const double *b, unsigned n, double *c) noexcept {
-  const DiffTables &dt = diff_tables(n);
+  const sigma_family_detail::DiffTables &dt = sigma_family_detail::diff_tables(n);
   for (unsigned t = 0; t < n; ++t) {
     c[t] = 0.0;
   }
@@ -751,21 +735,33 @@ void bary_basis_derivative(const double *b, unsigned n, double *c) noexcept {
   }
 }
 
-// σ -> the family z coordinate (clamped at the box edges for rounding only, as
-// interpolate() clamps) and dz/dσ (the unclamped chain).
-struct SigmaZ {
-  double z = 0.0;
-  double dz = 0.0;
-};
-
-[[nodiscard]] SigmaZ sigma_z(AlSigmaFamilyAxis axis, double u_lo, double u_hi,
-                             double sigma) noexcept {
+SigmaZ sigma_z(AlSigmaFamilyAxis axis, double u_lo, double u_hi, double sigma) noexcept {
   const double span = u_hi - u_lo;
   SigmaZ a;
   a.z = clamp_unit(2.0 * (axis_of(axis, sigma) - u_lo) / span - 1.0);
   a.dz = (axis == AlSigmaFamilyAxis::LogSigma) ? (2.0 / span) / sigma : 2.0 / span;
   return a;
 }
+
+} // namespace sigma_q_family_detail
+
+namespace {
+
+using sigma_family_detail::diff_tables;
+using sigma_family_detail::DiffTables;
+using sigma_q_family_detail::FusedPriceVega;
+using sigma_q_family_detail::FusedStatus;
+using sigma_q_family_detail::kMaxPremiumNodes;
+using sigma_q_family_detail::NodeBoundary;
+using sigma_q_family_detail::PremiumNodeKind;
+using sigma_q_family_detail::PremiumNodes;
+using sigma_q_family_detail::PremiumTable;
+using sigma_q_family_detail::QCarry;
+using sigma_q_family_detail::QTile;
+using sigma_q_family_detail::bary_basis;
+using sigma_q_family_detail::bary_basis_derivative;
+using sigma_q_family_detail::sigma_z;
+using sigma_q_family_detail::SigmaZ;
 
 // The τ barycentric at every Boundary premium node — the al_cheb_eval loop (num / den, an
 // exact hit returns the node value) — applied to y and dy/dσ on the same weights.
@@ -929,38 +925,6 @@ template <bool kFast, bool kVega>
   r.reason = why;
   r.status = FusedStatus::Unsupported;
   return r;
-}
-
-// From a table tile at sigma to the strike-free NodeBoundary.
-void boundary_from_tile(const PremiumTable &t, const QTile &tile, double sigma,
-                        NodeBoundary &out) noexcept {
-  const SigmaZ az = sigma_z(t.axis, t.u_lo, t.u_hi, sigma);
-  double bs[kMaxSigmaNodes] = {};
-  double cs[kMaxSigmaNodes] = {};
-  bary_basis(t.sz, t.sw, t.n_sigma, az.z, bs);
-  bary_basis_derivative(bs, t.n_sigma, cs);
-  const unsigned ns = t.n_sigma;
-  double y[kMaxPremiumNodes] = {};
-  double dy[kMaxPremiumNodes] = {};
-  double y_now = 0.0;
-  // The τ interpolation is folded into g: two n_sigma-dots per premium node.
-  const unsigned n = t.nodes.n;
-  for (unsigned i = 0; i <= n; ++i) {
-    const double *row = &tile.g[static_cast<std::size_t>(i) * ns];
-    double a = 0.0;
-    double d = 0.0;
-    for (unsigned s = 0; s < ns; ++s) {
-      a += bs[s] * row[s];
-      d += cs[s] * row[s];
-    }
-    if (i < n) {
-      y[i] = a;
-      dy[i] = d * az.dz;
-    } else {
-      y_now = a;
-    }
-  }
-  sigma_q_family_detail::finish_node_boundary(t.nodes, y, dy, y_now, sigma, out);
 }
 
 // Process-unique table stamps (a tile is valid for exactly the build it was cut from).
@@ -1232,6 +1196,27 @@ FusedStatus price_vega_strikes(const AlSigmaQFamily &f, double S, std::span<cons
   return result;
 }
 
+PremiumTable::PremiumTable(PremiumTable &&other) noexcept
+    : PremiumTableHeader(other), h(std::move(other.h)), h_size(other.h_size) {
+  other.reset();
+}
+
+PremiumTable &PremiumTable::operator=(PremiumTable &&other) noexcept {
+  if (this != &other) {
+    static_cast<PremiumTableHeader &>(*this) = other;
+    h = std::move(other.h);
+    h_size = other.h_size;
+    other.reset();
+  }
+  return *this;
+}
+
+void PremiumTable::reset() noexcept {
+  static_cast<PremiumTableHeader &>(*this) = PremiumTableHeader{};
+  h.reset();
+  h_size = 0;
+}
+
 std::size_t PremiumTable::bytes() const noexcept {
   return sizeof(PremiumTable) + h_size * sizeof(double);
 }
@@ -1267,7 +1252,7 @@ FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out) {
   const unsigned n = out.nodes.n;
   const std::size_t per = static_cast<std::size_t>(st->n_q) * st->n_sigma;
   const std::size_t hs = static_cast<std::size_t>(n + 1u) * per;
-  if (out.h_size != hs) {
+  if (!out.h || out.h_size != hs) { // a moved-from or reset table has no tensor
     out.h = std::make_unique<double[]>(hs);
     out.h_size = hs;
   }
@@ -1298,7 +1283,7 @@ FusedStatus build_premium_table(const AlSigmaQFamily &f, PremiumTable &out) {
 
 FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile) noexcept {
   tile.ok = false;
-  if (!t.ok || !std::isfinite(q)) {
+  if (!t.ok || !t.h || !std::isfinite(q)) {
     return FusedStatus::Unsupported;
   }
   if (q < t.q_lo || q > t.q_hi) {
@@ -1334,9 +1319,40 @@ FusedStatus contract_q(const PremiumTable &t, double q, QTile &tile) noexcept {
   return FusedStatus::Ok;
 }
 
+void node_boundary_from_tile(const PremiumTable &t, const QTile &tile, double sigma,
+                             NodeBoundary &out) noexcept {
+  const SigmaZ az = sigma_z(t.axis, t.u_lo, t.u_hi, sigma);
+  double bs[kMaxSigmaNodes] = {};
+  double cs[kMaxSigmaNodes] = {};
+  bary_basis(t.sz, t.sw, t.n_sigma, az.z, bs);
+  bary_basis_derivative(bs, t.n_sigma, cs);
+  const unsigned ns = t.n_sigma;
+  double y[kMaxPremiumNodes] = {};
+  double dy[kMaxPremiumNodes] = {};
+  double y_now = 0.0;
+  // The τ interpolation is folded into g: two n_sigma-dots per premium node.
+  const unsigned n = t.nodes.n;
+  for (unsigned i = 0; i <= n; ++i) {
+    const double *row = &tile.g[static_cast<std::size_t>(i) * ns];
+    double a = 0.0;
+    double d = 0.0;
+    for (unsigned s = 0; s < ns; ++s) {
+      a += bs[s] * row[s];
+      d += cs[s] * row[s];
+    }
+    if (i < n) {
+      y[i] = a;
+      dy[i] = d * az.dz;
+    } else {
+      y_now = a;
+    }
+  }
+  finish_node_boundary(t.nodes, y, dy, y_now, sigma, out);
+}
+
 FusedPriceVega price_vega_on(const PremiumTable &t, const QTile &tile, double S, double K,
                              double sigma) noexcept {
-  if (!t.ok || !tile.ok || tile.stamp != t.stamp) {
+  if (!t.ok || !t.h || !tile.ok || tile.stamp != t.stamp) {
     return fused_unsupported(AlSigmaQFamilyStatus::NotPrepared);
   }
   if (!(std::isfinite(S) && S > 0.0 && std::isfinite(K) && K > 0.0 && std::isfinite(sigma))) {
@@ -1349,7 +1365,7 @@ FusedPriceVega price_vega_on(const PremiumTable &t, const QTile &tile, double S,
     return fused_refusal(AlSigmaQFamilyStatus::SigmaOutsideBox);
   }
   NodeBoundary nb;
-  boundary_from_tile(t, tile, sigma, nb);
+  node_boundary_from_tile(t, tile, sigma, nb);
   const detail::InternalPutCoords ic = detail::internal_put_coords(t.side, S, K);
   return premium_pass(t.nodes, tile.carry, nb, ic.Sp, ic.Kp, t.fast, true);
 }
