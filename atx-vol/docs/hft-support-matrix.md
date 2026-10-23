@@ -12,6 +12,9 @@ section 3.1 clocks). Each row cites the measurement it rests on.
 | P1 | standalone cold price | <= 10 us |
 | P2 | prepared price / identifiable IV | <= 5 us / <= 25 us |
 | P3 | prepared price + primary Greek bundle | <= 20 us |
+| H1 | live query: a served record price + primary Greeks (ladder tier) | <= 150 ns p50, <= 1 us p99 |
+| H2 | live query: record IV / a 300-contract served chain | <= 500 ns p50 / <= 100 us |
+| H3 | live-query tails (steady, concurrent publication, quote burst) | p99, p99.9, max and miss rate reported; zero torn versions |
 
 Status values:
 - **WITHIN**: the p50 meets the budget.
@@ -186,3 +189,61 @@ Standard route, B0's harness, one pinned P core.
 
 If it fails, this row stays MISS and the recorded result is the measured table. The GIT
 hybrid-dividend method is not a second candidate in this experiment.
+
+### Live query: serving record and serve book (H1, 2026-10-23)
+
+**Scope.** These are the serving tiers of `slice_serve_record.hpp` read through
+`serve_book.hpp`. The design and the full tables are in `docs/live-query.md`.
+- Tier 0 (Ladder) and tier 1 (Family) are the primary tiers. No cold solve runs on the
+  quoting thread.
+- Each answer carries its own statement: K3's per-point bound, a validated ladder tail, or a
+  labelled `Sampled` estimate.
+
+**Measurement.** Run `H1-20261023-live-query\measure\full-1\`
+(`atx-vol-serve-record-bench`, vol-rel-avx2, code at `500d3d1c`, binary sha256 `a2ad725d...`):
+- one pinned thread; TSC timing; 5 repetitions per row, medians shown;
+- datasets: dev200 SPY (4 expiries) and spy23 (1 expiry), each under the default ladder
+  planes (12 x 6) and the tick profile (16 x 8).
+
+The host was shared with another lane's quote bench, Defender, VS Code and a compiler (load
+line in the run). These are development rows, not Q0-qualified.
+
+| Id | Row | p50 / p99 | Status |
+|---|---|---|---|
+| H1 | record call, tier 0 (price + 3 Greeks) | 125-167 ns / 148-240 ns | WITHIN on spy23; MISS 1.04-1.11x on SPY 4-expiry |
+| H1 | through the book, steady | 197-246 ns / 295-565 ns | MISS p50 1.3-1.6x; p99 WITHIN |
+| H1 | through the book, under concurrent publication | 427-459 ns / 681-916 ns | MISS p50 2.8-3.1x; p99 WITHIN |
+| H2 | record IV (tier 0 root) | 261-316 ns / 377-439 ns | WITHIN; `Ok` only under the tick profile (1,123 / 1,190 and 259 / 279), the default plane answers `Unconfirmed` |
+| H2 | 300-contract chain, tier 0 only (232-266 contracts) | 16.5-25.1 us | WITHIN |
+| H2 | 300-contract served chain, one version, mixed tiers | 183-513 us | MISS 1.8-5.1x: tier-1 (family) contracts cost 6-20 us each |
+| H3 | steady / publication / burst | miss rate 0 / 0 / 0.83-0.99 (typed `Stale`, by design) | reported; torn versions 0 |
+
+**H3 tails.** These are the all-query p99 / p99.9 / max:
+- steady: 9.3-19.5 us / 12.4-23.8 us / 53-616 us;
+- publication: 11.1-18.1 us / 13.4-23.0 us / 80-664 us;
+- burst: 9.3-22.2 us / 43-89 us / 0.46-6.1 ms. Every expiry is fresh again within 25-193 ms,
+  `budget_exhausted` is 0 and no rebuild fails.
+
+The torn-version count comes from `LivePublication.ReadersNeverSeeATornVersion`: 7 runs, each
+with 4 readers and a publisher, 171k-209k versions per run, 0 torn.
+
+**Accuracy and coverage.** The served price is compared with `andersen_lake` at the served
+sigma, on node strikes at a moved spot.
+
+| | tier 0 error max | tier 0 answers `Sampled` | tier 1 error max | within own statement |
+|---|---|---|---|---|
+| default planes | 3.5e-5 (spy23) to 9.5e-5 USD (SPY) | 76 / 266 and 543 / 1,100 | 1.6e-4 USD | 100 % |
+| tick profile | 4.9e-10 to 2.2e-8 USD | 1 / 279 and 3 / 1,190 | 1.6e-4 USD | 100 % |
+
+**Ladder coverage** is 78-84 % of node sides; the rest are ineligible and served by tier 1.
+- **Put side, SPY 4-expiry:** 476 of 705 sides keep a ladder under the default planes (145
+  validated) and 532 under the tick profile (529 validated).
+- **Put side, spy23:** 99 / 112 of 167 sides.
+- **Calls:** 624-658 of 705 sides on SPY 4-expiry, and every side on spy23.
+
+**Next.** Two experiments target the misses:
+- the mixed-chain MISS: a per-node boundary cache for tier-1 contracts;
+- the book p50 MISS: a reader-side last-expiry cache, which skips the search and keeps the
+  freshness checks.
+
+Neither is in H1's scope. Q0 re-runs these rows on a quiet host.
