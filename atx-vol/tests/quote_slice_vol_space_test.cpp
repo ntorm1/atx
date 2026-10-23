@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <new>
 #include <optional>
 #include <string>
@@ -71,6 +72,37 @@ Chain spy_chain(double years, bool strike_carry, double dividend_pv) {
   }
   QuoteSliceQuote &deep_put = out.quotes.back();
   deep_put.bid = 0.98 * (deep_put.strike - kSpot);
+  return out;
+}
+
+// An OIH-shaped wide-carry chain (dev200b OIH 0.50 y, review-SPY1s-p2 M1): spot 383.185,
+// strikes 235-545 in 5s, per-strike yields flat at 0.016534 up to K 430 and then rising
+// 3.0e-5 per strike dollar (a q box 3.45e-3 wide: n_q 4 with interior q nodes, just inside
+// the family's q-axis accuracy guard rho^-4 <= 1e-6; OIH's own 4.9e-3 box is refused by
+// that guard since L2h-c), a skewed smile priced with the engine the fitter inverts,
+// in-the-money puts to |ln K/S| 0.35 at 1.5 % half-spreads.
+Chain wide_carry_chain(double kYears) {
+  constexpr double kSpot = 383.185;
+  constexpr double kRate = 0.047639;
+  Chain out;
+  out.market = QuoteSliceMarket{kSpot, kYears, kYears, kRate, 0.016534, 0.0};
+  for (int strike = 235; strike <= 545; strike += 5) {
+    const double K = static_cast<double>(strike);
+    const double k = std::log(K / kSpot);
+    const double sigma = std::max(0.25, 0.40 - 0.20 * k + 0.60 * k * k);
+    const double q = K <= 430.0 ? 0.016534 : 0.016534 + 3.0e-5 * (K - 430.0);
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price = andersen_lake(kSpot, K, kYears, sigma, kRate, q, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double half = std::max(0.02, 0.03 * *price);
+      QuoteSliceQuote quote{K, side, std::max(*price - half, 0.0), *price + half};
+      quote.continuous_yield = q;
+      out.quotes.push_back(quote);
+    }
+  }
   return out;
 }
 
@@ -476,6 +508,380 @@ TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
   deam_iv_memo_clear();
 }
 
+// Opt-in seed-tier routing gate (SPY1s Phase 2, deam_seed_gate_kappa): on the SPY-shaped grid
+// the narrowed gate (kappa 4.3e-5 = 10x the measured Screen dip) routes FEWER inversions to
+// accurate iterates than Screen's own wide gate, the extra Screen-iterated roots are confirmed
+// (none skipped), and the fit serves the same rows with every quote volatility within the
+// inversion tolerance band of the Search values; the key is a cache-key word (the default
+// Screen entry never answers a keyed fit on one memo); kappa without Screen, a negative or a
+// non-finite kappa are refused.
+TEST(QuoteSliceVolSpace, SeedGateKappaRoutesFewerInversionsAndServesConfirmedVolatilities) {
+  const std::vector<GridCase> grid = {
+      {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t routed_default = 0, routed_keyed = 0, confirms_default = 0, confirms_keyed = 0;
+  std::size_t compared = 0;
+  double max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig screen = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    screen.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    QuoteSliceConfig keyed = screen;
+    keyed.channel.deam_seed_gate_kappa = 4.3e-5;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto seeded = fit_quote_slice_channel(c.market, c.quotes, screen, nullptr);
+    const auto narrowed = fit_quote_slice_channel(c.market, c.quotes, keyed, nullptr);
+    ASSERT_TRUE(reference && seeded && narrowed);
+    EXPECT_FALSE(narrowed->diagnostics.deam.reused); // its own cache entry on the same memo
+    EXPECT_EQ(deam_iv_memo_size(), 2u);
+    const QuoteSliceDeamDiagnostics &work = narrowed->diagnostics.deam;
+    EXPECT_EQ(work.confirms_skipped, 0u);
+    EXPECT_LE(work.seed_routed, seeded->diagnostics.deam.seed_routed);
+    routed_default += seeded->diagnostics.deam.seed_routed;
+    routed_keyed += work.seed_routed;
+    confirms_default += seeded->diagnostics.deam.confirms;
+    confirms_keyed += work.confirms;
+    EXPECT_EQ(narrowed->fit_status, reference->fit_status);
+    ASSERT_EQ(narrowed->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &p = narrowed->rows[i];
+      const QuoteSliceRow &r = reference->rows[i];
+      EXPECT_EQ(p.quote_status, r.quote_status) << i;
+      EXPECT_EQ(p.evaluation_status, r.evaluation_status) << i;
+      EXPECT_EQ(p.admitted, r.admitted) << i;
+      if (std::isfinite(p.market_iv) && std::isfinite(r.market_iv)) {
+        ++compared;
+        max_dsigma = std::max(max_dsigma, std::abs(p.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+  }
+  std::printf("[seed gate kappa] routed %zu -> %zu, confirms %zu -> %zu, %zu mid IVs compared, "
+              "max |dsigma| vs Search %.3g\n",
+              routed_default, routed_keyed, confirms_default, confirms_keyed, compared, max_dsigma);
+  EXPECT_LT(routed_keyed, routed_default); // fails with the key ignored
+  EXPECT_GT(confirms_keyed, confirms_default);
+  EXPECT_GT(compared, 0u);
+  deam_iv_memo_clear();
+  // Refusals: kappa without the Screen seed tier, negative, non-finite.
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig on_accurate =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true);
+  on_accurate.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  on_accurate.channel.deam_seed_gate_kappa = 4.3e-5;
+  QuoteSliceConfig negative = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                         true, QuoteSliceDeamProfile::Screen);
+  negative.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  negative.channel.deam_seed_gate_kappa = -1.0e-5;
+  QuoteSliceConfig nan_kappa = negative;
+  nan_kappa.channel.deam_seed_gate_kappa = std::numeric_limits<double>::quiet_NaN();
+  for (const QuoteSliceConfig *bad : {&on_accurate, &negative, &nan_kappa}) {
+    const auto refused = fit_quote_slice_channel(c.market, c.quotes, *bad, nullptr);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  }
+  deam_iv_memo_clear();
+}
+
+// Opt-in sigma-family iterates (SPY1s Phase 2, deam_family): on the SPY-shaped grid (strike
+// carry on two chains) the chain's cache builds its side families once (none for a reused
+// cache), the Premium iterates are priced on them, and the fit serves the same rows as the
+// PriceChannel fit with every quote volatility within the inversion tolerance band of the
+// Search values (every root confirmed at the strike's own yield); the dated-cash lattice
+// builds none; Adaptive with a huge c builds none; the family needs Screen + confirm always.
+TEST(QuoteSliceVolSpace, FamilyIteratesServeConfirmedVolatilities) {
+  const std::vector<GridCase> grid = {
+      {0.03, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t builds = 0, prices = 0, refused = 0, compared = 0;
+  double max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig family = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    family.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    family.channel.deam_family = QuoteSliceDeamFamily::Always;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto fitted = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    const auto again = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    ASSERT_TRUE(reference && fitted && again);
+    const QuoteSliceDeamDiagnostics &work = fitted->diagnostics.deam;
+    EXPECT_EQ(work.family_builds, 2u); // one per side, once per cache
+    EXPECT_TRUE(again->diagnostics.deam.reused);
+    EXPECT_EQ(again->diagnostics.deam.family_builds, 0u);
+    builds += work.family_builds;
+    prices += work.family_prices;
+    refused += work.family_refused;
+    EXPECT_EQ(work.confirms_skipped, 0u);
+    EXPECT_EQ(fitted->fit_status, reference->fit_status);
+    ASSERT_EQ(fitted->rows.size(), reference->rows.size());
+    for (std::size_t i = 0; i < reference->rows.size(); ++i) {
+      const QuoteSliceRow &p = fitted->rows[i];
+      const QuoteSliceRow &r = reference->rows[i];
+      EXPECT_EQ(p.quote_status, r.quote_status) << i;
+      EXPECT_EQ(p.evaluation_status, r.evaluation_status) << i;
+      EXPECT_EQ(p.admitted, r.admitted) << i;
+      if (std::isfinite(p.market_iv) && std::isfinite(r.market_iv)) {
+        ++compared;
+        max_dsigma = std::max(max_dsigma, std::abs(p.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(p.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+    // Adaptive with an unreachable threshold: no family, the Screen iterates.
+    QuoteSliceConfig sparse = family;
+    sparse.channel.deam_family = QuoteSliceDeamFamily::Adaptive;
+    sparse.channel.deam_family_c = 1.0e6;
+    const auto unbuilt = fit_quote_slice_channel(c.market, c.quotes, sparse, nullptr);
+    ASSERT_TRUE(unbuilt);
+    EXPECT_FALSE(unbuilt->diagnostics.deam.reused); // the mode and c are key words
+    EXPECT_EQ(unbuilt->diagnostics.deam.family_builds, 0u);
+    EXPECT_EQ(unbuilt->diagnostics.deam.family_prices, 0u);
+  }
+  std::printf("[family iterates] %zu families built, %zu family-priced iterates, %zu attempts "
+              "refused, %zu mid IVs compared, max |dsigma| vs Search %.3g\n",
+              builds, prices, refused, compared, max_dsigma);
+  EXPECT_GT(prices, 100u); // fails with the family ignored by the iterates
+  EXPECT_GT(compared, 0u);
+  deam_iv_memo_clear();
+  // The dated-cash lattice never builds a family.
+  {
+    const Chain c = spy_chain(0.15, false, 0.0);
+    QuoteSliceConfig lattice =
+        vol_config(price_config(QuoteSliceDividendModel::DatedCash), true,
+                   QuoteSliceDeamProfile::Screen);
+    lattice.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    lattice.channel.deam_family = QuoteSliceDeamFamily::Always;
+    const auto dated = fit_quote_slice_channel(c.market, c.quotes, lattice, nullptr);
+    if (dated) EXPECT_EQ(dated->diagnostics.deam.family_builds, 0u);
+  }
+  deam_iv_memo_clear();
+  // Refusals: a family without Screen, under the band policy, a non-positive c.
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig on_accurate =
+      vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true);
+  on_accurate.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  on_accurate.channel.deam_family = QuoteSliceDeamFamily::Adaptive;
+  QuoteSliceConfig band = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true,
+                                     QuoteSliceDeamProfile::Screen);
+  band.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  band.channel.deam_family = QuoteSliceDeamFamily::Adaptive;
+  band.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+  QuoteSliceConfig zero_c = band;
+  zero_c.channel.deam_confirm = QuoteSliceDeamConfirm::Always;
+  zero_c.channel.deam_family_c = 0.0;
+  for (const QuoteSliceConfig *bad : {&on_accurate, &band, &zero_c}) {
+    const auto refusal = fit_quote_slice_channel(c.market, c.quotes, *bad, nullptr);
+    ASSERT_FALSE(refusal);
+    EXPECT_EQ(refusal.error().code(), ErrorCode::InvalidArgument);
+  }
+  deam_iv_memo_clear();
+}
+
+// (sigma, q) families + the family certification grid (SPY1s Phase 2 step 5; deam_family_q,
+// grid_kernel Family): on the SPY-shaped grid (strike carry on two chains) the fit serves the
+// same rows and statuses as the same keys with the Fast grid, every served price within the
+// certificate's allowance 1e-8 + 1e-9 max(S, K) of the Fast grid's, at least one price
+// served from a family (the key is not inert); the iterates under (sigma, q) families keep
+// every quote volatility within the inversion tolerance band of Search; the family grid
+// without (sigma, q) families, and (sigma, q) families without a family mode, are refused.
+TEST(QuoteSliceVolSpace, SigmaQFamilyGridServesWithinTheCertificateAllowance) {
+  const std::vector<GridCase> grid = {
+      {0.15, true, QuoteSliceDividendModel::AggregateFundingPresentValue, std::nullopt},
+      {0.75, false, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+      {2.0, true, QuoteSliceDividendModel::ContinuousYield, std::nullopt},
+  };
+  const double tol = QuoteSliceConfig{}.iv_tolerance;
+  std::size_t compared = 0, differing = 0, iv_compared = 0, builds = 0;
+  double max_excess = -std::numeric_limits<double>::infinity(), max_dsigma = 0.0;
+  for (const GridCase &g : grid) {
+    SCOPED_TRACE("T=" + std::to_string(g.years));
+    const double pv = g.model == QuoteSliceDividendModel::AggregateFundingPresentValue ? 4.0 : 0.0;
+    const Chain c = spy_chain(g.years, g.strike_carry, pv);
+    const QuoteSliceConfig off = price_config(g.model);
+    QuoteSliceConfig fast = vol_config(off, true, QuoteSliceDeamProfile::Screen);
+    fast.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    fast.channel.deam_family = QuoteSliceDeamFamily::Always;
+    fast.channel.deam_family_q = true;
+    fast.grid_kernel = QuoteSliceGridKernel::Fast;
+    QuoteSliceConfig family = fast;
+    family.grid_kernel = QuoteSliceGridKernel::Family;
+    deam_iv_memo_clear();
+    const auto reference = fit_quote_slice_channel(c.market, c.quotes, off, nullptr);
+    const auto a = fit_quote_slice_channel(c.market, c.quotes, fast, nullptr);
+    deam_iv_memo_clear();
+    const auto b = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    ASSERT_TRUE(reference && a && b);
+    builds += a->diagnostics.deam.family_builds;
+    EXPECT_EQ(a->fit_status, b->fit_status);
+    ASSERT_EQ(a->rows.size(), b->rows.size());
+    for (std::size_t i = 0; i < a->rows.size(); ++i) {
+      const QuoteSliceRow &x = a->rows[i];
+      const QuoteSliceRow &y = b->rows[i];
+      EXPECT_EQ(x.quote_status, y.quote_status) << i;
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status) << i;
+      EXPECT_EQ(x.admitted, y.admitted) << i;
+      if (std::isfinite(x.fitted_price) && std::isfinite(y.fitted_price)) {
+        ++compared;
+        const double allowance =
+            1.0e-8 + 1.0e-9 * std::max(c.market.spot, c.quotes[i].strike);
+        const double move = std::abs(x.fitted_price - y.fitted_price);
+        max_excess = std::max(max_excess, move - allowance);
+        EXPECT_LT(move, allowance) << i;
+        if (!same_bits(x.fitted_price, y.fitted_price)) ++differing;
+      }
+      const QuoteSliceRow &r = reference->rows[i];
+      if (std::isfinite(x.market_iv) && std::isfinite(r.market_iv)) {
+        ++iv_compared;
+        max_dsigma = std::max(max_dsigma, std::abs(x.market_iv - r.market_iv));
+        EXPECT_LE(std::abs(x.market_iv - r.market_iv), 4.0 * tol) << i;
+      }
+    }
+  }
+  std::printf("[sigma-q grid] %zu families built, %zu served prices compared, %zu from a family "
+              "differ from the Fast grid, max move less allowance %.3g; %zu mid IVs, max |dsigma| "
+              "vs Search %.3g\n",
+              builds, compared, differing, max_excess, iv_compared, max_dsigma);
+  EXPECT_GT(builds, 0u);
+  EXPECT_GT(compared, 0u);
+  // Since the bound probes between q nodes (review-SPY1s-p2 M1) these synthetic strike-carry
+  // boxes measure too wide for the allowance and the grid prices them on Fast; the
+  // served-from-a-family pin is SigmaQFamilyGridOnAWideCarryChainStaysWithinTheAllowance's.
+  static_cast<void>(differing);
+  EXPECT_GT(iv_compared, 0u);
+  deam_iv_memo_clear();
+  const Chain c = spy_chain(0.15, false, 0.0);
+  QuoteSliceConfig no_q = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield), true,
+                                     QuoteSliceDeamProfile::Screen);
+  no_q.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  no_q.channel.deam_family = QuoteSliceDeamFamily::Always;
+  no_q.grid_kernel = QuoteSliceGridKernel::Family;
+  QuoteSliceConfig no_mode = no_q;
+  no_mode.grid_kernel = QuoteSliceGridKernel::Fast;
+  no_mode.channel.deam_family = QuoteSliceDeamFamily::Off;
+  no_mode.channel.deam_family_q = true;
+  for (const QuoteSliceConfig *bad : {&no_q, &no_mode}) {
+    const auto refusal = fit_quote_slice_channel(c.market, c.quotes, *bad, nullptr);
+    ASSERT_FALSE(refusal);
+    EXPECT_EQ(refusal.error().code(), ErrorCode::InvalidArgument);
+  }
+  deam_iv_memo_clear();
+}
+
+// review-SPY1s-p2 M1, at the fit: on a wide-carry chain (OIH-shaped, a q box 3.45e-3 wide,
+// n_q 4, the widest the q-axis guard admits) every price the family grid serves stays within
+// the certificate allowance of the Fast grid's - in-the-money puts included - at two
+// maturities. (Its pre-fix worst was 0.16 of the allowance: since L2h-c's q-axis guard a box
+// whose q error could exceed the allowance is refused; the probe placement itself is pinned
+// by DeAmIvCache.FamilyBoundProbesSeeTheQInterpolationError.)
+TEST(QuoteSliceVolSpace, SigmaQFamilyGridOnAWideCarryChainStaysWithinTheAllowance) {
+  std::size_t compared = 0, itm_puts = 0, differing = 0, builds = 0;
+  double worst_ratio = 0.0;
+  const auto run = [&](double years) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const Chain c = wide_carry_chain(years);
+    QuoteSliceConfig fast = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                       true, QuoteSliceDeamProfile::Screen);
+    fast.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+    fast.channel.deam_family = QuoteSliceDeamFamily::Always;
+    fast.channel.deam_family_q = true;
+    fast.grid_kernel = QuoteSliceGridKernel::Fast;
+    QuoteSliceConfig family = fast;
+    family.grid_kernel = QuoteSliceGridKernel::Family;
+    deam_iv_memo_clear();
+    const auto a = fit_quote_slice_channel(c.market, c.quotes, fast, nullptr);
+    deam_iv_memo_clear();
+    const auto b = fit_quote_slice_channel(c.market, c.quotes, family, nullptr);
+    ASSERT_TRUE(a && b);
+    ASSERT_EQ(a->fit_status, QuoteSliceFitStatus::Success) << a->fit_error;
+    EXPECT_EQ(a->fit_status, b->fit_status);
+    builds += b->diagnostics.deam.family_builds;
+    ASSERT_EQ(a->rows.size(), b->rows.size());
+    for (std::size_t i = 0; i < a->rows.size(); ++i) {
+      const QuoteSliceRow &x = a->rows[i];
+      const QuoteSliceRow &y = b->rows[i];
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status) << i;
+      if (!std::isfinite(x.fitted_price) || !std::isfinite(y.fitted_price)) continue;
+      ++compared;
+      const QuoteSliceQuote &quote = c.quotes[i];
+      if (quote.side == Side::Put && quote.strike > c.market.spot) ++itm_puts;
+      const double allowance = 1.0e-8 + 1.0e-9 * std::max(c.market.spot, quote.strike);
+      const double move = std::abs(x.fitted_price - y.fitted_price);
+      worst_ratio = std::max(worst_ratio, move / allowance);
+      if (!same_bits(x.fitted_price, y.fitted_price)) ++differing;
+      EXPECT_LT(move, allowance) << "K=" << quote.strike << " put=" << (quote.side == Side::Put);
+    }
+  };
+  run(0.4997);
+  run(1.0);
+  std::printf("[wide-carry family grid] %zu families, %zu served prices compared (%zu "
+              "in-the-money puts), %zu differ from the Fast grid, worst move / allowance %.3g\n",
+              builds, compared, itm_puts, differing, worst_ratio);
+  EXPECT_GT(builds, 0u);
+  EXPECT_GT(compared, 80u);
+  EXPECT_GT(itm_puts, 20u);
+  EXPECT_GT(differing, 0u); // the family grid served prices (the key is not inert)
+  deam_iv_memo_clear();
+}
+
+// review-SPY1s-p2 M1, at the bound itself: on an OIH-shaped wide-carry put family (q box
+// 3.45e-3, n_q 4) the family's error between q nodes is far above its error on them, and
+// deam_family_probe_worst - the measured bound's probes - must see it. Probes on the q box
+// ends (Lobatto nodes, the pre-fix placement) measure only the sigma-axis error.
+TEST(DeAmIvCache, FamilyBoundProbesSeeTheQInterpolationError) {
+  const double S = 383.185;
+  const double T = 0.4997;
+  const double r = 0.047639;
+  const double q_lo = 0.016534;
+  const double q_hi = 0.019984;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.5 * (q_lo + q_hi));
+  AlSigmaQFamily fam(g, Side::Put, S);
+  ASSERT_TRUE(fam.prepare(0.2, 1.0, kDeAmQFamilySigmaNodes, q_lo, q_hi, kDeAmQFamilyQNodes,
+                          kDeAmFamilyAxis));
+  ASSERT_EQ(fam.n_q(), 4u);
+  const double band_lo = S * std::exp(-kDeAmFamilyGridLogBand);
+  const double band_hi = S * std::exp(kDeAmFamilyGridLogBand);
+  const std::optional<double> worst =
+      deam_family_probe_worst(fam, S, T, r, std::nullopt, band_lo, band_hi);
+  ASSERT_TRUE(worst.has_value());
+  // The family's error at the probe strikes: on the q nodes (fractions 0, 1/4, 3/4, 1 of the
+  // box for n_q 4) and at the q-cell midpoints.
+  double on_nodes = 0.0;
+  double between = 0.0;
+  for (const double K : {band_lo, band_hi, S}) {
+    for (const double sigma : {0.25, 0.4, 0.6, 0.85}) {
+      for (const double frac : {0.0, 0.25, 0.75, 1.0, 0.125, 0.5, 0.875}) {
+        const double q = q_lo + frac * (q_hi - q_lo);
+        const auto cold = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+        const AlSigmaQFamilyPrice fp = fam.price(S, K, sigma, q);
+        ASSERT_TRUE(cold && fp.status == AlSigmaQFamilyStatus::Ok);
+        const double rel = std::abs(fp.price - *cold) / std::max(*cold, 1.0);
+        const bool node = frac == 0.0 || frac == 0.25 || frac == 0.75 || frac == 1.0;
+        (node ? on_nodes : between) = std::max(node ? on_nodes : between, rel);
+      }
+    }
+  }
+  std::printf("[family bound probes] measured worst %.3g; family error on q nodes %.3g, between "
+              "q nodes %.3g\n",
+              *worst, on_nodes, between);
+  EXPECT_GT(between, 10.0 * on_nodes); // the q axis dominates: the case is meaningful
+  EXPECT_GE(*worst, 0.25 * between);   // fails when the probes sit on q nodes
+}
+
 // Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
 // served prices are the grid's, so under grid_kernel Fast every served price moves by at most
 // the Fast bound 1e-12 max(P, 1) (below the certificate's allowance) with the same rows served
@@ -484,6 +890,7 @@ TEST(QuoteSliceVolSpace, ScreenSeededPremiumCacheServesConfirmedVolatilities) {
 TEST(QuoteSliceVolSpace, FastCertificationGridMovesServedPricesWithinTheFastBoundOnly) {
   std::size_t compared = 0, differing = 0;
   double max_rel = 0.0;
+  double min_headroom = std::numeric_limits<double>::infinity(); // allowance / Fast bound
   for (const double years : {0.03, 0.15, 0.75}) {
     SCOPED_TRACE("T=" + std::to_string(years));
     const Chain c = spy_chain(years, false, 0.0);
@@ -509,13 +916,23 @@ TEST(QuoteSliceVolSpace, FastCertificationGridMovesServedPricesWithinTheFastBoun
         max_rel = std::max(max_rel, rel);
         EXPECT_LE(rel, 1.0e-11) << i; // 10x the tested Fast price bound
         if (!same_bits(a.fitted_price, b.fitted_price)) ++differing;
+        // review-SPY1s-p1 minor: the Fast bound sits under the certificate's allowance
+        // 1e-8 + 1e-9 max(S, K) (quote_slice.cpp certificate_tolerance) at every served node,
+        // and so does the measured move.
+        const double allowance = 1.0e-8 + 1.0e-9 * std::max(c.market.spot, c.quotes[i].strike);
+        const double fast_bound = al_profile_price_bound(AlProfile::Fast, a.fitted_price, years);
+        EXPECT_LT(fast_bound, allowance) << i;
+        EXPECT_LT(std::abs(a.fitted_price - b.fitted_price), allowance) << i;
+        min_headroom = std::min(min_headroom, allowance / fast_bound);
       }
     }
   }
-  std::printf("[fast grid] %zu served prices compared, %zu differ, max |dP| / max(P, 1) %.3g\n",
-              compared, differing, max_rel);
+  std::printf("[fast grid] %zu served prices compared, %zu differ, max |dP| / max(P, 1) %.3g; "
+              "min certificate allowance / Fast bound %.3g\n",
+              compared, differing, max_rel, min_headroom);
   EXPECT_GT(compared, 0u);
   EXPECT_GT(differing, 0u);
+  EXPECT_GT(min_headroom, 100.0); // >= 1000x by arithmetic (P <= max(S, K)); 100x asserted
 }
 
 // A scripted American model: an Accurate inversion returns 0.25 * target, a Fast
@@ -839,6 +1256,14 @@ TEST(DeAmIvCache, MemoKeyCoversEveryInputThatChangesAnInversion) {
        [](KeyInputs &in) {
          in.config.channel.deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
        }},
+      // SPY1s Phase 2: the routing gate decides which kernel runs a root's iterates.
+      {"seed gate kappa", [](KeyInputs &in) { in.config.channel.deam_seed_gate_kappa = 4.3e-5; }},
+      {"family adaptive",
+       [](KeyInputs &in) { in.config.channel.deam_family = QuoteSliceDeamFamily::Adaptive; }},
+      {"family always",
+       [](KeyInputs &in) { in.config.channel.deam_family = QuoteSliceDeamFamily::Always; }},
+      {"family c", [](KeyInputs &in) { in.config.channel.deam_family_c = 4.0; }},
+      {"family q", [](KeyInputs &in) { in.config.channel.deam_family_q = true; }},
       {"dividend date", [](KeyInputs &in) { in.fit.variance_clock_dividends[0].tau = 0.06; }},
       {"dividend amount", [](KeyInputs &in) { in.fit.variance_clock_dividends[1].amount = 1.9; }},
       {"dividend count", [](KeyInputs &in) { in.fit.variance_clock_dividends.pop_back(); }},

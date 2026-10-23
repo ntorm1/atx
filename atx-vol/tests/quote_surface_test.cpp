@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <new>
 #include <optional>
 #include <span>
@@ -2955,6 +2956,384 @@ TEST(QuoteSurfaceRungMemo, AnExpiryTaskThatThrowsIsReturnedAsTheSurfaceError) {
   const auto again = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, wide);
   ASSERT_TRUE(again) << again.error().to_string();
   expect_bit_identical(*reference, *again, 2);
+}
+
+// ── Opt-in distance-to-market gate / repair (lane L3q market-distance) ──────
+
+// The smile chain with its in-the-money call at 90 re-quoted `width` wide and
+// `spreads` widths BELOW its model price. The point fit prices the out-of-the-money
+// side only, so it serves that call near the model: about `spreads` spreads above
+// its ask, while every other row sits inside its own quote.
+Chain off_market_call(double spreads, double width) {
+  Chain c = chain(0.25, 0.20, -0.10, 0.02);
+  const double sigma = 0.20 - 0.10 * std::log(0.9);
+  const auto model = andersen_lake(100.0, 90.0, 0.25, sigma, 0.03, 0.01, Side::Call);
+  EXPECT_TRUE(model);
+  for (auto &q : c.quotes) {
+    if (q.side == Side::Call && q.strike == 90.0) {
+      q.ask = *model - spreads * width;
+      q.bid = q.ask - width;
+    }
+  }
+  return c;
+}
+
+QuoteSliceConfig market_distance_config(QuoteSliceMarketDistance mode, double bound = 1.0) {
+  QuoteSliceConfig config;
+  config.repair.market_distance = mode;
+  config.repair.market_distance_spreads = bound;
+  return config;
+}
+
+std::size_t row_index(const Chain &c, double strike, Side side) {
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    if (c.quotes[i].strike == strike && c.quotes[i].side == side) return i;
+  }
+  ADD_FAILURE() << "no quote at " << strike;
+  return 0;
+}
+
+TEST(QuoteSurface, MarketDistanceGateRefusesOnlyTheRowOutsideItsQuote) {
+  const std::vector<Chain> one{off_market_call(3.0, 0.04)};
+  const std::size_t r = row_index(one[0], 90.0, Side::Call);
+  const auto off = fit_quote_surface(expiries(one), QuoteSliceConfig{});
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_EQ(off->size(), 1u);
+  const QuoteSurfaceSlice &base = (*off)[0];
+  ASSERT_NE(base.grade, QuoteSliceGrade::Refused) << base.refusal << ": " << base.error;
+  ASSERT_EQ(base.fit.rows[r].evaluation_status, QuoteSliceEvaluationStatus::Success);
+  const QuoteSliceQuote &q = one[0].quotes[r];
+  const double distance = market_distance_spreads(base.fit.rows[r].fitted_price, q.bid, q.ask, 0.01);
+  ASSERT_GT(distance, 2.0); // the constructed row: ~3 spreads above its ask
+  EXPECT_EQ(base.market_checked_rows, 0u); // provenance stays at its default when off
+  const auto gate = fit_quote_surface(expiries(one),
+                                      market_distance_config(QuoteSliceMarketDistance::Gate));
+  ASSERT_TRUE(gate) << gate.error().to_string();
+  const QuoteSurfaceSlice &g = (*gate)[0];
+  EXPECT_EQ(g.grade, base.grade); // the chain still serves
+  EXPECT_EQ(g.market_gated_rows, 1u);
+  EXPECT_NEAR(g.market_max_spreads, distance, 1.0e-12);
+  EXPECT_GT(g.market_checked_rows, 1u);
+  for (std::size_t i = 0; i < one[0].quotes.size(); ++i) {
+    if (i == r) {
+      EXPECT_EQ(g.fit.rows[i].evaluation_status, QuoteSliceEvaluationStatus::MarketDistanceFailure);
+      EXPECT_TRUE(std::isnan(g.fit.rows[i].fitted_iv));
+      continue;
+    }
+    EXPECT_EQ(g.fit.rows[i].evaluation_status, base.fit.rows[i].evaluation_status) << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(g.fit.rows[i].fitted_price),
+              std::bit_cast<std::uint64_t>(base.fit.rows[i].fitted_price))
+        << i;
+  }
+  EXPECT_STREQ(to_string(QuoteSliceEvaluationStatus::MarketDistanceFailure),
+               "market_distance_failure");
+  // A bound beyond the row's distance is inert: every row as without the gate.
+  const auto loose = fit_quote_surface(
+      expiries(one), market_distance_config(QuoteSliceMarketDistance::Gate, 10.0));
+  ASSERT_TRUE(loose) << loose.error().to_string();
+  EXPECT_EQ((*loose)[0].market_gated_rows, 0u);
+  for (std::size_t i = 0; i < one[0].quotes.size(); ++i) {
+    EXPECT_EQ((*loose)[0].fit.rows[i].evaluation_status, base.fit.rows[i].evaluation_status) << i;
+  }
+}
+
+TEST(QuoteSurface, MarketDistanceRepairServesTheRowInsideItsQuoteWithTheCertificateIntact) {
+  const std::vector<Chain> one{off_market_call(3.0, 0.04)};
+  const std::size_t r = row_index(one[0], 90.0, Side::Call);
+  const auto repair = fit_quote_surface(
+      expiries(one), market_distance_config(QuoteSliceMarketDistance::Repair));
+  ASSERT_TRUE(repair) << repair.error().to_string();
+  const QuoteSurfaceSlice &s = (*repair)[0];
+  ASSERT_NE(s.grade, QuoteSliceGrade::Refused) << s.refusal << ": " << s.error;
+  EXPECT_EQ(s.market_repair.outcome, QuoteSliceRepairOutcome::Applied)
+      << to_string(s.market_repair.outcome);
+  EXPECT_GT(s.market_max_spreads, 2.0);
+  EXPECT_LE(s.market_max_spreads_after, 1.0e-9);
+  EXPECT_EQ(s.market_gated_rows, 0u);
+  EXPECT_EQ(s.grade, QuoteSliceGrade::B); // its served prices left the fit
+  const QuoteSliceRow &row = s.fit.rows[r];
+  ASSERT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+  EXPECT_GE(row.fitted_price, one[0].quotes[r].bid - 1.0e-9);
+  EXPECT_LE(row.fitted_price, one[0].quotes[r].ask + 1.0e-9);
+  ASSERT_TRUE(s.fit.prices);
+  EXPECT_TRUE(AmericanPriceSlice::create(s.fit.prices->nodes(), s.fit.prices->bounds()));
+  EXPECT_FALSE(s.fit.moved_nodes.empty());
+  expect_moved_nodes_reimplied(s.fit, one[0].quotes);
+}
+
+TEST(QuoteSurface, MarketDistanceConfigurationIsValidatedAtTheSharedBoundary) {
+  QuoteSliceRepairConfig config;
+  EXPECT_EQ(config.market_distance, QuoteSliceMarketDistance::Off);
+  config.market_distance = QuoteSliceMarketDistance::Repair;
+  config.market_distance_spreads = 0.0; // strict containment is allowed
+  EXPECT_TRUE(validate_quote_slice_repair(config));
+  config.market_distance_spreads = -1.0;
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.market_distance_spreads = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+  config.market_distance_spreads = 1.0;
+  config.market_distance = static_cast<QuoteSliceMarketDistance>(7);
+  EXPECT_FALSE(validate_quote_slice_repair(config));
+}
+
+// ── Opt-in ladder wing tail (lane L3a) ───────────────────────────────────────
+
+// Rows of a served slice re-implied (moved node side) at exactly the floor kIvMin.
+std::size_t floor_reimplied_rows(const QuoteSliceFit &fit,
+                                 std::span<const QuoteSliceQuote> quotes) {
+  if (!fit.prices || fit.moved_nodes.empty()) return 0;
+  const auto nodes = fit.prices->nodes();
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const auto &row = fit.rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success || row.fitted_iv != kIvMin) {
+      continue;
+    }
+    const auto at = std::find_if(nodes.begin(), nodes.end(), [&](const AmericanPriceNode &n) {
+      return n.strike == quotes[i].strike;
+    });
+    const unsigned bit = quotes[i].side == Side::Call ? 1u : 2u;
+    if (at != nodes.end() &&
+        (fit.moved_nodes[static_cast<std::size_t>(at - nodes.begin())] & bit) != 0u) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// A dense 36-day chain (strikes 60-140 every 4, volatility `sigma`) around a
+// non-integer spot. Below 90 the supplied yield zig-zags (0.06 / 0), so the fitted
+// deep in-the-money call prices are locally non-convex and the bounded convexity
+// repair lowers sides onto their convex minorant; the high-yield calls sit in the
+// exercise region at S - K, where the zero-volatility value is S - K itself.
+Chain wing_tail_chain(double spot, double years, double sigma) {
+  Chain out;
+  out.market = QuoteSliceMarket{spot, years, years, 0.03, 0.0, 0.0};
+  for (int strike = 60; strike <= 140; strike += 4) {
+    const double q = strike < 90 && ((strike - 60) / 4) % 2 == 0 ? 0.06 : 0.0;
+    for (Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(spot, static_cast<double>(strike), years, sigma, 0.03, q, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.05);
+      out.quotes.push_back({static_cast<double>(strike), side, std::max(*price - spread, 0.0),
+                            *price + spread, q});
+    }
+  }
+  return out;
+}
+
+// The ladder with the convexity repair accepting any move and both containment
+// limits relaxed, so the repaired channel refit of wing_tail_chain serves.
+QuoteSliceConfig wing_config() {
+  QuoteSliceConfig config;
+  config.channel.repair_half_spreads = 1.0e6;
+  return config;
+}
+
+QuoteSurfaceConfig wing_surface(QuoteSurfaceWingTail tail) {
+  QuoteSurfaceConfig surface = knot_first();
+  surface.ladder_max_outside_fraction = 1.0;
+  surface.ladder_channel_max_outside_fraction = 1.0;
+  surface.ladder_wing_tail = tail;
+  return surface;
+}
+
+TEST(QuoteSurfaceLadder, WingTailFloorPriceOnlyRefusesAVolatilityReimpliedAtTheFloor) {
+  // The convexity repair lowers the exercised 68 call (yield 0.06) to S - K, its
+  // own zero-volatility value: the re-implied volatility is the inverter's floor
+  // kIvMin, a bound 14.5 vol points from the chain's 0.15. With the key off it is
+  // served as a volatility; FloorPriceOnly publishes that row PriceOnly and changes
+  // nothing else: every price, every other row's volatility and status, the grade.
+  constexpr double kSigma = 0.15;
+  const std::vector<Chain> chains{wing_tail_chain(99.71, 0.1, kSigma)};
+  const auto &quotes = chains[0].quotes;
+  const auto off =
+      fit_quote_surface(expiries(chains), wing_config(), wing_surface(QuoteSurfaceWingTail::Off));
+  ASSERT_TRUE(off) << off.error().to_string();
+  const auto on = fit_quote_surface(expiries(chains), wing_config(),
+                                    wing_surface(QuoteSurfaceWingTail::FloorPriceOnly));
+  ASSERT_TRUE(on) << on.error().to_string();
+  const QuoteSurfaceSlice &a = (*off)[0];
+  const QuoteSurfaceSlice &b = (*on)[0];
+  ASSERT_NE(a.grade, QuoteSliceGrade::Refused) << a.refusal << " " << a.error;
+  ASSERT_FALSE(a.fit.moved_nodes.empty());
+  const std::size_t floor_rows = floor_reimplied_rows(a.fit, quotes);
+  ASSERT_GT(floor_rows, 0u) << "fixture broken: no re-implied floor volatility";
+  EXPECT_EQ(a.wing_tail_price_only, 0u);
+  const std::size_t price_only_off = expect_price_only_rows(a.fit, quotes);
+
+  EXPECT_EQ(floor_reimplied_rows(b.fit, quotes), 0u);
+  EXPECT_EQ(b.wing_tail_price_only, floor_rows);
+  EXPECT_EQ(expect_price_only_rows(b.fit, quotes), price_only_off + floor_rows);
+  EXPECT_EQ(b.grade, a.grade);
+  EXPECT_EQ(b.method, a.method);
+  EXPECT_EQ(b.fit.moved_nodes, a.fit.moved_nodes);
+  ASSERT_EQ(b.fit.rows.size(), a.fit.rows.size());
+  std::size_t refused = 0;
+  for (std::size_t i = 0; i < a.fit.rows.size(); ++i) {
+    const QuoteSliceRow &x = a.fit.rows[i];
+    const QuoteSliceRow &y = b.fit.rows[i];
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(x.fitted_price),
+              std::bit_cast<std::uint64_t>(y.fitted_price)) << i;
+    const bool floor = x.evaluation_status == QuoteSliceEvaluationStatus::Success &&
+                       x.fitted_iv == kIvMin;
+    if (floor) {
+      // The tail row: served 0.005 against 0.15 with the key off; no volatility on.
+      EXPECT_GT(std::abs(x.fitted_iv - kSigma), 0.1) << i;
+      EXPECT_EQ(y.evaluation_status, QuoteSliceEvaluationStatus::PriceOnly) << i;
+      EXPECT_TRUE(std::isnan(y.fitted_iv)) << i;
+      ++refused;
+      continue;
+    }
+    EXPECT_EQ(y.evaluation_status, x.evaluation_status) << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(y.fitted_iv), std::bit_cast<std::uint64_t>(x.fitted_iv))
+        << i;
+  }
+  EXPECT_EQ(refused, floor_rows);
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::Off), "off");
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::FloorPriceOnly), "floor-price-only");
+}
+
+TEST(QuoteSurfaceLadder, WingTailIsANoOpWithoutAReimpliedFloorVolatility) {
+  // The pass-A knot chains: no repair moves a node, so the key changes nothing.
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  const auto off = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, knot_first());
+  ASSERT_TRUE(off) << off.error().to_string();
+  QuoteSurfaceConfig surface = knot_first();
+  surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+  const auto on = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  expect_bit_identical(*off, *on, 1);
+  for (const QuoteSurfaceSlice &slice : *on) EXPECT_EQ(slice.wing_tail_price_only, 0u);
+}
+
+TEST(QuoteSurfaceLadder, WingFloorVariantServesTheWingFlooredKnotSlice) {
+  // Put-skewed chains whose OTM wings beyond |k| 0.15 are bidless. Whenever the knot
+  // rung serves, FloorPriceOnlyWingFloor's knot slice is the standalone channel fit
+  // with the wing floor and FloorPriceOnly's the plain one; on at least one chain the
+  // floor binds (the two differ). A floored fit that fails its certificate is never
+  // served by the knot rung (the point fit or the channel passes take the slice).
+  std::size_t bound = 0;
+  for (const double skew : {-0.10, -0.20, -0.30}) {
+    SCOPED_TRACE(::testing::Message() << "skew " << skew);
+    const std::vector<Chain> chains{chain(0.25, 0.22, skew, 0.01, 60, 140, 5, 0.15)};
+    QuoteSurfaceConfig surface = knot_first();
+    surface.ladder_max_outside_fraction = 1.0;
+    surface.ladder_channel_max_outside_fraction = 1.0;
+    surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnlyWingFloor;
+    const auto floored = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+    surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+    const auto plain = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
+    ASSERT_TRUE(floored) << floored.error().to_string();
+    ASSERT_TRUE(plain) << plain.error().to_string();
+    const QuoteSurfaceSlice &a = (*floored)[0];
+    const QuoteSurfaceSlice &b = (*plain)[0];
+    QuoteSliceConfig config;
+    config.channel.wing_floor = true;
+    const auto knot = fit_quote_slice_channel(chains[0].market, chains[0].quotes, config, nullptr);
+    const auto unfloored =
+        fit_quote_slice_channel(chains[0].market, chains[0].quotes, QuoteSliceConfig{}, nullptr);
+    ASSERT_TRUE(knot) << knot.error().to_string();
+    ASSERT_TRUE(unfloored) << unfloored.error().to_string();
+    const bool a_knot = a.method == QuoteSurfaceMethod::Channel && a.grade == QuoteSliceGrade::A;
+    if (a_knot) expect_same_prices(a.fit, *knot);
+    if (b.method == QuoteSurfaceMethod::Channel && b.grade == QuoteSliceGrade::A) {
+      expect_same_prices(b.fit, *unfloored);
+    }
+    if (a_knot && unfloored->fit_status == QuoteSliceFitStatus::Success) {
+      for (std::size_t i = 0; i < knot->rows.size(); ++i) {
+        if (knot->rows[i].fitted_iv != unfloored->rows[i].fitted_iv) {
+          ++bound;
+          break;
+        }
+      }
+    }
+  }
+  EXPECT_GT(bound, 0u) << "fixture broken: no served knot slice where the wing floor binds";
+  EXPECT_STREQ(to_string(QuoteSurfaceWingTail::FloorPriceOnlyWingFloor),
+               "floor-price-only+wing-floor");
+}
+
+TEST(QuoteSurfaceLadder, WingTailRequiresTheKnotFirstLadderAndAKnownMode) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01)};
+  QuoteSurfaceConfig no_ladder;
+  no_ladder.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+  const auto refused = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, no_ladder);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  QuoteSurfaceConfig unknown = knot_first();
+  unknown.ladder_wing_tail = static_cast<QuoteSurfaceWingTail>(7);
+  const auto bad = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, unknown);
+  ASSERT_FALSE(bad);
+  EXPECT_EQ(bad.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_STREQ(to_string(static_cast<QuoteSurfaceWingTail>(7)), "unknown");
+}
+
+// review-SPY1s-p1 minor (confirm-solve naming / reason-split counters untested): under the
+// Screen-seeded Premium cache (with the Phase 2 routing gate kappa and sigma-family keys) the
+// fit_timing reason split partitions every inversion's AL solves - iterate + confirm + gate +
+// search == deam_inversion_al - and deam_confirms counts confirming SOLVES (= the confirm
+// reason; a root can take two), at least one per confirmed root; the whole split (with the
+// band edges' range_edge / ambiguous_edge reasons - none on these point-served chains) never
+// exceeds the chain's AL work; family builds / prices are counted beside it. Arming the trace
+// changes no fit.
+TEST(QuoteSurfaceTiming, ScreenSeededReasonSplitPartitionsInversionSolvesAndCountsConfirmSolves) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  QuoteSliceConfig config = vol_keys(QuoteSliceConfig{});
+  config.channel.deam_profile = QuoteSliceDeamProfile::Screen;
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_seed_gate_kappa = 4.3e-5;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  QuoteSurfaceConfig surface;
+  surface.fit_workers = 1;
+  deam_iv_memo_clear();
+  const auto off = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(off) << off.error().to_string();
+  const TracedSurface traced = traced_fit(chains, config, surface);
+  ASSERT_EQ(traced.slices.size(), chains.size());
+  expect_same_surface(*off, traced.slices);
+  deam_iv_memo_clear();
+  ft::SurfaceTrace trace;
+  const auto on = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  deam_iv_memo_clear();
+  ASSERT_EQ(trace.chains.size(), chains.size());
+  const auto reason = [](const ft::FitTimingCounters &t, ft::DeamReason r) -> std::uint64_t {
+    return t.deam_al_by_reason[static_cast<std::size_t>(r)];
+  };
+  std::uint64_t confirms = 0, premium = 0, family_prices = 0, family_builds = 0;
+  for (std::size_t e = 0; e < trace.chains.size(); ++e) {
+    const ft::FitTimingCounters &t = trace.chains[e];
+    const std::uint64_t in_inversions =
+        reason(t, ft::DeamReason::Iterate) + reason(t, ft::DeamReason::Confirm) +
+        reason(t, ft::DeamReason::Gate) + reason(t, ft::DeamReason::Search);
+    EXPECT_EQ(in_inversions, t.deam_inversion_al) << e;
+    EXPECT_EQ(t.deam_confirms, reason(t, ft::DeamReason::Confirm)) << e; // SOLVES, not roots
+    EXPECT_EQ(reason(t, ft::DeamReason::Gate), 0u) << e; // confirm always: no gate solve
+    const std::uint64_t accepted = t.deam_premium - t.deam_premium_fallbacks;
+    const std::uint64_t confirmed = accepted - std::min<std::uint64_t>(t.deam_seed_routed, accepted);
+    EXPECT_GE(t.deam_confirms, confirmed) << e; // every non-routed accepted root confirmed
+    EXPECT_LE(t.deam_confirms, 2u * t.deam_premium) << e; // kIvPremiumConfirmSolves = 2
+    std::uint64_t split = 0;
+    for (const std::uint32_t n : t.deam_al_by_reason) split += n;
+    EXPECT_LE(split, t.al_price_calls) << e;
+    expect_partitioned(t);
+    confirms += t.deam_confirms;
+    premium += t.deam_premium;
+    family_prices += t.deam_family_prices;
+    family_builds += t.deam_family_builds;
+  }
+  EXPECT_GT(premium, 0u);
+  EXPECT_GT(confirms, 0u);
+  EXPECT_GT(family_builds, 0u);
+  EXPECT_GT(family_prices, 0u);
+  expect_same_surface(*off, *on);
 }
 
 } // namespace

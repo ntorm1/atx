@@ -122,6 +122,59 @@ TEST(SliceChannel, ServedWingsAreFlatBeyondTheOutermostKnot) {
   EXPECT_DOUBLE_EQ(served(*fit, edge * 2.0), served(*fit, edge * 4.0));
 }
 
+// Lane L3a wing floor: tight two-sided channels of a put-skewed smile on
+// k in [-0.30, 0.30], then bidless deep puts (upper bounds only) out to k = -1.02,
+// one of them (k = -1.14) capped below the edge level.
+std::vector<ChannelObservation> skewed_with_bidless_wing() {
+  std::vector<ChannelObservation> out;
+  for (int i = -10; i <= 10; ++i) {
+    const double k = 0.03 * i;
+    const double s = 0.25 - 0.30 * k + 0.50 * k * k;
+    out.push_back({k, s - 0.002, s + 0.002, s, 1.0});
+  }
+  for (int i = 1; i <= 6; ++i) out.push_back({-0.30 - 0.12 * i, 0.0, 1.5});
+  out.push_back({-1.14, 0.0, 0.32});
+  return out;
+}
+
+TEST(SliceChannel, WingFloorKeepsABidlessWingAtTheOutermostLowerBoundedLevel) {
+  const auto obs = skewed_with_bidless_wing();
+  const auto off = fit_slice_channel(obs, kYears, nullptr);
+  ChannelFitConfig config;
+  config.wing_floor = true;
+  const auto on = fit_slice_channel(obs, kYears, nullptr, config);
+  ASSERT_TRUE(off) << off.error().to_string();
+  ASSERT_TRUE(on) << on.error().to_string();
+  // Without the floor the flat default shape pulls the unbounded wing back toward
+  // the money level: it droops below the last two-sided quote's volatility.
+  const double edge_off = served(*off, -0.30);
+  EXPECT_LT(served(*off, -0.90), edge_off - 0.02);
+  // With it, every bidless wing quote sits at or above the edge level, except
+  // where its own ask caps the wing lower (k = -1.14, ask volatility 0.32).
+  const double edge_on = served(*on, -0.30);
+  EXPECT_NEAR(edge_on, edge_off, 2.0e-3);
+  for (const auto &o : obs) {
+    if (o.k >= -0.30 - 1.0e-12) {
+      EXPECT_NEAR(served(*on, o.k), served(*off, o.k), 5.0e-3) << o.k; // the market's region
+    } else if (o.sigma_hi > edge_on) {
+      EXPECT_GE(served(*on, o.k), edge_on - 2.0e-3) << o.k;
+    } else {
+      EXPECT_LE(served(*on, o.k), o.sigma_hi + 1.0e-2) << o.k;
+    }
+  }
+  // Violations are counted against the original channels: the floor is not one,
+  // and the capped quote is at most grazed by the lifted wing beside it.
+  EXPECT_LE(on->diagnostics.violations, off->diagnostics.violations + 1);
+  EXPECT_LT(on->diagnostics.max_violation_half_widths, 0.5);
+  // Off is the historical fit, bit for bit.
+  ChannelFitConfig plain;
+  plain.wing_floor = false;
+  const auto again = fit_slice_channel(obs, kYears, nullptr, plain);
+  ASSERT_TRUE(again);
+  EXPECT_EQ(again->params.mult, off->params.mult);
+  EXPECT_EQ(again->params.atm_vol, off->params.atm_vol);
+}
+
 TEST(SliceChannel, RefusesTooFewObservationsAndMalformedInputs) {
   const std::vector<ChannelObservation> one{{0.0, 0.2, 0.3, 0.25, 1.0}};
   const auto few = fit_slice_channel(one, kYears, nullptr);

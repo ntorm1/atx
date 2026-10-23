@@ -821,7 +821,62 @@ def test_native_graded_options_are_strict(binary, tmp_path):
             ({"schema_version": 1, "admission": "graded", "graded": {"wing_mult_source": 1}},
              "must be a string"),
             ({"schema_version": 1, "graded": {"wing_mult_source": "market"}},
-             "require admission graded")):
+             "require admission graded"),
+            # Opt-in distance-to-market gate / repair (lane L3q).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"market_distance": "clip"}},
+             "market_distance must be off, gate or repair"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"market_distance_spreads": 1.0}},
+             "market_distance_spreads requires market_distance gate or repair"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"market_distance": "gate", "market_distance_spreads": -1}},
+             "outside supported bounds"),
+            ({"schema_version": 1, "graded": {"market_distance": "gate"}},
+             "require admission graded"),
+            # Screen routing gate kappa (SPY1s Phase 2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "accurate",
+                         "deam_inversion": "premium", "seed_gate_kappa": 4.3e-5}},
+             "seed_gate_kappa requires deam_profile screen"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "seed_gate_kappa": 0}},
+             "seed_gate_kappa must be a positive number"),
+            # Sigma-family iterates (SPY1s Phase 2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "sometimes"}},
+             "family must be off, adaptive or always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "confirm": "band", "family": "adaptive"}},
+             "family requires deam_profile screen and confirm always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family_c": 3}},
+             "family_c requires family adaptive or always"),
+            # (sigma, q) families and the family grid (SPY1s Phase 2 step 5).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family_q": True}},
+             "family_q requires family adaptive or always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen", "deam_cache": True,
+                         "deam_inversion": "premium", "family": "adaptive",
+                         "grid_kernel": "family"}},
+             "grid_kernel family requires family_q and deam_cache"),
+            # Family-native iterates (SPY1s Phase 3 lever 1).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "adaptive",
+                         "family_native": True}},
+             "family_native requires family_q and confirm always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "adaptive", "family_q": True,
+                         "family_native": 1}},
+             "family_native must be true or false")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -885,6 +940,38 @@ def test_native_market_wing_ceiling_is_opt_in_with_provenance(binary, tmp_path):
     assert reports["market"]["wing_mult_source"] == "market"
     assert "wing_mult_source" not in reports["plain"]
     assert reports["policy"] == reports["plain"]
+
+
+def test_native_market_distance_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.market_distance (lane L3q): with a bound no served row reaches (the
+    # synthetic quotes are 0.002 wide, so the scorer's one-tick spread floor applies),
+    # neither the gate nor the repair changes a prediction; only the opt-in
+    # provenance is added. An explicit "off" adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    graded = {"plain": None,
+              "gate": {"market_distance": "gate", "market_distance_spreads": 1000},
+              "repair": {"market_distance": "repair", "market_distance_spreads": 500},
+              "off": {"market_distance": "off"}}
+    outputs = {name: tmp_path / f"{name}.csv" for name in graded}
+    reports = {}
+    for name, keys in graded.items():
+        document = {"schema_version": 1, "admission": "graded"}
+        if keys is not None:
+            document["graded"] = keys
+        policy = write_policy(tmp_path / f"{name}.json", document)
+        result = invoke(binary, source, outputs[name], "--policy", str(policy))
+        assert result.returncode == 0, (name, result.stderr)
+        reports[name] = json.loads(result.stdout)["policy_definition"]["graded"]
+    plain_bytes = outputs["plain"].read_bytes()
+    for name in ("gate", "repair", "off"):
+        assert outputs[name].read_bytes() == plain_bytes, name
+    assert reports["gate"]["market_distance"] == "gate"
+    assert reports["gate"]["market_distance_spreads"] == 1000
+    assert reports["repair"]["market_distance"] == "repair"
+    assert reports["repair"]["market_distance_spreads"] == 500
+    assert not {"market_distance", "market_distance_spreads"} & set(reports["plain"])
+    assert reports["off"] == reports["plain"]
 
 
 def test_native_graded_repair_and_dominance_keys_are_opt_in(binary, tmp_path):
@@ -1168,6 +1255,44 @@ def test_native_knot_first_ladder_serves_the_knot_slice_with_provenance(binary, 
     assert entry["outside_fraction"] <= 0.05
     assert entry["outside_quotes"] >= 0
     assert report["price_only_rows"] == 0
+
+
+def test_native_ladder_wing_tail_key_is_strict_echoed_and_inert_on_clean_quotes(binary, tmp_path):
+    # Lane L3a: graded.ladder_wing_tail. Clean quotes have no repaired node, so the
+    # key changes no row; it is echoed only when on and needs the knot-first ladder.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    graded = {"schema_version": 1, "admission": "graded", "price_only": True}
+    for document, message in (
+            ({**graded, "graded": {"ladder_wing_tail": "floor-price-only"}},
+             "ladder_wing_tail requires ladder knot-first"),
+            ({**graded, "graded": {"ladder": "off", "ladder_wing_tail": "floor-price-only"}},
+             "ladder_wing_tail requires ladder knot-first"),
+            ({**graded, "graded": {"ladder": "knot-first", "ladder_wing_tail": "slope"}},
+             "ladder_wing_tail must be off, floor-price-only or floor-price-only+wing-floor")):
+        policy = write_policy(tmp_path / "bad.json", document)
+        result = invoke(binary, source, tmp_path / "bad.csv", "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+    runs = {}
+    for name, extra in (("plain", {}), ("off", {"ladder_wing_tail": "off"}),
+                        ("on", {"ladder_wing_tail": "floor-price-only"}),
+                        ("floor", {"ladder_wing_tail": "floor-price-only+wing-floor"})):
+        output = tmp_path / f"{name}.csv"
+        policy = write_policy(tmp_path / f"{name}.json",
+                              {**graded, "graded": {"ladder": "knot-first", **extra}})
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode == 0, result.stderr
+        runs[name] = (output.read_bytes(), json.loads(result.stdout))
+    assert runs["off"][0] == runs["plain"][0]
+    assert runs["on"][0] == runs["plain"][0]
+    assert "ladder_wing_tail" not in runs["plain"][1]["policy_definition"]["graded"]
+    assert "ladder_wing_tail" not in runs["off"][1]["policy_definition"]["graded"]
+    assert runs["on"][1]["policy_definition"]["graded"]["ladder_wing_tail"] == "floor-price-only"
+    assert runs["on"][1]["price_only_rows"] == 0
+    # The wing floor runs (it may move the clean chain's knot wing) and is echoed.
+    assert (runs["floor"][1]["policy_definition"]["graded"]["ladder_wing_tail"]
+            == "floor-price-only+wing-floor")
 
 
 def european_put(strike: float, years: float, sigma: float, q: float) -> float:

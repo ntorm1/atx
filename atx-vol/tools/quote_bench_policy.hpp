@@ -543,6 +543,13 @@ struct FitSpaceOptions {
   double confirm_k = 10.0;
   QuoteSliceDeamConfirmKernel confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate;
+  // Opt-in seed-tier routing gate kappa (quote_slice.hpp deam_seed_gate_kappa; SPY1s P2).
+  double seed_gate_kappa = 0.0;
+  // Opt-in sigma-family iterates (quote_slice.hpp deam_family / deam_family_c; SPY1s P2).
+  QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off;
+  double family_c = 3.0;
+  bool family_q = false; // quote_slice.hpp deam_family_q (step 5)
+  bool family_native = false; // quote_slice.hpp deam_family_native (SPY1s Phase 3 lever 1)
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -690,6 +697,75 @@ inline constexpr bool kGradedDefaultRungMemo = true;
       throw std::runtime_error("Policy graded confirm_kernel must be reference or fast");
     }
   }
+  // Opt-in seed-tier routing gate (quote_slice.hpp deam_seed_gate_kappa): a Screen-only
+  // control (inert, so refused, elsewhere); a positive finite kappa.
+  if (graded.contains("seed_gate_kappa")) {
+    if (out.deam_profile != QuoteSliceDeamProfile::Screen) {
+      throw std::runtime_error("Policy graded seed_gate_kappa requires deam_profile screen");
+    }
+    if (!graded.at("seed_gate_kappa").is_number()) {
+      throw std::runtime_error("Policy graded seed_gate_kappa must be a positive number");
+    }
+    out.seed_gate_kappa = graded.at("seed_gate_kappa").get<double>();
+    if (!(out.seed_gate_kappa > 0.0) || !std::isfinite(out.seed_gate_kappa)) {
+      throw std::runtime_error("Policy graded seed_gate_kappa must be a positive number");
+    }
+  }
+  // Opt-in sigma-family iterates (quote_slice.hpp deam_family): a Screen-seeded,
+  // always-confirmed inversion only; family_c only with a family.
+  if (graded.contains("family")) {
+    const auto name = text(graded.at("family"));
+    if (name == "adaptive") {
+      out.family = QuoteSliceDeamFamily::Adaptive;
+    } else if (name == "always") {
+      out.family = QuoteSliceDeamFamily::Always;
+    } else if (name != "off") {
+      throw std::runtime_error("Policy graded family must be off, adaptive or always");
+    }
+  }
+  // Step 5: (sigma, q) families (quote_slice.hpp deam_family_q) refine a family mode; with
+  // them the band gate may run on the family bound (B-family: confirm band).
+  if (graded.contains("family_q")) {
+    if (!graded.at("family_q").is_boolean()) {
+      throw std::runtime_error("Policy graded family_q must be true or false");
+    }
+    out.family_q = graded.at("family_q").get<bool>();
+    if (out.family_q && out.family == QuoteSliceDeamFamily::Off) {
+      throw std::runtime_error("Policy graded family_q requires family adaptive or always");
+    }
+  }
+  if (out.family != QuoteSliceDeamFamily::Off &&
+      (out.deam_profile != QuoteSliceDeamProfile::Screen ||
+       out.confirm == QuoteSliceDeamConfirm::Never ||
+       (out.confirm == QuoteSliceDeamConfirm::Band && !out.family_q))) {
+    throw std::runtime_error("Policy graded family requires deam_profile screen and confirm "
+                             "always (band only with family_q)");
+  }
+  // Phase 3 lever 1: family-native iterates (quote_slice.hpp deam_family_native) iterate the
+  // (sigma, q) family's own map; confirmed roots only (confirm always).
+  if (graded.contains("family_native")) {
+    if (!graded.at("family_native").is_boolean()) {
+      throw std::runtime_error("Policy graded family_native must be true or false");
+    }
+    out.family_native = graded.at("family_native").get<bool>();
+    if (out.family_native &&
+        (!out.family_q || out.confirm != QuoteSliceDeamConfirm::Always)) {
+      throw std::runtime_error("Policy graded family_native requires family_q and confirm "
+                               "always");
+    }
+  }
+  if (graded.contains("family_c")) {
+    if (out.family == QuoteSliceDeamFamily::Off) {
+      throw std::runtime_error("Policy graded family_c requires family adaptive or always");
+    }
+    if (!graded.at("family_c").is_number()) {
+      throw std::runtime_error("Policy graded family_c must be a positive number");
+    }
+    out.family_c = graded.at("family_c").get<double>();
+    if (!(out.family_c > 0.0) || !std::isfinite(out.family_c)) {
+      throw std::runtime_error("Policy graded family_c must be a positive number");
+    }
+  }
   // Certification-grid kernel (quote_slice.hpp QuoteSliceGridKernel): independent of the
   // cache keys (it acts on the served reprice of every graded profile).
   if (graded.contains("grid_kernel")) {
@@ -698,8 +774,17 @@ inline constexpr bool kGradedDefaultRungMemo = true;
       out.grid_kernel = QuoteSliceGridKernel::Fast;
     } else if (name == "reference") {
       out.grid_kernel = QuoteSliceGridKernel::Accurate;
+    } else if (name == "family") {
+      // Step 5: the chain cache's (sigma, q) families price the grid where their bound
+      // allows; they exist only under the vol-space cache with family_q.
+      if (!out.family_q || !out.deam_cache || out.fit_space != QuoteSliceFitSpace::VolChannel) {
+        throw std::runtime_error("Policy graded grid_kernel family requires family_q and "
+                                 "deam_cache");
+      }
+      out.grid_kernel = QuoteSliceGridKernel::Family;
     } else {
-      throw std::runtime_error("Policy graded grid_kernel must be reference or fast");
+      throw std::runtime_error("Policy graded grid_kernel must be reference or fast (or family "
+                               "with family_q)");
     }
   }
   return out;
@@ -731,11 +816,20 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
   if (repair.wing_mult_source == QuoteSliceWingMultSource::Market) {
     out["wing_mult_source"] = "market"; // provenance only when opted in (lane L3r1)
   }
+  if (repair.market_distance != QuoteSliceMarketDistance::Off) {
+    // provenance only when opted in (lane L3q)
+    out["market_distance"] =
+        repair.market_distance == QuoteSliceMarketDistance::Gate ? "gate" : "repair";
+    out["market_distance_spreads"] = repair.market_distance_spreads;
+  }
   if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
     out["ladder"] = "knot-first";
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
     out["ladder_channel_max_outside_fraction"] = s.ladder_channel_max_outside_fraction;
     out["ladder_min_outside_quotes"] = s.ladder_min_outside_quotes;
+    if (s.ladder_wing_tail != QuoteSurfaceWingTail::Off) {
+      out["ladder_wing_tail"] = to_string(s.ladder_wing_tail); // provenance only when on
+    }
   }
   if (space.fit_space == QuoteSliceFitSpace::VolChannel) {
     out["fit_space"] = "vol";
@@ -753,9 +847,19 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
       out["confirm_k"] = space.confirm_k;
       out["confirm_kernel"] =
           space.confirm_kernel == QuoteSliceDeamConfirmKernel::Fast ? "fast" : "reference";
+      if (space.seed_gate_kappa > 0.0) {
+        out["seed_gate_kappa"] = space.seed_gate_kappa; // provenance only when opted in
+      }
+      if (space.family != QuoteSliceDeamFamily::Off) {
+        out["family"] = space.family == QuoteSliceDeamFamily::Always ? "always" : "adaptive";
+        out["family_c"] = space.family_c;
+        if (space.family_q) out["family_q"] = true;
+        if (space.family_native) out["family_native"] = true;
+      }
     }
   }
   if (space.grid_kernel == QuoteSliceGridKernel::Fast) out["grid_kernel"] = "fast";
+  if (space.grid_kernel == QuoteSliceGridKernel::Family) out["grid_kernel"] = "family";
   if (s.rung_memo) out["rung_memo"] = true;
   return out;
 }
@@ -915,7 +1019,9 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
-             "wing_mult_source"});
+             "wing_mult_source", "market_distance", "market_distance_spreads",
+             "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
+             "family_native"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -940,6 +1046,23 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
          j.contains("ladder_min_outside_quotes")) &&
         surface.ladder != QuoteSurfaceLadder::KnotFirst) {
       throw std::runtime_error("Policy graded ladder containment keys require ladder knot-first");
+    }
+    // Opt-in ladder wing tail (lane L3a; quote_slice.hpp QuoteSurfaceWingTail); "off"
+    // is the historical path.
+    if (j.contains("ladder_wing_tail")) {
+      const auto mode = text(j.at("ladder_wing_tail"));
+      if (mode == "floor-price-only") {
+        surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnly;
+      } else if (mode == "floor-price-only+wing-floor") {
+        surface.ladder_wing_tail = QuoteSurfaceWingTail::FloorPriceOnlyWingFloor;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded ladder_wing_tail must be off, floor-price-only "
+                                 "or floor-price-only+wing-floor");
+      }
+      if (surface.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
+          surface.ladder != QuoteSurfaceLadder::KnotFirst) {
+        throw std::runtime_error("Policy graded ladder_wing_tail requires ladder knot-first");
+      }
     }
     numeric(j, "ladder_max_outside_fraction", surface.ladder_max_outside_fraction, 0, 1);
     numeric(j, "ladder_channel_max_outside_fraction", surface.ladder_channel_max_outside_fraction,
@@ -995,6 +1118,24 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
         throw std::runtime_error("Policy graded wing_mult_source must be policy or market");
       }
     }
+    // Opt-in distance-to-market gate / repair (quote_slice.hpp QuoteSliceMarketDistance,
+    // lane L3q): "off" is the historical path; the bound (spreads) is inert without it.
+    if (j.contains("market_distance")) {
+      const auto mode = text(j.at("market_distance"));
+      if (mode == "gate") {
+        repair.market_distance = QuoteSliceMarketDistance::Gate;
+      } else if (mode == "repair") {
+        repair.market_distance = QuoteSliceMarketDistance::Repair;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded market_distance must be off, gate or repair");
+      }
+    }
+    if (j.contains("market_distance_spreads") &&
+        repair.market_distance == QuoteSliceMarketDistance::Off) {
+      throw std::runtime_error("Policy graded market_distance_spreads requires market_distance "
+                               "gate or repair");
+    }
+    numeric(j, "market_distance_spreads", repair.market_distance_spreads, 0, 1000);
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};
@@ -1013,6 +1154,11 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_confirm = space.confirm;
     profile.config.channel.deam_confirm_k = space.confirm_k;
     profile.config.channel.deam_confirm_kernel = space.confirm_kernel;
+    profile.config.channel.deam_seed_gate_kappa = space.seed_gate_kappa;
+    profile.config.channel.deam_family = space.family;
+    profile.config.channel.deam_family_c = space.family_c;
+    profile.config.channel.deam_family_q = space.family_q;
+    profile.config.channel.deam_family_native = space.family_native;
     profile.config.grid_kernel = space.grid_kernel;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.

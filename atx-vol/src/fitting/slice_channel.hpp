@@ -68,6 +68,16 @@ struct ChannelFitConfig {
   double mult_ceil{3.0};             // served multiple ceiling
   std::uint16_t max_iterations{50};
   std::size_t min_observations{2};
+  // Opt-in wing floor (lane L3a; false is the historical fit, bit for bit). On each
+  // side of the money, the outermost observation with a lower volatility bound
+  // (sigma_lo > 0) is the last market evidence of the smile's level; beyond it only
+  // upper bounds remain and the flat default shape plus the natural spline let the
+  // wing droop. With the floor, the second solve gives every observation beyond that
+  // edge the first solve's volatility at the edge as its lower bound, wherever that
+  // stays below the observation's own upper bound (the market still caps the wing).
+  // Diagnostics count violations against the original channels. Native knot spline
+  // only (fit_slice_channel); fit_slice_channel_family ignores it.
+  bool wing_floor{false};
 };
 
 struct ChannelFitDiagnostics {

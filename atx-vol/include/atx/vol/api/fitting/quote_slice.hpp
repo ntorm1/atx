@@ -135,13 +135,31 @@ enum class QuoteSliceDeamInversion : std::uint8_t { Search, Premium };
 enum class QuoteSliceDeamConfirm : std::uint8_t { Always, Band, Never };
 enum class QuoteSliceDeamConfirmKernel : std::uint8_t { Accurate, Fast };
 
+// Sigma-family iterates of a Screen-seeded Premium inversion (QuoteSliceChannelConfig
+// deam_family; SPY1s Phase 2, opt-in; requires deam_profile Screen and deam_confirm
+// Always). Off (the default): every iterate is a cold Screen solve. Adaptive: the chain's
+// cache builds one AlSigmaFamily per side (american.hpp; 12 Reference node boundaries over
+// the box of the side's two-sided mid Black-76 IVs, at the expiry's representative yield)
+// when 5.4 x the side's two-sided quotes exceeds deam_family_c x 2 x 12, and the iterates
+// price the D-model A(sigma; own q) + D_family(sigma) on it instead of a cold solve (a
+// family refusal: the cold Screen iterate). Always: a family whenever one can be built
+// (measurement arm). Every accepted root is confirmed on the confirm kernel at the
+// contract's own yield as under Off. The dated-cash lattice and expiries below
+// kAlSigmaFamilyMinTau never build one.
+enum class QuoteSliceDeamFamily : std::uint8_t { Off, Adaptive, Always };
+
 // Kernel of the certification grid (certify_and_serve's American reprice of the fitted
 // curve at every strike; the served prices). Accurate (the default): the fit's own
 // model, the historical path bit for bit. Fast (opt-in, SPY1s Phase 1 arm D; research
 // R3): the same Andersen-Lake scheme on AlProfile::Fast, |dP| <= 1e-12 max(P, 1) below
 // the certificate's allowance 1e-8 + 1e-9 max(S, K); a MEASUREMENT arm with its own hash
 // set - the PM promotes or not at integration. The dated-cash lattice ignores it.
-enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast };
+// Family (opt-in, SPY1s Phase 2 step 5; requires the vol-space cache with deam_family_q):
+// each grid price on the chain cache's (sigma, q) family of its side at the strike's own q
+// where the family's measured bound x max(P, 1) is under the certificate's allowance 1e-8
+// + 1e-9 max(S, K); otherwise (no family, a refusal, a bound over the allowance) on
+// AlProfile::Fast as under Fast.
+enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast, Family };
 
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
@@ -176,6 +194,11 @@ struct QuoteSliceChannelConfig {
   // flagged in QuoteSliceFit::price_only_nodes) when that price has no
   // identifiable American volatility. 0 disables the repair.
   double repair_half_spreads = 0.0;
+  // Lane L3a (opt-in; false = the historical fit): the native knot spline's wing
+  // floor (slice_channel.hpp ChannelFitConfig::wing_floor) - beyond the outermost
+  // lower-bounded channel of each side, the second solve keeps the wing at or above
+  // the first solve's volatility at that edge, inside every quote's channel.
+  bool wing_floor = false;
   // Opt-in channel dominance under graded admission (fit_quote_surface), run
   // after every other rung (pass A, channel passes, repair rung, calendar
   // pass): an expiry whose final fit is a POINT fit (served, or refused only
@@ -220,6 +243,31 @@ struct QuoteSliceChannelConfig {
   // (the default) or the same scheme on AlProfile::Fast (|dP| <= 1e-12 max(P, 1); research
   // R3 measurement arm - the PM promotes or not at integration).
   QuoteSliceDeamConfirmKernel deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
+  // Seed-tier routing gate (deam_profile Screen only; SPY1s Phase 2, opt-in): 0 (the
+  // default) runs a price's iterates on the accurate kernel inside Screen's own wide
+  // non-monotone gate (4e-4 K max(1, T^2), about 100x the measured Screen dip); > 0 narrows
+  // that band to deam_seed_gate_kappa K max(1, T^2) (the measured dip times a margin, e.g.
+  // 4.3e-5 = 10 x 4.3e-6), so more inversions iterate on Screen. Every Screen-iterated root
+  // is confirmed (or band-gated) on the confirm kernel exactly as under the default. >= 0.
+  double deam_seed_gate_kappa = 0.0;
+  // Sigma-family iterates (QuoteSliceDeamFamily; SPY1s Phase 2) and the adaptive build's
+  // threshold constant c (> 0).
+  QuoteSliceDeamFamily deam_family = QuoteSliceDeamFamily::Off;
+  double deam_family_c = 3.0;
+  // (sigma, q) families (SPY1s Phase 2 step 5, opt-in; requires deam_family Adaptive /
+  // Always): the cache builds L2h-b AlSigmaQFamily per side instead - n_sigma 16 over the
+  // sigma box, n_q 4 (3 where T x q-width <= 1e-5) over the chain's q box (all quotes'
+  // effective yields) - with a MEASURED relative bound (off-node probes against the cold
+  // accurate kernel); the iterates price each strike at its OWN q on it (no D-model). With
+  // deam_confirm Band (allowed here: the B-family arm) the band gate uses that measured
+  // bound and the family's own chord. The adaptive rule counts n_sigma x n_q nodes.
+  bool deam_family_q = false;
+  // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; requires deam_family_q and
+  // deam_confirm Always): the (sigma, q) family's own map is iterated without the
+  // Barone-Adesi-Whaley / Black-76 seed leg (a bracketed secant-Newton from the mid's
+  // family points, else from the Black-76 IV with the family's chord); any family refusal
+  // restarts the inversion on the seed-leg path. Every root is still confirmed.
+  bool deam_family_native = false;
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -293,6 +341,21 @@ enum class QuoteSliceWingMultSource : std::uint8_t { Policy, Market };
 inline constexpr double kQuoteSliceMarketWingMultMax = 6.0;
 inline constexpr double kQuoteSliceMarketWingMultMargin = 1.1;
 
+// Distance-to-market certificate of fit_quote_surface (lane L3q, 2026-10-21; opt-in).
+// Off (the historical default, bit for bit): a served row may sit any distance from
+// its quotes. Gate: after every calendar pass, a served row (Success or PriceOnly)
+// whose price lies more than `market_distance_spreads` spreads outside its own quote
+// (american_price_slice.hpp market_distance_spreads, the scorer's spread) is refused
+// ROW by row (QuoteSliceEvaluationStatus::MarketDistanceFailure); the slice and its
+// certified curve are unchanged, so every served subset stays arbitrage-free.
+// Repair: Gate, preceded by (1) a BIDIRECTIONAL calendar rung — a crossing no
+// one-sided repair absorbs is projected jointly with the accepted slices it crosses,
+// each inside its own quote boxes (repair_quote_slice_calendar_joint) — and (2) per
+// served slice with a row beyond the bound, an in-box repair onto [bid, ask], then
+// onto the bound's band, under the calendar clamp of every other served slice
+// (repair_quote_slice_market); moved nodes are re-implied exactly like any repair's.
+enum class QuoteSliceMarketDistance : std::uint8_t { Off, Gate, Repair };
+
 struct QuoteSliceRepairConfig {
   QuoteSliceRepairMode mode = QuoteSliceRepairMode::Off;
   std::size_t max_nodes = 16;            // >= 1
@@ -304,11 +367,16 @@ struct QuoteSliceRepairConfig {
   double box_tick = 0.01;      // > 0, finite, price units
   // Opt-in market wing ceiling (QuoteSliceWingMultSource); Policy is the historical path.
   QuoteSliceWingMultSource wing_mult_source = QuoteSliceWingMultSource::Policy;
+  // Opt-in distance-to-market gate / repair (QuoteSliceMarketDistance, lane L3q); Off is
+  // the historical path. The bound is in spreads (>= 0, finite; 0 = strict containment:
+  // every served row inside its quote); the spread floor is box_tick.
+  QuoteSliceMarketDistance market_distance = QuoteSliceMarketDistance::Off;
+  double market_distance_spreads = 1.0;
 };
 
-// InvalidArgument unless the mode, certificate and wing source are known and every
-// budget and box control is finite and in range. fit_quote_slice and
-// fit_quote_surface apply it before any fit.
+// InvalidArgument unless the mode, certificate, wing source and market-distance mode
+// are known and every budget, box control and bound is finite and in range.
+// fit_quote_slice and fit_quote_surface apply it before any fit.
 [[nodiscard]] Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config);
 
 enum class QuoteSliceRepairOutcome : std::uint8_t {
@@ -386,13 +454,17 @@ enum class QuoteSliceQuoteStatus : std::uint8_t {
 // for it (QuoteSliceFit::price_only_nodes), so a PriceOnly row is never served
 // with a volatility. InvalidVolatility is a curve without a positive volatility
 // at the strike; such a row carries neither price nor volatility.
+// MarketDistanceFailure (lane L3q, opt-in QuoteSliceMarketDistance Gate / Repair): the
+// slice is served but this row's certified price lies more than the bound outside its
+// own quote; the row carries its (unserved) price for diagnostics and no volatility.
 enum class QuoteSliceEvaluationStatus : std::uint8_t {
   Success,
   InvalidContract,
   NoFit,
   InvalidVolatility,
   PricingFailure,
-  PriceOnly
+  PriceOnly,
+  MarketDistanceFailure
 };
 enum class QuoteSliceFitStatus : std::uint8_t {
   Success, InsufficientQuotes, FitFailure, ArbitrageFailure
@@ -472,9 +544,14 @@ struct QuoteSliceDeamDiagnostics {
   // routed to the accurate kernel because the price lay inside the seed tier's
   // non-monotone gate.
   std::size_t ambiguous_edges = 0;
-  std::size_t confirms = 0;
+  std::size_t confirms = 0; // confirming SOLVES (a root may take kIvPremiumConfirmSolves = 2)
   std::size_t confirms_skipped = 0;
   std::size_t seed_routed = 0;
+  // Sigma-family iterates (deam_family; zero otherwise): families this fit built (0 when
+  // the cache was reused), iterates priced on a family, Premium attempts a family refused.
+  std::size_t family_builds = 0;
+  std::size_t family_prices = 0;
+  std::size_t family_refused = 0;
 };
 
 struct QuoteSliceDiagnostics {
@@ -664,6 +741,61 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
     std::span<const AmericanPriceSlice *const> later, const QuoteSliceRepairConfig &budget,
     QuoteSliceRepairRecord *record = nullptr);
 
+// ── Distance to market (lane L3q, 2026-10-21; QuoteSliceMarketDistance Repair) ──
+
+// In-box market repair of one served slice: its certified node prices are projected
+// (project_convex_price_box, uniform weights) per side onto the quote boxes [bid, ask]
+// (bidless [0, ask]; a side without a valid quote held at its price) intersected with
+// the certificate's hard bounds and the calendar clamp of `earlier` / `later` (as
+// repair_quote_slice_calendar_in_channel); when no arbitrage-free curve fits those
+// boxes, once more onto the bound's band [bid - b s, ask + b s] (b =
+// config.market_distance_spreads, s = max(ask - bid, config.box_tick)). The result
+// must move some node by more than config.immaterial_price_move, pass the unchanged
+// certificate and check_american_calendar against every slice in `earlier` and
+// `later`; it is then committed exactly as a calendar repair (fit.prices, row prices,
+// moved nodes re-implied or PriceOnly, fit.moved_nodes) and true is returned.
+// Otherwise `fit` is unchanged. `record` (nullable) receives the outcome and moves.
+[[nodiscard]] bool repair_quote_slice_market(QuoteSliceFit &fit,
+                                             std::span<const QuoteSliceQuote> quotes,
+                                             std::span<const AmericanPriceSlice *const> earlier,
+                                             std::span<const AmericanPriceSlice *const> later,
+                                             const QuoteSliceRepairConfig &config,
+                                             QuoteSliceRepairRecord *record = nullptr);
+
+// One slice of a bidirectional calendar repair: its fit (certified prices, non-null)
+// and its quotes (the fit's row order).
+struct QuoteSliceJointMember {
+  QuoteSliceFit *fit = nullptr;
+  std::span<const QuoteSliceQuote> quotes;
+};
+
+// An accepted slice that stays fixed during a bidirectional repair, with its
+// calendar maturity (it is a floor for later members and a cap for earlier ones).
+struct QuoteSliceCalendarNeighbour {
+  const AmericanPriceSlice *prices = nullptr;
+  double calendar_years = 0.0;
+};
+
+// Bidirectional calendar repair (lane L3q): the members' certified prices (distinct
+// maturities, any order) are projected JOINTLY per side (project_calendar_joint) —
+// each member inside its own boxes, the quote boxes [bid - h, ask + h] (h =
+// config.box_half_ticks * config.box_tick under QuoteSliceCertificate::Box, else 0;
+// bidless [0, ask + h]; unquoted sides held) widened to contain the node's current
+// price (no node ends farther outside its quote than it started), intersected with
+// the hard bounds and the calendar clamp of the `fixed` neighbours — subject to every
+// member being convex with the certificate's end slopes and calendar-ordered against
+// every other member. Accepted only
+// when every member then passes the unchanged certificate and check_american_calendar
+// against every other member and every fixed neighbour; then each member that moved
+// is committed as a calendar repair, its moved node count written to `moved` (one
+// entry per member, nullable), and true is returned. Otherwise no member changes.
+// `record` (nullable) receives the outcome, the summed node counts and the largest
+// move over all members. Bounded: one projection per side.
+[[nodiscard]] bool repair_quote_slice_calendar_joint(
+    std::span<const QuoteSliceJointMember> members,
+    std::span<const QuoteSliceCalendarNeighbour> fixed, const QuoteSliceRepairConfig &config,
+    std::vector<std::size_t> *moved = nullptr, QuoteSliceRepairRecord *record = nullptr);
+
 // ── Graded admission over one valuation surface ──────────────────────────────
 
 // Confidence grade carried by every served expiry.
@@ -697,6 +829,25 @@ struct QuoteSurfaceExpiry {
 // at fit_quote_surface.
 enum class QuoteSurfaceLadder : std::uint8_t { Off, KnotFirst };
 
+// Knot-first ladder wing tail (lane L3a, opt-in; Off is the historical path, bit
+// for bit; refused without the ladder). FloorPriceOnly: after the ladder's
+// calendar pass, a served Success row whose volatility was RE-IMPLIED from a
+// repaired price (its node side is in QuoteSliceFit::moved_nodes) and equals the
+// inverter's reported floor kIvMin is published PriceOnly - certified price kept,
+// NaN volatility, flagged in QuoteSliceFit::price_only_nodes - exactly as when the
+// re-implication fails. A repair that moves a zero-time-value wing node (a deep
+// out-of-the-money side, or an in-the-money side at its exercise value) leaves a
+// price at or below the zero-volatility value, for which american_implied_vol
+// reports kIvMin (american_iv.hpp): a bound, not a measured volatility. Prices,
+// certificates, containment and every calendar decision are unchanged.
+// FloorPriceOnlyWingFloor: FloorPriceOnly, and every channel fit of the surface
+// (the knot rung, its repair rung, every channel refit and retry) runs with
+// QuoteSliceChannelConfig::wing_floor, so a knot wing never droops below its
+// outermost lower-bounded quote's fitted level; this one changes fitted prices.
+enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly, FloorPriceOnlyWingFloor };
+
+[[nodiscard]] const char *to_string(QuoteSurfaceWingTail value) noexcept;
+
 struct QuoteSurfaceConfig {
   double term_prior_weight = 1.0;     // scale of the neighbour prior's strength
   double prior_decay_log_time = 1.0;  // confidence e-folding in |ln(T/T_nearest)|
@@ -723,6 +874,7 @@ struct QuoteSurfaceConfig {
   double ladder_max_outside_fraction = 0.05;
   double ladder_channel_max_outside_fraction = 0.05;
   std::size_t ladder_min_outside_quotes = 1; // >= 1
+  QuoteSurfaceWingTail ladder_wing_tail = QuoteSurfaceWingTail::Off; // ladder only
   // Expiry fan-out width of the per-expiry stages (pass A or the ladder's pass
   // A, then the B1 and B2 channel refits), longest expiry first: 1 = serial on
   // the calling thread (the historical path), N = N workers, 0 = auto
@@ -829,6 +981,21 @@ struct QuoteSurfaceSlice {
   std::string knot_error;
   double outside_fraction = 0.0;
   std::size_t outside_quotes = 0;
+  // Distance-to-market provenance (QuoteSliceMarketDistance, lane L3q; defaults when
+  // Off): served rows the gate measured (a valid quote and a price), the rows it
+  // refused, the largest distance in spreads before the in-box repair and after it
+  // (the served maximum is at most the bound), the in-box repair's record, whether
+  // the slice was admitted by the bidirectional calendar rung, and how many of its
+  // nodes such a rung moved while it was a fixed-maturity partner of another slice.
+  std::size_t market_checked_rows = 0;
+  std::size_t market_gated_rows = 0;
+  double market_max_spreads = 0.0;
+  double market_max_spreads_after = 0.0;
+  QuoteSliceRepairRecord market_repair{};
+  bool calendar_joint_repaired = false;
+  std::size_t calendar_joint_partner_moves = 0;
+  // Rows published PriceOnly by QuoteSurfaceConfig::ladder_wing_tail (0 when off).
+  std::size_t wing_tail_price_only = 0;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation
