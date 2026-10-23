@@ -99,7 +99,16 @@ DeAmIvView::DeAmIvView(DeAmIvCache &cache, const DeAmModel &model,
                        QuoteSliceDeamDiagnostics &work, QuoteSliceDeamInversion inversion,
                        DeAmConfirmControls confirm) noexcept
     : cache_(cache), model_(model), quotes_(quotes), profile_(profile), work_(work),
-      inversion_(inversion), confirm_(confirm) {}
+      inversion_(inversion), confirm_(confirm) {
+  // The budget's limits are keyed words (deam_iv_key): every view of this cache sets the same.
+  cache_.reference_budget.max_calls = confirm_.reference_max_calls;
+  cache_.reference_budget.max_evaluations = confirm_.reference_max_evaluations;
+}
+
+bool DeAmIvView::native() const noexcept {
+  return confirm_.native_route && confirm_.family_native && premium() &&
+         kernel() == DeAmKernel::Screen;
+}
 
 bool DeAmIvView::premium() const noexcept {
   return inversion_ == QuoteSliceDeamInversion::Premium && kernel() != DeAmKernel::Fast;
@@ -139,6 +148,12 @@ static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_accept_by_k
 static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_accept_by_reason){}.size() ==
                   kRootAcceptanceReasonCount,
               "deam_accept_by_reason is sized by RootAcceptanceReason");
+static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_native_status){}.size() ==
+                  iv_batch::kInverseStatusCount,
+              "deam_native_status is sized by iv_batch::InverseStatus");
+static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_route_outcome){}.size() ==
+                  kIvRouteOutcomeCount,
+              "deam_route_outcome is sized by IvRouteOutcome");
 
 inline constexpr double kAuditBisectWidth = 1.0e-9; // the reference bracket's width (vol)
 inline constexpr int kAuditGrowSteps = 24;          // 4x bracket growth steps per side
@@ -381,6 +396,7 @@ void DeAmIvView::ensure_families() {
                                              static_cast<double>(kDeAmQFamilyQNodes)
                                        : static_cast<double>(kDeAmFamilyNodes);
   const double needed = confirm_.family_c * 2.0 * nodes;
+  std::uint32_t requested = 0;
   for (std::size_t s = 0; s < 2; ++s) {
     const bool wanted = count[s] > 0u && (confirm_.family == QuoteSliceDeamFamily::Always ||
                                           kDeAmFamilyCallsPerQuote * static_cast<double>(count[s]) >
@@ -388,7 +404,12 @@ void DeAmIvView::ensure_families() {
     if (wanted) {
       request.sigma_lo[s] = std::max(kAlSigmaFamilyMinSigma, 0.5 * lo);
       request.sigma_hi[s] = 1.5 * hi + 2.0 * kAlPackSigmaBump;
+      ++requested;
     }
+  }
+  namespace ft = counters::fit_timing;
+  if (ft::FitTimingCounters *const timing = ft::current_counts()) {
+    timing->deam_family_sides_requested += requested; // built + refused (the family lifecycle)
   }
   if (!(request.sigma_hi[0] > request.sigma_lo[0]) &&
       !(request.sigma_hi[1] > request.sigma_lo[1])) {
@@ -402,7 +423,6 @@ void DeAmIvView::ensure_families() {
                             (f.of_q(Side::Put) != nullptr ? 1u : 0u) +
                             (f.of_q(Side::Call) != nullptr ? 1u : 0u);
   work_.family_builds += built;
-  namespace ft = counters::fit_timing;
   if (ft::FitTimingCounters *const timing = ft::current_counts()) {
     timing->deam_family_builds += static_cast<std::uint32_t>(built);
     timing->deam_family_build_us += static_cast<std::uint64_t>(cache_.families->build_us);
@@ -428,6 +448,16 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
     const auto ns = (std::chrono::steady_clock::now() - stage_t0) / std::chrono::nanoseconds{1};
     stage->premium_fallback_ns[stage_reason] += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
   }
+  // K4 native fit route: the request's typed outcome, read by mid_iv / band; a request that
+  // reached the bounded reference route left the primary route (a reference exception).
+  last_route_ = stats.route;
+  last_lo_ = stats.route_lo;
+  last_hi_ = stats.route_hi;
+  if (stage != nullptr && stats.reference_evaluations > 0u) {
+    const auto ns = (std::chrono::steady_clock::now() - stage_t0) / std::chrono::nanoseconds{1};
+    stage->reference_ns += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    ++stage->reference_requests;
+  }
   if (timing == nullptr) {
     return out;
   }
@@ -447,9 +477,23 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   const std::uint64_t confirm_solves = std::min<std::uint64_t>(stats.confirm_solves, premium_solves);
   const std::uint64_t gate_solves =
       std::min<std::uint64_t>(stats.gate_solves, premium_solves - confirm_solves);
-  charge_reason(timing, ft::DeamReason::Iterate, premium_solves - confirm_solves - gate_solves);
+  // K4: the reference route's kernel evaluations (counted in premium_solves).
+  const std::uint64_t reference_solves = std::min<std::uint64_t>(
+      stats.reference_evaluations, premium_solves - confirm_solves - gate_solves);
+  charge_reason(timing, ft::DeamReason::Iterate,
+                premium_solves - confirm_solves - gate_solves - reference_solves);
   charge_reason(timing, ft::DeamReason::Confirm, confirm_solves);
   charge_reason(timing, ft::DeamReason::Gate, gate_solves);
+  charge_reason(timing, ft::DeamReason::Reference, reference_solves);
+  if (native()) {
+    // review-K2 m8: every native lane outcome and every route outcome has its own counter.
+    ++timing->deam_native_status[static_cast<std::size_t>(stats.native_status)];
+    ++timing->deam_route_outcome[static_cast<std::size_t>(stats.route)];
+    if (stats.native_carried) ++timing->deam_native_carried;
+    if (stats.reference_evaluations > 0u) ++timing->deam_reference_requests;
+    timing->deam_reference_evaluations += stats.reference_evaluations;
+    if (stats.route == IvRouteOutcome::BudgetExhausted) ++timing->deam_reference_budget_refused;
+  }
   charge_reason(timing, ft::DeamReason::Search, al > premium_solves ? al - premium_solves : 0u);
   timing->deam_confirms += stats.confirm_solves;
   if (stats.seed_routed) ++timing->deam_seed_routed;
@@ -552,6 +596,10 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
     controls.qfamily_bound = cache_.families->q_bound(quote.side);
     controls.qfamily_native = confirm_.family_native;
   }
+  if (native()) {
+    controls.native_route = true;
+    controls.reference_budget = &cache_.reference_budget;
+  }
   // Lane K3: under deam_family_q (the B-family arm) the band gate is never a skip
   // criterion: a quote whose side carries no (sigma, q) family is confirmed instead. The
   // gate's half-spread statement is not a 1e-7 bound (measured on SPY at 3fb9d6da: 41 of
@@ -577,6 +625,28 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
   if (stats.seed_routed) ++work_.seed_routed;
   work_.family_prices += stats.family_prices;
   if (stats.family_refused) ++work_.family_refused;
+  if (stats.reference_evaluations > 0u) ++work_.reference_inversions;
+  work_.reference_evaluations += stats.reference_evaluations;
+  switch (stats.route) {
+  case IvRouteOutcome::BudgetExhausted:
+    ++work_.reference_budget_exhausted;
+    break;
+  case IvRouteOutcome::PriceOnlyPlateau:
+  case IvRouteOutcome::PriceOnlyFloor:
+  case IvRouteOutcome::PriceOnlyLowVega:
+    ++work_.price_only_outcomes;
+    break;
+  case IvRouteOutcome::Interval:
+    ++work_.interval_outcomes;
+    break;
+  case IvRouteOutcome::None:
+  case IvRouteOutcome::NativeRoot:
+  case IvRouteOutcome::ReferenceRoot:
+  case IvRouteOutcome::LegRoot:
+  case IvRouteOutcome::AboveRange:
+  case IvRouteOutcome::Unresolved:
+    break;
+  }
   return iv;
 }
 
@@ -637,12 +707,58 @@ Result<double> DeAmIvView::mid_iv(std::size_t i) {
     // Premium: the mid from scratch; its cold points seed the band edges.
     const auto iv = invert(quote, mid, entry, premium() ? &entry.mid_memory : nullptr);
     entry.mid_iv = iv && positive(*iv) ? *iv : std::numeric_limits<double>::quiet_NaN();
+    entry.mid_route = last_route_;
+    entry.mid_lo = last_lo_;
+    entry.mid_hi = last_hi_;
     entry.computed = static_cast<std::uint8_t>(entry.computed | DeAmQuoteIv::kMid);
   }
   if (!positive(entry.mid_iv)) {
     return Err(ErrorCode::Unavailable, "de-Am IV cache: no identifiable mid volatility");
   }
   return Ok(entry.mid_iv);
+}
+
+// K4 native fit route: the band-edge comparisons decided by the model's validated edge
+// bounds (DeAmEdgeBounds) without pricing an edge. Every comparison must be decided: a
+// comparison a bound leaves open makes the band price its edges as on the other routes.
+bool DeAmIvView::bound_edges(const QuoteSliceQuote &quote, const DeAmQuoteIv &entry,
+                             EdgeDecision &out) {
+  ensure_families(); // the floor's family bound reads the chain's families
+  const DeAmEdgeBounds b = model_.edge_bounds(quote, entry.q_effective, cache_.families.get());
+  work_.family_prices += b.family_prices;
+  namespace ft = counters::fit_timing;
+  if (ft::FitTimingCounters *const timing = ft::current_counts()) {
+    timing->deam_family_prices += b.family_prices;
+  }
+  const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
+  // cap_lo <= A(kIvMax): x < cap_lo decides x < cap. floor_lo <= A(kIvMin) <= floor_hi:
+  // x > floor_hi decides x > floor, x <= floor_lo decides !(x > floor). NaN decides nothing.
+  if (!(quote.bid < b.cap_lo) || !(quote.ask > b.floor_hi)) {
+    return false; // the band's two gates (the bid below the cap, the ask above the floor)
+  }
+  out.bid_below_cap = true;
+  out.ask_above_floor = true;
+  if (quote.bid > b.floor_hi) {
+    out.bid_above_floor = true;
+  } else if (quote.bid <= b.floor_lo) {
+    out.bid_above_floor = false;
+  } else {
+    return false;
+  }
+  if (!(quote.ask < b.cap_lo)) {
+    return false; // an ask at or above the cap's lower bound: decided only by the price
+  }
+  out.ask_below_cap = true;
+  if (!(quote.bid > 0.0)) {
+    out.mid_inside = false;
+  } else if (mid > b.floor_hi && mid < b.cap_lo) {
+    out.mid_inside = true;
+  } else if (mid <= b.floor_lo) {
+    out.mid_inside = false;
+  } else {
+    return false;
+  }
+  return true;
 }
 
 const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
@@ -666,71 +782,101 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   }
   StageTimer endpoints(&DeAmStageClock::endpoint_ns); // B0: band-edge prices and re-prices
   if (DeAmStageClock *const stage = t_stage_clock) ++stage->endpoint_bands;
-  const DeAmKernel k = kernel();
   namespace ft = counters::fit_timing;
   ft::FitTimingCounters *const timing = ft::current_counts();
-  const std::uint64_t al0 = al_solves(timing);
-  const auto floor_price = model_.price(quote, kIvMin, filled.q_effective, k);
-  const auto cap_price = model_.price(quote, kIvMax, filled.q_effective, k);
-  charge_reason(timing, ft::DeamReason::RangeEdge, al_solves(timing) - al0);
-  cache_.model_prices += 2;
-  work_.model_prices += 2;
-  if (!floor_price || !cap_price) {
-    return publish();
+  EdgeDecision edges;
+  if (native() && bound_edges(quote, filled, edges)) {
+    // K4 native fit route: every comparison decided by validated bounds, no edge priced
+    // (floor_price / cap_price stay NaN; the channel builder reads mid_inside).
+    endpoints.stop();
+    if (DeAmStageClock *const stage = t_stage_clock) ++stage->bound_decided_bands;
+    if (timing != nullptr) ++timing->deam_edges_bound_decided;
+    ++work_.edges_decided;
+  } else {
+    if (native()) {
+      if (timing != nullptr) ++timing->deam_edges_priced;
+      ++work_.edges_priced;
+    }
+    const DeAmKernel k = kernel();
+    const std::uint64_t al0 = al_solves(timing);
+    const auto floor_price = model_.price(quote, kIvMin, filled.q_effective, k);
+    const auto cap_price = model_.price(quote, kIvMax, filled.q_effective, k);
+    charge_reason(timing, ft::DeamReason::RangeEdge, al_solves(timing) - al0);
+    cache_.model_prices += 2;
+    work_.model_prices += 2;
+    if (!floor_price || !cap_price) {
+      return publish();
+    }
+    // Bound-decided edges (gap report 1a, SPY1s Phase 1): on the Screen seed tier every
+    // comparison a quote makes with an edge price - the bid and the ask against both edges
+    // here, the mid against both (the builder's own test, vol_space_channel_observations)
+    // - is decided only when the quote clears the edge by more than the tier's tested
+    // bound; otherwise that edge is first re-priced on the accurate kernel (settle). The
+    // settled edges are what the entry publishes, so every later comparison agrees. On the
+    // accurate and Fast kernels every edge is decided as priced: the historical path.
+    const bool decided = k != DeAmKernel::Screen;
+    Edge floor_edge{*floor_price, kIvMin, decided};
+    Edge cap_edge{*cap_price, kIvMax, decided};
+    bool failed = false;
+    const double q_eff = filled.q_effective;
+    edges.bid_below_cap = quote.bid < settle(cap_edge, quote.bid, quote, q_eff, failed);
+    edges.ask_above_floor = quote.ask > settle(floor_edge, quote.ask, quote, q_eff, failed);
+    edges.bid_above_floor = quote.bid > settle(floor_edge, quote.bid, quote, q_eff, failed);
+    edges.ask_below_cap = quote.ask < settle(cap_edge, quote.ask, quote, q_eff, failed);
+    const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
+    edges.mid_inside = quote.bid > 0.0 && mid > settle(floor_edge, mid, quote, q_eff, failed) &&
+                       mid < settle(cap_edge, mid, quote, q_eff, failed);
+    endpoints.stop();
+    if (failed) {
+      return publish(); // an accurate edge re-price erred: the band stays undecided
+    }
+    filled.floor_price = floor_edge.value;
+    filled.cap_price = cap_edge.value;
   }
-  // Bound-decided edges (gap report 1a, SPY1s Phase 1): on the Screen seed tier every
-  // comparison a quote makes with an edge price - the bid and the ask against both edges
-  // here, the mid against both (the builder's own test, vol_space_channel_observations)
-  // - is decided only when the quote clears the edge by more than the tier's tested
-  // bound; otherwise that edge is first re-priced on the accurate kernel (settle). The
-  // settled edges are what the entry publishes, so every later comparison agrees. On the
-  // accurate and Fast kernels every edge is decided as priced: the historical path.
-  const bool decided = k != DeAmKernel::Screen;
-  Edge floor_edge{*floor_price, kIvMin, decided};
-  Edge cap_edge{*cap_price, kIvMax, decided};
-  bool failed = false;
-  const double q_eff = filled.q_effective;
-  const bool bid_below_cap = quote.bid < settle(cap_edge, quote.bid, quote, q_eff, failed);
-  const bool ask_above_floor = quote.ask > settle(floor_edge, quote.ask, quote, q_eff, failed);
-  const bool bid_above_floor = quote.bid > settle(floor_edge, quote.bid, quote, q_eff, failed);
-  const bool ask_below_cap = quote.ask < settle(cap_edge, quote.ask, quote, q_eff, failed);
-  const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
-  const bool mid_inside = quote.bid > 0.0 && mid > settle(floor_edge, mid, quote, q_eff, failed) &&
-                          mid < settle(cap_edge, mid, quote, q_eff, failed);
-  endpoints.stop();
-  if (failed) {
-    return publish(); // an accurate edge re-price erred: the band stays undecided
-  }
-  filled.floor_price = floor_edge.value;
-  filled.cap_price = cap_edge.value;
-  if (!bid_below_cap || !ask_above_floor) {
+  filled.mid_inside = edges.mid_inside;
+  if (!edges.bid_below_cap || !edges.ask_above_floor) {
     return publish();
   }
   // Premium: the mid first (exactly as the channel builder would ask for it: a
   // two-sided quote whose mid lies inside the identifiable range), then each edge from
   // a copy of the mid's cold points; without a mid, the edges from scratch.
   bool seeded = false;
-  if (premium() && mid_inside) {
+  if (premium() && edges.mid_inside) {
     static_cast<void>(mid_iv(i));
     // mid_iv wrote the slot (entry); carry its mid fields into the local copy so
     // that publish() keeps the mid and its memory (W2b merge of L2c x L2e).
     filled.mid_iv = entry.mid_iv;
     filled.mid_memory = entry.mid_memory;
+    filled.mid_route = entry.mid_route;
+    filled.mid_lo = entry.mid_lo;
+    filled.mid_hi = entry.mid_hi;
     filled.computed = entry.computed;
-    seeded = entry.mid_memory.points > 0u;
+    // review-K2 MJ1 (K4): on the native route the bid and the ask start from the mid's
+    // retained native carry whether or not the mid wrote seed-leg points.
+    seeded = entry.mid_memory.points > 0u || (native() && entry.mid_memory.carry.valid);
   }
   IvPremiumMemory bid_memory = filled.mid_memory;
   IvPremiumMemory ask_memory = filled.mid_memory;
+  // A typed native-route outcome that serves no IV still bounds the edge where its bracket
+  // end is certified on the target map (an interval, a budget or cap stop with one
+  // certified end, the floor's kIvMin); otherwise the edge carries no information.
+  const auto certified_end = [this](double end) {
+    return native() && std::isfinite(end) && end > 0.0;
+  };
   // A bid at or below the minimum-volatility price carries no lower
   // information; an ask at or above the maximum-volatility price no upper.
-  if (bid_above_floor) {
+  if (edges.bid_above_floor) {
     const auto lo = invert(quote, quote.bid, filled, seeded ? &bid_memory : nullptr);
-    filled.bid_iv = lo && positive(*lo) ? *lo : 0.0;
+    filled.bid_route = last_route_;
+    filled.bid_iv = lo && positive(*lo) ? *lo : certified_end(last_lo_) ? last_lo_ : 0.0;
   }
-  if (ask_below_cap) {
+  if (edges.ask_below_cap) {
     const auto hi = invert(quote, quote.ask, filled, seeded ? &ask_memory : nullptr);
+    filled.ask_route = last_route_;
     if (hi && positive(*hi)) {
       filled.ask_iv = *hi;
+    } else if (certified_end(last_hi_)) {
+      filled.ask_iv = last_hi_;
     }
   }
   filled.well_posed = filled.ask_iv > filled.bid_iv &&
@@ -742,10 +888,10 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  // 38 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
-  // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 4, two counts),
-  // then 2 per dividend and 6 per quote.
-  words.reserve(38 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  // 41 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
+  // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 4, native route 3,
+  // two counts), then 2 per dividend and 6 per quote.
+  words.reserve(41 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -801,6 +947,11 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   word(kDeAmQFamilyQNodes);
   // Phase 3 lever 1: family-native iterates run another iteration path (same tolerance).
   word(config.channel.deam_family_native ? 1u : 0u);
+  // K4: the native fit route types and routes differently, and its reference budget decides
+  // which requests the reference route answers (the cache owns the budget).
+  word(config.channel.deam_native_route ? 1u : 0u);
+  word(config.channel.deam_reference_max_calls);
+  word(config.channel.deam_reference_max_evaluations);
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);

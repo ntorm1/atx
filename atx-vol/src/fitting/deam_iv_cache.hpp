@@ -74,6 +74,18 @@ struct DeAmQuoteIv {
   // carrying at least one finite edge.
   bool well_posed = false;
   std::uint8_t computed = 0; // kCarry | kMid | kBand
+  // The native fit route (deam_native_route; None otherwise): the typed outcome of the
+  // mid's, the bid's and the ask's inversion (IvRouteOutcome), the mid's interval where its
+  // outcome carries one (C0's iv_lower / iv_upper; NaN: unknown), and whether the mid lies
+  // strictly inside the identifiable range (the band edges' decision, by validated bound or
+  // by price; what the channel builder reads on that route instead of floor/cap_price,
+  // which stay NaN when no edge was priced).
+  IvRouteOutcome mid_route = IvRouteOutcome::None;
+  IvRouteOutcome bid_route = IvRouteOutcome::None;
+  IvRouteOutcome ask_route = IvRouteOutcome::None;
+  double mid_lo = std::numeric_limits<double>::quiet_NaN();
+  double mid_hi = std::numeric_limits<double>::quiet_NaN();
+  bool mid_inside = false;
   // QuoteSliceDeamInversion::Premium: the cold points of the mid's inversion (made from
   // scratch); the bid and the ask are each seeded from a copy, so every cached value
   // is a function of the quote alone, whatever order the fits ask for them in.
@@ -191,6 +203,25 @@ struct DeAmFamilyRequest {
 // inversions of the mid, bid and ask at ~1.8 iterates each.
 inline constexpr double kDeAmFamilyCallsPerQuote = 5.4;
 
+// Validated bounds of one quote's band edges A(kIvMin) (the floor price) and A(kIvMax) (the
+// cap price) on the accurate kernel A, without pricing either edge (the native fit route,
+// lane K4; DeAmModel::edge_bounds). NaN: no bound.
+//   cap_lo   <= A(kIvMax): the European (Black-76) price at kIvMax on the kernel's carry
+//               (the Andersen-Lake price is the European leg plus a premium, floored at
+//               intrinsic), less a rounding margin;
+//   floor_lo <= A(kIvMin): the European price at kIvMin, less the same margin;
+//   floor_hi >= A(kIvMin): max(top of the non-monotone edge band above the zero-vol value,
+//               P_family(sigma_lo) + its envelope bound) - outside that band A rises in
+//               sigma (the L1c gate contract premium_root's monotone branch rests on), so
+//               A(kIvMin) <= A(sigma_lo) <= P_family + bound for a family box floor
+//               sigma_lo >= kIvMin; none without a covering family envelope.
+struct DeAmEdgeBounds {
+  double cap_lo = std::numeric_limits<double>::quiet_NaN();
+  double floor_lo = std::numeric_limits<double>::quiet_NaN();
+  double floor_hi = std::numeric_limits<double>::quiet_NaN();
+  std::uint32_t family_prices = 0; // bounded family prices spent
+};
+
 struct DeAmIvCache {
   std::uint64_t quote_set_hash = 0;
   std::vector<DeAmQuoteIv> ivs; // one per input quote, input order
@@ -202,6 +233,10 @@ struct DeAmIvCache {
   // inversion that could use one; nullptr when none was built.
   bool families_decided = false;
   std::shared_ptr<const DeAmSigmaFamilies> families;
+  // The native fit route's reference budget of this chain (deam_native_route; its limits
+  // are keyed words, so every fit sharing the cache shares one budget and spends it in the
+  // order the fits ask, deterministically).
+  IvReferenceBudget reference_budget{};
 };
 
 // The kernels the cache can price and invert with (QuoteSliceDeamProfile). Screen (SPY1s
@@ -232,6 +267,10 @@ struct DeAmPremiumControls {
   double qfamily_bound = std::numeric_limits<double>::infinity();
   // Family-native iterates on qfamily (IvPremiumGate::qfamily_native; deam_family_native).
   bool qfamily_native = false;
+  // The native fit route (IvPremiumGate::native_route / reference_budget;
+  // deam_native_route): the chain cache's reference budget (nullptr: off the route).
+  bool native_route = false;
+  IvReferenceBudget *reference_budget = nullptr;
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -295,6 +334,17 @@ public:
     static_cast<void>(request);
     return nullptr;
   }
+  // Validated bounds of the quote's band edges on the accurate kernel (the native fit
+  // route's endpoint decisions, DeAmEdgeBounds); every bound NaN (nothing decided) by
+  // default and for a model without them (the dated-cash lattice).
+  [[nodiscard]] virtual DeAmEdgeBounds edge_bounds(const QuoteSliceQuote &quote,
+                                                   double q_effective,
+                                                   const DeAmSigmaFamilies *families) const {
+    static_cast<void>(quote);
+    static_cast<void>(q_effective);
+    static_cast<void>(families);
+    return DeAmEdgeBounds{};
+  }
 
 protected:
   DeAmModel() = default;
@@ -334,6 +384,9 @@ struct DeAmConfirmControls {
   double family_c = 3.0;                                   // deam_family_c
   bool family_q = false;                                   // deam_family_q
   bool family_native = false;                              // deam_family_native
+  bool native_route = false;                               // deam_native_route (K4)
+  std::uint32_t reference_max_calls = 0;       // deam_reference_max_calls
+  std::uint32_t reference_max_evaluations = 0; // deam_reference_max_evaluations
 };
 
 class DeAmIvView {
@@ -387,6 +440,20 @@ private:
   // when that re-price errs.
   [[nodiscard]] double settle(Edge &edge, double x, const QuoteSliceQuote &quote,
                               double q_effective, bool &failed);
+  // The native fit route (deam_native_route on a Premium view).
+  [[nodiscard]] bool native() const noexcept;
+  // The band-edge comparisons of the native route decided by validated bounds before any
+  // edge is priced (deam_iv_cache.cpp bound_edges has the bounds); false when one of them
+  // is not decided that way (the edges are then priced as on the other routes).
+  struct EdgeDecision {
+    bool bid_below_cap = false;
+    bool ask_above_floor = false;
+    bool bid_above_floor = false;
+    bool ask_below_cap = false;
+    bool mid_inside = false;
+  };
+  [[nodiscard]] bool bound_edges(const QuoteSliceQuote &quote, const DeAmQuoteIv &entry,
+                                 EdgeDecision &out);
 
   DeAmIvCache &cache_;
   const DeAmModel &model_;
@@ -395,6 +462,10 @@ private:
   QuoteSliceDeamDiagnostics &work_;
   QuoteSliceDeamInversion inversion_;
   DeAmConfirmControls confirm_;
+  // The native route's typed outcome of the last inversion this view ran (invert()).
+  IvRouteOutcome last_route_ = IvRouteOutcome::None;
+  double last_lo_ = std::numeric_limits<double>::quiet_NaN();
+  double last_hi_ = std::numeric_limits<double>::quiet_NaN();
 };
 
 // The exact inputs a chain's cache depends on, as 64-bit words: two fits with
@@ -440,6 +511,11 @@ struct DeAmStageClock {
   std::array<std::uint64_t, kIvPremiumFallbackCount> premium_fallback_ns{};
   std::uint64_t fast_redo_ns = 0;
   std::uint64_t fast_redos = 0;
+  // The native fit route (K4): inversions that reached the bounded reference route (their
+  // whole wall: a reference exception) and the band edges decided by bound (endpoints).
+  std::uint64_t reference_ns = 0;
+  std::uint64_t reference_requests = 0;
+  std::uint64_t bound_decided_bands = 0;
 };
 // The clock armed on the calling thread, or null.
 [[nodiscard]] DeAmStageClock *deam_stage_clock() noexcept;
