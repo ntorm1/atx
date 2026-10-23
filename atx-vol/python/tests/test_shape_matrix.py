@@ -158,3 +158,30 @@ def test_selection_is_deterministic_and_never_picks_an_unqualified_policy(tmp_pa
     assert document["single_policy"] == "a" and document["wins"] == {"a": 1, "b": 1}
     with pytest.raises(ValueError, match="already exists"):
         sm.main(["select", "--table", str(table), "--output", str(out)])
+
+
+def test_validated_only_selection_admits_only_publication_validate_policies(tmp_path):
+    # C2's validation is the admission bar for the combined candidate: with --validated-only a
+    # policy qualifies only when its policy file sets graded.publication = validate.
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({"schema_version": 1, "admission": "graded", "graded": {}}),
+                     encoding="utf-8")
+    checked = tmp_path / "checked.json"
+    checked.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                   "graded": {"publication": "validate"}}), encoding="utf-8")
+    best = selection_cell("best", "dev", x=(0.99, 0.99, 0.01, 0))
+    best["policy_path"] = str(plain)
+    valid = selection_cell("valid", "dev", x=(0.90, 0.99, 0.10, 0))
+    valid["policy_path"] = str(checked)
+    unknown = selection_cell("unknown", "dev", x=(0.995, 0.99, 0.01, 0))  # no policy_path
+    cells = [best, valid, unknown]
+    assert sm.choose(cells, "dev", "x", 0.985) == "unknown"
+    assert sm.choose(cells, "dev", "x", 0.985, validated_only=True) == "valid"
+    table = tmp_path / "table.json"
+    table.write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    out = tmp_path / "select.json"
+    assert sm.main(["select", "--table", str(table), "--output", str(out),
+                    "--validated-only"]) == 0
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["validated_only"] is True
+    assert document["winners"] == {"dev": {"x": "valid"}}

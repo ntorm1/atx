@@ -368,14 +368,28 @@ def _violations(metrics: dict) -> int:
     return sum(counts.values()) + (metrics.get("duplicate_disagreements") or 0)
 
 
-def choose(cells: list[dict], cohort: str, name: str, containment: float):
+def validated(cell: dict) -> bool:
+    """Whether the cell's policy runs C2's publication validation (graded.publication =
+    validate in its policy file). A cell without a readable policy file is not validated."""
+    path = cell.get("policy_path")
+    if not path or not Path(path).is_file():
+        return False
+    policy = json.loads(Path(path).read_text(encoding="utf-8"))
+    return (policy.get("graded") or {}).get("publication") == "validate"
+
+
+def choose(cells: list[dict], cohort: str, name: str, containment: float,
+           validated_only: bool = False):
     """The deterministic winner of one (cohort, class): among policies with zero served shape
-    violations and containment >= the bar, the highest eligible price coverage; ties to
-    1e-12 go to the lower MAE/spread, then the smaller policy name. None when none qualifies."""
+    violations and containment >= the bar (and, with validated_only, C2's publication
+    validation on), the highest eligible price coverage; ties to 1e-12 go to the lower
+    MAE/spread, then the smaller policy name. None when none qualifies."""
     best = None
     for cell in cells:
         metrics = (cell.get("classes") or {}).get(name)
         if cell["cohort"] != cohort or not metrics or not metrics.get("eligible_rows"):
+            continue
+        if validated_only and not validated(cell):
             continue
         contained = metrics.get("containment")
         if contained is None or contained < containment or _violations(metrics):
@@ -403,7 +417,8 @@ def select(args: argparse.Namespace) -> int:
     winners = {}
     for cohort in cohorts:
         # Every class with eligible rows in this cohort; None where no policy qualifies.
-        winners[cohort] = {name: choose(cells, cohort, name, args.containment) for name in names
+        winners[cohort] = {name: choose(cells, cohort, name, args.containment,
+                                        args.validated_only) for name in names
                            if any((c["classes"].get(name) or {}).get("eligible_rows")
                                   for c in cells if c["cohort"] == cohort)}
     wins: dict = {}
@@ -413,7 +428,8 @@ def select(args: argparse.Namespace) -> int:
                 wins[policy] = wins.get(policy, 0) + 1
     single = min(wins, key=lambda p: (-wins[p], p)) if wins else None
     document = {"schema_version": SCHEMA_VERSION, "tool_sha256": TOOL_SHA256,
-                "containment": args.containment, "winners": winners, "wins": wins,
+                "containment": args.containment, "validated_only": args.validated_only,
+                "winners": winners, "wins": wins,
                 "single_policy": single,
                 "tables": {str(p): sha256(p) for p in args.table}}
     write = args.output.resolve()
@@ -436,6 +452,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--table", required=True, type=Path, action="append")
     s.add_argument("--output", required=True, type=Path)
     s.add_argument("--containment", type=float, default=0.985)
+    s.add_argument("--validated-only", action="store_true",
+                   help="admit only policies with graded.publication = validate (C2)")
     return p
 
 
