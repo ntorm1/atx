@@ -730,6 +730,10 @@ struct AlSigmaFamilyPriceVega {
   double price = std::numeric_limits<double>::quiet_NaN();
   double vega = std::numeric_limits<double>::quiet_NaN(); // dP/dσ of the family map
   AlSigmaFamilyStatus status = AlSigmaFamilyStatus::NotPrepared;
+  // A0 r6 (review-L3g m4): the row is in the exercise regime (family_greeks' `exercised`
+  // rule). vega is then exactly 0.0 BY CONSTRUCTION (intrinsic does not move with σ), not
+  // a measured slope: an inversion must treat it as "no slope here", never divide by it.
+  bool exercised = false;
 };
 
 // The exact Newton slope for a family-based inversion: price(S, K, sigma) and the

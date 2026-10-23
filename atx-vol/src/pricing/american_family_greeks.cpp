@@ -807,7 +807,8 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   need.sig1 = true;
   Internal in;
   fused_internal(v, c.Sp, c.Kp, sigma, need, nullptr, in);
-  return AlSigmaFamilyPriceVega{in.price, in.dsig, AlSigmaFamilyStatus::Ok};
+  // review-L3g m4 (A0 r6): the exercise regime's vega is 0.0 by construction — say so.
+  return AlSigmaFamilyPriceVega{in.price, in.dsig, AlSigmaFamilyStatus::Ok, in.exercised};
 }
 
 // The chain / shock column writer.

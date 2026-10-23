@@ -918,6 +918,37 @@ TEST(AlSigmaFamilyGreeks, ExerciseRegionServesIntrinsicWithTheExerciseGreeks) {
             << " edge=" << edge_of(put, 100.0, 100.0, 0.12, Side::Put) << "\n";
 }
 
+TEST(AlSigmaFamilyGreeks, PriceAndVegaFlagsTheExerciseRegimesZeroSlope) {
+  // review-L3g m4 (A0 r6): on the exercise regime family_price_and_vega serves vega ==
+  // 0.0 BY CONSTRUCTION; `exercised` says so (an inversion must treat it as "no slope",
+  // never divide by it), with family_greeks' rule along a spot ladder through the edge,
+  // and the detached copy carries the same flag.
+  const AlExpiryGeometry g = prepare_al_geometry(0.5, 0.05, 0.02);
+  AlSigmaFamily put(g, Side::Put, 100.0);
+  ASSERT_TRUE(put.prepare(0.1, 0.5, kNodes));
+  const AlSigmaFamilyPriceVega ex = family_price_and_vega(put, 40.0, 100.0, 0.12);
+  ASSERT_EQ(ex.status, AlSigmaFamilyStatus::Ok);
+  EXPECT_TRUE(ex.exercised);
+  EXPECT_EQ(ex.vega, 0.0);
+  const AlSigmaFamilyPriceVega cont = family_price_and_vega(put, 100.0, 100.0, 0.3);
+  EXPECT_FALSE(cont.exercised);
+  EXPECT_GT(cont.vega, 0.0);
+  std::size_t flagged = 0;
+  for (double S = 60.0; S <= 100.0; S += 1.0) {
+    const AlSigmaFamilyPriceVega pv = family_price_and_vega(put, S, 100.0, 0.12);
+    const AlSigmaFamilyGreeks gk = family_greeks(put, S, 100.0, 0.12, Mask::hedge());
+    EXPECT_EQ(pv.exercised, gk.exercised) << "S=" << S;
+    if (pv.exercised) {
+      EXPECT_EQ(pv.vega, 0.0) << "S=" << S;
+      ++flagged;
+    }
+  }
+  EXPECT_GE(flagged, 10u);
+  const AlSigmaFamilyDetached d = family_detach(put);
+  EXPECT_TRUE(d.price_and_vega(40.0, 100.0, 0.12).exercised);
+  EXPECT_FALSE(d.price_and_vega(100.0, 100.0, 0.3).exercised);
+}
+
 TEST(AlSigmaFamilyGreeks, MaskSelectsWhatIsComputedAndRequestedFieldsAreMaskIndependent) {
   const AlExpiryGeometry g = prepare_al_geometry(0.25, 0.045, 0.01);
   AlSigmaFamily f(g, Side::Put, 100.0);
