@@ -5,6 +5,22 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — family enclosure: the computed bracket meets the width (lane K5)
+
+`family_enclosure` (`src/pricing/american_iv.cpp`, the Skipped rule of K3's family-route root
+acceptance) placed its ends at x -/+ W/2 and refused the skip when the computed width `b - a`
+exceeded W. For every x below 0.25 vol (and in [1, 2)) the two roundings leave `b - a` one ulp
+of x above W, so roots whose two ends the validated envelope certified paid a Fast-AL confirm.
+The upper end now steps toward the lower one (at most `kEnclosureWidthSteps` ulps) until the
+computed bracket meets the unchanged rule; the envelope and the 1e-7 criterion are unchanged.
+Opt-in keys only (`graded.family_q` with `family_native`, and the B-family Band arm); the keys-OFF
+defaults are bit-identical. SPY native route (K4's policy): skipped roots 8,739 -> 25,925 of
+28,117 (31.1 % -> 92.2 %; calls 18.2 % -> 90.3 %, puts 43.6 % -> 94.0 %), confirm solves 22,823 ->
+5,637. Served sets are unchanged on SPY / cohort5 / dev200 / dev200b; served prices move by at
+most 8.3e-9 USD (a root moves inside its certified bracket). Pinned by
+`AmericanIvPremium.FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds`; design note
+`docs/sigma-q-family-error-envelope.md` section 9.
+
 ### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
 
 `ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` now default to 1, since both lanes

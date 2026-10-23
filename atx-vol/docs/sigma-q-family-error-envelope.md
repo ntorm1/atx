@@ -130,11 +130,13 @@ review-K3 MJ-1) by `QuoteSliceVolSpace.FamilyQBandArmConfirmsEveryRootOfASideWit
 a negative-carry chain builds the put family only; with the rule reverted 91 of its call
 roots are `LegacyBandGate`, with it 0 and every call root `Confirmed`.
 
-W = min(tol, 1e-7) (1 - 2^-20). Placement (`confirm_bracket`): C at the native root x; if
-C certifies x's side, the other end within W of x (the family at x +- W first, else C past
-the chord's Newton point); for a far root (Newton step > W / 4) both ends at the Newton
-point +- 0.45 W (family first, else C); if C leaves x's side open (|C(x) - price| <=
-eps_C), both ends at x +- W / 2 (family first, else C). No step length and no secant slope
+W = min(tol, 1e-7) (1 - 2^-20). Placement of the Skipped enclosure (`family_enclosure`): the
+ends x - W/2 and x + W/2, the upper end stepped toward the lower one by an ulp or two until
+the COMPUTED width meets b - a <= W (lane K5, section 9). Placement (`confirm_bracket`): C
+at the native root x; if C certifies x's side, the other end within W of x (the family at
+x +- W first, else C past the chord's Newton point); for a far root (Newton step > W / 4)
+both ends at the Newton point +- 0.45 W (family first, else C); if C leaves x's side open
+(|C(x) - price| <= eps_C), both ends at x +- W / 2 (family first, else C). No step length and no secant slope
 is a bound: a local chord only places an end and the served point. A request that carried a (sigma, q) family
 never reaches the band gate (`band_gate_holds` runs only when `gate->qfamily == nullptr`),
 so no domain of the family route falls back to a band-based criterion; the audit reads
@@ -189,3 +191,66 @@ None -> no family-route root (Search's answer).
 - (Closed in fix round 1, review-K3 mn-3: the public comments on `deam_family_q`,
   `deam_family_native` and the Family grid kernel in
   `include/atx/vol/api/fitting/quote_slice.hpp` now state this acceptance.)
+
+## 9. Refinement (lane K5, r6): the enclosure's width as computed
+
+The question (master plan section 7, "Can confirmations be skipped safely often enough?") was
+whether the envelope had to be refined or split so that more roots skip the Fast-AL confirm.
+Measured first, on the K4 native route at SPY (a temporary instrumented build at 746154d6,
+never committed): of 28,117 family-native roots, the validated bound certified BOTH ends of
+the enclosure on 25,925 (calls 12,511 of 13,849, puts 13,414 of 14,268), yet only 8,739 were
+skipped. The other 17,186 were refused by the width test: the ends were placed as
+`a = x - W/2`, `b = x + W/2`, and in floating point `b - a` exceeds `W` by an ulp of x for
+EVERY x below 0.25 vol (and in [1, 2)) at `W = acceptance_width(1e-7)` - the binade fixes
+how the half-width rounds - so those roots paid a confirm solve (and a family price at
+x +- W). The envelope was not the binding constraint.
+
+Change (`family_enclosure`, `american_iv.cpp`): `b` steps toward `a`, at most
+`kEnclosureWidthSteps` ulps (one inside a binade, two where `b` sits on a power of two), until
+the COMPUTED bracket meets the unchanged rule `b - a <= W`. `b - a` is exact there
+(Sterbenz: W << a), so a skip still means: a bracket no wider than W < 1e-7 whose two ends
+the validated envelope certifies, the served point clamped into it. Neither the envelope
+(bound, refinement, domain, class) nor the 1e-7 criterion changed. Pinned by
+`AmericanIvPremium.FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds` (64 rounding-widened
+brackets whose ends the bound certifies: 0 enclosed before, 64 after, each within W). Mutations
+(K5 report): removing the step, or removing it and loosening the rule to `W (1 + 1e-9)`, fails
+that test; K3's per-end bound pins still catch a dropped lower / upper / both bound.
+
+Measured on the K4 route (policy `graded-v1-famq-grid-native-route.json`):
+
+| SPY native roots | before (746154d6) | after (K5) |
+| --- | ---: | ---: |
+| skip rate (Skipped / native roots) | 31.1 % (8,739 / 28,117) | 92.2 % (25,925 / 28,117) |
+| calls / puts | 18.2 % / 43.6 % | 90.3 % / 94.0 % |
+| Fast-AL confirm solves | 22,823 | 5,637 |
+| family prices | 156,018 | 126,941 |
+| root audit (served roots) | 0 violations, max skipped err 6.25e-9 | 0 violations, max skipped err 6.25e-9 |
+
+The bench cohorts (same policy; skip rate over family-native roots, calls / puts):
+
+| cohort | before | after |
+| --- | ---: | ---: |
+| cohort5 | 35.4 % (22.5 / 47.5) | 91.9 % (90.5 / 93.2) |
+| dev200 | 69.7 % (90.0 / 56.4) | 74.1 % (96.5 / 59.3) |
+| dev200b | 53.1 % (62.3 / 45.0) | 53.2 % (62.3 / 45.2) |
+
+On dev200 / dev200b most roots are NOT family-native (no family on the side: the leg's
+Newton-contract confirms, 70,878 and 57,864 roots, are unchanged), and the family-native put
+roots still confirmed there are envelope-limited (`ConfirmBothEnds`: the bound exceeds W x
+slope at both ends), not width-limited.
+
+Per side, the bound itself (SPY, at the enclosure's ends): puts - every one of the 30 put
+envelopes verifies all 48 premium quadrature nodes; end bounds p50 2.8e-9, p90 1.3e-6, p99
+2.6e-5 USD; the 854 put roots still confirmed fail on the verified sensitivity term (worse-end
+bound / gap median 2.1). Calls - none of the 29 call envelopes verifies every node (18 to 48 of
+48 unverified: the q < r call's boundary tail does not decay geometrically); an unverified node
+takes its trivial box bound g(xmax), which is ~0 where the call's early-exercise premium is
+negligible, so 90 % of calls still enclose; the 1,338 call roots still confirmed are all
+dominated by that box term. These two populations are what a refined or split envelope (the
+section-7 candidates (a) / (c)) could still convert: at most 2,192 roots, ~2.5 k confirm solves.
+
+Cost (SPY, B0 clock, 10 cold trials, CPU 6, development rows on a shared host): the inverse
+stage 2,660 -> 1,451 ms. A temporary sub-clock (K5 report) puts the saving on the confirm
+bracket (1,664 -> 311 ms; Fast-AL confirm solves ~57 us each) and shows what is left of the
+acceptance: the enclosure itself, two bounded family prices per root, ~690 ms (~25 us per
+root) - `family_price_bounded`'s per-node bound terms, the next lever on this stage.
