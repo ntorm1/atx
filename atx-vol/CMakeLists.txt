@@ -264,6 +264,13 @@ set(ATX_VOL_ANALYTICS_SOURCES
     src/analytics/realized_vol.cpp
     # THEO-3: breakeven-vol root-find, layered over bev_replay_pnl (backtest.cpp)
     src/analytics/breakeven.cpp
+    # Lane A1 (r6): declared analytics on the live serving book (hedge conventions, Taylor /
+    # exact scenarios, attribution); European-only outputs on the common model; the curve
+    # session served through the book. api/analytics/{served_analytics,
+    # common_model_analytics,served_session}.hpp.
+    src/analytics/served_analytics.cpp
+    src/analytics/common_model_analytics.cpp
+    src/analytics/served_session.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES
