@@ -1,6 +1,8 @@
 # ATXVFA: archive format for fitted vol surfaces and their serving records
 
-Status: format major 1, minor 0 (lane `surface-archive`, 2026-10-17). This file
+Status: format major 1, minor 1 (lane `surface-archive`, 2026-10-17; minor 1 = lane C0,
+2026-10-22: the `PriceOnlyNodes` section and the minor-1 tails of `FitArchiveFitRecord` and
+`FitArchiveQuoteRow`, section 5.1). This file
 is the on-disk specification. The POD structs that implement it live in
 `include/atx/vol/api/storage/fit_archive_format.hpp`; every size and offset
 below is pinned there by `static_assert`, so the two cannot drift silently.
@@ -67,7 +69,7 @@ file_size - 64           Footer                64 B
 | --- | --- | --- | --- |
 | 0 | 8 | `magic` | `89 56 46 41 0D 0A 1A 0A` (`\x89VFA\r\n\x1A\n`: high bit, CRLF and ^Z detect 7-bit or text-mode transfer damage, PNG-style) |
 | 8 | 2 | `format_major` | 1 |
-| 10 | 2 | `format_minor` | 0 |
+| 10 | 2 | `format_minor` | 1 (0 before lane C0) |
 | 12 | 2 | `header_size` | 256 |
 | 14 | 2 | `section_entry_size` | 64 |
 | 16 | 4 | `endian_tag` | `0x01020304` |
@@ -149,15 +151,16 @@ binary search over `Symbols`; after that every lookup is integer-keyed.
 | 3 | `Provenance` | 1 | 1 | 1.0 | no | caller bytes (e.g. the policy JSON and run receipt); never interpreted |
 | 16 | `SurfaceRecords` | 192 | 8 | 1.0 | yes | `FitArchiveSurfaceRecord[]` (section 5.2) |
 | 17 | `SurfaceIndex` | 24 | 8 | 1.0 | yes | index over 16 |
-| 32 | `FitRecords` | 896 | 8 | 1.0 | yes | `FitArchiveFitRecord[]` (section 5.1) |
+| 32 | `FitRecords` | 944 | 8 | 1.1 | yes | `FitArchiveFitRecord[]` (section 5.1; minor 0 = 896) |
 | 33 | `FitIndex` | 24 | 8 | 1.0 | yes | index over 32 |
 | 34 | `PriceNodes` | 24 | 8 | 1.0 | yes | `{f64 strike, call, put}` = `AmericanPriceNode` |
-| 35 | `QuoteRows` | 48 | 8 | 1.0 | yes | `FitArchiveQuoteRow[]` |
+| 35 | `QuoteRows` | 72 | 8 | 1.1 | yes | `FitArchiveQuoteRow[]` (minor 0 = 48) |
 | 36 | `MovedNodes` | 1 | 1 | 1.0 | yes | `u8[]` (`QuoteSliceFit::moved_nodes`) |
 | 37 | `Dividends` | 16 | 8 | 1.0 | yes | `{f64 tau, amount}` = `CashDividend` |
 | 38 | `CarryPoints` | 16 | 8 | 1.0 | yes | `{f64 strike, continuous_yield}` = `QuoteSliceCarryPoint` |
 | 39 | `CurveWords` | 8 | 8 | 1.0 | yes | 8-byte words of curve payloads (section 6) |
 | 40 | `FitTimings` | 8 | 8 | 1.0 | no | `{f64 channel_solve_seconds}` per `FitRecords` element, same order; written only after `FitArchiveWriter::record_timings(true)` (section 9) |
+| 41 | `PriceOnlyNodes` | 1 | 1 | 1.0 | yes | `u8[]` (`QuoteSliceFit::price_only_nodes`, values 0..3; file minor 1) |
 | 48 | `ExpiryMeta` | 128 | 8 | 1.0 | yes | `FitArchiveExpiryMeta[]` (section 5.3) |
 | 49 | `ExpiryData` | 1824 | 8 | 1.0 | yes | `ExpiryRecord` object representations (section 7) |
 | 50 | `ExpiryIndex` | 24 | 8 | 1.0 | yes | index over 48 |
@@ -189,7 +192,7 @@ has implicit padding. Enumerations are stored as their `std::uint8_t` underlying
 value and range-checked on open. Booleans are bytes restricted to 0/1, or bits
 of a named `flags` byte.
 
-### 5.1 `FitArchiveFitRecord` (896 B): one expiry fit
+### 5.1 `FitArchiveFitRecord` (944 B; 896 B at minor 0): one expiry fit
 
 One `QuoteSurfaceSlice` (graded admission) or one standalone `QuoteSliceFit`
 (static path). Key: (underlier, snapshot, expiry_day, `sub` = caller ordinal,
@@ -214,10 +217,17 @@ One `QuoteSurfaceSlice` (graded admission) or one standalone `QuoteSliceFit`
 | 844 | 4 | `surface` | owning `SurfaceRecords` row, `0xFFFFFFFF` for a standalone fit |
 | 848 | 4 | | `fit_status`, `dividend_model`, `discrete_div_scheme`, `has_al_opts` |
 | 852 | 44 | `reserved` | zero |
+| 896 | 48 | minor-1 tail (lane C0) | `quote_ns`, `underlying_ns` (i64), `raw_spot` (f64, meaningful only with flag bit1), `spot_version`, `carry_version` (u32) = `QuoteSliceSnapshotInfo`; `price_only_nodes` ref into `PriceOnlyNodes` (offset 928); `carry_convention` (`QuoteSliceCarryConvention`), `floor_policy` (`QuoteSliceFloorPolicy`), `snapshot_flags` (bit0 spot_stale, bit1 has raw_spot), `spot_rule` (`QuoteSliceSpotRule`, offset 939: own / nearest / median; lane C0 fix round 1 took it from a reserved byte, so an earlier minor-1 writer's 0 reads as own), 4 reserved zero bytes. A minor-0 record reads as zero: no provenance (spot rule own), Legacy policy, no price-only nodes |
 
-`FitArchiveQuoteRow` (48 B): `market_iv`, `fitted_iv`, `fitted_price`,
-`spread_vol`, `weight_w` (f64), then `quote_status`, `evaluation_status`,
-`admitted`, `weight_capped` (u8) and 4 reserved bytes.
+`FitArchiveQuoteRow` (72 B; 48 B at minor 0): `market_iv`, `fitted_iv`, `fitted_price`,
+`spread_vol`, `weight_w` (f64), then `quote_status`, `evaluation_status`
+(every `QuoteSliceEvaluationStatus` up to `market_distance_failure`; before lane C0
+the reader stopped at `pricing_failure` and refused a PriceOnly row),
+`admitted`, `weight_capped` (u8) and 4 reserved bytes; the minor-1 tail (lane C0):
+`iv_lower`, `iv_upper` (f64, meaningful only with flag bit0, zero otherwise),
+`price_only_reason` (`QuoteSlicePriceOnlyReason`), `vol_source`
+(`QuoteSliceVolConvention`), `flags` (bit0 has interval) and 5 reserved zero bytes.
+A minor-0 row reads as zero: no reason, no convention, no interval.
 
 ### 5.2 `FitArchiveSurfaceRecord` (192 B): one cross-expiry quote surface
 

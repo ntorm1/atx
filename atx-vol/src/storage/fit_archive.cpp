@@ -44,21 +44,22 @@ struct SectionSpec {
   bool evolvable; // fixed-stride record type whose stride may grow by minor
 };
 
-constexpr std::array<SectionSpec, 26> kSpecs{{
+constexpr std::array<SectionSpec, 27> kSpecs{{
     {Type::Symbols, "symbols", 48, 48, 8, false},
     {Type::Strings, "strings", 1, 1, 1, false},
     {Type::Provenance, "provenance", 1, 1, 1, false},
     {Type::SurfaceRecords, "surface-records", 192, 192, 8, true},
     {Type::SurfaceIndex, "surface-index", 24, 24, 8, false},
-    {Type::FitRecords, "fit-records", 896, 896, 8, true},
+    {Type::FitRecords, "fit-records", 944, 896, 8, true}, // minor 1: 944 (lane C0)
     {Type::FitIndex, "fit-index", 24, 24, 8, false},
     {Type::PriceNodes, "price-nodes", 24, 24, 8, false},
-    {Type::QuoteRows, "quote-rows", 48, 48, 8, true},
+    {Type::QuoteRows, "quote-rows", 72, 48, 8, true}, // minor 1: 72 (lane C0)
     {Type::MovedNodes, "moved-nodes", 1, 1, 1, false},
     {Type::Dividends, "dividends", 16, 16, 8, false},
     {Type::CarryPoints, "carry-points", 16, 16, 8, false},
     {Type::CurveWords, "curve-words", 8, 8, 8, false},
     {Type::FitTimings, "fit-timings", 8, 8, 8, true},
+    {Type::PriceOnlyNodes, "price-only-nodes", 1, 1, 1, false},
     {Type::ExpiryMeta, "expiry-meta", 128, 128, 8, true},
     {Type::ExpiryData, "expiry-data", kFitArchiveExpiryRecordBytes,
      kFitArchiveExpiryRecordBytes, 8, false},
@@ -638,6 +639,11 @@ std::span<const FitArchiveQuoteRow> FitArchive::quote_rows(const FitArchiveFitRe
 
 std::span<const std::uint8_t> FitArchive::moved_nodes(const FitArchiveFitRecord &fit) const noexcept {
   return slice_of(view<std::uint8_t>(Type::MovedNodes), fit.moved_nodes);
+}
+
+std::span<const std::uint8_t>
+FitArchive::price_only_nodes(const FitArchiveFitRecord &fit) const noexcept {
+  return slice_of(view<std::uint8_t>(Type::PriceOnlyNodes), fit.price_only_nodes);
 }
 
 std::span<const double> FitArchive::curve_payload(const FitArchiveFitRecord &fit) const noexcept {

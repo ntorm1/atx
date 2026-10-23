@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -456,6 +457,77 @@ TEST(FitArchiveEvolution, NewerRecordMinorWithWiderStrideServesKnownPrefix) {
     ASSERT_TRUE(x.has_value() && y.has_value());
     EXPECT_EQ(testkit::diff_slice(*x, *y), "");
   }
+}
+
+// A file of minor 0 (before lane C0): 896-byte fit records, 48-byte quote rows, no
+// PriceOnlyNodes section. It opens, and the minor-1 tails read as absent.
+TEST(FitArchiveEvolution, MinorZeroFileReadsTheIdentifiabilityTailsAsAbsent) {
+  auto sections = split_image(sample_image());
+  const auto narrow = [](testkit::ImageSection &s, std::size_t old_stride) {
+    const std::size_t stride = s.meta.element_stride;
+    std::vector<std::byte> out;
+    for (std::size_t at = 0; at < s.bytes.size(); at += stride) {
+      out.insert(out.end(), s.bytes.begin() + static_cast<std::ptrdiff_t>(at),
+                 s.bytes.begin() + static_cast<std::ptrdiff_t>(at + old_stride));
+    }
+    s.bytes = std::move(out);
+    s.meta.element_stride = static_cast<std::uint32_t>(old_stride);
+    s.meta.type_minor = 0;
+  };
+  auto *fits = find_section(sections, Type::FitRecords);
+  auto *rows = find_section(sections, Type::QuoteRows);
+  ASSERT_NE(fits, nullptr);
+  ASSERT_NE(rows, nullptr);
+  EXPECT_EQ(fits->meta.type_minor, 1u);
+  EXPECT_EQ(rows->meta.type_minor, 1u);
+  narrow(*fits, 896);
+  narrow(*rows, 48);
+  std::erase_if(sections, [](const testkit::ImageSection &s) {
+    return s.meta.type == Type::PriceOnlyNodes;
+  });
+  auto old = FitArchive::open_copy(join_image(sections));
+  ASSERT_TRUE(old.has_value()) << to_string(old.error().status);
+  auto current = FitArchive::open_copy(sample_image());
+  ASSERT_TRUE(current.has_value());
+  ASSERT_EQ(old->fits().size(), current->fits().size());
+  for (std::size_t i = 0; i < old->fits().size(); ++i) {
+    EXPECT_EQ(std::memcmp(&old->fits()[i], &current->fits()[i], 896), 0) << i;
+    auto x = decode_fit(*old, old->fits()[i]);
+    ASSERT_TRUE(x.has_value());
+    EXPECT_EQ(x->floor_policy, QuoteSliceFloorPolicy::Legacy);
+    EXPECT_TRUE(x->price_only_nodes.empty());
+    EXPECT_EQ(x->snapshot.spot_version, 0u);
+    EXPECT_EQ(x->snapshot.spot_rule, QuoteSliceSpotRule::Own);
+    EXPECT_TRUE(std::isnan(x->snapshot.raw_spot));
+    for (const QuoteSliceRow &row : x->rows) {
+      EXPECT_EQ(row.price_only_reason, QuoteSlicePriceOnlyReason::None);
+      EXPECT_EQ(row.vol_source, QuoteSliceVolConvention::None);
+      EXPECT_TRUE(std::isnan(row.iv_lower) && std::isnan(row.iv_upper));
+    }
+  }
+}
+
+// A minor-1 tail that breaks its own invariants is refused, never misread.
+TEST(FitArchiveEvolution, InvalidIdentifiabilityTailIsRefused) {
+  const auto planted = [](Type type, std::size_t offset, std::uint8_t value) {
+    auto sections = split_image(sample_image());
+    auto *s = find_section(sections, type);
+    EXPECT_NE(s, nullptr);
+    if (s != nullptr) s->bytes[offset] = std::byte{value};
+    return open_status(join_image(sections), FitArchiveVerify::Paranoid);
+  };
+  EXPECT_EQ(planted(Type::QuoteRows, offsetof(FitArchiveQuoteRow, price_only_reason), 9),
+            ArchiveStatus::RecordInvalid);
+  EXPECT_EQ(planted(Type::QuoteRows, offsetof(FitArchiveQuoteRow, iv_upper), 1),
+            ArchiveStatus::RecordInvalid); // an interval without its flag
+  EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, floor_policy), 2),
+            ArchiveStatus::RecordInvalid);
+  EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, spot_rule), 3),
+            ArchiveStatus::RecordInvalid);
+  EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, reserved1), 1),
+            ArchiveStatus::RecordInvalid);
+  EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, raw_spot) + 7, 0x40),
+            ArchiveStatus::RecordInvalid); // a raw spot without its flag
 }
 
 TEST(FitArchiveEvolution, StrideBelowMinorZeroAndNonEvolvableStridesRefused) {

@@ -4,8 +4,11 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <span>
 #include <utility>
 #include <vector>
+
+#include "atx/vol/api/pricing/american.hpp" // kTauAtExpiryRelTol, CashDividend
 
 namespace atx::vol {
 
@@ -229,4 +232,133 @@ Result<QuoteSliceFit> fit_quote_slice_resolving_carry(const QuoteSliceMarket &ma
 }
 
 } // namespace detail
+
+// ── One authoritative spot per snapshot (lane C0) ─────────────────────────────
+
+namespace {
+
+bool finite_nonnegative(double value) noexcept { return value >= 0.0 && std::isfinite(value); }
+
+// The dated events fit_quote_slice keeps (prepare_fit): tau in (0, T (1 + rel tol)],
+// nonzero amounts, tau clamped to T. Calendar clock throughout.
+template <class Visit>
+void for_each_event(const QuoteSliceMarket &m, std::span<const CashDividend> dividends,
+                    Visit &&visit) {
+  const double window = m.calendar_years * (1.0 + kTauAtExpiryRelTol);
+  for (const CashDividend &event : dividends) {
+    if (!(event.tau > 0.0) || event.tau > window || event.amount == 0.0) continue;
+    visit(std::min(event.tau, m.calendar_years), event.amount);
+  }
+}
+
+// The lattice forward at spot `spot` and calendar yield `q`, exactly as prepare_fit
+// builds QuoteSliceDiagnostics::forward for DatedCash.
+double dated_forward(const QuoteSliceMarket &m, double spot, double q,
+                     std::span<const CashDividend> dividends) noexcept {
+  double forward = spot * std::exp((m.rate - q) * m.calendar_years);
+  for_each_event(m, dividends, [&](double tau, double amount) {
+    forward -= amount * std::exp((m.rate - q) * (m.calendar_years - tau));
+  });
+  return forward;
+}
+
+// The yield shift keeping the dated-cash forward: a bounded safeguarded Newton on
+// F(S*, q + shift) = F(S, q), decreasing in the shift while the forward is positive.
+// NaN when no positive forward or no finite root exists.
+double dated_cash_shift(const QuoteSliceMarket &m, double snapshot_spot,
+                        std::span<const CashDividend> dividends) noexcept {
+  const double target = dated_forward(m, m.spot, m.continuous_yield, dividends);
+  if (!detail::positive(target)) return std::numeric_limits<double>::quiet_NaN();
+  const double T = m.calendar_years;
+  double shift = std::log1p((snapshot_spot - m.spot) / m.spot) / T;
+  for (int step = 0; step < 64; ++step) {
+    const double q = m.continuous_yield + shift;
+    const double value = dated_forward(m, snapshot_spot, q, dividends) - target;
+    if (!std::isfinite(value)) break;
+    if (std::abs(value) <= 1.0e-15 * target) return shift;
+    double slope = -T * snapshot_spot * std::exp((m.rate - q) * T);
+    for_each_event(m, dividends, [&](double tau, double amount) {
+      slope += (T - tau) * amount * std::exp((m.rate - q) * (T - tau));
+    });
+    if (!(slope < 0.0) || !std::isfinite(slope)) break;
+    const double next = shift - value / slope;
+    if (!std::isfinite(next)) break;
+    if (next == shift) return shift;
+    shift = next;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+// The forward the model preserves, by the identities fit_quote_slice uses.
+double model_forward(const QuoteSliceMarket &m, QuoteSliceDividendModel model,
+                     std::span<const CashDividend> dividends) noexcept {
+  if (model == QuoteSliceDividendModel::DatedCash) {
+    return dated_forward(m, m.spot, m.continuous_yield, dividends);
+  }
+  return detail::supplied_forward(m, model);
+}
+
+} // namespace
+
+Result<QuoteSliceSpotRebase> rebase_quote_slice_spot(const QuoteSliceMarket &market,
+                                                     double snapshot_spot,
+                                                     QuoteSliceDividendModel model,
+                                                     std::span<const CashDividend> dividends) {
+  using detail::positive;
+  if (!positive(market.spot) || !positive(snapshot_spot) || !positive(market.calendar_years) ||
+      !std::isfinite(market.rate) || !std::isfinite(market.continuous_yield) ||
+      !finite_nonnegative(market.dividend_pv)) {
+    return Err(ErrorCode::InvalidArgument, "spot rebase: invalid market or snapshot spot");
+  }
+  if (model != QuoteSliceDividendModel::DatedCash && !dividends.empty()) {
+    return Err(ErrorCode::InvalidArgument, "spot rebase: dated dividends need DatedCash");
+  }
+  for (const CashDividend &event : dividends) {
+    if (!std::isfinite(event.tau) || !finite_nonnegative(event.amount)) {
+      return Err(ErrorCode::InvalidArgument, "spot rebase: invalid dividend event");
+    }
+  }
+  const double T = market.calendar_years;
+  // Spot ratios near one: log1p of the exact difference keeps the shift's relative
+  // accuracy where a log of the rounded ratio would lose it.
+  double shift = std::numeric_limits<double>::quiet_NaN();
+  switch (model) {
+  case QuoteSliceDividendModel::ContinuousYield:
+  case QuoteSliceDividendModel::AggregateFundingPresentValue:
+    // F = S e^{(r-q)T} (- PV e^{rT} under funding PV, independent of S and q).
+    shift = std::log1p((snapshot_spot - market.spot) / market.spot) / T;
+    break;
+  case QuoteSliceDividendModel::AggregatePresentValue: {
+    // F = (S - PV) e^{(r-q)T}: the escrowed stock carries the shift.
+    const double held = market.spot - market.dividend_pv;
+    if (!(held > 0.0) || !(snapshot_spot - market.dividend_pv > 0.0)) {
+      return Err(ErrorCode::OutOfRange, "spot rebase: spot at or below the escrowed PV");
+    }
+    shift = std::log1p((snapshot_spot - market.spot) / held) / T;
+    break;
+  }
+  case QuoteSliceDividendModel::DatedCash:
+    if (market.dividend_pv != 0.0) {
+      return Err(ErrorCode::InvalidArgument, "spot rebase: dated cash with an aggregate PV");
+    }
+    shift = dated_cash_shift(market, snapshot_spot, dividends);
+    break;
+  default:
+    return Err(ErrorCode::InvalidArgument, "spot rebase: unknown dividend model");
+  }
+  if (!std::isfinite(shift)) {
+    return Err(ErrorCode::OutOfRange, "spot rebase: no finite carry preserves the forward");
+  }
+  QuoteSliceSpotRebase out;
+  out.market = market;
+  out.market.spot = snapshot_spot;
+  out.market.continuous_yield = market.continuous_yield + shift;
+  out.yield_shift = shift;
+  out.forward = model_forward(market, model, dividends);
+  if (!std::isfinite(out.market.continuous_yield)) {
+    return Err(ErrorCode::OutOfRange, "spot rebase: no finite carry preserves the forward");
+  }
+  return atx::core::Ok(std::move(out));
+}
+
 } // namespace atx::vol

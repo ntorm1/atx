@@ -135,6 +135,27 @@ The scorer counts price coverage over
 `compose_predictions_by_status.py --served-status ok ok_price_only` routes both
 (default `ok` only).
 
+Top-level `"serve": {"floor_price_only": true}` (opt-in, lane C0) sets every
+profile's library floor policy to `PriceOnly`: a row whose volatility the
+certified price does not identify (at or below the floor `kIvMin`, on a flat
+exercise-region plateau, or an uncertified low-vega root) is a PriceOnly row
+with its price kept. The key **implies `price_only`** - recorded as
+`"price_only": true` in the report's `policy_definition` - so it changes two
+populations at once: the newly typed rows move from `ok` to `ok_price_only`
+(identified-IV coverage falls, price coverage is unchanged), and the historical
+`unidentified_interval` rows move from `invalid_volatility` to `ok_price_only`
+(price coverage rises). Compare it against a `price_only` arm, not the default,
+to isolate the floor typing. `"serve": {"metadata": true}` appends the
+convention / provenance columns (`price_only_reason`, `iv_lower`, `iv_upper`,
+`vol_convention`, `spot_rule`, ...; `vol_valid` is 1 only for a volatility the
+library query identifies) and the `identifiability` / `output_conventions`
+report blocks. `"snapshot": {"one_spot": "nearest" | "median"}` re-expresses
+every expiry of one snapshot on one spot S* (forward-preserving, not
+price-preserving); the row's `spot_rule` says which rule chose its spot (`own`,
+`nearest`, or `median` - also a `nearest` request that finds no observation
+instant), and without one_spot `underlying_ns` is the chain's latest quote
+observation, not the spot's own instant.
+
 Preparation projects only the fixed input allowlist and two label columns. It
 processes bounded Arrow batches; memory scales with batch size and the number of
 distinct underliers, not source rows. `--max-underliers` performs a preliminary

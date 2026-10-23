@@ -898,6 +898,34 @@ inline Json read_document(const std::filesystem::path &path) {
   });
 }
 
+// Lane C0 snapshot options (top-level `snapshot`; absent = each chain keeps its own spot,
+// the historical path). one_spot re-expresses every expiry of one underlying snapshot on a
+// single spot S* (rebase_quote_slice_spot): each expiry's carry moves so its forward is
+// unchanged - FORWARD-preserving only, American prices are not preserved. nearest: S* is
+// the median spot observed at the observation instant nearest snapshot_ns (the median
+// rule when no row carries observation_ns); median: the median spot of every row.
+enum class OneSpot : std::uint8_t { Off, Nearest, Median };
+
+inline const char *to_string(OneSpot value) {
+  switch (value) {
+  case OneSpot::Off:
+    return "off";
+  case OneSpot::Nearest:
+    return "nearest";
+  case OneSpot::Median:
+    return "median";
+  }
+  return "unknown";
+}
+
+struct SnapshotOptions {
+  OneSpot one_spot{OneSpot::Off};
+  // A chain whose own spot lies more than this many bp from S* is stale: flagged (served,
+  // spot_stale in the metadata) or refused (every row status stale_spot).
+  double stale_spot_bps{5.0};
+  bool refuse_stale{false};
+};
+
 struct LoadedPolicy {
   QuoteFitPolicyCatalog catalog;
   Json definition;
@@ -908,15 +936,73 @@ struct LoadedPolicy {
   QuoteSurfaceConfig surface{};
   // Opt-in (top-level `price_only`, static and graded): a served row whose
   // certified price has no identifiable volatility (PriceOnly) is published as
-  // status ok_price_only with that price and a blank volatility.
+  // status ok_price_only with that price and a blank volatility. Also true under
+  // serve.floor_price_only, which implies it (echoed as `price_only: true` in the
+  // definition).
   bool price_only{false};
+  // Lane C0 (top-level `serve`, opt-in). floor_price_only: every profile's
+  // QuoteSliceConfig::floor_policy is PriceOnly (a volatility at the floor is never served
+  // as identified) AND `price_only` is implied: every PriceOnly row - the newly typed
+  // floor_vol / flat_exercise_region / low_vega rows and the historical
+  // unidentified_interval rows alike - is served as ok_price_only. metadata: the
+  // convention / provenance columns and report blocks.
+  bool floor_price_only{false};
+  bool metadata{false};
+  SnapshotOptions snapshot{};
 };
+
+// The lane C0 `serve` and `snapshot` objects; absent keys keep the historical path.
+inline void parse_serve(const Json &document, bool &floor_price_only, bool &metadata) {
+  if (!document.contains("serve")) return;
+  const auto &j = document.at("serve");
+  keys(j, {"floor_price_only", "metadata"});
+  for (const auto &[key, target] : {std::pair<const char *, bool *>{"floor_price_only",
+                                                                    &floor_price_only},
+                                    std::pair<const char *, bool *>{"metadata", &metadata}}) {
+    if (!j.contains(key)) continue;
+    if (!j.at(key).is_boolean()) {
+      throw std::runtime_error(std::string{"Policy serve "} + key + " must be true or false");
+    }
+    *target = j.at(key).get<bool>();
+  }
+}
+
+inline SnapshotOptions parse_snapshot(const Json &document) {
+  SnapshotOptions out;
+  if (!document.contains("snapshot")) return out;
+  const auto &j = document.at("snapshot");
+  keys(j, {"one_spot", "stale_spot_bps", "stale_spot"});
+  if (j.contains("one_spot")) {
+    const auto mode = text(j.at("one_spot"));
+    if (mode == "nearest") {
+      out.one_spot = OneSpot::Nearest;
+    } else if (mode == "median") {
+      out.one_spot = OneSpot::Median;
+    } else if (mode != "off") {
+      throw std::runtime_error("Policy snapshot one_spot must be off, nearest or median");
+    }
+  }
+  if ((j.contains("stale_spot_bps") || j.contains("stale_spot")) &&
+      out.one_spot == OneSpot::Off) {
+    throw std::runtime_error("Policy snapshot stale_spot keys require one_spot nearest or median");
+  }
+  numeric(j, "stale_spot_bps", out.stale_spot_bps, 0, 10000);
+  if (j.contains("stale_spot")) {
+    const auto mode = text(j.at("stale_spot"));
+    if (mode == "refuse") {
+      out.refuse_stale = true;
+    } else if (mode != "flag") {
+      throw std::runtime_error("Policy snapshot stale_spot must be flag or refuse");
+    }
+  }
+  return out;
+}
 
 inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel dividends) {
   const Json document = selection == "auto" ? Json{{"schema_version", 1}} :
                                              read_document(selection);
   keys(document, {"schema_version", "profiles", "symbol_overrides", "regimes", "admission",
-                  "graded", "price_only"});
+                  "graded", "price_only", "serve", "snapshot"});
   bool price_only = false;
   if (document.contains("price_only")) {
     if (!document.at("price_only").is_boolean()) {
@@ -924,6 +1010,12 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     }
     price_only = document.at("price_only").get<bool>();
   }
+  bool floor_price_only = false;
+  bool metadata = false;
+  parse_serve(document, floor_price_only, metadata);
+  // serve.floor_price_only serves its PriceOnly rows, so it implies price_only.
+  price_only = price_only || floor_price_only;
+  const SnapshotOptions snapshot = parse_snapshot(document);
   if (!document.contains("schema_version") || !document.at("schema_version").is_number_integer() ||
       document.at("schema_version") != 1) {
     throw std::runtime_error("Policy schema_version must be 1");
@@ -1143,7 +1235,21 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     definition["admission"] = "graded";
     definition["graded"] = surface_json(surface, repair, space);
   }
-  if (price_only) definition["price_only"] = true; // provenance only when opted in
+  // Provenance only when opted in, directly or implied by serve.floor_price_only.
+  if (price_only) definition["price_only"] = true;
+  if (floor_price_only || metadata) {
+    definition["serve"] = {{"floor_price_only", floor_price_only}, {"metadata", metadata}};
+  }
+  if (snapshot.one_spot != OneSpot::Off) {
+    definition["snapshot"] = {{"one_spot", to_string(snapshot.one_spot)},
+                              {"stale_spot_bps", snapshot.stale_spot_bps},
+                              {"stale_spot", snapshot.refuse_stale ? "refuse" : "flag"}};
+    // The rebase re-derives an aggregate carry; a dated-cash schedule would need its own.
+    if (!routing.empty()) {
+      throw std::runtime_error("Policy snapshot one_spot requires dividends aggregate "
+                               "(inferred-schedule routing is not supported)");
+    }
+  }
   for (auto &profile : profiles) {
     profile.config.dividend_model = dividends;
     profile.config.repair = repair;
@@ -1160,6 +1266,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_family_q = space.family_q;
     profile.config.channel.deam_family_native = space.family_native;
     profile.config.grid_kernel = space.grid_kernel;
+    if (floor_price_only) profile.config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.
     if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&
@@ -1201,7 +1308,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
   return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface,
-          price_only};
+          price_only, floor_price_only, metadata, snapshot};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {

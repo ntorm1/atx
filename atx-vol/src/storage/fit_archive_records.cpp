@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -66,7 +67,14 @@ constexpr std::uint8_t kMaxScheme = ev(DiscreteDivScheme::EscrowedLeisenReimer);
 constexpr std::uint8_t kMaxGrade = ev(QuoteSliceGrade::Refused);
 constexpr std::uint8_t kMaxCurveKind = ev(VolCurveKind::SplineVol);
 constexpr std::uint8_t kMaxQuoteStatus = ev(QuoteSliceQuoteStatus::LowVegaWeight);
-constexpr std::uint8_t kMaxEvaluation = ev(QuoteSliceEvaluationStatus::PricingFailure);
+// The last enumerator: PriceOnly and MarketDistanceFailure rows are valid rows (lane C0;
+// the bound stopped at PricingFailure, so an archive of a price-only fit failed to open).
+constexpr std::uint8_t kMaxEvaluation = ev(QuoteSliceEvaluationStatus::MarketDistanceFailure);
+constexpr std::uint8_t kMaxPriceOnlyReason = ev(QuoteSlicePriceOnlyReason::UnidentifiedInterval);
+constexpr std::uint8_t kMaxVolConvention = ev(QuoteSliceVolConvention::ReimpliedRepaired);
+constexpr std::uint8_t kMaxCarryConvention = ev(QuoteSliceCarryConvention::ForwardPreserving);
+constexpr std::uint8_t kMaxFloorPolicy = ev(QuoteSliceFloorPolicy::PriceOnly);
+constexpr std::uint8_t kMaxSpotRule = ev(QuoteSliceSpotRule::Median);
 constexpr std::uint8_t kMaxRepairOutcome = ev(QuoteSliceRepairOutcome::NotCertified);
 constexpr std::uint8_t kMaxTermination = ev(FitTermination::Stalled);
 constexpr std::uint8_t kMaxProjection = ev(SliceProjection::Moved);
@@ -380,6 +388,14 @@ template <class T> [[nodiscard]] std::span<const T> slice_of(std::span<const T> 
   o.evaluation_status = ev(r.evaluation_status);
   o.admitted = r.admitted ? 1u : 0u;
   o.weight_capped = r.weight_capped ? 1u : 0u;
+  o.price_only_reason = ev(r.price_only_reason);
+  o.vol_source = ev(r.vol_source);
+  // NaN interval ends are absent (flag clear, stored zero): a minor-0 row reads the same.
+  if (!std::isnan(r.iv_lower) || !std::isnan(r.iv_upper)) {
+    o.flags = kQuoteRowHasInterval;
+    o.iv_lower = r.iv_lower;
+    o.iv_upper = r.iv_upper;
+  }
   return o;
 }
 
@@ -394,6 +410,12 @@ template <class T> [[nodiscard]] std::span<const T> slice_of(std::span<const T> 
   r.spread_vol = o.spread_vol;
   r.weight_w = o.weight_w;
   r.weight_capped = o.weight_capped != 0u;
+  r.price_only_reason = static_cast<QuoteSlicePriceOnlyReason>(o.price_only_reason);
+  r.vol_source = static_cast<QuoteSliceVolConvention>(o.vol_source);
+  if ((o.flags & kQuoteRowHasInterval) != 0u) {
+    r.iv_lower = o.iv_lower;
+    r.iv_upper = o.iv_upper;
+  }
   return r;
 }
 
@@ -436,6 +458,7 @@ struct FitArchiveWriter::Impl {
   std::vector<AmericanPriceNode> price_nodes;
   std::vector<FitArchiveQuoteRow> rows;
   std::vector<std::uint8_t> moved;
+  std::vector<std::uint8_t> price_only; // QuoteSliceFit::price_only_nodes (file minor 1)
   std::vector<CashDividend> dividends;
   std::vector<QuoteSliceCarryPoint> carry_points;
   std::vector<std::uint64_t> curve_words;
@@ -451,7 +474,7 @@ struct FitArchiveWriter::Impl {
 
   // Sizes of every staging vector, for all-or-nothing adds.
   struct Mark {
-    std::array<std::size_t, 22> n{};
+    std::array<std::size_t, 23> n{};
   };
   [[nodiscard]] Mark mark() const noexcept {
     return Mark{{surface_symbol.size(), fit_symbol.size(), expiry_symbol.size(), ladder_symbol.size(),
@@ -459,7 +482,7 @@ struct FitArchiveWriter::Impl {
                  expiry_data.size(), ladders.size(), markov.size(), price_nodes.size(), rows.size(),
                  moved.size(), dividends.size(), carry_points.size(), curve_words.size(),
                  ladder_contracts.size(), markov_intervals.size(), markov_local_vol.size(),
-                 markov_words.size(), fit_timings.size()}};
+                 markov_words.size(), fit_timings.size(), price_only.size()}};
   }
   void rollback(const Mark &m, std::size_t string_size) {
     surface_symbol.resize(m.n[0]);
@@ -484,6 +507,7 @@ struct FitArchiveWriter::Impl {
     markov_local_vol.resize(m.n[19]);
     markov_words.resize(m.n[20]);
     fit_timings.resize(m.n[21]);
+    price_only.resize(m.n[22]);
     strings.resize(string_size);
   }
 
@@ -630,6 +654,24 @@ ArchiveOutcome FitArchiveWriter::Impl::encode_fit(const QuoteSliceFit &fit, FitA
   r.fit_status = ev(fit.fit_status);
   r.dividend_model = ev(fit.dividend_model);
   r.discrete_div_scheme = ev(fit.discrete_div_scheme);
+  // Minor-1 tail (lane C0): the identifiability policy, the price-only node sides and the
+  // snapshot provenance; a NaN raw spot is absent.
+  r.price_only_nodes = put(price_only, std::span<const std::uint8_t>{fit.price_only_nodes});
+  r.floor_policy = ev(fit.floor_policy);
+  const QuoteSliceSnapshotInfo &s = fit.snapshot;
+  r.quote_ns = s.quote_ns;
+  r.underlying_ns = s.underlying_ns;
+  r.spot_version = s.spot_version;
+  r.spot_rule = ev(s.spot_rule);
+  r.carry_version = s.carry_version;
+  r.carry_convention = ev(s.carry_convention);
+  if (!std::isnan(s.raw_spot)) {
+    r.raw_spot = s.raw_spot;
+    r.snapshot_flags = static_cast<std::uint8_t>(r.snapshot_flags | kFitSnapshotHasRawSpot);
+  }
+  if (s.spot_stale) {
+    r.snapshot_flags = static_cast<std::uint8_t>(r.snapshot_flags | kFitSnapshotSpotStale);
+  }
   return {};
 }
 
@@ -950,7 +992,8 @@ ArchiveOutcome FitArchiveWriter::copy_from(const FitArchive &src) {
     return archive_error(ArchiveStatus::InvalidArgument, t);
   };
   const std::size_t nodes_base = w.price_nodes.size(), rows_base = w.rows.size(),
-                    moved_base = w.moved.size(), div_base = w.dividends.size(),
+                    moved_base = w.moved.size(), price_only_base = w.price_only.size(),
+                    div_base = w.dividends.size(),
                     carry_base = w.carry_points.size(), words_base = w.curve_words.size(),
                     contracts_base = w.ladder_contracts.size(), intervals_base = w.markov_intervals.size(),
                     local_base = w.markov_local_vol.size(), mwords_base = w.markov_words.size(),
@@ -964,6 +1007,7 @@ ArchiveOutcome FitArchiveWriter::copy_from(const FitArchive &src) {
   static_cast<void>(w.put(w.price_nodes, src.view<AmericanPriceNode>(Type::PriceNodes)));
   static_cast<void>(w.put(w.rows, src.view<FitArchiveQuoteRow>(Type::QuoteRows)));
   static_cast<void>(w.put(w.moved, src.view<std::uint8_t>(Type::MovedNodes)));
+  static_cast<void>(w.put(w.price_only, src.view<std::uint8_t>(Type::PriceOnlyNodes)));
   static_cast<void>(w.put(w.dividends, src.view<CashDividend>(Type::Dividends)));
   static_cast<void>(w.put(w.carry_points, src.view<QuoteSliceCarryPoint>(Type::CarryPoints)));
   static_cast<void>(w.put(w.curve_words, src.view<std::uint64_t>(Type::CurveWords)));
@@ -994,6 +1038,7 @@ ArchiveOutcome FitArchiveWriter::copy_from(const FitArchive &src) {
     const std::string_view name = src.underlier_name(f.key.underlier);
     f.key.underlier = 0;
     const bool ok = rebase(f.rows, rows_base) && rebase(f.moved_nodes, moved_base) &&
+                    rebase(f.price_only_nodes, price_only_base) &&
                     rebase(f.dividends, div_base) && rebase(f.carry_curve, carry_base) &&
                     rebase(f.curve.payload, words_base) && rebase(f.prices.nodes, nodes_base) &&
                     str(f.fit_error) && str(f.carry.reason) && str(f.slice.refusal) &&
@@ -1043,7 +1088,9 @@ namespace {
 template <class T>
 [[nodiscard]] FitArchiveSectionInput section_of(Type type, const std::vector<T> &v, std::uint32_t align,
                                                 std::uint32_t flags = kFitArchiveSectionRequired) {
-  return FitArchiveSectionInput{type, 1, 0, static_cast<std::uint32_t>(sizeof(T)), align, flags,
+  // The record types lane C0 evolved are written at their minor 1 (stride = sizeof).
+  const std::uint16_t minor = type == Type::FitRecords || type == Type::QuoteRows ? 1 : 0;
+  return FitArchiveSectionInput{type, 1, minor, static_cast<std::uint32_t>(sizeof(T)), align, flags,
                                 std::as_bytes(std::span<const T>{v})};
 }
 
@@ -1134,6 +1181,7 @@ ArchiveResult<std::vector<std::byte>> FitArchiveWriter::finish(const FitArchiveF
   pool(Type::PriceNodes, w.price_nodes, 8);
   pool(Type::QuoteRows, w.rows, 8);
   pool(Type::MovedNodes, w.moved, 1);
+  pool(Type::PriceOnlyNodes, w.price_only, 1); // Required: a reader must not drop the flags
   pool(Type::Dividends, w.dividends, 8);
   pool(Type::CarryPoints, w.carry_points, 8);
   pool(Type::CurveWords, w.curve_words, 8);
@@ -1286,6 +1334,17 @@ ArchiveResult<QuoteSliceFit> decode_fit(const FitArchive &a, const FitArchiveFit
   }
   const auto moved = a.moved_nodes(r);
   fit.moved_nodes.assign(moved.begin(), moved.end());
+  const auto price_only = a.price_only_nodes(r);
+  fit.price_only_nodes.assign(price_only.begin(), price_only.end());
+  fit.floor_policy = static_cast<QuoteSliceFloorPolicy>(r.floor_policy);
+  fit.snapshot.quote_ns = r.quote_ns;
+  fit.snapshot.underlying_ns = r.underlying_ns;
+  fit.snapshot.spot_version = r.spot_version;
+  fit.snapshot.spot_rule = static_cast<QuoteSliceSpotRule>(r.spot_rule);
+  fit.snapshot.carry_version = r.carry_version;
+  fit.snapshot.carry_convention = static_cast<QuoteSliceCarryConvention>(r.carry_convention);
+  if ((r.snapshot_flags & kFitSnapshotHasRawSpot) != 0u) fit.snapshot.raw_spot = r.raw_spot;
+  fit.snapshot.spot_stale = (r.snapshot_flags & kFitSnapshotSpotStale) != 0u;
   const auto rows = a.quote_rows(r);
   fit.rows.resize(rows.size());
   std::transform(rows.begin(), rows.end(), fit.rows.begin(), decode_row);
@@ -1508,6 +1567,7 @@ template <class R>
   const auto fits = a.fits();
   const auto rows = a.view<FitArchiveQuoteRow>(Type::QuoteRows);
   const auto moved = a.view<std::uint8_t>(Type::MovedNodes);
+  const auto price_only = a.view<std::uint8_t>(Type::PriceOnlyNodes);
   const auto divs = a.view<CashDividend>(Type::Dividends);
   const auto carry = a.view<QuoteSliceCarryPoint>(Type::CarryPoints);
   const auto words = a.view<double>(Type::CurveWords);
@@ -1520,7 +1580,8 @@ template <class R>
   }
   for (std::size_t i = 0; i < fits.size(); ++i) {
     const FitArchiveFitRecord &r = fits[i];
-    const bool refs = ref_in(r.rows, rows) && ref_in(r.moved_nodes, moved) && ref_in(r.dividends, divs) &&
+    const bool refs = ref_in(r.rows, rows) && ref_in(r.moved_nodes, moved) &&
+                      ref_in(r.price_only_nodes, price_only) && ref_in(r.dividends, divs) &&
                       ref_in(r.carry_curve, carry) && ref_in(r.curve.payload, words) &&
                       ref_in(r.prices.nodes, nodes) && string_in(r.fit_error, blob) &&
                       string_in(r.carry.reason, blob) && string_in(r.slice.refusal, blob) &&
@@ -1543,7 +1604,16 @@ template <class R>
         diagnostics_ok(r.diagnostics) && c.mode <= kMaxCarryMode && c.applied <= 1u &&
         c.fallback <= kMaxCarryFallback && c.status <= kMaxForwardStatus && c.reserved == 0u &&
         curve_ok(r.curve, slice_of(words, r.curve.payload)) && prices_ok && slice_ok;
-    if (!ok) return archive_error(ArchiveStatus::RecordInvalid, Type::FitRecords, i);
+    // Minor-1 tail (lane C0): zero means absent, so a flag-less raw spot must be zero.
+    const bool snapshot_ok =
+        r.carry_convention <= kMaxCarryConvention && r.floor_policy <= kMaxFloorPolicy &&
+        r.spot_rule <= kMaxSpotRule &&
+        r.snapshot_flags <= (kFitSnapshotSpotStale | kFitSnapshotHasRawSpot) &&
+        ((r.snapshot_flags & kFitSnapshotHasRawSpot) != 0u || bits_of(r.raw_spot) == 0u) &&
+        zero_bytes(r.reserved1);
+    if (!ok || !snapshot_ok) {
+      return archive_error(ArchiveStatus::RecordInvalid, Type::FitRecords, i);
+    }
     if (r.surface != kFitArchiveNone) {
       const FitArchiveSurfaceRecord &owner = surfaces[r.surface];
       if (i < owner.first_fit || i - owner.first_fit >= owner.fit_count) {
@@ -1553,13 +1623,22 @@ template <class R>
   }
   for (std::size_t j = 0; j < rows.size(); ++j) {
     const FitArchiveQuoteRow &q = rows[j];
+    const bool interval_ok = (q.flags & kQuoteRowHasInterval) != 0u ||
+                             (bits_of(q.iv_lower) == 0u && bits_of(q.iv_upper) == 0u);
     if (q.quote_status > kMaxQuoteStatus || q.evaluation_status > kMaxEvaluation || q.admitted > 1u ||
-        q.weight_capped > 1u || q.reserved != 0u) {
+        q.weight_capped > 1u || q.reserved != 0u || q.price_only_reason > kMaxPriceOnlyReason ||
+        q.vol_source > kMaxVolConvention || q.flags > kQuoteRowHasInterval || !interval_ok ||
+        !zero_bytes(q.reserved1)) {
       return archive_error(ArchiveStatus::RecordInvalid, Type::QuoteRows, j);
     }
   }
   for (std::size_t j = 0; j < moved.size(); ++j) {
     if (moved[j] > kMaxMovedNode) return archive_error(ArchiveStatus::RecordInvalid, Type::MovedNodes, j);
+  }
+  for (std::size_t j = 0; j < price_only.size(); ++j) {
+    if (price_only[j] > kMaxMovedNode) {
+      return archive_error(ArchiveStatus::RecordInvalid, Type::PriceOnlyNodes, j);
+    }
   }
   return {};
 }

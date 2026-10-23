@@ -1884,3 +1884,421 @@ def test_native_bench_flags_are_validated_before_output(binary, tmp_path, extra,
     assert result.returncode != 0
     assert message in result.stderr
     assert not output.exists()
+
+
+# ── Lane C0: identifiability publication, convention metadata, one spot per snapshot ──
+#
+# The policy keys `serve` {floor_price_only, metadata} and `snapshot` {one_spot,
+# stale_spot_bps, stale_spot} are opt-in: absent (or off) they leave every prediction byte
+# for byte as before.
+
+
+def crr_american(spot: float, strike: float, years: float, sigma: float, rate: float,
+                 q: float, call: bool, steps: int) -> float:
+    dt = years / steps
+    u = math.exp(sigma * math.sqrt(dt))
+    d = 1.0 / u
+    p = (math.exp((rate - q) * dt) - d) / (u - d)
+    disc = math.exp(-rate * dt)
+    sign = 1.0 if call else -1.0
+    values = [max(sign * (spot * u**j * d ** (steps - j) - strike), 0.0) for j in range(steps + 1)]
+    for i in range(steps - 1, -1, -1):
+        for j in range(i + 1):
+            exercise = sign * (spot * u**j * d ** (i - j) - strike)
+            values[j] = max(disc * (p * values[j + 1] + (1.0 - p) * values[j]), exercise)
+    return values[0]
+
+
+C0_COLUMNS = ["price_only_reason", "iv_lower", "iv_upper", "vol_convention", "model_kind",
+              "dividend_convention", "quote_ns", "underlying_ns", "spot_version", "spot_rule",
+              "carry_version", "carry_convention", "raw_spot", "spot_stale", "price_valid",
+              "vol_valid"]
+C0_DEEP_ITM_PUT = "39"  # K 136 put of the wing chain
+
+
+@pytest.fixture(scope="module")
+def wing_chain(tmp_path_factory) -> Path:
+    """The L3a-b wing chain (quote_slice_identification_test.cpp wing_chain): spot 99.71,
+    T 0.1, sigma 0.15, r 0.03, strikes 60-140 every 4, a 0.06 yield on alternate strikes
+    below 90, +/- 5 % spreads (at least 0.01), 400-step CRR prices."""
+    path = tmp_path_factory.mktemp("c0") / "wing.csv"
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+                         "years", "years_calendar", "rate", "sdiv", "ddiv_pv", "input_status",
+                         "exercise", "underlier", "root", "expiry_days", "snapshot_ns"])
+        row = 0
+        for strike in range(60, 141, 4):
+            q = 0.06 if strike < 90 and ((strike - 60) // 4) % 2 == 0 else 0.0
+            for call in (1, 0):
+                price = crr_american(99.71, strike, 0.1, 0.15, 0.03, q, call == 1, 400)
+                spread = max(0.01, price * 0.05)
+                writer.writerow([row, 17, strike, call, 99.71, max(price - spread, 0.0),
+                                 price + spread, 0.1, 0.1, 0.03, q, 0, "ok", "American", "WWW",
+                                 "WWW", 21000, 1])
+                row += 1
+    return path
+
+
+def c0_graded_policy(path: Path, **extra) -> Path:
+    """The CLI's graded-v1 historical arm on the wing chain (the library test's graded_v1)."""
+    graded = {"term_prior_weight": 1.0, "prior_decay_log_time": 1.0, "prior_quote_halflife": 6.0,
+              "channel_node_weight": 0.5, "calendar_retry_factor": 4.0,
+              "grade_b_min_mid_strikes": 4, "calendar_repair_half_spreads": 0.5,
+              **HISTORICAL_GRADED}
+    profiles = [{"name": name, "base": name, "channel": {"repair_half_spreads": 0.5}}
+                for name in PROFILE_NAMES]
+    return write_policy(path, {"schema_version": 1, "admission": "graded", "graded": graded,
+                               "profiles": profiles, **extra})
+
+
+def run_c0(binary: Path, source: Path, tmp_path: Path, name: str, policy: Path):
+    output, report = tmp_path / f"{name}.csv", tmp_path / f"{name}-native.json"
+    result = invoke(binary, source, output, "--policy", str(policy), "--report", str(report))
+    assert result.returncode == 0, result.stderr
+    return read_quotes(output), json.loads(report.read_text()), output
+
+
+def test_native_c0_serve_and_snapshot_keys_are_strict(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    routed = [{"name": name, "base": name, "dividends": "inferred-schedule"}
+              for name in PROFILE_NAMES]
+    base = {"schema_version": 1}
+    for document, message in (
+            ({**base, "serve": {"floor_price_only": "yes"}},
+             "serve floor_price_only must be true or false"),
+            ({**base, "serve": {"metadata": 1}}, "serve metadata must be true or false"),
+            ({**base, "serve": {"price_only": True}}, "Unknown policy key: price_only"),
+            ({**base, "serve": True}, "must be a JSON object"),
+            ({**base, "snapshot": {"one_spot": "first"}},
+             "one_spot must be off, nearest or median"),
+            ({**base, "snapshot": {"stale_spot_bps": 3}},
+             "stale_spot keys require one_spot nearest or median"),
+            ({**base, "snapshot": {"one_spot": "off", "stale_spot": "refuse"}},
+             "stale_spot keys require one_spot nearest or median"),
+            ({**base, "snapshot": {"one_spot": "median", "stale_spot": "drop"}},
+             "stale_spot must be flag or refuse"),
+            ({**base, "snapshot": {"one_spot": "median", "stale_spot_bps": -1}},
+             "outside supported bounds"),
+            ({**base, "snapshot": {"one_spot": "nearest", "spot": 1}},
+             "Unknown policy key: spot"),
+            ({**base, "snapshot": {"one_spot": "nearest"}, "profiles": routed},
+             "one_spot requires dividends aggregate")):
+        policy = write_policy(tmp_path / "policy.json", document)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+        assert not output.exists()
+
+
+def test_native_c0_keys_off_leave_predictions_unchanged(binary, tmp_path, wing_chain):
+    plain = c0_graded_policy(tmp_path / "plain.json")
+    off = c0_graded_policy(tmp_path / "off.json",
+                           serve={"floor_price_only": False, "metadata": False},
+                           snapshot={"one_spot": "off"})
+    _, plain_report, plain_csv = run_c0(binary, wing_chain, tmp_path, "plain", plain)
+    _, off_report, off_csv = run_c0(binary, wing_chain, tmp_path, "off", off)
+    assert off_csv.read_bytes() == plain_csv.read_bytes()
+    for report in (plain_report, off_report):
+        for key in ("identifiability", "output_conventions", "one_spot"):
+            assert key not in report
+    assert "serve" not in plain_report["policy_definition"]
+    assert "snapshot" not in off_report["policy_definition"]
+    # Metadata only appends columns: every historical column is unchanged.
+    meta = c0_graded_policy(tmp_path / "meta.json", serve={"metadata": True})
+    _, meta_report, meta_csv = run_c0(binary, wing_chain, tmp_path, "meta", meta)
+    plain_lines = plain_csv.read_text().splitlines()
+    meta_lines = meta_csv.read_text().splitlines()
+    assert len(meta_lines) == len(plain_lines)
+    for before, after in zip(plain_lines, meta_lines):
+        assert after.startswith(before + ",")
+    assert meta_lines[0].split(",")[-len(C0_COLUMNS):] == C0_COLUMNS
+    assert meta_report["output_conventions"]["columns"] == ",".join(C0_COLUMNS)
+
+
+def test_native_floor_price_only_serves_the_deep_itm_put_price_only_with_its_price(
+        binary, tmp_path, wing_chain):
+    # The historical graded arm serves the K 136 put at its exercise value with the floor
+    # volatility 0.005 as an identified IV; serve.floor_price_only serves the same price
+    # price-only (floor_vol) and no floor volatility at all.
+    off_policy = c0_graded_policy(tmp_path / "off.json", serve={"metadata": True})
+    on_policy = c0_graded_policy(tmp_path / "on.json",
+                                 serve={"floor_price_only": True, "metadata": True})
+    off, off_report, _ = run_c0(binary, wing_chain, tmp_path, "off", off_policy)
+    on, on_report, _ = run_c0(binary, wing_chain, tmp_path, "on", on_policy)
+    before = next(row for row in off if row["row_id"] == C0_DEEP_ITM_PUT)
+    after = next(row for row in on if row["row_id"] == C0_DEEP_ITM_PUT)
+    assert before["status"] == "ok" and float(before["predicted_vol"]) == 0.005
+    # A repair moved its node to the exercise value; the re-implied root is the floor. The
+    # Legacy row keeps that value but is labelled with the library query's answer (one
+    # answer per contract): no convention, not a valid volatility, floor_vol and the
+    # interval the price-only arm publishes.
+    assert before["vol_convention"] == "none"
+    assert (before["price_valid"], before["vol_valid"]) == ("1", "0")
+    assert before["price_only_reason"] == "floor_vol"
+    off_identifiability = off_report["identifiability"]
+    assert off_identifiability["identified_floor_vol_rows"] >= 1
+    assert off_identifiability["identified_vol_rows"] == sum(row["vol_valid"] == "1"
+                                                             for row in off)
+    assert (off_identifiability["identified_vol_rows"] + off_identifiability[
+        "identified_floor_vol_rows"] == off_identifiability["served_vol_rows"])
+    assert after["status"] == "ok_price_only"
+    assert after["predicted_price"] == before["predicted_price"]
+    assert after["predicted_vol"] == "" and after["vol_status"] == "unidentifiable"
+    assert after["price_only_reason"] == "floor_vol"
+    assert float(after["iv_lower"]) == 0.0 and float(after["iv_upper"]) > 0.005
+    assert (before["iv_lower"], before["iv_upper"]) == (after["iv_lower"], after["iv_upper"])
+    assert after["vol_convention"] == "none"
+    assert (after["price_valid"], after["vol_valid"]) == ("1", "0")
+    # No floor value is ever served as an identified IV under the key.
+    assert not [row for row in on if row["predicted_vol"] and float(row["predicted_vol"]) <= 0.005]
+    identifiability = on_report["identifiability"]
+    assert identifiability["identified_floor_vol_rows"] == 0
+    assert identifiability["floor_price_only"] is True
+    ok = sum(row["status"] == "ok" for row in on)
+    price_only = sum(row["status"] == "ok_price_only" for row in on)
+    assert identifiability["served_vol_rows"] == ok
+    assert identifiability["identified_vol_rows"] == ok
+    assert identifiability["served_price_rows"] == ok + price_only
+    assert identifiability["price_only_reason_counts"]["floor_vol"] >= 1
+    assert sum(identifiability["price_only_reason_counts"].values()) == price_only
+    # Price coverage never shrinks: every price the historical arm served is served.
+    served = {row["row_id"]: row["predicted_price"] for row in off if row["predicted_price"]}
+    assert all(next(r for r in on if r["row_id"] == i)["predicted_price"] == price
+               for i, price in served.items())
+    assert on_report["policy_definition"]["serve"] == {"floor_price_only": True,
+                                                       "metadata": True}
+    # serve.floor_price_only implies price_only (its PriceOnly rows - every reason,
+    # unidentified_interval included - are served ok_price_only); the definition says so.
+    assert on_report["policy_definition"]["price_only"] is True
+    assert "price_only" not in off_report["policy_definition"]
+    # Without metadata the key still publishes the price-only row (historical columns).
+    bare = c0_graded_policy(tmp_path / "bare.json", serve={"floor_price_only": True})
+    rows, _, _ = run_c0(binary, wing_chain, tmp_path, "bare", bare)
+    row = next(row for row in rows if row["row_id"] == C0_DEEP_ITM_PUT)
+    assert (row["status"], row["predicted_price"]) == ("ok_price_only", before["predicted_price"])
+    assert "price_only_reason" not in row
+
+
+def write_calendar_repair_snapshot(path: Path, drift: float) -> None:
+    """quote_slice_identification_test's calendar-repair surface in CSV form (400-step CRR
+    prices, r 5 %): N (chain 17, 0.45 y, sigma 50 %, q 4 %, puts 116-148) recorded at spot
+    100 + `drift` and F (chain 18, 0.5 y, sigma 5 % skewed up to 35 % below K 116, puts
+    60-148) at spot 100. The calendar repair caps N's puts onto F's exercise values; with
+    `drift` 1e-6 N's K 116 put (row 0) is then a hair above its own exercise value
+    (measured: C0-20221022-fix1 cli-two-expiry-reasons.txt)."""
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+                         "years", "years_calendar", "rate", "sdiv", "ddiv_pv", "input_status",
+                         "exercise", "underlier", "root", "expiry_days", "snapshot_ns"])
+        row = 0
+        chains = ((17, 0.45, 100.0 + drift, 116, 0.04, 0.5, 0.0),
+                  (18, 0.5, 100.0, 60, 0.0, 0.05, 0.30))
+        for chain, years, spot, low, q, atm, skew in chains:
+            for strike in range(low, 149, 4):
+                sigma = atm + skew * min(max((116.0 - strike) / 40.0, 0.0), 1.0)
+                price = crr_american(spot, float(strike), years, sigma, 0.05, q, False, 400)
+                spread = max(0.01, price * 0.05)
+                writer.writerow([row, chain, strike, 0, spot, max(price - spread, 0.0),
+                                 price + spread, years, years, 0.05, q, 0, "ok", "American",
+                                 "XYZ", "XYZ", 21000 + int(years * 365), 1])
+                row += 1
+
+
+def calendar_repair_policy(path: Path, *, graded=None, **extra) -> Path:
+    profiles = [{"name": name, "base": name, "side_policy": "all",
+                 "channel": {"repair_half_spreads": 100}} for name in PROFILE_NAMES]
+    return write_policy(path, {
+        "schema_version": 1, "admission": "graded",
+        "graded": {"grade_b_min_mid_strikes": 10, "calendar_repair_half_spreads": 100,
+                   **(graded or {})},
+        "profiles": profiles, **extra})
+
+
+@pytest.fixture(scope="module")
+def calendar_repair_chain(tmp_path_factory) -> Path:
+    path = tmp_path_factory.mktemp("c0-plateau") / "calendar-repair.csv"
+    write_calendar_repair_snapshot(path, 1e-6)
+    return path
+
+
+def test_native_flat_exercise_region_and_low_vega_rows_keep_their_price(
+        binary, tmp_path, calendar_repair_chain):
+    # N's repaired puts K 116-140 re-imply only a non-unique root: K 116 inside the
+    # kernel's exercise region (flat_exercise_region, interval [0, sigma_ex]), K 120-140
+    # outside it but uncertified (low_vega, no interval). serve.floor_price_only serves
+    # them price-only with their price; the Legacy arm keeps the historical root but says
+    # it is not identified - the same reasons, interval and price.
+    on, on_report, _ = run_c0(binary, calendar_repair_chain, tmp_path, "on",
+                              calendar_repair_policy(tmp_path / "on.json", serve={
+                                  "floor_price_only": True, "metadata": True}))
+    off, off_report, _ = run_c0(binary, calendar_repair_chain, tmp_path, "off",
+                                calendar_repair_policy(tmp_path / "off.json",
+                                                       serve={"metadata": True}))
+    expected = {"0": "flat_exercise_region", **{str(i): "low_vega" for i in range(1, 7)}}
+    for row in on:
+        reason = expected.get(row["row_id"])
+        if reason is None:
+            assert (row["status"], row["price_only_reason"]) == ("ok", "none"), row
+            assert row["vol_valid"] == "1"
+            continue
+        assert row["status"] == "ok_price_only" and row["predicted_vol"] == "", row
+        assert row["price_only_reason"] == reason
+        assert row["vol_convention"] == "none"
+        assert (row["price_valid"], row["vol_valid"]) == ("1", "0")
+    by_id = {row["row_id"]: row for row in on}
+    assert by_id["0"]["predicted_price"] == "16"  # F's exercise value at K 116
+    assert float(by_id["0"]["iv_lower"]) == 0.0 and 0.13 < float(by_id["0"]["iv_upper"]) < 0.14
+    assert all(by_id[i]["iv_lower"] == by_id[i]["iv_upper"] == "" for i in map(str, range(1, 7)))
+    reasons = on_report["identifiability"]["price_only_reason_counts"]
+    assert reasons == {"flat_exercise_region": 1, "low_vega": 6}
+    for row in off:
+        twin = by_id[row["row_id"]]
+        assert row["predicted_price"] == twin["predicted_price"]
+        assert (row["price_only_reason"], row["iv_lower"], row["iv_upper"]) == (
+            twin["price_only_reason"], twin["iv_lower"], twin["iv_upper"])
+        if row["row_id"] in expected:
+            assert row["status"] == "ok" and float(row["predicted_vol"]) > 0.005, row
+            assert (row["vol_convention"], row["vol_valid"]) == ("none", "0")
+    identifiability = off_report["identifiability"]
+    assert identifiability["served_vol_rows"] - identifiability["identified_vol_rows"] == 7
+    assert identifiability["identified_floor_vol_rows"] == 0
+
+
+def test_native_market_gated_rows_carry_no_price_only_reason(
+        binary, tmp_path, calendar_repair_chain):
+    # The market-distance gate refuses N's repaired K 116-124 puts (F's exercise values sit
+    # more than a spread below N's own quotes), which serve.floor_price_only alone serves
+    # flat_exercise_region / low_vega: a refused row has no served price, so no reason or
+    # interval either.
+    rows, report, _ = run_c0(binary, calendar_repair_chain, tmp_path, "gated",
+                             calendar_repair_policy(
+                                 tmp_path / "gated.json",
+                                 graded={"market_distance": "gate",
+                                         "market_distance_spreads": 1.0},
+                                 serve={"floor_price_only": True, "metadata": True}))
+    gated = [row for row in rows if row["status"] == "market_distance_failure"]
+    assert {row["row_id"] for row in gated} >= {"0", "1", "2"}
+    for row in gated:
+        assert (row["price_only_reason"], row["iv_lower"], row["iv_upper"]) == ("none", "", "")
+        assert (row["vol_convention"], row["price_valid"], row["vol_valid"]) == ("none", "0", "0")
+    assert report["identifiability"]["price_only_reason_counts"] == {"low_vega": 4}  # K 128-140
+
+
+def test_native_metadata_columns_carry_conventions_and_provenance(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    policy = write_policy(tmp_path / "policy.json",
+                          {"schema_version": 1, "serve": {"metadata": True}})
+    rows, report, _ = run_c0(binary, source, tmp_path, "meta", policy)
+    assert rows and all(set(C0_COLUMNS) <= set(row) for row in rows)
+    served = [row for row in rows if row["status"] == "ok"]
+    assert served
+    for row in rows:
+        assert row["model_kind"] == "andersen_lake"
+        assert row["dividend_convention"] == "aggregate_funding_pv_approximation"
+        assert (row["spot_version"], row["spot_rule"], row["carry_version"]) == ("0", "own", "0")
+        assert row["carry_convention"] == "supplied"
+        assert row["raw_spot"] == "" and row["spot_stale"] == "0"
+        assert row["quote_ns"] == "" and row["underlying_ns"] == ""  # no observation_ns column
+        assert row["price_valid"] == ("1" if row["predicted_price"] else "0")
+        assert row["vol_valid"] == ("1" if row["predicted_vol"] else "0")
+        expected = {"fitted_curve", "reimplied_repaired"} if row["status"] == "ok" else {"none"}
+        assert row["vol_convention"] in expected, row
+    conventions = report["output_conventions"]
+    for key in ("vol_convention", "model_kind", "dividend_convention", "quote_clock",
+                "underlying_clock", "versions", "validity"):
+        assert conventions[key]
+    assert report["identifiability"]["served_vol_rows"] == len(served)
+
+
+def write_two_expiry_snapshot(path: Path, drift: float) -> None:
+    """Two expiries of one snapshot priced at ONE spot 100 (200-step CRR, sigma 0.2, r 0.05);
+    the far chain records a spot `drift` above it and is observed 3 s later (the SPY
+    per-chain spot difference behind most served calendar crossings)."""
+    snapshot = 1791988200000000000
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["row_id", "chain_id", "snapshot_ns", "observation_ns", "strike",
+                         "is_call", "spot", "bid", "ask", "years", "years_calendar", "rate",
+                         "sdiv", "ddiv_pv", "input_status", "exercise", "underlier", "root",
+                         "expiry_days"])
+        row = 0
+        for chain, days, recorded, lag in ((17, 30, 100.0, 1), (18, 60, 100.0 + drift, 4)):
+            years = days / 365.0
+            for strike in [70 + 2.5 * i for i in range(25)]:
+                for call in (1, 0):
+                    price = crr_american(100.0, strike, years, 0.2, 0.05, 0.0, call == 1, 200)
+                    spread = max(0.01, 0.005 * price)
+                    writer.writerow([row, chain, snapshot, snapshot + lag * 1_000_000_000,
+                                     strike, call, recorded, max(price - spread, 0.0),
+                                     price + spread, years, years, 0.05, 0.0, 0.0, "ok",
+                                     "American", "XYZ", "XYZ", 21000 + days])
+                    row += 1
+
+
+def test_native_one_spot_removes_a_per_chain_spot_calendar_crossing(binary, tmp_path):
+    source = tmp_path / "two-expiry.csv"
+    write_two_expiry_snapshot(source, 0.05)
+    off_policy = write_policy(tmp_path / "off.json", {"schema_version": 1})
+    on_policy = write_policy(tmp_path / "on.json", {
+        "schema_version": 1, "snapshot": {"one_spot": "nearest"}, "serve": {"metadata": True}})
+    off, off_report, _ = run_c0(binary, source, tmp_path, "off", off_policy)
+    on, on_report, _ = run_c0(binary, source, tmp_path, "on", on_policy)
+    # Each chain's own spot: the far chain's deep in-the-money puts sit 5 cents under the
+    # near chain's exercise value, a calendar crossing that refuses both expiries.
+    assert {row["status"] for row in off} == {"calendar_arbitrage"}
+    assert off_report["calendar_rejected_chains"] == 2
+    assert {row["status"] for row in on} == {"ok"}
+    block = on_report["one_spot"]
+    assert block["mode"] == "nearest" and "FORWARD-preserving only" in block["semantics"]
+    (spot,) = block["snapshots"]
+    assert (spot["spot"], spot["rule"], spot["underlying_ns"]) == (
+        100.0, "nearest", 1791988201000000000)
+    chains = {chain["chain_id"]: chain for chain in block["chains"]}
+    assert (chains[17]["raw_spot"], chains[18]["raw_spot"]) == (100.0, 100.05)
+    assert chains[18]["yield_shift"] == pytest.approx(math.log(100.0 / 100.05) / (60 / 365),
+                                                      rel=1e-12)
+    assert block["chain_status_counts"] == {"rebased": 2}
+    for row in on:
+        assert (row["spot_version"], row["spot_rule"], row["carry_version"]) == (
+            "1", "nearest", "1")
+        assert row["carry_convention"] == "forward_preserving"
+        assert row["underlying_ns"] == "1791988201000000000"
+        assert float(row["raw_spot"]) == (100.0 if row["chain_id"] == "17" else 100.05)
+        assert row["quote_ns"] == ("1791988201000000000" if row["chain_id"] == "17"
+                                   else "1791988204000000000")
+    assert on_report["policy_definition"]["snapshot"] == {
+        "one_spot": "nearest", "stale_spot_bps": 5.0, "stale_spot": "flag"}
+    # The median rule: one spot from every row (half at 100, half at 100.05), no instant.
+    median_policy = write_policy(tmp_path / "median.json", {
+        "schema_version": 1, "snapshot": {"one_spot": "median"}, "serve": {"metadata": True}})
+    rows, report, _ = run_c0(binary, source, tmp_path, "median", median_policy)
+    (spot,) = report["one_spot"]["snapshots"]
+    assert (spot["spot"], spot["rule"], spot["underlying_ns"]) == (100.025, "median", 0)
+    assert {row["underlying_ns"] for row in rows} == {""}
+    assert {(row["spot_version"], row["spot_rule"]) for row in rows} == {("1", "median")}
+
+
+@pytest.mark.parametrize("disposition", ["flag", "refuse"])
+def test_native_one_spot_types_a_stale_chain(binary, tmp_path, disposition):
+    source = tmp_path / "two-expiry.csv"
+    write_two_expiry_snapshot(source, 0.05)
+    policy = write_policy(tmp_path / "policy.json", {
+        "schema_version": 1, "serve": {"metadata": True},
+        "snapshot": {"one_spot": "nearest", "stale_spot_bps": 1, "stale_spot": disposition}})
+    rows, report, _ = run_c0(binary, source, tmp_path, disposition, policy)
+    near = [row for row in rows if row["chain_id"] == "17"]
+    far = [row for row in rows if row["chain_id"] == "18"]
+    assert {row["status"] for row in near} == {"ok"}
+    assert {row["spot_stale"] for row in near} == {"0"}
+    if disposition == "flag":
+        assert {row["status"] for row in far} == {"ok"}
+        assert {row["spot_stale"] for row in far} == {"1"}
+        assert report["one_spot"]["chain_status_counts"] == {"rebased": 1, "rebased_stale": 1}
+    else:
+        assert {row["status"] for row in far} == {"stale_spot"}
+        assert all(row["predicted_price"] == "" for row in far)
+        assert report["one_spot"]["chain_status_counts"] == {"rebased": 1, "stale_spot": 1}

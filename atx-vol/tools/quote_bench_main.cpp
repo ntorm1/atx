@@ -394,6 +394,13 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
       row.dividend_sum_malformed = !cell.empty();
     }
   }
+  if (header.contains("observation_ns")) {
+    // Never throws (InputRow::observation_ns): only the opt-in lane C0 keys read it.
+    const auto cell = get("observation_ns");
+    std::int64_t value = 0;
+    const auto [end, error] = std::from_chars(cell.data(), cell.data() + cell.size(), value);
+    if (error == std::errc{} && end == cell.data() + cell.size()) row.observation_ns = value;
+  }
   return row;
 }
 
@@ -467,6 +474,13 @@ struct RunStatistics {
   // Opt-in policy key `price_only`: rows served as ok_price_only (never in `served`).
   bool price_only{false};
   std::size_t price_only_rows{};
+  // Lane C0 opt-in policy keys (`serve`, `snapshot`); absent = the historical path. The
+  // report blocks they fill (identifiability, one_spot) are written only when opted in.
+  bool floor_price_only{false};
+  bool metadata{false};
+  quote_bench_policy::SnapshotOptions snapshot{};
+  Json identifiability = Json::object();
+  Json one_spot = Json::object();
   // Inferred dividend schedules and per-chain routes; empty unless a profile
   // sets the policy key `dividends` to an inferred-schedule mode.
   Json dividend_schedules = Json::array();
@@ -592,6 +606,7 @@ struct PreparedChain {
   std::vector<QuoteSliceQuote> quotes;
   std::shared_ptr<const QuoteFitProfile> profile;
   std::string source;
+  QuoteSliceSnapshotInfo snapshot{}; // lane C0 provenance (clocks, spot / carry versions)
 };
 using SnapshotIdentity = std::array<std::string, 3>;
 using ChainRows = std::map<std::uint64_t, std::vector<std::size_t>>;
@@ -601,11 +616,167 @@ void count_into(Json &counts, const std::string &key, std::size_t count = 1U) {
   counts[key] = counts.value(key, std::size_t{}) + count;
 }
 
+// ── Lane C0: one authoritative spot per snapshot (policy key `snapshot`) ──────────
+//
+// S* of one underlying snapshot (underlier, snapshot_ns), from its rows' own spot
+// observations: `nearest` takes the median spot observed at the observation instant
+// nearest snapshot_ns (earlier on a tie), `median` (and nearest without any
+// observation_ns) the median spot of every row.
+struct SnapshotSpot {
+  double spot{kNaN};
+  std::int64_t underlying_ns{0}; // observation instant of S*; 0 under the median rule
+  std::size_t observations{0};   // spot observations S* is the median of
+  std::string rule;              // nearest | median | median_fallback
+};
+using SpotKey = std::array<std::string, 2>; // underlier, snapshot_ns
+
+SnapshotSpot choose_spot(const std::vector<std::pair<std::int64_t, double>> &seen,
+                         std::int64_t snapshot_ns, quote_bench_policy::OneSpot mode) {
+  using quote_bench_policy::OneSpot;
+  SnapshotSpot out;
+  std::int64_t best = 0;
+  std::uint64_t gap = std::numeric_limits<std::uint64_t>::max();
+  for (const auto &[ns, spot] : seen) {
+    if (mode != OneSpot::Nearest || ns <= 0 || !(std::isfinite(spot) && spot > 0.0)) continue;
+    const auto distance = ns >= snapshot_ns
+        ? static_cast<std::uint64_t>(ns) - static_cast<std::uint64_t>(snapshot_ns)
+        : static_cast<std::uint64_t>(snapshot_ns) - static_cast<std::uint64_t>(ns);
+    if (distance < gap || (distance == gap && ns < best)) {
+      gap = distance;
+      best = ns;
+    }
+  }
+  std::vector<double> spots;
+  for (const auto &[ns, spot] : seen) {
+    if (std::isfinite(spot) && spot > 0.0 && (best == 0 || ns == best)) spots.push_back(spot);
+  }
+  if (spots.empty()) return out;
+  out.observations = spots.size();
+  out.spot = median(std::move(spots));
+  out.underlying_ns = best;
+  out.rule = best != 0 ? "nearest" : mode == OneSpot::Nearest ? "median_fallback" : "median";
+  return out;
+}
+
+std::map<SpotKey, SnapshotSpot> choose_snapshot_spots(const std::vector<InputRow> &rows,
+                                                      const ChainRows &chains,
+                                                      RunStatistics &stats) {
+  std::map<SpotKey, std::vector<std::pair<std::int64_t, double>>> seen;
+  for (const auto &[chain_id, indices] : chains) {
+    static_cast<void>(chain_id);
+    for (const auto i : indices) {
+      const auto &row = rows[i];
+      seen[{row.identity[0], row.identity[3]}].emplace_back(row.observation_ns, row.market.spot);
+    }
+  }
+  std::map<SpotKey, SnapshotSpot> out;
+  Json spots = Json::array();
+  for (const auto &[key, observations] : seen) {
+    std::int64_t snapshot_ns = 0;
+    static_cast<void>(std::from_chars(key[1].data(), key[1].data() + key[1].size(), snapshot_ns));
+    const SnapshotSpot choice = choose_spot(observations, snapshot_ns, stats.snapshot.one_spot);
+    spots.push_back({{"underlier", key[0]}, {"snapshot_ns", key[1]},
+                     {"spot", finite_or_null(choice.spot)},
+                     {"underlying_ns", choice.underlying_ns}, {"rule", choice.rule},
+                     {"observations", choice.observations}});
+    out.emplace(key, choice);
+  }
+  stats.one_spot["mode"] = quote_bench_policy::to_string(stats.snapshot.one_spot);
+  stats.one_spot["stale_spot_bps"] = stats.snapshot.stale_spot_bps;
+  stats.one_spot["stale_spot"] = stats.snapshot.refuse_stale ? "refuse" : "flag";
+  stats.one_spot["spot_version"] = 1U;
+  stats.one_spot["carry_version"] = 1U;
+  stats.one_spot["carry_convention"] = "forward_preserving";
+  stats.one_spot["snapshots"] = std::move(spots);
+  return out;
+}
+
+// Re-expresses one chain on its snapshot's S*: the market and every contract yield
+// override move by the forward-preserving shift (rebase_quote_slice_spot), and the raw
+// spot, versions, clock and stale flag go to the chain's provenance. Returns the refusal
+// status of the chain, empty when it is kept.
+std::string apply_one_spot(const SnapshotSpot &choice, QuoteSliceDividendModel model,
+                           std::uint64_t chain_id, PreparedChain &chain, RunStatistics &stats) {
+  const double raw = chain.market.spot;
+  Json record{{"chain_id", chain_id}, {"raw_spot", raw}, {"spot", finite_or_null(choice.spot)}};
+  const auto rebased = rebase_quote_slice_spot(chain.market, choice.spot, model);
+  if (!rebased) {
+    record["status"] = "invalid_snapshot_spot";
+    record["error"] = rebased.error().to_string();
+    stats.one_spot["chains"].push_back(std::move(record));
+    count_into(stats.one_spot["chain_status_counts"], "invalid_snapshot_spot");
+    return "invalid_snapshot_spot";
+  }
+  const double bps = 10000.0 * std::abs(raw - choice.spot) / choice.spot;
+  const bool stale = bps > stats.snapshot.stale_spot_bps;
+  record["spot_shift_bps"] = bps;
+  record["yield_shift"] = rebased->yield_shift;
+  record["forward"] = rebased->forward;
+  record["stale"] = stale;
+  stats.one_spot["max_spot_shift_bps"] =
+      std::max(stats.one_spot.value("max_spot_shift_bps", 0.0), bps);
+  stats.one_spot["max_abs_yield_shift"] =
+      std::max(stats.one_spot.value("max_abs_yield_shift", 0.0), std::abs(rebased->yield_shift));
+  if (stale && stats.snapshot.refuse_stale) {
+    record["status"] = "stale_spot";
+    stats.one_spot["chains"].push_back(std::move(record));
+    count_into(stats.one_spot["chain_status_counts"], "stale_spot");
+    return "stale_spot";
+  }
+  const std::string status = stale ? "rebased_stale" : "rebased";
+  record["status"] = status;
+  stats.one_spot["chains"].push_back(std::move(record));
+  count_into(stats.one_spot["chain_status_counts"], status);
+  chain.market = rebased->market;
+  for (auto &quote : chain.quotes) {
+    if (quote.continuous_yield) *quote.continuous_yield += rebased->yield_shift;
+  }
+  QuoteSliceSnapshotInfo &info = chain.snapshot;
+  info.underlying_ns = choice.underlying_ns;
+  info.spot_version = 1U;
+  // The rule that actually chose S*: a nearest request without observation instants is
+  // the median rule (choice.rule median_fallback).
+  info.spot_rule =
+      choice.rule == "nearest" ? QuoteSliceSpotRule::Nearest : QuoteSliceSpotRule::Median;
+  info.carry_version = 1U;
+  info.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
+  info.raw_spot = raw;
+  info.spot_stale = stale;
+  return {};
+}
+
 Json repair_json(const QuoteSliceRepairRecord &r) {
   return {{"outcome", to_string(r.outcome)}, {"nodes", r.nodes},
           {"material_nodes", r.material_nodes}, {"max_price_move", r.max_price_move},
           {"max_vol_move", r.max_vol_move}, {"max_unquoted_vol_move", r.max_unquoted_vol_move},
           {"unidentified", r.unidentified}};
+}
+
+// A published volatility that is identified: finite with a volatility convention (an ok
+// row whose volatility query_quote_slice identifies; stamp_metadata sets the convention).
+bool vol_identified(const Prediction &prediction) {
+  return std::isfinite(prediction.vol) && prediction.vol_convention != "none";
+}
+
+// Lane C0 metadata of one published row (written only under serve.metadata): the
+// convention of the served volatility (none unless the row is served ok with a volatility
+// query_quote_slice identifies), the identification reason and IV interval of a served
+// slice's Success / PriceOnly row (query_quote_slice's own; none for every other row),
+// the fit's model and dividend convention, and the chain's snapshot provenance.
+void stamp_metadata(const QuoteSliceFit &fit, const QuoteSliceRow &row,
+                    const QuoteSliceSnapshotInfo &snapshot, bool slice_served,
+                    Prediction &prediction) {
+  prediction.vol_convention =
+      prediction.status == "ok" ? to_string(vol_convention(row)) : "none";
+  if (slice_served && (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+                       row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly)) {
+    prediction.price_only_reason = to_string(row.price_only_reason);
+    prediction.iv_lower = row.iv_lower;
+    prediction.iv_upper = row.iv_upper;
+  }
+  prediction.model_kind = to_string(model_kind(fit));
+  prediction.dividend_convention = to_string(fit.dividend_model);
+  prediction.snapshot = snapshot;
 }
 
 // A served fit's PriceOnly row: a certified price without an identifiable
@@ -744,7 +915,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
     expiries.reserve(members.size());
     for (const auto id : members) {
       const auto &chain = prepared.at(id);
-      expiries.push_back({chain.market, chain.quotes, {}});
+      expiries.push_back({chain.market, chain.quotes, {}, chain.snapshot});
       count_into(stats.per_profile_counts[profile.name], "attempted_chains");
       if (chain.market.dividend_pv > 0.0) ++stats.dividend_chains;
     }
@@ -907,6 +1078,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         } else {
           prediction.status = to_string(result.evaluation_status);
         }
+        stamp_metadata(fit, result, prepared.at(members[s]).snapshot, served, prediction);
       }
     }
   }
@@ -1157,7 +1329,10 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   if (args.curve.empty()) {
     policy.emplace(quote_bench_policy::load(args.policy, dividends));
     stats.policy_definition = policy->definition;
-    stats.price_only = policy->price_only;
+    stats.price_only = policy->price_only; // implied by serve.floor_price_only (lane C0)
+    stats.floor_price_only = policy->floor_price_only;
+    stats.metadata = policy->metadata;
+    stats.snapshot = policy->snapshot;
   } else {
     const auto kind = parse_curve_kind(args.curve);
     if (!kind) throw std::runtime_error(kind.error().to_string());
@@ -1187,6 +1362,9 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   stats.chains = chains.size();
   std::map<std::uint64_t, PreparedChain> prepared;
   std::map<SnapshotIdentity, std::vector<std::uint64_t>> snapshot_chains;
+  const bool one_spot = stats.snapshot.one_spot != quote_bench_policy::OneSpot::Off;
+  const auto snapshot_spots = one_spot ? choose_snapshot_spots(rows, chains, stats)
+                                       : std::map<SpotKey, SnapshotSpot>{};
   const auto start = Clock::now();
   for (const auto &[chain_id, indices] : chains) {
     if (!consistent_chain(rows, indices)) {
@@ -1202,11 +1380,24 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       for (const auto i : indices) predictions[i].status = "invalid_market";
       continue;
     }
-    PreparedChain chain{market, {}, {}, {}};
+    PreparedChain chain{market, {}, {}, {}, {}};
     chain.quotes.reserve(indices.size());
-    for (const auto i : indices) chain.quotes.push_back(rows[i].quote);
-    prepared.emplace(chain_id, std::move(chain));
+    for (const auto i : indices) {
+      chain.quotes.push_back(rows[i].quote);
+      // Quote clock: the chain's latest quote observation; its own spot rides on its quotes.
+      chain.snapshot.quote_ns = std::max(chain.snapshot.quote_ns, rows[i].observation_ns);
+    }
+    chain.snapshot.underlying_ns = chain.snapshot.quote_ns;
     const auto &identity = rows[indices.front()].identity;
+    if (one_spot) {
+      const auto refused = apply_one_spot(snapshot_spots.at({identity[0], identity[3]}),
+                                          dividends, chain_id, chain, stats);
+      if (!refused.empty()) {
+        for (const auto i : indices) predictions[i].status = refused;
+        continue;
+      }
+    }
+    prepared.emplace(chain_id, std::move(chain));
     snapshot_chains[{identity[0], identity[1], identity[3]}].push_back(chain_id);
   }
   const auto add_count = [](Json &counts, const std::string &key, std::size_t count = 1U) {
@@ -1412,6 +1603,8 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         } else {
           prediction.status = to_string(result.evaluation_status);
         }
+        stamp_metadata(*fit, result, chain.snapshot,
+                       fit->fit_status == QuoteSliceFitStatus::Success, prediction);
       }
     }
     stats.chain_microseconds.push_back(
@@ -1459,6 +1652,10 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       predictions[index].vol = kNaN;
       predictions[index].vol_status = "not_evaluated"; // the whole expiry is refused
       predictions[index].grade.clear();
+      predictions[index].vol_convention = "none";
+      predictions[index].price_only_reason = "none";
+      predictions[index].iv_lower = kNaN;
+      predictions[index].iv_upper = kNaN;
       predictions[index].status = ambiguous_expiries.contains(chain)
           ? "ambiguous_expiry" : "calendar_arbitrage";
     }
@@ -1485,6 +1682,30 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     else add_count(counts["actual_curve_rows"], prediction.actual_curve);
     add_count(counts["row_status_counts"], prediction.status);
   }
+  if (stats.floor_price_only || stats.metadata) {
+    // Lane C0: price coverage (ok | ok_price_only) and identified-IV coverage (ok with a
+    // volatility the library query identifies, vol_convention not none) are separate; an
+    // ok row at the floor is a floor value served with a volatility (zero under
+    // serve.floor_price_only), never counted as identified.
+    auto &id = stats.identifiability;
+    id = {{"floor_price_only", stats.floor_price_only}, {"served_price_rows", 0U},
+          {"served_vol_rows", 0U}, {"identified_vol_rows", 0U}, {"price_only_rows", 0U},
+          {"identified_floor_vol_rows", 0U}, {"price_only_reason_counts", Json::object()},
+          {"vol_convention_counts", Json::object()}};
+    for (const auto &prediction : predictions) {
+      const bool ok = prediction.status == "ok";
+      const bool price_only = prediction.status == "ok_price_only";
+      if (ok || price_only) add_count(id, "served_price_rows");
+      if (ok && std::isfinite(prediction.vol)) add_count(id, "served_vol_rows");
+      if (ok && vol_identified(prediction)) add_count(id, "identified_vol_rows");
+      if (ok && prediction.vol <= kIvMin) add_count(id, "identified_floor_vol_rows");
+      if (ok) add_count(id["vol_convention_counts"], prediction.vol_convention);
+      if (price_only) {
+        add_count(id, "price_only_rows");
+        add_count(id["price_only_reason_counts"], prediction.price_only_reason);
+      }
+    }
+  }
   const auto cold_end = Clock::now();
   stats.phases.lap(bench::Stage::Publication, cold_end);
   stats.cold_calibration_seconds = bench::seconds_between(cold_start, cold_end);
@@ -1492,13 +1713,44 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   return predictions;
 }
 
+// Lane C0 metadata columns (serve.metadata): blank where a value is not supplied.
+// vol_valid: the published volatility is identified (vol_identified).
+void write_metadata(std::ostream &stream, const Prediction &p) {
+  const auto number_or_blank = [&](double value) {
+    stream << ',';
+    if (std::isfinite(value)) stream << value;
+  };
+  const auto instant = [&](std::int64_t ns) {
+    stream << ',';
+    if (ns != 0) stream << ns;
+  };
+  const auto &s = p.snapshot;
+  stream << ',' << p.price_only_reason;
+  number_or_blank(p.iv_lower);
+  number_or_blank(p.iv_upper);
+  stream << ',' << p.vol_convention << ',' << p.model_kind << ',' << p.dividend_convention;
+  instant(s.quote_ns);
+  instant(s.underlying_ns);
+  stream << ',' << s.spot_version << ',' << to_string(s.spot_rule) << ',' << s.carry_version << ','
+         << (p.model_kind.empty() ? "" : to_string(s.carry_convention));
+  number_or_blank(s.raw_spot);
+  stream << ',' << (s.spot_stale ? 1 : 0) << ',' << (std::isfinite(p.price) ? 1 : 0) << ','
+         << (vol_identified(p) ? 1 : 0);
+}
+
 void write_predictions(const std::filesystem::path &path, const std::vector<InputRow> &rows,
-                       const std::vector<Prediction> &predictions, bool graded = false) {
+                       const std::vector<Prediction> &predictions, bool graded = false,
+                       bool metadata = false) {
   std::ofstream stream{path};
   if (!stream) throw std::runtime_error("Cannot open prediction output");
   stream << "row_id,predicted_price,predicted_vol,status,chain_id,quote_status,admitted,"
             "resolved_profile,policy_source,configured_curve,actual_curve,vol_status,model"
-         << (graded ? ",grade\n" : "\n");
+         << (graded ? ",grade" : "")
+         << (metadata ? ",price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,"
+                        "dividend_convention,quote_ns,underlying_ns,spot_version,spot_rule,"
+                        "carry_version,carry_convention,raw_spot,spot_stale,price_valid,vol_valid"
+                      : "")
+         << '\n';
   stream << std::setprecision(17);
   for (std::size_t i = 0; i < rows.size(); ++i) {
     const auto &prediction = predictions[i];
@@ -1514,6 +1766,7 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
            << (prediction.model == "quote-slice" && std::isfinite(prediction.vol)
                    ? "ok" : prediction.vol_status) << ',' << prediction.model;
     if (graded) stream << ',' << prediction.grade;
+    if (metadata) write_metadata(stream, prediction);
     stream << '\n';
   }
   stream.close();
@@ -1666,6 +1919,65 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "never counted in served_rows (price-served = ok | ok_price_only, vol-served = ok) and "
         "never becomes a vol row (a later calendar repair refreshes its price only); without "
         "the key such a row is refused invalid_volatility";
+  }
+  if (stats.floor_price_only || stats.metadata) {
+    report["identifiability"] = stats.identifiability;
+    report["identifiability_semantics"] = "serve.floor_price_only: every profile's "
+        "QuoteSliceConfig::floor_policy is PriceOnly, so a row whose volatility would sit at "
+        "the floor (kIvMin) or on a flat exercise-region plateau, or would re-imply only with "
+        "no vega, is a PriceOnly row (reason floor_vol, flat_exercise_region, low_vega or "
+        "unidentified_interval; IV interval where known) served as ok_price_only with its "
+        "certified price and no volatility; served_price_rows = ok | ok_price_only, "
+        "served_vol_rows = ok with a volatility, identified_vol_rows = ok with a volatility "
+        "query_quote_slice identifies (vol_convention not none), identified_floor_vol_rows "
+        "= ok rows at or below kIvMin (a floor value served with a volatility under the "
+        "Legacy policy, its vol_convention none; 0 under the key). serve.floor_price_only "
+        "implies price_only (policy_definition.price_only true)";
+  }
+  if (stats.metadata) {
+    report["output_conventions"] = {
+        {"columns", "price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,"
+            "dividend_convention,quote_ns,underlying_ns,spot_version,spot_rule,carry_version,"
+            "carry_convention,raw_spot,spot_stale,price_valid,vol_valid"},
+        {"vol_convention", "predicted_vol of an ok row: fitted_curve (the fitted American "
+            "IV curve at an unmoved certified node) or reimplied_repaired (the certified price "
+            "re-implied under the row's own carry and American model); none otherwise, "
+            "including an ok row whose volatility query_quote_slice does not identify (the "
+            "Legacy floor policy keeps its historical value; price_only_reason and the IV "
+            "interval then say why). No row is american_quoting or european_equivalent"},
+        {"price_only_reason", "query_quote_slice's reason (and iv_lower / iv_upper) for an "
+            "ok_price_only row, or an ok row whose volatility it does not identify; none on "
+            "every other row"},
+        {"model_kind", "andersen_lake, or discrete_dividend_lattice for a DatedCash route"},
+        {"dividend_convention", "QuoteSliceDividendModel of the fit"},
+        {"quote_clock", "quote_ns: the chain's latest observation_ns (blank without the "
+            "column)"},
+        {"underlying_clock", "underlying_ns: under snapshot.one_spot the observation "
+            "instant of S* (blank under the median rule); otherwise the chain's latest quote "
+            "observation_ns, NOT the spot's own instant (the chain spot is the median over "
+            "rows that may be observed at several instants)"},
+        {"versions", "spot_version 0 = the chain's own median spot, 1 = the snapshot spot S* "
+            "(snapshot.one_spot); spot_rule: the rule that chose the fit's spot - own, "
+            "nearest (S* at the observation instant nearest snapshot_ns) or median (every "
+            "observation; also a nearest request without observation instants); "
+            "carry_version 0 = supplied carry, 1 = re-derived by the forward-preserving "
+            "rebase (carry_convention forward_preserving)"},
+        {"validity", "raw_spot: the chain's own spot before a rebase; spot_stale: raw_spot "
+            "beyond snapshot.stale_spot_bps of S*; price_valid: a published price; vol_valid: "
+            "a published volatility that is identified (vol_convention not none)"}};
+  }
+  if (stats.snapshot.one_spot != quote_bench_policy::OneSpot::Off) {
+    report["one_spot"] = stats.one_spot;
+    report["one_spot"]["semantics"] = "snapshot.one_spot: every expiry of one underlying "
+        "snapshot (underlier, snapshot_ns) is re-expressed on one spot S* "
+        "(rebase_quote_slice_spot): spot = S*, and the expiry and every contract yield move by "
+        "the same calendar-clock shift so each forward under the run's dividend model is "
+        "unchanged (continuous / funding PV ln(S*/S)/T_cal, escrowed PV "
+        "ln((S*-PV)/(S-PV))/T_cal). FORWARD-preserving only: American prices are NOT "
+        "preserved (early exercise depends on the spot itself). Raw per-chain spots are kept "
+        "(chains[].raw_spot); spot_version 1, spot_rule nearest | median (snapshots[].rule; "
+        "median_fallback is the median rule), carry_version 1; a chain beyond stale_spot_bps "
+        "is flagged (rebased_stale, served) or refused (stale_spot)";
   }
   if (!stats.dividend_schedules.empty()) {
     report["dividend_schedule"] = {
@@ -2053,7 +2365,7 @@ int main(int argc, char **argv) {
     }
     const auto cpus_after = bench::sample_cpus();
     const auto write_start = Clock::now();
-    write_predictions(args.output, rows, predictions, stats.graded);
+    write_predictions(args.output, rows, predictions, stats.graded, stats.metadata);
     const auto outputs_ready = Clock::now();
     times.write_s = bench::seconds_between(write_start, outputs_ready);
     times.process_wall_s = times.startup_s + bench::seconds_between(main_entry, outputs_ready);
