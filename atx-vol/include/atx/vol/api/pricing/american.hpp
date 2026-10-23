@@ -562,7 +562,13 @@ private:
 //   θ (calendar, dV/dt) — the continuation-region PDE identity
 //                       θ = rV − (r − q) S Δ − ½ σ² S² Γ, the american_greeks_al /
 //                       RecordGreeks definition: the family has NO τ axis (one geometry
-//                       per expiry), so an FD-in-T theta does not exist here;
+//                       per expiry), so an FD-in-T theta does not exist here. NOT usable
+//                       next to the exercise edge: within ~0.03 σ√T of it this θ was
+//                       measured 25 – 138 % off the converged calendar difference, once
+//                       with the wrong sign (A0 r6 slow suite; review-A0 m2). This bundle
+//                       has no per-Greek reason, so nothing marks those rows — the (σ, q)
+//                       bundle (A0 block below) types the band NearExerciseEdge; review-L3g
+//                       m5's in-band part is OPEN for this bundle's owner;
 //   charm             — ∂θ/∂S from the same identity with the analytic speed;
 //   rho, phi (∂P/∂r, ∂P/∂q) — ONLY with an AlSigmaFamilyCarryBumps (below): a σ-family
 //                       has no r / q axis, and its frozen-boundary derivative (y held)
@@ -642,7 +648,7 @@ struct AlSigmaFamilyGreeks {
   double delta = 0.0;
   double gamma = 0.0;
   double vega = 0.0;
-  double theta = 0.0; // calendar dV/dt per year (PDE identity)
+  double theta = 0.0; // calendar dV/dt per year (PDE identity; NOT near the edge, above)
   double rho = 0.0;   // ∂P/∂r: carry set only (else NaN, `carry` says why)
   double phi = 0.0;   // ∂P/∂q: carry set only (else NaN, `carry` says why)
   double vanna = 0.0; // ∂²P/∂S∂σ
