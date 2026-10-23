@@ -5,6 +5,47 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — typed price-only identifiability, one spot per snapshot, convention metadata (lane C0)
+
+**Library.** `QuoteSliceConfig::floor_policy` (`QuoteSliceFloorPolicy`): `Legacy`, the
+default, is the historical path bit for bit; under `PriceOnly` a served row whose volatility
+would sit at `kIvMin`, or would re-imply only on a flat exercise-region plateau or with no
+vega, is a typed `PriceOnly` row that keeps its certified price. Every `PriceOnly` row now
+carries `QuoteSliceRow::price_only_reason` (`floor_vol`, `flat_exercise_region`, `low_vega`,
+`unidentified_interval`) and, where known, the IV interval `[iv_lower, iv_upper]`; every
+served row records where its volatility came from (`vol_convention(row)`: `fitted_curve`
+or `reimplied_repaired`). New `query_quote_slice` (the typed answer: price, status, reason,
+interval, convention), `model_kind(fit)`, `QuoteSliceSnapshotInfo` provenance on
+`QuoteSliceFit::snapshot` / `QuoteSurfaceExpiry::snapshot` (quote and underlying clocks,
+spot and carry versions, carry convention, raw spot, stale flag), and
+`rebase_quote_slice_spot`, which re-expresses an expiry on a snapshot spot S* with the
+forward-preserving carry of its dividend model (dated cash solves the lattice forward).
+The fit archive is ATXVFA 1.1: `PriceOnlyNodes` section and minor-1 tails on fit and quote
+rows (minor-0 files read the tails as absent). Python: `fit_quote_slice`,
+`query_quote_slice`, `evaluate_quote_slice`, `rebase_quote_slice_spot` and the metadata.
+
+**Behaviour change.** `evaluate_quote_slice` now refuses (`OutOfRange`) every answer that
+`query_quote_slice` types `PriceOnly`, whatever the fit's `floor_policy`: a query whose
+re-implied volatility is the floor (`kIvMin`) or is not identified - between nodes or at
+a repaired node - used to return `kIvMin` as if identified. No production caller is
+affected (only tests and the Python binding call it). **Migration:** call
+`query_quote_slice` for the typed answer, or `fit.prices->price(K, side)` for the price.
+
+**Bench (opt-in).** Policy key `serve` {`floor_price_only`, `metadata`}: the first sets
+every profile's `floor_policy` to `PriceOnly` and serves those rows `ok_price_only` with
+their price (report `identifiability`: price and identified-IV coverage separately,
+reason counts, `identified_floor_vol_rows`); the second appends the metadata columns
+`price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,dividend_convention,
+quote_ns,underlying_ns,spot_version,carry_version,carry_convention,raw_spot,spot_stale,
+price_valid,vol_valid` and the report block `output_conventions`. Policy key `snapshot`
+{`one_spot` off | nearest | median, `stale_spot_bps`, `stale_spot` flag | refuse}: one
+authoritative spot per underlying snapshot from the rows' own timestamped observations,
+each expiry rebased forward-preserving (American prices are not preserved), raw per-chain
+spots kept in the report block `one_spot`, stale chains flagged or refused `stale_spot`.
+
+**Migration:** none for the bench: with the keys absent or off, predictions are
+byte-identical (8/8 default hashes) and the report is unchanged.
+
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
 Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
