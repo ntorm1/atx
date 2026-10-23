@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import math
@@ -833,6 +834,14 @@ def test_native_graded_options_are_strict(binary, tmp_path):
               "graded": {"market_distance": "gate", "market_distance_spreads": -1}},
              "outside supported bounds"),
             ({"schema_version": 1, "graded": {"market_distance": "gate"}},
+             "require admission graded"),
+            # Opt-in publication validation (lane C2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"publication": "strict"}},
+             "publication must be off or validate"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"publication": True}},
+             "must be a string"),
+            ({"schema_version": 1, "graded": {"publication": "validate"}},
              "require admission graded"),
             # Screen routing gate kappa (SPY1s Phase 2).
             ({"schema_version": 1, "admission": "graded",
@@ -2185,6 +2194,180 @@ def test_native_market_gated_rows_carry_no_price_only_reason(
         assert (row["price_only_reason"], row["iv_lower"], row["iv_upper"]) == ("none", "", "")
         assert (row["vol_convention"], row["price_valid"], row["vol_valid"]) == ("none", "0", "0")
     assert report["identifiability"]["price_only_reason_counts"] == {"low_vega": 4}  # K 128-140
+
+
+def run_graded(binary: Path, source: Path, tmp_path: Path, name: str, document: dict):
+    policy = write_policy(tmp_path / f"{name}.json", document)
+    output, native = tmp_path / f"{name}.csv", tmp_path / f"{name}-native.json"
+    result = invoke(binary, source, output, "--policy", str(policy), "--report", str(native))
+    assert result.returncode == 0, (name, result.stderr)
+    return output, json.loads(result.stdout), json.loads(native.read_text())
+
+
+def test_native_publication_validation_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.publication validate (lane C2): on clean quotes nothing is repaired, gated or
+    # found, so the predictions are byte-identical to plain graded; the policy definition
+    # echoes the key and the native report carries the opt-in publication counters. An
+    # explicit "off" adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    runs = {}
+    for name, keys in {"plain": None, "validate": {"publication": "validate"},
+                       "off": {"publication": "off"}}.items():
+        document = {"schema_version": 1, "admission": "graded"}
+        if keys is not None:
+            document["graded"] = keys
+        runs[name] = run_graded(binary, source, tmp_path, name, document)
+    plain_bytes = runs["plain"][0].read_bytes()
+    assert runs["validate"][0].read_bytes() == plain_bytes
+    assert runs["off"][0].read_bytes() == plain_bytes
+    definitions = {name: run[1]["policy_definition"]["graded"] for name, run in runs.items()}
+    assert definitions["validate"]["publication"] == "validate"
+    assert "publication" not in definitions["plain"]
+    assert definitions["off"] == definitions["plain"]
+    stats = {name: run[2]["graded_stats"] for name, run in runs.items()}
+    counters = stats["validate"]["publication"]
+    for key in ("violations", "label_violations", "rollbacks", "withheld_rows",
+                "joint_nonconverged", "joint_infeasible"):
+        assert counters[key] == 0, key
+    assert all(entry["publication"]["violations"] == 0 for entry in stats["validate"]["slices"])
+    for name in ("plain", "off"):
+        assert "publication" not in stats[name]
+        assert not any("publication" in entry for entry in stats[name]["slices"])
+
+
+def test_native_publication_validation_keeps_one_answer_per_refused_contract(
+        binary, tmp_path, calendar_repair_chain):
+    # Lane C2's combined path through the CLI: N is repaired onto F's exercise values (the
+    # repair validated after its commit), the market-distance gate refuses the rows that
+    # land beyond one spread and withholds them, and the final check passes the published
+    # surface. Validation changes no prediction here; every refused row is withheld (the
+    # library API refuses it too), no row's labels disagree with the typed query, nothing
+    # was rolled back and no slice was refused.
+    graded = {"market_distance": "gate", "market_distance_spreads": 1.0}
+    serve = {"floor_price_only": True, "metadata": True}
+    gate, _, _ = run_graded(binary, calendar_repair_chain, tmp_path, "gate", json.loads(
+        calendar_repair_policy(tmp_path / "gate-doc.json", graded=graded,
+                               serve=serve).read_text()))
+    checked, summary, native = run_graded(
+        binary, calendar_repair_chain, tmp_path, "checked", json.loads(
+            calendar_repair_policy(tmp_path / "checked-doc.json",
+                                   graded={**graded, "publication": "validate"},
+                                   serve=serve).read_text()))
+    assert checked.read_bytes() == gate.read_bytes()
+    assert summary["policy_definition"]["graded"]["publication"] == "validate"
+    rows = read_quotes(checked)
+    refused = [row for row in rows if row["status"] == "market_distance_failure"]
+    assert {row["row_id"] for row in refused} >= {"0", "1", "2"}
+    for row in refused:
+        assert (row["predicted_price"], row["predicted_vol"]) == ("", "")
+        assert (row["price_only_reason"], row["vol_convention"]) == ("none", "none")
+    counters = native["graded_stats"]["publication"]
+    assert counters["withheld_rows"] == len(refused)
+    assert counters["checks"] >= 1  # N's calendar repair, validated before its commit
+    for key in ("rollbacks", "violations", "label_violations"):
+        assert counters[key] == 0, key
+    assert "publication_invalid" not in json.dumps(native["graded_stats"]["slices"])
+
+
+# Lane C2 fix round 1 (review M1): a surface on which the bidirectional calendar rung runs
+# and repairs a non-dividend expiry into a non-dividend violation (the dev200b LEMB
+# 20742 / 20777 pattern, on synthetic quotes).
+# - N (0.15 y): no dividend. Its deep-ITM calls cannot sit below S - dfK.
+# - D (0.30 y): a 6 % yield. Its deep-ITM calls are exercised, at S - K.
+# So N crosses D on every deep-ITM call, by up to K (1 - df).
+# The calls below K 90 are quoted 0.4 wide on each side: too narrow for either
+# one-sided rung, wide enough for the joint projection, which lowers N's calls below
+# S - dfK.
+# Inputs are rounded to 6 decimals, so the snapshot does not depend on libm's last bit.
+JOINT_SNAPSHOT_SHA256 = "7a01deb726d5fa56bafa7913c24ee488cb1f3122a7ab9480859f20dded785c67"
+# The historical rule: the C0 base binary (atx-vol-quote-bench-c0fix-7a78bb44, e22ff2c4
+# code; no non-dividend recheck anywhere) serves this snapshot under JOINT_H0_REPAIR
+# serially. The full dev200b cohort is the parity evidence for the same ruling: its h0 +
+# repair arm hashes to 2e31e087... on the base binary and on lane C2.
+JOINT_BASE_SHA256 = "28b14ac06772f2efcc079efff20321d3f7729c1eb8dd740f994a6e2b565a9c7e"
+JOINT_H0_REPAIR = {
+    "term_prior_weight": 1.0, "prior_decay_log_time": 1.0, "prior_quote_halflife": 6.0,
+    "channel_node_weight": 0.5, "calendar_retry_factor": 4.0, "grade_b_min_mid_strikes": 4,
+    "calendar_repair_half_spreads": 0.5, "certificate": "box",
+    "certificate_box_half_ticks": 0.0, "market_distance": "repair",
+    "market_distance_spreads": 1.0,
+}
+
+
+def write_joint_nondividend_snapshot(path: Path) -> None:
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream, lineterminator="\n")
+        writer.writerow(["row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+                         "years", "years_calendar", "rate", "sdiv", "ddiv_pv", "input_status",
+                         "exercise", "underlier", "root", "expiry_days", "snapshot_ns"])
+        row = 0
+        for chain, (years, q) in enumerate(((0.15, 0.0), (0.30, 0.06))):
+            for strike in range(50, 151, 5):
+                for call in (1, 0):
+                    price = crr_american(100.0, strike, years, 0.25, 0.05, q, call == 1, 400)
+                    half = 0.4 if call and strike < 90 else max(0.02, 0.03 * price)
+                    writer.writerow([row, 3000 + chain, strike, call, 100,
+                                     round(max(price - half, 0.0), 6), round(price + half, 6),
+                                     years, years, 0.05, q, 0, "ok", "American", "JJJ", "JJJ",
+                                     21000 + round(years * 365), 1])
+                    row += 1
+
+
+def test_native_joint_rung_rechecks_the_nondividend_certificate_only_under_validate(
+        binary, tmp_path):
+    # PM ruling 2026-10-23 on lane C2 (review-L3q m3; brief deliverable 6), surface wiring.
+    # Without validate, fit_quote_surface keeps the historical rule (Skip):
+    # - the joint repair applies, and N is served bit-identical to the base binary;
+    # - so a keys-ON repair arm never loses a row its base served.
+    # Under validate it re-certifies (Recheck):
+    # - the rung refuses (NotCertified), and N's rows are refused;
+    # - nothing was committed, so nothing is checked or rolled back.
+    # The test fails if joint_attempt passes Recheck always: the off arm then loses N.
+    # It also fails if joint_attempt passes Skip always: under validate the repair then
+    # applies and the after-mutation check rolls it back (outcome "applied",
+    # rollbacks 1, checks 1).
+    source = tmp_path / "quotes.csv"
+    write_joint_nondividend_snapshot(source)
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == JOINT_SNAPSHOT_SHA256
+    runs = {}
+    for name, extra in (("off", {}), ("validate", {"publication": "validate"})):
+        policy = write_policy(tmp_path / f"{name}.json", {
+            "schema_version": 1, "admission": "graded",
+            "graded": {**JOINT_H0_REPAIR, **extra},
+            "profiles": [{"name": profile, "base": profile,
+                          "channel": {"repair_half_spreads": 0.5}}
+                         for profile in PROFILE_NAMES]})
+        output, native = tmp_path / f"{name}.csv", tmp_path / f"{name}-native.json"
+        result = invoke(binary, source, output, "--policy", str(policy), "--dividends",
+                        "funding-pv", "--report", str(native), env={**os.environ, **SERIAL})
+        assert result.returncode == 0, (name, result.stderr)
+        runs[name] = (output, read_quotes(output), json.loads(native.read_text()))
+
+    def near(name):
+        return next(entry for entry in runs[name][2]["graded_stats"]["slices"]
+                    if entry["chain_id"] == 3000)
+
+    off_csv, off_rows, off = runs["off"]
+    assert hashlib.sha256(off_csv.read_bytes()).hexdigest() == JOINT_BASE_SHA256
+    record = near("off")["market_distance"]
+    assert record["calendar_joint_repaired"] is True
+    assert record["calendar_last_channel_repair"]["outcome"] == "applied"
+    served = [row["status"] for row in off_rows if row["chain_id"] == "3000"]
+    assert (served.count("ok"), len(served)) == (34, 42)
+    assert "publication" not in off["graded_stats"]
+
+    _, on_rows, on = runs["validate"]
+    entry = near("validate")
+    assert entry["market_distance"]["calendar_last_channel_repair"]["outcome"] == "not_certified"
+    assert entry["market_distance"]["calendar_joint_repaired"] is False
+    assert entry["grade"] == "calendar_arbitrage"
+    refused = [row["status"] for row in on_rows if row["chain_id"] == "3000"]
+    assert refused == ["calendar_arbitrage"] * 42
+    counters = on["graded_stats"]["publication"]
+    assert counters["joint_feasible"] == 1  # the projection settled; the recheck refused it
+    for key in ("checks", "rollbacks", "violations", "label_violations"):
+        assert counters[key] == 0, key
 
 
 def test_native_metadata_columns_carry_conventions_and_provenance(binary, tmp_path):

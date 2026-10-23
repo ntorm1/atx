@@ -833,6 +833,9 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
       out["ladder_wing_tail"] = to_string(s.ladder_wing_tail); // provenance only when on
     }
   }
+  if (s.publication != QuoteSurfacePublication::Off) {
+    out["publication"] = to_string(s.publication); // provenance only when opted in (lane C2)
+  }
   if (space.fit_space == QuoteSliceFitSpace::VolChannel) {
     out["fit_space"] = "vol";
     out["deam_profile"] = space.deam_profile == QuoteSliceDeamProfile::Fast     ? "fast"
@@ -1115,7 +1118,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
-             "family_native"});
+             "family_native", "publication"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1230,6 +1233,16 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
                                "gate or repair");
     }
     numeric(j, "market_distance_spreads", repair.market_distance_spreads, 0, 1000);
+    // Opt-in publication validation (lane C2; quote_slice.hpp QuoteSurfacePublication):
+    // "off" is the historical path.
+    if (j.contains("publication")) {
+      const auto mode = text(j.at("publication"));
+      if (mode == "validate") {
+        surface.publication = QuoteSurfacePublication::Validate;
+      } else if (mode != "off") {
+        throw std::runtime_error("Policy graded publication must be off or validate");
+      }
+    }
   }
   Json definition{{"schema_version", 1}, {"profiles", Json::array()},
                   {"symbol_overrides", Json::array()}, {"regimes", regimes_json(regimes)}};

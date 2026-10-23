@@ -5,6 +5,70 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — served support, publication validation, typed joint projection (lane C2)
+
+**Served support.** `QuoteSliceFit::withheld_nodes` marks the node sides whose certified
+value is withheld from the served representation; `served_quote_slice_price` (allocation-free
+served price) and `quote_slice_gaps` (the support / gap mask) read it. The opt-in
+market-distance gate (`QuoteSliceRepairConfig::market_distance` Gate / Repair) now withholds
+every row it refuses, and any other row of that node side: `query_quote_slice` answers
+`MarketDistanceFailure` (no price, no volatility) and `evaluate_quote_slice` refuses
+(`Unavailable`, "withheld") at the refused node side and at every strike strictly between it
+and its neighbouring nodes. **Behaviour change (opt-in gate only):** the API used to return
+the refused row's off-market certified price (review-L3q m5). The default path never gates.
+The fit archive does not store the mask yet (hand-off to the archive owner: a decoded fit
+with `MarketDistanceFailure` rows serves their node values again).
+
+**Publication validation.** `validate_published_representation` checks what API callers
+evaluate - the served price function on its support - at every node, dense interior points
+and, for EVERY calendar pair (not adjacent maturities only), the union knots and their
+midpoints. Classes: Certificate, Shape, CrossSide, Nondividend, QuoteBox (at a market-distance
+bound), Calendar, Extrapolation, Support (rows versus the API) and Identification (a row's
+labels versus `query_quote_slice`, lane C0's one answer per contract). Opt-in
+`QuoteSurfaceConfig::publication = Validate` (bench `graded.publication: validate`): every
+repair trial is validated after its library commit (so after `align_with_query`) and rolled
+back on any violation; last, the whole served set is checked until clean (a structural
+violation refuses the slice "publication_invalid", a QuoteBox / Support one withholds the
+row; Identification findings are counted). Counters on `QuoteSurfaceSlice`
+(`publication_*`, `withheld_rows`, `joint_*`); the bench reports them under
+`graded_stats.publication` only when the key is on. `Off` is the historical path bit for bit.
+
+**Repairs re-certified (review-L3q m2 / m3).** All four calendar repairs can re-certify a
+non-dividend slice with `check_nondividend_american` before committing: the bounded-move
+(`repair_quote_slice_calendar`), the channel / box (`repair_quote_slice_calendar_in_channel`),
+the in-box market (`repair_quote_slice_market`) and the joint rung
+(`repair_quote_slice_calendar_joint`). Each takes `QuoteSliceNondividendRecheck`:
+- `Recheck` is the default for direct callers. This is a **behaviour change** for them: such
+  a result is now refused.
+- `Skip` is the historical rule. `fit_quote_surface` uses it for all four unless
+  `publication = Validate`.
+
+So the default surface, and every keys-ON repair arm without `Validate`, serve exactly what
+they served before (PM ruling: a keys-ON repair arm never loses a row its base served). The
+four are gated alike: the channel / market recheck was new in lane C2 and changed no row on
+any measured arm, and fix round 1 gated it on the same rule (review m4). Separately, the
+market repair refuses a band result that moves a row out of its own quote (`LeftChannel`).
+
+Measured exposure:
+- dev200 / dev200b graded-v1 serve 17 / 18 non-dividend chains (440 / 498 rows) whose
+  bounded calendar repair fails the non-dividend certificate.
+- dev200b's box h0 / h0.5 + market-distance repair arms serve 80 rows on 3 SJB / LEMB
+  chains from joint repairs that fail it.
+
+`Validate` refuses them.
+
+**Bounded joint projection.** `project_calendar_joint_bounded` (budget `max_sweeps`,
+`relative_tolerance`) returns `Feasible`, `InfeasibleData` with an exact certificate naming
+the conflict (`EmptyBox`, `NoConvexCurve`, `CalendarBox`: slice, node, partner, strike,
+excess), `NonConverged` or `InvalidInput`; prices change only when `Feasible`. The joint rung
+(`repair_quote_slice_calendar_joint`) uses it with `QuoteSliceRepairConfig::joint_max_sweeps`
+(default 20,000, the historical budget) and records `QuoteSliceRepairOutcome::NonConverged`
+(previously reported as `Infeasible`), the sweeps and the conflict. The rung's own empty-box
+exits record an `EmptyBox` conflict too (member, node, strike, excess). Those exits are: the
+fixed neighbours' floor above their cap at a member's node, or a member's quote box outside
+that clamp. So every `Infeasible` names one. Every outcome but a certified, applied projection
+rolls back (no member changes). `project_calendar_joint` keeps its historical behaviour.
+
 ### NEW — typed price-only identifiability, one spot per snapshot, convention metadata (lane C0)
 
 **Library.** `QuoteSliceConfig::floor_policy` (`QuoteSliceFloorPolicy`): `Legacy`, the

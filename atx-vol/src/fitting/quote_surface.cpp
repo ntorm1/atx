@@ -39,6 +39,7 @@
 #include <exception>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -48,6 +49,7 @@
 
 #include "atx/vol/api/core/types.hpp" // kIvMin (ladder wing tail)
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
+#include "fitting/publication_seam.hpp"  // inject_rollback / inject_final (review m1 test seam)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only, clear_identification
@@ -79,7 +81,9 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
        s.ladder_wing_tail != QuoteSurfaceWingTail::FloorPriceOnly &&
        s.ladder_wing_tail != QuoteSurfaceWingTail::FloorPriceOnlyWingFloor) ||
       (s.ladder_wing_tail != QuoteSurfaceWingTail::Off &&
-       s.ladder != QuoteSurfaceLadder::KnotFirst)) {
+       s.ladder != QuoteSurfaceLadder::KnotFirst) ||
+      (s.publication != QuoteSurfacePublication::Off &&
+       s.publication != QuoteSurfacePublication::Validate)) {
     return Err(ErrorCode::InvalidArgument, "quote surface: invalid graded-admission configuration");
   }
   return Ok();
@@ -250,6 +254,10 @@ public:
       ATX_TRY_VOID(dominance_pass());
       market_distance_pass();
     }
+    // Lane C2 (opt-in): the final check, last. It is the only check of fit adoption (the
+    // certify_and_serve grid write, channel refits, serve_held_point), so any new final-grid
+    // write or refit adoption (K4) must come before it, or go through validated().
+    ATX_TRY_VOID(publication_pass());
     for (QuoteSurfaceSlice &slice : out_) {
       if (slice.grade == QuoteSliceGrade::Refused) {
         strip(slice.fit);
@@ -1151,12 +1159,18 @@ private:
     neighbours(fit, accepted, earlier, later);
     QuoteSliceFit trial = trial_copy(fit);
     double required = 0.0;
+    // Lane C2 (review-L3q m3): the non-dividend re-certification only under Validate; the
+    // default surface keeps the historical rule bit for bit (it serves dev200 graded-v1
+    // non-dividend chains whose repaired prices fail check_nondividend_american).
+    const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                          : QuoteSliceNondividendRecheck::Skip;
     const bool repaired = repair_quote_slice_calendar(trial, expiries_[i].quotes, earlier, later,
                                                       surface_.calendar_repair_half_spreads,
-                                                      &required);
+                                                      &required, recheck);
     out_[i].calendar_repair_required = std::max(out_[i].calendar_repair_required, required);
     if (!repaired || !consistent(trial, accepted)) return false;
     if (ladder() && !in_market(trial, i)) return false; // a bounded move can leave the quotes
+    if (!validated(i, trial, accepted)) return false;   // lane C2: rolled back
     commit(fit, trial);
     return true;
   }
@@ -1178,8 +1192,12 @@ private:
     neighbours(fit, accepted, earlier, later);
     QuoteSliceFit trial = trial_copy(fit);
     QuoteSliceRepairRecord &record = out_[i].calendar_channel_repair;
+    // Lane C2 fix round 1 (review m4): the non-dividend re-certification only under
+    // Validate, as for the bounded-move and joint repairs.
+    const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                          : QuoteSliceNondividendRecheck::Skip;
     const bool repaired = repair_quote_slice_calendar_in_channel(
-        trial, expiries_[i].quotes, earlier, later, config_.repair, &record);
+        trial, expiries_[i].quotes, earlier, later, config_.repair, &record, recheck);
     if (!repaired) return false;
     if (!consistent(trial, accepted)) {
       record.outcome = QuoteSliceRepairOutcome::NotCertified;
@@ -1187,6 +1205,10 @@ private:
     }
     if (ladder() && !in_market(trial, i)) {
       record.outcome = QuoteSliceRepairOutcome::LeftChannel;
+      return false;
+    }
+    if (!validated(i, trial, accepted)) { // lane C2: rolled back
+      record.outcome = QuoteSliceRepairOutcome::NotCertified;
       return false;
     }
     commit(fit, trial);
@@ -1241,13 +1263,19 @@ private:
       fixed.push_back({&*out_[j].fit.prices, out_[j].fit.market.calendar_years});
     }
     std::vector<std::size_t> moved;
-    if (!repair_quote_slice_calendar_joint(members, fixed, config_.repair, &moved,
-                                           &out_[i].calendar_channel_repair)) {
-      return false;
-    }
+    // Lane C2 (review-L3q m3, PM ruling 2026-10-23): the non-dividend re-certification of
+    // the joint rung only under Validate, as for the bounded-move repair (repair()): a
+    // keys-ON repair arm never loses a row its base served.
+    const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                          : QuoteSliceNondividendRecheck::Skip;
+    const bool joint = repair_quote_slice_calendar_joint(members, fixed, config_.repair, &moved,
+                                                         &out_[i].calendar_channel_repair, recheck);
+    count_joint(i, out_[i].calendar_channel_repair.outcome);
+    if (!joint) return false; // every outcome but Applied left the members unchanged
     for (std::size_t m = 0; ladder() && m < slots.size(); ++m) {
       if (moved[m] > 0 && !in_market(trials[m], slots[m])) return false;
     }
+    if (!validated_joint(slots, trials, moved, accepted)) return false; // lane C2: rolled back
     for (std::size_t m = 0; m < slots.size(); ++m) {
       if (moved[m] == 0) continue;
       commit(out_[slots[m]].fit, trials[m]);
@@ -1310,8 +1338,13 @@ private:
         std::vector<const AmericanPriceSlice *> later;
         neighbours(slice.fit, others, earlier, later);
         QuoteSliceFit trial = trial_copy(slice.fit);
+        // Lane C2 fix round 1 (review m4): the non-dividend re-certification only under
+        // Validate, as for every other repair.
+        const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                              : QuoteSliceNondividendRecheck::Skip;
         if (repair_quote_slice_market(trial, expiries_[i].quotes, earlier, later, config_.repair,
-                                      &slice.market_repair)) {
+                                      &slice.market_repair, recheck) &&
+            market_rechecked(i, trial, others)) {
           commit(slice.fit, trial);
         }
       }
@@ -1338,7 +1371,272 @@ private:
       auto &produced = slice.fit.diagnostics.prices_produced;
       if (produced > 0) --produced;
       ++slice.market_gated_rows;
+      withhold_row(i, k); // lane C2 (review-L3q m5): the API refuses it too
     }
+    refuse_withheld_rows(i);
+  }
+
+  // ── Served support and publication validation (lane C2) ─────────────────────
+
+  [[nodiscard]] bool publication_on() const {
+    return surface_.publication == QuoteSurfacePublication::Validate;
+  }
+
+  // Withholds the node side of expiry i's row k from the served support (review-L3q m5:
+  // a refused row's certified value is never served through the API).
+  void withhold_row(std::size_t i, std::size_t k) {
+    QuoteSliceFit &fit = out_[i].fit;
+    const QuoteSliceQuote &q = expiries_[i].quotes[k];
+    const auto nodes = fit.prices->nodes();
+    const auto at = detail::node_side(nodes, q.strike, q.side);
+    if (at) detail::withhold(fit, at->node, at->bit, nodes.size());
+  }
+
+  // Refuses every served row of expiry i whose contract the served support no longer
+  // serves (another row of a withheld node side), so rows and API give one answer, and
+  // counts every withheld row.
+  void refuse_withheld_rows(std::size_t i) {
+    QuoteSurfaceSlice &slice = out_[i];
+    QuoteSliceFit &fit = slice.fit;
+    const std::span<const QuoteSliceQuote> quotes = expiries_[i].quotes;
+    std::size_t withheld = 0;
+    for (std::size_t k = 0; k < quotes.size() && k < fit.rows.size(); ++k) {
+      QuoteSliceRow &row = fit.rows[k];
+      if (row.evaluation_status == QuoteSliceEvaluationStatus::MarketDistanceFailure) {
+        ++withheld;
+        continue;
+      }
+      if ((row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+           row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) ||
+          detail::serves(fit, quotes[k].strike, quotes[k].side)) {
+        continue;
+      }
+      row.evaluation_status = QuoteSliceEvaluationStatus::MarketDistanceFailure;
+      row.fitted_iv = kNaN;
+      detail::clear_identification(row);
+      auto &produced = fit.diagnostics.prices_produced;
+      if (produced > 0) --produced;
+      ++withheld;
+    }
+    slice.withheld_rows = withheld;
+  }
+
+  // The after-mutation check (Validate; true when Off): `trial` (expiry i, after the
+  // library commit and its align_with_query) with the slices `set` it was made consistent
+  // with, focused on the trial. Any violation rolls the mutation back: the caller keeps
+  // the last validated representation.
+  [[nodiscard]] bool validated(std::size_t i, const QuoteSliceFit &trial,
+                               const std::vector<std::size_t> &set) {
+    if (!publication_on()) return true;
+    std::vector<QuoteSlicePublicationSlice> slices;
+    slices.reserve(set.size() + 1u);
+    slices.push_back({&trial, expiries_[i].quotes});
+    for (const std::size_t j : set) {
+      if (j != i && out_[j].fit.prices) slices.push_back({&out_[j].fit, expiries_[j].quotes});
+    }
+    QuoteSlicePublicationConfig check;
+    check.box_tick = config_.repair.box_tick;
+    check.focus = 0;
+    ++out_[i].publication_checks;
+    const auto report = validate_published_representation(slices, check);
+    if (report && report->clean() && !detail::inject_rollback(i)) return true;
+    ++out_[i].publication_rollbacks;
+    return false;
+  }
+
+  // validated() for a joint repair: every moved member, with the other members' trials
+  // and the fixed accepted slices; counted on the crossing slice slots[0].
+  [[nodiscard]] bool validated_joint(const std::vector<std::size_t> &slots,
+                                     const std::vector<QuoteSliceFit> &trials,
+                                     const std::vector<std::size_t> &moved,
+                                     const std::vector<std::size_t> &accepted) {
+    if (!publication_on()) return true;
+    std::vector<QuoteSlicePublicationSlice> slices;
+    slices.reserve(slots.size() + accepted.size());
+    for (std::size_t m = 0; m < slots.size(); ++m) {
+      slices.push_back({&trials[m], expiries_[slots[m]].quotes});
+    }
+    for (const std::size_t j : accepted) {
+      if (std::find(slots.begin(), slots.end(), j) == slots.end() && out_[j].fit.prices) {
+        slices.push_back({&out_[j].fit, expiries_[j].quotes});
+      }
+    }
+    QuoteSlicePublicationConfig check;
+    check.box_tick = config_.repair.box_tick;
+    QuoteSurfaceSlice &owner = out_[slots.front()];
+    for (std::size_t m = 0; m < slots.size(); ++m) {
+      if (moved[m] == 0) continue;
+      check.focus = m;
+      ++owner.publication_checks;
+      const auto report = validate_published_representation(slices, check);
+      if (!report || !report->clean() || detail::inject_rollback(slots[m])) {
+        ++owner.publication_rollbacks;
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // The bidirectional rung's projection outcome (project_calendar_joint_bounded): settled
+  // (Applied, NoMove, NotCertified), refused by an infeasibility certificate or an empty
+  // box (Infeasible), budget spent (NonConverged). The last two rolled back.
+  void count_joint(std::size_t i, QuoteSliceRepairOutcome outcome) {
+    QuoteSurfaceSlice &slice = out_[i];
+    switch (outcome) {
+    case QuoteSliceRepairOutcome::Applied:
+    case QuoteSliceRepairOutcome::NoMove:
+    case QuoteSliceRepairOutcome::NotCertified:
+      ++slice.joint_feasible;
+      break;
+    case QuoteSliceRepairOutcome::Infeasible:
+      ++slice.joint_infeasible;
+      break;
+    case QuoteSliceRepairOutcome::NonConverged:
+      ++slice.joint_nonconverged;
+      break;
+    case QuoteSliceRepairOutcome::NotAttempted:
+    case QuoteSliceRepairOutcome::LeftChannel:
+    case QuoteSliceRepairOutcome::NodeBudget:
+    case QuoteSliceRepairOutcome::VolBudget:
+      break;
+    }
+  }
+
+  // The renewed market checks of an in-box market repair (review-L3q m2), on top of the
+  // library's own (no in-quote row leaves its quote, so the share of rows outside their
+  // quotes cannot rise and the first two checks cannot fire today; they keep the ladder's
+  // containment rule and the dominance gate explicit should that library rule change):
+  // the repair must not newly break the ladder's in_market rule or the dominance gate of a
+  // point fit, and (Validate) it must pass the publication check against every other
+  // served slice. Otherwise it is dropped.
+  [[nodiscard]] bool market_rechecked(std::size_t i, const QuoteSliceFit &trial,
+                                      const std::vector<std::size_t> &others) {
+    QuoteSurfaceSlice &slice = out_[i];
+    if (ladder() && !in_market(trial, i) && in_market(slice.fit, i)) {
+      slice.market_repair.outcome = QuoteSliceRepairOutcome::LeftChannel;
+      return false;
+    }
+    const auto &limit = config_.channel.point_max_outside_fraction;
+    if (!ladder() && limit && config_.method == QuoteSliceFitMethod::PointCurve &&
+        !slice.channel_refit) {
+      const auto gated = [&](const QuoteSliceFit &fit) {
+        const OutsideShare share = outside_share(fit, expiries_[i].quotes);
+        return share.fraction > *limit && share.count >= config_.channel.point_min_outside_quotes;
+      };
+      if (gated(trial) && !gated(slice.fit)) {
+        slice.market_repair.outcome = QuoteSliceRepairOutcome::LeftChannel;
+        return false;
+      }
+    }
+    if (!validated(i, trial, others)) {
+      slice.market_repair.outcome = QuoteSliceRepairOutcome::NotCertified;
+      return false;
+    }
+    return true;
+  }
+
+  // Of a calendar pair the final check found crossing, the slice to refuse: the lower
+  // grade, then fewer strictly two-sided quotes, then the later maturity.
+  [[nodiscard]] std::size_t lower_confidence(std::size_t a, std::size_t b) const {
+    if (out_[a].grade != out_[b].grade) return out_[a].grade > out_[b].grade ? a : b;
+    if (cost_[a] != cost_[b]) return cost_[a] < cost_[b] ? a : b;
+    return expiries_[a].market.calendar_years > expiries_[b].market.calendar_years ? a : b;
+  }
+
+  void refuse_publication(std::size_t i) {
+    QuoteSurfaceSlice &slice = out_[i];
+    slice.grade = QuoteSliceGrade::Refused;
+    slice.refusal = "publication_invalid";
+    slice.error = "published representation failed the publication check";
+    slice.fit.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+    slice.fit.fit_error = slice.error;
+  }
+
+  // A row the final check found beyond its quote box or disagreeing with the API: refused
+  // (MarketDistanceFailure, no labels) and withheld with every other row of its node side.
+  void refuse_published_row(std::size_t i, std::size_t k) {
+    QuoteSliceRow &row = out_[i].fit.rows[k];
+    if (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+        row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+      row.evaluation_status = QuoteSliceEvaluationStatus::MarketDistanceFailure;
+      row.fitted_iv = kNaN;
+      detail::clear_identification(row);
+      auto &produced = out_[i].fit.diagnostics.prices_produced;
+      if (produced > 0) --produced;
+    }
+    withhold_row(i, k);
+    refuse_withheld_rows(i);
+  }
+
+  // The served set as the final check sees it (maturity-distinct by validate_surface's
+  // fit_quote_surface contract).
+  [[nodiscard]] std::vector<std::size_t> published_set() const {
+    std::vector<std::size_t> set;
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      if (served(i) && out_[i].fit.prices) set.push_back(i);
+    }
+    return set;
+  }
+
+  // The final publication check (Validate), last: the whole served set as API callers
+  // evaluate it (QuoteBox at the market-distance bound when one is set), repeated until
+  // clean. A structural violation refuses its slice (a calendar one the pair's
+  // lower-confidence slice), a QuoteBox / Support one withholds its row. Each round
+  // refuses a slice or withholds a row, and withholding only removes served points, so
+  // the rounds are bounded by the slices plus the rows; on the last round every slice
+  // still named is refused. Then each published slice's Identification findings are
+  // counted (labels only).
+  [[nodiscard]] Status publication_pass() {
+    if (!publication_on()) return Ok();
+    QuoteSlicePublicationConfig check;
+    check.market_distance_spreads = config_.repair.market_distance != QuoteSliceMarketDistance::Off
+                                        ? config_.repair.market_distance_spreads
+                                        : std::numeric_limits<double>::infinity();
+    check.box_tick = config_.repair.box_tick;
+    check.identification = false;
+    const std::size_t rows = std::accumulate(
+        expiries_.begin(), expiries_.end(), std::size_t{0},
+        [](std::size_t sum, const QuoteSurfaceExpiry &e) { return sum + e.quotes.size(); });
+    const std::size_t max_rounds = out_.size() + rows + 1u;
+    for (std::size_t round = 0; round < max_rounds; ++round) {
+      const std::vector<std::size_t> set = published_set();
+      std::vector<QuoteSlicePublicationSlice> slices;
+      slices.reserve(set.size());
+      for (const std::size_t j : set) slices.push_back({&out_[j].fit, expiries_[j].quotes});
+      ATX_TRY(QuoteSlicePublicationReport report,
+              validate_published_representation(slices, check));
+      detail::inject_final(report, set);
+      if (report.clean()) break;
+      const bool last = round + 1u == max_rounds;
+      for (const QuoteSlicePublicationFinding &f : report.findings) {
+        const std::size_t i = set[f.expiry];
+        if (!served(i)) continue;
+        ++out_[i].publication_violations;
+        const bool row_class = f.kind == QuoteSlicePublicationViolation::QuoteBox ||
+                               f.kind == QuoteSlicePublicationViolation::Support;
+        if (row_class && !last && f.row != kQuoteSlicePublicationAll) {
+          refuse_published_row(i, f.row);
+        } else if (f.kind == QuoteSlicePublicationViolation::Calendar && !last) {
+          refuse_publication(lower_confidence(i, set[f.other]));
+        } else {
+          refuse_publication(i);
+        }
+      }
+    }
+    check.identification = true;
+    for (const std::size_t i : published_set()) {
+      // On a copy with its own curve, as the after-mutation checks do: the check leaves
+      // the published fit untouched. (The SPY drift first blamed on querying the published
+      // fit - 74 rows, <= 5.1e-13 - is a pre-existing dependence on the expiry fan-out
+      // schedule of the repair rungs, seen on the base binary too: lane C2 report D3.)
+      const QuoteSliceFit probe = trial_copy(out_[i].fit);
+      const std::array<QuoteSlicePublicationSlice, 1> one{{{&probe, expiries_[i].quotes}}};
+      ATX_TRY(const QuoteSlicePublicationReport labels,
+              validate_published_representation(one, check));
+      out_[i].publication_label_violations =
+          labels.count(QuoteSlicePublicationViolation::Identification);
+    }
+    return Ok();
   }
 
   // A repair trial: everything a repair reads or writes, with an owned curve.
@@ -1356,6 +1654,10 @@ private:
     trial.prices = fit.prices;
     trial.moved_nodes = fit.moved_nodes;
     trial.price_only_nodes = fit.price_only_nodes;
+    trial.withheld_nodes = fit.withheld_nodes; // lane C2: the served support
+    // Lane C2: the after-mutation check evaluates the trial through the serving API,
+    // which serves only a certified (Success) fit.
+    trial.fit_status = fit.fit_status;
     // The calendar repair re-implies moved rows under the fit's identifiability policy
     // (lane C0): a trial without it would re-imply under Legacy.
     trial.floor_policy = fit.floor_policy;
@@ -1368,6 +1670,7 @@ private:
     fit.prices = std::move(trial.prices);
     fit.moved_nodes = std::move(trial.moved_nodes);
     fit.price_only_nodes = std::move(trial.price_only_nodes);
+    fit.withheld_nodes = std::move(trial.withheld_nodes);
     fit.rows = std::move(trial.rows);
   }
 
@@ -1469,6 +1772,16 @@ const char *to_string(QuoteSurfaceWingTail value) noexcept {
     return "floor-price-only";
   case QuoteSurfaceWingTail::FloorPriceOnlyWingFloor:
     return "floor-price-only+wing-floor";
+  }
+  return "unknown";
+}
+
+const char *to_string(QuoteSurfacePublication value) noexcept {
+  switch (value) {
+  case QuoteSurfacePublication::Off:
+    return "off";
+  case QuoteSurfacePublication::Validate:
+    return "validate";
   }
   return "unknown";
 }

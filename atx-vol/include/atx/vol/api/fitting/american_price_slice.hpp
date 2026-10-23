@@ -249,6 +249,65 @@ struct JointPriceSide {
 // thread-compatible.
 [[nodiscard]] bool project_calendar_joint(std::span<const JointPriceSide> slices);
 
+// ── Bounded joint projection (lane C2, 2026-10-22) ─────────────────────────────
+//
+// project_calendar_joint with a typed outcome and an explicit sweep budget, so a caller
+// can tell inconsistent data from a solver that ran out of budget. Before any sweep, exact
+// infeasibility certificates are tested, each conflict beyond the certificate allowance
+// 1e-8 + 1e-9 * max(spot, K) (JointPriceSide::spot, the larger of a pair's): an empty box
+// (lo > hi); a slice whose boxes admit no convex curve (the greatest convex minorant of its
+// upper edges below a lower edge: every convex curve under the upper edges lies under that
+// minorant, so no curve inside the boxes passes AmericanPriceSlice::create's convexity
+// test); a calendar pair whose boxes cross at a knot of either slice inside both domains
+// (the earlier slice's lower edge above the later slice's upper edges interpolated there,
+// or the reverse: no prices inside the boxes pass check_american_calendar). Any of them is
+// InfeasibleData naming the conflicting constraint; otherwise the sweeps of
+// project_calendar_joint run. Feasible: they settled (per-sweep change at most
+// relative_tolerance x the largest price) and `prices` holds the projection, bit for bit
+// project_calendar_joint's under the default budget. NonConverged: no certificate, and
+// max_sweeps sweeps did not settle. InvalidInput: a malformed slice (fewer than two nodes,
+// mismatched sizes, non-finite values, non-increasing strikes, a negative spot) or budget.
+// `prices` changes only when Feasible, so a caller keeps its last validated representation
+// on every other outcome. Deterministic (no clock); allocates O(total nodes);
+// thread-compatible.
+enum class JointProjectionOutcome : std::uint8_t {
+  Feasible,
+  InfeasibleData,
+  NonConverged,
+  InvalidInput
+};
+enum class JointConflictKind : std::uint8_t { None, EmptyBox, NoConvexCurve, CalendarBox };
+
+// The constraint an InfeasibleData outcome names: slice `slice` (index into the span) at
+// its node `node` (strike `strike`), against slice `other` for CalendarBox (`other` ==
+// `slice` otherwise); `excess` is the conflict beyond the allowance, in price units.
+struct JointProjectionConflict {
+  JointConflictKind kind = JointConflictKind::None;
+  std::size_t slice = 0;
+  std::size_t node = 0;
+  std::size_t other = 0;
+  double strike = 0.0;
+  double excess = 0.0;
+};
+
+struct JointProjectionBudget {
+  std::size_t max_sweeps = 20000;      // >= 1
+  double relative_tolerance = 1.0e-10; // > 0, finite
+};
+
+struct JointProjectionResult {
+  JointProjectionOutcome outcome = JointProjectionOutcome::InvalidInput;
+  std::size_t sweeps = 0; // sweeps run (0 when a certificate or the input refused)
+  JointProjectionConflict conflict{};
+};
+
+[[nodiscard]] const char *to_string(JointProjectionOutcome value) noexcept;
+[[nodiscard]] const char *to_string(JointConflictKind value) noexcept;
+
+[[nodiscard]] JointProjectionResult
+project_calendar_joint_bounded(std::span<const JointPriceSide> slices,
+                               const JointProjectionBudget &budget = {});
+
 // Check later >= earlier for both American calls and puts at every knot in
 // the overlap of their strike domains. Their difference is affine between
 // consecutive union knots, so this certifies the whole overlap to the fixed
