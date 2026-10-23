@@ -209,6 +209,20 @@ TEST(QuoteSlicePublication, AnInBoxMarketRepairNeverServesANondividendViolation)
   } else {
     EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::NotCertified) << to_string(record.outcome);
   }
+  EXPECT_FALSE(repaired);
+  // Skip (fit_quote_surface without Validate; lane C2 fix round 1, review m4) is the
+  // historical rule: the in-box repair is applied and serves exactly the violation Recheck
+  // refused. Parity evidence for the gating: dev200b's box h0 + market-distance repair arm
+  // hashes to 2e31e087... on the C0 base binary and on lane C2 with it.
+  auto historical = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(historical) << historical.error().to_string();
+  QuoteSliceRepairRecord skipped;
+  ASSERT_TRUE(repair_quote_slice_market(*historical, quotes, {}, {}, config, &skipped,
+                                        QuoteSliceNondividendRecheck::Skip))
+      << to_string(skipped.outcome);
+  EXPECT_FALSE(check_nondividend_american(*historical->prices, df));
+  EXPECT_FALSE(repair_quote_slice_market(*historical, quotes, {}, {}, config, nullptr,
+                                         static_cast<QuoteSliceNondividendRecheck>(7)));
 }
 
 // ── m2: the band projection keeps in-quote rows in their quotes ────────────────────
@@ -532,6 +546,44 @@ TEST(QuoteSlicePublication, AJointCalendarRepairOnCrossingQuotesIsInfeasibleAndR
   expect_same_nodes(c.near, near_nodes, "near");
   expect_same_nodes(c.far, far_nodes, "far");
   EXPECT_TRUE(c.near.moved_nodes.empty());
+}
+
+// The channel / box calendar repair (lane C2 fix round 1, review m4). The fit is quoted
+// 2 wide around its own prices, so the box certificate's quote boxes can absorb an
+// earlier slice whose puts sit one unit above the fit's: the floor under which the
+// bounded-move repair serves a non-dividend violation.
+// - Recheck (the default; fit_quote_surface under Validate) refuses the result.
+// - Skip (the historical rule; fit_quote_surface without Validate) serves it.
+// Parity evidence for the gating: dev200b's box h0 + market-distance repair arm hashes to
+// 2e31e087... on the C0 base binary and on lane C2 with it.
+TEST(QuoteSlicePublication, AnInChannelRepairRechecksTheNondividendCertificateOnlyWhenAsked) {
+  const Chain c = nondividend_chain();
+  QuoteSliceRepairConfig config;
+  config.certificate = QuoteSliceCertificate::Box;
+  QuoteSliceFit fit = fitted(c);
+  ASSERT_TRUE(fit.prices);
+  const double df = fit.diagnostics.discount;
+  ASSERT_TRUE(check_nondividend_american(*fit.prices, df));
+  const auto quotes = quotes_around(fit, c.quotes, 2.0);
+  const AmericanPriceSlice earlier = raised_puts(fit, 1.0);
+  const std::vector<const AmericanPriceSlice *> floors{&earlier};
+  const auto before = nodes_of(fit);
+  QuoteSliceRepairRecord record;
+  EXPECT_FALSE(repair_quote_slice_calendar_in_channel(fit, quotes, floors, {}, config, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::NotCertified) << to_string(record.outcome);
+  expect_same_nodes(fit, before, "Recheck");
+  QuoteSliceFit historical = fitted(c);
+  QuoteSliceRepairRecord skipped;
+  ASSERT_TRUE(repair_quote_slice_calendar_in_channel(historical, quotes, floors, {}, config,
+                                                     &skipped,
+                                                     QuoteSliceNondividendRecheck::Skip))
+      << to_string(skipped.outcome);
+  EXPECT_EQ(skipped.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_TRUE(check_american_calendar(earlier, *historical.prices));
+  EXPECT_FALSE(check_nondividend_american(*historical.prices, df));
+  EXPECT_FALSE(repair_quote_slice_calendar_in_channel(historical, quotes, floors, {}, config,
+                                                      nullptr,
+                                                      static_cast<QuoteSliceNondividendRecheck>(7)));
 }
 
 // A non-dividend joint case (review-L3q m3 on the joint rung; the dev200b SJB / LEMB

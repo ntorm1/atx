@@ -2308,6 +2308,11 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
   align_with_query(fit, quotes); // a PriceOnly row's reason follows its refreshed price
 }
 
+bool valid_recheck(QuoteSliceNondividendRecheck recheck) noexcept {
+  return recheck == QuoteSliceNondividendRecheck::Recheck ||
+         recheck == QuoteSliceNondividendRecheck::Skip;
+}
+
 // Lane C2 (review-L3q m3): a repaired candidate of a non-dividend slice must pass the
 // non-dividend certificate the slice was first served under (certify_and_serve).
 bool nondividend_certified(const QuoteSliceFit &fit, const AmericanPriceSlice &candidate) {
@@ -2399,13 +2404,15 @@ bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
                                             std::span<const AmericanPriceSlice *const> earlier,
                                             std::span<const AmericanPriceSlice *const> later,
                                             const QuoteSliceRepairConfig &budget,
-                                            QuoteSliceRepairRecord *record) {
+                                            QuoteSliceRepairRecord *record,
+                                            QuoteSliceNondividendRecheck recheck) {
   const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
   QuoteSliceRepairRecord local;
   QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
   out = QuoteSliceRepairRecord{};
   if (!fit.prices || !fit.curve || fit.rows.size() != quotes.size() || budget.max_nodes < 1 ||
-      !positive(budget.max_vol_move) || !nonnegative(budget.immaterial_price_move)) {
+      !positive(budget.max_vol_move) || !nonnegative(budget.immaterial_price_move) ||
+      !valid_recheck(recheck)) {
     return false;
   }
   const auto original = fit.prices->nodes();
@@ -2440,7 +2447,8 @@ bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
     return true;
   };
   if (!within || !certified || !calendar_clean(*certified) ||
-      !nondividend_certified(fit, *certified)) {
+      (recheck == QuoteSliceNondividendRecheck::Recheck &&
+       !nondividend_certified(fit, *certified))) {
     out.outcome = QuoteSliceRepairOutcome::NotCertified;
     return false;
   }
@@ -2553,14 +2561,15 @@ bool repair_quote_slice_market(QuoteSliceFit &fit, std::span<const QuoteSliceQuo
                                std::span<const AmericanPriceSlice *const> earlier,
                                std::span<const AmericanPriceSlice *const> later,
                                const QuoteSliceRepairConfig &config,
-                               QuoteSliceRepairRecord *record) {
+                               QuoteSliceRepairRecord *record,
+                               QuoteSliceNondividendRecheck recheck) {
   const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
   QuoteSliceRepairRecord local;
   QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
   out = QuoteSliceRepairRecord{};
   if (!fit.prices || fit.rows.size() != quotes.size() ||
       !nonnegative(config.immaterial_price_move) || !positive(config.box_tick) ||
-      !nonnegative(config.market_distance_spreads)) {
+      !nonnegative(config.market_distance_spreads) || !valid_recheck(recheck)) {
     return false;
   }
   const auto original = fit.prices->nodes();
@@ -2589,7 +2598,8 @@ bool repair_quote_slice_market(QuoteSliceFit &fit, std::span<const QuoteSliceQuo
     auto certified = AmericanPriceSlice::create(nodes, bounds);
     if (!above_floors(fit, nodes, clamp) || !certified ||
         !calendar_consistent(*certified, earlier, later) ||
-        !nondividend_certified(fit, *certified)) {
+        (recheck == QuoteSliceNondividendRecheck::Recheck &&
+         !nondividend_certified(fit, *certified))) {
       out.outcome = QuoteSliceRepairOutcome::NotCertified;
       continue;
     }

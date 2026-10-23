@@ -1188,8 +1188,12 @@ private:
     neighbours(fit, accepted, earlier, later);
     QuoteSliceFit trial = trial_copy(fit);
     QuoteSliceRepairRecord &record = out_[i].calendar_channel_repair;
+    // Lane C2 fix round 1 (review m4): the non-dividend re-certification only under
+    // Validate, as for the bounded-move and joint repairs.
+    const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                          : QuoteSliceNondividendRecheck::Skip;
     const bool repaired = repair_quote_slice_calendar_in_channel(
-        trial, expiries_[i].quotes, earlier, later, config_.repair, &record);
+        trial, expiries_[i].quotes, earlier, later, config_.repair, &record, recheck);
     if (!repaired) return false;
     if (!consistent(trial, accepted)) {
       record.outcome = QuoteSliceRepairOutcome::NotCertified;
@@ -1330,8 +1334,12 @@ private:
         std::vector<const AmericanPriceSlice *> later;
         neighbours(slice.fit, others, earlier, later);
         QuoteSliceFit trial = trial_copy(slice.fit);
+        // Lane C2 fix round 1 (review m4): the non-dividend re-certification only under
+        // Validate, as for every other repair.
+        const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                              : QuoteSliceNondividendRecheck::Skip;
         if (repair_quote_slice_market(trial, expiries_[i].quotes, earlier, later, config_.repair,
-                                      &slice.market_repair) &&
+                                      &slice.market_repair, recheck) &&
             market_rechecked(i, trial, others)) {
           commit(slice.fit, trial);
         }

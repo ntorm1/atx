@@ -967,11 +967,16 @@ enum class QuoteSliceNondividendRecheck : std::uint8_t { Recheck, Skip };
 // boxes [bid - h, ask + h] instead of the fitted-widened channels and no node or
 // volatility budget applies (the box is the budget): a calendar crossing is
 // repaired exactly when the quotes can absorb it, and Infeasible otherwise.
+// `recheck` as for repair_quote_slice_calendar (lane C2 fix round 1, review m4):
+// Recheck, the default, also refuses (NotCertified) a non-dividend result that fails
+// check_nondividend_american. Skip is the historical rule, which fit_quote_surface keeps
+// unless QuoteSurfacePublication::Validate. An invalid value is refused.
 [[nodiscard]] bool repair_quote_slice_calendar_in_channel(
     QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
     std::span<const AmericanPriceSlice *const> earlier,
     std::span<const AmericanPriceSlice *const> later, const QuoteSliceRepairConfig &budget,
-    QuoteSliceRepairRecord *record = nullptr);
+    QuoteSliceRepairRecord *record = nullptr,
+    QuoteSliceNondividendRecheck recheck = QuoteSliceNondividendRecheck::Recheck);
 
 // ── Distance to market (lane L3q, 2026-10-21; QuoteSliceMarketDistance Repair) ──
 
@@ -989,12 +994,13 @@ enum class QuoteSliceNondividendRecheck : std::uint8_t { Recheck, Skip };
 // `later`; it is then committed exactly as a calendar repair (fit.prices, row prices,
 // moved nodes re-implied or PriceOnly, fit.moved_nodes) and true is returned.
 // Otherwise `fit` is unchanged. `record` (nullable) receives the outcome and moves.
-[[nodiscard]] bool repair_quote_slice_market(QuoteSliceFit &fit,
-                                             std::span<const QuoteSliceQuote> quotes,
-                                             std::span<const AmericanPriceSlice *const> earlier,
-                                             std::span<const AmericanPriceSlice *const> later,
-                                             const QuoteSliceRepairConfig &config,
-                                             QuoteSliceRepairRecord *record = nullptr);
+// `recheck` works as for repair_quote_slice_calendar_in_channel.
+[[nodiscard]] bool repair_quote_slice_market(
+    QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+    std::span<const AmericanPriceSlice *const> earlier,
+    std::span<const AmericanPriceSlice *const> later, const QuoteSliceRepairConfig &config,
+    QuoteSliceRepairRecord *record = nullptr,
+    QuoteSliceNondividendRecheck recheck = QuoteSliceNondividendRecheck::Recheck);
 
 // One slice of a bidirectional calendar repair: its fit (certified prices, non-null)
 // and its quotes (the fit's row order).
@@ -1039,10 +1045,16 @@ struct QuoteSliceCalendarNeighbour {
     std::vector<std::size_t> *moved = nullptr, QuoteSliceRepairRecord *record = nullptr,
     QuoteSliceNondividendRecheck recheck = QuoteSliceNondividendRecheck::Recheck);
 
-// Every repair above (lane C2) re-certifies its result exactly as the slice was first
-// certified before committing it: the unchanged AmericanPriceSlice certificate and, for a
-// non-dividend slice (zero carry at every node, no cash dividend, nonnegative rate),
-// check_nondividend_american; a failure is NotCertified and leaves the fit unchanged.
+// Every repair above re-certifies its result before committing it, with the unchanged
+// AmericanPriceSlice certificate. Lane C2 added a second check: the non-dividend
+// certificate the slice was first served under, check_nondividend_american. It applies to
+// a non-dividend slice (zero carry at every node, no cash dividend, nonnegative rate), and
+// only when the repair is called with QuoteSliceNondividendRecheck::Recheck. That is the
+// default for a direct caller. fit_quote_surface passes Recheck to all four repairs
+// (bounded-move, channel / box, market, joint) only under QuoteSurfacePublication::Validate,
+// and Skip otherwise (the historical rule). Without Validate, a surface can therefore
+// serve a repaired non-dividend slice that fails the non-dividend certificate. A failure
+// of either check is NotCertified and leaves the fit unchanged.
 
 // ── Publication validation (lane C2, 2026-10-22) ─────────────────────────────────
 //
