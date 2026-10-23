@@ -1336,10 +1336,12 @@ constexpr int kEnclosureWidthSteps = 4;
 
 } // namespace
 
-// Encloses A's root in [x - w/2, x + w/2] from two family prices with their bounds; a
-// second, re-centred attempt (on the local chord's root) when the first missed only by
-// its centre. Without a covering envelope it measures the local chord only. Declared in
-// american_iv_premium.hpp (FamilyEnclosure) so its tests can place x off the root.
+// Encloses A's root in [x - w/2, x + w/2] (the upper end stepped toward the lower one where
+// rounding widens the computed bracket past w; below) from two family prices with their
+// bounds, each certified at the end it serves; a second, re-centred attempt (on the local
+// chord's root) when the first missed only by its centre. Without a covering envelope it
+// measures the local chord only. Declared in american_iv_premium.hpp (FamilyEnclosure) so its
+// tests can place x off the root.
 FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x, double w,
                                  const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
                                  IvPremiumStats &stats) noexcept {
@@ -1348,9 +1350,12 @@ FamilyEnclosure family_enclosure(double price, double S, double K, double q, dou
   FamilyEnclosure out;
   for (int attempt = 0; attempt < 2; ++attempt) {
     const double a = x - 0.5 * w;
-    // x + w/2 can round so that b - a exceeds w by an ulp of x (every x below 0.25 vol at
-    // w = acceptance_width(1e-7)): b steps toward a until the bracket meets the width rule
-    // below AS COMPUTED. The rule is unchanged (b - a is exact here: w << a, Sterbenz).
+    // The two roundings leave b - a one ulp of x above w exactly when frac(w / (2 ulp(x))) >
+    // 1/2, a per-binade condition (both ends in x's binade). At w = acceptance_width(1e-7) on
+    // [0.005, 5]: x in [0.005, 2^-7), [2^-6, 2^-2), [1, 2) and [4, 5]; not [2^-7, 2^-6),
+    // [0.25, 1) or [2, 4). b steps toward a until the bracket meets the width rule below AS
+    // COMPUTED; both ends are priced and certified after the step (the served ones). The rule
+    // is unchanged (b - a is exact here: w << a, Sterbenz).
     double b = x + 0.5 * w;
     for (int step = 0; step < kEnclosureWidthSteps && !(b - a <= w); ++step) {
       b = std::nextafter(b, a);

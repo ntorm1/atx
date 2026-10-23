@@ -136,9 +136,9 @@ the COMPUTED width meets b - a <= W (lane K5, section 9). Placement (`confirm_br
 at the native root x; if C certifies x's side, the other end within W of x (the family at
 x +- W first, else C past the chord's Newton point); for a far root (Newton step > W / 4)
 both ends at the Newton point +- 0.45 W (family first, else C); if C leaves x's side open
-(|C(x) - price| <= eps_C), both ends at x +- W / 2 (family first, else C). No step length and no secant slope
-is a bound: a local chord only places an end and the served point. A request that carried a (sigma, q) family
-never reaches the band gate (`band_gate_holds` runs only when `gate->qfamily == nullptr`),
+(|C(x) - price| <= eps_C), both ends at x +- W / 2 (family first, else C). No step length and
+no secant slope is a bound: a local chord only places an end and the served point. A request
+that carried a (sigma, q) family never reaches the band gate (`band_gate_holds` runs only when `gate->qfamily == nullptr`),
 so no domain of the family route falls back to a band-based criterion; the audit reads
 `LegacyBandGate` = 0 on every family-route arm.
 
@@ -200,10 +200,13 @@ Measured first, on the K4 native route at SPY (a temporary instrumented build at
 never committed): of 28,117 family-native roots, the validated bound certified BOTH ends of
 the enclosure on 25,925 (calls 12,511 of 13,849, puts 13,414 of 14,268), yet only 8,739 were
 skipped. The other 17,186 were refused by the width test: the ends were placed as
-`a = x - W/2`, `b = x + W/2`, and in floating point `b - a` exceeds `W` by an ulp of x for
-EVERY x below 0.25 vol (and in [1, 2)) at `W = acceptance_width(1e-7)` - the binade fixes
-how the half-width rounds - so those roots paid a confirm solve (and a family price at
-x +- W). The envelope was not the binding constraint.
+`a = x - W/2`, `b = x + W/2`, and in floating point `b - a` exceeds `W` by an ulp of x
+exactly when frac(W / (2 ulp(x))) > 1/2 - the binade fixes how the half-width rounds (both
+ends in x's binade). At `W = acceptance_width(1e-7)`, on the inverse's range [0.005, 5], that
+is EVERY x in [0.005, 2^-7), [2^-6, 2^-2) = [0.0156, 0.25), [1, 2) and [4, 5], and no x in
+[2^-7, 2^-6), [0.25, 1) or [2, 4) (fix round 1, review-K5 m1: the earlier "every x below
+0.25" was false on [2^-7, 2^-6) and omitted [4, 8)). Those roots paid a confirm solve (and a
+family price at x +- W). The envelope was not the binding constraint.
 
 Change (`family_enclosure`, `american_iv.cpp`): `b` steps toward `a`, at most
 `kEnclosureWidthSteps` ulps (one inside a binade, two where `b` sits on a power of two), until
@@ -212,9 +215,14 @@ the COMPUTED bracket meets the unchanged rule `b - a <= W`. `b - a` is exact the
 the validated envelope certifies, the served point clamped into it. Neither the envelope
 (bound, refinement, domain, class) nor the 1e-7 criterion changed. Pinned by
 `AmericanIvPremium.FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds` (64 rounding-widened
-brackets whose ends the bound certifies: 0 enclosed before, 64 after, each within W). Mutations
-(K5 report): removing the step, or removing it and loosening the rule to `W (1 + 1e-9)`, fails
-that test; K3's per-end bound pins still catch a dropped lower / upper / both bound.
+brackets whose ends the bound certifies: 0 enclosed before, 64 after, each within W) and
+`AmericanIvPremium.FamilyEnclosureCertifiesTheEndsItServes` (fix round 1, review-K5 m2: both
+ends are priced and certified AFTER the step, at the ends served; at prices on the edge of what
+the unmoved end x + W/2 certifies, 18 of 64 points are not certified by the moved end, so a
+certificate taken before the step serves a bracket its upper end does not certify). Mutations
+(K5 report, fix round 1): removing the step, or removing it and loosening the rule to
+`W (1 + 1e-9)`, fails the first; certifying the upper end at x + W/2 while serving the moved
+end fails the second; K3's per-end bound pins still catch a dropped lower / upper / both bound.
 
 Measured on the K4 route (policy `graded-v1-famq-grid-native-route.json`):
 

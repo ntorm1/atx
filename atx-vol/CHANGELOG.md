@@ -9,16 +9,20 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 `family_enclosure` (`src/pricing/american_iv.cpp`, the Skipped rule of K3's family-route root
 acceptance) placed its ends at x -/+ W/2 and refused the skip when the computed width `b - a`
-exceeded W. For every x below 0.25 vol (and in [1, 2)) the two roundings leave `b - a` one ulp
-of x above W, so roots whose two ends the validated envelope certified paid a Fast-AL confirm.
-The upper end now steps toward the lower one (at most `kEnclosureWidthSteps` ulps) until the
-computed bracket meets the unchanged rule; the envelope and the 1e-7 criterion are unchanged.
+exceeded W. The two roundings leave `b - a` one ulp of x above W exactly when
+frac(W / (2 ulp(x))) > 1/2, a per-binade condition: at W = acceptance_width(1e-7), on the
+inverse's range [0.005, 5], for every x in [0.005, 2^-7), [2^-6, 2^-2), [1, 2) and [4, 5] (not
+in [2^-7, 2^-6), [0.25, 1) or [2, 4)) - so roots whose two ends the validated envelope certified
+paid a Fast-AL confirm. The upper end now steps toward the lower one (at most
+`kEnclosureWidthSteps` ulps) until the computed bracket meets the unchanged rule, and both ends
+are priced and certified after the step; the envelope and the 1e-7 criterion are unchanged.
 Opt-in keys only (`graded.family_q` with `family_native`, and the B-family Band arm); the keys-OFF
 defaults are bit-identical. SPY native route (K4's policy): skipped roots 8,739 -> 25,925 of
 28,117 (31.1 % -> 92.2 %; calls 18.2 % -> 90.3 %, puts 43.6 % -> 94.0 %), confirm solves 22,823 ->
 5,637. Served sets are unchanged on SPY / cohort5 / dev200 / dev200b; served prices move by at
 most 8.3e-9 USD (a root moves inside its certified bracket). Pinned by
-`AmericanIvPremium.FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds`; design note
+`AmericanIvPremium.FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds` and (fix round 1,
+review-K5 m2) `AmericanIvPremium.FamilyEnclosureCertifiesTheEndsItServes`; design note
 `docs/sigma-q-family-error-envelope.md` section 9.
 
 ### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
