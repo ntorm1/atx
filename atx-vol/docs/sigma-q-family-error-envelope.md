@@ -88,7 +88,14 @@ nodes, plus the rounding budget. Audit (`EnvelopeBoundsTheMeasuredErrorAtRandomO
 `family_domain_bound_usd` (the certification grid's scalar `q_bound`) takes every
 point-dependent factor at its domain-wide worst; the grid reads it per unit max(P, 1), a
 conservative reading. It is much looser than the per-point bound: on the OIH-shaped
-wide-carry chain the family grid now serves no price (the key is inert there).
+wide-carry chain the family grid now serves no price (the key is inert there). Fix round 1
+(review-K3 mn-7): a node's box term is `2 z (max(r, 0) K + max(-q, 0) S e^{max(-q, 0) t})`,
+t = z^2 - a negative carry's `e^{-qt} > 1` was dropped before - and the sensitivity term
+takes `e^{-rt} <= e^{max(-r, 0) t}` and `|r K| + |q| xmax`; each node's term falls with a
+put's q below 0 and rises above it, so the q box's ends still carry the worst. Pinned by
+`AmericanFamilyError.DomainBoundDominatesThePointBoundOnANegativeCarryBox` (point bound <=
+domain bound over a q < 0 put box, every node unverified included). Non-negative carry is
+bit-identical.
 
 ## 5. Root acceptance (the rule and its proof sketch)
 
@@ -118,7 +125,10 @@ Under `deam_family_q` the band gate never decides a skip: `DeAmIvView::invert_pr
 turns policy Band into Always for a quote whose side has no family (the B-family arm's
 non-family quotes). Measured why, on SPY at 3fb9d6da: 41 of that arm's 748 band-gated roots
 sat more than 1e-7 from the bisected accurate root (up to 9.5e-7). The Screen Band arm
-without `family_q` keeps the gate, counted as `LegacyBandGate`.
+without `family_q` keeps the gate, counted as `LegacyBandGate`. Pinned (fix round 1,
+review-K3 MJ-1) by `QuoteSliceVolSpace.FamilyQBandArmConfirmsEveryRootOfASideWithoutAFamily`:
+a negative-carry chain builds the put family only; with the rule reverted 91 of its call
+roots are `LegacyBandGate`, with it 0 and every call root `Confirmed`.
 
 W = min(tol, 1e-7) (1 - 2^-20). Placement (`confirm_bracket`): C at the native root x; if
 C certifies x's side, the other end within W of x (the family at x +- W first, else C past
@@ -134,6 +144,15 @@ MJ1 (`AmericanIvPremium.FamilyNativeAcceptanceDoesNotRestOnANonLocalSecant`): a 
 far pair forces the native iterate to accept with a partner 0.3 vol away (56 of 56 roots);
 every one is accepted through a certified bracket <= 1e-7 and lies within 7.8e-10 of the
 independently bisected accurate root.
+
+The bound term of the enclosure (fix round 1, review-K3 mn-5; `family_enclosure` is declared
+in `american_iv_premium.hpp` for this):
+`AmericanIvPremium.FamilyEnclosureRejectsAnEndWhoseEnvelopeBoundLeavesItOpen` puts the
+price 0.2 W x slope from one end and 0.8 W x slope from the other; a scaled envelope whose
+bound lies between the two gaps is rejected by the near end alone, at the lower end and in
+the mirror at the upper end (dropping either end's bound from the rule fails it);
+`AmericanIvPremium.AnInflatedEnvelopeBoundSkipsNoConfirmOnEitherRoute` scopes a
+1e6-inflated envelope and both routes skip nothing.
 
 ## 6. Plumbing and audit
 
@@ -167,6 +186,6 @@ None -> no family-route root (Search's answer).
   no vega bound. A validated vega lower bound from it could replace the second solve.
 - `family_domain_bound_usd` is loose; a per-point bound at the grid (quote_slice.cpp,
   out of scope here) would let the family grid serve again on wide boxes.
-- The public API comments on `deam_family_q` / `deam_family_native`
-  (`include/atx/vol/api/fitting/quote_slice.hpp`) still describe the measured bound and
-  "every root is still confirmed"; the header was out of this lane's scope.
+- (Closed in fix round 1, review-K3 mn-3: the public comments on `deam_family_q`,
+  `deam_family_native` and the Family grid kernel in
+  `include/atx/vol/api/fitting/quote_slice.hpp` now state this acceptance.)

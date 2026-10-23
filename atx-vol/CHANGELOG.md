@@ -27,6 +27,9 @@ sampled one (inert on wide carry boxes). Every family-route root is typed
 `deam_accept_by_reason`); `--deam-audit` re-solves each by bisection of the accurate map
 (`deam_audit_bracket_*`; per-root CSV via `ATX_VOL_FAMILY_ROOT_AUDIT`). Defaults: no
 change (no default reaches the family route). Design: `docs/sigma-q-family-error-envelope.md`.
+Fix round 1 (review-K3): the grid's domain-wide `q_bound` now carries `e^{-qt} > 1` for a
+negative carry (it understated the bound of a hard-to-borrow put box; non-negative carry
+bit-identical; the acceptance never reads it).
 
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
