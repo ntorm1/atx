@@ -886,11 +886,12 @@ void add_calendar(std::span<const JointPriceSide> slices, std::size_t a, std::si
 }
 
 // Dykstra / Hildreth over sparse half-spaces plus the box, uniform weights: the
-// loop of project_convex_price_box with general (index, coefficient) rows.
+// loop of project_convex_price_box with general (index, coefficient) rows, at most
+// `max_sweeps` sweeps; `sweeps` receives the sweeps run.
 [[nodiscard]] bool dykstra_sparse(std::span<double> x, std::span<const double> lo,
                                   std::span<const double> hi,
-                                  std::vector<SparseHalfSpace> &spaces) {
-  constexpr int kMaxSweeps = 20000;
+                                  std::vector<SparseHalfSpace> &spaces, std::size_t max_sweeps,
+                                  double relative_tolerance, std::size_t &sweeps) {
   const std::size_t n = x.size();
   std::vector<double> box(n, 0.0);
   double scale = 1.0;
@@ -898,8 +899,9 @@ void add_calendar(std::span<const JointPriceSide> slices, std::size_t a, std::si
   // Coupled slices converge more slowly than one; the unchanged certificate and
   // calendar checks downstream judge the result, so the stop is looser than
   // project_convex_price_box's (still ~1e-4 of the certificate allowance).
-  const double tolerance = 1.0e-10 * scale;
-  for (int sweep = 0; sweep < kMaxSweeps; ++sweep) {
+  const double tolerance = relative_tolerance * scale;
+  for (std::size_t sweep = 0; sweep < max_sweeps; ++sweep) {
+    sweeps = sweep + 1u;
     double change = 0.0;
     for (SparseHalfSpace &h : spaces) {
       double dot = 0.0;
@@ -944,21 +946,20 @@ void add_calendar(std::span<const JointPriceSide> slices, std::size_t a, std::si
 
 } // namespace
 
-bool project_calendar_joint(std::span<const JointPriceSide> slices) {
+namespace {
+
+// The joint problem of project_calendar_joint: the stacked prices `x` and boxes, each
+// slice's first variable `offset`, and every half-space (convexity and end slopes per
+// slice, calendar knots per pair). Requires well-formed slices.
+void build_joint(std::span<const JointPriceSide> slices, std::vector<double> &x,
+                 std::vector<double> &lo, std::vector<double> &hi,
+                 std::vector<std::size_t> &offset, std::vector<SparseHalfSpace> &spaces) {
   std::size_t total = 0;
-  for (const JointPriceSide &s : slices) {
-    if (!valid_joint_side(s)) return false;
-    total += s.strikes.size();
-  }
-  std::vector<double> x;
-  std::vector<double> lo;
-  std::vector<double> hi;
+  for (const JointPriceSide &s : slices) total += s.strikes.size();
   x.reserve(total);
   lo.reserve(total);
   hi.reserve(total);
-  std::vector<std::size_t> offset;
   offset.reserve(slices.size());
-  std::vector<SparseHalfSpace> spaces;
   spaces.reserve(2u * total);
   for (const JointPriceSide &s : slices) {
     const std::size_t base = x.size();
@@ -996,12 +997,197 @@ bool project_calendar_joint(std::span<const JointPriceSide> slices) {
       add_calendar(slices, a, b, offset, spaces);
     }
   }
-  if (!dykstra_sparse(x, lo, hi, spaces)) return false;
+}
+
+void scatter_joint(std::span<const JointPriceSide> slices, std::span<const double> x,
+                   std::span<const std::size_t> offset) {
   for (std::size_t m = 0; m < slices.size(); ++m) {
     std::copy_n(x.begin() + static_cast<std::ptrdiff_t>(offset[m]), slices[m].prices.size(),
                 slices[m].prices.begin());
   }
+}
+
+// The value at `strike` of the piecewise-linear interpolation of `values` on `strikes`
+// (AmericanPriceSlice::price's rule). Requires strike inside the strikes' range.
+[[nodiscard]] double interpolate(std::span<const double> strikes, std::span<const double> values,
+                                 double strike) noexcept {
+  const auto right = static_cast<std::size_t>(
+      std::lower_bound(strikes.begin(), strikes.end(), strike) - strikes.begin());
+  if (strikes[right] == strike || right == 0u) return values[right];
+  const double fraction = (strike - strikes[right - 1u]) / (strikes[right] - strikes[right - 1u]);
+  return std::lerp(values[right - 1u], values[right], fraction);
+}
+
+[[nodiscard]] JointProjectionConflict conflict_at(JointConflictKind kind, std::size_t slice,
+                                                  std::size_t node, std::size_t other,
+                                                  double strike, double excess) noexcept {
+  return JointProjectionConflict{kind, slice, node, other, strike, excess};
+}
+
+// Exact infeasibility certificates of one slice: an empty box, or boxes that admit no
+// convex curve passing the certificate's convexity test (a lower edge above the greatest
+// convex minorant of the upper edges beyond the allowance).
+[[nodiscard]] std::optional<JointProjectionConflict> slice_conflict(const JointPriceSide &s,
+                                                                    std::size_t index) {
+  const std::size_t n = s.strikes.size();
+  for (std::size_t i = 0; i < n; ++i) {
+    if (s.lo[i] > s.hi[i]) {
+      return conflict_at(JointConflictKind::EmptyBox, index, i, index, s.strikes[i],
+                         s.lo[i] - s.hi[i]);
+    }
+  }
+  std::vector<std::size_t> hull;
+  hull.reserve(n);
+  std::vector<double> minorant(n);
+  convex_minorant(s.strikes, s.hi, hull, minorant);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double excess = s.lo[i] - minorant[i] - price_tolerance(s.spot, s.strikes[i]);
+    if (excess > 0.0) {
+      return conflict_at(JointConflictKind::NoConvexCurve, index, i, index, s.strikes[i], excess);
+    }
+  }
+  return std::nullopt;
+}
+
+// Exact calendar certificate of a pair (earlier a, later b): at a knot of either inside
+// both domains P_a lies on or above a's lower edges and P_b on or below b's upper edges
+// (both interpolated where the knot is not their own), so a's lower edge above b's upper
+// edge beyond the allowance leaves no prices inside the boxes that check_american_calendar
+// accepts.
+[[nodiscard]] std::optional<JointProjectionConflict>
+calendar_conflict(std::span<const JointPriceSide> slices, std::size_t a, std::size_t b) {
+  const JointPriceSide &early = slices[a];
+  const JointPriceSide &late = slices[b];
+  const double lo = std::max(early.strikes.front(), late.strikes.front());
+  const double hi = std::min(early.strikes.back(), late.strikes.back());
+  if (hi < lo) return std::nullopt;
+  const double spot = std::max(early.spot, late.spot);
+  const auto test = [&](double k, std::size_t own, std::size_t node,
+                        std::size_t other) -> std::optional<JointProjectionConflict> {
+    const double floor = interpolate(early.strikes, early.lo, k);
+    const double cap = interpolate(late.strikes, late.hi, k);
+    const double excess = floor - cap - price_tolerance(spot, k);
+    if (!(excess > 0.0)) return std::nullopt;
+    return conflict_at(JointConflictKind::CalendarBox, own, node, other, k, excess);
+  };
+  for (std::size_t i = 0; i < early.strikes.size(); ++i) {
+    const double k = early.strikes[i];
+    if (k < lo || k > hi) continue;
+    if (auto c = test(k, a, i, b)) return c;
+  }
+  for (std::size_t j = 0; j < late.strikes.size(); ++j) {
+    const double k = late.strikes[j];
+    if (k < lo || k > hi) continue;
+    if (auto c = test(k, b, j, a)) return c;
+  }
+  return std::nullopt;
+}
+
+// valid_joint_side without the box test: an empty box is infeasible data, not a
+// malformed input.
+[[nodiscard]] bool well_formed_joint_side(const JointPriceSide &s) noexcept {
+  const std::size_t n = s.strikes.size();
+  if (n < 2u || s.prices.size() != n || s.lo.size() != n || s.hi.size() != n ||
+      !std::isfinite(s.spot) || s.spot < 0.0) {
+    return false;
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(s.strikes[i]) || !std::isfinite(s.prices[i]) || !std::isfinite(s.lo[i]) ||
+        !std::isfinite(s.hi[i]) || (i > 0u && !(s.strikes[i] > s.strikes[i - 1u]))) {
+      return false;
+    }
+  }
   return true;
+}
+
+} // namespace
+
+bool project_calendar_joint(std::span<const JointPriceSide> slices) {
+  for (const JointPriceSide &s : slices) {
+    if (!valid_joint_side(s)) return false;
+  }
+  std::vector<double> x;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  std::vector<std::size_t> offset;
+  std::vector<SparseHalfSpace> spaces;
+  build_joint(slices, x, lo, hi, offset, spaces);
+  std::size_t sweeps = 0;
+  if (!dykstra_sparse(x, lo, hi, spaces, 20000u, 1.0e-10, sweeps)) return false;
+  scatter_joint(slices, x, offset);
+  return true;
+}
+
+const char *to_string(JointProjectionOutcome value) noexcept {
+  switch (value) {
+  case JointProjectionOutcome::Feasible:
+    return "feasible";
+  case JointProjectionOutcome::InfeasibleData:
+    return "infeasible_data";
+  case JointProjectionOutcome::NonConverged:
+    return "nonconverged";
+  case JointProjectionOutcome::InvalidInput:
+    return "invalid_input";
+  }
+  return "unknown";
+}
+
+const char *to_string(JointConflictKind value) noexcept {
+  switch (value) {
+  case JointConflictKind::None:
+    return "none";
+  case JointConflictKind::EmptyBox:
+    return "empty_box";
+  case JointConflictKind::NoConvexCurve:
+    return "no_convex_curve";
+  case JointConflictKind::CalendarBox:
+    return "calendar_box";
+  }
+  return "unknown";
+}
+
+JointProjectionResult project_calendar_joint_bounded(std::span<const JointPriceSide> slices,
+                                                     const JointProjectionBudget &budget) {
+  JointProjectionResult result;
+  if (budget.max_sweeps < 1u || !std::isfinite(budget.relative_tolerance) ||
+      !(budget.relative_tolerance > 0.0)) {
+    return result; // InvalidInput
+  }
+  for (const JointPriceSide &s : slices) {
+    if (!well_formed_joint_side(s)) return result;
+  }
+  // Certificates first: each proves that no prices inside the boxes pass the caller's
+  // unchanged certificate and calendar checks, so the sweeps would be wasted work.
+  for (std::size_t m = 0; m < slices.size(); ++m) {
+    if (auto conflict = slice_conflict(slices[m], m)) {
+      result.outcome = JointProjectionOutcome::InfeasibleData;
+      result.conflict = *conflict;
+      return result;
+    }
+  }
+  for (std::size_t a = 0; a < slices.size(); ++a) {
+    for (std::size_t b = a + 1; b < slices.size(); ++b) {
+      if (auto conflict = calendar_conflict(slices, a, b)) {
+        result.outcome = JointProjectionOutcome::InfeasibleData;
+        result.conflict = *conflict;
+        return result;
+      }
+    }
+  }
+  std::vector<double> x;
+  std::vector<double> lo;
+  std::vector<double> hi;
+  std::vector<std::size_t> offset;
+  std::vector<SparseHalfSpace> spaces;
+  build_joint(slices, x, lo, hi, offset, spaces);
+  if (!dykstra_sparse(x, lo, hi, spaces, budget.max_sweeps, budget.relative_tolerance,
+                      result.sweeps)) {
+    result.outcome = JointProjectionOutcome::NonConverged;
+    return result;
+  }
+  scatter_joint(slices, x, offset);
+  result.outcome = JointProjectionOutcome::Feasible;
+  return result;
 }
 
 Status check_american_calendar(const AmericanPriceSlice &earlier, const AmericanPriceSlice &later) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -372,6 +373,9 @@ struct QuoteSliceRepairConfig {
   // every served row inside its quote); the spread floor is box_tick.
   QuoteSliceMarketDistance market_distance = QuoteSliceMarketDistance::Off;
   double market_distance_spreads = 1.0;
+  // Sweep budget of the bidirectional calendar rung's joint projection (lane C2;
+  // project_calendar_joint_bounded, >= 1). The default is the historical 20,000.
+  std::size_t joint_max_sweeps = 20000;
 };
 
 // InvalidArgument unless the mode, certificate, wing source and market-distance mode
@@ -387,7 +391,9 @@ enum class QuoteSliceRepairOutcome : std::uint8_t {
   LeftChannel,  // a moved node-side would end farther outside its channel
   NodeBudget,   // more than max_nodes strikes would move materially
   VolBudget,    // an unquoted node-side's volatility would move more than max_vol_move
-  NotCertified  // within budget, but the certificate (or the calendar clamp) still fails
+  NotCertified, // within budget, but the certificate (or the calendar clamp) still fails
+  NonConverged  // lane C2: the joint projection spent its sweep budget without settling
+                // and without an infeasibility certificate (Infeasible names a conflict)
 };
 
 [[nodiscard]] const char *to_string(QuoteSliceRepairOutcome value) noexcept;
@@ -401,6 +407,11 @@ struct QuoteSliceRepairRecord {
   double max_vol_move = 0.0;       // largest |IV change| over identifiable moved node-sides
   double max_unquoted_vol_move = 0.0; // the same over node-sides without a quote (budgeted)
   std::size_t unidentified = 0;    // moved node-sides whose new price has no American IV
+  // Joint projection only (repair_quote_slice_calendar_joint, lane C2): sweeps run over
+  // both sides, and the infeasibility certificate of an Infeasible outcome (kind None
+  // otherwise; JointProjectionConflict indexes the members in maturity order).
+  std::size_t sweeps = 0;
+  JointProjectionConflict conflict{};
 };
 
 // How a fit publishes a served row whose volatility its certified price does not
@@ -692,6 +703,9 @@ struct QuoteSliceFit {
   // prices enforce strike shape, exercise bounds and conservative cross-side
   // bounds throughout its finite domain. The intermediate IV curve is NOT a
   // certified serving representation. Absence means the fit cannot be served.
+  // The SERVED representation is this curve restricted to its support (withheld_nodes):
+  // serve through query_quote_slice / evaluate_quote_slice / served_quote_slice_price,
+  // which refuse every withheld strike, never through prices->price directly.
   std::optional<AmericanPriceSlice> prices;
   // Empty unless a repair moved served prices off the curve. Otherwise one entry
   // per prices->nodes() entry: value 1 = call moved, 2 = put moved (OR'd). At
@@ -703,6 +717,14 @@ struct QuoteSliceFit {
   // life of the fit: evaluate_quote_slice refuses their volatility, and a later
   // calendar repair refreshes their price but never re-implies them.
   std::vector<std::uint8_t> price_only_nodes;
+  // Empty unless a row's certified price was refused (lane C2: a MarketDistanceFailure
+  // row). Otherwise one entry per prices->nodes() entry: value 1 = call, 2 = put (OR'd),
+  // the node sides whose certified value is WITHHELD from the served representation. A
+  // withheld node side and every strike strictly between it and its neighbouring nodes
+  // (where the interpolation reads its value) lie outside the support: query_quote_slice
+  // answers MarketDistanceFailure there and evaluate_quote_slice / served_quote_slice_price
+  // refuse. quote_slice_gaps lists the gaps. Every row of a withheld node side is refused.
+  std::vector<std::uint8_t> withheld_nodes;
   std::vector<QuoteSliceRow> rows; // same order and length as input quotes
   QuoteSliceMarket market;
   QuoteSliceDividendModel dividend_model = QuoteSliceDividendModel::ContinuousYield;
@@ -737,7 +759,9 @@ struct QuoteSliceValue {
 // A typed query answer (query_quote_slice). status Success: `volatility` is identified
 // (vol_convention FittedCurve at an unmoved node, ReimpliedRepaired otherwise). status
 // PriceOnly: `price` is certified and served, `volatility` is NaN, `reason` says why and
-// [iv_lower, iv_upper] is the interval where known (NaN otherwise).
+// [iv_lower, iv_upper] is the interval where known (NaN otherwise). status
+// MarketDistanceFailure (lane C2): the strike lies inside the certified domain but outside
+// the served support (QuoteSliceFit::withheld_nodes); no price and no volatility.
 struct QuoteSliceQuery {
   QuoteSliceEvaluationStatus status = QuoteSliceEvaluationStatus::NoFit;
   QuoteSlicePriceOnlyReason reason = QuoteSlicePriceOnlyReason::None;
@@ -809,7 +833,9 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
 // Outside-domain requests fail.
 // Every answer query_quote_slice types PriceOnly is refused with OutOfRange (lane
 // C0): a volatility at or below kIvMin is never returned as an identified IV.
-// For allocation-free PRICE-ONLY serving, call fit.prices->price(K, side).
+// A strike outside the served support (QuoteSliceFit::withheld_nodes, lane C2) is refused
+// with Unavailable ("withheld"): a refused row's certified value is never returned.
+// For allocation-free PRICE-ONLY serving, call served_quote_slice_price(fit, K, side).
 // A slice enforces strike constraints; publish several expiries together only
 // after check_american_calendar has accepted their overlapping price domains.
 [[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike,
@@ -822,11 +848,36 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
 // side the fit flagged price-only (price_only_nodes; final for the life of the fit) is
 // always PriceOnly: with the reason its current certified price classifies to, or
 // UnidentifiedInterval when that price would now identify a volatility (a later calendar
-// repair moved it). Err exactly where
+// repair moved it). A strike outside the served support (lane C2) is a
+// MarketDistanceFailure answer with no price and no volatility. Err exactly where
 // evaluate_quote_slice fails for other reasons: an invalid contract (InvalidArgument),
 // no certified slice (Unavailable), a strike outside the certified domain (OutOfRange).
 [[nodiscard]] Result<QuoteSliceQuery> query_quote_slice(const QuoteSliceFit &fit, double strike,
                                                         Side side);
+
+// ── Served support (lane C2, 2026-10-22) ─────────────────────────────────────────
+
+// The served price of (strike, side): the certified price when the strike lies in the
+// served support, nullopt otherwise (no certified slice, outside the domain, an invalid
+// side, or a withheld strike: a withheld node side or a strike strictly between it and a
+// neighbouring node). Allocation-free; never throws.
+[[nodiscard]] std::optional<double> served_quote_slice_price(const QuoteSliceFit &fit,
+                                                             double strike, Side side) noexcept;
+
+// One gap of the served support of one side: the strikes in [lo, hi] are withheld, except
+// an endpoint flagged open (that endpoint is a served node). Adjacent withheld segments
+// merge into one gap.
+struct QuoteSliceGap {
+  Side side = Side::Call;
+  double lo = 0.0;
+  double hi = 0.0;
+  bool lo_open = false;
+  bool hi_open = false;
+};
+
+// The support/gap mask of a fit, calls first then puts, each in strike order; empty when
+// nothing is withheld. Allocates.
+[[nodiscard]] std::vector<QuoteSliceGap> quote_slice_gaps(const QuoteSliceFit &fit);
 
 // A smile prior for one expiry: an ATM volatility and a shape as multiples
 // sigma/atm_vol on an increasing standardized grid z = ln(K/F)/(atm_vol*sqrt(T))
@@ -907,7 +958,9 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // the certificate's hard bounds and the calendar clamp of `earlier` / `later` (as
 // repair_quote_slice_calendar_in_channel); when no arbitrage-free curve fits those
 // boxes, once more onto the bound's band [bid - b s, ask + b s] (b =
-// config.market_distance_spreads, s = max(ask - bid, config.box_tick)). The result
+// config.market_distance_spreads, s = max(ask - bid, config.box_tick)); a band result that
+// moves a row lying inside its own quote [bid, ask] out of it is refused (LeftChannel:
+// lane C2, the renewed market check). The result
 // must move some node by more than config.immaterial_price_move, pass the unchanged
 // certificate and check_american_calendar against every slice in `earlier` and
 // `later`; it is then committed exactly as a calendar repair (fit.prices, row prices,
@@ -948,11 +1001,107 @@ struct QuoteSliceCalendarNeighbour {
 // is committed as a calendar repair, its moved node count written to `moved` (one
 // entry per member, nullable), and true is returned. Otherwise no member changes.
 // `record` (nullable) receives the outcome, the summed node counts and the largest
-// move over all members. Bounded: one projection per side.
+// move over all members. Bounded: one projection per side (lane C2:
+// project_calendar_joint_bounded with config.joint_max_sweeps; an exact infeasibility
+// certificate is Infeasible with record->conflict, a spent budget NonConverged, and either
+// rolls back: no member changes; record->sweeps counts the sweeps run).
 [[nodiscard]] bool repair_quote_slice_calendar_joint(
     std::span<const QuoteSliceJointMember> members,
     std::span<const QuoteSliceCalendarNeighbour> fixed, const QuoteSliceRepairConfig &config,
     std::vector<std::size_t> *moved = nullptr, QuoteSliceRepairRecord *record = nullptr);
+
+// Every repair above (lane C2) re-certifies its result exactly as the slice was first
+// certified before committing it: the unchanged AmericanPriceSlice certificate and, for a
+// non-dividend slice (zero carry at every node, no cash dividend, nonnegative rate),
+// check_nondividend_american; a failure is NotCertified and leaves the fit unchanged.
+
+// ── Publication validation (lane C2, 2026-10-22) ─────────────────────────────────
+//
+// The final representation-level check of what API callers evaluate: the served price
+// function (served_quote_slice_price - the certified curve on its support) of every given
+// slice, at the evaluation points dense_points interior points per node segment, every
+// node (quote strikes are nodes) and every other slice's nodes inside its domain.
+// Violation classes:
+//  Certificate:   the published nodes fail AmericanPriceSlice::create.
+//  Shape:         at served evaluation points a call rises or a put falls, a slope leaves
+//                 [-discount_max, 0] (calls) / [0, discount_max] (puts), a second
+//                 difference is negative, or a price leaves its exercise / upper bound.
+//  CrossSide:     where both sides are served, call - put leaves the certificate's affine
+//                 bounds [prepaid_min - discount_max K, prepaid_max - discount_min K].
+//  Nondividend:   a non-dividend slice fails check_nondividend_american.
+//  QuoteBox:      a served row's price lies beyond market_distance_spreads spreads outside
+//                 its own quote (an infinite market_distance_spreads: not checked).
+//  Calendar:      for EVERY pair of slices (not adjacent maturities only: a nested domain
+//                 can cross a non-neighbour), a later served price below an earlier one at
+//                 the union of both slices' nodes and the midpoints between them.
+//  Extrapolation: a strike just outside the certified domain is served.
+//  Support:       a row disagrees with the API at its strike: a served row (Success or
+//                 PriceOnly) whose strike the API refuses or whose price differs from the
+//                 served price, or a MarketDistanceFailure row whose strike is served.
+// Every comparison allows the certificate's 1e-8 + 1e-9 * max(spot, K). `focus` (an index)
+// restricts the check to that slice and the calendar pairs it belongs to (the after-
+// mutation form); npos checks every slice and pair. Pure: reads the fits only.
+enum class QuoteSlicePublicationViolation : std::uint8_t {
+  Certificate,
+  Shape,
+  CrossSide,
+  Nondividend,
+  QuoteBox,
+  Calendar,
+  Extrapolation,
+  Support
+};
+inline constexpr std::size_t kQuoteSlicePublicationViolationKinds = 8;
+inline constexpr std::size_t kQuoteSlicePublicationMaxFindings = 64;
+inline constexpr std::size_t kQuoteSlicePublicationAll = static_cast<std::size_t>(-1);
+
+[[nodiscard]] const char *to_string(QuoteSlicePublicationViolation value) noexcept;
+
+// One violation: slice `expiry` (index into the checked span), the calendar partner `other`
+// (kQuoteSlicePublicationAll otherwise), the row (QuoteBox / Support; else
+// kQuoteSlicePublicationAll), side, strike and the excess beyond the allowance (price
+// units; QuoteBox: spreads beyond the bound).
+struct QuoteSlicePublicationFinding {
+  QuoteSlicePublicationViolation kind = QuoteSlicePublicationViolation::Certificate;
+  std::size_t expiry = 0;
+  std::size_t other = kQuoteSlicePublicationAll;
+  std::size_t row = kQuoteSlicePublicationAll;
+  Side side = Side::Call;
+  double strike = std::numeric_limits<double>::quiet_NaN();
+  double excess = 0.0;
+};
+
+struct QuoteSlicePublicationReport {
+  std::size_t slices = 0;          // slices checked
+  std::size_t points = 0;          // served evaluation points (per side)
+  std::size_t calendar_pairs = 0;  // pairs with overlapping domains
+  std::size_t withheld_rows = 0;   // rows the API refuses (MarketDistanceFailure)
+  std::size_t gap_segments = 0;    // withheld (side, node segment) pairs
+  std::array<std::size_t, kQuoteSlicePublicationViolationKinds> violations{};
+  std::vector<QuoteSlicePublicationFinding> findings; // the first kQuoteSlicePublicationMaxFindings
+  [[nodiscard]] std::size_t total() const noexcept;
+  [[nodiscard]] std::size_t count(QuoteSlicePublicationViolation kind) const noexcept;
+  [[nodiscard]] bool clean() const noexcept { return total() == 0u; }
+};
+
+// One published slice: its fit (certified prices, non-null) and its quotes (row order).
+struct QuoteSlicePublicationSlice {
+  const QuoteSliceFit *fit = nullptr;
+  std::span<const QuoteSliceQuote> quotes;
+};
+
+struct QuoteSlicePublicationConfig {
+  double market_distance_spreads = std::numeric_limits<double>::infinity(); // >= 0
+  double box_tick = 0.01;                                // > 0, finite
+  std::size_t dense_points = 3;                          // interior points per segment, <= 64
+  std::size_t focus = kQuoteSlicePublicationAll;
+};
+
+// InvalidArgument on a null fit, a fit without certified prices, rows not matching the
+// quotes, equal calendar maturities, a focus out of range or an invalid config.
+[[nodiscard]] Result<QuoteSlicePublicationReport>
+validate_published_representation(std::span<const QuoteSlicePublicationSlice> slices,
+                                  const QuoteSlicePublicationConfig &config = {});
 
 // ── Graded admission over one valuation surface ──────────────────────────────
 
@@ -1008,6 +1157,20 @@ enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly, FloorPrice
 
 [[nodiscard]] const char *to_string(QuoteSurfaceWingTail value) noexcept;
 
+// Publication validation of fit_quote_surface (lane C2, opt-in; Off is the historical
+// path bit for bit). Validate: (1) after EVERY mutation of a served or accepted slice's
+// prices (bounded-move, channel, joint and market repairs) the mutated slice is checked by
+// validate_published_representation (focus) against the slices it was made consistent
+// with; a violation rolls the mutation back (the repair is treated as refused) and counts
+// QuoteSurfaceSlice::publication_rollbacks; (2) after the market-distance pass the whole
+// served set is checked (QuoteBox at the market-distance bound when one is set); a slice
+// with a structural violation (any class but QuoteBox and Support) is refused
+// ("publication_invalid") - for a calendar pair, the lower-confidence slice - and a
+// QuoteBox / Support row is refused and withheld.
+enum class QuoteSurfacePublication : std::uint8_t { Off, Validate };
+
+[[nodiscard]] const char *to_string(QuoteSurfacePublication value) noexcept;
+
 struct QuoteSurfaceConfig {
   double term_prior_weight = 1.0;     // scale of the neighbour prior's strength
   double prior_decay_log_time = 1.0;  // confidence e-folding in |ln(T/T_nearest)|
@@ -1053,6 +1216,8 @@ struct QuoteSurfaceConfig {
   // on) reuses its American certification grid instead of repricing it. Both are
   // exact-keyed, so results are bit-identical with or without the memo. Speed only.
   bool rung_memo = false;
+  // Opt-in publication validation (QuoteSurfacePublication, lane C2).
+  QuoteSurfacePublication publication = QuoteSurfacePublication::Off;
 };
 
 // Which fitter produced a slice's served (or last attempted) fit: the pass-A
@@ -1156,6 +1321,21 @@ struct QuoteSurfaceSlice {
   std::size_t calendar_joint_partner_moves = 0;
   // Rows published PriceOnly by QuoteSurfaceConfig::ladder_wing_tail (0 when off).
   std::size_t wing_tail_price_only = 0;
+  // Lane C2. Rows withheld from the served support (a refused row and every other row of
+  // its node side; QuoteSliceFit::withheld_nodes), whatever the publication mode.
+  std::size_t withheld_rows = 0;
+  // Bidirectional calendar rung attempts by outcome (project_calendar_joint_bounded):
+  // settled, refused by an infeasibility certificate, budget spent. The last two roll
+  // back (no member changes).
+  std::size_t joint_feasible = 0;
+  std::size_t joint_infeasible = 0;
+  std::size_t joint_nonconverged = 0;
+  // QuoteSurfacePublication::Validate only (zero otherwise): mutations of this slice the
+  // after-mutation validation checked and rolled back, and the final pass's violations of
+  // this slice (a structural one refuses it: refusal "publication_invalid").
+  std::size_t publication_checks = 0;
+  std::size_t publication_rollbacks = 0;
+  std::size_t publication_violations = 0;
 };
 
 // Graded admission for every expiry of ONE underlier/deliverable at ONE valuation

@@ -64,4 +64,20 @@ struct VolIdentification {
                                               Side side, double price,
                                               QuoteSliceFloorPolicy policy);
 
+// Lane C2: the served support (QuoteSliceFit::withheld_nodes). True when `strike` (inside
+// the certified domain) is served on `side`: no mask, a node side not withheld, or a strike
+// strictly between two nodes neither of which is withheld on that side. A mask whose size
+// differs from the node count serves nothing. Defined in quote_slice_publication.cpp.
+[[nodiscard]] bool serves(const QuoteSliceFit &fit, double strike, Side side) noexcept;
+
+// Withholds node side `bit` of node `node` among `nodes` nodes (QuoteSliceFit::
+// withheld_nodes, sized to `nodes` on first use). Precondition: node < nodes.
+void withhold(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::size_t nodes);
+
+// The discount factor of the non-dividend regime in which a slice was certified with
+// check_nondividend_american (certify_and_serve: zero effective carry at the fit and at
+// every node strike, no cash dividend, nonnegative rate); nullopt outside it, or without
+// certified prices. Defined in quote_slice.cpp.
+[[nodiscard]] std::optional<double> nondividend_discount(const QuoteSliceFit &fit);
+
 } // namespace atx::vol::detail

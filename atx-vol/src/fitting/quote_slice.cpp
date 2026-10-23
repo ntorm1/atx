@@ -463,6 +463,8 @@ const char *to_string(QuoteSliceRepairOutcome value) noexcept {
     return "vol_budget";
   case QuoteSliceRepairOutcome::NotCertified:
     return "not_certified";
+  case QuoteSliceRepairOutcome::NonConverged:
+    return "nonconverged";
   }
   return "unknown";
 }
@@ -471,6 +473,12 @@ Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double st
   const auto answer = query_quote_slice(fit, strike, side);
   if (!answer) {
     return Err(answer.error());
+  }
+  if (answer->status == QuoteSliceEvaluationStatus::MarketDistanceFailure) {
+    // Lane C2: outside the served support - a refused row's value is never returned.
+    return Err(ErrorCode::Unavailable,
+               "quote slice: price withheld (outside the served support: market-distance "
+               "refusal)");
   }
   if (answer->status != QuoteSliceEvaluationStatus::Success) {
     // A price-only answer (lane C0): the certified price identifies no volatility, so
@@ -2010,7 +2018,8 @@ Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {
       (config.market_distance != QuoteSliceMarketDistance::Off &&
        config.market_distance != QuoteSliceMarketDistance::Gate &&
        config.market_distance != QuoteSliceMarketDistance::Repair) ||
-      !nonnegative(config.market_distance_spreads)) {
+      !nonnegative(config.market_distance_spreads) || config.joint_max_sweeps < 1u ||
+      config.joint_max_sweeps > 10000000u) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel repair configuration");
   }
   return Ok();
@@ -2245,7 +2254,30 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
   }
 }
 
+// Lane C2 (review-L3q m3): a repaired candidate of a non-dividend slice must pass the
+// non-dividend certificate the slice was first served under (certify_and_serve).
+bool nondividend_certified(const QuoteSliceFit &fit, const AmericanPriceSlice &candidate) {
+  const std::optional<double> df = detail::nondividend_discount(fit);
+  return !df || static_cast<bool>(check_nondividend_american(candidate, *df));
+}
+
 } // namespace
+
+namespace detail {
+
+std::optional<double> nondividend_discount(const QuoteSliceFit &fit) {
+  const auto &diag = fit.diagnostics;
+  if (!fit.prices || !fit.variance_clock_dividends.empty() || !(diag.effective_rate >= 0.0) ||
+      diag.effective_yield != 0.0) {
+    return std::nullopt;
+  }
+  for (const AmericanPriceNode &node : fit.prices->nodes()) {
+    if (effective_yield(fit, calendar_yield_at(fit, node.strike)) != 0.0) return std::nullopt;
+  }
+  return diag.discount;
+}
+
+} // namespace detail
 
 bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
                                  std::span<const AmericanPriceSlice *const> earlier,
@@ -2297,7 +2329,7 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
   if (required != nullptr) *required = worst;
   if (!within || worst > half_spreads) return false;
   auto certified = AmericanPriceSlice::create(nodes, fit.prices->bounds());
-  if (!certified) return false;
+  if (!certified || !nondividend_certified(fit, *certified)) return false;
   commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
   return true;
 }
@@ -2347,7 +2379,8 @@ bool repair_quote_slice_calendar_in_channel(QuoteSliceFit &fit,
     }
     return true;
   };
-  if (!within || !certified || !calendar_clean(*certified)) {
+  if (!within || !certified || !calendar_clean(*certified) ||
+      !nondividend_certified(fit, *certified)) {
     out.outcome = QuoteSliceRepairOutcome::NotCertified;
     return false;
   }
@@ -2419,6 +2452,28 @@ bool project_in_boxes(std::vector<AmericanPriceNode> &nodes,
   return true;
 }
 
+// Lane C2 (review-L3q m2): true when `repaired` would move a served row that sits inside
+// its own quote [bid, ask] (bidless [0, ask]) out of it. The band projection widens every
+// box to the bound, so it may trade an in-quote row for an off-market one; the renewed
+// market check refuses that trade instead of serving it.
+bool leaves_a_quote(const QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+                    const AmericanPriceSlice &repaired) {
+  for (std::size_t i = 0; i < quotes.size(); ++i) {
+    const QuoteSliceRow &row = fit.rows[i];
+    const QuoteSliceQuote &q = quotes[i];
+    if ((row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+         row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) ||
+        !std::isfinite(q.ask) || !std::isfinite(q.bid)) {
+      continue;
+    }
+    const double bid = std::max(q.bid, 0.0);
+    if (!(row.fitted_price >= bid && row.fitted_price <= q.ask)) continue;
+    const auto after = repaired.price(q.strike, q.side);
+    if (after && (*after < bid || *after > q.ask)) return true;
+  }
+  return false;
+}
+
 // check_american_calendar of `repaired` against every fixed earlier / later slice.
 bool calendar_consistent(const AmericanPriceSlice &repaired,
                          std::span<const AmericanPriceSlice *const> earlier,
@@ -2473,8 +2528,13 @@ bool repair_quote_slice_market(QuoteSliceFit &fit, std::span<const QuoteSliceQuo
     }
     auto certified = AmericanPriceSlice::create(nodes, bounds);
     if (!above_floors(fit, nodes, clamp) || !certified ||
-        !calendar_consistent(*certified, earlier, later)) {
+        !calendar_consistent(*certified, earlier, later) ||
+        !nondividend_certified(fit, *certified)) {
       out.outcome = QuoteSliceRepairOutcome::NotCertified;
+      continue;
+    }
+    if (widen > 0.0 && leaves_a_quote(fit, quotes, *certified)) {
+      out.outcome = QuoteSliceRepairOutcome::LeftChannel; // review-L3q m2 (lane C2)
       continue;
     }
     commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
@@ -2585,8 +2645,16 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
       sides[s] = JointPriceSide{work[s].strikes, p[s], lo[s], hi[s], call ? -dmax : 0.0,
                                 call ? 0.0 : dmax, work[s].bounds.spot};
     }
-    if (!project_calendar_joint(sides)) {
-      out.outcome = QuoteSliceRepairOutcome::Infeasible;
+    // Lane C2: typed and budgeted; every outcome but Feasible rolls back (no member
+    // changes) with its reason recorded.
+    const JointProjectionResult projected =
+        project_calendar_joint_bounded(sides, JointProjectionBudget{config.joint_max_sweeps});
+    out.sweeps += projected.sweeps;
+    if (projected.outcome != JointProjectionOutcome::Feasible) {
+      out.outcome = projected.outcome == JointProjectionOutcome::NonConverged
+                        ? QuoteSliceRepairOutcome::NonConverged
+                        : QuoteSliceRepairOutcome::Infeasible;
+      out.conflict = projected.conflict;
       return false;
     }
     for (std::size_t s = 0; s < work.size(); ++s) {
@@ -2600,7 +2668,8 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
   for (std::size_t s = 0; s < work.size(); ++s) {
     auto slice = AmericanPriceSlice::create(work[s].nodes, work[s].bounds);
     if (!slice || !above_floors(*members[work[s].member].fit, work[s].nodes, work[s].clamp) ||
-        !calendar_consistent(*slice, work[s].earlier, work[s].later)) {
+        !calendar_consistent(*slice, work[s].earlier, work[s].later) ||
+        !nondividend_certified(*members[work[s].member].fit, *slice)) {
       out.outcome = QuoteSliceRepairOutcome::NotCertified;
       return false;
     }
@@ -2806,6 +2875,12 @@ Result<QuoteSliceQuery> query_quote_slice(const QuoteSliceFit &fit, double strik
   const auto price = fit.prices->price(strike, side);
   if (!price) {
     return Err(ErrorCode::OutOfRange, "quote slice: strike outside certified price domain");
+  }
+  if (!detail::serves(fit, strike, side)) {
+    // Lane C2: a refused row's node side, or interpolation next to it (withheld_nodes).
+    QuoteSliceQuery withheld;
+    withheld.status = QuoteSliceEvaluationStatus::MarketDistanceFailure;
+    return Ok(withheld);
   }
   const auto node = detail::node_side(fit.prices->nodes(), strike, side);
   const auto flagged_in = [&node](const std::vector<std::uint8_t> &flags) {
