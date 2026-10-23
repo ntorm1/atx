@@ -211,6 +211,22 @@ gtest_discover_tests(atx-vol-tick-path-tests
     PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
+# Lane H0-A (r6, 2026-10-23): the immutable fitted serving record
+# (api/fitting/slice_serve_record.hpp) - build, ownership, tiered serve, tick-rate IV and
+# the zero-allocation Ladder / Family reads. support/alloc_counter.cpp replaces global
+# operator new for THIS binary only, so the suite lives only here (not in atx-vol-tests or
+# a slice) and atx_vol_fast runs each case once.
+add_executable(atx-vol-serve-record-tests
+    slice_serve_record_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-serve-record-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-serve-record-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+gtest_discover_tests(atx-vol-serve-record-tests
+    TEST_PREFIX "serve-record:"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
 # Chain-level batch price / Greeks / implied vol (batch-pricing lane, 2026-10-17):
 # api/pricing/batch_chain.hpp. Focused, and this suite lives ONLY here (not in
 # atx-vol-tests or a slice), so atx_vol_fast runs each case once.
