@@ -85,9 +85,11 @@ clamped grid on its affine call-minus-put bound).
 - A zero-bid quote is never a point observation: the point fit marks it `BidlessQuote` and the
   channel uses it only as an upper bound [0, ask]; no midpoint is ever formed from a zero bid.
   `QuoteSliceAdmission` tests fail if either rule is reverted.
-- A bid-only quote (ask <= 0) is `invalid_option_quote` at the bench adapter and outside the
-  frozen eligible population; `QuoteSliceQuote` needs a finite positive ask, so the library cannot
-  express a lower-bound-only observation (a bid-only inequality needs an API extension).
+- A bid-only quote (bid > 0, ask <= 0) does not occur in cohort5 / dev200 / dev200b (0 rows);
+  the adapter's `invalid_option_quote` rows there are no-market sentinels (ask <= 0, bid -99),
+  outside the frozen eligible population. `QuoteSliceQuote` needs a finite positive ask, so the
+  library cannot express a lower-bound-only observation (a bid-only inequality needs an API
+  extension).
 - A surface fit depends only on its own snapshot (no cross-snapshot state):
   `ASurfaceFitDependsOnlyOnItsOwnSnapshot` fits one snapshot, then a different one, then the
   first again (per-thread de-Am memo and rung memo on) and compares statuses and prices bit for
@@ -95,7 +97,8 @@ clamped grid on its affine call-minus-put bound).
 
 ## Events and 0DTE
 
-Every 0DTE row of the cohorts is `invalid_time` at the adapter (outside the eligible
-population), so 0DTE has no fitted row to score; the `short_dated` class (DTE <= 3) is the
+Every 0DTE row of the cohorts is outside the eligible population (cohort5: 398 `invalid_time`;
+dev200: 376 `invalid_time` + 250 `unsupported_exercise`; dev200b has no 0DTE row), so 0DTE has no
+fitted row to score; the `short_dated` class (DTE <= 3) is the
 nearest measured proxy. The inputs carry no earnings calendar, so earnings-variance rows are not
 measurable in this matrix.
