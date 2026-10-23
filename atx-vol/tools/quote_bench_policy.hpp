@@ -211,14 +211,16 @@ inline DividendRouting parse_dividend_routing(const Json &entry) {
 // Opt-in lattice scheme of the dated-cash route (american.hpp, DiscreteDivScheme)
 // and its step count. Both act only where a chain is routed to the DatedCash
 // lattice (`dividends` above); the aggregate models ignore them. Absent keys
-// keep the historical spliced 301-step lattice.
+// keep the historical spliced 301-step lattice. `spliced-cubic` (lane D1) is the
+// production lattice's Standard route (american_discrete_div_kernel.hpp section 4).
 inline void parse_lattice_options(const Json &entry, QuoteSliceConfig &cfg) {
   if (entry.contains("dividend_lattice")) {
     const auto name = text(entry.at("dividend_lattice"));
     bool known = false;
     for (const auto scheme : {DiscreteDivScheme::SplicedCrr, DiscreteDivScheme::SplicedBbs,
                               DiscreteDivScheme::SplicedBbsr, DiscreteDivScheme::EscrowedBbs,
-                              DiscreteDivScheme::EscrowedLeisenReimer}) {
+                              DiscreteDivScheme::EscrowedLeisenReimer,
+                              DiscreteDivScheme::SplicedCubic}) {
       if (name == to_string(scheme)) {
         cfg.discrete_div_scheme = scheme;
         known = true;
@@ -226,7 +228,7 @@ inline void parse_lattice_options(const Json &entry, QuoteSliceConfig &cfg) {
     }
     if (!known) {
       throw std::runtime_error("Policy dividend_lattice must be spliced, spliced-bbs, "
-                               "spliced-bbsr, escrowed-bbs or escrowed-lr");
+                               "spliced-bbsr, escrowed-bbs, escrowed-lr or spliced-cubic");
     }
   }
   numeric(entry, "dividend_lattice_steps", cfg.discrete_div_steps, 1, kDiscreteDivMaxSteps);

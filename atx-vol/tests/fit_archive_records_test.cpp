@@ -16,6 +16,7 @@
 
 #include "atx/vol/api/fitting/american_markov_fit.hpp"
 #include "atx/vol/api/fitting/expiry_record.hpp"
+#include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_markov.hpp"
 #include "atx/vol/api/pricing/chain_tick.hpp"
 #include "atx/vol/api/storage/fit_archive.hpp"
@@ -156,6 +157,42 @@ TEST(FitArchiveRecords, EveryCurveKindAndEveryOptionalFieldRoundTrips) {
     EXPECT_EQ(a.moved_nodes(a.fits()[i]).size(), slices[i].fit.moved_nodes.size());
     EXPECT_EQ(fit_dividends(a, a.fits()[i]).size(), 2u);
     EXPECT_EQ(fit_carry_curve(a, a.fits()[i]).size(), 3u);
+  }
+}
+
+// Every DiscreteDivScheme a fit can record round-trips (review-D1 M2). The open-side
+// range check stopped at EscrowedLeisenReimer, so a keys-ON fit-archive-bench run with
+// `dividend_lattice: "spliced-cubic"` (lane D1's SplicedCubic, 5) published an archive
+// every reader refused (RecordInvalid). The schemes are enumerated by name, so a new
+// enumerator with a name joins this test without an edit here.
+TEST(FitArchiveRecords, EveryDiscreteDivSchemeRoundTrips) {
+  const auto surface = testkit::synthetic_surface();
+  std::vector<QuoteSurfaceSlice> slices;
+  std::vector<std::int32_t> days;
+  for (int v = 0; v <= 255; ++v) {
+    const auto scheme = static_cast<DiscreteDivScheme>(v);
+    if (std::string(to_string(scheme)) == "unknown") {
+      break;
+    }
+    slices.push_back(testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense));
+    slices.back().fit.discrete_div_scheme = scheme;
+    days.push_back(21000 + v);
+  }
+  ASSERT_GE(slices.size(), 6u); // SplicedCrr .. SplicedCubic
+  EXPECT_EQ(slices.back().fit.discrete_div_scheme, DiscreteDivScheme::SplicedCubic);
+  FitArchiveWriter w;
+  w.record_timings(true);
+  ASSERT_TRUE(w.add_surface({"SPY", kSnapshot, slices, days, {}, {}, "dense", "symbol"}).has_value());
+  const auto image = w.finish();
+  ASSERT_TRUE(image.has_value());
+  auto a = FitArchive::open_copy(*image, FitArchiveVerify::Paranoid);
+  ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+  ASSERT_EQ(a->fits().size(), slices.size());
+  for (std::size_t i = 0; i < slices.size(); ++i) {
+    auto decoded = decode_surface_slice(*a, a->fits()[i]);
+    ASSERT_TRUE(decoded.has_value()) << to_string(decoded.error().status);
+    EXPECT_EQ(decoded->fit.discrete_div_scheme, slices[i].fit.discrete_div_scheme);
+    EXPECT_EQ(diff_slice(*decoded, slices[i]), "") << to_string(slices[i].fit.discrete_div_scheme);
   }
 }
 

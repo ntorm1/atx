@@ -305,7 +305,14 @@ struct KernelRow {
     const auto conv = american_discrete_div_converged_price(c.S, c.K, c.T, c.sigma, c.r, c.q,
                                                             c.side, c.divs,
                                                             ExerciseStyle::American, ws);
-    EXPECT_TRUE(conv.has_value()) << c.id;
+    // Lane D1 (L3f review m1): the comparator refuses a cash-dominated contract
+    // (OutOfRange; kernel header section 2). Of this matrix only E64 is one (cash 64 %
+    // of spot 5.9 days out, 40 sd); its `refined cmp` column is then n/a.
+    const bool cash_dominated = c.id.rfind("E64", 0) == 0;
+    EXPECT_EQ(conv.has_value(), !cash_dominated) << c.id;
+    if (!conv && cash_dominated) {
+      EXPECT_EQ(conv.error().code(), atx::vol::ErrorCode::OutOfRange) << c.id;
+    }
     if (conv) {
       k.pcmp = conv->price;
       k.cmp_claim = std::abs(conv->fine - conv->coarse);

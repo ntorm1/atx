@@ -62,6 +62,10 @@ set(ATX_VOL_PRICING_SOURCES
     # 2026-10-20): prices through the seam src/pricing/american_discrete_div_detail.hpp;
     # public header api/pricing/american_discrete_div_kernel.hpp (Tier-B).
     src/pricing/american_discrete_div_kernel.cpp
+    # The schedule-grouped batch of the D1 production path (lane D1, 2026-10-22):
+    # routes and step maps once per (schedule, T) group, then allocation-free loops.
+    # Public header api/pricing/american_discrete_div_batch.hpp (Tier-B).
+    src/pricing/american_discrete_div_batch.cpp
     # The INDEPENDENT cash-dividend reference (lane D0, 2026-10-22): event-aligned
     # PDE + ex-date-aligned trinomial lattice with stated uncertainty. Library-private
     # header src/pricing/american_discrete_div_reference.hpp; selected by no default.
@@ -999,6 +1003,12 @@ if(ATX_BUILD_TOOLS)
     # the continuous-carry price error at the served IV.
     add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)
     target_link_libraries(atx-vol-iv-comparator PRIVATE atx-vol-bench-clocks atx::vol
+        atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # Production cash-dividend latency / coverage (lane D1, vol-sota r6): per-contract
+    # cold price, prepared price / IV / Greek bundle and per-group setup on B0's clocks
+    # (the setup charged to the family_build_validation stage).
+    add_executable(atx-vol-ddiv-latency tools/ddiv_latency_main.cpp)
+    target_link_libraries(atx-vol-ddiv-latency PRIVATE atx-vol-bench-clocks atx::vol
         atx::core atx_warnings nlohmann_json::nlohmann_json)
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
         tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp

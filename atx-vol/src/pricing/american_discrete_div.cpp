@@ -231,6 +231,141 @@ void splice_dividend(std::span<double> level, std::span<double> value, std::span
   }
 }
 
+// The four-point Lagrange stencil of the CRR node set (lane D1). Adjacent nodes
+// of one step stand in the ratio u^2 (u * d == 1), so relative to a stencil's
+// SECOND node its four nodes sit at {u^-2, 1, u^2, u^4} wherever the stencil is:
+// the four basis denominators are constants of the lattice, computed once per
+// rollback, and a node's weights cost one division (its position) and twelve
+// multiplications.
+struct CubicStencil {
+  double a = 0.0; // u^-2
+  double b = 0.0; // u^2
+  double c = 0.0; // u^4
+  double inv0 = 0.0;
+  double inv1 = 0.0;
+  double inv2 = 0.0;
+  double inv3 = 0.0;
+};
+
+[[nodiscard]] CubicStencil cubic_stencil(double u) noexcept {
+  CubicStencil s;
+  s.b = u * u;
+  s.a = 1.0 / s.b;
+  s.c = s.b * s.b;
+  s.inv0 = 1.0 / ((s.a - 1.0) * (s.a - s.b) * (s.a - s.c));
+  s.inv1 = 1.0 / ((1.0 - s.a) * (1.0 - s.b) * (1.0 - s.c));
+  s.inv2 = 1.0 / ((s.b - s.a) * (s.b - 1.0) * (s.b - s.c));
+  s.inv3 = 1.0 / ((s.c - s.a) * (s.c - 1.0) * (s.c - s.b));
+  return s;
+}
+
+// When an ex-date is rounded onto a step, the step time t_k sits
+// `shift = tau - t_k` off the true ex-date (|shift| <= dt / 2). The exercise
+// rights at that step are then re-timed (lane D1): exercising cum-dividend at
+// tau-, or post-dividend at tau+, is a payoff received `shift` from t_k, worth
+// sgn (x e^{-q shift} - K e^{-r shift}) at t_k for the level x it is struck
+// against (the cum level, or the post level once the cash is forward-aligned).
+// Exercising AT t_k is also a right — cum when t_k precedes the ex-date (shift >
+// 0), post when it follows it (shift < 0). The historical test (both levels at
+// t_k, undiscounted) misprices the call's pre-dividend exercise by about
+// K r |shift|, which is what made the A-group calls of the D0 matrix a step
+// function of the ex-date (doc section 9 item 3).
+// An offset below this fraction of a step is an ex-date ON the step.
+constexpr double kShiftOnStepRel = 1.0e-9;
+
+struct ExStepTiming {
+  double shift = 0.0;  // tau - t_k
+  double stock = 1.0;  // exp(-q shift)
+  double strike = 1.0; // exp(-r shift)
+};
+
+[[nodiscard]] inline double retimed_exercise(double sgn, double level, double strike,
+                                             const ExStepTiming &timing) noexcept {
+  return std::max(sgn * (level * timing.stock - strike * timing.strike), 0.0);
+}
+
+// The production splice (lane D1). The grid-bottom rule (quadratic extrapolation
+// through the three lowest nodes, no clamp), the top clamp, the zero floor and
+// the two-pointer bracket sweep are the linear splice's, unchanged; two things
+// differ.
+//  * Inside the grid, `cubic != nullptr` (and four nodes) reads the continuation
+//    at `post` off the cubic through the four nodes around it, shifted inward at
+//    either edge, instead of the chord of the two that bracket it. THIS IS THE
+//    SPLICE DEFECT D0 MEASURED: the chord of a CONVEX curve lies above it by
+//    (x - x_j)(x_{j+1} - x) V'' / 2, so the linear splice adds a positive bias of
+//    order h^2 V'' = O(1/N) at EVERY ex-date and the biases add event by event
+//    (+0.017 USD per quarterly 1-USD event at 301 steps, kernel header); the
+//    cubic's error is O(h^4) on smooth data.
+//  * The exercise test is re-timed (`ExStepTiming`, above) unless shift == 0.
+void splice_production(std::span<double> level, std::span<double> value,
+                       std::span<double> scratch, std::size_t last, double amount, double sgn,
+                       double strike, bool american, const CubicStencil *cubic,
+                       const ExStepTiming &timing) noexcept {
+  const double lo = level[0];
+  const double hi = level[last];
+  const double lo_slope = (last >= 1U) ? ((value[1] - value[0]) / (level[1] - level[0])) : 0.0;
+  double lo_curv = 0.0;
+  double lo_next = lo;
+  if (last >= 2U) {
+    const double d12 = (value[2] - value[1]) / (level[2] - level[1]);
+    lo_curv = (d12 - lo_slope) / (level[2] - level[0]);
+    lo_next = level[1];
+  }
+  const bool use_cubic = (cubic != nullptr) && last >= 3U;
+  std::size_t j = 0;
+  for (std::size_t i = 0; i <= last; ++i) {
+    const double post = std::max(level[i] - amount, 0.0);
+    double cont = 0.0;
+    if (post <= lo) {
+      cont = value[0] + lo_slope * (post - lo) + lo_curv * (post - lo) * (post - lo_next);
+    } else if (post >= hi) {
+      cont = value[last];
+    } else {
+      while (j + 1U <= last && level[j + 1U] <= post) {
+        ++j;
+      }
+      if (use_cubic) {
+        // Stencil m .. m + 3 around the bracket [j, j + 1], clamped into the grid.
+        const std::size_t m = std::min((j >= 1U) ? j - 1U : 0U, last - 3U);
+        const CubicStencil &st = *cubic;
+        const double t = post / level[m + 1U];
+        const double ta = t - st.a;
+        const double t1 = t - 1.0;
+        const double tb = t - st.b;
+        const double tc = t - st.c;
+        cont = value[m] * (t1 * tb * tc * st.inv0) + value[m + 1U] * (ta * tb * tc * st.inv1) +
+               value[m + 2U] * (ta * t1 * tc * st.inv2) +
+               value[m + 3U] * (ta * t1 * tb * st.inv3);
+        // NO zero floor here, deliberately (review-D1 minor, measured). Next to a
+        // zero region (a payoff kink a step or two from expiry) the cubic's basis
+        // overshoots below 0, but the cubic is linear in the values, so the lattice
+        // keeps European put-call parity exactly; a floor at 0 breaks it, and
+        // against D0's PDE it raised the European error in 30 of 32 near-expiry
+        // cases (D1-20261023-fix1 diag-scratch-eu-*.log). American rollbacks are
+        // floored by the exercise max below.
+      } else {
+        const double slope = (value[j + 1U] - value[j]) / (level[j + 1U] - level[j]);
+        cont = slope * (post - level[j]) + value[j];
+      }
+    }
+    if (american) {
+      if (timing.shift == 0.0) {
+        cont = std::max({cont, exercise_value(sgn, post, strike),
+                         exercise_value(sgn, level[i], strike)});
+      } else {
+        const double now = (timing.shift > 0.0) ? exercise_value(sgn, level[i], strike)
+                                                : exercise_value(sgn, post, strike);
+        cont = std::max({cont, now, retimed_exercise(sgn, level[i], strike, timing),
+                         retimed_exercise(sgn, post, strike, timing)});
+      }
+    }
+    scratch[i] = cont;
+  }
+  for (std::size_t i = 0; i <= last; ++i) {
+    value[i] = scratch[i];
+  }
+}
+
 // BBS step N-1: the analytic continuation replaces the rollback of the kinked
 // payoff. Cash landing on THIS step is applied at each node's own post-dividend
 // level — the continuation is known in closed form at any level, so this splice
@@ -437,6 +572,252 @@ Result<LatticeOutcome> ddiv_detail::run_lattice(double S, double K, double T, do
     // shared S*u - S*d so the expression stays honest about rounding.
     const double delta_3 = (value_3[2] - value_3[1]) / (level_3[2] - level_3[1]);
     out.charm = (delta_3 - out.delta) / (2.0 * dt);
+  }
+  return Ok(out);
+}
+
+namespace {
+
+// Three nodes of one layer around its centre node `c` (level S at layers 0 and 2
+// of a pre-stepped tree): the t-local delta, and gamma from the two slopes.
+struct Triple {
+  double level[3] = {0.0, 0.0, 0.0};
+  double value[3] = {0.0, 0.0, 0.0};
+};
+
+[[nodiscard]] Triple capture_triple(std::span<const double> level, std::span<const double> value,
+                                    std::size_t c) noexcept {
+  Triple t;
+  for (std::size_t i = 0; i < 3U; ++i) {
+    t.level[i] = level[c - 1U + i];
+    t.value[i] = value[c - 1U + i];
+  }
+  return t;
+}
+
+[[nodiscard]] double triple_delta(const Triple &t) noexcept {
+  return (t.value[2] - t.value[0]) / (t.level[2] - t.level[0]);
+}
+
+[[nodiscard]] double triple_gamma(const Triple &t) noexcept {
+  const double slope_up = (t.value[2] - t.value[1]) / (t.level[2] - t.level[1]);
+  const double slope_dn = (t.value[1] - t.value[0]) / (t.level[1] - t.level[0]);
+  return (slope_up - slope_dn) / (0.5 * (t.level[2] - t.level[0]));
+}
+
+// The terminal layer of the production rollback: the payoff at each node's post
+// level, plus the cum-dividend right on an expiry ex-step — re-timed when the
+// ex-date was rounded onto expiry from before it (shift < 0; ExStepTiming).
+void production_terminal(std::span<const double> level, std::span<double> value, double amount,
+                         double sgn, double strike, bool american, const ExStepTiming &timing) {
+  const bool cum = american && (amount > 0.0);
+  for (std::size_t i = 0; i < level.size(); ++i) {
+    const double post = std::max(level[i] - amount, 0.0);
+    value[i] = exercise_value(sgn, post, strike);
+    if (cum) {
+      value[i] = (timing.shift == 0.0)
+                     ? std::max(value[i], exercise_value(sgn, level[i], strike))
+                     : std::max({value[i], retimed_exercise(sgn, level[i], strike, timing),
+                                 retimed_exercise(sgn, post, strike, timing)});
+    }
+  }
+}
+
+} // namespace
+
+// The production step map (seam header). With at least four pre-steps the t = 0
+// layer has the five nodes a splice needs, so an ex-date nearer 0 than half a step
+// is spliced there instead of being pushed onto step 1. Two events on one step
+// add, with their offsets amount-weighted.
+bool ddiv_detail::build_production_step_map(double T, double r, double q,
+                                            std::span<const CashDividend> dividends, int steps,
+                                            const ProductionSpec &spec,
+                                            std::span<double> step_amount,
+                                            std::span<double> step_shift) noexcept {
+  const double dt = T / static_cast<double>(steps);
+  std::fill(step_amount.begin(), step_amount.end(), 0.0);
+  std::fill(step_shift.begin(), step_shift.end(), 0.0);
+  const double first_step = (spec.pre_steps >= 4) ? 0.0 : 1.0;
+  bool any_dividend = false;
+  const double tau_at_expiry = T * (1.0 + kTauAtExpiryRelTol);
+  for (std::size_t e = 0; e < dividends.size(); ++e) {
+    const double tau = dividends[e].tau - spec.tau_shift;
+    const double cash = (e == spec.bump_index) ? spec.bump_amount : dividends[e].amount;
+    if (!(tau > 0.0) || tau > tau_at_expiry || !(cash > 0.0)) {
+      continue;
+    }
+    const double nearest = std::nearbyint(tau / dt);
+    const double placed = std::clamp(nearest, first_step, static_cast<double>(steps));
+    // An ex-date ON a step (tau == k dt up to the rounding of k * (T / N)) has no
+    // offset: it must not take the re-timed branch on a 1e-16 residue.
+    const double raw_shift = std::min(tau, T) - placed * dt;
+    const double shift = (std::abs(raw_shift) <= kShiftOnStepRel * dt) ? 0.0 : raw_shift;
+    const double amount = spec.align_forward ? cash * std::exp(-(r - q) * shift) : cash;
+    const std::size_t k = static_cast<std::size_t>(placed);
+    const double before = step_amount[k];
+    step_shift[k] = (before * step_shift[k] + amount * shift) / (before + amount);
+    step_amount[k] = before + amount;
+    any_dividend = true;
+  }
+  return any_dividend;
+}
+
+// The D1 production rollback (seam header). Same tree, same probabilities, same
+// final step and same bracket sweep as `run_lattice`; the node set is widened by
+// `pre_steps` (the tree is rooted `pre_steps` steps before valuation, so layer k
+// holds k + pre_steps + 1 nodes and the price is the centre node of layer 0).
+Result<LatticeOutcome>
+ddiv_detail::run_production_lattice(double S, double K, double T, double sigma, double r,
+                                    double q, Side side, std::span<const CashDividend> dividends,
+                                    int steps, ExerciseStyle exercise, const ProductionSpec &spec,
+                                    LatticeBuffers &buffers) {
+  const int n_steps = steps;
+  const int pre = spec.pre_steps;
+  const std::size_t n_layers = static_cast<std::size_t>(n_steps) + 1U;
+  const std::size_t n_nodes = n_layers + static_cast<std::size_t>(pre);
+  const bool american = (exercise == ExerciseStyle::American);
+  const double sgn = payoff_sign(side);
+
+  const double dt = T / static_cast<double>(n_steps);
+  const double sqrt_dt = std::sqrt(dt);
+  const double u = std::exp(sigma * sqrt_dt);
+  const double d = 1.0 / u;
+  const double disc = std::exp(-r * dt);
+  const double p = (std::exp((r - q) * dt) - d) / (u - d);
+  if (!(p > 0.0) || !(p < 1.0)) {
+    return Err(ErrorCode::OutOfRange,
+               "CRR risk-neutral probability left (0, 1); the step is too coarse for this "
+               "(r - q, sigma, T) — raise `steps`");
+  }
+  const double pu = disc * p;
+  const double pd = disc * (1.0 - p);
+
+  // Step map and per-step ex-date offset (`build_production_step_map`), or the
+  // caller's prebuilt one (one per batch group, lane D1).
+  std::span<const double> step_amount;
+  std::span<const double> step_shift;
+  bool any_dividend = false;
+  if (spec.prebuilt != nullptr) {
+    if (spec.prebuilt->amount.size() != n_layers || spec.prebuilt->shift.size() != n_layers) {
+      return Err(ErrorCode::InvalidArgument, "production lattice: prebuilt step map size");
+    }
+    step_amount = spec.prebuilt->amount;
+    step_shift = spec.prebuilt->shift;
+    any_dividend = spec.prebuilt->any;
+  } else {
+    buffers.step_amount.resize(n_layers);
+    buffers.step_shift.resize(n_layers);
+    const std::span<double> amount(buffers.step_amount.data(), n_layers);
+    const std::span<double> shift(buffers.step_shift.data(), n_layers);
+    any_dividend = build_production_step_map(T, r, q, dividends, n_steps, spec, amount, shift);
+    step_amount = amount;
+    step_shift = shift;
+  }
+  const auto timing_at = [&](std::size_t k) noexcept {
+    ExStepTiming t;
+    if (spec.align_exercise && step_shift[k] != 0.0) {
+      t.shift = step_shift[k];
+      t.stock = std::exp(-q * t.shift);
+      t.strike = std::exp(-r * t.shift);
+    }
+    return t;
+  };
+
+  // Terminal levels S * u^(2i - N - pre), ascending in i.
+  buffers.level.resize(n_nodes);
+  const std::span<double> level(buffers.level.data(), n_nodes);
+  for (std::size_t i = 0; i < n_nodes; ++i) {
+    const int rung = 2 * static_cast<int>(i) - n_steps - pre;
+    level[i] = S * std::exp(sigma * sqrt_dt * static_cast<double>(rung));
+  }
+  buffers.value.resize(n_nodes);
+  const std::span<double> value(buffers.value.data(), n_nodes);
+  const double terminal_amount = step_amount[static_cast<std::size_t>(n_steps)];
+  production_terminal(level, value, terminal_amount, sgn, K, american,
+                      timing_at(static_cast<std::size_t>(n_steps)));
+
+  std::span<double> scratch;
+  if (any_dividend) {
+    if (buffers.scratch.size() < n_nodes) {
+      buffers.scratch.resize(n_nodes);
+    }
+    scratch = std::span<double>(buffers.scratch.data(), n_nodes);
+  }
+  const FinalStepValue final_step{K,      terminal_amount, dt,   sigma, std::exp((r - q) * dt),
+                                  disc,   side,            american};
+  const bool cubic = (spec.splice == SpliceInterp::Cubic);
+  const CubicStencil stencil = cubic ? cubic_stencil(u) : CubicStencil{};
+
+  // Greek captures. pre == 0: the historical step-1 / step-2 / step-3 stencils.
+  // pre >= 2: the three nodes around S on layer 2 (theta, charm) and, after the
+  // loop, on layer 0 (delta, gamma at t = 0).
+  const std::size_t centre0 = static_cast<std::size_t>(pre / 2);
+  Triple layer2;
+  double level_1[2] = {0.0, 0.0};
+  double value_1[2] = {0.0, 0.0};
+  double level_3[4] = {0.0, 0.0, 0.0, 0.0};
+  double value_3[4] = {0.0, 0.0, 0.0, 0.0};
+
+  for (int k = n_steps - 1; k >= 0; --k) {
+    const std::size_t step = static_cast<std::size_t>(k);
+    const std::size_t last = step + static_cast<std::size_t>(pre);
+    for (std::size_t i = 0; i <= last; ++i) {
+      level[i] *= u;
+    }
+    const double amount = step_amount[step];
+    if (spec.bbs && k == n_steps - 1) {
+      bbs_final_step(level, value, last, amount, final_step, sgn, K, american);
+    } else {
+      for (std::size_t i = 0; i <= last; ++i) {
+        value[i] = pu * value[i + 1U] + pd * value[i];
+      }
+      if (amount > 0.0) {
+        const ExStepTiming timing = timing_at(step);
+        if (!cubic && timing.shift == 0.0) {
+          splice_dividend(level, value, scratch, last, amount, sgn, K, american);
+        } else {
+          splice_production(level, value, scratch, last, amount, sgn, K, american,
+                            cubic ? &stencil : nullptr, timing);
+        }
+      } else if (american) {
+        for (std::size_t i = 0; i <= last; ++i) {
+          value[i] = std::max(value[i], exercise_value(sgn, level[i], K));
+        }
+      }
+    }
+    if (pre == 0) {
+      if (k == 3) {
+        for (std::size_t i = 0; i < 4U; ++i) {
+          level_3[i] = level[i];
+          value_3[i] = value[i];
+        }
+      } else if (k == 2) {
+        layer2 = capture_triple(level, value, 1U);
+      } else if (k == 1) {
+        for (std::size_t i = 0; i < 2U; ++i) {
+          level_1[i] = level[i];
+          value_1[i] = value[i];
+        }
+      }
+    } else if (k == 2) {
+      layer2 = capture_triple(level, value, centre0 + 1U);
+    }
+  }
+
+  LatticeOutcome out;
+  out.price = value[centre0];
+  if (pre == 0) {
+    out.delta = (value_1[1] - value_1[0]) / (level_1[1] - level_1[0]);
+    out.gamma = triple_gamma(layer2);
+    out.theta = (layer2.value[1] - out.price) / (2.0 * dt);
+    const double delta_3 = (value_3[2] - value_3[1]) / (level_3[2] - level_3[1]);
+    out.charm = (delta_3 - out.delta) / (2.0 * dt);
+  } else {
+    const Triple layer0 = capture_triple(level, value, centre0);
+    out.delta = triple_delta(layer0);
+    out.gamma = triple_gamma(layer0);
+    out.theta = (layer2.value[1] - out.price) / (2.0 * dt);
+    out.charm = (triple_delta(layer2) - out.delta) / (2.0 * dt);
   }
   return Ok(out);
 }
@@ -700,6 +1081,8 @@ ddiv_detail::run_single_rollback(DiscreteDivScheme scheme, double S, double K, d
                                 buffers);
   case DiscreteDivScheme::SplicedBbsr:
     break; // two rollbacks: `richardson_price`
+  case DiscreteDivScheme::SplicedCubic:
+    break; // a routed lattice: `spliced_cubic_price`
   }
   return Err(ErrorCode::InvalidArgument, "not a single-rollback lattice scheme");
 }
@@ -744,6 +1127,8 @@ const char *to_string(DiscreteDivScheme value) noexcept {
     return "escrowed-bbs";
   case DiscreteDivScheme::EscrowedLeisenReimer:
     return "escrowed-lr";
+  case DiscreteDivScheme::SplicedCubic:
+    return "spliced-cubic";
   }
   return "unknown";
 }
@@ -765,6 +1150,10 @@ Result<double> american_discrete_div_price(double S, double K, double T, double 
   LatticeBuffers buffers;
   if (scheme == DiscreteDivScheme::SplicedBbsr) {
     return richardson_price(S, K, T, sigma, r, q, side, dividends, steps, exercise, buffers);
+  }
+  if (scheme == DiscreteDivScheme::SplicedCubic) {
+    return ddiv_detail::spliced_cubic_price(S, K, T, sigma, r, q, side, dividends, steps,
+                                            exercise, buffers);
   }
   const Result<LatticeOutcome> out =
       run_single_rollback(scheme, S, K, T, sigma, r, q, side, dividends, steps, exercise, buffers);

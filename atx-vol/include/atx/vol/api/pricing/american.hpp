@@ -1876,6 +1876,23 @@ inline constexpr int kDiscreteDivMaxSteps = 20001;
 //         under them reports the ESCROWED stock's volatility (the stock net of
 //         the cash in the option's life), not a spot volatility: comparable
 //         with another escrowed fit, not one for one with a spot-vol mark.
+//   SplicedCubic  (lane D1, opt-in; policy `dividend_lattice: "spliced-cubic"`)
+//         The SAME model as SplicedCrr (spot-shift V&N, liquidator floor,
+//         cum/post exercise) priced on the D1 production lattice's Standard
+//         route (api/pricing/american_discrete_div_kernel.hpp section 4, where
+//         every correction is measured against the independent reference): the
+//         CUBIC splice in place of the linear one — the linear splice's chord
+//         overprices a convex continuation at every ex-date, about 0.017 USD per
+//         quarterly 1-USD event at 301 steps, which is the -2.8 to -4.4 IV bp per
+//         event D0 measured — plus forward-preserving re-dating of each ex-date
+//         onto its step, cum/post exercise re-timed to the true ex-date, and
+//         pre-steps sized per schedule (an early ex-date gets the nodes a splice
+//         needs; delta and gamma are read at t = 0). `steps` is the BASE count;
+//         the route raises it only for long event chains
+//         (`kDiscreteDivStepsPerEvent` x in-life events when larger). NOT
+//         bit-identical to SplicedCrr wherever cash lands inside the life;
+//         `steps >= 4`. Removing the policy key (or naming "spliced") is the kill
+//         switch.
 //
 // The scheme is a PRICE option: `american_discrete_div_greeks`, the greek bundle
 // and the dividend sensitivities keep the spliced CRR rollback. Every scheme
@@ -1887,15 +1904,17 @@ enum class DiscreteDivScheme : std::uint8_t {
   SplicedBbsr,
   EscrowedBbs,
   EscrowedLeisenReimer,
+  SplicedCubic,
 };
 
 // Stable names for provenance and policy files: "spliced", "spliced-bbs",
-// "spliced-bbsr", "escrowed-bbs", "escrowed-lr".
+// "spliced-bbsr", "escrowed-bbs", "escrowed-lr", "spliced-cubic".
 [[nodiscard]] const char *to_string(DiscreteDivScheme value) noexcept;
 
 // True when `scheme` names a scheme and `steps` can carry it: Richardson needs a
-// coarse lattice of at least one step, so `steps >= 2`. The step RANGE itself
-// is `american_discrete_div_price`'s own validation.
+// coarse lattice of at least one step, so `steps >= 2`; the D1 production
+// lattice reads its greeks off steps 0..3, so SplicedCubic needs `steps >= 4`.
+// The step RANGE itself is `american_discrete_div_price`'s own validation.
 [[nodiscard]] constexpr bool discrete_div_scheme_admits(DiscreteDivScheme scheme,
                                                         int steps) noexcept {
   switch (scheme) {
@@ -1906,6 +1925,8 @@ enum class DiscreteDivScheme : std::uint8_t {
     return steps >= 1;
   case DiscreteDivScheme::SplicedBbsr:
     return steps >= 2;
+  case DiscreteDivScheme::SplicedCubic:
+    return steps >= 4;
   }
   return false;
 }

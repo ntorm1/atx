@@ -146,6 +146,28 @@ add_test(NAME atx-vol-discrete-div-reference-matrix COMMAND atx-vol-discrete-div
 set_tests_properties(atx-vol-discrete-div-reference-matrix PROPERTIES
     LABELS "atx_vol_slow" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}" TIMEOUT 1200)
 
+# The PRODUCTION cash-dividend path (lane D1 2026-10-22): the cubic splice, the
+# event-adaptive route, schedule-grouped batching and the event-aware sensitivities
+# (api/pricing/american_discrete_div_kernel.hpp, american_discrete_div_batch.hpp). One
+# focused executable, two ctest cases: the fast suites, and the slow comparison
+# against D0's independent reference (suite also in ATX_VOL_SLOW_FILTER). The
+# allocation test replaces global operator new through support/alloc_counter.cpp.
+add_executable(atx-vol-discrete-div-production-tests
+    american_discrete_div_production_test.cpp american_discrete_div_production_alloc_test.cpp
+    american_discrete_div_production_matrix_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-discrete-div-production-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-production-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-discrete-div-production COMMAND atx-vol-discrete-div-production-tests
+    "--gtest_filter=-DiscreteDivProductionMatrix.*")
+set_tests_properties(atx-vol-discrete-div-production PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+add_test(NAME atx-vol-discrete-div-production-matrix
+    COMMAND atx-vol-discrete-div-production-tests "--gtest_filter=DiscreteDivProductionMatrix.*")
+set_tests_properties(atx-vol-discrete-div-production-matrix PROPERTIES
+    LABELS "atx_vol_slow" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}" TIMEOUT 1200)
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)
@@ -800,7 +822,7 @@ gtest_discover_tests(atx-vol-discrete-div-tests
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*:DiscreteDivReferenceMatrix.*:AmericanFamilyRootAudit.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*:DiscreteDivReferenceMatrix.*:AmericanFamilyRootAudit.*:DiscreteDivProductionMatrix.*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a

@@ -113,6 +113,11 @@ enum class DiscreteDivCashExcess : std::uint8_t {
 enum class DiscreteDivExDateGrid : std::uint8_t {
   NearestStep = 0, // round-half-to-even onto a step of the UNIFORM grid, clamped
                    // into [1, N]; an ex-date is moved by up to half a step
+  // Lane D1 (SplicedCubic / the production routes, section 4): the same rounding
+  // (onto step 0 too when the tree carries >= 4 pre-steps), with the cash scaled
+  // so the move changes no forward and the cum / post exercise rights valued at
+  // the TRUE ex-date.
+  NearestStepRetimed = 1,
 };
 
 struct DiscreteDivConvention {
@@ -142,6 +147,12 @@ discrete_div_convention(DiscreteDivScheme scheme) noexcept {
                                  .cash_excess = DiscreteDivCashExcess::Refused,
                                  .ex_dates = DiscreteDivExDateGrid::NearestStep,
                                  .spot_volatility = false};
+  case DiscreteDivScheme::SplicedCubic:
+    return DiscreteDivConvention{.process = DiscreteDivProcess::SpotShift,
+                                 .cum_and_post_exercise = true,
+                                 .cash_excess = DiscreteDivCashExcess::Liquidator,
+                                 .ex_dates = DiscreteDivExDateGrid::NearestStepRetimed,
+                                 .spot_volatility = true};
   }
   return DiscreteDivConvention{};
 }
@@ -166,11 +177,22 @@ discrete_div_convention(DiscreteDivScheme scheme) noexcept {
 // between calls that a caller can observe — every rollback re-initialises the rows
 // it reads — so reusing it across contracts, schemes and step counts is the
 // intended use.
+//
+// PRODUCTION SIZE (lane D1). The D1 lattice (section 4; scheme SplicedCubic) runs
+// `steps + pre_steps + 1` nodes and one more row, the per-step ex-date offset. The
+// one-argument constructor reserves exactly what it always did (the four rows
+// above), so a workspace built by it REFUSES a production lattice (InvalidArgument)
+// rather than allocate; `DiscreteDivWorkspace(max_steps, max_pre_steps)` reserves
+// the production rows too: 4 rows x (max_steps + max_pre_steps + 2) doubles plus
+// the offset row x (max_steps + 2) — 14.6 KB at (301, 64), 99.3 KB at (2401, 64).
 class DiscreteDivWorkspace {
 public:
   // `max_steps` is clamped into [1, kDiscreteDivMaxSteps]; the one allocation this
   // class ever makes happens here.
   explicit DiscreteDivWorkspace(int max_steps = kDiscreteDivDefaultSteps);
+  // Production-sized (above): `max_pre_steps` is clamped into [0, 64]
+  // (kDiscreteDivMaxPreSteps, section 4).
+  DiscreteDivWorkspace(int max_steps, int max_pre_steps);
   ~DiscreteDivWorkspace();
   DiscreteDivWorkspace(DiscreteDivWorkspace &&) noexcept;
   DiscreteDivWorkspace &operator=(DiscreteDivWorkspace &&) noexcept;
@@ -178,9 +200,15 @@ public:
   DiscreteDivWorkspace &operator=(const DiscreteDivWorkspace &) = delete;
 
   [[nodiscard]] int max_steps() const noexcept { return max_steps_; }
-  // True when a lattice of `steps` steps (any scheme) runs allocation-free here.
+  // -1 for a workspace built without the production rows.
+  [[nodiscard]] int max_pre_steps() const noexcept { return max_pre_steps_; }
+  // True when a lattice of `steps` steps (any historical scheme) runs allocation-free here.
   [[nodiscard]] bool admits(int steps) const noexcept {
     return buffers_ != nullptr && steps >= 1 && steps <= max_steps_;
+  }
+  // True when a D1 production lattice of (steps, pre_steps) runs allocation-free here.
+  [[nodiscard]] bool admits_production(int steps, int pre_steps) const noexcept {
+    return admits(steps) && pre_steps >= 0 && pre_steps <= max_pre_steps_;
   }
   // Heap bytes the rows reserve (capacity, not size).
   [[nodiscard]] std::size_t reserved_bytes() const noexcept;
@@ -191,6 +219,7 @@ public:
 private:
   std::unique_ptr<ddiv_detail::LatticeBuffers> buffers_;
   int max_steps_ = 0;
+  int max_pre_steps_ = -1;
 };
 
 // `american_discrete_div_price` (american.hpp) on a caller-owned workspace.
@@ -242,6 +271,15 @@ struct DiscreteDivConverged {
 
 // Needs `workspace.admits(kDiscreteDivConvergedSteps)`; same error contract as the
 // price overload. Two rollbacks (fine first, coarse second, one workspace).
+//
+// REFUSES (OutOfRange) a CASH-DOMINATED contract (lane D1, L3f review m1, D0 row
+// E64): one whose spot, after the cash paid up to and including an ex-date tau in
+// (0, T], sits at or below S e^{-6 sigma sqrt(tau)} — beyond the 6-sd band of log
+// spot at that date (or at or below zero). Both lattices then read the spot's
+// post-dividend continuation off the grid-bottom extrapolation, not off the grid,
+// and `fine - coarse` stops being an uncertainty: on E64 (cash 64 % of spot 5.9
+// days out, 40 sd) the pair was +2.61 USD off the independent reference while
+// claiming 1.0. Every other row of D0's 50-row matrix is at most 2.5 sd (B1).
 [[nodiscard]] Result<DiscreteDivConverged>
 american_discrete_div_converged_price(double S, double K, double T, double sigma, double r,
                                       double q, Side side, std::span<const CashDividend> dividends,
@@ -378,5 +416,311 @@ american_discrete_div_implied_vol(double price, double S, double K, double T, do
                                   Side side, std::span<const CashDividend> dividends, int steps,
                                   DiscreteDivScheme scheme, const DiscreteDivIvOpts &opts,
                                   DiscreteDivWorkspace &workspace);
+
+// ── 4. The D1 production path (lane D1, vol-sota r5, 2026-10-22) ────────────
+//
+// THE SPLICE DEFECT (D0 measured it; this lane identified and fixed it). Against
+// the independent reference (src/pricing/american_discrete_div_reference.hpp,
+// docs/american-cash-dividend-reference.md) the 301-step SplicedCrr overprices
+// multi-event chains by 2.8 to 4.4 IV bp PER EVENT. The cause is the splice's
+// LINEAR interpolation: at an ex-date the continuation is re-read at the
+// post-dividend levels off the chord between two nodes, and the chord of a convex
+// curve lies above it by (x - x_j)(x_{j+1} - x) V''/2 — a positive bias of order
+// h^2 V'' = O(1/N) at every ex-date, which the events add up. Measured on D0's
+// 12-event LEAPS truncated to its first k events (doc section 11): the error grows
+// +0.0167 USD per event under the linear splice and is flat under a cubic one.
+//
+// THE PRODUCTION LATTICE (src/pricing/american_discrete_div_detail.hpp,
+// `run_production_lattice`): the same tree and model as SplicedCrr with
+//   1. the CUBIC splice (four-point Lagrange on the same geometric nodes; O(h^4));
+//   2. forward-preserving re-dating: cash rounded onto step t_k is scaled by
+//      exp(-(r - q)(tau - t_k)), so the rounding moves no forward;
+//   3. re-timed exercise at an ex-step: cum / post exercise valued at the TRUE
+//      ex-date (sgn (x e^{-q s} - K e^{-r s}), s = tau - t_k), plus exercise at
+//      t_k itself on the side of the ex-date t_k actually sits;
+//   4. PRE-STEPS: the tree is rooted `pre_steps` steps before valuation, so the
+//      t = 0 layer has pre_steps + 1 nodes centred on S. An ex-date in the first
+//      steps then has the nodes a splice needs (the first-step ex-date never
+//      converged on the historical lattice, LEDGER L522; D0 rows B1p / B1c,
+//      +19.3 / +17.0 bp at 301 steps), and delta / gamma are read AT t = 0.
+//
+// THE ROUTE (`discrete_div_lattice_route`, the documented rule; every row cited is
+// a D0 matrix row, re-scored in doc section 11):
+//   * kill switch (`opts.kill_switch`): the historical SplicedCrr at base_steps,
+//     bit-identical to `american_discrete_div_price` (method HistoricalSpliced);
+//   * Standard accuracy: method CubicCrr. steps = max(base_steps,
+//     kDiscreteDivStepsPerEvent x in-life events), capped at
+//     kDiscreteDivMaxRouteSteps (flag StepsCapped). The per-event coefficient is
+//     the residual first-order term the cubic lattice keeps per event (the
+//     exercise-boundary kink next to each ex-date; D12p / C8p truncation study):
+//     25 steps per event hold it under 0.5 bp of IV, so every D0 chain (<= 12
+//     events) stays at 301 — no global raise.
+//   * pre_steps = the smallest even count >= 2 that puts the post-dividend level of
+//     every node inside the 6-sd band of every in-life ex-step at or above the
+//     grid's second node, evaluated at kDiscreteDivRouteSigma (the route does not
+//     depend on the contract's sigma, so a root find and a batch group see ONE
+//     discretisation); capped at kDiscreteDivMaxPreSteps, beyond which the route
+//     says GridBottomExtrapolated and reports the depth. The count, and so the
+//     flag, is a statement for sigma >= kDiscreteDivRouteSigma: below it the
+//     cash spans more rungs of the contract's tree than of the route's, so a band
+//     node can read the extrapolated grid bottom with the flag clear. The cap is
+//     1024: D0 row
+//     E64 (cash 64 % of spot, 5.9 days out; price-only) asks for 334 / 688 / 940
+//     pre-steps at 301 / 1201 / 2401 steps, and at the checkpoint's cap of 64 its
+//     band read below the grid (Refined +1.28 USD on E64p). What still exceeds 1024
+//     is cash beyond the band (a post-dividend level <= 0 for the band's lowest
+//     node), which no pre-step count reaches.
+//   * Refined accuracy: method CubicBbsRichardson — the BBS final step plus the
+//     same-parity Richardson pair (N, (N + 1) / 2), N = kDiscreteDivRefinedSteps
+//     (or the Standard rule's count if larger): the reference-grade route. EXCEPT
+//     when an in-life ex-date falls in the last two COARSE steps, (T - 2 T / M, T)
+//     with M = (N + 1) / 2: the coarse lattice's BBS final step then spans the
+//     ex-date while the fine lattice splices it, the pair is inconsistent (D0 row
+//     B2c: +1.885 bp), and the route runs method CubicCrr at
+//     kDiscreteDivNearExpirySteps instead (flag NearExpiryExDate). IV bp by
+//     inversion, the convention of the +1.885 above: B2c +0.114, B2p -0.268
+//     (doc section 11.4).
+// A route is a pure function of (S, T, schedule, opts): no sigma, rate or strike.
+//
+// Thread-safety: as the rest of this header (pure functions + one workspace).
+
+inline constexpr int kDiscreteDivMaxPreSteps = 1024;
+inline constexpr int kDiscreteDivStepsPerEvent = 25;
+inline constexpr int kDiscreteDivMaxRouteSteps = 2401;
+inline constexpr int kDiscreteDivRefinedSteps = 1201;
+inline constexpr int kDiscreteDivNearExpirySteps = 2401;
+inline constexpr double kDiscreteDivRouteSigma = 0.10;
+
+enum class DiscreteDivAccuracy : std::uint8_t {
+  Standard = 0, // CubicCrr at the routed step count
+  Refined = 1,  // CubicBbsRichardson at kDiscreteDivRefinedSteps (CubicCrr at
+                // kDiscreteDivNearExpirySteps for an ex-date in the last two coarse steps)
+};
+
+enum class DiscreteDivMethod : std::uint8_t {
+  HistoricalSpliced = 0,  // the kill switch: SplicedCrr, linear splice, bit-identical
+  CubicCrr = 1,           // the production lattice, CRR terminal step
+  CubicBbsRichardson = 2, // the production lattice, BBS final step, Richardson pair
+};
+
+// Stable names: "historical-spliced", "cubic-crr", "cubic-bbs-richardson".
+[[nodiscard]] const char *to_string(DiscreteDivMethod value) noexcept;
+
+// What the route had to do (a bit set in `DiscreteDivLatticeRoute::flags`).
+enum class DiscreteDivRouteFlag : std::uint16_t {
+  NoInLifeEvent = 1U << 0,          // no cash strictly inside (0, T): no splice runs
+  PreStepsForEarlyExDate = 1U << 1, // more than the minimum two pre-steps were needed
+  StepsRaisedForEvents = 1U << 2,   // the per-event rule raised the step count
+  StepsCapped = 1U << 3,            // ... and hit kDiscreteDivMaxRouteSteps
+  GridBottomExtrapolated = 1U << 4, // kDiscreteDivMaxPreSteps left a band node below the grid
+                                    // (at kDiscreteDivRouteSigma: a sigma >= 0.10 statement)
+  ExDateOnStepZero = 1U << 5,       // an ex-date within half a step of t = 0, spliced at t = 0
+  KillSwitch = 1U << 6,             // historical lattice by request
+  NearExpiryExDate = 1U << 7,       // Refined: an ex-date in the last two coarse steps
+};
+
+[[nodiscard]] constexpr std::uint16_t bit(DiscreteDivRouteFlag flag) noexcept {
+  return static_cast<std::uint16_t>(flag);
+}
+
+struct DiscreteDivLatticeRoute {
+  DiscreteDivMethod method = DiscreteDivMethod::CubicCrr;
+  int steps = 0;          // the (fine) lattice
+  int coarse_steps = 0;   // the Richardson partner (CubicBbsRichardson), else 0
+  int pre_steps = 0;      // even; 0 under HistoricalSpliced
+  int events = 0;         // ex-dates strictly inside (0, T) with cash > 0
+  int first_ex_step = -1; // the earliest in-life ex-date's step on the fine lattice; -1 none
+  double max_cash_ratio = 0.0;    // largest in-life amount / S
+  double grid_bottom_depth = 0.0; // node spacings the deepest band node's post level sits
+                                  // under the grid after pre-steps; 0 = inside
+  std::uint16_t flags = 0;        // DiscreteDivRouteFlag bits
+
+  [[nodiscard]] constexpr bool has(DiscreteDivRouteFlag flag) const noexcept {
+    return (flags & bit(flag)) != 0U;
+  }
+};
+
+struct DiscreteDivProductionOpts {
+  DiscreteDivAccuracy accuracy = DiscreteDivAccuracy::Standard;
+  int base_steps = kDiscreteDivDefaultSteps; // [4, kDiscreteDivMaxSteps]
+  bool kill_switch = false;
+};
+
+// The route rule above. InvalidArgument for S, T or a dividend field the price
+// entry would refuse, or base_steps outside [4, kDiscreteDivMaxSteps]. The
+// per-event raise is capped at max(base_steps, kDiscreteDivMaxRouteSteps).
+[[nodiscard]] Result<DiscreteDivLatticeRoute>
+discrete_div_lattice_route(double S, double T, std::span<const CashDividend> dividends,
+                           const DiscreteDivProductionOpts &opts);
+
+// The price on a route (the route must be `discrete_div_lattice_route`'s for the
+// same S, T and schedule). Validation and errors as the price overload, plus
+// InvalidArgument when `!workspace.admits_production(route.steps, route.pre_steps)`
+// (a HistoricalSpliced route needs only `admits(route.steps)`). noexcept: as the
+// price overload (SAFETY note there).
+[[nodiscard]] Result<double>
+american_discrete_div_route_price(const DiscreteDivLatticeRoute &route, double S, double K,
+                                  double T, double sigma, double r, double q, Side side,
+                                  std::span<const CashDividend> dividends, ExerciseStyle exercise,
+                                  DiscreteDivWorkspace &workspace) noexcept;
+
+struct DiscreteDivProductionPrice {
+  double price = 0.0;
+  DiscreteDivLatticeRoute route{};
+  DiscreteDivConvention convention = discrete_div_convention(DiscreteDivScheme::SplicedCubic);
+};
+
+// Route + price in one call.
+[[nodiscard]] Result<DiscreteDivProductionPrice>
+american_discrete_div_production_price(double S, double K, double T, double sigma, double r,
+                                       double q, Side side,
+                                       std::span<const CashDividend> dividends,
+                                       ExerciseStyle exercise,
+                                       const DiscreteDivProductionOpts &opts,
+                                       DiscreteDivWorkspace &workspace);
+
+struct DiscreteDivProductionIv {
+  DiscreteDivIvResult iv{};          // sigma + cost record (section 3's fields)
+  DiscreteDivLatticeRoute route{};   // the accurate route the root is confirmed on
+  DiscreteDivLatticeRoute screen{};  // the Screen route (CubicCrr at opts.screen_steps)
+};
+
+// The seeded inversion of section 3 on a production route: the Screen leg runs the
+// CubicCrr lattice at `iv_opts.screen_steps` (with its own pre-steps — a cubic
+// screen, so its root sits within the CRR floor of the accurate one instead of the
+// linear splice's per-event bias), the confirm / polish / bracketed fallback run on
+// the accurate route. The root is ALWAYS the accurate route's; errors as section 3.
+// A Screen tier needs `iv_opts.screen_steps < route.steps`; otherwise (or with tier
+// Accurate) the accurate bracketed secant runs alone (fallback NotApplicable).
+[[nodiscard]] Result<DiscreteDivProductionIv>
+american_discrete_div_production_iv(double price, double S, double K, double T, double r,
+                                    double q, Side side, std::span<const CashDividend> dividends,
+                                    const DiscreteDivProductionOpts &opts,
+                                    const DiscreteDivIvOpts &iv_opts,
+                                    DiscreteDivWorkspace &workspace);
+
+// ── The event-aware sensitivities ────────────────────────────────────────────
+//
+// Every number below is computed on ONE route (fixed node set and pre-steps), so a
+// bump moves the model, never the discretisation. Supported greeks are FINITE;
+// an unsupported one is NaN with its bit set in `unsupported` — never 0.
+//   delta, gamma  the t = 0 central stencils of the pre-stepped tree (S d^2, S, S u^2);
+//                 under CubicBbsRichardson the route's own Richardson pair of them
+//                 (n d_n - m d_m) / (n - m), as its price: the stencil's error is
+//                 first order in 1 / N (D0 row E20p, Refined: +2.9e-4 from the fine
+//                 lattice alone, review-D1 M1);
+//   vega          the Richardson pair of central sigma bumps at h and h / 2,
+//                 h = kDiscreteDivSigmaBumpRel x sigma, (4 v(h / 2) - v(h)) / 3: it
+//                 removes the bump's O(h^2) bias (E20p: -0.27 % at h alone, +0.003 %).
+//                 UNSUPPORTED (reason ExerciseDominated) on an exercise-dominated
+//                 American call: an in-life ex-date tau_i where early exercise just
+//                 before it can be optimal, D_i > K (1 - e^{-r (t_next - tau_i)})
+//                 (t_next the next in-life ex-date or T), with the cum-dividend dated
+//                 forward there at least kDiscreteDivExerciseDominatedSd standard
+//                 deviations in the money, ln(F(tau_i-) / K) >= z sigma sqrt(tau_i).
+//                 Its vega is the small residual of the paths that keep the option,
+//                 read through the exercise boundary at the ex-date; on D0 row F1c
+//                 (z = 2.23) the lattice is +1.3 to +1.7 % off the reference at every
+//                 N and every bump size (doc section 11.6), so it is not served;
+//   rho, phi      central r and q bumps (kDiscreteDivProductionRateBump /
+//                 kDiscreteDivProductionYieldBump, below), q being the residual
+//                 continuous yield on top of the cash;
+//   dP/dD_i       per event, central amount bump (discrete_div_amount_bump; one-sided
+//                 at a zero amount, as american_discrete_div_dividend_sensitivities);
+//   theta, charm  the tree's two-step stencils (dP/dt at fixed spot, per year,
+//                 calendar convention). UNSUPPORTED when an in-life ex-date sits on
+//                 steps 0..2 of the route: the stencil would difference across the
+//                 ex-date, and a roll across an ex-date is an EVENT, not a derivative;
+//   roll          the event-aware time roll over `roll_horizon` (below). Under
+//                 CubicBbsRichardson theta and charm read the fine lattice's stencils
+//                 (the coarse one's first ex-step can sit inside its two-step stencil).
+enum class DiscreteDivGreek : std::uint8_t {
+  Delta = 0,
+  Gamma = 1,
+  Vega = 2,
+  Rho = 3,
+  Phi = 4,
+  Theta = 5,
+  Charm = 6,
+  DividendAmount = 7,
+  Roll = 8,
+};
+
+// Why a greek is unsupported (a bit 1 << reason in `DiscreteDivProductionGreeks::
+// reasons`; the greek's own bit says WHICH greek). NaN, never 0, in every case.
+enum class DiscreteDivUnsupportedReason : std::uint8_t {
+  NotRequested = 0,      // dP/dD without slots, the roll with horizon <= 0
+  ExDateInStencil = 1,   // theta / charm: an in-life ex-date on steps 0..2
+  RollRefused = 2,       // the roll's re-route or rollback refused (its error class)
+  ExerciseDominated = 3, // vega: the exercise-dominated American call (above)
+  Refused = 4,           // batch: the group or the whole bundle refused
+};
+
+// Stable names: "not_requested", "ex_date_in_stencil", "roll_refused",
+// "exercise_dominated", "refused".
+[[nodiscard]] const char *to_string(DiscreteDivUnsupportedReason value) noexcept;
+
+// The exercise-dominated threshold of the vega rule above, in standard deviations
+// of log spot at the ex-date (2: about 98 % of the lognormal mass in the money).
+inline constexpr double kDiscreteDivExerciseDominatedSd = 2.0;
+
+// The production bundle's rate / yield bumps (lane D1, r6). NOT the historical
+// bundle's kDiscreteDivRateBump / kDiscreteDivYieldBump (1e-4, american.hpp): r and q
+// move no node, but they move the exercise decisions node by node, so a lattice price
+// is rippled in r and q below ~1e-3 and a 1e-4 central difference reads that ripple.
+// Measured on the Refined route against the reference's bump study (D0 rows A2p, B3p,
+// C4c, D12p, E20p, F1c, B1p; doc section 11): worst relative error 1.7e-2 / 8.9e-3
+// (rho / phi, D12p) at 1e-4, 2.3e-3 (C4c) / 1.0e-3 (E20p) at 1e-3; 2e-3 and a
+// Richardson pair were no better.
+inline constexpr double kDiscreteDivProductionRateBump = 1.0e-3;
+inline constexpr double kDiscreteDivProductionYieldBump = 1.0e-3;
+
+// The calendar roll to t + horizon at a fixed SPOT: an ex-date in (0, horizon] is
+// an event operation — its cash comes off the stock (S - cash, floored at 0) and
+// off the schedule — and every later ex-date moves `horizon` closer. Not a
+// derivative and never divided by the horizon.
+struct DiscreteDivTimeRoll {
+  double horizon = 0.0;
+  int events_crossed = 0;
+  double cash_crossed = 0.0;
+  double rolled_price = 0.0; // the option at t + horizon (NaN when unsupported)
+  double roll = 0.0;         // rolled_price - price
+};
+
+struct DiscreteDivProductionGreeks {
+  double price = 0.0;
+  double delta = 0.0;
+  double gamma = 0.0;
+  double vega = 0.0;
+  double rho = 0.0;
+  double phi = 0.0;
+  double theta = 0.0;
+  double charm = 0.0;
+  DiscreteDivTimeRoll roll{};
+  std::uint16_t unsupported = 0; // bits 1 << DiscreteDivGreek
+  std::uint16_t reasons = 0;     // bits 1 << DiscreteDivUnsupportedReason
+  DiscreteDivLatticeRoute route{};
+
+  [[nodiscard]] constexpr bool supported(DiscreteDivGreek greek) const noexcept {
+    return (unsupported & (1U << static_cast<unsigned>(greek))) == 0U;
+  }
+  [[nodiscard]] constexpr bool has(DiscreteDivUnsupportedReason reason) const noexcept {
+    return (reasons & (1U << static_cast<unsigned>(reason))) != 0U;
+  }
+};
+
+// The bundle above. `dP_dDiv_out` is empty (no dividend sensitivities computed:
+// bit DividendAmount is SET, as not-computed is never reported as a value) or
+// holds one slot per entry of
+// `dividends` (an event outside (0, T] gets exactly 0). `roll_horizon` <= 0 skips
+// the roll (its bit set). Cost: 9 rollbacks (5 when vega is unsupported) + 2 per
+// in-life event + 1 for the roll (x 2 under CubicBbsRichardson). Errors: the route's
+// and the price's, plus
+// InvalidArgument for a wrongly sized `dP_dDiv_out` or a non-finite horizon.
+[[nodiscard]] Result<DiscreteDivProductionGreeks> american_discrete_div_production_greeks(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    std::span<const CashDividend> dividends, ExerciseStyle exercise,
+    std::span<double> dP_dDiv_out, double roll_horizon, const DiscreteDivProductionOpts &opts,
+    DiscreteDivWorkspace &workspace);
 
 } // namespace atx::vol
