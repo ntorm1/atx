@@ -447,6 +447,9 @@ struct LadderInputs {
   double q = 0.0;
   Side side = Side::Call;
   double family_bound_rel = kInf;
+  // |family - certified price| at the node at the fit's spot: the family's MEASURED error
+  // there (its probed bound covers only |ln(K / S)| <= kDeAmFamilyGridLogBand).
+  double node_family_error = 0.0;
 };
 
 // 2-D Chebyshev value of the ladder plane at (u, v).
@@ -548,7 +551,9 @@ struct LadderInputs {
   const double worst = certify_ladder(l, f, in, evaluations);
   if (!std::isfinite(worst)) return std::nullopt;
   const double forward_max = std::exp(l.x_hi + (in.rate - in.q) * in.tau);
-  l.certificate_usd = worst + in.family_bound_rel * std::max(price_max, 1.0) +
+  l.certificate_usd = worst +
+                      std::max(in.family_bound_rel * std::max(price_max, 1.0),
+                               in.node_family_error) +
                       kLadderUlpFloor * std::max(forward_max, in.strike);
   if (!(l.certificate_usd <=
         std::max(policy.ladder_max_cert_usd, policy.ladder_max_cert_rel * forward_max))) {
@@ -831,8 +836,9 @@ void attach_ladders(Impl &impl) {
       const AlSigmaQFamily *f = impl.family(side);
       if (f == nullptr || !(s.tiers & kServeNodeFamily)) continue;
       ServeSideSupport &support = side == Side::Call ? impl.support.call : impl.support.put;
-      const LadderInputs in{impl.spot, impl.tau, impl.rate, impl.nodes[i].strike, s.sigma,
-                            s.q, side, support.family_bound_rel};
+      const LadderInputs in{impl.spot,  impl.tau, impl.rate, impl.nodes[i].strike,
+                            s.sigma,    s.q,      side,      support.family_bound_rel,
+                            std::abs(s.family_price_delta)};
       std::optional<NodeLadder> l = build_ladder(*f, in, impl.policy,
                                                  impl.clocks.family_evaluations);
       if (!l) {
@@ -1109,13 +1115,26 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   return true;
 }
 
+// The family tier's error bar: its probed bound x max(P, 1) inside the probed band, at a
+// node at least the family's measured error there; outside the band between nodes no
+// claim (NaN) - the probes never visit the deep wings.
+[[nodiscard]] double family_certificate(const Impl &impl, const Contract &c,
+                                        double price) noexcept {
+  const double bound = impl.side_support(c.side).family_bound_rel * std::max(price, 1.0);
+  if (c.served != nullptr && std::isfinite(c.served->family_price_delta)) {
+    return std::max(bound, std::abs(c.served->family_price_delta));
+  }
+  const bool probed = std::abs(std::log(c.strike / impl.spot)) <= kDeAmFamilyGridLogBand;
+  return probed ? bound : kNaN;
+}
+
 [[nodiscard]] bool serve_family(const Impl &impl, const Contract &c, ServeGreekMask mask,
                                 ServeAnswer &a, bool &box) noexcept {
   double map_price = kNaN;
   if (!family_tier_read(impl, c, mask, a, map_price, box)) return false;
   a.tier = ServeTier::Family;
   a.route = ServeRoute::None;
-  a.certificate_usd = impl.side_support(c.side).family_bound_rel * std::max(map_price, 1.0);
+  a.certificate_usd = family_certificate(impl, c, map_price);
   place_price(impl, c, map_price, ServePriceSource::Family, a);
   return true;
 }

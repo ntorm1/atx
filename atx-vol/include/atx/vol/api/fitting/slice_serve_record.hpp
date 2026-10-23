@@ -235,8 +235,9 @@ struct ServedNodeSide {
   ServeErrorClass family_class = ServeErrorClass::Uncovered; // the side family's class
   // The family's price at (S_fit, K, sigma, q) minus `price` (NaN: no family price).
   double family_price_delta = std::numeric_limits<double>::quiet_NaN();
-  // The ladder's certified bound in USD against the family (+ the family's measured
-  // bound), NaN when the node side has no ladder.
+  // The ladder's bound in USD: its measured distance to the family off its nodes plus
+  // the larger of the family's probed bound x max(P, 1) and its measured error at this
+  // node (family_price_delta), plus an 8-ulp floor; NaN when the node side has no ladder.
   double ladder_certificate_usd = std::numeric_limits<double>::quiet_NaN();
   std::uint8_t tiers = 0; // kServeNodeLadder | kServeNodeFamily
   // The family tier's per-Greek reasons at the fit's spot (BundleUnavailable without A0).
@@ -378,7 +379,10 @@ struct ServeAnswer {
   double sigma = std::numeric_limits<double>::quiet_NaN(); // the volatility priced
   // |the Greek map's price - price| (0: one map; NaN: no Greek map).
   double price_map_delta = std::numeric_limits<double>::quiet_NaN();
-  // The tier's error bar on `price` in USD (NaN: none claimed).
+  // The answering map's error bar on `price` in USD: 0 for a certified node price, the
+  // ladder's bound, the family's probed bound x max(P, 1) (at a node at least its measured
+  // error there; NaN between nodes outside the probed band |ln(K / S)| <= 0.25), or the
+  // Fast kernel's tested bound for a Fast confirm. NaN: none claimed (piecewise slice).
   double certificate_usd = std::numeric_limits<double>::quiet_NaN();
   std::int64_t age_ns = 0;
   ServeTier tier = ServeTier::Cold;
