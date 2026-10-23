@@ -441,24 +441,33 @@ double family_domain_bound_usd(const ValidatedErrorEnvelope &env, double S, doub
   for (const double q : {d.q_lo, d.q_hi}) {
     const detail::InternalPutRates rq = detail::internal_put_rates(d.side, rate, q);
     const double xmax = amer::al_xmax_put(c.Kp, rq.rp, rq.qp);
-    // node_term with every point-dependent factor at its domain-wide worst: phi <= 1 /
-    // sqrt(2 pi), dr <= 1, |r K - q B| <= r K + |q| xmax, 1 / sigma <= 1 / sigma_lo, y_f >=
-    // y_lo; the box bound g(xmax) <= 2 z (r K + max(-q, 0) S).
-    const double carry = rq.rp * c.Kp + std::abs(rq.qp) * xmax;
-    const double box_rate = rq.rp * c.Kp + std::max(-rq.qp, 0.0) * c.Sp;
+    // node_term with every point-dependent factor at its domain-wide worst, at node time
+    // t = z^2. Box bound: g(xmax) = 2 z (r K e^{-rt} N2 - q S e^{-qt} N1) <= 2 z (max(r, 0) K
+    // + max(-q, 0) S e^{max(-q, 0) t}) (N <= 1; e^{-rt} <= 1 when r >= 0, the r term <= 0
+    // when r < 0; a NEGATIVE carry's e^{-qt} > 1, review-K3 mn-7). Sensitivity: phi <= 1 /
+    // sqrt(2 pi), e^{-rt} <= e^{max(-r, 0) t}, |r K - q B| <= |r| K + |q| xmax, 1 / sigma
+    // <= 1 / sigma_lo, y_f >= y_lo. Every node's term falls with a put's q below 0 and
+    // rises with it above 0, and rises with a call's q (its internal r > 0), so the box's
+    // two q ends carry the worst sum.
+    const double carry = std::abs(rq.rp) * c.Kp + std::abs(rq.qp) * xmax;
+    const double neg_q = std::max(-rq.qp, 0.0);
+    const double neg_r = std::max(-rq.rp, 0.0);
     double sum = 0.0;
     for (unsigned i = 0; i < env.n_quad; ++i) {
       if (std::isnan(env.zc[i])) {
         continue;
       }
-      const double box = 2.0 * env.z[i] * box_rate;
+      const double t = env.z[i] * env.z[i];
+      const double box =
+          2.0 * env.z[i] * (std::max(rq.rp, 0.0) * c.Kp + neg_q * c.Sp * std::exp(neg_q * t));
       const double delta = env.bound_y[i];
       double term = box;
       if (delta < kInf && delta > 0.0) {
         const double root_delta = std::sqrt(delta);
         const double y = env.y_lo[i];
         const double dd = y > 0.0 ? std::min(root_delta, delta / std::sqrt(y)) : root_delta;
-        const double sens = 2.0 * inv_sqrt_2pi * carry * std::exp(dd) * dd / d.sigma_lo;
+        const double sens =
+            2.0 * inv_sqrt_2pi * std::exp(neg_r * t) * carry * std::exp(dd) * dd / d.sigma_lo;
         term = std::min(box, sens);
       } else if (!(delta > 0.0)) {
         term = 0.0;

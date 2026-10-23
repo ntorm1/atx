@@ -173,7 +173,8 @@ struct FamilyBoundedPrice {
                                                       double q) noexcept;
 
 // A domain-wide price bound (USD) at (S, K) for every sigma and q of the domain: the
-// per-point bound with 1 / sigma_lo, the worst carry of the q box and y_lo for y_f. What a
+// per-point bound with 1 / sigma_lo, the worst carry of the q box (a negative carry's
+// e^{-q t} > 1 at each quadrature node included) and y_lo for y_f. What a
 // caller without the priced point's boundary can use (the certification grid's scalar);
 // +inf when the envelope is Uncovered.
 [[nodiscard]] double family_domain_bound_usd(const ValidatedErrorEnvelope &env, double S, double K,

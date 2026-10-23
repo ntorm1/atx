@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -450,4 +451,46 @@ TEST(AmericanFamilyError, ExerciseStrikeSitsOnTheFamilysBoundary) {
       EXPECT_GT(ps.price - intrinsic(shallow), 1.0e-6);
     }
   }
+}
+
+// review-K3 mn-7 (fix round 1): family_domain_bound_usd is ONE bound for every (sigma, q) of
+// the domain at a strike, so it dominates the per-point bound family_price_bounded states
+// anywhere in the box - also on a negative-carry put box, where a quadrature node's box bound
+// g(xmax) carries |q| S e^{-q t} with e^{-q t} > 1 (hard-to-borrow underlyings). Checked on the
+// envelope as built and on the same envelope with every node unverified (bound_y +inf, a state
+// a covered envelope reaches node by node: each node then contributes its box bound alone),
+// deep in the money included, at a short and a long expiry.
+TEST(AmericanFamilyError, DomainBoundDominatesThePointBoundOnANegativeCarryBox) {
+  double worst_built = 0.0;
+  double worst_unverified = 0.0;
+  for (const double T : {0.5, 3.0}) {
+    const FamilyCase c{100.0, T, 0.04, -0.095, -0.085, Side::Put, 0.1, 0.8, 4};
+    Built b(c);
+    ASSERT_TRUE(b.family.prepare(c.sigma_lo, c.sigma_hi, 16, c.q_lo, c.q_hi, c.n_q));
+    const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(b.family);
+    ASSERT_TRUE(env.covered()) << static_cast<int>(env.status);
+    ValidatedErrorEnvelope unverified = env;
+    unverified.bound_y.fill(std::numeric_limits<double>::infinity());
+    const std::array<const ValidatedErrorEnvelope *, 2> envelopes{&env, &unverified};
+    for (const ValidatedErrorEnvelope *e : envelopes) {
+      double &worst = e == &env ? worst_built : worst_unverified;
+      for (const double K : {60.0, 80.0, 100.0, 125.0, 160.0, 200.0}) {
+        const double domain = atx::vol::family_domain_bound_usd(*e, c.S, K, c.r);
+        ASSERT_TRUE(std::isfinite(domain));
+        for (const double sigma : {0.11, 0.2, 0.4, 0.79}) {
+          for (const double q : {c.q_lo, -0.09, c.q_hi}) {
+            const FamilyBoundedPrice fb =
+                atx::vol::family_price_bounded(b.family, *e, c.S, K, sigma, q);
+            ASSERT_EQ(fb.status, AlSigmaQFamilyStatus::Ok);
+            worst = std::max(worst, fb.bound_usd / domain);
+            EXPECT_LE(fb.bound_usd, domain) << "T " << T << " K " << K << " sigma " << sigma
+                                            << " q " << q << " unverified " << (e != &env);
+          }
+        }
+      }
+    }
+  }
+  std::printf("[domain bound, q < 0] worst point bound / domain bound: built %.3g, every node "
+              "unverified %.3g\n",
+              worst_built, worst_unverified);
 }
