@@ -743,9 +743,11 @@ struct BatchPair {
   ft::FitTimingCounters batched_counts{};
 };
 
-BatchPair fit_batch_pair(const Chain &c) {
+BatchPair fit_batch_pair(const Chain &c,
+                         QuoteSliceDeamConfirmKernel kernel = QuoteSliceDeamConfirmKernel::Fast) {
   BatchPair out;
   QuoteSliceConfig plain = native_config(true);
+  plain.channel.deam_confirm_kernel = kernel;
   QuoteSliceConfig batched = plain;
   batched.channel.deam_native_batch = true;
   const auto run = [&c](const QuoteSliceConfig &config, std::optional<QuoteSliceFit> &fit,
@@ -826,18 +828,24 @@ TEST(FitNativeRoute, BatchedRouteOnTheScalarMapIsTheUnbatchedRouteBitForBit) {
   EXPECT_EQ(confirms, 0u); // the confirm batch runs on the AVX2 kernel only
 }
 
-// K4b deliverables 1-2 (AVX2): the lanes run on the AVX2 kernel and the first confirm prices
-// on the AVX2 boundary batch; every typed outcome, acceptance kind and status is the
+// K4b deliverables 1-2 (AVX2): the lanes run on the AVX2 kernel; on the ACCURATE confirm
+// kernel the first confirm prices run on the AVX2 boundary batch (on the Fast confirm kernel
+// they stay scalar: the batch is not faster than the scalar Fast solve - see
+// iv_native_prepare_acceptance). Every typed outcome, acceptance kind and status is the
 // unbatched route's, and the served values agree to the kernels' rounding class (far inside
 // the 1e-7 root requirement and the certificate allowance).
 TEST(FitNativeRoute, BatchedRouteOnAvx2KeepsEveryOutcomeToTheKernelsRoundingClass) {
   if (!simd::have_avx2()) GTEST_SKIP() << "host has no AVX2";
   const IsaOverride avx2(simd::SimdIsa::Auto);
   double worst_iv = 0.0, worst_row = 0.0, worst_price = 0.0;
-  std::uint64_t avx2_calls = 0, confirm_hits = 0, misses = 0;
+  std::uint64_t avx2_calls = 0, confirm_hits = 0, misses = 0, fast_confirm_hits = 0;
+  for (const auto kernel :
+       {QuoteSliceDeamConfirmKernel::Fast, QuoteSliceDeamConfirmKernel::Accurate})
   for (const double years : {0.15, 0.5}) {
-    SCOPED_TRACE("T=" + std::to_string(years));
-    const BatchPair p = fit_batch_pair(spy_chain(years));
+    const bool accurate = kernel == QuoteSliceDeamConfirmKernel::Accurate;
+    SCOPED_TRACE(std::string(accurate ? "accurate" : "fast") + " confirms, T=" +
+                 std::to_string(years));
+    const BatchPair p = fit_batch_pair(spy_chain(years), kernel);
     ASSERT_TRUE(p.plain && p.batched);
     ASSERT_EQ(p.plain->rows.size(), p.batched->rows.size());
     ASSERT_EQ(p.plain_ivs.size(), p.batched_ivs.size());
@@ -880,25 +888,32 @@ TEST(FitNativeRoute, BatchedRouteOnAvx2KeepsEveryOutcomeToTheKernelsRoundingClas
     EXPECT_EQ(p.plain_counts.deam_native_status, p.batched_counts.deam_native_status);
     EXPECT_EQ(p.plain_counts.deam_confirms, p.batched_counts.deam_confirms);
     avx2_calls += p.batched_counts.deam_batch_avx2_calls;
-    confirm_hits += p.batched_counts.deam_batch_confirm_hits;
+    (accurate ? confirm_hits : fast_confirm_hits) += p.batched_counts.deam_batch_confirm_hits;
     misses += p.batched_counts.deam_batch_lane_misses;
   }
-  std::printf("[K4b batch avx2] kernel calls %llu, confirm prices consumed %llu, lane misses %llu; "
-              "max |d iv| cache %.3g rows %.3g, max |d fitted price| %.3g USD\n",
+  std::printf("[K4b batch avx2] kernel calls %llu, confirm prices consumed %llu (accurate "
+              "confirms; fast %llu), lane misses %llu; max |d iv| cache %.3g rows %.3g, max |d "
+              "fitted price| %.3g USD\n",
               static_cast<unsigned long long>(avx2_calls),
               static_cast<unsigned long long>(confirm_hits),
+              static_cast<unsigned long long>(fast_confirm_hits),
               static_cast<unsigned long long>(misses), worst_iv, worst_row, worst_price);
   EXPECT_GT(avx2_calls, 0u);
   EXPECT_GT(confirm_hits, 0u);
+  EXPECT_EQ(fast_confirm_hits, 0u);
   EXPECT_EQ(misses, 0u);
 }
 
 // K4b deliverable 2: the AVX2 boundary batch (a call through the McDonald-Schroder put map,
-// as iv_native_prepare_acceptance runs it) prices the confirm kernel's scheme within the class
-// kIvBatchConfirmMarginRel max(P, 1) of the scalar Andersen-Lake kernel (its decisive margin),
-// and the batch on the scalar route IS the scalar kernel bit for bit, puts and calls.
+// as iv_native_prepare_acceptance runs it) prices the confirm kernel's scheme - the accurate
+// one the batch serves, and Fast - within the class kIvBatchConfirmMarginRel max(P, 1) of the
+// scalar Andersen-Lake kernel (its decisive margin), and the batch on the scalar route IS the
+// scalar kernel bit for bit, puts and calls.
 TEST(FitNativeRoute, BatchedConfirmPricesAreTheScalarKernelsToTheirClass) {
-  const std::optional<AlOpts> fast = al_fast_profile(std::nullopt);
+  for (const bool accurate : {true, false}) {
+  SCOPED_TRACE(accurate ? "accurate scheme" : "fast profile");
+  const std::optional<AlOpts> fast =
+      accurate ? std::optional<AlOpts>{} : std::optional<AlOpts>{al_fast_profile(std::nullopt)};
   const double S = 670.0, r = 0.04;
   std::vector<double> bS, bK, bT, bsig, br, bq, ref;
   std::vector<Side> sides;
@@ -940,7 +955,7 @@ TEST(FitNativeRoute, BatchedConfirmPricesAreTheScalarKernelsToTheirClass) {
           << i;
     }
   }
-  if (!simd::have_avx2()) GTEST_SKIP() << "host has no AVX2 (scalar identity checked)";
+  if (!simd::have_avx2()) continue; // no AVX2: the scalar identity is what can be checked
   static_cast<void>(simd::american_put_boundary_batch(bS.data(), bK.data(), bT.data(), bsig.data(),
                                                       br.data(), bq.data(), vec.data(), n, fast,
                                                       simd::SimdIsa::ForceAvx2));
@@ -950,9 +965,10 @@ TEST(FitNativeRoute, BatchedConfirmPricesAreTheScalarKernelsToTheirClass) {
     worst = std::max(worst, rel);
     EXPECT_LE(rel, kIvBatchConfirmMarginRel) << i;
   }
-  std::printf("[K4b confirm batch] %zu contracts: scalar route bit-identical, AVX2 max "
+  std::printf("[K4b confirm batch] %s: %zu contracts: scalar route bit-identical, AVX2 max "
               "|dP| / max(P, 1) %.3g (margin %.1g)\n",
-              n, worst, kIvBatchConfirmMarginRel);
+              accurate ? "accurate" : "fast", n, worst, kIvBatchConfirmMarginRel);
+  }
 }
 
 // review-K4 m2: the reference route's bracket accepts a certified end only strictly inside
@@ -1139,6 +1155,56 @@ TEST(FitNativeRoute, LaneVegaHookReplacesTheUncoveredEnclosuresChord) {
   EXPECT_EQ(sk.acceptance.kind, RootAcceptanceKind::Confirmed);
   EXPECT_NEAR(rn.iv, sigma, kIvRootRequirement);
   EXPECT_NEAR(rn.iv, rk.iv, kIvRootRequirement);
+}
+
+// K4b deliverable 3 (review-K4 m6): per-contract error metadata of the certification grid.
+// On the native route (family grid, per-point bound) every served row carries its grid
+// node's bound on |grid price - the accurate model| - under the certificate's allowance by
+// construction (a family node's bound decided it; a Fast node's is the kernel's tested
+// bound); off the route none is published (NaN).
+TEST(FitNativeRoute, GridCarriesPerContractErrorMetadataOnTheRoute) {
+  std::size_t native_served = 0;
+  for (const double years : {0.15, 0.5})
+  for (const bool native : {false, true}) {
+    SCOPED_TRACE(std::string(native ? "native route" : "family-native") + ", T=" +
+                 std::to_string(years));
+    const Chain c = spy_chain(years);
+    deam_iv_memo_clear();
+    const auto fit = fit_quote_slice_channel(c.market, c.quotes, native_config(native), nullptr);
+    ASSERT_TRUE(fit);
+    if (!native) {
+      for (const QuoteSliceRow &row : fit->rows) EXPECT_TRUE(std::isnan(row.grid_bound_usd));
+      continue;
+    }
+    if (fit->fit_status != QuoteSliceFitStatus::Success) {
+      // No certified grid (this fixture at 0.5 y fails its certificate): nothing published.
+      for (const QuoteSliceRow &row : fit->rows) EXPECT_TRUE(std::isnan(row.grid_bound_usd));
+      continue;
+    }
+    std::size_t carried = 0, served = 0, family = 0;
+    double worst = 0.0;
+    for (std::size_t i = 0; i < fit->rows.size(); ++i) {
+      const QuoteSliceRow &row = fit->rows[i];
+      if (row.evaluation_status != QuoteSliceEvaluationStatus::Success) continue;
+      ++served;
+      ASSERT_TRUE(std::isfinite(row.grid_bound_usd)) << i;
+      ++carried;
+      worst = std::max(worst, row.grid_bound_usd);
+      if (row.grid_bound_usd > 1.0e-12 * std::max(row.fitted_price, 1.0)) ++family;
+      EXPECT_GE(row.grid_bound_usd, 0.0) << i;
+      EXPECT_LT(row.grid_bound_usd,
+                1.0e-8 + 1.0e-9 * std::max(c.market.spot, c.quotes[i].strike))
+          << i;
+    }
+    EXPECT_EQ(carried, served);
+    EXPECT_GT(family, 0u); // some nodes are the family's, with their per-point bound
+    native_served += served;
+    std::printf("[K4b grid metadata] T=%.2f: %zu served rows carry a bound (%zu above Fast's), "
+                "max %.3g USD\n",
+                years, carried, family, worst);
+  }
+  EXPECT_GT(native_served, 0u);
+  deam_iv_memo_clear();
 }
 
 // PM item A17 (K5's four-cohort K3 audit, dev200b; pre-dates K5 on the root 746154d6): the

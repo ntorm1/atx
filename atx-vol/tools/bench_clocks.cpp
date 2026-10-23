@@ -236,8 +236,6 @@ void add_fit_work(FitWork &work, const ft::FitTimingCounters &c) noexcept {
   work.deam_reference_wall_refused += c.deam_reference_wall_refused;
   work.deam_sub_grid_family_ns += c.deam_sub_grid_family_ns;
   work.deam_sub_grid_kernel_ns += c.deam_sub_grid_kernel_ns;
-  work.deam_batch_grid_prices += c.deam_batch_grid_prices;
-  work.deam_batch_edge_prices += c.deam_batch_edge_prices;
   work.deam_lane_vegas += c.deam_lane_vegas;
 }
 
@@ -321,8 +319,6 @@ FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
       saturating_minus(a.deam_sub_grid_family_ns, b.deam_sub_grid_family_ns);
   d.deam_sub_grid_kernel_ns =
       saturating_minus(a.deam_sub_grid_kernel_ns, b.deam_sub_grid_kernel_ns);
-  d.deam_batch_grid_prices = saturating_minus(a.deam_batch_grid_prices, b.deam_batch_grid_prices);
-  d.deam_batch_edge_prices = saturating_minus(a.deam_batch_edge_prices, b.deam_batch_edge_prices);
   d.deam_lane_vegas = saturating_minus(a.deam_lane_vegas, b.deam_lane_vegas);
   return d;
 }
@@ -394,9 +390,7 @@ Json native_route_json(const FitWork &w) {
                       {"lane_hits", w.deam_batch_lane_hits},
                       {"lane_misses", w.deam_batch_lane_misses},
                       {"confirms", w.deam_batch_confirms},
-                      {"confirm_hits", w.deam_batch_confirm_hits},
-                      {"grid_prices", w.deam_batch_grid_prices},
-                      {"edge_prices", w.deam_batch_edge_prices}};
+                      {"confirm_hits", w.deam_batch_confirm_hits}};
   return {{"native_lane_status", status},
           {"route_outcome", outcome},
           {"subclock", subclock},

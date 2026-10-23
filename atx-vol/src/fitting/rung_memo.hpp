@@ -42,6 +42,7 @@
 // Bounded: kRungMemoDeamKeys caches and kRungMemoGrids grids per expiry, FIFO.
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -96,8 +97,24 @@ public:
     return nullptr;
   }
 
-  void remember_grid(std::vector<std::uint64_t> key, std::vector<AmericanPriceNode> prices) {
-    remember(grids_, grid_next_, kRungMemoGrids, GridEntry{std::move(key), std::move(prices)});
+  void remember_grid(std::vector<std::uint64_t> key, std::vector<AmericanPriceNode> prices,
+                     std::vector<std::array<double, 2>> bounds = {}) {
+    remember(grids_, grid_next_, kRungMemoGrids,
+             GridEntry{std::move(key), std::move(prices), std::move(bounds)});
+  }
+
+  // K4b (review-K4 m6): the per-node (call, put) error bounds remembered with the grid of
+  // `key` (certify_and_serve's per-contract metadata), or null (no such grid, or none were
+  // remembered with it). Not a lookup for the hit / miss accounting.
+  [[nodiscard]] const std::vector<std::array<double, 2>> *
+  grid_bounds(std::span<const std::uint64_t> key) const noexcept {
+    for (const GridEntry &entry : grids_) {
+      if (entry.key.size() == key.size() &&
+          std::equal(entry.key.begin(), entry.key.end(), key.begin())) {
+        return entry.bounds.empty() ? nullptr : &entry.bounds;
+      }
+    }
+    return nullptr;
   }
 
   // Work accounting (tests and diagnostics): lookups that hit or missed.
@@ -114,6 +131,7 @@ private:
   struct GridEntry {
     std::vector<std::uint64_t> key;
     std::vector<AmericanPriceNode> prices;
+    std::vector<std::array<double, 2>> bounds; // K4b: per node (call, put); may be empty
   };
 
   template <class Entry>

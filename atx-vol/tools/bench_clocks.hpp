@@ -201,8 +201,6 @@ struct FitWork {
   std::uint64_t deam_reference_wall_refused{0};
   std::uint64_t deam_sub_grid_family_ns{0};
   std::uint64_t deam_sub_grid_kernel_ns{0};
-  std::uint64_t deam_batch_grid_prices{0};
-  std::uint64_t deam_batch_edge_prices{0};
   std::uint64_t deam_lane_vegas{0};
 };
 

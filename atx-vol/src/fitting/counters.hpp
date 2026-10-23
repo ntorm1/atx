@@ -1284,15 +1284,11 @@ struct FitTimingCounters {
   std::uint32_t deam_reference_wall_refused{0};
   // K4b (r6): the certification grid's repricing sub-clocks of the chain (ns; zero when
   // untimed): nodes priced on a family under the per-point bound (and the bound itself), and
-  // nodes priced on an Andersen-Lake kernel (Fast or the fit's own); grid nodes priced in a
-  // batch (deam_native_batch).
+  // nodes priced on an Andersen-Lake kernel (Fast or the fit's own).
   std::uint64_t deam_sub_grid_family_ns{0};
   std::uint64_t deam_sub_grid_kernel_ns{0};
-  std::uint32_t deam_batch_grid_prices{0};
-  // K4b (r6): band-edge prices evaluated in a batch and consumed (deam_native_batch), and
-  // native roots whose acceptance placed its confirm with the lane's fused vega instead of
-  // a family chord (the lane-vega hook; no covering envelope, or a refused chord).
-  std::uint32_t deam_batch_edge_prices{0};
+  // K4b (r6): native roots whose acceptance placed its confirm with the lane's fused vega
+  // instead of a family chord (the lane-vega hook; no covering envelope, or a refused chord).
   std::uint32_t deam_lane_vegas{0};
 };
 

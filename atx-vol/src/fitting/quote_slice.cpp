@@ -1695,7 +1695,12 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   };
   constexpr auto kGridFamilyNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_family_ns;
   constexpr auto kGridKernelNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_kernel_ns;
-  const auto grid_price = [&](double strike, Side side, double sigma, double q) {
+  // K4b (review-K4 m6): the per-contract error metadata of the grid on the native route -
+  // each node's bound (USD) on |grid price - the fit's accurate model|: the family's
+  // per-point bound for a family node, AlProfile::Fast's tested bound for a Fast-kernel node.
+  const bool grid_metadata = family_grid && family_point_bound;
+  const auto grid_price = [&](double strike, Side side, double sigma, double q, double &bound) {
+    bound = std::numeric_limits<double>::quiet_NaN();
     if (!fast_grid) {
       return timed(kGridKernelNs, [&] { return model_price(out, strike, side, sigma, q); });
     }
@@ -1725,6 +1730,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
                 std::max(timing->deam_family_grid_max_bound_usd, fb.bound_usd);
           }
           return Result<double>{Ok(fb.price)};
+          bound = fb.bound_usd;
         }
       }
       counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
@@ -1744,12 +1750,15 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       }
       counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
     }
-    return timed(kGridKernelNs, [&] {
+    Result<double> kernel = timed(kGridKernelNs, [&] {
       return andersen_lake(market.spot, strike, market.variance_years, sigma,
                            diag.effective_rate, q, side, fast_opts);
     });
   };
+    if (kernel) bound = al_profile_price_bound(AlProfile::Fast, *kernel, market.variance_years);
+    return kernel;
   detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
+  std::vector<std::array<double, 2>> node_bounds; // per strike: call, put (grid_metadata)
   std::vector<std::uint64_t> grid_key;
   if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
   if (!grid_key.empty()) grid_key.push_back(fast_grid ? 1u : 0u);
@@ -1773,6 +1782,12 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       grid_key.empty() ? nullptr : memo->grid(grid_key);
   if (memoised != nullptr) prices = *memoised;
   for (std::size_t s = 0; memoised == nullptr && s < strikes.size(); ++s) {
+  if (memoised != nullptr && grid_metadata) {
+    // The metadata rides the grid's memo entry (remembered with it, so a hit carries it).
+    if (const std::vector<std::array<double, 2>> *const b = memo->grid_bounds(grid_key)) {
+      node_bounds = *b;
+    }
+  }
     const double strike = strikes[s];
     const double q = effective_yield(out, calendar_yield_at(out, strike));
     q_min = std::min(q_min, q);
@@ -1783,8 +1798,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       out.fit_error = "American price certification: invalid grid volatility";
       return;
     }
-    const auto call = grid_price(strike, Side::Call, sigma, q);
-    const auto put = grid_price(strike, Side::Put, sigma, q);
+    std::array<double, 2> bound{};
+    const auto call = grid_price(strike, Side::Call, sigma, q, bound[0]);
+    const auto put = grid_price(strike, Side::Put, sigma, q, bound[1]);
     if (!call || !put) {
       out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
       out.fit_error = "American price certification: grid repricing failed";
@@ -1792,7 +1808,13 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     }
     prices.push_back({strike, *call, *put});
   }
-  if (memoised == nullptr && !grid_key.empty()) memo->remember_grid(std::move(grid_key), prices);
+    if (grid_metadata) node_bounds.push_back(bound);
+  if (memoised == nullptr && !grid_key.empty()) {
+    memo->remember_grid(std::move(grid_key), prices,
+                        node_bounds.size() == prices.size() ? node_bounds
+                                                            : std::vector<std::array<double, 2>>{});
+  }
+  if (node_bounds.size() != strikes.size()) node_bounds.clear(); // metadata only when whole
   const counters::fit_timing::BucketScope certify_timing(counters::fit_timing::Bucket::Certify);
   AmericanPriceBounds bounds{market.spot, std::min(1.0, diag.discount),
                              std::max(1.0, diag.discount), 0.0, 0.0};
@@ -1865,6 +1887,15 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     }
     detail::clear_identification(row); // a re-certification never keeps earlier labels
     row.fitted_iv = out.curve->iv(std::log(quote.strike / diag.forward));
+    {
+      // K4b (m6): the row's grid node's bound (NaN off the native route's family grid).
+      const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
+      const bool node = !node_bounds.empty() && at != strikes.end() && *at == quote.strike;
+      row.grid_bound_usd =
+          node ? node_bounds[static_cast<std::size_t>(at - strikes.begin())]
+                            [quote.side == Side::Call ? 0 : 1]
+               : std::numeric_limits<double>::quiet_NaN();
+    }
     if (!positive(row.fitted_iv)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
       continue;

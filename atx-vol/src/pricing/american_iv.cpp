@@ -3144,7 +3144,11 @@ void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorE
       if (enc.enclosed) continue;
       if (std::isfinite(enc.slope) && enc.slope > 0.0) slope = enc.slope;
     }
-    if (!avx2) continue;
+    // The AVX2 boundary batch prices a lane in about the scalar FAST solve's time (72-84 us
+    // vs 61-79 us per lane on the SPY shape; it is ~2x faster than the scalar ACCURATE scheme
+    // only, 77-84 vs 151-178 us: K4b E\diag\probe-boundary-batch-cost-1.txt), so the first
+    // confirms are batched on the accurate confirm kernel only; Fast confirms stay scalar.
+    if (!avx2 || profile != AlProfile::Reference) continue;
     const double eps_c = al_profile_price_bound(profile, rq.price, rq.T);
     if (!(std::isfinite(slope) && slope > 0.0) || !(slope * w > 2.0 * eps_c)) continue;
     const bool call = rq.side == Side::Call;

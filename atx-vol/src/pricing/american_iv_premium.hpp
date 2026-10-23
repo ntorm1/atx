@@ -429,7 +429,9 @@ struct FamilyEnclosure {
 // (american-iv-batch.md section 5); and a confirm price from the AVX2 boundary batch is
 // consumed only where its side decision - and the far-root placement test - clears the
 // confirm kernel's tested bound by more than kIvBatchConfirmMarginRel max(P, 1), so every
-// certified side is the one the scalar confirm kernel decides.
+// certified side is the one the scalar confirm kernel decides. The confirm batch runs on the
+// ACCURATE confirm kernel only: on the Fast one the batch is no faster than the scalar solve
+// (measured, iv_native_prepare_acceptance).
 
 // AVX2 boundary batch versus the scalar Andersen-Lake kernel on the same scheme, relative to
 // max(P, 1): the tested class (|dP| <= 1.1e-12 USD on the chain-batch grid, LEDGER L534;
