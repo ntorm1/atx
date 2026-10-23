@@ -613,3 +613,83 @@ discrete-div-smoothing, iv-batch-alloc, bench-clocks 6/6 (`atx-vol-umbrella`: it
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cg-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2cg-20261023-integrate\`.
+
+## W2c-h / r6 integration of D1 and A0 (vol-sota master plan, 2026-10-23)
+
+Lane W2c-h (run `vol-sota-r6-20261023`, pool-5) merged the approved D1 (cash-dividend production) and A0 (sigma/q
+family Greeks) lanes into the root `feat/vol-resume5-20261022`, `--no-ff`, in that order, on top of `92cea7df`. No
+default promoted; nothing pushed.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `5fba816b` | merge D1 cash-dividend production `bf1ed68e` (review BLOCK at `a203eb19`; fix round 1; re-review ALL ADDRESSED at `bf1ed68e`; merge base `668ad80e`; the lane's checkpoint commit `fc136391` stays under its root merge `185f679c`, PM ruling) | `CHANGELOG.md`, `tests/CMakeLists.txt` | union, no glue |
+| `085240c5` | merge A0 sigma/q family Greeks `ed2d2e05` (review BLOCK at `684b2ed4`; fix round 1; re-review ALL ADDRESSED at `ed2d2e05`; merge base `668ad80e`) | `CHANGELOG.md`, `CMakeLists.txt`, `tests/CMakeLists.txt` | union, no glue |
+
+**Conflict resolution.** CHANGELOG at both steps: the root's entries first, then the lane's (D1: its FIXED review
+round and its NEW production-lattice entry; A0: its NEW Greek-bundle entry); the entry-set check is OK at both
+commits (133 = 131 + 2, 134 = 133 + 1; nothing lost, nothing duplicated). `ATX_VOL_SLOW_FILTER`: the root's
+`AmericanFamilyRootAudit.*`, then `DiscreteDivProductionMatrix.*`, then `AlSigmaQFamilyGreeksModel.*`.
+`atx-vol/CMakeLists.txt`: K2's `american_iv_batch.cpp` / `american_iv_stream.cpp` block, then A0's
+`american_sigma_q_family_greeks.cpp` block. Auto-merged: `american.hpp` (D1's `SplicedCubic` enumerator and A0's
+Greeks block are disjoint), `fit_archive_records.cpp` (D1's scheme range beside C0's records), its test,
+`quote_bench_policy.hpp`. The union compiled as is: no semantic glue (the W2c-g `NativeRoot::partner` code is
+untouched by both lanes). Neither lane touches `quote_slice.cpp`, `deam_iv_cache*` or `american_iv.cpp` (K4's
+files).
+
+**Diff proof.** Per file, the merge's change against each parent equals the other side's own change since
+`668ad80e`: D1 merge 79 EQUAL_SEQ, A0 merge 87 EQUAL_SEQ; the only residual (2 per merge) is the slow-filter
+line in `tests/CMakeLists.txt`, which carries both sides' appends.
+
+**Per-merge suites** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`). After D1: production fast 27/27, ddiv 88/88,
+reference fast 24/24, fit-archive 57/57 (D1's 54 + C0's 3), anchored ddiv / fit-archive ctests 6/6, K3's pricing
+anchor 85/85. After A0: A0's closure 60/60 (slow model suite included), alloc 3/3, K2's final-gate regex 121/121,
+and D1's production 27, ddiv 88, reference 24, fit-archive 57 again.
+
+**Gates on the final code `085240c5`** (the docs commit changes `.md` files only):
+- 9/9 default hashes byte-identical (quote-bench `e8567a41`), `sha256sum -c` 9 OK with the log persisted, stderr
+  files 0 bytes.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (bin byte-equal to W2c-g's).
+- Name set at cap 3: exactly `52324ef8` (the L575 flake did not fire); A0's 15 new pricing names all pass, 0
+  removed (D1's tests live in their own targets).
+- Combined anchored ctest (W2c-g regex + `atx-vol-discrete-div-production` + `AlSigmaQFamilyGreeks`,
+  `AlSigmaQFamilyGreeksModel`), native ctest excluded: 146/146; CLI pytest on the two files directly: 190 passed.
+- D1 slow matrix ctest once (stated ~3 min): `atx-vol-discrete-div-production-matrix` Passed, 149.45 s.
+- A0 on vol-rel-avx2: the five family suites 69/69, AVX2-vs-scalar numbers equal to the lane's (S.Gamma 4.85e-14,
+  theta 3.68e-13).
+- ForceScalar filter: 121 + 1 passed, 4 skipped, 1 known failure (`PricePolishDefaultOffIsBitForBitControl`).
+  `atx-vol-umbrella`: its 3 known failures; counts 45 / 104 (+1 each: D1's new public header
+  `american_discrete_div_batch.hpp`).
+- PCH-off (`vol-hygiene`): 36 TUs (the full closure of the 6 private / D1 / A0 headers, plus `american.cpp` for
+  `american.hpp` and the lanes' changed TUs), exit 0, 0 diagnostics; the Debug library was precompiled in bounded
+  batches first (196 TUs, 0 diagnostics).
+- Keys-ON (all MATCH): D1 dev200 `fc81aad3` / dev200b `c6016745` (served 12,092 / 20,662); K3 SPY native `710115bb`
+  and B-family `13f6be35` = W2c-g; K2 replay ON `710115bb` and keys-OFF `6368997d` = W2c-g, replay block 13/13;
+  C0 one_spot dev200 `a9dec618`, dev200b `ed34eef7`, cohort5 `34e3ed27`, SPY `d7a48be7`, SPY box-h0 `34d5aab0`.
+
+**Gate wording.**
+- G5 (D1, PM ruling): splice defect removed; Standard <= 3 bp / Refined <= 1 bp accuracy class on every RESOLVED D0
+  row; per-event drift within D0's u NOT met; P1/P2/P3 cash budgets unmet.
+- A0: P3 bundle <= 20 us MET; 300-chain 1 ms stretch MISSED.
+
+### Deferred minors (W2c-h: D1 and A0 reviews, fix rounds, integration)
+- D1 re-review: the European parity pin covers one ex-date placement (1.4 steps before expiry) and K 100 / 130;
+  the 0.6-step ex-date and K 90 / 110 are not pinned (parity is structural, cheap insurance).
+- D1: the bounded challenger (one prepared Chebyshev-in-sigma family with the predeclared acceptance table in
+  `docs/hft-support-matrix.md`) was not run; every P1 / P2 / P3 cash-dividend latency budget is a MISS (cold 24.1,
+  price 23.8, IV 114.2, bundle 191.3 us p50); inverses are 99.94 % of the cold clock.
+- D1: the per-event drift misses D0's u on 3 of 4 chains (Refined) and 4 of 4 (Standard); ILp Refined +4.49 bp
+  (UNRESOLVED row); the study's vega / rho / dP/dD / roll bounds are accuracy classes, not u-derived.
+- D1 re-review nits: one 102-column line in `fit_archive_records_test.cpp` (copied from older 102-column lines);
+  C4c vega reads -0.08 % (bump -> 0) in the doc and -0.072 % (served bump) in the report; the study's
+  `exercise_dominated` lambda names F1c; the `atx-vol-fit-archive-bench` publish path itself was not exercised.
+- A0: the L3g sigma-family bundle still serves the in-band theta with status Ok (review-L3g m5 in-band part OPEN for
+  the L3g owner).
+- A0 re-review: `docs/sigma-q-family-greeks.md:160` and `:164` still quote the pre-fix pins (S.Gamma 2.4e-12 / theta
+  7.9e-10; 7.8e-14 / 2.2e-11) instead of 4.9e-14 / 3.7e-13 and 3.6e-16 / 7.3e-16; the "32 of 317 SPY 23 d rows in
+  the band" count has no reproducible source; the m5 allocation-free refusal relies on SSO capacity; the 0.25 band
+  is conservative beyond ~0.1 sigma sqrt T.
+- A0: the 300-chain <= 1 ms stretch is missed (1.7-2.4 ms p50 on a loaded host); it needs a lane-batched SIMD pass
+  or a second thread.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ch-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2ch-20261023-integrate\`.
