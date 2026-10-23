@@ -214,7 +214,9 @@ add_executable(atx-vol-sigma-q-family-alloc-tests
     american_sigma_q_family_alloc_test.cpp support/alloc_counter.cpp)
 target_link_libraries(atx-vol-sigma-q-family-alloc-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
-target_include_directories(atx-vol-sigma-q-family-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# K1 (r5): the fused price + vega entries are internal (src/pricing/american_sigma_q_family.hpp).
+target_include_directories(atx-vol-sigma-q-family-alloc-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-tests)
 set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
@@ -265,6 +267,7 @@ add_executable(atx-vol-tests
     american_geometry_test.cpp
     american_family_greeks_test.cpp
     american_sigma_q_family_test.cpp
+    american_sigma_q_family_vega_test.cpp
     counters_test.cpp
     phase_profile_test.cpp
     correction_test.cpp
