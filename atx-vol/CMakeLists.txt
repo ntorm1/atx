@@ -1033,6 +1033,11 @@ if(ATX_BUILD_TOOLS)
         tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
     target_link_libraries(atx-vol-quote-bench PRIVATE atx::vol atx::core atx_warnings
         nlohmann_json::nlohmann_json atx-vol-bench-clocks)
+    # Lane U0 (r6): hot queries on published serve records at a declared rate while a universe
+    # fit runs elsewhere; torn / stale checks and pool queue ages (docs/universe-census.md).
+    add_executable(atx-vol-quote-query-load tools/quote_query_load_main.cpp)
+    target_link_libraries(atx-vol-quote-query-load PRIVATE atx::vol atx::core atx_warnings
+        nlohmann_json::nlohmann_json)
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
     # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
     # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
