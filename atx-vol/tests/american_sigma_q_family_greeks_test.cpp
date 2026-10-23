@@ -1150,9 +1150,11 @@ TEST(AlSigmaQFamilyGreeks, Avx2AndScalarBuiltFamiliesAgreeToTheMeasuredBound) {
   // node tensor moves by its rounding (the AvxBoundary parity, <= ~4e-13 of y) and each
   // Greek by its sensitivity to y: Δ and the price ~1e-14, the σ- and carry-motion
   // Greeks 1e-11..1e-8 (phi's dy/dq differentiates the q interpolant of that rounding
-  // across a box 1e-4..1e-2 wide), θ the PDE identity's cancellation of them.
-  constexpr std::array<double, kAlFamilyGreekCount + 1> kPin = {1.4e-14, 2.4e-12, 2.4e-11,
-                                                                8.0e-10, 7.0e-10, 7.1e-9,
+  // across a box 1e-4..1e-2 wide), θ the PDE identity's cancellation of them. Re-pinned
+  // in A0 fix round 1 over the SERVED rows only: S·Γ was 2.4e-12 and θ 8.0e-10 on rows
+  // of the near-edge band, which now serve neither (NearExerciseEdge).
+  constexpr std::array<double, kAlFamilyGreekCount + 1> kPin = {1.4e-14, 4.9e-14, 2.4e-11,
+                                                                3.7e-13, 7.0e-10, 7.1e-9,
                                                                 4.3e-15};
   EXPECT_GT(rows, 500u);
   for (std::size_t k = 0; k < worst.size(); ++k) {
@@ -1220,8 +1222,9 @@ TEST(AlSigmaQFamilyGreeks, ACollapsedQBoxAgreesWithTheSigmaFamilyBundle) {
             << " theta=" << worst[3] << " rho=" << worst[4] << "\n";
   // Pinned at the measured worst (A0 r6, 2-figure round-ups; order Δ, S·Γ, vega, θ, rho):
   // the same boundary through two arithmetics (log form vs exp form) and the same bumped
-  // series through two contractions agree to rounding.
-  constexpr std::array<double, 5> kPin = {4.5e-16, 7.8e-14, 2.6e-13, 2.3e-11, 3.6e-13};
+  // series through two contractions agree to rounding. Re-pinned in A0 fix round 1 over
+  // the rows the (σ, q) bundle serves Γ and θ on: 7.8e-14 / 2.3e-11 were band rows.
+  constexpr std::array<double, 5> kPin = {4.5e-16, 3.6e-16, 2.6e-13, 7.3e-16, 3.6e-13};
   EXPECT_GT(rows, 100u);
   for (std::size_t k = 0; k < worst.size(); ++k) {
     EXPECT_LE(worst[k], kPin[k]) << "greek " << k;
