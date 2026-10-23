@@ -2,7 +2,7 @@
 
 // Internal seam (lane C3): the opt-in served call floor (QuoteSliceCallFloor). Called from
 // quote_slice.cpp at two points only - prepare_fit (select_call_floor) and certify_and_serve
-// (lift_to_call_floor, before the first certificate). Definitions live in
+// (lift_to_call_floor, on the certified slice). Definitions live in
 // quote_slice_call_floor.cpp. Not public API.
 
 #include <cstdint>
@@ -25,13 +25,13 @@ namespace atx::vol::detail {
 [[nodiscard]] double call_floor_at(std::span<const QuoteSliceCallFloorLine> lines,
                                    double strike) noexcept;
 
-// Lifts every call node more than the certificate allowance below the expiry's floor onto
-// it, when the lifted nodes pass AmericanPriceSlice::create(`bounds`); otherwise leaves
-// `nodes` unchanged and sets fit.diagnostics.call_floor_refused. Returns the lifted mask
-// (1 = call, one entry per node) or an empty vector when nothing moved. A fit without lines
-// returns empty at once, without touching `nodes`.
-[[nodiscard]] std::vector<std::uint8_t> lift_to_call_floor(QuoteSliceFit &fit,
-                                                           std::vector<AmericanPriceNode> &nodes,
-                                                           const AmericanPriceBounds &bounds);
+// Lifts every call node of the CERTIFIED slice (after certify_and_serve's own repairs) more
+// than the certificate allowance below the expiry's floor onto it, when the lifted nodes pass
+// AmericanPriceSlice::create with the slice's bounds; then replaces `certified` and ORs 1
+// (call) into `moved` (sized to the nodes on first use) at every lifted node. Otherwise leaves
+// both unchanged and sets fit.diagnostics.call_floor_refused. A fit without lines returns at
+// once.
+void lift_to_call_floor(QuoteSliceFit &fit, AmericanPriceSlice &certified,
+                        std::vector<std::uint8_t> &moved);
 
 } // namespace atx::vol::detail

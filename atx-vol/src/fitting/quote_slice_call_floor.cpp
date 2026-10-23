@@ -97,34 +97,37 @@ double call_floor_at(std::span<const QuoteSliceCallFloorLine> lines, double stri
   return floor;
 }
 
-std::vector<std::uint8_t> lift_to_call_floor(QuoteSliceFit &fit,
-                                              std::vector<AmericanPriceNode> &nodes,
-                                              const AmericanPriceBounds &bounds) {
+void lift_to_call_floor(QuoteSliceFit &fit, AmericanPriceSlice &certified,
+                        std::vector<std::uint8_t> &moved) {
   auto &diag = fit.diagnostics;
   diag.call_floor_lifted = 0;
   diag.call_floor_refused = false;
-  if (diag.call_floor_lines.empty()) return {};
-  std::vector<AmericanPriceNode> lifted = nodes;
-  std::vector<std::uint8_t> moved(nodes.size(), 0);
+  if (diag.call_floor_lines.empty()) return;
+  const auto nodes = certified.nodes();
+  const double spot = certified.bounds().spot;
+  std::vector<AmericanPriceNode> lifted(nodes.begin(), nodes.end());
+  std::vector<std::uint8_t> bits(lifted.size(), 0);
   std::size_t count = 0;
   for (std::size_t i = 0; i < lifted.size(); ++i) {
     const double floor = call_floor_at(diag.call_floor_lines, lifted[i].strike);
-    if (lifted[i].call < floor - allowance(bounds.spot, lifted[i].strike)) {
+    if (lifted[i].call < floor - allowance(spot, lifted[i].strike)) {
       lifted[i].call = floor;
-      moved[i] = 1u;
+      bits[i] = 1u;
       ++count;
     }
   }
-  if (count == 0) return {};
+  if (count == 0) return;
   // A floor the slice's own certificate cannot carry (e.g. an earlier expiry's spot above
-  // this one's) is refused, never half applied: the historical prices stay.
-  if (!AmericanPriceSlice::create(lifted, bounds)) {
+  // this one's) is refused, never half applied: the certified prices stay.
+  auto floored = AmericanPriceSlice::create(lifted, certified.bounds());
+  if (!floored) {
     diag.call_floor_refused = true;
-    return {};
+    return;
   }
-  nodes = std::move(lifted);
+  certified = std::move(*floored);
+  if (moved.size() != bits.size()) moved.assign(bits.size(), 0);
+  for (std::size_t i = 0; i < bits.size(); ++i) moved[i] |= bits[i];
   diag.call_floor_lifted = count;
-  return moved;
 }
 
 } // namespace detail

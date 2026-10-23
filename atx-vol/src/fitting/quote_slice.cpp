@@ -1671,9 +1671,6 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         std::max(-q_min, 0.0) * (market.variance_years - event.tau));
   }
   bounds.prepaid_min = std::max(bounds.prepaid_min, 0.0);
-  // Lane C3 (opt-in QuoteSliceCallFloor): the shared call floor, applied only when the
-  // lifted nodes certify, so `certified` below holds whenever a node was lifted.
-  std::vector<std::uint8_t> lifted = detail::lift_to_call_floor(out, prices, bounds);
   auto certified = AmericanPriceSlice::create(prices, bounds);
   const bool channel_mode =
       channel_repair != nullptr && channel_repair->mode == QuoteSliceRepairMode::Channel;
@@ -1684,7 +1681,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   // copied when one of them can run).
   std::vector<AmericanPriceNode> fitted;
   if (!certified && (channel_mode || box_mode)) fitted = prices;
-  std::vector<std::uint8_t> repaired = std::move(lifted); // lifted nodes are moved nodes
+  std::vector<std::uint8_t> repaired;
   if (!certified && repair_half_spreads > 0.0 &&
       repair_convexity(prices, quotes, repair_half_spreads, diag.channel, repaired)) {
     certified = AmericanPriceSlice::create(prices, bounds);
@@ -1715,6 +1712,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   AmericanPriceSlice &accepted = box_certified       ? *box_certified
                                  : channel_certified ? *channel_certified
                                                      : *certified;
+  // Lane C3 (opt-in QuoteSliceCallFloor): the shared call floor on the certified nodes; a
+  // lifted node is a moved node (its row's volatility is re-implied below).
+  detail::lift_to_call_floor(out, accepted, repaired);
   if (q_min == 0.0 && q_max == 0.0 && out.variance_clock_dividends.empty() &&
       diag.effective_rate >= 0.0) {
     const auto joint = check_nondividend_american(accepted, diag.discount);
