@@ -815,6 +815,15 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "outside supported bounds"),
             ({"schema_version": 1, "graded": {"certificate": "box"}},
              "require admission graded"),
+            # Opt-in exact in-box projection rung (lane C4): it backs up the box rung.
+            ({"schema_version": 1, "admission": "graded", "graded": {"inbox_projection": True}},
+             "inbox_projection requires certificate box"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"certificate": "exact", "inbox_projection": True}},
+             "inbox_projection requires certificate box"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"certificate": "box", "inbox_projection": "yes"}},
+             "inbox_projection must be true or false"),
             # Opt-in market wing ceiling (lane L3r1 lever 3).
             ({"schema_version": 1, "admission": "graded",
               "graded": {"wing_mult_source": "quotes"}},
@@ -933,6 +942,38 @@ def test_native_box_certificate_is_opt_in_with_provenance(binary, tmp_path):
     assert exact.returncode == 0, exact.stderr
     assert exact_output.read_bytes() == plain_output.read_bytes()
     assert json.loads(exact.stdout)["policy_definition"]["graded"] == plain_graded
+
+
+def test_native_inbox_projection_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.inbox_projection (lane C4): it runs only where the box rung refused. On clean
+    # quotes every point fit passes the exact certificate, so the predictions are
+    # byte-identical to the box certificate alone; the opt-in provenance is added (the
+    # policy echo and a per-slice record, not attempted). An explicit false adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    outputs = {name: tmp_path / f"{name}.csv" for name in ("box", "inbox", "off")}
+    graded = {
+        "box": {"certificate": "box", "certificate_box_half_ticks": 0.0},
+        "inbox": {"certificate": "box", "certificate_box_half_ticks": 0.0,
+                  "inbox_projection": True},
+        "off": {"certificate": "box", "certificate_box_half_ticks": 0.0,
+                "inbox_projection": False}}
+    reports = {}
+    for name, keys in graded.items():
+        policy = write_policy(tmp_path / f"{name}.json",
+                              {"schema_version": 1, "admission": "graded", "graded": keys})
+        run = invoke(binary, source, outputs[name], "--policy", str(policy))
+        assert run.returncode == 0, run.stderr
+        reports[name] = json.loads(run.stdout)
+    assert outputs["inbox"].read_bytes() == outputs["box"].read_bytes()
+    assert outputs["off"].read_bytes() == outputs["box"].read_bytes()
+    assert reports["inbox"]["policy_definition"]["graded"]["inbox_projection"] is True
+    assert "inbox_projection" not in reports["box"]["policy_definition"]["graded"]
+    assert reports["off"]["policy_definition"] == reports["box"]["policy_definition"]
+    slices = reports["inbox"]["graded_stats"]["slices"]
+    assert slices and all(s["inbox_projection"]["outcome"] == "not_attempted" for s in slices)
+    assert all("inbox_projection" not in s for s in reports["box"]["graded_stats"]["slices"])
+    assert "inbox_projection" not in reports["inbox"]["graded_stats"]
 
 
 def test_native_market_wing_ceiling_is_opt_in_with_provenance(binary, tmp_path):

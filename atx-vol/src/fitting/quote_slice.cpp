@@ -19,6 +19,7 @@
 #include "atx/vol/api/pricing/implied_vol.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "fitting/inbox_projection.hpp"
 #include "fitting/quote_slice_call_floor.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/quote_slice_nodes.hpp"
@@ -1564,6 +1565,12 @@ std::optional<AmericanPriceSlice> box_certify_slice(std::span<const QuoteSliceQu
   record = QuoteSliceRepairRecord{};
   const double h = config.box_half_ticks * config.box_tick;
   auto box = certify_american_box(prices, quote_boxes(prices, quotes, h), bounds);
+  if (!box && config.inbox_projection) {
+    // Lane C4 (opt-in): the exact in-box projection backs up the refused box rung, on the
+    // same boxes; its outcome and conflict are typed in record.inbox.
+    box = detail::project_american_in_box(prices, quote_boxes(prices, quotes, h), bounds,
+                                          box.error().message(), record.inbox);
+  }
   if (!box) {
     record.outcome = box.error().code() == ErrorCode::Unavailable
                          ? QuoteSliceRepairOutcome::Infeasible

@@ -426,6 +426,14 @@ struct QuoteSliceRepairConfig {
   QuoteSliceCertificate certificate = QuoteSliceCertificate::Exact;
   double box_half_ticks = 0.5; // >= 0, finite: each box edge is widened by this many ticks
   double box_tick = 0.01;      // > 0, finite, price units
+  // Opt-in exact in-box projection rung (lane C4, r6 2026-10-23; default off: the historical
+  // path bit for bit). Under the box certificate only (inert under Exact): when
+  // certify_american_box refuses a slice's fitted prices, the fitted grid is projected onto
+  // the certificate's polytope intersected with the same quote boxes by an exact interior-
+  // point method (src/fitting/inbox_projection.hpp); the projected curve is served when the
+  // UNCHANGED AmericanPriceSlice::create passes it, and an empty in-box polytope is typed
+  // InfeasibleData with its conflict (QuoteSliceRepairRecord::inbox). Never widens a box.
+  bool inbox_projection = false;
   // Opt-in market wing ceiling (QuoteSliceWingMultSource); Policy is the historical path.
   QuoteSliceWingMultSource wing_mult_source = QuoteSliceWingMultSource::Policy;
   // Opt-in distance-to-market gate / repair (QuoteSliceMarketDistance, lane L3q); Off is
@@ -463,6 +471,74 @@ enum class QuoteSliceRepairOutcome : std::uint8_t {
 
 [[nodiscard]] const char *to_string(QuoteSliceRepairOutcome value) noexcept;
 
+// ── Exact in-box projection rung (lane C4, r6 2026-10-23; opt-in) ──────────
+// QuoteSliceRepairConfig::inbox_projection. Outcomes of one run of the rung: NotAttempted
+// (key off, or the box certificate passed), Applied (the projected curve passed
+// AmericanPriceSlice::create and replaced the fitted prices), InfeasibleData (no arbitrage-
+// free curve exists inside the boxes: `conflict` names the constraint), NonConverged (the
+// Newton budget ran out; nothing changed), NotCertified (create() refused the projected
+// curve; nothing changed), InvalidInput (malformed nodes, boxes or bounds).
+enum class QuoteSliceInboxOutcome : std::uint8_t {
+  NotAttempted,
+  Applied,
+  InfeasibleData,
+  NonConverged,
+  NotCertified,
+  InvalidInput
+};
+// The conflict of an InfeasibleData outcome. EmptyBox: a node side's quote box misses the
+// certificate's own per-node bounds (intrinsic, upper; the non-dividend call floor).
+// NoConvexCurve: one side's boxes admit no convex curve with the certificate's slopes.
+// AffineBox: at one node no call / put pair inside the side curves' reach meets the affine
+// call-minus-put bound. Coupled: every node passes those tests, yet the interior-point
+// phase I proves that no curve pair meets every constraint at once; `excess` is then its
+// certified lower bound on the least achievable worst violation (price units) and the node /
+// side are those of the constraint carrying the largest dual weight.
+enum class QuoteSliceInboxConflict : std::uint8_t {
+  None,
+  EmptyBox,
+  NoConvexCurve,
+  AffineBox,
+  Coupled
+};
+// Why certify_american_box refused before the rung ran (diagnostic attribution only, read
+// from its message): the box outside the exercise bounds, no convex curve inside the boxes,
+// its Dykstra projection did not settle, or create() refused its per-side projection.
+enum class QuoteSliceBoxRefusal : std::uint8_t {
+  None,
+  ExerciseBounds,
+  NoConvexCurve,
+  NotSettled,
+  CertificateRefused,
+  Other
+};
+
+[[nodiscard]] const char *to_string(QuoteSliceInboxOutcome value) noexcept;
+[[nodiscard]] const char *to_string(QuoteSliceInboxConflict value) noexcept;
+[[nodiscard]] const char *to_string(QuoteSliceBoxRefusal value) noexcept;
+
+// What one run of the in-box projection rung did. Distances are in units of each quoted
+// side's own box half-width (half the quote spread at h = 0): `max_move_half_spreads` from
+// the fitted price, `max_mid_half_spreads` from the box centre (< 1: inside the box).
+// `elapsed_us` is the rung's own steady_clock wall (diagnostic; never a decision).
+struct QuoteSliceInboxRecord {
+  QuoteSliceInboxOutcome outcome = QuoteSliceInboxOutcome::NotAttempted;
+  QuoteSliceBoxRefusal box_refusal = QuoteSliceBoxRefusal::None;
+  QuoteSliceInboxConflict conflict = QuoteSliceInboxConflict::None;
+  Side conflict_side = Side::Call;
+  std::size_t conflict_node = 0;
+  double conflict_strike = 0.0;
+  double conflict_excess = 0.0;
+  std::size_t free_sides = 0;    // node sides the projection may move (lo < hi)
+  std::size_t fitted_outside = 0; // of which the fitted price lies outside [lo, hi]
+  std::size_t constraints = 0;   // barrier rows (implied rows dropped)
+  std::size_t phase1_steps = 0;  // Newton steps proving feasibility
+  std::size_t phase2_steps = 0;  // Newton steps of the projection itself
+  double max_move_half_spreads = 0.0;
+  double max_mid_half_spreads = 0.0;
+  double elapsed_us = 0.0;
+};
+
 // What one channel repair did (or would have done before it was refused).
 struct QuoteSliceRepairRecord {
   QuoteSliceRepairOutcome outcome = QuoteSliceRepairOutcome::NotAttempted;
@@ -481,6 +557,9 @@ struct QuoteSliceRepairRecord {
   // order.
   std::size_t sweeps = 0;
   JointProjectionConflict conflict{};
+  // The box certificate's record only (QuoteSliceDiagnostics::box): what the opt-in exact
+  // in-box projection rung did after certify_american_box refused (lane C4).
+  QuoteSliceInboxRecord inbox{};
 };
 
 // How a fit publishes a served row whose volatility its certified price does not

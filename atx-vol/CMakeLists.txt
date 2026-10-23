@@ -141,6 +141,8 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/quote_slice_call_floor.cpp
     # Lane H1 (r6): live publication of serving records; api/fitting/serve_book.hpp.
     src/fitting/serve_book.cpp
+    # Lane C4 (r6): the opt-in exact in-box projection rung (src/fitting/inbox_projection.hpp).
+    src/fitting/inbox_projection.cpp
     src/fitting/deam_iv_cache.cpp
     src/fitting/quote_surface.cpp
     src/fitting/slice_channel.cpp

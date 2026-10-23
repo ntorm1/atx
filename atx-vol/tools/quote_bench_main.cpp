@@ -1264,6 +1264,34 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         if (d.call_floor_lifted > 0) count_into(graded["call_floor"], "lifted_chains");
         if (d.call_floor_refused) count_into(graded["call_floor"], "refused_chains");
       }
+      if (profile.config.repair.inbox_projection) {
+        // Opt-in in-box projection provenance (lane C4, graded.inbox_projection): the last
+        // box rung run of the served fit (QuoteSliceDiagnostics::box); absent when off.
+        const QuoteSliceInboxRecord &r = d.box.inbox;
+        entry["inbox_projection"] = {
+            {"outcome", to_string(r.outcome)},
+            {"box_outcome", to_string(d.box.outcome)},
+            {"box_refusal", to_string(r.box_refusal)},
+            {"conflict", to_string(r.conflict)},
+            {"conflict_side", r.conflict_side == Side::Call ? "call" : "put"},
+            {"conflict_node", r.conflict_node},
+            {"conflict_strike", r.conflict_strike},
+            {"conflict_excess", r.conflict_excess},
+            {"free_sides", r.free_sides},
+            {"fitted_outside", r.fitted_outside},
+            {"constraints", r.constraints},
+            {"phase1_steps", r.phase1_steps},
+            {"phase2_steps", r.phase2_steps},
+            {"moved_nodes", d.box.nodes},
+            {"max_price_move", d.box.max_price_move},
+            {"max_move_half_spreads", r.max_move_half_spreads},
+            {"max_mid_half_spreads", r.max_mid_half_spreads},
+            {"elapsed_us", r.elapsed_us}};
+        if (r.outcome != QuoteSliceInboxOutcome::NotAttempted) {
+          count_into(graded["inbox_projection"], to_string(r.outcome));
+          if (served) count_into(graded["inbox_projection"], "served_chains");
+        }
+      }
       if (profile.config.repair.market_distance != QuoteSliceMarketDistance::Off) {
         // Opt-in distance-to-market provenance (lane L3q); absent when off.
         entry["market_distance"] = {

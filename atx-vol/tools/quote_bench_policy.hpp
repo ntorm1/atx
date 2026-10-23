@@ -873,6 +873,7 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
   if (repair.certificate == QuoteSliceCertificate::Box) {
     out["certificate"] = "box"; // provenance only when opted in (lane L3r1)
     out["certificate_box_half_ticks"] = repair.box_half_ticks;
+    if (repair.inbox_projection) out["inbox_projection"] = true; // lane C4, when opted in
   }
   if (repair.wing_mult_source == QuoteSliceWingMultSource::Market) {
     out["wing_mult_source"] = "market"; // provenance only when opted in (lane L3r1)
@@ -1231,7 +1232,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "ladder_channel_max_outside_fraction", "ladder_min_outside_quotes", "fit_space",
              "deam_profile", "deam_cache", "rung_memo", "deam_inversion", "confirm", "confirm_k",
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
-             "wing_mult_source", "market_distance", "market_distance_spreads",
+             "wing_mult_source", "market_distance", "market_distance_spreads", "inbox_projection",
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
              "family_native", "publication", "native_route", "reference_budget",
              "serve_records", "serve_record_profile",
@@ -1322,6 +1323,18 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       throw std::runtime_error("Policy graded certificate_box_half_ticks requires certificate box");
     }
     numeric(j, "certificate_box_half_ticks", repair.box_half_ticks, 0, 100);
+    // Opt-in exact in-box projection rung (lane C4; quote_slice.hpp
+    // QuoteSliceRepairConfig::inbox_projection): it backs up the box certificate's rung, so
+    // it requires certificate box; false is the historical path.
+    if (j.contains("inbox_projection")) {
+      if (!j.at("inbox_projection").is_boolean()) {
+        throw std::runtime_error("Policy graded inbox_projection must be true or false");
+      }
+      repair.inbox_projection = j.at("inbox_projection").get<bool>();
+      if (repair.inbox_projection && repair.certificate != QuoteSliceCertificate::Box) {
+        throw std::runtime_error("Policy graded inbox_projection requires certificate box");
+      }
+    }
     // Opt-in market wing ceiling (quote_slice.hpp QuoteSliceWingMultSource, lane L3r1):
     // "policy" is each profile's channel mult_ceil, the historical ceiling.
     if (j.contains("wing_mult_source")) {

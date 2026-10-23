@@ -40,6 +40,7 @@ set(ATX_VOL_SLICE_OWNED_ELSEWHERE
     quote_slice_call_floor                                          # atx-vol-quote-slice-tests
     quote_slice_admission                                           # atx-vol-quote-slice-tests
     fit_fanout_determinism                                          # atx-vol-quote-slice-tests
+    inbox_projection                                                # atx-vol-quote-slice-tests
     american_markov american_markov_batch american_markov_resolvent # atx-vol-american-markov-tests
     american_markov_pwl american_markov_grid pwl_strike
     american_markov_fit american_markov_seed                        # atx-vol-american-markov-*-tests
