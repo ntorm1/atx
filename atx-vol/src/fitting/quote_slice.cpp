@@ -530,6 +530,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.discrete_div_steps = config.discrete_div_steps;
   out.discrete_div_scheme = config.discrete_div_scheme;
   out.floor_policy = config.floor_policy;
+  out.calendar_parity_clamp = config.repair.calendar_parity_clamp; // K4b (opt-in)
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
@@ -1729,8 +1730,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
             timing->deam_family_grid_max_bound_usd =
                 std::max(timing->deam_family_grid_max_bound_usd, fb.bound_usd);
           }
-          return Result<double>{Ok(fb.price)};
           bound = fb.bound_usd;
+          return Result<double>{Ok(fb.price)};
         }
       }
       counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
@@ -1754,11 +1755,11 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       return andersen_lake(market.spot, strike, market.variance_years, sigma,
                            diag.effective_rate, q, side, fast_opts);
     });
-  };
     if (kernel) bound = al_profile_price_bound(AlProfile::Fast, *kernel, market.variance_years);
     return kernel;
-  detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
+  };
   std::vector<std::array<double, 2>> node_bounds; // per strike: call, put (grid_metadata)
+  detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
   std::vector<std::uint64_t> grid_key;
   if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
   if (!grid_key.empty()) grid_key.push_back(fast_grid ? 1u : 0u);
@@ -1781,13 +1782,13 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   const std::vector<AmericanPriceNode> *const memoised =
       grid_key.empty() ? nullptr : memo->grid(grid_key);
   if (memoised != nullptr) prices = *memoised;
-  for (std::size_t s = 0; memoised == nullptr && s < strikes.size(); ++s) {
   if (memoised != nullptr && grid_metadata) {
     // The metadata rides the grid's memo entry (remembered with it, so a hit carries it).
     if (const std::vector<std::array<double, 2>> *const b = memo->grid_bounds(grid_key)) {
       node_bounds = *b;
     }
   }
+  for (std::size_t s = 0; memoised == nullptr && s < strikes.size(); ++s) {
     const double strike = strikes[s];
     const double q = effective_yield(out, calendar_yield_at(out, strike));
     q_min = std::min(q_min, q);
@@ -1807,8 +1808,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       return;
     }
     prices.push_back({strike, *call, *put});
-  }
     if (grid_metadata) node_bounds.push_back(bound);
+  }
   if (memoised == nullptr && !grid_key.empty()) {
     memo->remember_grid(std::move(grid_key), prices,
                         node_bounds.size() == prices.size() ? node_bounds
@@ -1886,7 +1887,6 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       continue;
     }
     detail::clear_identification(row); // a re-certification never keeps earlier labels
-    row.fitted_iv = out.curve->iv(std::log(quote.strike / diag.forward));
     {
       // K4b (m6): the row's grid node's bound (NaN off the native route's family grid).
       const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
@@ -1896,6 +1896,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
                             [quote.side == Side::Call ? 0 : 1]
                : std::numeric_limits<double>::quiet_NaN();
     }
+    row.fitted_iv = out.curve->iv(std::log(quote.strike / diag.forward));
     if (!positive(row.fitted_iv)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
       continue;
@@ -2427,12 +2428,12 @@ void clamp_nodes(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c) 
   }
 }
 
-// K4b declared hunk (C3 review D2, TIGR 20770): the parity-coupled clamp. A call the
-// calendar clamp raised can leave call - put above the certificate's affine bound
-// prepaid_max - K discount_min (AmericanPriceSlice::create: "affine call-minus-put bound
-// violated"); that node's put is raised to the bound when its own calendar cap admits it.
-// Only a node the certificate would refuse (beyond its allowance) moves, so every repair
-// that certified before is unchanged bit for bit.
+// K4b declared hunk (C3 review D2, TIGR 20770): the parity-coupled clamp
+// (QuoteSliceRepairConfig::calendar_parity_clamp, opt-in). A call the calendar clamp raised
+// can leave call - put above the certificate's affine bound prepaid_max - K discount_min
+// (AmericanPriceSlice::create: "affine call-minus-put bound violated"); that node's put is
+// raised to the bound when its own calendar cap admits it. Only a node the certificate would
+// refuse (beyond its allowance) moves, so every repair that certified before is unchanged.
 void couple_call_put(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c,
                      const AmericanPriceBounds &b) {
   for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -2568,7 +2569,7 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
     }
     within = above_floors(fit, nodes, clamp);
   }
-  couple_call_put(nodes, clamp, fit.prices->bounds()); // K4b declared hunk (C3 D2)
+  if (fit.calendar_parity_clamp) couple_call_put(nodes, clamp, fit.prices->bounds()); // K4b
   std::vector<double> call_spread;
   std::vector<double> put_spread;
   node_half_spreads(nodes, quotes, call_spread, put_spread);

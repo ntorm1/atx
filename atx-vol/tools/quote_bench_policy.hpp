@@ -883,6 +883,7 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
         repair.market_distance == QuoteSliceMarketDistance::Gate ? "gate" : "repair";
     out["market_distance_spreads"] = repair.market_distance_spreads;
   }
+  if (repair.calendar_parity_clamp) out["calendar_parity_clamp"] = true; // K4b, when opted in
   if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
     out["ladder"] = "knot-first";
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
@@ -1189,7 +1190,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "wing_mult_source", "market_distance", "market_distance_spreads",
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
              "family_native", "publication", "native_route", "reference_budget",
-             "native_batch", "native_no_leg"});
+             "native_batch", "native_no_leg", "calendar_parity_clamp"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1297,6 +1298,14 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
       } else if (mode != "off") {
         throw std::runtime_error("Policy graded market_distance must be off, gate or repair");
       }
+    }
+    // K4b: the opt-in parity-coupled calendar clamp (quote_slice.hpp
+    // QuoteSliceRepairConfig::calendar_parity_clamp); false is the historical path.
+    if (j.contains("calendar_parity_clamp")) {
+      if (!j.at("calendar_parity_clamp").is_boolean()) {
+        throw std::runtime_error("Policy graded calendar_parity_clamp must be true or false");
+      }
+      repair.calendar_parity_clamp = j.at("calendar_parity_clamp").get<bool>();
     }
     if (j.contains("market_distance_spreads") &&
         repair.market_distance == QuoteSliceMarketDistance::Off) {

@@ -1224,7 +1224,12 @@ TEST(QuoteSliceCalendarParity, ARaisedCallRaisesItsPutToTheAffineBound) {
   QuoteSliceConfig config;
   config.side_policy = QuoteSliceSidePolicy::All;
   config.channel.repair_half_spreads = 0.5;
+  config.repair.calendar_parity_clamp = true; // the opt-in rule under test
   auto fit = fit_quote_slice_channel(market, quotes, config, nullptr);
+  // The historical rule (the default, keys off) refuses the same repair: the fail-on-revert.
+  QuoteSliceConfig historical = config;
+  historical.repair.calendar_parity_clamp = false;
+  auto refused = fit_quote_slice_channel(market, quotes, historical, nullptr);
   ASSERT_TRUE(fit) << fit.error().to_string();
   ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
   const AmericanPriceBounds bounds = fit->prices->bounds();
@@ -1246,6 +1251,11 @@ TEST(QuoteSliceCalendarParity, ARaisedCallRaisesItsPutToTheAffineBound) {
   ASSERT_TRUE(later) << later.error().to_string();
   const std::array<const AmericanPriceSlice *, 1> before{&*earlier};
   const std::array<const AmericanPriceSlice *, 1> after{&*later};
+  ASSERT_TRUE(refused);
+  ASSERT_EQ(refused->fit_status, QuoteSliceFitStatus::Success);
+  double refused_required = 0.0;
+  EXPECT_FALSE(repair_quote_slice_calendar(*refused, quotes, before, after, 2.0,
+                                           &refused_required));
   const std::vector<AmericanPriceNode> original(fit->prices->nodes().begin(),
                                                 fit->prices->nodes().end());
   // 2 half-spreads: the graded policy's rejected-slice retry budget (calendar_repair 0.5 x

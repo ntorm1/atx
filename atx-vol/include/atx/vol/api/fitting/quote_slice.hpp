@@ -431,6 +431,11 @@ struct QuoteSliceRepairConfig {
   // Sweep budget of the bidirectional calendar rung's joint projection (lane C2;
   // project_calendar_joint_bounded, >= 1). The default is the historical 20,000.
   std::size_t joint_max_sweeps = 20000;
+  // Opt-in parity-coupled calendar clamp (lane K4b, C3 review D2; default off: the historical
+  // path bit for bit). In repair_quote_slice_calendar, a node whose clamped call - put leaves
+  // the certificate's affine bound prepaid_max - K discount_min (so AmericanPriceSlice::create
+  // would refuse the slice) has its put raised to that bound inside its own calendar cap.
+  bool calendar_parity_clamp = false;
 };
 
 // InvalidArgument unless the mode, certificate, wing source and market-distance mode
@@ -849,6 +854,9 @@ struct QuoteSliceFit {
   // The fit's identifiability policy (QuoteSliceConfig::floor_policy), kept so a later
   // calendar repair re-implies moved rows under the same rule.
   QuoteSliceFloorPolicy floor_policy = QuoteSliceFloorPolicy::Legacy;
+  // QuoteSliceRepairConfig::calendar_parity_clamp of the fit's config (lane K4b), kept so a
+  // later repair_quote_slice_calendar applies the same rule.
+  bool calendar_parity_clamp = false;
   // Caller-supplied snapshot provenance (clocks, spot and carry versions). fit_quote_slice
   // leaves it default; fit_quote_surface copies QuoteSurfaceExpiry::snapshot.
   QuoteSliceSnapshotInfo snapshot{};
