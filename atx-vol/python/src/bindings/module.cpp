@@ -15,6 +15,7 @@ void bind_backtest(py::module_ &m);
 void bind_analytics(py::module_ &m);
 void bind_dispersion(py::module_ &m);
 void bind_fit(py::module_ &m);
+void bind_quote_slice(py::module_ &m);
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
@@ -60,4 +61,7 @@ PYBIND11_MODULE(_core, m) {
   // is registered by `bind_backtest`, and it returns PricedSurface / AmericanGreeks
   // registered by `bind_surface_db` / `bind_pricing`.
   bind_fit(m);
+  // The quote-slice fit, typed query and one-spot rebase (lane C0). Its call signatures
+  // take Side, which `bind_pricing` registers.
+  bind_quote_slice(m);
 }

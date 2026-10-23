@@ -89,6 +89,7 @@ pybind11_add_module(_core
     src/bindings/analytics.cpp
     src/bindings/dispersion.cpp
     src/bindings/fit.cpp
+    src/bindings/quote_slice.cpp
 )
 target_include_directories(_core PRIVATE src/bindings)
 # api/ restructure (2026-08-14): PRIVATE src/ include root, for parity with
