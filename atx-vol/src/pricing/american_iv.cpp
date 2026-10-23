@@ -2002,6 +2002,15 @@ struct ReferencePoint {
   // if the confirm kernel's tested distance eps_c were violated) makes the bracket
   // inconsistent: no root is served from it (Unresolved).
   bool crossed = false;
+  // K4b (PM item A17; K5's dev200b audit): whether the certified low end is an
+  // ExercisePlateau point. The classified map is the intrinsic exactly up to the plateau's
+  // edge sigma* and the kernel's euro + premium past it, so it JUMPS at sigma* by the
+  // kernel-floor map's own premium there (2.4e-6 on the BABO 3 call, 42 % carry); a price
+  // inside that jump is bracketed by a plateau end and a continuation end with no root
+  // between them. A served root's plateau end is therefore re-decided on the kernel-floor
+  // map (andersen_lake, the accurate map K3's audit re-bisects); a disagreement types the
+  // price price-only (plateau): it lies within the plateau edge's jump.
+  bool lo_plateau = false;
   const auto stop = [&]() -> std::optional<double> {
     if (spent) {
       ++budget->refused;
@@ -2029,6 +2038,7 @@ struct ReferencePoint {
       crossed = true;
       return IvRouteOutcome::Unresolved;
     }
+    if (t == IvReferenceTake::Lower) lo_plateau = e.cls == AlExerciseClass::ExercisePlateau;
     if (e.sigma <= kSigmaLo && e.side >= 0) return IvRouteOutcome::PriceOnlyFloor;
     if (e.sigma >= kSigmaHiCap && e.side <= 0) return IvRouteOutcome::AboveRange;
     return std::nullopt;
@@ -2077,6 +2087,30 @@ struct ReferencePoint {
       }
     }
     if (std::isfinite(p_lo) && std::isfinite(p_hi) && lo <= hi && hi - lo <= w) {
+      if (lo_plateau) {
+        // K4b (A17): the plateau end's side on the kernel-floor map (one evaluation, charged
+        // to the budget like every other; past the per-request cap by at most this one).
+        if (budget != nullptr) {
+          if (budget->evaluations >= budget->max_evaluations ||
+              (wall_budget && budget->wall_ns + wall_now() >= budget->max_wall_ns)) {
+            spent = true;
+            spent_wall = budget->evaluations < budget->max_evaluations;
+            return stop();
+          }
+          ++budget->evaluations;
+        }
+        ++stats.reference_evaluations;
+        ++stats.premium_solves;
+        counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+        const Result<double> a = andersen_lake(S, K, T, lo, r, q, side, kernel);
+        if (!a || !std::isfinite(*a)) {
+          refused = true;
+          return stop();
+        }
+        if (confirm_side(*a, price, eps) >= 0) {
+          return typed(IvRouteOutcome::PriceOnlyPlateau, 0.0, kNaN);
+        }
+      }
       const double gap = p_hi - p_lo;
       const double root = gap > 0.0 ? lo + (price - p_lo) / gap * (hi - lo) : 0.5 * (lo + hi);
       stats.acceptance = RootAcceptance{RootAcceptanceKind::Confirmed,

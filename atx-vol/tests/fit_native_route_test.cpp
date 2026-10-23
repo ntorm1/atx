@@ -1141,5 +1141,53 @@ TEST(FitNativeRoute, LaneVegaHookReplacesTheUncoveredEnclosuresChord) {
   EXPECT_NEAR(rn.iv, rk.iv, kIvRootRequirement);
 }
 
+// PM item A17 (K5's four-cohort K3 audit, dev200b; pre-dates K5 on the root 746154d6): the
+// reference route served a root 0.138 vol from the accurate map's. dev200b chain
+// 452a6746d690b21d (BABO, 0.42 y, q_eff 0.417), the 3 call's mid 4.15 = the intrinsic
+// (S - K = 4.1499998569) + 1.19e-7. The route certifies its bracket on the CLASSIFIED map
+// (Intrinsic region: the intrinsic exactly on the exercise side of B(T)); its low end there
+// is an ExercisePlateau point. The accurate map the audit re-bisects (andersen_lake,
+// KernelFloor: euro + premium floored at the intrinsic) prices that end above the intrinsic
+// by more than the price's 1.19e-7 premium - the two conventions disagree near the plateau's
+// edge by more than the confirm kernel's eps_c. A served root's every end must carry its
+// side on the accurate map too: here the price is within the conventions' distance of the
+// plateau, so it is typed price-only (plateau), never served.
+TEST(FitNativeRoute, PlateauEndOfAReferenceBracketIsReDecidedOnTheAccurateMap) {
+  const double S = 7.1499998569488525, K = 3.0, T = 0.4237929582595825;
+  const double r = 0.04721422493457794, q = 0.41747474283973884;
+  const double price = 4.1499999761581421; // the quote's mid (bid 3.30 / ask 5)
+  for (const double sigma : {0.9, 1.1, 1.149, 1.2, 1.287, 1.3}) {
+    const auto a = andersen_lake(S, K, T, sigma, r, q, Side::Call, std::nullopt);
+    const auto c = andersen_lake_classified(S, K, T, sigma, r, q, Side::Call,
+                                            al_fast_profile(std::nullopt),
+                                            AlExerciseRegion::Intrinsic);
+    ASSERT_TRUE(a && c);
+    std::printf("[K4b A17] sigma %.3f: accurate - intrinsic %.3e, classified %.3e (class %d)\n",
+                sigma, *a - (S - K), c->price - (S - K), static_cast<int>(c->cls));
+  }
+  IvReferenceBudget budget{4, 64};
+  const IvPremiumGate gate = native_gate(&budget);
+  IvPremiumStats st;
+  const IvResult res = american_implied_vol_premium(price, S, K, T, r, q, Side::Call,
+                                                    premium_opts(), nullptr, st, &gate);
+  std::printf("[K4b A17] route %d status %d iv %.10f bracket [%.10f, %.10f] evaluations %u\n",
+              static_cast<int>(st.route), static_cast<int>(res.status), res.iv,
+              st.acceptance.lo, st.acceptance.hi,
+              static_cast<unsigned>(st.reference_evaluations));
+  if (res.status == IvStatus::Ok) {
+    // K3's audit: the accurate map straddles the price within the requirement of the root.
+    const auto below = andersen_lake(S, K, T, res.iv - kIvRootRequirement, r, q, Side::Call,
+                                     std::nullopt);
+    const auto above = andersen_lake(S, K, T, res.iv + kIvRootRequirement, r, q, Side::Call,
+                                     std::nullopt);
+    ASSERT_TRUE(below && above);
+    EXPECT_LE(*below, price) << "served " << res.iv << " is not the accurate map's root";
+    EXPECT_GE(*above, price) << "served " << res.iv << " is not the accurate map's root";
+  }
+  EXPECT_EQ(st.route, IvRouteOutcome::PriceOnlyPlateau);
+  EXPECT_NE(res.status, IvStatus::Ok);
+  EXPECT_EQ(st.acceptance.kind, RootAcceptanceKind::None); // nothing for the audit to serve
+}
+
 } // namespace
 } // namespace atx::vol
