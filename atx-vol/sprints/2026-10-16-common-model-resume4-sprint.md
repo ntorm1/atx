@@ -1102,3 +1102,136 @@ final grid / endpoints (a Fast-profile vector kernel; the AVX2 boundary batch bu
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cl-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2cl-20261023-integrate\`.
+
+## W2c-m / r6 integration of P0, C4, A1 and U0: all-core scheduling, in-box projection, analytics, universe census; the pre-Q0 root (vol-sota master plan, 2026-10-23)
+
+Lane W2c-m (run `vol-sota-r6-20261023`, pool-3) merged the approved P0 (all-core scheduling and the Eigen
+determinism pin on the ROOT `CMakeLists.txt`), C4 (in-box projection rung), A1 (analytics and session wiring) and
+U0 (universe census tools and docs) lanes into the root `feat/vol-resume5-20261022`, `--no-ff`, on top of
+`1a519bac`, in the order P0 -> C4 -> A1 -> U0 (both phase-2 SHAs arrived before phase 1 ended, so the run went
+through without an interim stop). Every new key stays opt-in; no default promoted; nothing pushed. Light gates (user
+ruling): per merge only the owning suites; the gate list once at the end.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `99434d7f` | merge P0 `989e7e96` (review APPROVE) | `CHANGELOG.md` | union, no semantic glue; `configure` once after (Eigen pin) |
+| `9ae753ea` | merge C4 `f285af8a` (review APPROVE with deviations; G4 MISS recorded) | `atx-vol/CMakeLists.txt`, `tests/CMakeLists.txt`, `tests/slices.cmake` | union, no semantic glue |
+| `c3c96145` | merge A1 `a6f19256` (review BLOCK @ 7aee34bb, fix round 1, PM diff re-review ADDRESSED) | `CHANGELOG.md` | union, no semantic glue |
+| `546201d8` | merge U0 `4e9125c6` (review APPROVE, no fix round) | `CHANGELOG.md` | union, no semantic glue |
+
+**Conflict resolution.** CHANGELOG: the root's entries kept, each lane's entries added (entry-set checks 145 = 143
++ 2, 146 = 145 + 1 (C4 auto-merged where C4 placed it), 147 = 146 + 1, 148 = 147 + 1). `atx-vol/CMakeLists.txt`:
+H1's `serve_book.cpp`, then C4's `inbox_projection.cpp` (A1's analytics sources and U0's tool target auto-merged).
+`tests/CMakeLists.txt`: the quote-slice target lists P0's `fit_fanout_determinism_test.cpp` and C4's
+`inbox_projection_test.cpp`, the suite regex P0's `FitFanoutDeterminism.* FitFanoutDeterminismChild.*` and C4's
+`InboxProjection.* QuoteSliceInboxProjection.*`, each once (A1's target and U0's pytest line auto-merged).
+`slices.cmake`: both owned-elsewhere stems. `quote_slice.cpp` auto-merged and checked function by function: C4's one
+hook in `box_certify_slice` is byte-equal to C4's blob; `certify_and_serve` (C3's lift, H1's hand-off, K4b's grid
+block), `prepare_fit`, `repair_quote_slice_calendar` (K4b's TIGR call), `evaluate_quote_slice` (H1's fast path) and
+`couple_call_put` are byte-equal to the previous root's. `quote_surface.cpp` auto-merged (P0's `for_each_expiry`
+vs K4b's calendar trial copy). The graded allow-list has 44 keys, none twice. A1 has no hunk in `session.cpp`,
+`priced_surface` or `chain_tick` (its wiring is the new `served_session` TU); U0's query-load tool compiles on the
+merged root's serve-record API unchanged.
+
+**Diff proof** (per file, `git diff` bodies vs the lane blob and vs the previous root blob): P0 49 EQUAL_SEQ; C4 57
+EQUAL_SEQ + 2 DIFFER = `tests/CMakeLists.txt` on both sides, exactly the union lines; A1 60 EQUAL_SEQ; U0 62
+EQUAL_SEQ.
+
+**Per-merge owning suites** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`). P0: `^atx-vol-quote-slice$` 1/1 (265
+gtests: 264 + P0's child-only probe skipped), `FitFanout*` 6/6 + 1 skip, `^pricing/PricingExecutor\.` 23/23 (L575
+passes; one case skips at cap 3). C4: quote-slice 278 (277 + the probe), `InboxProjection` / `QuoteSliceInboxProjection`
+/ `QuoteSlicePublication` 41/41, CLI pytest 97. A1: `^served-analytics:` 38/38, `^serve-record:` 62/62. U0:
+`atx-vol-quote-query-load` builds, `test_universe_census.py` 44 passed, `^atx-vol-quote-benchmark-tools$` 1/1.
+
+**Gates on the final code `546201d8`** (the docs commit changes `.md` files only):
+- The ROOT `CMakeLists.txt` Eigen pin reaches 844 of 854 vol-rel TUs (the 10 others have no Eigen); the rebuild ran
+  in bounded batches.
+- 9/9 default hashes byte-identical at the runner's default workers (2) AND at workers = 1 (quote-bench `18c000ea`),
+  both `sha256sum -c` logs persisted (the w2 log byte-equal to W2c-l's), stderr files 0 bytes: P0's determinism
+  headline holds on the merged binary.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (bin byte-equal to W2c-l's; the Eigen pin moves no AL number).
+- Name set at cap 3: `52324ef8` exactly (W2c-l's set minus the L575 flake, fixed by P0); all `^(pricing|simd)/` names
+  1064, unchanged.
+- Combined anchored ctest (W2c-l regex + `^served-analytics:` + `^pricing/PricingExecutor\.`), native excluded:
+  296/296 (297 listed = 236 + 38 + 23); CLI pytest 196 (195 + C4's opt-in provenance test).
+- PCH-off (`vol-hygiene`): the closure of the 8 headers changed `1a519bac..546201d8`, 52 configured TUs, 3 batches
+  exit 0, 0 diagnostics.
+- Keys-ON (light ruling): K4 speed arm SPY `0c18287f` / dev200b `1524ce15` MATCH, lost 0 / gained 0 and every
+  served price bit-equal vs W2c-l; K3 SPY audit 29,411 typed roots, 0 violations, 0 unresolved (dev200b 61,591, 0 /
+  0); C4's `C4-inbox-h0` SPY row `c9d14f14` MATCH: 26 / 33 served expiries, 18 rung runs `applied`, publication /
+  label violations 0 / 0, per-expiry served counts and grades equal to C4's run; C3 dev200b combined-h0 `c629ae54`
+  and dev200 call floor `2644cafe` MATCH. Not run: the 31-row keys-ON table, cohort5 / dev200 arms, a second
+  10-trial row, A1's bench row (its bench target builds on vol-rel-avx2).
+
+**G3 (development row, merged root).** SPY, policy `k4b-batch` (`31228cb2`), B0's `run_cold_trials.ps1`, 10 fresh
+processes, `ATX_VOL_FIT_WORKERS=1`, CPU 6 P core, sibling 0/10 contended, host load 25 % before / 42 % after (no
+other live lease), binary `18c000ea`, predictions `622b6795` in all 10 (= W2c-l's batch SPY id): min / median / p95 /
+max **2.772 / 2.828 / 3.003 / 3.096 s** (runner p95; `g3_summary.py` p95 3.096), beside W2c-l's 2.673 / 3.005 / 3.220 /
+3.273. Stage medians (ms): inverses 1,148 (family accept = K3's enclosure 686, confirm 268 = 5,637 solves at 47.6 us,
+lane 65, leg 86), final grid 578 (family 304 + kernel 239), endpoints 394, reference exceptions 346, family build
+225, curve / repair 109. No P0 effect expected or seen on the serial row (width 1 runs inline).
+G3 MISS: SPY cold calibration median 2.828 s development row vs the 1 s bar; dominating remaining stage inverses
+1,148 ms, of which K3's enclosure (`family_price_bounded` x 2 per root) 686 ms, then the final grid 578 ms. §7 "Can
+the native batch route reach 950 ms?" stays OPEN (next challenger unchanged: a cheaper validated per-point bound
+evaluation, then the final grid / endpoints on a Fast-profile vector kernel).
+
+**F3 all-core row (development row, merged root; P0's recipe).** SPY, K4 speed arm (`1a488f48`), P0's
+`f3_trials.py`, `ATX_VOL_FIT_WORKERS=16`, mask `0xffff`, 10 fresh processes, host load 22-45 % before each trial,
+predictions `0c18287f` in all 10 (= the w2 speed-arm id: width-invariant): `cold_calibration_s` min / median / p95 /
+max **0.861 / 0.905 / 0.962 / 0.999 s** beside P0's 1.103 / 1.182 / 1.312 / 1.316 s (P0's root lacked K5 / K4b);
+sum of chains median 7.35 s, longest chain median 0.519 s.
+F3 MISS (G7): 0.905 s vs the 150 ms bar; dominating: SPY's longest single chain (0.519 s at width 16), which no width
+can hide; per-chain cost (inverses, final grid) is the lever, as for G3.
+
+**G4 (merged root, C4's arm).** G4 MISS: SPY served expiries 26 / 33 with `graded.inbox_projection` (bar >= 31 / 33;
+`combined-h0` 17), SPY coverage 78.25 % (10,068 / 12,866 eligible rows; bar 95 %), containment 99.50 %, violations
+0 - the same bytes as C4's tip on the merged root. Dominating stage for coverage: the surface calendar stage (C2's
+joint calendar rung's non-settling Dykstra, `joint_nonconverged` 8 on SPY) refusing 4 projected expiries (+ 2 never
+projected); for cost: `final_grid_validation` (re-implication of moved nodes; C4's arm 63.5 s cold vs 17.4 s). And
+G4 needs G3's < 1 s on the same binary / configuration, which is open. Next experiments: an exact joint calendar
+projection (C4's LP: -> 31 / 33, 94.0 %), then cheap re-implication of moved nodes.
+
+**G6 (analytics product, A1 on the merged root).** OPEN. On the merged root: A1's 38 suites green (declared hedge
+Greeks, Taylor / exact scenarios with failed exposure and like-for-like `matched_*` totals, Neumaier attribution
+bit-identical across workers, European-only outputs refused on the quoting surface, `ServedSession` wiring) and
+the serving suites 62/62. Lane-reported (A1's binary, loaded host, not re-run): Taylor remainder coverage spot
+988/988, vol 507/516, time 252/252, mixed 5443/5444; chain per-contract Taylor p50 1.50 ms / exact 3.42 ms (30
+cells); determinism 0 / 30 cells differ at workers 1/2/4. G6 stays OPEN: the legacy `session.cpp` / `PricedSurface`
+/ `chain_tick` path is not routed through the book (A1's additive wrapper is), H1's latency bars MISS (book tier-0
+p50 197-246 ns vs 150 ns, mixed 300-chain 183-513 us vs 100 us), and the per-contract Taylor cost is dominated by the
+remainder estimate (up to 9 cold solves per unique).
+
+**G7 (universe robustness).** OPEN. U0's census (binary `78f0ece2` on `989e7e96`, before C3 / K5 / K4b / H1; not
+re-run here per the ruling): 37,086 / 37,086 chains in 322.2 s of the 3,600-s cap, 0 exceptions / timeouts /
+memory-cap kills, 33.9 MiB peak per process, served 76.4 % of rows (82.5 % of eligible), deterministic (S1 == S2,
+72 / 72 job hashes); 6 M queries at 20,000 / s beside the board, 0 torn, 0 stale. F3 MISS above (0.905 s merged
+root); F4 MISS on the tail (P0: dev200 per-expiry p99 236.9 ms vs 100 ms); F5 MISS (P0: dev200 w16 16.48 s vs 10 s;
+the serial-surface floor is 12.98 s - dominating: quote-bench fits surfaces one after another, so F5 needs
+cross-surface parallelism). Q0 re-runs the census sample (`U0 E\sample\plan`) on this root.
+
+### Deferred minors (W2c-m: P0, C4, A1 and U0 reviews, fix rounds, integration)
+- P0 (Q0): `fit_fanout_determinism_test.cpp` and `fit_native_route_test.cpp` compile into two executables each
+  (quote-slice tests + the monolith; fit_native_route also into the misc slice) - dedupe; the in-process width test
+  (4 small expiries) would not flip on the old root, only the pinned P/E child probe is RED on revert - add the
+  cohort5 SPY chain; the default-policy widths 8 / 16 and dev200 w2 / w4 cells were skipped by ruling;
+  `fit_scheduler.hpp`'s "pinning changes only WHERE a task runs" comment is true only with the Eigen pin; B0's
+  runner is single-CPU (multi-worker trials need `f3_trials.py`).
+- C4: `tests/inbox_projection_test.cpp:275` is 112 columns; NonConverged rollback is tested on the pure function,
+  not at slice level (add when the Newton budget is configurable); the speed lever has an attribution but no target
+  number (Q0 names one); dev200b loses 44 rows on 2 chains to `calendar_arbitrage` (typed; containment -0.01 pp);
+  Q2 may not promote the rung until moved-node re-implication is cheap.
+- A1 (Q0): the legacy session path is not routed through the book (declared deviation); every A1 latency is a
+  loaded-host row; the remainder estimate is Sampled, not a bound, and misses at the exercise-edge kink in sigma;
+  A1's CHANGELOG entry still says "34" tests (38 after fix round 1); fix round 1's null guard is defensive
+  (`ServeBook` stores an empty version at construction).
+- U0 (Q0): the query tool's stale check is near-vacuous by construction (one reader; `current` stored before
+  `published`) - say so when quoting "stale 0"; universe queue ages are not instrumented (only SPY re-fits);
+  response tails are attributed to preemption by inference; R1 (5 chains with a non-finite / negative fitted node
+  price), R2 (6 chains with an invalid certification-grid volatility), R3 (4 Legendre chains, to classify) are
+  routed with per-underlier reproducers; the census is of `989e7e96`'s binary.
+- W2c-m integration: no semantic fix; the rebuild after the Eigen pin was ccache-warm (P0 / U0 / reviewers had
+  compiled most TUs with the pin). Not run under the light ruling: the 31-row keys-ON table, cohort5 / dev200 arms,
+  a second 10-trial row, the A1 bench row, a census re-run, ForceScalar and the umbrella suite.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cm-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2cm-20261023-integrate\`.
