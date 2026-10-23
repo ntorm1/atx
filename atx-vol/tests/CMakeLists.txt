@@ -126,6 +126,26 @@ add_test(NAME atx-vol-discrete-div-kernel COMMAND atx-vol-discrete-div-kernel-te
 set_tests_properties(atx-vol-discrete-div-kernel PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# The INDEPENDENT cash-dividend reference (src/pricing/american_discrete_div_reference.hpp,
+# lane D0 2026-10-22). One focused executable, two ctest cases: the engine mechanics
+# (fast label) and the data-driven matrix against the lattice kernel (slow label; its
+# suite is also listed in ATX_VOL_SLOW_FILTER below so it stays slow-labelled if it is
+# ever compiled into atx-vol-tests).
+add_executable(atx-vol-discrete-div-reference-tests
+    american_discrete_div_reference_test.cpp american_discrete_div_reference_matrix_test.cpp)
+target_link_libraries(atx-vol-discrete-div-reference-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-reference-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-discrete-div-reference COMMAND atx-vol-discrete-div-reference-tests
+    "--gtest_filter=-DiscreteDivReferenceMatrix.*")
+set_tests_properties(atx-vol-discrete-div-reference PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+add_test(NAME atx-vol-discrete-div-reference-matrix COMMAND atx-vol-discrete-div-reference-tests
+    "--gtest_filter=DiscreteDivReferenceMatrix.*")
+set_tests_properties(atx-vol-discrete-div-reference-matrix PROPERTIES
+    LABELS "atx_vol_slow" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}" TIMEOUT 1200)
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)
@@ -214,10 +234,27 @@ add_executable(atx-vol-sigma-q-family-alloc-tests
     american_sigma_q_family_alloc_test.cpp support/alloc_counter.cpp)
 target_link_libraries(atx-vol-sigma-q-family-alloc-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
-target_include_directories(atx-vol-sigma-q-family-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# K1 (r5): the fused price + vega entries are internal (src/pricing/american_sigma_q_family.hpp).
+target_include_directories(atx-vol-sigma-q-family-alloc-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-tests)
 set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
+# Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
+# arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
+# in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
+# tools target, hence the guard.
+if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-bench-clocks-tests bench_clocks_test.cpp)
+    target_link_libraries(atx-vol-bench-clocks-tests
+        PRIVATE atx-vol-bench-clocks atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-bench-clocks-tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_test(NAME atx-vol-bench-clocks COMMAND atx-vol-bench-clocks-tests)
+    set_tests_properties(atx-vol-bench-clocks PROPERTIES
+        LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+endif()
 
 add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
 target_link_libraries(atx-vol-umbrella-tests PRIVATE
@@ -252,6 +289,7 @@ add_executable(atx-vol-tests
     american_sigma_q_family_test.cpp
     american_family_error_test.cpp
     american_family_root_audit_test.cpp
+    american_sigma_q_family_vega_test.cpp
     counters_test.cpp
     phase_profile_test.cpp
     correction_test.cpp
@@ -745,7 +783,7 @@ gtest_discover_tests(atx-vol-discrete-div-tests
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*:AmericanFamilyRootAudit.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*:DiscreteDivReferenceMatrix.*:AmericanFamilyRootAudit.*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a

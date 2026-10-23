@@ -59,7 +59,7 @@ These ran on code tip `ce22bdbf`. Quote-bench binary `7bf84c23`, `ATX_VOL_FIT_WO
 | gate | result |
 | --- | --- |
 | B0 preconditions | root = `9cfd3dd0` (R0 G0); lineage as above; patch-ids: `9baa6d76` equal, `e648da0c` differs in the key-list hunk only (needs the fresh review B0.4 names); certificate grep exit 1 |
-| B1 build | 4 targets exit 0, 0 warnings. Bisect `check` at `ecf1e6c3`: NOT RUN (the detached checkout was refused by the session's permissions) |
+| B1 build | 4 targets exit 0, 0 warnings. Bisect `check` at `ecf1e6c3`: not run by R1-B (the detached checkout was refused by the session's permissions); RUN by the R1-B reviewer in a leased tree: `check -Preset vol-rel` exit 0, 0 warnings, for `deam_iv_cache.cpp`, `quote_slice.cpp` and the M1 test TU `quote_slice_vol_space_test.cpp` (`lane-review-R1B-owner-rebase-r5-report.md`, Evidence 3) |
 | B2 ctest | quote-slice 183 / 183 (subset 31 = p2 29 + 2 M1); pricing 54 / 54 (`deep ITM put: native fallback 0`); chain-batch 31 / 31; native CLI 172 passed (incl. both `family_native` refusals) |
 | B3 defaults | 9 / 9 MATCH: dev200 / dev200b auto `c89d0739` / `4b273b08`; graded dev200 `2bc7777d`, dev200b `ed34eef7`, cohort5 `45e491ea`, SPY `feac8d2c`; divsched `abc75955` / `747d3e6c`; SPY kill switch `087e6a54` |
 | B4 fingerprint | `53c4df68` MATCH (vol-rel-avx2) |
@@ -84,7 +84,12 @@ prices still move, by up to:
 | dev200b | 2.7e-8 |
 
 So the cohort5 move is above the 4.6e-8 that the owner reported on SPY alone. Where the moves are:
-- cohort5: MSTR long-dated far-OTM calls, |dsigma| <= 2.8e-8 (inside the 1e-7 IV tolerance).
+- cohort5: MSTR long-dated far-OTM calls. The 2.8e-8 is the FITTED-CURVE VOL delta ON vs OFF (|dsigma_fit| <=
+  2.8e-8 in `predicted_vol`), not a root error: the served move is exactly vega x dsigma_fit (MSTR K 470: 40.2948 x
+  2.7742e-8 = 1.1179e-6 USD; `lane-review-R1B-owner-rebase-r5-report.md`, F-R1B-1 ruling). Root-level 1e-7
+  compliance of the native roots rests only on Newton distances (B7(b), <= 2.3e-10). A bracketed root-error record
+  for the native roots is still owed by K3, and it is a precondition for any `family_native` promotion, beside MJ1
+  and MJ2.
 - dev200: META and ASML chains.
 
 The same move appears with the Fast grid, so the native iterates cause it, not the family grid. It is recorded as a named

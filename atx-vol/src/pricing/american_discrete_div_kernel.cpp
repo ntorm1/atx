@@ -783,7 +783,11 @@ american_discrete_div_implied_vol(double price, double S, double K, double T, do
                                   DiscreteDivScheme scheme, const DiscreteDivIvOpts &opts,
                                   DiscreteDivWorkspace &workspace) {
   Inverter inverter(price, S, K, T, r, q, side, dividends, steps, scheme, opts, workspace);
-  return inverter.run();
+  Result<DiscreteDivIvResult> out = inverter.run();
+  if (out) {
+    out->convention = discrete_div_convention(scheme);
+  }
+  return out;
 }
 
 } // namespace atx::vol

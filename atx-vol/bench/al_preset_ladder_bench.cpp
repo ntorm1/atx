@@ -77,6 +77,7 @@
 #include "pricing/american_boundary.hpp"      // L2h-c: amer:: seam for the sqbuild parts row
 #include "pricing/american_detail.hpp"
 #include "pricing/american_sigma_family.hpp" // L3g: sigma_family_detail::family_rho_variants
+#include "pricing/american_sigma_q_family.hpp" // K1: the fused price + vega rows (sqfused)
 #include "pricing/scalar_erfc.hpp"
 #include "simd/american_boundary_nodes_avx2.hpp" // L2h-c: the 4-lane node solve (parts row)
 #include "atx/vol/api/simd/cpu.hpp"              // L2h-c: SimdIsa override for sqbuild rows
@@ -3144,6 +3145,268 @@ const bool kRegisteredSqBuild = [] {
     if (s == SqSet::Spy23) {
       benchmark::RegisterBenchmark("american/sqbuild/spy23/price_strikes300",
                                    [](benchmark::State &state) { run_sqbuild_strikes(state); })
+          ->Iterations(1)
+          ->Unit(benchmark::kMillisecond);
+    }
+  }
+  return true;
+}();
+
+// ── K1 (r5, 2026-10-22): fused price + vega cost table on the (σ, q) family ─────────────
+//
+//   * ATX_VOL_AL_SQFUSED=1 registers (inputs: the sqfamily env files above):
+//       american/sqfused/<set>/nq4/ns<M>  for M in {12, 16}. One family per (S, T, r, side)
+//         group as run_sq_group lays it out (default ISA build: the AVX2 nodes on an AVX2
+//         host), every contract at its OWN q at the group's σ grid. Per family (median of
+//         5): build_us (prepare), table_us (build_premium_table into a fresh table: the
+//         time-grid precontraction), tile_us (contract_q, per distinct q). Per query (3
+//         timed passes each, p50): price_us (price(): price_on, the default), chord_us
+//         (price_and_chord: the current two-price slope), fused_po_us (the one-shot
+//         stages with want_vega false: the fused PRICE-only), fused_us (price_and_vega:
+//         one-shot price + vega), pre_us (price_vega_on on a prebuilt precontracted
+//         tile), strikes_us_per_strike (price_vega_strikes over
+//         the group's strikes at one (σ, q)), and the scalar baseline on a sample of 16
+//         queries per group: scalar_price_us (one cold andersen_lake at the contract's q)
+//         and scalar_pv_us (two cold solves, σ and σ + kAlPackSigmaBump: the scalar price
+//         + slope). Break-even (evaluations per family at which build + N fused calls
+//         beat N scalar price + vega calls): breakeven_oneshot = build / (scalar_pv −
+//         fused), breakeven_table = (build + table + tile) / (scalar_pv − pre).
+//         Memory: state_bytes (family), table_bytes, tile_bytes. Accuracy: the fused vs
+//         price() max |dP| / max(P, 1).
+
+void run_sqfused(benchmark::State &state, SqSet set, unsigned n_sigma) {
+  using namespace atx::vol;
+  namespace sq = sigma_q_family_detail;
+  const SqData &d = sq_data(set);
+  if (d.pts == nullptr || d.pts->empty()) {
+    state.SkipWithError("no contracts (unreadable or empty input file)");
+    return;
+  }
+  const std::vector<GridPt> &pts = *d.pts;
+  constexpr unsigned kNq = 4;
+  std::vector<double> build_us, table_us, tile_us, state_b, table_b;
+  std::vector<double> price_us, chord_us, fused_po_us, fused_us, pre_us, strike_us;
+  std::vector<double> scalar_price_us, scalar_pv_us, be_oneshot, be_table;
+  double cold_groups = 0.0;
+  double max_dp = 0.0;
+  double queries = 0.0;
+  for (auto _ : state) {
+    for (const SqGroup &g : d.groups) {
+      const AlExpiryGeometry geo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+      AlSigmaQFamily qf(geo, g.side, g.S);
+      std::vector<double> reps;
+      for (int rep = 0; rep < 5; ++rep) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Status st = qf.prepare(g.s_lo, g.s_hi, static_cast<std::uint16_t>(n_sigma), g.q_lo,
+                                     g.q_hi, static_cast<std::uint16_t>(kNq));
+        const double us = us_since(t0);
+        if (!st) {
+          reps.clear();
+          break;
+        }
+        reps.push_back(us);
+      }
+      if (reps.empty()) {
+        cold_groups += 1.0;
+        continue;
+      }
+      const double b_us = median_of(reps);
+      build_us.push_back(b_us);
+      state_b.push_back(static_cast<double>(qf.state_bytes()));
+      // The time-grid precontraction: a fresh table per rep (its allocation included).
+      std::vector<double> treps;
+      std::unique_ptr<sq::PremiumTable> table;
+      for (int rep = 0; rep < 5; ++rep) {
+        auto t = std::make_unique<sq::PremiumTable>();
+        const auto t0 = std::chrono::steady_clock::now();
+        const sq::FusedStatus ts = sq::build_premium_table(qf, *t);
+        treps.push_back(us_since(t0));
+        if (ts != sq::FusedStatus::Ok) {
+          state.SkipWithError("build_premium_table refused");
+          return;
+        }
+        table = std::move(t);
+      }
+      const double t_us = median_of(treps);
+      table_us.push_back(t_us);
+      table_b.push_back(static_cast<double>(table->bytes()));
+      // One precontracted tile per distinct q of the group.
+      std::map<double, sq::QTile> tiles;
+      std::vector<double> tile_reps;
+      for (const std::size_t i : g.idx) {
+        if (tiles.count(pts[i].q) != 0u) {
+          continue;
+        }
+        auto &slot = tiles[pts[i].q];
+        const auto t0 = std::chrono::steady_clock::now();
+        const sq::FusedStatus a = sq::contract_q(*table, pts[i].q, slot);
+        tile_reps.push_back(us_since(t0));
+        if (a != sq::FusedStatus::Ok) {
+          state.SkipWithError("contract_q refused");
+          return;
+        }
+      }
+      const double tl_us = median_of(tile_reps);
+      tile_us.push_back(tl_us);
+      const auto *st = sq::QFamilyAccess::state(qf);
+      std::vector<double> g_fused;
+      std::vector<double> g_pre;
+      for (const std::size_t i : g.idx) {
+        const GridPt &p = pts[i];
+        const auto &tl = tiles.at(p.q);
+        for (const double sigma : g.sigmas) {
+          queries += 1.0;
+          for (int pass = 0; pass < 3; ++pass) {
+            auto t0 = std::chrono::steady_clock::now();
+            AlSigmaQFamilyPrice pp = qf.price(p.S, p.K, sigma, p.q);
+            price_us.push_back(us_since(t0));
+            benchmark::DoNotOptimize(pp);
+            t0 = std::chrono::steady_clock::now();
+            AlSigmaQFamilyChord ch = qf.price_and_chord(p.S, p.K, sigma, p.q);
+            chord_us.push_back(us_since(t0));
+            benchmark::DoNotOptimize(ch);
+            t0 = std::chrono::steady_clock::now();
+            {
+              sq::PremiumNodes pn;
+              (void)st->lay_premium_nodes(pn);
+              sq::QCarry c;
+              sq::carry_at(pn, g.side, g.r, p.q, c);
+              sq::NodeBoundary nb;
+              st->boundary_at_nodes(pn, sigma, p.q, nb);
+              const bool call = g.side == Side::Call;
+              sq::FusedPriceVega po = sq::premium_pass(
+                  pn, c, nb, call ? p.K : p.S, call ? p.S : p.K, st->ws->fast, false);
+              benchmark::DoNotOptimize(po);
+            }
+            fused_po_us.push_back(us_since(t0));
+            t0 = std::chrono::steady_clock::now();
+            sq::FusedPriceVega fv = sq::price_and_vega(qf, p.S, p.K, sigma, p.q);
+            const double fu = us_since(t0);
+            fused_us.push_back(fu);
+            g_fused.push_back(fu);
+            benchmark::DoNotOptimize(fv);
+            t0 = std::chrono::steady_clock::now();
+            sq::FusedPriceVega tv = sq::price_vega_on(*table, tl, p.S, p.K, sigma);
+            const double pu = us_since(t0);
+            pre_us.push_back(pu);
+            g_pre.push_back(pu);
+            benchmark::DoNotOptimize(tv);
+            if (pass == 0 && pp.status == AlSigmaQFamilyStatus::Ok) {
+              max_dp = std::max(max_dp, std::abs(fv.price - pp.price) / std::max(pp.price, 1.0));
+            }
+          }
+        }
+      }
+      // The strike vector at one (σ, q): every strike of the group.
+      {
+        std::vector<double> K;
+        for (const std::size_t i : g.idx) {
+          K.push_back(pts[i].K);
+        }
+        std::vector<double> op(K.size(), 0.0);
+        std::vector<double> ov(K.size(), 0.0);
+        const double sigma = std::sqrt(g.s_lo * g.s_hi);
+        const double q = 0.5 * (g.q_lo + g.q_hi);
+        std::vector<double> sreps;
+        for (int rep = 0; rep < 5; ++rep) {
+          const auto t0 = std::chrono::steady_clock::now();
+          sq::FusedStatus fs = sq::price_vega_strikes(qf, g.S, K, sigma, q, op, ov);
+          sreps.push_back(us_since(t0) / static_cast<double>(K.size()));
+          benchmark::DoNotOptimize(fs);
+        }
+        strike_us.push_back(median_of(sreps));
+      }
+      // The scalar andersen_lake baseline on 16 spread queries of the group.
+      std::vector<double> g_scalar_pv;
+      const std::size_t stride = std::max<std::size_t>(1u, g.idx.size() / 8u);
+      for (std::size_t l = 0; l < g.idx.size() && g_scalar_pv.size() < 16u; l += stride) {
+        const GridPt &p = pts[g.idx[l]];
+        for (const double sigma : {g.sigmas.front(), g.sigmas[g.sigmas.size() / 2]}) {
+          auto t0 = std::chrono::steady_clock::now();
+          Result<double> a = andersen_lake(p.S, p.K, p.T, sigma, p.r, p.q, p.side);
+          scalar_price_us.push_back(us_since(t0));
+          benchmark::DoNotOptimize(a);
+          t0 = std::chrono::steady_clock::now();
+          Result<double> b0 = andersen_lake(p.S, p.K, p.T, sigma, p.r, p.q, p.side);
+          Result<double> b1 =
+              andersen_lake(p.S, p.K, p.T, sigma + kAlPackSigmaBump, p.r, p.q, p.side);
+          const double pv = us_since(t0);
+          benchmark::DoNotOptimize(b0);
+          benchmark::DoNotOptimize(b1);
+          scalar_pv_us.push_back(pv);
+          g_scalar_pv.push_back(pv);
+        }
+      }
+      const double s_pv = median_of(g_scalar_pv);
+      const double f_pv = median_of(g_fused);
+      const double t_pv = median_of(g_pre);
+      if (s_pv > f_pv) {
+        be_oneshot.push_back(b_us / (s_pv - f_pv));
+      }
+      if (s_pv > t_pv) {
+        be_table.push_back((b_us + t_us + tl_us * static_cast<double>(tiles.size())) /
+                           (s_pv - t_pv));
+      }
+    }
+  }
+  double build_total = 0.0;
+  double table_total = 0.0;
+  for (const double b : build_us) {
+    build_total += b;
+  }
+  for (const double t : table_us) {
+    table_total += t;
+  }
+  for (std::vector<double> *v :
+       {&price_us, &chord_us, &fused_po_us, &fused_us, &pre_us, &scalar_price_us, &scalar_pv_us}) {
+    std::sort(v->begin(), v->end());
+  }
+  state.counters["families"] = static_cast<double>(build_us.size());
+  state.counters["cold_groups"] = cold_groups;
+  state.counters["queries"] = queries;
+  state.counters["n_sigma"] = static_cast<double>(n_sigma);
+  state.counters["build_us_p50"] = median_of(build_us);
+  state.counters["build_ms_total"] = build_total * 1.0e-3;
+  state.counters["table_us_p50"] = median_of(table_us);
+  state.counters["table_ms_total"] = table_total * 1.0e-3;
+  state.counters["tile_us_p50"] = median_of(tile_us);
+  state.counters["state_bytes_p50"] = median_of(state_b);
+  state.counters["table_bytes_p50"] = median_of(table_b);
+  state.counters["tile_bytes"] = static_cast<double>(sizeof(sq::QTile));
+  state.counters["price_us_p50"] = sorted_quantile(price_us, 0.50);
+  state.counters["price_us_p99"] = sorted_quantile(price_us, 0.99);
+  state.counters["chord_us_p50"] = sorted_quantile(chord_us, 0.50);
+  state.counters["fused_po_us_p50"] = sorted_quantile(fused_po_us, 0.50);
+  state.counters["fused_us_p50"] = sorted_quantile(fused_us, 0.50);
+  state.counters["fused_us_p99"] = sorted_quantile(fused_us, 0.99);
+  state.counters["pre_us_p50"] = sorted_quantile(pre_us, 0.50);
+  state.counters["pre_us_p99"] = sorted_quantile(pre_us, 0.99);
+  state.counters["strikes_us_per_strike"] = median_of(strike_us);
+  state.counters["scalar_price_us_p50"] = sorted_quantile(scalar_price_us, 0.50);
+  state.counters["scalar_pv_us_p50"] = sorted_quantile(scalar_pv_us, 0.50);
+  state.counters["breakeven_oneshot_p50"] = median_of(be_oneshot);
+  state.counters["breakeven_table_p50"] = median_of(be_table);
+  state.counters["fused_vs_price_max_scaled"] = max_dp;
+}
+
+const bool kRegisteredSqFused = [] {
+  if (env_text("ATX_VOL_AL_SQFUSED").empty()) {
+    return false;
+  }
+  const std::pair<const char *, SqSet> sets[] = {
+      {"spy23", SqSet::Spy23}, {"spylong", SqSet::SpyLong}, {"spyall", SqSet::SpyAll}};
+  const char *envs[] = {"ATX_VOL_AL_SPY23", "ATX_VOL_AL_SPYLONG", "ATX_VOL_AL_SPYALL"};
+  for (std::size_t si = 0; si < 3; ++si) {
+    if (env_text(envs[si]).empty()) {
+      continue;
+    }
+    const SqSet s = sets[si].second;
+    for (const unsigned n_sigma : {12u, 16u}) {
+      benchmark::RegisterBenchmark(std::string("american/sqfused/") + sets[si].first + "/nq4/ns" +
+                                       std::to_string(n_sigma),
+                                   [s, n_sigma](benchmark::State &state) {
+                                     run_sqfused(state, s, n_sigma);
+                                   })
           ->Iterations(1)
           ->Unit(benchmark::kMillisecond);
     }

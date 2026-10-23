@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -66,6 +67,30 @@ struct Memo {
 };
 
 thread_local Memo t_memo;
+
+// Lane B0 stage clock (DeAmStageClock): charges its lifetime, or until stop(), to one
+// field of the clock armed on this thread; unarmed it never reads the time.
+thread_local DeAmStageClock *t_stage_clock = nullptr;
+class StageTimer {
+  using Steady = std::chrono::steady_clock;
+public:
+  explicit StageTimer(std::uint64_t DeAmStageClock::*field) noexcept
+      : clock_(t_stage_clock), field_(field),
+        start_(clock_ != nullptr ? Steady::now() : Steady::time_point{}) {}
+  ~StageTimer() { stop(); }
+  StageTimer(const StageTimer &) = delete;
+  StageTimer &operator=(const StageTimer &) = delete;
+  void stop() noexcept {
+    if (clock_ == nullptr) return;
+    const auto ns = (Steady::now() - start_) / std::chrono::nanoseconds{1};
+    clock_->*field_ += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    clock_ = nullptr;
+  }
+private:
+  DeAmStageClock *clock_;
+  std::uint64_t DeAmStageClock::*field_;
+  Steady::time_point start_;
+};
 
 } // namespace
 
@@ -390,9 +415,18 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   ensure_families(); // before the inversion's own solve count: builds are not its solves
   ft::FitTimingCounters *const timing = ft::current_counts();
   const std::uint64_t al0 = timing ? ledger::this_thread(ledger::Solve::AlBoundarySolves) : 0u;
+  DeAmStageClock *const stage = t_stage_clock; // B0: a fallback inversion is an exception
+  const auto stage_t0 = stage != nullptr ? std::chrono::steady_clock::now()
+                                         : std::chrono::steady_clock::time_point{};
   IvPremiumStats stats;
   Result<double> out = premium() ? invert_premium(quote, target, entry, memory, stats)
                                  : invert_search(quote, target, entry);
+  const auto stage_reason = static_cast<std::size_t>(stats.fallback);
+  if (stage != nullptr && premium() && stats.fallback != IvPremiumFallback::None &&
+      stage_reason < stage->premium_fallback_ns.size()) {
+    const auto ns = (std::chrono::steady_clock::now() - stage_t0) / std::chrono::nanoseconds{1};
+    stage->premium_fallback_ns[stage_reason] += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+  }
   if (timing == nullptr) {
     return out;
   }
@@ -579,6 +613,8 @@ Result<double> DeAmIvView::invert_search(const QuoteSliceQuote &quote, double ta
   ++work_.accurate_fallbacks;
   ++cache_.inversions;
   ++work_.inversions;
+  const StageTimer redo(&DeAmStageClock::fast_redo_ns); // B0: a reference exception
+  if (DeAmStageClock *const stage = t_stage_clock) ++stage->fast_redos;
   return model_.implied_vol(quote, target, entry.q_effective, DeAmKernel::Accurate);
 }
 
@@ -617,6 +653,8 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   if (!positive(filled.local_forward) || !std::isfinite(filled.q_effective)) {
     return publish();
   }
+  StageTimer endpoints(&DeAmStageClock::endpoint_ns); // B0: band-edge prices and re-prices
+  if (DeAmStageClock *const stage = t_stage_clock) ++stage->endpoint_bands;
   const DeAmKernel k = kernel();
   namespace ft = counters::fit_timing;
   ft::FitTimingCounters *const timing = ft::current_counts();
@@ -648,6 +686,7 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
   const bool mid_inside = quote.bid > 0.0 && mid > settle(floor_edge, mid, quote, q_eff, failed) &&
                           mid < settle(cap_edge, mid, quote, q_eff, failed);
+  endpoints.stop();
   if (failed) {
     return publish(); // an accurate edge re-price erred: the band stays undecided
   }
@@ -799,6 +838,14 @@ void deam_iv_memo_clear() noexcept {
 }
 
 std::size_t deam_iv_memo_size() noexcept { return t_memo.entries.size(); }
+
+DeAmStageClock *deam_stage_clock() noexcept { return t_stage_clock; }
+
+DeAmStageClock *deam_stage_clock_arm(DeAmStageClock *clock) noexcept {
+  DeAmStageClock *const previous = t_stage_clock;
+  t_stage_clock = clock;
+  return previous;
+}
 
 namespace {
 

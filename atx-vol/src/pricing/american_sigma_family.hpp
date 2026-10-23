@@ -15,6 +15,7 @@
 //
 // NOT a public API. Not installed. No stability guarantees.
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -82,6 +83,23 @@ inline constexpr std::uint16_t kMaxSigmaNodes = kAlSigmaFamilyMaxNodes;
 [[nodiscard]] inline double axis_of(AlSigmaFamilyAxis axis, double sigma) noexcept {
   return axis == AlSigmaFamilyAxis::LogSigma ? std::log(sigma) : sigma;
 }
+
+// L3g's nodal differentiation matrices on the n-node Chebyshev-Lobatto grid above
+// (cheb_node, 2nd-kind weights (−1)^s halved at the ends): D1 / D2 map nodal values to
+// the nodal first / second derivatives of their interpolant, so b(z)ᵀD1 is the
+// derivative of the barycentric basis without the quotient rule's near-node
+// cancellation (formulas and references at the definition, american_family_greeks.cpp).
+// K1 (r5, 2026-10-22): shared with the (σ, q) family's fused vega, which uses them on
+// both of its axes. Rows / columns past n are zero.
+struct DiffTables {
+  std::array<std::array<double, kMaxSigmaNodes>, kMaxSigmaNodes> d1{};
+  std::array<std::array<double, kMaxSigmaNodes>, kMaxSigmaNodes> d2{};
+};
+
+// The tables for n in [2, kMaxSigmaNodes], built once per process (thread-safe static
+// initialisation); allocation-free and const afterwards. Precondition: 2 <= n <=
+// kMaxSigmaNodes.
+[[nodiscard]] const DiffTables &diff_tables(unsigned n) noexcept;
 
 } // namespace sigma_family_detail
 
