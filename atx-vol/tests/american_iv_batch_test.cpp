@@ -15,8 +15,11 @@
 #include <vector>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "pricing/american_iv_batch.hpp"
+#include "pricing/american_iv_premium.hpp"
+#include "pricing/american_iv_stream.hpp"
 #include "pricing/american_sigma_q_family.hpp"
 
 // K2 (r5, 2026-10-22): the varying-parameter batch inversion (src/pricing/american_iv_batch.hpp).
@@ -720,6 +723,82 @@ TEST_F(IvBatch, ScratchCapacityAndWorkCountersAccumulate) {
   sum.add(work);
   EXPECT_EQ(sum.evaluations, 2u * work.evaluations);
   EXPECT_EQ(sum.by_status[1], 48u);
+}
+
+
+// The recorded request stream (american_iv_stream.hpp): while armed, every Premium request
+// is recorded — a native-eligible one with its family snapshotted once, a bid with the mid
+// whose carry it starts from, a request without a native gate with no family — and the
+// replay inverts the native-eligible ones per family with the bid anchored to its mid,
+// agreeing with the fit's own native outcomes. Disarmed, nothing is recorded.
+TEST_F(IvBatch, TheRecordedStreamReplaysEveryNativeRequestPerFamily) {
+  using atx::vol::IvOpts;
+  using atx::vol::IvPremiumGate;
+  using atx::vol::IvPremiumMemory;
+  using atx::vol::IvPremiumStats;
+  using atx::vol::IvStrategy;
+  IvPremiumGate gate;
+  gate.qfamily = &put().f;
+  gate.qfamily_bound = 1.0e-9;
+  gate.qfamily_native = true;
+  gate.seed_gate_kappa = 4.3e-5;
+  IvOpts o;
+  o.strategy = IvStrategy::Premium;
+  o.seed_profile = atx::vol::AlProfile::Screen;
+  ib::InverseStream stream;
+  ib::inverse_stream_arm(&stream);
+  std::size_t native_runs = 0;
+  for (const double K : {90.0, 100.0, 110.0}) {
+    const double q = 0.0205;
+    const double mid = family_price(put(), K, 0.3, q);
+    IvPremiumMemory m;
+    IvPremiumStats sm;
+    static_cast<void>(atx::vol::american_implied_vol_premium(mid, kS, K, kT, kR, q, Side::Put, o,
+                                                             &m, sm, &gate));
+    IvPremiumMemory bm = m;
+    IvPremiumStats sb;
+    static_cast<void>(atx::vol::american_implied_vol_premium(0.99 * mid, kS, K, kT, kR, q,
+                                                             Side::Put, o, &bm, sb, &gate));
+    native_runs += (sm.native_status != InverseStatus::Inactive ? 1u : 0u) +
+                   (sb.native_status != InverseStatus::Inactive ? 1u : 0u);
+  }
+  // A request without a native gate: recorded, no family.
+  IvPremiumStats plain;
+  static_cast<void>(atx::vol::american_implied_vol_premium(
+      family_price(put(), 100.0, 0.3, 0.0205), kS, 100.0, kT, kR, 0.0205, Side::Put, o, nullptr,
+      plain, nullptr));
+  ib::inverse_stream_arm(nullptr);
+  IvPremiumStats after;
+  static_cast<void>(atx::vol::american_implied_vol_premium(
+      family_price(put(), 100.0, 0.3, 0.0205), kS, 100.0, kT, kR, 0.0205, Side::Put, o, nullptr,
+      after, &gate));
+  ASSERT_EQ(stream.requests.size(), 7u); // 3 mids + 3 bids + 1 plain; nothing after disarm
+  EXPECT_EQ(stream.tables.size(), 1u);    // one family, snapshotted once
+  EXPECT_EQ(stream.table_failures, 0u);
+  EXPECT_EQ(native_runs, 6u);
+  for (std::size_t k = 0; k < 3; ++k) {
+    EXPECT_EQ(stream.requests[2 * k].family, 0);
+    EXPECT_EQ(stream.requests[2 * k].anchor, -1);
+    EXPECT_EQ(stream.requests[2 * k + 1].anchor, static_cast<std::int32_t>(2 * k));
+    EXPECT_EQ(stream.requests[2 * k + 1].fit_status, InverseStatus::Converged);
+  }
+  EXPECT_EQ(stream.requests[6].family, -1);
+  for (const InverseIsa isa : {InverseIsa::Scalar, InverseIsa::Avx2}) {
+    if (isa == InverseIsa::Avx2 && !avx2()) continue;
+    const ib::InverseReplay r = ib::replay_inverse_stream(stream, isa);
+    EXPECT_EQ(r.requests, 7u);
+    EXPECT_EQ(r.with_family, 6u);
+    EXPECT_EQ(r.without_family, 1u);
+    EXPECT_EQ(r.groups, 1u);
+    EXPECT_EQ(r.anchored, 3u);
+    EXPECT_EQ(r.seeds, 3u);
+    EXPECT_EQ(r.work.by_status[static_cast<std::size_t>(InverseStatus::Converged)], 6u);
+    EXPECT_EQ(r.fit_compared, 6u);
+    EXPECT_EQ(r.fit_status_equal, 6u);
+    EXPECT_LE(r.fit_max_dsigma, 2.0 * kTol);
+    EXPECT_GT(r.total_seconds, 0.0);
+    EXPECT_EQ(r.work.avx2, isa == InverseIsa::Avx2);
+  }
 }
 
 } // namespace

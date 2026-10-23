@@ -8,6 +8,7 @@
 #include "core/parallel_for.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "pricing/american_iv_stream.hpp" // lane K2: --inverse-replay
 #include "quote_bench_policy.hpp"
 #include "quote_bench_common.hpp"
 #include "quote_bench_progress.hpp"
@@ -69,6 +70,9 @@ struct Arguments {
   bool cold_reset{false};           // reset every market-dependent memo before each rep
   std::optional<unsigned> affinity; // pin the process and the fit worker to one logical CPU
   bool require_pcore{false};        // refuse unless the pinned CPU is a performance core
+  // Lane K2 (r5): record the fit's Premium inverse request stream and replay it through
+  // iv_batch::invert_many after the run (src/pricing/american_iv_stream.hpp).
+  std::optional<std::string> inverse_replay; // auto | scalar | avx2
 };
 
 template <class T> T number(std::string_view value, std::string_view column) {
@@ -117,7 +121,8 @@ Arguments arguments(int argc, char **argv) {
                    "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
                    "[--max-weight 1000] [--timing-detail] [--deam-audit] [--reps 1] "
-                   "[--cold-reset] [--affinity CPU [--require-pcore]]\n"
+                   "[--cold-reset] [--affinity CPU [--require-pcore]] "
+                   "[--inverse-replay auto|scalar|avx2]\n"
                    "Defaults: --policy auto --dividends funding-pv. "
                    "Quality/min-quotes flags require explicit --curve. "
                    "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
@@ -130,7 +135,11 @@ Arguments arguments(int argc, char **argv) {
                    "dependent memo before each rep; --affinity CPU pins the process and the "
                    "fit worker to one logical CPU (requires ATX_VOL_FIT_WORKERS=1); "
                    "--require-pcore refuses a CPU that is not on a performance core. Clock "
-                   "and receipt definitions: atx-vol/docs/benchmark-clocks.md.\n";
+                   "and receipt definitions: atx-vol/docs/benchmark-clocks.md. "
+                   "--inverse-replay ISA (quote-slice, one rep) records every Premium "
+                   "inverse request of the run and replays the stream through the batch "
+                   "inversion after it, reporting bench.inverse_replay "
+                   "(atx-vol/docs/american-iv-batch.md).\n";
       args.help_requested = true;
       return args;
     }
@@ -168,6 +177,7 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--max-weight") args.quality.max_weight = real(value, key);
     else if (key == "--reps") args.reps = number<std::size_t>(value, key);
     else if (key == "--affinity") args.affinity = number<unsigned>(value, key);
+    else if (key == "--inverse-replay") args.inverse_replay = value;
     else throw std::runtime_error("Unknown argument: " + std::string(key));
     quality_specified = quality_specified || key == "--min-quotes" ||
         key == "--max-spread-to-mid" || key == "--max-spread-vol" || key == "--max-weight";
@@ -199,6 +209,13 @@ Arguments arguments(int argc, char **argv) {
                              "--model quote-slice");
   }
   if (args.reps == 0U || args.reps > 1000U) throw std::runtime_error("--reps must be 1..1000");
+  if (args.inverse_replay &&
+      (args.model != "quote-slice" || args.reps != 1U ||
+       (*args.inverse_replay != "auto" && *args.inverse_replay != "scalar" &&
+        *args.inverse_replay != "avx2"))) {
+    throw std::runtime_error("--inverse-replay must be auto, scalar or avx2 and requires "
+                             "--model quote-slice with one rep");
+  }
   if (args.require_pcore && !args.affinity) {
     throw std::runtime_error("--require-pcore requires --affinity");
   }
@@ -1886,6 +1903,81 @@ Json process_json(const ProcessTimes &t, const RunStatistics &stats) {
                     "writes themselves are excluded (they carry this value)"}};
 }
 
+// Lane K2 (r5): the replayed inverse stream (bench.inverse_replay). Five replays of the
+// same recorded stream: replay 1 is the stop/go value (a fresh scratch, the tables not yet
+// touched by a replay), replays 2-5 show the spread.
+Json inverse_replay_json(const iv_batch::InverseStream &stream, const std::string &isa_name) {
+  namespace ib = iv_batch;
+  const ib::InverseIsa isa = isa_name == "scalar" ? ib::InverseIsa::Scalar
+                             : isa_name == "avx2" ? ib::InverseIsa::Avx2
+                                                  : ib::InverseIsa::Auto;
+  constexpr int kReplays = 5;
+  std::vector<double> totals;
+  Json runs = Json::array();
+  ib::InverseReplay first;
+  for (int i = 0; i < kReplays; ++i) {
+    const ib::InverseReplay r = ib::replay_inverse_stream(stream, isa);
+    totals.push_back(r.total_seconds);
+    runs.push_back({{"total_s", r.total_seconds}, {"seed_s", r.seed_seconds},
+                    {"batch_s", r.batch_seconds}});
+    if (i == 0) first = r;
+  }
+  const ib::InverseBatchWork &w = first.work;
+  Json by_status = Json::object();
+  Json fit_by_status = Json::object();
+  for (std::size_t s = 0; s < ib::kInverseStatusCount; ++s) {
+    const char *name = ib::inverse_status_name(static_cast<ib::InverseStatus>(s));
+    by_status[name] = w.by_status[s];
+    fit_by_status[name] = first.fit_by_status[s];
+  }
+  const double slots = static_cast<double>(w.vector_steps) * ib::kInverseLaneWidth;
+  const auto ratio = [](double a, double b) { return b > 0.0 ? Json(a / b) : Json(nullptr); };
+  return {
+      {"isa_requested", isa_name},
+      {"avx2", w.avx2},
+      {"requests", first.requests},
+      {"with_family", first.with_family},
+      {"without_family", first.without_family},
+      {"tables", stream.tables.size()},
+      {"table_failures", stream.table_failures},
+      {"record_failures", stream.record_failures},
+      {"groups", first.groups},
+      {"max_group", first.max_group},
+      {"anchored", first.anchored},
+      {"seeds", first.seeds},
+      {"seed_failures", first.seed_failures},
+      {"aggregate_inverse_s", first.total_seconds},
+      {"seed_s", first.seed_seconds},
+      {"batch_s", first.batch_seconds},
+      {"replays", runs},
+      {"replay_total_summary", bench::summary_json(bench::summarize(totals))},
+      {"work", {{"active_lanes", w.active_lanes}, {"evaluations", w.evaluations},
+                {"vector_steps", w.vector_steps}, {"vector_lane_slots", w.vector_lane_slots},
+                {"scalar_evaluations", w.scalar_evaluations},
+                {"q_contractions", w.q_contractions}, {"tile_reuses", w.tile_reuses},
+                {"seed_failed_lanes", w.seed_failed}, {"seed_clamped_lanes", w.seed_clamped},
+                {"anchored_lanes", w.anchored}}},
+      {"lane_utilization", ratio(static_cast<double>(w.vector_lane_slots), slots)},
+      {"evaluations_per_request", ratio(static_cast<double>(w.evaluations),
+                                        static_cast<double>(w.active_lanes))},
+      {"evaluations_per_converged_root",
+       ratio(static_cast<double>(w.evaluations),
+             static_cast<double>(w.by_status[static_cast<std::size_t>(
+                 ib::InverseStatus::Converged)]))},
+      {"us_per_request", ratio(1.0e6 * first.total_seconds,
+                               static_cast<double>(first.with_family))},
+      {"by_status", by_status},
+      {"fit_native", {{"by_status", fit_by_status}, {"compared", first.fit_compared},
+                      {"status_equal", first.fit_status_equal},
+                      {"both_converged", first.fit_both_converged},
+                      {"max_abs_dsigma", first.fit_max_dsigma}}},
+      {"scope", "every Premium inverse request the run made (refusals included), recorded "
+                "in arrival order; the native-eligible ones (a family-native family) are "
+                "replayed per family through iv_batch::invert_many with the bid / ask "
+                "anchored to their mid; aggregate_inverse_s = the Black-76 seeds plus the "
+                "invert_many calls of replay 1 (steady clock), grouping and tables excluded"}};
+}
+
 void pin_fit_worker(const Arguments &args) {
   bench::pin_to_logical_cpu(*args.affinity);
   if (!args.require_pcore) return;
@@ -1950,9 +2042,15 @@ int main(int argc, char **argv) {
     Json bench_report = {{"schema", "atx-vol-bench-clocks-v2"},
                          {"definitions", "atx-vol/docs/benchmark-clocks.md"}};
     const auto cpus_before = bench::sample_cpus();
+    iv_batch::InverseStream inverse_stream; // lane K2: armed only under --inverse-replay
+    if (args.inverse_replay) iv_batch::inverse_stream_arm(&inverse_stream);
     const auto compute_start = Clock::now();
     const auto predictions = run_reps(args, rows, stats, bench_report);
     times.compute_s = bench::seconds_between(compute_start, Clock::now());
+    iv_batch::inverse_stream_arm(nullptr);
+    if (args.inverse_replay) {
+      bench_report["inverse_replay"] = inverse_replay_json(inverse_stream, *args.inverse_replay);
+    }
     const auto cpus_after = bench::sample_cpus();
     const auto write_start = Clock::now();
     write_predictions(args.output, rows, predictions, stats.graded);
