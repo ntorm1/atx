@@ -998,6 +998,12 @@ if(ATX_BUILD_TOOLS)
     add_executable(atx-vol-iv-comparator tools/iv_comparator_main.cpp)
     target_link_libraries(atx-vol-iv-comparator PRIVATE atx-vol-bench-clocks atx::vol
         atx::core atx_warnings nlohmann_json::nlohmann_json)
+    # Production cash-dividend latency / coverage (lane D1, vol-sota r6): per-contract
+    # cold price, prepared price / IV / Greek bundle and per-group setup on B0's clocks
+    # (the setup charged to the family_build_validation stage).
+    add_executable(atx-vol-ddiv-latency tools/ddiv_latency_main.cpp)
+    target_link_libraries(atx-vol-ddiv-latency PRIVATE atx-vol-bench-clocks atx::vol
+        atx::core atx_warnings nlohmann_json::nlohmann_json)
     add_executable(atx-vol-quote-bench tools/quote_bench_main.cpp
         tools/quote_bench_common.cpp tools/quote_bench_common_policy.cpp
         tools/quote_bench_common_seed.cpp tools/quote_bench_progress.cpp)
