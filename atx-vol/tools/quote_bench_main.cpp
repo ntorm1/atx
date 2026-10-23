@@ -1010,6 +1010,25 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
           count_into(graded["market_distance"], "calendar_joint_chains");
         }
       }
+      if (surface.publication != QuoteSurfacePublication::Off) {
+        // Opt-in publication provenance (lane C2, graded.publication); absent when off.
+        const std::array<std::pair<const char *, std::size_t>, 9> publication{
+            {{"checks", slice.publication_checks},
+             {"rollbacks", slice.publication_rollbacks},
+             {"violations", slice.publication_violations},
+             {"label_violations", slice.publication_label_violations},
+             {"withheld_rows", slice.withheld_rows},
+             {"joint_feasible", slice.joint_feasible},
+             {"joint_infeasible", slice.joint_infeasible},
+             {"joint_nonconverged", slice.joint_nonconverged},
+             {"gaps", quote_slice_gaps(slice.fit).size()}}};
+        Json counters = Json::object();
+        for (const auto &[key, value] : publication) {
+          counters[key] = value;
+          count_into(graded["publication"], key, value);
+        }
+        entry["publication"] = std::move(counters);
+      }
       graded["slices"].push_back(std::move(entry));
       count_into(graded["chains"], grade);
       if (slice.channel_refit) count_into(graded["channel_refit_chains"], grade);

@@ -834,6 +834,14 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "outside supported bounds"),
             ({"schema_version": 1, "graded": {"market_distance": "gate"}},
              "require admission graded"),
+            # Opt-in publication validation (lane C2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"publication": "strict"}},
+             "publication must be off or validate"),
+            ({"schema_version": 1, "admission": "graded", "graded": {"publication": True}},
+             "must be a string"),
+            ({"schema_version": 1, "graded": {"publication": "validate"}},
+             "require admission graded"),
             # Screen routing gate kappa (SPY1s Phase 2).
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "accurate",
@@ -2185,6 +2193,80 @@ def test_native_market_gated_rows_carry_no_price_only_reason(
         assert (row["price_only_reason"], row["iv_lower"], row["iv_upper"]) == ("none", "", "")
         assert (row["vol_convention"], row["price_valid"], row["vol_valid"]) == ("none", "0", "0")
     assert report["identifiability"]["price_only_reason_counts"] == {"low_vega": 4}  # K 128-140
+
+
+def run_graded(binary: Path, source: Path, tmp_path: Path, name: str, document: dict):
+    policy = write_policy(tmp_path / f"{name}.json", document)
+    output, native = tmp_path / f"{name}.csv", tmp_path / f"{name}-native.json"
+    result = invoke(binary, source, output, "--policy", str(policy), "--report", str(native))
+    assert result.returncode == 0, (name, result.stderr)
+    return output, json.loads(result.stdout), json.loads(native.read_text())
+
+
+def test_native_publication_validation_is_opt_in_with_provenance(binary, tmp_path):
+    # graded.publication validate (lane C2): on clean quotes nothing is repaired, gated or
+    # found, so the predictions are byte-identical to plain graded; the policy definition
+    # echoes the key and the native report carries the opt-in publication counters. An
+    # explicit "off" adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    runs = {}
+    for name, keys in {"plain": None, "validate": {"publication": "validate"},
+                       "off": {"publication": "off"}}.items():
+        document = {"schema_version": 1, "admission": "graded"}
+        if keys is not None:
+            document["graded"] = keys
+        runs[name] = run_graded(binary, source, tmp_path, name, document)
+    plain_bytes = runs["plain"][0].read_bytes()
+    assert runs["validate"][0].read_bytes() == plain_bytes
+    assert runs["off"][0].read_bytes() == plain_bytes
+    definitions = {name: run[1]["policy_definition"]["graded"] for name, run in runs.items()}
+    assert definitions["validate"]["publication"] == "validate"
+    assert "publication" not in definitions["plain"]
+    assert definitions["off"] == definitions["plain"]
+    stats = {name: run[2]["graded_stats"] for name, run in runs.items()}
+    counters = stats["validate"]["publication"]
+    for key in ("violations", "label_violations", "rollbacks", "withheld_rows",
+                "joint_nonconverged", "joint_infeasible"):
+        assert counters[key] == 0, key
+    assert all(entry["publication"]["violations"] == 0 for entry in stats["validate"]["slices"])
+    for name in ("plain", "off"):
+        assert "publication" not in stats[name]
+        assert not any("publication" in entry for entry in stats[name]["slices"])
+
+
+def test_native_publication_validation_keeps_one_answer_per_refused_contract(
+        binary, tmp_path, calendar_repair_chain):
+    # Lane C2's combined path through the CLI: N is repaired onto F's exercise values (the
+    # repair validated after its commit), the market-distance gate refuses the rows that
+    # land beyond one spread and withholds them, and the final check passes the published
+    # surface. Validation changes no prediction here; every refused row is withheld (the
+    # library API refuses it too), no row's labels disagree with the typed query, nothing
+    # was rolled back and no slice was refused.
+    graded = {"market_distance": "gate", "market_distance_spreads": 1.0}
+    serve = {"floor_price_only": True, "metadata": True}
+    gate, _, _ = run_graded(binary, calendar_repair_chain, tmp_path, "gate", json.loads(
+        calendar_repair_policy(tmp_path / "gate-doc.json", graded=graded,
+                               serve=serve).read_text()))
+    checked, summary, native = run_graded(
+        binary, calendar_repair_chain, tmp_path, "checked", json.loads(
+            calendar_repair_policy(tmp_path / "checked-doc.json",
+                                   graded={**graded, "publication": "validate"},
+                                   serve=serve).read_text()))
+    assert checked.read_bytes() == gate.read_bytes()
+    assert summary["policy_definition"]["graded"]["publication"] == "validate"
+    rows = read_quotes(checked)
+    refused = [row for row in rows if row["status"] == "market_distance_failure"]
+    assert {row["row_id"] for row in refused} >= {"0", "1", "2"}
+    for row in refused:
+        assert (row["predicted_price"], row["predicted_vol"]) == ("", "")
+        assert (row["price_only_reason"], row["vol_convention"]) == ("none", "none")
+    counters = native["graded_stats"]["publication"]
+    assert counters["withheld_rows"] == len(refused)
+    assert counters["checks"] >= 1  # N's calendar repair, validated before its commit
+    for key in ("rollbacks", "violations", "label_violations"):
+        assert counters[key] == 0, key
+    assert "publication_invalid" not in json.dumps(native["graded_stats"]["slices"])
 
 
 def test_native_metadata_columns_carry_conventions_and_provenance(binary, tmp_path):
