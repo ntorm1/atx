@@ -1317,9 +1317,10 @@ struct AlSigmaQGreekColumns {
 // Every active lane is family_greeks(fam[, *rate], S, K[i], sigma[i], q[i], req) to the
 // bit (a refused lane carries its status and NaN; it never poisons another lane); the
 // strike-, σ- and q-free node data are laid once per call and the carry is reused while
-// q repeats. `rate` null: a requested rho is NoCarryBumps. Allocation-free, const on
-// every input, single-thread per call (lanes may be split across threads by the caller
-// with disjoint spans).
+// q repeats. `rate` null: a requested rho is NoCarryBumps. Allocation-free — the
+// InvalidArgument refusal too (its message fits the small-string buffer; review-A0 m5) —
+// const on every input, single-thread per call (lanes may be split across threads by
+// the caller with disjoint spans).
 // @return InvalidArgument when K / sigma / q / a non-empty `active` or column disagree
 //         in length (nothing is written); otherwise Ok — per-lane outcomes in `status`.
 [[nodiscard]] Status family_greeks_many(const AlSigmaQFamily &fam, double S,

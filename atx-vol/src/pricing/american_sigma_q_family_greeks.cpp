@@ -916,8 +916,9 @@ Status family_greeks_many(const AlSigmaQFamily &fam, double S, std::span<const d
   const std::size_t n = K.size();
   if (sigma.size() != n || q.size() != n || (!active.empty() && active.size() != n) ||
       !columns_fit(out, n)) {
-    return Err(ErrorCode::InvalidArgument,
-               "family_greeks_many: K / sigma / q / active / column lengths differ");
+    // The message fits every standard library's small-string buffer (<= 15 chars), so
+    // the refusal allocates nothing either (review-A0 m5; the alloc test counts it).
+    return Err(ErrorCode::InvalidArgument, "span lengths");
   }
   const auto *st = QFamilyAccess::state(fam);
   // The strike-, σ- and q-free node data and the rate view, laid on the first admitted

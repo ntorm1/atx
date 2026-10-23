@@ -13,7 +13,8 @@
 // premium table itself is built (and allocates) outside the counted block.
 // A0 (r6, 2026-10-23): the primary Greek bundle — family_greeks with and without a
 // rate-bump set (built outside the counted block: it allocates), refused rows and the
-// structure-of-arrays chain entry on its Ok path — is counted too.
+// structure-of-arrays chain entry on its Ok path — is counted too; A0 fix round 1
+// (review-A0 m5): so is that entry's InvalidArgument refusal (lengths that differ).
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -174,6 +175,17 @@ TEST(AlSigmaQFamilyAlloc, GreeksBundlePathAllocatesNothing) {
       EXPECT_EQ(served, 4u * (4u + 1u));
       EXPECT_GT(sum, 0.0);
       EXPECT_EQ(status[2], AlSigmaQFamilyStatus::YieldOutsideBox);
+      // The refusal path: K shorter than sigma / q (nothing written, typed, no allocation).
+      constexpr std::array<double, 3> kShortK = {70.0, 95.0, 100.0};
+      bool refused = false;
+      const std::uint64_t n_err = testkit::count_allocations([&] {
+        const Status st =
+            family_greeks_many(fam, 100.0, kShortK, kSigmas, kQs, kActive, cols, req, &bumps);
+        refused = !st && st.error().code() == atx::core::ErrorCode::InvalidArgument;
+      });
+      EXPECT_TRUE(refused);
+      EXPECT_EQ(n_err, 0u) << (side == Side::Put ? "put" : "call") << " n_q=" << n_q
+                           << " (the InvalidArgument refusal)";
     }
   }
 }
