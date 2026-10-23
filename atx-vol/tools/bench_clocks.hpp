@@ -217,6 +217,20 @@ private:
   DeAmStageClock *previous_;
 };
 
+// Population of one BRACKETED row of the IV comparator (iv_comparator_main.cpp;
+// docs/benchmark-clocks.md section 8). `error` = |served_iv - bracketed_iv| and
+// `uncertainty` = the reference's fine-scheme uncertainty at the root, both in absolute
+// vol. Resolved (uncertainty finite and <= threshold): pass / fail by error <= / >
+// threshold. Otherwise a decidable fail when the error clears the threshold by more than
+// kDecidableFailMargin uncertainties (error > threshold + 3 * uncertainty: even a
+// reference off by three times its own estimated error cannot make the row pass), else
+// unresolved. A non-finite error or uncertainty (no reference vega) is unresolved.
+inline constexpr double kDecidableFailMargin = 3.0;
+enum class IvPopulation { ResolvedPass, ResolvedFail, DecidableFail, ReferenceUnresolved };
+[[nodiscard]] IvPopulation classify_iv_row(double error, double uncertainty,
+                                           double threshold) noexcept;
+[[nodiscard]] const char *iv_population_name(IvPopulation population) noexcept;
+
 // In-process cold reset: drops every market-dependent memo a fit on THIS thread can
 // read across fits (the de-Am IV thread memo, the process-wide carry memo). The
 // per-fit rung memo is a member of each surface fit, so it never crosses fits. The

@@ -126,24 +126,18 @@ struct CarryView {
   const double *d_yield = nullptr;
 };
 
-} // namespace sigma_family_detail
-
-namespace {
-
-using Mask = AlSigmaFamilyGreeksMask;
-using sigma_family_detail::CarryView;
-using sigma_family_detail::FamilyView;
-
-// ── Nodal differentiation matrices on the σ Chebyshev-Lobatto grid ─────────────
+// ── Nodal differentiation matrices on the Chebyshev-Lobatto grid ──────────────────
 //
+// Declared in american_sigma_family.hpp. K1 (r5, 2026-10-22) moved them out of this
+// TU's anonymous namespace so the (σ, q) family's fused vega shares them on both of its
+// axes (american_sigma_q_family.cpp); the bodies are L3g's, unchanged.
 // D1[s][t] = (w_t / w_s) / (z_s − z_t) (s ≠ t), D1[s][s] = −Σ_{t≠s} D1[s][t];
 // D2[s][t] = 2 D1[s][t] (D1[s][s] − 1/(z_s − z_t)) (s ≠ t), D2[s][s] = −Σ_{t≠s} D2[s][t].
 // The grid and weights are the family's own (cheb_node, (−1)^s halved at the ends),
-// so a table depends on n alone. Built once per process for n in [kMin, kMax].
-struct DiffTables {
-  std::array<std::array<double, kMaxSigmaNodes>, kMaxSigmaNodes> d1{};
-  std::array<std::array<double, kMaxSigmaNodes>, kMaxSigmaNodes> d2{};
-};
+// so a table depends on n alone. Built once per process for n in [2, kMaxSigmaNodes]
+// (L3g built [kAlSigmaFamilyMinNodes, kMax]; the q axis also needs n = 2, 3 — every
+// table the σ family already read is the same bits).
+namespace {
 
 [[nodiscard]] DiffTables build_diff_tables(unsigned n) noexcept {
   DiffTables t{};
@@ -184,16 +178,29 @@ struct DiffTables {
   return t;
 }
 
-[[nodiscard]] const DiffTables &diff_tables(unsigned n) noexcept {
+} // namespace
+
+const DiffTables &diff_tables(unsigned n) noexcept {
   static const std::array<DiffTables, kMaxSigmaNodes + 1> all = [] {
     std::array<DiffTables, kMaxSigmaNodes + 1> a{};
-    for (unsigned n = kAlSigmaFamilyMinNodes; n <= kAlSigmaFamilyMaxNodes; ++n) {
-      a[n] = build_diff_tables(n);
+    for (unsigned m = 2; m <= kMaxSigmaNodes; ++m) {
+      a[m] = build_diff_tables(m);
     }
     return a;
   }();
   return all[n];
 }
+
+} // namespace sigma_family_detail
+
+namespace {
+
+using Mask = AlSigmaFamilyGreeksMask;
+using sigma_family_detail::CarryView;
+using sigma_family_detail::FamilyView;
+
+using sigma_family_detail::diff_tables;
+using sigma_family_detail::DiffTables;
 
 // Which internal derivatives a call needs (derived from the mask and the side).
 struct Need {

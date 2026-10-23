@@ -5,6 +5,66 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
+
+Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
+(`tools/bench_clocks.{hpp,cpp}`; definitions in `docs/benchmark-clocks.md`): the
+historical `legacy_fit_reprice_s` (unchanged), `cold_calibration_s` (adds the row
+classification and grouping the legacy timer skips; excludes I/O and the policy load),
+`ready_to_quote_s` reported `not_built`, and `process_wall_s` with startup / setup / read /
+decode / compute / write sub-timers. New flags: `--reps N` with min / median / p95 / p99 /
+max, `--cold-reset` (clears the de-Am IV thread memo and the carry memo before each rep),
+`--affinity CPU` (process and fit-worker pinning; requires `ATX_VOL_FIT_WORKERS=1`) and
+`--require-pcore`. Under `--timing-detail` the cold clock is split into exclusive
+measured stages (normalization, family build + validation, inverses, endpoints,
+curve/repair, final grid, reference exceptions, publication, fit_timing other; the family
+stage is `not_built` when no family was built), and `unattributed_s` = cold clock - stage
+sum is the time no timer measured (a real reconciliation, failing above 1%), with the
+fit-route and family counters; exact SIMD counters report `unavailable` when compiled
+out. `src/fitting/deam_iv_cache.*` gains `DeAmStageClock`, an opt-in, thread-armed
+timer of band-edge prices and fallback inversions (unarmed: one TLS load, no clock read).
+New tools: `bench/run_cold_trials.ps1` (fresh-process trials into one manifest with
+binary / policy / input hashes, source SHA, embedded build flags, a P-core proof and an
+SMT-contention flag per trial, threshold `-SiblingBusyThresholdPct` 10%) and
+`atx-vol-iv-comparator` (bisected American IV roots of served prices, in absolute vol, on
+the fitter's own Andersen-Lake accurate preset - independent root finding only, circular
+for pricer error on curve-priced rows - reported as populations: resolved pass /
+resolved fail / decidable fail (error > threshold + 3 x the reference uncertainty) /
+reference unresolved / IV not identified, with the non-circular count of each, the
+reference uncertainty and a continuous-carry price table).
+
+**Migration:** none. Predictions are byte-identical with and without every new flag; the
+report only gains the `bench` key.
+
+### NEW — fused price + analytic vega on the internal (σ, q) boundary family
+
+`AlSigmaQFamily` could only price; a slope meant two prices (`price_and_chord`).
+The internal `sigma_q_family_detail` namespace now returns price AND `dP/dσ` of
+the family's own price map from ONE premium-quadrature pass, the σ-motion of the
+interpolated transformed boundary included: `price_and_vega` (one strike),
+`price_vega_strikes` (one boundary shared across a strike vector, bit-identical
+to the per-strike calls) and a precontracted table path (`build_premium_table`,
+`contract_q`, `price_vega_on`) with the τ interpolation folded into the node
+tensor once. Statuses are typed (`Ok` / `OutsideBox` / `NearNodeDegenerate` /
+`Unsupported`); exact σ / τ / q node hits are stable (nodal differentiation
+matrix, no quotient rule); nothing in the evaluation path allocates.
+
+**No number changes.** `AlSigmaQFamily::price` (`price_on`) is untouched and
+stays the default evaluation; no policy routes through the family, and the SPY
+default (`feac8d2c`) and dev200b graded (`ed34eef7`) hashes match. The fused
+price equals `price_on` to 2.2e-16 scaled on the 18000-row SPY probe grid. The
+fused vega matches step-refined differences of the family map to 2.9e-11
+relative on the RESOLVED rows (smooth 516/930, exact node hits 226/636), where
+the reference's own tolerance is within 1e-9 of the vega. Full-price
+differences barely resolve σ = 0.05 (6/212, 0/140); differencing the premium
+alone there gives 1.5e-12 (24/24 smooth) and 1.1e-11 (47/52 node hits) on
+at-the-money SPY puts. Premium tables are move-only, and a moved-from table
+is a default (refused) table. On vol-rel-avx2 (spy23, 12 σ x 4 q nodes) price + vega costs 5.0 us
+one-shot and 3.5 us from a table tile against 6.2 us for `price_on` alone and
+275 us for the scalar two-solve path; a family pays for itself after about 9
+evaluations. Design, validation tables and the full cost table:
+`atx-vol/docs/sigma-q-fused-vega.md`.
+
 ### NEW — an independent cash-dividend reference, and the dividend convention declared on kernel results
 
 The American discrete-cash-dividend kernel (spliced CRR, 301 steps) had only itself to be
@@ -48,36 +108,6 @@ The refined comparator misses by 2.61 USD on the review-m1 contract, where cash 
 spot. The recommendation is event-adaptive handling (a gate, and an adaptive N for first-step
 chains); the splice as the multi-event cause is a hypothesis to test. This change promotes no
 default.
-
-### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
-
-Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
-(`tools/bench_clocks.{hpp,cpp}`; definitions in `docs/benchmark-clocks.md`): the
-historical `legacy_fit_reprice_s` (unchanged), `cold_calibration_s` (adds the row
-classification and grouping the legacy timer skips; excludes I/O and the policy load),
-`ready_to_quote_s` reported `not_built`, and `process_wall_s` with startup / setup / read /
-decode / compute / write sub-timers. New flags: `--reps N` with min / median / p95 / p99 /
-max, `--cold-reset` (clears the de-Am IV thread memo and the carry memo before each rep),
-`--affinity CPU` (process and fit-worker pinning; requires `ATX_VOL_FIT_WORKERS=1`) and
-`--require-pcore`. Under `--timing-detail` the cold clock is split into exclusive
-measured stages (normalization, family build + validation, inverses, endpoints,
-curve/repair, final grid, reference exceptions, publication, fit_timing other; the family
-stage is `not_built` when no family was built), and `unattributed_s` = cold clock - stage
-sum is the time no timer measured (a real reconciliation, failing above 1%), with the
-fit-route and family counters; exact SIMD counters report `unavailable` when compiled
-out. `src/fitting/deam_iv_cache.*` gains `DeAmStageClock`, an opt-in, thread-armed
-timer of band-edge prices and fallback inversions (unarmed: one TLS load, no clock read).
-New tools: `bench/run_cold_trials.ps1` (fresh-process trials into one manifest with
-binary / policy / input hashes, source SHA, embedded build flags, a P-core proof and an
-SMT-contention flag per trial, threshold `-SiblingBusyThresholdPct` 10%) and
-`atx-vol-iv-comparator` (bisected American IV roots of served prices, in absolute vol, on
-the fitter's own Andersen-Lake accurate preset - independent root finding only, circular
-for pricer error on curve-priced rows - reported as four populations: resolved pass /
-resolved fail / reference unresolved / IV not identified, with the reference uncertainty
-and a continuous-carry price table).
-
-**Migration:** none. Predictions are byte-identical with and without every new flag; the
-report only gains the `bench` key.
 
 ### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
 

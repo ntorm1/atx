@@ -354,3 +354,89 @@ F-R1B-1 ruling), not a root error. The arm stays opt-in and non-promotable until
 Keys-ON arms gate in IV units. Docs commit: the R1-B sprint note's B1 bisect and fitted-vol wording (review minors 1-2),
 the W2c-b ledger candidates (L2h-b, L3g, L3r1, L3f m1), the R1 baseline lines and this section. Report:
 `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cd-integrate-r5-report.md`.
+
+## W2c-e / r5 integration of B0, K1 and D0 (vol-sota master plan, 2026-10-22)
+
+Lane W2c-e (run `vol-sota-r5-20261022`, pool-35) merged three approved lanes into the r5 root
+`feat/vol-resume5-20261022`, `--no-ff`, in this order, on top of `9f05a40e`. No default promoted; nothing pushed.
+
+| Merge | Lane SHA | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `97f2f8de` | B0 benchmark harness and clock contract `6150dee8` (review APPROVE, re-review 2: all addressed) | none | tree = the B0 tip's `9a13fc86` (B0 already held `9f05a40e`) |
+| `90700ea4` | K1 fused sigma/q family price + vega `2301d18c` (review APPROVE, re-review 1: MJ1 / MJ2 addressed) | `atx-vol/CHANGELOG.md` | entry union: B0's entry, then K1's |
+| `42dc2ebd` | D0 independent cash-dividend reference `72600798` (review APPROVE, re-review 1: M1 / M2 addressed) | `atx-vol/CHANGELOG.md` | entry union: B0 + K1 entries, then D0's; both CMake lists auto-merged |
+
+**Diff proof.** For every file of every merge, the body of `git diff <merge>^1 <merge>` equals the lane's own change
+(merge base to lane tip), and the body of `git diff <merge>^2 <merge>` equals the root's own change (merge base to
+first parent). All 180 comparisons are EQUAL_SEQ: 13, 21 and 56 files, two sides each, for B0, K1 and D0
+(D0's merge base is `7344eb37`).
+
+**Per-merge suites** (vol-rel, `-Jobs 1`):
+- after B0: bench-clocks gtest 11/11, quote-slice gtest 183/183, CLI pytest 181 (B0's 9 cases 9/9);
+- after K1: ctest `^.*AlSigmaQFamily` 29/29, Greeks + sigma family + alloc 27/27;
+- after D0: ctest discrete-div reference / kernel / smoothing / schedule 4/4 (reference fast gtest 24/24, discrete-div
+  gtest 88/88).
+
+**Gates on the final code `42dc2ebd`** (the docs commit after it changes `.md` files only):
+- 9/9 default hashes byte-identical: R0's 8 full sha256 (dividend keys-OFF `abc75955` / `747d3e6c` among them) plus
+  the SPY kill switch `087e6a54`. quote-bench `6125a08b`.
+- AL fingerprint `53c4df68` on vol-rel-avx2.
+- Name set at cap 3: 52324ef8's 19 names plus `pricing/PricingExecutor.NestedDispatch_ReachesAPoolWorkerAndWakesThePool`,
+  the LEDGER L575 load flake. The executor and its test are untouched since `9f05a40e`; on this shared host it also
+  failed 6 of 40 in-process repeats. New names in the run: 14 `AlSigmaQFamilyFused.*` (K1) and 4 `AmericanIvPremium.*`
+  inherited from `9f05a40e` (R1-B). All 18 pass.
+- Combined anchored ctest (the lanes' suites, `^atx-vol-quote-slice`, the sigma / sigma-q family and AmericanIvPremium
+  pricing suites): 75/75. The CLI pytest (`test_quote_bench_cli.py` and `test_common_markov_bench_cli.py`) gives 181
+  passed with Python312. The `atx-vol-quote-benchmark-native` ctest fails only on its configured venv's missing polars
+  (L467).
+- `^atx-vol-pricing` is only `atx-vol-pricing-forcescalar`, which runs the monolithic `atx-vol-tests`. Its ForceScalar
+  filter was run directly on the pricing and simd slices instead: 94 + 1 passed, 4 skipped, 1 known failure
+  (`AmericanIv.PricePolishDefaultOffIsBitForBitControl`, already in 52324ef8). ScalarLegEnv passed (not skipped).
+- PCH-off (`vol-hygiene`): 22 TUs / 26 objects, 0 diagnostics. They cover every non-bench owner of the six headers
+  changed since `9f05a40e`, including the four owners of `bench_clocks.hpp`.
+
+**G1 on the root after W2c-e** (shared host; G1 evidence, no F1 claim). B0 harness, 10 fresh-process cold trials,
+`ATX_VOL_FIT_WORKERS=1`, CPU 6 P core, `-RequirePCore -RequireIdleSibling`; cold_calibration_s:
+
+| Workload | Policy | min / median / p95 / max (s) | SMT contended | Predictions | Manifest |
+| --- | --- | --- | --- | --- | --- |
+| section 9 SPY | `graded-v1-famq-grid-native.json` `9091b102` | 5.77 / 6.51 / 6.94 / 7.14 | 0/10 | `a3c0b01e` | `8fe510c8` |
+| default graded-v1 SPY | `graded-v1.json` `d7f89d13` | 7.78 / 9.15 / 9.65 / 9.77 | 0/10 | `feac8d2c` | `794f1812` |
+
+Each row is the first exit-0 run under a rule fixed before the retries (at most 3 attempts per policy). The earlier
+attempts exited 4 on sibling contention and are kept in the evidence folder: famq 1/10 and 6/10, default 1/10.
+
+**Routed, not fixed here:**
+- B0's comparator found one decidable failure (cohort5 AAPL call K=10, excluded side, 6.8e-4 vol) and the
+  131 SPY / 780 cohort5 IV-not-identified served rows. Both go to C0 / H0.
+- D0's memo recommends event-adaptive dividend handling over a raised 301-step default; any change is a later lane's
+  decision.
+
+### Deferred minors (W2c-e: B0, K1, D0 reviews)
+- B0 m4: `run_cold_trials.ps1` leaves `fast_math` unasserted on the CMakeCache fallback, and `source.sha` is the
+  tree HEAD at run time rather than bound to the binary.
+- B0 m8: `same_predictions` skips `policy_source`, `configured_curve` and `model`, although the doc says "every
+  published field".
+- B0 m9: affinity API failures throw without `GetLastError()`, and `DWORD_PTR{1} << cpu` is valid only on x64.
+- B0 m5 / m7: documented in `benchmark-clocks.md` section 3 ("Known inclusions") but not changed in code.
+  - m5: static-path fits under `--timing-detail` run inside a ChainRecorder (with `--deam-audit` this adds discarded
+    Search inversions).
+  - m7: `fit_other` and the normalization / publication stages include about 10 ms of diagnostic JSON bookkeeping.
+- K1 m1: the 5b model-vega table is thin. It has 3 mid-q cases on the default ISA, the spy23 call row is vacuous
+  (European-dominated), and the "converged" scheme's own uncertainty is not shown.
+- K1 m3: arms without tests: the `AlProfile::Fast` premium pass, the Linear sigma-axis chain, and interior sigma-node
+  near-hits. This matters once K2 or the owner runs families on `fit_.al_opts` with Fast.
+- K1 m5: `interpolate_derivs` accumulates the q derivative even when `dy_dq == nullptr`, about a third of the
+  contraction work on the one-shot price path.
+- D0 m2: the Howard tie rule's 1024-ulp constant is empirical and not bounded in u. It binds at its cap on G1c / G4c.
+  The comment "in practice 1-4" and the doc's "the constraint adds no error of its own" are stale.
+- D0 m4: the fast-suite resolution pin `u < 1e-6 x BS vega` is a loosening of the first `u < 2e-5 USD` pin
+  (anchor K120 T3 needs it). Describe it as one.
+- D0 m5: the t -> 0 limit is checked for the European case only, with a hand-picked 1e-4 slack. The American limit is
+  not pinned.
+- D0 m6: the slow matrix ctest asserts only `rows.size() == 50`. Add `EXPECT_EQ(disagree, 0U)`, and optionally pin the
+  UNRESOLVED / PRICE-ONLY id sets.
+- D0 m7: the A base at step 150.5 rounds half-to-even to 150, so no row moves the kernel's ex-step down by one.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ce-integrate-r5-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2ce-20261022-integrate\`.
