@@ -24,7 +24,8 @@
 //   iv_record        implied_vol(), Ladder only
 //   iv_family        implied_vol(), Family only
 //   chain300_tier<t> one pass over the 300 node sides nearest the money (largest expiry)
-//   build            one rebuild of every record (construction clocks, bytes, memory)
+//   build            one rebuild of every record (construction clocks, bytes, memory,
+//                    ladders per side: kept / validated / sampled / ineligible)
 //   consistency      untimed agreement of the records with their fits
 // Datasets <name>_tick (lane H1): the same fits under serve_record_policy_tick() (16 x 8
 // plane nodes, +/- 10 % sigma, +/- 2 % ln S: ladder statements that accept IV roots).
@@ -526,6 +527,8 @@ void run_build(benchmark::State &state, const Dataset &d) {
   ServeBuildClocks sum{};
   ServeRecordBytes bytes{};
   std::size_t nodes = 0, ladders = 0, ineligible = 0, families = 0, max_bytes = 0;
+  // Per side (lane H1: the put-side coverage): kept, validated, sampled, ineligible.
+  std::array<std::array<std::size_t, 4>, 2> side_ladders{};
   double max_total_us = 0.0;
   for (auto _ : state) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -539,6 +542,7 @@ void run_build(benchmark::State &state, const Dataset &d) {
     sum = ServeBuildClocks{};
     bytes = ServeRecordBytes{};
     nodes = ladders = ineligible = families = max_bytes = 0;
+    side_ladders = {};
     max_total_us = 0.0;
     for (const auto &r : rebuilt) {
       const ServeBuildClocks &c = r->clocks();
@@ -563,6 +567,13 @@ void run_build(benchmark::State &state, const Dataset &d) {
       ladders += r->support().call.ladders + r->support().put.ladders;
       ineligible += r->support().call.ladders_ineligible + r->support().put.ladders_ineligible;
       families += (r->support().call.family ? 1u : 0u) + (r->support().put.family ? 1u : 0u);
+      for (std::size_t k = 0; k < 2; ++k) {
+        const ServeSideSupport &side = k == 0 ? r->support().call : r->support().put;
+        side_ladders[k][0] += side.ladders;
+        side_ladders[k][1] += side.ladders_validated;
+        side_ladders[k][2] += side.ladders_sampled;
+        side_ladders[k][3] += side.ladders_ineligible;
+      }
     }
   }
   const double n = static_cast<double>(d.records.size());
@@ -570,6 +581,13 @@ void run_build(benchmark::State &state, const Dataset &d) {
   state.counters["nodes"] = static_cast<double>(nodes);
   state.counters["ladders"] = static_cast<double>(ladders);
   state.counters["ladders_ineligible"] = static_cast<double>(ineligible);
+  for (std::size_t k = 0; k < 2; ++k) {
+    const std::string side = k == 0 ? "call" : "put";
+    state.counters[side + "_ladders"] = static_cast<double>(side_ladders[k][0]);
+    state.counters[side + "_ladders_validated"] = static_cast<double>(side_ladders[k][1]);
+    state.counters[side + "_ladders_sampled"] = static_cast<double>(side_ladders[k][2]);
+    state.counters[side + "_ladders_ineligible"] = static_cast<double>(side_ladders[k][3]);
+  }
   state.counters["families"] = static_cast<double>(families);
   state.counters["identify_ms"] = sum.identify_us * 1.0e-3;
   state.counters["family_ms"] = sum.family_us * 1.0e-3;
