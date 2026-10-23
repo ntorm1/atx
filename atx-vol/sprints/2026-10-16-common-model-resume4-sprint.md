@@ -693,3 +693,96 @@ and D1's production 27, ddiv 88, reference 24, fit-archive 57 again.
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ch-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2ch-20261023-integrate\`.
+
+## W2c-i / r6 integration of C2 and H0-A, A0 / K3 seams on (vol-sota master plan, 2026-10-23)
+
+Lane W2c-i (run `vol-sota-r6-20261023`, pool-5) merged the approved C2 (repair consistency / publication
+validation) and H0-A (serving bundle phase A) lanes into the root `feat/vol-resume5-20261022`, `--no-ff`, in that
+order, on top of `5728edc6`, then switched H0-A's A0 / K3 compile-time seams on. No default promoted; nothing pushed.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `bdea828b` | merge C2 repair consistency `15bbeba7` (review BLOCK at `ea3d67ab`, M1 + m1-m5; fix round 1; re-review ALL ADDRESSED at `15bbeba7`; merge base `e22ff2c4`) | none | clean auto-merge, no glue |
+| `53692d40` | merge H0-A serving bundle phase A `f8c431f0` (review APPROVE, 15 minors; merge base `914a28ef`) | `CHANGELOG.md`, `CMakeLists.txt` | union, plus the semantic fix below |
+| `2126029c` | `feat(vol)`: `ATX_VOL_SERVE_RECORD_A0` / `_K3` default to 1 | - | serve-record 28/28 |
+
+**Conflict resolution.** C2 auto-merged everywhere (`quote_slice.cpp`, `quote_slice.hpp`, `CHANGELOG.md`,
+`CMakeLists.txt`, `tests/CMakeLists.txt`, `tests/slices.cmake`, `quote_bench_main.cpp`, `quote_bench_policy.hpp`);
+its `quote_slice.cpp` hunks are its declared repair / validation / publication functions, none in a region K4's
+branch touches. H0-A: CHANGELOG = the root's C2 entry, then H0-A's (entry-set check 136 = 135 + 1); the library
+source list = C2's `quote_slice_publication.cpp`, then H0-A's comment and `slice_serve_record.cpp`.
+
+**Semantic fix (the textual union does not compile).** K3 (W2c-g, after H0-A's base) removed
+`deam_family_probe_worst` from `deam_iv_cache.{hpp,cpp}` and replaced it in the fitter by `deam_family_certify`.
+`slice_serve_record.cpp` keeps its approved measured family bound through a file-local copy of the removed
+function (body byte-equal to `914a28ef`'s), plus `#include <numbers>` and one include comment (+54 / -1).
+Mirroring the fitter's `deam_family_certify` instead compiles but fails 7 of 26 serve-record tests: the
+envelope-derived bound makes every ladder of the fixture ineligible. Flagged for review; the K3 bound in the record
+is a phase-B / H1 decision.
+
+**Diff proof.** C2 merge: 89 of 89 per-file diffs EQUAL_SEQ (16 vs the C2 blob, 73 vs the root blob). H0-A merge:
+67 EQUAL_SEQ; the only residual is `slice_serve_record.cpp` on both sides, exactly the semantic fix.
+
+**Seam flip.** Both lanes are in the root (K3 `91d1f669` since W2c-g, A0 `ed2d2e05` since W2c-h), so the seams
+default to 1. The default policy's `policy_sha256` moves `87318ae7…cefe` -> `57902383…f3fc` (read with a scratch
+probe test, never committed). Serve-record suite with both seams on: 28/28 = the 26 +
+`FamilyTierGreeksAreA0sBundleToTheBit` (A0) + `FamilyRootsAreAcceptedByTheEnvelopesEnclosure` (K3); the two seams
+were never built together before (review-H0A m11, closed). Only `slice_serve_record.cpp` and its test include the
+seam header.
+
+**Per-merge suites** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`). After C2: quote-slice 223/223 (C2's 221 + K3's
+net 2), `QuoteSlicePublication.*` 28/28, fit-archive 57/57, bench-clocks 11/11, anchored ctests 3/3, CLI pytest
+193. After H0-A: serve-record 26/26 (seams off), `^serve-record:|^tick-path:|^fitting/SessionServe|^atx-vol-quote-slice$`
+90/90, `QuoteSlicePublication.*` 28/28.
+
+**Gates on the final code `2126029c`** (the docs commit changes `.md` files only):
+- 9/9 default hashes byte-identical (quote-bench `6ebdaf61`), `sha256sum -c` 9 OK with the log persisted, stderr
+  files 0 bytes.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (bin byte-equal to W2c-h's; 2.9 s); the record bench
+  `atx-vol-serve-record-bench` builds on vol-rel-avx2 with both seams on.
+- Name set at cap 3: `52324ef8` plus the L575 flake, which fired this run; 1062 names, 0 added, 0 removed (C2's and
+  H0-A's tests live in their own targets).
+- Combined anchored ctest (W2c-h regex + `^serve-record:`), native ctest excluded: 174/174; CLI pytest on the two
+  files directly: 193 passed (`test_quote_bench_cli.py` alone 94 = C2's count).
+- Direct: quote-slice 223, `QuoteSlicePublication.*` 28, serve-record 28, fit-archive 57.
+- ForceScalar filter: 121 passed, 4 skipped, 1 known failure (`PricePolishDefaultOffIsBitForBitControl`).
+  `atx-vol-umbrella`: its 3 known failures; counts 46 / 105 (+1 each: H0-A's public header `slice_serve_record.hpp`).
+- PCH-off (`vol-hygiene`): the full closure of the 7 changed headers, 35 TUs (the bench TU is not configured
+  there), exit 0, 0 diagnostics.
+- Keys-ON (all MATCH, each lane at its own worker count): C2 dev200b h0 + repair `2e31e087`, h0.5 + repair
+  `c4612fc3`, + validate `228b1a94` / `c1691f1e` (served 57,926 / 57,997 / 57,388 / 57,459), SPY / cohort5 arms
+  `ba413a85` / `4acd8575` / `d834b4d3` / `a90b5047` / `c3292d38` (all at `ATX_VOL_FIT_WORKERS=2`, as C2 ran them);
+  D1 `fc81aad3` / `c6016745`; K3 `710115bb` / `13f6be35`; K2 `710115bb` / `6368997d`, replay block 13/13; C0
+  one_spot `a9dec618` / `ed34eef7` / `34e3ed27` / `d7a48be7` / `34d5aab0`.
+
+### Deferred minors (W2c-i: C2 and H0-A reviews, fix rounds, integration)
+- C2 (P0): the keys-ON repair arms are not run-to-run reproducible at fan-out width >= 2 (2 SPY chains, <= 5.1e-13,
+  seen on the C0 base binary too); root cause not located (per-thread DeAm IV memo / AloPricer state candidates).
+- C2 (H1): the ATXVFA fit archive does not store `QuoteSliceFit::withheld_nodes`; a decoded fit re-serves every
+  `MarketDistanceFailure` row's off-market value (needs a `WithheldNodes` section and a round-trip test).
+- C2 (C3 / G4, review B(3)): `validate` on the default graded path refuses 440 / 498 in-market dev200 / dev200b
+  rows (547 on dev200b box + repair + validate); the validator is right: the default path publishes deep-ITM call
+  nodes at S - K below S - dfK (C1 of the non-dividend certificate, 141 violations on 34 chains, mostly sub-tick).
+  C3 picks: regime floors in the repair rungs and joint projection, a sub-tick allowance, or refusal.
+- C2 re-review: no committed surface test sees a revert of the channel / market Recheck gates (unit tests and the
+  dev200b hashes pin them); the M1 test pins `publication_checks == 0` and must be revisited if another repair
+  commits on that snapshot; `quote_surface.cpp:52` include order (nit).
+- H0-A (H1 / phase B / Q0), the review's 15 minors: m1 `implied_vol` has no staleness check; m2 the stale gate fails
+  open at `now_ns = 0`; m3 the Family-tier certificate between nodes at the fit spot is the family's, not the
+  chord's; m4 `bytes()` under-counts geometries (>= 2.94 MB per SPY symbol, not 2.57); m5 `implied_vol` with
+  `tier = Cold` still runs the family Newton and a Fast confirm; m6 ladder IV `Ok` with an ungated `bound_iv`; m7
+  `build_serve_record_with` does not check the holder's T / r / AlOpts / anchor; m8 the public `SliceServeRecord`
+  constructor accepts nullptr; m9 a third replica of `zero_vol_american`; m10 the AggregateFundingPV carry replica
+  is not bit-pinned; m11 closed here (28/28 with both seams); m12 the full mixed 300-chain is not met (~0.3 ms
+  estimate); m13 outside the probed band the certificates are one-point measurements; m14 the seam state is visible
+  only through `policy_sha256`; m15 a duplicated differentiated Clenshaw recurrence and a family-relative ladder
+  certificate.
+- H0-A (Q0): K3's put envelope is box-bound on the fixture (34 unverified nodes, 0.04-0.5 USD), so no put root is
+  accepted by enclosure; the tier-1 chain is 15x over the 300-chain target; every latency row is unqualified.
+- W2c-i integration: the record keeps the pre-K3 sampled bound (file-local copy); adopting K3's
+  `deam_family_certify` bound kills every fixture ladder, and a phase-B holder from the fitter
+  (`detail::build_serve_record_with`) carries the K3 bound, not the record's. K4 (still on its own branch) edits
+  `deam_iv_cache*`, `quote_bench_main.cpp` and `quote_bench_policy.hpp`, which C2 and the record now also touch.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ci-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2ci-20261023-integrate\`.
