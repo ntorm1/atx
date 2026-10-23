@@ -1703,21 +1703,33 @@ TEST(QuoteSurface, FanOutOrdersTheChannelStagesDensestFirst) {
   EXPECT_EQ(trace, (std::vector<std::size_t>{2, 1, 0, 2, 1, 0, 2, 1, 0}));
 }
 
-// Above one worker the per-expiry stages leave the calling thread: its armed
-// trace sees no task at fit_workers = 4, and sees every pass-A task at 1. The
-// result is the same either way (FanOutIsBitIdenticalForEveryWorkerCount).
-TEST(QuoteSurface, FanOutRunsOffTheCallingThreadAboveOneWorker) {
+std::atomic<std::size_t> g_tasks_run{0};
+void count_expiry_task(std::size_t) { g_tasks_run.fetch_add(1u); }
+
+// Every pass-A task runs exactly once at any width. At fit_workers = 1 all of them
+// run inline on the calling thread (its armed trace sees each one); above one worker
+// they run on the persistent pool, where the caller takes part as context 0 (lane P0,
+// expiry_pool.hpp), so its trace sees at most all of them. The result is the same
+// either way (FanOutIsBitIdenticalForEveryWorkerCount).
+TEST(QuoteSurface, FanOutRunsEveryTaskOnceOnThePoolAboveOneWorker) {
   const std::vector<Chain> chains = widening_chains();
   for (const unsigned workers : {1u, 4u}) {
     QuoteSurfaceConfig surface;
     surface.fit_workers = workers;
     std::vector<std::size_t> trace;
+    g_tasks_run.store(0u);
     {
+      const detail::ScopedExpiryTaskHook hook(&count_expiry_task);
       const detail::ScopedExpiryDispatchTrace arm{trace};
       const auto fitted = fit_quote_surface(expiries(chains), QuoteSliceConfig{}, surface);
       ASSERT_TRUE(fitted) << fitted.error().to_string();
     }
-    EXPECT_EQ(trace.size(), workers == 1u ? chains.size() : 0u) << "workers " << workers;
+    EXPECT_EQ(g_tasks_run.load(), chains.size()) << "workers " << workers;
+    if (workers == 1u) {
+      EXPECT_EQ(trace.size(), chains.size());
+    } else {
+      EXPECT_LE(trace.size(), chains.size());
+    }
   }
 }
 

@@ -12,10 +12,15 @@
 // (EIGEN_NO_CPUID, root CMakeLists.txt) and pins the three sizes, so every core blocks
 // the same way.
 //
+// The same suite pins the scheduler's contract (src/fitting/expiry_pool.hpp): the
+// per-expiry stages run on the one persistent pool (a bounded set of threads however
+// many fits run) and a pricing-pool dispatch inside a fit task runs inline.
+//
 // FitFanoutDeterminismChild.* is the child half of the cross-process test below; it
 // skips unless the parent set kPinProbeEnv.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -26,6 +31,7 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <Eigen/Core>
@@ -35,6 +41,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/pricing/pricing_executor.hpp"
 #include "fitting/expiry_schedule.hpp" // ScopedExpiryTaskHook (per-task state pollution)
 
 #ifdef _WIN32
@@ -331,6 +338,65 @@ TEST(FitFanoutDeterminism, SurfaceRowsAreByteIdenticalAcrossWidthsAndSchedules) 
       EXPECT_EQ(hash_surface(*result), want) << "workers " << workers << " polluted " << polluted;
     }
   }
+}
+
+// ── Bounded pool and the nested-dispatch rule ───────────────────────────────
+
+std::atomic<unsigned> g_task_threads{0}; // distinct OS threads that ever ran a fit task
+std::atomic<unsigned> g_foreign_blocks{0}; // pricing blocks run off their fit task's thread
+
+// Counts each OS thread the first time it runs a fit task. A thread_local sentinel, not
+// a thread id: Windows recycles ids, a new thread always gets fresh thread-local state.
+void count_task_thread(std::size_t) {
+  thread_local const bool counted = (g_task_threads.fetch_add(1u), true);
+  static_cast<void>(counted);
+}
+
+// Issues a plain pricing-pool dispatch from inside the fit task and counts the blocks
+// that ran on another thread: a fit task must never fan the pricing pool out again.
+void dispatch_pricing_from_task(std::size_t) {
+  const std::thread::id self = std::this_thread::get_id();
+  pricing_executor().run_blocks(64u, 0u, [self](std::size_t) {
+    if (std::this_thread::get_id() != self) g_foreign_blocks.fetch_add(1u);
+  });
+}
+
+// Deliverable 1: the per-expiry stages run on the one persistent pool, so however many
+// fits run, their tasks stay on at most pool size + 1 threads (the workers and the
+// caller). The fresh-jthread-per-stage fan-out started up to fit_workers new threads per
+// stage per fit, so enough fits always exceed that bound.
+TEST(FitFanoutDeterminism, FitsRunOnABoundedSetOfThreads) {
+  std::vector<Chain> storage;
+  const std::vector<QuoteSurfaceExpiry> chains = surface_expiries(storage);
+  const QuoteSliceConfig config = dense_repair_config();
+  QuoteSurfaceConfig surface;
+  surface.fit_workers = 4;
+  const unsigned bound = pricing_executor().size() + 1u;
+  const unsigned fits = bound / 4u + 2u; // fresh threads would add >= 4 per fit
+  g_task_threads.store(0u);
+  {
+    const detail::ScopedExpiryTaskHook hook(&count_task_thread);
+    for (unsigned fit = 0; fit < fits; ++fit) {
+      ASSERT_TRUE(fit_quote_surface(chains, config, surface));
+    }
+  }
+  EXPECT_LE(g_task_threads.load(), bound) << fits << " fits started threads beyond the pool";
+}
+
+// Deliverable 3, the nested-dispatch rule: fit tasks are pool work, so a pricing-pool
+// dispatch issued inside one runs inline on the task's thread - live fitting never
+// nests the pool and never oversubscribes it.
+TEST(FitFanoutDeterminism, PricingDispatchInsideAFitTaskRunsInline) {
+  std::vector<Chain> storage;
+  const std::vector<QuoteSurfaceExpiry> chains = surface_expiries(storage);
+  QuoteSurfaceConfig surface;
+  surface.fit_workers = 4;
+  g_foreign_blocks.store(0u);
+  {
+    const detail::ScopedExpiryTaskHook hook(&dispatch_pricing_from_task);
+    ASSERT_TRUE(fit_quote_surface(chains, dense_repair_config(), surface));
+  }
+  EXPECT_EQ(g_foreign_blocks.load(), 0u) << "a fit task fanned the pricing pool out";
 }
 
 // End to end across processes: the dense slice fitted by a process pinned to the P cores
