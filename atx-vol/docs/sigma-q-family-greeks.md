@@ -17,9 +17,9 @@ lane is the scalar entry's result bit for bit.
 
 | Greek | What it is | Needs |
 |---|---|---|
-| Δ, Γ | ∂/∂S of the integrand at fixed boundary (exact: the internal put's boundary does not depend on its spot); calls by homogeneity | — |
+| Δ, Γ | ∂/∂S of the integrand at fixed boundary (exact: the internal put's boundary does not depend on its spot); calls by homogeneity. Γ is NaN `NearExerciseEdge` in the near-edge band | — |
 | vega | K1's fused dP/dσ, the boundary's σ-motion included (bit for bit `sigma_q_family_detail::price_and_vega`'s vega on every served row) | — |
-| θ | the continuation-region PDE identity θ = rV − (r − q)SΔ − ½σ²S²Γ, calendar dV/dt per unit of the geometry's T | — |
+| θ | the continuation-region PDE identity θ = rV − (r − q)SΔ − ½σ²S²Γ, calendar dV/dt per unit of the geometry's T — NOT a derivative of the map (the family has no τ axis); NaN `NearExerciseEdge` in the near-edge band | — |
 | phi | ∂P/∂q: frozen-boundary terms plus the boundary motion dy/dq through the tensor's q axis | a q axis (`n_q() > 1`) |
 | rho | ∂P/∂r: frozen-boundary terms plus Σ ∂P/∂y · dY/dr | an `AlSigmaQFamilyRateBumps` built from this family |
 
@@ -59,16 +59,40 @@ number (`Served` or `Exercised`). An unsupported Greek is never `0.0` marked ser
 | `NoQAxis` | NaN | phi on a collapsed q box |
 | `NearNodeDegenerate` | NaN | the transform s = √y at its zero at a premium node with a nonzero slope in that Greek's parameter (σ: vega, q: phi, r: rho) |
 | `ConventionUnsupported` | NaN | `StickyMoneyness` / `RefittedSurface` requested |
+| `NearExerciseEdge` | NaN | θ and Γ on a continuation row inside the near-edge band (below) |
 
 Exercised rows serve rho = phi = 0 even without a rate-bump set: intrinsic does not move
 with r or q. On those rows the bundle's vega is 0.0 (`Exercised`) where K1's fused slope
 may be nonzero — K1's `price_and_vega` serves the slope of the map for an inversion; the
 bundle serves the exercise Greeks for hedging.
 
-**The near-boundary band.** A served row whose spot is within a quarter standard
-deviation of the family's current exercise edge (|ln(S / S_edge)| < 0.25 σ√T) is in the
-separately reported error class below. Its θ is the weakest Greek there: the PDE identity
-multiplies the map's Γ error by ½σ²S² exactly where V → intrinsic and θ → 0.
+**The near-edge band (fix round 1, review-A0 MJ1).** Every Ok bundle carries
+`edge_sd = ln(S' / B'_now) / (σ√T)`: the distance, in standard deviations, from the spot to
+the family's CURRENT exercise edge, computed in the internal put's coordinates — S' the
+internal spot, B'_now = xmax · exp(−√y) at τ = T and the contract's (σ, q), the very edge
+the `Exercised` rule tests. For a put that is ln(S / S*) / (σ√T); for a call (internal
+S' = K, K' = S) ln(S* / S) / (σ√T), S* the option's own edge. It is > 0 on the continuation
+side, ≤ 0 on the exercise side, NaN on a refused row. A continuation row with
+`edge_sd < kAlFamilyGreekEdgeBand` (0.25) is IN THE BAND: `near_edge` is set (SoA flags
+bit 2, and the `edge_sd` column), θ and Γ are NaN with `NearExerciseEdge` and not in
+`supported`; price, Δ, vega, rho and phi stay served (their in-band accuracy is in the
+table below). The slow suite checks the bundle's `edge_sd` against an independent edge
+(bisection on the exercise flag in option spot) and its classification row by row.
+
+Why θ and Γ: next to the edge V → K − S, Δ → −1 and θ → 0, so the identity
+θ = rV − (r − q)SΔ − ½σ²S²Γ is a cancellation of O(rK) terms, and it amplifies the
+discretised Andersen-Lake map's Γ error there (its approximate smooth pasting) by ½σ²S².
+Measured against the converged calendar difference: 138 % off with the WRONG sign at
+0.007 σ√T (θ = +0.128 per year vs −0.337), 25 % off at 0.016 σ√T, 1.4e-3 – 3.0e-3 at
+0.028 – 0.038 σ√T, ≤ 9.4e-5 from 0.11 σ√T on. The band's 0.25 is the validation's own split:
+every θ the bundle serves is then in the outside-band class (≤ 1.8e-4 against the converged
+model); it is conservative beyond ~0.1 σ√T, and narrowing it needs more in-band rows (a
+follow-up, not this lane). The cause is the identity on the discretised map, NOT the (σ, q) interpolant: the L3g
+σ family — another interpolant of the same build scheme — serves θ = 0.128092238836 on the
+worst row against this bundle's 0.128092238896, and the same 1.38 band maximum; a denser
+(σ, q) family does not fix it. Γ is withheld with θ because it is the term the identity
+amplifies (≈ 1 % implied on the worst row) and no in-band reference validates it. A
+caller that needs θ in the band takes a calendar difference of two families.
 
 ## The rate-bump set (rho)
 
@@ -113,9 +137,9 @@ in-the-money sets walking to the edge; CSV `A0-20261023-greeks\logs\slow-*-model
 | Greek | Outside band: vs converged max [p99] | vs build scheme max | build scheme vs converged | Inside band (8 rows): vs converged max |
 |---|---|---|---|---|
 | Δ | 1.9e-5 [2.3e-6] | 1.2e-8 | 1.9e-5 | 2.6e-5 |
-| Γ | 2.7e-5 [1.1e-5] | 5.0e-8 | 2.7e-5 | not differenced (one-sided) |
+| Γ | 2.7e-5 [1.1e-5] | 5.0e-8 | 2.7e-5 | NOT SERVED (`NearExerciseEdge`; not differenced) |
 | vega | 6.9e-5 [2.1e-5] | 4.9e-8 | 6.9e-5 | 1.5e-3 (converged uncertainty 1.3e-3) |
-| θ | 1.8e-4 [4.7e-5] | 6.8e-5 | 2.4e-4 | 1.38 (0.007 σ√T from the edge) |
+| θ | 1.8e-4 [4.7e-5] | 6.8e-5 | 2.4e-4 | NOT SERVED (`NearExerciseEdge`); the identity — the L3g σ family's θ, the same number — measures 1.38 (wrong sign) |
 | rho | 1.9e-4 [5.7e-5] | 2.3e-6 | 1.8e-4 | 2.2e-3 |
 | phi | 1.7e-4 [5.5e-5] | 2.2e-7 | 1.7e-4 | 2.1e-3 |
 
@@ -124,10 +148,13 @@ Outside the band the family's distance to the converged model IS its build schem
 Γ / vega / phi and the bump's truncation 2e-6 to rho. θ (the PDE identity) sits 1.8e-4
 from the converged calendar difference — closer than the build scheme's own calendar
 difference (2.4e-4): that scheme's price is not converged in T. The L3g σ family's θ on
-the same rows measures the same (1.8e-4 / 4.7e-5 p99): review-L3g m5 closed. Inside the
-band θ reaches 1.38 relative (0.47 per year absolute on a 61 USD put) at 0.007 σ√T from the
-edge, where θ → 0 and the identity amplifies Γ's error; the build scheme agrees with the
-converged reference there (3.1e-3), so it is the family, not the reference.
+the same rows measures the same (1.8e-4 / 4.7e-5 p99): review-L3g m5 is closed OUTSIDE the
+band only. Inside the band the identity θ reaches 1.38 relative (0.465 per year absolute,
+the wrong sign) at 0.007 σ√T from the edge; the build scheme's calendar difference agrees
+with the converged reference there (3.1e-3), so the reference is sound — the identity on
+the discretised map is not (above), which is why this bundle withholds θ and Γ in the band.
+The L3g σ-family bundle has no per-Greek reason and still serves that θ with status Ok:
+review-L3g m5's in-band part is OPEN for that bundle's owner (its header says so).
 
 **AVX2- vs scalar-built families** (same evaluator; the AVX2 node solve reorders the sweep
 arithmetic, ≤ ~4e-13 of y): Δ 1.3e-14, S·Γ 2.4e-12, vega 2.3e-11, θ 7.9e-10, rho 7.0e-10,
@@ -143,7 +170,7 @@ chain's 317 rows on a put and a call family, n_q 4, n_σ 12, 5,072 timed queries
 `american/sqgreeks_chain/{spy23,synthetic300}/{primary,all}` (one `family_greeks_many` call
 per chain, single thread, 5 warm + 101 timed calls); `ATX_VOL_AL_SQGREEKS=1` +
 `ATX_VOL_AL_SPY23=<csv>`. Two runs on a LOADED host (65 – 99 % CPU from other build lanes):
-unqualified, a quiet-host pin is W4's. JSON: `A0-20261023-greeksenchfter-m3-{1,2}.json`.
+unqualified, a quiet-host pin is W4's. JSON: `A0-20261023-greeks\bench\after-m3-{1,2}.json`.
 
 | row | p50 µs | p99 µs |
 |---|---|---|

@@ -15,14 +15,26 @@ identity), phi (∂P/∂q through the tensor's q axis, boundary motion included)
 (only with an `AlSigmaQFamilyRateBumps`: two second families at r ± 1e-4) from one fused
 premium pass over K1's stages. Every requested Greek carries a typed
 `AlFamilyGreekReason` (`Served`, `Exercised`, `Refused`, `NoCarryBumps`,
-`CarryBumpRefused`, `NoQAxis`, `NearNodeDegenerate`, `ConventionUnsupported`) and the
-`supported` mask; an unsupported Greek is NaN, never 0.0 marked served. Every bundle
+`CarryBumpRefused`, `NoQAxis`, `NearNodeDegenerate`, `ConventionUnsupported`,
+`NearExerciseEdge`) and the `supported` mask; an unsupported Greek is NaN, never 0.0
+marked served. Every bundle
 carries an `AlFamilyGreekConvention` (held fixed: `ContractSigma` / `StickyStrike`
 implemented, `StickyMoneyness` / `RefittedSurface` declared unsupported; model
 `SigmaQFamily`; clock `GeometryTime`; the caller's `surface_version`). The SoA entry takes
 per-lane K / σ / q and an active mask and is the scalar entry lane for lane, bit for bit.
 `AlSigmaFamilyPriceVega` gains `exercised` (review-L3g m4): its vega is 0.0 by
 construction on those rows.
+
+The near-edge band (A0 fix round 1, review-A0 MJ1): every Ok bundle carries `edge_sd` =
+ln(S' / B'_now) / (σ√T), the distance to the family's current exercise edge in the
+internal put's coordinates, and `near_edge` (SoA: flags bit 2 and an `edge_sd` column).
+On a continuation row with `edge_sd < kAlFamilyGreekEdgeBand` (0.25) θ and Γ are NaN with
+`NearExerciseEdge`: there the PDE-identity θ was measured up to 138 % off the converged
+calendar difference, with the wrong sign, and Γ (the term it amplifies) is not validated.
+The L3g σ-family bundle (`AlSigmaFamilyGreeks`) serves the same in-band θ with status Ok
+and has no per-Greek reason: its header now says so, and review-L3g m5's in-band part is
+OPEN for its owner. `family_greeks_many`'s InvalidArgument refusal allocates nothing
+either (review-A0 m5).
 
 **No number changes.** Nothing default selects the bundle; the bundle's price and served
 vega are K1's fused pass's bits; the 9 default quote-bench hashes match. The L3g σ-family
