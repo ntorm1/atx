@@ -1,7 +1,9 @@
-// Lane H0-A (r6, 2026-10-23): the immutable fitted serving record of one expiry -
+// Lanes H0-A and H1 (r6, 2026-10-23): the immutable fitted serving record of one expiry -
 // build from a completed QuoteSliceFit, ownership, the typed node answers, tiered serve,
-// the tick-rate implied volatility, routing, versions, bytes, concurrency and the
-// allocation budget of the Ladder and Family reads.
+// the tick-rate implied volatility, routing, versions, bytes, concurrency, the allocation
+// budget of the Ladder and Family reads, lane K3's error statements (H1: the families
+// certified through deam_family_certify, the per-point bound, typed Sampled statements),
+// the fitter's hand-off and the evaluate_quote_slice fast path.
 #include "atx/vol/api/fitting/slice_serve_record.hpp"
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -21,7 +24,11 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "fitting/deam_iv_cache.hpp"
 #include "fitting/slice_serve_record_detail.hpp"
+#include "pricing/american_boundary.hpp"       // AlExpiryGeometry::Impl (bytes)
+#include "pricing/american_family_error.hpp"   // K3: family_price_bounded, envelopes
+#include "pricing/american_iv_premium.hpp"      // iv_premium_edge_band_top (the L1c band)
 #include "pricing/american_sigma_q_family.hpp" // K1 fused price + vega (internal)
 #include "support/alloc_counter.hpp"
 
@@ -100,6 +107,10 @@ const ServedNodeSide &side_of(const ServedNode &node, Side side) {
   return side == Side::Call ? node.call : node.put;
 }
 
+const ServeSideSupport &support_of(const SliceServeRecord &record, Side side) {
+  return side == Side::Call ? record.support().call : record.support().put;
+}
+
 // The contract's effective yield exactly as the fitter derives it (ContinuousYield:
 // the calendar yield on the variance clock, T_cal == T_var here).
 double effective_q(const QuoteSliceFit &fit, double strike) {
@@ -143,6 +154,36 @@ ServeRequest at(double strike, Side side, double spot, ServeTier tier, ServeTier
   return r;
 }
 
+ServeIvRequest iv_at(double strike, Side side, double spot, double target, ServeTier tier,
+                     ServeTier tier_max) {
+  ServeIvRequest r;
+  r.strike = strike;
+  r.side = side;
+  r.spot = spot;
+  r.target_price = target;
+  r.tier = tier;
+  r.tier_max = tier_max;
+  return r;
+}
+
+// The record's own certified families with lane K3's envelope WITHDRAWN (class Uncovered,
+// grid bound +inf) and the build-time probe audit kept: no statement can be validated, so
+// every ladder the audit admits is Sampled. The holder is built here, never shared, so the
+// test may write it before the record observes it.
+std::shared_ptr<const DeAmSigmaFamilies> withdrawn_holder(const QuoteSliceFit &fit) {
+  auto holder = std::const_pointer_cast<DeAmSigmaFamilies>(
+      detail::build_serve_families(fit, ServeRecordPolicy{}));
+  EXPECT_NE(holder, nullptr);
+  if (holder == nullptr) return nullptr;
+  for (ValidatedErrorEnvelope *env : {&holder->q_envelope_put, &holder->q_envelope_call}) {
+    EXPECT_GT(env->audit.probes, 0u);
+    env->error_class = FamilyErrorClass::Uncovered;
+  }
+  holder->q_bound_put = kInf;
+  holder->q_bound_call = kInf;
+  return holder;
+}
+
 TEST(SliceServeRecord, FixtureFitIsServedWithPerStrikeCarry) {
   const QuoteSliceFit &fit = base_fit();
   ASSERT_EQ(fit.fit_status, QuoteSliceFitStatus::Success);
@@ -150,6 +191,8 @@ TEST(SliceServeRecord, FixtureFitIsServedWithPerStrikeCarry) {
   ASSERT_GE(fit.prices->nodes().size(), 20u);
   ASSERT_FALSE(fit.carry_curve.empty());
   ASSERT_NE(base_record(), nullptr);
+  EXPECT_EQ(fit.serve_handoff, nullptr); // no (sigma, q) families in this fit
+  EXPECT_EQ(fit.serve_record, nullptr);
 }
 
 // Deliverable 1 / 4: every node's call and put price is the slice's, byte for byte.
@@ -192,12 +235,10 @@ TEST(SliceServeRecord, NodeSidesCarryTheTypedQueryAnswer) {
 
 // The record's per-strike yield is the fitter's: an unmoved node's certified price is the
 // accurate kernel at the node's served sigma and the record's q, to the bit.
-TEST(SliceServeRecord, NodeYieldReproducesTheCertifiedPriceToTheBit) {
-  const auto record = base_record();
-  ASSERT_NE(record, nullptr);
-  const QuoteSliceFit &fit = base_fit();
+void expect_node_yields_reproduce_prices(const QuoteSliceFit &fit, const SliceServeRecord &record,
+                                         std::size_t at_least) {
   std::size_t checked = 0;
-  for (const ServedNode &node : record->nodes()) {
+  for (const ServedNode &node : record.nodes()) {
     for (const Side side : {Side::Call, Side::Put}) {
       const ServedNodeSide &s = side_of(node, side);
       if (s.moved || s.convention != QuoteSliceVolConvention::FittedCurve) continue;
@@ -210,11 +251,48 @@ TEST(SliceServeRecord, NodeYieldReproducesTheCertifiedPriceToTheBit) {
       ++checked;
     }
   }
-  EXPECT_GE(checked, 40u);
+  EXPECT_GE(checked, at_least);
 }
 
-// Ruling b: at the fit's own spot every tier serves the certified node price; the tier's
-// Greeks come from its own map and the answer declares the gap.
+TEST(SliceServeRecord, NodeYieldReproducesTheCertifiedPriceToTheBit) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  expect_node_yields_reproduce_prices(base_fit(), *record, 40u);
+}
+
+// Review-H0A m10: the funding-PV carry (the SPY default, --dividends funding-pv) with a
+// dividend PV and a calendar clock unlike the variance clock reproduces the certified
+// prices to the bit as well.
+TEST(SliceServeRecord, FundingPvNodeYieldReproducesTheCertifiedPriceToTheBit) {
+  const QuoteSliceMarket market{kSpot, 0.25, 0.27, kRate, kYield, 0.8};
+  const double forward = kSpot * std::exp((kRate - kYield) * 0.27) - 0.8;
+  std::vector<QuoteSliceQuote> quotes;
+  for (int i = 0; i < 21; ++i) {
+    const double K = 75.0 + 2.5 * static_cast<double>(i);
+    const double q = strike_yield(K, 3.0e-4);
+    for (const Side side : {Side::Call, Side::Put}) {
+      const Result<double> price = andersen_lake(kSpot, K, 0.25, smile(K, forward), kRate, q, side);
+      if (!price) continue;
+      const double spread = std::max(0.01, 0.01 * *price);
+      quotes.push_back({K, side, std::max(*price - spread, 0.0), *price + spread, q});
+    }
+  }
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::AggregateFundingPresentValue;
+  const Result<QuoteSliceFit> fit = fit_quote_slice(market, quotes, config);
+  ASSERT_TRUE(fit.has_value());
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
+  ASSERT_EQ(fit->dividend_model, QuoteSliceDividendModel::AggregateFundingPresentValue);
+  ServeRecordPolicy policy;
+  policy.ladders = false;
+  const auto record = build_serve_record(*fit, policy);
+  ASSERT_TRUE(record.has_value());
+  expect_node_yields_reproduce_prices(*fit, **record, 20u);
+}
+
+// Ruling b: at the fit's own spot every tier serves the certified node price (Exact); the
+// tier's Greeks come from its own map and the answer declares the gap and that map's own
+// statement.
 TEST(SliceServeRecord, ServeAtTheFitSpotReturnsTheCertifiedNodePriceOnEveryTier) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
@@ -228,7 +306,14 @@ TEST(SliceServeRecord, ServeAtTheFitSpotReturnsTheCertifiedNodePriceOnEveryTier)
         ++per_tier[static_cast<std::size_t>(tier)];
         EXPECT_EQ(bits(a.price), bits(s.price)) << node.strike;
         EXPECT_EQ(a.price_source, ServePriceSource::SliceNode);
+        EXPECT_EQ(a.certificate_usd, 0.0);
+        EXPECT_EQ(a.certificate_class, ServeBoundClass::Exact);
         EXPECT_EQ(a.tier, tier);
+        if (tier == ServeTier::Ladder) {
+          EXPECT_EQ(bits(a.map_certificate_usd), bits(s.ladder_certificate_usd));
+          EXPECT_EQ(a.map_certificate_class, s.ladder_class);
+          EXPECT_EQ(a.sampled, s.ladder_class == ServeBoundClass::Sampled);
+        }
         if (tier == ServeTier::Family) {
           EXPECT_EQ(a.greek_source, ServeGreekSource::Family);
           EXPECT_EQ(bits(a.price_map_delta), bits(std::abs(s.family_price_delta)));
@@ -254,8 +339,7 @@ TEST(SliceServeRecord, BetweenNodesAtTheFitSpotServeTheSliceWithinTheDeclaredBou
   const auto nodes = record->nodes();
   std::size_t checked = 0;
   for (const Side side : {Side::Call, Side::Put}) {
-    const ServeSideSupport &support =
-        side == Side::Call ? record->support().call : record->support().put;
+    const ServeSideSupport &support = support_of(*record, side);
     ASSERT_TRUE(support.family);
     ASSERT_TRUE(std::isfinite(support.between_node_bound_usd));
     for (std::size_t i = 0; i + 1 < nodes.size(); ++i) {
@@ -279,6 +363,28 @@ TEST(SliceServeRecord, BetweenNodesAtTheFitSpotServeTheSliceWithinTheDeclaredBou
     }
   }
   EXPECT_GT(checked, 200u);
+}
+
+// Review-H0A m3: between nodes at the fit's spot the served price is the slice, which
+// claims no statement; the Greek map's own statement is carried beside it with its class.
+TEST(SliceServeRecord, TheSliceBetweenNodesClaimsNoCertificateAndTheMapCarriesItsOwn) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  for (const Side side : {Side::Call, Side::Put}) {
+    const ServeAnswer a = record->serve(at(101.3, side, kSpot, ServeTier::Family,
+                                           ServeTier::Family));
+    ASSERT_EQ(a.status, ServeStatus::Ok);
+    EXPECT_EQ(a.price_source, ServePriceSource::SlicePiecewiseLinear);
+    EXPECT_TRUE(std::isnan(a.certificate_usd));
+    EXPECT_EQ(a.certificate_class, ServeBoundClass::None);
+    const ServeAnswer moved = record->serve(at(101.3, side, 1.0001 * kSpot, ServeTier::Family,
+                                               ServeTier::Family));
+    ASSERT_EQ(moved.status, ServeStatus::Ok);
+    EXPECT_EQ(a.map_certificate_class, moved.certificate_class);
+    if (moved.certificate_class == ServeBoundClass::RefinementValidated) {
+      EXPECT_TRUE(std::isfinite(a.map_certificate_usd));
+    }
+  }
 }
 
 // The family tier serves K1's fused price and vega at a moved spot, to the bit, and its
@@ -322,6 +428,7 @@ TEST(SliceServeRecord, FamilyTierServesTheFamilyMapToTheBitAtAMovedSpot) {
   }
   EXPECT_GT(checked, 40u);
   EXPECT_EQ(record->clocks().lazy_family_builds, 0u); // supplied: no kernel work
+  EXPECT_EQ(record->support().call.origin, ServeFamilyOrigin::Supplied);
 }
 
 // A node side's family_reasons are exactly the Family tier's reasons at the fit's spot for
@@ -347,9 +454,9 @@ TEST(SliceServeRecord, NodeFamilyReasonsAreTheFamilyTiersReasonsAtTheFitSpot) {
   EXPECT_GT(checked, 40u);
 }
 
-// Tier 0: price and four Greeks from one map - the ladder's price within its certificate
-// of the family, and its delta / gamma / vega the derivatives of that same map.
-TEST(SliceServeRecord, LadderServesPriceAndFourGreeksFromOneCertifiedMap) {
+// Tier 0: price and four Greeks from one map - the ladder's price within its statement of
+// the family, and its delta / gamma / vega the derivatives of that same map.
+TEST(SliceServeRecord, LadderServesPriceAndFourGreeksFromOneMap) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
   const QuoteSliceFit &fit = base_fit();
@@ -368,6 +475,8 @@ TEST(SliceServeRecord, LadderServesPriceAndFourGreeksFromOneCertifiedMap) {
         EXPECT_EQ(a.price_source, ServePriceSource::Ladder);
         EXPECT_EQ(a.greek_source, ServeGreekSource::Ladder);
         EXPECT_EQ(a.price_map_delta, 0.0);
+        EXPECT_EQ(bits(a.certificate_usd), bits(s.ladder_certificate_usd));
+        EXPECT_EQ(a.certificate_class, s.ladder_class);
         const auto fam = sigma_q_family_detail::price_and_vega(*families->of_q(side), S,
                                                                node.strike, s.sigma, s.q);
         ASSERT_EQ(fam.status, sigma_q_family_detail::FusedStatus::Ok);
@@ -404,7 +513,7 @@ TEST(SliceServeRecord, LadderServesPriceAndFourGreeksFromOneCertifiedMap) {
 // NearExerciseEdge; price, delta and vega stay served; outside the band all four serve.
 // Strikes every 0.5 over 90-120. Under the default sigma half-width (0.25) a ladder's
 // low-sigma samples cross the edge first, so every tier-0 row here stays >= 0.57 sigma sqrt T
-// off it (diagnostic in the lane report); a 5 % sigma window lets ladders reach the band.
+// off it (diagnostic in the H0-A report); a 5 % sigma window lets ladders reach the band.
 TEST(SliceServeRecord, LadderWithholdsThetaAndGammaInsideTheNearExerciseEdgeBand) {
   static const QuoteSliceFit fine = fit_chain(0.25, 2.0e-4, 90.0, 0.5, 61);
   ServeRecordPolicy policy;
@@ -472,36 +581,186 @@ TEST(SliceServeRecord, LadderWithholdsThetaAndGammaInsideTheNearExerciseEdgeBand
 #endif
 }
 
-// The family tier claims its probed bound only inside the probed band |ln(K / S)| <= 0.25
-// (and at a node at least its measured error there); a ladder's certificate carries the
-// node's measured family error.
-TEST(SliceServeRecord, FamilyCertificateClaimsNothingOutsideTheProbedBand) {
+// Review-W2ci For H1 item 2 / review-H0A m13: the family tier's statement is lane K3's
+// PER-POINT bound at the contract (family_price_bounded on the side's audited envelope),
+// at every strike of the domain (no probed band), RefinementValidated where it is finite;
+// none (NaN) otherwise or when the request skips it.
+TEST(SliceServeRecord, FamilyCertificateIsK3sPerPointBound) {
+  const QuoteSliceFit &fit = base_fit();
+  const auto families = detail::build_serve_families(fit, ServeRecordPolicy{});
+  ASSERT_NE(families, nullptr);
+  const auto built = detail::build_serve_record_with(fit, ServeRecordPolicy{}, families);
+  ASSERT_TRUE(built.has_value());
+  const double S = 1.003 * kSpot;
+  std::size_t validated = 0;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const AlSigmaQFamily *f = families->of_q(side);
+    const ValidatedErrorEnvelope *env = families->q_envelope(side);
+    ASSERT_NE(f, nullptr);
+    ASSERT_NE(env, nullptr);
+    for (const double K : {71.3, 84.9, 101.3, 117.5, 129.1}) {
+      const ServeAnswer a = (*built)->serve(at(K, side, S, ServeTier::Family, ServeTier::Family));
+      if (!answered(a.status)) continue;
+      const double q = carry_between(fit, K);
+      const double sigma = (*built)->curve().iv(std::log(K / fit.diagnostics.forward));
+      const FamilyBoundedPrice fb = family_price_bounded(*f, *env, S, K, sigma, q);
+      if (env->covered() && fb.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fb.bound_usd)) {
+        EXPECT_EQ(bits(a.certificate_usd), bits(fb.bound_usd)) << K;
+        EXPECT_EQ(a.certificate_class, ServeBoundClass::RefinementValidated);
+        EXPECT_FALSE(a.sampled);
+        ++validated;
+      } else {
+        EXPECT_TRUE(std::isnan(a.certificate_usd)) << K;
+        EXPECT_EQ(a.certificate_class, ServeBoundClass::None);
+      }
+      ServeRequest skip = at(K, side, S, ServeTier::Family, ServeTier::Family);
+      skip.family_bound = false;
+      const ServeAnswer b = (*built)->serve(skip);
+      EXPECT_EQ(bits(b.price), bits(a.price));
+      EXPECT_TRUE(std::isnan(b.certificate_usd));
+      EXPECT_EQ(b.certificate_class, ServeBoundClass::None);
+    }
+  }
+  EXPECT_GE(validated, 5u); // the call side at least (per-point bound ~1e-11 USD)
+}
+
+// Review-W2ci M1 / m1 / m2: the record's families are certified through lane K3's
+// deam_family_certify like the fitter's - the audited envelope (9 probes) is the one the
+// record reads - and a self-built and a supplied holder state one contract.
+TEST(SliceServeRecord, FamiliesCarryK3sAuditedEnvelopeAndOneErrorContract) {
+  const QuoteSliceFit &fit = base_fit();
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
-  const double S = 1.003 * kSpot;
-  const ServeAnswer inside =
-      record->serve(at(101.3, Side::Put, S, ServeTier::Family, ServeTier::Family));
-  ASSERT_TRUE(answered(inside.status));
-  EXPECT_TRUE(std::isfinite(inside.certificate_usd));
-  const ServeAnswer outside =
-      record->serve(at(71.3, Side::Put, S, ServeTier::Family, ServeTier::Family));
-  ASSERT_TRUE(answered(outside.status));
-  EXPECT_TRUE(std::isnan(outside.certificate_usd));
-  std::size_t ladders = 0;
-  for (const ServedNode &node : record->nodes()) {
+  const auto families = detail::build_serve_families(fit, ServeRecordPolicy{});
+  ASSERT_NE(families, nullptr);
+  const auto supplied = detail::build_serve_record_with(fit, ServeRecordPolicy{}, families);
+  ASSERT_TRUE(supplied.has_value());
+  for (const Side side : {Side::Call, Side::Put}) {
+    const ServeSideSupport &own = support_of(*record, side);
+    const ServeSideSupport &held = support_of(**supplied, side);
+    const ValidatedErrorEnvelope *env = families->q_envelope(side);
+    ASSERT_TRUE(own.family);
+    ASSERT_NE(env, nullptr);
+    EXPECT_EQ(own.origin, ServeFamilyOrigin::Built);
+    EXPECT_EQ(held.origin, ServeFamilyOrigin::Supplied);
+    EXPECT_EQ(own.audit_probes, kDeAmFamilyProbes);
+    EXPECT_EQ(own.audit_probes, env->audit.probes);
+    EXPECT_EQ(own.audit_violations, env->audit.violations);
+    EXPECT_EQ(own.envelope_status, static_cast<std::uint8_t>(env->status));
+    EXPECT_EQ(own.unverified_nodes, env->contributions.unverified_nodes);
+    EXPECT_EQ(own.family_class, env->covered() ? ServeErrorClass::RefinementValidated
+                                               : ServeErrorClass::Uncovered);
+    EXPECT_EQ(bits(own.family_bound_rel), bits(env->audit.max_rel)); // K3's estimate
+    EXPECT_EQ(bits(own.domain_bound_usd), bits(families->q_bound(side)));
+    // One contract: the self-built and the supplied holder state the same numbers.
+    EXPECT_EQ(own.family_class, held.family_class);
+    EXPECT_EQ(own.audit_probes, held.audit_probes);
+    EXPECT_EQ(bits(own.family_bound_rel), bits(held.family_bound_rel));
+    EXPECT_EQ(bits(own.domain_bound_usd), bits(held.domain_bound_usd));
+    EXPECT_EQ(own.ladders_validated, held.ladders_validated);
+    EXPECT_EQ(own.ladders_sampled, held.ladders_sampled);
+  }
+  EXPECT_EQ(record->support().call.family_class, ServeErrorClass::RefinementValidated);
+}
+
+// Review-W2ci M1 items 3 / 5: every ladder's statement is classed. A RefinementValidated
+// ladder's statement is its verified plane tail (audited: no check point above it) plus
+// K3's largest per-point bound over its sample and check points; a Sampled one (served only
+// under sampled_ladders, labelled) is the measured check plus 10 x K3's probe audit.
+TEST(SliceServeRecord, EveryLadderStatementIsClassedAndSampledLaddersAreLabelled) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  for (const Side side : {Side::Call, Side::Put}) {
+    const ServeSideSupport &support = support_of(*record, side);
+    std::size_t validated = 0;
+    std::size_t sampled = 0;
+    for (const ServedNode &node : record->nodes()) {
+      const ServedNodeSide &s = side_of(node, side);
+      if (!(s.tiers & kServeNodeLadder)) {
+        EXPECT_TRUE(std::isnan(s.ladder_certificate_usd));
+        EXPECT_EQ(s.ladder_class, ServeBoundClass::None);
+        continue;
+      }
+      EXPECT_TRUE(std::isfinite(s.ladder_plane_check_usd));
+      if (s.ladder_class == ServeBoundClass::RefinementValidated) {
+        ++validated;
+        ASSERT_TRUE(std::isfinite(s.ladder_plane_tail_usd)) << node.strike;
+        ASSERT_TRUE(std::isfinite(s.ladder_family_bound_usd)) << node.strike;
+        EXPECT_LE(s.ladder_plane_check_usd, s.ladder_plane_tail_usd) << node.strike;
+        EXPECT_GE(s.ladder_certificate_usd, s.ladder_plane_tail_usd + s.ladder_family_bound_usd);
+        // An unmoved node's slice price is the cold kernel's: K3's claim covers it.
+        if (!s.moved) {
+          EXPECT_GE(s.ladder_certificate_usd, std::abs(s.family_price_delta)) << node.strike;
+        }
+      } else {
+        ASSERT_EQ(s.ladder_class, ServeBoundClass::Sampled) << node.strike;
+        ++sampled;
+        EXPECT_GE(s.ladder_certificate_usd, s.ladder_plane_check_usd);
+        const ServeAnswer a = record->serve(at(node.strike, side, 1.002 * kSpot,
+                                               ServeTier::Ladder, ServeTier::Ladder));
+        if (a.status == ServeStatus::Ok) {
+          EXPECT_EQ(a.certificate_class, ServeBoundClass::Sampled);
+          EXPECT_TRUE(a.sampled);
+        }
+      }
+    }
+    EXPECT_EQ(validated, support.ladders_validated);
+    EXPECT_EQ(sampled, support.ladders_sampled);
+    EXPECT_EQ(validated + sampled, support.ladders);
+  }
+  // The call side's per-point bound is ~1e-11 USD on this fixture: its ladders validate.
+  EXPECT_GT(record->support().call.ladders_validated, 10u);
+}
+
+// sampled_ladders = false: a ladder whose validated statement does not qualify is dropped,
+// never served on its estimate.
+TEST(SliceServeRecord, WithoutSampledLaddersOnlyValidatedLaddersServe) {
+  ServeRecordPolicy policy;
+  policy.sampled_ladders = false;
+  const auto built = build_serve_record(base_fit(), policy);
+  ASSERT_TRUE(built.has_value());
+  for (const Side side : {Side::Call, Side::Put}) {
+    const ServeSideSupport &s = support_of(**built, side);
+    EXPECT_EQ(s.ladders_sampled, 0u);
+    EXPECT_EQ(s.ladders, s.ladders_validated);
+    EXPECT_EQ(s.ladders_validated, support_of(*base_record(), side).ladders_validated);
+  }
+  EXPECT_NE((*built)->version().policy_sha256, base_record()->version().policy_sha256);
+}
+
+// Review-W2ci M1 item 4 / review-H0A m6: a ladder root is Ok only on a RefinementValidated
+// ladder whose statement / slope plus the Newton distance meets iv_tolerance; on a Sampled
+// ladder (here every ladder: K3's envelope withdrawn, its audit kept) it is never Ok.
+TEST(SliceServeRecord, ALadderIvRootIsNeverOkOnASampledStatement) {
+  const QuoteSliceFit &fit = base_fit();
+  const auto built = detail::build_serve_record_with(fit, ServeRecordPolicy{},
+                                                     withdrawn_holder(fit));
+  ASSERT_TRUE(built.has_value());
+  const SliceServeRecord &record = **built;
+  std::size_t tried = 0;
+  for (const ServedNode &node : record.nodes()) {
     for (const Side side : {Side::Call, Side::Put}) {
       const ServedNodeSide &s = side_of(node, side);
       if (!(s.tiers & kServeNodeLadder)) continue;
-      EXPECT_GE(s.ladder_certificate_usd, std::abs(s.family_price_delta)) << node.strike;
-      const ServeAnswer at_node =
-          record->serve(at(node.strike, side, S, ServeTier::Family, ServeTier::Family));
-      if (answered(at_node.status)) {
-        EXPECT_GE(at_node.certificate_usd, std::abs(s.family_price_delta)) << node.strike;
-      }
-      ++ladders;
+      EXPECT_EQ(s.ladder_class, ServeBoundClass::Sampled) << node.strike;
+      const double S = 1.002 * kSpot;
+      const ServeAnswer priced =
+          record.serve(at(node.strike, side, S, ServeTier::Ladder, ServeTier::Ladder));
+      if (priced.status != ServeStatus::Ok) continue;
+      EXPECT_TRUE(priced.sampled);
+      const ServeIvAnswer iv = record.implied_vol(
+          iv_at(node.strike, side, S, priced.price, ServeTier::Ladder, ServeTier::Ladder));
+      if (iv.status == ServeStatus::NonMonotoneBand) continue;
+      EXPECT_NE(iv.status, ServeStatus::Ok) << node.strike;
+      EXPECT_NE(iv.acceptance.kind, ServeAcceptanceKind::LadderCertificate);
+      EXPECT_EQ(iv.status, ServeStatus::Unconfirmed) << node.strike;
+      EXPECT_EQ(iv.route, ServeRoute::ColdPath);
+      ++tried;
     }
   }
-  EXPECT_GT(ladders, 10u);
+  EXPECT_GT(tried, 10u);
+  EXPECT_EQ(record.support().call.family_class, ServeErrorClass::Uncovered);
+  EXPECT_EQ(record.support().call.ladders_validated, 0u);
 }
 
 #if ATX_VOL_SERVE_RECORD_A0
@@ -557,7 +816,7 @@ TEST(SliceServeRecord, FamilyTierGreeksAreA0sBundleToTheBit) {
 // accepted by the envelope's enclosure (no confirm solve) within the 1e-7 requirement of
 // the accurate kernel's root. Both sides: on the fixture the put envelope is covered but
 // its unverified quadrature nodes carry box bounds (0.04-0.5 USD, no enclosure), the call
-// envelope's bound is ~1e-11 USD (lane report, Diagnostics).
+// envelope's bound is ~1e-11 USD (H0-A report, Diagnostics).
 TEST(SliceServeRecord, FamilyRootsAreAcceptedByTheEnvelopesEnclosure) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
@@ -576,7 +835,7 @@ TEST(SliceServeRecord, FamilyRootsAreAcceptedByTheEnvelopesEnclosure) {
       if (f.status != ServeStatus::Ok) continue;
       const double target = f.price * (1.0 + 1.0e-3);
       const ServeIvAnswer iv = record->implied_vol(
-          ServeIvRequest{node.strike, side, S, target, ServeTier::Family, ServeTier::Family});
+          iv_at(node.strike, side, S, target, ServeTier::Family, ServeTier::Family));
       if (iv.status != ServeStatus::Ok) continue;
       EXPECT_EQ(iv.acceptance.kind, ServeAcceptanceKind::Skipped);
       EXPECT_EQ(iv.acceptance.reason, ServeAcceptanceReason::FamilyEnclosure);
@@ -635,6 +894,33 @@ TEST(SliceServeRecord, TheRecordOutlivesTheFitItWasBuiltFrom) {
   EXPECT_TRUE(std::isfinite(a.price));
 }
 
+// Review-H0A m7: a supplied holder built for another expiry is refused; the caller's own
+// reference to a matching holder may be dropped before serving (the record holds it).
+TEST(SliceServeRecord, AMismatchedHolderIsRefusedAndTheCallersHolderMayBeDropped) {
+  const QuoteSliceFit other = fit_chain(0.5, 2.0e-4);
+  const auto foreign = detail::build_serve_families(other, ServeRecordPolicy{});
+  ASSERT_NE(foreign, nullptr);
+  const auto refused = detail::build_serve_record_with(base_fit(), ServeRecordPolicy{}, foreign);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+
+  auto mine = detail::build_serve_families(base_fit(), ServeRecordPolicy{});
+  ASSERT_NE(mine, nullptr);
+  ServeRecordPolicy policy;
+  policy.ladders = false;
+  const auto built = detail::build_serve_record_with(base_fit(), policy, mine);
+  ASSERT_TRUE(built.has_value());
+  const ServeAnswer before = (*built)->serve(at(101.3, Side::Put, 1.002 * kSpot,
+                                                ServeTier::Family, ServeTier::Family));
+  ASSERT_EQ(before.status, ServeStatus::Ok);
+  mine.reset(); // the caller's reference: the record's own keeps the families alive
+  const ServeAnswer after = (*built)->serve(at(101.3, Side::Put, 1.002 * kSpot,
+                                               ServeTier::Family, ServeTier::Family));
+  EXPECT_EQ(after.status, ServeStatus::Ok);
+  EXPECT_EQ(bits(after.price), bits(before.price));
+  EXPECT_EQ(bits(after.vega), bits(before.vega));
+}
+
 TEST(SliceServeRecord, AStrikeOutsideTheCertifiedDomainRoutesToARefit) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
@@ -643,6 +929,10 @@ TEST(SliceServeRecord, AStrikeOutsideTheCertifiedDomainRoutesToARefit) {
   EXPECT_EQ(a.status, ServeStatus::OutOfDomain);
   EXPECT_EQ(a.route, ServeRoute::Refit);
   EXPECT_TRUE(std::isnan(a.price));
+  const ServeIvAnswer iv = record->implied_vol(
+      iv_at(50.0, Side::Put, kSpot, 1.0, ServeTier::Ladder, ServeTier::Certified));
+  EXPECT_EQ(iv.status, ServeStatus::OutOfDomain);
+  EXPECT_EQ(iv.route, ServeRoute::Refit);
 }
 
 // D1: a dated-cash expiry is tier 3 only in this phase; no tier <= 2 serves it.
@@ -707,6 +997,55 @@ TEST(SliceServeRecord, AnAnswerOlderThanThePolicyIsStale) {
   EXPECT_EQ(stale.age_ns, 2000);
 }
 
+// Review-H0A m1 / m2: implied_vol is stale-checked like serve(), and with max_age_ns set a
+// request without a clock (now_ns 0) refuses Stale / ColdPath on both - never fails open.
+TEST(SliceServeRecord, AMissingClockRefusesAndImpliedVolIsStaleChecked) {
+  ServeRecordPolicy policy;
+  policy.max_age_ns = 1000;
+  policy.ladders = false;
+  const auto built = build_serve_record(base_fit(), policy);
+  ASSERT_TRUE(built.has_value());
+  const SliceServeRecord &record = **built;
+  ServeRequest r = at(100.0, Side::Call, kSpot, ServeTier::Family, ServeTier::Certified);
+  r.now_ns = 0;
+  const ServeAnswer no_clock = record.serve(r);
+  EXPECT_EQ(no_clock.status, ServeStatus::Stale);
+  EXPECT_EQ(no_clock.route, ServeRoute::ColdPath);
+  EXPECT_TRUE(std::isnan(no_clock.price));
+  r.now_ns = record.version().as_of_ns + 10;
+  const ServeAnswer priced = record.serve(r);
+  ASSERT_EQ(priced.status, ServeStatus::Ok);
+  ServeIvRequest iv = iv_at(100.0, Side::Call, kSpot, priced.price, ServeTier::Family,
+                            ServeTier::Family);
+  iv.now_ns = 0;
+  const ServeIvAnswer iv_no_clock = record.implied_vol(iv);
+  EXPECT_EQ(iv_no_clock.status, ServeStatus::Stale);
+  EXPECT_EQ(iv_no_clock.route, ServeRoute::ColdPath);
+  EXPECT_EQ(iv_no_clock.evaluations, 0u);
+  iv.now_ns = record.version().as_of_ns + 5000;
+  const ServeIvAnswer iv_old = record.implied_vol(iv);
+  EXPECT_EQ(iv_old.status, ServeStatus::Stale);
+  EXPECT_EQ(iv_old.route, ServeRoute::Rebuild);
+  EXPECT_EQ(iv_old.age_ns, 5000);
+  iv.now_ns = record.version().as_of_ns + 10;
+  EXPECT_NE(record.implied_vol(iv).status, ServeStatus::Stale);
+}
+
+// Review-H0A m5: implied_vol with tier Cold is a route, never a solve inside the record.
+TEST(SliceServeRecord, ImpliedVolWithAColdTierIsARouteNotASolve) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  const ServeAnswer f =
+      record->serve(at(101.3, Side::Put, 0.996 * kSpot, ServeTier::Family, ServeTier::Family));
+  ASSERT_EQ(f.status, ServeStatus::Ok);
+  const ServeIvAnswer iv = record->implied_vol(
+      iv_at(101.3, Side::Put, 0.996 * kSpot, f.price, ServeTier::Cold, ServeTier::Cold));
+  EXPECT_EQ(iv.status, ServeStatus::TierUnavailable);
+  EXPECT_EQ(iv.route, ServeRoute::ColdPath);
+  EXPECT_EQ(iv.evaluations, 0u);
+  EXPECT_TRUE(std::isnan(iv.sigma));
+}
+
 // A price-only node side serves its certified price at the fit's spot and nothing else.
 TEST(SliceServeRecord, APriceOnlyNodeServesItsPriceAtTheFitSpotAndRoutesOtherwise) {
   QuoteSliceFit fit = fit_chain(0.25, 2.0e-4);
@@ -724,12 +1063,44 @@ TEST(SliceServeRecord, APriceOnlyNodeServesItsPriceAtTheFitSpotAndRoutesOtherwis
                                            ServeTier::Certified));
   EXPECT_EQ(here.status, ServeStatus::PriceOnly);
   EXPECT_EQ(bits(here.price), bits(node.put.price));
+  EXPECT_EQ(here.certificate_class, ServeBoundClass::Exact);
   EXPECT_EQ(here.reason[static_cast<std::size_t>(ServeGreek::Delta)], ServeGreekReason::NoMap);
+  EXPECT_TRUE(std::isnan(here.delta));
   const ServeAnswer moved = record.serve(at(node.strike, Side::Put, 1.01 * kSpot,
                                             ServeTier::Ladder, ServeTier::Certified));
   EXPECT_EQ(moved.status, ServeStatus::PriceOnly);
   EXPECT_EQ(moved.route, ServeRoute::Refit);
   EXPECT_TRUE(std::isnan(moved.price));
+}
+
+// Unsupported risk is never a zero: a Greek the answering tier's map has no number for is
+// NaN with a typed reason (the ladder has no rho / phi; a refusal has no map at all).
+TEST(SliceServeRecord, UnsupportedRiskIsNaNWithATypedReasonNeverZero) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  std::size_t ladders = 0;
+  for (const ServedNode &node : record->nodes()) {
+    if (!(node.call.tiers & kServeNodeLadder)) continue;
+    ServeRequest r = at(node.strike, Side::Call, 1.001 * kSpot, ServeTier::Ladder,
+                        ServeTier::Ladder);
+    r.greeks = ServeGreekMask::all();
+    const ServeAnswer a = record->serve(r);
+    if (a.status != ServeStatus::Ok) continue;
+    EXPECT_TRUE(std::isnan(a.rho) && std::isnan(a.phi));
+    EXPECT_EQ(a.reason[static_cast<std::size_t>(ServeGreek::Rho)],
+              ServeGreekReason::TierHasNoGreek);
+    EXPECT_EQ(a.reason[static_cast<std::size_t>(ServeGreek::Phi)],
+              ServeGreekReason::TierHasNoGreek);
+    ++ladders;
+  }
+  EXPECT_GT(ladders, 5u);
+  ServeRequest out = at(50.0, Side::Call, kSpot, ServeTier::Ladder, ServeTier::Certified);
+  out.greeks = ServeGreekMask::all();
+  const ServeAnswer refused = record->serve(out);
+  for (std::size_t k = 0; k < kServeGreekCount; ++k) {
+    EXPECT_EQ(refused.reason[k], ServeGreekReason::NoMap) << k;
+  }
+  EXPECT_TRUE(std::isnan(refused.delta) && std::isnan(refused.vega));
 }
 
 // Supplied families whose box misses the contract refuse it on the family tier: families
@@ -758,35 +1129,55 @@ TEST(SliceServeRecord, AVolatilityOutsideTheFamilyBoxRoutesToTheColdPath) {
   EXPECT_GT(refused, 5u);
 }
 
-// IV at tick rate: the ladder tier inverts its own map; the family tier its fused map; the
-// certified tier confirms the family root with one Fast solve.
+// IV at tick rate: the ladder tier inverts its own map (accepted only on a validated
+// statement within iv_tolerance); the family tier its fused map; the certified tier
+// confirms the family root with one Fast solve. Ladder roots under the default policy
+// (12 x 6 nodes, +/- 25 % sigma) carry a statement / slope of ~1e-7 to 1e-5 and are
+// Unconfirmed; the tick profile (serve_record_policy_tick: 16 x 8, +/- 10 %, +/- 2 % ln S)
+// meets iv_tolerance.
 TEST(SliceServeRecord, ImpliedVolInvertsEachTiersOwnMap) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
   const QuoteSliceFit &fit = base_fit();
-  const auto families = detail::build_serve_families(fit, ServeRecordPolicy{});
-  ASSERT_NE(families, nullptr);
-  std::size_t ladder = 0;
-  for (const ServedNode &node : record->nodes()) {
-    const ServedNodeSide &s = node.call;
-    if (!(s.tiers & kServeNodeLadder)) continue;
-    const double S = 1.002 * kSpot;
-    // A target the ladder's own map prices at its served sigma: the root is that sigma.
-    const ServeAnswer priced =
-        record->serve(at(node.strike, Side::Call, S, ServeTier::Ladder, ServeTier::Ladder));
-    if (priced.status != ServeStatus::Ok) continue;
-    ServeIvRequest r{node.strike, Side::Call, S, priced.price, ServeTier::Ladder,
-                     ServeTier::Ladder};
-    const ServeIvAnswer iv = record->implied_vol(r);
-    if (iv.status == ServeStatus::NonMonotoneBand) continue;
-    ASSERT_EQ(iv.status, ServeStatus::Ok) << node.strike;
-    EXPECT_EQ(iv.tier, ServeTier::Ladder);
-    EXPECT_NEAR(iv.sigma, s.sigma, 1.0e-9) << node.strike;
-    EXPECT_EQ(iv.acceptance.kind, ServeAcceptanceKind::LadderCertificate);
-    EXPECT_LE(iv.evaluations, 16u);
-    ++ladder;
+  const auto tick = build_serve_record(fit, serve_record_policy_tick());
+  ASSERT_TRUE(tick.has_value());
+  std::size_t default_unconfirmed = 0;
+  for (const SliceServeRecord *r : {record.get(), tick->get()}) {
+    std::size_t ladder = 0;
+    std::size_t unconfirmed = 0;
+    for (const ServedNode &node : r->nodes()) {
+      const ServedNodeSide &s = node.call;
+      if (!(s.tiers & kServeNodeLadder)) continue;
+      const double S = 1.002 * kSpot;
+      // A target the ladder's own map prices at its served sigma: the root is that sigma.
+      const ServeAnswer priced =
+          r->serve(at(node.strike, Side::Call, S, ServeTier::Ladder, ServeTier::Ladder));
+      if (priced.status != ServeStatus::Ok) continue;
+      const ServeIvAnswer iv = r->implied_vol(
+          iv_at(node.strike, Side::Call, S, priced.price, ServeTier::Ladder, ServeTier::Ladder));
+      if (iv.status == ServeStatus::NonMonotoneBand) continue;
+      EXPECT_NEAR(iv.sigma, s.sigma, 1.0e-9) << node.strike;
+      EXPECT_LE(iv.evaluations, 16u);
+      if (iv.status == ServeStatus::Ok) {
+        EXPECT_EQ(iv.tier, ServeTier::Ladder);
+        EXPECT_EQ(s.ladder_class, ServeBoundClass::RefinementValidated);
+        EXPECT_EQ(iv.acceptance.kind, ServeAcceptanceKind::LadderCertificate);
+        EXPECT_EQ(iv.acceptance.error_class, ServeErrorClass::RefinementValidated);
+        EXPECT_LE(iv.acceptance.bound_iv, r->policy().iv_tolerance);
+        ++ladder;
+      } else {
+        EXPECT_EQ(iv.status, ServeStatus::Unconfirmed) << node.strike;
+        EXPECT_EQ(iv.route, ServeRoute::ColdPath);
+        ++unconfirmed;
+      }
+    }
+    if (r == tick->get()) {
+      EXPECT_GT(ladder, 20u) << "unconfirmed " << unconfirmed;
+    } else {
+      default_unconfirmed = unconfirmed;
+    }
   }
-  EXPECT_GT(ladder, 5u);
+  EXPECT_GT(default_unconfirmed, 0u);
 
   // Between nodes (no ladder): the family tier inverts the family's own price at the
   // sticky sigma back to that sigma, and a lower target to a lower root.
@@ -795,22 +1186,17 @@ TEST(SliceServeRecord, ImpliedVolInvertsEachTiersOwnMap) {
   const ServeAnswer f = record->serve(at(K, Side::Put, S, ServeTier::Family, ServeTier::Family));
   ASSERT_EQ(f.status, ServeStatus::Ok);
   const ServeIvAnswer self = record->implied_vol(
-      ServeIvRequest{K, Side::Put, S, f.price, ServeTier::Ladder, ServeTier::Family});
+      iv_at(K, Side::Put, S, f.price, ServeTier::Ladder, ServeTier::Family));
   EXPECT_EQ(self.tier, ServeTier::Family);
   EXPECT_NEAR(self.sigma, f.sigma, 1.0e-9);
-  ServeIvRequest fr{K, Side::Put, S, f.price - 0.03 * f.vega * f.sigma, ServeTier::Ladder,
-                    ServeTier::Family};
+  ServeIvRequest fr = iv_at(K, Side::Put, S, f.price - 0.03 * f.vega * f.sigma, ServeTier::Ladder,
+                            ServeTier::Family);
   const ServeIvAnswer fam = record->implied_vol(fr);
   EXPECT_EQ(fam.tier, ServeTier::Family);
-#if !ATX_VOL_SERVE_RECORD_K3
-  EXPECT_EQ(fam.status, ServeStatus::Unconfirmed); // no validated envelope in this build
-  EXPECT_EQ(fam.route, ServeRoute::ColdPath);
-  EXPECT_EQ(fam.acceptance.kind, ServeAcceptanceKind::None);
-  EXPECT_EQ(fam.acceptance.error_class, ServeErrorClass::Uncovered);
-#endif
   EXPECT_LE(std::abs(fam.newton_distance_vol), 1.0e-9);
   EXPECT_NEAR(fam.sigma, 0.97 * f.sigma, 2.0e-3);
   // The certified tier confirms that root with one Fast solve (K3's NewtonContract).
+  fr.tier = ServeTier::Certified;
   fr.tier_max = ServeTier::Certified;
   const ServeIvAnswer cert = record->implied_vol(fr);
   ASSERT_EQ(cert.status, ServeStatus::Ok);
@@ -835,13 +1221,64 @@ TEST(SliceServeRecord, ImpliedVolRoutesANonMonotoneBandTargetToTheAccurateInvers
   const ServedNode &deep = record->nodes().back(); // K 130 put: deep in the money
   const double intrinsic = deep.strike - kSpot;
   for (const ServeTier tier : {ServeTier::Ladder, ServeTier::Family, ServeTier::Certified}) {
-    const ServeIvAnswer iv = record->implied_vol(
-        ServeIvRequest{deep.strike, Side::Put, kSpot, intrinsic + 1.0e-9 * deep.strike, tier,
-                       ServeTier::Certified});
+    const ServeIvAnswer iv = record->implied_vol(iv_at(deep.strike, Side::Put, kSpot,
+                                                       intrinsic + 1.0e-9 * deep.strike, tier,
+                                                       ServeTier::Certified));
     EXPECT_EQ(iv.status, ServeStatus::NonMonotoneBand) << to_string(tier);
     EXPECT_EQ(iv.route, ServeRoute::ColdPath);
     EXPECT_EQ(iv.evaluations, 0u);
   }
+}
+
+// Review-H0A m9: the record's band decision (its third replica of the zero-volatility
+// value) refuses every target american_implied_vol refuses as NonMonotoneRegion, refuses
+// only inside the band (at or below american's own band top, iv_premium_edge_band_top),
+// and never refuses a target above it. Targets: the accurate kernel's prices at small
+// volatilities (the plateau and the band) and at the node's served sigma.
+TEST(SliceServeRecord, TheL1cBandDecisionIsAmericanIvsOwn) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  const QuoteSliceFit &fit = base_fit();
+  std::size_t american_refused = 0;
+  std::size_t record_refused = 0;
+  std::size_t above = 0;
+  for (const ServedNode &node : record->nodes()) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServedNodeSide &s = side_of(node, side);
+      const double K = node.strike;
+      const double T = record->tau();
+      const double r = record->rate();
+      const double top = iv_premium_edge_band_top(kSpot, K, T, r, s.q, side, fit.al_opts);
+      ASSERT_TRUE(std::isfinite(top)) << K;
+      for (const double sigma : {0.006, 0.01, 0.03, 0.1, s.sigma}) {
+        const Result<double> target = andersen_lake(kSpot, K, T, sigma, r, s.q, side,
+                                                    fit.al_opts);
+        ASSERT_TRUE(target.has_value()) << K << " " << sigma;
+        IvOpts opts;
+        opts.al_opts = fit.al_opts;
+        opts.refuse_non_monotone = true;
+        const IvResult cold = american_implied_vol(*target, kSpot, K, T, r, s.q, side, opts);
+        const ServeIvAnswer iv = record->implied_vol(
+            iv_at(K, side, kSpot, *target, ServeTier::Family, ServeTier::Family));
+        if (cold.status == IvStatus::NonMonotoneRegion) {
+          EXPECT_EQ(iv.status, ServeStatus::NonMonotoneBand) << K << " " << sigma;
+          ++american_refused;
+        }
+        if (iv.status == ServeStatus::NonMonotoneBand) {
+          EXPECT_LE(*target, top) << K << " " << sigma;
+          EXPECT_EQ(iv.route, ServeRoute::ColdPath);
+          ++record_refused;
+        }
+        if (*target > top) {
+          EXPECT_NE(iv.status, ServeStatus::NonMonotoneBand) << K << " " << sigma;
+          ++above;
+        }
+      }
+    }
+  }
+  EXPECT_GT(american_refused, 0u);
+  EXPECT_GE(record_refused, american_refused);
+  EXPECT_GT(above, 0u);
 }
 
 TEST(SliceServeRecord, ConcurrentServesAreBitIdenticalToTheSerialLoop) {
@@ -856,8 +1293,9 @@ TEST(SliceServeRecord, ConcurrentServesAreBitIdenticalToTheSerialLoop) {
           out.push_back(a.price);
           out.push_back(a.delta);
           out.push_back(a.vega);
+          out.push_back(a.certificate_usd);
           const ServeIvAnswer iv = record->implied_vol(
-              ServeIvRequest{node.strike, side, 1.0031 * kSpot, a.price, tier, tier});
+              iv_at(node.strike, side, 1.0031 * kSpot, a.price, tier, tier));
           out.push_back(iv.sigma);
         }
       }
@@ -907,6 +1345,8 @@ TEST(SliceServeRecord, VersionDigestsAreDeterministicAndKeyedOnTheirInputs) {
   EXPECT_NE((*a)->version().fit_sha256, (*e)->version().fit_sha256);
 }
 
+// Review-H0A m4: bytes count every geometry the holder owns (three, each allocated by
+// construction) besides the families' state.
 TEST(SliceServeRecord, BytesAndClocksAreReported) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
@@ -914,7 +1354,7 @@ TEST(SliceServeRecord, BytesAndClocksAreReported) {
   EXPECT_EQ(b.nodes, record->nodes().size() * sizeof(ServedNode));
   EXPECT_GT(b.ladders, 0u);
   EXPECT_GT(b.families, 0u);
-  EXPECT_GT(b.geometries, 0u);
+  EXPECT_EQ(b.geometries, 3u * sizeof(AlExpiryGeometry::Impl));
   EXPECT_EQ(b.total(), b.nodes + b.ladders + b.families + b.geometries + b.fixed);
   const ServeBuildClocks &c = record->clocks();
   EXPECT_EQ(c.lazy_family_builds, 2u);
@@ -923,6 +1363,24 @@ TEST(SliceServeRecord, BytesAndClocksAreReported) {
   EXPECT_GE(c.total_us, c.family_us);
   EXPECT_TRUE(record->support().tiers[0] && record->support().tiers[1] &&
               record->support().tiers[2] && record->support().tiers[3]);
+}
+
+// Review-H0A m14: the seams this build carries are visible in the support block, not only
+// through policy_sha256.
+TEST(SliceServeRecord, SeamFlagsAreVisibleInTheSupport) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  EXPECT_EQ(record->support().a0_bundle, ATX_VOL_SERVE_RECORD_A0 != 0);
+  EXPECT_EQ(record->support().k3_envelope, ATX_VOL_SERVE_RECORD_K3 != 0);
+}
+
+// Review-H0A m8: no record exists without the builder (the constructor takes a key only
+// the builder can make).
+TEST(SliceServeRecord, OnlyTheBuilderMakesARecord) {
+  static_assert(!std::is_constructible_v<SliceServeRecord,
+                                         std::unique_ptr<const SliceServeRecord::Impl>>);
+  static_assert(!std::is_default_constructible_v<SliceServeRecord::Key>);
+  EXPECT_NE(base_record(), nullptr);
 }
 
 TEST(SliceServeRecord, AnInvalidPolicyIsRefused) {
@@ -959,7 +1417,7 @@ TEST(SliceServeRecordAlloc, LadderAndFamilyReadsAllocateNothing) {
           r.greeks = ServeGreekMask::all();
           const ServeAnswer a = record->serve(r);
           const ServeIvAnswer iv = record->implied_vol(
-              ServeIvRequest{node.strike, side, 1.002 * kSpot, a.price, tier, tier});
+              iv_at(node.strike, side, 1.002 * kSpot, a.price, tier, tier));
           if (a.status == ServeStatus::Ok && std::isfinite(iv.sigma)) {
             sum += a.price + iv.sigma;
             ++served;
@@ -974,6 +1432,206 @@ TEST(SliceServeRecordAlloc, LadderAndFamilyReadsAllocateNothing) {
   EXPECT_EQ(n, 0u);
   EXPECT_GT(served, 60u);
   EXPECT_TRUE(std::isfinite(sum));
+}
+
+// ── Lane H1 phase B: the fitter's hand-off ─────────────────────────────────────────────
+
+// The native fit route's family configuration (lane K4's fit_native_route_test.cpp).
+QuoteSliceConfig family_q_config() {
+  QuoteSliceConfig config;
+  config.dividend_model = QuoteSliceDividendModel::ContinuousYield;
+  config.channel.repair_half_spreads = 0.5;
+  config.channel.fit_space = QuoteSliceFitSpace::VolChannel;
+  config.channel.deam_profile = QuoteSliceDeamProfile::Screen;
+  config.channel.deam_cache = true;
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Fast;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  config.channel.deam_family_q = true;
+  config.channel.deam_family_native = true;
+  config.grid_kernel = QuoteSliceGridKernel::Family;
+  return config;
+}
+
+// The hook (end of certify_and_serve) on its own: no families or no certified fit - no
+// hand-off (an earlier one is cleared); a holder's families - each present side's recipe,
+// its envelope and two of its own prices.
+TEST(SliceServeRecordHandoff, TheHookStampsTheFamiliesOfACertifiedFitOnly) {
+  QuoteSliceFit fit = fit_chain(0.25, 2.0e-4);
+  const auto families = detail::build_serve_families(fit, ServeRecordPolicy{});
+  ASSERT_NE(families, nullptr);
+  detail::stamp_serve_handoff(fit, families.get());
+  ASSERT_NE(fit.serve_handoff, nullptr);
+  for (const Side side : {Side::Put, Side::Call}) {
+    const QuoteSliceServeHandoff::Family &h = fit.serve_handoff->sides[side == Side::Put ? 0 : 1];
+    const AlSigmaQFamily *f = families->of_q(side);
+    ASSERT_NE(f, nullptr);
+    ASSERT_TRUE(h.present);
+    EXPECT_EQ(bits(h.sigma_lo), bits(f->sigma_lo()));
+    EXPECT_EQ(h.n_q, f->n_q());
+    EXPECT_EQ(h.envelope.family, nullptr);
+    EXPECT_EQ(h.envelope.audit.probes, families->q_envelope(side)->audit.probes);
+    for (const QuoteSliceServeHandoff::Probe &p : h.probes) {
+      EXPECT_EQ(bits(p.price), bits(f->price(h.anchor, p.K, p.sigma, p.q).price));
+    }
+  }
+  detail::stamp_serve_handoff(fit, nullptr);
+  EXPECT_EQ(fit.serve_handoff, nullptr);
+  detail::stamp_serve_handoff(fit, families.get());
+  fit.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+  detail::stamp_serve_handoff(fit, families.get());
+  EXPECT_EQ(fit.serve_handoff, nullptr);
+}
+
+// certify_and_serve hands the fitter's families to the record builder: the record
+// re-prepares them from the hand-off (off the fit), keeps a side only when it reproduces
+// the fitter's own family (the fitter's holder is still in this thread's de-Am memo here,
+// so the test compares prices bit for bit), and reads the fitter's audited envelope.
+TEST(SliceServeRecordHandoff, TheRecordServesTheFittersOwnFamilies) {
+  const Chain chain = smile_chain(0.25, 2.0e-4);
+  const QuoteSliceConfig config = family_q_config();
+  deam_iv_memo_clear();
+  const Result<QuoteSliceFit> fit = fit_quote_slice_channel(chain.market, chain.quotes, config,
+                                                            nullptr);
+  ASSERT_TRUE(fit.has_value());
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
+  ASSERT_NE(fit->serve_handoff, nullptr);
+  bool reused = false;
+  const auto cache =
+      deam_iv_memo(deam_iv_key(*fit, chain.quotes, config), chain.quotes.size(), reused);
+  ASSERT_TRUE(reused);
+  ASSERT_NE(cache->families, nullptr);
+  const DeAmSigmaFamilies &fitter = *cache->families;
+  ServeRecordPolicy policy;
+  policy.ladders = false;
+  const auto built = build_serve_record(*fit, policy);
+  ASSERT_TRUE(built.has_value());
+  const SliceServeRecord &record = **built;
+  std::size_t compared = 0;
+  std::size_t handed = 0;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const AlSigmaQFamily *f = fitter.of_q(side);
+    const ServeSideSupport &s = support_of(record, side);
+    if (f == nullptr) {
+      EXPECT_NE(s.origin, ServeFamilyOrigin::Handed);
+      continue;
+    }
+    ++handed;
+    ASSERT_TRUE(s.family) << to_string(s.reason);
+    EXPECT_EQ(s.origin, ServeFamilyOrigin::Handed);
+    EXPECT_EQ(bits(s.sigma_lo), bits(f->sigma_lo()));
+    EXPECT_EQ(bits(s.q_hi), bits(f->q_hi()));
+    const ValidatedErrorEnvelope *env = fitter.q_envelope(side);
+    ASSERT_NE(env, nullptr);
+    EXPECT_EQ(s.family_class, env->covered() ? ServeErrorClass::RefinementValidated
+                                             : ServeErrorClass::Uncovered);
+    EXPECT_EQ(s.audit_probes, env->audit.probes);
+    EXPECT_EQ(bits(s.domain_bound_usd), bits(fitter.q_bound(side)));
+    // The record's family tier at a moved spot IS the fitter's family, to the bit.
+    for (const ServedNode &node : record.nodes()) {
+      const ServedNodeSide &ns = side_of(node, side);
+      if (!(ns.tiers & kServeNodeFamily)) continue;
+      const double S = 1.004 * kSpot;
+      const ServeAnswer a = record.serve(at(node.strike, side, S, ServeTier::Family,
+                                            ServeTier::Family));
+      const auto pv = sigma_q_family_detail::price_and_vega(*f, S, node.strike, ns.sigma, ns.q);
+      if (pv.status != sigma_q_family_detail::FusedStatus::Ok || !answered(a.status)) continue;
+      EXPECT_EQ(bits(a.price), bits(pv.price)) << node.strike;
+      ++compared;
+    }
+  }
+  EXPECT_GT(handed, 0u);
+  EXPECT_GT(compared, 10u);
+  EXPECT_EQ(record.clocks().lazy_family_builds, handed);
+}
+
+// A hand-off the rebuilt family does not reproduce (a probe price one ulp off) refuses
+// that side with HandoffMismatch: a record never serves a family it cannot tie to the fit.
+TEST(SliceServeRecordHandoff, AHandoffTheRebuildDoesNotReproduceIsRefused) {
+  const Chain chain = smile_chain(0.25, 2.0e-4);
+  deam_iv_memo_clear();
+  Result<QuoteSliceFit> fit = fit_quote_slice_channel(chain.market, chain.quotes,
+                                                      family_q_config(), nullptr);
+  ASSERT_TRUE(fit.has_value());
+  ASSERT_NE(fit->serve_handoff, nullptr);
+  auto forged = std::make_shared<QuoteSliceServeHandoff>(*fit->serve_handoff);
+  std::size_t forged_sides = 0;
+  for (QuoteSliceServeHandoff::Family &side : forged->sides) {
+    if (!side.present) continue;
+    side.probes[0].price = std::nextafter(side.probes[0].price, kInf);
+    ++forged_sides;
+  }
+  ASSERT_GT(forged_sides, 0u);
+  fit->serve_handoff = std::move(forged);
+  ServeRecordPolicy policy;
+  policy.ladders = false;
+  const auto built = build_serve_record(*fit, policy);
+  ASSERT_TRUE(built.has_value());
+  std::size_t refused = 0;
+  for (std::size_t i = 0; i < 2; ++i) {
+    if (!fit->serve_handoff->sides[i].present) continue;
+    const ServeSideSupport &s = i == 0 ? (*built)->support().put : (*built)->support().call;
+    EXPECT_FALSE(s.family);
+    EXPECT_EQ(s.reason, ServeUnsupportedReason::HandoffMismatch);
+    ++refused;
+  }
+  EXPECT_EQ(refused, forged_sides);
+}
+
+// ── Lane H1: the evaluate_quote_slice fast path ───────────────────────────────────────
+
+// With a record attached, a between-node query returns the SAME certified price and the
+// record family's root of it where K3's enclosure accepts it - within the record's
+// iv_tolerance (plus the cold inversion's own tolerance) of the cold accurate inversion's
+// volatility; at an unmoved node and wherever the enclosure does not accept, exactly the
+// answer without a record.
+TEST(SliceServeRecordFastPath, BetweenNodeVolatilitiesComeFromTheFamilyWithinTheContract) {
+  QuoteSliceFit with = fit_chain(0.25, 2.0e-4);
+  const QuoteSliceFit &without = base_fit();
+  const auto built = build_serve_record(with);
+  ASSERT_TRUE(built.has_value());
+  with.serve_record = *built;
+  std::size_t fast = 0;
+  std::size_t same = 0;
+  const auto nodes = without.prices->nodes();
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      for (const double t : {0.0, 0.3, 0.5}) {
+        if (i + 1 == nodes.size() && t > 0.0) continue;
+        const double K = t == 0.0 ? nodes[i].strike
+                                  : std::lerp(nodes[i].strike, nodes[i + 1].strike, t);
+        const Result<QuoteSliceValue> off = evaluate_quote_slice(without, K, side);
+        const Result<QuoteSliceValue> on = evaluate_quote_slice(with, K, side);
+        ASSERT_EQ(off.has_value(), on.has_value()) << K;
+        if (!off) continue;
+        EXPECT_EQ(bits(on->price), bits(off->price)) << K;
+        const std::optional<QuoteSliceValue> direct = detail::serve_record_value(with, K, side);
+        if (direct) {
+          EXPECT_EQ(bits(direct->volatility), bits(on->volatility)) << K;
+          EXPECT_LE(std::abs(on->volatility - off->volatility), 2.0e-7) << K;
+          ++fast;
+        } else {
+          EXPECT_EQ(bits(on->volatility), bits(off->volatility)) << K;
+          ++same;
+        }
+        if (t == 0.0) EXPECT_FALSE(direct.has_value()) << "an unmoved node: the curve's sigma";
+      }
+    }
+  }
+  EXPECT_GT(fast, 10u);
+  EXPECT_GT(same, 10u);
+}
+
+// A record that is not this fit's (another fit's prices) never answers: the query is the
+// fit's own, bit for bit.
+TEST(SliceServeRecordFastPath, ARecordOfAnotherFitIsNeverUsed) {
+  QuoteSliceFit with = fit_chain(0.25, 2.0e-4, 70.0, 2.5, 25, 0.01);
+  const auto built = build_serve_record(base_fit());
+  ASSERT_TRUE(built.has_value());
+  with.serve_record = *built; // the 0.22 smile's record on the 0.23 smile's fit
+  for (const double K : {83.7, 101.3, 112.2}) {
+    EXPECT_FALSE(detail::serve_record_value(with, K, Side::Put).has_value()) << K;
+  }
 }
 
 } // namespace
