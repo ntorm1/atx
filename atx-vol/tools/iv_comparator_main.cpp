@@ -1,12 +1,33 @@
-// Independent American IV comparator (lane B0, 2026-10-22; docs/benchmark-clocks.md).
+// American IV root-finding comparator (lane B0, 2026-10-22; docs/benchmark-clocks.md
+// section 8).
 //
 // For every served row of a quote-bench prediction CSV (status ok: a price and a
 // volatility), the American implied volatility of the served PRICE is bracketed with the
-// cold reference pricer and bisected to a stated absolute tolerance: no Newton step, no
-// family, no memo, no seed from the fitter. The error |served_iv - bracketed_iv| is in
+// reference pricer and bisected to a stated absolute tolerance: no Newton step, no
+// family, no memo. The bracket starts around the served IV (served_iv * (1 -+ 1e-3),
+// widened x4), so the search is seeded by the fitter's answer; on a monotone price map
+// the root does not depend on the seed. The error |served_iv - bracketed_iv| is in
 // ABSOLUTE volatility (0.20 = 20%; 1e-7 = 0.001 vol bp). The same rows give the
 // continuous-carry price table: the reference price at the served IV against the served
 // price, in USD.
+//
+// SCOPE - what this checks, and what it does not. The pricer is the fitter's own
+// Andersen-Lake accurate preset (std::nullopt, AlProfile::Reference): the independence is
+// in the ROOT FINDING only. On a row whose served price is the curve price at the served
+// IV (served price == P_ref(served_iv) within 1e-10 USD; summary "served_pair_consistent")
+// the check is therefore circular for pricer error: |served - bracketed| is bounded by
+// the bisection tolerance by construction, and only the fine-scheme reference
+// uncertainty speaks to the pricer. The genuine root checks are the rows whose served
+// pair is NOT consistent (re-implied, repaired or moved nodes, excluded-side rows). The
+// fitter's quote inversions (de-Am bid / ask / mid IVs) are not compared.
+// Follow-up: PDE-backed pricer option (D0's american_discrete_div_reference with zero
+// dividends) for true pricer independence.
+//
+// Populations (summary "populations"; plan 3.2: an unresolved row is not a pass), every
+// served row in exactly one: resolved_pass / resolved_fail (bracketed, reference
+// uncertainty finite and <= the threshold, |served - bracketed| <= / > the threshold),
+// reference_unresolved (bracketed, reference uncertainty above the threshold or
+// undefined - a zero reference vega), iv_not_identified (below), and the other statuses.
 //
 // The contract each row is priced under is rebuilt from the INPUT CSV, independently of
 // the fitter, by quote-bench's documented continuous-carry convention: chain market =
@@ -104,7 +125,12 @@ Arguments arguments(int argc, char **argv) {
       std::cout << "atx-vol-iv-comparator --input quotes.csv --predictions predictions.csv "
                    "--output rows.csv --summary summary.json [--report native.json] "
                    "[--dividends funding-pv|escrowed-pv|none] [--tolerance 1e-12] "
-                   "[--threshold 1e-7] [--max-rows N]\n";
+                   "[--threshold 1e-7] [--max-rows N]\n"
+                   "Root-finding check only: the pricer is the fitter's own Andersen-Lake "
+                   "accurate preset, so on rows whose served price is the curve price at "
+                   "the served IV the check is circular for pricer error (see "
+                   "atx-vol/docs/benchmark-clocks.md section 8). Populations: resolved "
+                   "pass / resolved fail / reference unresolved / IV not identified.\n";
       args.help = true;
       return args;
     }
@@ -443,9 +469,18 @@ struct Totals {
   std::map<std::string, Group> by_side_moneyness;
   Quantiles interval_width;
   std::size_t served_in_interval{0};
-  std::size_t unresolved{0};
+  std::size_t unresolved{0};            // bracketed, uncertainty > threshold or undefined
+  std::size_t unresolved_over{0};       // ... whose |served - bracketed| > threshold
+  std::size_t uncertainty_undefined{0}; // bracketed, no reference vega (subset of unresolved)
+  std::size_t resolved_pass{0};
+  std::size_t resolved_fail{0};
+  std::size_t pair_consistent{0}; // bracketed, served price == P_ref(served_iv) within 1e-10
   std::size_t compared{0};
 };
+
+// A served (price, iv) pair the reference reprices within this many USD is the curve's
+// own pair: the IV check on it is circular for pricer error (docs section 8).
+constexpr double kPairConsistentUsd = 1.0e-10;
 
 struct RowResult {
   std::string status;
@@ -515,7 +550,12 @@ Json summary_json(const Arguments &args, const Totals &t,
       {"threshold", args.threshold}, {"bisection_tolerance", args.tolerance},
       {"method", "bracket from served_iv * (1 -+ 1e-3), widen x4 inside [kIvMin, kIvMax], "
                  "bisect to hi - lo <= 2 * tolerance; no Newton, no family, no memo"},
-      {"reference", "Andersen-Lake accurate preset (std::nullopt, AlProfile::Reference)"},
+      {"reference", "Andersen-Lake accurate preset (std::nullopt, AlProfile::Reference): "
+                    "the fitter's own pricer; independence is in the root finding only"},
+      {"scope", "served (price, iv) pairs, not the fitter's quote inversions; on "
+                "served_pair_consistent rows the IV check is circular for pricer error"},
+      {"follow_up", "PDE-backed pricer option (D0's american_discrete_div_reference with "
+                    "zero dividends) for true pricer independence"},
       {"reference_uncertainty", "|P(32 nodes, quad 64/64, 16 sweeps, tol 1e-14) - "
                                 "P(accurate)| at the bracketed root; in vol via the reference "
                                 "vega (central difference, h = 1e-5 sigma)"},
@@ -523,11 +563,44 @@ Json summary_json(const Arguments &args, const Totals &t,
                 "q_eff = row yield on the variance clock with the aggregate cash PV folded in "
                 "(--dividends); T = T_var"},
       {"dividends", dividends}};
-  return {{"schema", "atx-vol-iv-comparator-v1"}, {"input", canonical(args.input)},
+  const auto count_of = [&t](const char *status) {
+    const auto found = t.status_counts.find(status);
+    return found == t.status_counts.end() ? std::size_t{0} : found->second;
+  };
+  const std::size_t not_identified = count_of("not_identified");
+  const std::size_t bracketed = count_of("bracketed");
+  const std::size_t other =
+      t.compared - t.resolved_pass - t.resolved_fail - t.unresolved - not_identified;
+  const std::string headline =
+      std::to_string(t.resolved_pass) + " resolved pass / " + std::to_string(t.resolved_fail) +
+      " resolved fail / " + std::to_string(t.unresolved) + " reference unresolved / " +
+      std::to_string(not_identified) + " IV not identified / " + std::to_string(other) +
+      " other, of " + std::to_string(t.compared) + " served rows";
+  Json populations = {
+      {"headline", headline}, {"rows", t.compared}, {"resolved_pass", t.resolved_pass},
+      {"resolved_fail", t.resolved_fail}, {"reference_unresolved", t.unresolved},
+      {"reference_unresolved_over_threshold", t.unresolved_over},
+      {"uncertainty_undefined", t.uncertainty_undefined},
+      {"iv_not_identified", not_identified}, {"other_statuses", other},
+      {"rule", "resolved = bracketed with a finite reference uncertainty <= threshold; pass "
+               "/ fail = |served - bracketed| <= / > threshold; reference_unresolved = "
+               "bracketed with the uncertainty above the threshold or undefined (zero "
+               "reference vega) - not a pass; iv_not_identified = price flat in sigma"}};
+  return {{"schema", "atx-vol-iv-comparator-v2"}, {"input", canonical(args.input)},
           {"predictions", canonical(args.predictions)}, {"report", canonical(args.report)},
           {"contract", std::move(contract)}, {"rows_compared", t.compared},
-          {"status_counts", t.status_counts},
+          {"status_counts", t.status_counts}, {"populations", std::move(populations)},
+          {"resolved_rows", t.resolved_pass + t.resolved_fail},
+          {"resolved_over_threshold", t.resolved_fail},
+          {"uncertainty_undefined_rows", t.uncertainty_undefined},
+          {"served_pair_consistent",
+           {{"rows", t.pair_consistent}, {"of_bracketed", bracketed},
+            {"tolerance_usd", kPairConsistentUsd},
+            {"note", "bracketed rows whose served price equals P_ref(served_iv): the IV "
+                     "check on them is circular for pricer error"}}},
           {"abs_iv_error", t.iv_error.json(args.threshold)},
+          {"abs_iv_error_scope", "every bracketed row, resolved or not: its over_threshold is "
+                                 "NOT a failure count (see populations)"},
           {"reference_uncertainty_iv", t.uncertainty_iv.json(args.threshold)},
           {"reference_uncertainty_usd", t.uncertainty_usd.json()},
           {"reference_unresolved_rows", t.unresolved},
@@ -564,7 +637,7 @@ int run(const Arguments &args) {
          "served_price,served_iv,bracketed_iv,abs_iv_error,bracket_width,evaluations,"
          "root_residual_usd,ref_price_at_served_iv,price_error_usd,price_error_rel,vega_ref,"
          "newton_distance_iv,ref_uncertainty_usd,ref_uncertainty_iv,iv_interval_lo,"
-         "iv_interval_hi,status\n";
+         "iv_interval_hi,status,population\n";
   out << std::setprecision(17);
   Totals t;
   for (std::size_t p = 0; p < predicted.rows.size(); ++p) {
@@ -594,12 +667,26 @@ int run(const Arguments &args) {
     const double price_rel = served_price >= 0.01 ? price_err / served_price : kNaN;
     const double newton = r.vega > 0.0 ? price_err / r.vega : kNaN;
     const double fine_iv = r.vega > 0.0 ? r.fine_gap / r.vega : kNaN;
+    std::string population = r.status == "not_identified" ? "iv_not_identified" : r.status;
     if (r.status == "bracketed") {
       t.iv_error.add(err);
       t.evaluations.add(static_cast<double>(r.root.evaluations));
       t.uncertainty_usd.add(r.fine_gap);
       t.uncertainty_iv.add(fine_iv);
-      if (std::isfinite(fine_iv) && fine_iv > args.threshold) ++t.unresolved;
+      // An undefined uncertainty (no reference vega) is unresolved, never a pass.
+      if (!std::isfinite(fine_iv) || fine_iv > args.threshold) {
+        ++t.unresolved;
+        if (!std::isfinite(fine_iv)) ++t.uncertainty_undefined;
+        if (err > args.threshold) ++t.unresolved_over;
+        population = "reference_unresolved";
+      } else if (err > args.threshold) {
+        ++t.resolved_fail;
+        population = "resolved_fail";
+      } else {
+        ++t.resolved_pass;
+        population = "resolved_pass";
+      }
+      if (price_err <= kPairConsistentUsd) ++t.pair_consistent;
       const double moneyness = std::log(c.strike / c.spot);
       const std::string bucket = std::string(side == Side::Call ? "call" : "put") +
           (moneyness < -0.1 ? ":k<-0.1" : moneyness > 0.1 ? ":k>0.1" : ":|k|<=0.1");
@@ -627,7 +714,7 @@ int run(const Arguments &args) {
       if (std::isfinite(v)) out << v;
       out << ',';
     }
-    out << r.status << '\n';
+    out << r.status << ',' << population << '\n';
   }
   out.close();
   if (!out) throw std::runtime_error("--output write failed");

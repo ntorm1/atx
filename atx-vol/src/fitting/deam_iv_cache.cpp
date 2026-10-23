@@ -1,10 +1,13 @@
 #include "fitting/deam_iv_cache.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <utility>
 
@@ -135,10 +138,97 @@ DeAmQuoteIv &DeAmIvView::carry(std::size_t i) {
   return entry;
 }
 
+void DeAmIvView::ensure_families() {
+  if (cache_.families_decided || confirm_.family == QuoteSliceDeamFamily::Off ||
+      kernel() != DeAmKernel::Screen || !premium()) {
+    return;
+  }
+  cache_.families_decided = true;
+  // The box: the Black-76 IVs of the out-of-the-money two-sided mids of BOTH sides (the
+  // strike-wise smile; an in-the-money mid's Black-76 IV carries its early-exercise premium
+  // and only widens the box); the count: each side's two-sided quotes.
+  double lo = std::numeric_limits<double>::infinity();
+  double hi = 0.0;
+  std::array<std::size_t, 2> count{0u, 0u};
+  // The families' yield: the median effective yield of the two-sided quotes (per-strike
+  // carry under funding-pv; the leg carries each contract's own q).
+  std::vector<double> yields;
+  yields.reserve(quotes_.size());
+  for (std::size_t i = 0; i < quotes_.size(); ++i) {
+    const QuoteSliceQuote &quote = quotes_[i];
+    if (!(quote.bid > 0.0 && quote.ask > quote.bid) || !std::isfinite(quote.ask)) continue;
+    const std::size_t s = quote.side == Side::Put ? 0u : 1u;
+    ++count[s];
+    const DeAmQuoteIv &entry = carry(i);
+    if (std::isfinite(entry.q_effective)) yields.push_back(entry.q_effective);
+    const bool otm = quote.side == Side::Put ? quote.strike <= entry.local_forward
+                                             : quote.strike >= entry.local_forward;
+    if (!otm) continue;
+    const double iv = model_.black_iv(quote, 0.5 * (quote.bid + quote.ask), entry.local_forward);
+    if (!(iv > 0.0) || !std::isfinite(iv)) continue;
+    lo = std::min(lo, iv);
+    hi = std::max(hi, iv);
+  }
+  if (!(hi >= lo) || yields.empty()) return; // no out-of-the-money two-sided mid: no box
+  const auto mid = yields.begin() + static_cast<std::ptrdiff_t>(yields.size() / 2);
+  std::nth_element(yields.begin(), mid, yields.end());
+  DeAmFamilyRequest request;
+  request.q = *mid;
+  request.sigma_q = confirm_.family_q;
+  if (request.sigma_q) {
+    // The (sigma, q) families' q box: every quote's effective yield (each iterate and each
+    // grid strike prices at its own q).
+    request.q_lo = std::numeric_limits<double>::infinity();
+    request.q_hi = -std::numeric_limits<double>::infinity();
+    request.strike_lo = std::numeric_limits<double>::infinity();
+    request.strike_hi = 0.0;
+    for (std::size_t i = 0; i < quotes_.size(); ++i) {
+      const double q = carry(i).q_effective;
+      if (!std::isfinite(q) || !positive(quotes_[i].strike)) continue;
+      request.q_lo = std::min(request.q_lo, q);
+      request.q_hi = std::max(request.q_hi, q);
+      request.strike_lo = std::min(request.strike_lo, quotes_[i].strike);
+      request.strike_hi = std::max(request.strike_hi, quotes_[i].strike);
+    }
+    if (!(request.q_hi >= request.q_lo) || !(request.strike_hi >= request.strike_lo)) return;
+  }
+  const double nodes = request.sigma_q ? static_cast<double>(kDeAmQFamilySigmaNodes) *
+                                             static_cast<double>(kDeAmQFamilyQNodes)
+                                       : static_cast<double>(kDeAmFamilyNodes);
+  const double needed = confirm_.family_c * 2.0 * nodes;
+  for (std::size_t s = 0; s < 2; ++s) {
+    const bool wanted = count[s] > 0u && (confirm_.family == QuoteSliceDeamFamily::Always ||
+                                          kDeAmFamilyCallsPerQuote * static_cast<double>(count[s]) >
+                                              needed);
+    if (wanted) {
+      request.sigma_lo[s] = std::max(kAlSigmaFamilyMinSigma, 0.5 * lo);
+      request.sigma_hi[s] = 1.5 * hi + 2.0 * kAlPackSigmaBump;
+    }
+  }
+  if (!(request.sigma_hi[0] > request.sigma_lo[0]) &&
+      !(request.sigma_hi[1] > request.sigma_lo[1])) {
+    return;
+  }
+  cache_.families = model_.sigma_families(request);
+  if (!cache_.families) return;
+  const DeAmSigmaFamilies &f = *cache_.families;
+  const std::size_t built = (f.of(Side::Put) != nullptr ? 1u : 0u) +
+                            (f.of(Side::Call) != nullptr ? 1u : 0u) +
+                            (f.of_q(Side::Put) != nullptr ? 1u : 0u) +
+                            (f.of_q(Side::Call) != nullptr ? 1u : 0u);
+  work_.family_builds += built;
+  namespace ft = counters::fit_timing;
+  if (ft::FitTimingCounters *const timing = ft::current_counts()) {
+    timing->deam_family_builds += static_cast<std::uint32_t>(built);
+    timing->deam_family_build_us += static_cast<std::uint64_t>(cache_.families->build_us);
+  }
+}
+
 Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
                                   const DeAmQuoteIv &entry, IvPremiumMemory *memory) {
   namespace ft = counters::fit_timing;
   namespace ledger = counters::ledger;
+  ensure_families(); // before the inversion's own solve count: builds are not its solves
   ft::FitTimingCounters *const timing = ft::current_counts();
   const std::uint64_t al0 = timing ? ledger::this_thread(ledger::Solve::AlBoundarySolves) : 0u;
   DeAmStageClock *const stage = t_stage_clock; // B0: a fallback inversion is an exception
@@ -178,6 +268,8 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   charge_reason(timing, ft::DeamReason::Search, al > premium_solves ? al - premium_solves : 0u);
   timing->deam_confirms += stats.confirm_solves;
   if (stats.seed_routed) ++timing->deam_seed_routed;
+  timing->deam_family_prices += stats.family_prices;
+  if (stats.family_refused) ++timing->deam_family_refused;
   ++timing->deam_premium;
   const bool fell_back = stats.fallback != IvPremiumFallback::None;
   if (fell_back) {
@@ -262,6 +354,14 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
   controls.half_spread_usd =
       quote.bid > 0.0 && quote.ask > quote.bid ? 0.5 * (quote.ask - quote.bid) : 0.0;
   controls.confirm_fast = confirm_.kernel == QuoteSliceDeamConfirmKernel::Fast;
+  controls.seed_gate_kappa = confirm_.seed_gate_kappa;
+  if (cache_.families) {
+    controls.family = cache_.families->of(quote.side);
+    controls.family_q = cache_.families->q;
+    controls.qfamily = cache_.families->of_q(quote.side);
+    controls.qfamily_bound = cache_.families->q_bound(quote.side);
+    controls.qfamily_native = confirm_.family_native;
+  }
   Result<double> iv =
       model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats, controls);
   if (stats.fallback != IvPremiumFallback::None) {
@@ -271,6 +371,8 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
     if (stats.confirm_skipped) ++work_.confirms_skipped;
   }
   if (stats.seed_routed) ++work_.seed_routed;
+  work_.family_prices += stats.family_prices;
+  if (stats.family_refused) ++work_.family_refused;
   return iv;
 }
 
@@ -436,9 +538,10 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
                       const QuoteSliceConfig &config) {
   DeAmIvKey key;
   std::vector<std::uint64_t> &words = key.words;
-  // 29 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
-  // inverter + kernel 4, confirm 3, two counts), then 2 per dividend and 6 per quote.
-  words.reserve(29 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  // 38 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
+  // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 4, two counts),
+  // then 2 per dividend and 6 per quote.
+  words.reserve(38 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;
@@ -479,6 +582,21 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   word(static_cast<std::uint64_t>(config.channel.deam_confirm));
   real(config.channel.deam_confirm_k);
   word(static_cast<std::uint64_t>(config.channel.deam_confirm_kernel));
+  // The seed-tier routing gate (SPY1s Phase 2): it decides which kernel runs the iterates,
+  // so a root (within tol) depends on it.
+  real(config.channel.deam_seed_gate_kappa);
+  // The sigma families (SPY1s Phase 2): mode, the adaptive constant, nodes and axis decide
+  // whether and on which family the iterates ran.
+  word(static_cast<std::uint64_t>(config.channel.deam_family));
+  real(config.channel.deam_family_c);
+  word(kDeAmFamilyNodes);
+  word(static_cast<std::uint64_t>(kDeAmFamilyAxis));
+  // Step 5: (sigma, q) families instead (their node counts are constants of this build).
+  word(config.channel.deam_family_q ? 1u : 0u);
+  word(kDeAmQFamilySigmaNodes);
+  word(kDeAmQFamilyQNodes);
+  // Phase 3 lever 1: family-native iterates run another iteration path (same tolerance).
+  word(config.channel.deam_family_native ? 1u : 0u);
   word(prepared.variance_clock_dividends.size());
   for (const CashDividend &event : prepared.variance_clock_dividends) {
     real(event.tau);
@@ -534,6 +652,50 @@ DeAmStageClock *deam_stage_clock_arm(DeAmStageClock *clock) noexcept {
   DeAmStageClock *const previous = t_stage_clock;
   t_stage_clock = clock;
   return previous;
+}
+
+std::optional<double> deam_family_probe_worst(const AlSigmaQFamily &family, double S, double T,
+                                              double r, const std::optional<AlOpts> &al_opts,
+                                              double band_lo, double band_hi) {
+  // Chebyshev-Lobatto q node j of n as a fraction of the q box (cheb_node's layout:
+  // -cos(pi j / (n - 1)) on [-1, 1]); a probe sits at the midpoint of a q cell.
+  const unsigned nq = family.n_q();
+  const auto cell_mid = [nq](unsigned c) {
+    const auto node = [nq](unsigned j) {
+      return 0.5 * (1.0 - std::cos(std::numbers::pi * static_cast<double>(j) /
+                                   static_cast<double>(nq - 1u)));
+    };
+    return 0.5 * (node(c) + node(c + 1u));
+  };
+  const double q_lo = family.q_lo();
+  const double q_hi = family.q_hi();
+  std::array<double, 3> q_at{q_lo, q_lo, q_lo}; // a collapsed q box: its one node
+  if (nq >= 2u) {
+    const std::array<unsigned, 3> cells{0u, (nq - 1u) / 2u, nq - 2u};
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+      q_at[i] = q_lo + (q_hi - q_lo) * cell_mid(cells[i]);
+    }
+  }
+  const auto strike = [S](double K) { return positive(K) ? K : S; };
+  const std::array<double, 3> strike_at{strike(band_lo), strike(band_hi), S};
+  // Log-sigma fractions of the sigma box, one per probe (off the sigma axis' nodes).
+  constexpr std::array<double, kDeAmFamilyProbes> kSigmaAt{0.07, 0.31, 0.62, 0.93, 0.5,
+                                                           0.2,  0.45, 0.8,  0.15};
+  const double sigma_lo = family.sigma_lo();
+  const double sigma_hi = family.sigma_hi();
+  double worst = 0.0;
+  for (std::size_t i = 0; i < kDeAmFamilyProbes; ++i) {
+    const double K = strike_at[i % 3u];
+    const double q = q_at[i / 3u];
+    const double sigma = sigma_lo * std::pow(sigma_hi / sigma_lo, kSigmaAt[i]);
+    const AlSigmaQFamilyPrice fp = family.price(S, K, sigma, q);
+    const Result<double> cold = andersen_lake(S, K, T, sigma, r, q, family.side(), al_opts);
+    if (fp.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
+      return std::nullopt;
+    }
+    worst = std::max(worst, std::fabs(fp.price - *cold) / std::max(*cold, 1.0));
+  }
+  return worst;
 }
 
 } // namespace atx::vol

@@ -3274,5 +3274,67 @@ TEST(QuoteSurfaceLadder, WingTailRequiresTheKnotFirstLadderAndAKnownMode) {
   EXPECT_STREQ(to_string(static_cast<QuoteSurfaceWingTail>(7)), "unknown");
 }
 
+// review-SPY1s-p1 minor (confirm-solve naming / reason-split counters untested): under the
+// Screen-seeded Premium cache (with the Phase 2 routing gate kappa and sigma-family keys) the
+// fit_timing reason split partitions every inversion's AL solves - iterate + confirm + gate +
+// search == deam_inversion_al - and deam_confirms counts confirming SOLVES (= the confirm
+// reason; a root can take two), at least one per confirmed root; the whole split (with the
+// band edges' range_edge / ambiguous_edge reasons - none on these point-served chains) never
+// exceeds the chain's AL work; family builds / prices are counted beside it. Arming the trace
+// changes no fit.
+TEST(QuoteSurfaceTiming, ScreenSeededReasonSplitPartitionsInversionSolvesAndCountsConfirmSolves) {
+  const std::vector<Chain> chains{chain(0.25, 0.22, -0.10, 0.01), chain(0.5, 0.24, -0.08, 0.01),
+                                  chain(1.0, 0.26, -0.06, 0.01)};
+  QuoteSliceConfig config = vol_keys(QuoteSliceConfig{});
+  config.channel.deam_profile = QuoteSliceDeamProfile::Screen;
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_seed_gate_kappa = 4.3e-5;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  QuoteSurfaceConfig surface;
+  surface.fit_workers = 1;
+  deam_iv_memo_clear();
+  const auto off = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(off) << off.error().to_string();
+  const TracedSurface traced = traced_fit(chains, config, surface);
+  ASSERT_EQ(traced.slices.size(), chains.size());
+  expect_same_surface(*off, traced.slices);
+  deam_iv_memo_clear();
+  ft::SurfaceTrace trace;
+  const auto on = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(on) << on.error().to_string();
+  deam_iv_memo_clear();
+  ASSERT_EQ(trace.chains.size(), chains.size());
+  const auto reason = [](const ft::FitTimingCounters &t, ft::DeamReason r) -> std::uint64_t {
+    return t.deam_al_by_reason[static_cast<std::size_t>(r)];
+  };
+  std::uint64_t confirms = 0, premium = 0, family_prices = 0, family_builds = 0;
+  for (std::size_t e = 0; e < trace.chains.size(); ++e) {
+    const ft::FitTimingCounters &t = trace.chains[e];
+    const std::uint64_t in_inversions =
+        reason(t, ft::DeamReason::Iterate) + reason(t, ft::DeamReason::Confirm) +
+        reason(t, ft::DeamReason::Gate) + reason(t, ft::DeamReason::Search);
+    EXPECT_EQ(in_inversions, t.deam_inversion_al) << e;
+    EXPECT_EQ(t.deam_confirms, reason(t, ft::DeamReason::Confirm)) << e; // SOLVES, not roots
+    EXPECT_EQ(reason(t, ft::DeamReason::Gate), 0u) << e; // confirm always: no gate solve
+    const std::uint64_t accepted = t.deam_premium - t.deam_premium_fallbacks;
+    const std::uint64_t confirmed = accepted - std::min<std::uint64_t>(t.deam_seed_routed, accepted);
+    EXPECT_GE(t.deam_confirms, confirmed) << e; // every non-routed accepted root confirmed
+    EXPECT_LE(t.deam_confirms, 2u * t.deam_premium) << e; // kIvPremiumConfirmSolves = 2
+    std::uint64_t split = 0;
+    for (const std::uint32_t n : t.deam_al_by_reason) split += n;
+    EXPECT_LE(split, t.al_price_calls) << e;
+    expect_partitioned(t);
+    confirms += t.deam_confirms;
+    premium += t.deam_premium;
+    family_prices += t.deam_family_prices;
+    family_builds += t.deam_family_builds;
+  }
+  EXPECT_GT(premium, 0u);
+  EXPECT_GT(confirms, 0u);
+  EXPECT_GT(family_builds, 0u);
+  EXPECT_GT(family_prices, 0u);
+  expect_same_surface(*off, *on);
+}
+
 } // namespace
 } // namespace atx::vol

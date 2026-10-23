@@ -6,10 +6,11 @@
 // Four pieces, each usable without the CLI:
 //   * summarize()      - min / median / p95 / p99 / max of one clock over reps;
 //   * PhaseClock       - EXCLUSIVE stage attribution of one cold-calibration span:
-//                        consecutive laps partition the span (no gap, no overlap), and
-//                        a fit lap is split into the stages its fit_timing buckets and
-//                        the de-Am stage clock measured, the remainder charged to the
-//                        lap's residual stage;
+//                        harness laps charge the span between two marks to one stage,
+//                        and a fit lap charges only what the fit's fit_timing buckets
+//                        and the de-Am stage clock measured; the rest of a fit lap is
+//                        charged to NO stage, so cold - sum(stages) (unattributed_s)
+//                        is the time no timer measured, not zero by construction;
 //   * FitWork          - the fit-route work counters summed over chains;
 //   * receipts         - build info, affinity / topology, the in-process cold reset.
 //
@@ -73,16 +74,14 @@ enum class Stage : unsigned {
   FinalGrid,             // certification grid, certificate / repairs, calendar validation
   ReferenceExceptions,   // inversions that left the primary route (fallbacks)
   Publication,           // row publication and per-run bookkeeping
-  FitOther,              // fit_timing other: chain preparation, containment, carry
-  SurfaceOther,          // surface-fit wall charged to no chain (term prior, scheduling)
+  FitOther,              // fit_timing other bucket only: chain preparation, containment, carry
   Count_
 };
 
 inline constexpr std::size_t kStageCount = static_cast<std::size_t>(Stage::Count_);
 inline constexpr std::array<const char *, kStageCount> kStageNames = {
     "normalization", "family_build_validation", "inverses", "endpoints", "curve_repair",
-    "final_grid_validation", "reference_exceptions", "publication", "fit_other",
-    "surface_other"};
+    "final_grid_validation", "reference_exceptions", "publication", "fit_other"};
 
 // One measured sub-span of a fit lap: `seconds` of the lap belong to `stage`.
 struct StagePart {
@@ -92,11 +91,15 @@ struct StagePart {
 
 // Exclusive lap clock over one span. Unarmed (the default) every call is a branch: no
 // clock read, nothing recorded. Armed: start() opens the span; lap(s, t) charges
-// [previous mark, t] to s; lap_split(t, parts, residual) charges the parts of that
-// interval first, each clamped to what is left of it, and the remainder to `residual`.
-// A clamp means the parts claimed more than the interval held (overlapping workers, or
-// rounding); the excess is NOT charged and is reported by conflict_seconds(). So the
-// stages always partition [start, last mark] exactly, up to floating-point rounding.
+// [previous mark, t] to s (a harness stage whose boundaries are the marks);
+// lap_split(t, parts) charges the MEASURED parts of [previous mark, t], each clamped to
+// what is left of it, and nothing else: the rest of the interval is time no timer
+// claimed and goes to unclaimed_seconds(), never to a stage; skip(t) moves the mark and
+// adds the interval to unclaimed_seconds() (an untimed region). A clamp means the parts
+// claimed more than the interval held (overlapping workers, or rounding); the excess is
+// NOT charged and is reported by conflict_seconds(). The stage sum is therefore the
+// measured time only, and cold - sum (stages_json unattributed_s) is what no stage
+// measured: it is zero only when every timer covered its interval.
 class PhaseClock {
 public:
   void arm() noexcept { armed_ = true; }
@@ -104,10 +107,12 @@ public:
   void start(BenchClock::time_point t) noexcept;
   void lap(Stage stage, BenchClock::time_point t) noexcept;
   void lap(Stage stage) noexcept;
-  void lap_split(BenchClock::time_point t, std::span<const StagePart> parts,
-                 Stage residual) noexcept;
+  void lap_split(BenchClock::time_point t, std::span<const StagePart> parts) noexcept;
+  void skip(BenchClock::time_point t) noexcept;
   [[nodiscard]] double seconds(Stage stage) const noexcept;
   [[nodiscard]] double total() const noexcept;
+  // Lap time no stage claimed (split-lap remainders and skipped regions).
+  [[nodiscard]] double unclaimed_seconds() const noexcept { return unclaimed_; }
   // Records over-attribution measured outside a lap (fit_parts' clamped excess).
   void add_conflict(double seconds) noexcept;
   [[nodiscard]] double conflict_seconds() const noexcept { return conflict_; }
@@ -118,6 +123,7 @@ private:
   [[nodiscard]] double take(BenchClock::time_point t) noexcept;
   std::array<double, kStageCount> seconds_{};
   double conflict_{0.0};
+  double unclaimed_{0.0};
   BenchClock::time_point mark_{};
   bool armed_{false};
   bool started_{false};
@@ -151,14 +157,24 @@ struct FitWork {
   std::uint64_t deam_confirms_skipped{0};
   std::uint64_t deam_ambiguous_edges{0};
   std::uint64_t deam_seed_routed{0};
+  // Sigma / (sigma, q) families (graded.family): builds and the wall of their node
+  // solves and probes (inside the deam bucket), iterate prices on a family, Premium
+  // attempts a family refused, certification-grid prices on a family / on Fast instead.
+  std::uint64_t deam_family_builds{0};
+  std::uint64_t deam_family_build_us{0};
+  std::uint64_t deam_family_prices{0};
+  std::uint64_t deam_family_refused{0};
+  std::uint64_t deam_family_grid_prices{0};
+  std::uint64_t deam_family_grid_cold{0};
 };
 
 void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &chain) noexcept;
 
 // The stage parts of a fit lap: fit_timing buckets of the lap's chains (`delta`) with
-// the de-Am stage clock's endpoint / exception time of the same lap carved out of the
-// deam bucket (both in nanoseconds; clamped at zero, the excess returned in `excess`).
-[[nodiscard]] std::array<StagePart, 6> fit_parts(const FitWork &delta,
+// the family build wall (`delta.deam_family_build_us`) and the de-Am stage clock's
+// endpoint / exception time of the same lap carved out of the deam bucket, in that
+// order (each clamped to what is left of the bucket, the excess returned in `excess`).
+[[nodiscard]] std::array<StagePart, 7> fit_parts(const FitWork &delta,
                                                  std::uint64_t endpoint_ns,
                                                  std::uint64_t exception_ns,
                                                  double &excess) noexcept;
@@ -167,11 +183,18 @@ void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &
 [[nodiscard]] FitWork fit_work_delta(const FitWork &after, const FitWork &before) noexcept;
 
 [[nodiscard]] Json fit_work_json(const FitWork &work);
+// The family counters of a run (bench.counters.families): measured by fit_timing, so
+// they are real counts (zero when the route built none); the fields the fit does not
+// count are `unavailable`.
+[[nodiscard]] Json families_json(const FitWork &work);
 [[nodiscard]] Json stage_clock_json(const DeAmStageClock &clock);
 
 // Exclusive stage table of one span: every stage with its seconds (null and status
 // not_built for the family stage when `family_built` is false), their sum, the
-// independently measured cold clock, and the unattributed residual (cold - sum).
+// independently measured cold clock (its own start / end stamps), unattributed_s =
+// cold - sum (time no stage measured), the clock's unclaimed lap time that explains it,
+// span_check_s = cold - sum - unclaimed (zero when the laps span the cold clock), and
+// reconciles_within_1pct = |unattributed_s| <= 1% of the cold clock.
 [[nodiscard]] Json stages_json(const PhaseClock &clock, double cold_calibration_s,
                                bool family_built);
 
@@ -179,6 +202,20 @@ void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &
 // ATX_VOL_BENCH_CXX_FLAGS / ATX_VOL_BENCH_BUILD_TYPE from CMake, predefined macros).
 // fast_math is true when any fast-math / finite-math predefined macro is present.
 [[nodiscard]] Json build_info_json();
+
+// Scope guard for the de-Am stage clock (deam_stage_clock_arm): arms `clock` (null
+// disarms) on the calling thread for the guard's lifetime and restores the previously
+// armed clock on every exit, an exception included.
+class StageClockArm {
+public:
+  explicit StageClockArm(DeAmStageClock *clock) noexcept;
+  ~StageClockArm();
+  StageClockArm(const StageClockArm &) = delete;
+  StageClockArm &operator=(const StageClockArm &) = delete;
+
+private:
+  DeAmStageClock *previous_;
+};
 
 // In-process cold reset: drops every market-dependent memo a fit on THIS thread can
 // read across fits (the de-Am IV thread memo, the process-wide carry memo). The

@@ -42,11 +42,13 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
+#include "atx/vol/api/pricing/american.hpp" // AlExpiryGeometry, AlSigmaFamily
 #include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
@@ -77,6 +79,101 @@ struct DeAmQuoteIv {
   IvPremiumMemory mid_memory{};
 };
 
+// The sigma families of one expiry (QuoteSliceDeamFamily; SPY1s Phase 2): one prepared
+// geometry at the expiry's representative yield `q` and the side families built on it.
+// The families observe the geometry, so the holder never moves (heap-held, not copyable or
+// movable); immutable once built, shared read-only by every fit of the cache.
+struct DeAmSigmaFamilies {
+  DeAmSigmaFamilies() = default;
+  DeAmSigmaFamilies(const DeAmSigmaFamilies &) = delete;
+  DeAmSigmaFamilies &operator=(const DeAmSigmaFamilies &) = delete;
+  DeAmSigmaFamilies(DeAmSigmaFamilies &&) = delete;
+  DeAmSigmaFamilies &operator=(DeAmSigmaFamilies &&) = delete;
+  ~DeAmSigmaFamilies() = default;
+
+  AlExpiryGeometry geometry;
+  std::optional<AlSigmaFamily> put;
+  std::optional<AlSigmaFamily> call;
+  double q = std::numeric_limits<double>::quiet_NaN();
+  double build_us = 0.0; // wall time of the node solves (diagnostics)
+  // (sigma, q) families (deam_family_q; L2h-b AlSigmaQFamily): one geometry per side at a
+  // yield inside that side's q box (a call orientation needs q > 0), the side family over
+  // the chain's (sigma box) x (q box), and its MEASURED relative price bound versus the
+  // cold accurate kernel (10x deam_family_probe_worst: kDeAmFamilyProbes probes off the
+  // nodes of BOTH axes - q at the midpoints of the q cells, since the q box ends are
+  // Lobatto nodes - at the grid band's strike ends and the spot; floored at 1e-12): the
+  // bound the band gate (B-family) and the certification grid use.
+  AlExpiryGeometry q_geometry_put;
+  AlExpiryGeometry q_geometry_call;
+  std::optional<AlSigmaQFamily> q_put;
+  std::optional<AlSigmaQFamily> q_call;
+  double q_bound_put = std::numeric_limits<double>::infinity();
+  double q_bound_call = std::numeric_limits<double>::infinity();
+
+  // The prepared family of `side`, nullptr when none was built.
+  [[nodiscard]] const AlSigmaFamily *of(Side side) const noexcept {
+    const std::optional<AlSigmaFamily> &f = side == Side::Put ? put : call;
+    return f && f->prepared() ? &*f : nullptr;
+  }
+  [[nodiscard]] const AlSigmaQFamily *of_q(Side side) const noexcept {
+    const std::optional<AlSigmaQFamily> &f = side == Side::Put ? q_put : q_call;
+    return f && f->prepared() ? &*f : nullptr;
+  }
+  [[nodiscard]] double q_bound(Side side) const noexcept {
+    return side == Side::Put ? q_bound_put : q_bound_call;
+  }
+};
+
+// The sigma-family nodes and axis of the de-Am cache (L2h section 7: 12 LogSigma nodes).
+inline constexpr std::uint16_t kDeAmFamilyNodes = 12;
+inline constexpr AlSigmaFamilyAxis kDeAmFamilyAxis = AlSigmaFamilyAxis::LogSigma;
+// (sigma, q) families (L2h-b note section 3: n_sigma 16 meets 1e-9 relative on the whole
+// SPY board; n_q 4, or 3 where T x q-width <= 1e-5, the 23 d chain's floor), and the
+// probes of the measured bound (3 strikes x 3 q cells, deam_family_probe_worst).
+inline constexpr std::uint16_t kDeAmQFamilySigmaNodes = 16;
+inline constexpr std::uint16_t kDeAmQFamilyQNodes = 4;
+inline constexpr std::uint16_t kDeAmQFamilyNarrowQNodes = 3;
+inline constexpr double kDeAmQFamilyNarrowCarry = 1.0e-5;
+inline constexpr std::size_t kDeAmFamilyProbes = 9;
+// The certification grid prices a node on a (sigma, q) family only inside this log-moneyness
+// band |ln(K / S)| (its bound is probed at the band's ends and the spot): the deep wings
+// carry the family's largest relative error near the exercise boundary (SPY 0.18 y calls at
+// K / S 0.3: 8.8e-8 relative = 4.8e-5 USD, missed by probes at the chain's strike ends).
+inline constexpr double kDeAmFamilyGridLogBand = 0.25;
+
+// The measured error of a prepared (sigma, q) family (review-SPY1s-p2 M1): the worst
+// |P_family - P_cold| / max(P_cold, 1) over kDeAmFamilyProbes probes against the cold
+// accurate kernel (andersen_lake with `al_opts`) at spot S, maturity T, rate r - OFF the
+// nodes of BOTH axes: the strikes {band_lo, band_hi, S} x the midpoints of the first, the
+// central and the last q cell of the family's Chebyshev-Lobatto q axis (its box ends ARE
+// nodes, so a probe there sees no q-interpolation error; a collapsed q box probes its one
+// node), each at its own log-sigma fraction of the sigma box. nullopt when any probe
+// fails (a family refusal, a cold solve error). A non-finite or non-positive band end
+// probes the spot instead.
+[[nodiscard]] std::optional<double> deam_family_probe_worst(const AlSigmaQFamily &family,
+                                                            double S, double T, double r,
+                                                            const std::optional<AlOpts> &al_opts,
+                                                            double band_lo, double band_hi);
+
+// What a cache asks its model to build (DeAmModel::sigma_families): per side (0 put, 1
+// call) the sigma box (empty, lo >= hi: no family of that side); the sigma families' yield
+// `q`; with `sigma_q` the (sigma, q) families over the chain's q box [q_lo, q_hi] instead.
+struct DeAmFamilyRequest {
+  std::array<double, 2> sigma_lo{1.0, 1.0};
+  std::array<double, 2> sigma_hi{0.0, 0.0};
+  double q = std::numeric_limits<double>::quiet_NaN();
+  bool sigma_q = false;
+  double q_lo = std::numeric_limits<double>::quiet_NaN();
+  double q_hi = std::numeric_limits<double>::quiet_NaN();
+  // The chain's strike range (the measured bound probes its ends: the deep wings carry the
+  // family's largest relative error).
+  double strike_lo = std::numeric_limits<double>::quiet_NaN();
+  double strike_hi = std::numeric_limits<double>::quiet_NaN();
+};
+// Expected family-priced calls per two-sided quote of a side (the adaptive rule): the
+// inversions of the mid, bid and ask at ~1.8 iterates each.
+inline constexpr double kDeAmFamilyCallsPerQuote = 5.4;
+
 struct DeAmIvCache {
   std::uint64_t quote_set_hash = 0;
   std::vector<DeAmQuoteIv> ivs; // one per input quote, input order
@@ -84,6 +181,10 @@ struct DeAmIvCache {
   std::size_t inversions = 0;
   std::size_t model_prices = 0;
   std::size_t accurate_fallbacks = 0;
+  // Sigma families (QuoteSliceDeamFamily): decided once per cache, on the first Premium
+  // inversion that could use one; nullptr when none was built.
+  bool families_decided = false;
+  std::shared_ptr<const DeAmSigmaFamilies> families;
 };
 
 // The kernels the cache can price and invert with (QuoteSliceDeamProfile). Screen (SPY1s
@@ -94,13 +195,26 @@ enum class DeAmKernel : std::uint8_t { Accurate, Fast, Screen };
 // Per-inversion controls a Premium view hands the model (SPY1s Phase 1): the seed kernel
 // (Screen: IvOpts::seed_profile Screen; Accurate: no seed tier), the confirm policy with
 // its k and the quote's half-spread in price (IvPremiumGate), and whether the confirm
-// runs on AlProfile::Fast instead of the accurate kernel.
+// runs on AlProfile::Fast instead of the accurate kernel. seed_gate_kappa (SPY1s Phase 2,
+// opt-in): the seed tier's routing gate kappa (IvPremiumGate::seed_gate_kappa; 0 = the
+// tier's own non-monotone gate).
 struct DeAmPremiumControls {
   DeAmKernel seed_kernel = DeAmKernel::Accurate;
   IvConfirmPolicy confirm = IvConfirmPolicy::Always;
   double k = 10.0;
   double half_spread_usd = 0.0;
   bool confirm_fast = false;
+  double seed_gate_kappa = 0.0;
+  // The quote's side family and the yield it was built at (IvPremiumGate::family; nullptr:
+  // cold seed-tier iterates).
+  const AlSigmaFamily *family = nullptr;
+  double family_q = std::numeric_limits<double>::quiet_NaN();
+  // The quote's side (sigma, q) family and its measured relative bound
+  // (IvPremiumGate::qfamily; deam_family_q).
+  const AlSigmaQFamily *qfamily = nullptr;
+  double qfamily_bound = std::numeric_limits<double>::infinity();
+  // Family-native iterates on qfamily (IvPremiumGate::qfamily_native; deam_family_native).
+  bool qfamily_native = false;
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -147,6 +261,23 @@ public:
   // Black-76 vega of the contract at `sigma` on `forward` (the Fast guard).
   [[nodiscard]] virtual double black_vega(const QuoteSliceQuote &quote, double sigma,
                                           double forward) const = 0;
+  // Sigma families (QuoteSliceDeamFamily; SPY1s Phase 2). black_iv: the Black-76 IV of
+  // `target` for the quote's contract on `forward` (the family box), NaN when none.
+  // sigma_families: the expiry's families of `request` (DeAmFamilyRequest) on the model's
+  // accurate kernel; nullptr when the model has none (the default; the dated-cash lattice,
+  // expiries below kAlSigmaFamilyMinTau) or no side could be built.
+  [[nodiscard]] virtual double black_iv(const QuoteSliceQuote &quote, double target,
+                                        double forward) const {
+    static_cast<void>(quote);
+    static_cast<void>(target);
+    static_cast<void>(forward);
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  [[nodiscard]] virtual std::shared_ptr<const DeAmSigmaFamilies>
+  sigma_families(const DeAmFamilyRequest &request) const {
+    static_cast<void>(request);
+    return nullptr;
+  }
 
 protected:
   DeAmModel() = default;
@@ -175,12 +306,17 @@ inline constexpr double kDeAmFastMinRelativeVega = 1.0e-5;
 // `work` must outlive the view; `quotes` must be the quotes the cache was built
 // for (same order, ivs sized to match).
 // Confirm controls of a Screen-seeded Premium view (QuoteSliceChannelConfig deam_confirm,
-// deam_confirm_k, deam_confirm_kernel); the default confirms every seed-tier root on the
-// accurate kernel.
+// deam_confirm_k, deam_confirm_kernel, deam_seed_gate_kappa); the default confirms every
+// seed-tier root on the accurate kernel and routes inside the seed tier's own gate.
 struct DeAmConfirmControls {
   QuoteSliceDeamConfirm policy = QuoteSliceDeamConfirm::Always;
   double k = 10.0;
   QuoteSliceDeamConfirmKernel kernel = QuoteSliceDeamConfirmKernel::Accurate;
+  double seed_gate_kappa = 0.0;
+  QuoteSliceDeamFamily family = QuoteSliceDeamFamily::Off; // deam_family
+  double family_c = 3.0;                                   // deam_family_c
+  bool family_q = false;                                   // deam_family_q
+  bool family_native = false;                              // deam_family_native
 };
 
 class DeAmIvView {
@@ -215,6 +351,12 @@ private:
                                              const DeAmQuoteIv &entry);
   [[nodiscard]] DeAmKernel kernel() const noexcept;
   [[nodiscard]] bool premium() const noexcept;
+  // Decides (once per cache) and builds the chain's sigma families under deam_family
+  // Adaptive / Always: one box from the Black-76 IVs of the out-of-the-money two-sided mids
+  // of both sides (lo = max(kAlSigmaFamilyMinSigma, 0.5 min), hi = 1.5 max + 2
+  // kAlPackSigmaBump), a side built when its two-sided count passes the adaptive rule (or
+  // Always); no-op otherwise. Charged to the fit's work and fit_timing counters.
+  void ensure_families();
 
   // One edge price (kIvMin / kIvMax) of a band: its value, the sigma it was priced at,
   // and whether it is the accurate kernel's (decided) or the seed tier's.

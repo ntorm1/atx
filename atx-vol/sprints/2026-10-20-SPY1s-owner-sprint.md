@@ -589,3 +589,99 @@ MATCH; SPY arm D @1 `feac8d2c` MATCH (= the Phase 1 lane's and the review's; 7.9
 sampled before / after, unqualified); cohort5 arm D `45e491ea` MATCH (10 s). Evidence
 `C:\atx-cache\quote-benchmark\SPY1s-20261021-m1\` (`runs.log`, `gates\`, `sha256.txt`). No header touched (PCH-off
 not applicable); no Phase 2 lever started.
+
+## 5. Phase 2 resume r4 — the levers below the kernel, then the (σ, q) family (2026-10-21, Opus 5.5)
+
+Base `c20e40bc`, pool-3, RunId `vol-20261021r4-SPY1s-p2`, `-Jobs 1`. Evidence
+`C:\atx-cache\quote-benchmark\SPY1s-20261021-phase2\` (`runs.log`, `spy\`, `audit\`, `cohort5\`, `dev200\`,
+`dev200b\`, `parity\`, `gates\`, `policies\`, `scripts\`, `bin\`, `RESULTS.md`, `sha256.txt`). Every timing is
+UNQUALIFIED: five build lanes were live; the load sampled across each SPY row ran 24-86 %, so single rows move
+±30 % with the load alone (the same arm-D CSV `feac8d2c` measured 11.5-15.4 s @1 on four binaries). The
+deterministic counters (AL solves by reason, family prices, confirms) carry the lever comparison.
+
+| commit | lever | key (all opt-in) | what it changes |
+| --- | --- | --- | --- |
+| `cb7cead0` | 1 | `graded.seed_gate_kappa` (Screen only) | routing gate kappa K max(1, T²) instead of Screen's 4e-4 (100× the dip): routed 5,849 → 2,048 |
+| `c9d99835` | 2 | `graded.family` adaptive / always (+ `family_c`) | σ-family per (expiry, side) at the median q; iterates on the D-model A(own q) + P_fam − A(q_fam) |
+| `80376a8e` | 3 | — (tests) | Fast bound < allowance asserted (headroom 4.0e3); reason split partitions inversion solves; confirm counters = SOLVES |
+| `baba32ab` | 5 | — (merge) | L2h-b `c16f2bac` (AlSigmaQFamily; carries L3g's wip `a4b34521`), clean |
+| `69e238be` | 5 | `graded.family_q`, `grid_kernel family`, `confirm band` with family_q (B-family) | (σ, q) families (16 × 4) per side with a measured bound; iterates at own q; family grid in |ln K/S| ≤ 0.25 where bound·max(P,1) < allowance; band gate on the family bound / chord |
+
+Lever 4 (σ-family grid where q is bit-identical) was not built separately: on SPY it covers 1 of 33 expiries
+(≤ 0.05 s by arithmetic) and the (σ, q) family grid of step 5 serves every strike at its own q.
+
+### 5.1 SPY @1 per arm (graded-v1 + keys, funding-pv, `fit_workers` 1; `spy\`, `runs.log`)
+
+| arm (binary) | CSV | `fit_and_reprice_s` | load mean / max | AL solves (deam / grid) | confirms | family prices (iterate / grid) | builds |
+| --- | --- | ---: | --- | --- | ---: | --- | --- |
+| arm D (base `b282a449`) | `feac8d2c` | 11.757 | 48.5 / 53.4 % | 106,232 / 28,908 | 28,551 | — | — |
+| + kappa 4.3e-5 (lever 1, `bef968b8`) | `a00720c7` | 8.238 | 24.5 / 35.2 % | 110,148 / 28,908 | 32,511 | — | — |
+| + σ-family D-model (lever 2, `b799ea7e`) | `650b11ed` | 9.421 | 35.7 / 42.4 % | 66,151 / 28,908 | 32,806 | 45,764 / 0 | 61 (0.12 s) |
+| + (σ, q) family, Always, family grid (step 5, `1a767ac8`) | `e67dd513` | 7.626 | 32.2 / 39.0 % | 63,206 / 13,872 | 27,704 | 45,605 / 15,036 | 59 (0.53 s) |
+| **B-family**: + confirm band k 10 (step 5, `1a767ac8`) | `815fee36` | **6.432** | 37.7 / 48.1 % | 36,667 / 13,872 | 185 (27,076 skipped) | 71,786 / 15,036 | 59 (0.47 s) |
+| B-family @0 (final `7c341f26`) | `815fee36` | 1.568 | 66.6 % | | | | |
+| arm D @0 (final `7c341f26`) | `feac8d2c` | 2.481 | 65.7 / 89.5 % | | | | |
+
+Final binary `7c341f26` (same source as `1a767ac8` for the bench): every CSV above reproduces bit for bit; its @1 rows
+ran at 54-86 % load (B-family 8.541 s at 54.1 %, arm D 15.389 s at 69.9 %). Reading the counters: lever 1 moves
+≈ 6.5k Reference iterates to Screen for +3.96k Fast confirms (≈ −0.7 s quiet-host arithmetic); lever 2 replaces
+45.8k Screen iterates with D-model prices but adds 313 no-convergence fallbacks — no measurable gain inside the
+noise, kept as the provisioning scaffold; step 5 Always cuts the second confirm solve (27,704 confirms for ≈ 27.6k
+roots) and half the grid; B-family skips 97.6 % of the confirms (deam AL solves 106k → 37k, total 135k → 51k).
+
+### 5.2 Accuracy (audit + served set; `audit\`, `scripts\served_compare.py`)
+
+- Lever 1: `--deam-audit` max accurate-map Newton distance 1.71e-10, status mismatches 0; served set = keys-OFF
+  (1,410, lost 0 / gained 0), max |ΔP| vs arm D 3.0e-12 USD.
+- Lever 2: audit max Newton 2.99e-10, mismatches 0; served set = OFF; |ΔP| vs the kappa arm ≤ 3.7e-11 USD.
+- Step 5 Always: iterates identical to the kappa arm to 3.0e-11 USD; the family grid moves served prices ≤ 4.57e-8
+  USD (allowance 7.8e-7). A first grid without the moneyness band moved deep-ITM calls of the 0.18 y expiry by
+  4.8e-5 USD (K/S 0.3: 8.8e-8 relative, missed by probes at the chain's strike ends) → the band rule.
+- B-family: 27,076 confirms skipped; skipped roots ≤ 2.91e-5 vol from the accurate map (gate statement: max bound
+  2.54e-3 vol); served set = OFF, max |ΔP| vs OFF 2.012e-5 USD (= arm D's Premium-vs-Search distance). Like Phase 1
+  arm B this is a band-gated measurement arm: its roots are NOT within 1e-7.
+
+### 5.3 Where the B-family 6.4 s goes and what is left
+
+deam bucket 5.1 s: band edges 22,590 Screen + 2,734 ambiguous Reference (≈ 0.95 s), routed accurate iterates
+(2,048 inversions, ≈ 4.5k Reference ≈ 0.7 s), Search fallbacks 782 (2,636 solves ≈ 0.45 s), family builds 0.47 s,
+family prices 71.8k (≈ 0.5 s), seed legs (BAW) and cache overhead ≈ 2 s; price bucket 1.1 s: 13,872 Fast grid
+nodes outside the moneyness band. Next, by size: strike-local family bounds (grid band → all strikes, ≈ −0.8 s);
+edges decided on the family's box ends (≈ −0.9 s); routed iterates on the family at its measured bound (≈ −0.6 s);
+the L2hc AVX2 node batch (builds 0.47 → ≈ 0.13 s); the leg slope from the family chord (≈ −0.3 s). Arithmetic floor
+on this host ≈ 3.5 s @1; ≈ 2 s quiet — the bar (1 s) is not met by Phase 2.
+
+### 5.4 Cohort gate, the W2c-a merge, parity
+
+**Cohort accuracy gate.** OFF is graded-v1 on the same binary `7c341f26`, run at @2 (`gates\gate-*.txt`).
+
+| cohort | arm | gate | served lost/gained | max abs ΔP (USD) |
+| --- | --- | --- | --- | ---: |
+| cohort5 | B-family | PASS | 0/0 | 2.4e-4 |
+| cohort5 | famq-grid | PASS | 0/0 | 4.1e-5 |
+| dev200 | B-family | PASS | 0/0 | 7.5e-4 |
+| dev200 | famq-grid | PASS | 0/0 | 2.8e-4 |
+| dev200b | B-family | PASS | 0/0 | 4.7e-4 |
+| dev200b | famq-grid | PASS | 0/0 | 4.0e-5 |
+
+- MAE, MAE/spread and p99 are each within 1e-6 relative of OFF, or lower.
+- famq-grid loses one contained row on dev200 and one on dev200b. In both, the price sits at a float32 ask and moves
+  across it: dev200 PHAT by 2.4e-8 USD, dev200b BMEA by 8.4e-8 USD (`scripts\contain_diff.py`).
+- The |Δvol| of 1.6 comes from price-identical rows where the vol cannot be identified (one side at the 0.005 floor).
+  Over moved prices the largest |Δvol| is 1.6e-4 for B-family and 3.0e-5 for famq.
+- Timing at @2, OFF → B-family: cohort5 72.9 → 8.3 s, dev200 142.1 → 28.6 s, dev200b 92.1 → 21.5 s.
+
+**The W2c-a merge.** `5ec6a451` merges `dad69ccb` with `--no-ff`.
+- The conflict was the `grid_kernel` parse in `tools/quote_bench_policy.hpp`. The resolution is the union: `dad69ccb`'s
+  explicit `reference → Accurate` (the promoted default is `Fast`) plus this lane's `family` branch.
+- `atx-vol/src` and `include` are unchanged, so the fingerprint `53c4df68` carries.
+
+**Post-merge binary `2cb2b770`: 11/11 MATCH.**
+- auto: `c89d0739` / `4b273b08`.
+- Promoted default: cohort5 `45e491ea`, dev200 `2bc7777d`, dev200b `ed34eef7`, SPY `feac8d2c`.
+- Kill-switch `{fit_space price, grid_kernel reference, rung_memo false}`: cohort5 `171fa2d2`, SPY `087e6a54`.
+- Arms: SPY B-family `815fee36`, cohort5 B-family `16ebed71`, cohort5 famq `7923201d`.
+
+**Post-merge SPY @1.** Default (arm D) 10.008 s at 33.3 % load; B-family 6.270 s at 32.0 %.
+
+**Checks.** Native pytest: 168 passed. PCH-off hygiene: CHECK_EXIT 0 over 59 + 5 includers, with 0 diagnostics.

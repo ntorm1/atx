@@ -1,13 +1,16 @@
 // Lane B0 benchmark clock contract (tools/bench_clocks.hpp, docs/benchmark-clocks.md).
 //
 // Pins: (1) the clock summary is the linear order-statistic rule; (2) PhaseClock laps
-// partition their span exactly, a split lap charges its parts then its residual and
-// never charges an over-claim (it is reported as a conflict instead); (3) fit_parts
-// carves the de-Am endpoint / exception time out of the deam bucket without going
-// negative; (4) the stage table reconciles against the cold clock and reports the
-// family stage as not_built, never zero; (5) the de-Am stage clock times band edges
-// without changing the fit; (6) the in-process cold reset empties the thread memo so a
-// second fit repeats the first one's work exactly, and is not faster than a stated bound.
+// charge the span between marks, a split lap charges only its measured parts (the rest
+// is unclaimed, never a stage) and never charges an over-claim (it is reported as a
+// conflict instead); (3) fit_parts carves the family build and the de-Am endpoint /
+// exception time out of the deam bucket without going negative; (4) the stage table
+// reconciles against the cold clock only when the stages measured it: an untimed region
+// shows as a nonzero unattributed_s and fails the 1% check, and the family stage is
+// not_built, never zero, when no family was built; (5) the de-Am stage clock times band
+// edges without changing the fit, and its scope guard disarms on an exception; (6) the
+// in-process cold reset empties the thread memo so a second fit repeats the first one's
+// work exactly, and is not faster than a stated bound.
 
 #include "bench_clocks.hpp"
 
@@ -20,6 +23,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -89,30 +93,37 @@ TEST(BenchPhaseClock, LapsPartitionTheSpanExactly) {
   EXPECT_NEAR(clock.total(), 0.006, kTight);
 }
 
-TEST(BenchPhaseClock, SplitLapChargesPartsThenResidualAndReportsOverclaims) {
+TEST(BenchPhaseClock, SplitLapChargesOnlyMeasuredPartsAndReportsOverclaims) {
   bench::PhaseClock clock;
   clock.arm();
   const BenchClock::time_point t0{};
   clock.start(t0);
   const std::array<bench::StagePart, 2> parts = {
       bench::StagePart{Stage::Inverses, 0.004}, bench::StagePart{Stage::CurveRepair, 0.003}};
-  clock.lap_split(t0 + milliseconds(10), parts, Stage::SurfaceOther);
+  clock.lap_split(t0 + milliseconds(10), parts);
   EXPECT_NEAR(clock.seconds(Stage::Inverses), 0.004, kTight);
   EXPECT_NEAR(clock.seconds(Stage::CurveRepair), 0.003, kTight);
-  EXPECT_NEAR(clock.seconds(Stage::SurfaceOther), 0.003, kTight);
+  // The 3 ms no part measured is charged to no stage.
+  EXPECT_NEAR(clock.total(), 0.007, kTight);
+  EXPECT_NEAR(clock.unclaimed_seconds(), 0.003, kTight);
   EXPECT_EQ(clock.conflict_seconds(), 0.0);
-  // Parts claiming more than the lap held (overlapping fit workers): the lap is still
-  // charged exactly once and the excess is a conflict, never time.
+  // Parts claiming more than the lap held (overlapping fit workers): the lap is charged
+  // at most once and the excess is a conflict, never time.
   const std::array<bench::StagePart, 2> over = {
       bench::StagePart{Stage::Inverses, 0.008}, bench::StagePart{Stage::FinalGrid, 0.005}};
-  clock.lap_split(t0 + milliseconds(20), over, Stage::SurfaceOther);
+  clock.lap_split(t0 + milliseconds(20), over);
   EXPECT_NEAR(clock.seconds(Stage::Inverses), 0.012, kTight);
   EXPECT_NEAR(clock.seconds(Stage::FinalGrid), 0.002, kTight);
-  EXPECT_NEAR(clock.seconds(Stage::SurfaceOther), 0.003, kTight);
-  EXPECT_NEAR(clock.total(), 0.020, kTight);
+  EXPECT_NEAR(clock.total(), 0.017, kTight);
+  EXPECT_NEAR(clock.unclaimed_seconds(), 0.003, kTight);
   EXPECT_NEAR(clock.conflict_seconds(), 0.003, kTight);
   clock.add_conflict(0.001);
   EXPECT_NEAR(clock.conflict_seconds(), 0.004, kTight);
+  // A skipped region moves the mark and is unclaimed time.
+  clock.skip(t0 + milliseconds(25));
+  clock.lap(Stage::Publication, t0 + milliseconds(26));
+  EXPECT_NEAR(clock.unclaimed_seconds(), 0.008, kTight);
+  EXPECT_NEAR(clock.seconds(Stage::Publication), 0.001, kTight);
 }
 
 bench::FitWork buckets(std::initializer_list<std::uint64_t> us) {
@@ -121,9 +132,9 @@ bench::FitWork buckets(std::initializer_list<std::uint64_t> us) {
   return work;
 }
 
-TEST(BenchFitParts, CarvesEndpointsAndExceptionsOutOfTheDeamBucket) {
+TEST(BenchFitParts, CarvesFamilyEndpointsAndExceptionsOutOfTheDeamBucket) {
   // fit_timing order: other, deam, solve, project, price, certify, calendar (us).
-  const bench::FitWork work = buckets({100, 1000, 200, 50, 300, 20, 30});
+  bench::FitWork work = buckets({100, 1000, 200, 50, 300, 20, 30});
   double excess = -1.0;
   const auto parts = bench::fit_parts(work, 250'000, 100'000, excess);
   EXPECT_EQ(excess, 0.0);
@@ -141,12 +152,20 @@ TEST(BenchFitParts, CarvesEndpointsAndExceptionsOutOfTheDeamBucket) {
   double total = 0.0;
   for (const bench::StagePart &p : parts) total += p.seconds;
   EXPECT_NEAR(total, 1700e-6, kTight); // the seven buckets, nothing added or lost
+  EXPECT_EQ(seconds_of(Stage::FamilyBuildValidation), 0.0);
   // Sub-spans above the bucket (rounding, or a wrong mapping) are clamped, not charged.
   const auto clamped = bench::fit_parts(work, 900'000, 300'000, excess);
   EXPECT_NEAR(excess, 200e-6, kTight);
-  EXPECT_NEAR(clamped[0].seconds + clamped[1].seconds + clamped[2].seconds, 1000e-6, kTight);
-  EXPECT_EQ(clamped[2].stage, Stage::Inverses);
-  EXPECT_EQ(clamped[2].seconds, 0.0);
+  EXPECT_NEAR(clamped[1].seconds + clamped[2].seconds + clamped[3].seconds, 1000e-6, kTight);
+  EXPECT_EQ(clamped[3].stage, Stage::Inverses);
+  EXPECT_EQ(clamped[3].seconds, 0.0);
+  // A family build (inside the deam bucket) is carved out first.
+  work.deam_family_build_us = 400;
+  const auto family = bench::fit_parts(work, 250'000, 100'000, excess);
+  EXPECT_EQ(excess, 0.0);
+  EXPECT_EQ(family[0].stage, Stage::FamilyBuildValidation);
+  EXPECT_NEAR(family[0].seconds, 400e-6, kTight);
+  EXPECT_NEAR(family[3].seconds, 250e-6, kTight); // inverses: 1000 - 400 - 250 - 100
 }
 
 TEST(BenchFitWork, AddAndDeltaAreComponentWise) {
@@ -197,6 +216,40 @@ TEST(BenchStages, TableReconcilesWithTheColdClockAndMarksTheFamilyNotBuilt) {
   EXPECT_FALSE(off["reconciles_within_1pct"].get<bool>()); // a 2% residual is reported
   EXPECT_EQ(off["stages"]["family_build_validation"]["status"], "timed");
   EXPECT_EQ(off["stages"].size(), bench::kStageCount);
+}
+
+// The reconciliation is a test, not an identity: a fit lap whose chains measured only
+// part of it (a deliberately untimed region inside the lap, e.g. an uninstrumented
+// family build or surface scheduling) leaves the cold clock - stage sum nonzero, and a
+// region over 1% of the cold clock fails reconciles_within_1pct.
+TEST(BenchStages, UntimedRegionIsUnattributedAndFailsTheOnePercentCheck) {
+  const BenchClock::time_point t0{};
+  const auto run = [&t0](microseconds untimed) {
+    bench::PhaseClock clock;
+    clock.arm();
+    clock.start(t0);
+    clock.lap(Stage::Normalization, t0 + milliseconds(10));
+    // A 100 ms fit lap plus the untimed region; the chains measured 100 ms of it.
+    const std::array<bench::StagePart, 2> measured = {
+        bench::StagePart{Stage::Inverses, 0.060}, bench::StagePart{Stage::FinalGrid, 0.040}};
+    clock.lap_split(t0 + milliseconds(110) + untimed, measured);
+    clock.lap(Stage::Publication, t0 + milliseconds(120) + untimed);
+    const double cold = bench::seconds_between(t0, t0 + milliseconds(120) + untimed);
+    return bench::stages_json(clock, cold, false);
+  };
+  const bench::Json big = run(microseconds(5'000)); // 5 ms of 125 ms = 4%
+  EXPECT_NEAR(big["sum_s"].get<double>(), 0.120, kTight);
+  EXPECT_NEAR(big["unattributed_s"].get<double>(), 0.005, kTight);
+  EXPECT_NEAR(big["unclaimed_lap_s"].get<double>(), 0.005, kTight);
+  EXPECT_NEAR(big["span_check_s"].get<double>(), 0.0, kTight);
+  EXPECT_FALSE(big["reconciles_within_1pct"].get<bool>());
+  const bench::Json small = run(microseconds(600)); // 0.6 ms of 120.6 ms = 0.5%
+  EXPECT_NEAR(small["unattributed_s"].get<double>(), 0.0006, kTight);
+  EXPECT_GT(small["unattributed_s"].get<double>(), 0.0); // nonzero, yet within 1%
+  EXPECT_TRUE(small["reconciles_within_1pct"].get<bool>());
+  const bench::Json none = run(microseconds(0)); // every interval measured
+  EXPECT_NEAR(none["unattributed_s"].get<double>(), 0.0, kTight);
+  EXPECT_TRUE(none["reconciles_within_1pct"].get<bool>());
 }
 
 struct Chain {
@@ -280,10 +333,19 @@ TEST(BenchDeamStageClock, ArmedClockTimesBandEdgesWithoutChangingTheFit) {
   const Rep plain = fit_once(chain, config);
   deam_iv_memo_clear();
   DeAmStageClock clock;
-  ASSERT_EQ(deam_stage_clock_arm(&clock), nullptr);
-  EXPECT_EQ(deam_stage_clock(), &clock);
-  const Rep timed = fit_once(chain, config);
-  EXPECT_EQ(deam_stage_clock_arm(nullptr), &clock);
+  ASSERT_EQ(deam_stage_clock(), nullptr);
+  const Rep timed = [&] {
+    const bench::StageClockArm armed(&clock);
+    EXPECT_EQ(deam_stage_clock(), &clock);
+    return fit_once(chain, config);
+  }();
+  EXPECT_EQ(deam_stage_clock(), nullptr); // the guard restored the previous (none)
+  // An exception leaves no clock armed: the guard restores on unwind.
+  try {
+    const bench::StageClockArm armed(&clock);
+    throw std::runtime_error("unwind");
+  } catch (const std::runtime_error &) {
+  }
   EXPECT_EQ(deam_stage_clock(), nullptr);
   expect_same_rows(plain.fit, timed.fit);
   EXPECT_EQ(plain.al_solves, timed.al_solves);

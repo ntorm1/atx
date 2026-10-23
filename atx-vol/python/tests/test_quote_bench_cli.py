@@ -833,7 +833,50 @@ def test_native_graded_options_are_strict(binary, tmp_path):
               "graded": {"market_distance": "gate", "market_distance_spreads": -1}},
              "outside supported bounds"),
             ({"schema_version": 1, "graded": {"market_distance": "gate"}},
-             "require admission graded")):
+             "require admission graded"),
+            # Screen routing gate kappa (SPY1s Phase 2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "accurate",
+                         "deam_inversion": "premium", "seed_gate_kappa": 4.3e-5}},
+             "seed_gate_kappa requires deam_profile screen"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "seed_gate_kappa": 0}},
+             "seed_gate_kappa must be a positive number"),
+            # Sigma-family iterates (SPY1s Phase 2).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "sometimes"}},
+             "family must be off, adaptive or always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "confirm": "band", "family": "adaptive"}},
+             "family requires deam_profile screen and confirm always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family_c": 3}},
+             "family_c requires family adaptive or always"),
+            # (sigma, q) families and the family grid (SPY1s Phase 2 step 5).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family_q": True}},
+             "family_q requires family adaptive or always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen", "deam_cache": True,
+                         "deam_inversion": "premium", "family": "adaptive",
+                         "grid_kernel": "family"}},
+             "grid_kernel family requires family_q and deam_cache"),
+            # Family-native iterates (SPY1s Phase 3 lever 1).
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "adaptive",
+                         "family_native": True}},
+             "family_native requires family_q and confirm always"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"fit_space": "vol", "deam_profile": "screen",
+                         "deam_inversion": "premium", "family": "adaptive", "family_q": True,
+                         "family_native": 1}},
+             "family_native must be true or false")):
         policy = write_policy(tmp_path / "policy.json", document)
         result = invoke(binary, source, output, "--policy", str(policy))
         assert result.returncode != 0, document
@@ -1648,7 +1691,7 @@ def test_native_empty_route_over_cash_in_life_is_a_window_mismatch(binary, tmp_p
 # object's clocks, exclusive stages, counters, cold reset and affinity receipt.
 BENCH_STAGES = ("normalization", "family_build_validation", "inverses", "endpoints",
                 "curve_repair", "final_grid_validation", "reference_exceptions", "publication",
-                "fit_other", "surface_other")
+                "fit_other")
 SERIAL = {"ATX_VOL_FIT_WORKERS": "1"}
 # A cold rep 2 is not faster than this share of rep 1 (docs/benchmark-clocks.md); a warm
 # memo hit skips every inversion and runs several times faster.
@@ -1708,7 +1751,7 @@ def test_native_bench_clocks_are_reported_and_stages_reconcile(binary, tmp_path)
     # The harness only measures: predictions are byte-identical to the plain run.
     assert timed_output.read_bytes() == plain_output.read_bytes()
     bench = plain["bench"]
-    assert bench["schema"] == "atx-vol-bench-clocks-v1"
+    assert bench["schema"] == "atx-vol-bench-clocks-v2"
     assert bench["reps"] == 1 and bench["cold_reset"] is False
     assert bench["stages"] == "unavailable: requires --timing-detail"
     assert bench["clocks"]["ready_to_quote_s"]["status"] == "not_built"
@@ -1742,8 +1785,16 @@ def test_native_bench_clocks_are_reported_and_stages_reconcile(binary, tmp_path)
     timed_stages = [s["seconds"] for s in stages["stages"].values() if s["status"] == "timed"]
     assert all(seconds >= 0.0 for seconds in timed_stages)
     assert sum(timed_stages) == pytest.approx(stages["sum_s"], rel=1e-9, abs=1e-12)
-    assert stages["reconciles_within_1pct"] is True
-    assert abs(stages["unattributed_s"]) <= 0.01 * stages["cold_calibration_s"]
+    # unattributed_s is the cold clock (its own stamps) minus the measured stages: time no
+    # timer claimed (surface scheduling, a fit lap's unmeasured remainder), not zero by
+    # construction; the lap clock's unclaimed time explains it to rounding.
+    assert stages["unattributed_s"] == pytest.approx(
+        stages["cold_calibration_s"] - stages["sum_s"], rel=1e-9, abs=1e-12)
+    assert stages["unclaimed_lap_s"] >= 0.0
+    assert abs(stages["span_check_s"]) <= 1e-9
+    assert stages["unattributed_s"] > 0.0
+    assert stages["reconciles_within_1pct"] is (
+        abs(stages["unattributed_s"]) <= 0.01 * stages["cold_calibration_s"])
     assert stages["attribution_valid"] is True and stages["attribution_conflict_s"] == 0.0
     assert stages["stages"]["inverses"]["seconds"] > 0.0
     assert stages["stages"]["final_grid_validation"]["seconds"] > 0.0
@@ -1752,13 +1803,16 @@ def test_native_bench_clocks_are_reported_and_stages_reconcile(binary, tmp_path)
     assert rows["input_rows"] == timed["rows"] and rows["served_rows"] == timed["served_rows"]
     assert rows["served_iv_rows"] == timed["served_rows"]
     assert sum(rows["rows_by_status"].values()) == timed["rows"]
+    families = counters["families"]
+    assert families["built"] == 0 and families["iterate_prices"] == 0  # family route off
+    assert families["attempted"].startswith("unavailable")
     route = counters["fit_route"]
     assert route["timed_chains"] == 4
     assert route["al_boundary_solves"] == sum(route["al_boundary_solves_by_bucket"].values())
     assert route["inversions"] > 0 and route["certification_passes"] >= 4
     assert sum(route["premium_fallbacks_by_reason"]) == route["premium_fallbacks"]
     assert counters["deam_stage_clock"]["endpoint_bands"] >= 0  # bands only on channel fits
-    assert counters["families"]["built"].startswith("unavailable")
+    assert plain["bench"]["counters"]["families"] == "unavailable: requires --timing-detail"
     ledger = [rep["solve_ledger"]["sl_al_boundary_solves"] for rep in bench["per_rep"]]
     assert ledger[0] == ledger[1] == counters["solve_ledger"]["sl_al_boundary_solves"] > 0
 

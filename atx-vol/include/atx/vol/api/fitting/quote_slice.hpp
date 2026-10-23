@@ -135,13 +135,31 @@ enum class QuoteSliceDeamInversion : std::uint8_t { Search, Premium };
 enum class QuoteSliceDeamConfirm : std::uint8_t { Always, Band, Never };
 enum class QuoteSliceDeamConfirmKernel : std::uint8_t { Accurate, Fast };
 
+// Sigma-family iterates of a Screen-seeded Premium inversion (QuoteSliceChannelConfig
+// deam_family; SPY1s Phase 2, opt-in; requires deam_profile Screen and deam_confirm
+// Always). Off (the default): every iterate is a cold Screen solve. Adaptive: the chain's
+// cache builds one AlSigmaFamily per side (american.hpp; 12 Reference node boundaries over
+// the box of the side's two-sided mid Black-76 IVs, at the expiry's representative yield)
+// when 5.4 x the side's two-sided quotes exceeds deam_family_c x 2 x 12, and the iterates
+// price the D-model A(sigma; own q) + D_family(sigma) on it instead of a cold solve (a
+// family refusal: the cold Screen iterate). Always: a family whenever one can be built
+// (measurement arm). Every accepted root is confirmed on the confirm kernel at the
+// contract's own yield as under Off. The dated-cash lattice and expiries below
+// kAlSigmaFamilyMinTau never build one.
+enum class QuoteSliceDeamFamily : std::uint8_t { Off, Adaptive, Always };
+
 // Kernel of the certification grid (certify_and_serve's American reprice of the fitted
 // curve at every strike; the served prices). Accurate (the default): the fit's own
 // model, the historical path bit for bit. Fast (opt-in, SPY1s Phase 1 arm D; research
 // R3): the same Andersen-Lake scheme on AlProfile::Fast, |dP| <= 1e-12 max(P, 1) below
 // the certificate's allowance 1e-8 + 1e-9 max(S, K); a MEASUREMENT arm with its own hash
 // set - the PM promotes or not at integration. The dated-cash lattice ignores it.
-enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast };
+// Family (opt-in, SPY1s Phase 2 step 5; requires the vol-space cache with deam_family_q):
+// each grid price on the chain cache's (sigma, q) family of its side at the strike's own q
+// where the family's measured bound x max(P, 1) is under the certificate's allowance 1e-8
+// + 1e-9 max(S, K); otherwise (no family, a refusal, a bound over the allowance) on
+// AlProfile::Fast as under Fast.
+enum class QuoteSliceGridKernel : std::uint8_t { Accurate, Fast, Family };
 
 // Channel knot-spline controls (src/fitting/slice_channel.hpp has the
 // objective). The mid anchor is in channel half-widths; the channel penalty is
@@ -225,6 +243,31 @@ struct QuoteSliceChannelConfig {
   // (the default) or the same scheme on AlProfile::Fast (|dP| <= 1e-12 max(P, 1); research
   // R3 measurement arm - the PM promotes or not at integration).
   QuoteSliceDeamConfirmKernel deam_confirm_kernel = QuoteSliceDeamConfirmKernel::Accurate;
+  // Seed-tier routing gate (deam_profile Screen only; SPY1s Phase 2, opt-in): 0 (the
+  // default) runs a price's iterates on the accurate kernel inside Screen's own wide
+  // non-monotone gate (4e-4 K max(1, T^2), about 100x the measured Screen dip); > 0 narrows
+  // that band to deam_seed_gate_kappa K max(1, T^2) (the measured dip times a margin, e.g.
+  // 4.3e-5 = 10 x 4.3e-6), so more inversions iterate on Screen. Every Screen-iterated root
+  // is confirmed (or band-gated) on the confirm kernel exactly as under the default. >= 0.
+  double deam_seed_gate_kappa = 0.0;
+  // Sigma-family iterates (QuoteSliceDeamFamily; SPY1s Phase 2) and the adaptive build's
+  // threshold constant c (> 0).
+  QuoteSliceDeamFamily deam_family = QuoteSliceDeamFamily::Off;
+  double deam_family_c = 3.0;
+  // (sigma, q) families (SPY1s Phase 2 step 5, opt-in; requires deam_family Adaptive /
+  // Always): the cache builds L2h-b AlSigmaQFamily per side instead - n_sigma 16 over the
+  // sigma box, n_q 4 (3 where T x q-width <= 1e-5) over the chain's q box (all quotes'
+  // effective yields) - with a MEASURED relative bound (off-node probes against the cold
+  // accurate kernel); the iterates price each strike at its OWN q on it (no D-model). With
+  // deam_confirm Band (allowed here: the B-family arm) the band gate uses that measured
+  // bound and the family's own chord. The adaptive rule counts n_sigma x n_q nodes.
+  bool deam_family_q = false;
+  // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; requires deam_family_q and
+  // deam_confirm Always): the (sigma, q) family's own map is iterated without the
+  // Barone-Adesi-Whaley / Black-76 seed leg (a bracketed secant-Newton from the mid's
+  // family points, else from the Black-76 IV with the family's chord); any family refusal
+  // restarts the inversion on the seed-leg path. Every root is still confirmed.
+  bool deam_family_native = false;
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -598,9 +641,14 @@ struct QuoteSliceDeamDiagnostics {
   // routed to the accurate kernel because the price lay inside the seed tier's
   // non-monotone gate.
   std::size_t ambiguous_edges = 0;
-  std::size_t confirms = 0;
+  std::size_t confirms = 0; // confirming SOLVES (a root may take kIvPremiumConfirmSolves = 2)
   std::size_t confirms_skipped = 0;
   std::size_t seed_routed = 0;
+  // Sigma-family iterates (deam_family; zero otherwise): families this fit built (0 when
+  // the cache was reused), iterates priced on a family, Premium attempts a family refused.
+  std::size_t family_builds = 0;
+  std::size_t family_prices = 0;
+  std::size_t family_refused = 0;
 };
 
 struct QuoteSliceDiagnostics {

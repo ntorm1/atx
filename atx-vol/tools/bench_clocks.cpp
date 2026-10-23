@@ -113,6 +113,7 @@ void PhaseClock::start(BenchClock::time_point t) noexcept {
   if (!armed_) return;
   seconds_.fill(0.0);
   conflict_ = 0.0;
+  unclaimed_ = 0.0;
   mark_ = t;
   started_ = true;
 }
@@ -133,8 +134,7 @@ void PhaseClock::lap(Stage stage) noexcept {
   lap(stage, BenchClock::now());
 }
 
-void PhaseClock::lap_split(BenchClock::time_point t, std::span<const StagePart> parts,
-                           Stage residual) noexcept {
+void PhaseClock::lap_split(BenchClock::time_point t, std::span<const StagePart> parts) noexcept {
   if (!armed_ || !started_) return;
   double remaining = take(t);
   for (const StagePart &part : parts) {
@@ -144,7 +144,12 @@ void PhaseClock::lap_split(BenchClock::time_point t, std::span<const StagePart> 
     remaining -= charged;
     conflict_ += claim - charged;
   }
-  seconds_[static_cast<std::size_t>(residual)] += remaining;
+  unclaimed_ += remaining; // measured by no timer: never a stage
+}
+
+void PhaseClock::skip(BenchClock::time_point t) noexcept {
+  if (!armed_ || !started_) return;
+  unclaimed_ += take(t);
 }
 
 void PhaseClock::add_conflict(double seconds) noexcept {
@@ -195,6 +200,12 @@ void add_fit_work(FitWork &work, const ft::FitTimingCounters &c) noexcept {
   work.deam_confirms_skipped += c.deam_confirms_skipped;
   work.deam_ambiguous_edges += c.deam_ambiguous_edges;
   work.deam_seed_routed += c.deam_seed_routed;
+  work.deam_family_builds += c.deam_family_builds;
+  work.deam_family_build_us += c.deam_family_build_us;
+  work.deam_family_prices += c.deam_family_prices;
+  work.deam_family_refused += c.deam_family_refused;
+  work.deam_family_grid_prices += c.deam_family_grid_prices;
+  work.deam_family_grid_cold += c.deam_family_grid_cold;
 }
 
 FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
@@ -230,25 +241,36 @@ FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
   d.deam_confirms_skipped = saturating_minus(a.deam_confirms_skipped, b.deam_confirms_skipped);
   d.deam_ambiguous_edges = saturating_minus(a.deam_ambiguous_edges, b.deam_ambiguous_edges);
   d.deam_seed_routed = saturating_minus(a.deam_seed_routed, b.deam_seed_routed);
+  d.deam_family_builds = saturating_minus(a.deam_family_builds, b.deam_family_builds);
+  d.deam_family_build_us = saturating_minus(a.deam_family_build_us, b.deam_family_build_us);
+  d.deam_family_prices = saturating_minus(a.deam_family_prices, b.deam_family_prices);
+  d.deam_family_refused = saturating_minus(a.deam_family_refused, b.deam_family_refused);
+  d.deam_family_grid_prices =
+      saturating_minus(a.deam_family_grid_prices, b.deam_family_grid_prices);
+  d.deam_family_grid_cold = saturating_minus(a.deam_family_grid_cold, b.deam_family_grid_cold);
   return d;
 }
 
-std::array<StagePart, 6> fit_parts(const FitWork &delta, std::uint64_t endpoint_ns,
+std::array<StagePart, 7> fit_parts(const FitWork &delta, std::uint64_t endpoint_ns,
                                    std::uint64_t exception_ns, double &excess) noexcept {
   const std::array<std::uint64_t, 7> &us = delta.bucket_us;
   const std::uint64_t deam_ns = us[bucket(ft::Bucket::Deam)] * 1000U;
-  const std::uint64_t endpoints = std::min(endpoint_ns, deam_ns);
-  const std::uint64_t exceptions = std::min(exception_ns, deam_ns - endpoints);
-  excess = 1.0e-9 * static_cast<double>((endpoint_ns - endpoints) + (exception_ns - exceptions));
+  const std::uint64_t family_ns = delta.deam_family_build_us * 1000U;
+  const std::uint64_t family = std::min(family_ns, deam_ns);
+  const std::uint64_t endpoints = std::min(endpoint_ns, deam_ns - family);
+  const std::uint64_t exceptions = std::min(exception_ns, deam_ns - family - endpoints);
+  excess = 1.0e-9 * static_cast<double>((family_ns - family) + (endpoint_ns - endpoints) +
+                                        (exception_ns - exceptions));
   const auto s_us = [&us](std::initializer_list<ft::Bucket> buckets) {
     std::uint64_t sum = 0;
     for (const ft::Bucket b : buckets) sum += us[bucket(b)];
     return 1.0e-6 * static_cast<double>(sum);
   };
-  return {StagePart{Stage::Endpoints, 1.0e-9 * static_cast<double>(endpoints)},
+  return {StagePart{Stage::FamilyBuildValidation, 1.0e-9 * static_cast<double>(family)},
+          StagePart{Stage::Endpoints, 1.0e-9 * static_cast<double>(endpoints)},
           StagePart{Stage::ReferenceExceptions, 1.0e-9 * static_cast<double>(exceptions)},
           StagePart{Stage::Inverses,
-                    1.0e-9 * static_cast<double>(deam_ns - endpoints - exceptions)},
+                    1.0e-9 * static_cast<double>(deam_ns - family - endpoints - exceptions)},
           StagePart{Stage::CurveRepair, s_us({ft::Bucket::Solve, ft::Bucket::Project})},
           StagePart{Stage::FinalGrid,
                     s_us({ft::Bucket::Price, ft::Bucket::Certify, ft::Bucket::Calendar})},
@@ -285,6 +307,17 @@ Json fit_work_json(const FitWork &w) {
           {"ambiguous_edges", w.deam_ambiguous_edges}, {"seed_routed", w.deam_seed_routed}};
 }
 
+Json families_json(const FitWork &w) {
+  const char *const not_counted = "unavailable: not counted by the fit";
+  return {{"built", w.deam_family_builds},
+          {"build_validation_s", 1.0e-6 * static_cast<double>(w.deam_family_build_us)},
+          {"iterate_prices", w.deam_family_prices},
+          {"refused_premium_attempts", w.deam_family_refused},
+          {"grid_prices", w.deam_family_grid_prices},
+          {"grid_prices_on_fast_instead", w.deam_family_grid_cold},
+          {"attempted", not_counted}, {"lane_vegas", not_counted}};
+}
+
 Json stage_clock_json(const DeAmStageClock &c) {
   std::uint64_t fallback_ns = 0;
   for (const std::uint64_t ns : c.premium_fallback_ns) fallback_ns += ns;
@@ -305,17 +338,19 @@ Json stages_json(const PhaseClock &clock, double cold, bool family_built) {
     const auto stage = static_cast<Stage>(s);
     if (stage == Stage::FamilyBuildValidation && !family_built) {
       stages[kStageNames[s]] = {{"seconds", nullptr}, {"status", "not_built"},
-                                {"reason", "no family build or family validation on this fit "
-                                           "route (family kernels are pricing-only here)"}};
+                                {"reason", "no family was built on this fit route (policy "
+                                           "graded.family off, or every build refused)"}};
       continue;
     }
     stages[kStageNames[s]] = {{"seconds", clock.seconds(stage)}, {"status", "timed"}};
   }
   const double sum = clock.total();
-  const double residual = cold - sum;
+  const double residual = cold - sum; // the cold clock has its own start / end stamps
   return {{"stages", std::move(stages)}, {"sum_s", sum}, {"cold_calibration_s", cold},
           {"unattributed_s", residual},
           {"unattributed_fraction", cold > 0.0 ? residual / cold : 0.0},
+          {"unclaimed_lap_s", clock.unclaimed_seconds()},
+          {"span_check_s", residual - clock.unclaimed_seconds()},
           {"reconciles_within_1pct", std::fabs(residual) <= 0.01 * cold},
           {"attribution_conflict_s", clock.conflict_seconds()}};
 }
@@ -368,6 +403,11 @@ Json build_info_json() {
 }
 
 std::size_t deam_memo_entries() noexcept { return deam_iv_memo_size(); }
+
+StageClockArm::StageClockArm(DeAmStageClock *clock) noexcept
+    : previous_(deam_stage_clock_arm(clock)) {}
+
+StageClockArm::~StageClockArm() { static_cast<void>(deam_stage_clock_arm(previous_)); }
 
 Json cold_reset() {
   const std::size_t deam_entries = deam_iv_memo_size();

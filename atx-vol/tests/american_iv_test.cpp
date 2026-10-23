@@ -2262,6 +2262,389 @@ TEST(AmericanIvPremium, APriceInsideScreensNonMonotoneGateRunsAccurateIteratesNo
   // returned Ok roots - the routing guard is in front regardless, pinned above.)
 }
 
+// Opt-in seed-tier routing gate (SPY1s Phase 2, IvPremiumGate::seed_gate_kappa): with kappa
+// = 4.3e-5 (10x the measured Screen dip) a price whose excess over the zero-vol value lies
+// between kappa K max(1, T^2) and Screen's own wide gate 4e-4 K max(1, T^2) iterates on
+// Screen and is CONFIRMED on the accurate kernel instead of being routed to accurate
+// iterates; inside the narrowed gate it is still routed; kappa 0 is the tier's own gate.
+// Every accepted root stays at the accurate root (the r = q grid of the routing test, and
+// the Premium grid under the key: Newton distance <= 4 tol, Search's acceptances kept).
+TEST(AmericanIvPremium, SeedGateKappaNarrowsTheRoutingBandAndConfirmsScreenIteratedRoots) {
+  using atx::vol::iv_premium_seed_gate;
+  const double S = 100.0;
+  const double tol = IvOpts{}.tol;
+  constexpr double kKappa = 4.3e-5;
+  // The gate helper: the tier's own gate without a kappa, the kappa band with one.
+  IvPremiumGate off;
+  IvPremiumGate keyed;
+  keyed.seed_gate_kappa = kKappa;
+  EXPECT_EQ(iv_premium_seed_gate(100.0, 2.0, al_screen_opts(), nullptr),
+            al_non_monotone_gate(100.0, 2.0, al_screen_opts()));
+  EXPECT_EQ(iv_premium_seed_gate(100.0, 2.0, al_screen_opts(), &off),
+            al_non_monotone_gate(100.0, 2.0, al_screen_opts()));
+  EXPECT_DOUBLE_EQ(iv_premium_seed_gate(100.0, 2.0, al_screen_opts(), &keyed), kKappa * 100.0 * 4.0);
+  EXPECT_DOUBLE_EQ(iv_premium_seed_gate(100.0, 0.5, al_screen_opts(), &keyed), kKappa * 100.0);
+  EXPECT_TRUE(std::isnan(iv_premium_seed_gate(0.0, 1.0, al_screen_opts(), &keyed)));
+  EXPECT_TRUE(std::isnan(iv_premium_seed_gate(100.0, 0.0, al_screen_opts(), &keyed)));
+  std::size_t candidates = 0, unrouted = 0, still_routed = 0, routed_off = 0;
+  double max_unrouted_newton = 0.0;
+  for (const double rq : {0.02, 0.03, 0.05}) {
+    for (const double T : {0.5, 1.0, 2.0}) {
+      for (const double m : {1.01, 1.02, 1.05, 1.1}) {
+        for (const Side sd : {Side::Put, Side::Call}) {
+          const double K = sd == Side::Put ? S * m : S / m; // in the money
+          const PremiumCase c{K, T, rq, rq, sd, 0.0};
+          const auto floor = andersen_lake(S, K, T, atx::vol::kIvMin, rq, rq, sd);
+          if (!floor) continue;
+          const double wide = al_non_monotone_gate(K, T, al_screen_opts());
+          const double narrow = kKappa * K * std::fmax(1.0, T * T);
+          for (const double frac : {0.5, 0.05}) {
+            const double price = *floor + frac * wide;
+            const IvResult s = american_implied_vol(price, S, K, T, rq, rq, sd, IvOpts{});
+            if (s.status != IvStatus::Ok) continue;
+            // Classified away from both gate edges (the library's zero-vol value is the
+            // test's own replica to a few ULP).
+            const double excess = price - zero_vol_value(S, K, T, rq, rq, sd);
+            ++candidates;
+            IvPremiumStats st_off, st_key;
+            const IvResult r_off = screen_seeded_iv(price, S, c, st_off, &off);
+            const IvResult r_key = screen_seeded_iv(price, S, c, st_key, &keyed);
+            ASSERT_EQ(r_off.status, IvStatus::Ok) << K << " " << T;
+            ASSERT_EQ(r_key.status, IvStatus::Ok) << K << " " << T;
+            if (st_off.fallback == IvPremiumFallback::None && excess < 0.95 * wide) {
+              EXPECT_TRUE(st_off.seed_routed) << K << " " << T << " " << frac;
+              routed_off += st_off.seed_routed ? 1u : 0u;
+            }
+            if (st_key.fallback != IvPremiumFallback::None) continue; // = Search, bit for bit
+            if (excess > 1.05 * narrow) {
+              EXPECT_FALSE(st_key.seed_routed) << K << " " << T << " " << frac;
+              EXPECT_EQ(st_key.seed_nodes, al_screen_opts().n_collocation);
+              EXPECT_GE(st_key.confirm_solves, 1u);
+              EXPECT_FALSE(st_key.confirm_skipped);
+              unrouted += st_key.seed_routed ? 0u : 1u;
+              // Near the intrinsic the forward-chord Newton distance is not a sharp yardstick
+              // (L1c): the confirmed root's accurate-map price residual against Search's own.
+              const auto pr = andersen_lake(S, K, T, r_key.iv, rq, rq, sd);
+              const auto ps = andersen_lake(S, K, T, s.iv, rq, rq, sd);
+              ASSERT_TRUE(pr && ps);
+              EXPECT_LE(std::abs(*pr - price),
+                        2.0 * std::abs(*ps - price) + 1.0e-9 * std::max(price, 1.0))
+                  << K << " " << T << " " << frac;
+              const double nd = accurate_newton_distance(price, S, c, r_key.iv);
+              if (std::isfinite(nd)) max_unrouted_newton = std::max(max_unrouted_newton, nd);
+            } else if (excess < 0.95 * narrow) {
+              EXPECT_TRUE(st_key.seed_routed) << K << " " << T << " " << frac;
+              still_routed += st_key.seed_routed ? 1u : 0u;
+            }
+          }
+        }
+      }
+    }
+  }
+  // The general Premium grid under the key: the accurate root, Search's acceptances.
+  std::size_t accepted = 0, grid_routed = 0;
+  double max_newton = 0.0;
+  for (const PremiumCase &c : premium_grid()) {
+    const auto p = andersen_lake(S, c.K, c.T, c.sig_true, c.r, c.q, c.sd);
+    if (!p || !(*p > 0.0)) continue;
+    IvPremiumStats st;
+    const IvResult r = screen_seeded_iv(*p, S, c, st, &keyed);
+    const IvResult s = american_implied_vol(*p, S, c.K, c.T, c.r, c.q, c.sd, IvOpts{});
+    ASSERT_EQ(r.status == IvStatus::Ok, s.status == IvStatus::Ok) << c.K << " " << c.T;
+    if (st.fallback != IvPremiumFallback::None) continue;
+    ++accepted;
+    grid_routed += st.seed_routed ? 1u : 0u;
+    const double nd = accurate_newton_distance(*p, S, c, r.iv);
+    if (std::isfinite(nd)) {
+      max_newton = std::max(max_newton, nd);
+      EXPECT_LE(nd, 4.0 * tol) << c.K << " " << c.T << " " << c.sig_true;
+    }
+  }
+  std::printf("[seed gate kappa %.2g] r = q candidates %zu: routed without the key %zu; with it "
+              "iterated on Screen and confirmed %zu (max accurate-map Newton %.3g), still routed "
+              "%zu; Premium grid accepted %zu (routed %zu), max accurate-map Newton %.3g\n",
+              kKappa, candidates, routed_off, unrouted, max_unrouted_newton, still_routed,
+              accepted, grid_routed, max_newton);
+  EXPECT_GT(candidates, 0u);
+  EXPECT_GT(routed_off, 0u);
+  EXPECT_GT(unrouted, 0u); // the key moves prices out of the routing band (fails on revert)
+  EXPECT_GT(accepted, 100u);
+  EXPECT_LE(max_newton, 4.0 * tol);
+}
+
+// Kernel-free family iterates (SPY1s Phase 2, IvPremiumGate::family): the Screen-seeded
+// Premium iterates price the D-model A(sigma; own q) + P_family(sigma; q_family) -
+// A(sigma; q_family) on an AlSigmaFamily built at a REPRESENTATIVE yield (the strike's own
+// q differs by up to 5e-4), every accepted root is confirmed on the accurate map at the
+// strike's own q (Newton distance <= 4 tol); a family that refuses (a box the iterates
+// leave) sends the attempt to the Screen iterates with the same accuracy; under the band
+// policy the family is not used (its bound is not the Screen tier's).
+TEST(AmericanIvPremium, FamilyIteratesAreConfirmedAtTheStrikesOwnYield) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaFamily;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double q_family = 0.01;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, family_priced = 0, narrow_refused = 0, narrow_accepted = 0;
+  std::size_t band_family = 0;
+  double max_newton = 0.0, max_narrow_newton = 0.0;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, q_family);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaFamily wide(g, sd, S);
+      ASSERT_TRUE(wide.prepare(0.05, 1.2, 12));
+      AlSigmaFamily narrow(g, sd, S);
+      ASSERT_TRUE(narrow.prepare(0.9, 1.0, 12)); // no root of the grid below lies inside
+      for (const double dq : {0.0, 2.0e-4, 5.0e-4}) {
+        const double q = q_family + dq;
+        for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+          for (const double sig : {0.15, 0.3, 0.6}) {
+            const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+            if (!p || !(*p > 0.0)) continue;
+            const PremiumCase c{K, T, r, q, sd, sig};
+            IvPremiumGate gate;
+            gate.family = &wide;
+            gate.family_q = q_family;
+            IvPremiumStats st;
+            const IvResult res = screen_seeded_iv(*p, S, c, st, &gate);
+            ASSERT_EQ(res.status, IvStatus::Ok) << K << " " << T << " " << sig;
+            if (st.fallback == IvPremiumFallback::None && !st.seed_routed) {
+              ++accepted;
+              family_priced += st.family_prices > 0u ? 1u : 0u;
+              EXPECT_GE(st.confirm_solves, 1u);
+              const double nd = accurate_newton_distance(*p, S, c, res.iv);
+              if (std::isfinite(nd)) {
+                max_newton = std::max(max_newton, nd);
+                EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << dq;
+              }
+            }
+            IvPremiumGate refusing = gate;
+            refusing.family = &narrow;
+            IvPremiumStats ns;
+            const IvResult nr = screen_seeded_iv(*p, S, c, ns, &refusing);
+            ASSERT_EQ(nr.status, IvStatus::Ok);
+            narrow_refused += ns.family_refused ? 1u : 0u;
+            if (ns.fallback == IvPremiumFallback::None && !ns.seed_routed) {
+              ++narrow_accepted;
+              const double nd = accurate_newton_distance(*p, S, c, nr.iv);
+              if (std::isfinite(nd)) {
+                max_narrow_newton = std::max(max_narrow_newton, nd);
+                EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << dq;
+              }
+            }
+            IvPremiumGate band = gate;
+            band.policy = IvConfirmPolicy::Band;
+            band.half_spread_usd = 0.05;
+            IvPremiumStats bs;
+            static_cast<void>(screen_seeded_iv(*p, S, c, bs, &band));
+            band_family += bs.family_prices;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[family iterates] accepted %zu, of which family-priced %zu, max accurate-map "
+              "Newton %.3g; refusing family: refused %zu, accepted %zu, max Newton %.3g; band "
+              "policy family prices %zu\n",
+              accepted, family_priced, max_newton, narrow_refused, narrow_accepted,
+              max_narrow_newton, band_family);
+  EXPECT_GT(accepted, 50u);
+  EXPECT_GT(family_priced, accepted / 2); // the family carries the iterates (fails on revert)
+  EXPECT_LE(max_newton, 4.0 * tol);
+  EXPECT_GT(narrow_refused, 0u);
+  EXPECT_GT(narrow_accepted, 0u);
+  EXPECT_EQ(band_family, 0u);
+}
+
+// (sigma, q) family iterates (SPY1s Phase 2 step 5, IvPremiumGate::qfamily; L2h-b
+// AlSigmaQFamily): the iterates price each strike at its OWN q on the family (strike yields
+// spread over the q box), every accepted root under Always is confirmed at the accurate root
+// (Newton distance <= 4 tol); under Band (the B-family arm) the gate runs on the family's
+// bound and chord (no Andersen-Lake gate solve): it skips confirms and every skipped root
+// sits within the gate's own vol bound of the accurate root; a yield outside the q box
+// refuses and the attempt iterates on Screen; Never never uses the family.
+TEST(AmericanIvPremium, SigmaQFamilyIteratesPriceTheStrikesOwnYield) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaQFamily;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double q_lo = 0.010;
+  const double q_hi = 0.012;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, family_priced = 0, band_skipped = 0, band_gate_solves = 0;
+  std::size_t outside_refused = 0, never_family = 0;
+  double max_newton = 0.0, max_skipped_excess = 0.0;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.011);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaQFamily fam(g, sd, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, q_lo, q_hi, 4));
+      for (const double q : {0.0100, 0.0107, 0.0120, 0.0130}) {
+        for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+          for (const double sig : {0.15, 0.3, 0.6}) {
+            const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+            if (!p || !(*p > 0.0)) continue;
+            const PremiumCase c{K, T, r, q, sd, sig};
+            IvPremiumGate gate;
+            gate.qfamily = &fam;
+            gate.qfamily_bound = 1.0e-9;
+            IvPremiumStats st;
+            const IvResult res = screen_seeded_iv(*p, S, c, st, &gate);
+            ASSERT_EQ(res.status, IvStatus::Ok) << K << " " << T << " " << sig;
+            const bool in_box = q <= q_hi;
+            if (!in_box) outside_refused += st.family_refused ? 1u : 0u;
+            if (st.fallback == IvPremiumFallback::None && !st.seed_routed) {
+              ++accepted;
+              family_priced += in_box && st.family_prices > 0u ? 1u : 0u;
+              const double nd = accurate_newton_distance(*p, S, c, res.iv);
+              if (std::isfinite(nd)) {
+                max_newton = std::max(max_newton, nd);
+                EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << q;
+              }
+            }
+            IvPremiumGate band = gate;
+            band.policy = IvConfirmPolicy::Band;
+            band.half_spread_usd = 0.05;
+            IvPremiumStats bs;
+            const IvResult br = screen_seeded_iv(*p, S, c, bs, &band);
+            ASSERT_EQ(br.status, IvStatus::Ok);
+            if (in_box && bs.confirm_skipped) {
+              ++band_skipped;
+              band_gate_solves += bs.gate_solves;
+              const double nd = accurate_newton_distance(*p, S, c, br.iv);
+              if (std::isfinite(nd) && std::isfinite(bs.gate_bound_vol)) {
+                // The gate's statement bounds the skipped root's distance (plus the
+                // root's own Newton tolerance on the family map).
+                max_skipped_excess = std::max(max_skipped_excess, nd - bs.gate_bound_vol - tol);
+              }
+            }
+            IvPremiumGate never = gate;
+            never.policy = IvConfirmPolicy::Never;
+            IvPremiumStats ns;
+            static_cast<void>(screen_seeded_iv(*p, S, c, ns, &never));
+            never_family += ns.family_prices;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[sigma-q iterates] accepted %zu, of which family-priced %zu, max accurate-map "
+              "Newton %.3g; band: skipped %zu with %zu AL gate solves, max skipped distance over "
+              "its gate bound %.3g; outside the q box refused %zu; never-policy family prices %zu\n",
+              accepted, family_priced, max_newton, band_skipped, band_gate_solves,
+              max_skipped_excess, outside_refused, never_family);
+  EXPECT_GT(accepted, 50u);
+  EXPECT_GT(family_priced, accepted / 2); // fails with the family ignored by the iterates
+  EXPECT_LE(max_newton, 4.0 * tol);
+  EXPECT_GT(band_skipped, 20u);
+  EXPECT_EQ(band_gate_solves, 0u); // the B-family chord is the family's own
+  EXPECT_LE(max_skipped_excess, 0.0);
+  EXPECT_GT(outside_refused, 0u);
+  EXPECT_EQ(never_family, 0u);
+}
+
+// Family-native iterates (SPY1s Phase 3 lever 1, IvPremiumGate::qfamily_native): the
+// (sigma, q) family's own map is iterated without the seed leg. On the grid above every
+// accepted root is confirmed at the accurate root (Newton distance <= 4 tol) with no
+// Andersen-Lake iterate solve, a band's bid / ask inversions reuse the mid's family-native
+// memory, and a deep in-the-money put whose seed leg refuses (SPY 0.21 y K 823, the
+// NoEuropeanSeed fallback class of the Phase 2 profile) is accepted on the family instead of
+// falling back to Search.
+TEST(AmericanIvPremium, FamilyNativeIteratesNeedNoSeedLeg) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaQFamily;
+  using atx::vol::IvPremiumMemory;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double tol = IvOpts{}.tol;
+  std::size_t accepted = 0, without_al_iterates = 0, native_memory = 0;
+  double max_newton = 0.0;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.011);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaQFamily fam(g, sd, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, 0.010, 0.012, 4));
+      for (const double q : {0.0100, 0.0107, 0.0120}) {
+        for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+          for (const double sig : {0.15, 0.3, 0.6}) {
+            const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+            if (!p || !(*p > 0.0)) continue;
+            const PremiumCase c{K, T, r, q, sd, sig};
+            IvPremiumGate gate;
+            gate.qfamily = &fam;
+            gate.qfamily_bound = 1.0e-9;
+            gate.qfamily_native = true;
+            IvOpts o;
+            o.strategy = IvStrategy::Premium;
+            o.seed_profile = AlProfile::Screen;
+            // A band: the mid from scratch, then a bid below it from a copy of its memory.
+            IvPremiumMemory mid_memory;
+            IvPremiumStats st;
+            const IvResult res =
+                american_implied_vol_premium(*p, S, K, T, r, q, sd, o, &mid_memory, st, &gate);
+            ASSERT_EQ(res.status, IvStatus::Ok) << K << " " << T << " " << sig;
+            if (st.fallback != IvPremiumFallback::None || st.seed_routed) continue;
+            ++accepted;
+            without_al_iterates += st.premium_solves == st.confirm_solves ? 1u : 0u;
+            const double nd = accurate_newton_distance(*p, S, c, res.iv);
+            if (std::isfinite(nd)) max_newton = std::max(max_newton, nd);
+            EXPECT_LE(nd, 4.0 * tol) << K << " " << T << " " << sig << " " << q;
+            IvPremiumMemory bid_memory = mid_memory;
+            native_memory += bid_memory.native ? 1u : 0u;
+            const double bid = 0.97 * *p;
+            IvPremiumStats bs;
+            const IvResult br =
+                american_implied_vol_premium(bid, S, K, T, r, q, sd, o, &bid_memory, bs, &gate);
+            if (br.status != IvStatus::Ok || bs.fallback != IvPremiumFallback::None) continue;
+            const double bnd = accurate_newton_distance(bid, S, c, br.iv);
+            if (std::isfinite(bnd)) max_newton = std::max(max_newton, bnd);
+            EXPECT_LE(bnd, 4.0 * tol) << "bid " << K << " " << T << " " << sig << " " << q;
+          }
+        }
+      }
+    }
+  }
+  // The deep in-the-money put of the Phase 2 fallback dump (FB reason=3).
+  const double S2 = 772.99, K2 = 823.0, T2 = 0.213892, r2 = 0.045908, q2 = 0.013688;
+  const AlExpiryGeometry g2 = prepare_al_geometry(T2, r2, q2);
+  AlSigmaQFamily put(g2, Side::Put, S2);
+  ASSERT_TRUE(put.prepare(0.05, 1.2, 16, 0.0136, 0.0138, 4));
+  const auto p2 = andersen_lake(S2, K2, T2, 0.1104, r2, q2, Side::Put);
+  ASSERT_TRUE(p2);
+  IvOpts o2;
+  o2.strategy = IvStrategy::Premium;
+  o2.seed_profile = AlProfile::Screen;
+  IvPremiumGate native_gate;
+  native_gate.qfamily = &put;
+  native_gate.qfamily_bound = 1.0e-9;
+  native_gate.qfamily_native = true;
+  native_gate.seed_gate_kappa = 4.3e-5; // the SPY arms' routing gate: not routed
+  IvPremiumGate leg_gate = native_gate;
+  leg_gate.qfamily_native = false;
+  IvPremiumStats ns, ls;
+  const IvResult nr =
+      american_implied_vol_premium(*p2, S2, K2, T2, r2, q2, Side::Put, o2, nullptr, ns, &native_gate);
+  const IvResult lr =
+      american_implied_vol_premium(*p2, S2, K2, T2, r2, q2, Side::Put, o2, nullptr, ls, &leg_gate);
+  std::printf("[family-native] accepted %zu (no AL iterate %zu), bid memories native %zu, max "
+              "accurate-map Newton %.3g; deep ITM put: native fallback %u iv %.10g, leg fallback "
+              "%u iv %.10g\n",
+              accepted, without_al_iterates, native_memory, max_newton,
+              static_cast<unsigned>(ns.fallback), nr.iv, static_cast<unsigned>(ls.fallback), lr.iv);
+  EXPECT_GT(accepted, 50u);
+  EXPECT_EQ(without_al_iterates, accepted); // no Andersen-Lake iterate on the family path
+  EXPECT_EQ(native_memory, accepted);       // fails with the native path off (leg memory)
+  EXPECT_LE(max_newton, 4.0 * tol);
+  ASSERT_EQ(nr.status, IvStatus::Ok);
+  EXPECT_EQ(ns.fallback, IvPremiumFallback::None); // fails with the native path off
+  const PremiumCase deep{K2, T2, r2, q2, Side::Put, 0.1104};
+  EXPECT_LE(accurate_newton_distance(*p2, S2, deep, nr.iv), 4.0 * tol);
+}
+
 TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {
   const double S = 100.0;
   const double tol = IvOpts{}.tol;
