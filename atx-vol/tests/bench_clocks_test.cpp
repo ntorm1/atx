@@ -219,6 +219,27 @@ TEST(BenchStages, TableReconcilesWithTheColdClockAndMarksTheFamilyNotBuilt) {
   EXPECT_EQ(off["stages"].size(), bench::kStageCount);
 }
 
+// Lane H1: the serve_build stage (serving records built after the fit clock closes) is
+// not_built, never zero, unless records were built; built, it is one more exclusive stage
+// of the same table, so the fit clock is the stage sum less it.
+TEST(BenchStages, TheServeBuildStageIsNotBuiltUnlessRecordsWereBuilt) {
+  bench::PhaseClock clock;
+  clock.arm();
+  const BenchClock::time_point t0{};
+  clock.start(t0);
+  clock.lap(Stage::Inverses, t0 + milliseconds(10));
+  clock.lap(Stage::ServeBuild, t0 + milliseconds(14));
+  const bench::Json off = bench::stages_json(clock, 0.014, true);
+  EXPECT_TRUE(off["stages"]["serve_build"]["seconds"].is_null());
+  EXPECT_EQ(off["stages"]["serve_build"]["status"], "not_built");
+  const bench::Json on = bench::stages_json(clock, 0.014, true, true);
+  EXPECT_EQ(on["stages"]["serve_build"]["status"], "timed");
+  EXPECT_NEAR(on["stages"]["serve_build"]["seconds"].get<double>(), 0.004, kTight);
+  EXPECT_NEAR(on["fit_clock_s"].get<double>(), 0.010, kTight);
+  EXPECT_NEAR(on["sum_s"].get<double>(), 0.014, kTight);
+  EXPECT_EQ(on["stages"].size(), bench::kStageCount);
+}
+
 // The reconciliation is a test, not an identity: a fit lap whose chains measured only
 // part of it (a deliberately untimed region inside the lap, e.g. an uninstrumented
 // family build or surface scheduling) leaves the cold clock - stage sum nonzero, and a

@@ -1,10 +1,12 @@
-# Immutable fitted serving record (H0-A, r6 phase A)
+# Immutable fitted serving record (H0-A phase A, H1 phase B)
 
-Status: new public header `include/atx/vol/api/fitting/slice_serve_record.hpp`,
-implementation `src/fitting/slice_serve_record.cpp`. Phase A builds a record from a
-**completed** `QuoteSliceFit` through a free function. There is no fitter hook, no session or
-tick wiring, and no default path constructs a record. Those are phase B / H1. Nothing a
-caller already uses changes a number.
+Status: public header `include/atx/vol/api/fitting/slice_serve_record.hpp`, implementation
+`src/fitting/slice_serve_record.cpp`. Phase A (H0-A) builds a record from a **completed**
+`QuoteSliceFit` through a free function. Phase B (H1, `docs/live-query.md`) adds the fitter's
+hand-off (`QuoteSliceFit::serve_handoff`), the families certified through lane K3's
+`deam_family_certify`, typed error statements (`ServeBoundClass`, `ServeAnswer::sampled`), the
+live book (`serve_book.hpp`) and the `evaluate_quote_slice` fast path. No default path
+constructs a record; nothing a caller already uses changes a number.
 
 ## What a record is
 
@@ -14,7 +16,7 @@ caller already uses changes a number.
 | Part | Content | Ownership |
 |---|---|---|
 | `nodes()` | every node of the fit's `AmericanPriceSlice`: strike, the call and put price copied **byte for byte**, C0's typed answer (`query_quote_slice`: status, price-only reason, IV interval, convention), the served σ, the contract's effective yield q (the fitter's per-strike funding-PV carry), the acceptance (K3 vocabulary), the family's price delta, the ladder certificate, the converged exercise edge | copied |
-| families | the expiry's (σ, q) `AlSigmaQFamily` per side, rebuilt with the fitter's own recipe (`build_sigma_q`: box, n_q, 16 log-σ nodes, probe bound) | `shared_ptr<const DeAmSigmaFamilies>`; the holder declares its geometries before its families, so they are destroyed after them |
+| families | the expiry's (σ, q) `AlSigmaQFamily` per side: the fitter's own (re-prepared from `serve_handoff` and verified bit for bit, `Handed`), else built with the fitter's recipe (`build_sigma_q`: box, n_q, 16 log-σ nodes; `Built`); either way certified through lane K3's `deam_family_certify` (the validated envelope, audited by 9 probes, and the grid bound). The pre-K3 file-local `deam_family_probe_worst` copy is deleted (H1) | `shared_ptr<const DeAmSigmaFamilies>`; the holder declares its geometries before its families, so they are destroyed after them |
 | ladders | per served node side, a Chebyshev plane in (ln S, σ) sampled from the family at the node's own strike and yield (tier 0) | owned |
 | curve | a clone of the fitted `IVolCurve` | `shared_ptr<const IVolCurve>` |
 | slice | a copy of the `AmericanPriceSlice` (for between-node slice prices) | owned |
@@ -29,10 +31,11 @@ caller already uses changes a number.
 - Readers share the record through `shared_ptr<const>`. Reclamation is deferred to the last
   reader that drops its copy, and a family can never outlive the geometry it observes
   because one holder owns both.
-- Phase B's hook is `detail::build_serve_record_with(fit, policy, families)` in
-  `src/fitting/slice_serve_record_detail.hpp`. It takes the cache's already-built holder,
-  so tier 1 costs no kernel work. Without it the families are built on demand and counted
-  in `clocks().lazy_family_builds`.
+- `detail::build_serve_record_with(fit, policy, families)` takes a caller's holder
+  (`Supplied`; refused when its T, r or anchor differ from the fit's bit for bit). Phase B's
+  fitter hand-off is the recipe in `fit.serve_handoff` (`docs/live-query.md` section 1):
+  the cache's holder is reached through a raw pointer, so it cannot be shared. Without a
+  hand-off the families are built on demand and counted in `clocks().lazy_family_builds`.
 - A record is immutable after build. Any number of threads may call `serve()` or
   `implied_vol()` (`ConcurrentServesAreBitIdenticalToTheSerialLoop`). Ladder and Family
   reads allocate nothing (`SliceServeRecordAlloc.LadderAndFamilyReadsAllocateNothing`).
@@ -66,7 +69,9 @@ or the fitted curve's σ(ln K/F_fit) between nodes. A spot move does not move th
 | Condition | `status` | `route` |
 |---|---|---|
 | bad request (strike / spot not positive and finite, side, tier order) | `InvalidArgument` | `None` |
-| older than `policy.max_age_ns` | `Stale` | `Rebuild` |
+| `policy.max_age_ns > 0` and no clock (`now_ns ≤ 0`; review-H0A m2, serve and IV) | `Stale` | `ColdPath` |
+| older than `policy.max_age_ns` (serve and IV; review-H0A m1) | `Stale` | `Rebuild` |
+| (IV) `tier = Cold`: a route, no solve (review-H0A m5) | `TierUnavailable` | `ColdPath` |
 | dated-cash fit | `TierUnavailable` | `ColdPath` |
 | strike outside [first node, last node] | `OutOfDomain` | `Refit` |
 | price-only node (C0) | `PriceOnly` (the certified price is served at the fit spot) | `None` at the fit spot, else `Refit` |
@@ -77,19 +82,39 @@ or the fitted curve's σ(ln K/F_fit) between nodes. A spot move does not move th
 | (IV) a family root no envelope bounds, `tier_max < Certified` | `Unconfirmed` (σ set) | `ColdPath` |
 | (IV) no accepted root | `NoConvergence` | `ColdPath` |
 
-### certificate_usd
+### Error statements (`certificate_usd`, `certificate_class`; H1)
 
-Each tier puts its own error bar on `price`:
+Every statement is against the cold accurate kernel and says what backs it
+(`ServeBoundClass`). **Provenance (review-W2ci m3):** since H1 the record's family and ladder
+statements rest on lane K3's validated per-point bound (`family_price_bounded`), never on the
+pre-K3 sampled `deam_family_probe_worst` estimate (deleted) and never on the domain-wide
+scalar `q_bound` (reported as `ServeSideSupport::domain_bound_usd` only).
 
-- a node price at the fit spot: 0;
-- a ladder: its measured distance to the family off its sample nodes, plus the larger of the
-  family's probed bound × max(P, 1) and the family's measured error at the node, plus an
-  8-ulp floor. A ladder serves only when this is ≤ max(5e-4 USD, 5e-7 · F);
-- the family: its probed bound × max(P, 1), and at a node at least its measured error
-  there. Between nodes outside the probed band |ln K/S| ≤ 0.25 it claims nothing (NaN).
-  This was measured: on the SPY surface the family is 1.6e-4 USD off at K = 230 call,
-  ln K/S = −1.21;
-- a Fast confirm: `al_profile_price_bound(Fast)`.
+- a node price at the fit spot: 0, `Exact`;
+- the piecewise-linear slice between nodes at the fit spot: NaN, `None` - the chord claims
+  nothing (review-H0A m3); the Greek map's own statement is `map_certificate_usd`;
+- the family: K3's per-point bound at the contract, `RefinementValidated`, where the side's
+  envelope covers the point; NaN / `None` elsewhere or with `family_bound = false`;
+- a ladder, `RefinementValidated` when its statement verifies: the Chebyshev plane's tail
+  bound (the trailing coefficients decay geometrically on both axes, pairwise; the bound is
+  2·(tail_ln S + tail_σ) plus rounding) with no check point above it, plus K3's largest
+  per-point bound over the ladder's sample and check points, plus a 64-ulp floor;
+- a ladder, `Sampled` otherwise (served only under `ServeRecordPolicy::sampled_ladders`,
+  default on; `ServeAnswer::sampled = true`, never called certified): the measured check
+  maximum plus max(10 × K3's audit `max_rel` × max(P, 1), the family's error at the node),
+  plus the floor. Either kind serves only when ≤ max(5e-4 USD, 5e-7 · F);
+- a Fast confirm: `al_profile_price_bound(Fast)`, `KernelTested`.
+
+The ladder's statement is therefore relative to the cold kernel, not to the family
+(review-H0A m15: the plane's own Clenshaw recurrence stays a file-local copy of
+`expiry_record.cpp`'s `eval_rows<2>`, fused into the record's row layout; both are pinned by
+their own derivative tests). Put ladders: K3's put envelope leaves its quadrature nodes
+unverified on the fixture (per-point bounds 3e-3 to 0.5 USD), so the fixture's put ladders
+are `Sampled` until lane K5 refines it. SPY's put envelopes do cover their samples:
+- under the default 12 × 6 planes, 145 of 476 put ladders validate (calls 412 of 624);
+- under `serve_record_policy_tick()`, 529 of 532 put ladders validate (calls 658 of 658).
+
+See `docs/live-query.md` 6.5.
 
 ## The near-exercise-edge band (A0 fix round, review-A0 MJ1)
 
@@ -129,7 +154,11 @@ terms that amplifies any map's Γ error. A0 measured θ up to 138 % off, with th
    `al_non_monotone_gate(K, T, al_opts)`, the result is `NonMonotoneBand` → `ColdPath`
    (accurate inversion).
 2. **Ladder root.** Lockstep contraction on the ladder's own (ln S, σ) plane at the
-   request's spot, accepted on the ladder certificate (`LadderCertificate`).
+   request's spot, accepted (`LadderCertificate`) only on a `RefinementValidated` ladder
+   whose statement / slope plus the Newton distance is ≤ `iv_tolerance` (review-H0A m6); a
+   `Sampled` ladder's root is never Ok. Under the default policy (12 × 6 nodes over
+   σ·[0.75, 1.25]) statement / vega is 1e-7 to 1e-5, so ladder roots are `Unconfirmed`;
+   `serve_record_policy_tick()` (16 × 8 over σ·[0.9, 1.1], ln S within ±2 %) meets it.
 3. **Family root.** Bracketed Newton on K1's fused price and vega inside the σ box,
    24 evaluations, tolerance 1e-13·max(1, target).
 4. **K3 enclosure (seam).** If the side's validated envelope brackets the target over a
@@ -139,19 +168,21 @@ terms that amplifies any map's Γ error. A0 measured θ up to 138 % off, with th
    accepted on its Newton distance ≤ `iv_tolerance` (`Confirmed / NewtonContract`), and
    served Newton-corrected.
 
-## Seams (A0 / K3 not in the base)
+## Seams (A0 / K3, both in the root and on)
 
-`ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` (default 0, in
-`slice_serve_record_detail.hpp`) compile the A0 bundle and the K3 envelope paths. Both values
-are folded into `policy_sha256`. With either seam off, the record's output is everything
-documented above minus that lane's fields. Both seams were verified by overlaying the lanes'
-tips on this branch (K3 `91d1f669`; A0 fix round `ed2d2e05`). Results are in the lane report.
-
-Integration W2c-i (both lanes in the root) sets both seams to 1. The default policy's
-`policy_sha256` moves from `87318ae7…cefe` (both 0) to `57902383…f3fc` (both 1); the
-serve-record suite is 28/28 with both on (the 26 plus the A0 and K3 seam tests).
+`ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` (default 1 since integration W2c-i,
+in `slice_serve_record_detail.hpp`) compile the A0 bundle and the K3 envelope paths. Both
+values are folded into `policy_sha256`; `ServeSupport::a0_bundle` / `k3_envelope` expose them
+(review-H0A m14). With either seam off the output is everything documented above minus that
+lane's fields. W2c-i moved the default policy's `policy_sha256` from `87318ae7…cefe` (both 0)
+to `57902383…f3fc` (both 1); H1's policy fields (`sampled_ladders`, the statement contract
+version) move it again. H1 ran the serve-record suite with both seams on (review-H0A m11).
 
 ## Measurement (lane H0-A, 2026-10-23, `vol-rel-avx2`, one run, unqualified)
+
+H0-A's numbers below are phase A's (the pre-K3 sampled bound let every ladder IV root be Ok,
+and `bytes()` missed the holder's third geometry, review-H0A m4). H1's re-measurement on the
+K3 statements, the corrected bytes and the live book are in `docs/live-query.md` section 6.
 
 Bench `atx-vol-serve-record-bench` (sha256 `0e1b9c45…0975`, built at `3db98e3b`). The main
 thread is pinned to a P-core. Timing is TSC per call: 0.40064 ns/tick, timer overhead
@@ -251,7 +282,7 @@ tensor: the ladder count is bounded by 2 × nodes.
 | `price_map_delta` declared (Family, fit spot) | max 1.57e-4 USD (K = 230 call, ln K/S = −1.21, deep ITM); p50 6.8e-14, p99 1.4e-5 | max 6.2e-9 USD | `FamilyTierServesTheFamilyMapToTheBitAtAMovedSpot` (0 off the fit spot) |
 | `price_map_delta` declared (Ladder, fit spot) | max 1.18e-4 USD | max 3.5e-5 USD | `LadderServesPriceAndFourGreeksFromOneCertifiedMap` |
 | ladder certificate | max 4.88e-4 USD (gate 5e-4) | max 1.46e-4 USD | |
-| Family Greeks == A0's bundle, bit for bit | A0 is not in the base; verified on the overlay of A0 `ed2d2e05` | | `FamilyTierGreeksAreA0sBundleToTheBit` (A0 seam) |
+| Family Greeks == A0's bundle, bit for bit | A0 was not in H0-A's base (verified on the overlay of A0 `ed2d2e05`); on since W2c-i | | `FamilyTierGreeksAreA0sBundleToTheBit` (A0 seam) |
 | tier-0 rows in the near-edge band | 0 (min `edge_sd` 0.41) | 0 (min 1.78) | `LadderWithholdsThetaAndGammaInsideTheNearExerciseEdgeBand` |
 
 ## Support matrix row

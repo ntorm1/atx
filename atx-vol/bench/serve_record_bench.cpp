@@ -24,8 +24,33 @@
 //   iv_record        implied_vol(), Ladder only
 //   iv_family        implied_vol(), Family only
 //   chain300_tier<t> one pass over the 300 node sides nearest the money (largest expiry)
-//   build            one rebuild of every record (construction clocks, bytes, memory)
+//   build            one rebuild of every record (construction clocks, bytes, memory,
+//                    ladders per side: kept / validated / sampled / ineligible)
 //   consistency      untimed agreement of the records with their fits
+// Datasets <name>_tick (lane H1): the same fits under serve_record_policy_tick() (16 x 8
+// plane nodes, +/- 10 % sigma, +/- 2 % ln S: ladder statements that accept IV roots).
+//
+// ── Rows book/<dataset>/<row> (lane H1: the live book, serve_book.hpp) ────────────────
+//   steady           every node side at the moved spot and every node midpoint (both
+//                    sides) through one ServeBookReader, tiers Ladder..Family (the primary
+//                    tier), family_bound false: per query TSC time classed hit0 (answered
+//                    by the ladder), hit1 (answered by the family), miss (a typed refusal)
+//   publication      steady while a publisher thread republishes the whole book in a loop
+//                    (every query may re-pin): versions published, reader re-pins
+//   burst            4 reader threads over the query set of records that are all Stale
+//                    (built with max_age_ns 1) on a 4-slot rebuild queue with one worker
+//                    whose rebuild is the tiers 1-2 record of the same fit: misses,
+//                    BudgetExhausted, queue age, rebuild completion, time to all-fresh
+//   chain300         serve_chain over the 300-contract chain (mixed: Ladder..Family) from
+//                    one pinned version (review-H0A m12: the full chain, not only the
+//                    ladder sides)
+//   first_usable     serve_build per expiry: the first usable bundle (tiers 1-2) and the
+//                    laddered record's publication latency
+//   accuracy         untimed: served price vs andersen_lake at the served sigma (node
+//                    strikes, moved spot), within the answer's own statement or not
+// Row serve/<dataset>/handoff_stamp (lane H1): the fit-clock cost of the hand-off hook -
+// detail::stamp_serve_handoff on each expiry's (sigma, q) families (built untimed with the
+// record's recipe), TSC per call.
 // Per-contract rows time every call on its own with the TSC (lfence-fenced rdtsc,
 // calibrated against steady_clock once per process; the empty-pair overhead is the
 // `timer_overhead_ns` counter and is NOT subtracted) and report p50 / p99 / p99.9 in ns;
@@ -35,6 +60,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -47,6 +73,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -62,10 +89,14 @@
 
 #include "atx/vol/api/fitting/quote_fit_policy.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
+#include "atx/vol/api/fitting/serve_book.hpp"
 #include "atx/vol/api/fitting/slice_serve_record.hpp"
+#include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/storage/fit_archive.hpp"
 #include "atx/vol/api/storage/fit_archive_records.hpp"
 #include "bench_util.hpp"
+#include "fitting/deam_iv_cache.hpp"             // DeAmSigmaFamilies (handoff_stamp)
+#include "fitting/slice_serve_record_detail.hpp" // stamp_serve_handoff (handoff_stamp)
 
 namespace {
 
@@ -165,6 +196,7 @@ struct Contract {
 
 struct Dataset {
   std::string name;
+  ServeRecordPolicy policy{}; // the records' policy (the _tick datasets: the tick profile)
   std::vector<QuoteSliceFit> fits; // kept for the consistency row and rebuilds
   std::vector<std::shared_ptr<const SliceServeRecord>> records;
   std::vector<Contract> contracts; // every node side of every record
@@ -203,7 +235,7 @@ void build_records(Dataset &d) {
   d.working_set_before_mb = working_set_mb();
   const auto t0 = std::chrono::steady_clock::now();
   for (const QuoteSliceFit &fit : d.fits) {
-    auto built = build_serve_record(fit);
+    auto built = build_serve_record(fit, d.policy);
     if (built) d.records.push_back(std::move(*built));
   }
   d.build_seconds =
@@ -213,26 +245,34 @@ void build_records(Dataset &d) {
   d.ok = !d.records.empty();
 }
 
-const Dataset &spy_surface() {
-  static const Dataset d = [] {
-    Dataset out;
-    out.name = "spy_surface";
-    const std::string path = env_text("ATX_VOL_SERVE_RECORD_ARCHIVE");
-    if (path.empty()) return out;
-    auto archive = FitArchive::open(path, {FitArchiveOpenMode::Read, FitArchiveVerify::Paranoid});
-    if (!archive) return out;
-    for (const FitArchiveSurfaceRecord &surface : archive->surfaces()) {
-      auto slices = decode_surface(*archive, surface);
-      if (!slices) continue;
-      for (QuoteSurfaceSlice &slice : *slices) {
-        if (slice.grade != QuoteSliceGrade::Refused && slice.fit.prices) {
-          out.fits.push_back(std::move(slice.fit));
-        }
+Dataset load_spy_surface(const char *name, const ServeRecordPolicy &policy) {
+  Dataset out;
+  out.name = name;
+  out.policy = policy;
+  const std::string path = env_text("ATX_VOL_SERVE_RECORD_ARCHIVE");
+  if (path.empty()) return out;
+  auto archive = FitArchive::open(path, {FitArchiveOpenMode::Read, FitArchiveVerify::Paranoid});
+  if (!archive) return out;
+  for (const FitArchiveSurfaceRecord &surface : archive->surfaces()) {
+    auto slices = decode_surface(*archive, surface);
+    if (!slices) continue;
+    for (QuoteSurfaceSlice &slice : *slices) {
+      if (slice.grade != QuoteSliceGrade::Refused && slice.fit.prices) {
+        out.fits.push_back(std::move(slice.fit));
       }
     }
-    build_records(out);
-    return out;
-  }();
+  }
+  build_records(out);
+  return out;
+}
+
+const Dataset &spy_surface() {
+  static const Dataset d = load_spy_surface("spy_surface", ServeRecordPolicy{});
+  return d;
+}
+
+const Dataset &spy_surface_tick() {
+  static const Dataset d = load_spy_surface("spy_surface_tick", serve_record_policy_tick());
   return d;
 }
 
@@ -244,63 +284,71 @@ const Dataset &spy_surface() {
   return out;
 }
 
-const Dataset &spy23() {
-  static const Dataset d = [] {
-    Dataset out;
-    out.name = "spy23";
-    const std::string path = env_text("ATX_VOL_SERVE_RECORD_SPY23");
-    if (path.empty()) return out;
-    std::ifstream in(path);
-    std::string line;
-    std::getline(in, line); // header S,K,T,r,q,is_call,bid,ask
-    std::vector<QuoteSliceQuote> quotes;
-    std::vector<double> yields;
-    QuoteSliceMarket market{};
-    while (std::getline(in, line)) {
-      const std::vector<double> v = csv_numbers(line);
-      if (v.size() < 8) continue;
-      market = QuoteSliceMarket{v[0], v[2], v[2], v[3], 0.0, 0.0};
-      quotes.push_back({v[1], v[5] != 0.0 ? Side::Call : Side::Put, v[6], v[7], v[4]});
-      yields.push_back(v[4]);
-    }
-    if (quotes.empty()) return out;
-    std::sort(yields.begin(), yields.end());
-    market.continuous_yield = yields[yields.size() / 2];
-    // The graded admission of one expiry (pass A, then the channel refits with their
-    // repair), surface settings of graded-v1; the first library profile (dense, ordinary,
-    // sparse), without then with the opt-in channel repair, that serves the expiry.
-    QuoteSurfaceConfig surface;
-    surface.calendar_repair_half_spreads = 0.5;
-    const std::array<QuoteSurfaceExpiry, 1> expiries{QuoteSurfaceExpiry{market, quotes, {}, {}}};
-    out.error = "spy23: no profile serves the expiry";
-    for (const QuoteSliceRepairMode repair : {QuoteSliceRepairMode::Off,
-                                              QuoteSliceRepairMode::Channel}) {
-      for (const QuoteFitProfile &profile : default_quote_fit_profiles()) {
-        QuoteSliceConfig config = profile.config;
-        config.channel.repair_half_spreads = 0.5;
-        config.dividend_model = QuoteSliceDividendModel::AggregateFundingPresentValue;
-        config.repair.mode = repair;
-        auto fitted = fit_quote_surface(expiries, config, surface);
-        if (!fitted) continue;
-        QuoteSurfaceSlice &slice = fitted->front();
-        if (slice.grade == QuoteSliceGrade::Refused || !slice.fit.prices) {
-          out.error += "; " + profile.name + (repair == QuoteSliceRepairMode::Channel
-                                                  ? "+channel_repair: "
-                                                  : ": ") +
-                       slice.refusal;
-          continue;
-        }
-        out.fit_label = profile.name + (repair == QuoteSliceRepairMode::Channel
-                                            ? "+channel_repair"
-                                            : "") +
-                        " grade " + to_string(slice.grade);
-        out.fits.push_back(std::move(slice.fit));
-        build_records(out);
-        return out;
+Dataset load_spy23(const char *name, const ServeRecordPolicy &policy) {
+  Dataset out;
+  out.name = name;
+  out.policy = policy;
+  const std::string path = env_text("ATX_VOL_SERVE_RECORD_SPY23");
+  if (path.empty()) return out;
+  std::ifstream in(path);
+  std::string line;
+  std::getline(in, line); // header S,K,T,r,q,is_call,bid,ask
+  std::vector<QuoteSliceQuote> quotes;
+  std::vector<double> yields;
+  QuoteSliceMarket market{};
+  while (std::getline(in, line)) {
+    const std::vector<double> v = csv_numbers(line);
+    if (v.size() < 8) continue;
+    market = QuoteSliceMarket{v[0], v[2], v[2], v[3], 0.0, 0.0};
+    quotes.push_back({v[1], v[5] != 0.0 ? Side::Call : Side::Put, v[6], v[7], v[4]});
+    yields.push_back(v[4]);
+  }
+  if (quotes.empty()) return out;
+  std::sort(yields.begin(), yields.end());
+  market.continuous_yield = yields[yields.size() / 2];
+  // The graded admission of one expiry (pass A, then the channel refits with their
+  // repair), surface settings of graded-v1; the first library profile (dense, ordinary,
+  // sparse), without then with the opt-in channel repair, that serves the expiry.
+  QuoteSurfaceConfig surface;
+  surface.calendar_repair_half_spreads = 0.5;
+  const std::array<QuoteSurfaceExpiry, 1> expiries{QuoteSurfaceExpiry{market, quotes, {}, {}}};
+  out.error = "spy23: no profile serves the expiry";
+  for (const QuoteSliceRepairMode repair : {QuoteSliceRepairMode::Off,
+                                            QuoteSliceRepairMode::Channel}) {
+    for (const QuoteFitProfile &profile : default_quote_fit_profiles()) {
+      QuoteSliceConfig config = profile.config;
+      config.channel.repair_half_spreads = 0.5;
+      config.dividend_model = QuoteSliceDividendModel::AggregateFundingPresentValue;
+      config.repair.mode = repair;
+      auto fitted = fit_quote_surface(expiries, config, surface);
+      if (!fitted) continue;
+      QuoteSurfaceSlice &slice = fitted->front();
+      if (slice.grade == QuoteSliceGrade::Refused || !slice.fit.prices) {
+        out.error += "; " + profile.name + (repair == QuoteSliceRepairMode::Channel
+                                                ? "+channel_repair: "
+                                                : ": ") +
+                     slice.refusal;
+        continue;
       }
+      out.fit_label = profile.name + (repair == QuoteSliceRepairMode::Channel
+                                          ? "+channel_repair"
+                                          : "") +
+                      " grade " + to_string(slice.grade);
+      out.fits.push_back(std::move(slice.fit));
+      build_records(out);
+      return out;
     }
-    return out;
-  }();
+  }
+  return out;
+}
+
+const Dataset &spy23() {
+  static const Dataset d = load_spy23("spy23", ServeRecordPolicy{});
+  return d;
+}
+
+const Dataset &spy23_tick() {
+  static const Dataset d = load_spy23("spy23_tick", serve_record_policy_tick());
   return d;
 }
 
@@ -479,12 +527,14 @@ void run_build(benchmark::State &state, const Dataset &d) {
   ServeBuildClocks sum{};
   ServeRecordBytes bytes{};
   std::size_t nodes = 0, ladders = 0, ineligible = 0, families = 0, max_bytes = 0;
+  // Per side (lane H1: the put-side coverage): kept, validated, sampled, ineligible.
+  std::array<std::array<std::size_t, 4>, 2> side_ladders{};
   double max_total_us = 0.0;
   for (auto _ : state) {
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<std::shared_ptr<const SliceServeRecord>> rebuilt;
     for (const QuoteSliceFit &fit : d.fits) {
-      auto r = build_serve_record(fit);
+      auto r = build_serve_record(fit, d.policy);
       if (r) rebuilt.push_back(std::move(*r));
     }
     state.SetIterationTime(
@@ -492,6 +542,7 @@ void run_build(benchmark::State &state, const Dataset &d) {
     sum = ServeBuildClocks{};
     bytes = ServeRecordBytes{};
     nodes = ladders = ineligible = families = max_bytes = 0;
+    side_ladders = {};
     max_total_us = 0.0;
     for (const auto &r : rebuilt) {
       const ServeBuildClocks &c = r->clocks();
@@ -516,6 +567,13 @@ void run_build(benchmark::State &state, const Dataset &d) {
       ladders += r->support().call.ladders + r->support().put.ladders;
       ineligible += r->support().call.ladders_ineligible + r->support().put.ladders_ineligible;
       families += (r->support().call.family ? 1u : 0u) + (r->support().put.family ? 1u : 0u);
+      for (std::size_t k = 0; k < 2; ++k) {
+        const ServeSideSupport &side = k == 0 ? r->support().call : r->support().put;
+        side_ladders[k][0] += side.ladders;
+        side_ladders[k][1] += side.ladders_validated;
+        side_ladders[k][2] += side.ladders_sampled;
+        side_ladders[k][3] += side.ladders_ineligible;
+      }
     }
   }
   const double n = static_cast<double>(d.records.size());
@@ -523,6 +581,13 @@ void run_build(benchmark::State &state, const Dataset &d) {
   state.counters["nodes"] = static_cast<double>(nodes);
   state.counters["ladders"] = static_cast<double>(ladders);
   state.counters["ladders_ineligible"] = static_cast<double>(ineligible);
+  for (std::size_t k = 0; k < 2; ++k) {
+    const std::string side = k == 0 ? "call" : "put";
+    state.counters[side + "_ladders"] = static_cast<double>(side_ladders[k][0]);
+    state.counters[side + "_ladders_validated"] = static_cast<double>(side_ladders[k][1]);
+    state.counters[side + "_ladders_sampled"] = static_cast<double>(side_ladders[k][2]);
+    state.counters[side + "_ladders_ineligible"] = static_cast<double>(side_ladders[k][3]);
+  }
   state.counters["families"] = static_cast<double>(families);
   state.counters["identify_ms"] = sum.identify_us * 1.0e-3;
   state.counters["family_ms"] = sum.family_us * 1.0e-3;
@@ -655,6 +720,501 @@ void run_consistency(benchmark::State &state, const Dataset &d) {
   state.counters["family_delta_worst_tau"] = worst.tau;
 }
 
+// ── Live book rows (lane H1) ─────────────────────────────────────────────────────────
+
+struct BookQuery {
+  std::uint64_t expiry = 0; // the record's index
+  ServeRequest request{};
+  double q = std::numeric_limits<double>::quiet_NaN(); // node side yield (NaN: midpoint)
+};
+
+// Every node side at the moved spot and every node midpoint (both sides), tiers
+// Ladder..Family, family_bound false (the latency rows): the mixed primary-tier population.
+[[nodiscard]] std::vector<BookQuery> book_queries(const Dataset &d) {
+  std::vector<BookQuery> out;
+  for (std::size_t r = 0; r < d.records.size(); ++r) {
+    const SliceServeRecord &rec = *d.records[r];
+    const auto nodes = rec.nodes();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        const ServedNodeSide &s = side == Side::Call ? nodes[i].call : nodes[i].put;
+        const double mid = i + 1 < nodes.size() ? 0.5 * (nodes[i].strike + nodes[i + 1].strike)
+                                                : std::numeric_limits<double>::quiet_NaN();
+        for (const double K : {nodes[i].strike, mid}) {
+          if (!std::isfinite(K)) continue;
+          BookQuery q;
+          q.expiry = r;
+          q.request.strike = K;
+          q.request.side = side;
+          q.request.spot = rec.spot() * kSpotMove;
+          q.request.tier = ServeTier::Ladder;
+          q.request.tier_max = ServeTier::Family;
+          q.request.greeks = ServeGreekMask::four();
+          q.request.family_bound = false;
+          q.q = K == nodes[i].strike ? s.q : std::numeric_limits<double>::quiet_NaN();
+          out.push_back(q);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+[[nodiscard]] std::vector<ServeBookEntry> book_entries(const Dataset &d) {
+  std::vector<ServeBookEntry> e;
+  for (std::size_t r = 0; r < d.records.size(); ++r) {
+    ServeBookEntry x;
+    x.expiry_id = r;
+    x.record = d.records[r];
+    x.tag = 1;
+    e.push_back(std::move(x));
+  }
+  return e;
+}
+
+enum class Klass : std::uint8_t { Hit0 = 0, Hit1 = 1, Miss = 2 };
+
+[[nodiscard]] Klass klass_of(const ServeAnswer &a) noexcept {
+  const bool answered = a.status == ServeStatus::Ok || a.status == ServeStatus::Exercised;
+  if (!answered) return Klass::Miss;
+  return a.tier == ServeTier::Ladder ? Klass::Hit0 : Klass::Hit1;
+}
+
+struct Tails {
+  std::array<std::vector<std::uint64_t>, 3> by{}; // hit0, hit1, miss (TSC ticks)
+  void reserve(std::size_t n) {
+    for (auto &v : by) v.reserve(n);
+  }
+  void merge(Tails &other) {
+    for (std::size_t k = 0; k < by.size(); ++k) {
+      by[k].insert(by[k].end(), other.by[k].begin(), other.by[k].end());
+    }
+  }
+};
+
+[[nodiscard]] double max_ns(const std::vector<std::uint64_t> &v) {
+  if (v.empty()) return std::numeric_limits<double>::quiet_NaN();
+  return static_cast<double>(*std::max_element(v.begin(), v.end())) * ns_per_tick();
+}
+
+void report_tails(benchmark::State &state, Tails &t) {
+  const std::array<const char *, 3> names = {"hit0", "hit1", "miss"};
+  std::vector<std::uint64_t> all;
+  std::size_t n = 0;
+  for (std::size_t k = 0; k < 3; ++k) {
+    n += t.by[k].size();
+    all.insert(all.end(), t.by[k].begin(), t.by[k].end());
+    const std::string p = names[k];
+    state.counters[p + "_n"] = static_cast<double>(t.by[k].size());
+    if (t.by[k].empty()) continue;
+    state.counters[p + "_max_ns"] = max_ns(t.by[k]);
+    state.counters[p + "_p50_ns"] = quantile(t.by[k], 0.50);
+    state.counters[p + "_p99_ns"] = quantile(t.by[k], 0.99);
+    state.counters[p + "_p999_ns"] = quantile(t.by[k], 0.999);
+  }
+  state.counters["queries"] = static_cast<double>(n);
+  state.counters["miss_rate"] =
+      n > 0 ? static_cast<double>(t.by[2].size()) / static_cast<double>(n) : 0.0;
+  if (!all.empty()) {
+    state.counters["all_max_ns"] = max_ns(all);
+    state.counters["all_p50_ns"] = quantile(all, 0.50);
+    state.counters["all_p99_ns"] = quantile(all, 0.99);
+    state.counters["all_p999_ns"] = quantile(all, 0.999);
+  }
+  state.counters["timer_overhead_ns"] = timer_overhead_ns();
+}
+
+// One timed pass of `queries` through `reader`; returns the pass's ticks.
+std::uint64_t book_pass(ServeBookReader &reader, const std::vector<BookQuery> &queries,
+                        Tails &tails, double &sink, std::uint64_t &repins) {
+  std::uint64_t pass = 0;
+  for (const BookQuery &q : queries) {
+    const std::uint64_t before = reader.pinned().number;
+    const std::uint64_t t0 = tsc();
+    const ServeAnswer a = reader.serve(q.expiry, q.request);
+    const std::uint64_t t1 = tsc();
+    repins += reader.pinned().number != before ? 1u : 0u;
+    sink += a.price + a.delta;
+    tails.by[static_cast<std::size_t>(klass_of(a))].push_back(t1 - t0);
+    pass += t1 - t0;
+  }
+  return pass;
+}
+
+// steady (publisher = false) and publication (publisher = true).
+void run_book(benchmark::State &state, const Dataset &d, bool publisher) {
+  if (!d.ok) {
+    state.SkipWithError(d.error);
+    return;
+  }
+  ServeBookPolicy policy;
+  policy.build_workers = 0;
+  ServeBook book(policy);
+  const std::vector<ServeBookEntry> entries = book_entries(d);
+  if (!book.publish(entries)) {
+    state.SkipWithError("publish failed");
+    return;
+  }
+  const std::vector<BookQuery> queries = book_queries(d);
+  ServeBookReader reader = book.reader();
+  Tails tails;
+  tails.reserve(queries.size() * static_cast<std::size_t>(state.max_iterations));
+  double sink = 0.0;
+  std::uint64_t repins = 0;
+  std::atomic<bool> stop{false};
+  std::atomic<std::uint64_t> published{0};
+  std::jthread pub;
+  if (publisher) {
+    pub = std::jthread([&] {
+      std::vector<ServeBookEntry> e = entries;
+      while (!stop.load(std::memory_order_relaxed)) {
+        for (ServeBookEntry &x : e) ++x.tag;
+        if (book.publish(e)) published.fetch_add(1, std::memory_order_relaxed);
+        std::this_thread::yield();
+      }
+    });
+  }
+  for (auto _ : state) {
+    const std::uint64_t pass = book_pass(reader, queries, tails, sink, repins);
+    state.SetIterationTime(static_cast<double>(pass) * ns_per_tick() * 1.0e-9);
+  }
+  stop.store(true);
+  if (pub.joinable()) pub.join();
+  benchmark::DoNotOptimize(sink);
+  report_tails(state, tails);
+  state.counters["records"] = static_cast<double>(d.records.size());
+  state.counters["versions_published"] = static_cast<double>(published.load());
+  state.counters["reader_repins"] = static_cast<double>(repins);
+  state.counters["versions_reclaimed"] = static_cast<double>(book.counters().reclaimed);
+}
+
+// burst: every record Stale at once; 4 readers until every expiry is fresh again.
+void run_book_burst(benchmark::State &state, const Dataset &d) {
+  if (!d.ok) {
+    state.SkipWithError(d.error);
+    return;
+  }
+  ServeRecordPolicy stale = d.policy;
+  stale.ladders = false;
+  stale.max_age_ns = 1; // every answer is Stale (route Rebuild)
+  ServeRecordPolicy fresh = d.policy;
+  fresh.ladders = false; // the rebuild: the first usable bundle of the same fit
+  std::vector<ServeBookEntry> entries;
+  std::vector<BookQuery> queries;
+  for (std::size_t r = 0; r < d.fits.size() && r < d.records.size(); ++r) {
+    auto built = build_serve_record(d.fits[r], stale);
+    if (!built) continue;
+    ServeBookEntry x;
+    x.expiry_id = r;
+    x.record = *built;
+    x.tag = 1;
+    entries.push_back(std::move(x));
+  }
+  const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                               .count();
+  for (BookQuery q : book_queries(d)) {
+    q.request.now_ns = now;
+    queries.push_back(q);
+  }
+  constexpr int kReaders = 4;
+  Tails tails;
+  double to_fresh_ms = 0.0;
+  double sink = 0.0;
+  ServeBookCounters c{};
+  for (auto _ : state) {
+    ServeBookPolicy policy;
+    policy.queue_capacity = 4;
+    policy.build_workers = 1;
+    ServeBook book(policy, [&d, &fresh](const ServeRebuildRequest &q) {
+      auto built = build_serve_record(d.fits[q.expiry_id], fresh);
+      std::optional<ServeBookEntry> e;
+      if (built) {
+        e.emplace();
+        e->expiry_id = q.expiry_id;
+        e->record = *built;
+        e->tag = 2;
+      }
+      return e;
+    });
+    if (!book.publish(entries)) {
+      state.SkipWithError("publish failed");
+      return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    std::array<Tails, kReaders> per{};
+    std::array<double, kReaders> sinks{};
+    {
+      std::vector<std::jthread> readers;
+      for (int t = 0; t < kReaders; ++t) {
+        readers.emplace_back([&, t] {
+          const auto slot = static_cast<std::size_t>(t);
+          ServeBookReader r = book.reader();
+          std::uint64_t repins = 0;
+          for (;;) {
+            (void)book_pass(r, queries, per[slot], sinks[slot], repins);
+            std::size_t ok = 0;
+            for (const ServeBookEntry &e : r.pinned().entries) ok += e.tag == 2 ? 1u : 0u;
+            if (ok == entries.size()) break;
+            if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(60)) break;
+          }
+        });
+      }
+    }
+    to_fresh_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    state.SetIterationTime(to_fresh_ms * 1.0e-3);
+    (void)book.wait_idle(std::chrono::milliseconds(60'000));
+    c = book.counters();
+    for (std::size_t t = 0; t < per.size(); ++t) {
+      tails.merge(per[t]);
+      sink += sinks[t];
+    }
+  }
+  benchmark::DoNotOptimize(sink);
+  report_tails(state, tails);
+  state.counters["expiries"] = static_cast<double>(entries.size());
+  state.counters["all_fresh_ms"] = to_fresh_ms;
+  state.counters["enqueued"] = static_cast<double>(c.enqueued);
+  state.counters["deduplicated"] = static_cast<double>(c.deduplicated);
+  state.counters["budget_exhausted"] = static_cast<double>(c.rejected);
+  state.counters["rebuilt"] = static_cast<double>(c.rebuilt);
+  state.counters["rebuild_failed"] = static_cast<double>(c.rebuild_failed);
+  const std::uint64_t ran = c.rebuilt + c.rebuild_failed;
+  const double runs = ran > 0 ? static_cast<double>(ran) : 1.0;
+  const double done = c.rebuilt > 0 ? static_cast<double>(c.rebuilt) : 1.0;
+  state.counters["queue_age_mean_ms"] = static_cast<double>(c.queue_age_sum_ns) * 1.0e-6 / runs;
+  state.counters["queue_age_max_ms"] = static_cast<double>(c.queue_age_max_ns) * 1.0e-6;
+  state.counters["rebuild_mean_ms"] = static_cast<double>(c.rebuild_sum_ns) * 1.0e-6 / done;
+  state.counters["rebuild_max_ms"] = static_cast<double>(c.rebuild_max_ns) * 1.0e-6;
+}
+
+// chain300 through the book: one pinned version, mixed tiers (Ladder..Family).
+void run_book_chain(benchmark::State &state, const Dataset &d) {
+  if (!d.ok || d.chain.empty()) {
+    state.SkipWithError(d.ok ? std::string("no chain") : d.error);
+    return;
+  }
+  ServeBookPolicy policy;
+  policy.build_workers = 0;
+  ServeBook book(policy);
+  if (!book.publish(book_entries(d))) {
+    state.SkipWithError("publish failed");
+    return;
+  }
+  const std::size_t n = d.chain.size();
+  std::vector<std::uint64_t> ids(n);
+  std::vector<double> strikes(n), price(n), delta(n), gamma(n), vega(n), theta(n);
+  std::vector<Side> sides(n);
+  std::vector<TickStatus> tick(n);
+  std::vector<ServedChainStatement> served(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    ids[i] = d.chain[i].record;
+    strikes[i] = d.chain[i].strike;
+    sides[i] = d.chain[i].side;
+  }
+  const double S = d.records[d.chain.front().record]->spot() * kSpotMove;
+  ServeBookReader reader = book.reader();
+  const ServedChainView view{ids, strikes, sides};
+  const ChainTickOutputs out{price, delta, gamma, vega, theta, tick};
+  // Untimed: the chain's composition.
+  std::array<std::size_t, 3> klass{};
+  for (std::size_t i = 0; i < n; ++i) {
+    ServeRequest q;
+    q.strike = strikes[i];
+    q.side = sides[i];
+    q.spot = S;
+    q.tier = ServeTier::Ladder;
+    q.tier_max = ServeTier::Family;
+    q.family_bound = false;
+    ++klass[static_cast<std::size_t>(klass_of(reader.serve(ids[i], q)))];
+  }
+  std::vector<std::uint64_t> passes;
+  passes.reserve(static_cast<std::size_t>(state.max_iterations));
+  double sink = 0.0;
+  for (auto _ : state) {
+    const std::uint64_t t0 = tsc();
+    const Status st =
+        reader.serve_chain(S, 0, view, ServeTier::Ladder, ServeTier::Family, out, served);
+    const std::uint64_t t1 = tsc();
+    sink += price[0] + (st ? 0.0 : 1.0);
+    passes.push_back(t1 - t0);
+    state.SetIterationTime(static_cast<double>(t1 - t0) * ns_per_tick() * 1.0e-9);
+  }
+  benchmark::DoNotOptimize(sink);
+  state.counters["contracts"] = static_cast<double>(n);
+  state.counters["tier0"] = static_cast<double>(klass[0]);
+  state.counters["tier1"] = static_cast<double>(klass[1]);
+  state.counters["refused"] = static_cast<double>(klass[2]);
+  state.counters["chain_max_us"] = max_ns(passes) * 1.0e-3;
+  state.counters["chain_p50_us"] = quantile(passes, 0.50) * 1.0e-3;
+  state.counters["chain_p99_us"] = quantile(passes, 0.99) * 1.0e-3;
+}
+
+// first_usable: serve_build (two-phase) per expiry into a fresh book.
+void run_book_first_usable(benchmark::State &state, const Dataset &d) {
+  if (!d.ok) {
+    state.SkipWithError(d.error);
+    return;
+  }
+  std::vector<double> first, total;
+  for (auto _ : state) {
+    ServeBookPolicy policy;
+    policy.build_workers = 0;
+    ServeBook book(policy);
+    first.clear();
+    total.clear();
+    const auto t0 = std::chrono::steady_clock::now();
+    for (std::size_t r = 0; r < d.fits.size(); ++r) {
+      ServeBookEntry key;
+      key.expiry_id = r;
+      const Result<ServeBuildStage> stage = serve_build(book, key, d.fits[r], d.policy);
+      if (!stage) continue;
+      first.push_back(stage->first_usable_us);
+      total.push_back(stage->total_us);
+    }
+    state.SetIterationTime(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  }
+  const auto stat = [](std::vector<double> v, double q) {
+    if (v.empty()) return std::numeric_limits<double>::quiet_NaN();
+    std::sort(v.begin(), v.end());
+    return v[static_cast<std::size_t>(q * static_cast<double>(v.size() - 1))];
+  };
+  state.counters["expiries"] = static_cast<double>(first.size());
+  state.counters["first_usable_p50_ms"] = stat(first, 0.5) * 1.0e-3;
+  state.counters["first_usable_max_ms"] = stat(first, 1.0) * 1.0e-3;
+  state.counters["final_p50_ms"] = stat(total, 0.5) * 1.0e-3;
+  state.counters["final_max_ms"] = stat(total, 1.0) * 1.0e-3;
+}
+
+// accuracy (untimed): node-strike answers at the moved spot vs andersen_lake at the served
+// sigma, against the answer's own statement (family_bound on).
+void run_book_accuracy(benchmark::State &state, const Dataset &d) {
+  if (!d.ok) {
+    state.SkipWithError(d.error);
+    return;
+  }
+  std::array<std::vector<double>, 2> err{};
+  std::array<std::size_t, 2> within{};
+  std::array<std::size_t, 2> stated{};
+  std::array<std::size_t, 2> sampled{};
+  for (auto _ : state) {
+    for (auto &e : err) e.clear();
+    within = {};
+    stated = {};
+    sampled = {};
+    for (const BookQuery &bq : book_queries(d)) {
+      if (!std::isfinite(bq.q) || bq.expiry >= d.fits.size()) continue;
+      const SliceServeRecord &rec = *d.records[bq.expiry];
+      ServeRequest q = bq.request;
+      q.family_bound = true;
+      const ServeAnswer a = rec.serve(q);
+      const Klass k = klass_of(a);
+      if (k == Klass::Miss || a.status != ServeStatus::Ok) continue;
+      const Result<double> cold = andersen_lake(q.spot, q.strike, rec.tau(), a.sigma, rec.rate(),
+                                                bq.q, q.side, d.fits[bq.expiry].al_opts);
+      if (!cold) continue;
+      const std::size_t slot = k == Klass::Hit0 ? 0u : 1u;
+      const double e = std::abs(a.price - *cold);
+      err[slot].push_back(e);
+      if (std::isfinite(a.certificate_usd)) {
+        ++stated[slot];
+        within[slot] += e <= a.certificate_usd ? 1u : 0u;
+      }
+      sampled[slot] += a.sampled ? 1u : 0u;
+    }
+  }
+  const std::array<const char *, 2> names = {"tier0", "tier1"};
+  for (std::size_t k = 0; k < 2; ++k) {
+    std::vector<double> &v = err[k];
+    const std::string p = names[k];
+    state.counters[p + "_n"] = static_cast<double>(v.size());
+    if (v.empty()) continue;
+    std::sort(v.begin(), v.end());
+    state.counters[p + "_err_p50_usd"] = v[v.size() / 2];
+    state.counters[p + "_err_p99_usd"] = v[(v.size() - 1) * 99 / 100];
+    state.counters[p + "_err_max_usd"] = v.back();
+    state.counters[p + "_with_statement"] = static_cast<double>(stated[k]);
+    state.counters[p + "_within_statement"] = static_cast<double>(within[k]);
+    state.counters[p + "_sampled"] = static_cast<double>(sampled[k]);
+  }
+}
+
+// handoff_stamp: the hook's cost per expiry on fits of its own (the families built untimed).
+void run_handoff(benchmark::State &state,
+                 Dataset (*load)(const char *, const ServeRecordPolicy &)) {
+  ServeRecordPolicy policy;
+  policy.ladders = false;
+  Dataset d = load("handoff_stamp", policy);
+  if (!d.ok) {
+    state.SkipWithError(d.error);
+    return;
+  }
+  std::vector<std::shared_ptr<const DeAmSigmaFamilies>> families;
+  for (const QuoteSliceFit &fit : d.fits) {
+    families.push_back(detail::build_serve_families(fit, policy));
+  }
+  std::vector<std::uint64_t> ticks;
+  std::size_t stamped = 0;
+  for (auto _ : state) {
+    std::uint64_t pass = 0;
+    for (std::size_t i = 0; i < d.fits.size(); ++i) {
+      const std::uint64_t t0 = tsc();
+      detail::stamp_serve_handoff(d.fits[i], families[i].get());
+      const std::uint64_t t1 = tsc();
+      ticks.push_back(t1 - t0);
+      pass += t1 - t0;
+      stamped += d.fits[i].serve_handoff ? 1u : 0u;
+    }
+    state.SetIterationTime(static_cast<double>(pass) * ns_per_tick() * 1.0e-9);
+  }
+  state.counters["expiries"] = static_cast<double>(d.fits.size());
+  state.counters["stamped"] = static_cast<double>(stamped);
+  state.counters["stamp_p50_us"] = quantile(ticks, 0.50) * 1.0e-3;
+  state.counters["stamp_max_us"] = max_ns(ticks) * 1.0e-3;
+}
+
+void register_book(const char *name, const Dataset &(*get)()) {
+  const std::string base = std::string("book/") + name + "/";
+  apply_common(benchmark::RegisterBenchmark(
+                   (base + "steady").c_str(),
+                   [get](benchmark::State &state) { run_book(state, get(), false); }))
+      ->UseManualTime()
+      ->Iterations(50)
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(benchmark::RegisterBenchmark(
+                   (base + "publication").c_str(),
+                   [get](benchmark::State &state) { run_book(state, get(), true); }))
+      ->UseManualTime()
+      ->Iterations(50)
+      ->Unit(benchmark::kMicrosecond);
+  benchmark::RegisterBenchmark((base + "burst").c_str(),
+                               [get](benchmark::State &state) { run_book_burst(state, get()); })
+      ->UseManualTime()
+      ->Iterations(1)
+      ->Repetitions(3)
+      ->Unit(benchmark::kMillisecond);
+  apply_common(benchmark::RegisterBenchmark(
+                   (base + "chain300").c_str(),
+                   [get](benchmark::State &state) { run_book_chain(state, get()); }))
+      ->UseManualTime()
+      ->Iterations(200)
+      ->Unit(benchmark::kMicrosecond);
+  benchmark::RegisterBenchmark(
+      (base + "first_usable").c_str(),
+      [get](benchmark::State &state) { run_book_first_usable(state, get()); })
+      ->UseManualTime()
+      ->Iterations(1)
+      ->Repetitions(1)
+      ->Unit(benchmark::kMillisecond);
+  benchmark::RegisterBenchmark((base + "accuracy").c_str(),
+                               [get](benchmark::State &state) { run_book_accuracy(state, get()); })
+      ->Iterations(1)
+      ->Repetitions(1)
+      ->Unit(benchmark::kMillisecond);
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────────────
 
 void register_dataset(const char *name, const Dataset &(*get)()) {
@@ -724,8 +1284,30 @@ const bool kRegistered = [] {
   add_context_once();
   if (!env_text("ATX_VOL_SERVE_RECORD_ARCHIVE").empty()) {
     register_dataset("spy_surface", &spy_surface);
+    register_dataset("spy_surface_tick", &spy_surface_tick);
+    benchmark::RegisterBenchmark("serve/spy_surface/handoff_stamp",
+                                 [](benchmark::State &state) {
+                                   run_handoff(state, &load_spy_surface);
+                                 })
+        ->UseManualTime()
+        ->Iterations(50)
+        ->Repetitions(1)
+        ->Unit(benchmark::kMicrosecond);
+    register_book("spy_surface", &spy_surface);
+    register_book("spy_surface_tick", &spy_surface_tick);
   }
-  if (!env_text("ATX_VOL_SERVE_RECORD_SPY23").empty()) register_dataset("spy23", &spy23);
+  if (!env_text("ATX_VOL_SERVE_RECORD_SPY23").empty()) {
+    register_dataset("spy23", &spy23);
+    register_dataset("spy23_tick", &spy23_tick);
+    benchmark::RegisterBenchmark("serve/spy23/handoff_stamp",
+                                 [](benchmark::State &state) { run_handoff(state, &load_spy23); })
+        ->UseManualTime()
+        ->Iterations(50)
+        ->Repetitions(1)
+        ->Unit(benchmark::kMicrosecond);
+    register_book("spy23", &spy23);
+    register_book("spy23_tick", &spy23_tick);
+  }
   return true;
 }();
 

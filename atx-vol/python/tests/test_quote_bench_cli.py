@@ -843,6 +843,17 @@ def test_native_graded_options_are_strict(binary, tmp_path):
              "must be a string"),
             ({"schema_version": 1, "graded": {"publication": "validate"}},
              "require admission graded"),
+            # Opt-in serving records (lane H1).
+            ({"schema_version": 1, "admission": "graded", "graded": {"serve_records": "on"}},
+             "serve_records must be true or false"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"serve_record_profile": "tick"}},
+             "serve_record_profile requires serve_records true"),
+            ({"schema_version": 1, "admission": "graded",
+              "graded": {"serve_records": True, "serve_record_profile": "fast"}},
+             "serve_record_profile must be default, tick or no_ladders"),
+            ({"schema_version": 1, "graded": {"serve_records": True}},
+             "require admission graded"),
             # Screen routing gate kappa (SPY1s Phase 2).
             ({"schema_version": 1, "admission": "graded",
               "graded": {"fit_space": "vol", "deam_profile": "accurate",
@@ -1700,7 +1711,7 @@ def test_native_empty_route_over_cash_in_life_is_a_window_mismatch(binary, tmp_p
 # object's clocks, exclusive stages, counters, cold reset and affinity receipt.
 BENCH_STAGES = ("normalization", "family_build_validation", "inverses", "endpoints",
                 "curve_repair", "final_grid_validation", "reference_exceptions", "publication",
-                "fit_other")
+                "fit_other", "serve_build")
 SERIAL = {"ATX_VOL_FIT_WORKERS": "1"}
 # A cold rep 2 is not faster than this share of rep 1 (docs/benchmark-clocks.md); a warm
 # memo hit skips every inversion and runs several times faster.
@@ -1791,6 +1802,7 @@ def test_native_bench_clocks_are_reported_and_stages_reconcile(binary, tmp_path)
     assert stages["stages"]["family_build_validation"] == {
         "seconds": None, "status": "not_built",
         "reason": stages["stages"]["family_build_validation"]["reason"]}
+    assert stages["stages"]["serve_build"]["status"] == "not_built"  # graded.serve_records off
     timed_stages = [s["seconds"] for s in stages["stages"].values() if s["status"] == "timed"]
     assert all(seconds >= 0.0 for seconds in timed_stages)
     assert sum(timed_stages) == pytest.approx(stages["sum_s"], rel=1e-9, abs=1e-12)
@@ -2270,6 +2282,46 @@ def test_native_publication_validation_is_opt_in_with_provenance(binary, tmp_pat
     for name in ("plain", "off"):
         assert "publication" not in stats[name]
         assert not any("publication" in entry for entry in stats[name]["slices"])
+
+
+def test_native_serve_records_are_opt_in_with_provenance(binary, tmp_path):
+    # graded.serve_records (lane H1): after each served slice's fit the serve_build stage
+    # builds its serving record, publishes it into the run's book and audits the
+    # evaluate_quote_slice fast path. On clean quotes no node is moved, so every served row
+    # keeps its record-free answer and the predictions are byte-identical to plain graded;
+    # between nodes the record's family root stays within its contract (iv_tolerance 1e-7
+    # plus the accurate inversion's own tolerance) of the record-free accurate root. The
+    # definition echoes the keys; explicit false adds nothing.
+    source = tmp_path / "quotes.csv"
+    make_quotes(source)
+    runs = {}
+    for name, keys in {"plain": None,
+                       "records": {"serve_records": True, "serve_record_profile": "no_ladders"},
+                       "off": {"serve_records": False}}.items():
+        document = {"schema_version": 1, "admission": "graded"}
+        if keys is not None:
+            document["graded"] = keys
+        runs[name] = run_graded(binary, source, tmp_path, name, document)
+    plain_bytes = runs["plain"][0].read_bytes()
+    assert runs["records"][0].read_bytes() == plain_bytes
+    assert runs["off"][0].read_bytes() == plain_bytes
+    definitions = {name: run[1]["policy_definition"]["graded"] for name, run in runs.items()}
+    assert definitions["records"]["serve_records"] is True
+    assert definitions["records"]["serve_record_profile"] == "no_ladders"
+    assert "serve_records" not in definitions["plain"]
+    assert definitions["off"] == definitions["plain"]
+    block = runs["records"][2]["graded_stats"]["serve_records"]
+    assert block["profile"] == "no_ladders"
+    assert block["records"] >= 1
+    assert block["book_versions"] == block["records"]  # one publication per record
+    assert block["rows_compared"] >= 1
+    assert block.get("rows_differ", 0) == 0
+    assert block["midpoints_compared"] >= 1
+    assert block.get("midpoints_on_refused_off_ok", 0) == 0
+    assert block["midpoints_max_dvol"] <= 2.0e-7
+    assert block["first_usable_us"]["n"] == block["records"]
+    for name in ("plain", "off"):
+        assert "serve_records" not in runs[name][2]["graded_stats"]
 
 
 def test_native_publication_validation_keeps_one_answer_per_refused_contract(

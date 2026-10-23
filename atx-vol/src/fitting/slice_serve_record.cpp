@@ -1,6 +1,7 @@
-// Immutable fitted serving record of one expiry (lane H0-A, r6 2026-10-23). See
+// Immutable fitted serving record of one expiry (lanes H0-A and H1, r6 2026-10-23). See
 // api/fitting/slice_serve_record.hpp for the contract; this file is the build (node
-// identification, side families, node ladders, audits, digests) and the tiered reads.
+// identification, side families and their K3 statements, node ladders, audits, digests),
+// the tiered reads, the fitter's hand-off and the evaluate_quote_slice fast path.
 #include "atx/vol/api/fitting/slice_serve_record.hpp"
 
 #include <algorithm>
@@ -12,7 +13,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <numbers>
 #include <optional>
 #include <span>
 #include <utility>
@@ -24,14 +24,13 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "fitting/correction_detail.hpp" // cheb_node / cheb_dct2 / cheb_clenshaw1d
-#include "fitting/deam_iv_cache.hpp"     // DeAmSigmaFamilies, kDeAmFamilyProbes
+#include "fitting/deam_iv_cache.hpp"     // DeAmSigmaFamilies, deam_family_certify
+#include "fitting/quote_slice_nodes.hpp" // detail::serves (lane C2's served support)
 #include "fitting/slice_serve_record_detail.hpp"
 #include "pricing/american_boundary.hpp"       // AlExpiryGeometry::Impl (geometry bytes)
+#include "pricing/american_family_error.hpp"   // family_price_bounded, envelopes
 #include "pricing/american_iv_premium.hpp"     // al_profile_price_bound
 #include "pricing/american_sigma_q_family.hpp" // K1 fused price + vega
-#if ATX_VOL_SERVE_RECORD_K3
-#include "pricing/american_family_error.hpp"
-#endif
 
 namespace atx::vol {
 
@@ -44,20 +43,25 @@ namespace fused = sigma_q_family_detail;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
+constexpr double kEps = std::numeric_limits<double>::epsilon();
 constexpr std::size_t kLadderMaxSpot = 16;
 constexpr std::size_t kLadderMaxSigma = 8;
 // A call side's q box is clipped to q > 0 (a q <= 0 call never exercises early), as the
 // fitter's (sigma, q) build does (quote_slice.cpp build_sigma_q).
 constexpr double kCallMinYield = 1.0e-9;
-// The declared between-node bound is this multiple of the audit's measured maximum (the
-// family-minus-chord gap is a smooth bump per interval; the audit samples its quarters).
+// The between-node audit's declared multiple of its measured maximum (Sampled).
 constexpr double kBetweenNodeSafety = 2.0;
+// A Sampled ladder statement takes this multiple of K3's probe audit (relative).
+constexpr double kSampledAuditSafety = 10.0;
 constexpr int kLadderIvMaxEvaluations = 16;
 constexpr int kFamilyIvMaxEvaluations = 24;
 // A ladder root is converged when its map misses the target by at most this x max(1, P).
 constexpr double kLadderIvPriceTol = 1.0e-12;
-// The ladder certificate's rounding floor: 8 ulps of max(F_max, K) (ChainSpotLadder's).
-constexpr double kLadderUlpFloor = 8.0 * std::numeric_limits<double>::epsilon();
+// The ladder statement's rounding floor: 8 ulps of max(F_max, K) (ChainSpotLadder's).
+constexpr double kLadderUlpFloor = 8.0 * kEps;
+// A plane coefficient at or under this many ulps of max(P_max, 1) is rounding: the
+// coefficient series has converged into the samples' own noise.
+constexpr double kPlaneNoiseUlps = 64.0;
 
 using Clock = std::chrono::steady_clock;
 
@@ -73,7 +77,13 @@ using Clock = std::chrono::steady_clock;
   return side == Side::Call || side == Side::Put;
 }
 
+[[nodiscard]] std::uint64_t bits_of(double x) noexcept { return std::bit_cast<std::uint64_t>(x); }
+
 // ── Chebyshev evaluation with derivatives (first kind, full c0) ─────────────────────
+//
+// A second copy of the differentiated Clenshaw recurrence expiry_record.cpp's eval_rows<2>
+// runs per row (review-H0A m15): kept file-local because that one is fused into the
+// record's row layout; both are pinned by their own derivative tests.
 
 struct ChebD2 {
   double v = 0.0;
@@ -81,8 +91,7 @@ struct ChebD2 {
   double dd = 0.0;
 };
 
-// p(x) = c0 + sum_k c_k T_k(x) and its first two x-derivatives (differentiated Clenshaw,
-// the recurrence expiry_record.cpp's eval_rows<2> runs per row).
+// p(x) = c0 + sum_k c_k T_k(x) and its first two x-derivatives (differentiated Clenshaw).
 [[nodiscard]] ChebD2 clenshaw_d2(const double *c, std::size_t n, double x) noexcept {
   double b1 = 0.0, b2 = 0.0, d1 = 0.0, d2 = 0.0, e1 = 0.0, e2 = 0.0;
   const double two_x = 2.0 * x;
@@ -121,7 +130,8 @@ struct ChebD1 {
 
 // ── The fitter's per-strike carry (quote_slice.cpp calendar_yield_at / effective_yield),
 //    operation for operation: the record prices every contract at the yield the fit
-//    certified it at (pinned: SliceServeRecord.NodeYieldReproducesTheCertifiedPriceToTheBit).
+//    certified it at (pinned: SliceServeRecord.NodeYieldReproducesTheCertifiedPriceToTheBit
+//    and, on the funding-PV model, ...FundingPvNodeYieldReproduces...).
 
 struct CarryModel {
   QuoteSliceMarket market{};
@@ -172,7 +182,9 @@ struct CarryModel {
 
 // The zero-volatility American value (american_iv.cpp zero_vol_american_value, the
 // non-monotone band's reference): the deterministic payoff's maximum over the exercise
-// horizon {0, T, t*}. NaN when the payoff overflows.
+// horizon {0, T, t*}. NaN when the payoff overflows. Third replica (review-H0A m9): its
+// band decision is pinned against american_implied_vol's own NonMonotoneRegion refusal
+// (SliceServeRecord.TheL1cBandDecisionIsAmericanIvsOwn).
 [[nodiscard]] double zero_vol_american(double S, double K, double T, double r, double q,
                                        Side side) noexcept {
   const double A = (side == Side::Call) ? S : K;
@@ -212,6 +224,7 @@ struct NodeLadder {
   std::array<double, kLadderMaxSpot> price{}; // the plane contracted at v_node
   std::array<double, kLadderMaxSpot> vega{};  // its sigma-derivative at v_node
   double certificate_usd = kNaN;
+  ServeBoundClass bound_class = ServeBoundClass::None;
   // The near-exercise-edge band: edge_sd = edge_sign * (ln S - edge_x) * inv_sd, edge_x
   // the log of the node's converged edge (-inf / +inf in the European regime).
   double edge_x = kNaN;
@@ -234,6 +247,15 @@ struct FamilyRead {
 
 [[nodiscard]] bool family_priced(const FamilyRead &r) noexcept {
   return r.status == fused::FusedStatus::Ok || r.status == fused::FusedStatus::NearNodeDegenerate;
+}
+
+// K3's per-point bound of `f`'s price at (S, K, sigma, q) against the cold accurate kernel
+// (+inf without a covering envelope or outside its domain).
+[[nodiscard]] double point_bound(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                 double S, double K, double sigma, double q) noexcept {
+  if (env == nullptr || !env->covered()) return kInf;
+  const FamilyBoundedPrice fb = family_price_bounded(f, *env, S, K, sigma, q);
+  return fb.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fb.price) ? fb.bound_usd : kInf;
 }
 
 #if !ATX_VOL_SERVE_RECORD_A0
@@ -292,12 +314,18 @@ struct SliceServeRecord::Impl {
   ServeRecordVersion version{};
   ServeRecordBytes bytes{};
   ServeBuildClocks clocks{};
-#if ATX_VOL_SERVE_RECORD_K3
-  std::array<std::optional<ValidatedErrorEnvelope>, 2> envelopes{}; // call, put
-#endif
 
   [[nodiscard]] const AlSigmaQFamily *family(Side side) const noexcept {
     return families ? families->of_q(side) : nullptr;
+  }
+  // The side family's K3 envelope (nullptr: none, or the K3 seam is off).
+  [[nodiscard]] const ValidatedErrorEnvelope *envelope(Side side) const noexcept {
+#if ATX_VOL_SERVE_RECORD_K3
+    return families ? families->q_envelope(side) : nullptr;
+#else
+    static_cast<void>(side);
+    return nullptr;
+#endif
   }
   [[nodiscard]] const ServeSideSupport &side_support(Side side) const noexcept {
     return side == Side::Call ? support.call : support.put;
@@ -314,6 +342,17 @@ struct SliceServeRecord::Impl {
     return (it != nodes.end() && it->strike == strike)
                ? static_cast<std::size_t>(it - nodes.begin())
                : nodes.size();
+  }
+};
+
+// The only maker of records (SliceServeRecord::Key), and the fast path's read access.
+struct SliceServeRecordAccess {
+  [[nodiscard]] static std::shared_ptr<const SliceServeRecord>
+  make(std::unique_ptr<const SliceServeRecord::Impl> impl) {
+    return std::make_shared<const SliceServeRecord>(SliceServeRecord::Key{}, std::move(impl));
+  }
+  [[nodiscard]] static const SliceServeRecord::Impl &impl(const SliceServeRecord &r) noexcept {
+    return *r.impl_;
   }
 };
 
@@ -379,7 +418,7 @@ void identify_node_side(const QuoteSliceFit &fit, const CarryModel &carry, std::
   return s.status == QuoteSliceEvaluationStatus::Success && positive(s.sigma);
 }
 
-// ── Build: side families (the fitter's (sigma, q) recipe) ──────────────────────────────
+// ── Build: side families (the fitter's (sigma, q) recipe, K3-certified) ───────────────
 
 struct FamilyInputs {
   double spot = 0.0;
@@ -426,64 +465,24 @@ struct SideBox {
   return box;
 }
 
-// The record's measured family bound (W2c-i integration): the de-Am cache's
-// deam_family_probe_worst as of the H0-A base 914a28ef, kept file-local because lane K3
-// replaced it in the fitter by deam_family_certify, whose envelope bound makes every ladder
-// of the record's fixture ineligible. The worst |P_family - P_cold| / max(P_cold, 1) over
-// kDeAmFamilyProbes probes off the nodes of both axes: the strikes {band_lo, band_hi, S} x
-// the midpoints of the first, central and last q cell, each at its own log-sigma fraction.
-// nullopt when any probe fails (a family refusal, a cold solve error).
-[[nodiscard]] std::optional<double> deam_family_probe_worst(const AlSigmaQFamily &family,
-                                                            double S, double T, double r,
-                                                            const std::optional<AlOpts> &al_opts,
-                                                            double band_lo, double band_hi) {
-  // Chebyshev-Lobatto q node j of n as a fraction of the q box (cheb_node's layout:
-  // -cos(pi j / (n - 1)) on [-1, 1]); a probe sits at the midpoint of a q cell.
-  const unsigned nq = family.n_q();
-  const auto cell_mid = [nq](unsigned c) {
-    const auto node = [nq](unsigned j) {
-      return 0.5 * (1.0 - std::cos(std::numbers::pi * static_cast<double>(j) /
-                                   static_cast<double>(nq - 1u)));
-    };
-    return 0.5 * (node(c) + node(c + 1u));
-  };
-  const double q_lo = family.q_lo();
-  const double q_hi = family.q_hi();
-  std::array<double, 3> q_at{q_lo, q_lo, q_lo}; // a collapsed q box: its one node
-  if (nq >= 2u) {
-    const std::array<unsigned, 3> cells{0u, (nq - 1u) / 2u, nq - 2u};
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-      q_at[i] = q_lo + (q_hi - q_lo) * cell_mid(cells[i]);
-    }
-  }
-  const auto strike = [S](double K) { return positive(K) ? K : S; };
-  const std::array<double, 3> strike_at{strike(band_lo), strike(band_hi), S};
-  // Log-sigma fractions of the sigma box, one per probe (off the sigma axis' nodes).
-  constexpr std::array<double, kDeAmFamilyProbes> kSigmaAt{0.07, 0.31, 0.62, 0.93, 0.5,
-                                                           0.2,  0.45, 0.8,  0.15};
-  const double sigma_lo = family.sigma_lo();
-  const double sigma_hi = family.sigma_hi();
-  double worst = 0.0;
-  for (std::size_t i = 0; i < kDeAmFamilyProbes; ++i) {
-    const double K = strike_at[i % 3u];
-    const double q = q_at[i / 3u];
-    const double sigma = sigma_lo * std::pow(sigma_hi / sigma_lo, kSigmaAt[i]);
-    const AlSigmaQFamilyPrice fp = family.price(S, K, sigma, q);
-    const Result<double> cold = andersen_lake(S, K, T, sigma, r, q, family.side(), al_opts);
-    if (fp.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
-      return std::nullopt;
-    }
-    worst = std::max(worst, std::fabs(fp.price - *cold) / std::max(*cold, 1.0));
-  }
-  return worst;
+[[nodiscard]] AlExpiryGeometry &geometry_of(DeAmSigmaFamilies &holder, Side side) noexcept {
+  return side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
 }
 
-// One side's family into `holder` (quote_slice.cpp build_sigma_q, with the record's box).
-// True when built; the measured bound is 10 x deam_family_probe_worst, floored at 1e-12.
+[[nodiscard]] std::optional<AlSigmaQFamily> &slot_of(DeAmSigmaFamilies &holder,
+                                                     Side side) noexcept {
+  return side == Side::Put ? holder.q_put : holder.q_call;
+}
+
+// One side's family into `holder` with the record's box (quote_slice.cpp build_sigma_q,
+// operation for operation), then its error contract through lane K3's deam_family_certify
+// exactly as the fitter's (review-W2ci M1 / m1 / m2: the validated envelope, audited by
+// probes independent of the nodes, and the grid bound). False when the family or its
+// certification refuses (the side then serves no family).
 [[nodiscard]] bool build_side_family(DeAmSigmaFamilies &holder, const FamilyInputs &in,
                                      const SideBox &box, Side side) {
-  AlExpiryGeometry &geometry = side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
-  std::optional<AlSigmaQFamily> &slot = side == Side::Put ? holder.q_put : holder.q_call;
+  AlExpiryGeometry &geometry = geometry_of(holder, side);
+  std::optional<AlSigmaQFamily> &slot = slot_of(holder, side);
   geometry.prepare(in.tau, in.rate, std::clamp(in.reference_q, box.q_lo, box.q_hi), in.al_opts);
   const std::uint16_t n_q = in.tau * (box.q_hi - box.q_lo) <= kDeAmQFamilyNarrowCarry
                                 ? kDeAmQFamilyNarrowQNodes
@@ -496,32 +495,135 @@ struct SideBox {
   }
   const double band_lo = std::max(in.strike_lo, in.spot * std::exp(-kDeAmFamilyGridLogBand));
   const double band_hi = std::min(in.strike_hi, in.spot * std::exp(kDeAmFamilyGridLogBand));
-  const std::optional<double> worst =
-      deam_family_probe_worst(*slot, in.spot, in.tau, in.rate, in.al_opts, band_lo, band_hi);
-  if (!worst) {
+  if (!deam_family_certify(holder, side, in.spot, in.tau, in.rate, in.al_opts, in.strike_lo,
+                           in.strike_hi, band_lo, band_hi)) {
     slot.reset();
     return false;
   }
-  (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) =
-      std::max(10.0 * *worst, 1.0e-12);
   return true;
 }
 
-// The families of `nodes` (nullptr when no side builds), counting the sides solved.
-[[nodiscard]] std::shared_ptr<const DeAmSigmaFamilies>
-build_families(std::span<const ServedNode> nodes, const FamilyInputs &in,
-               const ServeRecordPolicy &policy, std::size_t &built) {
-  if (!(in.tau >= kAlSigmaFamilyMinTau)) return nullptr;
+// Every number of the envelope its construction derives from the family's nodes (not the
+// audit, which the hand-off carries separately), bit for bit.
+[[nodiscard]] bool same_envelope(const ValidatedErrorEnvelope &a,
+                                 const ValidatedErrorEnvelope &b) noexcept {
+  const auto same = [](double x, double y) { return bits_of(x) == bits_of(y); };
+  const auto same_n = [&](const auto &x, const auto &y, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!same(x[i], y[i])) return false;
+    }
+    return true;
+  };
+  const FamilyErrorContributions &ca = a.contributions;
+  const FamilyErrorContributions &cb = b.contributions;
+  return a.n_sigma == b.n_sigma && a.n_q == b.n_q && a.n_quad == b.n_quad &&
+         a.n_quad <= kFamilyEnvelopeMaxQuad && same(a.domain.sigma_lo, b.domain.sigma_lo) &&
+         same(a.domain.sigma_hi, b.domain.sigma_hi) && same(a.domain.q_lo, b.domain.q_lo) &&
+         same(a.domain.q_hi, b.domain.q_hi) && same(a.domain.T, b.domain.T) &&
+         a.domain.side == b.domain.side && same_n(a.bound_y, b.bound_y, a.n_quad) &&
+         same_n(a.zc, b.zc, a.n_quad) && same_n(a.y_lo, b.y_lo, a.n_quad) &&
+         same_n(a.z, b.z, a.n_quad) && same_n(a.w, b.w, a.n_quad) &&
+         same(ca.interpolation_y, cb.interpolation_y) &&
+         same(ca.boundary_solve_y, cb.boundary_solve_y) && same(ca.reference_y, cb.reference_y) &&
+         same(ca.rounding_y, cb.rounding_y) && same(ca.rounding_rel, cb.rounding_rel) &&
+         same(ca.sigma_ratio, cb.sigma_ratio) && same(ca.q_ratio, cb.q_ratio) &&
+         ca.unverified_nodes == cb.unverified_nodes;
+}
+
+// One handed side re-prepared into `holder` with the fitter's recipe; true when the rebuilt
+// family reproduces the fitter's two probe prices and its envelope bit for bit. The
+// fitter's audit verdict (its 9 probes against the cold kernel) is then applied to the
+// rebuilt envelope unchanged, so the record reads the fitter's own error contract.
+[[nodiscard]] bool rebuild_handed_side(DeAmSigmaFamilies &holder,
+                                       const QuoteSliceServeHandoff::Family &h, Side side,
+                                       const std::optional<AlOpts> &al_opts) {
+  AlExpiryGeometry &geometry = geometry_of(holder, side);
+  std::optional<AlSigmaQFamily> &slot = slot_of(holder, side);
+  geometry.prepare(h.geometry_T, h.geometry_r, h.geometry_q, al_opts);
+  slot.emplace(geometry, side, h.anchor);
+  if (!slot->prepare(h.sigma_lo, h.sigma_hi, h.n_sigma, h.q_lo, h.q_hi, h.n_q,
+                     kDeAmFamilyAxis)) {
+    slot.reset();
+    return false;
+  }
+  for (const QuoteSliceServeHandoff::Probe &p : h.probes) {
+    const AlSigmaQFamilyPrice fp = slot->price(h.anchor, p.K, p.sigma, p.q);
+    if (fp.status != AlSigmaQFamilyStatus::Ok || bits_of(fp.price) != bits_of(p.price)) {
+      slot.reset();
+      return false;
+    }
+  }
+  ValidatedErrorEnvelope env = build_family_error_envelope(*slot);
+  if (!same_envelope(env, h.envelope)) {
+    slot.reset();
+    return false;
+  }
+  record_family_probe_audit(env, h.envelope.audit);
+  if (env.error_class != h.envelope.error_class || env.status != h.envelope.status) {
+    slot.reset();
+    return false;
+  }
+  (side == Side::Put ? holder.q_envelope_put : holder.q_envelope_call) = env;
+  (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) = h.q_bound;
+  return true;
+}
+
+struct FamilyBuild {
+  std::shared_ptr<const DeAmSigmaFamilies> holder;
+  std::array<ServeFamilyOrigin, 2> origin{}; // side_slot order (call, put)
+  std::array<bool, 2> mismatch{};
+  std::size_t built = 0;
+};
+
+// The families of `nodes`: per side the fit's hand-off when it carries that side
+// (re-prepared and verified), else the record's own recipe; both K3-certified.
+[[nodiscard]] FamilyBuild build_families(std::span<const ServedNode> nodes,
+                                         const FamilyInputs &in, const ServeRecordPolicy &policy,
+                                         const QuoteSliceServeHandoff *handoff) {
+  FamilyBuild out;
+  if (!(in.tau >= kAlSigmaFamilyMinTau)) return out;
   auto holder = std::make_shared<DeAmSigmaFamilies>();
   holder->q = in.reference_q;
   const auto t0 = Clock::now();
   for (const Side side : {Side::Put, Side::Call}) {
+    const std::size_t s = side_slot(side);
+    const QuoteSliceServeHandoff::Family *h =
+        handoff != nullptr ? &handoff->sides[side == Side::Put ? 0u : 1u] : nullptr;
+    if (h != nullptr && h->present) {
+      ++out.built;
+      if (rebuild_handed_side(*holder, *h, side, in.al_opts)) {
+        out.origin[s] = ServeFamilyOrigin::Handed;
+      } else {
+        out.mismatch[s] = true;
+      }
+      continue;
+    }
     const std::optional<SideBox> box = side_box(nodes, side, policy);
-    if (box && build_side_family(*holder, in, *box, side)) ++built;
+    if (!box) continue;
+    ++out.built;
+    if (build_side_family(*holder, in, *box, side)) out.origin[s] = ServeFamilyOrigin::Built;
   }
   holder->build_us = us_since(t0);
-  if (holder->of_q(Side::Put) == nullptr && holder->of_q(Side::Call) == nullptr) return nullptr;
-  return holder;
+  if (holder->of_q(Side::Put) != nullptr || holder->of_q(Side::Call) != nullptr) {
+    out.holder = std::move(holder);
+  }
+  return out;
+}
+
+// A supplied holder built for another expiry (review-H0A m7): a present side whose
+// geometry clock, rate or anchor differs from the fit's bit for bit.
+[[nodiscard]] bool holder_mismatched(const DeAmSigmaFamilies &holder, const QuoteSliceFit &fit) {
+  for (const Side side : {Side::Put, Side::Call}) {
+    const AlSigmaQFamily *f = holder.of_q(side);
+    if (f == nullptr) continue;
+    const AlExpiryGeometry &g = side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
+    if (bits_of(g.T()) != bits_of(fit.market.variance_years) ||
+        bits_of(g.r()) != bits_of(fit.diagnostics.effective_rate) ||
+        bits_of(f->anchor()) != bits_of(fit.market.spot)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ── Build: ladders ─────────────────────────────────────────────────────────────────────
@@ -534,10 +636,17 @@ struct LadderInputs {
   double sigma = 0.0;
   double q = 0.0;
   Side side = Side::Call;
-  double family_bound_rel = kInf;
-  // |family - certified price| at the node at the fit's spot: the family's MEASURED error
-  // there (its probed bound covers only |ln(K / S)| <= kDeAmFamilyGridLogBand).
+  const ValidatedErrorEnvelope *envelope = nullptr; // K3 (nullptr: no validated statement)
+  double sampled_rel = kInf; // 10 x K3's probe audit (relative): the Sampled statement only
+  // |family - certified price| at the node at the fit's spot (measured; Sampled only).
   double node_family_error = 0.0;
+};
+
+// What sampling and checking a ladder measured.
+struct LadderMeasure {
+  double price_max = 0.0;
+  double family_bound_max = 0.0; // the largest K3 per-point bound over samples and checks
+  double check_max = 0.0;        // the largest |plane - family| at the check points
 };
 
 // 2-D Chebyshev value of the ladder plane at (u, v).
@@ -551,7 +660,7 @@ struct LadderInputs {
 
 // Samples the plane at the Chebyshev nodes; false when a sample is refused or exercised.
 [[nodiscard]] bool sample_ladder(NodeLadder &l, const AlSigmaQFamily &f, const LadderInputs &in,
-                                 double &price_max, std::size_t &evaluations) {
+                                 LadderMeasure &m, std::size_t &evaluations) {
   std::array<double, kLadderMaxSpot * kLadderMaxSigma> vals{}; // [j * ns + i]
   for (std::uint16_t j = 0; j < l.nsig; ++j) {
     const double sigma = detail::cheb_from_unit(detail::cheb_node(j, l.nsig), l.s_lo, l.s_hi);
@@ -561,7 +670,12 @@ struct LadderInputs {
       ++evaluations;
       if (r.status != fused::FusedStatus::Ok || r.exercised) return false;
       vals[static_cast<std::size_t>(j) * l.ns + i] = r.price;
-      price_max = std::max(price_max, r.price);
+      m.price_max = std::max(m.price_max, r.price);
+      if (in.envelope != nullptr) {
+        m.family_bound_max =
+            std::max(m.family_bound_max, point_bound(f, in.envelope, S, in.strike, sigma, in.q));
+        ++evaluations;
+      }
     }
   }
   std::array<double, kLadderMaxSpot> in_row{};
@@ -582,47 +696,111 @@ struct LadderInputs {
   return true;
 }
 
-// The ladder's measured distance to the family off its nodes: every midpoint between
+// The plane's measured distance to the family off its nodes: every midpoint between
 // adjacent (sorted) nodes plus both window ends on each axis, and the node's own sigma
-// row. NaN when a check point is refused or exercised.
-[[nodiscard]] double certify_ladder(const NodeLadder &l, const AlSigmaQFamily &f,
-                                    const LadderInputs &in, std::size_t &evaluations) {
+// row (a SAMPLED measurement, and the audit of the tail bound). False when a check point
+// is refused or exercised.
+[[nodiscard]] bool check_ladder(const NodeLadder &l, const AlSigmaQFamily &f,
+                                const LadderInputs &in, LadderMeasure &m,
+                                std::size_t &evaluations) {
   const auto checks = [](std::uint8_t n, std::array<double, kLadderMaxSpot + 2> &out) {
     std::array<double, kLadderMaxSpot> nodes_sorted{};
     for (std::uint16_t i = 0; i < n; ++i) nodes_sorted[i] = detail::cheb_node(i, n);
     std::sort(nodes_sorted.begin(), nodes_sorted.begin() + n);
-    std::size_t m = 0;
-    out[m++] = -1.0;
+    std::size_t k = 0;
+    out[k++] = -1.0;
     for (std::size_t i = 0; i + 1 < n; ++i) {
-      out[m++] = 0.5 * (nodes_sorted[i] + nodes_sorted[i + 1]);
+      out[k++] = 0.5 * (nodes_sorted[i] + nodes_sorted[i + 1]);
     }
-    out[m++] = 1.0;
-    return m;
+    out[k++] = 1.0;
+    return k;
   };
   std::array<double, kLadderMaxSpot + 2> us{};
   std::array<double, kLadderMaxSpot + 2> vs{};
   const std::size_t nu = checks(l.ns, us);
   std::size_t nv = checks(l.nsig, vs);
   vs[nv++] = l.v_node;
-  double worst = 0.0;
   for (std::size_t b = 0; b < nv; ++b) {
     const double sigma = detail::cheb_from_unit(vs[b], l.s_lo, l.s_hi);
     for (std::size_t a = 0; a < nu; ++a) {
       const double S = std::exp(detail::cheb_from_unit(us[a], l.x_lo, l.x_hi));
       const FamilyRead r = family_read(f, S, in.strike, sigma, in.q);
       ++evaluations;
-      if (r.status != fused::FusedStatus::Ok || r.exercised) return kNaN;
-      worst = std::max(worst, std::abs(plane_value(l, us[a], vs[b]) - r.price));
+      if (r.status != fused::FusedStatus::Ok || r.exercised) return false;
+      m.check_max = std::max(m.check_max, std::abs(plane_value(l, us[a], vs[b]) - r.price));
+      if (in.envelope != nullptr) {
+        m.family_bound_max =
+            std::max(m.family_bound_max, point_bound(f, in.envelope, S, in.strike, sigma, in.q));
+        ++evaluations;
+      }
     }
   }
-  return worst;
+  return true;
 }
 
-// One node side's ladder, or nullopt when the window or its certificate does not qualify.
+// One axis's Chebyshev tail past the plane's last coefficient (K3's refinement rule on the
+// ladder). With R_k the largest |coefficient| of order k on this axis, taken in pairs from
+// the top (E = max(R_{n-1}, R_{n-2}), P = max(R_{n-3}, R_{n-4}), C = max(R_{n-5}, R_{n-6})) so
+// the even / odd alternation of a near-symmetric map never reads as a stall: the decay must
+// hold over the last three pairs (E < P < C; two pairs when n < 6) and the tail past the last
+// coefficient extrapolates the SLOWEST observed pair decay, rho^2 = max(E / P, P / C):
+// E rho / (1 - rho). The check points audit the result (build_ladder: a check above the
+// bound vetoes it). A series at the rounding floor is converged. nullopt: fewer than four
+// orders, a coefficient rising out of noise, or a decay that does not hold.
+template <class Norm>
+[[nodiscard]] std::optional<double> axis_tail(Norm &&norm, std::size_t n, double floor) {
+  if (n < 4) return std::nullopt;
+  const double e = std::max(norm(n - 1), norm(n - 2));
+  const double p = std::max(norm(n - 3), norm(n - 4));
+  if (e <= floor) return floor;
+  if (p <= floor) return std::nullopt;
+  double rho2 = e / p;
+  if (n >= 6) {
+    const double c = std::max(norm(n - 5), norm(n - 6));
+    if (!(p < c)) return std::nullopt;
+    rho2 = std::max(rho2, p / c);
+  }
+  if (!(rho2 < 1.0)) return std::nullopt;
+  const double rho = std::sqrt(rho2);
+  return e * rho / (1.0 - rho) + floor;
+}
+
+// The plane's interpolation error bound over its window: twice (aliasing) the sum of the
+// verified tails of both axes, plus the coefficients' own rounding. nullopt when either
+// axis's order does not verify (the ladder then has no validated statement).
+[[nodiscard]] std::optional<double> plane_tail_bound(const NodeLadder &l, double price_max) {
+  const double scale = std::max(price_max, 1.0);
+  const double floor = kPlaneNoiseUlps * kEps * scale;
+  const auto spot_norm = [&l](std::size_t i) {
+    double r = 0.0;
+    for (std::size_t j = 0; j < l.nsig; ++j) r = std::max(r, std::abs(l.plane[i * l.nsig + j]));
+    return r;
+  };
+  const auto sigma_norm = [&l](std::size_t j) {
+    double r = 0.0;
+    for (std::size_t i = 0; i < l.ns; ++i) r = std::max(r, std::abs(l.plane[i * l.nsig + j]));
+    return r;
+  };
+  const std::optional<double> tail_u = axis_tail(spot_norm, l.ns, floor);
+  const std::optional<double> tail_v = axis_tail(sigma_norm, l.nsig, floor);
+  if (!tail_u || !tail_v) return std::nullopt;
+  const double rounding =
+      4.0 * kEps * scale * static_cast<double>(l.ns) * static_cast<double>(l.nsig);
+  return 2.0 * (*tail_u + *tail_v) + rounding;
+}
+
+struct LadderStatement {
+  double tail = kNaN;
+  double check = kNaN;
+  double family_bound = kNaN;
+};
+
+// One node side's ladder, or nullopt when the window or its statement does not qualify.
 [[nodiscard]] std::optional<NodeLadder> build_ladder(const AlSigmaQFamily &f,
                                                      const LadderInputs &in,
                                                      const ServeRecordPolicy &policy,
-                                                     std::size_t &evaluations) {
+                                                     std::size_t &evaluations,
+                                                     LadderStatement &statement) {
   NodeLadder l;
   l.ns = policy.ladder_spot_nodes;
   l.nsig = policy.ladder_sigma_nodes;
@@ -634,17 +812,31 @@ struct LadderInputs {
   l.s_hi = std::min(in.sigma * (1.0 + policy.ladder_sigma_half_width), f.sigma_hi());
   if (!(l.s_lo < in.sigma && in.sigma < l.s_hi)) return std::nullopt;
   l.v_node = detail::cheb_to_unit(in.sigma, l.s_lo, l.s_hi);
-  double price_max = 0.0;
-  if (!sample_ladder(l, f, in, price_max, evaluations)) return std::nullopt;
-  const double worst = certify_ladder(l, f, in, evaluations);
-  if (!std::isfinite(worst)) return std::nullopt;
+  LadderMeasure m;
+  if (!sample_ladder(l, f, in, m, evaluations)) return std::nullopt;
+  if (!check_ladder(l, f, in, m, evaluations)) return std::nullopt;
   const double forward_max = std::exp(l.x_hi + (in.rate - in.q) * in.tau);
-  l.certificate_usd = worst +
-                      std::max(in.family_bound_rel * std::max(price_max, 1.0),
-                               in.node_family_error) +
-                      kLadderUlpFloor * std::max(forward_max, in.strike);
-  if (!(l.certificate_usd <=
-        std::max(policy.ladder_max_cert_usd, policy.ladder_max_cert_rel * forward_max))) {
+  const double floor = kLadderUlpFloor * std::max(forward_max, in.strike);
+  const double limit =
+      std::max(policy.ladder_max_cert_usd, policy.ladder_max_cert_rel * forward_max);
+  const std::optional<double> tail = plane_tail_bound(l, m.price_max);
+  statement.tail = tail ? *tail : kNaN;
+  statement.check = m.check_max;
+  statement.family_bound = in.envelope != nullptr ? m.family_bound_max : kNaN;
+  // Validated: the verified tail (audited: no check point above it) plus K3's per-point
+  // bound; Sampled: the measured check plus 10 x K3's probe audit (or the node error).
+  const bool validated = tail && m.check_max <= *tail && std::isfinite(statement.family_bound);
+  const double validated_usd = validated ? *tail + m.family_bound_max + floor : kInf;
+  const double sampled_usd =
+      m.check_max +
+      std::max(in.sampled_rel * std::max(m.price_max, 1.0), in.node_family_error) + floor;
+  if (validated_usd <= limit) {
+    l.certificate_usd = validated_usd;
+    l.bound_class = ServeBoundClass::RefinementValidated;
+  } else if (policy.sampled_ladders && sampled_usd <= limit) {
+    l.certificate_usd = sampled_usd;
+    l.bound_class = ServeBoundClass::Sampled;
+  } else {
     return std::nullopt;
   }
   const double dv_dsigma = 2.0 / (l.s_hi - l.s_lo);
@@ -684,11 +876,9 @@ void audit_family_at_nodes(Impl &impl) {
       for (ServeGreekReason &g : s.family_reasons) g = ServeGreekReason::BundleUnavailable;
       s.family_reasons[static_cast<std::size_t>(ServeGreek::Vega)] = fused_vega_reason(r);
 #endif
-#if ATX_VOL_SERVE_RECORD_K3
-      const auto &env = impl.envelopes[side_slot(side)];
-      s.family_class = env && env->covered() ? ServeErrorClass::RefinementValidated
-                                             : ServeErrorClass::Uncovered;
-#endif
+      const ValidatedErrorEnvelope *env = impl.envelope(side);
+      s.family_class = env != nullptr && env->covered() ? ServeErrorClass::RefinementValidated
+                                                        : ServeErrorClass::Uncovered;
     }
   }
 }
@@ -843,6 +1033,9 @@ template <class E> [[nodiscard]] std::uint8_t byte_of(E e) noexcept {
   d.add(p.surface_version);
   d.add(static_cast<std::uint64_t>(ATX_VOL_SERVE_RECORD_A0));
   d.add(static_cast<std::uint64_t>(ATX_VOL_SERVE_RECORD_K3));
+  // Lane H1: the statement contract (K3 per-point + verified ladder tails) and the key.
+  d.add(p.sampled_ladders);
+  d.add(static_cast<std::uint64_t>(2)); // statement contract version 2 (H1)
   return d.finish();
 }
 
@@ -886,34 +1079,69 @@ void copy_basics(Impl &impl, const QuoteSliceFit &fit, const ServeRecordPolicy &
   impl.support.tau = impl.tau;
   impl.support.tau_min_family = kAlSigmaFamilyMinTau;
   impl.support.tiers[static_cast<std::size_t>(ServeTier::Cold)] = true;
+  impl.support.a0_bundle = ATX_VOL_SERVE_RECORD_A0 != 0;
+  impl.support.k3_envelope = ATX_VOL_SERVE_RECORD_K3 != 0;
   const double q = fit.diagnostics.effective_yield;
   impl.support.double_continuation =
       detail::classify_regime(impl.rate, q) == detail::ExerciseRegime::Unsupported ||
       detail::classify_regime(q, impl.rate) == detail::ExerciseRegime::Unsupported;
 }
 
+// The side support's K3 fields from the side family's envelope and the holder's grid bound.
+void describe_side_family(const Impl &impl, Side side, ServeSideSupport &s) {
+  const AlSigmaQFamily *f = impl.family(side);
+  s.family = f != nullptr;
+  if (f == nullptr) return;
+  s.sigma_lo = f->sigma_lo();
+  s.sigma_hi = f->sigma_hi();
+  s.q_lo = f->q_lo();
+  s.q_hi = f->q_hi();
+  s.domain_bound_usd = impl.families->q_bound(side);
+  const ValidatedErrorEnvelope *env = impl.envelope(side);
+  if (env == nullptr) return;
+  s.family_class = env->covered() ? ServeErrorClass::RefinementValidated
+                                  : ServeErrorClass::Uncovered;
+  s.envelope_status = static_cast<std::uint8_t>(env->status);
+  s.unverified_nodes = env->contributions.unverified_nodes;
+  s.audit_probes = env->audit.probes;
+  s.audit_violations = env->audit.violations;
+  s.audit_max_bound_ratio = env->audit.max_bound_ratio;
+  if (env->audit.probes > 0 && std::isfinite(env->audit.max_rel)) {
+    s.family_bound_rel = env->audit.max_rel;
+  }
+}
+
+// `kept`: the origins of a supplied holder that an earlier record of the same fit built
+// (the serve_build stage's second phase); nullptr: a caller's holder (Supplied).
 void attach_families(Impl &impl, const QuoteSliceFit &fit,
-                     std::shared_ptr<const DeAmSigmaFamilies> supplied) {
+                     std::shared_ptr<const DeAmSigmaFamilies> supplied,
+                     const std::array<ServeFamilyOrigin, 2> *kept) {
   const auto t0 = Clock::now();
+  std::array<ServeFamilyOrigin, 2> origin{};
+  std::array<bool, 2> mismatch{};
   if (supplied) {
     impl.families = std::move(supplied);
+    for (const Side side : {Side::Call, Side::Put}) {
+      if (impl.families->of_q(side) != nullptr) {
+        origin[side_slot(side)] =
+            kept != nullptr ? (*kept)[side_slot(side)] : ServeFamilyOrigin::Supplied;
+      }
+    }
   } else if (impl.policy.families == ServeFamilyMode::Build) {
-    impl.families = build_families(impl.nodes, family_inputs(fit), impl.policy,
-                                   impl.clocks.lazy_family_builds);
+    FamilyBuild built = build_families(impl.nodes, family_inputs(fit), impl.policy,
+                                       fit.serve_handoff.get());
+    impl.families = std::move(built.holder);
+    impl.clocks.lazy_family_builds = built.built;
+    origin = built.origin;
+    mismatch = built.mismatch;
   }
   for (const Side side : {Side::Call, Side::Put}) {
     ServeSideSupport &s = side == Side::Call ? impl.support.call : impl.support.put;
-    const AlSigmaQFamily *f = impl.family(side);
-    s.family = f != nullptr;
-    if (f != nullptr) {
-      s.sigma_lo = f->sigma_lo();
-      s.sigma_hi = f->sigma_hi();
-      s.q_lo = f->q_lo();
-      s.q_hi = f->q_hi();
-      s.family_bound_rel = impl.families->q_bound(side);
-#if ATX_VOL_SERVE_RECORD_K3
-      impl.envelopes[side_slot(side)] = build_family_error_envelope(*f);
-#endif
+    describe_side_family(impl, side, s);
+    s.origin = s.family ? origin[side_slot(side)] : ServeFamilyOrigin::None;
+    if (s.family) continue;
+    if (mismatch[side_slot(side)]) {
+      s.reason = ServeUnsupportedReason::HandoffMismatch;
     } else if (impl.policy.families == ServeFamilyMode::None && !impl.families) {
       s.reason = ServeUnsupportedReason::FamiliesNotBuilt;
     } else if (!(impl.tau >= kAlSigmaFamilyMinTau)) {
@@ -953,11 +1181,24 @@ void attach_ladders(Impl &impl) {
         ++support.ladders_ineligible;
         continue;
       }
-      const LadderInputs in{impl.spot,  impl.tau, impl.rate, impl.nodes[i].strike,
-                            s.sigma,    s.q,      side,      support.family_bound_rel,
-                            std::abs(s.family_price_delta)};
+      const ValidatedErrorEnvelope *env = impl.envelope(side);
+      LadderInputs in;
+      in.spot = impl.spot;
+      in.tau = impl.tau;
+      in.rate = impl.rate;
+      in.strike = impl.nodes[i].strike;
+      in.sigma = s.sigma;
+      in.q = s.q;
+      in.side = side;
+      in.envelope = env != nullptr && env->covered() ? env : nullptr;
+      in.sampled_rel = kSampledAuditSafety * support.family_bound_rel;
+      in.node_family_error = std::abs(s.family_price_delta);
+      LadderStatement statement;
       std::optional<NodeLadder> l = build_ladder(*f, in, impl.policy,
-                                                 impl.clocks.family_evaluations);
+                                                 impl.clocks.family_evaluations, statement);
+      s.ladder_plane_tail_usd = statement.tail;
+      s.ladder_plane_check_usd = statement.check;
+      s.ladder_family_bound_usd = statement.family_bound;
       if (!l) {
         ++support.ladders_ineligible;
         continue;
@@ -966,10 +1207,13 @@ void attach_ladders(Impl &impl) {
       l->edge_sign = side == Side::Put ? 1.0 : -1.0;
       l->inv_sd = 1.0 / (s.sigma * std::sqrt(impl.tau));
       s.ladder_certificate_usd = l->certificate_usd;
+      s.ladder_class = l->bound_class;
       s.tiers |= kServeNodeLadder;
       impl.ladder_of[2 * i + side_slot(side)] = static_cast<std::int32_t>(impl.ladders.size());
       impl.ladders.push_back(*l);
       ++support.ladders;
+      ++(l->bound_class == ServeBoundClass::RefinementValidated ? support.ladders_validated
+                                                                : support.ladders_sampled);
     }
   }
   impl.clocks.ladder_us = us_since(t0);
@@ -993,17 +1237,23 @@ void finish_support(Impl &impl) {
       family ? family_greeks : ServeGreekMask::none();
 }
 
+// Every heap block a record holds: the node and ladder vectors, the families' state and
+// EVERY geometry of the holder - the sigma family's and both (sigma, q) sides', each
+// allocated by construction whether or not a side was built (review-H0A m4).
 void measure_bytes(Impl &impl) {
   impl.bytes.nodes = impl.nodes.size() * sizeof(ServedNode);
   impl.bytes.ladders = impl.ladders.size() * sizeof(NodeLadder) +
                        impl.ladder_of.size() * sizeof(std::int32_t);
   impl.bytes.fixed = sizeof(Impl) + sizeof(SliceServeRecord);
   if (!impl.families) return;
+  impl.bytes.fixed += sizeof(DeAmSigmaFamilies);
   for (const Side side : {Side::Call, Side::Put}) {
     const AlSigmaQFamily *f = impl.family(side);
-    if (f == nullptr) continue;
-    impl.bytes.families += f->state_bytes();
-    impl.bytes.geometries += sizeof(AlExpiryGeometry::Impl);
+    if (f != nullptr) impl.bytes.families += f->state_bytes();
+  }
+  for (const AlExpiryGeometry *g : {&impl.families->geometry, &impl.families->q_geometry_put,
+                                    &impl.families->q_geometry_call}) {
+    if (g->impl() != nullptr) impl.bytes.geometries += sizeof(AlExpiryGeometry::Impl);
   }
 }
 
@@ -1029,13 +1279,18 @@ void stamp_version(Impl &impl, const QuoteSliceFit &fit) {
 
 [[nodiscard]] Result<std::shared_ptr<const SliceServeRecord>>
 build_record(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
-             std::shared_ptr<const DeAmSigmaFamilies> supplied) {
+             std::shared_ptr<const DeAmSigmaFamilies> supplied,
+             const std::array<ServeFamilyOrigin, 2> *kept = nullptr) {
   const auto t0 = Clock::now();
   const Status valid = validate_serve_record_policy(policy);
   if (!valid) return Err(valid.error());
   if (fit.fit_status != QuoteSliceFitStatus::Success || !fit.curve || !fit.prices ||
       fit.prices->nodes().empty()) {
     return Err(ErrorCode::Unavailable, "serve record: the fit has no certified price slice");
+  }
+  if (supplied && holder_mismatched(*supplied, fit)) {
+    return Err(ErrorCode::InvalidArgument,
+               "serve record: the supplied families were built for another expiry");
   }
   auto impl = std::make_unique<Impl>();
   copy_basics(*impl, fit, policy);
@@ -1045,7 +1300,7 @@ build_record(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
     impl->support.reason = ServeUnsupportedReason::DatedCash;
     impl->support.call.reason = impl->support.put.reason = ServeUnsupportedReason::DatedCash;
   } else {
-    attach_families(*impl, fit, std::move(supplied));
+    attach_families(*impl, fit, std::move(supplied), kept);
     const auto t_audit = Clock::now();
     audit_family_at_nodes(*impl);
     impl->support.call.between_node_bound_usd = audit_between_nodes(*impl, Side::Call);
@@ -1057,7 +1312,7 @@ build_record(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
   measure_bytes(*impl);
   stamp_version(*impl, fit);
   impl->clocks.total_us = us_since(t0);
-  return Ok(std::make_shared<const SliceServeRecord>(std::unique_ptr<const Impl>(std::move(impl))));
+  return Ok(SliceServeRecordAccess::make(std::move(impl)));
 }
 
 // ── Reads ──────────────────────────────────────────────────────────────────────────────
@@ -1126,19 +1381,38 @@ void set_greek(ServeAnswer &a, ServeGreekMask mask, ServeGreek g, double value,
   return p ? *p : kNaN;
 }
 
-// Ruling b: at the fit's spot the served price is the slice's; the map's price only
-// measures the gap to the Greeks' map.
+// One map's error statement in USD and what backs it.
+struct Statement {
+  double usd = kNaN;
+  ServeBoundClass cls = ServeBoundClass::None;
+};
+
+// Ruling b: at the fit's spot the served price is the slice's (Exact at a node, no
+// statement between nodes: review-H0A m3); the map's price only measures the gap to the
+// Greeks' map, whose own statement is carried beside. Elsewhere the price is the map's.
 void place_price(const Impl &impl, const Contract &c, double map_price, ServePriceSource map_src,
-                 ServeAnswer &a) noexcept {
+                 Statement map, ServeAnswer &a) noexcept {
   if (c.at_fit) {
     a.price = slice_price(impl, c, a.price_source);
     a.price_map_delta = std::abs(map_price - a.price);
-    if (a.price_source == ServePriceSource::SliceNode) a.certificate_usd = 0.0;
+    if (a.price_source == ServePriceSource::SliceNode) {
+      a.certificate_usd = 0.0;
+      a.certificate_class = ServeBoundClass::Exact;
+    } else {
+      a.certificate_usd = kNaN;
+      a.certificate_class = ServeBoundClass::None;
+    }
+    a.map_certificate_usd = map.usd;
+    a.map_certificate_class = map.cls;
   } else {
     a.price = map_price;
     a.price_source = map_src;
     a.price_map_delta = 0.0;
+    a.certificate_usd = map.usd;
+    a.certificate_class = map.cls;
   }
+  a.sampled = a.certificate_class == ServeBoundClass::Sampled ||
+              a.map_certificate_class == ServeBoundClass::Sampled;
 }
 
 [[nodiscard]] bool serve_ladder(const Impl &impl, const Contract &c, ServeGreekMask mask,
@@ -1177,8 +1451,8 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   a.route = ServeRoute::None;
   a.greek_source = ServeGreekSource::Ladder;
   a.convention.model = ServeGreekModel::NodeLadder;
-  a.certificate_usd = l->certificate_usd;
-  place_price(impl, c, p.v, ServePriceSource::Ladder, a);
+  place_price(impl, c, p.v, ServePriceSource::Ladder, Statement{l->certificate_usd, l->bound_class},
+              a);
   return true;
 }
 
@@ -1224,36 +1498,37 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   return true;
 }
 
-// The family tier's error bar: its probed bound x max(P, 1) inside the probed band, at a
-// node at least the family's measured error there; outside the band between nodes no
-// claim (NaN) - the probes never visit the deep wings.
-[[nodiscard]] double family_certificate(const Impl &impl, const Contract &c,
-                                        double price) noexcept {
-  const double bound = impl.side_support(c.side).family_bound_rel * std::max(price, 1.0);
-  if (c.served != nullptr && std::isfinite(c.served->family_price_delta)) {
-    return std::max(bound, std::abs(c.served->family_price_delta));
-  }
-  const bool probed = std::abs(std::log(c.strike / impl.spot)) <= kDeAmFamilyGridLogBand;
-  return probed ? bound : kNaN;
+// The family tier's statement: K3's per-point bound at the contract (review-W2ci For H1
+// item 2), RefinementValidated where the side's envelope covers the point; none otherwise
+// or when the request skips it (one family pass saved).
+[[nodiscard]] Statement family_statement(const Impl &impl, const Contract &c,
+                                         bool wanted) noexcept {
+  const AlSigmaQFamily *f = impl.family(c.side);
+  if (!wanted || f == nullptr) return {};
+  const double bound = point_bound(*f, impl.envelope(c.side), c.spot, c.strike, c.sigma, c.q);
+  if (!std::isfinite(bound)) return {};
+  return Statement{bound, ServeBoundClass::RefinementValidated};
 }
 
-[[nodiscard]] bool serve_family(const Impl &impl, const Contract &c, ServeGreekMask mask,
+[[nodiscard]] bool serve_family(const Impl &impl, const Contract &c, const ServeRequest &request,
                                 ServeAnswer &a, bool &box) noexcept {
   double map_price = kNaN;
-  if (!family_tier_read(impl, c, mask, a, map_price, box)) return false;
+  if (!family_tier_read(impl, c, request.greeks, a, map_price, box)) return false;
   a.tier = ServeTier::Family;
   a.route = ServeRoute::None;
-  a.certificate_usd = family_certificate(impl, c, map_price);
-  place_price(impl, c, map_price, ServePriceSource::Family, a);
+  place_price(impl, c, map_price, ServePriceSource::Family,
+              family_statement(impl, c, request.family_bound), a);
   return true;
 }
 
 // Certified: the slice at the fit's spot (Greeks from the family where it serves); at any
 // other spot the family answer with its price replaced by one AlProfile::Fast solve.
-[[nodiscard]] bool serve_certified(const Impl &impl, const Contract &c, ServeGreekMask mask,
-                                   ServeAnswer &a, bool &box) {
+[[nodiscard]] bool serve_certified(const Impl &impl, const Contract &c,
+                                   const ServeRequest &request, ServeAnswer &a, bool &box) {
+  const ServeGreekMask mask = request.greeks;
   double map_price = kNaN;
   const bool greeks = family_tier_read(impl, c, mask, a, map_price, box);
+  const Statement family = greeks ? family_statement(impl, c, request.family_bound) : Statement{};
   if (c.at_fit) {
     if (!greeks) {
       request_reasons(a, mask, ServeGreekReason::NoMap);
@@ -1262,7 +1537,7 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
     }
     a.tier = ServeTier::Certified;
     a.route = ServeRoute::None;
-    place_price(impl, c, map_price, ServePriceSource::None, a);
+    place_price(impl, c, map_price, ServePriceSource::None, family, a);
     if (!greeks) a.price_map_delta = kNaN;
     return std::isfinite(a.price);
   }
@@ -1276,6 +1551,10 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   a.price_source = ServePriceSource::FamilyFastConfirm;
   a.price_map_delta = std::abs(map_price - *fast);
   a.certificate_usd = al_profile_price_bound(AlProfile::Fast, *fast, impl.tau);
+  a.certificate_class = ServeBoundClass::KernelTested;
+  a.map_certificate_usd = family.usd;
+  a.map_certificate_class = family.cls;
+  a.sampled = false;
   return true;
 }
 
@@ -1299,6 +1578,27 @@ void refuse(ServeAnswer &a, ServeStatus status, ServeRoute route, ServeGreekMask
 
 [[nodiscard]] ServeTier last_servable(ServeTier tier_max) noexcept {
   return tier_max == ServeTier::Cold ? ServeTier::Certified : tier_max;
+}
+
+// The staleness gate of serve() and implied_vol() (review-H0A m1 / m2): with max_age_ns > 0
+// a request without a clock (now_ns <= 0) refuses Stale / ColdPath - it never fails open -
+// and one older than the policy refuses Stale / Rebuild. A clock before as_of (a replay)
+// is fresh.
+[[nodiscard]] bool fresh(const Impl &impl, std::int64_t now_ns, std::int64_t &age_ns,
+                         ServeStatus &status, ServeRoute &route) noexcept {
+  if (impl.policy.max_age_ns <= 0) return true;
+  if (now_ns <= 0) {
+    status = ServeStatus::Stale;
+    route = ServeRoute::ColdPath;
+    return false;
+  }
+  age_ns = now_ns - impl.version.as_of_ns;
+  if (age_ns > impl.policy.max_age_ns) {
+    status = ServeStatus::Stale;
+    route = ServeRoute::Rebuild;
+    return false;
+  }
+  return true;
 }
 
 // ── IV ─────────────────────────────────────────────────────────────────────────────────
@@ -1419,13 +1719,12 @@ void take_root(ServeIvAnswer &a, const Root &r) noexcept {
   a.evaluations = static_cast<std::uint8_t>(std::min(255, a.evaluations + r.evaluations));
 }
 
-#if ATX_VOL_SERVE_RECORD_K3
 // K3's enclosure: both ends of a bracket of width W around the root certified by the
 // family price -/+ its envelope bound (american_family_error.hpp).
 [[nodiscard]] bool family_enclosure(const Impl &impl, const AlSigmaQFamily &f, const Contract &c,
                                     double sigma, double target, ServeRootAcceptance &acc) {
-  const auto &env = impl.envelopes[side_slot(c.side)];
-  if (!env || !env->covered()) return false;
+  const ValidatedErrorEnvelope *env = impl.envelope(c.side);
+  if (env == nullptr || !env->covered()) return false;
   const double W = std::min(impl.policy.iv_tolerance, kIvRootRequirement) * (1.0 - 0x1p-20);
   const FamilyBoundedPrice lo = family_price_bounded(f, *env, c.spot, c.strike, sigma - 0.5 * W,
                                                      c.q);
@@ -1439,14 +1738,43 @@ void take_root(ServeIvAnswer &a, const Root &r) noexcept {
   acc.bound_iv = W;
   return true;
 }
-#endif
+
+// The ladder tier's root: Ok only on a RefinementValidated ladder whose bound / slope plus
+// the Newton distance meets iv_tolerance (review-W2ci M1 item 4, review-H0A m6). Returns
+// true when answered; `unconfirmed` when a root converged without being accepted.
+[[nodiscard]] bool ladder_iv(const Impl &impl, const Contract &c, double target,
+                             ServeIvAnswer &a, bool &box, bool &unconfirmed) noexcept {
+  if (c.served == nullptr) return false;
+  const NodeLadder *l = impl.ladder(c.node, c.side);
+  const double x = std::log(c.spot);
+  if (l == nullptr || !(x >= l->x_lo && x <= l->x_hi)) return false;
+  const Root r = ladder_root(*l, c.spot, target);
+  take_root(a, r);
+  box = r.outcome == RootOutcome::BelowBox || r.outcome == RootOutcome::AboveBox;
+  if (r.outcome != RootOutcome::Converged) return false;
+  const double bound = l->certificate_usd / r.slope + std::abs(a.newton_distance_vol);
+  if (l->bound_class != ServeBoundClass::RefinementValidated ||
+      !(bound <= impl.policy.iv_tolerance)) {
+    unconfirmed = true;
+    return false;
+  }
+  a.tier = ServeTier::Ladder;
+  a.status = ServeStatus::Ok;
+  a.route = ServeRoute::None;
+  a.acceptance.kind = ServeAcceptanceKind::LadderCertificate;
+  a.acceptance.error_class = ServeErrorClass::RefinementValidated;
+  a.acceptance.bound_iv = bound;
+  return true;
+}
 
 } // namespace
 
 // ── SliceServeRecord ──────────────────────────────────────────────────────────────────
 
-SliceServeRecord::SliceServeRecord(std::unique_ptr<const Impl> impl) noexcept
-    : impl_(std::move(impl)) {}
+SliceServeRecord::SliceServeRecord(Key key, std::unique_ptr<const Impl> impl) noexcept
+    : impl_(std::move(impl)) {
+  static_cast<void>(key);
+}
 SliceServeRecord::~SliceServeRecord() = default;
 
 std::span<const ServedNode> SliceServeRecord::nodes() const noexcept { return impl_->nodes; }
@@ -1472,12 +1800,11 @@ ServeAnswer SliceServeRecord::serve(const ServeRequest &request) const {
     refuse(a, ServeStatus::InvalidArgument, ServeRoute::None, mask);
     return a;
   }
-  if (impl.policy.max_age_ns > 0) {
-    a.age_ns = request.now_ns - impl.version.as_of_ns;
-    if (a.age_ns > impl.policy.max_age_ns) {
-      refuse(a, ServeStatus::Stale, ServeRoute::Rebuild, mask);
-      return a;
-    }
+  ServeStatus stale = ServeStatus::Ok;
+  ServeRoute stale_route = ServeRoute::None;
+  if (!fresh(impl, request.now_ns, a.age_ns, stale, stale_route)) {
+    refuse(a, stale, stale_route, mask);
+    return a;
   }
   if (impl.dated_cash) {
     refuse(a, ServeStatus::TierUnavailable, ServeRoute::ColdPath, mask);
@@ -1490,11 +1817,15 @@ ServeAnswer SliceServeRecord::serve(const ServeRequest &request) const {
   const Contract c = resolve(impl, request.strike, request.side, request.spot);
   if (c.served != nullptr && c.served->status == QuoteSliceEvaluationStatus::PriceOnly) {
     refuse(a, ServeStatus::PriceOnly, c.at_fit ? ServeRoute::None : ServeRoute::Refit, mask);
+    a.price_only_reason = c.served->reason; // C0's reason and interval travel with the answer
+    a.iv_lower = c.served->iv_lower;
+    a.iv_upper = c.served->iv_upper;
     if (c.at_fit) {
       a.price = c.served->price;
       a.price_source = ServePriceSource::SliceNode;
       a.tier = ServeTier::Certified;
       a.certificate_usd = 0.0;
+      a.certificate_class = ServeBoundClass::Exact;
     }
     return a;
   }
@@ -1509,10 +1840,10 @@ ServeAnswer SliceServeRecord::serve(const ServeRequest &request) const {
       done = serve_ladder(impl, c, mask, tried);
       break;
     case ServeTier::Family:
-      done = serve_family(impl, c, mask, tried, box);
+      done = serve_family(impl, c, request, tried, box);
       break;
     case ServeTier::Certified:
-      done = serve_certified(impl, c, mask, tried, box);
+      done = serve_certified(impl, c, request, tried, box);
       break;
     case ServeTier::Cold:
       break;
@@ -1537,7 +1868,9 @@ ServeIvAnswer SliceServeRecord::implied_vol(const ServeIvRequest &request) const
     a.route = ServeRoute::None;
     return a;
   }
-  if (impl.dated_cash) return a; // TierUnavailable, ColdPath
+  if (!fresh(impl, request.now_ns, a.age_ns, a.status, a.route)) return a;
+  // A Cold request is a route, never a solve inside the record (review-H0A m5).
+  if (request.tier == ServeTier::Cold || impl.dated_cash) return a; // TierUnavailable
   if (!(request.strike >= impl.strike_lo && request.strike <= impl.strike_hi)) {
     a.status = ServeStatus::OutOfDomain;
     a.route = ServeRoute::Refit;
@@ -1553,26 +1886,12 @@ ServeIvAnswer SliceServeRecord::implied_vol(const ServeIvRequest &request) const
   const auto first = static_cast<std::uint8_t>(request.tier);
   const auto last = static_cast<std::uint8_t>(last_servable(request.tier_max));
   bool box = false;
-  if (first == 0u && c.served != nullptr) {
-    const NodeLadder *l = impl.ladder(c.node, c.side);
-    const double x = std::log(c.spot);
-    if (l != nullptr && x >= l->x_lo && x <= l->x_hi) {
-      const Root r = ladder_root(*l, c.spot, request.target_price);
-      take_root(a, r);
-      if (r.outcome == RootOutcome::Converged) {
-        a.tier = ServeTier::Ladder;
-        a.status = ServeStatus::Ok;
-        a.route = ServeRoute::None;
-        a.acceptance.kind = ServeAcceptanceKind::LadderCertificate;
-        a.acceptance.bound_iv = l->certificate_usd / r.slope + std::abs(a.newton_distance_vol);
-        return a;
-      }
-      box = r.outcome == RootOutcome::BelowBox || r.outcome == RootOutcome::AboveBox;
-    }
-  }
+  bool unconfirmed = false;
+  if (first == 0u && ladder_iv(impl, c, request.target_price, a, box, unconfirmed)) return a;
   const AlSigmaQFamily *f = impl.family(c.side);
   if (last < 1u || f == nullptr) {
-    a.status = box ? ServeStatus::SigmaOutOfBox : ServeStatus::TierUnavailable;
+    a.status = unconfirmed ? ServeStatus::Unconfirmed
+                           : (box ? ServeStatus::SigmaOutOfBox : ServeStatus::TierUnavailable);
     return a;
   }
   const Root r = family_root(*f, c, request.target_price, impl.policy.iv_tolerance);
@@ -1584,13 +1903,11 @@ ServeIvAnswer SliceServeRecord::implied_vol(const ServeIvRequest &request) const
     return a;
   }
   a.tier = ServeTier::Family;
-#if ATX_VOL_SERVE_RECORD_K3
-  if (family_enclosure(impl, *f, c, r.sigma, request.target_price, a.acceptance)) {
+  if (first <= 1u && family_enclosure(impl, *f, c, r.sigma, request.target_price, a.acceptance)) {
     a.status = ServeStatus::Ok;
     a.route = ServeRoute::None;
     return a;
   }
-#endif
   if (last < 2u) {
     a.status = ServeStatus::Unconfirmed; // no validated bound: a confirm must accept it
     return a;
@@ -1642,6 +1959,15 @@ Status validate_serve_record_policy(const ServeRecordPolicy &p) {
   return Ok();
 }
 
+ServeRecordPolicy serve_record_policy_tick() noexcept {
+  ServeRecordPolicy p;
+  p.ladder_spot_nodes = 16;
+  p.ladder_sigma_nodes = 8;
+  p.ladder_sigma_half_width = 0.10;
+  p.ladder_window_max = 0.02;
+  return p;
+}
+
 Result<std::shared_ptr<const SliceServeRecord>> build_serve_record(const QuoteSliceFit &fit,
                                                                   const ServeRecordPolicy &policy) {
   return build_record(fit, policy, nullptr);
@@ -1670,6 +1996,8 @@ const char *to_string(ServeStatus value) noexcept {
   case ServeStatus::NonMonotoneBand: return "non_monotone_band";
   case ServeStatus::Unconfirmed: return "unconfirmed";
   case ServeStatus::InvalidArgument: return "invalid_argument";
+  case ServeStatus::BudgetExhausted: return "budget_exhausted";
+  case ServeStatus::Invalidated: return "invalidated";
   }
   return "unknown";
 }
@@ -1711,11 +2039,75 @@ const char *to_string(ServeUnsupportedReason value) noexcept {
   case ServeUnsupportedReason::FamilyRefused: return "family_refused";
   case ServeUnsupportedReason::FamiliesNotBuilt: return "families_not_built";
   case ServeUnsupportedReason::NoServedVolatility: return "no_served_volatility";
+  case ServeUnsupportedReason::HandoffMismatch: return "handoff_mismatch";
+  }
+  return "unknown";
+}
+
+const char *to_string(ServeBoundClass value) noexcept {
+  switch (value) {
+  case ServeBoundClass::None: return "none";
+  case ServeBoundClass::Exact: return "exact";
+  case ServeBoundClass::RefinementValidated: return "refinement_validated";
+  case ServeBoundClass::Sampled: return "sampled";
+  case ServeBoundClass::KernelTested: return "kernel_tested";
   }
   return "unknown";
 }
 
 namespace detail {
+
+void stamp_serve_handoff(QuoteSliceFit &out, const DeAmSigmaFamilies *families) {
+  if (families == nullptr || out.fit_status != QuoteSliceFitStatus::Success) {
+    out.serve_handoff.reset();
+    return;
+  }
+  auto handoff = std::make_shared<QuoteSliceServeHandoff>();
+  bool any = false;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const AlSigmaQFamily *f = families->of_q(side);
+    if (f == nullptr) continue;
+    const AlExpiryGeometry &g =
+        side == Side::Put ? families->q_geometry_put : families->q_geometry_call;
+    QuoteSliceServeHandoff::Family &h = handoff->sides[side == Side::Put ? 0u : 1u];
+    h.present = true;
+    h.geometry_T = g.T();
+    h.geometry_r = g.r();
+    h.geometry_q = g.q();
+    h.anchor = f->anchor();
+    h.sigma_lo = f->sigma_lo();
+    h.sigma_hi = f->sigma_hi();
+    h.n_sigma = f->n_sigma();
+    h.q_lo = f->q_lo();
+    h.q_hi = f->q_hi();
+    h.n_q = f->n_q();
+    if (const ValidatedErrorEnvelope *env = families->q_envelope(side)) {
+      h.envelope = *env;
+      h.envelope.family = nullptr;
+    }
+    h.q_bound = families->q_bound(side);
+    // Two of the fitter family's own prices off its nodes (the identity the rebuild must
+    // reproduce): at the anchor strike mid-box, and 5 % out of the money low in the box.
+    const double moneyness = side == Side::Put ? 0.95 : 1.05;
+    const std::array<QuoteSliceServeHandoff::Probe, 2> at{
+        QuoteSliceServeHandoff::Probe{h.anchor, std::sqrt(h.sigma_lo * h.sigma_hi),
+                                      0.5 * (h.q_lo + h.q_hi), kNaN},
+        QuoteSliceServeHandoff::Probe{h.anchor * moneyness,
+                                      h.sigma_lo * std::pow(h.sigma_hi / h.sigma_lo, 0.3),
+                                      h.q_lo + 0.7 * (h.q_hi - h.q_lo), kNaN}};
+    for (std::size_t i = 0; i < at.size(); ++i) {
+      h.probes[i] = at[i];
+      const AlSigmaQFamilyPrice fp = f->price(h.anchor, at[i].K, at[i].sigma, at[i].q);
+      h.probes[i].price = fp.status == AlSigmaQFamilyStatus::Ok ? fp.price : kNaN;
+    }
+    any = true;
+  }
+  if (any) {
+    out.serve_handoff = std::move(handoff);
+  } else {
+    out.serve_handoff.reset();
+  }
+}
 
 std::shared_ptr<const DeAmSigmaFamilies> build_serve_families(const QuoteSliceFit &fit,
                                                               const ServeRecordPolicy &policy) {
@@ -1726,14 +2118,92 @@ std::shared_ptr<const DeAmSigmaFamilies> build_serve_families(const QuoteSliceFi
   Impl impl;
   copy_basics(impl, fit, policy);
   identify_nodes(impl, fit);
-  std::size_t built = 0;
-  return build_families(impl.nodes, family_inputs(fit), policy, built);
+  return build_families(impl.nodes, family_inputs(fit), policy, nullptr).holder;
 }
 
 Result<std::shared_ptr<const SliceServeRecord>>
 build_serve_record_with(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
                         std::shared_ptr<const DeAmSigmaFamilies> families) {
   return build_record(fit, policy, std::move(families));
+}
+
+Result<std::shared_ptr<const SliceServeRecord>>
+build_serve_record_on(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
+                      const SliceServeRecord &first) {
+  const Impl &held = SliceServeRecordAccess::impl(first);
+  if (!held.families) return build_record(fit, policy, nullptr);
+  // side_slot order (call, put).
+  const std::array<ServeFamilyOrigin, 2> kept{held.support.call.origin, held.support.put.origin};
+  return build_record(fit, policy, held.families, &kept);
+}
+
+std::optional<ServeRecordContract> serve_record_contract(const SliceServeRecord &record,
+                                                         double strike, Side side) {
+  const Impl &impl = SliceServeRecordAccess::impl(record);
+  if (!positive(strike) || !valid_side(side) ||
+      !(strike >= impl.strike_lo && strike <= impl.strike_hi)) {
+    return std::nullopt;
+  }
+  const Contract c = resolve(impl, strike, side, impl.spot);
+  return ServeRecordContract{impl.spot, impl.tau, impl.rate, c.q, impl.al_opts};
+}
+
+std::optional<QuoteSliceValue> serve_record_value(const QuoteSliceFit &fit, double strike,
+                                                  Side side) {
+  const SliceServeRecord *record = fit.serve_record.get();
+  if (record == nullptr || fit.fit_status != QuoteSliceFitStatus::Success || !fit.prices ||
+      !fit.curve || !positive(strike) || !valid_side(side)) {
+    return std::nullopt;
+  }
+  const Impl &impl = SliceServeRecordAccess::impl(*record);
+  const auto nodes = fit.prices->nodes();
+  // The record must be THIS fit's: the market and clock, and the certified node prices
+  // that bracket the strike, bit for bit.
+  if (bits_of(impl.spot) != bits_of(fit.market.spot) ||
+      bits_of(impl.tau) != bits_of(fit.market.variance_years) ||
+      bits_of(impl.rate) != bits_of(fit.diagnostics.effective_rate) ||
+      impl.nodes.size() != nodes.size() ||
+      !(strike >= impl.strike_lo && strike <= impl.strike_hi)) {
+    return std::nullopt;
+  }
+  const auto at = std::lower_bound(nodes.begin(), nodes.end(), strike,
+      [](const AmericanPriceNode &n, double k) { return n.strike < k; });
+  const auto hi = static_cast<std::size_t>(at - nodes.begin());
+  const bool is_node = at != nodes.end() && at->strike == strike;
+  const auto same_node = [&](std::size_t i) {
+    const double mine = side == Side::Call ? impl.nodes[i].call.price : impl.nodes[i].put.price;
+    const double fits = side == Side::Call ? nodes[i].call : nodes[i].put;
+    return bits_of(impl.nodes[i].strike) == bits_of(nodes[i].strike) &&
+           bits_of(mine) == bits_of(fits);
+  };
+  if (hi >= nodes.size() || !same_node(hi) || (!is_node && (hi == 0 || !same_node(hi - 1)))) {
+    return std::nullopt;
+  }
+  if (is_node) {
+    const std::uint8_t bit = side == Side::Call ? 1u : 2u;
+    // An unmoved node serves the curve's volatility (no inversion to save); a price-only
+    // node side is never identified.
+    if (!flagged(fit.moved_nodes, hi, bit) || flagged(fit.price_only_nodes, hi, bit)) {
+      return std::nullopt;
+    }
+  }
+  if (!detail::serves(fit, strike, side)) return std::nullopt; // withheld: the query types it
+  const std::optional<double> price = fit.prices->price(strike, side);
+  if (!price) return std::nullopt;
+  ServeIvRequest r;
+  r.strike = strike;
+  r.side = side;
+  r.spot = impl.spot;
+  r.target_price = *price;
+  r.tier = ServeTier::Family;
+  r.tier_max = ServeTier::Family;
+  const ServeIvAnswer iv = record->implied_vol(r);
+  if (iv.status != ServeStatus::Ok || iv.acceptance.kind != ServeAcceptanceKind::Skipped ||
+      iv.acceptance.error_class != ServeErrorClass::RefinementValidated ||
+      !(iv.sigma - iv.acceptance.bound_iv > kIvMin)) {
+    return std::nullopt;
+  }
+  return QuoteSliceValue{iv.sigma, *price};
 }
 
 } // namespace detail

@@ -17,6 +17,11 @@
 
 namespace atx::vol {
 
+// Lane H1 (phase B): the fitter's family hand-off (internal, slice_serve_record_detail.hpp)
+// and the serving record (slice_serve_record.hpp) a fit may carry (QuoteSliceFit).
+struct QuoteSliceServeHandoff;
+class SliceServeRecord;
+
 // A single expiry, with separate variance and funding clocks. Volatility is
 // annualized on variance_years; rate and continuous_yield on calendar_years.
 // continuous_yield excludes any separately supplied cash dividends.
@@ -858,6 +863,16 @@ struct QuoteSliceFit {
   // Caller-supplied snapshot provenance (clocks, spot and carry versions). fit_quote_slice
   // leaves it default; fit_quote_surface copies QuoteSurfaceExpiry::snapshot.
   QuoteSliceSnapshotInfo snapshot{};
+  // Lane H1 (phase B). Both empty by default; neither changes a fitted or served value.
+  // serve_handoff: what the last certification of this fit (certify_and_serve) read from
+  // its (sigma, q) families - set only when the fit ran with deam_family_q - for the
+  // serve_build stage's record builder (build_serve_record). serve_record: a serving
+  // record built from THIS fit and attached by the caller; when present,
+  // evaluate_quote_slice answers a between-node or moved-node volatility from the record's
+  // family where lane K3's enclosure accepts the root, and as without it everywhere else
+  // (slice_serve_record.hpp).
+  std::shared_ptr<const QuoteSliceServeHandoff> serve_handoff;
+  std::shared_ptr<const SliceServeRecord> serve_record;
 };
 
 // The American model of a fit: the dated-cash lattice for DatedCash, else Andersen-Lake.
@@ -950,6 +965,10 @@ fit_quote_slice(const QuoteSliceMarket &market, std::span<const QuoteSliceQuote>
 // For allocation-free PRICE-ONLY serving, call served_quote_slice_price(fit, K, side).
 // A slice enforces strike constraints; publish several expiries together only
 // after check_american_calendar has accepted their overlapping price domains.
+// Fast path (lane H1, opt-in by QuoteSliceFit::serve_record): a between-node or moved-node
+// query whose record family root lane K3's enclosure accepts returns the same certified
+// price with that root (within the record's iv_tolerance of the accurate root) instead of
+// the cold inversion; every other query is answered as without a record.
 [[nodiscard]] Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike,
                                                            Side side);
 

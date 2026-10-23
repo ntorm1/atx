@@ -25,6 +25,64 @@ most 8.3e-9 USD (a root moves inside its certified bracket). Pinned by
 review-K5 m2) `AmericanIvPremium.FamilyEnclosureCertifiesTheEndsItServes`; design note
 `docs/sigma-q-family-error-envelope.md` section 9.
 
+### NEW — live query: the fitter's hand-off, the serve book, the evaluate_quote_slice fast path (lane H1)
+
+**Hand-off.** `certify_and_serve` now ends with `detail::stamp_serve_handoff`: when the fit
+ran with `deam_family_q` families, `QuoteSliceFit::serve_handoff` carries their recipe, lane
+K3's validated envelope, the grid bound and two of their own prices; `build_serve_record`
+re-prepares the families from it and accepts them only when both prices and the envelope are
+reproduced bit for bit (else `ServeUnsupportedReason::HandoffMismatch`). No fitted or served
+number reads it: the 9 default parity hashes and K4's 4 native-route hashes are unchanged.
+
+**Serve book** (`api/fitting/serve_book.hpp`). Immutable copy-on-write versions of
+per-expiry records, published by one atomic store (`ServeBookTransaction::commit`; a
+publisher that dies before it publishes nothing), read through per-thread `ServeBookReader`s
+that re-pin only when the version counter moves, retired versions reclaimed on the publisher
+once no reader holds them. Readers cap every request at `primary_tier_max` (Family: no
+reader-triggered cold solve), answer `Invalidated` past an entry's `expiry_ns` /
+`next_event_ns`, `Stale` without a clock, and queue rebuilds on a bounded, deduplicated
+queue for `std::jthread` workers (`BudgetExhausted` when full). `serve_chain` serves a chain
+from one pinned version into `ChainTickOutputs` plus one fixed-size `ServedChainStatement`
+per contract (status, route, tier, certificate class and USD, the Greek map's statement,
+`sampled`, a price-only node's reason and IV interval); a `Sampled` answer's `TickStatus` is
+`Fallback`, never `Ok` (review-H1 F1). `serve_build` publishes the first usable
+bundle (tiers 1-2), then the laddered record on the same families. New `ServeStatus` values
+`BudgetExhausted` (11), `Invalidated` (12). `ServeAnswer` gains `price_only_reason`,
+`iv_lower`, `iv_upper` (lane C0's typed price-only answer at the node). Normal queries
+allocate nothing.
+
+**Fast path.** `evaluate_quote_slice` reads `QuoteSliceFit::serve_record` when the caller
+attached one built from that fit: a between-node or moved-node volatility is the record's
+family root of the same certified price where K3's enclosure accepts it (within
+`iv_tolerance`); everything else is answered as before. Opt-in by the record's presence.
+
+**Quote bench.** Opt-in `graded.serve_records` (+ `serve_record_profile`: default, tick,
+no_ladders) builds and publishes every served slice's record after its fit (B0's new
+`serve_build` stage, `stages_json` `fit_clock_s`, `ready_to_quote_s` timed) and audits the
+fast path against the record-free answer, listing every difference with both volatilities'
+Newton distances to the accurate root. Off: byte-identical predictions; the stage table
+gains a `serve_build` row reported `not_built`.
+
+### CHANGED — serving record statements rest on K3's validated per-point bound (lane H1)
+
+**Bound provenance (review-W2ci m3).** The record's families are now certified through lane
+K3's `deam_family_certify` (validated envelope, 9-probe audit, grid bound) whether handed by
+the fitter or built by the record; the file-local copy of the pre-K3 sampled
+`deam_family_probe_worst` bound is deleted. Family-tier `certificate_usd` is K3's per-point
+bound (`family_price_bounded`) at the contract, never the domain-wide scalar. Every statement
+carries `ServeBoundClass` (`Exact`, `RefinementValidated`, `Sampled`, `KernelTested`); a
+`Sampled` answer sets `ServeAnswer::sampled` and is never called certified. A ladder is
+`RefinementValidated` only when its Chebyshev tail verifies and K3's per-point bounds cover
+its samples; otherwise it is served `Sampled` (`ServeRecordPolicy::sampled_ladders`, default
+on) or dropped (off). **Behaviour changes:** a ladder IV root is `Ok` only on a validated
+statement within `iv_tolerance` (the default 12 × 6 ladder's roots are now `Unconfirmed`;
+`serve_record_policy_tick()` accepts them); a put ladder K3's put envelope leaves unverified
+is `Sampled` (the fixture's, until K5); the piecewise-linear slice between nodes claims no
+certificate (NaN, review-H0A m3); `max_age_ns` without a request clock refuses (`Stale` /
+`ColdPath`, m2) and IV is stale-checked (m1); `implied_vol` with `tier = Cold` is a route, no
+solve (m5); `bytes()` counts all three geometries of the holder (m4); every record's
+`policy_sha256` changes.
+
 ### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
 
 `ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` now default to 1, since both lanes

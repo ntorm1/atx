@@ -25,6 +25,7 @@
 #include "fitting/quote_slice_vol_space.hpp"
 #include "fitting/rung_memo.hpp"
 #include "fitting/slice_channel.hpp"
+#include "fitting/slice_serve_record_detail.hpp" // lane H1: the hand-off and the fast path
 #include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
@@ -482,6 +483,13 @@ const char *to_string(QuoteSliceRepairOutcome value) noexcept {
 }
 
 Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike, Side side) {
+  // Lane H1: opt-in by the record's presence - a between-node or moved-node volatility
+  // from the record's family where lane K3's enclosure accepts it, else the path below.
+  if (fit.serve_record) {
+    if (const std::optional<QuoteSliceValue> fast = detail::serve_record_value(fit, strike, side)) {
+      return Ok(*fast);
+    }
+  }
   const auto answer = query_quote_slice(fit, strike, side);
   if (!answer) {
     return Err(answer.error());
@@ -1865,6 +1873,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     out.moved_nodes = std::move(repaired);
   }
   align_with_query(out, quotes);
+  // Lane H1 (phase B): hand the families this certification read to the serving record's
+  // builder (serve_build, off the fit clock). Nothing served changes; no families, none.
+  detail::stamp_serve_handoff(out, families);
 }
 
 Status validate_channel(const QuoteSliceChannelConfig &c) {
