@@ -805,6 +805,14 @@ tolerance is 1e-9 here and 1e-7 there). Every Standard route below is the route 
 Worst RESOLVED |IV bp|: **Standard -2.865 (B2c), Refined -0.646 (E20c).** The historical 301
 lattice reaches -34.016 (D12c).
 
+These two numbers are the routes' ACCURACY CLASS: Standard <= 3 bp and Refined <= 1 bp of IV
+on D0's 41 RESOLVED rows, in one convention (spot-shift liquidator). They are the lane's
+published class, not a brief bound. The plan's D1 objective is "converged model reference
+within frozen price / root tolerances", and the brief's bar is D0's own u. That objective is
+NOT met: the per-event drift misses u on 3 of 4 chains on Refined and on all 4 on Standard
+(11.3). Refined C8 / D12 sit at 0.007-0.015 bp, above the 1e-7 IV root tolerance (review-D1,
+ruling A(i)).
+
 **Rows the claim does not cover, stated.**
 - **UNRESOLVED (5): F1c, F1p, F2c, F2p, ILp.** The reference cannot certify a root at the 1e-7
   IV contract on these rows (section 5).
@@ -838,102 +846,153 @@ or at or below zero.
 
 ### 11.6 Sensitivities against bump-and-revalue on the reference
 
-**What the bundle is** (`american_discrete_div_production_greeks`; the batch is bit-identical):
-- delta and gamma: the t = 0 stencil;
-- vega: a central 10 % sigma bump;
-- rho / phi: central 1e-3 bumps;
-- dP/dD_i: amount bumps;
-- theta / charm: the two-step stencils;
-- the event-aware one-day roll.
-Each is one route with fixed nodes. Unsupported is NaN with a bit, never 0.
+**What the bundle is** (`american_discrete_div_production_greeks`; the batch's `greeks()` is
+bit-identical). Fix round 1 (review-D1 M1) changed delta, gamma and vega.
+- **delta and gamma:** the t = 0 stencil. On the Refined route they take the BBS pair's
+  Richardson, (n d_n - m d_m) / (n - m), as the price does.
+- **vega:** the Richardson pair of central sigma bumps at h = 10 % and h / 2,
+  (4 v(h / 2) - v(h)) / 3.
+- **rho / phi:** central 1e-3 bumps.
+- **dP/dD_i:** amount bumps.
+- **theta / charm:** the fine lattice's two-step stencils.
+- **the event-aware one-day roll.**
 
-**What the reference is.** D0's PDE on a fixed common-mode grid (800 / 200 per year at level
-2): central differences at h and h/2 with one Richardson step. Delta and gamma are the PDE's
-own centre-node stencil; `+-` is the bump study's spread. The lattice columns are Standard at
-301 / 601 / 1201 and Refined: the step study.
+Each is computed on one route with fixed nodes. An unsupported greek is NaN, with its bit
+and a typed reason (`DiscreteDivUnsupportedReason`), never 0.
 
-| id | greek | reference (+- bump spread) | std 301 | std 601 | std 1201 | refined | err std 301 | err refined |
-|---|---|---|---|---|---|---|---|---|
-| A2p | delta | -0.48198164 +- 0.0e+00 | -0.481666 | -0.481824 | -0.481902 | -0.481915 | +3.15e-04 | +6.65e-05 |
-| A2p | gamma | 0.023820959 +- 0.0e+00 | 0.0237588 | 0.0237898 | 0.0238053 | 0.0238084 | -6.22e-05 | -1.26e-05 |
-| A2p | vega | 27.660532 +- 2.6e-04 | 27.6834 | 27.671 | 27.6647 | 27.6584 | +2.29e-02 | -2.12e-03 |
-| A2p | rho | -20.794507 +- 6.0e-04 | -20.8212 | -20.8096 | -20.7995 | -20.7886 | -2.67e-02 | +5.86e-03 |
-| A2p | phi | 18.379389 +- 1.9e-04 | 18.4003 | 18.391 | 18.3829 | 18.3742 | +2.09e-02 | -5.21e-03 |
-| A2p | theta | -5.2288344 +- 1.5e-04 | -5.23659 | -5.23289 | -5.23103 | -5.23197 | -7.76e-03 | -3.14e-03 |
-| A2p | dP/dD1 | 0.51413842 +- 5.8e-08 | 0.513996 | 0.514012 | 0.514082 | 0.514152 | -1.43e-04 | +1.32e-05 |
-| A2p | roll 1d | -0.020813763 +- 0.0e+00 | -0.0207408 | -0.0207264 | -0.0207201 | -0.0207146 | +7.29e-05 | +9.91e-05 |
-| A2p | roll events crossed | 0 (cash 0.0000) | | | | | | |
-| B3p | delta | -0.43378418 +- 0.0e+00 | -0.433409 | -0.433619 | -0.43369 | -0.433695 | +3.75e-04 | +8.97e-05 |
-| B3p | gamma | 0.015739895 +- 0.0e+00 | 0.0156984 | 0.0157298 | 0.0157295 | 0.0157317 | -4.15e-05 | -8.20e-06 |
-| B3p | vega | 39.343181 +- 1.6e-04 | 39.3916 | 39.3754 | 39.3659 | 39.3415 | +4.85e-02 | -1.63e-03 |
-| B3p | rho | -52.743096 +- 5.6e-03 | -52.7645 | -52.7485 | -52.7472 | -52.7413 | -2.14e-02 | +1.78e-03 |
-| B3p | phi | 43.364927 +- 1.8e-03 | 43.3781 | 43.3734 | 43.3679 | 43.3644 | +1.32e-02 | -4.86e-04 |
-| B3p | theta | -2.8081719 +- 8.6e-07 | -2.81161 | -2.81342 | -2.80904 | -2.80976 | -3.44e-03 | -1.59e-03 |
-| B3p | dP/dD1 | 0.51202446 +- 7.2e-06 | 0.510932 | 0.498021 | 0.510958 | 0.512032 | -1.09e-03 | +7.11e-06 |
-| B3p | roll 1d | -0.011162424 +- 0.0e+00 | -0.0111824 | -0.0112415 | -0.0111724 | -0.0111623 | -2.00e-05 | +1.44e-07 |
-| B3p | roll events crossed | 0 (cash 0.0000) | | | | | | |
-| C4c | delta | 0.63378496 +- 0.0e+00 | 0.633937 | 0.633897 | 0.633833 | 0.633823 | +1.52e-04 | +3.85e-05 |
-| C4c | gamma | 0.015581996 +- 0.0e+00 | 0.0155443 | 0.0155715 | 0.0155764 | 0.0155739 | -3.76e-05 | -8.13e-06 |
-| C4c | vega | 36.740286 +- 1.3e-03 | 36.5637 | 36.7192 | 36.7235 | 36.7301 | -1.77e-01 | -1.02e-02 |
-| C4c | rho | 43.960915 +- 3.7e-02 | 43.8179 | 43.9959 | 43.9048 | 43.8584 | -1.43e-01 | -1.02e-01 |
-| C4c | phi | -53.81144 +- 2.3e-01 | -53.6764 | -53.9041 | -53.8231 | -53.787 | +1.35e-01 | +2.44e-02 |
-| C4c | theta | -6.9162622 +- 3.4e-05 | -6.92268 | -6.9224 | -6.91915 | -6.91825 | -6.42e-03 | -1.99e-03 |
-| C4c | dP/dD1 | -0.6215135 +- 1.1e-07 | -0.621559 | -0.621572 | -0.621537 | -0.621506 | -4.52e-05 | +7.22e-06 |
-| C4c | roll 1d | -0.027467955 +- 0.0e+00 | -0.0270435 | -0.0280939 | -0.0271827 | -0.0261712 | +4.24e-04 | +1.30e-03 |
-| C4c | roll events crossed | 0 (cash 0.0000) | | | | | | |
-| D12p | delta | -0.42151882 +- 0.0e+00 | -0.420774 | -0.421142 | -0.421329 | -0.421341 | +7.45e-04 | +1.77e-04 |
-| D12p | gamma | 0.0096382139 +- 0.0e+00 | 0.00960907 | 0.00962359 | 0.00963094 | 0.00963207 | -2.91e-05 | -6.15e-06 |
-| D12p | vega | 63.718271 +- 6.4e-04 | 63.7598 | 63.7417 | 63.728 | 63.7148 | +4.15e-02 | -3.43e-03 |
-| D12p | rho | -153.12924 +- 5.1e-01 | -152.891 | -152.935 | -152.955 | -152.973 | +2.38e-01 | +1.56e-01 |
-| D12p | phi | 109.71669 +- 5.7e-03 | 109.597 | 109.687 | 109.711 | 109.735 | -1.20e-01 | +1.85e-02 |
-| D12p | theta | -0.6694102 +- 5.2e-06 | -0.671369 | -0.670397 | -0.669926 | -0.670302 | -1.96e-03 | -8.92e-04 |
-| D12p | dP/dD1 | 0.4258465 +- 4.3e-08 | 0.42568 | 0.425756 | 0.425799 | 0.425841 | -1.67e-04 | -5.83e-06 |
-| D12p | roll 1d | -0.0026601588 +- 0.0e+00 | -0.00234302 | -0.00267015 | -0.00268672 | -0.00270401 | +3.17e-04 | -4.39e-05 |
-| D12p | roll events crossed | 0 (cash 0.0000) | | | | | | |
-| E20p | delta | -0.73509053 +- 0.0e+00 | -0.73382 | -0.734453 | -0.734772 | -0.7348 | +1.27e-03 | +2.90e-04 |
-| E20p | gamma | 0.015537642 +- 0.0e+00 | 0.015524 | 0.0155308 | 0.0155342 | 0.0155344 | -1.36e-05 | -3.25e-06 |
-| E20p | vega | 29.34689 +- 9.5e-03 | 29.2991 | 29.2819 | 29.2749 | 29.2682 | -4.78e-02 | -7.87e-02 |
-| E20p | rho | -55.211237 +- 1.3e-03 | -55.228 | -55.2588 | -55.2099 | -55.1615 | -1.67e-02 | +4.97e-02 |
-| E20p | phi | 43.863039 +- 6.1e-04 | 43.8769 | 43.9033 | 43.8605 | 43.818 | +1.39e-02 | -4.50e-02 |
-| E20p | theta | -1.0898609 +- 5.1e-05 | -1.09335 | -1.09161 | -1.09075 | -1.09073 | -3.49e-03 | -8.68e-04 |
-| E20p | dP/dD1 | 0.76596261 +- 8.5e-08 | 0.765814 | 0.765685 | 0.765881 | 0.766076 | -1.49e-04 | +1.13e-04 |
-| E20p | roll 1d | -0.0043288103 +- 0.0e+00 | -0.00101996 | -0.0037761 | -0.00381307 | -0.00385106 | +3.31e-03 | +4.78e-04 |
-| E20p | roll events crossed | 0 (cash 0.0000) | | | | | | |
-| F1c | delta | 0.98967585 +- 0.0e+00 | 0.989583 | 0.989642 | 0.989647 | 0.989648 | -9.28e-05 | -2.78e-05 |
-| F1c | gamma | 0.0016319532 +- 0.0e+00 | 0.00163944 | 0.00163439 | 0.00163446 | 0.00163439 | +7.49e-06 | +2.44e-06 |
-| F1c | vega | 1.8508761 +- 3.7e-03 | 1.8802 | 1.88134 | 1.87898 | 1.87563 | +2.93e-02 | +2.48e-02 |
-| F1c | rho | 30.447139 +- 7.9e-06 | 30.4527 | 30.4497 | 30.4479 | 30.446 | +5.52e-03 | -1.10e-03 |
-| F1c | phi | -44.5371 +- 4.2e-06 | -44.5424 | -44.5395 | -44.5378 | -44.5361 | -5.28e-03 | +1.03e-03 |
-| F1c | theta | -3.216217 +- 1.6e-05 | -3.21268 | -3.21412 | -3.21554 | -3.21552 | +3.53e-03 | +7.00e-04 |
-| F1c | dP/dD1 | -0.00052793797 +- 8.7e-08 | -0.000711452 | -0.000363144 | -0.000443573 | -0.000520805 | -1.84e-04 | +7.13e-06 |
-| F1c | roll 1d | -0.012750274 +- 0.0e+00 | -0.0127151 | -0.0126339 | -0.0127574 | -0.0128755 | +3.51e-05 | -1.25e-04 |
-| F1c | roll events crossed | 0 (cash 0.0000) | | | | | | |
-| B1p | delta | -0.46930873 +- 0.0e+00 | -0.469002 | -0.46915 | -0.469231 | -0.46925 | +3.07e-04 | +5.90e-05 |
-| B1p | gamma | 0.018533504 +- 0.0e+00 | 0.0184896 | 0.0185119 | 0.0185227 | 0.0185253 | -4.39e-05 | -8.24e-06 |
-| B1p | vega | 37.686068 +- 1.0e-03 | 37.7157 | 37.6959 | 37.6871 | 37.6787 | +2.96e-02 | -7.38e-03 |
-| B1p | rho | -36.676882 +- 1.6e-03 | -36.7458 | -36.7137 | -36.6931 | -36.674 | -6.89e-02 | +2.85e-03 |
-| B1p | phi | 31.152915 +- 5.6e-04 | 31.2012 | 31.1796 | 31.164 | 31.1498 | +4.83e-02 | -3.14e-03 |
-| B1p | theta | -3.5289351 +- 1.0e-05 | UNSUPPORTED (NaN) | UNSUPPORTED (NaN) | -3.52982 | -3.53058 | +nan | -1.65e-03 |
-| B1p | dP/dD1 | 0.46953479 +- 1.0e-07 | 0.469542 | 0.469389 | 0.469524 | 0.469659 | +7.12e-06 | +1.25e-04 |
-| B1p | roll 1d | -0.013553926 +- 0.0e+00 | -0.0142075 | -0.0187193 | -0.0138087 | -0.0139313 | -6.54e-04 | -3.77e-04 |
-| B1p | roll events crossed | 1 (cash 3.0000) | | | | | | |
+**The vega rule.** Vega is UNSUPPORTED (reason `ExerciseDominated`) on an American call with
+an in-life ex-date tau_i where both hold:
+- early exercise just before tau_i can pay, D_i > K (1 - e^{-r (t_next - tau_i)});
+- the cum-dividend dated forward there is at least 2 sd in the money,
+  ln(F(tau_i-) / K) >= 2 sigma sqrt(tau_i).
 
-**Claims and what the study finds.** The slow test asserts the Refined route against these
-bounds. They were written before this study was run, and they were not moved after it:
-- **Holds:** rho within 0.5 % (worst C4c 0.23 %), dP/dD within 2e-3 (worst 1.3e-4), roll within
-  2e-3 USD (worst 1.3e-3, C4c).
-- **Fails: delta within 2e-4.** E20p is 2.9e-4 off; the rest are at most 1.8e-4. The error is
-  the stencil's secant over +-1.44 % of spot. It halves with each doubling of N (E20p Standard
-  1.27e-3 / 6.4e-4 / 3.2e-4 at 301 / 601 / 1201).
-- **Fails: vega within 0.2 %, on E20p and F1c.**
-  - E20p is -0.27 %, the bias of the 10 % bump. A bump-size study (below) measures -0.065 % at
-    5 % and +0.003 % with a 10 % / 5 % Richardson pair.
-  - F1c is +1.3 to +1.7 % at every N (301 / 601 / 1201 +1.59 / +1.65 / +1.52 %, Refined
-    +1.34 %) and at every Refined bump size (1.29-1.34 %). F1c is an UNRESOLVED row, deep in
-    the money before a late ex-date. The historical 301 lattice is +1.7 % there too (D0
-    section 8).
-  The slow ctest `atx-vol-discrete-div-production-matrix` is therefore red on these three
-  assertions. They are findings, not tolerances to widen.
+On D0's 50 rows the rule covers F1c (z = 2.23), E64c (price-only anyway, z = 9.6) and no
+RESOLVED row. The study below brackets it with D0 group F's other rows, where vega is served
+and holds its claim:
+- F2c, a call 1.90 sd in the money;
+- F1p and F2p, the puts.
+
+**What the reference is.** D0's PDE on a fixed common-mode grid (800 / 200 per year at
+level 2), with central differences at h and h / 2 and one Richardson step. Delta and gamma
+are the PDE's own centre-node stencil. `+- u` is the reference's own uncertainty for that
+greek and row:
+- delta and gamma: the PDE ladder's, (4/3) |x(level 3) - x(level 2)|, or D0 section 8's u
+  where it is larger;
+- the roll: the same ladder estimate;
+- vega: the larger of the bump spread and D0 section 8's u;
+- the rest: the bump spread.
+
+The lattice columns are Standard at 301 / 601 / 1201 and Refined (the step study).
+`refined err / u` and `bound` refer to the claim below. Run: `D1-20261023-fix1`
+`run7-final-slow.log` (binary sha256 6555ad42..., code at 59cdf815). Its re-score and drift
+tables reproduce sections 11.3-11.4 line for line (81 of 81 lines).
+
+| id | greek | reference +- u | std 301 | std 601 | std 1201 | refined | err std 301 | err refined | refined err / u | bound |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A2p | delta | -0.48198164 +- 2.2e-05 | -0.481666 | -0.481824 | -0.481902 | -0.481981 | +3.15e-04 | +4.78e-07 | 0.0 | 6.60e-05 |
+| A2p | gamma | 0.023820959 +- 1.3e-08 | 0.0237588 | 0.0237898 | 0.0238053 | 0.0238208 | -6.22e-05 | -1.42e-07 | 10.7 | - |
+| A2p | vega | 27.660532 +- 1.3e-03 | 27.6861 | 27.6743 | 27.6669 | 27.6596 | +2.56e-02 | -9.49e-04 | 0.7 | 2.77e-02 |
+| A2p | rho | -20.794507 +- 6.0e-04 | -20.8212 | -20.8096 | -20.7995 | -20.7886 | -2.67e-02 | +5.86e-03 | 9.8 | 1.04e-01 |
+| A2p | phi | 18.379389 +- 1.9e-04 | 18.4003 | 18.391 | 18.3829 | 18.3742 | +2.09e-02 | -5.21e-03 | 27.1 | - |
+| A2p | theta | -5.2288344 +- 1.5e-04 | -5.23659 | -5.23289 | -5.23103 | -5.23197 | -7.76e-03 | -3.14e-03 | 21.3 | - |
+| A2p | dP/dD1 | 0.51413842 +- 5.8e-08 | 0.513996 | 0.514012 | 0.514082 | 0.514152 | -1.43e-04 | +1.32e-05 | 227.0 | 2.00e-03 |
+| A2p | roll 1d | -0.020813763 +- 2.2e-07 | -0.0207408 | -0.0207264 | -0.0207201 | -0.0207146 | +7.29e-05 | +9.91e-05 | 455.3 | 2.00e-03 |
+| B3p | delta | -0.43378418 +- 1.2e-05 | -0.433409 | -0.433619 | -0.43369 | -0.433785 | +3.75e-04 | -3.29e-07 | 0.0 | 5.00e-05 |
+| B3p | gamma | 0.015739895 +- 3.7e-09 | 0.0156984 | 0.0157298 | 0.0157295 | 0.01574 | -4.15e-05 | +6.04e-08 | 16.3 | - |
+| B3p | vega | 39.343181 +- 2.9e-04 | 39.3902 | 39.4626 | 39.3645 | 39.3429 | +4.70e-02 | -2.53e-04 | 0.9 | 3.93e-02 |
+| B3p | rho | -52.743096 +- 5.6e-03 | -52.7645 | -52.7485 | -52.7472 | -52.7413 | -2.14e-02 | +1.78e-03 | 0.3 | 2.64e-01 |
+| B3p | phi | 43.364927 +- 1.8e-03 | 43.3781 | 43.3734 | 43.3679 | 43.3644 | +1.32e-02 | -4.86e-04 | 0.3 | - |
+| B3p | theta | -2.8081719 +- 8.6e-07 | -2.81161 | -2.81342 | -2.80904 | -2.80976 | -3.44e-03 | -1.59e-03 | 1857.1 | - |
+| B3p | dP/dD1 | 0.51202446 +- 7.2e-06 | 0.510932 | 0.498021 | 0.510958 | 0.512032 | -1.09e-03 | +7.11e-06 | 1.0 | 2.00e-03 |
+| B3p | roll 1d | -0.011162424 +- 5.3e-09 | -0.0111824 | -0.0112415 | -0.0111724 | -0.0111623 | -2.00e-05 | +1.44e-07 | 27.0 | 2.00e-03 |
+| C4c | delta | 0.63378496 +- 1.7e-05 | 0.633937 | 0.633897 | 0.633833 | 0.633775 | +1.52e-04 | -1.00e-05 | 0.6 | 5.10e-05 |
+| C4c | gamma | 0.015581996 +- 1.4e-08 | 0.0155443 | 0.0155715 | 0.0155764 | 0.0155831 | -3.76e-05 | +1.15e-06 | 81.0 | - |
+| C4c | vega | 36.740286 +- 1.3e-03 | 36.5606 | 36.7177 | 36.6816 | 36.714 | -1.80e-01 | -2.63e-02 | 20.5 | 3.67e-02 |
+| C4c | rho | 43.960915 +- 3.7e-02 | 43.8179 | 43.9959 | 43.9048 | 43.8584 | -1.43e-01 | -1.02e-01 | 2.8 | 2.20e-01 |
+| C4c | phi | -53.81144 +- 2.3e-01 | -53.6764 | -53.9041 | -53.8231 | -53.787 | +1.35e-01 | +2.44e-02 | 0.1 | - |
+| C4c | theta | -6.9162622 +- 3.4e-05 | -6.92268 | -6.9224 | -6.91915 | -6.91825 | -6.42e-03 | -1.99e-03 | 58.2 | - |
+| C4c | dP/dD1 | -0.6215135 +- 1.1e-07 | -0.621559 | -0.621572 | -0.621537 | -0.621506 | -4.52e-05 | +7.22e-06 | 68.7 | 2.00e-03 |
+| C4c | roll 1d | -0.027467955 +- 1.1e-07 | -0.0270435 | -0.0280939 | -0.0271827 | -0.0261712 | +4.24e-04 | +1.30e-03 | 11655.2 | 2.00e-03 |
+| D12p | delta | -0.42151882 +- 1.6e-05 | -0.420774 | -0.421142 | -0.421329 | -0.421516 | +7.45e-04 | +2.56e-06 | 0.2 | 5.00e-05 |
+| D12p | gamma | 0.0096382139 +- 1.2e-09 | 0.00960907 | 0.00962359 | 0.00963094 | 0.00963822 | -2.91e-05 | +2.50e-09 | 2.0 | - |
+| D12p | vega | 63.718271 +- 1.8e-03 | 63.7645 | 63.746 | 63.7328 | 63.7195 | +4.62e-02 | +1.23e-03 | 0.7 | 6.37e-02 |
+| D12p | rho | -153.12924 +- 5.1e-01 | -152.891 | -152.935 | -152.955 | -152.973 | +2.38e-01 | +1.56e-01 | 0.3 | 7.66e-01 |
+| D12p | phi | 109.71669 +- 5.7e-03 | 109.597 | 109.687 | 109.711 | 109.735 | -1.20e-01 | +1.85e-02 | 3.2 | - |
+| D12p | theta | -0.6694102 +- 5.2e-06 | -0.671369 | -0.670397 | -0.669926 | -0.670302 | -1.96e-03 | -8.92e-04 | 171.4 | - |
+| D12p | dP/dD1 | 0.4258465 +- 4.3e-08 | 0.42568 | 0.425756 | 0.425799 | 0.425841 | -1.67e-04 | -5.83e-06 | 134.3 | 2.00e-03 |
+| D12p | roll 1d | -0.0026601588 +- 1.8e-07 | -0.00234302 | -0.00267015 | -0.00268672 | -0.00270401 | +3.17e-04 | -4.39e-05 | 248.1 | 2.00e-03 |
+| E20p | delta | -0.73509053 +- 1.6e-05 | -0.73382 | -0.734453 | -0.734772 | -0.735089 | +1.27e-03 | +1.11e-06 | 0.1 | 5.00e-05 |
+| E20p | gamma | 0.015537642 +- 1.2e-08 | 0.015524 | 0.0155308 | 0.0155342 | 0.0155375 | -1.36e-05 | -1.21e-07 | 9.9 | - |
+| E20p | vega | 29.34689 +- 9.5e-03 | 29.3761 | 29.3608 | 29.3543 | 29.3478 | +2.92e-02 | +9.11e-04 | 0.1 | 2.93e-02 |
+| E20p | rho | -55.211237 +- 1.3e-03 | -55.228 | -55.2588 | -55.2099 | -55.1615 | -1.67e-02 | +4.97e-02 | 38.6 | 2.76e-01 |
+| E20p | phi | 43.863039 +- 6.1e-04 | 43.8769 | 43.9033 | 43.8605 | 43.818 | +1.39e-02 | -4.50e-02 | 73.4 | - |
+| E20p | theta | -1.0898609 +- 5.1e-05 | -1.09335 | -1.09161 | -1.09075 | -1.09073 | -3.49e-03 | -8.68e-04 | 17.1 | - |
+| E20p | dP/dD1 | 0.76596261 +- 8.5e-08 | 0.765814 | 0.765685 | 0.765881 | 0.766076 | -1.49e-04 | +1.13e-04 | 1324.5 | 2.00e-03 |
+| E20p | roll 1d | -0.0043288103 +- 2.6e-07 | -0.00101996 | -0.0037761 | -0.00381307 | -0.00385106 | +3.31e-03 | +4.78e-04 | 1843.1 | 2.00e-03 |
+| F1c | delta | 0.98967585 +- 1.2e-05 | 0.989583 | 0.989642 | 0.989647 | 0.989654 | -9.28e-05 | -2.23e-05 | 1.9 | 5.00e-05 |
+| F1c | gamma | 0.0016319532 +- 1.1e-08 | 0.00163944 | 0.00163439 | 0.00163446 | 0.00163442 | +7.49e-06 | +2.47e-06 | 230.4 | - |
+| F1c | vega | 1.8508761 +- 3.7e-03 | UNSUPPORTED (NaN) | UNSUPPORTED (NaN) | UNSUPPORTED (NaN) | UNSUPPORTED (NaN) | +nan | +nan | nan | 3.70e-03 |
+| F1c | rho | 30.447139 +- 7.9e-06 | 30.4527 | 30.4497 | 30.4479 | 30.446 | +5.52e-03 | -1.10e-03 | 140.6 | 1.52e-01 |
+| F1c | phi | -44.5371 +- 4.2e-06 | -44.5424 | -44.5395 | -44.5378 | -44.5361 | -5.28e-03 | +1.03e-03 | 244.0 | - |
+| F1c | theta | -3.216217 +- 1.6e-05 | -3.21268 | -3.21412 | -3.21554 | -3.21552 | +3.53e-03 | +7.00e-04 | 43.2 | - |
+| F1c | dP/dD1 | -0.00052793797 +- 8.7e-08 | -0.000711452 | -0.000363144 | -0.000443573 | -0.000520805 | -1.84e-04 | +7.13e-06 | 82.4 | 2.00e-03 |
+| F1c | roll 1d | -0.012750274 +- 1.3e-08 | -0.0127151 | -0.0126339 | -0.0127574 | -0.0128755 | +3.51e-05 | -1.25e-04 | 9694.1 | 2.00e-03 |
+| B1p | delta | -0.46930873 +- 3.6e-07 | -0.469002 | -0.46915 | -0.469231 | -0.469312 | +3.07e-04 | -3.72e-06 | 10.3 | 5.00e-05 |
+| B1p | gamma | 0.018533504 +- 4.7e-07 | 0.0184896 | 0.0185119 | 0.0185227 | 0.0185334 | -4.39e-05 | -1.06e-07 | 0.2 | - |
+| B1p | vega | 37.686068 +- 1.0e-03 | 37.725 | 37.7043 | 37.6956 | 37.6871 | +3.90e-02 | +1.06e-03 | 1.1 | 3.77e-02 |
+| B1p | rho | -36.676882 +- 1.6e-03 | -36.7458 | -36.7137 | -36.6931 | -36.674 | -6.89e-02 | +2.85e-03 | 1.8 | 1.83e-01 |
+| B1p | phi | 31.152915 +- 5.6e-04 | 31.2012 | 31.1796 | 31.164 | 31.1498 | +4.83e-02 | -3.14e-03 | 5.6 | - |
+| B1p | theta | -3.5289351 +- 1.0e-05 | UNSUPPORTED (NaN) | UNSUPPORTED (NaN) | -3.52982 | -3.53058 | +nan | -1.65e-03 | 160.8 | - |
+| B1p | dP/dD1 | 0.46953479 +- 1.0e-07 | 0.469542 | 0.469389 | 0.469524 | 0.469659 | +7.12e-06 | +1.25e-04 | 1213.4 | 2.00e-03 |
+| B1p | roll 1d | -0.013553926 +- 4.8e-07 | -0.0142075 | -0.0187193 | -0.0138087 | -0.0139313 | -6.54e-04 | -3.77e-04 | 782.5 | 2.00e-03 |
+| F1p | delta | -0.93618755 +- 3.9e-08 | -0.935546 | -0.935884 | -0.936045 | -0.936187 | +6.42e-04 | +6.38e-07 | 16.5 | 5.00e-05 |
+| F1p | gamma | 0.007157082 +- 4.3e-08 | 0.00718742 | 0.00717128 | 0.00716372 | 0.00715716 | +3.03e-05 | +7.46e-08 | 1.7 | - |
+| F1p | vega | 8.7891866 +- 1.9e-03 | 8.85158 | 8.77205 | 8.75268 | 8.78971 | +6.24e-02 | +5.28e-04 | 0.3 | 8.79e-03 |
+| F1p | rho | -57.259334 +- 7.1e-05 | -57.2637 | -57.2624 | -57.2609 | -57.2612 | -4.34e-03 | -1.91e-03 | 27.0 | 2.86e-01 |
+| F1p | phi | 42.375199 +- 4.7e-05 | 42.3796 | 42.3786 | 42.3769 | 42.3769 | +4.38e-03 | +1.72e-03 | 36.6 | - |
+| F1p | theta | 2.8322674 +- 9.5e-04 | 2.83603 | 2.83338 | 2.83186 | 2.83196 | +3.76e-03 | -3.10e-04 | 0.3 | - |
+| F1p | dP/dD1 | 0.93695207 +- 8.8e-08 | 0.936879 | 0.936956 | 0.936922 | 0.936874 | -7.33e-05 | -7.77e-05 | 880.3 | 2.00e-03 |
+| F1p | roll 1d | 0.011275157 +- 1.7e-06 | 0.0114568 | 0.0110104 | 0.0114013 | 0.0113353 | +1.82e-04 | +6.02e-05 | 35.7 | 2.00e-03 |
+| F2c | delta | 0.97508376 +- 5.7e-07 | 0.974961 | 0.974945 | 0.975013 | 0.975081 | -1.23e-04 | -3.25e-06 | 5.7 | 5.00e-05 |
+| F2c | gamma | 0.0047581562 +- 2.2e-08 | 0.00476837 | 0.00477228 | 0.00476543 | 0.00475855 | +1.02e-05 | +3.94e-07 | 17.8 | - |
+| F2c | vega | 2.8569332 +- 1.3e-03 | 2.85271 | 2.85312 | 2.85363 | 2.85485 | -4.22e-03 | -2.09e-03 | 1.6 | 3.82e-03 |
+| F2c | rho | 18.389777 +- 5.1e-06 | 18.3954 | 18.3906 | 18.3901 | 18.3897 | +5.59e-03 | -8.90e-05 | 17.5 | 9.19e-02 |
+| F2c | phi | -23.402088 +- 3.9e-06 | -23.4074 | -23.4029 | -23.4024 | -23.402 | -5.33e-03 | +8.30e-05 | 21.1 | - |
+| F2c | theta | -4.5519886 +- 5.5e-05 | -4.54422 | -4.55055 | -4.55127 | -4.55126 | +7.76e-03 | +7.27e-04 | 13.2 | - |
+| F2c | dP/dD1 | -0.00010234356 +- 6.0e-08 | -0.000154527 | -8.15106e-05 | -9.10082e-05 | -0.000100014 | -5.22e-05 | +2.33e-06 | 38.7 | 2.00e-03 |
+| F2c | roll 1d | -0.018014468 +- 1.1e-07 | -0.0174608 | -0.0177416 | -0.0182153 | -0.0186878 | +5.54e-04 | -6.73e-04 | 5908.9 | 2.00e-03 |
+| F2p | delta | -0.97146775 +- 4.9e-07 | -0.971307 | -0.9713 | -0.971382 | -0.971466 | +1.60e-04 | +1.41e-06 | 2.9 | 5.00e-05 |
+| F2p | gamma | 0.0052364872 +- 1.1e-07 | 0.00524786 | 0.00525226 | 0.00524464 | 0.00523671 | +1.14e-05 | +2.20e-07 | 2.0 | - |
+| F2p | vega | 3.258195 +- 2.2e-03 | 3.25822 | 3.25461 | 3.25069 | 3.25911 | +2.91e-05 | +9.14e-04 | 0.4 | 6.49e-03 |
+| F2p | rho | -30.032094 +- 1.4e-05 | -30.0368 | -30.0328 | -30.0324 | -30.032 | -4.68e-03 | +1.02e-04 | 7.6 | 1.50e-01 |
+| F2p | phi | 23.335878 +- 1.4e-05 | 23.341 | 23.3367 | 23.3362 | 23.3358 | +5.08e-03 | -1.06e-04 | 7.7 | - |
+| F2p | theta | 3.3690242 +- 1.5e-03 | 3.38055 | 3.36949 | 3.36736 | 3.36802 | +1.15e-02 | -1.00e-03 | 0.7 | - |
+| F2p | dP/dD1 | 0.96912463 +- 1.3e-07 | 0.96923 | 0.969145 | 0.969123 | 0.969104 | +1.05e-04 | -2.03e-05 | 153.5 | 2.00e-03 |
+| F2p | roll 1d | 0.01345013 +- 3.1e-06 | 0.0139048 | 0.0134874 | 0.0134054 | 0.0134155 | +4.55e-04 | -3.46e-05 | 11.2 | 2.00e-03 |
+
+**Claims and what the study finds.** The slow test asserts the Refined route against each
+claim's bound, min(the checkpoint's bound, max(3 u, class)). A bound is therefore never
+looser than before, and it is 3 u wherever the reference resolves the greek finer than the
+class.
+
+| greek | checkpoint bound | class | worst Refined error (row, error / u) | verdict |
+|---|---|---|---|---|
+| delta | 2e-4 | 5e-5 | 2.2e-05 (F1c, 1.9 u; bound 5.00e-05) | holds |
+| vega | 0.2 % | 0.1 % | 0.073 % (F2c, 1.6 u; bound 3.82e-03) | holds |
+| rho | 0.5 % | 0.5 % | 0.232 % (C4c, 2.8 u; bound 2.20e-01) | holds |
+| dP/dD1 | 2e-3 | 2e-3 | 1.3e-04 (B1p, 1213.4 u; bound 2.00e-03) | holds |
+| roll 1d | 2e-3 USD | 2e-3 USD | 1.3e-03 (C4c, 11655.2 u; bound 2.00e-03) | holds |
+
+Vega's class is not 3 u for a measured reason. C4c's Refined vega converges to -0.08 % as the
+bump goes to 0 (`diag-scratch-bumps.log`), which is 20-80 times D0's u. That is the
+lattice's own vega error, and no runtime rule can single the row out. A pure 3 u bound
+would refuse a well-defined greek. The same holds for rho, dP/dD and the roll: their errors
+sit far above the reference's tiny u, and their classes are the checkpoint's, unchanged.
+These are accuracy classes, not claims to be within the reference's uncertainty.
+
+The slow ctest is green (`ctest-production-final.log`). Before the fix it was red on the
+three checkpoint claims (`ctest-matrix-red.log`), and on the new bounds and rule
+(`gtest-m1-matrix-greeks-red.log`).
 
 **rho and phi: a bump-size defect, fixed.** The checkpoint's bundle used the historical
 bundle's 1e-4 rate / yield bumps. On D12p that gave Refined rho -150.51 and phi 108.74 against
@@ -999,16 +1058,64 @@ All 22,009 are priced.
 to 37x (bundle, > 12 events). The table by event count and tenor, the Refined route and the
 budget verdicts are in `docs/hft-support-matrix.md`.
 
+**Fix round 1 (run `D1-20261023-fix1\latency\f1\`).** The re-measurement is on the same
+cohort and CPU, at twice the host load (system 40 % against 21 %). p50:
+- cold price 26.9 us; prepared price 26.6 us; IV 123.0 us. These legs are unchanged code,
+  so the +10 % is the load.
+- bundle 264.4 us. That is +2 rollbacks for the vega pair on top of the load.
+- dominating stage of the cold group clock: inverses 99.94 % (2.6377 s of 2.6393 s);
+  family_build_validation 1.6 ms.
+
+Coverage also changed. 938 mid quotes strictly below the exercise value are now
+RefusedRange (inconsistent quotes), where they were price-only. The new counts:
+- 16,076 identified (unchanged);
+- 781 price-only;
+- 938 refused (range);
+- 6 out of budget.
+
 ### 11.8 Reproduce
 
 ```powershell
 powershell -NoProfile -File scripts\atx-build.ps1 build atx-vol-discrete-div-production-tests atx-vol-ddiv-latency -Preset vol-rel -Jobs 1
-# fast suite (23 tests, < 1 s)
+# fast suite (27 tests, ~1 s)
 powershell -NoProfile -File scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-discrete-div-production$"
-# slow: re-score + drift (~100 s) and the Greek study (~11 s)
+# slow: re-score + drift (~100-150 s) and the Greek study (~16-22 s)
 build-vol-rel\bin\atx-vol-discrete-div-production-tests.exe --gtest_filter=DiscreteDivProductionMatrix.*
 # latency / coverage (inputs: D1-20261023-production\scripts\build_ddiv_latency_inputs.py)
 build-vol-rel\bin\atx-vol-ddiv-latency.exe --input <csv> --output <json> --affinity <P-core CPU> --require-pcore
 ```
 
 Evidence: `C:\atx-cache\quote-benchmark\D1-20261023-production\` (manifest `sha256.txt`).
+
+### 11.9 Fix round 1 (review-D1, 2026-10-23)
+
+The review of a203eb19 returned BLOCK with two majors.
+- **M1, the Greek study red.** Fixed in 11.6:
+  - Richardson delta / gamma on the Refined route;
+  - the Richardson vega pair;
+  - the exercise-dominated vega rule;
+  - bounds re-derived from the reference's u.
+- **M2, archive.** `fit_archive_records.cpp` refused every archived SplicedCubic fit
+  (RecordInvalid). Its scheme range now ends at SplicedCubic, and a round-trip test covers
+  every named scheme.
+
+The minors:
+- **Moved-from batch.** It is empty (RefusedGroup), not a null dereference.
+- **Below-intrinsic quote.** RefusedRange, not price-only.
+- **Pre-steps.** The count and `GridBottomExtrapolated` are documented as a
+  sigma >= 0.10 statement.
+- **A fast reference delta pin.** E20p and C4c against D0 section 8.
+- **The reference's u.** The Greek table now carries it.
+- **The B1 pin.** It is labelled the lane's accuracy class.
+- **The next experiment.** It is named once, with an acceptance table, in the HFT row.
+- **The cubic splice's zero floor: measured, and not applied.**
+  - Against D0's 4-level PDE ladder, 32 near-expiry European cases (ex-date 0.6 to 5 steps
+    of 301 before expiry; K 90 to 130; calls and puts): a floor at 0 raised the European error
+    in 30 of 32 cases.
+  - It also broke put-call parity: the C and P errors diverged by up to 1.2e-3 USD.
+  - The reason: the cubic is linear in the values, so the unfloored lattice keeps parity
+    exactly.
+  - American rollbacks are floored by the exercise max anyway.
+  - A fast test pins European parity (1e-9) and the Refined European price (1e-3 USD;
+    measured 1.5e-4).
+  - Logs: `diag-scratch-eu-nofloor.log`, `diag-scratch-eu-floor.log`.

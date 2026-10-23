@@ -5,6 +5,62 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### FIXED — D1 cash-dividend Greeks, archive scheme range, batch lifetime (review-D1 round 1)
+
+The D1 review blocked on two majors.
+
+**M1, Greeks.** The slow Greek study (`atx-vol-discrete-div-production-matrix`) was red on
+three real defects. The bundle (`american_discrete_div_production_greeks`, and the batch's
+`greeks()`) changes as follows.
+- **delta / gamma.** On the Refined route they were the fine lattice's alone, first order
+  in 1/N (E20p +2.9e-4). They now take the route's own Richardson pair, as its price does.
+  Every study row is now within 2.3e-5 of the reference.
+- **vega.** It was one 10 % central bump (E20p -0.268 %). It is now the Richardson pair of
+  central bumps at h and h/2 (E20p +0.003 %), which costs 2 more rollbacks.
+- **Exercise-dominated calls.** On an American call that is exercise-dominated before an
+  in-life ex-date, vega is now NaN with reason `ExerciseDominated` instead of a number.
+  - The test: the cash beats the interest on the strike up to the next ex-date or expiry,
+    and the cum-dividend forward there is at least 2 sd in the money.
+  - On D0 row F1c that number was off by 1.3-1.7 % at every N and every bump size.
+- **Reasons.** Every unsupported greek now carries a typed reason (`DiscreteDivUnsupportedReason`,
+  `DiscreteDivProductionGreeks::reasons`).
+- **Bounds.** The study now carries the reference's own u per greek and row. Every claim is
+  bounded by min(the checkpoint bound, max(3u, class)): delta class 5e-5, vega class 0.1 %,
+  so neither bound is looser than before.
+- **Coverage.** The study adds D0 rows F1p, F2c and F2p.
+- **Not met.** None of this meets the plan's D1 objective of being within the reference's
+  uncertainty. Standard ≤ 3 bp and Refined ≤ 1 bp of IV on D0's RESOLVED rows is an accuracy
+  class; doc section 11.3 has the drift finding.
+
+**M2, archive.** `fit_archive_records.cpp` range-checked the stored `DiscreteDivScheme`
+against `EscrowedLeisenReimer`. A keys-ON `atx-vol-fit-archive-bench` run with
+`dividend_lattice: "spliced-cubic"` therefore published archives that every reader refused
+(RecordInvalid). The check now admits `SplicedCubic`, and a round-trip test covers every
+named scheme.
+
+**Minors.**
+- A moved-from `DiscreteDivBatch` used to dereference a null state. It is now empty: every
+  contract comes back RefusedGroup.
+- The pre-step count and `GridBottomExtrapolated` are now documented as a sigma >= 0.10
+  statement.
+- The cubic splice deliberately stays without a zero floor. A floor broke European put-call
+  parity and raised the European error in 30 of 32 measured cases. A fast test now pins
+  European parity and accuracy on the cubic route.
+- `docs/hft-support-matrix.md` names the dominating stage (the inversions, 99.9 % of the cold
+  clock) and one challenger with a predeclared acceptance table.
+
+**Behaviour change:**
+- The production bundle's vega, and its Refined delta / gamma, are new numbers.
+- Vega on an exercise-dominated call is now NaN.
+- In `DiscreteDivBatch::implied_vol`, a quote strictly below the exercise value is now
+  RefusedRange, not PriceOnly. A quote on the plateau (within 1e-12 max(S, K)) stays
+  PriceOnly.
+
+**Migration:**
+- Read `unsupported` / `reasons` before using a bundle field.
+- Archives of spliced-cubic fits need this build to open.
+- Default paths and hashes are unchanged.
+
 ### NEW — opt-in production cash-dividend lattice: cubic splice, routes, batch, event-aware Greeks
 
 D0 measured the 301-step spliced lattice 2.8-4.4 IV bp per ex-date off on multi-event chains.
@@ -33,16 +89,18 @@ per (S, T, r, q, schedule) group in `prepare()`, and its price, implied_vol and 
 allocate nothing per contract.
 
 The Greek bundle `american_discrete_div_production_greeks` returns:
-- delta and gamma from the t = 0 stencil;
-- vega;
+- delta and gamma from the t = 0 stencil (the Refined route's Richardson pair of it, fix
+  round 1 above);
+- vega (a Richardson pair of sigma bumps; unsupported on an exercise-dominated call, above);
 - rho / phi from 1e-3 central bumps (a 1e-4 bump read the lattice's ripple in r and q);
 - per-event dP/dD;
 - theta and charm;
 - an event-aware one-day roll. A roll across an ex-date takes the cash off the stock; it is
   not a derivative.
 
-Unsupported Greeks are NaN with a bit, never 0. The production inversion returns OutOfRange
-(price-only) for a quote at or below the exercise value.
+Unsupported Greeks are NaN with a bit and a typed reason, never 0. The production inversion
+returns OutOfRange (price-only) for a quote at or below the exercise value; the batch types a
+quote strictly below it as RefusedRange (above).
 
 Other additions:
 - quote-bench accepts `dividend_lattice: "spliced-cubic"`.
@@ -60,7 +118,8 @@ beyond the 6-sd band of log spot there. On D0 row E64 (cash 64 % of spot) the co
 - Default routes are unchanged: the nine default prediction hashes and the keys-OFF dividend
   hashes `abc75955` / `747d3e6c` reproduce byte for byte.
 - A caller of the converged comparator must handle the new OutOfRange.
-- `DiscreteDivScheme` gains the enumerator `SplicedCubic`. A switch over it must add the case.
+- `DiscreteDivScheme` gains the enumerator `SplicedCubic`. A switch over it must add the case,
+  and so must every range check over it (the fit archive's did not: fixed above, M2).
 
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 

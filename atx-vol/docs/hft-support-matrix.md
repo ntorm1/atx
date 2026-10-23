@@ -46,74 +46,83 @@ The harness is B0's (`tools/bench_clocks.hpp`, `docs/benchmark-clocks.md`). The 
   worst is B2c at -2.865 bp. The historical 301 lattice reaches 34 bp on the same rows.
 - **Refined route** (BBS-Richardson 1201 / 601; CubicCrr 2401 for a near-expiry ex-date).
   Within 1 bp on every RESOLVED row; the worst is E20c at -0.646 bp.
+- These are the routes' accuracy CLASS on D0's 41 RESOLVED rows (spot-shift liquidator).
+  The plan's D1 objective, "within the reference's uncertainty", is NOT met: the per-event
+  drift misses D0's u (doc section 11.3-11.4).
 
-**Measurement.** Run `D1-20261023-production\latency\b\` (`atx-vol-ddiv-latency`):
-- binary sha256 `ac3f234c...`, logical CPU 1 (a P core);
-- clock 2100 MHz (the receipt's limit on this host);
+**Measurement.** Run `D1-20261023-fix1\latency\f1\` (`atx-vol-ddiv-latency`, fix round 1):
+- binary sha256 `a5cb40ec...` (code at 59cdf815), logical CPU 1 (a P core), clock 2100 MHz
+  (the receipt's limit on this host);
+- host load: system 40 % (r6's run b: 21 %). The price and IV legs are unchanged code since
+  run b and read about 10 % slower here (run b: cold 24.1, price 23.8, IV 114.2 us). The
+  bundle gained 2 rollbacks (the vega pair: run b 191.3 us);
 - the dev200b divsched cohort: 398 chains, 22,009 contracts, Standard route.
 p50 / p99, us:
 
 | events in life | contracts | P1 cold price | P2 price | P2 IV | P3 bundle | group setup |
 |---|---|---|---|---|---|---|
-| 0 (ex-date on expiry) | 150 | 17.9 / 19.6 | 17.7 / 18.7 | 74.6 / 965.6 | 141.8 / 162.0 | 3.4 / 8.5 |
-| 1 | 11,343 | 21.3 / 34.6 | 21.0 / 31.2 | 93.9 / 226.6 | 169.0 / 285.3 | 2.5 / 11.6 |
-| 2 | 4,868 | 25.5 / 37.3 | 25.2 / 36.5 | 119.2 / 311.0 | 202.4 / 497.6 | 2.7 / 24.9 |
-| 3-4 | 2,452 | 30.0 / 41.9 | 29.6 / 41.4 | 147.6 / 451.5 | 237.3 / 589.1 | 3.0 / 71.1 |
-| 5-8 | 2,082 | 38.3 / 58.2 | 37.8 / 52.6 | 191.1 / 669.1 | 304.1 / 576.0 | 3.1 / 11.4 |
-| 9-12 | 1,052 | 53.2 / 75.3 | 52.2 / 90.1 | 278.9 / 815.5 | 417.3 / 812.9 | 4.1 / 10.5 |
-| > 12 | 62 | 98.2 / 125.9 | 94.8 / 130.6 | 513.5 / 1918.4 | 739.6 / 924.5 | 5.7 / 13.0 |
-| all | 22,009 | 24.1 / 62.2 | 23.8 / 61.2 | 114.2 / 473.2 | 191.3 / 570.1 | 2.8 / 13.5 |
+| 0 (ex-date on expiry) | 150 | 19.2 / 59.2 | 19.0 / 24.3 | 78.8 / 1061.0 | 189.7 / 277.1 | 2.5 / 2.9 |
+| 1 | 11,343 | 23.8 / 39.1 | 23.6 / 37.3 | 101.9 / 192.0 | 234.3 / 367.1 | 2.3 / 11.5 |
+| 2 | 4,868 | 29.0 / 52.0 | 28.7 / 50.3 | 129.9 / 473.2 | 286.2 / 499.6 | 2.5 / 12.3 |
+| 3-4 | 2,452 | 34.4 / 66.4 | 33.6 / 57.8 | 162.7 / 424.7 | 336.2 / 600.4 | 3.1 / 10.8 |
+| 5-8 | 2,082 | 43.4 / 61.4 | 42.9 / 60.5 | 207.6 / 688.4 | 428.9 / 628.6 | 3.4 / 9.8 |
+| 9-12 | 1,052 | 62.3 / 81.1 | 61.2 / 78.8 | 311.9 / 561.4 | 613.5 / 742.2 | 4.1 / 16.6 |
+| >12 | 62 | 124.3 / 137.4 | 120.6 / 151.7 | 560.0 / 2321.1 | 1126.9 / 2194.0 | 7.5 / 10.7 |
+| all | 22,009 | 26.9 / 65.8 | 26.6 / 65.6 | 123.0 / 452.1 | 264.4 / 653.3 | 2.7 / 12.3 |
 
 By event count and tenor, as the tool printed it (`dev200b-divsched-standard.md`; p50 / p99 us,
 coverage as quoted / priced / price_only / refused / budget):
 
 | events | tenor | groups | contracts | setup us p50 / p99 | cold price | price | IV | bundle | quoted / priced / price_only / refused / budget | prices |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 0 | <=0.25y | 3 | 150 | 3.4 / 8.5 | 17.9 / 19.6 | 17.7 / 18.7 | 74.6 / 965.6 | 141.8 / 162.0 | 97 / 79 / 15 / 0 / 3 | 150 |
-| 1 | <=0.25y | 84 | 4933 | 2.3 / 161.5 | 21.3 / 32.2 | 21.1 / 29.3 | 94.6 / 209.4 | 168.9 / 319.8 | 3578 / 3044 / 534 / 0 / 0 | 4933 |
-| 1 | 0.25-1y | 108 | 6186 | 2.5 / 9.4 | 21.2 / 36.3 | 21.0 / 32.3 | 93.5 / 223.8 | 168.1 / 277.2 | 4739 / 4179 / 560 / 0 / 0 | 6186 |
-| 1 | 1-2y | 2 | 224 | 2.2 / 2.5 | 22.3 / 25.1 | 22.1 / 27.2 | 94.3 / 470.1 | 176.7 / 199.0 | 212 / 191 / 21 / 0 / 0 | 224 |
-| 2 | <=0.25y | 8 | 252 | 2.6 / 23.6 | 24.7 / 29.8 | 24.6 / 32.4 | 113.1 / 310.4 | 196.7 / 284.8 | 146 / 104 / 42 / 0 / 0 | 252 |
-| 2 | 0.25-1y | 87 | 4032 | 2.7 / 55.0 | 25.6 / 39.7 | 25.4 / 37.7 | 118.5 / 256.8 | 204.0 / 541.8 | 3316 / 2998 / 315 / 0 / 3 | 4032 |
-| 2 | 1-2y | 4 | 406 | 2.4 / 7.5 | 25.7 / 33.3 | 25.4 / 31.0 | 129.9 / 478.9 | 202.5 / 260.5 | 374 / 355 / 19 / 0 / 0 | 406 |
-| 2 | >2y | 2 | 178 | 1.9 / 2.0 | 24.8 / 30.6 | 24.4 / 33.9 | 120.2 / 390.0 | 198.4 / 270.7 | 170 / 162 / 8 / 0 / 0 | 178 |
-| 3-4 | <=0.25y | 2 | 46 | 2.7 / 3.3 | 27.1 / 32.6 | 27.1 / 59.7 | 129.2 / 485.9 | 214.9 / 449.0 | 27 / 22 / 5 / 0 / 0 | 46 |
-| 3-4 | 0.25-1y | 34 | 1940 | 3.0 / 78.1 | 30.1 / 42.0 | 29.7 / 41.5 | 147.8 / 444.6 | 237.8 / 596.2 | 1753 / 1664 / 89 / 0 / 0 | 1940 |
-| 3-4 | 1-2y | 4 | 294 | 2.6 / 3.9 | 30.5 / 37.0 | 30.1 / 36.2 | 156.7 / 511.3 | 241.6 / 394.6 | 282 / 276 / 6 / 0 / 0 | 294 |
-| 3-4 | >2y | 1 | 172 | 7.3 / 7.3 | 29.1 / 32.6 | 28.5 / 32.0 | 142.1 / 277.4 | 228.2 / 295.8 | 172 / 172 / 0 / 0 / 0 | 172 |
-| 5-8 | 0.25-1y | 11 | 334 | 6.8 / 8.3 | 39.6 / 53.7 | 39.3 / 55.5 | 192.4 / 661.2 | 317.1 / 519.1 | 207 / 165 / 42 / 0 / 0 | 334 |
-| 5-8 | 1-2y | 23 | 1566 | 2.8 / 11.5 | 37.5 / 59.6 | 37.1 / 52.3 | 192.5 / 605.7 | 298.9 / 582.9 | 1499 / 1457 / 42 / 0 / 0 | 1566 |
-| 5-8 | >2y | 2 | 182 | 6.0 / 6.8 | 39.1 / 57.1 | 38.7 / 49.8 | 187.9 / 1040.8 | 310.4 / 437.4 | 182 / 180 / 2 / 0 / 0 | 182 |
-| 9-12 | 0.25-1y | 2 | 48 | 5.4 / 7.8 | 60.5 / 71.4 | 59.8 / 3554.6 | 261.5 / 1039.4 | 478.4 / 594.6 | 25 / 18 / 7 / 0 / 0 | 48 |
-| 9-12 | >2y | 18 | 1004 | 4.1 / 10.3 | 53.2 / 77.0 | 52.2 / 86.2 | 279.3 / 787.5 | 417.0 / 821.2 | 989 / 983 / 6 / 0 / 0 | 1004 |
-| >12 | 1-2y | 3 | 62 | 5.7 / 13.0 | 98.2 / 125.9 | 94.8 / 130.6 | 513.5 / 1918.4 | 739.6 / 924.5 | 33 / 27 / 6 / 0 / 0 | 62 |
+| 0 | <=0.25y | 3 | 150 | 2.5 / 2.9 | 19.2 / 59.2 | 19.0 / 24.3 | 78.8 / 1061.0 | 189.7 / 277.1 | 97 / 79 / 12 / 3 / 3 | 150 |
+| 1 | <=0.25y | 84 | 4933 | 2.3 / 11.7 | 23.9 / 32.4 | 23.6 / 31.2 | 103.1 / 161.8 | 235.3 / 317.5 | 3578 / 3044 / 306 / 228 / 0 | 4933 |
+| 1 | 0.25-1y | 108 | 6186 | 2.3 / 9.3 | 23.8 / 44.8 | 23.5 / 40.0 | 101.2 / 209.0 | 233.5 / 374.9 | 4739 / 4179 / 224 / 336 / 0 | 6186 |
+| 1 | 1-2y | 2 | 224 | 2.2 / 2.7 | 24.7 / 30.6 | 24.3 / 27.1 | 101.1 / 339.9 | 239.6 / 265.9 | 212 / 191 / 8 / 13 / 0 | 224 |
+| 2 | <=0.25y | 8 | 252 | 2.5 / 38.5 | 26.7 / 37.8 | 27.1 / 34.9 | 121.2 / 188.8 | 268.0 / 321.8 | 146 / 104 / 22 / 20 / 0 | 252 |
+| 2 | 0.25-1y | 87 | 4032 | 2.6 / 11.5 | 28.7 / 52.8 | 28.5 / 50.7 | 128.6 / 345.7 | 283.9 / 503.1 | 3316 / 2998 / 86 / 229 / 3 | 4032 |
+| 2 | 1-2y | 4 | 406 | 2.2 / 2.9 | 29.3 / 35.9 | 28.8 / 34.4 | 137.0 / 853.8 | 289.3 / 345.0 | 374 / 355 / 14 / 5 / 0 | 406 |
+| 2 | >2y | 2 | 178 | 5.5 / 8.8 | 29.1 / 31.3 | 28.6 / 41.0 | 134.9 / 268.1 | 290.5 / 395.2 | 170 / 162 / 5 / 3 / 0 | 178 |
+| 3-4 | <=0.25y | 2 | 46 | 4.9 / 7.5 | 31.6 / 66.2 | 30.8 / 49.5 | 136.3 / 164.3 | 304.0 / 535.6 | 27 / 22 / 0 / 5 / 0 | 46 |
+| 3-4 | 0.25-1y | 34 | 1940 | 3.1 / 10.9 | 34.8 / 66.6 | 34.1 / 58.6 | 162.2 / 559.7 | 334.1 / 615.4 | 1753 / 1664 / 50 / 39 / 0 | 1940 |
+| 3-4 | 1-2y | 4 | 294 | 3.0 / 9.2 | 36.8 / 42.3 | 36.4 / 42.0 | 168.3 / 356.9 | 363.9 / 401.0 | 282 / 276 / 0 / 6 / 0 | 294 |
+| 3-4 | >2y | 1 | 172 | 4.4 / 4.4 | 33.8 / 38.8 | 33.5 / 38.0 | 162.6 / 224.7 | 335.1 / 1924.8 | 172 / 172 / 0 / 0 / 0 | 172 |
+| 5-8 | 0.25-1y | 11 | 334 | 3.4 / 8.6 | 45.4 / 74.7 | 44.7 / 70.9 | 214.5 / 678.1 | 432.3 / 643.8 | 207 / 165 / 26 / 16 / 0 | 334 |
+| 5-8 | 1-2y | 23 | 1566 | 3.2 / 9.7 | 43.3 / 54.3 | 42.8 / 56.4 | 209.1 / 658.0 | 428.5 / 654.4 | 1499 / 1457 / 21 / 21 / 0 | 1566 |
+| 5-8 | >2y | 2 | 182 | 5.3 / 7.5 | 44.2 / 53.9 | 43.6 / 49.0 | 200.8 / 688.6 | 437.2 / 462.4 | 182 / 180 / 0 / 2 / 0 | 182 |
+| 9-12 | 0.25-1y | 2 | 48 | 7.6 / 11.9 | 69.0 / 96.3 | 68.2 / 114.7 | 277.2 / 3121.5 | 584.7 / 855.8 | 25 / 18 / 0 / 7 / 0 | 48 |
+| 9-12 | >2y | 18 | 1004 | 4.1 / 16.7 | 62.3 / 77.3 | 61.2 / 72.6 | 312.4 / 554.9 | 614.0 / 720.4 | 989 / 983 / 5 / 1 / 0 | 1004 |
+| >12 | 1-2y | 3 | 62 | 7.5 / 10.7 | 124.3 / 137.4 | 120.6 / 151.7 | 560.0 / 2321.1 | 1126.9 / 2194.0 | 33 / 27 / 2 / 4 / 0 | 62 |
 
 **Status against the budgets.** The factor is p50 over the budget, by event count.
 
 | Route | P1 cold price | P2 price | P2 IV | P3 bundle | Verdict |
 |---|---|---|---|---|---|
-| Standard, 0-2 events | MISS 1.8-2.6x | MISS 3.5-5.0x | MISS 3.0-4.8x | MISS 7.1-10.1x | MISS |
-| Standard, 3-12 events | MISS 3.0-5.3x | MISS 5.9-10.4x | MISS 5.9-11.2x | MISS 11.9-20.9x | MISS |
-| Standard, > 12 events | MISS 9.8x | MISS 19.0x | MISS 20.5x | MISS 37.0x | MISS |
-| Refined (synthetic ladder, 0-12 events) | MISS 47-66x | MISS 96-132x | MISS 54-83x | MISS 191-266x | MISS |
+| Standard, 0-2 events | MISS 1.9-2.9x | MISS 3.8-5.7x | MISS 3.2-5.2x | MISS 9.5-14.3x | MISS |
+| Standard, 3-12 events | MISS 3.4-6.2x | MISS 6.7-12.2x | MISS 6.5-12.5x | MISS 16.8-30.7x | MISS |
+| Standard, > 12 events | MISS 12.4x | MISS 24.1x | MISS 22.4x | MISS 56.3x | MISS |
+| Refined (synthetic ladder, 0-12 events) | MISS 58-87x | MISS 117-174x | MISS 74-109x | MISS 286-422x | MISS |
 
-The Refined row is from the synthetic ladder run (`latency\b\synthetic-refined.json`). Its p50
-is 474-663 us cold price, 1357-2065 us IV and 3826-5325 us bundle.
+The Refined row is from the synthetic ladder run (`latency\f1\synthetic-refined.json`). Its
+p50 is 585-872 us cold price, 1850-2713 us IV and 5714-8445 us bundle.
 
 **Coverage.** dev200b divsched cohort, Standard route, the quote is the bid/ask mid:
 - Prices: 22,009 of 22,009.
 - IV: 17,801 quoted (4,208 contracts have no two-sided market).
   - priced (identified): 16,076, 90.3 %;
-  - price_only: 1,719, 9.7 % (the quote is at or below the exercise value or the lowest-vol
+  - price_only: 781, 4.4 % (the quote is on the exercise value or at or below the lowest-vol
     lattice price; no volatility is identified);
-  - refused by input or range: 0;
+  - refused (range): 938, 5.3 %. These mid quotes sit strictly below the exercise value, an
+    inconsistent quote no model price reaches. Fix round 1 retyped them; r6 counted them as
+    price-only (1,719 = 781 + 938);
+  - refused by input: 0;
   - iteration budget exhausted: 6.
 
 **Unresolved and unsupported sub-domains.**
 - **UNRESOLVED: deep in the money before a late ex-date** (D0 rows F1c, F1p, F2c, F2p) **and
   cash near 60 % of a high-vol spot** (ILp). The reference cannot certify a root at the 1e-7
-  IV contract on these rows. The Refined route still misses ILp by a decidable +4.49 bp, and
-  the bundle's vega on F1c is 1.3 % above the reference's.
+  IV contract on these rows. The Refined route still misses ILp by a decidable +4.49 bp. On
+  F1c the bundle's vega is UNSUPPORTED (exercise-dominated, below); it was 1.3 % off.
 - **PRICE-ONLY: cash-dominated contracts.** These are contracts whose post-dividend spot sits
   beyond the 6-sd band, as on D0 row E64 (cash 64 % of spot, 5.9 days out).
   - The production routes price E64 to 1e-12 USD of the reference.
@@ -124,12 +133,56 @@ is 474-663 us cold price, 1357-2065 us IV and 3826-5325 us bundle.
   liquidator. D0 rows ISp / ISc measure the gap: +0.654 / -0.025 USD.
 - **NOT SUPPORTED by this row: the escrowed convention.** It is a different model (D0 group H,
   0.15-0.19 USD from the spot-shift model).
-- **Greeks.** Theta and charm are UNSUPPORTED (NaN plus a bit, never 0) when an in-life
-  ex-date sits on steps 0..2 of the route. The time roll across an ex-date is an event
-  operation, not a derivative.
+- **Greeks.** An unsupported greek is NaN plus a bit and a typed reason, never 0.
+  - Theta and charm are UNSUPPORTED (`ExDateInStencil`) when an in-life ex-date sits on steps
+    0..2 of the route.
+  - Vega is UNSUPPORTED (`ExerciseDominated`) on an American call that is exercise-dominated
+    before an in-life ex-date: the cash beats the interest on the strike to the next ex-date,
+    and the cum-dividend forward is at least 2 sd in the money (D0 F1c: the lattice's vega
+    was +1.3-1.7 % off at every N).
+  - The time roll across an ex-date is an event operation, not a derivative.
+  - Accuracy class on the Refined route, D0's study rows (doc section 11.6):
+    - delta within 2.3e-5 (Richardson pair);
+    - vega within 0.073 % (Richardson bump pair);
+    - rho within 0.24 %;
+    - dP/dD within 1.3e-4;
+    - roll within 1.3e-3 USD.
+  These are classes, not reference-uncertainty claims.
 
-**What would move this row.** The budgets need a 3.5-10x cheaper prepared price and a 3-11x
-cheaper IV up to 12 events (19x and 21x above 12). The 301-step rollback alone is 17.7 us at
-0 events (2.1 GHz). Lattice tuning does not close that gap. The bounded challenger the D1 brief
-reserves (GIT hybrid-dividend, or Dynamic Chebyshev on a fixed schedule) is the candidate. It
-has not been run.
+**The dominating stage.** In the cold group clock, the inversions take 99.94 % and
+`prepare()` (family_build_validation) the rest. Run f1:
+- inverses 2.6377 s;
+- family_build_validation 0.0016 s;
+- unattributed 3e-7 s.
+
+Per call, the floor is one rollback. The 301-step Standard rollback alone is 17.7 us at
+0 events (run b, 2.1 GHz), already 3.5 times P2's 5 us. An IV needs 4-5 rollbacks, and the bundle
+needs 9 or more. Lattice tuning does not close that gap. A prepared non-lattice
+representation is required.
+
+**The next experiment: one challenger, acceptance predeclared.**
+
+The challenger is a prepared Chebyshev-in-sigma family per (group, strike).
+- `prepare()` evaluates the Standard route at n Chebyshev nodes in sigma over the route's
+  admissible range. n is the smallest count whose interpolant reproduces the route within
+  the tolerance below at 2n check points.
+- A prepared price is then an O(n) evaluation, and an IV is a bracketed root of the
+  interpolant.
+- The family is a pure function of the route's prices, so its accuracy is the route's plus
+  the interpolation error. That error is checked at build time and refused, never served,
+  when it is exceeded.
+
+Budget: 2 days. Measured on the dev200b divsched cohort (398 groups, 22,009 contracts),
+Standard route, B0's harness, one pinned P core.
+
+| metric | target | rejected if |
+|---|---|---|
+| P2 prepared price, p50 | <= 5 us | > 5 us |
+| P2 identified IV, p50 | <= 25 us | > 25 us |
+| interpolation error vs the Standard route, every quoted contract | <= 0.1 bp of IV (keeps the 3 bp class against the reference) | any contract > 0.1 bp, or any refusal the route does not make |
+| IV coverage | identified >= the route's 16,076; no new refusal class | fewer identified |
+| setup (family_build_validation) p50 per group | reported, no target (P1 cold stays a MISS by design) | not reported |
+| P3 bundle | reported: vega and the sigma legs come from the family, the other legs stay rollbacks | not reported |
+
+If it fails, this row stays MISS and the recorded result is the measured table. The GIT
+hybrid-dividend method is not a second candidate in this experiment.
