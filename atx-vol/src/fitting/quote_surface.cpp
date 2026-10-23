@@ -1607,7 +1607,12 @@ private:
     }
     check.identification = true;
     for (const std::size_t i : published_set()) {
-      const std::array<QuoteSlicePublicationSlice, 1> one{{{&out_[i].fit, expiries_[i].quotes}}};
+      // On a copy with its own curve: query_quote_slice evaluates through the curve's cache,
+      // and a published curve whose cache the check filled serves later evaluations that
+      // differ in the last bits (measured: 74 SPY rows, <= 5.1e-13) - the check must leave
+      // the published fit untouched.
+      const QuoteSliceFit probe = trial_copy(out_[i].fit);
+      const std::array<QuoteSlicePublicationSlice, 1> one{{{&probe, expiries_[i].quotes}}};
       ATX_TRY(const QuoteSlicePublicationReport labels,
               validate_published_representation(one, check));
       out_[i].publication_label_violations =
