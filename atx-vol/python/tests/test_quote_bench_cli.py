@@ -1685,3 +1685,202 @@ def test_native_empty_route_over_cash_in_life_is_a_window_mismatch(binary, tmp_p
     assert route["route"] == "escrow"
     assert route["reason"] == "route_window_mismatch"
     assert route["lattice_scheme"] is None and route["lattice_steps"] is None
+
+
+# Lane B0 benchmark harness (tools/bench_clocks.hpp, docs/benchmark-clocks.md): the bench
+# object's clocks, exclusive stages, counters, cold reset and affinity receipt.
+BENCH_STAGES = ("normalization", "family_build_validation", "inverses", "endpoints",
+                "curve_repair", "final_grid_validation", "reference_exceptions", "publication",
+                "fit_other")
+SERIAL = {"ATX_VOL_FIT_WORKERS": "1"}
+# A cold rep 2 is not faster than this share of rep 1 (docs/benchmark-clocks.md); a warm
+# memo hit skips every inversion and runs several times faster.
+COLD_REP_MIN_RATIO = 0.5
+
+
+def make_american_snapshot(path: Path, expiries: int) -> None:
+    # Puts and calls on spot 100 at a 5% rate, no dividends: the puts carry an early-exercise
+    # premium, so admission inverts them on the American kernel. Calls are European values
+    # (no early exercise without dividends); puts are European values floored at intrinsic.
+    def phi(x: float) -> float:
+        return 0.5 * math.erfc(-x / math.sqrt(2.0))
+
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow([
+            "row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+            "years", "years_calendar", "rate", "sdiv", "ddiv_pv",
+            "input_status", "exercise", "underlier", "root", "expiry_days", "snapshot_ns",
+        ])
+        row = 0
+        for expiry in range(expiries):
+            years = 0.1 + 0.05 * expiry
+            for step in range(-8, 9):
+                strike = 100.0 + 2.5 * step
+                sigma = 0.25 - 0.2 * math.log(strike / 100.0)
+                sigma_t = sigma * math.sqrt(years)
+                d1 = (math.log(100.0 / strike) + 0.05 * years) / sigma_t + 0.5 * sigma_t
+                discount = strike * math.exp(-0.05 * years)
+                call = 100.0 * phi(d1) - discount * phi(d1 - sigma_t)
+                put = max(call - 100.0 + discount, strike - 100.0, 0.0)
+                for is_call, price in ((1, call), (0, put)):
+                    half = max(0.02, 0.02 * price)
+                    writer.writerow([
+                        row, 2000 + expiry, strike, is_call, 100, max(price - half, 0.0),
+                        price + half, years, years, 0.05, 0, 0, "ok", "American", "AAA", "AAA",
+                        round(years * 365.25 * 1000), 1,
+                    ])
+                    row += 1
+
+
+def bench_run(binary, source, output, *extra, workers="1"):
+    env = {**os.environ, "ATX_VOL_FIT_WORKERS": workers}
+    result = invoke(binary, source, output, *extra, env=env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_native_bench_clocks_are_reported_and_stages_reconcile(binary, tmp_path):
+    source = tmp_path / "quotes.csv"
+    make_american_snapshot(source, 4)
+    policy = write_policy(tmp_path / "graded.json", {"schema_version": 1, "admission": "graded"})
+    plain_output, timed_output = tmp_path / "plain.csv", tmp_path / "timed.csv"
+    plain = bench_run(binary, source, plain_output, "--policy", str(policy))
+    timed = bench_run(binary, source, timed_output, "--policy", str(policy), "--timing-detail",
+                      "--reps", "2", "--cold-reset")
+    # The harness only measures: predictions are byte-identical to the plain run.
+    assert timed_output.read_bytes() == plain_output.read_bytes()
+    bench = plain["bench"]
+    assert bench["schema"] == "atx-vol-bench-clocks-v2"
+    assert bench["reps"] == 1 and bench["cold_reset"] is False
+    assert bench["stages"] == "unavailable: requires --timing-detail"
+    assert bench["clocks"]["ready_to_quote_s"]["status"] == "not_built"
+    assert bench["affinity"]["pinned"] is False
+    assert bench["build_info"]["fast_math"] is False
+    assert bench["counters"]["simd"]["vector_pack_dispatches"].startswith("unavailable")
+    bench = timed["bench"]
+    clocks = bench["clocks"]
+    assert clocks["cold_calibration_s"]["summary"]["n"] == 2
+    assert set(clocks["legacy_fit_reprice_s"]["summary"]) == {"n", "min", "median", "p95",
+                                                              "p99", "max"}
+    for rep in bench["per_rep"]:
+        # Cold calibration contains the legacy clock (it adds classification/grouping).
+        assert rep["cold_calibration_s"] >= rep["legacy_fit_reprice_s"]
+        assert rep["predictions_identical_to_rep1"] is True
+        assert rep["cold_reset"]["applied"] is True
+        assert rep["deam_memo_entries_at_start"] == 0
+    assert timed["fit_and_reprice_seconds"] == bench["per_rep"][0]["legacy_fit_reprice_s"]
+    process = clocks["process_wall_s"]
+    assert process["status"] == "measured"
+    timers = process["sub_timers"]
+    assert {"startup_s", "setup_s", "read_s", "decode_s", "compute_s", "write_s",
+            "policy_load_s"} <= set(timers)
+    assert process["value"] >= timers["compute_s"] >= sum(r["cold_calibration_s"]
+                                                           for r in bench["per_rep"])
+    stages = bench["stages"]
+    assert set(stages["stages"]) == set(BENCH_STAGES)
+    assert stages["stages"]["family_build_validation"] == {
+        "seconds": None, "status": "not_built",
+        "reason": stages["stages"]["family_build_validation"]["reason"]}
+    timed_stages = [s["seconds"] for s in stages["stages"].values() if s["status"] == "timed"]
+    assert all(seconds >= 0.0 for seconds in timed_stages)
+    assert sum(timed_stages) == pytest.approx(stages["sum_s"], rel=1e-9, abs=1e-12)
+    # unattributed_s is the cold clock (its own stamps) minus the measured stages: time no
+    # timer claimed (surface scheduling, a fit lap's unmeasured remainder), not zero by
+    # construction; the lap clock's unclaimed time explains it to rounding.
+    assert stages["unattributed_s"] == pytest.approx(
+        stages["cold_calibration_s"] - stages["sum_s"], rel=1e-9, abs=1e-12)
+    assert stages["unclaimed_lap_s"] >= 0.0
+    assert abs(stages["span_check_s"]) <= 1e-9
+    assert stages["unattributed_s"] > 0.0
+    assert stages["reconciles_within_1pct"] is (
+        abs(stages["unattributed_s"]) <= 0.01 * stages["cold_calibration_s"])
+    assert stages["attribution_valid"] is True and stages["attribution_conflict_s"] == 0.0
+    assert stages["stages"]["inverses"]["seconds"] > 0.0
+    assert stages["stages"]["final_grid_validation"]["seconds"] > 0.0
+    counters = bench["counters"]
+    rows = counters["rows"]
+    assert rows["input_rows"] == timed["rows"] and rows["served_rows"] == timed["served_rows"]
+    assert rows["served_iv_rows"] == timed["served_rows"]
+    assert sum(rows["rows_by_status"].values()) == timed["rows"]
+    families = counters["families"]
+    assert families["built"] == 0 and families["iterate_prices"] == 0  # family route off
+    assert families["attempted"].startswith("unavailable")
+    route = counters["fit_route"]
+    assert route["timed_chains"] == 4
+    assert route["al_boundary_solves"] == sum(route["al_boundary_solves_by_bucket"].values())
+    assert route["inversions"] > 0 and route["certification_passes"] >= 4
+    assert sum(route["premium_fallbacks_by_reason"]) == route["premium_fallbacks"]
+    assert counters["deam_stage_clock"]["endpoint_bands"] >= 0  # bands only on channel fits
+    assert plain["bench"]["counters"]["families"] == "unavailable: requires --timing-detail"
+    ledger = [rep["solve_ledger"]["sl_al_boundary_solves"] for rep in bench["per_rep"]]
+    assert ledger[0] == ledger[1] == counters["solve_ledger"]["sl_al_boundary_solves"] > 0
+
+
+def test_native_cold_reset_repeats_rep1_work_where_a_memo_crosses_reps(binary, tmp_path):
+    # rung_memo false: the graded fits read the de-Am cache from the fitting thread's memo,
+    # which survives an in-process rep unless --cold-reset clears it.
+    source = tmp_path / "quotes.csv"
+    make_american_snapshot(source, 4)
+    policy = write_policy(tmp_path / "thread-memo.json", {
+        "schema_version": 1, "admission": "graded", "graded": {"rung_memo": False}})
+    warm = bench_run(binary, source, tmp_path / "warm.csv", "--policy", str(policy),
+                     "--reps", "2")["bench"]["per_rep"]
+    cold = bench_run(binary, source, tmp_path / "cold.csv", "--policy", str(policy),
+                     "--reps", "2", "--cold-reset")["bench"]["per_rep"]
+
+    def solves(rep):
+        return rep["solve_ledger"]["sl_al_boundary_solves"]
+
+    kept = warm[1]["deam_memo_entries_at_start"]
+    assert kept >= 4  # at least one cache per expiry survives rep 1
+    assert solves(warm[1]) < solves(warm[0])
+    assert cold[1]["cold_reset"]["cleared"][0]["entries_before"] == kept
+    assert cold[1]["deam_memo_entries_at_start"] == 0
+    assert solves(cold[1]) == solves(cold[0]) == solves(warm[0])
+    assert all(rep["predictions_identical_to_rep1"] for rep in warm + cold)
+    assert cold[1]["cold_calibration_s"] >= COLD_REP_MIN_RATIO * cold[0]["cold_calibration_s"]
+    assert (tmp_path / "warm.csv").read_bytes() == (tmp_path / "cold.csv").read_bytes()
+
+
+def test_native_affinity_pins_the_process_and_reports_the_core(binary, tmp_path):
+    source, output = tmp_path / "quotes.csv", tmp_path / "pinned.csv"
+    make_quotes(source)
+    last_cpu = str((os.cpu_count() or 1) - 1)
+    receipt = bench_run(binary, source, output, "--curve", "essvi", "--affinity", last_cpu)
+    affinity = receipt["bench"]["affinity"]
+    assert affinity["pinned"] is True and affinity["requested_cpu"] == int(last_cpu)
+    assert affinity["process_affinity_mask"] == hex(1 << int(last_cpu))
+    assert affinity["thread_affinity_mask"] == hex(1 << int(last_cpu))
+    assert affinity["current_cpu_at_receipt"] == int(last_cpu)
+    assert affinity["fit_workers"]["resolved_auto"] == 1
+    assert affinity["nested_pools"]["surface_expiry_fanout"] == 1
+    assert isinstance(affinity["is_pcore"], bool) and affinity["cpu_model"]
+    refused_output = tmp_path / "refused.csv"
+    required = invoke(binary, source, refused_output, "--curve", "essvi", "--affinity", last_cpu,
+                      "--require-pcore", env={**os.environ, **SERIAL})
+    if affinity["is_pcore"]:
+        assert required.returncode == 0, required.stderr
+    else:  # an efficiency core (hybrid host): refused before any output
+        assert required.returncode != 0
+        assert "is not on a performance core" in required.stderr
+        assert not refused_output.exists()
+
+
+@pytest.mark.parametrize(("extra", "workers", "message"), [
+    (("--reps", "0"), "1", "--reps must be 1..1000"),
+    (("--reps", "1001"), "1", "--reps must be 1..1000"),
+    (("--require-pcore",), "1", "--require-pcore requires --affinity"),
+    (("--affinity", "0"), "2", "--affinity requires ATX_VOL_FIT_WORKERS=1"),
+    (("--model", "common-markov", "--reps", "2"), "1", "require --model quote-slice"),
+    (("--model", "common-markov", "--cold-reset"), "1", "require --model quote-slice"),
+])
+def test_native_bench_flags_are_validated_before_output(binary, tmp_path, extra, workers,
+                                                        message):
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    result = invoke(binary, source, output, *extra,
+                    env={**os.environ, "ATX_VOL_FIT_WORKERS": workers})
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert not output.exists()

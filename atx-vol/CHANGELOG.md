@@ -34,6 +34,36 @@ one-shot and 3.5 us from a table tile against 6.2 us for `price_on` alone and
 evaluations. Design, validation tables and the full cost table:
 `atx-vol/docs/sigma-q-fused-vega.md`.
 
+### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
+
+Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
+(`tools/bench_clocks.{hpp,cpp}`; definitions in `docs/benchmark-clocks.md`): the
+historical `legacy_fit_reprice_s` (unchanged), `cold_calibration_s` (adds the row
+classification and grouping the legacy timer skips; excludes I/O and the policy load),
+`ready_to_quote_s` reported `not_built`, and `process_wall_s` with startup / setup / read /
+decode / compute / write sub-timers. New flags: `--reps N` with min / median / p95 / p99 /
+max, `--cold-reset` (clears the de-Am IV thread memo and the carry memo before each rep),
+`--affinity CPU` (process and fit-worker pinning; requires `ATX_VOL_FIT_WORKERS=1`) and
+`--require-pcore`. Under `--timing-detail` the cold clock is split into exclusive
+measured stages (normalization, family build + validation, inverses, endpoints,
+curve/repair, final grid, reference exceptions, publication, fit_timing other; the family
+stage is `not_built` when no family was built), and `unattributed_s` = cold clock - stage
+sum is the time no timer measured (a real reconciliation, failing above 1%), with the
+fit-route and family counters; exact SIMD counters report `unavailable` when compiled
+out. `src/fitting/deam_iv_cache.*` gains `DeAmStageClock`, an opt-in, thread-armed
+timer of band-edge prices and fallback inversions (unarmed: one TLS load, no clock read).
+New tools: `bench/run_cold_trials.ps1` (fresh-process trials into one manifest with
+binary / policy / input hashes, source SHA, embedded build flags, a P-core proof and an
+SMT-contention flag per trial, threshold `-SiblingBusyThresholdPct` 10%) and
+`atx-vol-iv-comparator` (bisected American IV roots of served prices, in absolute vol, on
+the fitter's own Andersen-Lake accurate preset - independent root finding only, circular
+for pricer error on curve-priced rows - reported as four populations: resolved pass /
+resolved fail / reference unresolved / IV not identified, with the reference uncertainty
+and a continuous-carry price table).
+
+**Migration:** none. Predictions are byte-identical with and without every new flag; the
+report only gains the `bench` key.
+
 ### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
 
 Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,
