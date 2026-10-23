@@ -519,3 +519,97 @@ file's `#`-heading blocks are exactly the first parent's plus the lane's new one
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cf-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2cf-20261023-integrate\`.
+
+## W2c-g / r6 integration of K3 (vol-sota master plan, 2026-10-23)
+
+Lane W2c-g (run `vol-sota-r6-20261023`, pool-5) merged the approved K3 lane into the root
+`feat/vol-resume5-20261022`, `--no-ff`, on top of `914a28ef`, then fixed the atxvol wheel's version-mirror guard and
+built the wheel once. No default promoted; nothing pushed.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `a005113a` | merge K3 error envelope `91d1f669` (review BLOCK at `02eab1ed`; fix round 1; re-review ALL ADDRESSED at `91d1f669`; merge base `668ad80e`) | `CHANGELOG.md`, `src/pricing/american_iv.cpp`, `src/pricing/american_iv_premium.hpp`, `tests/american_iv_test.cpp` | union, plus the semantic glue below |
+| `d79adeed` | `build(vol-python)`: the version-mirror guard reads `atx_VERSION` from the root directory's scope | - | wheel configures; drift still fails |
+
+**Conflict resolution.** CHANGELOG: C0's entry, then K3's (entry-set check OK: 131 blocks = the root's 130 + K3's
+one). Includes: both lanes' lines in all three C++ files. `IvPremiumStats`: K2's `native_*` fields and K3's
+`acceptance` / `native_partner_span`. The `qfamily_native` comment keeps K2's iterate description and K3's
+acceptance description; each side's sentence the other supersedes is dropped. The native branch of
+`premium_root` takes K3's `accept_family_native` (K2 had changed the same call's partner argument to `nullptr`).
+
+**Semantic glue (the textual union does not compile).** K2's batch-seam rewrite removed `NativeRoot::partner`: the
+lane is a bracketed Newton on the fused vega and has no secant partner. K3's `accept_family_native` read the
+partner only for the diagnostic `IvPremiumStats::native_partner_span`, which is now 0 on the native route
+(documented at the field). K3's `AmericanIvPremium.FamilyNativeAcceptanceDoesNotRestOnANonLocalSecant` forced a
+far secant partner through the memory's family points, which K2's lane never reads, so its precondition
+`EXPECT_GT(far_partner, checked / 2)` failed (0 vs 28) while every acceptance assertion passed (56 roots, max
+bracketed error 7.81e-10); it is now `EXPECT_EQ(far_partner, 0u)`, the acceptance assertions unchanged. Both
+glue hunks are in the merge commit and its message.
+
+**Diff proof.** Against the K3 blob (`914a28ef..merge` vs `668ad80e..91d1f669`) and against the W2c-f root blob
+(`91d1f669..merge` vs `668ad80e..914a28ef`): 63 per-file comparisons EQUAL_SEQ; the 6 others (the three glue files
+on both sides) differ only by the listed lines: the glue, the one line both lanes edited (the native accept call),
+the `<limits>` include both lanes added (once), and the two superseded comment sentences.
+
+**Per-merge suites** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`): K3's pricing anchor + quote-slice 86/86; K2's
+final-gate regex 121/121 (quote-slice counted in K3's run); C0's quote-slice, fit-archive, implied-forward,
+discrete-div-smoothing, iv-batch-alloc, bench-clocks 6/6 (`atx-vol-umbrella`: its 3 known failures, counts 44 /
+103 as at W2c-f).
+
+**Gates on the final code `d79adeed`** (the docs commit changes `.md` files only):
+- 9/9 default hashes byte-identical, `sha256sum -c` 9 OK, stderr files 0 bytes; quote-bench `f9b2a473`.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (library 117 s, then bench targets 30 s).
+- Name set at cap 3: exactly R0's `52324ef8` (the L575 flake did not fire this run). K3's 15 new names all pass
+  (`AmericanFamilyError.*` 9, `AmericanFamilyRootAudit.*` 1, `AmericanIvPremium.*` 5); 0 removed.
+- Combined anchored ctest (W2c-f regex + `AmericanFamilyError`, `AmericanFamilyRootAudit`), native ctest excluded:
+  130/130. CLI pytest on the two files directly: 190 passed.
+- ForceScalar filter on the slices: 121 + 1 passed, 4 skipped, 1 known failure
+  (`AmericanIv.PricePolishDefaultOffIsBitForBitControl`).
+- PCH-off (`vol-hygiene`): 80 TUs over the 5 changed headers (`quote_slice.hpp`, `counters.hpp`,
+  `deam_iv_cache.hpp`, `american_family_error.hpp`, `american_iv_premium.hpp`), exit 0, 0 diagnostics (30 bench
+  TUs, 2 example TUs and 2 python binding TUs are not configured in vol-hygiene; the bindings compiled in the
+  wheel build with no first-party warning).
+- Keys-ON (SPY, workers 2): K3 native `famq-grid-native` = K2's lane + K3's acceptance `710115bb` (neither lane's
+  own hash), served 1410, lost 0 / gained 0 against R1-B `a3c0b01e`, K3 `2debd48d` and K2 `5abc6bfe`, max |dvol|
+  2.3e-12, max |dP| 2.7e-11 against K3; work vs K3: confirm solves 21,916 -> 21,913, skips 8,065 -> 8,197,
+  fallbacks 528 -> 520 (K2's 520), family prices 160,287 -> 145,052. B-family `13f6be35` = K3's, work identical.
+  K2's `--inverse-replay avx2` row equals the native row; its `bench.inverse_replay` block is field-for-field
+  W2c-f's (13/13: 29725 requests, 28356 converged + 296 sigma_above_box, fit_native 26689 status-equal, max
+  dsigma 1.99e-13); its keys-OFF row moves `86ca3e10` -> `6368997d` = K3's famq-grid row (the family grid now serves
+  no price), lost 0. C0's 10 rows equal its fix-round hashes.
+- K3 bracket audit (`--deam-audit`, per-root CSV): SPY native 27,437, SPY B-family 27,182, cohort5 39,362, dev200b
+  59,737, dev200 89,654 typed roots; 0 violations of 1e-7, 0 unresolved on all five (negative-carry subsets
+  included); LegacyBandGate / LegacyNever 0; every row lost 0 vs R1-B and vs K3.
+- Python wheel: the guard fix configures (before: `... the root CMakeLists is .`; after: configure done; a
+  temporary pyproject `1.1.1` stops with `declares 1.1.1, but ... is 1.1.0`, restored). One wheel build at `-j 1`
+  (stated 30-minute exception): 1237 s, `atxvol-1.1.0-cp312-cp312-win_amd64.whl` sha256
+  `0ad53ac8390ed825af9c2dbfaf562745670a8bf7d58c81590dc7501f86f5b2d4`. In a scratch venv (numpy, pytest, pandas,
+  pyarrow 18): `test_quote_slice.py` 5/5, `test_atxvol.py` 9/9 (the wheel-metadata version assertion included);
+  14 binding files 217 passed / 24 failed / 5 skipped (20 = `run_sp100_strangle_backtest.py`'s driver refusing an
+  atxvol outside the tree, by design; 2 `test_report_from_archive` friction_regime refusals; 2
+  `test_surface_db_build` carry_failed cells; neither code path is touched by W2c-f or W2c-g); `test_chain.py`
+  cannot import beside pyarrow 18.
+
+### Deferred minors (W2c-g: K3 review, fix round, integration)
+- K3 mn-1 (the family certification grid serves 0 prices under the validated domain-wide bound; a per-point grid
+  bound) and mn-4 (PriceOnly / Interval fall back to Search, which serves an identified IV; publishing them needs a
+  validated vega lower bound and a fallback change): K4.
+- K3 mn-2 (informational): the B-family arm spends far more confirm solves (SPY 185 -> 19,566) for its 1e-7
+  statement.
+- K3 for K4: the thread-local `FamilyEnvelopeScope` must become an `IvPremiumGate` field before any lane is evaluated
+  off the inverting thread (a lane outside the scope silently confirms everything); `family_enclosure` is declared
+  in `src/pricing/american_iv_premium.hpp` for its per-end test, keep it reachable through a batch seam; the
+  family grid's rung-memo key carries `q_bound` bits (in-process memo only); the trivial box bound alone certifies
+  enclosures on low-premium families.
+- K3 re-review: the negative-carry domain-bound test's built-envelope arm only reaches 0.0033 of the bound (the box
+  term was the defect and is pinned through the every-node-unverified arm).
+- W2c-g integration: `NativeRoot`'s comment still calls the fused vega "the confirm's LOCAL slope" and
+  `IvPremiumStats::native_status` says "Converged with the root confirmed as before"; since K3 the native root goes
+  through `accept_family_native`, which uses the enclosure's chord, not that vega. `native_partner_span` is a constant
+  0 on the native route and could be retired from the audit CSV.
+- W2c-g wheel: the wheel does not bundle `arrow.dll` / `parquet.dll` (a delvewheel-style repair or static Arrow,
+  as the python README lists); with this build's Arrow 24 the README's measured "import atxvol, then pyarrow, works"
+  no longer holds (pyarrow 18 fails after atxvol); 4 binding tests fail on code these lanes did not touch.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cg-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2cg-20261023-integrate\`.
