@@ -952,13 +952,27 @@ struct LoadedPolicy {
   bool floor_price_only{false};
   bool metadata{false};
   SnapshotOptions snapshot{};
+  // Lane C3 (`serve.call_floor`, opt-in, graded only): every profile's
+  // QuoteSliceConfig::call_floor mode; quote_bench_main fills the lines per snapshot
+  // (quote_surface_call_floor_lines). Legacy is the historical path.
+  QuoteSliceCallFloor call_floor{QuoteSliceCallFloor::Legacy};
 };
 
-// The lane C0 `serve` and `snapshot` objects; absent keys keep the historical path.
-inline void parse_serve(const Json &document, bool &floor_price_only, bool &metadata) {
+// The lane C0 `serve` and `snapshot` objects; absent keys keep the historical path. Lane C3
+// adds serve.call_floor: legacy (the default) | discounted_intrinsic.
+inline void parse_serve(const Json &document, bool &floor_price_only, bool &metadata,
+                        QuoteSliceCallFloor &call_floor) {
   if (!document.contains("serve")) return;
   const auto &j = document.at("serve");
-  keys(j, {"floor_price_only", "metadata"});
+  keys(j, {"floor_price_only", "metadata", "call_floor"});
+  if (j.contains("call_floor")) {
+    const auto mode = text(j.at("call_floor"));
+    if (mode == "discounted_intrinsic") {
+      call_floor = QuoteSliceCallFloor::DiscountedIntrinsic;
+    } else if (mode != "legacy") {
+      throw std::runtime_error("Policy serve call_floor must be legacy or discounted_intrinsic");
+    }
+  }
   for (const auto &[key, target] : {std::pair<const char *, bool *>{"floor_price_only",
                                                                     &floor_price_only},
                                     std::pair<const char *, bool *>{"metadata", &metadata}}) {
@@ -1015,7 +1029,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   bool floor_price_only = false;
   bool metadata = false;
-  parse_serve(document, floor_price_only, metadata);
+  QuoteSliceCallFloor call_floor = QuoteSliceCallFloor::Legacy;
+  parse_serve(document, floor_price_only, metadata, call_floor);
   // serve.floor_price_only serves its PriceOnly rows, so it implies price_only.
   price_only = price_only || floor_price_only;
   const SnapshotOptions snapshot = parse_snapshot(document);
@@ -1250,8 +1265,14 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   }
   // Provenance only when opted in, directly or implied by serve.floor_price_only.
   if (price_only) definition["price_only"] = true;
-  if (floor_price_only || metadata) {
+  const bool floored = call_floor != QuoteSliceCallFloor::Legacy;
+  if (floor_price_only || metadata || floored) {
     definition["serve"] = {{"floor_price_only", floor_price_only}, {"metadata", metadata}};
+    if (floored) definition["serve"]["call_floor"] = to_string(call_floor); // lane C3
+  }
+  // The floor's lines are a snapshot's expiries, which only graded admission fits together.
+  if (floored && !graded) {
+    throw std::runtime_error("Policy serve call_floor requires admission graded");
   }
   if (snapshot.one_spot != OneSpot::Off) {
     definition["snapshot"] = {{"one_spot", to_string(snapshot.one_spot)},
@@ -1280,6 +1301,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_family_native = space.family_native;
     profile.config.grid_kernel = space.grid_kernel;
     if (floor_price_only) profile.config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+    profile.config.call_floor.mode = call_floor; // lane C3; lines per snapshot
     // The ladder brings its own knot rung and containment rule: a knot-spline
     // profile (already knot-first) or the dominance gate would be ambiguous.
     if (surface.ladder == QuoteSurfaceLadder::KnotFirst &&
@@ -1321,7 +1343,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
   auto catalog = QuoteFitPolicyCatalog::create(profiles, overrides, regimes);
   if (!catalog) throw std::runtime_error(catalog.error().to_string());
   return {std::move(*catalog), std::move(definition), std::move(routing), graded, surface,
-          price_only, floor_price_only, metadata, snapshot};
+          price_only, floor_price_only, metadata, snapshot, call_floor};
 }
 
 inline Json features_json(const QuoteFitLiquidityFeatures &f) {

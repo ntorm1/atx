@@ -2001,6 +2001,41 @@ def test_native_c0_serve_and_snapshot_keys_are_strict(binary, tmp_path):
         assert not output.exists()
 
 
+def test_native_call_floor_key_is_strict_graded_only_and_inert_when_legacy(
+        binary, tmp_path, wing_chain):
+    # Lane C3: serve.call_floor = legacy | discounted_intrinsic, graded admission only.
+    source, output = tmp_path / "quotes.csv", tmp_path / "predictions.csv"
+    make_quotes(source)
+    for document, message in (
+            ({"schema_version": 1, "serve": {"call_floor": "discount"}},
+             "serve call_floor must be legacy or discounted_intrinsic"),
+            ({"schema_version": 1, "serve": {"call_floor": True}}, "must be"),
+            ({"schema_version": 1, "serve": {"call_floor": "discounted_intrinsic"}},
+             "serve call_floor requires admission graded")):
+        policy = write_policy(tmp_path / "policy.json", document)
+        result = invoke(binary, source, output, "--policy", str(policy))
+        assert result.returncode != 0, document
+        assert message in result.stderr, (document, result.stderr)
+        assert not output.exists()
+    plain = c0_graded_policy(tmp_path / "plain.json")
+    legacy = c0_graded_policy(tmp_path / "legacy.json", serve={"call_floor": "legacy"})
+    floored = c0_graded_policy(tmp_path / "floored.json",
+                               serve={"call_floor": "discounted_intrinsic"})
+    _, plain_report, plain_csv = run_c0(binary, wing_chain, tmp_path, "plain", plain)
+    _, legacy_report, legacy_csv = run_c0(binary, wing_chain, tmp_path, "legacy", legacy)
+    _, on_report, _ = run_c0(binary, wing_chain, tmp_path, "floored", floored)
+    assert legacy_csv.read_bytes() == plain_csv.read_bytes()
+    assert "serve" not in legacy_report["policy_definition"]
+    assert "call_floor" not in plain_report["graded_stats"]
+    assert on_report["policy_definition"]["serve"] == {
+        "floor_price_only": False, "metadata": False, "call_floor": "discounted_intrinsic"}
+    # Opt-in provenance per slice: the wing chain is one dividend-bearing snapshot (alternate
+    # strikes carry a yield), so it lists no line and lifts nothing.
+    slices = on_report["graded_stats"]["slices"]
+    assert all(s["call_floor"] == {"lines": 0, "lifted_nodes": 0, "refused": False}
+               for s in slices)
+
+
 def test_native_c0_keys_off_leave_predictions_unchanged(binary, tmp_path, wing_chain):
     plain = c0_graded_policy(tmp_path / "plain.json")
     off = c0_graded_policy(tmp_path / "off.json",
