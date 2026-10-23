@@ -49,6 +49,7 @@
 
 #include "atx/vol/api/core/types.hpp" // kIvMin (ladder wing tail)
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
+#include "fitting/publication_seam.hpp"  // inject_rollback / inject_final (review m1 test seam)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
 #include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only, clear_identification
@@ -253,7 +254,10 @@ public:
       ATX_TRY_VOID(dominance_pass());
       market_distance_pass();
     }
-    ATX_TRY_VOID(publication_pass()); // lane C2 (opt-in): the final check, last
+    // Lane C2 (opt-in): the final check, last. It is the only check of fit adoption (the
+    // certify_and_serve grid write, channel refits, serve_held_point), so any new final-grid
+    // write or refit adoption (K4) must come before it, or go through validated().
+    ATX_TRY_VOID(publication_pass());
     for (QuoteSurfaceSlice &slice : out_) {
       if (slice.grade == QuoteSliceGrade::Refused) {
         strip(slice.fit);
@@ -1435,7 +1439,7 @@ private:
     check.focus = 0;
     ++out_[i].publication_checks;
     const auto report = validate_published_representation(slices, check);
-    if (report && report->clean()) return true;
+    if (report && report->clean() && !detail::inject_rollback(i)) return true;
     ++out_[i].publication_rollbacks;
     return false;
   }
@@ -1465,7 +1469,7 @@ private:
       check.focus = m;
       ++owner.publication_checks;
       const auto report = validate_published_representation(slices, check);
-      if (!report || !report->clean()) {
+      if (!report || !report->clean() || detail::inject_rollback(slots[m])) {
         ++owner.publication_rollbacks;
         return false;
       }
@@ -1599,8 +1603,9 @@ private:
       std::vector<QuoteSlicePublicationSlice> slices;
       slices.reserve(set.size());
       for (const std::size_t j : set) slices.push_back({&out_[j].fit, expiries_[j].quotes});
-      ATX_TRY(const QuoteSlicePublicationReport report,
+      ATX_TRY(QuoteSlicePublicationReport report,
               validate_published_representation(slices, check));
+      detail::inject_final(report, set);
       if (report.clean()) break;
       const bool last = round + 1u == max_rounds;
       for (const QuoteSlicePublicationFinding &f : report.findings) {

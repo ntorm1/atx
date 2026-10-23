@@ -24,6 +24,7 @@
 
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "fitting/publication_seam.hpp" // ScopedPublicationInjection (review m1 test seam)
 
 namespace atx::vol {
 namespace {
@@ -1034,6 +1035,89 @@ TEST(QuoteSlicePublication, RepairRevalidatePublishEvaluateGivesOneTypedAnswerPe
   EXPECT_TRUE(report->clean());
   EXPECT_EQ(report->withheld_rows, near.withheld_rows + far.withheld_rows);
   EXPECT_FALSE(quote_slice_gaps(near.fit).empty());
+}
+
+// ── Validate's enforcement, a backstop no fit reaches today (fix round 1, review m1) ──
+//
+// Every mutation path re-certifies what the validator checks, so neither the
+// after-mutation rollback nor the final pass's refusals fire on any fixture or cohort.
+// The publication_seam.hpp injection makes the check report a finding. The tests fail if
+// the enforcement is reverted: a trial committed despite its check, a structural finding
+// that does not refuse its slice, or a QuoteBox finding that does not refuse and withhold
+// its row.
+
+// The calendar-repair surface (PriceOnly, no market distance, Validate) fitted with
+// `injection` armed on this thread.
+Result<std::vector<QuoteSurfaceSlice>> fit_injected(const std::array<Chain, 2> &chains,
+                                                    detail::PublicationInjection &injection) {
+  const detail::ScopedPublicationInjection armed(injection);
+  return fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly,
+                             QuoteSliceMarketDistance::Off, QuoteSurfacePublication::Validate);
+}
+
+TEST(QuoteSlicePublication, AFailedAfterMutationCheckRollsTheRepairBack) {
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  detail::PublicationInjection injection;
+  injection.rollback_expiry = 0; // N
+  const auto surface = fit_injected(chains, injection);
+  ASSERT_TRUE(surface) << surface.error().to_string();
+  const QuoteSurfaceSlice &near = (*surface)[0];
+  // Without the injection N is repaired onto F (RepairRevalidatePublishEvaluate...); with
+  // every check of N's trials failing, no repair is committed and N stays refused.
+  EXPECT_GE(injection.injected, 1u);
+  EXPECT_EQ(near.publication_rollbacks, near.publication_checks);
+  EXPECT_GE(near.publication_rollbacks, 1u);
+  EXPECT_FALSE(near.calendar_repaired);
+  EXPECT_FALSE(near.calendar_channel_repaired);
+  EXPECT_EQ(near.grade, QuoteSliceGrade::Refused) << near.refusal;
+  EXPECT_NE((*surface)[1].grade, QuoteSliceGrade::Refused) << (*surface)[1].refusal;
+}
+
+TEST(QuoteSlicePublication, AStructuralFindingOfTheFinalPassRefusesItsSlice) {
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  detail::PublicationInjection injection;
+  injection.refuse_expiry = 1; // F
+  const auto surface = fit_injected(chains, injection);
+  ASSERT_TRUE(surface) << surface.error().to_string();
+  const QuoteSurfaceSlice &far = (*surface)[1];
+  EXPECT_EQ(injection.injected, 1u);
+  EXPECT_EQ(far.grade, QuoteSliceGrade::Refused);
+  EXPECT_EQ(far.refusal, "publication_invalid");
+  EXPECT_EQ(far.publication_violations, 1u);
+  EXPECT_FALSE(far.fit.prices); // stripped: nothing of F is served
+  for (const QuoteSliceRow &row : far.fit.rows) {
+    EXPECT_NE(row.evaluation_status, QuoteSliceEvaluationStatus::Success);
+    EXPECT_NE(row.evaluation_status, QuoteSliceEvaluationStatus::PriceOnly);
+  }
+  EXPECT_NE((*surface)[0].grade, QuoteSliceGrade::Refused) << (*surface)[0].refusal;
+}
+
+TEST(QuoteSlicePublication, ARowFindingOfTheFinalPassRefusesAndWithholdsItsRow) {
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  const auto clean = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly,
+                                         QuoteSliceMarketDistance::Off,
+                                         QuoteSurfacePublication::Validate);
+  ASSERT_TRUE(clean) << clean.error().to_string();
+  const QuoteSliceFit &before = (*clean)[1].fit; // F
+  const std::size_t k = row_index(chains[1], 100.0, Side::Put);
+  ASSERT_EQ(before.rows[k].evaluation_status, QuoteSliceEvaluationStatus::Success);
+  ASSERT_EQ((*clean)[1].withheld_rows, 0u);
+  detail::PublicationInjection injection;
+  injection.withhold_expiry = 1;
+  injection.row = k;
+  const auto surface = fit_injected(chains, injection);
+  ASSERT_TRUE(surface) << surface.error().to_string();
+  const QuoteSurfaceSlice &far = (*surface)[1];
+  EXPECT_EQ(injection.injected, 1u);
+  EXPECT_NE(far.grade, QuoteSliceGrade::Refused) << far.refusal;
+  EXPECT_EQ(far.publication_violations, 1u);
+  EXPECT_EQ(far.fit.rows[k].evaluation_status, QuoteSliceEvaluationStatus::MarketDistanceFailure);
+  EXPECT_GE(far.withheld_rows, 1u);
+  const auto answer = query_quote_slice(far.fit, 100.0, Side::Put);
+  ASSERT_TRUE(answer) << answer.error().to_string();
+  EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::MarketDistanceFailure);
+  EXPECT_FALSE(served_quote_slice_price(far.fit, 100.0, Side::Put));
+  expect_one_answer_per_contract(far.fit, chains[1].quotes, "far");
 }
 
 TEST(QuoteSlicePublication, ALabelThatDisagreesWithTheQueryIsAnIdentificationViolation) {

@@ -1225,6 +1225,18 @@ enum class QuoteSurfaceWingTail : std::uint8_t { Off, FloorPriceOnly, FloorPrice
 // and withheld; Identification findings of the final set are counted only. Independently
 // of the mode, the market-distance gate withholds every row it refuses
 // (QuoteSliceFit::withheld_nodes), so the API refuses the same contracts.
+//
+// (3) The enforcement in (1) and (2) is a backstop that no fit reaches today (lane C2 fix
+// round 1, review m1). By construction, every mutation path already re-certifies what the
+// check validates: the certificate, the calendar against every accepted slice, and the
+// non-dividend certificate under Validate. The market-distance gate also removes QuoteBox
+// rows first. A test seam (src/fitting/publication_seam.hpp) injects findings to pin the
+// rollback and both refusals.
+//
+// (4) Fit adoption is checked only by the final pass in (2), not per write. That covers
+// the certify_and_serve grid write, channel refits and serve_held_point. So any new
+// final-grid write or refit adoption must come before the final pass, or go through the
+// after-mutation check (lane K4: keep it so).
 enum class QuoteSurfacePublication : std::uint8_t { Off, Validate };
 
 [[nodiscard]] const char *to_string(QuoteSurfacePublication value) noexcept;
