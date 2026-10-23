@@ -5,6 +5,28 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — batch American IV inversion on the internal (σ, q) family (lane K2)
+
+`iv_batch::invert_many` (`src/pricing/american_iv_batch.hpp`, internal) inverts N prices of
+one family with per-lane strike, target, q and σ iterate — a bounded bracketed Newton on the
+fused price + vega with typed per-lane outcomes (converged, low vega, exercise-flat, σ below
+/ above the box, q outside the box, nonconverged, invalid input, unsupported ISA), the
+retained bracket on every exit, and bid / ask lanes anchored to their mid. The scalar path is
+the family map bit for bit; the 4-lane AVX2 kernel agrees to 3.4e-14 scaled price. No
+allocation once the scratch is warm. `atx-vol-quote-bench --inverse-replay
+auto|scalar|avx2` records a run's Premium inverse requests and replays them through it
+(`bench.inverse_replay`). Design: `atx-vol/docs/american-iv-batch.md`.
+
+### CHANGED — family-native iterates run through the batch seam (opt-in `graded.family_native`)
+
+The native attempt is now one batch lane instead of the 12-price secant / chord loop: its
+outcome is typed (`IvPremiumStats::native_status`), its bracket and vega are kept in
+`IvPremiumMemory::carry` for the quote's bid / ask, a refusal keeps the contract's leg
+memory, and the confirm's slope is the fused vega at the root. Defaults are unchanged. With
+the key ON the served set equals the key-OFF set on SPY, cohort5, dev200 and dev200b (lost 0,
+gained 0); served prices move against the previous native arm by at most 7.1e-12 (SPY),
+6.9e-10 (cohort5), 5.2e-9 (dev200) and 2.3e-8 USD (dev200b), fitted vols by <= 9.4e-9.
+
 ### NEW — fused price + analytic vega on the internal (σ, q) boundary family
 
 `AlSigmaQFamily` could only price; a slope meant two prices (`price_and_chord`).
