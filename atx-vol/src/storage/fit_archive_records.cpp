@@ -62,7 +62,12 @@ constexpr std::size_t kErFlagsEnd = kFitArchiveExpiryRecordValueBytes;
 template <class E> constexpr std::uint8_t ev(E e) noexcept { return static_cast<std::uint8_t>(e); }
 constexpr std::uint8_t kMaxFitStatus = ev(QuoteSliceFitStatus::ArbitrageFailure);
 constexpr std::uint8_t kMaxDividendModel = ev(QuoteSliceDividendModel::DatedCash);
-constexpr std::uint8_t kMaxScheme = ev(DiscreteDivScheme::EscrowedLeisenReimer);
+// The last DiscreteDivScheme (lane D1 added SplicedCubic; review-D1 M2: the check had
+// stopped at EscrowedLeisenReimer and refused every archived spliced-cubic fit). The
+// round-trip test FitArchiveRecords.EveryDiscreteDivSchemeRoundTrips enumerates the
+// schemes by name, so an enumerator added without raising this fails it.
+constexpr std::uint8_t kMaxScheme = ev(DiscreteDivScheme::SplicedCubic);
+static_assert(kMaxScheme == 5, "a new DiscreteDivScheme must raise kMaxScheme");
 constexpr std::uint8_t kMaxGrade = ev(QuoteSliceGrade::Refused);
 constexpr std::uint8_t kMaxCurveKind = ev(VolCurveKind::SplineVol);
 constexpr std::uint8_t kMaxQuoteStatus = ev(QuoteSliceQuoteStatus::LowVegaWeight);
