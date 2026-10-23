@@ -884,14 +884,11 @@ public:
 private:
   // One side's (sigma, q) family (L2h-b note section 6): the q box is the chain's, a call
   // side clipped to q > 0 (a q <= 0 call never exercises early; its strikes price cold),
-  // the geometry at the request's yield clamped into the box, n_q by T x width, and the
-  // measured bound: 10x deam_family_probe_worst (kDeAmFamilyProbes probes against the cold
-  // accurate kernel at the grid band's strike ends and the spot - the deep wings carry the
-  // largest relative error, measured 8.8e-8 on SPY's 0.18 y deep-ITM calls against ~1e-11
-  // at the money - x the midpoints of the q cells, where the q-interpolation error peaks
-  // (review-SPY1s-p2 M1: the q box ends are Lobatto nodes), log-sigma fractions over the
-  // box), floored at 1e-12. A refusal (a box straddling r, the q-axis accuracy guard, no
-  // American orientation, a probe failure) builds none.
+  // the geometry at the request's yield clamped into the box, n_q by T x width, and its
+  // error contract (lane K3, deam_family_certify): the validated envelope built from the
+  // family's nodes, audited by probes independent of them, and the grid's bound from it.
+  // A refusal (a box straddling r, the q-axis accuracy guard, no American orientation, a
+  // probe that cannot be priced) builds none.
   void build_sigma_q(DeAmSigmaFamilies &holder, const DeAmFamilyRequest &request,
                      Side side) const {
     const std::size_t s = side == Side::Put ? 0u : 1u;
@@ -926,14 +923,11 @@ private:
     const double band_lo =
         std::max(request.strike_lo, spot * std::exp(-kDeAmFamilyGridLogBand));
     const double band_hi = std::min(request.strike_hi, spot * std::exp(kDeAmFamilyGridLogBand));
-    const std::optional<double> worst =
-        deam_family_probe_worst(*slot, spot, T, r, fit_.al_opts, band_lo, band_hi);
-    if (!worst) {
+    if (!deam_family_certify(holder, side, spot, T, r, fit_.al_opts, request.strike_lo,
+                             request.strike_hi, band_lo, band_hi)) {
       slot.reset();
       return;
     }
-    (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) =
-        std::max(10.0 * *worst, 1.0e-12);
   }
 
   const QuoteSliceFit &fit_;

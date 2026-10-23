@@ -1210,9 +1210,23 @@ struct FitTimingCounters {
   std::uint32_t deam_seed_routed{0};
   double deam_gate_max_bound_vol{0.0};
   // --deam-audit, skipped confirms only: pairs and the largest accurate-map Newton
-  // distance of a root the band gate accepted without a confirm.
+  // distance of a root accepted without a confirm (the band gate's or, lane K3, a family
+  // envelope enclosure's).
   std::uint32_t deam_audit_skipped_pairs{0};
   double deam_audit_max_newton_skipped{0.0};
+  // Lane K3 (pricing/american_family_error.hpp): the Premium roots by typed acceptance kind
+  // (index = RootAcceptanceKind; None = no family-route root and no skip) and reason (index
+  // = RootAcceptanceReason), and, under --deam-audit, every served typed root re-solved by
+  // bisection on the accurate map to 1e-9: roots audited, references not bracketed,
+  // |served - reference| > kIvRootRequirement (violations), and the largest distance (vol)
+  // of a Skipped and of a Confirmed root. Per root: ATX_VOL_FAMILY_ROOT_AUDIT.
+  std::array<std::uint32_t, 5> deam_accept_by_kind{};
+  std::array<std::uint32_t, 9> deam_accept_by_reason{};
+  std::uint32_t deam_audit_bracket_roots{0};
+  std::uint32_t deam_audit_bracket_unresolved{0};
+  std::uint32_t deam_audit_bracket_violations{0};
+  double deam_audit_bracket_max_skipped{0.0};
+  double deam_audit_bracket_max_confirmed{0.0};
   // Sigma-family iterates (SPY1s Phase 2; QuoteSliceDeamFamily): families built and the
   // wall of their node solves (NOT in al_price_calls' reason split: built outside any
   // inversion), iterates priced on a family, Premium attempts a family refused.

@@ -19,9 +19,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "pricing/american_family_error.hpp" // RootAcceptance (lane K3)
 #include "pricing/american_iv_batch_status.hpp" // K2: the native attempt's typed outcome
 
 namespace atx::vol {
@@ -96,15 +98,17 @@ struct IvPremiumStats {
   // Newton correction, an upper bound on the served root's own residual.
   double last_residual_usd = 0.0;
   // Seed-tier wiring (IvOpts::seed_profile; SPY1s Phase 1, 2026-10-20). Of
-  // premium_solves: the confirming solve on the confirm kernel (0 or 1) and the band
+  // premium_solves: the confirming solves on the confirm kernel (at most
+  // kIvPremiumConfirmSolves; lane K3's bracket confirm spends up to three) and the band
   // gate's chord solve on the seed tier (0 or 1); the rest are iterates. seed_nodes: the
   // boundary node count of the scheme the iterates ran on (al_screen_opts() 7; the
   // accurate preset 12). confirm_profile: the kernel profile of the confirming solve when
   // one ran. seed_routed: the price lay inside the seed tier's non-monotone gate, so the
   // iterates ran on the accurate kernel and no confirm was needed. confirm_skipped: the
   // band gate (IvPremiumGate) accepted the seed-tier root without a confirm.
-  // gate_bound_vol: the gate's (eps_A + eps_r) / v_min in vol units when it was
-  // evaluated (NaN otherwise) - the bound the skipped root carries.
+  // gate_bound_vol: the vol bound a skipped root carries (NaN otherwise): the band gate's
+  // (eps_A + eps_r) / v_min, or (lane K3) the width of the bracket of the target map's root
+  // the family envelope enclosed (acceptance.bound_iv).
   std::uint32_t confirm_solves = 0;
   std::uint32_t gate_solves = 0;
   std::uint16_t seed_nodes = 0;
@@ -129,6 +133,14 @@ struct IvPremiumStats {
   std::uint16_t native_evaluations = 0;
   std::uint8_t native_flags = 0;
   bool native_carried = false;
+  // How the root was accepted (lane K3; american_family_error.hpp): a typed record for every
+  // root of the (sigma, q) family route and for a root the legacy band / never policies skip
+  // (kind None otherwise). native_partner_span: on the family-native route, the sigma span of
+  // the slope the iterate accepted with (R1-A MJ1: a secant that may be far from local;
+  // acceptance no longer uses it) - 0 since K2's batch seam (the fused vega at the lane's
+  // last point, a tangent) - NaN elsewhere.
+  RootAcceptance acceptance{};
+  double native_partner_span = std::numeric_limits<double>::quiet_NaN();
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp
@@ -199,10 +211,14 @@ struct IvPremiumGate {
   // (sigma, q) family iterates (SPY1s Phase 2 step 5, opt-in; takes precedence over
   // `family`): every seed-tier iterate's cold point is qfamily->price(S, K, sigma, q) at
   // the strike's OWN q (L2h-b AlSigmaQFamily) - no D-model. Policy Always: confirmed as
-  // above. Policy Band (the B-family arm): the band gate's eps_A is qfamily_bound *
-  // max(P, 1) (the family's measured relative bound) and its chord is the family's own
-  // (price_and_chord; no Andersen-Lake solve). A refusal restarts the attempt on the seed
-  // kernel (and the gate then uses the seed tier's bound as before).
+  // above. Policy Band (the B-family arm; lane K3): the confirm is skipped only when the
+  // family's validated envelope (american_family_error.hpp, the scoped
+  // current_family_envelope of qfamily) encloses the root in a bracket no wider than
+  // kIvRootRequirement; never by the band gate's half-spread statement. A refusal restarts
+  // the attempt on the seed kernel, and its root is then confirmed (no band gate: the
+  // request carried a family). qfamily_bound: the certification grid's scalar
+  // (deam_family_certify: the envelope's domain-wide USD bound, which the grid scales by
+  // max(P, 1), a conservative reading); not read by the acceptance.
   const AlSigmaQFamily *qfamily = nullptr;
   double qfamily_bound = std::numeric_limits<double>::infinity();
   // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; with qfamily under Always): the
@@ -214,14 +230,44 @@ struct IvPremiumGate {
   // out-of-box seed starts from the bracket), at most kIvPremiumNativeEvaluations
   // evaluations. Its typed outcome is IvPremiumStats::native_status; a non-converged
   // outcome hands the price to the seed-leg path (which keeps the contract's leg memory)
-  // and the carry keeps the bracket for the contract's next price. An accepted root is
-  // confirmed as before, with the fused vega at its last point as the LOCAL slope.
+  // and the carry keeps the bracket for the contract's next price.
+  // Acceptance (lane K3, replacing the secant-slope confirm of R1-A MJ1): the root is
+  // Skipped when the validated envelope encloses the target map's root in a bracket no
+  // wider than kIvRootRequirement (two family prices), else Confirmed by the confirm kernel
+  // closing such a bracket - every end a CERTIFIED side of the target's root: a confirm
+  // price beyond the kernel's tested bound, or a family price beyond its envelope bound (a
+  // local slope only places the far end) - else handed to Search (PriceOnly when the
+  // kernel's bound cannot resolve the width at the root's slope, Interval / None when the
+  // bracket did not close).
   bool qfamily_native = false;
 };
 
+// The family enclosure of a (sigma, q) family root (lane K3; american_iv.cpp, the Skipped
+// rule of the root acceptance; declared here for its tests). Two family prices with their
+// envelope bounds at the ends a = x - w/2, b = x + w/2 enclose the target map's root when
+// P_f(a) + eps(a) <= price <= P_f(b) - eps(b), eps the per-point bound of `env`
+// (family_price_bounded); `root` is then the falsi point clamped into [lo, hi] = [a, b].
+// When that misses only because `price` lies outside [P_f(a), P_f(b)] while the bounded
+// prices leave room, one re-centred attempt on the local chord's root. Without a covering
+// envelope (`env` nullptr or Uncovered) nothing is enclosed and only `slope` is measured:
+// the chord over the last attempt's bracket (NaN when a price refused), which places and
+// never bounds. stats.family_prices counts the prices spent.
+struct FamilyEnclosure {
+  bool enclosed = false;
+  double root = std::numeric_limits<double>::quiet_NaN();
+  double lo = std::numeric_limits<double>::quiet_NaN();
+  double hi = std::numeric_limits<double>::quiet_NaN();
+  double slope = std::numeric_limits<double>::quiet_NaN();
+};
+[[nodiscard]] FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x,
+                                               double w, const AlSigmaQFamily &f,
+                                               const ValidatedErrorEnvelope *env,
+                                               IvPremiumStats &stats) noexcept;
+
 // The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else
 // the seed tier's own non-monotone gate (NaN for an invalid K or T, which routes).
-[[nodiscard]] double iv_premium_seed_gate(double K, double T, const std::optional<AlOpts> &seed_opts,
+[[nodiscard]] double iv_premium_seed_gate(double K, double T,
+                                          const std::optional<AlOpts> &seed_opts,
                                           const IvPremiumGate *gate) noexcept;
 
 // IvOpts-typed inversion under the Premium strategy with optional per-contract memory

@@ -24,6 +24,7 @@
 #include "atx/vol/api/pricing/implied_vol.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
+#include "pricing/american_family_error.hpp"
 #include "pricing/american_iv_batch.hpp" // K2: the native lane's typed outcome / flags
 #include "pricing/american_iv_premium.hpp"
 #include "atx/vol/api/core/types.hpp"
@@ -2463,10 +2464,13 @@ TEST(AmericanIvPremium, FamilyIteratesAreConfirmedAtTheStrikesOwnYield) {
 // (sigma, q) family iterates (SPY1s Phase 2 step 5, IvPremiumGate::qfamily; L2h-b
 // AlSigmaQFamily): the iterates price each strike at its OWN q on the family (strike yields
 // spread over the q box), every accepted root under Always is confirmed at the accurate root
-// (Newton distance <= 4 tol); under Band (the B-family arm) the gate runs on the family's
-// bound and chord (no Andersen-Lake gate solve): it skips confirms and every skipped root
-// sits within the gate's own vol bound of the accurate root; a yield outside the q box
-// refuses and the attempt iterates on Screen; Never never uses the family.
+// (Newton distance <= 4 tol); under Band (the B-family arm) a confirm is skipped only on the
+// lane-K3 enclosure - two family prices and their validated envelope bracketing the accurate
+// root in at most 1e-7 vol, no Andersen-Lake gate solve - so with the family's envelope in
+// scope it skips and every skipped root sits inside its bracket (gate_bound_vol, <= 1e-7) of
+// the accurate root, and without one it never skips (the band criterion is not read on the
+// family route); a yield outside the q box refuses and the attempt iterates on Screen; Never
+// never uses the family.
 TEST(AmericanIvPremium, SigmaQFamilyIteratesPriceTheStrikesOwnYield) {
   using atx::vol::AlExpiryGeometry;
   using atx::vol::AlSigmaQFamily;
@@ -2477,13 +2481,15 @@ TEST(AmericanIvPremium, SigmaQFamilyIteratesPriceTheStrikesOwnYield) {
   const double q_hi = 0.012;
   const double tol = IvOpts{}.tol;
   std::size_t accepted = 0, family_priced = 0, band_skipped = 0, band_gate_solves = 0;
-  std::size_t outside_refused = 0, never_family = 0;
-  double max_newton = 0.0, max_skipped_excess = 0.0;
+  std::size_t outside_refused = 0, never_family = 0, unscoped_skipped = 0;
+  double max_newton = 0.0, max_skipped_excess = 0.0, max_skipped_newton = 0.0;
   for (const double T : {0.25, 1.0}) {
     const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.011);
     for (const Side sd : {Side::Put, Side::Call}) {
       AlSigmaQFamily fam(g, sd, S);
       ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, q_lo, q_hi, 4));
+      const atx::vol::ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+      ASSERT_TRUE(env.covered());
       for (const double q : {0.0100, 0.0107, 0.0120, 0.0130}) {
         for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
           for (const double sig : {0.15, 0.3, 0.6}) {
@@ -2510,17 +2516,27 @@ TEST(AmericanIvPremium, SigmaQFamilyIteratesPriceTheStrikesOwnYield) {
             IvPremiumGate band = gate;
             band.policy = IvConfirmPolicy::Band;
             band.half_spread_usd = 0.05;
+            IvPremiumStats us;
+            ASSERT_EQ(screen_seeded_iv(*p, S, c, us, &band).status, IvStatus::Ok);
+            unscoped_skipped += us.confirm_skipped ? 1u : 0u;
             IvPremiumStats bs;
-            const IvResult br = screen_seeded_iv(*p, S, c, bs, &band);
+            IvResult br{};
+            {
+              const atx::vol::FamilyEnvelopeScope scope(&env);
+              br = screen_seeded_iv(*p, S, c, bs, &band);
+            }
             ASSERT_EQ(br.status, IvStatus::Ok);
             if (in_box && bs.confirm_skipped) {
               ++band_skipped;
               band_gate_solves += bs.gate_solves;
+              EXPECT_EQ(bs.acceptance.kind, atx::vol::RootAcceptanceKind::Skipped);
+              EXPECT_LE(bs.gate_bound_vol, atx::vol::kIvRootRequirement);
               const double nd = accurate_newton_distance(*p, S, c, br.iv);
               if (std::isfinite(nd) && std::isfinite(bs.gate_bound_vol)) {
-                // The gate's statement bounds the skipped root's distance (plus the
-                // root's own Newton tolerance on the family map).
-                max_skipped_excess = std::max(max_skipped_excess, nd - bs.gate_bound_vol - tol);
+                // The bracket bounds the skipped root's distance to the accurate root (the
+                // Newton distance only approximates that distance, to its second order).
+                max_skipped_excess = std::max(max_skipped_excess, nd - bs.gate_bound_vol);
+                max_skipped_newton = std::max(max_skipped_newton, nd);
               }
             }
             IvPremiumGate never = gate;
@@ -2534,16 +2550,20 @@ TEST(AmericanIvPremium, SigmaQFamilyIteratesPriceTheStrikesOwnYield) {
     }
   }
   std::printf("[sigma-q iterates] accepted %zu, of which family-priced %zu, max accurate-map "
-              "Newton %.3g; band: skipped %zu with %zu AL gate solves, max skipped distance over "
-              "its gate bound %.3g; outside the q box refused %zu; never-policy family prices %zu\n",
+              "Newton %.3g; band: skipped %zu with %zu AL gate solves (no envelope: %zu), max "
+              "skipped Newton distance %.3g, over its bracket %.3g; outside the q box refused "
+              "%zu; never-policy family prices %zu\n",
               accepted, family_priced, max_newton, band_skipped, band_gate_solves,
-              max_skipped_excess, outside_refused, never_family);
+              unscoped_skipped, max_skipped_newton, max_skipped_excess, outside_refused,
+              never_family);
   EXPECT_GT(accepted, 50u);
   EXPECT_GT(family_priced, accepted / 2); // fails with the family ignored by the iterates
   EXPECT_LE(max_newton, 4.0 * tol);
   EXPECT_GT(band_skipped, 20u);
-  EXPECT_EQ(band_gate_solves, 0u); // the B-family chord is the family's own
-  EXPECT_LE(max_skipped_excess, 0.0);
+  EXPECT_EQ(band_gate_solves, 0u); // the enclosure prices on the family only
+  EXPECT_EQ(unscoped_skipped, 0u); // no envelope: no skip (no band criterion on the family)
+  EXPECT_LE(max_skipped_excess, 1.0e-10);
+  EXPECT_LE(max_skipped_newton, atx::vol::kIvRootRequirement);
   EXPECT_GT(outside_refused, 0u);
   EXPECT_EQ(never_family, 0u);
 }
@@ -2918,4 +2938,507 @@ TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSki
   EXPECT_GT(skipped, 50u);
   EXPECT_GT(never_skipped, 100u);
   EXPECT_GT(fast_confirmed, 100u);
+}
+
+// ── Lane K3 (r5): typed root acceptance of the (sigma, q) family route ─────────────────
+namespace {
+
+using atx::vol::AlSigmaQFamily;
+using atx::vol::FamilyEnvelopeScope;
+using atx::vol::kIvRootRequirement;
+using atx::vol::RootAcceptanceKind;
+using atx::vol::RootAcceptanceReason;
+using atx::vol::ValidatedErrorEnvelope;
+
+// The accurate (Reference) map's root of `price` bracketed by bisection to 1e-9 near
+// `guess` (independent of every family and of the inversion under test); nullopt when no
+// sign change is found within about +-0.05 vol.
+[[nodiscard]] std::optional<std::pair<double, double>>
+reference_bracket(double price, double S, const PremiumCase &c, double guess) {
+  const auto at = [&](double s) { return andersen_lake(S, c.K, c.T, s, c.r, c.q, c.sd); };
+  double lo = guess - 1.0e-7;
+  double hi = guess + 1.0e-7;
+  for (int i = 0;; ++i) {
+    const auto pl = at(lo);
+    const auto ph = at(hi);
+    if (!pl || !ph || i >= 12 || hi - lo > 0.1) return std::nullopt;
+    if (*pl <= price && *ph >= price) break;
+    const double w = hi - lo;
+    if (*pl > price) lo -= 4.0 * w;
+    if (*ph < price) hi += 4.0 * w;
+  }
+  for (int i = 0; i < 64 && hi - lo > 1.0e-9; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    const auto pm = at(mid);
+    if (!pm) return std::nullopt;
+    (*pm > price ? hi : lo) = mid;
+  }
+  return std::pair<double, double>{lo, hi};
+}
+
+// |served - sigma*| bounded by the reference bracket (its far end).
+[[nodiscard]] double bracketed_error(const std::pair<double, double> &ref, double served) {
+  return std::max(std::abs(served - ref.first), std::abs(served - ref.second));
+}
+
+struct NativeTally {
+  std::size_t accepted = 0, skipped = 0, confirmed = 0, family_far = 0, both_ends = 0;
+  double max_error = 0.0, max_width = 0.0;
+};
+
+// One native inversion under `gate`: on an accepted root the typed record, its bracket and
+// the bracketed reference error are checked against the 1e-7 requirement.
+void check_native_root(double price, double S, const PremiumCase &c, const IvPremiumGate &gate,
+                       NativeTally &t) {
+  IvOpts o;
+  o.strategy = IvStrategy::Premium;
+  o.seed_profile = AlProfile::Screen;
+  IvPremiumStats st;
+  const IvResult res = american_implied_vol_premium(price, S, c.K, c.T, c.r, c.q, c.sd, o,
+                                                    nullptr, st, &gate);
+  ASSERT_EQ(res.status, IvStatus::Ok);
+  if (st.fallback != IvPremiumFallback::None || st.seed_routed) return;
+  ++t.accepted;
+  const atx::vol::RootAcceptance &a = st.acceptance;
+  ASSERT_TRUE(a.kind == RootAcceptanceKind::Skipped || a.kind == RootAcceptanceKind::Confirmed)
+      << static_cast<int>(a.kind);
+  EXPECT_LE(a.lo, res.iv);
+  EXPECT_GE(a.hi, res.iv);
+  EXPECT_LE(a.hi - a.lo, kIvRootRequirement);
+  t.max_width = std::max(t.max_width, a.hi - a.lo);
+  if (a.kind == RootAcceptanceKind::Skipped) {
+    ++t.skipped;
+    EXPECT_EQ(a.reason, RootAcceptanceReason::FamilyEnclosure);
+    EXPECT_EQ(st.confirm_solves, 0u);
+    EXPECT_TRUE(st.confirm_skipped);
+  } else {
+    ++t.confirmed;
+    EXPECT_GE(st.confirm_solves, 1u);
+    t.family_far += a.reason == RootAcceptanceReason::ConfirmAndFamily ? 1u : 0u;
+    t.both_ends += a.reason == RootAcceptanceReason::ConfirmBothEnds ? 1u : 0u;
+  }
+  const auto ref = reference_bracket(price, S, c, res.iv);
+  ASSERT_TRUE(ref.has_value()) << c.K << " " << c.T;
+  const double err = bracketed_error(*ref, res.iv);
+  t.max_error = std::max(t.max_error, err);
+  EXPECT_LE(err, kIvRootRequirement) << "K " << c.K << " T " << c.T << " sig " << c.sig_true
+                                     << " kind " << static_cast<int>(a.kind);
+}
+
+} // namespace
+
+// Lane K3 (replacing R1-A MJ1's secant-slope confirm): with the family's validated envelope
+// in scope, a family-native root is Skipped only when two family prices and their bounds
+// enclose the accurate map's root in a bracket no wider than 1e-7, and Confirmed otherwise by
+// the confirm kernel closing such a bracket; every accepted root - skipped or confirmed, on
+// the Reference and on the Fast confirm kernel - lies within 1e-7 of the root an
+// independent bisection of the accurate map finds. Without an envelope (none in scope, or
+// one built for another family) nothing is skipped.
+TEST(AmericanIvPremium, FamilyNativeRootsSkipOnlyInsideTheEnvelopeAndAreBracketed) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  NativeTally with, fast, without, foreign;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.011);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaQFamily fam(g, sd, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, 0.010, 0.012, 4));
+      AlSigmaQFamily other(g, sd, S);
+      ASSERT_TRUE(other.prepare(0.05, 1.2, 16, 0.010, 0.012, 4));
+      const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+      const ValidatedErrorEnvelope other_env = atx::vol::build_family_error_envelope(other);
+      ASSERT_TRUE(env.covered());
+      IvPremiumGate gate;
+      gate.qfamily = &fam;
+      gate.qfamily_native = true;
+      IvPremiumGate fast_gate = gate;
+      fast_gate.confirm_opts = atx::vol::al_fast_profile(std::nullopt);
+      for (const double q : {0.0100, 0.0107, 0.0120}) {
+        for (const double K : {80.0, 90.0, 100.0, 110.0, 120.0}) {
+          for (const double sig : {0.15, 0.3, 0.6}) {
+            const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+            if (!p || !(*p > 0.0)) continue;
+            const PremiumCase c{K, T, r, q, sd, sig};
+            {
+              const FamilyEnvelopeScope scope(&env);
+              check_native_root(*p, S, c, gate, with);
+              check_native_root(*p, S, c, fast_gate, fast);
+            }
+            check_native_root(*p, S, c, gate, without);
+            const FamilyEnvelopeScope scope(&other_env);
+            check_native_root(*p, S, c, gate, foreign);
+          }
+        }
+      }
+    }
+  }
+  std::printf("[K3 native] envelope: %zu accepted, %zu skipped, %zu confirmed (family far end "
+              "%zu); Fast confirm: %zu / %zu / %zu; no envelope: %zu / %zu / %zu (both ends %zu); "
+              "foreign envelope skipped %zu; max bracketed error %.3g vol, max bracket %.3g\n",
+              with.accepted, with.skipped, with.confirmed, with.family_far, fast.accepted,
+              fast.skipped, fast.confirmed, without.accepted, without.skipped, without.confirmed,
+              without.both_ends, foreign.skipped,
+              std::max({with.max_error, fast.max_error, without.max_error}),
+              std::max({with.max_width, fast.max_width, without.max_width}));
+  EXPECT_GT(with.accepted, 50u);
+  EXPECT_GT(with.skipped, with.accepted / 2); // the envelope admits most of this grid
+  EXPECT_GT(fast.skipped, 0u);
+  EXPECT_EQ(without.skipped, 0u);
+  EXPECT_EQ(without.confirmed, without.accepted);
+  EXPECT_EQ(foreign.skipped, 0u); // an envelope is never read for another family
+}
+
+// R1-A MJ1: the native iterate may accept with a secant to a FAR partner (the latest earlier
+// point at any distance). Forced here through the iterate's memory: a remembered pair whose
+// newer point sits 0.3 vol above the root and whose older one a hair above it puts the
+// first iterate on the root, its partner 0.3 away, and |d| <= tol there - the acceptance
+// R1-A flagged. Its secant no longer accepts anything: every such root is accepted only
+// through a certified bracket of width <= 1e-7, and lies within 1e-7 of the independently
+// bracketed accurate root (with and without the family's envelope in scope).
+// W2c-g (K2 merged): the native attempt is now K2's batch-seam lane, a bracketed Newton on
+// the fused vega that reads only the memory's carry, never its family points, and keeps no
+// secant partner - the remembered pair is inert and every native root reports span 0. The
+// acceptance assertions are unchanged; the far-partner count now pins that no secant exists.
+TEST(AmericanIvPremium, FamilyNativeAcceptanceDoesNotRestOnANonLocalSecant) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::IvPremiumMemory;
+  using atx::vol::kAlPackSigmaBump;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.05;
+  const double q = 0.015;
+  std::size_t far_partner = 0, checked = 0;
+  double min_far_span = 1.0, max_error = 0.0;
+  for (const double T : {0.25, 1.0}) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, q);
+    for (const Side sd : {Side::Put, Side::Call}) {
+      AlSigmaQFamily fam(g, sd, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, 0.0149, 0.0151, 3));
+      const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+      IvPremiumGate gate;
+      gate.qfamily = &fam;
+      gate.qfamily_native = true;
+      for (const double K : {90.0, 100.0, 110.0, 125.0}) {
+        for (const double sig : {0.15, 0.3}) {
+          const auto p = andersen_lake(S, K, T, sig, r, q, sd);
+          if (!p || !(*p > 1.0e-3)) continue;
+          IvOpts o;
+          o.strategy = IvStrategy::Premium;
+          o.seed_profile = AlProfile::Screen;
+          IvPremiumStats first;
+          const IvResult r0 =
+              american_implied_vol_premium(*p, S, K, T, r, q, sd, o, nullptr, first, &gate);
+          if (r0.status != IvStatus::Ok || !std::isfinite(first.native_partner_span)) continue;
+          const double far = std::min(r0.iv + 0.3, 1.19);
+          const double near = r0.iv + 1.0e-9;
+          IvPremiumMemory memory;
+          memory.native = true;
+          memory.points = 2;
+          memory.sigma = {far, near};
+          memory.rest = {fam.price(S, K, far, q).price, fam.price(S, K, near, q).price};
+          for (const bool scoped : {false, true}) {
+            IvPremiumMemory m = memory;
+            IvPremiumStats st;
+            IvResult res{};
+            {
+              const FamilyEnvelopeScope scope(scoped ? &env : nullptr);
+              res = american_implied_vol_premium(*p, S, K, T, r, q, sd, o, &m, st, &gate);
+            }
+            ASSERT_EQ(res.status, IvStatus::Ok);
+            if (st.fallback != IvPremiumFallback::None || st.seed_routed) continue;
+            ASSERT_TRUE(std::isfinite(st.native_partner_span));
+            ++checked;
+            if (st.native_partner_span > 10.0 * kAlPackSigmaBump) {
+              ++far_partner;
+              min_far_span = std::min(min_far_span, st.native_partner_span);
+            }
+            EXPECT_TRUE(st.acceptance.kind == RootAcceptanceKind::Skipped ||
+                        st.acceptance.kind == RootAcceptanceKind::Confirmed);
+            EXPECT_LE(st.acceptance.hi - st.acceptance.lo, kIvRootRequirement);
+            const PremiumCase pc{K, T, r, q, sd, sig};
+            const auto ref = reference_bracket(*p, S, pc, res.iv);
+            ASSERT_TRUE(ref.has_value());
+            const double err = bracketed_error(*ref, res.iv);
+            max_error = std::max(max_error, err);
+            EXPECT_LE(err, kIvRootRequirement) << "K " << K << " T " << T << " sig " << sig;
+          }
+        }
+      }
+    }
+  }
+  std::printf("[K3 MJ1] %zu native roots accepted from a remembered far pair, %zu after a "
+              "secant to a partner > 10 bumps away (min span %.3g), max bracketed error %.3g "
+              "vol\n",
+              checked, far_partner, min_far_span, max_error);
+  EXPECT_GT(checked, 10u);
+  EXPECT_EQ(far_partner, 0u); // K2's lane accepts on a tangent: no far secant partner
+}
+
+// A confirm kernel whose tested price bound cannot resolve the requirement at the root's
+// local slope (slope x 1e-7 <= 2 eps_C) cannot certify any bracket end: the native root is
+// typed PriceOnly (LowVega) and handed to Search - never accepted on a step length. Screen
+// as the confirm kernel (eps_C = 7.8e-4 max(P, 1) for T > 0.1) puts every root there; the
+// Fast kernel (1e-12) resolves the same roots.
+TEST(AmericanIvPremium, FamilyNativeRootTheConfirmCannotResolveIsPriceOnly) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double T = 0.5;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.011);
+  AlSigmaQFamily fam(g, Side::Put, S);
+  ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, 0.010, 0.012, 4));
+  IvPremiumGate screen;
+  screen.qfamily = &fam;
+  screen.qfamily_native = true;
+  screen.confirm_opts = atx::vol::al_screen_opts();
+  IvPremiumGate fast = screen;
+  fast.confirm_opts = atx::vol::al_fast_profile(std::nullopt);
+  std::size_t price_only = 0, typed = 0, fast_price_only = 0, fast_accepted = 0;
+  for (const double K : {85.0, 95.0, 100.0, 105.0, 115.0}) {
+    for (const double sig : {0.15, 0.3, 0.6}) {
+      const auto p = andersen_lake(S, K, T, sig, r, 0.011, Side::Put);
+      if (!p || !(*p > 1.0e-3)) continue;
+      IvOpts o;
+      o.strategy = IvStrategy::Premium;
+      o.seed_profile = AlProfile::Screen;
+      IvPremiumStats st;
+      ASSERT_EQ(american_implied_vol_premium(*p, S, K, T, r, 0.011, Side::Put, o, nullptr, st,
+                                             &screen)
+                    .status,
+                IvStatus::Ok);
+      if (st.acceptance.kind != RootAcceptanceKind::None) {
+        ++typed;
+        if (st.acceptance.kind == RootAcceptanceKind::PriceOnly) {
+          ++price_only;
+          EXPECT_EQ(st.acceptance.reason, RootAcceptanceReason::LowVega);
+          EXPECT_NE(st.fallback, IvPremiumFallback::None); // Search serves it
+          EXPECT_EQ(st.confirm_solves, 0u);
+        }
+      }
+      IvPremiumStats fs;
+      ASSERT_EQ(american_implied_vol_premium(*p, S, K, T, r, 0.011, Side::Put, o, nullptr, fs,
+                                             &fast)
+                    .status,
+                IvStatus::Ok);
+      fast_price_only += fs.acceptance.kind == RootAcceptanceKind::PriceOnly ? 1u : 0u;
+      fast_accepted += fs.acceptance.kind == RootAcceptanceKind::Confirmed ? 1u : 0u;
+    }
+  }
+  std::printf("[K3 price-only] Screen confirm: %zu typed native roots, %zu price-only; Fast "
+              "confirm: %zu confirmed, %zu price-only\n",
+              typed, price_only, fast_accepted, fast_price_only);
+  EXPECT_GT(typed, 5u);
+  EXPECT_EQ(price_only, typed);
+  EXPECT_GT(fast_accepted, 5u);
+  EXPECT_EQ(fast_price_only, 0u);
+}
+
+// ── review-K3 mn-5 (fix round 1): the envelope bound decides the Skipped rule ───────────
+namespace {
+
+// A family whose early-exercise premium is material over its q box (a put at q < r, a call
+// at q > r), so the trivial box bound g(xmax) alone never certifies a 1e-7 bracket at the
+// test points and the envelope's node bounds decide.
+struct EnclosureCase {
+  Side side;
+  double q_lo;
+  double q_hi;
+  double q; // the priced point's yield (inside the box)
+};
+
+constexpr std::array<EnclosureCase, 2> kEnclosureCases{{
+    {Side::Put, 0.010, 0.012, 0.011},
+    {Side::Call, 0.060, 0.062, 0.061},
+}};
+
+} // namespace
+
+// The envelope BOUND at each end decides the Skipped rule (american_iv.cpp family_enclosure:
+// P_f(a) + eps(a) <= price <= P_f(b) - eps(b)), not only the bracket width. x sits 0.3 W above
+// the family's root of the price, so the price lies 0.2 W x slope above the lower end a and
+// 0.8 W x slope below the upper end b (W <= 1e-7 the bracket): the envelope as built (eps below
+// both gaps) encloses the root; the same envelope scaled until eps lies between the two gaps
+// does not - the LOWER end's bound alone rejects, the upper end alone would accept. The mirror
+// (x 0.3 W below the root) is rejected by the UPPER end's bound alone. Dropping either end's
+// bound from the rule fails one of the two.
+TEST(AmericanIvPremium, FamilyEnclosureRejectsAnEndWhoseEnvelopeBoundLeavesItOpen) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::FamilyBoundedPrice;
+  using atx::vol::FamilyEnclosure;
+  using atx::vol::family_enclosure;
+  using atx::vol::family_price_bounded;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double sig = 0.3;
+  const double w = kIvRootRequirement * (1.0 - 0x1p-20); // acceptance_width(tol >= 1e-7)
+  std::size_t lower = 0, upper = 0;
+  double min_margin = std::numeric_limits<double>::infinity(); // eps / gap, or gap / eps
+  for (const double T : {0.5, 1.0}) {
+    for (const EnclosureCase &ec : kEnclosureCases) {
+      const AlExpiryGeometry g = prepare_al_geometry(T, r, ec.q);
+      AlSigmaQFamily fam(g, ec.side, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, ec.q_lo, ec.q_hi, 4));
+      const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+      ASSERT_TRUE(env.covered());
+      const auto scaled = [&env](double s) {
+        ValidatedErrorEnvelope e = env;
+        for (double &b : e.bound_y) {
+          if (std::isfinite(b)) b *= s;
+        }
+        return e;
+      };
+      for (const double K : {90.0, 100.0, 110.0}) {
+        const double price = fam.price(S, K, sig, ec.q).price;
+        for (const double off : {0.3, -0.3}) {
+          SCOPED_TRACE("T " + std::to_string(T) + " side " +
+                       std::to_string(static_cast<int>(ec.side)) + " K " + std::to_string(K) +
+                       " off " + std::to_string(off));
+          const double x = sig + off * w;
+          const double a = x - 0.5 * w;
+          const double b = x + 0.5 * w;
+          const bool near_lower = off > 0.0; // the price sits nearer this end
+          const auto bounds = [&](const ValidatedErrorEnvelope &e) {
+            return std::pair<FamilyBoundedPrice, FamilyBoundedPrice>{
+                family_price_bounded(fam, e, S, K, a, ec.q),
+                family_price_bounded(fam, e, S, K, b, ec.q)};
+          };
+          const auto [pa, pb] = bounds(env);
+          const double gap_lo = price - pa.price;
+          const double gap_hi = pb.price - price;
+          ASSERT_GT(gap_lo, 0.0);
+          ASSERT_GT(gap_hi, 0.0);
+          const double near_gap = near_lower ? gap_lo : gap_hi;
+          const double far_gap = near_lower ? gap_hi : gap_lo;
+          IvPremiumStats st;
+          // The envelope as built: both bounds clear their gaps; the root is enclosed.
+          ASSERT_LT(std::max(pa.bound_usd, pb.bound_usd), near_gap);
+          const FamilyEnclosure built = family_enclosure(price, S, K, ec.q, x, w, fam, &env, st);
+          ASSERT_TRUE(built.enclosed);
+          EXPECT_EQ(built.lo, a);
+          EXPECT_EQ(built.hi, b);
+          EXPECT_LE(built.hi - built.lo, kIvRootRequirement);
+          // Scale the envelope until the near end's bound sits at sqrt(near_gap far_gap):
+          // above the near gap, below the far one (the bound grows with the scale).
+          const double target = std::sqrt(near_gap * far_gap);
+          double lo_s = 1.0;
+          double hi_s = 1.0e20;
+          for (int i = 0; i < 200; ++i) {
+            const double mid = std::sqrt(lo_s * hi_s);
+            const auto [ma, mb] = bounds(scaled(mid));
+            ((near_lower ? ma : mb).bound_usd < target ? lo_s : hi_s) = mid;
+          }
+          const ValidatedErrorEnvelope e = scaled(hi_s);
+          const auto [qa, qb] = bounds(e);
+          const double eps_near = near_lower ? qa.bound_usd : qb.bound_usd;
+          const double eps_far = near_lower ? qb.bound_usd : qa.bound_usd;
+          ASSERT_GT(eps_near, near_gap); // this end alone leaves the root's side open ...
+          ASSERT_LT(eps_far, far_gap);   // ... the other end alone would certify its side
+          min_margin = std::min(min_margin, std::min(eps_near / near_gap, far_gap / eps_far));
+          const FamilyEnclosure open = family_enclosure(price, S, K, ec.q, x, w, fam, &e, st);
+          EXPECT_FALSE(open.enclosed);
+          (near_lower ? lower : upper) += open.enclosed ? 0u : 1u;
+        }
+      }
+    }
+  }
+  std::printf("[K3 enclosure bound] %zu brackets rejected by the lower end's bound alone, %zu by "
+              "the upper end's alone (each enclosed with the envelope as built); min margin %.3g\n",
+              lower, upper, min_margin);
+  EXPECT_EQ(lower, 12u);
+  EXPECT_EQ(upper, 12u);
+}
+
+// The same through both acceptance routes: with a copy of the family's envelope whose node
+// bounds are inflated 1e6-fold in scope (same family, box and node counts: the identity check
+// passes), neither the family-native acceptance nor the B-family band route skips a confirm -
+// every accepted root is Confirmed and lies within 1e-7 of the bisected accurate root - while
+// the envelope as built skips on the same grid. A rule that read no bound would skip here.
+TEST(AmericanIvPremium, AnInflatedEnvelopeBoundSkipsNoConfirmOnEitherRoute) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double T = 0.5;
+  NativeTally native, native_inflated;
+  struct BandTally {
+    std::size_t accepted = 0, skipped = 0, confirmed = 0;
+    double max_error = 0.0;
+  } band, band_inflated;
+  // One B-family (policy Band) inversion: a skip is an enclosure of width <= 1e-7, a confirm
+  // the established Newton contract; either way within 1e-7 of the accurate map's root.
+  const auto check_band_root = [&](double price, const PremiumCase &c, const IvPremiumGate &gate,
+                                   BandTally &t) {
+    IvOpts o;
+    o.strategy = IvStrategy::Premium;
+    o.seed_profile = AlProfile::Screen;
+    IvPremiumStats st;
+    const IvResult res =
+        american_implied_vol_premium(price, S, c.K, c.T, c.r, c.q, c.sd, o, nullptr, st, &gate);
+    ASSERT_EQ(res.status, IvStatus::Ok);
+    if (st.fallback != IvPremiumFallback::None || st.seed_routed) return;
+    ++t.accepted;
+    if (st.acceptance.kind == RootAcceptanceKind::Skipped) {
+      ++t.skipped;
+      EXPECT_EQ(st.acceptance.reason, RootAcceptanceReason::FamilyEnclosure);
+      EXPECT_LE(st.acceptance.hi - st.acceptance.lo, kIvRootRequirement);
+    } else {
+      ASSERT_EQ(st.acceptance.kind, RootAcceptanceKind::Confirmed);
+      EXPECT_EQ(st.acceptance.reason, RootAcceptanceReason::NewtonContract);
+      ++t.confirmed;
+    }
+    const auto ref = reference_bracket(price, S, c, res.iv);
+    ASSERT_TRUE(ref.has_value());
+    t.max_error = std::max(t.max_error, bracketed_error(*ref, res.iv));
+    EXPECT_LE(bracketed_error(*ref, res.iv), kIvRootRequirement);
+  };
+  for (const EnclosureCase &ec : kEnclosureCases) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, ec.q);
+    AlSigmaQFamily fam(g, ec.side, S);
+    ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, ec.q_lo, ec.q_hi, 4));
+    const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+    ASSERT_TRUE(env.covered());
+    ValidatedErrorEnvelope inflated = env;
+    for (double &b : inflated.bound_y) {
+      if (std::isfinite(b)) b *= 1.0e6;
+    }
+    IvPremiumGate native_gate;
+    native_gate.qfamily = &fam;
+    native_gate.qfamily_native = true;
+    IvPremiumGate band_gate;
+    band_gate.qfamily = &fam;
+    band_gate.policy = IvConfirmPolicy::Band;
+    for (const double K : {85.0, 95.0, 100.0, 105.0, 115.0}) {
+      for (const double sig : {0.15, 0.3, 0.6}) {
+        const auto p = andersen_lake(S, K, T, sig, r, ec.q, ec.side);
+        if (!p || !(*p > 1.0e-3)) continue;
+        const PremiumCase c{K, T, r, ec.q, ec.side, sig};
+        {
+          const FamilyEnvelopeScope scope(&env);
+          check_native_root(*p, S, c, native_gate, native);
+          check_band_root(*p, c, band_gate, band);
+        }
+        const FamilyEnvelopeScope scope(&inflated);
+        check_native_root(*p, S, c, native_gate, native_inflated);
+        check_band_root(*p, c, band_gate, band_inflated);
+      }
+    }
+  }
+  std::printf("[K3 inflated bound] native: %zu accepted / %zu skipped, inflated %zu / %zu; band "
+              "route: %zu / %zu, inflated %zu / %zu; max bracketed error %.3g vol\n",
+              native.accepted, native.skipped, native_inflated.accepted, native_inflated.skipped,
+              band.accepted, band.skipped, band_inflated.accepted, band_inflated.skipped,
+              std::max({native.max_error, native_inflated.max_error, band.max_error,
+                        band_inflated.max_error}));
+  EXPECT_GT(native.skipped, 0u);
+  EXPECT_GT(band.skipped, 0u);
+  EXPECT_GT(native_inflated.accepted, 5u);
+  EXPECT_GT(band_inflated.accepted, 5u);
+  EXPECT_EQ(native_inflated.skipped, 0u);
+  EXPECT_EQ(band_inflated.skipped, 0u);
+  EXPECT_EQ(native_inflated.confirmed, native_inflated.accepted);
+  EXPECT_EQ(band_inflated.confirmed, band_inflated.accepted);
 }

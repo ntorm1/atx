@@ -5,15 +5,21 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <optional>
+#include <random>
 #include <utility>
 
 #include "atx/vol/api/fitting/aggregate_arity.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "fitting/counters.hpp"
+#include "pricing/american_family_error.hpp"
 
 namespace atx::vol {
 namespace {
@@ -122,6 +128,185 @@ void charge_reason(counters::fit_timing::FitTimingCounters *timing,
   if (timing == nullptr || solves == 0u) return;
   std::uint32_t &slot = timing->deam_al_by_reason[static_cast<std::size_t>(reason)];
   slot += counters::fit_timing::detail::saturate(solves);
+}
+
+// ── Lane K3 audit (--deam-audit): every typed root re-solved by bisection on the accurate
+// map, independent of the family and of the inversion that produced it. ──
+
+static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_accept_by_kind){}.size() ==
+                  kRootAcceptanceKindCount,
+              "deam_accept_by_kind is sized by RootAcceptanceKind");
+static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_accept_by_reason){}.size() ==
+                  kRootAcceptanceReasonCount,
+              "deam_accept_by_reason is sized by RootAcceptanceReason");
+
+inline constexpr double kAuditBisectWidth = 1.0e-9; // the reference bracket's width (vol)
+inline constexpr int kAuditGrowSteps = 24;          // 4x bracket growth steps per side
+inline constexpr int kAuditBisectSteps = 64;
+
+// The accurate map's root of `target` bracketed to kAuditBisectWidth near `sigma`: [lo, hi]
+// with A(lo) <= target <= A(hi) (A continuous: a root lies inside). Unresolved when no
+// bracket is found inside [kIvMin, 2 kIvMax] or a price errs.
+struct AuditReference {
+  bool resolved = false;
+  double lo = std::numeric_limits<double>::quiet_NaN();
+  double hi = std::numeric_limits<double>::quiet_NaN();
+};
+
+[[nodiscard]] AuditReference audit_reference(const DeAmModel &model, const QuoteSliceQuote &quote,
+                                             double target, double q_eff, double sigma) {
+  const auto price = [&](double s) -> std::optional<double> {
+    const Result<double> p = model.price(quote, s, q_eff, DeAmKernel::Accurate);
+    return p && std::isfinite(*p) ? std::optional<double>{*p} : std::nullopt;
+  };
+  AuditReference out;
+  double h = kIvRootRequirement;
+  double lo = std::max(sigma - h, kIvMin);
+  double hi = std::min(sigma + h, 2.0 * kIvMax);
+  std::optional<double> plo = price(lo);
+  std::optional<double> phi = price(hi);
+  for (int i = 0; i < kAuditGrowSteps && plo && *plo > target && lo > kIvMin; ++i) {
+    h *= 4.0;
+    hi = lo;
+    phi = plo;
+    lo = std::max(sigma - h, kIvMin);
+    plo = price(lo);
+  }
+  h = kIvRootRequirement;
+  for (int i = 0; i < kAuditGrowSteps && phi && *phi < target && hi < 2.0 * kIvMax; ++i) {
+    h *= 4.0;
+    lo = hi;
+    plo = phi;
+    hi = std::min(sigma + h, 2.0 * kIvMax);
+    phi = price(hi);
+  }
+  if (!plo || !phi || !(*plo <= target) || !(*phi >= target)) {
+    return out;
+  }
+  for (int i = 0; i < kAuditBisectSteps && hi - lo > kAuditBisectWidth; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    const std::optional<double> pm = price(mid);
+    if (!pm) {
+      return out;
+    }
+    (*pm > target ? hi : lo) = mid;
+  }
+  out.resolved = true;
+  out.lo = lo;
+  out.hi = hi;
+  return out;
+}
+
+// The audit's per-root CSV (OFF unless ATX_VOL_FAMILY_ROOT_AUDIT names a writable path and
+// --deam-audit is armed): one row per typed root, serialised on a mutex (offline evidence,
+// not throughput; calib.cpp's tier trace is the precedent).
+[[nodiscard]] std::FILE *family_root_audit_file() noexcept {
+  static std::FILE *const file = []() noexcept -> std::FILE * {
+    std::FILE *handle = nullptr;
+#if defined(_MSC_VER)
+    char *raw = nullptr;
+    std::size_t size = 0;
+    if (::_dupenv_s(&raw, &size, "ATX_VOL_FAMILY_ROOT_AUDIT") != 0 || raw == nullptr) {
+      return nullptr;
+    }
+    const bool opened = (::fopen_s(&handle, raw, "w") == 0);
+    std::free(raw);
+    if (!opened) {
+      return nullptr;
+    }
+#else
+    const char *raw = std::getenv("ATX_VOL_FAMILY_ROOT_AUDIT");
+    if (raw == nullptr) {
+      return nullptr;
+    }
+    handle = std::fopen(raw, "w");
+#endif
+    if (handle != nullptr) {
+      std::fputs("chain,strike,side,bid,ask,which,target,q_eff,T,served,kind,reason,class,"
+                 "bound_iv,acc_lo,acc_hi,ref_resolved,ref_lo,ref_hi,err,violation,fallback,"
+                 "confirm_solves,family_prices,partner_span\n",
+                 handle);
+    }
+    return handle;
+  }();
+  return file;
+}
+
+struct AuditRow {
+  std::uint64_t chain = 0;
+  const QuoteSliceQuote *quote = nullptr;
+  double target = 0.0;
+  double q_eff = 0.0;
+  double T = 0.0;
+  double served = 0.0;
+  const IvPremiumStats *stats = nullptr;
+  AuditReference ref{};
+  double err = 0.0;
+  bool violation = false;
+};
+
+void write_audit_row(const AuditRow &r) noexcept {
+  std::FILE *const file = family_root_audit_file();
+  if (file == nullptr) {
+    return;
+  }
+  const QuoteSliceQuote &q = *r.quote;
+  const double mid = 0.5 * q.bid + 0.5 * q.ask;
+  const char *which = r.target == mid ? "mid" : (r.target == q.bid ? "bid" : "ask");
+  const RootAcceptance &a = r.stats->acceptance;
+  static std::mutex audit_mutex;
+  const std::lock_guard<std::mutex> lock(audit_mutex);
+  std::fprintf(file,
+               "%016llx,%.17g,%d,%.17g,%.17g,%s,%.17g,%.17g,%.17g,%.17g,%u,%u,%u,%.6e,%.17g,"
+               "%.17g,%d,%.17g,%.17g,%.6e,%d,%u,%u,%u,%.6e\n",
+               static_cast<unsigned long long>(r.chain), q.strike, q.side == Side::Put ? 1 : 0,
+               q.bid, q.ask, which, r.target, r.q_eff, r.T, r.served,
+               static_cast<unsigned>(a.kind), static_cast<unsigned>(a.reason),
+               static_cast<unsigned>(a.error_class), a.bound_iv, a.lo, a.hi,
+               r.ref.resolved ? 1 : 0, r.ref.lo, r.ref.hi, r.err, r.violation ? 1 : 0,
+               static_cast<unsigned>(r.stats->fallback), r.stats->confirm_solves,
+               r.stats->family_prices, r.stats->native_partner_span);
+}
+
+void audit_typed_root(const DeAmIvCache &cache, const DeAmModel &model,
+                      const QuoteSliceQuote &quote, double target, const DeAmQuoteIv &entry,
+                      const Result<double> &out, const IvPremiumStats &stats,
+                      counters::fit_timing::FitTimingCounters &timing) {
+  // Lane K3: every root the acceptance typed is re-solved by bisection on the accurate map
+  // (never the family) and its distance to that reference counted against
+  // kIvRootRequirement; a root that fell back (Search's) is recorded with no reference,
+  // and so is an attempt the acceptance typed None WITH a reason (no bracket closed).
+  const RootAcceptance &acc = stats.acceptance;
+  if (acc.kind == RootAcceptanceKind::None && acc.reason == RootAcceptanceReason::None) {
+    return;
+  }
+  AuditRow row;
+  row.chain = cache.quote_set_hash;
+  row.quote = &quote;
+  row.target = target;
+  row.q_eff = entry.q_effective;
+  const ValidatedErrorEnvelope *env =
+      cache.families ? cache.families->q_envelope(quote.side) : nullptr;
+  row.T = env != nullptr ? env->domain.T : std::numeric_limits<double>::quiet_NaN();
+  row.served = out ? *out : std::numeric_limits<double>::quiet_NaN();
+  row.stats = &stats;
+  const bool served_by_family_route = stats.fallback == IvPremiumFallback::None && out;
+  if (served_by_family_route) {
+    row.ref = audit_reference(model, quote, target, entry.q_effective, *out);
+    ++timing.deam_audit_bracket_roots;
+    if (!row.ref.resolved) {
+      ++timing.deam_audit_bracket_unresolved;
+    } else {
+      row.err = std::max(std::fabs(*out - row.ref.lo), std::fabs(*out - row.ref.hi));
+      row.violation = !(row.err <= kIvRootRequirement);
+      timing.deam_audit_bracket_violations += row.violation ? 1u : 0u;
+      double &worst = acc.kind == RootAcceptanceKind::Skipped
+                          ? timing.deam_audit_bracket_max_skipped
+                          : timing.deam_audit_bracket_max_confirmed;
+      worst = std::max(worst, row.err);
+    }
+  }
+  write_audit_row(row);
 }
 
 } // namespace
@@ -271,6 +456,9 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   timing->deam_family_prices += stats.family_prices;
   if (stats.family_refused) ++timing->deam_family_refused;
   ++timing->deam_premium;
+  // Lane K3: the typed acceptance of the root (kind None: no family-route root and no skip).
+  ++timing->deam_accept_by_kind[static_cast<std::size_t>(stats.acceptance.kind)];
+  ++timing->deam_accept_by_reason[static_cast<std::size_t>(stats.acceptance.reason)];
   const bool fell_back = stats.fallback != IvPremiumFallback::None;
   if (fell_back) {
     ++timing->deam_premium_fallbacks;
@@ -316,8 +504,8 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
                 std::max(timing->deam_audit_max_newton_search, ns);
             timing->deam_audit_search_farther += ns > np ? 1u : 0u;
             if (stats.confirm_skipped) {
-              // The band gate's accuracy is MEASURED here: the accurate-map Newton
-              // distance of a root accepted without a confirm.
+              // A skipped confirm's accuracy is MEASURED here (the band gate's, or a K3
+              // enclosure's): the accurate-map Newton distance of a root accepted without one.
               timing->deam_audit_max_newton_skipped =
                   std::max(timing->deam_audit_max_newton_skipped, np);
             }
@@ -334,9 +522,11 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
       bin = static_cast<std::size_t>(std::clamp(decade, 1.0, 16.0));
     }
     ++timing->deam_audit_dsigma_decades[bin];
+    audit_typed_root(cache_, model_, quote, target, entry, out, stats, *timing);
   }
   return out;
 }
+
 
 Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double target,
                                           const DeAmQuoteIv &entry, IvPremiumMemory *memory,
@@ -362,6 +552,20 @@ Result<double> DeAmIvView::invert_premium(const QuoteSliceQuote &quote, double t
     controls.qfamily_bound = cache_.families->q_bound(quote.side);
     controls.qfamily_native = confirm_.family_native;
   }
+  // Lane K3: under deam_family_q (the B-family arm) the band gate is never a skip
+  // criterion: a quote whose side carries no (sigma, q) family is confirmed instead. The
+  // gate's half-spread statement is not a 1e-7 bound (measured on SPY at 3fb9d6da: 41 of
+  // the arm's 748 band-gated roots sat more than 1e-7 from the bisected accurate root, up
+  // to 9.5e-7). The Screen Band arm without family_q keeps it (RootAcceptanceReason
+  // LegacyBandGate counts it).
+  if (confirm_.family_q && controls.confirm == IvConfirmPolicy::Band &&
+      controls.qfamily == nullptr) {
+    controls.confirm = IvConfirmPolicy::Always;
+  }
+  // Lane K3: the quote's side family's envelope is the root acceptance's for this one
+  // inversion (american_family_error.hpp FamilyEnvelopeScope).
+  const FamilyEnvelopeScope envelope(cache_.families ? cache_.families->q_envelope(quote.side)
+                                                     : nullptr);
   Result<double> iv =
       model_.implied_vol_premium(quote, target, entry.q_effective, memory, stats, controls);
   if (stats.fallback != IvPremiumFallback::None) {
@@ -654,48 +858,112 @@ DeAmStageClock *deam_stage_clock_arm(DeAmStageClock *clock) noexcept {
   return previous;
 }
 
-std::optional<double> deam_family_probe_worst(const AlSigmaQFamily &family, double S, double T,
-                                              double r, const std::optional<AlOpts> &al_opts,
-                                              double band_lo, double band_hi) {
-  // Chebyshev-Lobatto q node j of n as a fraction of the q box (cheb_node's layout:
-  // -cos(pi j / (n - 1)) on [-1, 1]); a probe sits at the midpoint of a q cell.
-  const unsigned nq = family.n_q();
-  const auto cell_mid = [nq](unsigned c) {
-    const auto node = [nq](unsigned j) {
-      return 0.5 * (1.0 - std::cos(std::numbers::pi * static_cast<double>(j) /
-                                   static_cast<double>(nq - 1u)));
-    };
-    return 0.5 * (node(c) + node(c + 1u));
+namespace {
+
+// The cell midpoint of Chebyshev-Lobatto cell c of n nodes as a fraction of the box
+// (cheb_node's layout: -cos(pi j / (n - 1)) on [-1, 1]); the box midpoint when n < 2.
+[[nodiscard]] double lobatto_cell_mid(unsigned c, unsigned n) noexcept {
+  if (n < 2u) {
+    return 0.5;
+  }
+  const auto node = [n](unsigned j) {
+    return 0.5 * (1.0 - std::cos(std::numbers::pi * static_cast<double>(j) /
+                                 static_cast<double>(n - 1u)));
   };
-  const double q_lo = family.q_lo();
-  const double q_hi = family.q_hi();
-  std::array<double, 3> q_at{q_lo, q_lo, q_lo}; // a collapsed q box: its one node
-  if (nq >= 2u) {
-    const std::array<unsigned, 3> cells{0u, (nq - 1u) / 2u, nq - 2u};
-    for (std::size_t i = 0; i < cells.size(); ++i) {
-      q_at[i] = q_lo + (q_hi - q_lo) * cell_mid(cells[i]);
-    }
-  }
+  return 0.5 * (node(c) + node(c + 1u));
+}
+
+// The 9 audit probe points of a family (deam_family_certify's contract), deterministic per
+// family box (a seeded generator: reproducible, independent of the construction nodes).
+struct ProbePoint {
+  double K;
+  double sigma;
+  double q;
+};
+
+[[nodiscard]] std::array<ProbePoint, kDeAmFamilyProbes>
+family_probe_points(const AlSigmaQFamily &f, double S, double strike_lo, double strike_hi,
+                    double band_lo, double band_hi) {
   const auto strike = [S](double K) { return positive(K) ? K : S; };
-  const std::array<double, 3> strike_at{strike(band_lo), strike(band_hi), S};
-  // Log-sigma fractions of the sigma box, one per probe (off the sigma axis' nodes).
-  constexpr std::array<double, kDeAmFamilyProbes> kSigmaAt{0.07, 0.31, 0.62, 0.93, 0.5,
-                                                           0.2,  0.45, 0.8,  0.15};
-  const double sigma_lo = family.sigma_lo();
-  const double sigma_hi = family.sigma_hi();
-  double worst = 0.0;
-  for (std::size_t i = 0; i < kDeAmFamilyProbes; ++i) {
-    const double K = strike_at[i % 3u];
-    const double q = q_at[i / 3u];
-    const double sigma = sigma_lo * std::pow(sigma_hi / sigma_lo, kSigmaAt[i]);
-    const AlSigmaQFamilyPrice fp = family.price(S, K, sigma, q);
-    const Result<double> cold = andersen_lake(S, K, T, sigma, r, q, family.side(), al_opts);
-    if (fp.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
-      return std::nullopt;
-    }
-    worst = std::max(worst, std::fabs(fp.price - *cold) / std::max(*cold, 1.0));
+  const double k_lo = strike(strike_lo);
+  const double k_hi = std::max(strike(strike_hi), k_lo);
+  const double s_lo = f.sigma_lo();
+  const double s_hi = f.sigma_hi();
+  const auto sigma_at = [&](double frac) { return s_lo * std::pow(s_hi / s_lo, frac); };
+  const auto q_at = [&](double frac) { return f.q_lo() + (f.q_hi() - f.q_lo()) * frac; };
+  std::uint64_t seed = 0x4b33c0de2026ull;
+  for (const double v : {s_lo, s_hi, f.q_lo(), f.q_hi(), S}) {
+    seed = (seed ^ std::bit_cast<std::uint64_t>(v)) * 0x100000001b3ull;
   }
-  return worst;
+  std::mt19937_64 rng(seed);
+  std::uniform_real_distribution<double> u01(0.0, 1.0);
+  std::array<ProbePoint, kDeAmFamilyProbes> pts{};
+  // Random: strike log-uniform over the chain, log sigma and q uniform over the box.
+  for (std::size_t i = 0; i < 3u; ++i) {
+    const double K = k_lo * std::pow(k_hi / k_lo, u01(rng));
+    pts[i] = ProbePoint{K, sigma_at(u01(rng)), q_at(u01(rng))};
+  }
+  // Cell midpoints of both axes: the first, central and last cell of each, at the grid
+  // band's strike ends and the spot.
+  const unsigned ns = f.n_sigma();
+  const unsigned nq = f.n_q();
+  const std::array<unsigned, 3> s_cells{0u, (ns - 1u) / 2u, ns - 2u};
+  const std::array<unsigned, 3> q_cells{0u, nq >= 2u ? (nq - 1u) / 2u : 0u,
+                                        nq >= 2u ? nq - 2u : 0u};
+  const std::array<double, 3> strikes{strike(band_lo), strike(band_hi), S};
+  for (std::size_t i = 0; i < 3u; ++i) {
+    pts[3u + i] = ProbePoint{strikes[i], sigma_at(lobatto_cell_mid(s_cells[i], ns)),
+                             q_at(lobatto_cell_mid(q_cells[i], nq))};
+  }
+  // Near exercise: 0.2 % inside the continuation region of the boundary now, at the low,
+  // central and a random sigma (the boundary error peaks there; adversarial moneyness).
+  const std::array<double, 3> s_frac{lobatto_cell_mid(0u, ns), 0.5, u01(rng)};
+  for (std::size_t i = 0; i < 3u; ++i) {
+    const double sigma = sigma_at(s_frac[i]);
+    const double q = q_at(u01(rng));
+    const double k_star = family_exercise_strike(f, S, sigma, q);
+    const double K = f.side() == Side::Put ? k_star * (1.0 - 2.0e-3) : k_star * (1.0 + 2.0e-3);
+    pts[6u + i] = ProbePoint{positive(K) ? K : S, sigma, q};
+  }
+  return pts;
+}
+
+} // namespace
+
+bool deam_family_certify(DeAmSigmaFamilies &holder, Side side, double S, double T, double r,
+                         const std::optional<AlOpts> &al_opts, double strike_lo,
+                         double strike_hi, double band_lo, double band_hi) {
+  const AlSigmaQFamily *f = holder.of_q(side);
+  if (f == nullptr) {
+    return false;
+  }
+  ValidatedErrorEnvelope env = build_family_error_envelope(*f);
+  SampledErrorEstimate audit;
+  audit.max_abs_usd = 0.0;
+  audit.max_rel = 0.0;
+  audit.max_bound_ratio = 0.0;
+  for (const ProbePoint &p :
+       family_probe_points(*f, S, strike_lo, strike_hi, band_lo, band_hi)) {
+    const FamilyBoundedPrice fb = family_price_bounded(*f, env, S, p.K, p.sigma, p.q);
+    const Result<double> cold = andersen_lake(S, p.K, T, p.sigma, r, p.q, side, al_opts);
+    if (fb.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
+      return false;
+    }
+    const double err = std::fabs(fb.price - *cold);
+    audit.max_abs_usd = std::max(audit.max_abs_usd, err);
+    audit.max_rel = std::max(audit.max_rel, err / std::max(*cold, 1.0));
+    audit.max_bound_ratio = std::max(audit.max_bound_ratio, err / fb.bound_usd);
+    audit.violations += err > fb.bound_usd ? 1u : 0u;
+    ++audit.probes;
+  }
+  record_family_probe_audit(env, audit);
+  double grid_bound = 0.0;
+  for (const double K : {band_lo, band_hi, S}) {
+    grid_bound = std::max(grid_bound, family_domain_bound_usd(env, S, positive(K) ? K : S, r));
+  }
+  (side == Side::Put ? holder.q_envelope_put : holder.q_envelope_call) = env;
+  (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) = grid_bound;
+  return true;
 }
 
 } // namespace atx::vol

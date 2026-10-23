@@ -71,6 +71,32 @@ spots kept in the report block `one_spot`, stale chains flagged or refused `stal
 byte-identical (9/9 default hashes, the SPY kill switch included) and the report is
 unchanged.
 
+### CHANGED (opt-in keys only) — (sigma, q) family route: validated error envelope and typed root acceptance (lane K3)
+
+The (sigma, q) family route (`graded.family_q`, `graded.family_native`, the B-family
+`confirm: band` arm) no longer rests on a sampled bound. `deam_family_probe_worst` and its
+`max(10 x worst probe, 1e-12)` bound are removed; `deam_family_certify` builds a
+`ValidatedErrorEnvelope` from the family's own node tensor (refinement-verified Chebyshev
+tails, node parity, target noise, rounding; `src/pricing/american_family_error.hpp`),
+audits it with 9 probes independent of the nodes (a violation makes the family
+Uncovered), and sets the grid's `q_bound` to the envelope's domain-wide USD bound.
+Behaviour changes on those keys: (1) a confirm is skipped only when two family prices and
+their bounds enclose the accurate root in at most 1e-7 vol; the B-family arm no longer
+skips on the half-spread band gate anywhere (a quote whose side has no family is confirmed;
+the band gate now runs only in the Screen `confirm: band` arm without `family_q`); (2) the family-native confirm (R1-A MJ1) closes a bracket whose ends
+carry certified sides instead of dividing by the iterate's secant: C at the root plus one
+solve per bracket end the envelope cannot certify (at most 3; the secant confirm spent 1-2),
+and a root it cannot bracket falls back to Search typed `PriceOnly` / `Interval` / `None`; (3) the family certification grid
+serves a family price only under the domain-wide bound, which is looser than the old
+sampled one (inert on wide carry boxes). Every family-route root is typed
+(`IvPremiumStats::acceptance`; `FitTimingCounters::deam_accept_by_kind` /
+`deam_accept_by_reason`); `--deam-audit` re-solves each by bisection of the accurate map
+(`deam_audit_bracket_*`; per-root CSV via `ATX_VOL_FAMILY_ROOT_AUDIT`). Defaults: no
+change (no default reaches the family route). Design: `docs/sigma-q-family-error-envelope.md`.
+Fix round 1 (review-K3): the grid's domain-wide `q_bound` now carries `e^{-qt} > 1` for a
+negative carry (it understated the bound of a hard-to-borrow put box; non-negative carry
+bit-identical; the acceptance never reads it).
+
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
 Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object

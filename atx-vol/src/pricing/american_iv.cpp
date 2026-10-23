@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "pricing/al_probe.hpp" // env-gated AL hot-path zone timers (Perf 2b step 1)
+#include "pricing/american_family_error.hpp" // K3 envelope + root acceptance
 #include "pricing/american_iv_batch.hpp"  // K2: the family-native lane
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
@@ -1275,6 +1276,367 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
   return out;
 }
 
+// ── Root acceptance of the (sigma, q) family route (lane K3; american_family_error.hpp) ──
+//
+// THE RULE. A is the target map (the family's cold accurate kernel at the strike's own q),
+// C the confirm kernel (|C - A| <= eps_C, al_profile_price_bound: 0 on Reference, which
+// is A). On the domain premium_root admits (strictly inside the identifiable range, above
+// the non-monotone band) A is continuous and increasing, so a bracket [a, b] whose ends
+// carry CERTIFIED sides, A(a) <= price <= A(b), contains A's root. A side is certified
+//   by the family: P_family -/+ eps on the far side of the price, eps the validated
+//                  envelope's per-point bound (|P_family - A| <= eps);
+//   by C:          C -/+ eps_C on the far side of the price.
+//   Skipped:   both ends by the family (two family prices, no confirm solve), b - a <= W;
+//   Confirmed: at least one end by C (confirm_bracket), b - a <= W;
+// W = min(tol, kIvRootRequirement) (less one part in 2^20), so the served root, clamped
+// into [a, b], lies within W of A's root. No step length and no secant slope is a bound:
+// a local chord only PLACES an end and the served point.
+
+// A far root's bracket (confirm_bracket): centred on the chord's Newton point, half-width
+// this fraction of W (the estimate's own error must stay inside the remaining 0.05 W).
+constexpr double kFarRootHalfWidth = 0.45;
+
+// The bracket width the acceptance closes.
+[[nodiscard]] double acceptance_width(double tol) noexcept {
+  return std::fmin(tol, kIvRootRequirement) * (1.0 - 0x1p-20);
+}
+
+} // namespace
+
+// Encloses A's root in [x - w/2, x + w/2] from two family prices with their bounds; a
+// second, re-centred attempt (on the local chord's root) when the first missed only by
+// its centre. Without a covering envelope it measures the local chord only. Declared in
+// american_iv_premium.hpp (FamilyEnclosure) so its tests can place x off the root.
+FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x, double w,
+                                 const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                 IvPremiumStats &stats) noexcept {
+  static const ValidatedErrorEnvelope kNoEnvelope{};
+  const ValidatedErrorEnvelope &e = env != nullptr ? *env : kNoEnvelope;
+  FamilyEnclosure out;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const double a = x - 0.5 * w;
+    const double b = x + 0.5 * w;
+    const FamilyBoundedPrice pa = family_price_bounded(f, e, S, K, a, q);
+    const FamilyBoundedPrice pb = family_price_bounded(f, e, S, K, b, q);
+    stats.family_prices += 2u;
+    if (pa.status != AlSigmaQFamilyStatus::Ok || pb.status != AlSigmaQFamilyStatus::Ok) {
+      return out;
+    }
+    out.slope = (pb.price - pa.price) / (b - a);
+    if (!e.covered() || !(b - a <= w)) {
+      return out;
+    }
+    if (pa.price + pa.bound_usd <= price && price <= pb.price - pb.bound_usd) {
+      const double gap = pb.price - pa.price;
+      const double frac = gap > 0.0 ? (price - pa.price) / gap : 0.5;
+      out.enclosed = true;
+      out.lo = a;
+      out.hi = b;
+      out.root = std::clamp(a + frac * (b - a), a, b);
+      return out;
+    }
+    const bool fits = (pb.price - pb.bound_usd) - (pa.price + pa.bound_usd) > 0.0;
+    const bool off_centre = price < pa.price || price > pb.price;
+    if (!(fits && off_centre && out.slope > 0.0)) {
+      return out;
+    }
+    x = a + (price - pa.price) / out.slope;
+  }
+  return out;
+}
+
+namespace {
+
+// One solve of the confirm kernel at sigma (charged as a confirming solve).
+[[nodiscard]] std::optional<double> confirm_price(double S, double K, double T, double sigma,
+                                                  double r, double q, Side side,
+                                                  const std::optional<AlOpts> &confirm_opts,
+                                                  IvPremiumStats &stats) {
+  counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+  const Result<double> pc = andersen_lake(S, K, T, sigma, r, q, side, confirm_opts);
+  ++stats.premium_solves;
+  ++stats.confirm_solves;
+  if (!pc || !std::isfinite(*pc)) {
+    return std::nullopt;
+  }
+  return *pc;
+}
+
+// Which side of the target A's root sigma sits on, from one confirm price c there: +1 when
+// A(sigma) >= price is certified (c - eps_c >= price), -1 when A(sigma) <= price is (c +
+// eps_c <= price), 0 when C's tested distance eps_c to A leaves it open.
+[[nodiscard]] int confirm_side(double c, double price, double eps_c) noexcept {
+  if (c - eps_c >= price) return 1;
+  if (c + eps_c <= price) return -1;
+  return 0;
+}
+
+// The same from the family: the side of A at sigma that the envelope certifies (0 when
+// there is no covering envelope, the family refuses, or the bound leaves it open).
+[[nodiscard]] int family_side(double price, double S, double K, double q, double sigma,
+                              const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                              IvPremiumStats &stats) noexcept {
+  if (env == nullptr || !env->covered()) {
+    return 0;
+  }
+  const FamilyBoundedPrice fp = family_price_bounded(f, *env, S, K, sigma, q);
+  ++stats.family_prices;
+  if (fp.status != AlSigmaQFamilyStatus::Ok) {
+    return 0;
+  }
+  if (fp.price - fp.bound_usd >= price) return 1;
+  if (fp.price + fp.bound_usd <= price) return -1;
+  return 0;
+}
+
+// The confirm of a family-native root x (lane K3; replaces the secant-slope Newton distance
+// of R1-A MJ1). Every end of the accepted bracket carries a CERTIFIED side of A's root: a
+// confirm price beyond C's tested distance eps_c (confirm_side), or a family price beyond
+// its envelope bound (family_side); A is continuous and increasing on the domain, so its
+// root lies between two ends of opposite sides, and an accepted bracket is no wider than w.
+// At most three confirm solves: C at x, then the far end (the family first, C second)
+// within w of x; for a far root (the chord's Newton step beyond w / 4) both ends around
+// the Newton point at -/+ kFarRootHalfWidth w (the family first, C second); when C leaves
+// x's side open, both ends at x -/+ w/2 (the family first, then one C solve).
+// `slope` (a local chord: the enclosure's span <= w, or the family's kAlPackSigmaBump chord)
+// only PLACES the far end and the served point; it bounds nothing. nullopt with
+// stats.acceptance PriceOnly (low vega: slope w <= 2 eps_c, no bracket of width w can be
+// certified by C), Interval (a certified bracket wider than w) or None (no bracket) and
+// stats.fallback set: the caller then runs Search.
+[[nodiscard]] std::optional<double> confirm_bracket(double price, double S, double K, double T,
+                                                    double r, double q, Side side, double x,
+                                                    double slope, double w,
+                                                    const AlSigmaQFamily &f,
+                                                    const ValidatedErrorEnvelope *env,
+                                                    const std::optional<AlOpts> &confirm_opts,
+                                                    IvPremiumStats &stats) {
+  RootAcceptance &acc = stats.acceptance;
+  acc.error_class = env != nullptr && env->covered() ? env->error_class
+                                                     : FamilyErrorClass::Uncovered;
+  const auto fail = [&](IvPremiumFallback why, RootAcceptanceKind kind,
+                        RootAcceptanceReason reason) -> std::optional<double> {
+    acc.kind = kind;
+    acc.reason = reason;
+    stats.fallback = why;
+    return std::nullopt;
+  };
+  // An accepted bracket [lo, hi] (A's side certified -1 at lo, +1 at hi), the served point
+  // the falsi of the two prices (or the chord placement) clamped into it.
+  const auto accept = [&](double root, double lo, double hi,
+                          RootAcceptanceReason reason) -> std::optional<double> {
+    acc.kind = RootAcceptanceKind::Confirmed;
+    acc.reason = reason;
+    acc.lo = lo;
+    acc.hi = hi;
+    acc.bound_iv = hi - lo;
+    stats.fallback = IvPremiumFallback::None;
+    return std::clamp(root, lo, hi);
+  };
+  const auto interval = [&](double lo, double hi) -> std::optional<double> {
+    acc.lo = lo;
+    acc.hi = hi;
+    acc.bound_iv = hi - lo;
+    return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::Interval,
+                RootAcceptanceReason::BudgetExhausted);
+  };
+  const auto inside = [](double s) { return s > kSigmaLo && s < kSigmaHi; };
+  const AlProfile profile = confirm_opts ? confirm_opts->profile : AlProfile::Reference;
+  stats.confirm_profile = profile;
+  const double eps_c = al_profile_price_bound(profile, price, T);
+  if (!(std::isfinite(slope) && slope > 0.0) || !(slope * w > 2.0 * eps_c)) {
+    return fail(IvPremiumFallback::NotIncreasing, RootAcceptanceKind::PriceOnly,
+                RootAcceptanceReason::LowVega);
+  }
+  const std::optional<double> c0 = confirm_price(S, K, T, x, r, q, side, confirm_opts, stats);
+  if (!c0) {
+    return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                RootAcceptanceReason::None);
+  }
+  stats.last_residual_usd = std::fabs(*c0 - price);
+  const int s0 = confirm_side(*c0, price, eps_c);
+  if (s0 == 0) {
+    // C cannot place x: x sits within eps_c / slope of the root. The ends x -/+ w/2, each
+    // certified by the family first, else by one more confirm solve.
+    const double lo = x - 0.5 * w;
+    const double hi = x + 0.5 * w;
+    if (!inside(lo) || !inside(hi)) {
+      return fail(IvPremiumFallback::VolBound, RootAcceptanceKind::None,
+                  RootAcceptanceReason::BudgetExhausted);
+    }
+    int s_lo = family_side(price, S, K, q, lo, f, env, stats);
+    int s_hi = family_side(price, S, K, q, hi, f, env, stats);
+    const bool family_end = s_lo == -1 || s_hi == 1;
+    double c_lo = std::numeric_limits<double>::quiet_NaN();
+    double c_hi = std::numeric_limits<double>::quiet_NaN();
+    for (const bool upper : {false, true}) {
+      int &end_side = upper ? s_hi : s_lo;
+      const int want = upper ? 1 : -1;
+      if (end_side == want) continue;
+      const std::optional<double> ce =
+          confirm_price(S, K, T, upper ? hi : lo, r, q, side, confirm_opts, stats);
+      if (!ce) {
+        return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                    RootAcceptanceReason::None);
+      }
+      stats.last_residual_usd = std::fabs(*ce - price);
+      (upper ? c_hi : c_lo) = *ce;
+      end_side = confirm_side(*ce, price, eps_c);
+      if (end_side != want) {
+        return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+                    RootAcceptanceReason::BudgetExhausted);
+      }
+    }
+    const double gap = c_hi - c_lo;
+    const double root = std::isfinite(gap) && gap != 0.0 ? lo + (price - c_lo) / gap * w : x;
+    return accept(root, lo, hi,
+                  family_end ? RootAcceptanceReason::ConfirmAndFamily
+                             : RootAcceptanceReason::ConfirmBothEnds);
+  }
+  const int dir = -s0; // A increasing: the root lies on this side of x
+  const double delta = (price - *c0) / slope;
+  if (4.0 * std::fabs(delta) > w) {
+    // A far root: the chord puts the confirm map's root more than w / 4 from x, so no
+    // bracket with x as an end fits in w. The bracket is placed around the chord's Newton
+    // point instead, each end certified by the family first, else by C (two more solves).
+    const double centre = x + delta;
+    const double near_end = centre - dir * kFarRootHalfWidth * w; // x's side: needs s0
+    const double far_end = centre + dir * kFarRootHalfWidth * w;  // needs -s0
+    if (!inside(near_end) || !inside(far_end)) {
+      return fail(IvPremiumFallback::VolBound, RootAcceptanceKind::None,
+                  RootAcceptanceReason::BudgetExhausted);
+    }
+    int s_near = family_side(price, S, K, q, near_end, f, env, stats);
+    int s_far = family_side(price, S, K, q, far_end, f, env, stats);
+    const bool family_end = s_near == s0 || s_far == -s0;
+    double c_near = std::numeric_limits<double>::quiet_NaN();
+    double c_far = std::numeric_limits<double>::quiet_NaN();
+    if (s_near != s0) {
+      const std::optional<double> cn =
+          confirm_price(S, K, T, near_end, r, q, side, confirm_opts, stats);
+      if (!cn) {
+        return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                    RootAcceptanceReason::None);
+      }
+      c_near = *cn;
+      stats.last_residual_usd = std::fabs(c_near - price);
+      s_near = confirm_side(c_near, price, eps_c);
+      if (s_near == -s0) {
+        // The root lies between x and the near end: certified, but wider than w.
+        return interval(std::fmin(x, near_end), std::fmax(x, near_end));
+      }
+      if (s_near != s0) {
+        return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+                    RootAcceptanceReason::BudgetExhausted);
+      }
+    }
+    if (s_far != -s0) {
+      const std::optional<double> cf =
+          confirm_price(S, K, T, far_end, r, q, side, confirm_opts, stats);
+      if (!cf) {
+        return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                    RootAcceptanceReason::None);
+      }
+      c_far = *cf;
+      stats.last_residual_usd = std::fabs(c_far - price);
+      s_far = confirm_side(c_far, price, eps_c);
+      if (s_far != -s0) {
+        return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+                    RootAcceptanceReason::BudgetExhausted);
+      }
+    }
+    const double lo = std::fmin(near_end, far_end);
+    const double hi = std::fmax(near_end, far_end);
+    const double gap = c_far - c_near;
+    const double root = std::isfinite(gap) && gap != 0.0
+                            ? near_end + (price - c_near) / gap * (far_end - near_end)
+                            : centre;
+    return accept(root, lo, hi,
+                  family_end ? RootAcceptanceReason::ConfirmAndFamily
+                             : RootAcceptanceReason::ConfirmBothEnds);
+  }
+  const double far = x + dir * w;
+  if (inside(far) && family_side(price, S, K, q, far, f, env, stats) == -s0) {
+    return accept(x + delta, std::fmin(x, far), std::fmax(x, far),
+                  RootAcceptanceReason::ConfirmAndFamily);
+  }
+  // The second confirm solve past the chord's Newton point (4 x its step, <= w here).
+  const double step = std::fmax(4.0 * std::fabs(delta), 1.0e-3 * w);
+  const double e = x + dir * step;
+  if (!inside(e)) {
+    return fail(IvPremiumFallback::VolBound, RootAcceptanceKind::None,
+                RootAcceptanceReason::BudgetExhausted);
+  }
+  const std::optional<double> ce = confirm_price(S, K, T, e, r, q, side, confirm_opts, stats);
+  if (!ce) {
+    return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                RootAcceptanceReason::None);
+  }
+  stats.last_residual_usd = std::fabs(*ce - price);
+  const int se = confirm_side(*ce, price, eps_c);
+  const double lo = std::fmin(x, e);
+  const double hi = std::fmax(x, e);
+  if (se == -s0) {
+    if (hi - lo > w) {
+      return interval(lo, hi);
+    }
+    const double gap = *ce - *c0;
+    const double root = gap != 0.0 ? x + (price - *c0) / gap * (e - x) : 0.5 * (lo + hi);
+    return accept(root, lo, hi, RootAcceptanceReason::ConfirmBothEnds);
+  }
+  if (se == s0) {
+    // Still on x's side: the family may certify the other side within w past e.
+    const double far_e = e + dir * w;
+    if (inside(far_e) && family_side(price, S, K, q, far_e, f, env, stats) == -s0) {
+      return accept(e + (price - *ce) / slope, std::fmin(e, far_e), std::fmax(e, far_e),
+                    RootAcceptanceReason::ConfirmAndFamily);
+    }
+  }
+  return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+              RootAcceptanceReason::BudgetExhausted);
+}
+
+// K3 acceptance of a family-native root (IvPremiumGate::qfamily_native): Skipped when the
+// envelope encloses it, else confirm_bracket with the enclosure's local chord (or, where a
+// price refused, the family's own kAlPackSigmaBump chord at the root).
+[[nodiscard]] std::optional<double> accept_family_native(const NativeRoot &native, double price,
+                                                         double S, double K, double T, double r,
+                                                         double q, Side side, double tol,
+                                                         const AlSigmaQFamily &f,
+                                                         const std::optional<AlOpts> &confirm_opts,
+                                                         IvPremiumStats &stats) {
+  const double x = native.root;
+  stats.last_residual_usd = native.residual_usd;
+  // W2c-g: K2's batch-seam lane accepts on the fused vega at its last point - a tangent,
+  // no secant partner - so the span is 0 (K3's secant span is gone with the secant).
+  stats.native_partner_span = 0.0;
+  if (!(x > kSigmaLo && x < kSigmaHi)) {
+    stats.fallback = IvPremiumFallback::VolBound;
+    return std::nullopt;
+  }
+  const ValidatedErrorEnvelope *env = current_family_envelope(&f);
+  const double w = acceptance_width(tol);
+  const FamilyEnclosure enc = family_enclosure(price, S, K, q, x, w, f, env, stats);
+  if (enc.enclosed) {
+    stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
+                                      RootAcceptanceReason::FamilyEnclosure,
+                                      FamilyErrorClass::RefinementValidated, enc.hi - enc.lo,
+                                      enc.lo, enc.hi};
+    stats.confirm_skipped = true;
+    stats.gate_bound_vol = enc.hi - enc.lo;
+    stats.fallback = IvPremiumFallback::None;
+    return enc.root;
+  }
+  double slope = enc.slope;
+  if (!(std::isfinite(slope) && slope > 0.0)) {
+    const AlSigmaQFamilyChord fc = f.price_and_chord(S, K, x, q);
+    stats.family_prices += 2u;
+    if (fc.status == AlSigmaQFamilyStatus::Ok) {
+      slope = (fc.price_sigma_bumped - fc.price) / kAlPackSigmaBump;
+    }
+  }
+  return confirm_bracket(price, S, K, T, r, q, side, x, slope, w, f, env, confirm_opts, stats);
+}
+
 // The Premium root, or nullopt with stats.fallback set (the caller then runs Search).
 // Not noexcept: andersen_lake's Error path builds a message string.
 // `seed_opts` / `confirm` are taken by value: a price inside the seed tier's own
@@ -1323,30 +1685,24 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
   // chord bound h |volga| + 1e-8 (volga from the chord to the previous cold point; a 2x
   // margin when there is none), floored at min_relative_slope max(price, 1); the
   // half-spread is converted with the chord PLUS that margin (the conservative side).
-  // Both sides are in vol units (the brief's statement read on the vol scale).
+  // Both sides are in vol units (the brief's statement read on the vol scale). Lane K3: a
+  // request that carries a (sigma, q) family never reaches it (accept below), so eps_A is
+  // always the seed tier's TESTED bound, never a family's sampled estimate.
   const auto band_gate_holds = [&](double slope, const ColdPoint &last,
                                    const ColdPoint *partner) -> bool {
     if (gate == nullptr || !(gate->half_spread_usd > 0.0) || !(gate->k > 0.0)) {
       return false;
     }
     const AlProfile seed_profile = seed_opts ? seed_opts->profile : AlProfile::Reference;
-    double eps_a = al_profile_price_bound(seed_profile, price, T);
+    const double eps_a = al_profile_price_bound(seed_profile, price, T);
     const double eps_r = std::fabs(last.price - price);
-    double h = last.sigma + kAlPackSigmaBump < kSigmaHi ? kAlPackSigmaBump : -kAlPackSigmaBump;
+    const double h =
+        last.sigma + kAlPackSigmaBump < kSigmaHi ? kAlPackSigmaBump : -kAlPackSigmaBump;
     double bumped = std::numeric_limits<double>::quiet_NaN();
-    if (on_qfamily) {
-      // B-family: the family's measured bound and its own chord (no Andersen-Lake solve).
-      eps_a = gate->qfamily_bound * std::fmax(price, 1.0);
-      h = kAlPackSigmaBump;
-      const AlSigmaQFamilyChord fc = qfamily->price_and_chord(S, K, last.sigma, q);
-      ++stats.family_prices;
-      if (fc.status == AlSigmaQFamilyStatus::Ok) bumped = fc.price_sigma_bumped;
-    } else {
-      const Result<double> pb = andersen_lake(S, K, T, last.sigma + h, r, q, side, seed_opts);
-      ++stats.premium_solves;
-      ++stats.gate_solves;
-      if (pb) bumped = *pb;
-    }
+    const Result<double> pb = andersen_lake(S, K, T, last.sigma + h, r, q, side, seed_opts);
+    ++stats.premium_solves;
+    ++stats.gate_solves;
+    if (pb) bumped = *pb;
     if (!std::isfinite(bumped) || !std::isfinite(eps_a)) {
       return false;
     }
@@ -1370,7 +1726,11 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
   };
   // An accepted iterate's root; with a seed kernel other than the accurate one it is
   // confirmed by one solve on the confirm kernel (Newton distance <= tol on that map)
-  // unless the gate's policy skips the confirm (Never, or Band when the statement holds).
+  // unless the gate's policy skips the confirm: Never; Band on the (sigma, q) family route
+  // only when the family's validated envelope encloses the root (lane K3, the rule above
+  // accept_family_native); Band on a request that carried no family when the band gate's
+  // statement holds (the legacy Screen arm). A request that carried a (sigma, q) family
+  // never reaches the band gate: a root after a family refusal is confirmed.
   const auto accept = [&](double root, double slope, const ColdPoint &last,
                           const ColdPoint *partner) -> std::optional<double> {
     if (!(root > kSigmaLo && root < kSigmaHi)) {
@@ -1378,9 +1738,29 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
     }
     if (confirm) {
       const IvConfirmPolicy policy = gate != nullptr ? gate->policy : IvConfirmPolicy::Always;
-      const bool skip = policy == IvConfirmPolicy::Never ||
-                        (policy == IvConfirmPolicy::Band && band_gate_holds(slope, last, partner));
-      if (skip) {
+      if (policy == IvConfirmPolicy::Band && on_qfamily) {
+        const FamilyEnclosure enc =
+            family_enclosure(price, S, K, q, root, acceptance_width(tol), *qfamily,
+                             current_family_envelope(qfamily), stats);
+        if (enc.enclosed) {
+          stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
+                                            RootAcceptanceReason::FamilyEnclosure,
+                                            FamilyErrorClass::RefinementValidated,
+                                            enc.hi - enc.lo, enc.lo, enc.hi};
+          stats.confirm_skipped = true;
+          stats.gate_bound_vol = enc.hi - enc.lo;
+          stats.fallback = IvPremiumFallback::None;
+          return enc.root;
+        }
+      }
+      const bool legacy_band = policy == IvConfirmPolicy::Band && gate->qfamily == nullptr &&
+                               band_gate_holds(slope, last, partner);
+      if (policy == IvConfirmPolicy::Never || legacy_band) {
+        stats.acceptance.kind = RootAcceptanceKind::Skipped;
+        stats.acceptance.reason = legacy_band ? RootAcceptanceReason::LegacyBandGate
+                                              : RootAcceptanceReason::LegacyNever;
+        stats.acceptance.bound_iv = legacy_band ? stats.gate_bound_vol
+                                                : std::numeric_limits<double>::quiet_NaN();
         stats.confirm_skipped = true;
         stats.fallback = IvPremiumFallback::None;
         return root;
@@ -1417,6 +1797,10 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
           return fail(IvPremiumFallback::NoConvergence);
         }
       }
+      // The established contract (the keys-OFF confirm): a Newton distance on the confirm
+      // kernel, no bracket.
+      stats.acceptance.kind = RootAcceptanceKind::Confirmed;
+      stats.acceptance.reason = RootAcceptanceReason::NewtonContract;
     }
     stats.fallback = IvPremiumFallback::None;
     return root;
@@ -1486,8 +1870,9 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
     const NativeRoot native = family_native_root(price, S, K, T, r, q, side, tol, *qfamily,
                                                  memory, stats, stream_id);
     if (native.accepted) {
-      stats.last_residual_usd = native.residual_usd;
-      return accept(native.root, native.slope, native.last, nullptr);
+      const std::optional<AlOpts> &confirm_opts = gate->confirm_opts ? gate->confirm_opts : opts;
+      return accept_family_native(native, price, S, K, T, r, q, side, tol, *qfamily, confirm_opts,
+                                  stats);
     }
     on_qfamily = false;
     stats.family_refused = true;

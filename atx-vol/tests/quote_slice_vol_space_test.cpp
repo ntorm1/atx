@@ -11,6 +11,7 @@
 #include "fitting/deam_iv_cache.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -29,6 +30,8 @@
 
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "fitting/counters.hpp"
+#include "pricing/american_family_error.hpp"
 
 namespace atx::vol {
 namespace {
@@ -44,18 +47,19 @@ struct Chain {
 // An SPY-shaped chain: spot 670, strikes +-25% in 2.5% steps, a skewed smile
 // priced with the Andersen-Lake engine the fitter inverts, bidless far
 // out-of-the-money wings, and a deep in-the-money put whose bid sits below its
-// minimum-volatility price (a band with no lower information).
-Chain spy_chain(double years, bool strike_carry, double dividend_pv) {
+// minimum-volatility price (a band with no lower information). `yield` is the
+// reference yield (strike_carry: the strike yields yield + 0.004 ln(K / S)); a
+// negative one is a hard-to-borrow carry.
+Chain spy_chain(double years, bool strike_carry, double dividend_pv, double yield = 0.012) {
   constexpr double kSpot = 670.0;
   constexpr double kRate = 0.04;
-  constexpr double kYield = 0.012;
   Chain out;
-  out.market = QuoteSliceMarket{kSpot, years, years, kRate, kYield, dividend_pv};
+  out.market = QuoteSliceMarket{kSpot, years, years, kRate, yield, dividend_pv};
   for (int step = -10; step <= 10; ++step) {
     const double strike = std::round(kSpot * (1.0 + 0.025 * step));
     const double k = std::log(strike / kSpot);
     const double sigma = std::max(0.08, 0.16 - 0.30 * k + 0.80 * k * k);
-    const double q = strike_carry ? kYield + 0.004 * k : kYield;
+    const double q = strike_carry ? yield + 0.004 * k : yield;
     for (Side side : {Side::Call, Side::Put}) {
       const auto price = andersen_lake(kSpot, strike, years, sigma, kRate, q, side);
       if (!price) {
@@ -786,8 +790,11 @@ TEST(QuoteSliceVolSpace, SigmaQFamilyGridServesWithinTheCertificateAllowance) {
 // n_q 4, the widest the q-axis guard admits) every price the family grid serves stays within
 // the certificate allowance of the Fast grid's - in-the-money puts included - at two
 // maturities. (Its pre-fix worst was 0.16 of the allowance: since L2h-c's q-axis guard a box
-// whose q error could exceed the allowance is refused; the probe placement itself is pinned
-// by DeAmIvCache.FamilyBoundProbesSeeTheQInterpolationError.)
+// whose q error could exceed the allowance is refused.) Lane K3: the grid now serves a family
+// price only under the envelope's VALIDATED domain-wide bound (deam_family_certify), which on
+// a box this wide does not clear the allowance, so here every price is the Fast grid's (the
+// key is inert on this chain; measured 0 of 252 differ). The envelope itself is pinned by
+// DeAmIvCache.FamilyEnvelopeBoundsTheQInterpolationErrorAndItsAuditPasses.
 TEST(QuoteSliceVolSpace, SigmaQFamilyGridOnAWideCarryChainStaysWithinTheAllowance) {
   std::size_t compared = 0, itm_puts = 0, differing = 0, builds = 0;
   double worst_ratio = 0.0;
@@ -834,52 +841,69 @@ TEST(QuoteSliceVolSpace, SigmaQFamilyGridOnAWideCarryChainStaysWithinTheAllowanc
   EXPECT_GT(builds, 0u);
   EXPECT_GT(compared, 80u);
   EXPECT_GT(itm_puts, 20u);
-  EXPECT_GT(differing, 0u); // the family grid served prices (the key is not inert)
   deam_iv_memo_clear();
 }
 
-// review-SPY1s-p2 M1, at the bound itself: on an OIH-shaped wide-carry put family (q box
-// 3.45e-3, n_q 4) the family's error between q nodes is far above its error on them, and
-// deam_family_probe_worst - the measured bound's probes - must see it. Probes on the q box
-// ends (Lobatto nodes, the pre-fix placement) measure only the sigma-axis error.
-TEST(DeAmIvCache, FamilyBoundProbesSeeTheQInterpolationError) {
+// review-SPY1s-p2 M1 and R1-A MJ3, at the error contract itself (lane K3): on an OIH-shaped
+// wide-carry put family (q box 3.45e-3, n_q 4) the family's error between q nodes is far
+// above its error on them. The VALIDATED envelope deam_family_certify builds from the
+// family's own nodes bounds both, point by point; its probe audit (independent points) finds
+// no violation; and the grid's scalar q_bound is the envelope's domain-wide bound (no longer
+// 10x a sampled worst), so it dominates every error measured at the band's strikes.
+TEST(DeAmIvCache, FamilyEnvelopeBoundsTheQInterpolationErrorAndItsAuditPasses) {
   const double S = 383.185;
   const double T = 0.4997;
   const double r = 0.047639;
   const double q_lo = 0.016534;
   const double q_hi = 0.019984;
-  const AlExpiryGeometry g = prepare_al_geometry(T, r, 0.5 * (q_lo + q_hi));
-  AlSigmaQFamily fam(g, Side::Put, S);
-  ASSERT_TRUE(fam.prepare(0.2, 1.0, kDeAmQFamilySigmaNodes, q_lo, q_hi, kDeAmQFamilyQNodes,
-                          kDeAmFamilyAxis));
+  DeAmSigmaFamilies holder;
+  holder.q_geometry_put.prepare(T, r, 0.5 * (q_lo + q_hi), std::nullopt);
+  holder.q_put.emplace(holder.q_geometry_put, Side::Put, S);
+  ASSERT_TRUE(holder.q_put->prepare(0.2, 1.0, kDeAmQFamilySigmaNodes, q_lo, q_hi,
+                                    kDeAmQFamilyQNodes, kDeAmFamilyAxis));
+  const AlSigmaQFamily &fam = *holder.q_put;
   ASSERT_EQ(fam.n_q(), 4u);
   const double band_lo = S * std::exp(-kDeAmFamilyGridLogBand);
   const double band_hi = S * std::exp(kDeAmFamilyGridLogBand);
-  const std::optional<double> worst =
-      deam_family_probe_worst(fam, S, T, r, std::nullopt, band_lo, band_hi);
-  ASSERT_TRUE(worst.has_value());
-  // The family's error at the probe strikes: on the q nodes (fractions 0, 1/4, 3/4, 1 of the
-  // box for n_q 4) and at the q-cell midpoints.
+  ASSERT_TRUE(deam_family_certify(holder, Side::Put, S, T, r, std::nullopt, band_lo, band_hi,
+                                  band_lo, band_hi));
+  const ValidatedErrorEnvelope *env = holder.q_envelope(Side::Put);
+  ASSERT_NE(env, nullptr);
+  ASSERT_TRUE(env->covered()) << static_cast<int>(env->status);
+  EXPECT_EQ(env->audit.probes, kDeAmFamilyProbes);
+  EXPECT_EQ(env->audit.violations, 0u);
+  EXPECT_LT(env->audit.max_bound_ratio, 1.0);
+  ASSERT_TRUE(std::isfinite(holder.q_bound(Side::Put)));
+  // The family's error at the band's strikes: on the q nodes (fractions 0, 1/4, 3/4, 1 of
+  // the box for n_q 4) and at the q-cell midpoints.
   double on_nodes = 0.0;
   double between = 0.0;
+  double worst_abs = 0.0;
+  double worst_ratio = 0.0;
   for (const double K : {band_lo, band_hi, S}) {
     for (const double sigma : {0.25, 0.4, 0.6, 0.85}) {
       for (const double frac : {0.0, 0.25, 0.75, 1.0, 0.125, 0.5, 0.875}) {
         const double q = q_lo + frac * (q_hi - q_lo);
         const auto cold = andersen_lake(S, K, T, sigma, r, q, Side::Put);
-        const AlSigmaQFamilyPrice fp = fam.price(S, K, sigma, q);
-        ASSERT_TRUE(cold && fp.status == AlSigmaQFamilyStatus::Ok);
-        const double rel = std::abs(fp.price - *cold) / std::max(*cold, 1.0);
+        const FamilyBoundedPrice fb = family_price_bounded(fam, *env, S, K, sigma, q);
+        ASSERT_TRUE(cold && fb.status == AlSigmaQFamilyStatus::Ok);
+        const double err = std::abs(fb.price - *cold);
+        const double rel = err / std::max(*cold, 1.0);
         const bool node = frac == 0.0 || frac == 0.25 || frac == 0.75 || frac == 1.0;
         (node ? on_nodes : between) = std::max(node ? on_nodes : between, rel);
+        worst_abs = std::max(worst_abs, err);
+        worst_ratio = std::max(worst_ratio, err / fb.bound_usd);
+        EXPECT_LE(err, fb.bound_usd) << "K " << K << " sigma " << sigma << " q " << q;
       }
     }
   }
-  std::printf("[family bound probes] measured worst %.3g; family error on q nodes %.3g, between "
-              "q nodes %.3g\n",
-              *worst, on_nodes, between);
+  std::printf("[family envelope] error on q nodes %.3g, between q nodes %.3g (relative); worst "
+              "|dP| %.3g USD, worst |dP| / point bound %.3g, grid q_bound %.3g USD; probes %u, "
+              "audit worst ratio %.3g\n",
+              on_nodes, between, worst_abs, worst_ratio, holder.q_bound(Side::Put),
+              static_cast<unsigned>(env->audit.probes), env->audit.max_bound_ratio);
   EXPECT_GT(between, 10.0 * on_nodes); // the q axis dominates: the case is meaningful
-  EXPECT_GE(*worst, 0.25 * between);   // fails when the probes sit on q nodes
+  EXPECT_LE(worst_abs, holder.q_bound(Side::Put));
 }
 
 // Opt-in Fast certification grid (SPY1s Phase 1 arm D, QuoteSliceConfig::grid_kernel): the
@@ -1335,6 +1359,193 @@ TEST(DeAmIvCache, MemoIsBoundedAndAHeldCacheOutlivesItsEviction) {
   deam_iv_memo_clear();
   EXPECT_EQ(deam_iv_memo_size(), 0u);
   EXPECT_EQ(held->ivs[0].mid_iv, 0.25);
+}
+
+// Lane K3 at the fit: a family-native (deam_family_native) and a B-family (deam_confirm Band)
+// vol-space fit on an SPY-shaped strike-carry chain types EVERY root of the family route
+// (counters by kind), skips confirms only on the validated envelope deam_family_certify
+// installs (the scoped context of DeAmIvView), never on the band gate (LegacyBandGate 0), and
+// under the --deam-audit arm every typed root re-solved by bisection of the accurate map to
+// 1e-9 lies within 1e-7 of the served root (0 violations). Fails on a revert of the certify
+// call site (no envelope: nothing is Skipped).
+TEST(QuoteSliceVolSpace, FamilyRouteFitTypesEveryRootAndItsBracketAuditFindsNoViolation) {
+  namespace ft = counters::fit_timing;
+  std::array<std::uint64_t, kRootAcceptanceKindCount> kinds{};
+  std::array<std::uint64_t, kRootAcceptanceReasonCount> reasons{};
+  std::uint64_t audited = 0, unresolved = 0, violations = 0;
+  double max_skipped = 0.0, max_confirmed = 0.0;
+  ft::arm_deam_audit(true);
+  for (const bool native : {true, false}) {
+    for (const double years : {0.15, 0.5}) {
+      SCOPED_TRACE(std::string(native ? "native" : "band") + " T=" + std::to_string(years));
+      const Chain c = spy_chain(years, true, 0.0);
+      QuoteSliceConfig config = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                           true, QuoteSliceDeamProfile::Screen);
+      config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+      config.channel.deam_family = QuoteSliceDeamFamily::Always;
+      config.channel.deam_family_q = true;
+      config.channel.deam_family_native = native;
+      if (!native) config.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+      // The same fit without the family keys: the fit outcome does not depend on them.
+      QuoteSliceConfig plain = config;
+      plain.channel.deam_family = QuoteSliceDeamFamily::Off;
+      plain.channel.deam_family_q = false;
+      plain.channel.deam_family_native = false;
+      plain.channel.deam_confirm = QuoteSliceDeamConfirm::Always;
+      deam_iv_memo_clear();
+      const auto base = fit_quote_slice_channel(c.market, c.quotes, plain, nullptr);
+      ASSERT_TRUE(base);
+      deam_iv_memo_clear();
+      ft::ChainRecorder rec;
+      {
+        const ft::ChainScope chain(&rec, 1);
+        const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+        ASSERT_TRUE(fit);
+        EXPECT_EQ(fit->fit_status, base->fit_status) << fit->fit_error << " | " << base->fit_error;
+        EXPECT_GT(fit->diagnostics.deam.family_builds, 0u);
+      }
+      const ft::FitTimingCounters t = rec.result();
+      for (std::size_t k = 0; k < kinds.size(); ++k) kinds[k] += t.deam_accept_by_kind[k];
+      for (std::size_t k = 0; k < reasons.size(); ++k) reasons[k] += t.deam_accept_by_reason[k];
+      audited += t.deam_audit_bracket_roots;
+      unresolved += t.deam_audit_bracket_unresolved;
+      violations += t.deam_audit_bracket_violations;
+      max_skipped = std::max(max_skipped, t.deam_audit_bracket_max_skipped);
+      max_confirmed = std::max(max_confirmed, t.deam_audit_bracket_max_confirmed);
+    }
+  }
+  ft::arm_deam_audit(false);
+  deam_iv_memo_clear();
+  const auto kind = [&](RootAcceptanceKind k) { return kinds[static_cast<std::size_t>(k)]; };
+  const auto reason = [&](RootAcceptanceReason r) {
+    return reasons[static_cast<std::size_t>(r)];
+  };
+  std::printf("[K3 fit] kinds: none %llu confirmed %llu skipped %llu price-only %llu interval "
+              "%llu; skipped by enclosure %llu, confirmed with family end %llu / both ends %llu / "
+              "Newton contract %llu, legacy band %llu; audit: %llu roots, %llu unresolved, %llu "
+              "violations, max |served - root| skipped %.3g confirmed %.3g\n",
+              static_cast<unsigned long long>(kind(RootAcceptanceKind::None)),
+              static_cast<unsigned long long>(kind(RootAcceptanceKind::Confirmed)),
+              static_cast<unsigned long long>(kind(RootAcceptanceKind::Skipped)),
+              static_cast<unsigned long long>(kind(RootAcceptanceKind::PriceOnly)),
+              static_cast<unsigned long long>(kind(RootAcceptanceKind::Interval)),
+              static_cast<unsigned long long>(reason(RootAcceptanceReason::FamilyEnclosure)),
+              static_cast<unsigned long long>(reason(RootAcceptanceReason::ConfirmAndFamily)),
+              static_cast<unsigned long long>(reason(RootAcceptanceReason::ConfirmBothEnds)),
+              static_cast<unsigned long long>(reason(RootAcceptanceReason::NewtonContract)),
+              static_cast<unsigned long long>(reason(RootAcceptanceReason::LegacyBandGate)),
+              static_cast<unsigned long long>(audited),
+              static_cast<unsigned long long>(unresolved),
+              static_cast<unsigned long long>(violations), max_skipped, max_confirmed);
+  EXPECT_GT(kind(RootAcceptanceKind::Skipped), 0u); // the certify call site installed it
+  EXPECT_GT(kind(RootAcceptanceKind::Confirmed), 0u);
+  EXPECT_EQ(reason(RootAcceptanceReason::LegacyBandGate), 0u);
+  EXPECT_EQ(reason(RootAcceptanceReason::LegacyNever), 0u);
+  EXPECT_GT(audited, kind(RootAcceptanceKind::Skipped));
+  EXPECT_EQ(unresolved, 0u);
+  EXPECT_EQ(violations, 0u);
+  EXPECT_LE(max_skipped, kIvRootRequirement);
+  EXPECT_LE(max_confirmed, kIvRootRequirement);
+}
+
+// review-K3 MJ-1 (fix round 1): under deam_family_q the band gate never decides a skip, also
+// for a quote whose side builds NO (sigma, q) family - DeAmIvView::invert_premium turns policy
+// Band into Always for it (71929cd3). A negative-carry chain (strike yields -0.009 + 0.004 k,
+// all < 0) builds the put family only: a call with q <= 0 never exercises early, so
+// build_sigma_q skips the call side. On the B-family arm (deam_confirm Band) no root is
+// LegacyBandGate and every skip is an envelope enclosure (the call side has no envelope);
+// on the chain's calls alone (no family on either side) every typed root is Confirmed. With
+// the rule reverted those calls are band-gated, which neither the served prices nor the
+// default hashes show (review-K3 E7: on SPY 41 of 748 such roots sat 1.1e-7..9.5e-7 off).
+TEST(QuoteSliceVolSpace, FamilyQBandArmConfirmsEveryRootOfASideWithoutAFamily) {
+  namespace ft = counters::fit_timing;
+  struct Tally {
+    std::array<std::uint64_t, kRootAcceptanceKindCount> kinds{};
+    std::array<std::uint64_t, kRootAcceptanceReasonCount> reasons{};
+    std::uint64_t audited = 0, unresolved = 0, violations = 0;
+    std::size_t builds = 0;
+    [[nodiscard]] std::uint64_t kind(RootAcceptanceKind k) const {
+      return kinds[static_cast<std::size_t>(k)];
+    }
+    [[nodiscard]] std::uint64_t reason(RootAcceptanceReason r) const {
+      return reasons[static_cast<std::size_t>(r)];
+    }
+  };
+  QuoteSliceConfig config = vol_config(price_config(QuoteSliceDividendModel::ContinuousYield),
+                                       true, QuoteSliceDeamProfile::Screen);
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  config.channel.deam_family_q = true;
+  config.channel.deam_confirm = QuoteSliceDeamConfirm::Band;
+  const auto run = [&](const Chain &c, Tally &t) {
+    deam_iv_memo_clear();
+    ft::ChainRecorder rec;
+    {
+      const ft::ChainScope chain(&rec, 1);
+      const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      ASSERT_TRUE(fit);
+      t.builds += fit->diagnostics.deam.family_builds;
+    }
+    const ft::FitTimingCounters r = rec.result();
+    for (std::size_t k = 0; k < t.kinds.size(); ++k) t.kinds[k] += r.deam_accept_by_kind[k];
+    for (std::size_t k = 0; k < t.reasons.size(); ++k) t.reasons[k] += r.deam_accept_by_reason[k];
+    t.audited += r.deam_audit_bracket_roots;
+    t.unresolved += r.deam_audit_bracket_unresolved;
+    t.violations += r.deam_audit_bracket_violations;
+  };
+  Tally both, calls;
+  ft::arm_deam_audit(true);
+  for (const double years : {0.15, 0.5}) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const Chain c = spy_chain(years, true, 0.0, -0.009);
+    Chain call_only{c.market, {}};
+    for (const QuoteSliceQuote &quote : c.quotes) {
+      ASSERT_LT(quote.continuous_yield.value_or(0.0), 0.0); // every call: no family (q < 0)
+      if (quote.side == Side::Call) call_only.quotes.push_back(quote);
+    }
+    const std::size_t builds = both.builds;
+    run(c, both);
+    EXPECT_EQ(both.builds - builds, 1u); // the put family only
+    run(call_only, calls);
+  }
+  ft::arm_deam_audit(false);
+  deam_iv_memo_clear();
+  const auto typed = [](const Tally &t) {
+    return t.kind(RootAcceptanceKind::Confirmed) + t.kind(RootAcceptanceKind::Skipped) +
+           t.kind(RootAcceptanceKind::PriceOnly) + t.kind(RootAcceptanceKind::Interval);
+  };
+  std::printf("[K3 no-family side] both sides: %llu typed (skipped %llu, all by enclosure %llu), "
+              "legacy band %llu, audit %llu roots / %llu violations; calls only: %llu typed, "
+              "%llu confirmed (Newton contract %llu), legacy band %llu, audit %llu roots / %llu "
+              "violations\n",
+              static_cast<unsigned long long>(typed(both)),
+              static_cast<unsigned long long>(both.kind(RootAcceptanceKind::Skipped)),
+              static_cast<unsigned long long>(both.reason(RootAcceptanceReason::FamilyEnclosure)),
+              static_cast<unsigned long long>(both.reason(RootAcceptanceReason::LegacyBandGate)),
+              static_cast<unsigned long long>(both.audited),
+              static_cast<unsigned long long>(both.violations),
+              static_cast<unsigned long long>(typed(calls)),
+              static_cast<unsigned long long>(calls.kind(RootAcceptanceKind::Confirmed)),
+              static_cast<unsigned long long>(calls.reason(RootAcceptanceReason::NewtonContract)),
+              static_cast<unsigned long long>(calls.reason(RootAcceptanceReason::LegacyBandGate)),
+              static_cast<unsigned long long>(calls.audited),
+              static_cast<unsigned long long>(calls.violations));
+  // Both sides: the band gate decides nothing; a skip rests on the put family's envelope.
+  EXPECT_EQ(both.reason(RootAcceptanceReason::LegacyBandGate), 0u);
+  EXPECT_EQ(both.reason(RootAcceptanceReason::LegacyNever), 0u);
+  EXPECT_EQ(both.kind(RootAcceptanceKind::Skipped),
+            both.reason(RootAcceptanceReason::FamilyEnclosure));
+  EXPECT_GT(typed(both), 0u);
+  EXPECT_EQ(both.unresolved, 0u);
+  EXPECT_EQ(both.violations, 0u);
+  // The no-family side alone: every typed root confirmed on the confirm kernel.
+  EXPECT_EQ(calls.builds, 0u);
+  EXPECT_GT(typed(calls), 0u);
+  EXPECT_EQ(calls.kind(RootAcceptanceKind::Confirmed), typed(calls));
+  EXPECT_EQ(calls.reason(RootAcceptanceReason::NewtonContract), typed(calls));
+  EXPECT_EQ(calls.reason(RootAcceptanceReason::LegacyBandGate), 0u);
+  EXPECT_EQ(calls.unresolved, 0u);
+  EXPECT_EQ(calls.violations, 0u);
 }
 
 } // namespace

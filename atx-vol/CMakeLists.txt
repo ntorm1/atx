@@ -89,6 +89,8 @@ set(ATX_VOL_PRICING_SOURCES
     src/pricing/american_iv_stream.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
+    # K3 (r5): the (sigma, q) family's error envelope and root-acceptance context
+    src/pricing/american_family_error.cpp
     src/pricing/dividend.cpp
     src/pricing/adjusted_greeks.cpp
     src/pricing/pricing_executor.cpp
