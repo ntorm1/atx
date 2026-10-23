@@ -47,6 +47,9 @@
 //                    laddered record's publication latency
 //   accuracy         untimed: served price vs andersen_lake at the served sigma (node
 //                    strikes, moved spot), within the answer's own statement or not
+// Row serve/<dataset>/handoff_stamp (lane H1): the fit-clock cost of the hand-off hook -
+// detail::stamp_serve_handoff on each expiry's (sigma, q) families (built untimed with the
+// record's recipe), TSC per call.
 // Per-contract rows time every call on its own with the TSC (lfence-fenced rdtsc,
 // calibrated against steady_clock once per process; the empty-pair overhead is the
 // `timer_overhead_ns` counter and is NOT subtracted) and report p50 / p99 / p99.9 in ns;
@@ -91,6 +94,8 @@
 #include "atx/vol/api/storage/fit_archive.hpp"
 #include "atx/vol/api/storage/fit_archive_records.hpp"
 #include "bench_util.hpp"
+#include "fitting/deam_iv_cache.hpp"             // DeAmSigmaFamilies (handoff_stamp)
+#include "fitting/slice_serve_record_detail.hpp" // stamp_serve_handoff (handoff_stamp)
 
 namespace {
 
@@ -1118,6 +1123,40 @@ void run_book_accuracy(benchmark::State &state, const Dataset &d) {
   }
 }
 
+// handoff_stamp: the hook's cost per expiry on fits of its own (the families built untimed).
+void run_handoff(benchmark::State &state,
+                 Dataset (*load)(const char *, const ServeRecordPolicy &)) {
+  ServeRecordPolicy policy;
+  policy.ladders = false;
+  Dataset d = load("handoff_stamp", policy);
+  if (!d.ok) {
+    state.SkipWithError(d.error);
+    return;
+  }
+  std::vector<std::shared_ptr<const DeAmSigmaFamilies>> families;
+  for (const QuoteSliceFit &fit : d.fits) {
+    families.push_back(detail::build_serve_families(fit, policy));
+  }
+  std::vector<std::uint64_t> ticks;
+  std::size_t stamped = 0;
+  for (auto _ : state) {
+    std::uint64_t pass = 0;
+    for (std::size_t i = 0; i < d.fits.size(); ++i) {
+      const std::uint64_t t0 = tsc();
+      detail::stamp_serve_handoff(d.fits[i], families[i].get());
+      const std::uint64_t t1 = tsc();
+      ticks.push_back(t1 - t0);
+      pass += t1 - t0;
+      stamped += d.fits[i].serve_handoff ? 1u : 0u;
+    }
+    state.SetIterationTime(static_cast<double>(pass) * ns_per_tick() * 1.0e-9);
+  }
+  state.counters["expiries"] = static_cast<double>(d.fits.size());
+  state.counters["stamped"] = static_cast<double>(stamped);
+  state.counters["stamp_p50_us"] = quantile(ticks, 0.50) * 1.0e-3;
+  state.counters["stamp_max_us"] = max_ns(ticks) * 1.0e-3;
+}
+
 void register_book(const char *name, const Dataset &(*get)()) {
   const std::string base = std::string("book/") + name + "/";
   apply_common(benchmark::RegisterBenchmark(
@@ -1228,12 +1267,26 @@ const bool kRegistered = [] {
   if (!env_text("ATX_VOL_SERVE_RECORD_ARCHIVE").empty()) {
     register_dataset("spy_surface", &spy_surface);
     register_dataset("spy_surface_tick", &spy_surface_tick);
+    benchmark::RegisterBenchmark("serve/spy_surface/handoff_stamp",
+                                 [](benchmark::State &state) {
+                                   run_handoff(state, &load_spy_surface);
+                                 })
+        ->UseManualTime()
+        ->Iterations(50)
+        ->Repetitions(1)
+        ->Unit(benchmark::kMicrosecond);
     register_book("spy_surface", &spy_surface);
     register_book("spy_surface_tick", &spy_surface_tick);
   }
   if (!env_text("ATX_VOL_SERVE_RECORD_SPY23").empty()) {
     register_dataset("spy23", &spy23);
     register_dataset("spy23_tick", &spy23_tick);
+    benchmark::RegisterBenchmark("serve/spy23/handoff_stamp",
+                                 [](benchmark::State &state) { run_handoff(state, &load_spy23); })
+        ->UseManualTime()
+        ->Iterations(50)
+        ->Repetitions(1)
+        ->Unit(benchmark::kMicrosecond);
     register_book("spy23", &spy23);
     register_book("spy23_tick", &spy23_tick);
   }
