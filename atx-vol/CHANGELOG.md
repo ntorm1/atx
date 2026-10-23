@@ -11,10 +11,15 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 `classify_exercise_region` / `AlExerciseClass` (continuation, exercise_plateau,
 european, expiry_limit, zero_vol_limit, unsupported_regime) and
 `andersen_lake_classified`, which returns the price with its class and the solved
-boundary B(T). The scalar uncached, scalar cached and laned AVX2 price sites now
-classify through that one function against the same boundary bits
-(`amer::al_boundary_at_expiry`), so they agree bit for bit; the L3k laned site used
-its own `exp_pd` boundary and disagreed at B and one ulp below it. Under
+boundary B(T). The scalar uncached, scalar cached and laned AVX2 price sites and the
+warm-started ALO pricer now classify through that one function against the same
+boundary bits (`amer::al_boundary_at_expiry`), so they agree bit for bit; the L3k laned
+site used its own `exp_pd` boundary and disagreed at B and one ulp below it. The ALO
+site is the new `AloRegionPricer` (same header): `AloPricer` and it run one
+implementation over one state type, so `price(sigma, KernelFloor)` with no class output
+is `AloPricer::price(sigma)` bit for bit, and `price(sigma, rule, &cls)` adds the rule and
+the class for the scalar inversion. Under KernelFloor with a class output every site
+returns NaN outside the American arm (the laned site returned its floor there). Under
 `AlExerciseRegion::Intrinsic` a plateau prices exactly K - S / S - K with zero vega.
 The double-continuation regime (put q < r < 0, call r < q < 0) is a typed
 `unsupported_regime` with a NaN price on the classified entry; every other route

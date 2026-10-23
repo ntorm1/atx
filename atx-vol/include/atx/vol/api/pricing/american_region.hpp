@@ -47,6 +47,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 
 #include "atx/vol/api/core/types.hpp"
@@ -78,9 +79,10 @@ enum class AlExerciseClass : std::uint8_t {
 [[nodiscard]] const char *to_string(AlExerciseClass value) noexcept;
 
 // THE exercise classification. Every Andersen-Lake price site — the scalar uncached
-// site, the scalar cached site and the laned AVX2 kernel — calls this one function with
-// the boundary value it prices against, so the sites cannot disagree on a contract they
-// see with the same boundary bits (AmericanExerciseRegion.ThreeSitesAgree... pins it).
+// site, the scalar cached site, the laned AVX2 kernel and the warm-started ALO pricer
+// (AloRegionPricer below) — calls this one function with the boundary value it prices
+// against, so the sites cannot disagree on a contract they see with the same boundary
+// bits (AmericanExerciseRegion.FourSitesAgree... pins it).
 //
 // @param S,K,T,r,q,sigma  the contract (validated as andersen_lake validates them)
 // @param is_call          side; a call is classified through its McDonald-Schroder
@@ -148,5 +150,50 @@ andersen_lake_classified(double S, double K, double T, double sigma, double r, d
 [[nodiscard]] Result<AlRegionPrice> andersen_lake_classified(const AlExpiryGeometry &g,
                                                              double S, double K, double sigma,
                                                              Side side, AlExerciseRegion rule);
+
+namespace detail {
+struct AloCore; // the warm-started ALO state, shared with AloPricer (american.cpp)
+} // namespace detail
+
+// The warm-started ALO pricer (AloPricer, american.hpp: the scalar inversion's residual
+// map) under an explicit exercise-region rule — the fourth Andersen-Lake price site on
+// classify_exercise_region (C1 fix round 1). AloPricer and this class run ONE
+// implementation over the same state type: AloPricer::price(sigma) is this class's
+// price(sigma, KernelFloor) with no class output, operation for operation, so a caller
+// switching types moves no default bits. Same contract as AloPricer otherwise: fixed
+// contract, sigma sweep, warm-started boundary, NOT thread-safe, one per thread.
+class AloRegionPricer {
+public:
+  AloRegionPricer(double S, double K, double T, double r, double q, Side side,
+                  const std::optional<AlOpts> &opts = std::nullopt);
+  ~AloRegionPricer();
+  AloRegionPricer(AloRegionPricer &&) noexcept;
+  AloRegionPricer &operator=(AloRegionPricer &&) noexcept;
+  AloRegionPricer(const AloRegionPricer &) = delete;
+  AloRegionPricer &operator=(const AloRegionPricer &) = delete;
+
+  // AloPricer::reset: rebind to another contract; the next price() seeds cold.
+  void reset(double S, double K, double T, double r, double q, Side side,
+             const std::optional<AlOpts> &opts = std::nullopt) noexcept;
+
+  // AloPricer::price(sigma) under `rule`. Every branch is classified by
+  // classify_exercise_region on the internal put (expiry / zero-vol / unsupported /
+  // European before any boundary; ExercisePlateau or Continuation against B(T) =
+  // amer::al_boundary_at_expiry of the boundary this call converged), and the class is
+  // written to `cls_out` when non-null. Under Intrinsic an ExercisePlateau returns the
+  // intrinsic exactly (no premium quadrature); every other branch is AloPricer's value.
+  // NaN exactly where AloPricer returns NaN (double-continuation regime, boundary
+  // collapse, unsolvable boundary); for the two solve failures `cls_out` reads
+  // Continuation (no boundary to classify against).
+  [[nodiscard]] double price(double sigma, AlExerciseRegion rule,
+                             AlExerciseClass *cls_out = nullptr) noexcept;
+
+  // The retained state, opaque here; amer::al_alo_boundary (pricing/american_boundary.hpp)
+  // reads the converged boundary from it for the site-agreement tests.
+  [[nodiscard]] const detail::AloCore &core() const noexcept;
+
+private:
+  std::unique_ptr<detail::AloCore> core_;
+};
 
 } // namespace atx::vol

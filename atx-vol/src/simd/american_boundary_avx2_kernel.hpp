@@ -552,8 +552,10 @@ inline void solve_put_boundary_pack_avx2(
 // rounding in the decision). A lane outside `b.active` (the caller's scalar patch) is
 // classified with no boundary. The class is written to `cls_out[0..3]` when non-null.
 // Under Intrinsic an ExercisePlateau lane returns the intrinsic strike - spot (one IEEE
-// subtraction, bit-identical to the scalar sites' K - S), a Continuation lane the kernel
-// floor, and a lane classified outside the American arm a quiet NaN (never a price).
+// subtraction, bit-identical to the scalar sites' K - S) and a Continuation lane the
+// kernel floor; under KernelFloor both return the floor. A lane classified outside the
+// American arm returns a quiet NaN under either rule (never a price), as the scalar
+// sites do.
 // The per-lane classification costs four scalar exp per call and runs only on these
 // opt-in paths.
 inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
@@ -697,7 +699,9 @@ inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
             case AlExerciseClass::ExpiryLimit:
             case AlExerciseClass::ZeroVolLimit:
             case AlExerciseClass::UnsupportedRegime:
-                out[l] = (region == AlExerciseRegion::Intrinsic) ? kNoBoundary : floor_px[l];
+                // Outside the site's precondition: no price under either rule, exactly as
+                // the scalar sites return (C1 fix round 1, review m2).
+                out[l] = kNoBoundary;
                 break;
         }
     }

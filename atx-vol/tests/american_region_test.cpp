@@ -27,11 +27,12 @@
 
 // C1 exercise-region semantics (2026-10-22). One classification
 // (classify_exercise_region) for every Andersen-Lake price site and route; these tests pin
-// that the three sites — scalar uncached, scalar cached, laned AVX2 — agree on it bit for
-// bit (near-boundary and degenerate inputs included), that the classified entry is the
-// rule entry plus its class, the genuine exercise plateau (exact intrinsic, zero vega), the
-// plateau edge's continuity, the price limits, the carry regimes of both sides, and that
-// the double-continuation regime never yields a price on any route.
+// that the four sites — scalar uncached, scalar cached, laned AVX2 and the warm-started ALO
+// pricer (AloRegionPricer, C1 fix round 1) — agree on it bit for bit (near-boundary and
+// degenerate inputs included), that the classified entry is the rule entry plus its class,
+// the genuine exercise plateau (exact intrinsic, zero vega), the plateau edge's continuity,
+// the price limits, the carry regimes of both sides, and that the double-continuation
+// regime never yields a price on any route.
 //
 // Error classes used below: the L1c probe's noise floor 1e-12 * max(1, P) for a sigma step
 // (american_monotone_test.cpp; LEDGER 2026-10-19), and the accurate preset's in-region
@@ -46,6 +47,8 @@ using atx::vol::AlExerciseClass;
 using atx::vol::AlExerciseRegion;
 using atx::vol::AlExpiryGeometry;
 using atx::vol::AlOpts;
+using atx::vol::AloPricer;
+using atx::vol::AloRegionPricer;
 using atx::vol::AlRegionPrice;
 using atx::vol::andersen_lake;
 using atx::vol::andersen_lake_classified;
@@ -244,7 +247,7 @@ TEST(AmericanExerciseRegion, ClassifiedEntryIsBitwiseTheRuleEntryAndCarriesItsCl
   }
 }
 
-// ── 3. The three price sites agree on the classification, bit for bit ──────────────
+// ── 3. The four price sites agree on the classification, bit for bit ───────────────
 
 // The put-coordinate contract a site sees (a call arrives as its internal put).
 struct SiteInput {
@@ -284,10 +287,21 @@ constexpr std::size_t kSpots = 20;
   return pre == AlExerciseClass::Continuation; // American arm, no boundary given
 }
 
-TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
+[[nodiscard]] bool same_or_nan(double a, double b) noexcept {
+  return same_bits(a, b) || (std::isnan(a) && std::isnan(b));
+}
+
+// The four sites: the scalar uncached site, the scalar cached site (cache hit and inline),
+// the laned AVX2 kernel, and the warm-started ALO pricer (AloRegionPricer, the scalar
+// inversion's residual map; C1 fix round 1). Every site is handed ONE boundary per lane —
+// the ALO's own cold solve, copied into the scalar boundary and the pack's Y lane — so a
+// disagreement can only come from the decision itself. The ALO is reset to each point and
+// re-solves cold from the same inputs (the boundary does not depend on the spot); the test
+// pins that it re-converges the same B(T) bits it classified against.
+TEST(AmericanExerciseRegion, FourSitesAgreeOnTheClassificationBitForBit) {
   const amer::AlScheme sch = amer::scheme_from_opts(std::nullopt);
   // The laned site runs where the process may take the vector path (ATX_SIMD_ISA honoured,
-  // so the ForceScalar lane checks the two scalar sites against each other only).
+  // so the ForceScalar lane checks the three scalar sites against each other only).
   bool laned = false;
 #if defined(__AVX2__) && defined(__FMA__)
   laned = atx::vol::simd::use_avx2();
@@ -296,10 +310,13 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
   // and its geometry is filled; lanes 1-3 walk the grid.
   const SiteInput anchor{100.0, 1.0, 0.25, 0.05, 0.02};
   const std::vector<SiteInput> grid = site_contracts();
+  AloRegionPricer alo(anchor.K, anchor.K, anchor.T, anchor.r, anchor.q, Side::Put);
   std::size_t points = 0;
+  std::size_t alo_points = 0;
   std::size_t near_edge = 0;
   std::size_t plateau = 0;
   std::size_t unsolved = 0;
+  std::size_t solve_mismatch = 0;
   std::array<std::size_t, 6> seen{};
   for (std::size_t g0 = 0; g0 < grid.size(); g0 += 3) {
     std::array<SiteInput, 4> pack_in{anchor, anchor, anchor, anchor};
@@ -309,6 +326,7 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
     std::array<amer::AlBoundary, 4> bnd{};
     std::array<amer::AlWorkspace, 4> ws{};
     std::array<bool, 4> solved{};
+    std::array<bool, 4> alo_solved{};
 #if defined(__AVX2__) && defined(__FMA__)
     atx::vol::simd::detail::PutPackBoundary pack;
     if (laned) {
@@ -333,7 +351,7 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
         if (!solved[l]) {
           continue;
         }
-        // Hand the scalar sites the laned boundary: the same Y bits in every site.
+        // Hand the scalar sites the laned boundary (replaced by the ALO's below).
         for (unsigned j = 0; j < pack.nb; ++j) {
           alignas(32) double yl[4];
           _mm256_store_pd(yl, pack.Y[j]);
@@ -350,6 +368,42 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
                         amer::AlSolveStatus::Ok;
       }
     }
+    // The ALO's cold solve is the boundary every site is handed: the same Y bits in all four.
+    for (std::size_t l = 0; l < 4; ++l) {
+      const SiteInput &c = pack_in[l];
+      if (!american_live(c)) {
+        continue; // decided before any boundary: no solve on any site
+      }
+      alo.reset(c.K, c.K, c.T, c.r, c.q, Side::Put);
+      alo_solved[l] = !std::isnan(alo.price(c.sigma, AlExerciseRegion::KernelFloor));
+      if (alo_solved[l] != solved[l]) {
+        ++solve_mismatch; // one solver failed where the other converged: no shared boundary
+        continue;
+      }
+      if (!solved[l]) {
+        continue;
+      }
+      const amer::AlBoundary &ab = amer::al_alo_boundary(alo.core());
+      ASSERT_EQ(ab.n, bnd[l].n) << "one scheme, one node count";
+      ASSERT_TRUE(same_bits(ab.xmax, bnd[l].xmax)) << "one asymptotic level";
+      for (unsigned j = 0; j < ab.n; ++j) {
+        bnd[l].y[j] = ab.y[j];
+      }
+#if defined(__AVX2__) && defined(__FMA__)
+      if (laned) {
+        ASSERT_EQ(pack.nb, ab.n);
+        alignas(32) double xm[4];
+        _mm256_store_pd(xm, pack.XMAX);
+        ASSERT_TRUE(same_bits(xm[l], ab.xmax)) << "lane " << l;
+        for (unsigned j = 0; j < ab.n; ++j) {
+          alignas(32) double yl[4];
+          _mm256_store_pd(yl, pack.Y[j]);
+          yl[l] = ab.y[j];
+          pack.Y[j] = _mm256_load_pd(yl);
+        }
+      }
+#endif
+    }
     std::array<double, 4> B{};
     std::array<std::array<double, kSpots>, 4> spots{};
     for (std::size_t l = 0; l < 4; ++l) {
@@ -364,17 +418,27 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
     }
     for (std::size_t i = 0; i < kSpots; ++i) {
       std::array<AlExerciseClass, 4> cls_laned{};
+      std::array<AlExerciseClass, 4> cls_laned_floor{};
       alignas(32) std::array<double, 4> px_laned{};
+      alignas(32) std::array<double, 4> px_laned_floor{};
+      alignas(32) std::array<double, 4> px_laned_default{};
 #if defined(__AVX2__) && defined(__FMA__)
       if (laned) {
         alignas(32) std::array<double, 4> sp{};
         for (std::size_t l = 0; l < 4; ++l) {
           sp[l] = spots[l][i];
         }
-        _mm256_store_pd(px_laned.data(),
+        const __m256d spv = _mm256_load_pd(sp.data());
+        _mm256_store_pd(px_laned.data(), atx::vol::simd::detail::price_put_pack_at_avx2(
+                                             pack, spv, pack.Kv, pack.XMAX,
+                                             AlExerciseRegion::Intrinsic, cls_laned.data()));
+        // Review m2: KernelFloor with a class output prices like the scalar sites.
+        _mm256_store_pd(px_laned_floor.data(),
                         atx::vol::simd::detail::price_put_pack_at_avx2(
-                            pack, _mm256_load_pd(sp.data()), pack.Kv, pack.XMAX,
-                            AlExerciseRegion::Intrinsic, cls_laned.data()));
+                            pack, spv, pack.Kv, pack.XMAX, AlExerciseRegion::KernelFloor,
+                            cls_laned_floor.data()));
+        _mm256_store_pd(px_laned_default.data(), atx::vol::simd::detail::price_put_pack_at_avx2(
+                                                     pack, spv, pack.Kv, pack.XMAX));
       }
 #endif
       for (std::size_t l = 0; l < 4; ++l) {
@@ -386,6 +450,46 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
         ++seen[class_index(want)];
         if (laned) {
           EXPECT_EQ(cls_laned[l], want) << "laned, K " << c.K << " T " << c.T << " spot " << i;
+          EXPECT_EQ(cls_laned_floor[l], want) << "laned KernelFloor, K " << c.K << " T " << c.T;
+        }
+        // The fourth site, wherever it shares the boundary (or no site has one).
+        if (alo_solved[l] == solved[l]) {
+          ++alo_points;
+          AlExerciseClass ca = AlExerciseClass::UnsupportedRegime;
+          AlExerciseClass cf = AlExerciseClass::UnsupportedRegime;
+          alo.reset(S, c.K, c.T, c.r, c.q, Side::Put);
+          const double pa = alo.price(c.sigma, AlExerciseRegion::Intrinsic, &ca);
+          if (solved[l]) {
+            EXPECT_TRUE(same_bits(
+                amer::al_boundary_at_expiry(amer::al_alo_boundary(alo.core())), B[l]))
+                << "the ALO re-converges the shared B(T), K " << c.K << " T " << c.T;
+          }
+          alo.reset(S, c.K, c.T, c.r, c.q, Side::Put);
+          const double pfa = alo.price(c.sigma, AlExerciseRegion::KernelFloor, &cf);
+          EXPECT_EQ(ca, want) << "ALO, K " << c.K << " T " << c.T << " spot " << i;
+          EXPECT_EQ(cf, want) << "ALO KernelFloor, K " << c.K << " T " << c.T << " spot " << i;
+          const double intr = c.K - S;
+          switch (want) {
+          case AlExerciseClass::ExercisePlateau:
+            EXPECT_TRUE(same_bits(pa, intr)) << "ALO plateau price";
+            EXPECT_GE(pfa, intr) << "ALO KernelFloor never prices under intrinsic";
+            break;
+          case AlExerciseClass::Continuation:
+            EXPECT_TRUE(same_or_nan(pa, pfa)) << "ALO continuation: the rules agree";
+            EXPECT_EQ(std::isnan(pa), !solved[l]) << "ALO: NaN exactly when nothing solved";
+            break;
+          case AlExerciseClass::ExpiryLimit:
+            EXPECT_TRUE(same_bits(pa, (intr > 0.0) ? intr : 0.0)) << "ALO expiry: the payoff";
+            EXPECT_TRUE(same_bits(pfa, pa));
+            break;
+          case AlExerciseClass::ZeroVolLimit:
+          case AlExerciseClass::European:
+            EXPECT_TRUE(std::isfinite(pa) && same_bits(pfa, pa)) << "ALO " << to_string(want);
+            break;
+          case AlExerciseClass::UnsupportedRegime:
+            EXPECT_TRUE(std::isnan(pa) && std::isnan(pfa)) << "ALO: no price, typed class";
+            break;
+          }
         }
         if (!solved[l] && want == AlExerciseClass::Continuation) {
           ++unsolved; // American contract whose solve failed: the scalar patch's business
@@ -420,6 +524,8 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
           EXPECT_TRUE(same_bits(pc_inline, intr));
           if (laned) {
             EXPECT_TRUE(same_bits(px_laned[l], intr)) << "laned plateau price, lane " << l;
+            EXPECT_TRUE(same_bits(px_laned_floor[l], px_laned_default[l]))
+                << "laned KernelFloor with a class is the default floor, lane " << l;
           }
           EXPECT_GE(pf, intr) << "KernelFloor never prices under intrinsic";
           break;
@@ -428,6 +534,10 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
           EXPECT_TRUE(same_bits(pu, pf)) << "continuation: the rules agree";
           EXPECT_TRUE(same_bits(pc_hit, pu)) << "cached == uncached (F5 contract)";
           EXPECT_TRUE(same_bits(pc_inline, pu));
+          if (laned) {
+            EXPECT_TRUE(same_bits(px_laned_floor[l], px_laned[l])) << "laned: the rules agree";
+            EXPECT_TRUE(same_bits(px_laned_floor[l], px_laned_default[l]));
+          }
           break;
         case AlExerciseClass::European:
         case AlExerciseClass::ExpiryLimit:
@@ -439,6 +549,8 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
               << to_string(want);
           if (laned) {
             EXPECT_TRUE(std::isnan(px_laned[l])) << "laned, " << to_string(want);
+            EXPECT_TRUE(std::isnan(px_laned_floor[l]))
+                << "laned KernelFloor (review m2), " << to_string(want);
           }
           break;
         }
@@ -448,14 +560,89 @@ TEST(AmericanExerciseRegion, ThreeSitesAgreeOnTheClassificationBitForBit) {
       }
     }
   }
-  std::printf("[AmericanExerciseRegion] three-site grid: %zu points (%zu at B and +-1 ulp, %zu "
-              "plateau, %zu unsolved American) laned=%d classes cont=%zu plat=%zu euro=%zu "
-              "expiry=%zu zerovol=%zu unsupported=%zu\n",
-              points, near_edge, plateau, unsolved, laned ? 1 : 0, seen[0], seen[1], seen[2],
-              seen[3], seen[4], seen[5]);
+  std::printf("[AmericanExerciseRegion] four-site grid: %zu points (%zu on the ALO site, %zu "
+              "at B and +-1 ulp, %zu plateau, %zu unsolved American, %zu solve mismatches) "
+              "laned=%d classes cont=%zu plat=%zu euro=%zu expiry=%zu zerovol=%zu "
+              "unsupported=%zu\n",
+              points, alo_points, near_edge, plateau, unsolved, solve_mismatch, laned ? 1 : 0,
+              seen[0], seen[1], seen[2], seen[3], seen[4], seen[5]);
   EXPECT_GE(points, std::size_t{10000});
+  EXPECT_EQ(solve_mismatch, std::size_t{0}) << "every site solves where the ALO solves";
+  EXPECT_EQ(alo_points, points);
   EXPECT_GE(near_edge, std::size_t{300});
   EXPECT_GT(plateau, std::size_t{0});
+  for (std::size_t c = 0; c < seen.size(); ++c) {
+    EXPECT_GT(seen[c], std::size_t{0}) << "coverage: class " << c;
+  }
+}
+
+// AloPricer::price(sigma) and AloRegionPricer::price(sigma, KernelFloor) are one
+// implementation over one state type (C1 fix round 1): the same bits over warm sigma
+// sweeps (both sides of the 12% re-seed guard), resets, both sides, every class and both
+// profiles. A class output changes no bits under KernelFloor; Intrinsic changes them only
+// on the plateau, to the exact intrinsic; the class is THE classifier's against the
+// boundary the call converged.
+TEST(AmericanExerciseRegion, AloRegionPricerKernelFloorIsAloPricerBitForBit) {
+  constexpr std::array<double, 12> sweep{0.3,    0.31, 0.305,  0.25, 0.6, 0.59,
+                                         0.05,   0.0,  1.0e-9, 0.2,  0.2000001, 1.5};
+  const std::array<std::optional<AlOpts>, 2> presets{std::nullopt, atx::vol::al_fast_opts()};
+  std::array<std::size_t, 6> seen{};
+  std::size_t calls = 0;
+  for (const std::optional<AlOpts> &o : presets) {
+    std::optional<AloPricer> base;
+    std::optional<AloRegionPricer> floor_plain;
+    std::optional<AloRegionPricer> floor_cls;
+    std::optional<AloRegionPricer> intr_cls;
+    for (const Contract &c : route_grid()) {
+      if (c.sigma != 0.3) {
+        continue; // route_grid's contracts once each; the sweep supplies sigma
+      }
+      if (!base) {
+        base.emplace(c.S, c.K, c.T, c.r, c.q, c.side, o);
+        floor_plain.emplace(c.S, c.K, c.T, c.r, c.q, c.side, o);
+        floor_cls.emplace(c.S, c.K, c.T, c.r, c.q, c.side, o);
+        intr_cls.emplace(c.S, c.K, c.T, c.r, c.q, c.side, o);
+      } else {
+        base->reset(c.S, c.K, c.T, c.r, c.q, c.side, o);
+        floor_plain->reset(c.S, c.K, c.T, c.r, c.q, c.side, o);
+        floor_cls->reset(c.S, c.K, c.T, c.r, c.q, c.side, o);
+        intr_cls->reset(c.S, c.K, c.T, c.r, c.q, c.side, o);
+      }
+      const bool is_call = (c.side == Side::Call);
+      for (const double sg : sweep) {
+        AlExerciseClass cf = AlExerciseClass::UnsupportedRegime;
+        AlExerciseClass ci = AlExerciseClass::UnsupportedRegime;
+        const double p0 = base->price(sg);
+        const double p1 = floor_plain->price(sg, AlExerciseRegion::KernelFloor);
+        const double p2 = floor_cls->price(sg, AlExerciseRegion::KernelFloor, &cf);
+        const double p3 = intr_cls->price(sg, AlExerciseRegion::Intrinsic, &ci);
+        ++calls;
+        EXPECT_TRUE(same_or_nan(p1, p0)) << "K " << c.K << " T " << c.T << " sigma " << sg;
+        EXPECT_TRUE(same_or_nan(p2, p0)) << "a class output moves no bits, K " << c.K;
+        EXPECT_EQ(cf, ci) << "the class does not depend on the rule";
+        const bool arm = !std::isnan(p0) && (ci == AlExerciseClass::Continuation ||
+                                             ci == AlExerciseClass::ExercisePlateau);
+        const double b =
+            arm ? amer::al_boundary_at_expiry(amer::al_alo_boundary(intr_cls->core())) : kNaN;
+        EXPECT_EQ(ci, classify_exercise_region(c.S, c.K, c.T, c.r, c.q, sg, is_call, b))
+            << "K " << c.K << " T " << c.T << " sigma " << sg;
+        ++seen[class_index(ci)];
+        if (ci == AlExerciseClass::ExercisePlateau) {
+          const double intr = intrinsic_of(c.S, c.K, c.side);
+          EXPECT_TRUE(same_bits(p3, intr)) << "plateau: the exact intrinsic";
+          EXPECT_GE(p0, p3);
+        } else {
+          EXPECT_TRUE(same_or_nan(p3, p0)) << to_string(ci) << " K " << c.K << " T " << c.T;
+        }
+        EXPECT_EQ(std::isnan(p0) && ci != AlExerciseClass::Continuation,
+                  ci == AlExerciseClass::UnsupportedRegime)
+            << "NaN off the arm exactly in the unsupported regime";
+      }
+    }
+  }
+  std::printf("[AmericanExerciseRegion] ALO identity: %zu calls x 4 pricers, classes cont=%zu "
+              "plat=%zu euro=%zu expiry=%zu zerovol=%zu unsupported=%zu\n",
+              calls, seen[0], seen[1], seen[2], seen[3], seen[4], seen[5]);
   for (std::size_t c = 0; c < seen.size(); ++c) {
     EXPECT_GT(seen[c], std::size_t{0}) << "coverage: class " << c;
   }

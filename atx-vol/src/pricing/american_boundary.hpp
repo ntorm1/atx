@@ -316,6 +316,12 @@ struct AlSolveResid {
 // time (nothing to classify against: the American regime then reads Continuation).
 [[nodiscard]] double al_boundary_at_expiry(const AlBoundary& bnd) noexcept;
 
+// C1 fix round 1: the boundary the warm-started ALO state (AloPricer / AloRegionPricer)
+// holds after its last price() — the fourth site's boundary, handed to the other three
+// sites by the site-agreement test. Its node grid is reset()'s; its y[] is meaningful
+// once a price() call in the American regime has converged.
+[[nodiscard]] const AlBoundary& al_alo_boundary(const atx::vol::detail::AloCore& core) noexcept;
+
 // L3k monotone (2026-10-21) + C1: the same price under an explicit exercise-region rule
 // (AlExerciseRegion, api/pricing/american_region.hpp). KernelFloor with no `cls_out`
 // forwards to the function above (bit-identical, no extra work). Otherwise the site

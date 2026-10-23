@@ -3299,11 +3299,16 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
 // early-exercise boundary `bnd.y[]` alive between price() calls. All calls solve
 // an internal PUT; a Call is the McDonald-Schroder put P(K,S,q,r), so the boundary
 // machinery is identical.
-struct AloPricer::State {
+// C1 fix round 1 (2026-10-22): the state is a named core shared by AloPricer and
+// AloRegionPricer (api/pricing/american_region.hpp), so the scalar inversion's residual
+// map has ONE implementation whichever type holds it.
+namespace detail {
+
+struct AloCore {
   // User-provided construction deliberately avoids value-initializing the four
   // 512-double geometry arrays. reset() binds every active element before a
   // specialized kernel can read it.
-  State() noexcept {}
+  AloCore() noexcept {}
 
   double Sp{}; // internal-put spot   (= K for a call)
   double Kp{}; // internal-put strike (= S for a call) — drives the boundary
@@ -3320,20 +3325,40 @@ struct AloPricer::State {
   double last_sigma{-1.0};
 };
 
-AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
-                     const std::optional<AlOpts> &opts)
-    : st_(std::make_unique<State>()) {
-  ATX_VOL_COUNT(AloStateAllocations);
-  reset(S, K, T, r, q, side, opts);
+} // namespace detail
+
+// AloPricer's PIMPL is the shared core.
+struct AloPricer::State : detail::AloCore {
+  State() noexcept {}
+};
+
+namespace {
+
+constexpr double kNoBoundary = std::numeric_limits<double>::quiet_NaN();
+
+// The class of the branch alo_price takes: THE classifier on the internal put, with the
+// boundary that branch priced against.
+AlExerciseClass alo_report(const detail::AloCore &s, double sigma, double boundary,
+                           AlExerciseClass *cls_out) noexcept {
+  const AlExerciseClass cls =
+      classify_exercise_region(s.Sp, s.Kp, s.T, s.rp, s.qp, sigma, /*is_call=*/false, boundary);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return cls;
 }
 
-void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
-                      const std::optional<AlOpts> &opts) noexcept {
-  assert(st_ != nullptr);
-  if (st_ == nullptr) {
-    return; // moved-from pricer: fail safe without allocating in reset()
+// A branch decided before any boundary exists: records its class when one is asked for,
+// and does nothing at all on the default (no-output) path.
+void alo_note(const detail::AloCore &s, double sigma, AlExerciseClass *cls_out) noexcept {
+  if (cls_out != nullptr) {
+    (void)alo_report(s, sigma, kNoBoundary, cls_out);
   }
-  State &s = *st_;
+}
+
+// The body of AloPricer::reset, unchanged.
+void alo_reset(detail::AloCore &s, double S, double K, double T, double r, double q, Side side,
+               const std::optional<AlOpts> &opts) noexcept {
   s.prepared = false;
   s.european_only = false;
   s.unsupported = false;
@@ -3398,20 +3423,16 @@ void AloPricer::reset(double S, double K, double T, double r, double q, Side sid
   s.prepared = true;
 }
 
-AloPricer::~AloPricer() = default;
-AloPricer::AloPricer(AloPricer &&) noexcept = default;
-AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
-
-double AloPricer::price(double sigma) noexcept {
+// The body of AloPricer::price plus the C1 rule and class. KernelFloor with no class
+// output runs the pre-C1 operations exactly: alo_note is a no-op without an output and
+// the arm's classification is skipped.
+[[nodiscard]] double alo_price(detail::AloCore &s, double sigma, AlExerciseRegion rule,
+                               AlExerciseClass *cls_out) noexcept {
   const alprobe::Scope probe_zone(alprobe::Zone::AloPricerPrice);
-  assert(st_ != nullptr);
-  if (st_ == nullptr) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
-  State &s = *st_;
   // Degenerate T ~ 0: no time left, collapse to the spot intrinsic (internal-put
   // intrinsic Kp - Sp equals the original option's intrinsic for both sides).
   if (s.T <= 1.0e-12) {
+    alo_note(s, sigma, cls_out);
     const double intr = s.Kp - s.Sp;
     return (intr > 0.0) ? intr : 0.0;
   }
@@ -3422,12 +3443,14 @@ double AloPricer::price(double sigma) noexcept {
   // check — matching the pre-A4 degenerate guard, which priced sigma->0 regardless
   // of regime (the double-continuation corner is a sigma>0 limitation only).
   if (!(sigma > 1.0e-8)) {
+    alo_note(s, sigma, cls_out);
     return sigma_zero_american_limit(s.Sp, s.Kp, s.T, s.rp, s.qp, Side::Put);
   }
   // Double-continuation corner: no single-boundary price exists (andersen_lake
   // returns NotImplemented here). Surface NaN, matching the boundary-collapse
   // failure convention below.
   if (s.unsupported) {
+    alo_note(s, sigma, cls_out);
     return std::numeric_limits<double>::quiet_NaN();
   }
   // The European regime stays on the Reference leg under either profile (as
@@ -3436,9 +3459,11 @@ double AloPricer::price(double sigma) noexcept {
                           ? euro_put_sk_fast(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp)
                           : euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
   if (s.european_only) {
+    alo_note(s, sigma, cls_out);
     return euro;
   }
   if (!s.prepared) {
+    alo_note(s, sigma, cls_out); // collapse / table: no boundary
     return std::numeric_limits<double>::quiet_NaN();
   }
   // Warm-start unless this is the first solve or sigma moved more than ~12% (then
@@ -3469,6 +3494,7 @@ double AloPricer::price(double sigma) noexcept {
       // through this pricer's NaN failure channel. s.seeded / s.last_sigma are left
       // untouched, so the next call's warm/cold decision still refers to the last
       // SOLVED sigma and never records this frozen state as a converged one.
+      alo_note(s, sigma, cls_out);
       return std::numeric_limits<double>::quiet_NaN();
     }
     resid = sw.max_dy;
@@ -3483,6 +3509,7 @@ double AloPricer::price(double sigma) noexcept {
     for (std::uint16_t k = 0; k < s.sch.n_iter_fp; ++k) {
       const AlSweepResult sw = al_fixed_point_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
       if (sw.all_frozen) {
+        alo_note(s, sigma, cls_out);
         return std::numeric_limits<double>::quiet_NaN();
       }
       resid = sw.max_dy;
@@ -3494,6 +3521,13 @@ double AloPricer::price(double sigma) noexcept {
   }
   s.seeded = true;
   s.last_sigma = sigma;
+  if (rule == AlExerciseRegion::Intrinsic || cls_out != nullptr) {
+    // C1: the American arm's class against the boundary this call converged.
+    const AlExerciseClass cls = alo_report(s, sigma, al_boundary_at_expiry(s.bnd), cls_out);
+    if (rule == AlExerciseRegion::Intrinsic && cls == AlExerciseClass::ExercisePlateau) {
+      return s.Kp - s.Sp;
+    }
+  }
 
   const double prem = al_put_premium(s.bnd, s.ws, s.Sp, sigma, s.rp, s.qp);
   double px = euro + prem;
@@ -3505,6 +3539,77 @@ double AloPricer::price(double sigma) noexcept {
     px = euro;
   }
   return (px > 0.0) ? px : 0.0;
+}
+
+} // namespace
+
+AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
+                     const std::optional<AlOpts> &opts)
+    : st_(std::make_unique<State>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  reset(S, K, T, r, q, side, opts);
+}
+
+void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
+                      const std::optional<AlOpts> &opts) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return; // moved-from pricer: fail safe without allocating in reset()
+  }
+  alo_reset(*st_, S, K, T, r, q, side, opts);
+}
+
+AloPricer::~AloPricer() = default;
+AloPricer::AloPricer(AloPricer &&) noexcept = default;
+AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
+
+double AloPricer::price(double sigma) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return alo_price(*st_, sigma, AlExerciseRegion::KernelFloor, nullptr);
+}
+
+// ── AloRegionPricer (C1 fix round 1): the same core under an explicit rule ──
+
+AloRegionPricer::AloRegionPricer(double S, double K, double T, double r, double q, Side side,
+                                 const std::optional<AlOpts> &opts)
+    : core_(std::make_unique<detail::AloCore>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  alo_reset(*core_, S, K, T, r, q, side, opts);
+}
+
+AloRegionPricer::~AloRegionPricer() = default;
+AloRegionPricer::AloRegionPricer(AloRegionPricer &&) noexcept = default;
+AloRegionPricer &AloRegionPricer::operator=(AloRegionPricer &&) noexcept = default;
+
+void AloRegionPricer::reset(double S, double K, double T, double r, double q, Side side,
+                            const std::optional<AlOpts> &opts) noexcept {
+  assert(core_ != nullptr);
+  if (core_ == nullptr) {
+    return; // moved-from pricer
+  }
+  alo_reset(*core_, S, K, T, r, q, side, opts);
+}
+
+double AloRegionPricer::price(double sigma, AlExerciseRegion rule,
+                              AlExerciseClass *cls_out) noexcept {
+  assert(core_ != nullptr);
+  if (core_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return alo_price(*core_, sigma, rule, cls_out);
+}
+
+const detail::AloCore &AloRegionPricer::core() const noexcept {
+  assert(core_ != nullptr);
+  return *core_;
+}
+
+// The ALO boundary seam (pricing/american_boundary.hpp).
+const AlBoundary &amer::al_alo_boundary(const detail::AloCore &core) noexcept {
+  return core.bnd;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
