@@ -93,6 +93,26 @@ def python_command() -> list[str]:
     return [sys.executable, "-E", "-P", "-B"]
 
 
+def bounded(command: list[str], timeout: float, env: dict | None = None) -> tuple:
+    """(exit code, stderr) of one subprocess, or ("timeout", "") past `timeout` seconds. Both
+    steps of a cell (fit and score) run under the spec's max_cell_seconds."""
+    try:
+        done = subprocess.run(command, env=env, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return "timeout", ""
+    return done.returncode, done.stderr
+
+
+def keep_stderr(cell: Path, stderr: str) -> None:
+    """The first run's stderr stays in run.stderr.txt; a later run writes run.stderr.rerun-N.txt."""
+    path, n = cell / "run.stderr.txt", 0
+    while path.exists():
+        n += 1
+        path = cell / f"run.stderr.rerun-{n}.txt"
+    path.write_text(stderr or "", encoding="utf-8")
+
+
 def run_cell(spec: dict, out: Path, policy: str, cohort: str) -> dict:
     dataset = Path(spec["cohorts"][cohort])
     cell = out / "runs" / cohort / policy
@@ -114,15 +134,10 @@ def run_cell(spec: dict, out: Path, policy: str, cohort: str) -> dict:
                                       "--dividends", spec.get("dividends", "funding-pv"), "--",
                                       "--report", str(native), "--timing-detail"]
         start = time.perf_counter()
-        try:
-            done = subprocess.run(command, env=env, capture_output=True, text=True,
-                                  timeout=spec["max_cell_seconds"], check=False)
-            code, stderr = done.returncode, done.stderr
-        except subprocess.TimeoutExpired:
-            code, stderr = "timeout", ""
+        code, stderr = bounded(command, spec["max_cell_seconds"], env)
         record["run"] = {"exit": code, "wall_s": round(time.perf_counter() - start, 2),
                          "workers": spec["workers"], "stderr_tail": stderr[-800:]}
-        (cell / "run.stderr.txt").write_text(stderr or "", encoding="utf-8")
+        keep_stderr(cell, stderr)
         if code != 0:
             return record
     if not receipt.exists():
@@ -137,10 +152,10 @@ def run_cell(spec: dict, out: Path, policy: str, cohort: str) -> dict:
                                       "--run-receipt", str(receipt), "--output", str(score),
                                       "--split", ALLOWED_SPLIT,
                                       "--class-manifest", spec["class_manifest"]]
-        done = subprocess.run(command, capture_output=True, text=True, check=False)
-        record["score_exit"] = done.returncode
-        if done.returncode != 0:
-            record["error"] = f"score failed: {done.stderr[-800:]}"
+        code, stderr = bounded(command, spec["max_cell_seconds"])
+        record["score_exit"] = code
+        if code != 0:
+            record["error"] = f"score failed ({code}): {stderr[-800:]}"
             return record
     record["score_sha256"] = sha256(score)
     record["native_sha256"] = sha256(native) if native.exists() else None
@@ -404,9 +419,20 @@ def run(args: argparse.Namespace) -> int:
     header = {"spec": str(args.spec.resolve()), "spec_sha256": sha256(args.spec),
               "binary_sha256": sha256(Path(spec["binary"])), "tool_sha256": TOOL_SHA256}
     print(json.dumps({"matrix": header}), flush=True)
+    first_failure = {}
+    for record in records:
+        if not record.get("classes"):
+            first_failure.setdefault((record["policy"], record["cohort"]), record)
     failures = 0
     for policy, cohort in spec["cells"]:
-        record = run_cell(spec, out, policy, cohort)
+        csv = out / "runs" / cohort / policy / f"{cohort}-{policy}.csv"
+        failed = first_failure.get((policy, cohort))
+        if failed is not None and not csv.exists() and not args.rerun_failed:
+            # A failed cell is not re-run on resume (its leftovers would make the re-run fail
+            # for another reason); its FIRST failure stays the cell's record.
+            record = dict(failed, resumed_failed=True)
+        else:
+            record = run_cell(spec, out, policy, cohort)
         record.update(binary_sha256=header["binary_sha256"], spec_sha256=header["spec_sha256"],
                       finished_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         failures += 0 if record.get("classes") else 1
@@ -461,7 +487,8 @@ def choose(cells: list[dict], cohort: str, name: str, containment: float,
         if contained is None or contained < containment or _violations(metrics):
             continue
         coverage = round(metrics.get("eligible_price_coverage") or 0.0, 12)
-        key = (-coverage, metrics.get("mae_spread") or float("inf"), cell["policy"])
+        mae = metrics.get("mae_spread")
+        key = (-coverage, float("inf") if mae is None else mae, cell["policy"])
         if best is None or key < best[0]:
             best = (key, cell["policy"])
     return None if best is None else best[1]
@@ -512,6 +539,8 @@ def parser() -> argparse.ArgumentParser:
     r = sub.add_parser("run", help="run and score every policy x cohort cell of a spec")
     r.add_argument("--spec", required=True, type=Path)
     r.add_argument("--output", required=True, type=Path)
+    r.add_argument("--rerun-failed", action="store_true",
+                   help="re-run cells whose earlier run failed (default: keep the first failure)")
     t = sub.add_parser("table", help="re-aggregate cells.jsonl into table.md / table.json")
     t.add_argument("--output", required=True, type=Path)
     s = sub.add_parser("select", help="deterministic per-class winners from harness tables")

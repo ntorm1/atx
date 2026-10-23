@@ -218,3 +218,55 @@ def test_expiry_service_counts_served_slices_and_types_every_unserved_one():
                             "global lower convex envelope"}, []) == "arbitrage:convexity"
     assert sm.slice_reason({"grade": "insufficient_quotes"}, []) == "insufficient_quotes"
     assert sm.expiry_service(eligible.head(0), {})["expiry_completeness"] is None
+
+
+def test_a_zero_mae_spread_wins_its_tie_break():
+    # Review C3 minor: `mae_spread or inf` turned a real 0.0 into +inf in the tie-break.
+    cells = [selection_cell("a", "dev", x=(0.9, 0.99, 0.05, 0)),
+             selection_cell("b", "dev", x=(0.9, 0.99, 0.0, 0))]
+    assert sm.choose(cells, "dev", "x", 0.985) == "b"
+    cells[1]["classes"]["x"]["mae_spread"] = None  # unknown MAE ranks last, not first
+    assert sm.choose(cells, "dev", "x", 0.985) == "a"
+
+
+def test_bounded_subprocess_times_out_instead_of_hanging():
+    # Review C3 minor: the score step had no timeout; both steps now share one bound.
+    code, stderr = sm.bounded([sys.executable, "-c", "import time; time.sleep(30)"], 0.5)
+    assert code == "timeout" and stderr == ""
+    code, _ = sm.bounded([sys.executable, "-c", "raise SystemExit(3)"], 30)
+    assert code == 3
+
+
+def test_resume_keeps_a_failed_cell_and_its_first_error(tmp_path, monkeypatch):
+    # Review C3 minor: resume re-ran a failed cell (no CSV), the re-run failed on the leftover
+    # outputs and the table then showed that error instead of the real one.
+    binary = tmp_path / "bench.exe"
+    binary.write_bytes(b"x")
+    spec = write_spec(tmp_path, binary=str(binary))
+    out = tmp_path / "out"
+    out.mkdir()
+    first = {"policy": "p", "cohort": "dev", "run": {"exit": 2, "stderr_tail": "the real error"}}
+    later = {"policy": "p", "cohort": "dev", "run": {"exit": 2, "stderr_tail": "output exists"}}
+    (out / "cells.jsonl").write_text(json.dumps(first) + "\n" + json.dumps(later) + "\n",
+                                     encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(sm, "run_cell", lambda *a: calls.append(a) or dict(later))
+    assert sm.main(["run", "--spec", str(spec), "--output", str(out)]) == 1
+    assert calls == []
+    cell = json.loads((out / "table.json").read_text(encoding="utf-8"))["cells"][0]
+    assert cell["run"]["stderr_tail"] == "the real error" and cell["resumed_failed"] is True
+    assert sm.main(["run", "--spec", str(spec), "--output", str(out), "--rerun-failed"]) == 1
+    assert len(calls) == 1
+
+
+def test_a_rerun_never_overwrites_the_first_stderr(tmp_path, monkeypatch):
+    spec = sm.load_spec(write_spec(tmp_path))
+    out = tmp_path / "out"
+    answers = iter([(2, "first failure"), (2, "second failure")])
+    monkeypatch.setattr(sm, "bounded", lambda *a, **k: next(answers))
+    for _ in range(2):
+        record = sm.run_cell(spec, out, "p", "dev")
+        assert record["run"]["exit"] == 2
+    cell = out / "runs" / "dev" / "p"
+    assert (cell / "run.stderr.txt").read_text(encoding="utf-8") == "first failure"
+    assert (cell / "run.stderr.rerun-1.txt").read_text(encoding="utf-8") == "second failure"
