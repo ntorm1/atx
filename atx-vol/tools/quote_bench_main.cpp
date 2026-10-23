@@ -4,7 +4,10 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/marketdata/dividend_schedule.hpp"
 #include "atx/vol/api/pricing/dividend.hpp"
+#include "bench_clocks.hpp"
+#include "core/parallel_for.hpp"
 #include "fitting/counters.hpp"
+#include "fitting/deam_iv_cache.hpp"
 #include "quote_bench_policy.hpp"
 #include "quote_bench_common.hpp"
 #include "quote_bench_progress.hpp"
@@ -12,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -28,6 +32,7 @@
 #include <numeric>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -59,6 +64,11 @@ struct Arguments {
   bool help_requested{false};
   bool timing_detail{false}; // opt-in per-chain fit timing counters (graded admission)
   bool deam_audit{false};    // opt-in: every Premium de-Am inversion also runs Search (L2e)
+  // Lane B0 benchmark harness (bench_clocks.hpp, docs/benchmark-clocks.md).
+  std::size_t reps{1};              // in-process repetitions of the quote-slice run
+  bool cold_reset{false};           // reset every market-dependent memo before each rep
+  std::optional<unsigned> affinity; // pin the process and the fit worker to one logical CPU
+  bool require_pcore{false};        // refuse unless the pinned CPU is a performance core
 };
 
 template <class T> T number(std::string_view value, std::string_view column) {
@@ -106,14 +116,21 @@ Arguments arguments(int argc, char **argv) {
                    "[--progress fresh-progress.jsonl] "
                    "[--dividends funding-pv|escrowed-pv|none] [--max-rows 2000000] "
                    "[--min-quotes 6] [--max-spread-to-mid 0.6] [--max-spread-vol 0.05] "
-                   "[--max-weight 1000] [--timing-detail] [--deam-audit]\n"
+                   "[--max-weight 1000] [--timing-detail] [--deam-audit] [--reps 1] "
+                   "[--cold-reset] [--affinity CPU [--require-pcore]]\n"
                    "Defaults: --policy auto --dividends funding-pv. "
                    "Quality/min-quotes flags require explicit --curve. "
                    "--timing-detail (quote-slice only) adds per-chain fit timing counters to "
                    "graded_stats.slices[].timing and real per-chain graded latencies. "
                    "--deam-audit (with --timing-detail) also runs the Search inversion beside "
                    "every graded.deam_inversion premium one and reports the pair statistics "
-                   "(the predictions are the premium ones).\n";
+                   "(the predictions are the premium ones). "
+                   "--reps N (quote-slice) repeats the run in-process and reports min / median "
+                   "/ p95 / p99 / max of every clock; --cold-reset clears every market-"
+                   "dependent memo before each rep; --affinity CPU pins the process and the "
+                   "fit worker to one logical CPU (requires ATX_VOL_FIT_WORKERS=1); "
+                   "--require-pcore refuses a CPU that is not on a performance core. Clock "
+                   "and receipt definitions: atx-vol/docs/benchmark-clocks.md.\n";
       args.help_requested = true;
       return args;
     }
@@ -123,6 +140,14 @@ Arguments arguments(int argc, char **argv) {
     }
     if (key == "--deam-audit") {
       args.deam_audit = true;
+      continue;
+    }
+    if (key == "--cold-reset") {
+      args.cold_reset = true;
+      continue;
+    }
+    if (key == "--require-pcore") {
+      args.require_pcore = true;
       continue;
     }
     if (i + 1 == argc) throw std::runtime_error("Missing value for " + std::string(key));
@@ -141,6 +166,8 @@ Arguments arguments(int argc, char **argv) {
     else if (key == "--max-spread-to-mid") args.quality.max_spread_to_mid = real(value, key);
     else if (key == "--max-spread-vol") args.quality.max_spread_vol = real(value, key);
     else if (key == "--max-weight") args.quality.max_weight = real(value, key);
+    else if (key == "--reps") args.reps = number<std::size_t>(value, key);
+    else if (key == "--affinity") args.affinity = number<unsigned>(value, key);
     else throw std::runtime_error("Unknown argument: " + std::string(key));
     quality_specified = quality_specified || key == "--min-quotes" ||
         key == "--max-spread-to-mid" || key == "--max-spread-vol" || key == "--max-weight";
@@ -165,6 +192,19 @@ Arguments arguments(int argc, char **argv) {
   }
   if (args.deam_audit && !args.timing_detail) {
     throw std::runtime_error("--deam-audit requires --timing-detail");
+  }
+  if (args.model != "quote-slice" &&
+      (seen.contains("--reps") || args.cold_reset || args.affinity || args.require_pcore)) {
+    throw std::runtime_error("--reps, --cold-reset, --affinity and --require-pcore require "
+                             "--model quote-slice");
+  }
+  if (args.reps == 0U || args.reps > 1000U) throw std::runtime_error("--reps must be 1..1000");
+  if (args.require_pcore && !args.affinity) {
+    throw std::runtime_error("--require-pcore requires --affinity");
+  }
+  if (args.affinity && atx_auto_worker_count() != 1U) {
+    throw std::runtime_error("--affinity requires ATX_VOL_FIT_WORKERS=1: one fit worker and no "
+                             "nested fan-out on the pinned CPU");
   }
   if (seen.contains("--progress") &&
       (args.model != "common-markov" || args.progress.empty())) {
@@ -340,7 +380,15 @@ InputRow convert_row(const Header &header, const std::vector<std::string> &field
   return row;
 }
 
-std::vector<InputRow> read_rows(const Arguments &args) {
+// Lane B0 process sub-timers of the input: read_s is the stream (open, header, every
+// getline), decode_s the per-record parse and admission checks between the reads.
+struct ReadTimes {
+  double read_s{0.0};
+  double decode_s{0.0};
+};
+
+std::vector<InputRow> read_rows(const Arguments &args, ReadTimes &times) {
+  const auto read_start = Clock::now();
   std::ifstream stream{args.input};
   if (!stream) throw std::runtime_error("Cannot open input CSV");
   const Header header = read_header(stream);
@@ -348,6 +396,7 @@ std::vector<InputRow> read_rows(const Arguments &args) {
   std::set<std::uint64_t> ids;
   std::string line;
   while (std::getline(stream, line)) {
+    const auto decode_start = Clock::now();
     if (rows.size() >= args.max_rows) {
       throw std::runtime_error("Input exceeds --max-rows; shard the cohort or raise the limit");
     }
@@ -356,7 +405,9 @@ std::vector<InputRow> read_rows(const Arguments &args) {
     auto row = convert_row(header, csv_record(line));
     if (!ids.insert(row.id).second) throw std::runtime_error("Duplicate row_id");
     rows.push_back(std::move(row));
+    times.decode_s += bench::seconds_between(decode_start, Clock::now());
   }
+  times.read_s = bench::seconds_between(read_start, Clock::now()) - times.decode_s;
   if (!stream.eof()) throw std::runtime_error("Input CSV read failed");
   if (rows.empty()) throw std::runtime_error("Input contains no rows");
   return rows;
@@ -417,6 +468,17 @@ struct RunStatistics {
   // Opt-in --timing-detail: graded chain latency is each chain's own fit wall
   // (counters::fit_timing) instead of its surface wall divided by its expiries.
   bool timing_detail{false};
+  // Lane B0 (bench_clocks.hpp): the cold-calibration clock, the policy load outside it,
+  // its exclusive stage laps and fit-route work (armed with --timing-detail), and the
+  // de-Am stage clock armed on the fitting thread for the run; `bench` is the report's
+  // bench object, filled by main.
+  double cold_calibration_seconds{};
+  double policy_load_seconds{};
+  bench::PhaseClock phases;
+  bench::FitWork fit_work;
+  DeAmStageClock deam_clock{};
+  DeAmStageClock deam_clock_mark{};
+  Json bench = nullptr;
 };
 
 void bump(Json &counts, const std::string &key, std::size_t count = 1U) {
@@ -608,6 +670,33 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_family_grid_cold", t.deam_family_grid_cold}};
 }
 
+// Lane B0: charges the fit lap that just ended to its exclusive stages
+// (bench_clocks.hpp fit_parts): the fit_timing buckets of the lap's chains, with the
+// family build wall and the de-Am stage clock's endpoint and exception time of the lap
+// carved out of their deam bucket. Whatever the lap held beyond what the chains
+// measured is charged to no stage (PhaseClock unclaimed): it shows as unattributed_s.
+void charge_fit_lap(RunStatistics &stats,
+                    std::span<const counters::fit_timing::FitTimingCounters> chains) {
+  if (!stats.phases.armed()) return;
+  bench::FitWork lap;
+  for (const auto &chain : chains) {
+    bench::add_fit_work(lap, chain);
+    bench::add_fit_work(stats.fit_work, chain);
+  }
+  const DeAmStageClock &now = stats.deam_clock;
+  DeAmStageClock &mark = stats.deam_clock_mark;
+  const std::uint64_t endpoint_ns = now.endpoint_ns - mark.endpoint_ns;
+  std::uint64_t exception_ns = now.fast_redo_ns - mark.fast_redo_ns;
+  for (std::size_t r = 0; r < now.premium_fallback_ns.size(); ++r) {
+    exception_ns += now.premium_fallback_ns[r] - mark.premium_fallback_ns[r];
+  }
+  mark = now;
+  double excess = 0.0;
+  const auto parts = bench::fit_parts(lap, endpoint_ns, exception_ns, excess);
+  stats.phases.lap_split(Clock::now(), parts);
+  stats.phases.add_conflict(excess);
+}
+
 // Graded admission: one surface fit per exact snapshot. Routing has already
 // refused ambiguous expiries and resolved ONE profile per snapshot; calendar
 // consistency is enforced inside fit_quote_surface on the final prices. A
@@ -620,6 +709,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
                 std::set<std::uint64_t> &fitted_chains, std::set<std::uint64_t> &static_fallback) {
   auto &graded = stats.graded_stats;
   for (const auto &[identity, ids] : snapshot_chains) {
+    stats.phases.lap(bench::Stage::Publication); // B0: the previous snapshot's rows
     static_cast<void>(identity);
     std::vector<std::uint64_t> members;
     for (const auto id : ids) {
@@ -641,6 +731,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       count_into(stats.per_profile_counts[profile.name], "attempted_chains");
       if (chain.market.dividend_pv > 0.0) ++stats.dividend_chains;
     }
+    stats.phases.lap(bench::Stage::Normalization); // B0: this snapshot's worklist
     std::optional<counters::fit_timing::SurfaceTrace> trace;
     if (stats.timing_detail) trace.emplace();
     const auto start = Clock::now();
@@ -649,6 +740,10 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         std::chrono::duration<double, std::micro>(Clock::now() - start).count();
     const double per_chain = surface_us / static_cast<double>(members.size());
     const bool timed = trace && trace->chains.size() == members.size();
+    if (trace) {
+      using Chains = std::span<const counters::fit_timing::FitTimingCounters>;
+      charge_fit_lap(stats, timed ? Chains(trace->chains) : Chains{});
+    }
     if (timed) {
       std::uint64_t chain_us = 0;
       for (const auto &t : trace->chains) chain_us += t.wall_us;
@@ -1039,6 +1134,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       ? QuoteSliceDividendModel::AggregateFundingPresentValue
       : args.dividends == "escrowed-pv" ? QuoteSliceDividendModel::AggregatePresentValue
                                         : QuoteSliceDividendModel::ContinuousYield;
+  const auto policy_start = Clock::now(); // B0: configuration, outside the cold clock
   std::optional<quote_bench_policy::LoadedPolicy> policy;
   std::shared_ptr<const QuoteFitProfile> fixed;
   if (args.curve.empty()) {
@@ -1059,6 +1155,10 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         {"profiles", Json::array({quote_bench_policy::profile_json(*fixed)})},
         {"symbol_overrides", Json::array()}, {"regimes", nullptr}};
   }
+  // B0 cold-calibration clock: the resident snapshot is handed to the fit here.
+  const auto cold_start = Clock::now();
+  stats.policy_load_seconds = bench::seconds_between(policy_start, cold_start);
+  stats.phases.start(cold_start);
   std::vector<Prediction> predictions(rows.size());
   std::map<std::uint64_t, std::vector<std::size_t>> chains;
   for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -1192,6 +1292,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   std::map<SnapshotIdentity, std::vector<PublishedSlice>> surfaces;
   std::set<std::uint64_t> fitted_chains;
   std::set<std::uint64_t> static_fallback;
+  stats.phases.lap(bench::Stage::Normalization);
   if (policy && policy->graded) {
     stats.graded = true;
     // Expiry fan-out of every graded surface fit at the library's AUTO width
@@ -1203,6 +1304,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     surface.fit_workers = 0U;
     fit_graded(chains, prepared, snapshot_chains, ambiguous_expiries, surface, predictions, stats,
                fitted_chains, static_fallback);
+    stats.phases.lap(bench::Stage::Publication);
   }
   // Grade of a static-fallback expiry under graded admission: the pass-A rule
   // without a term prior (own point evidence and unmoved prices => A).
@@ -1215,6 +1317,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
                                                                                        : "C"};
   };
   for (const auto &[chain_id, chain] : prepared) {
+    stats.phases.lap(bench::Stage::Publication); // B0: the previous chain's rows
     // Graded admission fitted and published every snapshot above except the
     // static-fallback ones, which take this path and the static calendar rule.
     if (stats.graded && !static_fallback.contains(chain_id)) continue;
@@ -1230,9 +1333,20 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     // static(-fallback) path keeps its historical certificate unrepaired.
     QuoteSliceConfig static_config = chain.profile->config;
     static_config.repair.mode = QuoteSliceRepairMode::Off;
-    const auto fit = schedule == schedules.end()
-        ? fit_quote_slice(market, chain.quotes, static_config)
-        : fit_with_schedule(chain_id, first, indices.size(), chain, schedule->second, stats);
+    // B0: under --timing-detail a static fit is timed by its own fit_timing recorder.
+    std::optional<counters::fit_timing::ChainRecorder> recorder;
+    if (stats.phases.armed()) recorder.emplace();
+    stats.phases.lap(bench::Stage::Normalization);
+    const auto fit = [&] {
+      const counters::fit_timing::ChainScope timing(recorder ? &*recorder : nullptr);
+      return schedule == schedules.end()
+          ? fit_quote_slice(market, chain.quotes, static_config)
+          : fit_with_schedule(chain_id, first, indices.size(), chain, schedule->second, stats);
+    }();
+    if (recorder) {
+      const counters::fit_timing::FitTimingCounters timed = recorder->result();
+      charge_fit_lap(stats, {&timed, 1U});
+    }
     if (!fit) {
       ++stats.fit_failures[fit.error().to_string()];
       for (const auto i : indices) predictions[i].status = "invalid_market";
@@ -1286,6 +1400,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     stats.chain_microseconds.push_back(
         std::chrono::duration<double, std::micro>(Clock::now() - chain_start).count());
   }
+  stats.phases.lap(bench::Stage::Publication);
   std::set<std::uint64_t> calendar_failures;
   for (auto &[identity, slices] : surfaces) { // graded admission: static-fallback snapshots only
     static_cast<void>(identity);
@@ -1311,6 +1426,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
       }
     }
   }
+  stats.phases.lap(bench::Stage::FinalGrid); // B0: the static calendar validation
   stats.ambiguous_expiry_chains = ambiguous_expiries.size();
   stats.calendar_rejected_chains = 0U;
   for (const auto id : calendar_failures) {
@@ -1352,6 +1468,9 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
     else add_count(counts["actual_curve_rows"], prediction.actual_curve);
     add_count(counts["row_status_counts"], prediction.status);
   }
+  const auto cold_end = Clock::now();
+  stats.phases.lap(bench::Stage::Publication, cold_end);
+  stats.cold_calibration_seconds = bench::seconds_between(cold_start, cold_end);
   stats.elapsed_seconds = std::chrono::duration<double>(Clock::now() - start).count();
   return predictions;
 }
@@ -1578,6 +1697,7 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         {"schedules", stats.dividend_schedules},
         {"routes", stats.dividend_routes}};
   }
+  if (!stats.bench.is_null()) report["bench"] = stats.bench; // B0 clocks and receipts
 #ifdef __VERSION__
   report["compiler"] = __VERSION__;
 #elif defined(_MSC_VER)
@@ -1593,12 +1713,205 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
   stream << report.dump(2) << '\n';
 }
 
+// ── Lane B0 benchmark harness (bench_clocks.hpp, docs/benchmark-clocks.md) ─────────
+
+bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+// Every published field of two prediction sets, prices and vols bit for bit.
+bool same_predictions(const std::vector<Prediction> &a, const std::vector<Prediction> &b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const Prediction &x = a[i];
+    const Prediction &y = b[i];
+    if (!same_bits(x.price, y.price) || !same_bits(x.vol, y.vol) || x.status != y.status ||
+        x.quote_status != y.quote_status || x.admitted != y.admitted ||
+        x.resolved_profile != y.resolved_profile || x.actual_curve != y.actual_curve ||
+        x.vol_status != y.vol_status || x.grade != y.grade) {
+      return false;
+    }
+  }
+  return true;
+}
+
+Json ledger_json(const counters::ledger::Counts &work) {
+  Json out = Json::object();
+  for (unsigned i = 0; i < counters::ledger::kCount; ++i) {
+    out[counters::ledger::kNames[i]] = work.v[i];
+  }
+  return out;
+}
+
+// SIMD vector invocations and scalar-equivalent lanes come from the exact counter plane,
+// compiled out of the shipping build: there they are unavailable, never 0.
+Json simd_json(const counters::Snapshot &before, const counters::Snapshot &after) {
+  if (!after.enabled) {
+    const Json missing = "unavailable: exact counters compiled out (ATX_VOL_COUNTERS off)";
+    return {{"vector_pack_dispatches", missing}, {"scalar_equivalent_lanes", missing}};
+  }
+  using counters::Counter;
+  const auto delta = [&](Counter c) { return after.get(c) - before.get(c); };
+  return {{"vector_pack_dispatches", delta(Counter::AmericanAvxPackDispatches)},
+          {"scalar_equivalent_lanes", delta(Counter::AmericanWrapperKnownScalarLanes) +
+                                          delta(Counter::ScalarFallbackLanes)}};
+}
+
+// The rows counters of one run (input, admitted, served, price-only, identified IV).
+Json rows_json(const std::vector<InputRow> &rows, const std::vector<Prediction> &predictions,
+               const RunStatistics &stats) {
+  std::size_t eligible = 0;
+  std::size_t iv_rows = 0;
+  Json by_status = Json::object();
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].input_status == "ok") ++eligible;
+    const Prediction &p = predictions[i];
+    if (p.status == "ok" && std::isfinite(p.vol)) ++iv_rows;
+    bump(by_status, p.status);
+  }
+  return {{"input_rows", rows.size()}, {"supported_input_rows", eligible},
+          {"admitted_quotes", stats.admitted}, {"served_rows", stats.served},
+          {"price_only_rows", stats.price_only_rows},
+          {"served_price_rows", stats.served + stats.price_only_rows},
+          {"served_iv_rows", iv_rows}, {"rows_by_status", std::move(by_status)},
+          {"fitted_chains", stats.fitted}, {"chains", stats.chains},
+          {"publication", {{"rows_published", predictions.size()},
+                           {"graded_slice_records", stats.graded_stats.contains("slices")
+                               ? stats.graded_stats["slices"].size() : 0U}}}};
+}
+
+// --reps in-process repetitions of the quote-slice run, each preceded by the cold reset
+// under --cold-reset. Rep 1's statistics and predictions are the run's; every later rep
+// must reproduce them bit for bit (predictions_identical_to_rep1).
+std::vector<Prediction> run_reps(const Arguments &args, const std::vector<InputRow> &rows,
+                                 RunStatistics &stats, Json &out) {
+  std::vector<Prediction> first;
+  std::vector<double> legacy;
+  std::vector<double> cold;
+  Json per_rep = Json::array();
+  for (std::size_t rep = 0; rep < args.reps; ++rep) {
+    const Json reset = args.cold_reset ? bench::cold_reset() : Json(nullptr);
+    RunStatistics trial;
+    trial.timing_detail = args.timing_detail;
+    if (args.timing_detail) trial.phases.arm();
+    const std::size_t memo_at_start = bench::deam_memo_entries();
+    const auto ledger_before = counters::ledger::snapshot();
+    const auto exact_before = counters::snapshot();
+    auto predictions = [&] {
+      const bench::StageClockArm armed(args.timing_detail ? &trial.deam_clock : nullptr);
+      return run(args, rows, trial);
+    }();
+    const auto work = counters::ledger::snapshot() - ledger_before;
+    const auto exact_after = counters::snapshot();
+    legacy.push_back(trial.elapsed_seconds);
+    cold.push_back(trial.cold_calibration_seconds);
+    const bool identical = rep == 0U || same_predictions(first, predictions);
+    per_rep.push_back({{"rep", rep + 1U}, {"legacy_fit_reprice_s", trial.elapsed_seconds},
+                       {"cold_calibration_s", trial.cold_calibration_seconds},
+                       {"policy_load_s", trial.policy_load_seconds},
+                       {"deam_memo_entries_at_start", memo_at_start},
+                       {"deam_memo_entries_at_end", bench::deam_memo_entries()},
+                       {"solve_ledger", ledger_json(work)},
+                       {"predictions_identical_to_rep1", identical}, {"cold_reset", reset}});
+    if (rep == 0U) {
+      out["counters"] = {
+          {"rows", rows_json(rows, predictions, trial)}, {"solve_ledger", ledger_json(work)},
+          {"families", args.timing_detail ? bench::families_json(trial.fit_work)
+                                          : Json("unavailable: requires --timing-detail")},
+          {"fit_route", args.timing_detail ? bench::fit_work_json(trial.fit_work)
+                                           : Json("unavailable: requires --timing-detail")},
+          {"deam_stage_clock", args.timing_detail ? bench::stage_clock_json(trial.deam_clock)
+                                                  : Json("unavailable: requires --timing-detail")},
+          {"simd", simd_json(exact_before, exact_after)}};
+      out["stages"] = args.timing_detail
+          ? bench::stages_json(trial.phases, trial.cold_calibration_seconds,
+                               trial.fit_work.deam_family_builds > 0U)
+          : Json("unavailable: requires --timing-detail");
+      if (args.timing_detail) {
+        out["stages"]["rep"] = 1;
+        out["stages"]["attribution_valid"] =
+            atx_auto_worker_count() == 1U && trial.phases.conflict_seconds() == 0.0;
+      }
+      stats = std::move(trial);
+      first = std::move(predictions);
+    }
+  }
+  out["reps"] = args.reps;
+  out["cold_reset"] = args.cold_reset;
+  out["per_rep"] = std::move(per_rep);
+  out["clocks"] = {
+      {"legacy_fit_reprice_s",
+       {{"summary", bench::summary_json(bench::summarize(legacy))},
+        {"scope", "the historical quote-bench timer (fit_and_reprice_seconds): preparation "
+                  "after classification and grouping, routing, fit and repricing"}}},
+      {"cold_calibration_s",
+       {{"summary", bench::summary_json(bench::summarize(cold))},
+        {"scope", "resident snapshot handed to the fit -> validated surface and predictions "
+                  "published: classification, grouping, chain markets, routing, carry, "
+                  "fits, inverse memories, certification, calendar validation; excludes "
+                  "file I/O and the policy load"}}},
+      {"ready_to_quote_s",
+       {{"status", "not_built"},
+        {"reason", "quote-bench builds no serving tier (records, ladders, primary risk), so "
+                   "ready-to-quote is not measured; it is never reported as zero"}}}};
+  return first;
+}
+
+// Process clock and receipts of a quote-slice run (bench object of the report).
+struct ProcessTimes {
+  double startup_s{};
+  double setup_s{};
+  ReadTimes input{};
+  double compute_s{};
+  double write_s{};
+  double process_wall_s{};
+};
+
+Json process_json(const ProcessTimes &t, const RunStatistics &stats) {
+  const double attributed =
+      t.startup_s + t.setup_s + t.input.read_s + t.input.decode_s + t.compute_s + t.write_s;
+  return {{"value", std::isfinite(t.process_wall_s) ? Json(t.process_wall_s) : Json(nullptr)},
+          {"status", std::isfinite(t.startup_s) ? "measured" : "startup unavailable"},
+          {"sub_timers", {{"startup_s", std::isfinite(t.startup_s) ? Json(t.startup_s)
+                                                                  : Json(nullptr)},
+                          {"setup_s", t.setup_s}, {"read_s", t.input.read_s},
+                          {"decode_s", t.input.decode_s}, {"compute_s", t.compute_s},
+                          {"policy_load_s", stats.policy_load_seconds}, {"write_s", t.write_s}}},
+          {"unattributed_s", std::isfinite(t.process_wall_s) ? Json(t.process_wall_s - attributed)
+                                                             : Json(nullptr)},
+          {"scope", "process launch -> predictions written. startup = kernel process creation "
+                    "-> main; setup = arguments and pinning; read = open, header and getline; "
+                    "decode = record parse and admission; compute = every rep (policy load "
+                    "included, reported separately); write = predictions CSV. The report "
+                    "writes themselves are excluded (they carry this value)"}};
+}
+
+void pin_fit_worker(const Arguments &args) {
+  bench::pin_to_logical_cpu(*args.affinity);
+  if (!args.require_pcore) return;
+  const auto performance = bench::is_performance_cpu(*args.affinity);
+  if (!performance.has_value()) {
+    throw std::runtime_error("--require-pcore: the core topology is unavailable");
+  }
+  if (!*performance) {
+    throw std::runtime_error("--require-pcore: logical CPU " + std::to_string(*args.affinity) +
+                             " is not on a performance core");
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  // B0 process clock: kernel creation -> here is the startup sub-timer; every later one is
+  // on the monotonic clock from main entry.
+  ProcessTimes times;
+  times.startup_s = bench::seconds_since_process_creation();
+  const auto main_entry = Clock::now();
   try {
     const auto args = arguments(argc, argv);
     if (args.help_requested) return 0;
+    if (args.affinity) pin_fit_worker(args);
+    times.setup_s = bench::seconds_between(main_entry, Clock::now());
     Json provenance = Json::object();
     if (!args.progress.empty()) {
       provenance = {{"input", std::filesystem::weakly_canonical(args.input).string()},
@@ -1611,7 +1924,7 @@ int main(int argc, char **argv) {
           {"executable_hash_scope", "argv[0] if directly resolvable; wrapper start receipt "
               "always binds the absolute invoked executable"}};
     }
-    const auto rows = read_rows(args);
+    const auto rows = read_rows(args, times.input);
     if (!args.progress.empty() &&
         provenance["input_sha256"] != quote_bench::file_sha256(args.input)) {
       throw std::runtime_error("Input changed while reading progress-bound cohort");
@@ -1634,8 +1947,23 @@ int main(int argc, char **argv) {
     RunStatistics stats;
     stats.timing_detail = args.timing_detail;
     counters::fit_timing::arm_deam_audit(args.deam_audit); // before any fit starts
-    const auto predictions = run(args, rows, stats);
+    Json bench_report = {{"schema", "atx-vol-bench-clocks-v2"},
+                         {"definitions", "atx-vol/docs/benchmark-clocks.md"}};
+    const auto cpus_before = bench::sample_cpus();
+    const auto compute_start = Clock::now();
+    const auto predictions = run_reps(args, rows, stats, bench_report);
+    times.compute_s = bench::seconds_between(compute_start, Clock::now());
+    const auto cpus_after = bench::sample_cpus();
+    const auto write_start = Clock::now();
     write_predictions(args.output, rows, predictions, stats.graded);
+    const auto outputs_ready = Clock::now();
+    times.write_s = bench::seconds_between(write_start, outputs_ready);
+    times.process_wall_s = times.startup_s + bench::seconds_between(main_entry, outputs_ready);
+    bench_report["clocks"]["process_wall_s"] = process_json(times, stats);
+    bench_report["affinity"] =
+        bench::affinity_json(args.affinity, args.require_pcore, cpus_before, cpus_after);
+    bench_report["build_info"] = bench::build_info_json();
+    stats.bench = std::move(bench_report);
     write_report(std::cout, args, rows.size(), stats);
     if (!args.report.empty()) {
       std::ofstream report{args.report};

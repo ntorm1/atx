@@ -219,6 +219,21 @@ add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-
 set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
+# arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
+# in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
+# tools target, hence the guard.
+if(ATX_BUILD_TOOLS)
+    add_executable(atx-vol-bench-clocks-tests bench_clocks_test.cpp)
+    target_link_libraries(atx-vol-bench-clocks-tests
+        PRIVATE atx-vol-bench-clocks atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-bench-clocks-tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_test(NAME atx-vol-bench-clocks COMMAND atx-vol-bench-clocks-tests)
+    set_tests_properties(atx-vol-bench-clocks PROPERTIES
+        LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+endif()
+
 add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
 target_link_libraries(atx-vol-umbrella-tests PRIVATE
     atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)
