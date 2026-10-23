@@ -37,6 +37,7 @@
 // it shares every inversion already made, whichever rung made it.
 // Internal header (src/fitting); not part of the public API.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -267,5 +268,23 @@ void deam_iv_memo_clear() noexcept;
 
 // Caches currently held by the calling thread's memo.
 [[nodiscard]] std::size_t deam_iv_memo_size() noexcept;
+
+// Opt-in stage clock (lane B0 benchmark harness, quote-bench --timing-detail), armed on
+// the calling thread: the wall of the band-edge prices and their accurate re-prices
+// (endpoints), and of the inversions that left the primary route (reference exceptions:
+// a Premium inversion that fell back to Search, by IvPremiumFallback index, and a Fast
+// inversion redone on the accurate kernel). Unarmed (the default) a hook is one
+// thread_local load and a branch: no clock read, and no fitted value depends on it.
+struct DeAmStageClock {
+  std::uint64_t endpoint_ns = 0;
+  std::uint64_t endpoint_bands = 0;
+  std::array<std::uint64_t, kIvPremiumFallbackCount> premium_fallback_ns{};
+  std::uint64_t fast_redo_ns = 0;
+  std::uint64_t fast_redos = 0;
+};
+// The clock armed on the calling thread, or null.
+[[nodiscard]] DeAmStageClock *deam_stage_clock() noexcept;
+// Arms `clock` (null disarms) on the calling thread; returns the previously armed one.
+DeAmStageClock *deam_stage_clock_arm(DeAmStageClock *clock) noexcept;
 
 } // namespace atx::vol

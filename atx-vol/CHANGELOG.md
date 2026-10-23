@@ -5,6 +5,31 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
+
+Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
+(`tools/bench_clocks.{hpp,cpp}`; definitions in `docs/benchmark-clocks.md`): the
+historical `legacy_fit_reprice_s` (unchanged), `cold_calibration_s` (adds the row
+classification and grouping the legacy timer skips; excludes I/O and the policy load),
+`ready_to_quote_s` reported `not_built`, and `process_wall_s` with startup / setup / read /
+decode / compute / write sub-timers. New flags: `--reps N` with min / median / p95 / p99 /
+max, `--cold-reset` (clears the de-Am IV thread memo and the carry memo before each rep),
+`--affinity CPU` (process and fit-worker pinning; requires `ATX_VOL_FIT_WORKERS=1`) and
+`--require-pcore`. Under `--timing-detail` the cold clock is split into exclusive stages
+that partition it (normalization, inverses, endpoints, curve/repair, final grid,
+reference exceptions, publication, fit and surface residuals; the family stage is
+`not_built`), with the fit-route counters; exact SIMD counters report `unavailable` when
+compiled out. `src/fitting/deam_iv_cache.*` gains `DeAmStageClock`, an opt-in, thread-armed
+timer of band-edge prices and fallback inversions (unarmed: one TLS load, no clock read).
+New tools: `bench/run_cold_trials.ps1` (fresh-process trials into one manifest with
+binary / policy / input hashes, source SHA, embedded build flags and a P-core proof) and
+`atx-vol-iv-comparator` (independently bisected American IV roots of served prices, in
+absolute vol, with a not-identified class, reference uncertainty and a continuous-carry
+price table).
+
+**Migration:** none. Predictions are byte-identical with and without every new flag; the
+report only gains the `bench` key.
+
 ### FIXED — `include/atx/vol/alpha/` is a public include root that nothing installed
 
 Seven headers — `spec.hpp`, `registry.hpp`, `schema.hpp`, `frame.hpp`,
