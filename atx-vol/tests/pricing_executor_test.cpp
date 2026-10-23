@@ -454,6 +454,15 @@ TEST(PricingExecutor, NestedDispatch_DeterministicAcrossWorkerCounts) {
 // static-partition nested dispatch runs on more than one thread (a parked pool
 // worker helps), and — under -DATX_VOL_COUNTERS=ON — wakes the pool beyond the
 // single outer dispatch (PoolDispatches >= 2).
+//
+// Lane P0 (L575 flake, 20 of 80 repeats failed at cap 3 on a loaded host): the join
+// is HELP-FIRST, so a dispatcher may legitimately run every queued nested context
+// itself before a parked worker is scheduled, and "some block ran on another thread"
+// was a race the contract never promised. The test thread therefore holds its own
+// inline block of row 0 (bounded) until one of row 0's QUEUED nested contexts starts:
+// with the dispatcher held, only a woken pool worker can run them, which is exactly
+// the property under test - and a pool that never woke fails at the deadline instead
+// of hanging.
 TEST(PricingExecutor, NestedDispatch_ReachesAPoolWorkerAndWakesThePool) {
   using atx::vol::counters::Counter;
   using atx::vol::counters::counters_enabled;
@@ -466,6 +475,9 @@ TEST(PricingExecutor, NestedDispatch_ReachesAPoolWorkerAndWakesThePool) {
   std::vector<int> grid(R * C, 0);
   std::mutex mu;
   std::vector<std::thread::id> nested_threads;
+  const std::thread::id dispatcher = std::this_thread::get_id();
+  std::atomic<bool> row0_queued_started{false};
+  bool row0_waited_out = false;
 
   const auto run = [&] {
     ex.run_ranges(R, 2u, [&](std::size_t lo, std::size_t hi) {
@@ -473,6 +485,14 @@ TEST(PricingExecutor, NestedDispatch_ReachesAPoolWorkerAndWakesThePool) {
         // Outer left P-1 workers parked; a nested block-partition dispatch gives a
         // non-empty block to each, so at least one runs on a different thread.
         ex.run_ranges_nested(C, 0u, [&](std::size_t clo, std::size_t chi) {
+          if (r == 0u && clo != 0u) row0_queued_started.store(true);
+          if (r == 0u && clo == 0u && std::this_thread::get_id() == dispatcher) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            while (!row0_queued_started.load() && std::chrono::steady_clock::now() < deadline) {
+              std::this_thread::yield();
+            }
+            row0_waited_out = !row0_queued_started.load();
+          }
           for (std::size_t c = clo; c < chi; ++c) {
             grid[r * C + c] += 1;
           }
@@ -502,6 +522,7 @@ TEST(PricingExecutor, NestedDispatch_ReachesAPoolWorkerAndWakesThePool) {
                        nested_threads.end());
   EXPECT_GE(nested_threads.size(), 2u)
       << "nested dispatch did not reach a parked pool worker";
+  EXPECT_FALSE(row0_waited_out) << "no pool worker picked up a queued nested context in 60 s";
 }
 
 // Fallback: when the outer dispatch claims the WHOLE pool (n_threads=0), the idle

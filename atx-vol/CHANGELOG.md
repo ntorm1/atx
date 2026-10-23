@@ -133,6 +133,38 @@ wall budget binds and is host-dependent). Served set vs the K4 speed arm: SPY an
 / gained 0; SPY moves are the AVX2 rounding class (827 rows, |d vol| <= 2.3e-12); dev200b 4,225
 rows <= 1e-9 vol plus 43 rows on BABO's two chains (the plateau-end fix).
 
+### FIXED — served rows no longer depend on the core type that ran the first Eigen product (lane P0)
+
+Eigen 3.4 read L1/L2/L3 with CPUID once per process and sized its GEMM/TRSM blocking from
+the answer. On a hybrid CPU (i7-1260P: P core 48 KiB / 1.25 MiB, E core 32 KiB / 2 MiB) the
+blocking, and with it the summation order of every blocked dense product, followed the core
+TYPE of the first blocked product of the process. That is the C2 "fan-out nondeterminism"
+(SPY h0 + repair `ba413a85…` / `99f67416…`; cohort5 h0.5 + repair `a90b5047…` /
+`be888dc5…`), and a serial run pinned to an E core reproduced it. The root `CMakeLists.txt`
+now gives the `eigen` INTERFACE target `EIGEN_NO_CPUID` and
+`EIGEN_DEFAULT_L{1,2,3}_CACHE_SIZE` = 49152 / 1310720 / 18874368 (the P-core sizes every
+reference was recorded under).
+
+**Number change: none for any recorded reference.** Only the E-core alternates become
+unreachable. Changing those sizes is a numerical decision (`docs/all-core-scheduling.md`).
+
+### CHANGED — `fit_quote_surface` per-expiry fan-out runs on the persistent pool (lane P0)
+
+Pass A / the knot pass, B1 and B2 run on `pricing_executor()` instead of fresh `std::jthread`s
+per stage. The pool is bounded and persistent, the caller takes part, and no fit creates a
+thread after the first.
+
+- **Nested dispatch:** a plain `pricing_executor().run_*` inside a fit task runs inline, so
+  live fitting never nests or oversubscribes the pool.
+- **Width:** `fit_workers` is clamped to the pool (`size() + 1`, sized by the same
+  `ATX_VOL_FIT_WORKERS` cap). A stage of fewer than 4 expiries runs inline on the caller.
+- **Numbers:** byte-identical for every width.
+- **Test changes:**
+  - `QuoteSurface.FanOutRunsOffTheCallingThreadAboveOneWorker` became
+    `FanOutRunsEveryTaskOnceOnThePoolAboveOneWorker`, because the caller now runs tasks.
+  - L575 (`PricingExecutor.NestedDispatch_ReachesAPoolWorkerAndWakesThePool`) was a race
+    against the help-first join. It now waits, bounded, for a pool worker.
+
 ### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
 
 `ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` now default to 1, since both lanes

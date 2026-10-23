@@ -48,7 +48,7 @@
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp" // kIvMin (ladder wing tail)
-#include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
+#include "fitting/expiry_pool.hpp"       // run_expiry_tasks (per-expiry fan-out, lane P0)
 #include "fitting/publication_seam.hpp"  // inject_rollback / inject_final (review m1 test seam)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
@@ -275,19 +275,23 @@ private:
   // Runs body(i) once for every expiry index in `tasks`, fanned out over
   // surface_.fit_workers in longest-first order: the strictly two-sided quote
   // count, the pre-fit proxy for the admitted count, descending, with ties by
-  // index. CONTRACT: body(i) writes only expiry i's slots (out_[i], breadth_[i],
-  // two_sided_[i], held_point_[i]) and otherwise reads state no task writes
-  // (expiries_, the configs, a prior built before the call). The fan-out joins
-  // before it returns, so every write happens before the caller's next read.
-  // Each slot is a function of its own inputs alone, so the result is identical
-  // for any order and any worker count. A throwing body propagates to the caller
-  // (parallel_for_dynamic rethrows the first exception after the join), as the
-  // serial loop did; fit_quote_surface converts it to its typed error, so no
-  // partially written slot is ever returned. Each task runs with its expiry's rung
-  // memo installed (none when surface_.rung_memo is off).
+  // index (every task of one stage runs the same rungs, so the rung factor of the
+  // cost cancels out of the order). The fan-out runs on the persistent pool
+  // (expiry_pool.hpp, lane P0): no thread per fit, the caller takes part, and a
+  // pricing dispatch inside a task runs inline. CONTRACT: body(i) writes only
+  // expiry i's slots (out_[i], breadth_[i], two_sided_[i], held_point_[i]) and
+  // otherwise reads state no task writes (expiries_, the configs, a prior built
+  // before the call). The fan-out joins before it returns, so every write happens
+  // before the caller's next read. Each slot is a function of its own inputs
+  // alone, so the result is identical for any order, any worker count and any
+  // thread. A throwing body propagates to the caller (run_dynamic rethrows the
+  // first exception after the join), as the serial loop did; fit_quote_surface
+  // converts it to its typed error, so no partially written slot is ever
+  // returned. Each task runs with its expiry's rung memo installed (none when
+  // surface_.rung_memo is off).
   template <class Body> void for_each_expiry(std::vector<std::size_t> tasks, const Body &body) {
     tasks = detail::longest_first(std::move(tasks), cost_);
-    parallel_for_dynamic(tasks.size(), surface_.fit_workers, [&](std::size_t task) {
+    detail::run_expiry_tasks(tasks.size(), surface_.fit_workers, [&](std::size_t task) {
       detail::run_expiry_task_hook(tasks[task]);
       detail::note_expiry_dispatch(tasks[task]);
       const detail::ScopedRungMemo memo(memo_of(tasks[task]));
