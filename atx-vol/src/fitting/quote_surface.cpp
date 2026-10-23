@@ -1155,9 +1155,14 @@ private:
     neighbours(fit, accepted, earlier, later);
     QuoteSliceFit trial = trial_copy(fit);
     double required = 0.0;
+    // Lane C2 (review-L3q m3): the non-dividend re-certification only under Validate; the
+    // default surface keeps the historical rule bit for bit (it serves dev200 graded-v1
+    // non-dividend chains whose repaired prices fail check_nondividend_american).
+    const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                          : QuoteSliceNondividendRecheck::Skip;
     const bool repaired = repair_quote_slice_calendar(trial, expiries_[i].quotes, earlier, later,
                                                       surface_.calendar_repair_half_spreads,
-                                                      &required);
+                                                      &required, recheck);
     out_[i].calendar_repair_required = std::max(out_[i].calendar_repair_required, required);
     if (!repaired || !consistent(trial, accepted)) return false;
     if (ladder() && !in_market(trial, i)) return false; // a bounded move can leave the quotes

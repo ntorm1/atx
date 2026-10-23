@@ -171,6 +171,16 @@ TEST(QuoteSlicePublication, ACalendarRepairNeverServesANondividendViolation) {
     ASSERT_EQ(after.size(), before.size());
     for (std::size_t i = 0; i < before.size(); ++i) EXPECT_EQ(after[i].put, before[i].put) << i;
   }
+  // The historical rule (Skip, fit_quote_surface's default path) serves exactly that
+  // violation: the fixture exercises the recheck, and Recheck is what refused it.
+  auto historical = fit_quote_slice(c.market, c.quotes);
+  ASSERT_TRUE(historical) << historical.error().to_string();
+  ASSERT_TRUE(repair_quote_slice_calendar(*historical, c.quotes, floors, {}, 1.0e6, nullptr,
+                                          QuoteSliceNondividendRecheck::Skip));
+  EXPECT_FALSE(check_nondividend_american(*historical->prices, df));
+  EXPECT_FALSE(repaired);
+  EXPECT_FALSE(repair_quote_slice_calendar(*historical, c.quotes, floors, {}, 1.0e6, nullptr,
+                                           static_cast<QuoteSliceNondividendRecheck>(7)));
 }
 
 TEST(QuoteSlicePublication, AnInBoxMarketRepairNeverServesANondividendViolation) {

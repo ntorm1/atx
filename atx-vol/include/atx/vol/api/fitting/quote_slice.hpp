@@ -936,12 +936,19 @@ fit_quote_slice_channel(const QuoteSliceMarket &market, std::span<const QuoteSli
 // and is never re-implied) and returns true; otherwise leaves `fit` unchanged.
 // The largest required move, in half-spreads, is written to `required` when
 // non-null. The caller must still check the result against every accepted
-// slice.
-[[nodiscard]] bool repair_quote_slice_calendar(QuoteSliceFit &fit,
-                                               std::span<const QuoteSliceQuote> quotes,
-                                               std::span<const AmericanPriceSlice *const> earlier,
-                                               std::span<const AmericanPriceSlice *const> later,
-                                               double half_spreads, double *required = nullptr);
+// slice. `recheck` (lane C2, review-L3q m3): Recheck also refuses a result of a
+// non-dividend slice that fails check_nondividend_american (the certificate the slice
+// was first served under); Skip is the historical rule, which fit_quote_surface keeps on
+// its default path (QuoteSurfacePublication::Off) so the default surface stays bit for
+// bit.
+enum class QuoteSliceNondividendRecheck : std::uint8_t { Recheck, Skip };
+
+[[nodiscard]] bool repair_quote_slice_calendar(
+    QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+    std::span<const AmericanPriceSlice *const> earlier,
+    std::span<const AmericanPriceSlice *const> later, double half_spreads,
+    double *required = nullptr,
+    QuoteSliceNondividendRecheck recheck = QuoteSliceNondividendRecheck::Recheck);
 
 // Calendar repair inside the bid/ask channel: the certified node prices of
 // `fit` are projected exactly as by the channel repair (QuoteSliceRepairConfig),

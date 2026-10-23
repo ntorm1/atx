@@ -2336,11 +2336,14 @@ std::optional<double> nondividend_discount(const QuoteSliceFit &fit) {
 bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
                                  std::span<const AmericanPriceSlice *const> earlier,
                                  std::span<const AmericanPriceSlice *const> later,
-                                 double half_spreads, double *required) {
+                                 double half_spreads, double *required,
+                                 QuoteSliceNondividendRecheck recheck) {
   const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
   if (required != nullptr) *required = 0.0;
   if (!fit.prices || !fit.curve || !(half_spreads > 0.0) || !std::isfinite(half_spreads) ||
-      fit.rows.size() != quotes.size()) {
+      fit.rows.size() != quotes.size() ||
+      (recheck != QuoteSliceNondividendRecheck::Recheck &&
+       recheck != QuoteSliceNondividendRecheck::Skip)) {
     return false;
   }
   const auto original = fit.prices->nodes();
@@ -2383,7 +2386,10 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
   if (required != nullptr) *required = worst;
   if (!within || worst > half_spreads) return false;
   auto certified = AmericanPriceSlice::create(nodes, fit.prices->bounds());
-  if (!certified || !nondividend_certified(fit, *certified)) return false;
+  if (!certified || (recheck == QuoteSliceNondividendRecheck::Recheck &&
+                     !nondividend_certified(fit, *certified))) {
+    return false;
+  }
   commit_calendar_repair(fit, quotes, std::move(*certified), nodes, moved);
   return true;
 }
