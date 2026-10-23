@@ -32,7 +32,8 @@ add_executable(atx-vol-quote-slice-tests
     quote_surface_test.cpp slice_channel_test.cpp term_prior_test.cpp
     quote_slice_vol_space_test.cpp quote_slice_identification_test.cpp
     quote_slice_publication_test.cpp
-    fit_native_route_test.cpp)
+    fit_native_route_test.cpp quote_slice_call_floor_test.cpp
+    quote_slice_admission_test.cpp)
 target_link_libraries(atx-vol-quote-slice-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 # The channel/term-prior suites test internal fitting headers (src/fitting/).
@@ -45,7 +46,7 @@ string(JOIN ":" ATX_VOL_QUOTE_SLICE_SUITES QuoteSlice.* AmericanPriceSlice.* Quo
        SliceChannel.* SliceChannelFamily.* TermPrior.* QuoteSliceVolSpace.* DeAmIvCache.*
        AmericanCertification.* QuoteSurfaceRungMemo.* AmericanBoxCertificate.*
        QuoteSliceBoxCertificate.* QuoteSliceIdentification.* QuoteSlicePublication.*
-       FitNativeRoute.*)
+       FitNativeRoute.* QuoteSliceCallFloor.* QuoteSliceAdmission.*)
 add_test(NAME atx-vol-quote-slice
     COMMAND atx-vol-quote-slice-tests --gtest_filter=${ATX_VOL_QUOTE_SLICE_SUITES})
 set_tests_properties(atx-vol-quote-slice PROPERTIES LABELS "atx_vol_fast")
@@ -372,6 +373,8 @@ add_executable(atx-vol-tests
     quote_slice_identification_test.cpp
     quote_slice_publication_test.cpp
     fit_native_route_test.cpp
+    quote_slice_call_floor_test.cpp
+    quote_slice_admission_test.cpp
     quote_slice_carry_test.cpp
     implied_forward_test.cpp
     quote_surface_test.cpp
@@ -971,6 +974,7 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_american_audit_compare.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_compose_predictions_by_status.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_shape_cohort.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_shape_matrix.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_build_universe_dataset.py)
     set_tests_properties(atx-vol-quote-benchmark-tools PROPERTIES
         LABELS atx_vol_tools TIMEOUT 120

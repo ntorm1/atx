@@ -935,8 +935,15 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
     stats.phases.lap(bench::Stage::Normalization); // B0: this snapshot's worklist
     std::optional<counters::fit_timing::SurfaceTrace> trace;
     if (stats.timing_detail) trace.emplace();
+    // Lane C3 (serve.call_floor, opt-in): the snapshot's shared call-floor lines.
+    const bool call_floor = profile.config.call_floor.mode != QuoteSliceCallFloor::Legacy;
+    std::optional<QuoteSliceConfig> floored;
+    if (call_floor) {
+      floored.emplace(profile.config);
+      floored->call_floor.lines = quote_surface_call_floor_lines(expiries);
+    }
     const auto start = Clock::now();
-    const auto fitted = fit_quote_surface(expiries, profile.config, surface);
+    const auto fitted = fit_quote_surface(expiries, floored ? *floored : profile.config, surface);
     const double surface_us =
         std::chrono::duration<double, std::micro>(Clock::now() - start).count();
     const double per_chain = surface_us / static_cast<double>(members.size());
@@ -1021,6 +1028,15 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
         count_into(graded["ladder_fallback_chains"][to_string(slice.ladder_fallback)], grade);
       }
       if (timed) entry["timing"] = timing_json(trace->chains[s]);
+      if (call_floor) {
+        // Opt-in call-floor provenance (lane C3); absent when legacy.
+        entry["call_floor"] = {{"lines", d.call_floor_lines.size()},
+                               {"lifted_nodes", d.call_floor_lifted},
+                               {"refused", d.call_floor_refused}};
+        count_into(graded["call_floor"], "lifted_nodes", d.call_floor_lifted);
+        if (d.call_floor_lifted > 0) count_into(graded["call_floor"], "lifted_chains");
+        if (d.call_floor_refused) count_into(graded["call_floor"], "refused_chains");
+      }
       if (profile.config.repair.market_distance != QuoteSliceMarketDistance::Off) {
         // Opt-in distance-to-market provenance (lane L3q); absent when off.
         entry["market_distance"] = {

@@ -19,6 +19,7 @@
 #include "atx/vol/api/pricing/implied_vol.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "fitting/quote_slice_call_floor.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/quote_slice_nodes.hpp"
 #include "fitting/quote_slice_vol_space.hpp"
@@ -530,6 +531,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.discrete_div_steps = config.discrete_div_steps;
   out.discrete_div_scheme = config.discrete_div_scheme;
   out.floor_policy = config.floor_policy;
+  ATX_TRY_VOID(detail::select_call_floor(out, config.call_floor)); // lane C3, opt-in
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
@@ -1803,6 +1805,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   AmericanPriceSlice &accepted = box_certified       ? *box_certified
                                  : channel_certified ? *channel_certified
                                                      : *certified;
+  // Lane C3 (opt-in QuoteSliceCallFloor): the shared call floor on the certified nodes; a
+  // lifted node is a moved node (its row's volatility is re-implied below).
+  detail::lift_to_call_floor(out, accepted, repaired);
   if (q_min == 0.0 && q_max == 0.0 && out.variance_clock_dividends.empty() &&
       diag.effective_rate >= 0.0) {
     const auto joint = check_nondividend_american(accepted, diag.discount);

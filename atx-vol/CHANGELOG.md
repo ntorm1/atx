@@ -12,6 +12,42 @@ are in the root. The record's Family tier serves A0's six Greeks, and a family r
 accepted by K3's envelope enclosure. Every record's `policy_sha256` changes (the default
 policy: `87318ae7…cefe` to `57902383…f3fc`). No default quote-bench path builds a record.
 
+### NEW — opt-in shared call floor, shape-class matrix, admission contracts (lane C3)
+
+**Shared call floor (opt-in; default unchanged).** `QuoteSliceConfig::call_floor`
+(`QuoteSliceCallFloorConfig {mode, lines}`, `QuoteSliceCallFloor::Legacy | DiscountedIntrinsic`)
+and `quote_surface_call_floor_lines(expiries)` (one line {T, S, exp(-rT)} per expiry in the
+non-dividend regime). Under `DiscountedIntrinsic` each expiry is held to the lines of the
+expiries at or before it, floor(K) = max over T' <= T of S' - K * df' (valid for every later
+expiry, dividend payers included: C(T) >= C(T') >= S' - K * df'); `certify_and_serve` lifts the
+certified slice's calls onto it after its own repairs and re-certifies (a lift the certificate
+refuses is refused whole, `diagnostics.call_floor_refused`); lifted nodes are moved nodes, so their
+rows' volatilities are re-implied (`ReimpliedRepaired`). New diagnostics: `call_floor_lines`,
+`call_floor_lifted`, `call_floor_refused`. Bench key `serve.call_floor: legacy |
+discounted_intrinsic` (graded admission only; the native report adds per-slice `call_floor` and
+run counters only when on). Legacy with lines is refused (`InvalidArgument`). **Behaviour change
+under the key only:** deep in-the-money non-dividend calls the graded path served at S - K (below
+S - K * df; C2 review B(3)) now serve at or above the bound, which can change which of two
+crossing expiries the calendar pass keeps (see `docs/curve-admission-matrix.md`). The 9 default
+hashes are unchanged.
+
+**Shape-class matrix.** `tools/shape_matrix.py` (`run` / `table` / `select`): policy x cohort x
+the L1b shape classes, development split only, with the refusal taxonomy, per-expiry
+completeness, the per-expiry fit clock and a deterministic per-class selection; the scorer is
+imported, never edited.
+
+**Admission contracts pinned (no behaviour change).** A zero-bid quote is never a point
+observation and only an upper bound in the channel (never a midpoint); a surface fit depends only
+on its own snapshot (`QuoteSliceAdmission.*`).
+
+**Gate G4 (lane C3 verdict): OPEN.** On the combined arm (C2 box h0 + market-distance repair +
+validate, C0 serve keys + one-spot, C3 call floor; one binary) C1 PASSES (0 served shape and
+publication violations on dev200, dev200b, cohort5 and SPY); C2 MISSES (eligible coverage dev200
+88.33 %, dev200b 93.68 %, SPY 48.80 %; 7 class cells under 98.5 % containment) and C3 MISSES (SPY
+MAE/spread 0.227, dev200b sparse 0.303; identified IV median SPY 9.7 / mega 22.5-60.6 bp), each
+with one named next experiment in the lane report (SPY: an exact in-box projection rung at h0).
+F2 is untested on this binary: G3 missed, and the K4 speed arm is not in this lane's base.
+
 ### NEW — served support, publication validation, typed joint projection (lane C2)
 
 **Served support.** `QuoteSliceFit::withheld_nodes` marks the node sides whose certified
