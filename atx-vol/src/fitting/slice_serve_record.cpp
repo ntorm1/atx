@@ -1111,8 +1111,11 @@ void describe_side_family(const Impl &impl, Side side, ServeSideSupport &s) {
   }
 }
 
+// `kept`: the origins of a supplied holder that an earlier record of the same fit built
+// (the serve_build stage's second phase); nullptr: a caller's holder (Supplied).
 void attach_families(Impl &impl, const QuoteSliceFit &fit,
-                     std::shared_ptr<const DeAmSigmaFamilies> supplied) {
+                     std::shared_ptr<const DeAmSigmaFamilies> supplied,
+                     const std::array<ServeFamilyOrigin, 2> *kept) {
   const auto t0 = Clock::now();
   std::array<ServeFamilyOrigin, 2> origin{};
   std::array<bool, 2> mismatch{};
@@ -1120,7 +1123,8 @@ void attach_families(Impl &impl, const QuoteSliceFit &fit,
     impl.families = std::move(supplied);
     for (const Side side : {Side::Call, Side::Put}) {
       if (impl.families->of_q(side) != nullptr) {
-        origin[side_slot(side)] = ServeFamilyOrigin::Supplied;
+        origin[side_slot(side)] =
+            kept != nullptr ? (*kept)[side_slot(side)] : ServeFamilyOrigin::Supplied;
       }
     }
   } else if (impl.policy.families == ServeFamilyMode::Build) {
@@ -1275,7 +1279,8 @@ void stamp_version(Impl &impl, const QuoteSliceFit &fit) {
 
 [[nodiscard]] Result<std::shared_ptr<const SliceServeRecord>>
 build_record(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
-             std::shared_ptr<const DeAmSigmaFamilies> supplied) {
+             std::shared_ptr<const DeAmSigmaFamilies> supplied,
+             const std::array<ServeFamilyOrigin, 2> *kept = nullptr) {
   const auto t0 = Clock::now();
   const Status valid = validate_serve_record_policy(policy);
   if (!valid) return Err(valid.error());
@@ -1295,7 +1300,7 @@ build_record(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
     impl->support.reason = ServeUnsupportedReason::DatedCash;
     impl->support.call.reason = impl->support.put.reason = ServeUnsupportedReason::DatedCash;
   } else {
-    attach_families(*impl, fit, std::move(supplied));
+    attach_families(*impl, fit, std::move(supplied), kept);
     const auto t_audit = Clock::now();
     audit_family_at_nodes(*impl);
     impl->support.call.between_node_bound_usd = audit_between_nodes(*impl, Side::Call);
@@ -2117,6 +2122,16 @@ Result<std::shared_ptr<const SliceServeRecord>>
 build_serve_record_with(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
                         std::shared_ptr<const DeAmSigmaFamilies> families) {
   return build_record(fit, policy, std::move(families));
+}
+
+Result<std::shared_ptr<const SliceServeRecord>>
+build_serve_record_on(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
+                      const SliceServeRecord &first) {
+  const Impl &held = SliceServeRecordAccess::impl(first);
+  if (!held.families) return build_record(fit, policy, nullptr);
+  // side_slot order (call, put).
+  const std::array<ServeFamilyOrigin, 2> kept{held.support.call.origin, held.support.put.origin};
+  return build_record(fit, policy, held.families, &kept);
 }
 
 std::optional<QuoteSliceValue> serve_record_value(const QuoteSliceFit &fit, double strike,

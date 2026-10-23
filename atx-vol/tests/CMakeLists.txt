@@ -238,11 +238,14 @@ gtest_discover_tests(atx-vol-tick-path-tests
 
 # Lane H0-A (r6, 2026-10-23): the immutable fitted serving record
 # (api/fitting/slice_serve_record.hpp) - build, ownership, tiered serve, tick-rate IV and
-# the zero-allocation Ladder / Family reads. support/alloc_counter.cpp replaces global
-# operator new for THIS binary only, so the suite lives only here (not in atx-vol-tests or
-# a slice) and atx_vol_fast runs each case once.
+# the zero-allocation Ladder / Family reads. Lane H1 (r6): its live publication
+# (api/fitting/serve_book.hpp, live_publication_test.cpp) - versions, readers x publisher,
+# reclamation, the rebuild queue and the allocation-free query path.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only, so the
+# suites live only here (not in atx-vol-tests or a slice) and atx_vol_fast runs each case
+# once.
 add_executable(atx-vol-serve-record-tests
-    slice_serve_record_test.cpp support/alloc_counter.cpp)
+    slice_serve_record_test.cpp live_publication_test.cpp support/alloc_counter.cpp)
 target_link_libraries(atx-vol-serve-record-tests
     PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
 target_include_directories(atx-vol-serve-record-tests

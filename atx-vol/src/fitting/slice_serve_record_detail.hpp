@@ -95,6 +95,14 @@ build_serve_families(const QuoteSliceFit &fit, const ServeRecordPolicy &policy);
 build_serve_record_with(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
                         std::shared_ptr<const DeAmSigmaFamilies> families);
 
+// The serve_build stage's second phase (serve_book.cpp): the record of `fit` under
+// `policy` on the families `first` (an earlier record of the SAME fit) holds, their
+// origins kept - no second family build or certification. Builds its own when `first`
+// holds none. InvalidArgument as build_serve_record_with when `first` is another expiry's.
+[[nodiscard]] Result<std::shared_ptr<const SliceServeRecord>>
+build_serve_record_on(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
+                      const SliceServeRecord &first);
+
 // The evaluate_quote_slice fast path (lane H1): when fit.serve_record was built from this
 // fit (spot, clock, rate and the bracketing node prices bit-equal) and (strike, side) is
 // served between nodes or at a moved node, the certified slice price with the volatility
