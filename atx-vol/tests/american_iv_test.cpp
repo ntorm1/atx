@@ -3442,3 +3442,161 @@ TEST(AmericanIvPremium, AnInflatedEnvelopeBoundSkipsNoConfirmOnEitherRoute) {
   EXPECT_EQ(native_inflated.confirmed, native_inflated.accepted);
   EXPECT_EQ(band_inflated.confirmed, band_inflated.accepted);
 }
+
+// ── Lane K5 (r6): the enclosure's bracket meets the width rule as computed ──────────────
+// family_enclosure places its ends around x and skips the confirm only when the COMPUTED
+// bracket satisfies b - a <= w (w = acceptance_width(tol) < 1e-7). With the ends placed at
+// x -/+ w/2 in floating point, rounding widened b - a one ulp of x past w on about two thirds
+// of SPY's native roots (17,186 of 28,117 at 746154d6): roots whose two ends the validated
+// envelope certified were refused and paid a confirm solve. At points x where x -/+ w/2 round
+// to a bracket wider than w, with the price the family's own price at x (its root centred) and
+// the envelope bound clearing both end gaps, the enclosure must succeed, its bracket no wider
+// than w and holding x. The width rule itself is unchanged: no bracket wider than w is accepted.
+TEST(AmericanIvPremium, FamilyEnclosureMeetsTheWidthWhereRoundingWidensTheEnds) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::FamilyBoundedPrice;
+  using atx::vol::FamilyEnclosure;
+  using atx::vol::family_enclosure;
+  using atx::vol::family_price_bounded;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double T = 0.5;
+  const double w = kIvRootRequirement * (1.0 - 0x1p-20); // acceptance_width(tol >= 1e-7)
+  std::size_t widened = 0;
+  std::size_t enclosed = 0;
+  std::size_t open = 0; // an end the envelope bound leaves open
+  double max_width_excess = -std::numeric_limits<double>::infinity(); // (hi - lo) - w
+  for (const EnclosureCase &ec : kEnclosureCases) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, ec.q);
+    AlSigmaQFamily fam(g, ec.side, S);
+    ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, ec.q_lo, ec.q_hi, 4));
+    const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+    ASSERT_TRUE(env.covered());
+    for (const double K : {90.0, 100.0, 110.0}) {
+      // The binade fixes how the half-width rounds: the ends x -/+ w/2 round to a bracket
+      // wider than w for every x where frac(w / (2 ulp(x))) > 1/2 - at this w, x in
+      // [2^-6, 2^-2) and [1, 2) (also [2^-8, 2^-7) and [4, 8)); not [2^-7, 2^-6), [0.25, 1)
+      // or [2, 4). 0.12 and 0.2 lie in [2^-4, 2^-3) and [2^-3, 2^-2), 1.1 in [1, 2).
+      for (const double sig : {0.12, 0.2, 1.1}) {
+        // The first points at or above sig where the two ends round to a wider bracket.
+        double x = sig;
+        std::size_t found = 0;
+        for (int step = 0; step < 256 && found < 4u; ++step, x = std::nextafter(x, 1.0)) {
+          const double a = x - 0.5 * w;
+          const double b = x + 0.5 * w;
+          if (b - a <= w) continue;
+          ++found;
+          SCOPED_TRACE("side " + std::to_string(static_cast<int>(ec.side)) + " K " +
+                       std::to_string(K) + " x " + std::to_string(x));
+          const double price = fam.price(S, K, x, ec.q).price;
+          const FamilyBoundedPrice pa = family_price_bounded(fam, env, S, K, a, ec.q);
+          const FamilyBoundedPrice pb = family_price_bounded(fam, env, S, K, b, ec.q);
+          // Only points whose two ends the envelope certifies: there the width alone decides
+          // (near the exercise boundary the bound can leave an end open - not this case).
+          if (!(pa.price + pa.bound_usd <= price && price <= pb.price - pb.bound_usd)) {
+            ++open;
+            continue;
+          }
+          ++widened;
+          IvPremiumStats st;
+          const FamilyEnclosure enc = family_enclosure(price, S, K, ec.q, x, w, fam, &env, st);
+          EXPECT_TRUE(enc.enclosed);
+          if (!enc.enclosed) continue;
+          ++enclosed;
+          max_width_excess = std::max(max_width_excess, (enc.hi - enc.lo) - w);
+          EXPECT_LE(enc.hi - enc.lo, w);
+          EXPECT_EQ(enc.lo, a);
+          EXPECT_LE(enc.lo, x);
+          EXPECT_GE(enc.hi, x);
+          EXPECT_GE(enc.root, enc.lo);
+          EXPECT_LE(enc.root, enc.hi);
+        }
+        EXPECT_EQ(found, 4u) << "no rounding-widened bracket near sigma " << sig;
+      }
+    }
+  }
+  std::printf("[K5 enclosure width] %zu rounding-widened brackets with both ends certified, %zu "
+              "enclosed (%zu points with an end the bound leaves open); max (hi - lo) - w %.3g\n",
+              widened, enclosed, open, max_width_excess);
+  EXPECT_GE(widened, 60u);
+  EXPECT_EQ(enclosed, widened);
+  EXPECT_LE(max_width_excess, 0.0);
+}
+
+// Fix round 1 (review-K5 m2): the ends the enclosure SERVES are the ends it certified. Where
+// rounding widens x -/+ w/2, the upper end moves an ulp toward the lower one, so its certificate
+// must be the family price and envelope bound AT the moved end, never the one at x + w/2. At each
+// such x the price is set to the edge of what the unmoved end certifies, P_f(x + w/2) - eps
+// there; at many of these points the moved end's P_f - eps is lower (the one-ulp move), so it
+// does not certify that price and no enclosure may be served with it. Every served bracket's two
+// ends are re-priced here and must certify the price; the discriminating points are counted.
+TEST(AmericanIvPremium, FamilyEnclosureCertifiesTheEndsItServes) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::FamilyBoundedPrice;
+  using atx::vol::FamilyEnclosure;
+  using atx::vol::family_enclosure;
+  using atx::vol::family_price_bounded;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double T = 0.5;
+  const double w = kIvRootRequirement * (1.0 - 0x1p-20); // acceptance_width(tol >= 1e-7)
+  std::size_t checked = 0;
+  std::size_t moved_open = 0; // the moved end does not certify the unmoved end's edge price
+  std::size_t served = 0;
+  for (const EnclosureCase &ec : kEnclosureCases) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, ec.q);
+    AlSigmaQFamily fam(g, ec.side, S);
+    ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, ec.q_lo, ec.q_hi, 4));
+    const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+    ASSERT_TRUE(env.covered());
+    const auto bounded = [&](double K, double sigma) {
+      return family_price_bounded(fam, env, S, K, sigma, ec.q);
+    };
+    for (const double K : {90.0, 100.0, 110.0}) {
+      for (const double sig : {0.12, 0.2, 1.1}) { // binades where x -/+ w/2 round wide
+        double x = sig;
+        std::size_t found = 0;
+        for (int step = 0; step < 256 && found < 4u; ++step, x = std::nextafter(x, 1.0)) {
+          const double a = x - 0.5 * w;
+          const double b0 = x + 0.5 * w;
+          if (b0 - a <= w) continue;
+          ++found;
+          double b = b0; // the moved end, as family_enclosure places it
+          for (int k = 0; k < 4 && !(b - a <= w); ++k) {
+            b = std::nextafter(b, a);
+          }
+          SCOPED_TRACE("side " + std::to_string(static_cast<int>(ec.side)) + " K " +
+                       std::to_string(K) + " x " + std::to_string(x));
+          const FamilyBoundedPrice pa = bounded(K, a);
+          const FamilyBoundedPrice pb0 = bounded(K, b0);
+          const FamilyBoundedPrice pb = bounded(K, b);
+          const double edge = pb0.price - pb0.bound_usd; // the largest price b0 certifies
+          if (!(pa.price + pa.bound_usd <= edge)) continue; // the lower end must certify it
+          ++checked;
+          const bool open_at_b = !(edge <= pb.price - pb.bound_usd);
+          moved_open += open_at_b ? 1u : 0u;
+          IvPremiumStats st;
+          const FamilyEnclosure enc = family_enclosure(edge, S, K, ec.q, x, w, fam, &env, st);
+          if (open_at_b) {
+            EXPECT_FALSE(enc.enclosed && enc.hi == b) << "served the moved end on b0's certificate";
+          }
+          if (!enc.enclosed) continue;
+          ++served;
+          const FamilyBoundedPrice lo = bounded(K, enc.lo);
+          const FamilyBoundedPrice hi = bounded(K, enc.hi);
+          EXPECT_LE(lo.price + lo.bound_usd, edge) << "lower end served without its certificate";
+          EXPECT_LE(edge, hi.price - hi.bound_usd) << "upper end served without its certificate";
+          EXPECT_LE(enc.hi - enc.lo, w);
+        }
+        EXPECT_EQ(found, 4u) << "no rounding-widened bracket near sigma " << sig;
+      }
+    }
+  }
+  std::printf("[K5 served ends] %zu edge prices checked, %zu where the moved end does not certify "
+              "the unmoved end's edge, %zu enclosures served (each end re-certified)\n",
+              checked, moved_open, served);
+  EXPECT_GE(checked, 60u);
+  EXPECT_GE(moved_open, 10u); // the test discriminates: these points fail a stale certificate
+}
