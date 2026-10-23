@@ -28,9 +28,11 @@
 // sprints/2026-10-18-L1c-al-nonmonotone-sprint.md). These tests pin: the dip exists under
 // KernelFloor and is gone under Intrinsic; Intrinsic is bitwise KernelFloor outside the
 // region and the exact intrinsic inside (oracle: exercise_boundary, an independent solve);
-// the KernelFloor overloads are bitwise the default entry points; the in-region change is
-// within the bound the L3k probe measured; the three price sites (scalar uncached, scalar
-// cached, laned AVX2) agree bit for bit; validation, errors and closed forms are unchanged.
+// the KernelFloor overloads are bitwise the default entry points; the in-region error is
+// settled against an independent reference and pinned per preset (C1); the three price
+// sites (scalar uncached, scalar cached, laned AVX2) agree bit for bit; validation, errors
+// and closed forms are unchanged. The shared classification and the plateau / limit /
+// unsupported-regime behaviour are pinned in american_region_test.cpp.
 
 namespace {
 
@@ -57,14 +59,52 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 struct Preset {
   const char *name;
   std::optional<AlOpts> opts;
-  double bound; // pinned max |P_I - P_K| / (K max(1, T)^2), from the L3k probe (2-fig round-up)
+  // The preset's in-region error class: max (P_KernelFloor - P_exact) / (K max(1, T)^2) over
+  // the grid cells it classifies in-region, P_exact being the intrinsic the INDEPENDENT
+  // reference confirms (InRegionKernelFloorErrorIsReferenceBackedAndWithinItsClass). Pinned
+  // at the 2-figure round-up of the measured maximum, which is written beside each pin
+  // (C1, 2026-10-22; evidence C:\atx-cache\quote-benchmark\C1-20261022-region). The L3k
+  // checkpoint pinned all four at a provisional 1.2e-6; al_bulk_opts measures 3.64e-6
+  // there against the reference (its documented price accuracy is ~1e-3), so that pin was
+  // aspirational, not the preset's class.
+  double bound;
 };
 
 [[nodiscard]] std::array<Preset, 4> presets() {
-  return {{{"accurate", std::nullopt, 1.2e-6},
-           {"fast_profile", al_fast_profile(std::nullopt), 1.2e-6},
-           {"al_fast_opts", al_fast_opts(), 1.2e-6},
-           {"al_bulk_opts", al_bulk_opts(), 1.2e-6}}};
+  return {{// measured 5.011e-7: call K 62.5 T 5 sigma .30 r .05 q .10
+           {"accurate", std::nullopt, 5.1e-7},
+           // measured 5.011e-7: the same cell (the Fast profile prices it identically)
+           {"fast_profile", al_fast_profile(std::nullopt), 5.1e-7},
+           // measured 9.570e-7: the same cell
+           {"al_fast_opts", al_fast_opts(), 9.6e-7},
+           // measured 3.641e-6: put K 110 T 2 sigma .05 r .02 q -.03 — 1.602e-3 USD above the
+           // reference K - S = 10, 6.8% inside the converged boundary 107.33542
+           {"al_bulk_opts", al_bulk_opts(), 3.7e-6}}};
+}
+
+// The independent continuous-carry reference (lane B0's comparator, "reference
+// uncertainty" scheme): Andersen-Lake converged at 32 nodes, quadrature 64/64, 16 sweeps,
+// tol 1e-14.
+[[nodiscard]] AlOpts converged_reference() {
+  AlOpts o;
+  o.n_collocation = 32;
+  o.n_quadrature = 64;
+  o.n_quad_price = 64;
+  o.max_newton_iter = 16;
+  o.tol = 1.0e-14;
+  o.profile = atx::vol::AlProfile::Reference;
+  return o;
+}
+
+// A second, different method: the Broadie-Detemple binomial lattice (no dividends), which
+// shares nothing with the Andersen-Lake integral equation.
+[[nodiscard]] double lattice_price(double S, double K, double T, double sigma, double r,
+                                   double q, Side side, int steps) {
+  const std::vector<atx::vol::CashDividend> none;
+  const Result<double> p = atx::vol::american_discrete_div_price(
+      S, K, T, sigma, r, q, side, none, steps, atx::vol::ExerciseStyle::American,
+      atx::vol::DiscreteDivScheme::SplicedBbs);
+  return p ? *p : kNaN;
 }
 
 [[nodiscard]] double price(double S, double K, double T, double sigma, double r, double q,
@@ -215,7 +255,15 @@ TEST(AlMonotone, KernelFloorOverloadsAreBitwiseTheDefaultEntryPoints) {
   }
 }
 
-TEST(AlMonotone, InRegionExcessWithinThePinnedBound) {
+// C1 (2026-10-22): the L3k pin compared the two rules with each other, which says how far
+// they differ but not which one is right. Here every cell a preset classifies in-region is
+// first settled by the INDEPENDENT reference — the converged Andersen-Lake boundary puts the
+// spot inside the exercise region by a margin far beyond its own uncertainty, and both the
+// converged Andersen-Lake price and a binomial lattice return the intrinsic there — so the
+// exact value is K - S (put) / S - K (call), Intrinsic's error is exactly zero and
+// KernelFloor's excess is the preset's own in-region error, pinned per preset.
+TEST(AlMonotone, InRegionKernelFloorErrorIsReferenceBackedAndWithinItsClass) {
+  const AlOpts ref = converged_reference();
   for (const Preset &p : presets()) {
     double worst = 0.0;
     int changed = 0;
@@ -224,14 +272,40 @@ TEST(AlMonotone, InRegionExcessWithinThePinnedBound) {
                               AlExerciseRegion::KernelFloor);
       const double pi = price(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, p.opts,
                               AlExerciseRegion::Intrinsic);
-      if (!same_bits(pf, pi)) {
-        ++changed;
+      if (same_bits(pf, pi)) {
+        continue; // outside the preset's region: the two rules agree bitwise
       }
+      ++changed;
+      const double intrinsic = (c.side == Side::Put) ? (c.K - c.S) : (c.S - c.K);
       const double scale = c.K * std::max(1.0, c.T * c.T);
-      worst = std::max(worst, std::abs(pi - pf) / scale);
+      // (1) Inside the converged boundary, by more than 100x its distance to the accurate
+      //     preset's boundary (the reference's own uncertainty).
+      const Result<double> b_ref = exercise_boundary(c.K, c.T, c.sigma, c.r, c.q, c.side, ref);
+      const Result<double> b_acc =
+          exercise_boundary(c.K, c.T, c.sigma, c.r, c.q, c.side, std::nullopt);
+      ASSERT_TRUE(b_ref && b_acc) << p.name << " K " << c.K;
+      const double margin = (c.side == Side::Put) ? (1.0 - c.S / *b_ref) : (1.0 - *b_ref / c.S);
+      const double u_b = std::abs(*b_ref - *b_acc) / *b_ref;
+      EXPECT_GT(margin, 1.0e-3) << p.name << " K " << c.K << " T " << c.T << " s " << c.sigma;
+      EXPECT_GT(margin, 100.0 * u_b) << p.name << " K " << c.K << " T " << c.T;
+      // (2) The reference value is the intrinsic: the converged scheme (its own in-region
+      //     excess measured <= 1.5e-7 USD = 6.4e-11 of scale) and the lattice (node-level
+      //     rounding ~5e-11 USD; 2001 vs 1000 steps agree to the same order).
+      const double p_ref = price(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, ref,
+                                 AlExerciseRegion::KernelFloor);
+      EXPECT_LE(std::abs(p_ref - intrinsic), 1.0e-9 * scale) << p.name << " K " << c.K;
+      const double lat = lattice_price(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, 2001);
+      const double lat_half = lattice_price(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, 1000);
+      EXPECT_LE(std::abs(lat - intrinsic), 1.0e-9 * c.K) << p.name << " K " << c.K;
+      EXPECT_LE(std::abs(lat - lat_half), 1.0e-9 * c.K) << p.name << " K " << c.K;
+      // (3) Against that reference: Intrinsic is exact, KernelFloor errs upward.
+      EXPECT_TRUE(same_bits(pi, intrinsic)) << p.name << " K " << c.K;
+      EXPECT_GE(pf, intrinsic) << p.name << " K " << c.K;
+      worst = std::max(worst, (pf - intrinsic) / scale);
     }
     EXPECT_GT(changed, 0) << p.name << ": precondition, the region changes some prices";
-    EXPECT_LE(worst, p.bound) << p.name;
+    EXPECT_LE(worst, p.bound) << p.name << ": in-region error above its pinned class";
+    EXPECT_GT(worst, 0.5 * p.bound) << p.name << ": the pin is the measured class, not slack";
   }
 }
 
