@@ -5,6 +5,29 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### CHANGED (opt-in keys only) — (sigma, q) family route: validated error envelope and typed root acceptance (lane K3)
+
+The (sigma, q) family route (`graded.family_q`, `graded.family_native`, the B-family
+`confirm: band` arm) no longer rests on a sampled bound. `deam_family_probe_worst` and its
+`max(10 x worst probe, 1e-12)` bound are removed; `deam_family_certify` builds a
+`ValidatedErrorEnvelope` from the family's own node tensor (refinement-verified Chebyshev
+tails, node parity, target noise, rounding; `src/pricing/american_family_error.hpp`),
+audits it with 9 probes independent of the nodes (a violation makes the family
+Uncovered), and sets the grid's `q_bound` to the envelope's domain-wide USD bound.
+Behaviour changes on those keys: (1) a confirm is skipped only when two family prices and
+their bounds enclose the accurate root in at most 1e-7 vol; the B-family arm no longer
+skips on the half-spread band gate (the band gate now runs only on requests without a
+(sigma, q) family); (2) the family-native confirm (R1-A MJ1) closes a bracket whose ends
+carry certified sides instead of dividing by the iterate's secant: up to 2 confirm solves
+where the envelope cannot certify the far end (was 1), and a root it cannot bracket falls
+back to Search typed `PriceOnly` / `Interval` / `None`; (3) the family certification grid
+serves a family price only under the domain-wide bound, which is looser than the old
+sampled one (inert on wide carry boxes). Every family-route root is typed
+(`IvPremiumStats::acceptance`; `FitTimingCounters::deam_accept_by_kind` /
+`deam_accept_by_reason`); `--deam-audit` re-solves each by bisection of the accurate map
+(`deam_audit_bracket_*`; per-root CSV via `ATX_VOL_FAMILY_ROOT_AUDIT`). Defaults: no
+change (no default reaches the family route). Design: `docs/sigma-q-family-error-envelope.md`.
+
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
 Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
