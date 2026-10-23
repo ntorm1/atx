@@ -142,6 +142,7 @@ republishes back to back (19 versions in the window). The universe sample re-run
 | Miss rate (status not Ok) | 8.42 %, all `Exercised` (intrinsic with exercise Greeks); unanswered 0 |
 | Rebuild completion | p50 17.4 s (fit 12.6 s at width 2, records 4.25 s) |
 | P0 pool queue age (pass A, width 2, 8 expiries) | p50 541 ms, p99 1.42 s, max 1.59 s |
+| P0 pool queue age at all cores (AUTO 16; SPY 33 expiries; separate 30-s run) | p50 372 ms, p90 604 ms, max 773 ms |
 | Fit throughput loss | sample −11.7 %; full pass −21.8 % while queried |
 
 The record path stays sub-microsecond on ladders under load. The response tails come from OS preemption of an
