@@ -796,6 +796,10 @@ TEST(ServedAttribution, TermsSumToExplainedAndUnexplainedIsActualMinusExplained)
   EXPECT_EQ(bits(res->unexplained), bits(unexplained.value()));
   EXPECT_EQ(bits(res->cell.taylor_pnl), bits(res->explained));
   EXPECT_EQ(bits(res->cell.exact_pnl), bits(res->actual));
+  // The attribution's totals are the cell's like-for-like (matched) totals.
+  EXPECT_EQ(res->cell.matched_legs, res->attributed_legs);
+  EXPECT_EQ(bits(res->cell.matched_taylor_pnl), bits(res->explained));
+  EXPECT_EQ(bits(res->cell.matched_exact_pnl), bits(res->actual));
 }
 
 void expect_same_cell(const ScenarioCell &a, const ScenarioCell &b) {
@@ -809,6 +813,10 @@ void expect_same_cell(const ScenarioCell &a, const ScenarioCell &b) {
   EXPECT_EQ(bits(a.exact_certificate_usd), bits(b.exact_certificate_usd));
   EXPECT_EQ(bits(a.estimate_taylor_pnl), bits(b.estimate_taylor_pnl));
   EXPECT_EQ(bits(a.estimate_exact_pnl), bits(b.estimate_exact_pnl));
+  EXPECT_EQ(bits(a.matched_taylor_pnl), bits(b.matched_taylor_pnl));
+  EXPECT_EQ(bits(a.matched_exact_pnl), bits(b.matched_exact_pnl));
+  EXPECT_EQ(bits(a.matched_remainder), bits(b.matched_remainder));
+  EXPECT_EQ(a.matched_legs, b.matched_legs);
   EXPECT_EQ(a.taylor_legs, b.taylor_legs);
   EXPECT_EQ(a.exact_legs, b.exact_legs);
   EXPECT_EQ(a.exact_routes, b.exact_routes);
