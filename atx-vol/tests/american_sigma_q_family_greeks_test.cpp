@@ -346,6 +346,7 @@ TEST(AlSigmaQFamilyGreeks, PriceAndVegaAreTheFusedPassBitsOnEveryServedRow) {
 struct MapTables {
   Table delta, gamma, vega, phi;
   std::size_t skipped_near_exercise = 0;
+  std::size_t gamma_near_edge = 0; // band rows: Γ is NearExerciseEdge (review-A0 MJ1)
 };
 
 void map_rows(const Spec &s, const AlSigmaQFamily &f, MapTables &t) {
@@ -372,7 +373,14 @@ void map_rows(const Spec &s, const AlSigmaQFamily &f, MapTables &t) {
         const Rich d2 = richardson(PS, s.S, hS, 2);
         ASSERT_TRUE(d1.ok && d2.ok) << at;
         t.delta.add(std::abs(g.delta - d1.value), d1.value, 4.0 * d1.err + d1.gain * rnd, at);
-        t.gamma.add(std::abs(g.gamma - d2.value), d2.value, 4.0 * d2.err + d2.gain * rnd, at);
+        if (g.near_edge) { // the near-edge band: Γ is not served there (review-A0 MJ1)
+          ASSERT_EQ(g.reason_of(Greek::Gamma), Reason::NearExerciseEdge) << at;
+          ASSERT_TRUE(std::isnan(g.gamma)) << at;
+          ++t.gamma_near_edge;
+        } else {
+          t.gamma.add(std::abs(g.gamma - d2.value), d2.value, 4.0 * d2.err + d2.gain * rnd,
+                      at);
+        }
         const auto Psig = [&](double x, bool &ok) { return map_price(f, s.S, K, x, q, ok); };
         const Rich dv = richardson(Psig, sigma, 2.0e-3 * sigma, 1);
         ASSERT_TRUE(dv.ok) << at;
@@ -405,7 +413,8 @@ TEST(AlSigmaQFamilyGreeks, DeltaGammaVegaPhiAreTheFamilyMapsDerivatives) {
     MapTables t;
     map_rows(s, b->f, t);
     std::cout << "[AlSigmaQFamilyGreeks] map " << s.name << " skipped(near exercise)="
-              << t.skipped_near_exercise << "\n  delta " << t.delta.line() << "\n  gamma "
+              << t.skipped_near_exercise << " gamma NearExerciseEdge=" << t.gamma_near_edge
+              << "\n  delta " << t.delta.line() << "\n  gamma "
               << t.gamma.line() << "\n  vega  " << t.vega.line() << "\n  phi   " << t.phi.line()
               << "\n";
     for (auto [dst, src] : {std::pair{&all.delta, &t.delta}, std::pair{&all.gamma, &t.gamma},
@@ -446,6 +455,11 @@ TEST(AlSigmaQFamilyGreeks, DeltaGammaVegaPhiAreTheFamilyMapsDerivatives) {
 }
 
 // ── 3. rho against the second families' own central difference ─────────────────────
+
+// How far (in σ√T) the exercise FLAG's edge may sit on the continuation side of the
+// boundary's own edge B'_now (the bundle's edge_sd): the floored zone, where the served
+// price meets intrinsic just above the edge (A0 fix round 1: measured, see the tests).
+constexpr double kFlooredZoneSd = 3.4e-3; // measured 3.36e-3 (the slow suite's widest)
 
 // The option spot at which the family's exercise flag flips (bisection on S at fixed
 // K, σ, q): the current exercise edge in option-spot terms. NaN when no flip lies in
@@ -579,6 +593,8 @@ TEST(AlSigmaQFamilyGreeks, RhoIsTheBumpedFamiliesCentralDifferenceToItsTruncatio
 // ── 4. θ is the PDE identity of the served fields ──────────────────────────────────
 
 TEST(AlSigmaQFamilyGreeks, ThetaIsThePdeIdentityOfTheServedPriceDeltaGamma) {
+  std::size_t near_edge = 0;
+  std::size_t identity = 0;
   for (const Spec &s : specs()) {
     const std::unique_ptr<Built> b = build(s);
     ASSERT_NE(b, nullptr);
@@ -592,15 +608,30 @@ TEST(AlSigmaQFamilyGreeks, ThetaIsThePdeIdentityOfTheServedPriceDeltaGamma) {
             EXPECT_EQ(g.reason_of(Greek::Theta), Reason::Exercised);
             continue;
           }
+          // The near-edge band (review-A0 MJ1): θ and Γ are NaN with NearExerciseEdge.
+          EXPECT_EQ(g.near_edge, g.edge_sd < atx::vol::kAlFamilyGreekEdgeBand)
+              << describe(s, K, sigma, q);
+          if (g.near_edge) {
+            EXPECT_TRUE(std::isnan(g.theta) && std::isnan(g.gamma)) << describe(s, K, sigma, q);
+            EXPECT_EQ(g.reason_of(Greek::Theta), Reason::NearExerciseEdge);
+            EXPECT_EQ(g.reason_of(Greek::Gamma), Reason::NearExerciseEdge);
+            ++near_edge;
+            continue;
+          }
           const double want = s.r * g.price - (s.r - q) * s.S * g.delta -
                               0.5 * sigma * sigma * s.S * s.S * g.gamma;
           EXPECT_NEAR(g.theta, want, 1.0e-13 * std::max(std::abs(want), 1.0))
               << describe(s, K, sigma, q);
           EXPECT_EQ(g.reason_of(Greek::Theta), Reason::Served);
+          ++identity;
         }
       }
     }
   }
+  std::cout << "[AlSigmaQFamilyGreeks] theta: identity rows=" << identity
+            << " near-edge rows=" << near_edge << "\n";
+  EXPECT_GT(identity, 300u); // of the 476 continuation rows (the rest are in the band)
+  EXPECT_GT(near_edge, 0u);
 }
 
 // ── 5. Masks, reasons, convention ──────────────────────────────────────────────────
@@ -622,6 +653,101 @@ void expect_reason(const AlSigmaQFamilyGreeks &g, Greek k, Reason want, const ch
   } else {
     EXPECT_TRUE(std::isnan(v)) << what << " greek " << static_cast<int>(k);
   }
+}
+
+// ── 5a. The near-edge band (review-A0 MJ1) ─────────────────────────────────────────
+
+TEST(AlSigmaQFamilyGreeks, ThetaAndGammaNextToTheExerciseEdgeAreNearExerciseEdge) {
+  // The slow suite's worst row (band-spy23-put: K 1.05 S, σ 0.12, 0.0071 σ√T from the
+  // edge — the spy23-mid-put family): the PDE-identity θ there was +0.128 per year against
+  // a converged calendar difference of −0.337 (an American θ = −∂V/∂T is <= 0), served
+  // with reason Served. The row must say it is in the band; θ and Γ are NaN with
+  // NearExerciseEdge; Δ, vega, rho and phi stay served.
+  const std::unique_ptr<Built> b = build(specs()[0]);
+  ASSERT_NE(b, nullptr);
+  AlSigmaQFamilyRateBumps bumps;
+  ASSERT_TRUE(bumps.prepare(b->f));
+  const double q = kSpyQlo + 0.37 * (kSpyQhi - kSpyQlo);
+  const double K = strikes_around(kSpyS, 1.02, 1.12, 11)[3];
+  const double sigma = 0.12;
+  const double sd = sigma * std::sqrt(kSpyT);
+  const AlSigmaQGreeksRequest req = request(AlFamilyGreekMask::all());
+  const AlSigmaQFamilyGreeks g = family_greeks(b->f, bumps, kSpyS, K, sigma, q, req);
+  ASSERT_EQ(g.status, AlSigmaQFamilyStatus::Ok);
+  ASSERT_FALSE(g.exercised);
+  // The converged model's calendar θ on this row is negative (central, h = 2e-3 T).
+  const atx::vol::AlOpts conv{.n_collocation = 32, .n_quadrature = 64, .max_newton_iter = 16,
+                              .tol = 1.0e-13};
+  const double hT = 2.0e-3 * kSpyT;
+  const Result<double> up = andersen_lake(kSpyS, K, kSpyT + hT, sigma, kSpyR, q, Side::Put, conv);
+  const Result<double> dn = andersen_lake(kSpyS, K, kSpyT - hT, sigma, kSpyR, q, Side::Put, conv);
+  ASSERT_TRUE(up && dn);
+  const double theta_conv = -(*up - *dn) / (2.0 * hT);
+  // The bundle's edge distance against an independent edge (bisection on the exercise
+  // flag in option spot).
+  const double edge = edge_spot(b->f, Side::Put, kSpyS, K, sigma, q);
+  ASSERT_TRUE(std::isfinite(edge));
+  const double edge_sd = std::log(kSpyS / edge) / sd;
+  std::cout << "[AlSigmaQFamilyGreeks] near-edge row K=" << K << " sigma=" << sigma
+            << ": edge_sd=" << g.edge_sd << " (bisection " << edge_sd << ") theta=" << g.theta
+            << " (" << static_cast<int>(g.reason_of(Greek::Theta)) << ") gamma=" << g.gamma
+            << " converged calendar theta=" << theta_conv
+            << " gap to the flag's edge=" << g.edge_sd - edge_sd << "\n";
+  EXPECT_LT(theta_conv, 0.0);
+  EXPECT_FALSE(g.supported.has(Greek::Theta) && g.theta > 0.0) << "an American θ is <= 0";
+  // The bundle's edge is the boundary's own (B'_now); the exercise FLAG flips a little on
+  // the continuation side of it (the floored zone), so the independent bisection on the
+  // flag sits at or inside the bundle's distance, by at most the floored zone.
+  EXPECT_GE(g.edge_sd, edge_sd - 1.0e-9);
+  EXPECT_LE(g.edge_sd - edge_sd, kFlooredZoneSd);
+  EXPECT_GT(g.edge_sd, 0.0);
+  EXPECT_LT(g.edge_sd, 0.02);
+  EXPECT_TRUE(g.near_edge);
+  expect_reason(g, Greek::Theta, Reason::NearExerciseEdge, "near edge");
+  expect_reason(g, Greek::Gamma, Reason::NearExerciseEdge, "near edge");
+  for (const Greek k : {Greek::Delta, Greek::Vega, Greek::Rho, Greek::Phi}) {
+    expect_reason(g, k, Reason::Served, "near edge");
+  }
+  // The price and the served Greeks do not depend on the band.
+  const AlSigmaQFamilyGreeks d = family_greeks(b->f, kSpyS, K, sigma, q,
+                                               request(AlFamilyGreekMask::none()));
+  EXPECT_TRUE(same_bits(d.price, g.price));
+  EXPECT_TRUE(same_bits(d.edge_sd, g.edge_sd));
+  EXPECT_TRUE(d.near_edge);
+  // A strike walk across the band's border on the same family: in the band iff
+  // 0 < edge_sd < 0.25 on a continuation row; both sides are reached; outside it θ and Γ
+  // are served and θ <= 0 here.
+  std::size_t inside = 0;
+  std::size_t outside = 0;
+  double floored_sd = 0.0;
+  for (const double k : strikes_around(kSpyS, 0.95, 1.06, 45)) {
+    const AlSigmaQFamilyGreeks w = family_greeks(b->f, kSpyS, k, sigma, q);
+    ASSERT_EQ(w.status, AlSigmaQFamilyStatus::Ok);
+    if (w.exercised) {
+      EXPECT_FALSE(w.near_edge) << k;
+      // On the exercise side of B'_now (edge_sd <= 0) or in the floored zone next to it.
+      EXPECT_EQ(w.floored, w.edge_sd > 0.0) << k;
+      EXPECT_LE(w.edge_sd, kFlooredZoneSd) << k;
+      floored_sd = std::max(floored_sd, w.edge_sd);
+      continue;
+    }
+    EXPECT_GT(w.edge_sd, 0.0) << k;
+    EXPECT_EQ(w.near_edge, w.edge_sd < atx::vol::kAlFamilyGreekEdgeBand) << k;
+    if (w.near_edge) {
+      expect_reason(w, Greek::Theta, Reason::NearExerciseEdge, "walk, inside");
+      expect_reason(w, Greek::Gamma, Reason::NearExerciseEdge, "walk, inside");
+      ++inside;
+    } else {
+      expect_reason(w, Greek::Theta, Reason::Served, "walk, outside");
+      expect_reason(w, Greek::Gamma, Reason::Served, "walk, outside");
+      EXPECT_LE(w.theta, 0.0) << k;
+      ++outside;
+    }
+  }
+  std::cout << "[AlSigmaQFamilyGreeks] band walk: inside=" << inside << " outside=" << outside
+            << " widest floored edge_sd=" << floored_sd << "\n";
+  EXPECT_GT(inside, 0u);
+  EXPECT_GT(outside, 0u);
 }
 
 TEST(AlSigmaQFamilyGreeks, ExercisedRowsServeTheExerciseGreeksWithTheMask) {
@@ -838,6 +964,8 @@ TEST(AlSigmaQFamilyGreeks, ManyIsTheScalarEntryLaneForLaneWithRetiredAndRefusedL
     active[17] = 0;
     active[18] = 0;
     sig[18] = kNaN; // a retired lane's inputs are not read
+    K[20] = 1.05 * s.S; // a put lane in the near-edge band (review-A0 MJ1)
+    sig[20] = 0.12;
     for (const bool with_bumps : {false, true}) {
       AlSigmaQGreeksRequest req = request(AlFamilyGreekMask::all());
       req.surface_version = 7;
@@ -847,6 +975,7 @@ TEST(AlSigmaQFamilyGreeks, ManyIsTheScalarEntryLaneForLaneWithRetiredAndRefusedL
       std::vector<AlFamilyGreekMask> supported(kN, AlFamilyGreekMask{0xFF});
       std::vector<AlFamilyGreekReasons> reason(kN);
       std::vector<std::uint8_t> flags(kN, 0xFF);
+      std::vector<double> edge(kN, 9.0);
       AlSigmaQGreekColumns out;
       out.price = price;
       out.delta = delta;
@@ -859,6 +988,7 @@ TEST(AlSigmaQFamilyGreeks, ManyIsTheScalarEntryLaneForLaneWithRetiredAndRefusedL
       out.supported = supported;
       out.reason = reason;
       out.flags = flags;
+      out.edge_sd = edge;
       const Status st = family_greeks_many(b->f, s.S, K, sig, q, active, out, req,
                                            with_bumps ? &bumps : nullptr);
       ASSERT_TRUE(st);
@@ -866,6 +996,7 @@ TEST(AlSigmaQFamilyGreeks, ManyIsTheScalarEntryLaneForLaneWithRetiredAndRefusedL
         if (active[i] == 0) {
           EXPECT_EQ(price[i], 9.0);
           EXPECT_EQ(flags[i], 0xFFu);
+          EXPECT_EQ(edge[i], 9.0);
           EXPECT_EQ(supported[i].bits, 0xFFu);
           continue;
         }
@@ -883,8 +1014,14 @@ TEST(AlSigmaQFamilyGreeks, ManyIsTheScalarEntryLaneForLaneWithRetiredAndRefusedL
         EXPECT_EQ(supported[i].bits, g.supported.bits) << i;
         EXPECT_EQ(reason[i], g.reason) << i;
         EXPECT_EQ(flags[i], static_cast<std::uint8_t>((g.exercised ? 1u : 0u) |
-                                                      (g.floored ? 2u : 0u)))
+                                                      (g.floored ? 2u : 0u) |
+                                                      (g.near_edge ? 4u : 0u)))
             << i;
+        EXPECT_TRUE(same_bits(edge[i], g.edge_sd)) << i;
+      }
+      if (s.side == Side::Put) {
+        EXPECT_EQ(flags[20], 4u); // in the band, not exercised
+        EXPECT_EQ(reason[20][static_cast<std::size_t>(Greek::Theta)], Reason::NearExerciseEdge);
       }
       EXPECT_EQ(status[5], AlSigmaQFamilyStatus::SigmaOutsideBox);
       EXPECT_EQ(status[9], AlSigmaQFamilyStatus::InvalidArgument);
@@ -982,8 +1119,9 @@ TEST(AlSigmaQFamilyGreeks, Avx2AndScalarBuiltFamiliesAgreeToTheMeasuredBound) {
           const AlSigmaQFamilyGreeks ga = family_greeks(fa->f, ba, s.S, K, sigma, q, req);
           ASSERT_EQ(gs.status, AlSigmaQFamilyStatus::Ok);
           ASSERT_EQ(ga.status, AlSigmaQFamilyStatus::Ok);
-          if (gs.exercised != ga.exercised) {
-            ADD_FAILURE() << "exercise flag differs " << describe(s, K, sigma, q);
+          if (gs.exercised != ga.exercised || gs.near_edge != ga.near_edge ||
+              gs.reason != ga.reason) {
+            ADD_FAILURE() << "exercise / band / reason differs " << describe(s, K, sigma, q);
             continue;
           }
           const double floor = 1.0e-3 * std::max(gs.price, 1.0);
@@ -992,6 +1130,9 @@ TEST(AlSigmaQFamilyGreeks, Avx2AndScalarBuiltFamiliesAgreeToTheMeasuredBound) {
           const double b[] = {gs.delta, gs.gamma * s.S, gs.vega,  gs.theta,
                               gs.rho,   gs.phi,         gs.price};
           for (std::size_t k = 0; k < worst.size(); ++k) {
+            if (k < kAlFamilyGreekCount && !gs.supported.has(static_cast<Greek>(k))) {
+              continue; // a NaN by contract (θ / Γ in the near-edge band): nothing to compare
+            }
             const double fl = (k == 0) ? 1.0e-3 : floor;
             worst[k] = std::max(worst[k], std::abs(a[k] - b[k]) / std::max(std::abs(b[k]), fl));
           }
@@ -1060,6 +1201,12 @@ TEST(AlSigmaQFamilyGreeks, ACollapsedQBoxAgreesWithTheSigmaFamilyBundle) {
         const double av[] = {a.delta, a.gamma * kSpyS, a.vega, a.theta, a.rho};
         const double bv[] = {b.delta, b.gamma * kSpyS, b.vega, b.theta, b.rho};
         for (std::size_t k = 0; k < worst.size(); ++k) {
+          if (!a.supported.has(static_cast<Greek>(k))) {
+            // θ / Γ in the near-edge band: NaN here, still served by the L3g bundle (which
+            // has no per-Greek reason — review-A0 m2).
+            EXPECT_TRUE(a.near_edge) << K << " " << sigma << " greek " << k;
+            continue;
+          }
           const double fl = (k == 0) ? 1.0e-3 : floor;
           worst[k] = std::max(worst[k], std::abs(av[k] - bv[k]) / std::max(std::abs(bv[k]), fl));
         }
@@ -1130,9 +1277,13 @@ TEST(AlSigmaQFamilyGreeks, ConcurrentBundlesAreBitIdenticalToTheSerialLoop) {
 // Richardson ladder of 4th-order stencils. The reference's own uncertainty is the same
 // ladder on one rung below (24 / 48): |D_conv − D_rung| is printed beside every error.
 // Rows are split by their distance to the family's current exercise edge: the
-// NEAR-BOUNDARY BAND is |ln(S / S_edge)| < 0.25 σ√T (the interpolated boundary and the
-// smooth pasting the family only approximates dominate there; an S stencil that would
-// cross the edge is taken one-sided away from it, and Γ is not differenced there).
+// NEAR-BOUNDARY BAND is |ln(S / S_edge)| < 0.25 σ√T — the bundle's own edge_sd /
+// near_edge (review-A0 MJ1), checked here against an independent bisection edge. There
+// the bundle serves NO θ and NO Γ (NearExerciseEdge): the PDE-identity θ cancels O(rK)
+// terms next to the edge and was measured up to 138 % off with the wrong sign — the
+// L3g σ family's θ (the same identity, still served by that bundle) carries that
+// measurement on. An S stencil that would cross the edge is taken one-sided away from
+// it, and Γ is not differenced there.
 // The family's error against the converged model is the family's interpolation error
 // PLUS its build scheme's distance from convergence (the family is built at the
 // geometry's Reference scheme) — a measured TABLE (F11), guarded against gross breakage
@@ -1263,7 +1414,8 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
   if (const std::string path = csv_path(); !path.empty()) {
     csv.open(path);
     csv << "case,side,S,K,T,r,q,sigma,edge_sd,band,greek,family,converged,conv_tol,conv_unc,"
-           "build_scheme,rel_err_conv,rel_err_build,rel_build_vs_conv,l3g_theta\n";
+           "build_scheme,rel_err_conv,rel_err_build,rel_build_vs_conv,l3g_theta,"
+           "edge_sd_bisect,reason\n";
     csv << std::setprecision(17);
   }
   GreekErrors vs_conv[2][kModelGreeks]; // [outside band = 0 / inside = 1][greek]
@@ -1272,7 +1424,11 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
   GreekErrors l3g_theta[2];
   std::size_t rows[2] = {0, 0};
   std::size_t skipped_exercised = 0;
-  std::size_t skipped_gamma = 0;
+  std::size_t not_served[kModelGreeks] = {}; // band rows: θ / Γ NearExerciseEdge
+  std::size_t l3g_positive_theta = 0;        // band rows where the L3g identity θ > 0
+  std::size_t conv_positive_theta = 0;       // rows where the converged calendar θ > 0
+  std::size_t served_positive_theta = 0;     // rows serving θ > 0 (must stay 0)
+  double zone_sd = 0.0; // widest gap between the bundle's edge and the flag's (σ√T)
   for (const ModelCase &mc : model_cases()) {
     const Spec &s = mc.spec;
     const std::unique_ptr<Built> b = build(s);
@@ -1297,7 +1453,21 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
         }
         const double edge = edge_spot(b->f, s.side, s.S, K, sigma, q);
         const double edge_sd = std::isfinite(edge) ? std::abs(std::log(s.S / edge)) / sd : kNaN;
-        const bool band = std::isfinite(edge_sd) && edge_sd < 0.25;
+        // The bundle types the band itself (review-A0 MJ1): its edge distance agrees with
+        // the independent bisection edge, and so does its classification off the border.
+        const double band_w = atx::vol::kAlFamilyGreekEdgeBand;
+        if (std::isfinite(edge_sd)) {
+          // The flag's edge sits at or inside B'_now by at most the floored zone.
+          EXPECT_GE(g.edge_sd, edge_sd - 1.0e-9) << at;
+          EXPECT_LE(g.edge_sd - edge_sd, kFlooredZoneSd) << at;
+          zone_sd = std::max(zone_sd, g.edge_sd - edge_sd);
+          if (std::abs(edge_sd - band_w) > kFlooredZoneSd) {
+            EXPECT_EQ(g.near_edge, edge_sd < band_w) << at;
+          }
+        } else {
+          EXPECT_FALSE(g.near_edge) << at;
+        }
+        const bool band = g.near_edge;
         const int sb = band ? 1 : 0;
         ++rows[sb];
         const BandDirs dir = band_dirs(band, s.side);
@@ -1340,21 +1510,38 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
         const AlSigmaFamilyGreeks l3 =
             family_greeks(fs, s.S, K, sigma, AlSigmaFamilyGreeksMask::hedge());
         for (std::size_t k = 0; k < kModelGreeks; ++k) {
-          if (k == 1 && band) {
-            ++skipped_gamma;
-            continue;
+          const auto greek = static_cast<Greek>(k);
+          const bool served = g.supported.has(greek);
+          if (band && (k == 1 || k == 3)) {
+            // θ and Γ in the band: NaN with NearExerciseEdge, by contract (review-A0 MJ1).
+            EXPECT_FALSE(served) << at << " " << kModelGreekName[k];
+            EXPECT_EQ(g.reason_of(greek), Reason::NearExerciseEdge) << at;
+            EXPECT_TRUE(std::isnan(fam[k])) << at << " " << kModelGreekName[k];
+            ++not_served[k];
+            if (k == 1) {
+              continue; // no one-sided second difference: Γ is not differenced in the band
+            }
+          } else {
+            ASSERT_TRUE(served) << at << " " << kModelGreekName[k];
           }
           ASSERT_TRUE(rc[k].ok && rr[k].ok && rb[k].ok) << at << " " << kModelGreekName[k];
-          ASSERT_TRUE(g.supported.has(static_cast<Greek>(k))) << at << " " << kModelGreekName[k];
           const double rnd = price_rounding(s.S, K, g.price);
           const double tol = 4.0 * rc[k].err + rc[k].gain * rnd;
           const double unc = std::abs(rc[k].value - rr[k].value) + tol;
           const double fl = floor_of[k];
-          vs_conv[sb][k].add(fam[k], rc[k].value, unc, fl, at);
-          vs_build[sb][k].add(fam[k], rb[k].value, 4.0 * rb[k].err + rb[k].gain * rnd, fl, at);
+          if (served) {
+            vs_conv[sb][k].add(fam[k], rc[k].value, unc, fl, at);
+            vs_build[sb][k].add(fam[k], rb[k].value, 4.0 * rb[k].err + rb[k].gain * rnd, fl,
+                                at);
+          }
           build_vs_conv[sb][k].add(rb[k].value, rc[k].value, unc, fl, at);
-          if (k == 3 && l3.status == AlSigmaFamilyStatus::Ok && !l3.exercised) {
-            l3g_theta[sb].add(l3.theta, rc[k].value, unc, fl, at);
+          if (k == 3) {
+            conv_positive_theta += rc[k].value > 0.0 ? 1u : 0u;
+            served_positive_theta += (served && fam[k] > 0.0) ? 1u : 0u;
+            if (l3.status == AlSigmaFamilyStatus::Ok && !l3.exercised) {
+              l3g_theta[sb].add(l3.theta, rc[k].value, unc, fl, at);
+              l3g_positive_theta += (band && l3.theta > 0.0) ? 1u : 0u;
+            }
           }
           if (csv.is_open()) {
             const auto rel = [fl](double a, double ref) {
@@ -1365,7 +1552,8 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
                 << ',' << sb << ',' << kModelGreekName[k] << ',' << fam[k] << ','
                 << rc[k].value << ',' << tol << ',' << unc << ',' << rb[k].value << ','
                 << rel(fam[k], rc[k].value) << ',' << rel(fam[k], rb[k].value) << ','
-                << rel(rb[k].value, rc[k].value) << ',' << ((k == 3) ? l3.theta : kNaN) << '\n';
+                << rel(rb[k].value, rc[k].value) << ',' << ((k == 3) ? l3.theta : kNaN) << ','
+                << edge_sd << ',' << static_cast<int>(g.reason_of(greek)) << '\n';
           }
         }
       }
@@ -1388,10 +1576,20 @@ TEST(AlSigmaQFamilyGreeksModel, GreeksAgainstTheConvergedModelInsideAndOutsideTh
               << " p99=" << l3g_theta[sb].p99() << " at " << l3g_theta[sb].at << "\n";
   }
   std::cout << "[AlSigmaQFamilyGreeksModel] exercised rows (exercise Greeks, not differenced)="
-            << skipped_exercised << ", band rows without a gamma reference=" << skipped_gamma
-            << "\n";
+            << skipped_exercised << "; band rows with theta / gamma NearExerciseEdge="
+            << not_served[3] << " / " << not_served[1]
+            << "; band rows where the L3g identity theta > 0 (wrong sign)=" << l3g_positive_theta
+            << "; rows where the converged calendar theta > 0=" << conv_positive_theta
+            << "; widest bundle-edge vs flag-edge gap=" << zone_sd << " sigma*sqrt(T)\n";
   EXPECT_GT(rows[0], 50u);
   EXPECT_GT(rows[1], 5u);
+  // Every band row withholds θ and Γ; no served θ is positive anywhere (an American θ is
+  // <= 0: the converged calendar differences never are).
+  EXPECT_EQ(not_served[3], rows[1]);
+  EXPECT_EQ(not_served[1], rows[1]);
+  EXPECT_EQ(vs_conv[1][3].rel.size(), 0u);
+  EXPECT_EQ(conv_positive_theta, 0u);
+  EXPECT_EQ(served_positive_theta, 0u);
   // Outside the band, pinned at the measured worst (A0 r6, 2-figure round-ups; order Δ, Γ,
   // vega, θ, rho, phi). Against the family's own build scheme the gap is the
   // interpolation error (θ: the PDE identity against that scheme's calendar

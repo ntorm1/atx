@@ -440,6 +440,9 @@ struct GreeksInternal {
   bool exercised = false;        // FusedPriceVega::exercised's rule (K1's, read as is)
   bool inside = false;           // S' <= the current edge xmax · nb.now_factor
   bool sigma_degenerate = false; // nb.degenerate (the σ motion has no derivative)
+  // ln(S' / (xmax · nb.now_factor)) / (σ√T): the distance to the current edge in σ√T —
+  // the near-edge band's coordinate (A0 fix round 1, review-A0 MJ1).
+  double edge_sd = std::numeric_limits<double>::quiet_NaN();
 };
 
 // The pass. `fast` = the family's AlProfile::Fast arithmetic (the workspace flag).

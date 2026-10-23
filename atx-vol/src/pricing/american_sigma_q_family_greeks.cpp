@@ -31,7 +31,9 @@
 // contributes no derivative (the served Π is the constant 0 there), as in K1 / L3g.
 // Calls: Δ = (P − S' P_S')/K', Γ = (S'/K')² P_S'S' — homogeneity of degree 1, exact for
 // the served map (y is strike-free; xmax and the clamps are linear in K'). θ: the PDE
-// identity with the option's (r, q). Exercise: K1's rule (FusedPriceVega::exercised),
+// identity with the option's (r, q) — NOT a derivative of the map; next to the edge
+// (edge_sd < kAlFamilyGreekEdgeBand, the header's near-edge band) θ and Γ are
+// NearExerciseEdge (review-A0 MJ1). Exercise: K1's rule (FusedPriceVega::exercised),
 // read as is (PM r6 note: its semantics belong to K1 / K4) — the exercise Greeks.
 //
 // COST. The strike-free stage is K1's boundary_at_nodes plus one more q-contraction and
@@ -444,6 +446,9 @@ void greeks_pass_t(const PremiumNodes &pn, const QCarry &c, const NodeBoundary &
   }
   out.price = price;
   out.inside = Sp <= xmax * nb.now_factor;
+  // The near-edge band's coordinate (review-A0 MJ1): the distance to that same edge in
+  // σ√T, > 0 on the continuation side.
+  out.edge_sd = std::log(Sp / (xmax * nb.now_factor)) / (sigma * pn.sqrtT);
   out.exercised = clamped || (intr > 0.0 && price <= intr + 1.0e-9 * Kp) || out.inside;
   out.sigma_degenerate = nb.degenerate;
   if (out.exercised) {
@@ -579,8 +584,12 @@ void store_lane(const AlSigmaQGreekColumns &out, std::size_t i,
     if (g.floored) {
       f |= 2u;
     }
+    if (g.near_edge) {
+      f |= 4u;
+    }
     out.flags[i] = f;
   }
+  put(out.edge_sd, g.edge_sd);
 }
 
 [[nodiscard]] bool columns_fit(const AlSigmaQGreekColumns &out, std::size_t n) noexcept {
@@ -588,7 +597,7 @@ void store_lane(const AlSigmaQGreekColumns &out, std::size_t i,
   return fits(out.price.size()) && fits(out.delta.size()) && fits(out.gamma.size()) &&
          fits(out.vega.size()) && fits(out.theta.size()) && fits(out.rho.size()) &&
          fits(out.phi.size()) && fits(out.status.size()) && fits(out.supported.size()) &&
-         fits(out.reason.size()) && fits(out.flags.size());
+         fits(out.reason.size()) && fits(out.flags.size()) && fits(out.edge_sd.size());
 }
 
 // The scalar entry's body: admit, lay the node data and the carry, run bundle_at.
@@ -666,6 +675,12 @@ AlSigmaQFamilyGreeks map_greeks(const GreeksInternal &in, const NodeCarryMotion 
   g.convention = convention_of(req);
   g.exercised = in.exercised;
   g.floored = in.exercised && !in.inside;
+  g.edge_sd = in.edge_sd;
+  // The near-edge band (review-A0 MJ1): a continuation row within kAlFamilyGreekEdgeBand
+  // σ√T of the current edge serves neither θ (the PDE identity cancels O(rK) terms there
+  // and was measured up to 138 % off with the wrong sign) nor Γ (the term it amplifies,
+  // not validated there).
+  g.near_edge = !in.exercised && in.edge_sd < kAlFamilyGreekEdgeBand;
   const bool call = ctx.side == Side::Call;
   // The option's Greeks from the internal put's (homogeneity for a call).
   double delta = in.dS;
@@ -703,6 +718,7 @@ AlSigmaQFamilyGreeks map_greeks(const GreeksInternal &in, const NodeCarryMotion 
       break;
     case Greek::Gamma:
       value = gamma;
+      why = g.near_edge ? Reason::NearExerciseEdge : Reason::Served;
       break;
     case Greek::Vega:
       value = vega;
@@ -710,6 +726,7 @@ AlSigmaQFamilyGreeks map_greeks(const GreeksInternal &in, const NodeCarryMotion 
       break;
     case Greek::Theta:
       value = theta;
+      why = g.near_edge ? Reason::NearExerciseEdge : Reason::Served;
       break;
     case Greek::Rho:
       value = rho;

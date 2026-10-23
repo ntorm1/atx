@@ -1062,16 +1062,20 @@ private:
 // The (σ, q) family's price is one closed-form map of (S, K, σ, q) — K1's fused map
 // (src/pricing/american_sigma_q_family.hpp): P = clamp(E + Π), Π the premium quadrature
 // over the boundary B_i = xmax · exp(−√y_i), y interpolated tensor-barycentric in
-// (σ, q) and barycentric in τ. Every Greek below is an EXACT derivative of that served
-// map, from ONE fused premium pass (no stencil, no re-solve): the family's OWN
-// polynomial map, NOT the converged Andersen-Lake model (deep review F11; the distance
-// to the converged model is measured in docs/sigma-q-family-greeks.md).
+// (σ, q) and barycentric in τ. Δ, Γ, vega, phi and rho below are EXACT derivatives of
+// that served map, from ONE fused premium pass (no stencil, no re-solve): the family's
+// OWN polynomial map, NOT the converged Andersen-Lake model (deep review F11; the
+// distance to the converged model is measured in docs/sigma-q-family-greeks.md). θ is
+// NOT a derivative of the map (the family has no τ axis): it is the model's
+// continuation-region PDE identity evaluated with the map's V, Δ, Γ, so its error is not
+// bounded by the map's accuracy (review-A0 m4) — and next to the exercise edge it is
+// not served at all (the near-edge band below).
 //   Δ, Γ   ∂/∂S of the integrand at FIXED boundary (the internal put's boundary does
 //          not depend on its spot); calls through McDonald-Schroder and homogeneity,
 //          as family_greeks on the σ family (above);
 //   vega   K1's fused dP/dσ: the explicit σ-terms plus the boundary motion dy/dσ;
-//   θ      the continuation-region PDE identity θ = rV − (r − q)SΔ − ½σ²S²Γ (the
-//          family has no τ axis): calendar dV/dt per unit of the geometry's T;
+//   θ      the continuation-region PDE identity θ = rV − (r − q)SΔ − ½σ²S²Γ (NOT a
+//          derivative of the map): calendar dV/dt per unit of the geometry's T;
 //   phi    ∂P/∂q: the frozen-boundary terms PLUS the boundary motion dy/dq through the
 //          tensor's q axis (nodal differentiation, exact for the interpolant); a
 //          collapsed q box (n_q() == 1) has no q coordinate: NoQAxis;
@@ -1085,7 +1089,8 @@ private:
 // exercise Greeks (Δ = −1 put / +1 call, the rest 0.0) with reason Exercised; a
 // derivative the map does not have (the transform s = √y at its zero with a nonzero
 // slope in that parameter) is NaN with NearNodeDegenerate; an unimplemented held-fixed
-// convention is NaN with ConventionUnsupported. Validity: S, K > 0, σ inside the σ box,
+// convention is NaN with ConventionUnsupported; θ and Γ next to the exercise edge are
+// NaN with NearExerciseEdge (below). Validity: S, K > 0, σ inside the σ box,
 // q inside the q box; otherwise the row refuses with price()'s typed status and every
 // requested Greek is NaN with Refused. The price field is the fused pass's price —
 // price()'s map to rounding, not price()'s bits — whatever the mask. Accuracy (vs the
@@ -1093,6 +1098,22 @@ private:
 // near-boundary band, AVX2- vs scalar-built families) and cost are measured in
 // docs/sigma-q-family-greeks.md. Const, allocation-free, thread-safe on a const family
 // (stack scratch only). Nothing default selects any of this.
+//
+// THE NEAR-EDGE BAND (review-A0 MJ1). edge_sd = ln(S' / B'_now) / (σ√T) is the contract's
+// distance to the family's CURRENT exercise edge in standard deviations, computed in the
+// internal put's coordinates: S' the internal spot, B'_now = xmax · exp(−√y) at τ = T and
+// the contract's (σ, q) — the very edge the Exercised rule tests (S' <= B'_now). For a put
+// that is ln(S / S*) / (σ√T); for a call (internal S' = K, K' = S, homogeneity) it is
+// ln(S* / S) / (σ√T), S* the option's own edge. It is > 0 on the continuation side, <= 0
+// on the exercise side, NaN on a refused row. A continuation row with
+// edge_sd < kAlFamilyGreekEdgeBand (0.25 σ√T) is IN THE BAND: θ and Γ are NaN with
+// NearExerciseEdge (`near_edge`, flags bit 2). There θ → 0 is a cancellation of O(rK)
+// terms of the identity, which amplifies the discretised map's Γ error near the edge
+// (its approximate smooth pasting): the identity θ was measured up to 138 % off the
+// converged calendar difference with the WRONG sign 0.007 σ√T from the edge, 25 % off at
+// 0.016 σ√T (the L3g σ family's θ is the same number — the identity, not the (σ, q)
+// interpolant), and Γ is not validated there. Δ, vega, phi and rho stay served (their
+// in-band accuracy is in the docs).
 
 // The Greeks of the bundle, in the order of AlFamilyGreekReasons.
 enum class AlFamilyGreek : std::uint8_t {
@@ -1104,6 +1125,9 @@ enum class AlFamilyGreek : std::uint8_t {
   Phi = 5,
 };
 inline constexpr std::size_t kAlFamilyGreekCount = 6;
+
+// The near-edge band's half-width in σ√T (the band defined above).
+inline constexpr double kAlFamilyGreekEdgeBand = 0.25;
 
 // Which Greeks a call computes (the price always is); an unrequested Greek is left 0.0
 // with reason NotRequested.
@@ -1148,6 +1172,8 @@ enum class AlFamilyGreekReason : std::uint8_t {
   NearNodeDegenerate = 7,    // the boundary transform s = √y sits at its zero at a premium
                              // node with a nonzero slope in this Greek's parameter: NaN
   ConventionUnsupported = 8, // the requested held-fixed convention is not implemented: NaN
+  NearExerciseEdge = 9,      // θ and Γ on a continuation row inside the near-edge band
+                             // (edge_sd < kAlFamilyGreekEdgeBand): NaN
 };
 using AlFamilyGreekReasons = std::array<AlFamilyGreekReason, kAlFamilyGreekCount>;
 
@@ -1204,6 +1230,10 @@ struct AlSigmaQFamilyGreeks {
   AlFamilyGreekReasons reason{}; // per AlFamilyGreek (unrequested: NotRequested)
   bool exercised = false;        // the exercise Greeks were served
   bool floored = false;          // exercised on the CONTINUATION side of the current edge
+  bool near_edge = false;        // a continuation row in the near-edge band: θ and Γ are
+                                 // NearExerciseEdge
+  double edge_sd = std::numeric_limits<double>::quiet_NaN(); // the distance to the current
+                                 // exercise edge in σ√T (the band above); NaN unless Ok
   AlFamilyGreekConvention convention{};
   [[nodiscard]] AlFamilyGreekReason reason_of(AlFamilyGreek g) const noexcept {
     return reason[static_cast<std::size_t>(g)];
@@ -1264,7 +1294,8 @@ private:
 
 // Caller-owned structure-of-arrays outputs of family_greeks_many. A column is written iff
 // it is non-empty, and then its length must equal the lane count; the mask decides what
-// is COMPUTED, the spans what is STORED. `flags`: bit 0 exercised, bit 1 floored.
+// is COMPUTED, the spans what is STORED. `flags`: bit 0 exercised, bit 1 floored, bit 2
+// near_edge; `edge_sd`: the bundle's edge_sd.
 struct AlSigmaQGreekColumns {
   std::span<double> price{};
   std::span<double> delta{};
@@ -1277,6 +1308,7 @@ struct AlSigmaQGreekColumns {
   std::span<AlFamilyGreekMask> supported{};
   std::span<AlFamilyGreekReasons> reason{};
   std::span<std::uint8_t> flags{};
+  std::span<double> edge_sd{};
 };
 
 // A chain on ONE family at spot S, lane i = (K[i], sigma[i], q[i]) (per-lane σ and q:
