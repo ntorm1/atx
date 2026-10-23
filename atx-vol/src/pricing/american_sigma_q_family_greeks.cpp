@@ -377,7 +377,12 @@ void greeks_pass_t(const PremiumNodes &pn, const QCarry &c, const NodeBoundary &
     const double dm = dp - v;
     const double a = rp * Kp * c.dr[i];
     const double b = qp * Sp * c.dq[i];
-    total += pn.wz2[i] * (a * cdf_of<kFast>(-dm) - b * cdf_of<kFast>(-dp));
+    // The integrand's Φ values serve the S' / carry accumulators below too (review-L3g
+    // m3, applied once the derivative contract was proven): the same expression, so the
+    // price's bits are unchanged.
+    const double Phm = cdf_of<kFast>(-dm);
+    const double Php = cdf_of<kFast>(-dp);
+    total += pn.wz2[i] * (a * Phm - b * Php);
     const double phm = pdf_of<kFast>(dm);
     const double php = pdf_of<kFast>(dp);
     if (need.sigma) {
@@ -389,8 +394,6 @@ void greeks_pass_t(const PremiumNodes &pn, const QCarry &c, const NodeBoundary &
     }
     // ── the S' and carry accumulators (per unit 2 z_i w_i) ──
     const double wgt = pn.wz2[i];
-    const double Phm = cdf_of<kFast>(-dm);
-    const double Php = cdf_of<kFast>(-dp);
     const double G = a * phm - b * php;
     const double qdq = qp * c.dq[i];
     if (need.s1) {
