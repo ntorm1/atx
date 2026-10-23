@@ -239,6 +239,18 @@ if(NOT eigen3_POPULATED)
     target_include_directories(eigen SYSTEM INTERFACE
         $<BUILD_INTERFACE:${eigen3_SOURCE_DIR}>
         $<INSTALL_INTERFACE:include>)
+    # Deterministic GEMM/TRSM blocking (lane P0, 2026-10-23). Eigen otherwise reads the
+    # L1/L2/L3 sizes with CPUID once per process, on whichever core runs the first blocked
+    # product, and a hybrid CPU answers per core (i7-1260P: P 48 KiB / 1.25 MiB, E 32 KiB /
+    # 2 MiB), so blocked products - the dense slice's normal matrix among them - summed in
+    # a core-type-dependent order and served rows flipped between runs. With the query off
+    # every core uses these sizes (the i7-1260P P-core answers, so P-core results are
+    # unchanged). INTERFACE, so every Eigen consumer, and the install export, agrees.
+    target_compile_definitions(eigen INTERFACE
+        EIGEN_NO_CPUID
+        EIGEN_DEFAULT_L1_CACHE_SIZE=49152
+        EIGEN_DEFAULT_L2_CACHE_SIZE=1310720
+        EIGEN_DEFAULT_L3_CACHE_SIZE=18874368)
     add_library(Eigen3::Eigen ALIAS eigen)
 endif()
 
