@@ -22,9 +22,14 @@ once no reader holds them. Readers cap every request at `primary_tier_max` (Fami
 reader-triggered cold solve), answer `Invalidated` past an entry's `expiry_ns` /
 `next_event_ns`, `Stale` without a clock, and queue rebuilds on a bounded, deduplicated
 queue for `std::jthread` workers (`BudgetExhausted` when full). `serve_chain` serves a chain
-from one pinned version into `ChainTickOutputs`; `serve_build` publishes the first usable
+from one pinned version into `ChainTickOutputs` plus one fixed-size `ServedChainStatement`
+per contract (status, route, tier, certificate class and USD, the Greek map's statement,
+`sampled`, a price-only node's reason and IV interval); a `Sampled` answer's `TickStatus` is
+`Fallback`, never `Ok` (review-H1 F1). `serve_build` publishes the first usable
 bundle (tiers 1-2), then the laddered record on the same families. New `ServeStatus` values
-`BudgetExhausted` (11), `Invalidated` (12). Normal queries allocate nothing.
+`BudgetExhausted` (11), `Invalidated` (12). `ServeAnswer` gains `price_only_reason`,
+`iv_lower`, `iv_upper` (lane C0's typed price-only answer at the node). Normal queries
+allocate nothing.
 
 **Fast path.** `evaluate_quote_slice` reads `QuoteSliceFit::serve_record` when the caller
 attached one built from that fit: a between-node or moved-node volatility is the record's

@@ -76,6 +76,23 @@ refused root fall through to the record-free path unchanged.
 - `ServeBook::reader()` returns a per-thread handle. Each query does one acquire load of the
   counter; only when it moved does the reader re-pin (`current.load()`). A chain
   (`serve_chain`) pins once: every contract of a chain is answered by one version.
+- **What a served chain writes.** Beside the `ChainTickOutputs` columns, each contract gets
+  a fixed-size `ServedChainStatement`, filled from the answer's own fields (fix round 1,
+  review-H1 F1):
+  - `status`, `route` and `tier`;
+  - `certificate_class` and `certificate_usd`;
+  - the Greek map's statement;
+  - `sampled`;
+  - a price-only node's `price_only_reason` and IV interval.
+- **TickStatus.**
+  - `Ok` means an Ok answer that is **not** `Sampled`. It is not a certificate claim: read
+    `certificate_class`, where `None` means the answer claims no statement.
+  - A `Sampled` answer is `Fallback`, the record routes' value "NOT covered by any
+    certificate". A reader of the status span alone never mistakes it for a certified
+    answer.
+  - A price-only answer at the fit spot keeps its price and is also `Fallback`.
+  - An exercised contract is `Exercised`.
+  - A refusal is `Unpriceable`, with NaN outputs.
 - `primary_tier_max` (default Family) caps every request: a Certified Fast solve or a Cold
   route above the cap is a typed `TierUnavailable / ColdPath`, never a synchronous solve on
   the quoting thread.
@@ -147,6 +164,10 @@ and a ladder IV root is `Ok` only on a validated statement within `iv_tolerance`
 - Publish through a `ServeBook`; read through one `ServeBookReader` per thread. Never hold a
   version across a blocking call longer than needed: it pins its records.
 - A served answer carries its statement class; `sampled = true` answers are never certified.
+  A served chain carries the same per contract (`ServedChainStatement`), and its Sampled
+  contracts are `TickStatus::Fallback`, never `Ok`.
+- A price-only answer carries lane C0's reason and IV interval (`ServeAnswer::
+  price_only_reason`, `iv_lower`, `iv_upper`; the chain's statement too).
 - Readers never block on a build and never run a cold solve at the default cap.
 - The record does not move the smile on a spot move (sticky strike); only a new fit does.
 - `VolaSession` / `PricedSurface` do not consume records yet (they serve curve fits; A1).
