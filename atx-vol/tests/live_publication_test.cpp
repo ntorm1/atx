@@ -118,6 +118,12 @@ std::shared_ptr<const SliceServeRecord> rec_ladder() {
   static const auto r = record_of(fit_a(), serve_record_policy_tick());
   return r;
 }
+// The laddered record of fit A under the default 12 x 6 planes: some of its ladders are
+// served on a Sampled estimate (the fixture's put ladders; review-H1 F1).
+std::shared_ptr<const SliceServeRecord> rec_default_ladders() {
+  static const auto r = record_of(fit_a(), ServeRecordPolicy{});
+  return r;
+}
 
 ServeBookEntry entry(std::uint64_t id, std::shared_ptr<const SliceServeRecord> record,
                      std::uint64_t tag = 0) {
@@ -477,7 +483,7 @@ struct ChainColumns {
   std::vector<Side> side;
   std::vector<double> price, delta, gamma, vega, theta;
   std::vector<TickStatus> tick;
-  std::vector<ServeStatus> served;
+  std::vector<ServedChainStatement> served; // each answer's statement (review-H1 F1)
 
   explicit ChainColumns(std::size_t n)
       : price(n), delta(n), gamma(n), vega(n), theta(n), tick(n), served(n) {
@@ -527,14 +533,16 @@ TEST(LivePublication, TheServedChainIsTheRecordsAnswerPerContract) {
     q.family_bound = false;
     const auto &rec = c.id[k] == 1 ? rec_ladder() : rec_a();
     const ServeAnswer a = rec->serve(q);
-    EXPECT_EQ(c.served[k], a.status) << k;
+    EXPECT_EQ(c.served[k].status, a.status) << k;
+    EXPECT_EQ(c.served[k].tier, a.tier) << k;
+    EXPECT_EQ(c.served[k].sampled, a.sampled) << k;
     EXPECT_EQ(bits(c.price[k]), bits(a.price)) << k;
     EXPECT_EQ(bits(c.delta[k]), bits(a.delta)) << k;
     EXPECT_EQ(bits(c.gamma[k]), bits(a.gamma)) << k;
     EXPECT_EQ(bits(c.vega[k]), bits(a.vega)) << k;
     EXPECT_EQ(bits(c.theta[k]), bits(a.theta)) << k;
     if (a.status == ServeStatus::Ok) {
-      EXPECT_EQ(c.tick[k], TickStatus::Ok);
+      EXPECT_EQ(c.tick[k], a.sampled ? TickStatus::Fallback : TickStatus::Ok);
       ++ok;
       ladder += a.tier == ServeTier::Ladder ? 1u : 0u;
     } else if (a.status == ServeStatus::Exercised) {
@@ -551,6 +559,96 @@ TEST(LivePublication, TheServedChainIsTheRecordsAnswerPerContract) {
   EXPECT_FALSE(r.serve_chain(S, 0, shortc.view(), ServeTier::Ladder, ServeTier::Family,
                              shortc.out(), shortc.served)
                    .has_value());
+}
+
+// review-H1 F1: the served chain carries each answer's statement. A Sampled answer is an
+// estimate, never certified: its TickStatus is Fallback (the record routes' value "NOT
+// covered by any certificate"), never Ok, so a reader of the status span alone cannot take
+// it for a certified one.
+TEST(LivePublication, TheServedChainCarriesEachAnswersStatement) {
+  ServeBook book(inline_policy());
+  ASSERT_TRUE(book.publish_expiry(entry(1, rec_default_ladders())).has_value());
+  ServeBookReader r = book.reader();
+  const std::array<std::uint64_t, 1> ids{1};
+  ChainColumns c = chain_over(*rec_default_ladders(), ids);
+  const double S = 1.002 * kSpot;
+  ASSERT_TRUE(r.serve_chain(S, 0, c.view(), ServeTier::Ladder, ServeTier::Family, c.out(),
+                            c.served)
+                  .has_value());
+  std::size_t sampled = 0;
+  std::size_t not_sampled = 0;
+  for (std::size_t k = 0; k < c.strike.size(); ++k) {
+    ServeRequest q = req(c.strike[k], c.side[k], S, ServeTier::Ladder, ServeTier::Family);
+    q.family_bound = false;
+    const ServeAnswer a = rec_default_ladders()->serve(q);
+    const ServedChainStatement &st = c.served[k];
+    EXPECT_EQ(st.status, a.status) << k;
+    EXPECT_EQ(st.route, a.route) << k;
+    EXPECT_EQ(st.tier, a.tier) << k;
+    EXPECT_EQ(st.sampled, a.sampled) << k;
+    EXPECT_EQ(st.certificate_class, a.certificate_class) << k;
+    EXPECT_EQ(bits(st.certificate_usd), bits(a.certificate_usd)) << k;
+    EXPECT_EQ(st.map_certificate_class, a.map_certificate_class) << k;
+    EXPECT_EQ(bits(st.map_certificate_usd), bits(a.map_certificate_usd)) << k;
+    if (a.status != ServeStatus::Ok) continue;
+    if (a.sampled) {
+      ++sampled;
+      EXPECT_EQ(c.tick[k], TickStatus::Fallback) << k;
+      // The statement says what the status span no longer hides: an estimate.
+      EXPECT_TRUE(st.certificate_class == ServeBoundClass::Sampled ||
+                  st.map_certificate_class == ServeBoundClass::Sampled)
+          << k;
+    } else {
+      ++not_sampled;
+      EXPECT_EQ(c.tick[k], TickStatus::Ok) << k;
+      EXPECT_NE(st.certificate_class, ServeBoundClass::Sampled) << k;
+      EXPECT_NE(st.map_certificate_class, ServeBoundClass::Sampled) << k;
+    }
+  }
+  EXPECT_GT(sampled, 0u);
+  EXPECT_GT(not_sampled, 0u);
+
+  // C0's price-only answer travels too: the node's reason and IV interval, on the answer
+  // and on the chain's statement (at the fit spot the price is kept: Fallback).
+  QuoteSliceFit fit = fit_value(0.0);
+  const std::size_t n = fit.prices->nodes().size();
+  const std::size_t i = n / 2;
+  fit.price_only_nodes.assign(n, 0u);
+  fit.price_only_nodes[i] = 2u; // the put
+  const auto priced_only = record_of(fit, no_ladders());
+  ASSERT_NE(priced_only, nullptr);
+  const ServedNodeSide &node = priced_only->nodes()[i].put;
+  ASSERT_EQ(node.status, QuoteSliceEvaluationStatus::PriceOnly);
+  ASSERT_TRUE(book.publish_expiry(entry(2, priced_only)).has_value());
+  const ServeAnswer direct = priced_only->serve(
+      req(priced_only->nodes()[i].strike, Side::Put, kSpot, ServeTier::Ladder, ServeTier::Family));
+  EXPECT_EQ(direct.status, ServeStatus::PriceOnly);
+  EXPECT_EQ(direct.price_only_reason, node.reason);
+  EXPECT_EQ(bits(direct.iv_lower), bits(node.iv_lower));
+  EXPECT_EQ(bits(direct.iv_upper), bits(node.iv_upper));
+  const std::array<std::uint64_t, 1> ids2{2};
+  ChainColumns p = chain_over(*priced_only, ids2);
+  ASSERT_TRUE(r.serve_chain(kSpot, 0, p.view(), ServeTier::Ladder, ServeTier::Family, p.out(),
+                            p.served)
+                  .has_value());
+  std::size_t price_only = 0;
+  for (std::size_t k = 0; k < p.strike.size(); ++k) {
+    if (p.served[k].status != ServeStatus::PriceOnly) {
+      EXPECT_EQ(p.served[k].price_only_reason, QuoteSlicePriceOnlyReason::None) << k;
+      continue;
+    }
+    ++price_only;
+    EXPECT_EQ(p.side[k], Side::Put) << k;
+    EXPECT_EQ(p.served[k].price_only_reason, node.reason) << k;
+    EXPECT_EQ(bits(p.served[k].iv_lower), bits(node.iv_lower)) << k;
+    EXPECT_EQ(bits(p.served[k].iv_upper), bits(node.iv_upper)) << k;
+    EXPECT_EQ(p.tick[k], TickStatus::Fallback) << k;
+    EXPECT_EQ(bits(p.price[k]), bits(node.price)) << k;
+  }
+  EXPECT_EQ(price_only, 1u);
+  std::printf("[ statement ] sampled %zu not_sampled %zu price_only_reason %d iv [%g, %g]\n",
+              sampled, not_sampled, static_cast<int>(node.reason), node.iv_lower,
+              node.iv_upper);
 }
 
 // ── Concurrency and lifetime ─────────────────────────────────────────────────────────────
@@ -906,7 +1004,7 @@ TEST(LivePublication, ServeBuildPublishesTheFirstUsableBundleThenTheLadders) {
 struct ServeChainColumnsRef {
   ServedChainView view;
   ChainTickOutputs out;
-  std::span<ServeStatus> served;
+  std::span<ServedChainStatement> served;
 };
 
 // ── Allocation ───────────────────────────────────────────────────────────────────────────

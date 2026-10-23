@@ -65,6 +65,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -221,6 +222,23 @@ struct ServedChainView {
   }
 };
 
+// The statement of one served chain contract, beside its TickStatus (lane H1 fix round 1,
+// review-H1 F1): what the record's answer (ServeAnswer) says about the value it served.
+// Fixed size, written in place: the chain path stays allocation-free.
+struct ServedChainStatement {
+  double certificate_usd = std::numeric_limits<double>::quiet_NaN(); // ServeAnswer's
+  double map_certificate_usd = std::numeric_limits<double>::quiet_NaN();
+  double iv_lower = std::numeric_limits<double>::quiet_NaN(); // a PriceOnly node's interval
+  double iv_upper = std::numeric_limits<double>::quiet_NaN();
+  ServeStatus status = ServeStatus::TierUnavailable;
+  ServeRoute route = ServeRoute::ColdPath;
+  ServeTier tier = ServeTier::Cold;
+  ServeBoundClass certificate_class = ServeBoundClass::None;
+  ServeBoundClass map_certificate_class = ServeBoundClass::None;
+  QuoteSlicePriceOnlyReason price_only_reason = QuoteSlicePriceOnlyReason::None;
+  bool sampled = false; // ServeAnswer::sampled: an estimate, never certified
+};
+
 class ServeBookReader {
 public:
   ServeBookReader(const ServeBookReader &) = delete;
@@ -235,13 +253,19 @@ public:
   [[nodiscard]] ServeIvAnswer implied_vol(std::uint64_t expiry_id, const ServeIvRequest &request);
 
   // Every contract of `chain` at `spot` from ONE version (pinned for the whole call):
-  // price, delta, gamma, vega, theta into `out`, the typed status into `served`, the
-  // TickStatus Ok / Exercised for an answer and Unpriceable (NaN) for a refusal. The
-  // chain path's requests: Greeks four, family_bound false. No allocation.
+  // price, delta, gamma, vega, theta into `out`, each answer's statement into `statements`
+  // (status, route, tier, certificate class and USD, the sampled flag, a price-only
+  // node's reason and IV interval). TickStatus: Ok for an Ok answer that is not Sampled;
+  // Fallback for a Sampled answer (an estimate "NOT covered by any certificate") and for a
+  // refusal that keeps a price (PriceOnly at the fit spot); Exercised; Unpriceable (NaN)
+  // for a refusal. Ok is not a certificate claim: read `certificate_class` (None: the
+  // answer claims no statement). The chain path's requests: Greeks four, family_bound
+  // false. No allocation.
   // @return InvalidArgument when a column length disagrees (nothing is written).
   [[nodiscard]] Status serve_chain(double spot, std::int64_t now_ns, const ServedChainView &chain,
                                    ServeTier tier, ServeTier tier_max,
-                                   const ChainTickOutputs &out, std::span<ServeStatus> served);
+                                   const ChainTickOutputs &out,
+                                   std::span<ServedChainStatement> statements);
 
   // The version the last query read (pinned until the next query).
   [[nodiscard]] const ServeBookVersion &pinned() const noexcept { return *version_; }

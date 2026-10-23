@@ -505,6 +505,12 @@ struct ServeAnswer {
   ServeBoundClass map_certificate_class = ServeBoundClass::None;
   // True when any statement above is Sampled: such an answer is never "certified".
   bool sampled = false;
+  // Lane C0's typed price-only answer at the node (ServedNodeSide::reason, iv_lower,
+  // iv_upper) when status is PriceOnly: why no volatility is served and the implied-vol
+  // interval where known; None / NaN for every other answer (lane H1 fix round 1).
+  QuoteSlicePriceOnlyReason price_only_reason = QuoteSlicePriceOnlyReason::None;
+  double iv_lower = std::numeric_limits<double>::quiet_NaN();
+  double iv_upper = std::numeric_limits<double>::quiet_NaN();
   // The distance to the exercise edge in sigma sqrt T that masked theta / gamma (the band
   // above): the ladder's from the node's converged edge (ServedNodeSide::edge_spot), the
   // family's from A0's bundle (its own discretised edge). NaN when the answering map has

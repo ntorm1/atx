@@ -1007,7 +1007,7 @@ void run_book_chain(benchmark::State &state, const Dataset &d) {
   std::vector<double> strikes(n), price(n), delta(n), gamma(n), vega(n), theta(n);
   std::vector<Side> sides(n);
   std::vector<TickStatus> tick(n);
-  std::vector<ServeStatus> served(n);
+  std::vector<ServedChainStatement> served(n);
   for (std::size_t i = 0; i < n; ++i) {
     ids[i] = d.chain[i].record;
     strikes[i] = d.chain[i].strike;

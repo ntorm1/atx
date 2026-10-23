@@ -531,9 +531,9 @@ ServeIvAnswer ServeBookReader::implied_vol(std::uint64_t expiry_id,
 Status ServeBookReader::serve_chain(double spot, std::int64_t now_ns,
                                     const ServedChainView &chain, ServeTier tier,
                                     ServeTier tier_max, const ChainTickOutputs &out,
-                                    std::span<ServeStatus> served) {
+                                    std::span<ServedChainStatement> statements) {
   const std::size_t n = chain.size();
-  if (!chain.consistent() || !out.consistent() || out.size() != n || served.size() != n ||
+  if (!chain.consistent() || !out.consistent() || out.size() != n || statements.size() != n ||
       !std::isfinite(spot) || !(spot > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "serve_chain: column lengths or spot");
   }
@@ -554,11 +554,23 @@ Status ServeBookReader::serve_chain(double spot, std::int64_t now_ns,
     out.gamma[k] = a.gamma;
     out.vega[k] = a.vega;
     out.theta[k] = a.theta;
-    served[k] = a.status;
-    out.status[k] = a.status == ServeStatus::Ok          ? TickStatus::Ok
-                    : a.status == ServeStatus::Exercised ? TickStatus::Exercised
-                    : std::isnan(a.price)                ? TickStatus::Unpriceable
-                                                         : TickStatus::Fallback;
+    ServedChainStatement &st = statements[k];
+    st.certificate_usd = a.certificate_usd;
+    st.map_certificate_usd = a.map_certificate_usd;
+    st.iv_lower = a.iv_lower;
+    st.iv_upper = a.iv_upper;
+    st.status = a.status;
+    st.route = a.route;
+    st.tier = a.tier;
+    st.certificate_class = a.certificate_class;
+    st.map_certificate_class = a.map_certificate_class;
+    st.price_only_reason = a.price_only_reason;
+    st.sampled = a.sampled;
+    // review-H1 F1: a Sampled answer is never Ok on the status span.
+    out.status[k] = a.status == ServeStatus::Ok && !a.sampled ? TickStatus::Ok
+                    : a.status == ServeStatus::Exercised      ? TickStatus::Exercised
+                    : std::isnan(a.price)                     ? TickStatus::Unpriceable
+                                                              : TickStatus::Fallback;
   }
   return Ok();
 }

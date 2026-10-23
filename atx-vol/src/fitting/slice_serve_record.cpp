@@ -1817,6 +1817,9 @@ ServeAnswer SliceServeRecord::serve(const ServeRequest &request) const {
   const Contract c = resolve(impl, request.strike, request.side, request.spot);
   if (c.served != nullptr && c.served->status == QuoteSliceEvaluationStatus::PriceOnly) {
     refuse(a, ServeStatus::PriceOnly, c.at_fit ? ServeRoute::None : ServeRoute::Refit, mask);
+    a.price_only_reason = c.served->reason; // C0's reason and interval travel with the answer
+    a.iv_lower = c.served->iv_lower;
+    a.iv_upper = c.served->iv_upper;
     if (c.at_fit) {
       a.price = c.served->price;
       a.price_source = ServePriceSource::SliceNode;
