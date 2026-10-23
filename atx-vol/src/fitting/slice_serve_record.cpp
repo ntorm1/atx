@@ -2134,6 +2134,17 @@ build_serve_record_on(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
   return build_record(fit, policy, held.families, &kept);
 }
 
+std::optional<ServeRecordContract> serve_record_contract(const SliceServeRecord &record,
+                                                         double strike, Side side) {
+  const Impl &impl = SliceServeRecordAccess::impl(record);
+  if (!positive(strike) || !valid_side(side) ||
+      !(strike >= impl.strike_lo && strike <= impl.strike_hi)) {
+    return std::nullopt;
+  }
+  const Contract c = resolve(impl, strike, side, impl.spot);
+  return ServeRecordContract{impl.spot, impl.tau, impl.rate, c.q, impl.al_opts};
+}
+
 std::optional<QuoteSliceValue> serve_record_value(const QuoteSliceFit &fit, double strike,
                                                   Side side) {
   const SliceServeRecord *record = fit.serve_record.get();

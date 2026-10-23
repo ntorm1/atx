@@ -5,11 +5,13 @@
 #include "atx/vol/api/fitting/serve_book.hpp"         // lane H1: graded.serve_records
 #include "atx/vol/api/fitting/slice_serve_record.hpp" // lane H1: graded.serve_records
 #include "atx/vol/api/marketdata/dividend_schedule.hpp"
+#include "atx/vol/api/pricing/american.hpp" // lane H1: andersen_lake (fast-path audit)
 #include "atx/vol/api/pricing/dividend.hpp"
 #include "bench_clocks.hpp"
 #include "core/parallel_for.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "fitting/slice_serve_record_detail.hpp" // lane H1: the fast-path audit's contract
 #include "pricing/american_iv_stream.hpp" // lane K2: --inverse-replay
 #include "quote_bench_policy.hpp"
 #include "quote_bench_common.hpp"
@@ -933,6 +935,25 @@ void charge_fit_lap(RunStatistics &stats,
   return {{"volatility", v->volatility}, {"price", v->price}};
 }
 
+// The Newton distance of `sigma` to the accurate kernel's root of `price` on the record's
+// contract: (A(sigma) - price) / vega_A(sigma), A = andersen_lake on the fit's kernel
+// options, vega by a central difference (h = 1e-5 sigma). NaN when a price fails.
+[[nodiscard]] double newton_distance(const SliceServeRecord &record, double strike, Side side,
+                                     double sigma, double price) {
+  const auto c = detail::serve_record_contract(record, strike, side);
+  if (!c || !std::isfinite(sigma) || !(sigma > 0.0)) return kNaN;
+  const double h = 1.0e-5 * sigma;
+  const auto at = [&](double s) {
+    const Result<double> v =
+        andersen_lake(c->spot, strike, c->tau, s, c->rate, c->q, side, c->al_opts);
+    return v ? *v : kNaN;
+  };
+  const double p0 = at(sigma);
+  const double vega = (at(sigma + h) - at(sigma - h)) / (2.0 * h);
+  if (!std::isfinite(p0) || !(std::abs(vega) > 0.0)) return kNaN;
+  return (p0 - price) / vega;
+}
+
 // The serve_build stage of one served slice: its record built and published into the run's
 // book (two-phase unless no_ladders) under the chain id, then the fast-path audit - every
 // served row and every node midpoint answered without and with the record attached to the
@@ -1000,11 +1021,31 @@ serve_build_slice(RunStatistics &stats, std::uint64_t chain, QuoteSliceFit &fit,
     const double dvol = off && on ? std::abs(on->volatility - off->volatility) : kNaN;
     if (std::isfinite(dvol)) max_dvol = std::max(max_dvol, dvol);
     if (on) out[j] = *on;
+    const double nd_off =
+        off ? newton_distance(*stage->record, quotes[j].strike, quotes[j].side,
+                              off->volatility, off->price)
+            : kNaN;
+    const double nd_on =
+        on ? newton_distance(*stage->record, quotes[j].strike, quotes[j].side, on->volatility,
+                             on->price)
+           : kNaN;
+    if (std::isfinite(nd_on)) {
+      block["rows_max_newton_on"] =
+          std::max(block.value("rows_max_newton_on", 0.0), std::abs(nd_on));
+    }
+    if (std::isfinite(nd_off)) {
+      block["rows_max_newton_off"] =
+          std::max(block.value("rows_max_newton_off", 0.0), std::abs(nd_off));
+    }
+    if (std::abs(nd_on) > 1.0e-7) count_into(block, "rows_on_newton_above_1e-7");
+    if (std::abs(nd_off) > 1.0e-7) count_into(block, "rows_off_newton_above_1e-7");
     if (block["differences"].size() < 5000U) {
       block["differences"].push_back({{"chain_id", chain}, {"strike", quotes[j].strike},
                                       {"side", quotes[j].side == Side::Call ? "call" : "put"},
                                       {"off", value_json(off)}, {"on", value_json(on)},
-                                      {"abs_dvol_to_accurate_root", finite_or_null(dvol)}});
+                                      {"abs_dvol", finite_or_null(dvol)},
+                                      {"newton_off", finite_or_null(nd_off)},
+                                      {"newton_on", finite_or_null(nd_on)}});
     }
   }
   block["rows_max_dvol"] = max_dvol;
@@ -1027,7 +1068,28 @@ serve_build_slice(RunStatistics &stats, std::uint64_t chain, QuoteSliceFit &fit,
       }
       count_into(block, "midpoints_differ");
       if (off && !on) count_into(block, "midpoints_on_refused_off_ok");
-      if (off && on) mid_max = std::max(mid_max, std::abs(on->volatility - off->volatility));
+      if (off && on) {
+        mid_max = std::max(mid_max, std::abs(on->volatility - off->volatility));
+        const double nd_off = newton_distance(*stage->record, K, side, off->volatility,
+                                              off->price);
+        const double nd_on = newton_distance(*stage->record, K, side, on->volatility, on->price);
+        if (std::isfinite(nd_on)) {
+          block["midpoints_max_newton_on"] =
+              std::max(block.value("midpoints_max_newton_on", 0.0), std::abs(nd_on));
+        }
+        if (std::isfinite(nd_off)) {
+          block["midpoints_max_newton_off"] =
+              std::max(block.value("midpoints_max_newton_off", 0.0), std::abs(nd_off));
+        }
+        if (std::abs(nd_on) > 1.0e-7) count_into(block, "midpoints_on_newton_above_1e-7");
+        if (std::abs(nd_off) > 1.0e-7) count_into(block, "midpoints_off_newton_above_1e-7");
+        if (block["midpoint_worst"].size() < 200U && std::abs(nd_on) > 1.0e-7) {
+          block["midpoint_worst"].push_back(
+              {{"chain_id", chain}, {"strike", K}, {"side", side == Side::Call ? "call" : "put"},
+               {"off", value_json(off)}, {"on", value_json(on)},
+               {"newton_off", finite_or_null(nd_off)}, {"newton_on", finite_or_null(nd_on)}});
+        }
+      }
     }
   }
   block["midpoints_max_dvol"] = mid_max;

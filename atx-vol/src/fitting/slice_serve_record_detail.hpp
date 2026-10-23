@@ -103,6 +103,21 @@ build_serve_record_with(const QuoteSliceFit &fit, const ServeRecordPolicy &polic
 build_serve_record_on(const QuoteSliceFit &fit, const ServeRecordPolicy &policy,
                       const SliceServeRecord &first);
 
+// The contract the record prices (strike, side) on, exactly as its reads resolve it (lane
+// H1's fast-path audit: the Newton distance of a volatility to the accurate kernel's root):
+// the fit's spot, the variance clock, the effective rate, the contract's yield (the node's at
+// a node, the record's carry between nodes) and the fit's kernel options. nullopt outside
+// the record's strike domain.
+struct ServeRecordContract {
+  double spot = 0.0;
+  double tau = 0.0;
+  double rate = 0.0;
+  double q = 0.0;
+  std::optional<AlOpts> al_opts;
+};
+[[nodiscard]] std::optional<ServeRecordContract>
+serve_record_contract(const SliceServeRecord &record, double strike, Side side);
+
 // The evaluate_quote_slice fast path (lane H1): when fit.serve_record was built from this
 // fit (spot, clock, rate and the bracketing node prices bit-equal) and (strike, side) is
 // served between nodes or at a moved node, the certified slice price with the volatility
