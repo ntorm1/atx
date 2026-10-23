@@ -489,6 +489,40 @@ TEST(ServedScenario, InsideTheBoxTaylorIsWithinItsRemainderOfExact) {
   }
 }
 
+// The whole box, every axis and every pair of axes: the Taylor value of each leg sits within
+// its remainder estimate of the exact value (a rounding allowance of 1e-12 x (1 + |exact|)
+// for the cells where both are exact zero-order identities). The estimate measures what
+// Taylor leaves out: the cross terms (vanna, charm, vol x time), the linear map term between
+// the record's Greeks and the cold kernel, and the volatility / time residual's linear and
+// quadratic parts.
+TEST(ServedScenario, InsideTheBoxEveryCellIsWithinItsRemainderOfExact) {
+  auto book = book_of({entry(1, rec_a())});
+  const std::vector<ServedPosition> p = small_book();
+  ScenarioSpec spec = small_spec();
+  spec.spot_rel = {-0.02, -0.01, 0.0, 0.01, 0.02};
+  spec.vol_abs = {-0.02, -0.01, 0.0, 0.01, 0.02};
+  spec.time_years = {0.0, 1.0 / 365.0, 3.0 / 365.0};
+  const Result<ScenarioResult> res = served_scenarios(*book, p, spec);
+  ASSERT_TRUE(res.has_value());
+  const std::size_t nc = res->cell.size();
+  double worst_ratio = 0.0;
+  for (std::size_t u = 0; u < res->legs.size(); ++u) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      const ScenarioLegCell &lc = res->cells[u * nc + c];
+      const ScenarioCell &cell = res->cell[c];
+      ASSERT_EQ(lc.taylor_exclusion, ScenarioExclusion::None) << u << " " << c;
+      ASSERT_EQ(lc.exact_exclusion, ScenarioExclusion::None) << u << " " << c;
+      const double err = std::abs(lc.taylor - lc.exact);
+      EXPECT_LE(err, lc.remainder + 1e-12 * (1.0 + std::abs(lc.exact)))
+          << "leg " << u << " cell " << cell.spot_rel << " " << cell.vol_abs << " "
+          << cell.time_years;
+      if (lc.remainder > 0.0) worst_ratio = std::max(worst_ratio, err / lc.remainder);
+    }
+  }
+  std::printf("[ remainder ] worst |taylor - exact| / remainder over %zu leg cells: %.3f\n",
+              res->legs.size() * nc, worst_ratio);
+}
+
 TEST(ServedScenario, ACellOutsideTheBoxIsExcludedFromTaylorOnly) {
   auto book = book_of({entry(1, rec_a())});
   const std::vector<ServedPosition> p = small_book();

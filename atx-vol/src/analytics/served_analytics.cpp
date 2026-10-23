@@ -214,6 +214,84 @@ struct Shock {
   double dt = 0.0; // variance-clock years
 };
 
+// ── The Taylor remainder estimate (class Sampled; docs/analytics-contracts.md section 3) ──
+
+// |a| and |c| of a residual model e(h) = a h + c h^2 fitted through measured residuals.
+struct LinQuad {
+  double lin = kNaN;
+  double quad = kNaN;
+};
+
+// Two-sided fit through (y_lo, e_lo) and (y_hi, e_hi), y_lo < 0 < y_hi (the volatility box
+// ends). A side shorter than a quarter of the box (a floored volatility) is not fitted:
+// the longer side's residual is then scaled linearly (c = 0).
+[[nodiscard]] LinQuad fit_two_sided(double y_lo, double e_lo, double y_hi, double e_hi,
+                                    double b) noexcept {
+  if (!(std::isfinite(e_lo) && std::isfinite(e_hi))) return {};
+  const bool lo = -y_lo >= 0.25 * b;
+  const bool hi = y_hi >= 0.25 * b;
+  if (lo && hi) {
+    const double det = y_lo * y_hi * (y_hi - y_lo);
+    const double a = (e_lo * y_hi * y_hi - e_hi * y_lo * y_lo) / det;
+    const double c = (e_hi * y_lo - e_lo * y_hi) / det;
+    return {std::abs(a), std::abs(c)};
+  }
+  if (!lo && !hi) return {};
+  return {lo ? std::abs(e_lo / y_lo) : std::abs(e_hi / y_hi), 0.0};
+}
+
+// One-sided fit through e(h / 2) and e(h) (the time box: a roll only shortens T).
+[[nodiscard]] LinQuad fit_one_sided(double h, double e_half, double e_full) noexcept {
+  if (!(h > 0.0) || !std::isfinite(e_half) || !std::isfinite(e_full)) return {};
+  const double c = 2.0 * (e_full - 2.0 * e_half) / (h * h);
+  const double a = (4.0 * e_half - e_full) / h;
+  return {std::abs(a), std::abs(c)};
+}
+
+// The measured inputs of one contract's remainder estimate. Taylor holds no cross terms
+// (TaylorOrder::cross_terms false); the estimate measures them. b_s, b_v: the box's spot
+// and volatility half-widths; h: the time edge measured (<= the box).
+struct RemainderModel {
+  double gamma_var = kNaN; // max |gamma(S (1 +/- b_s)) - gamma(S)|
+  double vega_var = kNaN;  // max |vega(S (1 +/- b_s)) - vega(S)|   (spot x vol)
+  double theta_var = kNaN; // max |theta(S (1 +/- b_s)) - theta(S)| (spot x time)
+  // max |[P_exact(S (1 +/- b_s)) - P_exact(S)] - [P_greeks(S (1 +/- b_s)) - P_greeks(S)]|:
+  // the exact map's spot move against the Greeks' map's (served: the cold kernel against
+  // the record, read only where a cell's exact route is the cold kernel; 0 on one map).
+  double spot_map = kNaN;
+  LinQuad vol{};  // e(y) = P(sigma + y) - P(sigma) - vega y at y = +/- b_v (exact map)
+  LinQuad time{}; // e(t) = P(T - t) - P(T) - theta t at t = h / 2, h (exact map)
+  double time_h = 0.0;
+  // max over y = +/- b_v of |P(sigma + y, T - h) - P(sigma + y, T) - P(sigma, T - h) +
+  // P(sigma, T)| x b_v / |y|: the measured vol x time cross difference.
+  double cross_vt = kNaN;
+};
+
+// A cell's remainder estimate: the sum of the terms its non-zero shocks need, NaN when one
+// of them is unmeasured. rx = |x| / b_s, ry = |y| / b_v, rt = dt / h:
+//   spot  dS^2 / 2 x gamma_var        vol  lin |y| + quad y^2     time  lin dt + quad dt^2
+//   spot x vol  |y| vega_var rx      spot x time  dt theta_var rx     vol x time  cross_vt ry rt
+//   cold_spot (a spot shock priced on another map than the Greeks')  spot_map rx
+[[nodiscard]] double remainder_of(const RemainderModel &m, double x, double y, double dt,
+                                  double spot, const TaylorBox &box, bool cold_spot) noexcept {
+  const bool sx = x != 0.0;
+  const bool sy = y != 0.0;
+  const bool st = dt != 0.0;
+  double r = 0.0;
+  const double rx = sx ? std::abs(x) / box.spot_rel : 0.0;
+  if (sx) {
+    const double dS = spot * x;
+    r += 0.5 * dS * dS * m.gamma_var;
+  }
+  if (sy) r += m.vol.lin * std::abs(y) + m.vol.quad * y * y;
+  if (st) r += m.time.lin * dt + m.time.quad * dt * dt;
+  if (sx && sy) r += std::abs(y) * m.vega_var * rx;
+  if (sx && st) r += dt * m.theta_var * rx;
+  if (sy && st) r += m.cross_vt * (std::abs(y) / box.vol_abs) * (dt / m.time_h);
+  if (sx && cold_spot) r += m.spot_map * rx;
+  return r;
+}
+
 struct UniqueKey {
   std::uint64_t expiry_id = 0;
   double strike = 0.0;
@@ -230,9 +308,7 @@ struct UniqueEval {
   double rate = kNaN;
   double tau = kNaN;
   double cold_base = kNaN;
-  double gamma_var = kNaN; // max |gamma(S (1 +/- b)) - gamma(S)|
-  double vol_edge = kNaN;  // max |P(sigma +/- b) - P(sigma) - vega (+/- b)| (cold kernel)
-  double time_edge = kNaN; // |P(T - b) - P(T) - theta b| (cold kernel)
+  RemainderModel rm{}; // the remainder estimate's inputs (record ends, cold kernel)
   std::int64_t expiry_ns = 0;
   std::int64_t next_event_ns = 0;
   std::vector<ScenarioLegCell> cells;
@@ -269,46 +345,101 @@ struct EngineContext {
   return p ? *p : kNaN;
 }
 
+// The remainder estimate's inputs of one contract (RemainderModel): the record at the spot
+// box ends (gamma, vega, theta variation; its price for the map term), then the cold
+// kernel at the base, the volatility box ends, the time edge and its half, the vol x time
+// corners and - when a cell prices a spot shock on the cold kernel - the spot box ends.
+// Each sample is taken only when a cell of the matrix needs it.
 void remainder_setup(const EngineContext &cx, ServeBookReader &reader, const UniqueKey &key,
                      UniqueEval &u, WorkerTally &tally) {
   const ScenarioSpec &spec = cx.spec;
+  const TaylorBox &box = spec.box;
   const double S = spec.spot;
   const double sigma = u.base.sigma;
+  RemainderModel &m = u.rm;
+  std::array<double, 2> record_end{kNaN, kNaN};
   if (cx.taylor && cx.any_spot) {
-    const double b = spec.box.spot_rel;
-    double worst = 0.0;
-    bool ok = std::isfinite(u.base.gamma);
-    for (const double sgn : {-1.0, 1.0}) {
+    const double b = box.spot_rel;
+    double g = 0.0;
+    double v = 0.0;
+    double t = 0.0;
+    bool g_ok = std::isfinite(u.base.gamma);
+    bool v_ok = std::isfinite(u.base.vega);
+    bool t_ok = std::isfinite(u.base.theta);
+    for (std::size_t i = 0; i < 2; ++i) {
+      const double sgn = i == 0 ? -1.0 : 1.0;
       const ServeAnswer end = reader.serve(
           key.expiry_id, served_request(key.strike, key.side, S * (1.0 + sgn * b), spec.now_ns,
                                         spec.tier, spec.tier_max));
       ++tally.record_serves;
       tally.saw(reader.pinned().number);
-      ok = ok && std::isfinite(end.gamma);
-      if (ok) worst = std::max(worst, std::abs(end.gamma - u.base.gamma));
+      record_end[i] = end.price;
+      g_ok = g_ok && std::isfinite(end.gamma);
+      v_ok = v_ok && std::isfinite(end.vega);
+      t_ok = t_ok && std::isfinite(end.theta);
+      if (g_ok) g = std::max(g, std::abs(end.gamma - u.base.gamma));
+      if (v_ok) v = std::max(v, std::abs(end.vega - u.base.vega));
+      if (t_ok) t = std::max(t, std::abs(end.theta - u.base.theta));
     }
-    u.gamma_var = ok ? worst : kNaN;
+    m.gamma_var = g_ok ? g : kNaN;
+    m.vega_var = v_ok ? v : kNaN;
+    m.theta_var = t_ok ? t : kNaN;
   }
   if (!(cx.any_vol || cx.any_time) || !std::isfinite(u.q_node) || !(sigma > 0.0)) return;
   u.cold_base = cold_price(cx, key, S, u.tau, sigma, u, tally);
   if (!std::isfinite(u.cold_base) || !cx.taylor) return;
-  if (cx.any_vol && std::isfinite(u.base.vega) && spec.box.vol_abs > 0.0) {
-    const double b = spec.box.vol_abs;
+  const double p0 = u.cold_base;
+  std::array<double, 2> y_end{0.0, 0.0};
+  std::array<double, 2> p_end{kNaN, kNaN};
+  if (cx.any_vol && std::isfinite(u.base.vega) && box.vol_abs > 0.0) {
+    std::array<double, 2> e{kNaN, kNaN};
+    for (std::size_t i = 0; i < 2; ++i) {
+      const double sgn = i == 0 ? -1.0 : 1.0;
+      const double s1 = std::max(sigma + sgn * box.vol_abs, kScenarioSigmaFloor);
+      y_end[i] = s1 - sigma;
+      p_end[i] = cold_price(cx, key, S, u.tau, s1, u, tally);
+      e[i] = p_end[i] - p0 - u.base.vega * y_end[i];
+    }
+    m.vol = fit_two_sided(y_end[0], e[0], y_end[1], e[1], box.vol_abs);
+  }
+  double p_h = kNaN;
+  if (cx.any_time && std::isfinite(u.base.theta) && box.time_years > 0.0 &&
+      box.time_years < u.tau) {
+    const double h = box.time_years;
+    m.time_h = h;
+    p_h = cold_price(cx, key, S, u.tau - h, sigma, u, tally);
+    const double p_half = cold_price(cx, key, S, u.tau - 0.5 * h, sigma, u, tally);
+    m.time = fit_one_sided(h, p_half - p0 - u.base.theta * (0.5 * h),
+                           p_h - p0 - u.base.theta * h);
+  }
+  if (cx.any_vol && cx.any_time && std::isfinite(p_h)) {
+    double worst = 0.0;
+    bool ok = false;
+    for (std::size_t i = 0; i < 2; ++i) {
+      if (!(std::abs(y_end[i]) >= 0.25 * box.vol_abs) || !std::isfinite(p_end[i])) continue;
+      const double corner =
+          cold_price(cx, key, S, u.tau - m.time_h, sigma + y_end[i], u, tally);
+      if (!std::isfinite(corner)) {
+        ok = false;
+        break;
+      }
+      ok = true;
+      worst = std::max(worst, std::abs(corner - p_end[i] - p_h + p0) * box.vol_abs /
+                                  std::abs(y_end[i]));
+    }
+    m.cross_vt = ok ? worst : kNaN;
+  }
+  if (cx.any_spot && (cx.any_vol || cx.any_time) && std::isfinite(u.base.price)) {
     double worst = 0.0;
     bool ok = true;
-    for (const double sgn : {-1.0, 1.0}) {
-      const double s1 = std::max(sigma + sgn * b, kScenarioSigmaFloor);
-      const double p = cold_price(cx, key, S, u.tau, s1, u, tally);
-      ok = ok && std::isfinite(p);
-      if (ok) worst = std::max(worst, std::abs(p - u.cold_base - u.base.vega * (s1 - sigma)));
+    for (std::size_t i = 0; i < 2 && ok; ++i) {
+      const double sgn = i == 0 ? -1.0 : 1.0;
+      const double c_end = cold_price(cx, key, S * (1.0 + sgn * box.spot_rel), u.tau, sigma, u,
+                                      tally);
+      ok = std::isfinite(c_end) && std::isfinite(record_end[i]);
+      if (ok) worst = std::max(worst, std::abs((c_end - p0) - (record_end[i] - u.base.price)));
     }
-    u.vol_edge = ok ? worst : kNaN;
-  }
-  if (cx.any_time && std::isfinite(u.base.theta) && spec.box.time_years > 0.0 &&
-      spec.box.time_years < u.tau) {
-    const double b = spec.box.time_years;
-    const double p = cold_price(cx, key, S, u.tau - b, sigma, u, tally);
-    if (std::isfinite(p)) u.time_edge = std::abs(p - u.cold_base - u.base.theta * b);
+    m.spot_map = ok ? worst : kNaN;
   }
 }
 
@@ -363,8 +494,11 @@ void taylor_cell(const EngineContext &cx, const UniqueEval &u, const Shock &s, b
     c.taylor_exclusion = ScenarioExclusion::MissingGreek;
     return;
   }
-  if ((spot && !std::isfinite(u.gamma_var)) || (vol && !std::isfinite(u.vol_edge)) ||
-      (time && !std::isfinite(u.time_edge))) {
+  // A spot shock in a cell with a vol or time shock is priced on the cold kernel (Exact),
+  // not on the record whose Greeks Taylor reads: the map term enters the estimate.
+  const double remainder =
+      remainder_of(u.rm, s.x, s.y, s.dt, spec.spot, box, spot && (vol || time));
+  if (!std::isfinite(remainder)) {
     c.taylor_exclusion = ScenarioExclusion::RemainderUnbounded;
     return;
   }
@@ -375,10 +509,7 @@ void taylor_cell(const EngineContext &cx, const UniqueEval &u, const Shock &s, b
   c.taylor_vega = vol ? a.vega * s.y : 0.0;
   c.taylor_theta = time ? a.theta * s.dt : 0.0;
   c.taylor = c.taylor_delta + c.taylor_gamma + c.taylor_vega + c.taylor_theta;
-  const double ry = vol ? s.y / box.vol_abs : 0.0;
-  const double rt = time ? s.dt / box.time_years : 0.0;
-  c.remainder = (spot ? 0.5 * dS * dS * u.gamma_var : 0.0) + (vol ? u.vol_edge * ry * ry : 0.0) +
-                (time ? u.time_edge * rt * rt : 0.0);
+  c.remainder = remainder;
   if (u.cls == AnalyticsInputClass::Estimate) c.taylor_exclusion = ScenarioExclusion::Estimate;
 }
 
@@ -944,60 +1075,93 @@ struct CashRoll {
   return p ? p->price : kNaN;
 }
 
-struct CashBase {
-  double gamma_var = kNaN;
-  double vol_edge = kNaN;
-  double time_edge = kNaN;
-  double time_h = 0.0; // the measured time edge (<= box), short of the first ex-date
-};
-
-[[nodiscard]] CashBase cash_remainders(const CashDividendContract &c,
-                                       const DiscreteDivProductionGreeks &g,
-                                       const CashDividendScenarioSpec &spec,
-                                       DiscreteDivWorkspace &ws, std::size_t &solves) {
-  CashBase b;
+// The cash route's remainder inputs: every sample on D1's lattice, the map of both the
+// Taylor Greeks and the exact repricing (spot_map 0). The time edge stops short of the
+// first ex-date (h <= half of it), so no sample crosses an event.
+[[nodiscard]] RemainderModel cash_remainders(const CashDividendContract &c,
+                                             const DiscreteDivProductionGreeks &g,
+                                             const CashDividendScenarioSpec &spec,
+                                             DiscreteDivWorkspace &ws, std::size_t &solves) {
+  RemainderModel m;
+  m.spot_map = 0.0;
   const TaylorBox &box = spec.box;
   if (g.supported(DiscreteDivGreek::Gamma)) {
-    double worst = 0.0;
-    bool ok = true;
+    double gv = 0.0;
+    double vv = 0.0;
+    double tv = 0.0;
+    bool g_ok = true;
+    bool v_ok = g.supported(DiscreteDivGreek::Vega);
+    bool t_ok = g.supported(DiscreteDivGreek::Theta);
     for (const double sgn : {-1.0, 1.0}) {
       ++solves;
       const Result<DiscreteDivProductionGreeks> e = american_discrete_div_production_greeks(
           c.spot * (1.0 + sgn * box.spot_rel), c.strike, c.tau, c.sigma, c.rate, c.yield, c.side,
           c.dividends, c.exercise, {}, 0.0, spec.opts, ws);
-      ok = ok && e && e->supported(DiscreteDivGreek::Gamma);
-      if (ok) worst = std::max(worst, std::abs(e->gamma - g.gamma));
+      g_ok = g_ok && e && e->supported(DiscreteDivGreek::Gamma);
+      v_ok = v_ok && e && e->supported(DiscreteDivGreek::Vega);
+      t_ok = t_ok && e && e->supported(DiscreteDivGreek::Theta);
+      if (g_ok) gv = std::max(gv, std::abs(e->gamma - g.gamma));
+      if (v_ok) vv = std::max(vv, std::abs(e->vega - g.vega));
+      if (t_ok) tv = std::max(tv, std::abs(e->theta - g.theta));
     }
-    b.gamma_var = ok ? worst : kNaN;
+    m.gamma_var = g_ok ? gv : kNaN;
+    m.vega_var = v_ok ? vv : kNaN;
+    m.theta_var = t_ok ? tv : kNaN;
   }
+  std::array<double, 2> y_end{0.0, 0.0};
+  std::array<double, 2> p_end{kNaN, kNaN};
   if (g.supported(DiscreteDivGreek::Vega) && box.vol_abs > 0.0) {
-    double worst = 0.0;
-    bool ok = true;
-    for (const double sgn : {-1.0, 1.0}) {
+    std::array<double, 2> e{kNaN, kNaN};
+    for (std::size_t i = 0; i < 2; ++i) {
+      const double sgn = i == 0 ? -1.0 : 1.0;
       const double s1 = std::max(c.sigma + sgn * box.vol_abs, kScenarioSigmaFloor);
-      const double p = cash_price(c, c.spot, c.tau, s1, c.dividends, spec.opts, ws, solves);
-      ok = ok && std::isfinite(p);
-      if (ok) worst = std::max(worst, std::abs(p - g.price - g.vega * (s1 - c.sigma)));
+      y_end[i] = s1 - c.sigma;
+      p_end[i] = cash_price(c, c.spot, c.tau, s1, c.dividends, spec.opts, ws, solves);
+      e[i] = p_end[i] - g.price - g.vega * y_end[i];
     }
-    b.vol_edge = ok ? worst : kNaN;
+    m.vol = fit_two_sided(y_end[0], e[0], y_end[1], e[1], box.vol_abs);
   }
   double first_ex = std::numeric_limits<double>::infinity();
   for (const CashDividend &d : c.dividends) {
     if (d.tau > 0.0 && d.tau <= c.tau) first_ex = std::min(first_ex, d.tau);
   }
-  b.time_h = std::min(box.time_years, 0.5 * first_ex);
-  if (g.supported(DiscreteDivGreek::Theta) && b.time_h > 0.0 && b.time_h < c.tau) {
-    const CashRoll r = roll_schedule(c.dividends, c.tau, b.time_h);
-    const double p =
-        cash_price(c, c.spot, c.tau - b.time_h, c.sigma, r.rest, spec.opts, ws, solves);
-    if (std::isfinite(p)) b.time_edge = std::abs(p - g.price - g.theta * b.time_h);
+  const double h = std::min(box.time_years, 0.5 * first_ex);
+  m.time_h = h;
+  double p_h = kNaN;
+  CashRoll roll_h{};
+  if (g.supported(DiscreteDivGreek::Theta) && h > 0.0 && h < c.tau) {
+    roll_h = roll_schedule(c.dividends, c.tau, h);
+    const CashRoll roll_half = roll_schedule(c.dividends, c.tau, 0.5 * h);
+    p_h = cash_price(c, c.spot, c.tau - h, c.sigma, roll_h.rest, spec.opts, ws, solves);
+    const double p_half =
+        cash_price(c, c.spot, c.tau - 0.5 * h, c.sigma, roll_half.rest, spec.opts, ws, solves);
+    m.time = fit_one_sided(h, p_half - g.price - g.theta * (0.5 * h),
+                           p_h - g.price - g.theta * h);
   }
-  return b;
+  if (std::isfinite(p_h)) {
+    double worst = 0.0;
+    bool ok = false;
+    for (std::size_t i = 0; i < 2; ++i) {
+      if (!(std::abs(y_end[i]) >= 0.25 * box.vol_abs) || !std::isfinite(p_end[i])) continue;
+      const double corner = cash_price(c, c.spot, c.tau - h, c.sigma + y_end[i], roll_h.rest,
+                                       spec.opts, ws, solves);
+      if (!std::isfinite(corner)) {
+        ok = false;
+        break;
+      }
+      ok = true;
+      worst = std::max(worst, std::abs(corner - p_end[i] - p_h + g.price) * box.vol_abs /
+                                  std::abs(y_end[i]));
+    }
+    m.cross_vt = ok ? worst : kNaN;
+  }
+  return m;
 }
 
 [[nodiscard]] ScenarioExclusion cash_taylor_gate(const DiscreteDivProductionGreeks &g,
-                                                 const CashBase &b, const TaylorBox &box,
-                                                 const Shock &s, bool event) noexcept {
+                                                 const RemainderModel &b, double spot_level,
+                                                 const TaylorBox &box, const Shock &s,
+                                                 bool event) noexcept {
   const bool spot = s.x != 0.0;
   const bool vol = s.y != 0.0;
   const bool time = s.dt != 0.0;
@@ -1010,15 +1174,15 @@ struct CashBase {
       (time && !g.supported(DiscreteDivGreek::Theta))) {
     return ScenarioExclusion::MissingGreek;
   }
-  if ((spot && !std::isfinite(b.gamma_var)) || (vol && !std::isfinite(b.vol_edge)) ||
-      (time && (!std::isfinite(b.time_edge) || s.dt > b.time_h))) {
+  if ((time && s.dt > b.time_h) ||
+      !std::isfinite(remainder_of(b, s.x, s.y, s.dt, spot_level, box, false))) {
     return ScenarioExclusion::RemainderUnbounded;
   }
   return ScenarioExclusion::None;
 }
 
 void cash_cell(const CashDividendContract &c, const DiscreteDivProductionGreeks &g,
-               const CashBase &b, const CashDividendScenarioSpec &spec, const Shock &s,
+               const RemainderModel &b, const CashDividendScenarioSpec &spec, const Shock &s,
                DiscreteDivWorkspace &ws, std::size_t &solves, CashDividendLegCell &cell) {
   const TaylorBox &box = spec.box;
   const CashRoll roll = roll_schedule(c.dividends, c.tau, s.dt);
@@ -1026,7 +1190,7 @@ void cash_cell(const CashDividendContract &c, const DiscreteDivProductionGreeks 
   cell.cash_crossed = roll.cash;
   const bool expiry = s.dt >= c.tau;
   // Taylor: never across an event.
-  cell.taylor_exclusion = cash_taylor_gate(g, b, box, s, roll.events > 0 || expiry);
+  cell.taylor_exclusion = cash_taylor_gate(g, b, c.spot, box, s, roll.events > 0 || expiry);
   if (cell.taylor_exclusion == ScenarioExclusion::None) {
     const double dS = c.spot * s.x;
     const double td = s.x != 0.0 ? g.delta * dS : 0.0;
@@ -1034,11 +1198,7 @@ void cash_cell(const CashDividendContract &c, const DiscreteDivProductionGreeks 
     const double tv = s.y != 0.0 ? g.vega * s.y : 0.0;
     const double tt = s.dt != 0.0 ? g.theta * s.dt : 0.0;
     cell.taylor = td + tg + tv + tt;
-    const double ry = s.y != 0.0 ? s.y / box.vol_abs : 0.0;
-    const double rt = s.dt != 0.0 ? s.dt / b.time_h : 0.0;
-    cell.remainder = (s.x != 0.0 ? 0.5 * dS * dS * b.gamma_var : 0.0) +
-                     (s.y != 0.0 ? b.vol_edge * ry * ry : 0.0) +
-                     (s.dt != 0.0 ? b.time_edge * rt * rt : 0.0);
+    cell.remainder = remainder_of(b, s.x, s.y, s.dt, c.spot, box, false);
   }
   // Exact: D1's event roll - the crossed cash comes off the (shocked) stock and off the
   // schedule, later ex-dates move closer; through expiry, the payoff.
@@ -1086,7 +1246,7 @@ void cash_cell(const CashDividendContract &c, const DiscreteDivProductionGreeks 
     return leg;
   }
   leg.base = *g;
-  const CashBase b = cash_remainders(c, *g, spec, ws, solves);
+  const RemainderModel b = cash_remainders(c, *g, spec, ws, solves);
   for (std::size_t k = 0; k < shocks.size(); ++k) {
     cash_cell(c, *g, b, spec, shocks[k], ws, solves, leg.cells[k]);
   }

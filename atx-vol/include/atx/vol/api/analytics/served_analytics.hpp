@@ -62,12 +62,28 @@
 //   Taylor  delta dS + gamma dS^2 / 2 + vega dsigma + theta dt: declared order (spot 2,
 //           vol 1, time 1, no cross terms), declared validity box (TaylorBox; a cell
 //           outside it is excluded, OutsideTaylorBox) and a remainder estimate (class
-//           Sampled, never a certificate): spot  dS^2 / 2 x max |gamma(S (1 +/- b)) -
-//           gamma(S)| (the record's gamma at the box ends; exact when gamma is monotone
-//           on each side), vol and time  the first-order residual measured on the cold
-//           kernel at the box edge, scaled by (shock / edge)^2. Cross terms (vanna,
-//           charm) are outside the estimate; the A1 row measures them against exact.
-//           Every term is gated on its own shock (a zero shock never reads its Greek).
+//           Sampled - measured at sample points, never a certificate) of everything the
+//           value leaves out, the sum of the terms the cell's non-zero shocks need
+//           (rx = |dS / S| / b_spot, ry = |dsigma| / b_vol, rt = dt / h):
+//             spot         dS^2 / 2 x max |gamma(S (1 +/- b)) - gamma(S)| (the record at
+//                          the spot box ends);
+//             vol, time    |a| |shock| + |c| shock^2, the residual e = P(shocked) - P -
+//                          Greek x shock fitted as a shock + c shock^2 on the exact map
+//                          (vol: at +/- b_vol; time: at h / 2 and h, h = the time box):
+//                          the linear part holds the Greek's map against the exact map;
+//             spot x vol   |dsigma| x max |vega(S (1 +/- b)) - vega(S)| x rx (vanna);
+//             spot x time  dt x max |theta(S (1 +/- b)) - theta(S)| x rx (charm);
+//             vol x time   the measured mixed difference at the (+/- b_vol, h) corners
+//                          x ry x rt;
+//             spot map     in a cell whose spot shock is priced on the cold kernel (a vol
+//                          or time shock with it), max |cold spot move - record spot
+//                          move| at the box ends x rx.
+//           A term the cell needs and cannot measure (a Greek withheld at a box end, a
+//           solve refused) excludes the leg: RemainderUnbounded. Every term is gated on
+//           its own shock (a zero shock never reads its Greek). Costs, per unique
+//           contract and only for the axes the matrix holds: two record serves (spot
+//           ends) and up to nine cold solves (base, vol ends, time h and h / 2, two
+//           corners, two spot ends).
 //   Exact   ONE map per cell: a pure spot cell is the record at S' (route RecordTier,
 //           the answer's statement class) minus the record at S; any cell with a vol or
 //           time shock is the cold accurate kernel (andersen_lake at the served sigma +
@@ -98,7 +114,11 @@
 // A record does not serve dated cash (ServeCashDividends::UnsupportedInRecord): such a
 // contract runs on D1's production lattice (cash_dividend_scenarios), whose time roll
 // across an ex-date is D1's event operation (the cash comes off the stock and off the
-// schedule), never a Taylor step; D1's unsupported Greeks keep D1's reasons.
+// schedule), never a Taylor step; D1's unsupported Greeks keep D1's reasons. Its remainder
+// estimate is the scenario model above with every sample on D1's lattice (the map of
+// both the Greeks and the exact repricing: no spot-map term) and the time edge h at most
+// half the time to the first ex-date (no sample crosses an event; a longer roll inside
+// the box is RemainderUnbounded).
 //
 // ## Threads
 //
@@ -285,7 +305,8 @@ struct TaylorBox {
   double time_years = 7.0 / 365.0;
 };
 
-// The declared Taylor order (no cross terms: no tier serves vanna or charm).
+// The declared Taylor order (no cross terms: no tier serves vanna or charm; the
+// remainder estimate measures them).
 struct TaylorOrder {
   std::uint8_t spot = 2;
   std::uint8_t vol = 1;
@@ -310,7 +331,8 @@ enum class ScenarioExclusion : std::uint8_t {
   Estimate = 3,           // an uncertified input (Sampled / no statement): summed apart
   MissingGreek = 4,       // Taylor: a Greek the cell's shocks need is NaN (its reason)
   OutsideTaylorBox = 5,   // Taylor: the cell is outside the validity box
-  RemainderUnbounded = 6, // Taylor: a gamma at the box ends is NaN (band, refusal)
+  RemainderUnbounded = 6, // Taylor: a remainder term the cell needs is unmeasured (a
+                          // Greek withheld at a box end - the band - or a refused solve)
   EventOperation = 7,     // Taylor: the time shock crosses expiry or an event
   EventRequiresRefit = 8, // Exact: the time shock crosses the entry's next event
   ExactRefused = 9,       // Exact: the shocked reprice refused
