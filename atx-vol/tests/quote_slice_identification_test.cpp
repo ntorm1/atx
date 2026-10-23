@@ -21,6 +21,7 @@
 
 #include "atx/vol/api/fitting/quote_fit_policy.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
 
 namespace atx::vol {
 namespace {
@@ -587,6 +588,82 @@ std::optional<QuoteSliceFit> lifted_plateau_fit(const Chain &c, QuoteSliceFloorP
     return std::nullopt;
   }
   return std::move(*fit);
+}
+
+// The K 136 put row of a lifted plateau fit, checked against its query answer: the
+// lifted price kept, the typed reason, no volatility convention; PriceOnly under
+// PriceOnly, and under Legacy the historical Success at the plain root.
+const QuoteSliceRow &expect_plateau_put(const QuoteSliceFit &fit, const Chain &c, double lift,
+                                        QuoteSlicePriceOnlyReason reason) {
+  const auto at = std::find_if(c.quotes.begin(), c.quotes.end(), [](const QuoteSliceQuote &q) {
+    return q.strike == kPlateauStrike && q.side == Side::Put;
+  });
+  const QuoteSliceRow &row = fit.rows.at(static_cast<std::size_t>(at - c.quotes.begin()));
+  const std::string label = std::string{to_string(fit.floor_policy)} + " " + to_string(reason);
+  EXPECT_EQ(bits(row.fitted_price), bits(kPlateauStrike - 100.0 + lift)) << label;
+  EXPECT_EQ(row.price_only_reason, reason) << label;
+  EXPECT_EQ(vol_convention(row), QuoteSliceVolConvention::None) << label;
+  if (fit.floor_policy == QuoteSliceFloorPolicy::PriceOnly) {
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::PriceOnly) << label;
+    EXPECT_TRUE(std::isnan(row.fitted_iv)) << label;
+  } else {
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << label;
+    EXPECT_GT(row.fitted_iv, 0.25) << label; // the historical (non-unique) plain root
+  }
+  const auto answer = query_quote_slice(fit, kPlateauStrike, Side::Put);
+  if (!answer) {
+    ADD_FAILURE() << label << ": " << answer.error().to_string();
+    return row;
+  }
+  EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::PriceOnly) << label;
+  EXPECT_EQ(answer->reason, reason) << label;
+  EXPECT_EQ(bits(answer->price), bits(row.fitted_price)) << label;
+  EXPECT_TRUE(std::isnan(answer->volatility)) << label;
+  EXPECT_EQ(bits(answer->iv_lower), bits(row.iv_lower)) << label;
+  EXPECT_EQ(bits(answer->iv_upper), bits(row.iv_upper)) << label;
+  const auto value = evaluate_quote_slice(fit, kPlateauStrike, Side::Put);
+  EXPECT_FALSE(value) << label;
+  if (!value) EXPECT_EQ(value.error().code(), ErrorCode::OutOfRange) << label;
+  return row;
+}
+
+TEST(QuoteSliceIdentification, ARootInsideTheExercisePlateauIsFlatExerciseRegionWithItsEdge) {
+  const Chain c = plateau_chain();
+  constexpr double kLift = 3.0e-9 * kPlateauStrike;
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    const auto fit = lifted_plateau_fit(c, policy, kLift);
+    ASSERT_TRUE(fit);
+    const QuoteSliceRow &row =
+        expect_plateau_put(*fit, c, kLift, QuoteSlicePriceOnlyReason::FlatExerciseRegion);
+    // [0, sigma_ex]: sigma_ex is the plateau edge - the spot is in the kernel's exercise
+    // region just below it and outside it at it (al_non_monotone_region at the fit's own
+    // clock, rate and carry).
+    EXPECT_EQ(row.iv_lower, 0.0);
+    ASSERT_TRUE(std::isfinite(row.iv_upper));
+    const auto on_plateau = [&](double sigma) {
+      return al_non_monotone_region(row.fitted_price, fit->market.spot, kPlateauStrike,
+                                    fit->market.variance_years, fit->diagnostics.effective_rate,
+                                    0.0, Side::Put, sigma, fit->al_opts);
+    };
+    EXPECT_TRUE(on_plateau(row.iv_upper - 1.0e-6)) << row.iv_upper;
+    EXPECT_FALSE(on_plateau(row.iv_upper)) << row.iv_upper;
+    EXPECT_GT(row.iv_upper, 0.25); // past the fitted 0.25: the price does not identify it
+    EXPECT_LT(row.iv_upper, kIvMax);
+  }
+}
+
+TEST(QuoteSliceIdentification, AnUncertifiedRootAboveTheFloorIsLowVegaWithoutAnInterval) {
+  const Chain c = plateau_chain();
+  constexpr double kLift = 1.0e-8 * kPlateauStrike;
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    const auto fit = lifted_plateau_fit(c, policy, kLift);
+    ASSERT_TRUE(fit);
+    const QuoteSliceRow &row =
+        expect_plateau_put(*fit, c, kLift, QuoteSlicePriceOnlyReason::LowVega);
+    EXPECT_TRUE(std::isnan(row.iv_lower) && std::isnan(row.iv_upper));
+  }
 }
 
 TEST(QuoteSliceIdentification, EveryServedRowAgreesWithTheTypedQueryUnderBothPolicies) {
