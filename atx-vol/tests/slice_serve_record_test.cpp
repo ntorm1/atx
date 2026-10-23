@@ -527,9 +527,11 @@ TEST(SliceServeRecord, FamilyTierGreeksAreA0sBundleToTheBit) {
 #endif
 
 #if ATX_VOL_SERVE_RECORD_K3
-// Lane K3 seam: where the side family's validated envelope covers it, a family root is
+// Lane K3 seam: where the side family's validated envelope encloses it, a family root is
 // accepted by the envelope's enclosure (no confirm solve) within the 1e-7 requirement of
-// the accurate kernel's root.
+// the accurate kernel's root. Both sides: on the fixture the put envelope is covered but
+// its unverified quadrature nodes carry box bounds (0.04-0.5 USD, no enclosure), the call
+// envelope's bound is ~1e-11 USD (lane report, Diagnostics).
 TEST(SliceServeRecord, FamilyRootsAreAcceptedByTheEnvelopesEnclosure) {
   const auto record = base_record();
   ASSERT_NE(record, nullptr);
@@ -537,30 +539,33 @@ TEST(SliceServeRecord, FamilyRootsAreAcceptedByTheEnvelopesEnclosure) {
   const double S = 0.998 * kSpot;
   std::size_t skipped = 0;
   for (const ServedNode &node : record->nodes()) {
-    const ServedNodeSide &s = node.put;
-    if (!(s.tiers & kServeNodeFamily) || s.family_class != ServeErrorClass::RefinementValidated) {
-      continue;
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServedNodeSide &s = side_of(node, side);
+      if (!(s.tiers & kServeNodeFamily) ||
+          s.family_class != ServeErrorClass::RefinementValidated) {
+        continue;
+      }
+      const ServeAnswer f =
+          record->serve(at(node.strike, side, S, ServeTier::Family, ServeTier::Family));
+      if (f.status != ServeStatus::Ok) continue;
+      const double target = f.price * (1.0 + 1.0e-3);
+      const ServeIvAnswer iv = record->implied_vol(
+          ServeIvRequest{node.strike, side, S, target, ServeTier::Family, ServeTier::Family});
+      if (iv.status != ServeStatus::Ok) continue;
+      EXPECT_EQ(iv.acceptance.kind, ServeAcceptanceKind::Skipped);
+      EXPECT_EQ(iv.acceptance.reason, ServeAcceptanceReason::FamilyEnclosure);
+      EXPECT_LE(iv.acceptance.bound_iv, 1.0e-7);
+      const Result<double> lo = andersen_lake(S, node.strike, fit.market.variance_years,
+                                              iv.sigma - 1.0e-7, fit.diagnostics.effective_rate,
+                                              s.q, side, fit.al_opts);
+      const Result<double> hi = andersen_lake(S, node.strike, fit.market.variance_years,
+                                              iv.sigma + 1.0e-7, fit.diagnostics.effective_rate,
+                                              s.q, side, fit.al_opts);
+      ASSERT_TRUE(lo.has_value() && hi.has_value());
+      EXPECT_LE(*lo, target) << node.strike; // the accurate root lies within 1e-7
+      EXPECT_GE(*hi, target) << node.strike;
+      ++skipped;
     }
-    const ServeAnswer f =
-        record->serve(at(node.strike, Side::Put, S, ServeTier::Family, ServeTier::Family));
-    if (f.status != ServeStatus::Ok) continue;
-    const double target = f.price * (1.0 + 1.0e-3);
-    const ServeIvAnswer iv = record->implied_vol(
-        ServeIvRequest{node.strike, Side::Put, S, target, ServeTier::Family, ServeTier::Family});
-    if (iv.status != ServeStatus::Ok) continue;
-    EXPECT_EQ(iv.acceptance.kind, ServeAcceptanceKind::Skipped);
-    EXPECT_EQ(iv.acceptance.reason, ServeAcceptanceReason::FamilyEnclosure);
-    EXPECT_LE(iv.acceptance.bound_iv, 1.0e-7);
-    const Result<double> lo = andersen_lake(S, node.strike, fit.market.variance_years,
-                                            iv.sigma - 1.0e-7, fit.diagnostics.effective_rate,
-                                            s.q, Side::Put, fit.al_opts);
-    const Result<double> hi = andersen_lake(S, node.strike, fit.market.variance_years,
-                                            iv.sigma + 1.0e-7, fit.diagnostics.effective_rate,
-                                            s.q, Side::Put, fit.al_opts);
-    ASSERT_TRUE(lo.has_value() && hi.has_value());
-    EXPECT_LE(*lo, target) << node.strike; // the accurate root lies within 1e-7
-    EXPECT_GE(*hi, target) << node.strike;
-    ++skipped;
   }
   EXPECT_GT(skipped, 5u);
 }
