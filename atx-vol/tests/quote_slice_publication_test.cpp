@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <span>
@@ -1149,6 +1150,150 @@ TEST(QuoteSlicePublication, ALabelThatDisagreesWithTheQueryIsAnIdentificationVio
     EXPECT_EQ(stale->findings.front().row,
               static_cast<std::size_t>(floor_row - near.rows.begin()));
   }
+}
+
+// ── K4b declared hunk (C3 review D2): the parity-coupled calendar clamp ─────────────
+
+// TIGR 20770 (dev200b; C3 evidence probe\quotes-TIGR-b.csv, its 36 quotes) between the
+// accepted 20763 (floors) and 20784 (caps) of the call-floor run: the clamp's floors and caps
+// at 20770's nodes as C3's trace printed them (probe\dbg-tigr-on-repair-trace.txt, the first
+// T=0.086125 attempt). At K 1.0-3.0 the call's floor equals its cap; at K 3 the call is raised
+// to 1.18496 while the put stays near the fit's, so call - put leaves the certificate's affine
+// bound prepaid_max - K discount_min and AmericanPriceSlice::create refuses the slice ("node 5:
+// affine call-minus-put bound violated") - 36 rows lost to calendar_arbitrage. The parity-
+// coupled clamp raises that node's put, inside its own calendar cap, to the bound.
+struct TigrClampNode {
+  double strike, floor_call, floor_put, cap_call, cap_put;
+};
+constexpr TigrClampNode kTigr20770Clamp[] = {
+    {0.5, 3.65517349395857, 7.03807736204925e-173, 3.65561264802797, 2.56538608471777e-15},
+    {1.0, 3.15622532466616, 8.78684961095426e-13, 3.15622532466616, 3.0858944396449e-08},
+    {1.5, 2.65683800130435, 9.90631593886388e-08, 2.65683800130435, 2.94284995465659e-05},
+    {2.0, 2.15745067794255, 5.32720730931763e-05, 2.15745067794255, 0.00148997579284861},
+    {2.5, 1.66286122073876, 0.00206370122159342, 1.66286122073876, 0.00695041378516763},
+    {3.0, 1.18496274352134, 0.0096413575919144, 1.18496274352134, 0.0268025982401},
+    {3.5, 0.716442617772497, 0.0385343987755786, 0.73320289761091, 0.0724769380701921},
+    {4.0, 0.318950299713772, 0.140331071793943, 0.400239231738017, 0.237165279016782},
+    {4.5, 0.0993543350121134, 0.422635666029215, 0.185001093015903, 0.520214327116729},
+    {5.0, 0.0411877761830755, 0.86804698564258, 0.0811497848097429, 0.915623644811922},
+    {5.5, 0.0222910052205404, 1.35245323547547, 0.0370139833947931, 1.3717176844344},
+    {6.0, 0.0128519087503053, 1.84647559900552, 0.0222948172593044, 1.85742234694302},
+    {6.5, 0.00802724198133015, 2.34501108805046, 0.0178027144405422, 2.35295897017364},
+    {7.0, 0.00513011302536369, 2.84500002861023, 0.0144862635744217, 2.85014805536949},
+    {7.5, 0.00256979267110344, 3.34500002861023, 0.0111698127083012, 3.34733714056535},
+    {8.0, 0.0010514429327423, 3.84500002861023, 0.0078533618421807, 3.84541611206876},
+    {8.5, 0.000392450060277517, 4.34500002861023, 0.00505438511792927, 4.34500002861023},
+    {9.0, 0.000143697182296793, 4.84500002861023, 0.0208574760694072, 4.84500002861023}};
+
+std::vector<QuoteSliceQuote> tigr_20770_quotes() {
+  const std::vector<std::array<double, 4>> rows = {
+      {0.5, 1, 3.25, 4.199999809265137},   {0.5, 0, 0, 2.130000114440918},
+      {1, 1, 2.5, 4.449999809265137},      {1, 0, 0, 1},
+      {1.5, 1, 1.8700000047683716, 4.800000190734863}, {1.5, 0, 0, 1},
+      {2, 1, 1.9600000381469727, 2.9100000858306885},  {2, 0, 0, 1},
+      {2.5, 1, 1.4700000286102295, 2.4200000762939453}, {2.5, 0, 0, 1},
+      {3, 1, 0.9800000190734863, 1.7300000190734863},  {3, 0, 0, 0.949999988079071},
+      {3.5, 1, 0.5, 1.25}, {3.5, 0, 0.029999999329447746, 0.07000000029802322},
+      {4, 1, 0.3100000023841858, 0.4099999964237213},
+      {4, 0, 0.12999999523162842, 0.20000000298023224},
+      {4.5, 1, 0.10000000149011612, 0.1899999976158142},
+      {4.5, 0, 0.41999998688697815, 0.4699999988079071},
+      {5, 1, 0.03999999910593033, 0.07999999821186066},
+      {5, 0, 0.3499999940395355, 1.100000023841858},
+      {5.5, 1, 0, 0.05000000074505806}, {5.5, 0, 0.8199999928474426, 1.5700000524520874},
+      {6, 1, 0, 0.019999999552965164},  {6, 0, 0.9100000262260437, 3.799999952316284},
+      {6.5, 1, 0, 0.019999999552965164}, {6.5, 0, 1.409999966621399, 4.300000190734863},
+      {7, 1, 0, 0.8600000143051147},    {7, 0, 2.0999999046325684, 4.800000190734863},
+      {7.5, 1, 0, 0.8500000238418579},  {7.5, 0, 2.5999999046325684, 5.300000190734863},
+      {8, 1, 0, 0.05000000074505806},   {8, 0, 3.0999999046325684, 5.800000190734863},
+      {8.5, 1, 0, 0.949999988079071},   {8.5, 0, 3.5999999046325684, 6.300000190734863},
+      {9, 1, 0, 0.8500000238418579},    {9, 0, 4.099999904632568, 6.800000190734863}};
+  std::vector<QuoteSliceQuote> out;
+  for (const auto &r : rows) {
+    out.push_back({r[0], r[1] != 0.0 ? Side::Call : Side::Put, r[2], r[3]});
+  }
+  return out;
+}
+
+TEST(QuoteSliceCalendarParity, ARaisedCallRaisesItsPutToTheAffineBound) {
+  const QuoteSliceMarket market{4.1549999713897705, 0.08612515777349472, 0.08612515777349472,
+                                0.045037999749183655, 0.0018157954327762127, 0.0};
+  const std::vector<QuoteSliceQuote> quotes = tigr_20770_quotes();
+  // The channel fit (the graded sparse / ordinary profiles' method): every valid contract's
+  // bid / ask channel, so the wide, bidless TIGR quotes still give a certified slice.
+  QuoteSliceConfig config;
+  config.side_policy = QuoteSliceSidePolicy::All;
+  config.channel.repair_half_spreads = 0.5;
+  auto fit = fit_quote_slice_channel(market, quotes, config, nullptr);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  ASSERT_EQ(fit->fit_status, QuoteSliceFitStatus::Success) << fit->fit_error;
+  const AmericanPriceBounds bounds = fit->prices->bounds();
+  // The accepted neighbours as slices on 20770's strikes (wide carry bounds: they are other
+  // expiries'). The floors and caps are maxima / minima over several accepted slices with
+  // different domains: the floor slice is 20763's domain [1, 9] (the 0.5 floor came from an
+  // earlier expiry and does not bind), the cap slice stops at 8.5 (its 9.0 cap came from a
+  // different later slice).
+  std::vector<AmericanPriceNode> floors;
+  std::vector<AmericanPriceNode> caps;
+  for (const TigrClampNode &n : kTigr20770Clamp) {
+    if (n.strike >= 1.0) floors.push_back({n.strike, n.floor_call, n.floor_put});
+    if (n.strike <= 8.5) caps.push_back({n.strike, n.cap_call, n.cap_put});
+  }
+  const AmericanPriceBounds wide{market.spot, 0.5, 1.0, 0.0, market.spot};
+  const auto earlier = AmericanPriceSlice::create(floors, wide);
+  const auto later = AmericanPriceSlice::create(caps, wide);
+  ASSERT_TRUE(earlier) << earlier.error().to_string();
+  ASSERT_TRUE(later) << later.error().to_string();
+  const std::array<const AmericanPriceSlice *, 1> before{&*earlier};
+  const std::array<const AmericanPriceSlice *, 1> after{&*later};
+  const std::vector<AmericanPriceNode> original(fit->prices->nodes().begin(),
+                                                fit->prices->nodes().end());
+  // 2 half-spreads: the graded policy's rejected-slice retry budget (calendar_repair 0.5 x
+  // calendar_retry_factor 4); this fit is not the run's (its own profile), so its moves differ.
+  double required = 0.0;
+  const bool repaired =
+      repair_quote_slice_calendar(*fit, quotes, before, after, 2.0, &required);
+  std::printf("[K4b TIGR] repaired %d required %.6g half-spreads; nodes %zu\n",
+              repaired ? 1 : 0, required, original.size());
+  ASSERT_TRUE(repaired) << "the calendar repair refused TIGR 20770 (required " << required
+                        << " half-spreads)";
+  // The repaired slice: inside every floor and cap, the certificate's affine bound held, and
+  // the put moved only where the call's clamp pushed call - put past that bound.
+  std::size_t coupled = 0;
+  for (const AmericanPriceNode &node : fit->prices->nodes()) {
+    const double tol = 1.0e-8 + 1.0e-9 * std::max(market.spot, node.strike);
+    const double upper = bounds.prepaid_max - node.strike * bounds.discount_min;
+    EXPECT_LE(node.call - node.put, upper + tol) << node.strike;
+    for (const TigrClampNode &n : kTigr20770Clamp) {
+      if (n.strike != node.strike) continue;
+      if (n.strike >= 1.0) {
+        EXPECT_GE(node.call, n.floor_call - tol) << node.strike;
+        EXPECT_GE(node.put, n.floor_put - tol) << node.strike;
+      }
+      if (n.strike <= 8.5) {
+        EXPECT_LE(node.call, n.cap_call + tol) << node.strike;
+        EXPECT_LE(node.put, n.cap_put + tol) << node.strike;
+      }
+    }
+    for (const AmericanPriceNode &o : original) {
+      if (o.strike == node.strike && node.put > o.put &&
+          node.call - node.put >= upper - tol) {
+        ++coupled;
+        std::printf("[K4b TIGR] K %.1f: call %.8f put %.8f -> %.8f (bound %.8f)\n", node.strike,
+                    node.call, o.put, node.put, upper);
+      }
+    }
+  }
+  EXPECT_GE(coupled, 1u);
+  // C2's publication validation still runs on what the repair served: the slice is clean
+  // (certificate, shape, cross-side affine bounds, support, identification).
+  const std::array<QuoteSlicePublicationSlice, 1> one{QuoteSlicePublicationSlice{&*fit, quotes}};
+  const auto report = validate_published_representation(one);
+  ASSERT_TRUE(report) << report.error().to_string();
+  EXPECT_TRUE(report->clean()) << report->total() << " findings, first "
+                               << (report->findings.empty()
+                                       ? "-"
+                                       : to_string(report->findings.front().kind));
 }
 
 } // namespace

@@ -2396,6 +2396,22 @@ void clamp_nodes(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c) 
   }
 }
 
+// K4b declared hunk (C3 review D2, TIGR 20770): the parity-coupled clamp. A call the
+// calendar clamp raised can leave call - put above the certificate's affine bound
+// prepaid_max - K discount_min (AmericanPriceSlice::create: "affine call-minus-put bound
+// violated"); that node's put is raised to the bound when its own calendar cap admits it.
+// Only a node the certificate would refuse (beyond its allowance) moves, so every repair
+// that certified before is unchanged bit for bit.
+void couple_call_put(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c,
+                     const AmericanPriceBounds &b) {
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const double tol = 1.0e-8 + 1.0e-9 * std::max(b.spot, nodes[i].strike);
+    const double upper = b.prepaid_max - nodes[i].strike * b.discount_min;
+    const double put = nodes[i].call - upper; // the least put the bound admits
+    if (nodes[i].call - nodes[i].put > upper + tol && put <= c.cap_put[i]) nodes[i].put = put;
+  }
+}
+
 bool above_floors(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> nodes,
                   const CalendarClamp &c) {
   for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -2521,6 +2537,7 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
     }
     within = above_floors(fit, nodes, clamp);
   }
+  couple_call_put(nodes, clamp, fit.prices->bounds()); // K4b declared hunk (C3 D2)
   std::vector<double> call_spread;
   std::vector<double> put_spread;
   node_half_spreads(nodes, quotes, call_spread, put_spread);
