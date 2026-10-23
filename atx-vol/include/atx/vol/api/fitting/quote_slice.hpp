@@ -415,11 +415,13 @@ struct QuoteSliceRepairRecord {
 };
 
 // How a fit publishes a served row whose volatility its certified price does not
-// identify (opt-in). Legacy (the default) is the historical path bit for bit: a curve
-// volatility or re-implied root at or below kIvMin is a Success volatility. PriceOnly
-// publishes it PriceOnly (QuoteSlicePriceOnlyReason FloorVol, FlatExerciseRegion or
-// LowVega, below) with its certified price kept and NaN volatility, flagged in
-// QuoteSliceFit::price_only_nodes (lane C0).
+// identify (opt-in). Legacy (the default) keeps the historical status and value bit for
+// bit: a curve volatility or re-implied root at or below kIvMin, or a root the query
+// types FlatExerciseRegion / LowVega, is a Success volatility - labelled with the typed
+// query's answer (vol_convention None, the reason and interval; lane C0 fix round 1: one
+// answer per contract). PriceOnly publishes it PriceOnly (QuoteSlicePriceOnlyReason
+// FloorVol, FlatExerciseRegion or LowVega, below) with its certified price kept and NaN
+// volatility, flagged in QuoteSliceFit::price_only_nodes (lane C0).
 // Prices, certificates and every calendar decision are unchanged.
 enum class QuoteSliceFloorPolicy : std::uint8_t { Legacy, PriceOnly };
 
@@ -551,6 +553,13 @@ enum class QuoteSliceVolConvention : std::uint8_t {
 // early-exercise premium) depends on the spot itself, so it is not price-invariant.
 enum class QuoteSliceCarryConvention : std::uint8_t { Supplied, ForwardPreserving };
 
+// Which rule chose the spot an expiry was fitted on (lane C0 fix round 1: spot_version
+// alone does not say). Own: the expiry's own spot (spot_version 0). Nearest: the snapshot
+// spot S* observed at the observation instant nearest the snapshot time. Median: the
+// median spot over the snapshot's observations, with no instant - also what a Nearest
+// request falls back to when no observation carries an instant.
+enum class QuoteSliceSpotRule : std::uint8_t { Own, Nearest, Median };
+
 // The American model behind a fit's prices and volatilities.
 enum class QuoteSliceModelKind : std::uint8_t { AndersenLake, DiscreteDividendLattice };
 
@@ -558,6 +567,7 @@ enum class QuoteSliceModelKind : std::uint8_t { AndersenLake, DiscreteDividendLa
 [[nodiscard]] const char *to_string(QuoteSliceVolConvention value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceFloorPolicy value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceCarryConvention value) noexcept;
+[[nodiscard]] const char *to_string(QuoteSliceSpotRule value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceModelKind value) noexcept;
 
 // Snapshot provenance of one expiry fit, supplied by the caller that built the market
@@ -566,6 +576,7 @@ struct QuoteSliceSnapshotInfo {
   std::int64_t quote_ns = 0;      // quote clock: the quotes' observation instant, Unix ns
   std::int64_t underlying_ns = 0; // underlying clock: instant of the spot the fit used
   std::uint32_t spot_version = 0; // 0: the expiry's own spot; >= 1: the snapshot spot's version
+  QuoteSliceSpotRule spot_rule = QuoteSliceSpotRule::Own; // the rule that chose that spot
   std::uint32_t carry_version = 0; // 0: carry as supplied; >= 1: a re-derived carry's version
   QuoteSliceCarryConvention carry_convention = QuoteSliceCarryConvention::Supplied;
   double raw_spot = std::numeric_limits<double>::quiet_NaN(); // own spot before a rebase
@@ -583,17 +594,22 @@ struct QuoteSliceRow {
   double spread_vol = std::numeric_limits<double>::quiet_NaN();
   double weight_w = 0.0; // stored fit weight; zero when not admitted
   bool weight_capped = false;
-  // PriceOnly rows: why, and the volatility interval where known (NaN otherwise).
+  // query_quote_slice's reason and interval (NaN where none is known) for a served row
+  // whose volatility the query does not identify: every PriceOnly row, and under Legacy
+  // a Success row serving such a volatility. None / NaN on every other row, including a
+  // row demoted from served (MarketDistanceFailure, NoFit, PricingFailure).
   QuoteSlicePriceOnlyReason price_only_reason = QuoteSlicePriceOnlyReason::None;
   double iv_lower = std::numeric_limits<double>::quiet_NaN();
   double iv_upper = std::numeric_limits<double>::quiet_NaN();
-  // Where fitted_iv came from when it was set; read it through vol_convention(row).
+  // Where fitted_iv came from when it was set, None when the query does not identify it;
+  // read it through vol_convention(row).
   QuoteSliceVolConvention vol_source = QuoteSliceVolConvention::None;
 };
 
 // The convention of row.fitted_iv: vol_source for a Success row, None otherwise (so a
 // later status change - a market-distance refusal, a price-only flip - never leaves a
-// stale convention behind).
+// stale convention behind). A Legacy Success row whose volatility query_quote_slice does
+// not identify (price_only_reason set) reports None: a bound, not an identified IV.
 [[nodiscard]] QuoteSliceVolConvention vol_convention(const QuoteSliceRow &row) noexcept;
 
 // Pre-solve screen of a channel fit (lane L2c, 2026-10-19): the typed reason a channel

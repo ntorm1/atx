@@ -94,6 +94,10 @@ void bind_enums(py::module_ &m) {
   py::enum_<QuoteSliceCarryConvention>(m, "QuoteSliceCarryConvention")
       .value("SUPPLIED", QuoteSliceCarryConvention::Supplied)
       .value("FORWARD_PRESERVING", QuoteSliceCarryConvention::ForwardPreserving);
+  py::enum_<QuoteSliceSpotRule>(m, "QuoteSliceSpotRule")
+      .value("OWN", QuoteSliceSpotRule::Own)
+      .value("NEAREST", QuoteSliceSpotRule::Nearest)
+      .value("MEDIAN", QuoteSliceSpotRule::Median);
   py::enum_<QuoteSliceModelKind>(m, "QuoteSliceModelKind")
       .value("ANDERSEN_LAKE", QuoteSliceModelKind::AndersenLake)
       .value("DISCRETE_DIVIDEND_LATTICE", QuoteSliceModelKind::DiscreteDividendLattice);
@@ -144,6 +148,7 @@ void bind_inputs(py::module_ &m) {
       .def_readwrite("quote_ns", &QuoteSliceSnapshotInfo::quote_ns)
       .def_readwrite("underlying_ns", &QuoteSliceSnapshotInfo::underlying_ns)
       .def_readwrite("spot_version", &QuoteSliceSnapshotInfo::spot_version)
+      .def_readwrite("spot_rule", &QuoteSliceSnapshotInfo::spot_rule)
       .def_readwrite("carry_version", &QuoteSliceSnapshotInfo::carry_version)
       .def_readwrite("carry_convention", &QuoteSliceSnapshotInfo::carry_convention)
       .def_readwrite("raw_spot", &QuoteSliceSnapshotInfo::raw_spot)

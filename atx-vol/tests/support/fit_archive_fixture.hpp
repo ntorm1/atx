@@ -251,6 +251,7 @@ struct SyntheticSurface {
   f.snapshot.quote_ns = 1791988206009793000LL;
   f.snapshot.underlying_ns = 1791988205869274000LL;
   f.snapshot.spot_version = 2;
+  f.snapshot.spot_rule = QuoteSliceSpotRule::Nearest;
   f.snapshot.carry_version = 3;
   f.snapshot.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
   f.snapshot.raw_spot = 772.995;
@@ -466,7 +467,8 @@ inline void diff_fit(Diff &d, const QuoteSliceFit &a, const QuoteSliceFit &b) {
   const QuoteSliceSnapshotInfo &sa = a.snapshot;
   const QuoteSliceSnapshotInfo &sb = b.snapshot;
   d.check(sa.quote_ns == sb.quote_ns && sa.underlying_ns == sb.underlying_ns &&
-              sa.spot_version == sb.spot_version && sa.carry_version == sb.carry_version &&
+              sa.spot_version == sb.spot_version && sa.spot_rule == sb.spot_rule &&
+              sa.carry_version == sb.carry_version &&
               sa.carry_convention == sb.carry_convention && bits(sa.raw_spot, sb.raw_spot) &&
               sa.spot_stale == sb.spot_stale,
           "snapshot");

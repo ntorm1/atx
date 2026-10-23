@@ -74,6 +74,7 @@ constexpr std::uint8_t kMaxPriceOnlyReason = ev(QuoteSlicePriceOnlyReason::Unide
 constexpr std::uint8_t kMaxVolConvention = ev(QuoteSliceVolConvention::ReimpliedRepaired);
 constexpr std::uint8_t kMaxCarryConvention = ev(QuoteSliceCarryConvention::ForwardPreserving);
 constexpr std::uint8_t kMaxFloorPolicy = ev(QuoteSliceFloorPolicy::PriceOnly);
+constexpr std::uint8_t kMaxSpotRule = ev(QuoteSliceSpotRule::Median);
 constexpr std::uint8_t kMaxRepairOutcome = ev(QuoteSliceRepairOutcome::NotCertified);
 constexpr std::uint8_t kMaxTermination = ev(FitTermination::Stalled);
 constexpr std::uint8_t kMaxProjection = ev(SliceProjection::Moved);
@@ -661,6 +662,7 @@ ArchiveOutcome FitArchiveWriter::Impl::encode_fit(const QuoteSliceFit &fit, FitA
   r.quote_ns = s.quote_ns;
   r.underlying_ns = s.underlying_ns;
   r.spot_version = s.spot_version;
+  r.spot_rule = ev(s.spot_rule);
   r.carry_version = s.carry_version;
   r.carry_convention = ev(s.carry_convention);
   if (!std::isnan(s.raw_spot)) {
@@ -1338,6 +1340,7 @@ ArchiveResult<QuoteSliceFit> decode_fit(const FitArchive &a, const FitArchiveFit
   fit.snapshot.quote_ns = r.quote_ns;
   fit.snapshot.underlying_ns = r.underlying_ns;
   fit.snapshot.spot_version = r.spot_version;
+  fit.snapshot.spot_rule = static_cast<QuoteSliceSpotRule>(r.spot_rule);
   fit.snapshot.carry_version = r.carry_version;
   fit.snapshot.carry_convention = static_cast<QuoteSliceCarryConvention>(r.carry_convention);
   if ((r.snapshot_flags & kFitSnapshotHasRawSpot) != 0u) fit.snapshot.raw_spot = r.raw_spot;
@@ -1604,6 +1607,7 @@ template <class R>
     // Minor-1 tail (lane C0): zero means absent, so a flag-less raw spot must be zero.
     const bool snapshot_ok =
         r.carry_convention <= kMaxCarryConvention && r.floor_policy <= kMaxFloorPolicy &&
+        r.spot_rule <= kMaxSpotRule &&
         r.snapshot_flags <= (kFitSnapshotSpotStale | kFitSnapshotHasRawSpot) &&
         ((r.snapshot_flags & kFitSnapshotHasRawSpot) != 0u || bits_of(r.raw_spot) == 0u) &&
         zero_bytes(r.reserved1);

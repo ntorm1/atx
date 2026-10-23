@@ -3,8 +3,8 @@
 // Internal seam (lanes L3a / L3a-b / C0): the certified node side of a contract, the
 // price-only flag of a node side, the served-volatility floor rule and the
 // identification of a served volatility. Shared by quote_slice.cpp (row publication,
-// evaluate/query) and quote_surface.cpp (the ladder wing tail). Definitions live in
-// quote_slice.cpp. Not public API.
+// evaluate/query) and quote_surface.cpp (the ladder wing tail, row demotions).
+// Definitions live in quote_slice.cpp. Not public API.
 
 #include <cstddef>
 #include <cstdint>
@@ -63,6 +63,26 @@ struct VolIdentification {
 [[nodiscard]] VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike,
                                               Side side, double price,
                                               QuoteSliceFloorPolicy policy);
+
+// query_quote_slice's typed answer for certified `price` of (strike, side) - the one
+// classification behind both the query and a served row's labels (lane C0 fix round 1:
+// one answer per contract). At an unmoved node: the curve's volatility (FittedCurve),
+// FloorVol at or below kIvMin; elsewhere reimplied_vol under PriceOnly
+// (ReimpliedRepaired); a node side flagged price-only is never identified
+// (UnidentifiedInterval when the price would now identify a volatility). `source` is the
+// convention of an identified answer. nullopt: an unmoved node whose curve volatility is
+// not positive (the query refuses it with OutOfRange). Precondition: fit.prices and
+// fit.curve are set.
+struct ServedIdentification {
+  VolIdentification id;
+  QuoteSliceVolConvention source = QuoteSliceVolConvention::None;
+};
+[[nodiscard]] std::optional<ServedIdentification>
+identify_served(const QuoteSliceFit &fit, double strike, Side side, double price);
+
+// Clears a row's identifiability labels (price_only_reason None, NaN interval) - for a
+// row whose price is no longer served (a demotion) or whose volatility is identified.
+void clear_identification(QuoteSliceRow &row) noexcept;
 
 // Lane C2: the served support (QuoteSliceFit::withheld_nodes). True when `strike` (inside
 // the certified domain) is served on `side`: no mask, a node side not withheld, or a strike

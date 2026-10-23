@@ -1910,7 +1910,7 @@ def crr_american(spot: float, strike: float, years: float, sigma: float, rate: f
 
 
 C0_COLUMNS = ["price_only_reason", "iv_lower", "iv_upper", "vol_convention", "model_kind",
-              "dividend_convention", "quote_ns", "underlying_ns", "spot_version",
+              "dividend_convention", "quote_ns", "underlying_ns", "spot_version", "spot_rule",
               "carry_version", "carry_convention", "raw_spot", "spot_stale", "price_valid",
               "vol_valid"]
 C0_DEEP_ITM_PUT = "39"  # K 136 put of the wing chain
@@ -2030,14 +2030,25 @@ def test_native_floor_price_only_serves_the_deep_itm_put_price_only_with_its_pri
     before = next(row for row in off if row["row_id"] == C0_DEEP_ITM_PUT)
     after = next(row for row in on if row["row_id"] == C0_DEEP_ITM_PUT)
     assert before["status"] == "ok" and float(before["predicted_vol"]) == 0.005
-    # A repair moved its node to the exercise value; the re-implied root is the floor.
-    assert before["vol_convention"] == "reimplied_repaired"
-    assert off_report["identifiability"]["identified_floor_vol_rows"] >= 1
+    # A repair moved its node to the exercise value; the re-implied root is the floor. The
+    # Legacy row keeps that value but is labelled with the library query's answer (one
+    # answer per contract): no convention, not a valid volatility, floor_vol and the
+    # interval the price-only arm publishes.
+    assert before["vol_convention"] == "none"
+    assert (before["price_valid"], before["vol_valid"]) == ("1", "0")
+    assert before["price_only_reason"] == "floor_vol"
+    off_identifiability = off_report["identifiability"]
+    assert off_identifiability["identified_floor_vol_rows"] >= 1
+    assert off_identifiability["identified_vol_rows"] == sum(row["vol_valid"] == "1"
+                                                             for row in off)
+    assert (off_identifiability["identified_vol_rows"] + off_identifiability[
+        "identified_floor_vol_rows"] == off_identifiability["served_vol_rows"])
     assert after["status"] == "ok_price_only"
     assert after["predicted_price"] == before["predicted_price"]
     assert after["predicted_vol"] == "" and after["vol_status"] == "unidentifiable"
     assert after["price_only_reason"] == "floor_vol"
     assert float(after["iv_lower"]) == 0.0 and float(after["iv_upper"]) > 0.005
+    assert (before["iv_lower"], before["iv_upper"]) == (after["iv_lower"], after["iv_upper"])
     assert after["vol_convention"] == "none"
     assert (after["price_valid"], after["vol_valid"]) == ("1", "0")
     # No floor value is ever served as an identified IV under the key.
@@ -2048,6 +2059,7 @@ def test_native_floor_price_only_serves_the_deep_itm_put_price_only_with_its_pri
     ok = sum(row["status"] == "ok" for row in on)
     price_only = sum(row["status"] == "ok_price_only" for row in on)
     assert identifiability["served_vol_rows"] == ok
+    assert identifiability["identified_vol_rows"] == ok
     assert identifiability["served_price_rows"] == ok + price_only
     assert identifiability["price_only_reason_counts"]["floor_vol"] >= 1
     assert sum(identifiability["price_only_reason_counts"].values()) == price_only
@@ -2057,12 +2069,122 @@ def test_native_floor_price_only_serves_the_deep_itm_put_price_only_with_its_pri
                for i, price in served.items())
     assert on_report["policy_definition"]["serve"] == {"floor_price_only": True,
                                                        "metadata": True}
+    # serve.floor_price_only implies price_only (its PriceOnly rows - every reason,
+    # unidentified_interval included - are served ok_price_only); the definition says so.
+    assert on_report["policy_definition"]["price_only"] is True
+    assert "price_only" not in off_report["policy_definition"]
     # Without metadata the key still publishes the price-only row (historical columns).
     bare = c0_graded_policy(tmp_path / "bare.json", serve={"floor_price_only": True})
     rows, _, _ = run_c0(binary, wing_chain, tmp_path, "bare", bare)
     row = next(row for row in rows if row["row_id"] == C0_DEEP_ITM_PUT)
     assert (row["status"], row["predicted_price"]) == ("ok_price_only", before["predicted_price"])
     assert "price_only_reason" not in row
+
+
+def write_calendar_repair_snapshot(path: Path, drift: float) -> None:
+    """quote_slice_identification_test's calendar-repair surface in CSV form (400-step CRR
+    prices, r 5 %): N (chain 17, 0.45 y, sigma 50 %, q 4 %, puts 116-148) recorded at spot
+    100 + `drift` and F (chain 18, 0.5 y, sigma 5 % skewed up to 35 % below K 116, puts
+    60-148) at spot 100. The calendar repair caps N's puts onto F's exercise values; with
+    `drift` 1e-6 N's K 116 put (row 0) is then a hair above its own exercise value
+    (measured: C0-20221022-fix1 cli-two-expiry-reasons.txt)."""
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["row_id", "chain_id", "strike", "is_call", "spot", "bid", "ask",
+                         "years", "years_calendar", "rate", "sdiv", "ddiv_pv", "input_status",
+                         "exercise", "underlier", "root", "expiry_days", "snapshot_ns"])
+        row = 0
+        chains = ((17, 0.45, 100.0 + drift, 116, 0.04, 0.5, 0.0),
+                  (18, 0.5, 100.0, 60, 0.0, 0.05, 0.30))
+        for chain, years, spot, low, q, atm, skew in chains:
+            for strike in range(low, 149, 4):
+                sigma = atm + skew * min(max((116.0 - strike) / 40.0, 0.0), 1.0)
+                price = crr_american(spot, float(strike), years, sigma, 0.05, q, False, 400)
+                spread = max(0.01, price * 0.05)
+                writer.writerow([row, chain, strike, 0, spot, max(price - spread, 0.0),
+                                 price + spread, years, years, 0.05, q, 0, "ok", "American",
+                                 "XYZ", "XYZ", 21000 + int(years * 365), 1])
+                row += 1
+
+
+def calendar_repair_policy(path: Path, *, graded=None, **extra) -> Path:
+    profiles = [{"name": name, "base": name, "side_policy": "all",
+                 "channel": {"repair_half_spreads": 100}} for name in PROFILE_NAMES]
+    return write_policy(path, {
+        "schema_version": 1, "admission": "graded",
+        "graded": {"grade_b_min_mid_strikes": 10, "calendar_repair_half_spreads": 100,
+                   **(graded or {})},
+        "profiles": profiles, **extra})
+
+
+@pytest.fixture(scope="module")
+def calendar_repair_chain(tmp_path_factory) -> Path:
+    path = tmp_path_factory.mktemp("c0-plateau") / "calendar-repair.csv"
+    write_calendar_repair_snapshot(path, 1e-6)
+    return path
+
+
+def test_native_flat_exercise_region_and_low_vega_rows_keep_their_price(
+        binary, tmp_path, calendar_repair_chain):
+    # N's repaired puts K 116-140 re-imply only a non-unique root: K 116 inside the
+    # kernel's exercise region (flat_exercise_region, interval [0, sigma_ex]), K 120-140
+    # outside it but uncertified (low_vega, no interval). serve.floor_price_only serves
+    # them price-only with their price; the Legacy arm keeps the historical root but says
+    # it is not identified - the same reasons, interval and price.
+    on, on_report, _ = run_c0(binary, calendar_repair_chain, tmp_path, "on",
+                              calendar_repair_policy(tmp_path / "on.json", serve={
+                                  "floor_price_only": True, "metadata": True}))
+    off, off_report, _ = run_c0(binary, calendar_repair_chain, tmp_path, "off",
+                                calendar_repair_policy(tmp_path / "off.json",
+                                                       serve={"metadata": True}))
+    expected = {"0": "flat_exercise_region", **{str(i): "low_vega" for i in range(1, 7)}}
+    for row in on:
+        reason = expected.get(row["row_id"])
+        if reason is None:
+            assert (row["status"], row["price_only_reason"]) == ("ok", "none"), row
+            assert row["vol_valid"] == "1"
+            continue
+        assert row["status"] == "ok_price_only" and row["predicted_vol"] == "", row
+        assert row["price_only_reason"] == reason
+        assert row["vol_convention"] == "none"
+        assert (row["price_valid"], row["vol_valid"]) == ("1", "0")
+    by_id = {row["row_id"]: row for row in on}
+    assert by_id["0"]["predicted_price"] == "16"  # F's exercise value at K 116
+    assert float(by_id["0"]["iv_lower"]) == 0.0 and 0.13 < float(by_id["0"]["iv_upper"]) < 0.14
+    assert all(by_id[i]["iv_lower"] == by_id[i]["iv_upper"] == "" for i in map(str, range(1, 7)))
+    reasons = on_report["identifiability"]["price_only_reason_counts"]
+    assert reasons == {"flat_exercise_region": 1, "low_vega": 6}
+    for row in off:
+        twin = by_id[row["row_id"]]
+        assert row["predicted_price"] == twin["predicted_price"]
+        assert (row["price_only_reason"], row["iv_lower"], row["iv_upper"]) == (
+            twin["price_only_reason"], twin["iv_lower"], twin["iv_upper"])
+        if row["row_id"] in expected:
+            assert row["status"] == "ok" and float(row["predicted_vol"]) > 0.005, row
+            assert (row["vol_convention"], row["vol_valid"]) == ("none", "0")
+    identifiability = off_report["identifiability"]
+    assert identifiability["served_vol_rows"] - identifiability["identified_vol_rows"] == 7
+    assert identifiability["identified_floor_vol_rows"] == 0
+
+
+def test_native_market_gated_rows_carry_no_price_only_reason(
+        binary, tmp_path, calendar_repair_chain):
+    # The market-distance gate refuses N's repaired K 116-124 puts (F's exercise values sit
+    # more than a spread below N's own quotes), which serve.floor_price_only alone serves
+    # flat_exercise_region / low_vega: a refused row has no served price, so no reason or
+    # interval either.
+    rows, report, _ = run_c0(binary, calendar_repair_chain, tmp_path, "gated",
+                             calendar_repair_policy(
+                                 tmp_path / "gated.json",
+                                 graded={"market_distance": "gate",
+                                         "market_distance_spreads": 1.0},
+                                 serve={"floor_price_only": True, "metadata": True}))
+    gated = [row for row in rows if row["status"] == "market_distance_failure"]
+    assert {row["row_id"] for row in gated} >= {"0", "1", "2"}
+    for row in gated:
+        assert (row["price_only_reason"], row["iv_lower"], row["iv_upper"]) == ("none", "", "")
+        assert (row["vol_convention"], row["price_valid"], row["vol_valid"]) == ("none", "0", "0")
+    assert report["identifiability"]["price_only_reason_counts"] == {"low_vega": 4}  # K 128-140
 
 
 def test_native_metadata_columns_carry_conventions_and_provenance(binary, tmp_path):
@@ -2077,7 +2199,7 @@ def test_native_metadata_columns_carry_conventions_and_provenance(binary, tmp_pa
     for row in rows:
         assert row["model_kind"] == "andersen_lake"
         assert row["dividend_convention"] == "aggregate_funding_pv_approximation"
-        assert (row["spot_version"], row["carry_version"]) == ("0", "0")
+        assert (row["spot_version"], row["spot_rule"], row["carry_version"]) == ("0", "own", "0")
         assert row["carry_convention"] == "supplied"
         assert row["raw_spot"] == "" and row["spot_stale"] == "0"
         assert row["quote_ns"] == "" and row["underlying_ns"] == ""  # no observation_ns column
@@ -2141,7 +2263,8 @@ def test_native_one_spot_removes_a_per_chain_spot_calendar_crossing(binary, tmp_
                                                       rel=1e-12)
     assert block["chain_status_counts"] == {"rebased": 2}
     for row in on:
-        assert (row["spot_version"], row["carry_version"]) == ("1", "1")
+        assert (row["spot_version"], row["spot_rule"], row["carry_version"]) == (
+            "1", "nearest", "1")
         assert row["carry_convention"] == "forward_preserving"
         assert row["underlying_ns"] == "1791988201000000000"
         assert float(row["raw_spot"]) == (100.0 if row["chain_id"] == "17" else 100.05)
@@ -2156,6 +2279,7 @@ def test_native_one_spot_removes_a_per_chain_spot_calendar_crossing(binary, tmp_
     (spot,) = report["one_spot"]["snapshots"]
     assert (spot["spot"], spot["rule"], spot["underlying_ns"]) == (100.025, "median", 0)
     assert {row["underlying_ns"] for row in rows} == {""}
+    assert {(row["spot_version"], row["spot_rule"]) for row in rows} == {("1", "median")}
 
 
 @pytest.mark.parametrize("disposition", ["flag", "refuse"])

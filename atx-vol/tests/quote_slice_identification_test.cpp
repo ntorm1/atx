@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@
 
 #include "atx/vol/api/fitting/quote_fit_policy.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_iv.hpp"
 
 namespace atx::vol {
 namespace {
@@ -107,6 +109,52 @@ QuoteSurfaceConfig graded_v1_surface() {
 
 std::uint64_t bits(double value) { return std::bit_cast<std::uint64_t>(value); }
 
+// One answer per contract (lane C0 fix round 1, review M1): every served row of `fit`
+// (Success or PriceOnly) says what query_quote_slice says for its contract - the same
+// certified price; an identified answer is the row's own volatility and convention; an
+// unidentified answer is the row's reason and interval with no row convention (under
+// Legacy the row keeps its historical status and value). Under PriceOnly every
+// unidentified row is PriceOnly. Returns {served rows, unidentified rows}.
+std::array<std::size_t, 2> expect_rows_agree_with_query(const QuoteSliceFit &fit,
+                                                        std::span<const QuoteSliceQuote> quotes,
+                                                        const std::string &label) {
+  std::array<std::size_t, 2> counts{0, 0};
+  for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
+    const QuoteSliceRow &row = fit.rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+        row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) {
+      continue;
+    }
+    ++counts[0];
+    const std::string at = label + " row " + std::to_string(i);
+    const auto answer = query_quote_slice(fit, quotes[i].strike, quotes[i].side);
+    if (!answer) {
+      ADD_FAILURE() << at << ": " << answer.error().to_string();
+      continue;
+    }
+    EXPECT_EQ(bits(answer->price), bits(row.fitted_price)) << at;
+    if (answer->status == QuoteSliceEvaluationStatus::Success) {
+      EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << at;
+      EXPECT_NE(answer->vol_convention, QuoteSliceVolConvention::None) << at;
+      EXPECT_EQ(vol_convention(row), answer->vol_convention) << at;
+      EXPECT_EQ(bits(row.fitted_iv), bits(answer->volatility)) << at;
+      EXPECT_EQ(row.price_only_reason, QuoteSlicePriceOnlyReason::None) << at;
+      EXPECT_TRUE(std::isnan(row.iv_lower) && std::isnan(row.iv_upper)) << at;
+      continue;
+    }
+    ++counts[1];
+    EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::PriceOnly) << at;
+    EXPECT_EQ(vol_convention(row), QuoteSliceVolConvention::None) << at;
+    EXPECT_EQ(row.price_only_reason, answer->reason) << at;
+    EXPECT_EQ(bits(row.iv_lower), bits(answer->iv_lower)) << at;
+    EXPECT_EQ(bits(row.iv_upper), bits(answer->iv_upper)) << at;
+    if (fit.floor_policy == QuoteSliceFloorPolicy::PriceOnly) {
+      EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::PriceOnly) << at;
+    }
+  }
+  return counts;
+}
+
 TEST(QuoteSliceIdentification, DeepItmPutAtIntrinsicIsServedFloorVolPriceOnlyWithItsPrice) {
   const Chain c = wing_chain();
   const std::array<QuoteSurfaceExpiry, 1> expiry{{{c.market, c.quotes, {}}}};
@@ -123,13 +171,16 @@ TEST(QuoteSliceIdentification, DeepItmPutAtIntrinsicIsServedFloorVolPriceOnlyWit
   ASSERT_EQ(b.fit.rows.size(), c.quotes.size());
 
   // Legacy is the historical serve record: the floor bound as a Success volatility, at
-  // the put's exercise value 136 - 99.71.
+  // the put's exercise value 136 - 99.71. Its labels are the typed query's (lane C0 fix
+  // round 1, M1): no volatility convention, the FloorVol reason and interval.
   const QuoteSliceRow &floor_row = a.fit.rows[kDeepItmPut];
   ASSERT_EQ(floor_row.evaluation_status, QuoteSliceEvaluationStatus::Success)
       << "fixture broken: the deep ITM put is no longer served";
   ASSERT_EQ(floor_row.fitted_iv, kIvMin) << "fixture broken: no floor volatility";
   EXPECT_NEAR(floor_row.fitted_price, 136.0 - 99.71, 1.0e-9);
-  EXPECT_EQ(vol_convention(floor_row), QuoteSliceVolConvention::ReimpliedRepaired);
+  EXPECT_EQ(floor_row.vol_source, QuoteSliceVolConvention::None);
+  EXPECT_EQ(vol_convention(floor_row), QuoteSliceVolConvention::None);
+  EXPECT_EQ(floor_row.price_only_reason, QuoteSlicePriceOnlyReason::FloorVol);
 
   // PriceOnly: the same certified price, no volatility, the typed reason and interval.
   const QuoteSliceRow &row = b.fit.rows[kDeepItmPut];
@@ -143,6 +194,8 @@ TEST(QuoteSliceIdentification, DeepItmPutAtIntrinsicIsServedFloorVolPriceOnlyWit
   EXPECT_EQ(row.iv_lower, 0.0);
   EXPECT_GT(row.iv_upper, 0.15);
   EXPECT_LE(row.iv_upper, kIvMax);
+  EXPECT_EQ(floor_row.iv_lower, 0.0);
+  EXPECT_EQ(bits(floor_row.iv_upper), bits(row.iv_upper));
 
   // Nothing else changes: every other row's status, volatility and price, the grade,
   // and the moved nodes.
@@ -283,6 +336,7 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
   info.quote_ns = 1791988206009793000;
   info.underlying_ns = 1791988205869274000;
   info.spot_version = 1;
+  info.spot_rule = QuoteSliceSpotRule::Nearest;
   info.carry_version = 1;
   info.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
   info.raw_spot = 99.72;
@@ -295,6 +349,7 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
   EXPECT_EQ(got.quote_ns, info.quote_ns);
   EXPECT_EQ(got.underlying_ns, info.underlying_ns);
   EXPECT_EQ(got.spot_version, 1u);
+  EXPECT_EQ(got.spot_rule, QuoteSliceSpotRule::Nearest);
   EXPECT_EQ(got.carry_version, 1u);
   EXPECT_EQ(got.carry_convention, QuoteSliceCarryConvention::ForwardPreserving);
   EXPECT_EQ(got.raw_spot, 99.72);
@@ -305,8 +360,58 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
       fit_quote_slice(c.market, c.quotes, graded_v1(QuoteSliceFloorPolicy::Legacy));
   ASSERT_TRUE(alone) << alone.error().to_string();
   EXPECT_EQ(alone->snapshot.spot_version, 0u);
+  EXPECT_EQ(alone->snapshot.spot_rule, QuoteSliceSpotRule::Own);
   EXPECT_EQ(alone->snapshot.carry_convention, QuoteSliceCarryConvention::Supplied);
   EXPECT_TRUE(std::isnan(alone->snapshot.raw_spot));
+}
+
+// The lifted-calendar-floor fixture (quote_surface_test): S 100, T 0.5, sigma 0.25,
+// r 0.03, q 0.01, strikes 80-120 every 5 at their Andersen-Lake prices, +/- 1 % spreads.
+Chain refusal_chain() {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, 0.5, 0.5, 0.03, 0.01, 0.0};
+  for (int strike = 80; strike <= 120; strike += 5) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(100.0, static_cast<double>(strike), 0.5, 0.25, 0.03, 0.01, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.01);
+      out.quotes.push_back({static_cast<double>(strike), side, std::max(*price - spread, 0.0),
+                            *price + spread});
+    }
+  }
+  return out;
+}
+
+// The refusal chain fitted under `policy`, then lifted by a calendar floor at the
+// certificate's upper edge: every node above any finite-volatility American price, so
+// the moved rows re-imply nothing (UnidentifiedInterval).
+std::optional<QuoteSliceFit> lifted_refusal_fit(const Chain &c, QuoteSliceFloorPolicy policy) {
+  QuoteSliceConfig config;
+  config.floor_policy = policy;
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  if (!fit || fit->fit_status != QuoteSliceFitStatus::Success) {
+    ADD_FAILURE() << "refusal chain did not fit";
+    return std::nullopt;
+  }
+  std::vector<AmericanPriceNode> lifted;
+  for (const auto &node : fit->prices->nodes()) {
+    lifted.push_back({node.strike, 100.0 - 1.0e-4 * node.strike, node.strike * (1.0 - 2.0e-4)});
+  }
+  const auto floor = AmericanPriceSlice::create(lifted, fit->prices->bounds());
+  if (!floor) {
+    ADD_FAILURE() << floor.error().to_string();
+    return std::nullopt;
+  }
+  const std::array<const AmericanPriceSlice *, 1> earlier{&*floor};
+  if (!repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0e9)) {
+    ADD_FAILURE() << "the lifted floor was not repaired onto";
+    return std::nullopt;
+  }
+  return std::move(*fit);
 }
 
 // Puts from `lo` to 148 every 4 at a 5 % rate, a constant yield and the skew
@@ -329,6 +434,30 @@ Chain put_chain(double years, double atm, double skew, int lo, double yield) {
   return out;
 }
 
+// N (0.45 y, 50 %, 4 % yield): puts 116-148 with time value; F (0.5 y, skewed down to 5 %
+// from K 116): puts 60-148 at their exercise value from K 116 up.
+std::array<Chain, 2> calendar_repair_chains() {
+  return {put_chain(0.45, 0.5, 0.0, 116, 0.04), put_chain(0.5, 0.05, 0.30, 60, 0.0)};
+}
+
+// The calendar-repair surface: N repaired onto F's exercise values (F serves grade A, N
+// grade C after a channel refit, so F outranks N), with the market-distance mode `gate`.
+Result<std::vector<QuoteSurfaceSlice>>
+fit_calendar_repair(const std::array<Chain, 2> &chains, QuoteSliceFloorPolicy policy,
+                    QuoteSliceMarketDistance gate = QuoteSliceMarketDistance::Off) {
+  const std::array<QuoteSurfaceExpiry, 2> expiries{{{chains[0].market, chains[0].quotes, {}, {}},
+                                                    {chains[1].market, chains[1].quotes, {}, {}}}};
+  QuoteSurfaceConfig surface;
+  surface.grade_b_min_mid_strikes = 10;
+  surface.calendar_repair_half_spreads = 100.0;
+  QuoteSliceConfig config;
+  config.side_policy = QuoteSliceSidePolicy::All; // N's own in-the-money evidence
+  config.channel.repair_half_spreads = 100.0;
+  config.floor_policy = policy;
+  config.repair.market_distance = gate;
+  return fit_quote_surface(expiries, config, surface);
+}
+
 TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloorVolPriceOnly) {
   // N (0.45 y, 50 %, 4 % yield): puts 116-148 with time value. F (0.5 y, skewed down to
   // 5 % from K 116): puts 60-148, at their exercise value K - 100 from K 116 up. F serves
@@ -339,21 +468,11 @@ TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloor
   // volatility; under PriceOnly every repair path must type it FloorVol with the same price
   // (lane C0: the surface's repair trial dropped the fit's floor policy and re-implied
   // under Legacy - 190 dev200 rows served at 0.005 with serve.floor_price_only on).
-  const std::array<Chain, 2> chains{put_chain(0.45, 0.5, 0.0, 116, 0.04),
-                                    put_chain(0.5, 0.05, 0.30, 60, 0.0)};
-  const std::array<QuoteSurfaceExpiry, 2> expiries{{{chains[0].market, chains[0].quotes, {}, {}},
-                                                    {chains[1].market, chains[1].quotes, {}, {}}}};
-  QuoteSurfaceConfig surface;
-  surface.grade_b_min_mid_strikes = 10;
-  surface.calendar_repair_half_spreads = 100.0;
+  const std::array<Chain, 2> chains = calendar_repair_chains();
   std::vector<double> legacy_prices;
   for (const QuoteSliceFloorPolicy policy :
        {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
-    QuoteSliceConfig config;
-    config.side_policy = QuoteSliceSidePolicy::All; // N's own in-the-money evidence
-    config.channel.repair_half_spreads = 100.0;
-    config.floor_policy = policy;
-    const auto fitted = fit_quote_surface(expiries, config, surface);
+    const auto fitted = fit_calendar_repair(chains, policy);
     ASSERT_TRUE(fitted) << fitted.error().to_string();
     const QuoteSurfaceSlice &near = (*fitted)[0];
     ASSERT_NE(near.grade, QuoteSliceGrade::Refused) << near.refusal << " " << near.error;
@@ -383,6 +502,230 @@ TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloor
   }
 }
 
+TEST(QuoteSliceIdentification, ARowDemotedFromServedCarriesNoIdentification) {
+  // The market-distance gate (lane L3q) refuses N's repaired rows - served at F's exercise
+  // values, far below N's own quotes - row by row after the calendar pass. A demoted row
+  // carries no served price, so it carries no price-only reason or interval either (lane
+  // C0 fix round 1: they used to keep the FloorVol labels of the PriceOnly row they were).
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  const auto open = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly);
+  const auto gated = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly,
+                                         QuoteSliceMarketDistance::Gate);
+  ASSERT_TRUE(open) << open.error().to_string();
+  ASSERT_TRUE(gated) << gated.error().to_string();
+  const QuoteSurfaceSlice &before = (*open)[0];
+  const QuoteSurfaceSlice &after = (*gated)[0];
+  ASSERT_GT(after.market_gated_rows, 0u);
+  std::size_t demoted_price_only = 0;
+  for (std::size_t i = 0; i < chains[0].quotes.size(); ++i) {
+    const QuoteSliceRow &row = after.fit.rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::MarketDistanceFailure) continue;
+    if (before.fit.rows[i].evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+      ++demoted_price_only;
+      EXPECT_EQ(before.fit.rows[i].price_only_reason, QuoteSlicePriceOnlyReason::FloorVol) << i;
+    }
+    EXPECT_EQ(row.price_only_reason, QuoteSlicePriceOnlyReason::None) << i;
+    EXPECT_TRUE(std::isnan(row.iv_lower) && std::isnan(row.iv_upper)) << i;
+    EXPECT_EQ(vol_convention(row), QuoteSliceVolConvention::None) << i;
+  }
+  EXPECT_GT(demoted_price_only, 0u);
+}
+
+// The plateau fixture (lane C0 fix round 1, review M2; measured in
+// C0-20221022-fix1/scan-al-reasons.txt): S 100, T 0.25, sigma 0.25, r 0.03, no yield;
+// calls and puts 70-140 every 2 at their Andersen-Lake prices, +/- 1 % spreads (at least
+// 0.01). The deep in-the-money puts sit at their exercise value K - 100.
+Chain plateau_chain() {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, 0.25, 0.25, 0.03, 0.0, 0.0};
+  for (int strike = 70; strike <= 140; strike += 2) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto price =
+          andersen_lake(100.0, static_cast<double>(strike), 0.25, 0.25, 0.03, 0.0, side);
+      if (!price) {
+        ADD_FAILURE() << price.error().to_string();
+        return out;
+      }
+      const double spread = std::max(0.01, *price * 0.01);
+      out.quotes.push_back({static_cast<double>(strike), side, std::max(*price - spread, 0.0),
+                            *price + spread});
+    }
+  }
+  return out;
+}
+
+constexpr double kPlateauStrike = 136.0;
+
+// The plateau chain fitted under `policy`, its K 136 put at the exercise value 36, then
+// lifted by a parallel calendar floor `lift` above every node: the K 136 put's certified
+// price becomes 36 + lift, a hair above the zero-volatility value. At lift 3e-9 x 136 its
+// plain root (~0.31) lies inside the kernel's exercise region (FlatExerciseRegion); at
+// 1e-8 x 136 the root (~0.33) is outside it but uncertified by the cold map's slope /
+// Newton distance (LowVega).
+std::optional<QuoteSliceFit> lifted_plateau_fit(const Chain &c, QuoteSliceFloorPolicy policy,
+                                                double lift) {
+  QuoteSliceConfig config;
+  config.floor_policy = policy;
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  if (!fit || fit->fit_status != QuoteSliceFitStatus::Success) {
+    ADD_FAILURE() << "plateau chain did not fit";
+    return std::nullopt;
+  }
+  const auto put = fit->prices->price(kPlateauStrike, Side::Put);
+  if (!put || *put != kPlateauStrike - 100.0) {
+    ADD_FAILURE() << "fixture broken: the K 136 put is not at its exercise value";
+    return std::nullopt;
+  }
+  std::vector<AmericanPriceNode> floor_nodes;
+  for (const auto &node : fit->prices->nodes()) {
+    floor_nodes.push_back({node.strike, node.call + lift, node.put + lift});
+  }
+  const auto floor = AmericanPriceSlice::create(floor_nodes, fit->prices->bounds());
+  if (!floor) {
+    ADD_FAILURE() << floor.error().to_string();
+    return std::nullopt;
+  }
+  const std::array<const AmericanPriceSlice *, 1> earlier{&*floor};
+  if (!repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0)) {
+    ADD_FAILURE() << "the parallel floor was not repaired onto";
+    return std::nullopt;
+  }
+  return std::move(*fit);
+}
+
+// The K 136 put row of a lifted plateau fit, checked against its query answer: the
+// lifted price kept, the typed reason, no volatility convention; PriceOnly under
+// PriceOnly, and under Legacy the historical Success at the plain root.
+const QuoteSliceRow &expect_plateau_put(const QuoteSliceFit &fit, const Chain &c, double lift,
+                                        QuoteSlicePriceOnlyReason reason) {
+  const auto at = std::find_if(c.quotes.begin(), c.quotes.end(), [](const QuoteSliceQuote &q) {
+    return q.strike == kPlateauStrike && q.side == Side::Put;
+  });
+  const QuoteSliceRow &row = fit.rows.at(static_cast<std::size_t>(at - c.quotes.begin()));
+  const std::string label = std::string{to_string(fit.floor_policy)} + " " + to_string(reason);
+  EXPECT_EQ(bits(row.fitted_price), bits(kPlateauStrike - 100.0 + lift)) << label;
+  EXPECT_EQ(row.price_only_reason, reason) << label;
+  EXPECT_EQ(vol_convention(row), QuoteSliceVolConvention::None) << label;
+  if (fit.floor_policy == QuoteSliceFloorPolicy::PriceOnly) {
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::PriceOnly) << label;
+    EXPECT_TRUE(std::isnan(row.fitted_iv)) << label;
+  } else {
+    EXPECT_EQ(row.evaluation_status, QuoteSliceEvaluationStatus::Success) << label;
+    EXPECT_GT(row.fitted_iv, 0.25) << label; // the historical (non-unique) plain root
+  }
+  const auto answer = query_quote_slice(fit, kPlateauStrike, Side::Put);
+  if (!answer) {
+    ADD_FAILURE() << label << ": " << answer.error().to_string();
+    return row;
+  }
+  EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::PriceOnly) << label;
+  EXPECT_EQ(answer->reason, reason) << label;
+  EXPECT_EQ(bits(answer->price), bits(row.fitted_price)) << label;
+  EXPECT_TRUE(std::isnan(answer->volatility)) << label;
+  EXPECT_EQ(bits(answer->iv_lower), bits(row.iv_lower)) << label;
+  EXPECT_EQ(bits(answer->iv_upper), bits(row.iv_upper)) << label;
+  const auto value = evaluate_quote_slice(fit, kPlateauStrike, Side::Put);
+  EXPECT_FALSE(value) << label;
+  if (!value) EXPECT_EQ(value.error().code(), ErrorCode::OutOfRange) << label;
+  return row;
+}
+
+TEST(QuoteSliceIdentification, ARootInsideTheExercisePlateauIsFlatExerciseRegionWithItsEdge) {
+  const Chain c = plateau_chain();
+  constexpr double kLift = 3.0e-9 * kPlateauStrike;
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    const auto fit = lifted_plateau_fit(c, policy, kLift);
+    ASSERT_TRUE(fit);
+    const QuoteSliceRow &row =
+        expect_plateau_put(*fit, c, kLift, QuoteSlicePriceOnlyReason::FlatExerciseRegion);
+    // [0, sigma_ex]: sigma_ex is the plateau edge - the spot is in the kernel's exercise
+    // region just below it and outside it at it (al_non_monotone_region at the fit's own
+    // clock, rate and carry).
+    EXPECT_EQ(row.iv_lower, 0.0);
+    ASSERT_TRUE(std::isfinite(row.iv_upper));
+    const auto on_plateau = [&](double sigma) {
+      return al_non_monotone_region(row.fitted_price, fit->market.spot, kPlateauStrike,
+                                    fit->market.variance_years, fit->diagnostics.effective_rate,
+                                    0.0, Side::Put, sigma, fit->al_opts);
+    };
+    EXPECT_TRUE(on_plateau(row.iv_upper - 1.0e-6)) << row.iv_upper;
+    EXPECT_FALSE(on_plateau(row.iv_upper)) << row.iv_upper;
+    EXPECT_GT(row.iv_upper, 0.25); // past the fitted 0.25: the price does not identify it
+    EXPECT_LT(row.iv_upper, kIvMax);
+  }
+}
+
+TEST(QuoteSliceIdentification, AnUncertifiedRootAboveTheFloorIsLowVegaWithoutAnInterval) {
+  const Chain c = plateau_chain();
+  constexpr double kLift = 1.0e-8 * kPlateauStrike;
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    const auto fit = lifted_plateau_fit(c, policy, kLift);
+    ASSERT_TRUE(fit);
+    const QuoteSliceRow &row =
+        expect_plateau_put(*fit, c, kLift, QuoteSlicePriceOnlyReason::LowVega);
+    EXPECT_TRUE(std::isnan(row.iv_lower) && std::isnan(row.iv_upper));
+  }
+}
+
+TEST(QuoteSliceIdentification, EveryServedRowAgreesWithTheTypedQueryUnderBothPolicies) {
+  const Chain wing = wing_chain();
+  const std::array<QuoteSurfaceExpiry, 1> wing_expiry{{{wing.market, wing.quotes, {}}}};
+  const std::array<Chain, 2> calendar = calendar_repair_chains();
+  const Chain refusal = refusal_chain();
+  const Chain plateau = plateau_chain();
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    const std::string name = to_string(policy);
+    std::array<std::size_t, 2> total{0, 0};
+    const auto add = [&total](const std::array<std::size_t, 2> &counts) {
+      total[0] += counts[0];
+      total[1] += counts[1];
+      return counts;
+    };
+    const auto wing_fit = fit_quote_surface(wing_expiry, graded_v1(policy), graded_v1_surface());
+    ASSERT_TRUE(wing_fit) << wing_fit.error().to_string();
+    const QuoteSliceFit &wing_slice = (*wing_fit)[0].fit;
+    EXPECT_EQ(add(expect_rows_agree_with_query(wing_slice, wing.quotes, name + " wing"))[1], 5u);
+    // The deep ITM put (FloorVol) and the four historical UnidentifiedInterval rows.
+    EXPECT_EQ(std::count_if(wing_slice.rows.begin(), wing_slice.rows.end(),
+                            [](const QuoteSliceRow &row) {
+                              return row.price_only_reason == QuoteSlicePriceOnlyReason::FloorVol;
+                            }),
+              1)
+        << name;
+    EXPECT_EQ(std::count_if(wing_slice.rows.begin(), wing_slice.rows.end(),
+                            [](const QuoteSliceRow &row) {
+                              return row.evaluation_status ==
+                                         QuoteSliceEvaluationStatus::PriceOnly &&
+                                     row.price_only_reason ==
+                                         QuoteSlicePriceOnlyReason::UnidentifiedInterval;
+                            }),
+              4)
+        << name;
+    const auto surface = fit_calendar_repair(calendar, policy);
+    ASSERT_TRUE(surface) << surface.error().to_string();
+    ASSERT_TRUE((*surface)[0].calendar_repaired) << name;
+    EXPECT_GT(add(expect_rows_agree_with_query((*surface)[0].fit, calendar[0].quotes,
+                                               name + " calendar near"))[1],
+              0u);
+    add(expect_rows_agree_with_query((*surface)[1].fit, calendar[1].quotes,
+                                     name + " calendar far"));
+    const auto lifted = lifted_refusal_fit(refusal, policy);
+    ASSERT_TRUE(lifted);
+    EXPECT_GT(add(expect_rows_agree_with_query(*lifted, refusal.quotes, name + " lifted"))[1],
+              0u);
+    for (const double c : {3.0e-9, 1.0e-8}) {
+      const auto fit = lifted_plateau_fit(plateau, policy, c * kPlateauStrike);
+      ASSERT_TRUE(fit);
+      const std::string label = name + (c < 5.0e-9 ? " plateau flat" : " plateau low_vega");
+      EXPECT_GT(add(expect_rows_agree_with_query(*fit, plateau.quotes, label))[1], 0u);
+    }
+    EXPECT_GT(total[0], total[1]) << name;
+  }
+}
+
 TEST(QuoteSliceIdentification, AnUnknownFloorPolicyIsRefusedAndEveryNameIsStable) {
   const Chain c = wing_chain();
   QuoteSliceConfig config;
@@ -405,6 +748,9 @@ TEST(QuoteSliceIdentification, AnUnknownFloorPolicyIsRefusedAndEveryNameIsStable
   EXPECT_STREQ(to_string(QuoteSliceFloorPolicy::PriceOnly), "price_only");
   EXPECT_STREQ(to_string(QuoteSliceCarryConvention::Supplied), "supplied");
   EXPECT_STREQ(to_string(QuoteSliceCarryConvention::ForwardPreserving), "forward_preserving");
+  EXPECT_STREQ(to_string(QuoteSliceSpotRule::Own), "own");
+  EXPECT_STREQ(to_string(QuoteSliceSpotRule::Nearest), "nearest");
+  EXPECT_STREQ(to_string(QuoteSliceSpotRule::Median), "median");
   EXPECT_STREQ(to_string(QuoteSliceModelKind::AndersenLake), "andersen_lake");
   EXPECT_STREQ(to_string(QuoteSliceModelKind::DiscreteDividendLattice),
                "discrete_dividend_lattice");

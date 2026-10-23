@@ -497,6 +497,7 @@ TEST(FitArchiveEvolution, MinorZeroFileReadsTheIdentifiabilityTailsAsAbsent) {
     EXPECT_EQ(x->floor_policy, QuoteSliceFloorPolicy::Legacy);
     EXPECT_TRUE(x->price_only_nodes.empty());
     EXPECT_EQ(x->snapshot.spot_version, 0u);
+    EXPECT_EQ(x->snapshot.spot_rule, QuoteSliceSpotRule::Own);
     EXPECT_TRUE(std::isnan(x->snapshot.raw_spot));
     for (const QuoteSliceRow &row : x->rows) {
       EXPECT_EQ(row.price_only_reason, QuoteSlicePriceOnlyReason::None);
@@ -520,6 +521,10 @@ TEST(FitArchiveEvolution, InvalidIdentifiabilityTailIsRefused) {
   EXPECT_EQ(planted(Type::QuoteRows, offsetof(FitArchiveQuoteRow, iv_upper), 1),
             ArchiveStatus::RecordInvalid); // an interval without its flag
   EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, floor_policy), 2),
+            ArchiveStatus::RecordInvalid);
+  EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, spot_rule), 3),
+            ArchiveStatus::RecordInvalid);
+  EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, reserved1), 1),
             ArchiveStatus::RecordInvalid);
   EXPECT_EQ(planted(Type::FitRecords, offsetof(FitArchiveFitRecord, raw_spot) + 7, 0x40),
             ArchiveStatus::RecordInvalid); // a raw spot without its flag

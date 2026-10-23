@@ -717,6 +717,10 @@ std::string apply_one_spot(const SnapshotSpot &choice, QuoteSliceDividendModel m
   QuoteSliceSnapshotInfo &info = chain.snapshot;
   info.underlying_ns = choice.underlying_ns;
   info.spot_version = 1U;
+  // The rule that actually chose S*: a nearest request without observation instants is
+  // the median rule (choice.rule median_fallback).
+  info.spot_rule =
+      choice.rule == "nearest" ? QuoteSliceSpotRule::Nearest : QuoteSliceSpotRule::Median;
   info.carry_version = 1U;
   info.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
   info.raw_spot = raw;
@@ -731,21 +735,24 @@ Json repair_json(const QuoteSliceRepairRecord &r) {
           {"unidentified", r.unidentified}};
 }
 
-// A served fit's PriceOnly row: a certified price without an identifiable
-// American volatility. Its vol_status records that the volatility was evaluated
-// and is unidentifiable. With the policy key `price_only` the price is served
-// (status ok_price_only, blank vol; returns true); otherwise the row keeps the
-// historical status invalid_volatility and no price.
+// A published volatility that is identified: finite with a volatility convention (an ok
+// row whose volatility query_quote_slice identifies; stamp_metadata sets the convention).
+bool vol_identified(const Prediction &prediction) {
+  return std::isfinite(prediction.vol) && prediction.vol_convention != "none";
+}
+
 // Lane C0 metadata of one published row (written only under serve.metadata): the
-// convention of the served volatility (none unless the row is served ok), the PriceOnly
-// reason and IV interval of a served slice's row, the fit's model and dividend convention,
-// and the chain's snapshot provenance.
+// convention of the served volatility (none unless the row is served ok with a volatility
+// query_quote_slice identifies), the identification reason and IV interval of a served
+// slice's Success / PriceOnly row (query_quote_slice's own; none for every other row),
+// the fit's model and dividend convention, and the chain's snapshot provenance.
 void stamp_metadata(const QuoteSliceFit &fit, const QuoteSliceRow &row,
                     const QuoteSliceSnapshotInfo &snapshot, bool slice_served,
                     Prediction &prediction) {
   prediction.vol_convention =
       prediction.status == "ok" ? to_string(vol_convention(row)) : "none";
-  if (slice_served) {
+  if (slice_served && (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+                       row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly)) {
     prediction.price_only_reason = to_string(row.price_only_reason);
     prediction.iv_lower = row.iv_lower;
     prediction.iv_upper = row.iv_upper;
@@ -755,6 +762,11 @@ void stamp_metadata(const QuoteSliceFit &fit, const QuoteSliceRow &row,
   prediction.snapshot = snapshot;
 }
 
+// A served fit's PriceOnly row: a certified price without an identifiable
+// American volatility. Its vol_status records that the volatility was evaluated
+// and is unidentifiable. With the policy key `price_only` the price is served
+// (status ok_price_only, blank vol; returns true); otherwise the row keeps the
+// historical status invalid_volatility and no price.
 bool publish_price_only(const QuoteSliceRow &row, bool serve, Prediction &prediction) {
   prediction.vol_status = "unidentifiable";
   if (!serve) {
@@ -1300,10 +1312,8 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   if (args.curve.empty()) {
     policy.emplace(quote_bench_policy::load(args.policy, dividends));
     stats.policy_definition = policy->definition;
-    stats.price_only = policy->price_only;
-    // Lane C0: serve.floor_price_only serves its PriceOnly rows as `price_only` does.
+    stats.price_only = policy->price_only; // implied by serve.floor_price_only (lane C0)
     stats.floor_price_only = policy->floor_price_only;
-    stats.price_only = stats.price_only || stats.floor_price_only;
     stats.metadata = policy->metadata;
     stats.snapshot = policy->snapshot;
   } else {
@@ -1657,18 +1667,20 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
   }
   if (stats.floor_price_only || stats.metadata) {
     // Lane C0: price coverage (ok | ok_price_only) and identified-IV coverage (ok with a
-    // volatility) are separate; an ok row at the floor would be a floor value served as
-    // an identified IV (zero under serve.floor_price_only).
+    // volatility the library query identifies, vol_convention not none) are separate; an
+    // ok row at the floor is a floor value served with a volatility (zero under
+    // serve.floor_price_only), never counted as identified.
     auto &id = stats.identifiability;
     id = {{"floor_price_only", stats.floor_price_only}, {"served_price_rows", 0U},
-          {"served_vol_rows", 0U}, {"price_only_rows", 0U}, {"identified_floor_vol_rows", 0U},
-          {"price_only_reason_counts", Json::object()},
+          {"served_vol_rows", 0U}, {"identified_vol_rows", 0U}, {"price_only_rows", 0U},
+          {"identified_floor_vol_rows", 0U}, {"price_only_reason_counts", Json::object()},
           {"vol_convention_counts", Json::object()}};
     for (const auto &prediction : predictions) {
       const bool ok = prediction.status == "ok";
       const bool price_only = prediction.status == "ok_price_only";
       if (ok || price_only) add_count(id, "served_price_rows");
       if (ok && std::isfinite(prediction.vol)) add_count(id, "served_vol_rows");
+      if (ok && vol_identified(prediction)) add_count(id, "identified_vol_rows");
       if (ok && prediction.vol <= kIvMin) add_count(id, "identified_floor_vol_rows");
       if (ok) add_count(id["vol_convention_counts"], prediction.vol_convention);
       if (price_only) {
@@ -1685,6 +1697,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
 }
 
 // Lane C0 metadata columns (serve.metadata): blank where a value is not supplied.
+// vol_valid: the published volatility is identified (vol_identified).
 void write_metadata(std::ostream &stream, const Prediction &p) {
   const auto number_or_blank = [&](double value) {
     stream << ',';
@@ -1701,11 +1714,11 @@ void write_metadata(std::ostream &stream, const Prediction &p) {
   stream << ',' << p.vol_convention << ',' << p.model_kind << ',' << p.dividend_convention;
   instant(s.quote_ns);
   instant(s.underlying_ns);
-  stream << ',' << s.spot_version << ',' << s.carry_version << ','
+  stream << ',' << s.spot_version << ',' << to_string(s.spot_rule) << ',' << s.carry_version << ','
          << (p.model_kind.empty() ? "" : to_string(s.carry_convention));
   number_or_blank(s.raw_spot);
   stream << ',' << (s.spot_stale ? 1 : 0) << ',' << (std::isfinite(p.price) ? 1 : 0) << ','
-         << (std::isfinite(p.vol) ? 1 : 0);
+         << (vol_identified(p) ? 1 : 0);
 }
 
 void write_predictions(const std::filesystem::path &path, const std::vector<InputRow> &rows,
@@ -1717,8 +1730,8 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
             "resolved_profile,policy_source,configured_curve,actual_curve,vol_status,model"
          << (graded ? ",grade" : "")
          << (metadata ? ",price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,"
-                        "dividend_convention,quote_ns,underlying_ns,spot_version,carry_version,"
-                        "carry_convention,raw_spot,spot_stale,price_valid,vol_valid"
+                        "dividend_convention,quote_ns,underlying_ns,spot_version,spot_rule,"
+                        "carry_version,carry_convention,raw_spot,spot_stale,price_valid,vol_valid"
                       : "")
          << '\n';
   stream << std::setprecision(17);
@@ -1898,31 +1911,43 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "no vega, is a PriceOnly row (reason floor_vol, flat_exercise_region, low_vega or "
         "unidentified_interval; IV interval where known) served as ok_price_only with its "
         "certified price and no volatility; served_price_rows = ok | ok_price_only, "
-        "served_vol_rows = ok with a volatility, identified_floor_vol_rows = ok rows at or "
-        "below kIvMin (a floor value served as identified; 0 under the key)";
+        "served_vol_rows = ok with a volatility, identified_vol_rows = ok with a volatility "
+        "query_quote_slice identifies (vol_convention not none), identified_floor_vol_rows "
+        "= ok rows at or below kIvMin (a floor value served with a volatility under the "
+        "Legacy policy, its vol_convention none; 0 under the key). serve.floor_price_only "
+        "implies price_only (policy_definition.price_only true)";
   }
   if (stats.metadata) {
     report["output_conventions"] = {
         {"columns", "price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,"
-            "dividend_convention,quote_ns,underlying_ns,spot_version,carry_version,"
+            "dividend_convention,quote_ns,underlying_ns,spot_version,spot_rule,carry_version,"
             "carry_convention,raw_spot,spot_stale,price_valid,vol_valid"},
         {"vol_convention", "predicted_vol of an ok row: fitted_curve (the fitted American "
             "IV curve at an unmoved certified node) or reimplied_repaired (the certified price "
-            "re-implied under the row's own carry and American model); none otherwise. No row "
-            "is american_quoting or european_equivalent"},
+            "re-implied under the row's own carry and American model); none otherwise, "
+            "including an ok row whose volatility query_quote_slice does not identify (the "
+            "Legacy floor policy keeps its historical value; price_only_reason and the IV "
+            "interval then say why). No row is american_quoting or european_equivalent"},
+        {"price_only_reason", "query_quote_slice's reason (and iv_lower / iv_upper) for an "
+            "ok_price_only row, or an ok row whose volatility it does not identify; none on "
+            "every other row"},
         {"model_kind", "andersen_lake, or discrete_dividend_lattice for a DatedCash route"},
         {"dividend_convention", "QuoteSliceDividendModel of the fit"},
         {"quote_clock", "quote_ns: the chain's latest observation_ns (blank without the "
             "column)"},
-        {"underlying_clock", "underlying_ns: the observation instant of the spot the fit "
-            "used: the chain's own quote clock, or under snapshot.one_spot S*'s instant "
-            "(blank under the median rule)"},
+        {"underlying_clock", "underlying_ns: under snapshot.one_spot the observation "
+            "instant of S* (blank under the median rule); otherwise the chain's latest quote "
+            "observation_ns, NOT the spot's own instant (the chain spot is the median over "
+            "rows that may be observed at several instants)"},
         {"versions", "spot_version 0 = the chain's own median spot, 1 = the snapshot spot S* "
-            "(snapshot.one_spot); carry_version 0 = supplied carry, 1 = re-derived by the "
-            "forward-preserving rebase (carry_convention forward_preserving)"},
+            "(snapshot.one_spot); spot_rule: the rule that chose the fit's spot - own, "
+            "nearest (S* at the observation instant nearest snapshot_ns) or median (every "
+            "observation; also a nearest request without observation instants); "
+            "carry_version 0 = supplied carry, 1 = re-derived by the forward-preserving "
+            "rebase (carry_convention forward_preserving)"},
         {"validity", "raw_spot: the chain's own spot before a rebase; spot_stale: raw_spot "
-            "beyond snapshot.stale_spot_bps of S*; price_valid / vol_valid: a published price "
-            "/ volatility"}};
+            "beyond snapshot.stale_spot_bps of S*; price_valid: a published price; vol_valid: "
+            "a published volatility that is identified (vol_convention not none)"}};
   }
   if (stats.snapshot.one_spot != quote_bench_policy::OneSpot::Off) {
     report["one_spot"] = stats.one_spot;
@@ -1933,7 +1958,8 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "unchanged (continuous / funding PV ln(S*/S)/T_cal, escrowed PV "
         "ln((S*-PV)/(S-PV))/T_cal). FORWARD-preserving only: American prices are NOT "
         "preserved (early exercise depends on the spot itself). Raw per-chain spots are kept "
-        "(chains[].raw_spot); spot_version 1, carry_version 1; a chain beyond stale_spot_bps "
+        "(chains[].raw_spot); spot_version 1, spot_rule nearest | median (snapshots[].rule; "
+        "median_fallback is the median rule), carry_version 1; a chain beyond stale_spot_bps "
         "is flagged (rebased_stale, served) or refused (stale_spot)";
   }
   if (!stats.dividend_schedules.empty()) {
