@@ -3041,3 +3041,210 @@ TEST(AmericanIvPremium, FamilyNativeRootTheConfirmCannotResolveIsPriceOnly) {
   EXPECT_GT(fast_accepted, 5u);
   EXPECT_EQ(fast_price_only, 0u);
 }
+
+// ── review-K3 mn-5 (fix round 1): the envelope bound decides the Skipped rule ───────────
+namespace {
+
+// A family whose early-exercise premium is material over its q box (a put at q < r, a call
+// at q > r), so the trivial box bound g(xmax) alone never certifies a 1e-7 bracket at the
+// test points and the envelope's node bounds decide.
+struct EnclosureCase {
+  Side side;
+  double q_lo;
+  double q_hi;
+  double q; // the priced point's yield (inside the box)
+};
+
+constexpr std::array<EnclosureCase, 2> kEnclosureCases{{
+    {Side::Put, 0.010, 0.012, 0.011},
+    {Side::Call, 0.060, 0.062, 0.061},
+}};
+
+} // namespace
+
+// The envelope BOUND at each end decides the Skipped rule (american_iv.cpp family_enclosure:
+// P_f(a) + eps(a) <= price <= P_f(b) - eps(b)), not only the bracket width. x sits 0.3 W above
+// the family's root of the price, so the price lies 0.2 W x slope above the lower end a and
+// 0.8 W x slope below the upper end b (W <= 1e-7 the bracket): the envelope as built (eps below
+// both gaps) encloses the root; the same envelope scaled until eps lies between the two gaps
+// does not - the LOWER end's bound alone rejects, the upper end alone would accept. The mirror
+// (x 0.3 W below the root) is rejected by the UPPER end's bound alone. Dropping either end's
+// bound from the rule fails one of the two.
+TEST(AmericanIvPremium, FamilyEnclosureRejectsAnEndWhoseEnvelopeBoundLeavesItOpen) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::FamilyBoundedPrice;
+  using atx::vol::FamilyEnclosure;
+  using atx::vol::family_enclosure;
+  using atx::vol::family_price_bounded;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double sig = 0.3;
+  const double w = kIvRootRequirement * (1.0 - 0x1p-20); // acceptance_width(tol >= 1e-7)
+  std::size_t lower = 0, upper = 0;
+  double min_margin = std::numeric_limits<double>::infinity(); // eps / gap, or gap / eps
+  for (const double T : {0.5, 1.0}) {
+    for (const EnclosureCase &ec : kEnclosureCases) {
+      const AlExpiryGeometry g = prepare_al_geometry(T, r, ec.q);
+      AlSigmaQFamily fam(g, ec.side, S);
+      ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, ec.q_lo, ec.q_hi, 4));
+      const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+      ASSERT_TRUE(env.covered());
+      const auto scaled = [&env](double s) {
+        ValidatedErrorEnvelope e = env;
+        for (double &b : e.bound_y) {
+          if (std::isfinite(b)) b *= s;
+        }
+        return e;
+      };
+      for (const double K : {90.0, 100.0, 110.0}) {
+        const double price = fam.price(S, K, sig, ec.q).price;
+        for (const double off : {0.3, -0.3}) {
+          SCOPED_TRACE("T " + std::to_string(T) + " side " +
+                       std::to_string(static_cast<int>(ec.side)) + " K " + std::to_string(K) +
+                       " off " + std::to_string(off));
+          const double x = sig + off * w;
+          const double a = x - 0.5 * w;
+          const double b = x + 0.5 * w;
+          const bool near_lower = off > 0.0; // the price sits nearer this end
+          const auto bounds = [&](const ValidatedErrorEnvelope &e) {
+            return std::pair<FamilyBoundedPrice, FamilyBoundedPrice>{
+                family_price_bounded(fam, e, S, K, a, ec.q),
+                family_price_bounded(fam, e, S, K, b, ec.q)};
+          };
+          const auto [pa, pb] = bounds(env);
+          const double gap_lo = price - pa.price;
+          const double gap_hi = pb.price - price;
+          ASSERT_GT(gap_lo, 0.0);
+          ASSERT_GT(gap_hi, 0.0);
+          const double near_gap = near_lower ? gap_lo : gap_hi;
+          const double far_gap = near_lower ? gap_hi : gap_lo;
+          IvPremiumStats st;
+          // The envelope as built: both bounds clear their gaps; the root is enclosed.
+          ASSERT_LT(std::max(pa.bound_usd, pb.bound_usd), near_gap);
+          const FamilyEnclosure built = family_enclosure(price, S, K, ec.q, x, w, fam, &env, st);
+          ASSERT_TRUE(built.enclosed);
+          EXPECT_EQ(built.lo, a);
+          EXPECT_EQ(built.hi, b);
+          EXPECT_LE(built.hi - built.lo, kIvRootRequirement);
+          // Scale the envelope until the near end's bound sits at sqrt(near_gap far_gap):
+          // above the near gap, below the far one (the bound grows with the scale).
+          const double target = std::sqrt(near_gap * far_gap);
+          double lo_s = 1.0;
+          double hi_s = 1.0e20;
+          for (int i = 0; i < 200; ++i) {
+            const double mid = std::sqrt(lo_s * hi_s);
+            const auto [ma, mb] = bounds(scaled(mid));
+            ((near_lower ? ma : mb).bound_usd < target ? lo_s : hi_s) = mid;
+          }
+          const ValidatedErrorEnvelope e = scaled(hi_s);
+          const auto [qa, qb] = bounds(e);
+          const double eps_near = near_lower ? qa.bound_usd : qb.bound_usd;
+          const double eps_far = near_lower ? qb.bound_usd : qa.bound_usd;
+          ASSERT_GT(eps_near, near_gap); // this end alone leaves the root's side open ...
+          ASSERT_LT(eps_far, far_gap);   // ... the other end alone would certify its side
+          min_margin = std::min(min_margin, std::min(eps_near / near_gap, far_gap / eps_far));
+          const FamilyEnclosure open = family_enclosure(price, S, K, ec.q, x, w, fam, &e, st);
+          EXPECT_FALSE(open.enclosed);
+          (near_lower ? lower : upper) += open.enclosed ? 0u : 1u;
+        }
+      }
+    }
+  }
+  std::printf("[K3 enclosure bound] %zu brackets rejected by the lower end's bound alone, %zu by "
+              "the upper end's alone (each enclosed with the envelope as built); min margin %.3g\n",
+              lower, upper, min_margin);
+  EXPECT_EQ(lower, 12u);
+  EXPECT_EQ(upper, 12u);
+}
+
+// The same through both acceptance routes: with a copy of the family's envelope whose node
+// bounds are inflated 1e6-fold in scope (same family, box and node counts: the identity check
+// passes), neither the family-native acceptance nor the B-family band route skips a confirm -
+// every accepted root is Confirmed and lies within 1e-7 of the bisected accurate root - while
+// the envelope as built skips on the same grid. A rule that read no bound would skip here.
+TEST(AmericanIvPremium, AnInflatedEnvelopeBoundSkipsNoConfirmOnEitherRoute) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::prepare_al_geometry;
+  const double S = 100.0;
+  const double r = 0.04;
+  const double T = 0.5;
+  NativeTally native, native_inflated;
+  struct BandTally {
+    std::size_t accepted = 0, skipped = 0, confirmed = 0;
+    double max_error = 0.0;
+  } band, band_inflated;
+  // One B-family (policy Band) inversion: a skip is an enclosure of width <= 1e-7, a confirm
+  // the established Newton contract; either way within 1e-7 of the accurate map's root.
+  const auto check_band_root = [&](double price, const PremiumCase &c, const IvPremiumGate &gate,
+                                   BandTally &t) {
+    IvOpts o;
+    o.strategy = IvStrategy::Premium;
+    o.seed_profile = AlProfile::Screen;
+    IvPremiumStats st;
+    const IvResult res =
+        american_implied_vol_premium(price, S, c.K, c.T, c.r, c.q, c.sd, o, nullptr, st, &gate);
+    ASSERT_EQ(res.status, IvStatus::Ok);
+    if (st.fallback != IvPremiumFallback::None || st.seed_routed) return;
+    ++t.accepted;
+    if (st.acceptance.kind == RootAcceptanceKind::Skipped) {
+      ++t.skipped;
+      EXPECT_EQ(st.acceptance.reason, RootAcceptanceReason::FamilyEnclosure);
+      EXPECT_LE(st.acceptance.hi - st.acceptance.lo, kIvRootRequirement);
+    } else {
+      ASSERT_EQ(st.acceptance.kind, RootAcceptanceKind::Confirmed);
+      EXPECT_EQ(st.acceptance.reason, RootAcceptanceReason::NewtonContract);
+      ++t.confirmed;
+    }
+    const auto ref = reference_bracket(price, S, c, res.iv);
+    ASSERT_TRUE(ref.has_value());
+    t.max_error = std::max(t.max_error, bracketed_error(*ref, res.iv));
+    EXPECT_LE(bracketed_error(*ref, res.iv), kIvRootRequirement);
+  };
+  for (const EnclosureCase &ec : kEnclosureCases) {
+    const AlExpiryGeometry g = prepare_al_geometry(T, r, ec.q);
+    AlSigmaQFamily fam(g, ec.side, S);
+    ASSERT_TRUE(fam.prepare(0.05, 1.2, 16, ec.q_lo, ec.q_hi, 4));
+    const ValidatedErrorEnvelope env = atx::vol::build_family_error_envelope(fam);
+    ASSERT_TRUE(env.covered());
+    ValidatedErrorEnvelope inflated = env;
+    for (double &b : inflated.bound_y) {
+      if (std::isfinite(b)) b *= 1.0e6;
+    }
+    IvPremiumGate native_gate;
+    native_gate.qfamily = &fam;
+    native_gate.qfamily_native = true;
+    IvPremiumGate band_gate;
+    band_gate.qfamily = &fam;
+    band_gate.policy = IvConfirmPolicy::Band;
+    for (const double K : {85.0, 95.0, 100.0, 105.0, 115.0}) {
+      for (const double sig : {0.15, 0.3, 0.6}) {
+        const auto p = andersen_lake(S, K, T, sig, r, ec.q, ec.side);
+        if (!p || !(*p > 1.0e-3)) continue;
+        const PremiumCase c{K, T, r, ec.q, ec.side, sig};
+        {
+          const FamilyEnvelopeScope scope(&env);
+          check_native_root(*p, S, c, native_gate, native);
+          check_band_root(*p, c, band_gate, band);
+        }
+        const FamilyEnvelopeScope scope(&inflated);
+        check_native_root(*p, S, c, native_gate, native_inflated);
+        check_band_root(*p, c, band_gate, band_inflated);
+      }
+    }
+  }
+  std::printf("[K3 inflated bound] native: %zu accepted / %zu skipped, inflated %zu / %zu; band "
+              "route: %zu / %zu, inflated %zu / %zu; max bracketed error %.3g vol\n",
+              native.accepted, native.skipped, native_inflated.accepted, native_inflated.skipped,
+              band.accepted, band.skipped, band_inflated.accepted, band_inflated.skipped,
+              std::max({native.max_error, native_inflated.max_error, band.max_error,
+                        band_inflated.max_error}));
+  EXPECT_GT(native.skipped, 0u);
+  EXPECT_GT(band.skipped, 0u);
+  EXPECT_GT(native_inflated.accepted, 5u);
+  EXPECT_GT(band_inflated.accepted, 5u);
+  EXPECT_EQ(native_inflated.skipped, 0u);
+  EXPECT_EQ(band_inflated.skipped, 0u);
+  EXPECT_EQ(native_inflated.confirmed, native_inflated.accepted);
+  EXPECT_EQ(band_inflated.confirmed, band_inflated.accepted);
+}
