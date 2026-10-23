@@ -26,6 +26,9 @@ using atx::core::Ok;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+// A quote within this relative distance (of max(S, K)) under the exercise value is ON
+// the plateau (a caller's S - K rounding), not below it.
+constexpr double kPlateauRelTol = 1.0e-12;
 
 struct GroupState {
   DiscreteDivBatchGroup inputs{};
@@ -127,6 +130,9 @@ DiscreteDivBatch::DiscreteDivBatch(DiscreteDivBatch &&) noexcept = default;
 DiscreteDivBatch &DiscreteDivBatch::operator=(DiscreteDivBatch &&) noexcept = default;
 
 std::size_t DiscreteDivBatch::prepare(std::span<const DiscreteDivBatchGroup> groups) {
+  if (!impl_) {
+    return groups.size(); // moved-from: empty, every group refused (header)
+  }
   Impl &im = *impl_;
   im.groups.assign(groups.size(), GroupState{});
   std::size_t refused = 0;
@@ -190,14 +196,17 @@ std::size_t DiscreteDivBatch::prepare(std::span<const DiscreteDivBatchGroup> gro
   return refused;
 }
 
-std::size_t DiscreteDivBatch::groups() const noexcept { return impl_->groups.size(); }
+std::size_t DiscreteDivBatch::groups() const noexcept {
+  return impl_ ? impl_->groups.size() : 0U;
+}
 
 bool DiscreteDivBatch::group_ok(std::size_t group) const noexcept {
-  return group < impl_->groups.size() && impl_->groups[group].ok;
+  return impl_ && group < impl_->groups.size() && impl_->groups[group].ok;
 }
 
 const DiscreteDivLatticeRoute &DiscreteDivBatch::route(std::size_t group) const noexcept {
-  return group_ok(group) ? impl_->groups[group].route : impl_->empty_route;
+  static const DiscreteDivLatticeRoute kEmptyRoute{};
+  return group_ok(group) ? impl_->groups[group].route : kEmptyRoute;
 }
 
 Status DiscreteDivBatch::price(std::span<const DiscreteDivBatchContract> contracts,
@@ -205,17 +214,17 @@ Status DiscreteDivBatch::price(std::span<const DiscreteDivBatchContract> contrac
   if (out.size() != contracts.size()) {
     return Err(ErrorCode::InvalidArgument, "discrete-dividend batch: out.size() != contracts");
   }
-  Impl &im = *impl_;
   for (std::size_t i = 0; i < contracts.size(); ++i) {
     const DiscreteDivBatchContract &c = contracts[i];
     DiscreteDivBatchResult &res = out[i];
     res = DiscreteDivBatchResult{};
-    const GroupState *g = im.group(c.group);
+    const GroupState *g = impl_ ? impl_->group(c.group) : nullptr;
     if (g == nullptr) {
       res.value = kNaN;
       res.outcome = DiscreteDivBatchOutcome::RefusedGroup;
       continue;
     }
+    Impl &im = *impl_;
     const DiscreteDivBatchGroup &in = g->inputs;
     const Result<double> p =
         ddiv_detail::route_price_prebuilt(g->route, &g->maps, in.S, c.K, in.T, c.sigma, in.r,
@@ -236,23 +245,24 @@ Status DiscreteDivBatch::implied_vol(std::span<const DiscreteDivBatchContract> c
   if (out.size() != contracts.size()) {
     return Err(ErrorCode::InvalidArgument, "discrete-dividend batch: out.size() != contracts");
   }
-  Impl &im = *impl_;
   // The kill switch's historical inversion takes its Screen count from the batch.
+  const int screen_steps = impl_ ? impl_->screen_steps : 0;
   DiscreteDivIvOpts historical_opts = iv_opts;
-  historical_opts.screen_steps = std::max(im.screen_steps, 2);
-  if (im.screen_steps < 2) {
+  historical_opts.screen_steps = std::max(screen_steps, 2);
+  if (screen_steps < 2) {
     historical_opts.tier = DiscreteDivTier::Accurate;
   }
   for (std::size_t i = 0; i < contracts.size(); ++i) {
     const DiscreteDivBatchContract &c = contracts[i];
     DiscreteDivBatchResult &res = out[i];
     res = DiscreteDivBatchResult{};
-    const GroupState *g = im.group(c.group);
+    const GroupState *g = impl_ ? impl_->group(c.group) : nullptr;
     if (g == nullptr) {
       res.value = kNaN;
       res.outcome = DiscreteDivBatchOutcome::RefusedGroup;
       continue;
     }
+    Impl &im = *impl_;
     const DiscreteDivBatchGroup &in = g->inputs;
     const bool historical = (g->route.method == DiscreteDivMethod::HistoricalSpliced);
     const Result<DiscreteDivIvResult> iv =
@@ -286,9 +296,14 @@ Status DiscreteDivBatch::implied_vol(std::span<const DiscreteDivBatchContract> c
     // lattice's price at the lowest volatility the inversion can reach (one rollback,
     // refusals only). The exercise value is the exact payoff, not the lattice's root
     // level: the rollback rebuilds S by repeated multiplication, so its plateau value
-    // can sit an ulp-scale amount under it.
-    if (c.quote <= exercise_value(c.side, in.S, c.K)) {
-      res.outcome = DiscreteDivBatchOutcome::PriceOnly;
+    // can sit an ulp-scale amount under it. A quote ON the plateau (within a rounding
+    // tolerance of the payoff) is price-only; a quote BELOW it is an inconsistent
+    // quote no model price reaches: RefusedRange.
+    const double ev = exercise_value(c.side, in.S, c.K);
+    if (c.quote <= ev) {
+      const double tol = kPlateauRelTol * std::max(in.S, c.K);
+      res.outcome = (c.quote >= ev - tol) ? DiscreteDivBatchOutcome::PriceOnly
+                                          : DiscreteDivBatchOutcome::RefusedRange;
       continue;
     }
     const double floor_sigma = ddiv_detail::route_sigma_floor(g->route, in.T, in.r, in.q);
@@ -308,14 +323,14 @@ Status DiscreteDivBatch::greeks(std::span<const DiscreteDivBatchContract> contra
   if (out.size() != contracts.size()) {
     return Err(ErrorCode::InvalidArgument, "discrete-dividend batch: out.size() != contracts");
   }
-  Impl &im = *impl_;
   for (std::size_t i = 0; i < contracts.size(); ++i) {
     const DiscreteDivBatchContract &c = contracts[i];
-    const GroupState *g = im.group(c.group);
+    const GroupState *g = impl_ ? impl_->group(c.group) : nullptr;
     if (g == nullptr) {
       out[i] = refused_bundle();
       continue;
     }
+    Impl &im = *impl_;
     const DiscreteDivBatchGroup &in = g->inputs;
     const Result<DiscreteDivProductionGreeks> bundle = ddiv_detail::route_greeks_prebuilt(
         g->route, &g->maps, in.S, c.K, in.T, c.sigma, in.r, in.q, c.side, in.dividends,

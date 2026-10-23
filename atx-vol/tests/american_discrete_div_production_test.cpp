@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/core/types.hpp"
@@ -861,6 +862,7 @@ TEST(DiscreteDivBatch, RefusalsAreTypedPerContract) {
       {0, 150.0, Side::Put, 0.25, 50.0},  // deep ITM put at intrinsic: price-only
       {0, 100.0, Side::Put, 0.25, 500.0}, // above the maximum-volatility price
       {0, 100.0, Side::Put, 0.25, -1.0},  // not a quote
+      {0, 150.0, Side::Put, 0.25, 49.0},  // below intrinsic: an inconsistent quote
   };
   std::vector<DiscreteDivBatchResult> out(contracts.size());
   ASSERT_TRUE(batch.implied_vol(contracts, DiscreteDivIvOpts{}, out).has_value());
@@ -870,6 +872,10 @@ TEST(DiscreteDivBatch, RefusalsAreTypedPerContract) {
   EXPECT_EQ(out[3].outcome, DiscreteDivBatchOutcome::PriceOnly);
   EXPECT_EQ(out[4].outcome, DiscreteDivBatchOutcome::RefusedRange);
   EXPECT_EQ(out[5].outcome, DiscreteDivBatchOutcome::RefusedInput);
+  // Review-D1 minor: a quote strictly below the exercise value is no price the model
+  // can return, so it is a range refusal, not price-only (which says "the price is
+  // valid, no volatility is identified").
+  EXPECT_EQ(out[6].outcome, DiscreteDivBatchOutcome::RefusedRange);
   for (std::size_t i = 1; i < out.size(); ++i) {
     EXPECT_TRUE(std::isnan(out[i].value)) << i;
   }
@@ -878,10 +884,42 @@ TEST(DiscreteDivBatch, RefusalsAreTypedPerContract) {
   EXPECT_TRUE(std::isnan(bundles[1].delta));
   EXPECT_FALSE(bundles[1].supported(DiscreteDivGreek::Delta));
   EXPECT_FALSE(bundles[1].supported(DiscreteDivGreek::Roll));
+  EXPECT_TRUE(bundles[1].has(DiscreteDivUnsupportedReason::Refused));
   std::vector<DiscreteDivBatchResult> short_out(1);
   EXPECT_FALSE(batch.price(contracts, ExerciseStyle::American, short_out).has_value());
   EXPECT_STREQ(to_string(DiscreteDivBatchOutcome::PriceOnly), "price_only");
   EXPECT_STREQ(to_string(DiscreteDivBatchOutcome::RefusedGroup), "refused_group");
+}
+
+TEST(DiscreteDivBatch, AMovedFromBatchIsEmptyNotUndefined) {
+  // Review-D1 minor (lifetime): the defaulted move left the source's state null and
+  // every member, the noexcept accessors included, dereferenced it. A moved-from
+  // batch is now empty: no groups, every contract RefusedGroup, prepare() refuses
+  // every group; assigning a batch to it makes it usable again.
+  const std::vector<CashDividend> divs{{0.5, 1.0}};
+  const std::vector<DiscreteDivBatchGroup> groups{{100.0, 1.0, 0.04, 0.0, divs}};
+  DiscreteDivBatch a;
+  ASSERT_EQ(a.prepare(groups), 0U);
+  DiscreteDivBatch b(std::move(a));
+  EXPECT_EQ(b.groups(), 1U);
+  EXPECT_TRUE(b.group_ok(0));
+  // The moved-from state is the contract under test (use after move on purpose).
+  EXPECT_EQ(a.groups(), 0U); // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(a.group_ok(0));
+  EXPECT_EQ(a.route(0).steps, 0);
+  const std::vector<DiscreteDivBatchContract> contracts{{0, 100.0, Side::Put, 0.25, 9.0}};
+  std::vector<DiscreteDivBatchResult> out(contracts.size());
+  ASSERT_TRUE(a.price(contracts, ExerciseStyle::American, out).has_value());
+  EXPECT_EQ(out[0].outcome, DiscreteDivBatchOutcome::RefusedGroup);
+  ASSERT_TRUE(a.implied_vol(contracts, DiscreteDivIvOpts{}, out).has_value());
+  EXPECT_EQ(out[0].outcome, DiscreteDivBatchOutcome::RefusedGroup);
+  std::vector<DiscreteDivProductionGreeks> bundles(contracts.size());
+  ASSERT_TRUE(a.greeks(contracts, ExerciseStyle::American, 0.0, bundles).has_value());
+  EXPECT_TRUE(bundles[0].has(DiscreteDivUnsupportedReason::Refused));
+  EXPECT_EQ(a.prepare(groups), groups.size());
+  a = std::move(b);
+  EXPECT_EQ(a.groups(), 1U);
+  EXPECT_TRUE(a.group_ok(0));
 }
 
 } // namespace

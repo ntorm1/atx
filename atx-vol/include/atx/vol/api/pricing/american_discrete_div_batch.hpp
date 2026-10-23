@@ -54,12 +54,14 @@ struct DiscreteDivBatchContract {
 
 enum class DiscreteDivBatchOutcome : std::uint8_t {
   Priced = 0,       // a price, or an identified IV root
-  PriceOnly = 1,    // implied_vol: the quote sits at or below the exercise value (the
-                    // American plateau) or the lattice's lowest-vol price — the price
-                    // is valid, no volatility is identified by it
+  PriceOnly = 1,    // implied_vol: the quote sits ON the exercise value (the American
+                    // plateau, within 1e-12 max(S, K)) or at or below the lattice's
+                    // lowest-vol price — the price is valid, no volatility is
+                    // identified by it
   RefusedInput = 2, // InvalidArgument: the contract's own inputs (K, sigma, quote)
   RefusedRange = 3, // OutOfRange other than price-only: above the maximum-volatility
-                    // price, the CRR window closed, a non-finite lattice price
+                    // price, below the exercise value (an inconsistent quote), the
+                    // CRR window closed, a non-finite lattice price
   RefusedBudget = 4, // Unavailable: the inversion's iteration budget ran out
   RefusedGroup = 5,  // the contract's group failed `prepare()` (or no such group)
 };
@@ -85,6 +87,8 @@ public:
   explicit DiscreteDivBatch(const DiscreteDivProductionOpts &opts = {},
                             int screen_steps = kDiscreteDivScreenSteps);
   ~DiscreteDivBatch();
+  // A moved-from batch is EMPTY: groups() is 0, every contract comes back
+  // RefusedGroup and prepare() refuses every group; assign a batch to reuse it.
   DiscreteDivBatch(DiscreteDivBatch &&) noexcept;
   DiscreteDivBatch &operator=(DiscreteDivBatch &&) noexcept;
   DiscreteDivBatch(const DiscreteDivBatch &) = delete;
