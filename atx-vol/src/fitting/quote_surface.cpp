@@ -1661,6 +1661,8 @@ private:
     // The calendar repair re-implies moved rows under the fit's identifiability policy
     // (lane C0): a trial without it would re-imply under Legacy.
     trial.floor_policy = fit.floor_policy;
+    // Lane K4b: the opt-in parity-coupled calendar clamp follows the fit into its trials.
+    trial.calendar_parity_clamp = fit.calendar_parity_clamp;
     trial.snapshot = fit.snapshot;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;

@@ -540,6 +540,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.discrete_div_scheme = config.discrete_div_scheme;
   out.floor_policy = config.floor_policy;
   ATX_TRY_VOID(detail::select_call_floor(out, config.call_floor)); // lane C3, opt-in
+  out.calendar_parity_clamp = config.repair.calendar_parity_clamp; // K4b (opt-in)
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
@@ -868,6 +869,9 @@ public:
       // K4 native fit route: typed outcomes, the bounded reference route, the chain's budget.
       gate.native_route = controls.native_route;
       gate.reference_budget = controls.reference_budget;
+      // K4b: the batched route's prepared values, the no-family reference route (m5).
+      gate.prepared = controls.prepared;
+      gate.no_family_reference = controls.no_family_reference;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -876,6 +880,20 @@ public:
       return Err(ErrorCode::Unavailable, "quote slice: no American implied volatility");
     }
     return Ok(iv.iv);
+  }
+  // K4b: implied_vol_premium's own arguments (the batched route prepares with them).
+  bool premium_contract(const QuoteSliceQuote &quote, double q_effective, bool confirm_fast,
+                        DeAmPremiumContract &out) const override {
+    if (fit_.dividend_model == QuoteSliceDividendModel::DatedCash) return false;
+    out.S = fit_.market.spot;
+    out.K = quote.strike;
+    out.T = fit_.market.variance_years;
+    out.r = fit_.diagnostics.effective_rate;
+    out.q = q_effective;
+    out.tol = config_.iv_tolerance;
+    out.al_opts = fit_.al_opts;
+    out.confirm_opts = confirm_fast ? fast_ : fit_.al_opts; // IvPremiumGate::confirm_opts
+    return true;
   }
   double black_vega(const QuoteSliceQuote &quote, double sigma, double forward) const override {
     return black76_value_and_vega(forward, quote.strike, fit_.market.variance_years, sigma,
@@ -898,6 +916,12 @@ public:
   sigma_families(const DeAmFamilyRequest &request) const override {
     const double T = fit_.market.variance_years;
     if (!has_fast_kernel() || !(T >= kAlSigmaFamilyMinTau) || !std::isfinite(request.q)) {
+      const DeAmFamilyRefusal why = !has_fast_kernel() ? DeAmFamilyRefusal::NoContinuousModel
+                                    : !(T >= kAlSigmaFamilyMinTau)
+                                        ? DeAmFamilyRefusal::ShortExpiry
+                                        : DeAmFamilyRefusal::InvalidCarry;
+      refuse(request, 0, why);
+      refuse(request, 1, why);
       return nullptr;
     }
     const auto t0 = std::chrono::steady_clock::now();
@@ -916,7 +940,10 @@ public:
                              double hi) {
         if (!(hi > lo)) return;
         slot.emplace(holder->geometry, side, fit_.market.spot);
-        if (!slot->prepare(lo, hi, kDeAmFamilyNodes, kDeAmFamilyAxis)) slot.reset();
+        if (!slot->prepare(lo, hi, kDeAmFamilyNodes, kDeAmFamilyAxis)) {
+          slot.reset();
+          refuse(request, side == Side::Put ? 0u : 1u, DeAmFamilyRefusal::PrepareRefused);
+        }
       };
       build(holder->put, Side::Put, request.sigma_lo[0], request.sigma_hi[0]);
       build(holder->call, Side::Call, request.sigma_lo[1], request.sigma_hi[1]);
@@ -969,6 +996,10 @@ public:
   }
 
 private:
+  // K4b (review-K4 m8): records why a requested side (0 put, 1 call) built no family.
+  static void refuse(const DeAmFamilyRequest &request, std::size_t s, DeAmFamilyRefusal why) {
+    if (request.refused != nullptr) (*request.refused)[s] = why;
+  }
   // One side's (sigma, q) family (L2h-b note section 6): the q box is the chain's, a call
   // side clipped to q > 0 (a q <= 0 call never exercises early; its strikes price cold),
   // the geometry at the request's yield clamped into the box, n_q by T x width, and its
@@ -983,10 +1014,17 @@ private:
     const double sigma_hi = request.sigma_hi[s];
     double q_lo = request.q_lo;
     const double q_hi = request.q_hi;
-    if (!(sigma_hi > sigma_lo) || !std::isfinite(q_lo) || !std::isfinite(q_hi)) return;
+    if (!(sigma_hi > sigma_lo)) return; // not requested
+    if (!std::isfinite(q_lo) || !std::isfinite(q_hi)) {
+      refuse(request, s, DeAmFamilyRefusal::InvalidCarry);
+      return;
+    }
     if (side == Side::Call) {
       constexpr double kCallMinYield = 1.0e-9;
-      if (!(q_hi > kCallMinYield)) return;
+      if (!(q_hi > kCallMinYield)) {
+        refuse(request, s, DeAmFamilyRefusal::CallNoCarry);
+        return;
+      }
       q_lo = std::max(q_lo, kCallMinYield);
     }
     const double T = fit_.market.variance_years;
@@ -1003,6 +1041,7 @@ private:
     if (!slot->prepare(sigma_lo, sigma_hi, kDeAmQFamilySigmaNodes, q_lo, q_hi, n_q,
                        kDeAmFamilyAxis)) {
       slot.reset();
+      refuse(request, s, DeAmFamilyRefusal::PrepareRefused);
       return;
     }
     // The grid's family band: the chain's strikes clipped to |ln(K / S)| <=
@@ -1013,6 +1052,7 @@ private:
     if (!deam_family_certify(holder, side, spot, T, r, fit_.al_opts, request.strike_lo,
                              request.strike_hi, band_lo, band_hi)) {
       slot.reset();
+      refuse(request, s, DeAmFamilyRefusal::Uncertified);
       return;
     }
   }
@@ -1054,7 +1094,10 @@ public:
                                       config.channel.deam_family_native,
                                       config.channel.deam_native_route,
                                       config.channel.deam_reference_max_calls,
-                                      config.channel.deam_reference_max_evaluations});
+                                      config.channel.deam_reference_max_evaluations,
+                                      config.channel.deam_native_batch,
+                                      config.channel.deam_native_no_leg,
+                                      config.channel.deam_reference_max_wall_us});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1670,8 +1713,30 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       continuous;
   const std::optional<AlOpts> fast_opts =
       fast_grid ? std::optional<AlOpts>{al_fast_profile(out.al_opts)} : std::nullopt;
-  const auto grid_price = [&](double strike, Side side, double sigma, double q) {
-    if (!fast_grid) return model_price(out, strike, side, sigma, q);
+  // K4b: the grid's repricing sub-clocks (family / kernel), read only under an armed chain
+  // timer (quote-bench --timing-detail).
+  counters::fit_timing::FitTimingCounters *const grid_timing =
+      counters::fit_timing::current_counts();
+  const auto timed = [grid_timing](std::uint64_t counters::fit_timing::FitTimingCounters::*field,
+                                   auto &&price) {
+    if (grid_timing == nullptr) return price();
+    const auto t0 = std::chrono::steady_clock::now();
+    auto result = price();
+    const auto ns = (std::chrono::steady_clock::now() - t0) / std::chrono::nanoseconds{1};
+    grid_timing->*field += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    return result;
+  };
+  constexpr auto kGridFamilyNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_family_ns;
+  constexpr auto kGridKernelNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_kernel_ns;
+  // K4b (review-K4 m6): the per-contract error metadata of the grid on the native route -
+  // each node's bound (USD) on |grid price - the fit's accurate model|: the family's
+  // per-point bound for a family node, AlProfile::Fast's tested bound for a Fast-kernel node.
+  const bool grid_metadata = family_grid && family_point_bound;
+  const auto grid_price = [&](double strike, Side side, double sigma, double q, double &bound) {
+    bound = std::numeric_limits<double>::quiet_NaN();
+    if (!fast_grid) {
+      return timed(kGridKernelNs, [&] { return model_price(out, strike, side, sigma, q); });
+    }
     if (!std::isfinite(q)) {
       return Result<double>{Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow")};
     }
@@ -1683,7 +1748,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       const AlSigmaQFamily *f = families->of_q(side);
       const ValidatedErrorEnvelope *env = families->q_envelope(side);
       if (f != nullptr && env != nullptr && env->covered()) {
-        const FamilyBoundedPrice fb = family_price_bounded(*f, *env, market.spot, strike, sigma, q);
+        const FamilyBoundedPrice fb = timed(kGridFamilyNs, [&] {
+          return family_price_bounded(*f, *env, market.spot, strike, sigma, q);
+        });
         if (fb.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fb.price) &&
             fb.bound_usd < certificate_tolerance(market.spot, strike)) {
           namespace ft = counters::fit_timing;
@@ -1695,6 +1762,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
             timing->deam_family_grid_max_bound_usd =
                 std::max(timing->deam_family_grid_max_bound_usd, fb.bound_usd);
           }
+          bound = fb.bound_usd;
           return Result<double>{Ok(fb.price)};
         }
       }
@@ -1715,9 +1783,14 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       }
       counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
     }
-    return andersen_lake(market.spot, strike, market.variance_years, sigma, diag.effective_rate, q,
-                         side, fast_opts);
+    Result<double> kernel = timed(kGridKernelNs, [&] {
+      return andersen_lake(market.spot, strike, market.variance_years, sigma,
+                           diag.effective_rate, q, side, fast_opts);
+    });
+    if (kernel) bound = al_profile_price_bound(AlProfile::Fast, *kernel, market.variance_years);
+    return kernel;
   };
+  std::vector<std::array<double, 2>> node_bounds; // per strike: call, put (grid_metadata)
   detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
   std::vector<std::uint64_t> grid_key;
   if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
@@ -1741,6 +1814,12 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   const std::vector<AmericanPriceNode> *const memoised =
       grid_key.empty() ? nullptr : memo->grid(grid_key);
   if (memoised != nullptr) prices = *memoised;
+  if (memoised != nullptr && grid_metadata) {
+    // The metadata rides the grid's memo entry (remembered with it, so a hit carries it).
+    if (const std::vector<std::array<double, 2>> *const b = memo->grid_bounds(grid_key)) {
+      node_bounds = *b;
+    }
+  }
   for (std::size_t s = 0; memoised == nullptr && s < strikes.size(); ++s) {
     const double strike = strikes[s];
     const double q = effective_yield(out, calendar_yield_at(out, strike));
@@ -1752,16 +1831,23 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       out.fit_error = "American price certification: invalid grid volatility";
       return;
     }
-    const auto call = grid_price(strike, Side::Call, sigma, q);
-    const auto put = grid_price(strike, Side::Put, sigma, q);
+    std::array<double, 2> bound{};
+    const auto call = grid_price(strike, Side::Call, sigma, q, bound[0]);
+    const auto put = grid_price(strike, Side::Put, sigma, q, bound[1]);
     if (!call || !put) {
       out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
       out.fit_error = "American price certification: grid repricing failed";
       return;
     }
     prices.push_back({strike, *call, *put});
+    if (grid_metadata) node_bounds.push_back(bound);
   }
-  if (memoised == nullptr && !grid_key.empty()) memo->remember_grid(std::move(grid_key), prices);
+  if (memoised == nullptr && !grid_key.empty()) {
+    memo->remember_grid(std::move(grid_key), prices,
+                        node_bounds.size() == prices.size() ? node_bounds
+                                                            : std::vector<std::array<double, 2>>{});
+  }
+  if (node_bounds.size() != strikes.size()) node_bounds.clear(); // metadata only when whole
   const counters::fit_timing::BucketScope certify_timing(counters::fit_timing::Bucket::Certify);
   AmericanPriceBounds bounds{market.spot, std::min(1.0, diag.discount),
                              std::max(1.0, diag.discount), 0.0, 0.0};
@@ -1836,6 +1922,15 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       continue;
     }
     detail::clear_identification(row); // a re-certification never keeps earlier labels
+    {
+      // K4b (m6): the row's grid node's bound (NaN off the native route's family grid).
+      const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
+      const bool node = !node_bounds.empty() && at != strikes.end() && *at == quote.strike;
+      row.grid_bound_usd =
+          node ? node_bounds[static_cast<std::size_t>(at - strikes.begin())]
+                            [quote.side == Side::Call ? 0 : 1]
+               : std::numeric_limits<double>::quiet_NaN();
+    }
     row.fitted_iv = out.curve->iv(std::log(quote.strike / diag.forward));
     if (!positive(row.fitted_iv)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
@@ -1929,7 +2024,9 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
        (!c.deam_family_q || c.deam_confirm != QuoteSliceDeamConfirm::Always)) ||
       // The native fit route (K4) types the family-native route; its budget is finite.
       (c.deam_native_route && !c.deam_family_native) || c.deam_reference_max_calls == 0u ||
-      c.deam_reference_max_evaluations == 0u) {
+      c.deam_reference_max_evaluations == 0u ||
+      // K4b: the batched native route and the no-family reference route refine the route.
+      ((c.deam_native_batch || c.deam_native_no_leg) && !c.deam_native_route)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -2369,6 +2466,22 @@ void clamp_nodes(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c) 
   }
 }
 
+// K4b declared hunk (C3 review D2, TIGR 20770): the parity-coupled clamp
+// (QuoteSliceRepairConfig::calendar_parity_clamp, opt-in). A call the calendar clamp raised
+// can leave call - put above the certificate's affine bound prepaid_max - K discount_min
+// (AmericanPriceSlice::create: "affine call-minus-put bound violated"); that node's put is
+// raised to the bound when its own calendar cap admits it. Only a node the certificate would
+// refuse (beyond its allowance) moves, so every repair that certified before is unchanged.
+void couple_call_put(std::vector<AmericanPriceNode> &nodes, const CalendarClamp &c,
+                     const AmericanPriceBounds &b) {
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    const double tol = 1.0e-8 + 1.0e-9 * std::max(b.spot, nodes[i].strike);
+    const double upper = b.prepaid_max - nodes[i].strike * b.discount_min;
+    const double put = nodes[i].call - upper; // the least put the bound admits
+    if (nodes[i].call - nodes[i].put > upper + tol && put <= c.cap_put[i]) nodes[i].put = put;
+  }
+}
+
 bool above_floors(const QuoteSliceFit &fit, std::span<const AmericanPriceNode> nodes,
                   const CalendarClamp &c) {
   for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -2494,6 +2607,7 @@ bool repair_quote_slice_calendar(QuoteSliceFit &fit, std::span<const QuoteSliceQ
     }
     within = above_floors(fit, nodes, clamp);
   }
+  if (fit.calendar_parity_clamp) couple_call_put(nodes, clamp, fit.prices->bounds()); // K4b
   std::vector<double> call_spread;
   std::vector<double> put_spread;
   node_half_spreads(nodes, quotes, call_spread, put_spread);

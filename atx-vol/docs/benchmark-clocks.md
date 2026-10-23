@@ -114,7 +114,27 @@ on static chains (predictions unchanged; an opt-in path's cost changes).
 - `families` (`--timing-detail`, fit_timing): `built`, `build_validation_s`,
   `iterate_prices`, `refused_premium_attempts`, `grid_prices`,
   `grid_prices_on_fast_instead` (real counts; zero when the policy builds no family);
-  `attempted` and `lane_vegas` are `unavailable: not counted by the fit`.
+  `lane_vegas` (lane K4b) counts the native route's lane-vega hook (an acceptance that placed
+  its confirm with the lane's fused vega: no covering envelope, or a refused chord);
+  `attempted` (family sides the adaptive rule asked for), `refused` (= attempted - built) and
+  `refused_by_reason` (lane K4b, review-K4 m8: `not_offered`, `no_continuous_model`,
+  `short_expiry`, `invalid_carry`, `call_no_carry`, `prepare_refused`, `uncertified`; they sum
+  to `refused`; per chain `graded_stats.slices[].timing.deam_family_refused_by_reason`).
+- `fit_work.native_route` (`--timing-detail`, the native fit route; lane K4, sub-clocks K4b):
+  `subclock` (ms, summed over the chains): `request` (every Premium request's wall),
+  `lane` (the family-native lane: `invert_many`), `family_accept` (K3's enclosure / family
+  sides / chord family prices), `confirm` (confirm-kernel solves), `leg` (the seed leg net of
+  its confirms), `reference` (the bounded reference route), `other` = request minus the five,
+  `family_side` = lane + family_accept, `endpoint` (band edge decisions), `prefill` (the
+  batched route's per-chain prefill, `graded.native_batch`: its lane / family / confirm work
+  is ALSO charged to those clocks), `grid_family` / `grid_kernel` (the certification grid's
+  family per-point-bound prices / kernel prices). `batch`: `calls`, `lanes`, `avx2_calls`
+  (lanes prepared, AVX2 kernel calls), `lane_hits` / `lane_misses` (requests that consumed a
+  prepared lane / ran their own), `confirms` / `confirm_hits` (decisive batched confirm prices
+  prepared / consumed; accurate confirm kernel only). `reference_wall_refused`: requests the
+  reference wall budget stopped (`graded.reference_budget.wall_us`). Per chain:
+  `graded_stats.slices[].timing.deam_sub_*_ns`. No sub-clock runs (or costs) without
+  `--timing-detail`.
 - `simd` (`vector_pack_dispatches` = complete 4-lane AVX2 packs, `scalar_equivalent_lanes`
   = known scalar wrapper lanes + scalar fallback lanes): from the exact counter plane;
   compiled out of the shipping build (`ATX_VOL_COUNTERS` off), so `unavailable`, never 0.

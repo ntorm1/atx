@@ -59,6 +59,16 @@ struct DeAmQuoteIv {
   static constexpr std::uint8_t kCarry = 1u; // q_effective, local_forward
   static constexpr std::uint8_t kMid = 2u;   // mid_iv
   static constexpr std::uint8_t kBand = 4u;  // floor/cap prices, bid_iv, ask_iv, well_posed
+  static constexpr std::uint8_t kEdges = 8u; // K4b: the band's edge decisions (edge_bits)
+  // K4b (the batched native route): the band's edge decisions, decided once for the work
+  // group before its inversions (the comparisons band() makes, bit per comparison) and
+  // whether an edge price or its re-price erred (the band then carries no inversion).
+  static constexpr std::uint8_t kEdgeBidBelowCap = 1u;
+  static constexpr std::uint8_t kEdgeAskAboveFloor = 2u;
+  static constexpr std::uint8_t kEdgeBidAboveFloor = 4u;
+  static constexpr std::uint8_t kEdgeAskBelowCap = 8u;
+  static constexpr std::uint8_t kEdgeMidInside = 16u;
+  static constexpr std::uint8_t kEdgeFailed = 32u;
   // Contract carry, exactly as the slice fit derives it: the effective yield on
   // the variance clock and the contract's local forward.
   double q_effective = std::numeric_limits<double>::quiet_NaN();
@@ -73,7 +83,8 @@ struct DeAmQuoteIv {
   // a finite carry, a band not entirely outside [floor_price, cap_price] and
   // carrying at least one finite edge.
   bool well_posed = false;
-  std::uint8_t computed = 0; // kCarry | kMid | kBand
+  std::uint8_t computed = 0; // kCarry | kMid | kBand | kEdges
+  std::uint8_t edge_bits = 0; // kEdge* (with kEdges)
   // The native fit route (deam_native_route; None otherwise): the typed outcome of the
   // mid's, the bid's and the ask's inversion (IvRouteOutcome), the mid's interval where its
   // outcome carries one (C0's iv_lower / iv_upper; NaN: unknown), and whether the mid lies
@@ -184,6 +195,27 @@ inline constexpr double kDeAmFamilyGridLogBand = 0.25;
                                        double strike_lo, double strike_hi, double band_lo,
                                        double band_hi);
 
+// Why a requested side built no family (lane K4b, review-K4 m8; DeAmFamilyRequest::refused,
+// counted in this order by FitTimingCounters::deam_family_refused_by_reason):
+//   NotOffered         the model builds no families (DeAmModel's default);
+//   NoContinuousModel  no continuous-carry kernel (the dated-cash dividend model);
+//   ShortExpiry        T below kAlSigmaFamilyMinTau;
+//   InvalidCarry       a non-finite yield or q box;
+//   CallNoCarry        a call side whose q box is at or below zero (it never exercises early);
+//   PrepareRefused     the family's prepare refused (a box straddling r, the q-axis accuracy
+//                      guard, no American orientation);
+//   Uncertified        K3's error contract refused it (deam_family_certify).
+enum class DeAmFamilyRefusal : std::uint8_t {
+  NotOffered,
+  NoContinuousModel,
+  ShortExpiry,
+  InvalidCarry,
+  CallNoCarry,
+  PrepareRefused,
+  Uncertified,
+};
+inline constexpr std::size_t kDeAmFamilyRefusalCount = 7;
+
 // What a cache asks its model to build (DeAmModel::sigma_families): per side (0 put, 1
 // call) the sigma box (empty, lo >= hi: no family of that side); the sigma families' yield
 // `q`; with `sigma_q` the (sigma, q) families over the chain's q box [q_lo, q_hi] instead.
@@ -198,6 +230,9 @@ struct DeAmFamilyRequest {
   // family's largest relative error).
   double strike_lo = std::numeric_limits<double>::quiet_NaN();
   double strike_hi = std::numeric_limits<double>::quiet_NaN();
+  // K4b (review-K4 m8): where the model writes why a requested side (0 put, 1 call) built no
+  // family; null: not asked. A side the model builds is left as it was.
+  std::array<DeAmFamilyRefusal, 2> *refused = nullptr;
 };
 // Expected family-priced calls per two-sided quote of a side (the adaptive rule): the
 // inversions of the mid, bid and ask at ~1.8 iterates each.
@@ -237,6 +272,10 @@ struct DeAmIvCache {
   // are keyed words, so every fit sharing the cache shares one budget and spends it in the
   // order the fits ask, deterministically).
   IvReferenceBudget reference_budget{};
+  // K4b: the batched native route (deam_native_batch): whether this cache's work group was
+  // prepared, and the values prepared per input quote (mid, bid, ask; empty until then).
+  bool native_prepared = false;
+  std::vector<std::array<IvPremiumPrepared, 3>> prepared;
 };
 
 // The kernels the cache can price and invert with (QuoteSliceDeamProfile). Screen (SPY1s
@@ -271,6 +310,24 @@ struct DeAmPremiumControls {
   // deam_native_route): the chain cache's reference budget (nullptr: off the route).
   bool native_route = false;
   IvReferenceBudget *reference_budget = nullptr;
+  // K4b: the batched route's values for this request (IvPremiumGate::prepared; nullptr: none)
+  // and the no-family reference route (IvPremiumGate::no_family_reference; deam_native_no_leg).
+  const IvPremiumPrepared *prepared = nullptr;
+  bool no_family_reference = false;
+};
+
+// K4b: the arguments a model's Premium inversion passes american_implied_vol_premium for one
+// quote (DeAmModel::premium_contract): spot, strike, variance years, effective rate, the
+// contract's yield, the IV tolerance, the accurate kernel and the confirm kernel.
+struct DeAmPremiumContract {
+  double S = std::numeric_limits<double>::quiet_NaN();
+  double K = std::numeric_limits<double>::quiet_NaN();
+  double T = std::numeric_limits<double>::quiet_NaN();
+  double r = std::numeric_limits<double>::quiet_NaN();
+  double q = std::numeric_limits<double>::quiet_NaN();
+  double tol = std::numeric_limits<double>::quiet_NaN();
+  std::optional<AlOpts> al_opts = std::nullopt;
+  std::optional<AlOpts> confirm_opts = std::nullopt;
 };
 
 // The slice fit's American model at one contract's own carry, implemented by
@@ -334,6 +391,19 @@ public:
     static_cast<void>(request);
     return nullptr;
   }
+  // K4b: the Premium inversion's contract arguments for the quote under `confirm_fast`
+  // (DeAmPremiumContract: exactly what implied_vol_premium passes), so a work group can be
+  // prepared with the inversions' own inputs; false (the default; the dated-cash lattice)
+  // when the model has no Premium route.
+  [[nodiscard]] virtual bool premium_contract(const QuoteSliceQuote &quote, double q_effective,
+                                              bool confirm_fast,
+                                              DeAmPremiumContract &out) const {
+    static_cast<void>(quote);
+    static_cast<void>(q_effective);
+    static_cast<void>(confirm_fast);
+    static_cast<void>(out);
+    return false;
+  }
   // Validated bounds of the quote's band edges on the accurate kernel (the native fit
   // route's endpoint decisions, DeAmEdgeBounds); every bound NaN (nothing decided) by
   // default and for a model without them (the dated-cash lattice).
@@ -387,6 +457,9 @@ struct DeAmConfirmControls {
   bool native_route = false;                               // deam_native_route (K4)
   std::uint32_t reference_max_calls = 0;       // deam_reference_max_calls
   std::uint32_t reference_max_evaluations = 0; // deam_reference_max_evaluations
+  bool native_batch = false;                   // deam_native_batch (K4b)
+  bool native_no_leg = false;                  // deam_native_no_leg (K4b, review-K4 m5)
+  std::uint32_t reference_max_wall_us = 0;     // deam_reference_max_wall_us (K4b; 0 none)
 };
 
 class DeAmIvView {
@@ -412,11 +485,14 @@ private:
   [[nodiscard]] DeAmQuoteIv &carry(std::size_t i);
   // One inversion of the quote's contract at `target` (memory: Premium only), charged
   // to the fit's work and, when timing is armed, to the chain's fit_timing counters.
+  // `prepared`: the batched route's values for this request (nullptr: none).
   [[nodiscard]] Result<double> invert(const QuoteSliceQuote &quote, double target,
-                                      const DeAmQuoteIv &entry, IvPremiumMemory *memory);
+                                      const DeAmQuoteIv &entry, IvPremiumMemory *memory,
+                                      const IvPremiumPrepared *prepared = nullptr);
   [[nodiscard]] Result<double> invert_premium(const QuoteSliceQuote &quote, double target,
                                               const DeAmQuoteIv &entry, IvPremiumMemory *memory,
-                                              IvPremiumStats &stats);
+                                              IvPremiumStats &stats,
+                                              const IvPremiumPrepared *prepared);
   [[nodiscard]] Result<double> invert_search(const QuoteSliceQuote &quote, double target,
                                              const DeAmQuoteIv &entry);
   [[nodiscard]] DeAmKernel kernel() const noexcept;
@@ -454,6 +530,18 @@ private:
   };
   [[nodiscard]] bool bound_edges(const QuoteSliceQuote &quote, const DeAmQuoteIv &entry,
                                  EdgeDecision &out);
+  // The band's edge decisions (the endpoints stage) into `edges`, the edge prices into
+  // `filled`; false when an edge price or its accurate re-price erred (the band then carries
+  // no inversion). Precondition: a positive local forward and a finite carry.
+  [[nodiscard]] bool band_edges(const QuoteSliceQuote &quote, DeAmQuoteIv &filled,
+                                EdgeDecision &edges);
+  // K4b (deam_native_batch on the native route; once per cache): prepares the work group -
+  // every channel quote's edge decisions, then per side the mids' lanes, the bids' and asks'
+  // lanes from their mids' outcomes, and the acceptance (iv_native_prepare_*). A no-op off
+  // the batched route or when the cache has no family.
+  void prepare_native_batch();
+  // The prepared values of quote `i`'s request `slot` (0 mid, 1 bid, 2 ask), nullptr: none.
+  [[nodiscard]] const IvPremiumPrepared *prepared_for(std::size_t i, std::size_t slot) const;
 
   DeAmIvCache &cache_;
   const DeAmModel &model_;

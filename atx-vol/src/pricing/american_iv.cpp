@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -10,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include "pricing/al_probe.hpp" // env-gated AL hot-path zone timers (Perf 2b step 1)
 #include "pricing/american_family_error.hpp" // K3 envelope + root acceptance
@@ -24,6 +27,8 @@
 #include "fitting/counters.hpp"
 #include "atx/vol/api/pricing/implied_vol.hpp"
 #include "atx/vol/api/core/types.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp" // K4b: the batched confirm prices
+#include "atx/vol/api/simd/cpu.hpp"                     // K4b: simd::use_avx2()
 
 namespace atx::vol {
 
@@ -1005,6 +1010,21 @@ double iv_premium_edge_band_top(double S, double K, double T, double r, double q
   return zero_vol + std::fmax(al_non_monotone_gate(K, T, opts), band_tol); // NaN propagates
 }
 
+bool iv_premium_native_window(double price, double S, double K, double T, double r, double q,
+                              Side side, const std::optional<AlOpts> &opts) noexcept {
+  if (!std::isfinite(price) || !std::isfinite(S) || !std::isfinite(K) || !std::isfinite(T) ||
+      !std::isfinite(r) || !std::isfinite(q) || !(S > 0.0) || !(K > 0.0) || !(T > 0.0)) {
+    return false;
+  }
+  // premium_root's own arithmetic (its RangeEdge test and the native route's typed edges).
+  const double ceiling = american_price_ceiling(S, K, T, r, q, side);
+  const double zero_vol = zero_vol_american_value(S, K, T, r, q, side);
+  if (!std::isfinite(ceiling) || !std::isfinite(zero_vol)) return false;
+  const double band_tol = 1.0e-9 * ceiling + 1.0e-12;
+  return price < ceiling - band_tol &&
+         price - zero_vol > std::fmax(al_non_monotone_gate(K, T, opts), band_tol);
+}
+
 double iv_premium_seed_gate(double K, double T, const std::optional<AlOpts> &seed_opts,
                             const IvPremiumGate *gate) noexcept {
   if (gate == nullptr || !(gate->seed_gate_kappa > 0.0)) {
@@ -1152,6 +1172,93 @@ private:
   bool baw_; // the kernel has an exercise region: put r > 0, call q > 0
 };
 
+// K4b (r6): charges its lifetime to one inverse sub-clock of the request
+// (IvPremiumStats::sub_ns) when the request is timed; one branch and no clock read otherwise.
+class SubTimer {
+  using Steady = std::chrono::steady_clock;
+
+public:
+  SubTimer(IvPremiumStats &stats, IvPremiumSubClock clock) noexcept
+      : slot_(stats.timed ? &stats.sub_ns[static_cast<std::size_t>(clock)] : nullptr),
+        start_(slot_ != nullptr ? Steady::now() : Steady::time_point{}) {}
+  ~SubTimer() {
+    if (slot_ == nullptr) return;
+    const auto ns = (Steady::now() - start_) / std::chrono::nanoseconds{1};
+    *slot_ += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+  }
+  SubTimer(const SubTimer &) = delete;
+  SubTimer &operator=(const SubTimer &) = delete;
+  SubTimer(SubTimer &&) = delete;
+  SubTimer &operator=(SubTimer &&) = delete;
+
+private:
+  std::uint64_t *slot_;
+  Steady::time_point start_;
+};
+
+// K4b (r6): the seed-leg route's sub-clock - its lifetime less the confirm solves charged to
+// IvPremiumSubClock::Confirm meanwhile (the leg's own Newton confirms).
+class LegTimer {
+  using Steady = std::chrono::steady_clock;
+
+public:
+  explicit LegTimer(IvPremiumStats &stats) noexcept
+      : stats_(stats.timed ? &stats : nullptr),
+        confirm0_(stats.sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Confirm)]),
+        start_(stats_ != nullptr ? Steady::now() : Steady::time_point{}) {}
+  ~LegTimer() {
+    if (stats_ == nullptr) return;
+    const auto ns = (Steady::now() - start_) / std::chrono::nanoseconds{1};
+    const std::uint64_t confirm =
+        stats_->sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Confirm)] - confirm0_;
+    const std::uint64_t total = ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    stats_->sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Leg)] +=
+        total > confirm ? total - confirm : 0u;
+  }
+  LegTimer(const LegTimer &) = delete;
+  LegTimer &operator=(const LegTimer &) = delete;
+  LegTimer(LegTimer &&) = delete;
+  LegTimer &operator=(LegTimer &&) = delete;
+
+private:
+  IvPremiumStats *stats_;
+  std::uint64_t confirm0_;
+  Steady::time_point start_;
+};
+
+// K4b (r6): the prepared values of the request premium_root is running (IvPremiumGate::
+// prepared), installed for its duration by PreparedScope; the lane, the enclosure and the
+// first confirm read them and consume one only on bit-identical inputs.
+thread_local const IvPremiumPrepared *t_prepared = nullptr;
+
+class PreparedScope {
+public:
+  explicit PreparedScope(const IvPremiumPrepared *prepared) noexcept : prev_(t_prepared) {
+    t_prepared = prepared;
+  }
+  ~PreparedScope() { t_prepared = prev_; }
+  PreparedScope(const PreparedScope &) = delete;
+  PreparedScope &operator=(const PreparedScope &) = delete;
+  PreparedScope(PreparedScope &&) = delete;
+  PreparedScope &operator=(PreparedScope &&) = delete;
+
+private:
+  const IvPremiumPrepared *prev_;
+};
+
+// Bit equality (a NaN equals the same NaN): what "the same inputs" means for a prepared value.
+[[nodiscard]] bool same_bits(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+[[nodiscard]] bool same_opts(const std::optional<AlOpts> &a, const std::optional<AlOpts> &b) noexcept {
+  if (a.has_value() != b.has_value()) return false;
+  if (!a) return true;
+  return a->n_collocation == b->n_collocation && a->n_quadrature == b->n_quadrature &&
+         a->n_quad_price == b->n_quad_price && a->max_newton_iter == b->max_newton_iter &&
+         same_bits(a->tol, b->tol) && a->profile == b->profile;
+}
+
 // One cold point of the contract: sigma, its American price and its remainder D.
 struct ColdPoint {
   double sigma;
@@ -1183,55 +1290,82 @@ struct NativeRoot {
 static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
               "the native attempt's budget is the batch seam's lane cap");
 
+// The seed and retained bracket a family-native lane starts from (K2): the contract's native
+// carry - the evaluated points of an earlier attempt on this contract (the quote's mid behind
+// its bid / ask) bracket the price on the side their prices are on, and the last one with its
+// vega gives a Newton seed - else the Black-76 IV of the price at the contract's forward (an
+// upper bound of the American IV). One function for the one-lane route and the batched route
+// (K4b), so a prepared lane's inputs are the route's own. Not noexcept: the Black-76
+// inversion's Error path builds a message string.
+struct LaneStart {
+  double seed = std::numeric_limits<double>::quiet_NaN();
+  double blo = std::numeric_limits<double>::quiet_NaN();
+  double bhi = std::numeric_limits<double>::quiet_NaN();
+  double plo = std::numeric_limits<double>::quiet_NaN();
+  double phi = std::numeric_limits<double>::quiet_NaN();
+  bool carried = false;
+};
+
+[[nodiscard]] LaneStart lane_start(double price, double S, double K, double T, double r, double q,
+                                   Side side, const IvPremiumNativeCarry *carry) {
+  LaneStart st;
+  if (carry != nullptr && carry->valid) {
+    const IvPremiumNativeCarry &c = *carry;
+    st.carried = true;
+    const auto take = [&](double s, double p) {
+      if (!std::isfinite(s) || !std::isfinite(p)) return;
+      if (p < price) {
+        if (!(st.blo >= s)) {
+          st.blo = s;
+          st.plo = p;
+        }
+      } else if (!(st.bhi <= s)) {
+        st.bhi = s;
+        st.phi = p;
+      }
+    };
+    take(c.lo, c.p_lo);
+    take(c.hi, c.p_hi);
+    take(c.sigma, c.price);
+    if (std::isfinite(c.vega) && c.vega > iv_batch::kInverseVegaFloorRel * K) {
+      st.seed = c.sigma + (price - c.price) / c.vega;
+    }
+  }
+  if (!std::isfinite(st.seed)) {
+    const double F = S * std::exp((r - q) * T);
+    const Result<double> eu = implied_vol(price, F, K, T, std::exp(-r * T), side);
+    if (eu && std::isfinite(*eu)) st.seed = *eu;
+  }
+  return st;
+}
+
+// K4b: whether a prepared lane was computed from exactly these lane inputs.
+[[nodiscard]] bool prepared_lane_matches(const IvPreparedLane &p, const AlSigmaQFamily &f,
+                                         double S, double K, double price, double q, double tol,
+                                         const LaneStart &st) noexcept {
+  return p.valid && p.family == &f && same_bits(p.S, S) && same_bits(p.K, K) &&
+         same_bits(p.target, price) && same_bits(p.q, q) && same_bits(p.tol, tol) &&
+         same_bits(p.seed, st.seed) && same_bits(p.bracket_lo, st.blo) &&
+         same_bits(p.bracket_hi, st.bhi) && same_bits(p.price_lo, st.plo) &&
+         same_bits(p.price_hi, st.phi);
+}
+
 // The family-native iterates (SPY1s Phase 3 lever 1) through the K2 batch seam: ONE lane of
 // iv_batch::invert_many on the (sigma, q) family's own map at the strike's own q, a bounded
-// bracketed Newton on the fused price + vega (no seed leg, no chord). The lane starts from
-// the contract's native carry - the evaluated points of an earlier attempt on this contract
-// (the quote's mid behind its bid / ask) bracket the price on the side their prices are on
-// and the last one with its vega gives a Newton seed - else from the Black-76 IV of the
-// price at the contract's forward (an upper bound of the American IV); a failed or
-// out-of-box seed starts from the bracket (the box top is priced AT the box top, mn5).
-// Every attempt rewrites the carry, accepted or not. Not noexcept: the Black-76 inversion's
-// Error path builds a message string.
+// bracketed Newton on the fused price + vega (no seed leg, no chord), started as lane_start
+// says; a failed or out-of-box seed starts from the bracket (the box top is priced AT the
+// box top, mn5). K4b: a lane the batched route prepared from exactly these inputs is taken
+// instead of the one-lane call. Every attempt rewrites the carry, accepted or not. Not
+// noexcept: the Black-76 inversion's Error path builds a message string.
 [[nodiscard]] NativeRoot family_native_root(double price, double S, double K, double T, double r,
                                             double q, Side side, double tol,
                                             const AlSigmaQFamily &f, IvPremiumMemory *memory,
                                             IvPremiumStats &stats, std::uint32_t stream_id) {
   namespace ib = iv_batch;
   NativeRoot out;
-  double seed = std::numeric_limits<double>::quiet_NaN();
-  double blo = seed;
-  double bhi = seed;
-  double plo = seed;
-  double phi = seed;
-  if (memory != nullptr && memory->carry.valid) {
-    const IvPremiumNativeCarry &c = memory->carry;
-    stats.native_carried = true;
-    const auto take = [&](double s, double p) {
-      if (!std::isfinite(s) || !std::isfinite(p)) return;
-      if (p < price) {
-        if (!(blo >= s)) {
-          blo = s;
-          plo = p;
-        }
-      } else if (!(bhi <= s)) {
-        bhi = s;
-        phi = p;
-      }
-    };
-    take(c.lo, c.p_lo);
-    take(c.hi, c.p_hi);
-    take(c.sigma, c.price);
-    if (std::isfinite(c.vega) && c.vega > ib::kInverseVegaFloorRel * K) {
-      seed = c.sigma + (price - c.price) / c.vega;
-    }
-  }
-  if (!std::isfinite(seed)) {
-    const double F = S * std::exp((r - q) * T);
-    const Result<double> eu = implied_vol(price, F, K, T, std::exp(-r * T), side);
-    if (eu && std::isfinite(*eu)) seed = *eu;
-  }
-  const std::uint8_t is_call = side == Side::Call ? 1u : 0u;
+  const LaneStart start =
+      lane_start(price, S, K, T, r, q, side, memory != nullptr ? &memory->carry : nullptr);
+  if (start.carried) stats.native_carried = true;
   double sigma = 0.0;
   double lo = 0.0;
   double hi = 0.0;
@@ -1243,30 +1377,55 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
   std::uint16_t evals = 0;
   ib::InverseStatus status = ib::InverseStatus::Inactive;
   std::uint8_t flags = 0;
-  ib::LaneAcceptance acc;
-  ib::InverseBatchIn in;
-  in.family = &f;
-  in.S = S;
-  in.tol = tol;
-  in.max_evaluations = static_cast<std::uint16_t>(kIvPremiumNativeEvaluations);
-  in.isa = ib::InverseIsa::Scalar;
-  in.K = std::span<const double>(&K, 1);
-  in.target = std::span<const double>(&price, 1);
-  in.q = std::span<const double>(&q, 1);
-  in.is_call = std::span<const std::uint8_t>(&is_call, 1);
-  in.seed_sigma = std::span<const double>(&seed, 1);
-  in.bracket_lo = std::span<const double>(&blo, 1);
-  in.bracket_hi = std::span<const double>(&bhi, 1);
-  in.price_lo = std::span<const double>(&plo, 1);
-  in.price_hi = std::span<const double>(&phi, 1);
-  const ib::InverseBatchOut o{{&sigma, 1}, {&lo, 1},     {&hi, 1},    {&p_lo, 1},
-                              {&p_hi, 1},  {&res, 1},    {&vega, 1},  {&last, 1},
-                              {&evals, 1}, {&status, 1}, {&flags, 1}, {&acc, 1}};
-  // One scratch per thread (built once; the one-lane call then allocates nothing).
-  thread_local ib::InverseScratch scratch;
-  if (ib::invert_many(in, o, scratch) != ib::InverseBatchError::None) {
-    stats.native_status = ib::InverseStatus::InvalidInput;
-    return out;
+  const IvPreparedLane *prepared =
+      t_prepared != nullptr && t_prepared->lane.valid ? &t_prepared->lane : nullptr;
+  if (prepared != nullptr && prepared_lane_matches(*prepared, f, S, K, price, q, tol, start)) {
+    // K4b: the batched route's lane for exactly these inputs (iv_native_prepare_lanes).
+    sigma = prepared->sigma;
+    lo = prepared->lo;
+    hi = prepared->hi;
+    p_lo = prepared->p_lo;
+    p_hi = prepared->p_hi;
+    res = prepared->residual;
+    vega = prepared->vega;
+    last = prepared->last;
+    evals = prepared->evaluations;
+    status = prepared->status;
+    flags = prepared->flags;
+    stats.batch_lane_hit = true;
+  } else {
+    if (prepared != nullptr) stats.batch_lane_miss = true;
+    const std::uint8_t is_call = side == Side::Call ? 1u : 0u;
+    ib::LaneAcceptance acc;
+    ib::InverseBatchIn in;
+    in.family = &f;
+    in.S = S;
+    in.tol = tol;
+    in.max_evaluations = static_cast<std::uint16_t>(kIvPremiumNativeEvaluations);
+    in.isa = ib::InverseIsa::Scalar;
+    in.K = std::span<const double>(&K, 1);
+    in.target = std::span<const double>(&price, 1);
+    in.q = std::span<const double>(&q, 1);
+    in.is_call = std::span<const std::uint8_t>(&is_call, 1);
+    in.seed_sigma = std::span<const double>(&start.seed, 1);
+    in.bracket_lo = std::span<const double>(&start.blo, 1);
+    in.bracket_hi = std::span<const double>(&start.bhi, 1);
+    in.price_lo = std::span<const double>(&start.plo, 1);
+    in.price_hi = std::span<const double>(&start.phi, 1);
+    const ib::InverseBatchOut o{{&sigma, 1}, {&lo, 1},     {&hi, 1},    {&p_lo, 1},
+                                {&p_hi, 1},  {&res, 1},    {&vega, 1},  {&last, 1},
+                                {&evals, 1}, {&status, 1}, {&flags, 1}, {&acc, 1}};
+    // One scratch per thread (built once; the one-lane call then allocates nothing).
+    thread_local ib::InverseScratch scratch;
+    ib::InverseBatchError batch_error = ib::InverseBatchError::None;
+    {
+      const SubTimer lane_clock(stats, IvPremiumSubClock::Lane);
+      batch_error = ib::invert_many(in, o, scratch);
+    }
+    if (batch_error != ib::InverseBatchError::None) {
+      stats.native_status = ib::InverseStatus::InvalidInput;
+      return out;
+    }
   }
   stats.native_status = status;
   stats.native_evaluations = evals;
@@ -1397,6 +1556,20 @@ namespace {
                                                   const std::optional<AlOpts> &confirm_opts,
                                                   IvPremiumStats &stats) {
   counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+  // K4b: the batched route's first confirm price for exactly this solve (decisive only:
+  // iv_native_prepare_acceptance) is this solve's answer; still one confirming solve.
+  if (t_prepared != nullptr && t_prepared->confirm.valid) {
+    const IvPreparedConfirm &pc = t_prepared->confirm;
+    if (same_bits(pc.S, S) && same_bits(pc.K, K) && same_bits(pc.T, T) &&
+        same_bits(pc.sigma, sigma) && same_bits(pc.r, r) && same_bits(pc.q, q) &&
+        pc.side == side && same_opts(pc.opts, confirm_opts)) {
+      ++stats.premium_solves;
+      ++stats.confirm_solves;
+      stats.batch_confirm_hit = true;
+      return pc.price;
+    }
+  }
+  const SubTimer confirm_clock(stats, IvPremiumSubClock::Confirm);
   const Result<double> pc = andersen_lake(S, K, T, sigma, r, q, side, confirm_opts);
   ++stats.premium_solves;
   ++stats.confirm_solves;
@@ -1423,6 +1596,7 @@ namespace {
   if (env == nullptr || !env->covered()) {
     return 0;
   }
+  const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
   const FamilyBoundedPrice fp = family_price_bounded(f, *env, S, K, sigma, q);
   ++stats.family_prices;
   if (fp.status != AlSigmaQFamilyStatus::Ok) {
@@ -1645,7 +1819,9 @@ namespace {
 // K4 (native fit route, `lane_vega`): when the enclosure measured no chord (a family price
 // refused), the confirm's placement slope is the lane's fused vega at its last point, already
 // in hand, instead of the family's kAlPackSigmaBump chord (two more family prices). The slope
-// places only; the bracket rule is unchanged.
+// places only; the bracket rule is unchanged. K4b (review-K4 m3): the hook reaches the
+// enclosure step - without a covering envelope the enclosure cannot skip, so its two family
+// prices would only measure that placement chord; the fused vega replaces them.
 [[nodiscard]] std::optional<double> accept_family_native(const NativeRoot &native, double price,
                                                          double S, double K, double T, double r,
                                                          double q, Side side, double tol,
@@ -1664,7 +1840,26 @@ namespace {
   }
   const ValidatedErrorEnvelope *env = current_family_envelope(&f);
   const double w = acceptance_width(tol);
-  const FamilyEnclosure enc = family_enclosure(price, S, K, q, x, w, f, env, stats);
+  if (lane_vega && (env == nullptr || !env->covered()) && std::isfinite(native.slope) &&
+      native.slope > 0.0) {
+    stats.lane_vega_used = true;
+    return confirm_bracket(price, S, K, T, r, q, side, x, native.slope, w, f, env, confirm_opts,
+                           stats);
+  }
+  const FamilyEnclosure enc = [&] {
+    // K4b: the batched route's enclosure for exactly these inputs, with what it spent.
+    if (t_prepared != nullptr && t_prepared->enclosure.valid) {
+      const IvPreparedEnclosure &pe = t_prepared->enclosure;
+      if (pe.family == &f && pe.env == env && same_bits(pe.price, price) &&
+          same_bits(pe.S, S) && same_bits(pe.K, K) && same_bits(pe.q, q) &&
+          same_bits(pe.x, x) && same_bits(pe.w, w)) {
+        stats.family_prices += pe.family_prices;
+        return pe.enclosure;
+      }
+    }
+    const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
+    return family_enclosure(price, S, K, q, x, w, f, env, stats);
+  }();
   if (enc.enclosed) {
     stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
                                       RootAcceptanceReason::FamilyEnclosure,
@@ -1678,8 +1873,10 @@ namespace {
   double slope = enc.slope;
   if (!(std::isfinite(slope) && slope > 0.0) && lane_vega) {
     slope = native.slope; // > the lane's vega floor: family_native_root accepted on it
+    stats.lane_vega_used = true;
   }
   if (!(std::isfinite(slope) && slope > 0.0)) {
+    const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
     const AlSigmaQFamilyChord fc = f.price_and_chord(S, K, x, q);
     stats.family_prices += 2u;
     if (fc.status == AlSigmaQFamilyStatus::Ok) {
@@ -1742,6 +1939,7 @@ struct ReferencePoint {
                                                    const ReferenceHint &hint,
                                                    IvReferenceBudget *budget,
                                                    IvPremiumStats &stats) {
+  const SubTimer reference_clock(stats, IvPremiumSubClock::Reference);
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   const auto typed = [&stats](IvRouteOutcome outcome, double lo,
                               double hi) -> std::optional<double> {
@@ -1751,9 +1949,30 @@ struct ReferencePoint {
     stats.fallback = IvPremiumFallback::None;
     return std::nullopt;
   };
+  // K4b: the chain's reference WALL budget (IvReferenceBudget::max_wall_ns; 0: none), on top
+  // of the count budget: this request's wall is charged to it on every exit, and the budget is
+  // checked at entry and before every evaluation.
+  using Steady = std::chrono::steady_clock;
+  const bool wall_budget = budget != nullptr && budget->max_wall_ns > 0u;
+  const Steady::time_point wall_t0 = wall_budget ? Steady::now() : Steady::time_point{};
+  const auto wall_now = [&]() noexcept -> std::uint64_t {
+    const auto ns = (Steady::now() - wall_t0) / std::chrono::nanoseconds{1};
+    return ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+  };
+  struct WallCharge {
+    IvReferenceBudget *budget;
+    const decltype(wall_now) &now;
+    ~WallCharge() {
+      if (budget != nullptr) budget->wall_ns += now();
+    }
+  };
+  const WallCharge wall_charge{wall_budget ? budget : nullptr, wall_now};
   if (budget != nullptr) {
-    if (budget->calls >= budget->max_calls || budget->evaluations >= budget->max_evaluations) {
+    const bool wall_spent = wall_budget && budget->wall_ns >= budget->max_wall_ns;
+    if (budget->calls >= budget->max_calls || budget->evaluations >= budget->max_evaluations ||
+        wall_spent) {
       ++budget->refused;
+      if (wall_spent) ++budget->refused_wall;
       return typed(IvRouteOutcome::BudgetExhausted, kNaN, kNaN);
     }
     ++budget->calls;
@@ -1762,12 +1981,18 @@ struct ReferencePoint {
   const double eps = al_profile_price_bound(profile, price, T);
   const double w = acceptance_width(tol);
   bool spent = false; // the chain's budget ran out mid-request
+  bool spent_wall = false; // ... its wall budget (K4b)
   bool refused = false;
   const auto eval = [&](double s) -> std::optional<ReferencePoint> {
     if (stats.reference_evaluations >= kIvReferenceMaxEvaluations) return std::nullopt;
     if (budget != nullptr) {
       if (budget->evaluations >= budget->max_evaluations) {
         spent = true;
+        return std::nullopt;
+      }
+      if (wall_budget && budget->wall_ns + wall_now() >= budget->max_wall_ns) {
+        spent = true;
+        spent_wall = true;
         return std::nullopt;
       }
       ++budget->evaluations;
@@ -1789,11 +2014,28 @@ struct ReferencePoint {
   double hi = kSigmaHiCap;
   double p_lo = kNaN;
   double p_hi = kNaN;
+  // review-K4 m2: a certified end that would cross the other certified end (possible only
+  // if the confirm kernel's tested distance eps_c were violated) makes the bracket
+  // inconsistent: no root is served from it (Unresolved).
+  bool crossed = false;
+  // K4b (PM item A17; K5's dev200b audit): whether the certified low end is an
+  // ExercisePlateau point. The classified map is the intrinsic exactly up to the plateau's
+  // edge sigma* and the kernel's euro + premium past it, so it JUMPS at sigma* by the
+  // kernel-floor map's own premium there (2.4e-6 on the BABO 3 call, 42 % carry); a price
+  // inside that jump is bracketed by a plateau end and a continuation end with no root
+  // between them. A served root's plateau end is therefore re-decided on the kernel-floor
+  // map (andersen_lake, the accurate map K3's audit re-bisects); a disagreement types the
+  // price price-only (plateau): it lies within the plateau edge's jump.
+  bool lo_plateau = false;
   const auto stop = [&]() -> std::optional<double> {
     if (spent) {
       ++budget->refused;
+      if (spent_wall) ++budget->refused_wall;
       return typed(IvRouteOutcome::BudgetExhausted, std::isfinite(p_lo) ? lo : kNaN,
                    std::isfinite(p_hi) ? hi : kNaN);
+    }
+    if (crossed) {
+      return typed(IvRouteOutcome::Unresolved, kNaN, kNaN);
     }
     if (!refused && std::isfinite(p_lo) && std::isfinite(p_hi)) {
       return typed(IvRouteOutcome::Interval, lo, hi);
@@ -1806,18 +2048,19 @@ struct ReferencePoint {
     if (e.cls == AlExerciseClass::ExercisePlateau && e.side >= 0) {
       return IvRouteOutcome::PriceOnlyPlateau; // the price sits on the plateau's intrinsic
     }
-    if (e.side < 0 && e.sigma >= lo) {
-      lo = e.sigma;
-      p_lo = e.price;
-    } else if (e.side > 0 && e.sigma <= hi) {
-      hi = e.sigma;
-      p_hi = e.price;
+    // review-K4 m2: an end is accepted only strictly inside the other CERTIFIED end.
+    const IvReferenceTake t = iv_reference_take(lo, hi, p_lo, p_hi, e.sigma, e.price, e.side);
+    if (t == IvReferenceTake::Crossed) {
+      crossed = true;
+      return IvRouteOutcome::Unresolved;
     }
+    if (t == IvReferenceTake::Lower) lo_plateau = e.cls == AlExerciseClass::ExercisePlateau;
     if (e.sigma <= kSigmaLo && e.side >= 0) return IvRouteOutcome::PriceOnlyFloor;
     if (e.sigma >= kSigmaHiCap && e.side <= 0) return IvRouteOutcome::AboveRange;
     return std::nullopt;
   };
   const auto decided = [&](IvRouteOutcome o) -> std::optional<double> {
+    if (o == IvRouteOutcome::Unresolved) return stop(); // a crossing (m2)
     if (o == IvRouteOutcome::PriceOnlyPlateau) return typed(o, 0.0, kNaN);
     if (o == IvRouteOutcome::PriceOnlyFloor) return typed(o, 0.0, kSigmaLo);
     return typed(o, kSigmaHiCap, kNaN); // AboveRange
@@ -1851,10 +2094,39 @@ struct ReferencePoint {
         const std::optional<ReferencePoint> s = eval(end);
         if (!s) return stop();
         if (const auto o = take(*s)) return decided(*o);
-        if (s->side == 0) return typed(IvRouteOutcome::PriceOnlyLowVega, lo, hi);
+        // review-K4 m1: only a CERTIFIED end bounds the price-only outcome (an uncertified
+        // range end - kIvMin / kSigmaHiCap - carries no information).
+        if (s->side == 0) {
+          return typed(IvRouteOutcome::PriceOnlyLowVega, std::isfinite(p_lo) ? lo : kNaN,
+                       std::isfinite(p_hi) ? hi : kNaN);
+        }
       }
     }
-    if (std::isfinite(p_lo) && std::isfinite(p_hi) && hi - lo <= w) {
+    if (std::isfinite(p_lo) && std::isfinite(p_hi) && lo <= hi && hi - lo <= w) {
+      if (lo_plateau) {
+        // K4b (A17): the plateau end's side on the kernel-floor map (one evaluation, charged
+        // to the budget like every other; past the per-request cap by at most this one).
+        if (budget != nullptr) {
+          if (budget->evaluations >= budget->max_evaluations ||
+              (wall_budget && budget->wall_ns + wall_now() >= budget->max_wall_ns)) {
+            spent = true;
+            spent_wall = budget->evaluations < budget->max_evaluations;
+            return stop();
+          }
+          ++budget->evaluations;
+        }
+        ++stats.reference_evaluations;
+        ++stats.premium_solves;
+        counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+        const Result<double> a = andersen_lake(S, K, T, lo, r, q, side, kernel);
+        if (!a || !std::isfinite(*a)) {
+          refused = true;
+          return stop();
+        }
+        if (confirm_side(*a, price, eps) >= 0) {
+          return typed(IvRouteOutcome::PriceOnlyPlateau, 0.0, kNaN);
+        }
+      }
       const double gap = p_hi - p_lo;
       const double root = gap > 0.0 ? lo + (price - p_lo) / gap * (hi - lo) : 0.5 * (lo + hi);
       stats.acceptance = RootAcceptance{RootAcceptanceKind::Confirmed,
@@ -2018,6 +2290,8 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
     stats.fallback = why;
     return std::optional<double>{};
   };
+  // K4b: the batched route's values prepared for this request, for its whole duration.
+  const PreparedScope prepared_scope(gate != nullptr ? gate->prepared : nullptr);
   // K2 (r5): the bench's recorded request stream (american_iv_stream.hpp; disarmed: one
   // atomic load) - every Premium request, refusals included, with the family-native family
   // when the request is native-eligible and the request whose carry it starts from.
@@ -2106,9 +2380,11 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
     if (confirm) {
       const IvConfirmPolicy policy = gate != nullptr ? gate->policy : IvConfirmPolicy::Always;
       if (policy == IvConfirmPolicy::Band && on_qfamily) {
-        const FamilyEnclosure enc =
-            family_enclosure(price, S, K, q, root, acceptance_width(tol), *qfamily,
-                             current_family_envelope(qfamily), stats);
+        const FamilyEnclosure enc = [&] {
+          const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
+          return family_enclosure(price, S, K, q, root, acceptance_width(tol), *qfamily,
+                                  current_family_envelope(qfamily), stats);
+        }();
         if (enc.enclosed) {
           stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
                                             RootAcceptanceReason::FamilyEnclosure,
@@ -2142,7 +2418,10 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
       // at most, else the Search fallback.
       for (std::uint32_t attempt = 0;; ++attempt) {
         counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
-        const Result<double> pc = andersen_lake(S, K, T, root, r, q, side, confirm_opts);
+        const Result<double> pc = [&] {
+          const SubTimer confirm_clock(stats, IvPremiumSubClock::Confirm);
+          return andersen_lake(S, K, T, root, r, q, side, confirm_opts);
+        }();
         ++stats.premium_solves;
         ++stats.confirm_solves;
         if (!pc || !std::isfinite(*pc)) {
@@ -2213,6 +2492,14 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
   // native route never iterates on the seed tier (its family is built on the accurate kernel).
   const bool native_family_request = native_route && gate->qfamily != nullptr &&
                                      gate->qfamily->side() == side && gate->qfamily_native;
+  if (native_route && gate->no_family_reference && !native_family_request) {
+    // K4b (review-K4 m5): no family of this side - the bounded reference route answers, from
+    // the Black-76 IV; no seed leg and no Barone-Adesi-Whaley model on the route.
+    ReferenceHint hint;
+    hint.seed = black76_seed(price, S, K, T, r, q, side);
+    return reference_root(price, S, K, T, r, q, side, tol, reference_kernel, hint,
+                          gate->reference_budget, stats);
+  }
   if (confirm && !native_family_request) {
     // Seed-tier routing (L2f note section 4): inside the seed tier's own, wider
     // non-monotone gate its map may dip where the accurate map does not (Screen: 4e-4 K
@@ -2278,6 +2565,8 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
     on_qfamily = false;
   }
 
+  // K4b: from here on the request is on the seed-leg route (its sub-clock).
+  const LegTimer leg_clock(stats);
   // Up to two cold points, most recent first: the memory's, then this attempt's.
   std::array<ColdPoint, 2> pts{};
   std::size_t n = 0;
@@ -2508,6 +2797,8 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
                                      IvPremiumMemory *memory, IvPremiumStats &stats,
                                      const IvPremiumGate *gate) {
   stats = IvPremiumStats{};
+  // K4b: the sub-clocks run only under an armed chain timer (quote-bench --timing-detail).
+  stats.timed = counters::fit_timing::current_counts() != nullptr;
   if (premium_route(opts, side)) {
     const std::optional<AlOpts> seed_opts = premium_seed_opts(opts);
     const AlProfile own = opts.al_opts ? opts.al_opts->profile : AlProfile::Reference;
@@ -2653,6 +2944,269 @@ Result<std::size_t> american_implied_vol_batch(std::span<const double> price, do
     }
   }
   return Ok(n);
+}
+
+// ── K4b (r6): the batched native route (american_iv_premium.hpp) ───────────────────────
+
+IvReferenceTake iv_reference_take(double &lo, double &hi, double &p_lo, double &p_hi,
+                                  double sigma, double price, int side) noexcept {
+  if (side < 0 && sigma >= lo) {
+    if (std::isfinite(p_hi) && !(sigma < hi)) return IvReferenceTake::Crossed;
+    lo = sigma;
+    p_lo = price;
+    return IvReferenceTake::Lower;
+  }
+  if (side > 0 && sigma <= hi) {
+    if (std::isfinite(p_lo) && !(sigma > lo)) return IvReferenceTake::Crossed;
+    hi = sigma;
+    p_hi = price;
+    return IvReferenceTake::Upper;
+  }
+  return IvReferenceTake::None;
+}
+
+namespace {
+
+// The batch's structure-of-arrays columns, reused per thread (grown, never shrunk: a warm
+// thread prepares a work group without allocating).
+struct BatchColumns {
+  std::vector<std::size_t> index;
+  std::vector<double> K, target, q, seed, blo, bhi, plo, phi;
+  std::vector<std::uint8_t> is_call;
+  std::vector<double> sigma, lo, hi, p_lo, p_hi, res, vega, last;
+  std::vector<std::uint16_t> evals;
+  std::vector<iv_batch::InverseStatus> status;
+  std::vector<std::uint8_t> flags;
+  std::vector<iv_batch::LaneAcceptance> acc;
+  // The confirm batch (internal-put coordinates, McDonald-Schroder for a call).
+  std::vector<double> cS, cK, cT, csigma, cr, cq, cprice, cslope, ceps, cw;
+  std::vector<std::size_t> cindex;
+
+  void resize(std::size_t n) {
+    for (auto *v : {&K, &target, &q, &seed, &blo, &bhi, &plo, &phi, &sigma, &lo, &hi, &p_lo, &p_hi,
+                    &res, &vega, &last}) {
+      if (v->size() < n) v->resize(n);
+    }
+    if (index.size() < n) index.resize(n);
+    if (is_call.size() < n) is_call.resize(n);
+    if (evals.size() < n) evals.resize(n);
+    if (status.size() < n) status.resize(n);
+    if (flags.size() < n) flags.resize(n);
+    if (acc.size() < n) acc.resize(n);
+  }
+  void resize_confirms(std::size_t n) {
+    for (auto *v : {&cS, &cK, &cT, &csigma, &cr, &cq, &cprice, &cslope, &ceps, &cw}) {
+      if (v->size() < n) v->resize(n);
+    }
+    if (cindex.size() < n) cindex.resize(n);
+  }
+};
+
+thread_local BatchColumns t_columns;
+thread_local iv_batch::InverseScratch t_batch_scratch;
+
+[[nodiscard]] std::uint64_t ns_since(std::chrono::steady_clock::time_point t0) noexcept {
+  const auto ns = (std::chrono::steady_clock::now() - t0) / std::chrono::nanoseconds{1};
+  return ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+}
+
+} // namespace
+
+void iv_native_prepare_lanes(const AlSigmaQFamily &f,
+                             const sigma_q_family_detail::PremiumTable *table,
+                             std::span<const IvNativeBatchRequest> requests,
+                             std::span<IvPremiumPrepared> out, bool timed,
+                             IvNativeBatchWork &work) {
+  namespace ib = iv_batch;
+  const std::size_t n = requests.size();
+  if (n == 0 || out.size() != n) return;
+  // One spot and one tolerance per call (a chain's); a request that differs is not prepared.
+  const double S = requests[0].S;
+  const double tol = requests[0].tol;
+  BatchColumns &c = t_columns;
+  c.resize(n);
+  std::size_t m = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const IvNativeBatchRequest &rq = requests[i];
+    out[i].lane = IvPreparedLane{};
+    if (!same_bits(rq.S, S) || !same_bits(rq.tol, tol) || rq.side != f.side()) continue;
+    const LaneStart st = lane_start(rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.side, rq.carry);
+    c.index[m] = i;
+    c.K[m] = rq.K;
+    c.target[m] = rq.price;
+    c.q[m] = rq.q;
+    c.is_call[m] = rq.side == Side::Call ? 1u : 0u;
+    c.seed[m] = st.seed;
+    c.blo[m] = st.blo;
+    c.bhi[m] = st.bhi;
+    c.plo[m] = st.plo;
+    c.phi[m] = st.phi;
+    ++m;
+  }
+  if (m == 0) return;
+  // The AVX2 kernel on K1's snapshot when the host runs it; otherwise the family's own scalar
+  // map - the one-lane route's source, so every lane is that route's bit for bit.
+  const bool avx2 = table != nullptr && table->ok && !table->fast && simd::use_avx2();
+  ib::InverseBatchIn in;
+  if (avx2) {
+    in.table = table;
+    in.isa = ib::InverseIsa::Avx2;
+  } else {
+    in.family = &f;
+    in.isa = ib::InverseIsa::Scalar;
+  }
+  in.S = S;
+  in.tol = tol;
+  in.max_evaluations = static_cast<std::uint16_t>(kIvPremiumNativeEvaluations);
+  in.K = std::span<const double>(c.K.data(), m);
+  in.target = std::span<const double>(c.target.data(), m);
+  in.q = std::span<const double>(c.q.data(), m);
+  in.is_call = std::span<const std::uint8_t>(c.is_call.data(), m);
+  in.seed_sigma = std::span<const double>(c.seed.data(), m);
+  in.bracket_lo = std::span<const double>(c.blo.data(), m);
+  in.bracket_hi = std::span<const double>(c.bhi.data(), m);
+  in.price_lo = std::span<const double>(c.plo.data(), m);
+  in.price_hi = std::span<const double>(c.phi.data(), m);
+  const ib::InverseBatchOut o{{c.sigma.data(), m}, {c.lo.data(), m},     {c.hi.data(), m},
+                              {c.p_lo.data(), m},  {c.p_hi.data(), m},   {c.res.data(), m},
+                              {c.vega.data(), m},  {c.last.data(), m},   {c.evals.data(), m},
+                              {c.status.data(), m}, {c.flags.data(), m}, {c.acc.data(), m}};
+  ib::InverseBatchWork bw;
+  const auto t0 = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  const ib::InverseBatchError error = ib::invert_many(in, o, t_batch_scratch, &bw);
+  if (timed) work.lane_ns += ns_since(t0);
+  ++work.calls;
+  work.lanes += m;
+  if (bw.avx2) ++work.avx2_calls;
+  if (error != ib::InverseBatchError::None) return;
+  for (std::size_t j = 0; j < m; ++j) {
+    const IvNativeBatchRequest &rq = requests[c.index[j]];
+    IvPreparedLane &lane = out[c.index[j]].lane;
+    lane.valid = true;
+    lane.family = &f;
+    lane.S = S;
+    lane.K = rq.K;
+    lane.target = rq.price;
+    lane.q = rq.q;
+    lane.tol = tol;
+    lane.seed = c.seed[j];
+    lane.bracket_lo = c.blo[j];
+    lane.bracket_hi = c.bhi[j];
+    lane.price_lo = c.plo[j];
+    lane.price_hi = c.phi[j];
+    lane.sigma = c.sigma[j];
+    lane.lo = c.lo[j];
+    lane.hi = c.hi[j];
+    lane.p_lo = c.p_lo[j];
+    lane.p_hi = c.p_hi[j];
+    lane.residual = c.res[j];
+    lane.vega = c.vega[j];
+    lane.last = c.last[j];
+    lane.evaluations = c.evals[j];
+    lane.status = c.status[j];
+    lane.flags = c.flags[j];
+  }
+}
+
+IvPremiumNativeCarry iv_native_lane_carry(const IvPreparedLane &lane, double price) noexcept {
+  if (!lane.valid) return IvPremiumNativeCarry{};
+  // family_native_root's own carry write (the last point's price is target + residual).
+  const double last_price = std::isfinite(lane.residual) ? price + lane.residual : lane.residual;
+  return IvPremiumNativeCarry{true,      lane.lo,         lane.hi,   lane.p_lo,
+                              lane.p_hi, lane.last,       last_price, lane.vega,
+                              iv_batch::kNoStreamId};
+}
+
+void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                  std::span<const IvNativeBatchRequest> requests,
+                                  std::span<IvPremiumPrepared> out,
+                                  const std::optional<AlOpts> &confirm_opts, bool avx2,
+                                  bool timed, IvNativeBatchWork &work) {
+  const std::size_t n = requests.size();
+  if (out.size() != n) return;
+  const AlProfile profile = confirm_opts ? confirm_opts->profile : AlProfile::Reference;
+  BatchColumns &c = t_columns;
+  c.resize_confirms(n);
+  std::size_t m = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    IvPremiumPrepared &p = out[i];
+    p.enclosure = IvPreparedEnclosure{};
+    p.confirm = IvPreparedConfirm{};
+    const IvPreparedLane &lane = p.lane;
+    const IvNativeBatchRequest &rq = requests[i];
+    // family_native_root accepts exactly these lanes (its root = the lane's sigma), and
+    // accept_family_native runs the enclosure only inside the seed box.
+    if (!lane.valid || lane.status != iv_batch::InverseStatus::Converged ||
+        !std::isfinite(lane.vega) || !(lane.vega > iv_batch::kInverseVegaFloorRel * rq.K)) {
+      continue;
+    }
+    const double x = lane.sigma;
+    if (!(x > kSigmaLo && x < kSigmaHi)) continue;
+    const double w = acceptance_width(rq.tol);
+    // accept_family_native on the native route: no covering envelope - no enclosure, the
+    // lane's fused vega places the confirm (the lane-vega hook); otherwise the enclosure.
+    double slope = lane.vega;
+    if (env != nullptr && env->covered()) {
+      IvPremiumStats spent; // untimed: only family_prices is read
+      const auto t0 =
+          timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+      const FamilyEnclosure enc =
+          family_enclosure(rq.price, rq.S, rq.K, rq.q, x, w, f, env, spent);
+      if (timed) work.family_ns += ns_since(t0);
+      ++work.enclosures;
+      work.family_prices += spent.family_prices;
+      p.enclosure = IvPreparedEnclosure{true, &f,   env, rq.price, rq.S, rq.K, rq.q,
+                                        x,    w,    enc, spent.family_prices};
+      if (enc.enclosed) continue;
+      if (std::isfinite(enc.slope) && enc.slope > 0.0) slope = enc.slope;
+    }
+    // The AVX2 boundary batch prices a lane in about the scalar FAST solve's time (72-84 us
+    // vs 61-79 us per lane on the SPY shape; it is ~2x faster than the scalar ACCURATE scheme
+    // only, 77-84 vs 151-178 us: K4b E\diag\probe-boundary-batch-cost-1.txt), so the first
+    // confirms are batched on the accurate confirm kernel only; Fast confirms stay scalar.
+    if (!avx2 || profile != AlProfile::Reference) continue;
+    const double eps_c = al_profile_price_bound(profile, rq.price, rq.T);
+    if (!(std::isfinite(slope) && slope > 0.0) || !(slope * w > 2.0 * eps_c)) continue;
+    const bool call = rq.side == Side::Call;
+    c.cindex[m] = i;
+    c.cS[m] = call ? rq.K : rq.S; // McDonald-Schroder: C(S, K, r, q) = P(K, S, q, r)
+    c.cK[m] = call ? rq.S : rq.K;
+    c.cr[m] = call ? rq.q : rq.r;
+    c.cq[m] = call ? rq.r : rq.q;
+    c.cT[m] = rq.T;
+    c.csigma[m] = x;
+    c.cslope[m] = slope;
+    c.ceps[m] = eps_c;
+    c.cw[m] = w;
+    ++m;
+  }
+  if (m == 0) return;
+  const auto t0 = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  static_cast<void>(simd::american_put_boundary_batch(c.cS.data(), c.cK.data(), c.cT.data(),
+                                                      c.csigma.data(), c.cr.data(), c.cq.data(),
+                                                      c.cprice.data(), m, confirm_opts,
+                                                      simd::SimdIsa::ForceAvx2));
+  if (timed) work.confirm_ns += ns_since(t0);
+  work.confirms += m;
+  for (std::size_t j = 0; j < m; ++j) {
+    const std::size_t i = c.cindex[j];
+    const IvNativeBatchRequest &rq = requests[i];
+    const double price = c.cprice[j];
+    if (!std::isfinite(price)) continue;
+    // Decisive only: the side decision (confirm_side) and the far-root placement test
+    // (4 |delta| > w) are the same for every price within the batch kernel's tested class
+    // of this one, so they are the scalar confirm kernel's.
+    const double margin = kIvBatchConfirmMarginRel * std::fmax(rq.price, 1.0);
+    const double d = std::fabs(price - rq.price);
+    const bool side_decisive = d > c.ceps[j] + margin || d < c.ceps[j] - margin;
+    const double delta = (rq.price - price) / c.cslope[j];
+    const bool far_decisive =
+        std::fabs(4.0 * std::fabs(delta) - c.cw[j]) > 4.0 * margin / c.cslope[j];
+    if (!side_decisive || !far_decisive) continue;
+    ++work.decisive;
+    out[i].confirm = IvPreparedConfirm{true,  rq.S,    rq.K, rq.T,         c.csigma[j],
+                                       rq.r,  rq.q,    rq.side, confirm_opts, price};
+  }
 }
 
 } // namespace atx::vol

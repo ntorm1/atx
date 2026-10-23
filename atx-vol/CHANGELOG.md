@@ -83,6 +83,56 @@ certificate (NaN, review-H0A m3); `max_age_ns` without a request clock refuses (
 solve (m5); `bytes()` counts all three geometries of the holder (m4); every record's
 `policy_sha256` changes.
 
+### NEW — batched native route, reference wall budget, grid error metadata, opt-in parity-coupled calendar clamp (lane K4b)
+
+**Library (every key opt-in, default off: the nine keys-OFF default hashes are bit for bit).**
+- `QuoteSliceChannelConfig::deam_native_batch` (requires `deam_native_route`): per chain cache side
+  the mid / bid / ask lanes run in `iv_batch::invert_many` batches (AVX2 on the side's
+  `PremiumTable`, the family's scalar map otherwise) and the K3 acceptance is prepared per lane; a
+  request consumes a prepared value only on bit-identical inputs (scalar ISA: the unbatched route
+  bit for bit; AVX2: K2's rounding class, identical statuses). First confirm prices run in one AVX2
+  boundary batch on the ACCURATE confirm kernel only: on the Fast kernel the batch is no faster than
+  the scalar solve (72-84 vs 61-79 us per lane).
+- `deam_native_no_leg`: a request with no family of its side goes to the bounded reference route
+  from its Black-76 IV (no seed leg, no BAW on the route; review-K4 m5).
+- `deam_reference_max_wall_us`: the reference route's per-chain wall budget on top of the count
+  budget; a stop is `BudgetExhausted`, counted. A binding wall budget makes the served output
+  host-dependent.
+- Native route fixes (on the route only): a price-only low-vega outcome publishes only certified
+  ends (review-K4 m1); a crossing certified end leaves the bracket `Unresolved` (m2); a served
+  reference root whose low end is an exercise-plateau point is re-decided on the kernel-floor map,
+  and a price inside the plateau edge's jump is `PriceOnlyPlateau` (dev200b's one K3-audit
+  violation, BABO 3 call at 42 % carry: 0.138 vol). The lane-vega hook reaches the enclosure step.
+- `QuoteSliceRow::grid_bound_usd`: per-contract error metadata of the native route's family grid
+  (review-K4 m6), carried through the rung memo.
+- Family refusals typed by reason (review-K4 m8): `DeAmFamilyRefusal` via
+  `DeAmFamilyRequest::refused`, counted by `FitTimingCounters::deam_family_refused_by_reason`
+  (counters only; SPY: 62 sides asked, 59 built, 2 `short_expiry` + 1 `call_no_carry`).
+- `QuoteSliceRepairConfig::calendar_parity_clamp` (C3 review D2): in the calendar repair, a node
+  whose clamped call - put leaves the certificate's affine bound has its put raised to the bound
+  inside its calendar cap. On C3's dev200b combined-h0 arm it serves TIGR 20770's 36 rows (and
+  162 more on four expiries; 0 lost, publication violations 0); on by default it would change the
+  dev200 / dev200b graded-v1 defaults (+40 / +162 rows, 0 lost), hence opt-in.
+
+**Bench.** `graded.native_batch`, `graded.native_no_leg`, `graded.reference_budget.wall_us`,
+`graded.calendar_parity_clamp`; `fit_work.native_route.subclock` (inverse sub-clocks: lane,
+family_accept, confirm, leg, reference, endpoint, prefill, grid family / kernel; `--timing-detail`
+only), `.batch`, `.reference_wall_refused`; `families.lane_vegas` is now counted;
+`families.refused_by_reason`.
+
+**Measured (SPY historical, CPU 6, 1 fit worker, `--timing-detail`, development rows: other r6
+leases live).** `graded.native_batch` on the K4 speed arm, 10 cold trials: 3.466 / 4.170 / 4.406 /
+4.406 s (min / median / p95 / max); the speed arm itself on the same binary and host window
+(3 trials): median 4.497 s. Inverse sub-clocks (medians, before -> after): lane 320 -> 66 ms,
+family side (lane + K3 acceptance) 1,323 -> 1,095 ms, confirms 1,282 -> 1,210 ms (22,823 solves,
+56.2 -> 53.0 us each), reference 375 -> 341 ms; stages: inverses 2,715 -> 2,453 ms, endpoints
+409 -> 406 ms, final grid 606 -> 587 ms. The family side is now K3's enclosure (`family_accept`
+1,025 ms). With `reference_budget.wall_us` 2500 (3 trials) the reference stage is 44 ms and the
+SPY served output is byte-identical to the batch arm (dev200: 317 rows lost, 1,931 gained: the
+wall budget binds and is host-dependent). Served set vs the K4 speed arm: SPY and dev200b lost 0
+/ gained 0; SPY moves are the AVX2 rounding class (827 rows, |d vol| <= 2.3e-12); dev200b 4,225
+rows <= 1e-9 vol plus 43 rows on BABO's two chains (the plateau-end fix).
+
 ### CHANGED — serving record: the A0 and K3 seams are on (integration W2c-i)
 
 `ATX_VOL_SERVE_RECORD_A0` and `ATX_VOL_SERVE_RECORD_K3` now default to 1, since both lanes

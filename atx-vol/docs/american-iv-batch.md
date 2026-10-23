@@ -166,3 +166,31 @@ Untimed: grouping, arrays, scratch. Disarmed, recording costs one atomic load pe
 - Per-status counters in `FitTimingCounters` / the bench's fit-route JSON are not added
   (that needs `deam_iv_cache.cpp` and `quote_bench_main.cpp` fit-route hunks); the counts
   are in `IvPremiumStats` and in `bench.inverse_replay.fit_native.by_status`.
+  (K4 added them on the native route: `fit_work.native_route.native_lane_status`.)
+
+## 10. The batched native route (lane K4b, `graded.native_batch`, opt-in)
+
+The fit's work group is a chain cache's side (its (sigma, q) family). On the first mid
+request, `DeAmIvView::prepare_native_batch` decides every band's edges, then per side runs the
+mids through ONE `invert_many` call, the bids / asks through a second one that starts from the
+mid lane's bracket (`iv_native_lane_carry`), and the K3 acceptance of every lane the route
+accepts (`iv_native_prepare_acceptance`: the enclosure; without a covering envelope the lane's
+fused vega places the confirm - the lane-vega hook). The source is the side's `PremiumTable` on
+the AVX2 kernel when `simd::use_avx2()`, else the family's scalar map (section 5: the table's
+scalar map is not bit-equal to the family's). The requests then run as before and consume a
+prepared value only when their inputs are bit-identical to the ones it was computed from
+(`IvPremiumGate::prepared`; a mismatch runs its own one-lane call and counts a miss), so:
+
+- scalar ISA: the batched route serves exactly the unbatched route, bit for bit
+  (`FitNativeRoute.BatchedRouteOnTheScalarMapIsTheUnbatchedRouteBitForBit`);
+- AVX2: section 5's rounding class with identical statuses, acceptance kinds and route
+  outcomes (`FitNativeRoute.BatchedRouteOnAvx2KeepsEveryOutcomeToTheKernelsRoundingClass`).
+
+Confirms. The AVX2 boundary batch (`simd::american_put_boundary_batch`, a call through the
+McDonald-Schroder put map) prices a lane in about the scalar FAST solve's time (72-84 us vs
+61-79 us per lane on the SPY shape); it is ~2x faster only than the scalar ACCURATE scheme
+(77-84 vs 151-178 us). The first confirm prices are therefore batched on the accurate confirm
+kernel only, and consumed only where the side decision and the far-root placement test clear
+`kIvBatchConfirmMarginRel = 1e-11 max(P, 1)` (the batch's tested class of the scalar kernel,
+max 1.1e-13 measured), so every certified side is the scalar kernel's. The speed arm's Fast
+confirms stay scalar; for the same reason the final grid's Fast nodes are not batched.

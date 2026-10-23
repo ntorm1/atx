@@ -558,6 +558,11 @@ struct FitSpaceOptions {
   std::uint32_t reference_max_calls = QuoteSliceChannelConfig{}.deam_reference_max_calls;
   std::uint32_t reference_max_evaluations =
       QuoteSliceChannelConfig{}.deam_reference_max_evaluations;
+  // quote_slice.hpp deam_native_batch / deam_native_no_leg / deam_reference_max_wall_us
+  // (lane K4b: the batched native route, the no-family reference route, the wall budget).
+  bool native_batch = false;
+  bool native_no_leg = false;
+  std::uint32_t reference_max_wall_us = 0;
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -783,7 +788,7 @@ inline constexpr bool kGradedDefaultRungMemo = true;
       throw std::runtime_error("Policy graded reference_budget must be an object");
     }
     for (const auto &[name, value] : budget.items()) {
-      if (name != "calls" && name != "evaluations") {
+      if (name != "calls" && name != "evaluations" && name != "wall_us") {
         throw std::runtime_error("Policy graded reference_budget has unknown key: " + name);
       }
       if (!value.is_number_unsigned() || value.get<std::uint64_t>() == 0u ||
@@ -791,9 +796,24 @@ inline constexpr bool kGradedDefaultRungMemo = true;
         throw std::runtime_error("Policy graded reference_budget " + name +
                                  " must be a positive integer");
       }
-      (name == "calls" ? out.reference_max_calls : out.reference_max_evaluations) =
-          static_cast<std::uint32_t>(value.get<std::uint64_t>());
+      std::uint32_t &slot = name == "calls"         ? out.reference_max_calls
+                            : name == "evaluations" ? out.reference_max_evaluations
+                                                    : out.reference_max_wall_us;
+      slot = static_cast<std::uint32_t>(value.get<std::uint64_t>());
     }
+  }
+  // K4b: the batched native route and the no-family reference route (both opt-in on the
+  // native route; quote_slice.hpp deam_native_batch / deam_native_no_leg).
+  for (const char *key : {"native_batch", "native_no_leg"}) {
+    if (!graded.contains(key)) continue;
+    if (!graded.at(key).is_boolean()) {
+      throw std::runtime_error(std::string("Policy graded ") + key + " must be true or false");
+    }
+    const bool on = graded.at(key).get<bool>();
+    if (on && !out.native_route) {
+      throw std::runtime_error(std::string("Policy graded ") + key + " requires native_route");
+    }
+    (std::string(key) == "native_batch" ? out.native_batch : out.native_no_leg) = on;
   }
   if (graded.contains("family_c")) {
     if (out.family == QuoteSliceDeamFamily::Off) {
@@ -863,6 +883,7 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
         repair.market_distance == QuoteSliceMarketDistance::Gate ? "gate" : "repair";
     out["market_distance_spreads"] = repair.market_distance_spreads;
   }
+  if (repair.calendar_parity_clamp) out["calendar_parity_clamp"] = true; // K4b, when opted in
   if (s.ladder == QuoteSurfaceLadder::KnotFirst) {
     out["ladder"] = "knot-first";
     out["ladder_max_outside_fraction"] = s.ladder_max_outside_fraction;
@@ -903,6 +924,12 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
           out["native_route"] = true; // provenance only when opted in (K4)
           out["reference_budget"] = {{"calls", space.reference_max_calls},
                                      {"evaluations", space.reference_max_evaluations}};
+          // K4b: provenance only when opted in.
+          if (space.reference_max_wall_us > 0u) {
+            out["reference_budget"]["wall_us"] = space.reference_max_wall_us;
+          }
+          if (space.native_batch) out["native_batch"] = true;
+          if (space.native_no_leg) out["native_no_leg"] = true;
         }
       }
     }
@@ -1207,7 +1234,8 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "wing_mult_source", "market_distance", "market_distance_spreads",
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
              "family_native", "publication", "native_route", "reference_budget",
-             "serve_records", "serve_record_profile"});
+             "serve_records", "serve_record_profile",
+             "native_batch", "native_no_leg", "calendar_parity_clamp"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1316,6 +1344,14 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
         throw std::runtime_error("Policy graded market_distance must be off, gate or repair");
       }
     }
+    // K4b: the opt-in parity-coupled calendar clamp (quote_slice.hpp
+    // QuoteSliceRepairConfig::calendar_parity_clamp); false is the historical path.
+    if (j.contains("calendar_parity_clamp")) {
+      if (!j.at("calendar_parity_clamp").is_boolean()) {
+        throw std::runtime_error("Policy graded calendar_parity_clamp must be true or false");
+      }
+      repair.calendar_parity_clamp = j.at("calendar_parity_clamp").get<bool>();
+    }
     if (j.contains("market_distance_spreads") &&
         repair.market_distance == QuoteSliceMarketDistance::Off) {
       throw std::runtime_error("Policy graded market_distance_spreads requires market_distance "
@@ -1404,6 +1440,9 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_native_route = space.native_route;
     profile.config.channel.deam_reference_max_calls = space.reference_max_calls;
     profile.config.channel.deam_reference_max_evaluations = space.reference_max_evaluations;
+    profile.config.channel.deam_native_batch = space.native_batch;
+    profile.config.channel.deam_native_no_leg = space.native_no_leg;
+    profile.config.channel.deam_reference_max_wall_us = space.reference_max_wall_us;
     profile.config.grid_kernel = space.grid_kernel;
     if (floor_price_only) profile.config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
     profile.config.call_floor.mode = call_floor; // lane C3; lines per snapshot

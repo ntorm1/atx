@@ -308,6 +308,27 @@ struct QuoteSliceChannelConfig {
   bool deam_native_route = false;
   std::uint32_t deam_reference_max_calls = 1024;       // > 0, per chain cache
   std::uint32_t deam_reference_max_evaluations = 8192; // > 0, per chain cache
+  // The batched native route (lane K4b, r6 2026-10-23; opt-in, requires deam_native_route):
+  // the chain's work group is prepared together before its bands are read - every channel
+  // quote's band edges, then the mids' family-native lanes in one iv_batch::invert_many call
+  // per side (on the AVX2 kernel of a precontracted family table when the host allows, the
+  // scalar map otherwise), the bids' and asks' lanes from their mids' outcomes in a second
+  // call, and the K3 acceptance's first confirm prices in one batch - and each request then
+  // runs the native route exactly as without the key, consuming a prepared value only when
+  // its inputs are bit-identical to the ones it would have computed (on the scalar map every
+  // served value is the unbatched route's bit for bit; on AVX2 the batch kernel's documented
+  // rounding class, american-iv-batch.md section 5).
+  bool deam_native_batch = false;
+  // A request whose side has no family on the native route (lane K4b, review-K4 m5; opt-in,
+  // requires deam_native_route): answered by the bounded reference route instead of the
+  // Barone-Adesi-Whaley seed leg (no seed leg, no BAW model on the route).
+  bool deam_native_no_leg = false;
+  // The reference route's wall-time budget per chain cache (lane K4b; microseconds, 0: none),
+  // on top of the count budget above: a request that reaches the reference route after the
+  // chain's reference wall reached it is refused, typed BudgetExhausted and counted
+  // (reference_wall_refused). Host-dependent by construction: a binding wall budget makes the
+  // served set depend on the host's speed, so it is a guard, measured never to bind.
+  std::uint32_t deam_reference_max_wall_us = 0;
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -415,6 +436,11 @@ struct QuoteSliceRepairConfig {
   // Sweep budget of the bidirectional calendar rung's joint projection (lane C2;
   // project_calendar_joint_bounded, >= 1). The default is the historical 20,000.
   std::size_t joint_max_sweeps = 20000;
+  // Opt-in parity-coupled calendar clamp (lane K4b, C3 review D2; default off: the historical
+  // path bit for bit). In repair_quote_slice_calendar, a node whose clamped call - put leaves
+  // the certificate's affine bound prepaid_max - K discount_min (so AmericanPriceSlice::create
+  // would refuse the slice) has its put raised to that bound inside its own calendar cap.
+  bool calendar_parity_clamp = false;
 };
 
 // InvalidArgument unless the mode, certificate, wing source and market-distance mode
@@ -684,6 +710,14 @@ struct QuoteSliceRow {
   // Where fitted_iv came from when it was set, None when the query does not identify it;
   // read it through vol_convention(row).
   QuoteSliceVolConvention vol_source = QuoteSliceVolConvention::None;
+  // Per-contract error metadata of the certification grid (lane K4b, review-K4 m6; the
+  // native fit route with grid_kernel Family): a bound (USD) on |grid price - the fit's
+  // accurate American model| at this row's grid node (strike, side, curve sigma, contract
+  // yield) - the family's per-point bound (family_price_bounded) for a family-priced node,
+  // AlProfile::Fast's tested bound for a node priced on Fast. It describes the grid price
+  // the certificate started from, not a repair's move (moved_nodes). NaN off that route or
+  // where the row has no grid node.
+  double grid_bound_usd = std::numeric_limits<double>::quiet_NaN();
 };
 
 // The convention of row.fitted_iv: vol_source for a Success row, None otherwise (so a
@@ -770,6 +804,15 @@ struct QuoteSliceDeamDiagnostics {
   std::size_t edges_priced = 0;
   std::size_t grid_family_prices = 0;
   double grid_max_family_bound_usd = 0.0;
+  // The batched native route (deam_native_batch; zero otherwise): lanes this fit inverted in
+  // invert_many batches, requests that consumed a prepared lane, first confirm prices
+  // evaluated in a batch and requests that consumed one, and reference requests refused by
+  // the wall budget (deam_reference_max_wall_us; also in reference_budget_exhausted).
+  std::size_t batch_lanes = 0;
+  std::size_t batch_lane_hits = 0;
+  std::size_t batch_confirms = 0;
+  std::size_t batch_confirm_hits = 0;
+  std::size_t reference_wall_refused = 0;
 };
 
 struct QuoteSliceDiagnostics {
@@ -860,6 +903,9 @@ struct QuoteSliceFit {
   // The fit's identifiability policy (QuoteSliceConfig::floor_policy), kept so a later
   // calendar repair re-implies moved rows under the same rule.
   QuoteSliceFloorPolicy floor_policy = QuoteSliceFloorPolicy::Legacy;
+  // QuoteSliceRepairConfig::calendar_parity_clamp of the fit's config (lane K4b), kept so a
+  // later repair_quote_slice_calendar applies the same rule.
+  bool calendar_parity_clamp = false;
   // Caller-supplied snapshot provenance (clocks, spot and carry versions). fit_quote_slice
   // leaves it default; fit_quote_surface copies QuoteSurfaceExpiry::snapshot.
   QuoteSliceSnapshotInfo snapshot{};
