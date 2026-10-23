@@ -120,8 +120,9 @@ struct IvPremiumStats {
   // K2 (r5, 2026-10-22): the family-native attempt (IvPremiumGate::qfamily_native) through
   // the batch seam (pricing/american_iv_batch.hpp): its typed outcome (Inactive: it did not
   // run; Converged with the root confirmed as before; any other value is WHY the price went
-  // to the seed-leg path - low vega, exercise-flat, sigma below / above the box, q outside
-  // the box, nonconverged, invalid input), its fused evaluations (also counted in
+  // to the seed-leg path - converged without a usable slope (ConvergedNoSlope, review-K2
+  // m1), low vega, exercise-flat, sigma below / above the box, q outside the box,
+  // nonconverged, invalid input), its fused evaluations (also counted in
   // family_prices), its iv_batch::lane_flag bits, and whether it started from the
   // contract's retained carry (a bid / ask behind its mid).
   iv_batch::InverseStatus native_status = iv_batch::InverseStatus::Inactive;

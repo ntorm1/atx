@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <span>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_stream.hpp"
 #include "pricing/american_sigma_q_family.hpp"
+#include "simd/american_iv_batch_avx2.hpp"
 
 // K2 (r5, 2026-10-22): the varying-parameter batch inversion (src/pricing/american_iv_batch.hpp).
 // Every root here is a root of the FAMILY map (K1's fused price + vega): the targets are
@@ -36,6 +38,7 @@ using atx::vol::prepare_al_geometry;
 using atx::vol::Side;
 namespace sq = atx::vol::sigma_q_family_detail;
 namespace ib = atx::vol::iv_batch;
+namespace vx = atx::vol::simd::iv_batch_avx2;
 using ib::InverseBatchError;
 using ib::InverseIsa;
 using ib::InverseStatus;
@@ -56,15 +59,17 @@ constexpr double kSigHi = 0.9;
 
 // A family, its geometry and its precontracted table (built once per suite).
 struct Fam {
-  Fam(Side s) : g(prepare_al_geometry(kT, kR, 0.5 * (kQlo + kQhi))), f(g, s, kS), side(s) {}
+  Fam(Side s, const std::optional<atx::vol::AlOpts> &o = std::nullopt)
+      : g(prepare_al_geometry(kT, kR, 0.5 * (kQlo + kQhi), o)), f(g, s, kS), side(s) {}
   AlExpiryGeometry g;
   AlSigmaQFamily f;
   sq::PremiumTable table;
   Side side;
 };
 
-[[nodiscard]] std::unique_ptr<Fam> make_family(Side side) {
-  auto p = std::make_unique<Fam>(side);
+[[nodiscard]] std::unique_ptr<Fam> make_family(
+    Side side, const std::optional<atx::vol::AlOpts> &o = std::nullopt) {
+  auto p = std::make_unique<Fam>(side, o);
   if (!p->f.prepare(kSigLo, kSigHi, 16, kQlo, kQhi, 4)) {
     ADD_FAILURE() << "family prepare refused";
     return nullptr;
@@ -693,8 +698,10 @@ TEST_F(IvBatch, LowVegaRootsAreTypedAndKeepTheirBracket) {
     ib::InverseScratch scratch;
     ASSERT_EQ(ib::invert_many(b.in(call(), true, isa), b.out(), scratch), InverseBatchError::None);
     const InverseStatus s = b.status[0];
+    // A bracket that closes to 2 tol on this flat map has no usable slope at its last
+    // point: ConvergedNoSlope, never Converged (review-K2 m1).
     EXPECT_TRUE(s == InverseStatus::LowVega ||
-                (s == InverseStatus::Converged &&
+                (s == InverseStatus::ConvergedNoSlope &&
                  (b.flags[0] & ib::lane_flag::kBracketConverged) != 0u))
         << ib::inverse_status_name(s);
     EXPECT_LE(b.olo[0], 0.15 + 2.0 * kTol);
@@ -799,6 +806,319 @@ TEST_F(IvBatch, TheRecordedStreamReplaysEveryNativeRequestPerFamily) {
     EXPECT_GT(r.total_seconds, 0.0);
     EXPECT_EQ(r.work.avx2, isa == InverseIsa::Avx2);
   }
+}
+
+// K2 fix round 1 (review-K2 m1 / m3 / m4 / m6).
+
+// m1: a root enclosed by an evaluated 2 tol bracket with no usable slope there is typed
+// ConvergedNoSlope (acceptance FamilyBracket), never Converged; a Converged lane always
+// carries a fused vega above the floor (the confirm's local slope).
+TEST_F(IvBatch, BracketRootsWithoutAUsableSlopeAreTypedApart) {
+  for (const InverseIsa isa : {InverseIsa::Scalar, InverseIsa::Avx2}) {
+    if (isa == InverseIsa::Avx2 && !avx2()) continue;
+    for (const bool table : {true, false}) {
+      if (!table && isa == InverseIsa::Avx2) continue; // a family source is scalar only
+      Batch b(3);
+      // Lane 0: a retained, evaluated bracket of 0.8 tol around the root (0 evaluations).
+      set_lane(b, put(), 0, 100.0, 0.3, 0.0205, 0.1);
+      b.blo[0] = 0.3 - 0.4 * kTol;
+      b.bhi[0] = 0.3 + 0.4 * kTol;
+      b.plo[0] = family_price(put(), 100.0, b.blo[0], 0.0205);
+      b.phi[0] = family_price(put(), 100.0, b.bhi[0], 0.0205);
+      // Lane 1: the same contract from scratch (an ordinary Newton root).
+      set_lane(b, put(), 1, 100.0, 0.3, 0.0205, 0.1);
+      // Lane 2: an anchored ask behind lane 0: no evaluated point to borrow a slope from.
+      set_lane(b, put(), 2, 100.0, 0.3 + 0.1 * kTol, 0.0205, 0.0);
+      b.anchor[2] = 0;
+      ib::InverseScratch scratch;
+      ib::InverseBatchWork work;
+      ASSERT_EQ(ib::invert_many(b.in(put(), table, isa), b.out(), scratch, &work),
+                InverseBatchError::None);
+      EXPECT_EQ(b.status[0], InverseStatus::ConvergedNoSlope)
+          << ib::inverse_status_name(b.status[0]);
+      EXPECT_EQ(b.evals[0], 0u);
+      EXPECT_EQ(b.acc[0].kind, ib::AcceptanceKind::FamilyBracket);
+      EXPECT_NE(b.flags[0] & ib::lane_flag::kBracketConverged, 0u);
+      EXPECT_TRUE(std::isnan(b.vega[0]));
+      EXPECT_NEAR(b.sigma[0], 0.3, kTol);
+      EXPECT_EQ(b.status[1], InverseStatus::Converged);
+      EXPECT_GT(b.vega[1], ib::kInverseVegaFloorRel * 100.0);
+      EXPECT_EQ(b.status[2], InverseStatus::ConvergedNoSlope)
+          << ib::inverse_status_name(b.status[2]);
+      EXPECT_EQ(b.evals[2], 0u);
+      EXPECT_EQ(work.by_status[static_cast<std::size_t>(InverseStatus::ConvergedNoSlope)], 2u);
+      EXPECT_EQ(work.by_status[static_cast<std::size_t>(InverseStatus::Converged)], 1u);
+    }
+  }
+  EXPECT_STREQ(ib::inverse_status_name(InverseStatus::ConvergedNoSlope), "converged_no_slope");
+}
+
+// m3: a table of an AlProfile::Fast family (PremiumTable::fast) is evaluated on the scalar
+// map — the AVX2 kernel implements the full-precision map only: Auto runs the scalar path
+// (bit for bit), InverseIsa::Avx2 is UnsupportedIsa on every active lane.
+TEST_F(IvBatch, FastProfileTablesEvaluateOnTheScalarMap) {
+  atx::vol::AlOpts fo;
+  fo.profile = atx::vol::AlProfile::Fast;
+  const std::unique_ptr<Fam> fast = make_family(Side::Put, fo);
+  ASSERT_NE(fast, nullptr);
+  ASSERT_TRUE(fast->table.fast) << "fixture: an AlProfile::Fast family's table";
+  ASSERT_FALSE(put().table.fast);
+  Batch s(12);
+  fill_spread(s, *fast, 31u);
+  Batch a = s;
+  Batch v = s;
+  ib::InverseScratch scratch;
+  ib::InverseBatchWork ws;
+  ib::InverseBatchWork wa;
+  ib::InverseBatchWork wv;
+  ASSERT_EQ(ib::invert_many(s.in(*fast, true, InverseIsa::Scalar), s.out(), scratch, &ws),
+            InverseBatchError::None);
+  ASSERT_EQ(ib::invert_many(a.in(*fast, true, InverseIsa::Auto), a.out(), scratch, &wa),
+            InverseBatchError::None);
+  ASSERT_EQ(ib::invert_many(v.in(*fast, true, InverseIsa::Avx2), v.out(), scratch, &wv),
+            InverseBatchError::None);
+  EXPECT_FALSE(wa.avx2);
+  EXPECT_EQ(wa.vector_steps, 0u);
+  for (std::size_t i = 0; i < 12; ++i) {
+    ASSERT_EQ(s.status[i], InverseStatus::Converged) << "lane " << i;
+    EXPECT_EQ(a.status[i], s.status[i]) << "lane " << i;
+    EXPECT_EQ(a.evals[i], s.evals[i]) << "lane " << i;
+    EXPECT_TRUE(same_bits(a.sigma[i], s.sigma[i])) << "lane " << i;
+    EXPECT_TRUE(same_bits(a.vega[i], s.vega[i])) << "lane " << i;
+    EXPECT_EQ(v.status[i], InverseStatus::UnsupportedIsa) << "lane " << i;
+    EXPECT_EQ(v.evals[i], 0u);
+  }
+  EXPECT_EQ(wv.evaluations, 0u);
+  if (avx2()) {
+    // What the flag protects against: the full-precision kernel on the fast table, against
+    // the fast scalar map at the same points (recorded, not a bound).
+    sq::QTile tile;
+    ASSERT_EQ(sq::contract_q(fast->table, s.q[0], tile), sq::FusedStatus::Ok);
+    auto slots = std::make_unique<vx::Slots>();
+    vx::Result res;
+    double worst = 0.0;
+    for (std::size_t k = 0; k < vx::kLanes; ++k) {
+      vx::load_slot(fast->table, tile, kS, s.K[k], k, *slots);
+      slots->sigma[k] = s.truth[k];
+    }
+    vx::price_vega4(fast->table, *slots, res);
+    for (std::size_t k = 0; k < vx::kLanes; ++k) {
+      const sq::FusedPriceVega r = sq::price_vega_on(fast->table, tile, kS, s.K[k], s.truth[k]);
+      worst = std::max(worst, std::fabs(res.price[k] - r.price) / std::max(1.0, r.price));
+    }
+    std::cout << "[IvBatch] fast table: full-precision kernel vs the fast scalar map, max scaled"
+              << " |dP| " << worst << " (routed to scalar)\n";
+  }
+}
+
+// m4: a lane whose q tile cannot be cut (contract_q refuses: here a table whose tensor is
+// gone, the one contraction failure the lane validation cannot pre-empt) is refused with
+// the contraction's typed status before any evaluation, on both paths — never evaluated
+// on a stale tile left in the scratch by an earlier call.
+TEST_F(IvBatch, AQTileThatCannotBeCutRefusesItsLanesOnBothPaths) {
+  const std::unique_ptr<Fam> broken = make_family(Side::Put);
+  ASSERT_NE(broken, nullptr);
+  broken->table.h.reset(); // ok stays true: contract_q -> Unsupported
+  for (const InverseIsa isa : {InverseIsa::Scalar, InverseIsa::Avx2}) {
+    if (isa == InverseIsa::Avx2 && !avx2()) continue;
+    Batch b(6);
+    fill_spread(b, put(), 41u);
+    b.anchor[1] = 0; // a dependent of a refused root is refused too
+    b.K[1] = b.K[0];
+    b.q[1] = b.q[0];
+    ib::InverseScratch scratch;
+    Batch warm = b;
+    warm.anchor[1] = -1;
+    ASSERT_EQ(ib::invert_many(warm.in(put(), true, isa), warm.out(), scratch),
+              InverseBatchError::None); // leaves good tiles / slots in the scratch
+    ib::InverseBatchWork work;
+    ASSERT_EQ(ib::invert_many(b.in(*broken, true, isa), b.out(), scratch, &work),
+              InverseBatchError::None);
+    for (std::size_t i = 0; i < 6; ++i) {
+      EXPECT_EQ(b.status[i], InverseStatus::InvalidInput)
+          << "lane " << i << " " << ib::inverse_status_name(b.status[i]);
+      EXPECT_EQ(b.evals[i], 0u) << "lane " << i;
+    }
+    EXPECT_EQ(work.evaluations, 0u);
+    EXPECT_EQ(work.vector_steps, 0u);
+    EXPECT_GE(work.q_contractions, 5u);
+  }
+}
+
+// m6: AVX2 vs scalar across the exercise boundary (F04). The internal put's exercise rule
+// (spot inside the current edge, or the price clamped to / within 1e-9 K of intrinsic)
+// flips between adjacent doubles, and near a flip its inputs sit within rounding of the
+// threshold, so the vector kernel's own classification there is rounding noise. Points at
+// ±8 ulps of every flip — in σ at fixed K and in K at fixed σ, on three q tiles — and on
+// the plateau:
+//  (A) map level: price and vega agree to the rounding class everywhere; every point whose
+//      kernel classification differs from the scalar map's carries the kernel's recheck
+//      flag (vx::kBoundaryRecheckRel), and a point without it classifies identically;
+//  (B) one evaluation at the point through invert_many (target = the scalar price there):
+//      equal status on both ISAs, and the rechecked lanes are the scalar map bit for bit;
+//  (C) full inversions of those targets: equal status, roots to 2 tol.
+// (The call side of this geometry, q < r, has no exercise region.)
+TEST_F(IvBatch, Avx2AndScalarAgreeAcrossTheExerciseBoundary) {
+  if (!avx2()) GTEST_SKIP() << "host has no AVX2";
+  const Fam &fam = put();
+  struct Pt {
+    double K;
+    double sigma;
+    double q;
+  };
+  std::vector<Pt> pts;
+  std::size_t flips = 0;
+  constexpr double kInfD = std::numeric_limits<double>::infinity();
+  for (const double q : {kQlo, 0.5 * (kQlo + kQhi), kQhi}) {
+    sq::QTile tile;
+    ASSERT_EQ(sq::contract_q(fam.table, q, tile), sq::FusedStatus::Ok);
+    const auto ex = [&](double K, double sigma) {
+      const sq::FusedPriceVega r = sq::price_vega_on(fam.table, tile, kS, K, sigma);
+      EXPECT_TRUE(r.status == sq::FusedStatus::Ok ||
+                  r.status == sq::FusedStatus::NearNodeDegenerate);
+      return r.exercised;
+    };
+    // Bisect to adjacent doubles a < b with ex(a) != ex(b); then ±8 ulps around them.
+    const auto straddle = [&](double a, double b, auto &&at, auto &&push) {
+      const bool ea = at(a);
+      if (ea == at(b)) return;
+      for (;;) {
+        const double m = 0.5 * (a + b);
+        if (!(m > a && m < b)) break;
+        (at(m) == ea ? a : b) = m;
+      }
+      ++flips;
+      double lo = a;
+      double hi = b;
+      for (int j = 0; j <= 8; ++j) {
+        push(lo);
+        push(hi);
+        lo = std::nextafter(lo, -kInfD);
+        hi = std::nextafter(hi, kInfD);
+      }
+    };
+    for (const double K : {120.0, 130.0, 145.0}) { // σ direction at fixed K
+      straddle(
+          kSigLo, kSigHi, [&](double s) { return ex(K, s); },
+          [&](double s) { pts.push_back({K, s, q}); });
+      pts.push_back({K, kSigLo, q}); // plateau
+    }
+    for (const double sigma : {0.15, 0.3, 0.6}) { // K direction at fixed σ
+      straddle(
+          100.0, 400.0, [&](double K) { return ex(K, sigma); },
+          [&](double K) { pts.push_back({K, sigma, q}); });
+      pts.push_back({400.0, sigma, q}); // plateau
+    }
+  }
+  ASSERT_GE(flips, 12u) << "fixture: too few exercise flips found";
+  const std::size_t n = pts.size();
+  // (A) The kernel (four slots per call, each on its own tile) vs price_vega_on.
+  auto slots = std::make_unique<vx::Slots>();
+  std::array<sq::QTile, vx::kLanes> tiles{};
+  std::vector<std::uint8_t> recheck(n, 0u);
+  std::size_t differ = 0;
+  std::size_t uncovered = 0;
+  std::size_t flagged = 0;
+  std::size_t deg_differ = 0;
+  std::size_t exercised = 0;
+  double worst_p = 0.0;
+  double worst_v = 0.0;
+  for (std::size_t base = 0; base < n; base += vx::kLanes) {
+    const std::size_t m = std::min(vx::kLanes, n - base);
+    for (std::size_t k = 0; k < vx::kLanes; ++k) {
+      const Pt &p = pts[base + std::min(k, m - 1)];
+      ASSERT_EQ(sq::contract_q(fam.table, p.q, tiles[k]), sq::FusedStatus::Ok);
+      vx::load_slot(fam.table, tiles[k], kS, p.K, k, *slots);
+      slots->sigma[k] = p.sigma;
+    }
+    vx::Result res;
+    vx::price_vega4(fam.table, *slots, res);
+    for (std::size_t k = 0; k < m; ++k) {
+      const Pt &p = pts[base + k];
+      const sq::FusedPriceVega r = sq::price_vega_on(fam.table, tiles[k], kS, p.K, p.sigma);
+      const bool deg = r.status == sq::FusedStatus::NearNodeDegenerate;
+      const bool same = (res.exercised[k] != 0u) == r.exercised;
+      recheck[base + k] = res.recheck[k];
+      flagged += res.recheck[k];
+      differ += same ? 0u : 1u;
+      deg_differ += ((res.degenerate[k] != 0u) == deg) ? 0u : 1u;
+      if (!same && res.recheck[k] == 0u) {
+        ++uncovered;
+        ADD_FAILURE() << "unflagged classification difference at K " << p.K << " sigma "
+                      << p.sigma << " q " << p.q;
+      }
+      exercised += r.exercised ? 1u : 0u;
+      worst_p = std::max(worst_p, std::fabs(res.price[k] - r.price) / std::max(1.0, r.price));
+      if (!deg) {
+        worst_v = std::max(worst_v, std::fabs(res.vega[k] - r.vega) / std::max(1.0, r.vega));
+      }
+    }
+  }
+  // (B) One evaluation at each point (seed = the point, cap 1, target = its scalar price).
+  Batch s1(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    s1.K[i] = pts[i].K;
+    s1.q[i] = pts[i].q;
+    s1.is_call[i] = 0u;
+    s1.seed[i] = pts[i].sigma;
+    s1.target[i] = family_price(fam, pts[i].K, pts[i].sigma, pts[i].q);
+  }
+  Batch a1 = s1;
+  ib::InverseScratch scratch;
+  ib::InverseBatchIn is1 = s1.in(fam, true, InverseIsa::Scalar);
+  ib::InverseBatchIn ia1 = a1.in(fam, true, InverseIsa::Avx2);
+  is1.max_evaluations = 1;
+  ia1.max_evaluations = 1;
+  ASSERT_EQ(ib::invert_many(is1, s1.out(), scratch), InverseBatchError::None);
+  ib::InverseBatchWork w1;
+  ASSERT_EQ(ib::invert_many(ia1, a1.out(), scratch, &w1), InverseBatchError::None);
+  std::size_t equal1 = 0;
+  std::size_t flat1 = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(same_bits(a1.last[i], s1.last[i])) << "point " << i;
+    equal1 += a1.status[i] == s1.status[i] ? 1u : 0u;
+    EXPECT_EQ(a1.status[i], s1.status[i])
+        << "K " << pts[i].K << " sigma " << pts[i].sigma << ": avx2 "
+        << ib::inverse_status_name(a1.status[i]) << " scalar "
+        << ib::inverse_status_name(s1.status[i]);
+    flat1 += s1.status[i] == InverseStatus::ExerciseFlat ? 1u : 0u;
+    if (recheck[i] != 0u) {
+      EXPECT_TRUE(same_bits(a1.res[i], s1.res[i])) << "rechecked point " << i;
+      EXPECT_TRUE(same_bits(a1.vega[i], s1.vega[i])) << "rechecked point " << i;
+    }
+  }
+  EXPECT_EQ(w1.boundary_rechecks, flagged);
+  // (C) Full inversions of the targets at those points.
+  Batch s(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    set_lane(s, fam, i, pts[i].K, pts[i].sigma, pts[i].q, 0.1);
+  }
+  Batch a = s;
+  ASSERT_EQ(ib::invert_many(s.in(fam, true, InverseIsa::Scalar), s.out(), scratch),
+            InverseBatchError::None);
+  ASSERT_EQ(ib::invert_many(a.in(fam, true, InverseIsa::Avx2), a.out(), scratch),
+            InverseBatchError::None);
+  std::size_t equal = 0;
+  double worst_sigma = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    equal += a.status[i] == s.status[i] ? 1u : 0u;
+    EXPECT_EQ(a.status[i], s.status[i]) << "K " << pts[i].K << " sigma " << pts[i].sigma;
+    if (s.status[i] == InverseStatus::Converged && a.status[i] == InverseStatus::Converged) {
+      worst_sigma = std::max(worst_sigma, std::fabs(a.sigma[i] - s.sigma[i]));
+    }
+  }
+  std::cout << "[IvBatch] exercise boundary: " << flips << " flips, " << n << " points ("
+            << exercised << " exercised); kernel classification differs at " << differ
+            << " (all flagged: unflagged " << uncovered << "), flagged " << flagged
+            << ", degenerate differs " << deg_differ << "; max scaled |dP| " << worst_p
+            << ", max scaled |dvega| " << worst_v << "; one evaluation: status equal "
+            << equal1 << "/" << n << " (" << flat1 << " exercise-flat); inversions: status "
+            << "equal " << equal << "/" << n << ", max |dsigma| " << worst_sigma << "\n";
+  EXPECT_EQ(uncovered, 0u);
+  EXPECT_EQ(deg_differ, 0u);
+  EXPECT_LE(worst_p, 1.0e-13);
+  EXPECT_LE(worst_v, 1.0e-11);
+  EXPECT_LE(worst_sigma, 2.0 * kTol);
 }
 
 } // namespace

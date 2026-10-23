@@ -6,6 +6,7 @@
 
 #include <immintrin.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -317,6 +318,7 @@ void price_vega4(const sq::PremiumTable &t, const Slots &s, Result &out) noexcep
     const bool floored = !(tot[k] > 0.0);
     const double prem = floored ? 0.0 : tot[k];
     double price = eu[k] + prem;
+    const double raw = price;
     const double intr = s.intr[k];
     bool clamped = false;
     if (intr > price) {
@@ -333,10 +335,17 @@ void price_vega4(const sq::PremiumTable &t, const Slots &s, Result &out) noexcep
     const double now_factor = std::exp(-std::sqrt((yn[k] > 0.0) ? yn[k] : 0.0));
     const bool deg = dg[k] != 0.0;
     out.price[k] = price;
+    const double edge = s.xmax[k] * now_factor;
     out.exercised[k] = (clamped || (intr > 0.0 && price <= intr + 1.0e-9 * s.Kp[k]) ||
-                        s.Sp[k] <= s.xmax[k] * now_factor)
+                        s.Sp[k] <= edge)
                            ? 1u
                            : 0u;
+    // The recheck band (kBoundaryRecheckRel): near the clamp / the 1e-9 K rule, or the
+    // spot near the current edge.
+    const double band = kBoundaryRecheckRel * std::max(s.Kp[k], 1.0);
+    const bool near_price = raw >= intr - band && raw <= intr + 1.0e-9 * s.Kp[k] + band;
+    const bool near_edge = std::fabs(s.Sp[k] - edge) <= kBoundaryRecheckRel * s.Sp[k];
+    out.recheck[k] = (near_price || near_edge) ? 1u : 0u;
     out.degenerate[k] = (!clamped && deg) ? 1u : 0u;
     if (clamped) {
       out.vega[k] = 0.0;

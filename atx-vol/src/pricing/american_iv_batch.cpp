@@ -4,6 +4,7 @@
 #include "pricing/american_iv_batch.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -84,11 +85,16 @@ void finish(Lane &L, InverseStatus s) noexcept {
   L.status = s;
 }
 
-void converge(Lane &L, double root, AcceptanceKind kind, double newton) noexcept {
+void converge(Lane &L, double root, AcceptanceKind kind, double newton,
+              InverseStatus s = InverseStatus::Converged) noexcept {
   L.root = root;
   L.kind = kind;
   L.newton = newton;
-  finish(L, InverseStatus::Converged);
+  finish(L, s);
+}
+
+[[nodiscard]] bool rooted(InverseStatus s) noexcept {
+  return s == InverseStatus::Converged || s == InverseStatus::ConvergedNoSlope;
 }
 
 // The bracket midpoint: geometric on a wide bracket (the σ box spans decades), else
@@ -142,7 +148,11 @@ void apply_point(Lane &L, const Group &G, double s, double P) noexcept {
   }
   if (!std::isnan(L.lo.p) && !std::isnan(L.hi.p) && L.hi.x - L.lo.x <= 2.0 * G.tol) {
     L.flags |= lane_flag::kBracketConverged;
-    converge(L, 0.5 * (L.lo.x + L.hi.x), AcceptanceKind::FamilyBracket, kNaN);
+    // The root's slope is the last evaluated point's (inside the 2 tol bracket); none
+    // (settled at the start) or one at / under the floor types ConvergedNoSlope.
+    const bool slope = std::isfinite(L.last_v) && L.last_v > L.floor;
+    converge(L, 0.5 * (L.lo.x + L.hi.x), AcceptanceKind::FamilyBracket, kNaN,
+             slope ? InverseStatus::Converged : InverseStatus::ConvergedNoSlope);
     return true;
   }
   return false;
@@ -295,7 +305,7 @@ void step(Lane &L, const Group &G, double P, double V, bool exercised, bool dege
 // The lane's outputs (contract in the header).
 void write_lane(const Lane &L, const InverseBatchOut &out, InverseBatchWork &w) noexcept {
   const std::size_t i = L.i;
-  const bool conv = L.status == InverseStatus::Converged;
+  const bool conv = rooted(L.status);
   out.status[i] = L.status;
   out.evaluations[i] = L.evals;
   out.flags[i] = L.flags;
@@ -380,6 +390,8 @@ const char *inverse_status_name(InverseStatus s) noexcept {
     return "invalid_input";
   case InverseStatus::UnsupportedIsa:
     return "unsupported_isa";
+  case InverseStatus::ConvergedNoSlope:
+    return "converged_no_slope";
   }
   return "unknown";
 }
@@ -396,6 +408,7 @@ void InverseBatchWork::add(const InverseBatchWork &o) noexcept {
   seed_failed += o.seed_failed;
   seed_clamped += o.seed_clamped;
   anchored += o.anchored;
+  boundary_rechecks += o.boundary_rechecks;
   for (std::size_t s = 0; s < kInverseStatusCount; ++s) {
     by_status[s] += o.by_status[s];
   }
@@ -409,7 +422,8 @@ struct InverseScratch::Impl {
   std::vector<std::uint8_t> role;
   std::vector<std::int32_t> first_dep; // a root's first dependent (-1: none)
   std::vector<std::int32_t> next_dep;  // a dependent's next sibling (-1: none)
-  sq::QTile tile{};                    // the scalar path's tile / the AVX2 load staging
+  sq::QTile tile{};                    // the scalar path's tile
+  std::array<sq::QTile, vx::kLanes> slot_tile{}; // each AVX2 slot's tile (its recheck map)
   vx::Slots slots{};
   void reserve(std::size_t n) {
     if (n <= cap) {
@@ -439,6 +453,14 @@ struct Point {
   bool degenerate = false;
 };
 
+// A failed q contraction's typed outcome for its lane (review-K2 m4): OutsideBox is the
+// q box, anything else (an unusable table) is InvalidInput. The lane is refused before
+// any evaluation on either path.
+[[nodiscard]] InverseStatus contraction_refusal(sq::FusedStatus s) noexcept {
+  return s == sq::FusedStatus::OutsideBox ? InverseStatus::QOutsideBox
+                                          : InverseStatus::InvalidInput;
+}
+
 [[nodiscard]] Point eval_scalar(const Group &G, const sq::QTile &tile, const Lane &L) noexcept {
   const sq::FusedPriceVega r = (G.table != nullptr)
                                    ? sq::price_vega_on(*G.table, tile, G.S, L.K, L.x)
@@ -464,9 +486,13 @@ void run_scalar(const Group &G, const InverseBatchIn &in, const InverseBatchOut 
       if (tile_ok && same_bits(tile_q, L.q)) {
         ++w.tile_reuses;
       } else {
-        tile_ok = sq::contract_q(*G.table, L.q, sc.tile) == sq::FusedStatus::Ok;
+        const sq::FusedStatus cs = sq::contract_q(*G.table, L.q, sc.tile);
+        tile_ok = cs == sq::FusedStatus::Ok;
         tile_q = L.q;
         ++w.q_contractions;
+        if (!tile_ok) {
+          finish(L, contraction_refusal(cs));
+        }
       }
     }
     while (!L.done) {
@@ -509,19 +535,26 @@ void run_avx2(const Group &G, const InverseBatchIn &in, const InverseBatchOut &o
   vx::Slots &vs = sc.slots;
   std::array<Slot, vx::kLanes> slots{};
   std::size_t cursor = 0;
-  const auto load = [&](Slot &s, std::size_t k) {
+  // Slot k <- its lane; false (the lane finished with the contraction's typed refusal,
+  // nothing loaded) when the lane's q tile cannot be cut.
+  const auto load = [&](Slot &s, std::size_t k) -> bool {
     if (s.tile_ok && same_bits(s.tile_q, s.lane.q)) {
       vx::load_strike(*G.table, G.S, s.lane.K, k, vs);
       ++w.tile_reuses;
     } else {
-      static_cast<void>(sq::contract_q(*G.table, s.lane.q, sc.tile));
-      vx::load_slot(*G.table, sc.tile, G.S, s.lane.K, k, vs);
-      s.tile_ok = true;
-      s.tile_q = s.lane.q;
+      const sq::FusedStatus cs = sq::contract_q(*G.table, s.lane.q, sc.slot_tile[k]);
       ++w.q_contractions;
+      s.tile_ok = cs == sq::FusedStatus::Ok;
+      s.tile_q = s.lane.q;
+      if (!s.tile_ok) {
+        finish(s.lane, contraction_refusal(cs));
+        return false;
+      }
+      vx::load_slot(*G.table, sc.slot_tile[k], G.S, s.lane.K, k, vs);
     }
     vs.sigma[k] = s.lane.x;
     s.busy = true;
+    return true;
   };
   // Fill slot k with the next lane that needs evaluating; false when none is left.
   const auto refill = [&](Slot &s, std::size_t k) -> bool {
@@ -530,11 +563,10 @@ void run_avx2(const Group &G, const InverseBatchIn &in, const InverseBatchOut &o
         const auto d = static_cast<std::size_t>(s.pending);
         s.pending = sc.next_dep[d];
         init_lane(s.lane, G, in, d, &s.anchor);
-        if (s.lane.done) {
+        if (s.lane.done || !load(s, k)) {
           write_lane(s.lane, out, w);
           continue;
         }
-        load(s, k);
         return true;
       }
       while (cursor < n && sc.role[cursor] != kRoot) {
@@ -545,13 +577,12 @@ void run_avx2(const Group &G, const InverseBatchIn &in, const InverseBatchOut &o
       }
       const std::size_t r = cursor++;
       init_lane(s.lane, G, in, r, nullptr);
-      if (s.lane.done) {
+      if (s.lane.done || !load(s, k)) {
         write_lane(s.lane, out, w);
         s.anchor = s.lane;
         s.pending = sc.first_dep[r];
         continue;
       }
-      load(s, k);
       return true;
     }
   };
@@ -584,7 +615,15 @@ void run_avx2(const Group &G, const InverseBatchIn &in, const InverseBatchOut &o
       if (!s.busy) {
         continue;
       }
-      step(s.lane, G, res.price[k], res.vega[k], res.exercised[k] != 0u, res.degenerate[k] != 0u);
+      if (res.recheck[k] != 0u) {
+        // Inside the exercise rule's recheck band: the scalar map's point (review-K2 m6).
+        const Point p = eval_scalar(G, sc.slot_tile[k], s.lane);
+        ++w.boundary_rechecks;
+        step(s.lane, G, p.price, p.vega, p.exercised, p.degenerate);
+      } else {
+        step(s.lane, G, res.price[k], res.vega[k], res.exercised[k] != 0u,
+             res.degenerate[k] != 0u);
+      }
       if (!s.lane.done) {
         vs.sigma[k] = s.lane.x;
         continue;
@@ -703,8 +742,10 @@ InverseBatchError invert_many(const InverseBatchIn &in, const InverseBatchOut &o
     sc.next_dep[i] = sc.first_dep[a]; // prepend: walking i downward keeps index order
     sc.first_dep[a] = static_cast<std::int32_t>(i);
   }
-  const bool table_source = G.table != nullptr;
-  const bool avx2 = resolve_avx2(in.isa, table_source, simd::have_avx2(), simd::use_avx2());
+  // The AVX2 kernel implements the full-precision map: a table of an AlProfile::Fast family
+  // (t.fast, price_vega_on's fast arithmetic) evaluates on the scalar map (review-K2 m3).
+  const bool avx2_source = G.table != nullptr && !G.table->fast;
+  const bool avx2 = resolve_avx2(in.isa, avx2_source, simd::have_avx2(), simd::use_avx2());
   if (in.isa == InverseIsa::Avx2 && !avx2) {
     for (std::size_t i = 0; i < n; ++i) {
       if (sc.role[i] != kSkip) {

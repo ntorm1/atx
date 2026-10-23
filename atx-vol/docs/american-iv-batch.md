@@ -47,14 +47,15 @@ point, and the best iterate: the next route starts from what this one learned.
 
 | Status | Meaning |
 |---|---|
-| `Converged` | root found (Newton distance, or evaluated bracket <= 2 tol) |
+| `Converged` | root found (Newton distance, or evaluated bracket <= 2 tol) with a usable fused vega (> 1e-8 K) at the last point |
+| `ConvergedNoSlope` | an evaluated bracket <= 2 tol encloses the root (σ = its midpoint, acceptance `FamilyBracket`) but the last point's vega is NaN (none evaluated: a retained / anchored bracket settled the lane) or <= the floor — a root without the confirm's local slope (fix round 1, review m1) |
 | `LowVega` | cap / no progress with P' <= floor, not on the plateau: σ not identified to tol |
 | `ExerciseFlat` | P' <= floor on the exercise plateau (K1's `exercised`) with the target at or below it |
 | `SigmaBelowBox` / `SigmaAboveBox` | the evaluated box edge is on the wrong side of the target |
-| `QOutsideBox` | q outside the family's q box (no evaluation) |
+| `QOutsideBox` | q outside the family's q box (no evaluation; also a q tile `contract_q` refuses as OutsideBox) |
 | `NonConverged` | cap with a usable slope; bracket retained |
-| `InvalidInput` | non-finite / non-positive K, target, S; non-finite q; wrong side; inverted bracket; bad anchor |
-| `UnsupportedIsa` | `InverseIsa::Avx2` required and not executable (host, or a family source) |
+| `InvalidInput` | non-finite / non-positive K, target, S; non-finite q; wrong side; inverted bracket; bad anchor; a q tile `contract_q` refuses as Unsupported (both paths refuse the lane before any evaluation; review m4) |
+| `UnsupportedIsa` | `InverseIsa::Avx2` required and not executable (host, a family source, or a `PremiumTable::fast` table) |
 | `Inactive` | masked off |
 
 A failed seed is a flag (`lane_flag::kSeedFailed`, counted in `InverseBatchWork`), not a
@@ -91,6 +92,31 @@ is a pure function of its own slot, so it does not depend on batch order or its 
 (`ResultsAreIndependentOfBatchOrder`). `InverseIsa::Scalar` is the ForceScalar seam; `Auto`
 follows `simd::use_avx2()` (so `ATX_SIMD_ISA=ForceScalar` holds).
 
+Fix round 1 (review m3, m4, m6):
+
+- **Fast tables.** The kernel implements the full-precision map only. A table of an
+  `AlProfile::Fast` family (`PremiumTable::fast`, `price_vega_on`'s fast arithmetic) runs the
+  scalar map under `Auto` (bit for bit), and `InverseIsa::Avx2` on it is `UnsupportedIsa`
+  (`FastProfileTablesEvaluateOnTheScalarMap`; the full-precision kernel on a fast table would
+  differ from the fast scalar map by 3.5e-14 scaled price, recorded there).
+- **Contraction status.** A lane whose q tile cannot be cut is refused with the contraction's
+  typed status before any evaluation, on both paths (`AQTileThatCannotBeCutRefusesItsLanesOnBothPaths`).
+  Each AVX2 slot keeps its own tile. A slot whose result is not read may hold any data (it is
+  evaluated with defined IEEE arithmetic and discarded).
+- **The exercise boundary.** Near a flip of the exercise rule (spot inside the current edge, or
+  the price clamped to / within 1e-9 K of intrinsic) the rule's inputs sit within rounding of
+  their threshold. The kernel's own classification there is rounding noise: at ±8 ulps of 18
+  flips (σ at fixed K and K at fixed σ, three q tiles; 342 points) it differs from the scalar
+  map's on 118 points. The kernel therefore flags every lane whose inputs lie within
+  `kBoundaryRecheckRel = 1e-11` (relative; about 300x the price class) of a threshold, and the
+  AVX2 path re-evaluates those lanes on the scalar map (`InverseBatchWork::boundary_rechecks`).
+  Measured by `Avx2AndScalarAgreeAcrossTheExerciseBoundary`:
+  - every classification difference is flagged (unflagged 0; 336 of 342 points flagged);
+  - flagged lanes are the scalar map bit for bit;
+  - price class at the boundary 1.75e-15 scaled, vega 6.3e-12 scaled;
+  - statuses equal 342/342 (one evaluation at each point, and full inversions), roots to
+    8.2e-13 in σ.
+
 ## 6. Allocation
 
 `InverseScratch` (PIMPL: lane roles / chain links sized to the batch, one q tile, the AVX2
@@ -113,6 +139,9 @@ replacing the 12-price secant / chord loop:
   contract's leg memory (the leg path skips native points anyway).
 - An accepted root hands the confirm the fused vega at its last point as the slope — local by
   construction (review-R1 MJ1's required slope). The confirm itself is unchanged (K3 owns it).
+  Only `Converged` is accepted; `ConvergedNoSlope` (no usable slope) goes to the seed-leg path
+  with its own `native_status` (fix round 1, review m1; the acceptance set is unchanged — it was
+  already refused for its vega).
 
 Served-set identity with the key ON vs OFF (same keys minus `family_native`): lost 0 /
 gained 0 on SPY, cohort5, dev200, dev200b (lane report).

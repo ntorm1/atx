@@ -28,6 +28,16 @@ namespace atx::vol::simd::iv_batch_avx2 {
 inline constexpr std::size_t kLanes = 4;
 inline constexpr std::size_t kRows = sigma_q_family_detail::kMaxPremiumNodes + 1;
 inline constexpr std::size_t kSigmaNodes = sigma_family_detail::kMaxSigmaNodes;
+// The exercise rule's recheck band (review-K2 m6): a lane whose classification inputs sit
+// within this relative distance of a threshold — the unclamped price within
+// kBoundaryRecheckRel · max(Kp, 1) of [intrinsic, intrinsic + 1e-9 Kp], or the internal
+// spot within kBoundaryRecheckRel · Sp of the current edge xmax · now_factor — is flagged
+// Result::recheck, and the caller re-evaluates it on the scalar map (price_vega_on), so
+// the AVX2 path classifies exactly as the scalar map does. The kernel's rounding class is
+// 3.4e-14 scaled price (IvBatch.Avx2KernelPriceAndVegaMatchTheScalarMap); the band is
+// ~300x that. Outside the band both maps' decisions are the same by more than either's
+// rounding.
+inline constexpr double kBoundaryRecheckRel = 1.0e-11;
 
 // The four slots' per-contract state, interleaved by slot (index [..][slot]).
 struct alignas(32) Slots {
@@ -56,6 +66,7 @@ struct Result {
   double vega[kLanes] = {};
   std::uint8_t exercised[kLanes] = {};
   std::uint8_t degenerate[kLanes] = {};
+  std::uint8_t recheck[kLanes] = {}; // within kBoundaryRecheckRel of an exercise threshold
 };
 
 // Slot `k` <- the contract (S, K) on `tile` (cut from `t` by contract_q). Scalar.
@@ -66,9 +77,11 @@ void load_slot(const sigma_q_family_detail::PremiumTable &t,
 void load_strike(const sigma_q_family_detail::PremiumTable &t, double S, double K, std::size_t k,
                  Slots &s) noexcept;
 
-// Price + vega of all four slots at s.sigma[]. Precondition: every slot was loaded at
-// least once from `t` and its σ lies inside the table's box (an unused slot may repeat a
-// used one; its result is ignored). Requires AVX2 + FMA at run time.
+// Price + vega of all four slots at s.sigma[]. Precondition: every slot whose result is
+// read was loaded from `t` (load_slot from a tile contract_q cut with status Ok) and its
+// σ lies inside the table's box. A slot whose result is ignored may hold anything — never
+// loaded (zeros), another table's columns, a busy slot's σ — it is evaluated with defined
+// IEEE arithmetic and discarded (review-K2 m4). Requires AVX2 + FMA at run time.
 void price_vega4(const sigma_q_family_detail::PremiumTable &t, const Slots &s,
                  Result &out) noexcept;
 

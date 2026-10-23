@@ -18,9 +18,11 @@
 // bracket, and every exit returns the best evaluated bracket with its end prices, the
 // last residual and vega, so the next route starts from what this one learned.
 //
-// TYPED OUTCOMES (InverseStatus), one per lane, never a shared flag: converged, low vega,
-// exercise-flat (vega <= floor on the exercise plateau, price at intrinsic), σ below /
-// above the box, q outside the box, nonconverged at the evaluation cap, invalid input,
+// TYPED OUTCOMES (InverseStatus), one per lane, never a shared flag: converged (with a
+// usable slope at the root), converged without a usable slope (a 2 tol bracket whose last
+// point's vega is NaN or <= the floor), low vega, exercise-flat (vega <= floor on the
+// exercise plateau, price at intrinsic), σ below / above the box, q outside the box (also
+// a q tile that cannot be cut), nonconverged at the evaluation cap, invalid input,
 // unsupported ISA. A failed or out-of-bracket seed is NOT a terminal outcome — the lane
 // starts from the bracket and records lane_flag::kSeedFailed / kSeedClamped (counted).
 // No path calls the Search route or any cold solve: the caller decides with the bracket.
@@ -33,8 +35,10 @@
 //
 // ISA. A table source (PremiumTable, K1's precontracted snapshot) runs the 4-lane AVX2
 // kernel (simd/american_iv_batch_avx2.hpp) when InverseIsa and the host allow, else the
-// scalar reference; a family source (AlSigmaQFamily) always runs the scalar reference
-// (price_and_vega). The scalar path IS K1's map bit for bit (price_vega_on /
+// scalar reference; a family source (AlSigmaQFamily) and a table of an AlProfile::Fast
+// family (PremiumTable::fast: the kernel implements the full-precision map only) always
+// run the scalar reference — InverseIsa::Avx2 on them is UnsupportedIsa. The scalar path
+// IS K1's map bit for bit (price_vega_on /
 // price_and_vega). The AVX2 kernel evaluates the same map with the vector Cody Φ / φ /
 // exp / log (simd/vector_math.hpp): a ROUNDING-CLASS difference (documented in
 // docs/american-iv-batch.md), so lanes may take different iterate paths and agree to the
@@ -91,18 +95,19 @@ enum class InverseIsa : std::uint8_t {
   Avx2 = 2,   // the AVX2 kernel or UnsupportedIsa on every active lane
 };
 
-// The pure ISA decision (testable for a host without AVX2 on this host).
-[[nodiscard]] constexpr bool resolve_avx2(InverseIsa isa, bool table_source, bool host_avx2,
+// The pure ISA decision (testable for a host without AVX2 on this host). avx2_source: the
+// source is a table on the full-precision arithmetic (not a family, not PremiumTable::fast).
+[[nodiscard]] constexpr bool resolve_avx2(InverseIsa isa, bool avx2_source, bool host_avx2,
                                           bool auto_allows) noexcept {
   switch (isa) {
   case InverseIsa::Scalar:
     return false;
   case InverseIsa::Avx2:
-    return table_source && host_avx2;
+    return avx2_source && host_avx2;
   case InverseIsa::Auto:
     break;
   }
-  return table_source && host_avx2 && auto_allows;
+  return avx2_source && host_avx2 && auto_allows;
 }
 
 // A lane's acceptance record — the SLOT for K3's RootAcceptance (lane K3,
@@ -113,7 +118,8 @@ enum class InverseIsa : std::uint8_t {
 enum class AcceptanceKind : std::uint8_t {
   None = 0,           // not converged
   NewtonDistance = 1, // |P(x) − target| / P'(x) <= tol at an evaluated x (P' > floor)
-  FamilyBracket = 2,  // an evaluated family-map bracket no wider than 2 tol
+  FamilyBracket = 2,  // an evaluated family-map bracket no wider than 2 tol (status
+                      // Converged, or ConvergedNoSlope without a usable slope there)
 };
 
 struct LaneAcceptance {
@@ -150,7 +156,8 @@ struct InverseBatchIn {
 };
 
 struct InverseBatchOut {
-  std::span<double> sigma;      // the root (Converged), else the best evaluated iterate
+  std::span<double> sigma;      // the root (Converged / ConvergedNoSlope), else the best
+                                // evaluated iterate
   std::span<double> bracket_lo; // the retained bracket (family map)
   std::span<double> bracket_hi;
   std::span<double> price_lo; // family prices at the bracket ends (NaN: unevaluated)
@@ -177,6 +184,9 @@ struct InverseBatchWork {
   std::uint64_t seed_failed = 0;
   std::uint64_t seed_clamped = 0;
   std::uint64_t anchored = 0;
+  // AVX2 lane evaluations re-run on the scalar map: inside the exercise rule's recheck band
+  // (simd::iv_batch_avx2::kBoundaryRecheckRel), so the classification is the scalar map's.
+  std::uint64_t boundary_rechecks = 0;
   std::array<std::uint64_t, kInverseStatusCount> by_status{};
   bool avx2 = false; // the last call ran the AVX2 kernel
   void add(const InverseBatchWork &o) noexcept;

@@ -17,6 +17,17 @@ allocation once the scratch is warm. `atx-vol-quote-bench --inverse-replay
 auto|scalar|avx2` records a run's Premium inverse requests and replays them through it
 (`bench.inverse_replay`). Design: `atx-vol/docs/american-iv-batch.md`.
 
+### FIXED — batch IV inversion typing and AVX2 parity (lane K2 fix round 1)
+
+`iv_batch::invert_many`: a root enclosed by a 2 tol bracket with no usable slope there is
+`InverseStatus::ConvergedNoSlope` (was `Converged`, then refused by the fit without a typed
+reason); a table of an `AlProfile::Fast` family runs the scalar map (the AVX2 kernel is the
+full-precision map; `InverseIsa::Avx2` on it is `UnsupportedIsa`); a q tile that cannot be
+cut refuses its lane typed before any evaluation on both paths; AVX2 lanes within 1e-11 of an
+exercise-rule threshold are re-evaluated on the scalar map, so the AVX2 path classifies the
+exercise boundary as the scalar map does (`InverseBatchWork::boundary_rechecks`). Served
+results unchanged (the fit's native acceptance set is the same; it runs scalar).
+
 ### CHANGED — family-native iterates run through the batch seam (opt-in `graded.family_native`)
 
 The native attempt is now one batch lane instead of the 12-price secant / chord loop: its

@@ -2766,6 +2766,75 @@ TEST(AmericanIvPremium, FamilyNativeOutcomesAreTypedAndTheCarryKeepsTheBracket) 
   EXPECT_LE(max_newton, tol);
 }
 
+// K2 fix round 1 (review-K2 m1): a native lane whose root is enclosed by the carried 2 tol
+// bracket but has no usable slope (none evaluated: the carry settles it at the start) is
+// typed ConvergedNoSlope — not Converged — and is not accepted: the seed-leg path serves
+// the price within tol on the accurate map. The same price without the carry converges
+// natively (Converged, with its fused vega).
+TEST(AmericanIvPremium, ANativeRootWithoutASlopeIsTypedAndServedByTheSeedLeg) {
+  using atx::vol::AlExpiryGeometry;
+  using atx::vol::AlSigmaQFamily;
+  using atx::vol::IvPremiumMemory;
+  using atx::vol::prepare_al_geometry;
+  namespace ib = atx::vol::iv_batch;
+  namespace sq = atx::vol::sigma_q_family_detail;
+  const double S = 100.0;
+  const double T = 0.5;
+  const double r = 0.04;
+  const double q = 0.011;
+  const double K = 100.0;
+  const double sig = 0.24;
+  const double tol = IvOpts{}.tol;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, q);
+  AlSigmaQFamily put(g, Side::Put, S);
+  ASSERT_TRUE(put.prepare(0.1, 0.35, 16, 0.010, 0.012, 4));
+  IvPremiumGate gate;
+  gate.qfamily = &put;
+  gate.qfamily_bound = 1.0e-9;
+  gate.qfamily_native = true;
+  gate.seed_gate_kappa = 4.3e-5;
+  IvOpts o;
+  o.strategy = IvStrategy::Premium;
+  o.seed_profile = AlProfile::Screen;
+  const auto p = andersen_lake(S, K, T, sig, r, q, Side::Put);
+  ASSERT_TRUE(p);
+  // The family map's own root of the price (bisection to adjacent doubles).
+  double lo = put.sigma_lo();
+  double hi = put.sigma_hi();
+  for (;;) {
+    const double m = 0.5 * (lo + hi);
+    if (!(m > lo && m < hi)) break;
+    const sq::FusedPriceVega pv = sq::price_and_vega(put, S, K, m, q);
+    ASSERT_EQ(pv.status, sq::FusedStatus::Ok);
+    (pv.price < *p ? lo : hi) = m;
+  }
+  IvPremiumMemory memory;
+  memory.carry.valid = true;
+  memory.carry.lo = lo - 0.4 * tol;
+  memory.carry.hi = hi + 0.4 * tol;
+  memory.carry.p_lo = sq::price_and_vega(put, S, K, memory.carry.lo, q).price;
+  memory.carry.p_hi = sq::price_and_vega(put, S, K, memory.carry.hi, q).price;
+  ASSERT_LT(memory.carry.p_lo, *p);
+  ASSERT_GE(memory.carry.p_hi, *p);
+  IvPremiumStats st;
+  const IvResult rr =
+      american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, o, &memory, st, &gate);
+  EXPECT_EQ(st.native_status, ib::InverseStatus::ConvergedNoSlope)
+      << ib::inverse_status_name(st.native_status);
+  EXPECT_EQ(st.native_evaluations, 0u);
+  EXPECT_TRUE(st.native_carried);
+  EXPECT_TRUE(st.family_refused); // not accepted: the seed-leg path ran
+  ASSERT_EQ(rr.status, IvStatus::Ok);
+  const PremiumCase c{K, T, r, q, Side::Put, sig};
+  EXPECT_LE(accurate_newton_distance(*p, S, c, rr.iv), tol);
+  IvPremiumStats s0;
+  const IvResult r0 =
+      american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, o, nullptr, s0, &gate);
+  ASSERT_EQ(r0.status, IvStatus::Ok);
+  EXPECT_EQ(s0.native_status, ib::InverseStatus::Converged);
+  EXPECT_FALSE(s0.family_refused);
+}
+
 TEST(AmericanIvPremium, BandGateSkipsTheConfirmOnlyInsideItsStatementAndNeverSkipsAll) {
   const double S = 100.0;
   const double tol = IvOpts{}.tol;

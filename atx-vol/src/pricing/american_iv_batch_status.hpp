@@ -13,6 +13,7 @@ namespace atx::vol::iv_batch {
 enum class InverseStatus : std::uint8_t {
   Inactive = 0,      // masked off (active[i] == 0): nothing computed, outputs untouched
   Converged = 1,     // root found (Newton distance <= tol, or an evaluated bracket <= 2 tol)
+                     // with a usable fused vega (> the floor) at the last evaluated point
   LowVega = 2,       // the cap (or a collapsed bracket) on a map whose slope is <= the floor
                      // and not on the exercise plateau: σ not identified to tol
   ExerciseFlat = 3,  // the target sits on the exercise plateau (price at intrinsic, vega 0):
@@ -23,9 +24,15 @@ enum class InverseStatus : std::uint8_t {
   NonConverged = 7,  // the evaluation cap with a slope above the floor; bracket retained
   InvalidInput = 8,  // a non-finite / non-positive K, target or S, a non-finite q, the
                      // wrong side for the family, an inverted bracket, a bad anchor
-  UnsupportedIsa = 9 // InverseIsa::Avx2 required and not executable (host or source)
+  UnsupportedIsa = 9, // InverseIsa::Avx2 required and not executable (host or source)
+  // An evaluated bracket <= 2 tol encloses the root (sigma = its midpoint, acceptance
+  // FamilyBracket) but no usable slope was evaluated there: the last point's vega is NaN
+  // (none evaluated - a retained / anchored bracket settled the lane - or degenerate) or
+  // <= the floor. A root without the local slope a confirm needs: the fit's native
+  // attempt refuses it (review-K2 m1). Appended: earlier values keep their numbers.
+  ConvergedNoSlope = 10
 };
-inline constexpr std::size_t kInverseStatusCount = 10;
+inline constexpr std::size_t kInverseStatusCount = 11;
 
 [[nodiscard]] const char *inverse_status_name(InverseStatus s) noexcept;
 
