@@ -27,6 +27,7 @@
 #include "atx/vol/api/fitting/slice_serve_record.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_discrete_div_kernel.hpp"
+#include "atx/vol/api/pricing/chain_tick.hpp"
 
 namespace atx::vol {
 namespace {
@@ -308,6 +309,146 @@ TEST(ServedHedgeGreeks, ASampledAnswerIsAnEstimateNeverACertifiedInput) {
   }
   EXPECT_GT(sampled, 3u);
   EXPECT_GT(certified, 3u);
+}
+
+// review-A1 major: `sampled` alone keeps an answer out of the certified inputs, whatever its
+// price class. A record sets `sampled` from EITHER statement (slice_serve_record.cpp: the
+// price's class or the Greek map's), so at the fit's own spot a node answer carries the
+// node bytes' Exact price class next to a Sampled ladder map: that answer must still be an
+// Estimate (the Greeks it hands out come from the Sampled map).
+TEST(ServedClassification, SampledNeverCertifiesWhateverThePriceClass) {
+  for (const ServeStatus status : {ServeStatus::Ok, ServeStatus::Exercised}) {
+    for (const ServeBoundClass cls :
+         {ServeBoundClass::Exact, ServeBoundClass::RefinementValidated,
+          ServeBoundClass::KernelTested}) {
+      ServeAnswer a;
+      a.status = status;
+      a.price = 4.25;
+      a.certificate_class = cls;
+      a.sampled = false;
+      EXPECT_EQ(classify_served_answer(a), AnalyticsInputClass::Certified);
+      a.sampled = true;
+      EXPECT_EQ(classify_served_answer(a), AnalyticsInputClass::Estimate)
+          << static_cast<int>(status) << " " << static_cast<int>(cls);
+      ServedChainStatement st;
+      st.status = status;
+      st.certificate_class = cls;
+      st.sampled = false;
+      EXPECT_EQ(classify_served_statement(st, 4.25), AnalyticsInputClass::Certified);
+      st.sampled = true;
+      st.map_certificate_class = ServeBoundClass::Sampled;
+      EXPECT_EQ(classify_served_statement(st, 4.25), AnalyticsInputClass::Estimate)
+          << static_cast<int>(status) << " " << static_cast<int>(cls);
+    }
+  }
+}
+
+// The same shape through the served path: the default-ladder record at the fit's OWN spot,
+// node strikes. The price is the node's bytes (class Exact); where the side's ladder is
+// served on a Sampled estimate the answer is sampled, and hedge_greeks / the chain
+// statement must say Estimate (TickStatus Fallback on the chain), never Ok.
+TEST(ServedHedgeGreeks, AnExactNodePriceOnASampledMapIsAnEstimateNotOk) {
+  auto book = book_of({entry(1, rec_default_ladders())});
+  ServeBookReader r = book->reader();
+  ServeBookReader check = book->reader();
+  const SliceServeRecord &rec = *rec_default_ladders();
+  const double S = rec.spot(); // bit-equal: the at-fit branch
+  std::vector<std::uint64_t> ids;
+  std::vector<double> strikes;
+  std::vector<Side> sides;
+  std::size_t shaped = 0;
+  for (const ServedNode &n : rec.nodes()) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServeAnswer a = check.serve(1, sreq(n.strike, side, S));
+      if (a.status != ServeStatus::Ok || !a.sampled ||
+          a.certificate_class != ServeBoundClass::Exact) {
+        continue;
+      }
+      ASSERT_EQ(a.map_certificate_class, ServeBoundClass::Sampled);
+      ++shaped;
+      const HedgeGreeks h =
+          hedge_greeks(r, hreq(n.strike, side, S, HedgeConvention::StickyStrike));
+      EXPECT_EQ(h.certificate_class, ServeBoundClass::Exact);
+      EXPECT_TRUE(h.sampled);
+      EXPECT_EQ(h.input_class, AnalyticsInputClass::Estimate) << n.strike;
+      EXPECT_EQ(h.status, AnalyticsStatus::Estimate) << n.strike;
+      ids.push_back(1);
+      strikes.push_back(n.strike);
+      sides.push_back(side);
+    }
+  }
+  ASSERT_GT(shaped, 0u);
+  const std::size_t m = strikes.size();
+  std::vector<double> price(m), delta(m), gamma(m), vega(m), theta(m);
+  std::vector<TickStatus> status(m);
+  std::vector<ServedChainStatement> statements(m);
+  const ServedChainView view{ids, strikes, sides};
+  const ChainTickOutputs out{price, delta, gamma, vega, theta, status};
+  ASSERT_TRUE(r.serve_chain(S, kNow, view, ServeTier::Ladder, ServeTier::Family, out, statements)
+                  .has_value());
+  for (std::size_t k = 0; k < m; ++k) {
+    EXPECT_TRUE(statements[k].sampled);
+    EXPECT_EQ(statements[k].certificate_class, ServeBoundClass::Exact);
+    EXPECT_EQ(classify_served_statement(statements[k], price[k]), AnalyticsInputClass::Estimate);
+    EXPECT_EQ(status[k], TickStatus::Fallback);
+  }
+}
+
+// A curve with no value at the two slope samples of one node strike (k +/- h): the rest of
+// the fit, the record and the served node are untouched.
+class SlopeHoleCurve final : public IVolCurve {
+public:
+  SlopeHoleCurve(std::unique_ptr<IVolCurve> inner, double strike)
+      : IVolCurve(inner->T(), inner->F(), inner->df()), inner_(std::move(inner)),
+        k_(std::log(strike / F())), strike_(strike) {}
+  [[nodiscard]] double w(double k_log) const noexcept override {
+    return hole(k_log) ? std::nan("") : inner_->w(k_log);
+  }
+  [[nodiscard]] double iv(double k_log) const noexcept override {
+    return hole(k_log) ? std::nan("") : inner_->iv(k_log);
+  }
+  [[nodiscard]] VolCurveKind kind() const noexcept override { return inner_->kind(); }
+  [[nodiscard]] std::size_t dof() const noexcept override { return inner_->dof(); }
+  [[nodiscard]] std::unique_ptr<IVolCurve> clone() const override {
+    return std::make_unique<SlopeHoleCurve>(inner_->clone(), strike_);
+  }
+
+private:
+  [[nodiscard]] bool hole(double k_log) const noexcept {
+    return k_log == k_ + kSmileSlopeStep || k_log == k_ - kSmileSlopeStep;
+  }
+  std::unique_ptr<IVolCurve> inner_;
+  double k_;
+  double strike_;
+};
+
+// review-A1 minor: no finite smile slope at the strike - sticky delta/moneyness delta is NaN
+// with the typed SmileSlopeUnavailable, never the sticky-strike number passed off as it.
+TEST(ServedHedgeGreeks, StickyDeltaMoneynessWithoutASmileSlopeIsTypedUnavailable) {
+  constexpr double kK = 105.0;
+  QuoteSliceFit fit = fit_value(0.0);
+  ASSERT_TRUE(fit.curve != nullptr);
+  fit.curve = std::make_unique<SlopeHoleCurve>(std::move(fit.curve), kK);
+  const std::shared_ptr<const SliceServeRecord> rec = record_of(fit, no_ladders());
+  ASSERT_NE(rec, nullptr);
+  auto book = book_of({entry(1, rec)});
+  ServeBookReader r = book->reader();
+  const double S = rec->spot();
+  const HedgeGreeks ss = hedge_greeks(r, hreq(kK, Side::Call, S, HedgeConvention::StickyStrike));
+  ASSERT_EQ(ss.status, AnalyticsStatus::Ok);
+  ASSERT_TRUE(std::isfinite(ss.delta));
+  const HedgeGreeks sm =
+      hedge_greeks(r, hreq(kK, Side::Call, S, HedgeConvention::StickyDeltaMoneyness));
+  EXPECT_EQ(bits(sm.price), bits(ss.price)); // the price is still served
+  EXPECT_TRUE(std::isnan(sm.delta));
+  EXPECT_EQ(sm.reason[0], HedgeGreekReason::SmileSlopeUnavailable);
+  EXPECT_TRUE(std::isnan(sm.curve_slope));
+  EXPECT_TRUE(std::isnan(sm.dsigma_dspot));
+  EXPECT_EQ(sm.slope_class, SmileSlopeClass::None);
+  EXPECT_TRUE(std::isnan(sm.gamma));
+  EXPECT_EQ(sm.reason[1], HedgeGreekReason::NeedsVannaVolga);
+  EXPECT_EQ(bits(sm.vega), bits(ss.vega));
+  EXPECT_EQ(sm.declaration.convention, HedgeConvention::StickyDeltaMoneyness);
 }
 
 TEST(ServedHedgeGreeks, RefusalsAndPriceOnlyPropagateTheirTypedReason) {
