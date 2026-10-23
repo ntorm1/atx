@@ -336,6 +336,13 @@ void splice_production(std::span<double> level, std::span<double> value,
         cont = value[m] * (t1 * tb * tc * st.inv0) + value[m + 1U] * (ta * tb * tc * st.inv1) +
                value[m + 2U] * (ta * t1 * tc * st.inv2) +
                value[m + 3U] * (ta * t1 * tb * st.inv3);
+        // NO zero floor here, deliberately (review-D1 minor, measured). Next to a
+        // zero region (a payoff kink a step or two from expiry) the cubic's basis
+        // overshoots below 0, but the cubic is linear in the values, so the lattice
+        // keeps European put-call parity exactly; a floor at 0 breaks it, and
+        // against D0's PDE it raised the European error in 30 of 32 near-expiry
+        // cases (D1-20261023-fix1 diag-scratch-eu-*.log). American rollbacks are
+        // floored by the exercise max below.
       } else {
         const double slope = (value[j + 1U] - value[j]) / (level[j + 1U] - level[j]);
         cont = slope * (post - level[j]) + value[j];

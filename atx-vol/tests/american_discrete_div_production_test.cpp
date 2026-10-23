@@ -463,6 +463,49 @@ TEST(DiscreteDivProductionAccuracy, CashDominatedContractIsPricedOnTheGrid) {
   }
 }
 
+TEST(DiscreteDivProductionAccuracy, EuropeanOnTheCubicRouteKeepsParityAndMeetsTheReference) {
+  // Review-D1 minor: no test covered European on the cubic route. Next to a payoff
+  // kink one or two steps from expiry the cubic's basis overshoots below 0; the
+  // splice keeps it (american_discrete_div.cpp, splice_production): the cubic is
+  // linear in the values, so the lattice keeps put-call parity exactly, and a zero
+  // floor raised the European error against D0's PDE in 30 of 32 near-expiry cases
+  // (D1-20261023-fix1 diag-scratch-eu-*.log). One 3.00 ex-date 1.4 steps of 301
+  // before expiry, S 100, T 1, sigma 0.25, r 0.04. References: D0's PDE ladder
+  // (1200 / 300, 4 levels), value +- u (u <= 1.8e-6).
+  struct EuPin {
+    double K;
+    Side side;
+    double ref;
+  };
+  const EuPin pins[] = {{100.0, Side::Call, 10.4223471204},
+                        {100.0, Side::Put, 9.3841956600},
+                        {130.0, Side::Call, 2.4294907043},
+                        {130.0, Side::Put, 30.2150224166}};
+  const double tau = 1.0 - 1.4 / 301.0;
+  const std::vector<CashDividend> divs{{tau, 3.0}};
+  DiscreteDivWorkspace ws = production_workspace();
+  for (const DiscreteDivAccuracy acc :
+       {DiscreteDivAccuracy::Standard, DiscreteDivAccuracy::Refined}) {
+    double price[4];
+    for (std::size_t i = 0; i < 4; ++i) {
+      const auto p = american_discrete_div_production_price(
+          100.0, pins[i].K, 1.0, 0.25, 0.04, 0.0, pins[i].side, divs, ExerciseStyle::European,
+          opts_of(acc), ws);
+      ASSERT_TRUE(p.has_value());
+      price[i] = p->price;
+      // Standard: the CRR terminal step's European error (+7.7e-3 at the money);
+      // Refined: within 2e-4 measured, 1e-3 USD claimed (under 0.5 bp of IV here).
+      EXPECT_NEAR(price[i], pins[i].ref, acc == DiscreteDivAccuracy::Refined ? 1.0e-3 : 1.0e-2)
+          << i << " " << static_cast<int>(acc);
+    }
+    // Parity: C - P = S - D e^{-r tau} - K e^{-r T} (forward-preserving cash).
+    for (const std::size_t c : {std::size_t{0}, std::size_t{2}}) {
+      const double parity = 100.0 - 3.0 * std::exp(-0.04 * tau) - pins[c].K * std::exp(-0.04);
+      EXPECT_NEAR(price[c] - price[c + 1], parity, 1.0e-9) << c << " " << static_cast<int>(acc);
+    }
+  }
+}
+
 TEST(DiscreteDivConvergedComparator, RefusesACashDominatedContract) {
   // Review m1 of L3f, confirmed by D0: on E64 (cash 64 % of spot, 5.9 days out) the
   // comparator (SplicedBbs 2401 + Richardson vs 1201) is +2.61 USD off the
@@ -921,6 +964,7 @@ TEST(DiscreteDivBatch, AMovedFromBatchIsEmptyNotUndefined) {
   EXPECT_EQ(a.groups(), 1U);
   EXPECT_TRUE(a.group_ok(0));
 }
+
 
 } // namespace
 } // namespace atx::vol
