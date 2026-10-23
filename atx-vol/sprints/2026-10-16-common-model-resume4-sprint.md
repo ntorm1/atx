@@ -786,3 +786,96 @@ net 2), `QuoteSlicePublication.*` 28/28, fit-archive 57/57, bench-clocks 11/11, 
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ci-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2ci-20261023-integrate\`.
+
+## W2c-j / r6 integration of K4, the native fit route (vol-sota master plan, 2026-10-23)
+
+Lane W2c-j (run `vol-sota-r6-20261023`, pool-5) merged the approved K4 lane (native fit route; review APPROVE with
+deviations, a development result, no promotion) into the root `feat/vol-resume5-20261022`, `--no-ff`, on top of
+`d2c7eb5f`. The route stays opt-in (`deam_native_route` / `graded.native_route` default off). No default promoted;
+nothing pushed.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `a969fd20` | merge K4 native fit route `efb442bb` (review APPROVE with deviations, 9 minors; merge base `92cea7df`) | `CHANGELOG.md`, `tests/CMakeLists.txt`, `tools/quote_bench_policy.hpp` | union, no semantic glue |
+
+**Conflict resolution.** CHANGELOG = the root's entries, then K4's `### NEW` (entry-set check 138 = 137 + 1).
+`tests/CMakeLists.txt`: the quote-slice test sources, its suite filter and the `atx-vol-tests` source list carry
+both C2's `quote_slice_publication_test.cpp` / `QuoteSlicePublication.*` and K4's `fit_native_route_test.cpp` /
+`FitNativeRoute.*`. `quote_bench_policy.hpp` `load()`: the graded key allow-list carries C2's `"publication"` and
+K4's `"native_route", "reference_budget"`; `load()` is the one function both lanes edited, both edits additive (a
+key each plus a parse block in different places), so union per the per-function rule.
+
+**Region discipline (`quote_slice.cpp`, auto-merged).** A brace-depth parse of the merge-base blob maps every hunk
+to its enclosing function: K4 touches `label_unidentified_mid` (new), `admit_point_observations`,
+`SliceDeAmModel::implied_vol_premium`, `SliceDeAmModel::edge_bounds` (new), the `VolSpaceCache` constructor,
+`certify_and_serve` (signature + two body hunks), `validate_channel`, `fit_quote_slice`, `fit_quote_slice_channel`;
+C2 (the root side since `92cea7df`) touches `to_string(QuoteSliceRepairOutcome)`, `evaluate_quote_slice`,
+`validate_quote_slice_repair`, `calendar_clamp`, `valid_recheck` / `nondividend_certified` /
+`detail::nondividend_discount` (new), `repair_quote_slice_calendar`, `_in_channel`, `leaves_a_quote` (new),
+`repair_quote_slice_market`, `JointWork` / `prepare_joint` / `joint_box`, `repair_quote_slice_calendar_joint`,
+`query_quote_slice`. Functions touched by both: 0. Same check: `quote_slice.hpp` (K4 two config / diagnostics
+structs, C2 others) and `quote_bench_main.cpp` (K4 `timing_json` / `charge_fit_lap`, C2 `fit_graded`) share no
+function.
+
+**Diff proof.** 64 per-file diffs EQUAL_SEQ (16 vs the K4 blob, 52 vs the W2c-i root blob); the 4 DIFFER are
+`tests/CMakeLists.txt` and `quote_bench_policy.hpp` on both sides, exactly the union lines above.
+
+**Post-merge suites, both sides** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`). K4: quote-slice 235/235 (W2c-i's 223
++ `FitNativeRoute` 12), `FitNativeRoute.*` 12/12 (`[K4 fit] requests 195 typed 195 lanes 195 search 0 reference 9`)
+in both owning executables; C2: `QuoteSlicePublication.*` 28/28, quote-bench CLI 94, both CLI files 193; H0-A:
+serve-record 28/28 with the seams on, `^serve-record:|^tick-path:` 82/82; anchored `^atx-vol-(quote-slice|bench-clocks)$` 2/2.
+
+**Gates on the final code `a969fd20`** (the docs commit changes `.md` files only):
+- 9/9 default hashes byte-identical (quote-bench `08de794c`), `sha256sum -c` 9 OK with the log persisted, stderr
+  files 0 bytes.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (bin byte-equal to W2c-i's).
+- Name set at cap 3: `52324ef8` exactly (the L575 flake did not fire); 1062 names, 0 added, 0 removed (K4's 12
+  tests live in `atx-vol-quote-slice-tests` and `misc/FitNativeRoute.*`).
+- Combined anchored ctest (W2c-i regex + `^misc/FitNativeRoute\.`), native ctest excluded: 186/186; CLI pytest
+  193 (`test_quote_bench_cli.py` 94).
+- ForceScalar filter: 121 passed, 4 skipped, 1 known failure; `atx-vol-umbrella`: its 3 known failures (46 / 105,
+  unchanged: K4 adds no public header).
+- PCH-off (`vol-hygiene`): the closure of the 6 changed headers, 85 TUs (28 library, 11 tools, 46 tests; the 2 `examples/` TUs are not configured there, bench / python TUs excluded), 9 batches exit 0, 0 diagnostics.
+- Keys-ON (all MATCH): K4's speed arm SPY `75ca0fc5` / cohort5 `93918f62` / dev200 `9571c2e0` / dev200b `d6c05740`
+  (workers 2), served set vs the default lost 0 / gained 0 on all four (max |dP| 7.8e-8 / 2.2e-5 / 6.3e-2 /
+  9.3e-3 USD, = K4's); K3 audit on the merged SPY route output 29,411 typed roots, 0 violations, 0 unresolved;
+  C2 dev200b `2e31e087` / `c4612fc3` / `228b1a94` / `c1691f1e` and SPY / cohort5 `ba413a85` / `4acd8575` /
+  `d834b4d3` / `a90b5047` / `c3292d38` (workers 2); D1 `fc81aad3` / `c6016745`; K3 `710115bb` / `13f6be35`; K2
+  `710115bb` / `6368997d` (replay block 13/13); C0 one_spot `a9dec618` / `ed34eef7` / `34e3ed27` / `d7a48be7` /
+  `34d5aab0`. C2's validation does not touch the route's output (the arm hashes are K4's own).
+
+**G3 (development row, merged root).** SPY native-route speed arm (policy `1a488f48`), B0's `run_cold_trials.ps1`, 10 fresh processes,
+`ATX_VOL_FIT_WORKERS=1`, CPU 6 (P core), sibling idle 10/10 (max 1.5 %), host load 19 % before / 2 % after
+(review-C3 leased beside), source `a969fd20` clean, binary `08de794c`, predictions `75ca0fc5` in all 10:
+min / median / p95 / max **3.742 / 3.931 / 4.263 / 4.309 s**, beside K4's 4.154 / 4.540 / 5.265 / 5.395 and
+review-K4's 4.419 / 4.667 / 5.043 / 5.160. Stage medians: inverses 2,343 ms, final grid 565, endpoints 345,
+reference exceptions 328, family build 207, curve / repair 105 (unattributed 2.1 ms). No regression: every stage
+is 6-15 % under K4's on a quieter host; a development row, not a qualification.
+G3 MISS: SPY cold calibration median 4.54 s development row vs the 1 s bar; dominating stage inverses 2.77 s =
+22,823 confirm solves; §7 challenger K5 opened (and K4b for K4's declared batching deviations).
+
+### Deferred minors (W2c-j: K4 review, integration)
+- K4 review m1 (-> K4b): the reference route types `PriceOnlyLowVega` with an uncertified bracket end, so `band()`
+  can publish the range ends 0.005 / 40 as band ends (dev200: 1 request); return NaN for uncertified ends and test
+  the real `reference_root` exit.
+- m2 (-> K4b): `take()` accepts a certified end without checking it stays inside the bracket; crossed sides would
+  call `std::clamp(root, lo, hi)` with `hi < lo` (unreachable under K3's `eps_c`; audit 0 violations).
+- m3: the PM vega hook (`accept_family_native(..., lane_vega)`, fires 0 times on SPY) and the seed-routing bypass
+  for family requests (2,048 -> 324 seed-routed) have no fail-on-revert test.
+- m4 (-> K5): the inverse-stage split "confirms ~2 s, lane ~0.7 s" is an estimate; the review's arithmetic gives
+  confirms ~1.1-1.4 s, family side ~1.4-1.6 s; K5 adds an inverse sub-clock (lane / enclosure / confirm / leg).
+- m5 (-> K4b): the BAW seed leg stays for every request whose side has no family (cohort5 22.6 %, dev200 77.2 %,
+  dev200b 94.0 % of leg roots; SPY 250 of 546 reference requests are leg failures).
+- m6 (-> K4b): final-grid repricing is per node, not batched (658 ms vs 120); grid error metadata is aggregate.
+- m7 (-> H1 / Q0): typed outcomes are not mapped onto C0's `price_only_reason` / `iv_lower` / `iv_upper`; the row
+  gets `UnidentifiableVolatility`.
+- m8: family refusals are counted, not typed by reason; no box extension for the 296 SPY `SigmaAboveBox` requests.
+- m9 (doc): "evaluations 6,118 = AL-by-reason reference 6,118" is a stats identity, not a ledger reconciliation
+  (the 670-solve gap exists at the root too).
+- Q0: the K3 root audit is region-blind; add C1's exercise class at the served sigma as an audit column.
+- K4 report: hash rows at workers >= 2 can differ at <= 5e-13 USD (P0 fan-out nondeterminism); `families.attempted`
+  changed type (string -> int) in the bench JSON on every policy.
+- W2c-j integration: none beyond the three unions.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cj-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2cj-20261023-integrate\`.
