@@ -308,7 +308,10 @@ TEST(SliceServeRecord, FamilyTierServesTheFamilyMapToTheBitAtAMovedSpot) {
       EXPECT_EQ(bits(a.sigma), bits(s.sigma));
       EXPECT_EQ(a.price_source, ServePriceSource::Family);
       EXPECT_EQ(a.price_map_delta, 0.0);
-      EXPECT_EQ(a.reason[static_cast<std::size_t>(ServeGreek::Vega)], ServeGreekReason::Served);
+      // A number on both sides of the exercise edge: Exercised there (A0's reason too).
+      EXPECT_EQ(a.reason[static_cast<std::size_t>(ServeGreek::Vega)],
+                a.status == ServeStatus::Exercised ? ServeGreekReason::Exercised
+                                                   : ServeGreekReason::Served);
 #if !ATX_VOL_SERVE_RECORD_A0
       EXPECT_EQ(a.reason[static_cast<std::size_t>(ServeGreek::Delta)],
                 ServeGreekReason::BundleUnavailable);
@@ -319,6 +322,29 @@ TEST(SliceServeRecord, FamilyTierServesTheFamilyMapToTheBitAtAMovedSpot) {
   }
   EXPECT_GT(checked, 40u);
   EXPECT_EQ(record->clocks().lazy_family_builds, 0u); // supplied: no kernel work
+}
+
+// A node side's family_reasons are exactly the Family tier's reasons at the fit's spot for
+// the full mask (A0's bundle under the seam, else vega only).
+TEST(SliceServeRecord, NodeFamilyReasonsAreTheFamilyTiersReasonsAtTheFitSpot) {
+  const auto record = base_record();
+  ASSERT_NE(record, nullptr);
+  std::size_t checked = 0;
+  for (const ServedNode &node : record->nodes()) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const ServedNodeSide &s = side_of(node, side);
+      if (!(s.tiers & kServeNodeFamily)) continue;
+      ServeRequest r = at(node.strike, side, record->spot(), ServeTier::Family, ServeTier::Family);
+      r.greeks = ServeGreekMask::all();
+      const ServeAnswer a = record->serve(r);
+      ASSERT_TRUE(answered(a.status)) << node.strike;
+      for (std::size_t k = 0; k < kServeGreekCount; ++k) {
+        EXPECT_EQ(a.reason[k], s.family_reasons[k]) << node.strike << " greek " << k;
+      }
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 40u);
 }
 
 // Tier 0: price and four Greeks from one map - the ladder's price within its certificate

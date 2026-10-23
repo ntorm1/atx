@@ -235,6 +235,36 @@ struct FamilyRead {
   return r.status == fused::FusedStatus::Ok || r.status == fused::FusedStatus::NearNodeDegenerate;
 }
 
+#if !ATX_VOL_SERVE_RECORD_A0
+// K1's fused vega reason: Exercised on the exercise side (vega 0, a number), else Served or
+// NearNodeDegenerate (the vega is NaN at the sqrt transform's zero).
+[[nodiscard]] ServeGreekReason fused_vega_reason(const FamilyRead &r) noexcept {
+  if (r.exercised) return ServeGreekReason::Exercised;
+  return r.status == fused::FusedStatus::Ok ? ServeGreekReason::Served
+                                            : ServeGreekReason::NearNodeDegenerate;
+}
+#endif
+
+#if ATX_VOL_SERVE_RECORD_A0
+static_assert(kServeEdgeBand == kAlFamilyGreekEdgeBand, "the record's band is A0's");
+
+[[nodiscard]] ServeGreekReason from_a0(AlFamilyGreekReason r) noexcept {
+  switch (r) {
+  case AlFamilyGreekReason::NotRequested: return ServeGreekReason::NotRequested;
+  case AlFamilyGreekReason::Served: return ServeGreekReason::Served;
+  case AlFamilyGreekReason::Exercised: return ServeGreekReason::Exercised;
+  case AlFamilyGreekReason::Refused: return ServeGreekReason::Refused;
+  case AlFamilyGreekReason::NoCarryBumps: return ServeGreekReason::NoCarryBumps;
+  case AlFamilyGreekReason::CarryBumpRefused: return ServeGreekReason::CarryBumpRefused;
+  case AlFamilyGreekReason::NoQAxis: return ServeGreekReason::NoQAxis;
+  case AlFamilyGreekReason::NearNodeDegenerate: return ServeGreekReason::NearNodeDegenerate;
+  case AlFamilyGreekReason::ConventionUnsupported: return ServeGreekReason::ConventionUnsupported;
+  case AlFamilyGreekReason::NearExerciseEdge: return ServeGreekReason::NearExerciseEdge;
+  }
+  return ServeGreekReason::Refused;
+}
+#endif
+
 } // namespace
 
 // ── The record's state ──────────────────────────────────────────────────────────────
@@ -586,10 +616,21 @@ void audit_family_at_nodes(Impl &impl) {
       if (!family_priced(r)) continue;
       s.tiers |= kServeNodeFamily;
       s.family_price_delta = r.price - s.price;
+#if ATX_VOL_SERVE_RECORD_A0
+      // A0's reasons at the fit's spot for the full mask (what the Family tier serves there).
+      AlSigmaQGreeksRequest req;
+      req.mask = AlFamilyGreekMask::all();
+      req.held_fixed = AlFamilyGreekHeldFixed::StickyStrike;
+      req.surface_version = impl.policy.surface_version;
+      const AlSigmaQFamilyGreeks g = family_greeks(*f, impl.spot, node.strike, s.sigma, s.q, req);
+      for (std::size_t k = 0; k < kServeGreekCount; ++k) {
+        s.family_reasons[k] = g.status == AlSigmaQFamilyStatus::Ok ? from_a0(g.reason[k])
+                                                                   : ServeGreekReason::Refused;
+      }
+#else
       for (ServeGreekReason &g : s.family_reasons) g = ServeGreekReason::BundleUnavailable;
-      s.family_reasons[static_cast<std::size_t>(ServeGreek::Vega)] =
-          r.status == fused::FusedStatus::Ok ? ServeGreekReason::Served
-                                             : ServeGreekReason::NearNodeDegenerate;
+      s.family_reasons[static_cast<std::size_t>(ServeGreek::Vega)] = fused_vega_reason(r);
+#endif
 #if ATX_VOL_SERVE_RECORD_K3
       const auto &env = impl.envelopes[side_slot(side)];
       s.family_class = env && env->covered() ? ServeErrorClass::RefinementValidated
@@ -1088,26 +1129,6 @@ void place_price(const Impl &impl, const Contract &c, double map_price, ServePri
   return true;
 }
 
-#if ATX_VOL_SERVE_RECORD_A0
-static_assert(kServeEdgeBand == kAlFamilyGreekEdgeBand, "the record's band is A0's");
-
-[[nodiscard]] ServeGreekReason from_a0(AlFamilyGreekReason r) noexcept {
-  switch (r) {
-  case AlFamilyGreekReason::NotRequested: return ServeGreekReason::NotRequested;
-  case AlFamilyGreekReason::Served: return ServeGreekReason::Served;
-  case AlFamilyGreekReason::Exercised: return ServeGreekReason::Exercised;
-  case AlFamilyGreekReason::Refused: return ServeGreekReason::Refused;
-  case AlFamilyGreekReason::NoCarryBumps: return ServeGreekReason::NoCarryBumps;
-  case AlFamilyGreekReason::CarryBumpRefused: return ServeGreekReason::CarryBumpRefused;
-  case AlFamilyGreekReason::NoQAxis: return ServeGreekReason::NoQAxis;
-  case AlFamilyGreekReason::NearNodeDegenerate: return ServeGreekReason::NearNodeDegenerate;
-  case AlFamilyGreekReason::ConventionUnsupported: return ServeGreekReason::ConventionUnsupported;
-  case AlFamilyGreekReason::NearExerciseEdge: return ServeGreekReason::NearExerciseEdge;
-  }
-  return ServeGreekReason::Refused;
-}
-#endif
-
 // The family map's price and Greeks at (S, K, sigma, q) into `a` (no price placement).
 // False with `box` set when the volatility or yield lies outside the family box.
 [[nodiscard]] bool family_tier_read(const Impl &impl, const Contract &c, ServeGreekMask mask,
@@ -1142,9 +1163,7 @@ static_assert(kServeEdgeBand == kAlFamilyGreekEdgeBand, "the record's band is A0
   }
   map_price = r.price;
   request_reasons(a, mask, ServeGreekReason::BundleUnavailable);
-  set_greek(a, mask, ServeGreek::Vega, r.vega,
-            r.status == fused::FusedStatus::Ok ? ServeGreekReason::Served
-                                               : ServeGreekReason::NearNodeDegenerate);
+  set_greek(a, mask, ServeGreek::Vega, r.vega, fused_vega_reason(r));
   a.status = r.exercised ? ServeStatus::Exercised : ServeStatus::Ok;
 #endif
   a.greek_source = ServeGreekSource::Family;
