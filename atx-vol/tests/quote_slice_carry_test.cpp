@@ -1,10 +1,12 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -352,6 +354,121 @@ TEST(QuoteSliceCarry, EveryMalformedMarketFieldReportsTheSuppliedError) {
     EXPECT_EQ(implied.error().to_string(), supplied.error().to_string()) << i;
   }
   EXPECT_EQ(bad.size(), 15u);
+}
+
+// ── One authoritative spot per snapshot (lane C0) ─────────────────────────────
+
+// The forward fit_quote_slice derives from `market` under `model` (prepare_fit), read
+// off a fit of no quotes: the slice computes it before it admits anything.
+double fitted_forward(const QuoteSliceMarket &market, QuoteSliceDividendModel model,
+                      std::span<const CashDividend> dividends = {}) {
+  QuoteSliceConfig cfg;
+  cfg.dividend_model = model;
+  const auto fit = fit_quote_slice(market, {}, cfg, dividends);
+  if (!fit) {
+    ADD_FAILURE() << fit.error().to_string();
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return fit->diagnostics.forward;
+}
+
+TEST(QuoteSliceSpotRebase, EveryAggregateModelKeepsItsForwardOnTheCalendarClock) {
+  // A 2-day chain whose own spot sits 2 cents above the snapshot spot (the SPY
+  // per-chain drift), on separate clocks: the shift lives on the calendar clock.
+  const double snapshot = 772.98;
+  struct Case {
+    QuoteSliceDividendModel model;
+    double pv;
+  };
+  for (const Case c : {Case{QuoteSliceDividendModel::ContinuousYield, 0.0},
+                       Case{QuoteSliceDividendModel::AggregateFundingPresentValue, 1.75},
+                       Case{QuoteSliceDividendModel::AggregatePresentValue, 1.75}}) {
+    const QuoteSliceMarket market{773.00, 2.0 / 252.0, 2.0 / 365.0, 0.045, 0.012, c.pv};
+    const auto rebased = rebase_quote_slice_spot(market, snapshot, c.model);
+    ASSERT_TRUE(rebased) << to_string(c.model) << ": " << rebased.error().to_string();
+    EXPECT_EQ(rebased->market.spot, snapshot);
+    EXPECT_EQ(rebased->market.variance_years, market.variance_years);
+    EXPECT_EQ(rebased->market.calendar_years, market.calendar_years);
+    EXPECT_EQ(rebased->market.rate, market.rate);
+    EXPECT_EQ(rebased->market.dividend_pv, market.dividend_pv);
+    const double held = c.model == QuoteSliceDividendModel::AggregatePresentValue ? c.pv : 0.0;
+    const double expected =
+        std::log((snapshot - held) / (market.spot - held)) / market.calendar_years;
+    // The closed form through a rounded ratio carries ~1e-16 / (shift T) relative error.
+    EXPECT_NEAR(rebased->yield_shift, expected, 1.0e-10 * std::abs(expected));
+    EXPECT_EQ(rebased->market.continuous_yield, market.continuous_yield + rebased->yield_shift);
+    // One cent on a 2-day chain is ~24 bp of calendar yield: the shift is not small.
+    EXPECT_LT(rebased->yield_shift, -0.004);
+    const double before = fitted_forward(market, c.model);
+    const double after = fitted_forward(rebased->market, c.model);
+    EXPECT_NEAR(after, before, 1.0e-12 * before) << to_string(c.model);
+    EXPECT_NEAR(rebased->forward, before, 1.0e-12 * before) << to_string(c.model);
+  }
+}
+
+TEST(QuoteSliceSpotRebase, DatedCashSolvesTheLatticeForwardNotTheContinuousFormula) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 0.0};
+  const std::array<CashDividend, 2> dividends{{{0.1, 1.5}, {0.35, 1.5}}};
+  const double snapshot = 100.30;
+  const auto rebased = rebase_quote_slice_spot(market, snapshot,
+                                               QuoteSliceDividendModel::DatedCash, dividends);
+  ASSERT_TRUE(rebased) << rebased.error().to_string();
+  const double before = fitted_forward(market, QuoteSliceDividendModel::DatedCash, dividends);
+  const double after =
+      fitted_forward(rebased->market, QuoteSliceDividendModel::DatedCash, dividends);
+  EXPECT_NEAR(after, before, 1.0e-13 * before);
+  // The continuous-yield identity would move the dividends' forward value too.
+  const double continuous = std::log(snapshot / market.spot) / market.calendar_years;
+  EXPECT_GT(std::abs(rebased->yield_shift - continuous), 5.0e-5);
+  QuoteSliceMarket naive = market;
+  naive.spot = snapshot;
+  naive.continuous_yield += continuous;
+  const double wrong = fitted_forward(naive, QuoteSliceDividendModel::DatedCash, dividends);
+  EXPECT_GT(std::abs(wrong - before), 1.0e-3);
+}
+
+TEST(QuoteSliceSpotRebase, PreservesTheForwardNotTheAmericanPrice) {
+  // FORWARD-preserving only: a deep in-the-money American put at its exercise value
+  // moves with the spot itself, one for one, whatever the carry does.
+  const QuoteSliceMarket market{100.02, 0.25, 0.25, 0.04, 0.0, 0.0};
+  const auto rebased =
+      rebase_quote_slice_spot(market, 100.00, QuoteSliceDividendModel::ContinuousYield);
+  ASSERT_TRUE(rebased) << rebased.error().to_string();
+  const auto raw = andersen_lake(market.spot, 140.0, 0.25, 0.2, 0.04, 0.0, Side::Put);
+  const auto moved = andersen_lake(100.00, 140.0, 0.25, 0.2, 0.04,
+                                   rebased->market.continuous_yield, Side::Put);
+  ASSERT_TRUE(raw && moved);
+  EXPECT_NEAR(*raw, 140.0 - 100.02, 1.0e-9);
+  EXPECT_NEAR(*moved - *raw, 0.02, 1.0e-6);
+}
+
+TEST(QuoteSliceSpotRebase, RefusesInputsNoCarryCanReconcile) {
+  const QuoteSliceMarket market{100.0, 0.5, 0.5, 0.04, 0.01, 2.0};
+  EXPECT_EQ(rebase_quote_slice_spot(market, 1.5, QuoteSliceDividendModel::AggregatePresentValue)
+                .error()
+                .code(),
+            ErrorCode::OutOfRange);
+  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_EQ(rebase_quote_slice_spot(market, bad, QuoteSliceDividendModel::ContinuousYield)
+                  .error()
+                  .code(),
+              ErrorCode::InvalidArgument);
+  }
+  const std::array<CashDividend, 1> dividends{{{0.1, 1.0}}};
+  EXPECT_EQ(rebase_quote_slice_spot(market, 100.1,
+                                    QuoteSliceDividendModel::AggregateFundingPresentValue,
+                                    dividends)
+                .error()
+                .code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_EQ(rebase_quote_slice_spot(market, 100.1, QuoteSliceDividendModel::DatedCash, dividends)
+                .error()
+                .code(),
+            ErrorCode::InvalidArgument); // dated cash cannot also take an aggregate PV
+  EXPECT_EQ(rebase_quote_slice_spot(market, 100.1, static_cast<QuoteSliceDividendModel>(9))
+                .error()
+                .code(),
+            ErrorCode::InvalidArgument);
 }
 
 } // namespace

@@ -50,6 +50,7 @@
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
+#include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only (lane C0)
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 #include "fitting/term_prior.hpp"
 
@@ -1104,12 +1105,15 @@ private:
             (fit.moved_nodes[node] & bit) == 0u) {
           continue; // the curve's own volatility, not a re-implied one
         }
+        // Lane C0: the typed floor answer of the served price (reason and interval).
+        const detail::VolIdentification id =
+            detail::floor_vol(fit, strike, quotes[r].side, row.fitted_price);
         row.fitted_iv = kNaN;
         row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
-        if (fit.price_only_nodes.size() != nodes.size()) {
-          fit.price_only_nodes.assign(nodes.size(), 0);
-        }
-        fit.price_only_nodes[node] = static_cast<std::uint8_t>(fit.price_only_nodes[node] | bit);
+        row.price_only_reason = id.reason;
+        row.iv_lower = id.iv_lower;
+        row.iv_upper = id.iv_upper;
+        detail::mark_price_only(fit, node, bit, nodes.size());
         ++slice.wing_tail_price_only;
       }
     }
@@ -1499,7 +1503,14 @@ fit_quote_surface(std::span<const QuoteSurfaceExpiry> expiries, const QuoteSlice
   // fan-out's join, or a serial stage's) escapes.
   try {
     SurfaceFitter fitter(expiries, config, surface);
-    return fitter.run();
+    auto slices = fitter.run();
+    if (slices) {
+      // Lane C0: the caller's snapshot provenance rides on each expiry's fit.
+      for (std::size_t i = 0; i < slices->size(); ++i) {
+        (*slices)[i].fit.snapshot = expiries[i].snapshot;
+      }
+    }
+    return slices;
   } catch (...) {
     return Err(caught_exception().error());
   }

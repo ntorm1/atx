@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -17,6 +19,7 @@
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/quote_slice_carry.hpp"
+#include "fitting/quote_slice_nodes.hpp"
 #include "fitting/quote_slice_vol_space.hpp"
 #include "fitting/rung_memo.hpp"
 #include "fitting/slice_channel.hpp"
@@ -47,7 +50,9 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
       (cfg.method != QuoteSliceFitMethod::PointCurve &&
        cfg.method != QuoteSliceFitMethod::ChannelSpline) ||
       (cfg.grid_kernel != QuoteSliceGridKernel::Accurate &&
-       cfg.grid_kernel != QuoteSliceGridKernel::Fast)) {
+       cfg.grid_kernel != QuoteSliceGridKernel::Fast) ||
+      (cfg.floor_policy != QuoteSliceFloorPolicy::Legacy &&
+       cfg.floor_policy != QuoteSliceFloorPolicy::PriceOnly)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid fitting configuration");
   }
   if (!discrete_div_scheme_admits(cfg.discrete_div_scheme, cfg.discrete_div_steps)) {
@@ -367,6 +372,73 @@ const char *to_string(QuoteSliceFitStatus value) noexcept {
   }
   return "unknown";
 }
+const char *to_string(QuoteSlicePriceOnlyReason value) noexcept {
+  switch (value) {
+  case QuoteSlicePriceOnlyReason::None:
+    return "none";
+  case QuoteSlicePriceOnlyReason::FloorVol:
+    return "floor_vol";
+  case QuoteSlicePriceOnlyReason::FlatExerciseRegion:
+    return "flat_exercise_region";
+  case QuoteSlicePriceOnlyReason::LowVega:
+    return "low_vega";
+  case QuoteSlicePriceOnlyReason::UnidentifiedInterval:
+    return "unidentified_interval";
+  }
+  return "unknown";
+}
+const char *to_string(QuoteSliceVolConvention value) noexcept {
+  switch (value) {
+  case QuoteSliceVolConvention::None:
+    return "none";
+  case QuoteSliceVolConvention::AmericanQuoting:
+    return "american_quoting";
+  case QuoteSliceVolConvention::EuropeanEquivalent:
+    return "european_equivalent";
+  case QuoteSliceVolConvention::FittedCurve:
+    return "fitted_curve";
+  case QuoteSliceVolConvention::ReimpliedRepaired:
+    return "reimplied_repaired";
+  }
+  return "unknown";
+}
+const char *to_string(QuoteSliceFloorPolicy value) noexcept {
+  switch (value) {
+  case QuoteSliceFloorPolicy::Legacy:
+    return "legacy";
+  case QuoteSliceFloorPolicy::PriceOnly:
+    return "price_only";
+  }
+  return "unknown";
+}
+const char *to_string(QuoteSliceCarryConvention value) noexcept {
+  switch (value) {
+  case QuoteSliceCarryConvention::Supplied:
+    return "supplied";
+  case QuoteSliceCarryConvention::ForwardPreserving:
+    return "forward_preserving";
+  }
+  return "unknown";
+}
+const char *to_string(QuoteSliceModelKind value) noexcept {
+  switch (value) {
+  case QuoteSliceModelKind::AndersenLake:
+    return "andersen_lake";
+  case QuoteSliceModelKind::DiscreteDividendLattice:
+    return "discrete_dividend_lattice";
+  }
+  return "unknown";
+}
+QuoteSliceVolConvention vol_convention(const QuoteSliceRow &row) noexcept {
+  return row.evaluation_status == QuoteSliceEvaluationStatus::Success
+             ? row.vol_source
+             : QuoteSliceVolConvention::None;
+}
+QuoteSliceModelKind model_kind(const QuoteSliceFit &fit) noexcept {
+  return fit.dividend_model == QuoteSliceDividendModel::DatedCash
+             ? QuoteSliceModelKind::DiscreteDividendLattice
+             : QuoteSliceModelKind::AndersenLake;
+}
 const char *to_string(QuoteSliceRepairOutcome value) noexcept {
   switch (value) {
   case QuoteSliceRepairOutcome::NotAttempted:
@@ -390,49 +462,30 @@ const char *to_string(QuoteSliceRepairOutcome value) noexcept {
 }
 
 Result<QuoteSliceValue> evaluate_quote_slice(const QuoteSliceFit &fit, double strike, Side side) {
-  if (!positive(strike) || !valid_side(side)) {
-    return Err(ErrorCode::InvalidArgument, "quote slice: invalid query contract");
+  const auto answer = query_quote_slice(fit, strike, side);
+  if (!answer) {
+    return Err(answer.error());
   }
-  if (fit.fit_status != QuoteSliceFitStatus::Success || !fit.curve || !fit.prices) {
-    return Err(ErrorCode::Unavailable, "quote slice: no certified price slice");
-  }
-  const auto price = fit.prices->price(strike, side);
-  if (!price) {
-    return Err(ErrorCode::OutOfRange, "quote slice: strike outside certified price domain");
-  }
-  const auto nodes = fit.prices->nodes();
-  const auto node = std::lower_bound(nodes.begin(), nodes.end(), strike,
-      [](const AmericanPriceNode &value, double k) { return value.strike < k; });
-  const auto index = static_cast<std::size_t>(node - nodes.begin());
-  const unsigned bit = side == Side::Call ? 1u : 2u;
-  const bool at_node = node != nodes.end() && node->strike == strike;
-  if (at_node && index < fit.price_only_nodes.size() && (fit.price_only_nodes[index] & bit) != 0u) {
-    // A PriceOnly row's node side: its volatility stays refused even when a later
-    // calendar repair moved the price (QuoteSliceFit::price_only_nodes).
-    return Err(ErrorCode::OutOfRange, "quote slice: node side served price-only (no IV)");
-  }
-  const bool moved = index < fit.moved_nodes.size() && (fit.moved_nodes[index] & bit) != 0u;
-  if (at_node && !moved) {
-    const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
-    if (!positive(sigma)) {
-      return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
+  if (answer->status != QuoteSliceEvaluationStatus::Success) {
+    // A price-only answer (lane C0): the certified price identifies no volatility, so
+    // none is returned - in particular never the inverter's floor kIvMin.
+    switch (answer->reason) {
+    case QuoteSlicePriceOnlyReason::FloorVol:
+      return Err(ErrorCode::OutOfRange,
+                 "quote slice: certified price has no identified IV (at or below the floor)");
+    case QuoteSlicePriceOnlyReason::FlatExerciseRegion:
+      return Err(ErrorCode::OutOfRange,
+                 "quote slice: certified price has no identified IV (exercise region)");
+    case QuoteSlicePriceOnlyReason::LowVega:
+      return Err(ErrorCode::OutOfRange,
+                 "quote slice: certified price has no identified IV (uncertified slope)");
+    case QuoteSlicePriceOnlyReason::None:
+    case QuoteSlicePriceOnlyReason::UnidentifiedInterval:
+      break;
     }
-    return Ok(QuoteSliceValue{sigma, *price});
-  }
-  const double q = effective_yield(fit, calendar_yield_at(fit, strike));
-  QuoteSliceConfig query_config;
-  query_config.discrete_div_steps = fit.discrete_div_steps;
-  const QuoteSliceQuote query{strike, side, *price, *price, {}};
-  const auto sigma = fit.dividend_model == QuoteSliceDividendModel::DatedCash
-      ? dated_cash_iv(fit, query, *price, query_config, q)
-      : american_implied_vol(*price, fit.market.spot, strike, fit.market.variance_years,
-                             fit.diagnostics.effective_rate, q, side,
-                             AmericanMethod::AndersenLake, query_config.iv_tolerance,
-                             query_config.max_iv_iterations, fit.al_opts);
-  if (!sigma || !positive(*sigma)) {
     return Err(ErrorCode::OutOfRange, "quote slice: certified price has no identifiable IV");
   }
-  return Ok(QuoteSliceValue{*sigma, *price});
+  return Ok(QuoteSliceValue{answer->volatility, answer->price});
 }
 
 namespace {
@@ -451,6 +504,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.al_opts = config.al_opts;
   out.discrete_div_steps = config.discrete_div_steps;
   out.discrete_div_scheme = config.discrete_div_scheme;
+  out.floor_policy = config.floor_policy;
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
@@ -1266,10 +1320,26 @@ std::optional<AmericanPriceSlice> box_certify_slice(std::span<const QuoteSliceQu
 }
 
 // Flags node side `bit` (1 call, 2 put) of node `node` among `nodes` as served
-// price-only (QuoteSliceFit::price_only_nodes).
-void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::size_t nodes) {
-  if (fit.price_only_nodes.size() != nodes) fit.price_only_nodes.assign(nodes, 0);
-  fit.price_only_nodes[node] = static_cast<std::uint8_t>(fit.price_only_nodes[node] | bit);
+// price-only (QuoteSliceFit::price_only_nodes); shared with quote_surface.cpp.
+using detail::mark_price_only;
+
+// Publishes a row's identification (quote_slice_nodes.hpp): a Success volatility with
+// its convention, or PriceOnly with NaN volatility, the reason and the interval, its
+// node side flagged price-only. The certified price is the caller's, never touched.
+void publish_identification(QuoteSliceFit &fit, QuoteSliceRow &row,
+                            const detail::VolIdentification &id, QuoteSliceVolConvention source,
+                            std::size_t node, unsigned bit, std::size_t nodes) {
+  if (id.status == QuoteSliceEvaluationStatus::Success) {
+    row.fitted_iv = id.volatility;
+    row.vol_source = source;
+    return;
+  }
+  row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
+  row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
+  row.price_only_reason = id.reason;
+  row.iv_lower = id.iv_lower;
+  row.iv_upper = id.iv_upper;
+  mark_price_only(fit, node, bit, nodes);
 }
 
 // Rung memo key of a certification candidate (rung_memo.hpp): the fit-level words of
@@ -1454,27 +1524,25 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     }
     row.fitted_price = *price;
     row.evaluation_status = QuoteSliceEvaluationStatus::Success;
+    row.vol_source = QuoteSliceVolConvention::FittedCurve;
     ++diag.prices_produced;
-    if (!repaired.empty()) {
+    const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
+    const auto node = static_cast<std::size_t>(at - strikes.begin());
+    const unsigned bit = quote.side == Side::Call ? 1u : 2u;
+    const bool is_node = at != strikes.end() && *at == quote.strike;
+    if (!repaired.empty() && is_node && (repaired[node] & bit) != 0u) {
       // A repaired node's served price is no longer the curve's: report the
       // volatility of the certified price, and never the curve's pre-repair
       // volatility when the served price has none (PriceOnly).
-      const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
-      const auto node = static_cast<std::size_t>(at - strikes.begin());
-      const unsigned bit = quote.side == Side::Call ? 1u : 2u;
-      if (at != strikes.end() && *at == quote.strike && (repaired[node] & bit) != 0u) {
-        const double q = effective_yield(out, calendar_yield_at(out, quote.strike));
-        QuoteSliceConfig query;
-        query.discrete_div_steps = out.discrete_div_steps;
-        const auto iv = contract_iv(out, quote, *price, query, q);
-        if (iv && positive(*iv)) {
-          row.fitted_iv = *iv;
-        } else {
-          row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
-          row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
-          mark_price_only(out, node, bit, strikes.size());
-        }
-      }
+      publish_identification(
+          out, row, detail::reimplied_vol(out, quote.strike, quote.side, *price, out.floor_policy),
+          QuoteSliceVolConvention::ReimpliedRepaired, node, bit, strikes.size());
+    } else if (out.floor_policy == QuoteSliceFloorPolicy::PriceOnly && is_node &&
+               detail::at_vol_floor(row.fitted_iv)) {
+      // The curve's own volatility at or below the floor is a bound, not an identified
+      // volatility of the served price (QuoteSliceFloorPolicy::PriceOnly).
+      publish_identification(out, row, detail::floor_vol(out, quote.strike, quote.side, *price),
+                             QuoteSliceVolConvention::FittedCurve, node, bit, strikes.size());
     }
   }
   if (std::any_of(repaired.begin(), repaired.end(), [](std::uint8_t m) { return m != 0u; })) {
@@ -1987,19 +2055,11 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
     const auto node = static_cast<std::size_t>(at - strikes.begin());
     const unsigned bit = quote.side == Side::Call ? 1u : 2u;
     if (at != strikes.end() && *at == quote.strike && (moved[node] & bit) != 0u) {
-      const double q = effective_yield(fit, calendar_yield_at(fit, quote.strike));
-      QuoteSliceConfig query;
-      query.discrete_div_steps = fit.discrete_div_steps;
-      const auto iv = contract_iv(fit, quote, *price, query, q);
-      if (iv && positive(*iv)) {
-        row.fitted_iv = *iv;
-      } else {
-        // The served price has no identifiable volatility: never pair it with
-        // the curve's pre-repair volatility.
-        row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
-        row.evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
-        mark_price_only(fit, node, bit, nodes.size());
-      }
+      // The served price has moved off the curve: report its own volatility, and
+      // never pair it with the curve's pre-repair one when it has none (PriceOnly).
+      publish_identification(
+          fit, row, detail::reimplied_vol(fit, quote.strike, quote.side, *price, fit.floor_policy),
+          QuoteSliceVolConvention::ReimpliedRepaired, node, bit, nodes.size());
     }
   }
   // Union with any earlier (convexity) repair: both leave nodes off the curve.
@@ -2433,6 +2493,178 @@ const char *to_string(QuoteSlicePreScreen value) noexcept {
     return "too_few_channels";
   }
   return "unknown";
+}
+
+// ── Identifiability seam (quote_slice_nodes.hpp; lanes L3a-b / C0) ──────────────
+
+namespace detail {
+
+std::optional<NodeSide> node_side(std::span<const AmericanPriceNode> nodes, double strike,
+                                  Side side) noexcept {
+  if (!valid_side(side)) return std::nullopt;
+  const auto at = std::lower_bound(nodes.begin(), nodes.end(), strike,
+      [](const AmericanPriceNode &value, double k) { return value.strike < k; });
+  if (at == nodes.end() || at->strike != strike) return std::nullopt;
+  return NodeSide{static_cast<std::size_t>(at - nodes.begin()),
+                  static_cast<std::uint8_t>(side == Side::Call ? 1u : 2u)};
+}
+
+void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::size_t nodes) {
+  assert(node < nodes && "mark_price_only: node outside the slice");
+  if (fit.price_only_nodes.size() != nodes) fit.price_only_nodes.assign(nodes, 0);
+  fit.price_only_nodes[node] = static_cast<std::uint8_t>(fit.price_only_nodes[node] | bit);
+}
+
+bool at_vol_floor(double iv) noexcept { return std::isfinite(iv) && iv <= kIvMin; }
+
+namespace {
+
+// True when certified `price` lies in the Andersen-Lake kernel's non-monotone band and
+// the spot sits in the kernel's exercise region at `sigma` (al_non_monotone_region):
+// the exercise plateau, where every such volatility prices the exercise value.
+bool on_plateau(const QuoteSliceFit &fit, double strike, Side side, double price, double q,
+                double sigma) noexcept {
+  return al_non_monotone_region(price, fit.market.spot, strike, fit.market.variance_years,
+                                fit.diagnostics.effective_rate, q, side, sigma, fit.al_opts);
+}
+
+// The plateau edge above `from` (where on_plateau holds): the volatility, to 1e-6 and
+// rounded up, at which the spot leaves the kernel's exercise region; kIvMax when it never
+// does. Bounded bisection (24 halvings cover [kIvMin, kIvMax] to 1e-6).
+double plateau_edge(const QuoteSliceFit &fit, double strike, Side side, double price, double q,
+                    double from) noexcept {
+  if (on_plateau(fit, strike, side, price, q, kIvMax)) return kIvMax;
+  double lo = from;
+  double hi = kIvMax;
+  for (int halving = 0; halving < 64 && hi - lo > 1.0e-6; ++halving) {
+    const double mid = 0.5 * (lo + hi);
+    if (on_plateau(fit, strike, side, price, q, mid)) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return hi;
+}
+
+VolIdentification identified(double volatility) noexcept {
+  VolIdentification id;
+  id.status = QuoteSliceEvaluationStatus::Success;
+  id.reason = QuoteSlicePriceOnlyReason::None;
+  id.volatility = volatility;
+  return id;
+}
+
+} // namespace
+
+VolIdentification floor_vol(const QuoteSliceFit &fit, double strike, Side side, double price) {
+  const double q_effective = effective_yield(fit, calendar_yield_at(fit, strike));
+  VolIdentification id;
+  id.reason = QuoteSlicePriceOnlyReason::FloorVol;
+  id.iv_lower = 0.0;
+  id.iv_upper = kIvMin;
+  if (fit.dividend_model != QuoteSliceDividendModel::DatedCash &&
+      on_plateau(fit, strike, side, price, q_effective, kIvMin)) {
+    id.iv_upper = plateau_edge(fit, strike, side, price, q_effective, kIvMin);
+  }
+  return id;
+}
+
+VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
+                                QuoteSliceFloorPolicy policy) {
+  const double q_effective = effective_yield(fit, calendar_yield_at(fit, strike));
+  QuoteSliceConfig query;
+  query.discrete_div_steps = fit.discrete_div_steps;
+  const QuoteSliceQuote contract{strike, side, price, price, {}};
+  const VolIdentification unidentified; // PriceOnly, UnidentifiedInterval, no interval
+  const bool typed = policy == QuoteSliceFloorPolicy::PriceOnly;
+  if (!typed || fit.dividend_model == QuoteSliceDividendModel::DatedCash) {
+    // The historical rule (and the lattice, which has no non-monotone refusal).
+    const auto iv = contract_iv(fit, contract, price, query, q_effective);
+    if (!iv || !positive(*iv)) return unidentified;
+    if (typed && at_vol_floor(*iv)) return floor_vol(fit, strike, side, price);
+    return identified(*iv);
+  }
+  // Continuous carry under PriceOnly: the typed inversion with the opt-in non-monotone
+  // refusal. Its Ok answer is contract_iv's root bit for bit (american_iv.hpp: same
+  // Search route and controls), so identified volatilities match the Legacy rule.
+  IvOpts opts;
+  opts.method = AmericanMethod::AndersenLake;
+  opts.tol = query.iv_tolerance;
+  opts.max_iter = query.max_iv_iterations;
+  opts.al_opts = fit.al_opts;
+  opts.refuse_non_monotone = true;
+  const IvResult answer = american_implied_vol(price, fit.market.spot, strike,
+                                               fit.market.variance_years,
+                                               fit.diagnostics.effective_rate, q_effective, side,
+                                               opts);
+  if (answer.status == IvStatus::Ok && positive(answer.iv)) {
+    return at_vol_floor(answer.iv) ? floor_vol(fit, strike, side, price)
+                                   : identified(answer.iv);
+  }
+  if (answer.status != IvStatus::NonMonotoneRegion) return unidentified;
+  // Refused inside the non-monotone band: the plain root says why.
+  const auto root = contract_iv(fit, contract, price, query, q_effective);
+  if (!root || !positive(*root)) return unidentified;
+  if (at_vol_floor(*root)) return floor_vol(fit, strike, side, price);
+  VolIdentification id;
+  if (on_plateau(fit, strike, side, price, q_effective, *root)) {
+    id.reason = QuoteSlicePriceOnlyReason::FlatExerciseRegion;
+    id.iv_lower = 0.0;
+    id.iv_upper = plateau_edge(fit, strike, side, price, q_effective, *root);
+  } else {
+    id.reason = QuoteSlicePriceOnlyReason::LowVega;
+  }
+  return id;
+}
+
+} // namespace detail
+
+Result<QuoteSliceQuery> query_quote_slice(const QuoteSliceFit &fit, double strike, Side side) {
+  if (!positive(strike) || !valid_side(side)) {
+    return Err(ErrorCode::InvalidArgument, "quote slice: invalid query contract");
+  }
+  if (fit.fit_status != QuoteSliceFitStatus::Success || !fit.curve || !fit.prices) {
+    return Err(ErrorCode::Unavailable, "quote slice: no certified price slice");
+  }
+  const auto price = fit.prices->price(strike, side);
+  if (!price) {
+    return Err(ErrorCode::OutOfRange, "quote slice: strike outside certified price domain");
+  }
+  const auto node = detail::node_side(fit.prices->nodes(), strike, side);
+  const auto flagged_in = [&node](const std::vector<std::uint8_t> &flags) {
+    return node && node->node < flags.size() && (flags[node->node] & node->bit) != 0u;
+  };
+  detail::VolIdentification id;
+  QuoteSliceVolConvention source = QuoteSliceVolConvention::ReimpliedRepaired;
+  if (node && !flagged_in(fit.moved_nodes)) {
+    // An unmoved node serves the curve's own volatility, cached through the curve.
+    const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
+    if (!positive(sigma)) {
+      return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
+    }
+    source = QuoteSliceVolConvention::FittedCurve;
+    id = detail::at_vol_floor(sigma) ? detail::floor_vol(fit, strike, side, *price)
+                                     : detail::identified(sigma);
+  } else {
+    // Between nodes, or a moved node: invert the certified price at the local carry.
+    id = detail::reimplied_vol(fit, strike, side, *price, QuoteSliceFloorPolicy::PriceOnly);
+  }
+  if (flagged_in(fit.price_only_nodes) && id.status == QuoteSliceEvaluationStatus::Success) {
+    id = detail::VolIdentification{}; // final for the life of the fit: UnidentifiedInterval
+  }
+  QuoteSliceQuery answer;
+  answer.status = id.status;
+  answer.reason = id.reason;
+  answer.price = *price;
+  if (id.status == QuoteSliceEvaluationStatus::Success) {
+    answer.vol_convention = source;
+    answer.volatility = id.volatility;
+  } else {
+    answer.iv_lower = id.iv_lower;
+    answer.iv_upper = id.iv_upper;
+  }
+  return Ok(answer);
 }
 
 } // namespace atx::vol
