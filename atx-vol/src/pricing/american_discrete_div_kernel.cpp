@@ -154,6 +154,47 @@ struct PreStepNeed {
   return Ok();
 }
 
+// Header section 4, the Refined route's exception: an in-life ex-date inside the
+// last two steps of the Richardson pair's COARSE lattice (`coarse_steps`), where its
+// BBS final step spans the ex-date that the fine lattice splices.
+[[nodiscard]] bool near_expiry_event(std::span<const CashDividend> dividends, double T,
+                                     double tau_shift, int coarse_steps) noexcept {
+  const double window_start = T - 2.0 * T / static_cast<double>(coarse_steps);
+  for (const CashDividend &dv : dividends) {
+    if (in_life(dv, T, tau_shift) && dv.tau - tau_shift > window_start) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Header section 2 (lane D1, L3f review m1): a spot whose post-dividend level after
+// the cash paid up to an ex-date in (0, T] sits at or below the kBandSd band of log
+// spot at that date — the comparator's lattices read it off the grid bottom.
+[[nodiscard]] bool cash_dominated(double S, double T, double sigma,
+                                  std::span<const CashDividend> dividends) noexcept {
+  const double tau_at_expiry = T * (1.0 + kTauAtExpiryRelTol);
+  const auto counts = [&](const CashDividend &dv) {
+    return dv.tau > 0.0 && dv.tau <= tau_at_expiry && dv.amount > 0.0;
+  };
+  for (const CashDividend &dv : dividends) {
+    if (!counts(dv)) {
+      continue;
+    }
+    double paid = 0.0;
+    for (const CashDividend &other : dividends) {
+      if (counts(other) && other.tau <= dv.tau) {
+        paid += other.amount;
+      }
+    }
+    const double band_floor = S * std::exp(-kBandSd * sigma * std::sqrt(std::min(dv.tau, T)));
+    if (!(S - paid > band_floor)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // The route of header section 4. `raise_for_events` is false only for a Screen
 // tier (a seed lattice keeps its coarse count). `tau_shift` routes the contract
 // as seen `tau_shift` years later (the calendar roll).
@@ -204,10 +245,17 @@ build_route(double S, double T, std::span<const CashDividend> dividends,
     }
   }
   if (opts.accuracy == DiscreteDivAccuracy::Refined) {
-    route.method = DiscreteDivMethod::CubicBbsRichardson;
     steps = std::max(steps, kDiscreteDivRefinedSteps);
     steps += (steps % 2 == 0) ? 1 : 0; // same parity for the Richardson pair
-    route.coarse_steps = (steps + 1) / 2;
+    const int coarse = (steps + 1) / 2;
+    if (near_expiry_event(dividends, T, tau_shift, coarse)) {
+      route.method = DiscreteDivMethod::CubicCrr;
+      steps = std::max(steps, kDiscreteDivNearExpirySteps);
+      route.flags |= bit(DiscreteDivRouteFlag::NearExpiryExDate);
+    } else {
+      route.method = DiscreteDivMethod::CubicBbsRichardson;
+      route.coarse_steps = coarse;
+    }
   } else {
     route.method = DiscreteDivMethod::CubicCrr;
   }
@@ -229,7 +277,8 @@ build_route(double S, double T, std::span<const CashDividend> dividends,
 }
 
 // The ProductionSpec of one route (the method's knobs, no hooks).
-[[nodiscard]] ddiv_detail::ProductionSpec route_spec(const DiscreteDivLatticeRoute &route) noexcept {
+[[nodiscard]] ddiv_detail::ProductionSpec
+route_spec(const DiscreteDivLatticeRoute &route) noexcept {
   ddiv_detail::ProductionSpec spec;
   spec.splice = ddiv_detail::SpliceInterp::Cubic;
   spec.pre_steps = route.pre_steps;
@@ -469,6 +518,16 @@ Result<DiscreteDivConverged>
 american_discrete_div_converged_price(double S, double K, double T, double sigma, double r,
                                       double q, Side side, std::span<const CashDividend> dividends,
                                       ExerciseStyle exercise, DiscreteDivWorkspace &workspace) {
+  const Status ok =
+      ddiv_detail::validate(S, K, T, sigma, r, q, dividends, kDiscreteDivConvergedSteps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  if (cash_dominated(S, T, sigma, dividends)) {
+    return Err(ErrorCode::OutOfRange,
+               "converged reference: cash-dominated contract (the post-dividend spot sits "
+               "beyond the 6-sd band at an ex-date; the lattices extrapolate below the grid)");
+  }
   const Result<double> fine =
       price_on(S, K, T, sigma, r, q, side, dividends, kDiscreteDivConvergedSteps, exercise,
                DiscreteDivScheme::SplicedBbs, workspace);
@@ -1070,6 +1129,17 @@ Result<DiscreteDivIvResult> Inverter::run() {
       (route_ != nullptr) ? prepare_production(screen) : prepare_historical(screen);
   if (!prepared) {
     return Err(prepared.error());
+  }
+  // The production lattices (lane D1): a quote at or below the exercise value sits
+  // on the American exercise plateau, where the price IS the payoff over a range of
+  // volatilities. Any sigma there is a floor value, not an identified volatility
+  // (plan 3.2), so the quote is price-only. The historical schemes keep their
+  // call-for-call behaviour (the kill switch's parity).
+  const bool production = (route_ != nullptr) || scheme_ == DiscreteDivScheme::SplicedCubic;
+  if (production && !(price_ > intrinsic(side_, S_, K_))) {
+    return Err(ErrorCode::OutOfRange,
+               "dated-cash IV: quote at or below the exercise value (price-only: the exercise "
+               "plateau identifies no volatility)");
   }
   if (!screen) {
     fallback_ = DiscreteDivIvFallback::NotApplicable;

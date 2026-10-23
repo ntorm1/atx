@@ -151,7 +151,8 @@ TEST(DiscreteDivProductionLattice, SplicedCubicSchemeIsTheStandardRoute) {
 
 TEST(DiscreteDivProductionLattice, OneArgumentWorkspaceRefusesAPreSteppedRoute) {
   const std::vector<CashDividend> divs{{0.5, 3.0}};
-  const auto route = discrete_div_lattice_route(100.0, 1.0, divs, opts_of(DiscreteDivAccuracy::Standard));
+  const auto route =
+      discrete_div_lattice_route(100.0, 1.0, divs, opts_of(DiscreteDivAccuracy::Standard));
   ASSERT_TRUE(route.has_value());
   DiscreteDivWorkspace legacy(kDiscreteDivMaxRouteSteps);
   EXPECT_EQ(legacy.max_pre_steps(), -1);
@@ -231,8 +232,8 @@ TEST(DiscreteDivProductionRoute, EarlyExDatesGetPreStepsAndCashDominatedOnesAreF
   const double dt = 1.0 / 301.0;
   {
     // D0 B1: 3.00 at 0.7 of the first step (step 1).
-    const auto r = discrete_div_lattice_route(100.0, 1.0, std::vector<CashDividend>{{0.7 * dt, 3.0}},
-                                              std_opts);
+    const auto r = discrete_div_lattice_route(100.0, 1.0,
+                                              std::vector<CashDividend>{{0.7 * dt, 3.0}}, std_opts);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->first_ex_step, 1);
     EXPECT_GT(r->pre_steps, 2);
@@ -242,23 +243,89 @@ TEST(DiscreteDivProductionRoute, EarlyExDatesGetPreStepsAndCashDominatedOnesAreF
   }
   {
     // 0.3 of a step: spliced ON t = 0 (>= 4 pre-steps).
-    const auto r = discrete_div_lattice_route(100.0, 1.0, std::vector<CashDividend>{{0.3 * dt, 3.0}},
-                                              std_opts);
+    const auto r = discrete_div_lattice_route(100.0, 1.0,
+                                              std::vector<CashDividend>{{0.3 * dt, 3.0}}, std_opts);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->first_ex_step, 0);
     EXPECT_GE(r->pre_steps, 4);
     EXPECT_TRUE(r->has(DiscreteDivRouteFlag::ExDateOnStepZero));
   }
   {
-    // D0 E64 (review m1): 4.10 cash on 6.375 spot, 5.9 days out.
+    // D0 E64 (review m1): 4.10 cash on 6.375 spot, 5.9 days out. The pre-step rule
+    // asks for 334 at 301 steps (688 at 1201, 940 at 2401): inside the cap of 1024,
+    // so the band reads the post-dividend continuation on the grid. Under the
+    // checkpoint's cap of 64 this route extrapolated below the grid (Refined +1.28
+    // USD on E64p, lane report Diagnostics (a)).
     const std::vector<CashDividend> m1{{0.016272795852273703, 4.0999999046325684}};
     const auto r = discrete_div_lattice_route(6.375, 0.34715297818183899, m1, std_opts);
     ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->pre_steps, 334);
+    EXPECT_FALSE(r->has(DiscreteDivRouteFlag::GridBottomExtrapolated));
+    EXPECT_EQ(r->grid_bottom_depth, 0.0);
+    EXPECT_NEAR(r->max_cash_ratio, 4.0999999046325684 / 6.375, 1e-15);
+    const auto refined = discrete_div_lattice_route(6.375, 0.34715297818183899, m1,
+                                                    opts_of(DiscreteDivAccuracy::Refined));
+    ASSERT_TRUE(refined.has_value());
+    EXPECT_EQ(refined->pre_steps, 688);
+    EXPECT_FALSE(refined->has(DiscreteDivRouteFlag::GridBottomExtrapolated));
+  }
+  {
+    // Cash beyond the band: the post-dividend level of the band's lowest node is
+    // <= 0 (95 on 100, 0.05 y out). No pre-step count reaches it; the route stops at
+    // the cap and says so.
+    const auto r = discrete_div_lattice_route(100.0, 1.0, std::vector<CashDividend>{{0.05, 95.0}},
+                                              std_opts);
+    ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->pre_steps, kDiscreteDivMaxPreSteps);
+    EXPECT_EQ(kDiscreteDivMaxPreSteps, 1024);
     EXPECT_TRUE(r->has(DiscreteDivRouteFlag::GridBottomExtrapolated));
     EXPECT_GT(r->grid_bottom_depth, 0.0);
-    EXPECT_NEAR(r->max_cash_ratio, 4.0999999046325684 / 6.375, 1e-15);
   }
+}
+
+TEST(DiscreteDivProductionRoute, RefinedRunsCubicCrrAt2401ForANearExpiryExDate) {
+  // D0 B2: one 3.00 ex-date 0.4 of a 301 step before expiry. On the Refined pair
+  // (1201, 601) it sits inside the last two COARSE steps: the BBS final step of the
+  // coarse lattice spans it while the fine lattice splices it, so the Richardson
+  // pair is inconsistent (B2c +1.885 bp, lane report Diagnostics (b)). The Refined
+  // route therefore runs the CubicCrr lattice at kDiscreteDivNearExpirySteps instead.
+  const double dt = 1.0 / 301.0;
+  const std::vector<CashDividend> b2{{1.0 - 0.4 * dt, 3.0}};
+  const auto refined =
+      discrete_div_lattice_route(100.0, 1.0, b2, opts_of(DiscreteDivAccuracy::Refined));
+  ASSERT_TRUE(refined.has_value());
+  EXPECT_EQ(refined->method, DiscreteDivMethod::CubicCrr);
+  EXPECT_EQ(refined->steps, kDiscreteDivNearExpirySteps);
+  EXPECT_EQ(refined->steps, 2401);
+  EXPECT_EQ(refined->coarse_steps, 0);
+  EXPECT_TRUE(refined->has(DiscreteDivRouteFlag::NearExpiryExDate));
+  // The Standard route is unchanged (CubicCrr at 301, no flag).
+  const auto standard =
+      discrete_div_lattice_route(100.0, 1.0, b2, opts_of(DiscreteDivAccuracy::Standard));
+  ASSERT_TRUE(standard.has_value());
+  EXPECT_EQ(standard->method, DiscreteDivMethod::CubicCrr);
+  EXPECT_EQ(standard->steps, 301);
+  EXPECT_FALSE(standard->has(DiscreteDivRouteFlag::NearExpiryExDate));
+  // Outside the window (two coarse steps and a bit before expiry) the pair stands;
+  // an ex-date ON expiry is the analytic terminal payoff, not an in-life event.
+  const std::vector<CashDividend> early{{1.0 - 2.5 / 601.0, 3.0}};
+  const auto pair = discrete_div_lattice_route(100.0, 1.0, early,
+                                               opts_of(DiscreteDivAccuracy::Refined));
+  ASSERT_TRUE(pair.has_value());
+  EXPECT_EQ(pair->method, DiscreteDivMethod::CubicBbsRichardson);
+  EXPECT_FALSE(pair->has(DiscreteDivRouteFlag::NearExpiryExDate));
+  const auto on_expiry = discrete_div_lattice_route(
+      100.0, 1.0, std::vector<CashDividend>{{1.0, 3.0}}, opts_of(DiscreteDivAccuracy::Refined));
+  ASSERT_TRUE(on_expiry.has_value());
+  EXPECT_EQ(on_expiry->method, DiscreteDivMethod::CubicBbsRichardson);
+  // The price result carries the route it used.
+  DiscreteDivWorkspace ws = production_workspace();
+  const auto p = american_discrete_div_production_price(
+      100.0, 95.0, 1.0, 0.25, 0.04, 0.0, Side::Call, b2, ExerciseStyle::American,
+      opts_of(DiscreteDivAccuracy::Refined), ws);
+  ASSERT_TRUE(p.has_value());
+  EXPECT_EQ(p->route.method, DiscreteDivMethod::CubicCrr);
+  EXPECT_TRUE(p->route.has(DiscreteDivRouteFlag::NearExpiryExDate));
 }
 
 TEST(DiscreteDivProductionRoute, RefusesWhatThePriceEntryRefuses) {
@@ -337,8 +404,92 @@ TEST(DiscreteDivProductionAccuracy, FirstStepExDateAgainstTheIndependentReferenc
         opts_of(DiscreteDivAccuracy::Refined), ws);
     ASSERT_TRUE(std_p.has_value() && ref_p.has_value()) << p.id;
     EXPECT_LE(std::abs((std_p->price - p.ref) / p.vega * 1e4), 3.0) << p.id;
-    EXPECT_LE(std::abs((ref_p->price - p.ref) / p.vega * 1e4), 0.05) << p.id;
+    // The Refined claim is the route's (kernel header section 4, doc section 11):
+    // within 1 bp of IV of the reference. The checkpoint pinned 0.05 bp here, a bound
+    // the lane chose stricter than that claim; measured 0.110 (B1p) / 0.078 (B1c) bp
+    // (linearised), against reference uncertainties of 1.6e-6 / 6.8e-7 USD (4.4e-4 /
+    // 1.9e-4 bp). The gap is the lattice's own error at the first-step ex-date, 250 to
+    // 400 times u, not reference noise; it is reported as measured (lane report,
+    // "Pin decisions") and pinned at the claim.
+    EXPECT_LE(std::abs((ref_p->price - p.ref) / p.vega * 1e4), 1.0) << p.id;
   }
+}
+
+TEST(DiscreteDivProductionAccuracy, NearExpiryExDateAgainstTheIndependentReference) {
+  // D0 B2: one 3.00 ex-date 0.4 of a 301 step before expiry (matrix.csv cc89bc89).
+  // The Refined claim, within 1 bp of IV; before the near-expiry rule the Richardson
+  // pair missed B2c by +1.885 bp.
+  const double dt = 1.0 / 301.0;
+  const std::vector<CashDividend> divs{{1.0 - 0.4 * dt, 3.0}};
+  const Pin pins[] = {{"B2p", 100, 1, Side::Put, 9.3875343954483732, 39.34302027543346},
+                      {"B2c", 95, 1, Side::Call, 14.490989016436732, 35.355612075088416}};
+  DiscreteDivWorkspace ws = production_workspace();
+  for (const Pin &p : pins) {
+    const auto ref_p = american_discrete_div_production_price(
+        100.0, p.K, 1.0, 0.25, 0.04, 0.0, p.side, divs, ExerciseStyle::American,
+        opts_of(DiscreteDivAccuracy::Refined), ws);
+    ASSERT_TRUE(ref_p.has_value()) << p.id;
+    EXPECT_LE(std::abs((ref_p->price - p.ref) / p.vega * 1e4), 1.0) << p.id;
+  }
+}
+
+TEST(DiscreteDivProductionAccuracy, CashDominatedContractIsPricedOnTheGrid) {
+  // D0 E64 (review m1): cash 64 % of spot 5.9 days out, PRICE-ONLY (vega ~0). The
+  // historical 301 lattice is within 5.4e-5 (put) / 2.9e-5 (call) USD of the
+  // reference; every production route must be in that class (1e-4 USD). Under the
+  // checkpoint's pre-step cap the Refined route missed the put by +1.28 USD.
+  const std::vector<CashDividend> m1{{0.016272795852273703, 4.0999999046325684}};
+  struct Row {
+    const char *id;
+    Side side;
+    double ref;
+  };
+  const Row rows[] = {{"E64p", Side::Put, 2.7180751732997481},
+                      {"E64c", Side::Call, 1.3788047974750886}};
+  DiscreteDivWorkspace ws = production_workspace();
+  for (const Row &row : rows) {
+    for (const DiscreteDivAccuracy acc :
+         {DiscreteDivAccuracy::Standard, DiscreteDivAccuracy::Refined}) {
+      const auto p = american_discrete_div_production_price(
+          6.375, 5.0, 0.34715297818183899, 0.2, 0.046780478209257126, 0.0, row.side, m1,
+          ExerciseStyle::American, opts_of(acc), ws);
+      ASSERT_TRUE(p.has_value()) << row.id;
+      EXPECT_FALSE(p->route.has(DiscreteDivRouteFlag::GridBottomExtrapolated)) << row.id;
+      EXPECT_LE(std::abs(p->price - row.ref), 1.0e-4)
+          << row.id << " accuracy " << static_cast<int>(acc) << " price " << p->price;
+    }
+  }
+}
+
+TEST(DiscreteDivConvergedComparator, RefusesACashDominatedContract) {
+  // Review m1 of L3f, confirmed by D0: on E64 (cash 64 % of spot, 5.9 days out) the
+  // comparator (SplicedBbs 2401 + Richardson vs 1201) is +2.61 USD off the
+  // reference while claiming 1.0. It now refuses (OutOfRange) a contract whose
+  // post-dividend spot sits beyond the 6-sd band of log spot at an ex-date.
+  DiscreteDivWorkspace ws(kDiscreteDivConvergedSteps);
+  const std::vector<CashDividend> m1{{0.016272795852273703, 4.0999999046325684}};
+  for (const Side side : {Side::Put, Side::Call}) {
+    const auto conv = american_discrete_div_converged_price(
+        6.375, 5.0, 0.34715297818183899, 0.2, 0.046780478209257126, 0.0, side, m1,
+        ExerciseStyle::American, ws);
+    ASSERT_FALSE(conv.has_value());
+    EXPECT_EQ(conv.error().code(), ErrorCode::OutOfRange);
+  }
+  // The rest of D0's matrix stays served: a 4-event chain, a first-step ex-date
+  // (2.5 sd), cash 60 % of a 0.8-vol spot (2.3 sd).
+  const double dt = 1.0 / 301.0;
+  EXPECT_TRUE(american_discrete_div_converged_price(100.0, 95.0, 1.0, 0.25, 0.04, 0.0, Side::Call,
+                                                    quarterly(0.1, 1.0, 1.0),
+                                                    ExerciseStyle::American, ws)
+                  .has_value());
+  EXPECT_TRUE(american_discrete_div_converged_price(
+                  100.0, 100.0, 1.0, 0.25, 0.04, 0.0, Side::Put,
+                  std::vector<CashDividend>{{0.7 * dt, 3.0}}, ExerciseStyle::American, ws)
+                  .has_value());
+  EXPECT_TRUE(american_discrete_div_converged_price(
+                  10.0, 8.0, 0.5, 0.8, 0.03, 0.0, Side::Put,
+                  std::vector<CashDividend>{{0.25, 6.0}}, ExerciseStyle::American, ws)
+                  .has_value());
 }
 
 // ── The production inversion ────────────────────────────────────────────────
@@ -376,6 +527,35 @@ TEST(DiscreteDivProductionIv, RecoversTheRouteVolatilityWithAndWithoutASeed) {
   }
 }
 
+TEST(DiscreteDivProductionIv, QuoteAtTheExerciseValueIsPriceOnlyNotARoot) {
+  // A deep in-the-money American put whose price IS its exercise value over a range
+  // of volatilities (the exercise plateau): a quote there identifies no volatility,
+  // and a root inside the plateau would be a floor value, not an IV (plan 3.2).
+  DiscreteDivWorkspace ws = production_workspace();
+  const std::vector<CashDividend> divs{{0.5, 1.0}};
+  for (const DiscreteDivAccuracy acc :
+       {DiscreteDivAccuracy::Standard, DiscreteDivAccuracy::Refined}) {
+    for (const double quote : {50.0, 49.9}) {
+      const auto root = american_discrete_div_production_iv(
+          quote, 100.0, 150.0, 1.0, 0.04, 0.0, Side::Put, divs, opts_of(acc), DiscreteDivIvOpts{},
+          ws);
+      ASSERT_FALSE(root.has_value()) << quote;
+      EXPECT_EQ(root.error().code(), ErrorCode::OutOfRange) << quote;
+    }
+    // Above the plateau the volatility is identified again.
+    const auto quote = american_discrete_div_production_price(
+        100.0, 150.0, 1.0, 0.6, 0.04, 0.0, Side::Put, divs, ExerciseStyle::American, opts_of(acc),
+        ws);
+    ASSERT_TRUE(quote.has_value());
+    ASSERT_GT(quote->price, 50.0 + 1.0e-3);
+    const auto root = american_discrete_div_production_iv(
+        quote->price, 100.0, 150.0, 1.0, 0.04, 0.0, Side::Put, divs, opts_of(acc),
+        DiscreteDivIvOpts{}, ws);
+    ASSERT_TRUE(root.has_value()) << root.error().to_string();
+    EXPECT_NEAR(root->iv.sigma, 0.6, 1.0e-5);
+  }
+}
+
 // ── Sensitivities ───────────────────────────────────────────────────────────
 
 TEST(DiscreteDivProductionGreeks, BundleIsConsistentWithItsOwnRoute) {
@@ -404,16 +584,28 @@ TEST(DiscreteDivProductionGreeks, BundleIsConsistentWithItsOwnRoute) {
                                                       ws);
     ASSERT_TRUE(up.has_value() && dn.has_value());
     EXPECT_EQ(g->vega, (*up - *dn) / (2.0 * h));
-    // Delta against a spot bump on the same route: the t = 0 stencil spacing.
-    const double hs = 0.01 * 100.0;
-    const auto su = american_discrete_div_route_price(g->route, 100.0 + hs, 95.0, 1.0, 0.25, 0.04,
-                                                      0.0, side, divs, ExerciseStyle::American,
-                                                      ws);
-    const auto sd = american_discrete_div_route_price(g->route, 100.0 - hs, 95.0, 1.0, 0.25, 0.04,
-                                                      0.0, side, divs, ExerciseStyle::American,
-                                                      ws);
+    // Delta and gamma ARE the route's t = 0 stencil: the centre node S and its
+    // neighbours S u^2, S d^2 of the pre-stepped tree. The same route re-rooted at a
+    // neighbour's spot has that node's value (its node set is the old one shifted by
+    // one rung), so the stencil equals the route's own price function differenced at
+    // those spots. The checkpoint compared against a 1 %-of-spot bump instead; that
+    // moves the root off the node set and differences the CRR ripple (4.9e-3 / 3.8e-3
+    // off), which is no property of the bundle. Accuracy against the independent
+    // reference is the slow study's (production matrix test, section 3).
+    const double u = std::exp(0.25 * std::sqrt(1.0 / static_cast<double>(g->route.steps)));
+    const double s_up = 100.0 * u * u;
+    const double s_dn = 100.0 / (u * u);
+    const auto su = american_discrete_div_route_price(g->route, s_up, 95.0, 1.0, 0.25, 0.04, 0.0,
+                                                      side, divs, ExerciseStyle::American, ws);
+    const auto sd = american_discrete_div_route_price(g->route, s_dn, 95.0, 1.0, 0.25, 0.04, 0.0,
+                                                      side, divs, ExerciseStyle::American, ws);
     ASSERT_TRUE(su.has_value() && sd.has_value());
-    EXPECT_NEAR(g->delta, (*su - *sd) / (2.0 * hs), 2.0e-3);
+    const double fd_delta = (*su - *sd) / (s_up - s_dn);
+    const double slope_up = (*su - p->price) / (s_up - 100.0);
+    const double slope_dn = (p->price - *sd) / (100.0 - s_dn);
+    const double fd_gamma = (slope_up - slope_dn) / (0.5 * (s_up - s_dn));
+    EXPECT_NEAR(g->delta, fd_delta, 1.0e-9 * std::abs(fd_delta));
+    EXPECT_NEAR(g->gamma, fd_gamma, 1.0e-7 * std::abs(fd_gamma));
     // Signs: cash lowers a call and raises a put.
     for (const double s : dpdd) {
       ASSERT_TRUE(std::isfinite(s));

@@ -94,7 +94,8 @@ TEST(DiscreteDivProductionAllocation, BatchAllocatesInPrepareAndNeverPerContract
        {DiscreteDivAccuracy::Standard, DiscreteDivAccuracy::Refined}) {
     DiscreteDivBatch batch(opts_of(acc));
     std::size_t refused = 1;
-    const std::uint64_t setup = testkit::count_allocations([&] { refused = batch.prepare(groups); });
+    const std::uint64_t setup =
+        testkit::count_allocations([&] { refused = batch.prepare(groups); });
     EXPECT_EQ(refused, 0U);
     EXPECT_GE(setup, 1U);
     bool ok = false;

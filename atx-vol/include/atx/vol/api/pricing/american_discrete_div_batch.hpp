@@ -54,8 +54,9 @@ struct DiscreteDivBatchContract {
 
 enum class DiscreteDivBatchOutcome : std::uint8_t {
   Priced = 0,       // a price, or an identified IV root
-  PriceOnly = 1,    // implied_vol: the quote sits at or below the lattice's lowest-vol
-                    // price — the price is valid, no volatility is identified by it
+  PriceOnly = 1,    // implied_vol: the quote sits at or below the exercise value (the
+                    // American plateau) or the lattice's lowest-vol price — the price
+                    // is valid, no volatility is identified by it
   RefusedInput = 2, // InvalidArgument: the contract's own inputs (K, sigma, quote)
   RefusedRange = 3, // OutOfRange other than price-only: above the maximum-volatility
                     // price, the CRR window closed, a non-finite lattice price

@@ -271,6 +271,15 @@ struct DiscreteDivConverged {
 
 // Needs `workspace.admits(kDiscreteDivConvergedSteps)`; same error contract as the
 // price overload. Two rollbacks (fine first, coarse second, one workspace).
+//
+// REFUSES (OutOfRange) a CASH-DOMINATED contract (lane D1, L3f review m1, D0 row
+// E64): one whose spot, after the cash paid up to and including an ex-date tau in
+// (0, T], sits at or below S e^{-6 sigma sqrt(tau)} — beyond the 6-sd band of log
+// spot at that date (or at or below zero). Both lattices then read the spot's
+// post-dividend continuation off the grid-bottom extrapolation, not off the grid,
+// and `fine - coarse` stops being an uncertainty: on E64 (cash 64 % of spot 5.9
+// days out, 40 sd) the pair was +2.61 USD off the independent reference while
+// claiming 1.0. Every other row of D0's 50-row matrix is at most 2.5 sd (B1).
 [[nodiscard]] Result<DiscreteDivConverged>
 american_discrete_div_converged_price(double S, double K, double T, double sigma, double r,
                                       double q, Side side, std::span<const CashDividend> dividends,
@@ -451,24 +460,36 @@ american_discrete_div_implied_vol(double price, double S, double K, double T, do
 //     grid's second node, evaluated at kDiscreteDivRouteSigma (the route does not
 //     depend on the contract's sigma, so a root find and a batch group see ONE
 //     discretisation); capped at kDiscreteDivMaxPreSteps, beyond which the route
-//     says GridBottomExtrapolated and reports the depth (D0 row E64p / E64c:
-//     cash 64 % of spot — price-only, the 301 lattice within 5.4e-5 USD there).
+//     says GridBottomExtrapolated and reports the depth. The cap is 1024: D0 row
+//     E64 (cash 64 % of spot, 5.9 days out; price-only) asks for 334 / 688 / 940
+//     pre-steps at 301 / 1201 / 2401 steps, and at the checkpoint's cap of 64 its
+//     band read below the grid (Refined +1.28 USD on E64p). What still exceeds 1024
+//     is cash beyond the band (a post-dividend level <= 0 for the band's lowest
+//     node), which no pre-step count reaches.
 //   * Refined accuracy: method CubicBbsRichardson — the BBS final step plus the
 //     same-parity Richardson pair (N, (N + 1) / 2), N = kDiscreteDivRefinedSteps
-//     (or the Standard rule's count if larger): the reference-grade route.
+//     (or the Standard rule's count if larger): the reference-grade route. EXCEPT
+//     when an in-life ex-date falls in the last two COARSE steps, (T - 2 T / M, T)
+//     with M = (N + 1) / 2: the coarse lattice's BBS final step then spans the
+//     ex-date while the fine lattice splices it, the pair is inconsistent (D0 row
+//     B2c: +1.885 bp), and the route runs method CubicCrr at
+//     kDiscreteDivNearExpirySteps instead (flag NearExpiryExDate; B2c -0.11 bp,
+//     B2p +0.27 bp, doc section 11).
 // A route is a pure function of (S, T, schedule, opts): no sigma, rate or strike.
 //
 // Thread-safety: as the rest of this header (pure functions + one workspace).
 
-inline constexpr int kDiscreteDivMaxPreSteps = 64;
+inline constexpr int kDiscreteDivMaxPreSteps = 1024;
 inline constexpr int kDiscreteDivStepsPerEvent = 25;
 inline constexpr int kDiscreteDivMaxRouteSteps = 2401;
 inline constexpr int kDiscreteDivRefinedSteps = 1201;
+inline constexpr int kDiscreteDivNearExpirySteps = 2401;
 inline constexpr double kDiscreteDivRouteSigma = 0.10;
 
 enum class DiscreteDivAccuracy : std::uint8_t {
   Standard = 0, // CubicCrr at the routed step count
-  Refined = 1,  // CubicBbsRichardson at kDiscreteDivRefinedSteps
+  Refined = 1,  // CubicBbsRichardson at kDiscreteDivRefinedSteps (CubicCrr at
+                // kDiscreteDivNearExpirySteps for an ex-date in the last two coarse steps)
 };
 
 enum class DiscreteDivMethod : std::uint8_t {
@@ -489,6 +510,7 @@ enum class DiscreteDivRouteFlag : std::uint16_t {
   GridBottomExtrapolated = 1U << 4, // kDiscreteDivMaxPreSteps left a band node below the grid
   ExDateOnStepZero = 1U << 5,       // an ex-date within half a step of t = 0, spliced at t = 0
   KillSwitch = 1U << 6,             // historical lattice by request
+  NearExpiryExDate = 1U << 7,       // Refined: an ex-date in the last two coarse steps
 };
 
 [[nodiscard]] constexpr std::uint16_t bit(DiscreteDivRouteFlag flag) noexcept {

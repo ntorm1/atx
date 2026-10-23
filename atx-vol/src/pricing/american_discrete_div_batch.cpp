@@ -38,6 +38,11 @@ struct GroupState {
   std::size_t map_offset = 0; // into the batch's step-map arena
 };
 
+// The American exercise value at valuation (cum-dividend spot).
+[[nodiscard]] double exercise_value(Side side, double S, double K) noexcept {
+  return std::max((side == Side::Call) ? S - K : K - S, 0.0);
+}
+
 [[nodiscard]] DiscreteDivBatchOutcome outcome_of(ErrorCode code) noexcept {
   switch (code) {
   case ErrorCode::InvalidArgument:
@@ -274,8 +279,16 @@ Status DiscreteDivBatch::implied_vol(std::span<const DiscreteDivBatchContract> c
     if (code != ErrorCode::OutOfRange) {
       continue;
     }
-    // Price-only or a range refusal: the quote against the lattice's price at the
-    // lowest volatility the inversion can reach (one rollback, refusals only).
+    // Price-only or a range refusal: the quote against the exercise value (the
+    // production inversion refuses a quote on the exercise plateau) and against the
+    // lattice's price at the lowest volatility the inversion can reach (one rollback,
+    // refusals only). The exercise value is the exact payoff, not the lattice's root
+    // level: the rollback rebuilds S by repeated multiplication, so its plateau value
+    // can sit an ulp-scale amount under it.
+    if (c.quote <= exercise_value(c.side, in.S, c.K)) {
+      res.outcome = DiscreteDivBatchOutcome::PriceOnly;
+      continue;
+    }
     const double floor_sigma = ddiv_detail::route_sigma_floor(g->route, in.T, in.r, in.q);
     const Result<double> lowest = ddiv_detail::route_price_prebuilt(
         g->route, &g->maps, in.S, c.K, in.T, floor_sigma, in.r, in.q, c.side, in.dividends,
