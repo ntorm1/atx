@@ -374,11 +374,24 @@ void run_contracts(benchmark::State &state, const Dataset &d, const RowSpec &spe
   // Untimed: the rows inside the near-exercise-edge band (theta / gamma withheld).
   std::size_t near_edge = 0;
   double min_edge_sd = std::numeric_limits<double>::infinity();
+  // Untimed (IV rows): one pass's statuses, so not_ok (summed over every timed pass) has
+  // its reasons.
+  std::array<std::size_t, 5> iv_status{}; // ok, unconfirmed, no_convergence, band, other
   if (spec.op == Op::Serve) {
     for (std::size_t i = 0; i < n; ++i) {
       const ServeAnswer a = d.records[p.record[i]]->serve(p.serve[i]);
       near_edge += a.near_edge ? 1u : 0u;
       if (std::isfinite(a.edge_sd)) min_edge_sd = std::min(min_edge_sd, a.edge_sd);
+    }
+  } else {
+    for (std::size_t i = 0; i < n; ++i) {
+      const ServeStatus st = d.records[p.record[i]]->implied_vol(p.iv[i]).status;
+      const std::size_t at = st == ServeStatus::Ok                ? 0u
+                             : st == ServeStatus::Unconfirmed     ? 1u
+                             : st == ServeStatus::NoConvergence   ? 2u
+                             : st == ServeStatus::NonMonotoneBand ? 3u
+                                                                  : 4u;
+      ++iv_status[at];
     }
   }
   std::vector<std::uint64_t> samples;
@@ -414,6 +427,12 @@ void run_contracts(benchmark::State &state, const Dataset &d, const RowSpec &spe
   if (spec.op == Op::Serve) {
     state.counters["near_edge_rows"] = static_cast<double>(near_edge);
     if (std::isfinite(min_edge_sd)) state.counters["min_edge_sd"] = min_edge_sd;
+  } else {
+    state.counters["iv_ok"] = static_cast<double>(iv_status[0]);
+    state.counters["iv_unconfirmed"] = static_cast<double>(iv_status[1]);
+    state.counters["iv_no_convergence"] = static_cast<double>(iv_status[2]);
+    state.counters["iv_non_monotone_band"] = static_cast<double>(iv_status[3]);
+    state.counters["iv_other"] = static_cast<double>(iv_status[4]);
   }
   state.counters["timer_overhead_ns"] = timer_overhead_ns();
   state.counters["p50_ns"] = quantile(samples, 0.50);
