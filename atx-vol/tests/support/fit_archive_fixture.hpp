@@ -231,6 +231,30 @@ struct SyntheticSurface {
     for (std::size_t i = 0; i < f.moved_nodes.size(); ++i) f.moved_nodes[i] = static_cast<std::uint8_t>(i % 4);
   }
   f.rows = real.fit.rows;
+  // Lane C0 fields: a typed price-only row with an interval, flagged node sides, the
+  // identifiability policy and snapshot provenance.
+  if (!f.rows.empty()) {
+    f.rows[0].evaluation_status = QuoteSliceEvaluationStatus::PriceOnly;
+    f.rows[0].fitted_iv = std::numeric_limits<double>::quiet_NaN();
+    f.rows[0].price_only_reason = QuoteSlicePriceOnlyReason::FloorVol;
+    f.rows[0].iv_lower = 0.0;
+    f.rows[0].iv_upper = 0.3125;
+    f.rows[0].vol_source = QuoteSliceVolConvention::ReimpliedRepaired;
+  }
+  if (f.prices) {
+    f.price_only_nodes.resize(f.prices->nodes().size());
+    for (std::size_t i = 0; i < f.price_only_nodes.size(); ++i) {
+      f.price_only_nodes[i] = static_cast<std::uint8_t>(i % 3 == 0 ? 2 : 0);
+    }
+  }
+  f.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  f.snapshot.quote_ns = 1791988206009793000LL;
+  f.snapshot.underlying_ns = 1791988205869274000LL;
+  f.snapshot.spot_version = 2;
+  f.snapshot.carry_version = 3;
+  f.snapshot.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
+  f.snapshot.raw_spot = 772.995;
+  f.snapshot.spot_stale = true;
   f.market = real.fit.market;
   f.dividend_model = QuoteSliceDividendModel::DatedCash;
   f.al_opts = AlOpts{.n_collocation = 9, .n_quadrature = 18, .n_quad_price = 32, .max_newton_iter = 5,
@@ -432,9 +456,20 @@ inline void diff_fit(Diff &d, const QuoteSliceFit &a, const QuoteSliceFit &b) {
                        p.admitted == q.admitted && bits(p.market_iv, q.market_iv) &&
                        bits(p.fitted_iv, q.fitted_iv) && bits(p.fitted_price, q.fitted_price) &&
                        bits(p.spread_vol, q.spread_vol) && bits(p.weight_w, q.weight_w) &&
-                       p.weight_capped == q.weight_capped;
+                       p.weight_capped == q.weight_capped &&
+                       p.price_only_reason == q.price_only_reason && bits(p.iv_lower, q.iv_lower) &&
+                       bits(p.iv_upper, q.iv_upper) && p.vol_source == q.vol_source;
               }),
           "rows");
+  d.check(a.price_only_nodes == b.price_only_nodes, "price_only_nodes");
+  d.check(a.floor_policy == b.floor_policy, "floor_policy");
+  const QuoteSliceSnapshotInfo &sa = a.snapshot;
+  const QuoteSliceSnapshotInfo &sb = b.snapshot;
+  d.check(sa.quote_ns == sb.quote_ns && sa.underlying_ns == sb.underlying_ns &&
+              sa.spot_version == sb.spot_version && sa.carry_version == sb.carry_version &&
+              sa.carry_convention == sb.carry_convention && bits(sa.raw_spot, sb.raw_spot) &&
+              sa.spot_stale == sb.spot_stale,
+          "snapshot");
   d.check(bits(a.market.spot, b.market.spot) && bits(a.market.variance_years, b.market.variance_years) &&
               bits(a.market.calendar_years, b.market.calendar_years) && bits(a.market.rate, b.market.rate) &&
               bits(a.market.continuous_yield, b.market.continuous_yield) &&

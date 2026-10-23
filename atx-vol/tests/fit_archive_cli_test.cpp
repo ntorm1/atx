@@ -63,7 +63,8 @@ TEST(FitArchiveCli, InspectDumpVerifyAGoodArchive) {
   ASSERT_TRUE(sample_writer(kSnapshot).write_file(file).has_value());
   const CliRun inspect = run_cli(dir, "inspect " + file);
   EXPECT_EQ(inspect.code, 0) << inspect.out;
-  EXPECT_NE(inspect.out.find("format: ATXVFA 1.0"), std::string::npos) << inspect.out;
+  // File minor 1 since lane C0 (PriceOnlyNodes and the minor-1 record tails).
+  EXPECT_NE(inspect.out.find("format: ATXVFA 1.1"), std::string::npos) << inspect.out;
   EXPECT_NE(inspect.out.find("fits=4"), std::string::npos) << inspect.out;
   EXPECT_NE(inspect.out.find("fit-records"), std::string::npos) << inspect.out;
   const CliRun dump = run_cli(dir, "dump " + file);

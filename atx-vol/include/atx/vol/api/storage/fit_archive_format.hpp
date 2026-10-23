@@ -32,7 +32,9 @@ inline constexpr std::array<std::uint8_t, 8> kFitArchiveMagic{0x89, 0x56, 0x46, 
 inline constexpr std::array<std::uint8_t, 8> kFitArchiveFooterMagic{0x56, 0x46, 0x41, 0x2D,
                                                                     0x45, 0x4E, 0x44, 0x0A};
 inline constexpr std::uint16_t kFitArchiveFormatMajor = 1;
-inline constexpr std::uint16_t kFitArchiveFormatMinor = 0;
+// Minor 1 (lane C0, 2026-10-22): the PriceOnlyNodes section and the minor-1 tails of
+// FitArchiveQuoteRow / FitArchiveFitRecord (identifiability and snapshot provenance).
+inline constexpr std::uint16_t kFitArchiveFormatMinor = 1;
 inline constexpr std::uint32_t kFitArchiveEndianTag = 0x01020304u;
 inline constexpr std::uint64_t kFitArchiveSectionAlign = 64;
 inline constexpr std::uint32_t kFitArchiveMaxSections = 256;
@@ -57,6 +59,7 @@ enum class FitArchiveSectionType : std::uint32_t {
   CarryPoints = 38,
   CurveWords = 39,
   FitTimings = 40, // optional: wall-clock fit diagnostics, written only on request
+  PriceOnlyNodes = 41, // u8[] QuoteSliceFit::price_only_nodes (file minor 1)
   ExpiryMeta = 48,
   ExpiryData = 49,
   ExpiryIndex = 50,
@@ -424,7 +427,24 @@ struct FitArchiveFitRecord {
   std::uint8_t discrete_div_scheme{};
   std::uint8_t has_al_opts{};
   std::array<std::uint8_t, 44> reserved{};
+  // ── minor 1 (lane C0): snapshot provenance and the identifiability policy. A minor-0
+  // record reads these as zero: no provenance, Legacy policy, no price-only nodes.
+  std::int64_t quote_ns{};       // QuoteSliceSnapshotInfo::quote_ns
+  std::int64_t underlying_ns{};  // QuoteSliceSnapshotInfo::underlying_ns
+  double raw_spot{};             // meaningful when snapshot_flags has kFitSnapshotHasRawSpot
+  std::uint32_t spot_version{};
+  std::uint32_t carry_version{};
+  FitArchiveArrayRef price_only_nodes{}; // into PriceOnlyNodes
+  std::uint8_t carry_convention{}; // QuoteSliceCarryConvention
+  std::uint8_t floor_policy{};     // QuoteSliceFloorPolicy
+  std::uint8_t snapshot_flags{};   // kFitSnapshot*
+  std::array<std::uint8_t, 5> reserved1{};
 };
+
+inline constexpr std::uint8_t kFitSnapshotSpotStale = 1u;
+inline constexpr std::uint8_t kFitSnapshotHasRawSpot = 2u;
+
+inline constexpr std::uint8_t kQuoteRowHasInterval = 1u;
 
 struct FitArchiveQuoteRow {
   double market_iv{};
@@ -437,6 +457,14 @@ struct FitArchiveQuoteRow {
   std::uint8_t admitted{};
   std::uint8_t weight_capped{};
   std::uint32_t reserved{};
+  // ── minor 1 (lane C0): identifiability. A minor-0 row reads these as zero: no reason,
+  // no convention recorded, no interval.
+  double iv_lower{};               // meaningful when flags has kQuoteRowHasInterval
+  double iv_upper{};
+  std::uint8_t price_only_reason{}; // QuoteSlicePriceOnlyReason
+  std::uint8_t vol_source{};        // QuoteSliceVolConvention
+  std::uint8_t flags{};             // kQuoteRowHasInterval
+  std::array<std::uint8_t, 5> reserved1{};
 };
 
 // ── Surface records (one per underlier x snapshot) ──────────────────────────
@@ -617,7 +645,7 @@ static_assert(kFitArchivePod<FitArchiveCurve> && sizeof(FitArchiveCurve) == 48);
 static_assert(kFitArchivePod<FitArchivePrices> && sizeof(FitArchivePrices) == 56);
 static_assert(kFitArchivePod<FitArchiveAlOpts> && sizeof(FitArchiveAlOpts) == 16);
 static_assert(kFitArchivePod<FitArchiveSlice> && sizeof(FitArchiveSlice) == 184);
-static_assert(kFitArchivePod<FitArchiveFitRecord> && sizeof(FitArchiveFitRecord) == 896);
+static_assert(kFitArchivePod<FitArchiveFitRecord> && sizeof(FitArchiveFitRecord) == 944);
 static_assert(offsetof(FitArchiveFitRecord, market) == 24);
 static_assert(offsetof(FitArchiveFitRecord, diagnostics) == 72);
 static_assert(offsetof(FitArchiveFitRecord, carry) == 352);
@@ -630,7 +658,12 @@ static_assert(offsetof(FitArchiveFitRecord, fit_error) == 832);
 static_assert(offsetof(FitArchiveFitRecord, discrete_div_steps) == 840);
 static_assert(offsetof(FitArchiveFitRecord, fit_status) == 848);
 static_assert(offsetof(FitArchiveFitRecord, reserved) == 852);
-static_assert(kFitArchivePod<FitArchiveQuoteRow> && sizeof(FitArchiveQuoteRow) == 48);
+static_assert(offsetof(FitArchiveFitRecord, quote_ns) == 896); // minor-1 tail
+static_assert(offsetof(FitArchiveFitRecord, price_only_nodes) == 928);
+static_assert(offsetof(FitArchiveFitRecord, reserved1) == 939);
+static_assert(kFitArchivePod<FitArchiveQuoteRow> && sizeof(FitArchiveQuoteRow) == 72);
+static_assert(offsetof(FitArchiveQuoteRow, iv_lower) == 48); // minor-1 tail
+static_assert(offsetof(FitArchiveQuoteRow, reserved1) == 67);
 static_assert(kFitArchivePod<FitArchiveSurfaceRecord> && sizeof(FitArchiveSurfaceRecord) == 192);
 static_assert(offsetof(FitArchiveSurfaceRecord, policy_digest) == 80);
 static_assert(offsetof(FitArchiveSurfaceRecord, first_fit) == 128);

@@ -171,6 +171,9 @@ public:
   [[nodiscard]] std::span<const FitArchiveQuoteRow>
   quote_rows(const FitArchiveFitRecord &fit) const noexcept;
   [[nodiscard]] std::span<const std::uint8_t> moved_nodes(const FitArchiveFitRecord &fit) const noexcept;
+  // QuoteSliceFit::price_only_nodes of `fit` (file minor 1; empty in a minor-0 file).
+  [[nodiscard]] std::span<const std::uint8_t>
+  price_only_nodes(const FitArchiveFitRecord &fit) const noexcept;
   // The curve payload words (ARCHIVE_FORMAT.md section 6); integer words are
   // u64 bit patterns (read them with std::bit_cast).
   [[nodiscard]] std::span<const double> curve_payload(const FitArchiveFitRecord &fit) const noexcept;

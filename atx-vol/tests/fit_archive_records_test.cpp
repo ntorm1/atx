@@ -77,6 +77,16 @@ TEST(FitArchiveRecords, FixtureComparisonDetectsSingleFieldChanges) {
   auto flag = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
   flag.calendar_readmitted = false;
   EXPECT_EQ(diff_slice(base, flag), "slice flags");
+  auto po = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
+  ASSERT_FALSE(po.fit.price_only_nodes.empty());
+  po.fit.price_only_nodes[0] = 0;
+  EXPECT_EQ(diff_slice(base, po), "price_only_nodes");
+  auto snap = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
+  snap.fit.snapshot.spot_version += 1;
+  EXPECT_EQ(diff_slice(base, snap), "snapshot");
+  auto reason = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
+  reason.fit.rows[0].price_only_reason = QuoteSlicePriceOnlyReason::LowVega;
+  EXPECT_EQ(diff_slice(base, reason), "rows");
 }
 
 TEST(FitArchiveRecords, GradedSurfaceRoundTripIsBitExact) {
@@ -199,6 +209,41 @@ TEST(FitArchiveRecords, StrippedRepairedSliceKeepsMovedNodesWithoutPrices) {
   ASSERT_TRUE(decoded.has_value()) << to_string(decoded.error().status);
   EXPECT_EQ(diff_slice(*decoded, expected), "");
   EXPECT_FALSE(decoded->fit.prices.has_value());
+}
+
+// Lane C0: price-only node sides, typed rows and snapshot provenance archive and return
+// bit-exact (the archive dropped QuoteSliceFit::price_only_nodes, so a decoded fit's query
+// re-implied a volatility for a side the fit served price-only; and a PriceOnly row made
+// the archive unreadable).
+TEST(FitArchiveRecords, PriceOnlyNodesAndSnapshotProvenanceSurviveTheArchive) {
+  const auto surface = testkit::synthetic_surface();
+  const QuoteSurfaceSlice exotic = testkit::exotic_slice(surface.slices[1], VolCurveKind::Essvi);
+  ASSERT_TRUE(exotic.fit.prices);
+  ASSERT_EQ(exotic.fit.rows[0].evaluation_status, QuoteSliceEvaluationStatus::PriceOnly);
+  FitArchiveWriter w;
+  w.record_timings(true); // bit-exact including the exotic fit's wall-clock solve time
+  ASSERT_TRUE(w.add_fit({"SPY", kSnapshot, 20800, 0, &exotic.fit}).has_value());
+  const FitArchive a = open_image(*w.finish());
+  ASSERT_EQ(a.fits().size(), 1u);
+  const FitArchiveFitRecord &r = a.fits()[0];
+  EXPECT_EQ(a.price_only_nodes(r).size(), exotic.fit.price_only_nodes.size());
+  EXPECT_EQ(r.floor_policy, 1u);
+  EXPECT_EQ(r.spot_version, 2u);
+  EXPECT_EQ(r.snapshot_flags, kFitSnapshotSpotStale | kFitSnapshotHasRawSpot);
+  EXPECT_EQ(a.quote_rows(r)[0].flags, kQuoteRowHasInterval);
+  auto fit = decode_fit(a, r);
+  ASSERT_TRUE(fit.has_value()) << to_string(fit.error().status);
+  testkit::Diff d;
+  testkit::diff_fit(d, *fit, exotic.fit);
+  EXPECT_EQ(d.first(), "");
+  const auto nodes = exotic.fit.prices->nodes();
+  for (std::size_t k = 0; k < nodes.size(); ++k) {
+    if ((exotic.fit.price_only_nodes[k] & 2u) == 0u) continue;
+    const auto answer = query_quote_slice(*fit, nodes[k].strike, Side::Put);
+    ASSERT_TRUE(answer) << k << ": " << answer.error().to_string();
+    EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::PriceOnly) << k;
+    EXPECT_FALSE(evaluate_quote_slice(*fit, nodes[k].strike, Side::Put)) << k;
+  }
 }
 
 TEST(FitArchiveRecords, WritesAreDeterministicAndCopyIsByteIdentical) {
