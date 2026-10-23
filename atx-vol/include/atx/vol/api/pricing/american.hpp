@@ -1057,6 +1057,249 @@ private:
 };
 // ── end L2h-b sigma-q family ──
 
+// ── A0 sigma-q family Greeks (r6, 2026-10-23): the primary bundle on AlSigmaQFamily ──
+//
+// The (σ, q) family's price is one closed-form map of (S, K, σ, q) — K1's fused map
+// (src/pricing/american_sigma_q_family.hpp): P = clamp(E + Π), Π the premium quadrature
+// over the boundary B_i = xmax · exp(−√y_i), y interpolated tensor-barycentric in
+// (σ, q) and barycentric in τ. Every Greek below is an EXACT derivative of that served
+// map, from ONE fused premium pass (no stencil, no re-solve): the family's OWN
+// polynomial map, NOT the converged Andersen-Lake model (deep review F11; the distance
+// to the converged model is measured in docs/sigma-q-family-greeks.md).
+//   Δ, Γ   ∂/∂S of the integrand at FIXED boundary (the internal put's boundary does
+//          not depend on its spot); calls through McDonald-Schroder and homogeneity,
+//          as family_greeks on the σ family (above);
+//   vega   K1's fused dP/dσ: the explicit σ-terms plus the boundary motion dy/dσ;
+//   θ      the continuation-region PDE identity θ = rV − (r − q)SΔ − ½σ²S²Γ (the
+//          family has no τ axis): calendar dV/dt per unit of the geometry's T;
+//   phi    ∂P/∂q: the frozen-boundary terms PLUS the boundary motion dy/dq through the
+//          tensor's q axis (nodal differentiation, exact for the interpolant); a
+//          collapsed q box (n_q() == 1) has no q coordinate: NoQAxis;
+//   rho    ∂P/∂r: the family has no r axis, so ONLY with an AlSigmaQFamilyRateBumps
+//          (second families at r ± h): the frozen terms plus Σ ∂P/∂y · dy/dr in the
+//          same pass; without one NaN with NoCarryBumps (the frozen-boundary rho is
+//          never served — the L3g r4 ruling).
+// Every requested Greek carries a typed AlFamilyGreekReason, NEVER a silent 0.0 marked
+// served: the exercise regime (the σ-family rule — the spot on the exercise side of
+// the current edge, or the served price within 1e-9 K of intrinsic) serves the
+// exercise Greeks (Δ = −1 put / +1 call, the rest 0.0) with reason Exercised; a
+// derivative the map does not have (the transform s = √y at its zero with a nonzero
+// slope in that parameter) is NaN with NearNodeDegenerate; an unimplemented held-fixed
+// convention is NaN with ConventionUnsupported. Validity: S, K > 0, σ inside the σ box,
+// q inside the q box; otherwise the row refuses with price()'s typed status and every
+// requested Greek is NaN with Refused. The price field is the fused pass's price —
+// price()'s map to rounding, not price()'s bits — whatever the mask. Accuracy (vs the
+// family map, vs finite differences of the converged model inside / outside the
+// near-boundary band, AVX2- vs scalar-built families) and cost are measured in
+// docs/sigma-q-family-greeks.md. Const, allocation-free, thread-safe on a const family
+// (stack scratch only). Nothing default selects any of this.
+
+// The Greeks of the bundle, in the order of AlFamilyGreekReasons.
+enum class AlFamilyGreek : std::uint8_t {
+  Delta = 0,
+  Gamma = 1,
+  Vega = 2,
+  Theta = 3,
+  Rho = 4,
+  Phi = 5,
+};
+inline constexpr std::size_t kAlFamilyGreekCount = 6;
+
+// Which Greeks a call computes (the price always is); an unrequested Greek is left 0.0
+// with reason NotRequested.
+struct AlFamilyGreekMask {
+  std::uint8_t bits = 0;
+
+  [[nodiscard]] static constexpr std::uint8_t bit(AlFamilyGreek g) noexcept {
+    return static_cast<std::uint8_t>(1u << static_cast<unsigned>(g));
+  }
+  [[nodiscard]] static constexpr AlFamilyGreekMask none() noexcept { return {0}; }
+  // Δ, Γ, vega, θ, phi — everything the family serves on its own (no second family).
+  [[nodiscard]] static constexpr AlFamilyGreekMask primary() noexcept {
+    return {static_cast<std::uint8_t>(bit(AlFamilyGreek::Delta) | bit(AlFamilyGreek::Gamma) |
+                                      bit(AlFamilyGreek::Vega) | bit(AlFamilyGreek::Theta) |
+                                      bit(AlFamilyGreek::Phi))};
+  }
+  // primary() plus rho (served only with a rate-bump set).
+  [[nodiscard]] static constexpr AlFamilyGreekMask all() noexcept {
+    return {static_cast<std::uint8_t>(primary().bits | bit(AlFamilyGreek::Rho))};
+  }
+  [[nodiscard]] constexpr bool has(AlFamilyGreek g) const noexcept {
+    return (bits & bit(g)) != 0;
+  }
+  [[nodiscard]] constexpr AlFamilyGreekMask with(AlFamilyGreek g) const noexcept {
+    return {static_cast<std::uint8_t>(bits | bit(g))};
+  }
+};
+
+// Why a Greek holds what it holds. Served and Exercised carry a usable number; every
+// other reason but NotRequested carries NaN. A zero-initialised reason is NotRequested.
+enum class AlFamilyGreekReason : std::uint8_t {
+  NotRequested = 0,          // not in the request mask: 0.0
+  Served = 1,                // the derivative of the family's map (the convention below)
+  Exercised = 2,             // the exercise regime: intrinsic's derivative BY CONSTRUCTION
+                             // (Δ = −1 put / +1 call, every other Greek 0.0) — not the
+                             // continuation map's slope
+  Refused = 3,               // the row refused (status != Ok): NaN
+  NoCarryBumps = 4,          // rho without a rate-bump set (the family has no r axis): NaN
+  CarryBumpRefused = 5,      // rho with a rate-bump set that is unprepared or was built
+                             // from another family: NaN
+  NoQAxis = 6,               // phi on a collapsed q box (no q coordinate): NaN
+  NearNodeDegenerate = 7,    // the boundary transform s = √y sits at its zero at a premium
+                             // node with a nonzero slope in this Greek's parameter: NaN
+  ConventionUnsupported = 8, // the requested held-fixed convention is not implemented: NaN
+};
+using AlFamilyGreekReasons = std::array<AlFamilyGreekReason, kAlFamilyGreekCount>;
+
+// What a Greek holds fixed when its argument moves.
+enum class AlFamilyGreekHeldFixed : std::uint8_t {
+  ContractSigma = 0,   // the contract's σ (the call's sigma argument) held: implemented
+  StickyStrike = 1,    // the surface's σ(K) at the contract's strike held: on a family
+                       // priced at that σ these are the ContractSigma numbers: implemented
+  StickyMoneyness = 2, // σ moves with K / S (needs dσ/dS of a fitted surface — A1 / H0):
+                       // NOT implemented, every requested Greek ConventionUnsupported
+  RefittedSurface = 3, // σ re-fit after the move: NOT implemented (ConventionUnsupported)
+};
+
+// Whose derivatives these are: the family's own polynomial map (K1's), boundary motion
+// included — not the converged model's (F11).
+enum class AlFamilyGreekModel : std::uint8_t {
+  SigmaQFamily = 0,
+};
+
+// The units of θ / rho / phi: θ is dV/dt per unit of the geometry's T (the caller's year
+// fraction on whatever day count it prepared the geometry with); rho / phi per unit of
+// rate / yield. A time roll through expiry, an earnings date or a dividend is an event
+// operation, not θ.
+enum class AlFamilyGreekClock : std::uint8_t {
+  GeometryTime = 0,
+};
+
+// Populated on every bundle the entries return (refusals included).
+struct AlFamilyGreekConvention {
+  AlFamilyGreekHeldFixed held_fixed = AlFamilyGreekHeldFixed::ContractSigma; // as requested
+  AlFamilyGreekModel model = AlFamilyGreekModel::SigmaQFamily;
+  AlFamilyGreekClock clock = AlFamilyGreekClock::GeometryTime;
+  std::uint64_t surface_version = 0; // the caller's tag, echoed (a family carries none)
+};
+
+struct AlSigmaQGreeksRequest {
+  AlFamilyGreekMask mask = AlFamilyGreekMask::primary();
+  AlFamilyGreekHeldFixed held_fixed = AlFamilyGreekHeldFixed::ContractSigma;
+  std::uint64_t surface_version = 0;
+};
+
+struct AlSigmaQFamilyGreeks {
+  double price = std::numeric_limits<double>::quiet_NaN(); // NaN unless status == Ok
+  double delta = 0.0;
+  double gamma = 0.0;
+  double vega = 0.0;
+  double theta = 0.0; // calendar dV/dt (PDE identity), per unit of the geometry's T
+  double rho = 0.0;   // ∂P/∂r: rate-bump set only
+  double phi = 0.0;   // ∂P/∂q: the tensor's q axis
+  AlSigmaQFamilyStatus status = AlSigmaQFamilyStatus::NotPrepared;
+  AlFamilyGreekMask requested{};
+  AlFamilyGreekMask supported{}; // requested Greeks holding a usable number (Served /
+                                 // Exercised)
+  AlFamilyGreekReasons reason{}; // per AlFamilyGreek (unrequested: NotRequested)
+  bool exercised = false;        // the exercise Greeks were served
+  bool floored = false;          // exercised on the CONTINUATION side of the current edge
+  AlFamilyGreekConvention convention{};
+  [[nodiscard]] AlFamilyGreekReason reason_of(AlFamilyGreek g) const noexcept {
+    return reason[static_cast<std::size_t>(g)];
+  }
+};
+
+// ── rho: the rate-bump set (second families at r ± h) ──
+//
+// The r-sensitivity of ONE prepared (σ, q) family's node tensor. prepare(base) builds, on
+// geometries at (T, r ± h, q_geometry) with the base geometry's own AlOpts, two families
+// with the base's side, anchor, σ box, q box, node counts and axis (under the CURRENT
+// SimdIsa route), and keeps ONLY the central difference dY/dr of their tensors
+// (n_boundary · n_q · n_sigma doubles; the bumped geometries and families are released
+// before prepare() returns). h = kAlSigmaFamilyCarryBump. NO one-sided fallback: a
+// refusal of either bumped family (leaving the American regime, the q-box accuracy guard
+// at r ± h, a node that cannot move) is returned as is, (NotImplemented) a bumped family
+// whose collocation grid differs from the base's; (InvalidArgument) an unprepared base
+// or one whose geometry was re-prepared. Strong guarantee: on any refusal the set is
+// unprepared. Cost: two family builds plus two geometry prepares — the reason rho is
+// opt-in. Move-only, immutable after prepare(), thread-safe for every const use; it does
+// NOT observe the base (identity is checked by value on every call: CarryBumpRefused on
+// a mismatch).
+class AlSigmaQFamilyRateBumps {
+public:
+  AlSigmaQFamilyRateBumps();
+  ~AlSigmaQFamilyRateBumps();
+  AlSigmaQFamilyRateBumps(AlSigmaQFamilyRateBumps &&) noexcept;
+  AlSigmaQFamilyRateBumps &operator=(AlSigmaQFamilyRateBumps &&) noexcept;
+  AlSigmaQFamilyRateBumps(const AlSigmaQFamilyRateBumps &) = delete;
+  AlSigmaQFamilyRateBumps &operator=(const AlSigmaQFamilyRateBumps &) = delete;
+
+  [[nodiscard]] Status prepare(const AlSigmaQFamily &base);
+  [[nodiscard]] bool prepared() const noexcept;
+  // Heap bytes this set owns (its state block plus the dY/dr tensor; 0 when empty).
+  [[nodiscard]] std::size_t state_bytes() const noexcept;
+
+private:
+  struct State; // defined in src/pricing/american_sigma_q_family_greeks.cpp
+  friend struct sigma_q_family_detail::QFamilyAccess; // A0: the Greeks TU's const reads
+  std::unique_ptr<State> st_;
+};
+
+// Price + the requested Greeks of the (S, K) contract of the family's side at (sigma, q)
+// (the contract's own effective yield). Refuses exactly as AlSigmaQFamily::price().
+// A requested rho is NaN with NoCarryBumps (use the overload below).
+[[nodiscard]] AlSigmaQFamilyGreeks family_greeks(const AlSigmaQFamily &fam, double S, double K,
+                                                 double sigma, double q,
+                                                 const AlSigmaQGreeksRequest &req = {}) noexcept;
+
+// family_greeks(fam, …) with rho served from `rate`, which must have been prepared from
+// `fam` (same side, anchor, (T, r), boxes, nodes, axis, quadrature, node tensor);
+// otherwise a requested rho is NaN with CarryBumpRefused and every other field is the
+// overload above's.
+[[nodiscard]] AlSigmaQFamilyGreeks family_greeks(const AlSigmaQFamily &fam,
+                                                 const AlSigmaQFamilyRateBumps &rate, double S,
+                                                 double K, double sigma, double q,
+                                                 const AlSigmaQGreeksRequest &req = {}) noexcept;
+
+// Caller-owned structure-of-arrays outputs of family_greeks_many. A column is written iff
+// it is non-empty, and then its length must equal the lane count; the mask decides what
+// is COMPUTED, the spans what is STORED. `flags`: bit 0 exercised, bit 1 floored.
+struct AlSigmaQGreekColumns {
+  std::span<double> price{};
+  std::span<double> delta{};
+  std::span<double> gamma{};
+  std::span<double> vega{};
+  std::span<double> theta{};
+  std::span<double> rho{};
+  std::span<double> phi{};
+  std::span<AlSigmaQFamilyStatus> status{};
+  std::span<AlFamilyGreekMask> supported{};
+  std::span<AlFamilyGreekReasons> reason{};
+  std::span<std::uint8_t> flags{};
+};
+
+// A chain on ONE family at spot S, lane i = (K[i], sigma[i], q[i]) (per-lane σ and q:
+// a fitter's iterates, funding-pv yields). `active` empty = every lane; otherwise
+// active[i] == 0 retires lane i: its inputs are not read and nothing of it is written.
+// Every active lane is family_greeks(fam[, *rate], S, K[i], sigma[i], q[i], req) to the
+// bit (a refused lane carries its status and NaN; it never poisons another lane); the
+// strike-, σ- and q-free node data are laid once per call and the carry is reused while
+// q repeats. `rate` null: a requested rho is NoCarryBumps. Allocation-free, const on
+// every input, single-thread per call (lanes may be split across threads by the caller
+// with disjoint spans).
+// @return InvalidArgument when K / sigma / q / a non-empty `active` or column disagree
+//         in length (nothing is written); otherwise Ok — per-lane outcomes in `status`.
+[[nodiscard]] Status family_greeks_many(const AlSigmaQFamily &fam, double S,
+                                        std::span<const double> K,
+                                        std::span<const double> sigma,
+                                        std::span<const double> q,
+                                        std::span<const std::uint8_t> active,
+                                        const AlSigmaQGreekColumns &out,
+                                        const AlSigmaQGreeksRequest &req = {},
+                                        const AlSigmaQFamilyRateBumps *rate = nullptr);
+// ── end A0 sigma-q family Greeks ──
+
 // ── Boundary-convergence evidence (what `andersen_lake` does NOT tell you) ──
 //
 // The Andersen-Lake exercise boundary is solved by a FIXED sweep budget with an

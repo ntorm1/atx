@@ -216,6 +216,22 @@ struct QFamilyAccess {
   [[nodiscard]] static const AlSigmaQFamily::State *state(const AlSigmaQFamily &f) noexcept {
     return f.st_.get();
   }
+  // A0 (r6): also AlSigmaQFamilyRateBumps' friend. The set's dY/dr node tensor (the
+  // family's [(k · n_q + j) · n_sigma + s] layout) when `b` is non-null, prepared, and
+  // was prepared from `f` (identity checked by value: side, anchor, (T, r), boxes, node
+  // counts, axis, quadrature and two sentinel rows of the node tensor); otherwise null
+  // and `why` = NoCarryBumps (b null) or CarryBumpRefused. Defined in
+  // american_sigma_q_family_greeks.cpp. Precondition: state(f) is prepared.
+  [[nodiscard]] static const double *rate_tensor(const AlSigmaQFamily &f,
+                                                 const AlSigmaQFamilyRateBumps *b,
+                                                 AlFamilyGreekReason &why) noexcept;
+  // A0 (r6): AlSigmaQFamilyRateBumps::prepare's body (the two bumped builds) into `out`'s
+  // state; `out` is left unprepared on any refusal. `h` is the bump: prepare() passes
+  // kAlSigmaFamilyCarryBump; a measurement (the O(h²) truncation discriminator) may pass
+  // another (> 0, finite; otherwise InvalidArgument).
+  [[nodiscard]] static Status prepare_rate_bumps(const AlSigmaQFamily &base,
+                                                 AlSigmaQFamilyRateBumps &out,
+                                                 double h = kAlSigmaFamilyCarryBump);
 };
 
 // ── K1 (r5, 2026-10-22): fused price + vega entries (contract: the block at the top) ──
@@ -379,6 +395,83 @@ void node_boundary_from_tile(const PremiumTable &t, const QTile &tile, double si
 // not finite and > 0 or a sigma not finite; OutsideBox for the σ guard / box.
 [[nodiscard]] FusedPriceVega price_vega_on(const PremiumTable &t, const QTile &tile, double S,
                                            double K, double sigma) noexcept;
+
+// ── A0 (r6, 2026-10-23): the Greek bundle's stages (american_sigma_q_family_greeks.cpp) ──
+//
+// family_greeks on a (σ, q) family runs K1's stages (PremiumNodes, QCarry, NodeBoundary)
+// plus the boundary's motion in the internal put's two carry parameters, then ONE
+// premium pass that accumulates the price exactly as premium_pass does (the price, and
+// the vega on a served row, are price_and_vega's bits) together with the S', σ and carry
+// derivatives, and maps the internal put's bundle to the option's. The stages are
+// exposed so a test can force an input the public entry cannot reach (a degenerate
+// node); the contract of the result is the public one (api/pricing/american.hpp, A0).
+
+// ds_i/dθ for θ the internal put's rate r' and yield q' at the premium nodes (0 off
+// Boundary nodes and where y_i <= 0), and whether a Boundary node's y_i sits at the
+// transform's zero (|y_i| <= kFusedKinkRel · max |y|) with dy_i/dθ != 0. `have_*` false:
+// that motion is not available (no q axis / no rate-bump set) and its row is 0.
+struct NodeCarryMotion {
+  double ds_rate[kMaxPremiumNodes] = {};
+  double ds_yield[kMaxPremiumNodes] = {};
+  bool have_rate = false;
+  bool have_yield = false;
+  bool rate_degenerate = false;
+  bool yield_degenerate = false;
+};
+
+// Which internal-put derivatives a pass accumulates (the price always).
+struct GreeksNeed {
+  bool s1 = false;    // ∂P/∂S'
+  bool s2 = false;    // ∂²P/∂S'²
+  bool sigma = false; // dP/dσ, boundary motion included
+  bool rate = false;  // dP/dr': frozen terms + the xmax term + motion.ds_rate
+  bool yield = false; // dP/dq': frozen terms + the xmax term + motion.ds_yield
+};
+
+// The internal put's bundle at (S', K', nb.sigma). On an exercised row every derivative
+// is the exercise one (dS = −1, the rest 0).
+struct GreeksInternal {
+  double price = std::numeric_limits<double>::quiet_NaN();
+  double dS = 0.0;
+  double dSS = 0.0;
+  double dsig = 0.0;
+  double drate = 0.0;
+  double dyield = 0.0;
+  bool exercised = false;        // FusedPriceVega::exercised's rule (K1's, read as is)
+  bool inside = false;           // S' <= the current edge xmax · nb.now_factor
+  bool sigma_degenerate = false; // nb.degenerate (the σ motion has no derivative)
+};
+
+// The pass. `fast` = the family's AlProfile::Fast arithmetic (the workspace flag).
+void greeks_pass(const PremiumNodes &pn, const QCarry &c, const NodeBoundary &nb,
+                 const NodeCarryMotion &m, double Sp, double Kp, bool fast,
+                 const GreeksNeed &need, GreeksInternal &out) noexcept;
+
+// What the option mapping needs beyond the internal bundle.
+struct GreeksContext {
+  Side side = Side::Put;
+  double S = 0.0;     // the option's spot
+  double r = 0.0;     // the option's rate (the geometry's)
+  double q = 0.0;     // the option's yield (the contract's)
+  double sigma = 0.0;
+  double Sp = 0.0;    // the internal put's spot / strike
+  double Kp = 0.0;
+  bool q_axis = false; // the family has a q coordinate (n_q > 1)
+  // Served when the motion's rate-bump side was fed by a matching set; otherwise the
+  // refusal a requested rho carries (NoCarryBumps / CarryBumpRefused).
+  AlFamilyGreekReason rho_source = AlFamilyGreekReason::NoCarryBumps;
+};
+
+// The internal pass's needs for `req` on this side (θ needs Δ and Γ; rho / phi only
+// where their motion is available).
+[[nodiscard]] GreeksNeed greeks_need(const AlSigmaQGreeksRequest &req, const GreeksContext &ctx,
+                                     bool convention_ok) noexcept;
+
+// The option's bundle (status Ok) from the internal one: homogeneity for calls, the PDE
+// identity for θ, a reason for every Greek, the convention echoed from `req`.
+[[nodiscard]] AlSigmaQFamilyGreeks map_greeks(const GreeksInternal &in, const NodeCarryMotion &m,
+                                              const GreeksContext &ctx,
+                                              const AlSigmaQGreeksRequest &req) noexcept;
 
 } // namespace sigma_q_family_detail
 
