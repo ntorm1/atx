@@ -1355,6 +1355,10 @@ private:
     trial.prices = fit.prices;
     trial.moved_nodes = fit.moved_nodes;
     trial.price_only_nodes = fit.price_only_nodes;
+    // The calendar repair re-implies moved rows under the fit's identifiability policy
+    // (lane C0): a trial without it would re-imply under Legacy.
+    trial.floor_policy = fit.floor_policy;
+    trial.snapshot = fit.snapshot;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;
   }

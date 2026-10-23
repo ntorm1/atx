@@ -309,6 +309,80 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
   EXPECT_TRUE(std::isnan(alone->snapshot.raw_spot));
 }
 
+// Puts from `lo` to 148 every 4 at a 5 % rate, a constant yield and the skew
+// sigma(K) = atm + skew x clamp((116 - K) / 40, 0, 1) (flat at `atm` from K 116 up),
+// +/- 5 % spreads (at least 0.01), each quote carrying the yield.
+Chain put_chain(double years, double atm, double skew, int lo, double yield) {
+  Chain out;
+  out.market = QuoteSliceMarket{100.0, years, years, 0.05, yield, 0.0};
+  for (int strike = lo; strike <= 148; strike += 4) {
+    const double k = static_cast<double>(strike);
+    const double sigma = atm + skew * std::clamp((116.0 - k) / 40.0, 0.0, 1.0);
+    const auto price = andersen_lake(100.0, k, years, sigma, 0.05, yield, Side::Put);
+    if (!price) {
+      ADD_FAILURE() << price.error().to_string();
+      return out;
+    }
+    const double spread = std::max(0.01, *price * 0.05);
+    out.quotes.push_back({k, Side::Put, std::max(*price - spread, 0.0), *price + spread, yield});
+  }
+  return out;
+}
+
+TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloorVolPriceOnly) {
+  // N (0.45 y, 50 %, 4 % yield): puts 116-148 with time value. F (0.5 y, skewed down to
+  // 5 % from K 116): puts 60-148, at their exercise value K - 100 from K 116 up. F serves
+  // grade A, N grade C (a channel refit), so F outranks N. N crosses F and the bounded
+  // calendar repair - run on a
+  // repair trial of N's fit - caps N's nodes onto F's prices: N's own exercise value, whose
+  // only volatility root is the inverter floor. Legacy serves that floor as an identified
+  // volatility; under PriceOnly every repair path must type it FloorVol with the same price
+  // (lane C0: the surface's repair trial dropped the fit's floor policy and re-implied
+  // under Legacy - 190 dev200 rows served at 0.005 with serve.floor_price_only on).
+  const std::array<Chain, 2> chains{put_chain(0.45, 0.5, 0.0, 116, 0.04),
+                                    put_chain(0.5, 0.05, 0.30, 60, 0.0)};
+  const std::array<QuoteSurfaceExpiry, 2> expiries{{{chains[0].market, chains[0].quotes, {}, {}},
+                                                    {chains[1].market, chains[1].quotes, {}, {}}}};
+  QuoteSurfaceConfig surface;
+  surface.grade_b_min_mid_strikes = 10;
+  surface.calendar_repair_half_spreads = 100.0;
+  std::vector<double> legacy_prices;
+  for (const QuoteSliceFloorPolicy policy :
+       {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
+    QuoteSliceConfig config;
+    config.side_policy = QuoteSliceSidePolicy::All; // N's own in-the-money evidence
+    config.channel.repair_half_spreads = 100.0;
+    config.floor_policy = policy;
+    const auto fitted = fit_quote_surface(expiries, config, surface);
+    ASSERT_TRUE(fitted) << fitted.error().to_string();
+    const QuoteSurfaceSlice &near = (*fitted)[0];
+    ASSERT_NE(near.grade, QuoteSliceGrade::Refused) << near.refusal << " " << near.error;
+    ASSERT_TRUE(near.calendar_repaired) << to_string(policy);
+    std::size_t floor_success = 0;
+    std::size_t floor_price_only = 0;
+    for (std::size_t i = 0; i < chains[0].quotes.size(); ++i) {
+      const QuoteSliceRow &row = near.fit.rows[i];
+      if (policy == QuoteSliceFloorPolicy::Legacy) legacy_prices.push_back(row.fitted_price);
+      if (row.evaluation_status == QuoteSliceEvaluationStatus::Success &&
+          row.fitted_iv <= kIvMin) {
+        ++floor_success;
+      }
+      if (row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly &&
+          row.price_only_reason == QuoteSlicePriceOnlyReason::FloorVol) {
+        ++floor_price_only;
+        EXPECT_EQ(bits(row.fitted_price), bits(legacy_prices[i])) << i;
+      }
+    }
+    if (policy == QuoteSliceFloorPolicy::Legacy) {
+      EXPECT_GT(floor_success, 0u); // the historical floor, served as identified
+      EXPECT_EQ(floor_price_only, 0u);
+    } else {
+      EXPECT_EQ(floor_success, 0u);
+      EXPECT_GT(floor_price_only, 0u);
+    }
+  }
+}
+
 TEST(QuoteSliceIdentification, AnUnknownFloorPolicyIsRefusedAndEveryNameIsStable) {
   const Chain c = wing_chain();
   QuoteSliceConfig config;
