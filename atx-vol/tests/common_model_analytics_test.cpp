@@ -110,6 +110,24 @@ TEST(EuropeanOutputs, ABookExpiryIsTheQuotingSurfaceTooAndIsRefused) {
   EXPECT_TRUE(std::isnan(out.strip.total_variance));
 }
 
+// review-A1 minor: a book with nothing published (its version is the empty one the book is
+// built with) is still the quoting surface - refused, typed, no number, nothing declared
+// beyond the reference. A null current() takes the same refusal (defensive guard).
+TEST(EuropeanOutputs, AnUnpublishedBookIsRefusedWithoutAVersionOrEntry) {
+  ServeBookPolicy policy;
+  policy.build_workers = 0;
+  ServeBook book(policy);
+  const EuropeanOutputs out = european_outputs(EuropeanSurfaceRef::quoting_book_expiry(book, 9));
+  EXPECT_EQ(out.status, AnalyticsStatus::Refused);
+  EXPECT_EQ(out.refusal, EuropeanOutputRefusal::AmericanQuotingSurface);
+  EXPECT_EQ(out.declaration.model, AnalyticsModel::QuotingRecord);
+  EXPECT_EQ(out.declaration.expiry_id, 9u);
+  EXPECT_EQ(out.declaration.book_version, book.version());
+  EXPECT_EQ(out.declaration.entry_tag, 0u);
+  EXPECT_TRUE(out.density.mass.empty());
+  EXPECT_TRUE(std::isnan(out.strip.total_variance));
+}
+
 TEST(EuropeanOutputs, AnEmptyReferenceOrAMissingExpiryIsRefused) {
   const EuropeanOutputs none = european_outputs(EuropeanSurfaceRef{});
   EXPECT_EQ(none.status, AnalyticsStatus::Refused);

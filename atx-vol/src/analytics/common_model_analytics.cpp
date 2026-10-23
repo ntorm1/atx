@@ -42,9 +42,12 @@ void declare_record(const SliceServeRecord &record, AnalyticsDeclaration &d) noe
     declare_record(*surface.record, out.declaration);
   }
   if (surface.kind == EuropeanSurfaceKind::QuotingBookExpiry && surface.book != nullptr) {
-    const std::shared_ptr<const ServeBookVersion> v = surface.book->current();
-    out.declaration.book_version = v->number;
     out.declaration.expiry_id = surface.expiry_id;
+    const std::shared_ptr<const ServeBookVersion> v = surface.book->current();
+    // No version to declare (ServeBook stores an empty one at construction, so this is
+    // defensive): still the typed quoting-surface refusal, with no version or entry.
+    if (v == nullptr) return out;
+    out.declaration.book_version = v->number;
     if (const ServeBookEntry *e = v->find(surface.expiry_id); e != nullptr) {
       out.declaration.entry_tag = e->tag;
       out.declaration.clock.expiry_ns = e->expiry_ns;
