@@ -676,16 +676,20 @@ inline constexpr double kAlSigmaFamilyCarryBump = 1.0e-4;
 // geometry's own AlOpts, families with the base's side, anchor, σ-box, node count and
 // axis, and keeps ONLY the central differences of their σ-series (dy_{k,s}/dr,
 // dy_{k,s}/dq; the bumped geometries and families are released before prepare()
-// returns). When the DOWN bump leaves the American regime (a put with r − h <= 0, a
-// call with q − h <= 0: that family refuses NotImplemented) the forward difference
-// against the base series is kept instead and *_one_sided() says so — the A5 rule of
-// american_greeks_al / american_carry_greeks_al. Cost: 2 family builds per axis
+// returns). When the DOWN-bumped family refuses with NotImplemented the forward
+// difference against the base series is kept instead and *_one_sided() says so — the
+// A5 rule of american_greeks_al / american_carry_greeks_al, whose intended case is a
+// down bump that leaves the American regime (a put with r − h <= 0, a call with
+// q − h <= 0). The rule keys on the error CODE, not on the regime: every other
+// NotImplemented refusal of the down bump (a collapsed node, a sweep that cannot move,
+// a collocation grid that differs from the base's) takes the same one-sided route
+// (A0 r6 rewording, review-L3g m7). Cost: 2 family builds per axis
 // (≈ the base family's build each, plus a geometry prepare); the per-contract rho /
 // phi then costs one more τ-barycentric accumulator in the same fused pass.
 // Refuses (InvalidArgument) when the base is not prepared or its geometry was
-// re-prepared, with the bumped family's own refusal when an UP-bumped family (or a
-// down-bumped one, for any reason but leaving the regime) refuses, (NotImplemented)
-// when a bumped family's collocation grid differs from the base's. Strong
+// re-prepared, with the bumped family's own refusal when an UP-bumped family refuses
+// (or a down-bumped one with any code but NotImplemented), (NotImplemented) when the
+// UP-bumped family's collocation grid differs from the base's. Strong
 // guarantee: on a refusal the set is unprepared.
 // Move-only, immutable after prepare(), thread-safe for every const use; it does NOT
 // observe the base family (identity is checked by value on every call).

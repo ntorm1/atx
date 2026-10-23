@@ -150,8 +150,10 @@ namespace sigma_family_detail {
 // L3g measurement hook (bench / tests only): the frozen-boundary rho / phi of the
 // option in two conventions — `*_frozen_y` differentiates the map with the
 // dimensionless boundary y held (the explicit xmax(K, rate, yield) rescale of B IS
-// differentiated; what family_greeks serves), `*_frozen_b` holds the absolute
-// boundary B (no xmax term). Both omit dy/dr, dy/dq. Refuses as price() does.
+// differentiated: the frozen PART of the rho / phi family_greeks serves with a carry
+// set, which adds the boundary term; it is never served alone — A0 r6, review-L3g m6),
+// `*_frozen_b` holds the absolute boundary B (no xmax term). Both omit dy/dr, dy/dq.
+// Refuses as price() does.
 struct FamilyRhoVariants {
   double rho_frozen_y = 0.0;
   double phi_frozen_y = 0.0;
