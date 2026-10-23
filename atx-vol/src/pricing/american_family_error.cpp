@@ -83,7 +83,9 @@ constexpr double kPriceRoundingRel = 256.0 * kEps;
 
 // cos(m pi s / (n - 1)) and the DCT-I normalisation of n Lobatto points: the expansion
 // coefficient of T_m is scale[m] * sum_s cosine[m][s] f_s (signs (-1)^m dropped: only
-// magnitudes are used).
+// magnitudes are used). One layout serves both axes (lay_dct(n_sigma) and lay_dct(n_q),
+// n <= kMaxS and n <= kMaxQ checked before either), so its capacity must hold the q axis.
+static_assert(kMaxQ <= kMaxS, "Dct is sized by kMaxS and also laid for the q axis (n_q <= kMaxQ)");
 struct Dct {
   double cosine[kMaxS][kMaxS] = {};
   double edge[kMaxS] = {}; // 1/2 at s = 0 and s = n - 1, else 1
