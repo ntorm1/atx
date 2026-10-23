@@ -440,3 +440,82 @@ attempts exited 4 on sibling contention and are kept in the evidence folder: fam
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ce-integrate-r5-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2ce-20261022-integrate\`.
+
+## W2c-f / r6 integration of C1, K2 and C0 (vol-sota master plan, 2026-10-23)
+
+Lane W2c-f (run `vol-sota-r6-20261023`, pool-5) merged three approved lanes into the root
+`feat/vol-resume5-20261022`, `--no-ff`, in this order, on top of `668ad80e`. K3 is not in this wave (W2c-g). No
+default promoted; nothing pushed.
+
+| Merge | Lane SHA | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `cea079fc` | C1 exercise region `715d4210` (review APPROVE at `1404ef80`; re-review of fix round 1: ALL ADDRESSED) | `atx-vol/CHANGELOG.md` | entry union: the root's entries, then C1's |
+| `befa8fb8` | K2 batch inverse `e47fe501` (review APPROVE at `f0186be1`; re-review of fix round 1: ALL ADDRESSED) | `atx-vol/CHANGELOG.md` (two hunks; merge bases `6150dee8` and `2301d18c`) | entry union: the root's entries, then K2's three; K2's copy of K1's entry is byte-identical to the root's, so it appears once |
+| `776df009` | C0 contracts `e22ff2c4` (review APPROVE at `c7679508`; re-review of fix round 1: ALL ADDRESSED) | none | CHANGELOG, `tests/CMakeLists.txt`, `tests/slices.cmake` and `tools/quote_bench_main.cpp` (K2's `--inverse-replay` beside C0's serve / snapshot hunks) auto-merged |
+
+**Diff proof.** For every file of every merge, the body of `git diff <merge>^1 <merge>` equals the lane's own change
+and the body of `git diff <merge>^2 <merge>` equals the root's own change since the merge base: 39, 35 and 70
+comparisons, all EQUAL_SEQ. K2 has two merge bases; git's virtual base equals `90700ea4`'s tree on every file except
+the CHANGELOG, so `90700ea4` is the proof base, and the CHANGELOG is proven by an entry-set check instead: the merged
+file's `#`-heading blocks are exactly the first parent's plus the lane's new ones, with no block lost or duplicated
+(OK at all three merges).
+
+**Per-merge suites** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`):
+- after C1: C1's anchored AL ctest 127/127; `AlMonotone` + `AmericanExerciseRegion` 16/16 on AVX2 and on
+  ForceScalar (four-site grid 16000 points, `laned=1` / `laned=0`); the root's W2c-e regex 75/75;
+- after K2: K2's anchored ctest (IvBatch, AmericanIv*, sigma-q family, alloc, quote-slice, bench-clocks) 117/117
+  (the known `PricePolishDefaultOffIsBitForBitControl` excluded); C1's AL regex + the W2c-e regex 204/204;
+- after C0: quote-slice, fit-archive, implied-forward, discrete-div-smoothing, iv-batch-alloc, bench-clocks 6/6;
+  `atx-vol-umbrella` fails with its 3 known tests only.
+
+**Gates on the final code `776df009`** (the docs commit after it changes `.md` files only):
+- 9/9 default hashes byte-identical to the W2c-e table, `sha256sum -c` 9 OK, stderr files 0 bytes. quote-bench
+  `83d3b40c`.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (library then bench targets, 73 s + 30 s).
+- Name set at cap 3: identical to W2c-e's (52324ef8's 19 + the L575 NestedDispatch flake; executor code untouched).
+  37 new names, all passing, 0 removed: C1 `AlMonotone.*` 6 and `AmericanExerciseRegion.*` 10, K2 `IvBatch.*` 19 and
+  `AmericanIvPremium.*` 2.
+- Combined anchored ctest (W2c-e regex + iv-batch-alloc, fit-archive, implied-forward, IvBatch, AlMonotone,
+  AmericanExerciseRegion), native ctest excluded: 115/115. CLI pytest on the two files directly: 190 passed.
+- ForceScalar filter on the pricing / simd slices: 106 + 1 passed, 4 skipped, 1 known failure
+  (`AmericanIv.PricePolishDefaultOffIsBitForBitControl`); ScalarLegEnv passed.
+- PCH-off (`vol-hygiene`): 58 TUs (every non-bench, non-python includer of the 15 changed headers, transitively
+  through in-tree headers), exit 0, 0 first-party diagnostics.
+- Keys-ON identities: C0's 10 rows equal its fix-round hashes (floor `374341cd` / `1aab494e` / `346211b9` /
+  `feac8d2c`, one_spot `a9dec618` / `ed34eef7` / `34e3ed27` / `d7a48be7`, box-h0 `cb6b3680` / `34d5aab0`); K2's SPY
+  `family_native` ON with `--inverse-replay avx2` `5abc6bfe` (29725 requests, 28356 converged + 296
+  sigma_above_box) and OFF `86ca3e10`: lost 0, gained 0, max |dP| 4.0e-11. C1's region rule has no policy or CLI
+  key (API-only until K4), so it has no keys-ON row.
+- Python wheel: not built. `pip wheel --no-build-isolation --no-index` stops at configure on the version-mirror guard
+  in `atx-vol/python/CMakeLists.txt` (`${atx_VERSION}` is empty in the python project's scope; LEDGER trap of this
+  date). Routed to the PM; nothing installed.
+
+### Deferred minors (W2c-f: C1, K2, C0 reviews)
+- C1 m1: the `american_region.hpp` header's measured classes are the AlMonotone grid's only (no L1c band tops, no
+  5.8e-7 edge class), and its ZeroVolLimit gap list omits the double-continuation regime.
+- C1 m3: `american_region_test.cpp:900` accepts an error from the geometry classified route; it should assert a value
+  that is not priced.
+- C1 m4: lane 0 of every pack is the same anchor contract, so the four-site counts include repeats (about 12,020
+  distinct points, 723 near-edge, 128 grid-lane mismatches).
+- C1 m6: the plateau-edge class is measured for the accurate preset only; measure al_bulk_opts / al_fast_opts before
+  any leg on those presets runs `Intrinsic`.
+- C1 m7: the Greeks routes stay on KernelFloor and report a nonzero vega on plateau contracts; PM decision whether to
+  classify them or publish plateau Greeks from the class.
+- C1 concerns: K4 must not enable `Intrinsic` on any inversion leg before the `ScopedAloPricer` slot switch; `:414` /
+  `:740` go through Tier-A `american_price`; `batch_chain_iv.cpp`, `batch_chain.cpp` and the AVX2 driver have no
+  lane owner; K1's fused `premium_pass_t` is a fifth inline floor site. C1's Tier-B header moves the pre-existing red
+  umbrella counts by one (44 / 103).
+- K2 MJ1 (cross-route carry) and m8 (typed fit-level counters): K4.
+- K2 m2 (batch-error and map-NaN typing holes), m5 (stream recorder robustness, bench only), m9 (function size and a
+  hot-path allocation): deferred.
+- K2 re-review notes: no mixed good / refused tile test for m4; the recheck band also trips deep-OTM lanes (perf only,
+  unmeasured on the replay); `FastProfileTablesEvaluateOnTheScalarMap`'s Auto assertion is trivial on a non-AVX2
+  host. `LaneAcceptance` stays a placeholder until K3's `RootAcceptance`; the stop/go was not re-run at `e47fe501`.
+- C0 residual: the opt-in ladder wing tail types its rows with `floor_vol`, not `identify_served` (candidate for C2).
+- C0: `query_quote_slice` ignores per-row market-distance gating (C2); no exercise-style / certified-domain support
+  flag (H0 / A1); B0's `served_iv_rows` still counts Legacy floor rows.
+- C0 re-review notes: the agreement test is partly self-referential (the M2 pins carry the independent values); the
+  lane's evidence dir has no standalone `sha256sum -c` log (re-run here: 9 OK).
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cf-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2cf-20261023-integrate\`.
