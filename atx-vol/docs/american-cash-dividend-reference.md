@@ -631,3 +631,384 @@ sits 1.5-5.2e-6 USD ABOVE Andersen-Lake at its high preset `{32, 64, 16, 1e-13}`
 sixth 9.4e-8 below. AL's production accurate preset sits 0-2.5e-5 BELOW its high preset, so AL
 converges from below. Every gap is inside the PDE's stated uncertainty, which is all the fast
 test asserts.
+
+
+## 11. D1 production: splice fix, routes, batch, Greeks, latency (lane D1, 2026-10-23)
+
+This section is lane D1's. The D0 sections above are unchanged. They are the reference this
+section is scored against. Every table here is pasted verbatim from one run of the production
+suite's slow tests:
+- binary `atx-vol-discrete-div-production-tests`, sha256 `c3793e5f...` (branch
+  `feat/vol-D1-cash-production-20261022`, code at `0b69b219`);
+- log `C:\atx-cache\quote-benchmark\D1-20261023-production\run5-final-slow.log`.
+
+### 11.1 The splice defect, and what the production lattice changes
+
+Section 9 item 6 left the cause of the multi-event error as a hypothesis. It is the splice's
+linear interpolation. At an ex-date the continuation is re-read at each node's post-dividend
+level. The historical splice reads it off the chord between the two bracketing nodes. The chord
+of a convex function lies above it by (x - x_j)(x_{j+1} - x) V''/2, a positive bias of order
+h^2 V'' = O(1/N) at every ex-date, and the events add up: +0.0165 USD per quarterly 1-USD event
+at 301 steps (table 11.3, `hist301`).
+
+The production rollback (`ddiv_detail::run_production_lattice`) uses the same tree, the same
+probabilities and the same final step, with four changes:
+1. **The cubic splice.** A four-point Lagrange on the same geometric nodes, O(h^4) on smooth
+   data.
+2. **Forward-preserving re-dating.** Cash rounded onto step t_k is scaled by
+   exp(-(r - q)(tau - t_k)).
+3. **Re-timed exercise at an ex-step.** Cum / post exercise is valued at the true ex-date.
+   This removes the step function of section 9 item 3.
+4. **Pre-steps.** The tree is rooted before valuation, so an ex-date in the first steps has the
+   nodes a splice needs, and delta / gamma are read at t = 0.
+
+With every correction off it is the historical rollback bit for bit (fast test
+`AllCorrectionsOffIsTheHistoricalRollbackBitForBit`, 96 combinations).
+
+### 11.2 The route rule (kernel header section 4; `discrete_div_lattice_route`)
+
+A route is a pure function of (S, T, schedule, opts): no sigma, rate or strike. So a root find
+and a batch group each see one discretisation. Every price, IV and Greek result carries the
+`route` it used.
+
+| Condition | Method, steps | Flag | Evidence (D0 rows, this section's re-score) |
+|---|---|---|---|
+| kill switch | historical SplicedCrr at base steps (301), call for call | `KillSwitch` | parity hashes `abc75955` / `747d3e6c` |
+| Standard, <= 12 in-life events | CubicCrr at 301 | — | every RESOLVED row within 3 bp (worst B2c -2.865); C8 / D12 at -0.6..-2.0 bp against -24.8..-34.0 historical |
+| Standard, > 12 events | CubicCrr at 25 x events, capped at 2401 | `StepsRaisedForEvents` (`StepsCapped`) | the kernel header's per-event rule. No D0 row exercises it (every D0 chain has at most 12 events), so it is not certified by this matrix |
+| an ex-date in the first steps | pre-steps: the smallest even count (>= 2) that keeps the 6-sd band's post-dividend levels on the grid, evaluated at sigma 0.10; cap 1024 | `PreStepsForEarlyExDate` | B1p / B1c: +19.1 / +17.0 bp historical, -1.97 / -1.29 Standard, -0.110 / -0.078 Refined |
+| an ex-date within half a step of t = 0 | spliced on the t = 0 layer (>= 4 pre-steps) | `ExDateOnStepZero` | fast route test |
+| cash beyond the band | the pre-step cap, depth reported | `GridBottomExtrapolated` | E64 needs 334 / 688 / 940 pre-steps at 301 / 1201 / 2401: inside the cap, priced to 1e-12 USD (11.4). At the checkpoint's cap of 64 the Refined route missed E64p by +1.28 USD |
+| Refined | BBS final step + Richardson pair (1201, 601) | — | every RESOLVED row within 1 bp (worst E20c -0.646) |
+| Refined, an in-life ex-date in (T - 2T/601, T) | CubicCrr at 2401, no Richardson | `NearExpiryExDate` | B2c +1.885 bp (checkpoint re-score) under the pair, because the coarse lattice's BBS step spans the ex-date the fine lattice splices; +0.114 bp on this route. B2p -0.268 |
+
+No global raise of 301: every D0 chain (at most 12 events) routes at 301 on Standard.
+
+### 11.3 The splice-fix verdict: per-event drift on the 8- and 12-event chains
+
+**Method.** Each chain is truncated to its first k events (k = 0, 1, 2, 4, 8, 12). Each
+truncation is priced against a LIVE reference: D0's PDE ladder, 1200 / 300 per year, 4 levels.
+The per-event drift is the endpoint (e(K) - e(0)) / K. Its reference uncertainty is
+u_drift = (u(K) + u(0)) / K.
+
+Per-truncation errors (USD):
+
+| case | k | ref +- u | hist301 err | std err | refined err |
+|---|---|---|---|---|---|
+| C8p | 0 | 10.8797793614 +- 2.37e-06 | +8.444e-03 | +8.444e-03 | +6.857e-05 |
+| C8p | 1 | 11.2812204067 +- 2.42e-06 | +2.830e-02 | +8.284e-03 | +7.203e-05 |
+| C8p | 2 | 11.7095986995 +- 2.55e-06 | +4.868e-02 | +8.702e-03 | +4.156e-05 |
+| C8p | 4 | 12.5428778953 +- 2.73e-06 | +8.421e-02 | +9.548e-03 | +1.035e-04 |
+| C8p | 8 | 13.7238308662 +- 1.81e-06 | +1.439e-01 | +1.048e-02 | +7.975e-05 |
+| C8c | 0 | 20.2071615268 +- 1.46e-06 | +4.330e-03 | +4.330e-03 | +3.501e-05 |
+| C8c | 1 | 19.5128418128 +- 1.46e-06 | +1.945e-02 | +4.305e-03 | +3.524e-05 |
+| C8c | 2 | 18.8511592401 +- 1.44e-06 | +3.528e-02 | +4.437e-03 | +3.428e-05 |
+| C8c | 4 | 17.6275253285 +- 1.41e-06 | +6.739e-02 | +4.335e-03 | +2.884e-05 |
+| C8c | 8 | 15.7109045721 +- 3.95e-07 | +1.283e-01 | +3.190e-03 | +5.150e-05 |
+| D12p | 0 | 12.5480204737 +- 2.99e-06 | +8.311e-03 | +8.311e-03 | +9.252e-05 |
+| D12p | 1 | 12.9291778776 +- 3.04e-06 | +3.035e-02 | +8.086e-03 | +9.902e-05 |
+| D12p | 2 | 13.3344086809 +- 3.17e-06 | +5.340e-02 | +8.091e-03 | +1.052e-04 |
+| D12p | 4 | 14.1543934975 +- 3.33e-06 | +9.573e-02 | +8.752e-03 | +8.781e-05 |
+| D12p | 8 | 15.5257666713 +- 3.51e-06 | +1.564e-01 | +9.739e-03 | +3.268e-04 |
+| D12p | 12 | 16.4113301577 +- 4.42e-06 | +2.099e-01 | +1.120e-02 | +4.431e-05 |
+| D12c | 0 | 24.8599087191 +- 2.44e-06 | +1.095e-02 | +1.095e-02 | -6.560e-05 |
+| D12c | 1 | 24.1417468431 +- 2.43e-06 | +2.640e-02 | +1.093e-02 | -6.398e-05 |
+| D12c | 2 | 23.4509238309 +- 2.42e-06 | +4.232e-02 | +1.086e-02 | -6.319e-05 |
+| D12c | 4 | 22.1527703196 +- 2.38e-06 | +7.515e-02 | +1.055e-02 | -6.423e-05 |
+| D12c | 8 | 19.8932926729 +- 2.31e-06 | +1.433e-01 | +1.034e-02 | -7.607e-05 |
+| D12c | 12 | 18.2067337416 +- 8.01e-07 | +2.096e-01 | +1.147e-02 | -6.521e-05 |
+
+Summary (USD per event):
+
+| case | events | u(K) | u_drift | hist301 per event | std per event | refined per event | within u_drift: std / refined |
+|---|---|---|---|---|---|---|---|
+| C8p | 8 | 1.81e-06 | 5.23e-07 | +1.693e-02 | +2.545e-04 | +1.397e-06 | NO / NO |
+| C8c | 8 | 3.95e-07 | 2.32e-07 | +1.550e-02 | -1.424e-04 | +2.061e-06 | NO / NO |
+| D12p | 12 | 4.42e-06 | 6.18e-07 | +1.680e-02 | +2.410e-04 | -4.018e-06 | NO / NO |
+| D12c | 12 | 8.01e-07 | 2.70e-07 | +1.656e-02 | +4.279e-05 | +3.199e-08 | NO / yes |
+
+**Verdict.**
+- The linear-splice defect is gone. The historical +0.0155..+0.0169 USD per event falls by 98.5
+  to 99.7 % on the Standard route and by 3.6 to 6 orders of magnitude on the Refined one.
+- **The brief's bound, "per-event drift within the reference uncertainty", holds on one case of
+  four.** It holds on D12c (Refined, 3.2e-8 against u_drift 2.7e-7). It misses on C8p, C8c and
+  D12p (Refined +1.4e-6 / +2.1e-6 / -4.0e-6 against u_drift 2.3-6.2e-7, a factor of 3-9). The
+  Standard route misses everywhere: 4.3e-5..2.5e-4 USD, under 0.05 bp per event.
+- **Why the Refined misses are a floor, not a trend.** The Refined route's own errors scatter by
+  about +-3e-5 USD between truncations (the k rows above; D12p at k = 8 is the outlier,
+  +3.3e-4). Divided by K that scatter is 2.5-4e-6
+  per event, the size of the misses. The least-squares slopes (+2.8e-6, +1.9e-6, +3.8e-6,
+  -4.3e-7) are of the same size and flip sign against the endpoint on D12p and D12c. Every
+  Refined truncation is within 3.3e-4 USD of its reference.
+
+### 11.4 Re-score of D0's 50-row matrix
+
+The kernel IV bp is `(sigma the route implies from the REFERENCE price - sigma) x 1e4`, through
+`american_discrete_div_production_iv` at tol 1e-9. `hist301` is the historical 301 SplicedCrr
+inverted the same way. It matches section 5's `d301 IV bp (inv)` to 0.002 bp (the inversion
+tolerance is 1e-9 here and 1e-7 there). Every Standard route below is the route the rule picks;
+`301+n` means n pre-steps.
+
+| id | status (D0) | ref +- u | hist301 bp (inv) | std route | std USD | std bp (inv) | refined USD | refined bp (inv) |
+|---|---|---|---|---|---|---|---|---|
+| A1p | RESOLVED | 7.1736405 +- 1.4e-06 | -3.135 | cubic-crr 301+2 | +6.17e-03 | -2.230 | +1.27e-05 | -0.005 |
+| A1c | RESOLVED | 9.6862934 +- 4.8e-07 | +0.247 | cubic-crr 301+2 | -3.47e-03 | +1.394 | +3.29e-04 | -0.131 |
+| A2p | RESOLVED | 7.1735700 +- 1.4e-06 | -3.161 | cubic-crr 301+2 | +5.65e-03 | -2.041 | +1.88e-05 | -0.007 |
+| A2c | RESOLVED | 9.6904775 +- 4.9e-07 | +1.929 | cubic-crr 301+2 | -6.01e-03 | +2.451 | -9.65e-04 | +0.387 |
+| A3p | RESOLVED | 7.1734917 +- 1.4e-06 | -3.129 | cubic-crr 301+2 | +6.17e-03 | -2.227 | +2.29e-05 | -0.008 |
+| A3c | RESOLVED | 9.6947023 +- 4.8e-07 | -0.003 | cubic-crr 301+2 | -2.85e-03 | +1.162 | -6.61e-04 | +0.265 |
+| A4p | RESOLVED | 7.1735708 +- 1.4e-06 | -3.160 | cubic-crr 301+2 | +5.66e-03 | -2.043 | +2.37e-05 | -0.009 |
+| A4c | RESOLVED | 9.6904354 +- 4.8e-07 | +1.912 | cubic-crr 301+2 | -5.99e-03 | +2.441 | -9.41e-04 | +0.377 |
+| A5p | RESOLVED | 7.1735693 +- 1.4e-06 | -3.120 | cubic-crr 301+2 | +6.16e-03 | -2.227 | +1.10e-05 | -0.004 |
+| A5c | RESOLVED | 9.6905195 +- 4.8e-07 | -0.548 | cubic-crr 301+2 | -1.47e-03 | +0.595 | +5.14e-04 | -0.205 |
+| B1p | RESOLVED | 9.6402481 +- 1.6e-06 | +19.125 | cubic-crr 301+8 | +7.43e-03 | -1.970 | +4.13e-04 | -0.110 |
+| B1c | RESOLVED | 12.5021530 +- 6.8e-07 | +16.989 | cubic-crr 301+8 | +4.65e-03 | -1.293 | +2.82e-04 | -0.078 |
+| B2p | RESOLVED | 9.3875344 +- 6.9e-07 | -1.380 | cubic-crr 301+2 | +8.23e-03 | -2.090 | +1.06e-03 | -0.268 |
+| B2c | RESOLVED | 14.4909890 +- 2.2e-07 | -3.698 | cubic-crr 301+2 | +1.01e-02 | -2.865 | -4.02e-04 | +0.114 |
+| B3p | RESOLVED | 9.3852415 +- 3.0e-07 | -1.962 | cubic-crr 301+2 | +7.73e-03 | -1.962 | -4.51e-05 | +0.011 |
+| B3c | RESOLVED | 14.4997542 +- 7.3e-07 | -1.209 | cubic-crr 301+2 | +4.26e-03 | -1.209 | -4.33e-07 | +0.000 |
+| C2p | RESOLVED | 7.1221957 +- 1.9e-06 | -10.401 | cubic-crr 301+2 | +6.11e-03 | -2.203 | +3.92e-05 | -0.014 |
+| C2c | RESOLVED | 9.6074845 +- 4.4e-07 | -7.089 | cubic-crr 301+2 | -3.14e-03 | +1.241 | +2.89e-04 | -0.112 |
+| C4p | RESOLVED | 9.9514465 +- 1.9e-06 | -16.870 | cubic-crr 301+6 | +8.12e-03 | -2.091 | +4.39e-05 | -0.011 |
+| C4c | RESOLVED | 12.2084392 +- 2.4e-07 | -16.552 | cubic-crr 301+6 | +5.43e-03 | -1.486 | -6.01e-04 | +0.164 |
+| C8p | RESOLVED | 13.7238309 +- 1.8e-06 | -26.820 | cubic-crr 301+4 | +1.05e-02 | -1.960 | +7.97e-05 | -0.015 |
+| C8c | RESOLVED | 15.7109046 +- 3.9e-07 | -24.828 | cubic-crr 301+4 | +3.19e-03 | -0.621 | +5.15e-05 | -0.010 |
+| D12p | RESOLVED | 16.4113302 +- 4.4e-06 | -32.813 | cubic-crr 301+4 | +1.12e-02 | -1.757 | +4.43e-05 | -0.007 |
+| D12c | RESOLVED | 18.2067337 +- 8.0e-07 | -34.016 | cubic-crr 301+4 | +1.15e-02 | -1.867 | -6.52e-05 | +0.011 |
+| DSPYp | RESOLVED | 93.3185322 +- 3.3e-05 | -8.710 | cubic-crr 301+4 | +1.69e-02 | -0.444 | +1.61e-03 | -0.042 |
+| DSPYc | RESOLVED | 149.6531807 +- 9.2e-06 | -9.598 | cubic-crr 301+4 | +5.67e-02 | -1.294 | -1.64e-03 | +0.037 |
+| E1p | RESOLVED | 8.7370443 +- 1.6e-06 | -6.086 | cubic-crr 301+2 | +7.62e-03 | -1.977 | +6.60e-05 | -0.017 |
+| E1c | RESOLVED | 13.8776912 +- 7.0e-07 | -4.932 | cubic-crr 301+2 | +4.17e-03 | -1.168 | -3.52e-06 | +0.001 |
+| E5p | RESOLVED | 10.7557330 +- 1.8e-06 | -4.812 | cubic-crr 301+2 | +6.55e-03 | -1.706 | +6.15e-05 | -0.016 |
+| E5c | RESOLVED | 12.1633005 +- 3.2e-07 | -1.744 | cubic-crr 301+2 | +2.66e-03 | -0.775 | -8.96e-04 | +0.257 |
+| E20p | RESOLVED | 20.6308584 +- 1.1e-06 | -4.118 | cubic-crr 301+2 | +9.21e-04 | -0.314 | +7.58e-05 | -0.026 |
+| E20c | RESOLVED | 10.8738575 +- 5.6e-07 | +1.339 | cubic-crr 301+2 | -8.30e-04 | +0.314 | +1.79e-03 | -0.646 |
+| E64p | PRICE-ONLY (IV not identified) | 2.7180752 +- 2.5e-10 | +nan | cubic-crr 301+334 | -4.40e-13 | +nan | -1.11e-14 | +nan |
+| E64c | PRICE-ONLY (IV not identified) | 1.3788048 +- 1.6e-10 | +nan | cubic-crr 301+334 | +7.15e-13 | +nan | +2.63e-13 | +nan |
+| F1c | UNRESOLVED (u > 1e-7 IV) | 31.3109315 +- 4.0e-07 | +0.235 | cubic-crr 301+2 | -5.73e-04 | +2.827 | +1.77e-04 | -0.953 |
+| F1p | UNRESOLVED (u > 1e-7 IV) | 33.0453867 +- 2.3e-06 | -0.346 | cubic-crr 301+2 | -1.34e-04 | +0.155 | +8.26e-06 | -0.009 |
+| F2c | UNRESOLVED (u > 1e-7 IV) | 20.8846222 +- 3.9e-07 | +3.030 | cubic-crr 301+2 | -1.11e-03 | +3.507 | +2.73e-05 | -0.095 |
+| F2p | UNRESOLVED (u > 1e-7 IV) | 27.8985665 +- 1.7e-06 | +2.280 | cubic-crr 301+2 | -1.40e-03 | +4.016 | +6.43e-06 | -0.020 |
+| G1p | RESOLVED | 11.5210593 +- 1.9e-07 | -3.292 | cubic-crr 301+2 | +7.43e-03 | -1.890 | -7.58e-06 | +0.002 |
+| G1c | RESOLVED | 11.2202666 +- 3.0e-07 | -1.586 | cubic-crr 301+2 | +9.78e-04 | -0.273 | +1.97e-03 | -0.550 |
+| G4p | RESOLVED | 12.0663212 +- 2.0e-07 | -16.780 | cubic-crr 301+6 | +7.96e-03 | -2.038 | -2.21e-05 | +0.006 |
+| G4c | RESOLVED | 10.6583395 +- 5.6e-07 | -16.386 | cubic-crr 301+6 | +7.11e-03 | -1.925 | +3.05e-04 | -0.083 |
+| H1p | RESOLVED (not the D1 convention) | 9.5541072 +- 1.7e-06 | +nan | cubic-crr 301+2 | +1.65e-01 | +nan | +1.58e-01 | +nan |
+| H1c | RESOLVED (not the D1 convention) | 12.6540532 +- 4.6e-07 | +nan | cubic-crr 301+2 | +1.50e-01 | +nan | +1.46e-01 | +nan |
+| H4p | RESOLVED (not the D1 convention) | 9.7640159 +- 2.0e-06 | +nan | cubic-crr 301+6 | +1.96e-01 | +nan | +1.87e-01 | +nan |
+| H4c | RESOLVED (not the D1 convention) | 12.0273800 +- 2.8e-07 | +nan | cubic-crr 301+6 | +1.86e-01 | +nan | +1.80e-01 | +nan |
+| ILp | UNRESOLVED (u > 1e-7 IV) | 4.4750363 +- 4.5e-07 | -5.894 | cubic-crr 301+334 | -3.28e-04 | +2.471 | -5.82e-04 | +4.486 |
+| ILc | RESOLVED | 2.6775725 +- 9.4e-08 | +3.129 | cubic-crr 301+334 | -3.29e-04 | +2.248 | -3.23e-06 | +0.022 |
+| ISp | CONVENTION GAP (kernel = liquidator) (not the D1 convention) | 3.8210112 +- 4.7e-07 | +nan | cubic-crr 301+334 | +6.54e-01 | +nan | +6.53e-01 | +nan |
+| ISc | CONVENTION GAP (kernel = liquidator) (not the D1 convention) | 2.7021679 +- 1.1e-07 | +nan | cubic-crr 301+334 | -2.49e-02 | +nan | -2.46e-02 | +nan |
+
+Worst RESOLVED |IV bp|: **Standard -2.865 (B2c), Refined -0.646 (E20c).** The historical 301
+lattice reaches -34.016 (D12c).
+
+**Rows the claim does not cover, stated.**
+- **UNRESOLVED (5): F1c, F1p, F2c, F2p, ILp.** The reference cannot certify a root at the 1e-7
+  IV contract on these rows (section 5).
+  - Standard: +2.83 / +0.16 / +3.51 / +4.02 / +2.47 bp.
+  - Refined: -0.95 / -0.01 / -0.10 / -0.02 / **+4.49** bp.
+  - ILp's Refined miss is DECIDABLE. The reference's u is 4.5e-7 USD (0.003 bp), so +4.49 bp
+    is 1,300 times u. The Refined route is not reference-grade on a put whose spot loses 60 %
+    to cash (sigma 0.8, 2.3 sd). The Standard route is closer there.
+- **PRICE-ONLY (2): E64p, E64c.** The IV is not identified (vega ~1e-9).
+  - Both routes price them to within 1e-12 USD of the reference (Standard -4.4e-13 / +7.2e-13,
+    Refined -1.1e-14 / +2.6e-13).
+  - The production inversion refuses a quote at or below the exercise value as price-only. A
+    quote on the American plateau identifies no volatility.
+- **CONVENTION GAP (2): ISp, ISc.** The survivor convention is not implemented; the kernel is
+  the liquidator, as before. The gap is +0.654 / -0.025 USD.
+- **Group H (escrowed).** H is a different model. The spot-shift routes sit 0.15-0.19 USD from
+  it, which measures the convention, not an error.
+
+### 11.5 The comparator refuses cash-dominated contracts (L3f review m1)
+
+`american_discrete_div_converged_price` now returns OutOfRange for a contract whose spot,
+after the cash paid up to an ex-date tau in (0, T], sits at or below S exp(-6 sigma sqrt(tau)),
+or at or below zero.
+- **Why.** Its lattices would otherwise read the spot's post-dividend continuation off the
+  grid-bottom extrapolation, and `fine - coarse` stops being an uncertainty.
+- **What trips it in D0's matrix.** E64 alone: 40 sd, +2.61 USD in section 5. B1 is at
+  2.5 sd and IL at 2.3 sd; both stay served. The D0 slow test now expects the refusal on E64
+  and success elsewhere.
+- **The run.** `run6-d0-matrix.log`, the same binary set, re-ran section 5-8's matrix. Its
+  E64 `refined cmp` column reads `nan`.
+
+### 11.6 Sensitivities against bump-and-revalue on the reference
+
+**What the bundle is** (`american_discrete_div_production_greeks`; the batch is bit-identical):
+- delta and gamma: the t = 0 stencil;
+- vega: a central 10 % sigma bump;
+- rho / phi: central 1e-3 bumps;
+- dP/dD_i: amount bumps;
+- theta / charm: the two-step stencils;
+- the event-aware one-day roll.
+Each is one route with fixed nodes. Unsupported is NaN with a bit, never 0.
+
+**What the reference is.** D0's PDE on a fixed common-mode grid (800 / 200 per year at level
+2): central differences at h and h/2 with one Richardson step. Delta and gamma are the PDE's
+own centre-node stencil; `+-` is the bump study's spread. The lattice columns are Standard at
+301 / 601 / 1201 and Refined: the step study.
+
+| id | greek | reference (+- bump spread) | std 301 | std 601 | std 1201 | refined | err std 301 | err refined |
+|---|---|---|---|---|---|---|---|---|
+| A2p | delta | -0.48198164 +- 0.0e+00 | -0.481666 | -0.481824 | -0.481902 | -0.481915 | +3.15e-04 | +6.65e-05 |
+| A2p | gamma | 0.023820959 +- 0.0e+00 | 0.0237588 | 0.0237898 | 0.0238053 | 0.0238084 | -6.22e-05 | -1.26e-05 |
+| A2p | vega | 27.660532 +- 2.6e-04 | 27.6834 | 27.671 | 27.6647 | 27.6584 | +2.29e-02 | -2.12e-03 |
+| A2p | rho | -20.794507 +- 6.0e-04 | -20.8212 | -20.8096 | -20.7995 | -20.7886 | -2.67e-02 | +5.86e-03 |
+| A2p | phi | 18.379389 +- 1.9e-04 | 18.4003 | 18.391 | 18.3829 | 18.3742 | +2.09e-02 | -5.21e-03 |
+| A2p | theta | -5.2288344 +- 1.5e-04 | -5.23659 | -5.23289 | -5.23103 | -5.23197 | -7.76e-03 | -3.14e-03 |
+| A2p | dP/dD1 | 0.51413842 +- 5.8e-08 | 0.513996 | 0.514012 | 0.514082 | 0.514152 | -1.43e-04 | +1.32e-05 |
+| A2p | roll 1d | -0.020813763 +- 0.0e+00 | -0.0207408 | -0.0207264 | -0.0207201 | -0.0207146 | +7.29e-05 | +9.91e-05 |
+| A2p | roll events crossed | 0 (cash 0.0000) | | | | | | |
+| B3p | delta | -0.43378418 +- 0.0e+00 | -0.433409 | -0.433619 | -0.43369 | -0.433695 | +3.75e-04 | +8.97e-05 |
+| B3p | gamma | 0.015739895 +- 0.0e+00 | 0.0156984 | 0.0157298 | 0.0157295 | 0.0157317 | -4.15e-05 | -8.20e-06 |
+| B3p | vega | 39.343181 +- 1.6e-04 | 39.3916 | 39.3754 | 39.3659 | 39.3415 | +4.85e-02 | -1.63e-03 |
+| B3p | rho | -52.743096 +- 5.6e-03 | -52.7645 | -52.7485 | -52.7472 | -52.7413 | -2.14e-02 | +1.78e-03 |
+| B3p | phi | 43.364927 +- 1.8e-03 | 43.3781 | 43.3734 | 43.3679 | 43.3644 | +1.32e-02 | -4.86e-04 |
+| B3p | theta | -2.8081719 +- 8.6e-07 | -2.81161 | -2.81342 | -2.80904 | -2.80976 | -3.44e-03 | -1.59e-03 |
+| B3p | dP/dD1 | 0.51202446 +- 7.2e-06 | 0.510932 | 0.498021 | 0.510958 | 0.512032 | -1.09e-03 | +7.11e-06 |
+| B3p | roll 1d | -0.011162424 +- 0.0e+00 | -0.0111824 | -0.0112415 | -0.0111724 | -0.0111623 | -2.00e-05 | +1.44e-07 |
+| B3p | roll events crossed | 0 (cash 0.0000) | | | | | | |
+| C4c | delta | 0.63378496 +- 0.0e+00 | 0.633937 | 0.633897 | 0.633833 | 0.633823 | +1.52e-04 | +3.85e-05 |
+| C4c | gamma | 0.015581996 +- 0.0e+00 | 0.0155443 | 0.0155715 | 0.0155764 | 0.0155739 | -3.76e-05 | -8.13e-06 |
+| C4c | vega | 36.740286 +- 1.3e-03 | 36.5637 | 36.7192 | 36.7235 | 36.7301 | -1.77e-01 | -1.02e-02 |
+| C4c | rho | 43.960915 +- 3.7e-02 | 43.8179 | 43.9959 | 43.9048 | 43.8584 | -1.43e-01 | -1.02e-01 |
+| C4c | phi | -53.81144 +- 2.3e-01 | -53.6764 | -53.9041 | -53.8231 | -53.787 | +1.35e-01 | +2.44e-02 |
+| C4c | theta | -6.9162622 +- 3.4e-05 | -6.92268 | -6.9224 | -6.91915 | -6.91825 | -6.42e-03 | -1.99e-03 |
+| C4c | dP/dD1 | -0.6215135 +- 1.1e-07 | -0.621559 | -0.621572 | -0.621537 | -0.621506 | -4.52e-05 | +7.22e-06 |
+| C4c | roll 1d | -0.027467955 +- 0.0e+00 | -0.0270435 | -0.0280939 | -0.0271827 | -0.0261712 | +4.24e-04 | +1.30e-03 |
+| C4c | roll events crossed | 0 (cash 0.0000) | | | | | | |
+| D12p | delta | -0.42151882 +- 0.0e+00 | -0.420774 | -0.421142 | -0.421329 | -0.421341 | +7.45e-04 | +1.77e-04 |
+| D12p | gamma | 0.0096382139 +- 0.0e+00 | 0.00960907 | 0.00962359 | 0.00963094 | 0.00963207 | -2.91e-05 | -6.15e-06 |
+| D12p | vega | 63.718271 +- 6.4e-04 | 63.7598 | 63.7417 | 63.728 | 63.7148 | +4.15e-02 | -3.43e-03 |
+| D12p | rho | -153.12924 +- 5.1e-01 | -152.891 | -152.935 | -152.955 | -152.973 | +2.38e-01 | +1.56e-01 |
+| D12p | phi | 109.71669 +- 5.7e-03 | 109.597 | 109.687 | 109.711 | 109.735 | -1.20e-01 | +1.85e-02 |
+| D12p | theta | -0.6694102 +- 5.2e-06 | -0.671369 | -0.670397 | -0.669926 | -0.670302 | -1.96e-03 | -8.92e-04 |
+| D12p | dP/dD1 | 0.4258465 +- 4.3e-08 | 0.42568 | 0.425756 | 0.425799 | 0.425841 | -1.67e-04 | -5.83e-06 |
+| D12p | roll 1d | -0.0026601588 +- 0.0e+00 | -0.00234302 | -0.00267015 | -0.00268672 | -0.00270401 | +3.17e-04 | -4.39e-05 |
+| D12p | roll events crossed | 0 (cash 0.0000) | | | | | | |
+| E20p | delta | -0.73509053 +- 0.0e+00 | -0.73382 | -0.734453 | -0.734772 | -0.7348 | +1.27e-03 | +2.90e-04 |
+| E20p | gamma | 0.015537642 +- 0.0e+00 | 0.015524 | 0.0155308 | 0.0155342 | 0.0155344 | -1.36e-05 | -3.25e-06 |
+| E20p | vega | 29.34689 +- 9.5e-03 | 29.2991 | 29.2819 | 29.2749 | 29.2682 | -4.78e-02 | -7.87e-02 |
+| E20p | rho | -55.211237 +- 1.3e-03 | -55.228 | -55.2588 | -55.2099 | -55.1615 | -1.67e-02 | +4.97e-02 |
+| E20p | phi | 43.863039 +- 6.1e-04 | 43.8769 | 43.9033 | 43.8605 | 43.818 | +1.39e-02 | -4.50e-02 |
+| E20p | theta | -1.0898609 +- 5.1e-05 | -1.09335 | -1.09161 | -1.09075 | -1.09073 | -3.49e-03 | -8.68e-04 |
+| E20p | dP/dD1 | 0.76596261 +- 8.5e-08 | 0.765814 | 0.765685 | 0.765881 | 0.766076 | -1.49e-04 | +1.13e-04 |
+| E20p | roll 1d | -0.0043288103 +- 0.0e+00 | -0.00101996 | -0.0037761 | -0.00381307 | -0.00385106 | +3.31e-03 | +4.78e-04 |
+| E20p | roll events crossed | 0 (cash 0.0000) | | | | | | |
+| F1c | delta | 0.98967585 +- 0.0e+00 | 0.989583 | 0.989642 | 0.989647 | 0.989648 | -9.28e-05 | -2.78e-05 |
+| F1c | gamma | 0.0016319532 +- 0.0e+00 | 0.00163944 | 0.00163439 | 0.00163446 | 0.00163439 | +7.49e-06 | +2.44e-06 |
+| F1c | vega | 1.8508761 +- 3.7e-03 | 1.8802 | 1.88134 | 1.87898 | 1.87563 | +2.93e-02 | +2.48e-02 |
+| F1c | rho | 30.447139 +- 7.9e-06 | 30.4527 | 30.4497 | 30.4479 | 30.446 | +5.52e-03 | -1.10e-03 |
+| F1c | phi | -44.5371 +- 4.2e-06 | -44.5424 | -44.5395 | -44.5378 | -44.5361 | -5.28e-03 | +1.03e-03 |
+| F1c | theta | -3.216217 +- 1.6e-05 | -3.21268 | -3.21412 | -3.21554 | -3.21552 | +3.53e-03 | +7.00e-04 |
+| F1c | dP/dD1 | -0.00052793797 +- 8.7e-08 | -0.000711452 | -0.000363144 | -0.000443573 | -0.000520805 | -1.84e-04 | +7.13e-06 |
+| F1c | roll 1d | -0.012750274 +- 0.0e+00 | -0.0127151 | -0.0126339 | -0.0127574 | -0.0128755 | +3.51e-05 | -1.25e-04 |
+| F1c | roll events crossed | 0 (cash 0.0000) | | | | | | |
+| B1p | delta | -0.46930873 +- 0.0e+00 | -0.469002 | -0.46915 | -0.469231 | -0.46925 | +3.07e-04 | +5.90e-05 |
+| B1p | gamma | 0.018533504 +- 0.0e+00 | 0.0184896 | 0.0185119 | 0.0185227 | 0.0185253 | -4.39e-05 | -8.24e-06 |
+| B1p | vega | 37.686068 +- 1.0e-03 | 37.7157 | 37.6959 | 37.6871 | 37.6787 | +2.96e-02 | -7.38e-03 |
+| B1p | rho | -36.676882 +- 1.6e-03 | -36.7458 | -36.7137 | -36.6931 | -36.674 | -6.89e-02 | +2.85e-03 |
+| B1p | phi | 31.152915 +- 5.6e-04 | 31.2012 | 31.1796 | 31.164 | 31.1498 | +4.83e-02 | -3.14e-03 |
+| B1p | theta | -3.5289351 +- 1.0e-05 | UNSUPPORTED (NaN) | UNSUPPORTED (NaN) | -3.52982 | -3.53058 | +nan | -1.65e-03 |
+| B1p | dP/dD1 | 0.46953479 +- 1.0e-07 | 0.469542 | 0.469389 | 0.469524 | 0.469659 | +7.12e-06 | +1.25e-04 |
+| B1p | roll 1d | -0.013553926 +- 0.0e+00 | -0.0142075 | -0.0187193 | -0.0138087 | -0.0139313 | -6.54e-04 | -3.77e-04 |
+| B1p | roll events crossed | 1 (cash 3.0000) | | | | | | |
+
+**Claims and what the study finds.** The slow test asserts the Refined route against these
+bounds. They were written before this study was run, and they were not moved after it:
+- **Holds:** rho within 0.5 % (worst C4c 0.23 %), dP/dD within 2e-3 (worst 1.3e-4), roll within
+  2e-3 USD (worst 1.3e-3, C4c).
+- **Fails: delta within 2e-4.** E20p is 2.9e-4 off; the rest are at most 1.8e-4. The error is
+  the stencil's secant over +-1.44 % of spot. It halves with each doubling of N (E20p Standard
+  1.27e-3 / 6.4e-4 / 3.2e-4 at 301 / 601 / 1201).
+- **Fails: vega within 0.2 %, on E20p and F1c.**
+  - E20p is -0.27 %, the bias of the 10 % bump. A bump-size study (below) measures -0.065 % at
+    5 % and +0.003 % with a 10 % / 5 % Richardson pair.
+  - F1c is +1.3 to +1.7 % at every N (301 / 601 / 1201 +1.59 / +1.65 / +1.52 %, Refined
+    +1.34 %) and at every Refined bump size (1.29-1.34 %). F1c is an UNRESOLVED row, deep in
+    the money before a late ex-date. The historical 301 lattice is +1.7 % there too (D0
+    section 8).
+  The slow ctest `atx-vol-discrete-div-production-matrix` is therefore red on these three
+  assertions. They are findings, not tolerances to widen.
+
+**rho and phi: a bump-size defect, fixed.** The checkpoint's bundle used the historical
+bundle's 1e-4 rate / yield bumps. On D12p that gave Refined rho -150.51 and phi 108.74 against
+the reference's -153.13 / 109.72 (-1.7 % / -0.9 %).
+- **Diagnosis.** r and q move no node, but they flip exercise decisions node by node, so the
+  lattice price is rippled in r and q below ~1e-3.
+- **Evidence.** At matched bump sizes the lattice tracks D0's PDE ladder.
+  - On D12p: rho secant at 1e-3, -152.955 (CubicCrr 1201) against -152.965 +- 0.006 (ladder).
+  - At 5e-3: -150.959 against -150.937.
+  - Log: `diag-scratch-rho-phi.log`.
+- **The scan.** A scan of 1e-4 / 1e-3 / 2e-3 / 5e-3 and a Richardson pair over the seven study
+  rows (`diag-scratch-bumps.log`) put the worst Refined error at:
+
+| bump | rho | phi |
+|---|---|---|
+| 1e-4 | 1.7e-2 | 8.9e-3 |
+| 1e-3 | 2.3e-3 | 1.0e-3 |
+| 2e-3 | 4.3e-3 | 4.3e-3 |
+| 5e-3 | 1.4e-2 | 5.8e-3 |
+| Richardson pair | 2.8e-3 | 2.0e-3 |
+
+The production bundle now uses 1e-3 (`kDiscreteDivProductionRateBump` /
+`kDiscreteDivProductionYieldBump`). The historical bundle's constants are untouched. The fast
+test `RhoAndPhiAgainstTheReferenceOnTheTwelveEventLeaps` pins D12p at 0.5 %. It was red first.
+
+**Theta and the roll.**
+- **Theta.** Where the route's two-step stencil differences across an ex-date (an in-life
+  ex-date on steps 0..2), theta and charm are UNSUPPORTED. On B1p they are NaN with the bit on
+  the 301 / 601 routes. At 1201 the ex-date is 2.8 steps in and theta is served: 1201 gives
+  -3.5298 and Refined -3.5306, against the reference's -3.5289.
+- **Roll.** The one-day roll crosses B1p's ex-date as an event: the 3.00 comes off the stock
+  and the contract re-routes. Refined -0.01393 against the reference's -0.01355 USD.
+
+### 11.7 Batching, latency and coverage
+
+`DiscreteDivBatch::prepare` builds each (S, T, r, q, schedule) group's routes and step maps
+once. The price, implied_vol and greeks loops then allocate nothing (allocation test: 0 in all
+three loops). They are bit-identical to the per-contract entries (fast test).
+
+**The measurement.** `atx-vol-ddiv-latency` (tools) times each entry per contract on one
+pinned P-core logical CPU, with B0's receipts. Its cold group-calibration clock charges
+`prepare()` to `family_build_validation` and the inversions to `inverses`. The stage table
+reconciles: |unattributed| <= 5e-7 s.
+
+**The cohort result.** The dev200b divsched cohort is 398 chains and 22,009 contracts, Standard
+route. p50 per contract:
+- cold standalone price 24.1 us (17.9 at 0 in-life events, 98.2 above 12);
+- prepared price 23.8 us;
+- identified IV 114.2 us;
+- Greek bundle 191.3 us;
+- group setup 2.8 us.
+
+IV coverage on the bid/ask mid:
+- 16,076 identified;
+- 1,719 price-only;
+- 0 refused;
+- 6 out of budget;
+- 4,208 with no two-sided market.
+
+All 22,009 are priced.
+
+**Against the budgets.** Every P1 / P2 / P3 budget is a MISS, by 1.8x (cold price, 0 events) up
+to 37x (bundle, > 12 events). The table by event count and tenor, the Refined route and the
+budget verdicts are in `docs/hft-support-matrix.md`.
+
+### 11.8 Reproduce
+
+```powershell
+powershell -NoProfile -File scripts\atx-build.ps1 build atx-vol-discrete-div-production-tests atx-vol-ddiv-latency -Preset vol-rel -Jobs 1
+# fast suite (23 tests, < 1 s)
+powershell -NoProfile -File scripts\atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-discrete-div-production$"
+# slow: re-score + drift (~100 s) and the Greek study (~11 s)
+build-vol-rel\bin\atx-vol-discrete-div-production-tests.exe --gtest_filter=DiscreteDivProductionMatrix.*
+# latency / coverage (inputs: D1-20261023-production\scripts\build_ddiv_latency_inputs.py)
+build-vol-rel\bin\atx-vol-ddiv-latency.exe --input <csv> --output <json> --affinity <P-core CPU> --require-pcore
+```
+
+Evidence: `C:\atx-cache\quote-benchmark\D1-20261023-production\` (manifest `sha256.txt`).

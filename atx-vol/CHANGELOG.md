@@ -5,6 +5,63 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — opt-in production cash-dividend lattice: cubic splice, routes, batch, event-aware Greeks
+
+D0 measured the 301-step spliced lattice 2.8-4.4 IV bp per ex-date off on multi-event chains.
+The cause is the splice's linear interpolation: the chord of the convex continuation lies above
+it at every ex-date. A production lattice now exists beside the historical one
+(`api/pricing/american_discrete_div_kernel.hpp` section 4,
+`src/pricing/american_discrete_div.cpp` `run_production_lattice`). It has:
+- a 4-point cubic splice on the CRR nodes;
+- forward-preserving re-dating of rounded ex-dates;
+- exercise rights re-timed to the true ex-date;
+- pre-steps, so that an early ex-date has the nodes a splice needs and delta / gamma are
+  read at t = 0.
+
+The route rule `discrete_div_lattice_route` is a pure function of (S, T, schedule, opts). Every
+result carries a `route` field.
+- **Standard**: CubicCrr at max(301, 25 x in-life events) steps (capped at 2401), plus
+  pre-steps up to 1024.
+  It is within 3 bp of IV of D0's reference on every RESOLVED matrix row (the historical lattice
+  reaches 34 bp).
+- **Refined**: the BBS-Richardson pair 1201 / 601, or CubicCrr at 2401 when an ex-date falls in
+  the last two coarse steps (flag `NearExpiryExDate`). It is within 1 bp on every RESOLVED row.
+- **Kill switch**: the historical SplicedCrr, call for call.
+
+`api/pricing/american_discrete_div_batch.hpp` `DiscreteDivBatch` builds routes and step maps once
+per (S, T, r, q, schedule) group in `prepare()`, and its price, implied_vol and greeks loops
+allocate nothing per contract.
+
+The Greek bundle `american_discrete_div_production_greeks` returns:
+- delta and gamma from the t = 0 stencil;
+- vega;
+- rho / phi from 1e-3 central bumps (a 1e-4 bump read the lattice's ripple in r and q);
+- per-event dP/dD;
+- theta and charm;
+- an event-aware one-day roll. A roll across an ex-date takes the cash off the stock; it is
+  not a derivative.
+
+Unsupported Greeks are NaN with a bit, never 0. The production inversion returns OutOfRange
+(price-only) for a quote at or below the exercise value.
+
+Other additions:
+- quote-bench accepts `dividend_lattice: "spliced-cubic"`.
+- `atx-vol-ddiv-latency` (tools) measures per-event-count latency and coverage on B0's
+  harness.
+- `docs/hft-support-matrix.md` holds the latency row. It is a MISS on every P1 / P2 / P3 budget.
+- Accuracy, routing and Greek studies: `docs/american-cash-dividend-reference.md` section 11.
+
+**Behaviour change:** `american_discrete_div_converged_price` now returns OutOfRange for a
+cash-dominated contract. That is one whose spot, after the cash paid up to an ex-date, sits
+beyond the 6-sd band of log spot there. On D0 row E64 (cash 64 % of spot) the comparator was
++2.61 USD off the reference while claiming 1.0 (L3f review m1).
+
+**Migration:**
+- Default routes are unchanged: the nine default prediction hashes and the keys-OFF dividend
+  hashes `abc75955` / `747d3e6c` reproduce byte for byte.
+- A caller of the converged comparator must handle the new OutOfRange.
+- `DiscreteDivScheme` gains the enumerator `SplicedCubic`. A switch over it must add the case.
+
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
 Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object
