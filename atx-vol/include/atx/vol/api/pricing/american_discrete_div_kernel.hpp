@@ -460,7 +460,11 @@ american_discrete_div_implied_vol(double price, double S, double K, double T, do
 //     grid's second node, evaluated at kDiscreteDivRouteSigma (the route does not
 //     depend on the contract's sigma, so a root find and a batch group see ONE
 //     discretisation); capped at kDiscreteDivMaxPreSteps, beyond which the route
-//     says GridBottomExtrapolated and reports the depth. The cap is 1024: D0 row
+//     says GridBottomExtrapolated and reports the depth. The count, and so the
+//     flag, is a statement for sigma >= kDiscreteDivRouteSigma: below it the
+//     cash spans more rungs of the contract's tree than of the route's, so a band
+//     node can read the extrapolated grid bottom with the flag clear. The cap is
+//     1024: D0 row
 //     E64 (cash 64 % of spot, 5.9 days out; price-only) asks for 334 / 688 / 940
 //     pre-steps at 301 / 1201 / 2401 steps, and at the checkpoint's cap of 64 its
 //     band read below the grid (Refined +1.28 USD on E64p). What still exceeds 1024
@@ -509,6 +513,7 @@ enum class DiscreteDivRouteFlag : std::uint16_t {
   StepsRaisedForEvents = 1U << 2,   // the per-event rule raised the step count
   StepsCapped = 1U << 3,            // ... and hit kDiscreteDivMaxRouteSteps
   GridBottomExtrapolated = 1U << 4, // kDiscreteDivMaxPreSteps left a band node below the grid
+                                    // (at kDiscreteDivRouteSigma: a sigma >= 0.10 statement)
   ExDateOnStepZero = 1U << 5,       // an ex-date within half a step of t = 0, spliced at t = 0
   KillSwitch = 1U << 6,             // historical lattice by request
   NearExpiryExDate = 1U << 7,       // Refined: an ex-date in the last two coarse steps
@@ -600,7 +605,23 @@ american_discrete_div_production_iv(double price, double S, double K, double T, 
 // bump moves the model, never the discretisation. Supported greeks are FINITE;
 // an unsupported one is NaN with its bit set in `unsupported` — never 0.
 //   delta, gamma  the t = 0 central stencils of the pre-stepped tree (S d^2, S, S u^2);
-//   vega          central sigma bump, h = kDiscreteDivSigmaBumpRel x sigma;
+//                 under CubicBbsRichardson the route's own Richardson pair of them
+//                 (n d_n - m d_m) / (n - m), as its price: the stencil's error is
+//                 first order in 1 / N (D0 row E20p, Refined: +2.9e-4 from the fine
+//                 lattice alone, review-D1 M1);
+//   vega          the Richardson pair of central sigma bumps at h and h / 2,
+//                 h = kDiscreteDivSigmaBumpRel x sigma, (4 v(h / 2) - v(h)) / 3: it
+//                 removes the bump's O(h^2) bias (E20p: -0.27 % at h alone, +0.003 %).
+//                 UNSUPPORTED (reason ExerciseDominated) on an exercise-dominated
+//                 American call: an in-life ex-date tau_i where early exercise just
+//                 before it can be optimal, D_i > K (1 - e^{-r (t_next - tau_i)})
+//                 (t_next the next in-life ex-date or T), with the cum-dividend dated
+//                 forward there at least kDiscreteDivExerciseDominatedSd standard
+//                 deviations in the money, ln(F(tau_i-) / K) >= z sigma sqrt(tau_i).
+//                 Its vega is the small residual of the paths that keep the option,
+//                 read through the exercise boundary at the ex-date; on D0 row F1c
+//                 (z = 2.23) the lattice is +1.3 to +1.7 % off the reference at every
+//                 N and every bump size (doc section 11.6), so it is not served;
 //   rho, phi      central r and q bumps (kDiscreteDivProductionRateBump /
 //                 kDiscreteDivProductionYieldBump, below), q being the residual
 //                 continuous yield on top of the cash;
@@ -611,7 +632,8 @@ american_discrete_div_production_iv(double price, double S, double K, double T, 
 //                 steps 0..2 of the route: the stencil would difference across the
 //                 ex-date, and a roll across an ex-date is an EVENT, not a derivative;
 //   roll          the event-aware time roll over `roll_horizon` (below). Under
-//                 CubicBbsRichardson the greeks read the fine lattice's stencils.
+//                 CubicBbsRichardson theta and charm read the fine lattice's stencils
+//                 (the coarse one's first ex-step can sit inside its two-step stencil).
 enum class DiscreteDivGreek : std::uint8_t {
   Delta = 0,
   Gamma = 1,
@@ -623,6 +645,24 @@ enum class DiscreteDivGreek : std::uint8_t {
   DividendAmount = 7,
   Roll = 8,
 };
+
+// Why a greek is unsupported (a bit 1 << reason in `DiscreteDivProductionGreeks::
+// reasons`; the greek's own bit says WHICH greek). NaN, never 0, in every case.
+enum class DiscreteDivUnsupportedReason : std::uint8_t {
+  NotRequested = 0,      // dP/dD without slots, the roll with horizon <= 0
+  ExDateInStencil = 1,   // theta / charm: an in-life ex-date on steps 0..2
+  RollRefused = 2,       // the roll's re-route or rollback refused (its error class)
+  ExerciseDominated = 3, // vega: the exercise-dominated American call (above)
+  Refused = 4,           // batch: the group or the whole bundle refused
+};
+
+// Stable names: "not_requested", "ex_date_in_stencil", "roll_refused",
+// "exercise_dominated", "refused".
+[[nodiscard]] const char *to_string(DiscreteDivUnsupportedReason value) noexcept;
+
+// The exercise-dominated threshold of the vega rule above, in standard deviations
+// of log spot at the ex-date (2: about 98 % of the lognormal mass in the money).
+inline constexpr double kDiscreteDivExerciseDominatedSd = 2.0;
 
 // The production bundle's rate / yield bumps (lane D1, r6). NOT the historical
 // bundle's kDiscreteDivRateBump / kDiscreteDivYieldBump (1e-4, american.hpp): r and q
@@ -658,10 +698,14 @@ struct DiscreteDivProductionGreeks {
   double charm = 0.0;
   DiscreteDivTimeRoll roll{};
   std::uint16_t unsupported = 0; // bits 1 << DiscreteDivGreek
+  std::uint16_t reasons = 0;     // bits 1 << DiscreteDivUnsupportedReason
   DiscreteDivLatticeRoute route{};
 
   [[nodiscard]] constexpr bool supported(DiscreteDivGreek greek) const noexcept {
     return (unsupported & (1U << static_cast<unsigned>(greek))) == 0U;
+  }
+  [[nodiscard]] constexpr bool has(DiscreteDivUnsupportedReason reason) const noexcept {
+    return (reasons & (1U << static_cast<unsigned>(reason))) != 0U;
   }
 };
 
@@ -669,8 +713,9 @@ struct DiscreteDivProductionGreeks {
 // bit DividendAmount is SET, as not-computed is never reported as a value) or
 // holds one slot per entry of
 // `dividends` (an event outside (0, T] gets exactly 0). `roll_horizon` <= 0 skips
-// the roll (its bit set). Cost: 7 rollbacks + 2 per in-life event + 1 for the roll
-// (x 2 under CubicBbsRichardson). Errors: the route's and the price's, plus
+// the roll (its bit set). Cost: 9 rollbacks (5 when vega is unsupported) + 2 per
+// in-life event + 1 for the roll (x 2 under CubicBbsRichardson). Errors: the route's
+// and the price's, plus
 // InvalidArgument for a wrongly sized `dP_dDiv_out` or a non-finite horizon.
 [[nodiscard]] Result<DiscreteDivProductionGreeks> american_discrete_div_production_greeks(
     double S, double K, double T, double sigma, double r, double q, Side side,

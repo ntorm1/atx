@@ -11,7 +11,8 @@
 //      prices of every truncation, before (historical) and after (Standard, Refined).
 //   3. GreeksAgainstBumpAndRevalueOnTheReference — every supported sensitivity of the
 //      bundle against central bump-and-revalue on the reference PDE (common-mode
-//      fixed grid), with a step study; the unsupported ones checked to be NaN + bit.
+//      fixed grid), with a step study and the reference's own u per greek and row;
+//      the unsupported ones checked to be NaN + bit + reason.
 //
 // D0's reference prices, uncertainties and vegas below are its matrix run
 // C:\atx-cache\quote-benchmark\D0-20261022-fix1\matrix-run-cc89bc89\matrix.csv
@@ -514,30 +515,97 @@ TEST(DiscreteDivProductionMatrix, PerEventDriftAgainstLiveReferences) {
 
 struct RefGreek {
   double value = kNaN;
-  double spread = kNaN; // |central(h) - central(h / 2)|: the bump study's own spread
+  double u = kNaN; // the reference's own uncertainty for this greek on this row
 };
 
-// Central difference at h and h / 2 with one Richardson step (order 2).
+// Central difference at h and h / 2 with one Richardson step (order 2). u is the
+// bump study's own spread |central(h) - central(h / 2)|.
 template <class Fn> [[nodiscard]] RefGreek central(double h, Fn &&price_at) {
   const double d1 = (price_at(h) - price_at(-h)) / (2.0 * h);
   const double d2 = (price_at(0.5 * h) - price_at(-0.5 * h)) / h;
   RefGreek g;
   g.value = d2 + (d2 - d1) / 3.0;
-  g.spread = std::abs(d2 - d1);
+  g.u = std::abs(d2 - d1);
   return g;
+}
+
+// The PDE ladder's own uncertainty of a level-2 value x2 from the level-3 value x3:
+// the second-order estimate (4 / 3) |x3 - x2|.
+[[nodiscard]] double ladder_u(double x2, double x3) { return (4.0 / 3.0) * std::abs(x3 - x2); }
+
+[[nodiscard]] ref::PdeGrid finer(ref::PdeGrid g) {
+  ++g.space_level;
+  ++g.time_level;
+  return g;
+}
+
+// D0 section 8 (doc table "D0 DERIVATIVE TABLE"): delta and vega bumped on the finest
+// PDE ladder at three sizes and extrapolated; u = the extrapolation's uncertainty plus
+// the bumped prices' own. The study carries u = max(D0's u, its own estimate).
+struct D0GreekU {
+  const char *id;
+  double delta_u, vega_u;
+};
+constexpr D0GreekU kD0GreekU[] = {{"A2p", 2.2e-5, 1.3e-3},  {"B3p", 1.2e-5, 2.9e-4},
+                                  {"C4c", 1.7e-5, 3.3e-4},  {"D12p", 1.6e-5, 1.8e-3},
+                                  {"E20p", 1.6e-5, 1.8e-3}, {"F1c", 1.2e-5, 6.7e-4}};
+
+[[nodiscard]] const D0GreekU *d0_greek_u(const char *id) {
+  for (const D0GreekU &g : kD0GreekU) {
+    if (std::string(g.id) == id) {
+      return &g;
+    }
+  }
+  return nullptr;
+}
+
+// The claims on the Refined route (fix round 1, review-D1 M1). Each bound is
+//   min(the checkpoint's bound, max(3 u, the class)),
+// so it is never looser than before, it is 3 u wherever the reference resolves the
+// greek finer than the class, and it is the class where the lattice's own
+// discretisation sits above 3 u. The vega class is that case: C4c's Refined vega
+// converges to -0.08 % as the bump goes to 0 (bump scan, D1-20261023-production
+// diag-scratch-bumps.log), 80 times D0's u, and no runtime rule can single the
+// row out; a pure 3 u bound would refuse a well-defined greek.
+struct Claim {
+  DiscreteDivGreek greek;
+  bool relative;
+  double before; // the checkpoint's bound
+  double cls;    // the class (relative to |reference| when `relative`)
+};
+constexpr Claim kClaims[] = {
+    {DiscreteDivGreek::Delta, false, 2.0e-4, 5.0e-5},
+    {DiscreteDivGreek::Vega, true, 2.0e-3, 1.0e-3},
+    {DiscreteDivGreek::Rho, true, 5.0e-3, 5.0e-3},
+    {DiscreteDivGreek::DividendAmount, false, 2.0e-3, 2.0e-3},
+    {DiscreteDivGreek::Roll, false, 2.0e-3, 2.0e-3},
+};
+
+[[nodiscard]] double claim_bound(const Claim &c, const RefGreek &r) {
+  const double scale = c.relative ? std::abs(r.value) : 1.0;
+  return std::min(c.before * scale, std::max(3.0 * r.u, c.cls * scale));
 }
 
 TEST(DiscreteDivProductionMatrix, GreeksAgainstBumpAndRevalueOnTheReference) {
   const std::vector<Case> m = matrix();
-  const std::array<const char *, 7> ids{"A2p", "B3p", "C4c", "D12p", "E20p", "F1c", "B1p"};
+  // D0 section 8's six rows, B1p (the first-step ex-date) and the other three rows of
+  // D0 group F (deep in the money before a late ex-date), which bracket the
+  // exercise-dominated vega rule: F2c is a call 1.90 sd in the money there, F1p / F2p
+  // are puts.
+  const std::array<const char *, 10> ids{"A2p", "B3p", "C4c", "D12p", "E20p",
+                                          "F1c", "B1p", "F1p", "F2c", "F2p"};
+  // The rows the exercise-dominated vega rule covers (kernel header, the event-aware
+  // sensitivities): F1c, a call 2.23 sd in the money before a late ex-date.
+  const auto exercise_dominated = [](const std::string &id) { return id == "F1c"; };
   DiscreteDivWorkspace ws(atx::vol::kDiscreteDivMaxRouteSteps, atx::vol::kDiscreteDivMaxPreSteps);
   constexpr double kHorizon = 1.0 / 252.0;
-  std::printf("[d1-greeks] | id | greek | reference (+- bump spread) | std 301 | std 601 | "
-              "std 1201 | refined | err std 301 | err refined |\n");
-  std::printf("[d1-greeks] |---|---|---|---|---|---|---|---|---|\n");
+  std::printf("[d1-greeks] | id | greek | reference +- u | std 301 | std 601 | std 1201 | "
+              "refined | err std 301 | err refined | refined err / u | bound |\n");
+  std::printf("[d1-greeks] |---|---|---|---|---|---|---|---|---|---|---|\n");
   for (const char *id : ids) {
     const Case &c = find(m, id);
     const ref::PdeGrid g = bump_grid(c);
+    const ref::PdeGrid g3 = finer(g);
     const auto price_with = [&](auto &&edit) {
       std::vector<CashDividend> d = c.divs;
       ref::Problem p = problem_of(c, d);
@@ -546,14 +614,23 @@ TEST(DiscreteDivProductionMatrix, GreeksAgainstBumpAndRevalueOnTheReference) {
       return grid_price(p, g);
     };
     const auto base_grid = ref::pde_price(problem_of(c, c.divs), g);
-    ASSERT_TRUE(base_grid.has_value()) << id;
+    const auto base_fine = ref::pde_price(problem_of(c, c.divs), g3);
+    ASSERT_TRUE(base_grid.has_value() && base_fine.has_value()) << id;
+    const D0GreekU *d0u = d0_greek_u(id);
     // The reference greeks.
     std::array<RefGreek, 9> rg{};
-    rg[static_cast<std::size_t>(DiscreteDivGreek::Delta)] = {base_grid->delta, 0.0};
-    rg[static_cast<std::size_t>(DiscreteDivGreek::Gamma)] = {base_grid->gamma, 0.0};
+    rg[static_cast<std::size_t>(DiscreteDivGreek::Delta)] = {
+        base_grid->delta, std::max(ladder_u(base_grid->delta, base_fine->delta),
+                                   d0u != nullptr ? d0u->delta_u : 0.0)};
+    rg[static_cast<std::size_t>(DiscreteDivGreek::Gamma)] = {
+        base_grid->gamma, ladder_u(base_grid->gamma, base_fine->gamma)};
     rg[static_cast<std::size_t>(DiscreteDivGreek::Vega)] = central(0.01, [&](double h) {
       return price_with([&](ref::Problem &p, std::vector<CashDividend> &) { p.sigma += h; });
     });
+    if (d0u != nullptr) {
+      double &vu = rg[static_cast<std::size_t>(DiscreteDivGreek::Vega)].u;
+      vu = std::max(vu, d0u->vega_u);
+    }
     rg[static_cast<std::size_t>(DiscreteDivGreek::Rho)] = central(2.0e-3, [&](double h) {
       return price_with([&](ref::Problem &p, std::vector<CashDividend> &) { p.r += h; });
     });
@@ -590,8 +667,9 @@ TEST(DiscreteDivProductionMatrix, GreeksAgainstBumpAndRevalueOnTheReference) {
       ref::Problem p = problem_of(c, rolled);
       p.S = c.S - crossed;
       p.T = c.T - kHorizon;
-      rg[static_cast<std::size_t>(DiscreteDivGreek::Roll)] = {
-          grid_price(p, g) - base_grid->price, 0.0};
+      const double roll2 = grid_price(p, g) - base_grid->price;
+      const double roll3 = grid_price(p, g3) - base_fine->price;
+      rg[static_cast<std::size_t>(DiscreteDivGreek::Roll)] = {roll2, ladder_u(roll2, roll3)};
     }
 
     // The lattice bundles: Standard at 301 / 601 / 1201 and Refined.
@@ -641,6 +719,14 @@ TEST(DiscreteDivProductionMatrix, GreeksAgainstBumpAndRevalueOnTheReference) {
       }
       return kNaN;
     };
+    const auto claim_of = [](DiscreteDivGreek greek) -> const Claim * {
+      for (const Claim &cl : kClaims) {
+        if (cl.greek == greek) {
+          return &cl;
+        }
+      }
+      return nullptr;
+    };
     const std::array<std::pair<DiscreteDivGreek, const char *>, 8> greeks{
         {{DiscreteDivGreek::Delta, "delta"},
          {DiscreteDivGreek::Gamma, "gamma"},
@@ -660,17 +746,36 @@ TEST(DiscreteDivProductionMatrix, GreeksAgainstBumpAndRevalueOnTheReference) {
       }
       const double e301 = lattice_value(0, greek) - r.value;
       const double eref = lattice_value(3, greek) - r.value;
-      std::printf("[d1-greeks] | %s | %s | %.8g +- %.1e | %s%s | %s |\n", id, name, r.value,
-                  r.spread, cells.c_str(), fmt("%+.2e", e301).c_str(),
-                  fmt("%+.2e", eref).c_str());
+      const Claim *claim = claim_of(greek);
+      const std::string bound =
+          claim != nullptr ? fmt("%.2e", claim_bound(*claim, r)) : std::string("-");
+      std::printf("[d1-greeks] | %s | %s | %.8g +- %.1e | %s%s | %s | %s | %s |\n", id, name,
+                  r.value, r.u, cells.c_str(), fmt("%+.2e", e301).c_str(),
+                  fmt("%+.2e", eref).c_str(),
+                  r.u > 0.0 ? fmt("%.1f", std::abs(eref) / r.u).c_str() : "-", bound.c_str());
       // Every bundle field is either finite (supported) or NaN with its bit (never 0).
       for (std::size_t i = 0; i < runs.size(); ++i) {
         const double v = lattice_value(i, greek);
         EXPECT_TRUE(bundles[i].supported(greek) ? std::isfinite(v) : std::isnan(v))
             << id << " " << name;
       }
+      if (claim == nullptr) {
+        continue;
+      }
+      // The claim: within its bound on the Refined route, or typed unsupported with
+      // its reason where (and only where) the rule says so.
+      if (greek == DiscreteDivGreek::Vega && exercise_dominated(id)) {
+        for (std::size_t i = 0; i < runs.size(); ++i) {
+          EXPECT_FALSE(bundles[i].supported(greek)) << id << " " << runs[i].name;
+          EXPECT_TRUE(bundles[i].has(atx::vol::DiscreteDivUnsupportedReason::ExerciseDominated))
+              << id << " " << runs[i].name;
+        }
+        continue;
+      }
+      ASSERT_TRUE(bundles[3].supported(greek)) << id << " " << name;
+      EXPECT_LE(std::abs(eref), claim_bound(*claim, r)) << id << " " << name;
     }
-    std::printf("[d1-greeks] | %s | roll events crossed | %d (cash %.4f) | | | | | | |\n", id,
+    std::printf("[d1-greeks] | %s | roll events crossed | %d (cash %.4f) | | | | | | | | |\n", id,
                 bundles[0].roll.events_crossed, bundles[0].roll.cash_crossed);
     std::fflush(stdout);
     // The ex-date on step 1 of B1p: theta / charm are unsupported, never 0, and the
@@ -678,24 +783,9 @@ TEST(DiscreteDivProductionMatrix, GreeksAgainstBumpAndRevalueOnTheReference) {
     if (std::string(id) == "B1p") {
       EXPECT_FALSE(bundles[0].supported(DiscreteDivGreek::Theta));
       EXPECT_FALSE(bundles[0].supported(DiscreteDivGreek::Charm));
+      EXPECT_TRUE(bundles[0].has(atx::vol::DiscreteDivUnsupportedReason::ExDateInStencil));
       EXPECT_EQ(bundles[0].roll.events_crossed, 1);
     }
-    // Claims (docs section 11): on the Refined route delta within 2e-4, vega within
-    // 0.2 % (its 10 % relative bump), rho within 0.5 %, dP/dD within 2e-3 and the
-    // roll within 2e-3 USD of the reference bump-and-revalue.
-    const auto rel = [&](DiscreteDivGreek greek) {
-      const double v = lattice_value(3, greek);
-      const double rv = rg[static_cast<std::size_t>(greek)].value;
-      return std::abs(v - rv) / std::max(std::abs(rv), 1.0e-12);
-    };
-    const auto abs_err = [&](DiscreteDivGreek greek) {
-      return std::abs(lattice_value(3, greek) - rg[static_cast<std::size_t>(greek)].value);
-    };
-    EXPECT_LE(abs_err(DiscreteDivGreek::Delta), 2.0e-4) << id;
-    EXPECT_LE(rel(DiscreteDivGreek::Vega), 2.0e-3) << id;
-    EXPECT_LE(rel(DiscreteDivGreek::Rho), 5.0e-3) << id;
-    EXPECT_LE(abs_err(DiscreteDivGreek::DividendAmount), 2.0e-3) << id;
-    EXPECT_LE(abs_err(DiscreteDivGreek::Roll), 2.0e-3) << id;
   }
 }
 

@@ -9,6 +9,7 @@
 //     unsupported marking, and the batch's identity with the per-contract entries.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -574,16 +575,21 @@ TEST(DiscreteDivProductionGreeks, BundleIsConsistentWithItsOwnRoute) {
     ASSERT_TRUE(p.has_value());
     EXPECT_EQ(g->price, p->price);
     EXPECT_EQ(g->unsupported, 0U);
-    // Vega is the bundle's stencil on the SAME route.
+    // Vega is the bundle's stencil on the SAME route: the Richardson pair of central
+    // differences at h and h / 2 (review-D1 M1: the 10 % bump alone is biased).
     const double h = discrete_div_sigma_bump(0.25);
-    const auto up = american_discrete_div_route_price(g->route, 100.0, 95.0, 1.0, 0.25 + h, 0.04,
-                                                      0.0, side, divs, ExerciseStyle::American,
-                                                      ws);
-    const auto dn = american_discrete_div_route_price(g->route, 100.0, 95.0, 1.0, 0.25 - h, 0.04,
-                                                      0.0, side, divs, ExerciseStyle::American,
-                                                      ws);
-    ASSERT_TRUE(up.has_value() && dn.has_value());
-    EXPECT_EQ(g->vega, (*up - *dn) / (2.0 * h));
+    const auto vol_price = [&](double s) {
+      return american_discrete_div_route_price(g->route, 100.0, 95.0, 1.0, s, 0.04, 0.0, side,
+                                               divs, ExerciseStyle::American, ws);
+    };
+    const auto up = vol_price(0.25 + h);
+    const auto dn = vol_price(0.25 - h);
+    const auto half_up = vol_price(0.25 + 0.5 * h);
+    const auto half_dn = vol_price(0.25 - 0.5 * h);
+    ASSERT_TRUE(up.has_value() && dn.has_value() && half_up.has_value() && half_dn.has_value());
+    const double wide = (*up - *dn) / (2.0 * h);
+    const double narrow = (*half_up - *half_dn) / h;
+    EXPECT_EQ(g->vega, narrow + (narrow - wide) / 3.0);
     // Delta and gamma ARE the route's t = 0 stencil: the centre node S and its
     // neighbours S u^2, S d^2 of the pre-stepped tree. The same route re-rooted at a
     // neighbour's spot has that node's value (its node set is the old one shifted by
@@ -637,6 +643,83 @@ TEST(DiscreteDivProductionGreeks, RhoAndPhiAgainstTheReferenceOnTheTwelveEventLe
     ASSERT_TRUE(g.has_value());
     EXPECT_NEAR(g->rho, -153.12924, 0.005 * 153.12924) << static_cast<int>(acc);
     EXPECT_NEAR(g->phi, 109.71669, 0.005 * 109.71669) << static_cast<int>(acc);
+  }
+}
+
+TEST(DiscreteDivProductionGreeks, RefinedDeltaAndVegaAgainstTheReference) {
+  // Review-D1 M1. The references are D0 section 8's bump-and-revalue on the finest
+  // PDE ladder (Richardson over three bump sizes), value +- u. The bounds are the slow
+  // study's (production matrix test section 3): delta within max(3 u, 5e-5), vega
+  // within max(3 u, 0.1 % of vega). E20p (one 20.00 ex-date at 0.5, T 1, put K 100):
+  // before the fix the Refined delta was +2.9e-4 off (the fine lattice's stencil
+  // alone, first order in 1 / N) and its vega -0.268 % (the 10 % bump's bias). C4c
+  // (quarterly 1.00 from 0.10, T 1, call K 95) is the fast delta pin the checkpoint
+  // planned.
+  struct GreekPin {
+    const char *id;
+    double K;
+    Side side;
+    std::vector<CashDividend> divs;
+    double delta, delta_u, vega, vega_u;
+  };
+  const GreekPin pins[] = {
+      {"E20p", 100.0, Side::Put, {{0.5, 20.0}}, -0.73509151, 1.6e-5, 29.34691240, 1.8e-3},
+      {"C4c", 95.0, Side::Call, quarterly(0.1, 1.0, 1.0), 0.63378469, 1.7e-5, 36.74027262,
+       3.3e-4}};
+  DiscreteDivWorkspace ws = production_workspace();
+  for (const GreekPin &p : pins) {
+    const auto g = american_discrete_div_production_greeks(
+        100.0, p.K, 1.0, 0.25, 0.04, 0.0, p.side, p.divs, ExerciseStyle::American, {}, 0.0,
+        opts_of(DiscreteDivAccuracy::Refined), ws);
+    ASSERT_TRUE(g.has_value()) << p.id;
+    ASSERT_TRUE(g->supported(DiscreteDivGreek::Vega)) << p.id;
+    EXPECT_NEAR(g->delta, p.delta, std::max(3.0 * p.delta_u, 5.0e-5)) << p.id;
+    EXPECT_NEAR(g->vega, p.vega, std::max(3.0 * p.vega_u, 1.0e-3 * p.vega)) << p.id;
+  }
+}
+
+TEST(DiscreteDivProductionGreeks, ExerciseDominatedCallVegaIsUnsupportedWithItsReason) {
+  // Review-D1 M1 (c). D0 F1c: call K 70, S 100, T 0.5, 5.00 at 0.45, sigma 0.25,
+  // r 0.04. The cash beats the interest on the strike over the last 0.05 y (0.14 USD)
+  // and the cum-dividend forward at 0.45 is 2.23 sd in the money: exercise just
+  // before the ex-date takes about 99 % of the mass. The lattice's vega there is
+  // +1.3 to +1.7 % off the reference (1.85088 +- 6.7e-4) at every N and every bump
+  // size, so it is NaN with the ExerciseDominated reason; the rest is served.
+  DiscreteDivWorkspace ws = production_workspace();
+  const std::vector<CashDividend> divs{{0.45, 5.0}};
+  for (const DiscreteDivAccuracy acc :
+       {DiscreteDivAccuracy::Standard, DiscreteDivAccuracy::Refined}) {
+    const auto g = american_discrete_div_production_greeks(
+        100.0, 70.0, 0.5, 0.25, 0.04, 0.0, Side::Call, divs, ExerciseStyle::American, {}, 0.0,
+        opts_of(acc), ws);
+    ASSERT_TRUE(g.has_value());
+    EXPECT_FALSE(g->supported(DiscreteDivGreek::Vega)) << static_cast<int>(acc);
+    EXPECT_TRUE(std::isnan(g->vega)) << static_cast<int>(acc);
+    EXPECT_TRUE(g->has(DiscreteDivUnsupportedReason::ExerciseDominated)) << static_cast<int>(acc);
+    EXPECT_TRUE(g->supported(DiscreteDivGreek::Delta) && std::isfinite(g->delta));
+    EXPECT_TRUE(g->supported(DiscreteDivGreek::Rho) && std::isfinite(g->rho));
+  }
+  // Outside the rule, vega is served: 1.82 sd in the money (K 75), the put of the
+  // same row, the European call, and the call whose cash falls after expiry.
+  struct Off {
+    const char *what;
+    double K;
+    Side side;
+    ExerciseStyle exercise;
+    double tau;
+  };
+  const Off off[] = {{"K 75", 75.0, Side::Call, ExerciseStyle::American, 0.45},
+                     {"put K 130", 130.0, Side::Put, ExerciseStyle::American, 0.45},
+                     {"European", 70.0, Side::Call, ExerciseStyle::European, 0.45},
+                     {"cash after T", 70.0, Side::Call, ExerciseStyle::American, 0.6}};
+  for (const Off &o : off) {
+    const std::vector<CashDividend> d{{o.tau, 5.0}};
+    const auto g = american_discrete_div_production_greeks(
+        100.0, o.K, 0.5, 0.25, 0.04, 0.0, o.side, d, o.exercise, {}, 0.0,
+        opts_of(DiscreteDivAccuracy::Standard), ws);
+    ASSERT_TRUE(g.has_value()) << o.what;
+    EXPECT_TRUE(g->supported(DiscreteDivGreek::Vega) && std::isfinite(g->vega)) << o.what;
+    EXPECT_FALSE(g->has(DiscreteDivUnsupportedReason::ExerciseDominated)) << o.what;
   }
 }
 

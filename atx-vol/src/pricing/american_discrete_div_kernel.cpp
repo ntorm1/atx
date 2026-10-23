@@ -335,6 +335,11 @@ route_outcome(const DiscreteDivLatticeRoute &route, double S, double K, double T
     LatticeOutcome out = *fine;
     const double floor = (exercise == ExerciseStyle::American) ? intrinsic(side, S, K) : 0.0;
     out.price = std::max((n * fine->price - m * coarse->price) / (n - m), floor);
+    // The t = 0 stencils carry the same first-order term as the price (header, the
+    // event-aware sensitivities): the pair removes it. Theta / charm stay the fine
+    // lattice's (the coarse lattice's two-step stencil can straddle its first ex-step).
+    out.delta = (n * fine->delta - m * coarse->delta) / (n - m);
+    out.gamma = (n * fine->gamma - m * coarse->gamma) / (n - m);
     return Ok(out);
   }
   }
@@ -1436,6 +1441,46 @@ constexpr std::uint16_t greek_bit(DiscreteDivGreek greek) noexcept {
   return static_cast<std::uint16_t>(1U << static_cast<unsigned>(greek));
 }
 
+constexpr std::uint16_t reason_bit(DiscreteDivUnsupportedReason reason) noexcept {
+  return static_cast<std::uint16_t>(1U << static_cast<unsigned>(reason));
+}
+
+// Header, the event-aware sensitivities, vega: an in-life ex-date before which
+// early exercise can be optimal (the cash beats the interest on the strike up to the
+// next ex-date or expiry) on a call whose cum-dividend dated forward there sits at least
+// kDiscreteDivExerciseDominatedSd standard deviations in the money. Validated
+// inputs (ex-dates ascending).
+[[nodiscard]] bool exercise_dominated_call(double S, double K, double T, double sigma,
+                                           double r, double q,
+                                           std::span<const CashDividend> dividends) noexcept {
+  const double g = r - q;
+  for (std::size_t i = 0; i < dividends.size(); ++i) {
+    const CashDividend &dv = dividends[i];
+    if (!(dv.tau > 0.0) || !(dv.tau < T)) {
+      continue;
+    }
+    double forward = S * std::exp(g * dv.tau);
+    double next = T;
+    for (std::size_t j = 0; j < dividends.size(); ++j) {
+      const CashDividend &other = dividends[j];
+      if (!(other.tau > 0.0) || !(other.tau < T)) {
+        continue;
+      }
+      if (other.tau < dv.tau) {
+        forward -= other.amount * std::exp(g * (dv.tau - other.tau));
+      } else if (other.tau > dv.tau) {
+        next = std::min(next, other.tau);
+      }
+    }
+    const bool exercise_can_pay = dv.amount > K * (1.0 - std::exp(-r * (next - dv.tau)));
+    if (exercise_can_pay && forward > 0.0 &&
+        std::log(forward / K) >= kDiscreteDivExerciseDominatedSd * sigma * std::sqrt(dv.tau)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // The bumped price of one route (ProductionSpec hooks: a dividend amount, a
 // calendar shift). Validated inputs, admitted route.
 [[nodiscard]] Result<double>
@@ -1546,29 +1591,48 @@ Result<DiscreteDivProductionGreeks> ddiv_detail::route_greeks_prebuilt(
     out.theta = kNaN;
     out.charm = kNaN;
     out.unsupported |= greek_bit(DiscreteDivGreek::Theta) | greek_bit(DiscreteDivGreek::Charm);
+    out.reasons |= reason_bit(DiscreteDivUnsupportedReason::ExDateInStencil);
   } else {
     out.theta = base->theta;
     out.charm = base->charm;
   }
 
-  const double hv = discrete_div_sigma_bump(sigma);
-  const Result<double> vol_up = price_at(sigma + hv, r, q);
-  const Result<double> vol_dn = price_at(sigma - hv, r, q);
+  if (exercise == ExerciseStyle::American && side == Side::Call &&
+      exercise_dominated_call(S, K, T, sigma, r, q, dividends)) {
+    out.vega = kNaN;
+    out.unsupported |= greek_bit(DiscreteDivGreek::Vega);
+    out.reasons |= reason_bit(DiscreteDivUnsupportedReason::ExerciseDominated);
+  } else {
+    // The Richardson pair of central differences at h and h / 2 (header, vega).
+    const double hv = discrete_div_sigma_bump(sigma);
+    const Result<double> vol_up = price_at(sigma + hv, r, q);
+    const Result<double> vol_dn = price_at(sigma - hv, r, q);
+    const Result<double> half_up = price_at(sigma + 0.5 * hv, r, q);
+    const Result<double> half_dn = price_at(sigma - 0.5 * hv, r, q);
+    for (const Result<double> *leg : {&vol_up, &vol_dn, &half_up, &half_dn}) {
+      if (!*leg) {
+        return Err(leg->error());
+      }
+    }
+    const double wide = (*vol_up - *vol_dn) / (2.0 * hv);
+    const double narrow = (*half_up - *half_dn) / hv;
+    out.vega = narrow + (narrow - wide) / 3.0;
+  }
   const Result<double> rate_up = price_at(sigma, r + kDiscreteDivProductionRateBump, q);
   const Result<double> rate_dn = price_at(sigma, r - kDiscreteDivProductionRateBump, q);
   const Result<double> yield_up = price_at(sigma, r, q + kDiscreteDivProductionYieldBump);
   const Result<double> yield_dn = price_at(sigma, r, q - kDiscreteDivProductionYieldBump);
-  for (const Result<double> *leg : {&vol_up, &vol_dn, &rate_up, &rate_dn, &yield_up, &yield_dn}) {
+  for (const Result<double> *leg : {&rate_up, &rate_dn, &yield_up, &yield_dn}) {
     if (!*leg) {
       return Err(leg->error());
     }
   }
-  out.vega = (*vol_up - *vol_dn) / (2.0 * hv);
   out.rho = (*rate_up - *rate_dn) / (2.0 * kDiscreteDivProductionRateBump);
   out.phi = (*yield_up - *yield_dn) / (2.0 * kDiscreteDivProductionYieldBump);
 
   if (dP_dDiv_out.empty()) {
     out.unsupported |= greek_bit(DiscreteDivGreek::DividendAmount); // not computed
+    out.reasons |= reason_bit(DiscreteDivUnsupportedReason::NotRequested);
   }
   for (std::size_t i = 0; i < dP_dDiv_out.size(); ++i) {
     const CashDividend &dv = dividends[i];
@@ -1602,13 +1666,31 @@ Result<DiscreteDivProductionGreeks> ddiv_detail::route_greeks_prebuilt(
       out.roll.rolled_price = kNaN;
       out.roll.roll = kNaN;
       out.unsupported |= greek_bit(DiscreteDivGreek::Roll);
+      out.reasons |= reason_bit(DiscreteDivUnsupportedReason::RollRefused);
     }
   } else {
     out.roll.rolled_price = kNaN;
     out.roll.roll = kNaN;
     out.unsupported |= greek_bit(DiscreteDivGreek::Roll);
+    out.reasons |= reason_bit(DiscreteDivUnsupportedReason::NotRequested);
   }
   return Ok(out);
+}
+
+const char *to_string(DiscreteDivUnsupportedReason value) noexcept {
+  switch (value) {
+  case DiscreteDivUnsupportedReason::NotRequested:
+    return "not_requested";
+  case DiscreteDivUnsupportedReason::ExDateInStencil:
+    return "ex_date_in_stencil";
+  case DiscreteDivUnsupportedReason::RollRefused:
+    return "roll_refused";
+  case DiscreteDivUnsupportedReason::ExerciseDominated:
+    return "exercise_dominated";
+  case DiscreteDivUnsupportedReason::Refused:
+    return "refused";
+  }
+  return "unknown";
 }
 
 Result<DiscreteDivProductionGreeks> american_discrete_div_production_greeks(

@@ -75,6 +75,8 @@ struct GroupState {
   g.roll.rolled_price = kNaN;
   g.roll.roll = kNaN;
   g.unsupported = all_greek_bits();
+  g.reasons = static_cast<std::uint16_t>(
+      1U << static_cast<unsigned>(DiscreteDivUnsupportedReason::Refused));
   return g;
 }
 
