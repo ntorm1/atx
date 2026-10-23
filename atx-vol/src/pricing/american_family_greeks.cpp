@@ -521,16 +521,23 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
     const double dq = std::exp(-q * t);
     const double dr = std::exp(-r * t);
     double dp = 0.0;
+    // The integrand's Φ(−d−), Φ(−d+), reused by the derivative accumulators below
+    // (review-L3g m3, A0 r6: they were evaluated a second time there). Bit for bit the
+    // old Φ(−dm): −dp + v and −(dp − v) both round v − dp (negation is exact and
+    // round-to-nearest is symmetric), and I's expression is unchanged.
+    double Phm = 0.0;
+    double Php = 0.0;
     if (v.fast) {
       const double ld = (rem > 0.0) ? lsx + sy + (r - q) * t : std::log(S * dq / (bnd.K * dr));
       dp = ld / v_ + 0.5 * v_;
-      I = 2.0 * zi * (r * bnd.K * dr * detail::norm_cdf_erfc(-dp + v_) -
-                      q * S * dq * detail::norm_cdf_erfc(-dp));
+      Phm = detail::norm_cdf_erfc(-dp + v_);
+      Php = detail::norm_cdf_erfc(-dp);
     } else {
       dp = std::log(S * dq / (b_t * dr)) / v_ + 0.5 * v_;
-      I = 2.0 * zi * (r * bnd.K * dr * atx::core::norm_cdf(-dp + v_) -
-                      q * S * dq * atx::core::norm_cdf(-dp));
+      Phm = atx::core::norm_cdf(-dp + v_);
+      Php = atx::core::norm_cdf(-dp);
     }
+    I = 2.0 * zi * (r * bnd.K * dr * Phm - q * S * dq * Php);
     total += v.qw[i] * I;
 
     // ── derivative accumulators (per unit 2 z_i w_i) ──
@@ -539,8 +546,6 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
     const double b = q * S * dq;
     const double phm = v.fast ? detail::norm_pdf_cody(dm) : atx::core::norm_pdf(dm);
     const double php = v.fast ? detail::norm_pdf_cody(dp) : atx::core::norm_pdf(dp);
-    const double Phm = v.fast ? detail::norm_cdf_erfc(-dm) : atx::core::norm_cdf(-dm);
-    const double Php = v.fast ? detail::norm_cdf_erfc(-dp) : atx::core::norm_cdf(-dp);
     const double wgt = 2.0 * zi * v.qw[i];
     const double u = 1.0 / (S * v_);
     const double G = a * phm - b * php;        // ∂I/∂B · B v / (2z)
@@ -807,7 +812,8 @@ void fused_internal(const FamilyView &v, double S, double K, double sigma, const
   need.sig1 = true;
   Internal in;
   fused_internal(v, c.Sp, c.Kp, sigma, need, nullptr, in);
-  return AlSigmaFamilyPriceVega{in.price, in.dsig, AlSigmaFamilyStatus::Ok};
+  // review-L3g m4 (A0 r6): the exercise regime's vega is 0.0 by construction — say so.
+  return AlSigmaFamilyPriceVega{in.price, in.dsig, AlSigmaFamilyStatus::Ok, in.exercised};
 }
 
 // The chain / shock column writer.

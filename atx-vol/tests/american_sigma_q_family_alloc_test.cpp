@@ -11,7 +11,12 @@
 // K1 (r5, 2026-10-22): the fused price + vega entries (the internal K1 block) — the
 // one-shot, the strike vector, the q tile and the table path — are counted too; the
 // premium table itself is built (and allocates) outside the counted block.
+// A0 (r6, 2026-10-23): the primary Greek bundle — family_greeks with and without a
+// rate-bump set (built outside the counted block: it allocates), refused rows and the
+// structure-of-arrays chain entry on its Ok path — is counted too; A0 fix round 1
+// (review-A0 m5): so is that entry's InvalidArgument refusal (lengths that differ).
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <span>
 
@@ -114,6 +119,73 @@ TEST(AlSigmaQFamilyAlloc, FusedPriceVegaPathAllocatesNothing) {
       EXPECT_EQ(n, 0u) << (side == Side::Put ? "put" : "call") << " n_q=" << n_q;
       EXPECT_EQ(served, 4u * (4u + 1u + 4u));
       EXPECT_GT(sum, 0.0);
+    }
+  }
+}
+
+TEST(AlSigmaQFamilyAlloc, GreeksBundlePathAllocatesNothing) {
+  const AlExpiryGeometry g = prepare_al_geometry(0.5, 0.05, 0.02);
+  for (const Side side : {Side::Put, Side::Call}) {
+    for (const std::uint16_t n_q : {std::uint16_t{1}, std::uint16_t{4}}) {
+      AlSigmaQFamily fam(g, side, 100.0);
+      const double q_hi = (n_q == 1) ? 0.02 : 0.021;
+      ASSERT_TRUE(fam.prepare(0.1, 0.6, 12, 0.02, q_hi, n_q));
+      AlSigmaQFamilyRateBumps bumps; // built (allocating) outside the counted block
+      ASSERT_TRUE(bumps.prepare(fam));
+      constexpr std::array<double, 4> kStrikes = {70.0, 95.0, 100.0, 120.0};
+      constexpr std::array<double, 4> kSigmas = {0.1, 0.23, 0.41, 0.59};
+      constexpr std::array<double, 4> kQs = {0.02, 0.02, 0.5, 0.02}; // lane 2 refuses
+      constexpr std::array<std::uint8_t, 4> kActive = {1, 1, 1, 0};
+      std::array<double, 4> price{};
+      std::array<double, 4> delta{};
+      std::array<double, 4> rho{};
+      std::array<AlSigmaQFamilyStatus, 4> status{};
+      std::array<AlFamilyGreekMask, 4> supported{};
+      std::array<AlFamilyGreekReasons, 4> reason{};
+      AlSigmaQGreekColumns cols;
+      cols.price = price;
+      cols.delta = delta;
+      cols.rho = rho;
+      cols.status = status;
+      cols.supported = supported;
+      cols.reason = reason;
+      AlSigmaQGreeksRequest req;
+      req.mask = AlFamilyGreekMask::all();
+      double sum = 0.0;
+      unsigned served = 0;
+      const std::uint64_t n = testkit::count_allocations([&] {
+        for (const double sigma : kSigmas) {
+          for (const double K : kStrikes) {
+            const AlSigmaQFamilyGreeks a = family_greeks(fam, 100.0, K, sigma, 0.02, req);
+            const AlSigmaQFamilyGreeks b = family_greeks(fam, bumps, 100.0, K, sigma, 0.02, req);
+            const AlSigmaQFamilyGreeks r = family_greeks(fam, bumps, 100.0, K, sigma, 0.5, req);
+            if (a.status == AlSigmaQFamilyStatus::Ok && b.status == AlSigmaQFamilyStatus::Ok &&
+                r.status == AlSigmaQFamilyStatus::YieldOutsideBox) {
+              sum += a.price + std::abs(a.delta) + std::abs(b.rho); // put Δ, rho are < 0
+              ++served;
+            }
+          }
+          if (family_greeks_many(fam, 100.0, kStrikes, kSigmas, kQs, kActive, cols, req, &bumps)) {
+            sum += price[0] + std::abs(rho[1]);
+            ++served;
+          }
+        }
+      });
+      EXPECT_EQ(n, 0u) << (side == Side::Put ? "put" : "call") << " n_q=" << n_q;
+      EXPECT_EQ(served, 4u * (4u + 1u));
+      EXPECT_GT(sum, 0.0);
+      EXPECT_EQ(status[2], AlSigmaQFamilyStatus::YieldOutsideBox);
+      // The refusal path: K shorter than sigma / q (nothing written, typed, no allocation).
+      constexpr std::array<double, 3> kShortK = {70.0, 95.0, 100.0};
+      bool refused = false;
+      const std::uint64_t n_err = testkit::count_allocations([&] {
+        const Status st =
+            family_greeks_many(fam, 100.0, kShortK, kSigmas, kQs, kActive, cols, req, &bumps);
+        refused = !st && st.error().code() == atx::core::ErrorCode::InvalidArgument;
+      });
+      EXPECT_TRUE(refused);
+      EXPECT_EQ(n_err, 0u) << (side == Side::Put ? "put" : "call") << " n_q=" << n_q
+                           << " (the InvalidArgument refusal)";
     }
   }
 }

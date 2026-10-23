@@ -2151,6 +2151,20 @@ void run_family_greeks_error(benchmark::State &state, FamilySet set, const char 
 // Per-contract µs of one family entry over the SPY 23 d chain (one timed pass).
 enum class GreeksRow { Price, Hedge, Eight, All, PriceVega, Chord };
 
+// A0 r6: an FNV-1a fold of a double's bits, reported as a 52-bit counter (a double holds
+// it exactly) — two runs with equal folds served the same bits in every folded field
+// (the L3g m3 before / after identity of the price and every Greek).
+void fold_bits(std::uint64_t &h, double x) noexcept {
+  const auto b = std::bit_cast<std::uint64_t>(x);
+  for (int i = 0; i < 8; ++i) {
+    h ^= (b >> (8 * i)) & 0xFFu;
+    h *= 1099511628211ULL;
+  }
+}
+[[nodiscard]] double bits52(std::uint64_t h) noexcept {
+  return static_cast<double>(h & ((std::uint64_t{1} << 52) - 1u));
+}
+
 void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
   using namespace atx::vol;
   using Mask = AlSigmaFamilyGreeksMask;
@@ -2181,6 +2195,8 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
   double sink = 0.0;
   double refused = 0.0;
   double carry_refused = 0.0;
+  std::uint64_t fold = 1469598103934665603ULL;
+  AlSigmaFamilyGreeks last;
   for (auto _ : state) {
     us.clear();
     carry_ms.clear();
@@ -2215,15 +2231,21 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
           sink += c.price_sigma_bumped;
           refused += c.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
         } else if (with_carry) {
-          const AlSigmaFamilyGreeks a = family_greeks(fam, carry, p.S, p.K, p.sigma, mask);
-          sink += a.price + a.delta + a.rho;
-          refused += a.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+          last = family_greeks(fam, carry, p.S, p.K, p.sigma, mask);
+          sink += last.price + last.delta + last.rho;
+          refused += last.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
         } else {
-          const AlSigmaFamilyGreeks a = family_greeks(fam, p.S, p.K, p.sigma, mask);
-          sink += a.price + a.delta;
-          refused += a.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
+          last = family_greeks(fam, p.S, p.K, p.sigma, mask);
+          sink += last.price + last.delta;
+          refused += last.status == AlSigmaFamilyStatus::Ok ? 0.0 : 1.0;
         }
         const auto t1 = std::chrono::steady_clock::now();
+        if (row != GreeksRow::PriceVega && row != GreeksRow::Chord) {
+          for (const double x : {last.price, last.delta, last.gamma, last.vega, last.theta,
+                                 last.rho, last.phi, last.vanna, last.volga, last.charm}) {
+            fold_bits(fold, x);
+          }
+        }
         const double dt = std::chrono::duration<double, std::micro>(t1 - t0).count();
         us.push_back(dt);
         total_us += dt;
@@ -2239,6 +2261,7 @@ void run_spy23_family_greeks(benchmark::State &state, GreeksRow row) {
   }
   state.counters["contracts"] = static_cast<double>(us.size());
   state.counters["refused"] = refused;
+  state.counters["bits_fnv52"] = bits52(fold);
   state.counters["p50_us"] = sorted_quantile(us, 0.50);
   state.counters["p90_us"] = sorted_quantile(us, 0.90);
   state.counters["p99_us"] = sorted_quantile(us, 0.99);
@@ -3406,6 +3429,267 @@ const bool kRegisteredSqFused = [] {
                                        std::to_string(n_sigma),
                                    [s, n_sigma](benchmark::State &state) {
                                      run_sqfused(state, s, n_sigma);
+                                   })
+          ->Iterations(1)
+          ->Unit(benchmark::kMillisecond);
+    }
+  }
+  return true;
+}();
+
+// ── A0 (r6, 2026-10-23): the (σ, q) family's primary Greek bundle — µs per bundle / chain ──
+//
+//   * ATX_VOL_AL_SQGREEKS=1 registers:
+//       american/sqgreeks/spy23/nq4/ns12 (needs ATX_VOL_AL_SPY23): one family per (S, T,
+//         r, side) group as run_sqfused lays it out (default ISA build), every contract at
+//         its OWN q at the group's σ grid, 3 timed passes each, p50 / p99 of: price_us
+//         (price()), fused_us (price_and_vega), primary_us (family_greeks, primary():
+//         Δ Γ vega θ phi), all_us (family_greeks with the group's rate-bump set, all():
+//         + rho). Per group: build_us (prepare), bumps_us (the rate-bump set: two more
+//         family builds). price_bits_differ: rows whose bundle price is not K1's fused
+//         price bit for bit (0 by contract).
+//       american/sqgreeks_chain/<chain>/<mask>  chain in spy23 (317 rows at their own q;
+//         ATX_VOL_AL_SPY23) | synthetic300 (S 773, 23 d, 300 strikes 540..1090 on the
+//         representative skew, puts below spot and calls above, each strike at its own q
+//         spread over [0.00155, 0.00170] like a funding-pv chain); one put and one call
+//         family on the chain's (σ, q) box; mask primary | all (the rate-bump sets built
+//         outside the timed call). 5 warm-up then 101 timed chain evaluations (both sides'
+//         family_greeks_many): chain_us p50 / p99 / max and per-lane µs.
+
+void run_sqgreeks(benchmark::State &state, unsigned n_sigma) {
+  using namespace atx::vol;
+  namespace sq = sigma_q_family_detail;
+  const SqData &d = sq_data(SqSet::Spy23);
+  if (d.pts == nullptr || d.pts->empty()) {
+    state.SkipWithError("no contracts (ATX_VOL_AL_SPY23 unreadable or empty)");
+    return;
+  }
+  const std::vector<GridPt> &pts = *d.pts;
+  constexpr unsigned kNq = 4;
+  std::vector<double> build_us, bumps_us, price_us, fused_us, primary_us, all_us;
+  double bits_differ = 0.0;
+  double cold_groups = 0.0;
+  double queries = 0.0;
+  double refused = 0.0;
+  double bumps_refused = 0.0;
+  AlSigmaQGreeksRequest primary;
+  AlSigmaQGreeksRequest all;
+  all.mask = AlFamilyGreekMask::all();
+  std::uint64_t fold = 1469598103934665603ULL;
+  for (auto _ : state) {
+    for (const SqGroup &g : d.groups) {
+      const AlExpiryGeometry geo = prepare_al_geometry(g.T, g.r, 0.5 * (g.q_lo + g.q_hi));
+      AlSigmaQFamily qf(geo, g.side, g.S);
+      auto t0 = std::chrono::steady_clock::now();
+      const Status st = qf.prepare(g.s_lo, g.s_hi, static_cast<std::uint16_t>(n_sigma), g.q_lo,
+                                   g.q_hi, static_cast<std::uint16_t>(kNq));
+      const double b_us = us_since(t0);
+      if (!st) {
+        cold_groups += 1.0;
+        continue;
+      }
+      build_us.push_back(b_us);
+      AlSigmaQFamilyRateBumps bumps;
+      t0 = std::chrono::steady_clock::now();
+      const bool bok = bumps.prepare(qf).has_value();
+      bumps_us.push_back(us_since(t0));
+      bumps_refused += bok ? 0.0 : 1.0;
+      for (const std::size_t i : g.idx) {
+        const GridPt &p = pts[i];
+        for (const double sigma : g.sigmas) {
+          queries += 1.0;
+          for (int pass = 0; pass < 3; ++pass) {
+            t0 = std::chrono::steady_clock::now();
+            AlSigmaQFamilyPrice pp = qf.price(p.S, p.K, sigma, p.q);
+            price_us.push_back(us_since(t0));
+            benchmark::DoNotOptimize(pp);
+            t0 = std::chrono::steady_clock::now();
+            sq::FusedPriceVega fv = sq::price_and_vega(qf, p.S, p.K, sigma, p.q);
+            fused_us.push_back(us_since(t0));
+            benchmark::DoNotOptimize(fv);
+            t0 = std::chrono::steady_clock::now();
+            AlSigmaQFamilyGreeks gp = family_greeks(qf, p.S, p.K, sigma, p.q, primary);
+            primary_us.push_back(us_since(t0));
+            benchmark::DoNotOptimize(gp);
+            t0 = std::chrono::steady_clock::now();
+            AlSigmaQFamilyGreeks ga = bok ? family_greeks(qf, bumps, p.S, p.K, sigma, p.q, all)
+                                          : family_greeks(qf, p.S, p.K, sigma, p.q, all);
+            all_us.push_back(us_since(t0));
+            benchmark::DoNotOptimize(ga);
+            if (pass == 0) {
+              for (const double x : {gp.price, gp.delta, gp.gamma, gp.vega, gp.theta, gp.phi,
+                                     ga.rho}) {
+                fold_bits(fold, x);
+              }
+              refused += gp.status == AlSigmaQFamilyStatus::Ok ? 0.0 : 1.0;
+              const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
+              if (gp.status == AlSigmaQFamilyStatus::Ok && bits(gp.price) != bits(fv.price)) {
+                bits_differ += 1.0;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  for (std::vector<double> *v : {&price_us, &fused_us, &primary_us, &all_us}) {
+    std::sort(v->begin(), v->end());
+  }
+  state.counters["families"] = static_cast<double>(build_us.size());
+  state.counters["cold_groups"] = cold_groups;
+  state.counters["queries"] = queries;
+  state.counters["refused"] = refused;
+  state.counters["bumps_refused"] = bumps_refused;
+  state.counters["n_sigma"] = static_cast<double>(n_sigma);
+  state.counters["build_us_p50"] = median_of(build_us);
+  state.counters["bumps_us_p50"] = median_of(bumps_us);
+  state.counters["price_us_p50"] = sorted_quantile(price_us, 0.50);
+  state.counters["fused_us_p50"] = sorted_quantile(fused_us, 0.50);
+  state.counters["primary_us_p50"] = sorted_quantile(primary_us, 0.50);
+  state.counters["primary_us_p99"] = sorted_quantile(primary_us, 0.99);
+  state.counters["all_us_p50"] = sorted_quantile(all_us, 0.50);
+  state.counters["all_us_p99"] = sorted_quantile(all_us, 0.99);
+  state.counters["price_bits_differ"] = bits_differ;
+  state.counters["bits_fnv52"] = bits52(fold);
+}
+
+void run_sqgreeks_chain(benchmark::State &state, bool spy, bool all_mask) {
+  using namespace atx::vol;
+  const ChainInputs c = chain_inputs(spy);
+  if (c.K.empty()) {
+    state.SkipWithError("no chain (ATX_VOL_AL_SPY23 unreadable or empty)");
+    return;
+  }
+  const std::size_t n = c.K.size();
+  std::vector<double> q(n);
+  if (spy) {
+    const std::vector<GridPt> &pts = err_points(ErrSet::Spy23);
+    for (std::size_t i = 0; i < n; ++i) {
+      q[i] = pts[i].q;
+    }
+  } else {
+    for (std::size_t i = 0; i < n; ++i) {
+      q[i] = 0.00155 + 0.00015 * static_cast<double>((i * 37u) % n) / static_cast<double>(n - 1);
+    }
+  }
+  const double q_lo = *std::min_element(q.begin(), q.end());
+  const double q_hi = *std::max_element(q.begin(), q.end());
+  const AlExpiryGeometry g = prepare_al_geometry(c.T, c.r, 0.5 * (q_lo + q_hi));
+  AlSigmaQFamily put(g, Side::Put, c.S);
+  AlSigmaQFamily call(g, Side::Call, c.S);
+  const auto t_build = std::chrono::steady_clock::now();
+  const bool put_ok = put.prepare(c.lo, c.hi, 12, q_lo, q_hi, 4).has_value();
+  const bool call_ok = call.prepare(c.lo, c.hi, 12, q_lo, q_hi, 4).has_value();
+  const double build_ms = us_since(t_build) * 1.0e-3;
+  if (!put_ok || !call_ok) {
+    state.SkipWithError("a chain family refused its box");
+    return;
+  }
+  AlSigmaQFamilyRateBumps put_bumps;
+  AlSigmaQFamilyRateBumps call_bumps;
+  double bumps_ms = 0.0;
+  if (all_mask) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool a = put_bumps.prepare(put).has_value();
+    const bool b = call_bumps.prepare(call).has_value();
+    bumps_ms = us_since(t0) * 1.0e-3;
+    if (!a || !b) {
+      state.SkipWithError("a rate-bump set refused");
+      return;
+    }
+  }
+  std::vector<std::uint8_t> active_put(n), active_call(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    active_put[i] = c.side[i] == Side::Put ? 1u : 0u;
+    active_call[i] = c.side[i] == Side::Call ? 1u : 0u;
+  }
+  std::vector<double> price(n), delta(n), gamma(n), vega(n), theta(n), rho(n), phi(n);
+  std::vector<AlSigmaQFamilyStatus> status(n);
+  std::vector<AlFamilyGreekMask> supported(n);
+  AlSigmaQGreekColumns cols;
+  cols.price = price;
+  cols.delta = delta;
+  cols.gamma = gamma;
+  cols.vega = vega;
+  cols.theta = theta;
+  cols.rho = rho;
+  cols.phi = phi;
+  cols.status = status;
+  cols.supported = supported;
+  AlSigmaQGreeksRequest req;
+  if (all_mask) {
+    req.mask = AlFamilyGreekMask::all();
+  }
+  const auto chain = [&] {
+    const Status a = family_greeks_many(put, c.S, c.K, c.sigma, q, active_put, cols, req,
+                                        all_mask ? &put_bumps : nullptr);
+    const Status b = family_greeks_many(call, c.S, c.K, c.sigma, q, active_call, cols, req,
+                                        all_mask ? &call_bumps : nullptr);
+    return a.has_value() && b.has_value();
+  };
+  std::vector<double> chain_us;
+  for (auto _ : state) {
+    for (int w = 0; w < 5; ++w) {
+      if (!chain()) {
+        state.SkipWithError("family_greeks_many refused");
+        return;
+      }
+    }
+    for (int it = 0; it < 101; ++it) {
+      const auto t0 = std::chrono::steady_clock::now();
+      const bool ok = chain();
+      chain_us.push_back(us_since(t0));
+      benchmark::DoNotOptimize(price.data());
+      if (!ok) {
+        state.SkipWithError("family_greeks_many refused");
+        return;
+      }
+    }
+  }
+  std::sort(chain_us.begin(), chain_us.end());
+  double refused = 0.0;
+  double full = 0.0;
+  std::uint64_t fold = 1469598103934665603ULL;
+  for (std::size_t i = 0; i < n; ++i) {
+    refused += status[i] == AlSigmaQFamilyStatus::Ok ? 0.0 : 1.0;
+    full += supported[i].bits == req.mask.bits ? 1.0 : 0.0;
+    for (const double x : {price[i], delta[i], gamma[i], vega[i], theta[i], rho[i], phi[i]}) {
+      fold_bits(fold, x);
+    }
+  }
+  state.counters["bits_fnv52"] = bits52(fold);
+  state.counters["rows"] = static_cast<double>(n);
+  state.counters["refused"] = refused;
+  state.counters["rows_every_greek_supported"] = full;
+  state.counters["build_ms_both_sides"] = build_ms;
+  state.counters["bumps_ms_both_sides"] = bumps_ms;
+  state.counters["chain_us_p50"] = sorted_quantile(chain_us, 0.50);
+  state.counters["chain_us_p99"] = sorted_quantile(chain_us, 0.99);
+  state.counters["chain_us_max"] = chain_us.empty() ? 0.0 : chain_us.back();
+  state.counters["lane_us_p50"] = sorted_quantile(chain_us, 0.50) / static_cast<double>(n);
+}
+
+const bool kRegisteredSqGreeks = [] {
+  if (env_text("ATX_VOL_AL_SQGREEKS").empty()) {
+    return false;
+  }
+  const bool spy = !env_text("ATX_VOL_AL_SPY23").empty();
+  if (spy) {
+    benchmark::RegisterBenchmark("american/sqgreeks/spy23/nq4/ns12",
+                                 [](benchmark::State &state) { run_sqgreeks(state, 12); })
+        ->Iterations(1)
+        ->Unit(benchmark::kMillisecond);
+  }
+  for (const bool chain_spy : {true, false}) {
+    if (chain_spy && !spy) {
+      continue;
+    }
+    for (const bool all_mask : {false, true}) {
+      benchmark::RegisterBenchmark(std::string("american/sqgreeks_chain/") +
+                                       (chain_spy ? "spy23/" : "synthetic300/") +
+                                       (all_mask ? "all" : "primary"),
+                                   [chain_spy, all_mask](benchmark::State &state) {
+                                     run_sqgreeks_chain(state, chain_spy, all_mask);
                                    })
           ->Iterations(1)
           ->Unit(benchmark::kMillisecond);

@@ -213,6 +213,42 @@ beyond the 6-sd band of log spot there. On D0 row E64 (cash 64 % of spot) the co
 - `DiscreteDivScheme` gains the enumerator `SplicedCubic`. A switch over it must add the case,
   and so must every range check over it (the fit archive's did not: fixed above, M2).
 
+### NEW — primary Greek bundle on the (σ, q) family: masks, reasons, convention, rate bumps, SoA chain
+
+`AlSigmaQFamily` (opt-in, no default caller) gains `family_greeks(fam[, rate], S, K, σ, q,
+req)` and `family_greeks_many` (`api/pricing/american.hpp`, the A0 block;
+`src/pricing/american_sigma_q_family_greeks.cpp`; contract and measurements in
+`docs/sigma-q-family-greeks.md`): price, Δ, Γ, vega, θ (the continuation-region PDE
+identity), phi (∂P/∂q through the tensor's q axis, boundary motion included) and rho
+(only with an `AlSigmaQFamilyRateBumps`: two second families at r ± 1e-4) from one fused
+premium pass over K1's stages. Every requested Greek carries a typed
+`AlFamilyGreekReason` (`Served`, `Exercised`, `Refused`, `NoCarryBumps`,
+`CarryBumpRefused`, `NoQAxis`, `NearNodeDegenerate`, `ConventionUnsupported`,
+`NearExerciseEdge`) and the `supported` mask; an unsupported Greek is NaN, never 0.0
+marked served. Every bundle
+carries an `AlFamilyGreekConvention` (held fixed: `ContractSigma` / `StickyStrike`
+implemented, `StickyMoneyness` / `RefittedSurface` declared unsupported; model
+`SigmaQFamily`; clock `GeometryTime`; the caller's `surface_version`). The SoA entry takes
+per-lane K / σ / q and an active mask and is the scalar entry lane for lane, bit for bit.
+`AlSigmaFamilyPriceVega` gains `exercised` (review-L3g m4): its vega is 0.0 by
+construction on those rows.
+
+The near-edge band (A0 fix round 1, review-A0 MJ1): every Ok bundle carries `edge_sd` =
+ln(S' / B'_now) / (σ√T), the distance to the family's current exercise edge in the
+internal put's coordinates, and `near_edge` (SoA: flags bit 2 and an `edge_sd` column).
+On a continuation row with `edge_sd < kAlFamilyGreekEdgeBand` (0.25) θ and Γ are NaN with
+`NearExerciseEdge`: there the PDE-identity θ was measured up to 138 % off the converged
+calendar difference, with the wrong sign, and Γ (the term it amplifies) is not validated.
+The L3g σ-family bundle (`AlSigmaFamilyGreeks`) serves the same in-band θ with status Ok
+and has no per-Greek reason: its header now says so, and review-L3g m5's in-band part is
+OPEN for its owner. `family_greeks_many`'s InvalidArgument refusal allocates nothing
+either (review-A0 m5).
+
+**No number changes.** Nothing default selects the bundle; the bundle's price and served
+vega are K1's fused pass's bits; the 9 default quote-bench hashes match. The L3g σ-family
+Greek pass reuses the integrand's Φ values for its derivative terms (review-L3g m3) — the
+same bits in every field, measured before / after.
+
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
 Every `atx-vol-quote-bench --model quote-slice` report gains a `bench` object

@@ -91,6 +91,9 @@ set(ATX_VOL_PRICING_SOURCES
     # lanes, bracketed Newton, typed outcomes; AVX2 kernel src/simd/american_iv_batch_avx2.cpp).
     src/pricing/american_iv_batch.cpp
     src/pricing/american_iv_stream.cpp
+    # A0 sigma-q family Greeks (r6, 2026-10-23): the primary Greek bundle (masks, reasons,
+    # convention), the rate-bump set and the structure-of-arrays chain entry on that family.
+    src/pricing/american_sigma_q_family_greeks.cpp
     src/pricing/batch.cpp
     src/pricing/american_iv.cpp
     # K3 (r5): the (sigma, q) family's error envelope and root-acceptance context
