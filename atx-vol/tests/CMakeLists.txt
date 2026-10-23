@@ -310,6 +310,7 @@ add_executable(atx-vol-tests
     var_report_test.cpp
     var_validation_test.cpp
     american_iv_test.cpp
+    american_iv_batch_test.cpp
     dividend_test.cpp
     s3_test.cpp
     fit_metrics_test.cpp
