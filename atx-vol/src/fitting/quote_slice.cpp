@@ -2662,12 +2662,17 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
                                        std::span<const QuoteSliceCalendarNeighbour> fixed,
                                        const QuoteSliceRepairConfig &config,
                                        std::vector<std::size_t> *moved,
-                                       QuoteSliceRepairRecord *record) {
+                                       QuoteSliceRepairRecord *record,
+                                       QuoteSliceNondividendRecheck recheck) {
   const counters::fit_timing::BucketScope timing(counters::fit_timing::Bucket::Calendar);
   QuoteSliceRepairRecord local;
   QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
   out = QuoteSliceRepairRecord{};
-  if (members.size() < 2u || !nonnegative(config.immaterial_price_move)) return false;
+  if (members.size() < 2u || !nonnegative(config.immaterial_price_move) ||
+      (recheck != QuoteSliceNondividendRecheck::Recheck &&
+       recheck != QuoteSliceNondividendRecheck::Skip)) {
+    return false;
+  }
   for (const QuoteSliceJointMember &m : members) {
     if (m.fit == nullptr || !m.fit->prices || m.fit->rows.size() != m.quotes.size()) return false;
   }
@@ -2729,7 +2734,8 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
     auto slice = AmericanPriceSlice::create(work[s].nodes, work[s].bounds);
     if (!slice || !above_floors(*members[work[s].member].fit, work[s].nodes, work[s].clamp) ||
         !calendar_consistent(*slice, work[s].earlier, work[s].later) ||
-        !nondividend_certified(*members[work[s].member].fit, *slice)) {
+        (recheck == QuoteSliceNondividendRecheck::Recheck &&
+         !nondividend_certified(*members[work[s].member].fit, *slice))) {
       out.outcome = QuoteSliceRepairOutcome::NotCertified;
       return false;
     }

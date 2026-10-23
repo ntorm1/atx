@@ -36,13 +36,16 @@ row; Identification findings are counted). Counters on `QuoteSurfaceSlice`
 **Repairs re-certified (review-L3q m2 / m3).** The channel / box, in-box market and joint
 calendar repairs re-certify a non-dividend slice with `check_nondividend_american` before
 committing; the market repair refuses a band result that moves a row out of its own quote
-(`LeftChannel`). `repair_quote_slice_calendar` (the bounded-move repair) takes
-`QuoteSliceNondividendRecheck`: `Recheck`, the default for direct callers (**behaviour
-change** for them: such a result is now refused), or `Skip`, the historical rule that
-`fit_quote_surface` keeps unless `publication = Validate` - so the default surface is
-unchanged. Measured default-path exposure: dev200 / dev200b graded-v1 serve 17 / 18
+(`LeftChannel`). `repair_quote_slice_calendar` (the bounded-move repair) and
+`repair_quote_slice_calendar_joint` (the joint rung) take `QuoteSliceNondividendRecheck`:
+`Recheck`, the default for direct callers (**behaviour change** for them: such a result is
+now refused), or `Skip`, the historical rule that `fit_quote_surface` keeps for both unless
+`publication = Validate` - so the default surface and every keys-ON repair arm without
+`Validate` serve exactly what they served before (PM ruling: a keys-ON repair arm never loses
+a row its base served). Measured exposure: dev200 / dev200b graded-v1 serve 17 / 18
 non-dividend chains (440 / 498 rows) whose bounded calendar repair fails the non-dividend
-certificate; `Validate` refuses them.
+certificate, and dev200b's box h0 / h0.5 + market-distance repair arms serve 80 rows on 3
+SJB / LEMB chains from joint repairs that fail it; `Validate` refuses them.
 
 **Bounded joint projection.** `project_calendar_joint_bounded` (budget `max_sweeps`,
 `relative_tolerance`) returns `Feasible`, `InfeasibleData` with an exact certificate naming

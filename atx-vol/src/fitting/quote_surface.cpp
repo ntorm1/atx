@@ -1255,8 +1255,13 @@ private:
       fixed.push_back({&*out_[j].fit.prices, out_[j].fit.market.calendar_years});
     }
     std::vector<std::size_t> moved;
+    // Lane C2 (review-L3q m3, PM ruling 2026-10-23): the non-dividend re-certification of
+    // the joint rung only under Validate, as for the bounded-move repair (repair()): a
+    // keys-ON repair arm never loses a row its base served.
+    const auto recheck = publication_on() ? QuoteSliceNondividendRecheck::Recheck
+                                          : QuoteSliceNondividendRecheck::Skip;
     const bool joint = repair_quote_slice_calendar_joint(members, fixed, config_.repair, &moved,
-                                                         &out_[i].calendar_channel_repair);
+                                                         &out_[i].calendar_channel_repair, recheck);
     count_joint(i, out_[i].calendar_channel_repair.outcome);
     if (!joint) return false; // every outcome but Applied left the members unchanged
     for (std::size_t m = 0; ladder() && m < slots.size(); ++m) {

@@ -534,6 +534,75 @@ TEST(QuoteSlicePublication, AJointCalendarRepairOnCrossingQuotesIsInfeasibleAndR
   EXPECT_TRUE(c.near.moved_nodes.empty());
 }
 
+// A non-dividend joint case (review-L3q m3 on the joint rung; the dev200b SJB / LEMB
+// pattern): the earlier member (the non-dividend chain's fit at maturity 0.9) carries puts
+// one unit above the later member's (the same fit at 1.0), quoted 0.001 around them so it
+// cannot move; the later member is quoted 2 wide, so the joint projection lifts its puts
+// onto the earlier ones - exactly the floor under which the bounded-move repair serves a
+// non-dividend violation (ACalendarRepairNeverServesANondividendViolation).
+struct NondividendJointCase {
+  Chain chain = nondividend_chain();
+  QuoteSliceFit near;
+  QuoteSliceFit far;
+  std::vector<QuoteSliceQuote> near_quotes;
+  std::vector<QuoteSliceQuote> far_quotes;
+};
+
+void make_nondividend_joint_case(NondividendJointCase &c) {
+  c.near = fitted(c.chain);
+  c.far = fitted(c.chain);
+  ASSERT_TRUE(c.near.prices && c.far.prices);
+  c.near.market.calendar_years = 0.9;
+  c.near.prices = raised_puts(c.near, 1.0);
+  c.near_quotes = quotes_around(c.near, c.chain.quotes, 0.001);
+  c.far_quotes = quotes_around(c.far, c.chain.quotes, 2.0);
+  ASSERT_FALSE(check_american_calendar(*c.near.prices, *c.far.prices)); // the puts cross
+  ASSERT_TRUE(check_nondividend_american(*c.far.prices, c.far.diagnostics.discount));
+}
+
+TEST(QuoteSlicePublication, AJointRepairRechecksTheNondividendCertificateOnlyWhenAsked) {
+  // Recheck (the default for a direct caller; fit_quote_surface under Validate): refused,
+  // nothing changes.
+  NondividendJointCase c;
+  make_nondividend_joint_case(c);
+  const auto far_nodes = nodes_of(c.far);
+  const std::array<QuoteSliceJointMember, 2> members{
+      {{&c.near, c.near_quotes}, {&c.far, c.far_quotes}}};
+  QuoteSliceRepairRecord record;
+  EXPECT_FALSE(
+      repair_quote_slice_calendar_joint(members, {}, QuoteSliceRepairConfig{}, nullptr, &record));
+  EXPECT_EQ(record.outcome, QuoteSliceRepairOutcome::NotCertified) << to_string(record.outcome);
+  expect_same_nodes(c.far, far_nodes, "far (Recheck)");
+  EXPECT_TRUE(c.far.moved_nodes.empty());
+  // Skip (fit_quote_surface without Validate, PM ruling 2026-10-23): the historical rule -
+  // the projection is applied and the later member serves exactly the violation Recheck
+  // refused, as the keys-ON repair arms' base served it.
+  NondividendJointCase h;
+  make_nondividend_joint_case(h);
+  const std::array<QuoteSliceJointMember, 2> historical{
+      {{&h.near, h.near_quotes}, {&h.far, h.far_quotes}}};
+  QuoteSliceRepairRecord skipped;
+  std::vector<std::size_t> moved;
+  ASSERT_TRUE(repair_quote_slice_calendar_joint(historical, {}, QuoteSliceRepairConfig{}, &moved,
+                                                &skipped, QuoteSliceNondividendRecheck::Skip))
+      << to_string(skipped.outcome);
+  EXPECT_EQ(skipped.outcome, QuoteSliceRepairOutcome::Applied);
+  ASSERT_EQ(moved.size(), 2u);
+  EXPECT_GT(moved[1], 0u); // the later member moved
+  EXPECT_TRUE(check_american_calendar(*h.near.prices, *h.far.prices));
+  EXPECT_FALSE(check_nondividend_american(*h.far.prices, h.far.diagnostics.discount));
+  // An invalid value is refused and changes nothing.
+  NondividendJointCase v;
+  make_nondividend_joint_case(v);
+  const auto v_far = nodes_of(v.far);
+  const std::array<QuoteSliceJointMember, 2> invalid{
+      {{&v.near, v.near_quotes}, {&v.far, v.far_quotes}}};
+  EXPECT_FALSE(repair_quote_slice_calendar_joint(invalid, {}, QuoteSliceRepairConfig{}, nullptr,
+                                                 nullptr,
+                                                 static_cast<QuoteSliceNondividendRecheck>(7)));
+  expect_same_nodes(v.far, v_far, "far (invalid)");
+}
+
 // ── The publication validator (deliverable 1) ───────────────────────────────────────
 
 // smile_chain over strikes lo..hi every `step` (rate 3 %, yield 1 %, +/- 2 % spreads).

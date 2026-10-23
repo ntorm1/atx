@@ -1027,11 +1027,17 @@ struct QuoteSliceCalendarNeighbour {
 // move over all members. Bounded: one projection per side (lane C2:
 // project_calendar_joint_bounded with config.joint_max_sweeps; an exact infeasibility
 // certificate is Infeasible with record->conflict, a spent budget NonConverged, and either
-// rolls back: no member changes; record->sweeps counts the sweeps run).
+// rolls back: no member changes; record->sweeps counts the sweeps run). `recheck` as for
+// repair_quote_slice_calendar: Recheck (the default) also refuses (NotCertified) a result
+// in which a non-dividend member fails check_nondividend_american; Skip is the historical
+// rule, which fit_quote_surface keeps unless QuoteSurfacePublication::Validate, so a
+// keys-ON repair arm serves every row its base served (PM ruling 2026-10-23); an invalid
+// value is refused (false, nothing changes).
 [[nodiscard]] bool repair_quote_slice_calendar_joint(
     std::span<const QuoteSliceJointMember> members,
     std::span<const QuoteSliceCalendarNeighbour> fixed, const QuoteSliceRepairConfig &config,
-    std::vector<std::size_t> *moved = nullptr, QuoteSliceRepairRecord *record = nullptr);
+    std::vector<std::size_t> *moved = nullptr, QuoteSliceRepairRecord *record = nullptr,
+    QuoteSliceNondividendRecheck recheck = QuoteSliceNondividendRecheck::Recheck);
 
 // Every repair above (lane C2) re-certifies its result exactly as the slice was first
 // certified before committing it: the unchanged AmericanPriceSlice certificate and, for a
