@@ -12,6 +12,31 @@ are in the root. The record's Family tier serves A0's six Greeks, and a family r
 accepted by K3's envelope enclosure. Every record's `policy_sha256` changes (the default
 policy: `87318ae7…cefe` to `57902383…f3fc`). No default quote-bench path builds a record.
 
+### NEW — opt-in exact in-box projection rung behind the box certificate (lane C4)
+
+**Library (opt-in; default unchanged).** `QuoteSliceRepairConfig::inbox_projection` (inert under the
+exact certificate). When `certify_american_box` refuses a slice's fitted prices, the fitted grid
+is projected onto the certificate's polytope intersected with the same quote boxes (convex sides,
+the certificate's slopes and node bounds, the affine call-minus-put bound; in the non-dividend
+regime also the discounted-intrinsic call floor, call slopes >= -df and the Legendre segment
+condition) by a two-phase log-barrier interior-point method on a banded Newton system
+(`src/fitting/inbox_projection.{hpp,cpp}`; one call site, `box_certify_slice`). The result lies
+strictly inside every box and is served only when the unchanged `AmericanPriceSlice::create`
+passes it; its moved sides are re-implied like any repair's. An empty set is typed
+`InfeasibleData` with its conflict (`EmptyBox`, `NoConvexCurve`, `AffineBox`, `Coupled`); a spent
+Newton budget is `NonConverged`; neither changes anything. Boxes are never widened. New additive
+types: `QuoteSliceInboxOutcome`, `QuoteSliceInboxConflict`, `QuoteSliceBoxRefusal`,
+`QuoteSliceInboxRecord` (`QuoteSliceRepairRecord::inbox`, filled on `diagnostics.box`). Bench key
+`graded.inbox_projection` (requires `certificate box`; the policy echo, a per-slice
+`inbox_projection` record and run counters appear only when on). The 9 default hashes are
+unchanged. Design: `docs/inbox-projection.md`.
+
+**Measured (opt-in arm `C4-inbox-h0` vs `combined-h0`, same binary).** SPY served expiries 17 -> 26 / 32
+fitted (every rung run `applied`; Gate-G4's 31 / 33 is not met); cohort5 / dev200 / dev200b eligible
+coverage +20.69 / +3.94 / +0.96 pp, 0 violations. The SPY cold wall rises 17.4 -> 63.5 s (re-implication
+of moved nodes and the calendar passes, the rung itself ~11 ms per expiry). The remaining SPY refusals
+are the joint calendar rung's (`calendar_arbitrage`, 6 expiries).
+
 ### NEW — opt-in shared call floor, shape-class matrix, admission contracts (lane C3)
 
 **Shared call floor (opt-in; default unchanged).** `QuoteSliceConfig::call_floor`
