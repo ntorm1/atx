@@ -363,6 +363,67 @@ def table(args: argparse.Namespace) -> int:
     return 0
 
 
+def _violations(metrics: dict) -> int:
+    counts = metrics.get("violations") or {}
+    return sum(counts.values()) + (metrics.get("duplicate_disagreements") or 0)
+
+
+def choose(cells: list[dict], cohort: str, name: str, containment: float):
+    """The deterministic winner of one (cohort, class): among policies with zero served shape
+    violations and containment >= the bar, the highest eligible price coverage; ties to
+    1e-12 go to the lower MAE/spread, then the smaller policy name. None when none qualifies."""
+    best = None
+    for cell in cells:
+        metrics = (cell.get("classes") or {}).get(name)
+        if cell["cohort"] != cohort or not metrics or not metrics.get("eligible_rows"):
+            continue
+        contained = metrics.get("containment")
+        if contained is None or contained < containment or _violations(metrics):
+            continue
+        coverage = round(metrics.get("eligible_price_coverage") or 0.0, 12)
+        key = (-coverage, metrics.get("mae_spread") or float("inf"), cell["policy"])
+        if best is None or key < best[0]:
+            best = (key, cell["policy"])
+    return None if best is None else best[1]
+
+
+def select(args: argparse.Namespace) -> int:
+    """Per (cohort, class) winners from one or more harness tables, and the single policy that
+    wins the most cells (ties: the smaller name). A per-class route is a single configuration
+    only when the winners differ in profile keys alone; surface-level arms (certificate box,
+    market distance, ladder, publication) are one per run."""
+    cells = []
+    for path in args.table:
+        cells.extend(c for c in json.loads(path.read_text(encoding="utf-8"))["cells"]
+                     if c.get("classes"))
+    cohorts = sorted({c["cohort"] for c in cells})
+    names = []
+    for cell in cells:
+        names.extend(n for n in cell["classes"] if n not in names)
+    winners = {}
+    for cohort in cohorts:
+        # Every class with eligible rows in this cohort; None where no policy qualifies.
+        winners[cohort] = {name: choose(cells, cohort, name, args.containment) for name in names
+                           if any((c["classes"].get(name) or {}).get("eligible_rows")
+                                  for c in cells if c["cohort"] == cohort)}
+    wins: dict = {}
+    for by_class in winners.values():
+        for policy in by_class.values():
+            if policy is not None:
+                wins[policy] = wins.get(policy, 0) + 1
+    single = min(wins, key=lambda p: (-wins[p], p)) if wins else None
+    document = {"schema_version": SCHEMA_VERSION, "tool_sha256": TOOL_SHA256,
+                "containment": args.containment, "winners": winners, "wins": wins,
+                "single_policy": single,
+                "tables": {str(p): sha256(p) for p in args.table}}
+    write = args.output.resolve()
+    if write.exists():
+        raise ValueError("selection output already exists; use a new path")
+    write.write_text(json.dumps(document, indent=1), encoding="utf-8")
+    print(json.dumps({"single_policy": single, "wins": wins}))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="command", required=True)
@@ -371,12 +432,16 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--output", required=True, type=Path)
     t = sub.add_parser("table", help="re-aggregate cells.jsonl into table.md / table.json")
     t.add_argument("--output", required=True, type=Path)
+    s = sub.add_parser("select", help="deterministic per-class winners from harness tables")
+    s.add_argument("--table", required=True, type=Path, action="append")
+    s.add_argument("--output", required=True, type=Path)
+    s.add_argument("--containment", type=float, default=0.985)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    return run(args) if args.command == "run" else table(args)
+    return {"run": run, "table": table, "select": select}[args.command](args)
 
 
 if __name__ == "__main__":

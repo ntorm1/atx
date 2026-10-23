@@ -129,3 +129,32 @@ def test_table_has_one_row_per_class_and_names_failed_cells(tmp_path):
     assert any(line.startswith("| dev | q | (cell failed:") for line in table)
     document = json.loads((out / "table.json").read_text(encoding="utf-8"))
     assert [c["policy"] for c in document["cells"]] == ["p", "q"]
+
+
+def selection_cell(policy: str, cohort: str, **classes) -> dict:
+    return {"policy": policy, "cohort": cohort,
+            "classes": {name: {"eligible_rows": 10, "eligible_price_coverage": cov,
+                               "containment": contain, "mae_spread": mae,
+                               "violations": {"monotone": 0, "convex": 0, "calendar": bad},
+                               "duplicate_disagreements": 0}
+                        for name, (cov, contain, mae, bad) in classes.items()}}
+
+
+def test_selection_is_deterministic_and_never_picks_an_unqualified_policy(tmp_path):
+    cells = [selection_cell("b", "dev", x=(0.9, 0.99, 0.10, 0), y=(0.8, 0.99, 0.10, 0)),
+             selection_cell("a", "dev", x=(0.9, 0.99, 0.10, 0), y=(0.95, 0.97, 0.05, 0)),
+             selection_cell("c", "dev", x=(0.99, 0.99, 0.01, 1), y=(0.7, 0.99, 0.02, 0))]
+    # x: a and b tie on coverage and MAE/spread -> the smaller name; c has a violation.
+    assert sm.choose(cells, "dev", "x", 0.985) == "a"
+    # y: a is under the containment bar; b covers more than c.
+    assert sm.choose(cells, "dev", "y", 0.985) == "b"
+    assert sm.choose(cells, "dev", "z", 0.985) is None
+    table = tmp_path / "table.json"
+    table.write_text(json.dumps({"cells": cells}), encoding="utf-8")
+    out = tmp_path / "select.json"
+    assert sm.main(["select", "--table", str(table), "--output", str(out)]) == 0
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["winners"] == {"dev": {"x": "a", "y": "b"}}
+    assert document["single_policy"] == "a" and document["wins"] == {"a": 1, "b": 1}
+    with pytest.raises(ValueError, match="already exists"):
+        sm.main(["select", "--table", str(table), "--output", str(out)])
