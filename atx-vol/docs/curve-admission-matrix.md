@@ -14,7 +14,7 @@ directory (`C:/atx-cache/quote-benchmark/C3-20261023-admission/`).
 python -E -P -B atx-vol/tools/shape_matrix.py run    --spec matrix.json --output DIR
 python -E -P -B atx-vol/tools/shape_matrix.py table  --output DIR
 python -E -P -B atx-vol/tools/shape_matrix.py select --table DIR/table.json [--table ...] \
-       --output winners.json [--containment 0.985]
+       --output winners.json [--containment 0.985] [--validated-only]
 ```
 
 The spec (`schema_version` 1) names the native binary, the class manifest
@@ -29,8 +29,15 @@ Per cell and per class the table carries: all-row / eligible-price / identified-
 price-only rows, MAE (USD and per half spread), containment, IV median and p95 distance (bp),
 served shape violations (monotone / convex / calendar) and duplicate disagreements, the refusal
 taxonomy (status counts), per-expiry completeness buckets (complete / >= 0.9 / >= 0.5 / > 0 /
-none) and the per-expiry fit cost (p50 / p95 of the B0 per-slice clock
-`graded_stats.slices[].timing.wall_us`, not wall time), plus the sha256 of the prediction file.
+none), the served-EXPIRY completeness (fitted expiries, expiries serving at least one eligible
+row) with the reason of every unserved slice, and the per-expiry fit cost (p50 / p95 of the B0
+per-slice clock `graded_stats.slices[].timing.wall_us`, not wall time), plus the sha256 of the
+prediction file. The unserved-slice reason comes from the native report's per-slice entry:
+`arbitrage:<class>` (the certificate's refusal: vertical_spread, convexity,
+nondividend_upper_bound, legendre, parity, other), `calendar`, `insufficient_quotes`,
+`validator_rollback+<reason>` (C2's publication validation rolled a repair back first),
+`rows_refused:<status>` (a served slice whose eligible rows were all refused) or
+`not_fitted:<status>` (a chain the fitter never listed).
 Every finished cell is appended to `cells.jsonl` and the tables are rewritten (checkpointing);
 an existing prediction is re-verified by its receipt hash and never overwritten.
 
@@ -40,7 +47,9 @@ an existing prediction is re-verified by its receipt hash and never overwritten.
 violations (and zero duplicate disagreements) and containment >= the bar (default 98.5 %, the
 plan's C2 row); among qualifying policies the highest eligible price coverage wins, ties go to
 the lower MAE/spread, then the lexicographically smaller policy name. A class with no
-qualifying policy is reported as `none`. It also reports the best single policy (the one that
+qualifying policy is reported as `none`. `--validated-only` admits only policies whose file sets
+`graded.publication = validate` (C2's validation as the admission bar). It also reports the best
+single policy (the one that
 qualifies on the most classes). The selection is tool-side: the graded quote-slice path picks its
 family per profile from the policy, and `curve_selector.cpp` serves the pricer-fitter path, so a
 per-expiry route inside one surface fit needs a profile-routing hook in the surface fitter
@@ -74,8 +83,9 @@ Bench: `serve.call_floor: legacy | discounted_intrinsic` (graded admission only;
 adds per-slice `call_floor` {lines, lifted_nodes, refused} and run counters only when on).
 Library: `QuoteSliceConfig::call_floor` {mode, lines}; Legacy with lines is refused.
 
-Known interactions (measured in the lane report): with C0's one-spot rule the rebased expiries
-carry a yield, so they have no lines and the key is inert there; a lifted later expiry can change
+Known interactions (measured in the lane report): the key is inert where a surface has no
+non-dividend expiry (cohort5, SPY included) and active in the combined arm on dev200 / dev200b; a
+lifted later expiry can change
 which of two crossing expiries the greedy calendar pass keeps (a calendar-pass exchange), because
 the bounded calendar repair clamps calls without moving the put (`AmericanPriceSlice` refuses the
 clamped grid on its affine call-minus-put bound).
