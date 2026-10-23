@@ -1,4 +1,5 @@
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_region.hpp" // L3k: AlExerciseRegion entry points
 
 #include "pricing/american_detail.hpp"
 
@@ -2304,6 +2305,55 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
   return price;
 }
 
+// C1 exercise region (2026-10-22): the class a scalar price site assigns — THE classifier
+// (classify_exercise_region) on the boundary value every site reads
+// (al_boundary_at_expiry). A site is always a put: a call arrives as its internal put.
+[[nodiscard]] AlExerciseClass al_site_class(const AlBoundary &bnd, double S, double K, double T,
+                                            double sigma, double r, double q) noexcept {
+  return classify_exercise_region(S, K, T, r, q, sigma, /*is_call=*/false,
+                                  al_boundary_at_expiry(bnd));
+}
+
+// C1: the price rule of both scalar sites once the class is known. `floor` is the site's
+// own KernelFloor computation, called only where it is the answer. A class outside the
+// American arm means the caller broke the site's precondition (the dispatch handles those
+// classes before any boundary exists): a quiet NaN, never a price.
+template <class Floor>
+[[nodiscard]] double al_region_site_price(AlExerciseClass cls, AlExerciseRegion region,
+                                          double S, double K, Floor &&floor) noexcept {
+  switch (cls) {
+  case AlExerciseClass::ExercisePlateau:
+    return (region == AlExerciseRegion::Intrinsic) ? K - S : floor();
+  case AlExerciseClass::Continuation:
+    return floor();
+  case AlExerciseClass::European:
+  case AlExerciseClass::ExpiryLimit:
+  case AlExerciseClass::ZeroVolLimit:
+  case AlExerciseClass::UnsupportedRegime:
+    break;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+// L3k + C1: the cached site under an explicit AlExerciseRegion (contract on the uncached
+// overload, american_boundary.hpp). KernelFloor without `cls_out` forwards bit-identically.
+[[nodiscard]] double al_put_price_from_boundary_cached(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                       const AlPremiumCache &pc, double S, double K,
+                                                       double T, double sigma, double r, double q,
+                                                       AlExerciseRegion region,
+                                                       AlExerciseClass *cls_out) noexcept {
+  if (region == AlExerciseRegion::KernelFloor && cls_out == nullptr) {
+    return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q);
+  }
+  const AlExerciseClass cls = al_site_class(bnd, S, K, T, sigma, r, q);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return al_region_site_price(cls, region, S, K, [&]() noexcept {
+    return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q);
+  });
+}
+
 // ── Boundary solve / price split (S-independence seam) ───────────────────
 //
 // The Andersen-Lake exercise boundary depends on (K, T, sigma, r, q) but NOT on
@@ -2660,6 +2710,52 @@ void al_prepare_oriented_geometry(double T, double rate, double yield, const AlS
   return price;
 }
 
+// C1: B(tau = T) from the Lobatto end node (contract in american_boundary.hpp).
+[[nodiscard]] double al_boundary_at_expiry(double y_T, double xmax) noexcept {
+  return b_from_y(y_T, xmax);
+}
+
+[[nodiscard]] double al_boundary_at_expiry(const AlBoundary &bnd) noexcept {
+  if (bnd.n < 2 || !(bnd.T > 0.0)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return al_boundary_at_expiry(bnd.y[bnd.n - 1u], bnd.xmax);
+}
+
+// L3k monotone (2026-10-21) + C1: the uncached site under an explicit AlExerciseRegion
+// (contract in american_boundary.hpp). KernelFloor without `cls_out` forwards
+// bit-identically.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
+                                                double S, double K, double T, double sigma,
+                                                double r, double q, AlExerciseRegion region,
+                                                AlExerciseClass *cls_out) noexcept {
+  if (region == AlExerciseRegion::KernelFloor && cls_out == nullptr) {
+    return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q);
+  }
+  const AlExerciseClass cls = al_site_class(bnd, S, K, T, sigma, r, q);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return al_region_site_price(cls, region, S, K, [&]() noexcept {
+    return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q);
+  });
+}
+
+// L3k test seam for the cached site (american_boundary.hpp).
+[[nodiscard]] double al_put_price_from_boundary_cached_probe(const AlBoundary &bnd,
+                                                            const AlWorkspace &ws, double S,
+                                                            double K, double T, double sigma,
+                                                            double r, double q,
+                                                            AlExerciseRegion region,
+                                                            bool bind_cache,
+                                                            AlExerciseClass *cls_out) noexcept {
+  AlPremiumCache pc; // invalid until bound: an unbound cache takes the inline arm
+  if (bind_cache) {
+    al_bind_premium(bnd, ws, sigma, r, q, pc);
+  }
+  return al_put_price_from_boundary_cached(bnd, ws, pc, S, K, T, sigma, r, q, region, cls_out);
+}
+
 // Tick-path record seam (american_boundary.hpp): pure forwarders.
 [[nodiscard]] double al_boundary_now(const AlBoundary &bnd) noexcept {
   return al_boundary_at(bnd, bnd.T);
@@ -2864,12 +2960,37 @@ constexpr const char *kDoubleContinuationMsg =
     "single-boundary Andersen-Lake scheme cannot represent two exercise "
     "boundaries; see Andersen-Lake 2021 (double-boundary case)";
 
+// C1 (2026-10-22): what an American arm saw — the boundary B(tau = T) it priced against
+// and the class the price site assigned. Filled only when the arm reaches a price site
+// (`ran`); andersen_lake_classified reads it, every legacy caller passes none.
+struct AlArmReport {
+  bool ran = false;
+  double boundary = std::numeric_limits<double>::quiet_NaN();
+  AlExerciseClass cls = AlExerciseClass::Continuation;
+};
+
+// The American arm's price call: without a report it is the L3k call, unchanged.
+[[nodiscard]] double al_arm_price(const AlBoundary &bnd, const AlWorkspace &ws, double S, double K,
+                                  double T, double sigma, double r, double q,
+                                  AlExerciseRegion region, AlArmReport *report) noexcept {
+  if (report == nullptr) {
+    return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q, region);
+  }
+  report->ran = true;
+  report->boundary = al_boundary_at_expiry(bnd);
+  return al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q, region, &report->cls);
+}
+
 // Put core — used directly for puts and via McDonald-Schroder for calls. The
 // `specialize` flag (default true) forces the generic runtime-trip-count kernel when
 // false — the seam behind detail::andersen_lake_generic_kernel that proves the
-// specialized fixed-scheme kernel is bit-identical to the generic path.
+// specialized fixed-scheme kernel is bit-identical to the generic path. `region` (L3k)
+// selects the price-from-boundary rule; the KernelFloor default is every legacy caller.
+// `report` (C1) receives the arm's boundary and class when non-null.
 [[nodiscard]] Result<double> al_solve_put(double S, double K, double T, double sigma, double r,
-                                          double q, const AlScheme &sch, bool specialize = true) {
+                                          double q, const AlScheme &sch, bool specialize = true,
+                                          AlExerciseRegion region = AlExerciseRegion::KernelFloor,
+                                          AlArmReport *report = nullptr) {
   switch (classify_regime(/*rate=*/r, /*yield=*/q)) {
   case ExerciseRegime::European: {
     const double euro = euro_put_sk(S, K, T, sigma, r, q);
@@ -2896,7 +3017,7 @@ constexpr const char *kDoubleContinuationMsg =
   case AlSolveStatus::Ok:
     break;
   }
-  return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
+  return Ok(al_arm_price(bnd, ws, S, K, T, sigma, r, q, region, report));
 }
 
 // A4 (PR-C4): the sigma->0 limit of an American option is the European sigma->0
@@ -2973,7 +3094,10 @@ template <class AmericanArm>
                                                 const std::optional<AlOpts> &opts, bool specialize,
                                                 std::optional<detail::AlSeedMode> seed_override =
                                                     std::nullopt,
-                                                std::uint16_t n_quad_price_override = 0) {
+                                                std::uint16_t n_quad_price_override = 0,
+                                                AlExerciseRegion region =
+                                                    AlExerciseRegion::KernelFloor,
+                                                AlArmReport *report = nullptr) {
   return andersen_lake_dispatch(S, K, T, sigma, r, q, side, [&]() -> Result<double> {
     AlScheme sch = scheme_from_opts(opts);
     // A6 measurement seam: force a specific seed / premium-quad order on top of the
@@ -2986,10 +3110,10 @@ template <class AmericanArm>
       sch.n_quad_price = n_quad_price_override;
     }
     if (side == Side::Put) {
-      return al_solve_put(S, K, T, sigma, r, q, sch, specialize);
+      return al_solve_put(S, K, T, sigma, r, q, sch, specialize, region, report);
     }
     // McDonald-Schroder symmetry: C(S,K,r,q) = P(K,S,q,r). Swap (S↔K), (r↔q).
-    return al_solve_put(K, S, T, sigma, q, r, sch, specialize);
+    return al_solve_put(K, S, T, sigma, q, r, sch, specialize, region, report);
   });
 }
 
@@ -3026,10 +3150,13 @@ struct AlInternalPut {
 // solve of al_solve_put (same statuses, same messages) and the same price call.
 [[nodiscard]] Result<double> al_solve_put_prepared(const AlOrientedGeometry &g,
                                                    const AlInternalPut &p, double T, double sigma,
-                                                   AlPreparedScratch &s) {
+                                                   AlPreparedScratch &s,
+                                                   AlExerciseRegion region =
+                                                       AlExerciseRegion::KernelFloor,
+                                                   AlArmReport *report = nullptr) {
   ATX_TRY_VOID(al_solve_status_error(
       al_solve_put_boundary_prepared(g, p.K, sigma, s.bnd, s.ws, &s.loaded)));
-  return Ok(al_put_price_from_boundary(s.bnd, s.ws, p.S, p.K, T, sigma, p.rate, p.yield));
+  return Ok(al_arm_price(s.bnd, s.ws, p.S, p.K, T, sigma, p.rate, p.yield, region, report));
 }
 
 // andersen_lake through an expiry geometry with caller-retained scratch (one per
@@ -3037,17 +3164,21 @@ struct AlInternalPut {
 [[nodiscard]] Result<double> andersen_lake_prepared(const AlExpiryGeometry::Impl &g, double S,
                                                     double K, double sigma, Side side,
                                                     AlPreparedScratch &put_scratch,
-                                                    AlPreparedScratch &call_scratch) {
+                                                    AlPreparedScratch &call_scratch,
+                                                    AlExerciseRegion region =
+                                                        AlExerciseRegion::KernelFloor,
+                                                    AlArmReport *report = nullptr) {
   return andersen_lake_dispatch(S, K, g.T, sigma, g.r, g.q, side, [&]() -> Result<double> {
     const AlInternalPut p = al_internal_put(side, S, K, g.r, g.q);
     const AlOrientedGeometry &orient = (side == Side::Put) ? g.put : g.call;
     if (orient.id == 0) {
       // Not prepared for this regime (unreachable once dispatch said American with a
       // valid expiry); the cold solve keeps the answer exact regardless.
-      return andersen_lake_core(S, K, g.T, sigma, g.r, g.q, side, g.opts, /*specialize=*/true);
+      return andersen_lake_core(S, K, g.T, sigma, g.r, g.q, side, g.opts, /*specialize=*/true,
+                                std::nullopt, 0, region, report);
     }
     return al_solve_put_prepared(orient, p, g.T, sigma,
-                                 side == Side::Put ? put_scratch : call_scratch);
+                                 side == Side::Put ? put_scratch : call_scratch, region, report);
   });
 }
 
@@ -3168,11 +3299,16 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
 // early-exercise boundary `bnd.y[]` alive between price() calls. All calls solve
 // an internal PUT; a Call is the McDonald-Schroder put P(K,S,q,r), so the boundary
 // machinery is identical.
-struct AloPricer::State {
+// C1 fix round 1 (2026-10-22): the state is a named core shared by AloPricer and
+// AloRegionPricer (api/pricing/american_region.hpp), so the scalar inversion's residual
+// map has ONE implementation whichever type holds it.
+namespace detail {
+
+struct AloCore {
   // User-provided construction deliberately avoids value-initializing the four
   // 512-double geometry arrays. reset() binds every active element before a
   // specialized kernel can read it.
-  State() noexcept {}
+  AloCore() noexcept {}
 
   double Sp{}; // internal-put spot   (= K for a call)
   double Kp{}; // internal-put strike (= S for a call) — drives the boundary
@@ -3189,20 +3325,40 @@ struct AloPricer::State {
   double last_sigma{-1.0};
 };
 
-AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
-                     const std::optional<AlOpts> &opts)
-    : st_(std::make_unique<State>()) {
-  ATX_VOL_COUNT(AloStateAllocations);
-  reset(S, K, T, r, q, side, opts);
+} // namespace detail
+
+// AloPricer's PIMPL is the shared core.
+struct AloPricer::State : detail::AloCore {
+  State() noexcept {}
+};
+
+namespace {
+
+constexpr double kNoBoundary = std::numeric_limits<double>::quiet_NaN();
+
+// The class of the branch alo_price takes: THE classifier on the internal put, with the
+// boundary that branch priced against.
+AlExerciseClass alo_report(const detail::AloCore &s, double sigma, double boundary,
+                           AlExerciseClass *cls_out) noexcept {
+  const AlExerciseClass cls =
+      classify_exercise_region(s.Sp, s.Kp, s.T, s.rp, s.qp, sigma, /*is_call=*/false, boundary);
+  if (cls_out != nullptr) {
+    *cls_out = cls;
+  }
+  return cls;
 }
 
-void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
-                      const std::optional<AlOpts> &opts) noexcept {
-  assert(st_ != nullptr);
-  if (st_ == nullptr) {
-    return; // moved-from pricer: fail safe without allocating in reset()
+// A branch decided before any boundary exists: records its class when one is asked for,
+// and does nothing at all on the default (no-output) path.
+void alo_note(const detail::AloCore &s, double sigma, AlExerciseClass *cls_out) noexcept {
+  if (cls_out != nullptr) {
+    (void)alo_report(s, sigma, kNoBoundary, cls_out);
   }
-  State &s = *st_;
+}
+
+// The body of AloPricer::reset, unchanged.
+void alo_reset(detail::AloCore &s, double S, double K, double T, double r, double q, Side side,
+               const std::optional<AlOpts> &opts) noexcept {
   s.prepared = false;
   s.european_only = false;
   s.unsupported = false;
@@ -3267,20 +3423,16 @@ void AloPricer::reset(double S, double K, double T, double r, double q, Side sid
   s.prepared = true;
 }
 
-AloPricer::~AloPricer() = default;
-AloPricer::AloPricer(AloPricer &&) noexcept = default;
-AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
-
-double AloPricer::price(double sigma) noexcept {
+// The body of AloPricer::price plus the C1 rule and class. KernelFloor with no class
+// output runs the pre-C1 operations exactly: alo_note is a no-op without an output and
+// the arm's classification is skipped.
+[[nodiscard]] double alo_price(detail::AloCore &s, double sigma, AlExerciseRegion rule,
+                               AlExerciseClass *cls_out) noexcept {
   const alprobe::Scope probe_zone(alprobe::Zone::AloPricerPrice);
-  assert(st_ != nullptr);
-  if (st_ == nullptr) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
-  State &s = *st_;
   // Degenerate T ~ 0: no time left, collapse to the spot intrinsic (internal-put
   // intrinsic Kp - Sp equals the original option's intrinsic for both sides).
   if (s.T <= 1.0e-12) {
+    alo_note(s, sigma, cls_out);
     const double intr = s.Kp - s.Sp;
     return (intr > 0.0) ? intr : 0.0;
   }
@@ -3291,12 +3443,14 @@ double AloPricer::price(double sigma) noexcept {
   // check — matching the pre-A4 degenerate guard, which priced sigma->0 regardless
   // of regime (the double-continuation corner is a sigma>0 limitation only).
   if (!(sigma > 1.0e-8)) {
+    alo_note(s, sigma, cls_out);
     return sigma_zero_american_limit(s.Sp, s.Kp, s.T, s.rp, s.qp, Side::Put);
   }
   // Double-continuation corner: no single-boundary price exists (andersen_lake
   // returns NotImplemented here). Surface NaN, matching the boundary-collapse
   // failure convention below.
   if (s.unsupported) {
+    alo_note(s, sigma, cls_out);
     return std::numeric_limits<double>::quiet_NaN();
   }
   // The European regime stays on the Reference leg under either profile (as
@@ -3305,9 +3459,11 @@ double AloPricer::price(double sigma) noexcept {
                           ? euro_put_sk_fast(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp)
                           : euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
   if (s.european_only) {
+    alo_note(s, sigma, cls_out);
     return euro;
   }
   if (!s.prepared) {
+    alo_note(s, sigma, cls_out); // collapse / table: no boundary
     return std::numeric_limits<double>::quiet_NaN();
   }
   // Warm-start unless this is the first solve or sigma moved more than ~12% (then
@@ -3338,6 +3494,7 @@ double AloPricer::price(double sigma) noexcept {
       // through this pricer's NaN failure channel. s.seeded / s.last_sigma are left
       // untouched, so the next call's warm/cold decision still refers to the last
       // SOLVED sigma and never records this frozen state as a converged one.
+      alo_note(s, sigma, cls_out);
       return std::numeric_limits<double>::quiet_NaN();
     }
     resid = sw.max_dy;
@@ -3352,6 +3509,7 @@ double AloPricer::price(double sigma) noexcept {
     for (std::uint16_t k = 0; k < s.sch.n_iter_fp; ++k) {
       const AlSweepResult sw = al_fixed_point_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
       if (sw.all_frozen) {
+        alo_note(s, sigma, cls_out);
         return std::numeric_limits<double>::quiet_NaN();
       }
       resid = sw.max_dy;
@@ -3363,6 +3521,13 @@ double AloPricer::price(double sigma) noexcept {
   }
   s.seeded = true;
   s.last_sigma = sigma;
+  if (rule == AlExerciseRegion::Intrinsic || cls_out != nullptr) {
+    // C1: the American arm's class against the boundary this call converged.
+    const AlExerciseClass cls = alo_report(s, sigma, al_boundary_at_expiry(s.bnd), cls_out);
+    if (rule == AlExerciseRegion::Intrinsic && cls == AlExerciseClass::ExercisePlateau) {
+      return s.Kp - s.Sp;
+    }
+  }
 
   const double prem = al_put_premium(s.bnd, s.ws, s.Sp, sigma, s.rp, s.qp);
   double px = euro + prem;
@@ -3374,6 +3539,77 @@ double AloPricer::price(double sigma) noexcept {
     px = euro;
   }
   return (px > 0.0) ? px : 0.0;
+}
+
+} // namespace
+
+AloPricer::AloPricer(double S, double K, double T, double r, double q, Side side,
+                     const std::optional<AlOpts> &opts)
+    : st_(std::make_unique<State>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  reset(S, K, T, r, q, side, opts);
+}
+
+void AloPricer::reset(double S, double K, double T, double r, double q, Side side,
+                      const std::optional<AlOpts> &opts) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return; // moved-from pricer: fail safe without allocating in reset()
+  }
+  alo_reset(*st_, S, K, T, r, q, side, opts);
+}
+
+AloPricer::~AloPricer() = default;
+AloPricer::AloPricer(AloPricer &&) noexcept = default;
+AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
+
+double AloPricer::price(double sigma) noexcept {
+  assert(st_ != nullptr);
+  if (st_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return alo_price(*st_, sigma, AlExerciseRegion::KernelFloor, nullptr);
+}
+
+// ── AloRegionPricer (C1 fix round 1): the same core under an explicit rule ──
+
+AloRegionPricer::AloRegionPricer(double S, double K, double T, double r, double q, Side side,
+                                 const std::optional<AlOpts> &opts)
+    : core_(std::make_unique<detail::AloCore>()) {
+  ATX_VOL_COUNT(AloStateAllocations);
+  alo_reset(*core_, S, K, T, r, q, side, opts);
+}
+
+AloRegionPricer::~AloRegionPricer() = default;
+AloRegionPricer::AloRegionPricer(AloRegionPricer &&) noexcept = default;
+AloRegionPricer &AloRegionPricer::operator=(AloRegionPricer &&) noexcept = default;
+
+void AloRegionPricer::reset(double S, double K, double T, double r, double q, Side side,
+                            const std::optional<AlOpts> &opts) noexcept {
+  assert(core_ != nullptr);
+  if (core_ == nullptr) {
+    return; // moved-from pricer
+  }
+  alo_reset(*core_, S, K, T, r, q, side, opts);
+}
+
+double AloRegionPricer::price(double sigma, AlExerciseRegion rule,
+                              AlExerciseClass *cls_out) noexcept {
+  assert(core_ != nullptr);
+  if (core_ == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return alo_price(*core_, sigma, rule, cls_out);
+}
+
+const detail::AloCore &AloRegionPricer::core() const noexcept {
+  assert(core_ != nullptr);
+  return *core_;
+}
+
+// The ALO boundary seam (pricing/american_boundary.hpp).
+const AlBoundary &amer::al_alo_boundary(const detail::AloCore &core) noexcept {
+  return core.bnd;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -3423,6 +3659,104 @@ AlOpts al_fast_profile(const std::optional<AlOpts> &opts) noexcept {
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true);
+}
+
+// L3k monotone: the exercise-region rule (american.hpp AlExerciseRegion).
+Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
+                             Side side, const std::optional<AlOpts> &opts,
+                             AlExerciseRegion region) {
+  return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/true, std::nullopt,
+                            0, region);
+}
+
+// ── C1 exercise region (2026-10-22): the one classification + the classified price ──
+
+const char *to_string(AlExerciseClass value) noexcept {
+  switch (value) {
+  case AlExerciseClass::Continuation:
+    return "continuation";
+  case AlExerciseClass::ExercisePlateau:
+    return "exercise_plateau";
+  case AlExerciseClass::European:
+    return "european";
+  case AlExerciseClass::ExpiryLimit:
+    return "expiry_limit";
+  case AlExerciseClass::ZeroVolLimit:
+    return "zero_vol_limit";
+  case AlExerciseClass::UnsupportedRegime:
+    return "unsupported_regime";
+  }
+  return "unknown";
+}
+
+// The order is andersen_lake_dispatch's (degenerate T, degenerate sigma, the carry regime,
+// then the American arm), so a class names the branch that priced the contract.
+AlExerciseClass classify_exercise_region(double S, double K, double T, double r, double q,
+                                         double sigma, bool is_call, double boundary) noexcept {
+  if (T <= kAlExpiryLimitT) {
+    return AlExerciseClass::ExpiryLimit;
+  }
+  if (sigma <= kAlZeroVolSigma) {
+    return AlExerciseClass::ZeroVolLimit;
+  }
+  // The internal put: a call is the put with spot K, strike S, rate q and yield r.
+  const double rate = is_call ? q : r;
+  const double yield = is_call ? r : q;
+  switch (classify_regime(rate, yield)) {
+  case ExerciseRegime::European:
+    return AlExerciseClass::European;
+  case ExerciseRegime::Unsupported:
+    return AlExerciseClass::UnsupportedRegime;
+  case ExerciseRegime::American:
+    break;
+  }
+  const double spot = is_call ? K : S;
+  return (spot <= boundary) ? AlExerciseClass::ExercisePlateau : AlExerciseClass::Continuation;
+}
+
+namespace {
+
+// The classified result of one andersen_lake evaluation `p` whose American arm (if it
+// ran) reported into `arm`. Inputs are those andersen_lake validated; a validation error
+// returns before the classifier is consulted.
+[[nodiscard]] Result<AlRegionPrice> al_classified_result(double S, double K, double T,
+                                                         double sigma, double r, double q,
+                                                         Side side, const Result<double> &p,
+                                                         const AlArmReport &arm) {
+  const bool is_call = (side == Side::Call);
+  if (!p) {
+    // The dispatch validates before it classifies, so a NotImplemented here passed
+    // validation; in the double-continuation regime it is the typed refusal.
+    if (p.error().code() == ErrorCode::NotImplemented &&
+        classify_exercise_region(S, K, T, r, q, sigma, is_call,
+                                 std::numeric_limits<double>::quiet_NaN()) ==
+            AlExerciseClass::UnsupportedRegime) {
+      return Ok(AlRegionPrice{});
+    }
+    return Err(p.error());
+  }
+  AlRegionPrice out;
+  out.price = *p;
+  if (arm.ran) {
+    out.boundary = arm.boundary;
+    out.cls = arm.cls;
+  } else {
+    out.cls = classify_exercise_region(S, K, T, r, q, sigma, is_call,
+                                       std::numeric_limits<double>::quiet_NaN());
+  }
+  return Ok(out);
+}
+
+} // namespace
+
+Result<AlRegionPrice> andersen_lake_classified(double S, double K, double T, double sigma,
+                                               double r, double q, Side side,
+                                               const std::optional<AlOpts> &opts,
+                                               AlExerciseRegion rule) {
+  AlArmReport arm;
+  const Result<double> p = andersen_lake_core(S, K, T, sigma, r, q, side, opts,
+                                              /*specialize=*/true, std::nullopt, 0, rule, &arm);
+  return al_classified_result(S, K, T, sigma, r, q, side, p, arm);
 }
 
 // ── Shared expiry geometry, boundary handle, price pack (L2b, 2026-10-18) ──
@@ -3485,6 +3819,31 @@ Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, doub
   // Stateless: one scratch per call (loaded once, ~46 KB of stack).
   AlPreparedScratch scratch;
   return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch);
+}
+
+// L3k monotone: the geometry overload under an explicit exercise-region rule.
+Result<double> andersen_lake(const AlExpiryGeometry &g, double S, double K, double sigma,
+                             Side side, AlExerciseRegion region) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  AlPreparedScratch scratch;
+  return andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch, region);
+}
+
+// C1: the geometry overload, classified (contract in american_region.hpp).
+Result<AlRegionPrice> andersen_lake_classified(const AlExpiryGeometry &g, double S, double K,
+                                               double sigma, Side side, AlExerciseRegion rule) {
+  const AlExpiryGeometry::Impl *impl = g.impl();
+  if (impl == nullptr || !impl->prepared) {
+    return Err(ErrorCode::InvalidArgument, "andersen_lake: expiry geometry is not prepared");
+  }
+  AlPreparedScratch scratch;
+  AlArmReport arm;
+  const Result<double> p =
+      andersen_lake_prepared(*impl, S, K, sigma, side, scratch, scratch, rule, &arm);
+  return al_classified_result(S, K, impl->T, sigma, impl->r, impl->q, side, p, arm);
 }
 
 struct AlBoundaryHandle::State {

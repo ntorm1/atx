@@ -20,10 +20,12 @@
 
 #include "pricing/american_boundary.hpp" // amer:: seam (AlScheme/AlBoundary/al_init_put_boundary...)
 #include "atx/vol/api/pricing/american.hpp"     // classify_regime, ExerciseRegime
+#include "atx/vol/api/pricing/american_region.hpp" // AlExerciseRegion / classify (L3k, C1)
 #include "simd/vector_math.hpp" // log_pd/exp_pd/norm_cdf_erfc_pd2/norm_pdf_pd (+ __AVX2__ guard)
 
 #include <cstddef>
 #include <cmath>
+#include <limits>
 
 #if !defined(__AVX2__) || !defined(__FMA__)
 #  error "american_boundary_avx2_kernel.hpp requires -mavx2 -mfma (include only from src/simd/*_avx2.cpp)"
@@ -538,8 +540,28 @@ inline void solve_put_boundary_pack_avx2(
 // exact math; ~1 ULP from the scalar al_xmax_put(S2,q,r) direct evaluation, deep
 // inside the economic gate). One solved boundary therefore serves every stencil on
 // EITHER side — the K3 lever, unchanged.
+//
+// L3k monotone (2026-10-21) + C1 exercise region (2026-10-22): `region` is the
+// exercise-region rule (AlExerciseRegion, api/pricing/american_region.hpp). KernelFloor
+// with no `cls_out` (the 4-argument overload below) is the pre-L3k computation, operation
+// for operation. Otherwise each lane is classified by THE scalar classifier the scalar
+// sites call — classify_exercise_region(spot, strike, T, r, q, sigma, put, B) with
+// B = amer::al_boundary_at_expiry(Y[nb-1], xmax): the Lobatto end node the scalar
+// al_boundary_at(bnd, T) returns, through the same scalar exp — so a lane and a scalar
+// site handed the same boundary bits classify identically (no exp_pd / vector-compare
+// rounding in the decision). A lane outside `b.active` (the caller's scalar patch) is
+// classified with no boundary. The class is written to `cls_out[0..3]` when non-null.
+// Under Intrinsic an ExercisePlateau lane returns the intrinsic strike - spot (one IEEE
+// subtraction, bit-identical to the scalar sites' K - S) and a Continuation lane the
+// kernel floor; under KernelFloor both return the floor. A lane classified outside the
+// American arm returns a quiet NaN under either rule (never a price), as the scalar
+// sites do.
+// The per-lane classification costs four scalar exp per call and runs only on these
+// opt-in paths.
 inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
-                                      __m256d strike, __m256d xmax) noexcept {
+                                      __m256d strike, __m256d xmax,
+                                      AlExerciseRegion region,
+                                      AlExerciseClass* cls_out) noexcept {
     const __m256d zero = _mm256_setzero_pd();
     const __m256d one = _mm256_set1_pd(1.0);
     const __m256d two = _mm256_set1_pd(2.0);
@@ -638,7 +660,66 @@ inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
     __m256d nan_in = _mm256_cmp_pd(prem_raw, prem_raw, _CMP_UNORD_Q);
     nan_in = _mm256_or_pd(nan_in, _mm256_cmp_pd(euro, euro, _CMP_UNORD_Q));
     nan_in = _mm256_or_pd(nan_in, _mm256_cmp_pd(intrinsic, intrinsic, _CMP_UNORD_Q));
-    return _mm256_or_pd(price, nan_in);
+    const __m256d laundered = _mm256_or_pd(price, nan_in);
+    if (region == AlExerciseRegion::KernelFloor && cls_out == nullptr) {
+        return laundered;
+    }
+    // C1: the per-lane classification (contract above). Y[nb-1] is the node the exact-node
+    // guard returns at zc = +1; a pack always has nb >= 2 nodes when it is priced.
+    constexpr double kNoBoundary = std::numeric_limits<double>::quiet_NaN();
+    alignas(32) double y_t[4], xm[4], sp[4], kk[4], tt[4], rr[4], qv[4], sg[4];
+    alignas(32) double intr[4], floor_px[4], out[4];
+    _mm256_store_pd(y_t, (nb >= 2) ? Y[nb - 1] : _mm256_set1_pd(kNoBoundary));
+    _mm256_store_pd(xm, XMAX);
+    _mm256_store_pd(sp, Sv);
+    _mm256_store_pd(kk, Kv);
+    _mm256_store_pd(tt, Tv);
+    _mm256_store_pd(rr, Rv);
+    _mm256_store_pd(qv, Qv);
+    _mm256_store_pd(sg, SIG);
+    _mm256_store_pd(intr, intrinsic);
+    _mm256_store_pd(floor_px, laundered);
+    const int live = _mm256_movemask_pd(b.active);
+    for (int l = 0; l < 4; ++l) {
+        const bool solved = ((live >> l) & 1) != 0;
+        const double bnd_t = solved ? amer::al_boundary_at_expiry(y_t[l], xm[l]) : kNoBoundary;
+        const AlExerciseClass cls = classify_exercise_region(sp[l], kk[l], tt[l], rr[l], qv[l],
+                                                             sg[l], /*is_call=*/false, bnd_t);
+        if (cls_out != nullptr) {
+            cls_out[l] = cls;
+        }
+        switch (cls) {
+            case AlExerciseClass::ExercisePlateau:
+                out[l] = (region == AlExerciseRegion::Intrinsic) ? intr[l] : floor_px[l];
+                break;
+            case AlExerciseClass::Continuation:
+                out[l] = floor_px[l];
+                break;
+            case AlExerciseClass::European:
+            case AlExerciseClass::ExpiryLimit:
+            case AlExerciseClass::ZeroVolLimit:
+            case AlExerciseClass::UnsupportedRegime:
+                // Outside the site's precondition: no price under either rule, exactly as
+                // the scalar sites return (C1 fix round 1, review m2).
+                out[l] = kNoBoundary;
+                break;
+        }
+    }
+    return _mm256_load_pd(out);
+}
+
+// The L3k signature: the rule without a class output.
+inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
+                                      __m256d strike, __m256d xmax,
+                                      AlExerciseRegion region) noexcept {
+    return price_put_pack_at_avx2(b, spot, strike, xmax, region, nullptr);
+}
+
+// The pre-L3k signature: the KernelFloor rule (bit-identical, same instructions).
+inline __m256d price_put_pack_at_avx2(const PutPackBoundary& b, __m256d spot,
+                                      __m256d strike, __m256d xmax) noexcept {
+    return price_put_pack_at_avx2(b, spot, strike, xmax, AlExerciseRegion::KernelFloor,
+                                  nullptr);
 }
 
 // Put spot-stencil pricer: the contract strike (b.Kv) and asymptotic level (b.XMAX)

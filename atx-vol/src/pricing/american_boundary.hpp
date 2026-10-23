@@ -23,6 +23,7 @@
 
 #include "atx/vol/api/core/types.hpp"        // Status
 #include "atx/vol/api/pricing/american.hpp"  // AlOpts (scheme_from_opts input)
+#include "atx/vol/api/pricing/american_region.hpp"  // AlExerciseRegion (L3k price sites)
 #include "pricing/american_detail.hpp"        // detail::AlSeedMode (AlScheme::seed default)
 
 namespace atx::vol::amer {
@@ -300,6 +301,55 @@ struct AlSolveResid {
                                                 const AlWorkspace& ws, double S,
                                                 double K, double T, double sigma,
                                                 double r, double q) noexcept;
+
+// C1 exercise region (2026-10-22): B(tau = T) — the value every price site classifies
+// against (classify_exercise_region, api/pricing/american_region.hpp). It reads the
+// boundary's Lobatto END node: at u = T al_boundary_at evaluates z = 2 sqrt(T/T) - 1 =
+// +1 exactly, which is node n-1 (al_cheb_node returns exactly 1.0 there), so the
+// exact-node guard returns y[n-1] and the value is b_from_y(y[n-1], xmax). Taking
+// (y_T, xmax) as plain doubles lets the laned AVX2 kernel feed one lane's Y[nb-1] / xmax
+// through the SAME scalar code, so the scalar and laned sites see the same boundary bits.
+[[nodiscard]] double al_boundary_at_expiry(double y_T, double xmax) noexcept;
+
+// The same for a solved boundary: bit-identical to al_boundary_now(bnd) when bnd.n >= 2
+// and bnd.T > 0 (AmericanExerciseRegion pins it); NaN for a boundary with no nodes or no
+// time (nothing to classify against: the American regime then reads Continuation).
+[[nodiscard]] double al_boundary_at_expiry(const AlBoundary& bnd) noexcept;
+
+// C1 fix round 1: the boundary the warm-started ALO state (AloPricer / AloRegionPricer)
+// holds after its last price() — the fourth site's boundary, handed to the other three
+// sites by the site-agreement test. Its node grid is reset()'s; its y[] is meaningful
+// once a price() call in the American regime has converged.
+[[nodiscard]] const AlBoundary& al_alo_boundary(const atx::vol::detail::AloCore& core) noexcept;
+
+// L3k monotone (2026-10-21) + C1: the same price under an explicit exercise-region rule
+// (AlExerciseRegion, api/pricing/american_region.hpp). KernelFloor with no `cls_out`
+// forwards to the function above (bit-identical, no extra work). Otherwise the site
+// classifies (S, K, T, r, q, sigma, put, al_boundary_at_expiry(bnd)) and writes the class
+// to `cls_out` when non-null; Intrinsic then returns K - S — no euro leg, no premium
+// quadrature — on ExercisePlateau (K - S >= 0 there because B(T) <= xmax = K min(1, r/q)
+// <= K) and forwards on Continuation. Precondition (the dispatch's): American regime,
+// T > kAlExpiryLimitT, sigma > kAlZeroVolSigma. A classified call that violates it gets
+// that class back and a quiet NaN, never a price.
+[[nodiscard]] double al_put_price_from_boundary(const AlBoundary& bnd,
+                                                const AlWorkspace& ws, double S,
+                                                double K, double T, double sigma,
+                                                double r, double q,
+                                                AlExerciseRegion region,
+                                                AlExerciseClass* cls_out = nullptr) noexcept;
+
+// L3k test seam for the CACHED price site (al_put_price_from_boundary_cached, file-local
+// in american.cpp, the slice / greeks engines' route): binds its premium cache for
+// (bnd, ws, sigma, r, q) first when `bind_cache` is true, so a test reaches both the
+// cache-hit and the inline arm. Same contract as the overload above.
+[[nodiscard]] double al_put_price_from_boundary_cached_probe(const AlBoundary& bnd,
+                                                            const AlWorkspace& ws, double S,
+                                                            double K, double T, double sigma,
+                                                            double r, double q,
+                                                            AlExerciseRegion region,
+                                                            bool bind_cache,
+                                                            AlExerciseClass* cls_out =
+                                                                nullptr) noexcept;
 
 // ── Prepared expiry geometry seam (L2b al-geometry, 2026-10-18) ──────────────
 //
