@@ -988,3 +988,117 @@ SPY MAE/spread 0.227; identified IV median SPY 9.7 bp, mega 22.5 / 60.6 bp.)
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ck-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2ck-20261023-integrate\`.
+
+## W2c-l / r6 integration of K5, H1 and K4b: enclosure width fix, live query, batched native route (vol-sota master plan, 2026-10-23)
+
+Lane W2c-l (run `vol-sota-r6-20261023`, pool-34) merged the approved K5 (enclosure width fix), H1 (live query and
+publication) and K4b (batched native route) lanes into the root `feat/vol-resume5-20261022`, `--no-ff`, on top of
+`30a0b661`, in the order K5 -> H1 -> K4b (K4b's SHA arrived last). Every new key stays opt-in; no default
+promoted; nothing pushed. Light gates (user ruling): per merge only the owning suites; the gate list once at the
+end.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `ffd0b22c` | merge K5 `a2b71f58` (review APPROVE @ af94dd66, fix round 1, re-review ALL ADDRESSED) | none (CHANGELOG auto-merged) | clean |
+| `65869bdb` | merge H1 `ebb9eece` (review BLOCK @ 3e01df03 on F1, fix round 1, PM re-review ADDRESSED) | `CHANGELOG.md`, `atx-vol/CMakeLists.txt`, `tools/quote_bench_policy.hpp`, `tools/quote_bench_main.cpp` | union, no semantic glue |
+| `796aef6a` | merge K4b `b112be50` (review APPROVE with deviations, no fix round; code 87c3e8ab) | `CHANGELOG.md`, `src/fitting/quote_slice.cpp`, `tools/quote_bench_policy.hpp` | union, no semantic glue |
+
+**Conflict resolution.** CHANGELOG: K5's FIXED, H1's NEW + CHANGED, K4b's NEW above the root's entries (entry-set
+checks 140 = 139 + 1, 142 = 140 + 2, 143 = 142 + 1). `atx-vol/CMakeLists.txt`: C3's `quote_slice_call_floor.cpp`,
+then H1's comment + `serve_book.cpp`. `quote_bench_policy.hpp`: `LoadedPolicy` keeps C3's `call_floor` and H1's
+`serve_records`; `load()` returns both; the graded allow-list carries H1's `serve_records`, `serve_record_profile`
+and K4b's `native_batch`, `native_no_leg`, `calendar_parity_clamp` (43 keys, none twice). `quote_bench_main.cpp`
+`fit_graded`: the one statement both sides edited - C3 passes the floored config, H1 drops `const` so the audit can
+attach records - is `auto fitted = fit_quote_surface(expiries, floored ? *floored : profile.config, surface);`,
+H1's trailing comment moved to the line above (100 columns). `quote_slice.cpp` `prepare_fit`: two adjacent
+one-line insertions after `out.floor_policy` (C3's `select_call_floor` verbatim, then K4b's `calendar_parity_clamp`
+copy). Not a conflict inside a hook: C3's `certify_and_serve` lift (`lift_to_call_floor`) and H1's
+`stamp_serve_handoff` are byte-identical in context to the previous root; K5's `family_enclosure` is byte-identical
+to K5's blob (K4b edits only its callers `accept_family_native` and the Band call). Auto-merged: `american_iv.cpp`,
+`quote_slice.hpp` (H1's forward declarations and `QuoteSliceFit` fields beside C3's and K4b's additions),
+`bench_clocks.{hpp,cpp}` (H1's `ServeBuild` stage + K4b's sub-clocks), `tests/CMakeLists.txt`,
+`test_quote_bench_cli.py`.
+
+**Diff proof** (per file, `git diff` bodies vs the lane blob and vs the previous root blob): K5 23 EQUAL_SEQ; H1 40
+EQUAL_SEQ + 4 DIFFER = `quote_bench_main.cpp` / `quote_bench_policy.hpp` on both sides, exactly the union lines; K4b
+52 EQUAL_SEQ + 2 DIFFER = the allow-list union lines of `quote_bench_policy.hpp`. Index proof = commit proof for
+all three.
+
+**Per-merge owning suites** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`). K5: pricing regex 102/102 incl.
+`AmericanIvPremium.FamilyEnclosureCertifiesTheEndsItServes`, FitNativeRoute 12/12. H1: `^serve-record:` 62/62,
+`LivePublication*` 16/16 (torn 0). K4b: quote-slice 258/258 (W2c-k 245 + 13), FitNativeRoute 24/24,
+`QuoteSliceCalendarParity` 1/1, publication 28/28, bench-clocks 12/12; K5's enclosure tests re-run after the
+union 3/3 (`[K5 served ends] 64 / 18 / 46`).
+
+**Gates on the final code `796aef6a`** (the docs commit changes `.md` files only):
+- 9/9 default hashes byte-identical (quote-bench `3495d5d4`), `sha256sum -c` 9 OK with the log persisted (byte-equal
+  to W2c-k's), stderr files 0 bytes.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (bin byte-equal to W2c-k's).
+- Name set at cap 3: `52324ef8` + the L575 flake (`PricingExecutor.NestedDispatch...`, allowed), 0 removed; all
+  `^(pricing|simd)/` names 1064 = 1062 + K5's 2. New tests elsewhere: H1 +34 in `atx-vol-serve-record-tests`
+  (2 renamed by H1's lane), K4b +13 in quote-slice (FitNativeRoute 12, CalendarParity 1), H1 +1 bench-clocks.
+- Combined anchored ctest (W2c-k regex, unchanged: it already anchors the three lanes' suites), native excluded:
+  235/235 (236 listed = 188 + 34 + 12 + 2); CLI pytest 195 (194 + H1's serve-records test).
+- PCH-off (`vol-hygiene`): the closure of the 10 headers changed `30a0b661..796aef6a`, 90 configured TUs (2
+  `examples/` not configured, 33 bench / python excluded), 5 batches exit 0, 0 diagnostics.
+- Keys-ON (light ruling: SPY + dev200b speed arm, the audit, C3's two rows; the 31-row table skipped):
+
+| Row (merged `796aef6a`, workers 2, `--deam-audit`) | sha256 | want | lost / gained vs K4's arm |
+| --- | --- | --- | --- |
+| K4 policy SPY | `0c18287f` | K5's id: MATCH | 0 / 0 (max dP 8.3e-9) |
+| K4 policy dev200b | `1524ce15` | K4b's arms-k4 id (A17): MATCH | 0 / 0 (43 BABO rows, A17) |
+| k4b-batch SPY | `622b6795` | K4b's `b44ca72e`: MISMATCH, typed | 0 / 0 |
+| k4b-batch dev200b | `90761454` | K4b's id: MATCH | 0 / 0 |
+
+  The SPY batch row is K5 x K4b: vs K5's arm max |d vol| 2.27e-12 (K4b's AVX2 lane rounding class), vs K4b's arm
+  max |dP| 8.30e-9 USD (K5's in-bracket move). K3 audit: SPY 29,411 typed roots and dev200b 61,591, 0 violations,
+  0 unresolved on all four rows (the dev200b reference-route violation K5 found is gone: A17). K5's SPY counters
+  reproduce on both arms: skipped 25,925 / 28,117 = 92.2 %, confirms 5,637 (K4b's tip alone: 31.1 % / 22,823);
+  the batch engages (30,711 lanes, 118 AVX2 calls, 28,413 hits). C3 dev200b combined-h0 `c629ae54` and dev200
+  call floor `2644cafe`: MATCH.
+
+**G3 (development row, merged root).** SPY, policy `k4b-batch` (K4's native route + `native_batch`, `31228cb2`),
+B0's `run_cold_trials.ps1`, 10 fresh processes, `ATX_VOL_FIT_WORKERS=1`, CPU 6 P core, sibling 0/10 contended,
+host load 13 % before / 34 % after (A1, C4, U0 leased beside), source `796aef6a` clean, binary `3495d5d4`,
+predictions `622b6795` in all 10: min / median / p95 / max **2.673 / 3.005 / 3.273 / 3.273 s**, beside W2c-j's
+3.742 / 3.931 / 4.263 / 4.309 (K4 policy), K5's 3.02-3.25 medians (K4 policy) and K4b's 3.466 / 4.170 / 4.406 /
+4.406 (k4b-batch). A first attempt exited 4 (two trials' sibling sample came back empty; median 2.842 s) and was
+retried once. Stage medians (ms): inverses 1,220 (family accept = K3's enclosure 729, confirm 276 = 5,637 solves at
+48.9 us, lane 68, leg 88), final grid 610 (family 318 + kernel 249), endpoints 422, reference exceptions 353, family
+build 236, curve / repair 116.
+G3 MISS: SPY cold calibration median 3.005 s development row vs the 1 s bar; dominating remaining stage inverses
+1,220 ms, of which K3's enclosure (`family_price_bounded` x 2 per root) 729 ms, then the final grid 610 ms.
+§7 "Can confirmations be skipped safely often enough?" CLOSED (K5: 92.2 % skipped, accuracy unchanged, audit
+0 / 0 on four cohorts). §7 "Can the native batch route reach 950 ms?" stays OPEN: next challenger = a cheaper
+validated per-point bound evaluation (`american_family_error.*` node terms hoisted per family / point), then the
+final grid / endpoints (a Fast-profile vector kernel; the AVX2 boundary batch buys nothing on Fast).
+
+### Deferred minors (W2c-l: K5, H1 and K4b reviews, fix rounds, integration)
+- K5 m4 (Q0 known issue): the H0-A fixture's 34 unverified put nodes are attributed to the record's own family
+  build by elimination only; H1 now certifies the record's families through `deam_family_certify` (fixture puts 17
+  sampled / 0 validated / 8 ineligible) - re-measure the put per-point bound there before re-pinning ladders.
+- K5 m6: the inverse sub-clock behind "99 % of the saving on the confirm sub-clock" was a temporary diagnostic;
+  K4b's committed clocks now measure it on the merged root (confirm 276 ms = K5's diagnostic 276 ms).
+- K5 review (Q0 observation, pre-existing K3 code): `confirm_bracket`'s `s0 == 0` branch and the ConfirmAndFamily
+  far-end branch accept [x -/+ W/2] / [e, e +- W] with no computed-width check (`bound_iv` can be W + 1 ulp; 1e-7
+  holds, 9.5e-14 margin). Re-review residual: the K5 report's H1 bullet still says "every sigma < 0.25".
+- H1 -> A1: wire `VolaSession` / `PricedSurface` to `ServeBookReader`, `chain_tick` to `serve_chain`, `serve_build`
+  on `build_workers`, one reader per thread, `now_ns` always supplied. Q0: book tier-0 p50 197-246 ns (450 ns under
+  publication) and the mixed 300-chain 183-513 us are MISS; default-plane ladder IV `Unconfirmed` (tick planes
+  only); reader-side mutex on the Miss / Stale / Invalidated refusal paths; no TSan (7 stress runs, torn 0); m10
+  (no escrowed-PV pin), m15 (duplicate file-local Clenshaw, declared); every H1 timing unqualified; the chain bench
+  row not re-measured after the 40-byte statement.
+- K4b m-1: 43 BABO rows move (up to 0.506 vol, chain 1143835804049873679) as an indirect effect of the A17 retyping;
+  Q0 / Q2 attribute each chain to a typed root before promoting the typing. m-2: the lane-vega counter is 0 on
+  every cohort (hook unit-tested only). m-3: three code lines over 100 columns (`same_opts`, two `t0 = timed ? ...`
+  in `iv_native_prepare_*`). m-4: `rung_memo.hpp`, `american_iv_premium.hpp` outside the brief's listed scope.
+  m-5: speed bars MISS (family side 1,095 ms, confirm 53.0 us, grid 587 ms, endpoints 406 ms, cold 4.17 s at K4b's
+  tip). m-6: the raised put is not re-hulled after the TIGR raise (convexity caught only by `create`) - a Q2
+  precondition for `calendar_parity_clamp`. The reference wall key `reference_budget.wall_us` is measurement-only
+  (host-dependent served set; dev200 -317 / +1,931 rows when it binds).
+- W2c-l integration: the one shared statement in `quote_bench_main.cpp` `fit_graded` (above; H1's comment
+  relocated); `prepare_fit` carries C3's and K4b's adjacent one-liners. Not run under the light ruling: the 31-row
+  keys-ON table, cohort5 / dev200 arms, a second 10-trial row, ForceScalar and the umbrella suite.
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cl-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2cl-20261023-integrate\`.
