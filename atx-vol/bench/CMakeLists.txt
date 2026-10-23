@@ -599,6 +599,28 @@ target_link_libraries(atx-vol-chain-refresh-bench
         Threads::Threads
 )
 
+# ── Lane H0-A (r6, 2026-10-23) — serving-record bench ────────────────────────
+# api/fitting/slice_serve_record.hpp on a fitted surface: per-contract p50 / p99 /
+# p99.9 per tier (TSC-timed calls), the 300-contract served chain per tier, the
+# tick-rate implied volatility, build clocks, bytes and an untimed consistency row.
+# Inputs by environment (ATX_VOL_SERVE_RECORD_ARCHIVE, ATX_VOL_SERVE_RECORD_SPY23;
+# see the TU banner); no input, no rows. Own target (one owner per TU).
+add_executable(atx-vol-serve-record-bench
+    bench_main.cpp
+    serve_record_bench.cpp
+)
+target_link_libraries(atx-vol-serve-record-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(atx-vol-serve-record-bench PRIVATE psapi)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(

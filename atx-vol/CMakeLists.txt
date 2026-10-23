@@ -136,6 +136,8 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/quote_slice_carry.cpp
     src/fitting/quote_slice_vol_space.cpp
     src/fitting/quote_slice_publication.cpp
+    # Lane H0-A (r6): the immutable fitted serving record; api/fitting/slice_serve_record.hpp.
+    src/fitting/slice_serve_record.cpp
     src/fitting/deam_iv_cache.cpp
     src/fitting/quote_surface.cpp
     src/fitting/slice_channel.cpp

@@ -69,6 +69,38 @@ fixed neighbours' floor above their cap at a member's node, or a member's quote 
 that clamp. So every `Infeasible` names one. Every outcome but a certified, applied projection
 rolls back (no member changes). `project_calendar_joint` keeps its historical behaviour.
 
+### NEW — immutable fitted serving record of one expiry, tiered serve and tick-rate IV (lane H0-A, phase A)
+
+**Library.** New public header `fitting/slice_serve_record.hpp`:
+- `build_serve_record(fit, policy)` builds a `shared_ptr<const SliceServeRecord>` from a
+  completed `QuoteSliceFit`. The record copies the slice's node prices byte for byte and
+  carries C0's typed answer per node side. It holds the expiry's (σ, q) families together
+  with their geometries, per-node (ln S, σ) Chebyshev ladders, a clone of the curve, SHA-256
+  version digests, the build clocks and its bytes.
+- `serve()` walks four tiers and answers from the first that can: Ladder (tier 0: price,
+  Δ, Γ, vega, θ from one map), Family (K1's fused price and vega; A0's Greeks under the A0
+  seam), Certified (the slice at the fit spot, else the family plus one `AlProfile::Fast`
+  solve), and Cold (a typed route only, never run inside a call).
+- `implied_vol()` runs the L1c band gate, then a ladder root, a family root (K3 enclosure
+  under the K3 seam) and a Fast confirm.
+- At the fit spot every tier serves the certified slice price. A Greek map's distance from
+  it is declared as `price_map_delta`.
+- θ and Γ are withheld with `NearExerciseEdge` within 0.25 σ√T of the exercise edge, on
+  every tier (A0's fix-round band, `edge_sd` / `near_edge` on every answer).
+- Ladder and Family reads allocate nothing.
+
+**Default path.** Nothing default constructs a record, and no existing number changes: the
+9 default hashes match. The phase-B publish hook is `detail::build_serve_record_with`. A0
+and K3 are compile-time seams (`ATX_VOL_SERVE_RECORD_A0` / `_K3`, default off).
+
+**Measured** (`vol-rel-avx2`, unqualified, docs/serve-bundle.md):
+- tier 0: 141 ns p50 / 188 ns p99 per contract.
+- record IV: 264 ns p50.
+- 300-contract chain: tier 0 18 µs; tier 1 1.5 ms (target missed; per-contract family
+  evaluation).
+- record size: 642 KB per SPY expiry, 2.57 MB per symbol.
+- build: 1.46 s per SPY symbol (ladders 96 %).
+
 ### NEW — typed price-only identifiability, one spot per snapshot, convention metadata (lane C0)
 
 **Library.** `QuoteSliceConfig::floor_policy` (`QuoteSliceFloorPolicy`): `Legacy`, the
