@@ -217,7 +217,7 @@ One `QuoteSurfaceSlice` (graded admission) or one standalone `QuoteSliceFit`
 | 844 | 4 | `surface` | owning `SurfaceRecords` row, `0xFFFFFFFF` for a standalone fit |
 | 848 | 4 | | `fit_status`, `dividend_model`, `discrete_div_scheme`, `has_al_opts` |
 | 852 | 44 | `reserved` | zero |
-| 896 | 48 | minor-1 tail (lane C0) | `quote_ns`, `underlying_ns` (i64), `raw_spot` (f64, meaningful only with flag bit1), `spot_version`, `carry_version` (u32) = `QuoteSliceSnapshotInfo`; `price_only_nodes` ref into `PriceOnlyNodes` (offset 928); `carry_convention` (`QuoteSliceCarryConvention`), `floor_policy` (`QuoteSliceFloorPolicy`), `snapshot_flags` (bit0 spot_stale, bit1 has raw_spot), 5 reserved zero bytes. A minor-0 record reads as zero: no provenance, Legacy policy, no price-only nodes |
+| 896 | 48 | minor-1 tail (lane C0) | `quote_ns`, `underlying_ns` (i64), `raw_spot` (f64, meaningful only with flag bit1), `spot_version`, `carry_version` (u32) = `QuoteSliceSnapshotInfo`; `price_only_nodes` ref into `PriceOnlyNodes` (offset 928); `carry_convention` (`QuoteSliceCarryConvention`), `floor_policy` (`QuoteSliceFloorPolicy`), `snapshot_flags` (bit0 spot_stale, bit1 has raw_spot), `spot_rule` (`QuoteSliceSpotRule`, offset 939: own / nearest / median; lane C0 fix round 1 took it from a reserved byte, so an earlier minor-1 writer's 0 reads as own), 4 reserved zero bytes. A minor-0 record reads as zero: no provenance (spot rule own), Legacy policy, no price-only nodes |
 
 `FitArchiveQuoteRow` (72 B; 48 B at minor 0): `market_iv`, `fitted_iv`, `fitted_price`,
 `spread_vol`, `weight_w` (f64), then `quote_status`, `evaluation_status`

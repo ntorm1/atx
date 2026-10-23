@@ -438,7 +438,10 @@ struct FitArchiveFitRecord {
   std::uint8_t carry_convention{}; // QuoteSliceCarryConvention
   std::uint8_t floor_policy{};     // QuoteSliceFloorPolicy
   std::uint8_t snapshot_flags{};   // kFitSnapshot*
-  std::array<std::uint8_t, 5> reserved1{};
+  // QuoteSliceSpotRule (lane C0 fix round 1, from a reserved byte: an earlier minor-1
+  // writer wrote 0 = Own).
+  std::uint8_t spot_rule{};
+  std::array<std::uint8_t, 4> reserved1{};
 };
 
 inline constexpr std::uint8_t kFitSnapshotSpotStale = 1u;
@@ -660,7 +663,8 @@ static_assert(offsetof(FitArchiveFitRecord, fit_status) == 848);
 static_assert(offsetof(FitArchiveFitRecord, reserved) == 852);
 static_assert(offsetof(FitArchiveFitRecord, quote_ns) == 896); // minor-1 tail
 static_assert(offsetof(FitArchiveFitRecord, price_only_nodes) == 928);
-static_assert(offsetof(FitArchiveFitRecord, reserved1) == 939);
+static_assert(offsetof(FitArchiveFitRecord, spot_rule) == 939);
+static_assert(offsetof(FitArchiveFitRecord, reserved1) == 940);
 static_assert(kFitArchivePod<FitArchiveQuoteRow> && sizeof(FitArchiveQuoteRow) == 72);
 static_assert(offsetof(FitArchiveQuoteRow, iv_lower) == 48); // minor-1 tail
 static_assert(offsetof(FitArchiveQuoteRow, reserved1) == 67);

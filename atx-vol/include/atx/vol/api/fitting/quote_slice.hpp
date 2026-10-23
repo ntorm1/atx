@@ -542,6 +542,13 @@ enum class QuoteSliceVolConvention : std::uint8_t {
 // early-exercise premium) depends on the spot itself, so it is not price-invariant.
 enum class QuoteSliceCarryConvention : std::uint8_t { Supplied, ForwardPreserving };
 
+// Which rule chose the spot an expiry was fitted on (lane C0 fix round 1: spot_version
+// alone does not say). Own: the expiry's own spot (spot_version 0). Nearest: the snapshot
+// spot S* observed at the observation instant nearest the snapshot time. Median: the
+// median spot over the snapshot's observations, with no instant - also what a Nearest
+// request falls back to when no observation carries an instant.
+enum class QuoteSliceSpotRule : std::uint8_t { Own, Nearest, Median };
+
 // The American model behind a fit's prices and volatilities.
 enum class QuoteSliceModelKind : std::uint8_t { AndersenLake, DiscreteDividendLattice };
 
@@ -549,6 +556,7 @@ enum class QuoteSliceModelKind : std::uint8_t { AndersenLake, DiscreteDividendLa
 [[nodiscard]] const char *to_string(QuoteSliceVolConvention value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceFloorPolicy value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceCarryConvention value) noexcept;
+[[nodiscard]] const char *to_string(QuoteSliceSpotRule value) noexcept;
 [[nodiscard]] const char *to_string(QuoteSliceModelKind value) noexcept;
 
 // Snapshot provenance of one expiry fit, supplied by the caller that built the market
@@ -557,6 +565,7 @@ struct QuoteSliceSnapshotInfo {
   std::int64_t quote_ns = 0;      // quote clock: the quotes' observation instant, Unix ns
   std::int64_t underlying_ns = 0; // underlying clock: instant of the spot the fit used
   std::uint32_t spot_version = 0; // 0: the expiry's own spot; >= 1: the snapshot spot's version
+  QuoteSliceSpotRule spot_rule = QuoteSliceSpotRule::Own; // the rule that chose that spot
   std::uint32_t carry_version = 0; // 0: carry as supplied; >= 1: a re-derived carry's version
   QuoteSliceCarryConvention carry_convention = QuoteSliceCarryConvention::Supplied;
   double raw_spot = std::numeric_limits<double>::quiet_NaN(); // own spot before a rebase

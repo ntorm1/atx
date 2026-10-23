@@ -1910,7 +1910,7 @@ def crr_american(spot: float, strike: float, years: float, sigma: float, rate: f
 
 
 C0_COLUMNS = ["price_only_reason", "iv_lower", "iv_upper", "vol_convention", "model_kind",
-              "dividend_convention", "quote_ns", "underlying_ns", "spot_version",
+              "dividend_convention", "quote_ns", "underlying_ns", "spot_version", "spot_rule",
               "carry_version", "carry_convention", "raw_spot", "spot_stale", "price_valid",
               "vol_valid"]
 C0_DEEP_ITM_PUT = "39"  # K 136 put of the wing chain
@@ -2199,7 +2199,7 @@ def test_native_metadata_columns_carry_conventions_and_provenance(binary, tmp_pa
     for row in rows:
         assert row["model_kind"] == "andersen_lake"
         assert row["dividend_convention"] == "aggregate_funding_pv_approximation"
-        assert (row["spot_version"], row["carry_version"]) == ("0", "0")
+        assert (row["spot_version"], row["spot_rule"], row["carry_version"]) == ("0", "own", "0")
         assert row["carry_convention"] == "supplied"
         assert row["raw_spot"] == "" and row["spot_stale"] == "0"
         assert row["quote_ns"] == "" and row["underlying_ns"] == ""  # no observation_ns column
@@ -2263,7 +2263,8 @@ def test_native_one_spot_removes_a_per_chain_spot_calendar_crossing(binary, tmp_
                                                       rel=1e-12)
     assert block["chain_status_counts"] == {"rebased": 2}
     for row in on:
-        assert (row["spot_version"], row["carry_version"]) == ("1", "1")
+        assert (row["spot_version"], row["spot_rule"], row["carry_version"]) == (
+            "1", "nearest", "1")
         assert row["carry_convention"] == "forward_preserving"
         assert row["underlying_ns"] == "1791988201000000000"
         assert float(row["raw_spot"]) == (100.0 if row["chain_id"] == "17" else 100.05)
@@ -2278,6 +2279,7 @@ def test_native_one_spot_removes_a_per_chain_spot_calendar_crossing(binary, tmp_
     (spot,) = report["one_spot"]["snapshots"]
     assert (spot["spot"], spot["rule"], spot["underlying_ns"]) == (100.025, "median", 0)
     assert {row["underlying_ns"] for row in rows} == {""}
+    assert {(row["spot_version"], row["spot_rule"]) for row in rows} == {("1", "median")}
 
 
 @pytest.mark.parametrize("disposition", ["flag", "refuse"])

@@ -84,6 +84,9 @@ TEST(FitArchiveRecords, FixtureComparisonDetectsSingleFieldChanges) {
   auto snap = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
   snap.fit.snapshot.spot_version += 1;
   EXPECT_EQ(diff_slice(base, snap), "snapshot");
+  auto rule = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
+  rule.fit.snapshot.spot_rule = QuoteSliceSpotRule::Median;
+  EXPECT_EQ(diff_slice(base, rule), "snapshot");
   auto reason = testkit::exotic_slice(surface.slices[1], VolCurveKind::ConvexDense);
   reason.fit.rows[0].price_only_reason = QuoteSlicePriceOnlyReason::LowVega;
   EXPECT_EQ(diff_slice(base, reason), "rows");
@@ -229,6 +232,7 @@ TEST(FitArchiveRecords, PriceOnlyNodesAndSnapshotProvenanceSurviveTheArchive) {
   EXPECT_EQ(a.price_only_nodes(r).size(), exotic.fit.price_only_nodes.size());
   EXPECT_EQ(r.floor_policy, 1u);
   EXPECT_EQ(r.spot_version, 2u);
+  EXPECT_EQ(r.spot_rule, 1u); // QuoteSliceSpotRule::Nearest
   EXPECT_EQ(r.snapshot_flags, kFitSnapshotSpotStale | kFitSnapshotHasRawSpot);
   EXPECT_EQ(a.quote_rows(r)[0].flags, kQuoteRowHasInterval);
   auto fit = decode_fit(a, r);

@@ -123,13 +123,18 @@ def test_the_fit_carries_its_model_policy_and_snapshot_provenance(wing):
         0,
     )
     assert snap.carry_convention == av.QuoteSliceCarryConvention.SUPPLIED
+    assert snap.spot_rule == av.QuoteSliceSpotRule.OWN
     assert math.isnan(snap.raw_spot) and snap.spot_stale is False
     legacy = av.fit_quote_slice(market, quotes)
     assert legacy.floor_policy == av.QuoteSliceFloorPolicy.LEGACY
     info = av.QuoteSliceSnapshotInfo()
     info.spot_version = 2
     info.carry_convention = av.QuoteSliceCarryConvention.FORWARD_PRESERVING
+    info.spot_rule = av.QuoteSliceSpotRule.MEDIAN
     assert info.spot_version == 2
+    assert info.spot_rule == av.QuoteSliceSpotRule.MEDIAN
+    assert {rule.name for rule in av.QuoteSliceSpotRule.__members__.values()} == {
+        "OWN", "NEAREST", "MEDIAN"}
 
 
 def _forward(market):

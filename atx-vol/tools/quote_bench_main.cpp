@@ -717,6 +717,10 @@ std::string apply_one_spot(const SnapshotSpot &choice, QuoteSliceDividendModel m
   QuoteSliceSnapshotInfo &info = chain.snapshot;
   info.underlying_ns = choice.underlying_ns;
   info.spot_version = 1U;
+  // The rule that actually chose S*: a nearest request without observation instants is
+  // the median rule (choice.rule median_fallback).
+  info.spot_rule =
+      choice.rule == "nearest" ? QuoteSliceSpotRule::Nearest : QuoteSliceSpotRule::Median;
   info.carry_version = 1U;
   info.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
   info.raw_spot = raw;
@@ -1710,7 +1714,7 @@ void write_metadata(std::ostream &stream, const Prediction &p) {
   stream << ',' << p.vol_convention << ',' << p.model_kind << ',' << p.dividend_convention;
   instant(s.quote_ns);
   instant(s.underlying_ns);
-  stream << ',' << s.spot_version << ',' << s.carry_version << ','
+  stream << ',' << s.spot_version << ',' << to_string(s.spot_rule) << ',' << s.carry_version << ','
          << (p.model_kind.empty() ? "" : to_string(s.carry_convention));
   number_or_blank(s.raw_spot);
   stream << ',' << (s.spot_stale ? 1 : 0) << ',' << (std::isfinite(p.price) ? 1 : 0) << ','
@@ -1726,8 +1730,8 @@ void write_predictions(const std::filesystem::path &path, const std::vector<Inpu
             "resolved_profile,policy_source,configured_curve,actual_curve,vol_status,model"
          << (graded ? ",grade" : "")
          << (metadata ? ",price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,"
-                        "dividend_convention,quote_ns,underlying_ns,spot_version,carry_version,"
-                        "carry_convention,raw_spot,spot_stale,price_valid,vol_valid"
+                        "dividend_convention,quote_ns,underlying_ns,spot_version,spot_rule,"
+                        "carry_version,carry_convention,raw_spot,spot_stale,price_valid,vol_valid"
                       : "")
          << '\n';
   stream << std::setprecision(17);
@@ -1916,7 +1920,7 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
   if (stats.metadata) {
     report["output_conventions"] = {
         {"columns", "price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,"
-            "dividend_convention,quote_ns,underlying_ns,spot_version,carry_version,"
+            "dividend_convention,quote_ns,underlying_ns,spot_version,spot_rule,carry_version,"
             "carry_convention,raw_spot,spot_stale,price_valid,vol_valid"},
         {"vol_convention", "predicted_vol of an ok row: fitted_curve (the fitted American "
             "IV curve at an unmoved certified node) or reimplied_repaired (the certified price "
@@ -1931,12 +1935,16 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         {"dividend_convention", "QuoteSliceDividendModel of the fit"},
         {"quote_clock", "quote_ns: the chain's latest observation_ns (blank without the "
             "column)"},
-        {"underlying_clock", "underlying_ns: the observation instant of the spot the fit "
-            "used: the chain's own quote clock, or under snapshot.one_spot S*'s instant "
-            "(blank under the median rule)"},
+        {"underlying_clock", "underlying_ns: under snapshot.one_spot the observation "
+            "instant of S* (blank under the median rule); otherwise the chain's latest quote "
+            "observation_ns, NOT the spot's own instant (the chain spot is the median over "
+            "rows that may be observed at several instants)"},
         {"versions", "spot_version 0 = the chain's own median spot, 1 = the snapshot spot S* "
-            "(snapshot.one_spot); carry_version 0 = supplied carry, 1 = re-derived by the "
-            "forward-preserving rebase (carry_convention forward_preserving)"},
+            "(snapshot.one_spot); spot_rule: the rule that chose the fit's spot - own, "
+            "nearest (S* at the observation instant nearest snapshot_ns) or median (every "
+            "observation; also a nearest request without observation instants); "
+            "carry_version 0 = supplied carry, 1 = re-derived by the forward-preserving "
+            "rebase (carry_convention forward_preserving)"},
         {"validity", "raw_spot: the chain's own spot before a rebase; spot_stale: raw_spot "
             "beyond snapshot.stale_spot_bps of S*; price_valid: a published price; vol_valid: "
             "a published volatility that is identified (vol_convention not none)"}};
@@ -1950,7 +1958,8 @@ void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
         "unchanged (continuous / funding PV ln(S*/S)/T_cal, escrowed PV "
         "ln((S*-PV)/(S-PV))/T_cal). FORWARD-preserving only: American prices are NOT "
         "preserved (early exercise depends on the spot itself). Raw per-chain spots are kept "
-        "(chains[].raw_spot); spot_version 1, carry_version 1; a chain beyond stale_spot_bps "
+        "(chains[].raw_spot); spot_version 1, spot_rule nearest | median (snapshots[].rule; "
+        "median_fallback is the median rule), carry_version 1; a chain beyond stale_spot_bps "
         "is flagged (rebased_stale, served) or refused (stale_spot)";
   }
   if (!stats.dividend_schedules.empty()) {

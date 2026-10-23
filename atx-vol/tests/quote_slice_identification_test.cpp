@@ -336,6 +336,7 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
   info.quote_ns = 1791988206009793000;
   info.underlying_ns = 1791988205869274000;
   info.spot_version = 1;
+  info.spot_rule = QuoteSliceSpotRule::Nearest;
   info.carry_version = 1;
   info.carry_convention = QuoteSliceCarryConvention::ForwardPreserving;
   info.raw_spot = 99.72;
@@ -348,6 +349,7 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
   EXPECT_EQ(got.quote_ns, info.quote_ns);
   EXPECT_EQ(got.underlying_ns, info.underlying_ns);
   EXPECT_EQ(got.spot_version, 1u);
+  EXPECT_EQ(got.spot_rule, QuoteSliceSpotRule::Nearest);
   EXPECT_EQ(got.carry_version, 1u);
   EXPECT_EQ(got.carry_convention, QuoteSliceCarryConvention::ForwardPreserving);
   EXPECT_EQ(got.raw_spot, 99.72);
@@ -358,6 +360,7 @@ TEST(QuoteSliceIdentification, SnapshotProvenanceRidesOnEverySurfaceSlice) {
       fit_quote_slice(c.market, c.quotes, graded_v1(QuoteSliceFloorPolicy::Legacy));
   ASSERT_TRUE(alone) << alone.error().to_string();
   EXPECT_EQ(alone->snapshot.spot_version, 0u);
+  EXPECT_EQ(alone->snapshot.spot_rule, QuoteSliceSpotRule::Own);
   EXPECT_EQ(alone->snapshot.carry_convention, QuoteSliceCarryConvention::Supplied);
   EXPECT_TRUE(std::isnan(alone->snapshot.raw_spot));
 }
@@ -745,6 +748,9 @@ TEST(QuoteSliceIdentification, AnUnknownFloorPolicyIsRefusedAndEveryNameIsStable
   EXPECT_STREQ(to_string(QuoteSliceFloorPolicy::PriceOnly), "price_only");
   EXPECT_STREQ(to_string(QuoteSliceCarryConvention::Supplied), "supplied");
   EXPECT_STREQ(to_string(QuoteSliceCarryConvention::ForwardPreserving), "forward_preserving");
+  EXPECT_STREQ(to_string(QuoteSliceSpotRule::Own), "own");
+  EXPECT_STREQ(to_string(QuoteSliceSpotRule::Nearest), "nearest");
+  EXPECT_STREQ(to_string(QuoteSliceSpotRule::Median), "median");
   EXPECT_STREQ(to_string(QuoteSliceModelKind::AndersenLake), "andersen_lake");
   EXPECT_STREQ(to_string(QuoteSliceModelKind::DiscreteDividendLattice),
                "discrete_dividend_lattice");

@@ -426,6 +426,17 @@ const char *to_string(QuoteSliceCarryConvention value) noexcept {
   }
   return "unknown";
 }
+const char *to_string(QuoteSliceSpotRule value) noexcept {
+  switch (value) {
+  case QuoteSliceSpotRule::Own:
+    return "own";
+  case QuoteSliceSpotRule::Nearest:
+    return "nearest";
+  case QuoteSliceSpotRule::Median:
+    return "median";
+  }
+  return "unknown";
+}
 const char *to_string(QuoteSliceModelKind value) noexcept {
   switch (value) {
   case QuoteSliceModelKind::AndersenLake:
