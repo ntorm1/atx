@@ -195,6 +195,27 @@ inline constexpr double kDeAmFamilyGridLogBand = 0.25;
                                        double strike_lo, double strike_hi, double band_lo,
                                        double band_hi);
 
+// Why a requested side built no family (lane K4b, review-K4 m8; DeAmFamilyRequest::refused,
+// counted in this order by FitTimingCounters::deam_family_refused_by_reason):
+//   NotOffered         the model builds no families (DeAmModel's default);
+//   NoContinuousModel  no continuous-carry kernel (the dated-cash dividend model);
+//   ShortExpiry        T below kAlSigmaFamilyMinTau;
+//   InvalidCarry       a non-finite yield or q box;
+//   CallNoCarry        a call side whose q box is at or below zero (it never exercises early);
+//   PrepareRefused     the family's prepare refused (a box straddling r, the q-axis accuracy
+//                      guard, no American orientation);
+//   Uncertified        K3's error contract refused it (deam_family_certify).
+enum class DeAmFamilyRefusal : std::uint8_t {
+  NotOffered,
+  NoContinuousModel,
+  ShortExpiry,
+  InvalidCarry,
+  CallNoCarry,
+  PrepareRefused,
+  Uncertified,
+};
+inline constexpr std::size_t kDeAmFamilyRefusalCount = 7;
+
 // What a cache asks its model to build (DeAmModel::sigma_families): per side (0 put, 1
 // call) the sigma box (empty, lo >= hi: no family of that side); the sigma families' yield
 // `q`; with `sigma_q` the (sigma, q) families over the chain's q box [q_lo, q_hi] instead.
@@ -209,6 +230,9 @@ struct DeAmFamilyRequest {
   // family's largest relative error).
   double strike_lo = std::numeric_limits<double>::quiet_NaN();
   double strike_hi = std::numeric_limits<double>::quiet_NaN();
+  // K4b (review-K4 m8): where the model writes why a requested side (0 put, 1 call) built no
+  // family; null: not asked. A side the model builds is left as it was.
+  std::array<DeAmFamilyRefusal, 2> *refused = nullptr;
 };
 // Expected family-priced calls per two-sided quote of a side (the adaptive rule): the
 // inversions of the mid, bid and ask at ~1.8 iterates each.

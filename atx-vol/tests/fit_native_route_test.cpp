@@ -1255,5 +1255,68 @@ TEST(FitNativeRoute, PlateauEndOfAReferenceBracketIsReDecidedOnTheAccurateMap) {
   EXPECT_EQ(st.acceptance.kind, RootAcceptanceKind::None); // nothing for the audit to serve
 }
 
+// review-K4 m8: a family side the adaptive rule asked for and the model built none of is
+// counted once, by its typed reason, so the reasons sum to the sides asked for less those
+// built (the fail-on-revert: untyped, every refusal is lost from the count). A two-day expiry
+// is below kAlSigmaFamilyMinTau (ShortExpiry on every side asked for); a chain with negative
+// carry refuses its call side (CallNoCarry: a call with q <= 0 never exercises early).
+TEST(FitNativeRoute, FamilyRefusalsAreTypedByReason) {
+  const auto run = [](const Chain &c) {
+    QuoteSliceConfig config = native_config(true);
+    config.side_policy = QuoteSliceSidePolicy::All;
+    deam_iv_memo_clear();
+    ft::ChainRecorder rec;
+    {
+      const ft::ChainScope chain(&rec, 1);
+      const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      static_cast<void>(fit);
+    }
+    deam_iv_memo_clear();
+    return rec.result();
+  };
+  const auto refused = [](const ft::FitTimingCounters &t) {
+    std::uint32_t n = 0;
+    for (const std::uint32_t k : t.deam_family_refused_by_reason) n += k;
+    return n;
+  };
+  const auto at = [](const ft::FitTimingCounters &t, DeAmFamilyRefusal why) {
+    return t.deam_family_refused_by_reason[static_cast<std::size_t>(why)];
+  };
+  Chain carry_less;
+  {
+    constexpr double kSpot = 670.0, kRate = 0.04, kYield = -0.005, kYears = 0.5;
+    carry_less.market = QuoteSliceMarket{kSpot, kYears, kYears, kRate, kYield, 0.0};
+    for (int step = -8; step <= 8; ++step) {
+      const double strike = std::round(kSpot * (1.0 + 0.025 * step));
+      const double k = std::log(strike / kSpot);
+      const double sigma = std::max(0.08, 0.16 - 0.30 * k + 0.80 * k * k);
+      for (Side side : {Side::Call, Side::Put}) {
+        const auto price = andersen_lake(kSpot, strike, kYears, sigma, kRate, kYield, side);
+        ASSERT_TRUE(price);
+        const double half = std::max(0.02, 0.03 * *price);
+        QuoteSliceQuote quote{strike, side, std::max(*price - half, 0.0), *price + half};
+        quote.continuous_yield = kYield;
+        carry_less.quotes.push_back(quote);
+      }
+    }
+  }
+  const ft::FitTimingCounters spy = run(spy_chain(0.5));
+  const ft::FitTimingCounters brief = run(spy_chain(2.0 / 365.0));
+  const ft::FitTimingCounters flat = run(carry_less);
+  for (const ft::FitTimingCounters *t : {&spy, &brief, &flat}) {
+    std::printf("[K4b m8] asked %u built %u refused by reason [", t->deam_family_sides_requested,
+                t->deam_family_builds);
+    for (const std::uint32_t k : t->deam_family_refused_by_reason) std::printf(" %u", k);
+    std::printf(" ]\n");
+    EXPECT_GT(t->deam_family_sides_requested, 0u);
+    EXPECT_EQ(t->deam_family_sides_requested, t->deam_family_builds + refused(*t));
+  }
+  EXPECT_GT(spy.deam_family_builds, 0u);
+  EXPECT_EQ(brief.deam_family_builds, 0u);
+  EXPECT_EQ(at(brief, DeAmFamilyRefusal::ShortExpiry), brief.deam_family_sides_requested);
+  EXPECT_GE(at(flat, DeAmFamilyRefusal::CallNoCarry), 1u);
+  EXPECT_EQ(at(flat, DeAmFamilyRefusal::NotOffered), 0u);
+}
+
 } // namespace
 } // namespace atx::vol

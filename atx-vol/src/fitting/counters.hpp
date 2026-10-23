@@ -1256,6 +1256,9 @@ struct FitTimingCounters {
   std::uint32_t deam_edges_bound_decided{0};
   std::uint32_t deam_edges_priced{0};
   std::uint32_t deam_family_sides_requested{0};
+  // K4b (review-K4 m8): requested family sides that built none, by DeAmFamilyRefusal
+  // (deam_iv_cache.hpp); the sum is deam_family_sides_requested less the sides built.
+  std::array<std::uint32_t, 7> deam_family_refused_by_reason{};
   double deam_family_grid_max_bound_usd{0.0};
   // K4b (r6): the inverse stage's sub-clocks of the chain (nanoseconds; zero when untimed):
   // the wall of every de-Am inversion request and, inside them, the family-native lane, the

@@ -154,6 +154,9 @@ static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_accept_by_k
 static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_accept_by_reason){}.size() ==
                   kRootAcceptanceReasonCount,
               "deam_accept_by_reason is sized by RootAcceptanceReason");
+static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_family_refused_by_reason){}
+                      .size() == kDeAmFamilyRefusalCount,
+              "deam_family_refused_by_reason is sized by DeAmFamilyRefusal");
 static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_native_status){}.size() ==
                   iv_batch::kInverseStatusCount,
               "deam_native_status is sized by iv_batch::InverseStatus");
@@ -430,7 +433,21 @@ void DeAmIvView::ensure_families() {
       !(request.sigma_hi[1] > request.sigma_lo[1])) {
     return;
   }
+  // K4b (review-K4 m8): every requested side the model built no family for, typed by reason.
+  std::array<DeAmFamilyRefusal, 2> refused{DeAmFamilyRefusal::NotOffered,
+                                           DeAmFamilyRefusal::NotOffered};
+  request.refused = &refused;
   cache_.families = model_.sigma_families(request);
+  request.refused = nullptr;
+  if (ft::FitTimingCounters *const timing = ft::current_counts()) {
+    const DeAmSigmaFamilies *const made = cache_.families.get();
+    for (std::size_t s = 0; s < 2; ++s) {
+      const Side side = s == 0 ? Side::Put : Side::Call;
+      if (!(request.sigma_hi[s] > request.sigma_lo[s])) continue; // not requested
+      if (made != nullptr && (made->of(side) != nullptr || made->of_q(side) != nullptr)) continue;
+      ++timing->deam_family_refused_by_reason[static_cast<std::size_t>(refused[s])];
+    }
+  }
   if (!cache_.families) return;
   const DeAmSigmaFamilies &f = *cache_.families;
   const std::size_t built = (f.of(Side::Put) != nullptr ? 1u : 0u) +

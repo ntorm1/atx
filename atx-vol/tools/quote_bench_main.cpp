@@ -867,6 +867,7 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_edges_bound_decided", t.deam_edges_bound_decided},
           {"deam_edges_priced", t.deam_edges_priced},
           {"deam_family_sides_requested", t.deam_family_sides_requested},
+          {"deam_family_refused_by_reason", t.deam_family_refused_by_reason},
           {"deam_family_grid_max_bound_usd", t.deam_family_grid_max_bound_usd},
           {"deam_sub_request_ns", t.deam_sub_request_ns},
           {"deam_sub_lane_ns", t.deam_sub_ns[0]},

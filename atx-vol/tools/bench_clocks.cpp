@@ -220,6 +220,7 @@ void add_fit_work(FitWork &work, const ft::FitTimingCounters &c) noexcept {
   work.deam_edges_bound_decided += c.deam_edges_bound_decided;
   work.deam_edges_priced += c.deam_edges_priced;
   work.deam_family_sides_requested += c.deam_family_sides_requested;
+  add(work.deam_family_refused_by_reason, c.deam_family_refused_by_reason);
   work.deam_family_grid_max_bound_usd =
       std::max(work.deam_family_grid_max_bound_usd, c.deam_family_grid_max_bound_usd);
   work.deam_sub_request_ns += c.deam_sub_request_ns;
@@ -298,6 +299,8 @@ FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
   d.deam_edges_priced = saturating_minus(a.deam_edges_priced, b.deam_edges_priced);
   d.deam_family_sides_requested =
       saturating_minus(a.deam_family_sides_requested, b.deam_family_sides_requested);
+  minus(d.deam_family_refused_by_reason, a.deam_family_refused_by_reason,
+        b.deam_family_refused_by_reason);
   d.deam_family_grid_max_bound_usd = a.deam_family_grid_max_bound_usd; // a running max
   d.deam_sub_request_ns = saturating_minus(a.deam_sub_request_ns, b.deam_sub_request_ns);
   for (std::size_t i = 0; i < d.deam_sub_ns.size(); ++i) {
@@ -404,6 +407,16 @@ Json native_route_json(const FitWork &w) {
           {"edges_priced", w.deam_edges_priced}};
 }
 
+// K4b (review-K4 m8): the refused family sides by DeAmFamilyRefusal (deam_iv_cache.hpp).
+Json family_refusal_json(const std::array<std::uint64_t, 7> &n) {
+  static constexpr std::array<const char *, 7> kNames{
+      "not_offered",   "no_continuous_model", "short_expiry", "invalid_carry",
+      "call_no_carry", "prepare_refused",     "uncertified"};
+  Json out = Json::object();
+  for (std::size_t i = 0; i < n.size(); ++i) out[kNames[i]] = n[i];
+  return out;
+}
+
 } // namespace
 
 Json fit_work_json(const FitWork &w) {
@@ -449,6 +462,7 @@ Json families_json(const FitWork &w) {
           {"grid_max_point_bound_usd", w.deam_family_grid_max_bound_usd},
           {"attempted", w.deam_family_sides_requested},
           {"refused", saturating_minus(w.deam_family_sides_requested, w.deam_family_builds)},
+          {"refused_by_reason", family_refusal_json(w.deam_family_refused_by_reason)},
           {"lane_vegas", w.deam_lane_vegas}};
 }
 

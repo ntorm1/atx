@@ -906,6 +906,12 @@ public:
   sigma_families(const DeAmFamilyRequest &request) const override {
     const double T = fit_.market.variance_years;
     if (!has_fast_kernel() || !(T >= kAlSigmaFamilyMinTau) || !std::isfinite(request.q)) {
+      const DeAmFamilyRefusal why = !has_fast_kernel() ? DeAmFamilyRefusal::NoContinuousModel
+                                    : !(T >= kAlSigmaFamilyMinTau)
+                                        ? DeAmFamilyRefusal::ShortExpiry
+                                        : DeAmFamilyRefusal::InvalidCarry;
+      refuse(request, 0, why);
+      refuse(request, 1, why);
       return nullptr;
     }
     const auto t0 = std::chrono::steady_clock::now();
@@ -924,7 +930,10 @@ public:
                              double hi) {
         if (!(hi > lo)) return;
         slot.emplace(holder->geometry, side, fit_.market.spot);
-        if (!slot->prepare(lo, hi, kDeAmFamilyNodes, kDeAmFamilyAxis)) slot.reset();
+        if (!slot->prepare(lo, hi, kDeAmFamilyNodes, kDeAmFamilyAxis)) {
+          slot.reset();
+          refuse(request, side == Side::Put ? 0u : 1u, DeAmFamilyRefusal::PrepareRefused);
+        }
       };
       build(holder->put, Side::Put, request.sigma_lo[0], request.sigma_hi[0]);
       build(holder->call, Side::Call, request.sigma_lo[1], request.sigma_hi[1]);
@@ -977,6 +986,10 @@ public:
   }
 
 private:
+  // K4b (review-K4 m8): records why a requested side (0 put, 1 call) built no family.
+  static void refuse(const DeAmFamilyRequest &request, std::size_t s, DeAmFamilyRefusal why) {
+    if (request.refused != nullptr) (*request.refused)[s] = why;
+  }
   // One side's (sigma, q) family (L2h-b note section 6): the q box is the chain's, a call
   // side clipped to q > 0 (a q <= 0 call never exercises early; its strikes price cold),
   // the geometry at the request's yield clamped into the box, n_q by T x width, and its
@@ -991,10 +1004,17 @@ private:
     const double sigma_hi = request.sigma_hi[s];
     double q_lo = request.q_lo;
     const double q_hi = request.q_hi;
-    if (!(sigma_hi > sigma_lo) || !std::isfinite(q_lo) || !std::isfinite(q_hi)) return;
+    if (!(sigma_hi > sigma_lo)) return; // not requested
+    if (!std::isfinite(q_lo) || !std::isfinite(q_hi)) {
+      refuse(request, s, DeAmFamilyRefusal::InvalidCarry);
+      return;
+    }
     if (side == Side::Call) {
       constexpr double kCallMinYield = 1.0e-9;
-      if (!(q_hi > kCallMinYield)) return;
+      if (!(q_hi > kCallMinYield)) {
+        refuse(request, s, DeAmFamilyRefusal::CallNoCarry);
+        return;
+      }
       q_lo = std::max(q_lo, kCallMinYield);
     }
     const double T = fit_.market.variance_years;
@@ -1011,6 +1031,7 @@ private:
     if (!slot->prepare(sigma_lo, sigma_hi, kDeAmQFamilySigmaNodes, q_lo, q_hi, n_q,
                        kDeAmFamilyAxis)) {
       slot.reset();
+      refuse(request, s, DeAmFamilyRefusal::PrepareRefused);
       return;
     }
     // The grid's family band: the chain's strikes clipped to |ln(K / S)| <=
@@ -1021,6 +1042,7 @@ private:
     if (!deam_family_certify(holder, side, spot, T, r, fit_.al_opts, request.strike_lo,
                              request.strike_hi, band_lo, band_hi)) {
       slot.reset();
+      refuse(request, s, DeAmFamilyRefusal::Uncertified);
       return;
     }
   }

@@ -182,6 +182,7 @@ struct FitWork {
   std::uint64_t deam_edges_bound_decided{0};
   std::uint64_t deam_edges_priced{0};
   std::uint64_t deam_family_sides_requested{0};
+  std::array<std::uint64_t, 7> deam_family_refused_by_reason{}; // K4b: by DeAmFamilyRefusal
   double deam_family_grid_max_bound_usd{0.0};
   // K4b (r6): the inverse sub-clocks summed over chains (ns; fit_timing counters of the same
   // names): every inversion request's wall, the lane / family-accept / confirm / leg /
