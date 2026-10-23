@@ -274,9 +274,10 @@ void audit_typed_root(const DeAmIvCache &cache, const DeAmModel &model,
                       counters::fit_timing::FitTimingCounters &timing) {
   // Lane K3: every root the acceptance typed is re-solved by bisection on the accurate map
   // (never the family) and its distance to that reference counted against
-  // kIvRootRequirement; a root that fell back (Search's) is recorded with no reference.
+  // kIvRootRequirement; a root that fell back (Search's) is recorded with no reference,
+  // and so is an attempt the acceptance typed None WITH a reason (no bracket closed).
   const RootAcceptance &acc = stats.acceptance;
-  if (acc.kind == RootAcceptanceKind::None) {
+  if (acc.kind == RootAcceptanceKind::None && acc.reason == RootAcceptanceReason::None) {
     return;
   }
   AuditRow row;

@@ -106,16 +106,20 @@ served point clamped into [a, b] lies within b - a of sigma*. A side is certifie
 | kind | reason | ends |
 | --- | --- | --- |
 | Skipped | FamilyEnclosure | both by the family (two family prices at x -/+ W/2, one re-centred retry); no confirm solve |
-| Confirmed | ConfirmAndFamily | C at the root, the family at the far end (1 solve) |
-| Confirmed | ConfirmBothEnds | C at both ends (2 solves) |
+| Confirmed | ConfirmAndFamily | C at the root, the family at the other end (1 solve; 2 for a far root) |
+| Confirmed | ConfirmBothEnds | C at both ends (2 solves; 3 for a far root or an open root side) |
 | PriceOnly | LowVega | slope W <= 2 eps_C: C cannot certify any bracket of width W; Search serves |
 | Interval | BudgetExhausted | a certified bracket wider than W; Search serves |
-| None | BudgetExhausted / None | no bracket within kIvPremiumConfirmSolves = 2 solves; Search serves |
+| None | BudgetExhausted / None | no bracket within 3 confirm solves; Search serves |
 | Confirmed | NewtonContract | the established keys-OFF confirm (Newton distance on C), every non-native route |
 | Skipped | LegacyBandGate / LegacyNever | the band gate / policy Never on a request WITHOUT a (sigma, q) family |
 
-W = min(tol, 1e-7) (1 - 2^-20). No step length and no secant slope is a bound: a local
-chord only places an end and the served point. A request that carried a (sigma, q) family
+W = min(tol, 1e-7) (1 - 2^-20). Placement (`confirm_bracket`): C at the native root x; if
+C certifies x's side, the other end within W of x (the family at x +- W first, else C past
+the chord's Newton point); for a far root (Newton step > W / 4) both ends at the Newton
+point +- 0.45 W (family first, else C); if C leaves x's side open (|C(x) - price| <=
+eps_C), both ends at x +- W / 2 (family first, else C). No step length and no secant slope
+is a bound: a local chord only places an end and the served point. A request that carried a (sigma, q) family
 never reaches the band gate (`band_gate_holds` runs only when `gate->qfamily == nullptr`),
 so no domain of the family route falls back to a band-based criterion; the audit reads
 `LegacyBandGate` = 0 on every family-route arm.
@@ -151,8 +155,8 @@ None -> no family-route root (Search's answer).
 
 ## 8. Open
 
-- The bracket confirm spends 2 confirm solves where the envelope cannot certify the far
-  end (no envelope in scope, or a loose one: q < r calls); the old secant confirm spent 1.
+- The bracket confirm spends 2-3 confirm solves where the envelope cannot certify an end
+  (no envelope in scope, or a loose one: q < r calls); the old secant confirm spent 1-2.
   K1's fused vega (landed after this lane's base) is not consumed: the bracket rule needs
   no vega bound. A validated vega lower bound from it could replace the second solve.
 - `family_domain_bound_usd` is loose; a per-point bound at the grid (quote_slice.cpp,

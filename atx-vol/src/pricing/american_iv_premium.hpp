@@ -74,7 +74,7 @@ struct IvPremiumStats {
   double last_residual_usd = 0.0;
   // Seed-tier wiring (IvOpts::seed_profile; SPY1s Phase 1, 2026-10-20). Of
   // premium_solves: the confirming solves on the confirm kernel (at most
-  // kIvPremiumConfirmSolves; lane K3's bracket confirm spends up to two) and the band
+  // kIvPremiumConfirmSolves; lane K3's bracket confirm spends up to three) and the band
   // gate's chord solve on the seed tier (0 or 1); the rest are iterates. seed_nodes: the
   // boundary node count of the scheme the iterates ran on (al_screen_opts() 7; the
   // accurate preset 12). confirm_profile: the kernel profile of the confirming solve when

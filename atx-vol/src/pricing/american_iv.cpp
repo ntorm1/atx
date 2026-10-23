@@ -1312,6 +1312,10 @@ struct NativeRoot {
 // into [a, b], lies within W of A's root. No step length and no secant slope is a bound:
 // a local chord only PLACES an end and the served point.
 
+// A far root's bracket (confirm_bracket): centred on the chord's Newton point, half-width
+// this fraction of W (the estimate's own error must stay inside the remaining 0.05 W).
+constexpr double kFarRootHalfWidth = 0.45;
+
 // The bracket width the acceptance closes.
 [[nodiscard]] double acceptance_width(double tol) noexcept {
   return std::fmin(tol, kIvRootRequirement) * (1.0 - 0x1p-20);
@@ -1416,8 +1420,10 @@ struct FamilyEnclosure {
 // confirm price beyond C's tested distance eps_c (confirm_side), or a family price beyond
 // its envelope bound (family_side); A is continuous and increasing on the domain, so its
 // root lies between two ends of opposite sides, and an accepted bracket is no wider than w.
-// At most kIvPremiumConfirmSolves confirm solves: C at x, then the far end (the family
-// first, C second) at w, or - when C leaves x's side open - both ends at x -/+ w/2.
+// At most three confirm solves: C at x, then the far end (the family first, C second)
+// within w of x; for a far root (the chord's Newton step beyond w / 4) both ends around
+// the Newton point at -/+ kFarRootHalfWidth w (the family first, C second); when C leaves
+// x's side open, both ends at x -/+ w/2 (the family first, then one C solve).
 // `slope` (a local chord: the enclosure's span <= w, or the family's kAlPackSigmaBump chord)
 // only PLACES the far end and the served point; it bounds nothing. nullopt with
 // stats.acceptance PriceOnly (low vega: slope w <= 2 eps_c, no bracket of width w can be
@@ -1475,49 +1481,112 @@ struct FamilyEnclosure {
   stats.last_residual_usd = std::fabs(*c0 - price);
   const int s0 = confirm_side(*c0, price, eps_c);
   if (s0 == 0) {
-    // C cannot place x: x sits within eps_c / slope of the root. The ends x -/+ w/2, the
-    // family first, then the one confirm solve left for an end it leaves open.
+    // C cannot place x: x sits within eps_c / slope of the root. The ends x -/+ w/2, each
+    // certified by the family first, else by one more confirm solve.
     const double lo = x - 0.5 * w;
     const double hi = x + 0.5 * w;
     if (!inside(lo) || !inside(hi)) {
       return fail(IvPremiumFallback::VolBound, RootAcceptanceKind::None,
                   RootAcceptanceReason::BudgetExhausted);
     }
-    const int s_lo = family_side(price, S, K, q, lo, f, env, stats);
-    const int s_hi = family_side(price, S, K, q, hi, f, env, stats);
-    if (s_lo == -1 && s_hi == 1) {
-      return accept(x, lo, hi, RootAcceptanceReason::ConfirmAndFamily);
+    int s_lo = family_side(price, S, K, q, lo, f, env, stats);
+    int s_hi = family_side(price, S, K, q, hi, f, env, stats);
+    const bool family_end = s_lo == -1 || s_hi == 1;
+    double c_lo = std::numeric_limits<double>::quiet_NaN();
+    double c_hi = std::numeric_limits<double>::quiet_NaN();
+    for (const bool upper : {false, true}) {
+      int &end_side = upper ? s_hi : s_lo;
+      const int want = upper ? 1 : -1;
+      if (end_side == want) continue;
+      const std::optional<double> ce =
+          confirm_price(S, K, T, upper ? hi : lo, r, q, side, confirm_opts, stats);
+      if (!ce) {
+        return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                    RootAcceptanceReason::None);
+      }
+      stats.last_residual_usd = std::fabs(*ce - price);
+      (upper ? c_hi : c_lo) = *ce;
+      end_side = confirm_side(*ce, price, eps_c);
+      if (end_side != want) {
+        return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+                    RootAcceptanceReason::BudgetExhausted);
+      }
     }
-    if (s_lo != -1 && s_hi != 1) {
-      return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
-                  RootAcceptanceReason::BudgetExhausted);
-    }
-    const bool open_hi = s_lo == -1; // the family certified lo: C decides hi
-    const std::optional<double> ce =
-        confirm_price(S, K, T, open_hi ? hi : lo, r, q, side, confirm_opts, stats);
-    if (!ce) {
-      return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
-                  RootAcceptanceReason::None);
-    }
-    stats.last_residual_usd = std::fabs(*ce - price);
-    if (confirm_side(*ce, price, eps_c) == (open_hi ? 1 : -1)) {
-      return accept(x, lo, hi, RootAcceptanceReason::ConfirmAndFamily);
-    }
-    return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
-                RootAcceptanceReason::BudgetExhausted);
+    const double gap = c_hi - c_lo;
+    const double root = std::isfinite(gap) && gap != 0.0 ? lo + (price - c_lo) / gap * w : x;
+    return accept(root, lo, hi,
+                  family_end ? RootAcceptanceReason::ConfirmAndFamily
+                             : RootAcceptanceReason::ConfirmBothEnds);
   }
   const int dir = -s0; // A increasing: the root lies on this side of x
   const double delta = (price - *c0) / slope;
+  if (4.0 * std::fabs(delta) > w) {
+    // A far root: the chord puts the confirm map's root more than w / 4 from x, so no
+    // bracket with x as an end fits in w. The bracket is placed around the chord's Newton
+    // point instead, each end certified by the family first, else by C (two more solves).
+    const double centre = x + delta;
+    const double near_end = centre - dir * kFarRootHalfWidth * w; // x's side: needs s0
+    const double far_end = centre + dir * kFarRootHalfWidth * w;  // needs -s0
+    if (!inside(near_end) || !inside(far_end)) {
+      return fail(IvPremiumFallback::VolBound, RootAcceptanceKind::None,
+                  RootAcceptanceReason::BudgetExhausted);
+    }
+    int s_near = family_side(price, S, K, q, near_end, f, env, stats);
+    int s_far = family_side(price, S, K, q, far_end, f, env, stats);
+    const bool family_end = s_near == s0 || s_far == -s0;
+    double c_near = std::numeric_limits<double>::quiet_NaN();
+    double c_far = std::numeric_limits<double>::quiet_NaN();
+    if (s_near != s0) {
+      const std::optional<double> cn =
+          confirm_price(S, K, T, near_end, r, q, side, confirm_opts, stats);
+      if (!cn) {
+        return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                    RootAcceptanceReason::None);
+      }
+      c_near = *cn;
+      stats.last_residual_usd = std::fabs(c_near - price);
+      s_near = confirm_side(c_near, price, eps_c);
+      if (s_near == -s0) {
+        // The root lies between x and the near end: certified, but wider than w.
+        return interval(std::fmin(x, near_end), std::fmax(x, near_end));
+      }
+      if (s_near != s0) {
+        return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+                    RootAcceptanceReason::BudgetExhausted);
+      }
+    }
+    if (s_far != -s0) {
+      const std::optional<double> cf =
+          confirm_price(S, K, T, far_end, r, q, side, confirm_opts, stats);
+      if (!cf) {
+        return fail(IvPremiumFallback::PricerFailure, RootAcceptanceKind::None,
+                    RootAcceptanceReason::None);
+      }
+      c_far = *cf;
+      stats.last_residual_usd = std::fabs(c_far - price);
+      s_far = confirm_side(c_far, price, eps_c);
+      if (s_far != -s0) {
+        return fail(IvPremiumFallback::NoConvergence, RootAcceptanceKind::None,
+                    RootAcceptanceReason::BudgetExhausted);
+      }
+    }
+    const double lo = std::fmin(near_end, far_end);
+    const double hi = std::fmax(near_end, far_end);
+    const double gap = c_far - c_near;
+    const double root = std::isfinite(gap) && gap != 0.0
+                            ? near_end + (price - c_near) / gap * (far_end - near_end)
+                            : centre;
+    return accept(root, lo, hi,
+                  family_end ? RootAcceptanceReason::ConfirmAndFamily
+                             : RootAcceptanceReason::ConfirmBothEnds);
+  }
   const double far = x + dir * w;
   if (inside(far) && family_side(price, S, K, q, far, f, env, stats) == -s0) {
     return accept(x + delta, std::fmin(x, far), std::fmax(x, far),
                   RootAcceptanceReason::ConfirmAndFamily);
   }
-  // The second confirm solve past the chord's Newton point (4 x its step, inside w when the
-  // step is; 1.25 x the step otherwise).
-  const double step = std::fabs(delta) < w
-                          ? std::fmin(w, std::fmax(4.0 * std::fabs(delta), 1.0e-3 * w))
-                          : 1.25 * std::fabs(delta);
+  // The second confirm solve past the chord's Newton point (4 x its step, <= w here).
+  const double step = std::fmax(4.0 * std::fabs(delta), 1.0e-3 * w);
   const double e = x + dir * step;
   if (!inside(e)) {
     return fail(IvPremiumFallback::VolBound, RootAcceptanceKind::None,

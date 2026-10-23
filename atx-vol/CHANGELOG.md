@@ -18,9 +18,9 @@ Behaviour changes on those keys: (1) a confirm is skipped only when two family p
 their bounds enclose the accurate root in at most 1e-7 vol; the B-family arm no longer
 skips on the half-spread band gate (the band gate now runs only on requests without a
 (sigma, q) family); (2) the family-native confirm (R1-A MJ1) closes a bracket whose ends
-carry certified sides instead of dividing by the iterate's secant: up to 2 confirm solves
-where the envelope cannot certify the far end (was 1), and a root it cannot bracket falls
-back to Search typed `PriceOnly` / `Interval` / `None`; (3) the family certification grid
+carry certified sides instead of dividing by the iterate's secant: C at the root plus one
+solve per bracket end the envelope cannot certify (at most 3; the secant confirm spent 1-2),
+and a root it cannot bracket falls back to Search typed `PriceOnly` / `Interval` / `None`; (3) the family certification grid
 serves a family price only under the domain-wide bound, which is looser than the old
 sampled one (inert on wide carry boxes). Every family-route root is typed
 (`IvPremiumStats::acceptance`; `FitTimingCounters::deam_accept_by_kind` /
