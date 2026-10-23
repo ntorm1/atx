@@ -1695,8 +1695,10 @@ namespace {
 //
 // THE PATH. From the hint (the native attempt's retained bracket, best iterate and fused
 // vega, or the Black-76 IV): safeguarded Newton / secant steps kept inside the certified
-// bracket (bisection, geometric on a wide one, otherwise); once a step is within W / 4 the
-// next point straddles the root estimate by 0.45 W so one evaluation closes the bracket.
+// bracket (bisection, geometric on a wide one, otherwise; also from a point on the exercise
+// plateau, flat in sigma, and after two Newton steps that did not halve); once a step is
+// within W / 4 the next point straddles the root estimate by 0.45 W so one evaluation closes
+// the bracket.
 struct ReferenceHint {
   double seed = std::numeric_limits<double>::quiet_NaN();
   double slope = std::numeric_limits<double>::quiet_NaN();
@@ -1802,12 +1804,19 @@ struct ReferencePoint {
     return typed(o, kSigmaHi, kNaN); // AboveRange
   };
   std::optional<ReferencePoint> prev;
+  double last_step = std::numeric_limits<double>::infinity(); // the last Newton step
+  int slow = 0;                                                 // steps not halving
+  double intrinsic = kNaN; // a plateau point's price (the intrinsic), once one is evaluated
   double slope = std::isfinite(hint.slope) && hint.slope > 0.0 ? hint.slope : kNaN;
   if (hint.floor_first) {
     const std::optional<ReferencePoint> e = eval(kSigmaLo);
     if (!e) return stop();
     if (const auto o = take(*e)) return decided(*o);
-    prev = e;
+    if (e->cls == AlExerciseClass::ExercisePlateau) {
+      intrinsic = e->price;
+    } else {
+      prev = e;
+    }
   }
   double x = std::isfinite(hint.seed) && hint.seed > lo && hint.seed < hi
                  ? hint.seed
@@ -1839,20 +1848,48 @@ struct ReferencePoint {
       stats.fallback = IvPremiumFallback::None;
       return std::clamp(root, lo, hi);
     }
-    if (prev && prev->sigma != e->sigma) {
+    // A plateau point is flat in sigma (its chord is no local slope): the root lies past the
+    // plateau's edge, so the bracket is bisected and the point never seeds a chord.
+    const bool plateau = e->cls == AlExerciseClass::ExercisePlateau;
+    if (!plateau && prev && prev->sigma != e->sigma) {
       const double chord = (e->price - prev->price) / (e->sigma - prev->sigma);
       if (std::isfinite(chord) && chord > 0.0) slope = chord;
     }
-    if (std::isfinite(slope) && !(slope * w > 2.0 * eps)) {
+    if (!plateau && std::isfinite(slope) && !(slope * w > 2.0 * eps)) {
       return typed(IvRouteOutcome::PriceOnlyLowVega, std::isfinite(p_lo) ? lo : kNaN,
                    std::isfinite(p_hi) ? hi : kNaN);
     }
     double next = kNaN;
-    if (std::isfinite(slope)) {
-      const double newton = e->sigma - (e->price - price) / slope;
+    if (plateau) {
+      intrinsic = e->price;
+      next = reference_bisect(lo, hi);
+    } else if (std::isfinite(slope)) {
+      double newton = e->sigma - (e->price - price) / slope;
+      // Past the plateau's edge sigma* the premium P - I grows like (sigma - sigma*)^2 (smooth
+      // pasting), where Newton on P only halves its distance per step: with the intrinsic I
+      // known (a plateau point), the step is taken on g = sqrt(P - I), linear there.
+      if (std::isfinite(intrinsic) && e->price > intrinsic && price > intrinsic) {
+        const double target = std::sqrt(price - intrinsic);
+        const double ge = std::sqrt(e->price - intrinsic) - target;
+        double gslope = slope / (2.0 * std::sqrt(e->price - intrinsic));
+        if (prev && prev->price > intrinsic && prev->sigma != e->sigma) {
+          const double gp = std::sqrt(prev->price - intrinsic) - target;
+          const double chord = (ge - gp) / (e->sigma - prev->sigma);
+          if (std::isfinite(chord) && chord > 0.0) gslope = chord;
+        }
+        if (std::isfinite(gslope) && gslope > 0.0) newton = e->sigma - ge / gslope;
+      }
+      // A step that has not halved twice running is not converging: bisect instead.
+      const double step = std::fabs(newton - e->sigma);
+      slow = step > 0.5 * last_step ? slow + 1 : 0;
+      last_step = step;
       // Close to the root: straddle the estimate so the next evaluation closes the bracket.
       const double dir = e->side < 0 ? 1.0 : -1.0;
-      next = std::fabs(newton - e->sigma) <= 0.25 * w ? newton + dir * 0.45 * w : newton;
+      next = step <= 0.25 * w ? newton + dir * 0.45 * w : newton;
+      if (slow >= 2) {
+        next = reference_bisect(lo, hi);
+        slow = 0;
+      }
     } else if (e->side != 0) {
       next = e->sigma + (e->side < 0 ? w : -w); // a second point for the first chord
     }
@@ -1863,7 +1900,7 @@ struct ReferencePoint {
       if (!std::isfinite(p_hi) && next > 0.75 * kSigmaHi) next = kSigmaHi;
       if (!std::isfinite(p_lo) && next < 2.0 * kSigmaLo) next = kSigmaLo;
     }
-    prev = e;
+    if (!plateau) prev = e;
     x = next;
   }
 }

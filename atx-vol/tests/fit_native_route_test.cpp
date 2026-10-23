@@ -136,6 +136,35 @@ TEST(FitNativeRoute, EdgeBandContinuationPriceIsIdentifiedOnACertifiedBracket) {
   EXPECT_EQ(st.fallback, IvPremiumFallback::None);
 }
 
+// (1) The edge band past the plateau's edge (an SPY deep in-the-money put, 1.67 y, its mid one
+// cent over the intrinsic): kIvMin and every sigma up to the plateau's edge (~0.145) price the
+// intrinsic, and past it the premium grows like (sigma - sigma*)^2. The reference route
+// bisects across the plateau (no chord through a flat point) and steps on sqrt(P - I), so the
+// root is identified within the per-request cap - not left an Interval after 16 evaluations
+// of a secant crawling across the plateau (the first SPY run: 225 such requests).
+TEST(FitNativeRoute, EdgeBandRootPastThePlateausEdgeIsIdentifiedWithinTheCap) {
+  const double S = 772.9949951171875, K = 905.0, T = 1.6703925132751465;
+  const double r = 0.051124785095453262, q = 0.0068890395460387381;
+  const double price = 132.01499938964844; // the quote's mid: intrinsic 132.005 + 0.01
+  IvReferenceBudget budget{4, 64};
+  const IvPremiumGate gate = native_gate(&budget);
+  IvPremiumStats st;
+  const IvResult res = american_implied_vol_premium(price, S, K, T, r, q, Side::Put,
+                                                    premium_opts(), nullptr, st, &gate);
+  ASSERT_EQ(res.status, IvStatus::Ok) << static_cast<int>(st.route);
+  EXPECT_EQ(st.route, IvRouteOutcome::ReferenceRoot);
+  EXPECT_LE(st.acceptance.hi - st.acceptance.lo, kIvRootRequirement);
+  EXPECT_LE(st.reference_evaluations, kIvReferenceMaxEvaluations);
+  const AlOpts fast = al_fast_profile(std::nullopt);
+  const auto below = andersen_lake(S, K, T, st.acceptance.lo, r, q, Side::Put, fast);
+  const auto above = andersen_lake(S, K, T, st.acceptance.hi, r, q, Side::Put, fast);
+  ASSERT_TRUE(below && above);
+  EXPECT_LT(*below, price); // the bracket's ends straddle the price on the confirm kernel
+  EXPECT_GT(*above, price);
+  std::printf("[K4 plateau edge] root %.10f in %u evaluations\n", res.iv,
+              static_cast<unsigned>(st.reference_evaluations));
+}
+
 // (3) The reference budget: a request that finds it spent is refused (typed BudgetExhausted,
 // counted in the budget) without an evaluation; one that spends the last evaluation stops
 // there, also typed and counted - never a silent success, never a Search.
