@@ -32,8 +32,9 @@
 // ## Tiers (ServeTier)
 //
 //   Ladder (0)    the node's spot ladder: price, delta, gamma, vega and the
-//                 continuation-region theta from ONE Chebyshev map; served nodes only, the
-//                 spot inside the ladder window and the node side certified at build.
+//                 continuation-region theta from ONE Chebyshev map (gamma and theta withheld
+//                 inside the near-exercise-edge band, kServeEdgeBand); served nodes only,
+//                 the spot inside the ladder window and the node side certified at build.
 //   Family (1)    the (sigma, q) family at the contract's own yield: any strike of the
 //                 certified domain, any spot; price and vega (K1's fused pass) and, where
 //                 the build carries lane A0's bundle, A0's Greeks with A0's mask, reasons
@@ -253,7 +254,8 @@ struct ServedNodeSide {
   // node (family_price_delta), plus an 8-ulp floor; NaN when the node side has no ladder.
   double ladder_certificate_usd = std::numeric_limits<double>::quiet_NaN();
   std::uint8_t tiers = 0; // kServeNodeLadder | kServeNodeFamily
-  // The family tier's per-Greek reasons at the fit's spot (BundleUnavailable without A0).
+  // The family tier's per-Greek reasons at the fit's spot for the full mask (A0's bundle's
+  // under the A0 seam; else BundleUnavailable except vega).
   ServeGreekReasons family_reasons{};
   // The converged early-exercise edge S* at (tau, sigma, r, q) - exercise_boundary() on
   // the fit's AlOpts - that the ladder's band test uses: 0 (put) / +inf (call) in the

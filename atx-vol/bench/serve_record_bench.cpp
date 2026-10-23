@@ -371,6 +371,16 @@ void run_contracts(benchmark::State &state, const Dataset &d, const RowSpec &spe
     state.SkipWithError("no contract qualifies");
     return;
   }
+  // Untimed: the rows inside the near-exercise-edge band (theta / gamma withheld).
+  std::size_t near_edge = 0;
+  double min_edge_sd = std::numeric_limits<double>::infinity();
+  if (spec.op == Op::Serve) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const ServeAnswer a = d.records[p.record[i]]->serve(p.serve[i]);
+      near_edge += a.near_edge ? 1u : 0u;
+      if (std::isfinite(a.edge_sd)) min_edge_sd = std::min(min_edge_sd, a.edge_sd);
+    }
+  }
   std::vector<std::uint64_t> samples;
   samples.reserve(n * static_cast<std::size_t>(state.max_iterations));
   double sink = 0.0;
@@ -401,6 +411,10 @@ void run_contracts(benchmark::State &state, const Dataset &d, const RowSpec &spe
   benchmark::DoNotOptimize(sink);
   state.counters["contracts"] = static_cast<double>(n);
   state.counters["not_ok"] = static_cast<double>(not_ok);
+  if (spec.op == Op::Serve) {
+    state.counters["near_edge_rows"] = static_cast<double>(near_edge);
+    if (std::isfinite(min_edge_sd)) state.counters["min_edge_sd"] = min_edge_sd;
+  }
   state.counters["timer_overhead_ns"] = timer_overhead_ns();
   state.counters["p50_ns"] = quantile(samples, 0.50);
   state.counters["p99_ns"] = quantile(samples, 0.99);
@@ -508,6 +522,15 @@ void run_build(benchmark::State &state, const Dataset &d) {
   state.counters["bytes_ladders"] = static_cast<double>(bytes.ladders);
   state.counters["bytes_families"] = static_cast<double>(bytes.families);
   state.counters["bytes_geometries"] = static_cast<double>(bytes.geometries);
+  state.counters["bytes_fixed"] = static_cast<double>(bytes.fixed);
+  // The layout: one ServedNode (both sides) and one ladder (bytes.ladders less the
+  // two int32 ladder slots per node).
+  state.counters["sizeof_served_node"] = static_cast<double>(sizeof(ServedNode));
+  if (ladders > 0) {
+    state.counters["bytes_per_ladder"] =
+        static_cast<double>(bytes.ladders - 2 * nodes * sizeof(std::int32_t)) /
+        static_cast<double>(ladders);
+  }
   state.counters["first_build_s"] = d.build_seconds;
   state.SetLabel(d.fit_label);
   state.counters["ws_before_mb"] = d.working_set_before_mb;
