@@ -879,3 +879,112 @@ G3 MISS: SPY cold calibration median 4.54 s development row vs the 1 s bar; domi
 
 Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2cj-integrate-r6-report.md`. Evidence:
 `C:\atx-cache\quote-benchmark\W2cj-20261023-integrate\`.
+
+## W2c-k / r6 integration of C3, the curve/admission matrix and the opt-in call floor (vol-sota master plan, 2026-10-23)
+
+Lane W2c-k (run `vol-sota-r6-20261023`, pool-33) merged the approved C3 lane (shape-class matrix, admission
+contracts, opt-in shared call floor; review BLOCK at `7a0b4559` on a report-only major, fix round 1, scoped re-review
+ALL ADDRESSED at `57799aaf`) into the root `feat/vol-resume5-20261022`, `--no-ff`, on top of `746154d6`. The call
+floor stays opt-in (`serve.call_floor`, default `legacy`; library `QuoteSliceCallFloor::Legacy`). No default
+promoted; nothing pushed.
+
+| Commit | What | Conflicts | Outcome |
+| --- | --- | --- | --- |
+| `20bcfa1f` | merge C3 curve/admission matrix and call floor `57799aaf` (merge base `15bbeba7` = C2's tip, already in the root via W2c-i) | `CHANGELOG.md`, `atx-vol/CMakeLists.txt`, `tests/CMakeLists.txt` | union, no semantic glue |
+
+**Conflict resolution.** CHANGELOG = the root's W2c-i entry, then C3's `### NEW — opt-in shared call floor,
+shape-class matrix, admission contracts (lane C3)` (entry-set check 139 = 138 + 1). `atx-vol/CMakeLists.txt`: the
+library source list carries H0-A's `slice_serve_record.cpp` and C3's `quote_slice_call_floor.cpp`.
+`tests/CMakeLists.txt`: the quote-slice test sources, its suite filter and the `atx-vol-tests` source list carry
+K4's `fit_native_route_test.cpp` / `FitNativeRoute.*` and C3's `quote_slice_call_floor_test.cpp` /
+`quote_slice_admission_test.cpp` / `QuoteSliceCallFloor.*` / `QuoteSliceAdmission.*`. `quote_bench_policy.hpp`
+auto-merged: C3's key lives in the `serve` object's allow-list (`"floor_price_only", "metadata", "call_floor"`, each
+once); `load()`'s graded and document allow-lists are unchanged, so the predicted `load()` allow-list union did not
+occur.
+
+**Region discipline (auto-merged files).** Hunk-to-function map on the merge-base blob: in `quote_slice.cpp` C3
+touches the include, `prepare_fit` (1 line: `select_call_floor`) and `certify_and_serve` (the 3-line
+`lift_to_call_floor` hook); K4 (the root side since `15bbeba7`) also touches `certify_and_serve` (signature, the
+per-point family bound in the grid pricer, the grid key) — one shared function, at disjoint lines (C3 base 1712,
+K4 base 1565 / 1601 / 1623). The merged hook sits where C3's report asks: right after `accepted` is bound, before
+the non-dividend check and the rows loop; `prepare_fit`'s line follows `out.floor_policy`. In
+`quote_bench_policy.hpp` both lanes touch `load()` at disjoint lines (C3: `parse_serve` call, echo, graded-only
+check, profile mode, return; K4: allow-list line, three config lines). `quote_slice.hpp` and `quote_bench_main.cpp`
+share no function. C3 touches none of K4b's / K5's / H1's files (`deam_iv_cache*`, `american_iv.cpp`,
+`american_family_error.*`, `slice_serve_record.*`, `session.cpp`).
+
+**Diff proof.** 99 per-file diffs EQUAL_SEQ (16 vs the C3 blob, 85 vs the W2c-j root blob); the 2 DIFFER are
+`tests/CMakeLists.txt` on both sides, exactly the union lines. Merge vs `^1`: 16 files, +1717 / -9 (C3's own diff
++1718 / -9; one line less because the suite filter is one line).
+
+**Post-merge suites, both sides** (vol-rel, `-Jobs 1`, `ATX_VOL_FIT_WORKERS=3`). C3: quote-slice 245/245 (W2c-j's
+235 + `QuoteSliceCallFloor` 6 + `QuoteSliceAdmission` 4), `TermPrior.*` 7/7, matrix pytest (`test_quote_bench_cli`,
+`test_shape_matrix`, `test_quote_benchmark`, Python 3.12) 207 passed; C2: `QuoteSlicePublication.*` 28/28; K4:
+`FitNativeRoute.*` 12/12 in both owning executables (`[K4 fit] requests 195 typed 195 lanes 195 search 0 reference
+9`); H0-A: serve-record 28/28 (seams on); CLI pair 194 (= 193 + C3's call-floor CLI test); anchored
+`^atx-vol-(quote-slice|bench-clocks|quote-benchmark-tools)$|^serve-record:|^tick-path:` 85/85.
+
+**Gates on the final code `20bcfa1f`** (the docs commit changes `.md` files only):
+- 9/9 default hashes byte-identical (quote-bench `bdf0c96a`), `sha256sum -c` 9 OK with the log persisted (log
+  sha256 `564bc342`, = W2c-j's), stderr files 0 bytes.
+- AL fingerprint `53c4df68` on vol-rel-avx2 (bin byte-equal to W2c-j's).
+- Name set at cap 3: `52324ef8` exactly (the L575 flake did not fire); 1062 `^(pricing|simd)/` names, 0 added, 0
+  removed (C3's 10 tests live in `atx-vol-quote-slice-tests`, ctest `atx-vol-quote-slice`).
+- Combined anchored ctest (W2c-j regex + `atx-vol-quote-benchmark-tools`, which runs `test_shape_matrix.py`), native
+  ctest excluded: 187/187; the native ctest's two pytest files directly: 194 passed.
+- ForceScalar filter: 121 passed, 4 skipped, 1 known failure; `atx-vol-umbrella`: its 3 known failures (46 / 105,
+  unchanged: C3 adds no public header).
+- PCH-off (`vol-hygiene`): the closure of the 3 changed headers (`quote_slice.hpp`, `quote_slice_call_floor.hpp`,
+  `quote_bench_policy.hpp`), 37 TUs (12 library, 7 tools, 18 tests; 2 bench / python TUs excluded), 4 batches exit 0,
+  0 diagnostics.
+- Keys-ON, C3 (workers 2): combined-h0 dev200 `db61735c`, dev200b `c629ae54`, cohort5 `34dcc08a`, SPY (K4's input)
+  `331f8ff4` — all C3's recorded ids; the call-floor key alone on dev200 (graded-v1-serve `34971f44` ->
+  cf-graded-v1-serve `2644cafe`): served non-dividend calls below S - K*df 74 (17 chains) -> 0, lifted 74 + 274
+  later-floor, gained 176, lost 0, min signed move +4.4e-16; SOC 20742 K 1.5 call 2.0849999189 (`ok_price_only`)
+  -> 2.0856326857 (`ok`), bound 2.085633. C3's row table reproduced exactly.
+- Keys-ON, the 25 prior ids unchanged (all MATCH): K4 speed arm SPY `75ca0fc5` / cohort5 `93918f62` / dev200
+  `9571c2e0` / dev200b `d6c05740` (served lost 0 / gained 0 vs the default on all four) + the audit row (29,411
+  typed roots, 0 violations, 0 unresolved); C2 dev200b `2e31e087` / `c4612fc3` / `228b1a94` / `c1691f1e`, SPY /
+  cohort5 `ba413a85` / `4acd8575` / `d834b4d3` / `a90b5047` / `c3292d38` (workers 2); D1 `fc81aad3` / `c6016745`;
+  K3 `710115bb` / `13f6be35`; K2 `710115bb` / `6368997d` (replay block 13/13); C0 one_spot `a9dec618` / `ed34eef7`
+  / `34e3ed27` / `d7a48be7` / `34d5aab0`.
+- Two keys-ON rows matched only on their second run: cohort5 combined-h0 (run 1 `f4c97536`: 47 rows of one SPY
+  chain, <= 4.3e-13 USD, no status change) and C2 cohort5 box h0.5 + repair (run 1 `be888dc5`: 98 rows of two SPY
+  chains, <= 5.1e-13 USD). Both are the ledger's known workers >= 2 repair-arm nondeterminism (2026-10-23, P0
+  owns it), not a merge effect: C3's own binary gives `34dcc08a` through the same runner.
+
+**G4 (lane C3 verdict, recorded at integration): OPEN.** C1 PASS on all four cohorts; C2 coverage / containment
+and C3 MAE-spread / IV-bp MISS on the combined-h0 arm with named experiments; SPY 4/32 served expiries at the
+default is a fit / repair-budget / box-rung defect — 31/33 admit an in-box arbitrage-free grid; C4 = exact in-box
+projection rung; F2 untested. (The merged root reproduces the combined-h0 predictions byte for byte on all four
+cohorts, so C3's scored rows stand for this root: eligible coverage dev200 88.33 %, dev200b 93.68 %, SPY 48.80 %;
+SPY MAE/spread 0.227; identified IV median SPY 9.7 bp, mega 22.5 / 60.6 bp.)
+
+### Deferred minors (W2c-k: C3 review, fix round, integration)
+- TIGR 20770 (dev200b, keys-ON; -36 rows on 20770 / +34 on 20763, net -2) -> K4b as a declared hunk: the
+  parity-coupled clamp in `repair_quote_slice_calendar` (raise the node's put within its cap when a call is clamped
+  up). A **Q2 promotion precondition**: `serve.call_floor` is not promoted until it lands or the PM accepts the
+  exchange; a promotion bundle also carries new full hashes for the 9 defaults and re-measures D2 on dev200b.
+- Repair arms: the floor reprices 111 (dev200b) / 141 (dev200) calendar-coupled rows in both directions (max 0.25
+  USD); one dev200 row, IEF 20805 K 85 C, lands 0.055 spreads below its bid, inside the arm's 1.0-spread
+  market-distance bound.
+- SPY 17/32 served slices on combined-h0 (4/32 at the default) -> C4 (exact in-box projection rung at h0;
+  acceptance >= 31/33 SPY expiries, 0 violations, containment >= 98.5 %, cost per expiry).
+- C3 hook requests for the owners of `quote_slice.cpp` / `quote_surface.cpp`: (1) C0 residual 2,
+  `price_only_floor_vols()` should use `identify_served` (measured exposure 0); (2) the D2 clamp above; (3) a
+  per-expiry profile route keyed on a class tag (per-class winners inside one surface fit); (4) the in-box
+  projection rung (C4 / K4b). K4b keeps the hook placement in `certify_and_serve` / `prepare_fit` when it merges.
+- Deliverable gaps recorded by C3: no shape-class selector in `curve_selector.cpp` (tool-side `shape_matrix.py
+  select`); no short-dated / sparse regularisation (term-prior experiment named); a bid-only lower bound needs an
+  API extension (0 such rows); `term_prior` / L3a wing untouched; events / 0DTE have 0 eligible rows; linear variance
+  is not a quote-slice family.
+- Re-review notes: the single-table `select` exited 1 on matrix-c3 / c3b / extra (the lane's multi-table selection
+  reports 0 differences); the evidence dir holds no red-test logs (the re-reviewer reproduced 4 fails on the old
+  tool).
+- C3 process: `c17fe469` does not configure on its own (next commit fixes it); the D3 instrumentation accident was
+  restored blob-exact; D8 — C3's matrix runs overlapped K4's first G3 window.
+- W2c-k integration: none beyond the three unions; `certify_and_serve` and `load()` are functions both C3 and K4
+  edited, at disjoint lines (listed above).
+
+Report: `.superpowers/sdd/2026-10-18-vol-sota/lane-W2ck-integrate-r6-report.md`. Evidence:
+`C:\atx-cache\quote-benchmark\W2ck-20261023-integrate\`.
