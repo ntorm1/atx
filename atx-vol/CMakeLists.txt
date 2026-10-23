@@ -119,6 +119,7 @@ set(ATX_VOL_FITTING_SOURCES
     src/fitting/quote_slice_carry.cpp
     src/fitting/quote_slice_vol_space.cpp
     src/fitting/quote_slice_publication.cpp
+    src/fitting/quote_slice_call_floor.cpp
     src/fitting/deam_iv_cache.cpp
     src/fitting/quote_surface.cpp
     src/fitting/slice_channel.cpp

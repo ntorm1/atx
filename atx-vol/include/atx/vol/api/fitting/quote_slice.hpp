@@ -429,6 +429,40 @@ struct QuoteSliceRepairRecord {
 // Prices, certificates and every calendar decision are unchanged.
 enum class QuoteSliceFloorPolicy : std::uint8_t { Legacy, PriceOnly };
 
+// The served call floor (lane C3, opt-in). Legacy (the default) is the historical path bit
+// for bit: a call node's hard floor is its American exercise value max(S - K, 0).
+// DiscountedIntrinsic also holds every call node at or above the SHARED, maturity-consistent
+// discounted intrinsic of the snapshot's non-dividend expiries: the largest
+// spot - K * discount over the QuoteSliceCallFloorConfig::lines whose calendar_years is at
+// most the expiry's own. A non-dividend American call is worth at least S - K * df (C1 of
+// check_nondividend_american), and a later American call at least an earlier one, so the
+// floor also lifts a LATER expiry - a dividend payer included, whose own model may sit at
+// the exercise value S - K - off intrinsic wherever an earlier non-dividend expiry's bound
+// is higher. Without it a deep-ITM non-dividend call is served at S - K, below S - K * df,
+// whenever a later slice at S - K caps it through the calendar repair (review-C2 B(3)).
+// A slice whose lifted nodes fail its own certificate keeps its historical prices; lifted
+// nodes are moved nodes (QuoteSliceFit::moved_nodes, volatility re-implied).
+enum class QuoteSliceCallFloor : std::uint8_t { Legacy, DiscountedIntrinsic };
+
+[[nodiscard]] const char *to_string(QuoteSliceCallFloor value) noexcept;
+
+// One non-dividend expiry's discounted intrinsic, spot - K * discount (lane C3).
+// Valid: finite calendar_years >= 0, finite spot > 0, discount in (0, 1] (rate >= 0).
+struct QuoteSliceCallFloorLine {
+  double calendar_years = 0.0;
+  double spot = 0.0;
+  double discount = 1.0;
+};
+
+// QuoteSliceConfig::call_floor (lane C3). Under Legacy the line list must be empty (an
+// inert floor is refused). Under DiscountedIntrinsic the caller supplies the snapshot's
+// lines, normally quote_surface_call_floor_lines over the same expiries; an empty list
+// lifts nothing.
+struct QuoteSliceCallFloorConfig {
+  QuoteSliceCallFloor mode = QuoteSliceCallFloor::Legacy;
+  std::vector<QuoteSliceCallFloorLine> lines;
+};
+
 struct QuoteSliceConfig {
   CurveConfig curve{.kind = VolCurveKind::Essvi};
   QuoteSliceQualityConfig quality{};
@@ -458,6 +492,9 @@ struct QuoteSliceConfig {
   // Opt-in identifiability publication (lane C0; QuoteSliceFloorPolicy). Legacy is the
   // historical path bit for bit.
   QuoteSliceFloorPolicy floor_policy = QuoteSliceFloorPolicy::Legacy;
+  // Opt-in served call floor (lane C3; QuoteSliceCallFloor). Legacy is the historical path
+  // bit for bit.
+  QuoteSliceCallFloorConfig call_floor{};
 };
 
 enum class QuoteSliceQuoteStatus : std::uint8_t {
@@ -704,6 +741,13 @@ struct QuoteSliceDiagnostics {
   // failed a cross-side check; NotAttempted under Exact or a passed certificate.
   QuoteSliceRepairRecord box{};
   QuoteSliceDeamDiagnostics deam{};
+  // Lane C3 (QuoteSliceCallFloor::DiscountedIntrinsic): the call-floor lines this expiry
+  // is held to (calendar_years at most its own; empty under Legacy), the call nodes the
+  // floor lifted, and whether a lift was refused because the lifted nodes failed the
+  // certificate (the historical prices are kept).
+  std::vector<QuoteSliceCallFloorLine> call_floor_lines;
+  std::size_t call_floor_lifted = 0;
+  bool call_floor_refused = false;
 };
 
 struct QuoteSliceCarryPoint {
@@ -1185,6 +1229,15 @@ struct QuoteSurfaceExpiry {
   // Caller-supplied provenance, copied onto the expiry's QuoteSliceFit::snapshot (lane C0).
   QuoteSliceSnapshotInfo snapshot{};
 };
+
+// The shared call-floor lines of one snapshot's expiries (lane C3, QuoteSliceCallFloor):
+// one {calendar_years, spot, exp(-rate * calendar_years)} line per expiry that is
+// non-dividend on its inputs - rate >= 0, zero continuous yield on the market and on every
+// quote override, zero dividend PV and no calendar dividend - in input order. The regime is
+// the one check_nondividend_american certifies (lane C2's detail::nondividend_discount);
+// a carry-shifted expiry (snapshot.one_spot) is not non-dividend. Allocates.
+[[nodiscard]] std::vector<QuoteSliceCallFloorLine>
+quote_surface_call_floor_lines(std::span<const QuoteSurfaceExpiry> expiries);
 
 // Admission ladder of fit_quote_surface. Off is the historical point-first
 // admission, bit for bit. KnotFirst (opt-in, point profiles only) is described

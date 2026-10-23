@@ -19,6 +19,7 @@
 #include "atx/vol/api/pricing/implied_vol.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
+#include "fitting/quote_slice_call_floor.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/quote_slice_nodes.hpp"
 #include "fitting/quote_slice_vol_space.hpp"
@@ -530,6 +531,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.discrete_div_steps = config.discrete_div_steps;
   out.discrete_div_scheme = config.discrete_div_scheme;
   out.floor_policy = config.floor_policy;
+  ATX_TRY_VOID(detail::select_call_floor(out, config.call_floor)); // lane C3, opt-in
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
@@ -1669,6 +1671,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
         std::max(-q_min, 0.0) * (market.variance_years - event.tau));
   }
   bounds.prepaid_min = std::max(bounds.prepaid_min, 0.0);
+  // Lane C3 (opt-in QuoteSliceCallFloor): the shared call floor, applied only when the
+  // lifted nodes certify, so `certified` below holds whenever a node was lifted.
+  std::vector<std::uint8_t> lifted = detail::lift_to_call_floor(out, prices, bounds);
   auto certified = AmericanPriceSlice::create(prices, bounds);
   const bool channel_mode =
       channel_repair != nullptr && channel_repair->mode == QuoteSliceRepairMode::Channel;
@@ -1679,7 +1684,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   // copied when one of them can run).
   std::vector<AmericanPriceNode> fitted;
   if (!certified && (channel_mode || box_mode)) fitted = prices;
-  std::vector<std::uint8_t> repaired;
+  std::vector<std::uint8_t> repaired = std::move(lifted); // lifted nodes are moved nodes
   if (!certified && repair_half_spreads > 0.0 &&
       repair_convexity(prices, quotes, repair_half_spreads, diag.channel, repaired)) {
     certified = AmericanPriceSlice::create(prices, bounds);
