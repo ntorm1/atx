@@ -621,6 +621,28 @@ if(WIN32)
     target_link_libraries(atx-vol-serve-record-bench PRIVATE psapi)
 endif()
 
+# ── Lane A1 (r6, 2026-10-23) — served-analytics bench (the A1 row) ────────────────
+# api/analytics/served_analytics.hpp on the fitted SPY 23 d expiry served from a live
+# book: the scenario matrix by Taylor and by exact repricing (per-contract p50 / p99,
+# whole-matrix time), the error domain, failed exposure, memory, the near-boundary and the
+# ex-dividend tables. Input by environment (ATX_VOL_SERVE_RECORD_SPY23; see the TU
+# banner); no input, no rows. Own target (one owner per TU).
+add_executable(atx-vol-served-analytics-bench
+    bench_main.cpp
+    served_analytics_bench.cpp
+)
+target_link_libraries(atx-vol-served-analytics-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+if(WIN32)
+    target_link_libraries(atx-vol-served-analytics-bench PRIVATE psapi)
+endif()
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(
