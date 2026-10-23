@@ -503,6 +503,13 @@ TEST(ServedScenario, ACellOutsideTheBoxIsExcludedFromTaylorOnly) {
   EXPECT_EQ(cell.taylor_excluded[static_cast<std::size_t>(ScenarioExclusion::OutsideTaylorBox)],
             6u);
   EXPECT_EQ(cell.exact_legs, 6u);
+  // The like-for-like comparison holds only legs in BOTH totals: none here, so a Taylor
+  // total of 0 is never read against the exact total of six legs.
+  EXPECT_EQ(cell.matched_legs, 0u);
+  EXPECT_EQ(cell.matched_taylor_pnl, 0.0);
+  EXPECT_EQ(cell.matched_exact_pnl, 0.0);
+  EXPECT_EQ(cell.matched_remainder, 0.0);
+  EXPECT_NE(cell.exact_pnl, 0.0);
   double premium = 0.0;
   for (std::size_t u = 0; u < p.size(); ++u) {
     premium += std::abs(p[u].quantity * p[u].multiplier) * res->legs[u].base_price;
@@ -626,6 +633,10 @@ TEST(ServedScenario, FailedExposureIsReportedPerReasonAndEstimatesAreSummedApart
     // The certified total is the Neumaier sum of the certified legs only, in leg order.
     NeumaierSum certified;
     NeumaierSum estimates;
+    NeumaierSum matched_taylor;
+    NeumaierSum matched_exact;
+    NeumaierSum matched_remainder;
+    std::uint32_t matched = 0;
     for (std::size_t u = 0; u < p.size(); ++u) {
       const ServedLegProvenance &leg = res->legs[u];
       const ScenarioLegCell &lc = res->cells[leg.unique_index * res->cell.size() + c];
@@ -642,9 +653,22 @@ TEST(ServedScenario, FailedExposureIsReportedPerReasonAndEstimatesAreSummedApart
         EXPECT_EQ(leg.input_class, AnalyticsInputClass::Estimate);
         estimates.add(value);
       }
+      if (lc.taylor_exclusion == ScenarioExclusion::None &&
+          lc.exact_exclusion == ScenarioExclusion::None) {
+        matched_taylor.add(value);
+        matched_exact.add(scale * lc.exact);
+        matched_remainder.add(std::abs(scale) * lc.remainder);
+        ++matched;
+      }
     }
     EXPECT_EQ(bits(cell.taylor_pnl), bits(certified.value()));
     EXPECT_EQ(bits(cell.estimate_taylor_pnl), bits(estimates.value()));
+    // The like-for-like totals: the legs in both totals only, in leg order.
+    EXPECT_EQ(cell.matched_legs, matched);
+    EXPECT_LE(cell.matched_legs, std::min(cell.taylor_legs, cell.exact_legs));
+    EXPECT_EQ(bits(cell.matched_taylor_pnl), bits(matched_taylor.value()));
+    EXPECT_EQ(bits(cell.matched_exact_pnl), bits(matched_exact.value()));
+    EXPECT_EQ(bits(cell.matched_remainder), bits(matched_remainder.value()));
   }
 }
 

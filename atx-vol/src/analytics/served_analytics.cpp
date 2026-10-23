@@ -583,7 +583,7 @@ struct Uniques {
 
 struct CellSums {
   NeumaierSum taylor, delta, gamma, vega, theta, remainder, exact, certificate, est_taylor,
-      est_exact;
+      est_exact, matched_taylor, matched_exact, matched_remainder;
   std::array<NeumaierSum, kScenarioExclusionCount> taylor_usd{}, exact_usd{};
 };
 
@@ -625,6 +625,13 @@ void accumulate(const ScenarioLegCell &lc, double scale, double premium, Scenari
     ++cell.exact_excluded[ex];
     if (std::isfinite(premium)) sum.exact_usd[ex].add(premium);
   }
+  if (lc.taylor_exclusion == ScenarioExclusion::None &&
+      lc.exact_exclusion == ScenarioExclusion::None) {
+    sum.matched_taylor.add(value);
+    sum.matched_exact.add(scale * lc.exact);
+    sum.matched_remainder.add(abs_scale * lc.remainder);
+    ++cell.matched_legs;
+  }
 }
 
 void finish(const CellSums &sum, ScenarioCell &cell) {
@@ -638,6 +645,9 @@ void finish(const CellSums &sum, ScenarioCell &cell) {
   cell.exact_certificate_usd = sum.certificate.value();
   cell.estimate_taylor_pnl = sum.est_taylor.value();
   cell.estimate_exact_pnl = sum.est_exact.value();
+  cell.matched_taylor_pnl = sum.matched_taylor.value();
+  cell.matched_exact_pnl = sum.matched_exact.value();
+  cell.matched_remainder = sum.matched_remainder.value();
   for (std::size_t k = 0; k < kScenarioExclusionCount; ++k) {
     cell.taylor_excluded_usd[k] = sum.taylor_usd[k].value();
     cell.exact_excluded_usd[k] = sum.exact_usd[k].value();

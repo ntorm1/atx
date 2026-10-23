@@ -413,8 +413,16 @@ struct ScenarioCell {
   // Estimate legs (uncertified inputs), summed apart - never into the totals above.
   double estimate_taylor_pnl = 0.0;
   double estimate_exact_pnl = 0.0;
+  // Like for like: the legs in BOTH the Taylor and the exact totals only. The two totals
+  // above may hold different legs (a leg excluded from one method only, e.g. a missing
+  // gamma or an unbounded remainder on the Taylor side), so taylor_pnl - exact_pnl is not
+  // a Taylor error; matched_taylor_pnl - matched_exact_pnl is, against matched_remainder.
+  double matched_taylor_pnl = 0.0;
+  double matched_exact_pnl = 0.0;
+  double matched_remainder = 0.0;
   std::uint32_t taylor_legs = 0;
   std::uint32_t exact_legs = 0;
+  std::uint32_t matched_legs = 0;
   std::array<std::uint32_t, 5> exact_routes{}; // legs per ScenarioExactRoute
   ScenarioExclusionCounts taylor_excluded{};
   ScenarioExclusionUsd taylor_excluded_usd{}; // base premium of the excluded legs
