@@ -37,9 +37,9 @@
 //                     r <= 0 && q >= r; call q <= 0 && r >= q): Black-76.
 //   UnsupportedRegime the double-continuation regime (put q < r < 0 / call r < q < 0):
 //                     the option has TWO exercise boundaries and the single-boundary
-//                     Andersen-Lake scheme cannot represent them. The module has no
-//                     two-boundary route, so no price is served: andersen_lake returns
-//                     NotImplemented and andersen_lake_classified a typed
+//                     Andersen-Lake scheme cannot represent them. No Andersen-Lake route
+//                     has a two-boundary scheme, so none serves a price: andersen_lake
+//                     returns NotImplemented and andersen_lake_classified a typed
 //                     UnsupportedRegime with a NaN price.
 //   ExercisePlateau   American regime, spot on the exercise side of B(T): the exact
 //                     value is the intrinsic and dP/dsigma == 0.
