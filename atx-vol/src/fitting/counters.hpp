@@ -1289,6 +1289,11 @@ struct FitTimingCounters {
   std::uint64_t deam_sub_grid_family_ns{0};
   std::uint64_t deam_sub_grid_kernel_ns{0};
   std::uint32_t deam_batch_grid_prices{0};
+  // K4b (r6): band-edge prices evaluated in a batch and consumed (deam_native_batch), and
+  // native roots whose acceptance placed its confirm with the lane's fused vega instead of
+  // a family chord (the lane-vega hook; no covering envelope, or a refused chord).
+  std::uint32_t deam_batch_edge_prices{0};
+  std::uint32_t deam_lane_vegas{0};
 };
 
 // Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::

@@ -237,6 +237,8 @@ void add_fit_work(FitWork &work, const ft::FitTimingCounters &c) noexcept {
   work.deam_sub_grid_family_ns += c.deam_sub_grid_family_ns;
   work.deam_sub_grid_kernel_ns += c.deam_sub_grid_kernel_ns;
   work.deam_batch_grid_prices += c.deam_batch_grid_prices;
+  work.deam_batch_edge_prices += c.deam_batch_edge_prices;
+  work.deam_lane_vegas += c.deam_lane_vegas;
 }
 
 FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
@@ -320,6 +322,8 @@ FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
   d.deam_sub_grid_kernel_ns =
       saturating_minus(a.deam_sub_grid_kernel_ns, b.deam_sub_grid_kernel_ns);
   d.deam_batch_grid_prices = saturating_minus(a.deam_batch_grid_prices, b.deam_batch_grid_prices);
+  d.deam_batch_edge_prices = saturating_minus(a.deam_batch_edge_prices, b.deam_batch_edge_prices);
+  d.deam_lane_vegas = saturating_minus(a.deam_lane_vegas, b.deam_lane_vegas);
   return d;
 }
 
@@ -391,7 +395,8 @@ Json native_route_json(const FitWork &w) {
                       {"lane_misses", w.deam_batch_lane_misses},
                       {"confirms", w.deam_batch_confirms},
                       {"confirm_hits", w.deam_batch_confirm_hits},
-                      {"grid_prices", w.deam_batch_grid_prices}};
+                      {"grid_prices", w.deam_batch_grid_prices},
+                      {"edge_prices", w.deam_batch_edge_prices}};
   return {{"native_lane_status", status},
           {"route_outcome", outcome},
           {"subclock", subclock},
@@ -441,7 +446,6 @@ Json fit_work_json(const FitWork &w) {
 }
 
 Json families_json(const FitWork &w) {
-  const char *const not_counted = "unavailable: not counted by the fit";
   return {{"built", w.deam_family_builds},
           {"build_validation_s", 1.0e-6 * static_cast<double>(w.deam_family_build_us)},
           {"iterate_prices", w.deam_family_prices},
@@ -451,7 +455,7 @@ Json families_json(const FitWork &w) {
           {"grid_max_point_bound_usd", w.deam_family_grid_max_bound_usd},
           {"attempted", w.deam_family_sides_requested},
           {"refused", saturating_minus(w.deam_family_sides_requested, w.deam_family_builds)},
-          {"lane_vegas", not_counted}};
+          {"lane_vegas", w.deam_lane_vegas}};
 }
 
 Json stage_clock_json(const DeAmStageClock &c) {

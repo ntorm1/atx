@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
@@ -27,6 +28,11 @@
 #include "pricing/american_iv_batch_status.hpp" // K2: the native attempt's typed outcome
 
 namespace atx::vol {
+
+namespace sigma_q_family_detail {
+struct PremiumTable; // american_sigma_q_family.hpp (K1's precontracted family snapshot)
+} // namespace sigma_q_family_detail
+struct IvPremiumPrepared; // K4b: the batched route's prepared values (below)
 
 // Why a Premium inversion handed the price to the Search route (None: accepted).
 enum class IvPremiumFallback : std::uint8_t {
@@ -72,7 +78,26 @@ struct IvReferenceBudget {
   std::uint32_t calls = 0;
   std::uint32_t evaluations = 0;
   std::uint32_t refused = 0; // requests refused because the budget was spent
+  // K4b (r6): the wall-time budget on top of the count budget (QuoteSliceChannelConfig
+  // deam_reference_max_wall_us; 0: none): the reference route's wall spent so far, checked
+  // at entry and before every evaluation; a request it stops is BudgetExhausted like a
+  // spent count (`refused`) and is also counted in refused_wall.
+  std::uint64_t max_wall_ns = 0;
+  std::uint64_t wall_ns = 0;
+  std::uint32_t refused_wall = 0;
 };
+
+// K4b (review-K4 m2): one evaluated point's effect on the reference route's certified bracket
+// [lo, hi] (p_lo / p_hi: the confirm kernel's prices at the certified ends, NaN: that end is
+// not certified). A certified low side (side < 0) at or above lo moves lo, a certified high
+// side (side > 0) at or below hi moves hi - but only strictly inside the other end when that
+// end is certified: a point on the wrong side of a certified end is a crossing (possible only
+// if the kernel's tested distance were violated) and the bracket then serves no root. Exposed
+// for tests (american_iv.cpp reference_root is its caller).
+enum class IvReferenceTake : std::uint8_t { None = 0, Lower = 1, Upper = 2, Crossed = 3 };
+[[nodiscard]] IvReferenceTake iv_reference_take(double &lo, double &hi, double &p_lo,
+                                                double &p_hi, double sigma, double price,
+                                                int side) noexcept;
 
 // Kernel evaluations one reference request may spend (its own cap inside the budget): 32, so
 // a root in the flat high-volatility tail or just past the plateau's edge closes (16 left
@@ -223,6 +248,15 @@ struct IvPremiumStats {
   // depends on them.
   bool timed = false;
   std::array<std::uint64_t, kIvPremiumSubClockCount> sub_ns{};
+  // K4b (r6): the batched route (IvPremiumGate::prepared): the request consumed a prepared
+  // lane / ran its own one-lane call although a lane was prepared for it (its inputs
+  // differed) / consumed a prepared first confirm price.
+  bool batch_lane_hit = false;
+  bool batch_lane_miss = false;
+  bool batch_confirm_hit = false;
+  // K4b (the lane-vega hook): the native root's acceptance placed its confirm with the lane's
+  // fused vega instead of a family chord (no covering envelope, or a refused chord).
+  bool lane_vega_used = false;
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp
@@ -334,6 +368,13 @@ struct IvPremiumGate {
   // the accurate kernel). `reference_budget` (nullptr: unbounded) is the chain's budget.
   bool native_route = false;
   IvReferenceBudget *reference_budget = nullptr;
+  // K4b (r6, opt-in on the native route): the values the batched route prepared for THIS
+  // request (IvPremiumPrepared below; nullptr: none) - consumed only on bit-identical inputs.
+  const IvPremiumPrepared *prepared = nullptr;
+  // K4b (review-K4 m5, opt-in on the native route): a request whose side carries no family
+  // goes to the bounded reference route (seeded at the Black-76 IV) instead of the seed leg:
+  // no Barone-Adesi-Whaley / Screen iterates on the route.
+  bool no_family_reference = false;
 };
 
 // The family enclosure of a (sigma, q) family root (lane K3; american_iv.cpp, the Skipped
@@ -371,6 +412,153 @@ struct FamilyEnclosure {
 [[nodiscard]] double iv_premium_seed_gate(double K, double T,
                                           const std::optional<AlOpts> &seed_opts,
                                           const IvPremiumGate *gate) noexcept;
+
+// ── K4b (r6, 2026-10-23): the batched native fit route ─────────────────────────────────
+//
+// A work group - one chain cache (QuoteSliceChannelConfig::deam_native_batch) - prepares
+// its requests' family-native lanes in iv_batch::invert_many batches (one call per side for
+// the mids, one for the bids and asks started from their mids' outcomes), then the K3
+// acceptance's family enclosure of every lane the route accepts and, on the AVX2 boundary
+// batch, the first confirm price of those the enclosure does not close - BEFORE the
+// requests run. Each request then runs the native route unchanged: IvPremiumGate::prepared
+// hands it the values prepared for it, and the route consumes one only when the inputs it
+// would pass are bit-identical to the ones the value was computed from (otherwise it
+// computes its own, counted as a miss). So the batched route serves what the unbatched
+// route serves wherever the batch ran the scalar map (a lane's result is a pure function of
+// its inputs, K2); a lane from the AVX2 kernel carries the kernel's documented rounding class
+// (american-iv-batch.md section 5); and a confirm price from the AVX2 boundary batch is
+// consumed only where its side decision - and the far-root placement test - clears the
+// confirm kernel's tested bound by more than kIvBatchConfirmMarginRel max(P, 1), so every
+// certified side is the one the scalar confirm kernel decides.
+
+// AVX2 boundary batch versus the scalar Andersen-Lake kernel on the same scheme, relative to
+// max(P, 1): the tested class (|dP| <= 1.1e-12 USD on the chain-batch grid, LEDGER L534;
+// pinned with margin by FitNativeRoute.BatchedConfirmPricesAreTheScalarKernelsToTheirClass).
+inline constexpr double kIvBatchConfirmMarginRel = 1.0e-11;
+
+// The values prepared for one request. Inputs are kept to be compared bit for bit.
+struct IvPreparedLane {
+  bool valid = false;
+  const AlSigmaQFamily *family = nullptr;
+  double S = std::numeric_limits<double>::quiet_NaN();
+  double K = std::numeric_limits<double>::quiet_NaN();
+  double target = std::numeric_limits<double>::quiet_NaN();
+  double q = std::numeric_limits<double>::quiet_NaN();
+  double tol = std::numeric_limits<double>::quiet_NaN();
+  double seed = std::numeric_limits<double>::quiet_NaN();
+  double bracket_lo = std::numeric_limits<double>::quiet_NaN();
+  double bracket_hi = std::numeric_limits<double>::quiet_NaN();
+  double price_lo = std::numeric_limits<double>::quiet_NaN();
+  double price_hi = std::numeric_limits<double>::quiet_NaN();
+  // One lane of iv_batch::InverseBatchOut.
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+  double lo = std::numeric_limits<double>::quiet_NaN();
+  double hi = std::numeric_limits<double>::quiet_NaN();
+  double p_lo = std::numeric_limits<double>::quiet_NaN();
+  double p_hi = std::numeric_limits<double>::quiet_NaN();
+  double residual = std::numeric_limits<double>::quiet_NaN();
+  double vega = std::numeric_limits<double>::quiet_NaN();
+  double last = std::numeric_limits<double>::quiet_NaN();
+  std::uint16_t evaluations = 0;
+  iv_batch::InverseStatus status = iv_batch::InverseStatus::Inactive;
+  std::uint8_t flags = 0;
+};
+struct IvPreparedEnclosure {
+  bool valid = false;
+  const AlSigmaQFamily *family = nullptr;
+  const ValidatedErrorEnvelope *env = nullptr;
+  double price = std::numeric_limits<double>::quiet_NaN();
+  double S = std::numeric_limits<double>::quiet_NaN();
+  double K = std::numeric_limits<double>::quiet_NaN();
+  double q = std::numeric_limits<double>::quiet_NaN();
+  double x = std::numeric_limits<double>::quiet_NaN();
+  double w = std::numeric_limits<double>::quiet_NaN();
+  FamilyEnclosure enclosure{};
+  std::uint32_t family_prices = 0; // what family_enclosure spent (charged on consumption)
+};
+struct IvPreparedConfirm {
+  bool valid = false; // set only for a decisive price (see the header comment above)
+  double S = std::numeric_limits<double>::quiet_NaN();
+  double K = std::numeric_limits<double>::quiet_NaN();
+  double T = std::numeric_limits<double>::quiet_NaN();
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+  double r = std::numeric_limits<double>::quiet_NaN();
+  double q = std::numeric_limits<double>::quiet_NaN();
+  Side side = Side::Put;
+  std::optional<AlOpts> opts = std::nullopt;
+  double price = std::numeric_limits<double>::quiet_NaN();
+};
+struct IvPremiumPrepared {
+  IvPreparedLane lane{};
+  IvPreparedEnclosure enclosure{};
+  IvPreparedConfirm confirm{};
+};
+
+// One request of a work group: the arguments premium_root receives, and the native carry of
+// the memory it will run with (nullptr: none, or an invalid carry).
+struct IvNativeBatchRequest {
+  double price = std::numeric_limits<double>::quiet_NaN();
+  double S = std::numeric_limits<double>::quiet_NaN();
+  double K = std::numeric_limits<double>::quiet_NaN();
+  double T = std::numeric_limits<double>::quiet_NaN();
+  double r = std::numeric_limits<double>::quiet_NaN();
+  double q = std::numeric_limits<double>::quiet_NaN();
+  Side side = Side::Put;
+  double tol = std::numeric_limits<double>::quiet_NaN();
+  const IvPremiumNativeCarry *carry = nullptr;
+};
+
+// What a work group's preparation spent (added to, never reset). The *_ns parts are read
+// only with timing armed (the `timed` arguments below).
+struct IvNativeBatchWork {
+  std::uint64_t calls = 0;      // invert_many calls
+  std::uint64_t lanes = 0;      // lanes they inverted
+  std::uint64_t avx2_calls = 0; // calls that ran the AVX2 kernel
+  std::uint64_t enclosures = 0; // K3 enclosures prepared
+  std::uint64_t confirms = 0;   // first confirm prices evaluated in a batch (decisive or not)
+  std::uint64_t decisive = 0;   // ... of which decisive (prepared for consumption)
+  std::uint32_t family_prices = 0;
+  std::uint64_t lane_ns = 0;
+  std::uint64_t family_ns = 0;
+  std::uint64_t confirm_ns = 0;
+};
+
+// Whether premium_root's family-native branch admits the price: finite inputs, strictly
+// below the identifiable range's top and above the accurate non-monotone edge band - the
+// native route's own window (the remaining conditions are the gate's).
+[[nodiscard]] bool iv_premium_native_window(double price, double S, double K, double T, double r,
+                                            double q, Side side,
+                                            const std::optional<AlOpts> &opts) noexcept;
+
+// Prepares the family-native lanes of the requests (all of the family's side; out has one
+// entry per request) in one invert_many call: the AVX2 kernel of the table (K1's snapshot of
+// the family) when the table is non-null and simd::use_avx2() holds, else the family's own
+// scalar map (the one-lane route's source, so a consumed lane is that route's bit for bit).
+// Each lane gets exactly the seed and retained bracket family_native_root forms from the
+// request's carry. Writes out[i].lane; a batch-level refusal leaves every lane invalid.
+void iv_native_prepare_lanes(const AlSigmaQFamily &f,
+                             const sigma_q_family_detail::PremiumTable *table,
+                             std::span<const IvNativeBatchRequest> requests,
+                             std::span<IvPremiumPrepared> out, bool timed,
+                             IvNativeBatchWork &work);
+
+// The carry family_native_root writes from a lane's outcome at the request's price (what the
+// quote's bid and ask start from).
+[[nodiscard]] IvPremiumNativeCarry iv_native_lane_carry(const IvPreparedLane &lane,
+                                                        double price) noexcept;
+
+// Prepares the K3 acceptance of every request whose prepared lane the route accepts
+// (Converged with a vega above the lane floor, the root inside the seed box): its family
+// enclosure (family_enclosure on the envelope, exactly as accept_family_native runs it)
+// and - with avx2 set and the enclosure not closing the root - the first confirm price at
+// the root on the AVX2 boundary batch (american_put_boundary_batch, calls through the
+// McDonald-Schroder put map) under the confirm options, kept only where decisive. Writes
+// out[i].enclosure / out[i].confirm.
+void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                  std::span<const IvNativeBatchRequest> requests,
+                                  std::span<IvPremiumPrepared> out,
+                                  const std::optional<AlOpts> &confirm_opts, bool avx2,
+                                  bool timed, IvNativeBatchWork &work);
 
 // IvOpts-typed inversion under the Premium strategy with optional per-contract memory
 // (nullptr: none). `opts.strategy` is ignored (this IS Premium); every other field

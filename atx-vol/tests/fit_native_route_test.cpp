@@ -29,6 +29,8 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/american_region.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "pricing/american_family_error.hpp"
@@ -708,6 +710,435 @@ TEST(FitNativeRoute, InverseSubClocksAreChargedOnlyUnderAnArmedChainTimer) {
   EXPECT_FALSE(st.timed);
   for (const std::uint64_t ns : st.sub_ns) EXPECT_EQ(ns, 0u);
   deam_iv_memo_clear();
+}
+
+// Pins the process-wide SIMD dispatch for one test (restored on exit).
+class IsaOverride {
+public:
+  explicit IsaOverride(simd::SimdIsa isa) noexcept : prev_(simd::simd_isa_override()) {
+    simd::set_simd_isa_override(isa);
+  }
+  ~IsaOverride() { simd::set_simd_isa_override(prev_); }
+  IsaOverride(const IsaOverride &) = delete;
+  IsaOverride &operator=(const IsaOverride &) = delete;
+  IsaOverride(IsaOverride &&) = delete;
+  IsaOverride &operator=(IsaOverride &&) = delete;
+
+private:
+  simd::SimdIsa prev_;
+};
+
+bool same_bits(double a, double b) {
+  return std::memcmp(&a, &b, sizeof(double)) == 0;
+}
+
+// One chain fitted on the native route with and without deam_native_batch, each from an empty
+// memo; the rows, the chain cache entries and the batched fit's counters.
+struct BatchPair {
+  std::optional<QuoteSliceFit> plain;
+  std::optional<QuoteSliceFit> batched;
+  std::vector<DeAmQuoteIv> plain_ivs;
+  std::vector<DeAmQuoteIv> batched_ivs;
+  ft::FitTimingCounters plain_counts{};
+  ft::FitTimingCounters batched_counts{};
+};
+
+BatchPair fit_batch_pair(const Chain &c) {
+  BatchPair out;
+  QuoteSliceConfig plain = native_config(true);
+  QuoteSliceConfig batched = plain;
+  batched.channel.deam_native_batch = true;
+  const auto run = [&c](const QuoteSliceConfig &config, std::optional<QuoteSliceFit> &fit,
+                        std::vector<DeAmQuoteIv> &ivs, ft::FitTimingCounters &counts) {
+    deam_iv_memo_clear();
+    ft::ChainRecorder rec;
+    {
+      const ft::ChainScope chain(&rec, 1);
+      auto r = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      if (!r) return;
+      fit = std::move(*r);
+    }
+    counts = rec.result();
+    bool reused = false;
+    const auto cache = deam_iv_memo(deam_iv_key(*fit, c.quotes, config), c.quotes.size(), reused);
+    if (reused) ivs = cache->ivs;
+  };
+  run(plain, out.plain, out.plain_ivs, out.plain_counts);
+  run(batched, out.batched, out.batched_ivs, out.batched_counts);
+  deam_iv_memo_clear();
+  return out;
+}
+
+// K4b deliverable 1 (bit identity): on the scalar map (ForceScalar) the batched route - every
+// lane prepared in invert_many batches, consumed on bit-identical inputs - serves exactly what
+// the unbatched native route serves: every row, every cached mid / bid / ask volatility and
+// typed outcome, bit for bit; every request consumed its prepared lane (no miss).
+TEST(FitNativeRoute, BatchedRouteOnTheScalarMapIsTheUnbatchedRouteBitForBit) {
+  const IsaOverride scalar(simd::SimdIsa::ForceScalar);
+  std::uint64_t lanes = 0, hits = 0, misses = 0, confirms = 0, rows = 0, entries = 0;
+  for (const double years : {0.15, 0.5}) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const BatchPair p = fit_batch_pair(spy_chain(years));
+    ASSERT_TRUE(p.plain && p.batched);
+    ASSERT_EQ(p.plain->rows.size(), p.batched->rows.size());
+    EXPECT_EQ(p.plain->fit_status, p.batched->fit_status);
+    for (std::size_t i = 0; i < p.plain->rows.size(); ++i) {
+      const QuoteSliceRow &x = p.plain->rows[i];
+      const QuoteSliceRow &y = p.batched->rows[i];
+      EXPECT_EQ(x.quote_status, y.quote_status) << i;
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status) << i;
+      EXPECT_TRUE(same_bits(x.market_iv, y.market_iv)) << i;
+      EXPECT_TRUE(same_bits(x.fitted_iv, y.fitted_iv)) << i;
+      EXPECT_TRUE(same_bits(x.fitted_price, y.fitted_price)) << i;
+      ++rows;
+    }
+    ASSERT_EQ(p.plain_ivs.size(), p.batched_ivs.size());
+    for (std::size_t i = 0; i < p.plain_ivs.size(); ++i) {
+      const DeAmQuoteIv &x = p.plain_ivs[i];
+      const DeAmQuoteIv &y = p.batched_ivs[i];
+      EXPECT_TRUE(same_bits(x.mid_iv, y.mid_iv)) << i;
+      EXPECT_TRUE(same_bits(x.bid_iv, y.bid_iv)) << i;
+      EXPECT_TRUE(same_bits(x.ask_iv, y.ask_iv)) << i;
+      EXPECT_EQ(x.mid_route, y.mid_route) << i;
+      EXPECT_EQ(x.bid_route, y.bid_route) << i;
+      EXPECT_EQ(x.ask_route, y.ask_route) << i;
+      EXPECT_EQ(x.well_posed, y.well_posed) << i;
+      ++entries;
+    }
+    EXPECT_EQ(p.plain_counts.deam_accept_by_kind, p.batched_counts.deam_accept_by_kind);
+    EXPECT_EQ(p.plain_counts.deam_route_outcome, p.batched_counts.deam_route_outcome);
+    EXPECT_EQ(p.plain_counts.deam_confirms, p.batched_counts.deam_confirms);
+    EXPECT_EQ(p.plain_counts.deam_family_prices, p.batched_counts.deam_family_prices);
+    EXPECT_EQ(p.batched_counts.deam_batch_avx2_calls, 0u);
+    lanes += p.batched_counts.deam_batch_lanes;
+    hits += p.batched_counts.deam_batch_lane_hits;
+    misses += p.batched_counts.deam_batch_lane_misses;
+    confirms += p.batched_counts.deam_batch_confirm_hits;
+  }
+  std::printf("[K4b batch scalar] %llu rows and %llu cache entries bit-identical; lanes %llu "
+              "prepared, %llu consumed, %llu missed, confirm prices consumed %llu\n",
+              static_cast<unsigned long long>(rows), static_cast<unsigned long long>(entries),
+              static_cast<unsigned long long>(lanes), static_cast<unsigned long long>(hits),
+              static_cast<unsigned long long>(misses), static_cast<unsigned long long>(confirms));
+  EXPECT_GT(lanes, 0u);
+  EXPECT_GT(hits, 0u);
+  EXPECT_EQ(misses, 0u);
+  EXPECT_EQ(confirms, 0u); // the confirm batch runs on the AVX2 kernel only
+}
+
+// K4b deliverables 1-2 (AVX2): the lanes run on the AVX2 kernel and the first confirm prices
+// on the AVX2 boundary batch; every typed outcome, acceptance kind and status is the
+// unbatched route's, and the served values agree to the kernels' rounding class (far inside
+// the 1e-7 root requirement and the certificate allowance).
+TEST(FitNativeRoute, BatchedRouteOnAvx2KeepsEveryOutcomeToTheKernelsRoundingClass) {
+  if (!simd::have_avx2()) GTEST_SKIP() << "host has no AVX2";
+  const IsaOverride avx2(simd::SimdIsa::Auto);
+  double worst_iv = 0.0, worst_row = 0.0, worst_price = 0.0;
+  std::uint64_t avx2_calls = 0, confirm_hits = 0, misses = 0;
+  for (const double years : {0.15, 0.5}) {
+    SCOPED_TRACE("T=" + std::to_string(years));
+    const BatchPair p = fit_batch_pair(spy_chain(years));
+    ASSERT_TRUE(p.plain && p.batched);
+    ASSERT_EQ(p.plain->rows.size(), p.batched->rows.size());
+    ASSERT_EQ(p.plain_ivs.size(), p.batched_ivs.size());
+    EXPECT_EQ(p.plain->fit_status, p.batched->fit_status);
+    for (std::size_t i = 0; i < p.plain->rows.size(); ++i) {
+      const QuoteSliceRow &x = p.plain->rows[i];
+      const QuoteSliceRow &y = p.batched->rows[i];
+      EXPECT_EQ(x.quote_status, y.quote_status) << i;
+      EXPECT_EQ(x.evaluation_status, y.evaluation_status) << i;
+      for (const auto &[a, b] : {std::pair{x.market_iv, y.market_iv},
+                                 std::pair{x.fitted_iv, y.fitted_iv}}) {
+        EXPECT_EQ(std::isfinite(a), std::isfinite(b)) << i;
+        if (std::isfinite(a) && std::isfinite(b)) {
+          worst_row = std::max(worst_row, std::abs(a - b));
+          EXPECT_LE(std::abs(a - b), 0.01 * kIvRootRequirement) << i;
+        }
+      }
+      if (std::isfinite(x.fitted_price) && std::isfinite(y.fitted_price)) {
+        worst_price = std::max(worst_price, std::abs(x.fitted_price - y.fitted_price));
+      }
+    }
+    for (std::size_t i = 0; i < p.plain_ivs.size(); ++i) {
+      const DeAmQuoteIv &x = p.plain_ivs[i];
+      const DeAmQuoteIv &y = p.batched_ivs[i];
+      EXPECT_EQ(x.mid_route, y.mid_route) << i;
+      EXPECT_EQ(x.bid_route, y.bid_route) << i;
+      EXPECT_EQ(x.ask_route, y.ask_route) << i;
+      for (const auto &[a, b] : {std::pair{x.mid_iv, y.mid_iv}, std::pair{x.bid_iv, y.bid_iv},
+                                 std::pair{x.ask_iv, y.ask_iv}}) {
+        EXPECT_EQ(std::isfinite(a), std::isfinite(b)) << i;
+        if (std::isfinite(a) && std::isfinite(b)) {
+          worst_iv = std::max(worst_iv, std::abs(a - b));
+          EXPECT_LE(std::abs(a - b), 0.01 * kIvRootRequirement) << i;
+        }
+      }
+    }
+    EXPECT_EQ(p.plain_counts.deam_accept_by_kind, p.batched_counts.deam_accept_by_kind);
+    EXPECT_EQ(p.plain_counts.deam_accept_by_reason, p.batched_counts.deam_accept_by_reason);
+    EXPECT_EQ(p.plain_counts.deam_route_outcome, p.batched_counts.deam_route_outcome);
+    EXPECT_EQ(p.plain_counts.deam_native_status, p.batched_counts.deam_native_status);
+    EXPECT_EQ(p.plain_counts.deam_confirms, p.batched_counts.deam_confirms);
+    avx2_calls += p.batched_counts.deam_batch_avx2_calls;
+    confirm_hits += p.batched_counts.deam_batch_confirm_hits;
+    misses += p.batched_counts.deam_batch_lane_misses;
+  }
+  std::printf("[K4b batch avx2] kernel calls %llu, confirm prices consumed %llu, lane misses %llu; "
+              "max |d iv| cache %.3g rows %.3g, max |d fitted price| %.3g USD\n",
+              static_cast<unsigned long long>(avx2_calls),
+              static_cast<unsigned long long>(confirm_hits),
+              static_cast<unsigned long long>(misses), worst_iv, worst_row, worst_price);
+  EXPECT_GT(avx2_calls, 0u);
+  EXPECT_GT(confirm_hits, 0u);
+  EXPECT_EQ(misses, 0u);
+}
+
+// K4b deliverable 2: the AVX2 boundary batch (a call through the McDonald-Schroder put map,
+// as iv_native_prepare_acceptance runs it) prices the confirm kernel's scheme within the class
+// kIvBatchConfirmMarginRel max(P, 1) of the scalar Andersen-Lake kernel (its decisive margin),
+// and the batch on the scalar route IS the scalar kernel bit for bit, puts and calls.
+TEST(FitNativeRoute, BatchedConfirmPricesAreTheScalarKernelsToTheirClass) {
+  const std::optional<AlOpts> fast = al_fast_profile(std::nullopt);
+  const double S = 670.0, r = 0.04;
+  std::vector<double> bS, bK, bT, bsig, br, bq, ref;
+  std::vector<Side> sides;
+  std::vector<bool> american; // both maps run the American put solve (no European shortcut)
+  for (const double T : {0.03, 0.4, 1.6}) {
+    for (const double q : {0.0, 0.012, 0.035}) {
+      for (const double m : {0.7, 0.9, 1.0, 1.1, 1.35}) {
+        for (const double sigma : {0.08, 0.25, 0.7}) {
+          for (const Side side : {Side::Put, Side::Call}) {
+            const double K = std::round(S * m);
+            const auto p = andersen_lake(S, K, T, sigma, r, q, side, fast);
+            ASSERT_TRUE(p);
+            const bool call = side == Side::Call;
+            bS.push_back(call ? K : S);
+            bK.push_back(call ? S : K);
+            br.push_back(call ? q : r);
+            bq.push_back(call ? r : q);
+            bT.push_back(T);
+            bsig.push_back(sigma);
+            ref.push_back(*p);
+            sides.push_back(side);
+            american.push_back(!call || q > 0.0);
+          }
+        }
+      }
+    }
+  }
+  const std::size_t n = ref.size();
+  std::vector<double> scalar(n), vec(n);
+  static_cast<void>(simd::american_put_boundary_batch(bS.data(), bK.data(), bT.data(), bsig.data(),
+                                                      br.data(), bq.data(), scalar.data(), n,
+                                                      fast, simd::SimdIsa::ForceScalar));
+  for (std::size_t i = 0; i < n; ++i) {
+    // A call with q <= 0 is European on both maps (the Black-76 call vs its put image).
+    if (american[i]) {
+      EXPECT_TRUE(same_bits(scalar[i], ref[i])) << i << (sides[i] == Side::Call ? " call" : " put");
+    } else {
+      EXPECT_LE(std::abs(scalar[i] - ref[i]) / std::max(ref[i], 1.0), kIvBatchConfirmMarginRel)
+          << i;
+    }
+  }
+  if (!simd::have_avx2()) GTEST_SKIP() << "host has no AVX2 (scalar identity checked)";
+  static_cast<void>(simd::american_put_boundary_batch(bS.data(), bK.data(), bT.data(), bsig.data(),
+                                                      br.data(), bq.data(), vec.data(), n, fast,
+                                                      simd::SimdIsa::ForceAvx2));
+  double worst = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double rel = std::abs(vec[i] - ref[i]) / std::max(ref[i], 1.0);
+    worst = std::max(worst, rel);
+    EXPECT_LE(rel, kIvBatchConfirmMarginRel) << i;
+  }
+  std::printf("[K4b confirm batch] %zu contracts: scalar route bit-identical, AVX2 max "
+              "|dP| / max(P, 1) %.3g (margin %.1g)\n",
+              n, worst, kIvBatchConfirmMarginRel);
+}
+
+// review-K4 m2: the reference route's bracket accepts a certified end only strictly inside
+// the other certified end; a point on the wrong side of a certified end (a confirm kernel
+// off the target map by more than its tested distance - a fake kernel here) is a crossing
+// and leaves the bracket unchanged.
+TEST(FitNativeRoute, ReferenceBracketRefusesACrossingEnd) {
+  double lo = kIvMin, hi = 40.0, p_lo = kNaN, p_hi = kNaN;
+  // An uncertified high end: a low side moves up to it.
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.2, 1.0, -1), IvReferenceTake::Lower);
+  EXPECT_EQ(lo, 0.2);
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.3, 2.0, +1), IvReferenceTake::Upper);
+  EXPECT_EQ(hi, 0.3);
+  // The fake kernel now certifies the wrong sides.
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.35, 1.5, -1), IvReferenceTake::Crossed);
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.3, 1.5, -1), IvReferenceTake::Crossed);
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.15, 1.5, +1), IvReferenceTake::Crossed);
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.2, 1.5, +1), IvReferenceTake::Crossed);
+  EXPECT_EQ(lo, 0.2);
+  EXPECT_EQ(hi, 0.3);
+  EXPECT_EQ(p_lo, 1.0);
+  EXPECT_EQ(p_hi, 2.0);
+  // Consistent points still narrow it; an undecided point (side 0) changes nothing.
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.25, 1.4, -1), IvReferenceTake::Lower);
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.27, 1.6, +1), IvReferenceTake::Upper);
+  EXPECT_EQ(iv_reference_take(lo, hi, p_lo, p_hi, 0.26, 1.5, 0), IvReferenceTake::None);
+  EXPECT_EQ(lo, 0.25);
+  EXPECT_EQ(hi, 0.27);
+}
+
+// review-K4 m1: a reference-route price-only (low vega) outcome publishes only CERTIFIED
+// bracket ends. A deep out-of-the-money call priced inside the edge band with a vega so low
+// that the confirm kernel's tested bound cannot resolve 0.45 W: every finite published end
+// is a certified side on the confirm kernel, and a top the search never certified is NaN
+// (the ask side carries no upper information), never the unevaluated range top 40.
+TEST(FitNativeRoute, LowVegaPriceOnlyPublishesOnlyCertifiedEnds) {
+  const double S = 100.0, T = 0.1, r = 0.03, q = 0.01;
+  IvReferenceBudget budget{4, 256};
+  const IvPremiumGate gate = native_gate(&budget);
+  bool found = false;
+  int open_top = 0;
+  for (const double K : {140.0, 150.0, 160.0, 175.0, 190.0, 210.0}) {
+    for (const double sigma : {0.2, 0.25, 0.3, 0.35, 0.4, 0.5}) {
+      const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Call, al_fast_profile(std::nullopt));
+      ASSERT_TRUE(p);
+      const double band = iv_premium_edge_band_top(S, K, T, r, q, Side::Call, std::nullopt);
+      if (!(*p > 1.0e-10 && *p < 1.0e-7 && *p < band)) continue;
+      IvPremiumStats st;
+      static_cast<void>(american_implied_vol_premium(*p, S, K, T, r, q, Side::Call, premium_opts(),
+                                                     nullptr, st, &gate));
+      if (st.route != IvRouteOutcome::PriceOnlyLowVega) continue;
+      found = true;
+      std::printf("[K4b m1] K %.0f sigma %.2f price %.3g: price-only low vega, ends [%g, %g]\n", K,
+                  sigma, *p, st.route_lo, st.route_hi);
+      // Never the unevaluated range top (the pre-m1 route published kSigmaHiCap = 40 there).
+      EXPECT_NE(st.route_hi, 40.0);
+      const double eps = al_profile_price_bound(AlProfile::Fast, *p, T);
+      const AlOpts fast = al_fast_profile(std::nullopt);
+      if (std::isfinite(st.route_lo)) { // a certified low side on the confirm kernel
+        const auto c = andersen_lake(S, K, T, st.route_lo, r, q, Side::Call, fast);
+        ASSERT_TRUE(c);
+        EXPECT_LE(*c + eps, *p);
+      }
+      if (std::isfinite(st.route_hi)) { // a certified high side
+        const auto c = andersen_lake(S, K, T, st.route_hi, r, q, Side::Call, fast);
+        ASSERT_TRUE(c);
+        EXPECT_GE(*c - eps, *p);
+      } else {
+        ++open_top;
+      }
+    }
+  }
+  std::printf("[K4b m1] price-only low-vega outcomes with no certified top: %d\n", open_top);
+  ASSERT_TRUE(found) << "fixture: no low-vega edge-band call found";
+  EXPECT_GT(open_top, 0); // the case review-K4 m1 names (red before: 40 published)
+}
+
+// K4b: the reference route's wall budget (count AND time): a chain whose reference wall is
+// spent refuses the next request typed BudgetExhausted and counts it (refused_wall); a roomy
+// wall budget serves the same request and is charged its wall.
+TEST(FitNativeRoute, ReferenceWallBudgetIsATypedCountedRefusal) {
+  const double S = 100.0, T = 0.25, r = 0.03, q = 0.01;
+  double K = 0.0, price = 0.0;
+  for (const double k : {130.0, 140.0, 150.0, 160.0}) {
+    for (const double s : {0.2, 0.25, 0.3, 0.35}) {
+      const auto p = andersen_lake(S, k, T, s, r, q, Side::Call, al_fast_profile(std::nullopt));
+      ASSERT_TRUE(p);
+      const double band = iv_premium_edge_band_top(S, k, T, r, q, Side::Call, std::nullopt);
+      if (K == 0.0 && *p > 1.0e-6 && *p < band) {
+        K = k;
+        price = *p;
+      }
+    }
+  }
+  ASSERT_GT(K, 0.0) << "fixture: no out-of-the-money call priced inside the edge band";
+  IvReferenceBudget spent{4, 64};
+  spent.max_wall_ns = 1000;
+  spent.wall_ns = 1000;
+  const IvPremiumGate refused_gate = native_gate(&spent);
+  IvPremiumStats sr;
+  const IvResult rr = american_implied_vol_premium(price, S, K, T, r, q, Side::Call,
+                                                   premium_opts(), nullptr, sr, &refused_gate);
+  EXPECT_NE(rr.status, IvStatus::Ok);
+  EXPECT_EQ(sr.route, IvRouteOutcome::BudgetExhausted);
+  EXPECT_EQ(sr.reference_evaluations, 0u);
+  EXPECT_EQ(spent.refused, 1u);
+  EXPECT_EQ(spent.refused_wall, 1u);
+  EXPECT_EQ(spent.calls, 0u);
+  IvReferenceBudget roomy{4, 64};
+  roomy.max_wall_ns = 60'000'000'000ull;
+  const IvPremiumGate served_gate = native_gate(&roomy);
+  IvPremiumStats ss;
+  const IvResult rs = american_implied_vol_premium(price, S, K, T, r, q, Side::Call,
+                                                   premium_opts(), nullptr, ss, &served_gate);
+  EXPECT_EQ(rs.status, IvStatus::Ok);
+  EXPECT_EQ(ss.route, IvRouteOutcome::ReferenceRoot);
+  EXPECT_GT(roomy.wall_ns, 0u);
+  EXPECT_EQ(roomy.refused_wall, 0u);
+}
+
+// review-K4 m5: on the native route a request whose side carries no family is answered by
+// the bounded reference route (from the Black-76 IV) - no seed-leg iterate, no confirm of a
+// seed-tier root - when deam_native_no_leg asks; without it, the K4 seed leg.
+TEST(FitNativeRoute, NoFamilyRequestGoesToTheReferenceRouteWithoutTheSeedLeg) {
+  const double S = 100.0, K = 100.0, T = 0.5, r = 0.04, q = 0.011, sigma = 0.25;
+  const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Put, al_fast_profile(std::nullopt));
+  ASSERT_TRUE(p);
+  IvReferenceBudget b1{4, 64};
+  const IvPremiumGate leg_gate = native_gate(&b1);
+  IvPremiumStats sl;
+  const IvResult rl = american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, premium_opts(),
+                                                   nullptr, sl, &leg_gate);
+  ASSERT_EQ(rl.status, IvStatus::Ok);
+  EXPECT_EQ(sl.route, IvRouteOutcome::LegRoot);
+  EXPECT_GT(sl.premium_solves, sl.confirm_solves + sl.reference_evaluations); // leg iterates
+  IvReferenceBudget b2{4, 64};
+  IvPremiumGate ref_gate = native_gate(&b2);
+  ref_gate.no_family_reference = true;
+  IvPremiumStats sr;
+  const IvResult rr = american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, premium_opts(),
+                                                   nullptr, sr, &ref_gate);
+  ASSERT_EQ(rr.status, IvStatus::Ok);
+  EXPECT_EQ(sr.route, IvRouteOutcome::ReferenceRoot);
+  EXPECT_EQ(sr.premium_solves, sr.reference_evaluations); // nothing but the reference route
+  EXPECT_EQ(sr.confirm_solves, 0u);
+  EXPECT_FALSE(sr.seed_routed);
+  EXPECT_EQ(sr.acceptance.kind, RootAcceptanceKind::Confirmed);
+  EXPECT_NEAR(rr.iv, sigma, kIvRootRequirement);
+  EXPECT_NEAR(rr.iv, rl.iv, 2.0 * kIvRootRequirement);
+}
+
+// review-K4 m3 / K4b: the lane-vega hook reaches the enclosure step. Without a covering
+// envelope (no envelope scope here) the enclosure cannot skip, so on the native route the
+// acceptance places its confirm with the lane's fused vega and spends no family price beyond
+// the lane's; off the route (K3's family-native acceptance) the enclosure's two family prices
+// measure that chord. Both roots are confirmed within the requirement.
+TEST(FitNativeRoute, LaneVegaHookReplacesTheUncoveredEnclosuresChord) {
+  const double S = 100.0, K = 100.0, T = 0.5, r = 0.04, q = 0.011, sigma = 0.2;
+  const AlExpiryGeometry g = prepare_al_geometry(T, r, q);
+  AlSigmaQFamily put(g, Side::Put, S);
+  ASSERT_TRUE(put.prepare(0.1, 0.35, 16, 0.010, 0.012, 4));
+  const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_TRUE(p);
+  const auto run = [&](bool native_route, IvPremiumStats &st) {
+    IvReferenceBudget budget{4, 64};
+    IvPremiumGate gate = native_gate(&budget);
+    gate.native_route = native_route;
+    gate.qfamily = &put;
+    gate.qfamily_native = true;
+    return american_implied_vol_premium(*p, S, K, T, r, q, Side::Put, premium_opts(), nullptr,
+                                        st, &gate);
+  };
+  IvPremiumStats sn, sk;
+  const IvResult rn = run(true, sn);
+  const IvResult rk = run(false, sk);
+  ASSERT_EQ(rn.status, IvStatus::Ok);
+  ASSERT_EQ(rk.status, IvStatus::Ok);
+  EXPECT_EQ(sn.native_status, ib::InverseStatus::Converged);
+  EXPECT_TRUE(sn.lane_vega_used);
+  EXPECT_EQ(sn.family_prices, sn.native_evaluations); // no enclosure prices
+  EXPECT_EQ(sn.acceptance.kind, RootAcceptanceKind::Confirmed);
+  EXPECT_FALSE(sk.lane_vega_used);
+  EXPECT_EQ(sk.family_prices, sk.native_evaluations + 2u); // the enclosure's chord
+  EXPECT_EQ(sk.acceptance.kind, RootAcceptanceKind::Confirmed);
+  EXPECT_NEAR(rn.iv, sigma, kIvRootRequirement);
+  EXPECT_NEAR(rn.iv, rk.iv, kIvRootRequirement);
 }
 
 } // namespace

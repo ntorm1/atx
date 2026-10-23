@@ -858,6 +858,9 @@ public:
       // K4 native fit route: typed outcomes, the bounded reference route, the chain's budget.
       gate.native_route = controls.native_route;
       gate.reference_budget = controls.reference_budget;
+      // K4b: the batched route's prepared values, the no-family reference route (m5).
+      gate.prepared = controls.prepared;
+      gate.no_family_reference = controls.no_family_reference;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -866,6 +869,20 @@ public:
       return Err(ErrorCode::Unavailable, "quote slice: no American implied volatility");
     }
     return Ok(iv.iv);
+  }
+  // K4b: implied_vol_premium's own arguments (the batched route prepares with them).
+  bool premium_contract(const QuoteSliceQuote &quote, double q_effective, bool confirm_fast,
+                        DeAmPremiumContract &out) const override {
+    if (fit_.dividend_model == QuoteSliceDividendModel::DatedCash) return false;
+    out.S = fit_.market.spot;
+    out.K = quote.strike;
+    out.T = fit_.market.variance_years;
+    out.r = fit_.diagnostics.effective_rate;
+    out.q = q_effective;
+    out.tol = config_.iv_tolerance;
+    out.al_opts = fit_.al_opts;
+    out.confirm_opts = confirm_fast ? fast_ : fit_.al_opts; // IvPremiumGate::confirm_opts
+    return true;
   }
   double black_vega(const QuoteSliceQuote &quote, double sigma, double forward) const override {
     return black76_value_and_vega(forward, quote.strike, fit_.market.variance_years, sigma,
@@ -1044,7 +1061,10 @@ public:
                                       config.channel.deam_family_native,
                                       config.channel.deam_native_route,
                                       config.channel.deam_reference_max_calls,
-                                      config.channel.deam_reference_max_evaluations});
+                                      config.channel.deam_reference_max_evaluations,
+                                      config.channel.deam_native_batch,
+                                      config.channel.deam_native_no_leg,
+                                      config.channel.deam_reference_max_wall_us});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1660,11 +1680,6 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       continuous;
   const std::optional<AlOpts> fast_opts =
       fast_grid ? std::optional<AlOpts>{al_fast_profile(out.al_opts)} : std::nullopt;
-  const auto grid_price = [&](double strike, Side side, double sigma, double q) {
-    if (!fast_grid) {
-      return timed(kGridKernelNs, [&] { return model_price(out, strike, side, sigma, q); });
-    }
-    if (!std::isfinite(q)) {
   // K4b: the grid's repricing sub-clocks (family / kernel), read only under an armed chain
   // timer (quote-bench --timing-detail).
   counters::fit_timing::FitTimingCounters *const grid_timing =
@@ -1680,6 +1695,11 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   };
   constexpr auto kGridFamilyNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_family_ns;
   constexpr auto kGridKernelNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_kernel_ns;
+  const auto grid_price = [&](double strike, Side side, double sigma, double q) {
+    if (!fast_grid) {
+      return timed(kGridKernelNs, [&] { return model_price(out, strike, side, sigma, q); });
+    }
+    if (!std::isfinite(q)) {
       return Result<double>{Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow")};
     }
     if (family_grid && family_point_bound) {
@@ -1934,7 +1954,9 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
        (!c.deam_family_q || c.deam_confirm != QuoteSliceDeamConfirm::Always)) ||
       // The native fit route (K4) types the family-native route; its budget is finite.
       (c.deam_native_route && !c.deam_family_native) || c.deam_reference_max_calls == 0u ||
-      c.deam_reference_max_evaluations == 0u) {
+      c.deam_reference_max_evaluations == 0u ||
+      // K4b: the batched native route and the no-family reference route refine the route.
+      ((c.deam_native_batch || c.deam_native_no_leg) && !c.deam_native_route)) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {

@@ -202,6 +202,8 @@ struct FitWork {
   std::uint64_t deam_sub_grid_family_ns{0};
   std::uint64_t deam_sub_grid_kernel_ns{0};
   std::uint64_t deam_batch_grid_prices{0};
+  std::uint64_t deam_batch_edge_prices{0};
+  std::uint64_t deam_lane_vegas{0};
 };
 
 void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &chain) noexcept;
