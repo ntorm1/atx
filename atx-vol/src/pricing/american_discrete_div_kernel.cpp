@@ -44,6 +44,302 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   return std::max(payoff_sign(side) * (S - K), 0.0);
 }
 
+// ── The D1 route rule and the production pricing core (header section 4) ───
+
+// The band, in standard deviations of log spot at the ex-date, whose nodes must
+// read their post-dividend continuation inside the grid.
+constexpr double kBandSd = 6.0;
+// Bounded loops: the per-step cash aggregation below is O(events^2).
+constexpr int kMaxRouteEvents = 256;
+// A `need` far beyond any cap, so the double -> int conversion stays in range.
+constexpr double kNeedCeiling = 1.0e6;
+
+// The production lattice's placement of one ex-date (american_discrete_div.cpp,
+// `run_production_lattice`): nearest step, onto step 0 only with >= 4 pre-steps.
+[[nodiscard]] double placed_step(double tau, double dt, int steps, bool step_zero) noexcept {
+  return std::clamp(std::nearbyint(tau / dt), step_zero ? 0.0 : 1.0,
+                    static_cast<double>(steps));
+}
+
+// The lattice window ((0, T] up to kTauAtExpiryRelTol) on the shifted clock.
+[[nodiscard]] bool in_window(const CashDividend &dv, double T, double tau_shift) noexcept {
+  const double tau = dv.tau - tau_shift;
+  return tau > 0.0 && tau <= T * (1.0 + kTauAtExpiryRelTol) && dv.amount > 0.0;
+}
+
+// Strictly inside the life: a splice (not the analytic terminal payoff) prices it.
+[[nodiscard]] bool in_life(const CashDividend &dv, double T, double tau_shift) noexcept {
+  return in_window(dv, T, tau_shift) && dv.tau - tau_shift < T * (1.0 - kTauAtExpiryRelTol);
+}
+
+struct PreStepNeed {
+  int pre_steps = 2;
+  double depth = 0.0; // node spacings under the grid's second node after the cap
+  bool capped = false;
+  bool step_zero = false;
+  int first_step = -1;
+};
+
+// Header section 4, the pre-step rule. At an ex-step k the nodes the root reads lie
+// within min(6 sqrt(k), k) rungs of S (the 6-sd band, clipped to the cone of the
+// root); the post level of the band's lowest node, x = S e^{-w L} - cash, must sit
+// at or above the grid's second node S u^{2 - k - m}, L = kDiscreteDivRouteSigma
+// sqrt(dt): m >= 2 - k - ln(x / S) / L. Evaluated at a FIXED sigma, so the route is
+// one discretisation for every sigma of a root find or a batch group.
+[[nodiscard]] PreStepNeed pre_steps_for(double S, double T, std::span<const CashDividend> divs,
+                                        int steps, double tau_shift) noexcept {
+  const double dt = T / static_cast<double>(steps);
+  const double rung = kDiscreteDivRouteSigma * std::sqrt(dt);
+  PreStepNeed need;
+  for (const CashDividend &dv : divs) {
+    if (in_window(dv, T, tau_shift) && std::nearbyint((dv.tau - tau_shift) / dt) == 0.0) {
+      need.step_zero = true;
+    }
+  }
+  double worst = need.step_zero ? 4.0 : 2.0;
+  for (std::size_t i = 0; i < divs.size(); ++i) {
+    if (!in_window(divs[i], T, tau_shift)) {
+      continue;
+    }
+    const double k = placed_step(divs[i].tau - tau_shift, dt, steps, need.step_zero);
+    if (k >= static_cast<double>(steps)) {
+      continue; // the terminal step: the analytic payoff, no splice
+    }
+    double cash = 0.0;
+    for (const CashDividend &other : divs) {
+      if (in_window(other, T, tau_shift) &&
+          placed_step(other.tau - tau_shift, dt, steps, need.step_zero) == k) {
+        cash += other.amount;
+      }
+    }
+    const int ki = static_cast<int>(k);
+    need.first_step = (need.first_step < 0) ? ki : std::min(need.first_step, ki);
+    const double band = std::min(kBandSd * std::sqrt(k), k);
+    const double x = std::exp(-band * rung) - cash / S;
+    const double log_x = (x > 0.0) ? std::log(x) : std::log(std::numeric_limits<double>::min());
+    worst = std::max(worst, std::min(2.0 - k - log_x / rung, kNeedCeiling));
+  }
+  int m = static_cast<int>(std::ceil(worst));
+  m += (m % 2 != 0) ? 1 : 0;
+  if (m > kDiscreteDivMaxPreSteps) {
+    need.capped = true;
+    need.depth = 0.5 * (worst - static_cast<double>(kDiscreteDivMaxPreSteps));
+    m = kDiscreteDivMaxPreSteps;
+  }
+  need.pre_steps = m;
+  return need;
+}
+
+[[nodiscard]] Status validate_route_inputs(double S, double T,
+                                           std::span<const CashDividend> dividends,
+                                           int base_steps) {
+  if (!(S > 0.0) || !std::isfinite(S)) {
+    return Err(ErrorCode::InvalidArgument, "spot must be finite and > 0");
+  }
+  if (!(T > 0.0) || !std::isfinite(T)) {
+    return Err(ErrorCode::InvalidArgument, "year-fraction must be finite and > 0");
+  }
+  if (base_steps < 4 || base_steps > kDiscreteDivMaxSteps) {
+    return Err(ErrorCode::InvalidArgument,
+               "production route: base_steps must lie in [4, kDiscreteDivMaxSteps]");
+  }
+  for (const CashDividend &dv : dividends) {
+    if (!std::isfinite(dv.tau) || !std::isfinite(dv.amount)) {
+      return Err(ErrorCode::InvalidArgument, "dividend tau and amount must be finite");
+    }
+    if (dv.amount < 0.0) {
+      return Err(ErrorCode::InvalidArgument, "dividend amount must be >= 0");
+    }
+  }
+  return Ok();
+}
+
+// The route of header section 4. `raise_for_events` is false only for a Screen
+// tier (a seed lattice keeps its coarse count). `tau_shift` routes the contract
+// as seen `tau_shift` years later (the calendar roll).
+[[nodiscard]] Result<DiscreteDivLatticeRoute>
+build_route(double S, double T, std::span<const CashDividend> dividends,
+            const DiscreteDivProductionOpts &opts, bool raise_for_events, double tau_shift) {
+  const Status ok = validate_route_inputs(S, T, dividends, opts.base_steps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  DiscreteDivLatticeRoute route;
+  for (const CashDividend &dv : dividends) {
+    if (in_life(dv, T, tau_shift)) {
+      ++route.events;
+      route.max_cash_ratio = std::max(route.max_cash_ratio, dv.amount / S);
+    }
+  }
+  if (route.events > kMaxRouteEvents) {
+    return Err(ErrorCode::InvalidArgument,
+               "production route: more than 256 ex-dates inside the life");
+  }
+  if (route.events == 0) {
+    route.flags |= bit(DiscreteDivRouteFlag::NoInLifeEvent);
+  }
+  if (opts.kill_switch) {
+    route.method = DiscreteDivMethod::HistoricalSpliced;
+    route.steps = opts.base_steps;
+    route.flags |= bit(DiscreteDivRouteFlag::KillSwitch);
+    const double dt = T / static_cast<double>(route.steps);
+    for (const CashDividend &dv : dividends) {
+      if (in_life(dv, T, tau_shift)) {
+        const int k = static_cast<int>(placed_step(dv.tau - tau_shift, dt, route.steps, false));
+        route.first_ex_step = (route.first_ex_step < 0) ? k : std::min(route.first_ex_step, k);
+      }
+    }
+    return Ok(route);
+  }
+  int steps = opts.base_steps;
+  if (raise_for_events && route.events > 0) {
+    const int want = kDiscreteDivStepsPerEvent * route.events;
+    const int cap = std::max(opts.base_steps, kDiscreteDivMaxRouteSteps);
+    if (want > steps) {
+      steps = std::min(want, cap);
+      route.flags |= bit(DiscreteDivRouteFlag::StepsRaisedForEvents);
+      if (want > cap) {
+        route.flags |= bit(DiscreteDivRouteFlag::StepsCapped);
+      }
+    }
+  }
+  if (opts.accuracy == DiscreteDivAccuracy::Refined) {
+    route.method = DiscreteDivMethod::CubicBbsRichardson;
+    steps = std::max(steps, kDiscreteDivRefinedSteps);
+    steps += (steps % 2 == 0) ? 1 : 0; // same parity for the Richardson pair
+    route.coarse_steps = (steps + 1) / 2;
+  } else {
+    route.method = DiscreteDivMethod::CubicCrr;
+  }
+  route.steps = steps;
+  const PreStepNeed need = pre_steps_for(S, T, dividends, steps, tau_shift);
+  route.pre_steps = need.pre_steps;
+  route.first_ex_step = need.first_step;
+  route.grid_bottom_depth = need.depth;
+  if (need.pre_steps > 2) {
+    route.flags |= bit(DiscreteDivRouteFlag::PreStepsForEarlyExDate);
+  }
+  if (need.capped) {
+    route.flags |= bit(DiscreteDivRouteFlag::GridBottomExtrapolated);
+  }
+  if (need.step_zero) {
+    route.flags |= bit(DiscreteDivRouteFlag::ExDateOnStepZero);
+  }
+  return Ok(route);
+}
+
+// The ProductionSpec of one route (the method's knobs, no hooks).
+[[nodiscard]] ddiv_detail::ProductionSpec route_spec(const DiscreteDivLatticeRoute &route) noexcept {
+  ddiv_detail::ProductionSpec spec;
+  spec.splice = ddiv_detail::SpliceInterp::Cubic;
+  spec.pre_steps = route.pre_steps;
+  switch (route.method) {
+  case DiscreteDivMethod::HistoricalSpliced:
+    spec.splice = ddiv_detail::SpliceInterp::Linear;
+    spec.pre_steps = 0;
+    spec.align_forward = false;
+    spec.align_exercise = false;
+    break;
+  case DiscreteDivMethod::CubicCrr:
+    break;
+  case DiscreteDivMethod::CubicBbsRichardson:
+    spec.bbs = true;
+    break;
+  }
+  return spec;
+}
+
+// One rollback (or the Richardson pair) of a route. Validated inputs, buffers sized.
+// `bump_index` / `bump_amount` / `tau_shift`: the ProductionSpec hooks; `maps`: a
+// batch group's prebuilt step maps (only without hooks).
+[[nodiscard]] Result<LatticeOutcome>
+route_outcome(const DiscreteDivLatticeRoute &route, double S, double K, double T, double sigma,
+              double r, double q, Side side, std::span<const CashDividend> dividends,
+              ExerciseStyle exercise, LatticeBuffers &buffers,
+              std::size_t bump_index = ddiv_detail::ProductionSpec::kNoBump,
+              double bump_amount = 0.0, double tau_shift = 0.0,
+              const ddiv_detail::RouteMaps *maps = nullptr) {
+  ddiv_detail::ProductionSpec spec = route_spec(route);
+  spec.bump_index = bump_index;
+  spec.bump_amount = bump_amount;
+  spec.tau_shift = tau_shift;
+  spec.prebuilt = (maps != nullptr) ? &maps->fine : nullptr;
+  switch (route.method) {
+  case DiscreteDivMethod::HistoricalSpliced:
+  case DiscreteDivMethod::CubicCrr:
+    return ddiv_detail::run_production_lattice(S, K, T, sigma, r, q, side, dividends,
+                                               route.steps, exercise, spec, buffers);
+  case DiscreteDivMethod::CubicBbsRichardson: {
+    const Result<LatticeOutcome> fine = ddiv_detail::run_production_lattice(
+        S, K, T, sigma, r, q, side, dividends, route.steps, exercise, spec, buffers);
+    if (!fine) {
+      return Err(fine.error());
+    }
+    spec.prebuilt = (maps != nullptr) ? &maps->coarse : nullptr;
+    const Result<LatticeOutcome> coarse = ddiv_detail::run_production_lattice(
+        S, K, T, sigma, r, q, side, dividends, route.coarse_steps, exercise, spec, buffers);
+    if (!coarse) {
+      return Err(coarse.error());
+    }
+    const double n = static_cast<double>(route.steps);
+    const double m = static_cast<double>(route.coarse_steps);
+    LatticeOutcome out = *fine;
+    const double floor = (exercise == ExerciseStyle::American) ? intrinsic(side, S, K) : 0.0;
+    out.price = std::max((n * fine->price - m * coarse->price) / (n - m), floor);
+    return Ok(out);
+  }
+  }
+  return Err(ErrorCode::InvalidArgument, "unknown production lattice method");
+}
+
+// A route the caller handed in: shape checks (a route is data, it can be stale or
+// hand-built) and the workspace admission.
+[[nodiscard]] Status admit_route(const DiscreteDivLatticeRoute &route,
+                                 const DiscreteDivWorkspace &workspace) {
+  const bool historical = (route.method == DiscreteDivMethod::HistoricalSpliced);
+  const bool refined = (route.method == DiscreteDivMethod::CubicBbsRichardson);
+  const bool shape = route.steps >= 4 && route.steps <= kDiscreteDivMaxSteps &&
+                     route.pre_steps >= 0 && route.pre_steps <= kDiscreteDivMaxPreSteps &&
+                     route.pre_steps % 2 == 0 && (!historical || route.pre_steps == 0) &&
+                     (!refined || (route.coarse_steps >= 4 && route.coarse_steps < route.steps));
+  if (!shape) {
+    return Err(ErrorCode::InvalidArgument, "production route: malformed route");
+  }
+  const bool sized = historical ? workspace.admits(route.steps)
+                                : workspace.admits_production(route.steps, route.pre_steps);
+  if (!sized) {
+    return Err(ErrorCode::InvalidArgument,
+               "discrete-dividend workspace: not sized for this production route "
+               "(steps + pre-steps; build it with DiscreteDivWorkspace(max_steps, max_pre_steps))");
+  }
+  return Ok();
+}
+
+// The validated price of a route on a workspace (`maps`: a batch group's prebuilt
+// step maps, or null).
+[[nodiscard]] Result<double> price_route_on(const DiscreteDivLatticeRoute &route, double S,
+                                            double K, double T, double sigma, double r, double q,
+                                            Side side, std::span<const CashDividend> dividends,
+                                            ExerciseStyle exercise,
+                                            DiscreteDivWorkspace &workspace,
+                                            const ddiv_detail::RouteMaps *maps = nullptr) {
+  const Status ok = ddiv_detail::validate(S, K, T, sigma, r, q, dividends, route.steps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  const Status admitted = admit_route(route, workspace);
+  if (!admitted) {
+    return Err(admitted.error());
+  }
+  const Result<LatticeOutcome> out =
+      route_outcome(route, S, K, T, sigma, r, q, side, dividends, exercise, workspace.buffers(),
+                    ddiv_detail::ProductionSpec::kNoBump, 0.0, 0.0, maps);
+  if (!out) {
+    return Err(out.error());
+  }
+  return Ok(out->price);
+}
+
 // The one pricing path of this TU: the allocating entry's validation and scheme
 // admission (same texts), the workspace's admission, then the seam.
 [[nodiscard]] Result<double> price_on(double S, double K, double T, double sigma, double r,
@@ -57,6 +353,15 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   if (!discrete_div_scheme_admits(scheme, steps)) {
     return Err(ErrorCode::InvalidArgument,
                "unknown discrete-dividend lattice scheme, or too few steps for it");
+  }
+  if (scheme == DiscreteDivScheme::SplicedCubic) {
+    DiscreteDivProductionOpts opts;
+    opts.base_steps = steps;
+    const Result<DiscreteDivLatticeRoute> route = build_route(S, T, dividends, opts, true, 0.0);
+    if (!route) {
+      return Err(route.error());
+    }
+    return price_route_on(*route, S, K, T, sigma, r, q, side, dividends, exercise, workspace);
   }
   if (!workspace.admits(steps)) {
     return Err(ErrorCode::InvalidArgument,
@@ -98,15 +403,30 @@ DiscreteDivWorkspace::DiscreteDivWorkspace(int max_steps)
   buffers_->scratch.reserve(n);
 }
 
+DiscreteDivWorkspace::DiscreteDivWorkspace(int max_steps, int max_pre_steps)
+    : buffers_(std::make_unique<LatticeBuffers>()),
+      max_steps_(std::clamp(max_steps, 1, kDiscreteDivMaxSteps)),
+      max_pre_steps_(std::clamp(max_pre_steps, 0, kDiscreteDivMaxPreSteps)) {
+  const std::size_t n = nodes_for(max_steps_);
+  const std::size_t nodes = n + static_cast<std::size_t>(max_pre_steps_);
+  buffers_->step_amount.reserve(n);
+  buffers_->step_shift.reserve(n);
+  buffers_->level.reserve(nodes);
+  buffers_->value.reserve(nodes);
+  buffers_->scratch.reserve(nodes);
+}
+
 DiscreteDivWorkspace::~DiscreteDivWorkspace() = default;
 
 DiscreteDivWorkspace::DiscreteDivWorkspace(DiscreteDivWorkspace &&other) noexcept
-    : buffers_(std::move(other.buffers_)), max_steps_(std::exchange(other.max_steps_, 0)) {}
+    : buffers_(std::move(other.buffers_)), max_steps_(std::exchange(other.max_steps_, 0)),
+      max_pre_steps_(std::exchange(other.max_pre_steps_, -1)) {}
 
 DiscreteDivWorkspace &DiscreteDivWorkspace::operator=(DiscreteDivWorkspace &&other) noexcept {
   if (this != &other) {
     buffers_ = std::move(other.buffers_);
     max_steps_ = std::exchange(other.max_steps_, 0);
+    max_pre_steps_ = std::exchange(other.max_pre_steps_, -1);
   }
   return *this;
 }
@@ -116,7 +436,8 @@ std::size_t DiscreteDivWorkspace::reserved_bytes() const noexcept {
     return 0;
   }
   const std::size_t doubles = buffers_->step_amount.capacity() + buffers_->level.capacity() +
-                              buffers_->value.capacity() + buffers_->scratch.capacity();
+                              buffers_->value.capacity() + buffers_->scratch.capacity() +
+                              buffers_->step_shift.capacity();
   return doubles * sizeof(double);
 }
 
@@ -269,11 +590,23 @@ constexpr int kNotIncreasingRetries = 1;
 // so the two counters and the shared budget are kept in one place.
 class Inverter {
 public:
+  // The historical tiers: the accurate (steps, scheme) lattice, the Screen scheme.
   Inverter(double price, double S, double K, double T, double r, double q, Side side,
            std::span<const CashDividend> dividends, int steps, DiscreteDivScheme scheme,
            const DiscreteDivIvOpts &opts, DiscreteDivWorkspace &workspace) noexcept
       : price_(price), S_(S), K_(K), T_(T), r_(r), q_(q), side_(side), dividends_(dividends),
         steps_(steps), scheme_(scheme), opts_(opts), ws_(workspace) {}
+  // The D1 production tiers (lane D1): the accurate route, and a Screen route or
+  // nullptr. Both routes must outlive the Inverter.
+  Inverter(double price, double S, double K, double T, double r, double q, Side side,
+           std::span<const CashDividend> dividends, const DiscreteDivLatticeRoute &route,
+           const DiscreteDivLatticeRoute *screen_route, const DiscreteDivIvOpts &opts,
+           DiscreteDivWorkspace &workspace, const ddiv_detail::RouteMaps *maps = nullptr,
+           const ddiv_detail::RouteMaps *screen_maps = nullptr) noexcept
+      : price_(price), S_(S), K_(K), T_(T), r_(r), q_(q), side_(side), dividends_(dividends),
+        steps_(route.steps), scheme_(DiscreteDivScheme::SplicedCubic), opts_(opts),
+        ws_(workspace), route_(&route), screen_route_(screen_route), maps_(maps),
+        screen_maps_(screen_maps) {}
 
   [[nodiscard]] Result<DiscreteDivIvResult> run();
 
@@ -281,8 +614,12 @@ private:
   // A residual on a tier; the typed refusal of the lattice propagates unchanged.
   [[nodiscard]] Result<double> acc(double sigma) {
     ++out_.accurate_lattices;
-    const Result<double> p = price_on(S_, K_, T_, sigma, r_, q_, side_, dividends_, steps_,
-                                      ExerciseStyle::American, scheme_, ws_);
+    const Result<double> p =
+        (route_ != nullptr)
+            ? price_route_on(*route_, S_, K_, T_, sigma, r_, q_, side_, dividends_,
+                             ExerciseStyle::American, ws_, maps_)
+            : price_on(S_, K_, T_, sigma, r_, q_, side_, dividends_, steps_,
+                       ExerciseStyle::American, scheme_, ws_);
     if (!p) {
       return Err(p.error());
     }
@@ -290,13 +627,20 @@ private:
   }
   [[nodiscard]] Result<double> scr(double sigma) {
     ++out_.screen_lattices;
-    const Result<double> p = price_on(S_, K_, T_, sigma, r_, q_, side_, dividends_, screen_steps_,
-                                      ExerciseStyle::American, kDiscreteDivScreenScheme, ws_);
+    const Result<double> p =
+        (screen_route_ != nullptr)
+            ? price_route_on(*screen_route_, S_, K_, T_, sigma, r_, q_, side_, dividends_,
+                             ExerciseStyle::American, ws_, screen_maps_)
+            : price_on(S_, K_, T_, sigma, r_, q_, side_, dividends_, screen_steps_,
+                       ExerciseStyle::American, kDiscreteDivScreenScheme, ws_);
     if (!p) {
       return Err(p.error());
     }
     return Ok(*p - price_);
   }
+  // The setup of the two tiers (validation, lower endpoints, Screen admission).
+  [[nodiscard]] Status prepare_historical(bool &screen);
+  [[nodiscard]] Status prepare_production(bool &screen);
   [[nodiscard]] bool budget_left() const noexcept {
     return static_cast<unsigned>(out_.screen_lattices) +
                static_cast<unsigned>(out_.accurate_lattices) <
@@ -332,6 +676,10 @@ private:
   DiscreteDivScheme scheme_;
   const DiscreteDivIvOpts &opts_;
   DiscreteDivWorkspace &ws_;
+  const DiscreteDivLatticeRoute *route_ = nullptr;        // production: the accurate route
+  const DiscreteDivLatticeRoute *screen_route_ = nullptr; // production: the Screen route
+  const ddiv_detail::RouteMaps *maps_ = nullptr;          // a batch group's prebuilt maps
+  const ddiv_detail::RouteMaps *screen_maps_ = nullptr;
 
   DiscreteDivIvResult out_;
   DiscreteDivIvFallback fallback_ = DiscreteDivIvFallback::None;
@@ -717,35 +1065,11 @@ Result<DiscreteDivIvResult> Inverter::run() {
   if (!(opts_.tol > 0.0) || !std::isfinite(opts_.tol)) {
     return Err(ErrorCode::InvalidArgument, "dated-cash IV: tol must be finite and > 0");
   }
-  // The allocating entry's validation, once, with a placeholder sigma inside the
-  // admissible range; every later price call revalidates for free.
-  const Status ok = ddiv_detail::validate(S_, K_, T_, 1.0, r_, q_, dividends_, steps_);
-  if (!ok) {
-    return Err(ok.error());
-  }
-  if (!discrete_div_scheme_admits(scheme_, steps_)) {
-    return Err(ErrorCode::InvalidArgument,
-               "unknown discrete-dividend lattice scheme, or too few steps for it");
-  }
-  if (!ws_.admits(steps_)) {
-    return Err(ErrorCode::InvalidArgument,
-               "discrete-dividend workspace: steps exceed the max_steps it was sized for");
-  }
-  lo_acc_ = lattice_sigma_floor(T_, r_, q_, discrete_div_coarsest_steps(steps_, scheme_));
-  if (!(lo_acc_ < kIvMax)) {
-    return Err(ErrorCode::OutOfRange, "dated-cash IV: lattice has no admissible volatility range");
-  }
-
   bool screen = false;
-  if (opts_.tier == DiscreteDivTier::Screen) {
-    const Result<int> ns = discrete_div_screen_steps(T_, dividends_, steps_, opts_.screen_steps);
-    if (ns && ws_.admits(*ns)) {
-      screen_steps_ = *ns;
-      lo_scr_ = std::max(
-          lo_acc_, lattice_sigma_floor(T_, r_, q_, discrete_div_coarsest_steps(
-                                                       screen_steps_, kDiscreteDivScreenScheme)));
-      screen = lo_scr_ < kIvMax;
-    }
+  const Status prepared =
+      (route_ != nullptr) ? prepare_production(screen) : prepare_historical(screen);
+  if (!prepared) {
+    return Err(prepared.error());
   }
   if (!screen) {
     fallback_ = DiscreteDivIvFallback::NotApplicable;
@@ -775,6 +1099,63 @@ Result<DiscreteDivIvResult> Inverter::run() {
   return Ok(out_);
 }
 
+Status Inverter::prepare_historical(bool &screen) {
+  // The allocating entry's validation, once, with a placeholder sigma inside the
+  // admissible range; every later price call revalidates for free.
+  const Status ok = ddiv_detail::validate(S_, K_, T_, 1.0, r_, q_, dividends_, steps_);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  if (!discrete_div_scheme_admits(scheme_, steps_)) {
+    return Err(ErrorCode::InvalidArgument,
+               "unknown discrete-dividend lattice scheme, or too few steps for it");
+  }
+  if (!ws_.admits(steps_)) {
+    return Err(ErrorCode::InvalidArgument,
+               "discrete-dividend workspace: steps exceed the max_steps it was sized for");
+  }
+  lo_acc_ = lattice_sigma_floor(T_, r_, q_, discrete_div_coarsest_steps(steps_, scheme_));
+  if (!(lo_acc_ < kIvMax)) {
+    return Err(ErrorCode::OutOfRange, "dated-cash IV: lattice has no admissible volatility range");
+  }
+  if (opts_.tier == DiscreteDivTier::Screen) {
+    const Result<int> ns = discrete_div_screen_steps(T_, dividends_, steps_, opts_.screen_steps);
+    if (ns && ws_.admits(*ns)) {
+      screen_steps_ = *ns;
+      lo_scr_ = std::max(
+          lo_acc_, lattice_sigma_floor(T_, r_, q_, discrete_div_coarsest_steps(
+                                                       screen_steps_, kDiscreteDivScreenScheme)));
+      screen = lo_scr_ < kIvMax;
+    }
+  }
+  return Ok();
+}
+
+// The production tiers (lane D1). The Screen route needs no first-step refusal:
+// its pre-steps give an early ex-date the nodes it needs.
+Status Inverter::prepare_production(bool &screen) {
+  const Status ok = ddiv_detail::validate(S_, K_, T_, 1.0, r_, q_, dividends_, route_->steps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  const Status admitted = admit_route(*route_, ws_);
+  if (!admitted) {
+    return Err(admitted.error());
+  }
+  const int coarsest = (route_->coarse_steps > 0) ? route_->coarse_steps : route_->steps;
+  lo_acc_ = lattice_sigma_floor(T_, r_, q_, coarsest);
+  if (!(lo_acc_ < kIvMax)) {
+    return Err(ErrorCode::OutOfRange, "dated-cash IV: lattice has no admissible volatility range");
+  }
+  if (opts_.tier == DiscreteDivTier::Screen && screen_route_ != nullptr &&
+      screen_route_->steps < route_->steps && admit_route(*screen_route_, ws_)) {
+    screen_steps_ = screen_route_->steps;
+    lo_scr_ = std::max(lo_acc_, lattice_sigma_floor(T_, r_, q_, screen_steps_));
+    screen = lo_scr_ < kIvMax;
+  }
+  return Ok();
+}
+
 } // namespace
 
 Result<DiscreteDivIvResult>
@@ -788,6 +1169,390 @@ american_discrete_div_implied_vol(double price, double S, double K, double T, do
     out->convention = discrete_div_convention(scheme);
   }
   return out;
+}
+
+// ── 4. The D1 production path ───────────────────────────────────────────────
+
+Result<double> ddiv_detail::spliced_cubic_price(double S, double K, double T, double sigma,
+                                                double r, double q, Side side,
+                                                std::span<const CashDividend> dividends,
+                                                int steps, ExerciseStyle exercise,
+                                                LatticeBuffers &buffers) {
+  DiscreteDivProductionOpts opts;
+  opts.base_steps = steps;
+  const Result<DiscreteDivLatticeRoute> route = build_route(S, T, dividends, opts, true, 0.0);
+  if (!route) {
+    return Err(route.error());
+  }
+  const Result<LatticeOutcome> out =
+      route_outcome(*route, S, K, T, sigma, r, q, side, dividends, exercise, buffers);
+  if (!out) {
+    return Err(out.error());
+  }
+  return Ok(out->price);
+}
+
+const char *to_string(DiscreteDivMethod value) noexcept {
+  switch (value) {
+  case DiscreteDivMethod::HistoricalSpliced:
+    return "historical-spliced";
+  case DiscreteDivMethod::CubicCrr:
+    return "cubic-crr";
+  case DiscreteDivMethod::CubicBbsRichardson:
+    return "cubic-bbs-richardson";
+  }
+  return "unknown";
+}
+
+Result<DiscreteDivLatticeRoute> discrete_div_lattice_route(double S, double T,
+                                                           std::span<const CashDividend> dividends,
+                                                           const DiscreteDivProductionOpts &opts) {
+  return build_route(S, T, dividends, opts, true, 0.0);
+}
+
+Result<double> american_discrete_div_route_price(const DiscreteDivLatticeRoute &route, double S,
+                                                 double K, double T, double sigma, double r,
+                                                 double q, Side side,
+                                                 std::span<const CashDividend> dividends,
+                                                 ExerciseStyle exercise,
+                                                 DiscreteDivWorkspace &workspace) noexcept {
+  return price_route_on(route, S, K, T, sigma, r, q, side, dividends, exercise, workspace);
+}
+
+Result<DiscreteDivProductionPrice> american_discrete_div_production_price(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    std::span<const CashDividend> dividends, ExerciseStyle exercise,
+    const DiscreteDivProductionOpts &opts, DiscreteDivWorkspace &workspace) {
+  const Result<DiscreteDivLatticeRoute> route = build_route(S, T, dividends, opts, true, 0.0);
+  if (!route) {
+    return Err(route.error());
+  }
+  const Result<double> price =
+      price_route_on(*route, S, K, T, sigma, r, q, side, dividends, exercise, workspace);
+  if (!price) {
+    return Err(price.error());
+  }
+  DiscreteDivProductionPrice out;
+  out.price = *price;
+  out.route = *route;
+  out.convention = discrete_div_convention(route->method == DiscreteDivMethod::HistoricalSpliced
+                                               ? DiscreteDivScheme::SplicedCrr
+                                               : DiscreteDivScheme::SplicedCubic);
+  return Ok(out);
+}
+
+Result<DiscreteDivProductionIv> american_discrete_div_production_iv(
+    double price, double S, double K, double T, double r, double q, Side side,
+    std::span<const CashDividend> dividends, const DiscreteDivProductionOpts &opts,
+    const DiscreteDivIvOpts &iv_opts, DiscreteDivWorkspace &workspace) {
+  const Result<DiscreteDivLatticeRoute> route = build_route(S, T, dividends, opts, true, 0.0);
+  if (!route) {
+    return Err(route.error());
+  }
+  DiscreteDivProductionIv out;
+  out.route = *route;
+  if (route->method == DiscreteDivMethod::HistoricalSpliced) {
+    // The kill switch: section 3 on the historical lattice, call for call.
+    const Result<DiscreteDivIvResult> iv =
+        american_discrete_div_implied_vol(price, S, K, T, r, q, side, dividends, route->steps,
+                                          DiscreteDivScheme::SplicedCrr, iv_opts, workspace);
+    if (!iv) {
+      return Err(iv.error());
+    }
+    out.iv = *iv;
+    return Ok(out);
+  }
+  // The Screen route: the Standard lattice at the screen count, no per-event raise.
+  bool has_screen = false;
+  if (iv_opts.screen_steps >= 4) {
+    const Result<DiscreteDivLatticeRoute> screen =
+        ddiv_detail::screen_route(S, T, dividends, iv_opts.screen_steps);
+    if (screen) {
+      out.screen = *screen;
+      has_screen = true;
+    }
+  }
+  Inverter inverter(price, S, K, T, r, q, side, dividends, out.route,
+                    has_screen ? &out.screen : nullptr, iv_opts, workspace);
+  const Result<DiscreteDivIvResult> iv = inverter.run();
+  if (!iv) {
+    return Err(iv.error());
+  }
+  out.iv = *iv;
+  out.iv.convention = discrete_div_convention(DiscreteDivScheme::SplicedCubic);
+  return Ok(out);
+}
+
+Result<double> ddiv_detail::route_price_prebuilt(const DiscreteDivLatticeRoute &route,
+                                                 const RouteMaps *maps, double S, double K,
+                                                 double T, double sigma, double r, double q,
+                                                 Side side,
+                                                 std::span<const CashDividend> dividends,
+                                                 ExerciseStyle exercise,
+                                                 DiscreteDivWorkspace &workspace) {
+  return price_route_on(route, S, K, T, sigma, r, q, side, dividends, exercise, workspace, maps);
+}
+
+Result<DiscreteDivIvResult>
+ddiv_detail::route_iv_prebuilt(double price, const DiscreteDivLatticeRoute &route,
+                               const RouteMaps *maps, const DiscreteDivLatticeRoute *screen,
+                               const RouteMaps *screen_maps, double S, double K, double T, double r,
+                               double q, Side side, std::span<const CashDividend> dividends,
+                               const DiscreteDivIvOpts &opts, DiscreteDivWorkspace &workspace) {
+  Inverter inverter(price, S, K, T, r, q, side, dividends, route, screen, opts, workspace, maps,
+                    screen_maps);
+  Result<DiscreteDivIvResult> out = inverter.run();
+  if (out) {
+    out->convention = discrete_div_convention(route.method == DiscreteDivMethod::HistoricalSpliced
+                                                  ? DiscreteDivScheme::SplicedCrr
+                                                  : DiscreteDivScheme::SplicedCubic);
+  }
+  return out;
+}
+
+Result<DiscreteDivLatticeRoute> ddiv_detail::screen_route(double S, double T,
+                                                          std::span<const CashDividend> dividends,
+                                                          int screen_steps) {
+  DiscreteDivProductionOpts screen_opts;
+  screen_opts.base_steps = screen_steps;
+  return build_route(S, T, dividends, screen_opts, false, 0.0);
+}
+
+std::size_t ddiv_detail::route_map_doubles(const DiscreteDivLatticeRoute &route) noexcept {
+  const auto layers = [](int steps) {
+    return (steps > 0) ? 2U * (static_cast<std::size_t>(steps) + 1U) : std::size_t{0};
+  };
+  const bool refined = (route.method == DiscreteDivMethod::CubicBbsRichardson);
+  return layers(route.steps) + (refined ? layers(route.coarse_steps) : std::size_t{0});
+}
+
+ddiv_detail::RouteMaps ddiv_detail::build_route_maps(const DiscreteDivLatticeRoute &route,
+                                                     double T, double r, double q,
+                                                     std::span<const CashDividend> dividends,
+                                                     std::span<double> arena) noexcept {
+  RouteMaps maps;
+  if (route.steps <= 0 || arena.size() < route_map_doubles(route)) {
+    return maps; // empty maps: the rollback refuses them by size
+  }
+  const ProductionSpec spec = route_spec(route);
+  std::size_t used = 0;
+  const auto build = [&](int steps) {
+    StepMap map;
+    const std::size_t n = static_cast<std::size_t>(steps) + 1U;
+    const std::span<double> amount = arena.subspan(used, n);
+    const std::span<double> shift = arena.subspan(used + n, n);
+    used += 2U * n;
+    map.any = build_production_step_map(T, r, q, dividends, steps, spec, amount, shift);
+    map.amount = amount;
+    map.shift = shift;
+    return map;
+  };
+  maps.fine = build(route.steps);
+  if (route.method == DiscreteDivMethod::CubicBbsRichardson) {
+    maps.coarse = build(route.coarse_steps);
+  }
+  return maps;
+}
+
+double ddiv_detail::route_sigma_floor(const DiscreteDivLatticeRoute &route, double T, double r,
+                                      double q) noexcept {
+  const int coarsest = (route.coarse_steps > 0) ? route.coarse_steps : route.steps;
+  return lattice_sigma_floor(T, r, q, std::max(coarsest, 1));
+}
+
+namespace {
+
+constexpr std::uint16_t greek_bit(DiscreteDivGreek greek) noexcept {
+  return static_cast<std::uint16_t>(1U << static_cast<unsigned>(greek));
+}
+
+// The bumped price of one route (ProductionSpec hooks: a dividend amount, a
+// calendar shift). Validated inputs, admitted route.
+[[nodiscard]] Result<double>
+bumped_price(const DiscreteDivLatticeRoute &route, double S, double K, double T, double sigma,
+             double r, double q, Side side, std::span<const CashDividend> dividends,
+             ExerciseStyle exercise, LatticeBuffers &buffers,
+             std::size_t bump_index = ddiv_detail::ProductionSpec::kNoBump,
+             double bump_amount = 0.0, const ddiv_detail::RouteMaps *maps = nullptr) {
+  const Result<LatticeOutcome> out =
+      route_outcome(route, S, K, T, sigma, r, q, side, dividends, exercise, buffers, bump_index,
+                    bump_amount, 0.0, maps);
+  if (!out) {
+    return Err(out.error());
+  }
+  return Ok(out->price);
+}
+
+// The calendar roll of header section 4: cash in (0, horizon] comes off the stock,
+// later ex-dates move closer, the contract is re-routed as seen at t + horizon.
+[[nodiscard]] Result<DiscreteDivTimeRoll>
+time_roll(double price, double S, double K, double T, double sigma, double r, double q, Side side,
+          std::span<const CashDividend> dividends, ExerciseStyle exercise, double horizon,
+          const DiscreteDivProductionOpts &opts, DiscreteDivWorkspace &workspace) {
+  DiscreteDivTimeRoll roll;
+  roll.horizon = horizon;
+  for (const CashDividend &dv : dividends) {
+    if (in_window(dv, T, 0.0) && dv.tau <= horizon) {
+      ++roll.events_crossed;
+      roll.cash_crossed += dv.amount;
+    }
+  }
+  const double rolled_spot = S - roll.cash_crossed;
+  if (!(rolled_spot > 0.0)) {
+    return Err(ErrorCode::OutOfRange, "time roll: the cash crossed exhausts the stock");
+  }
+  const double rolled_T = T - horizon;
+  if (!(rolled_T > 0.0)) {
+    // A roll through expiry is an event too: the option is its payoff.
+    roll.rolled_price = intrinsic(side, rolled_spot, K);
+  } else {
+    const Result<DiscreteDivLatticeRoute> rolled =
+        build_route(rolled_spot, rolled_T, dividends, opts, true, horizon);
+    if (!rolled) {
+      return Err(rolled.error());
+    }
+    const Status admitted = admit_route(*rolled, workspace);
+    if (!admitted) {
+      return Err(admitted.error());
+    }
+    const Result<LatticeOutcome> out =
+        route_outcome(*rolled, rolled_spot, K, rolled_T, sigma, r, q, side, dividends, exercise,
+                      workspace.buffers(), ddiv_detail::ProductionSpec::kNoBump, 0.0, horizon);
+    if (!out) {
+      return Err(out.error());
+    }
+    roll.rolled_price = out->price;
+  }
+  roll.roll = roll.rolled_price - price;
+  return Ok(roll);
+}
+
+} // namespace
+
+Result<DiscreteDivProductionGreeks> ddiv_detail::route_greeks_prebuilt(
+    const DiscreteDivLatticeRoute &route_in, const RouteMaps *maps, double S, double K, double T,
+    double sigma, double r, double q, Side side, std::span<const CashDividend> dividends,
+    ExerciseStyle exercise, std::span<double> dP_dDiv_out, double roll_horizon,
+    const DiscreteDivProductionOpts &opts, DiscreteDivWorkspace &workspace) {
+  if (!dP_dDiv_out.empty() && dP_dDiv_out.size() != dividends.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "dP_dDiv_out must be empty or carry exactly one slot per dividend event");
+  }
+  if (!std::isfinite(roll_horizon)) {
+    return Err(ErrorCode::InvalidArgument, "roll horizon must be finite");
+  }
+  const DiscreteDivLatticeRoute *route = &route_in;
+  const Status ok = ddiv_detail::validate(S, K, T, sigma, r, q, dividends, route->steps);
+  if (!ok) {
+    return Err(ok.error());
+  }
+  const Status admitted = admit_route(*route, workspace);
+  if (!admitted) {
+    return Err(admitted.error());
+  }
+  LatticeBuffers &buffers = workspace.buffers();
+  // The vega legs share the group's (r, q) and so its maps; the rate and yield legs
+  // move the forward scale of every ex-date and rebuild theirs.
+  const auto price_at = [&](double s, double rr, double qq) {
+    const RouteMaps *legs = (rr == r && qq == q) ? maps : nullptr;
+    return bumped_price(*route, S, K, T, s, rr, qq, side, dividends, exercise, buffers,
+                        ProductionSpec::kNoBump, 0.0, legs);
+  };
+
+  DiscreteDivProductionGreeks out;
+  out.route = *route;
+  const Result<LatticeOutcome> base =
+      route_outcome(*route, S, K, T, sigma, r, q, side, dividends, exercise, buffers,
+                    ProductionSpec::kNoBump, 0.0, 0.0, maps);
+  if (!base) {
+    return Err(base.error());
+  }
+  out.price = base->price;
+  out.delta = base->delta;
+  out.gamma = base->gamma;
+  // The two-step stencils difference across steps 0..2: an ex-date there makes
+  // them a difference across an EVENT, which is not a derivative.
+  if (route->first_ex_step >= 0 && route->first_ex_step <= 2) {
+    out.theta = kNaN;
+    out.charm = kNaN;
+    out.unsupported |= greek_bit(DiscreteDivGreek::Theta) | greek_bit(DiscreteDivGreek::Charm);
+  } else {
+    out.theta = base->theta;
+    out.charm = base->charm;
+  }
+
+  const double hv = discrete_div_sigma_bump(sigma);
+  const Result<double> vol_up = price_at(sigma + hv, r, q);
+  const Result<double> vol_dn = price_at(sigma - hv, r, q);
+  const Result<double> rate_up = price_at(sigma, r + kDiscreteDivRateBump, q);
+  const Result<double> rate_dn = price_at(sigma, r - kDiscreteDivRateBump, q);
+  const Result<double> yield_up = price_at(sigma, r, q + kDiscreteDivYieldBump);
+  const Result<double> yield_dn = price_at(sigma, r, q - kDiscreteDivYieldBump);
+  for (const Result<double> *leg : {&vol_up, &vol_dn, &rate_up, &rate_dn, &yield_up, &yield_dn}) {
+    if (!*leg) {
+      return Err(leg->error());
+    }
+  }
+  out.vega = (*vol_up - *vol_dn) / (2.0 * hv);
+  out.rho = (*rate_up - *rate_dn) / (2.0 * kDiscreteDivRateBump);
+  out.phi = (*yield_up - *yield_dn) / (2.0 * kDiscreteDivYieldBump);
+
+  if (dP_dDiv_out.empty()) {
+    out.unsupported |= greek_bit(DiscreteDivGreek::DividendAmount); // not computed
+  }
+  for (std::size_t i = 0; i < dP_dDiv_out.size(); ++i) {
+    const CashDividend &dv = dividends[i];
+    // The lattice's (0, T] window on the ex-date alone: a zero amount inside it
+    // still has a (one-sided) sensitivity; an event outside it moves nothing.
+    if (!(dv.tau > 0.0) || dv.tau > T * (1.0 + kTauAtExpiryRelTol)) {
+      dP_dDiv_out[i] = 0.0;
+      continue;
+    }
+    const double h = discrete_div_amount_bump(dv.amount);
+    const double lo = std::max(dv.amount - h, 0.0);
+    const double hi = dv.amount + h;
+    const Result<double> up = bumped_price(*route, S, K, T, sigma, r, q, side, dividends,
+                                           exercise, buffers, i, hi);
+    const Result<double> dn = bumped_price(*route, S, K, T, sigma, r, q, side, dividends,
+                                           exercise, buffers, i, lo);
+    if (!up || !dn) {
+      return Err(!up ? up.error() : dn.error());
+    }
+    dP_dDiv_out[i] = (*up - *dn) / (hi - lo);
+  }
+
+  if (roll_horizon > 0.0) {
+    const Result<DiscreteDivTimeRoll> roll = time_roll(out.price, S, K, T, sigma, r, q, side,
+                                                       dividends, exercise, roll_horizon, opts,
+                                                       workspace);
+    if (roll) {
+      out.roll = *roll;
+    } else {
+      out.roll.horizon = roll_horizon;
+      out.roll.rolled_price = kNaN;
+      out.roll.roll = kNaN;
+      out.unsupported |= greek_bit(DiscreteDivGreek::Roll);
+    }
+  } else {
+    out.roll.rolled_price = kNaN;
+    out.roll.roll = kNaN;
+    out.unsupported |= greek_bit(DiscreteDivGreek::Roll);
+  }
+  return Ok(out);
+}
+
+Result<DiscreteDivProductionGreeks> american_discrete_div_production_greeks(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    std::span<const CashDividend> dividends, ExerciseStyle exercise,
+    std::span<double> dP_dDiv_out, double roll_horizon, const DiscreteDivProductionOpts &opts,
+    DiscreteDivWorkspace &workspace) {
+  const Result<DiscreteDivLatticeRoute> route = build_route(S, T, dividends, opts, true, 0.0);
+  if (!route) {
+    return Err(route.error());
+  }
+  return ddiv_detail::route_greeks_prebuilt(*route, nullptr, S, K, T, sigma, r, q, side,
+                                            dividends, exercise, dP_dDiv_out, roll_horizon, opts,
+                                            workspace);
 }
 
 } // namespace atx::vol

@@ -62,6 +62,10 @@ set(ATX_VOL_PRICING_SOURCES
     # 2026-10-20): prices through the seam src/pricing/american_discrete_div_detail.hpp;
     # public header api/pricing/american_discrete_div_kernel.hpp (Tier-B).
     src/pricing/american_discrete_div_kernel.cpp
+    # The schedule-grouped batch of the D1 production path (lane D1, 2026-10-22):
+    # routes and step maps once per (schedule, T) group, then allocation-free loops.
+    # Public header api/pricing/american_discrete_div_batch.hpp (Tier-B).
+    src/pricing/american_discrete_div_batch.cpp
     # The INDEPENDENT cash-dividend reference (lane D0, 2026-10-22): event-aligned
     # PDE + ex-date-aligned trinomial lattice with stated uncertainty. Library-private
     # header src/pricing/american_discrete_div_reference.hpp; selected by no default.
