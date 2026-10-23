@@ -324,8 +324,9 @@ struct IvPremiumGate {
 
 // The family enclosure of a (sigma, q) family root (lane K3; american_iv.cpp, the Skipped
 // rule of the root acceptance; declared here for its tests). Two family prices with their
-// envelope bounds at the ends a = x - w/2, b = x + w/2 enclose the target map's root when
-// P_f(a) + eps(a) <= price <= P_f(b) - eps(b), eps the per-point bound of `env`
+// envelope bounds at the ends a = x - w/2, b = x + w/2 (b stepped toward a by an ulp or two
+// when rounding left the computed width above w: lane K5) enclose the target map's root when
+// b - a <= w and P_f(a) + eps(a) <= price <= P_f(b) - eps(b), eps the per-point bound of `env`
 // (family_price_bounded); `root` is then the falsi point clamped into [lo, hi] = [a, b].
 // When that misses only because `price` lies outside [P_f(a), P_f(b)] while the bounded
 // prices leave room, one re-centred attempt on the local chord's root. Without a covering

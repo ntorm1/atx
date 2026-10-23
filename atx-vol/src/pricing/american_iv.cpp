@@ -1324,6 +1324,11 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
 // this fraction of W (the estimate's own error must stay inside the remaining 0.05 W).
 constexpr double kFarRootHalfWidth = 0.45;
 
+// The enclosure's upper end (family_enclosure) moves toward the lower one by at most this
+// many ulps so that the bracket's COMPUTED width meets b - a <= w (lane K5): one step within
+// a binade, two where b sits on a power of two.
+constexpr int kEnclosureWidthSteps = 4;
+
 // The bracket width the acceptance closes.
 [[nodiscard]] double acceptance_width(double tol) noexcept {
   return std::fmin(tol, kIvRootRequirement) * (1.0 - 0x1p-20);
@@ -1343,7 +1348,13 @@ FamilyEnclosure family_enclosure(double price, double S, double K, double q, dou
   FamilyEnclosure out;
   for (int attempt = 0; attempt < 2; ++attempt) {
     const double a = x - 0.5 * w;
-    const double b = x + 0.5 * w;
+    // x + w/2 can round so that b - a exceeds w by an ulp of x (every x below 0.25 vol at
+    // w = acceptance_width(1e-7)): b steps toward a until the bracket meets the width rule
+    // below AS COMPUTED. The rule is unchanged (b - a is exact here: w << a, Sterbenz).
+    double b = x + 0.5 * w;
+    for (int step = 0; step < kEnclosureWidthSteps && !(b - a <= w); ++step) {
+      b = std::nextafter(b, a);
+    }
     const FamilyBoundedPrice pa = family_price_bounded(f, e, S, K, a, q);
     const FamilyBoundedPrice pb = family_price_bounded(f, e, S, K, b, q);
     stats.family_prices += 2u;
