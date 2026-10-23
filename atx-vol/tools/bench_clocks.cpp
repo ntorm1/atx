@@ -409,6 +409,32 @@ StageClockArm::StageClockArm(DeAmStageClock *clock) noexcept
 
 StageClockArm::~StageClockArm() { static_cast<void>(deam_stage_clock_arm(previous_)); }
 
+IvPopulation classify_iv_row(double error, double uncertainty, double threshold) noexcept {
+  if (!std::isfinite(error) || !std::isfinite(uncertainty)) {
+    return IvPopulation::ReferenceUnresolved;
+  }
+  if (uncertainty <= threshold) {
+    return error <= threshold ? IvPopulation::ResolvedPass : IvPopulation::ResolvedFail;
+  }
+  return error > threshold + kDecidableFailMargin * uncertainty
+             ? IvPopulation::DecidableFail
+             : IvPopulation::ReferenceUnresolved;
+}
+
+const char *iv_population_name(IvPopulation population) noexcept {
+  switch (population) {
+  case IvPopulation::ResolvedPass:
+    return "resolved_pass";
+  case IvPopulation::ResolvedFail:
+    return "resolved_fail";
+  case IvPopulation::DecidableFail:
+    return "decidable_fail";
+  case IvPopulation::ReferenceUnresolved:
+    return "reference_unresolved";
+  }
+  return "reference_unresolved";
+}
+
 Json cold_reset() {
   const std::size_t deam_entries = deam_iv_memo_size();
   deam_iv_memo_clear();

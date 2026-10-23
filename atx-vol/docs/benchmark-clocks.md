@@ -229,12 +229,30 @@ the accurate preset at the bracketed root, in USD and through the reference vega
 undefined (no reference vega); those are not passes.
 
 Populations (summary `populations`, per-row CSV column `population`; every served row in
-exactly one; plan 3.2): `resolved_pass` and `resolved_fail` (bracketed with a finite
-uncertainty <= the threshold, |served - bracketed| <= / > the threshold),
-`reference_unresolved` (with `reference_unresolved_over_threshold` and
-`uncertainty_undefined`), `iv_not_identified`, and `other_statuses`. The headline is
-`resolved pass / resolved fail / reference unresolved / IV not identified`; the
-`abs_iv_error.over_threshold` of all bracketed rows is not a failure count. Continuous-carry price table: `|P_ref(served_iv) - served_price|` in USD and
+exactly one; plan 3.2; rule in `bench_clocks.hpp` `classify_iv_row`, with u = the
+reference uncertainty in vol and err = |served - bracketed|):
+- `resolved_pass` / `resolved_fail`: u finite and <= the threshold; err <= / > the
+  threshold.
+- `decidable_fail`: u above the threshold, but **err > threshold + 3 u**
+  (`decidable_fail_margin` = 3): even a reference off by three times its own estimated
+  error cannot make the row pass. Applied to every bracketed row with u above the
+  threshold.
+- `reference_unresolved`: every other bracketed row (u above the threshold and err within
+  threshold + 3 u, or u undefined because the reference vega is zero), with
+  `reference_unresolved_over_threshold` and `uncertainty_undefined`. Not a pass.
+- `iv_not_identified`, and `other_statuses`.
+
+`populations.non_circular` counts, per population, the bracketed rows whose served pair is
+NOT consistent (|P_ref(served_iv) - served price| > 1e-10 USD): only those are genuine root
+checks; every other bracketed row is circular for pricer error. A resolved-pass count is
+therefore NOT a coverage claim: on the r5 defaults SPY has 1026 resolved passes of which 0
+are non-circular, and cohort5 5258 of which 5 are non-circular (one non-circular row,
+AAPL call K=10, is the one `decidable_fail`). The headline reads `resolved pass (n
+non-circular) / resolved fail / decidable fail / reference unresolved / IV not
+identified`; the `abs_iv_error.over_threshold` of all bracketed rows is not a failure
+count. Schema `atx-vol-iv-comparator-v3` (v2 plus `decidable_fail`, `non_circular`,
+`decidable_fail_margin`, `decidable_fail_rows`; a v2 `reference_unresolved` row with a
+decidable failure is a v3 `decidable_fail`). Continuous-carry price table: `|P_ref(served_iv) - served_price|` in USD and
 relative (P >= 0.01) and its Newton distance in vol. Per-expiry and per side x moneyness
 (`|ln K/S| <= 0.1`, below, above) tables accompany every aggregate. The tool refuses to
 compile under fast-math (`#error` on `__FAST_MATH__`, `_M_FP_FAST`, finite-math) and its
