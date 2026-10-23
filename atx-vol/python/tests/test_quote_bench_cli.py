@@ -1805,7 +1805,8 @@ def test_native_bench_clocks_are_reported_and_stages_reconcile(binary, tmp_path)
     assert sum(rows["rows_by_status"].values()) == timed["rows"]
     families = counters["families"]
     assert families["built"] == 0 and families["iterate_prices"] == 0  # family route off
-    assert families["attempted"].startswith("unavailable")
+    # K4: the family sides the fit requested (and refused) are counted; none with the route off.
+    assert families["attempted"] == 0 and families["refused"] == 0
     route = counters["fit_route"]
     assert route["timed_chains"] == 4
     assert route["al_boundary_solves"] == sum(route["al_boundary_solves_by_bucket"].values())
