@@ -41,6 +41,60 @@ enum class IvPremiumFallback : std::uint8_t {
 };
 inline constexpr std::size_t kIvPremiumFallbackCount = 8;
 
+// K4 (r6, 2026-10-23): the typed outcome of one request on the native fit route
+// (IvPremiumGate::native_route). The route never runs Search: every request ends in exactly
+// one of these. The non-identified outcomes map onto C0's identifiability statuses
+// (quote_slice.hpp QuoteSlicePriceOnlyReason): PriceOnlyPlateau -> flat_exercise_region,
+// PriceOnlyFloor -> floor_vol, PriceOnlyLowVega -> low_vega, Interval ->
+// unidentified_interval; BudgetExhausted / AboveRange / Unresolved are typed refusals.
+enum class IvRouteOutcome : std::uint8_t {
+  None = 0,             // not on the native route
+  NativeRoot = 1,       // a family-native root the K3 acceptance closed (Skipped / Confirmed)
+  ReferenceRoot = 2,    // a root the bounded reference route certified (bracket <= the width)
+  LegRoot = 3,          // a request with no family of its side: the seed-leg route's root
+  PriceOnlyPlateau = 4, // the price lies on the exercise plateau (C1 ExercisePlateau class)
+  PriceOnlyFloor = 5,   // at or below the kIvMin price outside the plateau
+  PriceOnlyLowVega = 6, // the slope cannot resolve the width (K3 PriceOnly, K2 LowVega)
+  Interval = 7,         // a certified bracket wider than the requirement (K3 Interval)
+  BudgetExhausted = 8,  // the chain's reference budget is spent: refused and counted
+  AboveRange = 9,       // at or above the identifiable range's top
+  Unresolved = 10,      // the reference kernel refused, or no bracket closed within its cap
+};
+inline constexpr std::size_t kIvRouteOutcomeCount = 11;
+
+// The reference route's budget of one chain cache (QuoteSliceChannelConfig
+// deam_reference_max_calls / _max_evaluations), spent by the requests that reach the route
+// in the order the fit asks for them (deterministic). Not thread-safe: one chain cache is
+// filled by one thread at a time (rung_memo.hpp).
+struct IvReferenceBudget {
+  std::uint32_t max_calls = 0;
+  std::uint32_t max_evaluations = 0;
+  std::uint32_t calls = 0;
+  std::uint32_t evaluations = 0;
+  std::uint32_t refused = 0; // requests refused because the budget was spent
+};
+
+// Kernel evaluations one reference request may spend (its own cap inside the budget).
+inline constexpr std::uint16_t kIvReferenceMaxEvaluations = 16;
+
+// The native fit route's outcome of a family-native root the K3 acceptance left unaccepted
+// (review-K3 For K4): PriceOnly -> PriceOnlyLowVega and Interval -> Interval, typed and NOT
+// re-solved (C0's low_vega / iv_interval); None (no bracket closed) -> None, which sends the
+// root to the bounded reference route. Confirmed / Skipped are accepted roots (None here).
+[[nodiscard]] constexpr IvRouteOutcome native_unaccepted_outcome(RootAcceptanceKind kind) noexcept {
+  switch (kind) {
+  case RootAcceptanceKind::PriceOnly:
+    return IvRouteOutcome::PriceOnlyLowVega;
+  case RootAcceptanceKind::Interval:
+    return IvRouteOutcome::Interval;
+  case RootAcceptanceKind::None:
+  case RootAcceptanceKind::Confirmed:
+  case RootAcceptanceKind::Skipped:
+    break;
+  }
+  return IvRouteOutcome::None;
+}
+
 // Cold iterate solves one Premium attempt may spend before it falls back (plus one
 // accurate confirming solve when IvOpts::seed_profile selects another kernel), and the
 // extra solves it may add one at a time while the Newton distance keeps shrinking by at
@@ -141,6 +195,18 @@ struct IvPremiumStats {
   // last point, a tangent) - NaN elsewhere.
   RootAcceptance acceptance{};
   double native_partner_span = std::numeric_limits<double>::quiet_NaN();
+  // K4 (r6): the native fit route's typed outcome (None off the route), the bounded
+  // reference route's kernel evaluations (also in premium_solves), the bracket or interval
+  // that typed outcome carries (NaN: an unknown end; [route_lo, route_hi] of a
+  // ReferenceRoot is its certified bracket, of an Interval its certified bracket, of a
+  // PriceOnly outcome the volatilities consistent with the price where known), and the
+  // exercise class the reference kernel saw at its last evaluation (american_region.hpp;
+  // meaningful only when reference_evaluations > 0).
+  IvRouteOutcome route = IvRouteOutcome::None;
+  std::uint16_t reference_evaluations = 0;
+  double route_lo = std::numeric_limits<double>::quiet_NaN();
+  double route_hi = std::numeric_limits<double>::quiet_NaN();
+  std::uint8_t reference_class = 0;
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp
@@ -240,6 +306,18 @@ struct IvPremiumGate {
   // kernel's bound cannot resolve the width at the root's slope, Interval / None when the
   // bracket did not close).
   bool qfamily_native = false;
+  // The native fit route (K4 r6, opt-in; with qfamily_native): no request reaches Search.
+  // A price inside the accurate non-monotone edge band, a refused family-native attempt and
+  // a native root the acceptance leaves open (kind None) go to the bounded reference route
+  // (american_iv.cpp reference_root: a certified bracketed root on the confirm kernel under
+  // AlExerciseRegion::Intrinsic, classified per evaluation, started from the native
+  // attempt's retained bracket / last point / fused vega); PriceOnly and Interval
+  // acceptances are typed outcomes (IvPremiumStats::route), not re-solved. A request whose
+  // side carries no family keeps the seed-leg route, its fallback the reference route.
+  // The seed tier's routing gate never diverts a family request (the family is built on
+  // the accurate kernel). `reference_budget` (nullptr: unbounded) is the chain's budget.
+  bool native_route = false;
+  IvReferenceBudget *reference_budget = nullptr;
 };
 
 // The family enclosure of a (sigma, q) family root (lane K3; american_iv.cpp, the Skipped
@@ -263,6 +341,14 @@ struct FamilyEnclosure {
                                                double w, const AlSigmaQFamily &f,
                                                const ValidatedErrorEnvelope *env,
                                                IvPremiumStats &stats) noexcept;
+
+// The top of the Premium route's edge band (K4): the zero-volatility American value plus
+// max(al_non_monotone_gate(K, T, opts), the ceiling's rounding band) - a price at or below it
+// is not inverted on the monotone branch (premium_root: RangeEdge; on the native fit route
+// it is classified and goes to the reference route). NaN for invalid inputs.
+[[nodiscard]] double iv_premium_edge_band_top(double S, double K, double T, double r, double q,
+                                              Side side,
+                                              const std::optional<AlOpts> &opts) noexcept;
 
 // The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else
 // the seed tier's own non-monotone gate (NaN for an invalid K or T, which routes).
