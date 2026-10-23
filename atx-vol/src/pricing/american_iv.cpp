@@ -1321,23 +1321,15 @@ constexpr double kFarRootHalfWidth = 0.45;
   return std::fmin(tol, kIvRootRequirement) * (1.0 - 0x1p-20);
 }
 
-// A family enclosure attempt around x: the bracket, both family prices with their bounds,
-// and the local chord over it (NaN when a price refused).
-struct FamilyEnclosure {
-  bool enclosed = false;
-  double root = std::numeric_limits<double>::quiet_NaN();
-  double lo = std::numeric_limits<double>::quiet_NaN();
-  double hi = std::numeric_limits<double>::quiet_NaN();
-  double slope = std::numeric_limits<double>::quiet_NaN();
-};
+} // namespace
 
 // Encloses A's root in [x - w/2, x + w/2] from two family prices with their bounds; a
 // second, re-centred attempt (on the local chord's root) when the first missed only by
-// its centre. Without a covering envelope it measures the local chord only.
-[[nodiscard]] FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x,
-                                               double w, const AlSigmaQFamily &f,
-                                               const ValidatedErrorEnvelope *env,
-                                               IvPremiumStats &stats) noexcept {
+// its centre. Without a covering envelope it measures the local chord only. Declared in
+// american_iv_premium.hpp (FamilyEnclosure) so its tests can place x off the root.
+FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x, double w,
+                                 const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                 IvPremiumStats &stats) noexcept {
   static const ValidatedErrorEnvelope kNoEnvelope{};
   const ValidatedErrorEnvelope &e = env != nullptr ? *env : kNoEnvelope;
   FamilyEnclosure out;
@@ -1372,6 +1364,8 @@ struct FamilyEnclosure {
   }
   return out;
 }
+
+namespace {
 
 // One solve of the confirm kernel at sigma (charged as a confirming solve).
 [[nodiscard]] std::optional<double> confirm_price(double S, double K, double T, double sigma,

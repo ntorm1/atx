@@ -18,6 +18,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
@@ -200,6 +202,28 @@ struct IvPremiumGate {
   // bracket did not close).
   bool qfamily_native = false;
 };
+
+// The family enclosure of a (sigma, q) family root (lane K3; american_iv.cpp, the Skipped
+// rule of the root acceptance; declared here for its tests). Two family prices with their
+// envelope bounds at the ends a = x - w/2, b = x + w/2 enclose the target map's root when
+// P_f(a) + eps(a) <= price <= P_f(b) - eps(b), eps the per-point bound of `env`
+// (family_price_bounded); `root` is then the falsi point clamped into [lo, hi] = [a, b].
+// When that misses only because `price` lies outside [P_f(a), P_f(b)] while the bounded
+// prices leave room, one re-centred attempt on the local chord's root. Without a covering
+// envelope (`env` nullptr or Uncovered) nothing is enclosed and only `slope` is measured:
+// the chord over the last attempt's bracket (NaN when a price refused), which places and
+// never bounds. stats.family_prices counts the prices spent.
+struct FamilyEnclosure {
+  bool enclosed = false;
+  double root = std::numeric_limits<double>::quiet_NaN();
+  double lo = std::numeric_limits<double>::quiet_NaN();
+  double hi = std::numeric_limits<double>::quiet_NaN();
+  double slope = std::numeric_limits<double>::quiet_NaN();
+};
+[[nodiscard]] FamilyEnclosure family_enclosure(double price, double S, double K, double q, double x,
+                                               double w, const AlSigmaQFamily &f,
+                                               const ValidatedErrorEnvelope *env,
+                                               IvPremiumStats &stats) noexcept;
 
 // The seed-tier routing gate of a Premium attempt: gate->seed_gate_kappa when set, else
 // the seed tier's own non-monotone gate (NaN for an invalid K or T, which routes).
