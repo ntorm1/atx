@@ -3,8 +3,8 @@
 // Internal seam (lanes L3a / L3a-b / C0): the certified node side of a contract, the
 // price-only flag of a node side, the served-volatility floor rule and the
 // identification of a served volatility. Shared by quote_slice.cpp (row publication,
-// evaluate/query) and quote_surface.cpp (the ladder wing tail). Definitions live in
-// quote_slice.cpp. Not public API.
+// evaluate/query) and quote_surface.cpp (the ladder wing tail, row demotions).
+// Definitions live in quote_slice.cpp. Not public API.
 
 #include <cstddef>
 #include <cstdint>
@@ -63,5 +63,9 @@ struct VolIdentification {
 [[nodiscard]] VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike,
                                               Side side, double price,
                                               QuoteSliceFloorPolicy policy);
+
+// Clears a row's identifiability labels (price_only_reason None, NaN interval) - for a
+// row whose price is no longer served (a demotion) or whose volatility is identified.
+void clear_identification(QuoteSliceRow &row) noexcept;
 
 } // namespace atx::vol::detail

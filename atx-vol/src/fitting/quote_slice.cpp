@@ -1671,6 +1671,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     if (row.evaluation_status == QuoteSliceEvaluationStatus::InvalidContract) {
       continue;
     }
+    detail::clear_identification(row); // a re-certification never keeps earlier labels
     row.fitted_iv = out.curve->iv(std::log(quote.strike / diag.forward));
     if (!positive(row.fitted_iv)) {
       row.evaluation_status = QuoteSliceEvaluationStatus::InvalidVolatility;
@@ -2222,6 +2223,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
       row.evaluation_status = QuoteSliceEvaluationStatus::PricingFailure;
       row.fitted_price = std::numeric_limits<double>::quiet_NaN();
       row.fitted_iv = std::numeric_limits<double>::quiet_NaN();
+      detail::clear_identification(row);
       if (produced > 0) --produced; // the row no longer carries a price
       continue;
     }
@@ -2692,6 +2694,12 @@ void mark_price_only(QuoteSliceFit &fit, std::size_t node, unsigned bit, std::si
 }
 
 bool at_vol_floor(double iv) noexcept { return std::isfinite(iv) && iv <= kIvMin; }
+
+void clear_identification(QuoteSliceRow &row) noexcept {
+  row.price_only_reason = QuoteSlicePriceOnlyReason::None;
+  row.iv_lower = std::numeric_limits<double>::quiet_NaN();
+  row.iv_upper = std::numeric_limits<double>::quiet_NaN();
+}
 
 namespace {
 

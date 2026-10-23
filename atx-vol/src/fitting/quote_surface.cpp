@@ -50,7 +50,7 @@
 #include "core/parallel_for.hpp"         // parallel_for_dynamic (per-expiry fan-out)
 #include "fitting/counters.hpp"
 #include "fitting/expiry_schedule.hpp" // longest_first, note_expiry_dispatch
-#include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only (lane C0)
+#include "fitting/quote_slice_nodes.hpp" // floor_vol, mark_price_only, clear_identification
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 #include "fitting/term_prior.hpp"
 
@@ -1334,6 +1334,7 @@ private:
       if (!(d > bound)) continue;
       row.evaluation_status = QuoteSliceEvaluationStatus::MarketDistanceFailure;
       row.fitted_iv = kNaN;
+      detail::clear_identification(row); // lane C0: no served price, no price-only labels
       auto &produced = slice.fit.diagnostics.prices_produced;
       if (produced > 0) --produced;
       ++slice.market_gated_rows;
@@ -1380,6 +1381,7 @@ private:
     for (QuoteSliceRow &row : fit.rows) {
       row.fitted_iv = kNaN;
       row.fitted_price = kNaN;
+      detail::clear_identification(row); // lane C0: no served price, no price-only labels
       if (row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
           row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
         row.evaluation_status = QuoteSliceEvaluationStatus::NoFit;

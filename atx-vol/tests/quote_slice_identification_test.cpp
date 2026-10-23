@@ -329,6 +329,30 @@ Chain put_chain(double years, double atm, double skew, int lo, double yield) {
   return out;
 }
 
+// N (0.45 y, 50 %, 4 % yield): puts 116-148 with time value; F (0.5 y, skewed down to 5 %
+// from K 116): puts 60-148 at their exercise value from K 116 up.
+std::array<Chain, 2> calendar_repair_chains() {
+  return {put_chain(0.45, 0.5, 0.0, 116, 0.04), put_chain(0.5, 0.05, 0.30, 60, 0.0)};
+}
+
+// The calendar-repair surface: N repaired onto F's exercise values (F serves grade A, N
+// grade C after a channel refit, so F outranks N), with the market-distance mode `gate`.
+Result<std::vector<QuoteSurfaceSlice>>
+fit_calendar_repair(const std::array<Chain, 2> &chains, QuoteSliceFloorPolicy policy,
+                    QuoteSliceMarketDistance gate = QuoteSliceMarketDistance::Off) {
+  const std::array<QuoteSurfaceExpiry, 2> expiries{{{chains[0].market, chains[0].quotes, {}, {}},
+                                                    {chains[1].market, chains[1].quotes, {}, {}}}};
+  QuoteSurfaceConfig surface;
+  surface.grade_b_min_mid_strikes = 10;
+  surface.calendar_repair_half_spreads = 100.0;
+  QuoteSliceConfig config;
+  config.side_policy = QuoteSliceSidePolicy::All; // N's own in-the-money evidence
+  config.channel.repair_half_spreads = 100.0;
+  config.floor_policy = policy;
+  config.repair.market_distance = gate;
+  return fit_quote_surface(expiries, config, surface);
+}
+
 TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloorVolPriceOnly) {
   // N (0.45 y, 50 %, 4 % yield): puts 116-148 with time value. F (0.5 y, skewed down to
   // 5 % from K 116): puts 60-148, at their exercise value K - 100 from K 116 up. F serves
@@ -339,21 +363,11 @@ TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloor
   // volatility; under PriceOnly every repair path must type it FloorVol with the same price
   // (lane C0: the surface's repair trial dropped the fit's floor policy and re-implied
   // under Legacy - 190 dev200 rows served at 0.005 with serve.floor_price_only on).
-  const std::array<Chain, 2> chains{put_chain(0.45, 0.5, 0.0, 116, 0.04),
-                                    put_chain(0.5, 0.05, 0.30, 60, 0.0)};
-  const std::array<QuoteSurfaceExpiry, 2> expiries{{{chains[0].market, chains[0].quotes, {}, {}},
-                                                    {chains[1].market, chains[1].quotes, {}, {}}}};
-  QuoteSurfaceConfig surface;
-  surface.grade_b_min_mid_strikes = 10;
-  surface.calendar_repair_half_spreads = 100.0;
+  const std::array<Chain, 2> chains = calendar_repair_chains();
   std::vector<double> legacy_prices;
   for (const QuoteSliceFloorPolicy policy :
        {QuoteSliceFloorPolicy::Legacy, QuoteSliceFloorPolicy::PriceOnly}) {
-    QuoteSliceConfig config;
-    config.side_policy = QuoteSliceSidePolicy::All; // N's own in-the-money evidence
-    config.channel.repair_half_spreads = 100.0;
-    config.floor_policy = policy;
-    const auto fitted = fit_quote_surface(expiries, config, surface);
+    const auto fitted = fit_calendar_repair(chains, policy);
     ASSERT_TRUE(fitted) << fitted.error().to_string();
     const QuoteSurfaceSlice &near = (*fitted)[0];
     ASSERT_NE(near.grade, QuoteSliceGrade::Refused) << near.refusal << " " << near.error;
@@ -381,6 +395,35 @@ TEST(QuoteSliceIdentification, ASurfaceCalendarRepairOntoTheExerciseValueIsFloor
       EXPECT_GT(floor_price_only, 0u);
     }
   }
+}
+
+TEST(QuoteSliceIdentification, ARowDemotedFromServedCarriesNoIdentification) {
+  // The market-distance gate (lane L3q) refuses N's repaired rows - served at F's exercise
+  // values, far below N's own quotes - row by row after the calendar pass. A demoted row
+  // carries no served price, so it carries no price-only reason or interval either (lane
+  // C0 fix round 1: they used to keep the FloorVol labels of the PriceOnly row they were).
+  const std::array<Chain, 2> chains = calendar_repair_chains();
+  const auto open = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly);
+  const auto gated = fit_calendar_repair(chains, QuoteSliceFloorPolicy::PriceOnly,
+                                         QuoteSliceMarketDistance::Gate);
+  ASSERT_TRUE(open) << open.error().to_string();
+  ASSERT_TRUE(gated) << gated.error().to_string();
+  const QuoteSurfaceSlice &before = (*open)[0];
+  const QuoteSurfaceSlice &after = (*gated)[0];
+  ASSERT_GT(after.market_gated_rows, 0u);
+  std::size_t demoted_price_only = 0;
+  for (std::size_t i = 0; i < chains[0].quotes.size(); ++i) {
+    const QuoteSliceRow &row = after.fit.rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::MarketDistanceFailure) continue;
+    if (before.fit.rows[i].evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) {
+      ++demoted_price_only;
+      EXPECT_EQ(before.fit.rows[i].price_only_reason, QuoteSlicePriceOnlyReason::FloorVol) << i;
+    }
+    EXPECT_EQ(row.price_only_reason, QuoteSlicePriceOnlyReason::None) << i;
+    EXPECT_TRUE(std::isnan(row.iv_lower) && std::isnan(row.iv_upper)) << i;
+    EXPECT_EQ(vol_convention(row), QuoteSliceVolConvention::None) << i;
+  }
+  EXPECT_GT(demoted_price_only, 0u);
 }
 
 TEST(QuoteSliceIdentification, AnUnknownFloorPolicyIsRefusedAndEveryNameIsStable) {
