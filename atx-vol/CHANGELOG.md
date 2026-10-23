@@ -5,6 +5,28 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — label-free universe census runner and a simultaneous quote-query load tool (lane U0)
+
+`tools/universe_census.py` runs `atx-vol-quote-bench` over the L5u label-free universe
+(`universe-20261014`: 2,082,476 rows, 6,067 underliers, 37,086 chains) under declared bounds:
+whole-underlier jobs cut byte for byte from `quotes.csv`, K processes in flight, a 20 s
+per-chain budget with single-underlier isolation of a failed job, a working-set cap sampled
+every 100 ms, a host memory floor, ≤ 10-min checkpointed chunks (`jobs.jsonl`; a chunk stop
+re-runs in a new attempt directory) and a cumulative cap. `verify` recomputes the dataset's
+counts and per-stratum chain lists, `plan` draws the stratified sample (every non-empty
+stratum covered, ≤ 5 % of chains) or orders the full board by `sha256(seed | underlier)`,
+`summarize` / `compare` build the cost, support, failure, memory and identity tables.
+Nothing is scored: no labels, marks or holdout membership are read.
+
+`atx-vol-quote-query-load` (new tool target) drives H0-A's `SliceServeRecord::serve()` at a
+declared open-loop rate on one thread while a publisher re-fits one underlier's board and
+publishes versions through `std::atomic<std::shared_ptr>`. It reports service and response
+p50 / p99 / p99.9 / max, the miss rate, torn and stale results (each answer is checked bit for
+bit against its version's precomputed answer), rebuild clocks and P0's pass-A pool queue ages
+(from the `expiry_schedule.hpp` task hook). Results: `docs/universe-census.md`.
+
+**Number change: none.** No library file changed; both are tools.
+
 ### FIXED — served rows no longer depend on the core type that ran the first Eigen product (lane P0)
 
 Eigen 3.4 read L1/L2/L3 with CPUID once per process and sized its GEMM/TRSM blocking from
