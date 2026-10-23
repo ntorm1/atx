@@ -4,8 +4,10 @@
 // (`fit_curve_surface`'s prepass, carry repair and starved retry;
 // `fit_quote_surface`'s pass A and channel stages).
 //
-// `parallel_for_dynamic` hands out task positions in increasing order, so the
-// order of the task list is the order in which the expiries start. With the
+// `parallel_for_dynamic` and the persistent pool's `run_dynamic` (the
+// `fit_quote_surface` stages, `expiry_pool.hpp`) hand out task positions in
+// increasing order, so the order of the task list is the order in which the
+// expiries start. With the
 // densest expiries first, the cheap ones fill in behind them. A dense expiry
 // claimed last would otherwise leave one worker running long after every other
 // worker has gone idle. The order is a pure function of the inputs: a stable
@@ -18,10 +20,12 @@
 // Test seam (the counters.hpp `t_step_sink` pattern): a trace armed on the
 // calling thread records each task's expiry index as that task starts on that
 // thread. At fit_workers = 1 every task runs inline on the caller, so the trace
-// is the complete dispatch order. When the fan-out runs on spawned workers,
-// nothing is recorded, because the caller's thread_local stays armed and the
-// workers' stays null. Production never arms it, and an unarmed trace costs one
-// thread_local load per expiry.
+// is the complete dispatch order. Above one worker only the tasks the caller
+// itself runs are recorded (none on `parallel_for_dynamic`'s spawned workers; the
+// caller's share on the pool, where it takes part as context 0), because the
+// caller's thread_local stays armed and every other thread's stays null.
+// Production never arms it, and an unarmed trace costs one thread_local load per
+// expiry.
 
 #include <algorithm>
 #include <atomic>
