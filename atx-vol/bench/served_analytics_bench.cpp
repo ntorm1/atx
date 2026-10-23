@@ -315,9 +315,21 @@ void print_cells(const char *name, const ScenarioResult &r) {
 }
 
 // The error domain: |Taylor - exact| per share per (unique, cell) where both are included,
-// by cell class, and how often the remainder estimate covers it.
-void error_domain(const char *name, const ScenarioResult &r, benchmark::State &state) {
+// by cell class, and how often the remainder estimate covers it (with a rounding allowance
+// of 1e-12 x (1 + |exact|): an exercised leg's Taylor and exact values agree to rounding
+// against a zero estimate).
+struct Uncovered {
+  double excess = 0.0; // |taylor - exact| - remainder (per share)
+  std::size_t unique = 0;
+  std::size_t cell = 0;
+  double err = 0.0;
+  double remainder = 0.0;
+};
+
+void error_domain(const char *name, const ScenarioResult &r, std::span<const ServedPosition> p,
+                  benchmark::State &state) {
   const std::size_t nc = r.cell.size();
+  std::array<std::vector<Uncovered>, 4> miss;
   const char *classes[] = {"spot_only", "vol_only", "time_only", "mixed"};
   std::array<std::vector<double>, 4> err;
   std::array<std::vector<double>, 4> rel;
@@ -336,17 +348,38 @@ void error_domain(const char *name, const ScenarioResult &r, benchmark::State &s
       const double e = std::abs(lc.taylor - lc.exact);
       err[k].push_back(e);
       rel[k].push_back(e / std::max(std::abs(lc.exact), 1e-2));
-      if (e <= lc.remainder) ++covered[k];
+      if (e <= lc.remainder + 1e-12 * (1.0 + std::abs(lc.exact))) {
+        ++covered[k];
+      } else {
+        miss[k].push_back(Uncovered{e - lc.remainder, u, c, e, lc.remainder});
+      }
     }
   }
   for (std::size_t k = 0; k < 4; ++k) {
     const Stats s = stats_of(err[k]);
     const Stats q = stats_of(rel[k]);
     std::printf("error_domain %s %s: n %zu |taylor-exact| per share p50 %.3e p99 %.3e max %.3e "
-                "(rel to max(|exact|,0.01): p50 %.3e p99 %.3e) remainder covers %zu/%zu\n",
+                "(rel to max(|exact|,0.01): p50 %.3e p99 %.3e) remainder (+1e-12 rounding) "
+                "covers %zu/%zu\n",
                 name, classes[k], s.n, s.p50, s.p99, s.max, q.p50, q.p99, covered[k], s.n);
     state.counters[std::string("err_") + classes[k] + "_p99"] = s.p99;
     state.counters[std::string("err_") + classes[k] + "_max"] = s.max;
+    // Where the remainder estimate (Sampled) does not cover: the six worst by excess.
+    std::sort(miss[k].begin(), miss[k].end(),
+              [](const Uncovered &a, const Uncovered &b) { return a.excess > b.excess; });
+    for (std::size_t i = 0; i < std::min<std::size_t>(6, miss[k].size()); ++i) {
+      const Uncovered &m = miss[k][i];
+      std::size_t l = 0;
+      while (l < r.legs.size() && r.legs[l].unique_index != m.unique) ++l;
+      if (l == r.legs.size()) continue;
+      const ServedLegProvenance &leg = r.legs[l];
+      const ScenarioCell &cell = r.cell[m.cell];
+      std::printf("uncovered %s %s: K %.1f %s edge_sd %.3f tier %s sigma %.4f | cell %+.3f %+.3f "
+                  "%.5f | err %.4e remainder %.4e\n",
+                  name, classes[k], p[l].strike, p[l].side == Side::Call ? "C" : "P",
+                  leg.edge_sd, to_string(leg.tier), leg.sigma, cell.spot_rel, cell.vol_abs,
+                  cell.time_years, m.err, m.remainder);
+    }
   }
 }
 
@@ -443,7 +476,7 @@ void run_workload(benchmark::State &state, const char *name,
     std::printf("inputs %s: certified %zu estimate %zu price_only %zu refused %zu (legs)\n", name,
                 by_class[0], by_class[1], by_class[2], by_class[3]);
     print_cells(name, *r);
-    error_domain(name, *r, state);
+    error_domain(name, *r, p, state);
     per_contract(name, d, p, matrix_spec(d), state);
     whole_matrix(name, d, p, matrix_spec(d), state);
     state.counters["result_bytes"] = static_cast<double>(result_bytes(*r));
