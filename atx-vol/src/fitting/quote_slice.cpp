@@ -1463,6 +1463,45 @@ void publish_identification(QuoteSliceFit &fit, QuoteSliceRow &row,
   mark_price_only(fit, node, bit, nodes);
 }
 
+// One answer per contract (lane C0 fix round 1, review M1): a served row's
+// identifiability labels are query_quote_slice's own (detail::identify_served on the
+// row's certified price). A Success row the query does not identify - a floor value, or
+// a re-implied root the query types FlatExerciseRegion / LowVega - keeps its status and
+// volatility (QuoteSliceFloorPolicy::Legacy, bit for bit) but reports no convention
+// (vol_source None) and carries the query's reason and interval; a PriceOnly row carries
+// the reason and interval of its current price; a row the query identifies carries none.
+// A Success row serving its unmoved node's curve volatility above the floor is the
+// query's FittedCurve answer by construction, so it is not classified again. Runs last
+// in certify_and_serve and commit_calendar_repair, after moved_nodes is final.
+void align_with_query(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes) {
+  if (!fit.prices || !fit.curve) return;
+  const auto nodes = fit.prices->nodes();
+  const std::size_t rows = std::min(quotes.size(), fit.rows.size());
+  for (std::size_t i = 0; i < rows; ++i) {
+    QuoteSliceRow &row = fit.rows[i];
+    const bool success = row.evaluation_status == QuoteSliceEvaluationStatus::Success;
+    if (!success && row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) continue;
+    const QuoteSliceQuote &quote = quotes[i];
+    const auto node = detail::node_side(nodes, quote.strike, quote.side);
+    const bool moved = node && node->node < fit.moved_nodes.size() &&
+                       (fit.moved_nodes[node->node] & node->bit) != 0u;
+    if (success && node && !moved && !detail::at_vol_floor(row.fitted_iv)) {
+      detail::clear_identification(row);
+      continue;
+    }
+    const auto answer =
+        detail::identify_served(fit, quote.strike, quote.side, row.fitted_price);
+    if (!answer || answer->id.status == QuoteSliceEvaluationStatus::Success) {
+      detail::clear_identification(row);
+      continue;
+    }
+    row.price_only_reason = answer->id.reason;
+    row.iv_lower = answer->id.iv_lower;
+    row.iv_upper = answer->id.iv_upper;
+    if (success) row.vol_source = QuoteSliceVolConvention::None;
+  }
+}
+
 // Rung memo key of a certification candidate (rung_memo.hpp): the fit-level words of
 // the American model (deam_iv_key of the prepared fit with no quotes and fixed
 // inverter controls, so only the market, derived carry and clocks, dividend model and
@@ -1708,6 +1747,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   if (std::any_of(repaired.begin(), repaired.end(), [](std::uint8_t m) { return m != 0u; })) {
     out.moved_nodes = std::move(repaired);
   }
+  align_with_query(out, quotes);
 }
 
 Status validate_channel(const QuoteSliceChannelConfig &c) {
@@ -2245,6 +2285,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
     if (fit.moved_nodes.size() != moved.size()) fit.moved_nodes.assign(moved.size(), 0);
     for (std::size_t i = 0; i < moved.size(); ++i) fit.moved_nodes[i] |= moved[i];
   }
+  align_with_query(fit, quotes); // a PriceOnly row's reason follows its refreshed price
 }
 
 } // namespace
@@ -2802,6 +2843,31 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   return id;
 }
 
+std::optional<ServedIdentification> identify_served(const QuoteSliceFit &fit, double strike,
+                                                    Side side, double price) {
+  assert(fit.prices && fit.curve && "identify_served: no certified slice");
+  const auto node = node_side(fit.prices->nodes(), strike, side);
+  const auto flagged_in = [&node](const std::vector<std::uint8_t> &flags) {
+    return node && node->node < flags.size() && (flags[node->node] & node->bit) != 0u;
+  };
+  ServedIdentification out;
+  out.source = QuoteSliceVolConvention::ReimpliedRepaired;
+  if (node && !flagged_in(fit.moved_nodes)) {
+    // An unmoved node serves the curve's own volatility, cached through the curve.
+    const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
+    if (!positive(sigma)) return std::nullopt;
+    out.source = QuoteSliceVolConvention::FittedCurve;
+    out.id = at_vol_floor(sigma) ? floor_vol(fit, strike, side, price) : identified(sigma);
+  } else {
+    // Between nodes, or a moved node: invert the certified price at the local carry.
+    out.id = reimplied_vol(fit, strike, side, price, QuoteSliceFloorPolicy::PriceOnly);
+  }
+  if (flagged_in(fit.price_only_nodes) && out.id.status == QuoteSliceEvaluationStatus::Success) {
+    out.id = VolIdentification{}; // final for the life of the fit: UnidentifiedInterval
+  }
+  return out;
+}
+
 } // namespace detail
 
 Result<QuoteSliceQuery> query_quote_slice(const QuoteSliceFit &fit, double strike, Side side) {
@@ -2815,34 +2881,17 @@ Result<QuoteSliceQuery> query_quote_slice(const QuoteSliceFit &fit, double strik
   if (!price) {
     return Err(ErrorCode::OutOfRange, "quote slice: strike outside certified price domain");
   }
-  const auto node = detail::node_side(fit.prices->nodes(), strike, side);
-  const auto flagged_in = [&node](const std::vector<std::uint8_t> &flags) {
-    return node && node->node < flags.size() && (flags[node->node] & node->bit) != 0u;
-  };
-  detail::VolIdentification id;
-  QuoteSliceVolConvention source = QuoteSliceVolConvention::ReimpliedRepaired;
-  if (node && !flagged_in(fit.moved_nodes)) {
-    // An unmoved node serves the curve's own volatility, cached through the curve.
-    const double sigma = fit.curve->iv(std::log(strike / fit.diagnostics.forward));
-    if (!positive(sigma)) {
-      return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
-    }
-    source = QuoteSliceVolConvention::FittedCurve;
-    id = detail::at_vol_floor(sigma) ? detail::floor_vol(fit, strike, side, *price)
-                                     : detail::identified(sigma);
-  } else {
-    // Between nodes, or a moved node: invert the certified price at the local carry.
-    id = detail::reimplied_vol(fit, strike, side, *price, QuoteSliceFloorPolicy::PriceOnly);
+  const auto served = detail::identify_served(fit, strike, side, *price);
+  if (!served) {
+    return Err(ErrorCode::OutOfRange, "quote slice: invalid node volatility");
   }
-  if (flagged_in(fit.price_only_nodes) && id.status == QuoteSliceEvaluationStatus::Success) {
-    id = detail::VolIdentification{}; // final for the life of the fit: UnidentifiedInterval
-  }
+  const detail::VolIdentification &id = served->id;
   QuoteSliceQuery answer;
   answer.status = id.status;
   answer.reason = id.reason;
   answer.price = *price;
   if (id.status == QuoteSliceEvaluationStatus::Success) {
-    answer.vol_convention = source;
+    answer.vol_convention = served->source;
     answer.volatility = id.volatility;
   } else {
     answer.iv_lower = id.iv_lower;

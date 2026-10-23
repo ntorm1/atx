@@ -64,6 +64,22 @@ struct VolIdentification {
                                               Side side, double price,
                                               QuoteSliceFloorPolicy policy);
 
+// query_quote_slice's typed answer for certified `price` of (strike, side) - the one
+// classification behind both the query and a served row's labels (lane C0 fix round 1:
+// one answer per contract). At an unmoved node: the curve's volatility (FittedCurve),
+// FloorVol at or below kIvMin; elsewhere reimplied_vol under PriceOnly
+// (ReimpliedRepaired); a node side flagged price-only is never identified
+// (UnidentifiedInterval when the price would now identify a volatility). `source` is the
+// convention of an identified answer. nullopt: an unmoved node whose curve volatility is
+// not positive (the query refuses it with OutOfRange). Precondition: fit.prices and
+// fit.curve are set.
+struct ServedIdentification {
+  VolIdentification id;
+  QuoteSliceVolConvention source = QuoteSliceVolConvention::None;
+};
+[[nodiscard]] std::optional<ServedIdentification>
+identify_served(const QuoteSliceFit &fit, double strike, Side side, double price);
+
 // Clears a row's identifiability labels (price_only_reason None, NaN interval) - for a
 // row whose price is no longer served (a demotion) or whose volatility is identified.
 void clear_identification(QuoteSliceRow &row) noexcept;
