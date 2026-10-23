@@ -619,6 +619,27 @@ TEST(DiscreteDivProductionGreeks, BundleIsConsistentWithItsOwnRoute) {
   }
 }
 
+TEST(DiscreteDivProductionGreeks, RhoAndPhiAgainstTheReferenceOnTheTwelveEventLeaps) {
+  // D0 D12p: quarterly 1.00 from 0.10, T 3, put K 100, S 100, sigma 0.25, r 0.04. The
+  // reference is the slow study's bump-and-revalue on D0's PDE (central differences at
+  // 2e-3 and 1e-3 with one Richardson step on a fixed common-mode grid; production
+  // matrix test section 3, run D1-20261023-production/run3-greeks.log): rho -153.12924
+  // (bump spread 0.51), phi 109.71669 (spread 0.0057). The claim is 0.5 % (doc section
+  // 11). A 1e-4 rate / yield bump read the lattice's sub-1e-3 ripple in r and q instead
+  // (Refined -1.7 % / -0.9 %).
+  DiscreteDivWorkspace ws = production_workspace();
+  const auto divs = quarterly(0.1, 1.0, 3.0);
+  for (const DiscreteDivAccuracy acc :
+       {DiscreteDivAccuracy::Standard, DiscreteDivAccuracy::Refined}) {
+    const auto g = american_discrete_div_production_greeks(
+        100.0, 100.0, 3.0, 0.25, 0.04, 0.0, Side::Put, divs, ExerciseStyle::American, {}, 0.0,
+        opts_of(acc), ws);
+    ASSERT_TRUE(g.has_value());
+    EXPECT_NEAR(g->rho, -153.12924, 0.005 * 153.12924) << static_cast<int>(acc);
+    EXPECT_NEAR(g->phi, 109.71669, 0.005 * 109.71669) << static_cast<int>(acc);
+  }
+}
+
 TEST(DiscreteDivProductionGreeks, ThetaNextToAnExDateIsUnsupportedAndTheRollIsAnEvent) {
   DiscreteDivWorkspace ws = production_workspace();
   const double dt = 1.0 / 301.0;

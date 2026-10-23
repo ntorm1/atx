@@ -1554,18 +1554,18 @@ Result<DiscreteDivProductionGreeks> ddiv_detail::route_greeks_prebuilt(
   const double hv = discrete_div_sigma_bump(sigma);
   const Result<double> vol_up = price_at(sigma + hv, r, q);
   const Result<double> vol_dn = price_at(sigma - hv, r, q);
-  const Result<double> rate_up = price_at(sigma, r + kDiscreteDivRateBump, q);
-  const Result<double> rate_dn = price_at(sigma, r - kDiscreteDivRateBump, q);
-  const Result<double> yield_up = price_at(sigma, r, q + kDiscreteDivYieldBump);
-  const Result<double> yield_dn = price_at(sigma, r, q - kDiscreteDivYieldBump);
+  const Result<double> rate_up = price_at(sigma, r + kDiscreteDivProductionRateBump, q);
+  const Result<double> rate_dn = price_at(sigma, r - kDiscreteDivProductionRateBump, q);
+  const Result<double> yield_up = price_at(sigma, r, q + kDiscreteDivProductionYieldBump);
+  const Result<double> yield_dn = price_at(sigma, r, q - kDiscreteDivProductionYieldBump);
   for (const Result<double> *leg : {&vol_up, &vol_dn, &rate_up, &rate_dn, &yield_up, &yield_dn}) {
     if (!*leg) {
       return Err(leg->error());
     }
   }
   out.vega = (*vol_up - *vol_dn) / (2.0 * hv);
-  out.rho = (*rate_up - *rate_dn) / (2.0 * kDiscreteDivRateBump);
-  out.phi = (*yield_up - *yield_dn) / (2.0 * kDiscreteDivYieldBump);
+  out.rho = (*rate_up - *rate_dn) / (2.0 * kDiscreteDivProductionRateBump);
+  out.phi = (*yield_up - *yield_dn) / (2.0 * kDiscreteDivProductionYieldBump);
 
   if (dP_dDiv_out.empty()) {
     out.unsupported |= greek_bit(DiscreteDivGreek::DividendAmount); // not computed

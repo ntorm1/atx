@@ -600,8 +600,9 @@ american_discrete_div_production_iv(double price, double S, double K, double T, 
 // an unsupported one is NaN with its bit set in `unsupported` — never 0.
 //   delta, gamma  the t = 0 central stencils of the pre-stepped tree (S d^2, S, S u^2);
 //   vega          central sigma bump, h = kDiscreteDivSigmaBumpRel x sigma;
-//   rho, phi      central r and q bumps (kDiscreteDivRateBump / kDiscreteDivYieldBump),
-//                 q being the residual continuous yield on top of the cash;
+//   rho, phi      central r and q bumps (kDiscreteDivProductionRateBump /
+//                 kDiscreteDivProductionYieldBump, below), q being the residual
+//                 continuous yield on top of the cash;
 //   dP/dD_i       per event, central amount bump (discrete_div_amount_bump; one-sided
 //                 at a zero amount, as american_discrete_div_dividend_sensitivities);
 //   theta, charm  the tree's two-step stencils (dP/dt at fixed spot, per year,
@@ -621,6 +622,17 @@ enum class DiscreteDivGreek : std::uint8_t {
   DividendAmount = 7,
   Roll = 8,
 };
+
+// The production bundle's rate / yield bumps (lane D1, r6). NOT the historical
+// bundle's kDiscreteDivRateBump / kDiscreteDivYieldBump (1e-4, american.hpp): r and q
+// move no node, but they move the exercise decisions node by node, so a lattice price
+// is rippled in r and q below ~1e-3 and a 1e-4 central difference reads that ripple.
+// Measured on the Refined route against the reference's bump study (D0 rows A2p, B3p,
+// C4c, D12p, E20p, F1c, B1p; doc section 11): worst relative error 1.7e-2 / 8.9e-3
+// (rho / phi, D12p) at 1e-4, 2.3e-3 (C4c) / 1.0e-3 (E20p) at 1e-3; 2e-3 and a
+// Richardson pair were no better.
+inline constexpr double kDiscreteDivProductionRateBump = 1.0e-3;
+inline constexpr double kDiscreteDivProductionYieldBump = 1.0e-3;
 
 // The calendar roll to t + horizon at a fixed SPOT: an ex-date in (0, horizon] is
 // an event operation — its cash comes off the stock (S - cash, floored at 0) and
