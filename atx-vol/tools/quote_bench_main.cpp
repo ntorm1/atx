@@ -661,7 +661,13 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_seed_routed", t.deam_seed_routed},
           {"deam_gate_max_bound_vol", t.deam_gate_max_bound_vol},
           {"deam_audit_skipped_pairs", t.deam_audit_skipped_pairs},
-          {"deam_audit_max_newton_skipped", t.deam_audit_max_newton_skipped}};
+          {"deam_audit_max_newton_skipped", t.deam_audit_max_newton_skipped},
+          {"deam_family_builds", t.deam_family_builds},
+          {"deam_family_build_us", t.deam_family_build_us},
+          {"deam_family_prices", t.deam_family_prices},
+          {"deam_family_refused", t.deam_family_refused},
+          {"deam_family_grid_prices", t.deam_family_grid_prices},
+          {"deam_family_grid_cold", t.deam_family_grid_cold}};
 }
 
 // Lane B0: charges the fit lap that just ended to its exclusive stages

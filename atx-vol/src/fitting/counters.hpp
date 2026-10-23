@@ -1204,7 +1204,7 @@ struct FitTimingCounters {
   // inversions routed to accurate iterates by the seed tier's non-monotone gate, and the
   // largest gate bound (eps_A + eps_r) / v_min (vol) of a skipped root.
   std::array<std::uint32_t, 6> deam_al_by_reason{};
-  std::uint32_t deam_confirms{0};
+  std::uint32_t deam_confirms{0}; // confirming SOLVES (= deam_al_by_reason confirm), not roots
   std::uint32_t deam_confirms_skipped{0};
   std::uint32_t deam_ambiguous_edges{0};
   std::uint32_t deam_seed_routed{0};
@@ -1213,6 +1213,18 @@ struct FitTimingCounters {
   // distance of a root the band gate accepted without a confirm.
   std::uint32_t deam_audit_skipped_pairs{0};
   double deam_audit_max_newton_skipped{0.0};
+  // Sigma-family iterates (SPY1s Phase 2; QuoteSliceDeamFamily): families built and the
+  // wall of their node solves (NOT in al_price_calls' reason split: built outside any
+  // inversion), iterates priced on a family, Premium attempts a family refused.
+  std::uint32_t deam_family_builds{0};
+  std::uint64_t deam_family_build_us{0};
+  std::uint32_t deam_family_prices{0};
+  std::uint32_t deam_family_refused{0};
+  // grid_kernel Family (step 5): certification-grid prices served by a (sigma, q) family,
+  // and those priced on Fast instead (no family of the side, a refusal, a bound over the
+  // node's allowance).
+  std::uint32_t deam_family_grid_prices{0};
+  std::uint32_t deam_family_grid_cold{0};
 };
 
 // Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::
