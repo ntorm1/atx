@@ -11,7 +11,7 @@
 #include <limits>
 
 #include "pricing/american_boundary.hpp"     // amer::al_xmax_put
-#include "pricing/american_sigma_family.hpp" // sigma_family_detail::axis_of / diff_tables
+#include "pricing/american_sigma_family.hpp" // sigma_family_detail::diff_tables
 #include "pricing/boundary_interp.hpp"       // detail::internal_put_coords
 #include "simd/vector_math.hpp"
 
@@ -20,13 +20,8 @@ namespace atx::vol::simd::iv_batch_avx2 {
 namespace {
 
 namespace sq = sigma_q_family_detail;
-using sigma_family_detail::axis_of;
 using sigma_family_detail::diff_tables;
 using sigma_family_detail::DiffTables;
-
-[[nodiscard]] double clamp_unit(double z) noexcept {
-  return (z < -1.0) ? -1.0 : ((z > 1.0) ? 1.0 : z); // the family's own box-edge clamp
-}
 
 // Φ(x) and φ(x) from one exponential: erfc_nonneg_pd's regions (simd/vector_math.hpp, the
 // Cody CALERF coefficients) with e = exp(−y²), y = |x|/√2, returned as well — that e IS
@@ -92,8 +87,8 @@ ATX_FORCE_INLINE void cdf_pdf_pd(__m256d x, __m256d &cdf, __m256d &pdf) noexcept
 ATX_FORCE_INLINE __m256d ld4(const double *p) noexcept { return _mm256_load_pd(p); }
 
 // The normalised barycentric σ basis b and its nodal derivative c = bᵀD1, four lanes
-// (american_sigma_q_family.cpp bary_basis / bary_basis_derivative per lane; an exact node
-// hit is the unit vector on the first hit node, as the scalar returns there).
+// (sigma_q_family_detail::bary_basis / bary_basis_derivative per lane; a lane on an exact
+// node takes the scalar bary_basis itself — the unit vector on its first hit node).
 void sigma_basis(const sq::PremiumTable &t, const double *z, __m256d *b, __m256d *c) noexcept {
   const unsigned ns = t.n_sigma;
   const __m256d zq = ld4(z);
@@ -115,12 +110,15 @@ void sigma_basis(const sq::PremiumTable &t, const double *z, __m256d *b, __m256d
       _mm256_store_pd(bl[s], b[s]);
     }
     for (std::size_t k = 0; k < kLanes; ++k) {
+      bool hit = false;
       for (unsigned s = 0; s < ns; ++s) {
-        if (z[k] - t.sz[s] == 0.0) {
-          for (unsigned u = 0; u < ns; ++u) {
-            bl[u][k] = (u == s) ? 1.0 : 0.0;
-          }
-          break;
+        hit = hit || (z[k] - t.sz[s] == 0.0);
+      }
+      if (hit) {
+        double one[kSigmaNodes] = {};
+        sq::bary_basis(t.sz, t.sw, ns, z[k], one);
+        for (unsigned u = 0; u < ns; ++u) {
+          bl[u][k] = one[u];
         }
       }
     }
@@ -183,14 +181,13 @@ void price_vega4(const sq::PremiumTable &t, const Slots &s, Result &out) noexcep
   const sq::PremiumNodes &pn = t.nodes;
   const unsigned n = pn.n;
   const unsigned ns = t.n_sigma;
-  // σ -> the axis coordinate z and dz/dσ per lane (sigma_z's scalar expressions).
+  // σ -> the axis coordinate z and dz/dσ per lane (the family's own sigma_z).
   alignas(32) double z[kLanes];
   alignas(32) double dzs[kLanes];
-  const double span = t.u_hi - t.u_lo;
   for (std::size_t k = 0; k < kLanes; ++k) {
-    const double sigma = s.sigma[k];
-    z[k] = clamp_unit(2.0 * (axis_of(t.axis, sigma) - t.u_lo) / span - 1.0);
-    dzs[k] = (t.axis == AlSigmaFamilyAxis::LogSigma) ? (2.0 / span) / sigma : 2.0 / span;
+    const sq::SigmaZ az = sq::sigma_z(t.axis, t.u_lo, t.u_hi, s.sigma[k]);
+    z[k] = az.z;
+    dzs[k] = az.dz;
   }
   __m256d b[kSigmaNodes];
   __m256d c[kSigmaNodes];
