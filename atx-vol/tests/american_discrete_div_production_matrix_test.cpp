@@ -456,10 +456,19 @@ TEST(DiscreteDivProductionMatrix, PerEventDriftAgainstLiveReferences) {
       return num / den;
     };
     const double u_drift = (us[last] + us[0]) / n_events;
+    // The brief's claim, stated per case: |per-event drift| <= the reference's own
+    // uncertainty on it, (u(K) + u(0)) / K. Printed, not asserted: the lattice's
+    // residual scatter between truncations (~3e-5 USD on the Refined route) divided
+    // by K is the floor of this estimator, so the verdict is a finding to report.
+    const auto within = [&](const std::vector<double> &e) {
+      return std::abs(endpoint(e)) <= u_drift ? "yes" : "NO";
+    };
     std::printf("[d1-drift-summary] | %s | events %.0f | u(K) %.2e | u_drift %.2e | hist %+.3e "
-                "(slope %+.3e) | std %+.3e (slope %+.3e) | refined %+.3e (slope %+.3e) |\n",
+                "(slope %+.3e) | std %+.3e (slope %+.3e) | refined %+.3e (slope %+.3e) | "
+                "within u_drift: std %s, refined %s |\n",
                 b.id, n_events, us[last], u_drift, endpoint(e_hist), slope(e_hist),
-                endpoint(e_std), slope(e_std), endpoint(e_ref), slope(e_ref));
+                endpoint(e_std), slope(e_std), endpoint(e_ref), slope(e_ref), within(e_std),
+                within(e_ref));
     std::fflush(stdout);
     // The defect is O(1/N) per event; the cubic splice leaves the per-event term
     // at most 1/20 of it on the Standard route, and the Refined route's per-event
