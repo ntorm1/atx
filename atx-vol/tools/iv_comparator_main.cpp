@@ -23,11 +23,15 @@
 // Follow-up: PDE-backed pricer option (D0's american_discrete_div_reference with zero
 // dividends) for true pricer independence.
 //
-// Populations (summary "populations"; plan 3.2: an unresolved row is not a pass), every
-// served row in exactly one: resolved_pass / resolved_fail (bracketed, reference
-// uncertainty finite and <= the threshold, |served - bracketed| <= / > the threshold),
-// reference_unresolved (bracketed, reference uncertainty above the threshold or
-// undefined - a zero reference vega), iv_not_identified (below), and the other statuses.
+// Populations (summary "populations", per-row column "population"; plan 3.2: an
+// unresolved row is not a pass), every served row in exactly one (bench_clocks.hpp
+// classify_iv_row): resolved_pass / resolved_fail (bracketed, reference uncertainty u
+// finite and <= the threshold, |served - bracketed| <= / > the threshold),
+// decidable_fail (u above the threshold, but the error > threshold + 3 u: a failure the
+// reference decides despite its uncertainty), reference_unresolved (the rest of the
+// bracketed rows, and every undefined u - a zero reference vega), iv_not_identified
+// (below), and the other statuses. "non_circular" counts, per population, the rows whose
+// served pair is NOT consistent: only those are genuine root checks.
 //
 // The contract each row is priced under is rebuilt from the INPUT CSV, independently of
 // the fitter, by quote-bench's documented continuous-carry convention: chain market =
@@ -130,7 +134,8 @@ Arguments arguments(int argc, char **argv) {
                    "accurate preset, so on rows whose served price is the curve price at "
                    "the served IV the check is circular for pricer error (see "
                    "atx-vol/docs/benchmark-clocks.md section 8). Populations: resolved "
-                   "pass / resolved fail / reference unresolved / IV not identified.\n";
+                   "pass / resolved fail / decidable fail (error > threshold + 3 x the "
+                   "reference uncertainty) / reference unresolved / IV not identified.\n";
       args.help = true;
       return args;
     }
@@ -474,7 +479,9 @@ struct Totals {
   std::size_t uncertainty_undefined{0}; // bracketed, no reference vega (subset of unresolved)
   std::size_t resolved_pass{0};
   std::size_t resolved_fail{0};
+  std::size_t decidable_fail{0};  // bracketed, u > threshold, error > threshold + 3 u
   std::size_t pair_consistent{0}; // bracketed, served price == P_ref(served_iv) within 1e-10
+  std::map<std::string, std::size_t> non_circular; // per population: pair NOT consistent
   std::size_t compared{0};
 };
 
@@ -569,29 +576,47 @@ Json summary_json(const Arguments &args, const Totals &t,
   };
   const std::size_t not_identified = count_of("not_identified");
   const std::size_t bracketed = count_of("bracketed");
-  const std::size_t other =
-      t.compared - t.resolved_pass - t.resolved_fail - t.unresolved - not_identified;
+  const std::size_t other = t.compared - t.resolved_pass - t.resolved_fail - t.decidable_fail -
+                            t.unresolved - not_identified;
+  const auto non_circular = [&t](const char *population) {
+    const auto found = t.non_circular.find(population);
+    return found == t.non_circular.end() ? std::size_t{0} : found->second;
+  };
   const std::string headline =
-      std::to_string(t.resolved_pass) + " resolved pass / " + std::to_string(t.resolved_fail) +
-      " resolved fail / " + std::to_string(t.unresolved) + " reference unresolved / " +
+      std::to_string(t.resolved_pass) + " resolved pass (" +
+      std::to_string(non_circular("resolved_pass")) + " non-circular) / " +
+      std::to_string(t.resolved_fail) + " resolved fail / " + std::to_string(t.decidable_fail) +
+      " decidable fail / " + std::to_string(t.unresolved) + " reference unresolved / " +
       std::to_string(not_identified) + " IV not identified / " + std::to_string(other) +
       " other, of " + std::to_string(t.compared) + " served rows";
   Json populations = {
       {"headline", headline}, {"rows", t.compared}, {"resolved_pass", t.resolved_pass},
-      {"resolved_fail", t.resolved_fail}, {"reference_unresolved", t.unresolved},
+      {"resolved_fail", t.resolved_fail}, {"decidable_fail", t.decidable_fail},
+      {"reference_unresolved", t.unresolved},
       {"reference_unresolved_over_threshold", t.unresolved_over},
       {"uncertainty_undefined", t.uncertainty_undefined},
       {"iv_not_identified", not_identified}, {"other_statuses", other},
-      {"rule", "resolved = bracketed with a finite reference uncertainty <= threshold; pass "
-               "/ fail = |served - bracketed| <= / > threshold; reference_unresolved = "
-               "bracketed with the uncertainty above the threshold or undefined (zero "
-               "reference vega) - not a pass; iv_not_identified = price flat in sigma"}};
-  return {{"schema", "atx-vol-iv-comparator-v2"}, {"input", canonical(args.input)},
+      {"non_circular", {{"resolved_pass", non_circular("resolved_pass")},
+                        {"resolved_fail", non_circular("resolved_fail")},
+                        {"decidable_fail", non_circular("decidable_fail")},
+                        {"reference_unresolved", non_circular("reference_unresolved")},
+                        {"note", "bracketed rows whose served pair is NOT consistent "
+                                 "(|P_ref(served_iv) - served price| > 1e-10 USD): the only "
+                                 "genuine root checks; every other bracketed row is circular "
+                                 "for pricer error"}}},
+      {"decidable_fail_margin", bench::kDecidableFailMargin},
+      {"rule", "resolved = bracketed with a finite reference uncertainty u <= threshold; pass "
+               "/ fail = |served - bracketed| <= / > threshold; decidable_fail = u > "
+               "threshold and |served - bracketed| > threshold + 3 u; reference_unresolved = "
+               "the other bracketed rows and every undefined u (zero reference vega) - not a "
+               "pass; iv_not_identified = price flat in sigma"}};
+  return {{"schema", "atx-vol-iv-comparator-v3"}, {"input", canonical(args.input)},
           {"predictions", canonical(args.predictions)}, {"report", canonical(args.report)},
           {"contract", std::move(contract)}, {"rows_compared", t.compared},
           {"status_counts", t.status_counts}, {"populations", std::move(populations)},
           {"resolved_rows", t.resolved_pass + t.resolved_fail},
           {"resolved_over_threshold", t.resolved_fail},
+          {"decidable_fail_rows", t.decidable_fail},
           {"uncertainty_undefined_rows", t.uncertainty_undefined},
           {"served_pair_consistent",
            {{"rows", t.pair_consistent}, {"of_bracketed", bracketed},
@@ -674,19 +699,29 @@ int run(const Arguments &args) {
       t.uncertainty_usd.add(r.fine_gap);
       t.uncertainty_iv.add(fine_iv);
       // An undefined uncertainty (no reference vega) is unresolved, never a pass.
-      if (!std::isfinite(fine_iv) || fine_iv > args.threshold) {
+      const bench::IvPopulation p = bench::classify_iv_row(err, fine_iv, args.threshold);
+      population = bench::iv_population_name(p);
+      switch (p) {
+      case bench::IvPopulation::ResolvedPass:
+        ++t.resolved_pass;
+        break;
+      case bench::IvPopulation::ResolvedFail:
+        ++t.resolved_fail;
+        break;
+      case bench::IvPopulation::DecidableFail:
+        ++t.decidable_fail;
+        break;
+      case bench::IvPopulation::ReferenceUnresolved:
         ++t.unresolved;
         if (!std::isfinite(fine_iv)) ++t.uncertainty_undefined;
         if (err > args.threshold) ++t.unresolved_over;
-        population = "reference_unresolved";
-      } else if (err > args.threshold) {
-        ++t.resolved_fail;
-        population = "resolved_fail";
-      } else {
-        ++t.resolved_pass;
-        population = "resolved_pass";
+        break;
       }
-      if (price_err <= kPairConsistentUsd) ++t.pair_consistent;
+      if (price_err <= kPairConsistentUsd) {
+        ++t.pair_consistent;
+      } else {
+        ++t.non_circular[population];
+      }
       const double moneyness = std::log(c.strike / c.spot);
       const std::string bucket = std::string(side == Side::Call ? "call" : "put") +
           (moneyness < -0.1 ? ":k<-0.1" : moneyness > 0.1 ? ":k>0.1" : ":|k|<=0.1");
