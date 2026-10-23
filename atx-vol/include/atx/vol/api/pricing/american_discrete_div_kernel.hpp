@@ -473,8 +473,9 @@ american_discrete_div_implied_vol(double price, double S, double K, double T, do
 //     with M = (N + 1) / 2: the coarse lattice's BBS final step then spans the
 //     ex-date while the fine lattice splices it, the pair is inconsistent (D0 row
 //     B2c: +1.885 bp), and the route runs method CubicCrr at
-//     kDiscreteDivNearExpirySteps instead (flag NearExpiryExDate; B2c -0.11 bp,
-//     B2p +0.27 bp, doc section 11).
+//     kDiscreteDivNearExpirySteps instead (flag NearExpiryExDate). IV bp by
+//     inversion, the convention of the +1.885 above: B2c +0.114, B2p -0.268
+//     (doc section 11.4).
 // A route is a pure function of (S, T, schedule, opts): no sigma, rate or strike.
 //
 // Thread-safety: as the rest of this header (pure functions + one workspace).
