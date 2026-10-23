@@ -56,6 +56,7 @@
 #include <span>
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_iv_batch_status.hpp"
 #include "pricing/american_sigma_q_family.hpp"
 
 namespace atx::vol::iv_batch {
@@ -70,24 +71,7 @@ inline constexpr double kInverseVegaFloorRel = 1.0e-8;
 // The AVX2 kernel's lane width.
 inline constexpr std::size_t kInverseLaneWidth = 4;
 
-enum class InverseStatus : std::uint8_t {
-  Inactive = 0,      // masked off (active[i] == 0): nothing computed, outputs untouched
-  Converged = 1,     // root found (Newton distance <= tol, or an evaluated bracket <= 2 tol)
-  LowVega = 2,       // the cap (or a collapsed bracket) on a map whose slope is <= the floor
-                     // and not on the exercise plateau: σ not identified to tol
-  ExerciseFlat = 3,  // the target sits on the exercise plateau (price at intrinsic, vega 0):
-                     // price-only / an interval, never a unique σ
-  SigmaBelowBox = 4, // P(σ_lo) > target: the root lies below the family's σ box
-  SigmaAboveBox = 5, // P(σ_hi) < target: the root lies above the family's σ box
-  QOutsideBox = 6,   // q[i] outside the family's q box (no evaluation)
-  NonConverged = 7,  // the evaluation cap with a slope above the floor; bracket retained
-  InvalidInput = 8,  // a non-finite / non-positive K, target or S, a non-finite q, the
-                     // wrong side for the family, an inverted bracket, a bad anchor
-  UnsupportedIsa = 9 // InverseIsa::Avx2 required and not executable (host or source)
-};
-inline constexpr std::size_t kInverseStatusCount = 10;
-
-[[nodiscard]] const char *inverse_status_name(InverseStatus s) noexcept;
+// InverseStatus / kInverseStatusCount / inverse_status_name: american_iv_batch_status.hpp.
 
 // Per-lane diagnostics (bit set in InverseBatchOut::flags).
 namespace lane_flag {

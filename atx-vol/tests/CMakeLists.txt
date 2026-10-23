@@ -221,6 +221,19 @@ add_test(NAME atx-vol-sigma-q-family-alloc COMMAND atx-vol-sigma-q-family-alloc-
 set_tests_properties(atx-vol-sigma-q-family-alloc PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# K2 (r5): the batch IV inversion's query loop allocates nothing once its scratch is warm.
+# support/alloc_counter.cpp replaces global operator new for THIS binary only (the accuracy
+# suite IvBatch.* is in atx-vol-tests and atx-vol-pricing-slice).
+add_executable(atx-vol-iv-batch-alloc-tests
+    american_iv_batch_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-iv-batch-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-iv-batch-alloc-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-iv-batch-alloc COMMAND atx-vol-iv-batch-alloc-tests)
+set_tests_properties(atx-vol-iv-batch-alloc PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+
 add_executable(atx-vol-umbrella-tests vol_umbrella_test.cpp)
 target_link_libraries(atx-vol-umbrella-tests PRIVATE
     atx::vol atx::core atx_warnings GTest::gtest_main atx-vol-test-paths)

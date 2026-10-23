@@ -18,9 +18,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "atx/vol/api/core/types.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "pricing/american_iv_batch_status.hpp" // K2: the native attempt's typed outcome
 
 namespace atx::vol {
 
@@ -49,9 +51,30 @@ inline constexpr double kIvPremiumShrink = 0.25;
 // confirms when its Newton distance is <= tol; otherwise its Newton step is taken and one
 // more solve confirms (a Screen root sits up to 7.8e-4 max(P, 1) off the accurate map).
 inline constexpr std::uint32_t kIvPremiumConfirmSolves = 2;
-// Family prices one family-native attempt (IvPremiumGate::qfamily_native) may spend
-// before it hands the price to the seed-leg path (a chord counts two).
-inline constexpr std::uint32_t kIvPremiumNativePrices = 12;
+// Fused family evaluations (price + vega) one family-native attempt
+// (IvPremiumGate::qfamily_native) may spend before it hands the price, with its typed
+// outcome and retained bracket, to the seed-leg path (K2 r5: the batch seam's lane cap,
+// iv_batch::kInverseMaxEvaluations; was 12 family prices with a chord counting two).
+inline constexpr std::uint32_t kIvPremiumNativeEvaluations = 16;
+
+// K2 (r5, 2026-10-22): what a family-native attempt learned about ONE contract on the
+// family map — the bracket [lo, hi] with the family prices at its ends (NaN: an
+// unevaluated end), its last evaluated point and the fused vega there. Written by EVERY
+// native attempt, accepted or not, and never by the seed-leg path, so a quote's bid and ask
+// start from the mid's bracket and a Newton seed off its last point even when the mid's
+// attempt handed the price to another route. stream_id: the recorded request that wrote it
+// (pricing/american_iv_stream.hpp; 0xFFFFFFFF = none, when no stream is armed).
+struct IvPremiumNativeCarry {
+  bool valid = false;
+  double lo = std::numeric_limits<double>::quiet_NaN();
+  double hi = std::numeric_limits<double>::quiet_NaN();
+  double p_lo = std::numeric_limits<double>::quiet_NaN();
+  double p_hi = std::numeric_limits<double>::quiet_NaN();
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+  double price = std::numeric_limits<double>::quiet_NaN();
+  double vega = std::numeric_limits<double>::quiet_NaN();
+  std::uint32_t stream_id = 0xFFFFFFFFu;
+};
 
 // The cold Andersen-Lake points of one contract: sigma and the remainder D = P_am - A
 // of the seed leg A (Barone-Adesi-Whaley where the contract has an exercise region,
@@ -63,6 +86,7 @@ struct IvPremiumMemory {
   std::array<double, 2> rest{};
   std::uint8_t points = 0; // valid entries, most recent first
   bool native = false;
+  IvPremiumNativeCarry carry{}; // K2: the family-native attempts' retained bracket
 };
 
 struct IvPremiumStats {
@@ -93,6 +117,17 @@ struct IvPremiumStats {
   // family refusal sent the rest of the attempt's iterates to the seed kernel.
   std::uint32_t family_prices = 0;
   bool family_refused = false;
+  // K2 (r5, 2026-10-22): the family-native attempt (IvPremiumGate::qfamily_native) through
+  // the batch seam (pricing/american_iv_batch.hpp): its typed outcome (Inactive: it did not
+  // run; Converged with the root confirmed as before; any other value is WHY the price went
+  // to the seed-leg path - low vega, exercise-flat, sigma below / above the box, q outside
+  // the box, nonconverged, invalid input), its fused evaluations (also counted in
+  // family_prices), its iv_batch::lane_flag bits, and whether it started from the
+  // contract's retained carry (a bid / ask behind its mid).
+  iv_batch::InverseStatus native_status = iv_batch::InverseStatus::Inactive;
+  std::uint16_t native_evaluations = 0;
+  std::uint8_t native_flags = 0;
+  bool native_carried = false;
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp
@@ -171,12 +206,15 @@ struct IvPremiumGate {
   double qfamily_bound = std::numeric_limits<double>::infinity();
   // Family-native iterates (SPY1s Phase 3 lever 1, opt-in; with qfamily under Always): the
   // family's own map P_family(sigma; q) at the strike's own q is iterated WITHOUT the seed
-  // leg (no Barone-Adesi-Whaley / Black-76 model): a bracketed secant-Newton seeded from
-  // the memory's family points, else from the Black-76 IV of the price (an upper bound of
-  // the American IV) with the family's own chord, at most kIvPremiumNativePrices family
-  // prices. Any refusal (a sigma outside the box, a chord that does not rise, the budget)
-  // restarts the attempt on the seed-leg path exactly as a family refusal does today. The
-  // confirm is unchanged.
+  // leg (no Barone-Adesi-Whaley / Black-76 model). K2 (r5): one lane of the batch seam
+  // (iv_batch::invert_many) - a bounded bracketed Newton on the fused price + vega, started
+  // from the memory's native carry (the mid's bracket and point behind a bid / ask), else
+  // from the Black-76 IV of the price (an upper bound of the American IV; a failed or
+  // out-of-box seed starts from the bracket), at most kIvPremiumNativeEvaluations
+  // evaluations. Its typed outcome is IvPremiumStats::native_status; a non-converged
+  // outcome hands the price to the seed-leg path (which keeps the contract's leg memory)
+  // and the carry keeps the bracket for the contract's next price. An accepted root is
+  // confirmed as before, with the fused vega at its last point as the LOCAL slope.
   bool qfamily_native = false;
 };
 
