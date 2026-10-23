@@ -108,6 +108,27 @@ and K3 are compile-time seams (`ATX_VOL_SERVE_RECORD_A0` / `_K3`, default off).
 - record size: 642 KB per SPY expiry, 2.57 MB per symbol.
 - build: 1.46 s per SPY symbol (ladders 96 %).
 
+### NEW — opt-in native fit route: typed inversion outcomes, a bounded reference route, no Search (lane K4)
+
+**Library (opt-in, default off: every default and keys-ON output is bit for bit).**
+`QuoteSliceChannelConfig::deam_native_route` (requires `deam_family_native`) with
+`deam_reference_max_calls` / `deam_reference_max_evaluations` (per chain cache, both > 0, memo-keyed).
+On the route a Premium inversion never runs the seed leg's Search restart: a price inside the edge
+band is classified by C1's `andersen_lake_classified` before any root attempt (on the exercise
+plateau: price-only; at the floor: price-only; at the range's top: refused); K3's unaccepted
+`PriceOnly` / `Interval` roots are typed outcomes; a refused family-native lane, a request with no
+family and every other failure go to a bounded reference route on the confirm kernel (K3's bracket
+rule, at most 32 evaluations per request and the chain's budget; exhaustion is a typed, counted
+refusal). The band's bid and ask start from the mid's retained native carry (review-K2 MJ1), its edges
+are decided by validated bounds when every comparison is decided, a typed non-identifiable mid is
+`UnidentifiableVolatility`, and the family certification grid serves a node's family price only under
+its per-point bound. Measured (SPY historical, one pinned P core, 10 fresh-process cold trials,
+development rows): cold calibration median 4.54 s against the family-native route's 8.01 s on the
+same host and core; served sets on SPY, cohort5, dev200 and dev200b: lost 0, gained 0 against the
+family-native route; zero Search solves. Still far above the 1 s bar (G3 missed): inverses 2.77 s.
+Bench: `graded.native_route`, `graded.reference_budget {calls, evaluations}`; the native lane
+statuses, route outcomes, reference requests and bound-decided edges in the fit counters.
+
 ### NEW — typed price-only identifiability, one spot per snapshot, convention metadata (lane C0)
 
 **Library.** `QuoteSliceConfig::floor_policy` (`QuoteSliceFloorPolicy`): `Legacy`, the

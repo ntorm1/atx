@@ -1203,7 +1203,7 @@ struct FitTimingCounters {
   // confirms done and skipped, the ambiguous band edges re-priced accurately, the
   // inversions routed to accurate iterates by the seed tier's non-monotone gate, and the
   // largest gate bound (eps_A + eps_r) / v_min (vol) of a skipped root.
-  std::array<std::uint32_t, 6> deam_al_by_reason{};
+  std::array<std::uint32_t, 7> deam_al_by_reason{};
   std::uint32_t deam_confirms{0}; // confirming SOLVES (= deam_al_by_reason confirm), not roots
   std::uint32_t deam_confirms_skipped{0};
   std::uint32_t deam_ambiguous_edges{0};
@@ -1239,17 +1239,44 @@ struct FitTimingCounters {
   // node's allowance).
   std::uint32_t deam_family_grid_prices{0};
   std::uint32_t deam_family_grid_cold{0};
+  // The native fit route (lane K4; deam_native_route, zero otherwise; review-K2 m8: no
+  // native non-acceptance collapses into deam_family_refused). Per request: the family-native
+  // lane's typed outcome (index = iv_batch::InverseStatus; Inactive = no lane ran) and the
+  // route's typed outcome (index = IvRouteOutcome), the lanes started from a retained carry,
+  // the bounded reference route's requests, kernel evaluations and budget refusals. Per band:
+  // edges decided by validated bounds or priced. Per cache: family sides the adaptive rule
+  // asked for, and the certification-grid prices served on a family under its per-point
+  // bound (in deam_family_grid_prices) with the largest such bound (USD).
+  std::array<std::uint32_t, 11> deam_native_status{};
+  std::array<std::uint32_t, 11> deam_route_outcome{};
+  std::uint32_t deam_native_carried{0};
+  std::uint32_t deam_reference_requests{0};
+  std::uint32_t deam_reference_evaluations{0};
+  std::uint32_t deam_reference_budget_refused{0};
+  std::uint32_t deam_edges_bound_decided{0};
+  std::uint32_t deam_edges_priced{0};
+  std::uint32_t deam_family_sides_requested{0};
+  double deam_family_grid_max_bound_usd{0.0};
 };
 
 // Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::
 // deam_al_by_reason): the kIvMin / kIvMax band-edge prices, the inversion iterates (seed
 // tier or accurate), the confirming solve, an ambiguous edge re-priced accurately, the
-// band gate's chord solve, and the Search route's solves (plain Search inversions and
-// Premium fallbacks).
-enum class DeamReason : unsigned { RangeEdge = 0, Iterate, Confirm, AmbiguousEdge, Gate, Search, Count_ };
+// band gate's chord solve, the Search route's solves (plain Search inversions and
+// Premium fallbacks), and (K4, appended) the native fit route's bounded reference route.
+enum class DeamReason : unsigned {
+  RangeEdge = 0,
+  Iterate,
+  Confirm,
+  AmbiguousEdge,
+  Gate,
+  Search,
+  Reference,
+  Count_
+};
 inline constexpr unsigned kDeamReasonCount = static_cast<unsigned>(DeamReason::Count_);
 inline constexpr const char *kDeamReasonNames[kDeamReasonCount] = {
-    "range_edge", "iterate", "confirm", "ambiguous_edge", "gate", "search"};
+    "range_edge", "iterate", "confirm", "ambiguous_edge", "gate", "search", "reference"};
 static_assert(decltype(FitTimingCounters::deam_al_by_reason){}.size() == kDeamReasonCount,
               "deam_al_by_reason is sized by DeamReason");
 

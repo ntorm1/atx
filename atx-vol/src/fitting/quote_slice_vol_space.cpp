@@ -44,7 +44,12 @@ vol_space_channel_observations(QuoteSliceFit &out, std::span<const QuoteSliceQuo
       obs.sigma_mid = row.market_iv;
     } else if (quote.bid > 0.0) {
       const double mid = 0.5 * quote.bid + 0.5 * quote.ask;
-      if (mid > band.floor_price && mid < band.cap_price) {
+      // The native fit route (K4) may decide the band's edges by bound without pricing them
+      // (floor_price / cap_price NaN): its decision is the band's mid_inside.
+      const bool inside = channel.deam_native_route
+                              ? band.mid_inside
+                              : mid > band.floor_price && mid < band.cap_price;
+      if (inside) {
         const auto iv = cache.mid_iv(i);
         if (iv) obs.sigma_mid = *iv;
       }

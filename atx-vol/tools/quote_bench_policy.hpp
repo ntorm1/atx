@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -552,6 +553,11 @@ struct FitSpaceOptions {
   double family_c = 3.0;
   bool family_q = false; // quote_slice.hpp deam_family_q (step 5)
   bool family_native = false; // quote_slice.hpp deam_family_native (SPY1s Phase 3 lever 1)
+  // quote_slice.hpp deam_native_route / deam_reference_max_* (lane K4: the speed arm).
+  bool native_route = false;
+  std::uint32_t reference_max_calls = QuoteSliceChannelConfig{}.deam_reference_max_calls;
+  std::uint32_t reference_max_evaluations =
+      QuoteSliceChannelConfig{}.deam_reference_max_evaluations;
 };
 
 // The graded default (PM ruling R3, integrate-W2c-a 2026-10-21): SPY1s Phase 1 arm D - the
@@ -756,6 +762,39 @@ inline constexpr bool kGradedDefaultRungMemo = true;
                                "always");
     }
   }
+  // K4: the native fit route (quote_slice.hpp deam_native_route) types the family-native
+  // route and never runs Search; reference_budget {calls, evaluations} bounds its reference
+  // route per chain (positive integers; the library defaults otherwise).
+  if (graded.contains("native_route")) {
+    if (!graded.at("native_route").is_boolean()) {
+      throw std::runtime_error("Policy graded native_route must be true or false");
+    }
+    out.native_route = graded.at("native_route").get<bool>();
+    if (out.native_route && !out.family_native) {
+      throw std::runtime_error("Policy graded native_route requires family_native");
+    }
+  }
+  if (graded.contains("reference_budget")) {
+    if (!out.native_route) {
+      throw std::runtime_error("Policy graded reference_budget requires native_route");
+    }
+    const auto &budget = graded.at("reference_budget");
+    if (!budget.is_object()) {
+      throw std::runtime_error("Policy graded reference_budget must be an object");
+    }
+    for (const auto &[name, value] : budget.items()) {
+      if (name != "calls" && name != "evaluations") {
+        throw std::runtime_error("Policy graded reference_budget has unknown key: " + name);
+      }
+      if (!value.is_number_unsigned() || value.get<std::uint64_t>() == 0u ||
+          value.get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("Policy graded reference_budget " + name +
+                                 " must be a positive integer");
+      }
+      (name == "calls" ? out.reference_max_calls : out.reference_max_evaluations) =
+          static_cast<std::uint32_t>(value.get<std::uint64_t>());
+    }
+  }
   if (graded.contains("family_c")) {
     if (out.family == QuoteSliceDeamFamily::Off) {
       throw std::runtime_error("Policy graded family_c requires family adaptive or always");
@@ -860,6 +899,11 @@ inline Json surface_json(const QuoteSurfaceConfig &s, const QuoteSliceRepairConf
         out["family_c"] = space.family_c;
         if (space.family_q) out["family_q"] = true;
         if (space.family_native) out["family_native"] = true;
+        if (space.native_route) {
+          out["native_route"] = true; // provenance only when opted in (K4)
+          out["reference_budget"] = {{"calls", space.reference_max_calls},
+                                     {"evaluations", space.reference_max_evaluations}};
+        }
       }
     }
   }
@@ -1118,7 +1162,7 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
              "confirm_kernel", "grid_kernel", "certificate", "certificate_box_half_ticks",
              "wing_mult_source", "market_distance", "market_distance_spreads",
              "ladder_wing_tail", "seed_gate_kappa", "family", "family_c", "family_q",
-             "family_native", "publication"});
+             "family_native", "publication", "native_route", "reference_budget"});
     space = parse_fit_space(j);
     // Per-expiry rung memo (quote_slice.hpp QuoteSurfaceConfig::rung_memo): exact-keyed
     // reuse across an expiry's rungs, speed only; on by default under graded admission (R3).
@@ -1280,6 +1324,9 @@ inline LoadedPolicy load(const std::string &selection, QuoteSliceDividendModel d
     profile.config.channel.deam_family_c = space.family_c;
     profile.config.channel.deam_family_q = space.family_q;
     profile.config.channel.deam_family_native = space.family_native;
+    profile.config.channel.deam_native_route = space.native_route;
+    profile.config.channel.deam_reference_max_calls = space.reference_max_calls;
+    profile.config.channel.deam_reference_max_evaluations = space.reference_max_evaluations;
     profile.config.grid_kernel = space.grid_kernel;
     if (floor_price_only) profile.config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
     // The ladder brings its own knot rung and containment rule: a knot-spline

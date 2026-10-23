@@ -570,6 +570,33 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   return Ok();
 }
 
+// The native fit route (K4): a quote whose mid the route typed as not identifiable (a price
+// on the exercise plateau, at the floor, below the confirm kernel's resolution, inside a
+// certified interval wider than the requirement, or at the range's top) is
+// UnidentifiableVolatility, not an inversion failure; a budget stop or an unresolved bracket
+// stays ImpliedVolatilityFailure. The typed outcome itself stays in the chain's de-Am cache
+// entry (mid_route, mid_lo / mid_hi) and the fit counters: the row's price_only_reason /
+// iv_lower / iv_upper are C0's SERVED-answer fields (None / NaN on an unserved row), written
+// only by the served identification (align_with_query).
+void label_unidentified_mid(QuoteSliceRow &row, const DeAmQuoteIv &entry) noexcept {
+  switch (entry.mid_route) {
+  case IvRouteOutcome::PriceOnlyPlateau:
+  case IvRouteOutcome::PriceOnlyFloor:
+  case IvRouteOutcome::PriceOnlyLowVega:
+  case IvRouteOutcome::Interval:
+  case IvRouteOutcome::AboveRange:
+    row.quote_status = QuoteSliceQuoteStatus::UnidentifiableVolatility;
+    return;
+  case IvRouteOutcome::None:
+  case IvRouteOutcome::NativeRoot:
+  case IvRouteOutcome::ReferenceRoot:
+  case IvRouteOutcome::LegRoot:
+  case IvRouteOutcome::BudgetExhausted:
+  case IvRouteOutcome::Unresolved:
+    return;
+  }
+}
+
 // Stage 2: point-quote admission (quality gates, mid IV, inverse-uncertainty
 // weights). Records every row's status and returns the admitted observations
 // sorted by strike, with diagnostics.distinct_strikes counted. A vol-space fit
@@ -648,6 +675,7 @@ std::vector<FitObs> admit_point_observations(QuoteSliceFit &out,
                                    config.max_iv_iterations, config.al_opts);
     if (!iv || !positive(*iv)) {
       row.quote_status = QuoteSliceQuoteStatus::ImpliedVolatilityFailure;
+      if (deam != nullptr) label_unidentified_mid(row, deam->cache().ivs[i]);
       continue;
     }
     row.market_iv = *iv;
@@ -827,6 +855,9 @@ public:
       gate.qfamily = controls.qfamily;
       gate.qfamily_bound = controls.qfamily_bound;
       gate.qfamily_native = controls.qfamily_native;
+      // K4 native fit route: typed outcomes, the bounded reference route, the chain's budget.
+      gate.native_route = controls.native_route;
+      gate.reference_budget = controls.reference_budget;
     }
     const IvResult iv = american_implied_vol_premium(
         target, fit_.market.spot, quote.strike, fit_.market.variance_years,
@@ -887,6 +918,44 @@ public:
                            std::chrono::steady_clock::now() - t0)
                            .count();
     return holder;
+  }
+  // The native fit route's edge bounds (deam_iv_cache.hpp DeAmEdgeBounds) on the accurate
+  // kernel andersen_lake(spot, K, T, sigma, r_eff, q_eff): its European leg is Black-76 on
+  // that carry (a lower bound of the American price at kIvMax and at kIvMin, less a
+  // relative rounding margin); the floor's upper bound needs the side's (sigma, q) family
+  // with a covering envelope whose box floor is at or above kIvMin. Continuous-carry only.
+  DeAmEdgeBounds edge_bounds(const QuoteSliceQuote &quote, double q_effective,
+                             const DeAmSigmaFamilies *families) const override {
+    DeAmEdgeBounds out;
+    if (!has_fast_kernel() || !std::isfinite(q_effective)) return out;
+    constexpr double kMargin = 1.0e-12; // relative + absolute: the two legs' rounding
+    const double S = fit_.market.spot;
+    const double T = fit_.market.variance_years;
+    const double r = fit_.diagnostics.effective_rate;
+    const double F = S * std::exp((r - q_effective) * T);
+    const double df = std::exp(-r * T);
+    const auto european = [&](double sigma) {
+      const double p = black76_value_and_vega(F, quote.strike, T, sigma, df, quote.side).price;
+      return std::isfinite(p) ? p - kMargin * (p + 1.0) : std::numeric_limits<double>::quiet_NaN();
+    };
+    out.cap_lo = european(kIvMax);
+    out.floor_lo = european(kIvMin);
+    const AlSigmaQFamily *f = families != nullptr ? families->of_q(quote.side) : nullptr;
+    const ValidatedErrorEnvelope *env =
+        families != nullptr ? families->q_envelope(quote.side) : nullptr;
+    if (f == nullptr || env == nullptr || !env->covered() || !(f->sigma_lo() >= kIvMin)) {
+      return out;
+    }
+    const FamilyBoundedPrice fb =
+        family_price_bounded(*f, *env, S, quote.strike, f->sigma_lo(), q_effective);
+    ++out.family_prices;
+    const double band_top =
+        iv_premium_edge_band_top(S, quote.strike, T, r, q_effective, quote.side, fit_.al_opts);
+    if (fb.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fb.price) &&
+        std::isfinite(fb.bound_usd) && std::isfinite(band_top)) {
+      out.floor_hi = std::max(band_top, fb.price + fb.bound_usd);
+    }
+    return out;
   }
 
 private:
@@ -972,7 +1041,10 @@ public:
                                       config.channel.deam_seed_gate_kappa,
                                       config.channel.deam_family, config.channel.deam_family_c,
                                       config.channel.deam_family_q,
-                                      config.channel.deam_family_native});
+                                      config.channel.deam_family_native,
+                                      config.channel.deam_native_route,
+                                      config.channel.deam_reference_max_calls,
+                                      config.channel.deam_reference_max_evaluations});
   }
   VolSpaceCache(const VolSpaceCache &) = delete;
   VolSpaceCache &operator=(const VolSpaceCache &) = delete;
@@ -1556,7 +1628,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
                        double repair_half_spreads = 0.0,
                        const QuoteSliceRepairConfig *channel_repair = nullptr,
                        QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate,
-                       const DeAmSigmaFamilies *families = nullptr) {
+                       const DeAmSigmaFamilies *families = nullptr,
+                       bool family_point_bound = false) {
   const counters::fit_timing::BucketScope price_timing(counters::fit_timing::Bucket::Price);
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::certification_passes);
   const QuoteSliceMarket &market = out.market;
@@ -1592,7 +1665,31 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     if (!std::isfinite(q)) {
       return Result<double>{Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow")};
     }
-    if (family_grid) {
+    if (family_grid && family_point_bound) {
+      // K4 native fit route: the family's PER-POINT bound against the accurate kernel at this
+      // node (family_price_bounded; valid at every strike by homogeneity, so no moneyness
+      // band) decides, not the envelope's domain-wide scalar: a node is the family's price
+      // only when that bound is under the node's certificate allowance.
+      const AlSigmaQFamily *f = families->of_q(side);
+      const ValidatedErrorEnvelope *env = families->q_envelope(side);
+      if (f != nullptr && env != nullptr && env->covered()) {
+        const FamilyBoundedPrice fb = family_price_bounded(*f, *env, market.spot, strike, sigma, q);
+        if (fb.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fb.price) &&
+            fb.bound_usd < certificate_tolerance(market.spot, strike)) {
+          namespace ft = counters::fit_timing;
+          ft::count(&ft::FitTimingCounters::deam_family_grid_prices);
+          ++diag.deam.grid_family_prices;
+          diag.deam.grid_max_family_bound_usd =
+              std::max(diag.deam.grid_max_family_bound_usd, fb.bound_usd);
+          if (ft::FitTimingCounters *const timing = ft::current_counts()) {
+            timing->deam_family_grid_max_bound_usd =
+                std::max(timing->deam_family_grid_max_bound_usd, fb.bound_usd);
+          }
+          return Result<double>{Ok(fb.price)};
+        }
+      }
+      counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
+    } else if (family_grid) {
       const AlSigmaQFamily *f = std::fabs(std::log(strike / market.spot)) <= kDeAmFamilyGridLogBand
                                     ? families->of_q(side)
                                     : nullptr;
@@ -1615,6 +1712,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   std::vector<std::uint64_t> grid_key;
   if (memo != nullptr) grid_key = certification_grid_key(out, strikes, q_min, q_max);
   if (!grid_key.empty()) grid_key.push_back(fast_grid ? 1u : 0u);
+  // K4: the per-point family bound prices other nodes than the domain-wide scalar.
+  if (!grid_key.empty() && family_grid) grid_key.push_back(family_point_bound ? 1u : 0u);
   if (!grid_key.empty() && family_grid) {
     // The families' identity: a memoised family grid never answers another family.
     for (const Side side : {Side::Put, Side::Call}) {
@@ -1811,7 +1910,10 @@ Status validate_channel(const QuoteSliceChannelConfig &c) {
       (c.deam_family_q && c.deam_family == QuoteSliceDeamFamily::Off) ||
       // Family-native iterates (Phase 3 lever 1): on (sigma, q) families, confirmed roots.
       (c.deam_family_native &&
-       (!c.deam_family_q || c.deam_confirm != QuoteSliceDeamConfirm::Always))) {
+       (!c.deam_family_q || c.deam_confirm != QuoteSliceDeamConfirm::Always)) ||
+      // The native fit route (K4) types the family-native route; its budget is finite.
+      (c.deam_native_route && !c.deam_family_native) || c.deam_reference_max_calls == 0u ||
+      c.deam_reference_max_evaluations == 0u) {
     return Err(ErrorCode::InvalidArgument, "quote slice: invalid channel configuration");
   }
   if (c.family) {
@@ -2117,7 +2219,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
   }
   out.curve = std::move(*curve);
   certify_and_serve(out, quotes, 0.0, &config.repair, config.grid_kernel,
-                    deam ? deam->families() : nullptr);
+                    deam ? deam->families() : nullptr, config.channel.deam_native_route);
   return Ok(std::move(out));
 }
 
@@ -2193,7 +2295,8 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::jacobian_evals,
                               counters::fit_timing::detail::saturate(d.iterations));
   certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair,
-                    config.grid_kernel, deam ? deam->families() : nullptr);
+                    config.grid_kernel, deam ? deam->families() : nullptr,
+                    config.channel.deam_native_route);
   return Ok(std::move(out));
 }
 

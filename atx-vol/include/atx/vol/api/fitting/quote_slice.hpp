@@ -284,6 +284,25 @@ struct QuoteSliceChannelConfig {
   // family beyond its envelope bound), and a root it cannot bracket is answered by the
   // Search route. No secant slope or step length is a bound.
   bool deam_family_native = false;
+  // The native fit route (lane K4, r6 2026-10-23; opt-in, requires deam_family_native; the
+  // speed arm, no default changes): every inversion of the chain stays on typed routes and
+  // NEVER runs the Search route. A price inside the non-monotone edge band is classified
+  // (american_region.hpp, the exercise plateau) before any root attempt; a family-native
+  // root the acceptance cannot close, a refused native attempt and an edge-band price go to
+  // the bounded reference route (a certified bracketed root on the confirm kernel under the
+  // Intrinsic exercise rule, started from the native attempt's retained bracket) - never to
+  // the Barone-Adesi-Whaley seed leg; a price-only or interval acceptance outcome is typed
+  // (no IV) instead of re-solved; a quote's bid and ask always start from its mid's carry.
+  // The reference route is budgeted per chain cache: deam_reference_max_calls requests and
+  // deam_reference_max_evaluations kernel evaluations (a deterministic proxy for its time);
+  // an exhausted budget is a typed, counted refusal, never a silent success. Band edges are
+  // decided by validated bounds (Black-76 below the kIvMax edge, the family's bounded price
+  // at its sigma box floor above the kIvMin edge) before any edge is priced, and the
+  // certification grid prices a node on the family only under its per-point bound
+  // (family_price_bounded) below the certificate allowance.
+  bool deam_native_route = false;
+  std::uint32_t deam_reference_max_calls = 1024;       // > 0, per chain cache
+  std::uint32_t deam_reference_max_evaluations = 8192; // > 0, per chain cache
 };
 
 // InvalidArgument unless every channel control is finite and in range
@@ -695,6 +714,20 @@ struct QuoteSliceDeamDiagnostics {
   std::size_t family_builds = 0;
   std::size_t family_prices = 0;
   std::size_t family_refused = 0;
+  // The native fit route (deam_native_route; zero otherwise): inversions answered on the
+  // bounded reference route and its kernel evaluations, requests refused for an exhausted
+  // reference budget, typed non-identified outcomes (price-only, interval), band edges
+  // decided by validated bounds or priced, and certification-grid nodes priced on a family
+  // under its per-point bound with the largest such bound (USD).
+  std::size_t reference_inversions = 0;
+  std::size_t reference_evaluations = 0;
+  std::size_t reference_budget_exhausted = 0;
+  std::size_t price_only_outcomes = 0;
+  std::size_t interval_outcomes = 0;
+  std::size_t edges_decided = 0;
+  std::size_t edges_priced = 0;
+  std::size_t grid_family_prices = 0;
+  double grid_max_family_bound_usd = 0.0;
 };
 
 struct QuoteSliceDiagnostics {

@@ -18,6 +18,7 @@
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/pricing/american_region.hpp" // C1 classifier (K4 native route)
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp" // CorrectionCache, american_price_cached hot path
 #include "fitting/counters.hpp"
@@ -268,8 +269,12 @@ struct PolishTrace {
   bool bolt_reverted{false}; // ... and rejected one that failed to reduce the residual
 };
 
+// The retained ALO pricer is C1's AloRegionPricer (american_region.hpp; K4 wiring of the
+// fourth KernelFloor site): under AlExerciseRegion::KernelFloor with no class output it is
+// AloPricer operation for operation (AloRegionPricerKernelFloorIsAloPricerBitForBit), so the
+// Search route moves no bits; the native fit route never reaches this residual map.
 struct ThreadAloSlot {
-  std::optional<AloPricer> pricer;
+  std::optional<AloRegionPricer> pricer;
   bool busy{false};
 };
 
@@ -308,12 +313,12 @@ public:
     }
   }
 
-  [[nodiscard]] AloPricer &get() noexcept { return *pricer_; }
+  [[nodiscard]] AloRegionPricer &get() noexcept { return *pricer_; }
 
 private:
   ThreadAloSlot *slot_{nullptr};
-  std::optional<AloPricer> fallback_;
-  AloPricer *pricer_{nullptr};
+  std::optional<AloRegionPricer> fallback_;
+  AloRegionPricer *pricer_{nullptr};
 };
 
 // NOT noexcept, deliberately: this body allocates. A cold Andersen-Lake
@@ -407,7 +412,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
       return Ok(p - price);
     }
     if (alo) {
-      const double p = alo->get().price(sigma);
+      const double p = alo->get().price(sigma, AlExerciseRegion::KernelFloor);
       if (!std::isfinite(p)) {
         return Err(ErrorCode::NotImplemented,
                    "american_implied_vol: ALO boundary collapsed (negative-carry corner)");
@@ -992,6 +997,14 @@ double al_non_monotone_gate(double K, double T, const std::optional<AlOpts> &opt
   return kappa * K * std::fmax(1.0, T * T);
 }
 
+double iv_premium_edge_band_top(double S, double K, double T, double r, double q, Side side,
+                                const std::optional<AlOpts> &opts) noexcept {
+  const double ceiling = american_price_ceiling(S, K, T, r, q, side);
+  const double zero_vol = zero_vol_american_value(S, K, T, r, q, side);
+  const double band_tol = 1.0e-9 * ceiling + 1.0e-12; // premium_root's own arithmetic
+  return zero_vol + std::fmax(al_non_monotone_gate(K, T, opts), band_tol); // NaN propagates
+}
+
 double iv_premium_seed_gate(double K, double T, const std::optional<AlOpts> &seed_opts,
                             const IvPremiumGate *gate) noexcept {
   if (gate == nullptr || !(gate->seed_gate_kappa > 0.0)) {
@@ -1156,6 +1169,15 @@ struct NativeRoot {
   double slope = 0.0;
   double residual_usd = 0.0;
   ColdPoint last{0.0, 0.0, 0.0};
+  // K4: what the lane learned, accepted or not (the native fit route's reference hint):
+  // its best iterate, the last evaluated point with its fused vega, and the family-map
+  // bracket at exit (NaN: an unevaluated end). Not certified on the target map.
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+  double last_sigma = std::numeric_limits<double>::quiet_NaN();
+  double last_price = std::numeric_limits<double>::quiet_NaN();
+  double vega = std::numeric_limits<double>::quiet_NaN();
+  double lo = std::numeric_limits<double>::quiet_NaN();
+  double hi = std::numeric_limits<double>::quiet_NaN();
 };
 
 static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
@@ -1250,7 +1272,13 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
   stats.native_evaluations = evals;
   stats.native_flags = flags;
   stats.family_prices += evals;
+  out.sigma = sigma;
+  out.last_sigma = last;
+  out.vega = vega;
+  out.lo = lo;
+  out.hi = hi;
   const double last_price = std::isfinite(res) ? price + res : res;
+  out.last_price = last_price;
   if (memory != nullptr) {
     memory->carry = IvPremiumNativeCarry{true, lo, hi, p_lo, p_hi, last, last_price, vega,
                                          stream_id};
@@ -1598,12 +1626,17 @@ namespace {
 // K3 acceptance of a family-native root (IvPremiumGate::qfamily_native): Skipped when the
 // envelope encloses it, else confirm_bracket with the enclosure's local chord (or, where a
 // price refused, the family's own kAlPackSigmaBump chord at the root).
+// K4 (native fit route, `lane_vega`): when the enclosure measured no chord (a family price
+// refused), the confirm's placement slope is the lane's fused vega at its last point, already
+// in hand, instead of the family's kAlPackSigmaBump chord (two more family prices). The slope
+// places only; the bracket rule is unchanged.
 [[nodiscard]] std::optional<double> accept_family_native(const NativeRoot &native, double price,
                                                          double S, double K, double T, double r,
                                                          double q, Side side, double tol,
                                                          const AlSigmaQFamily &f,
                                                          const std::optional<AlOpts> &confirm_opts,
-                                                         IvPremiumStats &stats) {
+                                                         IvPremiumStats &stats,
+                                                         bool lane_vega = false) {
   const double x = native.root;
   stats.last_residual_usd = native.residual_usd;
   // W2c-g: K2's batch-seam lane accepts on the fused vega at its last point - a tangent,
@@ -1627,6 +1660,9 @@ namespace {
     return enc.root;
   }
   double slope = enc.slope;
+  if (!(std::isfinite(slope) && slope > 0.0) && lane_vega) {
+    slope = native.slope; // > the lane's vega floor: family_native_root accepted on it
+  }
   if (!(std::isfinite(slope) && slope > 0.0)) {
     const AlSigmaQFamilyChord fc = f.price_and_chord(S, K, x, q);
     stats.family_prices += 2u;
@@ -1635,6 +1671,321 @@ namespace {
     }
   }
   return confirm_bracket(price, S, K, T, r, q, side, x, slope, w, f, env, confirm_opts, stats);
+}
+
+// ── The bounded reference route of the native fit route (lane K4, r6) ──
+//
+// THE MAP. C_I(sigma) = andersen_lake_classified(..., confirm kernel, Intrinsic): the confirm
+// kernel C of the K3 acceptance (eps_c = its tested bound against the target map A,
+// al_profile_price_bound) under C1's exact plateau rule. Outside the exercise plateau C_I is
+// C bit for bit; on the plateau (the spot on the exercise side of B(T)) it is the intrinsic,
+// flat in sigma, so the in-region roots of the kernel floor's dip (L1c) cannot be returned.
+// Every evaluation is classified (american_region.hpp), so the plateau is decided by the
+// classifier, never by a family's own exercise flag.
+//
+// THE RULE (K3's bracket rule on C_I): a side of the root at sigma is certified when
+// C_I -/+ eps_c lies beyond the price; a root is served only from a bracket [lo, hi] whose
+// ends carry opposite certified sides, hi - lo <= W = acceptance_width(tol), the served point
+// the falsi of the end prices clamped into it. Typed outcomes otherwise (IvRouteOutcome):
+// an evaluation on the plateau whose intrinsic is not below the price (the price sits on the
+// plateau): PriceOnlyPlateau; C_I(kIvMin) not below the price outside the plateau:
+// PriceOnlyFloor; C_I(kSigmaHiCap) - Search's own expansion ceiling - not above it:
+// AboveRange; a point C_I cannot place whose two straddling points 0.45 W away it cannot
+// place either (the slope cannot clear 2 eps_c across W): PriceOnlyLowVega; the per-request
+// cap with a certified bracket: Interval, without one (or a kernel refusal): Unresolved; the
+// chain's budget spent: BudgetExhausted. Low vega is decided only there, at the root: a chord
+// across a flat tail far from it (a deep out-of-the-money price near zero) says nothing.
+//
+// THE PATH. From the hint (the native attempt's retained bracket, best iterate and fused
+// vega, or the Black-76 IV): safeguarded Newton / secant steps kept inside the certified
+// bracket (bisection, geometric on a wide one, otherwise; also from a point on the exercise
+// plateau, flat in sigma, and after two Newton steps that did not halve); once a step is
+// within W / 4 the next point straddles the root estimate by 0.45 W so one evaluation closes
+// the bracket.
+struct ReferenceHint {
+  double seed = std::numeric_limits<double>::quiet_NaN();
+  double slope = std::numeric_limits<double>::quiet_NaN();
+  bool floor_first = false; // evaluate kIvMin first (an edge-band price)
+};
+
+struct ReferencePoint {
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+  double price = std::numeric_limits<double>::quiet_NaN();
+  int side = 0;
+  AlExerciseClass cls = AlExerciseClass::Continuation;
+};
+
+// The geometric (or arithmetic, on a narrow bracket) midpoint of (lo, hi).
+[[nodiscard]] double reference_bisect(double lo, double hi) noexcept {
+  return hi > 4.0 * lo && lo > 0.0 ? std::sqrt(lo * hi) : 0.5 * (lo + hi);
+}
+
+[[nodiscard]] std::optional<double> reference_root(double price, double S, double K, double T,
+                                                   double r, double q, Side side, double tol,
+                                                   const std::optional<AlOpts> &kernel,
+                                                   const ReferenceHint &hint,
+                                                   IvReferenceBudget *budget,
+                                                   IvPremiumStats &stats) {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  const auto typed = [&stats](IvRouteOutcome outcome, double lo,
+                              double hi) -> std::optional<double> {
+    stats.route = outcome;
+    stats.route_lo = lo;
+    stats.route_hi = hi;
+    stats.fallback = IvPremiumFallback::None;
+    return std::nullopt;
+  };
+  if (budget != nullptr) {
+    if (budget->calls >= budget->max_calls || budget->evaluations >= budget->max_evaluations) {
+      ++budget->refused;
+      return typed(IvRouteOutcome::BudgetExhausted, kNaN, kNaN);
+    }
+    ++budget->calls;
+  }
+  const AlProfile profile = kernel ? kernel->profile : AlProfile::Reference;
+  const double eps = al_profile_price_bound(profile, price, T);
+  const double w = acceptance_width(tol);
+  bool spent = false; // the chain's budget ran out mid-request
+  bool refused = false;
+  const auto eval = [&](double s) -> std::optional<ReferencePoint> {
+    if (stats.reference_evaluations >= kIvReferenceMaxEvaluations) return std::nullopt;
+    if (budget != nullptr) {
+      if (budget->evaluations >= budget->max_evaluations) {
+        spent = true;
+        return std::nullopt;
+      }
+      ++budget->evaluations;
+    }
+    ++stats.reference_evaluations;
+    ++stats.premium_solves;
+    counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+    const Result<AlRegionPrice> rp =
+        andersen_lake_classified(S, K, T, s, r, q, side, kernel, AlExerciseRegion::Intrinsic);
+    if (!rp || !rp->priced() || !std::isfinite(rp->price)) {
+      refused = true;
+      return std::nullopt;
+    }
+    stats.reference_class = static_cast<std::uint8_t>(rp->cls);
+    return ReferencePoint{s, rp->price, confirm_side(rp->price, price, eps), rp->cls};
+  };
+  // The certified bracket (NaN price: that end is not certified yet).
+  double lo = kSigmaLo;
+  double hi = kSigmaHiCap;
+  double p_lo = kNaN;
+  double p_hi = kNaN;
+  const auto stop = [&]() -> std::optional<double> {
+    if (spent) {
+      ++budget->refused;
+      return typed(IvRouteOutcome::BudgetExhausted, std::isfinite(p_lo) ? lo : kNaN,
+                   std::isfinite(p_hi) ? hi : kNaN);
+    }
+    if (!refused && std::isfinite(p_lo) && std::isfinite(p_hi)) {
+      return typed(IvRouteOutcome::Interval, lo, hi);
+    }
+    return typed(IvRouteOutcome::Unresolved, std::isfinite(p_lo) ? lo : kNaN,
+                 std::isfinite(p_hi) ? hi : kNaN);
+  };
+  // Records a point; a typed outcome when the point itself decides one.
+  const auto take = [&](const ReferencePoint &e) -> std::optional<IvRouteOutcome> {
+    if (e.cls == AlExerciseClass::ExercisePlateau && e.side >= 0) {
+      return IvRouteOutcome::PriceOnlyPlateau; // the price sits on the plateau's intrinsic
+    }
+    if (e.side < 0 && e.sigma >= lo) {
+      lo = e.sigma;
+      p_lo = e.price;
+    } else if (e.side > 0 && e.sigma <= hi) {
+      hi = e.sigma;
+      p_hi = e.price;
+    }
+    if (e.sigma <= kSigmaLo && e.side >= 0) return IvRouteOutcome::PriceOnlyFloor;
+    if (e.sigma >= kSigmaHiCap && e.side <= 0) return IvRouteOutcome::AboveRange;
+    return std::nullopt;
+  };
+  const auto decided = [&](IvRouteOutcome o) -> std::optional<double> {
+    if (o == IvRouteOutcome::PriceOnlyPlateau) return typed(o, 0.0, kNaN);
+    if (o == IvRouteOutcome::PriceOnlyFloor) return typed(o, 0.0, kSigmaLo);
+    return typed(o, kSigmaHiCap, kNaN); // AboveRange
+  };
+  std::optional<ReferencePoint> prev;
+  double last_step = std::numeric_limits<double>::infinity(); // the last Newton step
+  int slow = 0;                                                 // steps not halving
+  double intrinsic = kNaN; // a plateau point's price (the intrinsic), once one is evaluated
+  double slope = std::isfinite(hint.slope) && hint.slope > 0.0 ? hint.slope : kNaN;
+  if (hint.floor_first) {
+    const std::optional<ReferencePoint> e = eval(kSigmaLo);
+    if (!e) return stop();
+    if (const auto o = take(*e)) return decided(*o);
+    if (e->cls == AlExerciseClass::ExercisePlateau) {
+      intrinsic = e->price;
+    } else {
+      prev = e;
+    }
+  }
+  double x = std::isfinite(hint.seed) && hint.seed > lo && hint.seed < hi
+                 ? hint.seed
+                 : reference_bisect(lo, hi);
+  for (;;) {
+    std::optional<ReferencePoint> e = eval(x);
+    if (!e) return stop();
+    if (const auto o = take(*e)) return decided(*o);
+    if (e->side == 0) {
+      // C_I cannot place x: the root lies within eps_c / slope of it. Straddle x by 0.45 W
+      // (a bracket of 0.9 W: no rounding of the two ends can widen it past W).
+      for (const double end : {x - 0.45 * w, x + 0.45 * w}) {
+        const std::optional<ReferencePoint> s = eval(end);
+        if (!s) return stop();
+        if (const auto o = take(*s)) return decided(*o);
+        if (s->side == 0) return typed(IvRouteOutcome::PriceOnlyLowVega, lo, hi);
+      }
+    }
+    if (std::isfinite(p_lo) && std::isfinite(p_hi) && hi - lo <= w) {
+      const double gap = p_hi - p_lo;
+      const double root = gap > 0.0 ? lo + (price - p_lo) / gap * (hi - lo) : 0.5 * (lo + hi);
+      stats.acceptance = RootAcceptance{RootAcceptanceKind::Confirmed,
+                                        RootAcceptanceReason::ConfirmBothEnds,
+                                        FamilyErrorClass::Uncovered, hi - lo, lo, hi};
+      stats.last_residual_usd = std::fmin(std::fabs(p_lo - price), std::fabs(p_hi - price));
+      stats.route = IvRouteOutcome::ReferenceRoot;
+      stats.route_lo = lo;
+      stats.route_hi = hi;
+      stats.fallback = IvPremiumFallback::None;
+      return std::clamp(root, lo, hi);
+    }
+    // A plateau point is flat in sigma (its chord is no local slope): the root lies past the
+    // plateau's edge, so the bracket is bisected and the point never seeds a chord.
+    const bool plateau = e->cls == AlExerciseClass::ExercisePlateau;
+    if (!plateau && prev && prev->sigma != e->sigma) {
+      const double chord = (e->price - prev->price) / (e->sigma - prev->sigma);
+      if (std::isfinite(chord) && chord > 0.0) slope = chord;
+    }
+    double next = kNaN;
+    if (plateau) {
+      intrinsic = e->price;
+      next = reference_bisect(lo, hi);
+    } else if (std::isfinite(slope)) {
+      double newton = e->sigma - (e->price - price) / slope;
+      // Past the plateau's edge sigma* the premium P - I grows like (sigma - sigma*)^2 (smooth
+      // pasting), where Newton on P only halves its distance per step: with the intrinsic I
+      // known (a plateau point), the step is taken on g = sqrt(P - I), linear there.
+      if (std::isfinite(intrinsic) && e->price > intrinsic && price > intrinsic) {
+        const double target = std::sqrt(price - intrinsic);
+        const double ge = std::sqrt(e->price - intrinsic) - target;
+        double gslope = slope / (2.0 * std::sqrt(e->price - intrinsic));
+        if (prev && prev->price > intrinsic && prev->sigma != e->sigma) {
+          const double gp = std::sqrt(prev->price - intrinsic) - target;
+          const double chord = (ge - gp) / (e->sigma - prev->sigma);
+          if (std::isfinite(chord) && chord > 0.0) gslope = chord;
+        }
+        if (std::isfinite(gslope) && gslope > 0.0) newton = e->sigma - ge / gslope;
+      }
+      // A step that has not halved twice running is not converging: bisect instead.
+      const double step = std::fabs(newton - e->sigma);
+      slow = step > 0.5 * last_step ? slow + 1 : 0;
+      last_step = step;
+      // Close to the root: straddle the estimate so the next evaluation closes the bracket.
+      const double dir = e->side < 0 ? 1.0 : -1.0;
+      next = step <= 0.25 * w ? newton + dir * 0.45 * w : newton;
+      if (slow >= 2) {
+        next = reference_bisect(lo, hi);
+        slow = 0;
+      }
+    } else if (e->side != 0) {
+      next = e->sigma + (e->side < 0 ? w : -w); // a second point for the first chord
+    }
+    if (!(next > lo && next < hi)) {
+      // Outside the certified bracket: bisect; an uncertified box end is evaluated at the
+      // box end itself once the bracket has narrowed onto it (the floor / range decision).
+      next = reference_bisect(lo, hi);
+      if (!std::isfinite(p_hi) && next > 0.75 * kSigmaHiCap) next = kSigmaHiCap;
+      if (!std::isfinite(p_lo) && next < 2.0 * kSigmaLo) next = kSigmaLo;
+    }
+    if (!plateau) prev = e;
+    x = next;
+  }
+}
+
+// The Black-76 IV of `price` at the contract's forward (an upper bound of the American IV), the
+// reference route's seed where no family point is known; NaN when there is none. Not
+// noexcept: the Black-76 inversion's Error path builds a message string.
+[[nodiscard]] double black76_seed(double price, double S, double K, double T, double r, double q,
+                                  Side side) {
+  const double F = S * std::exp((r - q) * T);
+  const Result<double> eu = implied_vol(price, F, K, T, std::exp(-r * T), side);
+  return eu && std::isfinite(*eu) ? *eu : std::numeric_limits<double>::quiet_NaN();
+}
+
+// The family's Newton estimate from the lane's last evaluated point (NaN without one).
+[[nodiscard]] double lane_newton(const NativeRoot &native, double price) noexcept {
+  if (!std::isfinite(native.last_price) || !(native.vega > 0.0) || !std::isfinite(native.vega)) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return native.last_sigma + (price - native.last_price) / native.vega;
+}
+
+// K4 native fit route: a family-native root the K3 acceptance did not close. PriceOnly (the
+// confirm kernel cannot resolve the width at the root's slope) and Interval (a certified
+// bracket wider than the requirement) are typed outcomes - C0's low_vega / iv_interval - not
+// re-solved; a bracket that did not close (kind None) goes to the reference route from the
+// root with the lane's fused vega.
+[[nodiscard]] std::optional<double>
+native_unaccepted(const NativeRoot &native, double price, double S, double K, double T, double r,
+                  double q, Side side, double tol, const std::optional<AlOpts> &kernel,
+                  IvReferenceBudget *budget, IvPremiumStats &stats) {
+  const RootAcceptance &acc = stats.acceptance;
+  stats.fallback = IvPremiumFallback::None;
+  const IvRouteOutcome typed = native_unaccepted_outcome(acc.kind);
+  if (typed != IvRouteOutcome::None) {
+    stats.route = typed;
+    if (typed == IvRouteOutcome::Interval) {
+      stats.route_lo = acc.lo; // a certified bracket of the target map's root
+      stats.route_hi = acc.hi;
+    }
+    return std::nullopt;
+  }
+  ReferenceHint hint;
+  hint.seed = native.root;
+  hint.slope = native.slope;
+  return reference_root(price, S, K, T, r, q, side, tol, kernel, hint, budget, stats);
+}
+
+// K4 native fit route: a refused family-native attempt, typed by its InverseStatus and never
+// handed to the seed leg. LowVega (a slope at or below the lane's floor off the plateau) is
+// price-only; every other status goes to the reference route, started from what the lane
+// learned: the family's Newton estimate from its last point (a box miss: the box edge it
+// evaluated), its best iterate (nonconverged, converged without a slope, exercise-flat -
+// whose plateau the reference route's classifier decides, not the family's own flag), else
+// the Black-76 IV (no evaluation: q outside the box, invalid input, unsupported ISA).
+[[nodiscard]] std::optional<double>
+native_refused(const NativeRoot &native, double price, double S, double K, double T, double r,
+               double q, Side side, double tol, const std::optional<AlOpts> &kernel,
+               IvReferenceBudget *budget, IvPremiumStats &stats) {
+  namespace ib = iv_batch;
+  ReferenceHint hint;
+  hint.slope = native.vega;
+  switch (stats.native_status) {
+  case ib::InverseStatus::LowVega:
+    // The lane's bracket is the family map's, not certified on the target map: no interval.
+    stats.fallback = IvPremiumFallback::None;
+    stats.route = IvRouteOutcome::PriceOnlyLowVega;
+    return std::nullopt;
+  case ib::InverseStatus::SigmaBelowBox:
+  case ib::InverseStatus::SigmaAboveBox:
+    hint.seed = lane_newton(native, price);
+    break;
+  case ib::InverseStatus::NonConverged:
+  case ib::InverseStatus::ConvergedNoSlope:
+  case ib::InverseStatus::ExerciseFlat:
+  case ib::InverseStatus::Converged: // converged without a usable vega (accepted otherwise)
+    hint.seed = native.sigma;
+    break;
+  case ib::InverseStatus::Inactive:
+  case ib::InverseStatus::QOutsideBox:
+  case ib::InverseStatus::InvalidInput:
+  case ib::InverseStatus::UnsupportedIsa:
+    break;
+  }
+  if (!std::isfinite(hint.seed)) hint.seed = black76_seed(price, S, K, T, r, q, side);
+  return reference_root(price, S, K, T, r, q, side, tol, kernel, hint, budget, stats);
 }
 
 // The Premium root, or nullopt with stats.fallback set (the caller then runs Search).
@@ -1820,10 +2171,33 @@ namespace {
   }
   const double band_tol = 1.0e-9 * ceiling + 1.0e-12;
   const double accurate_gate = al_non_monotone_gate(K, T, opts);
+  // K4 native fit route: the typed edges. At or above the range's top there is no IV; a
+  // price inside the edge band is classified before any root attempt - the reference route
+  // evaluates kIvMin first, classified (a price on the exercise plateau is price-only, at or
+  // below the floor price outside it too), then finds the continuation root, if any.
+  const bool native_route = gate != nullptr && gate->native_route;
+  const std::optional<AlOpts> &reference_kernel =
+      gate != nullptr && gate->confirm_opts ? gate->confirm_opts : opts;
+  if (native_route && !(price < ceiling - band_tol)) {
+    stats.route = IvRouteOutcome::AboveRange;
+    stats.fallback = IvPremiumFallback::None;
+    return std::nullopt;
+  }
+  if (native_route && !(price - zero_vol > std::fmax(accurate_gate, band_tol))) {
+    ReferenceHint hint;
+    hint.floor_first = true;
+    hint.seed = black76_seed(price, S, K, T, r, q, side);
+    return reference_root(price, S, K, T, r, q, side, tol, reference_kernel, hint,
+                          gate->reference_budget, stats);
+  }
   if (!(price < ceiling - band_tol) || !(price - zero_vol > std::fmax(accurate_gate, band_tol))) {
     return fail(IvPremiumFallback::RangeEdge);
   }
-  if (confirm) {
+  // K4: the seed tier's routing gate protects seed-tier iterates; a family request on the
+  // native route never iterates on the seed tier (its family is built on the accurate kernel).
+  const bool native_family_request = native_route && gate->qfamily != nullptr &&
+                                     gate->qfamily->side() == side && gate->qfamily_native;
+  if (confirm && !native_family_request) {
     // Seed-tier routing (L2f note section 4): inside the seed tier's own, wider
     // non-monotone gate its map may dip where the accurate map does not (Screen: 4e-4 K
     // max(1, T)^2, dips at r = q), so the iterates run on the accurate kernel instead -
@@ -1871,11 +2245,21 @@ namespace {
                                                  memory, stats, stream_id);
     if (native.accepted) {
       const std::optional<AlOpts> &confirm_opts = gate->confirm_opts ? gate->confirm_opts : opts;
-      return accept_family_native(native, price, S, K, T, r, q, side, tol, *qfamily, confirm_opts,
-                                  stats);
+      const std::optional<double> root = accept_family_native(
+          native, price, S, K, T, r, q, side, tol, *qfamily, confirm_opts, stats, native_route);
+      if (root || !native_route) {
+        if (root && native_route) stats.route = IvRouteOutcome::NativeRoot;
+        return root;
+      }
+      return native_unaccepted(native, price, S, K, T, r, q, side, tol, reference_kernel,
+                               gate->reference_budget, stats);
+    }
+    stats.family_refused = true;
+    if (native_route) {
+      return native_refused(native, price, S, K, T, r, q, side, tol, reference_kernel,
+                            gate->reference_budget, stats);
     }
     on_qfamily = false;
-    stats.family_refused = true;
   }
 
   // Up to two cold points, most recent first: the memory's, then this attempt's.
@@ -2078,6 +2462,28 @@ namespace {
   return seed;
 }
 
+// The IvStatus of a native-route outcome that serves no IV (IvPremiumStats::route carries
+// the typed reason; the caller reads it, the status is the coarse public class).
+[[nodiscard]] IvStatus route_status(IvRouteOutcome route) noexcept {
+  switch (route) {
+  case IvRouteOutcome::PriceOnlyPlateau:
+    return IvStatus::NonMonotoneRegion; // the exercise plateau: the opt-in refusal's class
+  case IvRouteOutcome::PriceOnlyFloor:
+  case IvRouteOutcome::AboveRange:
+    return IvStatus::OutOfRange;
+  case IvRouteOutcome::None:
+  case IvRouteOutcome::NativeRoot:
+  case IvRouteOutcome::ReferenceRoot:
+  case IvRouteOutcome::LegRoot:
+  case IvRouteOutcome::PriceOnlyLowVega:
+  case IvRouteOutcome::Interval:
+  case IvRouteOutcome::BudgetExhausted:
+  case IvRouteOutcome::Unresolved:
+    break;
+  }
+  return IvStatus::NoConvergence;
+}
+
 // The Premium strategy: its root when accepted (then the same opt-in refusal gate as
 // Search), else the Search route unchanged. `gate` governs a seed-tier root's confirm
 // (nullptr: Always on al_opts).
@@ -2090,9 +2496,29 @@ namespace {
     const std::optional<AlOpts> seed_opts = premium_seed_opts(opts);
     const AlProfile own = opts.al_opts ? opts.al_opts->profile : AlProfile::Reference;
     const bool confirm = opts.seed_profile.has_value() && *opts.seed_profile != own;
-    if (const std::optional<double> root =
-            premium_root(price, S, K, T, r, q, side, opts.tol, opts.al_opts, seed_opts, confirm,
-                         confirm ? gate : nullptr, memory, stats)) {
+    const IvPremiumGate *const active = confirm ? gate : nullptr;
+    std::optional<double> root = premium_root(price, S, K, T, r, q, side, opts.tol, opts.al_opts,
+                                              seed_opts, confirm, active, memory, stats);
+    if (!root && active != nullptr && active->native_route) {
+      if (stats.route == IvRouteOutcome::None) {
+        // K4: a request with no family of its side left the seed-leg route (stats.fallback):
+        // the bounded reference route answers it, never Search.
+        stats.fallback = IvPremiumFallback::None;
+        ReferenceHint hint;
+        hint.seed = black76_seed(price, S, K, T, r, q, side);
+        const std::optional<AlOpts> &kernel = active->confirm_opts ? active->confirm_opts
+                                                                   : opts.al_opts;
+        root = reference_root(price, S, K, T, r, q, side, opts.tol, kernel, hint,
+                              active->reference_budget, stats);
+      }
+      if (!root) {
+        return IvResult{std::numeric_limits<double>::quiet_NaN(), route_status(stats.route)};
+      }
+    }
+    if (root) {
+      if (active != nullptr && active->native_route && stats.route == IvRouteOutcome::None) {
+        stats.route = IvRouteOutcome::LegRoot;
+      }
       if (opts.refuse_non_monotone &&
           !scalar_answer_certified(price, S, K, T, r, q, side, *root, opts.al_opts)) {
         return IvResult{std::numeric_limits<double>::quiet_NaN(), IvStatus::NonMonotoneRegion};
