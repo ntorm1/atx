@@ -17,34 +17,59 @@ served row records where its volatility came from (`vol_convention(row)`: `fitte
 or `reimplied_repaired`). New `query_quote_slice` (the typed answer: price, status, reason,
 interval, convention), `model_kind(fit)`, `QuoteSliceSnapshotInfo` provenance on
 `QuoteSliceFit::snapshot` / `QuoteSurfaceExpiry::snapshot` (quote and underlying clocks,
-spot and carry versions, carry convention, raw spot, stale flag), and
+spot and carry versions, the rule that chose the spot - `QuoteSliceSpotRule` own / nearest
+/ median -, carry convention, raw spot, stale flag), and
 `rebase_quote_slice_spot`, which re-expresses an expiry on a snapshot spot S* with the
 forward-preserving carry of its dividend model (dated cash solves the lattice forward).
 The fit archive is ATXVFA 1.1: `PriceOnlyNodes` section and minor-1 tails on fit and quote
 rows (minor-0 files read the tails as absent). Python: `fit_quote_slice`,
 `query_quote_slice`, `evaluate_quote_slice`, `rebase_quote_slice_spot` and the metadata.
 
+**One answer per contract (fix round 1).** Under the default `Legacy` policy a served row
+whose volatility `query_quote_slice` does not identify keeps its historical status and
+value bit for bit, but is labelled with the query's answer: `vol_convention(row)` is now
+`None` (it used to say `reimplied_repaired` or `fitted_curve`) and the row carries the
+query's `price_only_reason` and interval, so the row and the query never disagree. A row
+demoted from served (market-distance gate, refused slice, repair pricing failure) carries
+no reason or interval. Statuses, prices and volatilities are unchanged under both
+policies.
+
 **Behaviour change.** `evaluate_quote_slice` now refuses (`OutOfRange`) every answer that
-`query_quote_slice` types `PriceOnly`, whatever the fit's `floor_policy`: a query whose
-re-implied volatility is the floor (`kIvMin`) or is not identified - between nodes or at
-a repaired node - used to return `kIvMin` as if identified. No production caller is
-affected (only tests and the Python binding call it). **Migration:** call
-`query_quote_slice` for the typed answer, or `fit.prices->price(K, side)` for the price.
+`query_quote_slice` types `PriceOnly`, whatever the fit's `floor_policy`. Three classes
+used to return a volatility: (1) a re-implied volatility at the floor `kIvMin` (between
+nodes or at a repaired node), returned as if identified; (2) an UNMOVED node whose fitted
+curve value is at or below `kIvMin` - the curve's own value, not a re-implied one; (3) a
+re-implied root above the floor that the inverter's opt-in non-monotone refusal types
+`FlatExerciseRegion` (inside the kernel's exercise region) or `LowVega` (uncertified
+slope / Newton distance) - these used to return that above-floor, non-unique root. The
+refusal's `OutOfRange` is the SAME code as "strike outside the certified domain", so a
+caller that must tell "a price exists but its IV is not identified" from "no price" must
+call `query_quote_slice`, which discriminates (status `PriceOnly` with the price, reason
+and interval, versus an error). Callers are tests and the Python binding only - no tool,
+atx-impl or atx-engine caller. **Migration:** call `query_quote_slice` for the typed
+answer, or `fit.prices->price(K, side)` for the price.
 
 **Bench (opt-in).** Policy key `serve` {`floor_price_only`, `metadata`}: the first sets
-every profile's `floor_policy` to `PriceOnly` and serves those rows `ok_price_only` with
-their price (report `identifiability`: price and identified-IV coverage separately,
-reason counts, `identified_floor_vol_rows`); the second appends the metadata columns
+every profile's `floor_policy` to `PriceOnly` and IMPLIES the top-level `price_only`
+(echoed as `"price_only": true` in `policy_definition`), so every PriceOnly row - the
+newly typed ones and the historical `unidentified_interval` ones - is served
+`ok_price_only` with its price (report `identifiability`: price and identified-IV coverage
+separately - `served_vol_rows`, `identified_vol_rows` -, reason counts,
+`identified_floor_vol_rows`); the second appends the metadata columns
 `price_only_reason,iv_lower,iv_upper,vol_convention,model_kind,dividend_convention,
-quote_ns,underlying_ns,spot_version,carry_version,carry_convention,raw_spot,spot_stale,
-price_valid,vol_valid` and the report block `output_conventions`. Policy key `snapshot`
+quote_ns,underlying_ns,spot_version,spot_rule,carry_version,carry_convention,raw_spot,
+spot_stale,price_valid,vol_valid` (`vol_valid` 1 only for a volatility the query
+identifies) and the report block `output_conventions`. Not published yet: an
+exercise-style / deliverable-support / certified-domain support flag (master plan 3.2) -
+handed to H0 / A1. Policy key `snapshot`
 {`one_spot` off | nearest | median, `stale_spot_bps`, `stale_spot` flag | refuse}: one
 authoritative spot per underlying snapshot from the rows' own timestamped observations,
 each expiry rebased forward-preserving (American prices are not preserved), raw per-chain
 spots kept in the report block `one_spot`, stale chains flagged or refused `stale_spot`.
 
 **Migration:** none for the bench: with the keys absent or off, predictions are
-byte-identical (8/8 default hashes) and the report is unchanged.
+byte-identical (9/9 default hashes, the SPY kill switch included) and the report is
+unchanged.
 
 ### NEW — benchmark clock contract: cold clocks, exclusive stages, affinity, cold reset, IV comparator
 
