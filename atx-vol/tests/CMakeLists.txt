@@ -977,7 +977,8 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_compose_predictions_by_status.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_shape_cohort.py
             ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_shape_matrix.py
-            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_build_universe_dataset.py)
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_build_universe_dataset.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/test_universe_census.py)
     set_tests_properties(atx-vol-quote-benchmark-tools PROPERTIES
         LABELS atx_vol_tools TIMEOUT 120
         FAIL_REGULAR_EXPRESSION "[0-9]+ skipped")
