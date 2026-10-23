@@ -126,6 +126,26 @@ add_test(NAME atx-vol-discrete-div-kernel COMMAND atx-vol-discrete-div-kernel-te
 set_tests_properties(atx-vol-discrete-div-kernel PROPERTIES
     LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
 
+# The INDEPENDENT cash-dividend reference (src/pricing/american_discrete_div_reference.hpp,
+# lane D0 2026-10-22). One focused executable, two ctest cases: the engine mechanics
+# (fast label) and the data-driven matrix against the lattice kernel (slow label; its
+# suite is also listed in ATX_VOL_SLOW_FILTER below so it stays slow-labelled if it is
+# ever compiled into atx-vol-tests).
+add_executable(atx-vol-discrete-div-reference-tests
+    american_discrete_div_reference_test.cpp american_discrete_div_reference_matrix_test.cpp)
+target_link_libraries(atx-vol-discrete-div-reference-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-discrete-div-reference-tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME atx-vol-discrete-div-reference COMMAND atx-vol-discrete-div-reference-tests
+    "--gtest_filter=-DiscreteDivReferenceMatrix.*")
+set_tests_properties(atx-vol-discrete-div-reference PROPERTIES
+    LABELS "atx_vol_fast" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}")
+add_test(NAME atx-vol-discrete-div-reference-matrix COMMAND atx-vol-discrete-div-reference-tests
+    "--gtest_filter=DiscreteDivReferenceMatrix.*")
+set_tests_properties(atx-vol-discrete-div-reference-matrix PROPERTIES
+    LABELS "atx_vol_slow" FAIL_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}" TIMEOUT 1200)
+
 add_executable(atx-vol-american-markov-tests
     american_markov_test.cpp american_markov_batch_test.cpp american_markov_resolvent_test.cpp
     american_markov_pwl_test.cpp american_markov_grid_test.cpp pwl_strike_test.cpp)
@@ -761,7 +781,7 @@ gtest_discover_tests(atx-vol-discrete-div-tests
 # "atx_vol" label. `ctest --print-labels` will list atx_vol_fast/atx_vol_slow
 # only, not a standalone "atx_vol" entry.
 set(ATX_VOL_SLOW_FILTER
-    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*")
+    "MultinamePipeline.*:Corpus.*:CorpusGeneratedProperty.*:CorpusBuildSession.*:QualifiedCorpus.*:OpraBreadthCorpus.*:SpyFitCorpus.*:SigmaInterpCorpus.*:CallGreeksAl.*:CallGreeksFd.*:AndersenLake.*:AndersenLakeRegime.*:ImplicitDiff.*:SigmaInterp.*:CurveFitParallel.*:CurveFitParity.*:CurveSurfaceNoArb.*:SpyBidAskRegression.*:SpyPortfolioPnl.*:PnlGreeksConsistency.*:SpyArchiveRoundTrip.*:SpyRealCalendarReporting.*:SpyRealOpra.*:BacktestReal.*:BreadthRegime.*:WarmAcrossTime.*:BoundaryHoist.*:Dispersion.*:CorrectionCache.*:PricerFitterTest.*:PreparedPortfolio.*:AmericanGreeks.*:*SurfaceV2Qualification*:*SurfaceV2Fallback*:EarningsReproSmoke.*:EarningsValidation.*:AmznEarnings.*:BevPathLoader.*:DiscreteDivReferenceMatrix.*")
 
 # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no longer
 # pays TWO test-enumeration runs of this ~2600-test binary (one per call below), and a

@@ -85,6 +85,67 @@ namespace ddiv_detail {
 struct LatticeBuffers; // src/pricing/american_discrete_div_detail.hpp (library-private)
 } // namespace ddiv_detail
 
+// ── 0. The declared convention of every scheme (lane D0, 2026-10-22) ────────
+//
+// ADDITIVE METADATA, NO ARITHMETIC. Until this block a dividend-path result
+// (`american_discrete_div_price`'s double, `DiscreteDivGreeks`, the converged and
+// IV results below) did not say which model produced it. Master plan section
+// 3.2: every output reports its model and convention. `discrete_div_convention`
+// answers five questions for each scheme, as the code in american_discrete_div.cpp
+// implements them (not as a policy wish), and the two result structs below carry
+// the answer for the scheme that produced them. The independent reference
+// (src/pricing/american_discrete_div_reference.hpp) prices the SAME models:
+// SpotShift + Liquidator is its `CashProcess::SpotLiquidator`, Escrowed its
+// `CashProcess::Escrowed`.
+enum class DiscreteDivProcess : std::uint8_t {
+  SpotShift = 0, // dividend-free GBM spot; at an ex-date the stock drops by the cash
+  Escrowed = 1,  // X = S - cash to come (discounted at r - q) is the lognormal state
+};
+
+// What happens when the cash exceeds the stock it is paid from.
+enum class DiscreteDivCashExcess : std::uint8_t {
+  Liquidator = 0, // post-dividend level floored at 0 (`splice_dividend`)
+  Refused = 1,    // escrowed: unreachable after t = 0 (the stock never falls below
+                  // the cash to come); X0 <= 0 at t = 0 is OutOfRange
+};
+
+// How an ex-date meets the lattice's time grid.
+enum class DiscreteDivExDateGrid : std::uint8_t {
+  NearestStep = 0, // round-half-to-even onto a step of the UNIFORM grid, clamped
+                   // into [1, N]; an ex-date is moved by up to half a step
+};
+
+struct DiscreteDivConvention {
+  DiscreteDivProcess process = DiscreteDivProcess::SpotShift;
+  // American: at an ex-step the exercise test is applied to the CUM- and the
+  // POST-dividend stock (and the cum level on an expiry ex-date).
+  bool cum_and_post_exercise = true;
+  DiscreteDivCashExcess cash_excess = DiscreteDivCashExcess::Liquidator;
+  DiscreteDivExDateGrid ex_dates = DiscreteDivExDateGrid::NearestStep;
+  // true: sigma is the SPOT's volatility; false: the escrowed stock's.
+  bool spot_volatility = true;
+
+  [[nodiscard]] constexpr bool operator==(const DiscreteDivConvention &) const = default;
+};
+
+[[nodiscard]] constexpr DiscreteDivConvention
+discrete_div_convention(DiscreteDivScheme scheme) noexcept {
+  switch (scheme) {
+  case DiscreteDivScheme::SplicedCrr:
+  case DiscreteDivScheme::SplicedBbs:
+  case DiscreteDivScheme::SplicedBbsr:
+    return DiscreteDivConvention{};
+  case DiscreteDivScheme::EscrowedBbs:
+  case DiscreteDivScheme::EscrowedLeisenReimer:
+    return DiscreteDivConvention{.process = DiscreteDivProcess::Escrowed,
+                                 .cum_and_post_exercise = true,
+                                 .cash_excess = DiscreteDivCashExcess::Refused,
+                                 .ex_dates = DiscreteDivExDateGrid::NearestStep,
+                                 .spot_volatility = false};
+  }
+  return DiscreteDivConvention{};
+}
+
 // ── 1. The caller-owned workspace ───────────────────────────────────────────
 
 // Owns the four lattice rows (dividend step map, node levels, node values, splice
@@ -175,6 +236,8 @@ struct DiscreteDivConverged {
   double price = 0.0;  // (N P_N - M P_M) / (N - M), floored at intrinsic for an American
   double fine = 0.0;   // P_N, SplicedBbs at kDiscreteDivConvergedSteps
   double coarse = 0.0; // P_M, SplicedBbs at kDiscreteDivConvergedCoarseSteps
+  // Appended (lane D0): the model of all three numbers above.
+  DiscreteDivConvention convention = discrete_div_convention(DiscreteDivScheme::SplicedBbs);
 };
 
 // Needs `workspace.admits(kDiscreteDivConvergedSteps)`; same error contract as the
@@ -290,6 +353,9 @@ struct DiscreteDivIvResult {
   std::uint16_t screen_lattices = 0;
   std::uint16_t accurate_lattices = 0;
   DiscreteDivIvFallback fallback = DiscreteDivIvFallback::None;
+  // Appended (lane D0): the model `sigma` is a volatility OF — the accurate
+  // (steps, scheme) lattice's, `discrete_div_convention(scheme)`.
+  DiscreteDivConvention convention{};
 };
 
 // Invert `price` for the volatility of the accurate (steps, scheme) lattice.
