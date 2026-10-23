@@ -867,7 +867,20 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"deam_edges_bound_decided", t.deam_edges_bound_decided},
           {"deam_edges_priced", t.deam_edges_priced},
           {"deam_family_sides_requested", t.deam_family_sides_requested},
-          {"deam_family_grid_max_bound_usd", t.deam_family_grid_max_bound_usd}};
+          {"deam_family_grid_max_bound_usd", t.deam_family_grid_max_bound_usd},
+          {"deam_sub_request_ns", t.deam_sub_request_ns},
+          {"deam_sub_lane_ns", t.deam_sub_ns[0]},
+          {"deam_sub_family_accept_ns", t.deam_sub_ns[1]},
+          {"deam_sub_confirm_ns", t.deam_sub_ns[2]},
+          {"deam_sub_leg_ns", t.deam_sub_ns[3]},
+          {"deam_sub_reference_ns", t.deam_sub_ns[4]},
+          {"deam_sub_endpoint_ns", t.deam_sub_endpoint_ns},
+          {"deam_sub_prefill_ns", t.deam_sub_prefill_ns},
+          {"deam_batch_lanes", t.deam_batch_lanes},
+          {"deam_batch_lane_hits", t.deam_batch_lane_hits},
+          {"deam_batch_confirm_hits", t.deam_batch_confirm_hits},
+          {"deam_sub_grid_family_ns", t.deam_sub_grid_family_ns},
+          {"deam_sub_grid_kernel_ns", t.deam_sub_grid_kernel_ns}};
 }
 
 // Lane B0: charges the fit lap that just ended to its exclusive stages

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -1152,6 +1153,60 @@ private:
   bool baw_; // the kernel has an exercise region: put r > 0, call q > 0
 };
 
+// K4b (r6): charges its lifetime to one inverse sub-clock of the request
+// (IvPremiumStats::sub_ns) when the request is timed; one branch and no clock read otherwise.
+class SubTimer {
+  using Steady = std::chrono::steady_clock;
+
+public:
+  SubTimer(IvPremiumStats &stats, IvPremiumSubClock clock) noexcept
+      : slot_(stats.timed ? &stats.sub_ns[static_cast<std::size_t>(clock)] : nullptr),
+        start_(slot_ != nullptr ? Steady::now() : Steady::time_point{}) {}
+  ~SubTimer() {
+    if (slot_ == nullptr) return;
+    const auto ns = (Steady::now() - start_) / std::chrono::nanoseconds{1};
+    *slot_ += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+  }
+  SubTimer(const SubTimer &) = delete;
+  SubTimer &operator=(const SubTimer &) = delete;
+  SubTimer(SubTimer &&) = delete;
+  SubTimer &operator=(SubTimer &&) = delete;
+
+private:
+  std::uint64_t *slot_;
+  Steady::time_point start_;
+};
+
+// K4b (r6): the seed-leg route's sub-clock - its lifetime less the confirm solves charged to
+// IvPremiumSubClock::Confirm meanwhile (the leg's own Newton confirms).
+class LegTimer {
+  using Steady = std::chrono::steady_clock;
+
+public:
+  explicit LegTimer(IvPremiumStats &stats) noexcept
+      : stats_(stats.timed ? &stats : nullptr),
+        confirm0_(stats.sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Confirm)]),
+        start_(stats_ != nullptr ? Steady::now() : Steady::time_point{}) {}
+  ~LegTimer() {
+    if (stats_ == nullptr) return;
+    const auto ns = (Steady::now() - start_) / std::chrono::nanoseconds{1};
+    const std::uint64_t confirm =
+        stats_->sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Confirm)] - confirm0_;
+    const std::uint64_t total = ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    stats_->sub_ns[static_cast<std::size_t>(IvPremiumSubClock::Leg)] +=
+        total > confirm ? total - confirm : 0u;
+  }
+  LegTimer(const LegTimer &) = delete;
+  LegTimer &operator=(const LegTimer &) = delete;
+  LegTimer(LegTimer &&) = delete;
+  LegTimer &operator=(LegTimer &&) = delete;
+
+private:
+  IvPremiumStats *stats_;
+  std::uint64_t confirm0_;
+  Steady::time_point start_;
+};
+
 // One cold point of the contract: sigma, its American price and its remainder D.
 struct ColdPoint {
   double sigma;
@@ -1264,7 +1319,12 @@ static_assert(kIvPremiumNativeEvaluations == iv_batch::kInverseMaxEvaluations,
                               {&evals, 1}, {&status, 1}, {&flags, 1}, {&acc, 1}};
   // One scratch per thread (built once; the one-lane call then allocates nothing).
   thread_local ib::InverseScratch scratch;
-  if (ib::invert_many(in, o, scratch) != ib::InverseBatchError::None) {
+  ib::InverseBatchError batch_error = ib::InverseBatchError::None;
+  {
+    const SubTimer lane_clock(stats, IvPremiumSubClock::Lane);
+    batch_error = ib::invert_many(in, o, scratch);
+  }
+  if (batch_error != ib::InverseBatchError::None) {
     stats.native_status = ib::InverseStatus::InvalidInput;
     return out;
   }
@@ -1381,6 +1441,7 @@ namespace {
                                                   const std::optional<AlOpts> &confirm_opts,
                                                   IvPremiumStats &stats) {
   counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
+  const SubTimer confirm_clock(stats, IvPremiumSubClock::Confirm);
   const Result<double> pc = andersen_lake(S, K, T, sigma, r, q, side, confirm_opts);
   ++stats.premium_solves;
   ++stats.confirm_solves;
@@ -1407,6 +1468,7 @@ namespace {
   if (env == nullptr || !env->covered()) {
     return 0;
   }
+  const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
   const FamilyBoundedPrice fp = family_price_bounded(f, *env, S, K, sigma, q);
   ++stats.family_prices;
   if (fp.status != AlSigmaQFamilyStatus::Ok) {
@@ -1648,7 +1710,10 @@ namespace {
   }
   const ValidatedErrorEnvelope *env = current_family_envelope(&f);
   const double w = acceptance_width(tol);
-  const FamilyEnclosure enc = family_enclosure(price, S, K, q, x, w, f, env, stats);
+  const FamilyEnclosure enc = [&] {
+    const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
+    return family_enclosure(price, S, K, q, x, w, f, env, stats);
+  }();
   if (enc.enclosed) {
     stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
                                       RootAcceptanceReason::FamilyEnclosure,
@@ -1664,6 +1729,7 @@ namespace {
     slope = native.slope; // > the lane's vega floor: family_native_root accepted on it
   }
   if (!(std::isfinite(slope) && slope > 0.0)) {
+    const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
     const AlSigmaQFamilyChord fc = f.price_and_chord(S, K, x, q);
     stats.family_prices += 2u;
     if (fc.status == AlSigmaQFamilyStatus::Ok) {
@@ -1726,6 +1792,7 @@ struct ReferencePoint {
                                                    const ReferenceHint &hint,
                                                    IvReferenceBudget *budget,
                                                    IvPremiumStats &stats) {
+  const SubTimer reference_clock(stats, IvPremiumSubClock::Reference);
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   const auto typed = [&stats](IvRouteOutcome outcome, double lo,
                               double hi) -> std::optional<double> {
@@ -2090,9 +2157,11 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
     if (confirm) {
       const IvConfirmPolicy policy = gate != nullptr ? gate->policy : IvConfirmPolicy::Always;
       if (policy == IvConfirmPolicy::Band && on_qfamily) {
-        const FamilyEnclosure enc =
-            family_enclosure(price, S, K, q, root, acceptance_width(tol), *qfamily,
-                             current_family_envelope(qfamily), stats);
+        const FamilyEnclosure enc = [&] {
+          const SubTimer family_clock(stats, IvPremiumSubClock::FamilyAccept);
+          return family_enclosure(price, S, K, q, root, acceptance_width(tol), *qfamily,
+                                  current_family_envelope(qfamily), stats);
+        }();
         if (enc.enclosed) {
           stats.acceptance = RootAcceptance{RootAcceptanceKind::Skipped,
                                             RootAcceptanceReason::FamilyEnclosure,
@@ -2126,7 +2195,10 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
       // at most, else the Search fallback.
       for (std::uint32_t attempt = 0;; ++attempt) {
         counters::ledger::bump(counters::ledger::Solve::IvNewtonIters);
-        const Result<double> pc = andersen_lake(S, K, T, root, r, q, side, confirm_opts);
+        const Result<double> pc = [&] {
+          const SubTimer confirm_clock(stats, IvPremiumSubClock::Confirm);
+          return andersen_lake(S, K, T, root, r, q, side, confirm_opts);
+        }();
         ++stats.premium_solves;
         ++stats.confirm_solves;
         if (!pc || !std::isfinite(*pc)) {
@@ -2262,6 +2334,8 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
     on_qfamily = false;
   }
 
+  // K4b: from here on the request is on the seed-leg route (its sub-clock).
+  const LegTimer leg_clock(stats);
   // Up to two cold points, most recent first: the memory's, then this attempt's.
   std::array<ColdPoint, 2> pts{};
   std::size_t n = 0;
@@ -2492,6 +2566,8 @@ native_refused(const NativeRoot &native, double price, double S, double K, doubl
                                      IvPremiumMemory *memory, IvPremiumStats &stats,
                                      const IvPremiumGate *gate) {
   stats = IvPremiumStats{};
+  // K4b: the sub-clocks run only under an armed chain timer (quote-bench --timing-detail).
+  stats.timed = counters::fit_timing::current_counts() != nullptr;
   if (premium_route(opts, side)) {
     const std::optional<AlOpts> seed_opts = premium_seed_opts(opts);
     const AlProfile own = opts.al_opts ? opts.al_opts->profile : AlProfile::Reference;

@@ -1257,6 +1257,38 @@ struct FitTimingCounters {
   std::uint32_t deam_edges_priced{0};
   std::uint32_t deam_family_sides_requested{0};
   double deam_family_grid_max_bound_usd{0.0};
+  // K4b (r6): the inverse stage's sub-clocks of the chain (nanoseconds; zero when untimed):
+  // the wall of every de-Am inversion request and, inside them, the family-native lane, the
+  // K3 acceptance's family prices, the confirm solves, the seed-leg route less its confirms
+  // and the bounded reference route (index = IvPremiumSubClock, american_iv_premium.hpp),
+  // and the band-edge wall of the chain's bands (the de-Am stage clock's endpoints).
+  std::uint64_t deam_sub_request_ns{0};
+  std::array<std::uint64_t, 5> deam_sub_ns{};
+  std::uint64_t deam_sub_endpoint_ns{0};
+  // K4b (r6): the batched native route (deam_native_batch; zero otherwise). The wall of the
+  // chain's prefill (its lane batches, enclosures and confirm batches are ALSO charged to the
+  // matching deam_sub_ns parts; the requests that consume them are not); invert_many calls
+  // and the lanes they inverted (on AVX2: calls that ran the kernel); requests that consumed
+  // a precomputed lane and requests that ran their own one-lane call (no precomputed lane
+  // with their exact inputs); first confirm prices evaluated in a batch and the requests that
+  // consumed one; reference requests refused by the chain's wall budget (also counted in
+  // deam_reference_budget_refused).
+  std::uint64_t deam_sub_prefill_ns{0};
+  std::uint32_t deam_batch_calls{0};
+  std::uint32_t deam_batch_lanes{0};
+  std::uint32_t deam_batch_avx2_calls{0};
+  std::uint32_t deam_batch_lane_hits{0};
+  std::uint32_t deam_batch_lane_misses{0};
+  std::uint32_t deam_batch_confirms{0};
+  std::uint32_t deam_batch_confirm_hits{0};
+  std::uint32_t deam_reference_wall_refused{0};
+  // K4b (r6): the certification grid's repricing sub-clocks of the chain (ns; zero when
+  // untimed): nodes priced on a family under the per-point bound (and the bound itself), and
+  // nodes priced on an Andersen-Lake kernel (Fast or the fit's own); grid nodes priced in a
+  // batch (deam_native_batch).
+  std::uint64_t deam_sub_grid_family_ns{0};
+  std::uint64_t deam_sub_grid_kernel_ns{0};
+  std::uint32_t deam_batch_grid_prices{0};
 };
 
 // Reason of an AL boundary solve inside the de-Am cache (FitTimingCounters::

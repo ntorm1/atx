@@ -1661,8 +1661,25 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   const std::optional<AlOpts> fast_opts =
       fast_grid ? std::optional<AlOpts>{al_fast_profile(out.al_opts)} : std::nullopt;
   const auto grid_price = [&](double strike, Side side, double sigma, double q) {
-    if (!fast_grid) return model_price(out, strike, side, sigma, q);
+    if (!fast_grid) {
+      return timed(kGridKernelNs, [&] { return model_price(out, strike, side, sigma, q); });
+    }
     if (!std::isfinite(q)) {
+  // K4b: the grid's repricing sub-clocks (family / kernel), read only under an armed chain
+  // timer (quote-bench --timing-detail).
+  counters::fit_timing::FitTimingCounters *const grid_timing =
+      counters::fit_timing::current_counts();
+  const auto timed = [grid_timing](std::uint64_t counters::fit_timing::FitTimingCounters::*field,
+                                   auto &&price) {
+    if (grid_timing == nullptr) return price();
+    const auto t0 = std::chrono::steady_clock::now();
+    auto result = price();
+    const auto ns = (std::chrono::steady_clock::now() - t0) / std::chrono::nanoseconds{1};
+    grid_timing->*field += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    return result;
+  };
+  constexpr auto kGridFamilyNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_family_ns;
+  constexpr auto kGridKernelNs = &counters::fit_timing::FitTimingCounters::deam_sub_grid_kernel_ns;
       return Result<double>{Err(ErrorCode::OutOfRange, "quote slice: contract yield clock conversion overflow")};
     }
     if (family_grid && family_point_bound) {
@@ -1673,7 +1690,9 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       const AlSigmaQFamily *f = families->of_q(side);
       const ValidatedErrorEnvelope *env = families->q_envelope(side);
       if (f != nullptr && env != nullptr && env->covered()) {
-        const FamilyBoundedPrice fb = family_price_bounded(*f, *env, market.spot, strike, sigma, q);
+        const FamilyBoundedPrice fb = timed(kGridFamilyNs, [&] {
+          return family_price_bounded(*f, *env, market.spot, strike, sigma, q);
+        });
         if (fb.status == AlSigmaQFamilyStatus::Ok && std::isfinite(fb.price) &&
             fb.bound_usd < certificate_tolerance(market.spot, strike)) {
           namespace ft = counters::fit_timing;
@@ -1705,8 +1724,10 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       }
       counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::deam_family_grid_cold);
     }
-    return andersen_lake(market.spot, strike, market.variance_years, sigma, diag.effective_rate, q,
-                         side, fast_opts);
+    return timed(kGridKernelNs, [&] {
+      return andersen_lake(market.spot, strike, market.variance_years, sigma,
+                           diag.effective_rate, q, side, fast_opts);
+    });
   };
   detail::ExpiryRungMemo *const memo = detail::current_rung_memo();
   std::vector<std::uint64_t> grid_key;

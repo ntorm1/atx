@@ -222,6 +222,21 @@ void add_fit_work(FitWork &work, const ft::FitTimingCounters &c) noexcept {
   work.deam_family_sides_requested += c.deam_family_sides_requested;
   work.deam_family_grid_max_bound_usd =
       std::max(work.deam_family_grid_max_bound_usd, c.deam_family_grid_max_bound_usd);
+  work.deam_sub_request_ns += c.deam_sub_request_ns;
+  add(work.deam_sub_ns, c.deam_sub_ns);
+  work.deam_sub_endpoint_ns += c.deam_sub_endpoint_ns;
+  work.deam_sub_prefill_ns += c.deam_sub_prefill_ns;
+  work.deam_batch_calls += c.deam_batch_calls;
+  work.deam_batch_lanes += c.deam_batch_lanes;
+  work.deam_batch_avx2_calls += c.deam_batch_avx2_calls;
+  work.deam_batch_lane_hits += c.deam_batch_lane_hits;
+  work.deam_batch_lane_misses += c.deam_batch_lane_misses;
+  work.deam_batch_confirms += c.deam_batch_confirms;
+  work.deam_batch_confirm_hits += c.deam_batch_confirm_hits;
+  work.deam_reference_wall_refused += c.deam_reference_wall_refused;
+  work.deam_sub_grid_family_ns += c.deam_sub_grid_family_ns;
+  work.deam_sub_grid_kernel_ns += c.deam_sub_grid_kernel_ns;
+  work.deam_batch_grid_prices += c.deam_batch_grid_prices;
 }
 
 FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
@@ -284,6 +299,27 @@ FitWork fit_work_delta(const FitWork &a, const FitWork &b) noexcept {
   d.deam_family_sides_requested =
       saturating_minus(a.deam_family_sides_requested, b.deam_family_sides_requested);
   d.deam_family_grid_max_bound_usd = a.deam_family_grid_max_bound_usd; // a running max
+  d.deam_sub_request_ns = saturating_minus(a.deam_sub_request_ns, b.deam_sub_request_ns);
+  for (std::size_t i = 0; i < d.deam_sub_ns.size(); ++i) {
+    d.deam_sub_ns[i] = saturating_minus(a.deam_sub_ns[i], b.deam_sub_ns[i]);
+  }
+  d.deam_sub_endpoint_ns = saturating_minus(a.deam_sub_endpoint_ns, b.deam_sub_endpoint_ns);
+  d.deam_sub_prefill_ns = saturating_minus(a.deam_sub_prefill_ns, b.deam_sub_prefill_ns);
+  d.deam_batch_calls = saturating_minus(a.deam_batch_calls, b.deam_batch_calls);
+  d.deam_batch_lanes = saturating_minus(a.deam_batch_lanes, b.deam_batch_lanes);
+  d.deam_batch_avx2_calls = saturating_minus(a.deam_batch_avx2_calls, b.deam_batch_avx2_calls);
+  d.deam_batch_lane_hits = saturating_minus(a.deam_batch_lane_hits, b.deam_batch_lane_hits);
+  d.deam_batch_lane_misses = saturating_minus(a.deam_batch_lane_misses, b.deam_batch_lane_misses);
+  d.deam_batch_confirms = saturating_minus(a.deam_batch_confirms, b.deam_batch_confirms);
+  d.deam_batch_confirm_hits =
+      saturating_minus(a.deam_batch_confirm_hits, b.deam_batch_confirm_hits);
+  d.deam_reference_wall_refused =
+      saturating_minus(a.deam_reference_wall_refused, b.deam_reference_wall_refused);
+  d.deam_sub_grid_family_ns =
+      saturating_minus(a.deam_sub_grid_family_ns, b.deam_sub_grid_family_ns);
+  d.deam_sub_grid_kernel_ns =
+      saturating_minus(a.deam_sub_grid_kernel_ns, b.deam_sub_grid_kernel_ns);
+  d.deam_batch_grid_prices = saturating_minus(a.deam_batch_grid_prices, b.deam_batch_grid_prices);
   return d;
 }
 
@@ -330,8 +366,37 @@ Json native_route_json(const FitWork &w) {
   Json outcome = Json::object();
   for (std::size_t i = 0; i < kStatus.size(); ++i) status[kStatus[i]] = w.deam_native_status[i];
   for (std::size_t i = 0; i < kOutcome.size(); ++i) outcome[kOutcome[i]] = w.deam_route_outcome[i];
+  // K4b (r6): the inverse sub-clocks (ms; zero off the route or untimed). other = the
+  // requests' wall no sub-clock claimed (routing, seeds, typing, bookkeeping).
+  const auto ms = [](std::uint64_t ns) { return 1.0e-6 * static_cast<double>(ns); };
+  std::uint64_t parts = 0;
+  for (const std::uint64_t ns : w.deam_sub_ns) parts += ns;
+  const Json subclock = {
+      {"request_ms", ms(w.deam_sub_request_ns)},
+      {"lane_ms", ms(w.deam_sub_ns[0])},
+      {"family_accept_ms", ms(w.deam_sub_ns[1])},
+      {"confirm_ms", ms(w.deam_sub_ns[2])},
+      {"leg_ms", ms(w.deam_sub_ns[3])},
+      {"reference_ms", ms(w.deam_sub_ns[4])},
+      {"other_ms", ms(saturating_minus(w.deam_sub_request_ns, parts))},
+      {"family_side_ms", ms(w.deam_sub_ns[0] + w.deam_sub_ns[1])},
+      {"endpoint_ms", ms(w.deam_sub_endpoint_ns)},
+      {"prefill_ms", ms(w.deam_sub_prefill_ns)},
+      {"grid_family_ms", ms(w.deam_sub_grid_family_ns)},
+      {"grid_kernel_ms", ms(w.deam_sub_grid_kernel_ns)}};
+  const Json batch = {{"calls", w.deam_batch_calls},
+                      {"lanes", w.deam_batch_lanes},
+                      {"avx2_calls", w.deam_batch_avx2_calls},
+                      {"lane_hits", w.deam_batch_lane_hits},
+                      {"lane_misses", w.deam_batch_lane_misses},
+                      {"confirms", w.deam_batch_confirms},
+                      {"confirm_hits", w.deam_batch_confirm_hits},
+                      {"grid_prices", w.deam_batch_grid_prices}};
   return {{"native_lane_status", status},
           {"route_outcome", outcome},
+          {"subclock", subclock},
+          {"batch", batch},
+          {"reference_wall_refused", w.deam_reference_wall_refused},
           {"native_carried", w.deam_native_carried},
           {"reference_requests", w.deam_reference_requests},
           {"reference_evaluations", w.deam_reference_evaluations},

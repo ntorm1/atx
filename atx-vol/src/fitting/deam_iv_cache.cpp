@@ -154,6 +154,15 @@ static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_native_stat
 static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_route_outcome){}.size() ==
                   kIvRouteOutcomeCount,
               "deam_route_outcome is sized by IvRouteOutcome");
+static_assert(decltype(counters::fit_timing::FitTimingCounters::deam_sub_ns){}.size() ==
+                  kIvPremiumSubClockCount,
+              "deam_sub_ns is sized by IvPremiumSubClock");
+
+// K4b (r6): nanoseconds since `t0` (non-negative).
+[[nodiscard]] std::uint64_t elapsed_ns(std::chrono::steady_clock::time_point t0) noexcept {
+  const auto ns = (std::chrono::steady_clock::now() - t0) / std::chrono::nanoseconds{1};
+  return ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+}
 
 inline constexpr double kAuditBisectWidth = 1.0e-9; // the reference bracket's width (vol)
 inline constexpr int kAuditGrowSteps = 24;          // 4x bracket growth steps per side
@@ -437,8 +446,9 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   ft::FitTimingCounters *const timing = ft::current_counts();
   const std::uint64_t al0 = timing ? ledger::this_thread(ledger::Solve::AlBoundarySolves) : 0u;
   DeAmStageClock *const stage = t_stage_clock; // B0: a fallback inversion is an exception
-  const auto stage_t0 = stage != nullptr ? std::chrono::steady_clock::now()
-                                         : std::chrono::steady_clock::time_point{};
+  const auto stage_t0 = stage != nullptr || timing != nullptr
+                            ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
   IvPremiumStats stats;
   Result<double> out = premium() ? invert_premium(quote, target, entry, memory, stats)
                                  : invert_search(quote, target, entry);
@@ -460,6 +470,11 @@ Result<double> DeAmIvView::invert(const QuoteSliceQuote &quote, double target,
   }
   if (timing == nullptr) {
     return out;
+  }
+  // K4b: the request's wall and its inverse sub-clocks (american_iv.cpp SubTimer).
+  timing->deam_sub_request_ns += elapsed_ns(stage_t0);
+  for (std::size_t c = 0; c < kIvPremiumSubClockCount; ++c) {
+    timing->deam_sub_ns[c] += stats.sub_ns[c];
   }
   const std::uint64_t al = ledger::this_thread(ledger::Solve::AlBoundarySolves) - al0;
   const std::uint32_t spent = ft::detail::saturate(al);
@@ -784,11 +799,18 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
   if (DeAmStageClock *const stage = t_stage_clock) ++stage->endpoint_bands;
   namespace ft = counters::fit_timing;
   ft::FitTimingCounters *const timing = ft::current_counts();
+  // K4b: the chain's own endpoint sub-clock (the stage clock's endpoint wall, per chain).
+  const auto endpoint_t0 = timing != nullptr ? std::chrono::steady_clock::now()
+                                             : std::chrono::steady_clock::time_point{};
+  const auto stop_endpoints = [&]() noexcept {
+    endpoints.stop();
+    if (timing != nullptr) timing->deam_sub_endpoint_ns += elapsed_ns(endpoint_t0);
+  };
   EdgeDecision edges;
   if (native() && bound_edges(quote, filled, edges)) {
     // K4 native fit route: every comparison decided by validated bounds, no edge priced
     // (floor_price / cap_price stay NaN; the channel builder reads mid_inside).
-    endpoints.stop();
+    stop_endpoints();
     if (DeAmStageClock *const stage = t_stage_clock) ++stage->bound_decided_bands;
     if (timing != nullptr) ++timing->deam_edges_bound_decided;
     ++work_.edges_decided;
@@ -805,6 +827,7 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
     cache_.model_prices += 2;
     work_.model_prices += 2;
     if (!floor_price || !cap_price) {
+      stop_endpoints();
       return publish();
     }
     // Bound-decided edges (gap report 1a, SPY1s Phase 1): on the Screen seed tier every
@@ -826,7 +849,7 @@ const DeAmQuoteIv &DeAmIvView::band(std::size_t i) {
     const double mid = 0.5 * quote.bid + 0.5 * quote.ask; // admission's own arithmetic
     edges.mid_inside = quote.bid > 0.0 && mid > settle(floor_edge, mid, quote, q_eff, failed) &&
                        mid < settle(cap_edge, mid, quote, q_eff, failed);
-    endpoints.stop();
+    stop_endpoints();
     if (failed) {
       return publish(); // an accurate edge re-price erred: the band stays undecided
     }
@@ -890,8 +913,8 @@ DeAmIvKey deam_iv_key(const QuoteSliceFit &prepared, std::span<const QuoteSliceQ
   std::vector<std::uint64_t> &words = key.words;
   // 41 fixed words (market 6, derived carry 4, model + lattice + AlOpts flag 4, AlOpts 6,
   // inverter + kernel 4, confirm 3, seed gate 1, family 4, sigma-q family 4, native route 3,
-  // two counts), then 2 per dividend and 6 per quote.
-  words.reserve(41 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
+  // batched route 3, two counts), then 2 per dividend and 6 per quote.
+  words.reserve(44 + 2 * prepared.variance_clock_dividends.size() + 6 * quotes.size());
   const auto real = [&words](double value) { words.push_back(std::bit_cast<std::uint64_t>(value)); };
   const auto word = [&words](std::uint64_t value) { words.push_back(value); };
   const QuoteSliceMarket &m = prepared.market;

@@ -661,5 +661,54 @@ TEST(FitNativeRoute, FamilyGridServesOnlyUnderThePerPointBound) {
   EXPECT_LT(worst_bound, 1.0e-8 + 1.0e-9 * 670.0 * 1.25);
 }
 
+// ── Lane K4b (r6): sub-clocks, the batched route, m1 / m2 / m5, the wall budget ──
+
+// The inverse sub-clocks: under an armed chain timer every request's wall is charged, the
+// family-native lane / the acceptance's family prices / the confirm solves are charged inside
+// it (their sum never exceeds the requests' wall), and the band-edge wall per chain; an
+// unarmed request reads no clock (IvPremiumStats::timed false, every sub-clock zero).
+TEST(FitNativeRoute, InverseSubClocksAreChargedOnlyUnderAnArmedChainTimer) {
+  const Chain c = spy_chain(0.5);
+  const QuoteSliceConfig config = native_config(true);
+  deam_iv_memo_clear();
+  ft::ChainRecorder rec;
+  {
+    const ft::ChainScope chain(&rec, 1);
+    ASSERT_TRUE(fit_quote_slice_channel(c.market, c.quotes, config, nullptr));
+  }
+  const ft::FitTimingCounters t = rec.result();
+  std::uint64_t parts = 0;
+  for (const std::uint64_t ns : t.deam_sub_ns) parts += ns;
+  const auto sub = [&t](IvPremiumSubClock s) { return t.deam_sub_ns[static_cast<std::size_t>(s)]; };
+  std::printf("[K4b subclock] request %.3f ms: lane %.3f family %.3f confirm %.3f leg %.3f "
+              "reference %.3f; endpoints %.3f ms; grid family %.3f kernel %.3f ms\n",
+              1.0e-6 * static_cast<double>(t.deam_sub_request_ns),
+              1.0e-6 * static_cast<double>(sub(IvPremiumSubClock::Lane)),
+              1.0e-6 * static_cast<double>(sub(IvPremiumSubClock::FamilyAccept)),
+              1.0e-6 * static_cast<double>(sub(IvPremiumSubClock::Confirm)),
+              1.0e-6 * static_cast<double>(sub(IvPremiumSubClock::Leg)),
+              1.0e-6 * static_cast<double>(sub(IvPremiumSubClock::Reference)),
+              1.0e-6 * static_cast<double>(t.deam_sub_endpoint_ns),
+              1.0e-6 * static_cast<double>(t.deam_sub_grid_family_ns),
+              1.0e-6 * static_cast<double>(t.deam_sub_grid_kernel_ns));
+  EXPECT_GT(t.deam_premium, 0u);
+  EXPECT_GT(t.deam_sub_request_ns, 0u);
+  EXPECT_GT(sub(IvPremiumSubClock::Lane), 0u);
+  EXPECT_GT(sub(IvPremiumSubClock::FamilyAccept), 0u);
+  EXPECT_GT(sub(IvPremiumSubClock::Confirm), 0u);
+  EXPECT_LE(parts, t.deam_sub_request_ns);
+  EXPECT_GT(t.deam_sub_endpoint_ns, 0u);
+  EXPECT_GT(t.deam_sub_grid_family_ns + t.deam_sub_grid_kernel_ns, 0u);
+  // Unarmed: the Premium entry reads no clock.
+  IvReferenceBudget budget{4, 64};
+  const IvPremiumGate gate = native_gate(&budget);
+  IvPremiumStats st;
+  static_cast<void>(american_implied_vol_premium(2.0, 100.0, 100.0, 0.5, 0.03, 0.01, Side::Put,
+                                                 premium_opts(), nullptr, st, &gate));
+  EXPECT_FALSE(st.timed);
+  for (const std::uint64_t ns : st.sub_ns) EXPECT_EQ(ns, 0u);
+  deam_iv_memo_clear();
+}
+
 } // namespace
 } // namespace atx::vol

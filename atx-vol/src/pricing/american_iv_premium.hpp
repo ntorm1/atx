@@ -147,6 +147,14 @@ struct IvPremiumMemory {
   IvPremiumNativeCarry carry{}; // K2: the family-native attempts' retained bracket
 };
 
+// K4b (r6, 2026-10-23): the inverse stage's sub-clocks (IvPremiumStats::sub_ns, index =
+// enumerator): the family-native lane (iv_batch::invert_many), the K3 acceptance's family
+// prices (the enclosure, the family-side checks, the chord fallback), the confirm kernel's
+// solves (K3's bracket confirm and the legacy Newton confirm), the seed-leg route less its
+// confirm solves, and the bounded reference route.
+enum class IvPremiumSubClock : std::uint8_t { Lane = 0, FamilyAccept, Confirm, Leg, Reference };
+inline constexpr std::size_t kIvPremiumSubClockCount = 5;
+
 struct IvPremiumStats {
   std::uint32_t premium_solves = 0; // cold Andersen-Lake solves of the Premium attempt
   IvPremiumFallback fallback = IvPremiumFallback::NotApplicable;
@@ -209,6 +217,12 @@ struct IvPremiumStats {
   double route_lo = std::numeric_limits<double>::quiet_NaN();
   double route_hi = std::numeric_limits<double>::quiet_NaN();
   std::uint8_t reference_class = 0;
+  // K4b (r6): the request's inverse sub-clocks (nanoseconds, IvPremiumSubClock index), read
+  // only when `timed` - the chain's fit timing is armed on this thread (quote-bench
+  // --timing-detail; set by the Premium entry) - and zero otherwise. No fitted value
+  // depends on them.
+  bool timed = false;
+  std::array<std::uint64_t, kIvPremiumSubClockCount> sub_ns{};
 };
 
 // Tested price bounds of the seed tiers versus the accurate Reference kernel (american.hpp

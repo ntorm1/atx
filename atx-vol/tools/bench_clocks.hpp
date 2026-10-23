@@ -183,6 +183,25 @@ struct FitWork {
   std::uint64_t deam_edges_priced{0};
   std::uint64_t deam_family_sides_requested{0};
   double deam_family_grid_max_bound_usd{0.0};
+  // K4b (r6): the inverse sub-clocks summed over chains (ns; fit_timing counters of the same
+  // names): every inversion request's wall, the lane / family-accept / confirm / leg /
+  // reference parts inside it (IvPremiumSubClock order) and the chains' band-edge wall.
+  std::uint64_t deam_sub_request_ns{0};
+  std::array<std::uint64_t, 5> deam_sub_ns{};
+  std::uint64_t deam_sub_endpoint_ns{0};
+  // K4b (r6): the batched native route's counters (fit_timing counters of the same names).
+  std::uint64_t deam_sub_prefill_ns{0};
+  std::uint64_t deam_batch_calls{0};
+  std::uint64_t deam_batch_lanes{0};
+  std::uint64_t deam_batch_avx2_calls{0};
+  std::uint64_t deam_batch_lane_hits{0};
+  std::uint64_t deam_batch_lane_misses{0};
+  std::uint64_t deam_batch_confirms{0};
+  std::uint64_t deam_batch_confirm_hits{0};
+  std::uint64_t deam_reference_wall_refused{0};
+  std::uint64_t deam_sub_grid_family_ns{0};
+  std::uint64_t deam_sub_grid_kernel_ns{0};
+  std::uint64_t deam_batch_grid_prices{0};
 };
 
 void add_fit_work(FitWork &work, const counters::fit_timing::FitTimingCounters &chain) noexcept;
