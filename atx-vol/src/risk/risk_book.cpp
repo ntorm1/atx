@@ -323,7 +323,12 @@ Result<PreparedRiskBook> PreparedRiskBook::create(const RiskBook &book) {
   return out;
 }
 
-const RiskBook &PreparedRiskBook::book() const noexcept { return *impl_->book; }
+// PIMPL rule (risk_stream.cpp): an unprepared or moved-from PreparedRiskBook reports
+// a shared empty RiskBook (no legs; its own logical id).
+const RiskBook &PreparedRiskBook::book() const noexcept {
+  static const RiskBook kEmpty{};
+  return impl_ ? *impl_->book : kEmpty;
+}
 std::size_t PreparedRiskBook::n_unique() const noexcept { return impl_ ? impl_->side.size() : 0u; }
 std::size_t PreparedRiskBook::n_groups() const noexcept {
   return impl_ ? impl_->groups.size() : 0u;
