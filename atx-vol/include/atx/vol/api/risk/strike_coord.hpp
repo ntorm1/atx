@@ -132,7 +132,9 @@ struct CoordResult {
 //         outside (0,1) / (-1,0) or with the wrong sign for the side; OutOfRange
 //         under TenorExtrapPolicy::Forbid; NotFound when a delta target is unreachable
 //         within the surface's domain; NotImplemented for a convention a route
-//         cannot honour.
+//         cannot honour; Unavailable when the surface has no forward / vol at
+//         (K, T), a delta is not finite there, or the American solve cannot
+//         evaluate / converge.
 [[nodiscard]] Result<CoordResult> convert_strike_coord(const SurfaceRef &surface, double T,
                                                        Side side, const StrikeCoord &from,
                                                        const ProjectionPolicy &policy = {});
