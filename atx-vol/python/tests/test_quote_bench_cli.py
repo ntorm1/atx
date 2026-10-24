@@ -143,6 +143,33 @@ def test_native_carry_normalization_policy_is_explicit_and_bounded(binary, tmp_p
             assert report["one_spot"]["chains"][0]["carry_normalization"]["strikes_changed"] == 0
 
 
+def test_native_terminal_floor_recovery_policy_is_explicit_and_reports_counts(binary, tmp_path):
+    source, policy = tmp_path / "quotes.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    for graded, accepted in [
+            ({"certificate": "box", "terminal_floor_recovery": True}, True),
+            ({"certificate": "box", "terminal_floor_recovery": False}, True),
+            ({"terminal_floor_recovery": True}, False),
+            ({"certificate": "box", "terminal_floor_recovery": "true"}, False)]:
+        policy.write_text(json.dumps({"schema_version": 1, "admission": "graded", "graded": graded}))
+        result = invoke(binary, source, tmp_path / "predictions.csv", "--policy", str(policy),
+                        "--timing-detail")
+        assert (result.returncode == 0) == accepted, result.stderr
+        if not accepted:
+            continue
+        report = json.loads(result.stdout)
+        enabled = graded["terminal_floor_recovery"]
+        assert report["policy_definition"]["graded"].get("terminal_floor_recovery", False) == enabled
+        assert len(report["graded_stats"]["slices"]) == 1
+        for entry in report["graded_stats"]["slices"]:
+            timing = entry["timing"]
+            assert all(key in timing for key in ("reimply_native_attempts", "reimply_native_roots",
+                "reimply_native_fallbacks", "reimply_native_max_bound_iv"))
+            if enabled:
+                assert entry["repair"]["terminal_floor_asks"] == 0
+                assert entry["repair"]["terminal_floor_max_ask_raise"] == 0
+
+
 def test_native_funding_carry_normalization_is_reported_and_material_conflicts_refuse(
         binary, tmp_path):
     source = tmp_path / "quotes.csv"

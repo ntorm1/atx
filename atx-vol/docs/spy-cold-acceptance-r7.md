@@ -108,7 +108,12 @@ library. Artifacts are created exclusively; existing files are never overwritten
 
 The candidate policy `bench/policies/spy-c4-native-candidate.json` combines C4's
 one-spot, floor-price-only, box h0, inbox repair, market-distance repair, publication
-validation with native sigma/q family inversion and batching. It is a candidate,
+validation with native sigma/q family inversion and batching. It also explicitly
+enables `graded.terminal_floor_recovery`: the library enforces terminal floors and
+widens only directly conflicting asks in its projection boxes, while scoring
+against the original input quotes. Reports expose the number and largest dollar
+amount of ask corrections, plus native repaired-price inversion counters.
+It is a candidate,
 not a qualified or default-promoted policy. No host-dependent wall budget is used.
 
 ```powershell
@@ -136,8 +141,9 @@ native report says `timing_qualifying=false`. A performance pass requires a
 **separate** fresh-process run without `--acceptance-audit`, with identical binary,
 input, policy, and prediction hashes. Use `bench/run_cold_trials.ps1` on a clean
 `vol-rel-avx2` build, 100 fresh trials, affinity to one performance core, fit worker
-count one, and `-RequireIdleSibling`. The `qualify` command inspects every native
-timing report and demands every observed cold-calibration time below 1.000 s:
+count one, and `-SiblingBusyThresholdPct 5 -RequireIdleSibling`. The `qualify`
+command inspects every native timing report and demands every observed
+cold-calibration time below 1.000 s:
 
 Qualification counts actual successful records and requires at least 100 distinct
 trial IDs, report files, report hashes, and kernel PID/creation-time identities.
@@ -158,7 +164,9 @@ The clock covers resident-snapshot normalization, fitting/repair and publication
 CSV loading and process startup are separately reported. If a serving record is
 part of the selected API route, its construction must be included. An audit with
 no attached record only verifies the direct fitted-slice API, never the record
-or live-publication route.
+or live-publication route. Attached records fail the continuous representation
+gate until their own between-node shape/calendar proof is implemented; finite
+actual-API probes still diagnose record-price disagreement.
 
 The correctness oracle also reconstructs the common spot, market clocks/rate/cash,
 per-strike normalized carry, and exercise-horizon bounds from frozen raw inputs.
@@ -204,9 +212,10 @@ terminal lower bounds at **every** projected node, while widening boxes only for
 the 15 direct input conflicts. The audit's approximately 144-second fit/reprice
 clock includes expensive validation calls and is **not a performance result**.
 
-Focused verification of the harness: 20 independent Python oracle tests pass;
-seven native CLI tests covering the audit, normalization and existing common-spot
-behavior pass. The benchmark target builds with `vol-rel`. Negative cases include
+Focused verification of the harness: 21 independent Python oracle tests pass;
+native CLI checks cover the audit, normalization, existing common-spot behavior,
+floor-policy parsing and fresh-process identities. The benchmark target builds
+with `vol-rel`. Negative cases include
 withheld-price leakage, between-node disagreement, missing union queries, false
 identified price-only volatility, nonadjacent calendar crossings, discounted
 terminal floors under nonzero carry, two workers, a multi-CPU process mask and

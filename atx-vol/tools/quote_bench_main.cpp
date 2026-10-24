@@ -789,7 +789,8 @@ Json repair_json(const QuoteSliceRepairRecord &r) {
   return {{"outcome", to_string(r.outcome)}, {"nodes", r.nodes},
           {"material_nodes", r.material_nodes}, {"max_price_move", r.max_price_move},
           {"max_vol_move", r.max_vol_move}, {"max_unquoted_vol_move", r.max_unquoted_vol_move},
-          {"unidentified", r.unidentified}};
+          {"unidentified", r.unidentified}, {"terminal_floor_asks", r.terminal_floor_asks},
+          {"terminal_floor_max_ask_raise", r.terminal_floor_max_ask_raise}};
 }
 
 // A published volatility that is identified: finite with a volatility convention (an ok
@@ -864,6 +865,10 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"certify_us", t.certify_us}, {"calendar_us", t.calendar_us},
           {"other_us", t.other_us}, {"al_price_calls", t.al_price_calls},
           {"al_greeks_calls", t.al_greeks_calls},
+          {"reimply_native_attempts", t.reimply_native_attempts},
+          {"reimply_native_roots", t.reimply_native_roots},
+          {"reimply_native_fallbacks", t.reimply_native_fallbacks},
+          {"reimply_native_max_bound_iv", t.reimply_native_max_bound_iv},
           {"certification_passes", t.certification_passes},
           {"channel_solves", t.channel_solves}, {"jacobian_evals", t.jacobian_evals},
           {"rung_attempts", t.rung_attempts}, {"calendar_pairs", t.calendar_pairs},
@@ -1259,7 +1264,7 @@ void fit_graded(const ChainRows &chains, const std::map<std::uint64_t, PreparedC
       stats.graded_channel_repair = stats.graded_channel_repair || channel_repair;
       stats.graded_dominance = stats.graded_dominance || dominance;
       if (channel_repair || dominance) entry["point_error"] = slice.point_error;
-      if (channel_repair) {
+      if (channel_repair || profile.config.repair.terminal_floor_recovery) {
         entry["repair"] = repair_json(d.repair);
         entry["repair_rung"] = slice.repair_rung;
         entry["rung_repair"] = repair_json(slice.rung_repair);

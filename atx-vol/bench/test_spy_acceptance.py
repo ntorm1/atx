@@ -73,6 +73,12 @@ class FinalApiOracleTests(unittest.TestCase):
     def test_genuine_price_only_domain_passes(self):
         self.assertEqual(audit.api_violations(document(surface())), [])
 
+    def test_record_route_requires_its_own_continuous_representation_proof(self):
+        value = surface()
+        value["record_attached"] = True
+        self.assertTrue(any(v["kind"] == "unproved_record_representation"
+                            for v in audit.api_violations(document(value))))
+
     def test_missing_native_audit_cannot_pass(self):
         self.assertTrue(audit.api_violations({}))
 

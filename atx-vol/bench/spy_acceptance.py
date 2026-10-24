@@ -480,6 +480,11 @@ def api_violations(report):
         union = sorted({node["strike"] for entry in entries for node in entry["nodes"]})
         for entry in entries:
             nodes, mask = entry["nodes"], entry["withheld_nodes"]
+            if entry.get("record_attached") is not False:
+                # Finite probes can find record-route errors, but cannot prove
+                # continuous shape/calendar for a generally nonlinear record.
+                problems.append({"kind": "unproved_record_representation",
+                                 "chain_id": entry["chain_id"]})
             strikes = [node["strike"] for node in nodes]
             if len(nodes) < 2 or strikes != sorted(set(strikes)) or \
                any(not math.isfinite(node[key]) for node in nodes for key in ("strike", "call", "put")):

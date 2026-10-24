@@ -15,6 +15,7 @@
     "market_distance_spreads": 1.0,
     "publication": "validate",
     "inbox_projection": true,
+    "terminal_floor_recovery": true,
     "fit_space": "vol",
     "deam_profile": "screen",
     "deam_cache": true,
