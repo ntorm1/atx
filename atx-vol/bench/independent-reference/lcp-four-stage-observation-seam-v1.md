@@ -85,3 +85,12 @@ from the declared four-stage experiment, which still has not run.
 The joins prove phase consistency, not an independent re-execution of LAPACK or
 a forensic distinction between different exceptions with identical counters.
 The later runner must still bind exact source/execution/artifact provenance.
+
+A second independent review found that a finite initial state could be erased
+and relabeled as a nonfinite first residual, with internally consistent counts.
+That exact zero-solve mutant reproduced runtime RED. The reader now independently
+recomputes the original initial continuation and obstacle gap before accepting
+either an absent or a present state prefix. Genuine continuation-overflow and
+gap-overflow initial refusals remain valid and retain no invented checked state.
+The full focused set is now sixteen observation controls plus fifteen existing
+controls; no saved-stage replay or new solver arithmetic is involved.

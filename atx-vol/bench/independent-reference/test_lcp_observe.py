@@ -273,6 +273,34 @@ raise SystemExit(1)
         with self.assertRaises(ValueError):
             verify_observation(arrays, wrong)
 
+    def test_finite_initial_state_cannot_be_erased_as_an_unobserved_nonfinite_residual(self):
+        wrong = observe_stage(small(), max_updates=0)
+        self.assertEqual(wrong['linear_calls'], 0)
+        wrong['values'] = wrong['values'][:0]
+        wrong['policies'] = wrong['policies'][:0]
+        wrong['states'] = []
+        wrong['terminal_values'] = None
+        wrong['work']['reason'] = 'nonfinite_original_residual'
+        wrong['work']['last_checked_residual'] = None
+        wrong['nonfinite_observations'] = 1
+        wrong['observation_cap_reached'] = False
+        wrong['recurrence'] = recurrence(wrong['values'], wrong['policies'], [])
+        with self.assertRaises(ValueError):
+            verify_observation(small(), wrong)
+
+    def test_genuine_nonfinite_initial_continuation_or_gap_has_no_checked_state(self):
+        for gap_overflow in (False, True):
+            arrays = [np.zeros(1), np.full(2, 1. if gap_overflow else 2.), np.zeros(1),
+                      np.zeros(2), np.full(2, -1e308 if gap_overflow else 0.), np.full(2, 1e308)]
+            with self.subTest(gap_overflow=gap_overflow):
+                result = observe_stage(arrays, max_updates=0)
+                self.assertEqual(result['work']['reason'], 'nonfinite_original_residual')
+                self.assertEqual(result['nonfinite_observations'], 1)
+                self.assertEqual(result['linear_calls'], 0)
+                self.assertEqual(len(result['states']), 0)
+                self.assertIsNone(result['terminal_values'])
+                self.assertTrue(verify_observation(arrays, result))
+
 
 if __name__ == '__main__':
     unittest.main()

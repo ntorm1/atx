@@ -229,6 +229,17 @@ def verify_observation(arrays, result, *, tolerance=1e-10):
         _require(0 <= result['nonfinite_observations'] <= 1)
         _require(work['residual_checks'] == len(states)+result['nonfinite_observations'] == work['iterations']+1)
         _require(work['correction_solves'] <= result['selected_multiplies'] <= work['correction_solves']+1)
+        # The initial operand is independently known even when no state was
+        # retained. A claimed nonfinite first inspect must reproduce here;
+        # counters alone cannot justify deleting a finite initial observation.
+        with np.errstate(over='ignore', invalid='ignore'):
+            initial_continuation = diagonal*initial
+            initial_continuation[1:] += lower*initial[:-1]
+            initial_continuation[:-1] += upper*initial[1:]
+            initial_continuation -= rhs
+            initial_gap = initial-payoff
+        initial_finite = bool(np.isfinite(initial_continuation).all() and np.isfinite(initial_gap).all())
+        _require(bool(states) == initial_finite)
         if states:
             _require(_bits_equal(values[0], initial))
         for index, row in enumerate(states):
