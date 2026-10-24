@@ -280,6 +280,13 @@ guard; nothing is implied without the inversion. `BucketStateReport` counts
 row (`sticky`, `mode_flipped`). The bench threads each bucket's table into the next load
 and counts the flips (`mode_flips`) with the flag on or off.
 
+Measured (licensed 2026-10-14, top-100, the 11 buckets 10:00–15:00; lane E): mode flips
+952 over 316 (uid, expiry) → **110 over 80** with the sticky rule; 61 of the 80 flip once,
+mostly a published expiry entering implied as its calls tighten (70 of the 110 events);
+19 flip twice or more. A Python re-implementation of the rule reproduces both counts
+exactly. Price parity is unchanged by it; Σ|unexplained| / Σ|pnl| on options 1.05 % →
+0.99 %.
+
 Bucket 1000 of 2026-10-14, top-100: **1,758 expiries implied, 155 Published** (10 with
 < 3 calls, 145 on the IQR guard — e.g. TLT / IWM / SPY long-dated, whose calls do not
 imply one forward); DIA 2028-12-15 **F = 562.34** (IQR 3.9e-4, 55 calls; Published

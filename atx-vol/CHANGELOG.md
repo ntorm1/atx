@@ -26,6 +26,23 @@ Tool `atx-vol-risk-bench` + `scripts/spiderrock_intraday_to_store.py` run the 10
 filters to American exercise and standard option roots. Docs: `docs/risk-engine.md`, `docs/risk-bench.md`,
 design `docs/superpowers/specs/2026-10-24-atx-vol-risk-engine-design.md`.
 
+Lane E (design D22 / D23) adds, all additive: `ExpiryCarry::T_override` (NaN = the `TimeSpec`;
+finite ⇒ > 0, else `InvalidArgument`) is THE T of its expiry for both kernels and the explain
+(dt = the contract's own `T_base − T_shifted` whenever either state overrides the expiry; with no
+override the explain is bit-unchanged, digest pin `0x5660a61510ac3e32`); the SpiderRock loader
+fills it from the vendor's `years` (`SpiderRockClock::VendorYears`, the spec default;
+`kSpiderRockConventionsVersion` 3). The explain gains a carry axis: a re-mark of an expiry's
+q / pv_divs between two states is booked per leg as `pnl_carry = w·Δ·S·J` (`ExplainResult::pnl_carry`,
+the 21st per-leg double column; `ExplainTotals::pnl_carry`, which grows the struct 152 → 160
+bytes) instead of landing in unexplained; unmoved carry ⇒ +0.0. `market_state_from_bucket` has
+a sticky-mode overload taking the previous bucket's forwards table (an implied expiry holds to
+3× the IQR guard, a published one enters at half of it). `atx-vol-risk-bench`: `--time vendor`
+(default under `--store`), `--sticky-carry on|off` (default on under `--store`), report schema
+v3 (axis `carry`, `n_expiries_vendor_T`, sticky counts, `n_mode_flips`), dump columns `T_vendor`,
+`pnl_carry`. Integration: lane P2's RiskRun layout (20 explain columns) must append the carry
+column. Licensed 10:00–15:00: price sym-rel 4.27 % → 0.41 %, unexplained on options 3.01 % →
+0.99 %.
+
 ### NEW — coupled calendar feasibility and explicit terminal-floor recovery
 
 The opt-in `QuoteSliceRepairConfig::inbox_projection` calendar path solves calls and puts
