@@ -638,9 +638,12 @@ void bind_book(py::module_ &m) {
                              [](const ServeBookReader &r) { return r.pinned().number; })
       .def("refresh", &ServeBookReader::refresh);
 
-  py::class_<ServeBook>(m, "ServeBook", "The live, versioned book of serving records.")
+  // shared_ptr holder: a ServedSession (served_analytics.cpp) co-owns its book, as the C++
+  // API's std::shared_ptr<const ServeBook> parameter requires.
+  py::class_<ServeBook, std::shared_ptr<ServeBook>>(m, "ServeBook",
+                                                    "The live, versioned book of serving records.")
       .def(py::init([](const ServeBookPolicy &policy) {
-             return std::make_unique<ServeBook>(policy);
+             return std::make_shared<ServeBook>(policy);
            }),
            py::arg("policy") = ServeBookPolicy{ServeTier::Family, 64, 0})
       .def("transaction", &ServeBook::transaction, py::keep_alive<0, 1>(),

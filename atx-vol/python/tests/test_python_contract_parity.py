@@ -234,6 +234,10 @@ def test_served_analytics_surface_is_complete():
     for name in ("hedge_greeks", "served_scenarios", "served_attribution",
                  "cash_dividend_scenarios", "classify_served_answer"):
         assert callable(getattr(av, name)), name
+    assert {"bind", "reader", "serve", "serve_chain", "bound_expiry",
+            "bindings"} <= _public_members(av.ServedSession)
+    assert {"source", "book", "input_class", "status",
+            "declaration"} <= _public_members(av.SessionServedAnswer)
 
 
 def test_region_and_discrete_dividend_batch_surface_is_complete():

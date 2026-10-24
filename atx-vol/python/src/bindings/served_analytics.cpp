@@ -7,9 +7,15 @@
 // silent value. Scenario cells come back as numpy arrays shaped (n_spot, n_vol, n_time)
 // (the C++ row-major [spot][vol][time] order); exclusion counts gain a trailing axis of
 // length len(ScenarioExclusion).
+//
+// ServedSession (analytics/served_session.hpp) is bound over a PricedSurface only: the
+// VolaSession overload needs a VolaSession binding, which does not exist. The session
+// BORROWS the surface (keep_alive ties the surface to the session object) and co-owns the
+// book (ServeBook's holder is std::shared_ptr, serve.cpp).
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -21,7 +27,10 @@
 #include <pybind11/stl.h>
 
 #include "atx/vol/api/analytics/served_analytics.hpp"
+#include "atx/vol/api/analytics/served_session.hpp"
+#include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/fitting/serve_book.hpp"
+#include "atx/vol/api/pricing/chain_tick.hpp"
 #include "common.hpp"
 #include "result.hpp"
 
@@ -520,6 +529,136 @@ void bind_cash(py::module_ &m) {
       "Dated-cash scenario matrix on D1's production lattice (default route options).");
 }
 
+// ── ServedSession (PricedSurface overload) ──────────────────────────────────────────
+
+template <class T> py::array_t<T> column_of(std::size_t n) {
+  return py::array_t<T>(static_cast<py::ssize_t>(n));
+}
+
+py::dict session_chain(const ServedSession &session, ServeBookReader &reader, double spot,
+                       std::int64_t now_ns, const atxvol::python::F64Column &strike,
+                       const atxvol::python::F64Column &expiry, const py::object &side) {
+  const std::size_t n = static_cast<std::size_t>(strike.size());
+  const auto k = atxvol::python::column(strike, "strike", n, "strike");
+  const auto t = atxvol::python::column(expiry, "expiry", n, "strike");
+  const std::vector<Side> sides = atxvol::python::side_column(side, n, "strike");
+  auto price = column_of<double>(n), delta = column_of<double>(n), gamma = column_of<double>(n),
+       vega = column_of<double>(n), theta = column_of<double>(n);
+  std::vector<TickStatus> ticks(n);
+  std::vector<SessionChainStatement> statements(n);
+  std::vector<std::uint64_t> scratch(n);
+  const ChainTickOutputs out{{price.mutable_data(), n}, {delta.mutable_data(), n},
+                             {gamma.mutable_data(), n}, {vega.mutable_data(), n},
+                             {theta.mutable_data(), n}, ticks};
+  const SessionChainView chain{k, t, sides};
+  Status status;
+  {
+    py::gil_scoped_release release;
+    status = session.serve_chain(reader, spot, now_ns, chain, out, statements, scratch);
+  }
+  atxvol::python::unwrap(status);
+  auto tick = column_of<std::uint8_t>(n), source = column_of<std::uint8_t>(n),
+       input = column_of<std::uint8_t>(n), st = column_of<std::uint8_t>(n),
+       route = column_of<std::uint8_t>(n), tier = column_of<std::uint8_t>(n),
+       cls = column_of<std::uint8_t>(n);
+  auto cert = column_of<double>(n);
+  auto sampled = column_of<bool>(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const SessionChainStatement &s = statements[i];
+    tick.mutable_data()[i] = static_cast<std::uint8_t>(ticks[i]);
+    source.mutable_data()[i] = static_cast<std::uint8_t>(s.source);
+    input.mutable_data()[i] = static_cast<std::uint8_t>(s.input_class);
+    st.mutable_data()[i] = static_cast<std::uint8_t>(s.book.status);
+    route.mutable_data()[i] = static_cast<std::uint8_t>(s.book.route);
+    tier.mutable_data()[i] = static_cast<std::uint8_t>(s.book.tier);
+    cls.mutable_data()[i] = static_cast<std::uint8_t>(s.book.certificate_class);
+    cert.mutable_data()[i] = s.book.certificate_usd;
+    sampled.mutable_data()[i] = s.book.sampled;
+  }
+  py::dict d;
+  d["price"] = std::move(price);
+  d["delta"] = std::move(delta);
+  d["gamma"] = std::move(gamma);
+  d["vega"] = std::move(vega);
+  d["theta"] = std::move(theta);
+  d["tick_status"] = std::move(tick);
+  d["source"] = std::move(source);
+  d["input_class"] = std::move(input);
+  d["status"] = std::move(st);
+  d["route"] = std::move(route);
+  d["tier"] = std::move(tier);
+  d["certificate_class"] = std::move(cls);
+  d["certificate_usd"] = std::move(cert);
+  d["sampled"] = std::move(sampled);
+  return d;
+}
+
+void bind_session(py::module_ &m) {
+  py::enum_<SessionServeSource>(m, "SessionServeSource")
+      .value("BOOK", SessionServeSource::Book)
+      .value("SESSION_COLD", SessionServeSource::SessionCold)
+      .value("REFUSED", SessionServeSource::Refused);
+  atxvol::python::register_enum_names<SessionServeSource>("SessionServeSource");
+
+  py::class_<SessionBookExpiry>(m, "SessionBookExpiry")
+      .def(py::init([](double T, std::uint64_t expiry_id) { return SessionBookExpiry{T, expiry_id}; }),
+           py::arg("T"), py::arg("expiry_id"))
+      .def_readwrite("T", &SessionBookExpiry::T)
+      .def_readwrite("expiry_id", &SessionBookExpiry::expiry_id);
+
+  py::class_<SessionServedAnswer>(m, "SessionServedAnswer")
+      .def_readonly("price", &SessionServedAnswer::price)
+      .def_readonly("delta", &SessionServedAnswer::delta)
+      .def_readonly("gamma", &SessionServedAnswer::gamma)
+      .def_readonly("vega", &SessionServedAnswer::vega)
+      .def_readonly("theta", &SessionServedAnswer::theta)
+      .def_readonly("source", &SessionServedAnswer::source)
+      .def_readonly("book", &SessionServedAnswer::book)
+      .def_readonly("input_class", &SessionServedAnswer::input_class)
+      .def_readonly("status", &SessionServedAnswer::status)
+      .def_readonly("declaration", &SessionServedAnswer::declaration);
+
+  py::class_<ServedSession>(m, "ServedSession",
+                            "A PricedSurface served through a ServeBook at the bound expiries.")
+      .def_static(
+          "bind",
+          [](const PricedSurface &surface, std::shared_ptr<ServeBook> book,
+             const std::vector<SessionBookExpiry> &expiries) {
+            if (!book) throw py::value_error("book must not be None");
+            return atxvol::python::unwrap(ServedSession::bind(
+                surface, std::shared_ptr<const ServeBook>(std::move(book)), expiries));
+          },
+          // The session borrows the surface: keep it alive as long as the session.
+          py::keep_alive<0, 1>(), py::arg("surface"), py::arg("book"), py::arg("expiries"),
+          "Bind (T -> book expiry id) pairs; AtxError(INVALID_ARGUMENT) for a bad T or a "
+          "duplicate binding.")
+      .def("reader", &ServedSession::reader, "A reader for the calling thread.")
+      .def(
+          "serve",
+          [](const ServedSession &s, ServeBookReader &reader, double K, double T, Side side,
+             double spot, std::int64_t now_ns) {
+            py::gil_scoped_release release;
+            return s.serve(reader, K, T, side, spot, now_ns);
+          },
+          py::arg("reader"), py::arg("K"), py::arg("T"), py::arg("side"), py::arg("spot"),
+          py::arg("now_ns"),
+          "The book's record at a bound T, else the surface's cold route; typed status.")
+      .def("serve_chain", &session_chain, py::arg("reader"), py::arg("spot"), py::arg("now_ns"),
+           py::arg("strike"), py::arg("expiry"), py::arg("side"),
+           "numpy columns (price, Greeks, tick_status, source, input_class and the book "
+           "statement's status / route / tier / certificate_class / certificate_usd / sampled).")
+      .def(
+          "bound_expiry",
+          [](const ServedSession &s, double T) -> py::object {
+            const auto id = s.bound_expiry(T);
+            return id ? py::object(py::int_(*id)) : py::object(py::none());
+          },
+          py::arg("T"))
+      .def("bindings", [](const ServedSession &s) {
+        return std::vector<SessionBookExpiry>(s.bindings().begin(), s.bindings().end());
+      });
+}
+
 } // namespace
 
 void bind_served_analytics(py::module_ &m) {
@@ -528,4 +667,5 @@ void bind_served_analytics(py::module_ &m) {
   bind_hedge(m);
   bind_scenarios(m);
   bind_cash(m);
+  bind_session(m);
 }
