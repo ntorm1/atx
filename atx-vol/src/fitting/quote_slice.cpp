@@ -30,6 +30,14 @@
 #include "pricing/american_iv_premium.hpp"
 
 namespace atx::vol {
+
+// Owned by a fit, immutable after construction. The family holder owns the geometry
+// observed by its families, so clearing the thread's fitting memo cannot dangle them.
+struct QuoteSliceReimplyContext {
+  std::shared_ptr<const DeAmSigmaFamilies> families;
+  DeAmIvKey model;
+};
+
 namespace {
 
 using atx::core::Err;
@@ -1111,12 +1119,40 @@ public:
   [[nodiscard]] const DeAmSigmaFamilies *families() const noexcept {
     return cache_->families.get();
   }
+  [[nodiscard]] std::shared_ptr<const DeAmSigmaFamilies> hold_families() const noexcept {
+    return cache_->families;
+  }
 
 private:
   SliceDeAmModel model_;
   std::shared_ptr<DeAmIvCache> cache_; // never null after construction
   std::optional<DeAmIvView> view_;
 };
+
+// Use the same query controls as reimplied_vol, including its fixed tolerance. The
+// per-contract carry curve is keyed too: editing a public fit can never reuse a model
+// prepared before that edit, even if the new yield happens to lie inside its box.
+DeAmIvKey reimply_model_key(const QuoteSliceFit &fit) {
+  DeAmIvKey key = deam_iv_key(fit, {}, QuoteSliceConfig{});
+  key.words.push_back(fit.carry_curve.size());
+  for (const auto &point : fit.carry_curve) {
+    key.words.push_back(std::bit_cast<std::uint64_t>(point.strike));
+    key.words.push_back(std::bit_cast<std::uint64_t>(point.continuous_yield));
+  }
+  return key;
+}
+
+void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
+                            const QuoteSliceConfig &config) {
+  if (cache == nullptr || !config.channel.deam_native_route ||
+      fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly || cache->families() == nullptr) {
+    return;
+  }
+  auto context = std::make_shared<QuoteSliceReimplyContext>();
+  context->families = cache->hold_families();
+  context->model = reimply_model_key(fit);
+  fit.reimply_context = std::move(context);
+}
 
 // Half-spread of each node's own quote per side (bidless: half the ask). A side
 // without a quote borrows the other side's; a strike without quotes gets zero,
@@ -2345,6 +2381,7 @@ Result<QuoteSliceFit> fit_quote_slice(const QuoteSliceMarket &market,
     return Ok(std::move(out));
   }
   out.curve = std::move(*curve);
+  retain_reimply_context(out, deam ? &*deam : nullptr, config);
   certify_and_serve(out, quotes, 0.0, &config.repair, config.grid_kernel,
                     deam ? deam->families() : nullptr, config.channel.deam_native_route);
   return Ok(std::move(out));
@@ -2421,6 +2458,7 @@ Result<QuoteSliceFit> fit_quote_slice_channel(const QuoteSliceMarket &market,
   channel_diag.iterations = d.iterations;
   counters::fit_timing::count(&counters::fit_timing::FitTimingCounters::jacobian_evals,
                               counters::fit_timing::detail::saturate(d.iterations));
+  retain_reimply_context(out, deam ? &*deam : nullptr, config);
   certify_and_serve(out, quotes, config.channel.repair_half_spreads, &config.repair,
                     config.grid_kernel, deam ? deam->families() : nullptr,
                     config.channel.deam_native_route);
@@ -3150,6 +3188,53 @@ VolIdentification identified(double volatility) noexcept {
   return id;
 }
 
+// A qualified family root is reusable for a repaired price, regardless of whether that
+// price was an original quote. Only the existing K3 bracket acceptance can return it.
+// Refused/flat/out-of-box prices keep reimplied_vol's historical typed Search semantics;
+// the acceleration gets no additional reference solves before that fallback.
+std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double strike, Side side,
+                                           double price, double q, const IvOpts &opts) {
+  const auto &context = fit.reimply_context;
+  if (!context || fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
+      context->model.words != reimply_model_key(fit).words) return std::nullopt;
+  const AlSigmaQFamily *const family = context->families->of_q(side);
+  if (family == nullptr || q < family->q_lo() || q > family->q_hi() ||
+      !iv_premium_native_window(price, fit.market.spot, strike, fit.market.variance_years,
+                                fit.diagnostics.effective_rate, q, side, fit.al_opts)) {
+    return std::nullopt;
+  }
+  IvOpts native = opts;
+  native.seed_profile = AlProfile::Screen; // enables the native gate; no seed solve on a hit
+  IvReferenceBudget no_reference; // zero calls/evaluations: fall back without extra solves
+  IvPremiumGate gate;
+  gate.policy = IvConfirmPolicy::Always; // native K3 enclosure/confirm, never a spread gate
+  gate.qfamily = family;
+  gate.qfamily_native = true;
+  gate.native_route = true;
+  gate.reference_budget = &no_reference;
+  const FamilyEnvelopeScope envelope(context->families->q_envelope(side));
+  IvPremiumStats stats;
+  const IvResult answer = american_implied_vol_premium(price, fit.market.spot, strike,
+      fit.market.variance_years, fit.diagnostics.effective_rate, q, side, native, nullptr,
+      stats, &gate);
+  const bool accepted = answer.status == IvStatus::Ok && answer.iv > kIvMin &&
+      stats.route == IvRouteOutcome::NativeRoot &&
+      (stats.acceptance.kind == RootAcceptanceKind::Confirmed ||
+       stats.acceptance.kind == RootAcceptanceKind::Skipped) &&
+      stats.acceptance.bound_iv >= 0.0 && stats.acceptance.bound_iv <= opts.tol;
+  if (auto *const counts = counters::fit_timing::current_counts()) {
+    ++counts->reimply_native_attempts;
+    if (accepted) {
+      ++counts->reimply_native_roots;
+      counts->reimply_native_max_bound_iv =
+          std::max(counts->reimply_native_max_bound_iv, stats.acceptance.bound_iv);
+    } else {
+      ++counts->reimply_native_fallbacks;
+    }
+  }
+  return accepted ? std::optional<double>{answer.iv} : std::nullopt;
+}
+
 } // namespace
 
 VolIdentification floor_vol(const QuoteSliceFit &fit, double strike, Side side, double price) {
@@ -3189,6 +3274,9 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   opts.max_iter = query.max_iv_iterations;
   opts.al_opts = fit.al_opts;
   opts.refuse_non_monotone = true;
+  if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts)) {
+    return identified(*root);
+  }
   const IvResult answer = american_implied_vol(price, fit.market.spot, strike,
                                                fit.market.variance_years,
                                                fit.diagnostics.effective_rate, q_effective, side,

@@ -1158,6 +1158,12 @@ struct FitTimingCounters {
   std::uint32_t calendar_pairs{0};       // check_american_calendar pairs charged to the chain
   std::uint32_t projections{0};          // project_in_channel calls
   std::uint32_t iv_newton_iters{0};      // American IV inversion iterations (solve ledger)
+  // Repaired/query prices accelerated on the fit's retained native family. A fallback
+  // runs the original typed Search route; root acceptance still requires the K3 bracket.
+  std::uint32_t reimply_native_attempts{0};
+  std::uint32_t reimply_native_roots{0};
+  std::uint32_t reimply_native_fallbacks{0};
+  double reimply_native_max_bound_iv{0.0};
   std::uint64_t wall_us{0};              // the sum of the seven exclusive buckets below
   std::uint64_t deam_us{0};
   std::uint64_t solve_us{0};

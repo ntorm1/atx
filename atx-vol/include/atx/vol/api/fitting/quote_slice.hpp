@@ -20,6 +20,7 @@ namespace atx::vol {
 // Lane H1 (phase B): the fitter's family hand-off (internal, slice_serve_record_detail.hpp)
 // and the serving record (slice_serve_record.hpp) a fit may carry (QuoteSliceFit).
 struct QuoteSliceServeHandoff;
+struct QuoteSliceReimplyContext;
 class SliceServeRecord;
 
 // A single expiry, with separate variance and funding clocks. Volatility is
@@ -998,6 +999,12 @@ struct QuoteSliceFit {
   // (slice_serve_record.hpp).
   std::shared_ptr<const QuoteSliceServeHandoff> serve_handoff;
   std::shared_ptr<const SliceServeRecord> serve_record;
+  // Runtime-only immutable ownership of the native fit's American family and model
+  // inputs. With native fitting and PriceOnly enabled, repaired prices and queries
+  // reuse its qualified inverse. Model changes invalidate it. Archives do not persist
+  // this acceleration: restored fits use Search, numerically equivalent at the root
+  // tolerance rather than necessarily bit-identical to a native inverse.
+  std::shared_ptr<const QuoteSliceReimplyContext> reimply_context;
 };
 
 // The American model of a fit: the dated-cash lattice for DatedCash, else Andersen-Lake.

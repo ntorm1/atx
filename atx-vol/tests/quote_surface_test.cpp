@@ -25,6 +25,7 @@
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"   // deam_iv_memo_clear (rung memo tests)
 #include "fitting/expiry_schedule.hpp" // ScopedExpiryDispatchTrace (fan-out order seam)
+#include "fitting/quote_slice_nodes.hpp" // repaired-price identification contract
 #include "fitting/rung_memo.hpp"       // ExpiryRungMemo, ScopedRungMemo
 
 namespace atx::vol {
@@ -1201,6 +1202,160 @@ TEST(QuoteSliceChannel, TypedCalendarRepairIdentifiesEachChangedPriceOnlyOnce) {
   }
   EXPECT_EQ(unchanged.result().iv_newton_iters, 0u);
   EXPECT_EQ(unchanged.result().al_price_calls, 0u);
+}
+
+QuoteSliceConfig native_repair_config() {
+  QuoteSliceConfig config;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  config.channel.fit_space = QuoteSliceFitSpace::VolChannel;
+  config.channel.deam_cache = true;
+  config.channel.deam_profile = QuoteSliceDeamProfile::Screen;
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  config.channel.deam_family_q = true;
+  config.channel.deam_family_native = true;
+  config.channel.deam_native_route = true;
+  config.channel.deam_native_batch = true;
+  return config;
+}
+
+TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCleared) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  const QuoteSliceConfig config = native_repair_config();
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_GT(fit->diagnostics.deam.family_builds, 0u);
+  const AmericanPriceSlice floor = shifted_slice(*fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  deam_iv_memo_clear(); // the fitted snapshot must own the family it will use later
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder repair;
+  {
+    const timing::ChainScope scope(&repair);
+    ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  }
+  timing::ChainRecorder reference;
+  {
+    const timing::ChainScope scope(&reference);
+    IvOpts opts;
+    opts.refuse_non_monotone = true;
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto &quote = c.quotes[i];
+      const auto answer = american_implied_vol(fit->rows[i].fitted_price, c.market.spot,
+          quote.strike, c.market.variance_years, c.market.rate, c.market.continuous_yield,
+          quote.side, opts);
+      ASSERT_EQ(answer.status, IvStatus::Ok) << i;
+    }
+  }
+  EXPECT_LT(repair.result().al_price_calls, reference.result().al_price_calls);
+  EXPECT_GT(repair.result().reimply_native_roots, 0u);
+  EXPECT_LE(repair.result().reimply_native_max_bound_iv, 1.0e-7);
+  RecordProperty("repair_al", repair.result().al_price_calls);
+  RecordProperty("search_al", reference.result().al_price_calls);
+  RecordProperty("native_roots", repair.result().reimply_native_roots);
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
+    ASSERT_TRUE(answer);
+    EXPECT_EQ(answer->volatility, fit->rows[i].fitted_iv) << i;
+    EXPECT_EQ(answer->price, fit->rows[i].fitted_price) << i;
+    // Search uses warm boundary reseeding: tightening its iteration tolerance does
+    // not remove that map's noise against cold A. Bisect the actual target map.
+    double lo = answer->volatility - 1.0e-4;
+    double hi = answer->volatility + 1.0e-4;
+    const auto cold = [&](double sigma) {
+      return andersen_lake(c.market.spot, c.quotes[i].strike, c.market.variance_years,
+          sigma, c.market.rate, c.market.continuous_yield, c.quotes[i].side);
+    };
+    const auto lower = cold(lo);
+    const auto upper = cold(hi);
+    ASSERT_TRUE(lower && upper);
+    ASSERT_LT(*lower, answer->price);
+    ASSERT_GT(*upper, answer->price);
+    for (unsigned step = 0; step < 32 && hi - lo > 1.0e-11; ++step) {
+      const double mid = 0.5 * (lo + hi);
+      const auto price = cold(mid);
+      ASSERT_TRUE(price);
+      if (*price < answer->price) lo = mid;
+      else hi = mid;
+    }
+    EXPECT_LE(hi - lo, 1.0e-11);
+    EXPECT_NEAR(answer->volatility, 0.5 * (lo + hi), 1.0e-7) << i;
+  }
+}
+
+TEST(QuoteSliceChannel, NativeReimplicationRejectsChangedModelsAndPreservesPriceOnlyReasons) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto fit = fit_quote_slice(c.market, c.quotes, native_repair_config());
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_NE(fit->reimply_context, nullptr);
+  const auto context = fit->reimply_context;
+  const auto market = fit->market;
+  const auto rate = fit->diagnostics.effective_rate;
+  const auto al_opts = fit->al_opts;
+  const auto carry = fit->carry_curve;
+  const double target = *fit->prices->price(100.0, Side::Put) + 0.002;
+  namespace timing = counters::fit_timing;
+  for (const auto mutate : {+[](QuoteSliceFit &f) { f.market.spot += 0.1; },
+                            +[](QuoteSliceFit &f) { f.market.variance_years += 0.01; },
+                            +[](QuoteSliceFit &f) { f.diagnostics.effective_rate += 0.001; },
+                            +[](QuoteSliceFit &f) { f.al_opts = al_fast_opts(); },
+                            +[](QuoteSliceFit &f) { f.carry_curve = {{100.0, 0.051}}; }}) {
+    mutate(*fit);
+    timing::ChainRecorder rec;
+    detail::VolIdentification accelerated;
+    {
+      const timing::ChainScope scope(&rec);
+      accelerated = detail::reimplied_vol(*fit, 100.0, Side::Put, target,
+                                         QuoteSliceFloorPolicy::PriceOnly);
+    }
+    EXPECT_EQ(rec.result().reimply_native_attempts, 0u);
+    fit->reimply_context.reset();
+    const auto reference = detail::reimplied_vol(*fit, 100.0, Side::Put, target,
+                                               QuoteSliceFloorPolicy::PriceOnly);
+    EXPECT_EQ(accelerated.status, reference.status);
+    EXPECT_EQ(accelerated.volatility, reference.volatility);
+    fit->reimply_context = context;
+    fit->market = market;
+    fit->diagnostics.effective_rate = rate;
+    fit->al_opts = al_opts;
+    fit->carry_curve = carry;
+  }
+  // Exercise/floor prices never enter the family window, and keep their interval.
+  const auto typed = detail::reimplied_vol(*fit, 150.0, Side::Put, 50.0,
+                                          QuoteSliceFloorPolicy::PriceOnly);
+  fit->reimply_context.reset();
+  const auto plain = detail::reimplied_vol(*fit, 150.0, Side::Put, 50.0,
+                                          QuoteSliceFloorPolicy::PriceOnly);
+  EXPECT_EQ(typed.status, QuoteSliceEvaluationStatus::PriceOnly);
+  EXPECT_EQ(typed.status, plain.status);
+  EXPECT_EQ(typed.reason, plain.reason);
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(typed.iv_lower),
+            std::bit_cast<std::uint64_t>(plain.iv_lower));
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(typed.iv_upper),
+            std::bit_cast<std::uint64_t>(plain.iv_upper));
+}
+
+TEST(QuoteSurface, NativeCalendarTrialPreservesTheQualifiedInverseAndPublicAnswer) {
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  QuoteSurfaceConfig surface;
+  surface.calendar_repair_half_spreads = 1.0;
+  const auto repaired = fit_quote_surface(expiries(chains), native_repair_config(), surface);
+  ASSERT_TRUE(repaired);
+  const auto &fixed = (*repaired)[1];
+  ASSERT_TRUE(fixed.calendar_repaired) << fixed.refusal << " " << fixed.error;
+  ASSERT_NE(fixed.fit.reimply_context, nullptr);
+  ASSERT_TRUE(fixed.fit.prices);
+  expect_calendar_consistent(*repaired);
+  for (std::size_t i = 0; i < chains[1].quotes.size(); ++i) {
+    const auto &q = chains[1].quotes[i];
+    const auto answer = query_quote_slice(fixed.fit, q.strike, q.side);
+    ASSERT_TRUE(answer);
+    if (answer->status == QuoteSliceEvaluationStatus::Success) {
+      EXPECT_EQ(answer->volatility, fixed.fit.rows[i].fitted_iv) << i;
+    }
+    EXPECT_EQ(answer->price, fixed.fit.rows[i].fitted_price) << i;
+  }
 }
 
 TEST(QuoteSliceChannel, RejectsAnInvalidRepairOrDominanceConfiguration) {

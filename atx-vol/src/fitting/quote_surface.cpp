@@ -1692,6 +1692,7 @@ private:
     trial.floor_policy = fit.floor_policy;
     // Lane K4b: the opt-in parity-coupled calendar clamp follows the fit into its trials.
     trial.calendar_parity_clamp = fit.calendar_parity_clamp;
+    trial.reimply_context = fit.reimply_context;
     trial.snapshot = fit.snapshot;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;
