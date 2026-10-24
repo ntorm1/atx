@@ -1,0 +1,10 @@
+{
+  "schema": "atx-quantlib-comparator-binary-availability-v1",
+  "measured_source": "3a0071cde2a2b5c76a87d10f8f973c0474cea20d",
+  "measured_binary_sha256": "df4f428503ef062bbb173668d7d6fd7b32079fe7ba9f0ac6380d1f73cc112e39",
+  "original_build_path": "C:/atx-wt/pool-33/build-vol-rel-avx2/bin/atx-vol-quantlib-comparator.exe",
+  "binary_archived": false,
+  "availability": "The original v1 executable was replaced by the subsequent v2 build. Its original before/after SHA256 remains pinned in both immutable run receipts. The build path in the original evidence manifest is a historical location, not an assertion of current file availability.",
+  "verification": "The root reviewer independently checked the v1 file hashes and reproduced both summaries before replacement; exact measured source, upstream, corpus and toolchain remain pinned.",
+  "future_policy": "Archive every measured executable under its SHA256 before subsequent builds."
+}
