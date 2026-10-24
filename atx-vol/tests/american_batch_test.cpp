@@ -1733,7 +1733,7 @@ TEST(AmericanGreeksBatch, UnsupportedLaneReportsStatus) {
 TEST(AmericanGreeksBatch, AvailabilityPreservesPriceAndUsesExactFieldMask) {
   Book b;
   b.push(100, 100, .5, .3, .04, .01, Side::Put);
-  b.push(1.0e-160, 100, .05, .9, .043, .02, Side::Put);
+  b.push(772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put);
   b.push(-100, 100, .5, .3, .04, .01, Side::Call);
   std::vector<double> px(b.size()), gamma(b.size());
   simd::GreeksBatchSoA out;
@@ -1756,7 +1756,7 @@ TEST(AmericanGreeksBatch, AvailabilityPreservesPriceAndUsesExactFieldMask) {
       EXPECT_TRUE(std::isnan(gamma[1]));
       EXPECT_TRUE(has_field(ws.lane_supported_view()[1], GreekFieldMask::Price));
       EXPECT_FALSE(has_field(ws.lane_supported_view()[1], GreekFieldMask::Gamma));
-      EXPECT_EQ(ws.lane_reasons_view()[1][1], AmericanGreekReason::Nonfinite);
+      EXPECT_EQ(ws.lane_reasons_view()[1][1], AmericanGreekReason::StencilCrossing);
       const double retained_price = px[1];
 
       constexpr auto fields = GreekFieldMask::Price;
@@ -1791,6 +1791,27 @@ TEST(AmericanGreeksBatch, UnknownFieldMaskRefusesBeforeWrites) {
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
   EXPECT_TRUE(ws.lane_status_view().empty());
   for (const double value : px) EXPECT_EQ(value, 123.0);
+}
+
+TEST(AmericanGreeksBatch, DeepExerciseSuppliesExactGammaDespiteTinySpotDenominator) {
+  Book b;
+  b.push(1e-160, 100., .05, .9, .043, .02, Side::Put);
+  std::array<double, 1> price{}, gamma{};
+  simd::GreeksBatchSoA out;
+  out.price = price.data();
+  out.gamma = gamma.data();
+  PricingWorkspace workspace;
+  for (bool analytic : {false, true}) {
+    PricingKernel kernel;
+    kernel.analytic_greeks = analytic;
+    kernel.isa = simd::SimdIsa::ForceScalar;
+    ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::Price | GreekFieldMask::Gamma,
+                                    out, kernel, workspace));
+    EXPECT_EQ(workspace.lane_status_view()[0], LaneStatus::Ok);
+    EXPECT_EQ(gamma[0], 0.0);
+    EXPECT_EQ(price[0], 100.0);
+    EXPECT_EQ(workspace.lane_reasons_view()[0][1], AmericanGreekReason::Exercised);
+  }
 }
 
 TEST(AmericanGreeksBatch, PriceOnlyBatchDoesNotAllocateGreekMetadata) {
@@ -1836,17 +1857,17 @@ TEST(AmericanGreeksBatch, EmptyIsNoOp) {
 // (python/src/bindings/pricing.cpp, called with GreekFieldMask::All — every Greek
 // requested and, pre-fix, none guarded), so the sprint changed its exposure.
 //
-// Trigger is G1's: at S = 1e-160 the FD gamma denominator hS*hS = (1e-3*S)^2
-// underflows to 0.0 while the mark stays finite, so gamma = 0/0 = NaN on a
-// SUCCESSFUL bundle. Both sides are driven in ONE call.
-constexpr double kI3TinyS = 1.0e-160;
-
+// The former tiny-spot denominator trigger now supplies exact exercise Greeks.
+// Use the independently frozen crossing and its McDonald-Schroder call pair.
 TEST(AmericanGreeksBatch, I3_OkStampGuardsTheRequestedGreekSetOnBothSides) {
   // Kernel-level precondition, asserted for BOTH sides: a SUCCESSFUL differenced
   // bundle with a finite mark and a non-finite gamma.
   for (const Side sd : {Side::Put, Side::Call}) {
-    const auto probe =
-        american_greeks_fd(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, sd);
+    const double S = sd == Side::Put ? 772.99 : 811.6395;
+    const double K = sd == Side::Put ? 811.6395 : 772.99;
+    const double r = sd == Side::Put ? .04496 : .00162193;
+    const double q = sd == Side::Put ? .00162193 : .04496;
+    const auto probe = american_greeks_fd(S, K, .0682, .12, r, q, sd);
     ASSERT_TRUE(probe.has_value()) << "side " << static_cast<int>(sd);
     EXPECT_TRUE(std::isfinite(probe->price)) << "side " << static_cast<int>(sd);
     EXPECT_FALSE(std::isfinite(probe->gamma)) << "side " << static_cast<int>(sd);
@@ -1854,8 +1875,8 @@ TEST(AmericanGreeksBatch, I3_OkStampGuardsTheRequestedGreekSetOnBothSides) {
 
   // Identical inputs modulo `side`, in the SAME call — the asymmetry's own shape.
   Book b;
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  b.push(772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put);
+  b.push(811.6395, 772.99, .0682, .12, .00162193, .04496, Side::Call);
   const std::size_t n = b.size();
   std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0);
   simd::GreeksBatchSoA out;
@@ -1887,8 +1908,8 @@ TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
     GTEST_SKIP() << "analytic laned put route needs an AVX2 host";
   }
   Book b;
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
-  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  b.push(772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put);
+  b.push(811.6395, 772.99, .0682, .12, .00162193, .04496, Side::Call);
   const std::size_t n = b.size();
   std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0), th(n, 0.0);
   simd::GreeksBatchSoA out;
@@ -1904,16 +1925,15 @@ TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
                   .has_value());
 
   EXPECT_EQ(ws.lane_status_view()[0], ws.lane_status_view()[1])
-      << "analytic put (laned) and call (scalar) stamps disagree on the same input";
+      << "analytic put and call-dual stamps disagree on the fixed crossing";
   for (std::size_t i = 0; i < n; ++i) {
-    if (ws.lane_status_view()[i] != LaneStatus::Ok) {
-      continue;
-    }
-    // An Ok lane's REQUESTED columns are finite — the whole point of the stamp.
+    EXPECT_EQ(ws.lane_status_view()[i], LaneStatus::Unsupported);
+    EXPECT_EQ(ws.lane_reasons_view()[i][1], AmericanGreekReason::StencilCrossing);
+    // Every requested refusal remains in the denominator, with usable price.
     EXPECT_TRUE(std::isfinite(px[i])) << "lane " << i << " price";
-    EXPECT_TRUE(std::isfinite(dl[i])) << "lane " << i << " delta";
-    EXPECT_TRUE(std::isfinite(gm[i])) << "lane " << i << " gamma";
-    EXPECT_TRUE(std::isfinite(th[i])) << "lane " << i << " theta";
+    EXPECT_TRUE(std::isnan(dl[i])) << "lane " << i << " delta";
+    EXPECT_TRUE(std::isnan(gm[i])) << "lane " << i << " gamma";
+    EXPECT_TRUE(std::isnan(th[i])) << "lane " << i << " theta";
   }
 }
 
