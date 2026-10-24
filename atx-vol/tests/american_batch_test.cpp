@@ -17,6 +17,7 @@
 #include "atx/vol/api/pricing/american_batch.hpp"
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_greek_availability.hpp"
 #include "fitting/counters.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 
@@ -1973,6 +1974,102 @@ TEST(AmericanBatchErrorModel, EveryEntryCarriesTheLaneCountItWrote) {
   const Result<std::size_t> none = american_price_batch(empty, empty_out, kernel, ws);
   ASSERT_TRUE(none.has_value());
   EXPECT_EQ(*none, 0u);
+}
+
+TEST(AmericanGreekAvailability, PreservesPublicMaskOrdinals) {
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Delta), 1u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Gamma), 2u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Vega), 4u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Theta), 8u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Rho), 16u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Vanna), 32u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Volga), 64u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Charm), 128u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::Price), 256u);
+  EXPECT_EQ(static_cast<std::uint32_t>(GreekFieldMask::All), 511u);
+}
+
+TEST(AmericanGreekAvailability, FiniteDefaultZerosSupplyNoFields) {
+  const AmericanGreeks g;
+  EXPECT_EQ(g.delta, 0.0);
+  EXPECT_EQ(g.price, 0.0);
+  EXPECT_EQ(g.requested, GreekFieldMask::None);
+  EXPECT_EQ(g.supported, GreekFieldMask::None);
+  for (const auto reason : g.reasons) EXPECT_EQ(reason, AmericanGreekReason::NotRequested);
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Delta));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Price));
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::None));
+}
+
+TEST(AmericanGreekAvailability, ExplicitZeroAndPartialRefusalPreservePrice) {
+  AmericanGreeks g;
+  g.price = 10.0;
+  g.delta = -1.0;
+  g.theta = 8.8;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Theta, AmericanGreekReason::ComputedEstimate);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Gamma));
+  detail::mark_american_greek_fields(g, GreekFieldMask::Theta,
+                                    AmericanGreekReason::StencilCrossing);
+  EXPECT_TRUE(std::isnan(g.theta));
+  EXPECT_EQ(g.price, 10.0);
+  EXPECT_EQ(g.delta, -1.0);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Price | GreekFieldMask::Delta));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Theta));
+  EXPECT_TRUE(has_field(g.requested, GreekFieldMask::Theta));
+  EXPECT_EQ(g.reasons[3], AmericanGreekReason::StencilCrossing);
+  EXPECT_EQ(g.reasons[8], AmericanGreekReason::ComputedEstimate);
+}
+
+TEST(AmericanGreekAvailability, NonfiniteAndContradictoryMetadataCannotPass) {
+  AmericanGreeks g;
+  g.vega = std::numeric_limits<double>::infinity();
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vega,
+                                    AmericanGreekReason::ComputedEstimate);
+  EXPECT_EQ(g.reasons[2], AmericanGreekReason::Nonfinite);
+  EXPECT_TRUE(std::isnan(g.vega));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  // Finite data with a forged support bit is insufficient without a supplied reason.
+  g.vega = 0.0;
+  g.supported = GreekFieldMask::Vega;
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  detail::mark_american_greek_fields(g, GreekFieldMask::Vega,
+                                    AmericanGreekReason::Exercised);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  g.vega = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Vega));
+  EXPECT_FALSE(detail::american_greeks_support(g, static_cast<GreekFieldMask>(1u << 15)));
+}
+
+TEST(AmericanGreekAvailability, NarrowingNeverPromotesUnrequestedZeros) {
+  AmericanGreeks g;
+  detail::mark_american_greek_fields(g, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
+  detail::mark_american_greek_fields(g, GreekFieldMask::Theta,
+                                    AmericanGreekReason::StencilCrossing);
+  const auto delta_price = GreekFieldMask::Delta | GreekFieldMask::Price;
+  detail::narrow_american_greek_request(g, delta_price);
+  EXPECT_EQ(g.requested, delta_price);
+  EXPECT_EQ(g.supported, delta_price);
+  EXPECT_EQ(g.reasons[3], AmericanGreekReason::NotRequested);
+  EXPECT_TRUE(detail::american_greeks_support(g, delta_price));
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Rho));
+  EXPECT_EQ(g.rho, 0.0); // Legacy numeric normalization is not a supplied value.
+  detail::narrow_american_greek_request(g, delta_price | GreekFieldMask::Rho);
+  EXPECT_FALSE(detail::american_greeks_support(g, GreekFieldMask::Rho));
+  EXPECT_EQ(g.reasons[4], AmericanGreekReason::UnsupportedAxis);
+  EXPECT_TRUE(std::isnan(g.rho));
+}
+
+TEST(AmericanGreekAvailability, SolveNeedsMapOnlyToActuallyRequestedGroups) {
+  const auto base = GreekFieldMask::Price | GreekFieldMask::Delta |
+                    GreekFieldMask::Gamma | GreekFieldMask::Theta;
+  EXPECT_EQ(detail::american_greek_request(false, false, false), base);
+  EXPECT_EQ(detail::american_greek_request(true, false, false), base |
+            GreekFieldMask::Vega | GreekFieldMask::Vanna | GreekFieldMask::Volga);
+  EXPECT_EQ(detail::american_greek_request(false, true, false), base | GreekFieldMask::Rho);
+  EXPECT_EQ(detail::american_greek_request(false, false, true), base | GreekFieldMask::Charm);
+  EXPECT_EQ(detail::american_greek_request(true, true, true), GreekFieldMask::All);
 }
 
 } // namespace

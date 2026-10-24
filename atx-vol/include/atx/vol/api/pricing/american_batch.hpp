@@ -263,36 +263,7 @@ class PricingWorkspace {
 };
 
 // ── Greek field selector (models PriceFieldMask; per-greek granularity) ────
-enum class GreekFieldMask : std::uint32_t {
-  None = 0,
-  Delta = 1u << 0,
-  Gamma = 1u << 1,
-  Vega = 1u << 2,
-  Theta = 1u << 3,
-  Rho = 1u << 4,
-  Vanna = 1u << 5,
-  Volga = 1u << 6,
-  Charm = 1u << 7,
-  Price = 1u << 8,
-  AllGreeks = Delta | Gamma | Vega | Theta | Rho | Vanna | Volga | Charm,
-  All = AllGreeks | Price,
-};
-
-[[nodiscard]] constexpr GreekFieldMask operator|(GreekFieldMask a,
-                                                 GreekFieldMask b) noexcept {
-  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) |
-                                     static_cast<std::uint32_t>(b));
-}
-[[nodiscard]] constexpr GreekFieldMask operator&(GreekFieldMask a,
-                                                 GreekFieldMask b) noexcept {
-  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) &
-                                     static_cast<std::uint32_t>(b));
-}
-[[nodiscard]] constexpr bool has_field(GreekFieldMask set,
-                                       GreekFieldMask bit) noexcept {
-  return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) !=
-         0u;
-}
+// GreekFieldMask is shared with scalar AmericanGreeks in american.hpp.
 
 // ── The batch APIs ────────────────────────────────────────────────────────
 

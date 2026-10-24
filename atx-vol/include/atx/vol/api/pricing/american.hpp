@@ -1687,6 +1687,48 @@ struct AmericanPriceVega {
 // same fused Clenshaw traversal, with no off-point finite-difference stencil.
 //
 // theta uses the calendar-time convention: ∂P/∂t = -∂P/∂T.
+// Shared scalar/batch field order. These values retain the original
+// american_batch.hpp ordinals; Price is independent of Greek availability.
+enum class GreekFieldMask : std::uint32_t {
+  None = 0,
+  Delta = 1u << 0,
+  Gamma = 1u << 1,
+  Vega = 1u << 2,
+  Theta = 1u << 3,
+  Rho = 1u << 4,
+  Vanna = 1u << 5,
+  Volga = 1u << 6,
+  Charm = 1u << 7,
+  Price = 1u << 8,
+  AllGreeks = Delta | Gamma | Vega | Theta | Rho | Vanna | Volga | Charm,
+  All = AllGreeks | Price,
+};
+
+[[nodiscard]] constexpr GreekFieldMask operator|(GreekFieldMask a,
+                                                GreekFieldMask b) noexcept {
+  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) |
+                                     static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr GreekFieldMask operator&(GreekFieldMask a,
+                                                GreekFieldMask b) noexcept {
+  return static_cast<GreekFieldMask>(static_cast<std::uint32_t>(a) &
+                                     static_cast<std::uint32_t>(b));
+}
+[[nodiscard]] constexpr bool has_field(GreekFieldMask set, GreekFieldMask bit) noexcept {
+  return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(bit)) != 0u;
+}
+
+// Availability is not an accuracy certificate. ComputedEstimate identifies a
+// value supplied by the producing model, with no derivative error budget implied.
+enum class AmericanGreekReason : std::uint8_t {
+  NotRequested = 0,
+  ComputedEstimate = 1,
+  Exercised = 2,
+  UnsupportedAxis = 3,
+  StencilCrossing = 4,
+  Nonfinite = 5,
+};
+
 struct AmericanGreeks {
   double delta = 0.0;
   double gamma = 0.0;
@@ -1697,6 +1739,14 @@ struct AmericanGreeks {
   double volga = 0.0;
   double charm = 0.0;
   double price = 0.0;
+
+  // Default/untouched zeros supply nothing. A partial bundle can retain a valid
+  // price while individual requested Greeks are unavailable (NaN, with reason).
+  // reasons follows mask-bit order: delta, gamma, vega, theta, rho, vanna,
+  // volga, charm, price. Continuous-carry phi belongs to CarryGreeks separately.
+  GreekFieldMask requested = GreekFieldMask::None;
+  GreekFieldMask supported = GreekFieldMask::None;
+  std::array<AmericanGreekReason, 9> reasons{};
 
   [[nodiscard]] bool operator==(const AmericanGreeks &) const = default;
 };
