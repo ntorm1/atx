@@ -132,6 +132,245 @@ struct Outs {
   [[nodiscard]] ChainGreekColumns price_only() { return {price, {}, {}, {}, {}, {}, status}; }
 };
 
+[[nodiscard]] Chain partial_greek_chain(Side side) {
+  Chain c;
+  const bool put = side == Side::Put;
+  c.spot = put ? 772.99 : 811.6395;
+  c.T = {.0682, .5};
+  c.rate = {put ? .04496 : .00162193, 0.};
+  c.carry = {put ? .00162193 : .04496, 0.};
+  for (std::uint32_t i = 0; i < 8; ++i) {
+    c.strike.push_back(i < 4 ? (put ? 811.6395 : 772.99) : c.spot);
+    c.sigma.push_back(i < 4 ? .12 : .25);
+    c.expiry.push_back(i < 4 ? 0u : 1u);
+    c.side.push_back(side);
+  }
+  c.strike.back() = -1.;
+  return c;
+}
+
+TEST(ChainBatchGreekAvailability, PartialRefusalRetainsPriceAndSuppliedColumns) {
+  for (const Side side : {Side::Put, Side::Call}) {
+    const Chain c = partial_greek_chain(side);
+    const auto ref = american_greeks_al(c.spot, c.strike[0], c.T[0], c.sigma[0],
+        c.rate[0], c.carry[0], side, std::nullopt, true, true, false);
+    ASSERT_TRUE(ref.has_value());
+    ASSERT_TRUE(std::isfinite(ref->price));
+    ASSERT_TRUE(std::isfinite(ref->rho));
+    ASSERT_EQ(ref->reasons[1], AmericanGreekReason::StencilCrossing);
+    for (const auto route : {ChainBatchRoute::Scalar, ChainBatchRoute::LanedAvx2}) {
+      SCOPED_TRACE(static_cast<int>(side));
+      SCOPED_TRACE(static_cast<int>(route));
+      ChainBatchOptions options;
+      options.route = route;
+      ChainBatchWorkspace ws;
+      Outs out(c.size());
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), out.all(), options, ws));
+      for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_TRUE(std::isfinite(out.price[i]));
+        EXPECT_TRUE(std::isfinite(out.rho[i]));
+        EXPECT_TRUE(std::isnan(out.gamma[i]));
+        EXPECT_EQ(out.status[i], ChainRowStatus::GreeksUnavailable);
+        if (route == ChainBatchRoute::Scalar) {
+          EXPECT_EQ(std::memcmp(&out.price[i], &ref->price, sizeof(double)), 0);
+          EXPECT_EQ(std::memcmp(&out.rho[i], &ref->rho, sizeof(double)), 0);
+        }
+      }
+      for (std::size_t i = 4; i < 7; ++i) EXPECT_EQ(out.status[i], ChainRowStatus::Ok);
+      EXPECT_EQ(out.status[7], ChainRowStatus::InvalidInput);
+      EXPECT_TRUE(std::isnan(out.price[7]));
+    }
+  }
+}
+
+struct ChainMetadata {
+  std::vector<GreekFieldMask> requested, supported;
+  std::vector<std::array<AmericanGreekReason, 9>> reasons;
+  explicit ChainMetadata(std::size_t n)
+      : requested(n, GreekFieldMask::All), supported(n, GreekFieldMask::All), reasons(n) {}
+  [[nodiscard]] ChainGreekColumns attach(ChainGreekColumns out) {
+    out.requested = requested;
+    out.supported = supported;
+    out.reasons = reasons;
+    return out;
+  }
+};
+
+TEST(ChainBatchGreekAvailability, ExactColumnsAndReusedMetadataPreserveNativeReasons) {
+  constexpr auto all = GreekFieldMask::Price | GreekFieldMask::Delta | GreekFieldMask::Gamma |
+      GreekFieldMask::Vega | GreekFieldMask::Theta | GreekFieldMask::Rho;
+  for (const Side side : {Side::Put, Side::Call}) {
+    Chain c = partial_greek_chain(side);
+    for (const auto route : {ChainBatchRoute::Scalar, ChainBatchRoute::LanedAvx2}) {
+      SCOPED_TRACE(static_cast<int>(side));
+      SCOPED_TRACE(static_cast<int>(route));
+      ChainBatchOptions options;
+      options.route = route;
+      ChainBatchWorkspace ws;
+      Outs out(c.size());
+      ChainMetadata metadata(c.size());
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(),
+          metadata.attach(out.all()), options, ws));
+      for (std::size_t i = 0; i < c.size(); ++i) {
+        EXPECT_EQ(metadata.requested[i], all);
+        for (const auto field : {5u, 6u, 7u})
+          EXPECT_EQ(metadata.reasons[i][field], AmericanGreekReason::NotRequested);
+        if (i < 4) {
+          EXPECT_TRUE(has_field(metadata.supported[i], GreekFieldMask::Price));
+          EXPECT_FALSE(has_field(metadata.supported[i], GreekFieldMask::Gamma));
+          EXPECT_EQ(metadata.reasons[i][1], AmericanGreekReason::StencilCrossing);
+        } else if (i < 7) {
+          EXPECT_EQ(metadata.supported[i], all);
+        } else {
+          EXPECT_EQ(metadata.supported[i], GreekFieldMask::None);
+          for (const auto field : {0u, 1u, 2u, 3u, 4u, 8u})
+            EXPECT_EQ(metadata.reasons[i][field], AmericanGreekReason::Nonfinite);
+        }
+      }
+      const auto retained_price = out.price;
+      const auto retained_rho = out.rho;
+      // The kernel's grouped theta/gamma refusal cannot veto these exact columns.
+      ChainGreekColumns rho_only{out.price, {}, {}, {}, {}, out.rho, out.status};
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(),
+          metadata.attach(rho_only), options, ws));
+      for (std::size_t i = 0; i < 7; ++i) {
+        EXPECT_EQ(out.status[i], ChainRowStatus::Ok);
+        EXPECT_EQ(metadata.requested[i], GreekFieldMask::Price | GreekFieldMask::Rho);
+        EXPECT_EQ(metadata.supported[i], metadata.requested[i]);
+        EXPECT_EQ(metadata.reasons[i][1], AmericanGreekReason::NotRequested);
+        EXPECT_DOUBLE_EQ(out.price[i], retained_price[i]);
+        EXPECT_DOUBLE_EQ(out.rho[i], retained_rho[i]);
+      }
+      // Price-only requests also overwrite prior failure metadata, with every
+      // derivative NotRequested even though the packed kernel computes some.
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(),
+          metadata.attach(out.price_only()), options, ws));
+      for (std::size_t i = 0; i < c.size(); ++i) {
+        EXPECT_EQ(metadata.requested[i], GreekFieldMask::Price);
+        EXPECT_EQ(metadata.supported[i], i == 7 ? GreekFieldMask::None : GreekFieldMask::Price);
+        for (std::size_t field = 0; field < 8; ++field)
+          EXPECT_EQ(metadata.reasons[i][field], AmericanGreekReason::NotRequested);
+        if (i < 7) EXPECT_DOUBLE_EQ(out.price[i], retained_price[i]);
+      }
+      // Individually optional columns do not depend on the other metadata spans.
+      auto supported_only = out.price_only();
+      supported_only.supported = metadata.supported;
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), supported_only, options, ws));
+      EXPECT_EQ(metadata.supported[0], GreekFieldMask::Price);
+      auto reasons_only = out.price_only();
+      reasons_only.reasons = metadata.reasons;
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), reasons_only, options, ws));
+      EXPECT_EQ(metadata.reasons[7][8], AmericanGreekReason::Nonfinite);
+      auto requested_only = out.price_only();
+      requested_only.requested = metadata.requested;
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), requested_only, options, ws));
+      EXPECT_EQ(metadata.requested[0], GreekFieldMask::Price);
+    }
+  }
+}
+
+TEST(ChainBatchGreekAvailability, KernelFailureOverwritesPreviouslySuppliedMetadata) {
+  Chain c = partial_greek_chain(Side::Put);
+  ChainBatchWorkspace ws;
+  Outs out(c.size());
+  ChainMetadata metadata(c.size());
+  for (const auto route : {ChainBatchRoute::Scalar, ChainBatchRoute::LanedAvx2}) {
+    ChainBatchOptions options;
+    options.route = route;
+    c.rate[1] = c.carry[1] = 0.;
+    ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), metadata.attach(out.all()), options, ws));
+    ASSERT_EQ(out.status[4], ChainRowStatus::Ok);
+    ASSERT_TRUE(has_field(metadata.supported[4], GreekFieldMask::Price));
+    // Valid model inputs, but the double-continuation put regime is unsupported.
+    c.rate[1] = -.01;
+    c.carry[1] = -.02;
+    for (const bool price_only : {false, true}) {
+      const auto cols = metadata.attach(price_only ? out.price_only() : out.all());
+      ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), cols, options, ws));
+      for (std::size_t i = 4; i < 7; ++i) {
+        EXPECT_EQ(out.status[i], ChainRowStatus::Unpriceable);
+        EXPECT_TRUE(std::isnan(out.price[i]));
+        EXPECT_EQ(metadata.supported[i], GreekFieldMask::None);
+        EXPECT_EQ(metadata.reasons[i][8], AmericanGreekReason::Nonfinite);
+      }
+    }
+  }
+}
+
+TEST(ChainBatchGreekAvailability, MetadataShapesAndByteAliasesRefuseBeforeWrites) {
+  Chain c = partial_greek_chain(Side::Put);
+  Outs out(c.size());
+  ChainMetadata metadata(c.size());
+  ChainBatchWorkspace ws;
+  const auto refuses = [&](const ChainGreekColumns &columns) {
+    const auto rc = price_chain_batch(c.spot, c.exp(), c.con(), columns, {}, ws);
+    EXPECT_FALSE(rc.has_value());
+    if (!rc) EXPECT_EQ(rc.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_TRUE(std::all_of(out.price.begin(), out.price.end(), [](double p) { return p == -7.; }));
+    EXPECT_TRUE(std::all_of(metadata.requested.begin(), metadata.requested.end(),
+        [](GreekFieldMask mask) { return mask == GreekFieldMask::All; }));
+  };
+  auto columns = metadata.attach(out.all());
+  columns.requested = columns.requested.first(1);
+  refuses(columns);
+  columns = metadata.attach(out.all());
+  columns.supported = columns.supported.first(1);
+  refuses(columns);
+  columns = metadata.attach(out.all());
+  columns.reasons = columns.reasons.first(1);
+  refuses(columns);
+  columns = metadata.attach(out.all());
+  columns.supported = columns.requested;
+  refuses(columns);
+  columns = metadata.attach(out.all());
+  columns.requested = {reinterpret_cast<GreekFieldMask *>(c.expiry.data()), c.size()};
+  refuses(columns);
+  columns = metadata.attach(out.all());
+  columns.status = {reinterpret_cast<ChainRowStatus *>(metadata.reasons.data()), c.size()};
+  refuses(columns);
+}
+
+TEST(ChainBatchGreekAvailability, PartialMetadataIsDeterministicAndAllocationFree) {
+  Chain c = partial_greek_chain(Side::Put);
+  const auto seed = c;
+  for (int copies = 0; copies < 8; ++copies) {
+    c.strike.insert(c.strike.end(), seed.strike.begin(), seed.strike.end());
+    c.sigma.insert(c.sigma.end(), seed.sigma.begin(), seed.sigma.end());
+    c.expiry.insert(c.expiry.end(), seed.expiry.begin(), seed.expiry.end());
+    c.side.insert(c.side.end(), seed.side.begin(), seed.side.end());
+  }
+  ASSERT_GT(c.size(), 2 * kChainBatchChunk);
+  ChainBatchWorkspace ws;
+  ws.reserve(c.T.size());
+  Outs out(c.size());
+  ChainMetadata metadata(c.size());
+  for (const auto route : {ChainBatchRoute::Scalar, ChainBatchRoute::LanedAvx2}) {
+    ChainBatchOptions options;
+    options.route = route;
+    const auto cols = metadata.attach(out.all());
+    ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), cols, options, ws));
+    const auto baseline = out;
+    const auto baseline_meta = metadata;
+    options.executor = &pricing_executor();
+    options.n_threads = 3;
+    ASSERT_TRUE(price_chain_batch(c.spot, c.exp(), c.con(), cols, options, ws));
+    EXPECT_EQ(std::memcmp(out.price.data(), baseline.price.data(), c.size() * sizeof(double)), 0);
+    EXPECT_EQ(out.status, baseline.status);
+    EXPECT_EQ(metadata.requested, baseline_meta.requested);
+    EXPECT_EQ(metadata.supported, baseline_meta.supported);
+    EXPECT_EQ(metadata.reasons, baseline_meta.reasons);
+    // Thread-local allocation check isolates this caller's preallocated scatter;
+    // existing ChainBatchAlloc tests cover the worker pool's warmed routes.
+    options.executor = nullptr;
+    bool success = false;
+    const auto allocations = testkit::count_allocations([&] {
+      success = price_chain_batch(c.spot, c.exp(), c.con(), cols, options, ws).has_value();
+    });
+    EXPECT_TRUE(success);
+    EXPECT_EQ(allocations, 0u);
+  }
+}
+
 [[nodiscard]] bool same_bits(std::span<const double> a, std::span<const double> b) {
   return a.size() == b.size() &&
          (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
@@ -163,6 +402,13 @@ void fail_row(Outs &o, std::size_t i, ChainRowStatus st, bool greeks) {
   o.status[i] = st;
 }
 
+[[nodiscard]] bool reference_supplied(const AmericanGreeks &g, std::size_t field, double v) {
+  const auto bit = static_cast<GreekFieldMask>(std::uint32_t{1} << field);
+  return has_field(g.requested, bit) && has_field(g.supported, bit) && std::isfinite(v) &&
+      (g.reasons[field] == AmericanGreekReason::ComputedEstimate ||
+       g.reasons[field] == AmericanGreekReason::Exercised);
+}
+
 // The per-contract loop: andersen_lake for prices only, else american_greeks_al
 // with the requested vega / rho solves, at the expiry's effective carry.
 [[nodiscard]] Outs reference_loop(const Chain &c, bool greeks, bool vega = true,
@@ -189,10 +435,7 @@ void fail_row(Outs &o, std::size_t i, ChainRowStatus st, bool greeks) {
     }
     const Result<AmericanGreeks> g = american_greeks_al(
         c.spot, c.strike[i], c.T[e], c.sigma[i], c.rate[e], q, c.side[i], opts, vega, rho, false);
-    const bool fine = g && std::isfinite(g->price) && std::isfinite(g->delta) &&
-                      std::isfinite(g->gamma) && std::isfinite(g->theta) &&
-                      (!vega || std::isfinite(g->vega)) && (!rho || std::isfinite(g->rho));
-    if (!fine) {
+    if (!g || !reference_supplied(*g, 8, g->price)) {
       fail_row(o, i, ChainRowStatus::Unpriceable, true);
       continue;
     }
@@ -202,7 +445,11 @@ void fail_row(Outs &o, std::size_t i, ChainRowStatus st, bool greeks) {
     o.vega[i] = vega ? g->vega : -7.0;
     o.theta[i] = g->theta;
     o.rho[i] = rho ? g->rho : -7.0;
-    o.status[i] = ChainRowStatus::Ok;
+    const bool complete = reference_supplied(*g, 0, g->delta) &&
+        reference_supplied(*g, 1, g->gamma) && reference_supplied(*g, 3, g->theta) &&
+        (!vega || reference_supplied(*g, 2, g->vega)) &&
+        (!rho || reference_supplied(*g, 4, g->rho));
+    o.status[i] = complete ? ChainRowStatus::Ok : ChainRowStatus::GreeksUnavailable;
   }
   return o;
 }

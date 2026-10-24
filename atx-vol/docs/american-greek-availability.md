@@ -267,3 +267,37 @@ owning PCH-off objects. All refused contracts stay in the tests. Evidence is
 repair-iv/greek-surface-{red,final,alloc-red,alloc-final,hygiene}.* and
 greek-surface-baw-red.{py,log}. Chain-batch and ServedSession result propagation,
 plus additive backtest price coverage/carry bookkeeping, remain separate work.
+
+Chain-batch pricing now retains a supplied price and each supplied derivative
+when another requested derivative is refused. The appended
+`ChainRowStatus::GreeksUnavailable` value is 7; all previous ordinals and IV
+statuses are unchanged. `Unpriceable` still means no supplied price, and invalid
+or unpriceable rows still poison every requested numeric column. The optional
+caller-owned `requested`, `supported` and nine-reason spans are independently
+empty or row-sized, checked for byte aliases before any output write, and
+overwritten on every row. Only Price and the nonempty Delta/Gamma/Vega/Theta/Rho
+columns are requested; Vanna, Volga and Charm remain NotRequested even if a
+kernel solve group computed them. Availability remains separate from accuracy.
+
+The new runtime regression first reproduced lost partial prices on both sides
+and both scalar/AVX2 routes. The nullopt crossing fixture independently supplies
+Price and Rho (mask 272), not Delta; this was verified against the frozen
+pre-chain Python module b2aa4140 before correcting the test's initial Delta
+assumption. Scalar retained prices and Rho are bit-identical to direct kernel
+calls. Mixed complete/partial/invalid rows, exact Price+Rho and Price-only
+requests, kernel failures after buffer reuse, independently optional metadata,
+alias rejection, thread-count determinism and allocation checks pass. The
+focused chain/IV/workspace/allocation suite passes all 37 tests, including zero
+allocations on reserved partial-result buffers and the existing process-wide
+worker checks. Receipts are `repair-iv/greek-chain-{red,probe,green,final}.*`.
+All four owning PCH-off objects pass, including the benchmark; its target was
+enabled in the hygiene cache only to compile that owning object. The final test
+executable is SHA256
+9bcd7475634071870ee565264ab703d2fef5f9c7b70148e8539758b815a17876.
+
+The chain benchmark's eight-status histogram includes partial rows. Its
+per-column comparison counts retain every finite supplied price/derivative,
+including partial rows, and report NaN error when no values were compared.
+These are correctness/denominator changes; no chain throughput or Greek
+accuracy claim is made. Native ServedSession propagation and additive backtest
+price coverage/carry bookkeeping remain separate work.
