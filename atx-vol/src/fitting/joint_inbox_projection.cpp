@@ -1,5 +1,9 @@
 #include "fitting/joint_inbox_projection.hpp"
 
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+#include "fitting/counters.hpp"
+#endif
+
 #if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
 #include "fitting/joint_row_census.hpp"
 #endif
@@ -339,9 +343,16 @@ void add_calendars(Problem &p, std::span<const JointInboxSlice> slices) {
 // Reuses the symbolic structure and coefficient positions at each iteration.
 class NewtonSystem {
 public:
-  NewtonSystem(const Problem &p, JointInboxProfile *profile)
+  NewtonSystem(const Problem &p, JointInboxProfile *profile
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+               , JointWorkingSolveWork *work = nullptr
+#endif
+               )
       : p_(p), profile_(profile), matrix_(static_cast<int>(p.target.size()),
                                        static_cast<int>(p.target.size())) {
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    work_ = work;
+#endif
     ProfileSpan timer(profile_ ? &profile_->symbolic_ns : nullptr);
     std::vector<Eigen::Triplet<double>> entries;
     for (int i = 0; i < matrix_.rows(); ++i) entries.emplace_back(i, i, 1.0);
@@ -365,7 +376,15 @@ public:
       }
     }
     factor_.analyzePattern(matrix_);
-    if (profile_) profile_->matrix_nonzeros = static_cast<std::size_t>(matrix_.nonZeros());
+    const auto nonzeros = static_cast<std::size_t>(matrix_.nonZeros());
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if (work_) work_->matrix_nonzeros = nonzeros;
+    if (profile_ && work_) {
+      profile_->matrix_nonzeros = std::max(profile_->matrix_nonzeros, nonzeros);
+    }
+    else
+#endif
+    if (profile_) profile_->matrix_nonzeros = nonzeros;
   }
 
   [[nodiscard]] bool factor(const Vector &s, const Vector &z) {
@@ -387,12 +406,34 @@ public:
     if (!std::all_of(matrix_.valuePtr(), matrix_.valuePtr()+matrix_.nonZeros(),
                      [](double value) { return std::isfinite(value); })) return false;
     ProfileSpan numeric(profile_ ? &profile_->factor_ns : nullptr);
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if (work_) {
+      ++work_->factorizations;
+      if (profile_) ++profile_->factorizations;
+    }
+#endif
     factor_.factorize(matrix_);
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if (work_) {
+      if (factor_.info() == Eigen::Success) {
+        work_->factor_nonzeros_peak = std::max(work_->factor_nonzeros_peak,
+            static_cast<std::size_t>(factor_.matrixL().nestedExpression().nonZeros()));
+      }
+    }
+#endif
     if (profile_) {
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+      if (!work_)
+#endif
       ++profile_->factorizations;
       if (factor_.info() == Eigen::Success) {
-        profile_->factor_nonzeros =
+        const auto nonzeros =
             static_cast<std::size_t>(factor_.matrixL().nestedExpression().nonZeros());
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+        if (work_) profile_->factor_nonzeros = std::max(profile_->factor_nonzeros, nonzeros);
+        else
+#endif
+        profile_->factor_nonzeros = nonzeros;
       }
     }
     return factor_.info() == Eigen::Success;
@@ -404,6 +445,9 @@ public:
                                 Vector *rhs_scratch = nullptr) const {
     ProfileSpan rhs_timer(profile_ ? &profile_->rhs_ns : nullptr);
     if (profile_) ++profile_->directions;
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if (work_) ++work_->directions;
+#endif
     Vector owned_rhs;
     Vector &rhs = rhs_scratch ? *rhs_scratch : owned_rhs;
     rhs = -rd;
@@ -441,6 +485,9 @@ private:
   struct Term { int position; double value; };
   const Problem &p_;
   JointInboxProfile *profile_;
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+  JointWorkingSolveWork *work_ = nullptr;
+#endif
   Matrix matrix_;
   Eigen::SimplicialLDLT<Matrix, Eigen::Lower> factor_;
   std::vector<int> diagonal_;
@@ -578,6 +625,9 @@ void observe_built(const Problem &p, const Vector &x, std::size_t budget,
 #if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
                           , const CensusContext &census
 #endif
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+                          , JointWorkingSolveWork *work = nullptr
+#endif
                           ) {
   const auto n = static_cast<Eigen::Index>(p.target.size());
   const auto m = static_cast<Eigen::Index>(p.rows.size());
@@ -600,7 +650,11 @@ void observe_built(const Problem &p, const Vector &x, std::size_t budget,
   for (Eigen::Index j = 0; j < m; ++j) {
     s[j] = std::max(1.0, p.rows[static_cast<std::size_t>(j)].value(x));
   }
-  NewtonSystem system(p, profile);
+  NewtonSystem system(p, profile
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+                      , work
+#endif
+                      );
 #if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
   std::optional<CentralityWorkspace> correction;
   if (centrality) prepare_centrality(correction, system, s, z, n, profile);
@@ -611,6 +665,9 @@ void observe_built(const Problem &p, const Vector &x, std::size_t budget,
     ProfileSpan iteration_timer(profile ? &profile->iteration_ns : nullptr);
     ProfileSpan residual_timer(profile ? &profile->residual_ns : nullptr);
     used = iteration + 1u;
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if (work) work->iterations = used;
+#endif
     for (Eigen::Index i = 0; i < n; ++i) rd[i] = x[i] - p.target[static_cast<std::size_t>(i)];
     double violation = 0.0;
     for (Eigen::Index j = 0; j < m; ++j) {
@@ -686,10 +743,238 @@ void observe_built(const Problem &p, const Vector &x, std::size_t budget,
   return true;
 }
 
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+struct FullScan {
+  bool finite = true;
+  std::size_t violations = 0, added = 0;
+  double minimum = std::numeric_limits<double>::infinity();
+};
+
+// Reconstruct the exact publication clamp without allocating a second iterate.
+// Row order and coefficient accumulation match Row::value; no slack is widened.
+FullScan scan_full(const Problem &p, const Vector &x, bool published,
+                   std::vector<std::uint8_t> *selected, JointWorkingSetWork &work) {
+  FullScan scan;
+  for (std::size_t i = 0; i < p.rows.size(); ++i) {
+    const auto &row = p.rows[i];
+    double slack = -row.b;
+    if (!published) slack = row.value(x);
+    else {
+      for (std::size_t k = 0; k < row.count; ++k) {
+        const auto v = static_cast<std::size_t>(row.index[k]);
+        slack += row.coef[k] * std::clamp(x[row.index[k]], p.lower[v], p.upper[v]);
+      }
+    }
+    ++work.full_scan_rows;
+    if (!std::isfinite(slack)) scan.finite = false;
+    scan.minimum = std::min(scan.minimum, slack);
+    if (slack < -kFeasibilityTolerance) {
+      ++scan.violations;
+      if (selected && (*selected)[i] == 0u) {
+        (*selected)[i] = 1u;
+        ++scan.added;
+      }
+    }
+  }
+  if (p.rows.empty()) scan.minimum = 0.;
+  return scan;
+}
+
+bool working_certificate(std::span<const JointInboxSlice> slices, const Problem &p,
+                         const Vector &x, std::vector<std::vector<AmericanPriceNode>> &nodes,
+                         JointInboxProfile *profile) {
+  ProfileSpan timer(profile ? &profile->certificate_ns : nullptr);
+  nodes.clear();
+  return certify(slices, p, x, nodes);
+}
+
+bool working_attempt(const Problem &p, std::size_t budget, Vector &x,
+                      JointInboxDiagnostics &diagnostics, JointInboxProfile *profile,
+                      JointWorkingSetWork &work, bool fallback) {
+  auto &slot = work.solves[work.attempts++];
+  slot.full_fallback = fallback;
+  slot.selected_rows = p.rows.size();
+  slot.outcome = JointWorkingSolveOutcome::Aborted;
+  if (fallback) ++work.full_solves;
+  else ++work.reduced_solves;
+  std::size_t used = 0;
+  const bool success = solve(p, budget, x, used, diagnostics, profile, false
+#if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
+                             , CensusContext{nullptr, {}, nullptr}
+#endif
+                             , &slot);
+  slot.outcome = success ? JointWorkingSolveOutcome::Feasible
+                         : JointWorkingSolveOutcome::NonConverged;
+  return success;
+}
+
+bool working_scan_and_certify(std::span<const JointInboxSlice> slices, const Problem &p,
+    const Vector &x, std::vector<std::uint8_t> *selected,
+    std::vector<std::vector<AmericanPriceNode>> &nodes, JointInboxProfile *profile,
+    JointWorkingSetWork &work, const JointWorkingSetControl *control = nullptr) {
+  auto &slot = work.solves[work.attempts - 1u];
+  const auto before = scan_full(p, x, false, selected, work);
+  const auto after = scan_full(p, x, true, selected, work);
+  slot.iterate_scan_rows = p.rows.size();
+  slot.publication_scan_rows = p.rows.size();
+  slot.min_iterate_slack = before.minimum;
+  slot.min_published_slack = after.minimum;
+  slot.violated_rows = after.violations;
+  slot.newly_added_rows = before.added + after.added;
+  work.newly_added_rows += slot.newly_added_rows;
+  if (control && control->fault == JointWorkingFault::ScanRefusal) {
+    ++work.injected_refusals;
+    work.fallback_reason = JointWorkingReason::NonfiniteScan;
+    return false;
+  }
+  if (!before.finite || !after.finite) {
+    work.fallback_reason = JointWorkingReason::NonfiniteScan;
+    return false;
+  }
+  if (after.violations != 0u) return false;
+  if (control && control->fault == JointWorkingFault::NoProgress) {
+    ++work.injected_refusals;
+    work.fallback_reason = JointWorkingReason::NoProgress;
+    return false;
+  }
+  const bool certified = working_certificate(slices, p, x, nodes, profile);
+  const bool forced = control && control->fault == JointWorkingFault::CertificateRefusal;
+  if (forced) ++work.injected_refusals;
+  if (!certified || forced) {
+    slot.outcome = JointWorkingSolveOutcome::CertificateRefused;
+    work.fallback_reason = JointWorkingReason::CertificateRefused;
+    return false;
+  }
+  return true;
+}
+
+// This storage is optional. Every reduced solve restarts at the original target;
+// its vectors and matrix never replace or mutate the authoritative full problem.
+struct WorkingStorage {
+  Problem reduced;
+  std::vector<std::uint8_t> selected;
+  WorkingStorage(const Problem &p, JointWorkingSetWork &work) {
+    work.workspace_bytes = sizeof(WorkingStorage) + p.rows.size() * (sizeof(Row) + 1u) +
+                           3u * p.target.size() * sizeof(double);
+    selected.resize(p.rows.size());
+    reduced.target = p.target;
+    reduced.lower = p.lower;
+    reduced.upper = p.upper;
+    reduced.rows.reserve(p.rows.size());
+  }
+};
+
+bool reduced_rounds(std::span<const JointInboxSlice> slices, const Problem &p,
+    std::size_t budget, Vector &x, JointInboxDiagnostics &diagnostics, JointInboxProfile *profile,
+    std::vector<std::vector<AmericanPriceNode>> &nodes, JointWorkingSetWork &work,
+    const JointWorkingSetControl *control) {
+  if (control && control->before_optional_allocation) {
+    control->before_optional_allocation(control->context);
+  }
+  WorkingStorage storage(p, work);
+  const auto bounds_begin = p.rows.size() - 2u * p.target.size();
+  for (std::size_t i = 0; i < p.rows.size(); ++i) {
+    const double slack = p.rows[i].value(x);
+    ++work.selection_scan_rows;
+    ++work.full_scan_rows;
+    storage.selected[i] = (i >= bounds_begin || slack < -kFeasibilityTolerance) ? 1u : 0u;
+  }
+  const auto rounds = control ? control->reduced_rounds_limit : 3u;
+  for (std::size_t round = 0; round < rounds; ++round) {
+    storage.reduced.rows.clear();
+    for (std::size_t i = 0; i < p.rows.size(); ++i) {
+      if (storage.selected[i] != 0u) storage.reduced.rows.push_back(p.rows[i]);
+    }
+    if (!working_attempt(storage.reduced, budget, x, diagnostics, profile, work, false)) {
+      work.fallback_reason = JointWorkingReason::ReducedNonConverged;
+      return false;
+    }
+    if (control && control->fault == JointWorkingFault::ReducedRefusal) {
+      ++work.injected_refusals;
+      work.solves[work.attempts - 1u].outcome = JointWorkingSolveOutcome::NonConverged;
+      work.fallback_reason = JointWorkingReason::ReducedNonConverged;
+      return false;
+    }
+    if (working_scan_and_certify(slices, p, x, &storage.selected, nodes, profile, work, control)) {
+      return true;
+    }
+    if (work.fallback_reason != JointWorkingReason::None) return false;
+    if (work.solves[work.attempts - 1u].newly_added_rows == 0u) {
+      work.fallback_reason = JointWorkingReason::NoProgress;
+      return false;
+    }
+  }
+  work.fallback_reason = JointWorkingReason::RoundLimit;
+  return false;
+}
+
+bool solve_working(std::span<const JointInboxSlice> slices, const Problem &p,
+    std::size_t budget, Vector &x, JointInboxDiagnostics &diagnostics, JointInboxProfile *profile,
+    std::vector<std::vector<AmericanPriceNode>> &nodes, JointWorkingSetWork &work,
+    const JointWorkingSetControl *control) {
+  work.synthetic_control = control != nullptr;
+  work.full_variables = p.target.size();
+  work.full_rows = p.rows.size();
+  work.bound_rows = 2u * p.target.size();
+  x.resize(static_cast<Eigen::Index>(p.target.size()));
+  for (std::size_t i = 0; i < p.target.size(); ++i) {
+    x[static_cast<Eigen::Index>(i)] = std::clamp(p.target[i], p.lower[i], p.upper[i]);
+  }
+  const auto initial = scan_full(p, x, false, nullptr, work);
+  work.initial_scan_rows = p.rows.size();
+  work.initial_violated_rows = initial.violations;
+  if (initial.finite && initial.violations == 0u) {
+    if (working_certificate(slices, p, x, nodes, profile)) return true;
+    work.fallback_reason = JointWorkingReason::CertificateRefused;
+  } else if (!initial.finite) work.fallback_reason = JointWorkingReason::NonfiniteScan;
+  else if (p.target.size() > (control ? control->variables_limit : 14000u) ||
+           p.rows.size() > (control ? control->rows_limit : 60000u)) {
+    work.fallback_reason = JointWorkingReason::Capacity;
+    ++work.capacity_refusals;
+  } else {
+    try {
+      if (reduced_rounds(slices, p, budget, x, diagnostics, profile, nodes, work, control)) {
+        return true;
+      }
+    } catch (const std::bad_alloc &) {
+      // Only optional work is contained. The original full solve below retains
+      // its existing allocation/error behavior and never reruns a reduced stage.
+      ++work.allocation_refusals;
+      if (work.attempts != 0u) {
+        work.solves[work.attempts - 1u].outcome = JointWorkingSolveOutcome::AllocationRefused;
+      }
+      work.fallback_reason = JointWorkingReason::OptionalAllocation;
+    }
+  }
+  if (!working_attempt(p, budget, x, diagnostics, profile, work, true)) return false;
+  return working_scan_and_certify(slices, p, x, nullptr, nodes, profile, work);
+}
+
+void total_work(JointWorkingSetWork &work, std::size_t &iterations) noexcept {
+  work.iterations = 0;
+  work.factorizations = 0;
+  work.directions = 0;
+  for (const auto &slot : work.solves) {
+    work.iterations += slot.iterations;
+    work.factorizations += slot.factorizations;
+    work.directions += slot.directions;
+  }
+  iterations = work.iterations;
+}
+#endif
+
 } // namespace
 
 bool joint_centrality_compiled() noexcept {
 #if defined(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool joint_working_set_compiled() noexcept {
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
   return true;
 #else
   return false;
@@ -732,7 +1017,10 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
                                            JointInboxProfile *profile,
                                             JointDirectionMode mode,
                                             research::JointRowObserver *observer,
-                                            const research::JointRowRawSource *raw_census) {
+                                            const research::JointRowRawSource *raw_census,
+                                            JointConstraintMode constraints,
+                                            JointWorkingSetWork *working,
+                                            const JointWorkingSetControl *control) {
 #if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
   // Resolve only the calling thread's live owner. An arbitrary supplied pointer
   // never grants permission to dereference another thread's recorder.
@@ -754,6 +1042,42 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
   JointInboxDiagnostics local;
   JointInboxDiagnostics &record = diagnostics ? *diagnostics : local;
   record = {};
+  if (working) *working = {};
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+  JointWorkingSetWork owned_work;
+  if (!working) working = &owned_work;
+  struct RecordWork {
+    JointWorkingSetWork &work;
+    ~RecordWork() {
+      std::size_t ignored = 0;
+      total_work(work, ignored); // Also retain actual work if the original fallback throws.
+      // The caller's existing ChainScope places a global surface solve in its
+      // first expiry. Other joint calls are charged once to their actual scope.
+      if (auto *chain = counters::fit_timing::detail::t_chain) {
+        chain->counts.joint_working_set.add(work);
+      }
+    }
+  } recorded_work{*working};
+#endif
+  bool use_working = false;
+  switch (constraints) {
+    case JointConstraintMode::Compiled: use_working = joint_working_set_compiled(); break;
+    case JointConstraintMode::Full: break;
+    case JointConstraintMode::WorkingSet:
+      if (!joint_working_set_compiled()) return result;
+      use_working = true;
+      break;
+    default: return result;
+  }
+  if (working) {
+    working->enabled = use_working;
+    working->synthetic_control = control != nullptr;
+  }
+  if (control && (!use_working || control->variables_limit > 14000u ||
+      control->rows_limit > 60000u || control->reduced_rounds_limit == 0u ||
+      control->reduced_rounds_limit > 3u ||
+      static_cast<unsigned>(control->fault) >
+          static_cast<unsigned>(JointWorkingFault::CertificateRefusal))) return result;
   bool centrality = false;
   switch (mode) {
     case JointDirectionMode::Compiled: centrality = joint_centrality_compiled(); break;
@@ -765,6 +1089,7 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
     default: return result;
   }
   if (profile) profile->centrality_enabled = centrality;
+  if (use_working && centrality) return result;
   if (max_iterations == 0u || slices.empty()) return result;
   Problem p;
   if (!build_variables(slices, p)) return result;
@@ -802,6 +1127,19 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
     for (const Row &row : p.rows) ++profile->row_arities[row.count];
   }
   build_timer.finish();
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+  if (use_working) {
+    auto &work = *working;
+    work.enabled = true;
+    const bool success = solve_working(slices, p, max_iterations, x, record, profile, nodes, work,
+                                      control);
+    total_work(work, result.sweeps);
+    if (!success) {
+      result.outcome = JointProjectionOutcome::NonConverged;
+      return result;
+    }
+  } else {
+#endif
   if (!solve(p, max_iterations, x, result.sweeps, record, profile, centrality
 #if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
              , CensusContext{observer, slices, raw_census}
@@ -816,6 +1154,9 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
     return result;
   }
   certificate_timer.finish();
+#if defined(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+  }
+#endif
   record.certificate_passed = true;
 #if defined(ATX_VOL_JOINT_ROW_CENSUS_RESEARCH)
   if (observer) observer->published({nodes,

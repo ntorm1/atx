@@ -357,6 +357,14 @@ if(ATX_VOL_JOINT_CENTRALITY_RESEARCH)
         COMPILE_DEFINITIONS ATX_VOL_JOINT_CENTRALITY_RESEARCH=1)
     target_sources(atx-vol PRIVATE bench/joint-centrality/corrector.cpp)
 endif()
+option(ATX_VOL_JOINT_WORKING_SET_RESEARCH "Research-only bounded joint row generation" OFF)
+if(ATX_VOL_JOINT_WORKING_SET_RESEARCH)
+    if(ATX_VOL_JOINT_CENTRALITY_RESEARCH OR ATX_VOL_QP_FAER_RESEARCH_LIBRARY)
+        message(FATAL_ERROR "Joint working set must use original directions and factor backend")
+    endif()
+    set_property(SOURCE src/fitting/joint_inbox_projection.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_JOINT_WORKING_SET_RESEARCH=1)
+endif()
 
 # All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
 # AVX2+FMA intrinsics and get the ISA enabled PER-FILE (NOT library-wide) so the

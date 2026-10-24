@@ -56,7 +56,9 @@ struct RawPriceDraftResult {
 // slots. On every failure all drafts remain unchanged. No public fit is published.
 [[nodiscard]] JointProjectionResult project_raw_price_drafts(
     std::span<RawPriceDraft> drafts, std::size_t max_iterations = 100,
-    JointInboxDiagnostics *diagnostics = nullptr, JointInboxProfile *profile = nullptr);
+    JointInboxDiagnostics *diagnostics = nullptr, JointInboxProfile *profile = nullptr,
+    JointWorkingSetWork *working = nullptr,
+    JointConstraintMode constraints = JointConstraintMode::Compiled);
 
 // Consumes a successfully projected private draft. Classifies each final node side,
 // builds a genuine ConvexDense curve from identified final OTM observations, then

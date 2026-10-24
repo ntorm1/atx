@@ -23,6 +23,7 @@
 #include "quote_bench_retained_audit.hpp"
 #include "quote_bench_candidate_capture.hpp"
 #include "quote_bench_joint_row_census.hpp"
+#include "quote_bench_joint_working_set.hpp"
 
 #include <algorithm>
 #include <array>
@@ -243,7 +244,8 @@ Arguments arguments(int argc, char **argv) {
           "timing-detail, cold-reset and report; no other capture/audit/replay");
     if (!research::joint_row_census_compiled())
       throw std::runtime_error("joint row census requires ATX_VOL_JOINT_ROW_CENSUS_RESEARCH build");
-    if (detail::joint_centrality_compiled() || reimply_candidate_batch_enabled() ||
+    if (detail::joint_centrality_compiled() || detail::joint_working_set_compiled() ||
+        reimply_candidate_batch_enabled() ||
         reimply_seed_kernel() != IvPriceSeedKernel::ScalarReference)
       throw std::runtime_error("joint row census requires ordinary projection and scalar proof modes");
     for (const auto &path : {args.joint_row_census, args.output, args.report})
@@ -982,6 +984,7 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_candidate_batch_calls", t.reimply_candidate_batch_calls},
           {"reimply_candidate_batch_requests", t.reimply_candidate_batch_requests},
           {"reimply_candidate_batch", candidate_batch},
+          {"joint_working_set", quote_bench_joint_working_set::report(t.joint_working_set)},
           {"reimply_candidate_attempts", t.reimply_fast_attempts},
           {"reimply_candidate_roots", t.reimply_fast_roots},
           {"reimply_proposal_stops", t.reimply_proposal_stops},
@@ -2352,6 +2355,14 @@ Json seed_target_provenance() {
           {"maximum_extra_directions_per_factor", detail::joint_centrality_compiled() ? 3 : 0},
           {"primal_feasibility_tolerance", 1e-10},
           {"publication_certificates", "Original slice, exact box and all-pair calendar"}}},
+      {"joint_constraints", {
+          {"cmake_option", "ATX_VOL_JOINT_WORKING_SET_RESEARCH"},
+          {"enabled", detail::joint_working_set_compiled()},
+          {"selection", detail::joint_working_set_compiled() ? "BoundedWorkingSet" : "Full"},
+          {"maximum_reduced_solves", detail::joint_working_set_compiled() ? 3 : 0},
+          {"maximum_full_fallback_solves", detail::joint_working_set_compiled() ? 1 : 0},
+          {"per_solve_budget", "Original caller iteration budget"},
+          {"publication", "Every original row after clamp plus original full certificates"}}},
       {"candidate_proof_batch", {
           {"cmake_option", "ATX_VOL_EMPIRICAL_CANDIDATE_PROOFS"},
           {"enabled", reimply_candidate_batch_enabled()},

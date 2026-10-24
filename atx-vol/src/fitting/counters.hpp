@@ -48,6 +48,7 @@
 #include <limits>
 #include <mutex>  // solve ledger registry lock (register/scrape only; never the hot path)
 #include <vector> // solve-ledger per-step trace sink
+#include "fitting/joint_working_set_work.hpp"
 
 namespace atx::vol::counters {
 
@@ -1174,6 +1175,9 @@ struct CandidateProofBatchCounters {
 };
 
 struct FitTimingCounters {
+  // Global projection is charged once to the first chain, including failed
+  // attempts. Aggregate totals retain every call; detailed slots are first-call only.
+  atx::vol::detail::JointWorkingSetAggregate joint_working_set;
   std::uint32_t al_price_calls{0};       // AL boundary solves on the fitting thread (every AL
                                          // price, including those inside American IV inversions)
   std::uint32_t al_greeks_calls{0};      // AL full-Greek bundles (any route) on that thread

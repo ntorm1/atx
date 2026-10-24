@@ -7,6 +7,7 @@
 #include <span>
 
 #include "atx/vol/api/fitting/american_price_slice.hpp"
+#include "fitting/joint_working_set_work.hpp"
 
 namespace atx::vol::research {
 class JointRowObserver;
@@ -109,6 +110,9 @@ project_joint_in_box(std::span<const JointInboxSlice> slices,
                      JointInboxProfile *profile = nullptr,
                      JointDirectionMode mode = JointDirectionMode::Compiled,
                      research::JointRowObserver *observer = nullptr,
-                     const research::JointRowRawSource *raw_census = nullptr);
+                     const research::JointRowRawSource *raw_census = nullptr,
+                     JointConstraintMode constraints = JointConstraintMode::Compiled,
+                     JointWorkingSetWork *working = nullptr,
+                     const JointWorkingSetControl *control = nullptr);
 
 } // namespace atx::vol::detail
