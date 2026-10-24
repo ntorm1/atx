@@ -56,7 +56,8 @@ constexpr PersistSectionSpec kManifestSchema[] = {
 constexpr std::uint64_t kManifestFingerprint =
     persist_fingerprint(persist_salt("ATXVMF01"), kManifestSchema);
 
-constexpr std::size_t kKeyMax = 16;
+// The 16-byte key field keeps a terminating NUL (fixed_name refuses a full-width one).
+constexpr std::size_t kKeyMax = std::tuple_size_v<decltype(PersistManifestEntry::key)> - 1;
 // Bound on the orphan-skip probe (a crash leaves at most a handful of orphans).
 constexpr std::uint64_t kMaxSeqProbe = 1u << 16;
 

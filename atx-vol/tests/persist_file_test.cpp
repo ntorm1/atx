@@ -864,10 +864,11 @@ TEST(PersistDirectory, RefusesTraversalFileName) {
   for (const std::string_view key :
        {std::string_view{".."}, std::string_view{"."}, std::string_view{"../x"},
         std::string_view{"a/b"}, std::string_view{"a\\b"}, std::string_view{"C:"},
-        std::string_view{""}, std::string_view{"abcdefghijklmnopq"}}) {
-    EXPECT_EQ(persist_file_name(PersistKind::MarketState, key, 1).error().status,
-              PersistStatus::InvalidArgument)
-        << key;
+        std::string_view{""}, std::string_view{"abcdefghijklmnopq"},
+        std::string_view{"abcdefghijklmnop"}}) { // 16: the key field keeps a NUL
+    const auto name = persist_file_name(PersistKind::MarketState, key, 1);
+    ASSERT_FALSE(name.has_value()) << key;
+    EXPECT_EQ(name.error().status, PersistStatus::InvalidArgument) << key;
   }
   EXPECT_EQ(persist_file_name(PersistKind::Manifest, "1000", 1).error().status,
             PersistStatus::InvalidArgument);
