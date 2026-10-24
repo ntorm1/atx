@@ -122,9 +122,9 @@ struct SpiderRockBucket {
   // Rows of underliers outside the admitted set (explicit list / top-N cap),
   // including whole row groups pruned by the ticker statistics; not part of
   // rows_dropped_*: they were never candidates. Every row of the partition is
-  // counted once: rows_read == size() + rows_dropped_null + rows_dropped_bad_input
-  // + rows_not_selected + dropped_non_american (a NULL ticker counts as
-  // rows_dropped_null; a pruned row group counts as rows_not_selected).
+  // counted once, in the six-term identity stated at dropped_nonstandard_root below
+  // (a NULL ticker counts as rows_dropped_null; a pruned row group counts as
+  // rows_not_selected).
   std::int64_t rows_not_selected{0};
   // Rows dropped by SpiderRockStoreSpec::american_only (exType != "American",
   // including a NULL exType), counted before underlier admission.

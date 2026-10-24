@@ -19,17 +19,32 @@
 
 #include "risk_bench.hpp"
 
+#if defined(_WIN32)
+#include <process.h> // _getpid: a private scratch dir per test process
+#else
+#include <unistd.h> // getpid
+#endif
+
 namespace {
 
 namespace fs = std::filesystem;
 namespace rb = atx::vol::riskbench;
+
+// Per-process suffix for the scratch store (see risk_bench_test.cpp process_tag).
+[[nodiscard]] std::string process_tag() {
+#if defined(_WIN32)
+  return std::to_string(::_getpid());
+#else
+  return std::to_string(::getpid());
+#endif
+}
 
 [[nodiscard]] double rel_gap(double a, double b) {
   return std::abs(a - b) / std::max({1.0, std::abs(a), std::abs(b)});
 }
 
 TEST(RiskBenchE2E, SyntheticRunProducesReport) {
-  const fs::path dir = fs::temp_directory_path() / "atx-risk-bench-e2e";
+  const fs::path dir = fs::temp_directory_path() / ("atx-risk-bench-e2e-" + process_tag());
   std::error_code ec;
   fs::remove_all(dir, ec);
 
