@@ -30,7 +30,11 @@ records Git/Python/platform identity, and checks the frozen corpus hash. The
 native report preserves exact input rows, schemes, model convention and raw
 price stencils; Python reconstructs derivatives independently of the C++ code.
 `--report native.json --output summary.json` reproduces a summary without rerunning
-prices. `test_greek_report.py` exercises polynomial signs/mixed derivatives and
+prices. Add `--require-all` to require exactly all 715 frozen IDs, or
+`--selection selection.json` to require that exact subset. Native execution
+always joins the result to the requested selection. Standalone revalidation
+without either flag permits an explicitly declared subset. `test_greek_report.py`
+exercises polynomial signs/mixed derivatives and
 malformed receipts. Set `ATX_GREEK_NATIVE_REPORT` to a pilot receipt to also check
 228 price stencil values against independent European Black closed forms.
 
@@ -66,6 +70,10 @@ change, Richardson drift, profile change and intrinsic-band crossing (price
 within `1e-9*K` of positive intrinsic). None is a rigorous reference error bound.
 The per-level crossings remain in the raw report; the summary's union flag is
 conservative and must not be read as saying every finer level crossed.
+Python independently checks each native flag against the bumped spot, strike,
+side and price. Each field's regime evidence includes the center even when its
+formula does not. A missing center is reported as incomplete regime evidence,
+without discarding a first difference whose own operands are available.
 
 Separate served-map stencils vary only actual family axes. Sigma-family permits
 spot/sigma; sigma/q permits spot/sigma/q. Time and rate axes, and sigma-family q,
@@ -81,3 +89,7 @@ family preparation), whereas chain/shock counters describe the final complete
 iteration. Shock coverage accumulates every contract before its output columns
 are reused. Price-only work requests zero derivatives; the separate chord and
 price/vega microbenchmarks do not masquerade as nine-field requests.
+
+The [complete 715-case receipt review](../../docs/american-greek-full-corpus-20261024.md)
+retains all 25,740 requested field outcomes and documents the cold PDE exercise
+failures, short-expiry step errors, and unresolved carry-boundary references.

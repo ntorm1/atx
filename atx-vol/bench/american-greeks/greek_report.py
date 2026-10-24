@@ -77,8 +77,15 @@ def derivatives(stencil):
         valid = all(x['status'] == 'finite' for x in selected)
         value = math.fsum(w*s['price'] for w, s in zip(weights, selected))/divisor if valid else None
         require(value is None or finite(value), 'nonfinite derivative reconstruction')
+        # The center is regime evidence even when it is not a formula operand.
+        # A refused center leaves a computable first difference intact, but does
+        # not establish that its stencil stays in one exercise regime.
+        evidence = [samples[i] for i in sorted(set(ids) | {0})]
+        evidence_complete = all(s['status'] == 'finite' for s in evidence)
         result[field] = dict(value=value, sample_statuses=sorted({s['status'] for s in selected}),
-                             intrinsic_band_changed=valid and len({s['intrinsic_band'] for s in selected}) > 1)
+                             intrinsic_evidence_complete=evidence_complete,
+                             intrinsic_band_changed=len({s['intrinsic_band'] for s in evidence
+                                                         if s['status'] == 'finite'}) > 1)
     return result
 
 
@@ -90,6 +97,13 @@ def validate_levels(levels, case):
         require(type(level['scale']) is float and level['scale'] == scale, 'step scale')
         require(level['h'] == [scale*x for x in base], 'model step convention')
         derivatives(level)
+        for sample in level['samples']:
+            if sample['status'] != 'finite':
+                continue
+            spot = case['S'] + sample['offset'][0]*level['h'][0]
+            intrinsic = max(case['K']-spot if case['side'] == 'put' else spot-case['K'], 0.)
+            expected = intrinsic > 0 and sample['price'] <= intrinsic + 1e-9*case['K']
+            require(sample['intrinsic_band'] == expected, 'price-derived intrinsic evidence')
 
 
 def validate_report(report, corpus):
@@ -161,6 +175,8 @@ def stability(series24, series32, field):
     b = [s[field]['value'] for s in series32]
     complete = all(finite(x) for x in a+b)
     result = dict(refined24=a, refined32=b, complete=complete,
+                  intrinsic_evidence_complete=all(s[field]['intrinsic_evidence_complete']
+                                                  for s in series24+series32),
                   intrinsic_band_changed=any(s[field]['intrinsic_band_changed'] for s in series24+series32))
     if complete:
         prior, last = abs(b[1]-b[0]), abs(b[2]-b[1])
@@ -221,13 +237,15 @@ def summarize(report, corpus):
         complete = [x for x in details if x['reference'][field]['complete']]
         reference_summary[field] = dict(
             requested=len(details), complete=len(complete), unavailable=len(details)-len(complete),
+            intrinsic_evidence_incomplete=sum(not x['reference'][field]['intrinsic_evidence_complete']
+                                              for x in details),
             intrinsic_band_changed=sum(x['reference'][field]['intrinsic_band_changed'] for x in details),
             step_change_increases=sum(not x['reference'][field]['change_decreases'] for x in complete))
         for metric in ['last_step_change', 'profile_change', 'richardson_change']:
             ranked = sorted(complete, key=lambda x:x['reference'][field][metric], reverse=True)
             reference_summary[field][metric+'_worst'] = [
                 dict(id=x['input']['id'], value=x['reference'][field][metric]) for x in ranked[:10]]
-    return dict(schema='atx-american-greek-summary-v1', case_count=len(details),
+    return dict(schema='atx-american-greek-summary-v2', case_count=len(details),
                 derivative_tolerances=None, qualified=False, reference_independent_method=False,
                 note='Numerical diagnostics only. Step/profile drift is not a rigorous error bound.',
                 reference_summary=reference_summary, totals=totals, cases=details)
@@ -237,11 +255,23 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def validate_requested_ids(report, expected):
+    require(type(expected) is list and len(expected) > 0 and
+            all(type(x) is str and x for x in expected) and len(set(expected)) == len(expected),
+            'requested selection identity')
+    actual = report['selected_ids']
+    require(type(actual) is list and len(actual) == len(expected) and
+            all(type(x) is str for x in actual) and len(set(actual)) == len(actual) and
+            set(actual) == set(expected), 'execution omitted or added requested cases')
+
+
 def run(binary, output, selection):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     corpus = HERE/'corpus-v1.json'
     require(digest(corpus) == CORPUS_SHA, 'frozen corpus hash')
+    corpus_data = json.loads(corpus.read_text())
+    all_ids = [x['id'] for x in corpus_data['cases']]
     binary = Path(binary).resolve()
     archived = output/'atx-vol-greek-audit.exe'
     shutil.copy2(binary, archived)
@@ -249,12 +279,17 @@ def run(binary, output, selection):
     if selection:
         selected = str(output/'selection.json')
         shutil.copy2(selection, selected)
+    expected = json.loads(Path(selected).read_text()) if selection else all_ids
+    validate_requested_ids(dict(selected_ids=expected), expected)
+    require(set(expected) <= set(all_ids), 'requested case outside frozen corpus')
     native = output/'native.json'
     command = [str(archived), str(corpus), selected, str(native)]
     with (output/'native.log').open('w') as log:
         subprocess.run(command, check=True, stdout=log, stderr=subprocess.STDOUT)
     require(digest(binary) == digest(archived), 'binary changed during run')
-    summary = summarize(json.loads(native.read_text()), json.loads(corpus.read_text()))
+    report = json.loads(native.read_text())
+    validate_requested_ids(report, expected)
+    summary = summarize(report, corpus_data)
     (output/'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     root = HERE.parents[2]
     manifest = dict(schema='atx-american-greek-run-v1', utc=datetime.now(timezone.utc).isoformat(),
@@ -262,6 +297,7 @@ def run(binary, output, selection):
                     source_status=subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True),
                     python=sys.version, platform=platform.platform(), command=command,
                     corpus_sha256=digest(corpus), derivative_tolerances=None, latency_qualified=False,
+                    expected_case_ids=expected,
                     files={p.name:digest(p) for p in output.iterdir() if p.is_file()})
     manifest['runner_sources'] = {str(p.relative_to(root)): digest(p)
         for p in [HERE/'greek_main.cpp', HERE/'greek_report.py', HERE/'test_greek_report.py',
@@ -276,9 +312,20 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True)
     parser.add_argument('--selection')
     parser.add_argument('--report')
+    parser.add_argument('--require-all', action='store_true',
+                        help='require every frozen corpus ID when revalidating --report')
     args = parser.parse_args()
+    require(bool(args.report) or not args.require_all, '--require-all applies to --report')
     if args.report:
-        result = summarize(json.loads(Path(args.report).read_text()), json.loads((HERE/'corpus-v1.json').read_text()))
+        report = json.loads(Path(args.report).read_text())
+        require(digest(HERE/'corpus-v1.json') == CORPUS_SHA, 'frozen corpus hash')
+        corpus = json.loads((HERE/'corpus-v1.json').read_text())
+        require(not (args.require_all and args.selection), 'choose full corpus or explicit selection')
+        if args.require_all or args.selection:
+            expected = ([x['id'] for x in corpus['cases']] if args.require_all else
+                        json.loads(Path(args.selection).read_text()))
+            validate_requested_ids(report, expected)
+        result = summarize(report, corpus)
         Path(args.output).write_text(json.dumps(result,indent=2)+'\n')
     else:
         require(bool(args.binary), '--binary required')

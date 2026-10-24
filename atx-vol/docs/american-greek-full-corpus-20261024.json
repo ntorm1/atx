@@ -1,0 +1,6059 @@
+{
+  "schema": "atx-american-greek-full-corpus-review-v1",
+  "native_source": "e62d092d2827ddf794a866a51acbf17905681d64",
+  "native_source_clean": true,
+  "case_count": 715,
+  "requested_field_outcomes": 25740,
+  "qualified": false,
+  "derivative_tolerances": null,
+  "latency_qualified": false,
+  "reference_independent_method": false,
+  "receipt_sha256": {
+    "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\greek-full715-v1\\atx-vol-greek-audit.exe": "83cd04cdec766951a307b60e18f65e29d67be9e41f7faf18fc97684b54dcc115",
+    "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\greek-full715-v1\\native.json": "017f73de1e495f7cdd2a879e915bfb08800c17d72e171e641a6f8ba73ec7a778",
+    "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\greek-full715-v1\\manifest.json": "54399ddad8b70b4749d35d1fda332daf6465b68468abee2dfc70178864d7f3d4",
+    "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\greek-full715-v1\\summary.json": "51b9b9a1bab7ec886367a2fc8efa5d355a677f71b1fe7fd1e0a30e05957ff68e",
+    "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\greek-full715-v1\\summary-hardened-v2.json": "927d0e1270ff582da31d78f18c0fdca334e5e0471d7fe81b66fb0c9affd2d9de"
+  },
+  "coverage": {
+    "cold_fd": {
+      "delta": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.0008512210898731221,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.000735156495139111,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.000661705167528559,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.0005331146239231366,
+            "id": "g003-call-03"
+          },
+          {
+            "abs_error": 0.0004596567554792097,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.0004354982045943201,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.0003348259257135444,
+            "id": "g000-call-03"
+          },
+          {
+            "abs_error": 0.00029469195828535355,
+            "id": "g001-put-03"
+          },
+          {
+            "abs_error": 0.00023551916765784942,
+            "id": "g001-call-03"
+          },
+          {
+            "abs_error": 0.0001407123287988643,
+            "id": "g015-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "gamma": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.018258637619602114,
+            "id": "g001-call-03"
+          },
+          {
+            "abs_error": 0.018242053141318326,
+            "id": "g000-call-03"
+          },
+          {
+            "abs_error": 0.018222036906482053,
+            "id": "g001-put-03"
+          },
+          {
+            "abs_error": 0.018208068904282726,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.0181911358354232,
+            "id": "g003-call-03"
+          },
+          {
+            "abs_error": 0.018172728324325815,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.018049223974163642,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.018027354400754536,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.0021340436516219894,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0002886468476349102,
+            "id": "g006-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "vega": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.07017723338501958,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0072863641946128155,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.006969879764341158,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.005328392150616423,
+            "id": "g036-call-03"
+          },
+          {
+            "abs_error": 0.004866188014485129,
+            "id": "g039-put-04"
+          },
+          {
+            "abs_error": 0.00413491809680977,
+            "id": "g037-call-03"
+          },
+          {
+            "abs_error": 0.003835659096539379,
+            "id": "g038-call-02"
+          },
+          {
+            "abs_error": 0.0034880593169361873,
+            "id": "g038-put-04"
+          },
+          {
+            "abs_error": 0.003462939329068604,
+            "id": "g039-call-04"
+          },
+          {
+            "abs_error": 0.0034377392186009104,
+            "id": "g038-put-05"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "theta": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 5.399665875340361,
+            "id": "g010-put-03"
+          },
+          {
+            "abs_error": 5.399196383592027,
+            "id": "g010-call-03"
+          },
+          {
+            "abs_error": 5.399189205713867,
+            "id": "g009-call-03"
+          },
+          {
+            "abs_error": 5.39911221010982,
+            "id": "g008-call-03"
+          },
+          {
+            "abs_error": 5.3990420714836205,
+            "id": "g009-put-03"
+          },
+          {
+            "abs_error": 5.398951559150021,
+            "id": "g011-call-03"
+          },
+          {
+            "abs_error": 5.398900085896514,
+            "id": "g008-put-03"
+          },
+          {
+            "abs_error": 5.398591140927806,
+            "id": "g011-put-03"
+          },
+          {
+            "abs_error": 1.3497225057189013,
+            "id": "g006-put-03"
+          },
+          {
+            "abs_error": 1.3496912868961317,
+            "id": "g005-call-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "rho": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 6.156690847944901,
+            "id": "zero_rate_closed_form-call-06"
+          },
+          {
+            "abs_error": 2.511203634618653,
+            "id": "zero_rate_closed_form-call-05"
+          },
+          {
+            "abs_error": 2.1985332533880353,
+            "id": "zero_rate_closed_form-put-01"
+          },
+          {
+            "abs_error": 0.6575003669606616,
+            "id": "zero_rate_closed_form-call-04"
+          },
+          {
+            "abs_error": 0.5443252994741243,
+            "id": "zero_rate_closed_form-put-02"
+          },
+          {
+            "abs_error": 0.3185299205243908,
+            "id": "zero_rate_closed_form-call-03"
+          },
+          {
+            "abs_error": 0.2495084157949634,
+            "id": "zero_rate_closed_form-put-03"
+          },
+          {
+            "abs_error": 0.1222457869864968,
+            "id": "zero_rate_closed_form-call-02"
+          },
+          {
+            "abs_error": 0.1086524708604486,
+            "id": "zero_rate_closed_form-put-04"
+          },
+          {
+            "abs_error": 0.08585637150559933,
+            "id": "zero_rate_closed_form-put-00"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "phi": {
+        "requested": 715,
+        "supported": 0,
+        "refused_or_unsupported": 715,
+        "compared": 0,
+        "reasons": {
+          "NotInApi": 715
+        },
+        "errors_worst": [],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "vanna": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 1.215228595686444,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0436733451929569,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.04230962830119242,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.029880053372260462,
+            "id": "g003-call-03"
+          },
+          {
+            "abs_error": 0.028517077379237088,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.024967132211518278,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.0182261319490907,
+            "id": "g000-call-03"
+          },
+          {
+            "abs_error": 0.016294015838581755,
+            "id": "g001-put-03"
+          },
+          {
+            "abs_error": 0.012383260617981617,
+            "id": "g001-call-03"
+          },
+          {
+            "abs_error": 0.01050053644258142,
+            "id": "g039-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "volga": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 158.85461519202545,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.24292603184596828,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.2385517879760073,
+            "id": "g036-put-04"
+          },
+          {
+            "abs_error": 0.2050214621407349,
+            "id": "g037-put-04"
+          },
+          {
+            "abs_error": 0.19334270007220766,
+            "id": "g037-call-04"
+          },
+          {
+            "abs_error": 0.18215275154886967,
+            "id": "g039-call-03"
+          },
+          {
+            "abs_error": 0.1766066368702468,
+            "id": "g036-call-04"
+          },
+          {
+            "abs_error": 0.17361558830168633,
+            "id": "g038-put-05"
+          },
+          {
+            "abs_error": 0.15676830500410688,
+            "id": "g038-put-03"
+          },
+          {
+            "abs_error": 0.13667425946550793,
+            "id": "g036-put-02"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "charm": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.7120422726404101,
+            "id": "g011-put-02"
+          },
+          {
+            "abs_error": 0.6222479598326327,
+            "id": "g010-put-04"
+          },
+          {
+            "abs_error": 0.6221844117481083,
+            "id": "g010-call-04"
+          },
+          {
+            "abs_error": 0.6156568397822753,
+            "id": "g009-call-04"
+          },
+          {
+            "abs_error": 0.6156491346478745,
+            "id": "g009-put-04"
+          },
+          {
+            "abs_error": 0.6147209822809021,
+            "id": "g008-call-04"
+          },
+          {
+            "abs_error": 0.614710703819636,
+            "id": "g008-put-04"
+          },
+          {
+            "abs_error": 0.6128536799442834,
+            "id": "g011-call-04"
+          },
+          {
+            "abs_error": 0.6128370624341013,
+            "id": "g011-put-04"
+          },
+          {
+            "abs_error": 0.5666879601689196,
+            "id": "sigma-family-near-edge-put-00"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      }
+    },
+    "cold_al": {
+      "delta": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.0008512210898731221,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.000735156495139111,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.000661705167528559,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.0005331146239231366,
+            "id": "g003-call-03"
+          },
+          {
+            "abs_error": 0.0004596567554792097,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.0004354982045943201,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.0003348259257135444,
+            "id": "g000-call-03"
+          },
+          {
+            "abs_error": 0.00029469195828535355,
+            "id": "g001-put-03"
+          },
+          {
+            "abs_error": 0.00023551916765784942,
+            "id": "g001-call-03"
+          },
+          {
+            "abs_error": 0.0001407123287988643,
+            "id": "g015-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "gamma": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.018258637619602114,
+            "id": "g001-call-03"
+          },
+          {
+            "abs_error": 0.018242053141318326,
+            "id": "g000-call-03"
+          },
+          {
+            "abs_error": 0.018222036906482053,
+            "id": "g001-put-03"
+          },
+          {
+            "abs_error": 0.018208068904282726,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.0181911358354232,
+            "id": "g003-call-03"
+          },
+          {
+            "abs_error": 0.018172728324325815,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.018049223974163642,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.018027354400754536,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.0021340436516219894,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0002886468476349102,
+            "id": "g006-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "vega": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.07017723338501958,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0072863641946128155,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.006969879764341158,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.005328392150616423,
+            "id": "g036-call-03"
+          },
+          {
+            "abs_error": 0.004866188014485129,
+            "id": "g039-put-04"
+          },
+          {
+            "abs_error": 0.00413491809680977,
+            "id": "g037-call-03"
+          },
+          {
+            "abs_error": 0.003835659096539379,
+            "id": "g038-call-02"
+          },
+          {
+            "abs_error": 0.0034880593169361873,
+            "id": "g038-put-04"
+          },
+          {
+            "abs_error": 0.003462939329068604,
+            "id": "g039-call-04"
+          },
+          {
+            "abs_error": 0.0034377392186009104,
+            "id": "g038-put-05"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "theta": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 12.99996879030763,
+            "id": "g042-call-06"
+          },
+          {
+            "abs_error": 9.1373356101127,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 8.19984284070618,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 5.799980643814015,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 5.39911221010982,
+            "id": "g008-call-03"
+          },
+          {
+            "abs_error": 5.398951559150021,
+            "id": "g011-call-03"
+          },
+          {
+            "abs_error": 4.799980632464168,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 4.399962369161898,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 2.999996069944558,
+            "id": "g036-put-02"
+          },
+          {
+            "abs_error": 2.9999897433792855,
+            "id": "g024-put-02"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "rho": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 6.156690847944901,
+            "id": "zero_rate_closed_form-call-06"
+          },
+          {
+            "abs_error": 2.511203634618653,
+            "id": "zero_rate_closed_form-call-05"
+          },
+          {
+            "abs_error": 2.1985332533880353,
+            "id": "zero_rate_closed_form-put-01"
+          },
+          {
+            "abs_error": 0.6575003669606616,
+            "id": "zero_rate_closed_form-call-04"
+          },
+          {
+            "abs_error": 0.5443252994741243,
+            "id": "zero_rate_closed_form-put-02"
+          },
+          {
+            "abs_error": 0.3185299205243908,
+            "id": "zero_rate_closed_form-call-03"
+          },
+          {
+            "abs_error": 0.2495084157949634,
+            "id": "zero_rate_closed_form-put-03"
+          },
+          {
+            "abs_error": 0.1222457869864968,
+            "id": "zero_rate_closed_form-call-02"
+          },
+          {
+            "abs_error": 0.1086524708604486,
+            "id": "zero_rate_closed_form-put-04"
+          },
+          {
+            "abs_error": 0.08585637150559933,
+            "id": "zero_rate_closed_form-put-00"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "phi": {
+        "requested": 715,
+        "supported": 0,
+        "refused_or_unsupported": 715,
+        "compared": 0,
+        "reasons": {
+          "NotInApi": 715
+        },
+        "errors_worst": [],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "vanna": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 1.215228595686444,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0436733451929569,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.04230962830119242,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.029880053372260462,
+            "id": "g003-call-03"
+          },
+          {
+            "abs_error": 0.028517077379237088,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.024967132211518278,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.0182261319490907,
+            "id": "g000-call-03"
+          },
+          {
+            "abs_error": 0.016294015838581755,
+            "id": "g001-put-03"
+          },
+          {
+            "abs_error": 0.012383260617981617,
+            "id": "g001-call-03"
+          },
+          {
+            "abs_error": 0.01050053644258142,
+            "id": "g039-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "volga": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 158.85461519202545,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.24292603184596828,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.2385517879760073,
+            "id": "g036-put-04"
+          },
+          {
+            "abs_error": 0.2050214621407349,
+            "id": "g037-put-04"
+          },
+          {
+            "abs_error": 0.19334270007220766,
+            "id": "g037-call-04"
+          },
+          {
+            "abs_error": 0.18215275154886967,
+            "id": "g039-call-03"
+          },
+          {
+            "abs_error": 0.1766066368702468,
+            "id": "g036-call-04"
+          },
+          {
+            "abs_error": 0.17361558830168633,
+            "id": "g038-put-05"
+          },
+          {
+            "abs_error": 0.15676830500410688,
+            "id": "g038-put-03"
+          },
+          {
+            "abs_error": 0.13667425946550793,
+            "id": "g036-put-02"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "charm": {
+        "requested": 715,
+        "supported": 708,
+        "refused_or_unsupported": 7,
+        "compared": 708,
+        "reasons": {
+          "ApiRefused": 7,
+          "ApiValueUnqualified": 708
+        },
+        "errors_worst": [
+          {
+            "abs_error": 21.444771642862936,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.6147209822809021,
+            "id": "g008-call-04"
+          },
+          {
+            "abs_error": 0.6128536799442834,
+            "id": "g011-call-04"
+          },
+          {
+            "abs_error": 0.3689681111660632,
+            "id": "g003-put-03"
+          },
+          {
+            "abs_error": 0.3246234058384685,
+            "id": "g011-call-02"
+          },
+          {
+            "abs_error": 0.323710789376352,
+            "id": "g008-call-02"
+          },
+          {
+            "abs_error": 0.28454356653065194,
+            "id": "g002-call-03"
+          },
+          {
+            "abs_error": 0.2540723426081084,
+            "id": "g002-put-03"
+          },
+          {
+            "abs_error": 0.237541492507793,
+            "id": "g000-put-03"
+          },
+          {
+            "abs_error": 0.1719218183482072,
+            "id": "g001-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      }
+    },
+    "sigma_family": {
+      "delta": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 1.1221536348249295e-05,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 9.39244497943914e-06,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 7.166639125921748e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 6.2916149208835925e-06,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 4.01466227550884e-06,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 3.090432411201327e-06,
+            "id": "g046-call-06"
+          },
+          {
+            "abs_error": 2.628388897640832e-06,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 2.4711875282745766e-06,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 2.0904076251104797e-06,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 1.9348314284073354e-06,
+            "id": "g041-put-01"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 1.0810659944238132e-05,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 1.0005792028588978e-05,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 6.895908818083107e-06,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 6.63920073395996e-06,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 6.451707884158608e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 6.271415769698585e-06,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 6.152289188432469e-06,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 3.0442455752899278e-06,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 2.593530896877194e-06,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 2.5031045409740216e-06,
+            "id": "g026-call-04"
+          }
+        ]
+      },
+      "gamma": {
+        "requested": 715,
+        "supported": 383,
+        "refused_or_unsupported": 332,
+        "compared": 383,
+        "reasons": {
+          "Exercised": 64,
+          "NearExerciseEdge": 3,
+          "Refused": 329,
+          "Served": 319
+        },
+        "errors_worst": [
+          {
+            "abs_error": 4.677532013774854e-06,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 3.6936332715176157e-06,
+            "id": "g014-call-03"
+          },
+          {
+            "abs_error": 3.420592034647507e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 3.4113763153764687e-06,
+            "id": "g015-put-03"
+          },
+          {
+            "abs_error": 3.0398806229181563e-06,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 2.5472360405953687e-06,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 7.159291720709726e-07,
+            "id": "g025-put-03"
+          },
+          {
+            "abs_error": 6.573226523087783e-07,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 3.9529406817284674e-07,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 3.945647894278148e-07,
+            "id": "g042-call-03"
+          }
+        ],
+        "map_errors_count": 383,
+        "map_errors_worst": [
+          {
+            "abs_error": 2.2253286182222152e-06,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 1.374880114035637e-06,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 1.3679583215908675e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 1.20442033363366e-06,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 1.1939220763423908e-06,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 9.078806293855227e-07,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 7.322695536357868e-07,
+            "id": "g024-put-02"
+          },
+          {
+            "abs_error": 3.8135357131105887e-07,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 3.3336658658567053e-07,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 3.0401192471773975e-07,
+            "id": "g013-call-03"
+          }
+        ]
+      },
+      "vega": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.0055769394414539875,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.005263686894011244,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.002228886571671751,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.0014218501100415892,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.0011823953207255045,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 0.001141771653756507,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.0011118735131994129,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 0.00104524934293182,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0004878226599700497,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 0.0004802756971358235,
+            "id": "g043-put-03"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 0.0032143760009262223,
+            "id": "g036-put-02"
+          },
+          {
+            "abs_error": 0.0028215099234785157,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 0.0020659031463310384,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 0.0007856085559865278,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 0.0005745551234781487,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 0.0005262880620193755,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 0.0002569882440184301,
+            "id": "g042-call-06"
+          },
+          {
+            "abs_error": 0.00011272597078004765,
+            "id": "g024-put-02"
+          },
+          {
+            "abs_error": 6.701014114818271e-06,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 5.501289804143994e-06,
+            "id": "g041-put-01"
+          }
+        ]
+      },
+      "theta": {
+        "requested": 715,
+        "supported": 383,
+        "refused_or_unsupported": 332,
+        "compared": 383,
+        "reasons": {
+          "Exercised": 64,
+          "NearExerciseEdge": 3,
+          "Refused": 329,
+          "Served": 319
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.0003429586202439161,
+            "id": "g046-call-06"
+          },
+          {
+            "abs_error": 0.00015554203509093867,
+            "id": "g046-call-05"
+          },
+          {
+            "abs_error": 0.00011173241508977139,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 8.136676542846999e-05,
+            "id": "g046-call-04"
+          },
+          {
+            "abs_error": 6.423536549060582e-05,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 6.310697451183955e-05,
+            "id": "g046-call-03"
+          },
+          {
+            "abs_error": 5.1322780423967984e-05,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 4.808110632481544e-05,
+            "id": "g046-call-02"
+          },
+          {
+            "abs_error": 4.1345695924288606e-05,
+            "id": "g014-call-03"
+          },
+          {
+            "abs_error": 3.954546128626113e-05,
+            "id": "g015-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "rho": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.006112891414669974,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.005771343300857268,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.00464222971758943,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.004387842796106156,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.0031179206906344348,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.0027644336024934546,
+            "id": "g034-put-00"
+          },
+          {
+            "abs_error": 0.002346049817234075,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 0.0019972258575222668,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 0.0017222958909428598,
+            "id": "g043-put-03"
+          },
+          {
+            "abs_error": 0.0012618355613938093,
+            "id": "g046-put-00"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "phi": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.010514845097361558,
+            "id": "g046-call-06"
+          },
+          {
+            "abs_error": 0.006878129192813276,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.005931159698008059,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.005930414719873767,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.0038023061723038154,
+            "id": "g046-call-05"
+          },
+          {
+            "abs_error": 0.0032532199992090227,
+            "id": "g045-call-03"
+          },
+          {
+            "abs_error": 0.0032401057594029226,
+            "id": "g045-call-04"
+          },
+          {
+            "abs_error": 0.003214956033403382,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.003149700876122097,
+            "id": "g045-call-02"
+          },
+          {
+            "abs_error": 0.003023998018889529,
+            "id": "g042-call-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "vanna": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.03941653906942033,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0024670522482766674,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.002310747227972587,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.0012505932047679469,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 0.0011997306549886844,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 0.0009921355901900686,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.00013678400019023762,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.00011908103657831681,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 0.00010582324612307126,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.00010114906863811779,
+            "id": "g024-put-03"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 0.055102912344711985,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0007642234499548471,
+            "id": "g036-put-02"
+          },
+          {
+            "abs_error": 0.0005173587977777869,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 0.000511185967056349,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 0.0005054359355460836,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 0.0004994229949501286,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.0004939558640238428,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.00020966773996001898,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 0.00020901820100782675,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 0.00018862606460801068,
+            "id": "g036-put-03"
+          }
+        ]
+      },
+      "volga": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 23.621712310070507,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.24253895987760643,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.10701302218694764,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.09235815633951461,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 0.0751410984723293,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 0.06926719396415137,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 0.05365335097388879,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.024230369912501715,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.01642020586922399,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.012906064191980704,
+            "id": "g025-put-03"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 0.18126272871268156,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.13675673926627496,
+            "id": "g036-put-02"
+          },
+          {
+            "abs_error": 0.03267786041760701,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 0.021600499167107046,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 0.021083224055473693,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 0.01999467258428922,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 0.007474909580196254,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 0.004104094841750339,
+            "id": "g042-call-06"
+          },
+          {
+            "abs_error": 0.00025011104298755527,
+            "id": "g024-put-02"
+          },
+          {
+            "abs_error": 0.00016191143686228315,
+            "id": "g037-call-04"
+          }
+        ]
+      },
+      "charm": {
+        "requested": 715,
+        "supported": 383,
+        "refused_or_unsupported": 332,
+        "compared": 383,
+        "reasons": {
+          "Exercised": 64,
+          "NearExerciseEdge": 3,
+          "Refused": 329,
+          "Served": 319
+        },
+        "errors_worst": [
+          {
+            "abs_error": 4.922309664657327e-05,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 4.429427505185657e-05,
+            "id": "g014-call-03"
+          },
+          {
+            "abs_error": 4.414793058305313e-05,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 4.2114990498956506e-05,
+            "id": "g015-put-03"
+          },
+          {
+            "abs_error": 4.0033196568634716e-05,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 3.40701317616994e-05,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 1.8253814273561098e-05,
+            "id": "g019-put-02"
+          },
+          {
+            "abs_error": 1.5737436194000233e-05,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 1.4460346111855316e-05,
+            "id": "g018-call-04"
+          },
+          {
+            "abs_error": 1.414935378862836e-05,
+            "id": "g024-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      }
+    },
+    "sigma_q_family": {
+      "delta": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 1.1222527971366247e-05,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 9.392531366780865e-06,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 7.167616979275593e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 6.2961890787693875e-06,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 4.014713034905526e-06,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 3.09044132895675e-06,
+            "id": "g046-call-06"
+          },
+          {
+            "abs_error": 2.628434414675418e-06,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 2.4708270722206827e-06,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 2.091236654178097e-06,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 1.9346657494923036e-06,
+            "id": "g041-put-01"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 1.081074236719548e-05,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 1.0011490897077202e-05,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 6.895908833404185e-06,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 6.63920075177904e-06,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 6.451707908583515e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 6.271415764480537e-06,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 6.152380137902647e-06,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 3.044245585281935e-06,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 2.593530958494572e-06,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 2.503212511162367e-06,
+            "id": "g026-call-04"
+          }
+        ]
+      },
+      "gamma": {
+        "requested": 715,
+        "supported": 383,
+        "refused_or_unsupported": 332,
+        "compared": 383,
+        "reasons": {
+          "Exercised": 64,
+          "NearExerciseEdge": 3,
+          "Refused": 329,
+          "Served": 319
+        },
+        "errors_worst": [
+          {
+            "abs_error": 4.677986274875812e-06,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 3.693707706475813e-06,
+            "id": "g014-call-03"
+          },
+          {
+            "abs_error": 3.4210432940384727e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 3.411451065638005e-06,
+            "id": "g015-put-03"
+          },
+          {
+            "abs_error": 3.0402659193379256e-06,
+            "id": "g024-put-03"
+          },
+          {
+            "abs_error": 2.5485301276412242e-06,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 7.165915771184528e-07,
+            "id": "g025-put-03"
+          },
+          {
+            "abs_error": 6.573268692688927e-07,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 3.9508645746644255e-07,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 3.945677083776189e-07,
+            "id": "g042-call-03"
+          }
+        ],
+        "map_errors_count": 383,
+        "map_errors_worst": [
+          {
+            "abs_error": 2.226100565885757e-06,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 1.3748804896795974e-06,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 1.3679619871864723e-06,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 1.2044213527906411e-06,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 1.1939214112077767e-06,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 9.079122090626675e-07,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 7.324063989034147e-07,
+            "id": "g024-put-02"
+          },
+          {
+            "abs_error": 3.813794092287229e-07,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 3.3336871260725154e-07,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 3.0401192471773975e-07,
+            "id": "g013-call-03"
+          }
+        ]
+      },
+      "vega": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.005576940702709976,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.005263692560617983,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.0022287464303261117,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.0014218616096144387,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.0011823906215369107,
+            "id": "g026-call-03"
+          },
+          {
+            "abs_error": 0.001141782660198487,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.0011118623932162564,
+            "id": "g027-put-03"
+          },
+          {
+            "abs_error": 0.0010452208624359693,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 0.0004878260205103402,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 0.0004802800402856633,
+            "id": "g043-put-03"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 0.0032145738515509947,
+            "id": "g036-put-02"
+          },
+          {
+            "abs_error": 0.0028215288949695605,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 0.0020665877542569433,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 0.0007856300499042845,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 0.0005745534537027197,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 0.0005263013136413974,
+            "id": "g027-put-02"
+          },
+          {
+            "abs_error": 0.00025699762318254216,
+            "id": "g042-call-06"
+          },
+          {
+            "abs_error": 0.0001127779469811685,
+            "id": "g024-put-02"
+          },
+          {
+            "abs_error": 6.701073752224396e-06,
+            "id": "sigma-family-near-edge-put-00"
+          },
+          {
+            "abs_error": 5.501303881771946e-06,
+            "id": "g041-put-01"
+          }
+        ]
+      },
+      "theta": {
+        "requested": 715,
+        "supported": 383,
+        "refused_or_unsupported": 332,
+        "compared": 383,
+        "reasons": {
+          "Exercised": 64,
+          "NearExerciseEdge": 3,
+          "Refused": 329,
+          "Served": 319
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.00034295893517422016,
+            "id": "g046-call-06"
+          },
+          {
+            "abs_error": 0.0001555422228021186,
+            "id": "g046-call-05"
+          },
+          {
+            "abs_error": 0.00011173291922805806,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 8.136689549687048e-05,
+            "id": "g046-call-04"
+          },
+          {
+            "abs_error": 6.423567449287404e-05,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 6.310708660173248e-05,
+            "id": "g046-call-03"
+          },
+          {
+            "abs_error": 5.1322999905512035e-05,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 4.8081201168059806e-05,
+            "id": "g046-call-02"
+          },
+          {
+            "abs_error": 4.134619697759856e-05,
+            "id": "g014-call-03"
+          },
+          {
+            "abs_error": 3.9546002350232534e-05,
+            "id": "g015-put-03"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "rho": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.006112763829737133,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.005771170898842826,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.0046421678437340574,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.004387810966434813,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.0031184726956681175,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.0027643978581508577,
+            "id": "g034-put-00"
+          },
+          {
+            "abs_error": 0.0023445120416525356,
+            "id": "g037-put-03"
+          },
+          {
+            "abs_error": 0.001997208670161399,
+            "id": "g042-call-03"
+          },
+          {
+            "abs_error": 0.001722278153579282,
+            "id": "g043-put-03"
+          },
+          {
+            "abs_error": 0.001261815093585028,
+            "id": "g046-put-00"
+          }
+        ],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "phi": {
+        "requested": 715,
+        "supported": 386,
+        "refused_or_unsupported": 329,
+        "compared": 386,
+        "reasons": {
+          "Exercised": 64,
+          "Refused": 329,
+          "Served": 322
+        },
+        "errors_worst": [
+          {
+            "abs_error": 0.010455257741710966,
+            "id": "g046-call-06"
+          },
+          {
+            "abs_error": 0.006811930067300409,
+            "id": "g042-call-04"
+          },
+          {
+            "abs_error": 0.005861174977681571,
+            "id": "g038-call-03"
+          },
+          {
+            "abs_error": 0.005858379810938175,
+            "id": "g039-put-03"
+          },
+          {
+            "abs_error": 0.0037721961874979115,
+            "id": "g046-call-05"
+          },
+          {
+            "abs_error": 0.003187382805514005,
+            "id": "g036-put-03"
+          },
+          {
+            "abs_error": 0.0031724819261569337,
+            "id": "g043-put-02"
+          },
+          {
+            "abs_error": 0.003156497026850502,
+            "id": "g045-call-03"
+          },
+          {
+            "abs_error": 0.0031261819283940895,
+            "id": "g045-call-04"
+          },
+          {
+            "abs_error": 0.003069699600985132,
+            "id": "g045-call-02"
+          }
+        ],
+        "map_errors_count": 386,
+        "map_errors_worst": [
+          {
+            "abs_error": 0.006276636668189894,
+            "id": "g042-call-05"
+          },
+          {
+            "abs_error": 0.004363859815725846,
+            "id": "g043-put-01"
+          },
+          {
+            "abs_error": 0.0040688737357186255,
+            "id": "g036-put-02"
+          },
+          {
+            "abs_error": 0.001190443441601019,
+            "id": "g037-put-02"
+          },
+          {
+            "abs_error": 0.0009742063866724493,
+            "id": "g042-call-06"
+          },
+          {
+            "abs_error": 0.0009069196471500618,
+            "id": "g041-call-06"
+          },
+          {
+            "abs_error": 0.00022057861761481945,
+            "id": "g029-call-06"
+          },
+          {
+            "abs_error": 0.00016555180337718411,
+            "id": "g024-put-02"
+          },
+          {
+            "abs_error": 0.00014201027909166442,
+            "id": "g026-call-04"
+          },
+          {
+            "abs_error": 0.00011498494649231361,
+            "id": "g041-call-05"
+          }
+        ]
+      },
+      "vanna": {
+        "requested": 715,
+        "supported": 0,
+        "refused_or_unsupported": 715,
+        "compared": 0,
+        "reasons": {
+          "NotInApi": 715
+        },
+        "errors_worst": [],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "volga": {
+        "requested": 715,
+        "supported": 0,
+        "refused_or_unsupported": 715,
+        "compared": 0,
+        "reasons": {
+          "NotInApi": 715
+        },
+        "errors_worst": [],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      },
+      "charm": {
+        "requested": 715,
+        "supported": 0,
+        "refused_or_unsupported": 715,
+        "compared": 0,
+        "reasons": {
+          "NotInApi": 715
+        },
+        "errors_worst": [],
+        "map_errors_count": 0,
+        "map_errors_worst": []
+      }
+    }
+  },
+  "reference_summary": {
+    "delta": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 1,
+      "step_change_increases": 85,
+      "last_step_change_worst": [
+        {
+          "id": "g027-put-03",
+          "value": 2.0688842194971357e-05
+        },
+        {
+          "id": "g026-call-03",
+          "value": 1.9918855724831985e-05
+        },
+        {
+          "id": "g039-put-03",
+          "value": 1.9356069260734188e-05
+        },
+        {
+          "id": "g038-call-03",
+          "value": 1.881510016343846e-05
+        },
+        {
+          "id": "g024-put-03",
+          "value": 9.132179736859314e-06
+        },
+        {
+          "id": "g036-put-03",
+          "value": 7.781058419809028e-06
+        },
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 7.62080526006681e-06
+        },
+        {
+          "id": "g015-put-03",
+          "value": 6.5803268811670534e-06
+        },
+        {
+          "id": "g014-call-03",
+          "value": 6.209914138466388e-06
+        },
+        {
+          "id": "g025-put-03",
+          "value": 5.231188047183366e-06
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "g039-put-03",
+          "value": 1.1690259738017517e-06
+        },
+        {
+          "id": "g038-call-03",
+          "value": 1.1537078115075872e-06
+        },
+        {
+          "id": "g036-put-03",
+          "value": 4.847711787547837e-07
+        },
+        {
+          "id": "g027-put-03",
+          "value": 4.6758048322104173e-07
+        },
+        {
+          "id": "g026-call-03",
+          "value": 4.632305050655816e-07
+        },
+        {
+          "id": "g037-put-03",
+          "value": 2.3924234149319545e-07
+        },
+        {
+          "id": "g024-put-03",
+          "value": 1.8538554691360787e-07
+        },
+        {
+          "id": "g043-put-02",
+          "value": 1.741893148610174e-07
+        },
+        {
+          "id": "g042-call-04",
+          "value": 1.6520993861846023e-07
+        },
+        {
+          "id": "g014-call-03",
+          "value": 1.2860323472807522e-07
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 9.447815086227607e-05
+        },
+        {
+          "id": "g039-put-03",
+          "value": 2.22889301459972e-09
+        },
+        {
+          "id": "g027-put-03",
+          "value": 2.131051279885554e-09
+        },
+        {
+          "id": "g038-call-03",
+          "value": 1.6921664069968756e-09
+        },
+        {
+          "id": "g026-call-03",
+          "value": 1.6012906001172666e-09
+        },
+        {
+          "id": "g036-put-03",
+          "value": 3.3711738955943815e-10
+        },
+        {
+          "id": "g024-put-03",
+          "value": 1.9239310145025001e-10
+        },
+        {
+          "id": "g024-call-03",
+          "value": 1.8490242670310408e-10
+        },
+        {
+          "id": "g015-call-03",
+          "value": 1.6625967269590092e-10
+        },
+        {
+          "id": "g025-call-03",
+          "value": 1.618379874557263e-10
+        }
+      ]
+    },
+    "gamma": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 1,
+      "step_change_increases": 57,
+      "last_step_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 4.992702172987307e-05
+        },
+        {
+          "id": "g001-call-03",
+          "value": 9.52978437829266e-06
+        },
+        {
+          "id": "g001-put-03",
+          "value": 9.508586723550039e-06
+        },
+        {
+          "id": "g000-call-03",
+          "value": 9.500696868114389e-06
+        },
+        {
+          "id": "g002-put-03",
+          "value": 9.479235812959175e-06
+        },
+        {
+          "id": "g003-call-03",
+          "value": 9.473418716154924e-06
+        },
+        {
+          "id": "g000-put-03",
+          "value": 9.472612305660988e-06
+        },
+        {
+          "id": "g002-call-03",
+          "value": 9.412242957251848e-06
+        },
+        {
+          "id": "g003-put-03",
+          "value": 9.395644678944493e-06
+        },
+        {
+          "id": "g027-put-03",
+          "value": 4.125853969583204e-06
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "g039-put-03",
+          "value": 6.036753319449417e-07
+        },
+        {
+          "id": "g038-call-03",
+          "value": 5.904455591121405e-07
+        },
+        {
+          "id": "g027-put-03",
+          "value": 2.716395997026666e-07
+        },
+        {
+          "id": "g026-call-03",
+          "value": 2.679003685557291e-07
+        },
+        {
+          "id": "g036-put-03",
+          "value": 1.702478158449594e-07
+        },
+        {
+          "id": "g015-put-03",
+          "value": 1.2123422266085981e-07
+        },
+        {
+          "id": "g014-call-03",
+          "value": 1.2117311598558445e-07
+        },
+        {
+          "id": "g024-put-03",
+          "value": 8.959091246651951e-08
+        },
+        {
+          "id": "g037-put-03",
+          "value": 6.826610388088739e-08
+        },
+        {
+          "id": "g025-put-03",
+          "value": 3.65922403489094e-08
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.0003461254888496891
+        },
+        {
+          "id": "g002-put-00",
+          "value": 2.4313884239290915e-08
+        },
+        {
+          "id": "g002-put-03",
+          "value": 1.5441511624914028e-08
+        },
+        {
+          "id": "g001-call-03",
+          "value": 1.5183682977593094e-08
+        },
+        {
+          "id": "g001-put-03",
+          "value": 1.2817300332201853e-08
+        },
+        {
+          "id": "g002-put-01",
+          "value": 1.1908841260060861e-08
+        },
+        {
+          "id": "g000-call-03",
+          "value": 1.0941247907680918e-08
+        },
+        {
+          "id": "g000-call-05",
+          "value": 1.0409209397682825e-08
+        },
+        {
+          "id": "g003-call-03",
+          "value": 1.022567697184229e-08
+        },
+        {
+          "id": "g000-call-04",
+          "value": 6.447979585222424e-09
+        }
+      ]
+    },
+    "vega": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 0,
+      "step_change_increases": 7,
+      "last_step_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 3.281765970086781e-05
+        },
+        {
+          "id": "g041-put-01",
+          "value": 1.650320768931124e-05
+        },
+        {
+          "id": "g036-call-03",
+          "value": 9.997123129323882e-06
+        },
+        {
+          "id": "g039-put-04",
+          "value": 9.21938882880724e-06
+        },
+        {
+          "id": "g037-call-03",
+          "value": 7.756035813599738e-06
+        },
+        {
+          "id": "g038-call-02",
+          "value": 7.249343365156591e-06
+        },
+        {
+          "id": "g038-put-04",
+          "value": 6.5424288209214865e-06
+        },
+        {
+          "id": "g039-call-04",
+          "value": 6.499121241176908e-06
+        },
+        {
+          "id": "g038-put-05",
+          "value": 6.449780986628184e-06
+        },
+        {
+          "id": "g036-call-04",
+          "value": 6.320632905953971e-06
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "g043-put-02",
+          "value": 2.461852943724807e-05
+        },
+        {
+          "id": "g042-call-04",
+          "value": 2.2552733014435944e-05
+        },
+        {
+          "id": "g041-put-01",
+          "value": 1.8974475324284867e-05
+        },
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 1.3713593223996234e-05
+        },
+        {
+          "id": "g037-put-03",
+          "value": 1.1126322085885931e-05
+        },
+        {
+          "id": "g038-call-03",
+          "value": 9.002045779027412e-06
+        },
+        {
+          "id": "g040-put-02",
+          "value": 8.771987580757923e-06
+        },
+        {
+          "id": "g031-put-02",
+          "value": 8.69368577127716e-06
+        },
+        {
+          "id": "g030-call-04",
+          "value": 8.547242913437003e-06
+        },
+        {
+          "id": "g043-put-03",
+          "value": 7.70336683331152e-06
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 6.564240509043806e-06
+        },
+        {
+          "id": "g025-call-04",
+          "value": 1.1013412404281553e-09
+        },
+        {
+          "id": "g024-call-05",
+          "value": 7.815970093361102e-10
+        },
+        {
+          "id": "g039-call-04",
+          "value": 6.868579038865619e-10
+        },
+        {
+          "id": "g015-call-04",
+          "value": 4.973799150320701e-10
+        },
+        {
+          "id": "g027-call-03",
+          "value": 4.4853010194856324e-10
+        },
+        {
+          "id": "g017-call-05",
+          "value": 4.322468355466569e-10
+        },
+        {
+          "id": "g031-call-06",
+          "value": 4.263256414560601e-10
+        },
+        {
+          "id": "g040-call-06",
+          "value": 4.1448355858619834e-10
+        },
+        {
+          "id": "g038-put-02",
+          "value": 4.1448322551929095e-10
+        }
+      ]
+    },
+    "theta": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 0,
+      "step_change_increases": 32,
+      "last_step_change_worst": [
+        {
+          "id": "g008-put-03",
+          "value": 2.8589237615506136e-05
+        },
+        {
+          "id": "g010-put-03",
+          "value": 2.8588994496203668e-05
+        },
+        {
+          "id": "g011-call-03",
+          "value": 2.8587292490556138e-05
+        },
+        {
+          "id": "g009-put-03",
+          "value": 2.858644154457579e-05
+        },
+        {
+          "id": "g009-call-03",
+          "value": 2.8585225891220034e-05
+        },
+        {
+          "id": "g010-call-03",
+          "value": 2.8583159178197093e-05
+        },
+        {
+          "id": "g008-call-03",
+          "value": 2.8582105585428508e-05
+        },
+        {
+          "id": "g011-put-03",
+          "value": 2.857995787053369e-05
+        },
+        {
+          "id": "g005-put-03",
+          "value": 7.148281966351533e-06
+        },
+        {
+          "id": "g007-call-03",
+          "value": 7.145597308522156e-06
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 3.7234731427027157e-06
+        },
+        {
+          "id": "g046-call-06",
+          "value": 1.0228783744459236e-06
+        },
+        {
+          "id": "g043-put-02",
+          "value": 1.0014537347169394e-06
+        },
+        {
+          "id": "g042-call-04",
+          "value": 9.163478864593344e-07
+        },
+        {
+          "id": "g027-put-03",
+          "value": 8.795150163720677e-07
+        },
+        {
+          "id": "g026-call-03",
+          "value": 8.324287925631779e-07
+        },
+        {
+          "id": "g039-put-03",
+          "value": 8.201465432726429e-07
+        },
+        {
+          "id": "g030-call-04",
+          "value": 7.882867691932915e-07
+        },
+        {
+          "id": "g038-call-03",
+          "value": 7.853102242574156e-07
+        },
+        {
+          "id": "g031-put-02",
+          "value": 7.345839492245432e-07
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 2.6863273205890437e-07
+        },
+        {
+          "id": "g003-call-05",
+          "value": 1.3183528935201139e-08
+        },
+        {
+          "id": "g007-call-05",
+          "value": 1.3183528935201139e-08
+        },
+        {
+          "id": "g008-call-04",
+          "value": 1.0319890719756586e-08
+        },
+        {
+          "id": "g003-call-06",
+          "value": 9.07718344933528e-09
+        },
+        {
+          "id": "g007-call-06",
+          "value": 9.07718344933528e-09
+        },
+        {
+          "id": "g011-call-06",
+          "value": 9.07718344933528e-09
+        },
+        {
+          "id": "g011-call-05",
+          "value": 8.86105944175597e-09
+        },
+        {
+          "id": "g000-call-04",
+          "value": 8.212689639464088e-09
+        },
+        {
+          "id": "g004-call-04",
+          "value": 8.212689639464088e-09
+        }
+      ]
+    },
+    "rho": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 1,
+      "step_change_increases": 71,
+      "last_step_change_worst": [
+        {
+          "id": "zero_rate_closed_form-call-06",
+          "value": 3.0755022167738844
+        },
+        {
+          "id": "zero_rate_closed_form-put-01",
+          "value": 1.0058786158140265
+        },
+        {
+          "id": "zero_rate_closed_form-call-05",
+          "value": 0.7710663319926425
+        },
+        {
+          "id": "zero_rate_closed_form-put-02",
+          "value": 0.2501637959362313
+        },
+        {
+          "id": "zero_rate_closed_form-call-04",
+          "value": 0.17803771466873286
+        },
+        {
+          "id": "zero_rate_closed_form-put-03",
+          "value": 0.11491700402821436
+        },
+        {
+          "id": "zero_rate_closed_form-call-03",
+          "value": 0.08330170475190357
+        },
+        {
+          "id": "zero_rate_closed_form-put-00",
+          "value": 0.05786263820084514
+        },
+        {
+          "id": "zero_rate_closed_form-put-04",
+          "value": 0.05015295550414578
+        },
+        {
+          "id": "zero_rate_closed_form-call-02",
+          "value": 0.03105347437859507
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "zero_rate_closed_form-call-06",
+          "value": 0.003293131385362358
+        },
+        {
+          "id": "g041-put-01",
+          "value": 0.000144208556207559
+        },
+        {
+          "id": "g043-put-02",
+          "value": 0.00011000050648135584
+        },
+        {
+          "id": "g042-call-04",
+          "value": 0.0001056215737094135
+        },
+        {
+          "id": "g046-call-06",
+          "value": 6.43626663077157e-05
+        },
+        {
+          "id": "g037-put-03",
+          "value": 6.398847673949604e-05
+        },
+        {
+          "id": "g040-put-02",
+          "value": 6.279105235762472e-05
+        },
+        {
+          "id": "g036-put-03",
+          "value": 5.574163353117001e-05
+        },
+        {
+          "id": "g038-call-03",
+          "value": 5.534755986857931e-05
+        },
+        {
+          "id": "g043-put-03",
+          "value": 5.298826266653123e-05
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "zero_rate_closed_form-call-06",
+          "value": 2.8192832388166735
+        },
+        {
+          "id": "zero_rate_closed_form-put-01",
+          "value": 0.9435915873545753
+        },
+        {
+          "id": "zero_rate_closed_form-call-05",
+          "value": 0.7173205809962724
+        },
+        {
+          "id": "zero_rate_closed_form-put-02",
+          "value": 0.23545810792373345
+        },
+        {
+          "id": "zero_rate_closed_form-call-04",
+          "value": 0.16736481869430975
+        },
+        {
+          "id": "zero_rate_closed_form-put-03",
+          "value": 0.10831519372977993
+        },
+        {
+          "id": "zero_rate_closed_form-call-03",
+          "value": 0.0784415549788946
+        },
+        {
+          "id": "zero_rate_closed_form-put-00",
+          "value": 0.06781893983287546
+        },
+        {
+          "id": "zero_rate_closed_form-put-04",
+          "value": 0.04733141202233071
+        },
+        {
+          "id": "zero_rate_closed_form-call-02",
+          "value": 0.029285653032985692
+        }
+      ]
+    },
+    "phi": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 2,
+      "step_change_increases": 66,
+      "last_step_change_worst": [
+        {
+          "id": "zero_rate_closed_form-call-06",
+          "value": 6.7100696418265215
+        },
+        {
+          "id": "zero_rate_closed_form-call-05",
+          "value": 1.2840236440325725
+        },
+        {
+          "id": "zero_rate_closed_form-put-01",
+          "value": 0.5958309252207528
+        },
+        {
+          "id": "zero_rate_closed_form-call-04",
+          "value": 0.2569664487950263
+        },
+        {
+          "id": "zero_rate_closed_form-put-02",
+          "value": 0.1724352462062484
+        },
+        {
+          "id": "zero_rate_closed_form-call-03",
+          "value": 0.11491700418808648
+        },
+        {
+          "id": "zero_rate_closed_form-put-03",
+          "value": 0.08330170458314967
+        },
+        {
+          "id": "zero_rate_closed_form-put-00",
+          "value": 0.05875445332037543
+        },
+        {
+          "id": "zero_rate_closed_form-call-02",
+          "value": 0.041045359360225575
+        },
+        {
+          "id": "zero_rate_closed_form-put-04",
+          "value": 0.0378011435575587
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "zero_rate_closed_form-put-00",
+          "value": 0.0001458231224660267
+        },
+        {
+          "id": "g041-put-01",
+          "value": 0.0001441490837805759
+        },
+        {
+          "id": "g043-put-02",
+          "value": 0.00010830994767729862
+        },
+        {
+          "id": "g042-call-04",
+          "value": 0.00010216208323754472
+        },
+        {
+          "id": "g037-put-03",
+          "value": 6.484163872499948e-05
+        },
+        {
+          "id": "g040-put-02",
+          "value": 6.103537231183509e-05
+        },
+        {
+          "id": "g036-put-03",
+          "value": 5.798156621494854e-05
+        },
+        {
+          "id": "g038-call-03",
+          "value": 5.301755257036689e-05
+        },
+        {
+          "id": "g039-put-03",
+          "value": 5.258052881984554e-05
+        },
+        {
+          "id": "g043-put-03",
+          "value": 5.190141649791258e-05
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "zero_rate_closed_form-call-06",
+          "value": 6.402079971010721
+        },
+        {
+          "id": "zero_rate_closed_form-call-05",
+          "value": 1.2048265471283486
+        },
+        {
+          "id": "zero_rate_closed_form-put-01",
+          "value": 0.5540522423726699
+        },
+        {
+          "id": "zero_rate_closed_form-call-04",
+          "value": 0.24189371662448877
+        },
+        {
+          "id": "zero_rate_closed_form-put-02",
+          "value": 0.1620588208428586
+        },
+        {
+          "id": "zero_rate_closed_form-call-03",
+          "value": 0.10831519400068146
+        },
+        {
+          "id": "zero_rate_closed_form-put-03",
+          "value": 0.07844155469320668
+        },
+        {
+          "id": "zero_rate_closed_form-put-00",
+          "value": 0.06843028456179212
+        },
+        {
+          "id": "zero_rate_closed_form-call-02",
+          "value": 0.038741283981586605
+        },
+        {
+          "id": "zero_rate_closed_form-put-04",
+          "value": 0.035643936036795054
+        }
+      ]
+    },
+    "vanna": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 1,
+      "step_change_increases": 10,
+      "last_step_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.2020390351583785
+        },
+        {
+          "id": "g027-put-03",
+          "value": 0.0015338390113583955
+        },
+        {
+          "id": "g026-call-03",
+          "value": 0.001516586978222989
+        },
+        {
+          "id": "g039-put-03",
+          "value": 0.0014982703411270393
+        },
+        {
+          "id": "g038-call-03",
+          "value": 0.0014818923865789202
+        },
+        {
+          "id": "g024-put-03",
+          "value": 0.0006270267638441851
+        },
+        {
+          "id": "g036-put-03",
+          "value": 0.0005659726465268022
+        },
+        {
+          "id": "g015-put-03",
+          "value": 0.0004521676366664451
+        },
+        {
+          "id": "g014-call-03",
+          "value": 0.0004448045265448286
+        },
+        {
+          "id": "g025-put-03",
+          "value": 0.0003350998145634776
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "g038-call-03",
+          "value": 4.539115749935263e-05
+        },
+        {
+          "id": "g039-put-03",
+          "value": 4.446549795034116e-05
+        },
+        {
+          "id": "g036-put-03",
+          "value": 1.5970158528944012e-05
+        },
+        {
+          "id": "g027-put-03",
+          "value": 1.5344792103633154e-05
+        },
+        {
+          "id": "g026-call-03",
+          "value": 1.506843538834346e-05
+        },
+        {
+          "id": "g037-put-03",
+          "value": 8.945288954009811e-06
+        },
+        {
+          "id": "g024-put-03",
+          "value": 7.476508301351714e-06
+        },
+        {
+          "id": "g015-put-03",
+          "value": 5.536993086252551e-06
+        },
+        {
+          "id": "g014-call-03",
+          "value": 5.519495971384458e-06
+        },
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 5.4254574886059e-06
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.02454838181403396
+        },
+        {
+          "id": "g039-put-03",
+          "value": 3.7472802638660596e-07
+        },
+        {
+          "id": "g027-put-03",
+          "value": 3.7212270298514483e-07
+        },
+        {
+          "id": "g038-call-03",
+          "value": 3.148777535377789e-07
+        },
+        {
+          "id": "g026-call-03",
+          "value": 3.0839127551640644e-07
+        },
+        {
+          "id": "g001-call-03",
+          "value": 1.8371629673108458e-07
+        },
+        {
+          "id": "g003-put-03",
+          "value": 1.706120109634668e-07
+        },
+        {
+          "id": "g001-put-03",
+          "value": 1.2447635268364454e-07
+        },
+        {
+          "id": "g002-call-03",
+          "value": 1.0558108187730397e-07
+        },
+        {
+          "id": "g003-call-03",
+          "value": 9.833627456767857e-08
+        }
+      ]
+    },
+    "volga": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 0,
+      "step_change_increases": 66,
+      "last_step_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.17102171530814303
+        },
+        {
+          "id": "g036-put-04",
+          "value": 0.00045423109713738086
+        },
+        {
+          "id": "g037-put-04",
+          "value": 0.00038178349370809883
+        },
+        {
+          "id": "g037-call-04",
+          "value": 0.0003353761712787673
+        },
+        {
+          "id": "g039-call-03",
+          "value": 0.0003339550858072471
+        },
+        {
+          "id": "g038-put-05",
+          "value": 0.00032190916601848585
+        },
+        {
+          "id": "g036-call-04",
+          "value": 0.0003097966327914037
+        },
+        {
+          "id": "g038-put-03",
+          "value": 0.00027640112421067897
+        },
+        {
+          "id": "g041-put-01",
+          "value": 0.00023803181647963356
+        },
+        {
+          "id": "g037-call-03",
+          "value": 0.00019824142327706795
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.0027711166694643907
+        },
+        {
+          "id": "g038-call-03",
+          "value": 0.0014862777675261896
+        },
+        {
+          "id": "g039-put-03",
+          "value": 0.0012917666936118621
+        },
+        {
+          "id": "g036-put-03",
+          "value": 0.0004700240197053063
+        },
+        {
+          "id": "g043-put-02",
+          "value": 0.0003623767952376511
+        },
+        {
+          "id": "g042-call-04",
+          "value": 0.0003169020601490047
+        },
+        {
+          "id": "g039-put-04",
+          "value": 0.00030022095921822256
+        },
+        {
+          "id": "g027-put-03",
+          "value": 0.0002842170943040401
+        },
+        {
+          "id": "g026-call-03",
+          "value": 0.00024726887204451486
+        },
+        {
+          "id": "g041-put-01",
+          "value": 0.00020463630789890885
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.011122132021682773
+        },
+        {
+          "id": "g024-call-04",
+          "value": 8.662700187755945e-05
+        },
+        {
+          "id": "g025-call-05",
+          "value": 7.413329209763712e-05
+        },
+        {
+          "id": "g038-put-01",
+          "value": 6.584362684710254e-05
+        },
+        {
+          "id": "g027-call-03",
+          "value": 6.57548089861848e-05
+        },
+        {
+          "id": "g027-call-04",
+          "value": 5.992243738717207e-05
+        },
+        {
+          "id": "g037-call-03",
+          "value": 5.4030853846143145e-05
+        },
+        {
+          "id": "g037-put-03",
+          "value": 4.8109664419371256e-05
+        },
+        {
+          "id": "g013-call-04",
+          "value": 4.748793950648533e-05
+        },
+        {
+          "id": "g024-call-03",
+          "value": 4.4334906135645724e-05
+        }
+      ]
+    },
+    "charm": {
+      "requested": 715,
+      "complete": 708,
+      "unavailable": 7,
+      "intrinsic_evidence_incomplete": 7,
+      "intrinsic_band_changed": 1,
+      "step_change_increases": 64,
+      "last_step_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.09531279333107823
+        },
+        {
+          "id": "g010-put-04",
+          "value": 0.00033776308820776535
+        },
+        {
+          "id": "g010-call-04",
+          "value": 0.00033749910361713376
+        },
+        {
+          "id": "g009-call-04",
+          "value": 0.0003356551154372056
+        },
+        {
+          "id": "g009-put-04",
+          "value": 0.0003356178491280559
+        },
+        {
+          "id": "g008-put-04",
+          "value": 0.00033533850300848655
+        },
+        {
+          "id": "g008-call-04",
+          "value": 0.00033522930900709014
+        },
+        {
+          "id": "g011-put-04",
+          "value": 0.0003347669648228191
+        },
+        {
+          "id": "g011-call-04",
+          "value": 0.00033447622986493286
+        },
+        {
+          "id": "g011-call-02",
+          "value": 0.0003254437024740042
+        }
+      ],
+      "profile_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 1.9130366870623305e-06
+        },
+        {
+          "id": "g014-call-03",
+          "value": 5.540634617773321e-07
+        },
+        {
+          "id": "g015-put-03",
+          "value": 5.515232714969898e-07
+        },
+        {
+          "id": "g027-put-03",
+          "value": 3.783751090224996e-07
+        },
+        {
+          "id": "g038-call-03",
+          "value": 3.6793605199614624e-07
+        },
+        {
+          "id": "g026-call-03",
+          "value": 3.668043646598562e-07
+        },
+        {
+          "id": "g039-put-03",
+          "value": 3.6500136246786496e-07
+        },
+        {
+          "id": "g012-put-03",
+          "value": 1.929301163272612e-07
+        },
+        {
+          "id": "g024-put-03",
+          "value": 1.8457235739788302e-07
+        },
+        {
+          "id": "g010-put-00",
+          "value": 1.548387020544606e-07
+        }
+      ],
+      "richardson_change_worst": [
+        {
+          "id": "sigma-family-near-edge-put-00",
+          "value": 0.01218538684306969
+        },
+        {
+          "id": "g000-call-06",
+          "value": 4.830967504070158e-06
+        },
+        {
+          "id": "g000-put-00",
+          "value": 3.3032256438086542e-06
+        },
+        {
+          "id": "g000-call-03",
+          "value": 2.6668547072894455e-06
+        },
+        {
+          "id": "g003-call-03",
+          "value": 2.4936692315513653e-06
+        },
+        {
+          "id": "g000-call-05",
+          "value": 2.4921657759092082e-06
+        },
+        {
+          "id": "g000-call-04",
+          "value": 2.24281513883599e-06
+        },
+        {
+          "id": "g001-put-02",
+          "value": 2.2078851959484934e-06
+        },
+        {
+          "id": "g000-put-01",
+          "value": 2.1972349148548643e-06
+        },
+        {
+          "id": "g002-put-01",
+          "value": 1.7843317093729771e-06
+        }
+      ]
+    }
+  },
+  "family_preparation": {
+    "sigma_family": {
+      "AlSigmaFamily: expiry below the near-expiry guard kAlSigmaFamilyMinTau": 168,
+      "OK": 386,
+      "AlSigmaFamily: side is not in the American regime on this expiry (no early-exercise boundary to interpolate)": 161
+    },
+    "sigma_q_family": {
+      "AlSigmaQFamily: expiry below the near-expiry guard kAlSigmaFamilyMinTau": 168,
+      "OK": 386,
+      "AlSigmaQFamily: side is not American over the whole q box (a call needs q > 0; price q <= 0 calls in closed form)": 133,
+      "AlSigmaQFamily: the geometry has no American orientation on either side (no premium quadrature to price with)": 28
+    }
+  },
+  "reference_unavailable_ids": [
+    "double_boundary_diagnostic-put-00",
+    "double_boundary_diagnostic-put-01",
+    "double_boundary_diagnostic-put-02",
+    "double_boundary_diagnostic-put-03",
+    "double_boundary_diagnostic-put-04",
+    "double_boundary_diagnostic-put-05",
+    "double_boundary_diagnostic-put-06"
+  ],
+  "regressions": [
+    {
+      "input": {
+        "K": 100.0,
+        "S": 100.0,
+        "T": 0.0027397260273972603,
+        "group": "g001",
+        "id": "g001-call-03",
+        "q": 0.01,
+        "r": 0.03,
+        "side": "call",
+        "sigma": 0.05
+      },
+      "reference": {
+        "delta": {
+          "refined24": [
+            0.5088593426753032,
+            0.5088598384363402,
+            0.5088599623844481
+          ],
+          "refined32": [
+            0.5088593426753032,
+            0.5088598384363402,
+            0.5088599623844481
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 1.239481078885163e-07,
+          "prior_step_change": 4.957610370004417e-07,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.5088600036900192,
+            0.5088600037004841
+          ],
+          "richardson_change": 1.0464962230116726e-11
+        },
+        "gamma": {
+          "refined24": [
+            1.5238866729410798,
+            1.523924746527544,
+            1.5239342763119224
+          ],
+          "refined32": [
+            1.5238866729410798,
+            1.523924746527544,
+            1.5239342763119224
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 9.52978437829266e-06,
+          "prior_step_change": 3.807358646423786e-05,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            1.5239374377230321,
+            1.5239374529067151
+          ],
+          "richardson_change": 1.5183682977593094e-08
+        },
+        "vega": {
+          "refined24": [
+            2.0875855236526797,
+            2.0875855251514808,
+            2.08758552539573
+          ],
+          "refined32": [
+            2.0875855236526797,
+            2.0875855251514808,
+            2.08758552539573
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.4424906541753444e-10,
+          "prior_step_change": 1.4988010832439613e-09,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            2.087585525651081,
+            2.0875855254771465
+          ],
+          "richardson_change": 1.7393464446513462e-10
+        },
+        "theta": {
+          "refined24": [
+            -20.063732513387887,
+            -20.063725369573596,
+            -20.063723580026128
+          ],
+          "refined32": [
+            -20.063732513387887,
+            -20.063725369573596,
+            -20.063723580026128
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 1.7895474684337387e-06,
+          "prior_step_change": 7.143814290344608e-06,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -20.063722988302164,
+            -20.063722983510306
+          ],
+          "richardson_change": 4.79185757740197e-09
+        },
+        "rho": {
+          "refined24": [
+            0.1391200977734347,
+            0.13912009776448353,
+            0.13912009770217226
+          ],
+          "refined32": [
+            0.1391200977734347,
+            0.13912009776448353,
+            0.13912009770217226
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 6.231126725708691e-11,
+          "prior_step_change": 8.951173136040325e-12,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            0.1391200977614998,
+            0.13912009768140185
+          ],
+          "richardson_change": 8.009795604557723e-11
+        },
+        "phi": {
+          "refined24": [
+            -0.13941369962099104,
+            -0.13941369961079086,
+            -0.13941369954861837
+          ],
+          "refined32": [
+            -0.13941369962099104,
+            -0.13941369961079086,
+            -0.13941369954861837
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 6.217248937900877e-11,
+          "prior_step_change": 1.0200174038743626e-11,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.1394136996073908,
+            -0.1394136995278942
+          ],
+          "richardson_change": 7.949660374428902e-11
+        },
+        "vanna": {
+          "refined24": [
+            -0.15653409873099022,
+            -0.1565602366572331,
+            -0.15656663335157125
+          ],
+          "refined32": [
+            -0.15653409873099022,
+            -0.1565602366572331,
+            -0.15656663335157125
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 6.3966943381621455e-06,
+          "prior_step_change": 2.613792624286959e-05,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.15656894929931406,
+            -0.15656876558301733
+          ],
+          "richardson_change": 1.8371629673108458e-07
+        },
+        "volga": {
+          "refined24": [
+            0.018230827958376494,
+            0.01823646789134159,
+            0.018255463807292927
+          ],
+          "refined32": [
+            0.018230827958376494,
+            0.01823646789134159,
+            0.018255463807292927
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 1.899591595133643e-05,
+          "prior_step_change": 5.639932965095795e-06,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            0.018238347868996623,
+            0.018261795779276706
+          ],
+          "richardson_change": 2.3447910280083306e-05
+        },
+        "charm": {
+          "refined24": [
+            -1.6142163919311225,
+            -1.614125772459778,
+            -1.614103856009244
+          ],
+          "refined32": [
+            -1.6142163919311225,
+            -1.614125772459778,
+            -1.614103856009244
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.191645053395419e-05,
+          "prior_step_change": 9.061947134458848e-05,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -1.6140955659693297,
+            -1.6140965505257328
+          ],
+          "richardson_change": 9.845564030719345e-07
+        }
+      },
+      "comparisons": {
+        "cold_al": {
+          "delta": {
+            "value": 0.5086244432167902,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.00023551916765784942
+          },
+          "gamma": {
+            "value": 1.5056756386923202,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.018258637619602114
+          },
+          "vega": {
+            "value": 2.0875853422412103,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.8315451955075446e-07
+          },
+          "theta": {
+            "value": -19.834979429873524,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.22874415015260396
+          },
+          "rho": {
+            "value": 0.1391200977734347,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 7.126244039312724e-11
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": -0.14418337273358964,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.012383260617981617
+          },
+          "volga": {
+            "value": 0.018237967497336527,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.7496309956399614e-05
+          },
+          "charm": {
+            "value": -1.7755097104355075,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.16140585442626354
+          }
+        },
+        "cold_fd": {
+          "delta": {
+            "value": 0.5086244432167902,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.00023551916765784942
+          },
+          "gamma": {
+            "value": 1.5056756386923202,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.018258637619602114
+          },
+          "vega": {
+            "value": 2.0875853422412103,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.8315451955075446e-07
+          },
+          "theta": {
+            "value": -20.401078062682277,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.3373544826561492
+          },
+          "rho": {
+            "value": 0.1391200977734347,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 7.126244039312724e-11
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": -0.14418337273358964,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.012383260617981617
+          },
+          "volga": {
+            "value": 0.018237967497336527,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.7496309956399614e-05
+          },
+          "charm": {
+            "value": -1.6871426569786858,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.07303880096944182
+          }
+        },
+        "sigma_family": {
+          "delta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "gamma": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vega": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "theta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "sigma_q_family": {
+          "delta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "gamma": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vega": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "theta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        }
+      }
+    },
+    {
+      "input": {
+        "K": 100.0,
+        "S": 100.0,
+        "T": 0.0027397260273972603,
+        "group": "g010",
+        "id": "g010-put-03",
+        "q": 0.08,
+        "r": 0.03,
+        "side": "put",
+        "sigma": 0.8
+      },
+      "reference": {
+        "delta": {
+          "refined24": [
+            -0.4928463789400805,
+            -0.49284519189620035,
+            -0.49284489510694673
+          ],
+          "refined32": [
+            -0.4928463789400805,
+            -0.49284519189620035,
+            -0.49284489510694673
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.967892536176464e-07,
+          "prior_step_change": 1.1870438801353522e-06,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.49284479621490696,
+            -0.49284479617719557
+          ],
+          "richardson_change": 3.771138956665254e-11
+        },
+        "gamma": {
+          "refined24": [
+            0.0952333735168647,
+            0.09523573993836833,
+            0.0952363315745719
+          ],
+          "refined32": [
+            0.0952333735168647,
+            0.09523573993836833,
+            0.0952363315745719
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 5.916362035701672e-07,
+          "prior_step_change": 2.366421503627314e-06,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.09523652874553619,
+            0.09523652878663975
+          ],
+          "richardson_change": 4.1103564996092246e-11
+        },
+        "vega": {
+          "refined24": [
+            2.087375973055111,
+            2.0873759731704356,
+            2.087375973222616
+          ],
+          "refined32": [
+            2.087375973055111,
+            2.0873759731704356,
+            2.087375973222616
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 5.218048215738236e-11,
+          "prior_step_change": 1.1532463872754306e-10,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            2.0873759732088772,
+            2.0873759732400097
+          ],
+          "richardson_change": 3.113242996732879e-11
+        },
+        "theta": {
+          "refined24": [
+            -307.17095821134217,
+            -307.17084386130074,
+            -307.17081527230624
+          ],
+          "refined32": [
+            -307.17095821134217,
+            -307.17084386130074,
+            -307.17081527230624
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.8588994496203668e-05,
+          "prior_step_change": 0.0001143500414286791,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -307.1708057446203,
+            -307.17080574264145
+          ],
+          "richardson_change": 1.9788330973824486e-09
+        },
+        "rho": {
+          "refined24": [
+            -0.13962052217819654,
+            -0.13962052219707033,
+            -0.13962052211269338
+          ],
+          "refined32": [
+            -0.13962052217819654,
+            -0.13962052219707033,
+            -0.13962052211269338
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 8.43769498715119e-11,
+          "prior_step_change": 1.887379141862766e-11,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.1396205222033616,
+            -0.13962052208456774
+          ],
+          "richardson_change": 1.1879386363489175e-10
+        },
+        "phi": {
+          "refined24": [
+            0.13502597159376073,
+            0.13502597161263452,
+            0.13502597152825757
+          ],
+          "refined32": [
+            0.13502597159376073,
+            0.13502597161263452,
+            0.13502597152825757
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 8.43769498715119e-11,
+          "prior_step_change": 1.887379141862766e-11,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            0.1350259716189258,
+            0.13502597150013193
+          ],
+          "richardson_change": 1.1879386363489175e-10
+        },
+        "vanna": {
+          "refined24": [
+            0.012069405467098894,
+            0.012068083235889142,
+            0.012067751575498933
+          ],
+          "refined32": [
+            0.012069405467098894,
+            0.012068083235889142,
+            0.012067751575498933
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 3.3166039020877947e-07,
+          "prior_step_change": 1.322231209752514e-06,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.012067642492152558,
+            0.01206764102203553
+          ],
+          "richardson_change": 1.4701170281128384e-09
+        },
+        "volga": {
+          "refined24": [
+            -0.0011158633045349475,
+            -0.0011158934887234295,
+            -0.0011163014956849793
+          ],
+          "refined32": [
+            -0.0011158633045349475,
+            -0.0011158934887234295,
+            -0.0011163014956849793
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 4.0800696154974503e-07,
+          "prior_step_change": 3.0184188481996443e-08,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.0011159035501195902,
+            -0.0011164374980054959
+          ],
+          "richardson_change": 5.339478859056612e-07
+        },
+        "charm": {
+          "refined24": [
+            -1.325410376675436,
+            -1.3251931766861302,
+            -1.3251388553984824
+          ],
+          "refined32": [
+            -1.325410376675436,
+            -1.3251931766861302,
+            -1.3251388553984824
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 5.4321287647818295e-05,
+          "prior_step_change": 0.00021719998930569417,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -1.325120776689695,
+            -1.3251207483025997
+          ],
+          "richardson_change": 2.8387095341031454e-08
+        }
+      },
+      "comparisons": {
+        "cold_al": {
+          "delta": {
+            "value": -0.49284705275398744,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.157647040701427e-06
+          },
+          "gamma": {
+            "value": 0.09523203014423219,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.301430339706536e-06
+          },
+          "vega": {
+            "value": 2.087375972963934,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.5868196473766147e-10
+          },
+          "theta": {
+            "value": -307.15642139640937,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.014393875896871577
+          },
+          "rho": {
+            "value": -0.13962052217819654,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.550315845288424e-11
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": 0.012070155994137188,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.4044186382552596e-06
+          },
+          "volga": {
+            "value": -0.0011158542978506603,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.4719783431901305e-07
+          },
+          "charm": {
+            "value": -1.3280022481370903,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.002863392738607917
+          }
+        },
+        "cold_fd": {
+          "delta": {
+            "value": -0.49284705275398744,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.157647040701427e-06
+          },
+          "gamma": {
+            "value": 0.09523203014423219,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.301430339706536e-06
+          },
+          "vega": {
+            "value": 2.087375972963934,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.5868196473766147e-10
+          },
+          "theta": {
+            "value": -312.5704811476466,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 5.399665875340361
+          },
+          "rho": {
+            "value": -0.13962052217819654,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.550315845288424e-11
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": 0.012070155994137188,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.4044186382552596e-06
+          },
+          "volga": {
+            "value": -0.0011158542978506603,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.4719783431901305e-07
+          },
+          "charm": {
+            "value": -1.3483521115709163,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.02321325617243386
+          }
+        },
+        "sigma_family": {
+          "delta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "gamma": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vega": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "theta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "sigma_q_family": {
+          "delta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "gamma": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vega": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "theta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        }
+      }
+    },
+    {
+      "input": {
+        "K": 100.0,
+        "S": 200.0,
+        "T": 3.0,
+        "group": "g042",
+        "id": "g042-call-06",
+        "q": 0.08,
+        "r": 0.03,
+        "side": "call",
+        "sigma": 0.2
+      },
+      "reference": {
+        "delta": {
+          "refined24": [
+            0.9999999999999432,
+            0.9999999999999432,
+            1.0000000000002274
+          ],
+          "refined32": [
+            0.9999999999999432,
+            0.9999999999999432,
+            1.0000000000002274
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.8421709430404007e-13,
+          "prior_step_change": 0.0,
+          "change_decreases": false,
+          "profile_change": 0.0,
+          "richardson": [
+            0.9999999999999432,
+            1.0000000000003222
+          ],
+          "richardson_change": 3.7903014060702844e-13
+        },
+        "gamma": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "vega": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "theta": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "rho": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "phi": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "vanna": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "volga": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        },
+        "charm": {
+          "refined24": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "refined32": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.0,
+          "prior_step_change": 0.0,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0,
+            0.0
+          ],
+          "richardson_change": 0.0
+        }
+      },
+      "comparisons": {
+        "cold_al": {
+          "delta": {
+            "value": 0.9999993959570475,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.040431799192447e-07
+          },
+          "gamma": {
+            "value": 3.169517981405078e-08,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 3.169517981405078e-08
+          },
+          "vega": {
+            "value": 0.0002569936796703587,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0002569936796703587
+          },
+          "theta": {
+            "value": 12.99996879030763,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 12.99996879030763
+          },
+          "rho": {
+            "value": -0.0005569415151285284,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0005569415151285284
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": -1.265004101469458e-05,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.265004101469458e-05
+          },
+          "volga": {
+            "value": 0.0041052743426917004,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0041052743426917004
+          },
+          "charm": {
+            "value": 0.08000117822538186,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.08000117822538186
+          }
+        },
+        "cold_fd": {
+          "delta": {
+            "value": 0.9999993959570475,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.040431799192447e-07
+          },
+          "gamma": {
+            "value": 3.169517981405078e-08,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 3.169517981405078e-08
+          },
+          "vega": {
+            "value": 0.0002569936796703587,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0002569936796703587
+          },
+          "theta": {
+            "value": -2.8975577492929006e-05,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.8975577492929006e-05
+          },
+          "rho": {
+            "value": -0.0005569415151285284,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0005569415151285284
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": -1.265004101469458e-05,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.265004101469458e-05
+          },
+          "volga": {
+            "value": 0.0041052743426917004,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0041052743426917004
+          },
+          "charm": {
+            "value": 1.2189005360596639e-06,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.2189005360596639e-06
+          }
+        },
+        "sigma_family": {
+          "delta": {
+            "value": 1.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.2737367544323206e-13,
+            "served_map_estimates": [
+              0.9999993959569764,
+              0.999999395964366,
+              0.9999993959664266
+            ],
+            "abs_error_vs_finest_served_map": 6.040335733814572e-07
+          },
+          "gamma": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              3.169517981405078e-08,
+              3.169446927131502e-08,
+              3.169589035678654e-08
+            ],
+            "abs_error_vs_finest_served_map": 3.169589035678654e-08
+          },
+          "vega": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              0.000256988599289798,
+              0.00025698845718125085,
+              0.0002569882440184301
+            ],
+            "abs_error_vs_finest_served_map": 0.0002569882440184301
+          },
+          "theta": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              -1.2648815328475392e-05,
+              -1.2649081782001302e-05,
+              -1.2647660696529782e-05
+            ],
+            "abs_error_vs_finest_served_map": 1.2647660696529782e-05
+          },
+          "volga": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              0.004104805384486099,
+              0.0041026737562788185,
+              0.004104094841750339
+            ],
+            "abs_error_vs_finest_served_map": 0.004104094841750339
+          },
+          "charm": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "sigma_q_family": {
+          "delta": {
+            "value": 1.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 2.2737367544323206e-13,
+            "served_map_estimates": [
+              0.9999993959428721,
+              0.9999993959500841,
+              0.9999993959520737
+            ],
+            "abs_error_vs_finest_served_map": 6.040479263447196e-07
+          },
+          "gamma": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              3.16948245426829e-08,
+              3.169020601490046e-08,
+              3.16788373311283e-08
+            ],
+            "abs_error_vs_finest_served_map": 3.16788373311283e-08
+          },
+          "vega": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              0.0002569978363453629,
+              0.00025699762318254216,
+              0.00025699762318254216
+            ],
+            "abs_error_vs_finest_served_map": 0.00025699762318254216
+          },
+          "theta": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": 0.0,
+            "reason": "Exercised",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0,
+            "served_map_estimates": [
+              0.0009742041839899684,
+              0.0009742055340211664,
+              0.0009742063866724493
+            ],
+            "abs_error_vs_finest_served_map": 0.0009742063866724493
+          },
+          "vanna": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              -1.2648992964159332e-05,
+              -1.2649437053369182e-05,
+              -1.2644818525586741e-05
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              0.004103384299014579,
+              0.004098410499864258,
+              0.0040813574742060155
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        }
+      }
+    },
+    {
+      "input": {
+        "K": 100.0,
+        "S": 200.0,
+        "T": 1.0,
+        "group": "zero_rate_closed_form",
+        "id": "zero_rate_closed_form-call-06",
+        "q": 0.0,
+        "r": 0.0,
+        "side": "call",
+        "sigma": 0.2
+      },
+      "reference": {
+        "delta": {
+          "refined24": [
+            0.9998185708362328,
+            0.999818578977667,
+            0.9998185810135851
+          ],
+          "refined32": [
+            0.9998185708362328,
+            0.999818578977667,
+            0.9998185810135851
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.035918100773415e-09,
+          "prior_step_change": 8.141434193476016e-09,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.9998185816914784,
+            0.9998185816922245
+          ],
+          "richardson_change": 7.460698725481052e-13
+        },
+        "gamma": {
+          "refined24": [
+            1.7296175158776347e-05,
+            1.7295796794769555e-05,
+            1.7295712950726735e-05
+          ],
+          "refined32": [
+            1.7296175158776347e-05,
+            1.7295796794769555e-05,
+            1.7295712950726735e-05
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 8.384404281969182e-11,
+          "prior_step_change": 3.7836400679225335e-10,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            1.7295670673433957e-05,
+            1.729568500271246e-05
+          ],
+          "richardson_change": 1.4329278503365976e-11
+        },
+        "vega": {
+          "refined24": [
+            0.13836786767029707,
+            0.13836600004424326,
+            0.13836553293344878
+          ],
+          "refined32": [
+            0.13836786767029707,
+            0.13836600004424326,
+            0.13836553293344878
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 4.6711079448868986e-07,
+          "prior_step_change": 1.8676260538086353e-06,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.13836537750222533,
+            0.13836537722985062
+          ],
+          "richardson_change": 2.7237470612284653e-10
+        },
+        "theta": {
+          "refined24": [
+            -0.013836710653691853,
+            -0.013836580968984435,
+            -0.013836548546919403
+          ],
+          "refined32": [
+            -0.013836710653691853,
+            -0.013836580968984435,
+            -0.013836548546919403
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 3.242206503273337e-08,
+          "prior_step_change": 1.2968470741725469e-07,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.01383653774074863,
+            -0.013836537739564392
+          ],
+          "richardson_change": 1.184238471174659e-12
+        },
+        "rho": {
+          "refined24": [
+            56.85388681627046,
+            62.33574598283553,
+            65.56292197984703
+          ],
+          "refined32": [
+            58.646553743813,
+            62.49071289445851,
+            65.5662151112324
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 3.0755022167738844,
+          "prior_step_change": 3.8441591506455097,
+          "change_decreases": true,
+          "profile_change": 0.003293131385362358,
+          "richardson": [
+            63.77209927800701,
+            66.59138251682369
+          ],
+          "richardson_change": 2.8192832388166735
+        },
+        "phi": {
+          "refined24": [
+            -109.41796559613692,
+            -117.05203744995174,
+            -123.76210596215742
+          ],
+          "refined32": [
+            -109.41796559613692,
+            -117.05200425041085,
+            -123.76207389223737
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": true,
+          "last_step_change": 6.7100696418265215,
+          "prior_step_change": 7.6340386542739225,
+          "change_decreases": true,
+          "profile_change": 3.2069920052890666e-05,
+          "richardson": [
+            -119.59668380183548,
+            -125.9987637728462
+          ],
+          "richardson_change": 6.402079971010721
+        },
+        "vanna": {
+          "refined24": [
+            -0.011643155950480375,
+            -0.011642688235724561,
+            -0.011642570996173161
+          ],
+          "refined32": [
+            -0.011643155950480375,
+            -0.011642688235724561,
+            -0.011642570996173161
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 1.1723955140041653e-07,
+          "prior_step_change": 4.6771475581408595e-07,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            -0.011642532330805956,
+            -0.011642531916322694
+          ],
+          "richardson_change": 4.1448326194848395e-10
+        },
+        "volga": {
+          "refined24": [
+            8.302873411025757,
+            8.302848186758638,
+            8.302862397613353
+          ],
+          "refined32": [
+            8.302873411025757,
+            8.302848186758638,
+            8.302862397613353
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 1.4210854715202004e-05,
+          "prior_step_change": 2.5224267119483557e-05,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            8.302839778669599,
+            8.302867134564925
+          ],
+          "richardson_change": 2.7355895326763857e-05
+        },
+        "charm": {
+          "refined24": [
+            0.001164310381440714,
+            0.001164267544595532,
+            0.0011642565311831277
+          ],
+          "refined32": [
+            0.001164310381440714,
+            0.001164267544595532,
+            0.0011642565311831277
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 1.1013412404281553e-08,
+          "prior_step_change": 4.283684518213704e-08,
+          "change_decreases": true,
+          "profile_change": 0.0,
+          "richardson": [
+            0.0011642532656471378,
+            0.0011642528600456596
+          ],
+          "richardson_change": 4.0560147818516357e-10
+        }
+      },
+      "comparisons": {
+        "cold_al": {
+          "delta": {
+            "value": 0.9998185708362328,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.0177352294249431e-08
+          },
+          "gamma": {
+            "value": 1.7296175158776347e-05,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.6220804961194517e-10
+          },
+          "vega": {
+            "value": 0.13842763450355733,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.210157010855255e-05
+          },
+          "theta": {
+            "value": -0.013836580968984435,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 3.242206503273337e-08
+          },
+          "rho": {
+            "value": 59.409524263287494,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.156690847944901
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": -0.011646170356982566,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 3.5993608094048862e-06
+          },
+          "volga": {
+            "value": 8.303668280973397,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0008058833600443904
+          },
+          "charm": {
+            "value": 0.0011643048658527277,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.8334669600080815e-08
+          }
+        },
+        "cold_fd": {
+          "delta": {
+            "value": 0.9998185708362328,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.0177352294249431e-08
+          },
+          "gamma": {
+            "value": 1.7296175158776347e-05,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.6220804961194517e-10
+          },
+          "vega": {
+            "value": 0.13842763450355733,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.210157010855255e-05
+          },
+          "theta": {
+            "value": -0.013836580968984435,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 3.242206503273337e-08
+          },
+          "rho": {
+            "value": 59.409524263287494,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 6.156690847944901
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": -0.011646170356982566,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 3.5993608094048862e-06
+          },
+          "volga": {
+            "value": 8.303668280973397,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0008058833600443904
+          },
+          "charm": {
+            "value": 0.0011643048658527277,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 4.8334669600080815e-08
+          }
+        },
+        "sigma_family": {
+          "delta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "gamma": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vega": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "theta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "sigma_q_family": {
+          "delta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "gamma": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vega": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "theta": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": null,
+            "reason": "Refused",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        }
+      }
+    },
+    {
+      "input": {
+        "K": 811.6395,
+        "S": 772.99,
+        "T": 0.0682,
+        "group": "near_edge_regression",
+        "id": "sigma-family-near-edge-put-00",
+        "q": 0.00162193,
+        "r": 0.04496,
+        "side": "put",
+        "sigma": 0.12
+      },
+      "reference": {
+        "delta": {
+          "refined24": [
+            -0.9979305777329542,
+            -0.9982442085611456,
+            -0.9982524155291027
+          ],
+          "refined32": [
+            -0.997930855047546,
+            -0.9982447727211731,
+            -0.9982523935264331
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": true,
+          "last_step_change": 7.62080526006681e-06,
+          "prior_step_change": 0.00031391767362709544,
+          "change_decreases": true,
+          "profile_change": 2.2002669575194034e-08,
+          "richardson": [
+            -0.9983494119457155,
+            -0.9982549337948532
+          ],
+          "richardson_change": 9.447815086227607e-05
+        },
+        "gamma": {
+          "refined24": [
+            0.0069698522496777415,
+            0.008204333598486675,
+            0.008259100148549277
+          ],
+          "refined32": [
+            0.006971079547566051,
+            0.008209164101034607,
+            0.00825909112276448
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": true,
+          "last_step_change": 4.992702172987307e-05,
+          "prior_step_change": 0.0012380845534685561,
+          "change_decreases": true,
+          "profile_change": 9.02578479664018e-09,
+          "richardson": [
+            0.008621858952190793,
+            0.008275733463341104
+          ],
+          "richardson_change": 0.0003461254888496891
+        },
+        "vega": {
+          "refined24": [
+            0.7107281210079938,
+            0.7108396740562739,
+            0.7108724865645399
+          ],
+          "refined32": [
+            0.7107418045807871,
+            0.7108533824980631,
+            0.7108862001577639
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 3.281765970086781e-05,
+          "prior_step_change": 0.00011157791727600674,
+          "change_decreases": true,
+          "profile_change": 1.3713593223996234e-05,
+          "richardson": [
+            0.7108905751371551,
+            0.7108971393776642
+          ],
+          "richardson_change": 6.564240509043806e-06
+        },
+        "theta": {
+          "refined24": [
+            -0.33733415875570977,
+            -0.3373601357345052,
+            -0.33736683155793823
+          ],
+          "refined32": [
+            -0.337330431479809,
+            -0.337356411584159,
+            -0.3373631080847955
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 6.696500636504954e-06,
+          "prior_step_change": 2.5980104350009636e-05,
+          "change_decreases": true,
+          "profile_change": 3.7234731427027157e-06,
+          "richardson": [
+            -0.3373650716189423,
+            -0.33736534025167436
+          ],
+          "richardson_change": 2.6863273205890437e-07
+        },
+        "rho": {
+          "refined24": [
+            -0.45266019863987594,
+            -0.45266795495990664,
+            -0.45267016446359776
+          ],
+          "refined32": [
+            -0.452685039178391,
+            -0.45269279951298813,
+            -0.45269501015354763
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.2106405594968237e-06,
+          "prior_step_change": 7.760334597151086e-06,
+          "change_decreases": true,
+          "profile_change": 2.4845689949870575e-05,
+          "richardson": [
+            -0.45269538629118716,
+            -0.4526957470337341
+          ],
+          "richardson_change": 3.6074254694540286e-07
+        },
+        "phi": {
+          "refined24": [
+            0.43627422126490956,
+            0.43628170459442117,
+            0.43628380097970876
+          ],
+          "refined32": [
+            0.4362990141970613,
+            0.436306501185868,
+            0.4363085983527526
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 2.0971668845959357e-06,
+          "prior_step_change": 7.486988806704176e-06,
+          "change_decreases": true,
+          "profile_change": 2.479737304383889e-05,
+          "richardson": [
+            0.4363089968488036,
+            0.4363092974083808
+          ],
+          "richardson_change": 3.005595772265224e-07
+        },
+        "vanna": {
+          "refined24": [
+            2.4053212277319047,
+            3.139818423553537,
+            3.3418889611238685
+          ],
+          "refined32": [
+            2.4053335053165896,
+            3.1398445005080013,
+            3.34188353566638
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": true,
+          "last_step_change": 0.2020390351583785,
+          "prior_step_change": 0.7345109951914117,
+          "change_decreases": true,
+          "profile_change": 5.4254574886059e-06,
+          "richardson": [
+            3.3846814989051386,
+            3.4092298807191725
+          ],
+          "richardson_change": 0.02454838181403396
+        },
+        "volga": {
+          "refined24": [
+            1362.158843498662,
+            1362.8765434721874,
+            1363.0476145307412
+          ],
+          "refined32": [
+            1362.1563684414657,
+            1362.8738216987635,
+            1363.0448434140717
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": false,
+          "last_step_change": 0.17102171530814303,
+          "prior_step_change": 0.7174532572978478,
+          "change_decreases": true,
+          "profile_change": 0.0027711166694643907,
+          "richardson": [
+            1363.1129727845293,
+            1363.1018506525077
+          ],
+          "richardson_change": 0.011122132021682773
+        },
+        "charm": {
+          "refined24": [
+            -1.1527158684208483,
+            -1.4974148844323094,
+            -1.5927211569662358
+          ],
+          "refined32": [
+            -1.152711437803366,
+            -1.4974064505984706,
+            -1.5927192439295488
+          ],
+          "complete": true,
+          "intrinsic_evidence_complete": true,
+          "intrinsic_band_changed": true,
+          "last_step_change": 0.09531279333107823,
+          "prior_step_change": 0.3446950127951045,
+          "change_decreases": true,
+          "profile_change": 1.9130366870623305e-06,
+          "richardson": [
+            -1.6123047881968386,
+            -1.6244901750399083
+          ],
+          "richardson_change": 0.01218538684306969
+        }
+      },
+      "comparisons": {
+        "cold_al": {
+          "delta": {
+            "value": -0.99740117243656,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0008512210898731221
+          },
+          "gamma": {
+            "value": 0.006125047471142491,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0021340436516219894
+          },
+          "vega": {
+            "value": 0.7810634335427835,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.07017723338501958
+          },
+          "theta": {
+            "value": 8.799972502027904,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 9.1373356101127
+          },
+          "rho": {
+            "value": -0.45363157504141327,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.000936564887865643
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": 2.126654939979936,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.215228595686444
+          },
+          "volga": {
+            "value": 1204.1902282220462,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 158.85461519202545
+          },
+          "charm": {
+            "value": -23.037490886792483,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 21.444771642862936
+          }
+        },
+        "cold_fd": {
+          "delta": {
+            "value": -0.99740117243656,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0008512210898731221
+          },
+          "gamma": {
+            "value": 0.006125047471142491,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0021340436516219894
+          },
+          "vega": {
+            "value": 0.7810634335427835,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.07017723338501958
+          },
+          "theta": {
+            "value": -0.33347808489025965,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.003885023194535875
+          },
+          "rho": {
+            "value": -0.45363157504141327,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.000936564887865643
+          },
+          "phi": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false
+          },
+          "vanna": {
+            "value": 2.126654939979936,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.215228595686444
+          },
+          "volga": {
+            "value": 1204.1902282220462,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 158.85461519202545
+          },
+          "charm": {
+            "value": -1.0260312837606291,
+            "reason": "ApiValueUnqualified",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.5666879601689196
+          }
+        },
+        "sigma_family": {
+          "delta": {
+            "value": -0.9982509419750875,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.4515513456769824e-06,
+            "served_map_estimates": [
+              -0.9979364216870372,
+              -0.9982560993849314,
+              -0.9982523890700392
+            ],
+            "abs_error_vs_finest_served_map": 1.4470949517564335e-06
+          },
+          "gamma": {
+            "value": null,
+            "reason": "NearExerciseEdge",
+            "supported": false,
+            "served_map_estimates": [
+              0.006993770460660459,
+              0.008298331120900499,
+              0.008230952701767238
+            ]
+          },
+          "vega": {
+            "value": 0.7119314495006958,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.00104524934293182,
+            "served_map_estimates": [
+              0.7117895823564405,
+              0.7119028019531015,
+              0.7119247484865809
+            ],
+            "abs_error_vs_finest_served_map": 6.701014114818271e-06
+          },
+          "theta": {
+            "value": null,
+            "reason": "NearExerciseEdge",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": -0.4535987020889216,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0009036919353739847,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": 0.4370988647252201,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0007902663724674852,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "vanna": {
+            "value": 3.3024669965969595,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.03941653906942033,
+            "served_map_estimates": [
+              2.4053073638620983,
+              3.1412001038349273,
+              3.3575699089416715
+            ],
+            "abs_error_vs_finest_served_map": 0.055102912344711985
+          },
+          "volga": {
+            "value": 1339.4231311040012,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 23.621712310070507,
+            "served_map_estimates": [
+              1342.2575219203104,
+              1340.145594497244,
+              1339.6043938327139
+            ],
+            "abs_error_vs_finest_served_map": 0.18126272871268156
+          },
+          "charm": {
+            "value": null,
+            "reason": "NearExerciseEdge",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        },
+        "sigma_q_family": {
+          "delta": {
+            "value": -0.998250942009449,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 1.451516984163348e-06,
+            "served_map_estimates": [
+              -0.9979364209338772,
+              -0.9982560978610124,
+              -0.9982523891061764
+            ],
+            "abs_error_vs_finest_served_map": 1.4470967274471391e-06
+          },
+          "gamma": {
+            "value": null,
+            "reason": "NearExerciseEdge",
+            "supported": false,
+            "served_map_estimates": [
+              0.006993767205493131,
+              0.008298318245534939,
+              0.008230952716297613
+            ]
+          },
+          "vega": {
+            "value": 0.7119314210201999,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0010452208624359693,
+            "served_map_estimates": [
+              0.7117895536978835,
+              0.7119027734129683,
+              0.7119247199464477
+            ],
+            "abs_error_vs_finest_served_map": 6.701073752224396e-06
+          },
+          "theta": {
+            "value": null,
+            "reason": "NearExerciseEdge",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "rho": {
+            "value": -0.45359859856652207,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0009035884129744431,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          },
+          "phi": {
+            "value": 0.4371274269775114,
+            "reason": "Served",
+            "supported": true,
+            "abs_error_vs_finest_cold": 0.0008188286247587939,
+            "served_map_estimates": [
+              0.4371269610103923,
+              0.4371276260428658,
+              0.43712749899782466
+            ],
+            "abs_error_vs_finest_served_map": 7.202031326869474e-08
+          },
+          "vanna": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              2.4053073344689073,
+              3.1412000444374604,
+              3.3575699123637475
+            ]
+          },
+          "volga": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              1342.2575209334454,
+              1340.145594497244,
+              1339.604401727633
+            ]
+          },
+          "charm": {
+            "value": null,
+            "reason": "NotInApi",
+            "supported": false,
+            "served_map_estimates": [
+              null,
+              null,
+              null
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

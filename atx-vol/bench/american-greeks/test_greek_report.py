@@ -4,7 +4,8 @@ import math
 import os
 from pathlib import Path
 import unittest
-from greek_report import FIELDS, ENGINES, PROFILES, DEFAULT_OPTIONS, derivatives, summarize, validate_report
+from greek_report import (FIELDS, ENGINES, PROFILES, DEFAULT_OPTIONS, derivatives,
+                          summarize, validate_report, validate_requested_ids)
 
 
 def polynomial_stencil(scale=1.):
@@ -30,6 +31,24 @@ def polynomial_stencil(scale=1.):
 
 
 class Reconstruction(unittest.TestCase):
+    def test_center_is_part_of_stencil_regime_evidence(self):
+        stencil = polynomial_stencil()
+        for sample in stencil['samples'][1:]:
+            sample['intrinsic_band'] = True
+        result = derivatives(stencil)
+        for field in FIELDS:
+            self.assertTrue(result[field]['intrinsic_band_changed'], field)
+            self.assertTrue(result[field]['intrinsic_evidence_complete'], field)
+
+    def test_unavailable_center_does_not_claim_complete_regime_evidence(self):
+        stencil = polynomial_stencil()
+        stencil['samples'][0].update(price=None, status='refused', intrinsic_band=None)
+        result = derivatives(stencil)
+        self.assertIsNotNone(result['theta']['value'])
+        self.assertIsNone(result['gamma']['value'])
+        for field in FIELDS:
+            self.assertFalse(result[field]['intrinsic_evidence_complete'], field)
+
     def test_polynomial_signs_units_and_mixed_derivatives(self):
         expected = [9.4, 2., 9.2, -17., 7., 8., 3., 8., -6.]
         for scale in [1., .5, .25]:
@@ -94,6 +113,42 @@ def receipt_fixture():
 
 
 class Receipt(unittest.TestCase):
+    def test_execution_requires_the_actual_requested_ids(self):
+        report, corpus = receipt_fixture()
+        validate_report(report, corpus)  # a standalone declared subset is legitimate
+        for expected in [['fixture', 'omitted'], ['different'], ['fixture', 'fixture'], [], [True]]:
+            with self.assertRaises(ValueError):
+                validate_requested_ids(report, expected)
+        validate_requested_ids(report, ['fixture'])
+
+    def test_price_derived_intrinsic_flags_are_independently_checked(self):
+        report, corpus = receipt_fixture()
+        report['cases'][0]['references']['refined32']['stencils'][0]['samples'][0]['intrinsic_band']=True
+        with self.assertRaises(ValueError):
+            validate_report(report, corpus)
+
+    def test_intrinsic_evidence_uses_bumped_spot_and_both_sides(self):
+        for side in ['put', 'call']:
+            report, corpus = receipt_fixture()
+            row = report['cases'][0]
+            row['input'].update(K=2., side=side)
+            for engine in ['sigma_family', 'sigma_q_family']:
+                row['engines'][engine]['box']['anchor'] = 2.
+            all_levels = [r['stencils'] for r in row['references'].values()] + list(row['served_maps'].values())
+            for levels in all_levels:
+                for level in levels:
+                    for sample in level['samples']:
+                        if sample['status'] != 'finite':
+                            continue
+                        spot = 2. + sample['offset'][0]*level['h'][0]
+                        intrinsic = max(2.-spot if side == 'put' else spot-2., 0.)
+                        sample.update(price=intrinsic, intrinsic_band=intrinsic > 0)
+            validate_report(report, corpus)
+            index = 2 if side == 'put' else 1
+            row['references']['refined32']['stencils'][0]['samples'][index]['intrinsic_band'] = False
+            with self.assertRaises(ValueError):
+                validate_report(report, corpus)
+
     def test_denominators_and_no_qualification(self):
         report, corpus = receipt_fixture()
         summary = summarize(report, corpus)
