@@ -113,9 +113,9 @@ struct ResolvedTheo {
                                                 const ProjectionPolicy &policy = {});
 
 // Many templates on one surface. `out.size() == specs.size()`; per-row market
-// failures land in `out[i].status`. Rows are grouped by (expiry, side) internally
-// so the delta solves share seeds; the per-row result is independent of batch
-// composition.
+// failures land in `out[i].status`. Rows are resolved independently (fanned over the
+// pricing executor); each row's result is bit-equal to `resolve_theo` and independent
+// of batch composition.
 [[nodiscard]] Status resolve_theo_many(std::span<const TheoContract> specs,
                                        const SurfaceRef &surface, std::int64_t valuation_ns,
                                        const ProjectionPolicy &policy,
