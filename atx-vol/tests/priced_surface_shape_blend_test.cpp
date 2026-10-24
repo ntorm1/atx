@@ -115,11 +115,14 @@ private:
 }
 
 // A two-pillar SplineVol surface (the one curve kind that reports
-// `is_extrapolated`): hand-built knots, data-supported standardized range
-// [-1.5, 1.2] (asymmetric, so a sign slip shows), ATM 24% / 22%.
+// `is_extrapolated`): hand-built knots, ATM 24% / 22%, data-supported
+// standardized range [-1.5, 1.2] on pillar 0 and [-0.9, 1.2] on pillar 1. The
+// asymmetry shows a sign slip; pillar 1's NARROWER low side (k_lo = -0.140 vs
+// pillar 0's -0.180, while its high side is wider: 0.187 vs 0.144) means each
+// pillar has strikes only IT calls extrapolated, so both arms of the OR count.
 constexpr std::array<double, 2> kSplineT{0.25, 0.5};
 constexpr std::array<double, 2> kSplineAtm{0.24, 0.22};
-constexpr double kSplineZLo = -1.5;
+constexpr std::array<double, 2> kSplineZLo{-1.5, -0.9};
 constexpr double kSplineZHi = 1.2;
 
 [[nodiscard]] PricedSurface make_spline_surface() {
@@ -132,7 +135,7 @@ constexpr double kSplineZHi = 1.2;
     p.atm_vol = kSplineAtm[i];
     p.z = {-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0};
     p.mult = {1.34, 1.21, 1.09, 1.0, 0.95, 0.93, 0.94};
-    p.z_lo_valid = kSplineZLo;
+    p.z_lo_valid = kSplineZLo[i];
     p.z_hi_valid = kSplineZHi;
     cs.push(std::make_unique<SplineVolCurve>(std::move(p), T, F, std::exp(-kRate * T)));
     ctx.push_back(SliceContext{T, F, 0.0, kCarry, 20, 0});
@@ -152,7 +155,7 @@ constexpr double kSplineZHi = 1.2;
   return kSplineZHi * kSplineAtm[i] * std::sqrt(kSplineT[i]);
 }
 [[nodiscard]] double spline_k_lo(std::size_t i) noexcept {
-  return kSplineZLo * kSplineAtm[i] * std::sqrt(kSplineT[i]);
+  return kSplineZLo[i] * kSplineAtm[i] * std::sqrt(kSplineT[i]);
 }
 
 // 20 strikes x 10 tenors = 200 grid points, spanning short-end extrapolation,
@@ -328,6 +331,15 @@ TEST(PricedSurfaceShapeBlend, MoneynessExtrapolatedOnSplineWing) {
   EXPECT_TRUE(both(strike(0.5 * (spline_k_hi(0) + spline_k_hi(1)), Tq), Tq));
   EXPECT_TRUE(both(strike(1.2 * spline_k_hi(1), Tq), Tq));
   EXPECT_TRUE(both(strike(1.2 * spline_k_lo(1), Tq), Tq));
+
+  // The upper slice's arm: inside pillar 0's range but below pillar 1's narrower
+  // low edge -> extrapolated on pillar 1 only -> true. At pillar 0 alone the same
+  // k is inside (false); past the last pillar, pillar 1 alone says true.
+  ASSERT_GT(spline_k_lo(1), spline_k_lo(0));
+  const double k_upper_only = 0.5 * (spline_k_lo(0) + spline_k_lo(1)); // ~ -0.16
+  EXPECT_TRUE(both(strike(k_upper_only, Tq), Tq));
+  EXPECT_FALSE(both(strike(k_upper_only, T0), T0));
+  EXPECT_TRUE(both(strike(k_upper_only, 0.8), 0.8));
 
   // Past the last pillar: pillar 1 alone serves.
   constexpr double T_long = 0.8;

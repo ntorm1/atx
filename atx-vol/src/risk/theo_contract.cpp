@@ -192,6 +192,8 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
 //               and positive (e.g. log-moneyness 800 overflows F e^k): the template
 //               names no strike on this state.
 //   OutOfRange  MaturityUnavailable (TenorExtrapPolicy::Forbid).
+//   (A failure on an American route whose pricer refuses the state outright is
+//   PricingError before this mapping is consulted: american_pricer_refuses.)
 //   Unavailable Delta strike: DeltaUnreachable (the solve could not evaluate /
 //               converge, or the solved strike has no vol); any other kind:
 //               SurfaceUnavailable (no vol at that strike).
@@ -212,8 +214,28 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
   return TheoStatus::PricingError;
 }
 
+// True when the conversion needed the American pricer (a Delta strike under the
+// American convention, or an American reported delta) and that pricer refuses this
+// state outright. A regime refusal (Andersen-Lake's double-continuation corner,
+// put q < r <= 0 / call r < q <= 0) depends on the carry, not on the strike, so
+// one cold American delta at the forward decides it. Called only on the failure
+// path, after the forward / ATM-vol check has passed.
+[[nodiscard]] bool american_pricer_refuses(const SurfaceRef &surface, const TheoContract &spec,
+                                           double T, double F, const ProjectionPolicy &policy) {
+  const bool uses_american =
+      policy.delta_conv == DeltaConvention::American ||
+      (spec.strike.kind == StrikeCoordKind::Delta &&
+       spec.strike.delta_conv == DeltaConvention::American);
+  return uses_american &&
+         !risk_detail::cold_delta(surface, F, T, spec.side, policy.interp).has_value();
+}
+
 // Resolve a validated template at a known expiry instant. The Result is an error
-// only for a structural strike problem surfaced by the conversion.
+// only for a structural strike problem surfaced by the conversion (InvalidArgument;
+// the spec and policy were validated by the caller, so in practice none remain).
+// A pricer refusal surfacing from the conversion or its American solve, e.g. the
+// American reported delta's NotImplemented in a double-continuation regime, is a
+// PricingError ROW under the uniform non-Ok rule, whatever the delta convention.
 [[nodiscard]] Result<ResolvedTheo> resolve_at_expiry(const TheoContract &spec,
                                                      const SurfaceRef &surface,
                                                      std::int64_t valuation_ns,
@@ -251,10 +273,12 @@ constexpr double kMaxDeltaTolerance = 1.0e-3; // the American solve's own ceilin
       convert_strike_coord(surface, out.T, spec.side, spec.strike, policy);
   if (!coord) {
     const ErrorCode code = coord.error().code();
-    if (code == ErrorCode::InvalidArgument || code == ErrorCode::NotImplemented) {
+    if (code == ErrorCode::InvalidArgument) {
       return Err(coord.error());
     }
-    out.status = market_status(code, spec.strike);
+    out.status = american_pricer_refuses(surface, spec, out.T, out.forward, policy)
+                     ? TheoStatus::PricingError
+                     : market_status(code, spec.strike);
     return Ok(out);
   }
   const CoordResult &c = *coord;
