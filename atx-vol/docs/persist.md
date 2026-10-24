@@ -25,7 +25,7 @@ auto reports = build_state_store_from_spiderrock(spec, buckets_et, o);
 
 // Serve one bucket.
 auto store = StateStore::open("C:/atx-cache/persist");
-auto archive = store->open_bucket("2026-10-14", "1000");   // Full verify by default
+auto archive = store->open_bucket("2026-10-14", "1000");   // size policy, see below
 const MarketState &state = archive->state();               // valid while `archive` lives
 MarkExtras x = archive->extras(uid);                       // bid / ask / vendor Greeks per mark
 auto bucket = selection_bucket_from_archive(*archive);     // feeds the bench book selector
@@ -107,6 +107,16 @@ Full 11.63 ms, Parquet 1.487 s, 128x. `Full` over `Framing` is the CRC pass over
 (single-stream hardware CRC32C plus first-touch faults on the mapped view): about 9 ms for the
 top-100 file and 51 ms for the uncapped one. `NO_BUFFERING` sequential read: 2.56 GB/s (top-100
 file), 2.85 GB/s (uncapped).
+
+**Default verify level (ruling 2026-10-24).** The default opens (`StateStore::open_bucket(date,
+bucket)`, `MarketStateArchive::open(path)`) verify `Full` up to `kMarketStateFullVerifyMaxBytes`
+= 64 MiB and `Framing` above it (`market_state_open_options(file_size)`). So the top-100 book
+opens Full (11.1 ms) and the uncapped book opens Framing (16.2 ms instead of 67.5 ms; the
+design target for it was 60 ms Full). Framing still checks the header, section-table and footer
+CRCs and every structural rule of the reader; it skips only the payload CRC pass. `Lazy` is not
+used: building the state touches every section at open, so Lazy measured the same as Full
+(67.6 ms). Full / Paranoid stay available by passing options explicitly
+(`kMarketStateOpenDefaults` is the Full set), and `atx-vol-state-store verify` runs Paranoid.
 
 ### Build (per bucket, p50 over 11 buckets)
 

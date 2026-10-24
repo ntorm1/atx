@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -731,6 +732,13 @@ MarketStateArchive::MarketStateArchive(std::unique_ptr<Impl> impl) noexcept
 MarketStateArchive::MarketStateArchive(MarketStateArchive &&) noexcept = default;
 MarketStateArchive &MarketStateArchive::operator=(MarketStateArchive &&) noexcept = default;
 MarketStateArchive::~MarketStateArchive() = default;
+
+PersistResult<MarketStateArchive> MarketStateArchive::open(std::string_view path) {
+  std::error_code ec;
+  const std::uintmax_t size = std::filesystem::file_size(std::filesystem::path{path}, ec);
+  // An unreadable size falls through to the Full open, which reports the real refusal.
+  return open(path, market_state_open_options(ec ? 0u : static_cast<std::uint64_t>(size)));
+}
 
 PersistResult<MarketStateArchive> MarketStateArchive::open(std::string_view path,
                                                            const PersistOpenOptions &options) {

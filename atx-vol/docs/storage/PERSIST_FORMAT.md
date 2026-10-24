@@ -131,8 +131,10 @@ its bytes. A mapped file is never rewritten in place (section 5).
 | `Paranoid` | as Full + `file_crc32c` | nothing more |
 
 Codec sections are always decoded and verified at open, so nothing allocates after open
-(`PersistFile.NoAllocationAfterOpen`). `MarketStateArchive::open` defaults to `Full`
-(`kMarketStateOpenDefaults`).
+(`PersistFile.NoAllocationAfterOpen`). The MarketState default opens
+(`MarketStateArchive::open(path)`, `StateStore::open_bucket(date, bucket)`) use `Full` up to
+`kMarketStateFullVerifyMaxBytes` (64 MiB) and `Framing` above it
+(`market_state_open_options`); explicit options choose any level.
 
 ### 2.1 Validation order (the first refusal wins)
 

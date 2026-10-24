@@ -310,6 +310,58 @@ TEST(PersistStateStore, RefusesOutputInsideSourceRoot) {
       << "a sibling whose name merely starts with the root's is outside it";
 }
 
+// Ruling 2026-10-24: Full verification up to kMarketStateFullVerifyMaxBytes, Framing above
+// it (Lazy would cost what Full costs: the state build touches every section at open).
+TEST(PersistStateStore, DefaultVerifyIsFullUpToThresholdFramingAbove) {
+  static_assert(market_state_open_options(kMarketStateFullVerifyMaxBytes).verify ==
+                PersistVerify::Full);
+  static_assert(market_state_open_options(kMarketStateFullVerifyMaxBytes + 1).verify ==
+                PersistVerify::Framing);
+  EXPECT_TRUE(market_state_open_options(kMarketStateFullVerifyMaxBytes + 1).mapped);
+
+  // Applied by default: a small archive with one flipped payload byte (its stored CRC left
+  // alone) is refused by the default opens and served by an explicit Framing open.
+  const SpiderRockStoreSpec spec = spec_of(shared_store());
+  const fs::path out = fresh_dir("policy");
+  const std::vector<std::string> one{"1000"};
+  auto built = build_state_store_from_spiderrock(spec, one, options_of(out));
+  ASSERT_TRUE(built.has_value());
+  const std::string path = built->front().path;
+  const StateStore store = StateStore::open(out.string()).value();
+  std::uint64_t at = 0;
+  {
+    auto a = store.open_bucket(spec.date, "1000");
+    ASSERT_TRUE(a.has_value()) << to_string(a.error().status);
+    ASSERT_LE(a->file().header().file_size, kMarketStateFullVerifyMaxBytes);
+    const PersistSectionEntry *e =
+        a->file().entry(static_cast<std::uint32_t>(MarketStateSection::Sigma));
+    ASSERT_NE(e, nullptr);
+    ASSERT_GT(e->length, 0u);
+    at = e->offset; // the low byte of the first sigma: still a valid positive vol
+  }
+  {
+    std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(f.good());
+    char c = 0;
+    f.seekg(static_cast<std::streamoff>(at));
+    f.read(&c, 1);
+    c = static_cast<char>(c ^ 0x01);
+    f.seekp(static_cast<std::streamoff>(at));
+    f.write(&c, 1);
+  }
+  auto by_store = store.open_bucket(spec.date, "1000");
+  ASSERT_FALSE(by_store.has_value());
+  EXPECT_EQ(by_store.error().status, PersistStatus::SectionChecksum);
+  auto by_path = MarketStateArchive::open(path);
+  ASSERT_FALSE(by_path.has_value());
+  EXPECT_EQ(by_path.error().status, PersistStatus::SectionChecksum);
+  PersistOpenOptions framing = kMarketStateOpenDefaults;
+  framing.verify = PersistVerify::Framing;
+  auto lax = store.open_bucket(spec.date, "1000", framing);
+  ASSERT_TRUE(lax.has_value()) << to_string(lax.error().status);
+  EXPECT_FALSE(lax->file().verify_all().has_value());
+}
+
 TEST(PersistStateStore, SelectionBucketFeedsBenchBookSelector) {
   const SpiderRockStoreSpec spec = spec_of(shared_store());
   const fs::path out = fresh_dir("sel");

@@ -76,9 +76,28 @@ enum class MarketStateSection : std::uint32_t {
 // The one schema fingerprint this build reads and writes for the MarketState kind.
 [[nodiscard]] std::uint64_t market_state_fingerprint() noexcept;
 
-// Open defaults for the MarketState kind (persist D7): Full, because the open touches
-// every core column anyway (mark order and side validation).
+// The Full-verify open options for the MarketState kind (persist D7): every section CRC
+// and every padding byte at open. The DEFAULT opens (`MarketStateArchive::open(path)`,
+// `StateStore::open_bucket(date, bucket)`) use them up to kMarketStateFullVerifyMaxBytes.
 inline constexpr PersistOpenOptions kMarketStateOpenDefaults{true, PersistVerify::Full, false, 0};
+
+// ── Lane P1 addition: the size policy of the default opens (ruling 2026-10-24) ──
+// Full verification is one CRC pass over the whole file at open, ~0.25-0.27 ms per MB warm
+// on the research host (2026-10-14 bucket 1000: 35.7 MB top-100 book Full 11.1 ms vs
+// Framing 2.3 ms; 189.6 MB uncapped book Full 67.5 ms vs Framing 16.2 ms). Files above the
+// threshold open at Framing: header / table / footer CRCs plus every structural rule of the
+// reader (row ranges, mark order, side bytes) still run, and Full / Paranoid stay available
+// by passing options explicitly (`atx-vol-state-store verify` runs Paranoid). Not Lazy: Lazy
+// verifies a section on its first touch, and building the state touches every section at
+// open, so Lazy costs what Full costs (67.6 ms measured on the uncapped file).
+inline constexpr std::uint64_t kMarketStateFullVerifyMaxBytes = std::uint64_t{64} << 20;
+
+[[nodiscard]] constexpr PersistOpenOptions
+market_state_open_options(std::uint64_t file_size) noexcept {
+  PersistOpenOptions o = kMarketStateOpenDefaults;
+  if (file_size > kMarketStateFullVerifyMaxBytes) o.verify = PersistVerify::Framing;
+  return o;
+}
 
 // ── Writer ───────────────────────────────────────────────────────────────────
 
@@ -145,6 +164,8 @@ public:
   // outside its column), SectionStride (a column whose length is not n_marks).
   [[nodiscard]] static PersistResult<MarketStateArchive> open(std::string_view path,
                                                               const PersistOpenOptions &options);
+  // ── Lane P1 addition: the default open (market_state_open_options of the file size) ──
+  [[nodiscard]] static PersistResult<MarketStateArchive> open(std::string_view path);
   // ── Lane P1 addition: validate an image already in memory (tests, the tool) ──
   [[nodiscard]] static PersistResult<MarketStateArchive>
   open_bytes(std::span<const std::byte> bytes, std::shared_ptr<const void> owner,
@@ -240,10 +261,14 @@ public:
   // The bucket keys published for `date` (ascending). NotFound when the date is absent.
   [[nodiscard]] PersistResult<std::vector<std::string>> buckets(std::string_view date) const;
   // Open the current generation of (date, bucket); SegmentMismatch when the file
-  // disagrees with its manifest entry (size or header CRC).
+  // disagrees with its manifest entry (size or header CRC). The two-argument form applies
+  // market_state_open_options to the manifest's file size; pass options to choose the
+  // verify level explicitly (e.g. kMarketStateOpenDefaults for Full at any size).
+  [[nodiscard]] PersistResult<MarketStateArchive> open_bucket(std::string_view date,
+                                                            std::string_view bucket_et) const;
   [[nodiscard]] PersistResult<MarketStateArchive>
   open_bucket(std::string_view date, std::string_view bucket_et,
-              const PersistOpenOptions &options = kMarketStateOpenDefaults) const;
+              const PersistOpenOptions &options) const;
 
 private:
   std::string root_;

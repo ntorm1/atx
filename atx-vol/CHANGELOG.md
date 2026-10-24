@@ -6312,7 +6312,9 @@ module `api/persist/` (lane P1 of the wave-3 persistence sprint; spec
 Measured on the licensed day 2026-10-14 (bucket 1000, warm): the top-100 book (367,664 marks,
 35.7 MB) opens with Full verification and serves its state in 11.1 ms p50 against 1.35 s for
 the Parquet load + state build (121x; Framing 2.3 ms). The uncapped book (1.94 M marks,
-189.6 MB) opens Full in 67.5 ms p50 (Framing 16.2 ms) against 1.65 s. Encode + publish per
+189.6 MB) opens Full in 67.5 ms p50 against 1.65 s, over the 60 ms target, so the default opens
+verify Full only up to 64 MiB (`kMarketStateFullVerifyMaxBytes`) and Framing above it: the
+uncapped book opens in 16.2 ms by default, Full / Paranoid on request. Encode + publish per
 bucket: 0.086 s (top-100) and 0.43 s (uncapped). Rebuilds of all 11 buckets are sha256-identical
 across `--parallel 1` / `--parallel 2` and repeated runs, and a `RiskStream` explain over the 11
 archived states is bit-equal to the Parquet-built states on all 10 transitions.
