@@ -42,6 +42,8 @@
 #include "atx/vol/api/fitting/vol_surface.hpp"
 #include "batch_status.hpp"
 #include "result.hpp"
+#include "greek_metadata.hpp"
+#include "pricing/american_greek_availability.hpp"
 #include "sides.hpp"
 
 namespace py = pybind11;
@@ -114,7 +116,8 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   }
   const auto n = static_cast<py::ssize_t>(k.size());
   py::array_t<double> iv(n), w(n), value(n), delta(n), gamma(n), vega(n), theta(n), rho(n),
-      vanna(n), volga(n), charm(n);
+      vanna(n), volga(n), charm(n), greek_price(n);
+  atxvol::python::GreekMetadataColumns metadata(k.size());
   // F-5: every independently evaluated output family gets its own status and
   // validity channel. `iv` / `total_variance` expose only a bare-double C++
   // API, so a non-finite value maps to OutOfRange; fair value and Greeks retain
@@ -149,6 +152,7 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   auto *vanna_p = vanna.mutable_data();
   auto *volga_p = volga.mutable_data();
   auto *charm_p = charm.mutable_data();
+  auto *greek_price_p = greek_price.mutable_data();
   auto *status_p = status.mutable_data();
   auto *iv_status_p = iv_status.mutable_data();
   auto *w_status_p = w_status.mutable_data();
@@ -204,6 +208,11 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
       }
       auto g = self.greeks(k[i], t[i], side, execution);
       if (!g) {
+        AmericanGreeks unavailable;
+        detail::mark_american_greek_fields(unavailable, GreekFieldMask::All,
+                                          AmericanGreekReason::Nonfinite);
+        metadata.write(i, unavailable);
+        greek_price_p[i] = kNan;
         delta_p[i] = gamma_p[i] = vega_p[i] = theta_p[i] = kNan;
         rho_p[i] = vanna_p[i] = volga_p[i] = charm_p[i] = kNan;
         greeks_valid_p[i] = false;
@@ -217,6 +226,8 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
         }
         continue;
       }
+      metadata.write(i, *g);
+      greek_price_p[i] = g->price;
       delta_p[i] = g->delta;
       gamma_p[i] = g->gamma;
       vega_p[i] = g->vega;
@@ -225,14 +236,14 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
       vanna_p[i] = g->vanna;
       volga_p[i] = g->volga;
       charm_p[i] = g->charm;
-      delta_valid_p[i] = std::isfinite(delta_p[i]);
-      gamma_valid_p[i] = std::isfinite(gamma_p[i]);
-      vega_valid_p[i] = std::isfinite(vega_p[i]);
-      theta_valid_p[i] = std::isfinite(theta_p[i]);
-      rho_valid_p[i] = std::isfinite(rho_p[i]);
-      vanna_valid_p[i] = std::isfinite(vanna_p[i]);
-      volga_valid_p[i] = std::isfinite(volga_p[i]);
-      charm_valid_p[i] = std::isfinite(charm_p[i]);
+      delta_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Delta);
+      gamma_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Gamma);
+      vega_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Vega);
+      theta_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Theta);
+      rho_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Rho);
+      vanna_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Vanna);
+      volga_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Volga);
+      charm_valid_p[i] = detail::american_greeks_support(*g, GreekFieldMask::Charm);
       greeks_valid_p[i] =
           delta_valid_p[i] && gamma_valid_p[i] && vega_valid_p[i] &&
           theta_valid_p[i] && rho_valid_p[i] && vanna_valid_p[i] &&
@@ -257,6 +268,8 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   out["vanna"] = std::move(vanna);
   out["volga"] = std::move(volga);
   out["charm"] = std::move(charm);
+  out["greek_price"] = std::move(greek_price);
+  std::move(metadata).publish(out);
   out["status"] = std::move(status);
   out["iv_status"] = std::move(iv_status);
   out["total_variance_status"] = std::move(w_status);

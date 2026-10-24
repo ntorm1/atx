@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -12,6 +13,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -19,6 +21,11 @@
 #include "atx/vol/api/pricing/american_iv.hpp" // american_implied_vol (AlFastProfile IV bound)
 #include "pricing/american_boundary.hpp" // amer:: boundary seam (REVL1-F2 seed check)
 #include "pricing/american_detail.hpp"
+#include "simd/american_greeks_avx2.hpp"
+#include "pricing/american_greek_stencil.hpp"
+#include "pricing/american_greek_fd_audit.hpp"
+#include "atx/vol/api/simd/american_boundary_batch.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/fitting/correction.hpp"
 #include "fitting/counters.hpp"
@@ -1134,11 +1141,46 @@ AmericanGreeks greeks_fd_reference(double S, double K, double T, double sigma, d
   return g;
 }
 
-TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
+// Reuse parity concerns the numerical stencil, whereas admission now recognizes
+// exact exercised derivatives and refuses crossing stencils. Keep all requested
+// fields in the accounting and validate those outcomes separately, never compare
+// a refused NaN through an error accumulator that silently drops it.
+bool comparable_fd_estimate(const AmericanGreeks &g, std::size_t index, Side side,
+                            std::array<std::size_t, 3> &counts) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  const auto field = static_cast<GreekFieldMask>(1u << index);
+  const double value = g.*atx::vol::detail::kAmericanGreekMembers[index];
+  EXPECT_TRUE(atx::vol::has_field(g.requested, field));
+  switch (g.reasons[index]) {
+  case AmericanGreekReason::ComputedEstimate:
+    EXPECT_TRUE(atx::vol::has_field(g.supported, field));
+    EXPECT_TRUE(std::isfinite(value));
+    ++counts[0];
+    return true;
+  case AmericanGreekReason::Exercised:
+    EXPECT_TRUE(atx::vol::has_field(g.supported, field));
+    EXPECT_EQ(value, index == 0 ? (side == Side::Put ? -1. : 1.) : 0.);
+    ++counts[1];
+    return false;
+  case AmericanGreekReason::StencilCrossing:
+  case AmericanGreekReason::Nonfinite:
+    EXPECT_FALSE(atx::vol::has_field(g.supported, field));
+    EXPECT_TRUE(std::isnan(value));
+    ++counts[2];
+    return false;
+  default:
+    ADD_FAILURE() << "missing requested field " << index;
+    return false;
+  }
+}
+
+TEST(AmericanGreeks, FdBoundaryReusePreservesPricesAndAdmittedPutStencils) {
   const double S = 100.0;
   const double r = 0.05;
   const double q = 0.03;
   int checked = 0;
+  std::array<std::size_t, 3> outcomes{};
   for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
     for (const double T : {0.02, 0.1, 0.5, 1.0, 2.0}) {
       for (const double sigma : {0.12, 0.25, 0.45}) {
@@ -1148,19 +1190,22 @@ TEST(AmericanGreeks, FdBoundaryReuse_BitIdentical_PutGrid) {
         const std::string at = "K=" + std::to_string(K) + " T=" + std::to_string(T) +
                                " sigma=" + std::to_string(sigma);
         EXPECT_EQ(fast->price, ref.price) << at;
-        EXPECT_EQ(fast->delta, ref.delta) << at;
-        EXPECT_EQ(fast->gamma, ref.gamma) << at;
-        EXPECT_EQ(fast->vega, ref.vega) << at;
-        EXPECT_EQ(fast->volga, ref.volga) << at;
-        EXPECT_EQ(fast->rho, ref.rho) << at;
-        EXPECT_EQ(fast->theta, ref.theta) << at;
-        EXPECT_EQ(fast->vanna, ref.vanna) << at;
-        EXPECT_EQ(fast->charm, ref.charm) << at;
+        for (std::size_t i = 0; i < 8; ++i) {
+          if (comparable_fd_estimate(*fast, i, Side::Put, outcomes)) {
+            const auto member = atx::vol::detail::kAmericanGreekMembers[i];
+            EXPECT_TRUE(bits_equal((*fast).*member, ref.*member)) << at << " field=" << i;
+          }
+        }
         ++checked;
       }
     }
   }
   EXPECT_EQ(checked, 75);
+  EXPECT_EQ(outcomes[0]+outcomes[1]+outcomes[2], 75u*8u);
+  EXPECT_GT(outcomes[0], 0u);
+  EXPECT_GT(outcomes[1], 0u);
+  std::printf("[put FD reuse] computed=%zu exercised=%zu refused=%zu requested=600\n",
+              outcomes[0], outcomes[1], outcomes[2]);
 }
 
 // ── Call fast path (P2.1): McDonald-Schroder + strike homogeneity ────────────
@@ -1182,6 +1227,7 @@ TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
   double max_vega = 0, max_volga = 0, max_rho = 0, max_theta = 0;
   double max_vanna = 0, max_charm = 0;
   int checked = 0;
+  std::array<std::size_t, 3> outcomes{};
   for (const double K : {70.0, 85.0, 100.0, 115.0, 130.0}) {
     for (const double T : {0.05, 0.1, 0.5, 1.0, 2.0}) {
       for (const double sigma : {0.12, 0.25, 0.45}) {
@@ -1192,23 +1238,26 @@ TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
                                " sigma=" + std::to_string(sigma);
         // p0 and the non-spot greeks reuse their boundary un-rescaled => bit-identical.
         EXPECT_TRUE(bits_equal(fast->price, cold.price)) << "price " << at;
-        EXPECT_TRUE(bits_equal(fast->vega, cold.vega)) << "vega " << at;
-        EXPECT_TRUE(bits_equal(fast->volga, cold.volga)) << "volga " << at;
-        EXPECT_TRUE(bits_equal(fast->rho, cold.rho)) << "rho " << at;
-        EXPECT_TRUE(bits_equal(fast->theta, cold.theta)) << "theta " << at;
+        std::array<bool, 8> compare{};
+        for (std::size_t i = 0; i < compare.size(); ++i)
+          compare[i] = comparable_fd_estimate(*fast, i, Side::Call, outcomes);
+        if (compare[2]) EXPECT_TRUE(bits_equal(fast->vega, cold.vega)) << "vega " << at;
+        if (compare[6]) EXPECT_TRUE(bits_equal(fast->volga, cold.volga)) << "volga " << at;
+        if (compare[4]) EXPECT_TRUE(bits_equal(fast->rho, cold.rho)) << "rho " << at;
+        if (compare[3]) EXPECT_TRUE(bits_equal(fast->theta, cold.theta)) << "theta " << at;
         max_price = std::max(max_price, std::fabs(fast->price - cold.price));
-        max_delta = std::max(max_delta, std::fabs(fast->delta - cold.delta));
-        max_gamma = std::max(max_gamma, std::fabs(fast->gamma - cold.gamma));
-        if (std::fabs(cold.gamma) > 1.0e-3) {
+        if (compare[0]) max_delta = std::max(max_delta, std::fabs(fast->delta - cold.delta));
+        if (compare[1]) max_gamma = std::max(max_gamma, std::fabs(fast->gamma - cold.gamma));
+        if (compare[1] && std::fabs(cold.gamma) > 1.0e-3) {
           max_gamma_rel =
               std::max(max_gamma_rel, std::fabs(fast->gamma - cold.gamma) / std::fabs(cold.gamma));
         }
-        max_vega = std::max(max_vega, std::fabs(fast->vega - cold.vega));
-        max_volga = std::max(max_volga, std::fabs(fast->volga - cold.volga));
-        max_rho = std::max(max_rho, std::fabs(fast->rho - cold.rho));
-        max_theta = std::max(max_theta, std::fabs(fast->theta - cold.theta));
-        max_vanna = std::max(max_vanna, std::fabs(fast->vanna - cold.vanna));
-        max_charm = std::max(max_charm, std::fabs(fast->charm - cold.charm));
+        if (compare[2]) max_vega = std::max(max_vega, std::fabs(fast->vega - cold.vega));
+        if (compare[6]) max_volga = std::max(max_volga, std::fabs(fast->volga - cold.volga));
+        if (compare[4]) max_rho = std::max(max_rho, std::fabs(fast->rho - cold.rho));
+        if (compare[3]) max_theta = std::max(max_theta, std::fabs(fast->theta - cold.theta));
+        if (compare[5]) max_vanna = std::max(max_vanna, std::fabs(fast->vanna - cold.vanna));
+        if (compare[7]) max_charm = std::max(max_charm, std::fabs(fast->charm - cold.charm));
         ++checked;
       }
     }
@@ -1219,6 +1268,11 @@ TEST(CallGreeksFd, Fast_MatchesColdWithinTol) {
               checked, max_delta, max_gamma, max_gamma_rel, max_vanna, max_charm, max_price,
               max_vega, max_volga, max_rho, max_theta);
   EXPECT_EQ(checked, 75);
+  EXPECT_EQ(outcomes[0]+outcomes[1]+outcomes[2], 75u*8u);
+  EXPECT_GT(outcomes[0], 0u);
+  EXPECT_GT(outcomes[1], 0u);
+  std::printf("[call FD reuse] computed=%zu exercised=%zu refused=%zu requested=600\n",
+              outcomes[0], outcomes[1], outcomes[2]);
   // §9.2 Greek gates vs the independent cold scalar reference. MEASURED maxima on
   // this grid (Debug gate): delta ~1.8e-14, gamma ~7e-13 (rel ~7e-11), vanna ~1.8e-11,
   // charm ~3.1e-11 — the ±0.1% spot bump reuses a boundary whose dimensionless y[]
@@ -2772,6 +2826,286 @@ int median_of(std::vector<int> v) {
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
 }
+TEST(AmericanGreekMetadata, ColdScalarPreparedAndSimdStampActualRequests) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  constexpr auto base = GreekFieldMask::Price | GreekFieldMask::Delta |
+                        GreekFieldMask::Gamma | GreekFieldMask::Theta;
+  const auto check = [](const AmericanGreeks &g, GreekFieldMask requested) {
+    EXPECT_EQ(g.requested, requested);
+    EXPECT_EQ(g.supported, requested);
+    const std::array<double, 9> values{g.delta, g.gamma, g.vega, g.theta, g.rho,
+                                      g.vanna, g.volga, g.charm, g.price};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      const auto bit = static_cast<GreekFieldMask>(1u << i);
+      const bool wanted = atx::vol::has_field(requested, bit);
+      EXPECT_EQ(g.reasons[i], wanted ? AmericanGreekReason::ComputedEstimate
+                                     : AmericanGreekReason::NotRequested);
+      if (wanted) EXPECT_TRUE(std::isfinite(values[i]));
+    }
+  };
+  for (const Side side : {Side::Put, Side::Call}) {
+    constexpr double S = 100., K = 100., T = 1., sigma = .3, r = .04, q = .02;
+    const auto fd = american_greeks_fd(S, K, T, sigma, r, q, side);
+    ASSERT_TRUE(fd);
+    check(*fd, GreekFieldMask::All);
+    atx::vol::AlExpiryGeometry geometry;
+    geometry.prepare(T, r, q);
+    for (const bool extras : {false, true}) {
+      const auto requested = extras ? GreekFieldMask::All : base;
+      const auto scalar = american_greeks_al(S, K, T, sigma, r, q, side,
+                                             std::nullopt, extras, extras, extras);
+      ASSERT_TRUE(scalar);
+      check(*scalar, requested);
+      const auto prepared = american_greeks_al(geometry, S, K, sigma, side,
+                                               extras, extras, extras);
+      ASSERT_TRUE(prepared);
+      check(*prepared, requested);
+      if (atx::vol::simd::have_avx2()) {
+        AmericanGreeks lane;
+        bool handled = false;
+        const auto kernel = side == Side::Put
+                                ? atx::vol::simd::detail::american_put_greeks_batch_avx2
+                                : atx::vol::simd::detail::american_call_greeks_batch_avx2;
+        kernel(&S, &K, &T, &sigma, &r, &q, 1, std::nullopt, &lane, &handled,
+               {.vega=extras, .rho=extras, .charm=extras});
+        ASSERT_TRUE(handled);
+        check(lane, requested);
+      }
+    }
+  }
+  // AL's European fallback computes the full FD bundle internally. Its public
+  // request still supplies only the requested cost groups.
+  const auto fallback = american_greeks_al(100., 100., 1., .3, .04, 0., Side::Call,
+                                           std::nullopt, false, false, false);
+  ASSERT_TRUE(fallback);
+  check(*fallback, base);
+}
+
+TEST(AmericanGreekMetadata, PublicSimdWrappersNarrowScalarPatchesAndStampFailures) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  using atx::vol::simd::SimdIsa;
+  constexpr auto base = GreekFieldMask::Price | GreekFieldMask::Delta |
+                        GreekFieldMask::Gamma | GreekFieldMask::Theta;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const auto batch = side == Side::Put ? atx::vol::simd::american_put_greeks_batch
+                                         : atx::vol::simd::american_call_greeks_batch;
+    for (const SimdIsa isa : {SimdIsa::ForceScalar, SimdIsa::ForceAvx2}) {
+      constexpr double K=100., T=.5, sigma=.2, r=0., q=0.; // forces the scalar patch
+      for (const double S : {100., -1.}) {
+        AmericanGreeks g;
+        (void)batch(&S, &K, &T, &sigma, &r, &q, 1, std::nullopt, &g, isa, false, false, false);
+        EXPECT_EQ(g.requested, base);
+        EXPECT_EQ(g.supported, S > 0. ? base : GreekFieldMask::None);
+        for (unsigned i = 0; i < 9; ++i) {
+          const auto bit = static_cast<GreekFieldMask>(1u << i);
+          EXPECT_EQ(g.reasons[i], !atx::vol::has_field(base, bit)
+              ? AmericanGreekReason::NotRequested : S > 0.
+              ? AmericanGreekReason::ComputedEstimate : AmericanGreekReason::Nonfinite);
+        }
+        if (S > 0.) EXPECT_TRUE(std::isfinite(g.price));
+        else EXPECT_TRUE(std::isnan(g.price));
+      }
+    }
+  }
+}
+
+TEST(AmericanGreekAdmission, MissingAndCrossingSamplesCannotDiscardValidOtherFields) {
+  using namespace atx::vol;
+  using detail::AmericanGreekSample;
+  using detail::AmericanGreekStencil;
+  AmericanGreeks g;
+  g.price=10.; g.delta=.5; g.gamma=.1; g.vega=20.;
+  detail::mark_american_greek_fields(g, GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Vega, AmericanGreekReason::ComputedEstimate);
+  const AmericanGreekSample center{10.,false}, continued{11.,false}, exercised{9.,true};
+  std::array<AmericanGreekStencil,8> stencils{};
+  stencils[0]=detail::american_greek_stencil({center,continued});
+  stencils[1]=detail::american_greek_stencil({center,{}});
+  stencils[2]=detail::american_greek_stencil({center,exercised});
+  detail::apply_american_greek_stencils(g,stencils,Side::Put);
+  EXPECT_EQ(g.price,10.);
+  EXPECT_EQ(g.delta,.5);
+  EXPECT_EQ(g.supported,GreekFieldMask::Price | GreekFieldMask::Delta);
+  EXPECT_TRUE(std::isnan(g.gamma));
+  EXPECT_TRUE(std::isnan(g.vega));
+  EXPECT_EQ(g.reasons[1],AmericanGreekReason::Nonfinite);
+  EXPECT_EQ(g.reasons[2],AmericanGreekReason::StencilCrossing);
+  EXPECT_EQ(g.reasons[3],AmericanGreekReason::NotRequested);
+}
+
+TEST(AmericanGreekAdmission, PriceProximityIsNotAnExerciseCertificate) {
+  using atx::vol::detail::american_greek_sample;
+  // Both are within the former 1e-9*K band but remain above an inactive clamp
+  // and outside the solved exercise boundary. Do not manufacture exact Greeks.
+  for (const auto side : {Side::Put, Side::Call}) {
+    const double S = side == Side::Put ? 90. : 110.;
+    const auto near = american_greek_sample(10.+1e-8, S, 100., side, 80.);
+    EXPECT_FALSE(near.exercised);
+    const auto clamped = american_greek_sample(10., S, 100., side, 80.);
+    EXPECT_TRUE(clamped.exercised);
+    const auto boundary = american_greek_sample(10.+1e-8, S, 100., side, 120.);
+    EXPECT_TRUE(boundary.exercised);
+  }
+}
+
+// Actual complete-corpus failures, not a relative-error gate that drops small
+// calendar theta. Availability describes a computed estimate, not an accuracy
+// certificate; rejected stencil fields must preserve the independently usable
+// price. McDonald-Schroder pairs exercise both internal-put orientations.
+struct GreekAdmissionCase {
+  double S, K, T, sigma, r, q;
+  Side side;
+};
+
+constexpr std::array<GreekAdmissionCase, 2> kGreekCrossingCases{{
+    {772.99, 811.6395, .0682, .12, .04496, .00162193, Side::Put},
+    {811.6395, 772.99, .0682, .12, .00162193, .04496, Side::Call}}};
+constexpr std::array<GreekAdmissionCase, 2> kGreekExerciseCases{{
+    {200., 100., 3., .2, .03, .08, Side::Call},
+    {100., 200., 3., .2, .08, .03, Side::Put}}};
+
+void expect_crossing_greek_refusal(const AmericanGreeks &g) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  EXPECT_TRUE(atx::vol::has_field(g.supported, GreekFieldMask::Price));
+  EXPECT_TRUE(std::isfinite(g.price));
+  for (const auto &[field, value, index] :
+       {std::tuple{GreekFieldMask::Gamma, g.gamma, 1u},
+        std::tuple{GreekFieldMask::Theta, g.theta, 3u},
+        std::tuple{GreekFieldMask::Charm, g.charm, 7u}}) {
+    EXPECT_TRUE(atx::vol::has_field(g.requested, field));
+    EXPECT_FALSE(atx::vol::has_field(g.supported, field));
+    EXPECT_TRUE(std::isnan(value));
+    EXPECT_EQ(g.reasons[index], AmericanGreekReason::StencilCrossing);
+  }
+}
+
+void expect_exercised_greek_values(const AmericanGreeks &g, Side side) {
+  using atx::vol::GreekFieldMask;
+  using atx::vol::AmericanGreekReason;
+  EXPECT_EQ(g.supported & GreekFieldMask::All, GreekFieldMask::All);
+  EXPECT_EQ(g.delta, side == Side::Put ? -1. : 1.);
+  EXPECT_EQ(g.gamma, 0.);
+  EXPECT_EQ(g.vega, 0.);
+  EXPECT_EQ(g.theta, 0.);
+  EXPECT_EQ(g.rho, 0.);
+  EXPECT_EQ(g.vanna, 0.);
+  EXPECT_EQ(g.volga, 0.);
+  EXPECT_EQ(g.charm, 0.);
+  for (unsigned index = 0; index < 8u; ++index) {
+    EXPECT_EQ(g.reasons[index], AmericanGreekReason::Exercised);
+  }
+  EXPECT_EQ(g.reasons[8], AmericanGreekReason::ComputedEstimate);
+}
+
+TEST(AmericanGreekAdmission, ColdAndPreparedAlRefuseCrossingPdeFields) {
+  for (const auto &c : kGreekCrossingCases) {
+    const auto price = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(price);
+    const auto g = american_greeks_al(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(g);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(g->price), std::bit_cast<std::uint64_t>(*price));
+    expect_crossing_greek_refusal(*g);
+    atx::vol::AlExpiryGeometry geometry;
+    geometry.prepare(c.T, c.r, c.q);
+    const auto prepared = american_greeks_al(geometry, c.S, c.K, c.sigma, c.side);
+    ASSERT_TRUE(prepared);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(prepared->price), std::bit_cast<std::uint64_t>(*price));
+    expect_crossing_greek_refusal(*prepared);
+  }
+  // The historical theta.rel accumulator ignored this |theta|<1 counterexample.
+  const auto &c = kGreekCrossingCases[0];
+  AlOpts refined;
+  refined.n_collocation = 32;
+  refined.n_quadrature = 64;
+  refined.n_quad_price = 64;
+  refined.max_newton_iter = 32;
+  refined.tol = 1e-14;
+  constexpr double h = .0000341;
+  const auto up = andersen_lake(c.S, c.K, c.T+h, c.sigma, c.r, c.q, c.side, refined);
+  const auto down = andersen_lake(c.S, c.K, c.T-h, c.sigma, c.r, c.q, c.side, refined);
+  ASSERT_TRUE(up && down);
+  const double theta = -(*up-*down)/(2.*h);
+  EXPECT_LT(theta, -.3372);
+  EXPECT_GT(theta, -.3375);
+}
+
+TEST(AmericanGreekAdmission, SolvedBoundaryRecognizesDeepExerciseDespitePriceResidual) {
+  for (const auto &c : kGreekExerciseCases) {
+    const auto price = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(price);
+    ASSERT_GT(*price, 100. + 1e-9*c.K); // old center-only gate takes continuation PDE
+    const auto g = american_greeks_al(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(g);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(g->price), std::bit_cast<std::uint64_t>(*price));
+    expect_exercised_greek_values(*g, c.side);
+    const auto fd = american_greeks_fd(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(fd);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(fd->price), std::bit_cast<std::uint64_t>(*price));
+    expect_exercised_greek_values(*fd, c.side);
+  }
+}
+
+TEST(AmericanGreekAdmission, ExplicitAvx2PreservesPriceWithFieldSpecificAdmission) {
+  if (!atx::vol::simd::have_avx2()) GTEST_SKIP() << "AVX2 unavailable";
+  for (const auto &cases : {kGreekCrossingCases, kGreekExerciseCases}) {
+    for (const auto &c : cases) {
+      AmericanGreeks g;
+      bool handled = false;
+      const auto kernel = c.side == Side::Put
+                              ? atx::vol::simd::detail::american_put_greeks_batch_avx2
+                              : atx::vol::simd::detail::american_call_greeks_batch_avx2;
+      kernel(&c.S, &c.K, &c.T, &c.sigma, &c.r, &c.q, 1, std::nullopt, &g, &handled, {});
+      ASSERT_TRUE(handled); // an explicitly refused derivative is still a handled price
+      const auto price = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side);
+      ASSERT_TRUE(price);
+      EXPECT_NEAR(g.price, *price, 1e-9); // existing SIMD/libm price parity, not a Greek budget
+      if (c.T < 1.) expect_crossing_greek_refusal(g);
+      else expect_exercised_greek_values(g, c.side);
+    }
+  }
+}
+
+TEST(AmericanGreekAdmission, VegaHelperRefusesCrossingsAndRespectsFallbackAvailability) {
+  for (const auto &c : kGreekCrossingCases) {
+    const auto vega = atx::vol::american_vega_al(c.S,c.K,c.T,c.sigma,c.r,c.q,c.side);
+    EXPECT_FALSE(vega);
+  }
+  for (const auto &c : kGreekExerciseCases) {
+    const auto vega = atx::vol::american_vega_al(c.S,c.K,c.T,c.sigma,c.r,c.q,c.side);
+    ASSERT_TRUE(vega);
+    EXPECT_EQ(*vega,0.);
+  }
+  // r-hr<=0 invokes the full FD fallback. Its numerical refusal must not be
+  // extracted as a successful scalar NaN.
+  atx::vol::amer::AlBoundary boundary;
+  atx::vol::amer::AlWorkspace workspace;
+  const auto scheme = atx::vol::amer::scheme_from_opts(std::nullopt);
+  ASSERT_EQ(atx::vol::amer::al_solve_put_boundary(100.,1.,.2,.00005,0.,scheme,boundary,workspace),
+            atx::vol::amer::AlSolveStatus::Ok);
+  const double spot=atx::vol::amer::al_boundary_at_expiry(boundary)*(1.+1e-5);
+  const auto fd=american_greeks_fd(spot,100.,1.,.2,.00005,0.,Side::Put);
+  ASSERT_TRUE(fd);
+  ASSERT_FALSE(atx::vol::has_field(fd->supported,atx::vol::GreekFieldMask::Vega));
+  EXPECT_EQ(fd->reasons[2],atx::vol::AmericanGreekReason::StencilCrossing);
+  const auto vega=atx::vol::american_vega_al(spot,100.,1.,.2,.00005,0.,Side::Put);
+  ASSERT_FALSE(vega);
+  EXPECT_EQ(vega.error().code(),atx::core::ErrorCode::Unavailable);
+}
+
+TEST(AmericanGreekAdmission, EndpointEvidenceDoesNotImplyCenterInclusiveAdmission) {
+  // Synthetic regime evidence explicitly pins the different contracts; no
+  // monotonicity of a numerically solved boundary is inferred from two endpoints.
+  using namespace atx::vol;
+  const detail::AmericanGreekSample lower{1.,false}, upper{2.,false}, center{1.5,true};
+  EXPECT_EQ(detail::american_greek_stencil({lower,upper}),
+            detail::AmericanGreekStencil::Continuation);
+  EXPECT_EQ(detail::american_greek_stencil({center,lower,upper}),
+            detail::AmericanGreekStencil::Crossing);
+}
+
 } // namespace
 TEST(BoundaryHoist, SeedSpike_SweepCount) {
   using atx::vol::detail::al_boundary_jn_sweeps_to_converge;
@@ -4769,6 +5103,141 @@ TEST(AlScreenProfile, ImpliedVolWithinMeasuredBoundOfReference) {
   EXPECT_GT(solved, 500);
   std::cout << "[AlScreenProfile] iv solved=" << solved << " worst bp=" << worst_bp << " at "
             << worst_at << "\n";
+}
+
+
+TEST(AmericanGreekFdAudit, DefaultStepsRetainPublicValuesAndSolveCounts) {
+  using namespace atx::vol;
+  for (const auto side : {Side::Put, Side::Call}) {
+    for (const bool warm : {false, true}) {
+      detail::AlGreekFdAudit audit;
+      const detail::AlGreekFdSteps steps{.1, .001, .0001, .001};
+      const auto observed = detail::audit_american_greeks_fd(
+          100., 100., .5, .25, .05, .03, side, steps, audit,
+          AmericanMethod::AndersenLake, std::nullopt, warm);
+      const auto original = american_greeks_fd(100.,100.,.5,.25,.05,.03,side,
+          AmericanMethod::AndersenLake,std::nullopt,warm);
+      ASSERT_TRUE(observed);
+      ASSERT_TRUE(original);
+      EXPECT_EQ(observed->requested,original->requested);
+      EXPECT_EQ(observed->supported,original->supported);
+      EXPECT_EQ(observed->reasons,original->reasons);
+      for (const auto member : detail::kAmericanGreekMembers)
+        EXPECT_TRUE(bits_equal((*observed).*member,(*original).*member));
+      EXPECT_EQ(audit.sample_attempts,17u);
+      EXPECT_EQ(audit.boundary_price_calls,17u);
+      EXPECT_EQ(audit.boundary_cold_solves,warm ? 1u : 7u);
+      EXPECT_EQ(audit.boundary_warm_solves,warm ? 6u : 0u);
+      EXPECT_EQ(audit.public_price_calls,0u);
+      EXPECT_EQ(audit.european_price_calls,0u);
+      EXPECT_FALSE(audit.time_forward);
+      EXPECT_FALSE(audit.rho_forward);
+      EXPECT_EQ(audit.steps.spot,steps.spot);
+      for (const auto &sample : audit.samples) {
+        EXPECT_TRUE(sample.evaluated);
+        EXPECT_TRUE(std::isfinite(sample.price));
+        EXPECT_TRUE(sample.boundary_required);
+        EXPECT_GT(sample.internal_boundary,0.);
+      }
+      EXPECT_EQ(audit.samples[1].S,100.1);
+      EXPECT_EQ(audit.samples[2].S,99.9);
+      EXPECT_EQ(audit.samples[7].T,.501);
+      EXPECT_EQ(audit.samples[8].T,.499);
+      const auto cold = american_price(100.1,100.,.5,.25,.05,.03,side);
+      ASSERT_TRUE(cold);
+      EXPECT_NEAR(audit.samples[1].price,*cold,1e-11);
+    }
+  }
+}
+
+TEST(AmericanGreekFdAudit, InvalidExplicitStepsRefuseBeforePricing) {
+  using namespace atx::vol;
+  const double nan=std::numeric_limits<double>::quiet_NaN();
+  const double inf=std::numeric_limits<double>::infinity();
+  const detail::AlGreekFdSteps valid{.1,.001,.0001,.001};
+  for (std::size_t axis=0;axis<4;++axis) {
+    for (const double value : {0.,-1.,nan,inf}) {
+      auto steps=valid;
+      const std::array members{&detail::AlGreekFdSteps::spot,
+          &detail::AlGreekFdSteps::volatility,&detail::AlGreekFdSteps::rate,
+          &detail::AlGreekFdSteps::time};
+      steps.*members[axis]=value;
+      detail::AlGreekFdAudit audit;
+      audit.sample_attempts=999;
+      const auto result=detail::audit_american_greeks_fd(
+          100.,100.,.5,.25,.05,.03,Side::Put,steps,audit);
+      ASSERT_FALSE(result);
+      EXPECT_EQ(result.error().code(),atx::core::ErrorCode::InvalidArgument);
+      EXPECT_EQ(audit.sample_attempts,0u);
+      EXPECT_EQ(audit.boundary_cold_solves+audit.boundary_warm_solves,0u);
+    }
+  }
+  for (const double hS : {100.,101.,1e-20}) {
+    auto steps=valid; steps.spot=hS;
+    detail::AlGreekFdAudit audit;
+    EXPECT_FALSE(detail::audit_american_greeks_fd(
+        100.,100.,.5,.25,.05,.03,Side::Put,steps,audit));
+    EXPECT_EQ(audit.sample_attempts,0u);
+  }
+}
+
+TEST(AmericanGreekFdAudit, OneSidedAliasesAndVolatilityClampRemainExplicit) {
+  using namespace atx::vol;
+  detail::AlGreekFdAudit time;
+  ASSERT_TRUE(detail::audit_american_greeks_fd(100.,100.,.0005,.25,.05,.03,Side::Put,
+      detail::AlGreekFdSteps{.1,.001,.0001,.001},time));
+  EXPECT_TRUE(time.time_forward);
+  EXPECT_EQ(time.sample_attempts,14u);
+  EXPECT_EQ(time.samples[8].T,time.samples[0].T);
+  EXPECT_EQ(time.samples[15].T,time.samples[1].T);
+  EXPECT_EQ(time.samples[16].T,time.samples[2].T);
+  EXPECT_FALSE(time.samples[8].evaluated);
+  EXPECT_FALSE(time.samples[15].evaluated);
+  EXPECT_FALSE(time.samples[16].evaluated);
+  detail::AlGreekFdAudit rate;
+  ASSERT_TRUE(detail::audit_american_greeks_fd(100.,100.,.5,.25,.00005,-.001,Side::Put,
+      detail::AlGreekFdSteps{.1,.001,.0001,.001},rate));
+  EXPECT_TRUE(rate.rho_forward);
+  EXPECT_EQ(rate.sample_attempts,16u);
+  EXPECT_EQ(rate.samples[6].r,rate.samples[0].r);
+  EXPECT_FALSE(rate.samples[6].evaluated);
+  detail::AlGreekFdAudit vol;
+  ASSERT_TRUE(detail::audit_american_greeks_fd(100.,100.,.5,.0005,0.,0.,Side::Put,
+      detail::AlGreekFdSteps{.1,.001,.0001,.001},vol));
+  EXPECT_EQ(vol.steps.volatility,.00025);
+  EXPECT_EQ(vol.samples[4].sigma,.00025);
+}
+
+TEST(AmericanGreekFdAudit, NonfiniteModelRefusesBeforeObservingPrices) {
+  using namespace atx::vol;
+  for (std::size_t axis = 0; axis < 6; ++axis) {
+    for (const double value : {std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity()}) {
+      std::array<double, 6> model{100., 100., .5, .25, .05, .03};
+      model[axis] = value;
+      detail::AlGreekFdAudit audit;
+      const auto result = detail::audit_american_greeks_fd(
+          model[0], model[1], model[2], model[3], model[4], model[5], Side::Put,
+          detail::AlGreekFdSteps{.1, .001, .0001, .001}, audit);
+      EXPECT_FALSE(result);
+      EXPECT_EQ(audit.sample_attempts, 0u) << "axis=" << axis;
+      EXPECT_EQ(audit.boundary_cold_solves + audit.public_price_calls, 0u);
+    }
+  }
+}
+
+TEST(AmericanGreekFdAudit, RefusalMarksOnlyActuallyAttemptedOperands) {
+  using namespace atx::vol;
+  detail::AlGreekFdAudit audit;
+  const auto result = detail::audit_american_greeks_fd(
+      100., 100., .5, .25, -.01, -.02, Side::Put,
+      detail::AlGreekFdSteps{.1, .001, .0001, .001}, audit);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(audit.sample_attempts, 1u);
+  EXPECT_EQ(audit.public_price_calls, 1u);
+  EXPECT_TRUE(audit.samples[0].evaluated);
+  for (std::size_t i = 1; i < audit.samples.size(); ++i)
+    EXPECT_FALSE(audit.samples[i].evaluated) << "sample=" << i;
 }
 
 } // namespace

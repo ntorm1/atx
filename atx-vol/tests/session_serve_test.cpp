@@ -18,6 +18,7 @@
 #include "atx/vol/api/marketdata/data.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
 #include "atx/vol/api/pricing/american.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 // VolaSession serve policy (serve-path lane, 2026-10-16; session.hpp
 // SessionServePolicy): the records serve mode and the correction-tensor
@@ -191,6 +192,15 @@ TEST(SessionServeRecords, FittedExpiryQueriesAreServedWithinTheirCertificate) {
         EXPECT_TRUE(std::isnan(g->rho) && std::isnan(g->vanna) && std::isnan(g->volga) &&
                     std::isnan(g->charm))
             << "the record route does not serve rho/vanna/volga/charm";
+        using atx::vol::GreekFieldMask;
+        using atx::vol::AmericanGreekReason;
+        const auto supplied = GreekFieldMask::Price | GreekFieldMask::Delta |
+            GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+        EXPECT_EQ(g->requested, GreekFieldMask::All);
+        EXPECT_EQ(g->supported, supplied);
+        EXPECT_TRUE(atx::vol::detail::american_greeks_support(*g, supplied));
+        EXPECT_EQ(g->reasons[4], AmericanGreekReason::UnsupportedAxis);
+        EXPECT_EQ(g->reasons[7], AmericanGreekReason::UnsupportedAxis);
         ++served;
       }
     }

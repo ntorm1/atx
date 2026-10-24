@@ -219,6 +219,20 @@ H1 deferred the session / `PricedSurface` / chain-tick wiring to A1 (H1 report, 
   checked after every contract, the chain is redone once on a move, and a second move is
   `ErrorCode::Unavailable`.
 
+Availability is separate from those route/model/price statuses. Scalar answers and
+session-chain statements carry `GreekFieldMask requested/supported` for exactly Price,
+Delta, Gamma, Vega and Theta. A valid price survives a cold Greek refusal. PriceOnly
+book answers support only Price; refused answers support nothing. Default-constructed
+metadata is empty, and every evaluated row overwrites its metadata.
+
+The reason payloads retain their provenance: `cold_reasons` has AmericanGreekReason's
+nine-axis order (Delta, Gamma, Vega, Theta, Rho, Vanna, Volga, Charm, Price), with axes
+outside this API NotRequested. A book answer leaves `cold_reasons` NotRequested and
+keeps its six ServeGreekReason values verbatim in `book.reason`, or
+`book.greek_reasons` for chain statements (Delta, Gamma, Vega, Theta, Rho, Phi).
+In particular, NearExerciseEdge is not renamed StencilCrossing and Phi is not Vanna.
+These masks report available estimates or exercise values, not qualified Greek accuracy.
+
 ## 7. Measurement: the A1 row (2026-10-23)
 
 Bench `atx-vol-served-analytics-bench` (vol-rel-avx2, workers 1) on the SPY 23-day slice of

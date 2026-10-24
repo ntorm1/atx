@@ -25,6 +25,46 @@
 # Those lanes get a `FAIL_REGULAR_EXPRESSION` instead — see each one.
 set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 
+# Explicit private research target; no kernel is linked into the production library.
+option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
+if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
+    set(CASH_THOMAS_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-pde-simd")
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/pricing/american_discrete_div_reference.cpp"
+        TARGET_DIRECTORY atx-vol PROPERTIES
+        COMPILE_DEFINITIONS ATX_VOL_CASH_PDE_BATCH_RESEARCH=1)
+    add_executable(atx-vol-cash-thomas-research-tests
+        ${CASH_THOMAS_RESEARCH_DIR}/tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/replay_tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/batch_tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
+    set_source_files_properties(${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp
+        PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
+    target_link_libraries(atx-vol-cash-thomas-research-tests
+        PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+    target_include_directories(atx-vol-cash-thomas-research-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    add_executable(atx-vol-cash-dspy-refinement ${CASH_THOMAS_RESEARCH_DIR}/refinement.cpp)
+    target_link_libraries(atx-vol-cash-dspy-refinement PRIVATE atx::vol atx::core
+        atx_warnings nlohmann_json::nlohmann_json)
+    target_include_directories(atx-vol-cash-dspy-refinement PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(TARGET atx-vol-bench-clocks)
+        add_executable(atx-vol-cash-pde-batch-research
+            ${CASH_THOMAS_RESEARCH_DIR}/runner.cpp
+            ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
+            ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
+        target_link_libraries(atx-vol-cash-pde-batch-research PRIVATE atx::vol atx::core
+            atx_warnings atx-vol-bench-clocks nlohmann_json::nlohmann_json)
+        target_include_directories(atx-vol-cash-pde-batch-research PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+        target_compile_definitions(atx-vol-cash-pde-batch-research PRIVATE
+            ATX_CASH_BATCH_IPO=$<BOOL:${CMAKE_INTERPROCEDURAL_OPTIMIZATION}>)
+    endif()
+endif()
+
 # This entry point is also consumable without the engine/backtest test graph.
 # Keep a focused executable so numerical and include checks stay inexpensive.
 add_executable(atx-vol-quote-slice-tests
@@ -193,7 +233,7 @@ add_executable(atx-vol-discrete-div-production-tests
     american_discrete_div_production_test.cpp american_discrete_div_production_alloc_test.cpp
     american_discrete_div_production_matrix_test.cpp support/alloc_counter.cpp)
 target_link_libraries(atx-vol-discrete-div-production-tests
-    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main nlohmann_json::nlohmann_json)
 target_include_directories(atx-vol-discrete-div-production-tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME atx-vol-discrete-div-production COMMAND atx-vol-discrete-div-production-tests

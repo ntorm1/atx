@@ -221,6 +221,7 @@ def test_american_batch_unsupported_regime_is_not_an_error_code():
 
     assert math.isnan(prices[3])
     assert int(status[3]) == av.AMERICAN_BATCH_UNSUPPORTED_REGIME
+    assert int(status[3]) != av.STATUS_OK
     assert int(status[3]) < 0
     assert int(status[3]) != int(av.ErrorCode.NOT_IMPLEMENTED)
     assert all(int(status[i]) == av.STATUS_OK for i in range(len(t)) if i != 3)

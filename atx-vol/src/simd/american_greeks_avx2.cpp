@@ -23,11 +23,14 @@
 #include "american_greeks_avx2.hpp"
 
 #include "american_boundary_avx2_kernel.hpp"
+#include "pricing/american_greek_availability.hpp"
+#include "pricing/american_greek_stencil.hpp"
 
 #include "atx/vol/api/pricing/american.hpp" // AmericanGreeks, classify_regime, ExerciseRegime
 #include "fitting/counters.hpp" // BoundarySolves + always-on SIMD-invariant solve ledger
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <limits>
@@ -52,6 +55,39 @@ struct SolveScratch {
     amer::AlBoundary bnd[4];
     amer::AlWorkspace ws[4];
 };
+
+using GreekSamples = std::array<atx::vol::detail::AmericanGreekSample, 13>;
+
+void record_greek_samples(const PutPackBoundary &boundary, const double *prices,
+    const double *S, const double *K, const double *hS, double offset,
+    std::size_t index, std::size_t n, Side side,
+    std::array<GreekSamples, 4> &samples) noexcept {
+    if (boundary.nb < 2) return; // default nonfinite evidence refuses the fields
+    alignas(32) double y[4], xmax[4];
+    _mm256_store_pd(y, boundary.Y[boundary.nb-1u]);
+    _mm256_store_pd(xmax, boundary.XMAX);
+    for (std::size_t l = 0; l < n; ++l) {
+        const double spot = S[l] + offset*hS[l];
+        // Same strike homogeneity as price_call_stencil; the converged Y remains
+        // unchanged. Read it now, before the next bump solve overwrites the pack.
+        const double scale = side == Side::Call ? spot/S[l] : 1.;
+        const double bound = amer::al_boundary_at_expiry(y[l], xmax[l]*scale);
+        samples[l][index] = atx::vol::detail::american_greek_sample(
+            prices[l], spot, K[l], side, bound);
+    }
+}
+
+void admit_greek_samples(AmericanGreeks &g, const GreekSamples &s, Side side) noexcept {
+    using atx::vol::detail::american_greek_stencil;
+    const auto spot = american_greek_stencil({s[0], s[1], s[2]});
+    const auto vol = american_greek_stencil({s[0], s[3], s[4]});
+    const std::array<atx::vol::detail::AmericanGreekStencil, 8> stencils{
+        spot, spot, vol, spot,
+        american_greek_stencil({s[0], s[9], s[10]}),
+        american_greek_stencil({s[0], s[5], s[6], s[7], s[8]}), vol,
+        american_greek_stencil({s[0], s[1], s[2], s[11], s[12]})};
+    atx::vol::detail::apply_american_greek_stencils(g, stencils, side);
+}
 
 } // namespace
 
@@ -144,6 +180,11 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
         PutPackBoundary pk;
         bool elig[4];
         int ref = -1;
+        std::array<GreekSamples, 4> evidence{};
+        const auto price_stencil = [&](double *values, double offset, std::size_t index) {
+            _mm256_store_pd(values, price_put_pack_avx2(pk, spot_vec(offset)));
+            record_greek_samples(pk, values, Sl, Kl, hS, offset, index, m, Side::Put, evidence);
+        };
 
         // Base boundary (sigma, r): price 5 spot stencils.
         solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
@@ -153,12 +194,12 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
         if (ref < 0) {
             continue; // no eligible lane in this pack; all patched by the caller.
         }
-        _mm256_store_pd(v0, price_put_pack_avx2(pk, spot_vec(0.0)));
-        _mm256_store_pd(vSp, price_put_pack_avx2(pk, spot_vec(+1.0)));
-        _mm256_store_pd(vSm, price_put_pack_avx2(pk, spot_vec(-1.0)));
+        price_stencil(v0, 0.0, 0);
+        price_stencil(vSp, +1.0, 1);
+        price_stencil(vSm, -1.0, 2);
         if (need_charm) { // wide S+/-2h speed stencils feed only charm
-            _mm256_store_pd(vS2p, price_put_pack_avx2(pk, spot_vec(+2.0)));
-            _mm256_store_pd(vS2m, price_put_pack_avx2(pk, spot_vec(-2.0)));
+            price_stencil(vS2p, +2.0, 11);
+            price_stencil(vS2m, -2.0, 12);
         }
 
         if (need_vega) {
@@ -183,9 +224,9 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vvp, price_put_pack_avx2(pk, spot_vec(0.0)));
-            _mm256_store_pd(vSpVp, price_put_pack_avx2(pk, spot_vec(+1.0)));
-            _mm256_store_pd(vSmVp, price_put_pack_avx2(pk, spot_vec(-1.0)));
+            price_stencil(vvp, 0.0, 3);
+            price_stencil(vSpVp, +1.0, 5);
+            price_stencil(vSmVp, -1.0, 6);
 
             // sigma- boundary.
             solve_put_boundary_pack_avx2(Sl, Kl, Tl, sig_m, rl, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
@@ -195,9 +236,9 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vvm, price_put_pack_avx2(pk, spot_vec(0.0)));
-            _mm256_store_pd(vSpVm, price_put_pack_avx2(pk, spot_vec(+1.0)));
-            _mm256_store_pd(vSmVm, price_put_pack_avx2(pk, spot_vec(-1.0)));
+            price_stencil(vvm, 0.0, 4);
+            price_stencil(vSpVm, +1.0, 7);
+            price_stencil(vSmVm, -1.0, 8);
         }
 
         if (need_rho) {
@@ -209,7 +250,7 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vrp, price_put_pack_avx2(pk, spot_vec(0.0)));
+            price_stencil(vrp, 0.0, 9);
 
             // r- boundary: price at S.
             solve_put_boundary_pack_avx2(Sl, Kl, Tl, sigl, r_m, ql, m, sch, sc.bnd, sc.ws, pk, elig, ref);
@@ -219,7 +260,7 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vrm, price_put_pack_avx2(pk, spot_vec(0.0)));
+            price_stencil(vrm, 0.0, 10);
         }
 
         // ── Combine per lane — EXACT american_greeks_al formulas (scalar) ──
@@ -228,15 +269,14 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
                 continue; // caller patches via scalar american_greeks_al
             }
             const double hSl = hS[l], hvl = hv[l], hrl = hr[l];
-            const double Sc = Sl[l], Kc = Kl[l], sc_ = sigl[l], rc = rl[l], qc = ql[l];
+            const double Sc = Sl[l], sc_ = sigl[l], rc = rl[l], qc = ql[l];
             AmericanGreeks g; // unrequested greeks stay 0 (the caller's mask skips them)
             g.price = v0[l];
             g.delta = (vSp[l] - vSm[l]) / (2.0 * hSl);
             g.gamma = (vSp[l] - 2.0 * v0[l] + vSm[l]) / (hSl * hSl);
             // theta rides the base boundary (v0/delta/gamma) via the continuation-region
-            // PDE — always available, no extra solve. charm additionally needs speed.
-            const double intr0 = Kc - Sc; // put intrinsic
-            const bool exercised = (v0[l] <= intr0 + 1.0e-9 * Kc) && (intr0 > 0.0);
+            // PDE, with per-field admission below. Charm additionally needs speed.
+            const bool exercised = evidence[l][0].exercised;
             g.theta = exercised ? 0.0
                                 : rc * v0[l] - (rc - qc) * Sc * g.delta -
                                       0.5 * sc_ * sc_ * Sc * Sc * g.gamma;
@@ -275,6 +315,10 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             if (!ok) {
                 continue;
             }
+            atx::vol::detail::mark_american_greek_fields(g,
+                atx::vol::detail::american_greek_request(need_vega, need_rho, need_charm),
+                AmericanGreekReason::ComputedEstimate);
+            admit_greek_samples(g, evidence[l], Side::Put);
             out_greeks[base + l] = g;
             handled[base + l] = true;
             ATX_VOL_COUNT_N(BoundarySolves, bundle_solves);
@@ -379,6 +423,11 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
         PutPackBoundary pk;
         bool elig[4];
         int ref = -1;
+        std::array<GreekSamples, 4> evidence{};
+        const auto price_stencil = [&](double *values, double offset, std::size_t index) {
+            _mm256_store_pd(values, price_call_stencil(pk, offset));
+            record_greek_samples(pk, values, Sl, Kl, hS, offset, index, m, Side::Call, evidence);
+        };
 
         // Base boundary: internal-strike = S, rate = q (call yield), yield = r (call rate).
         solve_put_boundary_pack_avx2(Sl, Sl, Tl, sigl, ql, rl, m, sch, sc.bnd, sc.ws, pk, elig, ref);
@@ -388,12 +437,12 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
         if (ref < 0) {
             continue; // no eligible lane in this pack; all patched by the caller.
         }
-        _mm256_store_pd(v0, price_call_stencil(pk, 0.0));
-        _mm256_store_pd(vSp, price_call_stencil(pk, +1.0));
-        _mm256_store_pd(vSm, price_call_stencil(pk, -1.0));
+        price_stencil(v0, 0.0, 0);
+        price_stencil(vSp, +1.0, 1);
+        price_stencil(vSm, -1.0, 2);
         if (need_charm) {
-            _mm256_store_pd(vS2p, price_call_stencil(pk, +2.0));
-            _mm256_store_pd(vS2m, price_call_stencil(pk, -2.0));
+            price_stencil(vS2p, +2.0, 11);
+            price_stencil(vS2m, -2.0, 12);
         }
 
         if (need_vega) {
@@ -407,9 +456,9 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vvp, price_call_stencil(pk, 0.0));
-            _mm256_store_pd(vSpVp, price_call_stencil(pk, +1.0));
-            _mm256_store_pd(vSmVp, price_call_stencil(pk, -1.0));
+            price_stencil(vvp, 0.0, 3);
+            price_stencil(vSpVp, +1.0, 5);
+            price_stencil(vSmVp, -1.0, 6);
 
             // sigma- boundary.
             solve_put_boundary_pack_avx2(Sl, Sl, Tl, sig_m, ql, rl, m, sch, sc.bnd, sc.ws, pk, elig, ref);
@@ -419,9 +468,9 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vvm, price_call_stencil(pk, 0.0));
-            _mm256_store_pd(vSpVm, price_call_stencil(pk, +1.0));
-            _mm256_store_pd(vSmVm, price_call_stencil(pk, -1.0));
+            price_stencil(vvm, 0.0, 4);
+            price_stencil(vSpVm, +1.0, 7);
+            price_stencil(vSmVm, -1.0, 8);
         }
 
         if (need_rho) {
@@ -433,7 +482,7 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vrp, price_call_stencil(pk, 0.0));
+            price_stencil(vrp, 0.0, 9);
 
             // r- boundary: internal yield = r - hr.
             solve_put_boundary_pack_avx2(Sl, Sl, Tl, sigl, ql, yld_m, m, sch, sc.bnd, sc.ws, pk, elig, ref);
@@ -443,7 +492,7 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             if (ref < 0) {
                 continue; // refused bump solve: `pk` still holds the BASE boundary
             }
-            _mm256_store_pd(vrm, price_call_stencil(pk, 0.0));
+            price_stencil(vrm, 0.0, 10);
         }
 
         // ── Combine per lane — EXACT american_greeks_al(Side::Call) formulas (scalar) ──
@@ -452,15 +501,14 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
                 continue; // caller patches via scalar american_greeks_al
             }
             const double hSl = hS[l], hvl = hv[l], hrl = hr[l];
-            const double Sc = Sl[l], Kc = Kl[l], sc_ = sigl[l], rc = rl[l], qc = ql[l];
+            const double Sc = Sl[l], sc_ = sigl[l], rc = rl[l], qc = ql[l];
             AmericanGreeks g;
             g.price = v0[l];
             g.delta = (vSp[l] - vSm[l]) / (2.0 * hSl);
             g.gamma = (vSp[l] - 2.0 * v0[l] + vSm[l]) / (hSl * hSl);
             // theta / charm from the continuation-region PDE in the ORIGINAL (S,r,q); call
             // intrinsic S-K. Side-agnostic given the correct call V/delta/gamma/speed.
-            const double intr0 = Sc - Kc; // call intrinsic
-            const bool exercised = (v0[l] <= intr0 + 1.0e-9 * Kc) && (intr0 > 0.0);
+            const bool exercised = evidence[l][0].exercised;
             g.theta = exercised ? 0.0
                                 : rc * v0[l] - (rc - qc) * Sc * g.delta -
                                       0.5 * sc_ * sc_ * Sc * Sc * g.gamma;
@@ -497,6 +545,10 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             if (!ok) {
                 continue;
             }
+            atx::vol::detail::mark_american_greek_fields(g,
+                atx::vol::detail::american_greek_request(need_vega, need_rho, need_charm),
+                AmericanGreekReason::ComputedEstimate);
+            admit_greek_samples(g, evidence[l], Side::Call);
             out_greeks[base + l] = g;
             handled[base + l] = true;
             ATX_VOL_COUNT_N(BoundarySolves, bundle_solves);

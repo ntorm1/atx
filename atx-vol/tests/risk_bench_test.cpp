@@ -23,11 +23,18 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/api/marketdata/spiderrock_store.hpp"
 #include "risk_bench.hpp"
+
+#if defined(_WIN32)
+#include <process.h> // _getpid: a private scratch dir per test process
+#else
+#include <unistd.h> // getpid
+#endif
 
 namespace {
 
@@ -35,6 +42,18 @@ namespace fs = std::filesystem;
 namespace rb = atx::vol::riskbench;
 using atx::vol::ErrorCode;
 using atx::vol::Side;
+
+// Per-process suffix for scratch directories: ctest runs every test of a suite in its
+// own process, so a fixed name would let one process's remove_all() delete another's
+// store mid-read (atx-test-scratch already gives each process a private TEMP; this
+// keeps the fixture safe in a binary that does not link it).
+[[nodiscard]] std::string process_tag() {
+#if defined(_WIN32)
+  return std::to_string(::_getpid());
+#else
+  return std::to_string(::getpid());
+#endif
+}
 
 [[nodiscard]] atx::vol::Result<rb::RiskBenchArgs> parse(std::vector<const char *> argv) {
   argv.insert(argv.begin(), "atx-vol-risk-bench");
@@ -44,10 +63,10 @@ using atx::vol::Side;
 // ── RiskBenchArgs ───────────────────────────────────────────────────────────
 
 TEST(RiskBenchArgs, DefaultsWithStore) {
-  const auto a = parse({"--store", "C:/store"});
+  const auto a = parse({"--store", "store-root"});
   ASSERT_TRUE(a.has_value()) << a.error().to_string();
-  EXPECT_EQ(a->store, "C:/store");
-  EXPECT_EQ(a->store_root(), "C:/store");
+  EXPECT_EQ(a->store, "store-root");
+  EXPECT_EQ(a->store_root(), "store-root");
   EXPECT_EQ(a->date, "2026-10-14");
   EXPECT_EQ(a->from, "1000");
   EXPECT_EQ(a->to, "1500");
@@ -65,13 +84,13 @@ TEST(RiskBenchArgs, DefaultsWithStore) {
 }
 
 TEST(RiskBenchArgs, AllFlags) {
-  const auto a = parse({"--synthetic", "D:/syn", "--date", "2026-08-14", "--from", "1030", "--to",
+  const auto a = parse({"--synthetic", "syn-root", "--date", "2026-08-14", "--from", "1030", "--to",
                         "1200", "--underliers", "10", "--options", "400", "--shares", "7",
                         "--kernel", "both", "--threads", "2", "--needs", "rho", "--trapezoid",
                         "--determinism", "--out", "r.json", "--md", "r.md", "--seed", "42"});
   ASSERT_TRUE(a.has_value()) << a.error().to_string();
-  EXPECT_EQ(a->synthetic_dir, "D:/syn");
-  EXPECT_EQ(a->store_root(), "D:/syn");
+  EXPECT_EQ(a->synthetic_dir, "syn-root");
+  EXPECT_EQ(a->store_root(), "syn-root");
   EXPECT_EQ(a->date, "2026-08-14");
   EXPECT_EQ(a->from, "1030");
   EXPECT_EQ(a->to, "1200");
@@ -118,12 +137,32 @@ TEST(RiskBenchArgs, HelpSkipsValidation) {
   EXPECT_NE(rb::risk_bench_usage().find("--synthetic"), std::string::npos);
 }
 
+TEST(RiskBenchArgs, DumpLegsFlags) {
+  const auto d = parse({"--store", "store-root"});
+  ASSERT_TRUE(d.has_value()) << d.error().to_string();
+  EXPECT_TRUE(d->dump_legs.empty());
+  EXPECT_EQ(d->dump_steps, 1u);
+  const auto a = parse({"--store", "store-root", "--dump-legs", "legs.csv", "--dump-steps", "3"});
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  EXPECT_EQ(a->dump_legs, "legs.csv");
+  EXPECT_EQ(a->dump_steps, 3u);
+  const auto all = parse({"--store", "s", "--dump-legs", "l.csv", "--dump-steps", "0"});
+  ASSERT_TRUE(all.has_value()) << all.error().to_string();
+  EXPECT_EQ(all->dump_steps, 0u); // 0 = every step
+  EXPECT_EQ(parse({"--store", "s", "--dump-legs"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(parse({"--store", "s", "--dump-steps", "x"}).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_NE(rb::risk_bench_usage().find("--dump-legs"), std::string::npos);
+  EXPECT_NE(rb::risk_bench_usage().find("--dump-steps"), std::string::npos);
+}
+
 // ── RiskBenchBook ───────────────────────────────────────────────────────────
 
 class RiskBenchBook : public ::testing::Test {
 protected:
   static void SetUpTestSuite() {
-    root_ = std::make_unique<fs::path>(fs::temp_directory_path() / "atx-risk-bench-book");
+    root_ = std::make_unique<fs::path>(fs::temp_directory_path() /
+                                       ("atx-risk-bench-book-" + process_tag()));
     std::error_code ec;
     fs::remove_all(*root_, ec);
     atx::vol::SyntheticSpiderRockSpec spec;
@@ -200,6 +239,17 @@ TEST_F(RiskBenchBook, SelectsRequestedCounts) {
     EXPECT_EQ(n, 20u) << "uid " << uid;
     EXPECT_GE(expiries[uid].size(), 4u) << "uid " << uid;
   }
+  // Sides alternate inside each expiry: with a quota of 20 over 8 expiries every
+  // expiry is visited at least twice, so each one holds a call and a put (each |delta|
+  // target is taken on both sides, not twice on one).
+  std::map<std::pair<std::uint32_t, std::int64_t>, std::set<Side>> sides;
+  for (const atx::vol::OptionLeg &leg : book->options) {
+    sides[{leg.uid, leg.expiry_ns}].insert(leg.side);
+  }
+  for (const auto &[key, s] : sides) {
+    EXPECT_EQ(s.size(), 2u) << "uid " << key.first << " expiry " << key.second
+                            << " holds one side only";
+  }
   for (const atx::vol::ShareLeg &s : book->shares) {
     EXPECT_TRUE(ids.insert(s.id).second) << "share id collides " << s.id;
   }
@@ -211,14 +261,45 @@ TEST_F(RiskBenchBook, SelectsRequestedCounts) {
   EXPECT_EQ(uneven->uids.size(), 6u);
   EXPECT_EQ(uneven->options.size(), 13u);
   EXPECT_TRUE(uneven->shares.empty());
-  // A quota equal to the expiry count (8) still spans both sides: sides alternate
-  // across a uid's picks, not per expiry.
+  // A quota equal to the expiry count (8) still spans both sides: the first pass over
+  // the expiries alternates the side from one expiry to the next.
   std::mt19937_64 rng3{5};
   const auto thin = rb::select_bench_book(*bucket_, args(6, 48, 0), rng3);
   ASSERT_TRUE(thin.has_value());
   EXPECT_EQ(thin->options.size(), 48u);
   EXPECT_EQ(thin->uids_with_both_sides, 6u);
   EXPECT_GE(thin->min_expiries_per_uid, 4u);
+}
+
+TEST_F(RiskBenchBook, RejectsZeroUnderliers) {
+  ASSERT_NE(bucket_, nullptr);
+  std::mt19937_64 rng{1};
+  const auto book = rb::select_bench_book(*bucket_, args(0, 100, 5), rng);
+  ASSERT_FALSE(book.has_value());
+  EXPECT_EQ(book.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST_F(RiskBenchBook, RejectsShortColumns) {
+  ASSERT_NE(bucket_, nullptr);
+  // market_state_from_bucket accepts empty vendor columns, so such a bucket is legal
+  // input elsewhere; the book selector reads them and must refuse, not read past them.
+  const auto refused = [&](const atx::vol::SpiderRockBucket &b) {
+    std::mt19937_64 rng{1};
+    const auto book = rb::select_bench_book(b, args(5, 100, 5), rng);
+    return !book.has_value() && book.error().code() == ErrorCode::InvalidArgument;
+  };
+  atx::vol::SpiderRockBucket no_delta = *bucket_;
+  no_delta.vendor_delta.clear();
+  EXPECT_TRUE(refused(no_delta));
+  atx::vol::SpiderRockBucket short_bid = *bucket_;
+  short_bid.bid.pop_back();
+  EXPECT_TRUE(refused(short_bid));
+  atx::vol::SpiderRockBucket short_ask = *bucket_;
+  short_ask.ask.resize(3);
+  EXPECT_TRUE(refused(short_ask));
+  atx::vol::SpiderRockBucket short_strike = *bucket_;
+  short_strike.strike.pop_back();
+  EXPECT_TRUE(refused(short_strike));
 }
 
 TEST_F(RiskBenchBook, SharesHedgeVendorDelta) {
@@ -348,7 +429,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
 
 [[nodiscard]] rb::RiskBenchReport fabricated_report() {
   rb::RiskBenchArgs args;
-  args.synthetic_dir = "C:/tmp/syn";
+  args.synthetic_dir = "syn-store";
   args.kernel = rb::BenchKernel::Both;
   args.determinism = true;
   rb::RiskBenchReport r = rb::report_skeleton(args);
@@ -466,6 +547,211 @@ TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
   EXPECT_NE(md.find("# atx-vol-risk-bench"), std::string::npos);
   EXPECT_NE(md.find("1000->1030"), std::string::npos);
   EXPECT_NE(md.find("diagnostic"), std::string::npos);
+}
+
+TEST(RiskBenchReport, MarkdownListsFrameCountsPerStep) {
+  rb::RiskBenchReport r = fabricated_report();
+  r.steps[1].flags = {};
+  r.steps[1].carry_sets_built = 12;
+  const std::string md = rb::report_to_markdown(r);
+  EXPECT_NE(md.find("- 1000->1030: families_built 1600, carry_sets_built 0, family_rows 9800, "
+                    "cold_rows 76, exercised_rows 0, refused_rows 0; routes Family 9800, "
+                    "ColdAnalytic 76; flags VendorParityAvailable 9876\n"),
+            std::string::npos)
+      << md;
+  EXPECT_NE(md.find("- 1030->1100: families_built 1600, carry_sets_built 12, family_rows 9800, "
+                    "cold_rows 76, exercised_rows 0, refused_rows 0; routes Family 9800, "
+                    "ColdAnalytic 76; flags none\n"),
+            std::string::npos)
+      << md;
+}
+
+// One CSV line (its LF stripped) split into cells, RFC 4180 quotes honored.
+[[nodiscard]] std::vector<std::string> csv_cells(std::string_view line) {
+  std::vector<std::string> cells(1);
+  bool quoted = false;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    const char c = line[i];
+    if (quoted && c == '"' && i + 1 < line.size() && line[i + 1] == '"') {
+      cells.back() += '"';
+      ++i;
+    } else if (c == '"') {
+      quoted = !quoted;
+    } else if (c == ',' && !quoted) {
+      cells.emplace_back();
+    } else {
+      cells.back() += c;
+    }
+  }
+  return cells;
+}
+
+[[nodiscard]] std::vector<std::string> csv_line_cells(const std::string &text) {
+  return csv_cells(std::string_view{text}.substr(0, text.empty() ? 0 : text.size() - 1));
+}
+
+[[nodiscard]] atx::vol::SpiderRockBucket one_row_bucket(std::int64_t expiry_ns) {
+  atx::vol::SpiderRockBucket b;
+  b.uid = {7};
+  b.strike = {450.5};
+  b.expiry_ns = {expiry_ns};
+  b.side = {Side::Put};
+  b.sigma = {0.25};
+  b.vendor_price = {10.5};
+  b.vendor_delta = {-0.4};
+  b.vendor_gamma = {0.02};
+  b.vendor_vega = {0.25};
+  b.vendor_theta = {-0.01};
+  b.vendor_T = {0.1};
+  b.uprc = {455.0};
+  b.rate = {0.04};
+  b.sdiv = {0.01};
+  b.ddiv = {1.5};
+  b.bid = {10.4};
+  b.ask = {10.6};
+  return b;
+}
+
+TEST(RiskBenchReport, LegDumpCsvFormat) {
+  const std::string header = rb::leg_dump_csv_header();
+  ASSERT_FALSE(header.empty());
+  EXPECT_EQ(header.back(), '\n');
+  EXPECT_EQ(header.find('\r'), std::string::npos);
+  const std::vector<std::string> names = csv_line_cells(header);
+  ASSERT_FALSE(names.empty());
+  EXPECT_EQ(names.front(), "step");
+  EXPECT_EQ(std::set<std::string>(names.begin(), names.end()).size(), names.size());
+
+  const auto expiry = atx::vol::spiderrock_bucket_instant_ns("2026-11-20", "1600");
+  ASSERT_TRUE(expiry.has_value());
+  rb::LegDumpRow row;
+  row.step = "1000->1030";
+  row.leg_index = 3;
+  row.leg_id = 4;
+  row.prepared_row = 2;
+  row.ticker = "BRK,B";
+  row.uid = 7;
+  row.uid_slot = 1;
+  row.strike = 450.5;
+  row.expiry_ns = *expiry;
+  row.side = Side::Put;
+  row.qty = -3.0;
+  row.multiplier = 100.0;
+  row.T = 0.1;
+  row.sigma = 0.25;
+  row.spot = 455.0;
+  row.forward = 454.0;
+  row.rate = 0.04;
+  row.q_eff = 0.02;
+  row.carry_source = rb::CarrySource::TermCarry;
+  row.carry_rate = 0.04;
+  row.carry_q = 0.01;
+  row.pv_divs = 1.5;
+  row.route = "Family";
+  row.flags = "VendorParityAvailable|ColdFallback";
+  row.status = "Ok";
+  row.leg_status = "Ok";
+  row.price = 10.0;
+  row.delta = -0.41;
+  row.gamma = 0.021;
+  row.vega = 26.0;
+  row.theta = -2.6; // vanna stays NaN: an empty cell
+  row.volga = 1.0;
+  row.charm = 0.1;
+  row.vendor_price = 10.5;
+  row.vendor_delta = -0.4;
+  rb::set_leg_dump_vendor(row, one_row_bucket(*expiry), 0);
+  row.pnl_total = 12.5;
+  row.pnl_delta = 10.0;
+  row.pnl_unexplained = 0.25;
+
+  std::string out;
+  rb::append_leg_dump_csv(out, row);
+  ASSERT_FALSE(out.empty());
+  EXPECT_EQ(out.back(), '\n');
+  EXPECT_EQ(std::count(out.begin(), out.end(), '\n'), 1);
+  EXPECT_EQ(out.find('\r'), std::string::npos);
+  EXPECT_NE(out.find("\"BRK,B\""), std::string::npos); // quoted on write
+  const std::vector<std::string> cells = csv_line_cells(out);
+  ASSERT_EQ(cells.size(), names.size());
+  const auto cell = [&](std::string_view name) -> std::string {
+    const auto it = std::find(names.begin(), names.end(), name);
+    return it == names.end() ? "<no column " + std::string{name} + ">"
+                             : cells[static_cast<std::size_t>(it - names.begin())];
+  };
+  EXPECT_EQ(cell("step"), "1000->1030");
+  EXPECT_EQ(cell("leg_index"), "3");
+  EXPECT_EQ(cell("leg_id"), "4");
+  EXPECT_EQ(cell("prepared_row"), "2");
+  EXPECT_EQ(cell("ticker"), "BRK,B");
+  EXPECT_EQ(cell("uid"), "7");
+  EXPECT_EQ(cell("uid_slot"), "1");
+  EXPECT_EQ(cell("strike"), "450.5");
+  EXPECT_EQ(cell("expiry"), "2026-11-20");
+  EXPECT_EQ(cell("side"), "put");
+  EXPECT_EQ(cell("qty"), "-3");
+  EXPECT_EQ(cell("multiplier"), "100");
+  EXPECT_EQ(cell("T"), "0.1");
+  EXPECT_EQ(cell("q_eff"), "0.02");
+  EXPECT_EQ(cell("carry_source"), "term_carry");
+  EXPECT_EQ(cell("pv_divs"), "1.5");
+  EXPECT_EQ(cell("route"), "Family");
+  EXPECT_EQ(cell("flags"), "VendorParityAvailable|ColdFallback");
+  EXPECT_EQ(cell("status"), "Ok");
+  EXPECT_EQ(cell("leg_status"), "Ok");
+  EXPECT_EQ(cell("price"), "10");
+  EXPECT_EQ(cell("vanna"), ""); // non-finite => empty
+  EXPECT_EQ(cell("charm"), "0.1");
+  EXPECT_EQ(cell("vendor_price"), "10.5");
+  EXPECT_EQ(cell("vendor_delta"), "-0.4");
+  EXPECT_EQ(cell("sr_prc"), "10.5");
+  EXPECT_EQ(cell("sr_de"), "-0.4");
+  EXPECT_EQ(cell("sr_ga"), "0.02");
+  EXPECT_EQ(cell("sr_ve"), "0.25");
+  EXPECT_EQ(cell("sr_th"), "-0.01");
+  EXPECT_EQ(cell("sr_years"), "0.1");
+  EXPECT_EQ(cell("sr_uprc"), "455");
+  EXPECT_EQ(cell("sr_rate"), "0.04");
+  EXPECT_EQ(cell("sr_sdiv"), "0.01");
+  EXPECT_EQ(cell("sr_ddiv"), "1.5");
+  EXPECT_EQ(cell("sr_bid"), "10.4");
+  EXPECT_EQ(cell("sr_ask"), "10.6");
+  // Derived columns: exact doubles through the shortest round-trip text.
+  EXPECT_EQ(std::stod(cell("vendor_vega")), 0.25 / atx::vol::kSpiderRockVegaScale);
+  EXPECT_EQ(std::stod(cell("vendor_theta")), -0.01 / atx::vol::kSpiderRockThetaScale);
+  EXPECT_EQ(std::stod(cell("q_eff_d4")), atx::vol::spiderrock_q_eff(455.0, 1.5, 0.04, 0.01, 0.1));
+  EXPECT_EQ(std::stod(cell("price_abs_err")), 0.5);
+  EXPECT_EQ(std::stod(cell("price_sym_rel")), 0.5 / 10.5);
+  EXPECT_EQ(cell("pnl_total"), "12.5");
+  EXPECT_EQ(cell("pnl_delta"), "10");
+  EXPECT_EQ(cell("pnl_gamma"), "");
+  EXPECT_EQ(cell("pnl_unexplained"), "0.25");
+
+  // No vendor mark => no price error; flat carry labelled as such.
+  row.vendor_price = std::numeric_limits<double>::quiet_NaN();
+  row.carry_source = rb::CarrySource::Flat;
+  row.ticker = "SPY";
+  std::string flat;
+  rb::append_leg_dump_csv(flat, row);
+  const std::vector<std::string> fc = csv_line_cells(flat);
+  ASSERT_EQ(fc.size(), names.size());
+  const auto at = [&](std::string_view name) {
+    return fc[static_cast<std::size_t>(std::find(names.begin(), names.end(), name) -
+                                       names.begin())];
+  };
+  EXPECT_EQ(at("price_abs_err"), "");
+  EXPECT_EQ(at("price_sym_rel"), "");
+  EXPECT_EQ(at("carry_source"), "flat");
+  EXPECT_EQ(flat.find('"'), std::string::npos);
+
+  // Prepared-row order (ties by leg index) and the --dump-steps selection.
+  EXPECT_EQ(rb::leg_dump_order(std::vector<std::uint32_t>{2, 0, 2, 1}),
+            (std::vector<std::size_t>{1, 3, 0, 2}));
+  EXPECT_TRUE(rb::dump_step_selected(1, 1));
+  EXPECT_FALSE(rb::dump_step_selected(1, 2));
+  EXPECT_TRUE(rb::dump_step_selected(3, 3));
+  EXPECT_FALSE(rb::dump_step_selected(3, 4));
+  EXPECT_TRUE(rb::dump_step_selected(0, 9));
 }
 
 } // namespace

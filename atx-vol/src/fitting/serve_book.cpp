@@ -17,6 +17,7 @@
 
 #include "fitting/serve_book_detail.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // build_serve_record_on (the stage's phase 2)
+#include "pricing/chain_tick_availability.hpp"
 
 namespace atx::vol {
 
@@ -660,7 +661,9 @@ Status ServeBookReader::serve_chain(double spot, std::int64_t now_ns,
                                     std::span<ServedChainStatement> statements) {
   const std::size_t n = chain.size();
   if (!chain.consistent() || !out.consistent() || out.size() != n || statements.size() != n ||
-      !std::isfinite(spot) || !(spot > 0.0)) {
+      !std::isfinite(spot) || !(spot > 0.0) || detail::tick_metadata_aliases(out,
+          {std::as_bytes(chain.expiry_id), std::as_bytes(chain.strike),
+           std::as_bytes(chain.side), std::as_bytes(statements)})) {
     return Err(ErrorCode::InvalidArgument, "serve_chain: column lengths or spot");
   }
   refresh(); // ONE version for the whole chain
@@ -692,11 +695,33 @@ Status ServeBookReader::serve_chain(double spot, std::int64_t now_ns,
     st.map_certificate_class = a.map_certificate_class;
     st.price_only_reason = a.price_only_reason;
     st.sampled = a.sampled;
+    st.greek_reasons = a.reason;
     // review-H1 F1: a Sampled answer is never Ok on the status span.
     out.status[k] = a.status == ServeStatus::Ok && !a.sampled ? TickStatus::Ok
                     : a.status == ServeStatus::Exercised      ? TickStatus::Exercised
                     : std::isnan(a.price)                     ? TickStatus::Unpriceable
                                                               : TickStatus::Fallback;
+    if (detail::tick_has_metadata(out)) {
+      auto fields = GreekFieldMask::None;
+      if (std::isfinite(a.price) && (a.status == ServeStatus::Ok ||
+          a.status == ServeStatus::Exercised || a.status == ServeStatus::PriceOnly)) {
+        fields = GreekFieldMask::Price;
+        // PriceOnly's unused zeros never become supplied derivatives. Keep the
+        // record reason vocabulary separate from the cold Greek schema.
+        if (a.status != ServeStatus::PriceOnly) {
+          constexpr std::array axes{ServeGreek::Delta, ServeGreek::Gamma,
+                                     ServeGreek::Vega, ServeGreek::Theta};
+          const std::array values{a.delta, a.gamma, a.vega, a.theta};
+          for (std::size_t i = 0; i < axes.size(); ++i) {
+            const auto reason = a.reason[static_cast<std::size_t>(axes[i])];
+            if (std::isfinite(values[i]) && (reason == ServeGreekReason::Served ||
+                reason == ServeGreekReason::Exercised))
+              fields = fields | detail::kTickDerivativeFields[i];
+          }
+        }
+      }
+      detail::write_tick_metadata(out, k, fields);
+    }
   }
   return Ok();
 }

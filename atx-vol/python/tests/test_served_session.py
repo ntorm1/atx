@@ -109,3 +109,74 @@ def test_a_bad_binding_raises_and_the_source_enum_is_complete(book):
     assert raised.value.code == av.ErrorCode.INVALID_ARGUMENT
     library = av._core._enum_names("SessionServeSource")
     assert set(library) == {int(v) for v in av.SessionServeSource.__members__.values()}
+
+
+@pytest.mark.parametrize("side", [av.Side.PUT, av.Side.CALL])
+def test_cold_partial_availability_and_provenance_survive_scalar_and_chain(side):
+    put = side == av.Side.PUT
+    s, k = (772.99, 811.6395) if put else (811.6395, 772.99)
+    r, q = (.04496, .00162193) if put else (.00162193, .04496)
+    t, sigma = .0682, .12
+    p = av.EssviParams()
+    p.T, p.F, p.theta = t, s * math.exp((r-q)*t), sigma*sigma*t
+    p.phi = p.rho = 0.
+    p.psi = p.p = p.lambda_ = .5
+    curves = av.CurveSurface()
+    curves.push_essvi(p, math.exp(-r*t))
+    pricing = av.PricingContext()
+    pricing.S, pricing.r = s, r
+    surface = av.PricedSurface.create(curves, [av.SliceContext(
+        T=t, forward=p.F, borrow=0., q_eff=q, n_used=100, n_dropped=0)], pricing)
+    session = av.ServedSession.bind(surface, av.ServeBook(), [])
+    reader = session.reader()
+    answer = session.serve(reader, k, t, side, s, NOW_NS)
+    wanted = 256 | 1 | 2 | 4 | 8
+    assert int(answer.requested) == wanted
+    assert int(answer.supported) & 256
+    assert not int(answer.supported) & 2
+    assert math.isfinite(answer.price) and math.isnan(answer.gamma)
+    assert answer.cold_reasons[1] == av.AmericanGreekReason.STENCIL_CROSSING
+    assert all(answer.cold_reasons[i] == av.AmericanGreekReason.NOT_REQUESTED
+               for i in (4, 5, 6, 7))
+    assert answer.status == av.AnalyticsStatus.ESTIMATE  # model/price class, not all-risk
+    strikes = np.array([k, s, -1.])
+    expiries = np.full(3, t)
+    columns = session.serve_chain(reader, s, NOW_NS, strikes, expiries, side)
+    assert columns["requested"].dtype == columns["supported"].dtype == np.uint32
+    assert columns["cold_reasons"].shape == (3, 9)
+    assert columns["book_greek_reasons"].shape == (3, 6)
+    assert columns["cold_reasons"].dtype == columns["book_greek_reasons"].dtype == np.uint8
+    for i in range(3):
+        one = session.serve(reader, strikes[i], t, side, s, NOW_NS)
+        assert columns["requested"][i] == int(one.requested)
+        assert columns["supported"][i] == int(one.supported)
+        assert columns["cold_reasons"][i].tolist() == [int(v) for v in one.cold_reasons]
+        assert columns["book_greek_reasons"][i].tolist() == [0]*6
+    assert columns["supported"][2] == 0 and math.isnan(columns["price"][2])
+    assert columns["supported"][1] == wanted
+    empty = session.serve_chain(reader, s, NOW_NS, np.array([]), np.array([]), side)
+    assert empty["cold_reasons"].shape == (0, 9)
+    assert empty["book_greek_reasons"].shape == (0, 6)
+    saved = columns["cold_reasons"].copy()
+    del reader, session, surface
+    gc.collect()
+    np.testing.assert_array_equal(columns["cold_reasons"], saved)
+    assert columns["cold_reasons"].flags.owndata
+
+
+def test_book_reason_vocabulary_is_preserved_without_cold_translation(book):
+    session = av.ServedSession.bind(_surface(), book, [av.SessionBookExpiry(.25, 7)])
+    reader = session.reader()
+    strikes = np.array([96., 100., 500.])
+    ids = np.full(3, 7, dtype=np.uint64)
+    book_columns = reader.serve_chain(100., NOW_NS, ids, strikes, PUT)
+    assert book_columns["greek_reasons"].shape == (3, 6)
+    assert book_columns["greek_reasons"].dtype == np.uint8
+    columns = session.serve_chain(reader, 100., NOW_NS, strikes, np.full(3, .25), PUT)
+    np.testing.assert_array_equal(columns["book_greek_reasons"], book_columns["greek_reasons"])
+    assert np.all(columns["cold_reasons"] == int(av.AmericanGreekReason.NOT_REQUESTED))
+    for i, strike in enumerate(strikes):
+        one = session.serve(reader, strike, .25, PUT, 100., NOW_NS)
+        assert columns["supported"][i] == int(one.supported)
+        assert book_columns["greek_reasons"][i].tolist() == [int(v) for v in one.book.reason]
+    assert columns["supported"][2] == 0

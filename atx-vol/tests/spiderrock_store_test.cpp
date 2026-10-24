@@ -44,6 +44,12 @@
 #include "atx/vol/api/marketdata/spiderrock_store.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 
+#if defined(_WIN32)
+#include <process.h> // _getpid: a private scratch dir per test process
+#else
+#include <unistd.h> // getpid
+#endif
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -64,12 +70,19 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
 
+// A scratch dir private to this test and this process (atx-test-scratch already gives
+// each process a private TEMP; the pid keeps it so in a binary that does not link it).
 [[nodiscard]] fs::path fresh_dir(std::string_view tag) {
   const auto *info = ::testing::UnitTest::GetInstance()->current_test_info();
   std::string name = "atx-spiderrock-" + std::string(tag);
   if (info != nullptr) {
     name += std::string("-") + info->test_suite_name() + "-" + info->name();
   }
+#if defined(_WIN32)
+  name += "-" + std::to_string(::_getpid());
+#else
+  name += "-" + std::to_string(::getpid());
+#endif
   const fs::path dir = fs::temp_directory_path() / name;
   std::error_code ec;
   fs::remove_all(dir, ec);
@@ -115,7 +128,8 @@ constexpr NumField kNumFields[] = {
 };
 
 void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool large_strings,
-                     bool licensed_extras = false, std::int64_t row_group_rows = 3) {
+                     bool licensed_extras = false, std::int64_t row_group_rows = 3,
+                     bool nested_lead = false) {
   ASSERT_TRUE(fs::create_directories(dir) || fs::is_directory(dir));
   std::vector<std::shared_ptr<arrow::Field>> fields;
   std::vector<std::shared_ptr<arrow::Array>> arrays;
@@ -196,6 +210,22 @@ void write_partition(const fs::path &dir, const std::vector<Row> &rows, bool lar
     ASSERT_TRUE(b.Finish(&arr).ok());
     fields.push_back(arrow::field("atmVol", arrow::float64()));
     arrays.push_back(std::move(arr));
+  }
+  if (nested_lead) { // a 2-leaf struct column FIRST: arrow field index != parquet leaf
+    std::vector<std::shared_ptr<arrow::Array>> kids;
+    for (int k = 0; k < 2; ++k) {
+      arrow::DoubleBuilder b;
+      for (const Row &r : rows) {
+        ASSERT_TRUE(b.Append(r.strike).ok());
+      }
+      std::shared_ptr<arrow::Array> arr;
+      ASSERT_TRUE(b.Finish(&arr).ok());
+      kids.push_back(std::move(arr));
+    }
+    auto nested = arrow::StructArray::Make(kids, std::vector<std::string>{"a", "b"});
+    ASSERT_TRUE(nested.ok()) << nested.status().ToString();
+    fields.insert(fields.begin(), arrow::field("nested", (*nested)->type()));
+    arrays.insert(arrays.begin(), *nested);
   }
   const auto table =
       arrow::Table::Make(arrow::schema(fields), arrays, static_cast<std::int64_t>(rows.size()));
@@ -519,6 +549,26 @@ TEST(SpiderRockStore, StandardRootsOnlyDropsAdjustedRoots) {
   EXPECT_EQ(c->dropped_nonstandard_root, 0);
 }
 
+// Row-group pruning and the projected read address parquet LEAF columns by the arrow
+// field index, which holds only for a flat schema: a nested column is refused loudly
+// (with and without the top-N statistics path), never pruned silently.
+TEST(SpiderRockStore, RefusesNestedSchema) {
+  const fs::path root = fresh_dir("nested");
+  write_partition(bucket_dir(root, "2026-10-14", "1000"), three_rows(), /*large=*/false,
+                  /*licensed_extras=*/false, /*row_group_rows=*/3, /*nested_lead=*/true);
+  ASSERT_FALSE(HasFatalFailure());
+  for (const std::size_t cap : {std::size_t{0}, std::size_t{1}}) {
+    SpiderRockStoreSpec spec = spec_for(root, "2026-10-14");
+    spec.max_underliers = cap;
+    UnderlierTable table;
+    const auto b = atx::vol::load_spiderrock_bucket(spec, "1000", table);
+    ASSERT_FALSE(b.has_value()) << "cap " << cap;
+    EXPECT_EQ(b.error().code(), ErrorCode::InvalidArgument) << b.error().to_string();
+    EXPECT_NE(b.error().to_string().find("data.parquet"), std::string::npos)
+        << b.error().to_string();
+  }
+}
+
 // ── SpiderRockStoreReal: the licensed store, env-gated ──────────────────────
 //
 // Skipped unless ATX_VOL_SPIDERROCK_STORE names the partitioned store root (the
@@ -705,16 +755,14 @@ TEST(SyntheticStore, MarketMovesAcrossBuckets) {
   }
   // Per uid, per expiry (rows sorted by uid, expiry, side, strike): the first and
   // last strike of the call block give a skew proxy; atmVol (read from the file)
-  // gives the ATM level.
+  // gives the ATM level of every row.
   const std::size_t per_block = spec.n_strikes;
   for (std::size_t k = 1; k < buckets.size(); ++k) {
     const SpiderRockBucket &p = buckets[k - 1];
     const SpiderRockBucket &c = buckets[k];
     for (std::size_t row = 0; row + per_block <= c.size(); row += 2 * per_block) {
       EXPECT_NE(c.uprc[row], p.uprc[row]) << "spot frozen, bucket " << k << " row " << row;
-      const double skew_p = p.sigma[row] - p.sigma[row + per_block - 1];
       const double skew_c = c.sigma[row] - c.sigma[row + per_block - 1];
-      EXPECT_NE(skew_c, skew_p) << "skew frozen, bucket " << k << " row " << row;
       EXPECT_GT(skew_c, 0.0) << "eSSVI rho < 0 must slope down in strike";
     }
     const auto atm_p = read_double_column(
@@ -724,7 +772,41 @@ TEST(SyntheticStore, MarketMovesAcrossBuckets) {
                            "atmVol");
     ASSERT_EQ(atm_p.size(), atm_c.size());
     ASSERT_FALSE(atm_c.empty());
-    EXPECT_NE(atm_c.front(), atm_p.front()) << "ATM level frozen at bucket " << k;
+    std::size_t frozen = 0;
+    for (std::size_t i = 0; i < atm_c.size(); ++i) {
+      frozen += atm_c[i] == atm_p[i] ? 1u : 0u;
+    }
+    EXPECT_EQ(frozen, 0u) << "ATM level frozen on " << frozen << " of " << atm_c.size()
+                          << " rows at bucket " << k;
+  }
+  // The rho shock is live: a store with the same seed and skew_shock_vol = 0 draws the
+  // same spot and level paths (every draw is unconditional) and the same first-bucket
+  // smiles, and its skews differ from the second bucket on. (The skew proxy alone also
+  // moves with spot and T, so comparing buckets of ONE store cannot show this.)
+  SyntheticSpiderRockSpec flat_spec = spec;
+  flat_spec.skew_shock_vol = 0.0;
+  const fs::path flat_root = fresh_dir("moves-flat");
+  ASSERT_TRUE(atx::vol::write_synthetic_spiderrock_store(flat_spec, flat_root.string())
+                  .has_value());
+  UnderlierTable flat_table;
+  const SpiderRockStoreSpec flat_rspec = spec_for(flat_root, spec.date);
+  std::vector<SpiderRockBucket> flat;
+  for (const std::string &bucket : spec.buckets_et) {
+    auto b = atx::vol::load_spiderrock_bucket(flat_rspec, bucket, flat_table);
+    ASSERT_TRUE(b.has_value()) << b.error().to_string();
+    flat.push_back(std::move(*b));
+  }
+  ASSERT_EQ(flat.size(), buckets.size());
+  EXPECT_EQ(flat.front().sigma, buckets.front().sigma);
+  for (std::size_t k = 0; k < buckets.size(); ++k) {
+    EXPECT_EQ(flat[k].uprc, buckets[k].uprc) << "spot path depends on the skew shock " << k;
+  }
+  for (std::size_t k = 1; k < buckets.size(); ++k) {
+    for (std::size_t row = 0; row + per_block <= buckets[k].size(); row += 2 * per_block) {
+      const double skew = buckets[k].sigma[row] - buckets[k].sigma[row + per_block - 1];
+      const double skew_flat = flat[k].sigma[row] - flat[k].sigma[row + per_block - 1];
+      EXPECT_NE(skew, skew_flat) << "rho shock not live, bucket " << k << " row " << row;
+    }
   }
   // Time decays with the clock: vendor T shrinks bucket to bucket.
   EXPECT_LT(buckets.back().vendor_T[0], buckets.front().vendor_T[0]);

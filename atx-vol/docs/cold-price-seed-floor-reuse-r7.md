@@ -15,8 +15,8 @@ range, the exact cold price at sigma 0.005, and the positive cold chord when the
 target lies in the existing nonmonotone band. The budget comes from the immutable
 original quote spread and cap.
 
-`IvPriceSeedFloorCache` owns one geometry and one boundary handle within a single
-preparation call. It allocates only after a candidate passes its cold-price check.
+`IvPriceSeedFloorCache` owns one geometry and one boundary handle per side within a
+single operation. It allocates only after a candidate passes its cold-price check.
 Its key includes exact binary64 expiry, rates, yield, internal strike, side and
 complete optional AL options, including profile and optional presence. A model
 change rebuilds the owned state. Invalid preparation or a failed handle price
@@ -76,3 +76,38 @@ The six `reimply_cold_seed_*` counters distinguish prepared attempts and roots f
 consumed `hits`, floor `preparations` and `hits`, and preparation nanoseconds. They
 do not increment strict native/K3 root counters or the later ordinary seed fallback
 counters. Clocks run only when fitting timing is armed.
+
+## Final-publication floor reuse
+
+The final raw-price publication operation now also owns a lazy floor cache on its
+stack. Its optional pointer is passed through the private `reimplied_vol` helper
+to both the ordinary prepared-lane seed fallback and the Screen/Fast candidate
+chain. Every early Screen candidate, early Fast candidate and full Fast retry
+continues through the identical cold seed proof. Other callers omit the pointer
+and keep their previous behavior. The prepared 496-proof batch retains its own
+separate cache; no mutable cache enters a published fit, query context or archive.
+
+There are two exact-key slots, one per side, so interleaved call and put publication
+cannot evict a reusable call boundary. Put strike remains part of the key; this
+change makes no strike-homogeneity assumption. Expiry, rates, yield, anchor and all
+caller options still require bit-exact identity. A failed preparation leaves the
+old valid entry untouched and preserves the existing cold-solve fallback.
+
+The development complete-SPY replay in `calendar/final-floor-candidate-v1/` is
+byte-identical to the prior `234b31fe` candidate, with predictions SHA-256
+`e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`.
+The 700 ordinary candidate calls now perform 1,158 boundary solves instead of
+1,363; the 70 lane fallback calls perform 123 instead of 183. This removes 265
+exact floor boundary solves without changing the 1,437 candidate IV iterations,
+route counts, prices, IVs or identifications. These are deterministic work counts,
+not a qualified latency claim. Existing stage counters measure them; no counters
+or serializer fields were added.
+
+Red/green tests cover side alternation, failed preparation, exact cold price bits,
+Screen/Fast decision and sigma parity, target-floor refusals and final-publication
+work reduction. The scoped gate passed eight pricing and four publication tests,
+plus owning PCH-off compilation of both production sources and both test sources.
+Receipts are `final-floor-side-cache-red.xml`, `final-floor-integration-red.xml`,
+`final-floor-cache-green.xml` and `final-floor-integration-green.xml` beneath the
+same calendar evidence directory. Full integrated API and release timing remain
+separate parent qualification gates.

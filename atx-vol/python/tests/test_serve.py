@@ -110,6 +110,15 @@ def test_serve_chain_columns_equal_the_per_contract_answers_of_one_version(recor
     for name in ("status", "route", "tier", "certificate_class", "tick_status"):
         assert cols[name].dtype == np.uint8, name
     assert cols["sampled"].dtype == np.bool_
+    assert cols["greek_reasons"].shape == (4, 6)
+    assert cols["greek_reasons"].dtype == np.uint8
+    fields = int(av.GreekFieldMask.PRICE) | sum(int(x) for x in (
+        av.GreekFieldMask.DELTA, av.GreekFieldMask.GAMMA,
+        av.GreekFieldMask.VEGA, av.GreekFieldMask.THETA))
+    for name in ("requested", "supported"):
+        assert cols[name].dtype == np.uint32 and cols[name].shape == (4,)
+        assert cols[name].flags.owndata
+    assert cols["requested"].tolist() == [fields] * 4
 
     for i in range(4):
         answer = reader.serve(int(ids[i]), av.ServeRequest(
@@ -120,17 +129,37 @@ def test_serve_chain_columns_equal_the_per_contract_answers_of_one_version(recor
         assert av.ServeTier(int(cols["tier"][i])) == answer.tier
         assert av.ServeBoundClass(int(cols["certificate_class"][i])) == answer.certificate_class
         assert bool(cols["sampled"][i]) == answer.sampled
+        assert cols["greek_reasons"][i].tolist() == [int(v) for v in answer.reason]
         assert (cols["price"][i] == answer.price) or (
             math.isnan(cols["price"][i]) and math.isnan(answer.price))
+        supplied = 0
+        if math.isfinite(answer.price) and answer.status in (
+                av.ServeStatus.OK, av.ServeStatus.EXERCISED, av.ServeStatus.PRICE_ONLY):
+            supplied = int(av.GreekFieldMask.PRICE)
+            if answer.status != av.ServeStatus.PRICE_ONLY:
+                for j, name in enumerate(("delta", "gamma", "vega", "theta")):
+                    if math.isfinite(getattr(answer, name)) and answer.reason[j] in (
+                            av.ServeGreekReason.SERVED, av.ServeGreekReason.EXERCISED):
+                        supplied |= int(getattr(av.GreekFieldMask, name.upper()))
+        assert int(cols["supported"][i]) == supplied
 
     ticks = [av.TickStatus(int(t)) for t in cols["tick_status"]]
     # A sampled ladder answer is an estimate (Fallback); an unknown expiry is a refusal.
     assert ticks[0] == (av.TickStatus.FALLBACK if cols["sampled"][0] else av.TickStatus.OK)
     assert ticks[3] == av.TickStatus.UNPRICEABLE
     assert av.ServeStatus(int(cols["status"][3])) == av.ServeStatus.TIER_UNAVAILABLE
+    assert cols["supported"][3] == 0
 
     with pytest.raises(ValueError, match="same length"):
         reader.serve_chain(100.0, 0, ids, strikes[:2], PUT)
+
+    empty = reader.serve_chain(100.0, 0, np.array([], dtype=np.uint64), np.array([]), PUT)
+    for name in ("requested", "supported"):
+        assert empty[name].dtype == np.uint32 and empty[name].shape == (0,)
+    snapshot = cols["supported"].copy()
+    del reader
+    gc.collect()
+    np.testing.assert_array_equal(cols["supported"], snapshot)
 
 
 def test_serve_build_publishes_two_phases_and_transactions_retire(fit):

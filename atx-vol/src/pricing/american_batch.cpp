@@ -1,8 +1,6 @@
 #include "atx/vol/api/pricing/american_batch.hpp"
 
-#include "backtest/laned_greek_run.hpp"           // FIX-5/I3: detail::{normalize_unrequested_greeks,
-                                         // requested_greeks_finite} — the SINGLE Ok-stamp
-                                         // definition FIX-1/2/3 established
+#include "pricing/american_greek_availability.hpp"
 #include "atx/vol/api/pricing/american.hpp"          // andersen_lake, american_greeks_fd/al, classify_regime
 #include "fitting/counters.hpp"          // exact resolved-route diagnostics
 #include "atx/vol/api/pricing/pricing_executor.hpp"  // PricingExecutor
@@ -91,7 +89,7 @@ Result<std::size_t> american_price_batch(const AmericanBatchInput& in, PriceBatc
     return Ok(n);
   }
 
-  ws.reserve_lanes(n);
+  ws.reserve_price_lanes(n);
 
   // Pass 1: classify + compact. Genuine American lanes -> internal-put pack;
   // everything else patches to scalar andersen_lake in public order.
@@ -276,6 +274,10 @@ Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in, GreekFie
     return Err(ErrorCode::InvalidArgument,
                "american_greeks_batch: input span length mismatch");
   }
+  constexpr auto known = static_cast<std::uint32_t>(GreekFieldMask::All);
+  if ((static_cast<std::uint32_t>(fields) & ~known) != 0u) {
+    return Err(ErrorCode::InvalidArgument, "american_greeks_batch: unknown field mask");
+  }
   const std::size_t n = in.size();
   ws.reserve_lanes(n);
   if (n == 0) {
@@ -298,10 +300,18 @@ Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in, GreekFie
                          has_field(fields, GreekFieldMask::Vanna);
   const bool need_rho = has_field(fields, GreekFieldMask::Rho);
   const bool need_charm = has_field(fields, GreekFieldMask::Charm);
-  // FIX-5/I3: the REQUESTED Greek set, in the vocabulary the shared Ok-stamp speaks.
-  // Same derivation the K4 solve-skip selectors above use, so the columns that were
-  // asked for are exactly the columns that are swept.
-  const GreekNeeds needs{need_vega, need_rho, need_charm};
+  // Solve groups are broader than output requests. Gate the exact requested
+  // fields so, for example, an unavailable theta cannot veto a delta-only lane.
+  const auto store_lane = [&](std::size_t i, AmericanGreeks g, simd::SimdRoute route) noexcept {
+    const bool ok = detail::american_greeks_support(g, fields | GreekFieldMask::Price);
+    detail::narrow_american_greek_request(g, fields);
+    write_masked(greeks, i, g, fields);
+    ws.lane_status[i] = ok ? LaneStatus::Ok : LaneStatus::Unsupported;
+    ws.lane_route[i] = route;
+    ws.lane_requested[i] = g.requested;
+    ws.lane_supported[i] = g.supported;
+    ws.lane_reasons[i] = g.reasons;
+  };
   // SAFETY: the lane keeps its `noexcept` — it runs on PricingExecutor worker
   // threads below, where an escaping exception is unrecoverable no matter what
   // this lambda claims — and the claim is made TRUE by containing the throw. The
@@ -326,32 +336,14 @@ Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in, GreekFie
         return Err(ErrorCode::Internal);
       }
     }();
-    // FIX-5/I3: `has_value()` alone certified a bundle with a finite mark and a NaN
-    // in a REQUESTED column as Ok — the pre-FIX-1 predicate, on the driver WS-Y made
-    // public Python API (bindings/pricing.cpp, GreekFieldMask::All). Route both this
-    // stamp and the laned one below through the SINGLE shared pair so they cannot
-    // disagree by side: normalize the unrequested slots (FIX-1/F3's load-bearing
-    // half), then sweep the requested set finite.
     if (g.has_value()) {
-      AmericanGreeks gg = *g;
-      detail::normalize_unrequested_greeks(gg, needs);
-      if (detail::requested_greeks_finite(gg, needs)) {
-        write_masked(greeks, i, gg, fields);
-        ws.lane_status[i] = LaneStatus::Ok;
-      } else {
-        // Computed columns are left in place for diagnosis (exactly as
-        // laned_greek_run's scatter does); consumers gate on status.
-        write_masked(greeks, i, gg, fields);
-        ws.lane_status[i] = LaneStatus::Unsupported;
-      }
+      store_lane(i, *g, simd::SimdRoute::Scalar);
     } else {
       AmericanGreeks nan_g;
-      nan_g.delta = nan_g.gamma = nan_g.vega = nan_g.theta = nan_g.rho =
-          nan_g.vanna = nan_g.volga = nan_g.charm = nan_g.price = kNaN;
-      write_masked(greeks, i, nan_g, fields);
-      ws.lane_status[i] = LaneStatus::Unsupported;
+      detail::mark_american_greek_fields(nan_g, fields | GreekFieldMask::Price,
+                                        AmericanGreekReason::Nonfinite);
+      store_lane(i, nan_g, simd::SimdRoute::Scalar);
     }
-    ws.lane_route[i] = simd::SimdRoute::Scalar; // scalar Greek stencil (honest)
   };
 
   // K3 laned fast path: taken when the AVX2 Greeks route is selected for this isa
@@ -392,14 +384,7 @@ Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in, GreekFie
                       cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf,
                       kernel.isa, need_vega, need_rho, need_charm);
         for (std::size_t j = 0; j < cnt; ++j) {
-          const std::size_t oi = oidx[j];
-          AmericanGreeks gg = gbuf[j];
-          detail::normalize_unrequested_greeks(gg, needs);
-          const bool ok = detail::requested_greeks_finite(gg, needs);
-          write_masked(greeks, oi, gg, fields);
-          ws.lane_status[oi] =
-              ok ? LaneStatus::Ok : LaneStatus::Unsupported;
-          ws.lane_route[oi] = route;
+          store_lane(oidx[j], gbuf[j], route);
         }
         cnt = 0;
       };

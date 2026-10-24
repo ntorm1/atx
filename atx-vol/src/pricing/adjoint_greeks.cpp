@@ -35,6 +35,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 
 #include "pricing/american_boundary.hpp" // amer:: boundary + residual + price seams
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol::detail {
 
@@ -509,6 +510,7 @@ american_put_adjoint(double S, double K, double T, double sigma, double r, doubl
   g.vanna = vanna;
   g.volga = volga;
   g.charm = charm;
+  mark_american_greek_fields(g, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
   return g;
 }
 
@@ -535,6 +537,7 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
     if (dP_dq != nullptr) {
       *dP_dq = 0.0; // no time left: no carry sensitivity
     }
+    mark_american_greek_fields(g, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
     return g;
   }
   // Arm 2 (L5 T3) — σ ~ 0 WITH time left. This used to return the bare spot
@@ -592,6 +595,7 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
       if (dP_dq != nullptr) {
         *dP_dq = nan;
       }
+      mark_american_greek_fields(g, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
       return g;
     }
     const double df = std::exp(-r * T);
@@ -612,6 +616,7 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
     } else if (dP_dq != nullptr) {
       *dP_dq = 0.0; // out of the money at σ = 0: identically zero, all derivatives too
     }
+    mark_american_greek_fields(g, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
     return g;
   }
   const EuroFirstOrder fo = euro_reverse(S, K, T, sigma, r, q, side);
@@ -629,6 +634,7 @@ AmericanGreeks european_greeks_adjoint(double S, double K, double T, double sigm
   if (dP_dq != nullptr) {
     *dP_dq = fo.dq;
   }
+  mark_american_greek_fields(g, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
   return g;
 }
 

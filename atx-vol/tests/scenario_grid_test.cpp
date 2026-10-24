@@ -1638,6 +1638,15 @@ TEST(ScenarioGridDeriv, AShortContractDoesNotPoisonAGridThatAsksForNoTimeRoll) {
       EXPECT_EQ(r->n_deriv_missing_sensitivity, 0u)
           << kind_name(kind) << ": excluded over a sensitivity this grid never reads";
     }
+    // This known-priceable kind must participate. A broad failure bucket must
+    // not make the conditional assertion above vacuously pass.
+    if (kind == DerivKind::VarSwap) {
+      EXPECT_EQ(r->n_deriv_ok, 1u);
+      EXPECT_EQ(r->n_deriv_failed, 0u);
+      EXPECT_EQ(r->n_deriv_missing_sensitivity, 0u);
+      EXPECT_TRUE(std::any_of(r->deriv_pnl.begin(), r->deriv_pnl.end(),
+                              [](double pnl) { return pnl != 0.0; }));
+    }
   }
 }
 

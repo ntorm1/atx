@@ -29,6 +29,11 @@ The launcher archives the executable, hashes every receipt and runner source,
 records Git/Python/platform identity, and checks the frozen corpus hash. The
 native report preserves exact input rows, schemes, model convention and raw
 price stencils; Python reconstructs derivatives independently of the C++ code.
+Native schema v2 also records the cold APIs' actual request/support masks and
+all nine availability reasons. The verifier checks every field against those
+bits, preserves partial bundles with usable prices, and rejects contradictory
+finite unsupported values. Historical v1 receipts retain their explicitly
+finite-only API inference; they are not rewritten as metadata-aware evidence.
 `--report native.json --output summary.json` reproduces a summary without rerunning
 prices. Add `--require-all` to require exactly all 715 frozen IDs, or
 `--selection selection.json` to require that exact subset. Native execution
@@ -93,3 +98,51 @@ price/vega microbenchmarks do not masquerade as nine-field requests.
 The [complete 715-case receipt review](../../docs/american-greek-full-corpus-20261024.md)
 retains all 25,740 requested field outcomes and documents the cold PDE exercise
 failures, short-expiry step errors, and unresolved carry-boundary references.
+
+The separate `atx-vol-fd-refinement` tool studies explicit FD steps through the
+private observation seam. It is enabled by the same default-off CMake option.
+It does not alter public default steps, choose an adaptive policy or establish
+a derivative tolerance. The twelve frozen IDs in `refinement-v1.json` include
+the short-T gamma/theta failures, exercise-edge and exercised cases, an
+unsupported model and European controls.
+
+```powershell
+./scripts/atx-build.ps1 -Preset vol-rel -Jobs 2 build atx-vol-fd-refinement
+python atx-vol/bench/american-greeks/fd_refinement.py --binary build-vol-rel/bin/atx-vol-fd-refinement.exe --output <new-evidence-directory> --reference <frozen-full715-native.json>
+```
+
+Each case requests nine risk fields in 48 bundles: three quadratures times
+legacy steps once plus five scales for spot-only, time-only and combined
+refinement. Phi is explicitly absent from the cold API. Spot uses
+`min(.001*S,.02*S*sigma*sqrt(T))`, time `.002*T`, each scaled by
+`1,1/2,1/4,1/8,1/16`; volatility and rate stay at the legacy steps to isolate
+spot/time effects. The legacy volatility clamp and one-sided time/rate rules
+remain active and are exported. Each call preserves all seventeen formula
+slots, but actual attempted work excludes aliases and samples skipped after
+a prior error. Progress is printed after each complete contract.
+
+Python independently reconstructs formulas, actual model bumps, one-sided
+aliases, exercise admission from the solved boundary/active clamp, and the
+availability masks/reasons. It rejects omitted cases/evaluations, forged
+exercise flags, inconsistent metadata and changed options. It reports step
+drift, floating-point cancellation indicators, correlated reference/profile
+differences, per-field supply/refusal counts and operation counts. A strict
+European interior also has independent Black closed-form Greek diagnostics.
+The optional native regression checks 816 European sample prices against a
+separate Python Black implementation:
+
+```powershell
+$env:ATX_FD_NATIVE_REPORT='<native.json>'
+python -m unittest discover -s atx-vol/bench/american-greeks -p test_fd_refinement.py
+```
+
+The launcher archives the executable and hashes sources, corpus, selection,
+native report and summary. `--report <native.json> --output <summary.json>`
+revalidates without pricing; selection must still match exactly. The optional
+reference is validated under its own frozen schema and recorded by path/hash.
+Shock diagnostics use a 0.1% spot move, 60 calendar seconds on Calendar365 and
+one basis point of volatility/rate. They are differences in individual Taylor
+contributions, not full repricing P&L, hedge guarantees or accepted risk limits.
+Reported wall times include the observer and are always unqualified. Agreement
+at a step identical to the correlated reference's step is not independent
+accuracy evidence; the finer-step and profile drift must remain visible.

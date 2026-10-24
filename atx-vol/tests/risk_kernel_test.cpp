@@ -428,7 +428,7 @@ TEST(RiskKernel, ColdFallbackOffLeavesRefused) {
   std::cout << "[RiskKernel] cold_fallback=false: refused=" << refused
             << " (NearExerciseEdge kept on " << refused_edge << ")\n";
   EXPECT_GT(refused, 0u);
-  EXPECT_GT(refused_edge, 0u) << "the family's edge-band lanes keep NearExerciseEdge";
+  EXPECT_EQ(refused_edge, 3u) << "the family's edge-band lanes keep NearExerciseEdge";
   EXPECT_EQ(off.counters.refused_rows, refused);
   EXPECT_EQ(off.counters.cold_rows, 0u);
 

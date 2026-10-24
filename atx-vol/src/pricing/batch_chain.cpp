@@ -21,6 +21,7 @@
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "pricing/batch_chain_detail.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 
@@ -141,9 +142,28 @@ struct PriceCall {
   bool price_only;
   bool need_vega;
   bool need_rho;
+  GreekFieldMask requested;
 };
 
-void write_failed(const ChainGreekColumns &out, std::size_t i, ChainRowStatus st) noexcept {
+[[nodiscard]] GreekFieldMask requested_fields(const ChainGreekColumns &out) noexcept {
+  auto fields = GreekFieldMask::Price;
+  if (!out.delta.empty()) fields = fields | GreekFieldMask::Delta;
+  if (!out.gamma.empty()) fields = fields | GreekFieldMask::Gamma;
+  if (!out.vega.empty()) fields = fields | GreekFieldMask::Vega;
+  if (!out.theta.empty()) fields = fields | GreekFieldMask::Theta;
+  if (!out.rho.empty()) fields = fields | GreekFieldMask::Rho;
+  return fields;
+}
+
+void write_metadata(const ChainGreekColumns &out, std::size_t i,
+                    const AmericanGreeks &g) noexcept {
+  if (!out.requested.empty()) out.requested[i] = g.requested;
+  if (!out.supported.empty()) out.supported[i] = g.supported;
+  if (!out.reasons.empty()) out.reasons[i] = g.reasons;
+}
+
+void write_failed(const ChainGreekColumns &out, std::size_t i, ChainRowStatus st,
+                  GreekFieldMask requested) noexcept {
   out.price[i] = bcd::kNaN;
   for (const std::span<double> col : {out.delta, out.gamma, out.vega, out.theta, out.rho}) {
     if (!col.empty()) {
@@ -151,19 +171,21 @@ void write_failed(const ChainGreekColumns &out, std::size_t i, ChainRowStatus st
     }
   }
   out.status[i] = st;
+  AmericanGreeks g{};
+  detail::mark_american_greek_fields(g, requested, AmericanGreekReason::Nonfinite);
+  write_metadata(out, i, g);
 }
 
-// A kernel bundle is served only when every requested column is finite (the
-// american_greeks_batch rule); otherwise the row is Unpriceable.
-void write_bundle(const ChainGreekColumns &out, std::size_t i, const AmericanGreeks &g) noexcept {
-  const auto fine = [](std::span<double> col, double v) noexcept {
-    return col.empty() || std::isfinite(v);
-  };
-  if (!std::isfinite(g.price) || !fine(out.delta, g.delta) || !fine(out.gamma, g.gamma) ||
-      !fine(out.vega, g.vega) || !fine(out.theta, g.theta) || !fine(out.rho, g.rho)) {
-    write_failed(out, i, ChainRowStatus::Unpriceable);
+// Kernel solve groups may supply more fields than this API exposes. Admission
+// uses the exact output columns and preserves independent price/risk supply.
+void write_bundle(const ChainGreekColumns &out, std::size_t i, AmericanGreeks g,
+                  GreekFieldMask requested) noexcept {
+  if (!detail::american_greeks_support(g, GreekFieldMask::Price)) {
+    write_failed(out, i, ChainRowStatus::Unpriceable, requested);
     return;
   }
+  const bool complete = detail::american_greeks_support(g, requested);
+  detail::narrow_american_greek_request(g, requested);
   out.price[i] = g.price;
   const auto put = [i](std::span<double> col, double v) noexcept {
     if (!col.empty()) {
@@ -175,14 +197,15 @@ void write_bundle(const ChainGreekColumns &out, std::size_t i, const AmericanGre
   put(out.vega, g.vega);
   put(out.theta, g.theta);
   put(out.rho, g.rho);
-  out.status[i] = ChainRowStatus::Ok;
+  out.status[i] = complete ? ChainRowStatus::Ok : ChainRowStatus::GreeksUnavailable;
+  write_metadata(out, i, g);
 }
 
 // Scalar route: exactly the per-contract loop's call at the hoisted carry.
 void price_row_scalar(const PriceCall &c, std::size_t i) noexcept {
   const std::size_t n_exp = c.expiries.size();
   if (!bcd::contract_ok(c.contracts, c.w, n_exp, i)) {
-    write_failed(c.out, i, ChainRowStatus::InvalidInput);
+    write_failed(c.out, i, ChainRowStatus::InvalidInput, c.requested);
     return;
   }
   const std::uint32_t e = c.contracts.expiry[i];
@@ -199,10 +222,13 @@ void price_row_scalar(const PriceCall &c, std::size_t i) noexcept {
     if (c.price_only) {
       const Result<double> p = andersen_lake(c.spot, K, T, sig, r, q, side, c.opts);
       if (p && std::isfinite(*p)) {
-        c.out.price[i] = *p;
-        c.out.status[i] = ChainRowStatus::Ok;
+        AmericanGreeks g{};
+        g.price = *p;
+        detail::mark_american_greek_fields(g, GreekFieldMask::Price,
+                                         AmericanGreekReason::ComputedEstimate);
+        write_bundle(c.out, i, g, c.requested);
       } else {
-        write_failed(c.out, i, ChainRowStatus::Unpriceable);
+        write_failed(c.out, i, ChainRowStatus::Unpriceable, c.requested);
       }
       return;
     }
@@ -210,12 +236,12 @@ void price_row_scalar(const PriceCall &c, std::size_t i) noexcept {
                                                         c.need_vega, c.need_rho,
                                                         /*need_charm=*/false);
     if (!g) {
-      write_failed(c.out, i, ChainRowStatus::Unpriceable);
+      write_failed(c.out, i, ChainRowStatus::Unpriceable, c.requested);
       return;
     }
-    write_bundle(c.out, i, *g);
+    write_bundle(c.out, i, *g, c.requested);
   } catch (const std::bad_alloc &) {
-    write_failed(c.out, i, ChainRowStatus::Unpriceable);
+    write_failed(c.out, i, ChainRowStatus::Unpriceable, c.requested);
   }
 }
 
@@ -234,7 +260,7 @@ void price_chunk_laned(const PriceCall &c, std::size_t lo, std::size_t hi) noexc
   std::array<AmericanGreeks, kChainBatchChunk> g{};
   for (std::size_t i = lo; i < hi; ++i) {
     if (!bcd::contract_ok(c.contracts, c.w, n_exp, i)) {
-      write_failed(c.out, i, ChainRowStatus::InvalidInput);
+      write_failed(c.out, i, ChainRowStatus::InvalidInput, c.requested);
     }
   }
   for (const Side side : {Side::Put, Side::Call}) {
@@ -269,7 +295,7 @@ void price_chunk_laned(const PriceCall &c, std::size_t lo, std::size_t hi) noexc
                                              /*need_charm=*/false);
     }
     for (std::size_t j = 0; j < m; ++j) {
-      write_bundle(c.out, row[j], g[j]);
+      write_bundle(c.out, row[j], g[j], c.requested);
     }
   }
 }
@@ -285,7 +311,8 @@ void price_chunk_laned(const PriceCall &c, std::size_t lo, std::size_t hi) noexc
   return bcd::outputs_alias(
       {std::as_bytes(out.price), std::as_bytes(out.delta), std::as_bytes(out.gamma),
        std::as_bytes(out.vega), std::as_bytes(out.theta), std::as_bytes(out.rho),
-       std::as_bytes(out.status)},
+       std::as_bytes(out.status), std::as_bytes(out.requested),
+       std::as_bytes(out.supported), std::as_bytes(out.reasons)},
       {std::as_bytes(x.T), std::as_bytes(x.rate), std::as_bytes(x.carry), std::as_bytes(x.div_pv),
        std::as_bytes(c.strike), std::as_bytes(c.expiry), std::as_bytes(c.side),
        std::as_bytes(c.sigma)});
@@ -326,7 +353,8 @@ Result<std::size_t> price_chain_batch(double spot, const ChainExpiryColumns &exp
                        options.al_opts,
                        out.price_only(),
                        !out.vega.empty(),
-                       !out.rho.empty()};
+                       !out.rho.empty(),
+                       requested_fields(out)};
   const bool laned = options.route == ChainBatchRoute::LanedAvx2;
   batch_chain_detail::for_each_chunk(
       n, options.executor, options.n_threads,

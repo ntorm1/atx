@@ -36,8 +36,10 @@ struct GreekNeeds {
 // documented economic gate. `needs` (K4) skips the boundary solves the requested
 // greeks don't need. For each lane l solved on all needed bump states, `out_greeks[l]`
 // is filled (unrequested greeks left 0) and `handled[l]` set true; a lane not genuine
-// early-exercise on every needed state (or non-finite in a needed greek) is left
-// `handled[l] = false` for the caller's scalar patch. Lengths >= n. noexcept.
+// early-exercise on every needed state (or non-finite before admission) is left
+// `handled[l] = false` for the caller's scalar patch. A handled lane can retain
+// its price while individual fields are refused by exercise-stencil admission;
+// callers must inspect requested/supported/reasons. Lengths >= n. noexcept.
 void american_put_greeks_batch_avx2(const double* S, const double* K, const double* T,
                                     const double* sigma, const double* r, const double* q,
                                     std::size_t n, const std::optional<AlOpts>& opts,
