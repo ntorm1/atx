@@ -979,11 +979,28 @@ if(Python3_Interpreter_FOUND)
     # log rather than vanishing. atx-vol/python is a STANDALONE scikit-build-core
     # project, not an add_subdirectory of this build, so there is no _core target
     # here to guard on at configure time — hence the run-time guard.
-    add_test(
-        NAME atx-vol-python
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
-    )
+    #
+    # Lane PY (2026-10-23): with -DATX_VOL_PYTHON=ON the extension IS a target of
+    # this build (`atx-vol-python-core`, atx-vol/CMakeLists.txt), and the lane
+    # becomes a HARD gate on that exact build output: `--expect-core` makes the
+    # driver fail (never skip) when the staged `_core` is missing, unimportable or
+    # not byte-identical to $<TARGET_FILE:atx-vol-python-core>. The interpreter is
+    # the one the module was compiled against (Python3_EXECUTABLE, found by the
+    # option block with Development.Module before this directory was added).
+    if(TARGET atx-vol-python-core)
+        add_test(
+            NAME atx-vol-python
+            COMMAND ${Python3_EXECUTABLE} -E -P -B -X utf8
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
+                    --expect-core $<TARGET_FILE:atx-vol-python-core>
+        )
+    else()
+        add_test(
+            NAME atx-vol-python
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
+        )
+    endif()
     set_tests_properties(atx-vol-python PROPERTIES
         LABELS atx_vol
         SKIP_RETURN_CODE 77

@@ -91,36 +91,33 @@ endif()
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
-pybind11_add_module(_core
-    src/bindings/module.cpp
-    src/bindings/pricing.cpp
-    src/bindings/surface.cpp
-    src/bindings/surface_db.cpp
-    src/bindings/strategy.cpp
-    src/bindings/backtest.cpp
-    src/bindings/analytics.cpp
-    src/bindings/dispersion.cpp
-    src/bindings/fit.cpp
-    src/bindings/quote_slice.cpp
-)
-target_include_directories(_core PRIVATE src/bindings)
-# api/ restructure (2026-08-14): PRIVATE src/ include root, for parity with
-# the other internal targets (atx-vol/CMakeLists.txt). Not architecturally
-# required -- python/ is one of the three external reachability roots the
-# placement measurement itself was computed from, so _core should only ever
-# need the public atx/vol/api/ surface -- but added per the restructure's own
-# decision to give every internal-facing target this root uniformly.
-target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-# S5-T24 resolved the S4-T18 carried finding: src/bindings/fit.cpp exposes the
-# deterministic SPY known-truth fixture (`make_spy_synthetic_spec`) to Python as
-# `make_spy_synthetic_panel`, and it used to reach it through an extra
-# atx-vol/tests quoted-include root -- a SHIPPED artifact reaching into a test
-# fixture, which an installed tree (no tests/) cannot satisfy at all. The
-# builder is now the Tier-B public header atx/vol/spy_fixture.hpp, so the
-# extension needs nothing but atx::vol's own include interface.
-target_link_libraries(_core PRIVATE atx::vol)
+# The TU list, include roots and link line are shared with the in-tree
+# ATX_VOL_PYTHON target (atx-vol/CMakeLists.txt) through one file, so the two
+# builds cannot drift apart. The wheel's target keeps the plain name `_core`.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/atxvol_core.cmake")
+atxvol_add_core_module(_core)
 
 install(TARGETS _core
     LIBRARY DESTINATION atxvol COMPONENT python
     RUNTIME DESTINATION atxvol COMPONENT python
 )
+
+# The DLL closure travels WITH the module. `_core` imports vcpkg's arrow.dll /
+# parquet.dll (atx-core's unconditional Parquet loader) and, through them, zstd /
+# lz4 / snappy / brotli / bz2 / zlib / libcrypto; Python 3.8+ resolves an
+# extension's DLL imports from the extension's OWN directory (never PATH), so a
+# wheel holding only `_core*.pyd` cannot be imported anywhere -- the first wheel
+# built from this recipe in months installed cleanly and then failed `import
+# atxvol` with "DLL load failed while importing _core: The specified module could
+# not be found" (lane PY, 2026-10-23). vcpkg's applocal POST_BUILD step has
+# already copied exactly that closure beside the built module, so install every
+# DLL in the module's own output directory (non-recursive: bin/ holds the CLIs'
+# copies). Collision with a same-process pyarrow is a separate, documented
+# limitation (README "Known limitation").
+install(CODE "
+    file(GLOB _atxvol_dlls LIST_DIRECTORIES false \"$<TARGET_FILE_DIR:_core>/*.dll\")
+    if(NOT _atxvol_dlls)
+        message(FATAL_ERROR \"atxvol: no DLLs beside $<TARGET_FILE:_core>; the vcpkg applocal step did not run\")
+    endif()
+    file(INSTALL \${_atxvol_dlls} DESTINATION \"\${CMAKE_INSTALL_PREFIX}/atxvol\")
+" COMPONENT python)
