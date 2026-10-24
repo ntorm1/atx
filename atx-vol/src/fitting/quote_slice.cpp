@@ -34,8 +34,17 @@ namespace atx::vol {
 // Owned by a fit, immutable after construction. The family holder owns the geometry
 // observed by its families, so clearing the thread's fitting memo cannot dangle them.
 struct QuoteSliceReimplyContext {
+  struct Identification {
+    double strike = 0.0;
+    double price = 0.0;
+    double q = 0.0;
+    detail::VolIdentification id;
+  };
   std::shared_ptr<const DeAmSigmaFamilies> families;
-  DeAmIvKey model;
+  std::array<std::uint64_t, 13> model{};
+  // At most one current answer per node side, replaced at publication. Queries read
+  // immutable snapshots; a calendar trial replaces its own pointer before committing.
+  std::vector<std::array<std::optional<Identification>, 2>> identified;
 };
 
 namespace {
@@ -1129,15 +1138,24 @@ private:
   std::optional<DeAmIvView> view_;
 };
 
-// Use the same query controls as reimplied_vol, including its fixed tolerance. The
-// per-contract carry curve is keyed too: editing a public fit can never reuse a model
-// prepared before that edit, even if the new yield happens to lie inside its box.
-DeAmIvKey reimply_model_key(const QuoteSliceFit &fit) {
-  DeAmIvKey key = deam_iv_key(fit, {}, QuoteSliceConfig{});
-  key.words.push_back(fit.carry_curve.size());
-  for (const auto &point : fit.carry_curve) {
-    key.words.push_back(std::bit_cast<std::uint64_t>(point.strike));
-    key.words.push_back(std::bit_cast<std::uint64_t>(point.continuous_yield));
+// Exactly the fixed arguments of the continuous-carry inverse; strike, side, price
+// and the resolved local q are checked per request. Fixed-size to keep cached reads
+// allocation-free. No identity depends on unrelated contracts' carry points.
+std::array<std::uint64_t, 13> reimply_model_key(const QuoteSliceFit &fit) noexcept {
+  const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
+  const QuoteSliceConfig query;
+  std::array<std::uint64_t, 13> key{bits(fit.market.spot), bits(fit.market.variance_years),
+      bits(fit.diagnostics.effective_rate), static_cast<std::uint64_t>(fit.dividend_model),
+      fit.al_opts ? 1u : 0u, 0u, 0u, 0u, 0u, 0u, 0u, bits(query.iv_tolerance),
+      query.max_iv_iterations};
+  if (fit.al_opts) {
+    const auto &opts = *fit.al_opts;
+    key[5] = opts.n_collocation;
+    key[6] = opts.n_quadrature;
+    key[7] = opts.n_quad_price;
+    key[8] = opts.max_newton_iter;
+    key[9] = bits(opts.tol);
+    key[10] = static_cast<std::uint64_t>(opts.profile);
   }
   return key;
 }
@@ -1687,6 +1705,36 @@ void align_with_query(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quote
   }
 }
 
+// Freeze exactly the typed answers publication just produced. A changed model or price
+// cannot read this snapshot, and replacing it never accumulates intermediate repairs.
+void remember_reimplied_nodes(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes) {
+  if (!fit.reimply_context || !fit.prices ||
+      fit.reimply_context->model != reimply_model_key(fit)) return;
+  auto context = std::make_shared<QuoteSliceReimplyContext>();
+  context->families = fit.reimply_context->families;
+  context->model = fit.reimply_context->model;
+  const auto nodes = fit.prices->nodes();
+  context->identified.resize(nodes.size());
+  for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
+    const QuoteSliceRow &row = fit.rows[i];
+    if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
+        row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) continue;
+    const auto node = detail::node_side(nodes, quotes[i].strike, quotes[i].side);
+    if (!node || node->node >= fit.moved_nodes.size() ||
+        (fit.moved_nodes[node->node] & node->bit) == 0u) continue;
+    detail::VolIdentification id;
+    id.status = row.evaluation_status;
+    id.reason = row.price_only_reason;
+    id.volatility = row.fitted_iv;
+    id.iv_lower = row.iv_lower;
+    id.iv_upper = row.iv_upper;
+    context->identified[node->node][quotes[i].side == Side::Call ? 0u : 1u] =
+        QuoteSliceReimplyContext::Identification{quotes[i].strike, row.fitted_price,
+            effective_yield(fit, calendar_yield_at(fit, quotes[i].strike)), id};
+  }
+  fit.reimply_context = std::move(context);
+}
+
 // Rung memo key of a certification candidate (rung_memo.hpp): the fit-level words of
 // the American model (deam_iv_key of the prepared fit with no quotes and fixed
 // inverter controls, so only the market, derived carry and clocks, dividend model and
@@ -2018,6 +2066,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     out.moved_nodes = std::move(repaired);
   }
   align_with_query(out, quotes, identified);
+  remember_reimplied_nodes(out, quotes);
   // Lane H1 (phase B): hand the families this certification read to the serving record's
   // builder (serve_build, off the fit clock). Nothing served changes; no families, none.
   detail::stamp_serve_handoff(out, families);
@@ -2600,6 +2649,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
     for (std::size_t i = 0; i < moved.size(); ++i) fit.moved_nodes[i] |= moved[i];
   }
   align_with_query(fit, quotes, identified); // changed PriceOnly prices get fresh reasons
+  remember_reimplied_nodes(fit, quotes);
 }
 
 bool valid_recheck(QuoteSliceNondividendRecheck recheck) noexcept {
@@ -3196,7 +3246,7 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
                                            double price, double q, const IvOpts &opts) {
   const auto &context = fit.reimply_context;
   if (!context || fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
-      context->model.words != reimply_model_key(fit).words) return std::nullopt;
+      context->model != reimply_model_key(fit)) return std::nullopt;
   const AlSigmaQFamily *const family = context->families->of_q(side);
   if (family == nullptr || q < family->q_lo() || q > family->q_hi() ||
       !iv_premium_native_window(price, fit.market.spot, strike, fit.market.variance_years,
@@ -3253,6 +3303,17 @@ VolIdentification floor_vol(const QuoteSliceFit &fit, double strike, Side side, 
 VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
                                 QuoteSliceFloorPolicy policy) {
   const double q_effective = effective_yield(fit, calendar_yield_at(fit, strike));
+  if (policy == QuoteSliceFloorPolicy::PriceOnly && fit.reimply_context && fit.prices) {
+    const auto &context = *fit.reimply_context;
+    const auto node = node_side(fit.prices->nodes(), strike, side);
+    if (node && node->node < context.identified.size()) {
+      const auto &entry = context.identified[node->node][side == Side::Call ? 0u : 1u];
+      if (entry && entry->strike == strike &&
+          std::bit_cast<std::uint64_t>(entry->price) == std::bit_cast<std::uint64_t>(price) &&
+          std::bit_cast<std::uint64_t>(entry->q) == std::bit_cast<std::uint64_t>(q_effective) &&
+          context.model == reimply_model_key(fit)) return entry->id;
+    }
+  }
   QuoteSliceConfig query;
   query.discrete_div_steps = fit.discrete_div_steps;
   const QuoteSliceQuote contract{strike, side, price, price, {}};

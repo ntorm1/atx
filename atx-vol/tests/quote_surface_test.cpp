@@ -1358,6 +1358,83 @@ TEST(QuoteSurface, NativeCalendarTrialPreservesTheQualifiedInverseAndPublicAnswe
   }
 }
 
+TEST(QuoteSliceChannel, NativeRepairedNodeQueriesReusePublishedIdentification) {
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto fit = fit_quote_slice(c.market, c.quotes, native_repair_config());
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  const AmericanPriceSlice floor = shifted_slice(*fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder queries;
+  {
+    const timing::ChainScope scope(&queries);
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
+      ASSERT_TRUE(answer);
+      EXPECT_EQ(answer->volatility, fit->rows[i].fitted_iv) << i;
+      EXPECT_EQ(answer->price, fit->rows[i].fitted_price) << i;
+    }
+  }
+  EXPECT_EQ(queries.result().iv_newton_iters, 0u);
+  EXPECT_EQ(queries.result().al_price_calls, 0u);
+  EXPECT_EQ(queries.result().reimply_native_attempts, 0u);
+  // A public price mutation cannot return the previous node's cached volatility.
+  const auto old = query_quote_slice(*fit, 100.0, Side::Put);
+  ASSERT_TRUE(old);
+  fit->prices = shifted_slice(*fit, 0.001);
+  timing::ChainRecorder changed;
+  {
+    const timing::ChainScope scope(&changed);
+    const auto answer = query_quote_slice(*fit, 100.0, Side::Put);
+    ASSERT_TRUE(answer);
+    EXPECT_GT(answer->volatility, old->volatility);
+    EXPECT_GT(answer->price, old->price);
+  }
+  EXPECT_GT(changed.result().reimply_native_attempts, 0u);
+}
+
+TEST(QuoteSliceChannel, NativePriceOnlyNodeQueriesPreserveTheirPublishedInterval) {
+  auto c = chain(0.25, 0.25, 0.0, 0.05, 70, 140, 2);
+  c.market.continuous_yield = 0.0;
+  for (auto &q : c.quotes) {
+    const auto price = andersen_lake(100.0, q.strike, 0.25, 0.25, 0.03, 0.0, q.side);
+    ASSERT_TRUE(price);
+    const double spread = std::max(0.01, *price * 0.05);
+    q.bid = std::max(*price - spread, 0.0);
+    q.ask = *price + spread;
+  }
+  auto fit = fit_quote_slice(c.market, c.quotes, native_repair_config());
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_NE(fit->reimply_context, nullptr);
+  const AmericanPriceSlice floor = shifted_slice(*fit, 1.0e-8 * 136.0);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  std::size_t price_only = 0;
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder queries;
+  {
+    const timing::ChainScope scope(&queries);
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto &row = fit->rows[i];
+      if (row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) continue;
+      ++price_only;
+      const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
+      ASSERT_TRUE(answer);
+      EXPECT_EQ(answer->status, QuoteSliceEvaluationStatus::PriceOnly);
+      EXPECT_EQ(answer->reason, row.price_only_reason);
+      EXPECT_EQ(answer->price, row.fitted_price);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(answer->iv_lower),
+                std::bit_cast<std::uint64_t>(row.iv_lower));
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(answer->iv_upper),
+                std::bit_cast<std::uint64_t>(row.iv_upper));
+    }
+  }
+  EXPECT_GT(price_only, 0u);
+  EXPECT_EQ(queries.result().iv_newton_iters, 0u);
+  EXPECT_EQ(queries.result().al_price_calls, 0u);
+}
+
 TEST(QuoteSliceChannel, RejectsAnInvalidRepairOrDominanceConfiguration) {
   const auto c = chain(0.5, 0.25, 0.0, 0.02);
   const std::vector<Chain> one{c};

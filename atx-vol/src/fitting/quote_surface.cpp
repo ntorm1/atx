@@ -1703,6 +1703,7 @@ private:
     fit.moved_nodes = std::move(trial.moved_nodes);
     fit.price_only_nodes = std::move(trial.price_only_nodes);
     fit.withheld_nodes = std::move(trial.withheld_nodes);
+    fit.reimply_context = std::move(trial.reimply_context);
     fit.rows = std::move(trial.rows);
   }
 

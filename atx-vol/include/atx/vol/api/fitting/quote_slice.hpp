@@ -1000,10 +1000,11 @@ struct QuoteSliceFit {
   std::shared_ptr<const QuoteSliceServeHandoff> serve_handoff;
   std::shared_ptr<const SliceServeRecord> serve_record;
   // Runtime-only immutable ownership of the native fit's American family and model
-  // inputs. With native fitting and PriceOnly enabled, repaired prices and queries
-  // reuse its qualified inverse. Model changes invalidate it. Archives do not persist
-  // this acceleration: restored fits use Search, numerically equivalent at the root
-  // tolerance rather than necessarily bit-identical to a native inverse.
+  // inputs and current typed identifications at repaired nodes. With native fitting
+  // and PriceOnly enabled, repairs reuse its qualified inverse and queries reuse the
+  // published identification. Model/price changes invalidate the corresponding reuse.
+  // Archives do not persist this acceleration: restored fits retain certified prices
+  // but use historical Search and do not retain the native IV root certificate.
   std::shared_ptr<const QuoteSliceReimplyContext> reimply_context;
 };
 
