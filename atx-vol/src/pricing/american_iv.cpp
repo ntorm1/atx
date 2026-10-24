@@ -20,6 +20,7 @@
 #include "pricing/american_iv_batch.hpp"  // K2: the family-native lane
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
+#include "pricing/american_iv_seed_batch.hpp"
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
 #if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
 #include "pricing/american_iv_seed_capture.hpp"
@@ -3012,6 +3013,143 @@ std::optional<double> american_implied_vol_price_seed(
   } catch (const std::bad_alloc &) {
     return std::nullopt;
   }
+}
+
+namespace {
+// This scope is intentionally narrower than the public pricing domain. A scalar
+// fallback preserves every unsupported scheme/control and the original decision.
+bool vector_seed_scope(const IvPriceSeedRequest &a, const IvOpts &opts) noexcept {
+  if (opts.al_opts) {
+    const auto &o = *opts.al_opts;
+    if (o.profile != AlProfile::Reference || o.n_collocation != 12 ||
+        o.n_quadrature != 24 || o.n_quad_price != 48 || o.max_newton_iter != 6 ||
+        o.tol != 1e-10) return false;
+  }
+  if (opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
+      opts.warm_start != 0.0 || opts.price_tol != 0.0 ||
+      !(a.budget > 0.0) || !std::isfinite(a.budget) ||
+      !(a.sigma > kIvMin) || !std::isfinite(a.sigma) ||
+      !std::isfinite(a.price) || a.price < 0.0 ||
+      !(a.S > 0.0) || !std::isfinite(a.S) || !(a.K > 0.0) || !std::isfinite(a.K) ||
+      !(a.T > 0.0) || !std::isfinite(a.T) ||
+      !(a.r >= 0.0) || !std::isfinite(a.r) || !(a.q >= 0.0) || !std::isfinite(a.q) ||
+      (a.side != Side::Call && a.side != Side::Put)) return false;
+  const double ceiling = american_price_ceiling(a.S, a.K, a.T, a.r, a.q, a.side);
+  const double zero_vol = zero_vol_american_value(a.S, a.K, a.T, a.r, a.q, a.side);
+  const double band_tol = 1e-9 * ceiling + 1e-12;
+  return std::isfinite(ceiling) && std::isfinite(zero_vol) &&
+      a.price <= ceiling + band_tol && a.price > zero_vol + band_tol;
+}
+} // namespace
+
+bool american_implied_vol_price_seed_batch(std::span<const IvPriceSeedRequest> requests,
+    const IvOpts &opts, IvPriceSeedKernel kernel, std::span<IvPriceSeedResult> out,
+    IvPriceSeedBatchStats &stats, bool timed) {
+  stats = {};
+  for (auto &v : out) v = {};
+  if (out.size() != requests.size() ||
+      (kernel != IvPriceSeedKernel::ScalarReference &&
+       kernel != IvPriceSeedKernel::VectorReferenceEmpirical)) return false;
+  const auto now = [&] { return timed ? std::chrono::steady_clock::now()
+      : std::chrono::steady_clock::time_point{}; };
+  const auto elapsed = [](std::chrono::steady_clock::time_point t) {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - t).count());
+  };
+  const auto start = now();
+  { // Include operation-local floor-owner destruction in the inclusive clock.
+    IvPriceSeedFloorCache floor_cache;
+    stats.requests = requests.size();
+    auto scalar = [&](std::size_t i, IvPriceSeedRetry reason) {
+      const auto t = now();
+      const auto &a = requests[i];
+      out[i].retry = reason;
+      out[i].sigma = american_implied_vol_price_seed(a.price, a.S, a.K, a.T, a.r, a.q,
+          a.side, opts, a.budget, a.sigma, &floor_cache);
+      out[i].origin = out[i].sigma ? IvPriceSeedOrigin::ScalarReference : IvPriceSeedOrigin::None;
+      ++stats.scalar_fallbacks;
+      if (out[i].sigma) ++stats.scalar_admitted;
+      if (timed) stats.scalar_ns += elapsed(t);
+    };
+    std::array<IvPriceSeedRequest, 4> pack;
+    std::array<std::size_t, 4> indices{};
+    std::size_t count = 0;
+    auto flush = [&] {
+      std::array<simd::detail::IvSeedVectorPrice, 4> values;
+      const auto t = now();
+      simd::detail::iv_seed_reference_pack_avx2(pack, opts.al_opts, values);
+      if (timed) stats.vector_ns += elapsed(t);
+      ++stats.vector_packs;
+      stats.vector_lanes += 4;
+      for (std::size_t j = 0; j < 4; ++j) {
+        const std::size_t i = indices[j];
+        const auto &a = requests[i];
+        const auto &v = values[j];
+        auto &answer = out[i];
+        answer.target_price = v.price;
+        answer.boundary = v.boundary;
+        answer.exercise = v.exercise;
+        if (!v.solved || !std::isfinite(v.price) ||
+            !std::isfinite(v.boundary) || !(v.boundary > 0.0)) {
+          scalar(i, IvPriceSeedRetry::KernelRefusal);
+          continue;
+        }
+        const double internal_spot = a.side == Side::Call ? a.K : a.S;
+        answer.boundary_distance = std::log(internal_spot / v.boundary) /
+            (a.sigma * std::sqrt(a.T));
+        if (v.exercise != AlExerciseClass::Continuation ||
+            !std::isfinite(answer.boundary_distance) ||
+            !(answer.boundary_distance >= kAlFamilyGreekEdgeBand)) {
+          scalar(i, IvPriceSeedRetry::ExerciseEdge);
+          continue;
+        }
+        // Engineering allowance, NOT an enclosure of the scalar Reference map.
+        answer.empirical_allowance = 1e-11 *
+            std::max({1.0, a.S, a.K, std::abs(a.price), std::abs(v.price)});
+        const double error = std::abs(v.price - a.price) + answer.empirical_allowance;
+        if (!std::isfinite(error) || !(error <= a.budget)) {
+          scalar(i, IvPriceSeedRetry::InsufficientMargin);
+          continue;
+        }
+        const auto floor_start = now();
+        auto floor = floor_cache.price(a.S, a.K, a.T, a.r, a.q, a.side, opts.al_opts);
+        if (!floor) {
+          const auto cold = andersen_lake(a.S, a.K, a.T, kIvMin, a.r, a.q, a.side, opts.al_opts);
+          if (cold) floor = *cold;
+        }
+        if (timed) stats.floor_ns += elapsed(floor_start);
+        if (!floor || !std::isfinite(*floor) || !(a.price > *floor)) {
+          scalar(i, IvPriceSeedRetry::FloorRefusal);
+          continue;
+        }
+        answer.sigma = a.sigma;
+        answer.origin = IvPriceSeedOrigin::VectorReferenceEmpirical;
+        ++stats.vector_admitted;
+      }
+      count = 0;
+    };
+    const bool vector = kernel == IvPriceSeedKernel::VectorReferenceEmpirical && simd::use_avx2();
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+      const auto &a = requests[i];
+      if (!vector) {
+        scalar(i, kernel == IvPriceSeedKernel::ScalarReference ? IvPriceSeedRetry::ScalarMode
+            : IvPriceSeedRetry::UnsupportedScope);
+      } else if (!vector_seed_scope(a, opts)) {
+        scalar(i, IvPriceSeedRetry::UnsupportedScope);
+      } else if (in_band(a.price, a.S, a.K, a.T, a.r, a.q, a.side, opts.al_opts)) {
+        scalar(i, IvPriceSeedRetry::NonmonotoneBand);
+      } else {
+        indices[count] = i;
+        pack[count++] = a;
+        if (count == 4) flush();
+      }
+    }
+    for (std::size_t j = 0; j < count; ++j) scalar(indices[j], IvPriceSeedRetry::Tail);
+    stats.floor_preparations = floor_cache.preparations();
+    stats.floor_hits = floor_cache.hits();
+  }
+  if (timed) stats.inclusive_ns = elapsed(start);
+  return true;
 }
 
 std::optional<double> american_implied_vol_price_candidate(

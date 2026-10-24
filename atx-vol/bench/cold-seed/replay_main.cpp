@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -23,6 +24,7 @@
 #include "atx/vol/api/pricing/american_region.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "pricing/american_iv_search.hpp"
+#include "pricing/american_iv_seed_batch.hpp"
 #include "simd/american_boundary_avx2_kernel.hpp"
 
 namespace {
@@ -261,19 +263,94 @@ Json run(const Json &input,int reps,std::optional<unsigned> cpu) {
       {"process",bench::process_identity_json()},
       {"scope","Price routes include output allocation, packing, setup and scalar fallback; scalar_full_proof includes original floor/chord logic. No AVX2 full proof is implemented or qualified."}};
 }
+Json run_candidate(const Json &input, int reps, std::optional<unsigned> cpu) {
+  const auto rs = read(input);
+  Json rows = Json::array(), timings = Json::array(), previous;
+  const auto before = bench::sample_cpus();
+  for (int rep = 0; rep < reps; ++rep) {
+    Json current = Json::array();
+    for (std::size_t begin = 0; begin < rs.size();) {
+      std::size_t end = begin + 1;
+      while (end < rs.size() && rs[end].batch == rs[begin].batch) ++end;
+      std::vector<IvPriceSeedRequest> requests;
+      for (std::size_t i = begin; i < end; ++i) {
+        const auto &r = rs[i];
+        if (!same_opts(r.opts, rs[begin].opts) || !same(r.tol, rs[begin].tol))
+          throw std::runtime_error("Mixed candidate batch options");
+        requests.push_back({r.target, r.S, r.K, r.T, r.r, r.q, r.sigma, r.budget, r.side});
+      }
+      IvOpts opts;
+      opts.method = AmericanMethod::AndersenLake;
+      opts.tol = rs[begin].tol;
+      opts.al_opts = rs[begin].opts;
+      opts.refuse_non_monotone = true;
+      std::vector<IvPriceSeedResult> result(requests.size());
+      IvPriceSeedBatchStats stats;
+      if (!american_implied_vol_price_seed_batch(requests, opts,
+          IvPriceSeedKernel::VectorReferenceEmpirical, result, stats, true))
+        throw std::runtime_error("Candidate batch refused shape");
+      timings.push_back({{"rep",rep},{"batch",rs[begin].batch},
+          {"requests",stats.requests},{"vector_packs",stats.vector_packs},
+          {"vector_lanes",stats.vector_lanes},{"vector_admitted",stats.vector_admitted},
+          {"scalar_fallbacks",stats.scalar_fallbacks},{"scalar_admitted",stats.scalar_admitted},
+          {"floor_preparations",stats.floor_preparations},{"floor_hits",stats.floor_hits},
+          {"vector_ns",stats.vector_ns},{"scalar_ns",stats.scalar_ns},
+          {"floor_ns",stats.floor_ns},{"inclusive_ns",stats.inclusive_ns}});
+      for (std::size_t j = 0; j < result.size(); ++j) {
+        const auto &v = result[j];
+        auto number = [](double x) { return std::isfinite(x) ? Json(x) : Json(nullptr); };
+        current.push_back({{"request",input.at("requests").at(begin+j)},
+            {"sigma",v.sigma ? Json(*v.sigma) : Json(nullptr)},
+            {"origin",static_cast<int>(v.origin)},{"retry",static_cast<int>(v.retry)},
+            {"vector_price",number(v.target_price)},{"boundary",number(v.boundary)},
+            {"distance",number(v.boundary_distance)},{"allowance",v.empirical_allowance},
+            {"class",to_string(v.exercise)}});
+      }
+      begin = end;
+    }
+    if (rep == 0) previous = current;
+    else if (current != previous) throw std::runtime_error("Repeated candidate differs");
+  }
+  const auto after = bench::sample_cpus();
+  for (std::size_t i = 0; i < rs.size(); ++i) {
+    const auto &r = rs[i];
+    IvOpts opts;
+    opts.method = AmericanMethod::AndersenLake;
+    opts.tol = r.tol;
+    opts.al_opts = r.opts;
+    opts.refuse_non_monotone = true;
+    auto row = previous.at(i);
+    row["scalar_full_proof"] = american_implied_vol_price_seed(r.target,r.S,r.K,r.T,
+        r.r,r.q,r.side,opts,r.budget,r.sigma).has_value();
+    row["scalar"] = describe(scalar(r),r);
+    const auto floor = andersen_lake(r.S,r.K,r.T,kIvMin,r.r,r.q,r.side,r.opts);
+    row["scalar_floor"] = floor && std::isfinite(*floor) ? Json(*floor) : Json(nullptr);
+    rows.push_back(std::move(row));
+  }
+  return {{"schema","atx.cold-seed.empirical-component.v1"},{"request_count",rs.size()},
+      {"repetitions",reps},{"rows",rows},{"timings",timings},
+      {"build",bench::build_info_json()},{"ipo",ATX_VOL_COLD_SEED_REPLAY_IPO!=0},
+      {"affinity",bench::affinity_json(cpu,cpu.has_value(),before,after)},
+      {"process",bench::process_identity_json()},
+      {"scope","Experimental vector target arithmetic with empirical margin; scalar floor/chord unchanged. Internal component clocks include floor-owner destruction but exclude caller input/output adapters. Unqualified diagnostic, not full fit or generic error certification."}};
+}
 } // namespace
 int main(int argc,char **argv) {
   try {
-    if(argc<3||argc>5)throw std::runtime_error("Usage: replay input.json output.json [reps] [PcoreCPU]");
+    if(argc<3||argc>6)throw std::runtime_error("Usage: replay input.json output.json [reps] [PcoreCPU] [empirical]");
     const int reps=argc>=4?std::stoi(argv[3]):1;
     if(reps<1||reps>1000)throw std::runtime_error("Bad repetition count");
     if(!atx::vol::simd::have_avx2())throw std::runtime_error("AVX2+FMA required");
-    const auto cpu=argc==5?std::optional<unsigned>(static_cast<unsigned>(std::stoul(argv[4]))):std::nullopt;
+    const auto cpu=argc>=5?std::optional<unsigned>(static_cast<unsigned>(std::stoul(argv[4]))):std::nullopt;
     if(cpu) { atx::vol::bench::pin_to_logical_cpu(*cpu);
       if(atx::vol::bench::is_performance_cpu(*cpu)!=true)throw std::runtime_error("Not a P-core"); }
+    const bool empirical = argc == 6;
+    if (empirical && std::string(argv[5]) != "empirical")
+      throw std::runtime_error("Unknown candidate mode");
+    if (std::filesystem::exists(argv[2])) throw std::runtime_error("Output already exists");
     std::ifstream source(argv[1]); if(!source)throw std::runtime_error("Cannot open input");
     Json input;source>>input;
-    const auto result=run(input,reps,cpu);
+    const auto result=empirical ? run_candidate(input,reps,cpu) : run(input,reps,cpu);
     std::ofstream output(argv[2]);output<<result.dump(2)<<'\n';
     if(!output)throw std::runtime_error("Cannot write output");
     return 0;

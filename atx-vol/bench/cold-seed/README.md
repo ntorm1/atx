@@ -103,3 +103,37 @@ about 2.2 ms, boundary solving 134 ms and evaluation 6.6 ms. These are **not
 qualified latency numbers**. They identify setup sharing as a small lever; it is
 not proposed for production. A quiet, archived ThinLTO comparison is still needed
 for vector component performance. No whole-fit speedup follows from this replay.
+
+
+## Private empirical vector candidate component
+
+The private component in `american_iv_seed_batch.hpp` has an explicit
+`ScalarReference` / `VectorReferenceEmpirical` mode. No fitting caller selects the
+new mode in this commit. Vector-origin target prices are identified separately;
+unsupported scope, nonmonotone targets, near-exercise states, insufficient margin,
+failed floor checks and incomplete packs use the unchanged scalar helper.
+The empirical allowance is not a generic certified error bound. Exact scalar
+reporting-floor pricing remains mandatory and its owner destruction is included
+in the component clock. Nonmonotone targets retain the original full scalar chord.
+
+The optional `empirical` replay mode preserves the old input schema and emits
+`atx.cold-seed.empirical-component.v1`. It runs the new component, then independently
+re-evaluates every original scalar full decision, classified price and floor.
+Output files must not already exist. The component's internal clocks exclude
+caller input/output adapter allocations, so they do not qualify an inclusive
+full-fit or comparison claim. All current measurements are correctness diagnostics.
+
+```powershell
+build-vol-rel/bin/atx-vol-cold-seed-replay.exe requests.json candidate.json 2 6 empirical
+python atx-vol/bench/cold-seed/empirical.py requests.json candidate.json summary.json
+python atx-vol/bench/cold-seed/test_empirical.py
+```
+
+The independent verifier preserves all request/repetition/batch denominators,
+checks scalar decisions, returned sigma, scalar residual/floor/classification,
+vector arithmetic allowance, boundary-distance model reconstruction and explicit
+origin/retry/counter consistency. It reports observed allowance exceedances as
+failures. An all-pass component report still sets whole-fit qualification,
+generic error certification and timing qualification to false. Full scalar
+actual-API SPY acceptance and explicit research-policy wiring remain prerequisites.
+See `docs/cold-seed-vector-component-20261024.md` for the frozen development census.

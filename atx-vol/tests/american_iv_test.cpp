@@ -28,6 +28,8 @@
 #include "pricing/american_iv_batch.hpp" // K2: the native lane's typed outcome / flags
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
+#include "pricing/american_iv_seed_batch.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/core/types.hpp"
 
 // American implied-vol inverter coverage.
@@ -4455,4 +4457,191 @@ TEST(AmericanIvPremium, FamilyEnclosureCertifiesTheEndsItServes) {
               checked, moved_open, served);
   EXPECT_GE(checked, 60u);
   EXPECT_GE(moved_open, 10u); // the test discriminates: these points fail a stale certificate
+}
+
+TEST(AmericanIvSeedBatch, ExplicitVectorOriginBothSidesAndScalarTails) {
+  using namespace atx::vol;
+  if (!simd::use_avx2()) GTEST_SKIP() << "AVX2 unavailable";
+  for (const Side side : {Side::Call, Side::Put}) {
+    std::array<IvPriceSeedRequest, 5> requests;
+    for (std::size_t i = 0; i < requests.size(); ++i) {
+      const double K = 98.0 + static_cast<double>(i);
+      requests[i] = {cold_al(100, K, .5, .25, .04, .012, side),
+          100, K, .5, .04, .012, .25, .001, side};
+    }
+    std::array<IvPriceSeedResult, 5> out;
+    IvPriceSeedBatchStats stats;
+    IvOpts opts;
+    ASSERT_TRUE(american_implied_vol_price_seed_batch(requests, opts,
+        IvPriceSeedKernel::VectorReferenceEmpirical, out, stats));
+    EXPECT_EQ(stats.requests, 5u);
+    EXPECT_EQ(stats.vector_lanes, 4u);
+    EXPECT_EQ(stats.vector_admitted, 4u);
+    EXPECT_EQ(stats.scalar_fallbacks, 1u);
+    EXPECT_EQ(stats.floor_preparations, side == Side::Call ? 1u : 5u);
+    EXPECT_EQ(stats.floor_hits, side == Side::Call ? 4u : 0u);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      ASSERT_TRUE(out[i].sigma);
+      EXPECT_TRUE(same_double(*out[i].sigma, .25));
+      if (i < 4) {
+        EXPECT_EQ(out[i].origin, IvPriceSeedOrigin::VectorReferenceEmpirical);
+        EXPECT_EQ(out[i].retry, IvPriceSeedRetry::None);
+        EXPECT_GT(out[i].empirical_allowance, 0.0);
+        EXPECT_GE(out[i].boundary_distance, .25);
+        EXPECT_EQ(out[i].exercise, AlExerciseClass::Continuation);
+        EXPECT_LE(std::abs(out[i].target_price - requests[i].price) +
+            out[i].empirical_allowance, requests[i].budget);
+      } else {
+        EXPECT_EQ(out[i].origin, IvPriceSeedOrigin::ScalarReference);
+        EXPECT_EQ(out[i].retry, IvPriceSeedRetry::Tail);
+      }
+    }
+  }
+}
+
+TEST(AmericanIvSeedBatch, ScalarModeAndEveryRetryRetainOriginalDecision) {
+  using namespace atx::vol;
+  std::array<IvPriceSeedRequest, 4> requests;
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const double K = 99.0 + static_cast<double>(i);
+    requests[i] = {cold_al(100, K, .5, .25, .04, .012, Side::Put),
+        100, K, .5, .04, .012, .25, .001, Side::Put};
+  }
+  for (int variant = 0; variant < 7; ++variant) {
+    auto rs = requests;
+    IvOpts opts;
+    auto kernel = IvPriceSeedKernel::VectorReferenceEmpirical;
+    if (variant == 0) kernel = IvPriceSeedKernel::ScalarReference;
+    if (variant == 1) opts.al_opts = al_fast_profile(std::nullopt);
+    if (variant == 2) for (auto &r : rs) r.budget = 1e-14;
+    if (variant == 3) for (auto &r : rs) r.budget = 0.0;
+    if (variant == 4) for (auto &r : rs) r.r = -.01;
+    if (variant == 5) for (auto &r : rs) r.price = cold_al(r.S, r.K, r.T,
+        kIvMin, r.r, r.q, r.side);
+    if (variant == 6) for (auto &r : rs) r.sigma = kIvMin;
+    std::array<IvPriceSeedResult, 4> out;
+    IvPriceSeedBatchStats stats;
+    ASSERT_TRUE(american_implied_vol_price_seed_batch(rs, opts, kernel, out, stats));
+    EXPECT_EQ(stats.requests, rs.size());
+    EXPECT_EQ(stats.vector_admitted, 0u);
+    EXPECT_EQ(stats.scalar_fallbacks, rs.size());
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      const auto &r = rs[i];
+      const auto scalar = american_implied_vol_price_seed(r.price, r.S, r.K, r.T,
+          r.r, r.q, r.side, opts, r.budget, r.sigma);
+      EXPECT_EQ(out[i].sigma.has_value(), scalar.has_value());
+      if (scalar) EXPECT_TRUE(same_double(*out[i].sigma, *scalar));
+      EXPECT_NE(out[i].origin, IvPriceSeedOrigin::VectorReferenceEmpirical);
+      EXPECT_NE(out[i].retry, IvPriceSeedRetry::None);
+    }
+  }
+}
+
+TEST(AmericanIvSeedBatch, ShapeAndUnknownModeFailClosed) {
+  using namespace atx::vol;
+  std::array<IvPriceSeedRequest, 1> requests{};
+  std::array<IvPriceSeedResult, 1> out{};
+  out[0].sigma = .25;
+  IvPriceSeedBatchStats stats;
+  EXPECT_FALSE(american_implied_vol_price_seed_batch(requests, IvOpts{},
+      IvPriceSeedKernel::ScalarReference, std::span<IvPriceSeedResult>{}, stats));
+  EXPECT_FALSE(american_implied_vol_price_seed_batch(requests, IvOpts{},
+      static_cast<IvPriceSeedKernel>(99), out, stats));
+  EXPECT_FALSE(out[0].sigma);
+}
+
+TEST(AmericanIvSeedBatch, ReferenceDomainCensusPreservesEveryAttemptAndColdBudget) {
+  using namespace atx::vol;
+  if (!simd::use_avx2()) GTEST_SKIP() << "AVX2 unavailable";
+  std::vector<IvPriceSeedRequest> requests;
+  std::size_t forward_refusals = 0;
+  for (const Side side : {Side::Call, Side::Put})
+    for (double r : {0.0, .04, .15}) for (double q : {0.0, .012, .08})
+      for (double T : {.002, .5, 3.0}) for (double sigma : {.02, .25, 1.0})
+        for (double K : {60.0, 90.0, 100.0, 110.0, 160.0}) {
+          const auto p = andersen_lake(100, K, T, sigma, r, q, side);
+          if (!p) ++forward_refusals;
+          requests.push_back({p ? *p : std::numeric_limits<double>::quiet_NaN(),
+              100, K, T, r, q, sigma, .001, side});
+        }
+  ASSERT_EQ(requests.size(), 810u);
+  std::vector<IvPriceSeedResult> out(requests.size());
+  IvPriceSeedBatchStats stats;
+  IvOpts opts;
+  ASSERT_TRUE(american_implied_vol_price_seed_batch(requests, opts,
+      IvPriceSeedKernel::VectorReferenceEmpirical, out, stats));
+  EXPECT_EQ(stats.requests, requests.size());
+  EXPECT_EQ(stats.vector_admitted + stats.scalar_fallbacks, requests.size());
+  EXPECT_GT(stats.vector_admitted, 0u);
+  EXPECT_GT(stats.scalar_fallbacks, 0u);
+  double max_vector_difference = 0.0;
+  std::size_t scalar_accepted = 0;
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const auto &r = requests[i];
+    const auto scalar = american_implied_vol_price_seed(r.price, r.S, r.K, r.T,
+        r.r, r.q, r.side, opts, r.budget, r.sigma);
+    if (scalar) ++scalar_accepted;
+    EXPECT_EQ(out[i].sigma.has_value(), scalar.has_value()) << "request " << i;
+    if (out[i].origin != IvPriceSeedOrigin::VectorReferenceEmpirical) continue;
+    const auto cold = andersen_lake(r.S, r.K, r.T, *out[i].sigma, r.r, r.q, r.side);
+    const auto floor = andersen_lake(r.S, r.K, r.T, kIvMin, r.r, r.q, r.side);
+    ASSERT_TRUE(cold && floor);
+    EXPECT_GT(r.price, *floor) << "request " << i;
+    EXPECT_LE(std::abs(*cold - r.price), r.budget) << "request " << i;
+    max_vector_difference = std::max(max_vector_difference,
+        std::abs(out[i].target_price - *cold));
+  }
+  RecordProperty("attempted", static_cast<int>(requests.size()));
+  RecordProperty("forward_refusals", static_cast<int>(forward_refusals));
+  RecordProperty("scalar_accepted", static_cast<int>(scalar_accepted));
+  RecordProperty("vector_admitted", static_cast<int>(stats.vector_admitted));
+  RecordProperty("scalar_fallbacks", static_cast<int>(stats.scalar_fallbacks));
+  RecordProperty("max_vector_scalar_difference", max_vector_difference);
+  std::reverse(requests.begin(), requests.end());
+  std::vector<IvPriceSeedResult> reverse(requests.size());
+  ASSERT_TRUE(american_implied_vol_price_seed_batch(requests, opts,
+      IvPriceSeedKernel::VectorReferenceEmpirical, reverse, stats));
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const auto &original = out[out.size() - 1 - i];
+    EXPECT_EQ(reverse[i].sigma.has_value(), original.sigma.has_value()) << "request " << i;
+    if (original.sigma && reverse[i].sigma)
+      EXPECT_TRUE(same_double(*reverse[i].sigma, *original.sigma));
+  }
+}
+
+TEST(AmericanIvSeedBatch, ExerciseEdgeAndSubfloorTargetsKeepScalarRefusalSemantics) {
+  using namespace atx::vol;
+  IvOpts opts;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const bool call = side == Side::Call;
+    for (const bool subfloor : {false, true}) {
+      const double S = subfloor ? 100. : (call ? 811.6395 : 772.99);
+      const double K = subfloor ? 100. : (call ? 772.99 : 811.6395);
+      const double T = subfloor ? 1. : .0682;
+      const double r = subfloor ? .02 : (call ? .00162193 : .04496);
+      const double q = subfloor ? .02 : (call ? .04496 : .00162193);
+      const double sigma = subfloor ? .00501 : .12;
+      const double target = cold_al(S, K, T, subfloor ? .00499 : sigma, r, q, side);
+      const IvPriceSeedRequest request{target, S, K, T, r, q, sigma, .001, side};
+      const std::array<IvPriceSeedRequest, 4> requests{request, request, request, request};
+      std::array<IvPriceSeedResult, 4> out;
+      IvPriceSeedBatchStats stats;
+      ASSERT_TRUE(american_implied_vol_price_seed_batch(requests, opts,
+          IvPriceSeedKernel::VectorReferenceEmpirical, out, stats));
+      const auto scalar = american_implied_vol_price_seed(target, S, K, T, r, q, side,
+          opts, .001, sigma);
+      if (subfloor) EXPECT_FALSE(scalar);
+      EXPECT_EQ(stats.vector_admitted, 0u);
+      EXPECT_EQ(stats.scalar_fallbacks, 4u);
+      for (const auto &answer : out) {
+        EXPECT_EQ(answer.sigma.has_value(), scalar.has_value());
+        EXPECT_NE(answer.origin, IvPriceSeedOrigin::VectorReferenceEmpirical);
+        if (simd::use_avx2()) {
+          EXPECT_TRUE(answer.retry == IvPriceSeedRetry::NonmonotoneBand ||
+              answer.retry == IvPriceSeedRetry::ExerciseEdge ||
+              answer.retry == IvPriceSeedRetry::FloorRefusal);
+        }
+      }
+    }
+  }
 }
