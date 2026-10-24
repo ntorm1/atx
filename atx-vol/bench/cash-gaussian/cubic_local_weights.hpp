@@ -33,6 +33,9 @@ struct LocalWeightWork {
 
 struct LocalCubicWeights {
   CubicWeights weights;
+  // Per-integral absolute-term/signed-result ratios, only on LocalSeries.
+  std::array<std::string, 4> value_conditions;
+  std::array<std::string, 3> derivative_conditions;
   // Real-arithmetic truncation formulas evaluated at fixed precision; these
   // exclude transcendental/rounding and full-price errors. Empty on the labeled
   // original route because no series remainder was constructed.

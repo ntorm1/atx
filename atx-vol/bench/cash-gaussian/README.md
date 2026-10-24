@@ -269,3 +269,14 @@ strings cover real-arithmetic series truncation only, evaluated at fixed
 precision; they exclude arithmetic/transcendental and complete-price errors.
 The successor fixed24 exporter/reader is not implemented or executed yet, and
 neither Stage A completeness nor18-request progression is established.
+
+Peer review of3ece878 found two diagnostic-contract gaps: only the maximum
+condition survived publication, and local probes could fall back before their
+scalar workspace was charged. Both defects reproduce runtime RED. The narrow
+follow-up publishes all seven local-series ratios and reserves bounded scalar
+workspace before any positive-lower local arithmetic. Width/variation/order
+nonadmission keeps that reservation; a selected-buffer refusal retains only
+completed scalar reservation. Zero-lower direct original routing still uses
+no local scalar workspace. All45 native groups and owning2-TU PCH-off checks
+pass after correction; the original failed review and prior receipt remain.
+No successor24 export or18-request run was performed.

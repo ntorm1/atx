@@ -286,6 +286,13 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
     return out;
   };
   if (request.lower == 0.) return original(LocalWeightReason::ZeroLower);
+  // Charge the bounded local scalar/short-array reservation before forming
+  // even a width or density probe. Analytic fallback retains this actual work.
+  constexpr std::size_t scalar_workspace_bytes = 256*sizeof(R);
+  static_assert(scalar_workspace_bytes <= 1048576);
+  if (scalar_workspace_bytes > budget.max_workspace_bytes)
+    return Err(ErrorCode::Unavailable, "local cubic scalar workspace budget");
+  work.workspace_bytes = scalar_workspace_bytes;
   const R lower(request.lower), upper(request.upper), stock(request.stock);
   const R h = upper-lower, center = lower+h/2;
   const R epsilon = h/(2*center);
@@ -340,7 +347,7 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
   work.exponential_order = selected_n;
   // Conservative owned workspace reservation includes fixed scalar/short-array
   // temporaries in this route, beyond the four large coefficient buffers.
-  constexpr std::size_t workspace_bytes = sizeof(LocalWorkspace<R>)+256*sizeof(R);
+  constexpr std::size_t workspace_bytes = sizeof(LocalWorkspace<R>)+scalar_workspace_bytes;
   static_assert(workspace_bytes <= 1048576);
   if (workspace_bytes > budget.max_workspace_bytes)
     return Err(ErrorCode::Unavailable, "local cubic workspace budget");
@@ -388,7 +395,7 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
   const unsigned degree = exponent_degree*selected_n;
   R maximum_condition = 1;
   const auto integrate = [&](const std::array<R, 514> &coefficients, unsigned count,
-                             unsigned basis_degree, unsigned j) -> R {
+                             unsigned basis_degree, unsigned j, R &condition) -> R {
     R value = 0, absolute_sum = 0;
     for (unsigned k = 0; k <= count; ++k) {
       const auto rational = bernstein_integral(basis_degree, j, k);
@@ -400,7 +407,7 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
     }
     if (!finite(value) || !(value > 0))
       throw LocalNumericFailure{"local cubic integral arithmetic"};
-    const R condition = absolute_sum/value;
+    condition = absolute_sum/value;
     if (!finite(condition) || condition > 4)
       throw LocalNumericFailure{"local cubic integral conditioning"};
     if (condition > maximum_condition) maximum_condition = condition;
@@ -408,8 +415,11 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
   };
   std::array<R, 4> weights{};
   std::array<R, 3> derivative{};
+  std::array<R, 4> value_conditions{};
+  std::array<R, 3> derivative_conditions{};
   for (unsigned j = 0; j < 4; ++j)
-    weights[j] = counter.product(prefactor, integrate(workspace->sum, degree, 3, j));
+    weights[j] = counter.product(prefactor,
+        integrate(workspace->sum, degree, 3, j, value_conditions[j]));
   workspace->term.fill(R(0));
   for (unsigned k = 0; k <= degree; ++k) {
     workspace->term[k] += workspace->sum[k];
@@ -418,7 +428,7 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
   const R derivative_prefactor = prefactor*(center/stock);
   for (unsigned j = 0; j < 3; ++j)
     derivative[j] = counter.product(derivative_prefactor,
-        integrate(workspace->term, degree+1, 2, j));
+        integrate(workspace->term, degree+1, 2, j, derivative_conditions[j]));
   R weight_sum = 0, derivative_sum = 0;
   for (const auto &w : weights) weight_sum += w;
   for (const auto &d : derivative) derivative_sum += d;
@@ -443,10 +453,12 @@ Result<LocalCubicWeights> calculate_local(const WeightRequest &request,
     out.weights.value[k] = encode(weights[k]);
     out.weights.scaled_moments[k] = encode(raw->moments[k]);
     out.value_remainders[k] = encode(value_bound);
+    out.value_conditions[k] = encode(value_conditions[k]);
   }
   for (unsigned k = 0; k < 3; ++k) {
     out.weights.derivative[k] = encode(derivative[k]);
     out.derivative_remainders[k] = encode(derivative_bound);
+    out.derivative_conditions[k] = encode(derivative_conditions[k]);
   }
   out.weights.mass = encode(raw->moments[0]);
   out.weights.discounted_stock_ratio = encode(stock_ratio);

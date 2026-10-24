@@ -331,4 +331,82 @@ TEST(CashGaussianLocalWeights, SelectionAndRemaindersMatchIndependentPrecisionFo
   for (const auto &encoded : result->derivative_remainders)
     EXPECT_LT(abs(CheckReal(encoded)-derivative_bound)/derivative_bound, CheckReal("1e-70"));
 }
+
+TEST(CashGaussianLocalWeights, EveryLocalProbeChargesWorkspaceBeforeFallback) {
+  const std::array<cg::WeightRequest, 3> requests{{
+      {80., 120., 100., .7, .35, .03, .01},
+      {99.99, 100.01, 100., .01, .001, 0., 0.},
+      {99.9, 100.1, 100., 1., .2, 0., 0.}}};
+  for (const auto &request : requests) {
+    cg::LocalWeightBudget budget;
+    budget.max_workspace_bytes = 0;
+    cg::LocalWeightWork work;
+    const auto refused = cg::cubic_local_weight_control(request,
+        cg::WeightPrecision::Decimal100, budget, work);
+    EXPECT_FALSE(refused);
+    EXPECT_EQ(work.route, cg::LocalWeightRoute::NotSelected);
+    EXPECT_EQ(work.local_functions, 0u);
+    EXPECT_EQ(work.workspace_bytes, 0u);
+    EXPECT_EQ(work.moments.moment_attempts, 0u);
+    const auto admitted = cg::cubic_local_weight_control(request,
+        cg::WeightPrecision::Decimal100, {}, work);
+    ASSERT_TRUE(admitted);
+    EXPECT_EQ(work.route, cg::LocalWeightRoute::OriginalMoments);
+    EXPECT_GT(work.workspace_bytes, 0u);
+  }
+}
+
+TEST(CashGaussianLocalWeights, AllSevenConditionRatiosSurvivePublication) {
+  cg::LocalWeightWork work;
+  const auto result = cg::cubic_local_weight_control(
+      {1., std::nextafter(1., 2.), 1., 1., .2, 0., 0.},
+      cg::WeightPrecision::Decimal100, {}, work);
+  ASSERT_TRUE(result);
+  CheckReal maximum = 1;
+  for (const auto &ratio : result->value_conditions) {
+    ASSERT_FALSE(ratio.empty());
+    const CheckReal value(ratio);
+    EXPECT_GE(value, 1);
+    EXPECT_LE(value, 4);
+    if (value > maximum) maximum = value;
+  }
+  for (const auto &ratio : result->derivative_conditions) {
+    ASSERT_FALSE(ratio.empty());
+    const CheckReal value(ratio);
+    EXPECT_GE(value, 1);
+    EXPECT_LE(value, 4);
+    if (value > maximum) maximum = value;
+  }
+  EXPECT_EQ(CheckReal(result->weights.maximum_condition), maximum);
+}
+
+TEST(CashGaussianLocalWeights, BufferRefusalRetainsScalarReservationAndZeroLowerBypassesIt) {
+  cg::LocalWeightWork work;
+  const auto probe = cg::cubic_local_weight_control({80., 120., 100., .7, .35, .03, .01},
+      cg::WeightPrecision::Decimal100, {}, work);
+  ASSERT_TRUE(probe);
+  ASSERT_GT(work.workspace_bytes, 0u);
+  const auto scalar_reservation = work.workspace_bytes;
+  cg::LocalWeightBudget budget;
+  budget.max_workspace_bytes = scalar_reservation;
+  const auto refused = cg::cubic_local_weight_control(
+      {1., std::nextafter(1., 2.), 1., 1., .2, 0., 0.},
+      cg::WeightPrecision::Decimal100, budget, work);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ(work.route, cg::LocalWeightRoute::LocalSeries);
+  EXPECT_EQ(work.workspace_bytes, scalar_reservation);
+  EXPECT_GT(work.selection_checks, 0u);
+  EXPECT_EQ(work.moments.moment_attempts, 0u);
+  EXPECT_EQ(work.coefficient_products, 0u);
+  budget.max_workspace_bytes = 0;
+  const auto zero_lower = cg::cubic_local_weight_control({0., 100., 80., .5, .2, -.03, .02},
+      cg::WeightPrecision::Decimal100, budget, work);
+  ASSERT_TRUE(zero_lower);
+  EXPECT_EQ(work.route, cg::LocalWeightRoute::OriginalMoments);
+  EXPECT_EQ(work.reason, cg::LocalWeightReason::ZeroLower);
+  EXPECT_EQ(work.workspace_bytes, 0u);
+  EXPECT_EQ(work.local_functions, 0u);
+  for (const auto &ratio : zero_lower->value_conditions) EXPECT_TRUE(ratio.empty());
+  for (const auto &ratio : zero_lower->derivative_conditions) EXPECT_TRUE(ratio.empty());
+}
 } // namespace
