@@ -77,6 +77,10 @@ const char *to_string(RiskFlag value) noexcept {
     return "ColdFallback";
   case RiskFlag::CarryFromSurface:
     return "CarryFromSurface";
+  case RiskFlag::FamilyUneconomic:
+    return "FamilyUneconomic";
+  case RiskFlag::ShortTenor:
+    return "ShortTenor";
   }
   return "Unknown"; // a bit no enumerator names
 }

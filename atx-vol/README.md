@@ -545,46 +545,53 @@ which change the numerical results of the shipped paths:
 
 ## Historical portfolio VaR
 
-`var.hpp` replays a delta-defined option and stock portfolio through a
-`SurfaceDb`. An option is anchored on the reference date, converted to forward
-log-moneyness and signed dollar delta, then independently restruck at that same
-relative expiry and moneyness on each historical base date. Its resolved units
-are held into the next stored date. Stock shares are likewise resized on the
-base date and held across the transition, so stock hedges retain nonzero P&L.
+`historical_var` (`api/risk/historical_var.hpp`) is one-period historical
+simulation on the risk engine. The book is a set of RELATIVE option templates
+(`TheoLeg`: a uid, a relative maturity, a strike coordinate such as a fixed
+delta or a fixed log-moneyness, a side, a multiplier and a signed quantity) plus
+share legs. Each scenario is a (base, shifted) pair of surface-backed
+`MarketState`s, usually two consecutive sessions. Per scenario every template is
+resolved on the base state's surface (a fixed delta is re-solved, a fixed
+moneyness held, the maturity re-anchored at the base instant), the resolved
+contracts and the shares form one `RiskBook`, and `explain(base -> shifted)`
+gives the scenario's P&L with its Greek split. Quantities are never re-sized.
 
 ```cpp
-#include "atx/vol/api/storage/surface_db.hpp"
-#include "atx/vol/var.hpp"  // internal (src/analytics/var.hpp) -- not part of
-                             // the installed api/ surface; example/reference
-                             // code, not a public-consumer include
+#include "atx/vol/api/risk/historical_var.hpp"
+#include "atx/vol/api/risk/market_state.hpp"
 
 using namespace atx::vol;
 
-auto db = SurfaceDb::open("surface-db/sp100-2026").value();
-std::vector<VarPosition> book{
-    VarOptionPosition{"SPY", ProjectedMaturitySpec::months(3),
-                      0.40, Side::Call, 25.0, 100.0},
-    VarStockPosition{"SPY", -750.0},
-};
+// One state per session from that session's fitted surfaces (SurfaceRef handles,
+// e.g. SurfaceSet::find(uid)). A MarketState views its storage, so keep both alive.
+std::vector<MarketStateStorage> storage; // market_state_from_surfaces(ts_ns, time, refs)
+std::vector<MarketState> states;         // make_market_state(storage[i]).value()
 
-VarRunConfig config;
-config.reference_date = "2026-06-26";
-config.date_begin = "2026-01-02";
-config.date_end = "2026-06-26";
-config.confidence = 0.99;
-config.evaluation.n_threads = 8;
+HistoricalVarBook book;
+book.options.push_back(TheoLeg{
+    TheoContract{spy_uid, MaturitySpec::months(3),
+                 StrikeCoord::delta(0.40, DeltaConvention::American), Side::Call, 100.0},
+    25.0});
+book.shares.push_back(ShareLeg{/*id=*/1, spy_uid, -750.0});
 
-auto result = run_historical_var(db, book, config).value();
-// result.risk.value_at_risk, result.risk.expected_shortfall, result.frames
+std::vector<HistoricalVarScenario> pairs; // consecutive sessions (i, i + 1)
+for (std::size_t i = 0; i + 1 < states.size(); ++i) {
+  pairs.push_back({&states[i], &states[i + 1]});
+}
+
+HistoricalVarConfig config; // sigma-family kernel; RiskKernelKind::Cold is the oracle
+config.confidences = {0.99};
+auto result = historical_var(book, pairs, config).value();
+// result.points[0].value_at_risk / expected_shortfall / tail_mean (Greek split of the
+// tail), result.frames[i].totals (each pair's explain), result.reference_pv
 ```
 
-Dates are sorted ascending and adjacent transitions are split into balanced,
-contiguous ranges on the persistent pricing executor. Each transition is
-independent, output order is deterministic, and exact duplicate contract
-definitions share pricing work while retaining separate position rows and
-dollar-delta targets. The default run fails closed on a missing or non-admitted
-risk surface; `VarScenarioFailurePolicy::ExcludeFromDistribution` records those
-scenarios and excludes them from the nearest-rank VaR/expected-shortfall sample.
+VaR / ES are nearest-rank loss quantiles over the admitted scenarios. A template
+that does not resolve on a base state is counted, not fatal; a scenario with
+excluded premium above `max_excluded_premium_frac · |pv_base|` is dropped from the
+quantiles. Results are bit-identical for any thread count. Semantics, failure
+policy, threading and the migration table from the deleted `var.hpp` /
+`historical_projection.hpp` pipeline: [`docs/historical-var.md`](docs/historical-var.md).
 
 ## Backtest database
 
@@ -1094,7 +1101,10 @@ The risk-engine sprint (2026-10-24) added the `api/risk/` module (8 headers: `ri
 `theo_contract`, `historical_var`) and `api/marketdata/spiderrock_store.hpp`, outside the
 umbrella; re-deriving at that commit found 119 api/ headers, so Tier-B is **60**: the sprint's
 10 plus 12 Tier-B headers that had landed between 2026-10-17 and 2026-10-24 without a log line
-here (the table test was red on `main` at 109 headers). No Tier-A change.
+here (the table test was red on `main` at 109 headers). No Tier-A change. The same sprint
+deleted the old historical VaR pipeline (`var.hpp`, `var_report.hpp`, `var_validation.hpp`,
+`historical_projection.hpp`); all four already lived under `src/analytics/`, outside api/, so
+no tier count moved.
 
 Wave-3 lane P (2026-10-24, binary persistence) added the `api/persist/` module (5 headers:
 `persist_format`, `persist_file`, `state_archive`, `surface_timeline`, `risk_run_archive`),

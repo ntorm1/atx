@@ -362,6 +362,49 @@ TEST(PersistStateStore, DefaultVerifyIsFullUpToThresholdFramingAbove) {
   EXPECT_FALSE(lax->file().verify_all().has_value());
 }
 
+// Review 2: the build's skip check verifies Full at ANY size (it is off the latency path:
+// ~50 ms against ~1.8 s for the load it saves), so a published bucket whose payload was
+// damaged is rebuilt even though its source fingerprint still matches. The damage here is
+// payload-only (a Framing open serves it); the repair is byte-identical to the original.
+TEST(PersistStateStore, PayloadDamageWithMatchingFingerprintIsRebuilt) {
+  const SpiderRockStoreSpec spec = spec_of(shared_store());
+  const fs::path out = fresh_dir("repair");
+  const std::vector<std::string> one{"1000"};
+  auto first = build_state_store_from_spiderrock(spec, one, options_of(out));
+  ASSERT_TRUE(first.has_value());
+  const std::string path = first->front().path;
+  const std::vector<std::byte> pristine = slurp(path);
+  PersistOpenOptions framing = kMarketStateOpenDefaults;
+  framing.verify = PersistVerify::Framing;
+  std::uint64_t at = 0;
+  {
+    auto a = MarketStateArchive::open(path, framing);
+    ASSERT_TRUE(a.has_value());
+    const PersistSectionEntry *e =
+        a->file().entry(static_cast<std::uint32_t>(MarketStateSection::Sigma));
+    ASSERT_NE(e, nullptr);
+    at = e->offset;
+  }
+  {
+    std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(f.good());
+    char c = 0;
+    f.seekg(static_cast<std::streamoff>(at));
+    f.read(&c, 1);
+    c = static_cast<char>(c ^ 0x01);
+    f.seekp(static_cast<std::streamoff>(at));
+    f.write(&c, 1);
+  }
+  ASSERT_TRUE(MarketStateArchive::open(path, framing).has_value()) << "damage must be payload-only";
+  auto second = build_state_store_from_spiderrock(spec, one, options_of(out));
+  ASSERT_TRUE(second.has_value());
+  EXPECT_FALSE(second->front().skipped) << "a payload-damaged bucket was skipped";
+  EXPECT_NE(second->front().path, path) << "the repair is a new generation";
+  EXPECT_TRUE(slurp(second->front().path) == pristine) << "the repair differs from the first build";
+  auto healed = StateStore::open(out.string()).value().open_bucket(spec.date, "1000");
+  ASSERT_TRUE(healed.has_value()) << to_string(healed.error().status);
+}
+
 TEST(PersistStateStore, SelectionBucketFeedsBenchBookSelector) {
   const SpiderRockStoreSpec spec = spec_of(shared_store());
   const fs::path out = fresh_dir("sel");

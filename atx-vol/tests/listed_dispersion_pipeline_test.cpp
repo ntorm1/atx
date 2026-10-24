@@ -1,18 +1,21 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/backtest/backtest.hpp"                   // MarketSnapshot
 #include "atx/vol/api/analytics/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
 #include "atx/vol/api/marketdata/corpus.hpp"                     // CorpusManifest, CorpusEntry (engine-driven clock)
 #include "atx/vol/api/backtest/dispersion.hpp"                 // DispersionMember, DispersionBook, build_dispersion_book
-#include "analytics/historical_projection.hpp"      // HistoricalProjectionScenario/Frame/Config, ProjectedHistoricalVar
+#include "atx/vol/api/risk/historical_var.hpp"       // HistoricalVarConfig, HistoricalVarFrame
 #include "atx/vol/api/backtest/listed_dispersion.hpp"          // ListedOptionQuote
 #include "atx/vol/research/listed_dispersion_pipeline.hpp" // module under test
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
@@ -840,27 +843,21 @@ TEST(ListedDispersionPipeline, TwoRouteColdParity_LegMarksEqual) {
 
 // ── Task 5 — dispersion_book_var (M8) ─────────────────────────────────────────
 //
-// dispersion_book_var lifts run_projected_var_command's book -> OptionProjectionSpec
-// synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
-// per confidence. The book is pre-built by the caller, so the lift itself applies no
-// vega scaling of any kind. The library re-projects the book positions across
-// historical scenarios and splits the loss quantile per requested confidence; the
-// CLI keeps the three bespoke TSV emissions (out-of-archive per the partition rule).
+// dispersion_book_var turns the pre-built book into relative templates (same uid / side /
+// multiplier / qty, ATM-forward strike, the caller's relative maturity) and runs the
+// risk-engine historical VaR over the CONSECUTIVE pairs of the historical surface sets: each
+// pair's loss is minus the one-period P&L of the templates resolved on the pair's base set
+// and explained to its shifted set; the points are nearest-rank VaR / ES per confidence.
+// RE-PINNED for the risk-engine rebuild (BREAKING, CHANGELOG 2026-10-24): N sets now give
+// N - 1 scenarios, and the reference is the mean base value of the book over the admitted
+// pairs — it used to be the LAST set's value with every loss a level difference against it.
+// The book is pre-built by the caller, so the function applies no vega scaling of any kind
+// (E1: `DispersionConfig::target_vega` is dollars per VOL POINT).
 //
-// REV-TAIL M-5 / I-2, two corrections to what this block used to say. (1) The
-// "per-vol-point vega * 100 scaling in the DispersionConfig
-// builder (a CLI boundary wired at T9)" no longer exists: E1 redefined
-// `DispersionConfig::target_vega` as dollars per VOL POINT, and there is now no
-// scaling anywhere on this route. (2) The `spy_dispersion_backtest.cpp:1119-1194`
-// line references described a CLI body that no longer exists -- `run-projected-var`
-// is a dispatch into `dispersion_run_projected_var`, which since REV-TAIL I-2 calls
-// THIS function, so this test now gates the shipped route rather than a duplicate
-// of it.
-//
-// The lift reads `dispersion.projected_maturity`, which was defined OUTSIDE the
-// lifted range, so the relative-template maturity is a required input here (the
-// plan's book-only signature omits it; days(N) is a relative template that MUST NOT
-// be reconstructed to an absolute expiry, or per-scenario aging would change).
+// `run-projected-var` is a dispatch into `dispersion_run_projected_var`, which calls THIS
+// function, so this test gates the shipped route rather than a duplicate of it. The
+// relative-template maturity is a required input: days(N) is a relative template that MUST
+// NOT be reconstructed to an absolute expiry, or per-scenario aging would change.
 TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   // A small dispersion book off the synthetic surfaces: SPY (uid 1) index + two
   // names (uid 2, 3) => six positions (call/put per straddle across index + 2 names).
@@ -887,12 +884,9 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   // claiming to "mirror the CLI boundary (spy_dispersion_backtest.cpp:1110)". E1
   // abolished that boundary -- the constant had no call site left at all and was
   // deleted in the C-2 follow-up -- so the line denoted $10,000/vol-point where $100 was
-  // intended, a 100x book. Every assertion in this test is structural (counts,
-  // n_failed, ES >= VaR, VaR(99) >= VaR(95), reference == frames.back().value) and
-  // therefore SCALE-INVARIANT: it passed either way and could never self-correct,
-  // which made it the most misleading text in the tree about the exact unit hazard
-  // that produced the 100x bug this sprint fixed. Do not reintroduce a scaling
-  // here without changing what `target_vega` means.
+  // intended, a 100x book. Do not reintroduce a scaling here without changing what
+  // `target_vega` means. (The structural assertions below are scale-invariant; the
+  // numeric pins at the end are not, which is what makes them catch a unit slip.)
   dispersion.target_vega = 100.0;
   dispersion.side = DispersionSide::ShortIndexLongNames;
   dispersion.multiplier = 100.0;
@@ -902,8 +896,9 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   ASSERT_TRUE(book) << (book ? std::string{} : book.error().to_string());
   ASSERT_EQ(book->positions.size(), 6u);
 
-  // Three historical scenarios (surfaces at distinct valuation timestamps). Keep the
-  // surface vectors + SurfaceSets alive for the whole dispersion_book_var call.
+  // Three historical sessions (surfaces at distinct valuation timestamps) => two
+  // consecutive-pair scenarios, s0 -> s1 and s1 -> s2. Keep the surface vectors +
+  // SurfaceSets alive for the whole dispersion_book_var call.
   const std::vector<PricedSurface> s0 = surfaces(kNow0, 0.0);
   const std::vector<PricedSurface> s1 = surfaces(kNow1, 5.0);
   const std::vector<PricedSurface> s2 = surfaces(kNow2, -5.0);
@@ -911,49 +906,258 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   auto set1 = SurfaceSet::create(pointers(s1));
   auto set2 = SurfaceSet::create(pointers(s2));
   ASSERT_TRUE(set0 && set1 && set2);
-  const std::vector<HistoricalProjectionScenario> scenarios = {
+  const std::vector<DispersionVarSnapshot> snapshots = {
       {kNow0, &*set0}, {kNow1, &*set1}, {kNow2, &*set2}};
 
-  const std::vector<double> confidences = {0.95, 0.99};
-  HistoricalProjectionConfig hp_cfg;
-  hp_cfg.n_threads = 1;
+  HistoricalVarConfig cfg;
+  cfg.confidences = {0.95, 0.99};
+  cfg.n_threads = 1;
 
-  auto var = dispersion_book_var(*book, maturity, scenarios, confidences, hp_cfg);
+  auto var = dispersion_book_var(*book, maturity, snapshots, cfg);
   ASSERT_TRUE(var) << (var ? std::string{} : var.error().to_string());
 
-  // n_positions matches the book; frames one-per-scenario; legs scenario-major.
+  // n_positions matches the book; one frame per consecutive pair; legs pair-major.
+  const std::size_t n_pairs = snapshots.size() - 1u;
   EXPECT_EQ(var->n_positions, book->positions.size());
-  ASSERT_EQ(var->frames.size(), scenarios.size());
-  EXPECT_EQ(var->legs.size(), scenarios.size() * book->positions.size());
+  ASSERT_EQ(var->var.frames.size(), n_pairs);
+  ASSERT_EQ(var->legs.size(), n_pairs * book->positions.size());
+  EXPECT_NE(var->prepared_fingerprint, 0u);
 
-  // Every scenario projected cleanly (no failed legs; all positions ok).
-  for (const HistoricalProjectionFrame &frame : var->frames) {
-    EXPECT_EQ(frame.n_failed, 0u);
-    EXPECT_EQ(frame.n_ok, book->positions.size());
+  // Every pair resolved every template on its base set, chains to the next, and was
+  // admitted with no excluded lane.
+  for (std::size_t i = 0; i < n_pairs; ++i) {
+    const HistoricalVarFrame &frame = var->var.frames[i];
+    EXPECT_EQ(frame.base_ts_ns, snapshots[i].ts_ns) << i;
+    EXPECT_EQ(frame.shifted_ts_ns, snapshots[i + 1u].ts_ns) << i;
+    EXPECT_TRUE(frame.admitted) << i;
+    EXPECT_EQ(frame.n_legs_resolved, book->positions.size()) << i;
+    EXPECT_EQ(frame.n_legs_unresolved, 0u) << i;
+    EXPECT_EQ(frame.totals.n_ok, book->positions.size()) << i;
+    EXPECT_EQ(frame.totals.n_excluded, 0u) << i;
+    EXPECT_NE(frame.totals.pnl_total, 0.0) << i;
+    for (std::size_t leg = 0; leg < book->positions.size(); ++leg) {
+      const ResolvedTheo &r = var->legs[i * book->positions.size() + leg];
+      const Position &position = book->positions[leg];
+      ASSERT_EQ(r.status, TheoStatus::Ok) << i << "," << leg;
+      // Book position `leg` -> template `leg`: same identity, ATM-forward strike, 30-day
+      // TTE re-anchored at the pair's base session.
+      EXPECT_EQ(r.leg.uid, position.contract.uid);
+      EXPECT_EQ(r.leg.side, position.contract.side);
+      EXPECT_EQ(r.leg.qty, position.qty);
+      EXPECT_EQ(r.leg.multiplier, position.multiplier);
+      EXPECT_EQ(r.valuation_ns, snapshots[i].ts_ns);
+      EXPECT_NEAR(r.k_log, 0.0, 1e-12);
+      EXPECT_NEAR(r.T, kTargetDteDays / 365.25, 1e-9);
+      EXPECT_EQ(r.leg.expiry_ns - snapshots[i].ts_ns,
+                var->legs[leg].leg.expiry_ns - snapshots[0].ts_ns)
+          << "the relative maturity must not change between pairs";
+    }
   }
 
-  // The confidences split into two risks carrying exactly 0.95 / 0.99, each over all
-  // three successful scenarios.
-  ASSERT_EQ(var->risks.size(), 2u);
-  EXPECT_EQ(var->risks[0].confidence, 0.95);
-  EXPECT_EQ(var->risks[1].confidence, 0.99);
-  for (const ProjectedHistoricalVar &risk : var->risks) {
-    EXPECT_EQ(risk.n_scenarios, scenarios.size());
-  }
+  // The confidences split into two points carrying exactly 0.95 / 0.99, each over both
+  // admitted pairs.
+  ASSERT_EQ(var->var.points.size(), 2u);
+  EXPECT_EQ(var->var.points[0].confidence, 0.95);
+  EXPECT_EQ(var->var.points[1].confidence, 0.99);
+  EXPECT_EQ(var->var.n_admitted, n_pairs);
 
-  // Free risk invariants — these cost nothing and are what actually catches a
-  // synthesis that wires the confidences, the tail or the reference the wrong way
-  // round. The structural assertions above would all still pass under such a bug.
-  for (const ProjectedHistoricalVar &risk : var->risks) {
+  // Free risk invariants — these cost nothing and are what actually catches a synthesis
+  // that wires the confidences, the tail or the loss sign the wrong way round.
+  const double loss0 = -var->var.frames[0].totals.pnl_total;
+  const double loss1 = -var->var.frames[1].totals.pnl_total;
+  for (const HistoricalVarPoint &point : var->var.points) {
     // ES is the mean of the tail beyond VaR, so it can never be the smaller loss.
-    EXPECT_GE(risk.expected_shortfall, risk.value_at_risk) << risk.confidence;
-    // The reference is the book's current value: the LAST (most recent) scenario
-    // frame, not the first — swapping them silently reverses every P&L sign.
-    EXPECT_EQ(risk.reference_value, var->frames.back().value);
+    EXPECT_GE(point.expected_shortfall, point.value_at_risk) << point.confidence;
+    // Two pairs: nearest rank ceil(c * 2) = 2 for c > 0.5, so VaR is the WORSE pair's loss
+    // (minus its P&L — a flipped sign would pick the better pair).
+    EXPECT_EQ(point.value_at_risk, std::max(loss0, loss1)) << point.confidence;
+    EXPECT_EQ(point.tail_scenarios, 1u);
   }
   // A deeper confidence is a worse loss: VaR(99%) >= VaR(95%).
-  EXPECT_GE(var->risks[1].value_at_risk, var->risks[0].value_at_risk);
-  EXPECT_GE(var->risks[1].expected_shortfall, var->risks[0].expected_shortfall);
+  EXPECT_GE(var->var.points[1].value_at_risk, var->var.points[0].value_at_risk);
+  EXPECT_GE(var->var.points[1].expected_shortfall, var->var.points[0].expected_shortfall);
+  // The reference is the book's mean base value over the admitted pairs.
+  EXPECT_NEAR(var->var.reference_pv,
+              0.5 * (var->var.frames[0].totals.pv_base + var->var.frames[1].totals.pv_base),
+              1e-12 * std::fabs(var->var.reference_pv));
+
+  // RE-PINNED numbers from the risk engine (family kernel, 2026-10-24). The vega-sized book
+  // is worth ~0 at entry; the s0 -> s1 pair (spot +1 %, names +1.5 %) loses, s1 -> s2 gains,
+  // so VaR = ES = the first pair's loss at both confidences.
+  const auto pin = [](double got, double want, const char *what) {
+    EXPECT_NEAR(got, want, 1e-9 * std::fabs(want)) << what;
+  };
+  pin(var->var.frames[0].totals.pnl_total, -36.078699706862814, "pair 0 P&L");
+  pin(var->var.frames[1].totals.pnl_total, 74.785648025537853, "pair 1 P&L");
+  pin(var->var.reference_pv, -24.772929979007017, "reference_pv");
+  pin(var->var.points[0].value_at_risk, 36.078699706862814, "VaR 95");
+  pin(var->var.points[0].expected_shortfall, 36.078699706862814, "ES 95");
+  EXPECT_NEAR(var->var.frames[0].totals.pv_base, 0.0, 1e-6) << "entry book is vega-flat";
+}
+
+namespace {
+
+// The six-position book of DispersionBookVar_SplitsConfidences, sized off `set`.
+[[nodiscard]] Result<DispersionBook> var_test_book(const SurfaceSet &set,
+                                                   const ProjectedMaturitySpec &maturity) {
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"SPY", 1u, 0.0};
+  universe.names.push_back(DispersionMember{"N0", 2u, 0.4});
+  universe.names.push_back(DispersionMember{"N1", 3u, 0.6});
+  DispersionConfig dispersion;
+  dispersion.target_T = 30.0 / 365.25;
+  dispersion.target_vega = 100.0; // dollars per vol point (E1)
+  dispersion.side = DispersionSide::ShortIndexLongNames;
+  dispersion.multiplier = 100.0;
+  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 2u};
+  dispersion.projected_maturity = maturity;
+  return build_dispersion_book(universe, set, dispersion);
+}
+
+} // namespace
+
+// The bounded form of dispersion_book_var (review D-1): an evaluator that hands the history
+// over in windows overlapping by one snapshot -- the shape dispersion_run_projected_var uses
+// with 16-pair windows -- gives the one-window span form's result BIT FOR BIT; a pair covered
+// twice, a pair left uncovered, or a window past the history is InvalidArgument.
+TEST(ListedDispersionPipeline, DispersionBookVar_WindowsMatchOneSpanAndCoverEveryPairOnce) {
+  const std::vector<PricedSurface> book_surfaces = surfaces(kNow0, 0.0);
+  auto book_set = SurfaceSet::create(pointers(book_surfaces));
+  ASSERT_TRUE(book_set) << (book_set ? std::string{} : book_set.error().to_string());
+  const ProjectedMaturitySpec maturity = ProjectedMaturitySpec::days(30);
+  auto book = var_test_book(*book_set, maturity);
+  ASSERT_TRUE(book) << (book ? std::string{} : book.error().to_string());
+
+  // Seven sessions (six pairs) on a non-monotone spot path.
+  constexpr std::size_t kSessions = 7u;
+  std::vector<std::vector<PricedSurface>> owned;
+  std::vector<SurfaceSet> sets;
+  owned.reserve(kSessions);
+  sets.reserve(kSessions);
+  for (std::size_t d = 0; d < kSessions; ++d) {
+    const std::int64_t now = kNow0 + static_cast<std::int64_t>(d) * kDayNs;
+    owned.push_back(surfaces(now, 6.0 * std::sin(1.3 * static_cast<double>(d))));
+    auto set = SurfaceSet::create(pointers(owned.back()));
+    ASSERT_TRUE(set) << (set ? std::string{} : set.error().to_string());
+    sets.push_back(std::move(*set));
+  }
+  std::vector<DispersionVarSnapshot> snapshots;
+  for (std::size_t d = 0; d < kSessions; ++d) {
+    snapshots.push_back({kNow0 + static_cast<std::int64_t>(d) * kDayNs, &sets[d]});
+  }
+  HistoricalVarConfig cfg;
+  cfg.confidences = {0.8, 0.95};
+  cfg.n_threads = 1;
+  const auto whole = dispersion_book_var(*book, maturity, snapshots, cfg);
+  ASSERT_TRUE(whole) << (whole ? std::string{} : whole.error().to_string());
+  ASSERT_EQ(whole->var.frames.size(), kSessions - 1u);
+
+  // Runs `windows` = {first snapshot, snapshot count} through the bounded form.
+  const std::span<const DispersionVarSnapshot> all(snapshots);
+  const auto run = [&](std::vector<std::pair<std::size_t, std::size_t>> windows) {
+    return dispersion_book_var(
+        *book, maturity, kSessions,
+        [all, windows](const DispersionVarWindow &run_window) -> Status {
+          for (const auto &[first, count] : windows) {
+            if (Status st = run_window(all.subspan(first, count), first); !st.has_value()) {
+              return st;
+            }
+          }
+          return atx::core::Ok();
+        },
+        cfg);
+  };
+
+  // Windows of three snapshots: pairs {0, 1}, {2, 3}, {4, 5}; snapshots 2 and 4 are shared.
+  const auto windowed = run({{0u, 3u}, {2u, 3u}, {4u, 3u}});
+  ASSERT_TRUE(windowed) << (windowed ? std::string{} : windowed.error().to_string());
+  ASSERT_EQ(windowed->var.frames.size(), whole->var.frames.size());
+  for (std::size_t i = 0; i < whole->var.frames.size(); ++i) {
+    const HistoricalVarFrame &a = windowed->var.frames[i];
+    const HistoricalVarFrame &b = whole->var.frames[i];
+    EXPECT_EQ(a.base_ts_ns, b.base_ts_ns) << i;
+    EXPECT_EQ(a.shifted_ts_ns, b.shifted_ts_ns) << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a.totals.pnl_total),
+              std::bit_cast<std::uint64_t>(b.totals.pnl_total))
+        << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a.totals.pv_base),
+              std::bit_cast<std::uint64_t>(b.totals.pv_base))
+        << i;
+    EXPECT_TRUE(a.admitted) << i;
+  }
+  ASSERT_EQ(windowed->legs.size(), whole->legs.size());
+  for (std::size_t k = 0; k < whole->legs.size(); ++k) {
+    EXPECT_EQ(windowed->legs[k].fingerprint, whole->legs[k].fingerprint) << k;
+  }
+  ASSERT_EQ(windowed->var.points.size(), whole->var.points.size());
+  for (std::size_t k = 0; k < whole->var.points.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(windowed->var.points[k].value_at_risk),
+              std::bit_cast<std::uint64_t>(whole->var.points[k].value_at_risk))
+        << k;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(windowed->var.points[k].expected_shortfall),
+              std::bit_cast<std::uint64_t>(whole->var.points[k].expected_shortfall))
+        << k;
+  }
+  EXPECT_EQ(std::bit_cast<std::uint64_t>(windowed->var.reference_pv),
+            std::bit_cast<std::uint64_t>(whole->var.reference_pv));
+  EXPECT_EQ(windowed->prepared_fingerprint, whole->prepared_fingerprint);
+
+  const auto invalid = [](const auto &r) {
+    return !r.has_value() && r.error().code() == ErrorCode::InvalidArgument;
+  };
+  EXPECT_TRUE(invalid(run({{0u, 3u}, {1u, 3u}, {4u, 3u}}))) << "pair 1 covered twice";
+  EXPECT_TRUE(invalid(run({{0u, 3u}, {3u, 4u}}))) << "pair 2 (snapshot 2 -> 3) uncovered";
+  const auto past_end = dispersion_book_var(
+      *book, maturity, kSessions,
+      [all](const DispersionVarWindow &run_window) -> Status {
+        return run_window(all.subspan(5u, 2u), 6u); // labelled one pair past the last
+      },
+      cfg);
+  EXPECT_TRUE(invalid(past_end)) << "window past the end of the history";
+}
+
+// States (listed_dispersion_pipeline.hpp): a surface's own instant must equal its snapshot's;
+// only a surface that carries NO instant (now_ts_ns <= 0) is measured from the snapshot's. One
+// untimed surface in a set must not switch that check off for the set's other surfaces.
+TEST(ListedDispersionPipeline, DispersionBookVar_UntimedSurfaceDoesNotExcuseAMismatchedOne) {
+  const std::vector<PricedSurface> book_surfaces = surfaces(kNow0, 0.0);
+  auto book_set = SurfaceSet::create(pointers(book_surfaces));
+  ASSERT_TRUE(book_set) << (book_set ? std::string{} : book_set.error().to_string());
+  const ProjectedMaturitySpec maturity = ProjectedMaturitySpec::days(30);
+  auto book = var_test_book(*book_set, maturity);
+  ASSERT_TRUE(book) << (book ? std::string{} : book.error().to_string());
+
+  const std::vector<PricedSurface> s0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> s2 = surfaces(kNow2, -5.0);
+  // Session 1: uid 1 carries no instant; uid 2 is stamped one day EARLY; uid 3 is on time.
+  std::vector<PricedSurface> mismatched;
+  mismatched.push_back(make_surface(1u, 505.0, 0));
+  mismatched.push_back(make_surface(2u, 101.5, kNow0));
+  mismatched.push_back(make_surface(3u, 199.0, kNow1));
+  // Control: the same session with uid 2 on time.
+  std::vector<PricedSurface> on_time;
+  on_time.push_back(make_surface(1u, 505.0, 0));
+  on_time.push_back(make_surface(2u, 101.5, kNow1));
+  on_time.push_back(make_surface(3u, 199.0, kNow1));
+  auto set0 = SurfaceSet::create(pointers(s0));
+  auto set2 = SurfaceSet::create(pointers(s2));
+  auto bad1 = SurfaceSet::create(pointers(mismatched));
+  auto good1 = SurfaceSet::create(pointers(on_time));
+  ASSERT_TRUE(set0 && set2 && bad1 && good1);
+  HistoricalVarConfig cfg;
+  cfg.n_threads = 1;
+
+  const std::vector<DispersionVarSnapshot> bad = {
+      {kNow0, &*set0}, {kNow1, &*bad1}, {kNow2, &*set2}};
+  const auto refused = dispersion_book_var(*book, maturity, bad, cfg);
+  ASSERT_FALSE(refused) << "a surface stamped a day early was accepted next to an untimed one";
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+
+  const std::vector<DispersionVarSnapshot> good = {
+      {kNow0, &*set0}, {kNow1, &*good1}, {kNow2, &*set2}};
+  const auto accepted = dispersion_book_var(*book, maturity, good, cfg);
+  ASSERT_TRUE(accepted) << (accepted ? std::string{} : accepted.error().to_string());
+  EXPECT_EQ(accepted->var.frames.size(), 2u);
 }
 
 // ── (h) Mark divergence collector (L10) ───────────────────────────────────────

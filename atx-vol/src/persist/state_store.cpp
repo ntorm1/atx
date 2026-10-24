@@ -241,7 +241,10 @@ try_skip(const Slot &slot, const fs::path &day, const StateStoreBuildOptions &op
   }
   auto dir = PersistDirectory::open(day.string());
   if (!dir) return std::nullopt;
-  PersistOpenOptions o = market_state_open_options(slot.existing->file_size);
+  // Full at ANY size (review 2): the skip check is off the latency path (~50 ms Full
+  // against the ~1.8 s load it saves), and a Framing check would let payload damage in a
+  // published bucket survive every rebuild while its fingerprint matches.
+  PersistOpenOptions o = kMarketStateOpenDefaults;
   o.expected_size = slot.existing->file_size;
   auto archive = MarketStateArchive::open(dir->path(*slot.existing), o);
   if (!archive || archive->has_extras() != opt.include_extras ||

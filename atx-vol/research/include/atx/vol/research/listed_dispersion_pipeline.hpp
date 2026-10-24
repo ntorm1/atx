@@ -26,7 +26,7 @@
 #include "atx/vol/api/marketdata/corpus.hpp"                     // CorpusAdmissionRule
 #include "atx/vol/api/backtest/dispersion.hpp"                 // DispersionBook
 #include "atx/vol/research/dispersion_workflow.hpp"        // RunSpec, batch_spec
-#include "analytics/historical_projection.hpp"      // HistoricalProjection{Scenario,Frame,Config}, ProjectedHistoricalVar
+#include "atx/vol/api/risk/historical_var.hpp"       // HistoricalVarConfig, HistoricalVarResult
 #include "atx/vol/api/backtest/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
 #include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/api/backtest/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
@@ -392,71 +392,83 @@ make_mark_divergence_observer(const ListedDispersionSchedule &schedule,
                               std::vector<ListedMarkDivergenceRow> &out);
 
 // ── Projected relative-template VaR (M8) ────────────────────────────────────────
+//
+// BREAKING (risk-engine sprint 2026-10-24, design D13). The VaR is one-period historical
+// simulation on the risk engine (`api/risk/historical_var.hpp`): the scenarios are the
+// CONSECUTIVE pairs of the historical surface sets (set_i -> set_{i+1}, so N sets give N - 1
+// scenarios), each scenario's loss is minus the P&L of the as-of book's relative templates
+// resolved on set_i and explained to set_{i+1}, and the summary is nearest-rank VaR / ES per
+// confidence with the Greek attribution of the tail. It used to re-value the templates on
+// every set and measure each value against the LAST set's value (a level difference, not a
+// one-period P&L); that pipeline (`historical_projection` / `var`) is deleted.
 
-// The materialized output of the book-projected historical VaR: the per-scenario
-// aggregate frames, the scenario-major per-leg projections, one risk summary per
-// requested confidence, and the position count. The CLI serializes these into its
-// three bespoke loose-TSV schemas (projected_risk_scenarios / projected_risk_legs /
-// projected_var) — out-of-archive per the design partition rule, so NOT folded into
-// run.atxrun this wave (no schema bump). The library owns the economics; the CLI the
-// serialization.
+// One historical surface set at its valuation instant, borrowed for the call.
+struct DispersionVarSnapshot {
+  std::int64_t ts_ns{0};
+  const SurfaceSet *surfaces{nullptr};
+};
+
+// The materialized output: the engine's result (one frame per consecutive pair, one point
+// per confidence, the tail attribution), the scenario-major per-template resolutions on
+// each pair's BASE set, the position count, and the identity of the relative templates.
+// The run route serializes these into its loose-TSV triple (projected_risk_scenarios /
+// projected_risk_legs / projected_var) — out-of-archive per the design partition rule. The
+// library owns the economics; the route the serialization.
 struct DispersionBookVar {
-  std::vector<HistoricalProjectionFrame> frames; // one per scenario, scenario order
-  std::vector<ProjectedOption> legs;             // scenario-major: scenarios * n_positions
-  std::vector<ProjectedHistoricalVar> risks;     // one per requested confidence, input order
-  std::size_t n_positions{0};                    // == book.positions.size()
-  // The prepared relative-template projection's identity hash
-  // (`PreparedHistoricalProjection::fingerprint()`), surfaced so the CLI can emit
-  // the `projected_var.tsv` provenance column without rebuilding the projection.
+  HistoricalVarResult var;        // frames: n_snapshots - 1; points: one per confidence
+  std::vector<ResolvedTheo> legs; // scenario-major: frames x n_positions, base-set resolutions
+  std::size_t n_positions{0};     // == book.positions.size()
+  // Hash of the relative templates and their quantities (uid, side, multiplier, maturity,
+  // strike coordinate, qty), surfaced so the route can emit the `prepared_fingerprint`
+  // provenance column without rebuilding the templates. Never 0.
   std::uint64_t prepared_fingerprint{0};
 };
 
-// Bounded-input form of `dispersion_book_var`. The library still owns book ->
-// relative-template synthesis, output allocation, incomplete-frame rejection and
-// VaR/ES calculation; `evaluate` owns only how scenario SurfaceSets are supplied
-// to the already-prepared projection. File-oriented callers can therefore load
-// sealed, subsetted snapshots in bounded batches instead of retaining every
-// archive to satisfy HistoricalProjectionScenario's borrowed pointer.
-using DispersionProjectionEvaluator = std::function<Status(
-    const PreparedHistoricalProjection &prepared, std::span<HistoricalProjectionFrame> frames,
-    std::span<ProjectedOption> legs, const HistoricalProjectionConfig &config)>;
+// Runs the scenarios of one WINDOW of consecutive snapshots: `window[k]` is snapshot
+// `first_snapshot + k` of the history and the window covers the pairs (k, k + 1) for k in
+// [0, window.size() - 1). The sets only need to stay alive for the call.
+using DispersionVarWindow = std::function<Status(
+    std::span<const DispersionVarSnapshot> window, std::size_t first_snapshot)>;
+
+// Bounded-input form: `evaluate` supplies the history in windows so a file-oriented caller
+// loads sealed, subsetted snapshots in bounded batches instead of retaining every archive.
+// It must call `run_window` so that every pair (i, i + 1), i in [0, n_snapshots - 1), is
+// covered exactly once (windows overlap by one snapshot); a pair left uncovered or covered
+// twice is InvalidArgument. The library still owns book -> template synthesis, output
+// allocation, the incomplete-scenario gate and the VaR / ES calculation.
+using DispersionProjectionEvaluator = std::function<Status(const DispersionVarWindow &run_window)>;
 
 [[nodiscard]] Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
-                    std::size_t n_scenarios, std::span<const double> confidences,
-                    const DispersionProjectionEvaluator &evaluate,
-                    const HistoricalProjectionConfig &cfg = {});
+                    std::size_t n_snapshots, const DispersionProjectionEvaluator &evaluate,
+                    const HistoricalVarConfig &cfg = {});
 
-// Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec synthesis
-// + PreparedHistoricalProjection::evaluate_into + projected_historical_var per
-// confidence (spy_dispersion_backtest.cpp:1119-1194). Each book position becomes a
-// relative template — same uid / side / multiplier / qty, ATM-forward strike, and the
-// caller's relative `maturity` — then the templates are re-projected onto every
-// historical `scenario` and the loss quantile is split per requested confidence.
+// Each book position becomes a relative template — same uid / side / multiplier / qty, an
+// ATM-forward strike (`StrikeCoord::log_moneyness(0)`) and the caller's relative `maturity`
+// (YearFraction and CalendarDays map to a fixed year-fraction TTE, `MaturitySpec::years_of`,
+// so every scenario re-ages the option to `base_valuation + maturity` exactly as before;
+// CalendarMonths and AbsoluteExpiry map to their `MaturitySpec` namesakes). The templates
+// are resolved on every pair's base set and explained to its shifted set with
+// `cfg.kernel` (family by default) and `cfg.explain`; the points are over `cfg.confidences`.
 //
-// `maturity` is the CLI's `dispersion.projected_maturity` (spy_dispersion_backtest
-// .cpp:1124), which is defined at :1114 OUTSIDE the :1119-1194 lift range and so is a
-// required input here (the plan's book-only signature omitted it). It MUST be the
-// relative template (`ProjectedMaturitySpec::days(N)`), NOT an absolute expiry: the
-// point of relative-template historical VaR is that each scenario re-ages the option
-// to `scenario_valuation + maturity`; substituting the book's absolute projected
-// expiry would freeze the tenor and change every non-entry scenario's risk.
+// `maturity` MUST be the relative template (`ProjectedMaturitySpec::days(N)`), NOT an
+// absolute expiry: substituting the book's absolute projected expiry freezes the tenor.
 //
-// UNITS: this function applies NO vega scaling — the book handed in is already
-// sized. (It never should again: E1 redefined `DispersionConfig::target_vega` as
-// dollars per VOL POINT, which abolished the CLI's `* 100.0` per-vol-point →
-// per-unit-vol boundary entirely. The `kVegaVolPointToUnitVol` constant this note
-// used to name was deleted as dead in the C-2 follow-up; see the top of this file.)
+// States: `market_state_from_surfaces(snapshot.ts_ns, cfg.projection.time, surfaces of the
+// book's uids)` with the timestamps checked (a surface's own `now_ts_ns` must equal the
+// snapshot's); a surface that carries no timestamp (`now_ts_ns <= 0`) is measured from the
+// snapshot's instant instead. A uid absent from a set leaves its templates unresolved there.
 //
-// Returns Err(Unavailable) if any scenario projected an incomplete frame
-// (n_failed != 0), matching the CLI's post-projection gate (:1175-1178); on that path
-// no VaR is meaningful. On success `risks` carries one summary per confidence (loss =
-// frames.back().value - scenario.value, the CLI's reference at :1188). The CLI keeps
-// the loose-TSV writes (T9).
+// UNITS: no vega scaling — the book handed in is already sized (E1 defined
+// `DispersionConfig::target_vega` as dollars per VOL POINT).
+//
+// Errors: InvalidArgument for fewer than two snapshots, an empty book, a null set or a
+// timestamp mismatch; Unavailable when any scenario is incomplete (an unresolved template or
+// a pair the engine did not admit) — a VaR over a partially-failed book is not this book's
+// VaR, so no summary is produced on that path (the route errors before writing).
 [[nodiscard]] Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
-                    std::span<const HistoricalProjectionScenario> scenarios,
-                    std::span<const double> confidences,
-                    const HistoricalProjectionConfig &cfg = {});
+                    std::span<const DispersionVarSnapshot> snapshots,
+                    const HistoricalVarConfig &cfg = {});
 
 } // namespace atx::vol

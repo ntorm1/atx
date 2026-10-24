@@ -15,6 +15,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -31,6 +32,14 @@
 #include "atx/vol/api/persist/persist_format.hpp"
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
 #include <process.h>
 #else
 #include <unistd.h>
@@ -175,6 +184,23 @@ template <class T> void store(std::vector<std::byte> &img, std::size_t at, const
   return 0;
 }
 
+// A well-formed zstd frame that RECORDS `claim` content bytes but carries one 1000-byte
+// RLE block: header (magic, FHD 0xC0 = 8-byte content size, window 128 KiB), the size,
+// one last RLE block, its byte. Self-consistent to every frame-level check; only a walk
+// of the block headers shows the body cannot produce the claim.
+[[nodiscard]] std::vector<std::byte> tiny_body_frame(std::uint64_t claim) {
+  std::vector<std::uint8_t> f{0x28, 0xB5, 0x2F, 0xFD, 0xC0, 0x38};
+  for (int k = 0; k < 8; ++k) f.push_back(static_cast<std::uint8_t>(claim >> (8 * k)));
+  const std::uint32_t block = 1u | (1u << 1) | (1000u << 3); // last, RLE, 1000 bytes
+  f.push_back(static_cast<std::uint8_t>(block & 0xFFu));
+  f.push_back(static_cast<std::uint8_t>((block >> 8) & 0xFFu));
+  f.push_back(static_cast<std::uint8_t>((block >> 16) & 0xFFu));
+  f.push_back(0x00);
+  std::vector<std::byte> out(f.size());
+  std::memcpy(out.data(), f.data(), f.size());
+  return out;
+}
+
 // Recompute table CRC -> header CRC -> footer copies -> footer CRC (and the whole-file
 // CRC), so a mutation survives every checksum that guards it.
 void reseal(std::vector<std::byte> &img) {
@@ -211,6 +237,35 @@ void mutate_footer(std::vector<std::byte> &img, const std::function<void(Persist
   f.footer_crc32c = 0;
   f.footer_crc32c = persist_crc32c(std::as_bytes(std::span{&f, 1}));
   store(img, footer_at(img), f);
+}
+
+// Section 5 (the sample's zstd + shuffle section) becomes `tiny_body_frame(claim)`,
+// declared as `claim` raw bytes, every checksum resealed.
+void install_claim(std::vector<std::byte> &img, std::uint64_t claim) {
+  const std::vector<std::byte> frame = tiny_body_frame(claim);
+  const PersistSectionEntry e = entry_of(img, 5);
+  ASSERT_LE(frame.size(), e.length);
+  std::memcpy(img.data() + e.offset, frame.data(), frame.size());
+  std::fill(img.begin() + static_cast<std::ptrdiff_t>(e.offset + frame.size()),
+            img.begin() + static_cast<std::ptrdiff_t>(e.offset + e.length), std::byte{0});
+  const std::uint32_t crc = persist_crc32c(std::span<const std::byte>{frame});
+  mutate_entry(img, 5, [&](PersistSectionEntry &x) {
+    x.length = frame.size();
+    x.raw_length = claim;
+    x.element_count = claim / x.element_stride;
+    x.crc32c = crc;
+  });
+}
+
+// Peak committed bytes of this process (0 where not measured).
+[[nodiscard]] std::uint64_t peak_commit_bytes() {
+#if defined(_WIN32)
+  PROCESS_MEMORY_COUNTERS pmc{};
+  if (::GetProcessMemoryInfo(::GetCurrentProcess(), &pmc, sizeof pmc) != FALSE) {
+    return static_cast<std::uint64_t>(pmc.PeakPagefileUsage);
+  }
+#endif
+  return 0;
 }
 
 } // namespace
@@ -522,6 +577,10 @@ using Img = std::vector<std::byte>;
                    e.element_count = e.raw_length / e.element_stride;
                  });
                }, V::Framing, S::CodecError});
+  // A frame that consistently claims the 2^32 cap with an 18-byte body (review 2): refused
+  // from the block headers, before the claimed size is allocated.
+  c.push_back({"codec-claim-tiny-body", [](Img &i) { install_claim(i, std::uint64_t{1} << 32); },
+               V::Framing, S::CodecError});
   c.push_back({"filter-without-codec", [](Img &i) {
                  mutate_entry(i, 2, [](PersistSectionEntry &e) { e.filter = 1; });
                }, V::Full, S::HeaderInvalid});
@@ -683,6 +742,45 @@ TEST(PersistFile, ConcurrentLazyVerifyIsRaceFree) {
             << "round " << round << " thread " << w << " section " << t;
       }
     }
+  }
+}
+
+// Review 2: a self-consistent 256 MiB claim carried by an 18-byte frame used to be
+// allocated (and zero-filled, plus the shuffle scratch: ~512 MiB committed) before the
+// decode refused it. The block-header bound refuses it first.
+TEST(PersistFile, ConsistentHugeCodecClaimIsRefusedBeforeAllocation) {
+  const SampleData d;
+  std::vector<std::byte> img = sample_image(d);
+  install_claim(img, std::uint64_t{1} << 28);
+  const std::uint64_t before = peak_commit_bytes();
+  auto f = open_image(img, PersistVerify::Framing);
+  const std::uint64_t after = peak_commit_bytes();
+  ASSERT_FALSE(f.has_value());
+  EXPECT_EQ(f.error().status, PersistStatus::CodecError);
+  EXPECT_LT(after - before, std::uint64_t{32} << 20)
+      << "peak commit grew by " << ((after - before) >> 20) << " MiB opening an 18-byte frame";
+}
+
+// The most compressible legitimate section (a constant column: zstd emits 4-byte RLE
+// blocks per 128 KiB, the format's ratio ceiling) still round-trips under the codec
+// ratio cap. Measured legitimate MarketState sections top out near 300:1 (2026-10-14).
+TEST(PersistFile, ConstantColumnAtTheCodecRatioCeilingRoundTrips) {
+  const std::vector<double> zeros(std::size_t{1} << 21, 0.0); // 16 MiB
+  for (const PersistFilter filter : {PersistFilter::None, PersistFilter::ByteShuffle}) {
+    const PersistSectionInput in[] = {{16, 1, 0, PersistDType::F64, 8, true, PersistCodec::Zstd,
+                                       filter, 3, std::as_bytes(std::span{zeros})}};
+    auto image = build_persist_file(in, test_info());
+    ASSERT_TRUE(image.has_value());
+    auto f = open_image(*image, PersistVerify::Full);
+    ASSERT_TRUE(f.has_value()) << to_string(f.error().status);
+    const PersistSectionEntry *e = f->entry(16);
+    ASSERT_NE(e, nullptr);
+    const double ratio = static_cast<double>(e->raw_length) / static_cast<double>(e->length);
+    std::printf("[persist] constant 16 MiB column, filter %d: ratio %.0f:1\n",
+                static_cast<int>(filter), ratio);
+    auto v = f->typed<double>(16);
+    ASSERT_TRUE(v.has_value());
+    EXPECT_TRUE(std::all_of(v->begin(), v->end(), [](double x) { return x == 0.0; }));
   }
 }
 

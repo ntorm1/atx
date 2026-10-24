@@ -35,6 +35,7 @@ struct ExpiryBlock {
 struct BlockCounters {
   std::uint64_t families_built{0};
   std::uint64_t carry_sets_built{0};
+  std::uint64_t family_nodes{0}; // sigma nodes over the families built
   double family_build_seconds{0.0};
 };
 
@@ -70,10 +71,13 @@ void write_refused(RiskFrame &f, std::size_t r, RiskLaneStatus status) noexcept;
 // american_greeks_al (analytic) or american_greeks_fd. Unrequested axes are 0.0. A
 // pricer error or a non-finite requested value refuses the row NumericError. A row
 // whose served price sits on intrinsic (the exercise regime: the cold bundle's only
-// edge signal) is flagged NearExerciseEdge. Not noexcept: the solvers may throw
-// bad_alloc, which the executor carries back to the caller.
+// edge signal) is flagged NearExerciseEdge. `geometry`, when given, is an AL geometry
+// prepared for exactly the row's (T, rate, q_eff) and `opts`: the analytic route then
+// prices on it, bit-identical to the fresh call (LEDGER 2026-10-19); the FD route
+// ignores it. Not noexcept: the solvers may throw bad_alloc, which the executor carries
+// back to the caller.
 void cold_row(RiskFrame &f, std::size_t r, double S, double K, Side side, const AlOpts &opts,
-              bool analytic, RiskNeeds needs);
+              bool analytic, RiskNeeds needs, const AlExpiryGeometry *geometry = nullptr);
 
 // The kernels. Preconditions (checked by RiskKernel::evaluate): the frame is sized
 // and cleared for `book`, its per-uid rows filled, `ws` is bound to `book`.

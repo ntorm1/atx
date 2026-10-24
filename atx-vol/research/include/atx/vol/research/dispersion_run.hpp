@@ -882,7 +882,9 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 
 // Envelope gate for the OPTIONAL projected-VaR stage. Absent artifacts are fine
 // (the stage need not have run); a PRESENT summary must have its two companions,
-// the contract header, and a scenario count matching the run's session count —
+// the contract header, and a scenario count of `n_sessions - 1` (one scenario per
+// consecutive session pair, design D13), with every VaR / ES point recomputing bit-for-bit
+// from the stored scenario rows (`summarize_historical_var`) —
 // so a truncated or stale projected-VaR run cannot pass silently. `n_sessions ==
 // 0` skips the count check. Exposed separately so it is testable without a full
 // run dir.

@@ -156,6 +156,179 @@ TEST(RiskBenchArgs, DumpLegsFlags) {
   EXPECT_NE(rb::risk_bench_usage().find("--dump-steps"), std::string::npos);
 }
 
+// --time: the state TimeSpec is Calendar365 by default under BOTH stores (under --store the
+// default clock is `vendor`, whose TimeSpec is Calendar365: RiskBenchArgs.TimeVendor). VolTime
+// reproduces the vendor's `years` only up to the first NYSE early close
+// (SpiderRockStoreReal.LoadsBucket1000 prints the table; docs/risk-bench.md "Clock"), and the
+// synthetic store's vendor columns are priced on the calendar clock.
+TEST(RiskBenchArgs, TimeFlag) {
+  using atx::vol::TimeConvention;
+  EXPECT_EQ(parse({"--store", "s"}).value().time, TimeConvention::Calendar365);
+  EXPECT_EQ(parse({"--synthetic", "s"}).value().time, TimeConvention::Calendar365);
+  EXPECT_EQ(parse({"--store", "s", "--time", "voltime"}).value().time, TimeConvention::VolTime);
+  EXPECT_EQ(parse({"--synthetic", "s", "--time", "voltime"}).value().time,
+            TimeConvention::VolTime);
+  EXPECT_EQ(parse({"--store", "s", "--time", "calendar365"}).value().time,
+            TimeConvention::Calendar365);
+  EXPECT_EQ(parse({"--store", "s", "--time", "vol"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(parse({"--store", "s", "--time"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_STREQ(rb::time_name(TimeConvention::VolTime), "voltime");
+  EXPECT_STREQ(rb::time_name(TimeConvention::Calendar365), "calendar365");
+  EXPECT_NE(rb::risk_bench_usage().find("--time vendor|voltime|calendar365"), std::string::npos);
+}
+
+// Lane E (design D22): --time vendor prices every expiry on the vendor's own `years`
+// (SpiderRockClock::VendorYears; the TimeSpec under it is Calendar365). It is the default
+// under --store; --synthetic defaults to calendar365 (its vendor columns are priced on that
+// clock). The report's inputs.time names the clock the run used.
+TEST(RiskBenchArgs, TimeVendor) {
+  using atx::vol::TimeConvention;
+  const auto store = parse({"--store", "s"});
+  ASSERT_TRUE(store.has_value()) << store.error().to_string();
+  EXPECT_FALSE(store->time_choice.has_value());
+  EXPECT_EQ(rb::bench_time(*store), rb::BenchTime::Vendor);
+  EXPECT_EQ(store->time, TimeConvention::Calendar365);
+  EXPECT_EQ(rb::bench_time(parse({"--synthetic", "s"}).value()), rb::BenchTime::Calendar365);
+  const auto vendor_syn = parse({"--synthetic", "s", "--time", "vendor"});
+  ASSERT_TRUE(vendor_syn.has_value()) << vendor_syn.error().to_string();
+  EXPECT_EQ(rb::bench_time(*vendor_syn), rb::BenchTime::Vendor);
+  EXPECT_EQ(vendor_syn->time, TimeConvention::Calendar365);
+  const auto vol = parse({"--store", "s", "--time", "voltime"});
+  EXPECT_EQ(rb::bench_time(vol.value()), rb::BenchTime::VolTime);
+  EXPECT_EQ(vol.value().time, TimeConvention::VolTime);
+  EXPECT_EQ(rb::bench_time(parse({"--store", "s", "--time", "calendar365"}).value()),
+            rb::BenchTime::Calendar365);
+  EXPECT_EQ(parse({"--store", "s", "--time", "vendors"}).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_STREQ(rb::bench_time_name(rb::BenchTime::Vendor), "vendor");
+  EXPECT_STREQ(rb::bench_time_name(rb::BenchTime::VolTime), "voltime");
+  EXPECT_STREQ(rb::bench_time_name(rb::BenchTime::Calendar365), "calendar365");
+  EXPECT_EQ(rb::report_skeleton(*store).time, "vendor");
+  EXPECT_EQ(rb::report_skeleton(parse({"--synthetic", "s"}).value()).time, "calendar365");
+  EXPECT_EQ(rb::report_skeleton(vol.value()).time, "voltime");
+}
+
+// --sticky-carry on|off (lane E, design D23b): on by default under --store, off under
+// --synthetic (whose Published states have nothing to hold); the report echoes it.
+TEST(RiskBenchArgs, StickyCarry) {
+  const auto store = parse({"--store", "s"});
+  ASSERT_TRUE(store.has_value()) << store.error().to_string();
+  EXPECT_FALSE(store->sticky_carry.has_value());
+  EXPECT_TRUE(rb::bench_sticky_carry(*store));
+  EXPECT_FALSE(rb::bench_sticky_carry(parse({"--synthetic", "s"}).value()));
+  EXPECT_FALSE(rb::bench_sticky_carry(parse({"--store", "s", "--sticky-carry", "off"}).value()));
+  EXPECT_TRUE(
+      rb::bench_sticky_carry(parse({"--synthetic", "s", "--sticky-carry", "on"}).value()));
+  EXPECT_EQ(parse({"--store", "s", "--sticky-carry", "yes"}).error().code(),
+            ErrorCode::InvalidArgument);
+  EXPECT_EQ(parse({"--store", "s", "--sticky-carry"}).error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(rb::risk_bench_usage().find("--sticky-carry on|off"), std::string::npos);
+  EXPECT_TRUE(rb::report_skeleton(*store).sticky_carry);
+  EXPECT_FALSE(rb::report_skeleton(parse({"--synthetic", "s"}).value()).sticky_carry);
+}
+
+// Mode flips between two bucket tables: rows of `cur` whose (uid, expiry) `prev` holds on the
+// other mode; rows only one table has never flip. The flipped keys are appended in order.
+TEST(RiskBenchArgs, ModeFlipsCountChangedRows) {
+  using atx::vol::SpiderRockCarryMode;
+  using atx::vol::SpiderRockExpiryForward;
+  auto row = [](std::uint32_t uid, std::int64_t expiry, SpiderRockCarryMode mode) {
+    SpiderRockExpiryForward f;
+    f.uid = uid;
+    f.expiry_ns = expiry;
+    f.mode = mode;
+    return f;
+  };
+  constexpr auto kI = SpiderRockCarryMode::ImpliedFromCalls;
+  constexpr auto kP = SpiderRockCarryMode::Published;
+  const std::vector<SpiderRockExpiryForward> prev{row(1, 10, kI), row(1, 20, kP), row(2, 10, kI),
+                                                  row(3, 30, kP)};
+  const std::vector<SpiderRockExpiryForward> cur{row(1, 10, kP), row(1, 15, kI), row(1, 20, kP),
+                                                 row(2, 10, kI), row(3, 30, kI), row(4, 5, kP)};
+  std::vector<std::pair<std::uint32_t, std::int64_t>> flipped{{9, 9}};
+  EXPECT_EQ(rb::mode_flips(prev, cur, flipped), 2u);
+  const std::vector<std::pair<std::uint32_t, std::int64_t>> want{{9, 9}, {1, 10}, {3, 30}};
+  EXPECT_EQ(flipped, want);
+  EXPECT_EQ(rb::mode_flips({}, cur, flipped), 0u);
+  EXPECT_EQ(rb::mode_flips(prev, prev, flipped), 0u);
+  EXPECT_EQ(flipped.size(), 3u);
+}
+
+// The carry mode follows the store: Published under --synthetic (its vendor columns are
+// priced on the D4 carry), ImpliedFromCalls under --store.
+TEST(RiskBenchArgs, CarryModeFollowsStore) {
+  using atx::vol::SpiderRockCarryMode;
+  EXPECT_EQ(rb::bench_carry_mode(parse({"--store", "s"}).value()),
+            SpiderRockCarryMode::ImpliedFromCalls);
+  EXPECT_EQ(rb::bench_carry_mode(parse({"--synthetic", "s"}).value()),
+            SpiderRockCarryMode::Published);
+  EXPECT_STREQ(rb::carry_mode_name(SpiderRockCarryMode::Published), "published");
+  EXPECT_STREQ(rb::carry_mode_name(SpiderRockCarryMode::ImpliedFromCalls), "implied_from_calls");
+  EXPECT_EQ(rb::report_skeleton(parse({"--store", "s"}).value()).carry_mode,
+            "implied_from_calls");
+}
+
+// Lane A2: the family-kernel policy overrides. Unset by default (the kernel's own
+// defaults apply); each parses its value; a malformed value is a usage error.
+TEST(RiskBenchArgs, FamilyPolicyFlags) {
+  const auto d = parse({"--store", "s"});
+  ASSERT_TRUE(d.has_value()) << d.error().to_string();
+  EXPECT_FALSE(d->n_sigma.has_value());
+  EXPECT_FALSE(d->n_sigma_min.has_value());
+  EXPECT_FALSE(d->sigma_box_pad.has_value());
+  EXPECT_FALSE(d->sigma_node_spacing.has_value());
+  EXPECT_FALSE(d->family_economics.has_value());
+  EXPECT_FALSE(d->family_dynamic_schedule.has_value());
+  EXPECT_FALSE(d->family_node_cost_us.has_value());
+  EXPECT_FALSE(d->cold_lane_cost_us.has_value());
+  EXPECT_FALSE(d->short_box_tau.has_value());
+  EXPECT_FALSE(d->n_sigma_min_short.has_value());
+  const auto a = parse({"--store", "s", "--n-sigma", "12", "--n-sigma-min", "12",
+                        "--sigma-box-pad", "0.25", "--sigma-node-spacing", "0.1",
+                        "--family-economics", "off", "--family-schedule", "dynamic",
+                        "--family-node-cost-us", "33", "--cold-lane-cost-us", "140.5",
+                        "--short-box-tau", "0.25", "--n-sigma-min-short", "6"});
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  EXPECT_EQ(a->n_sigma, std::optional<std::uint16_t>{12});
+  EXPECT_EQ(a->n_sigma_min, std::optional<std::uint16_t>{12});
+  EXPECT_EQ(a->sigma_box_pad, std::optional<double>{0.25});
+  EXPECT_EQ(a->sigma_node_spacing, std::optional<double>{0.1});
+  EXPECT_EQ(a->family_economics, std::optional<bool>{false});
+  EXPECT_EQ(a->family_dynamic_schedule, std::optional<bool>{true});
+  EXPECT_EQ(a->family_node_cost_us, std::optional<double>{33.0});
+  EXPECT_EQ(a->cold_lane_cost_us, std::optional<double>{140.5});
+  EXPECT_EQ(a->short_box_tau, std::optional<double>{0.25});
+  EXPECT_EQ(a->n_sigma_min_short, std::optional<std::uint16_t>{6});
+  const auto b = parse({"--store", "s", "--family-economics", "on", "--family-schedule", "static"});
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  EXPECT_EQ(b->family_economics, std::optional<bool>{true});
+  EXPECT_EQ(b->family_dynamic_schedule, std::optional<bool>{false});
+  const std::vector<std::vector<const char *>> bad = {
+      {"--store", "s", "--n-sigma", "x"},
+      {"--store", "s", "--n-sigma-min", "70000"},       // overflows uint16
+      {"--store", "s", "--sigma-box-pad", "nan"},
+      {"--store", "s", "--sigma-node-spacing", "0.1x"},
+      {"--store", "s", "--sigma-node-spacing"},
+      {"--store", "s", "--family-economics", "yes"},
+      {"--store", "s", "--family-schedule", "auto"},
+      {"--store", "s", "--cold-lane-cost-us", "inf"},
+      {"--store", "s", "--short-box-tau", "nan"},
+      {"--store", "s", "--short-box-tau"},
+      {"--store", "s", "--n-sigma-min-short", "-1"},
+  };
+  for (const auto &argv : bad) {
+    const auto r = parse(argv);
+    ASSERT_FALSE(r.has_value()) << "accepted case #" << (&argv - bad.data());
+    EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+  }
+  for (const char *flag : {"--n-sigma", "--n-sigma-min", "--sigma-box-pad",
+                           "--sigma-node-spacing", "--family-economics", "--family-schedule",
+                           "--family-node-cost-us", "--cold-lane-cost-us", "--short-box-tau",
+                           "--n-sigma-min-short"}) {
+    EXPECT_NE(rb::risk_bench_usage().find(flag), std::string::npos) << flag;
+  }
+}
+
 // ── RiskBenchBook ───────────────────────────────────────────────────────────
 
 class RiskBenchBook : public ::testing::Test {
@@ -432,6 +605,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   args.synthetic_dir = "syn-store";
   args.kernel = rb::BenchKernel::Both;
   args.determinism = true;
+  args.time = atx::vol::TimeConvention::VolTime;
   rb::RiskBenchReport r = rb::report_skeleton(args);
   r.synthetic_generated = true;
   r.synthetic_seconds = 14.6;
@@ -448,10 +622,22 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   bl.rows_kept = 367664;
   bl.dropped_non_american = 114149;
   bl.dropped_nonstandard_root = 31329;
+  bl.dropped_forward_framework = 4736;
+  bl.pv_divs_from_ddiv_pv = true;
+  bl.n_expiries_implied = 1758;
+  bl.n_expiries_published = 155;
+  bl.max_forward_gap_rel = 0.330673;
+  bl.implied_carry_seconds = 0.0126;
+  bl.n_expiries_vendor_T = 1911;
+  bl.n_expiries_sticky_implied = 41;
+  bl.n_expiries_sticky_published = 7;
+  bl.n_mode_flips = 3;
   bl.rows_null_vendor = 12;
   bl.n_uids = 100;
   bl.max_ddiv_spread = 0.125;
   r.bucket_loads = {bl, bl};
+  r.sticky_carry = true; // lane E (schema v3); --synthetic's default is off
+  r.n_expiries_mode_flipped = 5;
   r.start_state_seconds = 0.033;
   r.start_evaluate_seconds = 0.15;
   for (int k = 0; k < 2; ++k) {
@@ -485,6 +671,7 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
     t.explained_ratio = 32.1 / 99999.0;
     t.axes.delta = 0.1 + k;
     t.axes.vol_resid = -0.25;
+    t.axes.carry = 12.75; // lane E (schema v3)
     t.axis_share.delta = 0.5;
     t.spearman = 0.97;
     t.ks = 0.02;
@@ -503,12 +690,14 @@ TEST(RiskBenchStats, SpearmanKsZonesAndParity) {
   return r;
 }
 
-TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
+TEST(RiskBenchReport, JsonSchemaV3RoundTrip) {
   const rb::RiskBenchReport r = fabricated_report();
   // NaN-valued fields (never-set parity / cold maxima) must survive as null.
   ASSERT_TRUE(std::isnan(r.steps[0].parity_price.mae));
   const std::string text = rb::report_to_json(r);
-  EXPECT_NE(text.find("\"schema_version\": 1"), std::string::npos);
+  EXPECT_EQ(rb::kReportSchemaVersion, 3);
+  EXPECT_NE(text.find("\"schema_version\": 3"), std::string::npos);
+  EXPECT_NE(text.find("\"time\": \"voltime\""), std::string::npos);
   EXPECT_NE(text.find("\"mae\": null"), std::string::npos);
 
   const auto back = rb::report_from_json(text);
@@ -518,6 +707,7 @@ TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
   EXPECT_EQ(rb::report_to_json(*back), text);
   EXPECT_EQ(back->schema_version, rb::kReportSchemaVersion);
   EXPECT_EQ(back->kernel, "both");
+  EXPECT_EQ(back->time, "voltime");
   EXPECT_TRUE(back->synthetic);
   EXPECT_EQ(back->steps.size(), 2u);
   EXPECT_EQ(back->steps[1].ts_from, r.steps[1].ts_from);
@@ -526,6 +716,22 @@ TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
   EXPECT_TRUE(std::isnan(back->steps[0].parity_price.mae));
   EXPECT_EQ(back->steps[0].parity_delta.mae, 1e-7);
   EXPECT_EQ(back->bucket_loads[0].dropped_nonstandard_root, 31329);
+  EXPECT_EQ(back->bucket_loads[0].dropped_forward_framework, 4736);
+  EXPECT_TRUE(back->bucket_loads[0].pv_divs_from_ddiv_pv);
+  EXPECT_EQ(back->bucket_loads[0].n_expiries_implied, 1758u);
+  EXPECT_EQ(back->bucket_loads[0].n_expiries_published, 155u);
+  EXPECT_EQ(back->bucket_loads[0].max_forward_gap_rel, 0.330673);
+  EXPECT_EQ(back->bucket_loads[0].implied_carry_seconds, 0.0126);
+  EXPECT_EQ(back->bucket_loads[0].n_expiries_vendor_T, 1911u);
+  EXPECT_EQ(back->bucket_loads[1].n_expiries_sticky_implied, 41u);
+  EXPECT_EQ(back->bucket_loads[1].n_expiries_sticky_published, 7u);
+  EXPECT_EQ(back->bucket_loads[1].n_mode_flips, 3u);
+  EXPECT_TRUE(back->sticky_carry);
+  EXPECT_NE(text.find("\"sticky_carry\": true"), std::string::npos);
+  EXPECT_EQ(back->n_expiries_mode_flipped, 5u);
+  EXPECT_EQ(back->steps[1].axes.carry, 12.75);
+  EXPECT_NE(text.find("\"carry\": 12.75"), std::string::npos);
+  EXPECT_EQ(back->carry_mode, "published"); // --synthetic
   EXPECT_TRUE(back->summary.determinism_bit_equal);
   EXPECT_EQ(back->summary.cold_speedup_p50, 100.0);
 
@@ -534,10 +740,13 @@ TEST(RiskBenchReport, JsonSchemaV1RoundTrip) {
   EXPECT_DOUBLE_EQ(r.summary.cold_lane_fraction, (2.0 * 76.0) / (2.0 * 9876.0));
   EXPECT_NEAR(r.summary.run_seconds_excl_io, 0.033 + 0.15 + 2 * (0.03 + 0.125), 1e-12);
 
-  // A wrong schema version or a missing field is a ParseError, never a guess.
-  std::string v2 = text;
-  v2.replace(v2.find("\"schema_version\": 1"), 19, "\"schema_version\": 2");
-  EXPECT_EQ(rb::report_from_json(v2).error().code(), ErrorCode::ParseError);
+  // A wrong schema version (a v1 / v2 report: it lacks the later fields) or a missing field
+  // is a ParseError, never a guess.
+  for (const char *old : {"\"schema_version\": 1", "\"schema_version\": 2"}) {
+    std::string v = text;
+    v.replace(v.find("\"schema_version\": 3"), 19, old);
+    EXPECT_EQ(rb::report_from_json(v).error().code(), ErrorCode::ParseError) << old;
+  }
   std::string missing = text;
   missing.replace(missing.find("\"tool\""), 6, "\"tooX\"");
   EXPECT_EQ(rb::report_from_json(missing).error().code(), ErrorCode::ParseError);
@@ -609,6 +818,7 @@ TEST(RiskBenchReport, MarkdownListsFrameCountsPerStep) {
   b.ddiv = {1.5};
   b.bid = {10.4};
   b.ask = {10.6};
+  b.syn_spot = {455.25};
   return b;
 }
 
@@ -647,6 +857,9 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   row.carry_rate = 0.04;
   row.carry_q = 0.01;
   row.pv_divs = 1.5;
+  row.carry_mode = "implied_from_calls";
+  row.implied_forward = 455.5;
+  row.published_forward = 454.25;
   row.route = "Family";
   row.flags = "VendorParityAvailable|ColdFallback";
   row.status = "Ok";
@@ -664,6 +877,8 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   row.pnl_total = 12.5;
   row.pnl_delta = 10.0;
   row.pnl_unexplained = 0.25;
+  row.T_vendor = 0.1025;
+  row.pnl_carry = -1.75;
 
   std::string out;
   rb::append_leg_dump_csv(out, row);
@@ -695,6 +910,11 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("q_eff"), "0.02");
   EXPECT_EQ(cell("carry_source"), "term_carry");
   EXPECT_EQ(cell("pv_divs"), "1.5");
+  EXPECT_EQ(cell("carry_mode"), "implied_from_calls");
+  EXPECT_EQ(cell("implied_forward"), "455.5");
+  EXPECT_EQ(cell("published_forward"), "454.25");
+  EXPECT_EQ(cell("sr_synspot"), "455.25");
+  EXPECT_EQ(names.size(), 69u);
   EXPECT_EQ(cell("route"), "Family");
   EXPECT_EQ(cell("flags"), "VendorParityAvailable|ColdFallback");
   EXPECT_EQ(cell("status"), "Ok");
@@ -726,11 +946,23 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(cell("pnl_delta"), "10");
   EXPECT_EQ(cell("pnl_gamma"), "");
   EXPECT_EQ(cell("pnl_unexplained"), "0.25");
+  EXPECT_EQ(cell("T_vendor"), "0.1025");
+  EXPECT_EQ(cell("pnl_carry"), "-1.75");
+  // Lane E appended T_vendor, pnl_carry: the earlier 67 columns keep their positions.
+  EXPECT_EQ(names[names.size() - 2u], "T_vendor");
+  EXPECT_EQ(names.back(), "pnl_carry");
+  EXPECT_EQ(names[66], "pnl_unexplained");
 
-  // No vendor mark => no price error; flat carry labelled as such.
+  // No vendor mark => no price error; flat carry labelled as such; a store without
+  // synSpot and a uid without a carry row leave those cells empty.
   row.vendor_price = std::numeric_limits<double>::quiet_NaN();
   row.carry_source = rb::CarrySource::Flat;
   row.ticker = "SPY";
+  row.carry_mode.clear();
+  row.implied_forward = std::numeric_limits<double>::quiet_NaN();
+  atx::vol::SpiderRockBucket no_syn = one_row_bucket(*expiry);
+  no_syn.syn_spot.clear();
+  rb::set_leg_dump_vendor(row, no_syn, 0);
   std::string flat;
   rb::append_leg_dump_csv(flat, row);
   const std::vector<std::string> fc = csv_line_cells(flat);
@@ -742,6 +974,9 @@ TEST(RiskBenchReport, LegDumpCsvFormat) {
   EXPECT_EQ(at("price_abs_err"), "");
   EXPECT_EQ(at("price_sym_rel"), "");
   EXPECT_EQ(at("carry_source"), "flat");
+  EXPECT_EQ(at("carry_mode"), "");
+  EXPECT_EQ(at("implied_forward"), "");
+  EXPECT_EQ(at("sr_synspot"), "");
   EXPECT_EQ(flat.find('"'), std::string::npos);
 
   // Prepared-row order (ties by leg index) and the --dump-steps selection.

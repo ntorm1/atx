@@ -3,7 +3,12 @@
 // per group: one AlSigmaFamily over the group's sigma box (+ a carry-bump set only
 // when rho is needed), then family_greeks per lane. Lanes the family cannot serve
 // (outside the box, tau below the family floor, near the exercise edge, a refused
-// requested Greek) are priced cold in a second pass over the same block.
+// requested Greek) are priced cold in a second pass over the same block, and so is
+// every lane of a group whose family would cost more than pricing its lanes cold
+// (FamilyKernelPolicy "FAMILY ECONOMICS"; flagged FamilyUneconomic). Every block prepares
+// its geometry, also below the family's tau floor (no family there: ShortTenor), and the
+// cold pass prices a lane ON it when the lane's carry is the block's -- bit-identical to
+// the fresh american_greeks_al (LEDGER 2026-10-19), minus the per-lane setup.
 
 #include <algorithm>
 #include <bit>
@@ -157,11 +162,58 @@ struct BlockCarry {
   double T{0.0};
   double rate{0.0};
   double q_eff{0.0};
-  bool geometry_ok{false};
+  bool geometry_ok{false}; // T >= kAlSigmaFamilyMinTau: a family may be built on it
 };
+
+// Whether row `r` resolved to exactly the block's carry (it may then use the geometry).
+[[nodiscard]] bool on_block_carry(const RiskFrame &f, std::size_t r,
+                                  const BlockCarry &carry) noexcept {
+  return same_bits(f.T[r], carry.T) && same_bits(f.rate[r], carry.rate) &&
+         same_bits(f.q_eff[r], carry.q_eff);
+}
 
 [[nodiscard]] bool eligible(const BlockCtx &c, std::size_t r) noexcept {
   return c.out.status[r] == RiskLaneStatus::Ok && c.ws.cold[r] == 0u;
+}
+
+// FamilyKernelPolicy "ADAPTIVE NODE COUNT": ceil(log(hi / lo) / spacing) + 1 clamped to
+// [floor, n_sigma], floor = min(n_sigma_min, n_sigma) (the ceiling wins), or
+// min(n_sigma_min_short, n_sigma) for a block of tenor T < short_box_tau ("SHORT-TENOR
+// NODE FLOOR"). Clamped in double before the cast (an out-of-range float-to-integer
+// conversion is UB); a non-finite ratio takes the floor count.
+[[nodiscard]] std::uint16_t node_count(const FamilyKernelPolicy &p, double T, double lo,
+                                       double hi) noexcept {
+  const std::uint16_t block_floor = T < p.short_box_tau ? p.n_sigma_min_short : p.n_sigma_min;
+  const std::uint16_t floor = std::min(block_floor, p.n_sigma);
+  const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
+  if (!(want > static_cast<double>(floor))) {
+    return floor;
+  }
+  if (want >= static_cast<double>(p.n_sigma)) {
+    return p.n_sigma;
+  }
+  return static_cast<std::uint16_t>(want);
+}
+
+// FamilyKernelPolicy "FAMILY ECONOMICS": whether a family of `n_nodes` sigma nodes costs at
+// least the cold-analytic route of its `n_eligible` lanes. Under rho a carry set builds two
+// rate-bumped families beside the base one (x3) and a cold lane adds two rate-bumped solves
+// to its five (x7/5). Reads only the group's shape and the policy constants, never a clock,
+// so the decision is the same for every thread count. Off without an analytic cold route
+// (no cold route at all, or the FD one, which the constants do not describe).
+[[nodiscard]] bool family_uneconomic(const BlockCtx &c, std::uint32_t n_eligible,
+                                     std::uint16_t n_nodes) noexcept {
+  const FamilyKernelPolicy &p = c.policy;
+  if (!(p.family_economics && p.cold_fallback && p.analytic_cold)) {
+    return false;
+  }
+  constexpr double kRhoFamilyScale = 3.0;
+  constexpr double kRhoColdScale = 7.0 / 5.0;
+  const double family_us = static_cast<double>(n_nodes) * p.family_node_cost_us *
+                           (c.needs.rho ? kRhoFamilyScale : 1.0);
+  const double cold_us = static_cast<double>(n_eligible) * p.cold_lane_cost_us *
+                         (c.needs.rho ? kRhoColdScale : 1.0);
+  return family_us >= cold_us;
 }
 
 void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const BlockCarry &carry,
@@ -176,10 +228,13 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
     if (f.status[r] != RiskLaneStatus::Ok) {
       continue;
     }
-    const bool on_geometry = carry.geometry_ok && same_bits(f.T[r], carry.T) &&
-                             same_bits(f.rate[r], carry.rate) && same_bits(f.q_eff[r], carry.q_eff);
-    if (!on_geometry) {
-      send_cold(c, r, static_cast<RiskFlags>(RiskFlag::ColdFallback));
+    if (!(carry.geometry_ok && on_block_carry(f, r, carry))) {
+      // No family can serve it: below the family's tau floor (ShortTenor), or off the
+      // block's geometry.
+      const RiskFlags why = f.T[r] < kAlSigmaFamilyMinTau
+                                ? RiskFlag::ColdFallback | RiskFlag::ShortTenor
+                                : static_cast<RiskFlags>(RiskFlag::ColdFallback);
+      send_cold(c, r, why);
       continue;
     }
     smin = std::min(smin, f.sigma[r]);
@@ -213,6 +268,15 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
     lo = std::max(centre * (1.0 - pad), floor);
     hi = centre * (1.0 + pad);
   }
+  const std::uint16_t n_nodes = node_count(c.policy, carry.T, lo, hi);
+  if (family_uneconomic(c, n_eligible, n_nodes)) {
+    for (std::uint32_t r = grp.begin; r < grp.end; ++r) {
+      if (eligible(c, r)) {
+        send_cold(c, r, static_cast<RiskFlags>(RiskFlag::FamilyUneconomic));
+      }
+    }
+    return;
+  }
 
   // The anchor: spot for a call family (McDonald-Schroder internal strike). For a put
   // family the group's MEDIAN eligible strike: the family serves the other strikes by
@@ -240,10 +304,11 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
   if (!(slot.has_value() && slot->side() == grp.side && same_bits(slot->anchor(), anchor))) {
     slot.emplace(c.ws.geometry[b], grp.side, anchor);
   }
-  const Status built = slot->prepare(lo, hi, c.policy.n_sigma, AlSigmaFamilyAxis::LogSigma);
+  const Status built = slot->prepare(lo, hi, n_nodes, AlSigmaFamilyAxis::LogSigma);
   bool carry_ok = true;
   if (built.has_value()) {
     ++bc.families_built;
+    bc.family_nodes += n_nodes;
     if (c.needs.rho) {
       carry_ok = c.ws.carry[gi].prepare(*slot, Mask{Mask::kRho}).has_value();
       if (carry_ok) {
@@ -314,11 +379,13 @@ void process_block(const BlockCtx &c, std::size_t b) {
   const double S = c.state.underlier(uid)->spot; // an Ok lane implies the underlier
   const AlOpts opts = resolve_al_opts(c.policy.al_opts, c.state, uid);
 
-  // 2. One geometry per (uid, expiry), prepared in place (no allocation once warm).
+  // 2. One geometry per (uid, expiry), prepared in place (no allocation once warm). Also
+  // below the family's tau floor (~4 us), where it serves the cold pass alone; only the
+  // family-capable blocks bill it to family_build_seconds.
   carry.geometry_ok = carry.T >= kAlSigmaFamilyMinTau;
+  const Clock::time_point t0 = Clock::now();
+  c.ws.geometry[b].prepare(carry.T, carry.rate, carry.q_eff, std::optional<AlOpts>{opts});
   if (carry.geometry_ok) {
-    const Clock::time_point t0 = Clock::now();
-    c.ws.geometry[b].prepare(carry.T, carry.rate, carry.q_eff, std::optional<AlOpts>{opts});
     bc.family_build_seconds += seconds_since(t0);
   }
 
@@ -327,12 +394,15 @@ void process_block(const BlockCtx &c, std::size_t b) {
     family_group(c, b, gi, carry, S, bc);
   }
 
-  // 4. Second pass: the block's cold list on the resolved inputs.
+  // 4. Second pass: the block's cold list on the resolved inputs, on the block geometry
+  // when the lane's carry is the block's.
+  const AlExpiryGeometry &geometry = c.ws.geometry[b];
   for (std::uint32_t gi = blk.group_begin; gi < blk.group_end; ++gi) {
     const RiskGroup &grp = groups[gi];
     for (std::uint32_t r = grp.begin; r < grp.end; ++r) {
       if (c.ws.cold[r] != 0u) {
-        cold_row(c.out, r, S, strike[r], grp.side, opts, c.policy.analytic_cold, c.needs);
+        const AlExpiryGeometry *geo = on_block_carry(c.out, r, carry) ? &geometry : nullptr;
+        cold_row(c.out, r, S, strike[r], grp.side, opts, c.policy.analytic_cold, c.needs, geo);
       }
     }
   }
@@ -344,8 +414,13 @@ void evaluate_family(const PreparedRiskBook &book, const MarketState &state, Ris
                      const FamilyKernelPolicy &policy, RiskFrame &out, WorkspaceState &ws) {
   const BlockCtx c{book, state, needs, policy, out, ws, mask_of(needs)};
   // Each block is owned by exactly one worker: it writes only its own rows, its own
-  // geometry / family / carry slots and its own counters, so the frame does not
-  // depend on the thread count.
+  // geometry / family / carry slots and its own counters, so the frame depends neither
+  // on the thread count nor on which worker claims which block (the schedule).
+  if (policy.dynamic_schedule) {
+    pricing_executor().run_dynamic(ws.blocks.size(), policy.n_threads,
+                                   [&c](std::size_t b, unsigned) { process_block(c, b); });
+    return;
+  }
   pricing_executor().run_blocks(ws.blocks.size(), policy.n_threads,
                                 [&c](std::size_t b) { process_block(c, b); });
 }

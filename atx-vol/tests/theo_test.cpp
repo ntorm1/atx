@@ -977,7 +977,7 @@ TEST_F(TheoEngineTest, MakeEventVarOverlayRejectsNegativeEmoveMarket) {
 namespace {
 
 // Writes `content` to a fresh temp file; removed when the guard goes out of
-// scope. Mirrors var_test.cpp's `ScopedTempDirectory` for a single-file
+// scope: a scoped temp-directory guard reduced to one file, for a single-file
 // fixture instead of a directory tree (Task 5/6 loader tests write their
 // input fixtures the same way -- see bev_label_factory.cpp's dividends
 // loader test fixtures / earnings_forecast_loader_test.cpp's convention).

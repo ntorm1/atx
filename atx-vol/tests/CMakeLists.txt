@@ -480,6 +480,7 @@ add_executable(atx-vol-tests
     test_paths_test.cpp
     arb_test.cpp
     risk_book_test.cpp
+    risk_historical_var_test.cpp
     risk_kernel_test.cpp
     risk_market_state_test.cpp
     risk_pnl_explain_test.cpp
@@ -539,10 +540,6 @@ add_executable(atx-vol-tests
     batch_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
-    historical_projection_test.cpp
-    var_test.cpp
-    var_report_test.cpp
-    var_validation_test.cpp
     american_iv_test.cpp
     american_iv_batch_test.cpp
     dividend_test.cpp
