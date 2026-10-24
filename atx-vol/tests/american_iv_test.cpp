@@ -3489,6 +3489,186 @@ TEST(AmericanIvPremium, BatchedEnclosuresKeepScalarDecisionsAndCertifiedEnds) {
   EXPECT_GT(retry_prices, 0u);
 }
 
+TEST(AmericanIvPremium, EconomicFamilyCandidatesCarryColdPriceAndFloorEvidence) {
+  using namespace atx::vol;
+  std::size_t accepted = 0;
+  for (const Side side : {Side::Put, Side::Call}) {
+    const auto geometry = prepare_al_geometry(0.5, 0.04, 0.012);
+    AlSigmaQFamily family(geometry, side, 100.0);
+    ASSERT_TRUE(family.prepare(0.05, 0.6, 16, 0.011, 0.013, 4));
+    const auto envelope = build_family_error_envelope(family);
+    ASSERT_TRUE(envelope.covered());
+    std::vector<IvNativeBatchRequest> requests;
+    for (const double K : {90.0, 100.0, 110.0}) {
+      for (const double sigma : {0.15, 0.25, 0.45}) {
+        const auto price = andersen_lake(100.0, K, 0.5, sigma, 0.04, 0.012, side);
+        ASSERT_TRUE(price);
+        requests.push_back({*price, 100.0, K, 0.5, 0.04, 0.012, side, 1e-7});
+      }
+    }
+    std::vector<IvPremiumPrepared> prepared(requests.size());
+    std::vector<double> budgets(requests.size(), 0.001);
+    IvNativeBatchWork work;
+    iv_native_prepare_lanes(family, nullptr, requests, prepared, false, work);
+    iv_native_prepare_economic(family, &envelope, requests, budgets, prepared,
+                               std::nullopt, false, work);
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      const auto &request = requests[i];
+      const auto &proof = prepared[i].economic;
+      const auto sigma = iv_native_economic_candidate(family, &envelope, request,
+          budgets[i], prepared[i], std::nullopt);
+      if (!sigma) continue;
+      ++accepted;
+      EXPECT_FALSE(prepared[i].enclosure.valid);
+      EXPECT_FALSE(prepared[i].confirm.valid);
+      EXPECT_LT(*sigma, prepared[i].lane.sigma);
+      EXPECT_GT(*sigma, kIvMin);
+      EXPECT_GT(proof.price_lower, iv_premium_edge_band_top(request.S, request.K,
+          request.T, request.r, request.q, request.side, std::nullopt));
+      EXPECT_LT(proof.price_upper, request.price);
+      EXPECT_LE(proof.bound_price, budgets[i]);
+      const auto cold = andersen_lake(request.S, request.K, request.T, *sigma,
+          request.r, request.q, request.side);
+      const auto floor = andersen_lake(request.S, request.K, request.T, kIvMin,
+          request.r, request.q, request.side);
+      ASSERT_TRUE(cold && floor);
+      EXPECT_GT(request.price, *floor);
+      EXPECT_LE(proof.price_lower, *cold);
+      EXPECT_GE(proof.price_upper, *cold);
+      EXPECT_LE(std::abs(*cold - request.price), budgets[i]);
+      EXPECT_FALSE(iv_native_economic_candidate(family, &envelope, request,
+          budgets[i] * 0.1, prepared[i], std::nullopt));
+      auto changed = request;
+      changed.price = std::nextafter(changed.price, 0.0);
+      EXPECT_FALSE(iv_native_economic_candidate(family, &envelope, changed,
+          budgets[i], prepared[i], std::nullopt));
+    }
+    EXPECT_GT(work.economic_prices, 0u);
+    EXPECT_EQ(work.enclosures, 0u);
+    EXPECT_EQ(work.confirms, 0u);
+    for (const double budget : {0.0, 1e-16}) {
+      std::fill(budgets.begin(), budgets.end(), budget);
+      iv_native_prepare_economic(family, &envelope, requests, budgets, prepared,
+                                 std::nullopt, false, work);
+      for (const auto &p : prepared) EXPECT_FALSE(p.economic.valid);
+    }
+  }
+  EXPECT_GE(accepted, 12u);
+}
+
+TEST(AmericanIvPremium, EconomicFamilyCandidatesRejectStaleIdentityAndUnsafeProposals) {
+  using namespace atx::vol;
+  auto geometry = prepare_al_geometry(0.5, 0.04, 0.012);
+  AlSigmaQFamily family(geometry, Side::Put, 100.0);
+  ASSERT_TRUE(family.prepare(0.05, 0.6, 16, 0.011, 0.013, 4));
+  const auto envelope = build_family_error_envelope(family);
+  const auto price = andersen_lake(100.0, 100.0, 0.5, 0.25, 0.04, 0.012, Side::Put);
+  ASSERT_TRUE(price);
+  const std::array<IvNativeBatchRequest, 1> request{{
+      {*price, 100.0, 100.0, 0.5, 0.04, 0.012, Side::Put, 1e-7}}};
+  const std::array<double, 1> budget{0.001};
+  std::array<IvPremiumPrepared, 1> prepared;
+  IvNativeBatchWork work;
+  iv_native_prepare_lanes(family, nullptr, request, prepared, false, work);
+  iv_native_prepare_economic(family, &envelope, request, budget, prepared,
+                             std::nullopt, false, work);
+  ASSERT_TRUE(prepared[0].economic.valid);
+  const auto original = prepared;
+  const auto lane = original[0].lane;
+  for (int field = 0; field < 8; ++field) {
+    auto changed = request[0];
+    switch (field) {
+    case 0: changed.S = std::nextafter(changed.S, 0.0); break;
+    case 1: changed.K = std::nextafter(changed.K, 0.0); break;
+    case 2: changed.T = std::nextafter(changed.T, 0.0); break;
+    case 3: changed.r = std::nextafter(changed.r, 0.0); break;
+    case 4: changed.q = std::nextafter(changed.q, 0.0); break;
+    case 5: changed.price = std::nextafter(changed.price, 0.0); break;
+    case 6: changed.tol *= 2.0; break;
+    default: changed.side = Side::Call; break;
+    }
+    EXPECT_FALSE(iv_native_economic_candidate(family, &envelope, changed,
+        budget[0], original[0], std::nullopt));
+  }
+  EXPECT_FALSE(iv_native_economic_candidate(family, &envelope, request[0], budget[0],
+      original[0], al_fast_profile(std::nullopt)));
+  for (int invalid = 0; invalid < 5; ++invalid) {
+    prepared = original;
+    switch (invalid) {
+    case 0: prepared[0].lane.vega = 0.0; break;
+    case 1: prepared[0].lane.sigma = kIvMin; break;
+    case 2: prepared[0].lane.sigma = family.sigma_hi() * 2.0; break;
+    case 3: prepared[0].lane.target = std::nextafter(*price, 0.0); break;
+    default: prepared[0].lane.family = nullptr; break;
+    }
+    iv_native_prepare_economic(family, &envelope, request, budget, prepared,
+                               std::nullopt, false, work);
+    EXPECT_FALSE(prepared[0].economic.valid);
+  }
+  prepared[0].lane = lane;
+  iv_native_prepare_economic(family, nullptr, request, budget, prepared,
+                             std::nullopt, false, work);
+  EXPECT_FALSE(prepared[0].economic.valid);
+  // Same address and domain with a new tensor must invalidate both new preparation
+  // against an old envelope and a previously accepted monetary candidate.
+  ASSERT_TRUE(family.prepare(0.05, 0.6, 16, 0.011, 0.013, 4));
+  EXPECT_FALSE(iv_native_economic_candidate(family, &envelope, request[0], budget[0],
+      original[0], std::nullopt));
+  prepared = original;
+  iv_native_prepare_economic(family, &envelope, request, budget, prepared,
+                             std::nullopt, false, work);
+  EXPECT_FALSE(prepared[0].economic.valid);
+}
+
+TEST(AmericanIvPremium, EconomicFamilyCandidatesDoNotRelabelSubfloorOrPlateauTargets) {
+  using namespace atx::vol;
+  std::size_t checked = 0, window = 0;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double r = 0.04, q = side == Side::Call ? 0.012 : 0.06;
+    for (const double T : {0.02, 0.5, 2.0}) {
+      const auto geometry = prepare_al_geometry(T, r, q);
+      AlSigmaQFamily family(geometry, side, 100.0);
+      ASSERT_TRUE(family.prepare(0.01, 0.08, 16, q, q, 1));
+      const auto envelope = build_family_error_envelope(family);
+      for (const double K : {100.0, 100.0 * std::exp((r - q) * T),
+                             side == Side::Call ? 80.0 : 120.0}) {
+        const auto target = andersen_lake(100.0, K, T, 0.00499, r, q, side);
+        const auto floor = andersen_lake(100.0, K, T, kIvMin, r, q, side);
+        ASSERT_TRUE(target && floor);
+        // Some cold numerical maps can dip near exercise. Restrict this
+        // adversary to targets the actual reporting-floor price excludes.
+        if (*target > *floor) continue;
+        ++checked;
+        window += iv_premium_native_window(*target, 100.0, K, T, r, q, side,
+                                           std::nullopt) ? 1u : 0u;
+        const std::array<IvNativeBatchRequest, 1> request{{
+            {*target, 100.0, K, T, r, q, side, 1e-7}}};
+        // Deliberately optimistic lane metadata must not turn a residual-only
+        // near-floor proposal into an economic acceptance.
+        std::array<IvPremiumPrepared, 1> prepared;
+        auto &lane = prepared[0].lane;
+        lane.valid = true;
+        lane.family = &family;
+        lane.S = 100.0;
+        lane.K = K;
+        lane.target = *target;
+        lane.q = q;
+        lane.tol = 1e-7;
+        lane.sigma = 0.01001;
+        lane.vega = 1000.0;
+        lane.status = iv_batch::InverseStatus::Converged;
+        const std::array<double, 1> budget{0.001};
+        IvNativeBatchWork work;
+        iv_native_prepare_economic(family, &envelope, request, budget, prepared,
+                                   std::nullopt, false, work);
+        EXPECT_FALSE(prepared[0].economic.valid) << T << " " << K;
+      }
+    }
+  }
+  EXPECT_GE(checked, 12u);
+  EXPECT_GT(window, 0u); // the native window alone does not establish floor status
+}
+
 TEST(AmericanIvPremium, FamilyEnclosureRejectsAnEndWhoseEnvelopeBoundLeavesItOpen) {
   using atx::vol::AlExpiryGeometry;
   using atx::vol::FamilyBoundedPrice;

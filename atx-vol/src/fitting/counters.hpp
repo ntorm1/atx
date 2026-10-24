@@ -1191,6 +1191,10 @@ struct FitTimingCounters {
   std::uint32_t reimply_fast_roots{0};
   std::uint32_t reimply_seed_attempts{0};
   std::uint32_t reimply_seed_roots{0};
+  // Explicit monetary-policy candidates: never counted as strict K3 roots.
+  std::uint32_t reimply_economic_attempts{0};
+  std::uint32_t reimply_economic_roots{0};
+  std::uint64_t reimply_economic_ns{0};
   // RootAcceptanceKind / RootAcceptanceReason, exactly as deam_accept_by_* below.
   std::array<std::uint32_t, 5> reimply_accept_by_kind{};
   std::array<std::uint32_t, 9> reimply_accept_by_reason{};

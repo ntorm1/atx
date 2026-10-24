@@ -20,6 +20,7 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
+#include "pricing/american_sigma_q_family.hpp"
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_region.hpp" // C1 classifier (K4 native route)
@@ -3223,6 +3224,105 @@ IvPremiumNativeCarry iv_native_lane_carry(const IvPreparedLane &lane, double pri
   return IvPremiumNativeCarry{true,      lane.lo,         lane.hi,   lane.p_lo,
                               lane.p_hi, lane.last,       last_price, lane.vega,
                               iv_batch::kNoStreamId};
+}
+
+namespace {
+
+bool economic_family_matches(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                             const IvNativeBatchRequest &rq,
+                             const std::optional<AlOpts> &opts) noexcept {
+  const auto *const st = sigma_q_family_detail::QFamilyAccess::state(f);
+  return st != nullptr && st->ok && st->g != nullptr && st->g->prepared &&
+      st->generation == st->g->generation && env != nullptr && env->covered() &&
+      env->family == &f && env->preparation_stamp == st->preparation_stamp &&
+      same_bits(st->grid.T, rq.T) && same_bits(st->rate, rq.r) && st->side == rq.side &&
+      same_opts(st->g->opts, opts) &&
+      iv_premium_native_window(rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.side, opts);
+}
+
+} // namespace
+
+void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                std::span<const IvNativeBatchRequest> requests,
+                                std::span<const double> budgets,
+                                std::span<IvPremiumPrepared> out,
+                                const std::optional<AlOpts> &opts, bool timed,
+                                IvNativeBatchWork &work) {
+  for (auto &p : out) p.economic = IvPreparedEconomic{};
+  if (requests.size() != out.size() || budgets.size() != out.size()) return;
+  const auto t0 = timed ? std::chrono::steady_clock::now()
+                        : std::chrono::steady_clock::time_point{};
+  BatchColumns &c = t_columns;
+  c.resize_enclosures(out.size());
+  std::size_t count = 0;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    const auto &rq = requests[i];
+    const auto &lane = out[i].lane;
+    const double budget = budgets[i];
+    if (!(budget > 0.0) || !std::isfinite(budget) ||
+        !economic_family_matches(f, env, rq, opts) ||
+        !lane.valid || lane.family != &f ||
+        lane.status != iv_batch::InverseStatus::Converged ||
+        !same_bits(lane.S, rq.S) || !same_bits(lane.K, rq.K) ||
+        !same_bits(lane.target, rq.price) || !same_bits(lane.q, rq.q) ||
+        !same_bits(lane.tol, rq.tol) || !std::isfinite(lane.vega) ||
+        !(lane.vega > iv_batch::kInverseVegaFloorRel * rq.K)) continue;
+    // The tangent places a candidate, never an error or monotonicity proof.
+    // Bias is intentional only under the explicit monetary policy. Requiring
+    // the whole interval below target supplies a lower-vol price witness.
+    const double sigma = lane.sigma - (0.5 * budget) / lane.vega;
+    if (!(sigma > kIvMin && sigma < kSigmaHi && sigma < lane.sigma) ||
+        !(sigma >= f.sigma_lo() && sigma <= f.sigma_hi())) continue;
+    c.eindex[count] = i;
+    c.erequest[count] = {rq.S, rq.K, sigma, rq.q};
+    ++count;
+  }
+  if (count != 0) {
+    static_cast<void>(family_prices_bounded(f, *env,
+        std::span<const FamilyBoundedRequest>(c.erequest.data(), count),
+        std::span<FamilyBoundedPrice>(c.eprice.data(), count)));
+  }
+  work.economic_prices += count;
+  constexpr double inf = std::numeric_limits<double>::infinity();
+  for (std::size_t j = 0; j < count; ++j) {
+    const std::size_t i = c.eindex[j];
+    const auto &rq = requests[i];
+    const auto &price = c.eprice[j];
+    if (price.status != AlSigmaQFamilyStatus::Ok || !std::isfinite(price.price) ||
+        !(price.bound_usd >= 0.0) || !std::isfinite(price.bound_usd)) continue;
+    const double lower = std::nextafter(price.price - price.bound_usd, -inf);
+    const double upper = std::nextafter(price.price + price.bound_usd, inf);
+    const double error = std::nextafter(rq.price - lower, inf);
+    const double band = iv_premium_edge_band_top(rq.S, rq.K, rq.T, rq.r, rq.q, rq.side, opts);
+    // As in K3, this is the empirical cold-map monotone window. Its premise
+    // extends the below-target witness to the reporting floor; local lane vega
+    // alone does not establish that extension. Cold-floor audits are mandatory.
+    if (!(lower > band && upper < rq.price && error <= budgets[i])) continue;
+    out[i].economic = IvPreparedEconomic{true, &f, env, env->preparation_stamp,
+        rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.tol, budgets[i], rq.side, opts,
+        c.erequest[j].sigma, lower, upper, error};
+  }
+  if (timed) work.economic_ns += ns_since(t0);
+}
+
+std::optional<double> iv_native_economic_candidate(
+    const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+    const IvNativeBatchRequest &rq, double budget, const IvPremiumPrepared &prepared,
+    const std::optional<AlOpts> &opts) noexcept {
+  const auto &p = prepared.economic;
+  if (!p.valid || !(budget > 0.0) || !std::isfinite(budget) ||
+      !economic_family_matches(f, env, rq, opts) || p.family != &f || p.envelope != env ||
+      p.preparation_stamp != env->preparation_stamp ||
+      !same_bits(p.target, rq.price) || !same_bits(p.S, rq.S) || !same_bits(p.K, rq.K) ||
+      !same_bits(p.T, rq.T) || !same_bits(p.r, rq.r) || !same_bits(p.q, rq.q) ||
+      !same_bits(p.tol, rq.tol) || !same_bits(p.budget, budget) || p.side != rq.side ||
+      !same_opts(p.opts, opts) || !(p.sigma > kIvMin && p.sigma < kSigmaHi) ||
+      !(p.sigma >= f.sigma_lo() && p.sigma <= f.sigma_hi()) ||
+      !(p.price_lower > iv_premium_edge_band_top(rq.S, rq.K, rq.T, rq.r, rq.q, rq.side, opts)) ||
+      !(p.price_upper < rq.price && p.bound_price >= 0.0 && p.bound_price <= budget)) {
+    return std::nullopt;
+  }
+  return p.sigma;
 }
 
 void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,

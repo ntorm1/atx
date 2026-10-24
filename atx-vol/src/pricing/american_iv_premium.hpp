@@ -491,10 +491,35 @@ struct IvPreparedConfirm {
   std::optional<AlOpts> opts = std::nullopt;
   double price = std::numeric_limits<double>::quiet_NaN();
 };
+// Explicit monetary-policy candidate, separate from a strict K3 root acceptance.
+// The interval inherits the family's RefinementValidated error class and the
+// native route's empirical monotone-window premise. A local vega is not a proof
+// of global cold-map monotonicity; the independent cold-floor audit still applies.
+struct IvPreparedEconomic {
+  bool valid = false;
+  const AlSigmaQFamily *family = nullptr;
+  const ValidatedErrorEnvelope *envelope = nullptr;
+  std::uint64_t preparation_stamp = 0;
+  double target = std::numeric_limits<double>::quiet_NaN();
+  double S = std::numeric_limits<double>::quiet_NaN();
+  double K = std::numeric_limits<double>::quiet_NaN();
+  double T = std::numeric_limits<double>::quiet_NaN();
+  double r = std::numeric_limits<double>::quiet_NaN();
+  double q = std::numeric_limits<double>::quiet_NaN();
+  double tol = std::numeric_limits<double>::quiet_NaN();
+  double budget = 0.0;
+  Side side = Side::Put;
+  std::optional<AlOpts> opts;
+  double sigma = std::numeric_limits<double>::quiet_NaN();
+  double price_lower = std::numeric_limits<double>::quiet_NaN();
+  double price_upper = std::numeric_limits<double>::quiet_NaN();
+  double bound_price = std::numeric_limits<double>::infinity();
+};
 struct IvPremiumPrepared {
   IvPreparedLane lane{};
   IvPreparedEnclosure enclosure{};
   IvPreparedConfirm confirm{};
+  IvPreparedEconomic economic{};
 };
 
 // One request of a work group: the arguments premium_root receives, and the native carry of
@@ -526,6 +551,8 @@ struct IvNativeBatchWork {
   std::uint64_t lane_ns = 0;
   std::uint64_t family_ns = 0;
   std::uint64_t confirm_ns = 0;
+  std::uint64_t economic_prices = 0; // separate from K3 enclosure prices
+  std::uint64_t economic_ns = 0;
 };
 
 // Whether premium_root's family-native branch admits the price: finite inputs, strictly
@@ -564,6 +591,24 @@ void iv_native_prepare_acceptance(const AlSigmaQFamily &f, const ValidatedErrorE
                                   std::span<IvPremiumPrepared> out,
                                   const std::optional<AlOpts> &confirm_opts, bool avx2,
                                   bool timed, IvNativeBatchWork &work);
+
+// Propose a small downward displacement of each solved family lane, then accept
+// only a bounded price interval wholly above the native edge band and below its
+// target, within that request's positive explicit dollar budget. Vega places the
+// candidate only. No cold solve or strict IV acceptance; failures leave economic
+// invalid for the caller's unchanged K3/cold-floor fallback. Writes economic only.
+void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+                                std::span<const IvNativeBatchRequest> requests,
+                                std::span<const double> budgets,
+                                std::span<IvPremiumPrepared> out,
+                                const std::optional<AlOpts> &opts, bool timed,
+                                IvNativeBatchWork &work);
+
+// Exact request and prepared-state validation on consumption; no pricing work.
+[[nodiscard]] std::optional<double> iv_native_economic_candidate(
+    const AlSigmaQFamily &f, const ValidatedErrorEnvelope *env,
+    const IvNativeBatchRequest &request, double budget, const IvPremiumPrepared &prepared,
+    const std::optional<AlOpts> &opts) noexcept;
 
 // IvOpts-typed inversion under the Premium strategy with optional per-contract memory
 // (nullptr: none). `opts.strategy` is ignored (this IS Premium); every other field

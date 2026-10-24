@@ -1342,6 +1342,10 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
   std::vector<IvNativeBatchRequest> requests;
   std::vector<std::size_t> where;
   std::vector<IvPremiumPrepared> part;
+  std::vector<double> budgets;
+  std::vector<IvNativeBatchRequest> strict_requests;
+  std::vector<IvPremiumPrepared> strict_part;
+  std::vector<std::size_t> strict_where;
   const QuoteSliceConfig query;
   auto *const counts = counters::fit_timing::current_counts();
   IvNativeBatchWork work;
@@ -1379,10 +1383,37 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
     part.assign(requests.size(), IvPremiumPrepared{});
     const auto &table = context->tables[side == Side::Call ? 0u : 1u];
     iv_native_prepare_lanes(*family, table.get(), requests, part, counts != nullptr, work);
-    iv_native_prepare_acceptance(*family, context->families->q_envelope(side),
-        std::span<const IvNativeBatchRequest>(requests).first(native_count),
-        std::span<IvPremiumPrepared>(part).first(native_count), context->confirm_opts,
-        table != nullptr && simd::use_avx2(), counts != nullptr, work);
+    const auto *const envelope = context->families->q_envelope(side);
+    if (fit.reimply_price_cap > 0.0) {
+      budgets.clear();
+      for (std::size_t j = 0; j < native_count; ++j) {
+        const auto &target = targets[where[j]];
+        budgets.push_back(reimply_price_budget(fit, target.strike, target.side).value_or(0.0));
+      }
+      iv_native_prepare_economic(*family, envelope,
+          std::span<const IvNativeBatchRequest>(requests).first(native_count), budgets,
+          std::span<IvPremiumPrepared>(part).first(native_count), fit.al_opts,
+          counts != nullptr, work);
+      // Stable compaction preserves the original strict requests and lane values
+      // for every refusal. Dollar candidates spend no eager K3 enclosure/confirm.
+      strict_requests.clear();
+      strict_part.clear();
+      strict_where.clear();
+      for (std::size_t j = 0; j < native_count; ++j) {
+        if (part[j].economic.valid) continue;
+        strict_requests.push_back(requests[j]);
+        strict_part.push_back(part[j]);
+        strict_where.push_back(j);
+      }
+      iv_native_prepare_acceptance(*family, envelope, strict_requests, strict_part,
+          context->confirm_opts, table != nullptr && simd::use_avx2(), counts != nullptr, work);
+      for (std::size_t j = 0; j < strict_where.size(); ++j) part[strict_where[j]] = strict_part[j];
+    } else {
+      iv_native_prepare_acceptance(*family, envelope,
+          std::span<const IvNativeBatchRequest>(requests).first(native_count),
+          std::span<IvPremiumPrepared>(part).first(native_count), context->confirm_opts,
+          table != nullptr && simd::use_avx2(), counts != nullptr, work);
+    }
     for (std::size_t j = 0; j < where.size(); ++j) prepared[where[j]] = part[j];
   }
   if (counts != nullptr) {
@@ -1395,6 +1426,8 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
     counts->reimply_batch_lane_ns += work.lane_ns;
     counts->reimply_batch_family_ns += work.family_ns;
     counts->reimply_batch_confirm_ns += work.confirm_ns;
+    counts->reimply_economic_attempts += ft::detail::saturate(work.economic_prices);
+    counts->reimply_economic_ns += work.economic_ns;
   }
   return prepared;
 }
@@ -4109,6 +4142,23 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   opts.al_opts = fit.al_opts;
   opts.refuse_non_monotone = true;
   const auto budget = reimply_price_budget(fit, strike, side);
+  if (budget && *budget > 0.0 && prepared != nullptr && prepared->economic.valid &&
+      fit.reimply_context && fit.reimply_context->families) {
+    // Budget lookup already matched the immutable pricing model. This distinct
+    // monetary result is never reported as a strict native/K3 root acceptance.
+    const auto &families = *fit.reimply_context->families;
+    if (const auto *const family = families.of_q(side)) {
+      const IvNativeBatchRequest request{price, fit.market.spot, strike,
+          fit.market.variance_years, fit.diagnostics.effective_rate, q_effective, side, opts.tol};
+      if (const auto sigma = iv_native_economic_candidate(*family, families.q_envelope(side),
+              request, *budget, *prepared, fit.al_opts)) {
+        if (auto *const counts = counters::fit_timing::current_counts()) {
+          ++counts->reimply_economic_roots;
+        }
+        return identified(*sigma);
+      }
+    }
+  }
   if (!budget || *budget > 0.0) {
     if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts,
                                                prepared)) {

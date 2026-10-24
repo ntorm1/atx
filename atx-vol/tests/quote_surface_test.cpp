@@ -1647,10 +1647,11 @@ TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCaches
   }
   EXPECT_EQ(repair.result().reimply_price_family_checks +
                 repair.result().reimply_price_enclosure_hits, repair.result().reimply_native_roots);
-  EXPECT_GT(repair.result().reimply_price_enclosure_hits, 0u);
+  EXPECT_GT(repair.result().reimply_economic_roots, 0u);
+  EXPECT_GE(repair.result().reimply_economic_attempts, repair.result().reimply_economic_roots);
   EXPECT_EQ(repair.result().reimply_price_rejections, 0u);
-  // Omitting the dollar policy retains the same accepted native root bits. Reusing
-  // its existing monetary proof changes work, not final prices or identification.
+  // The explicit dollar policy may choose a slightly lower IV; prices and typed
+  // identification stay unchanged, with independent cold residual/floor checks.
   auto baseline = fit_quote_slice(c.market, c.quotes, native_repair_config());
   ASSERT_TRUE(baseline && baseline->fit_status == QuoteSliceFitStatus::Success);
   ASSERT_TRUE(repair_quote_slice_calendar(*baseline, c.quotes, earlier, {}, 1.0));
@@ -1658,8 +1659,6 @@ TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCaches
   for (std::size_t i = 0; i < fit->rows.size(); ++i) {
     EXPECT_EQ(fit->rows[i].evaluation_status, baseline->rows[i].evaluation_status);
     EXPECT_DOUBLE_EQ(fit->rows[i].fitted_price, baseline->rows[i].fitted_price);
-    EXPECT_EQ(std::bit_cast<std::uint64_t>(fit->rows[i].fitted_iv),
-              std::bit_cast<std::uint64_t>(baseline->rows[i].fitted_iv));
   }
   timing::ChainRecorder queries;
   {
@@ -1672,6 +1671,11 @@ TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCaches
       const auto price = andersen_lake(c.market.spot, quote.strike, c.market.variance_years,
           answer->volatility, c.market.rate, c.market.continuous_yield, quote.side);
       ASSERT_TRUE(price);
+      const auto floor_price = andersen_lake(c.market.spot, quote.strike,
+          c.market.variance_years, kIvMin, c.market.rate, c.market.continuous_yield, quote.side);
+      ASSERT_TRUE(floor_price);
+      EXPECT_GT(answer->price, *floor_price);
+      EXPECT_GT(answer->volatility, kIvMin);
       EXPECT_LE(std::abs(*price - answer->price),
                 std::min(config.reimply_price_cap,
                          config.reimply_spread_fraction * (quote.ask - quote.bid)));
@@ -1681,6 +1685,8 @@ TEST(QuoteSliceChannel, PriceBudgetNativeRepairChecksEveryPublishedRootAndCaches
   EXPECT_EQ(queries.result().reimply_fast_attempts, 0u);
   EXPECT_EQ(queries.result().reimply_price_family_checks, 0u);
   EXPECT_EQ(queries.result().reimply_price_cold_checks, 0u);
+  EXPECT_EQ(queries.result().reimply_economic_attempts, 0u);
+  EXPECT_EQ(queries.result().reimply_economic_roots, 0u);
 }
 
 TEST(QuoteSliceChannel, TightPriceBudgetRetainsCenterColdCheckAndRejectedRootFallback) {

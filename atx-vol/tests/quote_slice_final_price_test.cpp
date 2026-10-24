@@ -169,6 +169,8 @@ TEST(QuoteSliceFinalPrice, NativeScalarBatchMatchesUnbatchedFinalPricesAndColdRe
   const QuoteSliceMarket market{100, 0.5, 0.5, 0.05, 0.01, 0};
   const auto quotes = final_price_quotes(market);
   auto config = final_price_config(true);
+  config.reimply_price_cap = 0;
+  config.reimply_spread_fraction = 0; // the default strict route keeps exact IV parity
   config.channel.deam_native_batch = false;
   auto scalar = detail::finalize_raw_price_draft(projected_draft(market, quotes, config), config);
   config.channel.deam_native_batch = true;
@@ -182,6 +184,8 @@ TEST(QuoteSliceFinalPrice, NativeScalarBatchMatchesUnbatchedFinalPricesAndColdRe
   ASSERT_TRUE(scalar && batch);
   EXPECT_GT(publication.result().reimply_batch_lanes, 0u);
   EXPECT_EQ(publication.result().reimply_batch_hits, publication.result().reimply_batch_lanes);
+  EXPECT_EQ(publication.result().reimply_economic_attempts, 0u);
+  EXPECT_EQ(publication.result().reimply_economic_roots, 0u);
   EXPECT_EQ(batch->diagnostics.deam.inversions, 0u);
   EXPECT_EQ(batch->diagnostics.deam.model_prices, 0u);
   const auto bits = [](double value) { return std::bit_cast<std::uint64_t>(value); };
@@ -229,7 +233,9 @@ TEST(QuoteSliceFinalPrice, NativeAvx2FinalTargetsKeepColdPriceAccuracyAndCachedQ
   }();
   ASSERT_TRUE(fit) << fit.error().to_string();
   EXPECT_GT(publication.result().reimply_batch_avx2_calls, 0u);
-  EXPECT_EQ(publication.result().reimply_batch_hits, publication.result().reimply_batch_lanes);
+  EXPECT_EQ(publication.result().reimply_batch_hits + publication.result().reimply_economic_roots,
+            publication.result().reimply_batch_lanes);
+  EXPECT_GT(publication.result().reimply_economic_roots, 0u);
   deam_iv_memo_clear();
   timing::ChainRecorder queries;
   for (std::size_t i = 0; i < quotes.size(); ++i) {
@@ -248,7 +254,14 @@ TEST(QuoteSliceFinalPrice, NativeAvx2FinalTargetsKeepColdPriceAccuracyAndCachedQ
     const auto cold = andersen_lake(market.spot, quotes[i].strike, market.variance_years,
         answer->volatility, market.rate, market.continuous_yield, quotes[i].side);
     ASSERT_TRUE(cold);
-    EXPECT_LE(std::abs(*cold - answer->price), 0.001);
+    const auto floor = andersen_lake(market.spot, quotes[i].strike, market.variance_years,
+        kIvMin, market.rate, market.continuous_yield, quotes[i].side);
+    ASSERT_TRUE(floor);
+    EXPECT_GT(answer->price, *floor);
+    EXPECT_GT(answer->volatility, kIvMin);
+    EXPECT_LE(std::abs(*cold - answer->price),
+              std::min(config.reimply_price_cap,
+                       config.reimply_spread_fraction * (quotes[i].ask - quotes[i].bid)));
   }
   EXPECT_EQ(queries.result().al_price_calls, 0u);
   EXPECT_EQ(queries.result().iv_newton_iters, 0u);

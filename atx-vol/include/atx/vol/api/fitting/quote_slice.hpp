@@ -635,8 +635,10 @@ struct QuoteSliceConfig {
   // contracts use the tightest budget; zero spread and unquoted queries retain the
   // historical fallback. These fields bound acceleration acceptance; the unchanged
   // Search fallback is not a new general output-error guarantee. Whole-fit accuracy
-  // still requires independent repricing. Prices, market constraints and default IV
-  // controls do not change.
+  // still requires independent repricing and floor checks. A prepared family may
+  // select a slightly lower IV within this budget under its empirical error and
+  // monotone-domain contracts; this implies no Greek accuracy. Prices, market
+  // constraints and default IV controls do not change.
   double reimply_price_cap = 0.0;
   double reimply_spread_fraction = 0.0;
   QuoteSliceGridKernel grid_kernel = QuoteSliceGridKernel::Accurate; // opt-in (SPY1s P1)
