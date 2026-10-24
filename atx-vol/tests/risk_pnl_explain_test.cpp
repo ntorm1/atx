@@ -878,3 +878,120 @@ TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
         << "totals field " << k;
   }
 }
+
+namespace {
+
+// A marks-only state for uid 1 (spot 100) at `ts_ns`: one ExpiryCarry row per fixture
+// expiry (rate kRate, `q`, `pv_divs[e]`) carrying `T_override[e]` (NaN keeps the clock),
+// and a mark for every contract of `legs` (the same smile in every state). Heap-pinned:
+// the underlier's term_carry span points into the storage.
+[[nodiscard]] std::unique_ptr<MarketStateStorage>
+clock_state(std::int64_t ts_ns, const std::vector<OptionLeg> &legs,
+            const std::array<double, 4> &T_override, const std::array<double, 4> &q,
+            const std::array<double, 4> &pv_divs) {
+  auto st = std::make_unique<MarketStateStorage>();
+  st->ts_ns = ts_ns;
+  UnderlierState u;
+  u.uid = 1u;
+  u.spot = 100.0;
+  u.flat_rate = rt::kRate;
+  u.flat_q = 0.015;
+  u.carry = CarryFrom::State;
+  st->underliers.push_back(u);
+  std::vector<ExpiryCarry> carry;
+  for (std::size_t e = 0; e < rt::kExpiryUnits.size(); ++e) {
+    carry.push_back(ExpiryCarry{rt::expiry_ns(e), pv_divs[e], rt::kRate, q[e], T_override[e]});
+  }
+  st->term_carries.push_back(std::move(carry));
+  MarketStateStorage::MarksColumns m;
+  m.uid = 1u;
+  for (const OptionLeg &l : legs) {
+    m.strike.push_back(l.K);
+    m.expiry_ns.push_back(l.expiry_ns);
+    m.side.push_back(l.side);
+    m.sigma.push_back(0.24 - 0.12 * std::log(l.K / 100.0));
+  }
+  st->marks.push_back(std::move(m));
+  st->normalize_marks();
+  st->underliers[0].term_carry = st->term_carries[0];
+  return st;
+}
+
+[[nodiscard]] std::size_t expiry_index(std::int64_t expiry_ns) {
+  return static_cast<std::size_t>(std::find(rt::kExpiryUnits.begin(), rt::kExpiryUnits.end(),
+                                            (expiry_ns - rt::kT0) / rt::kUnitNs) -
+                                  rt::kExpiryUnits.begin());
+}
+
+// Frames of `book` on two states (cold kernel: no family policy involved).
+struct ClockPair {
+  RiskFrame fb;
+  RiskFrame ft;
+};
+
+[[nodiscard]] ClockPair clock_frames(const PreparedRiskBook &prep, const MarketState &b,
+                                     const MarketState &t) {
+  ClockPair p;
+  RiskWorkspace ws;
+  EXPECT_TRUE(RiskKernel::cold().evaluate(prep, b, RiskNeeds{}, p.fb, ws).has_value());
+  EXPECT_TRUE(RiskKernel::cold().evaluate(prep, t, RiskNeeds{}, p.ft, ws).has_value());
+  return p;
+}
+
+} // namespace
+
+// Design D22: with per-expiry T overrides the explain's time step is per expiry,
+// dt_e = T_base(e) - T_shifted(e) (the contract's own roll), not the instants' calendar
+// step. Two states one fixture day apart whose overrides roll each expiry by a DIFFERENT
+// dt_e (and nothing else moves): every leg's d_time is dt_e, its theta term is exactly
+// w (theta_b dt_e), the remainder identity holds to 2 ulp, and theta explains the roll
+// (the calendar step would not). ExplainResult::dt_years stays the calendar step.
+TEST(RiskExplain, ExpiryTOverrideDrivesTheta) {
+  const std::vector<OptionLeg> legs = rt::make_option_legs(1);
+  const std::int64_t t1 = rt::instant_ns(rt::kDayUnits);
+  std::array<double, 4> T_b{};
+  std::array<double, 4> T_t{};
+  std::array<double, 4> dt_e{};
+  for (std::size_t e = 0; e < T_b.size(); ++e) {
+    T_b[e] = rt::years(rt::kExpiryUnits[e]) + 0.004; // the vendor's clock runs ahead
+    dt_e[e] = 0.0005 * static_cast<double>(e + 1u);  // 0.18 .. 0.73 calendar days
+    T_t[e] = T_b[e] - dt_e[e];
+    dt_e[e] = T_b[e] - T_t[e]; // the explain's own subtraction
+  }
+  const std::array<double, 4> q{0.015, 0.015, 0.015, 0.015};
+  const std::array<double, 4> pv{0.0, 0.0, 0.0, 0.0};
+  const auto sb = clock_state(rt::kT0, legs, T_b, q, pv);
+  const auto st = clock_state(t1, legs, T_t, q, pv);
+  const MarketState base = make_market_state(*sb).value();
+  const MarketState shifted = make_market_state(*st).value();
+  const RiskBook book = RiskBook::create(legs, {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const ClockPair f = clock_frames(prep, base, shifted);
+  const ExplainResult e = explain(prep, base, f.fb, shifted, f.ft).value();
+  const double dt_cal = rt::years(rt::kDayUnits);
+  EXPECT_TRUE(same_bits(e.dt_years, dt_cal));
+
+  double sum_total = 0.0;
+  double sum_unexpl = 0.0;
+  double sum_unexpl_calendar = 0.0;
+  for (std::size_t i = 0; i < legs.size(); ++i) {
+    ASSERT_EQ(e.status[i], RiskLaneStatus::Ok) << i;
+    const std::uint32_t r = prep.leg_prepared_row()[i];
+    const double w = prep.leg_weight()[i];
+    const std::size_t x = expiry_index(legs[i].expiry_ns);
+    ASSERT_LT(x, dt_e.size());
+    EXPECT_TRUE(same_bits(e.d_time[i], dt_e[x])) << i;
+    EXPECT_TRUE(same_bits(e.pnl_theta[i], w * (f.fb.theta[r] * dt_e[x]))) << i;
+    const double gap = std::fabs((explained(e, i) + e.pnl_unexplained[i]) - e.pnl_total[i]);
+    EXPECT_LE(gap, 2.0 * ulp(e.pnl_total[i])) << i;
+    sum_total += std::fabs(e.pnl_total[i]);
+    sum_unexpl += std::fabs(e.pnl_unexplained[i]);
+    sum_unexpl_calendar += std::fabs(e.pnl_total[i] - w * (f.fb.theta[r] * dt_cal));
+  }
+  std::cout << "[RiskExplain] per-expiry dt: sum|pnl|=" << sum_total
+            << " sum|unexplained| per-expiry dt=" << sum_unexpl
+            << " (calendar dt would leave " << sum_unexpl_calendar << ")\n";
+  EXPECT_GT(sum_total, 0.0);
+  EXPECT_LE(sum_unexpl, 0.02 * sum_total);
+  EXPECT_GT(sum_unexpl_calendar, 10.0 * sum_unexpl);
+}

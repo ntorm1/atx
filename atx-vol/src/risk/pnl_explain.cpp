@@ -17,6 +17,7 @@
 
 #include "atx/vol/api/core/vol_time.hpp"
 #include "atx/vol/api/pricing/pricing_executor.hpp"
+#include "risk/expiry_clock.hpp"
 #include "risk/risk_neumaier.hpp"
 #include "simd/pnl_batch.hpp"
 
@@ -40,6 +41,9 @@ struct PivotGroup {
   bool usable{false};     // a0..a2 apply to the group's legs
   bool from_marks{false}; // the pivots are marks (flag PivotFromMarks)
   bool edge{false};       // a pivot resolved NaN: a0 = a1 = a2 = 0
+  // Either state carries a finite T_override for (uid, expiry) (design D22): the group's
+  // legs then roll by their own frames' T_base - T_shifted instead of the instants' step.
+  bool clock_override{false};
   double F_b{0.0};
   double sigma_atm{0.0};
   double sqrt_T{0.0};
@@ -270,6 +274,14 @@ void sample_marks(PivotGroup &pg, const ContractMarks &mb, const ContractMarks &
   pg.usable = true;
 }
 
+// The per-(uid, expiry) inputs every leg of the group shares, whatever the options.
+void prepare_group(PivotGroup &pg, const MarketState &base_state,
+                   const MarketState &shifted_state) noexcept {
+  pg.clock_override =
+      risk_detail::has_T_override(risk_detail::expiry_row(base_state, pg.uid, pg.expiry_ns)) ||
+      risk_detail::has_T_override(risk_detail::expiry_row(shifted_state, pg.uid, pg.expiry_ns));
+}
+
 void sample_pivots(PivotGroup &pg, const MarketState &base_state, const RiskFrame &base,
                    const MarketState &shifted_state, double z_ref) noexcept {
   std::uint32_t r0 = pg.row_end;
@@ -391,7 +403,9 @@ void explain_option_leg(const LegCtx &c, std::size_t i) noexcept {
   }
   // rho_b is read only when the row's rate moved (a frame without rho has 0 there).
   const double rho = dr != 0.0 ? c.base.rho[r] : 0.0;
-  const double dt = c.dt;
+  // Design D22: under a T override the time step is the contract's own roll, on the clocks
+  // the two frames priced it at (both Ok here, so both T are finite).
+  const double dt = pg.clock_override ? c.base.T[r] - c.shifted.T[r] : c.dt;
   // One lane through simd/pnl_batch: the kernel is bit-identical for any lane
   // position and route, so this equals the row's value inside a full batch.
   std::array<double, 8> term{};
@@ -659,11 +673,14 @@ Status explain_into(const PreparedRiskBook &book, const MarketState &base_state,
   }
   std::sort(s.expiries.begin(), s.expiries.end());
   s.expiries.erase(std::unique(s.expiries.begin(), s.expiries.end()), s.expiries.end());
-  if (split) {
-    pricing_executor().run_blocks(s.pivots.size(), opts.n_threads, [&](std::size_t k) {
+  // Per (uid, expiry) group: the shared clock inputs, and the vega-split pivots when
+  // splitting. Each worker writes its own PivotGroup slots only.
+  pricing_executor().run_blocks(s.pivots.size(), opts.n_threads, [&](std::size_t k) {
+    prepare_group(s.pivots[k], base_state, shifted_state);
+    if (split) {
       sample_pivots(s.pivots[k], base_state, base, shifted_state, opts.z_ref);
-    });
-  }
+    }
+  });
 
   const std::size_t n_buckets_exp = s.expiries.size() + (n_sh > 0u ? 1u : 0u);
   out.reserve(n_opt, n_sh, book.uids().size(), n_buckets_exp);
