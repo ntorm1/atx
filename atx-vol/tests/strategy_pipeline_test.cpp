@@ -10,6 +10,7 @@
 
 #include "atx/vol/api/analytics/scenario_grid.hpp"
 #include "backtest/strategy_pipeline.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 namespace {
@@ -54,6 +55,8 @@ namespace {
   value.volga = volga;
   value.rho = rho;
   value.charm = charm;
+  // These tests explicitly supply all nine numeric inputs, including zeros.
+  detail::mark_american_greek_fields(value, GreekFieldMask::All, AmericanGreekReason::ComputedEstimate);
   return value;
 }
 
@@ -177,6 +180,32 @@ TEST(StrategyPipelineRisk, AggregatesRiskAndSupportsClampOrReject) {
   limits.action = ScalarRiskBreachAction::Clamp;
   limits.max_abs_delta = std::numeric_limits<double>::quiet_NaN();
   EXPECT_FALSE(apply_scalar_risk_overlay(*risk, scenarios, limits));
+}
+
+TEST(StrategyPipelineRiskAvailability, DefaultOrRefusedValuesCannotSupplyRequestedRisk) {
+  PositionRiskInput input;
+  input.position = Position{1u, OptionContract{1u, 100., .25, Side::Call}, 1., 100.};
+  // The old finite-only gate accepted every untouched zero as supplied risk.
+  EXPECT_FALSE(aggregate_strategy_risk(std::span(&input, 1)));
+  auto &g = input.greeks_per_share;
+  g = greeks(4., .5, .02, 3., -.1);
+  constexpr auto fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+      GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+  g.requested = g.supported = fields;
+  g.reasons.fill(AmericanGreekReason::NotRequested);
+  for (const auto i : {0u, 1u, 2u, 3u, 8u}) g.reasons[i] = AmericanGreekReason::ComputedEstimate;
+  // Scalar risk consumes only these five axes; unrelated unavailable fields
+  // must not prevent a complete requested aggregate.
+  g.rho = g.vanna = g.volga = g.charm = std::numeric_limits<double>::quiet_NaN();
+  const auto valid = aggregate_strategy_risk(std::span(&input, 1));
+  ASSERT_TRUE(valid);
+  EXPECT_DOUBLE_EQ(valid->delta, 50.);
+  EXPECT_DOUBLE_EQ(valid->gamma, 2.);
+  EXPECT_DOUBLE_EQ(valid->vega, 300.);
+  EXPECT_DOUBLE_EQ(valid->theta, -10.);
+  EXPECT_DOUBLE_EQ(valid->gross_notional, 400.);
+  g.reasons[1] = AmericanGreekReason::StencilCrossing; // finite value is insufficient
+  EXPECT_FALSE(aggregate_strategy_risk(std::span(&input, 1)));
 }
 
 TEST(StrategyPipelineScenario,

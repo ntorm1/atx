@@ -135,7 +135,10 @@ struct RiskVector {
 };
 
 // Deterministically aggregate position-scaled risk in ascending position-id
-// order. Duplicate IDs and every non-finite input are rejected.
+// order. Requires explicit finite Price/Delta/Gamma/Vega/Theta availability;
+// untouched zeros and refused fields return Unavailable. Unused derivative
+// fields do not participate. Invalid positions, duplicate IDs, negative price
+// and unrepresentable sums are rejected.
 [[nodiscard]] Result<RiskVector>
 aggregate_strategy_risk(std::span<const PositionRiskInput> positions);
 

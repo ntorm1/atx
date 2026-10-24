@@ -40,6 +40,7 @@
 #include "core/phase_profile.hpp"
 #include "fitting/counters.hpp" // counters::ledger — V1 always-on solve ledger (per-step)
 #include "pricing/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
+#include "pricing/american_greek_availability.hpp"
 #include "storage/snapshot_pool.hpp" // Task C2: SnapshotPool (RunConfig::snapshot_pool)
 
 namespace atx::vol {
@@ -5385,6 +5386,10 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const 
           american_greeks_al(path[0].s, spec.strike, yrs(path[0].ts_ns), sigma, path[0].r,
                              path[0].q_eff, spec.side, opts, /*need_vega=*/true,
                              /*need_rho=*/false, /*need_charm=*/false));
+  constexpr auto entry_fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+                                GreekFieldMask::Vega;
+  if (!detail::american_greeks_support(g0, entry_fields))
+    return Err(ErrorCode::Unavailable, "bev_replay_pnl: required entry Greeks unavailable");
   out.premium = g0.price;
   out.vega_entry = g0.vega;
   cash -= g0.price;
@@ -5428,6 +5433,8 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const 
             american_greeks_al(cur.s, spec.strike, t_rem, sigma, cur.r, cur.q_eff, spec.side, opts,
                                /*need_vega=*/false, /*need_rho=*/false,
                                /*need_charm=*/false));
+    if (!detail::american_greeks_support(g, GreekFieldMask::Price))
+      return Err(ErrorCode::Unavailable, "bev_replay_pnl: exercise price unavailable");
 
     if (cfg.apply_early_exercise) {
       double threshold = 0.0;
@@ -5464,6 +5471,8 @@ Result<BevReplayResult> bev_replay_pnl(std::span<const BevDayState> path, const 
     // (~:699-712) — slippage on |trade|*spot, notional settled into cash, then
     // recorded — folded into cash (a single-instrument replay has no separate
     // cost lane).
+    if (!detail::american_greeks_support(g, GreekFieldMask::Delta))
+      return Err(ErrorCode::Unavailable, "bev_replay_pnl: hedge Delta unavailable");
     const double net = g.delta + ledger.get(0u);
     if (std::fabs(net) > cfg.hedge_band) {
       const double trade = -net;

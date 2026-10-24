@@ -369,3 +369,33 @@ shapes and array lifetime remain explicit. The staged native module is SHA256
 bc64fef5a93f3b7abeb79419d359acd9aa4e6d8b6b30ba008268dab536293c47.
 Evidence is repair-iv/greek-tick-python-{red,final,hygiene}.*. This is availability
 propagation only; additive backtest price coverage/carry remains separate.
+
+
+BEV replay now checks supplied Price, Delta and Vega at entry, supplied Price
+before the exercise decision, and supplied Delta before a continuing hedge.
+A typed refusal returns Unavailable; it cannot silently become a no-trade
+comparison against NaN. An exercise exit needs no further hedge Delta. The
+strategy risk reducer requires its actual five inputs (Price, Delta, Gamma,
+Vega, Theta), permitting unavailable unrelated sensitivities while refusing
+finite default zeros without metadata. Manually supplied test bundles now
+explicitly declare their supplied fields.
+
+Runtime RED captured entry and rebalance failures for both put and dual call,
+and strategy acceptance of unstamped zeros/rejection of a complete five-field
+bundle with unrelated NaNs. Five focused consumer tests and five owning PCH-off
+objects pass. Evidence is repair-iv/greek-{bev,strategy}-guard-component.* and
+greek-risk-guard-hygiene.log. This component does not change numerical pricing
+or Greek arithmetic.
+
+Broader checks remain explicitly pending a separate producer correction: a
+zero-rate/yield European call at S=118.744054000552, K=100,
+T=0.0082135523613963042, sigma=0.25 is incorrectly labeled StencilCrossing when
+rounded Black prices straddle intrinsic. The complete 17-operand trace is
+repair-iv/greek-bev-operands.log. The down-rate operand genuinely enters an
+American regime, so its Rho crossing must not be erased. No contract or test
+row is dropped from the denominator. Two other strict numeric pins reproduce
+on the pre-guard production source (28b2ad5d): GoldenPathPnlIsPinned returns
+1.3832639438392142 versus its historical 1.3832639438393373, and the strategy
+cancellation fixture returns Gamma -4.163336342344337e-17 versus zero. Archived
+baseline executables and hashes are in greek-risk-guard-baseline-binaries.json;
+these pins are retained unchanged in this guard component.

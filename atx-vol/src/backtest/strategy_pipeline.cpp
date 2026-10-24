@@ -14,6 +14,7 @@
 
 #include "atx/vol/api/analytics/scenario_grid.hpp"
 #include "atx/vol/api/marketdata/universe.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 
@@ -377,10 +378,14 @@ Result<RiskVector> aggregate_strategy_risk(std::span<const PositionRiskInput> po
   for (const PositionRiskInput &input : positions) {
     if (input.position.id == 0u || !valid_contract(input.position.contract) ||
         !finite(input.position.qty) || !finite(input.position.multiplier) ||
-        input.position.multiplier <= 0.0 || !finite_greeks(input.greeks_per_share) ||
+        input.position.multiplier <= 0.0 || !finite(input.greeks_per_share.price) ||
         input.greeks_per_share.price < 0.0) {
       return Err(ErrorCode::InvalidArgument, "strategy_pipeline: invalid position risk input");
     }
+    constexpr auto fields = GreekFieldMask::Price | GreekFieldMask::Delta |
+        GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+    if (!detail::american_greeks_support(input.greeks_per_share, fields))
+      return Err(ErrorCode::Unavailable, "strategy_pipeline: requested risk unavailable");
     ordered.push_back(&input);
   }
   std::sort(ordered.begin(), ordered.end(),
