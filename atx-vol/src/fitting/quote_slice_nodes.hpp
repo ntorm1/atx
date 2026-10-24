@@ -16,6 +16,10 @@
 #include "atx/vol/api/fitting/american_price_slice.hpp"
 #include "atx/vol/api/fitting/quote_slice.hpp"
 
+namespace atx::vol {
+struct IvPremiumPrepared;
+}
+
 namespace atx::vol::detail {
 
 // A contract's node side in a certified price slice: the node index and the side bit
@@ -60,9 +64,12 @@ struct VolIdentification {
 // root included), an inverter refusal is UnidentifiedInterval. PriceOnly classifies a
 // root at or below kIvMin as FloorVol and types a NonMonotoneRegion refusal of
 // american_iv.hpp as FlatExerciseRegion or LowVega (QuoteSlicePriceOnlyReason).
+// `prepared`, when supplied by publication, borrows a native batch result whose
+// exact input keys are checked before consumption; it is never retained.
 [[nodiscard]] VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike,
                                               Side side, double price,
-                                              QuoteSliceFloorPolicy policy);
+                                              QuoteSliceFloorPolicy policy,
+                                              const IvPremiumPrepared *prepared = nullptr);
 
 // query_quote_slice's typed answer for certified `price` of (strike, side) - the one
 // classification behind both the query and a served row's labels (lane C0 fix round 1:
@@ -78,7 +85,8 @@ struct ServedIdentification {
   QuoteSliceVolConvention source = QuoteSliceVolConvention::None;
 };
 [[nodiscard]] std::optional<ServedIdentification>
-identify_served(const QuoteSliceFit &fit, double strike, Side side, double price);
+identify_served(const QuoteSliceFit &fit, double strike, Side side, double price,
+                const IvPremiumPrepared *prepared = nullptr);
 
 // Clears a row's identifiability labels (price_only_reason None, NaN interval) - for a
 // row whose price is no longer served (a demotion) or whose volatility is identified.

@@ -22,6 +22,7 @@
 #include "atx/vol/api/fitting/quote_slice.hpp"
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_iv.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"   // deam_iv_memo_clear (rung memo tests)
 #include "fitting/expiry_schedule.hpp" // ScopedExpiryDispatchTrace (fan-out order seam)
@@ -1249,10 +1250,19 @@ TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCle
   }
   EXPECT_LT(repair.result().al_price_calls, reference.result().al_price_calls);
   EXPECT_GT(repair.result().reimply_native_roots, 0u);
+  EXPECT_EQ(repair.result().reimply_batch_lanes, c.quotes.size());
+  EXPECT_EQ(repair.result().reimply_batch_hits, c.quotes.size());
+  if (simd::use_avx2()) EXPECT_GT(repair.result().reimply_batch_avx2_calls, 0u);
   EXPECT_LE(repair.result().reimply_native_max_bound_iv, 1.0e-7);
   RecordProperty("repair_al", repair.result().al_price_calls);
   RecordProperty("search_al", reference.result().al_price_calls);
   RecordProperty("native_roots", repair.result().reimply_native_roots);
+  RecordProperty("batch_lanes", repair.result().reimply_batch_lanes);
+  RecordProperty("batch_hits", repair.result().reimply_batch_hits);
+  RecordProperty("batch_confirm_hits", repair.result().reimply_batch_confirm_hits);
+  RecordProperty("batch_lane_ns", repair.result().reimply_batch_lane_ns);
+  RecordProperty("batch_family_ns", repair.result().reimply_batch_family_ns);
+  RecordProperty("batch_confirm_ns", repair.result().reimply_batch_confirm_ns);
   for (std::size_t i = 0; i < c.quotes.size(); ++i) {
     const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
     ASSERT_TRUE(answer);
@@ -1281,6 +1291,90 @@ TEST(QuoteSliceChannel, NativeCalendarRepairReusesItsFamilyAfterTheFitCacheIsCle
     EXPECT_LE(hi - lo, 1.0e-11);
     EXPECT_NEAR(answer->volatility, 0.5 * (lo + hi), 1.0e-7) << i;
   }
+}
+
+TEST(QuoteSliceChannel, NativeRepairBatchScalarPublicationIsBitIdentical) {
+  struct RestoreIsa {
+    simd::SimdIsa saved = simd::simd_isa_override();
+    ~RestoreIsa() { simd::set_simd_isa_override(saved); }
+  } restore;
+  simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  auto config = native_repair_config();
+  config.channel.deam_native_batch = false;
+  auto scalar = fit_quote_slice(c.market, c.quotes, config);
+  config.channel.deam_native_batch = true;
+  auto batched = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(scalar && scalar->fit_status == QuoteSliceFitStatus::Success);
+  ASSERT_TRUE(batched && batched->fit_status == QuoteSliceFitStatus::Success);
+  const AmericanPriceSlice floor = shifted_slice(*scalar, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  ASSERT_TRUE(repair_quote_slice_calendar(*scalar, c.quotes, earlier, {}, 1.0));
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder repair;
+  {
+    const timing::ChainScope scope(&repair);
+    ASSERT_TRUE(repair_quote_slice_calendar(*batched, c.quotes, earlier, {}, 1.0));
+  }
+  EXPECT_EQ(repair.result().reimply_batch_lanes, c.quotes.size());
+  EXPECT_EQ(repair.result().reimply_batch_hits, c.quotes.size());
+  EXPECT_EQ(repair.result().reimply_batch_avx2_calls, 0u);
+  const auto bits = [](double x) { return std::bit_cast<std::uint64_t>(x); };
+  for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+    const auto &a = scalar->rows[i];
+    const auto &b = batched->rows[i];
+    EXPECT_EQ(a.evaluation_status, b.evaluation_status) << i;
+    EXPECT_EQ(a.price_only_reason, b.price_only_reason) << i;
+    EXPECT_EQ(a.vol_source, b.vol_source) << i;
+    EXPECT_EQ(bits(a.fitted_price), bits(b.fitted_price)) << i;
+    EXPECT_EQ(bits(a.fitted_iv), bits(b.fitted_iv)) << i;
+    EXPECT_EQ(bits(a.iv_lower), bits(b.iv_lower)) << i;
+    EXPECT_EQ(bits(a.iv_upper), bits(b.iv_upper)) << i;
+    const auto answer = query_quote_slice(*batched, c.quotes[i].strike, c.quotes[i].side);
+    ASSERT_TRUE(answer);
+    EXPECT_EQ(bits(answer->volatility), bits(b.fitted_iv)) << i;
+    EXPECT_EQ(bits(answer->price), bits(b.fitted_price)) << i;
+  }
+  timing::ChainRecorder unchanged;
+  {
+    const timing::ChainScope scope(&unchanged);
+    ASSERT_TRUE(repair_quote_slice_calendar(*batched, c.quotes, earlier, {}, 1.0));
+  }
+  EXPECT_EQ(unchanged.result().reimply_batch_lanes, 0u);
+  EXPECT_EQ(unchanged.result().reimply_native_attempts, 0u);
+}
+
+TEST(QuoteSliceChannel, NativeInitialRepairPublishesPreparedRoots) {
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.0095, 0.0105, 0.05);
+  auto config = native_repair_config();
+  config.repair.certificate = QuoteSliceCertificate::Box;
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder publication;
+  auto fit = [&] {
+    const timing::ChainScope scope(&publication);
+    return fit_quote_slice(c.market, c.quotes, config);
+  }();
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  EXPECT_EQ(fit->diagnostics.box.outcome, QuoteSliceRepairOutcome::Applied);
+  EXPECT_GT(publication.result().reimply_batch_lanes, 0u);
+  EXPECT_EQ(publication.result().reimply_batch_hits, publication.result().reimply_batch_lanes);
+  EXPECT_LE(publication.result().reimply_native_max_bound_iv, 1.0e-7);
+  timing::ChainRecorder queries;
+  {
+    const timing::ChainScope scope(&queries);
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
+      ASSERT_TRUE(answer);
+      EXPECT_EQ(answer->status, fit->rows[i].evaluation_status) << i;
+      EXPECT_EQ(answer->price, fit->rows[i].fitted_price) << i;
+      if (answer->status == QuoteSliceEvaluationStatus::Success) {
+        EXPECT_EQ(answer->volatility, fit->rows[i].fitted_iv) << i;
+      }
+    }
+  }
+  EXPECT_EQ(queries.result().reimply_native_attempts, 0u);
+  EXPECT_EQ(queries.result().iv_newton_iters, 0u);
+  EXPECT_EQ(queries.result().al_price_calls, 0u);
 }
 
 TEST(QuoteSliceChannel, NativeReimplicationRejectsChangedModelsAndPreservesPriceOnlyReasons) {

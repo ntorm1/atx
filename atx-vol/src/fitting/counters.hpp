@@ -1164,6 +1164,16 @@ struct FitTimingCounters {
   std::uint32_t reimply_native_roots{0};
   std::uint32_t reimply_native_fallbacks{0};
   double reimply_native_max_bound_iv{0.0};
+  // Repaired publication's prepared work and actual consumption. Sub-clocks cover
+  // preparation only; native acceptance can still do scalar fallback/confirm work.
+  std::uint32_t reimply_batch_calls{0};
+  std::uint32_t reimply_batch_lanes{0};
+  std::uint32_t reimply_batch_avx2_calls{0};
+  std::uint32_t reimply_batch_hits{0};
+  std::uint32_t reimply_batch_confirm_hits{0};
+  std::uint64_t reimply_batch_lane_ns{0};
+  std::uint64_t reimply_batch_family_ns{0};
+  std::uint64_t reimply_batch_confirm_ns{0};
   std::uint64_t wall_us{0};              // the sum of the seven exclusive buckets below
   std::uint64_t deam_us{0};
   std::uint64_t solve_us{0};

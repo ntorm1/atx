@@ -17,6 +17,7 @@
 #include "atx/vol/api/pricing/american_iv.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
 #include "atx/vol/api/pricing/implied_vol.hpp"
+#include "atx/vol/api/simd/cpu.hpp"
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/inbox_projection.hpp"
@@ -29,6 +30,7 @@
 #include "fitting/slice_channel.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the hand-off and the fast path
 #include "pricing/american_iv_premium.hpp"
+#include "pricing/american_sigma_q_family.hpp"
 
 namespace atx::vol {
 
@@ -44,6 +46,8 @@ struct QuoteSliceReimplyContext {
   };
   std::shared_ptr<const DeAmSigmaFamilies> families;
   std::array<std::uint64_t, 13> model{};
+  bool batch_enabled = false;
+  std::array<std::shared_ptr<const sigma_q_family_detail::PremiumTable>, 2> tables;
   // At most one current answer per node side, replaced at publication. Queries read
   // immutable snapshots; a calendar trial replaces its own pointer before committing.
   std::vector<std::array<std::optional<Identification>, 2>> identified;
@@ -1176,7 +1180,116 @@ void retain_reimply_context(QuoteSliceFit &fit, const VolSpaceCache *cache,
   auto context = std::make_shared<QuoteSliceReimplyContext>();
   context->families = cache->hold_families();
   context->model = reimply_model_key(fit);
+  context->batch_enabled = config.channel.deam_native_batch;
+  // One immutable tensor snapshot per side; shared across calendar trial/publication
+  // contexts. No table construction or allocation is needed by subsequent queries.
+  if (context->batch_enabled && simd::use_avx2()) {
+    namespace sq = sigma_q_family_detail;
+    for (const Side side : {Side::Call, Side::Put}) {
+      const auto *const family = context->families->of_q(side);
+      if (family == nullptr) continue;
+      auto table = std::make_shared<sq::PremiumTable>();
+      if (sq::build_premium_table(*family, *table) == sq::FusedStatus::Ok) {
+        context->tables[side == Side::Call ? 0u : 1u] = std::move(table);
+      }
+    }
+  }
   fit.reimply_context = std::move(context);
+}
+
+enum class ReimplyPublication { Certification, Calendar };
+
+// Only work that publication will consume. PriceOnly calendar rows keep their status,
+// but their changed price still needs the fresh reason/interval produced by align_with_query.
+std::optional<double> reimply_publication_target(const QuoteSliceFit &fit,
+    const QuoteSliceQuote &quote, const QuoteSliceRow &row,
+    std::span<const std::uint8_t> moved, ReimplyPublication publication) {
+  const auto node = detail::node_side(fit.prices->nodes(), quote.strike, quote.side);
+  if (!node) return std::nullopt;
+  const bool newly_moved = node->node < moved.size() && (moved[node->node] & node->bit) != 0u;
+  if (publication == ReimplyPublication::Certification) {
+    if (!newly_moved || row.evaluation_status == QuoteSliceEvaluationStatus::InvalidContract ||
+        !positive(fit.curve->iv(std::log(quote.strike / fit.diagnostics.forward)))) {
+      return std::nullopt;
+    }
+  } else {
+    const bool price_only = row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly;
+    if (!price_only && row.evaluation_status != QuoteSliceEvaluationStatus::Success) {
+      return std::nullopt;
+    }
+    const bool previously_moved = node->node < fit.moved_nodes.size() &&
+        (fit.moved_nodes[node->node] & node->bit) != 0u;
+    if (!newly_moved && !(price_only && previously_moved)) return std::nullopt;
+  }
+  const auto price = fit.prices->price(quote.strike, quote.side);
+  if (!price || !nonnegative(*price) ||
+      (publication == ReimplyPublication::Calendar && row.fitted_price == *price)) {
+    return std::nullopt;
+  }
+  return *price;
+}
+
+// Allocation is bounded by the publication's quote count: one result per quote, plus
+// reusable request/index/result buffers for one side. Nothing is retained per repair.
+std::vector<IvPremiumPrepared> prepare_reimplied_nodes(const QuoteSliceFit &fit,
+    std::span<const QuoteSliceQuote> quotes, std::span<const std::uint8_t> moved,
+    ReimplyPublication publication) {
+  const auto &context = fit.reimply_context;
+  if (!context || !context->batch_enabled || !fit.prices || !fit.curve ||
+      fit.floor_policy != QuoteSliceFloorPolicy::PriceOnly ||
+      fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
+      context->model != reimply_model_key(fit)) return {};
+  std::vector<IvPremiumPrepared> prepared(quotes.size());
+  std::vector<IvNativeBatchRequest> requests;
+  std::vector<std::size_t> where;
+  std::vector<IvPremiumPrepared> part;
+  const QuoteSliceConfig query;
+  auto *const counts = counters::fit_timing::current_counts();
+  IvNativeBatchWork work;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto *const family = context->families->of_q(side);
+    if (family == nullptr) continue;
+    requests.clear();
+    where.clear();
+    for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
+      const auto &quote = quotes[i];
+      if (quote.side != side) continue;
+      const auto price = reimply_publication_target(fit, quote, fit.rows[i], moved, publication);
+      if (!price) continue;
+      const double q = effective_yield(fit, calendar_yield_at(fit, quote.strike));
+      if (q < family->q_lo() || q > family->q_hi() ||
+          !iv_premium_native_window(*price, fit.market.spot, quote.strike,
+              fit.market.variance_years, fit.diagnostics.effective_rate, q, side, fit.al_opts)) {
+        continue;
+      }
+      requests.push_back(IvNativeBatchRequest{*price, fit.market.spot, quote.strike,
+          fit.market.variance_years, fit.diagnostics.effective_rate, q, side,
+          query.iv_tolerance, nullptr});
+      where.push_back(i);
+    }
+    if (requests.empty()) continue;
+    part.assign(requests.size(), IvPremiumPrepared{});
+    const auto &table = context->tables[side == Side::Call ? 0u : 1u];
+    iv_native_prepare_lanes(*family, table.get(), requests, part, counts != nullptr, work);
+    iv_native_prepare_acceptance(*family, context->families->q_envelope(side), requests,
+        part, fit.al_opts, table != nullptr && simd::use_avx2(), counts != nullptr, work);
+    for (std::size_t j = 0; j < where.size(); ++j) prepared[where[j]] = part[j];
+  }
+  if (counts != nullptr) {
+    namespace ft = counters::fit_timing;
+    counts->reimply_batch_calls += ft::detail::saturate(work.calls);
+    counts->reimply_batch_lanes += ft::detail::saturate(work.lanes);
+    counts->reimply_batch_avx2_calls += ft::detail::saturate(work.avx2_calls);
+    counts->reimply_batch_lane_ns += work.lane_ns;
+    counts->reimply_batch_family_ns += work.family_ns;
+    counts->reimply_batch_confirm_ns += work.confirm_ns;
+  }
+  return prepared;
+}
+
+const IvPremiumPrepared *prepared_at(std::span<const IvPremiumPrepared> prepared,
+                                     std::size_t index) noexcept {
+  return index < prepared.size() && prepared[index].lane.valid ? &prepared[index] : nullptr;
 }
 
 // Half-spread of each node's own quote per side (bidless: half the ask). A side
@@ -1763,7 +1876,8 @@ void publish_identification(QuoteSliceFit &fit, QuoteSliceRow &row,
 // `identified` marks rows whose CURRENT price has already been classified under
 // PriceOnly. A repair's legacy inversion cannot set it: the query has stricter rules.
 void align_with_query(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
-                      std::span<const std::uint8_t> identified) {
+                      std::span<const std::uint8_t> identified,
+                      std::span<const IvPremiumPrepared> prepared) {
   if (!fit.prices || !fit.curve) return;
   const auto nodes = fit.prices->nodes();
   const std::size_t rows = std::min(quotes.size(), fit.rows.size());
@@ -1781,7 +1895,8 @@ void align_with_query(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quote
       continue;
     }
     const auto answer =
-        detail::identify_served(fit, quote.strike, quote.side, row.fitted_price);
+        detail::identify_served(fit, quote.strike, quote.side, row.fitted_price,
+                                prepared_at(prepared, i));
     if (!answer || answer->id.status == QuoteSliceEvaluationStatus::Success) {
       detail::clear_identification(row);
       continue;
@@ -1801,6 +1916,8 @@ void remember_reimplied_nodes(QuoteSliceFit &fit, std::span<const QuoteSliceQuot
   auto context = std::make_shared<QuoteSliceReimplyContext>();
   context->families = fit.reimply_context->families;
   context->model = fit.reimply_context->model;
+  context->batch_enabled = fit.reimply_context->batch_enabled;
+  context->tables = fit.reimply_context->tables;
   const auto nodes = fit.prices->nodes();
   context->identified.resize(nodes.size());
   for (std::size_t i = 0; i < quotes.size() && i < fit.rows.size(); ++i) {
@@ -2109,6 +2226,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   }
   out.prices = std::move(accepted);
   out.fit_status = QuoteSliceFitStatus::Success;
+  const auto prepared = prepare_reimplied_nodes(out, quotes, repaired,
+                                               ReimplyPublication::Certification);
   std::vector<std::uint8_t> identified(quotes.size(), 0u);
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     const auto &quote = quotes[i];
@@ -2149,7 +2268,8 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       // volatility of the certified price, and never the curve's pre-repair
       // volatility when the served price has none (PriceOnly).
       publish_identification(
-          out, row, detail::reimplied_vol(out, quote.strike, quote.side, *price, out.floor_policy),
+          out, row, detail::reimplied_vol(out, quote.strike, quote.side, *price, out.floor_policy,
+                                         prepared_at(prepared, i)),
           QuoteSliceVolConvention::ReimpliedRepaired, node, bit, strikes.size());
       identified[i] = out.floor_policy == QuoteSliceFloorPolicy::PriceOnly ? 1u : 0u;
     } else if (out.floor_policy == QuoteSliceFloorPolicy::PriceOnly && is_node &&
@@ -2164,7 +2284,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   if (std::any_of(repaired.begin(), repaired.end(), [](std::uint8_t m) { return m != 0u; })) {
     out.moved_nodes = std::move(repaired);
   }
-  align_with_query(out, quotes, identified);
+  align_with_query(out, quotes, identified, prepared);
   remember_reimplied_nodes(out, quotes);
   // Lane H1 (phase B): hand the families this certification read to the serving record's
   // builder (serve_build, off the fit clock). Nothing served changes; no families, none.
@@ -2718,6 +2838,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
   strikes.reserve(nodes.size());
   for (const auto &node : nodes) strikes.push_back(node.strike);
   auto &produced = fit.diagnostics.prices_produced;
+  const auto prepared = prepare_reimplied_nodes(fit, quotes, moved, ReimplyPublication::Calendar);
   std::vector<std::uint8_t> identified(quotes.size(), 0u);
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     auto &row = fit.rows[i];
@@ -2747,7 +2868,8 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
       // The served price has moved off the curve: report its own volatility, and
       // never pair it with the curve's pre-repair one when it has none (PriceOnly).
       publish_identification(
-          fit, row, detail::reimplied_vol(fit, quote.strike, quote.side, *price, fit.floor_policy),
+          fit, row, detail::reimplied_vol(fit, quote.strike, quote.side, *price, fit.floor_policy,
+                                         prepared_at(prepared, i)),
           QuoteSliceVolConvention::ReimpliedRepaired, node, bit, nodes.size());
       identified[i] = fit.floor_policy == QuoteSliceFloorPolicy::PriceOnly ? 1u : 0u;
     }
@@ -2757,7 +2879,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
     if (fit.moved_nodes.size() != moved.size()) fit.moved_nodes.assign(moved.size(), 0);
     for (std::size_t i = 0; i < moved.size(); ++i) fit.moved_nodes[i] |= moved[i];
   }
-  align_with_query(fit, quotes, identified); // changed PriceOnly prices get fresh reasons
+  align_with_query(fit, quotes, identified, prepared); // fresh reasons for changed PriceOnly prices
   remember_reimplied_nodes(fit, quotes);
 }
 
@@ -3413,7 +3535,7 @@ VolIdentification identified(double volatility) noexcept {
 // Refused/flat/out-of-box prices keep reimplied_vol's historical typed Search semantics;
 // the acceleration gets no additional reference solves before that fallback.
 std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double strike, Side side,
-                                           double price, double q, const IvOpts &opts) {
+    double price, double q, const IvOpts &opts, const IvPremiumPrepared *prepared) {
   const auto &context = fit.reimply_context;
   if (!context || fit.dividend_model == QuoteSliceDividendModel::DatedCash ||
       context->model != reimply_model_key(fit)) return std::nullopt;
@@ -3432,6 +3554,7 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
   gate.qfamily_native = true;
   gate.native_route = true;
   gate.reference_budget = &no_reference;
+  gate.prepared = prepared;
   const FamilyEnvelopeScope envelope(context->families->q_envelope(side));
   IvPremiumStats stats;
   const IvResult answer = american_implied_vol_premium(price, fit.market.spot, strike,
@@ -3444,6 +3567,8 @@ std::optional<double> native_reimplied_root(const QuoteSliceFit &fit, double str
       stats.acceptance.bound_iv >= 0.0 && stats.acceptance.bound_iv <= opts.tol;
   if (auto *const counts = counters::fit_timing::current_counts()) {
     ++counts->reimply_native_attempts;
+    if (stats.batch_lane_hit) ++counts->reimply_batch_hits;
+    if (stats.batch_confirm_hit) ++counts->reimply_batch_confirm_hits;
     if (accepted) {
       ++counts->reimply_native_roots;
       counts->reimply_native_max_bound_iv =
@@ -3471,7 +3596,7 @@ VolIdentification floor_vol(const QuoteSliceFit &fit, double strike, Side side, 
 }
 
 VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side side, double price,
-                                QuoteSliceFloorPolicy policy) {
+                                QuoteSliceFloorPolicy policy, const IvPremiumPrepared *prepared) {
   const double q_effective = effective_yield(fit, calendar_yield_at(fit, strike));
   if (policy == QuoteSliceFloorPolicy::PriceOnly && fit.reimply_context && fit.prices) {
     const auto &context = *fit.reimply_context;
@@ -3509,7 +3634,7 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
   opts.max_iter = query.max_iv_iterations;
   opts.al_opts = fit.al_opts;
   opts.refuse_non_monotone = true;
-  if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts)) {
+  if (const auto root = native_reimplied_root(fit, strike, side, price, q_effective, opts, prepared)) {
     return identified(*root);
   }
   const IvResult answer = american_implied_vol(price, fit.market.spot, strike,
@@ -3537,7 +3662,7 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
 }
 
 std::optional<ServedIdentification> identify_served(const QuoteSliceFit &fit, double strike,
-                                                    Side side, double price) {
+    Side side, double price, const IvPremiumPrepared *prepared) {
   assert(fit.prices && fit.curve && "identify_served: no certified slice");
   const auto node = node_side(fit.prices->nodes(), strike, side);
   const auto flagged_in = [&node](const std::vector<std::uint8_t> &flags) {
@@ -3553,7 +3678,7 @@ std::optional<ServedIdentification> identify_served(const QuoteSliceFit &fit, do
     out.id = at_vol_floor(sigma) ? floor_vol(fit, strike, side, price) : identified(sigma);
   } else {
     // Between nodes, or a moved node: invert the certified price at the local carry.
-    out.id = reimplied_vol(fit, strike, side, price, QuoteSliceFloorPolicy::PriceOnly);
+    out.id = reimplied_vol(fit, strike, side, price, QuoteSliceFloorPolicy::PriceOnly, prepared);
   }
   if (flagged_in(fit.price_only_nodes) && out.id.status == QuoteSliceEvaluationStatus::Success) {
     out.id = VolIdentification{}; // final for the life of the fit: UnidentifiedInterval
