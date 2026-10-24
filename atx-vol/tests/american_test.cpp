@@ -23,6 +23,7 @@
 #include "pricing/american_detail.hpp"
 #include "simd/american_greeks_avx2.hpp"
 #include "pricing/american_greek_stencil.hpp"
+#include "pricing/american_greek_fd_audit.hpp"
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/pricing/black76.hpp"
@@ -5102,6 +5103,127 @@ TEST(AlScreenProfile, ImpliedVolWithinMeasuredBoundOfReference) {
   EXPECT_GT(solved, 500);
   std::cout << "[AlScreenProfile] iv solved=" << solved << " worst bp=" << worst_bp << " at "
             << worst_at << "\n";
+}
+
+
+TEST(AmericanGreekFdAudit, DefaultStepsRetainPublicValuesAndSolveCounts) {
+  using namespace atx::vol;
+  for (const auto side : {Side::Put, Side::Call}) {
+    for (const bool warm : {false, true}) {
+      detail::AlGreekFdAudit audit;
+      const detail::AlGreekFdSteps steps{.1, .001, .0001, .001};
+      const auto observed = detail::audit_american_greeks_fd(
+          100., 100., .5, .25, .05, .03, side, steps, audit,
+          AmericanMethod::AndersenLake, std::nullopt, warm);
+      const auto original = american_greeks_fd(100.,100.,.5,.25,.05,.03,side,
+          AmericanMethod::AndersenLake,std::nullopt,warm);
+      ASSERT_TRUE(observed);
+      ASSERT_TRUE(original);
+      EXPECT_EQ(observed->requested,original->requested);
+      EXPECT_EQ(observed->supported,original->supported);
+      EXPECT_EQ(observed->reasons,original->reasons);
+      for (const auto member : detail::kAmericanGreekMembers)
+        EXPECT_TRUE(bits_equal((*observed).*member,(*original).*member));
+      EXPECT_EQ(audit.sample_attempts,17u);
+      EXPECT_EQ(audit.boundary_price_calls,17u);
+      EXPECT_EQ(audit.boundary_cold_solves,warm ? 1u : 7u);
+      EXPECT_EQ(audit.boundary_warm_solves,warm ? 6u : 0u);
+      EXPECT_EQ(audit.public_price_calls,0u);
+      EXPECT_EQ(audit.european_price_calls,0u);
+      EXPECT_FALSE(audit.time_forward);
+      EXPECT_FALSE(audit.rho_forward);
+      EXPECT_EQ(audit.steps.spot,steps.spot);
+      for (const auto &sample : audit.samples) {
+        EXPECT_TRUE(sample.evaluated);
+        EXPECT_TRUE(std::isfinite(sample.price));
+        EXPECT_TRUE(sample.boundary_required);
+        EXPECT_GT(sample.internal_boundary,0.);
+      }
+      EXPECT_EQ(audit.samples[1].S,100.1);
+      EXPECT_EQ(audit.samples[2].S,99.9);
+      EXPECT_EQ(audit.samples[7].T,.501);
+      EXPECT_EQ(audit.samples[8].T,.499);
+      const auto cold = american_price(100.1,100.,.5,.25,.05,.03,side);
+      ASSERT_TRUE(cold);
+      EXPECT_NEAR(audit.samples[1].price,*cold,1e-11);
+    }
+  }
+}
+
+TEST(AmericanGreekFdAudit, InvalidExplicitStepsRefuseBeforePricing) {
+  using namespace atx::vol;
+  const double nan=std::numeric_limits<double>::quiet_NaN();
+  const double inf=std::numeric_limits<double>::infinity();
+  const detail::AlGreekFdSteps valid{.1,.001,.0001,.001};
+  for (std::size_t axis=0;axis<4;++axis) {
+    for (const double value : {0.,-1.,nan,inf}) {
+      auto steps=valid;
+      const std::array members{&detail::AlGreekFdSteps::spot,
+          &detail::AlGreekFdSteps::volatility,&detail::AlGreekFdSteps::rate,
+          &detail::AlGreekFdSteps::time};
+      steps.*members[axis]=value;
+      detail::AlGreekFdAudit audit;
+      audit.sample_attempts=999;
+      const auto result=detail::audit_american_greeks_fd(
+          100.,100.,.5,.25,.05,.03,Side::Put,steps,audit);
+      ASSERT_FALSE(result);
+      EXPECT_EQ(result.error().code(),atx::core::ErrorCode::InvalidArgument);
+      EXPECT_EQ(audit.sample_attempts,0u);
+      EXPECT_EQ(audit.boundary_cold_solves+audit.boundary_warm_solves,0u);
+    }
+  }
+  for (const double hS : {100.,101.,1e-20}) {
+    auto steps=valid; steps.spot=hS;
+    detail::AlGreekFdAudit audit;
+    EXPECT_FALSE(detail::audit_american_greeks_fd(
+        100.,100.,.5,.25,.05,.03,Side::Put,steps,audit));
+    EXPECT_EQ(audit.sample_attempts,0u);
+  }
+}
+
+TEST(AmericanGreekFdAudit, OneSidedAliasesAndVolatilityClampRemainExplicit) {
+  using namespace atx::vol;
+  detail::AlGreekFdAudit time;
+  ASSERT_TRUE(detail::audit_american_greeks_fd(100.,100.,.0005,.25,.05,.03,Side::Put,
+      detail::AlGreekFdSteps{.1,.001,.0001,.001},time));
+  EXPECT_TRUE(time.time_forward);
+  EXPECT_EQ(time.sample_attempts,14u);
+  EXPECT_EQ(time.samples[8].T,time.samples[0].T);
+  EXPECT_EQ(time.samples[15].T,time.samples[1].T);
+  EXPECT_EQ(time.samples[16].T,time.samples[2].T);
+  EXPECT_FALSE(time.samples[8].evaluated);
+  EXPECT_FALSE(time.samples[15].evaluated);
+  EXPECT_FALSE(time.samples[16].evaluated);
+  detail::AlGreekFdAudit rate;
+  ASSERT_TRUE(detail::audit_american_greeks_fd(100.,100.,.5,.25,.00005,-.001,Side::Put,
+      detail::AlGreekFdSteps{.1,.001,.0001,.001},rate));
+  EXPECT_TRUE(rate.rho_forward);
+  EXPECT_EQ(rate.sample_attempts,16u);
+  EXPECT_EQ(rate.samples[6].r,rate.samples[0].r);
+  EXPECT_FALSE(rate.samples[6].evaluated);
+  detail::AlGreekFdAudit vol;
+  ASSERT_TRUE(detail::audit_american_greeks_fd(100.,100.,.5,.0005,0.,0.,Side::Put,
+      detail::AlGreekFdSteps{.1,.001,.0001,.001},vol));
+  EXPECT_EQ(vol.steps.volatility,.00025);
+  EXPECT_EQ(vol.samples[4].sigma,.00025);
+}
+
+TEST(AmericanGreekFdAudit, NonfiniteModelRefusesBeforeObservingPrices) {
+  using namespace atx::vol;
+  for (std::size_t axis = 0; axis < 6; ++axis) {
+    for (const double value : {std::numeric_limits<double>::quiet_NaN(),
+                               std::numeric_limits<double>::infinity()}) {
+      std::array<double, 6> model{100., 100., .5, .25, .05, .03};
+      model[axis] = value;
+      detail::AlGreekFdAudit audit;
+      const auto result = detail::audit_american_greeks_fd(
+          model[0], model[1], model[2], model[3], model[4], model[5], Side::Put,
+          detail::AlGreekFdSteps{.1, .001, .0001, .001}, audit);
+      EXPECT_FALSE(result);
+      EXPECT_EQ(audit.sample_attempts, 0u) << "axis=" << axis;
+      EXPECT_EQ(audit.boundary_cold_solves + audit.public_price_calls, 0u);
+    }
+  }
 }
 
 } // namespace

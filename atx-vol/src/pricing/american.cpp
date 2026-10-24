@@ -4,6 +4,7 @@
 #include "pricing/american_detail.hpp"
 #include "pricing/american_greek_availability.hpp"
 #include "pricing/american_greek_stencil.hpp"
+#include "pricing/american_greek_fd_audit.hpp"
 
 #include <array>
 #include <atomic>
@@ -4737,23 +4738,42 @@ Result<AmericanGreeks> american_greeks(double S, double K, double T, double sigm
   return Ok(out);
 }
 
-Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double sigma, double r,
-                                          double q, Side side, AmericanMethod method,
-                                          const std::optional<AlOpts> &opts, bool warm_start) {
+namespace {
+Result<AmericanGreeks> american_greeks_fd_impl(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    AmericanMethod method, const std::optional<AlOpts> &opts, bool warm_start,
+    const detail::AlGreekFdSteps *step_override, detail::AlGreekFdAudit *audit) {
+  if (audit != nullptr) *audit = {};
   if (!(S > 0.0) || !(K > 0.0) || !(T > 0.0) || !(sigma > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "american_greeks_fd: S, K, T, sigma must be > 0");
+  }
+
+  if (step_override != nullptr) {
+    const auto &h = *step_override;
+    if (!std::isfinite(S) || !std::isfinite(K) || !std::isfinite(T) ||
+        !std::isfinite(sigma) || !std::isfinite(r) || !std::isfinite(q) ||
+        !(h.spot > 0.) || !(h.volatility > 0.) || !(h.rate > 0.) || !(h.time > 0.) ||
+        !std::isfinite(h.spot) || !std::isfinite(h.volatility) ||
+        !std::isfinite(h.rate) || !std::isfinite(h.time) || !(h.spot < S) ||
+        !std::isfinite(S+h.spot) || S+h.spot == S || S-h.spot == S ||
+        !std::isfinite(sigma+h.volatility) || sigma+h.volatility == sigma ||
+        !std::isfinite(r+h.rate) || !std::isfinite(r-h.rate) ||
+        r+h.rate == r || r-h.rate == r ||
+        !std::isfinite(T+h.time) || T+h.time == T) {
+      return Err(ErrorCode::InvalidArgument, "FD audit steps");
+    }
   }
 
   // Central-difference steps (match the P0-1 spec). Near expiry the T-derivatives
   // (theta, charm) fall back to a one-sided forward stencil so no bump reaches a
   // non-positive T.
-  const double hS = 1.0e-3 * S;
-  double hv = 1.0e-3;
+  const double hS = step_override ? step_override->spot : 1.0e-3 * S;
+  double hv = step_override ? step_override->volatility : 1.0e-3;
   if (sigma - hv <= 0.0) {
     hv = 0.5 * sigma;
   }
-  const double hr = 1.0e-4;
-  const double hT = 1.0e-3;
+  const double hr = step_override ? step_override->rate : 1.0e-4;
+  const double hT = step_override ? step_override->time : 1.0e-3;
   const bool near_expiry = (T - hT <= 1.0e-8);
   // A5 (core-review finding 5): the rho DOWN-bump r - hr can cross OUT of the
   // American regime into double-continuation for a PRICEABLE base contract (a put
@@ -4768,6 +4788,11 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   const double rho_dn_yield = rho_is_call ? (r - hr) : q;
   const bool rho_forward =
       (classify_regime(rho_dn_rate, rho_dn_yield) == ExerciseRegime::Unsupported);
+  if (audit != nullptr) {
+    audit->steps = {hS, hv, hr, hT};
+    audit->rho_forward = rho_forward;
+    audit->time_forward = near_expiry;
+  }
 
   // Bumped cold price. Captures the FIRST american_price error and short-circuits;
   // the poisoned NaN it returns afterwards is never consumed once `failed` is set.
@@ -4777,6 +4802,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     if (failed) {
       return std::numeric_limits<double>::quiet_NaN();
     }
+    if (audit != nullptr) ++audit->public_price_calls;
     const Result<double> p =
         american_price(S + dS, K, T + dT, sigma + dsig, r + dr, q, side, method, opts);
     if (!p) {
@@ -4848,10 +4874,12 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // (r = 0, q > 0 put: df*(K - F) > 0 with the spot intrinsic at 0) — the FD
     // bundle then served a price american_price never quotes on the same inputs.
     if (T2 <= 1.0e-12) {
+      if (audit != nullptr) ++audit->degenerate_samples;
       const double intr = K - S2;
       return (intr > 0.0) ? intr : 0.0;
     }
     if (sig2 <= 1.0e-8) {
+      if (audit != nullptr) ++audit->degenerate_samples;
       return sigma_zero_american_limit(S2, K, T2, r2, q, Side::Put);
     }
     // Put no-early-exercise regime is American == European (Black-76). The
@@ -4860,6 +4888,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // through the bundle instead of a silently-wrong European Greeks set.
     switch (classify_regime(/*rate=*/r2, /*yield=*/q)) {
     case ExerciseRegime::European:
+      if (audit != nullptr) ++audit->european_price_calls;
       return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2, std::exp(-r2 * T2),
                            Side::Put);
     case ExerciseRegime::Unsupported:
@@ -4894,6 +4923,10 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
       const bool is_base = (dsig == 0.0 && dr == 0.0 && dT == 0.0);
       const bool can_warm = warm_start && !is_base && n_memo > 1 && memo[0].ok &&
                             memo[0].dsig == 0.0 && memo[0].dr == 0.0 && memo[0].dT == 0.0;
+      if (audit != nullptr) {
+        if (can_warm) ++audit->boundary_warm_solves;
+        else ++audit->boundary_cold_solves;
+      }
       const AlSolveStatus st =
           can_warm ? al_solve_put_boundary_warm(K, T2, sig2, r2, q, sch, memo[0].bnd, c->bnd, c->ws)
                    : al_solve_put_boundary(K, T2, sig2, r2, q, sch, c->bnd, c->ws);
@@ -4908,6 +4941,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     if (!al_premium_cache_matches(prem_cache, c->bnd, c->ws, sig2, r2, q)) {
       al_bind_premium(c->bnd, c->ws, sig2, r2, q, prem_cache);
     }
+    if (audit != nullptr) ++audit->boundary_price_calls;
     return al_put_price_from_boundary_cached(c->bnd, c->ws, prem_cache, S2, K, T2, sig2, r2, q);
   };
   // Call fast path evaluator. McDonald-Schroder: C(S,K,r,q) prices via an internal
@@ -4934,10 +4968,12 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // own (S,K,r,q) — sigma_zero_american_limit is side-parameterised, so no
     // McDonald-Schroder swap belongs here).
     if (T2 <= 1.0e-12) {
+      if (audit != nullptr) ++audit->degenerate_samples;
       const double intr = S2 - K; // call intrinsic
       return (intr > 0.0) ? intr : 0.0;
     }
     if (sig2 <= 1.0e-8) {
+      if (audit != nullptr) ++audit->degenerate_samples;
       return sigma_zero_american_limit(S2, K, T2, r2, q, Side::Call);
     }
     // Regime in the call's internal-put terms (rate = q, yield = r2 — the same
@@ -4947,6 +4983,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // NotImplemented propagates through the bundle, never a silently-wrong European.
     switch (classify_regime(/*rate=*/q, /*yield=*/r2)) {
     case ExerciseRegime::European:
+      if (audit != nullptr) ++audit->european_price_calls;
       return black76_price(S2 * std::exp((r2 - q) * T2), K, T2, sig2, std::exp(-r2 * T2),
                            Side::Call);
     case ExerciseRegime::Unsupported:
@@ -4979,6 +5016,10 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
       const bool is_base = (dsig == 0.0 && dr == 0.0 && dT == 0.0);
       const bool can_warm = warm_start && !is_base && n_memo > 1 && memo[0].ok &&
                             memo[0].dsig == 0.0 && memo[0].dr == 0.0 && memo[0].dT == 0.0;
+      if (audit != nullptr) {
+        if (can_warm) ++audit->boundary_warm_solves;
+        else ++audit->boundary_cold_solves;
+      }
       const AlSolveStatus st =
           can_warm
               ? al_solve_put_boundary_warm(/*K=*/S, T2, sig2, /*r=*/q, /*q=*/r2, sch, memo[0].bnd,
@@ -5004,6 +5045,7 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     if (!al_premium_cache_matches(prem_cache, c->bnd, c->ws, sig2, /*r=*/q, /*q=*/r2)) {
       al_bind_premium(c->bnd, c->ws, sig2, /*r=*/q, /*q=*/r2, prem_cache);
     }
+    if (audit != nullptr) ++audit->boundary_price_calls;
     const double price = al_put_price_from_boundary_cached(
         c->bnd, c->ws, prem_cache, /*spot=*/K, /*strike=*/S2, T2, sig2, /*r=*/q, /*q=*/r2);
     // T9a-M1: restore the canonical base scaling so the in-place rescale above never
@@ -5037,6 +5079,12 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     }
     evidence[sample_index] = detail::american_greek_sample(value, S+dS, K, side,
                                                           boundary, boundary_required);
+    if (audit != nullptr) {
+      ++audit->sample_attempts;
+      audit->samples[sample_index] = {S+dS, K, T+dT, sigma+dsig, r+dr, q, value,
+                                      boundary, boundary_required,
+                                      evidence[sample_index].exercised, true};
+    }
     return value;
   };
 
@@ -5052,11 +5100,23 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   // Rate stencils (one-sided forward when the down-bump exits the American regime).
   const double p_rp = EV(0.0, 0.0, +hr, 0.0, 5);
   const double p_rm = rho_forward ? p0 : EV(0.0, 0.0, -hr, 0.0, 6);
-  if (rho_forward) evidence[6] = evidence[0];
+  if (rho_forward) {
+    evidence[6] = evidence[0];
+    if (audit != nullptr) {
+      audit->samples[6] = audit->samples[0];
+      audit->samples[6].evaluated = false;
+    }
+  }
   // Time stencils (one-sided forward near expiry).
   const double p_Tp = EV(0.0, 0.0, 0.0, +hT, 7);
   const double p_Tm = near_expiry ? p0 : EV(0.0, 0.0, 0.0, -hT, 8);
-  if (near_expiry) evidence[8] = evidence[0];
+  if (near_expiry) {
+    evidence[8] = evidence[0];
+    if (audit != nullptr) {
+      audit->samples[8] = audit->samples[0];
+      audit->samples[8].evaluated = false;
+    }
+  }
   // Vanna cross (spot x vol), central.
   const double p_SpVp = EV(+hS, +hv, 0.0, 0.0, 9);
   const double p_SpVm = EV(+hS, -hv, 0.0, 0.0, 10);
@@ -5067,7 +5127,14 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
   const double p_SmTp = EV(-hS, 0.0, 0.0, +hT, 14);
   const double p_SpTm = near_expiry ? p_Sp : EV(+hS, 0.0, 0.0, -hT, 15);
   const double p_SmTm = near_expiry ? p_Sm : EV(-hS, 0.0, 0.0, -hT, 16);
-  if (near_expiry) { evidence[15] = evidence[1]; evidence[16] = evidence[2]; }
+  if (near_expiry) {
+    evidence[15] = evidence[1]; evidence[16] = evidence[2];
+    if (audit != nullptr) {
+      audit->samples[15] = audit->samples[1];
+      audit->samples[16] = audit->samples[2];
+      audit->samples[15].evaluated = audit->samples[16].evaluated = false;
+    }
+  }
 
   if (failed) {
     return Err(std::move(first_err));
@@ -5105,6 +5172,21 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
           {evidence[0], evidence[13], evidence[14], evidence[15], evidence[16]})};
   detail::apply_american_greek_stencils(out, stencils, side);
   return Ok(out);
+}
+
+} // namespace
+
+Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double sigma, double r,
+                                          double q, Side side, AmericanMethod method,
+                                          const std::optional<AlOpts> &opts, bool warm_start) {
+  return american_greeks_fd_impl(S,K,T,sigma,r,q,side,method,opts,warm_start,nullptr,nullptr);
+}
+
+Result<AmericanGreeks> detail::audit_american_greeks_fd(
+    double S, double K, double T, double sigma, double r, double q, Side side,
+    const AlGreekFdSteps &steps, AlGreekFdAudit &audit, AmericanMethod method,
+    const std::optional<AlOpts> &opts, bool warm_start) {
+  return american_greeks_fd_impl(S,K,T,sigma,r,q,side,method,opts,warm_start,&steps,&audit);
 }
 
 double american_vega(double S, double K, double T, double sigma, double r, double q, Side side,

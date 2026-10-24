@@ -27,10 +27,27 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
 #include "pricing/american_sigma_q_family.hpp" // K1: the fused entries (internal)
+#include "pricing/american_greek_fd_audit.hpp"
 #include "support/alloc_counter.hpp"
 
 namespace atx::vol {
 namespace {
+
+TEST(AmericanGreekFdAuditAlloc, SampleObservationAddsNoAllocations) {
+  for (const auto side : {Side::Put, Side::Call}) {
+    detail::AlGreekFdAudit audit;
+    bool ok = false;
+    const auto allocations = testkit::count_allocations([&] {
+      ok = detail::audit_american_greeks_fd(100.,100.,.5,.25,.05,.03,side,
+          detail::AlGreekFdSteps{.1,.001,.0001,.001},audit).has_value();
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(allocations,0u);
+    EXPECT_EQ(audit.sample_attempts,17u);
+    EXPECT_EQ(audit.boundary_cold_solves,7u);
+    EXPECT_EQ(audit.boundary_price_calls,17u);
+  }
+}
 
 TEST(AmericanGreekAdmissionAlloc, PartialColdBundlesAndVegaRefusalAllocateNothing) {
   for (const auto side : {Side::Put, Side::Call}) {
