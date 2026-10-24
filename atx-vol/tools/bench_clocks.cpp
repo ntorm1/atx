@@ -476,6 +476,16 @@ Json stage_clock_json(const DeAmStageClock &c) {
           {"fast_redos", c.fast_redos}, {"fast_redo_s", s(c.fast_redo_ns)},
           {"reference_requests", c.reference_requests}, {"reference_s", s(c.reference_ns)},
           {"bound_decided_bands", c.bound_decided_bands},
+          {"family_substages", {{"geometry_s", s(c.family_geometry_ns)},
+                                {"tensor_s", s(c.family_tensor_ns)},
+                                {"envelope_s", s(c.family_envelope_ns)},
+                                {"probe_bounded_s", s(c.family_probe_bound_ns)},
+                                {"probe_cold_s", s(c.family_probe_cold_ns)},
+                                {"side_attempts", c.family_sides},
+                                {"built_nodes", c.family_nodes},
+                                {"probe_attempts", c.family_probes},
+                                {"scope", "diagnostic subspans of inclusive sigma-q family build; "
+                                          "not additional exclusive fit buckets; setup/other is unclaimed"}}},
           {"premium_fallback_reason_index", "IvPremiumFallback: 1 not applicable, 2 range edge "
                                             "or non-monotone band, 3 no European seed, 4 not "
                                             "increasing, 5 vol bound, 6 pricer failure, 7 no "

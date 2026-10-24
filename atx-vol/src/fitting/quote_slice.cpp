@@ -1085,13 +1085,28 @@ private:
     AlExpiryGeometry &geometry =
         side == Side::Put ? holder.q_geometry_put : holder.q_geometry_call;
     std::optional<AlSigmaQFamily> &slot = side == Side::Put ? holder.q_put : holder.q_call;
+    DeAmStageClock *const clock = deam_stage_clock();
+    using FamilyClock = std::chrono::steady_clock;
+    auto mark = clock ? FamilyClock::now() : FamilyClock::time_point{};
     geometry.prepare(T, r, std::clamp(request.q, q_lo, q_hi), fit_.al_opts);
+    if (clock != nullptr) {
+      const auto ns = (FamilyClock::now() - mark) / std::chrono::nanoseconds{1};
+      clock->family_geometry_ns += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+      ++clock->family_sides;
+    }
     const std::uint16_t n_q = T * (q_hi - q_lo) <= kDeAmQFamilyNarrowCarry
                                   ? kDeAmQFamilyNarrowQNodes
                                   : kDeAmQFamilyQNodes;
     slot.emplace(geometry, side, spot);
-    if (!slot->prepare(sigma_lo, sigma_hi, kDeAmQFamilySigmaNodes, q_lo, q_hi, n_q,
-                       kDeAmFamilyAxis)) {
+    if (clock != nullptr) mark = FamilyClock::now();
+    const Status prepared = slot->prepare(sigma_lo, sigma_hi, kDeAmQFamilySigmaNodes,
+                                           q_lo, q_hi, n_q, kDeAmFamilyAxis);
+    if (clock != nullptr) {
+      const auto ns = (FamilyClock::now() - mark) / std::chrono::nanoseconds{1};
+      clock->family_tensor_ns += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+      if (prepared) clock->family_nodes += static_cast<std::uint64_t>(slot->n_sigma()) * slot->n_q();
+    }
+    if (!prepared) {
       slot.reset();
       refuse(request, s, DeAmFamilyRefusal::PrepareRefused);
       return;

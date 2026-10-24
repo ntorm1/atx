@@ -407,6 +407,38 @@ TEST(BenchDeamStageClock, ArmedClockTimesBandEdgesWithoutChangingTheFit) {
   deam_iv_memo_clear();
 }
 
+TEST(BenchDeamStageClock, FamilySubstagesPreserveFitAndAccountForBothSides) {
+  const Chain chain = spy_chain(0.15);
+  QuoteSliceConfig config = cached_vol_config();
+  config.channel.deam_profile = QuoteSliceDeamProfile::Screen;
+  config.channel.deam_inversion = QuoteSliceDeamInversion::Premium;
+  config.channel.deam_family = QuoteSliceDeamFamily::Always;
+  config.channel.deam_family_q = true;
+  deam_iv_memo_clear();
+  const Rep plain = fit_once(chain, config);
+  deam_iv_memo_clear();
+  DeAmStageClock clock;
+  const Rep timed = [&] {
+    const bench::StageClockArm armed(&clock);
+    return fit_once(chain, config);
+  }();
+  EXPECT_EQ(deam_stage_clock(), nullptr);
+  expect_same_rows(plain.fit, timed.fit);
+  EXPECT_EQ(plain.al_solves, timed.al_solves);
+  EXPECT_EQ(clock.family_sides, 2u);
+  EXPECT_EQ(clock.family_nodes, 2u * kDeAmQFamilySigmaNodes);
+  EXPECT_EQ(clock.family_probes, 2u * kDeAmFamilyProbes);
+  EXPECT_GT(clock.family_geometry_ns, 0u);
+  EXPECT_GT(clock.family_tensor_ns, 0u);
+  EXPECT_GT(clock.family_envelope_ns, 0u);
+  EXPECT_GT(clock.family_probe_bound_ns, 0u);
+  EXPECT_GT(clock.family_probe_cold_ns, 0u);
+  const auto sum = clock.family_geometry_ns + clock.family_tensor_ns +
+      clock.family_envelope_ns + clock.family_probe_bound_ns + clock.family_probe_cold_ns;
+  EXPECT_LT(1e-9 * static_cast<double>(sum), timed.seconds);
+  deam_iv_memo_clear();
+}
+
 TEST(BenchColdReset, ResetEmptiesTheThreadMemoSoTheSecondRepRepeatsTheFirst) {
   const QuoteSliceConfig config = cached_vol_config();
   // First-use work (static tables, the thread's ALO slot) is paid on another chain, so

@@ -1355,15 +1355,30 @@ bool deam_family_certify(DeAmSigmaFamilies &holder, Side side, double S, double 
   if (f == nullptr) {
     return false;
   }
+  DeAmStageClock *const clock = deam_stage_clock();
+  using FamilyClock = std::chrono::steady_clock;
+  auto mark = clock ? FamilyClock::now() : FamilyClock::time_point{};
+  const auto lap = [&](std::uint64_t DeAmStageClock::*field) {
+    if (clock == nullptr) return;
+    const auto now = FamilyClock::now();
+    const auto ns = (now - mark) / std::chrono::nanoseconds{1};
+    clock->*field += ns > 0 ? static_cast<std::uint64_t>(ns) : 0u;
+    mark = now;
+  };
   ValidatedErrorEnvelope env = build_family_error_envelope(*f);
+  lap(&DeAmStageClock::family_envelope_ns);
   SampledErrorEstimate audit;
   audit.max_abs_usd = 0.0;
   audit.max_rel = 0.0;
   audit.max_bound_ratio = 0.0;
   for (const ProbePoint &p :
        family_probe_points(*f, S, strike_lo, strike_hi, band_lo, band_hi)) {
+    if (clock != nullptr) mark = FamilyClock::now();
     const FamilyBoundedPrice fb = family_price_bounded(*f, env, S, p.K, p.sigma, p.q);
+    lap(&DeAmStageClock::family_probe_bound_ns);
     const Result<double> cold = andersen_lake(S, p.K, T, p.sigma, r, p.q, side, al_opts);
+    lap(&DeAmStageClock::family_probe_cold_ns);
+    if (clock != nullptr) ++clock->family_probes;
     if (fb.status != AlSigmaQFamilyStatus::Ok || !cold || !std::isfinite(*cold)) {
       return false;
     }
@@ -1374,6 +1389,7 @@ bool deam_family_certify(DeAmSigmaFamilies &holder, Side side, double S, double 
     audit.violations += err > fb.bound_usd ? 1u : 0u;
     ++audit.probes;
   }
+  if (clock != nullptr) mark = FamilyClock::now();
   record_family_probe_audit(env, audit);
   double grid_bound = 0.0;
   for (const double K : {band_lo, band_hi, S}) {
@@ -1381,6 +1397,7 @@ bool deam_family_certify(DeAmSigmaFamilies &holder, Side side, double S, double 
   }
   (side == Side::Put ? holder.q_envelope_put : holder.q_envelope_call) = env;
   (side == Side::Put ? holder.q_bound_put : holder.q_bound_call) = grid_bound;
+  lap(&DeAmStageClock::family_envelope_ns);
   return true;
 }
 

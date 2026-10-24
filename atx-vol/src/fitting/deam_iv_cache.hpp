@@ -612,6 +612,16 @@ struct DeAmStageClock {
   std::uint64_t reference_ns = 0;
   std::uint64_t reference_requests = 0;
   std::uint64_t bound_decided_bands = 0;
+  // Diagnostic subspans of the existing inclusive family-build clock. These
+  // never contribute another exclusive fit bucket or alter family decisions.
+  std::uint64_t family_geometry_ns = 0;
+  std::uint64_t family_tensor_ns = 0;
+  std::uint64_t family_envelope_ns = 0;
+  std::uint64_t family_probe_bound_ns = 0;
+  std::uint64_t family_probe_cold_ns = 0;
+  std::uint64_t family_sides = 0;
+  std::uint64_t family_nodes = 0;
+  std::uint64_t family_probes = 0;
 };
 // The clock armed on the calling thread, or null.
 [[nodiscard]] DeAmStageClock *deam_stage_clock() noexcept;
