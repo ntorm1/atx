@@ -2958,12 +2958,33 @@ std::optional<double> american_implied_vol_price_seed(
 
 std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
-    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats) noexcept {
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
+    IvPriceProposalKernel proposal_kernel) noexcept {
   if (stats != nullptr) *stats = {};
   if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
       opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
-      opts.warm_start != 0.0 || opts.price_tol != 0.0) return std::nullopt;
+      opts.warm_start != 0.0 || opts.price_tol != 0.0 ||
+      (proposal_kernel != IvPriceProposalKernel::Fast &&
+       proposal_kernel != IvPriceProposalKernel::ScreenThenFast)) return std::nullopt;
   try {
+    if (proposal_kernel == IvPriceProposalKernel::ScreenThenFast) {
+      if (stats != nullptr) stats->screen_attempted = true;
+      const std::optional<AlOpts> screen = al_screen_opts();
+      PriceProposal proposal{0.25 * max_price_error, false};
+      const auto candidate = american_implied_vol_impl(price, S, K, T, r, q, side,
+          opts.method, opts.tol, opts.max_iter, screen, opts.correction, 0.0, 0.0, nullptr,
+          &proposal);
+      if (stats != nullptr) stats->screen_stopped_early = proposal.stopped;
+      if (candidate && *candidate > kIvMin && std::isfinite(*candidate)) {
+        if (const auto answer = american_implied_vol_price_seed(price, S, K, T, r, q, side,
+                                                               opts, max_price_error, *candidate)) {
+          if (stats != nullptr) stats->screen_accepted = true;
+          return answer;
+        }
+      }
+      // Screen is only a proposal map. Failure, a refused early stop, or full
+      // Screen convergence that misses the cold budget all retain the Fast chain.
+    }
     IvOpts seed = opts;
     seed.al_opts = al_fast_profile(opts.al_opts);
     seed.refuse_non_monotone = false;

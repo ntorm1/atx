@@ -1,10 +1,17 @@
 # Early residual proposals for economic repaired IVs
 
 The explicit repaired-price budget route can propose an IV from an evaluated
-Fast residual before paying for strict sigma convergence and Fast cold polish.
+Screen or Fast residual before paying for strict sigma convergence and cold polish.
 This private optimization changes `american_implied_vol_price_candidate` only.
 Public Search, its sigma tolerance, public `price_tol` polish, default fitting,
 and the three-day family-domain guard retain their existing controls.
+
+Screen 7/16/48/5 proposes first. A refusal, numerical failure, or full Screen
+convergence that misses the target check falls through the complete Fast chain.
+The private `IvPriceProposalKernel::Fast` control retains that approved chain for
+comparison; the private helper defaults to `ScreenThenFast`. Neither mode changes
+public Search or enables the monetary policy on a default fit. Screen has no
+uniform accuracy guarantee and supplies no acceptance proof.
 
 An internal `PriceProposal` is null on every public/default inversion. On the
 economic candidate route it requests an early return only at a finite evaluated
@@ -21,15 +28,19 @@ screen, actual cold `P(kIvMin) < target`, continuation classification, and the
 existing positive cold chord in the near-exercise band. No floor witness or
 exercise check is replaced by a monetary residual.
 
-When an early candidate fails that check, the implementation reruns the original
-complete Fast Search and its original cold-target check. If no early stop occurs,
-the first search already performed that full algorithm and is checked once.
+When an early Fast candidate fails that check, the implementation reruns the original
+complete Fast Search and its original cold-target check. If Fast has no early stop,
+that search already performed the full algorithm and is checked once.
 An ultimate refusal delegates to the caller's existing typed fallback. A refusal
 does not change a row to PriceOnly directly. Zero/invalid budgets and unsupported
 controls refuse before starting any work.
 
-The private optional `IvPriceCandidateStats` reports `stopped_early`,
+The private optional `IvPriceCandidateStats` reports the Fast chain's `stopped_early`,
 `accepted_early`, and `retried_full_search`, separately from native K3 acceptance.
+`screen_attempted`, `screen_stopped_early`, and `screen_accepted` report the preceding
+Screen proposal. Existing aggregate fit counters named `reimply_fast_attempts` and
+`reimply_fast_roots` count calls/results of the monetary candidate chain; after this
+addition those historical names do not mean that Fast arithmetic actually ran.
 It is reset even on an invalid request. No strict IV accuracy or Greek accuracy
 is inferred from economic acceptance.
 
@@ -60,6 +71,21 @@ The 16 focused identification/finalizer tests pass (`price-proposal-fit.xml`),
 including final cold repricing and cached query metadata. PCH-off compilation of
 the changed pricing source/test and the quote-slice consumer passes
 (`price-proposal-hygiene.log`).
+
+The separate Screen runtime red (`price-proposal-screen-red.xml`) records zero
+Screen attempts/acceptances before implementation. The new Screen test accepts
+all twelve one/two-day call/put cases after independent cold checks. Across twelve
+ill-conditioned/tight-budget cases it refuses nine proposals; seven refusals have
+no early stop, and two recover valid Fast answers. Every refusal's result and Fast
+diagnostics exactly match the explicit Fast-only control. An explicit nondefault
+target-scheme test checks the caller's cold map, not Screen's own map. All fifteen
+non-monotone/candidate tests pass (`price-proposal-screen-cases.xml`). Zero budget,
+unknown private kernel selection, sub-floor and exercise plateau requests remain
+refused. The sixteen identification/finalizer regressions also pass after the
+Screen change (`price-proposal-screen-fit.xml`), and the changed pricing source,
+test and quote-slice consumer pass PCH-off compilation
+(`price-proposal-screen-hygiene.log`). Screen's full-input correctness and timing
+are separate integration work.
 
 Full SPY actual-API price/floor/coverage audit and a quiet complete-fit timing
 remain integration gates. This optimization does not turn historical typed

@@ -22,22 +22,32 @@ struct IvSearchResult {
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts) noexcept;
 
-// Diagnostics of the private proposal, separate from the public Search result.
+// Diagnostics of the private proposals, separate from public Search. The first
+// three fields describe Fast; the Screen fields describe its preceding proposal.
 struct IvPriceCandidateStats {
   bool stopped_early{false};
   bool accepted_early{false};
   bool retried_full_search{false};
+  bool screen_attempted{false};
+  bool screen_stopped_early{false};
+  bool screen_accepted{false};
 };
 
-// Opt-in repaired-node seed: an evaluated Fast residual may propose sigma before
-// strict IV convergence. Acceptance still requires cold target repricing within
-// max_price_error plus the target floor/exercise/slope checks. A refused early
-// proposal retries the original complete Fast search before typed fallback.
+// Internal experiment/measurement control. Neither value changes the public
+// Search API; ScreenThenFast must retain the complete Fast refusal chain.
+enum class IvPriceProposalKernel { Fast, ScreenThenFast };
+
+// Opt-in repaired-node seed: an evaluated Screen or Fast residual may propose sigma
+// before strict IV convergence. Acceptance still requires cold target repricing
+// within max_price_error plus the target floor/exercise/slope checks. Screen
+// refusals retain the full Fast chain; a refused early Fast proposal retries the
+// original complete Fast search before typed fallback.
 // Zero/invalid budgets and unsupported Search controls return nullopt. Stats are
 // reset on entry, including refusal. No public/default Search behavior changes.
 [[nodiscard]] std::optional<double> american_implied_vol_price_candidate(
     double price, double S, double K, double T, double r, double q, Side side,
-    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats = nullptr) noexcept;
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats = nullptr,
+    IvPriceProposalKernel proposal_kernel = IvPriceProposalKernel::ScreenThenFast) noexcept;
 
 // Checks an externally prepared sigma with the same cold price/exercise/slope
 // acceptance as price_candidate, without any inverse iteration or fallback.

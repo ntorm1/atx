@@ -1834,7 +1834,8 @@ TEST(AmericanIvNonMonotone, PriceBudgetEarlyProposalCutsShortExpirySearchWork) {
       atx::vol::IvPriceCandidateStats stats;
       const auto before = led::snapshot();
       const auto candidate = atx::vol::american_implied_vol_price_candidate(target, 773,
-          strike, days / 365, .045, .01, Side::Put, opts, .001, &stats);
+          strike, days / 365, .045, .01, Side::Put, opts, .001, &stats,
+          atx::vol::IvPriceProposalKernel::Fast);
       early_iters += (led::snapshot() - before).get(led::Solve::IvNewtonIters);
       early_solves += (led::snapshot() - before).get(led::Solve::AlBoundarySolves);
       ASSERT_TRUE(candidate);
@@ -1890,7 +1891,8 @@ TEST(AmericanIvNonMonotone, RejectedPriceProposalRetriesTheOriginalFullFastSearc
       }
       atx::vol::IvPriceCandidateStats stats;
       const auto answer = atx::vol::american_implied_vol_price_candidate(c.price, c.S,
-          c.K, c.T, c.r, c.q, c.side, opts, budget, &stats);
+          c.K, c.T, c.r, c.q, c.side, opts, budget, &stats,
+          atx::vol::IvPriceProposalKernel::Fast);
       if (stats.retried_full_search) {
         ++retries;
         recovered += answer ? 1u : 0u;
@@ -1917,20 +1919,132 @@ TEST(AmericanIvNonMonotone, PriceProposalKeepsZeroBudgetAndTargetFloorRefusals) 
   namespace led = atx::vol::counters::ledger;
   IvOpts opts;
   const auto before = led::snapshot();
-  atx::vol::IvPriceCandidateStats stats{true, true, true};
+  atx::vol::IvPriceCandidateStats stats{true, true, true, true, true, true};
   EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
       10, 100, 100, 1, .05, 0, Side::Put, opts, 0, &stats));
   EXPECT_EQ((led::snapshot() - before).get(led::Solve::IvNewtonIters), 0u);
   EXPECT_FALSE(stats.stopped_early);
   EXPECT_FALSE(stats.accepted_early);
   EXPECT_FALSE(stats.retried_full_search);
+  EXPECT_FALSE(stats.screen_attempted);
+  EXPECT_FALSE(stats.screen_stopped_early);
+  EXPECT_FALSE(stats.screen_accepted);
   const double sub_floor = cold_al(100, 100, 1, .00499, 0, 0, Side::Call);
   EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
       sub_floor, 100, 100, 1, 0, 0, Side::Call, opts, .001, &stats));
   EXPECT_FALSE(stats.accepted_early);
+  EXPECT_FALSE(stats.screen_accepted);
   EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
       40, 100, 140, 1, .05, 0, Side::Put, opts, .001, &stats));
   EXPECT_FALSE(stats.accepted_early);
+  EXPECT_FALSE(stats.screen_accepted);
+  EXPECT_FALSE(atx::vol::american_implied_vol_price_candidate(
+      10, 100, 100, 1, .05, 0, Side::Put, opts, .001, &stats,
+      static_cast<atx::vol::IvPriceProposalKernel>(255)));
+  EXPECT_FALSE(stats.screen_attempted);
+}
+
+TEST(AmericanIvNonMonotone, ScreenProposalUsesTheSameIndependentColdTargetChecks) {
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  std::size_t screen_accepted = 0;
+  for (const Side side : {Side::Call, Side::Put}) {
+    for (const double days : {1.0, 2.0}) {
+      for (const double strike : {770.0, 773.0, 780.0}) {
+        const double target = cold_al(773, strike, days / 365, .35, .045, .01, side);
+        atx::vol::IvPriceCandidateStats stats;
+        const auto answer = atx::vol::american_implied_vol_price_candidate(
+            target, 773, strike, days / 365, .045, .01, side, opts, .001, &stats);
+        ASSERT_TRUE(answer);
+        EXPECT_TRUE(stats.screen_attempted);
+        screen_accepted += stats.screen_accepted ? 1u : 0u;
+        EXPECT_GT(*answer, kIvMin);
+        EXPECT_LE(std::abs(cold_al(773, strike, days / 365, *answer, .045, .01, side) - target),
+                  .001);
+        EXPECT_GT(target, cold_al(773, strike, days / 365, kIvMin, .045, .01, side));
+        EXPECT_FALSE(spot_exercises(773, strike, days / 365, *answer, .045, .01, side));
+        if (stats.screen_accepted) {
+          EXPECT_FALSE(stats.stopped_early);
+          EXPECT_FALSE(stats.accepted_early);
+          EXPECT_FALSE(stats.retried_full_search);
+        }
+      }
+    }
+  }
+  EXPECT_EQ(screen_accepted, 12u);
+}
+
+TEST(AmericanIvNonMonotone, ScreenRefusalsRetainFastEvenWithoutAnEarlyStop) {
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  struct Case { double K, T, r, q, price; Side side; };
+  const Case cases[] = {
+      {925, 2.257885694503784, .0515890046954155, .00582131263777355,
+       152.01331004092836, Side::Put},
+      {65, .9224853515625, .04965313524007797, .008097793258072,
+       708.0004269712528, Side::Call},
+      {780, 1.0 / 365, .045, .01,
+       cold_al(773, 780, 1.0 / 365, .35, .045, .01, Side::Put), Side::Put},
+  };
+  std::size_t fallbacks = 0, no_stop = 0, retained_answers = 0;
+  for (const auto &c : cases) {
+    for (const double budget : {.001, .000001, .0000000001, .000000000001}) {
+      atx::vol::IvPriceCandidateStats fast_stats, screen_stats;
+      const auto fast = atx::vol::american_implied_vol_price_candidate(c.price, 773, c.K,
+          c.T, c.r, c.q, c.side, opts, budget, &fast_stats, atx::vol::IvPriceProposalKernel::Fast);
+      const auto answer = atx::vol::american_implied_vol_price_candidate(c.price, 773, c.K,
+          c.T, c.r, c.q, c.side, opts, budget, &screen_stats);
+      EXPECT_TRUE(screen_stats.screen_attempted);
+      EXPECT_FALSE(fast_stats.screen_attempted);
+      if (!screen_stats.screen_accepted) {
+        ++fallbacks;
+        no_stop += screen_stats.screen_stopped_early ? 0u : 1u;
+        retained_answers += answer ? 1u : 0u;
+        EXPECT_EQ(answer.has_value(), fast.has_value());
+        if (answer && fast) EXPECT_TRUE(same_double(*answer, *fast));
+        EXPECT_EQ(screen_stats.stopped_early, fast_stats.stopped_early);
+        EXPECT_EQ(screen_stats.accepted_early, fast_stats.accepted_early);
+        EXPECT_EQ(screen_stats.retried_full_search, fast_stats.retried_full_search);
+      }
+      if (answer) {
+        EXPECT_LE(std::abs(cold_al(773, c.K, c.T, *answer, c.r, c.q, c.side) - c.price), budget);
+        EXPECT_GT(c.price, cold_al(773, c.K, c.T, kIvMin, c.r, c.q, c.side));
+      }
+    }
+  }
+  EXPECT_GT(fallbacks, 0u);
+  EXPECT_GT(no_stop, 0u);
+  EXPECT_GT(retained_answers, 0u);
+  std::printf("[Screen proposal] %zu refusals, %zu without early stop, %zu valid Fast answers\n",
+      fallbacks, no_stop, retained_answers);
+}
+
+TEST(AmericanIvNonMonotone, ScreenProposalChecksTheCallersExplicitColdScheme) {
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  auto target_options = atx::vol::al_fast_profile(std::nullopt);
+  target_options.profile = atx::vol::AlProfile::Reference;
+  target_options.n_collocation = 16;
+  target_options.n_quadrature = 32;
+  target_options.n_quad_price = 64;
+  target_options.max_newton_iter = 8;
+  target_options.tol = 1e-12;
+  opts.al_opts = target_options;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto target = andersen_lake(773, 780, 2.0 / 365, .35, .045, .01, side, opts.al_opts);
+    ASSERT_TRUE(target);
+    atx::vol::IvPriceCandidateStats stats;
+    const auto answer = atx::vol::american_implied_vol_price_candidate(*target, 773, 780,
+        2.0 / 365, .045, .01, side, opts, .001, &stats);
+    ASSERT_TRUE(answer);
+    EXPECT_TRUE(stats.screen_attempted);
+    const auto cold = andersen_lake(773, 780, 2.0 / 365, *answer, .045, .01, side, opts.al_opts);
+    const auto floor = andersen_lake(773, 780, 2.0 / 365, kIvMin, .045, .01, side, opts.al_opts);
+    ASSERT_TRUE(cold);
+    ASSERT_TRUE(floor);
+    EXPECT_LE(std::abs(*cold - *target), .001);
+    EXPECT_GT(*target, *floor);
+  }
 }
 
 TEST(AmericanIvNonMonotone, ExternalPriceSeedPreservesTargetFloorAndRangeRefusals) {
