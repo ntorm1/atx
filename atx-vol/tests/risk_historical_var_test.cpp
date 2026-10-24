@@ -22,7 +22,11 @@
 #include <vector>
 
 #include "atx/vol/api/risk/historical_var.hpp"
+#include "atx/vol/api/risk/market_state.hpp"
 #include "atx/vol/api/risk/pnl_explain.hpp"
+#include "atx/vol/api/risk/risk_book.hpp"
+#include "atx/vol/api/risk/risk_frame.hpp"
+#include "atx/vol/api/risk/risk_kernel.hpp"
 #include "atx/vol/api/risk/theo_contract.hpp"
 #include "support/risk_synthetic_market.hpp"
 
@@ -572,8 +576,17 @@ TEST(HistoricalVar, FamilyAndColdAgreeWithinTolerance) {
   book.options.push_back(moneyness_leg(2u, 0.30, -0.08, Side::Put, 4.0));
   book.options.push_back(put_delta_leg(3u, 0.15, -0.35, 8.0));
 
+  // Every qty is long, so each state's net pv is its gross pv (the bounds below use it).
+  for (const TheoLeg &leg : book.options) {
+    ASSERT_GT(leg.qty, 0.0);
+  }
+
   HistoricalVarConfig fam;
   fam.confidences = {0.5, 0.95};
+  fam.keep_resolved_legs = true; // the route witness below rebuilds each pair's book
+  // Every (uid, expiry, side) group here is one lane, which family economics prices cold;
+  // turn it off so the comparison is family against cold, not cold against cold.
+  fam.family.family_economics = false;
   HistoricalVarConfig cold = fam;
   cold.kernel = RiskKernelKind::Cold;
   const Result<HistoricalVarResult> f = historical_var(book, h.scenarios, fam);
@@ -582,18 +595,68 @@ TEST(HistoricalVar, FamilyAndColdAgreeWithinTolerance) {
   ASSERT_TRUE(c.has_value()) << c.error().to_string();
   ASSERT_EQ(f->n_admitted, 2u);
   ASSERT_EQ(c->n_admitted, 2u);
-  ASSERT_GT(f->reference_pv, 0.0);
-  const double tol = 1e-6 * f->reference_pv;
-  EXPECT_NEAR(f->reference_pv, c->reference_pv, tol);
-  for (std::size_t k = 0; k < f->points.size(); ++k) {
-    EXPECT_NEAR(f->points[k].value_at_risk, c->points[k].value_at_risk, tol) << k;
-    EXPECT_NEAR(f->points[k].expected_shortfall, c->points[k].expected_shortfall, tol) << k;
-  }
+  ASSERT_GT(c->reference_pv, 0.0);
+
+  // The family kernel's contract is the design's price gate: per contract, |P_family -
+  // P_cold| <= g * P_cold with g = 1e-6 (the calibration target of FamilyKernelPolicy's
+  // adaptive node count). On this all-long book that bounds everything reported here:
+  //   each state's pv:  |pv_f - pv_c| <= g * pv_c;
+  //   pair i's P&L:     |pnl_f - pnl_c| <= g * (pv_base_c + pv_target_c) =: eps_i;
+  //   VaR / ES:         order statistics and tail means of the losses are 1-Lipschitz in the
+  //                     sup norm, so they move by at most max_i eps_i;
+  //   reference_pv:     the mean pv_base, so by at most g * reference_pv_c.
+  // A 1e-4 relative divergence of the prices moves the pv levels by ~1e-4 * pv and misses
+  // the first bound by two orders of magnitude.
+  constexpr double kPriceGate = 1e-6;
+  double eps_max = 0.0;
   for (std::size_t i = 0; i < 2; ++i) {
-    EXPECT_NEAR(f->frames[i].totals.pnl_total, c->frames[i].totals.pnl_total, tol) << i;
-    EXPECT_NE(f->frames[i].totals.pnl_total, 0.0) << i;
+    const ExplainTotals &tf = f->frames[i].totals;
+    const ExplainTotals &tc = c->frames[i].totals;
+    ASSERT_GT(tc.pv_base, 0.0) << i;
+    ASSERT_GT(tc.pv_target, 0.0) << i;
+    EXPECT_NEAR(tf.pv_base, tc.pv_base, kPriceGate * tc.pv_base) << i;
+    EXPECT_NEAR(tf.pv_target, tc.pv_target, kPriceGate * tc.pv_target) << i;
+    const double eps = kPriceGate * (tc.pv_base + tc.pv_target);
+    EXPECT_NEAR(tf.pnl_total, tc.pnl_total, eps) << i;
+    EXPECT_NE(tf.pnl_total, 0.0) << i;
+    eps_max = std::max(eps_max, eps);
   }
-  // Non-vacuity: two different kernels really ran (they agree to ~1e-10 here, not to the bit).
+  EXPECT_NEAR(f->reference_pv, c->reference_pv, kPriceGate * c->reference_pv);
+  ASSERT_EQ(f->points.size(), c->points.size());
+  for (std::size_t k = 0; k < f->points.size(); ++k) {
+    EXPECT_NEAR(f->points[k].value_at_risk, c->points[k].value_at_risk, eps_max) << k;
+    EXPECT_NEAR(f->points[k].expected_shortfall, c->points[k].expected_shortfall, eps_max) << k;
+  }
+
+  // Non-vacuity: the family route really ran. Family economics (lane A2, on by default)
+  // prices a group whose family cannot amortize -- every group of this book is one lane --
+  // cold-analytic, flagged FamilyUneconomic. Rebuild each pair's resolved book and evaluate
+  // it with the same family policy on both of its states: every row must be served without
+  // the economics demotion and some by a family.
+  const RiskKernel kernel = RiskKernel::family(fam.family);
+  const std::size_t n_templates = book.options.size();
+  ASSERT_EQ(f->resolved_legs.size(), h.scenarios.size() * n_templates);
+  for (std::size_t i = 0; i < h.scenarios.size(); ++i) {
+    std::vector<OptionLeg> legs;
+    for (std::size_t j = 0; j < n_templates; ++j) {
+      const ResolvedTheo &r = f->resolved_legs[i * n_templates + j];
+      ASSERT_EQ(r.status, TheoStatus::Ok) << i << "/" << j;
+      legs.push_back(r.leg);
+    }
+    const Result<RiskBook> resolved = RiskBook::create(legs, {});
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
+    const Result<PreparedRiskBook> prepared = PreparedRiskBook::create(*resolved);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+    for (const MarketState *state : {h.scenarios[i].base, h.scenarios[i].shifted}) {
+      RiskWorkspace ws;
+      ws.reserve(*prepared);
+      RiskFrame frame;
+      ASSERT_TRUE(kernel.evaluate(*prepared, *state, fam.needs, frame, ws).has_value()) << i;
+      EXPECT_GT(frame.counters.family_rows, 0u) << i;
+      EXPECT_EQ(frame.counters.uneconomic_rows, 0u) << i;
+    }
+  }
+  // And historical_var itself took it: the family totals are not the cold kernel's bits.
   EXPECT_FALSE(same_bits(f->frames[0].totals.pnl_total, c->frames[0].totals.pnl_total));
 }
 
