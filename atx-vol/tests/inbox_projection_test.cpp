@@ -354,5 +354,63 @@ TEST(QuoteSliceInboxProjection, ASliceTheBoxRungServesIsUntouchedByTheKey) {
   }
 }
 
+TEST(QuoteSliceInboxProjection, FloorRecoveryIsExplicitAndKeepsOriginalQuoteRows) {
+  auto c = zigzag_carry_chain(0.5, 0.25, 0.01, 0.01, 0.05);
+  const double floor = c.market.spot * std::exp(-0.01 * c.market.calendar_years) -
+                      c.quotes[0].strike *
+                                         std::exp(-c.market.rate * c.market.calendar_years);
+  c.quotes[0].bid = floor - 0.2;
+  c.quotes[0].ask = floor - 0.1;
+  auto config = box_config(true);
+  config.repair.box_half_ticks = 0.0;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  const auto off = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(off) << off.error().to_string();
+  EXPECT_FALSE(off->terminal_floor_recovery);
+  EXPECT_EQ(off->diagnostics.box.terminal_floor_asks, 0u);
+  config.repair.terminal_floor_recovery = true;
+  const auto on = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(on) << on.error().to_string();
+  ASSERT_EQ(on->fit_status, QuoteSliceFitStatus::Success) << on->fit_error;
+  ASSERT_TRUE(on->prices);
+  EXPECT_TRUE(on->terminal_floor_recovery);
+  EXPECT_EQ(on->diagnostics.box.terminal_floor_asks, 1u);
+  EXPECT_NEAR(on->diagnostics.box.terminal_floor_max_ask_raise, 0.1, 2.0e-7);
+  EXPECT_GE(on->prices->nodes()[0].call, floor);
+  ASSERT_EQ(on->rows.size(), c.quotes.size());
+  EXPECT_EQ(c.quotes[0].bid, floor - 0.2);
+  EXPECT_EQ(c.quotes[0].ask, floor - 0.1);
+  EXPECT_GT(on->rows[0].fitted_price, c.quotes[0].ask);
+  for (const auto &node : on->prices->nodes()) {
+    const double terminal = c.market.spot * std::exp(-0.01 * c.market.calendar_years) -
+                            node.strike * on->diagnostics.discount;
+    EXPECT_GE(node.call, terminal);
+    EXPECT_GE(node.put, -terminal);
+  }
+}
+
+TEST(QuoteSliceInboxProjection, FloorRecoveryRequiresABoxAndSupportedDividendModel) {
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.01, 0.01, 0.05);
+  QuoteSliceConfig config;
+  config.repair.terminal_floor_recovery = true;
+  EXPECT_FALSE(validate_quote_slice_repair(config.repair));
+  EXPECT_FALSE(fit_quote_slice(c.market, c.quotes, config));
+  config.repair.certificate = QuoteSliceCertificate::Box;
+  EXPECT_TRUE(validate_quote_slice_repair(config.repair));
+  config.dividend_model = QuoteSliceDividendModel::DatedCash;
+  EXPECT_FALSE(fit_quote_slice(c.market, c.quotes, config));
+}
+
+TEST(QuoteSliceInboxProjection, FloorRecoveryStillRefusesUnrelatedConvexityConflict) {
+  const auto c = zigzag_carry_chain(0.5, 0.25, 0.005, 0.015, 0.0);
+  auto config = box_config(true);
+  config.repair.terminal_floor_recovery = true;
+  const auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit) << fit.error().to_string();
+  EXPECT_EQ(fit->fit_status, QuoteSliceFitStatus::ArbitrageFailure);
+  EXPECT_FALSE(fit->prices);
+  EXPECT_EQ(fit->diagnostics.box.terminal_floor_asks, 0u);
+}
+
 } // namespace
 } // namespace atx::vol

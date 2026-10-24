@@ -623,6 +623,11 @@ ArchiveOutcome FitArchiveWriter::Impl::encode_curve(const IVolCurve &c, FitArchi
 }
 
 ArchiveOutcome FitArchiveWriter::Impl::encode_fit(const QuoteSliceFit &fit, FitArchiveFitRecord &r) {
+  // This record version has no terminal-floor policy field. Both writer entry
+  // points use this seam and roll back, so a reload cannot silently weaken it.
+  if (fit.terminal_floor_recovery) {
+    return archive_error(ArchiveStatus::UnsupportedRecordVersion, Type::FitRecords);
+  }
   // moved_nodes is stored as the fit holds it, with no tie to `prices`: a slice
   // stripped after a repair (quote_surface.cpp strip) keeps its flags with no
   // prices, and consumers bound-check the index (quote_slice.cpp).

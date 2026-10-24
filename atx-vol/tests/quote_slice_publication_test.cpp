@@ -499,6 +499,34 @@ TEST(QuoteSlicePublication, AJointCalendarRepairThatSettlesCommitsTheMovedMember
   EXPECT_TRUE(check_american_calendar(*c.near.prices, *c.far.prices));
 }
 
+TEST(QuoteSlicePublication, JointTerminalFloorPolicySurvivesEveryMemberCommit) {
+  JointCase c;
+  make_joint_case(c, 0.3);
+  const auto near_quotes = quotes_around(c.near, c.near_chain.quotes, 1.0);
+  const auto far_quotes = quotes_around(c.far, c.far_chain.quotes, 1.0);
+  const std::array<QuoteSliceJointMember, 2> members{
+      {{&c.near, near_quotes}, {&c.far, far_quotes}}};
+  ASSERT_FALSE(c.near.terminal_floor_recovery || c.far.terminal_floor_recovery);
+  QuoteSliceRepairConfig config;
+  config.certificate = QuoteSliceCertificate::Box;
+  config.terminal_floor_recovery = true;
+  QuoteSliceRepairRecord record;
+  ASSERT_TRUE(repair_quote_slice_calendar_joint(members, {}, config, nullptr, &record))
+      << to_string(record.outcome);
+  EXPECT_TRUE(c.near.terminal_floor_recovery);
+  EXPECT_TRUE(c.far.terminal_floor_recovery);
+  EXPECT_TRUE(check_american_calendar(*c.near.prices, *c.far.prices));
+  for (const auto &member : members) {
+    const auto &fit = *member.fit;
+    const double prepaid = fit.market.spot *
+                           std::exp(-fit.market.continuous_yield * fit.market.calendar_years);
+    for (const auto &node : fit.prices->nodes()) {
+      EXPECT_GE(node.call, prepaid - fit.diagnostics.discount * node.strike);
+      EXPECT_GE(node.put, fit.diagnostics.discount * node.strike - prepaid);
+    }
+  }
+}
+
 TEST(QuoteSlicePublication, AJointCalendarRepairOutOfBudgetIsNonConvergedAndRollsBack) {
   JointCase c;
   make_joint_case(c, 0.3);

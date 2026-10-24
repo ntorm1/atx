@@ -20,6 +20,7 @@
 #include "fitting/counters.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/inbox_projection.hpp"
+#include "fitting/joint_inbox_projection.hpp"
 #include "fitting/quote_slice_call_floor.hpp"
 #include "fitting/quote_slice_carry.hpp"
 #include "fitting/quote_slice_nodes.hpp"
@@ -108,6 +109,10 @@ Status validate(const QuoteSliceMarket &m, std::span<const QuoteSliceQuote> quot
     }
     break;
   case QuoteSliceDividendModel::DatedCash:
+    if (cfg.repair.terminal_floor_recovery) {
+      return Err(ErrorCode::InvalidArgument,
+                 "terminal-floor recovery does not support the dated-cash model");
+    }
     if (m.dividend_pv != 0.0) {
       return Err(ErrorCode::InvalidArgument, "dated-cash model cannot also consume aggregate PV");
     }
@@ -560,6 +565,7 @@ Status prepare_fit(QuoteSliceFit &out, const QuoteSliceMarket &market,
   out.floor_policy = config.floor_policy;
   ATX_TRY_VOID(detail::select_call_floor(out, config.call_floor)); // lane C3, opt-in
   out.calendar_parity_clamp = config.repair.calendar_parity_clamp; // K4b (opt-in)
+  out.terminal_floor_recovery = config.repair.terminal_floor_recovery;
   auto &diag = out.diagnostics;
   diag.quotes_seen = quotes.size();
   const double ratio = market.calendar_years / market.variance_years;
@@ -1604,6 +1610,83 @@ std::vector<AmericanPriceBox> quote_boxes(std::span<const AmericanPriceNode> nod
   return boxes;
 }
 
+std::vector<double> terminal_prepaid(const QuoteSliceFit &fit,
+                                     std::span<const AmericanPriceNode> nodes) {
+  if (fit.dividend_model == QuoteSliceDividendModel::DatedCash) return {};
+  std::vector<double> prepaid;
+  prepaid.reserve(nodes.size());
+  for (const auto &node : nodes) {
+    const double q = effective_yield(fit, calendar_yield_at(fit, node.strike));
+    prepaid.push_back(fit.market.spot * std::exp(-q * fit.market.variance_years));
+  }
+  return prepaid;
+}
+
+std::vector<std::uint8_t> quoted_sides(std::span<const AmericanPriceNode> nodes,
+                                       std::span<const QuoteSliceQuote> quotes) {
+  const NodeChannels channel = node_channels(nodes, quotes);
+  std::vector<std::uint8_t> quoted(nodes.size(), 0u);
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    if (std::isfinite(channel.call_hi[i])) quoted[i] |= 1u;
+    if (std::isfinite(channel.put_hi[i])) quoted[i] |= 2u;
+  }
+  return quoted;
+}
+
+bool recover_floor_boxes(const detail::JointInboxSlice &input,
+                         std::span<const QuoteSliceQuote> quotes,
+                         std::span<AmericanPriceBox> boxes, QuoteSliceRepairRecord &record) {
+  detail::TerminalFloorRecovery recovered;
+  if (!detail::recover_terminal_floor_asks(input, quoted_sides(input.nodes, quotes),
+                                          boxes, recovered)) return false;
+  record.terminal_floor_asks += recovered.raised_asks;
+  record.terminal_floor_max_ask_raise =
+      std::max(record.terminal_floor_max_ask_raise, recovered.max_ask_raise);
+  return true;
+}
+
+std::optional<AmericanPriceSlice> terminal_box_projection(
+    const QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+    std::vector<AmericanPriceNode> &prices, const AmericanPriceBounds &bounds,
+    const QuoteSliceRepairConfig &config, std::vector<std::uint8_t> &repaired,
+    QuoteSliceRepairRecord &record) {
+  auto boxes = quote_boxes(prices, quotes, config.box_half_ticks * config.box_tick);
+  auto candidate = prices;
+  const auto prepaid = terminal_prepaid(fit, candidate);
+  const detail::JointInboxSlice input{candidate, boxes, bounds, fit.diagnostics.discount, prepaid};
+  if (!recover_floor_boxes(input, quotes, boxes, record)) {
+    record.outcome = QuoteSliceRepairOutcome::NotCertified;
+    record.inbox.outcome = QuoteSliceInboxOutcome::InvalidInput;
+    return std::nullopt;
+  }
+  detail::JointInboxDiagnostics diagnostics;
+  const auto start = std::chrono::steady_clock::now();
+  const auto projected = detail::project_joint_in_box(std::span(&input, 1), 100u, &diagnostics);
+  record.inbox.elapsed_us = std::chrono::duration<double, std::micro>(
+      std::chrono::steady_clock::now() - start).count();
+  record.sweeps = projected.sweeps;
+  record.conflict = projected.conflict;
+  record.inbox.constraints = diagnostics.constraints;
+  record.inbox.free_sides = diagnostics.variables;
+  record.inbox.phase2_steps = projected.sweeps;
+  if (projected.outcome != JointProjectionOutcome::Feasible) {
+    record.outcome = projected.outcome == JointProjectionOutcome::InfeasibleData
+                         ? QuoteSliceRepairOutcome::Infeasible
+                         : QuoteSliceRepairOutcome::NonConverged;
+    record.inbox.outcome = projected.outcome == JointProjectionOutcome::InfeasibleData
+                              ? QuoteSliceInboxOutcome::InfeasibleData
+                              : QuoteSliceInboxOutcome::NonConverged;
+    return std::nullopt;
+  }
+  auto certified = AmericanPriceSlice::create(candidate, bounds);
+  if (!certified) return std::nullopt;
+  measure_move(prices, candidate, config.immaterial_price_move, repaired, record);
+  record.outcome = QuoteSliceRepairOutcome::Applied;
+  record.inbox.outcome = QuoteSliceInboxOutcome::Applied;
+  prices = std::move(candidate);
+  return std::move(*certified);
+}
+
 // Box certificate of a failed exact certificate: certify_american_box on the
 // FITTED prices inside their quote boxes. On success replaces `prices` with the
 // in-box curve and `repaired` with its moved nodes; `record` keeps what it did
@@ -1611,13 +1694,17 @@ std::vector<AmericanPriceBox> quote_boxes(std::span<const AmericanPriceNode> nod
 // the price) or why it refused (Infeasible: no arbitrage-free curve inside the
 // boxes; NotCertified: the in-box curve failed a cross-side check). No node or
 // volatility budget: the box is the budget.
-std::optional<AmericanPriceSlice> box_certify_slice(std::span<const QuoteSliceQuote> quotes,
+std::optional<AmericanPriceSlice> box_certify_slice(const QuoteSliceFit &fit,
+                                                    std::span<const QuoteSliceQuote> quotes,
                                                     std::vector<AmericanPriceNode> &prices,
                                                     const AmericanPriceBounds &bounds,
                                                     const QuoteSliceRepairConfig &config,
                                                     std::vector<std::uint8_t> &repaired,
                                                     QuoteSliceRepairRecord &record) {
   record = QuoteSliceRepairRecord{};
+  if (config.terminal_floor_recovery && fit.dividend_model != QuoteSliceDividendModel::DatedCash) {
+    return terminal_box_projection(fit, quotes, prices, bounds, config, repaired, record);
+  }
   const double h = config.box_half_ticks * config.box_tick;
   auto box = certify_american_box(prices, quote_boxes(prices, quotes, h), bounds);
   if (!box && config.inbox_projection) {
@@ -1961,18 +2048,20 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       channel_repair != nullptr && channel_repair->mode == QuoteSliceRepairMode::Channel;
   const bool box_mode = channel_repair != nullptr &&
                         channel_repair->certificate == QuoteSliceCertificate::Box;
+  const bool terminal_mode = box_mode && channel_repair->terminal_floor_recovery &&
+                             out.dividend_model != QuoteSliceDividendModel::DatedCash;
   // The channel repair and the box certificate start from the fitted prices,
   // never from a bounded-move repair that moved them and still failed (only
   // copied when one of them can run).
   std::vector<AmericanPriceNode> fitted;
-  if (!certified && (channel_mode || box_mode)) fitted = prices;
+  if (terminal_mode || (!certified && (channel_mode || box_mode))) fitted = prices;
   std::vector<std::uint8_t> repaired;
-  if (!certified && repair_half_spreads > 0.0 &&
+  if (!terminal_mode && !certified && repair_half_spreads > 0.0 &&
       repair_convexity(prices, quotes, repair_half_spreads, diag.channel, repaired)) {
     certified = AmericanPriceSlice::create(prices, bounds);
   }
   std::optional<AmericanPriceSlice> channel_certified;
-  if (!certified && channel_mode) {
+  if (!terminal_mode && !certified && channel_mode) {
     // A bounded attempt that moved nodes and still failed is discarded: the
     // served moves (if any) are the channel repair's, recorded in diag.repair.
     if (!repaired.empty()) diag.channel.repaired_nodes = 0;
@@ -1981,13 +2070,20 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
     if (channel_certified) prices = std::move(fitted);
   }
   std::optional<AmericanPriceSlice> box_certified;
-  if (!certified && !channel_certified && box_mode) {
+  if (terminal_mode || (!certified && !channel_certified && box_mode)) {
     // The box certificate is the last rung (QuoteSliceCertificate::Box): the
     // fitted prices inside their quote boxes; the served moves are its own,
     // recorded in diag.box.
     if (!repaired.empty()) diag.channel.repaired_nodes = 0;
-    box_certified = box_certify_slice(quotes, fitted, bounds, *channel_repair, repaired, diag.box);
+    box_certified = box_certify_slice(out, quotes, fitted, bounds, *channel_repair,
+                                      repaired, diag.box);
     if (box_certified) prices = std::move(fitted);
+  }
+  if (terminal_mode && !box_certified) {
+    out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
+    out.fit_error = "terminal-floor box projection refused: " +
+                    std::string(to_string(diag.box.outcome));
+    return;
   }
   if (!certified && !channel_certified && !box_certified) {
     out.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
@@ -2370,6 +2466,9 @@ Status validate_quote_slice_channel(const QuoteSliceChannelConfig &config) {
 }
 
 Status validate_quote_slice_repair(const QuoteSliceRepairConfig &config) {
+  if (config.terminal_floor_recovery && config.certificate != QuoteSliceCertificate::Box) {
+    return Err(ErrorCode::InvalidArgument, "terminal-floor recovery requires the Box certificate");
+  }
   if ((config.mode != QuoteSliceRepairMode::Off && config.mode != QuoteSliceRepairMode::Channel) ||
       (config.certificate != QuoteSliceCertificate::Exact &&
        config.certificate != QuoteSliceCertificate::Box) ||
@@ -2534,6 +2633,13 @@ bool calendar_clamp(const QuoteSliceFit &fit, std::span<const AmericanPriceNode>
   c.cap_put.assign(nodes.size(), std::numeric_limits<double>::infinity());
   for (std::size_t i = 0; i < nodes.size(); ++i) {
     const double k = nodes[i].strike;
+    if (fit.terminal_floor_recovery &&
+        fit.dividend_model != QuoteSliceDividendModel::DatedCash) {
+      const double q = effective_yield(fit, calendar_yield_at(fit, k));
+      const double prepaid = fit.market.spot * std::exp(-q * fit.market.variance_years);
+      c.floor_call[i] = std::max(0.0, prepaid - fit.diagnostics.discount * k);
+      c.floor_put[i] = std::max(0.0, fit.diagnostics.discount * k - prepaid);
+    }
     for (const AmericanPriceSlice *slice : earlier) {
       const auto call = slice->price(k, Side::Call);
       const auto put = slice->price(k, Side::Put);
@@ -2972,6 +3078,7 @@ struct JointWork {
   std::vector<AmericanPriceBox> boxes;
   CalendarClamp clamp;
   AmericanPriceBounds bounds{};
+  std::vector<double> terminal_prepaid;
   std::vector<const AmericanPriceSlice *> earlier; // fixed neighbours
   std::vector<const AmericanPriceSlice *> later;
 };
@@ -3021,6 +3128,54 @@ bool joint_box(const JointWork &w, Side side, std::vector<double> &lo, std::vect
   return true;
 }
 
+bool project_coupled_calendar(std::vector<JointWork> &work,
+                               std::span<const QuoteSliceJointMember> members,
+                               const QuoteSliceRepairConfig &config,
+                               QuoteSliceRepairRecord &record) {
+  std::vector<detail::JointInboxSlice> input;
+  input.reserve(work.size());
+  for (std::size_t s = 0; s < work.size(); ++s) {
+    JointWork &w = work[s];
+    const auto &member = members[w.member];
+    const QuoteSliceFit &fit = *member.fit;
+    std::optional<double> discount;
+    if ((config.terminal_floor_recovery || fit.terminal_floor_recovery) &&
+        fit.dividend_model != QuoteSliceDividendModel::DatedCash) {
+      w.terminal_prepaid = terminal_prepaid(fit, w.nodes);
+      discount = fit.diagnostics.discount;
+    }
+    input.push_back({w.nodes, w.boxes, w.bounds, discount, w.terminal_prepaid});
+    if (discount && !recover_floor_boxes(input.back(), member.quotes, w.boxes, record)) {
+      record.outcome = QuoteSliceRepairOutcome::NotCertified;
+      return false;
+    }
+    for (std::size_t i = 0; i < w.nodes.size(); ++i) {
+      w.boxes[i].call_lo = std::max(w.boxes[i].call_lo, w.clamp.floor_call[i]);
+      w.boxes[i].call_hi = std::min(w.boxes[i].call_hi, w.clamp.cap_call[i]);
+      w.boxes[i].put_lo = std::max(w.boxes[i].put_lo, w.clamp.floor_put[i]);
+      w.boxes[i].put_hi = std::min(w.boxes[i].put_hi, w.clamp.cap_put[i]);
+      const double excess = std::max(w.boxes[i].call_lo - w.boxes[i].call_hi,
+                                     w.boxes[i].put_lo - w.boxes[i].put_hi);
+      if (excess > 0.0) {
+        record.outcome = QuoteSliceRepairOutcome::Infeasible;
+        record.conflict = {JointConflictKind::EmptyBox, s, i, s, w.nodes[i].strike, excess};
+        return false;
+      }
+    }
+  }
+  const auto projected = detail::project_joint_in_box(
+      input, std::min(std::size_t{100}, config.joint_max_sweeps));
+  record.sweeps = projected.sweeps;
+  record.conflict = projected.conflict;
+  if (projected.outcome == JointProjectionOutcome::Feasible) return true;
+  record.outcome = projected.outcome == JointProjectionOutcome::InfeasibleData
+                       ? QuoteSliceRepairOutcome::Infeasible
+                       : projected.outcome == JointProjectionOutcome::InvalidInput
+                             ? QuoteSliceRepairOutcome::NotCertified
+                             : QuoteSliceRepairOutcome::NonConverged;
+  return false;
+}
+
 } // namespace
 
 bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> members,
@@ -3033,13 +3188,15 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
   QuoteSliceRepairRecord local;
   QuoteSliceRepairRecord &out = record != nullptr ? *record : local;
   out = QuoteSliceRepairRecord{};
-  if (members.size() < 2u || !nonnegative(config.immaterial_price_move) ||
+  if (members.size() < 2u || !validate_quote_slice_repair(config) ||
       (recheck != QuoteSliceNondividendRecheck::Recheck &&
        recheck != QuoteSliceNondividendRecheck::Skip)) {
     return false;
   }
   for (const QuoteSliceJointMember &m : members) {
     if (m.fit == nullptr || !m.fit->prices || m.fit->rows.size() != m.quotes.size()) return false;
+    if (config.terminal_floor_recovery &&
+        m.fit->dividend_model == QuoteSliceDividendModel::DatedCash) return false;
   }
   for (const QuoteSliceCalendarNeighbour &n : fixed) {
     if (n.prices == nullptr) return false;
@@ -3067,33 +3224,40 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
       return empty_box(s);
     }
   }
-  std::vector<std::vector<double>> lo(work.size());
-  std::vector<std::vector<double>> hi(work.size());
-  std::vector<std::vector<double>> p(work.size());
-  std::vector<JointPriceSide> sides(work.size());
-  for (const Side side : {Side::Call, Side::Put}) {
-    const bool call = side == Side::Call;
-    for (std::size_t s = 0; s < work.size(); ++s) {
-      if (!joint_box(work[s], side, lo[s], hi[s], p[s], out.conflict)) return empty_box(s);
-      const double dmax = work[s].bounds.discount_max;
-      sides[s] = JointPriceSide{work[s].strikes, p[s], lo[s], hi[s], call ? -dmax : 0.0,
-                                call ? 0.0 : dmax, work[s].bounds.spot};
-    }
-    // Lane C2: typed and budgeted; every outcome but Feasible rolls back (no member
-    // changes) with its reason recorded.
-    const JointProjectionResult projected =
-        project_calendar_joint_bounded(sides, JointProjectionBudget{config.joint_max_sweeps});
-    out.sweeps += projected.sweeps;
-    if (projected.outcome != JointProjectionOutcome::Feasible) {
-      out.outcome = projected.outcome == JointProjectionOutcome::NonConverged
-                        ? QuoteSliceRepairOutcome::NonConverged
-                        : QuoteSliceRepairOutcome::Infeasible;
-      out.conflict = projected.conflict;
-      return false;
-    }
-    for (std::size_t s = 0; s < work.size(); ++s) {
-      for (std::size_t i = 0; i < work[s].nodes.size(); ++i) {
-        (call ? work[s].nodes[i].call : work[s].nodes[i].put) = p[s][i];
+  const bool retained_terminal = std::any_of(members.begin(), members.end(), [](const auto &m) {
+    return m.fit->terminal_floor_recovery;
+  });
+  if (config.inbox_projection || config.terminal_floor_recovery || retained_terminal) {
+    if (!project_coupled_calendar(work, members, config, out)) return false;
+  } else {
+    std::vector<std::vector<double>> lo(work.size());
+    std::vector<std::vector<double>> hi(work.size());
+    std::vector<std::vector<double>> p(work.size());
+    std::vector<JointPriceSide> sides(work.size());
+    for (const Side side : {Side::Call, Side::Put}) {
+      const bool call = side == Side::Call;
+      for (std::size_t s = 0; s < work.size(); ++s) {
+        if (!joint_box(work[s], side, lo[s], hi[s], p[s], out.conflict)) return empty_box(s);
+        const double dmax = work[s].bounds.discount_max;
+        sides[s] = JointPriceSide{work[s].strikes, p[s], lo[s], hi[s], call ? -dmax : 0.0,
+                                  call ? 0.0 : dmax, work[s].bounds.spot};
+      }
+      // Lane C2: typed and budgeted; every outcome but Feasible rolls back (no member
+      // changes) with its reason recorded.
+      const JointProjectionResult projected =
+          project_calendar_joint_bounded(sides, JointProjectionBudget{config.joint_max_sweeps});
+      out.sweeps += projected.sweeps;
+      if (projected.outcome != JointProjectionOutcome::Feasible) {
+        out.outcome = projected.outcome == JointProjectionOutcome::NonConverged
+                          ? QuoteSliceRepairOutcome::NonConverged
+                          : QuoteSliceRepairOutcome::Infeasible;
+        out.conflict = projected.conflict;
+        return false;
+      }
+      for (std::size_t s = 0; s < work.size(); ++s) {
+        for (std::size_t i = 0; i < work[s].nodes.size(); ++i) {
+          (call ? work[s].nodes[i].call : work[s].nodes[i].put) = p[s][i];
+        }
       }
     }
   }
@@ -3139,6 +3303,9 @@ bool repair_quote_slice_calendar_joint(std::span<const QuoteSliceJointMember> me
   }
   for (std::size_t s = 0; s < work.size(); ++s) {
     QuoteSliceFit &fit = *members[work[s].member].fit;
+    // Every member was checked under the promoted policy, including members
+    // whose existing prices already satisfy the coupled solution.
+    fit.terminal_floor_recovery |= config.terminal_floor_recovery;
     if (std::none_of(flags[s].begin(), flags[s].end(), [](std::uint8_t f) { return f != 0u; })) {
       continue;
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 
@@ -31,6 +32,21 @@ struct JointInboxDiagnostics {
   double duality_gap = 0.0;
   bool certificate_passed = false;
 };
+
+struct TerminalFloorRecovery {
+  std::size_t raised_asks = 0;
+  double max_ask_raise = 0.0;
+};
+
+// Explicit quote recovery: only quoted asks below their own proven intrinsic or
+// terminal European floor are raised to that floor plus the fixed certificate
+// allowance. Bids and other asks remain identical. The original quotes are never
+// inputs/outputs here. quoted uses bit 1 for call and bit 2 for put.
+// Requires actual terminal_discount and terminal_prepaid for every node.
+[[nodiscard]] bool recover_terminal_floor_asks(const JointInboxSlice &slice,
+                                               std::span<const std::uint8_t> quoted,
+                                               std::span<AmericanPriceBox> boxes,
+                                               TerminalFloorRecovery &record);
 
 // Coupled call/put feasible projection, including affine carry bounds and all calendar
 // union knots. Fixed variables are eliminated. An infeasible-start primal-dual

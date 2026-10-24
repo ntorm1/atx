@@ -37,6 +37,36 @@ using Type = FitArchiveSectionType;
 
 constexpr std::int64_t kSnapshot = 1791988200000000000LL;
 
+TEST(FitArchiveRecords, UnpersistedTerminalFloorPolicyIsExplicitlyRefused) {
+  auto surface = testkit::synthetic_surface();
+  ASSERT_GT(surface.slices.size(), 1u);
+  surface.slices[1].fit.terminal_floor_recovery = true;
+  FitArchiveWriter standalone;
+  const auto fit = standalone.add_fit({"SPY", kSnapshot, 20800, 0, &surface.slices[1].fit});
+  ASSERT_FALSE(fit);
+  EXPECT_EQ(fit.error().status, ArchiveStatus::UnsupportedRecordVersion);
+  EXPECT_EQ(fit.error().section, static_cast<std::uint32_t>(Type::FitRecords));
+  FitArchiveWriter grouped;
+  const auto all = grouped.add_surface({"SPY", kSnapshot, surface.slices,
+                                       surface.expiry_days, surface.config, {}, "", ""});
+  ASSERT_FALSE(all);
+  EXPECT_EQ(all.error().status, ArchiveStatus::UnsupportedRecordVersion);
+  EXPECT_EQ(all.error().section, static_cast<std::uint32_t>(Type::FitRecords));
+  // Both entry points roll back; the writer stays reusable for supported fits.
+  surface.slices[1].fit.terminal_floor_recovery = false;
+  ASSERT_TRUE(standalone.add_fit({"SPY", kSnapshot, 20800, 0, &surface.slices[1].fit}));
+  ASSERT_TRUE(grouped.add_surface({"SPY", kSnapshot, surface.slices,
+                                  surface.expiry_days, surface.config, {}, "", ""}));
+  const auto standalone_image = standalone.finish();
+  const auto grouped_image = grouped.finish();
+  ASSERT_TRUE(standalone_image && grouped_image);
+  const auto standalone_read = FitArchive::open_copy(*standalone_image);
+  const auto grouped_read = FitArchive::open_copy(*grouped_image);
+  ASSERT_TRUE(standalone_read && grouped_read);
+  EXPECT_EQ(standalone_read->fits().size(), 1u);
+  EXPECT_EQ(grouped_read->fits().size(), surface.slices.size());
+}
+
 std::array<std::uint8_t, 32> digest() {
   std::array<std::uint8_t, 32> d{};
   for (std::size_t i = 0; i < d.size(); ++i) d[i] = static_cast<std::uint8_t>(0xd7 ^ i);

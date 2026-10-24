@@ -1693,12 +1693,14 @@ private:
     // Lane K4b: the opt-in parity-coupled calendar clamp follows the fit into its trials.
     trial.calendar_parity_clamp = fit.calendar_parity_clamp;
     trial.reimply_context = fit.reimply_context;
+    trial.terminal_floor_recovery = fit.terminal_floor_recovery;
     trial.snapshot = fit.snapshot;
     trial.curve = fit.curve ? fit.curve->clone() : nullptr;
     return trial;
   }
 
   static void commit(QuoteSliceFit &fit, QuoteSliceFit &trial) {
+    fit.terminal_floor_recovery = trial.terminal_floor_recovery;
     fit.prices = std::move(trial.prices);
     fit.moved_nodes = std::move(trial.moved_nodes);
     fit.price_only_nodes = std::move(trial.price_only_nodes);

@@ -1,4 +1,5 @@
 #include "fitting/joint_inbox_projection.hpp"
+#include "fitting/inbox_projection.hpp"
 
 #include <array>
 #include <cstddef>
@@ -129,6 +130,72 @@ TEST(JointInboxProjection, FeasibleInputKeepsItsPricesExactly) {
     EXPECT_EQ(nodes[i].call, before[i].call);
     EXPECT_EQ(nodes[i].put, before[i].put);
   }
+}
+
+TEST(JointInboxProjection, ExplicitFloorRecoveryChangesOnlyTheProvenImpossibleAsk) {
+  std::vector<AmericanPriceNode> nodes{{90, 12, 3}, {100, 10, 8}, {110, 4, 12}};
+  const AmericanPriceBounds bounds{100, .9, 1, 98, 100};
+  std::vector<AmericanPriceBox> boxes{{12, 16, 1, 5}, {8, 12, 6, 10}, {2, 6, 10, 14}};
+  const auto original = boxes;
+  const std::vector<double> prepaid(3, 98);
+  const std::vector<std::uint8_t> quoted(3, 3u);
+  const detail::JointInboxSlice slice{nodes, boxes, bounds, .9, prepaid};
+  detail::TerminalFloorRecovery recovery;
+  ASSERT_TRUE(detail::recover_terminal_floor_asks(slice, quoted, boxes, recovery));
+  EXPECT_EQ(recovery.raised_asks, 1u);
+  EXPECT_GT(boxes[0].call_hi, 17);
+  EXPECT_LT(boxes[0].call_hi, 17.000001);
+  for (std::size_t i = 0; i < boxes.size(); ++i) {
+    EXPECT_EQ(boxes[i].call_lo, original[i].call_lo);
+    EXPECT_EQ(boxes[i].put_lo, original[i].put_lo);
+    EXPECT_EQ(boxes[i].put_hi, original[i].put_hi);
+    if (i > 0u) EXPECT_EQ(boxes[i].call_hi, original[i].call_hi);
+  }
+  EXPECT_EQ(detail::project_joint_in_box(std::span(&slice, 1)).outcome,
+            JointProjectionOutcome::Feasible);
+}
+
+TEST(JointInboxProjection, FloorRecoveryDoesNotRelaxAMaterialConvexityConflict) {
+  std::vector<AmericanPriceNode> nodes{{90, 12, 3}, {100, 10, 8}, {110, 4, 12}};
+  const AmericanPriceBounds bounds{100, .9, 1, 98, 100};
+  std::vector<AmericanPriceBox> boxes{{12, 16, 2, 2.5}, {8, 12, 8, 9}, {2, 6, 12, 12.5}};
+  const std::vector<double> prepaid(3, 98);
+  const std::vector<std::uint8_t> quoted(3, 3u);
+  const detail::JointInboxSlice slice{nodes, boxes, bounds, .9, prepaid};
+  detail::TerminalFloorRecovery recovery;
+  ASSERT_TRUE(detail::recover_terminal_floor_asks(slice, quoted, boxes, recovery));
+  EXPECT_EQ(detail::project_joint_in_box(std::span(&slice, 1)).outcome,
+            JointProjectionOutcome::InfeasibleData);
+}
+
+TEST(JointInboxProjection, ExistingInboxRungRecoversAZeroInteriorFeasibleSlice) {
+  const std::vector<AmericanPriceNode> nodes{{80, 22, 1}, {90, 12, 2.5}, {100, 2, 1}};
+  const std::vector<AmericanPriceBox> boxes{{20, 23, 0, 2}, {10, 13, 2, 3}, {0, 3, 0, 2}};
+  QuoteSliceInboxRecord record;
+  const auto result = detail::project_american_in_box(nodes, boxes, kCarry, "", record);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  EXPECT_EQ(record.outcome, QuoteSliceInboxOutcome::Applied);
+  for (const auto &node : result->slice.nodes()) EXPECT_NEAR(node.put, 2, 1e-7);
+}
+
+TEST(JointInboxProjection, NegativeRateUsesItsActualTerminalDiscount) {
+  std::vector<AmericanPriceNode> nodes{{90, 12, 2}, {100, 7, 12}, {110, 2, 23}};
+  const AmericanPriceBounds bounds{100, 1, 1.1, 98, 100};
+  const std::vector<AmericanPriceBox> boxes{{10, 14, 0, 4}, {5, 9, 11, 13}, {0, 4, 22, 24}};
+  const std::vector<double> prepaid(3, 99);
+  const detail::JointInboxSlice slice{nodes, boxes, bounds, 1.1, prepaid};
+  ASSERT_EQ(detail::project_joint_in_box(std::span(&slice, 1)).outcome,
+            JointProjectionOutcome::Feasible);
+  for (const auto &node : nodes) EXPECT_GE(node.put, 1.1 * node.strike - 99);
+}
+
+TEST(JointInboxProjection, TerminalPrepaidOutsideItsHorizonEnvelopeIsInvalid) {
+  std::vector<AmericanPriceNode> nodes{{90, 12, 3}, {100, 7, 8}, {110, 2, 13}};
+  const std::vector<AmericanPriceBox> boxes{{11, 13, 2, 4}, {6, 8, 7, 9}, {1, 3, 12, 14}};
+  const std::vector<double> prepaid(3, 97);
+  const detail::JointInboxSlice slice{nodes, boxes, kCarry, 1, prepaid};
+  EXPECT_EQ(detail::project_joint_in_box(std::span(&slice, 1)).outcome,
+            JointProjectionOutcome::InvalidInput);
 }
 
 TEST(JointInboxProjection, ExternalRawBoxFixturePassesEveryIndependentCertificate) {

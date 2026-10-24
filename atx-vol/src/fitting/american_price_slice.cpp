@@ -1142,6 +1142,8 @@ const char *to_string(JointConflictKind value) noexcept {
     return "no_convex_curve";
   case JointConflictKind::CalendarBox:
     return "calendar_box";
+  case JointConflictKind::LinearConstraint:
+    return "linear_constraint";
   }
   return "unknown";
 }

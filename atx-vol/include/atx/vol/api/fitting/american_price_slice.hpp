@@ -276,7 +276,9 @@ enum class JointProjectionOutcome : std::uint8_t {
   NonConverged,
   InvalidInput
 };
-enum class JointConflictKind : std::uint8_t { None, EmptyBox, NoConvexCurve, CalendarBox };
+enum class JointConflictKind : std::uint8_t {
+  None, EmptyBox, NoConvexCurve, CalendarBox, LinearConstraint
+};
 
 // The constraint an InfeasibleData outcome names: slice `slice` (index into the span) at
 // its node `node` (strike `strike`), against slice `other` for CalendarBox (`other` ==

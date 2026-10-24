@@ -5,6 +5,23 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — coupled calendar feasibility and explicit terminal-floor recovery
+
+The opt-in `QuoteSliceRepairConfig::inbox_projection` calendar path solves calls and puts
+together, including affine parity bounds and whole-overlap calendar constraints. Its bounded
+primal-dual solver accepts feasible boundary faces that the earlier strict-interior method
+could refuse. Budget exhaustion is `NonConverged`; direct contradictory bounds are
+`InfeasibleData`. Every slice and calendar pair is independently certified before commit.
+
+New `terminal_floor_recovery` (default false, Box only) enforces actual terminal European
+floors at all continuous/aggregate-PV price nodes and raises only an observed ask below its
+own proven floor to that floor plus the fixed certificate allowance. Raw quotes and bids
+stay unchanged; repair diagnostics report counts and maximum internal ask raise. The policy
+survives in-memory surface trials and later repairs. Current archive records cannot store it:
+both writer entry points return `UnsupportedRecordVersion` / `FitRecords` and roll back,
+rather than silently losing the guarantee. Dated-cash fits and default-off behavior retain
+their existing contracts. See `docs/joint-calendar-projection.md` for scope and evidence.
+
 ### FIXED — family enclosure: the computed bracket meets the width (lane K5)
 
 `family_enclosure` (`src/pricing/american_iv.cpp`, the Skipped rule of K3's family-route root

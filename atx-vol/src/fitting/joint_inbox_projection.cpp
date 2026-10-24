@@ -27,6 +27,7 @@ struct Row {
   std::array<double, 4> coef{};
   std::size_t count = 0;
   double b = 0.0;
+  JointProjectionConflict conflict{JointConflictKind::LinearConstraint};
 
   void term(int i, double a) {
     if (a == 0.0) return;
@@ -51,6 +52,7 @@ struct Problem {
   std::vector<double> lower, upper, target;
   std::vector<Row> rows;
   bool infeasible = false;
+  JointProjectionConflict conflict{};
 };
 
 [[nodiscard]] bool valid_bounds(const AmericanPriceBounds &b) {
@@ -88,7 +90,13 @@ void add_row(Problem &p, const Row &original) {
     high += a * (a > 0.0 ? p.upper[v] : p.lower[v]);
     norm2 += a * a;
   }
-  if (high < -kFeasibilityTolerance) p.infeasible = true;
+  if (high < -kFeasibilityTolerance) {
+    p.infeasible = true;
+    if (-high > p.conflict.excess) {
+      p.conflict = original.conflict;
+      p.conflict.excess = -high;
+    }
+  }
   if (low >= 0.0 || norm2 == 0.0) return;
   const double scale = 1.0 / std::sqrt(norm2);
   for (std::size_t k = 0; k < row.count; ++k) row.coef[k] *= scale;
@@ -103,7 +111,8 @@ void add_row(Problem &p, const Row &original) {
       return false;
     }
     if (s.terminal_discount && (!std::isfinite(*s.terminal_discount) ||
-        *s.terminal_discount < s.bounds.discount_min || *s.terminal_discount > s.bounds.discount_max)) {
+        *s.terminal_discount < s.bounds.discount_min ||
+        *s.terminal_discount > s.bounds.discount_max)) {
       return false;
     }
     if (!s.terminal_prepaid.empty() &&
@@ -115,7 +124,8 @@ void add_row(Problem &p, const Row &original) {
   }
   p.variable.reserve(2u * total);
   p.fixed.reserve(2u * total);
-  for (const auto &s : slices) {
+  for (std::size_t expiry = 0; expiry < slices.size(); ++expiry) {
+    const auto &s = slices[expiry];
     p.offsets.push_back(p.variable.size());
     for (std::size_t i = 0; i < s.nodes.size(); ++i) {
       const auto &node = s.nodes[i];
@@ -123,17 +133,25 @@ void add_row(Problem &p, const Row &original) {
       if (!std::isfinite(node.strike) || node.strike <= 0.0 ||
           !std::isfinite(node.call) || !std::isfinite(node.put) ||
           (i > 0u && node.strike <= s.nodes[i - 1u].strike)) return false;
-      if (!s.terminal_prepaid.empty() && (!std::isfinite(s.terminal_prepaid[i]) ||
-          s.terminal_prepaid[i] < 0.0)) return false;
+      if (!s.terminal_prepaid.empty()) {
+        const double value = s.terminal_prepaid[i];
+        const double roundoff = 64.0 * std::numeric_limits<double>::epsilon() *
+                                std::max(1.0, s.bounds.prepaid_max);
+        if (!std::isfinite(value) || value < 0.0 ||
+            value < s.bounds.prepaid_min - roundoff ||
+            value > s.bounds.prepaid_max + roundoff) return false;
+      }
       for (const bool call : {true, false}) {
         const double box_lo = call ? box.call_lo : box.put_lo;
         const double box_hi = call ? box.call_hi : box.put_hi;
         if (!std::isfinite(box_lo) || !std::isfinite(box_hi) || box_lo > box_hi) return false;
-        double floor = std::max(call ? s.bounds.spot - node.strike : node.strike - s.bounds.spot, 0.0);
+        double floor = std::max(call ? s.bounds.spot - node.strike
+                                    : node.strike - s.bounds.spot, 0.0);
         const double terminal_df = s.terminal_discount.value_or(call ? s.bounds.discount_max
                                                                     : s.bounds.discount_min);
-        const double prepaid = !s.terminal_prepaid.empty() ? s.terminal_prepaid[i]
-                                                          : (call ? s.bounds.prepaid_min : s.bounds.prepaid_max);
+        const double prepaid = !s.terminal_prepaid.empty()
+                                   ? s.terminal_prepaid[i]
+                                   : (call ? s.bounds.prepaid_min : s.bounds.prepaid_max);
         floor = std::max(floor, call ? prepaid - terminal_df * node.strike
                                     : terminal_df * node.strike - prepaid);
         if (call && nondividend(s.bounds)) {
@@ -143,7 +161,13 @@ void add_row(Problem &p, const Row &original) {
         const double hi = std::min(box_hi, call ? s.bounds.prepaid_max :
                                                    s.bounds.discount_max * node.strike);
         if (!std::isfinite(lo) || !std::isfinite(hi)) return false;
-        if (lo > hi) p.infeasible = true;
+        if (lo > hi) {
+          p.infeasible = true;
+          if (lo - hi > p.conflict.excess) {
+            p.conflict = {JointConflictKind::EmptyBox, expiry, i, expiry,
+                          node.strike, lo - hi};
+          }
+        }
         p.fixed.push_back(lo);
         if (lo == hi || lo > hi) p.variable.push_back(-1);
         else {
@@ -258,6 +282,7 @@ void add_calendars(Problem &p, std::span<const JointInboxSlice> slices) {
         if (k < low || k > high || (b > a + 1u && k >= bridge_low && k <= bridge_high)) return;
         for (const bool call : {true, false}) {
           Row row;
+          row.conflict = {JointConflictKind::CalendarBox, a, 0, b, k, 0.0};
           add_interpolated(row, far, p.offsets[b], call, k, 1.0);
           add_interpolated(row, near, p.offsets[a], call, k, -1.0);
           add_row(p, row);
@@ -348,8 +373,9 @@ private:
   [[nodiscard]] int position(int row, int column) const {
     const int begin = matrix_.outerIndexPtr()[column];
     const int end = matrix_.outerIndexPtr()[column + 1];
-    return static_cast<int>(std::lower_bound(matrix_.innerIndexPtr() + begin,
-                                            matrix_.innerIndexPtr() + end, row) - matrix_.innerIndexPtr());
+    const auto *found = std::lower_bound(matrix_.innerIndexPtr() + begin,
+                                         matrix_.innerIndexPtr() + end, row);
+    return static_cast<int>(found - matrix_.innerIndexPtr());
   }
   struct Term { int position; double value; };
   const Problem &p_;
@@ -384,7 +410,9 @@ private:
   }
   Vector s(m), z = Vector::Ones(m), rp(m), rd(n), rc(m), dx(n), ds(m), dz(m);
   Vector ds_aff(m), dz_aff(m);
-  for (Eigen::Index j = 0; j < m; ++j) s[j] = std::max(1.0, p.rows[static_cast<std::size_t>(j)].value(x));
+  for (Eigen::Index j = 0; j < m; ++j) {
+    s[j] = std::max(1.0, p.rows[static_cast<std::size_t>(j)].value(x));
+  }
   NewtonSystem system(p);
   for (std::size_t iteration = 0; iteration < budget; ++iteration) {
     used = iteration + 1u;
@@ -407,7 +435,8 @@ private:
     // required, and forcing complementarity to zero at a boundary-only feasible
     // face can needlessly destroy the Newton system's conditioning.
     if (diagnostics.primal_residual <= kFeasibilityTolerance) return true;
-    if (!system.factor(s, z) || !system.direction(s, z, rp, rd, rc, dx, ds_aff, dz_aff)) return false;
+    if (!system.factor(s, z) ||
+        !system.direction(s, z, rp, rd, rc, dx, ds_aff, dz_aff)) return false;
     const double ap = step_bound(s, ds_aff);
     const double ad = step_bound(z, dz_aff);
     const double mu_aff = ((s + ap * ds_aff).array() * (z + ad * dz_aff).array()).mean();
@@ -420,7 +449,8 @@ private:
     x += alpha_p * dx;
     s += alpha_p * ds;
     z += alpha_d * dz;
-    if (!x.allFinite() || !s.allFinite() || !z.allFinite() || s.minCoeff() <= 0.0 || z.minCoeff() <= 0.0) {
+    if (!x.allFinite() || !s.allFinite() || !z.allFinite() ||
+        s.minCoeff() <= 0.0 || z.minCoeff() <= 0.0) {
       return false;
     }
   }
@@ -437,8 +467,8 @@ private:
       for (const bool call : {true, false}) {
         const auto old = static_cast<std::size_t>(coordinate(p.offsets[s], i, call));
         const int v = p.variable[old];
-        const double value = v < 0 ? p.fixed[old] : std::clamp(x[v], p.lower[static_cast<std::size_t>(v)],
-                                                                  p.upper[static_cast<std::size_t>(v)]);
+        const auto free = static_cast<std::size_t>(v);
+        const double value = v < 0 ? p.fixed[old] : std::clamp(x[v], p.lower[free], p.upper[free]);
         (call ? nodes.back()[i].call : nodes.back()[i].put) = value;
       }
     }
@@ -457,6 +487,36 @@ private:
 }
 
 } // namespace
+
+bool recover_terminal_floor_asks(const JointInboxSlice &slice,
+                                 std::span<const std::uint8_t> quoted,
+                                 std::span<AmericanPriceBox> boxes,
+                                 TerminalFloorRecovery &record) {
+  record = {};
+  if (!slice.terminal_discount || slice.terminal_prepaid.size() != slice.nodes.size() ||
+      quoted.size() != slice.nodes.size() || boxes.size() != slice.nodes.size()) return false;
+  Problem checked;
+  if (!build_variables(std::span(&slice, 1), checked)) return false;
+  for (std::size_t i = 0; i < boxes.size(); ++i) {
+    const double strike = slice.nodes[i].strike;
+    const double prepaid = slice.terminal_prepaid[i];
+    const double df = *slice.terminal_discount;
+    const double allowance = 1e-8 + 1e-9 * std::max(slice.bounds.spot, strike);
+    for (const bool call : {true, false}) {
+      if ((quoted[i] & (call ? 1u : 2u)) == 0u) continue;
+      const double intrinsic = call ? slice.bounds.spot - strike : strike - slice.bounds.spot;
+      const double european = call ? prepaid - df * strike : df * strike - prepaid;
+      const double floor = std::max({0.0, intrinsic, european});
+      double &ask = call ? boxes[i].call_hi : boxes[i].put_hi;
+      if (ask >= floor) continue;
+      const double raised = floor + allowance;
+      record.max_ask_raise = std::max(record.max_ask_raise, raised - ask);
+      ask = raised;
+      ++record.raised_asks;
+    }
+  }
+  return true;
+}
 
 JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slices,
                                            std::size_t max_iterations,
@@ -477,6 +537,7 @@ JointProjectionResult project_joint_in_box(std::span<const JointInboxSlice> slic
   }
   if (p.infeasible) {
     result.outcome = JointProjectionOutcome::InfeasibleData;
+    result.conflict = p.conflict;
     return result;
   }
   // Box rows are retained even though the bound test regards them as redundant;

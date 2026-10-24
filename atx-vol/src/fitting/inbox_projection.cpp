@@ -1,4 +1,5 @@
 #include "fitting/inbox_projection.hpp"
+#include "fitting/joint_inbox_projection.hpp"
 
 #include <algorithm>
 #include <array>
@@ -512,7 +513,8 @@ QuoteSliceBoxRefusal classify_box_refusal(std::string_view message) noexcept {
   return QuoteSliceBoxRefusal::Other;
 }
 
-Result<AmericanBoxCertificate> project_american_in_box(std::span<const AmericanPriceNode> fitted,
+static Result<AmericanBoxCertificate> project_american_in_box_strict(
+    std::span<const AmericanPriceNode> fitted,
                                                        std::span<const AmericanPriceBox> boxes,
                                                        const AmericanPriceBounds &bounds,
                                                        std::string_view box_refusal,
@@ -769,7 +771,7 @@ Result<AmericanBoxCertificate> project_american_in_box(std::span<const AmericanP
       if (c != Centring::Centred) return nonconverged(1);
       if (s < 0.0) break;
       const double gap = m / t;
-      if (s - gap > 0.0) {
+      if (s - gap > 1.0e-10 * scale) {
         // Certified: no point violates every row by less than s - m / t. Name the row with
         // the largest dual weight 1 / (t (g + s)), i.e. the smallest phase I slack.
         const auto slacks = centrer.slacks();
@@ -779,9 +781,9 @@ Result<AmericanBoxCertificate> project_american_in_box(std::span<const AmericanP
             {QuoteSliceInboxConflict::Coupled, p.rows[j].side, p.rows[j].node, s - gap});
       }
       if (gap < 1.0e-14 * std::max(1.0, std::abs(s))) {
-        // Degenerate: the set is at best a boundary (s = 0 to rounding). Nothing interior
-        // exists to project from; the weakest violation is typed as the conflict.
-        return infeasible({QuoteSliceInboxConflict::Coupled, Side::Call, 0u, std::max(s, 0.0)});
+        // A boundary-only feasible face has no strict interior. This is not a
+        // positive infeasibility certificate; allow the closed-polytope fallback.
+        return nonconverged(1);
       }
       t *= kBarrierGrowth;
     }
@@ -835,6 +837,64 @@ Result<AmericanBoxCertificate> project_american_in_box(std::span<const AmericanP
         std::max(record.max_mid_half_spreads, std::abs(x[v] - p.centre[v]) / p.half[v]);
   }
   finish(QuoteSliceInboxOutcome::Applied);
+  return Ok(std::move(out));
+}
+
+Result<AmericanBoxCertificate> project_american_in_box(
+    std::span<const AmericanPriceNode> fitted, std::span<const AmericanPriceBox> boxes,
+    const AmericanPriceBounds &bounds, std::string_view box_refusal,
+    QuoteSliceInboxRecord &record, std::size_t max_newton_steps) {
+  // Reserve bounded work for a closed-polytope solve. A zero-interior face is
+  // feasible data, although the historical strict barrier cannot enter it.
+  const std::size_t reserve = max_newton_steps > 100u ? 100u : 0u;
+  auto strict = project_american_in_box_strict(fitted, boxes, bounds, box_refusal,
+                                               record, max_newton_steps - reserve);
+  if (strict || record.outcome != QuoteSliceInboxOutcome::NonConverged) return strict;
+  const std::size_t used = record.phase1_steps + record.phase2_steps;
+  if (used >= max_newton_steps) return strict;
+  std::vector<AmericanPriceNode> nodes(fitted.begin(), fitted.end());
+  const JointInboxSlice input{nodes, boxes, bounds};
+  const auto start = std::chrono::steady_clock::now();
+  const auto projected = project_joint_in_box(
+      std::span(&input, 1), std::min(std::size_t{100}, max_newton_steps - used));
+  record.phase2_steps += projected.sweeps;
+  record.elapsed_us += std::chrono::duration<double, std::micro>(
+      std::chrono::steady_clock::now() - start).count();
+  if (projected.outcome != JointProjectionOutcome::Feasible) {
+    // A strict barrier's zero-interior diagnosis is not an infeasibility proof.
+    record.outcome = projected.outcome == JointProjectionOutcome::InfeasibleData
+                         ? QuoteSliceInboxOutcome::InfeasibleData
+                         : QuoteSliceInboxOutcome::NonConverged;
+    return Err(record.outcome == QuoteSliceInboxOutcome::InfeasibleData
+                   ? ErrorCode::Unavailable : ErrorCode::OutOfRange,
+               "AmericanPriceSlice in-box projection: closed-polytope recovery refused");
+  }
+  auto certified = AmericanPriceSlice::create(nodes, bounds);
+  if (!certified) return Err(certified.error().code(), certified.error().message());
+  AmericanBoxCertificate out{std::move(*certified), std::vector<std::uint8_t>(nodes.size(), 0u),
+                             0u, 0.0};
+  record.max_move_half_spreads = 0.0;
+  record.max_mid_half_spreads = 0.0;
+  for (std::size_t i = 0; i < nodes.size(); ++i) {
+    for (const bool call : {true, false}) {
+      const double price = call ? nodes[i].call : nodes[i].put;
+      const double before = call ? fitted[i].call : fitted[i].put;
+      const double lo = call ? boxes[i].call_lo : boxes[i].put_lo;
+      const double hi = call ? boxes[i].call_hi : boxes[i].put_hi;
+      if (price != before) out.moved[i] |= call ? 1u : 2u;
+      out.max_price_move = std::max(out.max_price_move, std::abs(price - before));
+      if (hi > lo) {
+        record.max_move_half_spreads = std::max(record.max_move_half_spreads,
+                                                2.0 * std::abs(price - before) / (hi - lo));
+        record.max_mid_half_spreads = std::max(record.max_mid_half_spreads,
+                                               std::abs(2.0 * price - lo - hi) / (hi - lo));
+      }
+    }
+    if (out.moved[i] != 0u) ++out.moved_nodes;
+  }
+  record.outcome = QuoteSliceInboxOutcome::Applied;
+  record.conflict = QuoteSliceInboxConflict::None;
+  record.conflict_excess = 0.0;
   return Ok(std::move(out));
 }
 

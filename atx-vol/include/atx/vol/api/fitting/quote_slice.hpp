@@ -435,6 +435,12 @@ struct QuoteSliceRepairConfig {
   // UNCHANGED AmericanPriceSlice::create passes it, and an empty in-box polytope is typed
   // InfeasibleData with its conflict (QuoteSliceRepairRecord::inbox). Never widens a box.
   bool inbox_projection = false;
+  // Explicit recovery of an observed ask below its contract's proven intrinsic
+  // or terminal European floor: raise only that internal box's ask to the floor
+  // plus the fixed certificate allowance. Raw quotes and bids stay unchanged.
+  // Requires Box and a continuous/aggregate-PV model; DatedCash is rejected.
+  // Counts and maximum ask raise are recorded in QuoteSliceRepairRecord.
+  bool terminal_floor_recovery = false;
   // Opt-in market wing ceiling (QuoteSliceWingMultSource); Policy is the historical path.
   QuoteSliceWingMultSource wing_mult_source = QuoteSliceWingMultSource::Policy;
   // Opt-in distance-to-market gate / repair (QuoteSliceMarketDistance, lane L3q); Off is
@@ -558,6 +564,8 @@ struct QuoteSliceRepairRecord {
   // order.
   std::size_t sweeps = 0;
   JointProjectionConflict conflict{};
+  std::size_t terminal_floor_asks = 0;
+  double terminal_floor_max_ask_raise = 0.0;
   // The box certificate's record only (QuoteSliceDiagnostics::box): what the opt-in exact
   // in-box projection rung did after certify_american_box refused (lane C4).
   QuoteSliceInboxRecord inbox{};
@@ -986,6 +994,10 @@ struct QuoteSliceFit {
   // QuoteSliceRepairConfig::calendar_parity_clamp of the fit's config (lane K4b), kept so a
   // later repair_quote_slice_calendar applies the same rule.
   bool calendar_parity_clamp = false;
+  // Retain the declared terminal floors through later calendar repairs. The current
+  // archive schema cannot store this policy: add_fit/add_surface explicitly refuse
+  // it with UnsupportedRecordVersion / FitRecords rather than lose the guarantee.
+  bool terminal_floor_recovery = false;
   // Caller-supplied snapshot provenance (clocks, spot and carry versions). fit_quote_slice
   // leaves it default; fit_quote_surface copies QuoteSurfaceExpiry::snapshot.
   QuoteSliceSnapshotInfo snapshot{};
