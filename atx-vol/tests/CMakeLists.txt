@@ -404,6 +404,20 @@ gtest_discover_tests(atx-vol-risk-alloc-tests
     PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
     DISCOVERY_MODE PRE_TEST)
 
+# Wave-3 lane P: PersistFile.NoAllocationAfterOpen (design persist D6 / T8).
+# support/alloc_counter.cpp replaces global operator new for THIS binary only, so the
+# case lives only here. The "persist/" prefix keeps it inside the lane's anchored
+# -R "^persist/PersistFile\."; atx-vol-persist-slice depends on it (below the slices
+# include) so building the slice builds it.
+add_executable(atx-vol-persist-alloc-tests persist_alloc_test.cpp support/alloc_counter.cpp)
+target_link_libraries(atx-vol-persist-alloc-tests
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+target_include_directories(atx-vol-persist-alloc-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+gtest_discover_tests(atx-vol-persist-alloc-tests
+    TEST_PREFIX "persist/"
+    PROPERTIES LABELS atx_vol_fast SKIP_REGULAR_EXPRESSION "${ATX_VOL_GTEST_SKIP_REGEX}"
+    DISCOVERY_MODE PRE_TEST)
+
 # Lane B0 benchmark clock contract (tools/bench_clocks.hpp): the exclusive phase
 # arithmetic, the de-Am stage clock and the in-process cold reset. Lives only here (not
 # in atx-vol-tests or a slice), so atx_vol_fast runs each case once. The library is a
@@ -1289,3 +1303,5 @@ set_tests_properties(AlphaRegistry PROPERTIES
 include(${CMAKE_CURRENT_SOURCE_DIR}/slices.cmake)
 # The risk lane's focused allocation exe rides the risk slice build (see above).
 add_dependencies(atx-vol-risk-slice atx-vol-risk-alloc-tests)
+# The persist lane's focused allocation exe rides the persist slice build (see above).
+add_dependencies(atx-vol-persist-slice atx-vol-persist-alloc-tests)
