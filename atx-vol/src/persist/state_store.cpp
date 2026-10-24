@@ -450,11 +450,13 @@ build_state_store_from_spiderrock(const SpiderRockStoreSpec &spec,
     }
     if (!slots[k].loaded) {
       // A wave: k plus the next buckets that certainly need a load (no up-to-date
-      // generation), up to max_parallel_buckets in flight; they are published in order.
+      // generation) and are not loaded yet, up to max_parallel_buckets in flight; they are
+      // published in order. (A bucket loaded by an earlier wave stays loaded when a
+      // skippable bucket before it fails its skip and opens a new wave.)
       std::vector<Slot *> wave{&slots[k]};
       for (std::size_t j = k + 1;
            j < slots.size() && wave.size() < options.max_parallel_buckets; ++j) {
-        if (!skippable(slots[j])) wave.push_back(&slots[j]);
+        if (!skippable(slots[j]) && !slots[j].loaded) wave.push_back(&slots[j]);
       }
       load_wave(spec, wave);
     }
