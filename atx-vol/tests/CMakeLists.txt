@@ -45,6 +45,19 @@ if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
         PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
     target_include_directories(atx-vol-cash-thomas-research-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(TARGET atx-vol-bench-clocks)
+        add_executable(atx-vol-cash-pde-batch-research
+            ${CASH_THOMAS_RESEARCH_DIR}/runner.cpp
+            ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
+            ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
+        target_link_libraries(atx-vol-cash-pde-batch-research PRIVATE atx::vol atx::core
+            atx_warnings atx-vol-bench-clocks nlohmann_json::nlohmann_json)
+        target_include_directories(atx-vol-cash-pde-batch-research PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+        target_compile_definitions(atx-vol-cash-pde-batch-research PRIVATE
+            ATX_CASH_BATCH_IPO=$<BOOL:${CMAKE_INTERPROCEDURAL_OPTIMIZATION}>)
+    endif()
 endif()
 
 # This entry point is also consumable without the engine/backtest test graph.
