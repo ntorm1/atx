@@ -359,7 +359,8 @@ weakly-canonical, case-folded paths on Windows).
 FNV-1a/64 + fmix64 (as section 3) over: salt `ATXVSS01`; `conventions_version` (u32, required
 nonzero); `ATX_VOL_VERSION`; the store root (lexically normal, generic separators); date; the
 underlier filter list; `max_underliers`; time convention and the five `VolTimeParams` doubles
-(bit patterns); `american_only`; `standard_roots_only`; the bucket; then, over the bucket's
+(bit patterns); `american_only`; `standard_roots_only`; `spot_framework_only`; `carry_mode`;
+`clock`; the bucket; then, over the bucket's
 `*.parquet` files sorted by name: file name, size, last-write time. A bucket is rebuilt when its
 fingerprint or extras choice differs from the archived one (or `force`), or when its archived
 `uid-table` is not a prefix-consistent replay of the build's uid assignment so far; otherwise it is

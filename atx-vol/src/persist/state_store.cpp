@@ -387,19 +387,29 @@ spiderrock_state_source_fingerprint(const SpiderRockStoreSpec &spec, std::string
   h = fold_le(h, persist_salt("ATXVSS01"), 8);
   h = fold_le(h, conventions_version, 4);
   h = fold_le(h, static_cast<std::uint64_t>(ATX_VOL_VERSION), 8);
-  h = fold_str(h, fs::path{spec.store_root}.lexically_normal().generic_string());
-  h = fold_str(h, spec.date);
-  h = fold_le(h, spec.underliers.size(), 4);
-  for (const std::string &u : spec.underliers) h = fold_str(h, u);
-  h = fold_le(h, spec.max_underliers, 8);
-  h = fold_le(h, static_cast<std::uint8_t>(spec.time.convention), 1);
-  const VolTimeParams &vt = spec.time.vol_time;
-  for (const double v : {vt.alpha, vt.trading_hours_per_year, vt.nontrading_hours_per_year,
-                         vt.session_open_hour_et, vt.session_span_hours}) {
+  // EVERY SpiderRockStoreSpec field (design D11). The structured bindings are exhaustive:
+  // a field added to the spec (or to TimeSpec / VolTimeParams) stops this compiling until
+  // it is folded here too, so a build with a different loader option can never skip an
+  // archive built under another (review: clock, carry_mode and spot_framework_only were
+  // missing).
+  const auto &[store_root, date, underliers, max_underliers, time, american_only,
+               standard_roots_only, spot_framework_only, carry_mode, clock] = spec;
+  const auto &[convention, vol_time] = time;
+  const auto &[alpha, trading_hours, nontrading_hours, session_open, session_span] = vol_time;
+  h = fold_str(h, fs::path{store_root}.lexically_normal().generic_string());
+  h = fold_str(h, date);
+  h = fold_le(h, underliers.size(), 4);
+  for (const std::string &u : underliers) h = fold_str(h, u);
+  h = fold_le(h, max_underliers, 8);
+  h = fold_le(h, static_cast<std::uint8_t>(convention), 1);
+  for (const double v : {alpha, trading_hours, nontrading_hours, session_open, session_span}) {
     h = fold_le(h, std::bit_cast<std::uint64_t>(v), 8);
   }
-  h = fold_le(h, spec.american_only ? 1u : 0u, 1);
-  h = fold_le(h, spec.standard_roots_only ? 1u : 0u, 1);
+  h = fold_le(h, american_only ? 1u : 0u, 1);
+  h = fold_le(h, standard_roots_only ? 1u : 0u, 1);
+  h = fold_le(h, spot_framework_only ? 1u : 0u, 1);
+  h = fold_le(h, static_cast<std::uint8_t>(carry_mode), 1);
+  h = fold_le(h, static_cast<std::uint8_t>(clock), 1);
   h = fold_str(h, bucket_et);
   h = fold_le(h, files.size(), 4);
   for (const fs::path &f : files) {

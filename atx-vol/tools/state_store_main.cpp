@@ -60,10 +60,6 @@ namespace fs = std::filesystem;
 using namespace atx::vol; // NOLINT(google-build-using-namespace): tool TU
 using Clock = std::chrono::steady_clock;
 
-// The loader-conventions version the archived values follow (orchestrator ruling Q2).
-// TODO(integration): replace with kSpiderRockConventionsVersion
-constexpr std::uint32_t kStateStoreConventionsVersion = 1;
-
 constexpr int kExitOk = 0;
 constexpr int kExitFail = 1;
 constexpr int kExitUsage = 2;
@@ -339,7 +335,7 @@ void write_text(const std::string &path, const std::string &text) {
   o.include_extras = a.extras;
   o.created_unix_ns = a.created;
   o.force = a.force;
-  o.conventions_version = kStateStoreConventionsVersion;
+  o.conventions_version = kSpiderRockConventionsVersion;
   const auto t0 = Clock::now();
   auto r = build_state_store_from_spiderrock(spec_of(a), buckets, o);
   const double total = since(t0);
@@ -350,7 +346,7 @@ void write_text(const std::string &path, const std::string &text) {
   std::ostringstream js;
   js << "{\"schema_version\":1,\"tool\":\"atx-vol-state-store build\",\"date\":\"" << a.date
      << "\",\"top\":" << a.top << ",\"extras\":" << (a.extras ? "true" : "false")
-     << ",\"conventions_version\":" << kStateStoreConventionsVersion
+     << ",\"conventions_version\":" << kSpiderRockConventionsVersion
      << ",\"total_s\":" << fmt("%.4f", total) << ",\"buckets\":[";
   std::printf("%-6s %10s %12s %8s %8s %8s %4s  %s\n", "bucket", "marks", "bytes", "load_s",
               "encode_s", "publ_s", "skip", a.sha256 ? "sha256" : "path");
@@ -543,7 +539,7 @@ struct CodecRow {
   if (!archive) {
     StateStoreBuildOptions o;
     o.out_root = a.out;
-    o.conventions_version = kStateStoreConventionsVersion;
+    o.conventions_version = kSpiderRockConventionsVersion;
     const std::vector<std::string> one{a.bucket};
     if (auto b = build_state_store_from_spiderrock(spec, one, o); !b) {
       std::fprintf(stderr, "bench: build: %s\n", to_status(b.error()).error().to_string().c_str());
