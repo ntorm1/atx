@@ -4,7 +4,7 @@
 
 ## 1. Where the branch is
 - Branch `feat/vol-resume5-20261022`; r5 handoff root `668ad80e`; r6 roots in order: W2c-f `914a28ef` → W2c-g `92cea7df` → W2c-h `5728edc6` → W2c-i `d2c7eb5f` → W2c-j `746154d6` → W2c-k `30a0b661` → W2c-l `1a519bac` → W2c-m `e5438aa5` (pre-Q0) → Q0 docs `a606a27b` (fast-forwarded onto the root; docs only) → PM docs (handoff r6 + final PM ledger).
-- Nothing pushed; no PR; `main` untouched; every lane branch kept at its approved SHA (list in `progress.md`).
+- MERGED INTO `main` LOCALLY on 2026-10-24 (user's choice, option 1): merge commit `5d559dae` (parents 496ca582 + d1814227), conflict-free, 406 files; verified on the merged tree: configure + builds exit 0, `atx-vol-quote-slice` 1/1, serve-record + served-analytics 100/100, pricing 107/108 (the 1 = `PricePolishDefaultOffIsBitForBitControl`, ignore list), keys-OFF 9/9 byte-identical (evidence `C:tx-cache\quote-benchmark\PM-20261023-main-merge\`). Feature branch deleted after the merge; every lane branch kept at its approved SHA (list in `progress.md`). Not pushed; no PR.
 - Lanes landed this session: C1, K2, C0 (W2c-f); K3 (W2c-g); D1, A0 (W2c-h); C2, H0-A (W2c-i); K4 (W2c-j); C3 (W2c-k); K5, H1, K4b (W2c-l); P0, C4, A1, U0 (W2c-m). Reviews: every lane fresh exact-SHA reviewed; fix rounds: C3 (1), K5 (1), H1 (1); light-review protocol from 16:05 (user ruling).
 
 ## 2. Gate table (every row names its binary: merged root e5438aa5 or the lane binary; dev = loaded shared host; quiet = Q0's run alone)
