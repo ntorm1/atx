@@ -242,7 +242,7 @@ public:
     ATX_TRY_VOID(channel_passes());
     if (ladder()) {
       ladder_repair_rung();
-      ATX_TRY_VOID(ladder_calendar_pass());
+      if (!joint_surface_attempt()) ATX_TRY_VOID(ladder_calendar_pass());
       market_distance_pass();
       measure_containment();
       if (surface_.ladder_wing_tail != QuoteSurfaceWingTail::Off) {
@@ -250,7 +250,7 @@ public:
       }
     } else {
       repair_rung();
-      ATX_TRY_VOID(calendar_pass());
+      if (!joint_surface_attempt()) ATX_TRY_VOID(calendar_pass());
       ATX_TRY_VOID(dominance_pass());
       market_distance_pass();
     }
@@ -878,6 +878,31 @@ private:
     slice.error = "American calendar price crossing";
     slice.fit.fit_status = QuoteSliceFitStatus::ArbitrageFailure;
     slice.fit.fit_error = slice.error;
+  }
+
+  // The in-box policy asks for a feasible surface. Let every currently certified
+  // expiry move together before spending work on stronger-prior refits and many
+  // overlapping local repair trials. On refusal the existing ladder still runs;
+  // joint_attempt is transactional and independently checks every adopted price.
+  [[nodiscard]] bool joint_surface_attempt() {
+    if (!config_.repair.inbox_projection ||
+        config_.repair.certificate != QuoteSliceCertificate::Box || !market_repair_on()) {
+      return false;
+    }
+    std::vector<std::size_t> slots;
+    for (std::size_t i = 0; i < out_.size(); ++i) {
+      if (served(i) && out_[i].fit.prices) slots.push_back(i);
+    }
+    if (slots.size() < 2u) return false;
+    std::sort(slots.begin(), slots.end(), [this](std::size_t a, std::size_t b) {
+      return expiries_[a].market.calendar_years < expiries_[b].market.calendar_years;
+    });
+    const std::size_t first = slots.front();
+    const std::vector<std::size_t> partners(slots.begin() + 1, slots.end());
+    const counters::fit_timing::ChainScope chain(slot(first));
+    if (!joint_attempt(first, partners, partners)) return false;
+    if (!out_[first].fit.moved_nodes.empty()) mark_repaired(first);
+    return true;
   }
 
   [[nodiscard]] Status calendar_pass() {

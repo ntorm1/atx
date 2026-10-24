@@ -1493,6 +1493,37 @@ TEST(QuoteSurface, BoxCertificateOpensTheCalendarRepairInsideTheQuotesWithTheCha
   }
 }
 
+TEST(QuoteSurface, JointInBoxRepairServesFeasibleCrossingsWithoutRefittingExpiries) {
+  const std::vector<Chain> chains{chain(0.25, 0.30, 0.0, 0.01, 70, 130, 5),
+                                  chain(0.5, 0.218, 0.0, 0.05, 80, 120, 5)};
+  auto config = box_certificate_config(0.0);
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  config.repair.inbox_projection = true;
+  config.repair.market_distance = QuoteSliceMarketDistance::Repair;
+  config.channel.min_channel_quotes = 100000; // no refit can help this price-feasible case
+  QuoteSurfaceConfig surface;
+  surface.publication = QuoteSurfacePublication::Validate;
+  const auto result = fit_quote_surface(expiries(chains), config, surface);
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->size(), 2u);
+  expect_calendar_consistent(*result);
+  bool repaired = false;
+  for (std::size_t s = 0; s < result->size(); ++s) {
+    const auto &slice = (*result)[s];
+    EXPECT_NE(slice.grade, QuoteSliceGrade::Refused) << slice.error;
+    EXPECT_FALSE(slice.calendar_retry);
+    EXPECT_FALSE(slice.channel_refit);
+    repaired = repaired || slice.calendar_joint_repaired;
+    for (std::size_t i = 0; i < chains[s].quotes.size(); ++i) {
+      const auto &row = slice.fit.rows[i];
+      EXPECT_TRUE(row.evaluation_status == QuoteSliceEvaluationStatus::Success ||
+                  row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly);
+      EXPECT_LE(channel_distance(row.fitted_price, chains[s].quotes[i]), 1e-8);
+    }
+  }
+  EXPECT_TRUE(repaired);
+}
+
 // Zig-zag carry chain quoted on its out-of-the-money side only: every strike's
 // in-the-money node-side has no quote, so no channel protects its price.
 Chain otm_only(Chain c) {
