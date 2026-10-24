@@ -864,8 +864,14 @@ TEST(RiskExplain, ExplainBitEqualAcrossLegFanout) {
     std::cout << " 0x" << std::bit_cast<std::uint64_t>(ref.total.*f);
   }
   std::cout << std::dec << " pivot groups " << ref.n_pivot_groups << "\n";
-  constexpr std::uint64_t kPinnedDigest = 0x0ULL;
-  constexpr std::array<std::uint64_t, 18> kPinnedTotals{};
+  constexpr std::uint64_t kPinnedDigest = 0x5660a61510ac3e32ULL;
+  constexpr std::array<std::uint64_t, 18> kPinnedTotals{
+      0xc0b65d5f0cf24b1eULL, 0xc0b4fc5b70eb93f9ULL, 0x40761039c06b723aULL, 0x408b5ffa407a3848ULL,
+      0xc01020c400b10519ULL, 0xc07ac4f301d262ccULL, 0xc00332f9be70a8a0ULL, 0x400cca2e984d58d1ULL,
+      0x403295a8af607cb7ULL, 0x0ULL,                0x3ff4b74fe1c1f001ULL, 0xc05bee13ccfd6a57ULL,
+      0xc07e36e8c1c68d71ULL, 0xc04b583ce502c5b7ULL, 0xc03d10be264bcdddULL, 0x40615c127df28075ULL,
+      0x40607ffffffffff7ULL, 0x0ULL};
+  EXPECT_EQ(ref.n_pivot_groups, 12u);
   EXPECT_EQ(legs_digest(ref), kPinnedDigest);
   for (std::size_t k = 0; k < kTotalsFields.size(); ++k) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(ref.total.*kTotalsFields[k]), kPinnedTotals[k])
