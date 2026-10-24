@@ -703,3 +703,78 @@ matrix. Continuous-yield substitution cannot qualify dated-cash output.
 Production default promotion, main merge,100-process cold-fit qualification,
 full archive persistence and broad price/Greek/cash frontier qualification remain
 open. Every rejected experiment is retained with source and evidence hashes.
+
+
+## 2026-10-24 integration checkpoint: exact cold floor reuse and Greek findings
+
+The geometry/carry release at numerical source `a0af95ab` passed all 13 actual-API
+SPY gates, with the same prices, classifications and prediction hash as
+`126447ef`. Three quiet ThinLTO fresh processes took **1.0180031, 1.0411881 and
+1.0494917 seconds** (median **1.0411881**, P-core6, one fit worker, SMT sibling0%).
+Those measurements do not establish an overall improvement over the preceding
+1.0305445-second median; the isolated geometry saving must not be advertised as
+a complete-fit gain. Every trial still exceeds one second. Evidence:
+`geometry-carry-v1-lto-profile/manifest.json` (SHA256
+`049dc088446792606246ae4dde6bf7c85713567d9dd01d1c3b7c781dda896462`),
+archived binary `1eb11005515b0a0c3bc1f1101b7d703c8a0bb491745e3fa191c7d93658ce8878`.
+
+The next reviewed numerical component, integrated as `42333054` from
+`234b31fe`, accepts 496 previously refused bounded-family proposals only after
+the original complete cold price-seed proof. Their reporting-floor boundaries
+share 11 exact models; retained owned handles preserve cold price bits, with no
+rescaling, relaxed floor criterion or new reference budget. Preparation and
+consumption validate model/options/request/budget and family identity separately.
+The integrated full SPY audit passes all13 gates: 33 valid slices,12,866/12,866
+eligible prices,12,850 IVs plus16 truthful PriceOnly outputs,12,851 inside raw
+quotes (99.88341365%). Maximum cold price residual is still
+$0.0005012966094284366, with no roundoff-only pass. All fitted prices and statuses
+are unchanged;496 IVs change. The new prediction SHA256 is
+`e086fd069a81c2c9eb84bb99e25e8a59e5d78fca8b02b0d51556668eff354d5f`.
+
+The archived development executable is
+`8be86d832ad116f02de8160f25653991caec81528523c1423dcc682a495cd5d6`;
+`acceptance/integrated-cold-floor-v1-audit/verification-reviewed-v3.json` joins
+its receipt, raw input and unchanged Always-family policy. Integrated focused
+checks pass21 pricing tests and29 fitting tests;5 external opt-in fixtures are
+skipped in that unit invocation, while the full API audit checks the complete
+SPY input. This audit is correctness evidence, not a quiet latency measurement.
+Next: measure the merged release and investigate identical floor work in the
+remaining ordinary seed/Screen candidate checks, retaining every cold proof.
+
+The complete715-contract Greek diagnostic is now frozen and independently
+reverified. It retains25,740 field requests and17,103 available estimates; no
+Greek accuracy budget is inferred from the monetary price budget. Cold AL theta
+is wrong near exercise (+8.79997 versus refined calendar -0.337363), and a deeply
+exercised call returns +12.99997 instead of the refined zero. A crossing-only
+patch misses the latter. Fixed-step FD also has a short-expiry theta discrepancy
+of5.39967 and a gamma discrepancy of0.0182586. Reference instability and all
+unsupported fields remain in the denominators. See
+`docs/american-greek-full-corpus-20261024.{md,json}` and the10 passing hardened
+runner tests, including228 independent European price checks.
+
+The next analytics implementation uses solved exercise-boundary evidence and
+field-specific stencils, preserving a valid price when a derivative is refused.
+A shared additive requested/supported/reason schema has passed review, but
+producer, consumer, batch and Python propagation must land together before
+calling the migration complete. Adaptive derivative refinement follows
+separately. For the independent PDE oracle, price convergence alone does not
+qualify Greeks: [in 't Hout's numerical study](https://arxiv.org/abs/2401.13361)
+finds problematic Delta/Gamma convergence for Crank-Nicolson even with Rannacher
+smoothing and studies DIRK/Lobatto alternatives. That research motivates an
+explicit derivative convergence experiment, not an automatic solver switch.
+
+Cash work continues from the existing D0/D1 implementations and their actual
+22,009-contract evidence. `docs/cash-reference-frontier-review-20261024.md`
+defines current-model rescoring, exact dividend-event alignment, independent
+comparison and shared rollback experiments. Richardson drift is an empirical
+indicator, not a conservative error bound by definition.
+
+The user authorized a local-main merge at this checkpoint. Main's newer
+bindings/storage work was reconciled in `725e36a7`; changelog/ledger conflicts
+retain both histories. The new complete-enum gate caught the omitted
+`ProjectedPrice` Python enumerator, corrected and independently reviewed in
+`a1ca7d14`. Combined storage/Python/build and post-merge SPY checks are in progress.
+Local main has not yet been advanced at the time of this entry. Unrelated main
+worktree changes must remain intact. Default policy promotion,100-process
+subsecond qualification, full archive persistence and broad Greek/cash/frontier
+qualification remain open.
