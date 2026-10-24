@@ -1,6 +1,8 @@
 # Remaining monetary IV candidates: attribution before batching
 
 This is a predeclared instrumentation design, not an implemented optimization.
+The private local observation seam is implemented and checked as described below;
+whole-fit collection and replay remain pending.
 On the complete SPY audit of `701f96de`, 700 calls to
 `detail::american_implied_vol_price_candidate` remain after the native family
 and prepared-seed routes. Of these, 684 accept and 16 refuse. Every acceptance
@@ -127,3 +129,42 @@ original complete retry. Packing/setup/destruction, unused lanes and all scalar
 fallbacks belong in the inclusive result. No approximate vector value may be
 recorded under an exact scalar proof field. No generic error theorem or new
 Greek budget follows from passing this SPY experiment.
+
+## Local observation component
+
+`src/pricing/american_iv_candidate_trace.hpp` declares a private explicit traced
+call. Both the ordinary and observed calls instantiate one numerical body; the
+ordinary specialization has no clocks, ledger reads, trace storage or observer
+branch. The observed specialization owns its request/options/results, records
+only phases actually invoked, and copies the original six decision flags.
+It captures each phase's raw optional AL options, proposal or proof sigma,
+original error or typed status, early-stop flag, three always-on solve-ledger
+deltas, and floor-cache preparation/hit deltas. Null optional AL options remain
+null, rather than being mislabeled as an explicit default scheme.
+
+The phase clocks cover the existing numerical calls including their local
+destruction; the outer clock also contains observation bookkeeping. This is
+diagnostic instrumentation, not a claim that the clocks are overhead-free.
+Trace storage is fixed-size. The usual thread-local ledger registration must
+precede allocation measurements. A bad allocation escaping an invoked operation
+is recorded before the unchanged outer containment; a helper that already
+returns an optional refusal cannot reveal its internal cause, and the trace
+does not invent one.
+
+The missing-interface RED receipt is
+`acceptance/price-candidate-trace-red.log`. Five local tests cover both-side
+Screen acceptance, 24 complete conditional paths over two kernels and four
+budgets, invalid controls/stale-record reset, invalid-model errors with skipped
+proofs, and cold/warm floor-cache ownership with explicit nondefault options.
+They compare original answers bit for bit, decision flags and actual solve
+counts; phase totals match the inclusive count and all refused calls remain in
+the denominator. The new tests plus existing nonmonotone/seed controls pass
+29/29; strengthened path-coverage assertions pass in the final five-test receipt.
+The owning pricing and test objects also pass with PCH disabled. Receipts live
+under `acceptance/price-candidate-trace-*` in the frozen r7 evidence root.
+
+This component does not dispatch fitting calls, install a global collector,
+serialize a capture, or establish the 700/684/16 whole-SPY join. Bounded collector
+exhaustion, incomplete receipt rejection, whole-fit parity and isolated replay
+remain required before using the design for architectural conclusions. Runtime
+allocation-failure injection is also not claimed by these five tests.

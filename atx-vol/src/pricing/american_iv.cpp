@@ -21,6 +21,7 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_seed_batch.hpp"
+#include "pricing/american_iv_candidate_trace.hpp"
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
 #if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
 #include "pricing/american_iv_seed_capture.hpp"
@@ -3152,30 +3153,183 @@ bool american_implied_vol_price_seed_batch(std::span<const IvPriceSeedRequest> r
   return true;
 }
 
-std::optional<double> american_implied_vol_price_candidate(
+namespace {
+
+using CandidatePhase = research::IvCandidatePhase;
+using CandidateOutcome = research::IvCandidateOutcome;
+using CandidatePhaseOutcome = research::IvCandidatePhaseOutcome;
+using CandidateWork = research::IvCandidateWork;
+using CandidateClock = std::chrono::steady_clock;
+
+[[nodiscard]] CandidateWork candidate_work() noexcept {
+  namespace led = counters::ledger;
+  return {led::this_thread(led::Solve::AlBoundarySolves),
+          led::this_thread(led::Solve::AlPremiumEvals),
+          led::this_thread(led::Solve::IvNewtonIters)};
+}
+
+[[nodiscard]] CandidateWork candidate_delta(const CandidateWork &before) noexcept {
+  auto after = candidate_work();
+  for (std::size_t i = 0; i < after.size(); ++i) after[i] -= before[i];
+  return after;
+}
+
+[[nodiscard]] std::uint64_t candidate_elapsed(CandidateClock::time_point start) noexcept {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      CandidateClock::now() - start).count());
+}
+
+// The ordinary instantiation has no clock, ledger reads, trace storage or
+// observer branch. Lambdas invoke the same original numerical operations.
+struct NoCandidateObservation {
+  template <class Function>
+  auto invoke(CandidatePhase, const std::optional<AlOpts> &, std::optional<double>,
+              const bool *, Function &&function) const {
+    return std::forward<Function>(function)();
+  }
+  [[nodiscard]] std::optional<double> finish(std::optional<double> answer,
+                                            CandidateOutcome) const noexcept {
+    return answer;
+  }
+};
+
+class CandidateObservation {
+public:
+  CandidateObservation(research::IvPriceCandidateTrace &trace,
+      const research::IvCandidateRequest &request, const IvOpts &opts,
+      IvPriceProposalKernel kernel, IvPriceCandidateStats &stats,
+      IvPriceSeedFloorCache *floor_cache) noexcept
+      : trace_(trace), stats_(stats), floor_cache_(floor_cache),
+        start_(CandidateClock::now()), work_(candidate_work()),
+        preparations_(preparations()), hits_(hits()) {
+    trace_ = {};
+    trace_.request = request;
+    trace_.options = {opts.method, opts.tol, opts.max_iter, opts.al_opts,
+        opts.correction != nullptr, opts.warm_start, opts.price_tol,
+        opts.refuse_non_monotone, opts.strategy, opts.seed_profile};
+    trace_.kernel = kernel;
+    trace_.floor_cache_present = floor_cache != nullptr;
+  }
+  ~CandidateObservation() {
+    trace_.work = candidate_delta(work_);
+    trace_.floor_preparations = preparations() - preparations_;
+    trace_.floor_hits = hits() - hits_;
+    trace_.stats = stats_;
+    trace_.elapsed_ns = candidate_elapsed(start_);
+    trace_.complete = true;
+  }
+  CandidateObservation(const CandidateObservation &) = delete;
+  CandidateObservation &operator=(const CandidateObservation &) = delete;
+  CandidateObservation(CandidateObservation &&) = delete;
+  CandidateObservation &operator=(CandidateObservation &&) = delete;
+
+  template <class Function>
+  auto invoke(CandidatePhase phase, const std::optional<AlOpts> &opts,
+              std::optional<double> seed_sigma, const bool *stopped,
+              Function &&function) {
+    auto &record = trace_.phases[static_cast<std::size_t>(phase)];
+    record.visited = true;
+    record.al_opts = opts;
+    record.seed_sigma = seed_sigma;
+    const auto before = candidate_work();
+    const auto before_preparations = preparations(), before_hits = hits();
+    const auto start = CandidateClock::now();
+    const auto complete = [&] {
+      record.elapsed_ns = candidate_elapsed(start);
+      record.work = candidate_delta(before);
+      record.floor_preparations = preparations() - before_preparations;
+      record.floor_hits = hits() - before_hits;
+      record.stopped_early = stopped != nullptr && *stopped;
+      record.complete = true;
+    };
+    try {
+      auto result = std::forward<Function>(function)();
+      complete();
+      observe_result(record, result);
+      return result;
+    } catch (const std::bad_alloc &) {
+      complete();
+      record.outcome = CandidatePhaseOutcome::AllocationFailure;
+      throw;
+    }
+  }
+  [[nodiscard]] std::optional<double> finish(std::optional<double> answer,
+                                            CandidateOutcome outcome) noexcept {
+    trace_.sigma = answer;
+    trace_.outcome = outcome;
+    return answer;
+  }
+
+private:
+  static void observe_result(research::IvCandidatePhaseTrace &record,
+                             const Result<double> &result) noexcept {
+    if (result) {
+      record.sigma = *result;
+      record.outcome = CandidatePhaseOutcome::Value;
+    } else {
+      record.error = result.error().code();
+      record.outcome = CandidatePhaseOutcome::Error;
+    }
+  }
+  static void observe_result(research::IvCandidatePhaseTrace &record,
+                             const std::optional<double> &result) noexcept {
+    record.sigma = result;
+    record.outcome = result ? CandidatePhaseOutcome::Value : CandidatePhaseOutcome::Refused;
+  }
+  static void observe_result(research::IvCandidatePhaseTrace &record,
+                             const IvResult &result) noexcept {
+    record.sigma = result.iv;
+    record.typed_status = result.status;
+    record.outcome = result.status == IvStatus::Ok
+        ? CandidatePhaseOutcome::Value : CandidatePhaseOutcome::Refused;
+  }
+  [[nodiscard]] std::uint64_t preparations() const noexcept {
+    return floor_cache_ != nullptr ? floor_cache_->preparations() : 0;
+  }
+  [[nodiscard]] std::uint64_t hits() const noexcept {
+    return floor_cache_ != nullptr ? floor_cache_->hits() : 0;
+  }
+  research::IvPriceCandidateTrace &trace_;
+  IvPriceCandidateStats &stats_;
+  IvPriceSeedFloorCache *floor_cache_; // borrowed for this synchronous invocation
+  CandidateClock::time_point start_;
+  CandidateWork work_;
+  std::uint64_t preparations_, hits_;
+};
+
+template <class Observation>
+std::optional<double> price_candidate_observed(
     double price, double S, double K, double T, double r, double q, Side side,
     const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
-    IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache) noexcept {
+    IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache,
+    Observation &observation) noexcept {
   if (stats != nullptr) *stats = {};
   if (!(max_price_error > 0.0) || !std::isfinite(max_price_error) ||
       opts.method != AmericanMethod::AndersenLake || opts.correction != nullptr ||
       opts.warm_start != 0.0 || opts.price_tol != 0.0 ||
       (proposal_kernel != IvPriceProposalKernel::Fast &&
-       proposal_kernel != IvPriceProposalKernel::ScreenThenFast)) return std::nullopt;
+       proposal_kernel != IvPriceProposalKernel::ScreenThenFast))
+    return observation.finish(std::nullopt, CandidateOutcome::InvalidControls);
   try {
     if (proposal_kernel == IvPriceProposalKernel::ScreenThenFast) {
       if (stats != nullptr) stats->screen_attempted = true;
       const std::optional<AlOpts> screen = al_screen_opts();
       PriceProposal proposal{0.25 * max_price_error, false};
-      const auto candidate = american_implied_vol_impl(price, S, K, T, r, q, side,
-          opts.method, opts.tol, opts.max_iter, screen, opts.correction, 0.0, 0.0, nullptr,
-          &proposal);
+      const auto candidate = observation.invoke(CandidatePhase::ScreenProposal, screen,
+          std::nullopt, &proposal.stopped, [&] {
+            return american_implied_vol_impl(price, S, K, T, r, q, side,
+                opts.method, opts.tol, opts.max_iter, screen, opts.correction,
+                0.0, 0.0, nullptr, &proposal);
+          });
       if (stats != nullptr) stats->screen_stopped_early = proposal.stopped;
       if (candidate && *candidate > kIvMin && std::isfinite(*candidate)) {
-        if (const auto answer = american_implied_vol_price_seed(price, S, K, T, r, q, side,
-                opts, max_price_error, *candidate, floor_cache)) {
+        if (const auto answer = observation.invoke(CandidatePhase::ScreenProof, opts.al_opts,
+                *candidate, nullptr, [&] {
+                  return american_implied_vol_price_seed(price, S, K, T, r, q, side,
+                      opts, max_price_error, *candidate, floor_cache);
+                })) {
           if (stats != nullptr) stats->screen_accepted = true;
-          return answer;
+          return observation.finish(answer, CandidateOutcome::Accepted);
         }
       }
       // Screen is only a proposal map. Failure, a refused early stop, or full
@@ -3188,27 +3342,63 @@ std::optional<double> american_implied_vol_price_candidate(
     // budget for cold-map differences; the exact target helper decides acceptance.
     // If that check refuses, repeat the original complete Fast search unchanged.
     PriceProposal proposal{0.25 * max_price_error, false};
-    const auto early = american_implied_vol_impl(price, S, K, T, r, q, side,
-        seed.method, seed.tol, seed.max_iter, seed.al_opts, seed.correction,
-        seed.warm_start, seed.price_tol, nullptr, &proposal);
+    const auto early = observation.invoke(CandidatePhase::FastProposal, seed.al_opts,
+        std::nullopt, &proposal.stopped, [&] {
+          return american_implied_vol_impl(price, S, K, T, r, q, side,
+              seed.method, seed.tol, seed.max_iter, seed.al_opts, seed.correction,
+              seed.warm_start, seed.price_tol, nullptr, &proposal);
+        });
     if (stats != nullptr) stats->stopped_early = proposal.stopped;
     if (early && *early > kIvMin && std::isfinite(*early)) {
-      if (const auto answer = american_implied_vol_price_seed(price, S, K, T, r, q, side,
-              opts, max_price_error, *early, floor_cache)) {
+      if (const auto answer = observation.invoke(CandidatePhase::FastProof, opts.al_opts,
+              *early, nullptr, [&] {
+                return american_implied_vol_price_seed(price, S, K, T, r, q, side,
+                    opts, max_price_error, *early, floor_cache);
+              })) {
         if (stats != nullptr) stats->accepted_early = proposal.stopped;
-        return answer;
+        return observation.finish(answer, CandidateOutcome::Accepted);
       }
     }
-    if (!proposal.stopped) return std::nullopt;
+    if (!proposal.stopped) return observation.finish(std::nullopt, CandidateOutcome::Refused);
     if (stats != nullptr) stats->retried_full_search = true;
-    const IvResult candidate = search_typed(price, S, K, T, r, q, side, seed);
+    const IvResult candidate = observation.invoke(CandidatePhase::CompleteFast, seed.al_opts,
+        std::nullopt, nullptr, [&] {
+          return search_typed(price, S, K, T, r, q, side, seed);
+        });
     if (candidate.status != IvStatus::Ok || !(candidate.iv > kIvMin) ||
-        !std::isfinite(candidate.iv)) return std::nullopt;
-    return american_implied_vol_price_seed(price, S, K, T, r, q, side, opts,
-                                            max_price_error, candidate.iv, floor_cache);
+        !std::isfinite(candidate.iv))
+      return observation.finish(std::nullopt, CandidateOutcome::Refused);
+    const auto answer = observation.invoke(CandidatePhase::RetryProof, opts.al_opts,
+        candidate.iv, nullptr, [&] {
+          return american_implied_vol_price_seed(price, S, K, T, r, q, side, opts,
+              max_price_error, candidate.iv, floor_cache);
+        });
+    return observation.finish(answer, answer ? CandidateOutcome::Accepted : CandidateOutcome::Refused);
   } catch (const std::bad_alloc &) {
-    return std::nullopt;
+    return observation.finish(std::nullopt, CandidateOutcome::AllocationFailure);
   }
+}
+
+} // namespace
+
+std::optional<double> american_implied_vol_price_candidate(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error, IvPriceCandidateStats *stats,
+    IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache) noexcept {
+  NoCandidateObservation observation;
+  return price_candidate_observed(price, S, K, T, r, q, side, opts, max_price_error,
+      stats, proposal_kernel, floor_cache, observation);
+}
+
+std::optional<double> research::american_implied_vol_price_candidate_traced(
+    double price, double S, double K, double T, double r, double q, Side side,
+    const IvOpts &opts, double max_price_error, IvPriceCandidateTrace &trace,
+    IvPriceProposalKernel proposal_kernel, IvPriceSeedFloorCache *floor_cache) noexcept {
+  IvPriceCandidateStats stats;
+  CandidateObservation observation(trace, {price, S, K, T, r, q, max_price_error, side},
+      opts, proposal_kernel, stats, floor_cache);
+  return price_candidate_observed(price, S, K, T, r, q, side, opts, max_price_error,
+      &stats, proposal_kernel, floor_cache, observation);
 }
 
 IvResult american_implied_vol_premium(double price, double S, double K, double T, double r,

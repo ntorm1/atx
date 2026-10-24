@@ -29,6 +29,7 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_seed_batch.hpp"
+#include "pricing/american_iv_candidate_trace.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
 #include "atx/vol/api/core/types.hpp"
 
@@ -4701,4 +4702,210 @@ TEST(AmericanIvPremium, EmpiricalColdSeedRecordsBindModeOriginAllowanceAndReques
     EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[i],
         budgets[i], prepared[i], std::nullopt, IvPriceSeedKernel::VectorReferenceEmpirical));
   }
+}
+
+TEST(AmericanIvCandidateTrace, ScreenAcceptancePreservesEverySolveAndOriginalAnswer) {
+  using namespace atx::vol;
+  namespace led = counters::ledger;
+  const auto counts = [] {
+    return std::array{led::this_thread(led::Solve::AlBoundarySolves),
+        led::this_thread(led::Solve::AlPremiumEvals),
+        led::this_thread(led::Solve::IvNewtonIters)};
+  };
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double target = cold_al(773., 780., 1. / 365., .35, .045, .01, side);
+    IvPriceCandidateStats original_stats;
+    const auto before = counts();
+    const auto original = american_implied_vol_price_candidate(target, 773., 780.,
+        1. / 365., .045, .01, side, opts, .001, &original_stats);
+    const auto after = counts();
+    research::IvPriceCandidateTrace trace;
+    const auto observed_before = counts();
+    const auto observed = research::american_implied_vol_price_candidate_traced(target,
+        773., 780., 1. / 365., .045, .01, side, opts, .001, trace);
+    const auto observed_after = counts();
+    ASSERT_TRUE(original && observed);
+    EXPECT_TRUE(same_double(*original, *observed));
+    EXPECT_TRUE(trace.complete);
+    EXPECT_TRUE(trace.stats.screen_accepted);
+    EXPECT_EQ(trace.outcome, research::IvCandidateOutcome::Accepted);
+    ASSERT_TRUE(trace.sigma);
+    EXPECT_TRUE(same_double(*trace.sigma, *observed));
+    EXPECT_TRUE(trace.phases[0].visited);
+    EXPECT_TRUE(trace.phases[1].visited);
+    EXPECT_TRUE(trace.phases[0].stopped_early);
+    for (std::size_t i = 2; i < trace.phases.size(); ++i) {
+      EXPECT_FALSE(trace.phases[i].visited);
+      EXPECT_EQ(trace.phases[i].elapsed_ns, 0u);
+      EXPECT_FALSE(trace.phases[i].sigma);
+    }
+    for (std::size_t i = 0; i < before.size(); ++i) {
+      EXPECT_EQ(after[i] - before[i], observed_after[i] - observed_before[i]);
+      EXPECT_EQ(trace.work[i], after[i] - before[i]);
+      EXPECT_EQ(trace.phases[0].work[i] + trace.phases[1].work[i], trace.work[i]);
+    }
+    EXPECT_EQ(trace.request.side, side);
+    EXPECT_TRUE(same_double(trace.request.price, target));
+    EXPECT_DOUBLE_EQ(trace.request.budget, .001);
+    EXPECT_FALSE(trace.options.has_correction);
+    EXPECT_EQ(trace.options.refuse_non_monotone, opts.refuse_non_monotone);
+  }
+}
+
+TEST(AmericanIvCandidateTrace, ConditionalRetriesAndRefusalsKeepTheirEntireDenominator) {
+  using namespace atx::vol;
+  IvOpts opts;
+  opts.refuse_non_monotone = true;
+  struct Case { double K, T, r, q, price; Side side; };
+  const std::array cases{
+      Case{925., 2.257885694503784, .0515890046954155, .00582131263777355,
+           152.01331004092836, Side::Put},
+      Case{65., .9224853515625, .04965313524007797, .008097793258072,
+           708.0004269712528, Side::Call},
+      Case{780., 1. / 365., .045, .01,
+           cold_al(773., 780., 1. / 365., .35, .045, .01, Side::Put), Side::Put}};
+  std::size_t attempts = 0, retries = 0, refused = 0, screen_refused = 0;
+  std::size_t screen_refused_fast_accepted = 0, retry_accepted = 0;
+  for (const auto kernel : {IvPriceProposalKernel::Fast, IvPriceProposalKernel::ScreenThenFast})
+    for (const auto &c : cases) for (const double budget : {.001, 1e-6, 1e-10, 1e-12}) {
+      ++attempts;
+      IvPriceCandidateStats stats;
+      const auto original = american_implied_vol_price_candidate(c.price, 773., c.K,
+          c.T, c.r, c.q, c.side, opts, budget, &stats, kernel);
+      research::IvPriceCandidateTrace trace;
+      const auto observed = research::american_implied_vol_price_candidate_traced(c.price,
+          773., c.K, c.T, c.r, c.q, c.side, opts, budget, trace, kernel);
+      EXPECT_EQ(original.has_value(), observed.has_value());
+      if (original && observed) EXPECT_TRUE(same_double(*original, *observed));
+      EXPECT_TRUE(trace.complete);
+      EXPECT_EQ(trace.outcome, observed ? research::IvCandidateOutcome::Accepted
+                                        : research::IvCandidateOutcome::Refused);
+      EXPECT_EQ(trace.stats.screen_attempted, stats.screen_attempted);
+      EXPECT_EQ(trace.stats.screen_accepted, stats.screen_accepted);
+      EXPECT_EQ(trace.stats.screen_stopped_early, stats.screen_stopped_early);
+      EXPECT_EQ(trace.stats.stopped_early, stats.stopped_early);
+      EXPECT_EQ(trace.stats.accepted_early, stats.accepted_early);
+      EXPECT_EQ(trace.stats.retried_full_search, stats.retried_full_search);
+      EXPECT_EQ(trace.phases[0].visited, stats.screen_attempted);
+      EXPECT_EQ(trace.phases[2].visited, !stats.screen_accepted);
+      EXPECT_EQ(trace.phases[4].visited, stats.retried_full_search);
+      retries += stats.retried_full_search ? 1u : 0u;
+      refused += observed ? 0u : 1u;
+      screen_refused += stats.screen_attempted && !stats.screen_accepted ? 1u : 0u;
+      screen_refused_fast_accepted += stats.screen_attempted && !stats.screen_accepted &&
+          observed.has_value() ? 1u : 0u;
+      retry_accepted += stats.retried_full_search && observed.has_value() ? 1u : 0u;
+      std::array<std::uint64_t, 3> sum{};
+      std::uint64_t phase_ns = 0;
+      for (const auto &phase : trace.phases) {
+        phase_ns += phase.elapsed_ns;
+        for (std::size_t i = 0; i < sum.size(); ++i) sum[i] += phase.work[i];
+        if (!phase.visited) EXPECT_EQ(phase.elapsed_ns, 0u);
+        EXPECT_EQ(phase.complete, phase.visited);
+      }
+      EXPECT_EQ(sum, trace.work);
+      EXPECT_LE(phase_ns, trace.elapsed_ns);
+    }
+  EXPECT_EQ(attempts, 24u);
+  EXPECT_GT(retries, 0u);
+  EXPECT_GT(refused, 0u);
+  EXPECT_GT(screen_refused, 0u);
+  EXPECT_GT(screen_refused_fast_accepted, 0u);
+  EXPECT_GT(retry_accepted, 0u);
+  RecordProperty("attempts", static_cast<int>(attempts));
+  RecordProperty("full_retries", static_cast<int>(retries));
+  RecordProperty("full_retry_acceptances", static_cast<int>(retry_accepted));
+  RecordProperty("screen_refused_fast_accepted", static_cast<int>(screen_refused_fast_accepted));
+  RecordProperty("final_refusals", static_cast<int>(refused));
+}
+
+TEST(AmericanIvCandidateTrace, InvalidControlsResetStaleTraceWithoutFabricatingPhases) {
+  using namespace atx::vol;
+  IvOpts opts;
+  research::IvPriceCandidateTrace trace;
+  trace.complete = true;
+  trace.sigma = 2.;
+  for (auto &phase : trace.phases) { phase.visited = true; phase.elapsed_ns = 99; }
+  EXPECT_FALSE(research::american_implied_vol_price_candidate_traced(
+      10., 100., 100., 1., .05, 0., Side::Put, opts, 0., trace));
+  EXPECT_TRUE(trace.complete);
+  EXPECT_FALSE(trace.sigma);
+  EXPECT_EQ(trace.outcome, research::IvCandidateOutcome::InvalidControls);
+  EXPECT_EQ(trace.work, (std::array<std::uint64_t, 3>{}));
+  for (const auto &phase : trace.phases) {
+    EXPECT_FALSE(phase.visited);
+    EXPECT_EQ(phase.elapsed_ns, 0u);
+    EXPECT_FALSE(phase.sigma);
+  }
+}
+
+TEST(AmericanIvCandidateTrace, ExactOptionsAndWarmFloorCacheRemainOwnedObservations) {
+  using namespace atx::vol;
+  IvOpts opts;
+  opts.al_opts = AlOpts{.n_collocation = 16, .n_quadrature = 32,
+      .n_quad_price = 64, .max_newton_iter = 7};
+  opts.tol = 2e-8;
+  opts.max_iter = 77;
+  opts.refuse_non_monotone = true;
+  opts.seed_profile = AlProfile::Fast;
+  const auto target_result = andersen_lake(773., 780., 1. / 365., .35,
+      .045, .01, Side::Put, opts.al_opts);
+  ASSERT_TRUE(target_result);
+  const double target = *target_result;
+  IvPriceSeedFloorCache original_cache, observed_cache;
+  for (int pass = 0; pass < 2; ++pass) {
+    IvPriceCandidateStats stats;
+    const auto original = american_implied_vol_price_candidate(target, 773., 780.,
+        1. / 365., .045, .01, Side::Put, opts, .001, &stats,
+        IvPriceProposalKernel::ScreenThenFast, &original_cache);
+    research::IvPriceCandidateTrace trace;
+    const auto observed = research::american_implied_vol_price_candidate_traced(target,
+        773., 780., 1. / 365., .045, .01, Side::Put, opts, .001, trace,
+        IvPriceProposalKernel::ScreenThenFast, &observed_cache);
+    ASSERT_TRUE(original && observed);
+    EXPECT_TRUE(same_double(*original, *observed));
+    EXPECT_TRUE(trace.floor_cache_present);
+    EXPECT_EQ(original_cache.preparations(), observed_cache.preparations());
+    EXPECT_EQ(original_cache.hits(), observed_cache.hits());
+    EXPECT_EQ(trace.floor_preparations, pass == 0 ? 1u : 0u);
+    EXPECT_EQ(trace.floor_hits, pass == 0 ? 0u : 1u);
+    EXPECT_EQ(trace.phases[1].floor_preparations, trace.floor_preparations);
+    EXPECT_EQ(trace.phases[1].floor_hits, trace.floor_hits);
+    ASSERT_TRUE(trace.options.al_opts);
+    EXPECT_EQ(trace.options.al_opts->n_collocation, opts.al_opts->n_collocation);
+    EXPECT_EQ(trace.options.al_opts->n_quadrature, opts.al_opts->n_quadrature);
+    EXPECT_EQ(trace.options.al_opts->n_quad_price, opts.al_opts->n_quad_price);
+    EXPECT_EQ(trace.options.al_opts->max_newton_iter, opts.al_opts->max_newton_iter);
+    EXPECT_DOUBLE_EQ(trace.options.tol, opts.tol);
+    EXPECT_EQ(trace.options.max_iter, opts.max_iter);
+    EXPECT_EQ(trace.options.seed_profile, opts.seed_profile);
+    ASSERT_TRUE(trace.phases[1].seed_sigma);
+    ASSERT_TRUE(trace.phases[0].sigma);
+    EXPECT_TRUE(same_double(*trace.phases[1].seed_sigma, *trace.phases[0].sigma));
+  }
+}
+
+TEST(AmericanIvCandidateTrace, InvalidRequestPreservesErrorsAndSkipsEveryProof) {
+  using namespace atx::vol;
+  research::IvPriceCandidateTrace trace;
+  EXPECT_FALSE(research::american_implied_vol_price_candidate_traced(
+      10., -100., 100., 1., .05, 0., Side::Put, IvOpts{}, .001, trace));
+  EXPECT_TRUE(trace.complete);
+  EXPECT_EQ(trace.outcome, research::IvCandidateOutcome::Refused);
+  for (const std::size_t i : {0u, 2u}) {
+    EXPECT_TRUE(trace.phases[i].visited);
+    EXPECT_TRUE(trace.phases[i].complete);
+    EXPECT_EQ(trace.phases[i].outcome, research::IvCandidatePhaseOutcome::Error);
+    ASSERT_TRUE(trace.phases[i].error);
+    EXPECT_EQ(*trace.phases[i].error, ErrorCode::InvalidArgument);
+    EXPECT_FALSE(trace.phases[i].sigma);
+  }
+  for (const std::size_t i : {1u, 3u, 4u, 5u}) {
+    EXPECT_FALSE(trace.phases[i].visited);
+    EXPECT_EQ(trace.phases[i].work, (research::IvCandidateWork{}));
+    EXPECT_EQ(trace.phases[i].outcome, research::IvCandidatePhaseOutcome::NotVisited);
+  }
+  EXPECT_EQ(trace.work, (research::IvCandidateWork{}));
 }
