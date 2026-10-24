@@ -21,6 +21,9 @@
 #include "pricing/american_iv_premium.hpp"
 #include "pricing/american_iv_search.hpp"
 #include "pricing/american_iv_stream.hpp" // K2: the bench's recorded request stream
+#if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
+#include "pricing/american_iv_seed_capture.hpp"
+#endif
 #include "pricing/american_sigma_q_family.hpp"
 #include "atx/core/error.hpp"
 #include "atx/vol/api/pricing/american.hpp"
@@ -3437,6 +3440,9 @@ void iv_native_prepare_cold_seeds(const AlSigmaQFamily &f,
   const auto t0 = timed ? std::chrono::steady_clock::now()
                         : std::chrono::steady_clock::time_point{};
   IvPriceSeedFloorCache floor_cache;
+#if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
+  const auto capture_batch = research::next_cold_seed_batch();
+#endif
   for (std::size_t i = 0; i < out.size(); ++i) {
     const auto &rq = requests[i];
     const auto &lane = out[i].lane;
@@ -3459,6 +3465,10 @@ void iv_native_prepare_cold_seeds(const AlSigmaQFamily &f,
     ++work.cold_seed_attempts;
     const auto sigma = american_implied_vol_price_seed(rq.price, rq.S, rq.K, rq.T,
         rq.r, rq.q, rq.side, seed_opts, budget, lane.sigma, &floor_cache);
+#if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
+    research::capture_cold_seed(capture_batch, i, rq, budget, lane.sigma, opts,
+                                sigma.has_value());
+#endif
     if (!sigma) continue;
     out[i].cold_seed = IvPreparedColdSeed{true, &f, env, env->preparation_stamp,
         rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.tol, budget, rq.side, opts, *sigma};
