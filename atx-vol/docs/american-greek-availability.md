@@ -409,3 +409,12 @@ binary and is independently listed as r6 known issue Q0-F26. All nine focused
 strategy/quant integration tests and the owning PCH-off object now pass. The
 BEV golden remains unchanged (r6 Q0-F3); its original first-green deterministic
 pin is not an economic tolerance. No production arithmetic was changed.
+
+
+After the separately reviewed model-regime correction d5537bff, the complete
+BEV denominator is 20 tests: 19 pass and the unchanged historical golden
+Q0-F3 alone fails at exactly the pre-guard value 1.3832639438392142. GBM mean,
+root solving, serial/batch/thread-count equality, poisoned jobs and the genuine
+crossing-Delta refusal all pass. No job, contract or assertion was removed.
+The checkpoint retains this known failure rather than claiming a full release
+pass. Evidence: repair-iv/greek-bev-european.{log,xml}.
