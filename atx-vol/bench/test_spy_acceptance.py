@@ -21,7 +21,9 @@ def surface():
             fraction = (strike - nodes[left]["strike"]) / 10
             price = nodes[left][side] * (1 - fraction) + nodes[left + 1][side] * fraction
             queries.append({"strike": strike, "side": side, "status": "price_only",
-                            "served_price": price, "price": price, "volatility": None})
+                            "served_price": price, "price": price, "volatility": None,
+                            "reason": "low_vega", "iv_lower": None, "iv_upper": None,
+                            "vol_convention": "none"})
     return {"chain_id": 1, "grade": "A", "calendar_years": 1.0,
             "bounds": bounds, "nodes": nodes, "queries": queries,
             "market": {"spot": 100.0, "rate": 0.0, "continuous_yield": 0.0,
@@ -124,6 +126,35 @@ class FinalApiOracleTests(unittest.TestCase):
         value = surface()
         value["queries"][0]["volatility"] = 0.2
         self.assertTrue(audit.api_violations(document(value)))
+
+    def test_actual_api_interval_metadata_is_required_and_well_formed(self):
+        for patch in ({"iv_lower": 0.3, "iv_upper": 0.2}, {"iv_upper": float("inf")},
+                      {"reason": "none"}, {"vol_convention": "european_equivalent"}):
+            value = surface()
+            value["queries"][0].update(patch)
+            self.assertTrue(any(v["kind"] == "invalid_api_metadata"
+                                for v in audit.api_violations(document(value))))
+        value = surface()
+        del value["queries"][0]["iv_upper"]
+        self.assertFalse(audit.valid_query_metadata(value["queries"][0]))
+
+    def test_csv_metadata_must_match_actual_api_including_interval_and_convention(self):
+        query = surface()["queries"][0]
+        query.update(reason="floor_vol", iv_lower=0.0, iv_upper=0.005)
+        row = {"status": "ok_price_only", "price_only_reason": "floor_vol",
+               "predicted_vol": "", "iv_lower": "0", "iv_upper": "0.005",
+               "vol_convention": "none"}
+        self.assertTrue(audit.prediction_metadata_matches(query, row))
+        for field, wrong in (("iv_upper", "0.006"), ("iv_lower", ""),
+                             ("predicted_vol", "0.2"), ("price_only_reason", "low_vega"),
+                             ("vol_convention", "fitted_curve"), ("status", "ok")):
+            self.assertFalse(audit.prediction_metadata_matches(query, dict(row, **{field: wrong})))
+        query.update(status="success", reason="none", volatility=0.2, iv_lower=None,
+                     iv_upper=None, vol_convention="reimplied_repaired")
+        row.update(status="ok", price_only_reason="none", predicted_vol="0.2",
+                   iv_lower="", iv_upper="", vol_convention="reimplied_repaired")
+        self.assertTrue(audit.prediction_metadata_matches(query, row))
+        self.assertFalse(audit.prediction_metadata_matches(query, dict(row, predicted_vol="0.21")))
 
     def test_discounted_terminal_floor_is_checked_with_nonzero_carry(self):
         value = surface()

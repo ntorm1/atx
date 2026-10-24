@@ -463,6 +463,50 @@ def terminal_floor_violations(entry):
     return problems
 
 
+def valid_query_metadata(query):
+    required = {"status", "reason", "volatility", "iv_lower", "iv_upper", "vol_convention"}
+    if not required <= query.keys():
+        return False
+    lo, hi = query["iv_lower"], query["iv_upper"]
+    if any(value is not None and (not isinstance(value, (int, float)) or
+            not math.isfinite(value) or value < 0) for value in (lo, hi)):
+        return False
+    if lo is not None and hi is not None and lo > hi:
+        return False
+    if query["status"] == "success":
+        return query["reason"] == "none" and lo is None and hi is None and \
+            query["vol_convention"] in ("fitted_curve", "reimplied_repaired")
+    if query["status"] == "price_only":
+        return query["volatility"] is None and query["vol_convention"] == "none" and \
+            query["reason"] in ("floor_vol", "flat_exercise_region", "low_vega", "unidentified_interval")
+    return False
+
+
+def prediction_metadata_matches(query, prediction):
+    if not valid_query_metadata(query):
+        return False
+    expected_status = "ok" if query["status"] == "success" else "ok_price_only"
+    if prediction.get("status") != expected_status or \
+       prediction.get("price_only_reason") != query["reason"] or \
+       prediction.get("vol_convention") != query["vol_convention"]:
+        return False
+    for exported, column in (("volatility", "predicted_vol"), ("iv_lower", "iv_lower"),
+                              ("iv_upper", "iv_upper")):
+        if column not in prediction:
+            return False
+        value = prediction[column]
+        if query[exported] is None:
+            if value != "":
+                return False
+        else:
+            try:
+                if float(value) != query[exported]:
+                    return False
+            except (TypeError, ValueError):
+                return False
+    return True
+
+
 def api_violations(report):
     audit = report.get("graded_stats", {}).get("acceptance_audit")
     if not audit or audit.get("schema") != "atx-vol-final-api-audit-v1":
@@ -526,6 +570,9 @@ def api_violations(report):
                     if query["status"] == "success" and (query.get("volatility") is None or
                             not math.isfinite(query["volatility"]) or query["volatility"] <= 0):
                         problems.append({"kind": "invalid_identified_vol", "chain_id": entry["chain_id"]})
+                    if not valid_query_metadata(query):
+                        problems.append({"kind": "invalid_api_metadata", "chain_id": entry["chain_id"],
+                                         "strike": strike, "side": side})
             entry_queries = queries
             # Local-only index: never trust an audit-supplied precomputed arb result.
             entry["_queries"] = entry_queries
@@ -753,12 +800,14 @@ def verify(args, eligibility):
         predicted = {int(row["row_id"]): row for row in csv.DictReader(stream)}
     eligible_ids = set(eligibility["eligible_row_ids"])
     row_failures = []
+    metadata_failures = []
     for row in rows:
         if row["row_id"] not in eligible_ids:
             continue
         entry = slices.get(row["chain_id"])
         if entry is None or entry["grade"] not in ("A", "B"):
             row_failures.append({"row_id": row["row_id"], "kind": "missing_published_slice"})
+            metadata_failures.append({"row_id": row["row_id"], "kind": "missing_published_slice"})
             continue
         if "_query_index" not in entry:
             entry["_query_index"] = {(q["strike"], q["side"]): q for q in entry["queries"]}
@@ -769,12 +818,17 @@ def verify(args, eligibility):
            query["price"] is None or not math.isfinite(value) or \
            abs(value - query["price"]) > price_tolerance(entry["bounds"], row["strike"]):
             row_failures.append({"row_id": row["row_id"], "kind": "prediction_not_actual_api"})
+        if query is None or not prediction_metadata_matches(query, prediction):
+            metadata_failures.append({"row_id": row["row_id"], "kind": "metadata_not_actual_api"})
     checks["every_eligible_prediction_matches_actual_api"] = not row_failures
+    checks["every_eligible_metadata_matches_actual_api"] = not metadata_failures
     result = {"schema": "atx-vol-spy-acceptance-v1", "checks": checks,
               "correctness_passed": all(checks.values()), "goal_achieved": False,
               "metrics": metrics, "api_violation_count": len(violations),
               "api_violations_first100": violations[:100], "row_failure_count": len(row_failures),
               "row_failures_first100": row_failures[:100],
+              "metadata_failure_count": len(metadata_failures),
+              "metadata_failures_first100": metadata_failures[:100],
               "eligibility_sha256": hashlib.sha256(json.dumps(eligibility, sort_keys=True).encode()).hexdigest(),
               "evidence_scope": "Static American node bounds, all-pair vertical spreads, global "
                   "convex envelopes, affine call-put, strike-specific terminal European lower "

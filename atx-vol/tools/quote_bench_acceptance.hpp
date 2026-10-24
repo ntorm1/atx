@@ -31,6 +31,9 @@ inline Json query(const QuoteSliceFit &fit, double strike, Side side) {
     result["price"] = finite(typed->price);
     result["volatility"] = finite(typed->volatility);
     result["reason"] = to_string(typed->reason);
+    result["iv_lower"] = finite(typed->iv_lower);
+    result["iv_upper"] = finite(typed->iv_upper);
+    result["vol_convention"] = to_string(typed->vol_convention);
   } else {
     result["status"] = "error";
     result["error"] = typed.error().to_string();

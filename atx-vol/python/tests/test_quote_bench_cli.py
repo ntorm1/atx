@@ -84,7 +84,8 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     source = tmp_path / "quotes.csv"
     make_quotes(source)
     policy = tmp_path / "policy.json"
-    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded"}))
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                  "serve": {"metadata": True, "floor_price_only": True}}))
     plain = invoke(binary, source, tmp_path / "plain.csv", "--policy", str(policy))
     audited = invoke(binary, source, tmp_path / "audit.csv", "--policy", str(policy),
                      "--acceptance-audit")
@@ -99,6 +100,18 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     assert len(entry["nodes"]) >= 2
     assert len(entry["queries"]) > 2 * len(entry["nodes"])
     assert all(query["status"] in ("success", "price_only") for query in entry["queries"])
+    assert all({"iv_lower", "iv_upper", "vol_convention", "reason"} <= query.keys()
+               for query in entry["queries"])
+    with (tmp_path / "audit.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    by_contract = {(query["strike"], query["side"]): query for query in entry["queries"]}
+    for strike, row in zip(range(75, 126, 2), rows):
+        query = by_contract[strike, "call"]
+        assert query["vol_convention"] == row["vol_convention"]
+        assert query["reason"] == row["price_only_reason"]
+        for key, column in (("iv_lower", "iv_lower"), ("iv_upper", "iv_upper"),
+                            ("volatility", "predicted_vol")):
+            assert query[key] == (float(row[column]) if row[column] else None)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native/launcher process receipt")

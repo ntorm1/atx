@@ -174,6 +174,10 @@ actual-API probes still diagnose record-price disagreement.
 The correctness oracle also reconstructs the common spot, market clocks/rate/cash,
 per-strike normalized carry, and exercise-horizon bounds from frozen raw inputs.
 Exported bounds cannot redefine the constraints used to judge the exported prices.
+The current query export includes IV interval endpoints and volatility conventions;
+the verifier requires well-formed actual metadata and exact CSV/API equality for
+status, reason, volatility, both interval endpoints and convention on every eligible
+row. Earlier audit files without those fields cannot satisfy this expanded gate.
 
 ## Limits and primary reference
 
