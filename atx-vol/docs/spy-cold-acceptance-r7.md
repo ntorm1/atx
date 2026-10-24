@@ -499,3 +499,62 @@ floor. A genuinely just-above-floor target passes. Additional regressions cover
 interior exercise optima with both signs of rates, floor equality, invalid/missing
 fields, changed context, all-PriceOnly evidence and independent monetary PASS
 beside floor FAIL. All 47 Python oracle tests pass.
+
+## Complete final-price candidate, 2026-10-24
+
+Source `cfb1e4363ec6545b9e31a43e9238d59dfa6ac663` uses the explicit
+`joint_feasible_mid` objective: intersect quote intervals with proven floors,
+project once across the surface, then identify each final node once. A single
+fresh-process development run on performance core 6, one worker and 0% measured
+SMT sibling activity took **1.4140127 seconds**. This is a non-ThinLTO development
+measurement, not a 100-trial or subsecond qualification.
+
+The same binary's complete API audit serves **33/33 valid expiries and
+12,866/12,866 eligible rows**, with **12,851 inside the original quotes
+(99.88341365%)**. It reports **12,850 identified IVs and 16 PriceOnly rows**.
+All identified nodes pass the approved monetary repricing budget and the new
+independent target-floor gate. Maximum cold Reference residual is
+**$0.0000314582211/share**, at most **3.14582211%** of the applicable raw budget.
+All shape, parity, calendar, API-price and metadata checks pass. Strict 1e-7 IV
+comparison has 30 diagnostic failures, separate from the approved price contract.
+
+The frozen status-comparison gate remains explicitly **failed for two rows**:
+27418697 and 27419115. Their previous targets and IVs were valid. The new targets
+are respectively about $0.0000000889 and $0.0000000195 lower and cross the existing
+zero-volatility classification band; cold Search correctly returns the reporting
+floor. Both asks were among the fifteen proven floor conflicts. They are served
+as truthful PriceOnly, not omitted or given artificial time value. An explicit,
+pinned audit-only review contract is being implemented; the strict receipt and
+original baseline remain unchanged. This candidate is not yet promoted.
+
+The clock and audit share prediction SHA256
+`892135920e749c697228fffce1e212b36c4385d47d3b6aff3bc0c02bb91ce676`.
+Binary SHA256 is `188f0a8d6e4b70c568ffe62028a6fa22ded0b1b87e967e1b0586eaec3e84fc50`;
+policy SHA256 is `ca9f258e5a7edcd059f0cb34293cda09603b36c05ffaefc3e82808ed5a373d28`.
+See `acceptance/integrated-joint-feasible-v1-audit/summary-v1.json` and
+`joint-feasible-v1-profile/manifest.json` under the r7 evidence root.
+
+Measured remaining work, rather than estimates from the old partial-service arm:
+
+| Work | Development time | Next implementation test |
+|---|---:|---|
+| Global joint calendar projection | 418.076 ms | Inspect sparse constraint/workspace/factorization costs; preserve objective and final feasibility |
+| Family construction | 216.079 ms | Measure necessary domains and preparation reuse without warm-data assumptions |
+| Native root acceptance | 164.589 ms | Avoid strict-IV work only where an independently bounded monetary candidate suffices |
+| Paired bounded-family preparation | 165.071 ms | Test one bounded candidate evaluation with explicit floor/region proof |
+| Fast candidate route | 238.224 ms | Improve candidate coverage and eliminate unnecessary inverse iterations |
+| Residual checks after native acceptance | 67.465 ms | Retain tight-budget/cold fallback; 10,662 other checks already reuse endpoint proofs |
+
+The global calendar bucket is charged to the first chain, not that expiry's
+independent fitting cost. Certification totals 732.141 ms and contains the listed
+inverse/check work; do not add that inclusive bucket again. There are exactly
+12,866 uncached final identifications and 12,866 subsequent cache hits.
+
+Integrated correctness receipts include 32 pricing, 29 quote/finalization,
+67 serving and 47 oracle tests before the public mode; the public boundary then
+passes nine CLI, 26 mode/final-price/budget and 17 archive cases. Two explicit
+external-fixture unit tests are skipped; the full native API run above supplies
+the complete SPY evidence. Owning PCH-off builds pass. Merge finding R1 is fixed
+by owned/versioned withheld support; R3 unsafe widening is blocked by typed
+archive refusal, with versioned persistence still to implement. R2 asynchronous
+publication protection is in its separate reviewed development lane.
