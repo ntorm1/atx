@@ -26,7 +26,7 @@ def summarize(source, report):
     for r, row in zip(rs, report["rows"]):
         require(row["request"] == r, "request join")
         require(type(row["origin"]) is int and row["origin"] in (0, 1, 2), "origin")
-        require(type(row["retry"]) is int and 0 <= row["retry"] <= 9, "retry")
+        require(type(row["retry"]) is int and 0 <= row["retry"] <= 8, "retry")
         require(type(row["scalar_full_proof"]) is bool, "scalar proof")
         require(row["class"] in CLASSES, "class")
         require(number(row["allowance"]) and row["allowance"] >= 0, "allowance")

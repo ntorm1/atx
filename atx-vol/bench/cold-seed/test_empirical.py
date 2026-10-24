@@ -37,7 +37,7 @@ class EmpiricalTests(unittest.TestCase):
 
     def test_structural_mutants_fail_closed(self):
         for mutate in (lambda r:r["rows"].pop(),lambda r:r["timings"].clear(),
-            lambda r:r["rows"][0].update(origin=1),lambda r:r["rows"][0].update(sigma=.251),
+            lambda r:r["rows"][0].update(retry=9),lambda r:r["rows"][0].update(origin=1),lambda r:r["rows"][0].update(sigma=.251),
             lambda r:r["rows"][0].update(boundary=99.),
             lambda r:r["rows"][0].update(allowance=0.),
             lambda r:r["rows"][0].update(**{"class":"exercise_plateau"}),

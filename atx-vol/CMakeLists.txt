@@ -325,6 +325,15 @@ target_sources(atx-vol PRIVATE
     ${ATX_VOL_BACKTEST_SOURCES}
 )
 
+# Isolated binary experiment. The public policy/default remains scalar unless
+# this explicit build switch is selected; benchmark provenance queries the actual
+# linked fitting implementation, not a separately compiled tool macro.
+option(ATX_VOL_EMPIRICAL_VECTOR_SEEDS "Research-only empirical vector seed targets" OFF)
+if(ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
+    set_property(SOURCE src/fitting/quote_slice.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS ATX_VOL_EMPIRICAL_VECTOR_SEEDS=1)
+endif()
+
 # ---- SIMD/AVX2 vectorized batch kernels (fastpath) ---------------------------
 # All src/simd/*.cpp join the library; the *_avx2.cpp translation units emit
 # AVX2+FMA intrinsics and get the ISA enabled PER-FILE (NOT library-wide) so the
@@ -1107,6 +1116,9 @@ if(ATX_BUILD_TOOLS)
     endif()
     option(ATX_VOL_BUILD_GREEK_AUDIT "Build offline Greek corpus diagnostics" OFF)
     option(ATX_VOL_CAPTURE_COLD_SEEDS "Research-only cold seed CSV observation" OFF)
+    if(ATX_VOL_CAPTURE_COLD_SEEDS AND ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
+        message(FATAL_ERROR "Scalar cold-seed capture cannot observe an empirical-vector binary")
+    endif()
     if(ATX_VOL_CAPTURE_COLD_SEEDS)
         set_property(SOURCE src/pricing/american_iv.cpp APPEND PROPERTY
             COMPILE_DEFINITIONS ATX_VOL_CAPTURE_COLD_SEEDS=1)

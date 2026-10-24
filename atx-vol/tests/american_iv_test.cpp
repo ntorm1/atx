@@ -4645,3 +4645,60 @@ TEST(AmericanIvSeedBatch, ExerciseEdgeAndSubfloorTargetsKeepScalarRefusalSemanti
     }
   }
 }
+
+TEST(AmericanIvPremium, EmpiricalColdSeedRecordsBindModeOriginAllowanceAndRequest) {
+  using namespace atx::vol;
+  if (!simd::use_avx2()) GTEST_SKIP() << "AVX2 unavailable";
+  auto geometry = prepare_al_geometry(.5, .04, .012);
+  AlSigmaQFamily family(geometry, Side::Call, 100);
+  ASSERT_TRUE(family.prepare(.05, .6, 16, .011, .013, 4));
+  auto envelope = build_family_error_envelope(family);
+  ASSERT_TRUE(envelope.covered());
+  for (auto &bound : envelope.bound_y) bound = std::max(bound, 1.0);
+  std::vector<IvNativeBatchRequest> requests;
+  for (double K : {98., 99., 100., 101., 102.})
+    requests.push_back({cold_al(100, K, .5, .25, .04, .012, Side::Call),
+        100, K, .5, .04, .012, Side::Call, 1e-7});
+  const std::vector<double> budgets(requests.size(), .001);
+  std::vector<IvPremiumPrepared> prepared(requests.size());
+  IvNativeBatchWork work;
+  iv_native_prepare_lanes(family, nullptr, requests, prepared, false, work);
+  iv_native_prepare_cold_seeds(family, &envelope, requests, budgets, prepared,
+      std::nullopt, false, work, IvPriceSeedKernel::VectorReferenceEmpirical);
+  ASSERT_EQ(work.seed_vector.vector_admitted, 4u);
+  EXPECT_EQ(work.cold_seed_attempts, 1u);
+  EXPECT_EQ(work.cold_seed_roots, 1u);
+  for (std::size_t i = 0; i < prepared.size(); ++i) {
+    ASSERT_TRUE(prepared[i].cold_seed.valid);
+    EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[i],
+        budgets[i], prepared[i], std::nullopt));
+    const auto accepted = iv_native_cold_seed_candidate(family, &envelope, requests[i],
+        budgets[i], prepared[i], std::nullopt, IvPriceSeedKernel::VectorReferenceEmpirical);
+    ASSERT_TRUE(accepted);
+    EXPECT_TRUE(same_double(*accepted, prepared[i].lane.sigma));
+  }
+  for (int field = 0; field < 9; ++field) {
+    auto p = prepared[0];
+    switch (field) {
+      case 0: p.cold_seed.kernel = IvPriceSeedKernel::ScalarReference; break;
+      case 1: p.cold_seed.origin = IvPriceSeedOrigin::ScalarReference; break;
+      case 2: p.cold_seed.allowance = 0.0; break;
+      case 3: p.cold_seed.vector_price += .01; break;
+      case 4: p.cold_seed.vector_boundary = requests[0].K; break;
+      case 5: p.cold_seed.vector_class = AlExerciseClass::ExercisePlateau; break;
+      case 6: p.cold_seed.target = std::nextafter(p.cold_seed.target, 0.0); break;
+      case 7: p.cold_seed.preparation_stamp += 1; break;
+      default: p.cold_seed.budget *= 2.0; break;
+    }
+    EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[0],
+        budgets[0], p, std::nullopt, IvPriceSeedKernel::VectorReferenceEmpirical));
+  }
+  iv_native_prepare_cold_seeds(family, &envelope, requests, budgets, prepared,
+      std::nullopt, false, work);
+  for (std::size_t i = 0; i < prepared.size(); ++i) {
+    ASSERT_TRUE(iv_native_cold_seed_candidate(family, &envelope, requests[i],
+        budgets[i], prepared[i], std::nullopt));
+    EXPECT_FALSE(iv_native_cold_seed_candidate(family, &envelope, requests[i],
+        budgets[i], prepared[i], std::nullopt, IvPriceSeedKernel::VectorReferenceEmpirical));
+  }
+}

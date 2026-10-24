@@ -2913,3 +2913,39 @@ def test_native_one_spot_types_a_stale_chain(binary, tmp_path, disposition):
         assert {row["status"] for row in far} == {"stale_spot"}
         assert all(row["predicted_price"] == "" for row in far)
         assert report["one_spot"]["chain_status_counts"] == {"rebased": 1, "stale_spot": 1}
+
+
+def test_native_seed_target_tier_matches_linked_library_and_policy_provenance(binary, tmp_path):
+    source, policy = tmp_path / "quotes.csv", tmp_path / "policy.json"
+    make_quotes(source)
+    policy.write_text(json.dumps({"schema_version": 1, "admission": "graded",
+                                 "graded": {"certificate": "box"}}))
+    result = invoke(binary, source, tmp_path / "predictions.csv", "--policy", str(policy),
+                    "--timing-detail")
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    expected = os.environ.get("ATX_QUOTE_BENCH_SEED_TIER", "ScalarReference")
+    assert expected in ("ScalarReference", "VectorReferenceEmpirical")
+    provenance = report["policy_definition"]["research_build"]
+    assert provenance == report["bench"]["build_info"]["cold_seed_target"]
+    assert provenance["cmake_option"] == "ATX_VOL_EMPIRICAL_VECTOR_SEEDS"
+    assert provenance["enabled"] is (expected == "VectorReferenceEmpirical")
+    assert provenance["target_kernel"] == expected
+    assert provenance["scalar_audit_reference"] == "AndersenLakeReference"
+    assert len(report["graded_stats"]["slices"]) == 1
+    for entry in report["graded_stats"]["slices"]:
+        timing = entry["timing"]
+        for key in ("reimply_seed_vector_requests", "reimply_seed_vector_packs",
+                    "reimply_seed_vector_lanes", "reimply_seed_vector_roots",
+                    "reimply_seed_vector_hits", "reimply_seed_scalar_fallbacks",
+                    "reimply_seed_vector_ns", "reimply_seed_vector_floor_ns",
+                    "reimply_seed_candidate_ns"):
+            assert type(timing[key]) is int and timing[key] >= 0
+        retries = timing["reimply_seed_vector_retries"]
+        assert set(retries) == {"admitted", "scalar_mode", "unsupported_scope",
+            "nonmonotone_band", "scalar_tail", "kernel_refusal", "exercise_edge",
+            "insufficient_margin", "floor_refusal"}
+        assert all(type(x) is int and x >= 0 for x in retries.values())
+        if expected == "ScalarReference":
+            assert timing["reimply_seed_vector_requests"] == 0
+            assert sum(retries.values()) == 0

@@ -137,3 +137,38 @@ failures. An all-pass component report still sets whole-fit qualification,
 generic error certification and timing qualification to false. Full scalar
 actual-API SPY acceptance and explicit research-policy wiring remain prerequisites.
 See `docs/cold-seed-vector-component-20261024.md` for the frozen development census.
+
+
+## Whole-fit research build wiring
+
+`ATX_VOL_EMPIRICAL_VECTOR_SEEDS=ON` selects the empirical tier only at the private
+repaired-node preparation and consumption sites. It defaults OFF. The linked
+fitting library supplies the tier reported under both
+`policy_definition.research_build` and `bench.build_info.cold_seed_target`; the
+tool cannot independently select a contradictory macro. The original input
+policy and its dollar budget stay unchanged. Record the source/binary/policy
+hashes plus CMake cache value and tier beside every experiment. Simultaneous
+scalar-only request capture and the empirical build are rejected by CMake.
+
+Prepared candidates retain mode, origin, empirical allowance, actual vector
+price/class/boundary and every previous exact request/model/family/envelope key.
+Scalar consumers refuse records prepared in empirical mode, including scalar
+fallbacks within that mode. Every consumer rechecks allowance, edge and residual
+conditions for vector-origin records. Existing scalar callers and default
+arguments remain scalar; the actual-API audit's cold scalar Reference exporter
+is unchanged.
+
+`reimply_cold_seed_attempts/roots/hits/ns` now continue to describe scalar proof
+work exclusively. The new `reimply_seed_vector_*` fields describe vector work,
+and named retry counts retain every rejected or tail lane. Exact scalar floor
+preparations/hits include both origins. Use `reimply_seed_candidate_ns` for the
+inclusive whole stage in either mode: it includes grouping, all owners, packing,
+publication of prepared records and destruction. Vector and floor substages are
+cross-cuts, not independent extra wall time to add to the total.
+
+Native prepared-record tests cover mode changes, origin/allowance tampering,
+changed residual/boundary/class, stale family stamp and target/budget identity.
+The focused 29-test selection passes, both build modes pass native provenance
+checks, and the five owning translation units pass PCH-off checks. These are
+implementation checks; the enabled full-SPY scalar actual-API audit is a separate
+required receipt before any workload promotion or latency claim.

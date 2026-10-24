@@ -1211,6 +1211,17 @@ struct FitTimingCounters {
   std::uint32_t reimply_cold_seed_floor_preparations{0};
   std::uint32_t reimply_cold_seed_floor_hits{0};
   std::uint64_t reimply_cold_seed_ns{0};
+  // Isolated empirical target arithmetic is never counted as scalar cold proof.
+  std::uint32_t reimply_seed_vector_requests{0};
+  std::uint32_t reimply_seed_vector_packs{0};
+  std::uint32_t reimply_seed_vector_lanes{0};
+  std::uint32_t reimply_seed_vector_roots{0};
+  std::uint32_t reimply_seed_vector_hits{0};
+  std::uint32_t reimply_seed_scalar_fallbacks{0};
+  std::array<std::uint32_t, 9> reimply_seed_vector_retries{};
+  std::uint64_t reimply_seed_vector_ns{0};
+  std::uint64_t reimply_seed_vector_floor_ns{0};
+  std::uint64_t reimply_seed_candidate_ns{0}; // inclusive mode-independent stage
   // RootAcceptanceKind / RootAcceptanceReason, exactly as deam_accept_by_* below.
   std::array<std::uint32_t, 5> reimply_accept_by_kind{};
   std::array<std::uint32_t, 9> reimply_accept_by_reason{};

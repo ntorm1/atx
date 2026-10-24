@@ -29,6 +29,7 @@
 #include "fitting/quote_slice_vol_space.hpp"
 #include "fitting/raw_price_draft.hpp"
 #include "fitting/rung_memo.hpp"
+#include "fitting/reimply_seed_mode.hpp"
 #include "fitting/slice_channel.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the hand-off and the fast path
 #include "pricing/american_iv_premium.hpp"
@@ -36,6 +37,14 @@
 #include "pricing/american_sigma_q_family.hpp"
 
 namespace atx::vol {
+
+IvPriceSeedKernel reimply_seed_kernel() noexcept {
+#if defined(ATX_VOL_EMPIRICAL_VECTOR_SEEDS)
+  return IvPriceSeedKernel::VectorReferenceEmpirical;
+#else
+  return IvPriceSeedKernel::ScalarReference;
+#endif
+}
 
 // Owned by a fit, immutable after construction. The family holder owns the geometry
 // observed by its families, so clearing the thread's fitting memo cannot dangle them.
@@ -1397,7 +1406,7 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
       iv_native_prepare_cold_seeds(*family, envelope,
           std::span<const IvNativeBatchRequest>(requests).first(native_count), budgets,
           std::span<IvPremiumPrepared>(part).first(native_count), fit.al_opts,
-          counts != nullptr, work);
+          counts != nullptr, work, reimply_seed_kernel());
       // Stable compaction preserves the original strict requests and lane values
       // for every refusal. Dollar candidates spend no eager K3 enclosure/confirm.
       strict_requests.clear();
@@ -1438,6 +1447,17 @@ std::vector<IvPremiumPrepared> prepare_reimplied_targets(const QuoteSliceFit &fi
         ft::detail::saturate(work.cold_seed_floor_preparations);
     counts->reimply_cold_seed_floor_hits += ft::detail::saturate(work.cold_seed_floor_hits);
     counts->reimply_cold_seed_ns += work.cold_seed_ns;
+    counts->reimply_seed_vector_requests += ft::detail::saturate(work.seed_vector.requests);
+    counts->reimply_seed_vector_packs += ft::detail::saturate(work.seed_vector.vector_packs);
+    counts->reimply_seed_vector_lanes += ft::detail::saturate(work.seed_vector.vector_lanes);
+    counts->reimply_seed_vector_roots += ft::detail::saturate(work.seed_vector.vector_admitted);
+    counts->reimply_seed_scalar_fallbacks += ft::detail::saturate(work.seed_vector.scalar_fallbacks);
+    static_assert(kIvPriceSeedRetryCount == 9); // counter/report vocabulary must evolve together
+    for (std::size_t i = 0; i < kIvPriceSeedRetryCount; ++i)
+      counts->reimply_seed_vector_retries[i] += ft::detail::saturate(work.seed_vector_retries[i]);
+    counts->reimply_seed_vector_ns += work.seed_vector.vector_ns;
+    counts->reimply_seed_vector_floor_ns += work.seed_vector.floor_ns;
+    counts->reimply_seed_candidate_ns += work.seed_candidate_ns;
   }
   return prepared;
 }
@@ -4171,9 +4191,11 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
         return identified(*sigma);
       }
       if (const auto sigma = iv_native_cold_seed_candidate(*family, families.q_envelope(side),
-              request, *budget, *prepared, fit.al_opts)) {
+              request, *budget, *prepared, fit.al_opts, reimply_seed_kernel())) {
         if (auto *const counts = counters::fit_timing::current_counts()) {
-          ++counts->reimply_cold_seed_hits;
+          if (prepared->cold_seed.origin == IvPriceSeedOrigin::VectorReferenceEmpirical)
+            ++counts->reimply_seed_vector_hits;
+          else ++counts->reimply_cold_seed_hits;
         }
         return identified(*sigma);
       }

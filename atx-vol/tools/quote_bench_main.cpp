@@ -10,6 +10,7 @@
 #include "bench_clocks.hpp"
 #include "core/parallel_for.hpp"
 #include "fitting/counters.hpp"
+#include "fitting/reimply_seed_mode.hpp"
 #include "fitting/deam_iv_cache.hpp"
 #include "fitting/slice_serve_record_detail.hpp" // lane H1: the fast-path audit's contract
 #include "pricing/american_iv_stream.hpp" // lane K2: --inverse-replay
@@ -461,6 +462,8 @@ double median(std::vector<double> values) {
   return values.size() % 2U ? values[mid] : 0.5 * values[mid - 1U] + 0.5 * values[mid];
 }
 
+Json seed_target_provenance();
+
 struct RunStatistics {
   std::size_t chains{};
   std::size_t fitted{};
@@ -902,6 +905,25 @@ Json timing_json(const counters::fit_timing::FitTimingCounters &t) {
           {"reimply_cold_seed_floor_preparations", t.reimply_cold_seed_floor_preparations},
           {"reimply_cold_seed_floor_hits", t.reimply_cold_seed_floor_hits},
           {"reimply_cold_seed_ns", t.reimply_cold_seed_ns},
+          {"reimply_seed_vector_requests", t.reimply_seed_vector_requests},
+          {"reimply_seed_vector_packs", t.reimply_seed_vector_packs},
+          {"reimply_seed_vector_lanes", t.reimply_seed_vector_lanes},
+          {"reimply_seed_vector_roots", t.reimply_seed_vector_roots},
+          {"reimply_seed_vector_hits", t.reimply_seed_vector_hits},
+          {"reimply_seed_scalar_fallbacks", t.reimply_seed_scalar_fallbacks},
+          {"reimply_seed_vector_ns", t.reimply_seed_vector_ns},
+          {"reimply_seed_vector_floor_ns", t.reimply_seed_vector_floor_ns},
+          {"reimply_seed_candidate_ns", t.reimply_seed_candidate_ns},
+          {"reimply_seed_vector_retries", {
+              {"admitted", t.reimply_seed_vector_retries[0]},
+              {"scalar_mode", t.reimply_seed_vector_retries[1]},
+              {"unsupported_scope", t.reimply_seed_vector_retries[2]},
+              {"nonmonotone_band", t.reimply_seed_vector_retries[3]},
+              {"scalar_tail", t.reimply_seed_vector_retries[4]},
+              {"kernel_refusal", t.reimply_seed_vector_retries[5]},
+              {"exercise_edge", t.reimply_seed_vector_retries[6]},
+              {"insufficient_margin", t.reimply_seed_vector_retries[7]},
+              {"floor_refusal", t.reimply_seed_vector_retries[8]}}},
           {"reimply_native_max_bound_iv", t.reimply_native_max_bound_iv},
           {"reimply_cache_hits", t.reimply_cache_hits},
           {"reimply_uncached", t.reimply_uncached},
@@ -1772,6 +1794,7 @@ std::vector<Prediction> run(const Arguments &args, const std::vector<InputRow> &
         {"profiles", Json::array({quote_bench_policy::profile_json(*fixed)})},
         {"symbol_overrides", Json::array()}, {"regimes", nullptr}};
   }
+  stats.policy_definition["research_build"] = seed_target_provenance();
   // B0 cold-calibration clock: the resident snapshot is handed to the fit here.
   const auto cold_start = Clock::now();
   stats.policy_load_seconds = bench::seconds_between(policy_start, cold_start);
@@ -2206,6 +2229,15 @@ double quantile(std::vector<double> values, double p) {
   const auto lo = static_cast<std::size_t>(location);
   const auto hi = std::min(lo + 1U, values.size() - 1U);
   return values[lo] + (location - static_cast<double>(lo)) * (values[hi] - values[lo]);
+}
+
+Json seed_target_provenance() {
+  const bool empirical = reimply_seed_kernel() == IvPriceSeedKernel::VectorReferenceEmpirical;
+  return {{"cmake_option", "ATX_VOL_EMPIRICAL_VECTOR_SEEDS"}, {"enabled", empirical},
+      {"target_kernel", empirical ? "VectorReferenceEmpirical" : "ScalarReference"},
+      {"scalar_audit_reference", "AndersenLakeReference"},
+      {"scope", empirical ? "Isolated empirical target tier; scalar floor/chord retained"
+                           : "Default scalar target/floor/chord proof"}};
 }
 
 void write_report(std::ostream &stream, const Arguments &args, std::size_t rows,
@@ -2817,6 +2849,7 @@ int main(int argc, char **argv) {
     bench_report["affinity"] =
         bench::affinity_json(args.affinity, args.require_pcore, cpus_before, cpus_after);
     bench_report["build_info"] = bench::build_info_json();
+    bench_report["build_info"]["cold_seed_target"] = seed_target_provenance();
     bench_report["process_identity"] = bench::process_identity_json();
     stats.bench = std::move(bench_report);
     write_report(std::cout, args, rows.size(), stats);

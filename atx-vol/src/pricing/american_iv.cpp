@@ -3572,56 +3572,119 @@ void iv_native_prepare_economic(const AlSigmaQFamily &f, const ValidatedErrorEnv
 void iv_native_prepare_cold_seeds(const AlSigmaQFamily &f,
     const ValidatedErrorEnvelope *env, std::span<const IvNativeBatchRequest> requests,
     std::span<const double> budgets, std::span<IvPremiumPrepared> out,
-    const std::optional<AlOpts> &opts, bool timed, IvNativeBatchWork &work) {
+    const std::optional<AlOpts> &opts, bool timed, IvNativeBatchWork &work,
+    IvPriceSeedKernel kernel) {
   for (auto &p : out) p.cold_seed = IvPreparedColdSeed{};
-  if (requests.size() != out.size() || budgets.size() != out.size()) return;
+  if (requests.size() != out.size() || budgets.size() != out.size() ||
+      (kernel != IvPriceSeedKernel::ScalarReference &&
+       kernel != IvPriceSeedKernel::VectorReferenceEmpirical)) return;
   const auto t0 = timed ? std::chrono::steady_clock::now()
                         : std::chrono::steady_clock::time_point{};
-  IvPriceSeedFloorCache floor_cache;
+  { // Temporary owners and packing are charged before the inclusive clock stops.
+    IvPriceSeedFloorCache floor_cache;
+    std::vector<IvPriceSeedRequest> batch;
+    std::vector<std::size_t> indices;
 #if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
-  const auto capture_batch = research::next_cold_seed_batch();
+    const auto capture_batch = research::next_cold_seed_batch();
 #endif
-  for (std::size_t i = 0; i < out.size(); ++i) {
-    const auto &rq = requests[i];
-    const auto &lane = out[i].lane;
-    const double budget = budgets[i];
-    if (out[i].economic.valid || !(budget > 0.0) || !std::isfinite(budget) ||
-        !economic_family_matches(f, env, rq, opts) ||
-        !economic_lane_matches(f, rq, lane)) continue;
-    // Restrict this ordering change to proposals admitted to bounded economic
-    // pricing. The original lane, not the downward proposal, receives cold proof.
-    const double proposed = lane.sigma - (0.5 * budget) / lane.vega;
-    if (!(proposed > kIvMin && proposed < kSigmaHi && proposed < lane.sigma) ||
-        !(proposed >= f.sigma_lo() && proposed <= f.sigma_hi()) ||
-        !(lane.sigma > kIvMin && lane.sigma < kSigmaHi &&
-          lane.sigma >= f.sigma_lo() && lane.sigma <= f.sigma_hi())) continue;
-    IvOpts seed_opts;
-    seed_opts.method = AmericanMethod::AndersenLake;
-    seed_opts.tol = rq.tol;
-    seed_opts.al_opts = opts;
-    seed_opts.refuse_non_monotone = true;
-    ++work.cold_seed_attempts;
-    const auto sigma = american_implied_vol_price_seed(rq.price, rq.S, rq.K, rq.T,
-        rq.r, rq.q, rq.side, seed_opts, budget, lane.sigma, &floor_cache);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      const auto &rq = requests[i];
+      const auto &lane = out[i].lane;
+      const double budget = budgets[i];
+      if (out[i].economic.valid || !(budget > 0.0) || !std::isfinite(budget) ||
+          !economic_family_matches(f, env, rq, opts) ||
+          !economic_lane_matches(f, rq, lane)) continue;
+      // Restrict this ordering change to proposals admitted to bounded economic
+      // pricing. The original lane, not the downward proposal, receives cold proof.
+      const double proposed = lane.sigma - (0.5 * budget) / lane.vega;
+      if (!(proposed > kIvMin && proposed < kSigmaHi && proposed < lane.sigma) ||
+          !(proposed >= f.sigma_lo() && proposed <= f.sigma_hi()) ||
+          !(lane.sigma > kIvMin && lane.sigma < kSigmaHi &&
+            lane.sigma >= f.sigma_lo() && lane.sigma <= f.sigma_hi())) continue;
+      if (kernel == IvPriceSeedKernel::VectorReferenceEmpirical) {
+        batch.push_back({rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, lane.sigma, budget, rq.side});
+        indices.push_back(i);
+        continue;
+      }
+      IvOpts seed_opts;
+      seed_opts.method = AmericanMethod::AndersenLake;
+      seed_opts.tol = rq.tol;
+      seed_opts.al_opts = opts;
+      seed_opts.refuse_non_monotone = true;
+      ++work.cold_seed_attempts;
+      const auto sigma = american_implied_vol_price_seed(rq.price, rq.S, rq.K, rq.T,
+          rq.r, rq.q, rq.side, seed_opts, budget, lane.sigma, &floor_cache);
 #if defined(ATX_VOL_CAPTURE_COLD_SEEDS)
-    research::capture_cold_seed(capture_batch, i, rq, budget, lane.sigma, opts,
-                                sigma.has_value());
+      research::capture_cold_seed(capture_batch, i, rq, budget, lane.sigma, opts,
+                                  sigma.has_value());
 #endif
-    if (!sigma) continue;
-    out[i].cold_seed = IvPreparedColdSeed{true, &f, env, env->preparation_stamp,
-        rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.tol, budget, rq.side, opts, *sigma};
-    ++work.cold_seed_roots;
+      if (!sigma) continue;
+      out[i].cold_seed = IvPreparedColdSeed{true, kernel,
+          IvPriceSeedOrigin::ScalarReference, 0.0,
+          std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
+          AlExerciseClass::UnsupportedRegime, &f, env, env->preparation_stamp,
+          rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.tol, budget, rq.side, opts, *sigma};
+      ++work.cold_seed_roots;
+    }
+    work.cold_seed_floor_preparations += floor_cache.preparations();
+    work.cold_seed_floor_hits += floor_cache.hits();
+    if (kernel == IvPriceSeedKernel::ScalarReference && timed)
+      work.cold_seed_ns += ns_since(t0);
+    if (!batch.empty()) {
+      IvOpts seed_opts;
+      seed_opts.method = AmericanMethod::AndersenLake;
+      seed_opts.al_opts = opts;
+      seed_opts.refuse_non_monotone = true;
+      // This helper performs no inverse iteration; per-request IV tolerance is
+      // nevertheless retained in each immutable consumer key below.
+      std::vector<IvPriceSeedResult> result(batch.size());
+      IvPriceSeedBatchStats stats;
+      if (american_implied_vol_price_seed_batch(batch, seed_opts, kernel, result, stats, timed)) {
+        work.cold_seed_attempts += stats.scalar_fallbacks;
+        work.cold_seed_roots += stats.scalar_admitted;
+        work.cold_seed_floor_preparations += stats.floor_preparations;
+        work.cold_seed_floor_hits += stats.floor_hits;
+        work.cold_seed_ns += stats.scalar_ns;
+        work.seed_vector.requests += stats.requests;
+        work.seed_vector.vector_packs += stats.vector_packs;
+        work.seed_vector.vector_lanes += stats.vector_lanes;
+        work.seed_vector.vector_admitted += stats.vector_admitted;
+        work.seed_vector.scalar_fallbacks += stats.scalar_fallbacks;
+        work.seed_vector.scalar_admitted += stats.scalar_admitted;
+        work.seed_vector.floor_preparations += stats.floor_preparations;
+        work.seed_vector.floor_hits += stats.floor_hits;
+        work.seed_vector.scalar_ns += stats.scalar_ns;
+        work.seed_vector.inclusive_ns += stats.inclusive_ns;
+        work.seed_vector.vector_ns += stats.vector_ns;
+        work.seed_vector.floor_ns += stats.floor_ns;
+        for (std::size_t j = 0; j < result.size(); ++j) {
+          const auto &answer = result[j];
+          ++work.seed_vector_retries[static_cast<std::size_t>(answer.retry)];
+          if (!answer.sigma) continue;
+          const std::size_t i = indices[j];
+          const auto &rq = requests[i];
+          const bool vector = answer.origin == IvPriceSeedOrigin::VectorReferenceEmpirical;
+          out[i].cold_seed = IvPreparedColdSeed{true, kernel, answer.origin,
+              vector ? answer.empirical_allowance : 0.0, answer.target_price,
+              answer.boundary, answer.exercise, &f, env, env->preparation_stamp,
+              rq.price, rq.S, rq.K, rq.T, rq.r, rq.q, rq.tol, budgets[i], rq.side, opts,
+              *answer.sigma};
+        }
+      }
+    }
   }
-  work.cold_seed_floor_preparations += floor_cache.preparations();
-  work.cold_seed_floor_hits += floor_cache.hits();
-  if (timed) work.cold_seed_ns += ns_since(t0);
+  if (timed) work.seed_candidate_ns += ns_since(t0);
 }
 
 std::optional<double> iv_native_cold_seed_candidate(const AlSigmaQFamily &f,
     const ValidatedErrorEnvelope *env, const IvNativeBatchRequest &rq, double budget,
-    const IvPremiumPrepared &prepared, const std::optional<AlOpts> &opts) noexcept {
+    const IvPremiumPrepared &prepared, const std::optional<AlOpts> &opts,
+    IvPriceSeedKernel kernel) noexcept {
   const auto &p = prepared.cold_seed;
-  if (!p.valid || !(budget > 0.0) || !std::isfinite(budget) ||
+  if (!p.valid || p.kernel != kernel ||
+      (kernel != IvPriceSeedKernel::ScalarReference &&
+       kernel != IvPriceSeedKernel::VectorReferenceEmpirical) ||
+      !(budget > 0.0) || !std::isfinite(budget) ||
       !economic_family_matches(f, env, rq, opts) ||
       !economic_lane_matches(f, rq, prepared.lane) || p.family != &f || p.envelope != env ||
       p.preparation_stamp != env->preparation_stamp ||
@@ -3631,6 +3694,22 @@ std::optional<double> iv_native_cold_seed_candidate(const AlSigmaQFamily &f,
       !same_opts(p.opts, opts) || !same_bits(p.sigma, prepared.lane.sigma) ||
       !(p.sigma > kIvMin && p.sigma < kSigmaHi) ||
       !(p.sigma >= f.sigma_lo() && p.sigma <= f.sigma_hi())) return std::nullopt;
+  if (p.origin == IvPriceSeedOrigin::ScalarReference) {
+    if (p.allowance != 0.0) return std::nullopt;
+  } else if (p.origin == IvPriceSeedOrigin::VectorReferenceEmpirical) {
+    if (kernel != IvPriceSeedKernel::VectorReferenceEmpirical ||
+        !std::isfinite(p.vector_price) || !std::isfinite(p.vector_boundary) ||
+        !(p.vector_boundary > 0.0) || p.vector_class != AlExerciseClass::Continuation)
+      return std::nullopt;
+    const double allowance = 1e-11 *
+        std::max({1.0, rq.S, rq.K, std::abs(rq.price), std::abs(p.vector_price)});
+    const double internal_spot = rq.side == Side::Call ? rq.K : rq.S;
+    const double distance = std::log(internal_spot / p.vector_boundary) /
+        (p.sigma * std::sqrt(rq.T));
+    if (!same_bits(p.allowance, allowance) || !std::isfinite(distance) ||
+        !(distance >= kAlFamilyGreekEdgeBand) ||
+        !(std::abs(p.vector_price - rq.price) + allowance <= budget)) return std::nullopt;
+  } else return std::nullopt;
   return p.sigma;
 }
 

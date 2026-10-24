@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -18,6 +19,8 @@ enum class IvPriceSeedRetry {
   None, ScalarMode, UnsupportedScope, NonmonotoneBand, Tail, KernelRefusal,
   ExerciseEdge, InsufficientMargin, FloorRefusal
 };
+inline constexpr std::size_t kIvPriceSeedRetryCount =
+    static_cast<std::size_t>(IvPriceSeedRetry::FloorRefusal) + 1;
 struct IvPriceSeedRequest {
   double price = 0.0, S = 0.0, K = 0.0, T = 0.0, r = 0.0, q = 0.0;
   double sigma = 0.0, budget = 0.0;
@@ -46,6 +49,7 @@ struct IvPriceSeedBatchStats {
 // Only full packs are vectorized; tails retain scalar arithmetic. Cold scalar
 // floor checks and nonmonotone chord semantics are mandatory. Resets results and
 // stats; false denotes invalid shape/mode, never a per-lane numerical refusal.
+// Input and output spans must be disjoint and live through the call.
 // No retained state. Allocation is limited to the existing boundary/floor owners.
 [[nodiscard]] bool american_implied_vol_price_seed_batch(
     std::span<const IvPriceSeedRequest> requests, const IvOpts &opts,
