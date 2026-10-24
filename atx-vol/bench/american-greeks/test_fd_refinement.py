@@ -35,6 +35,23 @@ def fixture():
 
 
 class RefinementTest(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('ATX_FD_EUROPEAN_CONTROL'), 'set ATX_FD_EUROPEAN_CONTROL for v2 native control')
+    def test_native_v2_roundoff_control_and_mutants(self):
+        folder=Path(os.environ['ATX_FD_EUROPEAN_CONTROL'])
+        report=json.loads((folder/'native.json').read_text())
+        corpus=json.loads((folder/'corpus.json').read_text())
+        m.base.validate_requested_ids(report,['bev-zero-call','bev-zero-put'])
+        result=m.summarize(report,corpus)
+        self.assertEqual(result['field_requests'],864)
+        self.assertEqual(result['admission_contract'],'model-regime-v2')
+        self.assertEqual({e['supported'] for row in report['cases'] for e in row['evaluations']},{495})
+        changed=copy.deepcopy(report)
+        changed['cases'][0]['evaluations'][0]['samples'][0]['exercised']=True
+        with self.assertRaises(ValueError): m.summarize(changed,corpus)
+        changed=copy.deepcopy(report)
+        changed.update(schema='atx-american-fd-refinement-v1',admission_contract='legacy-clamp-v1')
+        with self.assertRaises(ValueError): m.summarize(changed,corpus)
+
     @unittest.skipUnless(os.environ.get('ATX_FD_NATIVE_REPORT'), 'set ATX_FD_NATIVE_REPORT for native receipt')
     def test_native_receipt_and_independent_european_sample_prices(self):
         report=json.loads(Path(os.environ['ATX_FD_NATIVE_REPORT']).read_text())
@@ -156,6 +173,49 @@ class RefinementTest(unittest.TestCase):
             self.assertEqual(m.sample_regime(sample,side),'Continuation')
             sample['boundary_required']=not required
             with self.assertRaises(ValueError): m.sample_regime(sample,side)
+
+    def test_v2_european_roundoff_and_historical_v1_are_distinct(self):
+        sample=dict(model=[118.744054000552,100.,.0082135523613963042,.25,0.,0.],
+            price=18.744054000551998,internal_boundary=None,boundary_required=False,
+            exercised=False,evaluated=True)
+        self.assertEqual(m.sample_regime(sample,'call','model-regime-v2'),'Continuation')
+        sample['internal_boundary']=200.
+        with self.assertRaises(ValueError): m.sample_regime(sample,'call','model-regime-v2')
+        sample['internal_boundary']=None
+        with self.assertRaises(ValueError): m.sample_regime(sample,'call')
+        sample['exercised']=True
+        self.assertEqual(m.sample_regime(sample,'call'),'Exercised')
+        with self.assertRaises(ValueError): m.sample_regime(sample,'call','model-regime-v2')
+        sample['model'][4]=-.0001
+        sample.update(boundary_required=True,internal_boundary=105.0882830886497)
+        self.assertEqual(m.sample_regime(sample,'call','model-regime-v2'),'Exercised')
+
+    def test_v2_preserves_degenerate_and_american_clamps(self):
+        for model in [[90.,100.,1e-12,.2,0.,0.],[90.,100.,.5,1e-8,0.,0.],
+                      [90.,100.,.5,.2,.03,.01]]:
+            required=model[2]>1e-12 and model[3]>1e-8
+            sample=dict(model=model,price=10.,internal_boundary=80. if required else None,
+                        boundary_required=required,exercised=True,evaluated=True)
+            self.assertEqual(m.sample_regime(sample,'put','model-regime-v2'),'Exercised')
+
+    def test_versioned_report_contract_is_required_and_preserves_v1_summary(self):
+        report,corpus=fixture()
+        old=m.summarize(report,corpus)
+        self.assertEqual(old['schema'],'atx-american-fd-refinement-summary-v1')
+        self.assertNotIn('admission_contract',old)
+        report['schema']='atx-american-fd-refinement-v2'
+        with self.assertRaises(ValueError): m.summarize(report,corpus)
+        report['admission_contract']='model-regime-v2'
+        new=m.summarize(report,corpus)
+        self.assertEqual(new['schema'],'atx-american-fd-refinement-summary-v2')
+        self.assertEqual(new['admission_contract'],'model-regime-v2')
+        self.assertEqual(new['field_requests'],432)
+        self.assertEqual(new['cases'],old['cases'])
+        for schema,admission in [('atx-american-fd-refinement-v2','legacy-clamp-v1'),
+                                 ('atx-american-fd-refinement-v1','model-regime-v2'),
+                                 ('unknown','model-regime-v2')]:
+            report.update(schema=schema,admission_contract=admission)
+            with self.assertRaises(ValueError): m.summarize(report,corpus)
 
 
 if __name__ == '__main__':

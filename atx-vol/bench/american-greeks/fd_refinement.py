@@ -24,6 +24,10 @@ OFFSETS = [[0,0,0,0], [1,0,0,0], [-1,0,0,0], [0,1,0,0], [0,-1,0,0],
            [1,0,0,1], [-1,0,0,1], [1,0,0,-1], [-1,0,0,-1]]
 REASONS = ['NotRequested','ComputedEstimate','Exercised','UnsupportedAxis','StencilCrossing','Nonfinite']
 require, finite = base.require, base.finite
+LEGACY_ADMISSION = 'legacy-clamp-v1'
+MODEL_ADMISSION = 'model-regime-v2'
+SCHEMA_ADMISSION = {'atx-american-fd-refinement-v1': LEGACY_ADMISSION,
+                    'atx-american-fd-refinement-v2': MODEL_ADMISSION}
 
 
 def identities():
@@ -62,7 +66,8 @@ def reconstruct(samples, h, rho_forward, time_forward):
     return out
 
 
-def sample_regime(sample, side):
+def sample_regime(sample, side, admission=LEGACY_ADMISSION):
+    require(admission in (LEGACY_ADMISSION,MODEL_ADMISSION), 'admission contract')
     require(len(sample['model'])==6 and all(finite(x) for x in sample['model']), 'sample model')
     require(all(type(sample[k]) is bool for k in ['boundary_required','exercised','evaluated']), 'sample booleans')
     S,K,T,sigma,r,q = sample['model']
@@ -73,9 +78,17 @@ def sample_regime(sample, side):
     p,b = sample['price'],sample['internal_boundary']
     require(p is None or finite(p), 'sample price representation')
     require(b is None or finite(b), 'boundary representation')
+    if admission==MODEL_ADMISSION and not sample['boundary_required']:
+        require(b is None, 'unrequired boundary must be absent')
     valid = finite(p) and (not sample['boundary_required'] or (finite(b) and b>0))
     intrinsic = K-S if side=='put' else S-K
-    exercised = valid and intrinsic>0 and ((finite(b) and (S if side=='put' else K)<=b) or p<=intrinsic)
+    # V1 retains the original recorded clamp semantics. New live AL European
+    # samples are unfloored Black evaluations: rounded intrinsic equality is
+    # not an active exercise clamp. Degenerate and American cases are unchanged.
+    european = (T>1e-12 and sigma>1e-8 and
+                ((rate==0 and yield_>=0) or (rate<0 and rate<=yield_)))
+    exercised = (valid and not (admission==MODEL_ADMISSION and european) and
+                 intrinsic>0 and ((finite(b) and (S if side=='put' else K)<=b) or p<=intrinsic))
     require(sample['exercised']==exercised, 'price/boundary exercise evidence')
     return ('Exercised' if exercised else 'Continuation') if valid else 'Nonfinite'
 
@@ -95,7 +108,7 @@ def european_greeks(c):
         charm=q*dq*n1-dq*density*(2*(r-q)*T-d2*v*root)/(2*T*v*root))
 
 
-def validate_evaluation(e, c):
+def validate_evaluation(e, c, admission=LEGACY_ADMISSION):
     profile,design,scale = e['profile'],e['design'],e['scale']
     require((profile,design,scale) in identities() and type(scale) is float, 'evaluation identity')
     require(e['options']==PROFILES[profile] and type(e['options']['explicit']) is bool, 'option identity')
@@ -124,7 +137,7 @@ def validate_evaluation(e, c):
         else:
             require(not (stopped and sample['evaluated']), 'sample after short circuit')
             stopped = stopped or not sample['evaluated']
-        regimes.append(sample_regime(sample,c['side']))
+        regimes.append(sample_regime(sample,c['side'],admission))
         if i in aliases:
             require({k:v for k,v in sample.items() if k!='evaluated'} ==
                     {k:v for k,v in samples[aliases[i]].items() if k!='evaluated'}, 'alias evidence')
@@ -172,7 +185,9 @@ def validate_evaluation(e, c):
 
 
 def summarize(report, corpus, reference=None):
-    require(report['schema']=='atx-american-fd-refinement-v1', 'schema')
+    require(report['schema'] in SCHEMA_ADMISSION, 'schema')
+    admission=SCHEMA_ADMISSION[report['schema']]
+    require(report.get('admission_contract',LEGACY_ADMISSION)==admission, 'schema admission contract')
     for key in ['qualified','latency_qualified','warm_start','reference_independent_method']:
         require(report[key] is False, 'unqualified scope')
     require(report['derivative_tolerances'] is None and report['continuous_carry_only'] is True and
@@ -204,7 +219,7 @@ def summarize(report, corpus, reference=None):
                 reference_fields[p]=[base.derivatives(level) for level in refs[cid]['references'][p]['stencils']]
         out=[]
         for e in entries:
-            reconstruction=validate_evaluation(e,c)
+            reconstruction=validate_evaluation(e,c,admission)
             key=f"{e['profile']}/{e['design']}/{e['scale']}"
             tally=totals.setdefault(key,dict(requested=0,supplied=0,reasons=Counter(),work=Counter()))
             tally['work'].update(e['work'])
@@ -258,12 +273,15 @@ def summarize(report, corpus, reference=None):
         details.append(dict(input=c,evaluations=out,trends=trends))
     for tally in totals.values():
         tally['reasons']=dict(tally['reasons']); tally['work']=dict(tally['work'])
-    return dict(schema='atx-american-fd-refinement-summary-v1',case_count=len(details),
+    result = dict(schema='atx-american-fd-refinement-summary-v1',case_count=len(details),
         field_requests=sum(t['requested'] for t in totals.values()),qualified=False,derivative_tolerances=None,
         latency_qualified=False,reference_independent_method=False,
         shock_convention=dict(spot_fraction=.001,calendar_seconds=60,year_seconds=31536000,
                               volatility=.0001,rate=.0001,note='Taylor contribution differences, not full P&L'),
         totals=totals,cases=details)
+    if admission==MODEL_ADMISSION:
+        result.update(schema='atx-american-fd-refinement-summary-v2',admission_contract=admission)
+    return result
 
 
 def run(binary, output, selection, reference):

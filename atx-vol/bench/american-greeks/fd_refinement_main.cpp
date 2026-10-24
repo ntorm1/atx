@@ -120,7 +120,8 @@ int main(int argc,char **argv) {
       rows.push_back({{"input",c},{"evaluations",entries}});
       std::cout<<c.at("id").get<std::string>()<<" complete\n"<<std::flush;
     }
-    Json report={{"schema","atx-american-fd-refinement-v1"},{"case_count",rows.size()},
+    Json report={{"schema","atx-american-fd-refinement-v2"},
+      {"admission_contract","model-regime-v2"},{"case_count",rows.size()},
       {"input_case_count",all.size()},{"selected_ids",selected},{"cases",rows},
       {"convention",corpus.at("convention")},{"derivative_tolerances",nullptr},
       {"qualified",false},{"latency_qualified",false},{"warm_start",false},
