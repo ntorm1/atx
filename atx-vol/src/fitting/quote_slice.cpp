@@ -1618,11 +1618,15 @@ void publish_identification(QuoteSliceFit &fit, QuoteSliceRow &row,
 // A Success row serving its unmoved node's curve volatility above the floor is the
 // query's FittedCurve answer by construction, so it is not classified again. Runs last
 // in certify_and_serve and commit_calendar_repair, after moved_nodes is final.
-void align_with_query(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes) {
+// `identified` marks rows whose CURRENT price has already been classified under
+// PriceOnly. A repair's legacy inversion cannot set it: the query has stricter rules.
+void align_with_query(QuoteSliceFit &fit, std::span<const QuoteSliceQuote> quotes,
+                      std::span<const std::uint8_t> identified) {
   if (!fit.prices || !fit.curve) return;
   const auto nodes = fit.prices->nodes();
   const std::size_t rows = std::min(quotes.size(), fit.rows.size());
   for (std::size_t i = 0; i < rows; ++i) {
+    if (i < identified.size() && identified[i] != 0u) continue;
     QuoteSliceRow &row = fit.rows[i];
     const bool success = row.evaluation_status == QuoteSliceEvaluationStatus::Success;
     if (!success && row.evaluation_status != QuoteSliceEvaluationStatus::PriceOnly) continue;
@@ -1922,6 +1926,7 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
   }
   out.prices = std::move(accepted);
   out.fit_status = QuoteSliceFitStatus::Success;
+  std::vector<std::uint8_t> identified(quotes.size(), 0u);
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     const auto &quote = quotes[i];
     auto &row = out.rows[i];
@@ -1963,18 +1968,20 @@ void certify_and_serve(QuoteSliceFit &out, std::span<const QuoteSliceQuote> quot
       publish_identification(
           out, row, detail::reimplied_vol(out, quote.strike, quote.side, *price, out.floor_policy),
           QuoteSliceVolConvention::ReimpliedRepaired, node, bit, strikes.size());
+      identified[i] = out.floor_policy == QuoteSliceFloorPolicy::PriceOnly ? 1u : 0u;
     } else if (out.floor_policy == QuoteSliceFloorPolicy::PriceOnly && is_node &&
                detail::at_vol_floor(row.fitted_iv)) {
       // The curve's own volatility at or below the floor is a bound, not an identified
       // volatility of the served price (QuoteSliceFloorPolicy::PriceOnly).
       publish_identification(out, row, detail::floor_vol(out, quote.strike, quote.side, *price),
                              QuoteSliceVolConvention::FittedCurve, node, bit, strikes.size());
+      identified[i] = 1u;
     }
   }
   if (std::any_of(repaired.begin(), repaired.end(), [](std::uint8_t m) { return m != 0u; })) {
     out.moved_nodes = std::move(repaired);
   }
-  align_with_query(out, quotes);
+  align_with_query(out, quotes, identified);
   // Lane H1 (phase B): hand the families this certification read to the serving record's
   // builder (serve_build, off the fit clock). Nothing served changes; no families, none.
   detail::stamp_serve_handoff(out, families);
@@ -2515,6 +2522,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
   strikes.reserve(nodes.size());
   for (const auto &node : nodes) strikes.push_back(node.strike);
   auto &produced = fit.diagnostics.prices_produced;
+  std::vector<std::uint8_t> identified(quotes.size(), 0u);
   for (std::size_t i = 0; i < quotes.size(); ++i) {
     auto &row = fit.rows[i];
     if (row.evaluation_status != QuoteSliceEvaluationStatus::Success &&
@@ -2531,6 +2539,9 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
       if (produced > 0) --produced; // the row no longer carries a price
       continue;
     }
+    // Unchanged prices retain their earlier query classification, even when a
+    // different contract moved in this calendar pass.
+    identified[i] = row.fitted_price == *price ? 1u : 0u;
     row.fitted_price = *price;
     if (row.evaluation_status == QuoteSliceEvaluationStatus::PriceOnly) continue; // final
     const auto at = std::lower_bound(strikes.begin(), strikes.end(), quote.strike);
@@ -2542,6 +2553,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
       publish_identification(
           fit, row, detail::reimplied_vol(fit, quote.strike, quote.side, *price, fit.floor_policy),
           QuoteSliceVolConvention::ReimpliedRepaired, node, bit, nodes.size());
+      identified[i] = fit.floor_policy == QuoteSliceFloorPolicy::PriceOnly ? 1u : 0u;
     }
   }
   // Union with any earlier (convexity) repair: both leave nodes off the curve.
@@ -2549,7 +2561,7 @@ void commit_calendar_repair(QuoteSliceFit &fit, std::span<const QuoteSliceQuote>
     if (fit.moved_nodes.size() != moved.size()) fit.moved_nodes.assign(moved.size(), 0);
     for (std::size_t i = 0; i < moved.size(); ++i) fit.moved_nodes[i] |= moved[i];
   }
-  align_with_query(fit, quotes); // a PriceOnly row's reason follows its refreshed price
+  align_with_query(fit, quotes, identified); // changed PriceOnly prices get fresh reasons
 }
 
 bool valid_recheck(QuoteSliceNondividendRecheck recheck) noexcept {

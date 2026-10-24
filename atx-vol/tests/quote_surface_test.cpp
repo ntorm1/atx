@@ -1163,6 +1163,46 @@ TEST(QuoteSliceBoxCertificate, BoxCalendarRepairLiftsACrossingInsideTheQuotesWit
   EXPECT_TRUE(far.moved_nodes.empty());
 }
 
+TEST(QuoteSliceChannel, TypedCalendarRepairIdentifiesEachChangedPriceOnlyOnce) {
+  // A parallel lift changes every node without changing strike shape. Publishing the
+  // moved rows and aligning their public query labels must share the typed inversion.
+  const auto c = chain(0.5, 0.25, 0.0, 0.05, 80, 120, 5);
+  QuoteSliceConfig config;
+  config.floor_policy = QuoteSliceFloorPolicy::PriceOnly;
+  auto fit = fit_quote_slice(c.market, c.quotes, config);
+  ASSERT_TRUE(fit && fit->fit_status == QuoteSliceFitStatus::Success);
+  const AmericanPriceSlice floor = shifted_slice(*fit, 0.002);
+  const std::array<const AmericanPriceSlice *, 1> earlier{&floor};
+  namespace timing = counters::fit_timing;
+  timing::ChainRecorder repair;
+  {
+    const timing::ChainScope scope(&repair);
+    ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  }
+  timing::ChainRecorder queries;
+  {
+    const timing::ChainScope scope(&queries);
+    for (std::size_t i = 0; i < c.quotes.size(); ++i) {
+      const auto answer = query_quote_slice(*fit, c.quotes[i].strike, c.quotes[i].side);
+      ASSERT_TRUE(answer);
+      ASSERT_EQ(answer->status, QuoteSliceEvaluationStatus::Success) << i;
+      EXPECT_EQ(answer->volatility, fit->rows[i].fitted_iv) << i;
+      EXPECT_EQ(answer->price, fit->rows[i].fitted_price) << i;
+      EXPECT_EQ(answer->vol_convention, vol_convention(fit->rows[i])) << i;
+    }
+  }
+  ASSERT_GT(queries.result().iv_newton_iters, 0u);
+  EXPECT_EQ(repair.result().iv_newton_iters, queries.result().iv_newton_iters);
+  EXPECT_EQ(repair.result().al_price_calls, queries.result().al_price_calls);
+  timing::ChainRecorder unchanged;
+  {
+    const timing::ChainScope scope(&unchanged);
+    ASSERT_TRUE(repair_quote_slice_calendar(*fit, c.quotes, earlier, {}, 1.0));
+  }
+  EXPECT_EQ(unchanged.result().iv_newton_iters, 0u);
+  EXPECT_EQ(unchanged.result().al_price_calls, 0u);
+}
+
 TEST(QuoteSliceChannel, RejectsAnInvalidRepairOrDominanceConfiguration) {
   const auto c = chain(0.5, 0.25, 0.0, 0.02);
   const std::vector<Chain> one{c};
