@@ -231,7 +231,9 @@ TEST(FitRiskProbe, ShadowClockReproducesFitCarry) {
   for (const auto model : {QuoteSliceDividendModel::AggregateFundingPresentValue,
                            QuoteSliceDividendModel::AggregatePresentValue,
                            QuoteSliceDividendModel::ContinuousYield}) {
-    const QuoteSliceMarket market{spot, Tv, Tc, rate, yield, pv};
+    // The continuous-yield model refuses a cash PV (it cannot ignore one): zero it there.
+    const double cash = model == QuoteSliceDividendModel::ContinuousYield ? 0.0 : pv;
+    const QuoteSliceMarket market{spot, Tv, Tc, rate, yield, cash};
     const double r_v = fp::shadow_rate(market);
     const double q_v = fp::shadow_yield(market, yield, model);
     std::vector<QuoteSliceQuote> quotes;
@@ -249,6 +251,8 @@ TEST(FitRiskProbe, ShadowClockReproducesFitCarry) {
     const auto fit = fit_quote_surface(expiries, config);
     ASSERT_TRUE(fit.has_value()) << fit.error().to_string();
     ASSERT_EQ(fit->size(), 1u);
+    ASSERT_TRUE((*fit)[0].refusal.empty())
+        << (*fit)[0].refusal << ": " << (*fit)[0].error << " / " << (*fit)[0].fit.fit_error;
     const QuoteSliceDiagnostics &diag = (*fit)[0].fit.diagnostics;
     EXPECT_TRUE(same_bits(q_v, diag.effective_yield))
         << static_cast<int>(model) << ": " << q_v << " vs " << diag.effective_yield;

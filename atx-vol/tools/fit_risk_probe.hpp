@@ -56,6 +56,9 @@ inline constexpr int kProbeSchemaVersion = 1;
 // max(kRepriceRel * P_predicted, kRepriceAbs) (design §4 note 6, `reprice_mismatch`).
 inline constexpr double kRepriceRel = 1.0e-6;
 inline constexpr double kRepriceAbs = 1.0e-8;
+// The reprice gap is also stated in vol bp (|dP| / vega) where vega is at least this: a
+// deep-wing row with a vanishing vega has no meaningful vol-space gap.
+inline constexpr double kRepriceVegaFloor = 1.0e-6;
 // The shadow clock's rounding bound, asserted per expiry: |T' - T_v| <= this.
 inline constexpr double kShadowClockTolerance = 1.0e-12;
 // American slack of the call-put delta check: |(Dc - Dp) - exp(-q T)| above this, with
@@ -190,7 +193,7 @@ struct ProbeRow {
   double theta{0.0};           // shadow-clock theta (variance time); not a calendar theta
   double identity_price{0.0};  // cold price when the cold kernel ran, else `price`
   double reprice_abs{0.0};     // |identity_price - predicted_price|; NaN unless Ok
-  double reprice_vol_bp{0.0};  // reprice_abs / vega in vol bp; NaN unless vega > 0
+  double reprice_vol_bp{0.0};  // reprice_abs / vega in vol bp; NaN unless vega >= floor
   double T{0.0};               // shadow T' (variance years)
   double rate{0.0};            // variance-clock rate
   double q{0.0};               // variance-clock yield
