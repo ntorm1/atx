@@ -226,3 +226,27 @@ an unexpected expiry fanout. ThinLTO performance qualification is still pending.
 Independent review found and reproduced a former qualification bug: one native
 50-second trial could pass under a summary claiming 100 trials of 0.5 seconds.
 The joined evidence checks above and adversarial regression now reject this case.
+
+## Integrated full-surface correctness result
+
+Root commit `2362f6aa` passes the independent actual-API correctness gate in
+`acceptance/integrated-full-v1-audit/verification.json`: all 33 valid expiries and
+12,866 eligible rows are served, with 12,851 inside the original boxes
+(99.88341365%). The 15 departures are exactly the previously proved direct
+terminal-floor conflicts. There are zero raw-model, shape, parity, calendar,
+analytical between-node terminal-floor or CSV/API price failures.
+
+The audit covers 6,433 price nodes and 62,494 actual side/strike queries, with no
+attached serving record. All 12,866 actual node statuses, reasons and returned
+volatilities also agree with CSV metadata (`metadata-verification.json`). There
+are 12,183 identified volatilities and 683 price-only rows: 16 floor intervals,
+610 low-vega cases and 57 unidentified intervals. CSV interval structure passes;
+the current actual-query export does not include interval endpoints or volatility
+conventions, so exact API/CSV equality for those fields is not asserted here.
+
+Binary SHA256: `004993da5a846dce39f1d0c1177b767ea3cb9268459a36678b58548a46a8b9c3`.
+Prediction SHA256: `2be0eb424dbd04e0a9173c7f5997d6e5b7c67e8c8d2435f54792af75878568fc`.
+The prediction bytes match the unaudited development profile exactly. Its
+21.217-second development cold clock is not a qualifying ThinLTO performance
+result; the audit's approximately 60.3-second clock includes expensive query
+verification. The sub-second goal remains unachieved.
