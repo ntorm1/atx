@@ -633,11 +633,14 @@ struct ExpiryPool {
   }
   const std::size_t start = static_cast<std::size_t>(rng() % pools.size());
   const std::size_t bound = pools.size() * (run.end - run.begin + 1);
-  // Sides alternate across the uid's picks (not per expiry), so even a quota no larger
-  // than the expiry count holds both calls and puts.
+  // The side is chosen per pool: (rank + picks) % 2. Inside a pool the sides alternate,
+  // so every |delta| target is taken as a call AND a put; the first pass over the pools
+  // (picks == 0) alternates across them, so even a quota no larger than the expiry
+  // count holds both calls and puts.
   for (std::size_t iter = 0; picked.size() < quota && iter < bound; ++iter) {
-    ExpiryPool &pool = pools[(start + iter) % pools.size()];
-    if (const auto r = pick_one(b, pool, picked.size() % 2); r.has_value()) {
+    const std::size_t rank = iter % pools.size();
+    ExpiryPool &pool = pools[(start + rank) % pools.size()];
+    if (const auto r = pick_one(b, pool, (rank + pool.picks) % 2); r.has_value()) {
       picked.push_back(*r);
     }
   }
@@ -658,6 +661,19 @@ Result<BenchBook> select_bench_book(const SpiderRockBucket &bucket, const RiskBe
                                     std::mt19937_64 &rng) {
   if (bucket.size() == 0) {
     return Err(ErrorCode::InvalidArgument, "select_bench_book: empty bucket");
+  }
+  if (args.underliers == 0) {
+    return Err(ErrorCode::InvalidArgument, "select_bench_book: underliers must be >= 1");
+  }
+  // Every column the selector reads must cover every row (market_state_from_bucket
+  // accepts empty vendor columns, so a legal bucket can lack them).
+  const std::size_t n = bucket.size();
+  if (bucket.uid.size() != n || bucket.expiry_ns.size() != n || bucket.side.size() != n ||
+      bucket.strike.size() != n || bucket.vendor_delta.size() != n || bucket.bid.size() != n ||
+      bucket.ask.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "select_bench_book: uid / expiry / side / strike / vendor delta / bid / ask "
+               "columns must all have one value per row");
   }
   ATX_TRY(std::vector<UidRun> runs, uid_runs(bucket));
   std::stable_sort(runs.begin(), runs.end(), [](const UidRun &a, const UidRun &b) {

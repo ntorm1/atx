@@ -317,15 +317,19 @@ void summarize(RiskBenchReport &report);
 //            per uid, eligible rows have |vendor_delta| in [0.05, 0.95], sigma in
 //            (0.01, 3.0] (the licensed drop carries penny-name srVol >= 5 rows) and a
 //            two-sided quote (bid > 0, ask >= bid); picks go round-robin over the
-//            uid's expiries (starting at an rng-chosen one), sides alternating across
-//            the uid's picks, each pick the unused contract nearest a cycling |delta|
+//            uid's expiries (starting at an rng-chosen one); the side alternates inside
+//            each expiry (call and put at every |delta| target) and across expiries on
+//            the first pass (so a quota <= the expiry count still holds both sides);
+//            each pick is the unused contract nearest the expiry's cycling |delta|
 //            target grid;
 //            qty uniform in {-10..-1, 1..10}, multiplier 100, ids 1..n;
 //   shares   one leg per uid for the first min(args.shares, n_uids) uids, qty =
 //            -round(sum(qty * 100 * vendor_delta) / 100) * 100 (100 when that is 0),
 //            ids continuing after the options.
 // A uid with fewer eligible rows than its quota contributes what it has
-// (`shortfall` counts the gap). InvalidArgument when the bucket is empty.
+// (`shortfall` counts the gap). InvalidArgument when the bucket is empty, when
+// `args.underliers` is 0, or when a column the selector reads (uid, expiry_ns, side,
+// strike, vendor_delta, bid, ask) does not have one value per row.
 struct BenchBook {
   std::vector<OptionLeg> options;
   std::vector<ShareLeg> shares;

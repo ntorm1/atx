@@ -30,12 +30,30 @@
 #include "atx/vol/api/marketdata/spiderrock_store.hpp"
 #include "risk_bench.hpp"
 
+#if defined(_WIN32)
+#include <process.h> // _getpid: a private scratch dir per test process
+#else
+#include <unistd.h> // getpid
+#endif
+
 namespace {
 
 namespace fs = std::filesystem;
 namespace rb = atx::vol::riskbench;
 using atx::vol::ErrorCode;
 using atx::vol::Side;
+
+// Per-process suffix for scratch directories: ctest runs every test of a suite in its
+// own process, so a fixed name would let one process's remove_all() delete another's
+// store mid-read (atx-test-scratch already gives each process a private TEMP; this
+// keeps the fixture safe in a binary that does not link it).
+[[nodiscard]] std::string process_tag() {
+#if defined(_WIN32)
+  return std::to_string(::_getpid());
+#else
+  return std::to_string(::getpid());
+#endif
+}
 
 [[nodiscard]] atx::vol::Result<rb::RiskBenchArgs> parse(std::vector<const char *> argv) {
   argv.insert(argv.begin(), "atx-vol-risk-bench");
@@ -143,7 +161,8 @@ TEST(RiskBenchArgs, DumpLegsFlags) {
 class RiskBenchBook : public ::testing::Test {
 protected:
   static void SetUpTestSuite() {
-    root_ = std::make_unique<fs::path>(fs::temp_directory_path() / "atx-risk-bench-book");
+    root_ = std::make_unique<fs::path>(fs::temp_directory_path() /
+                                       ("atx-risk-bench-book-" + process_tag()));
     std::error_code ec;
     fs::remove_all(*root_, ec);
     atx::vol::SyntheticSpiderRockSpec spec;
@@ -220,6 +239,17 @@ TEST_F(RiskBenchBook, SelectsRequestedCounts) {
     EXPECT_EQ(n, 20u) << "uid " << uid;
     EXPECT_GE(expiries[uid].size(), 4u) << "uid " << uid;
   }
+  // Sides alternate inside each expiry: with a quota of 20 over 8 expiries every
+  // expiry is visited at least twice, so each one holds a call and a put (each |delta|
+  // target is taken on both sides, not twice on one).
+  std::map<std::pair<std::uint32_t, std::int64_t>, std::set<Side>> sides;
+  for (const atx::vol::OptionLeg &leg : book->options) {
+    sides[{leg.uid, leg.expiry_ns}].insert(leg.side);
+  }
+  for (const auto &[key, s] : sides) {
+    EXPECT_EQ(s.size(), 2u) << "uid " << key.first << " expiry " << key.second
+                            << " holds one side only";
+  }
   for (const atx::vol::ShareLeg &s : book->shares) {
     EXPECT_TRUE(ids.insert(s.id).second) << "share id collides " << s.id;
   }
@@ -231,14 +261,45 @@ TEST_F(RiskBenchBook, SelectsRequestedCounts) {
   EXPECT_EQ(uneven->uids.size(), 6u);
   EXPECT_EQ(uneven->options.size(), 13u);
   EXPECT_TRUE(uneven->shares.empty());
-  // A quota equal to the expiry count (8) still spans both sides: sides alternate
-  // across a uid's picks, not per expiry.
+  // A quota equal to the expiry count (8) still spans both sides: the first pass over
+  // the expiries alternates the side from one expiry to the next.
   std::mt19937_64 rng3{5};
   const auto thin = rb::select_bench_book(*bucket_, args(6, 48, 0), rng3);
   ASSERT_TRUE(thin.has_value());
   EXPECT_EQ(thin->options.size(), 48u);
   EXPECT_EQ(thin->uids_with_both_sides, 6u);
   EXPECT_GE(thin->min_expiries_per_uid, 4u);
+}
+
+TEST_F(RiskBenchBook, RejectsZeroUnderliers) {
+  ASSERT_NE(bucket_, nullptr);
+  std::mt19937_64 rng{1};
+  const auto book = rb::select_bench_book(*bucket_, args(0, 100, 5), rng);
+  ASSERT_FALSE(book.has_value());
+  EXPECT_EQ(book.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST_F(RiskBenchBook, RejectsShortColumns) {
+  ASSERT_NE(bucket_, nullptr);
+  // market_state_from_bucket accepts empty vendor columns, so such a bucket is legal
+  // input elsewhere; the book selector reads them and must refuse, not read past them.
+  const auto refused = [&](const atx::vol::SpiderRockBucket &b) {
+    std::mt19937_64 rng{1};
+    const auto book = rb::select_bench_book(b, args(5, 100, 5), rng);
+    return !book.has_value() && book.error().code() == ErrorCode::InvalidArgument;
+  };
+  atx::vol::SpiderRockBucket no_delta = *bucket_;
+  no_delta.vendor_delta.clear();
+  EXPECT_TRUE(refused(no_delta));
+  atx::vol::SpiderRockBucket short_bid = *bucket_;
+  short_bid.bid.pop_back();
+  EXPECT_TRUE(refused(short_bid));
+  atx::vol::SpiderRockBucket short_ask = *bucket_;
+  short_ask.ask.resize(3);
+  EXPECT_TRUE(refused(short_ask));
+  atx::vol::SpiderRockBucket short_strike = *bucket_;
+  short_strike.strike.pop_back();
+  EXPECT_TRUE(refused(short_strike));
 }
 
 TEST_F(RiskBenchBook, SharesHedgeVendorDelta) {
