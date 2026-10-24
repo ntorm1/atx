@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -155,6 +156,106 @@ TEST(ChainTickCached, HappyPathTickAllocatesNothing) {
   const std::uint64_t n = atx::vol::testkit::count_allocations(
       [&] { (void)refresh_chain_cached(101.0, v, cc, ov); });
   EXPECT_EQ(n, 0u);
+}
+
+constexpr auto kTickFields = GreekFieldMask::Price | GreekFieldMask::Delta |
+    GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+
+TEST(ChainTickAvailability, CachedAndFallbackUseActualProducerAndResetReusedRows) {
+  SmallChain c = make_chain();
+  const AmericanCorrectionCaches cc{nullptr, &*caches().put};
+  Outputs out(c.strike.size()), plain(c.strike.size());
+  std::vector<GreekFieldMask> requested(c.strike.size(), GreekFieldMask::All);
+  std::vector<GreekFieldMask> supported(c.strike.size(), GreekFieldMask::All);
+  auto view = out.view();
+  view.requested = requested;
+  view.supported = supported;
+  ASSERT_TRUE(refresh_chain_cached(100., c.view(), cc, plain.view()));
+  const auto allocations = atx::vol::testkit::count_allocations(
+      [&] { (void)refresh_chain_cached(100., c.view(), cc, view); });
+  EXPECT_EQ(allocations, 0u);
+  for (std::size_t i = 0; i < c.strike.size(); ++i) {
+    const auto g = american_greeks(100., c.strike[i], c.expiry[i], c.sigma[i],
+        c.rate[i], c.carry[i], c.side[i], cc.for_side(c.side[i]));
+    ASSERT_TRUE(g);
+    EXPECT_EQ(requested[i], kTickFields);
+    EXPECT_EQ(supported[i], g->supported & kTickFields);
+    EXPECT_EQ(out.status[i], plain.status[i]);
+    EXPECT_TRUE(bits_equal(out.price[i], plain.price[i]));
+    EXPECT_TRUE(bits_equal(out.delta[i], plain.delta[i]));
+    EXPECT_TRUE(bits_equal(out.gamma[i], plain.gamma[i]));
+    EXPECT_TRUE(bits_equal(out.vega[i], plain.vega[i]));
+    EXPECT_TRUE(bits_equal(out.theta[i], plain.theta[i]));
+  }
+  c.sigma[3] = -1.;
+  ASSERT_TRUE(refresh_chain_cached(100., c.view(), cc, view));
+  EXPECT_EQ(requested[3], kTickFields);
+  EXPECT_EQ(supported[3], GreekFieldMask::None);
+  EXPECT_EQ(out.status[3], TickStatus::Unpriceable);
+  EXPECT_TRUE(std::isnan(out.price[3]));
+  view.requested = {}; // each optional column works independently
+  ASSERT_TRUE(refresh_chain_cached(100., c.view(), cc, view));
+  EXPECT_EQ(supported[3], GreekFieldMask::None);
+}
+
+TEST(ChainTickAvailability, RecordsKeepFallbackEstimatesAndRefuseInvalidContractSupply) {
+  SmallChain c = make_chain();
+  const auto records = ChainRecords::build(100., c.view());
+  ASSERT_TRUE(records);
+  Outputs out(c.strike.size()), plain(c.strike.size());
+  std::vector<GreekFieldMask> requested(c.strike.size(), GreekFieldMask::All);
+  std::vector<GreekFieldMask> supported(c.strike.size(), GreekFieldMask::All);
+  auto view = out.view();
+  view.requested = requested;
+  view.supported = supported;
+  ASSERT_TRUE(refresh_chain_records(180., c.view(), *records, plain.view()));
+  const auto allocations = atx::vol::testkit::count_allocations(
+      [&] { (void)refresh_chain_records(180., c.view(), *records, view); });
+  EXPECT_EQ(allocations, 0u);
+  for (std::size_t i = 0; i < c.strike.size(); ++i) {
+    EXPECT_EQ(requested[i], kTickFields);
+    EXPECT_EQ(supported[i], kTickFields);
+    EXPECT_EQ(out.status[i], TickStatus::Fallback); // availability is not certification
+    EXPECT_EQ(out.status[i], plain.status[i]);
+    EXPECT_TRUE(bits_equal(out.price[i], plain.price[i]));
+    EXPECT_TRUE(bits_equal(out.delta[i], plain.delta[i]));
+    EXPECT_TRUE(bits_equal(out.gamma[i], plain.gamma[i]));
+    EXPECT_TRUE(bits_equal(out.vega[i], plain.vega[i]));
+    EXPECT_TRUE(bits_equal(out.theta[i], plain.theta[i]));
+  }
+  c.strike[0] = -1.;
+  ASSERT_TRUE(refresh_chain_records(100., c.view(), *records, view));
+  EXPECT_EQ(requested[0], kTickFields);
+  EXPECT_EQ(supported[0], GreekFieldMask::None);
+  EXPECT_EQ(out.status[0], TickStatus::Unpriceable);
+}
+
+TEST(ChainTickAvailability, MetadataLengthsAndAliasesRefuseBeforeAnyWrites) {
+  const SmallChain c = make_chain();
+  Outputs out(c.strike.size());
+  const AmericanCorrectionCaches cc{nullptr, &*caches().put};
+  std::vector<GreekFieldMask> metadata(c.strike.size(), GreekFieldMask::All);
+  auto view = out.view();
+  view.requested = std::span(metadata).first(metadata.size()-1);
+  EXPECT_FALSE(refresh_chain_cached(100., c.view(), cc, view));
+  EXPECT_EQ(out.price[0], -7.);
+  view.requested = metadata;
+  view.supported = metadata;
+  EXPECT_FALSE(refresh_chain_cached(100., c.view(), cc, view));
+  EXPECT_EQ(metadata[0], GreekFieldMask::All);
+  EXPECT_EQ(out.price[0], -7.);
+  // Byte overlap is rejected before dereferencing this deliberately aliased
+  // typed view; no GreekFieldMask object is created in the double storage.
+  view.supported = {};
+  view.requested = {reinterpret_cast<GreekFieldMask *>(out.price.data()), out.price.size()};
+  EXPECT_FALSE(refresh_chain_cached(100., c.view(), cc, view));
+  EXPECT_EQ(out.price[0], -7.);
+  SmallChain mutable_chain = c;
+  view.requested = {reinterpret_cast<GreekFieldMask *>(mutable_chain.strike.data()),
+                    mutable_chain.strike.size()};
+  EXPECT_FALSE(refresh_chain_cached(100., mutable_chain.view(), cc, view));
+  EXPECT_EQ(mutable_chain.strike[0], c.strike[0]);
+  EXPECT_EQ(out.price[0], -7.);
 }
 
 // ── cpu_topology.hpp (audit item 5a) ─────────────────────────────────────────

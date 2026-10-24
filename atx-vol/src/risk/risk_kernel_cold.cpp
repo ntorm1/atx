@@ -1,6 +1,14 @@
 // risk_kernel_cold — the oracle kernel: per contract, resolve against the state and
 // price the resolved (S, K, T, sigma, r, q_eff) through american_greeks_al /
 // american_greeks_fd. Deliberately simple: it is what the family kernel is pinned to.
+//
+// NearExerciseEdge on this kernel means the EXERCISE REGIME only (the served price on
+// a positive intrinsic, see cold_row in risk_kernel.cpp): the cold bundles expose no
+// edge distance, so continuation-side lanes inside the family's 0.25 sigma sqrt(T)
+// band are not flagged here. That is narrower than design F5. On the family kernel
+// the full band meaning holds only for lanes the family actually judged; lanes it
+// sends cold before a family answer (tau floor, failed prepare / carry set, off
+// geometry, below the floor, outside the box) carry this same narrow bit.
 
 #include <cstddef>
 #include <cstdint>

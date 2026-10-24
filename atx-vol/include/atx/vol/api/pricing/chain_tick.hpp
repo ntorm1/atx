@@ -88,12 +88,20 @@ struct ChainTickOutputs {
   std::span<double> vega;
   std::span<double> theta;
   std::span<TickStatus> status;
+  // Optional, independently empty or size(). The five output axes are always
+  // requested. Support means a finite field was supplied by this route, not
+  // qualified Greek accuracy. Route/model status remains independent. These
+  // spans must not overlap any input, output, statement or scratch column.
+  std::span<GreekFieldMask> requested{};
+  std::span<GreekFieldMask> supported{};
 
   [[nodiscard]] std::size_t size() const noexcept { return price.size(); }
   [[nodiscard]] bool consistent() const noexcept {
     const std::size_t n = price.size();
     return delta.size() == n && gamma.size() == n && vega.size() == n &&
-           theta.size() == n && status.size() == n;
+           theta.size() == n && status.size() == n &&
+           (requested.empty() || requested.size() == n) &&
+           (supported.empty() || supported.size() == n);
   }
 };
 

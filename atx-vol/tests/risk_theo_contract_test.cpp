@@ -552,6 +552,36 @@ TEST(TheoContract, PricingErrorRowFollowsUniformRule) {
                                 ProjectionPolicy{}, many)
                   .has_value());
   EXPECT_TRUE(same_bits(*theo, many[0]));
+
+  // The delta convention must not reclassify the same refusal: an American
+  // reported delta (policy) and an American delta STRIKE both reach the refusing
+  // pricer, and both are the same PricingError row, scalar == batch == series.
+  ProjectionPolicy american;
+  american.delta_conv = DeltaConvention::American;
+  const TheoContract american_strike{34, MaturitySpec::years_of(0.3),
+                                     StrikeCoord::delta(-0.3, DeltaConvention::American),
+                                     Side::Put};
+  const std::array<std::pair<TheoContract, ProjectionPolicy>, 2> cases{
+      std::pair{spec, american}, std::pair{american_strike, ProjectionPolicy{}}};
+  for (const auto &[c, policy] : cases) {
+    const auto scalar = resolve_theo(c, SurfaceRef{ps}, ts, policy);
+    ASSERT_TRUE(scalar.has_value()) << scalar.error().to_string();
+    EXPECT_EQ(scalar->status, TheoStatus::PricingError) << to_string(scalar->status);
+    expect_unserved(*scalar);
+    EXPECT_TRUE(std::isfinite(scalar->T));
+    EXPECT_TRUE(std::isfinite(scalar->forward));
+    EXPECT_NE(scalar->leg.expiry_ns, 0);
+    std::array<ResolvedTheo, 1> batch{};
+    ASSERT_TRUE(resolve_theo_many(std::span<const TheoContract>{&c, 1}, SurfaceRef{ps}, ts,
+                                  policy, batch)
+                    .has_value());
+    EXPECT_TRUE(same_bits(*scalar, batch[0]));
+    const std::array<SurfaceRef, 1> refs{SurfaceRef{ps}};
+    const std::array<std::int64_t, 1> stamps{ts};
+    std::array<ResolvedTheo, 1> series{};
+    ASSERT_TRUE(project_series(c, refs, stamps, policy, series).has_value());
+    EXPECT_TRUE(same_bits(*scalar, series[0]));
+  }
 }
 
 // A moneyness coordinate that names no finite positive strike on this state is a

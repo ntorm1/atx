@@ -36,6 +36,7 @@
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
 
 #include "backtest/laned_greek_run.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 namespace {
@@ -195,6 +196,45 @@ TEST(LanedGreekOkStamp, F2B_UnrequestedRhoDoesNotVetoTheLaneAndRequestedColumnsA
 // FIX-1/F3 lesson would be silently unlearned here.
 // ---------------------------------------------------------------------------------
 
+TEST(LanedGreekOkStamp, AvailabilityRejectsUnstampedFiniteZeros) {
+  const AmericanGreeks empty{};
+  EXPECT_FALSE(detail::requested_greeks_finite(empty, GreekNeeds{}));
+  EXPECT_FALSE(detail::requested_greeks_finite(empty, GreekNeeds{false, false, false}));
+
+  AmericanGreeks supplied{};
+  detail::mark_american_greek_fields(supplied, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
+  EXPECT_TRUE(detail::requested_greeks_finite(supplied, GreekNeeds{}));
+  supplied.supported = GreekFieldMask::Price;
+  EXPECT_FALSE(detail::requested_greeks_finite(supplied, GreekNeeds{}));
+}
+
+TEST(LanedGreekOkStamp, AvailabilityNormalizationCannotResurrectUnsupportedFields) {
+  AmericanGreeks g{};
+  g.price = 7.0;
+  detail::mark_american_greek_fields(g, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
+  detail::mark_american_greek_fields(g, GreekFieldMask::Rho,
+                                    AmericanGreekReason::UnsupportedAxis);
+  const GreekNeeds narrowed{true, false, true};
+  detail::normalize_unrequested_greeks(g, narrowed);
+  EXPECT_EQ(g.rho, 0.0);
+  EXPECT_FALSE(has_field(g.requested, GreekFieldMask::Rho));
+  EXPECT_FALSE(has_field(g.supported, GreekFieldMask::Rho));
+  EXPECT_EQ(g.reasons[4], AmericanGreekReason::NotRequested);
+  EXPECT_TRUE(detail::requested_greeks_finite(g, narrowed));
+  EXPECT_FALSE(detail::requested_greeks_finite(g, GreekNeeds{}));
+
+  detail::mark_american_greek_fields(g, GreekFieldMask::Gamma,
+                                    AmericanGreekReason::StencilCrossing);
+  detail::normalize_unrequested_greeks(g, narrowed);
+  EXPECT_FALSE(detail::requested_greeks_finite(g, narrowed));
+  EXPECT_TRUE(std::isnan(g.gamma));
+  EXPECT_EQ(g.reasons[1], AmericanGreekReason::StencilCrossing);
+  EXPECT_EQ(g.price, 7.0);
+  EXPECT_TRUE(detail::american_greeks_support(g, GreekFieldMask::Price));
+}
+
 TEST(LanedGreekOkStamp, F2B_GuardCoversTheRequestedSetOnly) {
   AmericanGreeks g{};
   g.price = 1.0;
@@ -206,6 +246,8 @@ TEST(LanedGreekOkStamp, F2B_GuardCoversTheRequestedSetOnly) {
   g.vanna = 0.4;
   g.charm = 0.5;
   g.rho = std::numeric_limits<double>::quiet_NaN();
+  detail::mark_american_greek_fields(g, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
 
   GreekNeeds all{};
   EXPECT_FALSE(detail::requested_greeks_finite(g, all)) << "a REQUESTED non-finite rho must veto";
@@ -239,6 +281,8 @@ TEST(LanedGreekOkStamp, F2B_UnrequestedNonFiniteSlotIsNormalizedNotPassedThrough
   g.rho = std::numeric_limits<double>::quiet_NaN();
   g.charm = std::numeric_limits<double>::quiet_NaN();
   g.vega = 7.0; // requested and finite: must be left exactly alone
+  detail::mark_american_greek_fields(g, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
 
   GreekNeeds needs{};
   needs.rho = false;

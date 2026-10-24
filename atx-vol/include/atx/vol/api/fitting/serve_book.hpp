@@ -252,6 +252,9 @@ struct ServedChainStatement {
   ServeBoundClass map_certificate_class = ServeBoundClass::None;
   QuoteSlicePriceOnlyReason price_only_reason = QuoteSlicePriceOnlyReason::None;
   bool sampled = false; // ServeAnswer::sampled: an estimate, never certified
+  // Verbatim ServeAnswer::reason (Delta/Gamma/Vega/Theta/Rho/Phi). Its own
+  // vocabulary is distinct from AmericanGreeks' cold numerical stencil reasons.
+  ServeGreekReasons greek_reasons{};
 };
 
 class ServeBookReader {

@@ -1,6 +1,7 @@
 #include "atx/vol/api/fitting/session.hpp"
 
 #include "backtest/term_carry.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1078,6 +1079,12 @@ constexpr double kCertUlps = 8.0;
   out.vanna = kNaN;
   out.volga = kNaN;
   out.charm = kNaN;
+  constexpr auto supplied = GreekFieldMask::Price | GreekFieldMask::Delta |
+                            GreekFieldMask::Gamma | GreekFieldMask::Vega | GreekFieldMask::Theta;
+  constexpr auto missing = GreekFieldMask::Rho | GreekFieldMask::Vanna |
+                           GreekFieldMask::Volga | GreekFieldMask::Charm;
+  detail::mark_american_greek_fields(out, supplied, AmericanGreekReason::ComputedEstimate);
+  detail::mark_american_greek_fields(out, missing, AmericanGreekReason::UnsupportedAxis);
   return out;
 }
 

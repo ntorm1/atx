@@ -67,6 +67,8 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 | `--determinism` | off | a threads = 1 shadow stream; totals must be bit-equal |
 | `--out <file>` | stdout | JSON report |
 | `--md <file>` | — | markdown summary |
+| `--dump-legs <file.csv>` | — | per-option-leg CSV (see "Per-leg dump" below) |
+| `--dump-steps N` | 1 | steps written to `--dump-legs`: the first N, 0 = every step |
 | `--seed N` | 1 | book selection seed |
 | `--help` | | usage |
 
@@ -81,7 +83,10 @@ filter columns `exType` and `okey_tk` when present; every other column is tolera
 and ignored. Strings may be `utf8` (the partitioned 2026-10-14 drop) or `large_utf8`
 (the polars-written oracle store); numerics must be Float64, okey_yr/mn/dy Int64 (Int32
 accepted). Only `<root>/date=<d>/bucket_et=<HHMM>` is opened; row groups whose ticker
-statistics exclude every admitted ticker are skipped.
+statistics exclude every admitted ticker are skipped. The schema must be flat (every
+field one parquet leaf column): the projection and the statistics address leaves by
+arrow field index, so a nested column is refused (`InvalidArgument` naming the file)
+rather than misread or pruned silently.
 
 - **expiry** = okey_yr/mn/dy at 16:00 ET (`expiry_instant_ns(…, Pm)`); **bucket instant**
   = 16:00 ET of the date minus (16:00 − HH:MM) (`spiderrock_bucket_instant_ns`; exact
@@ -180,10 +185,15 @@ On the first bucket: the top `--underliers` uids by row count (ties: lower uid);
 `--options` split evenly (remainder to the first uids). Per uid, an eligible contract has
 |vendor delta| in [0.05, 0.95], srVol in (0.01, 3.0] (the licensed drop carries
 penny-name srVol ≥ 5 rows) and a two-sided quote (bid > 0, ask ≥ bid). Picks go
-round-robin over the uid's expiries from an rng-chosen start, sides alternating across
-the uid's picks, each the unused contract nearest the expiry's cycling |delta| target
-grid (0.50, 0.25, 0.75, 0.10, 0.90, …), so a quota of ≥ 4 spans ≥ 4 expiries (when the
-uid lists them) and both sides. qty is uniform in
+round-robin over the uid's expiries from an rng-chosen start; the side is chosen per
+expiry, `(rank + picks) % 2`: inside an expiry the sides alternate, so each |delta|
+target of the expiry's cycling grid (0.50, 0.25, 0.75, 0.10, 0.90, …) is taken as a call
+AND a put, and the first pass over the expiries alternates from one expiry to the next,
+so even a quota no larger than the expiry count holds both sides. Each pick is the
+unused contract nearest the target; a quota of ≥ 4 spans ≥ 4 expiries (when the uid
+lists them). `select_bench_book` refuses `--underliers 0` and a bucket whose uid /
+expiry / side / strike / vendor delta / bid / ask column does not cover every row.
+qty is uniform in
 {−10 … −1, 1 … 10}, multiplier 100. Shares: one leg per uid for the first `--shares`
 uids, qty = −round(Σ qty·100·vendor delta / 100)·100 (100 when that rounds to 0): a
 delta-hedged book. With `american_only` the top-100 by row count are equity / ETF names
@@ -199,7 +209,8 @@ frame evaluate and family build (`RiskFrame::counters`), explain
 second stream at threads = 1 on the same states and compares bit-for-bit the explain
 totals, per-leg pnl_total / pnl_unexplained and the frame's price / delta / gamma /
 vega / theta. `--kernel both` runs a cold stream alongside and reports the evaluate
-speedup and the max |Δ| per column. Only the main stream is timed in the step clocks.
+speedup and the max |Δ| per column (`null` when no row is Ok in both frames: nothing
+compared is not "no difference"). Only the main stream is timed in the step clocks.
 
 Explain-quality statistics (diagnostic, **not** a regulatory number): per step, the
 Spearman rank correlation and the two-sample KS statistic between per-leg explained
@@ -258,7 +269,7 @@ position-scaled currency (qty × multiplier).
 | `steps[].quality.spearman`, `.ks`, `.zone` | number, number, string | per-leg explained vs actual; zone `green`/`amber`/`red`/`undefined` (diagnostic) |
 | `steps[].vendor_parity.{price,delta,vega}` | object | `n`, `mae`, `sym_rel`, `max_abs` |
 | `steps[].determinism.checked`, `.bit_equal` | bool | `--determinism` result |
-| `steps[].cold` | object | `ran`, `n_compared`, `evaluate_seconds`, `speedup` (cold / main evaluate), `max_abs_{price,delta,gamma,vega,theta,vanna,volga,charm}` (unique options Ok in both), `max_abs_pnl_total` (legs Ok in both) |
+| `steps[].cold` | object | `ran`, `n_compared`, `evaluate_seconds`, `speedup` (cold / main evaluate), `max_abs_{price,delta,gamma,vega,theta,vanna,volga,charm}` (unique options Ok in both; `null` when none), `max_abs_pnl_total` (legs Ok in both; `null` when none) |
 | `summary.{load,state,evaluate,explain,step}` | object | `p50`, `p95` (nearest rank over steps), `mean`, `total` |
 | `summary.contracts_per_second` | number | n_unique_options / evaluate p50 |
 | `summary.legs_per_second` | number | (option + share legs) / explain p50 |
@@ -270,16 +281,73 @@ position-scaled currency (qty × multiplier).
 | `summary.cold_speedup_p50` | number | median cold speedup (`--kernel both`) |
 
 The markdown summary (`--md`) restates the inputs, the clock table (ms per step), the
-throughput, explain quality and determinism lines, and one row per step.
+throughput, explain quality and determinism lines, one row per step, and one line per
+step with the shifted frame's counters (`families_built`, `carry_sets_built`,
+`family_rows`, `cold_rows`, `exercised_rows`, `refused_rows`), its nonzero route counts
+and its nonzero flag counts (`flags none` when no flag is set), e.g.
+`- 1000->1030: families_built 1600, carry_sets_built 0, family_rows 9800, cold_rows 76,
+exercised_rows 0, refused_rows 0; routes Family 9800, ColdAnalytic 76; flags
+VendorParityAvailable 9876`.
+
+## Per-leg dump (`--dump-legs`)
+
+Per-contract visibility for vendor parity: `--dump-legs legs.csv` writes one row per
+OPTION leg (share legs are not dumped) for the first `--dump-steps` steps (default 1;
+0 = every step), e.g.
+
+```powershell
+atx-vol-risk-bench --store C:\atx-data\spiderrock-30min --from 1000 --to 1500 --kernel family `
+                   --threads 8 --out run.json --dump-legs legs-1000.csv --dump-steps 1
+```
+
+The file is opened (header written) before any bucket is read, so a bad path fails
+fast (`IoError`, exit 1). Rows are in PREPARED row order (grouped by uid, expiry, side;
+ascending strike), ties by leg input index. Header row, LF line endings, doubles in
+shortest round-trip form, a non-finite value is an EMPTY cell, a text cell holding
+`,` `"` CR or LF is quoted (RFC 4180). Every model column is the step's **base** side:
+the base frame (`RiskStream::previous()` after the step), the base state's carry and the
+base bucket's raw row; the P&L columns are the step's per-leg explain. (The report's
+`vendor_parity` uses the shifted frame, so the first step's dump and its parity line
+are one bucket apart.)
+
+| columns | source |
+|---|---|
+| `step` | `<from>-><to>` |
+| `leg_index`, `leg_id`, `prepared_row` | option-leg input index, the leg's id, its prepared row |
+| `ticker`, `uid`, `uid_slot` | underlier; `uid_slot` indexes `PreparedRiskBook::uids()` |
+| `strike`, `expiry`, `side` | contract; `expiry` is the expiry instant's UTC date `YYYY-MM-DD`; `call` / `put` |
+| `qty`, `multiplier` | signed contracts; the effective deliverable (≤ 0 / non-finite ⇒ 100) |
+| `T`, `sigma`, `forward`, `rate`, `q_eff` | the base frame's resolved inputs (what the kernel priced at) |
+| `spot` | the base state's `UnderlierState::spot` (median uPrc of the bucket) |
+| `carry_source` | `term_carry` (the uid's `ExpiryCarry` row with the exact expiry), `flat` (no row: flat_rate / flat_q, no cash dividends), `flat_curve_or_divs` (no row; a yield curve or cash dividends apply, rate / pv_divs not reproduced), `surface`, `absent` |
+| `carry_rate`, `carry_q`, `pv_divs` | that row's rate / q / pv_divs (flat: flat_rate, flat_q, 0) |
+| `q_eff_d4` | `spiderrock_q_eff(spot, pv_divs, carry_rate, carry_q, T)`: the D4 carry the row implies; compare with `q_eff` |
+| `route`, `flags`, `status` | the base frame row: `to_string(RiskRoute)`, the `to_string(RiskFlag)` names of its set bits joined by `\|`, `to_string(RiskLaneStatus)` |
+| `leg_status` | the explain's status for the leg (Ok or the exclusion reason) |
+| `price`, `delta`, `gamma`, `vega`, `theta`, `vanna`, `volga`, `charm` | ours, base frame, per share (`risk_frame.hpp` conventions: vega per unit vol, theta per calendar year) |
+| `vendor_price`, `vendor_delta` | the vendor as the engine carried it (the marks; empty unless `VendorParityAvailable`) |
+| `vendor_vega`, `vendor_theta` | `sr_ve / 0.01` (per unit vol, what parity compares), `sr_th × 252` (per year) |
+| `price_abs_err`, `price_sym_rel` | \|price − vendor_price\| and that over max(\|price\|, \|vendor_price\|, 0.01) |
+| `sr_prc`, `sr_de`, `sr_ga`, `sr_ve`, `sr_th` | the base bucket's raw srPrc, de, ga, ve, th (SpiderRock units) |
+| `sr_years`, `sr_uprc`, `sr_rate`, `sr_sdiv`, `sr_ddiv`, `sr_bid`, `sr_ask` | the same row's years, uPrc, rate, sdiv, ddiv, bidPrc, askPrc (raw) |
+| `pnl_total`, `pnl_delta`, `pnl_gamma`, `pnl_vega`, `pnl_volga`, `pnl_vanna`, `pnl_theta`, `pnl_rho`, `pnl_charm`, `pnl_unexplained` | the step's per-leg explain (position-scaled) |
+
+Reading it: a carry gap shows as `q_eff` ≠ `q_eff_d4`, or as `sr_uprc` / `sr_years`
+far from `spot` / `T` on the rows with the large `price_abs_err`; a kernel defect shows
+as a large error with matching inputs. The writer is engine-free and pinned by
+`RiskBenchReport.LegDumpCsvFormat`.
 
 ## Tests and integration
 
 - `SpiderRockStore.*`, `SyntheticStore.*`, `BucketState.*`
   (`tests/spiderrock_store_test.cpp`) and `RiskBenchArgs.*`, `RiskBenchBook.*`,
   `RiskBenchStats.*`, `RiskBenchReport.*` (`tests/risk_bench_test.cpp`) link without the
-  engine (risk slice). `SpiderRockStoreReal.LoadsBucket1000` runs only with
+  engine (risk slice). `SpiderRockStoreReal.LoadsBucket1000` and
+  `RiskBenchBookReal.SelectsFullBookOnBucket1000` run only with
   `ATX_VOL_SPIDERROCK_STORE` set (GTEST_SKIP otherwise);
   `SyntheticStore.DISABLED_FullSizeGenerationTiming` is an on-demand timing receipt.
+  Scratch stores live under the process's private temp root (atx-test-scratch) with a
+  pid suffix, so parallel ctest processes and pool trees never share one.
 - `RiskBenchE2E.SyntheticRunProducesReport` (`tests/risk_bench_e2e_test.cpp`) and
   `tools/risk_bench.cpp` join `atx-vol-tests` only under `-DATX_VOL_RISK_E2E=ON`
   (default OFF) because they link the risk engine; the integration stage flips it and

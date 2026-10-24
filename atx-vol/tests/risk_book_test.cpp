@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/risk/risk_book.hpp"
@@ -197,4 +198,33 @@ TEST(RiskBook, InvalidLegsKeptNotDropped) {
                   RiskLaneStatus::InvalidContract)],
               3u);
   }
+}
+
+TEST(RiskBook, EmptyPimplAccessorsAreSafe) {
+  // The lane's PIMPL rule: an accessor on a default-constructed or moved-from object
+  // returns a documented empty value (0, an empty span, a shared empty object).
+  const PreparedRiskBook unprepared;
+  EXPECT_EQ(unprepared.book().n_option_legs(), 0u);
+  EXPECT_EQ(unprepared.n_unique(), 0u);
+  EXPECT_EQ(unprepared.book_logical_id(), 0u);
+
+  RiskBook book = RiskBook::create(rt::make_option_legs(), {}).value();
+  PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  const PreparedRiskBook moved_prep = std::move(prep);
+  EXPECT_EQ(&moved_prep.book(), &book);
+  // NOLINTBEGIN(bugprone-use-after-move): the moved-from contract is what is pinned.
+  EXPECT_EQ(prep.book().n_option_legs(), 0u);
+  const RiskBook moved_book = std::move(book);
+  EXPECT_EQ(book.n_option_legs(), 0u);
+  EXPECT_EQ(book.logical_id(), 0u);
+
+  FamilyKernelPolicy custom;
+  custom.n_sigma = 8;
+  RiskKernel kernel = RiskKernel::family(custom);
+  const RiskKernel moved_kernel = std::move(kernel);
+  EXPECT_EQ(moved_kernel.family_policy().n_sigma, 8u);
+  EXPECT_EQ(kernel.family_policy().n_sigma, FamilyKernelPolicy{}.n_sigma);
+  EXPECT_EQ(kernel.cold_policy().analytic, ColdKernelPolicy{}.analytic);
+  // NOLINTEND(bugprone-use-after-move)
+  EXPECT_EQ(moved_book.n_option_legs(), rt::make_option_legs().size());
 }

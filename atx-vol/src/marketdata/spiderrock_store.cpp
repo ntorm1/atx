@@ -231,8 +231,18 @@ struct OpenedFile {
   if (!st.ok()) {
     return Err(from_arrow(st, "spiderrock store: schema of " + f.path));
   }
-  ATX_TRY(f.cols, resolve_columns(*schema, f.path, filters));
   f.meta = f.reader->parquet_reader()->metadata();
+  // The projection (ReadRowGroup's leaf indices) and the row-group statistics address
+  // parquet LEAF columns by the arrow field index; that holds iff every field is one
+  // leaf. A nested column would misalign both (statistics of another column => groups
+  // pruned silently), so it is refused here.
+  if (schema->num_fields() != f.meta->num_columns()) {
+    return Err(ErrorCode::InvalidArgument,
+               "spiderrock store: nested (non-flat) schema in " + f.path + ": " +
+                   std::to_string(schema->num_fields()) + " fields over " +
+                   std::to_string(f.meta->num_columns()) + " leaf columns");
+  }
+  ATX_TRY(f.cols, resolve_columns(*schema, f.path, filters));
   return Ok(std::move(f));
 }
 
@@ -383,6 +393,19 @@ using Admitted = std::optional<std::vector<std::string>>;
   return it != a->end() && std::string_view{*it} <= hi;
 }
 
+// The one chunk of column `name` (CombineChunks can leave a binary column in several
+// chunks past 2 GiB of offsets; that is refused loudly, never read partially).
+[[nodiscard]] Result<const arrow::Array *> single_chunk(const arrow::Table &table,
+                                                       std::string_view name,
+                                                       const std::string &file) {
+  const std::shared_ptr<arrow::ChunkedArray> col = table.GetColumnByName(std::string{name});
+  if (col == nullptr || col->num_chunks() != 1) {
+    return Err(ErrorCode::Internal,
+               "spiderrock store: column '" + std::string{name} + "' unreadable in " + file);
+  }
+  return Ok(col->chunk(0).get());
+}
+
 // Counts the non-null tickers of one row group into `counts`, over the rows that
 // pass the optional filters: the filters precede the top-N count.
 [[nodiscard]] Status count_group_tickers(const OpenedFile &f, int g,
@@ -406,15 +429,13 @@ using Admitted = std::optional<std::vector<std::string>>;
   if (table->num_rows() == 0) {
     return Ok();
   }
-  // Column order follows `cols` (the projection order is the output order).
-  const arrow::Array *tk_arr = table->column(0)->chunk(0).get();
+  ATX_TRY(const arrow::Array *tk_arr, single_chunk(*table, "undSecKey_tk", f.path));
   FilterArrays filters;
-  int next = 1;
   if (f.cols.ex_type >= 0) {
-    filters.ex_type = table->column(next++)->chunk(0).get();
+    ATX_TRY(filters.ex_type, single_chunk(*table, kExTypeName, f.path));
   }
   if (f.cols.okey_tk >= 0) {
-    filters.okey_tk = table->column(next)->chunk(0).get();
+    ATX_TRY(filters.okey_tk, single_chunk(*table, kOptionRootName, f.path));
   }
   const bool strings = is_string_type(*tk_arr) &&
                        (filters.ex_type == nullptr || is_string_type(*filters.ex_type)) &&
@@ -491,17 +512,6 @@ struct GroupArrays {
   std::array<const arrow::Array *, kNumIntCols> ints{};
   std::array<const arrow::DoubleArray *, kNumCols> nums{};
 };
-
-[[nodiscard]] Result<const arrow::Array *> single_chunk(const arrow::Table &table,
-                                                       std::string_view name,
-                                                       const std::string &file) {
-  const std::shared_ptr<arrow::ChunkedArray> col = table.GetColumnByName(std::string{name});
-  if (col == nullptr || col->num_chunks() != 1) {
-    return Err(ErrorCode::Internal,
-               "spiderrock store: column '" + std::string{name} + "' unreadable in " + file);
-  }
-  return Ok(col->chunk(0).get());
-}
 
 [[nodiscard]] Error bad_type(std::string_view name, const char *want, const std::string &file) {
   return Error{ErrorCode::InvalidArgument, "spiderrock store: column '" + std::string{name} +

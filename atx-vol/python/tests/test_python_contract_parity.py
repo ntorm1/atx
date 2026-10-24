@@ -213,11 +213,12 @@ def test_serve_surface_is_complete():
     assert {"serve", "implied_vol", "serve_chain", "pinned_version",
             "refresh"} <= _public_members(av.ServeBookReader)
     # ServedChainStatement's fields, all of them, as serve_chain column keys (checked in
-    # test_serve.py on a live book); here the answer types expose the same statement.
+    # test_serve.py on a live book); greek_reasons comes from ServeAnswer.reason.
     statement = {"certificate_usd", "certificate_class", "map_certificate_usd",
                  "map_certificate_class", "sampled", "price_only_reason", "iv_lower",
                  "iv_upper", "status", "route", "tier"}
     assert statement <= _public_members(av.ServeAnswer)
+    assert "reason" in _public_members(av.ServeAnswer)
     for name in ("build_serve_record", "serve_build", "validate_serve_record_policy"):
         assert callable(getattr(av, name)), name
 
@@ -237,7 +238,7 @@ def test_served_analytics_surface_is_complete():
     assert {"bind", "reader", "serve", "serve_chain", "bound_expiry",
             "bindings"} <= _public_members(av.ServedSession)
     assert {"source", "book", "input_class", "status",
-            "declaration"} <= _public_members(av.SessionServedAnswer)
+            "declaration", "requested", "supported", "cold_reasons"} <= _public_members(av.SessionServedAnswer)
 
 
 def test_region_and_discrete_dividend_batch_surface_is_complete():

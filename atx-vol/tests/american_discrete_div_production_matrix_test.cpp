@@ -22,13 +22,21 @@
 //
 // Every table line is printed with a "[d1-...]" prefix for the lane report.
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -38,6 +46,7 @@
 #include "atx/vol/api/pricing/american.hpp"
 #include "atx/vol/api/pricing/american_discrete_div_kernel.hpp"
 #include "pricing/american_discrete_div_reference.hpp"
+#include "support/ddiv_matrix_cases.hpp"
 
 namespace {
 
@@ -165,85 +174,13 @@ constexpr D0Row kD0[] = {
      "CONVENTION GAP (kernel = liquidator)"},
 };
 
-// D0's `matrix()`, case for case (same order as kD0).
+// Original D0 inputs, with their frozen reference records joined by exact ID.
 [[nodiscard]] std::vector<Case> matrix() {
   std::vector<Case> m;
-  constexpr double kSig = 0.25;
-  constexpr double kR = 0.04;
-  {
-    const double dt = 0.5 / 301.0;
-    const std::array<double, 5> taus{0.25 - dt, 0.25, 0.25 + dt, 150.49 * dt, 150.51 * dt};
-    const std::array<const char *, 10> ids{"A1p", "A1c", "A2p", "A2c", "A3p",
-                                           "A3c", "A4p", "A4c", "A5p", "A5c"};
-    for (std::size_t i = 0; i < taus.size(); ++i) {
-      m.push_back(make(ids[2 * i], 100, 100, 0.5, kSig, kR, Side::Put, {{taus[i], 2.0}}));
-      m.push_back(make(ids[2 * i + 1], 100, 95, 0.5, kSig, kR, Side::Call, {{taus[i], 2.0}}));
-    }
-  }
-  {
-    const double dt = 1.0 / 301.0;
-    const std::array<double, 3> taus{0.7 * dt, 1.0 - 0.4 * dt, 1.0};
-    const std::array<const char *, 6> ids{"B1p", "B1c", "B2p", "B2c", "B3p", "B3c"};
-    for (std::size_t i = 0; i < taus.size(); ++i) {
-      m.push_back(make(ids[2 * i], 100, 100, 1.0, kSig, kR, Side::Put, {{taus[i], 3.0}}));
-      m.push_back(make(ids[2 * i + 1], 100, 95, 1.0, kSig, kR, Side::Call, {{taus[i], 3.0}}));
-    }
-  }
-  {
-    const std::array<double, 3> Ts{0.5, 1.0, 2.0};
-    const std::array<const char *, 6> ids{"C2p", "C2c", "C4p", "C4c", "C8p", "C8c"};
-    for (std::size_t i = 0; i < Ts.size(); ++i) {
-      const auto divs = quarterly(0.1, 1.0, Ts[i]);
-      m.push_back(make(ids[2 * i], 100, 100, Ts[i], kSig, kR, Side::Put, divs));
-      m.push_back(make(ids[2 * i + 1], 100, 95, Ts[i], kSig, kR, Side::Call, divs));
-    }
-  }
-  {
-    const auto divs = quarterly(0.1, 1.0, 3.0);
-    m.push_back(make("D12p", 100, 100, 3.0, kSig, kR, Side::Put, divs));
-    m.push_back(make("D12c", 100, 95, 3.0, kSig, kR, Side::Call, divs));
-    const auto spy = quarterly(0.15, 1.8311, 2.182);
-    m.push_back(make("DSPYp", 772.98, 700, 2.182, 0.35, 0.047, Side::Put, spy));
-    m.push_back(make("DSPYc", 772.98, 858, 2.182, 0.35, 0.047, Side::Call, spy));
-  }
-  {
-    const std::array<double, 3> Ds{1.0, 5.0, 20.0};
-    const std::array<const char *, 6> ids{"E1p", "E1c", "E5p", "E5c", "E20p", "E20c"};
-    for (std::size_t i = 0; i < Ds.size(); ++i) {
-      m.push_back(make(ids[2 * i], 100, 100, 1.0, kSig, kR, Side::Put, {{0.5, Ds[i]}}));
-      m.push_back(make(ids[2 * i + 1], 100, 95, 1.0, kSig, kR, Side::Call, {{0.5, Ds[i]}}));
-    }
-  }
-  {
-    const std::vector<CashDividend> m1{{0.016272795852273703, 4.0999999046325684}};
-    m.push_back(make("E64p", 6.375, 5.0, 0.34715297818183899, 0.2, 0.046780478209257126,
-                     Side::Put, m1));
-    m.push_back(make("E64c", 6.375, 5.0, 0.34715297818183899, 0.2, 0.046780478209257126,
-                     Side::Call, m1));
-  }
-  m.push_back(make("F1c", 100, 70, 0.5, kSig, kR, Side::Call, {{0.45, 5.0}}));
-  m.push_back(make("F1p", 100, 130, 0.5, kSig, kR, Side::Put, {{0.45, 5.0}}));
-  m.push_back(make("F2c", 100, 80, 0.25, kSig, kR, Side::Call, {{0.24, 4.0}}));
-  m.push_back(make("F2p", 100, 125, 0.25, kSig, kR, Side::Put, {{0.24, 4.0}}));
-  m.push_back(make("G1p", 100, 100, 1.0, kSig, 0.0, Side::Put, {{0.5, 3.0}}));
-  m.push_back(make("G1c", 100, 95, 1.0, kSig, 0.0, Side::Call, {{0.5, 3.0}}));
-  m.push_back(make("G4p", 100, 100, 1.0, kSig, 0.0, Side::Put, quarterly(0.1, 1.0, 1.0)));
-  m.push_back(make("G4c", 100, 95, 1.0, kSig, 0.0, Side::Call, quarterly(0.1, 1.0, 1.0)));
-  m.push_back(make("H1p", 100, 100, 1.0, kSig, kR, Side::Put, {{0.5, 3.0}},
-                   ref::CashProcess::Escrowed));
-  m.push_back(make("H1c", 100, 95, 1.0, kSig, kR, Side::Call, {{0.5, 3.0}},
-                   ref::CashProcess::Escrowed));
-  m.push_back(make("H4p", 100, 100, 1.0, kSig, kR, Side::Put, quarterly(0.1, 1.0, 1.0),
-                   ref::CashProcess::Escrowed));
-  m.push_back(make("H4c", 100, 95, 1.0, kSig, kR, Side::Call, quarterly(0.1, 1.0, 1.0),
-                   ref::CashProcess::Escrowed));
-  m.push_back(make("ILp", 10, 8, 0.5, 0.8, 0.03, Side::Put, {{0.25, 6.0}}));
-  m.push_back(make("ILc", 10, 8, 0.5, 0.8, 0.03, Side::Call, {{0.25, 6.0}}));
-  m.push_back(make("ISp", 10, 8, 0.5, 0.8, 0.03, Side::Put, {{0.25, 6.0}},
-                   ref::CashProcess::SpotSurvivor));
-  m.push_back(make("ISc", 10, 8, 0.5, 0.8, 0.03, Side::Call, {{0.25, 6.0}},
-                   ref::CashProcess::SpotSurvivor));
-  for (Case &c : m) {
+  for (const auto &input : atx::vol::test::ddiv_matrix::matrix()) {
+    auto c = make(input.id.c_str(), input.S, input.K, input.T, input.sigma, input.r,
+                  input.side, input.divs, input.process);
+    c.q = input.q;
     for (const D0Row &row : kD0) {
       if (c.id == row.id) {
         c.ref = row.ref;
@@ -252,8 +189,16 @@ constexpr D0Row kD0[] = {
         c.status = row.status;
       }
     }
+    m.push_back(std::move(c));
   }
   return m;
+}
+
+TEST(DiscreteDivProductionManifest, PreservesFrozenOriginalInputFingerprint) {
+  const auto cases = matrix();
+  ASSERT_EQ(cases.size(), 50U);
+  EXPECT_EQ(atx::vol::test::ddiv_matrix::input_fingerprint(cases),
+            12110935955959749584ULL);
 }
 
 [[nodiscard]] const Case &find(const std::vector<Case> &m, const char *id) {
@@ -294,6 +239,375 @@ constexpr D0Row kD0[] = {
 }
 
 // ── 1. The 50-row re-score ───────────────────────────────────────────────────
+
+using Json = nlohmann::ordered_json;
+
+// A dollar-price comparison. The stored uncertainty is empirical; neither this
+// gate nor the historical IV-status label is a proof of reference error.
+[[nodiscard]] Json empirical_price_gate(
+    const Case &c, double candidate,
+    ref::CashProcess candidate_process = ref::CashProcess::SpotLiquidator) {
+  constexpr double budget = 0.001;
+  Json gate{{"budget_usd", budget}, {"status", "invalid_reference"},
+            {"absolute_difference", nullptr}, {"difference_plus_uncertainty", nullptr}};
+  if (c.process != candidate_process) {
+    gate["status"] = "model_mismatch";
+  } else if (!std::isfinite(candidate)) {
+    gate["status"] = "candidate_refused";
+  } else if (std::isfinite(c.ref) && std::isfinite(c.ref_u) && c.ref_u >= 0.0) {
+    const double error = std::abs(candidate - c.ref);
+    gate["absolute_difference"] = error;
+    gate["difference_plus_uncertainty"] = error + c.ref_u;
+    if (c.ref_u > budget) {
+      gate["status"] = "reference_unresolved";
+    } else if (error + c.ref_u <= budget) {
+      gate["status"] = "pass";
+    } else if (error - c.ref_u > budget) {
+      gate["status"] = "fail";
+    } else {
+      gate["status"] = "uncertain";
+    }
+  }
+  return gate;
+}
+
+[[nodiscard]] Json price_record(const Case &c, DiscreteDivAccuracy accuracy,
+                               DiscreteDivWorkspace &ws) {
+  const auto opts = route_opts(accuracy);
+  const auto priced = atx::vol::american_discrete_div_production_price(
+      c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, c.divs, ExerciseStyle::American, opts, ws);
+  Json row{{"status", priced ? "priced" : "refused"}, {"price", nullptr},
+           {"options", {{"accuracy", static_cast<int>(opts.accuracy)},
+                        {"base_steps", opts.base_steps}, {"kill_switch", opts.kill_switch}}},
+           {"empirical_price_gate", empirical_price_gate(c, priced ? priced->price : kNaN)}};
+  if (!priced) {
+    row["error_code"] = static_cast<int>(priced.error().code());
+    row["error"] = priced.error().to_string();
+    return row;
+  }
+  row["price"] = priced->price;
+  const auto &r = priced->route;
+  row["route"] = {{"method", atx::vol::to_string(r.method)}, {"steps", r.steps},
+                  {"coarse_steps", r.coarse_steps}, {"pre_steps", r.pre_steps},
+                  {"events", r.events}, {"first_ex_step", r.first_ex_step},
+                  {"max_cash_ratio", r.max_cash_ratio},
+                  {"grid_bottom_depth", r.grid_bottom_depth}, {"flags", r.flags}};
+  const auto &convention = priced->convention;
+  row["convention"] = {{"process", static_cast<int>(convention.process)},
+                       {"cum_and_post_exercise", convention.cum_and_post_exercise},
+                       {"cash_excess", static_cast<int>(convention.cash_excess)},
+                       {"ex_dates", static_cast<int>(convention.ex_dates)},
+                       {"spot_volatility", convention.spot_volatility}};
+  return row;
+}
+
+[[nodiscard]] Json input_record(const atx::vol::test::ddiv_matrix::InputCase &c) {
+  Json events = Json::array();
+  for (const auto &div : c.divs) {
+    events.push_back({{"tau", div.tau}, {"cash", div.amount}});
+  }
+  return {{"spot", c.S}, {"strike", c.K}, {"maturity", c.T}, {"sigma", c.sigma},
+          {"rate", c.r}, {"yield", c.q}, {"side", c.side == Side::Call ? "call" : "put"},
+          {"cash_process", ref::to_string(c.process)}, {"exercise", "american"},
+          {"cum_and_post_exercise", true}, {"events", std::move(events)}};
+}
+
+[[nodiscard]] Json price_manifest() {
+  const auto cases = matrix();
+  const auto inputs = atx::vol::test::ddiv_matrix::matrix();
+  Json out{{"schema", "atx-vol-cash-price-manifest-v1"},
+           {"input_fingerprint_fnv1a64", std::to_string(
+                atx::vol::test::ddiv_matrix::input_fingerprint(inputs))},
+           {"reference_source", "D1-20261023-production/d0-matrix-out/matrix.csv"},
+           {"reference_sha256",
+            "210fd6287cbfc56bca047cca3fd6302d8b2df86801d4afa36eb958ea4ff4dfba"},
+           {"reference_run_source", "cc89bc89"},
+           {"reference_uncertainty_kind", "empirical_convergence_indicator"},
+           {"time_unit", "model_year"}, {"continuous_yield", "residual_to_cash"},
+           {"candidate_cash_process", "spot-liquidator"},
+           {"price_budget_usd", 0.001}, {"raw_spread_available", false},
+           {"cases", Json::array()}};
+  DiscreteDivWorkspace ws(atx::vol::kDiscreteDivMaxRouteSteps,
+                          atx::vol::kDiscreteDivMaxPreSteps);
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const auto &c = cases[i];
+    out["cases"].push_back(
+        {{"id", c.id}, {"group", inputs[i].group}, {"input", input_record(inputs[i])},
+         {"same_cash_model", c.process == ref::CashProcess::SpotLiquidator},
+         {"reference", {{"price", c.ref}, {"uncertainty", c.ref_u}, {"vega", c.vega},
+                        {"original_iv_status", c.status}}},
+         {"standard", price_record(c, DiscreteDivAccuracy::Standard, ws)},
+         {"refined", price_record(c, DiscreteDivAccuracy::Refined, ws)}});
+  }
+  return out;
+}
+
+[[nodiscard]] std::optional<std::string> manifest_output_directory(
+    const char *name = "ATX_VOL_DDIV_MANIFEST_OUT") {
+#ifdef _MSC_VER
+  char *value = nullptr;
+  std::size_t size = 0;
+  const int status = ::_dupenv_s(&value, &size, name);
+  const std::unique_ptr<char, decltype(&std::free)> owned(value, &std::free);
+  if (status != 0 || value == nullptr) {
+    return std::nullopt;
+  }
+  return std::string(value);
+#else
+  const char *value = std::getenv(name);
+  return value == nullptr ? std::nullopt : std::optional<std::string>(value);
+#endif
+}
+
+TEST(DiscreteDivProductionManifest, ExportsAllInputsAndUnroundedPrices) {
+  const auto manifest = price_manifest();
+  ASSERT_TRUE(manifest.contains("cases"));
+  ASSERT_EQ(manifest.at("cases").size(), 50U);
+  const auto roundtrip = Json::parse(manifest.dump());
+  const auto inputs = atx::vol::test::ddiv_matrix::matrix();
+  const auto refs = matrix();
+  std::size_t comparable = 0;
+  std::size_t price_only = 0;
+  for (std::size_t i = 0; i < inputs.size(); ++i) {
+    SCOPED_TRACE(inputs[i].id);
+    const auto &row = roundtrip.at("cases").at(i);
+    const auto &input = row.at("input");
+    EXPECT_EQ(row.at("id"), inputs[i].id);
+    EXPECT_FALSE(refs[i].status.empty());
+    EXPECT_EQ(input.at("cash_process"), ref::to_string(inputs[i].process));
+    EXPECT_EQ(input.at("side"), inputs[i].side == Side::Call ? "call" : "put");
+    EXPECT_EQ(input.at("exercise"), "american");
+    const std::array names{"spot", "strike", "maturity", "sigma", "rate", "yield"};
+    const std::array values{inputs[i].S, inputs[i].K, inputs[i].T, inputs[i].sigma,
+                            inputs[i].r, inputs[i].q};
+    for (std::size_t j = 0; j < names.size(); ++j) {
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(input.at(names[j]).get<double>()),
+                std::bit_cast<std::uint64_t>(values[j]));
+    }
+    ASSERT_EQ(input.at("events").size(), inputs[i].divs.size());
+    for (std::size_t j = 0; j < inputs[i].divs.size(); ++j) {
+      const auto &event = input.at("events").at(j);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(event.at("tau").get<double>()),
+                std::bit_cast<std::uint64_t>(inputs[i].divs[j].tau));
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(event.at("cash").get<double>()),
+                std::bit_cast<std::uint64_t>(inputs[i].divs[j].amount));
+    }
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(row.at("reference").at("price").get<double>()),
+              std::bit_cast<std::uint64_t>(refs[i].ref));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(row.at("reference").at("uncertainty").get<double>()),
+              std::bit_cast<std::uint64_t>(refs[i].ref_u));
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(row.at("reference").at("vega").get<double>()),
+              std::bit_cast<std::uint64_t>(refs[i].vega));
+    comparable += row.at("same_cash_model").get<bool>() ? 1U : 0U;
+    price_only += refs[i].status.starts_with("PRICE-ONLY") ? 1U : 0U;
+    for (const char *accuracy : {"standard", "refined"}) {
+      const auto &candidate = row.at(accuracy);
+      EXPECT_EQ(candidate.at("status"), "priced");
+      EXPECT_TRUE(candidate.at("route").contains("pre_steps"));
+      EXPECT_EQ(candidate.at("empirical_price_gate").at("budget_usd"), 0.001);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(candidate.at("price").get<double>()),
+                std::bit_cast<std::uint64_t>(
+                    manifest.at("cases").at(i).at(accuracy).at("price").get<double>()));
+    }
+  }
+  EXPECT_EQ(comparable, 44U);
+  EXPECT_EQ(price_only, 2U);
+  ASSERT_FALSE(HasFailure());
+  // Opt-in export requires a NEW directory, so an existing receipt is never overwritten.
+  if (const auto out = manifest_output_directory()) {
+    ASSERT_FALSE(out->empty());
+    ASSERT_TRUE(std::filesystem::create_directory(*out)) << "output directory exists";
+    std::ofstream stream(std::filesystem::path(*out) / "manifest.json", std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    stream << manifest.dump(2) << '\n';
+    stream.close();
+    ASSERT_TRUE(stream.good());
+  }
+}
+
+TEST(DiscreteDivProductionManifest, RecordsTypedRefusalWithoutDroppingTheRequest) {
+  auto c = matrix().front();
+  c.sigma = -1.0;
+  DiscreteDivWorkspace ws(atx::vol::kDiscreteDivMaxRouteSteps);
+  const auto out = price_record(c, DiscreteDivAccuracy::Standard, ws);
+  ASSERT_TRUE(out.contains("status"));
+  EXPECT_EQ(out.at("status"), "refused");
+  EXPECT_TRUE(out.at("price").is_null());
+  EXPECT_EQ(out.at("error_code"), static_cast<int>(atx::core::ErrorCode::InvalidArgument));
+  EXPECT_EQ(out.at("empirical_price_gate").at("status"), "candidate_refused");
+}
+
+TEST(DiscreteDivProductionManifest, MonetaryGateRetainsUncertaintyAndModelDenominators) {
+  auto c = matrix().front();
+  c.ref = 10.0;
+  c.ref_u = 0.0001;
+  EXPECT_EQ(empirical_price_gate(c, 10.0008).at("status"), "pass");
+  EXPECT_EQ(empirical_price_gate(c, 10.0012).at("status"), "fail");
+  EXPECT_EQ(empirical_price_gate(c, 10.0010).at("status"), "uncertain");
+  c.ref_u = 0.002;
+  EXPECT_EQ(empirical_price_gate(c, 10.0).at("status"), "reference_unresolved");
+  c.ref_u = -0.001;
+  EXPECT_EQ(empirical_price_gate(c, 10.0).at("status"), "invalid_reference");
+  c.ref_u = kNaN;
+  EXPECT_EQ(empirical_price_gate(c, 10.0).at("status"), "invalid_reference");
+  c.ref_u = 0.0;
+  c.ref = 0.0;
+  EXPECT_EQ(empirical_price_gate(c, 0.001).at("status"), "pass");
+  EXPECT_EQ(empirical_price_gate(c, kNaN).at("status"), "candidate_refused");
+  c.status = "PRICE-ONLY (IV not identified)";
+  EXPECT_EQ(empirical_price_gate(c, 0.0).at("status"), "pass");
+  c.process = ref::CashProcess::Escrowed;
+  EXPECT_EQ(empirical_price_gate(c, 0.0).at("status"), "model_mismatch");
+  c.process = ref::CashProcess::SpotSurvivor;
+  EXPECT_EQ(empirical_price_gate(c, 0.0).at("status"), "model_mismatch");
+}
+
+[[nodiscard]] Json pde_record(const Case &c, const ref::PdeGrid &grid) {
+  const ref::Problem problem{.S = c.S, .K = c.K, .T = c.T, .sigma = c.sigma,
+                            .r = c.r, .q = c.q, .side = c.side,
+                            .exercise = ExerciseStyle::American,
+                            .process = c.process, .dividends = c.divs};
+  ref::PdeDiagnostics diagnostics;
+  const auto priced = ref::pde_price(problem, grid, &diagnostics);
+  Json row{{"status", priced ? "priced" : "refused"}, {"price", nullptr},
+           {"cash_process", ref::to_string(c.process)},
+           {"grid", {{"space_base", grid.space_base}, {"space_level", grid.space_level},
+                     {"time_base", grid.time_base}, {"time_level", grid.time_level},
+                     {"width_sd", grid.width_sd}, {"rannacher_steps", grid.rannacher_steps},
+                     {"domain_sigma", grid.domain_sigma}, {"time_grading", grid.time_grading}}},
+           {"empirical_price_gate",
+            empirical_price_gate(c, priced ? priced->price : kNaN, c.process)}};
+  if (!priced) {
+    row["error_code"] = static_cast<int>(priced.error().code());
+    row["error"] = priced.error().to_string();
+    return row;
+  }
+  row["price"] = priced->price;
+  row["work"] = {{"space_intervals", priced->space_intervals},
+                 {"implicit_solves", priced->time_steps},
+                 {"max_policy_iterations", priced->max_policy_iterations},
+                 {"worst_policy_calendar_time", priced->max_policy_time},
+                 {"max_lcp_violation", priced->max_lcp_violation},
+                 {"lcp_rounding_ties", priced->lcp_rounding_ties}};
+  Json lengths = Json::array();
+  for (std::size_t i = 0; i < diagnostics.continuation_run_lengths.size(); ++i) {
+    if (diagnostics.continuation_run_lengths[i] != 0) {
+      lengths.push_back({{"length", i}, {"count", diagnostics.continuation_run_lengths[i]}});
+    }
+  }
+  row["work_census"] = {{"thomas_sweeps", diagnostics.thomas_sweeps},
+                        {"fresh_seed_sweeps", diagnostics.fresh_seed_sweeps},
+                        {"forward_rows", diagnostics.forward_rows},
+                        {"continuation_rows", diagnostics.continuation_rows},
+                        {"identity_rows", diagnostics.identity_rows},
+                        {"continuation_runs", diagnostics.continuation_runs},
+                        {"exact_key_coefficient_rows", diagnostics.exact_key_coefficient_rows},
+                        {"continuation_run_lengths", std::move(lengths)}};
+  Json steps = Json::array();
+  for (const auto &step : diagnostics.coefficient_steps) {
+    steps.push_back({{"coefficient_bits_u64",
+                      {std::to_string(step.coefficient_bits[0]),
+                       std::to_string(step.coefficient_bits[1]),
+                       std::to_string(step.coefficient_bits[2])}},
+                     {"thomas_sweeps", step.thomas_sweeps},
+                     {"continuation_rows", step.continuation_rows},
+                     {"max_run_length", step.max_run_length}});
+  }
+  row["work_census"]["coefficient_steps"] = std::move(steps);
+  return row;
+}
+
+[[nodiscard]] Json pde_replay_manifest() {
+  auto out = price_manifest();
+  out["schema"] = "atx-vol-cash-pde-three-grid-v1";
+  out["production_cash_process"] = out.at("candidate_cash_process");
+  out.erase("candidate_cash_process");
+  out["pde_method"] = "event-aligned-cn-rannacher-howard";
+  out["pde_extrapolation"] = false;
+  out["pde_reference_model"] = "each_original_case_process";
+  out["work_limit"] = "maximum policy iterations is not a total sweep counter";
+  const auto cases = matrix();
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    auto &results = out["cases"][i]["pde_grids"];
+    results = Json::array();
+    // Three declared complete solves, with no tuning, extrapolation or selection.
+    for (const int scale : {1, 2, 4}) {
+      ref::PdeGrid grid;
+      grid.space_base = 400 * scale;
+      grid.time_base = 200 * scale;
+      results.push_back(pde_record(cases[i], grid));
+    }
+  }
+  return out;
+}
+
+TEST(DiscreteDivProductionMatrix, DiagnosticThreeGridPdeReplay) {
+  const auto manifest = pde_replay_manifest();
+  ASSERT_TRUE(manifest.contains("cases"));
+  ASSERT_EQ(manifest.at("cases").size(), 50U);
+  const auto roundtrip = Json::parse(manifest.dump());
+  const auto cases = matrix();
+  std::size_t requested = 0;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const auto &c = cases[i];
+    SCOPED_TRACE(c.id);
+    const auto &row = roundtrip.at("cases").at(i);
+    EXPECT_EQ(row.at("id"), c.id);
+    ASSERT_EQ(row.at("pde_grids").size(), 3U);
+    for (std::size_t level = 0; level < 3; ++level) {
+      ++requested;
+      const auto &pde = row.at("pde_grids").at(level);
+      EXPECT_EQ(pde.at("cash_process"), ref::to_string(c.process));
+      EXPECT_EQ(pde.at("grid").at("space_base"), 400U << level);
+      EXPECT_EQ(pde.at("grid").at("time_base"), 200U << level);
+      EXPECT_EQ(pde.at("grid").at("space_level"), 0);
+      EXPECT_EQ(pde.at("grid").at("time_level"), 0);
+      EXPECT_EQ(pde.at("grid").at("width_sd"), 8.0);
+      EXPECT_EQ(pde.at("grid").at("rannacher_steps"), 2);
+      EXPECT_EQ(pde.at("grid").at("time_grading"), 2.0);
+      EXPECT_EQ(pde.at("grid").at("domain_sigma"), 0.0);
+      EXPECT_NE(pde.at("empirical_price_gate").at("status"), "model_mismatch");
+      if (pde.at("status") == "priced") {
+        EXPECT_TRUE(std::isfinite(pde.at("price").get<double>()));
+        EXPECT_GT(pde.at("work").at("implicit_solves").get<int>(), 0);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(pde.at("price").get<double>()),
+                  std::bit_cast<std::uint64_t>(manifest.at("cases").at(i)
+                      .at("pde_grids").at(level).at("price").get<double>()));
+      } else {
+        EXPECT_EQ(pde.at("status"), "refused");
+        EXPECT_TRUE(pde.at("price").is_null());
+        EXPECT_TRUE(pde.contains("error_code"));
+      }
+    }
+  }
+  EXPECT_EQ(requested, 150U);
+  ASSERT_FALSE(HasFailure());
+  if (const auto out = manifest_output_directory("ATX_VOL_DDIV_PDE_REPLAY_OUT")) {
+    ASSERT_FALSE(out->empty());
+    ASSERT_TRUE(std::filesystem::create_directory(*out)) << "output directory exists";
+    std::ofstream stream(std::filesystem::path(*out) / "replay.json", std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    stream << manifest.dump(2) << '\n';
+    stream.close();
+    ASSERT_TRUE(stream.good());
+  }
+}
+
+TEST(DiscreteDivProductionManifest, PdeReplayKeepsTypedUnsupportedGridRefusal) {
+  auto c = matrix().front();
+  c.S = 100.0;
+  c.K = 200.0;
+  c.T = 1.0;
+  c.sigma = 0.005;
+  c.r = 0.1;
+  c.q = 0.0;
+  const auto out = pde_record(c, {});
+  ASSERT_TRUE(out.contains("status"));
+  EXPECT_EQ(out.at("status"), "refused");
+  EXPECT_TRUE(out.at("price").is_null());
+  EXPECT_EQ(out.at("error_code"), static_cast<int>(atx::core::ErrorCode::OutOfRange));
+  EXPECT_EQ(out.at("empirical_price_gate").at("status"), "candidate_refused");
+}
 
 TEST(DiscreteDivProductionMatrix, ReScoreAgainstTheIndependentReference) {
   const std::vector<Case> m = matrix();

@@ -22,6 +22,7 @@
 #include "atx/vol/api/core/types.hpp"
 #include "batch_status.hpp"
 #include "common.hpp"
+#include "greek_metadata.hpp"
 #include "result.hpp"
 #include "sides.hpp"
 
@@ -327,12 +328,13 @@ py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot
 // (`batch_status.hpp`).
 
 
-// LaneStatus is a two-state Ok/Unsupported BATCH-REGIME flag, not an
+// LaneStatus is a two-state Ok/Unsupported availability flag, not an
 // `atx::core::Status`. F-5: do not collapse Unsupported into
 // ErrorCode::NotImplemented — that made it indistinguishable from a scalar
 // pricer genuinely returning NotImplemented. The negative sentinel is outside
 // ErrorCode's non-negative domain and is published to Python below.
-inline constexpr std::int32_t kAmericanBatchUnsupportedRegime = -1;
+inline constexpr std::int32_t kAmericanBatchUnsupportedRegime = -2;
+static_assert(kAmericanBatchUnsupportedRegime != atxvol::python::kStatusOk);
 
 py::array_t<std::int32_t> lane_status_array(std::span<const LaneStatus> lanes) {
   py::array_t<std::int32_t> out(static_cast<py::ssize_t>(lanes.size()));
@@ -498,6 +500,13 @@ py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray 
   out["charm"] = std::move(charm);
   out["price"] = std::move(price);
   out["status"] = lane_status_array(ws.lane_status_view());
+  atxvol::python::GreekMetadataColumns metadata(book.n);
+  const auto requested = ws.lane_requested_view();
+  const auto supported = ws.lane_supported_view();
+  const auto reasons = ws.lane_reasons_view();
+  for (std::size_t i = 0; i < book.n; ++i)
+    metadata.write(i, requested[i], supported[i], reasons[i]);
+  std::move(metadata).publish(out);
   return out;
 }
 
@@ -612,7 +621,31 @@ void bind_pricing(py::module_ &m) {
       .def_static("default", &al_default_opts)
       .def_static("fast", &al_fast_opts);
 
-  py::class_<AmericanGreeks>(m, "AmericanGreeks")
+  py::enum_<GreekFieldMask> mask(m, "GreekFieldMask", py::arithmetic());
+  mask.value("NONE", GreekFieldMask::None)
+      .value("DELTA", GreekFieldMask::Delta)
+      .value("GAMMA", GreekFieldMask::Gamma)
+      .value("VEGA", GreekFieldMask::Vega)
+      .value("THETA", GreekFieldMask::Theta)
+      .value("RHO", GreekFieldMask::Rho)
+      .value("VANNA", GreekFieldMask::Vanna)
+      .value("VOLGA", GreekFieldMask::Volga)
+      .value("CHARM", GreekFieldMask::Charm)
+      .value("PRICE", GreekFieldMask::Price)
+      .value("ALL_GREEKS", GreekFieldMask::AllGreeks)
+      .value("ALL", GreekFieldMask::All)
+      .def("__or__", [](GreekFieldMask a, GreekFieldMask b) { return a | b; }, py::is_operator())
+      .def("__and__", [](GreekFieldMask a, GreekFieldMask b) { return a & b; }, py::is_operator());
+  py::enum_<AmericanGreekReason>(m, "AmericanGreekReason")
+      .value("NOT_REQUESTED", AmericanGreekReason::NotRequested)
+      .value("COMPUTED_ESTIMATE", AmericanGreekReason::ComputedEstimate)
+      .value("EXERCISED", AmericanGreekReason::Exercised)
+      .value("UNSUPPORTED_AXIS", AmericanGreekReason::UnsupportedAxis)
+      .value("STENCIL_CROSSING", AmericanGreekReason::StencilCrossing)
+      .value("NONFINITE", AmericanGreekReason::Nonfinite);
+  py::class_<AmericanGreeks>(m, "AmericanGreeks",
+      "Per-field availability is not an accuracy certificate. Reasons follow "
+      "Delta, Gamma, Vega, Theta, Rho, Vanna, Volga, Charm, Price bit order.")
       .def_readonly("delta", &AmericanGreeks::delta)
       .def_readonly("gamma", &AmericanGreeks::gamma)
       .def_readonly("vega", &AmericanGreeks::vega)
@@ -621,7 +654,10 @@ void bind_pricing(py::module_ &m) {
       .def_readonly("vanna", &AmericanGreeks::vanna)
       .def_readonly("volga", &AmericanGreeks::volga)
       .def_readonly("charm", &AmericanGreeks::charm)
-      .def_readonly("price", &AmericanGreeks::price);
+      .def_readonly("price", &AmericanGreeks::price)
+      .def_readonly("requested", &AmericanGreeks::requested)
+      .def_readonly("supported", &AmericanGreeks::supported)
+      .def_readonly("reasons", &AmericanGreeks::reasons);
 
   // G2: carry sensitivities (∂P/∂q; ∂P/∂Div via the chain rule at the C++ layer).
   py::class_<CarryGreeks>(m, "CarryGreeks")
@@ -792,7 +828,10 @@ void bind_pricing(py::module_ &m) {
         py::arg("analytic") = false, py::arg("isa") = simd::SimdIsa::Auto,
         "American Greeks for a whole book as numpy SoA columns.\n\n"
         "Returns a dict of delta/gamma/vega/theta/rho/vanna/volga/charm/price\n"
-        "plus `status`. `analytic=False` (default) fans the scalar FD reference\n"
+        "plus `status`, uint32 `requested`/`supported`, and uint8 `reasons` (N,9).\n"
+        "Reason order is Delta..Charm, Price. Partial lanes retain supplied values;\n"
+        "a failed full-bundle status does not invalidate a supplied price.\n"
+        "Availability does not certify derivative accuracy. `analytic=False` fans the FD reference\n"
         "per lane; `analytic=True` takes the analytic route, which defers to FD\n"
         "off its supported regime.");
 

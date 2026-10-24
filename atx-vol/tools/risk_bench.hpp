@@ -65,6 +65,8 @@ struct RiskBenchArgs {
   bool determinism{false};      // --determinism (threads=1 shadow stream, bit-compare)
   std::string out_json;         // --out <file>  (stdout when empty)
   std::string out_md;           // --md <file>   (not written when empty)
+  std::string dump_legs;        // --dump-legs <file.csv>: per-option-leg CSV (none when empty)
+  std::size_t dump_steps{1};    // --dump-steps N: dump the first N steps (0 = every step)
   std::uint64_t seed{1};
   bool help{false};             // --help / -h
 
@@ -315,15 +317,19 @@ void summarize(RiskBenchReport &report);
 //            per uid, eligible rows have |vendor_delta| in [0.05, 0.95], sigma in
 //            (0.01, 3.0] (the licensed drop carries penny-name srVol >= 5 rows) and a
 //            two-sided quote (bid > 0, ask >= bid); picks go round-robin over the
-//            uid's expiries (starting at an rng-chosen one), sides alternating across
-//            the uid's picks, each pick the unused contract nearest a cycling |delta|
+//            uid's expiries (starting at an rng-chosen one); the side alternates inside
+//            each expiry (call and put at every |delta| target) and across expiries on
+//            the first pass (so a quota <= the expiry count still holds both sides);
+//            each pick is the unused contract nearest the expiry's cycling |delta|
 //            target grid;
 //            qty uniform in {-10..-1, 1..10}, multiplier 100, ids 1..n;
 //   shares   one leg per uid for the first min(args.shares, n_uids) uids, qty =
 //            -round(sum(qty * 100 * vendor_delta) / 100) * 100 (100 when that is 0),
 //            ids continuing after the options.
 // A uid with fewer eligible rows than its quota contributes what it has
-// (`shortfall` counts the gap). InvalidArgument when the bucket is empty.
+// (`shortfall` counts the gap). InvalidArgument when the bucket is empty, when
+// `args.underliers` is 0, or when a column the selector reads (uid, expiry_ns, side,
+// strike, vendor_delta, bid, ask) does not have one value per row.
 struct BenchBook {
   std::vector<OptionLeg> options;
   std::vector<ShareLeg> shares;
@@ -336,13 +342,133 @@ struct BenchBook {
 [[nodiscard]] Result<BenchBook> select_bench_book(const SpiderRockBucket &bucket,
                                                   const RiskBenchArgs &args, std::mt19937_64 &rng);
 
+// ═══ Per-leg dump (--dump-legs) ══════════════════════════════════════════════
+//
+// One CSV row per OPTION leg per dumped step (share legs are not dumped), in PREPARED
+// row order (ties: leg input order). Every model column is the step's BASE side: the
+// base frame (RiskStream::previous() after the step), the base state's carry and the
+// base bucket's raw vendor row; the P&L columns are the step's per-leg explain.
+// Header row, LF line endings, doubles in shortest round-trip form, a non-finite value
+// is an EMPTY cell. Columns are listed in docs/risk-bench.md.
+
+// Vendor parity floors (the symmetric-relative denominator's minimum): one tick in
+// price, 1e-3 in delta and in vega per unit vol.
+inline constexpr double kParityPriceFloor = 0.01;
+inline constexpr double kParityDeltaFloor = 1e-3;
+inline constexpr double kParityVegaFloor = 1e-3;
+
+// Where the carry a contract was priced with came from in the base state (the
+// MarketState precedence, market_state.hpp):
+//   TermCarry        the uid's ExpiryCarry row with the contract's exact expiry_ns
+//   Flat             no row: flat_rate / flat_q, no cash dividends (pv_divs = 0)
+//   FlatCurveOrDivs  no row, and a yield curve or cash dividends apply: the rate /
+//                    pv_divs the engine derived are not reproduced (empty cells; the
+//                    frame's rate / q_eff columns are what the kernel used)
+//   Surface          CarryFrom::Surface (carry read from the uid's surface)
+//   Absent           the uid is not in the base state
+enum class CarrySource : std::uint8_t {
+  TermCarry = 0,
+  Flat = 1,
+  FlatCurveOrDivs = 2,
+  Surface = 3,
+  Absent = 4
+};
+[[nodiscard]] const char *to_string(CarrySource source) noexcept;
+
+struct LegDumpRow {
+  std::string step;            // "<from>-><to>"
+  std::size_t leg_index{0};    // option-leg input index
+  std::uint64_t leg_id{0};
+  std::uint32_t prepared_row{0};
+  std::string ticker;
+  std::uint32_t uid{0};
+  std::uint32_t uid_slot{0};   // index into PreparedRiskBook::uids()
+  double strike{kNaN};
+  std::int64_t expiry_ns{0};   // written as its UTC date YYYY-MM-DD
+  Side side{Side::Call};
+  double qty{kNaN};
+  double multiplier{kNaN};
+  // The base frame's resolved inputs (per share).
+  double T{kNaN};
+  double sigma{kNaN};
+  double spot{kNaN};           // the base state's UnderlierState spot
+  double forward{kNaN};
+  double rate{kNaN};           // the frame's rate column (what the kernel priced at)
+  double q_eff{kNaN};          // the frame's q_eff column
+  CarrySource carry_source{CarrySource::Absent};
+  double carry_rate{kNaN};     // the ExpiryCarry row's rate (Flat: flat_rate)
+  double carry_q{kNaN};        // the row's q (Flat: flat_q)
+  double pv_divs{kNaN};        // the row's pv_divs (Flat: 0)
+  std::string route;           // to_string(RiskRoute) of the base frame row
+  std::string flags;           // to_string(RiskFlag) names of the set bits, '|'-joined
+  std::string status;          // to_string(RiskLaneStatus) of the base frame row
+  std::string leg_status;      // the explain's status for this leg
+  // Ours: the base frame (per share, unscaled; risk_frame.hpp conventions).
+  double price{kNaN};
+  double delta{kNaN};
+  double gamma{kNaN};
+  double vega{kNaN};
+  double theta{kNaN};
+  double vanna{kNaN};
+  double volga{kNaN};
+  double charm{kNaN};
+  // The vendor as the engine carried it (the base frame's marks columns; NaN unless
+  // VendorParityAvailable).
+  double vendor_price{kNaN};
+  double vendor_delta{kNaN};
+  // The base bucket's row, RAW SpiderRock units (set_leg_dump_vendor).
+  double sr_prc{kNaN};
+  double sr_de{kNaN};
+  double sr_ga{kNaN};
+  double sr_ve{kNaN};
+  double sr_th{kNaN};
+  double sr_years{kNaN};
+  double sr_uprc{kNaN};
+  double sr_rate{kNaN};
+  double sr_sdiv{kNaN};
+  double sr_ddiv{kNaN};
+  double sr_bid{kNaN};
+  double sr_ask{kNaN};
+  // The step's per-leg explain (position-scaled).
+  double pnl_total{kNaN};
+  double pnl_delta{kNaN};
+  double pnl_gamma{kNaN};
+  double pnl_vega{kNaN};
+  double pnl_volga{kNaN};
+  double pnl_vanna{kNaN};
+  double pnl_theta{kNaN};
+  double pnl_rho{kNaN};
+  double pnl_charm{kNaN};
+  double pnl_unexplained{kNaN};
+};
+
+// Copies row `r` of `bucket` into the sr_* columns of `row`.
+void set_leg_dump_vendor(LegDumpRow &row, const SpiderRockBucket &bucket, std::size_t r);
+// The header line (LF-terminated).
+[[nodiscard]] std::string leg_dump_csv_header();
+// Appends one LF-terminated line. Derived columns, computed here:
+//   q_eff_d4       spiderrock_q_eff(spot, pv_divs, carry_rate, carry_q, T): the D4 carry
+//                  the row implies (compare with q_eff, what the kernel used)
+//   vendor_vega    sr_ve / kSpiderRockVegaScale   (per unit vol, as parity compares)
+//   vendor_theta   sr_th / kSpiderRockThetaScale  (per year)
+//   price_abs_err  |price - vendor_price|
+//   price_sym_rel  price_abs_err / max(|price|, |vendor_price|, kParityPriceFloor)
+// A string cell holding ',' '"' CR or LF is quoted (RFC 4180).
+void append_leg_dump_csv(std::string &out, const LegDumpRow &row);
+// Option-leg indices ordered by prepared row, ties by leg index (a stable sort).
+[[nodiscard]] std::vector<std::size_t>
+leg_dump_order(std::span<const std::uint32_t> leg_prepared_row);
+// Whether 1-based step `step` is dumped under `--dump-steps limit` (0 = every step).
+[[nodiscard]] bool dump_step_selected(std::size_t limit, std::size_t step) noexcept;
+
 // ═══ Engine driver (tools/risk_bench.cpp) ════════════════════════════════════
 
 // Runs the benchmark: prepares the synthetic store when asked, loads buckets
 // [from, to] (top-N underliers fixed at the first bucket), selects the book on the
 // first bucket, drives a RiskStream (plus the threads=1 shadow for --determinism and
 // the cold kernel for --kernel both) and returns the filled, summarized report.
-// Progress goes to `log`. NotFound / InvalidArgument / engine errors propagate.
+// With --dump-legs it writes the per-leg CSV (opened before any bucket is read).
+// Progress goes to `log`. NotFound / InvalidArgument / IoError / engine errors propagate.
 [[nodiscard]] Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &log);
 
 } // namespace atx::vol::riskbench

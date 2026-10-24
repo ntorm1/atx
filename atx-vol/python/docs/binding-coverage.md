@@ -33,6 +33,24 @@ the end; the classification column is a judgement and is the part to review.
 `quote_slice.cpp` deltas, 98 bound enum types gated for completeness
 (`tests/test_binding_enum_parity.py`).
 
+### Availability update, 2026-10-24
+
+At `3f643bd1`, the current static source gate counts **101** bound qualified enum
+types: the historical 98 plus `GreekFieldMask`, `AmericanGreekReason`, and
+`PriceStatus`. Scalar American Greeks and the American batch, fitted-chain and
+priced-surface grid outputs now expose per-field availability. The grid keeps
+its independent fair value separate from the Greek bundle's price. The dedicated
+American Unsupported batch sentinel is `-2`; success remains `-1`.
+
+The original matrix and receipt above describe the 2026-10-23 inventory. Its
+`backtest/portfolio_pricer.hpp` entry must not be read as a Python `PortfolioPricer`
+API: the binding exposes configuration/types (now including `PriceStatus`), while
+`PortfolioPricer`, `PriceFrame`, and `PriceTotals` remain unbound. Native
+ServedSession partial-result propagation is also a separate pending component.
+Validation: 99 focused Python tests passed, one expected source-build wheel
+metadata skip, and four owning PCH-off objects passed; evidence is
+`repair-iv/greek-python-final.*` and `greek-python-hygiene.log` under the r7 run.
+
 ## Matrix
 
 | Header | Status | Where / note |

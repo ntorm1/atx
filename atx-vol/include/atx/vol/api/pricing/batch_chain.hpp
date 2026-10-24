@@ -75,8 +75,12 @@
 //
 // ## Status, errors, allocation
 //
-// Each contract gets one ChainRowStatus byte; a non-Ok row holds NaN in every
-// requested output column. The call returns Result<std::size_t> (the contract count)
+// Each contract gets one ChainRowStatus byte. GreeksUnavailable retains its
+// supplied price and derivative columns; refused derivatives are NaN. Other
+// non-Ok rows hold NaN in every requested output column. Optional per-field
+// metadata distinguishes computed estimates, exercise values and refusals; it
+// describes availability, not a numerical accuracy certificate.
+// The call returns Result<std::size_t> (the contract count)
 // and reports only call-shape errors there: mismatched or missing columns, an output
 // that overlaps an input or another output, a non-finite or non-positive spot. Once
 // the ChainBatchWorkspace is reserved the call allocates nothing itself; a row the
@@ -98,6 +102,7 @@
 //
 // Tier-B: public and includable, outside the frozen umbrella.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -122,7 +127,7 @@ enum class ChainRowStatus : std::uint8_t {
   InvalidInput = 1,  // failed boundary validation (strike, sigma, target, expiry index or
                      // the expiry's own T/rate/carry/div_pv); never sent to the kernel
   Unpriceable = 2,   // the kernel refused the contract (e.g. the double-continuation
-                     // regime), returned a non-finite requested output, or (implied vol)
+                     // regime), did not supply a finite price, or (implied vol)
                      // the zero-vol bound overflows
   VegaFloor = 3,     // implied vol: ill-posed. A target within the band of the zero-vol
                      // American value (every sigma up to the exercise edge, or below
@@ -136,6 +141,8 @@ enum class ChainRowStatus : std::uint8_t {
   NonMonotoneRegion = 6, // implied vol, opt-in (ChainIvOptions::refuse_non_monotone): the
                          // answer sits where the cold Andersen-Lake map is not monotone
                          // in sigma (rule 3 of "One implied-vol refusal rule")
+  GreeksUnavailable = 7, // pricing: price is supplied, at least one requested
+                         // derivative is unavailable; other supplied fields survive
 };
 
 // One entry per expiry e. T is the year fraction (> 0), rate / carry the continuous
@@ -174,7 +181,11 @@ struct ChainContractColumns {
 // required; each Greek column is optional (an empty span is not computed, and an
 // empty vega / rho skips that pair of boundary solves). theta is the calendar
 // derivative dV/dt per year (american_greeks_al convention), vega per unit sigma,
-// rho per unit rate.
+// rho per unit rate. The three metadata columns are independently optional,
+// empty or one entry per contract. requested is Price plus nonempty derivative
+// columns, supported is its supplied subset, and reasons use AmericanGreeks' bit
+// order (Delta, Gamma, Vega, Theta, Rho, Vanna, Volga, Charm, Price). Vanna, Volga
+// and Charm are always NotRequested: this API has no output column for them.
 struct ChainGreekColumns {
   std::span<double> price;
   std::span<double> delta;
@@ -183,13 +194,16 @@ struct ChainGreekColumns {
   std::span<double> theta;
   std::span<double> rho;
   std::span<ChainRowStatus> status;
+  std::span<GreekFieldMask> requested{};
+  std::span<GreekFieldMask> supported{};
+  std::span<std::array<AmericanGreekReason, 9>> reasons{};
 
   [[nodiscard]] std::size_t size() const noexcept { return price.size(); }
   [[nodiscard]] bool consistent() const noexcept {
     const std::size_t n = price.size();
-    const auto opt = [n](std::span<double> s) noexcept { return s.empty() || s.size() == n; };
+    const auto opt = [n](auto s) noexcept { return s.empty() || s.size() == n; };
     return status.size() == n && opt(delta) && opt(gamma) && opt(vega) && opt(theta) &&
-           opt(rho);
+           opt(rho) && opt(requested) && opt(supported) && opt(reasons);
   }
   [[nodiscard]] bool price_only() const noexcept {
     return delta.empty() && gamma.empty() && vega.empty() && theta.empty() && rho.empty();

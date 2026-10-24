@@ -29,6 +29,7 @@
 #include "fitting/counters.hpp" // ATX_VOL_COUNT(SurfaceFullGreekRoutes)
 #include "atx/vol/api/backtest/priced_surface.hpp"
 #include "atx/vol/api/simd/american_boundary_batch.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -36,6 +37,20 @@
 #include <span>
 
 namespace atx::vol::detail {
+
+// Full-bundle bits retain their solve-group request. Dedicated routes request
+// only the explicitly selected axes; untouched numeric zeros supply nothing.
+[[nodiscard]] inline GreekFieldMask fused_greek_request(PricedSurface::EvalField fields,
+                                                        GreekNeeds needs) noexcept {
+  using EF = PricedSurface::EvalField;
+  if (has_field(fields, EF::FirstOrder) || has_field(fields, EF::SecondOrder))
+    return american_greek_request(needs.vega, needs.rho, needs.charm);
+  GreekFieldMask requested = GreekFieldMask::None;
+  if (has_field(fields, EF::Price)) requested = requested | GreekFieldMask::Price;
+  if (has_field(fields, EF::Delta)) requested = requested | GreekFieldMask::Delta;
+  if (has_field(fields, EF::Vega)) requested = requested | GreekFieldMask::Vega;
+  return requested;
+}
 
 // Whether `laned_greek_run` is the right route for this batch request. Mirrors the
 // predicate WS-P1a locked on PricedSurface (the ACCELERATOR guard is the caller's — the
@@ -48,7 +63,9 @@ namespace atx::vol::detail {
          method == AmericanMethod::AndersenLake && simd::avx2_greeks_selected(isa);
 }
 
-// FIX-2/F2-B (rev-ws-g M1-5): the finite sweep behind the Greek Ok-stamp. It IS
+// Supplied-field metadata and finiteness both guard the Greek Ok-stamp. Default
+// zero slots have no availability; normalized unrequested zeros never gain it.
+// FIX-2/F2-B (rev-ws-g M1-5): this evolved from the finite sweep. It IS
 // `greeks_all_finite` in portfolio_pricer.cpp — as of FIX-5/M3 that name delegates here
 // instead of carrying a second copy. The semantics FIX-1 locked at the portfolio
 // Ok-stamps (740b040 F2, 9c3e1d0 F3): price/delta/gamma/theta always,
@@ -64,30 +81,13 @@ namespace atx::vol::detail {
 // change to these two functions must stay a change to BOTH routes at once, which is
 // exactly what having one definition buys.
 //
-// FIX-5 (I1, I3, M3) — the census, because "the three portfolio Ok-stamps" was carried in
-// four commit bodies and in this comment, and it was wrong. There are FOUR stamps in
-// portfolio_pricer.cpp (seed-staging, marks, ADJOINT, non-adjoint greeks) — I1 found the
-// adjoint one still on the pre-FIX-1 `isfinite(price)` predicate — and a second laned-Greek
-// driver outside that file entirely, `american_greeks_batch` (src/american_batch.cpp),
-// whose scalar and laned arms each carried their own predicate and disagreed by side (I3).
-// Every one of them now routes through THESE two functions. The list of routes that must
-// stay on this definition is: laned_greek_run's scatter; both evaluate_resolved
-// implementations; all four portfolio_pricer stamps (via `greeks_all_finite`, which
-// delegates here as of M3); and american_greeks_batch's two arms.
+// Surface evaluation and portfolio seed/base/target-risk validation use these
+// functions, including both adjoint and non-adjoint Greek routes. The public
+// american_greeks_batch arms share american_greeks_support underneath with their
+// finer output-field mask, rather than requiring an entire internal solve group.
 [[nodiscard]] inline bool requested_greeks_finite(const AmericanGreeks &g,
                                                   GreekNeeds needs) noexcept {
-  bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&
-            std::isfinite(g.theta);
-  if (needs.vega) {
-    ok = ok && std::isfinite(g.vega) && std::isfinite(g.volga) && std::isfinite(g.vanna);
-  }
-  if (needs.rho) {
-    ok = ok && std::isfinite(g.rho);
-  }
-  if (needs.charm) {
-    ok = ok && std::isfinite(g.charm);
-  }
-  return ok;
+  return american_greeks_support(g, american_greek_request(needs.vega, needs.rho, needs.charm));
 }
 
 // FIX-1/F3's second half, applied here: an UNREQUESTED slot that came back non-finite is
@@ -97,6 +97,7 @@ namespace atx::vol::detail {
 // a consumer's `g.rho * dr` is NaN even when dr is 0.0. Restricted to the non-finite case,
 // so every lane that is admitted today stays bit-for-bit identical.
 inline void normalize_unrequested_greeks(AmericanGreeks &g, GreekNeeds needs) noexcept {
+  narrow_american_greek_request(g, american_greek_request(needs.vega, needs.rho, needs.charm));
   if (!needs.vega) {
     if (!std::isfinite(g.vega)) {
       g.vega = 0.0;
@@ -182,9 +183,7 @@ void laned_greek_run(double S, std::span<const Side> side, const std::optional<A
     // in place for diagnosis — consumers gate on status.
     out.greeks[e] = gg;
     out.price[e] = gg.price;
-    out.status[e] = atx::core::Err(atx::core::ErrorCode::Internal,
-                                   "laned_greek_run: non-finite requested Greek on a "
-                                   "finite-price lane");
+    out.status[e] = atx::core::Err(atx::core::ErrorCode::Unavailable, "Greek refused");
   };
 
   const auto flush_put = [&]() {

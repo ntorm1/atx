@@ -2,8 +2,9 @@
 // `run_risk_bench` loads SpiderRock buckets, builds one MarketState per bucket,
 // selects the book on the first bucket and drives RiskStream (plus the threads=1
 // shadow stream for --determinism and the cold-kernel stream for --kernel both),
-// filling the report through the engine-free core. Links only where the risk
-// engine is compiled in (the tool target; the ATX_VOL_RISK_E2E test).
+// filling the report through the engine-free core, and writes the --dump-legs CSV.
+// Links only where the risk engine is compiled in (the tool target; the
+// ATX_VOL_RISK_E2E test).
 
 #include "risk_bench.hpp"
 
@@ -13,12 +14,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <ostream>
 #include <random>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,12 +42,6 @@ using atx::core::Ok;
 namespace {
 
 using Clock = std::chrono::steady_clock;
-
-// Symmetric-relative floors for vendor parity (one tick in price; 1e-3 in delta and
-// in vega per unit vol).
-constexpr double kPriceFloor = 0.01;
-constexpr double kDeltaFloor = 1e-3;
-constexpr double kVegaFloor = 1e-3;
 
 [[nodiscard]] double seconds_since(Clock::time_point t0) noexcept {
   return std::chrono::duration<double>(Clock::now() - t0).count();
@@ -262,9 +259,9 @@ void fill_parity(StepReport &t, const RiskFrame &f, const PreparedRiskBook &pb,
       vv.push_back(b.vendor_vega[*row] / kSpiderRockVegaScale);
     }
   }
-  t.parity_price = parity(op, vp, kPriceFloor);
-  t.parity_delta = parity(od, vd, kDeltaFloor);
-  t.parity_vega = parity(ov, vv, kVegaFloor);
+  t.parity_price = parity(op, vp, kParityPriceFloor);
+  t.parity_delta = parity(od, vd, kParityDeltaFloor);
+  t.parity_vega = parity(ov, vv, kParityVegaFloor);
 }
 
 [[nodiscard]] bool bits_equal(double a, double b) noexcept {
@@ -303,15 +300,18 @@ void fill_parity(StepReport &t, const RiskFrame &f, const PreparedRiskBook &pb,
          columns_equal(fa.theta, fb.theta);
 }
 
+// NaN (JSON null) when no row is Ok in both: "nothing compared" is not "no difference".
 [[nodiscard]] double max_abs_diff(std::span<const double> a, std::span<const double> b,
                                   std::span<const std::uint8_t> both_ok) noexcept {
   double m = 0.0;
+  bool any = false;
   for (std::size_t i = 0; i < both_ok.size(); ++i) {
     if (both_ok[i] != 0) {
       m = std::max(m, std::abs(a[i] - b[i]));
+      any = true;
     }
   }
-  return m;
+  return any ? m : kNaN;
 }
 
 // --kernel both: the cold frame / explain against the main ones.
@@ -340,8 +340,199 @@ void fill_cold(ColdComparison &c, const RiskFrame &m, const RiskFrame &k, const 
   c.max_abs_pnl_total = max_abs_diff(mx.pnl_total, kx.pnl_total, legs_ok);
 }
 
+// ── --dump-legs ─────────────────────────────────────────────────────────────
+
+// The per-option-leg CSV: opened (header written) before any bucket is read, so a bad
+// path fails fast; one block per selected step (dump_step_selected).
+struct LegDump {
+  std::ofstream file;
+  std::string path;
+  std::size_t limit{1};
+  std::size_t steps_seen{0};
+  std::size_t steps_written{0};
+  std::size_t rows{0};
+  const UnderlierTable *table{nullptr};
+};
+
+[[nodiscard]] Status write_dump_text(LegDump &d, std::string_view text) {
+  d.file.write(text.data(), static_cast<std::streamsize>(text.size()));
+  d.file.flush();
+  if (!d.file) {
+    return Err(ErrorCode::IoError, "risk-bench: --dump-legs write failed: " + d.path);
+  }
+  return Ok();
+}
+
+// nullptr without --dump-legs.
+[[nodiscard]] Result<std::unique_ptr<LegDump>> open_leg_dump(const RiskBenchArgs &args,
+                                                             const UnderlierTable &table) {
+  if (args.dump_legs.empty()) {
+    return Ok(std::unique_ptr<LegDump>{});
+  }
+  auto d = std::make_unique<LegDump>();
+  d->path = args.dump_legs;
+  d->limit = args.dump_steps;
+  d->table = &table;
+  d->file.open(d->path, std::ios::binary | std::ios::trunc); // binary: LF line endings
+  if (!d->file) {
+    return Err(ErrorCode::IoError, "risk-bench: cannot open --dump-legs file: " + d->path);
+  }
+  ATX_TRY_VOID(write_dump_text(*d, leg_dump_csv_header()));
+  return Ok(std::move(d));
+}
+
+struct CarryUsed {
+  CarrySource source{CarrySource::Absent};
+  double rate{kNaN};
+  double q{kNaN};
+  double pv_divs{kNaN};
+};
+
+// The carry the state hands a contract under CarryFrom::State (market_state.hpp's
+// precedence): the exact-expiry ExpiryCarry row, else the flat fallbacks.
+[[nodiscard]] CarryUsed carry_used(const MarketState &state, std::uint32_t uid,
+                                   std::int64_t expiry_ns) noexcept {
+  CarryUsed c;
+  const UnderlierState *u = state.underlier(uid);
+  if (u == nullptr) {
+    return c;
+  }
+  if (u->carry == CarryFrom::Surface) {
+    c.source = CarrySource::Surface;
+    return c;
+  }
+  const auto it = std::lower_bound(
+      u->term_carry.begin(), u->term_carry.end(), expiry_ns,
+      [](const ExpiryCarry &e, std::int64_t x) { return e.expiry_ns < x; });
+  if (it != u->term_carry.end() && it->expiry_ns == expiry_ns) {
+    return CarryUsed{CarrySource::TermCarry, it->rate, it->q, it->pv_divs};
+  }
+  if (u->yield != nullptr || !u->cash_divs.empty()) {
+    c.source = CarrySource::FlatCurveOrDivs;
+    c.rate = u->yield == nullptr ? u->flat_rate : kNaN;
+    c.q = u->flat_q;
+    return c;
+  }
+  return CarryUsed{CarrySource::Flat, u->flat_rate, u->flat_q, 0.0};
+}
+
+// The to_string(RiskFlag) names of the set bits, lowest first, '|'-joined.
+[[nodiscard]] std::string flag_names(RiskFlags bits) {
+  std::string s;
+  for (std::uint32_t b = 0; b < 32; ++b) {
+    const std::uint32_t bit = 1u << b;
+    if ((bits & bit) == 0u) {
+      continue;
+    }
+    if (!s.empty()) {
+      s.push_back('|');
+    }
+    s += to_string(static_cast<RiskFlag>(bit));
+  }
+  return s;
+}
+
+// The base frame's row `r`, the base state's spot / carry and the base bucket's row.
+void fill_dump_model(LegDumpRow &row, const RiskFrame &f, std::uint32_t r, const Snapshot &base) {
+  row.T = f.T[r];
+  row.sigma = f.sigma[r];
+  const UnderlierState *u = base.state->underlier(row.uid);
+  row.spot = u != nullptr ? u->spot : kNaN;
+  row.forward = f.forward[r];
+  row.rate = f.rate[r];
+  row.q_eff = f.q_eff[r];
+  const CarryUsed c = carry_used(*base.state, row.uid, row.expiry_ns);
+  row.carry_source = c.source;
+  row.carry_rate = c.rate;
+  row.carry_q = c.q;
+  row.pv_divs = c.pv_divs;
+  row.route = to_string(f.route[r]);
+  row.flags = flag_names(f.flags[r]);
+  row.status = to_string(f.status[r]);
+  row.price = f.price[r];
+  row.delta = f.delta[r];
+  row.gamma = f.gamma[r];
+  row.vega = f.vega[r];
+  row.theta = f.theta[r];
+  row.vanna = f.vanna[r];
+  row.volga = f.volga[r];
+  row.charm = f.charm[r];
+  row.vendor_price = f.vendor_price[r];
+  row.vendor_delta = f.vendor_delta[r];
+  const std::optional<std::size_t> br =
+      find_bucket_row(base.bucket, row.uid, row.expiry_ns, row.side, row.strike);
+  if (br.has_value()) {
+    set_leg_dump_vendor(row, base.bucket, *br);
+  }
+}
+
+void fill_dump_pnl(LegDumpRow &row, const ExplainResult &ex, std::size_t i) {
+  row.leg_status = to_string(ex.status[i]);
+  row.pnl_total = ex.pnl_total[i];
+  row.pnl_delta = ex.pnl_delta[i];
+  row.pnl_gamma = ex.pnl_gamma[i];
+  row.pnl_vega = ex.pnl_vega[i];
+  row.pnl_volga = ex.pnl_volga[i];
+  row.pnl_vanna = ex.pnl_vanna[i];
+  row.pnl_theta = ex.pnl_theta[i];
+  row.pnl_rho = ex.pnl_rho[i];
+  row.pnl_charm = ex.pnl_charm[i];
+  row.pnl_unexplained = ex.pnl_unexplained[i];
+}
+
+// One block of option-leg rows for a step, in prepared row order. The model columns
+// are the step's BASE side: `stream.previous()` after the step and the `base` snapshot
+// (still alive: run_risk_bench releases it only after every stream stepped).
+[[nodiscard]] Status dump_step(LegDump &d, const std::string &label, const RiskStream &stream,
+                               const ExplainResult &ex, const Snapshot &base) {
+  d.steps_seen += 1;
+  if (!dump_step_selected(d.limit, d.steps_seen)) {
+    return Ok();
+  }
+  const PreparedRiskBook &pb = stream.prepared();
+  const RiskFrame &f = stream.previous();
+  const std::span<const OptionLeg> legs = pb.book().option_legs();
+  const std::span<const std::uint32_t> prow = pb.leg_prepared_row();
+  if (prow.size() != legs.size() || ex.size() < legs.size() || f.size() != pb.n_unique()) {
+    return Err(ErrorCode::InvalidArgument,
+               "risk-bench: --dump-legs: book, frame and explain sizes disagree");
+  }
+  std::string text;
+  text.reserve(legs.size() * 512);
+  for (const std::size_t i : leg_dump_order(prow)) {
+    const std::uint32_t r = prow[i];
+    const OptionLeg &leg = legs[i];
+    LegDumpRow row;
+    row.step = label;
+    row.leg_index = i;
+    row.leg_id = leg.id;
+    row.prepared_row = r;
+    row.uid = pb.uid()[r];
+    row.ticker = std::string{d.table->ticker(row.uid)};
+    const auto slot = std::lower_bound(pb.uids().begin(), pb.uids().end(), row.uid);
+    row.uid_slot = static_cast<std::uint32_t>(slot - pb.uids().begin());
+    row.strike = pb.strike()[r];
+    row.expiry_ns = pb.expiry_ns()[r];
+    row.side = pb.side()[r];
+    row.qty = leg.qty;
+    // The effective deliverable (risk_book.hpp: <= 0 or non-finite => 100).
+    row.multiplier = std::isfinite(leg.multiplier) && leg.multiplier > 0.0 ? leg.multiplier : 100.0;
+    fill_dump_model(row, f, r, base);
+    fill_dump_pnl(row, ex, i);
+    append_leg_dump_csv(text, row);
+  }
+  ATX_TRY_VOID(write_dump_text(d, text));
+  d.steps_written += 1;
+  d.rows += legs.size();
+  return Ok();
+}
+
+// ── Steps ───────────────────────────────────────────────────────────────────
+
 // Steps every stream to `cur` and records the step; `prev` stays alive throughout.
-[[nodiscard]] Result<StepReport> run_step(Streams &s, const Snapshot &prev, const Snapshot &cur) {
+// With a LegDump, the main stream's step is dumped (base side = `prev`).
+[[nodiscard]] Result<StepReport> run_step(Streams &s, const Snapshot &prev, const Snapshot &cur,
+                                          LegDump *dump) {
   StepReport t;
   t.bucket_from = prev.bucket.bucket_et;
   t.bucket_to = cur.bucket.bucket_et;
@@ -353,6 +544,9 @@ void fill_cold(ColdComparison &c, const RiskFrame &m, const RiskFrame &k, const 
   fill_frame(t, s.main->current());
   fill_explain(t, *ex);
   fill_parity(t, s.main->current(), s.main->prepared(), cur.bucket);
+  if (dump != nullptr) {
+    ATX_TRY_VOID(dump_step(*dump, t.bucket_from + "->" + t.bucket_to, *s.main, *ex, prev));
+  }
   if (s.shadow.has_value()) {
     ATX_TRY(const ExplainResult *dx, s.shadow->step(*cur.state));
     t.determinism_checked = true;
@@ -405,6 +599,7 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   spec.date = args.date;
   spec.max_underliers = args.underliers;
   UnderlierTable table;
+  ATX_TRY(const std::unique_ptr<LegDump> dump, open_leg_dump(args, table));
   ATX_TRY(std::unique_ptr<Snapshot> prev, load_snapshot(spec, rep.buckets.front(), table));
   rep.bucket_loads.push_back(bucket_load(*prev));
   // The universe is fixed at the first bucket: later buckets read exactly these
@@ -432,10 +627,14 @@ Result<RiskBenchReport> run_risk_bench(const RiskBenchArgs &args, std::ostream &
   for (std::size_t k = 1; k < rep.buckets.size(); ++k) {
     ATX_TRY(std::unique_ptr<Snapshot> cur, load_snapshot(spec, rep.buckets[k], table));
     rep.bucket_loads.push_back(bucket_load(*cur));
-    ATX_TRY(StepReport step, run_step(streams, *prev, *cur));
+    ATX_TRY(StepReport step, run_step(streams, *prev, *cur, dump.get()));
     log_step(log, step);
     rep.steps.push_back(std::move(step));
     prev = std::move(cur); // the old state is released only after every stream stepped
+  }
+  if (dump != nullptr) {
+    log << "[risk-bench] --dump-legs: " << dump->rows << " option-leg rows over "
+        << dump->steps_written << " step(s) -> " << dump->path << "\n";
   }
   summarize(rep);
   return Ok(std::move(rep));

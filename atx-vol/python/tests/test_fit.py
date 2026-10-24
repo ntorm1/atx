@@ -302,6 +302,34 @@ def test_value_chain_only_fills_the_requested_fields(fitted):
     assert len(val["delta"]) == 0
 
 
+def test_value_chain_carries_native_greek_availability(fitted):
+    chain, fitter = fitted
+    val = fitter.value_chain(chain, av.OutputField.GREEKS | av.OutputField.MODEL_IV, n_threads=1)
+    assert val["requested"].shape == val["supported"].shape == (chain.size(),)
+    assert val["requested"].dtype == val["supported"].dtype == np.uint32
+    assert val["reasons"].shape == (chain.size(), 9)
+    assert val["reasons"].dtype == np.uint8
+    surface, snap = fitter.surface(), chain.snapshot()
+    checked = 0
+    for i in range(0, chain.size(), max(1, chain.size() // 40)):
+        if not math.isfinite(val["model_iv"][i]):
+            continue
+        side = av.Side.CALL if snap["side"][i] == int(av.Side.CALL) else av.Side.PUT
+        g = surface.greeks(float(snap["strike"][i]), float(snap["T"][i]), side)
+        assert val["requested"][i] == int(g.requested)
+        assert val["supported"][i] == int(g.supported)
+        assert list(val["reasons"][i]) == [int(reason) for reason in g.reasons]
+        checked += 1
+    assert checked >= 10
+
+
+def test_unrequested_chain_greeks_have_empty_availability(fitted):
+    chain, fitter = fitted
+    val = fitter.value_chain(chain, av.OutputField.MODEL_IV, n_threads=1)
+    assert val["requested"].shape == val["supported"].shape == (0,)
+    assert val["reasons"].shape == (0, 9)
+
+
 def test_value_chain_is_bit_identical_across_n_threads(fitted):
     # `PricerFitter::value_chain` documents "DETERMINISTIC: the result is
     # bit-identical for any thread count (disjoint output slots, pure const
