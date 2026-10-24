@@ -305,14 +305,57 @@ counts and break-even batch size. Use the release ThinLTO profile, fixed P-core,
 one worker, fresh processes and recorded sibling contention; retain failed timing
 receipts. Do not compare the historical busy-host D1 latency to a quiet new run.
 
-Existing focused build/test entry points (the proposed exporter/prepared-PDE tool
-does not exist yet):
+Existing focused build/test entry points (the prepared-PDE experiment remains
+unimplemented; the exact input/price exporter below is available):
 
 ```powershell
 powershell scripts/atx-build.ps1 build atx-vol-discrete-div-reference-tests atx-vol-discrete-div-production-tests atx-vol-ddiv-latency -Preset vol-rel -Jobs 3
 powershell scripts/atx-build.ps1 -Ctest -Preset vol-rel -R "^atx-vol-discrete-div-(reference|production)$"
 build-vol-rel/bin/atx-vol-discrete-div-production-tests.exe --gtest_filter=DiscreteDivProductionMatrix.ReScoreAgainstTheIndependentReference
 ```
+
+### Frozen exact input and price manifest
+
+`tests/support/ddiv_matrix_cases.hpp` is now the single source of the original
+50 matrix inputs. Before removing the two older constructors, runtime red/green
+tests compared every original model/event bit against each independently written
+constructor. Both produced input fingerprint `12110935955959749584`. The retained
+tests pin this fingerprint; it is an FNV accidental-drift check, not a cryptographic
+evidence hash. No original input, event arithmetic or frozen reference value changed.
+
+The production matrix target exports all 50 cases with original events, process,
+exercise rights, residual continuous carry, unrounded Standard/Refined prices,
+effective route/options/convention, typed refusals, original reference IV status,
+reference value/empirical uncertainty/vega and archived reference CSV SHA256.
+Price-only and IV-unresolved rows remain price requests. Six other-model cases
+remain explicit `model_mismatch` records; the matching production-model denominator
+is 44. The price gate reports pass/fail/uncertain/reference-unresolved/refusal
+separately and uses `abs(price-reference)+reference_u <= 0.001` for an empirical
+pass. These synthetic inputs have no raw bid/ask spread, so this export cannot
+qualify the separate 1%-of-spread budget.
+
+```powershell
+# The parent exists; this final directory MUST NOT already exist.
+$env:ATX_VOL_DDIV_MANIFEST_OUT = 'C:/atx-cache/quote-benchmark/cash-manifest-new-run'
+build-vol-rel/bin/atx-vol-discrete-div-production-tests.exe --gtest_filter=DiscreteDivProductionManifest.ExportsAllInputsAndUnroundedPrices
+```
+
+The export refuses an existing directory and preserves its receipt. JSON
+round-trip tests preserve all original model/event/reference/price binary64 values.
+Focused gates: 29 reference and 31 production tests pass; both owning matrix TUs
+compile with PCH disabled. Evidence is
+`C:/atx-cache/quote-benchmark/spy-qualified-r7-20261023/calendar/cash-manifest-v1/`:
+the two constructor comparisons, exporter red/green tests, final suites, expected
+overwrite refusal, `export/manifest.json`, and independent `verify_manifest.py`.
+The verifier joins every row to the archived CSV and checks original input and
+reference bits. `receipt.json` records source-file, executable and artifact hashes.
+
+The unrounded result confirms **Standard 9/44 pass, 35/44 fail; Refined 39/44 pass,
+5/44 fail**, with six model-mismatch records for each. There are no uncertain or
+unresolved dollar comparisons in this fixture. The manifest SHA256 is
+`def79ede5481a1bc1761fa6e7e126794f5128f9f995905ef2f7d6b1bf95d9810`.
+This is a reproducible numerical baseline, not a latency result or rigorous error
+certificate. No production pricing source changed for this exporter.
 
 ## 7. Later methods and promotion boundary
 

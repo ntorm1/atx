@@ -193,7 +193,7 @@ add_executable(atx-vol-discrete-div-production-tests
     american_discrete_div_production_test.cpp american_discrete_div_production_alloc_test.cpp
     american_discrete_div_production_matrix_test.cpp support/alloc_counter.cpp)
 target_link_libraries(atx-vol-discrete-div-production-tests
-    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main)
+    PRIVATE atx::vol atx::core atx_warnings GTest::gtest_main nlohmann_json::nlohmann_json)
 target_include_directories(atx-vol-discrete-div-production-tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME atx-vol-discrete-div-production COMMAND atx-vol-discrete-div-production-tests
