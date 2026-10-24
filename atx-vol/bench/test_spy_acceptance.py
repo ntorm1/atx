@@ -164,6 +164,69 @@ class FinalApiOracleTests(unittest.TestCase):
                             for v in audit.api_violations(document(value))))
 
 
+class ColdNodeRootOracleTests(unittest.TestCase):
+    def fixture(self):
+        value = surface()
+        options = {"explicit": False, "n_collocation": 12, "n_quadrature": 24,
+                   "n_quad_price": 0, "max_newton_iter": 8, "tol": 1e-10, "profile": 0}
+        value["al_options"] = options
+        nodes = {node["strike"] for node in value["nodes"]}
+        for query in value["queries"]:
+            if query["strike"] not in nodes:
+                continue
+            query.update(status="success", volatility=0.2, reason="none",
+                         vol_convention="reimplied_repaired")
+            query["cold_node"] = {"status": "evaluated", "model": "andersen_lake",
+                "options": options.copy(), "spot": 100.0, "strike": query["strike"],
+                "variance_years": 1.0, "effective_rate": 0.0, "calendar_yield": 0.0,
+                "effective_yield": 0.0, "sigma_lower": 0.2 - 1e-7, "sigma_center": 0.2,
+                "sigma_upper": 0.2 + 1e-7, "radius": 1e-7,
+                "price_lower": query["price"] - 1e-5, "price_center": query["price"],
+                "price_upper": query["price"] + 1e-5}
+        return document(value), value["queries"][0]
+
+    def test_all_identified_node_roots_must_strictly_straddle(self):
+        report, query = self.fixture()
+        result = audit.cold_root_audit(report)
+        self.assertTrue(result["strict_accuracy_passed"])
+        self.assertEqual(result["strict_straddles"], 6)
+        query["cold_node"]["price_lower"] = query["price"] + 1e-6
+        query["cold_node"]["price_center"] = query["price"] + 2e-6
+        result = audit.cold_root_audit(report)
+        self.assertFalse(result["strict_accuracy_passed"])
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["failures"][0]["kind"], "cold_root_outside_1e7_bracket")
+
+    def test_roundoff_and_flat_prices_are_separate_unresolved_evidence(self):
+        for delta in (0.0, 1e-13):
+            report, query = self.fixture()
+            query["cold_node"]["price_lower"] = query["price"] + delta
+            result = audit.cold_root_audit(report)
+            self.assertFalse(result["strict_accuracy_passed"])
+            self.assertEqual(result["roundoff_only_count"], 1)
+            self.assertEqual(result["failure_count"], 0)
+
+    def test_wrong_contract_options_or_widened_iv_radius_cannot_pass(self):
+        for patch in ({"effective_yield": 0.1}, {"radius": 2e-7},
+                      {"sigma_upper": 0.2 + 2e-7}, {"effective_rate": 0.1}):
+            report, query = self.fixture()
+            query["cold_node"].update(patch)
+            self.assertEqual(audit.cold_root_audit(report)["failure_count"], 1)
+        report, query = self.fixture()
+        query["cold_node"]["options"]["profile"] = 1
+        self.assertEqual(audit.cold_root_audit(report)["failure_count"], 1)
+
+    def test_missing_unsupported_nonfinite_or_nonmonotone_forward_evidence_fails(self):
+        for patch in ({"status": "unsupported_model"}, {"price_upper": None},
+                      {"price_upper": float("nan")}, {"price_center": 100.0}):
+            report, query = self.fixture()
+            query["cold_node"].update(patch)
+            self.assertEqual(audit.cold_root_audit(report)["failure_count"], 1)
+        report, query = self.fixture()
+        del query["cold_node"]
+        self.assertEqual(audit.cold_root_audit(report)["failure_count"], 1)
+
+
 class ColdClockOracleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

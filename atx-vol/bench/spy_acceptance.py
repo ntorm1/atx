@@ -482,6 +482,119 @@ def valid_query_metadata(query):
     return False
 
 
+def cold_root_audit(report, rows=()):
+    """Cold Reference-profile forward signs at the unchanged +/-1e-7 IV target.
+
+    Roundoff-only sign matches are diagnostic, never a strict accuracy pass.
+    The 32-epsilon USD allowance is explicit and is not an IV-tolerance increase.
+    """
+    row_ids = defaultdict(list)
+    for row in rows:
+        if invalid_reason(row) is None:
+            row_ids[row["chain_id"], row["strike"], "call" if row["is_call"] else "put"].append(row["row_id"])
+    failures, roundoff = [], []
+    identified = price_only = strict = 0
+    max_residual = 0.0
+    entries = [entry for snapshot in report.get("graded_stats", {}).get("acceptance_audit", {})
+               .get("snapshots", []) for entry in snapshot]
+    if not entries:
+        failures.append({"kind": "missing_actual_api_audit"})
+    for entry in entries:
+        if entry.get("grade") not in ("A", "B"):
+            continue
+        queries = {(q["strike"], q["side"]): q for q in entry.get("queries", [])}
+        market = entry.get("market", {})
+        curve = entry.get("carry_curve", [])
+        strikes = [point["strike"] for point in curve]
+        for node in entry.get("nodes", []):
+            strike = node["strike"]
+            for side in ("call", "put"):
+                query = queries.get((strike, side), {})
+                if query.get("status") == "price_only":
+                    price_only += 1
+                    continue
+                context = {"chain_id": entry["chain_id"], "strike": strike, "side": side,
+                           "row_ids": row_ids[entry["chain_id"], strike, side],
+                           "query": query, "market": market, "dividend_model": entry.get("dividend_model")}
+                if query.get("status") != "success":
+                    failures.append(dict(context, kind="missing_identified_node_query"))
+                    continue
+                identified += 1
+                if any(not isinstance(query.get(key), (int, float)) or
+                       isinstance(query[key], bool) or not math.isfinite(query[key])
+                       for key in ("volatility", "price")):
+                    failures.append(dict(context, kind="nonfinite_identified_query"))
+                    continue
+                cold = query.get("cold_node", {})
+                numeric = ("spot", "strike", "variance_years", "effective_rate", "calendar_yield",
+                           "effective_yield", "sigma_lower", "sigma_center", "sigma_upper",
+                           "price_lower", "price_center", "price_upper", "radius")
+                if cold.get("status") != "evaluated" or cold.get("model") != "andersen_lake" or any(
+                    not isinstance(cold.get(key), (int, float)) or isinstance(cold[key], bool) or
+                    not math.isfinite(cold[key]) for key in numeric):
+                    failures.append(dict(context, kind="missing_unsupported_or_nonfinite_cold_node"))
+                    continue
+                index = bisect.bisect_left(strikes, strike)
+                if not curve:
+                    calendar_q = market["continuous_yield"]
+                elif index == len(curve):
+                    calendar_q = curve[-1]["continuous_yield"]
+                elif index == 0 or strikes[index] == strike:
+                    calendar_q = curve[index]["continuous_yield"]
+                else:
+                    weight = math.log1p((strike - strikes[index - 1]) / strikes[index - 1]) / \
+                             math.log1p((strikes[index] - strikes[index - 1]) / strikes[index - 1])
+                    calendar_q = curve[index - 1]["continuous_yield"] * (1 - weight) + \
+                                 curve[index]["continuous_yield"] * weight
+                spot, tv, tc = market["spot"], market["variance_years"], market["calendar_years"]
+                terminal = spot * math.exp(-calendar_q * tc)
+                if entry["dividend_model"] == "aggregate_funding_pv_approximation":
+                    terminal -= market["dividend_pv"]
+                elif entry["dividend_model"] == "aggregate_pv_approximation":
+                    terminal = (spot - market["dividend_pv"]) * math.exp(-calendar_q * tc)
+                elif entry["dividend_model"] != "continuous_yield":
+                    failures.append(dict(context, kind="unsupported_declared_model"))
+                    continue
+                if terminal <= 0 or tv <= 0:
+                    failures.append(dict(context, kind="invalid_declared_carry"))
+                    continue
+                expected = {"spot": spot, "strike": strike, "variance_years": tv,
+                            "effective_rate": market["rate"] * tc / tv,
+                            "calendar_yield": calendar_q, "effective_yield": -math.log(terminal / spot) / tv}
+                sigma = query["volatility"]
+                options = cold.get("options", {})
+                if options != entry.get("al_options") or options.get("profile") != 0 or any(
+                    not math.isclose(cold[key], value, rel_tol=1e-12, abs_tol=1e-13)
+                    for key, value in expected.items()) or cold["sigma_center"] != sigma or \
+                    cold["sigma_lower"] != sigma - 1e-7 or cold["sigma_upper"] != sigma + 1e-7 or \
+                    cold["radius"] != 1e-7 or cold["sigma_lower"] <= 0:
+                    failures.append(dict(context, kind="cold_contract_or_radius_mismatch", expected=expected))
+                    continue
+                target = query["price"]
+                lower, center, upper = (cold["price_" + name] for name in ("lower", "center", "upper"))
+                allowance = 32 * math.ulp(1.0) * max(1.0, spot, strike, abs(target),
+                                                   abs(lower), abs(center), abs(upper))
+                max_residual = max(max_residual, abs(center - target))
+                diagnostic = dict(context, price_allowance_usd=allowance,
+                                  center_residual_usd=center - target,
+                                  lower_excess_usd=lower - target, upper_shortfall_usd=target - upper)
+                if center < lower - allowance or center > upper + allowance or upper < lower - allowance:
+                    failures.append(dict(diagnostic, kind="cold_forward_nonmonotone"))
+                elif lower < target < upper:
+                    strict += 1
+                elif lower - allowance <= target <= upper + allowance:
+                    roundoff.append(dict(diagnostic, kind="roundoff_only_or_flat"))
+                else:
+                    failures.append(dict(diagnostic, kind="cold_root_outside_1e7_bracket"))
+    return {"schema": "atx-vol-cold-node-root-audit-v1", "identified_nodes": identified,
+            "price_only_nodes": price_only, "strict_straddles": strict,
+            "roundoff_only_count": len(roundoff), "failure_count": len(failures),
+            "strict_accuracy_passed": identified > 0 and strict == identified and not failures,
+            "max_center_residual_usd": max_residual,
+            "iv_radius": 1e-7, "price_allowance": "32*epsilon*max(1,S,K,abs(target),abs(cold prices))",
+            "failures": failures, "roundoff_only": roundoff}
+
+
 def prediction_metadata_matches(query, prediction):
     if not valid_query_metadata(query):
         return False
@@ -784,6 +897,7 @@ def verify(args, eligibility):
     predictions = audit_dir / "predictions.csv"
     metrics = prediction_metrics(rows, predictions, eligibility)
     violations = api_violations(report) + raw_model_violations(report, rows)
+    roots = cold_root_audit(report, rows)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
         "input_frozen": receipt["input_sha256"] == eligibility["input_sha256"],
@@ -793,6 +907,7 @@ def verify(args, eligibility):
         "all_valid_slices_fully_served": metrics["fully_served_slices"] == eligibility["required_slices"],
         "containment_995": metrics["containment_of_served"] >= eligibility["containment_min"],
         "actual_api_shape_parity_calendar": not violations,
+        "identified_node_cold_root_accuracy": roots["strict_accuracy_passed"],
     }
     audit = report.get("graded_stats", {}).get("acceptance_audit", {})
     slices = {entry["chain_id"]: entry for snapshot in audit.get("snapshots", []) for entry in snapshot}
@@ -829,6 +944,7 @@ def verify(args, eligibility):
               "row_failures_first100": row_failures[:100],
               "metadata_failure_count": len(metadata_failures),
               "metadata_failures_first100": metadata_failures[:100],
+              "cold_root_audit": roots,
               "eligibility_sha256": hashlib.sha256(json.dumps(eligibility, sort_keys=True).encode()).hexdigest(),
               "evidence_scope": "Static American node bounds, all-pair vertical spreads, global "
                   "convex envelopes, affine call-put, strike-specific terminal European lower "
@@ -850,7 +966,7 @@ def verify(args, eligibility):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("freeze", "feasibility", "predictions", "run-audit",
-                                            "verify", "qualify"))
+                                            "verify", "qualify", "cold-roots"))
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--predictions", type=Path)
@@ -869,6 +985,14 @@ def main():
         return
     if args.command in ("verify", "qualify"):
         result = verify(args, eligibility)
+    elif args.command == "cold-roots":
+        report = read_json(args.audit_dir / "native.json")
+        receipt = read_json(args.audit_dir / "receipt.json")
+        rows = load_quotes(args.input)
+        result = cold_root_audit(report, rows)
+        result["raw_model_failures"] = raw_model_violations(report, rows)
+        result["report_hash_verified"] = sha256(args.audit_dir / "native.json") == receipt["report_sha256"]
+        result["strict_accuracy_passed"] &= not result["raw_model_failures"] and result["report_hash_verified"]
     elif args.command == "freeze":
         result = eligibility
     elif args.command == "predictions":
@@ -890,7 +1014,9 @@ def main():
     write_json(args.out, result)
     print(json.dumps({key: value for key, value in result.items()
                       if key not in ("chains", "eligible_row_ids", "metrics",
-                                     "api_violations_first100", "row_failures_first100")}, indent=2))
+                                     "api_violations_first100", "row_failures_first100",
+                                     "metadata_failures_first100", "cold_root_audit",
+                                     "failures", "roundoff_only")}, indent=2))
     if args.command == "verify" and not result["correctness_passed"]:
         raise SystemExit(2)
     if args.command == "qualify" and not result["goal_achieved"]:

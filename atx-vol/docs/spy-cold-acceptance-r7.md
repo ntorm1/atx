@@ -179,6 +179,23 @@ the verifier requires well-formed actual metadata and exact CSV/API equality for
 status, reason, volatility, both interval endpoints and convention on every eligible
 row. Earlier audit files without those fields cannot satisfy this expanded gate.
 
+Every identified actual API node also receives three independent cold
+Andersen-Lake forward evaluations at its reported volatility and exactly
+`sigma - 1e-7`, `sigma + 1e-7`. The export includes evaluated sigmas, model,
+effective carry and all kernel options. The verifier independently reconstructs
+the carry, checks Reference-profile pricing, and requires a strict price straddle
+for every identified node. `cold-roots` writes complete failure contexts and raw
+row IDs. Roundoff-only or flat cases are reported separately and do not satisfy
+the strict accuracy gate; the diagnostic price allowance is
+`32 * epsilon * max(1, S, K, abs(target), abs(cold prices))`, never an enlarged
+IV tolerance. Price-only rows are counted separately without invented IVs.
+These calls occur only inside the explicitly nonqualifying audit run.
+
+```powershell
+python atx-vol/bench/spy_acceptance.py cold-roots --input $inputCsv `
+  --audit-dir $auditDir --out 'C:/.../cold-node-roots.json'
+```
+
 ## Limits and primary reference
 
 These gates establish the explicitly checked static constraints on the actual

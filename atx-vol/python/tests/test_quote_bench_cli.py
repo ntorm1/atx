@@ -102,6 +102,38 @@ def test_native_acceptance_audit_queries_actual_final_surface(binary, tmp_path):
     assert all(query["status"] in ("success", "price_only") for query in entry["queries"])
     assert all({"iv_lower", "iv_upper", "vol_convention", "reason"} <= query.keys()
                for query in entry["queries"])
+    node_strikes = {node["strike"] for node in entry["nodes"]}
+    checked = 0
+    for query in entry["queries"]:
+        if query["strike"] not in node_strikes or query["status"] != "success":
+            assert "cold_node" not in query
+            continue
+        cold = query["cold_node"]
+        assert cold["status"] == "evaluated"
+        assert cold["options"] == entry["al_options"]
+        assert cold["options"]["profile"] == 0
+        assert cold["radius"] == 1e-7
+        assert cold["sigma_lower"] == query["volatility"] - 1e-7
+        assert cold["sigma_upper"] == query["volatility"] + 1e-7
+        # With zero rate/carry this American fixture equals closed-form Black-Scholes.
+        for name in ("lower", "center", "upper"):
+            sigma_t = cold["sigma_" + name] * math.sqrt(0.5)
+            d1 = math.log(100.0 / query["strike"]) / sigma_t + 0.5 * sigma_t
+            d2 = d1 - sigma_t
+            expected = 50.0 * math.erfc(-d1 / math.sqrt(2.0)) - \
+                       0.5 * query["strike"] * math.erfc(-d2 / math.sqrt(2.0))
+            if query["side"] == "put":
+                expected += query["strike"] - 100.0
+            assert abs(cold["price_" + name] - expected) < 1e-10
+        checked += 1
+    assert checked > 0
+    verifier_path = Path(__file__).resolve().parents[2] / "bench" / "spy_acceptance.py"
+    spec = importlib.util.spec_from_file_location("native_cold_node_verifier", verifier_path)
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    root_audit = verifier.cold_root_audit(native)
+    assert root_audit["strict_accuracy_passed"], root_audit
+    assert root_audit["identified_nodes"] == checked
     with (tmp_path / "audit.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
     by_contract = {(query["strike"], query["side"]): query for query in entry["queries"]}
