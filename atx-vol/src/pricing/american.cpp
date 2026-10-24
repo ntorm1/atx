@@ -5064,8 +5064,9 @@ Result<AmericanGreeks> american_greeks_fd_impl(
                                    : (put_fast ? Pput(dS, dsig, dr, dT) : P(dS, dsig, dr, dT));
     double boundary = std::numeric_limits<double>::quiet_NaN();
     const double rate = call_fast ? q : r+dr, yield = call_fast ? r+dr : q;
-    const bool boundary_required = (call_fast || put_fast) && T+dT > 1e-12 && sigma+dsig > 1e-8 &&
-                                   classify_regime(rate, yield) == ExerciseRegime::American;
+    const bool live_al_sample = (call_fast || put_fast) && T+dT > 1e-12 && sigma+dsig > 1e-8;
+    const auto regime = classify_regime(rate, yield);
+    const bool boundary_required = live_al_sample && regime == ExerciseRegime::American;
     if (boundary_required) {
       for (std::size_t i = 0; i < n_memo; ++i) {
         const auto &entry = memo[i];
@@ -5078,8 +5079,13 @@ Result<AmericanGreeks> american_greeks_fd_impl(
         }
       }
     }
-    evidence[sample_index] = detail::american_greek_sample(value, S+dS, K, side,
-                                                          boundary, boundary_required);
+    // Pcall/Pput use the unfloored Black price in this exact model regime.
+    // Rounding to/below intrinsic is not an active exercise clamp. Classify each
+    // bumped model independently: a rate bump can still require an American
+    // boundary and must retain its field-specific crossing refusal.
+    evidence[sample_index] = live_al_sample && regime == ExerciseRegime::European
+        ? detail::AmericanGreekSample{value, false}
+        : detail::american_greek_sample(value, S+dS, K, side, boundary, boundary_required);
     if (audit != nullptr) {
       if (attempted) ++audit->sample_attempts;
       audit->samples[sample_index] = {S+dS, K, T+dT, sigma+dsig, r+dr, q, value,

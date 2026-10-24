@@ -2950,6 +2950,96 @@ TEST(AmericanGreekAdmission, PriceProximityIsNotAnExerciseCertificate) {
   }
 }
 
+TEST(AmericanGreekAdmission, EuropeanRoundoffCannotInventExerciseCrossings) {
+  using namespace atx::vol;
+  constexpr double T = .0082135523613963042, sigma = .25, q = 0.;
+  const auto opts = al_fast_opts(); // actual BEV failure: 7/16/0/4, Reference
+  for (const Side side : {Side::Call, Side::Put}) {
+    const double S = side == Side::Call ? 118.744054000552 : 100.;
+    const double K = side == Side::Call ? 100. : 118.744054000552;
+    for (const bool rate_transition : {true, false}) {
+      const double r = rate_transition ? 0. : side == Side::Call ? .04 : -.04;
+      SCOPED_TRACE(::testing::Message() << "side=" << static_cast<int>(side) << " rate=" << r);
+      detail::AlGreekFdAudit audit;
+      const auto fd = detail::audit_american_greeks_fd(S, K, T, sigma, r, q, side,
+          {1e-3*S, 1e-3, 1e-4, 1e-3}, audit, AmericanMethod::AndersenLake, opts);
+      ASSERT_TRUE(fd);
+      EXPECT_EQ(audit.sample_attempts, 17u);
+      const auto expected = rate_transition
+          ? static_cast<GreekFieldMask>(static_cast<std::uint32_t>(GreekFieldMask::All) &
+                                       ~static_cast<std::uint32_t>(GreekFieldMask::Rho))
+          : GreekFieldMask::All;
+      const auto check = [&](const AmericanGreeks &g) {
+        EXPECT_EQ(g.requested, GreekFieldMask::All);
+        EXPECT_EQ(g.supported, expected);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(g.price),
+                  std::bit_cast<std::uint64_t>(fd->price));
+        for (std::size_t i = 0; i < g.reasons.size(); ++i)
+          EXPECT_EQ(g.reasons[i], rate_transition && i == 4
+              ? AmericanGreekReason::StencilCrossing : AmericanGreekReason::ComputedEstimate);
+      };
+      check(*fd);
+      std::size_t european = 0, american = 0;
+      std::ostringstream operands;
+      operands.precision(17);
+      operands << "index,S,K,T,sigma,r,q,price,boundary,required,exercised,evaluated\n";
+      std::size_t sample_index = 0;
+      for (const auto &sample : audit.samples) {
+        operands << sample_index++ << ',' << sample.S << ',' << sample.K << ',' << sample.T
+                 << ',' << sample.sigma << ',' << sample.r << ',' << sample.q << ','
+                 << sample.price << ',' << sample.internal_boundary << ','
+                 << sample.boundary_required << ',' << sample.exercised << ','
+                 << sample.evaluated << '\n';
+        ASSERT_TRUE(sample.evaluated);
+        const double internal_rate = side == Side::Call ? sample.q : sample.r;
+        const double internal_yield = side == Side::Call ? sample.r : sample.q;
+        const auto regime = detail::classify_regime(internal_rate, internal_yield);
+        if (regime == detail::ExerciseRegime::European) {
+          ++european;
+          EXPECT_FALSE(sample.boundary_required);
+          EXPECT_FALSE(sample.exercised);
+          const double F = sample.S*std::exp((sample.r-sample.q)*sample.T);
+          const double european_price = black76_price(F, sample.K, sample.T,
+              sample.sigma, std::exp(-sample.r*sample.T), side);
+          EXPECT_EQ(std::bit_cast<std::uint64_t>(sample.price),
+                    std::bit_cast<std::uint64_t>(european_price));
+        } else {
+          ++american;
+          EXPECT_EQ(regime, detail::ExerciseRegime::American);
+          EXPECT_TRUE(sample.boundary_required);
+          EXPECT_TRUE(sample.exercised);
+        }
+      }
+      EXPECT_EQ(european, rate_transition ? 16u : 17u);
+      EXPECT_EQ(american, rate_transition ? 1u : 0u);
+      EXPECT_EQ(audit.european_price_calls, european);
+      EXPECT_EQ(audit.boundary_cold_solves, american);
+      EXPECT_EQ(audit.boundary_price_calls, american);
+      EXPECT_EQ(audit.boundary_warm_solves, 0u);
+      EXPECT_EQ(audit.public_price_calls, 0u);
+      EXPECT_EQ(audit.degenerate_samples, 0u);
+      RecordProperty(std::string(side == Side::Call ? "call_" : "put_") +
+          (rate_transition ? "zero_rate_operands" : "interior_operands"), operands.str());
+      const auto scalar = american_greeks_al(S, K, T, sigma, r, q, side, opts);
+      ASSERT_TRUE(scalar); check(*scalar);
+      AlExpiryGeometry geometry;
+      geometry.prepare(T, r, q, opts);
+      const auto prepared = american_greeks_al(geometry, S, K, sigma, side);
+      ASSERT_TRUE(prepared); check(*prepared);
+      const auto batch = side == Side::Call ? simd::american_call_greeks_batch
+                                           : simd::american_put_greeks_batch;
+      for (const auto isa : {simd::SimdIsa::ForceScalar, simd::SimdIsa::ForceAvx2}) {
+        AmericanGreeks g;
+        (void)batch(&S, &K, &T, &sigma, &r, &q, 1, opts, &g, isa, true, true, true);
+        check(g);
+      }
+      const auto vega = american_vega_al(S, K, T, sigma, r, q, side, opts);
+      ASSERT_TRUE(vega);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(*vega), std::bit_cast<std::uint64_t>(fd->vega));
+    }
+  }
+}
+
 // Actual complete-corpus failures, not a relative-error gate that drops small
 // calendar theta. Availability describes a computed estimate, not an accuracy
 // certificate; rejected stencil fields must preserve the independently usable

@@ -14,6 +14,8 @@ namespace atx::vol::detail {
 // A solved exercise boundary and an active price clamp are both evidence that
 // the continuation PDE cannot be used at this sample. The price stays untouched;
 // admission concerns only the derivative that consumes the sample.
+// A caller using an unfloored no-early-exercise price must instead supply a
+// continuation sample: rounding to intrinsic is not evidence of a clamp there.
 struct AmericanGreekSample {
   double price = std::numeric_limits<double>::quiet_NaN();
   bool exercised = false;
