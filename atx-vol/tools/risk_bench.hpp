@@ -88,6 +88,8 @@ struct RiskBenchArgs {
   std::optional<double> family_node_cost_us;   // --family-node-cost-us X
   std::optional<double> cold_lane_cost_us;     // --cold-lane-cost-us X
   std::optional<bool> family_dynamic_schedule; // --family-schedule static|dynamic
+  std::optional<double> short_box_tau;           // --short-box-tau X (years; 0 = off)
+  std::optional<std::uint16_t> n_sigma_min_short; // --n-sigma-min-short N
 
   // The store the run reads: the synthetic dir when set, else --store.
   [[nodiscard]] const std::string &store_root() const noexcept {

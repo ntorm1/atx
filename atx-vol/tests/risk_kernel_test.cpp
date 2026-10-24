@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/api/pricing/pricing_executor.hpp"
@@ -147,12 +148,14 @@ template <class T>
 
 // Every group keeps its family (economics off): the policy of the tests whose subject
 // IS a family (its accuracy, its carry set, its degenerate box), whatever the group size.
-// `fixed_nodes` restores the pre-A2 family: n_sigma_min = n_sigma = 12 over the 0.25 pad.
+// `fixed_nodes` restores the pre-A2 family: both node floors (n_sigma_min and the short
+// tenors' n_sigma_min_short) = n_sigma = 12 over the 0.25 pad.
 [[nodiscard]] FamilyKernelPolicy families_always(bool fixed_nodes = false) {
   FamilyKernelPolicy p;
   p.family_economics = false;
   if (fixed_nodes) {
     p.n_sigma_min = p.n_sigma;
+    p.n_sigma_min_short = p.n_sigma;
     p.sigma_box_pad = 0.25;
   }
   return p;
@@ -547,13 +550,20 @@ TEST(RiskKernel, RefusesInvalidPolicyAndTimeSpec) {
   nan_cold.family_economics = false;
   FamilyKernelPolicy low_min;
   low_min.n_sigma_min = 3;
-  FamilyKernelPolicy min_over_max;
-  min_over_max.n_sigma = 8;
-  min_over_max.n_sigma_min = 9;
   FamilyKernelPolicy no_spacing;
   no_spacing.sigma_node_spacing = 0.0;
+  // Lane A2 lever 6: the short-tenor floor is a node count too, and the tenor finite >= 0.
+  FamilyKernelPolicy low_short;
+  low_short.n_sigma_min_short = 3;
+  FamilyKernelPolicy nan_tau;
+  nan_tau.short_box_tau = std::numeric_limits<double>::quiet_NaN();
+  FamilyKernelPolicy neg_tau;
+  neg_tau.short_box_tau = -0.1;
+  FamilyKernelPolicy inf_tau;
+  inf_tau.short_box_tau = std::numeric_limits<double>::infinity();
   for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor, free_nodes, nan_cold,
-                                        low_min, min_over_max, no_spacing}) {
+                                        low_min, no_spacing, low_short, nan_tau, neg_tau,
+                                        inf_tau}) {
     expect_invalid_argument(
         RiskKernel::family(bad).evaluate(prep, owned->state, RiskNeeds{}, frame, ws));
     expect_cleared(frame);
@@ -868,6 +878,7 @@ TEST(RiskKernel, FamilyEconomicsRoutesSmallGroupsCold) {
   FamilyKernelPolicy p;
   p.n_sigma = 12;
   p.n_sigma_min = 12;
+  p.n_sigma_min_short = 12;
   p.family_economics = true;
   p.family_node_cost_us = 33.0;
   p.cold_lane_cost_us = 140.0;
@@ -1013,8 +1024,10 @@ namespace {
 }
 
 // The node count of every family the frame's groups built, by the documented rule
-// (risk_kernel.hpp "ADAPTIVE NODE COUNT") over each group's box as family_group builds it.
-// Valid for a frame whose every lane is family-served (the box spans all its lanes).
+// (risk_kernel.hpp "ADAPTIVE NODE COUNT", its floor by "SHORT-TENOR NODE FLOOR") over each
+// group's box as family_group builds it; `n_at_floor` counts the families at their own
+// block's floor. Valid for a frame whose every lane is family-served (the box spans all
+// its lanes, and every lane of a group is on its block's tenor).
 [[nodiscard]] std::uint64_t rule_nodes(const PreparedRiskBook &prep, const RiskFrame &fam,
                                        const FamilyKernelPolicy &p, std::size_t &n_at_floor) {
   std::uint64_t total = 0;
@@ -1024,9 +1037,11 @@ namespace {
     const double lo = std::max(*lo_it * (1.0 - p.sigma_box_pad), p.sigma_box_floor);
     const double hi = *hi_it * (1.0 + p.sigma_box_pad);
     const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
-    const double n = std::clamp(want, static_cast<double>(p.n_sigma_min),
-                                static_cast<double>(p.n_sigma));
-    n_at_floor += n == static_cast<double>(p.n_sigma_min) ? 1u : 0u;
+    const std::uint16_t block_floor =
+        fam.T[g.begin] < p.short_box_tau ? p.n_sigma_min_short : p.n_sigma_min;
+    const double floor = static_cast<double>(std::min(block_floor, p.n_sigma));
+    const double n = std::clamp(want, floor, static_cast<double>(p.n_sigma));
+    n_at_floor += n == floor ? 1u : 0u;
     total += static_cast<std::uint64_t>(n);
   }
   return total;
@@ -1054,23 +1069,114 @@ namespace {
   return legs;
 }
 
+// The short-dated narrow book (lane A2 lever 6): per underlier and side THREE strikes
+// slightly in the money (puts at 1.01 / 1.03 / 1.05 of spot, calls at 0.95 / 0.97 / 0.99)
+// at T ~ 0.07 / 0.12 / 0.2 / 0.27 y, between the fixture surfaces' pillars and every one
+// below the default short_box_tau: the narrow short boxes the SHORT-TENOR NODE FLOOR
+// solves at n_sigma_min_short.
+[[nodiscard]] std::vector<OptionLeg> short_narrow_legs() {
+  std::vector<OptionLeg> legs;
+  std::uint64_t id = 1;
+  for (const rt::UnderlierSpec &u : rt::kUnderliers) {
+    for (const std::int64_t units : {std::int64_t{1100}, std::int64_t{2000}, std::int64_t{3300},
+                                     std::int64_t{4400}}) {
+      for (const Side side : {Side::Put, Side::Call}) {
+        for (const double rel : {0.01, 0.03, 0.05}) {
+          const double m = side == Side::Put ? 1.0 + rel : 1.0 - rel;
+          legs.push_back(OptionLeg{id++, u.uid, std::round(u.spot * m * 2.0) / 2.0,
+                                   rt::instant_ns(units), side, 1.0, 100.0});
+        }
+      }
+    }
+  }
+  return legs;
+}
+
 } // namespace
+
+// The node ceiling caps the floor: n_sigma = 4 under the default n_sigma_min (5) is a valid
+// policy whose every family takes 4 nodes, and n_sigma_min above n_sigma (or equal) gives
+// the fixed count n_sigma. Only n_sigma_min below 4 is refused. The ceiling caps the short
+// tenors' floor n_sigma_min_short the same way (the book spans T 0.05 - 0.6 y, across the
+// default short_box_tau).
+TEST(RiskKernel, NodeFloorCappedByCeiling) {
+  const auto owned = rt::make_state(rt::StateMove{});
+  const RiskBook book = RiskBook::create(narrow_legs(), {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  for (const auto &[n_sigma, n_min] : {std::pair<std::uint16_t, std::uint16_t>{4, 5},
+                                       {8, 9},
+                                       {6, 16},
+                                       {12, 12}}) {
+    FamilyKernelPolicy p = families_always();
+    p.n_sigma = n_sigma;
+    p.n_sigma_min = n_min;
+    p.n_sigma_min_short = n_min;
+    const RiskFrame f = evaluate_or_die(RiskKernel::family(p), prep, owned->state, RiskNeeds{});
+    ASSERT_GT(f.counters.families_built, 0u);
+    EXPECT_EQ(f.counters.family_nodes, n_sigma * f.counters.families_built)
+        << "n_sigma " << n_sigma << " n_sigma_min " << n_min;
+    EXPECT_EQ(f.counters.family_rows + f.counters.exercised_rows + f.counters.cold_rows,
+              prep.n_unique());
+  }
+}
+
+// Lane A2 lever 6. SHORT-TENOR NODE FLOOR: a block with T < short_box_tau takes the floor
+// min(n_sigma_min_short, n_sigma), every other block min(n_sigma_min, n_sigma). Under a
+// spacing no box can use (every family at its floor), each family's count IS its block's
+// floor: all n_sigma_min with short_box_tau 0 (off), all n_sigma_min_short with a tenor
+// above every block's, split by T in between (the 0.05 / 0.15 y pillars below 0.2 y, the
+// 0.3 / 0.6 y ones above).
+TEST(RiskKernel, ShortBoxTauSelectsNodeFloor) {
+  const auto owned = rt::make_state(rt::StateMove{});
+  const RiskBook book = RiskBook::create(narrow_legs(), {}).value();
+  const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
+  for (const double tau : {0.0, 0.2, 1.0e9}) {
+    FamilyKernelPolicy p = families_always();
+    p.sigma_node_spacing = 100.0; // ceil(log(hi / lo) / 100) + 1 = 2: below every floor
+    p.n_sigma_min = 7;
+    p.n_sigma_min_short = 5;
+    p.short_box_tau = tau;
+    const RiskFrame f = evaluate_or_die(RiskKernel::family(p), prep, owned->state, RiskNeeds{});
+    std::uint64_t expected = 0;
+    std::size_t n_short = 0;
+    std::size_t n_long = 0;
+    for (const RiskGroup &g : prep.groups()) {
+      ASSERT_EQ(f.route[g.begin], RiskRoute::Family) << "the premise: every lane a family's";
+      const bool short_block = f.T[g.begin] < tau;
+      expected += short_block ? 5u : 7u;
+      ++(short_block ? n_short : n_long);
+    }
+    EXPECT_EQ(f.counters.families_built, prep.n_groups()) << "tau " << tau;
+    EXPECT_EQ(f.counters.family_nodes, expected) << "tau " << tau;
+    if (tau == 0.0) {
+      EXPECT_EQ(n_short, 0u);
+    } else if (tau > 1.0) {
+      EXPECT_EQ(n_long, 0u);
+    } else {
+      EXPECT_GT(n_short, 0u);
+      EXPECT_GT(n_long, 0u);
+    }
+  }
+}
 
 // Lane A2 lever 2. The adaptive node count at the shipped spacing keeps the
 // family-vs-cold gate (price 1e-6, vega 1e-4, delta 1e-4 or adjudicated) on the narrow
 // licensed-shaped boxes, which the rule solves at its SMALLEST count (n_sigma_min) but for
 // the few whose sigmas spread wider, on the standard fixture book's wider boxes and on the
-// long-dated narrow boxes (the regime that binds the calibration), over four states each.
-// Every family takes exactly the documented rule's count. Economics off: every group keeps
-// its family, so every lane is a family number under test.
+// long-dated narrow boxes (the regime that binds the calibration), over four states each;
+// lane A2 lever 6 adds the short-dated narrow boxes, every one below short_box_tau and so
+// solved at the short tenors' floor n_sigma_min_short. Every family takes exactly the
+// documented rule's count. Economics off: every group keeps its family, so every lane is a
+// family number under test.
 TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
   const FamilyKernelPolicy p = families_always();
-  for (const int kind : {0, 1, 2}) {
+  for (const int kind : {0, 1, 2, 3}) {
     const bool narrow = kind == 0;
     const RiskBook book =
         RiskBook::create(kind == 0   ? narrow_legs()
                          : kind == 1 ? rt::make_option_legs()
-                                     : long_narrow_legs(),
+                         : kind == 2 ? long_narrow_legs()
+                                     : short_narrow_legs(),
                          {})
             .value();
     const PreparedRiskBook prep = PreparedRiskBook::create(book).value();
@@ -1081,6 +1187,7 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
     std::size_t at_floor = 0;
     std::size_t edge_cold = 0;
     double max_spread = 0.0;
+    bool all_short = true;
     for (const bool shifted : {false, true}) {
       for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
         const auto owned = rt::make_state(shifted ? rt::shifted_move() : rt::StateMove{}, carry);
@@ -1100,17 +1207,19 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
           const auto [lo, hi] =
               std::minmax_element(fam.sigma.begin() + g.begin, fam.sigma.begin() + g.end);
           max_spread = std::max(max_spread, *hi - *lo);
+          all_short = all_short && fam.T[g.begin] < p.short_box_tau;
         }
         expect_family_gate(prep, fam, cold, s);
       }
     }
     print_gate(kind == 0   ? "adaptive nodes, narrow boxes"
                : kind == 1 ? "adaptive nodes, fixture book"
-                           : "adaptive nodes, long-dated narrow boxes",
+               : kind == 2 ? "adaptive nodes, long-dated narrow boxes"
+                           : "adaptive nodes, short-dated narrow boxes",
                s);
     std::cout << "[RiskKernel]   families=" << families << " nodes=" << nodes
               << " (per family " << static_cast<double>(nodes) / static_cast<double>(families)
-              << ", at n_sigma_min " << at_floor << "), max sigma spread per group "
+              << ", at the block's floor " << at_floor << "), max sigma spread per group "
               << max_spread << "\n";
     ASSERT_GT(families, 0u);
     // Every lane is family-served but the long-dated book's exercise-edge lanes (its
@@ -1121,9 +1230,15 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
     }
     EXPECT_LE(edge_cold, 4u);
     EXPECT_EQ(nodes, expected) << "every family takes the documented rule's count";
-    if (narrow) {
+    if (kind == 3) {
+      EXPECT_TRUE(all_short) << "the premise: every block below short_box_tau";
+      // 3/4: the 4-node floor spans log box widths <= 3 h only, so the widest of these
+      // narrow boxes take one node more.
+      EXPECT_GE(4u * at_floor, 3u * families) << "most short boxes take n_sigma_min_short";
+      EXPECT_LE(nodes, static_cast<std::uint64_t>(p.n_sigma_min_short + 1u) * families);
+    } else if (narrow) {
       EXPECT_LE(max_spread, 0.05) << "the premise: licensed-shaped narrow boxes";
-      EXPECT_GE(10u * at_floor, 9u * families) << "most narrow boxes take n_sigma_min";
+      EXPECT_GE(4u * at_floor, 3u * families) << "most narrow boxes take their floor";
       EXPECT_LE(nodes, static_cast<std::uint64_t>(p.n_sigma_min + 1u) * families);
     } else {
       EXPECT_LT(nodes, static_cast<std::uint64_t>(p.n_sigma) * families);
@@ -1162,6 +1277,7 @@ TEST(RiskKernel, DISABLED_AdaptiveNodeSpacingSweep) {
       p.sigma_box_pad = pad;
       p.n_sigma = n;
       p.n_sigma_min = n;
+      p.n_sigma_min_short = n;
       for (std::size_t bi = 0; bi < books.size(); ++bi) {
         const PreparedRiskBook &prep = books[bi];
         std::array<double, kEdges.size()> worst{};

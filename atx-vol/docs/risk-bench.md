@@ -71,10 +71,26 @@ two other build lanes running (pricing 12.5 s, fanned over the pricing executor)
 | `--dump-legs <file.csv>` | — | per-option-leg CSV (see "Per-leg dump" below) |
 | `--dump-steps N` | 1 | steps written to `--dump-legs`: the first N, 0 = every step |
 | `--seed N` | 1 | book selection seed |
+| `--n-sigma N` | policy (12) | family kernel: sigma-node ceiling `FamilyKernelPolicy::n_sigma` |
+| `--n-sigma-min N` | policy (5) | adaptive node floor `n_sigma_min`, capped at `n_sigma` (both floors ≥ `n_sigma`: the fixed count) |
+| `--sigma-box-pad X` | policy (0.05) | sigma box pad |
+| `--sigma-node-spacing X` | policy (0.06) | adaptive log-sigma node spacing |
+| `--family-economics on\|off` | policy (on) | route groups whose family cannot amortize to cold-analytic (`FamilyUneconomic`) |
+| `--family-node-cost-us X` | policy (73) | economics: cost of one sigma node |
+| `--cold-lane-cost-us X` | policy (270) | economics: cost of one cold-analytic lane |
+| `--family-schedule static\|dynamic` | policy (dynamic) | block fan-out: `run_blocks` / `run_dynamic` |
+| `--short-box-tau X` | policy (0.3) | blocks with T < X years take the short-tenor floor; 0 = off |
+| `--n-sigma-min-short N` | policy (4) | the short-tenor node floor `n_sigma_min_short`, capped at `n_sigma` |
 | `--help` | | usage |
 
 Exit codes: **0** success, **1** runtime error (missing store, engine error, write
 failure), **2** usage error. Progress goes to stderr.
+
+The family-kernel flags (lane A2) override single `FamilyKernelPolicy` fields; an absent
+flag keeps the policy default shown. They are parsed for syntax only (an unsigned or a
+finite number, `on|off`, `static|dynamic`): the kernel validates the ranges, so an
+out-of-range value fails the run (exit 1), not the parse. The effective policy is echoed
+in `inputs.family_policy` and as the markdown line `- family policy: …`.
 
 The carry mode has no flag: `--store` builds states with `ImpliedFromCalls`, `--synthetic`
 with `Published` (its vendor columns are priced on exactly the D4 carry, design D20); see
@@ -331,8 +347,10 @@ position-scaled currency (qty × multiplier).
 **v2** (lane C follow-up 2) adds `inputs.time`, `inputs.carry_mode` and the
 `bucket_loads[]` fields `dropped_forward_framework`, `pv_divs_from_ddiv_pv`,
 `n_expiries_implied`, `n_expiries_published`, `max_forward_gap_rel`,
-`implied_carry_seconds`. The reader requires every v2 field and refuses any other
-`schema_version` (a v1 report is a ParseError, never read with guessed defaults).
+`implied_carry_seconds`; lane A2's family-kernel fields `inputs.family_policy`,
+`steps[].frame.family_nodes` and `steps[].cold.max_rel_price_family` are v2 fields too.
+The reader requires every v2 field and refuses any other `schema_version` (a v1 report is
+a ParseError, never read with guessed defaults).
 
 | path | type | meaning |
 |---|---|---|
@@ -349,6 +367,7 @@ position-scaled currency (qty × multiplier).
 | `inputs.host_threads` | uint | `std::thread::hardware_concurrency()` |
 | `inputs.time` | string | `calendar365` / `voltime` (`--time`) |
 | `inputs.carry_mode` | string | `implied_from_calls` (`--store`) / `published` (`--synthetic`) |
+| `inputs.family_policy` | string | the effective `FamilyKernelPolicy` of the main stream (`n_sigma`, `n_sigma_min`, pad, spacing, economics and its two constants, schedule, `short_box_tau` and `n_sigma_min_short`); empty under `--kernel cold` |
 | `synthetic_store.generated` | bool | the store was written by this run |
 | `synthetic_store.seconds`, `.rows` | number, uint | generation wall clock, rows written |
 | `book.n_option_legs`, `.n_unique_options`, `.n_share_legs`, `.n_underliers` | uint | from `RiskBook` |
@@ -361,6 +380,7 @@ position-scaled currency (qty × multiplier).
 | `steps[].dt_years` | number | explain dt (base state's TimeSpec) |
 | `steps[].clocks.{load,state,evaluate,family_build,explain,step}_seconds` | number | stage clocks (above) |
 | `steps[].frame.{families_built,carry_sets_built,family_rows,cold_rows,exercised_rows,refused_rows}` | uint | shifted frame's `FrameCounters` |
+| `steps[].frame.family_nodes` | uint | sigma nodes solved over the families built (`FrameCounters::family_nodes`; nodes per family = family_nodes / families_built) |
 | `steps[].frame.routes` | object | unique options per `RiskRoute` name (None … Refused) |
 | `steps[].frame.flags` | object | unique options carrying each `RiskFlag` bit, by name |
 | `steps[].explain.n_legs`, `.n_ok`, `.n_excluded` | uint | legs (options then shares), Ok, excluded |
@@ -374,7 +394,7 @@ position-scaled currency (qty × multiplier).
 | `steps[].quality.spearman`, `.ks`, `.zone` | number, number, string | per-leg explained vs actual; zone `green`/`amber`/`red`/`undefined` (diagnostic) |
 | `steps[].vendor_parity.{price,delta,vega}` | object | `n`, `mae`, `sym_rel`, `max_abs` |
 | `steps[].determinism.checked`, `.bit_equal` | bool | `--determinism` result |
-| `steps[].cold` | object | `ran`, `n_compared`, `evaluate_seconds`, `speedup` (cold / main evaluate), `max_abs_{price,delta,gamma,vega,theta,vanna,volga,charm}` (unique options Ok in both; `null` when none), `max_abs_pnl_total` (legs Ok in both; `null` when none) |
+| `steps[].cold` | object | `ran`, `n_compared`, `evaluate_seconds`, `speedup` (cold / main evaluate), `max_abs_{price,delta,gamma,vega,theta,vanna,volga,charm}` (unique options Ok in both; `null` when none), `max_abs_pnl_total` (legs Ok in both; `null` when none), `max_rel_price_family` (the family price gate: max \|Δprice\| / \|cold price\| over the unique options Ok in both that the main frame served from a family and whose cold price is nonzero; `null` when none) |
 | `summary.{load,state,evaluate,explain,step}` | object | `p50`, `p95` (nearest rank over steps), `mean`, `total` |
 | `summary.contracts_per_second` | number | n_unique_options / evaluate p50 |
 | `summary.legs_per_second` | number | (option + share legs) / explain p50 |

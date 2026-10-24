@@ -114,6 +114,8 @@ struct Snapshot {
   p.family_node_cost_us = args.family_node_cost_us.value_or(p.family_node_cost_us);
   p.cold_lane_cost_us = args.cold_lane_cost_us.value_or(p.cold_lane_cost_us);
   p.dynamic_schedule = args.family_dynamic_schedule.value_or(p.dynamic_schedule);
+  p.short_box_tau = args.short_box_tau.value_or(p.short_box_tau);
+  p.n_sigma_min_short = args.n_sigma_min_short.value_or(p.n_sigma_min_short);
   return p;
 }
 
@@ -124,7 +126,8 @@ struct Snapshot {
     << p.sigma_box_pad << ", sigma_node_spacing " << p.sigma_node_spacing << ", economics "
     << (p.family_economics ? "on" : "off") << " (node " << p.family_node_cost_us
     << " us, cold lane " << p.cold_lane_cost_us << " us), schedule "
-    << (p.dynamic_schedule ? "dynamic" : "static");
+    << (p.dynamic_schedule ? "dynamic" : "static") << ", short_box_tau " << p.short_box_tau
+    << " (n_sigma_min_short " << p.n_sigma_min_short << ")";
   return s.str();
 }
 
@@ -367,11 +370,12 @@ void fill_cold(ColdComparison &c, const RiskFrame &m, const RiskFrame &k, const 
   c.max_abs_vanna = max_abs_diff(m.vanna, k.vanna, ok);
   c.max_abs_volga = max_abs_diff(m.volga, k.volga, ok);
   c.max_abs_charm = max_abs_diff(m.charm, k.charm, ok);
-  // Lane A2: the price gate over the family-served rows (relative to the cold price).
+  // Lane A2: the price gate over the family-served rows (relative to the cold price; a
+  // zero cold price has no relative gap and is skipped rather than read as inf / NaN).
   bool any_family = false;
   double max_rel = 0.0;
   for (std::size_t r = 0; r < ok.size(); ++r) {
-    if (ok[r] != 0 && m.route[r] == RiskRoute::Family) {
+    if (ok[r] != 0 && m.route[r] == RiskRoute::Family && k.price[r] != 0.0) {
       max_rel = std::max(max_rel, std::abs(m.price[r] - k.price[r]) / std::abs(k.price[r]));
       any_family = true;
     }
