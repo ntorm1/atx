@@ -546,7 +546,8 @@ namespace {
   std::vector<std::uint8_t> pos_ok(n_pos, 0u);
   std::vector<double> pos_spot(n_pos, kNaNv);
   for (std::size_t p = 0; p < n_pos; ++p) {
-    if (frame.rows[p].status != PriceStatus::Ok) {
+    if (frame.rows[p].status != PriceStatus::Ok &&
+        frame.rows[p].status != PriceStatus::GreeksUnavailable) {
       continue;
     }
     const SurfaceRef surf = base.find(deriv_book[p].uid);

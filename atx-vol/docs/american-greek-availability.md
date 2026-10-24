@@ -165,3 +165,39 @@ Independent PV and risk remain usable. A runtime regression reproduced the
 bucket-grand false support; the final tests also cover actual large finite
 positions and signed overflow. All 100 portfolio/seed tests and three owning
 PCH-off objects pass. Receipts are `repair-iv/greek-portfolio-overflow-*`.
+
+Derivative books now propagate availability for the nine axes shared with
+`PriceTotals`. Standalone `DerivGreeks` pricing, its extra carry/smile diagnostics
+and its numerical methods are unchanged. A finite PV with an unavailable
+requested shared derivative reports `GreeksUnavailable`; its price and other
+supplied derivatives remain in the totals. `second_order=false` leaves Vanna
+and Charm unrequested, while Gamma and Volga remain requested. Missing time
+operands use `UnsupportedAxis`, not an American exercise-crossing label.
+The legacy exclusion counters still count missing row columns, including
+disabled axes. Exactly zero quantities contribute zero aggregate risk while
+their row retains any refusal.
+
+`combine_totals` unions requests and requires both inputs to supply each field.
+An empty marks-only block still refuses the combined Greeks, preserving the
+previous NaN convention; default finite zeros carry no availability evidence.
+All three coverage counts saturate independently. Their `n_ok` values describe
+the original input requests; the combined supported mask describes the union.
+Signed/gross Vega overflow shares a refusal, and independent PV survives.
+The derivative scenario caller admits partial priced rows to its existing
+shock-specific check: an unused unavailable theta cannot exclude a no-time-roll
+scenario, while a requested missing theta remains a named missing sensitivity.
+
+Four derivative-book regressions and the scenario missing-time classification
+first failed at runtime. All 129 portfolio/derivative/memo tests and 18 derivative
+scenario tests then pass. The memo test retains every row's bit-exact comparison
+and exact fixed-order PV sum. Its old independent `sum += qty * raw_pv` oracle
+was a contracted multiply-add recurrence, one ULP away from the sum of rounded
+published rows. An older pool3 binary (SHA256
+`0587890fdc472edebf29e1898206817d74a512dab87b3fa061bf149d79aa7c44`, exact source
+revision unknown) independently reproduced the same failure. A test-only
+volatile product now enforces separate rounding; no tolerance was relaxed and
+the production PV sum remains unchanged. The diagnostic source, hashes and
+exact integer bit patterns are frozen in `repair-iv/greek-deriv-book-fma-*`.
+All six owning PCH-off objects pass; final receipts are
+`repair-iv/greek-deriv-book-final2.*`, `greek-deriv-scenario-final.*` and
+`greek-deriv-book-hygiene*.log`.

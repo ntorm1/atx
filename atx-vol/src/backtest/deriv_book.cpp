@@ -1,6 +1,7 @@
 #include "atx/vol/api/backtest/deriv_book.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,7 @@
 
 #include "atx/core/error.hpp"
 #include "pricing/deriv_ref_bridge.hpp" // deriv_price_on_ref / deriv_greeks_on_ref (P-6)
+#include "pricing/american_greek_availability.hpp"
 
 namespace atx::vol {
 
@@ -108,6 +110,74 @@ constexpr double kNaN = kPriceColumnNaN;
 [[nodiscard]] PriceStatus status_for(const Error &e) noexcept {
   return e.code() == ErrorCode::InvalidArgument ? PriceStatus::InvalidContract
                                                 : PriceStatus::NumericError;
+}
+
+constexpr std::array<double DerivGreeks::*, 8> kDerivRiskMembers{
+    &DerivGreeks::delta, &DerivGreeks::gamma, &DerivGreeks::vega, &DerivGreeks::theta,
+    &DerivGreeks::rho, &DerivGreeks::vanna, &DerivGreeks::volga, &DerivGreeks::charm};
+constexpr std::array<double PriceTotals::*, 9> kTotalMembers{
+    &PriceTotals::delta, &PriceTotals::gamma, &PriceTotals::vega, &PriceTotals::theta,
+    &PriceTotals::rho, &PriceTotals::vanna, &PriceTotals::volga, &PriceTotals::charm,
+    &PriceTotals::pv};
+
+[[nodiscard]] GreekFieldMask requested_axes(bool greeks, const DerivGreekBumps &bumps) noexcept {
+  if (!greeks) return GreekFieldMask::Price;
+  const auto first = GreekFieldMask::Price | GreekFieldMask::Delta | GreekFieldMask::Gamma |
+                     GreekFieldMask::Vega | GreekFieldMask::Theta | GreekFieldMask::Rho |
+                     GreekFieldMask::Volga;
+  return bumps.second_order ? first | GreekFieldMask::Vanna | GreekFieldMask::Charm : first;
+}
+
+[[nodiscard]] AmericanGreeks row_axes(const DerivPriceRow &row) noexcept {
+  AmericanGreeks g;
+  for (std::size_t i = 0; i < kDerivRiskMembers.size(); ++i)
+    g.*detail::kAmericanGreekMembers[i] = row.greeks.*kDerivRiskMembers[i];
+  g.price = row.pv;
+  g.requested = row.requested;
+  g.supported = row.supported;
+  g.reasons = row.reasons;
+  return g;
+}
+
+void stamp_row(DerivPriceRow &row, GreekFieldMask requested,
+               double maturity, const DerivGreekBumps &bumps) noexcept {
+  if (row.status == PriceStatus::Ok && !std::isfinite(row.pv)) {
+    row.status = PriceStatus::NumericError;
+    row.pv = row.fair_strike_dec = kNaN;
+    row.greeks = nan_greeks();
+  }
+  auto g = row_axes(row);
+  const auto reason = row.status == PriceStatus::Ok ? AmericanGreekReason::ComputedEstimate
+      : row.status == PriceStatus::NumericError ? AmericanGreekReason::Nonfinite
+                                                : AmericanGreekReason::UnsupportedAxis;
+  detail::mark_american_greek_fields(g, requested, reason);
+  // A missing time operand is an unsupported axis, not an exercise crossing.
+  // Fully aged contracts may supply exact time risks even below this horizon.
+  if (row.status == PriceStatus::Ok && maturity <= bumps.time_years) {
+    for (const auto field : {GreekFieldMask::Theta, GreekFieldMask::Charm})
+      if (has_field(requested, field) && !detail::american_greeks_support(g, field))
+        detail::mark_american_greek_fields(g, field, AmericanGreekReason::UnsupportedAxis);
+  }
+  for (std::size_t i = 0; i < kDerivRiskMembers.size(); ++i) {
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    row.greeks.*kDerivRiskMembers[i] = has_field(requested, field)
+        ? g.*detail::kAmericanGreekMembers[i] : kNaN;
+  }
+  row.requested = g.requested;
+  row.supported = g.supported;
+  row.reasons = g.reasons;
+  if (row.status == PriceStatus::Ok && !detail::american_greeks_support(g, requested))
+    row.status = PriceStatus::GreeksUnavailable;
+}
+
+void refuse_total(PriceTotals &t, std::size_t i, AmericanGreekReason reason) noexcept {
+  t.*kTotalMembers[i] = kNaN;
+  if (i == 2u) t.abs_vega = kNaN;
+  t.supported = static_cast<GreekFieldMask>(static_cast<std::uint32_t>(t.supported) &
+                                           ~(std::uint32_t{1} << i));
+  t.reasons[i] = detail::american_greek_supplied_reason(reason) ||
+                        reason == AmericanGreekReason::NotRequested
+                    ? AmericanGreekReason::Nonfinite : reason;
 }
 
 // ── Task P-6 (GK-P book memo): book-level shared VarSwap strip ─────────────
@@ -364,29 +434,27 @@ using VarSwapMemo = std::map<VarSwapMemoKey, detail::VarSwapSharedBlock>;
 // Open the totals accumulator for the requested mode. Which columns are NaN is
 // driven by the MODE, not by the row count: an empty greek-bearing book has a
 // genuine zero delta, whereas a marks-only book has no delta at all.
-[[nodiscard]] PriceTotals open_totals(bool greeks) noexcept {
+[[nodiscard]] PriceTotals open_totals(GreekFieldMask requested) noexcept {
   PriceTotals t{};
-  if (greeks) {
-    // `abs_vega` defaults to NaN ("not computed"); this reduction does compute
-    // it, so open the accumulator explicitly (mirrors the option pricer's
-    // reduce_price_totals).
-    t.abs_vega = 0.0;
-  } else {
-    t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
-    t.vanna = t.volga = t.charm = kNaN; // abs_vega is already NaN by default
+  t.requested = requested;
+  t.supported = requested & GreekFieldMask::All;
+  for (std::size_t i = 0; i < kTotalMembers.size(); ++i) {
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    const bool selected = has_field(requested, field);
+    t.*kTotalMembers[i] = selected ? 0.0 : kNaN;
+    t.reasons[i] = selected ? AmericanGreekReason::ComputedEstimate
+                           : AmericanGreekReason::NotRequested;
   }
+  if (has_field(requested, GreekFieldMask::Vega)) t.abs_vega = 0.0;
   // `dP_dq` stays NaN unconditionally: the carry/borrow axis is defined on the
   // option pipeline's per-contract IV lane, and a swap has no such lane.
   return t;
 }
 
-// Accumulate one row. Non-Ok rows are EXCLUDED, not zeroed. A greek a lane
-// itself reported as "not computed" (theta/charm on a contract too short to
-// roll, vanna/charm under second_order=false) propagates its NaN into that
-// column of the total -- the total is genuinely unknown, and a partial sum
-// presented as complete is the failure mode being avoided. That NaN-poisoning
-// is unchanged; GK-C9b adds the count of WHICH Ok rows caused it, per column,
-// so a NaN total names its own cause instead of going silent.
+// Aggregate every priced row; missing requested risks refuse only their own
+// totals. Exactly zero weights contribute zero without requiring those risks.
+// The legacy exclusion counters count unavailable row columns, including axes
+// the request disabled, independently of the aggregate zero-weight exception.
 //
 // Task F-7: `maturity_t` is passed in rather than read off the row because
 // neither `DerivPriceRow` nor the `DerivQuote` it embeds carries a tenor --
@@ -399,19 +467,32 @@ using VarSwapMemo = std::map<VarSwapMemoKey, detail::VarSwapSharedBlock>;
 // already allocates freely (`rows.reserve`/`push_back`) and is not noexcept
 // either, so propagating matches what the layer around it already does.
 void accumulate(DerivPriceFrame &frame, const DerivPriceRow &row, bool greeks,
-                double maturity_t) {
-  if (row.status != PriceStatus::Ok) {
+                double maturity_t, bool zero_weight) {
+  if (row.status != PriceStatus::Ok && row.status != PriceStatus::GreeksUnavailable) {
     return;
   }
   PriceTotals &t = frame.totals;
   t.pv += row.pv;
+  if (!std::isfinite(t.pv)) refuse_total(t, 8u, AmericanGreekReason::Nonfinite);
+  const auto g = row_axes(row);
+  for (std::size_t i = 0; i < kDerivRiskMembers.size(); ++i) {
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    if (!has_field(t.requested, field)) continue;
+    const bool exact_zero = zero_weight;
+    const double contribution = exact_zero ? 0.0 : g.*detail::kAmericanGreekMembers[i];
+    if (!exact_zero && !detail::american_greeks_support(g, field)) {
+      if (has_field(t.supported, field)) refuse_total(t, i, g.reasons[i]);
+      continue;
+    }
+    t.*kTotalMembers[i] += contribution;
+    if (!std::isfinite(t.*kTotalMembers[i]) && has_field(t.supported, field))
+      refuse_total(t, i, AmericanGreekReason::Nonfinite);
+    if (field == GreekFieldMask::Vega && has_field(t.supported, field)) {
+      t.abs_vega += std::fabs(contribution);
+      if (!std::isfinite(t.abs_vega)) refuse_total(t, i, AmericanGreekReason::Nonfinite);
+    }
+  }
   if (greeks) {
-    const DerivGreeks &g = row.greeks;
-    t.delta += g.delta;
-    t.gamma += g.gamma;
-    const double leg_vega = g.vega;
-    t.vega += leg_vega;
-    t.abs_vega += std::fabs(leg_vega);
     // Term-bucket vega (Task F-7). A non-finite maturity is not a bucket any
     // caller could look up again, so such a lane is left out of the ladder
     // rather than allowed to create a NaN KEY -- which `std::map`'s `<` orders
@@ -419,18 +500,17 @@ void accumulate(DerivPriceFrame &frame, const DerivPriceRow &row, bool greeks,
     // just its own entry. `totals.vega` still carries the lane, so the ladder
     // summing short of the net total is the visible, honest signal.
     if (std::isfinite(maturity_t)) {
-      frame.vega_by_tenor[maturity_t] += leg_vega;
+      double &term_vega = frame.vega_by_tenor[maturity_t];
+      term_vega += zero_weight ? 0.0 : row.greeks.vega;
+      if (!std::isfinite(term_vega)) term_vega = kNaN;
     }
-    t.theta += g.theta;
-    frame.n_theta_excluded += std::isfinite(g.theta) ? 0u : 1u;
-    t.rho += g.rho;
-    t.vanna += g.vanna;
-    frame.n_vanna_excluded += std::isfinite(g.vanna) ? 0u : 1u;
-    t.volga += g.volga;
-    t.charm += g.charm;
-    frame.n_charm_excluded += std::isfinite(g.charm) ? 0u : 1u;
+    frame.n_theta_excluded += std::isfinite(row.greeks.theta) ? 0u : 1u;
+    frame.n_vanna_excluded += std::isfinite(row.greeks.vanna) ? 0u : 1u;
+    frame.n_charm_excluded += std::isfinite(row.greeks.charm) ? 0u : 1u;
   }
-  ++t.n_ok;
+  ++t.n_priced;
+  if (row.status == PriceStatus::Ok) ++t.n_ok;
+  else ++t.n_greeks_unavailable;
 }
 
 } // namespace
@@ -456,7 +536,8 @@ Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
 
   DerivPriceFrame frame;
   frame.rows.reserve(book.size());
-  frame.totals = open_totals(greeks);
+  const auto requested = requested_axes(greeks, bumps);
+  frame.totals = open_totals(requested);
   // Task P-6 (GK-P book memo): resolved ONCE, book-wide -- see the key-field
   // audit above `var_swap_memo_eligible`'s own doc for why `cfg` as a whole,
   // and this field specifically, is never a per-row concern.
@@ -469,30 +550,57 @@ Result<DerivPriceFrame> price_deriv_book(const SurfaceSet &surfaces,
   for (const DerivPosition &p : book) {
     frame.rows.push_back(
         price_one(surfaces, p, cfg, greeks, bumps, wing_band_of, discrete_correction_ok, var_swap_memo));
-    accumulate(frame, frame.rows.back(), greeks, p.contract.maturity_t);
+    stamp_row(frame.rows.back(), requested, p.contract.maturity_t, bumps);
+    accumulate(frame, frame.rows.back(), greeks, p.contract.maturity_t, p.qty == 0.0);
   }
   return Ok(std::move(frame));
 }
 
 PriceTotals combine_totals(const PriceTotals &a, const PriceTotals &b) noexcept {
-  PriceTotals out{};
-  out.pv = a.pv + b.pv;
-  out.delta = a.delta + b.delta;
-  out.gamma = a.gamma + b.gamma;
-  out.vega = a.vega + b.vega;
-  out.abs_vega = a.abs_vega + b.abs_vega;
-  out.theta = a.theta + b.theta;
-  out.rho = a.rho + b.rho;
-  out.vanna = a.vanna + b.vanna;
-  out.volga = a.volga + b.volga;
-  out.charm = a.charm + b.charm;
+  PriceTotals out = open_totals(a.requested | b.requested);
+  // Reuse the exact supplied-field contract; finite default zeros alone do
+  // not establish that a caller-provided aggregate was computed.
+  const auto axes = [](const PriceTotals &t) noexcept {
+    AmericanGreeks g;
+    for (std::size_t i = 0; i < kTotalMembers.size(); ++i)
+      g.*detail::kAmericanGreekMembers[i] = t.*kTotalMembers[i];
+    g.requested = t.requested;
+    g.supported = t.supported;
+    g.reasons = t.reasons;
+    return g;
+  };
+  const auto ga = axes(a), gb = axes(b);
+  for (std::size_t i = 0; i < kTotalMembers.size(); ++i) {
+    const auto field = static_cast<GreekFieldMask>(std::uint32_t{1} << i);
+    if (!has_field(out.requested, field)) continue;
+    const PriceTotals *missing = !detail::american_greeks_support(ga, field) ? &a
+        : !detail::american_greeks_support(gb, field) ? &b : nullptr;
+    if (missing != nullptr) {
+      refuse_total(out, i, has_field(missing->requested, field)
+          ? missing->reasons[i] : AmericanGreekReason::UnsupportedAxis);
+      continue;
+    }
+    out.*kTotalMembers[i] = a.*kTotalMembers[i] + b.*kTotalMembers[i];
+    if (!std::isfinite(out.*kTotalMembers[i]))
+      refuse_total(out, i, AmericanGreekReason::Nonfinite);
+    if (field == GreekFieldMask::Vega && has_field(out.supported, field)) {
+      out.abs_vega = a.abs_vega + b.abs_vega;
+      if (!(a.abs_vega >= 0.0) || !(b.abs_vega >= 0.0) || !std::isfinite(out.abs_vega))
+        refuse_total(out, i, AmericanGreekReason::Nonfinite);
+    }
+  }
   out.dP_dq = a.dP_dq + b.dP_dq;
   // Saturating rather than wrapping: an overflowed lane count would understate
   // the priced population, which is worse than pinning it at the maximum.
   constexpr std::uint64_t kMaxOk =
       static_cast<std::uint64_t>((std::numeric_limits<std::uint32_t>::max)());
-  const std::uint64_t n = static_cast<std::uint64_t>(a.n_ok) + static_cast<std::uint64_t>(b.n_ok);
-  out.n_ok = static_cast<std::uint32_t>(n < kMaxOk ? n : kMaxOk);
+  const auto add_count = [](std::uint32_t x, std::uint32_t y) noexcept {
+    const std::uint64_t n = static_cast<std::uint64_t>(x) + static_cast<std::uint64_t>(y);
+    return static_cast<std::uint32_t>(n < kMaxOk ? n : kMaxOk);
+  };
+  out.n_ok = add_count(a.n_ok, b.n_ok);
+  out.n_priced = add_count(a.n_priced, b.n_priced);
+  out.n_greeks_unavailable = add_count(a.n_greeks_unavailable, b.n_greeks_unavailable);
   return out;
 }
 
