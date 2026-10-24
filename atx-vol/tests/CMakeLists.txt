@@ -29,9 +29,14 @@ set(ATX_VOL_GTEST_SKIP_REGEX "\\[  SKIPPED \\]")
 option(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH "Build isolated cash Thomas SIMD controls" OFF)
 if(ATX_VOL_BUILD_CASH_THOMAS_RESEARCH)
     set(CASH_THOMAS_RESEARCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../bench/cash-pde-simd")
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/pricing/american_discrete_div_reference.cpp"
+        TARGET_DIRECTORY atx-vol PROPERTIES
+        COMPILE_DEFINITIONS ATX_VOL_CASH_PDE_BATCH_RESEARCH=1)
     add_executable(atx-vol-cash-thomas-research-tests
         ${CASH_THOMAS_RESEARCH_DIR}/tests.cpp
         ${CASH_THOMAS_RESEARCH_DIR}/replay_tests.cpp
+        ${CASH_THOMAS_RESEARCH_DIR}/batch_tests.cpp
         ${CASH_THOMAS_RESEARCH_DIR}/thomas_scalar.cpp
         ${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp)
     set_source_files_properties(${CASH_THOMAS_RESEARCH_DIR}/thomas_avx2.cpp

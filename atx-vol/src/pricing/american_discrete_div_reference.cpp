@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(ATX_VOL_CASH_PDE_BATCH_RESEARCH)
+#include "../../bench/cash-pde-simd/batch.hpp"
+#endif
+
 // The independent cash-dividend reference (contract, model, uncertainty rule and
 // the two methods: the header). This file states each load-bearing choice again at
 // the line that implements it.
@@ -1286,5 +1290,9 @@ Result<Reference> reference_price(const Problem &p, const ReferenceOpts &opts) {
                                       : gap + pde->uncertainty + lattice->uncertainty;
   return Ok(out);
 }
+
+#if defined(ATX_VOL_CASH_PDE_BATCH_RESEARCH)
+#include "../../bench/cash-pde-simd/batch_impl.inc"
+#endif
 
 } // namespace atx::vol::ddiv_ref
