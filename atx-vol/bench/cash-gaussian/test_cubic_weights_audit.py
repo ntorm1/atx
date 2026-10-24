@@ -16,11 +16,12 @@ class CubicWeightAuditTests(unittest.TestCase):
             raise unittest.SkipTest('explicit fixed24 native control receipt required')
         cls.native = json.loads(Path(fixture).read_text())
 
-    def test_all24_native_controls_and_independent_positive_integrals(self):
+    def test_all24_native_outcomes_preserve_the_actual_control_decisions(self):
         result = audit.verify(self.native)
-        self.assertTrue(result['controls_passed'])
         self.assertEqual(len(result['precision_checks']), 12)
         self.assertEqual(len(result['quadrature_checks']), 168)
+        self.assertEqual(result['controls_passed'], all(
+            x['passed'] for x in result['precision_checks']+result['quadrature_checks']))
         self.assertFalse(result['stage_a_complete'])
         self.assertFalse(result['semigroup_run'])
         self.assertFalse(result['full_price_error_bound'])
@@ -61,6 +62,7 @@ class CubicWeightAuditTests(unittest.TestCase):
                     audit.verify(changed)
 
     def test_common_moment_bias_is_detected_by_independent_quadrature(self):
+        baseline = audit.verify(self.native)
         changed = copy.deepcopy(self.native)
         with localcontext() as context:
             context.prec = 250
@@ -71,7 +73,8 @@ class CubicWeightAuditTests(unittest.TestCase):
                 for field in ('mass', 'discounted_stock_ratio'):
                     weights[field] = str(Decimal(weights[field])*Decimal('1.0001'))
         result = audit.verify(changed)
-        self.assertTrue(all(x['passed'] for x in result['precision_checks']))
+        self.assertEqual([x['passed'] for x in result['precision_checks']],
+                         [x['passed'] for x in baseline['precision_checks']])
         self.assertFalse(result['controls_passed'])
         self.assertTrue(any(not x['passed'] for x in result['quadrature_checks']))
 

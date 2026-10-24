@@ -234,3 +234,13 @@ This component does not construct a new option curve, run the18 semigroup
 requests, perform American exercise, establish Stage A completeness or replace
 the previous negative PWL receipts. Full-domain/tail, repeated-polynomial and
 owner/derivative-kink controls remain necessary before progression.
+
+The first frozen24 export is negative: all24 compute and all168 independent
+positive-integrand quadrature checks pass, but adjacent-high/low/unit fail the
+unchanged1e-40 precision-agreement gate. The numerical reader and original
+summary remain unchanged. A test-only correction permits a valid negative
+fixture instead of requiring every fixture to pass its numerical gate.
+See the [complete result](../../docs/cash-cubic-weight-review-20261024.md) and
+[prospective direct local-weight series](cubic-local-series-plan.md). The latter
+freezes a positive-integrand construction, truncation and work caps before
+implementation; it does not authorize the18 semigroup run.
