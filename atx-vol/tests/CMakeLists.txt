@@ -503,6 +503,7 @@ add_executable(atx-vol-tests
     prepared_portfolio_test.cpp
     priced_surface_test.cpp
     priced_surface_shape_blend_test.cpp   # risk-engine sprint 2026-10-24, lane B
+    risk_strike_coord_test.cpp
     spy_portfolio_pnl_test.cpp
     pnl_greeks_consistency_test.cpp
     scenario_grid_test.cpp
