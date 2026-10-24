@@ -17,6 +17,7 @@
 #include "atx/vol/api/pricing/american_batch.hpp"
 
 #include "atx/vol/api/pricing/american.hpp"
+#include "atx/vol/api/fitting/correction.hpp"
 #include "pricing/american_greek_availability.hpp"
 #include "fitting/counters.hpp"
 #include "atx/vol/api/simd/cpu.hpp"
@@ -2070,6 +2071,40 @@ TEST(AmericanGreekAvailability, SolveNeedsMapOnlyToActuallyRequestedGroups) {
   EXPECT_EQ(detail::american_greek_request(false, true, false), base | GreekFieldMask::Rho);
   EXPECT_EQ(detail::american_greek_request(false, false, true), base | GreekFieldMask::Charm);
   EXPECT_EQ(detail::american_greek_request(true, true, true), GreekFieldMask::All);
+}
+
+TEST(AmericanGreekAvailability, CachedGraphSuppliesExplicitEstimates) {
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto g = american_greeks(100, 105, .5, .3, .04, .01, side, nullptr);
+    ASSERT_TRUE(g);
+    EXPECT_EQ(g->requested, GreekFieldMask::All);
+    EXPECT_TRUE(detail::american_greeks_support(*g, GreekFieldMask::All));
+    for (const auto reason : g->reasons) EXPECT_EQ(reason, AmericanGreekReason::ComputedEstimate);
+    // This overload's documented null-cache route is the European graph;
+    // american_price_cached(nullptr) instead falls back to cold American pricing.
+    EXPECT_TRUE(std::isfinite(g->price));
+  }
+}
+
+TEST(AmericanGreekAvailability, PopulatedCacheAndBlendSupplyExplicitEstimates) {
+  for (const Side side : {Side::Call, Side::Put}) {
+    const auto lower = CorrectionCache::build(8, 6, 6, .04, .01,
+        -.3, .3, .1, 1.0, .1, .6, side);
+    const auto upper = CorrectionCache::build(8, 6, 6, .05, .02,
+        -.3, .3, .1, 1.0, .1, .6, side);
+    ASSERT_TRUE(lower);
+    ASSERT_TRUE(upper);
+    const CorrectionBlend blend{&*lower, &*upper, .5};
+    const auto single = american_greeks(100, 105, .5, .3, .045, .015, side, &*lower);
+    const auto blended = american_greeks(100, 105, .5, .3, .045, .015, side, blend);
+    ASSERT_TRUE(single);
+    ASSERT_TRUE(blended);
+    for (const AmericanGreeks *g : {&*single, &*blended}) {
+      EXPECT_EQ(g->requested, GreekFieldMask::All);
+      EXPECT_TRUE(detail::american_greeks_support(*g, GreekFieldMask::All));
+      for (const auto reason : g->reasons) EXPECT_EQ(reason, AmericanGreekReason::ComputedEstimate);
+    }
+  }
 }
 
 } // namespace

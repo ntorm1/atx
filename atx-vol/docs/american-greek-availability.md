@@ -47,3 +47,27 @@ of the previously recorded README header-count mismatch and fixture-path checks
 in unchanged inputs. Receipts are `repair-iv/greek-availability-*` under the
 `spy-qualified-r7-20261023` benchmark evidence directory. No numerical producer
 admission or downstream mask enforcement has yet been changed by this component.
+
+The cached correction graph and native adjoint producers now stamp their computed
+fields as `ComputedEstimate`, including explicitly computed zeros in the closed-form
+European degenerate limits. Nonfinite results are unavailable. The cached graph's
+sensitivities still differentiate its fixed-carry correction model; this change does
+not claim they differentiate the separate served-price floor or match cold American
+sensitivities. In particular, `american_greeks` with a null correction uses the
+documented European graph, while `american_price_cached` with a null correction
+falls back to the cold American price. Those are distinct existing contracts.
+
+The session record adapter requests all fields and supplies price, delta, gamma,
+vega and theta. It explicitly reports rho, vanna, volga and charm as
+`UnsupportedAxis`; their existing NaN values remain. The record's supplied fields
+are model estimates, not new derivative accuracy certificates. Producer stamping
+changes no finite numeric value or pricing decision. Consumer gates and the separate
+cold-stencil admission changes remain follow-up work.
+
+Producer regressions first failed at runtime on the missing metadata. The final
+focused run passes 29 schema/cached/adjoint tests and all seven session-record
+tests, including 104 certified record contracts. Six owning source/test objects
+also pass the PCH-off build. Evidence is `repair-iv/greek-producer-*` and
+`repair-iv/greek-record-*`. A separate shared-consumer regression remains RED
+until the next component: this producer change does not yet enforce metadata in
+the old finite-only caller gates.

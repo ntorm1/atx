@@ -2,6 +2,7 @@
 #include "atx/vol/api/pricing/american_region.hpp" // L3k: AlExerciseRegion entry points
 
 #include "pricing/american_detail.hpp"
+#include "pricing/american_greek_availability.hpp"
 
 #include <array>
 #include <atomic>
@@ -3288,6 +3289,10 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
   // explicit fixed-carry T partial.
   const double carry = r - q;
   out.charm = m * (gB.charm - dc_dT + d2c_dk_dT - carry * (D + F * D_F));
+  // Availability describes this fixed-carry correction graph, not a cold-map
+  // accuracy certificate or derivatives of the separately floored served price.
+  detail::mark_american_greek_fields(out, GreekFieldMask::All,
+                                    AmericanGreekReason::ComputedEstimate);
 }
 
 } // namespace
