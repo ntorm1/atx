@@ -244,7 +244,7 @@ inline constexpr double kDeAmFamilyCallsPerQuote = 5.4;
 //   cap_lo   <= A(kIvMax): the European (Black-76) price at kIvMax on the kernel's carry
 //               (the Andersen-Lake price is the European leg plus a premium, floored at
 //               intrinsic), less a rounding margin;
-//   floor_lo <= A(kIvMin): the European price at kIvMin, less the same margin;
+//   floor_lo <= A(kIvMin): max(intrinsic, European price at kIvMin less the same margin);
 //   floor_hi >= A(kIvMin): max(top of the non-monotone edge band above the zero-vol value,
 //               P_family(sigma_lo) + its envelope bound) - outside that band A rises in
 //               sigma (the L1c gate contract premium_root's monotone branch rests on), so

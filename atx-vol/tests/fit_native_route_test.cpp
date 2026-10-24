@@ -452,19 +452,17 @@ struct Chain {
   std::vector<QuoteSliceQuote> quotes;
 };
 
-Chain spy_chain(double years) {
+Chain spy_chain(double years, double rate = 0.04, double yield = 0.012) {
   constexpr double kSpot = 670.0;
-  constexpr double kRate = 0.04;
-  constexpr double kYield = 0.012;
   Chain out;
-  out.market = QuoteSliceMarket{kSpot, years, years, kRate, kYield, 0.0};
+  out.market = QuoteSliceMarket{kSpot, years, years, rate, yield, 0.0};
   for (int step = -10; step <= 10; ++step) {
     const double strike = std::round(kSpot * (1.0 + 0.025 * step));
     const double k = std::log(strike / kSpot);
     const double sigma = std::max(0.08, 0.16 - 0.30 * k + 0.80 * k * k);
-    const double q = kYield + 0.004 * k;
+    const double q = yield + 0.004 * k;
     for (Side side : {Side::Call, Side::Put}) {
-      const auto price = andersen_lake(kSpot, strike, years, sigma, kRate, q, side);
+      const auto price = andersen_lake(kSpot, strike, years, sigma, rate, q, side);
       if (!price) {
         ADD_FAILURE() << price.error().to_string();
         return out;
@@ -617,6 +615,81 @@ TEST(FitNativeRoute, BoundDecidedEdgesAgreeWithTheAccurateEdgePrices) {
   std::printf("[K4 edges] %zu bound-decided bands checked against the accurate edges\n",
               checked);
   EXPECT_GT(checked, 0u);
+}
+
+TEST(FitNativeRoute, IntrinsicBidDecidesTheFloorWithoutAnEndpointSolve) {
+  for (const bool zero_bid : {false, true}) {
+    for (const Side side : {Side::Put, Side::Call}) {
+      SCOPED_TRACE(::testing::Message() << "zero bid " << zero_bid << " side "
+                                        << static_cast<int>(side));
+      Chain c = side == Side::Put ? spy_chain(0.5) : spy_chain(0.5, 0.012, 0.04);
+      const std::size_t i = side == Side::Put
+          ? (zero_bid ? 1u : c.quotes.size() - 1u)
+          : (zero_bid ? c.quotes.size() - 2u : 0u);
+      auto &quote = c.quotes[i];
+      ASSERT_EQ(quote.side, side);
+      const double intrinsic = std::max(side == Side::Put ? quote.strike - c.market.spot
+                                                         : c.market.spot - quote.strike, 0.0);
+      ASSERT_EQ(intrinsic == 0.0, zero_bid);
+      quote.bid = intrinsic;
+      // The deep-exercise family's upper bound is deliberately conservative. Clear it
+      // so only the lower-bound comparison of bid versus floor is under test.
+      quote.ask = intrinsic + (zero_bid ? 0.02 : 10.0);
+      auto config = native_config(true);
+      config.side_policy = QuoteSliceSidePolicy::All;
+      config.min_time_value = 0.0;
+      deam_iv_memo_clear();
+      const auto fit = fit_quote_slice_channel(c.market, c.quotes, config, nullptr);
+      ASSERT_TRUE(fit);
+      bool reused = false;
+      const auto cache = deam_iv_memo(deam_iv_key(*fit, c.quotes, config), c.quotes.size(), reused);
+      ASSERT_TRUE(reused);
+      const auto &e = cache->ivs[i];
+      ASSERT_TRUE(cache->families);
+      const auto *family = cache->families->of_q(side);
+      const auto *envelope = cache->families->q_envelope(side);
+      ASSERT_TRUE(family && envelope);
+      const auto bound = family_price_bounded(*family, *envelope, c.market.spot,
+                                             quote.strike, family->sigma_lo(), e.q_effective);
+      const double band_top = iv_premium_edge_band_top(
+          c.market.spot, quote.strike, c.market.variance_years,
+          fit->diagnostics.effective_rate, e.q_effective, side, fit->al_opts);
+      ASSERT_GT(0.5 * quote.bid + 0.5 * quote.ask,
+                std::max(bound.price + bound.bound_usd, band_top));
+      const auto floor = andersen_lake(c.market.spot, quote.strike, c.market.variance_years,
+                                      kIvMin, fit->diagnostics.effective_rate,
+                                      e.q_effective, side);
+      ASSERT_TRUE(floor);
+      ASSERT_GE(*floor, intrinsic);
+      ASSERT_LT(*floor, intrinsic + 0.01);
+      EXPECT_TRUE(std::isnan(e.floor_price)); // certified without pricing either endpoint
+      EXPECT_TRUE(std::isnan(e.cap_price));
+      EXPECT_EQ(e.bid_route, IvRouteOutcome::None);
+      EXPECT_EQ(e.mid_inside, !zero_bid);
+      deam_iv_memo_clear();
+    }
+  }
+}
+
+// The added bound is the kernel's actual intrinsic clamp, with no assumptions on
+// rate/yield signs. Unsupported double-boundary cases remain explicit errors.
+TEST(FitNativeRoute, IntrinsicFloorBoundHoldsForBothSidesAndSignedCarry) {
+  std::size_t checked = 0;
+  for (const auto [r, q] : {std::pair{0.04, 0.012}, {0.012, 0.04}, {-0.01, 0.02},
+                           {0.02, -0.01}, {-0.01, -0.03}, {-0.03, -0.01}, {0.0, 0.0}}) {
+    for (const Side side : {Side::Put, Side::Call}) {
+      for (const double K : {70.0, 99.0, 100.0, 101.0, 140.0}) {
+        for (const double T : {0.02, 0.5, 3.0}) {
+          const auto price = andersen_lake(100.0, K, T, kIvMin, r, q, side);
+          if (!price) continue;
+          const double floor = std::max(side == Side::Put ? K - 100.0 : 100.0 - K, 0.0);
+          EXPECT_GE(*price, floor) << r << " " << q << " " << K << " " << T;
+          ++checked;
+        }
+      }
+    }
+  }
+  EXPECT_GE(checked, 180u);
 }
 
 // (6) The family grid on the native route serves a node's family price only under its

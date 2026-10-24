@@ -990,8 +990,9 @@ public:
   // The native fit route's edge bounds (deam_iv_cache.hpp DeAmEdgeBounds) on the accurate
   // kernel andersen_lake(spot, K, T, sigma, r_eff, q_eff): its European leg is Black-76 on
   // that carry (a lower bound of the American price at kIvMax and at kIvMin, less a
-  // relative rounding margin); the floor's upper bound needs the side's (sigma, q) family
-  // with a covering envelope whose box floor is at or above kIvMin. Continuous-carry only.
+  // relative rounding margin). The floor's lower bound also includes the kernel's intrinsic
+  // clamp; its upper bound needs the side's (sigma, q) family with a covering envelope whose
+  // box floor is at or above kIvMin. Continuous-carry only.
   DeAmEdgeBounds edge_bounds(const QuoteSliceQuote &quote, double q_effective,
                              const DeAmSigmaFamilies *families) const override {
     DeAmEdgeBounds out;
@@ -1007,7 +1008,12 @@ public:
       return std::isfinite(p) ? p - kMargin * (p + 1.0) : std::numeric_limits<double>::quiet_NaN();
     };
     out.cap_lo = european(kIvMax);
-    out.floor_lo = european(kIvMin);
+    const double euro_floor = european(kIvMin);
+    const double intrinsic =
+        std::max(quote.side == Side::Put ? quote.strike - S : S - quote.strike, 0.0);
+    // The accurate kernel clamps to this same intrinsic value. Unlike the discounted
+    // European subtraction, this needs no rounding margin, including at zero bid.
+    out.floor_lo = std::isfinite(euro_floor) ? std::max(euro_floor, intrinsic) : euro_floor;
     const AlSigmaQFamily *f = families != nullptr ? families->of_q(quote.side) : nullptr;
     const ValidatedErrorEnvelope *env =
         families != nullptr ? families->q_envelope(quote.side) : nullptr;
