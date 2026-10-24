@@ -286,6 +286,8 @@ set(ATX_VOL_ANALYTICS_SOURCES
 # historical_var). risk_api_check.cpp compiles every frozen header and stays empty.
 set(ATX_VOL_RISK_SOURCES
     src/risk/risk_api_check.cpp
+    src/risk/risk_types.cpp
+    src/risk/market_state.cpp
 )
 
 set(ATX_VOL_BACKTEST_SOURCES
