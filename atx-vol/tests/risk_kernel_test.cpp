@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "atx/vol/api/risk/pnl_explain.hpp"
@@ -133,12 +134,13 @@ template <class T>
 
 // Every group keeps its family (economics off): the policy of the tests whose subject
 // IS a family (its accuracy, its carry set, its degenerate box), whatever the group size.
-// `fixed_nodes` restores the pre-A2 fixed count (n_sigma_min = n_sigma = 12).
+// `fixed_nodes` restores the pre-A2 family: n_sigma_min = n_sigma = 12 over the 0.25 pad.
 [[nodiscard]] FamilyKernelPolicy families_always(bool fixed_nodes = false) {
   FamilyKernelPolicy p;
   p.family_economics = false;
   if (fixed_nodes) {
     p.n_sigma_min = p.n_sigma;
+    p.sigma_box_pad = 0.25;
   }
   return p;
 }
@@ -501,7 +503,15 @@ TEST(RiskKernel, RefusesInvalidPolicyAndTimeSpec) {
   FamilyKernelPolicy nan_cold;
   nan_cold.cold_lane_cost_us = std::numeric_limits<double>::quiet_NaN();
   nan_cold.family_economics = false;
-  for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor, free_nodes, nan_cold}) {
+  FamilyKernelPolicy low_min;
+  low_min.n_sigma_min = 3;
+  FamilyKernelPolicy min_over_max;
+  min_over_max.n_sigma = 8;
+  min_over_max.n_sigma_min = 9;
+  FamilyKernelPolicy no_spacing;
+  no_spacing.sigma_node_spacing = 0.0;
+  for (const FamilyKernelPolicy &bad : {few_nodes, wide_pad, zero_floor, free_nodes, nan_cold,
+                                        low_min, min_over_max, no_spacing}) {
     expect_invalid_argument(
         RiskKernel::family(bad).evaluate(prep, owned->state, RiskNeeds{}, frame, ws));
     expect_cleared(frame);
@@ -845,13 +855,35 @@ namespace {
   return legs;
 }
 
+// The node count of every family the frame's groups built, by the documented rule
+// (risk_kernel.hpp "ADAPTIVE NODE COUNT") over each group's box as family_group builds it.
+// Valid for a frame whose every lane is family-served (the box spans all its lanes).
+[[nodiscard]] std::uint64_t rule_nodes(const PreparedRiskBook &prep, const RiskFrame &fam,
+                                       const FamilyKernelPolicy &p, std::size_t &n_at_floor) {
+  std::uint64_t total = 0;
+  for (const RiskGroup &g : prep.groups()) {
+    const auto [lo_it, hi_it] =
+        std::minmax_element(fam.sigma.begin() + g.begin, fam.sigma.begin() + g.end);
+    const double lo = std::max(*lo_it * (1.0 - p.sigma_box_pad), p.sigma_box_floor);
+    const double hi = *hi_it * (1.0 + p.sigma_box_pad);
+    const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
+    const double n = std::clamp(want, static_cast<double>(p.n_sigma_min),
+                                static_cast<double>(p.n_sigma));
+    n_at_floor += n == static_cast<double>(p.n_sigma_min) ? 1u : 0u;
+    total += static_cast<std::uint64_t>(n);
+  }
+  return total;
+}
+
 } // namespace
 
 // Lane A2 lever 2. The adaptive node count at the shipped spacing keeps the
 // family-vs-cold gate (price 1e-6, vega 1e-4, delta 1e-4 or adjudicated) on the narrow
-// licensed-shaped boxes, which the rule solves at its SMALLEST count (n_sigma_min), and on
-// the standard fixture book's wider boxes, over four states each. Economics off: every
-// group keeps its family, so every lane is a family number under test.
+// licensed-shaped boxes, which the rule solves at its SMALLEST count (n_sigma_min) but for
+// the few whose sigmas spread wider than three node spacings, and on the standard fixture
+// book's wider boxes, over four states each. Every family takes exactly the documented
+// rule's count. Economics off: every group keeps its family, so every lane is a family
+// number under test.
 TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
   const FamilyKernelPolicy p = families_always();
   for (const bool narrow : {true, false}) {
@@ -861,6 +893,8 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
     GateStats s;
     std::uint64_t families = 0;
     std::uint64_t nodes = 0;
+    std::uint64_t expected = 0;
+    std::size_t at_floor = 0;
     double max_spread = 0.0;
     for (const bool shifted : {false, true}) {
       for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
@@ -871,6 +905,7 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
             evaluate_or_die(RiskKernel::cold(), prep, owned->state, RiskNeeds{});
         families += fam.counters.families_built;
         nodes += fam.counters.family_nodes;
+        expected += rule_nodes(prep, fam, p, at_floor);
         for (const RiskGroup &g : prep.groups()) {
           const auto [lo, hi] =
               std::minmax_element(fam.sigma.begin() + g.begin, fam.sigma.begin() + g.end);
@@ -882,15 +917,92 @@ TEST(RiskKernel, AdaptiveNodeCountKeepsPriceGate) {
     print_gate(narrow ? "adaptive nodes, narrow boxes" : "adaptive nodes, fixture book", s);
     std::cout << "[RiskKernel]   families=" << families << " nodes=" << nodes
               << " (per family " << static_cast<double>(nodes) / static_cast<double>(families)
-              << "), max sigma spread per group " << max_spread << "\n";
+              << ", at n_sigma_min " << at_floor << "), max sigma spread per group "
+              << max_spread << "\n";
     ASSERT_GT(families, 0u);
     EXPECT_EQ(s.compared, 4u * prep.n_unique()) << "every lane must be family-served";
+    EXPECT_EQ(nodes, expected) << "every family takes the documented rule's count";
     if (narrow) {
       EXPECT_LE(max_spread, 0.05) << "the premise: licensed-shaped narrow boxes";
-      EXPECT_EQ(nodes, static_cast<std::uint64_t>(p.n_sigma_min) * families)
-          << "narrow boxes take the rule's smallest node count";
+      EXPECT_GE(10u * at_floor, 9u * families) << "most narrow boxes take n_sigma_min";
+      EXPECT_LE(nodes, static_cast<std::uint64_t>(p.n_sigma_min + 1u) * families);
     } else {
       EXPECT_LT(nodes, static_cast<std::uint64_t>(p.n_sigma) * families);
+    }
+  }
+}
+
+// On-demand calibration receipt (DISABLED_: a sweep, not a gate) for
+// FamilyKernelPolicy::sigma_node_spacing / n_sigma_min / sigma_box_pad. Economics off, so
+// every lane is a family number. At a FIXED node count n (n_sigma_min = n_sigma = n) and a
+// pad, over the narrow licensed-shaped book and the fixture book at four states each, every
+// group's worst family-vs-cold relative price gap is binned by the group's effective node
+// spacing h_eff = log(hi / lo) / (n - 1) (its box as family_group builds it). The adaptive
+// rule n = ceil(log(hi / lo) / h) + 1 gives every group h_eff <= h, so the largest bin edge
+// whose worst gap stays under the gate AT n = n_sigma_min is the calibrated spacing (more
+// nodes at the same h_eff are more accurate, so the smallest count binds).
+TEST(RiskKernel, DISABLED_AdaptiveNodeSpacingSweep) {
+  const RiskBook narrow_book = RiskBook::create(narrow_legs(), {}).value();
+  const RiskBook fixture_book = RiskBook::create(rt::make_option_legs(), {}).value();
+  const std::array<PreparedRiskBook, 2> books{PreparedRiskBook::create(narrow_book).value(),
+                                              PreparedRiskBook::create(fixture_book).value()};
+  std::vector<std::unique_ptr<rt::OwnedState>> states;
+  for (const bool shifted : {false, true}) {
+    for (const CarryFrom carry : {CarryFrom::Surface, CarryFrom::State}) {
+      states.push_back(rt::make_state(shifted ? rt::shifted_move() : rt::StateMove{}, carry));
+    }
+  }
+  constexpr std::array<double, 9> kEdges{0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.3, 1e9};
+  for (const double pad : {0.25, 0.15, 0.10, 0.05}) {
+    for (const std::uint16_t n : {4, 5, 6, 7, 8}) {
+      FamilyKernelPolicy p = families_always();
+      p.sigma_box_pad = pad;
+      p.n_sigma = n;
+      p.n_sigma_min = n;
+      std::array<double, kEdges.size()> worst{};
+      std::array<std::size_t, kEdges.size()> groups{};
+      double w_min = 1e9;
+      double w_max = 0.0;
+      for (const PreparedRiskBook &prep : books) {
+        for (const auto &owned : states) {
+          const RiskFrame fam = evaluate_or_die(RiskKernel::family(p), prep, owned->state, {});
+          const RiskFrame cold = evaluate_or_die(RiskKernel::cold(), prep, owned->state, {});
+          for (const RiskGroup &g : prep.groups()) {
+            double smin = 1e9;
+            double smax = 0.0;
+            double err = 0.0;
+            for (std::uint32_t r = g.begin; r < g.end; ++r) {
+              if (fam.route[r] != RiskRoute::Family) {
+                continue;
+              }
+              smin = std::min(smin, fam.sigma[r]);
+              smax = std::max(smax, fam.sigma[r]);
+              err = std::max(err, rel_gap(fam.price[r], cold.price[r]));
+            }
+            if (smax <= 0.0 || smax <= smin) {
+              continue; // no family lane, or a one-lane (degenerate-box) group
+            }
+            const double w = std::log(smax * (1.0 + pad) / std::max(smin * (1.0 - pad), 0.02));
+            w_min = std::min(w_min, w);
+            w_max = std::max(w_max, w);
+            const double h_eff = w / static_cast<double>(n - 1);
+            std::size_t b = 0;
+            while (b + 1 < kEdges.size() && h_eff > kEdges[b]) {
+              ++b;
+            }
+            worst[b] = std::max(worst[b], err);
+            ++groups[b];
+          }
+        }
+      }
+      std::cout << "[RiskKernel] sweep pad=" << pad << " n=" << n << " w=[" << w_min << ", "
+                << w_max << "] worst rel price by h_eff <=";
+      for (std::size_t b = 0; b < kEdges.size(); ++b) {
+        if (groups[b] != 0u) {
+          std::cout << " " << kEdges[b] << ":" << worst[b] << "(" << groups[b] << ")";
+        }
+      }
+      std::cout << "\n";
     }
   }
 }

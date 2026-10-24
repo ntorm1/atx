@@ -69,7 +69,8 @@ enum class RiskKernelKind : std::uint8_t { Family = 0, Cold = 1 };
 
 struct FamilyKernelPolicy {
   std::uint16_t n_sigma{12};        // Chebyshev sigma nodes per family (4..16)
-  double sigma_box_pad{0.25};       // box = [min sigma * (1 - pad), max sigma * (1 + pad)]
+  double sigma_box_pad{0.05};       // box = [min sigma * (1 - pad), max sigma * (1 + pad)]
+                                    // (lane A2: 0.25 -> 0.05, see ADAPTIVE NODE COUNT)
   double sigma_box_floor{0.02};     // never below kAlSigmaFamilyMinSigma + headroom
   bool cold_near_edge{true};        // family `near_edge` lane => whole lane cold (above)
   bool cold_fallback{true};         // false => refused lanes stay Refused
@@ -82,9 +83,14 @@ struct FamilyKernelPolicy {
   // ADAPTIVE NODE COUNT. A group's family gets
   //   n = clamp(ceil(log(sigma_hi / sigma_lo) / sigma_node_spacing) + 1, n_sigma_min, n_sigma)
   // nodes, so a narrow box is not solved at the wide-box count. `n_sigma` is the
-  // ceiling; n_sigma_min == n_sigma restores the fixed count (the pre-A2 behaviour).
+  // ceiling; n_sigma_min == n_sigma (and pad 0.25) restores the pre-A2 fixed count.
+  // Calibrated (RiskKernel.DISABLED_AdaptiveNodeSpacingSweep): the family-vs-cold price
+  // gap at the binding count n = 4 is <= 1.7e-7 relative while the box spacing
+  // log(hi / lo) / (n - 1) is <= 0.075 at pad 0.05; at pad 0.25 no 4- or 5-node family
+  // meets the 1e-6 gate. The box is rebuilt from each state's own sigmas, so the pad buys
+  // no containment, only width.
   std::uint16_t n_sigma_min{4};     // in [4, n_sigma]
-  double sigma_node_spacing{0.25};  // target log-sigma spacing h of the rule (> 0)
+  double sigma_node_spacing{0.075}; // target log-sigma spacing h of the rule (> 0)
   // FAMILY ECONOMICS. A family costs n * family_node_cost_us to build and serves its
   // lanes at a few us; the cold route costs cold_lane_cost_us per lane. A group with
   // n * family_node_cost_us >= n_eligible * cold_lane_cost_us (both scaled by the

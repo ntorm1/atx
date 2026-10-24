@@ -219,6 +219,12 @@ namespace {
   if (!(std::isfinite(p.sigma_box_floor) && p.sigma_box_floor > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "RiskKernel: sigma_box_floor must be finite > 0");
   }
+  if (p.n_sigma_min < kAlSigmaFamilyMinNodes || p.n_sigma_min > p.n_sigma) {
+    return Err(ErrorCode::InvalidArgument, "RiskKernel: n_sigma_min outside [4, n_sigma]");
+  }
+  if (!(std::isfinite(p.sigma_node_spacing) && p.sigma_node_spacing > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "RiskKernel: sigma_node_spacing must be finite > 0");
+  }
   if (!(std::isfinite(p.family_node_cost_us) && p.family_node_cost_us > 0.0 &&
         std::isfinite(p.cold_lane_cost_us) && p.cold_lane_cost_us > 0.0)) {
     return Err(ErrorCode::InvalidArgument,

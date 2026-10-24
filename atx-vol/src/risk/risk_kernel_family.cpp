@@ -166,6 +166,21 @@ struct BlockCarry {
   return c.out.status[r] == RiskLaneStatus::Ok && c.ws.cold[r] == 0u;
 }
 
+// FamilyKernelPolicy "ADAPTIVE NODE COUNT": ceil(log(hi / lo) / spacing) + 1 clamped to
+// [n_sigma_min, n_sigma]. Clamped in double before the cast (an out-of-range float-to-
+// integer conversion is UB); a non-finite ratio takes the floor count.
+[[nodiscard]] std::uint16_t node_count(const FamilyKernelPolicy &p, double lo,
+                                       double hi) noexcept {
+  const double want = std::ceil(std::log(hi / lo) / p.sigma_node_spacing) + 1.0;
+  if (!(want > static_cast<double>(p.n_sigma_min))) {
+    return p.n_sigma_min;
+  }
+  if (want >= static_cast<double>(p.n_sigma)) {
+    return p.n_sigma;
+  }
+  return static_cast<std::uint16_t>(want);
+}
+
 // FamilyKernelPolicy "FAMILY ECONOMICS": whether a family of `n_nodes` sigma nodes costs at
 // least the cold-analytic route of its `n_eligible` lanes. Under rho a carry set builds two
 // rate-bumped families beside the base one (x3) and a cold lane adds two rate-bumped solves
@@ -236,7 +251,7 @@ void family_group(const BlockCtx &c, std::size_t b, std::uint32_t gi, const Bloc
     lo = std::max(centre * (1.0 - pad), floor);
     hi = centre * (1.0 + pad);
   }
-  const std::uint16_t n_nodes = c.policy.n_sigma;
+  const std::uint16_t n_nodes = node_count(c.policy, lo, hi);
   if (family_uneconomic(c, n_eligible, n_nodes)) {
     for (std::uint32_t r = grp.begin; r < grp.end; ++r) {
       if (eligible(c, r)) {
