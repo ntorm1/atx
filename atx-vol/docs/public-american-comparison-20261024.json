@@ -1,0 +1,52 @@
+{
+  "schema": "atx-public-american-comparison-evidence-v1",
+  "source_commit": "21a0dffed4bc4d28220079c2ec2aebf5e9a72bff",
+  "independent_general_american_accuracy_established": false,
+  "whole_fit_latency_measured": false,
+  "files": [
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-lto-common-v1\\receipt.json",
+      "sha256": "a71eaa5ca9487527953a3f2264954944c9e715972cf1f38ee469ed164745aa01"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-lto-common-v1\\native.json",
+      "sha256": "271acdb4a577473e9b701611904145da89edef37dd9353352a98059173b64275"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-lto-common-v1\\summary.json",
+      "sha256": "58d755d8915f03e9313bd1009c375e6bf960e64e86e75b634da5169f1e50d2e5"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-lto-diagnostic-v1\\receipt.json",
+      "sha256": "7b156c33b194df6aa6c5c675f49019faa66989c71d7f5d3ca4ef5b58c2d268c1"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-lto-diagnostic-v1\\native.json",
+      "sha256": "1311344b3ce5c5cdedee237a2499a4e52ceb4837ef7222adbd9fc43c5f8e0fae"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-lto-diagnostic-v1\\summary.json",
+      "sha256": "0a126513e7ef33788d585e027db9db82af0046366d923f9d847a3fbcf4eb767f"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-tests-final.log",
+      "sha256": "3de85075bc1936d505c4877035ad3174083d91e4bec9a43ddca3f27562efca9d"
+    },
+    {
+      "path": "C:\\atx-cache\\quote-benchmark\\spy-qualified-r7-20261023\\acceptance\\public-comparator-hygiene.log",
+      "sha256": "835fc352fdb32d7577c5973d6e2a45c7d29d107b819bff1d7c07d7ffc065f58c"
+    },
+    {
+      "path": "atx-vol\\bench\\public-american\\corpus-v1.json",
+      "sha256": "fa531834f90b9dac27c6972006b3b048a492d37d48b788a8f0e76f784e49486e"
+    },
+    {
+      "path": "atx-vol\\bench\\public-american\\corpus-common-v1.json",
+      "sha256": "874e1e95e3f36dd5ad0ee698a53e655f467e59a39d7f9972937e5f0a59cd5556"
+    },
+    {
+      "path": "atx-vol\\bench\\public-american\\upstream.json",
+      "sha256": "3a461499e0fd00abb4a248d3d305f4c2f1be5196fea21304882d73e09fea23bb"
+    }
+  ]
+}

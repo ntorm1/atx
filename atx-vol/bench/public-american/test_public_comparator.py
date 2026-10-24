@@ -37,14 +37,19 @@ class ComparatorContractTests(unittest.TestCase):
                 comparator.verify_upstream(path, manifest)
 
     def test_reference_error_is_not_independent_accuracy_and_failures_stay_in_denominator(self):
-        report = {"schema": "american-put-public-comparator-v1", "case_count": 3,
+        report = {"schema": "american-put-public-comparator-v1", "case_count": 3, "cases": [{}, {}, {}],
                   "references": [
                       {"price": 1.0, "refinement_difference": 1e-7, "closed_form": None},
                       {"price": 2.0, "refinement_difference": .01, "closed_form": None},
                       {"price": 0.0, "refinement_difference": 0.0, "closed_form": 0.0}],
                   "engines": [{"name": "example", "cold_prices": [1.00001, 2.0, None],
                       "prepared_prices": [1.00001, 2.0, None], "cold_s": [1.0],
-                      "prepared_setup_s": [.2], "prepared_eval_s": [.1], "prepared_total_s": [.31]}]}
+                      "prepared_setup_s": [.2], "prepared_eval_s": [.1], "prepared_total_s": [.31],
+                      "cold_digests": [123], "prepared_digests": [123]}]}
+        report["engines"] = [dict(copy.deepcopy(report["engines"][0]), name=name) for name in
+                             ["simu_fast", "simu_finer", "atx_default", "atx_bulk_fast"]]
+        report["upstream_adapter_checks"] = [dict(engine=name, index=i, bit_identical=True)
+            for name in ["simu_fast", "simu_finer"] for i in range(3)]
         summary = comparator.summarize_report(report)
         row = summary["engines"][0]
         self.assertEqual(row["attempted"], 3)
@@ -55,6 +60,19 @@ class ComparatorContractTests(unittest.TestCase):
         self.assertFalse(summary["independent_general_american_accuracy_established"])
         malformed = copy.deepcopy(report)
         malformed["engines"][0]["prepared_prices"].pop()
+        with self.assertRaises(ValueError):
+            comparator.summarize_report(malformed)
+        for key in ["cases", "upstream_adapter_checks"]:
+            malformed = copy.deepcopy(report)
+            malformed.pop(key)
+            with self.assertRaises(ValueError):
+                comparator.summarize_report(malformed)
+        malformed = copy.deepcopy(report)
+        malformed["engines"][0].pop("cold_digests")
+        with self.assertRaises(ValueError):
+            comparator.summarize_report(malformed)
+        malformed = copy.deepcopy(report)
+        malformed["upstream_adapter_checks"][0] = malformed["upstream_adapter_checks"][1]
         with self.assertRaises(ValueError):
             comparator.summarize_report(malformed)
         malformed = copy.deepcopy(report)

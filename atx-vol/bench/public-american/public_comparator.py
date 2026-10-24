@@ -95,16 +95,21 @@ def summarize_report(report):
         raise ValueError("Unsupported native report")
     count = report["case_count"]
     refs = report["references"]
-    if not isinstance(count, int) or isinstance(count, bool) or count <= 0 or len(refs) != count:
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0 or len(refs) != count or \
+            len(report.get("cases", [])) != count:
         raise ValueError("Invalid reference denominator")
+    names = [e.get("name") for e in report.get("engines", [])]
+    if sorted(names) != sorted(["simu_fast", "simu_finer", "atx_default", "atx_bulk_fast"]):
+        raise ValueError("Missing or duplicated native engine profile")
     result = dict(schema="american-put-public-comparison-summary-v1", case_count=count,
         independent_general_american_accuracy_established=False,
         reference="Refined atx-vol Reference: correlated in-house check, not independent American oracle",
         clocks="Cold has fresh per-contract setup, not cold OS/CPU caches; prepared includes setup per immutable model group",
         engines=[])
-    checks = report.get("upstream_adapter_checks")
-    if checks is not None and (len(checks) != 2 * count or any(
-            item.get("bit_identical") is not True for item in checks)):
+    checks = report.get("upstream_adapter_checks", [])
+    expected_checks = {(name, i) for name in ["simu_fast", "simu_finer"] for i in range(count)}
+    if len(checks) != 2 * count or any(item.get("bit_identical") is not True for item in checks) or \
+            {(item.get("engine"), item.get("index")) for item in checks} != expected_checks:
         raise ValueError("Native adapter does not reproduce original upstream calc()")
     for engine in report["engines"]:
         prices, prepared = engine["cold_prices"], engine["prepared_prices"]
@@ -118,7 +123,8 @@ def summarize_report(report):
             status=engine.get("cold_status", [None] * count)[i],
             case=report.get("cases", [None] * count)[i]) for i, p in enumerate(prices) if not finite(p)]
         for key in ["cold_digests", "prepared_digests"]:
-            if key in engine and (len(engine[key]) != len(engine["cold_s"]) or len(set(engine[key])) != 1):
+            values = engine.get(key, [])
+            if len(values) != len(engine["cold_s"]) or len(set(values)) != 1:
                 raise ValueError("Native repeated prices are not deterministic")
         for clock in ["cold_s", "prepared_setup_s", "prepared_eval_s", "prepared_total_s"]:
             row[clock] = time_stats(engine[clock], count)
