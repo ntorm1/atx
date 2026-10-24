@@ -18,17 +18,28 @@
 //            MEDIAN over its rows in the bucket, and the per-row value is kept)
 //   rate   = row rate (continuous), one per uid (median over rows)
 //   q      = sdiv as a continuous yield (median over rows of the uid)
-//   ddiv   = PV of cash dividends to expiry, PER ROW; escrowed as ONE cash event at
-//            expiry_ns - 1 ns of amount ddiv (design D4) — a documented approximation
-//            to the vendor's lattice; vendor_price lets the user see the gap
+//   ddiv   = PV of cash dividends to expiry, PER ROW. SpiderRock publishes ONE
+//            (rate, sdiv, ddiv) tuple per EXPIRY, so the state carries one
+//            ExpiryCarry{expiry_ns, pv_divs, rate, q} per (uid, expiry) from the
+//            medians over that expiry's rows (design D4 revised): the forward
+//            F = (S - pv_divs) e^{(r - q) T} reproduces the vendor's forward basis
+//            per expiry; `cash_divs` stays EMPTY. The remaining gap to the vendor's
+//            discrete-dividend lattice is visible through vendor_price.
 //   expiry = okey_yr/mn/dy at 16:00 ET (PM settlement) via expiry_instant_ns
 //   years  = SpiderRock's hybrid vol-time year fraction: kept as `vendor_T`
 //   sigma  = srVol (decimal). bidIV / askIV / error -99 sentinels are NULL in the
 //            store: a row with a NULL srVol or a non-finite required input is
 //            counted and dropped, never priced.
 //
-// Strings in the real store are large_utf8 (polars); both utf8 and large_utf8 are
-// read (tools/oracle_cohort_reader.cpp rules).
+// Strings in the polars-written oracle store are large_utf8 and in the partitioned
+// intraday drop (2026-10-14) plain utf8; both are read (tools/oracle_cohort_reader.cpp
+// rules).
+//
+// Vendor Greek UNITS (CONVENTIONS.md resolved map): de / ga are per unit of spot,
+// ve is per vol POINT (= dP/dsigma * kSpiderRockVegaScale), th is per business day
+// (= dP/dt * kSpiderRockThetaScale, same sign as the library's calendar theta). The
+// bucket keeps the vendor columns in vendor units; a parity consumer divides by the
+// scale before comparing with library Greeks.
 
 #include <cstddef>
 #include <cstdint>
@@ -63,6 +74,21 @@ struct SpiderRockStoreSpec {
   std::vector<std::string> underliers; // undSecKey_tk values; empty => all (then max_underliers)
   std::size_t max_underliers{0};       // 0 => no cap; else the top-N by row count in the bucket
   TimeSpec time{};                     // the clock T is measured on (Calendar365 default)
+  // ── Lane C additions (appended) ──
+  // Keep only exType == "American" rows when the partition has an `exType` column
+  // (the licensed intraday drop does; the synthetic and older oracle stores do not,
+  // and then every row is American). Applied BEFORE the top-N row count, so
+  // European / Forward-framework index products (SPX, NDX, XSP, RUT, ...) never enter
+  // a top-N universe: the risk kernel is American-on-spot and would fail vendor parity
+  // on them by construction. Dropped rows are counted in `dropped_non_american`.
+  bool american_only{true};
+  // Keep only rows whose option root `okey_tk` equals the underlier ticker when the
+  // partition has an `okey_tk` column. A different root is an adjusted / non-standard
+  // deliverable: its (expiry, side, strike) key collides with the standard contract's
+  // (bucket 1000 of 2026-10-14: 16,355 colliding keys, all distinct roots) and its
+  // price is not a function of the underlier's spot. Applied before the top-N count;
+  // counted in `dropped_nonstandard_root`. A NULL root passes.
+  bool standard_roots_only{true};
 };
 
 // One bucket decoded to SoA (rows sorted by (uid, expiry_ns, side, strike)).
@@ -92,7 +118,46 @@ struct SpiderRockBucket {
   std::int64_t rows_dropped_bad_input{0};
   std::vector<std::string> files_opened;
   [[nodiscard]] std::size_t size() const noexcept { return sigma.size(); }
+  // ── Lane C additions (appended) ──
+  // Rows of underliers outside the admitted set (explicit list / top-N cap),
+  // including whole row groups pruned by the ticker statistics; not part of
+  // rows_dropped_*: they were never candidates. Every row of the partition is
+  // counted once: rows_read == size() + rows_dropped_null + rows_dropped_bad_input
+  // + rows_not_selected + dropped_non_american (a NULL ticker counts as
+  // rows_dropped_null; a pruned row group counts as rows_not_selected).
+  std::int64_t rows_not_selected{0};
+  // Rows dropped by SpiderRockStoreSpec::american_only (exType != "American",
+  // including a NULL exType), counted before underlier admission.
+  std::int64_t dropped_non_american{0};
+  // KEPT rows with at least one optional vendor / carry cell (srPrc, de, ga, th, ve,
+  // sdiv, ddiv, bidPrc, askPrc) NULL or a vendor sentinel (-99 anywhere, sdiv <=
+  // -9.98), carried as NaN. A sentinel in a required column drops the row as
+  // rows_dropped_null. Not part of the rows_read identity (the rows are kept).
+  std::int64_t rows_null_vendor{0};
+  // Rows dropped by SpiderRockStoreSpec::standard_roots_only (okey_tk != the
+  // underlier ticker), counted before underlier admission; part of the identity:
+  // rows_read == size() + rows_dropped_null + rows_dropped_bad_input +
+  //              rows_not_selected + dropped_non_american + dropped_nonstandard_root.
+  std::int64_t dropped_nonstandard_root{0};
 };
+
+// Vendor-unit scales (see "Vendor Greek UNITS" above): ve = vega * kSpiderRockVegaScale,
+// th = theta * kSpiderRockThetaScale (BUS_252 day).
+inline constexpr double kSpiderRockVegaScale = 0.01;
+inline constexpr double kSpiderRockThetaScale = 1.0 / 252.0;
+
+// The bucket's instant: `date` + HH:MM US/Eastern -> UTC epoch ns, derived as
+// expiry_instant_ns(date, Pm) - (16:00 - HH:MM) (exact: DST resolves at day
+// granularity). InvalidArgument on a malformed date / bucket.
+[[nodiscard]] Result<std::int64_t> spiderrock_bucket_instant_ns(std::string_view date,
+                                                                std::string_view bucket_et);
+
+// The effective continuous carry implied by one ExpiryCarry row (design D4):
+// F = (spot - pv_divs) e^{(rate - q) T}, q_eff = rate - ln(F / spot) / T. NaN when
+// T <= 0, spot <= 0 or pv_divs >= spot. The synthetic generator prices its vendor
+// columns at exactly this carry.
+[[nodiscard]] double spiderrock_q_eff(double spot, double pv_divs, double rate, double q,
+                                      double T) noexcept;
 
 // List the `bucket_et=HHMM` partitions present for `date` (ascending). NotFound
 // when the date directory is missing.
@@ -113,6 +178,12 @@ struct BucketStateReport {
   std::size_t n_uids{0};
   std::size_t n_uids_dropped{0};
   std::size_t n_marks{0};
+  // ── Lane C additions (appended): the D4 dividend approximation, made visible ──
+  std::size_t n_uids_with_divs{0};    // uids with any ExpiryCarry::pv_divs > 0
+  std::size_t n_expiry_rows{0};       // ExpiryCarry rows written (one per (uid, expiry))
+  double max_ddiv_spread{0.0};        // max over (uid, expiry) of max(ddiv) - min(ddiv)
+  std::size_t n_duplicate_marks{0};   // exact duplicate (expiry, side, strike) rows dropped
+  std::size_t n_rows_bad_sigma{0};    // rows with a non-finite / non-positive sigma skipped
 };
 [[nodiscard]] Result<MarketStateStorage> market_state_from_bucket(const SpiderRockBucket &bucket,
                                                                   const TimeSpec &time,
@@ -140,8 +211,22 @@ struct SyntheticSpiderRockSpec {
   double level_shock_vol{0.01};     // per-bucket ATM vol shock (absolute, annualized sigma)
   double skew_shock_vol{0.002};
   std::uint64_t seed{1};
+  // ── Lane C additions (appended) ──
+  unsigned n_threads{0};            // pricing fan-out degree (0 = executor auto)
 };
 [[nodiscard]] Status write_synthetic_spiderrock_store(const SyntheticSpiderRockSpec &spec,
                                                       std::string_view out_dir);
+
+// What a synthetic write produced (the overload below fills it).
+struct SyntheticStoreReport {
+  std::size_t rows_written{0};
+  std::size_t pricing_failures{0}; // rows whose vendor columns are NULL (pricer refused)
+  std::size_t files_written{0};
+  double seconds{0.0};             // wall clock of the whole write
+  double pricing_seconds{0.0};     // of which: the fanned-out American pricing
+};
+[[nodiscard]] Status write_synthetic_spiderrock_store(const SyntheticSpiderRockSpec &spec,
+                                                      std::string_view out_dir,
+                                                      SyntheticStoreReport &report);
 
 } // namespace atx::vol

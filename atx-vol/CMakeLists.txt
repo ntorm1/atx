@@ -202,6 +202,13 @@ set(ATX_VOL_MARKETDATA_SOURCES
     src/marketdata/listed_opra.cpp
     src/marketdata/listed_definitions_cache.cpp
     src/marketdata/occ_ess.cpp
+    # Risk-engine sprint 2026-10-24 lane C: SpiderRock intraday store loader +
+    # SpiderRock-shaped synthetic store (api/marketdata/spiderrock_store.hpp). Both
+    # read/write parquet through Arrow directly; Arrow/Parquet reach atx-vol through
+    # atx::core's unconditional PUBLIC edge (the oracle reader's arrangement), so they
+    # are NOT gated on ATX_VOL_LAKEHOUSE.
+    src/marketdata/spiderrock_store.cpp
+    src/marketdata/synthetic_spiderrock_store.cpp
 )
 
 set(ATX_VOL_STORAGE_SOURCES
@@ -1270,6 +1277,18 @@ if(ATX_BUILD_TOOLS)
         tools/oracle_scorecard.cpp
         tools/oracle_cohort_reader.cpp)
     target_link_libraries(atx-vol-oracle-bench PRIVATE atx::vol atx::core atx_warnings)
+
+    # Risk-engine sprint 2026-10-24 (design §5.8): the intraday risk benchmark over
+    # the SpiderRock store layout (licensed or `--synthetic`; identical loader and
+    # engine path). risk_bench_core.cpp is the engine-free core (also compiled into
+    # atx-vol-tests); risk_bench.cpp drives RiskStream. CLI / report schema:
+    # docs/risk-bench.md. The JSON report is written / read by a self-contained
+    # encoder in the core (no third-party JSON dependency reaches the test slices).
+    add_executable(atx-vol-risk-bench
+        tools/risk_bench_main.cpp
+        tools/risk_bench.cpp
+        tools/risk_bench_core.cpp)
+    target_link_libraries(atx-vol-risk-bench PRIVATE atx::vol atx::core atx_warnings)
 
     # D2: track_compact -- folds staging/ into the hive-partitioned zstd
     # Parquet tracks/ lakehouse (atx::vol::compact(), track_store.hpp). Only
