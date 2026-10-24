@@ -3326,9 +3326,10 @@ VolIdentification reimplied_vol(const QuoteSliceFit &fit, double strike, Side si
     if (typed && at_vol_floor(*iv)) return floor_vol(fit, strike, side, price);
     return identified(*iv);
   }
-  // Continuous carry under PriceOnly: the typed inversion with the opt-in non-monotone
-  // refusal. Its Ok answer is contract_iv's root bit for bit (american_iv.hpp: same
-  // Search route and controls), so identified volatilities match the Legacy rule.
+  // Continuous carry under PriceOnly: prefer the retained family's certified native
+  // root. Otherwise the typed Search fallback keeps the historical non-monotone
+  // refusal and Search controls. The two routes need not be bit-identical: Search
+  // uses a warm-boundary map, while the native bracket certifies the cold price map.
   IvOpts opts;
   opts.method = AmericanMethod::AndersenLake;
   opts.tol = query.iv_tolerance;
