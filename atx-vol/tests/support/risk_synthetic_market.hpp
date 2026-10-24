@@ -244,7 +244,8 @@ make_state(const StateMove &mv, CarryFrom carry = CarryFrom::Surface, std::size_
   for (const UnderlierSpec &u : kUnderliers) {
     for (std::size_t ei = 0; ei < kExpiryUnits.size(); ++ei) {
       for (std::size_t s = 0; s < n_strikes; ++s) {
-        const double rel = 0.85 + 0.30 * static_cast<double>(s) / static_cast<double>(n_strikes - 1u);
+        const double rel =
+            0.85 + 0.30 * static_cast<double>(s) / static_cast<double>(n_strikes - 1u);
         const double K = u.spot * rel;
         for (const Side side : {Side::Call, Side::Put}) {
           legs.push_back(OptionLeg{id, u.uid, K, expiry_ns(ei), side, 1.0, 100.0});

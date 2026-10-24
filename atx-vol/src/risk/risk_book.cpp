@@ -296,7 +296,8 @@ Result<PreparedRiskBook> PreparedRiskBook::create(const RiskBook &book) {
     const std::int64_t expiry = p.expiry_ns.data()[r];
     const Side side = p.side[r];
     std::uint32_t e = r + 1u;
-    while (e < n && p.uid.data()[e] == uid && p.expiry_ns.data()[e] == expiry && p.side[e] == side) {
+    while (e < n && p.uid.data()[e] == uid && p.expiry_ns.data()[e] == expiry &&
+           p.side[e] == side) {
       ++e;
     }
     p.groups.push_back(RiskGroup{uid, expiry, side, r, e, uid_slot(uid)});

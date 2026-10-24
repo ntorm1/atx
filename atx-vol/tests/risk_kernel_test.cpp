@@ -37,7 +37,8 @@ namespace {
   return frame;
 }
 
-template <class T> [[nodiscard]] bool bytes_equal(const std::vector<T> &a, const std::vector<T> &b) {
+template <class T>
+[[nodiscard]] bool bytes_equal(const std::vector<T> &a, const std::vector<T> &b) {
   return a.size() == b.size() &&
          (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
 }

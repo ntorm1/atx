@@ -54,11 +54,10 @@ struct Scenario {
   RiskFrame ft;
 };
 
-[[nodiscard]] std::unique_ptr<Scenario> make_scenario(const rt::StateMove &b, const rt::StateMove &t,
-                                                      std::vector<OptionLeg> legs,
-                                                      std::vector<ShareLeg> shares,
-                                                      const RiskKernel &kernel, RiskNeeds needs,
-                                                      std::size_t shifted_uids = 3) {
+[[nodiscard]] std::unique_ptr<Scenario>
+make_scenario(const rt::StateMove &b, const rt::StateMove &t, std::vector<OptionLeg> legs,
+              std::vector<ShareLeg> shares, const RiskKernel &kernel, RiskNeeds needs,
+              std::size_t shifted_uids = 3) {
   auto s = std::make_unique<Scenario>();
   s->base = rt::make_state(b);
   s->shifted = rt::make_state(t, CarryFrom::Surface, shifted_uids);
@@ -82,7 +81,8 @@ struct Scenario {
   return r.has_value() ? std::move(*r) : ExplainResult{};
 }
 
-template <class T> [[nodiscard]] bool bytes_equal(const std::vector<T> &a, const std::vector<T> &b) {
+template <class T>
+[[nodiscard]] bool bytes_equal(const std::vector<T> &a, const std::vector<T> &b) {
   return a.size() == b.size() &&
          (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
 }
@@ -555,8 +555,8 @@ TEST(RiskExplain, ThreadCountBitIdentical) {
   eight.n_threads = 8;
   const ExplainResult a = run(*s, one);
   ExplainResult b;
-  ASSERT_TRUE(
-      explain_into(*s->prep, s->base->state, s->fb, s->shifted->state, s->ft, eight, b).has_value());
+  ASSERT_TRUE(explain_into(*s->prep, s->base->state, s->fb, s->shifted->state, s->ft, eight, b)
+                  .has_value());
   EXPECT_TRUE(bytes_equal(a.id, b.id) && bytes_equal(a.uid, b.uid) && bytes_equal(a.kind, b.kind));
   for (const auto col :
        {&ExplainResult::pv_base, &ExplainResult::pv_target, &ExplainResult::pnl_total,

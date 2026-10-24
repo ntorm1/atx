@@ -49,27 +49,25 @@ struct PivotGroup {
 };
 
 // Column order of the accumulated totals (ExplainTotals' double fields).
-enum TotalsIx : std::size_t {
-  kPvBase,
-  kPvTarget,
-  kTotal,
-  kDelta,
-  kGamma,
-  kVega,
-  kVolga,
-  kVanna,
-  kTheta,
-  kRho,
-  kCharm,
-  kUnexplained,
-  kLevel,
-  kSkew,
-  kCurv,
-  kResid,
-  kShares,
-  kExcludedPremium,
-  kTotalsCount
-};
+constexpr std::size_t kPvBase = 0;
+constexpr std::size_t kPvTarget = 1;
+constexpr std::size_t kTotal = 2;
+constexpr std::size_t kDelta = 3;
+constexpr std::size_t kGamma = 4;
+constexpr std::size_t kVega = 5;
+constexpr std::size_t kVolga = 6;
+constexpr std::size_t kVanna = 7;
+constexpr std::size_t kTheta = 8;
+constexpr std::size_t kRho = 9;
+constexpr std::size_t kCharm = 10;
+constexpr std::size_t kUnexplained = 11;
+constexpr std::size_t kLevel = 12;
+constexpr std::size_t kSkew = 13;
+constexpr std::size_t kCurv = 14;
+constexpr std::size_t kResid = 15;
+constexpr std::size_t kShares = 16;
+constexpr std::size_t kExcludedPremium = 17;
+constexpr std::size_t kTotalsCount = 18;
 
 class TotalsAcc {
 public:
@@ -121,8 +119,9 @@ private:
 
 // explain_into's scratch. The frozen API gives it no workspace, so it lives per
 // calling thread and is grow-only: a steady-state explain on one thread allocates
-// nothing. Worker threads of the per-leg fan-out only READ it (through the captured
-// reference, for the duration of the call).
+// nothing. During a call the executor's workers reach it only through the calling
+// thread's captured reference: the pivot fan-out writes disjoint PivotGroup slots, the
+// per-leg fan-out only reads them, and the reduction is serial on the calling thread.
 struct ExplainScratch {
   std::vector<PivotGroup> pivots;
   std::vector<std::int64_t> expiries; // distinct option expiries, ascending
@@ -511,7 +510,8 @@ void build_pivot_groups(const PreparedRiskBook &book, std::vector<PivotGroup> &p
   }
 }
 
-[[nodiscard]] std::size_t index_of(std::span<const std::uint32_t> sorted, std::uint32_t v) noexcept {
+[[nodiscard]] std::size_t index_of(std::span<const std::uint32_t> sorted,
+                                   std::uint32_t v) noexcept {
   return static_cast<std::size_t>(std::lower_bound(sorted.begin(), sorted.end(), v) -
                                   sorted.begin());
 }

@@ -223,7 +223,9 @@ Result<MarketState> MarketState::create(std::int64_t ts_ns, const TimeSpec &time
   s.time_ = time;
   s.underliers_.assign(underliers.begin(), underliers.end());
   std::sort(s.underliers_.begin(), s.underliers_.end(),
-            [](const UnderlierState &a, const UnderlierState &b) noexcept { return a.uid < b.uid; });
+            [](const UnderlierState &a, const UnderlierState &b) noexcept {
+              return a.uid < b.uid;
+            });
   for (std::size_t i = 0; i < s.underliers_.size(); ++i) {
     if (Status v = validate_underlier(s.underliers_[i]); !v.has_value()) {
       return Err(v.error());
@@ -317,7 +319,8 @@ ResolvedContract MarketState::resolve(std::uint32_t uid, double K, std::int64_t 
                                       Side side) const noexcept {
   const std::size_t slot = find_slot(underliers_, uid);
   if (slot == kNpos) {
-    return refused(RiskLaneStatus::ModelUnavailable, RiskFlag::MarkMissing | RiskFlag::SurfaceMissing);
+    return refused(RiskLaneStatus::ModelUnavailable,
+                   RiskFlag::MarkMissing | RiskFlag::SurfaceMissing);
   }
   if (!finite_positive(K) || (side != Side::Call && side != Side::Put)) {
     return refused(RiskLaneStatus::InvalidContract, 0u);
@@ -471,7 +474,8 @@ void MarketStateStorage::normalize_marks() {
       if (!keep.empty()) {
         const std::size_t j = keep.back();
         if (m.expiry_ns[i] == m.expiry_ns[j] && m.side[i] == m.side[j] &&
-            std::bit_cast<std::uint64_t>(m.strike[i]) == std::bit_cast<std::uint64_t>(m.strike[j])) {
+            std::bit_cast<std::uint64_t>(m.strike[i]) ==
+                std::bit_cast<std::uint64_t>(m.strike[j])) {
           continue; // exact duplicate key: the first (stable order) wins
         }
       }
