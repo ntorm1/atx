@@ -62,3 +62,26 @@ remain runner work. They are not claimed implemented by this seam. Fresh
 independent component review is required before that runner is finalized; a
 second exact-source review is required before its fixed four-stage execution.
 No PDE result, historical refusal, Greek accuracy rule or production path changes.
+
+## Refusal-phase review correction
+
+Independent review of `2c963fea` found that a genuine zero-solve observation-cap
+result could be relabeled as an impossible numerical or algorithmic failure.
+All seven alternative refusal labels reproduced runtime failures in the new
+control. The reader now joins each reason to its exact original phase using
+completed updates, policy/correction calls, selected-matrix multiplies and
+nonfinite original-residual observations. An algorithmic iteration-limit label
+requires the full original `n+2` updates; an observation-cap label requires a
+strictly smaller allowance. Neither can masquerade as the other.
+
+Fourteen observation controls plus the fifteen existing controls pass after
+the correction. Positive controls retain failures at the policy solve,
+correction-RHS, correction solve, corrected-value and initial/updated original
+residual phases; scripted solver results exercise these branches on two-row
+inputs. Both kinds of linear-solve exception remain valid. A scripted complete
+original iteration-limit exit also remains valid. These controls are separate
+from the declared four-stage experiment, which still has not run.
+
+The joins prove phase consistency, not an independent re-execution of LAPACK or
+a forensic distinction between different exceptions with identical counters.
+The later runner must still bind exact source/execution/artifact provenance.

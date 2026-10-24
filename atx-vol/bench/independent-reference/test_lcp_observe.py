@@ -201,6 +201,78 @@ raise SystemExit(1)
                                 cwd=Path(__file__).parent, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 
+    def test_zero_solve_cap_cannot_be_relabelled_as_an_algorithm_or_numerical_failure(self):
+        original = observe_stage(small(), max_updates=0)
+        self.assertEqual(original['linear_calls'], 0)
+        for reason in ('policy_iteration_limit', 'linear_solve_failure', 'nonfinite_policy_solves',
+                       'nonfinite_correction_solves', 'nonfinite_corrected_values',
+                       'nonfinite_correction_rhs', 'nonfinite_original_residual'):
+            wrong = copy.deepcopy(original)
+            wrong['work']['reason'] = reason
+            wrong['observation_cap_reached'] = False
+            with self.subTest(reason=reason), self.assertRaises(ValueError):
+                verify_observation(small(), wrong)
+
+    def test_actual_failure_phases_are_retained_and_incompatible_labels_refused(self):
+        arrays = [np.zeros(1), np.ones(2), np.zeros(1), np.ones(2), np.zeros(2), np.zeros(2)]
+        controls = (
+            ([np.linalg.LinAlgError('policy')], 'linear_solve_failure', 1, 0, 0),
+            ([np.ones(2), np.linalg.LinAlgError('correction')], 'linear_solve_failure', 1, 1, 1),
+            ([np.full(2, np.inf)], 'nonfinite_policy_solves', 1, 0, 0),
+            ([np.ones(2), np.full(2, np.inf)], 'nonfinite_correction_solves', 1, 1, 1),
+            ([np.full(2, 1e308), np.full(2, 1e308)], 'nonfinite_corrected_values', 1, 1, 1),
+        )
+        for outputs, reason, policies, corrections, selected in controls:
+            with self.subTest(reason=reason, policies=policies, corrections=corrections), \
+                    patch('lcp_observe._delegate_solve', side_effect=outputs):
+                answer = observe_stage(arrays)
+            self.assertEqual(answer['work']['reason'], reason)
+            self.assertEqual(answer['work']['iterations'], 0)
+            self.assertEqual(answer['work']['policy_solves'], policies)
+            self.assertEqual(answer['work']['correction_solves'], corrections)
+            self.assertEqual(answer['selected_multiplies'], selected)
+            self.assertTrue(verify_observation(arrays, answer))
+            wrong = copy.deepcopy(answer)
+            wrong['work']['reason'] = 'nonfinite_original_residual'
+            with self.assertRaises(ValueError):
+                verify_observation(arrays, wrong)
+        arrays[1][:] = 2.
+        with patch('lcp_observe._delegate_solve', return_value=np.full(2, 1e308)):
+            rhs_failure = observe_stage(arrays)
+        self.assertEqual(rhs_failure['work']['reason'], 'nonfinite_correction_rhs')
+        self.assertEqual(rhs_failure['work']['policy_solves'], 1)
+        self.assertEqual(rhs_failure['work']['correction_solves'], 0)
+        self.assertEqual(rhs_failure['selected_multiplies'], 1)
+        wrong = copy.deepcopy(rhs_failure)
+        wrong['work']['reason'] = 'nonfinite_policy_solves'
+        with self.assertRaises(ValueError):
+            verify_observation(arrays, wrong)
+        with patch('lcp_observe._delegate_solve', side_effect=[np.full(2, .6e308), np.full(2, .6e308)]):
+            inspected = observe_stage(arrays)
+        self.assertEqual(inspected['work']['reason'], 'nonfinite_original_residual')
+        self.assertEqual(inspected['work']['iterations'], 1)
+        self.assertEqual(inspected['work']['policy_solves'], 1)
+        self.assertEqual(inspected['work']['correction_solves'], 1)
+        self.assertEqual(inspected['nonfinite_observations'], 1)
+        self.assertEqual(len(inspected['states']), 1)  # Only the preceding finite state is published.
+        self.assertTrue(verify_observation(arrays, inspected))
+
+    def test_original_iteration_limit_cannot_be_relabelled_as_the_observation_cap(self):
+        arrays = [np.zeros(1), np.ones(2), np.zeros(1), np.full(2, 2.), np.zeros(2), np.zeros(2)]
+        outputs = [a for i in range(1, 5) for a in (np.full(2, i/8.), np.zeros(2))]
+        with patch('lcp_observe._delegate_solve', side_effect=outputs):
+            answer = observe_stage(arrays)
+        self.assertEqual(answer['work']['reason'], 'policy_iteration_limit')
+        self.assertEqual(answer['work']['iterations'], 4)
+        self.assertEqual(answer['linear_calls'], 8)
+        self.assertFalse(answer['observation_cap_reached'])
+        self.assertTrue(verify_observation(arrays, answer))
+        wrong = copy.deepcopy(answer)
+        wrong['work']['reason'] = 'linear_budget'
+        wrong['observation_cap_reached'] = True
+        with self.assertRaises(ValueError):
+            verify_observation(arrays, wrong)
+
 
 if __name__ == '__main__':
     unittest.main()

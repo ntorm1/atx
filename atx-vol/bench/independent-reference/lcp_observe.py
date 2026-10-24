@@ -257,16 +257,38 @@ def verify_observation(arrays, result, *, tolerance=1e-10):
                 _require(row['selected_system_residual'] is None)
         terminal = result['terminal_values']
         _require((terminal is None and not states) or (terminal is not None and states and _bits_equal(terminal, values[-1])))
+        completed = work['iterations']
+        # Deltas locate the exact original phase relative to the last completed
+        # corrected update. Only inspect can add a nonfinite observation; only
+        # correction-RHS evaluation can precede its corresponding solver call.
+        phase = (work['policy_solves']-completed, work['correction_solves']-completed,
+                 result['selected_multiplies']-completed, result['nonfinite_observations'])
         if result['status'] == 'computed':
+            _require(phase == (0, 0, 0, 0))
             _require(states and states[-1]['residual'] <= tolerance)
             _require(_float_bits(work['complementarity_residual']) == _float_bits(states[-1]['residual']))
             _require(work['policy_solves'] == work['correction_solves'] == work['iterations'])
         else:
             _require(result['status'] == 'refused')
             _require(not states or states[-1]['residual'] > tolerance)
-            _require(work['reason'] in ('linear_budget','policy_iteration_limit','linear_solve_failure',
-                'nonfinite_policy_solves','nonfinite_correction_solves','nonfinite_corrected_values',
-                'nonfinite_correction_rhs','nonfinite_original_residual'))
+            phases = {
+                'linear_budget': ((0, 0, 0, 0),),
+                'policy_iteration_limit': ((0, 0, 0, 0),),
+                'linear_solve_failure': ((1, 0, 0, 0), (1, 1, 1, 0)),
+                'nonfinite_policy_solves': ((1, 0, 0, 0),),
+                'nonfinite_correction_rhs': ((1, 0, 1, 0),),
+                'nonfinite_correction_solves': ((1, 1, 1, 0),),
+                'nonfinite_corrected_values': ((1, 1, 1, 0),),
+                'nonfinite_original_residual': ((0, 0, 0, 1),),
+            }
+            reason = work['reason']
+            _require(reason in phases and phase in phases[reason])
+            if reason == 'linear_budget':
+                _require(completed == budget//2 < n+2)
+            elif reason == 'policy_iteration_limit':
+                _require(completed == n+2 and budget == 2*(n+2))
+            elif reason != 'nonfinite_original_residual':
+                _require(completed < budget//2)  # A whole pair was reserved before this attempt.
             _require((work['last_checked_residual'] is None and not states) or \
                 (states and _float_bits(work['last_checked_residual']) == _float_bits(states[-1]['residual'])))
         expected_cap = result['status'] == 'refused' and work['reason'] == 'linear_budget'
