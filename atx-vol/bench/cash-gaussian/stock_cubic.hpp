@@ -97,7 +97,7 @@ struct CubicContribution {
 
 // Finite-cell contribution only. Bounds come from the owner; request.lower/upper
 // must equal them. Positive stochastic time/stock/volatility only. No tail is
-// omitted by a full-curve routine: full-domain integration is not implemented here.
+// omitted by a full-curve routine: cubic_expectation.hpp owns that separate seam.
 [[nodiscard]] Result<CubicContribution> cubic_cell_contribution(const StockCubic &curve,
     std::size_t cell, const WeightRequest &request, WeightPrecision precision,
     const CubicOwnerBudget &budget, CubicOwnerWork &work);

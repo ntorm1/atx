@@ -1,4 +1,5 @@
 #include "stock_cubic.hpp"
+#include "cubic_point_detail.hpp"
 
 #include <algorithm>
 #include <array>
@@ -296,6 +297,51 @@ Result<CubicContribution> contribution(const StockCubic &curve, std::size_t inde
   return CubicContribution{math.encode(value), math.encode(derivative),
       math.encode(value_abs), math.encode(delta_abs), math.encode(math.maximum_condition)};
 }
+
+template <unsigned Digits>
+Result<CubicPoint> decimal_point(const StockCubic &curve, const std::string &stock,
+    const CubicOwnerBudget &budget, CubicOwnerWork &work) {
+  using R = Real<Digits>;
+  if (!reserve<Digits>(curve, budget, work, false))
+    return Err(ErrorCode::Unavailable, "cubic decimal point workspace/knots budget");
+  Arithmetic<Digits> math(work);
+  const R x = math.convert(stock);
+  if (!finite(x) || x < 0)
+    return Err(ErrorCode::InvalidArgument, "cubic decimal point domain");
+  // This entry is only for nonidentity exponential transport. No rounded
+  // equality may be interpreted as an authoritative knot identity.
+  auto location = [&](const R &knot_value) {
+    const R difference = x-knot_value;
+    if (difference == 0)
+      throw NumericRefusal{"cubic uncertain transported knot"};
+    math.condition(difference, R(abs(x)+abs(knot_value)));
+  };
+  for (const auto &cell : curve.cells()) {
+    ++work.cells_examined;
+    const R a = math.convert(cell.lower), b = math.convert(cell.upper);
+    location(a); location(b);
+    if (x < b) {
+      if (budget.max_finite_cells == 0)
+        return Err(ErrorCode::Unavailable, "cubic decimal point cell budget");
+      const R offset = math.difference(x, a, CubicCoefficient::CoordinateOffset);
+      const R width = math.difference(b, a, CubicCoefficient::Width);
+      const R u = offset/width;
+      if (!(u > 0 && u < 1))
+        throw NumericRefusal{"cubic decimal point rounded coordinate"};
+      return direct_cell(cell, u, math, work);
+    }
+  }
+  const auto &tail = curve.tail();
+  const R a = math.convert(tail.lower), v = math.convert(tail.value);
+  const R slope = math.convert(tail.slope);
+  location(a);
+  R absolute_sum;
+  const R offset = math.difference(x, a, CubicCoefficient::TailOffset);
+  const R value = math.sum(std::array<R, 2>{v, slope*offset}, absolute_sum);
+  return CubicPoint{math.encode(value), math.encode(slope), math.encode(slope),
+      CubicSlopeKind::Smooth, math.encode(absolute_sum), math.encode(R(abs(slope))),
+      math.encode(math.maximum_condition)};
+}
 } // namespace
 
 Result<StockCubic> StockCubic::make(std::span<const HermiteCell> cells, CubicAffineTail tail,
@@ -373,6 +419,17 @@ Result<CubicContribution> cubic_cell_contribution(const StockCubic &curve, std::
     return Err(ErrorCode::InvalidArgument, "cubic owner weight bounds");
   return precision_call<CubicContribution>(precision, [&](auto digits) {
     return contribution<decltype(digits)::value>(curve, cell, request, budget, work);
+  });
+}
+
+Result<CubicPoint> detail::cubic_decimal_point(const StockCubic &curve,
+    const std::string &stock, WeightPrecision precision,
+    const CubicOwnerBudget &budget, CubicOwnerWork &work) {
+  work = {};
+  if (stock.empty() || stock.size() > 256)
+    return Err(ErrorCode::InvalidArgument, "cubic decimal point encoding length");
+  return precision_call<CubicPoint>(precision, [&](auto digits) {
+    return decimal_point<decltype(digits)::value>(curve, stock, budget, work);
   });
 }
 } // namespace atx::vol::cash_gaussian
