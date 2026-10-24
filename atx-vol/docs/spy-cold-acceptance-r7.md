@@ -449,3 +449,53 @@ Evidence: `economic-v2-profile/floor-promotion-regressions.json`,
 22 quote and one native CLI tests, plus owning PCH-off compilation. A complete
 audit and a new timed run of the corrected source remain required; the previous
 4.8842-second measurement cannot be reused for it.
+
+## Target-IV floors: independent thirteenth gate
+
+The monetary repricing budget does not authorize identifying a target that belongs
+to the zero-volatility or minimum-volatility interval. Acceptance output schema
+`atx-vol-spy-acceptance-v3` therefore adds
+`identified_node_target_floor_semantics` as a separate thirteenth check. The
+unchanged `raw-spread-price-v1` result remains visible independently. Previously
+saved twelve-gate receipts are historical evidence and are not rewritten.
+
+Under `target-iv-floor-v1`, every final Success node must satisfy all three rules:
+
+- The target exceeds the zero-volatility American value plus
+  `1e-9 * price_ceiling + 1e-12`. Python independently maximizes the discounted
+  deterministic payoff over time zero, maturity, and the possible interior
+  stationary point; the ceiling accounts for negative rates or carry.
+- The target strictly exceeds the cold Reference price at sigma `0.005`.
+  The native audit must supply finite same-context `cold_node.floor_sigma` and
+  `cold_node.price_at_floor`; the floor must equal `0.005` exactly. Missing fields,
+  unsupported models, changed contract/options or nonfinite evidence fail closed.
+- The reported sigma itself exceeds `0.005`. Neither the economic price budget
+  nor its roundoff allowance relaxes these identification rules.
+
+PriceOnly remains a served-price classification without a point-IV claim. The
+frozen no-demotion/coverage gate continues separately; a legitimate new floor
+classification must be reviewed explicitly. Standalone `cold-floors` writes the
+full observations and failure contexts as `atx-vol-cold-node-floor-audit-v1`.
+`verify` and `qualify` always enforce this gate in the new output schema.
+
+The `8b410e31` candidate's saved economic-v2 audit still passes the prior twelve
+checks, including cold monetary accuracy, when evaluated by the new verifier.
+It fails the floor gate: **eight of 12,858 Success nodes** independently violate
+the zero-volatility target screen. That historical exporter also lacks sigma-floor
+price evidence for all 12,858 nodes, so the new gate cannot pass even after the
+eight violations are accounted for. Its eight other nodes are PriceOnly.
+The new receipt is
+`acceptance/integrated-economic-v2-audit/verification-economic-with-floor-v3.json`;
+the old receipt is untouched. This result does not promote that candidate's
+separate development latency.
+
+The eight actual failures are frozen with original boxes, row IDs, exact native
+contracts and source/artifact hashes in
+`bench/fixtures/spy-economic-v2-floor-promotions-v1.json`. No historical floor
+price was fabricated. A separate closed-form test uses `S=K=100`, `T=1`, zero
+rate/yield: the price at sigma `0.00499` is within $0.001 of the price at seed
+`0.00501`, yet must fail identification because the target is below the sigma
+floor. A genuinely just-above-floor target passes. Additional regressions cover
+interior exercise optima with both signs of rates, floor equality, invalid/missing
+fields, changed context, all-PriceOnly evidence and independent monetary PASS
+beside floor FAIL. All 47 Python oracle tests pass.

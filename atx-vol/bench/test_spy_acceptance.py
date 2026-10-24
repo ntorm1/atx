@@ -2,6 +2,7 @@
 import copy
 import csv
 import json
+import math
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -184,7 +185,9 @@ class ColdNodeRootOracleTests(unittest.TestCase):
                 "effective_yield": 0.0, "sigma_lower": 0.2 - 1e-7, "sigma_center": 0.2,
                 "sigma_upper": 0.2 + 1e-7, "radius": 1e-7,
                 "price_lower": query["price"] - 1e-5, "price_center": query["price"],
-                "price_upper": query["price"] + 1e-5}
+                "price_upper": query["price"] + 1e-5,
+                "floor_sigma": 0.005, "price_at_floor": max(0.0,
+                    100.0 - query["strike"] if query["side"] == "call" else query["strike"] - 100.0)}
         return document(value), value["queries"][0]
 
     def test_all_identified_node_roots_must_strictly_straddle(self):
@@ -421,6 +424,18 @@ class ColdNodePriceOracleTests(unittest.TestCase):
             self.assertNotIn("identified_node_cold_root_accuracy", economic["checks"])
             self.assertFalse(economic["cold_root_audit"]["strict_accuracy_passed"])
             self.assertFalse(economic["goal_achieved"])
+            self.assertEqual(economic["schema"], "atx-vol-spy-acceptance-v3")
+            self.assertEqual(len(economic["checks"]), 13)
+            self.assertTrue(economic["checks"]["identified_node_target_floor_semantics"])
+            # Missing new evidence cannot reuse a historical 12-gate pass.
+            del query["cold_node"]["price_at_floor"]
+            (directory / "native.json").write_text(json.dumps(report))
+            receipt["report_sha256"] = audit.sha256(directory / "native.json")
+            (directory / "receipt.json").write_text(json.dumps(receipt))
+            missing_floor = audit.verify(args, eligibility)
+            self.assertTrue(missing_floor["checks"]["identified_node_cold_reference_price_accuracy"])
+            self.assertFalse(missing_floor["checks"]["identified_node_target_floor_semantics"])
+            self.assertFalse(missing_floor["correctness_passed"])
 
     def test_frozen_spy_price_and_low_vega_cases_preserve_both_contract_results(self):
         fixture = audit.read_json(Path(__file__).with_name("fixtures") /
@@ -442,6 +457,103 @@ class ColdNodePriceOracleTests(unittest.TestCase):
                 row["ask"] = row["bid"] + 0.01
         self.assertFalse(audit.cold_price_audit(fixture["report"], fixture["raw_rows"])
                          ["price_accuracy_passed"])
+
+
+class TargetFloorOracleTests(unittest.TestCase):
+    @staticmethod
+    def bs_atm(sigma):
+        # S=K=100, r=q=0, T=1: both sides have this independent European value.
+        return 100.0 * math.erf(sigma / (2.0 * math.sqrt(2.0)))
+
+    def fixture(self, target_sigma=0.2, reported_sigma=0.2):
+        report, _, rows = ColdNodePriceOracleTests.fixture(self)
+        entry = report["graded_stats"]["acceptance_audit"]["snapshots"][0][0]
+        query = next(q for q in entry["queries"] if q["strike"] == 100 and q["side"] == "call")
+        target = self.bs_atm(target_sigma)
+        query.update(price=target, served_price=target, volatility=reported_sigma)
+        query["cold_node"].update(sigma_lower=reported_sigma - 1e-7,
+            sigma_center=reported_sigma, sigma_upper=reported_sigma + 1e-7,
+            price_lower=self.bs_atm(reported_sigma - 1e-7),
+            price_center=self.bs_atm(reported_sigma), price_upper=self.bs_atm(reported_sigma + 1e-7),
+            floor_sigma=0.005, price_at_floor=self.bs_atm(0.005))
+        return report, query, rows
+
+    def test_subfloor_target_passes_monetary_budget_but_fails_floor_semantics(self):
+        report, query, rows = self.fixture(0.00499, 0.00501)
+        self.assertTrue(audit.cold_price_audit(report, rows)["price_accuracy_passed"])
+        result = audit.cold_floor_audit(report, rows)
+        self.assertFalse(result["floor_semantics_passed"])
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["failures"][0]["kind"], "target_at_or_below_sigma_floor_price")
+        self.assertGreater(query["price"], 1.0e-7 + 1.0e-12)
+        self.assertEqual(result["contract"]["version"], "target-iv-floor-v1")
+
+    def test_close_above_floor_is_accepted_without_widening_floor(self):
+        report, _, rows = self.fixture(0.00500001, 0.00500001)
+        self.assertTrue(audit.cold_floor_audit(report, rows)["floor_semantics_passed"])
+        report, _, rows = self.fixture(0.005, 0.00501)
+        self.assertFalse(audit.cold_floor_audit(report, rows)["floor_semantics_passed"])
+        report, _, rows = self.fixture(0.00501, 0.005)
+        result = audit.cold_floor_audit(report, rows)
+        self.assertTrue(any(f["kind"] == "reported_sigma_at_or_below_floor" for f in result["failures"]))
+
+    def test_missing_wrong_or_nonfinite_floor_evidence_fails_closed(self):
+        for patch in ({"floor_sigma": None}, {"floor_sigma": True}, {"floor_sigma": 0.004},
+                      {"price_at_floor": None}, {"price_at_floor": float("nan")},
+                      {"price_at_floor": float("inf")}, {"price_at_floor": -1.0},
+                      {"price_at_floor": False}):
+            report, query, rows = self.fixture()
+            query["cold_node"].update(patch)
+            self.assertFalse(audit.cold_floor_audit(report, rows)["floor_semantics_passed"], patch)
+        for key in ("floor_sigma", "price_at_floor"):
+            report, query, rows = self.fixture()
+            del query["cold_node"][key]
+            self.assertFalse(audit.cold_floor_audit(report, rows)["floor_semantics_passed"])
+
+    def test_zero_vol_supremum_includes_stationary_point_and_negative_rates(self):
+        zero, ceiling = audit.zero_volatility_bounds(150.0, 100.0, 10.0, 0.1, 0.05, "call")
+        self.assertAlmostEqual(zero, 56.25, places=12)
+        self.assertEqual(ceiling, 150.0)
+        # A put with both rates negative has an interior maximum in this example.
+        zero, ceiling = audit.zero_volatility_bounds(50.0, 150.0, 10.0, -0.05, -0.1, "put")
+        self.assertAlmostEqual(zero, 112.5, places=12)
+        self.assertAlmostEqual(ceiling, 150.0 * math.exp(0.5))
+        self.assertEqual(audit.zero_volatility_bounds(100, 100, 1, 0, 0, "call"), (0.0, 100.0))
+        self.assertEqual(audit.zero_volatility_bounds(100, 100, 1, 0.1, 0.1, "put"), (0.0, 100.0))
+        for inputs in ((100, 100, 0, 0, 0, "call"), (True, 100, 1, 0, 0, "call"),
+                       (100, 100, 1, 0, 0, "other"), (100, 100, 1, -1000, -1000, "put")):
+            with self.assertRaises(ValueError):
+                audit.zero_volatility_bounds(*inputs)
+
+    def test_zero_volatility_target_screen_is_separate_from_floor_evidence(self):
+        report, query, rows = self.fixture()
+        query.update(price=1e-8, served_price=1e-8)
+        query["cold_node"]["price_at_floor"] = 0.0
+        result = audit.cold_floor_audit(report, rows)
+        self.assertTrue(any(f["kind"] == "target_in_zero_volatility_band" for f in result["failures"]))
+        self.assertFalse(result["floor_semantics_passed"])
+
+    def test_actual_eight_spy_floor_promotions_fail_independent_zero_vol_screen(self):
+        fixture = audit.read_json(Path(__file__).with_name("fixtures") /
+                                  "spy-economic-v2-floor-promotions-v1.json")
+        self.assertEqual(len(fixture["contracts"]), 8)
+        for contract in fixture["contracts"]:
+            cold = contract["cold_node"]
+            zero, ceiling = audit.zero_volatility_bounds(cold["spot"], contract["strike"],
+                cold["variance_years"], cold["effective_rate"], cold["effective_yield"], contract["side"])
+            self.assertLessEqual(contract["target_price"], zero + 1e-9 * ceiling + 1e-12,
+                                 contract["row_id"])
+            self.assertEqual(contract["prior_price_only_reason"], "floor_vol")
+
+    def test_no_identified_nodes_or_changed_context_cannot_pass(self):
+        report, _, rows = self.fixture()
+        entry = report["graded_stats"]["acceptance_audit"]["snapshots"][0][0]
+        for query in entry["queries"]:
+            query.update(status="price_only", volatility=None, reason="low_vega", vol_convention="none")
+        self.assertFalse(audit.cold_floor_audit(report, rows)["floor_semantics_passed"])
+        report, query, rows = self.fixture()
+        query["cold_node"]["effective_yield"] = 0.1
+        self.assertFalse(audit.cold_floor_audit(report, rows)["floor_semantics_passed"])
 
 
 class ColdClockOracleTests(unittest.TestCase):

@@ -25,6 +25,8 @@ NUMERIC = ("strike", "bid", "ask", "spot", "rate", "sdiv", "ddiv_pv", "years",
            "years_calendar")
 STRICT_IV_CONTRACT = "strict-iv-v1"
 RAW_SPREAD_PRICE_CONTRACT = "raw-spread-price-v1"
+TARGET_FLOOR_CONTRACT = "target-iv-floor-v1"
+IV_FLOOR = 0.005
 IDENTIFICATION_BASELINE = Path(__file__).with_name("fixtures") / "spy-wave1-identification-v1.json"
 
 
@@ -633,6 +635,124 @@ def cold_root_audit(report, rows=()):
             "failures": failures, "roundoff_only": roundoff}
 
 
+def zero_volatility_bounds(spot, strike, maturity, rate, yield_rate, side):
+    """Independent discounted deterministic-exercise supremum and payoff ceiling.
+
+    The discounted call payoff is S*exp(-q*t)-K*exp(-r*t), negated for
+    a put. Its only possible interior stationary point solves
+    exp((r-q)*t)=r*K/(q*S); endpoints and that point exhaust the extrema.
+    """
+    numbers = (spot, strike, maturity, rate, yield_rate)
+    if any(not isinstance(x, (int, float)) or isinstance(x, bool) or
+           not math.isfinite(x) for x in numbers) or min(spot, strike, maturity) <= 0 or \
+            side not in ("call", "put"):
+        raise ValueError("invalid deterministic American contract")
+    times = [0.0, maturity]
+    if rate != yield_rate and rate != 0 and yield_rate != 0 and \
+            (rate > 0) == (yield_rate > 0):
+        stationary = (math.log(abs(rate)) + math.log(strike) -
+                      math.log(abs(yield_rate)) - math.log(spot)) / (rate - yield_rate)
+        if 0 < stationary < maturity:
+            times.append(stationary)
+    try:
+        differences = [spot * math.exp(-yield_rate * t) - strike * math.exp(-rate * t)
+                       for t in times]
+        zero = max(0.0, max(differences) if side == "call" else -min(differences))
+        ceiling = spot * max(1.0, math.exp(-yield_rate * maturity)) if side == "call" else \
+                  strike * max(1.0, math.exp(-rate * maturity))
+    except OverflowError as error:
+        raise ValueError("nonfinite deterministic American contract") from error
+    if not all(math.isfinite(x) for x in (*differences, zero, ceiling)):
+        raise ValueError("nonfinite deterministic American contract")
+    return zero, ceiling
+
+
+def cold_floor_audit(report, rows=(), roots=None):
+    """Target identification semantics, independent of the monetary error budget.
+
+    Historical native reports without floor prices fail this new contract;
+    their saved accuracy receipts are not changed. PriceOnly nodes make no
+    point-IV claim and need no sigma-floor forward-price evidence.
+    """
+    roots = cold_root_audit(report, rows) if roots is None else roots
+    diagnostic_only = {"cold_root_outside_1e7_bracket", "cold_forward_nonmonotone"}
+    failures = [dict(f) for f in roots["failures"] if f["kind"] not in diagnostic_only]
+    invalid = {(f.get("chain_id"), f.get("strike"), f.get("side")) for f in failures}
+    row_ids = defaultdict(list)
+    for row in rows:
+        if invalid_reason(row) is None:
+            row_ids[row["chain_id"], row["strike"], "call" if row["is_call"] else "put"].append(row["row_id"])
+    observations, seen = [], set()
+    checked = price_only = 0
+    for snapshot in report.get("graded_stats", {}).get("acceptance_audit", {}).get("snapshots", []):
+        for entry in snapshot:
+            if entry.get("grade") not in ("A", "B"):
+                continue
+            queries = {(q["strike"], q["side"]): q for q in entry.get("queries", [])}
+            if len(queries) != len(entry.get("queries", [])):
+                failures.append({"kind": "duplicate_query", "chain_id": entry["chain_id"]})
+            for node in entry.get("nodes", []):
+                for side in ("call", "put"):
+                    key = (entry["chain_id"], node["strike"], side)
+                    context = {"chain_id": key[0], "strike": key[1], "side": side,
+                               "row_ids": row_ids[key]}
+                    if key in seen:
+                        failures.append(dict(context, kind="duplicate_published_node"))
+                        continue
+                    seen.add(key)
+                    query = queries.get((key[1], side), {})
+                    if not valid_query_metadata(query):
+                        failures.append(dict(context, kind="invalid_query_metadata"))
+                        continue
+                    if query["status"] == "price_only":
+                        price_only += 1
+                        continue
+                    if key in invalid:
+                        continue
+                    cold = query["cold_node"]
+                    context.update(query=query, market=entry.get("market"),
+                                   dividend_model=entry.get("dividend_model"))
+                    try:
+                        zero, ceiling = zero_volatility_bounds(cold["spot"], key[1],
+                            cold["variance_years"], cold["effective_rate"], cold["effective_yield"], side)
+                    except ValueError:
+                        failures.append(dict(context, kind="invalid_zero_volatility_contract"))
+                        continue
+                    band = 1e-9 * ceiling + 1e-12
+                    target = query["price"]
+                    observation = dict(context, target_price=target, zero_vol_price=zero,
+                        price_ceiling=ceiling, zero_vol_band_usd=band,
+                        zero_vol_margin_usd=target - (zero + band),
+                        floor_sigma=cold.get("floor_sigma"), price_at_floor=cold.get("price_at_floor"))
+                    observations.append(observation)
+                    if not target > zero + band:
+                        failures.append(dict(observation, kind="target_in_zero_volatility_band"))
+                    if query["volatility"] <= IV_FLOOR:
+                        failures.append(dict(observation, kind="reported_sigma_at_or_below_floor"))
+                    if any(not isinstance(cold.get(name), (int, float)) or isinstance(cold[name], bool) or
+                           not math.isfinite(cold[name]) for name in ("floor_sigma", "price_at_floor")) or \
+                            cold["floor_sigma"] != IV_FLOOR or cold["price_at_floor"] < 0:
+                        failures.append(dict(observation, kind="missing_invalid_or_nonfinite_floor_evidence"))
+                        continue
+                    checked += 1
+                    observation["sigma_floor_margin_usd"] = target - cold["price_at_floor"]
+                    if not target > cold["price_at_floor"]:
+                        failures.append(dict(observation, kind="target_at_or_below_sigma_floor_price"))
+    if checked == 0:
+        failures.append({"kind": "no_identified_floor_nodes_checked"})
+    return {"schema": "atx-vol-cold-node-floor-audit-v1",
+            "contract": {"version": TARGET_FLOOR_CONTRACT, "floor_sigma": IV_FLOOR,
+                "zero_vol_target_rule": "target > sup(discounted deterministic exercise payoff) + "
+                                        "1e-9*price_ceiling + 1e-12",
+                "sigma_floor_target_rule": "target > cold Reference price at floor_sigma",
+                "reported_sigma_rule": "reported sigma > floor_sigma",
+                "economic_budget_applies_to_floor_rules": False},
+            "identified_nodes": roots["identified_nodes"], "identified_nodes_checked": checked,
+            "price_only_nodes": price_only, "failure_count": len(failures),
+            "floor_semantics_passed": checked > 0 and checked == roots["identified_nodes"] and not failures,
+            "failures": failures, "observations": observations}
+
+
 def cold_price_audit(report, rows, roots=None):
     """Versioned raw-spread budget; price-only rows make no point-IV claim.
 
@@ -1079,6 +1199,7 @@ def verify(args, eligibility):
     roots = cold_root_audit(report, rows)
     contract = accuracy_contract(getattr(args, "accuracy_contract", STRICT_IV_CONTRACT))
     prices = cold_price_audit(report, rows, roots)
+    floors = cold_floor_audit(report, rows, roots)
     coverage = identification_coverage(prices, eligibility)
     checks = {
         "audit_run_succeeded": receipt["exit_code"] == 0,
@@ -1090,6 +1211,7 @@ def verify(args, eligibility):
         "containment_995": metrics["containment_of_served"] >= eligibility["containment_min"],
         "actual_api_shape_parity_calendar": not violations,
         "identified_coverage_preserved": coverage["coverage_passed"],
+        "identified_node_target_floor_semantics": floors["floor_semantics_passed"],
     }
     if contract["version"] == RAW_SPREAD_PRICE_CONTRACT:
         checks["identified_node_cold_reference_price_accuracy"] = prices["price_accuracy_passed"]
@@ -1123,7 +1245,7 @@ def verify(args, eligibility):
             metadata_failures.append({"row_id": row["row_id"], "kind": "metadata_not_actual_api"})
     checks["every_eligible_prediction_matches_actual_api"] = not row_failures
     checks["every_eligible_metadata_matches_actual_api"] = not metadata_failures
-    result = {"schema": "atx-vol-spy-acceptance-v2", "accuracy_contract": contract, "checks": checks,
+    result = {"schema": "atx-vol-spy-acceptance-v3", "accuracy_contract": contract, "checks": checks,
               "correctness_passed": all(checks.values()), "goal_achieved": False,
               "metrics": metrics, "api_violation_count": len(violations),
               "api_violations_first100": violations[:100], "row_failure_count": len(row_failures),
@@ -1132,6 +1254,7 @@ def verify(args, eligibility):
               "metadata_failures_first100": metadata_failures[:100],
               "cold_root_audit": roots,
               "cold_price_audit": {key: value for key, value in prices.items() if key != "observations"},
+              "cold_floor_audit": {key: value for key, value in floors.items() if key != "observations"},
               "identification_coverage": coverage,
               "eligibility_sha256": hashlib.sha256(json.dumps(eligibility, sort_keys=True).encode()).hexdigest(),
               "evidence_scope": "Static American node bounds, all-pair vertical spreads, global "
@@ -1140,7 +1263,8 @@ def verify(args, eligibility):
                   "domain. Between-knot preservation follows PWL linearity. No extrapolation, "
                   "model-realizability, discrete-dividend model accuracy, Greek accuracy or live-tick claim. "
                   "Cold Reference price accuracy uses the explicitly versioned contract; local IV "
-                  "conditioning estimates do not establish root-error bounds."}
+                  "conditioning estimates do not establish root-error bounds. Identified targets "
+                  "must separately clear the zero-volatility band and cold sigma-floor price."}
     if args.command == "qualify":
         manifest = read_json(args.cold_manifest)
         timing = cold_timing_checks(manifest, args.cold_manifest.parent, receipt, report)
@@ -1156,7 +1280,7 @@ def verify(args, eligibility):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("freeze", "feasibility", "predictions", "run-audit",
-                                            "verify", "qualify", "cold-roots", "cold-prices"))
+                                            "verify", "qualify", "cold-roots", "cold-prices", "cold-floors"))
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--predictions", type=Path)
@@ -1178,17 +1302,20 @@ def main():
         return
     if args.command in ("verify", "qualify"):
         result = verify(args, eligibility)
-    elif args.command in ("cold-roots", "cold-prices"):
+    elif args.command in ("cold-roots", "cold-prices", "cold-floors"):
         report = read_json(args.audit_dir / "native.json")
         receipt = read_json(args.audit_dir / "receipt.json")
         rows = load_quotes(args.input)
-        result = cold_root_audit(report, rows) if args.command == "cold-roots" else cold_price_audit(report, rows)
+        audit_function = {"cold-roots": cold_root_audit, "cold-prices": cold_price_audit,
+                          "cold-floors": cold_floor_audit}[args.command]
+        result = audit_function(report, rows)
         result["raw_model_failures"] = raw_model_violations(report, rows)
         result["input_sha256"] = sha256(args.input)
         result["native_report_sha256"] = sha256(args.audit_dir / "native.json")
         result["input_hash_verified"] = result["input_sha256"] == receipt["input_sha256"]
         result["report_hash_verified"] = result["native_report_sha256"] == receipt["report_sha256"]
-        gate = "strict_accuracy_passed" if args.command == "cold-roots" else "price_accuracy_passed"
+        gate = {"cold-roots": "strict_accuracy_passed", "cold-prices": "price_accuracy_passed",
+                "cold-floors": "floor_semantics_passed"}[args.command]
         result[gate] &= not result["raw_model_failures"] and result["report_hash_verified"] and \
             result["input_hash_verified"]
         if args.command == "cold-prices":
@@ -1217,7 +1344,7 @@ def main():
                       if key not in ("chains", "eligible_row_ids", "metrics",
                                      "identification_baseline",
                                      "api_violations_first100", "row_failures_first100",
-                                     "metadata_failures_first100", "cold_root_audit", "cold_price_audit",
+                                     "metadata_failures_first100", "cold_root_audit", "cold_price_audit", "cold_floor_audit",
                                      "failures", "roundoff_only", "observations")}, indent=2))
     if args.command == "verify" and not result["correctness_passed"]:
         raise SystemExit(2)
